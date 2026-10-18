@@ -485,12 +485,14 @@ export class GatewayServer {
   /**
    * Keeps an accepted video's price counted against the caps until it is
    * delivered (then its charge settles like any request's) or will never be:
-   * the job failed, or the buyer does not know it.
+   * the job reports `failed`, or the buyer answers that it does not know the
+   * job. Any other error (a malformed poll, a seller that cannot be reached)
+   * keeps the commitment, which expires on its own.
    */
   private _settleVideo(
     request: ForwardedRequest,
     status: number,
-    outcome: { videoJobId: string | null; videoPriceUsdc: number; videoDelivered: boolean; poll: Buffer[] | null },
+    outcome: { videoJobId: string | null; videoPriceUsdc: number; videoDelivered: boolean; poll: Buffer[] | null; error: Buffer[] },
   ): void {
     const video = request.video
     if (!video) return
@@ -502,7 +504,10 @@ export class GatewayServer {
     if (!video.resourceId) return
     const job = videoJobKey(video.protocol, video.resourceId)
     if (outcome.videoDelivered) accounting.deliverVideo(request.tag, job)
-    else if (status === 404 || status === 400 || status === 422 || (outcome.poll && videoPollFailed(Buffer.concat(outcome.poll)))) accounting.dropVideo(job)
+    else if (
+      (status === 200 && outcome.poll && videoPollFailed(Buffer.concat(outcome.poll)))
+      || (status === 404 && errorCode(Buffer.concat(outcome.error)) === 'video_route_not_found')
+    ) accounting.dropVideo(job)
   }
 
   /**
@@ -566,7 +571,7 @@ export class GatewayServer {
         } catch (error) {
           this._log(`gateway could not record request ${tag}: ${errorMessage(error)}`)
         }
-        this._settleVideo(request, status, { videoJobId, videoPriceUsdc, videoDelivered, poll: videoPollChunks })
+        this._settleVideo(request, status, { videoJobId, videoPriceUsdc, videoDelivered, poll: videoPollChunks, error: errorChunks })
         // Only the retrieve that delivers a video is charged: a create or a status poll holds nothing once answered.
         if (request.video && !videoDelivered) this._options.accounting.release(tag)
         else this._options.accounting.finish(tag)
@@ -957,6 +962,16 @@ function videoPollFailed(body: Buffer): boolean {
     return (JSON.parse(body.toString('utf8')) as { status?: unknown }).status === 'failed'
   } catch {
     return false
+  }
+}
+
+/** The `error.code` of a JSON error answer, if any. */
+function errorCode(body: Buffer): string | null {
+  try {
+    const code = (JSON.parse(body.toString('utf8')) as { error?: { code?: unknown } }).error?.code
+    return typeof code === 'string' ? code : null
+  } catch {
+    return null
   }
 }
 

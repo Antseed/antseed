@@ -535,7 +535,9 @@ test('a video create and a status poll hold nothing once answered; only the deli
  * the gateway sends, as the real buyer does. A create names its job with the
  * body's `job` and answers after `createDelayMs`; a retrieve for a job ending
  * in `-fail` reports a failed job, one ending in `-done` delivers the file, one
- * ending in `-cut` breaks off mid-file, any other is still processing.
+ * ending in `-cut` breaks off mid-file, one ending in `-gone` is unknown to the
+ * buyer, one ending in `-bad` is refused as a malformed request, any other is
+ * still processing.
  */
 async function pricedVideoBuyer(priceUsdc: number, createDelayMs = 0) {
   const caps: Array<string | null> = []
@@ -562,6 +564,12 @@ async function pricedVideoBuyer(priceUsdc: number, createDelayMs = 0) {
           res.writeHead(200, { ...headers, 'content-type': 'application/json', 'x-antseed-video-price-usdc': String(priceUsdc) })
           res.end(JSON.stringify({ queue_id: body.job }))
         }, createDelayMs)
+        return
+      }
+      if (body.queue_id?.endsWith('-gone') || body.queue_id?.endsWith('-bad')) {
+        const gone = body.queue_id.endsWith('-gone')
+        res.writeHead(gone ? 404 : 400, { ...headers, 'content-type': 'application/json' })
+        res.end(JSON.stringify({ error: gone ? { code: 'video_route_not_found', message: 'Unknown video job' } : { code: 'invalid_required_parameters', message: 'Malformed' } }))
         return
       }
       if (body.queue_id?.endsWith('-cut')) {
@@ -631,6 +639,27 @@ test('video creates in flight at once cannot both be told the same room', async 
     assert.deepEqual(video.buyer.caps, ['1000000'])
     // Once priced, only the job's $0.60 stays committed.
     await waitFor(() => video.gateway.accounting.heldUsdc(video.key.id) === 600_000)
+  } finally {
+    await video.close()
+  }
+})
+
+test('a malformed poll keeps the job committed; a job the buyer does not know stops counting', async () => {
+  const video = await videoGateway(600_000, 1_000_000)
+  const held = () => video.gateway.accounting.heldUsdc(video.key.id)
+  try {
+    assert.equal((await video.create('job-bad')).status, 200)
+    await waitFor(() => held() === 600_000)
+    assert.equal((await video.poll('job-bad')).status, 400)
+    await waitFor(() => held() === 600_000)
+    // The job is still worth $0.60: a second $0.60 video is refused.
+    assert.equal((await video.create('job-2')).status, 422)
+    assert.equal((await video.create('job-gone')).status, 422)
+    video.gateway.accounting.dropVideo(videoJobKey('venice-video', 'job-bad'))
+    assert.equal((await video.create('job-gone')).status, 200)
+    await waitFor(() => held() === 600_000)
+    assert.equal((await video.poll('job-gone')).status, 404)
+    await waitFor(() => held() === 0)
   } finally {
     await video.close()
   }
