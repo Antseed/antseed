@@ -43,7 +43,7 @@ const waitFor = async (check, label, timeoutMs = 60_000, intervalMs = 200) => {
   throw new Error(`Timed out waiting for ${label}`);
 };
 
-const state = { anvil: null, bootstrap: null, mocks: new Map(), workers: new Map(), buyer: null, proxy: null, control: null, reader: null };
+const state = { anvil: null, bootstrap: null, mocks: new Map(), workers: new Map(), buyer: null, proxy: null, control: null, reader: null, needAuthLoss: { remaining: 0, lost: [] } };
 let manifest = null;
 let lockEntry = null;
 let shuttingDown = null;
@@ -150,11 +150,33 @@ async function stopSellerWorker(id) {
 
 let buyerRuntime = null;
 
+/**
+ * Fault hook behind POST /faults/buyer/need-auth-loss: the buyer drops the next N NeedAuth frames from
+ * sellers, as if they were lost on the wire. The node has no public seam for losing a payment frame,
+ * so this wraps the buyer payment manager's public handleNeedAuth, which the negotiator calls per frame.
+ * Every buyer start disarms the fault and forgets earlier losses.
+ */
+function injectNeedAuthLoss(bpm) {
+  state.needAuthLoss = { remaining: 0, lost: [] };
+  if (!bpm) {
+    log('Fault hook not installed: the buyer has no payment manager');
+    return;
+  }
+  const handleNeedAuth = bpm.handleNeedAuth.bind(bpm);
+  bpm.handleNeedAuth = async (sellerPeerId, payload, paymentMux) => {
+    if (state.needAuthLoss.remaining === 0) return handleNeedAuth(sellerPeerId, payload, paymentMux);
+    state.needAuthLoss.remaining -= 1;
+    state.needAuthLoss.lost.push({ sellerPeerId, ...payload, lostAt: new Date().toISOString() });
+    log(`Fault: lost NeedAuth required=${payload.requiredCumulativeAmount} lastRequestCost=${payload.lastRequestCost ?? 'none'}`);
+  };
+}
+
 /** Starts the buyer node and its BuyerProxy (on `port`, or a free one the first time). */
 async function startBuyer(port) {
   const { sdk, BuyerProxy, bootstrapNodes, payments, chain, routingPreferences } = buyerRuntime;
   state.buyer = new sdk.AntseedNode(sandboxNodeOptions({ role: 'buyer', dataDir: paths.buyer, bootstrapNodes, payments }));
   await state.buyer.start();
+  injectNeedAuthLoss(state.buyer.buyerPaymentManager);
   const launch = async (candidatePort) => {
     await saveJson(manifest.buyerConfig, {
       buyer: { proxyPort: candidatePort, minPeerReputation: 0, routingPreferences, ...(plan.topology.buyer.maxPricing ? { maxPricing: plan.topology.buyer.maxPricing } : {}) },
@@ -435,6 +457,15 @@ async function main() {
         await discover(manifest.sellers.filter((seller) => state.workers.has(seller.id)).map((seller) => seller.id));
         log('Buyer node and proxy restarted on the same port');
         return { started: true };
+      },
+      'GET /faults/buyer/need-auth-loss': () => state.needAuthLoss,
+      'POST /faults/buyer/need-auth-loss': ({ body }) => {
+        if (!state.buyer?.buyerPaymentManager) throw Object.assign(new Error('The buyer has no payment manager'), { statusCode: 409 });
+        const count = Number(body.count);
+        if (!Number.isInteger(count) || count < 0 || count > 10) throw Object.assign(new Error('count must be 0..10'), { statusCode: 400 });
+        state.needAuthLoss = { remaining: count, lost: [] };
+        log(`Fault: the buyer loses the next ${count} NeedAuth frame(s) (control request)`);
+        return state.needAuthLoss;
       },
       'POST /sellers/:id/mock': ({ params, body }) => {
         const mock = state.mocks.get(params.id);
