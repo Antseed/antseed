@@ -60,6 +60,20 @@ test('cuts off a stream the buyer did not accept as the finished video, so it ne
   assert.equal(retired, 1)
 })
 
+test('cuts off a good video whose delivery the buyer could not save, but keeps its job for another download', async () => {
+  let retired = 0
+  const unrecorded: SerializedHttpResponse = { ...start, headers: { ...start.headers, 'x-antseed-video-delivered': 'unrecorded' } }
+  await serve(async (sent, callbacks) => {
+    callbacks.onResponseStart!(start, { streaming: true })
+    await callbacks.onResponseChunk!({ requestId: sent.requestId, data: video, done: false })
+    return unrecorded
+  }, async url => {
+    const response = await fetch(url)
+    await assert.rejects(response.arrayBuffer())
+  }, async () => { retired += 1; return true })
+  assert.equal(retired, 0)
+})
+
 test('returns errors before a stream starts', async () => {
   for (const status of [404, 409, 410, 413, 429]) {
     await serve(async () => ({ ...start, statusCode: status }), async url => {

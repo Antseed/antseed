@@ -58,12 +58,15 @@ export const VIDEO_PRICE_HEADER = 'x-antseed-video-price-usdc';
 export const VIDEO_JOB_RETIRED_HEADER = 'x-antseed-video-job-retired';
 
 /**
- * On a video retrieve answer: the buyer accepted the streamed file as the
- * finished video (readable, close enough to the requested duration). Only
- * such a delivery is charged, so a stream without it was not a delivery.
- * Set by the buyer only.
+ * On a video retrieve answer: `1` when the buyer accepted the streamed file
+ * as the finished video (readable, close enough to the requested duration)
+ * and recorded its delivery. A stream without it was not a delivery.
+ * `unrecorded` when the file is fine but the buyer could not yet save that
+ * the job is done: not reported as a delivery, but the job is not given up
+ * and may be downloaded again. Set by the buyer only.
  */
 export const VIDEO_DELIVERED_HEADER = 'x-antseed-video-delivered';
+export const VIDEO_DELIVERY_UNRECORDED = 'unrecorded';
 
 /** Headers only the buyer may set: a seller's copy (in any letter case) is dropped from its responses. */
 const BUYER_ONLY_RESPONSE_HEADERS: ReadonlySet<string> = new Set([ANTSEED_FAULT_ATTRIBUTION_HEADER, VIDEO_PRICE_HEADER, VIDEO_JOB_RETIRED_HEADER, VIDEO_DELIVERED_HEADER]);
@@ -488,8 +491,9 @@ export class BuyerRequestHandler {
    * Whether a retrieve's answer is the finished video (readable, close enough
    * to the requested duration). For a tracked job it is only once the delivery
    * is recorded, which ends the job (it is charged once, and never again): a
-   * delivery that could not be recorded is not one, so the job is not taken
-   * as delivered while it can still be charged.
+   * delivery whose job could not be removed from storage is `unrecorded`: the
+   * file is fine and the job is not given up, but it is not reported as
+   * delivered until the buyer has saved that it is done.
    */
   private _recordVideoDelivery(
     peer: BuyerPeerView,
@@ -499,11 +503,15 @@ export class BuyerRequestHandler {
     videoRoute: ReturnType<typeof nativeVideoRoute>,
     videoJobId: string | undefined,
     requestId: string,
-  ): boolean {
-    if (videoRoute?.action !== 'retrieve' || !videoJobId) return false;
-    if (!nativeVideoDelivered(response, duration)) return false;
-    if (!tracked) return true;
-    return this._deps.negotiator?.bpm?.recordVideoDelivered(peer.peerId, videoRoute.protocol, videoJobId, requestId) === true;
+  ): VideoDelivery {
+    if (videoRoute?.action !== 'retrieve' || !videoJobId) return null;
+    if (!nativeVideoDelivered(response, duration)) return null;
+    if (!tracked) {
+      return this._deps.negotiator?.bpm?.videoDeliveryUnsaved(peer.peerId, videoRoute.protocol, videoJobId) === true ? 'unrecorded' : 'delivered';
+    }
+    const recorded = this._deps.negotiator?.bpm?.recordVideoDelivered(peer.peerId, videoRoute.protocol, videoJobId, requestId);
+    if (recorded === 'recorded') return 'delivered';
+    return recorded === 'unsaved' ? 'unrecorded' : null;
   }
 
   private _prepareDirectFreeUsageOpen(peer: BuyerPeerView, conn: BuyerConnection): void {
@@ -741,8 +749,11 @@ export function stripPeerControlledResponseHeaders(
 }
 
 /** Marks a retrieve answer the buyer accepted as the finished video. */
-function withVideoDelivered(response: SerializedHttpResponse, delivered: boolean): SerializedHttpResponse {
-  return delivered ? { ...response, headers: { ...response.headers, [VIDEO_DELIVERED_HEADER]: '1' } } : response;
+type VideoDelivery = 'delivered' | 'unrecorded' | null;
+
+function withVideoDelivered(response: SerializedHttpResponse, delivery: VideoDelivery): SerializedHttpResponse {
+  if (delivery === null) return response;
+  return { ...response, headers: { ...response.headers, [VIDEO_DELIVERED_HEADER]: delivery === 'delivered' ? '1' : VIDEO_DELIVERY_UNRECORDED } };
 }
 
 /** True when a 402 body carries the seller's payment_required contract (flat or wrapped). */

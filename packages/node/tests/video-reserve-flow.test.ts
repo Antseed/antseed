@@ -505,17 +505,35 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     expect(h.buyer.trackVideoRetrieve(h.peer.peerId, 'venice-video', 'job-1', 'retrieve-2')).toBe(false);
   });
 
-  it('does not mark a download delivered while the job cannot be removed from storage', async () => {
+  it('pays the seller but does not report a delivery while the job cannot be removed from storage', async () => {
     const h = setup();
     await h.send(h.videoRequest('video-1'));
     await h.settle();
 
     // A job still stored comes back after a restart and could be charged again: the download is not a delivery.
-    const store = (h.buyer as unknown as { _channelStore: { upsertChannel: (...args: unknown[]) => unknown } })._channelStore;
-    const failWrites = () => { vi.spyOn(store, 'upsertChannel').mockImplementation(() => { throw new Error('database is locked'); }); };
+    const store = (h.buyer as unknown as { _channelStore: { upsertChannel: (record: { oneOffVideoJob?: string | null }) => unknown } })._channelStore;
+    const upsert = store.upsertChannel.bind(store);
+    let failing: ReturnType<typeof vi.spyOn> | null = null;
+    // Only the write that clears the delivered job fails (for example a lock held just then).
+    const failWrites = () => {
+      failing = vi.spyOn(store, 'upsertChannel').mockImplementation((record) => {
+        if (record.oneOffVideoJob === null) throw new Error('database is locked');
+        return upsert(record);
+      });
+    };
     const response = await h.send(h.retrieveRequest('retrieve-1', 'job-1'), { onResponseStart: failWrites, onResponseChunk() {} });
-    expect(response.headers['x-antseed-video-delivered']).toBeUndefined();
-    expect(h.buyer.trackVideoRetrieve(h.peer.peerId, 'venice-video', 'job-1', 'retrieve-2')).toBe(true);
+    // The file is fine and the seller is paid for it, but the job is not reported delivered (nor retired).
+    expect(response.headers['x-antseed-video-delivered']).toBe('unrecorded');
+    await h.settle();
+    expect(h.close).toHaveBeenCalledOnce();
+    expect(h.close.mock.calls[0]![2]).toBe(VIDEO_PRICE);
+    expect((await h.send(h.retrieveRequest('retrieve-2', 'job-1'))).headers['x-antseed-video-delivered']).toBe('unrecorded');
+
+    failing!.mockRestore();
+    const again = await h.send(h.retrieveRequest('retrieve-3', 'job-1'));
+    expect(again.headers['x-antseed-video-delivered']).toBe('1');
+    await h.settle();
+    expect(h.close).toHaveBeenCalledOnce();
   });
 
   it('does not mark a download delivered when its job is no longer tracked', async () => {

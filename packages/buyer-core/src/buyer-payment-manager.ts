@@ -133,6 +133,8 @@ interface StoredBuyerRequestBillingEntry extends BuyerRequestBillingEntry {
   createdAtMs: number;
   /** Video jobs only: the one-off channel that pays for the job. */
   oneOffChannelId?: string;
+  /** A video retrieve the buyer did not take as the job's delivery: no NeedAuth for it waits for one. */
+  notDelivered?: boolean;
 }
 
 /** Identity of a not-yet-opened buyer channel: fresh salt, derived channelId, auth deadline. */
@@ -235,7 +237,7 @@ export class BuyerPaymentManager {
    * the fact.
    */
   private readonly _requestBillingEntries = new Map<string, StoredBuyerRequestBillingEntry>();
-  private readonly _observedUsageWaiters = new Map<string, Array<(usage: UnitBillingUsage) => void>>();
+  private readonly _observedUsageWaiters = new Map<string, Array<(usage: UnitBillingUsage | undefined) => void>>();
 
   /** sellerPeerId -> full pricing map (defaults + per-service overrides from peer metadata / 402) */
   private readonly _sessionPricing = new Map<string, { defaults: ServicePricing; services: Record<string, ServicePricing> }>();
@@ -260,6 +262,8 @@ export class BuyerPaymentManager {
    * receives the finished video.
    */
   private readonly _videoJobs = new Map<string, StoredBuyerRequestBillingEntry>();
+  /** Delivered jobs whose stored copy could not be cleared yet, by job key: their one-off channel. */
+  private readonly _unsavedVideoDeliveries = new Map<string, string>();
   /** One-off channels keyed by channelId. Never a seller's session channel. */
   private readonly _oneOffChannels = new Map<string, OneOffChannelState>();
 
@@ -2254,15 +2258,26 @@ export class BuyerPaymentManager {
     }
   }
 
+  /** Nothing was delivered for the request: a NeedAuth waiting for it is judged now, as after the wait. */
+  private _noObservedUnitUsage(requestId: string): void {
+    const entry = this._requestBillingEntries.get(requestId);
+    if (entry) entry.notDelivered = true;
+    const waiters = this._observedUsageWaiters.get(requestId);
+    if (!waiters) return;
+    this._observedUsageWaiters.delete(requestId);
+    for (const waiter of waiters) waiter(undefined);
+  }
+
   /** Wait for observed unit usage while the buyer's response path catches up. */
   private _waitForObservedUnitUsage(
     requestId: string,
     timeoutMs: number,
   ): Promise<UnitBillingUsage | undefined> {
-    const existing = this._requestBillingEntries.get(requestId)?.observedUnitUsage;
-    if (existing) return Promise.resolve(existing);
+    const entry = this._requestBillingEntries.get(requestId);
+    if (entry?.observedUnitUsage) return Promise.resolve(entry.observedUnitUsage);
+    if (entry?.notDelivered) return Promise.resolve(undefined);
     return new Promise((resolve) => {
-      const onUsage = (usage: UnitBillingUsage): void => {
+      const onUsage = (usage: UnitBillingUsage | undefined): void => {
         clearTimeout(timer);
         resolve(usage);
       };
@@ -2347,19 +2362,43 @@ export class BuyerPaymentManager {
   /**
    * Record that the buyer received the finished video. Only now may the
    * seller's NeedAuth for the job's price be signed, and only once.
+   * `untracked`: the buyer no longer has the job (it can never be charged).
+   * `unsaved`: the delivery is recorded (the seller's charge is signed, so it
+   * is paid for what it delivered) but the job could not be removed from
+   * storage yet, where a restart would find it again; until that is saved
+   * (see `videoDeliveryUnsaved`) the download is not reported as delivered,
+   * so a gateway keeps the price held until the charge reaches it.
    */
-  recordVideoDelivered(sellerPeerId: string, protocol: string, jobId: string, requestId: string): boolean {
+  recordVideoDelivered(sellerPeerId: string, protocol: string, jobId: string, requestId: string): 'recorded' | 'unsaved' | 'untracked' {
     const key = videoJobKey(sellerPeerId, protocol, jobId);
     const job = this._videoJobs.get(key);
     // The job's own facts, not the request's cache entry, which other requests may have evicted meanwhile.
     const facts = job?.requestFacts;
-    if (!job || facts?.kind !== 'video') return false;
-    // Saved first: a job still stored would be chargeable again after a restart, so it is not delivered yet.
-    if (job.oneOffChannelId && !this._persistVideoJob(job.oneOffChannelId, null)) return false;
+    if (!job || facts?.kind !== 'video') {
+      this._noObservedUnitUsage(requestId);
+      return 'untracked';
+    }
+    const saved = !job.oneOffChannelId || this._persistVideoJob(job.oneOffChannelId, null);
     if (!this._requestBillingEntries.has(requestId)) this.trackVideoRetrieve(sellerPeerId, protocol, jobId, requestId);
     this._videoJobs.delete(key);
+    if (!saved) this._unsavedVideoDeliveries.set(key, job.oneOffChannelId!);
     this.recordObservedUnitUsage(requestId, nativeVideoUnitUsage(facts.video));
-    return true;
+    return saved ? 'recorded' : 'unsaved';
+  }
+
+  /**
+   * Whether a delivered job's stored copy is still to be cleared (retried
+   * now). While it is, a restart could restore the job, so another download
+   * of it is not reported as delivered either; its one-off channel never pays
+   * more than the price already signed.
+   */
+  videoDeliveryUnsaved(sellerPeerId: string, protocol: string, jobId: string): boolean {
+    const key = videoJobKey(sellerPeerId, protocol, jobId);
+    const channelId = this._unsavedVideoDeliveries.get(key);
+    if (channelId === undefined) return false;
+    if (!this._persistVideoJob(channelId, null)) return true;
+    this._unsavedVideoDeliveries.delete(key);
+    return false;
   }
 
   /** The duration a tracked video job asked for, if it is tracked. */

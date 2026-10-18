@@ -1,6 +1,6 @@
 import { once } from 'node:events'
 import type { ServerResponse } from 'node:http'
-import { VIDEO_DELIVERED_HEADER, VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_JOB_RETIRED_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, VIDEO_DOWNLOAD_MAX_BYTES, type RequestStreamCallbacks, type SerializedHttpRequest, type SerializedHttpResponse } from '@antseed/node'
+import { VIDEO_DELIVERED_HEADER, VIDEO_DELIVERY_UNRECORDED, VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_JOB_RETIRED_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, VIDEO_DOWNLOAD_MAX_BYTES, type RequestStreamCallbacks, type SerializedHttpRequest, type SerializedHttpResponse } from '@antseed/node'
 
 type SendDownload = (request: SerializedHttpRequest, callbacks: RequestStreamCallbacks, signal: AbortSignal) => Promise<SerializedHttpResponse>
 let activeDownloads = 0
@@ -151,10 +151,12 @@ export async function downloadVideo(
     }
     if (result.statusCode !== 200 || (length !== null && received !== length)) throw new Error('Incomplete video')
     // Only a file the buyer accepted as the finished video is a delivery (and is charged). Any other stream is cut
-    // off, so no client or gateway takes it for one; the job is retired first (it would only be rejected again), so
-    // the next poll answers it is gone and a gateway stops holding its price.
-    if (result.headers[VIDEO_DELIVERED_HEADER] !== '1') {
-      await retire().catch(() => false)
+    // off, so no client or gateway takes it for one. A rejected file is retired first (it would only be rejected
+    // again), so the next poll answers it is gone and a gateway stops holding its price; a good file whose delivery
+    // could not be saved keeps its job, so it can be downloaded again.
+    const delivered = result.headers[VIDEO_DELIVERED_HEADER]
+    if (delivered !== '1') {
+      if (delivered !== VIDEO_DELIVERY_UNRECORDED) await retire().catch(() => false)
       throw new Error('Video not accepted')
     }
     response.end()
