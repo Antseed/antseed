@@ -294,7 +294,14 @@ export class GatewayServer {
 
     // Caps are only as good as the spend that reaches the ledger, so a key
     // with caps fails closed while its buyer is not reporting spend.
-    if (route.paid && this._options.accounting.hasBudgets(key, context) && !await this._spendFeedReporting(res)) return
+    if (route.paid && this._options.accounting.hasBudgets(key, context)) {
+      if (!await this._spendFeedReporting(res)) return
+      // Caps count accepted video jobs; refuse rather than admit against commitments that could be lost.
+      if (!this._options.accounting.videoCommitmentsReady()) {
+        sendError(res, 503, 'api_error', 'spend_tracking_unavailable', 'Spend limits cannot be applied right now: video jobs could not be stored. Try again shortly.')
+        return
+      }
+    }
 
     let body = await readBody(req)
     if (!body) return sendBodyTooLarge(res)

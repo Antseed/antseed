@@ -352,7 +352,7 @@ export class BuyerPaymentNegotiator {
         ...(route.unitModel ? { unitModel: route.unitModel } : {}),
         ...(route.tokenPricing ? { tokenPricing: route.tokenPricing } : {}),
       });
-      return estimatedCost > 0n ? estimatedCost : undefined;
+      return isVideo ? estimatedCost : undefined;
     } else {
       this._bpm.trackRequestService(request.requestId, service);
       return undefined;

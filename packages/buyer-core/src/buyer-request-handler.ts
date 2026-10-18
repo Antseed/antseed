@@ -170,6 +170,8 @@ export class BuyerRequestHandler {
     const isFreeService = videoRoute?.action === 'retrieve' || (requestedService
       ? (billingRoute ? isBillingRouteFree(billingRoute) : isPeerServiceFree(peer, requestedService))
       : false);
+    // A free video costs nothing: say so, so a caller does not hold its whole budget for it.
+    if (videoRoute?.action === 'create' && isFreeService) videoPriceUsdc = 0n;
     if (negotiator && requestedService) {
       if (isFreeService) {
         negotiator.trackFreeUsageRequestService(req.requestId, requestedService);

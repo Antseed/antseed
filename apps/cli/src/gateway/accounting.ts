@@ -113,6 +113,10 @@ export class GatewayAccounting {
   private readonly _holds = new Map<string, Hold>()
   /** Accepted video jobs, by `videoJobKey`: their price counts against the caps until delivered, failed or expired. */
   private readonly _videoCommitments = new Map<string, VideoCommitment>()
+  /** Commitment writes that failed, retried before admitting a capped request (null: a delete). */
+  private readonly _pendingVideoWrites = new Map<string, VideoCommitmentRecord | null>()
+  /** Whether the stored commitments were read; until then a capped request cannot be admitted safely. */
+  private _videoCommitmentsLoaded = false
   private readonly _settleGraceMs: number
   private readonly _videoCommitmentMs: number
   private readonly _maxVideoRequestUsdc: number
@@ -123,11 +127,7 @@ export class GatewayAccounting {
     this._videoCommitmentMs = _options.videoCommitmentMs ?? DEFAULT_VIDEO_COMMITMENT_MS
     this._maxVideoRequestUsdc = _options.maxVideoRequestUsdc ?? DEFAULT_MAX_VIDEO_REQUEST_USDC
     this._now = _options.now ?? (() => Date.now())
-    try {
-      for (const { job, ...commitment } of _store.listVideoCommitments(this._now())) this._videoCommitments.set(job, commitment)
-    } catch (error) {
-      _options.onLog?.(`gateway could not load video commitments: ${error instanceof Error ? error.message : String(error)}`)
-    }
+    this._loadVideoCommitments()
   }
 
   /** In-flight holds plus accepted videos not yet charged, optionally leaving one video job out. */
@@ -196,7 +196,7 @@ export class GatewayAccounting {
       deliveredAt: null,
     }
     this._videoCommitments.set(job, commitment)
-    this._write(() => this._store.saveVideoCommitment({ job, ...commitment }))
+    this._storeVideo(job, { job, ...commitment })
   }
 
   /** The key that created a video job through this gateway, if it is still remembered. */
@@ -223,7 +223,7 @@ export class GatewayAccounting {
     const commitment = this._videoCommitments.get(job)
     if (!commitment || commitment.deliveredAt !== null) return
     commitment.deliveredAt = this._now()
-    this._write(() => this._store.saveVideoCommitment({ job, ...commitment }))
+    this._storeVideo(job, { job, ...commitment })
   }
 
   /**
@@ -240,26 +240,54 @@ export class GatewayAccounting {
 
   private _setVideoHeld(job: string, commitment: VideoCommitment, amountUsdc: number): void {
     commitment.amountUsdc = amountUsdc
-    this._write(() => this._store.saveVideoCommitment({ job, ...commitment }))
+    this._storeVideo(job, { job, ...commitment })
   }
 
   private _forgetVideo(job: string): void {
     this._videoCommitments.delete(job)
-    this._write(() => this._store.deleteVideoCommitment(job))
+    this._storeVideo(job, null)
   }
 
   /**
-   * Commitments live in memory first and are stored so a restart keeps them;
-   * a failed write (for example another process holding the database lock)
-   * must not fail the request that caused it.
+   * Commitments live in memory first and are stored so a restart keeps them.
+   * A failed write (for example another process holding the database lock)
+   * does not fail the request that caused it; it is retried, and until it
+   * succeeds capped requests are refused (see `videoCommitmentsReady`), so a
+   * restart can never forget a job that can still be charged.
    */
-  private _write(write: () => void): void {
+  private _storeVideo(job: string, record: VideoCommitmentRecord | null): void {
+    this._pendingVideoWrites.delete(job)
     try {
-      write()
+      if (record) this._store.saveVideoCommitment(record)
+      else this._store.deleteVideoCommitment(job)
     } catch (error) {
+      this._pendingVideoWrites.set(job, record)
       this._options.onLog?.(`gateway could not store a video commitment: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
+
+  private _loadVideoCommitments(): void {
+    try {
+      for (const { job, ...commitment } of this._store.listVideoCommitments(this._now())) {
+        if (!this._videoCommitments.has(job) && !this._pendingVideoWrites.has(job)) this._videoCommitments.set(job, commitment)
+      }
+      this._videoCommitmentsLoaded = true
+    } catch (error) {
+      this._options.onLog?.(`gateway could not load video commitments: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  /**
+   * Whether every video commitment is read and stored, so caps can be applied:
+   * retries a failed load and failed writes first. A delete that still fails
+   * only over-counts after a restart (the safe side) and does not block.
+   */
+  videoCommitmentsReady(): boolean {
+    if (!this._videoCommitmentsLoaded) this._loadVideoCommitments()
+    for (const [job, record] of [...this._pendingVideoWrites]) this._storeVideo(job, record)
+    return this._videoCommitmentsLoaded && [...this._pendingVideoWrites.values()].every((record) => record === null)
+  }
+
 
   /** Whether any level above or at the key caps spend (so admission depends on the spend feed). */
   hasBudgets(key: ApiKeyRecord, context: KeyContext = this._context(key)): boolean {

@@ -1050,6 +1050,61 @@ test('a job that holds its price can always be polled and downloaded, even after
   }
 })
 
+test('capped requests are refused while a video commitment cannot be stored or loaded, and resume once it can', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await pricedVideoBuyer(400_000)
+  const { key, secret } = store.createKey({ label: 'Video', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: 1_000_000, monthly: null, total: null }, expiresAt: null })
+  const save = store.saveVideoCommitment.bind(store)
+  let failWrites = true
+  store.saveVideoCommitment = (record) => { if (failWrites) throw new Error('database is locked'); save(record) }
+  const gateway = await startGateway(store, buyer.port, 100_000, null, 60_000)
+  try {
+    assert.equal((await request(gateway.port, '/api/v1/video/queue', { method: 'POST', key: secret, body: '{"model":"seedance","prompt":"An ant","duration":"8s","job":"job-1"}' })).status, 200)
+    await waitFor(() => gateway.accounting.heldUsdc(key.id) === 400_000)
+    // The job is held in memory but not stored: a restart could forget it, so capped requests wait.
+    const refused = await request(gateway.port, '/v1/chat/completions', { method: 'POST', key: secret, body: '{"model":"m"}' })
+    assert.equal(refused.status, 503)
+    assert.equal(JSON.parse(refused.body).error.code, 'spend_tracking_unavailable')
+    failWrites = false
+    assert.equal((await request(gateway.port, '/v1/chat/completions', { method: 'POST', key: secret, body: '{"model":"m"}' })).status, 200)
+    assert.equal(store.listVideoCommitments(Date.now()).length, 1, 'stored on the retry')
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    cleanup()
+  }
+})
+
+test('stored video commitments that cannot be read at startup are read before any capped request', () => {
+  const { store, cleanup } = tempDataDir()
+  try {
+    const { key } = store.createKey({ label: 'Video', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: 1_000_000, monthly: null, total: null }, expiresAt: null })
+    store.saveVideoCommitment({ job: videoJobKey('venice-video', 'job-1'), keyId: key.id, memberId: null, workspaceId: key.workspaceId, amountUsdc: 600_000, expiresAt: Date.now() + 60_000, deliveredAt: null })
+    const list = store.listVideoCommitments.bind(store)
+    let failReads = true
+    store.listVideoCommitments = (now) => { if (failReads) throw new Error('database is locked'); return list(now) }
+    const accounting = new GatewayAccounting(store, { holdUsdc: 100_000 })
+    assert.equal(accounting.videoCommitmentsReady(), false)
+    failReads = false
+    assert.equal(accounting.videoCommitmentsReady(), true)
+    assert.equal(accounting.heldUsdc(key.id), 600_000)
+    accounting.dispose()
+  } finally {
+    cleanup()
+  }
+})
+
+test('a free video holds nothing for its job', async () => {
+  const video = await videoGateway(0, 1_000_000)
+  try {
+    assert.equal((await video.create('job-free')).status, 200)
+    await waitFor(() => video.gateway.accounting.heldUsdc(video.key.id) === 0)
+    assert.equal(video.gateway.accounting.videoJobOwner(videoJobKey('venice-video', 'job-free')), video.key.id)
+  } finally {
+    await video.close()
+  }
+})
+
 test('a delivered video that is never charged stops holding its price an hour after delivery', () => {
   const { store, cleanup } = tempDataDir()
   let now = Date.UTC(2026, 0, 1)
