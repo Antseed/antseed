@@ -291,10 +291,15 @@ test('the request log keeps why automatic routing picked the seller that served 
   const { secret, key } = ctx.store.createKey({ label: 'team', limits: NO_LIMITS, expiresAt: null })
   const body = { model: 'gpt-5', messages: [{ role: 'user', content: 'Hello' }] }
 
+  // A seller cannot replace the buyer's explanation with its own.
+  const forged = Buffer.from(JSON.stringify({ rank: 1, of: 1, attempt: 0, pick: 'best', ordering: 'expected-cost', record: 'model', expectedCostUsd: 0, expectedSeconds: 0, successRate: 1, observations: 999, poolSize: 1, inFlight: 0 })).toString('base64url')
+  ctx.sellerHeaders['X-Antseed-Route-Selection'] = forged
   const res = await ctx.call(secret, '/v1/chat/completions', body)
   assert.equal(res.status, 200, res.text)
+  assert.notEqual(res.headers.get('x-antseed-route-selection'), forged)
   const [row] = ctx.store.listRequests({ keyId: key.id })
   const picked = ctx.store.getRequest(row!.tag)!.routeSelection
+  assert.equal(picked?.of, 2, 'the buyer\'s selection, not the seller\'s')
   assert.equal(picked?.rank, 1)
   assert.equal(picked?.of, 2)
   assert.equal(picked?.attempt, 0)
