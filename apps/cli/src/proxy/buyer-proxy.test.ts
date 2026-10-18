@@ -1597,6 +1597,50 @@ test('a video job that reports failed is retired: later retrieves never reach th
   }
 })
 
+function failingVideoProxy(persist: () => Promise<void>, answer: (call: number) => Promise<object>) {
+  const peer = makePeer('a', ['venice'])
+  peer.providerServiceApiProtocols = { venice: { services: { 'video-model': ['venice-video'] } } }
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+  ;(proxy as any)._persistResourceRoutes = persist
+  ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: SerializedHttpRequest) =>
+    ({ requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ queue_id: 'job' })) })
+  const calls = { retrieves: 0 }
+  ;(proxy as any)._node.sendRequestStream = async (_peer: PeerInfo, request: SerializedHttpRequest) => {
+    const body = await answer(++calls.retrieves)
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify(body)) }
+  }
+  const create = () => invokeProxy(proxy, makeProxyRequest({ path: '/api/v1/video/queue', body: { model: 'video-model', prompt: 'cat', duration: '5s' } }))
+  const retrieve = () => invokeProxy(proxy, makeProxyRequest({ method: 'POST', path: '/api/v1/video/retrieve', body: { model: 'video-model', queue_id: 'job' } }))
+  return { create, retrieve, calls }
+}
+
+test('a retrieve queued behind one that retires the job as failed never reaches the seller', async () => {
+  const video = failingVideoProxy(async () => {}, async (call) => {
+    if (call === 1) await new Promise((resolve) => setTimeout(resolve, 30))
+    return { status: 'FAILED' }
+  })
+  assert.equal((await video.create()).statusCode, 200)
+  const [first, second] = await Promise.all([video.retrieve(), video.retrieve()])
+  assert.equal(JSON.parse(first.body).status, 'failed')
+  assert.equal(second.statusCode, 404, second.body)
+  assert.equal(video.calls.retrieves, 1)
+})
+
+test('a failed job whose retirement cannot be saved is reported as unknown and kept', async () => {
+  let failWrites = false
+  const video = failingVideoProxy(async () => { if (failWrites) throw new Error('disk full') }, async () => ({ status: 'FAILED' }))
+  assert.equal((await video.create()).statusCode, 200)
+  failWrites = true
+  const unsaved = await video.retrieve()
+  assert.equal(unsaved.statusCode, 200)
+  assert.deepEqual([JSON.parse(unsaved.body).status, JSON.parse(unsaved.body).retryable], ['unknown', true])
+  // The route was put back, so the job is still polled (and retired once the write succeeds).
+  failWrites = false
+  assert.equal(JSON.parse((await video.retrieve()).body).status, 'failed')
+  assert.equal((await video.retrieve()).statusCode, 404)
+  assert.equal(video.calls.retrieves, 2)
+})
+
 test('native resource follow-ups fail when the recorded provider loses support instead of switching providers', async () => {
   for (const provider of ['venice'] as const) {
     const protocol = 'venice-video'

@@ -49,6 +49,11 @@ export class ResourceRoutes {
     return this.routes.delete(routeKey(protocol, resourceId))
   }
 
+  /** Puts back a route exactly as it was (for a retirement that could not be saved). */
+  restore(route: ResourceRoute): void {
+    this.routes.set(routeKey(route.protocol, route.resourceId), route)
+  }
+
   private prune(): void {
     const cutoff = this.now() - ROUTE_TTL_MS
     for (const [key, route] of this.routes) {

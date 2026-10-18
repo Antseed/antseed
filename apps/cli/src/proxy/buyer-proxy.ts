@@ -1,4 +1,4 @@
-import { nativeVideoRoute } from '@antseed/api-adapter'
+import { nativeVideoRoute, type NativeVideoProtocol } from '@antseed/api-adapter'
 import { ResourceRoutes } from './resource-routes.js'
 import { prepareVideoRequest, recordVideoAcceptance } from './native-video-proxy.js'
 import { downloadVideo } from './video-download.js'
@@ -1185,6 +1185,8 @@ export class BuyerProxy {
 
   private _stateWriteChain: Promise<void> = Promise.resolve()
   private readonly _resourceRoutes = new ResourceRoutes()
+  /** Retrieves of one video job run one at a time, so a job retired as failed cannot be delivered by a retrieve already under way. */
+  private readonly _videoJobQueues = new Map<string, Promise<void>>()
 
   private _cachedPeers: PeerInfo[] = []
   private _cacheLastUpdatedAtMs = 0
@@ -2316,6 +2318,38 @@ export class BuyerProxy {
       }
     }).catch(() => {})
     return this._stateWriteChain
+  }
+
+  private async _serializeVideoJob(job: string, run: () => Promise<void>): Promise<void> {
+    const previous = this._videoJobQueues.get(job) ?? Promise.resolve()
+    const current = previous.then(run, run)
+    const tail = current.catch(() => {})
+    this._videoJobQueues.set(job, tail)
+    try {
+      await current
+    } finally {
+      if (this._videoJobQueues.get(job) === tail) this._videoJobQueues.delete(job)
+    }
+  }
+
+  /**
+   * Retires a failed video job: later retrieves get `video_route_not_found` and
+   * never reach the seller, so it can never be delivered or charged, and a
+   * gateway may release the price it held for it. False (route kept) when the
+   * retirement could not be saved, so a restart cannot bring the job back.
+   */
+  private async _retireVideoJob(protocol: NativeVideoProtocol, resourceId: string): Promise<boolean> {
+    const route = this._resourceRoutes.resolve(protocol, resourceId)
+    if (!route) return true
+    this._resourceRoutes.forget(protocol, resourceId)
+    try {
+      await this._persistResourceRoutes()
+      return true
+    } catch (error) {
+      this._resourceRoutes.restore(route)
+      console.error('[proxy] Retired video route was not saved; the job is kept:', error)
+      return false
+    }
   }
 
   private async _persistResourceRoutes(): Promise<void> {
@@ -4839,14 +4873,17 @@ export class BuyerProxy {
     const wantsStreaming = clientWantsStreaming && !videoRoute
     if (videoRoute?.action === 'retrieve') {
       // The seller hands a job only to the buyer that created it: retrieve with the same wallet.
-      const outcome = await downloadVideo(requestForPeer, res, (request, callbacks, signal) => this._node.sendRequestStream(selectedPeer, request, callbacks, {
-        signal, pinned: true, ...(buyerIdentity ? { buyerIdentity } : {}),
-      }), requestSignal)
-      // A failed job is retired: later retrieves get `video_route_not_found` and never reach the seller, so it
-      // can never be delivered or charged, and a gateway may release the price it held for it.
-      if (outcome === 'failed' && videoRoute.resourceId && this._resourceRoutes.forget(videoRoute.protocol, videoRoute.resourceId)) {
-        await this._persistResourceRoutes().catch(error => console.error('[proxy] Retired video route was not persisted:', error))
-      }
+      const { protocol, resourceId } = videoRoute
+      await this._serializeVideoJob(`${protocol}\n${resourceId ?? ''}`, async () => {
+        // Checked again in turn: a retrieve queued behind one that retired the job must not reach the seller.
+        if (!resourceId || !this._resourceRoutes.resolve(protocol, resourceId)) {
+          sendJson(res, 404, { error: { code: 'video_route_not_found', message: 'Unknown video job' } })
+          return
+        }
+        await downloadVideo(requestForPeer, res, (request, callbacks, signal) => this._node.sendRequestStream(selectedPeer, request, callbacks, {
+          signal, pinned: true, ...(buyerIdentity ? { buyerIdentity } : {}),
+        }), requestSignal, () => this._retireVideoJob(protocol, resourceId))
+      })
       return { done: true }
     }
     const peerResponseProtocol = selectedRoutePlan.selection?.targetProtocol ?? requestProtocol
