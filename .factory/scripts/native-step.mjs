@@ -98,6 +98,9 @@ herdr(['pane', 'rename', pane, `${tag.split('/').pop()} · ${model}`])
 log(`starting claude ${model} (${mode}) in ${pane}, session ${sessionId}`)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const screenText = () => (sh('herdr', ['pane', 'read', pane, '--source', 'visible']).stdout ?? '').replace(/\s+/g, ' ')
+// The transcript path is derived from cwd, so the pane's shell must be in exactly that directory.
+sh('herdr', ['pane', 'run', pane, `cd '${cwd}'`])
+await sleep(800)
 const start = sh('herdr', ['agent', 'start', name, '--kind', 'claude', '--pane', pane, '--timeout', '120000', '--', ...claudeArgs])
 // A first launch in a new worktree shows the folder-trust dialog, and Herdr may already report the agent as
 // ready. The factory created that folder, so accept it. The default option is "No, exit": move down first.

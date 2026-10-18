@@ -77,7 +77,11 @@ function render(template, v) {
   const text = read(join(FACTORY, 'prompts', '_preamble.md')) + read(join(FACTORY, 'prompts', template))
   return text.replace(/\{(\w+)\}/g, (m, k) => (k in v ? String(v[k]) : m))
 }
-function runStep({ stage, round = 1, template, prefix, cwd, pane, model, mode, extra = {}, addDirs = [], suffix = '' }) {
+// Read-only stages start in a scratch directory under the run dir, with the fix worktree added by path, so
+// a relative slip (a persisting `cd`, an unmatched glob) cannot land in the tree they must not touch.
+const scratchCwd = (stage) => { const d = join(RD, 'scratch', stage); mkdirSync(d, { recursive: true }); return d }
+function runStep({ stage, round = 1, template, prefix, cwd, pane, model, mode, extra = {}, addDirs = [], suffix = '', readonly = false }) {
+  if (readonly) { addDirs = [...addDirs, cwd]; cwd = scratchCwd(stage) }
   const conf = MODELS.stages[stage] ?? MODELS.stages[template.replace('.md', '')]
   model ??= conf.model
   mode ??= conf.mode
@@ -141,6 +145,7 @@ let outcome = { verdict: 'RUNNING', reason: '' }
 class Stop extends Error {}
 function stop(verdict, reason) {
   outcome = { verdict, reason }
+  decide(slug, 'outcome', `${verdict}: ${reason}`, 'the driver stopped the run at a gate', 'events.jsonl', verdict)
   event(slug, 'outcome', verdict, reason)
   throw new Stop(reason)
 }
@@ -172,7 +177,7 @@ async function intake() {
   let note = ''
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     const before = snapshot()
-    const step = await runStep({ stage: 'intake', round: attempt, template: 'intake.md', prefix: 'INTAKE', cwd: S.worktree, extra: { sent_back: note } })
+    const step = await runStep({ readonly: true, stage: 'intake', round: attempt, template: 'intake.md', prefix: 'INTAKE', cwd: S.worktree, extra: { sent_back: note } })
     auditGate(step); readOnly(before, 'intake'); tripwire('intake')
     if (step.answer.startsWith(`INTAKE ${slug} NOT_REPRODUCED`)) pause('intake', 'the bug did not reproduce on origin/main; pick another bug or sharpen the task', step.answer)
     if (step.answer.startsWith(`INTAKE ${slug} NEEDS_INPUT`)) pause('intake', step.answer, step.out)
@@ -251,7 +256,7 @@ async function verify(label) {
   decide(slug, 'verify-gate', gateLine.slice(0, 300), 'exit codes recorded by verify.sh, decided by verify-gate.mjs', `verify/${label}/gate.json`, r.status ? 'FAIL' : 'PASS')
   S = saveState(slug, { last_verify: label })
   const before = snapshot()
-  const step = await runStep({ stage: 'verify', round: label.replace(/\D/g, '') || 1, suffix: label.startsWith('r') ? '' : `-${label}`, template: 'verify.md', prefix: 'VERIFY', cwd: S.worktree,
+  const step = await runStep({ readonly: true, stage: 'verify', round: label.replace(/\D/g, '') || 1, suffix: label.startsWith('r') ? '' : `-${label}`, template: 'verify.md', prefix: 'VERIFY', cwd: S.worktree,
     addDirs: [`${WT_ROOT}/scratch-${slug}`].filter(existsSync), extra: { verify_dir: join(RD, 'verify', label) } })
   auditGate(step); readOnly(before, 'verify'); tripwire('verify')
   const file = join(RD, 'verify', label, 'verify.md')
@@ -262,7 +267,7 @@ async function verify(label) {
 
 async function blast() {
   const before = snapshot()
-  const step = await runStep({ stage: 'blast-radius', template: 'blast-radius.md', prefix: 'BLAST', cwd: S.worktree })
+  const step = await runStep({ readonly: true, stage: 'blast-radius', template: 'blast-radius.md', prefix: 'BLAST', cwd: S.worktree })
   auditGate(step); readOnly(before, 'blast-radius'); tripwire('blast-radius')
   if (!existsSync(join(RD, 'blast-radius.md'))) writeFileSync(join(RD, 'blast-radius.md'), read(step.out))
   if (!step.answer.startsWith(`BLAST ${slug} `)) stop('FAILED', `blast radius gave no answer: ${step.answer}`)
@@ -283,13 +288,13 @@ async function review() {
     const panes = [anchor, newPane(S.worktree, anchor, 'right')]
     panes.push(newPane(S.worktree, panes[1], 'down'))
     const labels = ['A', 'B', 'C']
-    const steps = await Promise.all(reviewers.map((model, i) => runStep({ stage: 'review', round, suffix: `-${model}`, template: 'review.md', prefix: 'REVIEW', cwd: S.worktree,
+    const steps = await Promise.all(reviewers.map((model, i) => runStep({ readonly: true, stage: 'review', round, suffix: `-${model}`, template: 'review.md', prefix: 'REVIEW', cwd: S.worktree,
       pane: panes[i], model, mode: 'reader', extra: { reviewer: labels[i], intent: intent() } })))
     steps.forEach(auditGate); readOnly(before, 'a reviewer'); tripwire('review')
     const files = steps.map((s, i) => { const f = join(RD, `review-r${round}-${reviewers[i]}.md`); writeFileSync(f, read(s.out)); return f })
     const missing = steps.filter((s) => !s.answer.startsWith(`REVIEW ${slug} `))
     if (missing.length) stop('FAILED', `${missing.length} reviewer(s) gave no review: ${missing.map((s) => s.answer).join(' | ')}`)
-    const judge = await runStep({ stage: 'judge', round, template: 'judge.md', prefix: 'JUDGE', cwd: S.worktree, mode: 'reader', pane: newPane(S.worktree, panes[0], 'down'),
+    const judge = await runStep({ readonly: true, stage: 'judge', round, template: 'judge.md', prefix: 'JUDGE', cwd: S.worktree, mode: 'reader', pane: newPane(S.worktree, panes[0], 'down'),
       extra: { intent: intent(), review_files: files.map((f, i) => `- Reviewer ${labels[i]} (${reviewers[i]}): ${f}`).join('\n'),
         previous_judgment: round > 1 ? ` The previous round's judgment, whose Act-on items were since fixed: ${join(RD, `judgment-r${round - 1}.md`)}.` : '' } })
     auditGate(judge); readOnly(before, 'the judge'); tripwire('judge')
