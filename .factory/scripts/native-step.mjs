@@ -20,7 +20,8 @@ import { randomUUID } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { AUDIT_URL, PEER, auditRows, auditStep, herdr, runDir, sh } from '../lib/common.mjs'
+import { auditRows, auditStep, herdr, runDir, sh } from '../lib/common.mjs'
+import { DENY, sessionEnv } from '../lib/session-env.mjs'
 
 const argv = process.argv.slice(2)
 const opt = (name, fallback) => {
@@ -40,32 +41,13 @@ const dir = runDir(slug)
 mkdirSync(join(dir, 'settings'), { recursive: true })
 mkdirSync(join(dir, 'sessions'), { recursive: true })
 
-const DENY = [
-  'Bash(git push:*)', 'Bash(git push)', 'Bash(gh pr create:*)', 'Bash(gh pr merge:*)', 'Bash(gh pr comment:*)',
-  'Bash(gh pr review:*)', 'Bash(gh pr edit:*)', 'Bash(gh pr close:*)', 'Bash(gh pr ready:*)', 'Bash(gh issue:*)',
-  'Bash(gh api:*)', 'Bash(gh repo:*)', 'Bash(pnpm sandbox mainnet:*)', 'Bash(git stash:*)',
-]
 const WRITER_TOOLS = ['Bash', 'Edit', 'Write', 'Read', 'Glob', 'Grep', 'TodoWrite', 'Task']
 const READER_TOOLS = ['Read', 'Grep', 'Glob', 'Bash(git diff:*)', 'Bash(git log:*)', 'Bash(git show:*)']
 const NEVER = ['AskUserQuestion', 'EnterPlanMode', 'WebFetch', 'WebSearch']
 const READER_NEVER = ['Edit', 'Write', 'NotebookEdit', 'ExitPlanMode', 'Task']
 
 const settingsFile = join(dir, 'settings', `${tag.replaceAll('/', '_')}.json`)
-const env = {
-  ANTHROPIC_BASE_URL: AUDIT_URL,
-  ANTHROPIC_CUSTOM_HEADERS: ['x-antseed-system-proxy-source: claude-code', `x-antseed-pin-peer: ${PEER}`, `x-factory-step: ${tag}`].join('\n'),
-  ANTHROPIC_MODEL: model,
-  ANTHROPIC_DEFAULT_OPUS_MODEL: model,
-  ANTHROPIC_DEFAULT_SONNET_MODEL: model,
-  ANTHROPIC_DEFAULT_HAIKU_MODEL: model,
-  ANTHROPIC_SMALL_FAST_MODEL: model,
-  CLAUDE_CODE_SUBAGENT_MODEL: model,
-  DISABLE_AUTOUPDATER: '1',
-  GIT_CONFIG_COUNT: '1',
-  GIT_CONFIG_KEY_0: 'remote.origin.pushurl',
-  GIT_CONFIG_VALUE_0: 'factory-sessions-never-push:none',
-  GH_TOKEN: 'factory-sessions-have-no-github-access',
-}
+const env = sessionEnv(model, tag)
 const allow = mode === 'reader' ? READER_TOOLS : WRITER_TOOLS
 const deny = mode === 'reader' ? [...DENY, ...NEVER, ...READER_NEVER] : [...DENY, ...NEVER]
 writeFileSync(settingsFile, JSON.stringify({ env, permissions: { allow, deny } }, null, 2) + '\n')
