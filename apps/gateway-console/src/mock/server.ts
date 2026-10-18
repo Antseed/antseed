@@ -11,7 +11,7 @@
  * member of Default and an admin of Research.
  */
 import type {
-  AdminToken, ApiKey, AuditEntry, BuyerLimits, DepositConfirmation, GatewayExposure, GatewayExposureMode, Me, MeResponse, Member, RequestDetail, RequestLogEntry, RoutePreview, RoutingPolicy,
+  AdminToken, ApiKey, AuditEntry, BuyerLimits, DepositConfirmation, GatewayExposure, GatewayExposureMode, GatewayUpdate, Me, MeResponse, Member, RequestDetail, RequestLogEntry, RoutePreview, RoutingPolicy,
   UsageGroupBy, Workspace, WorkspaceRole,
 } from '../api/types'
 import { LIMIT_PERIODS } from '../lib/format'
@@ -243,6 +243,7 @@ function filterRequests(query: URLSearchParams): RequestDetail[] {
     && (!query.get('key') || request.keyId === query.get('key'))
     && (!query.get('member') || request.memberId === query.get('member'))
     && (!query.get('model') || (request.model ?? '').includes(query.get('model')!))
+    && (!query.get('router') || request.router?.peerId === query.get('router'))
     && (!query.get('status') || (query.get('status') === 'error' ? (request.status ?? 0) >= 400 : (request.status ?? 0) < 400))
     && (!q || [request.model, request.keyLabel, request.endUser, request.path, request.errorCode, request.errorMessage].some((field) => (field ?? '').toLowerCase().includes(q)))
     && request.startedAt >= from && request.startedAt <= to)
@@ -290,6 +291,7 @@ function groupKey(row: RequestLogEntry, groupBy: UsageGroupBy): [string, string]
     case 'key': return [row.keyId, row.keyLabel]
     case 'member': return [row.memberId ?? 'none', db.members.find((m) => m.id === row.memberId)?.label ?? 'None']
     case 'peer': return [row.sellerPeerId ?? 'none', db.peers.find((p) => p.peerId === row.sellerPeerId)?.displayName ?? row.sellerPeerId ?? 'No seller']
+    case 'router': return [row.router?.peerId ?? '', db.peers.find((p) => p.peerId === row.router?.peerId)?.displayName ?? row.router?.peerId ?? 'Not routed']
     case 'workspace': return [row.workspaceId, db.workspaces.find((w) => w.id === row.workspaceId)?.name ?? row.workspaceId]
     case 'user': return [row.endUser ?? 'none', row.endUser ?? 'Not sent']
   }
@@ -880,6 +882,20 @@ const routes: Array<[string, string, Handler]> = [
   ['DELETE', '/presets/:id', ({ params }) => { editablePreset(params['id']); db.presets = db.presets.filter((x) => x.id !== params['id']) }],
 
   ['GET', '/status', () => ({ version: '0.1.0-mock', publicUrl: mockExposure === 'public' ? db.settings.publicUrl : null, buyer: { reachable: true, peers: db.peers.length, dhtNodes: 42, uptimeMs: 26 * 3600_000 }, spendFeed: 'local', x402: true, exposure: exposureFor(mockExposure) })],
+  ['GET', '/update', () => { requireOrgAdmin(); return mockUpdate() }],
+  ['POST', '/update/check', () => { requireOrgAdmin(); mockUpdateState.checkedAt = Date.now(); return mockUpdate() }],
+  ['POST', '/update', ({ body }) => {
+    requireOrgAdmin()
+    const update = mockUpdate()
+    if (update.apply !== 'console') throw new MockError(409, 'update_unsupported', `On its host, run: ${update.command}`)
+    if (!update.available) throw new MockError(409, 'up_to_date', 'Already the latest version')
+    const action = body?.action === 'download' ? 'download' : 'install'
+    if (action === 'download' && mockUpdateState.downloaded) return update
+    mockUpdateState.requestedAt = Date.now()
+    mockUpdateState.action = action
+    if (action === 'install') audit('gateway.update')
+    return mockUpdate()
+  }],
   ['GET', '/settings', () => { requireOrgAdmin(); return maskedSettings() }],
   ['PATCH', '/settings/buyer', ({ body }) => {
     requireOrgAdmin()
@@ -900,6 +916,55 @@ const routes: Array<[string, string, Handler]> = [
   }],
   ['PUT', '/settings/observability', ({ body }) => { requireOrgAdmin(); db.settings.observability = observability(body); return maskedSettings() }],
 ]
+
+/**
+ * `?update=available|command|current|desktop` on the first load picks what
+ * `/update` reports (default available; desktop is a gateway in the desktop
+ * app). An applied update waits 3 s for the update service, installs for
+ * 5 s, then reports the new version.
+ */
+const mockUpdateState = {
+  mode: 'available' as 'available' | 'command' | 'current' | 'desktop',
+  current: '0.1.180',
+  checkedAt: Date.now() - 20 * 60_000,
+  requestedAt: null as number | null,
+  action: 'install' as 'download' | 'install',
+  downloaded: false,
+}
+function mockUpdate(): GatewayUpdate {
+  const mode = mockUpdateState.mode
+  if (mode === 'desktop' && mockUpdateState.current === '0.1.180') mockUpdateState.current = '0.2.62'
+  const latest = mode === 'current' ? mockUpdateState.current : mode === 'desktop' ? '0.2.63' : '0.1.193'
+  const base: GatewayUpdate = {
+    product: mode === 'desktop' ? 'desktop' : 'cli',
+    current: mockUpdateState.current, latest, available: latest !== mockUpdateState.current, checkedAt: mockUpdateState.checkedAt, checkError: null, checksDisabled: false,
+    apply: mode === 'command' ? 'command' : 'console', install: mode === 'command' ? 'npm' : mode === 'desktop' ? 'desktop' : 'installer',
+    command: mode === 'command' ? 'npm install -g @antseed/cli@latest' : mode === 'desktop' ? null : 'antseed update',
+    note: mode === 'command' ? 'Installed globally with npm.'
+      : mode === 'desktop' ? 'Bundled with the desktop app, which installs the update and restarts.'
+      : 'Installed by the gateway installer; its root update service installs new versions and restarts the services.',
+    progress: null,
+    downloaded: null,
+  }
+  const at = mockUpdateState.requestedAt
+  const action = mockUpdateState.action
+  if (at === null) {
+    return mockUpdateState.downloaded
+      ? { ...base, downloaded: latest, progress: { state: 'ready', action: 'download', from: base.current, to: latest, startedAt: 1, finishedAt: 2, error: null } }
+      : base
+  }
+  const elapsed = Date.now() - at
+  if (elapsed < 1_500) return { ...base, progress: { state: 'requested', action, from: null, to: null, startedAt: at, finishedAt: null, error: null } }
+  if (elapsed < 6_000) return { ...base, progress: { state: 'running', action, from: base.current, to: latest, startedAt: at + 1_500, finishedAt: null, error: null } }
+  mockUpdateState.requestedAt = null
+  if (action === 'download') {
+    mockUpdateState.downloaded = true
+    return mockUpdate()
+  }
+  mockUpdateState.current = latest
+  mockUpdateState.downloaded = false
+  return { ...base, current: latest, available: false, progress: { state: 'succeeded', action, from: base.current, to: latest, startedAt: at + 1_500, finishedAt: at + 6_000, error: null } }
+}
 
 /** `?exposure=local|lan|public` on the first load picks what `/status` reports (default public). */
 let mockExposure: GatewayExposureMode = 'public'
@@ -941,6 +1006,10 @@ export function installMockApi(): void {
   const realFetch = window.fetch.bind(window)
   const exposureParam = new URLSearchParams(window.location.search).get('exposure')
   if (exposureParam === 'local' || exposureParam === 'lan' || exposureParam === 'public') mockExposure = exposureParam
+  const updateParam = new URLSearchParams(window.location.search).get('update')
+  if (updateParam === 'available' || updateParam === 'command' || updateParam === 'current' || updateParam === 'desktop') mockUpdateState.mode = updateParam
+  // `?update=ready`: the new version is downloaded and waits for Restart & update.
+  if (updateParam === 'ready') mockUpdateState.downloaded = true
   // `?mock=empty`: a gateway nothing has run through yet (no keys, no traffic), for the getting-started Overview.
   if (new URLSearchParams(window.location.search).get('mock') === 'empty') {
     db.keys.length = 0
@@ -983,5 +1052,5 @@ export function installMockApi(): void {
       return json(500, { error: { code: 'mock_error', message: String(error) } })
     }
   }
-  console.info('[antseed console] Mock API active. Switch identity with ?as=owner|admin|wsadmin|member|key|out, reachability with ?exposure=local|lan|public')
+  console.info('[antseed console] Mock API active. Switch identity with ?as=owner|admin|wsadmin|member|key|out, reachability with ?exposure=local|lan|public, updates with ?update=available|command|current|desktop')
 }

@@ -214,14 +214,26 @@ export const COST_PENDING_MS = 10 * 60 * 1000
  * reads `video-charged` (that charge) or `on-delivery`, a status poll
  * `not-charged`.
  */
+/**
+ * What became of a routed request's recommendations: which pick served it,
+ * or, when it failed, how many were tried (each one after a refusal of the last).
+ */
+export function routerOutcome(rank: number | null, status: number | null): string {
+  if (rank === null) return 'ranking failed'
+  if (status === null) return rank === 1 ? 'trying its first pick' : `trying its pick #${rank}`
+  if (status < 400) return rank === 1 ? 'its first pick served it' : `its pick #${rank} served it (the ones before failed)`
+  return rank === 1 ? 'its first pick failed' : `its picks #1–${rank} all failed`
+}
+
 export function costStatus(
   entry: Pick<RequestLogEntry, 'spent' | 'servedFree' | 'costPending' | 'startedAt' | 'finishedAt' | 'video'>,
   now: number,
 ): 'spent' | 'free' | 'pending' | 'not-recorded' | 'video-charged' | 'on-delivery' | 'not-charged' | null {
-  if (entry.spent !== null) return 'spent'
+  // A routed request can have its router's fee while the seller's spend is still to come.
+  if (entry.spent !== null && !entry.costPending) return 'spent'
   if (entry.video?.action === 'create') return entry.video.charged !== null ? 'video-charged' : 'on-delivery'
   if (entry.video?.action === 'poll') return 'not-charged'
   if (entry.servedFree) return 'free'
-  if (!entry.costPending) return null
+  if (!entry.costPending) return entry.spent !== null ? 'spent' : null
   return now - (entry.finishedAt ?? entry.startedAt) < COST_PENDING_MS ? 'pending' : 'not-recorded'
 }

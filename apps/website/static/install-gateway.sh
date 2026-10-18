@@ -10,7 +10,9 @@
 #
 #   curl -fsSL --proto '=https' --tlsv1.2 https://antseed.com/install-gateway.sh | sudo bash -s -- --domain llm.example.com
 #
-# Re-running it upgrades the CLI and rewrites the services. Wallets and keys in
+# Re-running it upgrades the CLI and rewrites the services; between runs,
+# `antseed update` or the console's Update button installs the latest CLI
+# through a root antseed-update service. Wallets and keys in
 # /var/lib/antseed are never touched. Docs: https://antseed.com/docs/gateway/server
 
 set -euo pipefail
@@ -22,6 +24,15 @@ ENV_FILE=/etc/antseed/gateway.env
 WALLET_ENV_FILE=/etc/antseed/wallet.env
 WRAPPER=/usr/local/bin/antseed
 WRAPPER_MARKER='# antseed-gateway-wrapper'
+# Each CLI version is installed in its own releases/<version> directory and
+# $CLI_HOME points at the one in use, so an update installs next to the
+# running version and switching (or rolling back) is one symlink swap.
+CLI_HOME="$PREFIX/current"
+CLI_BIN="$CLI_HOME/bin/antseed"
+UPDATER="$PREFIX/bin/antseed-update"
+UPDATE_REQUEST="$SERVICE_HOME/update-request"
+UPDATE_STATUS_DIR=/var/lib/antseed-update
+UPDATE_STATUS="$UPDATE_STATUS_DIR/status.json"
 NODE_MAJOR=24
 BUYER_PORT=8377
 
@@ -193,8 +204,11 @@ check_system() {
 
 uninstall() {
   step "Removing Antseed services"
-  systemctl disable --now antseed-gateway.service antseed-buyer.service 2>/dev/null || true
-  rm -f /etc/systemd/system/antseed-gateway.service /etc/systemd/system/antseed-buyer.service
+  systemctl disable --now antseed-gateway.service antseed-buyer.service antseed-update.path 2>/dev/null || true
+  rm -f /etc/systemd/system/antseed-gateway.service /etc/systemd/system/antseed-buyer.service \
+    /etc/systemd/system/antseed-update.service /etc/systemd/system/antseed-update.path
+  rm -rf "$UPDATE_STATUS_DIR"
+  rm -f "$UPDATE_REQUEST"
   systemctl daemon-reload
   if [[ -f /etc/caddy/antseed.caddy ]]; then
     rm -f /etc/caddy/antseed.caddy
@@ -454,11 +468,68 @@ install_node() {
   rm -rf "$PREFIX/node.old"
 }
 
+# The version of the CLI installed under $1 (a release directory or $CLI_HOME), or nothing.
+cli_version() {
+  "$PREFIX/node/bin/node" -p "require('$1/lib/node_modules/@antseed/cli/package.json').version" 2>/dev/null \
+    | grep -E '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' || true
+}
+
+# Whether $PREFIX/releases/$1 holds @antseed/cli@$1 and it runs.
+release_ready() {
+  local dir="$PREFIX/releases/$1"
+  [[ "$(cli_version "$dir")" == "$1" ]] && PATH="$PREFIX/node/bin:$PATH" "$dir/bin/antseed" --version >/dev/null 2>&1
+}
+
+# Installs @antseed/cli@$1 (an exact version) in $PREFIX/releases/$1 and
+# checks that it runs; one already there (downloaded earlier) is kept. The
+# release in use is never touched.
+install_release() {
+  local version="$1" loglevel="${2:-error}" dir="$PREFIX/releases/$1"
+  if [[ "$(readlink -f "$CLI_HOME" 2>/dev/null)" == "$dir" ]] || release_ready "$version"; then return 0; fi
+  rm -rf "$dir"
+  mkdir -p "$PREFIX/releases"
+  if PATH="$PREFIX/node/bin:$PATH" "$PREFIX/node/bin/npm" install --global --prefix "$dir" \
+      --no-fund --no-audit --loglevel="$loglevel" "@antseed/cli@$version" \
+    && release_ready "$version"; then
+    return 0
+  fi
+  rm -rf "$dir"
+  return 1
+}
+
+# Points $CLI_HOME at a release directory in one atomic rename.
+activate_release() {
+  ln -sfn "$1" "$CLI_HOME.next"
+  mv -Tf "$CLI_HOME.next" "$CLI_HOME"
+}
+
+# Removes every release but the one in use and $1 (the one to roll back to).
+prune_releases() {
+  local keep_current keep_previous dir
+  keep_current="$(readlink -f "$CLI_HOME" 2>/dev/null || true)"
+  keep_previous="$(readlink -f "${1:-}" 2>/dev/null || true)"
+  for dir in "$PREFIX"/releases/*; do
+    [[ -d "$dir" ]] || continue
+    [[ "$dir" == "$keep_current" || "$dir" == "$keep_previous" ]] && continue
+    rm -rf "$dir"
+  done
+}
+
 install_cli() {
   step "Installing @antseed/cli@$CLI_VERSION"
-  PATH="$PREFIX/node/bin:$PATH" "$PREFIX/node/bin/npm" install --global --prefix "$PREFIX/cli" \
-    --no-fund --no-audit --loglevel="$([[ "$VERBOSE" == 1 ]] && echo notice || echo error)" "@antseed/cli@$CLI_VERSION"
-  note "antseed $(PATH="$PREFIX/node/bin:$PATH" "$PREFIX/cli/bin/antseed" --version 2>/dev/null | head -1 || true)"
+  local version
+  version="$(PATH="$PREFIX/node/bin:$PATH" "$PREFIX/node/bin/npm" view "@antseed/cli@$CLI_VERSION" version 2>/dev/null | tail -1 | sed -E "s/^.*'([^']+)'$/\1/")"
+  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || die "npm has no @antseed/cli@$CLI_VERSION"
+  install_release "$version" "$([[ "$VERBOSE" == 1 ]] && echo notice || echo error)" || die "could not install @antseed/cli@$version"
+  activate_release "$PREFIX/releases/$version"
+  note "antseed $version"
+}
+
+# Installs before this layout put the CLI straight in $PREFIX/cli. The
+# services stop using it once they restart on $CLI_HOME.
+remove_legacy_cli() {
+  if [[ -d "$PREFIX/cli" && ! -L "$PREFIX/cli" ]]; then rm -rf "$PREFIX/cli"; fi
+  prune_releases ""
 }
 
 create_user() {
@@ -480,13 +551,17 @@ install_wrapper() {
 $WRAPPER_MARKER
 # Runs the Antseed CLI as the $SERVICE_USER service user, against the gateway's data.
 export PATH="$PREFIX/node/bin:\$PATH"
-if [ "\$(id -un)" = "$SERVICE_USER" ]; then exec "$PREFIX/cli/bin/antseed" "\$@"; fi
+# Lets "antseed update" hand the install to the root update service.
+export ANTSEED_UPDATER_REQUEST="$UPDATE_REQUEST" ANTSEED_UPDATER_STATUS="$UPDATE_STATUS"
+if [ "\$(id -un)" = "$SERVICE_USER" ]; then exec "$CLI_BIN" "\$@"; fi
 if [ "\$(id -u)" = 0 ]; then
   # Wallet keys encrypted at rest need the passphrase the services are given.
   if [ -r "$WALLET_ENV_FILE" ]; then set -a; . "$WALLET_ENV_FILE"; set +a; fi
-  exec runuser -u "$SERVICE_USER" -- env HOME="$SERVICE_HOME" PATH="\$PATH" "$PREFIX/cli/bin/antseed" "\$@"
+  exec runuser -u "$SERVICE_USER" -- env HOME="$SERVICE_HOME" PATH="\$PATH" \\
+    ANTSEED_UPDATER_REQUEST="\$ANTSEED_UPDATER_REQUEST" ANTSEED_UPDATER_STATUS="\$ANTSEED_UPDATER_STATUS" "$CLI_BIN" "\$@"
 fi
-exec sudo -u "$SERVICE_USER" env HOME="$SERVICE_HOME" PATH="\$PATH" "$PREFIX/cli/bin/antseed" "\$@"
+exec sudo -u "$SERVICE_USER" env HOME="$SERVICE_HOME" PATH="\$PATH" \\
+  ANTSEED_UPDATER_REQUEST="\$ANTSEED_UPDATER_REQUEST" ANTSEED_UPDATER_STATUS="\$ANTSEED_UPDATER_STATUS" "$CLI_BIN" "\$@"
 EOF
   chmod 0755 "$WRAPPER"
 }
@@ -541,8 +616,12 @@ Group=$SERVICE_USER
 EnvironmentFile=-$WALLET_ENV_FILE
 Environment=HOME=$SERVICE_HOME
 Environment=PATH=$PREFIX/node/bin:/usr/local/bin:/usr/bin:/bin
+Environment=ANTSEED_UPDATER_REQUEST=$UPDATE_REQUEST
+Environment=ANTSEED_UPDATER_STATUS=$UPDATE_STATUS
 Restart=always
 RestartSec=5
+# Stopping lets requests in flight finish (up to a minute) before exiting.
+TimeoutStopSec=90
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
@@ -563,7 +642,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=$PREFIX/cli/bin/antseed buyer start --port $BUYER_PORT
+ExecStart=$CLI_BIN buyer start --port $BUYER_PORT
 Environment=ANTSEED_SUPERVISED=1
 $common
 
@@ -573,9 +652,9 @@ EOF
 
   local exec_start
   if [[ "$MODE" == cloudflare ]]; then
-    exec_start="$PREFIX/cli/bin/antseed tunnel start --no-buyer --provider cloudflare --buyer-port $BUYER_PORT --gateway-port $PORT"
+    exec_start="$CLI_BIN tunnel start --no-buyer --provider cloudflare --buyer-port $BUYER_PORT --gateway-port $PORT"
   else
-    exec_start="$PREFIX/cli/bin/antseed gateway start --no-buyer --host $HOST --port $PORT --buyer-port $BUYER_PORT"
+    exec_start="$CLI_BIN gateway start --no-buyer --host $HOST --port $PORT --buyer-port $BUYER_PORT"
     [[ -n "$CONSOLE_ORIGIN" ]] && exec_start+=" --public-url $CONSOLE_ORIGIN"
   fi
   cat >/etc/systemd/system/antseed-gateway.service <<EOF
@@ -593,6 +672,167 @@ $common
 WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
+}
+
+# The services run unprivileged and cannot write $PREFIX. A root oneshot,
+# started by a path unit when the gateway (or `antseed update`) creates
+# $UPDATE_REQUEST, installs @antseed/cli@latest. Like the desktop app's
+# Download and Restart & update, it takes two steps: a request with
+# "action":"download" only installs the new version next to the running one
+# (status "ready"), and any other request also switches to it and restarts
+# the services. Nothing else in the request is read, so nobody can ask for a
+# particular version, and the status goes to a root-owned directory the
+# services can only read.
+#
+# The services keep serving until the new version is in place. The buyer
+# restarts first while the gateway holds requests for it, then the gateway,
+# with Caddy holding requests for that. Either one not coming back rolls
+# both back to the previous version.
+install_updater() {
+  mkdir -p "$PREFIX/bin"
+  local probe_host="$HOST"
+  case "$probe_host" in 0.0.0.0|::|localhost) probe_host=127.0.0.1 ;; esac
+  [[ "$probe_host" == *:* ]] && probe_host="[$probe_host]"
+  {
+    cat <<EOF
+#!/usr/bin/env bash
+# Installs @antseed/cli@latest for the Antseed gateway and restarts its services.
+# Run as root by antseed-update.service; written by install-gateway.sh.
+PREFIX="$PREFIX"
+CLI_HOME="$CLI_HOME"
+REQUEST="$UPDATE_REQUEST"
+STATUS_DIR="$UPDATE_STATUS_DIR"
+STATUS="$UPDATE_STATUS"
+BUYER_URL="http://127.0.0.1:$BUYER_PORT/_antseed/buyer-identities"
+GATEWAY_URL="http://$probe_host:$PORT/v1/models"
+EOF
+    declare -f cli_version release_ready install_release activate_release prune_releases
+    cat <<'EOF'
+set -uo pipefail
+umask 022
+export PATH="$PREFIX/node/bin:/usr/local/bin:/usr/bin:/bin" HOME=/root
+mkdir -p "$STATUS_DIR" && chmod 0755 "$STATUS_DIR"
+now() { date +%s%3N; }
+str() { if [ -n "$1" ]; then printf '"%s"' "$1"; else printf null; fi; }
+# status <state> <from> <to> [finishedAt] [error]
+status() {
+  printf '{"state":"%s","action":"%s","from":%s,"to":%s,"startedAt":%s,"finishedAt":%s,"error":%s}\n' \
+    "$1" "$ACTION" "$(str "$2")" "$(str "$3")" "$STARTED" "${4:-null}" "$(str "${5:-}")" >"$STATUS.tmp" && mv -f "$STATUS.tmp" "$STATUS"
+}
+# done_status <state> ...: the run's last status; the exit trap leaves it alone.
+done_status() { DONE=1; status "$@"; }
+fail() { done_status failed "$FROM" "" "$(now)" "$1"; exit 1; }
+# answers <url> <status>: something answers <url> with <status> within two
+# minutes, as long as the gateway holds requests for a restarting buyer.
+answers() {
+  local _ code
+  for _ in $(seq 1 120); do
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$1" 2>/dev/null || true)"
+    if [ "$code" = "$2" ]; then return 0; fi
+    sleep 1
+  done
+  return 1
+}
+# restart <unit> <url> <status>: restarts an enabled unit and waits for it to answer.
+restart() {
+  systemctl is-enabled --quiet "$1" || return 0
+  systemctl restart "$1" && answers "$2" "$3"
+}
+rollback() {
+  activate_release "$PREVIOUS"
+  systemctl restart antseed-buyer.service
+  systemctl restart antseed-gateway.service
+  rm -rf "$PREFIX/releases/$TO"
+  done_status failed "$FROM" "" "$(now)" "$1; rolled back to ${FROM:-the previous version}"
+  exit 1
+}
+# Stopped part way (systemctl stop, the start timeout): go back to the
+# version the services ran and say so, instead of leaving "running" behind.
+interrupted() {
+  [ "$DONE" = 1 ] && return
+  if [ "$ACTIVATED" = 1 ]; then
+    activate_release "$PREVIOUS"
+    systemctl --no-block restart antseed-buyer.service antseed-gateway.service
+  fi
+  status failed "$FROM" "" "$(now)" "the update service stopped before finishing${ACTIVATED:+; went back to ${FROM:-the previous version}}"
+}
+
+STARTED="$(now)"
+FROM="$(cli_version "$CLI_HOME")"
+TO="" PREVIOUS="" ACTIVATED="" DONE=0
+# The request is the antseed user's file: only a little of a regular file is
+# read, never through a link, and only to pick the step. Its writers rename it
+# into place whole; anything over 1 KiB, or anything but a JSON object with no
+# action, "download" or "install", restarts nothing. No request at all is root starting this
+# service by hand: an install.
+PARSE_REQUEST='const b=[];process.stdin.on("data",(c)=>{b.push(c)}).on("end",()=>{const s=Buffer.concat(b);if(s.length>1024)return;let r;try{r=JSON.parse(s.toString("utf8"))}catch{return}if(!r||typeof r!=="object"||Array.isArray(r))return;const a=r.action===undefined?"install":r.action;if(a==="download"||a==="install")process.stdout.write(a)})'
+ACTION=install
+if [[ -e "$REQUEST" || -L "$REQUEST" ]]; then
+  ACTION=""
+  if [[ -f "$REQUEST" && ! -L "$REQUEST" ]]; then
+    ACTION="$(timeout 5 head -c 1025 -- "$REQUEST" 2>/dev/null | timeout 10 node -e "$PARSE_REQUEST" 2>/dev/null || true)"
+  fi
+fi
+case "$ACTION" in
+  download|install) ;;
+  *) ACTION=install; rm -rf -- "$REQUEST"; fail "the update request was incomplete; ask again" ;;
+esac
+# A version this service downloaded earlier (its own status, which only root writes).
+READY="$(sed -nE 's/^\{"state":"ready","action":"download","from":[^,]*,"to":"([^"]+)".*/\1/p' "$STATUS" 2>/dev/null | head -1)"
+trap interrupted EXIT
+trap 'exit 1' TERM INT
+status running "$FROM" ""
+rm -rf -- "$REQUEST"
+# Restart & update installs what was downloaded, even if npm moved on since.
+if [ "$ACTION" = install ] && [ -n "$READY" ] && [ "$READY" != "$FROM" ] && release_ready "$READY"; then
+  TO="$READY"
+else
+  TO="$(npm view @antseed/cli@latest version 2>/dev/null | tail -1)"
+fi
+[[ "$TO" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || fail "could not read the latest version from npm"
+# Already on it: nothing to install, nothing to restart.
+if [ "$TO" = "$FROM" ]; then done_status succeeded "$FROM" "$TO" "$(now)"; exit 0; fi
+status running "$FROM" "$TO"
+install_release "$TO" error || fail "npm could not install @antseed/cli@$TO"
+# Downloaded: the services keep running $FROM until someone restarts them onto it.
+if [ "$ACTION" = download ]; then
+  prune_releases "$PREFIX/releases/$TO"
+  done_status ready "$FROM" "$TO" "$(now)"
+  exit 0
+fi
+PREVIOUS="$(readlink -f "$CLI_HOME" 2>/dev/null || true)"
+[ -n "$PREVIOUS" ] && [ -d "$PREVIOUS" ] || fail "no release is active to go back to; re-run the installer"
+ACTIVATED=1
+activate_release "$PREFIX/releases/$TO"
+restart antseed-buyer.service "$BUYER_URL" 200 || rollback "the buyer did not start on $TO"
+restart antseed-gateway.service "$GATEWAY_URL" 401 || rollback "the gateway did not start on $TO"
+prune_releases "$PREVIOUS"
+done_status succeeded "$FROM" "$TO" "$(now)"
+EOF
+  } >"$UPDATER"
+  chmod 0755 "$UPDATER"
+
+  cat >/etc/systemd/system/antseed-update.service <<EOF
+[Unit]
+Description=Antseed update (installs @antseed/cli@latest and restarts the gateway)
+
+[Service]
+Type=oneshot
+ExecStart=$UPDATER
+TimeoutStartSec=15min
+EOF
+  cat >/etc/systemd/system/antseed-update.path <<EOF
+[Unit]
+Description=Start an Antseed update when the gateway asks for one
+
+[Path]
+PathExists=$UPDATE_REQUEST
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now antseed-update.path >/dev/null 2>&1
 }
 
 wait_for_buyer() {
@@ -659,6 +899,13 @@ $DOMAIN {
 	request_header -X-Forwarded-For
 	reverse_proxy 127.0.0.1:$PORT {
 		flush_interval -1
+		# While the gateway restarts (an update finishing its requests in
+		# flight, then starting), new requests wait for it instead of failing:
+		# its 60 s drain plus a start, within the updater's two-minute wait
+		# for it to answer. (The gateway holds requests for the buyer the
+		# same two minutes.)
+		lb_try_duration 75s
+		lb_try_interval 250ms
 	}
 }
 EOF
@@ -685,6 +932,7 @@ print_plan() {
   note "Node.js $NODE_MAJOR ($NODE_ARCH) and @antseed/cli@$CLI_VERSION -> $PREFIX"
   note "System user $SERVICE_USER, data in $SERVICE_HOME"
   note "Services: antseed-buyer (port $BUYER_PORT), antseed-gateway ($HOST:$PORT)"
+  note "Updates: antseed-update.path starts a root antseed-update.service when the console or 'antseed update' asks"
   case "$MODE" in
     caddy) note "HTTPS: Caddy for https://$DOMAIN -> 127.0.0.1:$PORT" ;;
     cloudflare) note "HTTPS: Cloudflare named tunnel at $PUBLIC_URL" ;;
@@ -760,6 +1008,7 @@ main() {
   install_wrapper
   quiet_x write_env_file
   write_units
+  install_updater
   if [[ -n "$IMPORT_BUNDLE" ]]; then import_bundle; fi
 
   step "Starting the buyer"
@@ -775,6 +1024,7 @@ main() {
 
   if [[ "$MODE" == caddy ]]; then install_caddy; fi
   verify_gateway
+  remove_legacy_cli
   quiet_x console_link
 
   case "$MODE" in
@@ -812,6 +1062,7 @@ main() {
   note "Manage keys:   in the console, or antseed gateway key create --label alice --weekly-limit 5"
   note "Fund wallet:   antseed buyer deposit --no-watch"
   note "Logs:          journalctl -u antseed-gateway -u antseed-buyer -f"
+  note "Update:        antseed update, or Settings > General in the console"
   if [[ "$MODE" == local && "$HOST" == 127.0.0.1 ]]; then
     echo
     note "The gateway only listens on this server. From your machine:"

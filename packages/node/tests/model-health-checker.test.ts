@@ -6,7 +6,7 @@ import {
   supportsHealthProbe,
   type ModelHealthEvent,
 } from '../src/health/model-health-checker.js';
-import type { Provider } from '../src/interfaces/seller-provider.js';
+import type { Provider, ServiceHealthStatus, UpstreamAccountStatus } from '../src/interfaces/seller-provider.js';
 import type { SerializedHttpRequest, SerializedHttpResponse } from '../src/types/http.js';
 
 type ProbeHandler = (req: SerializedHttpRequest) => Promise<SerializedHttpResponse>;
@@ -388,5 +388,96 @@ describe('ModelHealthChecker', () => {
     const b = snapshot.find((s) => s.service === 'model-b');
     expect(a).toMatchObject({ advertised: true, consecutiveFailures: 1, lastStatusCode: 500 });
     expect(b).toMatchObject({ advertised: true, consecutiveFailures: 0, lastStatusCode: 200 });
+  });
+});
+
+describe('ModelHealthChecker free media health checks', () => {
+  type Results = Record<string, ServiceHealthStatus>;
+  const next = <T>(answers: Array<T | Error>): T => {
+    const answer = answers.length > 1 ? answers.shift()! : answers[0]!;
+    if (answer instanceof Error) throw answer;
+    return answer;
+  };
+  function makeCheckedProvider(answers: Array<Results | Error>, accounts?: UpstreamAccountStatus[]) {
+    const checkServiceHealth = vi.fn(async (_services: string[]): Promise<Results> => next(answers));
+    const checkUpstreamAccount = accounts ? vi.fn(async (): Promise<UpstreamAccountStatus> => next(accounts)) : undefined;
+    const handleRequest = vi.fn(async (req: SerializedHttpRequest) => jsonResponse(req.requestId, 200));
+    const provider = makeProvider({
+      name: 'venice-video',
+      services: ['wan-2.5', 'kling-2'],
+      serviceApiProtocols: { 'wan-2.5': ['venice-video'], 'kling-2': ['venice-video'] },
+      checkServiceHealth,
+      checkUpstreamAccount,
+      handleRequest,
+    });
+    return { provider, checkServiceHealth, checkUpstreamAccount, handleRequest };
+  }
+  const both = (wan: ServiceHealthStatus, kling: ServiceHealthStatus = wan): Results => ({ 'wan-2.5': wan, 'kling-2': kling });
+  const available = both({ status: 'available' });
+  const funded = (balanceUsd?: number): UpstreamAccountStatus => ({ status: 'available', balanceUsd });
+  const noCredits: UpstreamAccountStatus = { status: 'unavailable', reason: 'Venice balance $0.00 is at or below the $0 minimum' };
+
+  it('calls the free check once per sweep with every media service and never sends a paid probe', async () => {
+    const { provider, checkServiceHealth, checkUpstreamAccount, handleRequest } = makeCheckedProvider([available], [funded(5)]);
+    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1 });
+    await checker.runSweep();
+    expect(checkUpstreamAccount).toHaveBeenCalledTimes(1);
+    expect(checkServiceHealth).toHaveBeenCalledTimes(1);
+    expect(checkServiceHealth).toHaveBeenCalledWith(['wan-2.5', 'kling-2']);
+    expect(handleRequest).not.toHaveBeenCalled();
+    expect(provider.services).toEqual(['wan-2.5', 'kling-2']);
+  });
+
+  it('unadvertises every media model after repeated failed account checks and re-advertises once it passes', async () => {
+    const { provider } = makeCheckedProvider([available], [noCredits, noCredits, noCredits, funded(20)]);
+    const onChange = vi.fn();
+    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 3, onChange });
+    await checker.runSweep();
+    await checker.runSweep();
+    expect(provider.services).toEqual(['wan-2.5', 'kling-2']);
+    await checker.runSweep();
+    expect(provider.services).toEqual([]);
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ service: 'wan-2.5', status: 'removed', detail: noCredits.reason }));
+
+    await checker.runSweep();
+    expect([...provider.services].sort()).toEqual(['kling-2', 'wan-2.5']);
+    expect(provider.healthCheckAvailable).toBe(true);
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ service: 'kling-2', status: 'restored' }));
+  });
+
+  it('hides only the model the provider no longer offers', async () => {
+    const { provider } = makeCheckedProvider([both({ status: 'unavailable', reason: 'Venice no longer offers this model' }, { status: 'available' })], [funded(5)]);
+    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1 });
+    await checker.runSweep();
+    expect(provider.services).toEqual(['kling-2']);
+  });
+
+  it('treats unknown answers, missing answers, and failed checks as inconclusive', async () => {
+    const { provider } = makeCheckedProvider([
+      both({ status: 'unknown', reason: 'Venice account check returned HTTP 500' }),
+      {},
+      new Error('network down'),
+    ]);
+    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1 });
+    for (let i = 0; i < 3; i++) await checker.runSweep();
+    expect(provider.services).toEqual(['wan-2.5', 'kling-2']);
+    expect(checker.getSnapshot().every((s) => s.consecutiveFailures === 0)).toBe(true);
+  });
+
+  it('uses the account check alone when the provider has no model check', async () => {
+    const { provider } = makeCheckedProvider([available], [noCredits]);
+    const accountOnly = { ...provider, checkServiceHealth: undefined, services: provider.services };
+    const checker = new ModelHealthChecker({ targets: [{ provider: accountOnly }], failureThreshold: 1 });
+    await checker.runSweep();
+    expect(accountOnly.services).toEqual([]);
+  });
+
+  it('uses the unwrapped probe provider for the free check', async () => {
+    const { provider: inner, checkUpstreamAccount } = makeCheckedProvider([available], [noCredits]);
+    const wrapper = { ...inner, checkServiceHealth: undefined, checkUpstreamAccount: undefined, services: inner.services };
+    const checker = new ModelHealthChecker({ targets: [{ provider: wrapper, probeProvider: inner }], failureThreshold: 1 });
+    await checker.runSweep();
+    expect(checkUpstreamAccount).toHaveBeenCalledTimes(1);
+    expect(wrapper.services).toEqual([]);
   });
 });

@@ -380,6 +380,112 @@ describe('BuyerPaymentNegotiator', () => {
       expect(result.action).toBe('retry');
     });
 
+    describe('when the buyer already signed at least what the seller asks for', () => {
+      const catchUp = {
+        error: 'payment_required',
+        minBudgetPerRequest: '10000',
+        suggestedAmount: '1000000',
+        requiredCumulativeAmount: '5537080',
+        currentSpent: '5537080',
+        currentAcceptedCumulative: '5511251',
+      };
+
+      function setSigned(amount: bigint, deposit = 6_000_000n) {
+        (bpm.getCumulativeAmount as ReturnType<typeof vi.fn>).mockReturnValue(amount);
+        (channelsClient.getSession as ReturnType<typeof vi.fn>).mockResolvedValue({
+          buyer: identity.wallet.address,
+          seller: '0x' + '22'.repeat(20),
+          deposit,
+          settled: 0n,
+          metadataHash: '0x' + '00'.repeat(32),
+          deadline: BigInt(Math.floor(Date.now() / 1000) + 3600),
+          settledAt: 0n,
+          closeRequestedAt: 0n,
+          status: 1,
+        });
+      }
+
+      function closeConfirmed() {
+        return vi.spyOn(negotiator, 'requestChannelClose').mockImplementation(async () => {
+          // A confirmed close retires the session, releasing its reserve.
+          (bpm.getActiveSession as ReturnType<typeof vi.fn>).mockReturnValue(null);
+          return { channelId: makeActiveSession(peer.peerId).sessionId, status: 'closed', finalAmount: '6000000' };
+        });
+      }
+
+      beforeEach(async () => {
+        await simulateSuccessfulNegotiation(negotiator, bpm, peer, conn);
+        for (const fn of [bpm.authorizeSpending, bpm.extendCurrentSpendingAuth, bpm.resendCurrentSpendingAuth, bpm.retireSession]) {
+          (fn as ReturnType<typeof vi.fn>).mockClear();
+        }
+        (bpm.getActiveSession as ReturnType<typeof vi.fn>).mockReturnValue(makeActiveSession(peer.peerId));
+        (bpm.resendCurrentSpendingAuth as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+          (bpm.isLockConfirmed as ReturnType<typeof vi.fn>).mockReturnValue(true);
+        });
+        (bpm.authorizeSpending as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+          (bpm.isLockConfirmed as ReturnType<typeof vi.fn>).mockReturnValue(true);
+        });
+      });
+
+      it('resends the current authorization instead of raising the signed cumulative', async () => {
+        setSigned(5_600_000n);
+        const result = await negotiator.handle402(make402Response(catchUp), peer, conn, makeRequest());
+
+        expect(result.action).toBe('retry');
+        expect(bpm.resendCurrentSpendingAuth).toHaveBeenCalledWith(peer.peerId, expect.anything());
+        expect(bpm.extendCurrentSpendingAuth).not.toHaveBeenCalled();
+        expect(bpm.retireSession).not.toHaveBeenCalled();
+      });
+
+      it('closes the channel before opening a replacement when the seller repeats the target', async () => {
+        setSigned(5_600_000n);
+        await negotiator.handle402(make402Response(catchUp), peer, conn, makeRequest());
+        const close = closeConfirmed();
+        bufferPaymentRequired(negotiator, peer.peerId, conn);
+
+        const result = await negotiator.handle402(make402Response(catchUp), peer, conn, makeRequest());
+
+        expect(close).toHaveBeenCalledWith(peer.peerId, conn, { maxCumulative: 6_000_000n });
+        expect(bpm.resendCurrentSpendingAuth).toHaveBeenCalledTimes(1);
+        expect(bpm.retireSession).not.toHaveBeenCalledWith(peer.peerId, CHANNEL_STATUS.GHOST);
+        expect(bpm.authorizeSpending).toHaveBeenCalled();
+        expect(result.action).toBe('retry');
+      });
+
+      it('closes at the deposit right away when the signed cumulative exceeds it', async () => {
+        // 30.39 USDC signed against a 6 USDC deposit: no resend could be
+        // accepted and the contract rejects a close above the deposit.
+        setSigned(30_393_050n);
+        const close = closeConfirmed();
+
+        const result = await negotiator.handle402(make402Response(catchUp), peer, conn, makeRequest());
+
+        expect(bpm.resendCurrentSpendingAuth).not.toHaveBeenCalled();
+        expect(close).toHaveBeenCalledWith(peer.peerId, conn, { maxCumulative: 6_000_000n });
+        expect(bpm.authorizeSpending).toHaveBeenCalled();
+        expect(result.action).toBe('retry');
+      });
+
+      it('keeps a channel the seller will not close instead of abandoning its reserve', async () => {
+        setSigned(30_393_050n);
+        vi.spyOn(negotiator, 'requestChannelClose').mockResolvedValue({
+          channelId: makeActiveSession(peer.peerId).sessionId,
+          status: 'rejected',
+          code: 'pending_auth',
+        });
+        // Funds are still locked in the old channel.
+        (depositsClient.getBuyerBalance as ReturnType<typeof vi.fn>).mockResolvedValue({
+          available: 0n, reserved: 6_000_000n, lastActivityAt: 0n,
+        });
+
+        const result = await negotiator.handle402(make402Response(catchUp), peer, conn, makeRequest());
+
+        expect(bpm.retireSession).not.toHaveBeenCalled();
+        expect(bpm.authorizeSpending).not.toHaveBeenCalled();
+        expect(result.action).not.toBe('retry');
+      });
+    });
+
     it('retires session as settled and renegotiates without retrying extend when seller flags channel_exhausted', async () => {
       await simulateSuccessfulNegotiation(negotiator, bpm, peer, conn);
       (bpm.authorizeSpending as ReturnType<typeof vi.fn>).mockClear();
@@ -502,6 +608,7 @@ describe('BuyerPaymentNegotiator', () => {
         .mockReturnValueOnce(activeSession)
         .mockReturnValueOnce(activeSession)
         .mockReturnValueOnce(null)
+        .mockReturnValueOnce(null)
         .mockReturnValueOnce(null);
       bufferPaymentRequired(negotiator, peer.peerId, conn);
       (bpm.authorizeSpending as ReturnType<typeof vi.fn>).mockImplementation(async () => {
@@ -541,6 +648,7 @@ describe('BuyerPaymentNegotiator', () => {
         .mockReturnValueOnce(activeSession)
         .mockReturnValueOnce(activeSession)
         .mockReturnValueOnce(activeSession)
+        .mockReturnValueOnce(activeSession)
         .mockReturnValueOnce(null);
       (channelsClient.getSession as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('rpc down'));
       bufferPaymentRequired(negotiator, peer.peerId, conn);
@@ -551,6 +659,41 @@ describe('BuyerPaymentNegotiator', () => {
       const result = await negotiator.handle402(make402Response(), peer, conn, makeRequest());
 
       expect(bpm.retireSession).toHaveBeenCalledWith(peer.peerId, CHANNEL_STATUS.GHOST);
+      expect(bpm.authorizeSpending).toHaveBeenCalled();
+      expect(result.action).toBe('retry');
+    });
+
+    it('retires every stored session whose channel is closed on-chain before renegotiating', async () => {
+      const newer = { ...makeActiveSession(peer.peerId), sessionId: '0x' + 'a1'.repeat(32) };
+      const older = { ...makeActiveSession(peer.peerId), sessionId: '0x' + 'a2'.repeat(32) };
+      const stored = [newer, older];
+      (bpm.getActiveSession as ReturnType<typeof vi.fn>).mockImplementation(() => stored[0] ?? null);
+      (bpm.retireSession as ReturnType<typeof vi.fn>).mockImplementation(() => { stored.shift(); });
+      const onChain = (status: number): ChannelInfo => ({
+        buyer: '0x' + '11'.repeat(20),
+        seller: '0x' + '22'.repeat(20),
+        deposit: 1_000_000n,
+        settled: 40_000n,
+        metadataHash: '0x' + '00'.repeat(32),
+        deadline: 0n,
+        settledAt: 0n,
+        closeRequestedAt: 0n,
+        status,
+      });
+      (channelsClient.getSession as ReturnType<typeof vi.fn>).mockImplementation(async (channelId: string) =>
+        onChain(channelId === newer.sessionId ? 2 : 3));
+      // Another reserve keeps the aggregate balance non-zero, so only the per-channel check can unblock this.
+      depositsClient = createMockDepositsClient(1_000_000n, 500_000n);
+      negotiator = new BuyerPaymentNegotiator(identity, bpm as unknown as BuyerPaymentManager, depositsClient, channelsClient, channelStore, config, emitter);
+      bufferPaymentRequired(negotiator, peer.peerId, conn);
+      (bpm.authorizeSpending as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+        (bpm.isLockConfirmed as ReturnType<typeof vi.fn>).mockReturnValue(true);
+      });
+
+      const result = await negotiator.handle402(make402Response(), peer, conn, makeRequest());
+
+      expect(bpm.retireSession).toHaveBeenNthCalledWith(1, peer.peerId, CHANNEL_STATUS.SETTLED, 40_000n);
+      expect(bpm.retireSession).toHaveBeenNthCalledWith(2, peer.peerId, CHANNEL_STATUS.TIMEOUT);
       expect(bpm.authorizeSpending).toHaveBeenCalled();
       expect(result.action).toBe('retry');
     });
@@ -1039,6 +1182,42 @@ describe('BuyerPaymentNegotiator', () => {
       const result = await promise;
       expect(result.status).toBe('rejected');
       expect(result.code).toBe('busy');
+      expect(bpm.retireSession).not.toHaveBeenCalled();
+    });
+
+    it('retires the session when the seller has no record of a channel that is closed on-chain', async () => {
+      (bpm.getActiveSession as ReturnType<typeof vi.fn>)
+        .mockReturnValueOnce(makeActiveSession(SELLER_PEER_ID))
+        .mockReturnValueOnce(makeActiveSession(SELLER_PEER_ID))
+        .mockReturnValue(null);
+      (channelsClient.getSession as ReturnType<typeof vi.fn>).mockResolvedValue({
+        buyer: '0x' + '11'.repeat(20),
+        seller: '0x' + '22'.repeat(20),
+        deposit: 1_000_000n,
+        settled: 750_000n,
+        metadataHash: '0x' + '00'.repeat(32),
+        deadline: 0n,
+        settledAt: 0n,
+        closeRequestedAt: 0n,
+        status: 2,
+      });
+      const promise = negotiator.requestChannelClose(SELLER_PEER_ID, conn);
+      await vi.waitFor(() => expect(conn.send).toHaveBeenCalled());
+      replyWithResult({ version: 1, channelId: CHANNEL_ID, status: 'rejected', code: 'no_channel', reason: 'no active channel' });
+
+      const result = await promise;
+      expect(result.code).toBe('no_channel');
+      expect(bpm.retireSession).toHaveBeenCalledWith(SELLER_PEER_ID, CHANNEL_STATUS.SETTLED, 750_000n);
+    });
+
+    it('keeps the session when the seller has no record but the channel is still open on-chain', async () => {
+      const promise = negotiator.requestChannelClose(SELLER_PEER_ID, conn);
+      await vi.waitFor(() => expect(conn.send).toHaveBeenCalled());
+      replyWithResult({ version: 1, channelId: CHANNEL_ID, status: 'rejected', code: 'no_channel', reason: 'no active channel' });
+
+      const result = await promise;
+      expect(result.code).toBe('no_channel');
+      expect(channelsClient.getSession).toHaveBeenCalled();
       expect(bpm.retireSession).not.toHaveBeenCalled();
     });
 

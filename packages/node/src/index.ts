@@ -12,9 +12,10 @@ export {
   type BuyerChannelSummary,
   type NodeRequestOptions,
   type BuyerIdentitySummary,
+  type ResponseAuthEvent,
 } from './node.js';
 export { DEFAULT_BUYER_IDENTITY, isValidBuyerIdentityName } from './buyer-identity-context.js';
-export type { Provider, ProviderStreamCallbacks } from './interfaces/seller-provider.js';
+export type { Provider, ProviderStreamCallbacks, ServiceHealthStatus, UpstreamAccountStatus } from './interfaces/seller-provider.js';
 export { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, VIDEO_DOWNLOAD_MAX_BYTES, VIDEO_DOWNLOAD_CHUNK_BYTES, ANTSEED_STREAMING_RESPONSE_HEADER } from './types/http.js';
 export {
   ModelHealthChecker,
@@ -77,7 +78,7 @@ export {
   type FaultAttribution,
   type AntseedErrorCode,
 } from './errors.js';
-export { adaptPeerFaultErrorResponse } from '@antseed/buyer-core';
+export { adaptPeerFaultErrorResponse, VIDEO_PRICE_HEADER, VIDEO_JOB_RETIRED_HEADER, VIDEO_DELIVERED_HEADER, VIDEO_DELIVERY_UNRECORDED } from '@antseed/buyer-core';
 
 // Submodule re-exports (commonly used)
 export {
@@ -343,6 +344,22 @@ export {
   type ModelRoutingPreferences,
   type ScoredModelRoute,
 } from './routing/model-route-ranking.js';
+export {
+  SellerHealthBook,
+  orderAdaptiveRoutes,
+  scoreAdaptiveRoute,
+  successProbability,
+  adaptiveFirstTokenTimeoutMs,
+  sellerHealthKey,
+  DEFAULT_TIME_VALUE_USD_PER_SECOND,
+  SELLER_HEALTH_HALF_LIFE_MS,
+  type SellerHealthStats,
+  type SellerSuccessTiming,
+  type RouteRequestShape,
+  type AdaptiveRouteInput,
+  type AdaptiveRouteScore,
+  type AdaptiveOrder,
+} from './routing/seller-health.js';
 
 export type { AntseedPlugin, AntseedProviderPlugin, AntseedRouterPlugin, AntseedVerifierPlugin, Prover, VerifyContext, VerifyResult, ClaimResult, SellerRequest, SellerResponse, PluginConfigKey, ConfigField } from './interfaces/plugin.js'
 export { ANTSEED_ATTEST_PATH } from './interfaces/plugin.js'

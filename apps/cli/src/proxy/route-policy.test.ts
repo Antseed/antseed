@@ -106,13 +106,14 @@ test('buyer-limit reasons name their level', () => {
   assert.equal(buyerConfigReason('outside buyer pricing/reputation limits'), 'buyer config: outside pricing/reputation limits')
 })
 
-type C = { peerId: string; price: number | null; trust: number | null; latency: number | null; cooling?: boolean }
+type C = { peerId: string; price: number | null; trust: number | null; latency: number | null; cooling?: boolean; unhealthy?: boolean }
 const accessors = {
   peerId: (c: C) => c.peerId,
   totalPrice: (c: C) => c.price,
   trustScore: (c: C) => c.trust,
   latencyMs: (c: C) => c.latency,
   coolingDown: (c: C) => c.cooling === true,
+  unhealthy: (c: C) => c.unhealthy === true,
 }
 const a: C = { peerId: id('a'), price: 5, trust: 70, latency: 300 }
 const b: C = { peerId: id('b'), price: 1, trust: 90, latency: null }
@@ -128,6 +129,12 @@ test('orderByPolicy ranks by each sort mode, keeping the incoming order as balan
   assert.deepEqual(order(orderByPolicy([a, b, c], { sort: 'latency' }, 'm', accessors).ordered), ['c', 'a', 'b'])
   assert.deepEqual(order(orderByPolicy([a, b, c], { preferFreePeers: true }, 'm', accessors).ordered), ['c', 'a', 'b'])
   assert.deepEqual(order(orderByPolicy([{ ...c, cooling: true }, a, b], { sort: 'price' }, 'm', accessors).ordered), ['b', 'a', 'c'])
+})
+
+test('orderByPolicy tries unhealthy sellers after healthy ones and before cooling-down ones, in sorts and route chains', () => {
+  assert.deepEqual(order(orderByPolicy([{ ...c, unhealthy: true }, a, { ...b, cooling: true }], { sort: 'price' }, 'm', accessors).ordered), ['a', 'c', 'b'])
+  const chain = orderByPolicy([{ ...c, unhealthy: true }, a, b], { modelRoutes: { m: { peerIds: [id('c'), id('a')] } } }, 'm', accessors)
+  assert.deepEqual(order(chain.ordered), ['a', 'c', 'b'])
 })
 
 test('orderByPolicy applies model route chains, strict and non-strict', () => {

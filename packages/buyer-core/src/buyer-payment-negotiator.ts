@@ -27,7 +27,7 @@ import {
   type BuyerChannelStore,
   type StoredChannel,
 } from './channel-store-types.js';
-import { classifyOnChainChannel } from './channel-session-state.js';
+import { classifyOnChainChannel, type OnChainChannelState } from './channel-session-state.js';
 import { peerIdToAddress } from '@antseed/protocol/peer-id';
 import { debugLog, debugWarn } from './debug.js';
 import type { SellerAddressResolver } from './seller-address-resolver.js';
@@ -77,6 +77,8 @@ const ONE_OFF_ACK_TIMEOUT_MS = 45_000;
  * AuthAck gets the same one-off 402 back.
  */
 const ONE_OFF_CHAIN_CONFIRM_GRACE_MS = 15_000;
+/** Upper bound on stored sessions for one seller checked against the chain in a single pass. */
+const MAX_STALE_SESSION_CHECKS = 5;
 /** Emitter interface — subset of EventEmitter used by the negotiator. */
 export interface NegotiationEmitter {
   emit(event: string, ...args: unknown[]): boolean;
@@ -159,6 +161,8 @@ export class BuyerPaymentNegotiator {
 
   /** Tracks which seller peers the buyer has already negotiated payment for. */
   private readonly _lockedPeers = new Set<string>();
+  /** peerId -> catch-up target already answered by resending the current SpendingAuth. */
+  private readonly _resentForTarget = new Map<string, bigint>();
   /** Pending PaymentRequired payloads from sellers, keyed by peerId. */
   private readonly _pendingPaymentRequired = new Map<string, {
     resolve: (payload: PaymentRequiredPayload) => void;
@@ -299,11 +303,17 @@ export class BuyerPaymentNegotiator {
     return this._muxes.get(peerId);
   }
 
+  /**
+   * `maxVideoCostUsdc` is the most the caller may spend on this request (for
+   * example what is left of a gateway key's spend limit): a video priced above
+   * it is refused before any job starts. Returns a video create's price.
+   */
   trackRequestBillingContext(
     request: SerializedHttpRequest,
     service: string,
     route: SelectedBillingRoute | null,
-  ): void {
+    maxVideoCostUsdc?: bigint,
+  ): bigint | undefined {
     if (route) {
       const isVideo = Boolean(nativeVideoRoute(request));
       let captured;
@@ -329,6 +339,12 @@ export class BuyerPaymentNegotiator {
           'buyer-budget-too-low',
         );
       }
+      if (isVideo && maxVideoCostUsdc !== undefined && estimatedCost > maxVideoCostUsdc) {
+        throw buyerFault(
+          `Video costs ${formatUsdc(estimatedCost)} USDC, more than the ${formatUsdc(maxVideoCostUsdc)} USDC left on this spend limit`,
+          'buyer-budget-too-low',
+        );
+      }
       this._bpm.trackRequestBilling(request.requestId, {
         context: captured.context,
         requestFacts: captured.requestFacts,
@@ -336,8 +352,10 @@ export class BuyerPaymentNegotiator {
         ...(route.unitModel ? { unitModel: route.unitModel } : {}),
         ...(route.tokenPricing ? { tokenPricing: route.tokenPricing } : {}),
       });
+      return isVideo ? estimatedCost : undefined;
     } else {
       this._bpm.trackRequestService(request.requestId, service);
+      return undefined;
     }
   }
 
@@ -612,9 +630,11 @@ export class BuyerPaymentNegotiator {
   async requestChannelClose(
     peerId: PeerId,
     conn: BuyerConnection,
-    { includeAuth = true, timeoutMs = CLOSE_REQUEST_TIMEOUT_MS }: {
+    { includeAuth = true, timeoutMs = CLOSE_REQUEST_TIMEOUT_MS, maxCumulative }: {
       includeAuth?: boolean;
       timeoutMs?: number;
+      /** Cap the attached authorization (e.g. at the on-chain deposit). */
+      maxCumulative?: bigint;
     } = {},
   ): Promise<CloseChannelResultPayload> {
     if (this._pendingCloseRequests.has(peerId)) {
@@ -635,7 +655,7 @@ export class BuyerPaymentNegotiator {
     await this.sendPostResponseAuthTo(peerId, conn);
 
     const pmux = this.getOrCreatePaymentMux(peerId, conn);
-    const payload = await this._bpm.buildCloseChannelRequest(peerId, { includeAuth });
+    const payload = await this._bpm.buildCloseChannelRequest(peerId, { includeAuth, maxCumulative });
 
     const result = await new Promise<CloseChannelResultPayload>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -678,6 +698,14 @@ export class BuyerPaymentNegotiator {
         `[BuyerNegotiator] Seller ${peerId.slice(0, 12)}... declined to close ` +
         `${result.channelId.slice(0, 18)}...: ${result.code ?? 'unknown'} — ${result.reason ?? 'no reason given'}`,
       );
+      // The seller has no record of this channel. Drop ours as well once the
+      // chain confirms it is no longer open; a channel that is still open
+      // holds a reserve and is kept.
+      if (result.code === 'no_channel' && await this._retireSessionsClosedOnChain(peerId)) {
+        this._lockedPeers.delete(peerId);
+        this._firstRequestSent.delete(peerId);
+        this._lastResponseCost.delete(peerId);
+      }
     }
 
     return result;
@@ -884,6 +912,10 @@ export class BuyerPaymentNegotiator {
       if (recovered) {
         return { action: 'retry' };
       }
+
+      // Older stored sessions for this seller (e.g. from a reserve that never
+      // locked) would each block a fresh reserve; check every one on-chain.
+      await this._retireSessionsClosedOnChain(peer.peerId);
 
       if (this._bpm.getActiveSession(peer.peerId)) {
         if (await this._canRetireStaleSessionWithoutOnChainProof()) {
@@ -1499,18 +1531,7 @@ export class BuyerPaymentNegotiator {
       return false;
     }
 
-    if (onChain.status === CHANNEL_STATUS.SETTLED) {
-      this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.SETTLED, onChain.channel.settled);
-      return false;
-    }
-
-    if (onChain.status === CHANNEL_STATUS.TIMEOUT) {
-      this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.TIMEOUT);
-      return false;
-    }
-
-    if (onChain.status !== 'active') {
-      this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.GHOST);
+    if (this._retireIfNotOpenOnChain(peer.peerId, onChain)) {
       return false;
     }
 
@@ -1536,8 +1557,47 @@ export class BuyerPaymentNegotiator {
     if (hasPendingReserve) {
       await this._bpm.resendPendingReserveAuth(peer.peerId, pmux);
     }
-    if (!requireFreshAck && minBudgetPerRequest != null && minBudgetPerRequest > 0n) {
-      const cumulativeBefore = this._bpm.getCumulativeAmount(peer.peerId);
+    const signedCumulative = this._bpm.getCumulativeAmount(peer.peerId);
+    const deposit = onChain.channel.deposit;
+    if (!requireFreshAck && targetCumulative != null && targetCumulative > 0n && signedCumulative >= targetCumulative) {
+      // We already signed at least what the seller asks for, so our latest
+      // SpendingAuth has not reached it (or the 402 predates it). Signing more
+      // would only raise what the seller may claim without delivering
+      // anything new: resend the highest authorization unchanged. An
+      // authorization above the on-chain deposit can never be accepted, so
+      // such a channel goes straight to a close capped at the deposit.
+      const resendable = deposit <= 0n || signedCumulative <= deposit;
+      if (!resendable || this._resentForTarget.get(peer.peerId) === targetCumulative) {
+        // The resend did not reach the seller either (or could not be
+        // accepted). Close the channel cooperatively so its reserve is
+        // released before a replacement is funded; never forget a channel
+        // that is still active on-chain.
+        this._resentForTarget.delete(peer.peerId);
+        try {
+          const result = await this.requestChannelClose(
+            peer.peerId,
+            conn,
+            deposit > 0n ? { maxCumulative: deposit } : {},
+          );
+          if (result.status !== 'closed') {
+            debugWarn(
+              `[BuyerNegotiator] Seller ${peer.peerId.slice(0, 12)}... keeps asking for ${targetCumulative} ` +
+              `and declined to close the channel (${result.code ?? 'unknown'})`,
+            );
+          }
+        } catch (err) {
+          debugWarn(
+            `[BuyerNegotiator] Could not close stuck channel with ${peer.peerId.slice(0, 12)}...: ` +
+            `${err instanceof Error ? err.message : err}`,
+          );
+        }
+        return false;
+      }
+      this._resentForTarget.set(peer.peerId, targetCumulative);
+      await this._bpm.resendCurrentSpendingAuth(peer.peerId, pmux);
+    } else if (!requireFreshAck && minBudgetPerRequest != null && minBudgetPerRequest > 0n) {
+      this._resentForTarget.delete(peer.peerId);
+      const cumulativeBefore = signedCumulative;
       await this._bpm.extendCurrentSpendingAuth(
         peer.peerId,
         minBudgetPerRequest,
@@ -1567,6 +1627,42 @@ export class BuyerPaymentNegotiator {
     });
     this._lockedPeers.add(peer.peerId);
     return true;
+  }
+
+  /**
+   * Retire the seller's stored session when the chain shows its channel is no
+   * longer open, recording how it ended. Returns whether it was retired.
+   */
+  private _retireIfNotOpenOnChain(peerId: string, onChain: OnChainChannelState): boolean {
+    if (onChain.status === CHANNEL_STATUS.ACTIVE) {
+      return false;
+    }
+    if (onChain.status === CHANNEL_STATUS.SETTLED) {
+      this._bpm.retireSession(peerId, CHANNEL_STATUS.SETTLED, onChain.channel.settled);
+    } else if (onChain.status === CHANNEL_STATUS.TIMEOUT) {
+      this._bpm.retireSession(peerId, CHANNEL_STATUS.TIMEOUT);
+    } else {
+      this._bpm.retireSession(peerId, CHANNEL_STATUS.GHOST);
+    }
+    return true;
+  }
+
+  /**
+   * Check the seller's stored sessions against their own channels on-chain,
+   * newest first, retiring each one that is no longer open. Stops at the first
+   * channel that is still open or cannot be read. Returns whether any session
+   * was retired.
+   */
+  private async _retireSessionsClosedOnChain(peerId: string): Promise<boolean> {
+    let retired = false;
+    for (let i = 0; i < MAX_STALE_SESSION_CHECKS; i++) {
+      const session = this._bpm.getActiveSession(peerId);
+      if (!session) break;
+      const onChain = await this._getOnChainSessionState(session.sessionId);
+      if (onChain === null || !this._retireIfNotOpenOnChain(peerId, onChain)) break;
+      retired = true;
+    }
+    return retired;
   }
 
   private async _canRetireStaleSessionWithoutOnChainProof(): Promise<boolean> {

@@ -78,6 +78,7 @@ Conventions:
 | `GET /presets`, `POST /presets`, `PATCH /presets/:id`, `DELETE /presets/:id` | Presets |
 | `GET /peers`, `GET /models` | The providers and models the buyer sees |
 | `GET /settings`, `PATCH /settings/buyer`, `PUT /settings/observability` | Buyer and observability settings |
+| `GET /update`, `POST /update/check`, `POST /update` | The running and latest Antseed version, a fresh check, and the [one-click update](/docs/gateway/server#upgrade) (admin scope; recorded in the audit log) |
 | `GET /workspaces/:id/wallet`, `GET /workspaces/:id/channels`, `GET /workspaces/:id/rewards` | A workspace's balances, payment channels and rewards |
 
 The console's own pages are the most complete examples: every request it makes is visible in your browser's developer tools.

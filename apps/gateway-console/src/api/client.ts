@@ -1,6 +1,6 @@
 import type {
   AdminToken, ApiKey, ApiKeyInput, AuditEntry, AuthConfig, BuyerLimits, BuyerSettingsInput, Channel, ChainInfo, DepositConfirmation, DepositWatch, Enrollment,
-  GatewayStatus, Invite, InviteInput, Member, MemberInput, MeResponse, ObservabilitySettings, OperatorAuthorization, OperatorState, WorkspaceOperatorSummary, ChatContext, ChatModel, ChatThread, ChatThreadDetail, NetworkModel, Peer, PeerList, Preset,
+  GatewayStatus, GatewayUpdate, Invite, InviteInput, Member, MemberInput, MeResponse, ObservabilitySettings, OperatorAuthorization, OperatorState, WorkspaceOperatorSummary, ChatContext, ChatModel, ChatThread, ChatThreadDetail, NetworkModel, Peer, PeerList, Preset,
   RequestDetail, RequestLogEntry, Rewards, RoutePreview, RoutingPolicy, Settings, SpendLimits, UsageGroupBy, UsageReport, Wallet, Workspace,
   WorkspaceInput, WorkspaceRole,
 } from './types'
@@ -39,6 +39,8 @@ export const ERROR_COPY: Record<string, string> = {
   empty_allow_list: 'This allow list is empty, so no seller could serve. Confirm to save it anyway.',
   last_credential: 'You cannot remove your only sign-in method, or you could not sign in again. Add another passkey or wallet first.',
   credential_exists: 'This passkey or wallet is already registered.',
+  update_unsupported: 'This gateway cannot update itself from the console. Run the update command on its host.',
+  update_in_progress: 'An update is already running. Try again when it is done.',
   max_keys_reached: 'You already have as many keys as you are allowed. Revoke one, or ask an admin to raise your limit.',
 }
 
@@ -267,6 +269,12 @@ export function createApiClient(fetchImpl: FetchLike = (input, init) => fetch(in
       updateBuyer: (input: BuyerSettingsInput) => patch<SettingsResult>('/settings/buyer', input),
       setObservability: (input: ObservabilitySettings) => put<SettingsResult>('/settings/observability', input),
     },
+    update: {
+      get: () => get<GatewayUpdate>('/update'),
+      check: () => post<GatewayUpdate>('/update/check'),
+      /** `download` fetches the new version; `install` switches to it and restarts. */
+      apply: (action: 'download' | 'install') => post<GatewayUpdate>('/update', { action }),
+    },
   }
 }
 
@@ -274,6 +282,8 @@ export interface UsageFilter {
   workspace?: string
   key?: string
   member?: string
+  /** Only requests this routing service ranked (its peer id). */
+  router?: string
   from?: number
   to?: number
 }

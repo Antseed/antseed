@@ -66,9 +66,18 @@ The exact cost of a request is only known once the provider is paid, which can h
 
 `GET /v1/models` and `POST /v1/messages/count_tokens` are answered for free and never count against a limit.
 
+### Videos
+
+A video is charged once, when its file is delivered, but its price is known when it starts, so it counts against the limits from start to charge:
+
+- When a video is created, the gateway tells the buyer how much is left under the key's limits (the lowest of the key's, its owner's and its workspace's), and holds that much while the buyer prices the video. The most one video may hold is the buyer's `payments.maxVideoRequestUsdc` ($5 by default). A video that costs more than what is left is refused with `422` before it starts.
+- Once the video is accepted, it holds its price until it is charged, the job fails, or 30 days pass. Its status polls and its download are always let through, since its price is already held.
+- Only the key that created a video can poll or download it. Other keys get `404 video_route_not_found`.
+- Other requests that only miss the limit because a video is still being priced get `429 video_pricing_in_progress`, which can be retried after a few seconds.
+
 ### Fail closed
 
-A key with limits at any level fails closed. If the buyer is not reachable or does not report spend to the gateway, the gateway answers `503` with `spend_tracking_unavailable` instead of serving requests it cannot count. Keys with no limits at any level are not affected.
+A key with limits at any level fails closed. If the buyer is not reachable or does not report spend to the gateway, or the gateway cannot save the videos it holds, the gateway answers `503` with `spend_tracking_unavailable` instead of serving requests it cannot count. Videos of such a key are only started through a buyer that checks their price against the limit; an older buyer gets `503 buyer_upgrade_required`. Keys with no limits at any level are not affected.
 
 The most common cause is a gateway and a buyer that use different data directories, so the buyer rejects the gateway's control secret. Run both with the same `--data-dir`.
 

@@ -11,6 +11,8 @@
  * HTTP status.
  */
 import type { RoutingPolicy } from '../../routing-policy/policy.js'
+import type { InstallKind } from '../../update/install-method.js'
+import type { RootUpdateProgress } from '../../update/root-updater.js'
 
 export type { RoutingPolicy, ModelRoute, RoutingSort } from '../../routing-policy/policy.js'
 export type { OperatorRelation, OperatorState, OperatorAuthorization, WorkspaceOperatorSummary } from './operator-types.js'
@@ -274,7 +276,7 @@ export interface AdminToken {
 // ── Usage & activity ────────────────────────────────────────────────────
 
 /** `hour` and `day` group by UTC hour (`YYYY-MM-DDTHH`) and day (`YYYY-MM-DD`), oldest first. */
-export type UsageGroupBy = 'hour' | 'day' | 'model' | 'key' | 'member' | 'peer' | 'workspace' | 'user'
+export type UsageGroupBy = 'hour' | 'day' | 'model' | 'key' | 'member' | 'peer' | 'router' | 'workspace' | 'user'
 
 // GET /usage?workspace=&key=&member=&from=&to=&groupBy=&splitBy=   → UsageReport
 //   splitBy (needs groupBy, must differ) adds `splits` to each group, e.g. groupBy=day&splitBy=model
@@ -305,6 +307,18 @@ export interface UsageTotals {
   outputTokens: number
 }
 
+/** The routing service that ranked a request. */
+export interface RequestRouterInfo {
+  peerId: string
+  /** The router's service id, e.g. `levanto-router`. */
+  service: string | null
+  /**
+   * The recommendation tried last, 1 = the router's first pick: the one that served the request, or, when the
+   * request failed, the last one refused (the ones before it were refused too). Null when the ranking failed.
+   */
+  rank: number | null
+}
+
 export interface RequestLogEntry {
   tag: string
   startedAt: number
@@ -319,13 +333,20 @@ export interface RequestLogEntry {
   path: string
   model: string | null
   status: number | null
+  /** The seller that served the request (for a routed request, the one the router picked). */
   sellerPeerId: string | null
+  /** The model that answered, when it differs from `model` (a router picked it). */
+  servedModel?: string | null
+  /** The routing service that ranked the request, when one did. */
+  router?: RequestRouterInfo | null
   latencyMs: number | null
   /** Streamed answers: time from sending to the seller's first frame, measured by the buyer. */
   firstTokenMs: number | null
   /** Streamed answers of 20+ output tokens: output tokens per second after the first frame. */
   tokensPerSecond: number | null
   spent: Usdc | null
+  /** The part of `spent` that paid the router for its ranking (routed requests only). */
+  routingSpent?: Usdc | null
   inputTokens: number
   cachedInputTokens: number
   outputTokens: number
@@ -798,6 +819,46 @@ export interface GatewayStatus {
    * (`listenHost` null, `reasons` empty).
    */
   exposure?: GatewayExposure
+}
+
+// GET   /update                    → GatewayUpdate  (org admins)
+// POST  /update/check              → GatewayUpdate  (asks npm now)
+// POST  /update                    → GatewayUpdate  (installer servers and the desktop app; body {action: 'download' | 'install'}:
+//                                     download fetches the latest version, install switches to it and restarts; default install)
+export interface GatewayUpdate {
+  /**
+   * What updates: `cli` is @antseed/cli from npm; `desktop` is the desktop
+   * app running this gateway, whose own updater reports the versions below.
+   */
+  product: 'cli' | 'desktop'
+  /** The running version (of the CLI, or of the desktop app). */
+  current: string
+  /** The newest version at the last check (npm's `latest`, or the app's newest release); null before the first answer. */
+  latest: string | null
+  available: boolean
+  /** When npm was last asked (ms); null when never. */
+  checkedAt: number | null
+  /** Why the last check failed; null when it worked. */
+  checkError: string | null
+  /** `NO_UPDATE_NOTIFIER`, `ANTSEED_NO_UPDATE_CHECK` or `CI` turned background checks off. */
+  checksDisabled: boolean
+  /**
+   * `console`: `POST /update` downloads and installs it (servers set up by the gateway
+   * installer, and the desktop app); `command`: run `command` on the gateway
+   * host; `none`: it updates some other way.
+   */
+  apply: 'console' | 'command' | 'none'
+  install: InstallKind
+  command: string | null
+  /** One line on how this install updates. */
+  note: string
+  /** The update service's pending request or last run; null when `apply` is not `console` or it never ran. */
+  progress: RootUpdateProgress | null
+  /**
+   * A version downloaded and waiting for Restart & update: newer than
+   * `current`, whatever npm's `latest` has moved on to since. Null when none.
+   */
+  downloaded: string | null
 }
 
 /**

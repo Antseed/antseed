@@ -1,0 +1,12 @@
+/* Update notice and the Settings → Updates panel. Calm: amber dot + one line + text links. */
+
+.gc-update-notice {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 0.25rem 0.5rem; margin: 0 0 1.25rem;
+  color: var(--as-text-secondary); font-size: 0.8125rem; line-height: 1.45;
+}
+.gc-update-notice__link {
+  padding: 0; border: 0; background: none; font: inherit; color: var(--as-text-primary);
+  text-decoration: underline; text-underline-offset: 2px; cursor: pointer;
+  &:hover { color: var(--as-text-secondary); }
+}
+.gc-update__version { display: inline-flex; align-items: center; gap: 0.5rem; }

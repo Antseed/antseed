@@ -223,7 +223,9 @@ Both must be positive integers; `recordFlushIntervalMs` must be at least 1000. T
 
 ### Model health checks
 
-The seller probes each text service at startup and every `intervalMs` afterwards. After `failureThreshold` consecutive failures it stops advertising the service, and advertises it again when a probe succeeds. Image and video services are never probed, because a probe would generate a paid result.
+The seller probes each text service at startup and every `intervalMs` afterwards. After `failureThreshold` consecutive failures it stops advertising the service, and advertises it again when a probe succeeds.
+
+Image and video services are never probed, because a probe would generate a paid result. Instead, the Venice and fal video plugins check the account and model list for free every `intervalMs` (see [Image and video services](/docs/provide/media)).
 
 ```json
 {
