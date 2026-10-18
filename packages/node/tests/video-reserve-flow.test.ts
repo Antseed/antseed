@@ -386,7 +386,14 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
       videoRequest,
       retrieveRequest,
       chatRequest,
-      settle: async () => { await negotiator.drainPendingNeedAuth(); await new Promise((resolve) => setTimeout(resolve, 20)); },
+      // Several rounds: a delivery's charge (NeedAuth → SpendingAuth → close) crosses the wire more than once,
+      // and one fixed wait was too short on a loaded machine.
+      settle: async () => {
+        for (let round = 0; round < 4; round += 1) {
+          await negotiator.drainPendingNeedAuth();
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+      },
       restartBuyer: () => new BuyerPaymentManager(buyerIdentity, buyerConfig, buyerStore),
     };
   }
@@ -496,6 +503,19 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     expect(h.close.mock.calls.find((call) => call[1] === channelId)?.[2]).toBe(VIDEO_PRICE);
     // Delivered once and never again: the job is no longer chargeable.
     expect(h.buyer.trackVideoRetrieve(h.peer.peerId, 'venice-video', 'job-1', 'retrieve-2')).toBe(false);
+  });
+
+  it('does not mark a download delivered while the job cannot be removed from storage', async () => {
+    const h = setup();
+    await h.send(h.videoRequest('video-1'));
+    await h.settle();
+
+    // A job still stored comes back after a restart and could be charged again: the download is not a delivery.
+    const store = (h.buyer as unknown as { _channelStore: { upsertChannel: (...args: unknown[]) => unknown } })._channelStore;
+    const failWrites = () => { vi.spyOn(store, 'upsertChannel').mockImplementation(() => { throw new Error('database is locked'); }); };
+    const response = await h.send(h.retrieveRequest('retrieve-1', 'job-1'), { onResponseStart: failWrites, onResponseChunk() {} });
+    expect(response.headers['x-antseed-video-delivered']).toBeUndefined();
+    expect(h.buyer.trackVideoRetrieve(h.peer.peerId, 'venice-video', 'job-1', 'retrieve-2')).toBe(true);
   });
 
   it('does not mark a download delivered when its job is no longer tracked', async () => {

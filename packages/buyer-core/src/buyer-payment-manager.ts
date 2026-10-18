@@ -2354,9 +2354,10 @@ export class BuyerPaymentManager {
     // The job's own facts, not the request's cache entry, which other requests may have evicted meanwhile.
     const facts = job?.requestFacts;
     if (!job || facts?.kind !== 'video') return false;
+    // Saved first: a job still stored would be chargeable again after a restart, so it is not delivered yet.
+    if (job.oneOffChannelId && !this._persistVideoJob(job.oneOffChannelId, null)) return false;
     if (!this._requestBillingEntries.has(requestId)) this.trackVideoRetrieve(sellerPeerId, protocol, jobId, requestId);
     this._videoJobs.delete(key);
-    if (job.oneOffChannelId) this._persistVideoJob(job.oneOffChannelId, null);
     this.recordObservedUnitUsage(requestId, nativeVideoUnitUsage(facts.video));
     return true;
   }
@@ -2368,17 +2369,20 @@ export class BuyerPaymentManager {
   }
 
   /** Store (or clear) the undelivered job on its one-off channel row. */
-  private _persistVideoJob(channelId: string, job: PersistedVideoJob | null): void {
-    const channel = this._channelStore.getChannel(channelId);
-    if (!channel) return;
+  /** Whether the job is stored as given (true too when its channel is gone: nothing can restore the job). */
+  private _persistVideoJob(channelId: string, job: PersistedVideoJob | null): boolean {
     try {
+      const channel = this._channelStore.getChannel(channelId);
+      if (!channel) return true;
       this._channelStore.upsertChannel({
         ...channel,
         oneOffVideoJob: job ? JSON.stringify(job, (_key, value) => typeof value === 'bigint' ? { $bigint: value.toString() } : value) : null,
         updatedAt: Date.now(),
       });
+      return true;
     } catch (err) {
       debugWarn(`[BuyerPayment] Failed to persist video job for ${channelId.slice(0, 18)}...: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
     }
   }
 
