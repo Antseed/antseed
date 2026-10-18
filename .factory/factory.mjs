@@ -3,7 +3,7 @@
 // anything a model should judge. Every judgment step is a fresh pinned Claude Code session in its own Herdr
 // pane (scripts/native-step.mjs). Run it inside Herdr.
 //
-//   node .factory/factory.mjs run --slug <slug> (--issue <n> | --task-file <file>) [--from <stage>] [--until <stage>]
+//   node .factory/factory.mjs run --slug <slug> (--issue <n> | --task-file <file>) [--note-file <file>] [--from <stage>] [--until <stage>]
 //   node .factory/factory.mjs status --slug <slug>
 //
 // Stages: intake red fix verify blast-radius review no-comments publish reflect. Publish is always a dry run
@@ -162,6 +162,7 @@ function pause(stage, question, context) {
 async function intake() {
   if (!existsSync(join(RD, 'task.md'))) {
     const src = opt('issue') ? ['--issue', opt('issue')] : ['--task-file', opt('task-file')]
+    if (opt('note-file')) src.push('--note-file', opt('note-file'))
     const r = script('intake.sh', [slug, ...src]); process.stdout.write(r.out)
     if (r.status) stop('FAILED', `intake.sh: ${lastLine(r.out)}`)
   }
