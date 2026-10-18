@@ -8,6 +8,7 @@ set -uo pipefail
 secs="$1"; dir="$2"; cmd="$3"
 run_id="bounded-$$-$(date +%s%N)"   # set only in the child's environment, so this script's own helpers do not match
 marked() { grep -lsz "^FACTORY_RUN_ID=$run_id\$" /proc/[0-9]*/environ 2>/dev/null | cut -d/ -f3 || true; }
+echo "[run-bounded] run id $run_id (every process of this run carries FACTORY_RUN_ID=$run_id)" >&2
 (cd "$dir" && FACTORY_RUN_ID="$run_id" exec setsid bash -c "$cmd") &
 child=$!
 deadline=$(( $(date +%s) + secs ))
