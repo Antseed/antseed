@@ -47,8 +47,18 @@ export interface RequestStreamCallbacks {
   onResponseChunk?: (chunk: SerializedHttpResponseChunk) => void | Promise<void>;
 }
 
-/** On an accepted video create: the job's price in USDC base units, charged when the video is delivered. */
+/** On an accepted video create: the job's price in USDC base units, charged when the video is delivered. Set by the buyer only. */
 export const VIDEO_PRICE_HEADER = 'x-antseed-video-price-usdc';
+
+/**
+ * On a video retrieve answer: the buyer has retired the job (it failed, the
+ * seller no longer has it, or the buyer has no record of it), so it can never
+ * be delivered or charged. Set by the buyer only.
+ */
+export const VIDEO_JOB_RETIRED_HEADER = 'x-antseed-video-job-retired';
+
+/** Headers only the buyer may set: a seller's copy (in any letter case) is dropped from its responses. */
+const BUYER_ONLY_RESPONSE_HEADERS: ReadonlySet<string> = new Set([ANTSEED_FAULT_ATTRIBUTION_HEADER, VIDEO_PRICE_HEADER, VIDEO_JOB_RETIRED_HEADER]);
 
 export interface RequestExecutionOptions {
   signal?: AbortSignal;
@@ -141,7 +151,8 @@ export class BuyerRequestHandler {
     const adaptPeerResponse = (response: SerializedHttpResponse): SerializedHttpResponse => {
       const adapted = adaptPeerFaultErrorResponse(response, requestProtocol, { pinned: options?.pinned });
       if (videoPriceUsdc === undefined || adapted.statusCode < 200 || adapted.statusCode >= 300) return adapted;
-      return { ...adapted, headers: { ...adapted.headers, [VIDEO_PRICE_HEADER]: videoPriceUsdc.toString() } };
+      const headers = Object.fromEntries(Object.entries(adapted.headers).filter(([name]) => name.toLowerCase() !== VIDEO_PRICE_HEADER));
+      return { ...adapted, headers: { ...headers, [VIDEO_PRICE_HEADER]: videoPriceUsdc.toString() } };
     };
     const billingRoute = requestedService ? selectBillingRoute(peer, req, requestedService) : null;
     // Decide free vs paid from the resolved route (provider + protocol), mirroring
@@ -695,7 +706,7 @@ export function stripPeerControlledResponseHeaders(
 ): SerializedHttpResponse {
   const headers = Object.fromEntries(
     Object.entries(response.headers).filter(
-      ([name]) => name.toLowerCase() !== ANTSEED_FAULT_ATTRIBUTION_HEADER,
+      ([name]) => !BUYER_ONLY_RESPONSE_HEADERS.has(name.toLowerCase()),
     ),
   );
   return Object.keys(headers).length === Object.keys(response.headers).length

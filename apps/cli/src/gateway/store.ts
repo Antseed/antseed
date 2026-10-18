@@ -19,6 +19,7 @@ import {
 } from './limits.js'
 import { splitPinnedModel } from './pinned-model.js'
 import { MIGRATIONS } from './store-migrations.js'
+import { requestVideoJob } from './video-jobs.js'
 
 export type ApiKeySource = 'created' | 'tunnel-env'
 export type ApiKeyStatus = 'active' | 'revoked'
@@ -1074,7 +1075,6 @@ export class GatewayStore {
     return ids
   }
 
-  /** Records use at most once a minute per key (per process), so requests do not each write. */
   /** Accepted video jobs whose price still counts against the caps (see GatewayAccounting). */
   listVideoCommitments(now: number): VideoCommitmentRecord[] {
     this._stmt('DELETE FROM video_commitments WHERE expires_at <= ?').run(now)
@@ -1099,6 +1099,7 @@ export class GatewayStore {
     this._stmt('DELETE FROM video_commitments WHERE job = ?').run(job)
   }
 
+  /** Records use at most once a minute per key (per process), so requests do not each write. */
   touchKey(id: string): void {
     const now = this._now()
     if (!this._shouldTouch(`key:${id}`, now)) return
@@ -1225,12 +1226,25 @@ export class GatewayStore {
     memberId: string | null
     model: string | null
     endUser: string | null
+    /** A video retrieve's job, keyed like `videoJobKey`. */
+    videoJob: string | null
   } | null {
-    const row = this._stmt('SELECT key_id, buyer_identity, workspace_id, member_id, model, end_user FROM gateway_requests WHERE tag = ?').get(tag) as
-      { key_id: string; buyer_identity: string; workspace_id: string | null; member_id: string | null; model: string | null; end_user: string | null } | undefined
+    const row = this._stmt(`SELECT key_id, buyer_identity, workspace_id, member_id, model, end_user, path, video_action, video_job_id
+      FROM gateway_requests WHERE tag = ?`).get(tag) as
+      { key_id: string; buyer_identity: string; workspace_id: string | null; member_id: string | null; model: string | null; end_user: string | null
+        path: string; video_action: string | null; video_job_id: string | null } | undefined
     return row
-      ? { keyId: row.key_id, buyerIdentity: row.buyer_identity, workspaceId: row.workspace_id, memberId: row.member_id, model: row.model, endUser: row.end_user }
+      ? {
+        keyId: row.key_id, buyerIdentity: row.buyer_identity, workspaceId: row.workspace_id, memberId: row.member_id, model: row.model, endUser: row.end_user,
+        videoJob: row.video_action === 'poll' || row.video_action === 'delivery' ? requestVideoJob(row.path, row.video_job_id) : null,
+      }
       : null
+  }
+
+  /** The key whose create, logged by this gateway, started the video job (jobs created before video commitments were stored). */
+  findVideoJobCreator(jobId: string): string | null {
+    const row = this._stmt("SELECT key_id FROM gateway_requests WHERE video_action = 'create' AND video_job_id = ? LIMIT 1").get(jobId) as { key_id: string } | undefined
+    return row?.key_id ?? null
   }
 
   /** Requests per seller since a time, with the medians of what this gateway measured. */

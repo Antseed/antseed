@@ -49,6 +49,7 @@ import {
   type SerializedHttpResponse,
   type SerializedHttpResponseChunk,
   type SweepReceiptPayload,
+  VIDEO_JOB_RETIRED_HEADER,
 } from '@antseed/node'
 import { canonicalModelKey } from '@antseed/node/model-identity'
 import {
@@ -2333,10 +2334,11 @@ export class BuyerProxy {
   }
 
   /**
-   * Retires a failed video job: later retrieves get `video_route_not_found` and
-   * never reach the seller, so it can never be delivered or charged, and a
-   * gateway may release the price it held for it. False (route kept) when the
-   * retirement could not be saved, so a restart cannot bring the job back.
+   * Retires a video job that failed or that its seller no longer has: later
+   * retrieves get `video_route_not_found` and never reach the seller, so it can
+   * never be delivered or charged, and a gateway may release the price it held
+   * for it. False (route kept) when the retirement could not be saved, so a
+   * restart cannot bring the job back.
    */
   private async _retireVideoJob(protocol: NativeVideoProtocol, resourceId: string): Promise<boolean> {
     const route = this._resourceRoutes.resolve(protocol, resourceId)
@@ -3746,7 +3748,9 @@ export class BuyerProxy {
       // Re-classify with the body: some APIs (Venice) carry the job ID in it.
       const prepared = prepareVideoRequest(nativeVideoRoute(serializedReq) ?? nativeVideo, serializedReq.headers, this._resourceRoutes)
       if ('error' in prepared) {
-        res.writeHead(prepared.error.statusCode, { 'content-type': 'application/json' })
+        // No route for the job: this buyer can never deliver or charge it.
+        const retired = prepared.error.body.error.code === 'video_route_not_found' ? { [VIDEO_JOB_RETIRED_HEADER]: '1' } : {}
+        res.writeHead(prepared.error.statusCode, { 'content-type': 'application/json', ...retired })
         res.end(JSON.stringify(prepared.error.body))
         return
       }
@@ -4877,7 +4881,8 @@ export class BuyerProxy {
       await this._serializeVideoJob(`${protocol}\n${resourceId ?? ''}`, async () => {
         // Checked again in turn: a retrieve queued behind one that retired the job must not reach the seller.
         if (!resourceId || !this._resourceRoutes.resolve(protocol, resourceId)) {
-          sendJson(res, 404, { error: { code: 'video_route_not_found', message: 'Unknown video job' } })
+          res.writeHead(404, { 'content-type': 'application/json', [VIDEO_JOB_RETIRED_HEADER]: '1' })
+          res.end(JSON.stringify({ error: { code: 'video_route_not_found', message: 'Unknown video job' } }))
           return
         }
         await downloadVideo(requestForPeer, res, (request, callbacks, signal) => this._node.sendRequestStream(selectedPeer, request, callbacks, {

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { BuyerRequestHandler } from './buyer-request-handler.js';
+import { BuyerRequestHandler, stripPeerControlledResponseHeaders } from './buyer-request-handler.js';
 import { ConnectionState, toPeerId } from '@antseed/protocol';
 import type { BuyerPeerView, ResponseAuthContext, StoredResponseAuth } from './interfaces.js';
 import { hashRequest } from './response-auth.js';
@@ -157,5 +157,17 @@ describe('BuyerRequestHandler response receipts', () => {
     // The stored receipt keeps what the seller claimed; the context says who actually answered.
     expect(inserted[0]!.record.sellerPeerId).toBe(other);
     expect(inserted[0]!.context).toEqual({ sellerPeerId: peer.peerId, requestedService: 'video-model' });
+  });
+});
+
+describe('stripPeerControlledResponseHeaders', () => {
+  it('drops a seller copy of every buyer-only header, in any letter case', () => {
+    const response = {
+      requestId: 'r',
+      statusCode: 200,
+      headers: { 'content-type': 'application/json', 'X-Antseed-Video-Price-Usdc': '1', 'x-antseed-video-job-retired': '1', 'X-AntSeed-Fault-Attribution': 'buyer' },
+      body: new Uint8Array(),
+    };
+    expect(stripPeerControlledResponseHeaders(response).headers).toEqual({ 'content-type': 'application/json' });
   });
 });

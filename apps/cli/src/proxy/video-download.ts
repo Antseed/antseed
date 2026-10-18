@@ -1,6 +1,6 @@
 import { once } from 'node:events'
 import type { ServerResponse } from 'node:http'
-import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, VIDEO_DOWNLOAD_MAX_BYTES, type RequestStreamCallbacks, type SerializedHttpRequest, type SerializedHttpResponse } from '@antseed/node'
+import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_JOB_RETIRED_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, VIDEO_DOWNLOAD_MAX_BYTES, type RequestStreamCallbacks, type SerializedHttpRequest, type SerializedHttpResponse } from '@antseed/node'
 
 type SendDownload = (request: SerializedHttpRequest, callbacks: RequestStreamCallbacks, signal: AbortSignal) => Promise<SerializedHttpResponse>
 let activeDownloads = 0
@@ -11,6 +11,9 @@ const SELLER_ERROR_CODES = new Set([
   'unsupported_video_download', 'unsupported_video_request', 'resource_ownership_unavailable',
 ])
 const RETURNED_STATUSES = new Set([400, 404, 409, 410, 413, 429])
+/** The seller no longer has the job: it can never be delivered. */
+const JOB_GONE_STATUSES = new Set([404, 410])
+const RETIRED = { [VIDEO_JOB_RETIRED_HEADER]: '1' }
 const PROCESSING_STATUSES = new Set(['PROCESSING', 'QUEUED', 'PENDING', 'IN_QUEUE', 'IN_PROGRESS', 'RUNNING'])
 const FAILED_STATUSES = new Set(['FAILED', 'ERROR', 'CANCELLED', 'CANCELED'])
 
@@ -70,10 +73,12 @@ function sellerErrorCode(body: Uint8Array): string | null {
 
 /** Streams a finished video from the seller that owns the job to the client. */
 /**
- * Streams a finished video, or answers the job's status. Before answering that
- * the job failed (including a JSON `completed` with no video), `retire` must
- * durably retire the job; when it cannot, the answer is a retryable `unknown`
- * instead, so no caller treats the job as finished while it can still be charged.
+ * Streams a finished video, or answers the job's status. Before an answer that
+ * ends the job (it failed, including a JSON `completed` with no video, or the
+ * seller answers 404/410: it no longer has the job), `retire` must durably
+ * retire it; that answer then carries VIDEO_JOB_RETIRED_HEADER. When the job
+ * cannot be retired, the answer is a retryable `unknown` instead, so no caller
+ * treats the job as finished while it can still be charged.
  */
 export async function downloadVideo(
   request: SerializedHttpRequest,
@@ -82,8 +87,8 @@ export async function downloadVideo(
   clientSignal: AbortSignal,
   retire: () => Promise<boolean> = async () => true,
 ): Promise<void> {
-  const reply = (httpStatus: number, body: Record<string, unknown>) => {
-    response.writeHead(httpStatus, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+  const reply = (httpStatus: number, body: Record<string, unknown>, extraHeaders: Record<string, string> = {}) => {
+    response.writeHead(httpStatus, { 'content-type': 'application/json', 'cache-control': 'no-store', ...extraHeaders })
     response.end(JSON.stringify(body))
   }
   const error = (httpStatus: number, code: string) => reply(httpStatus, { error: { code, message: 'Video download unavailable' } })
@@ -121,15 +126,24 @@ export async function downloadVideo(
       const isJson = result.headers['content-type']?.startsWith('application/json') === true
       if (isJson && result.statusCode < 500) {
         const answer = result.statusCode === 200 ? withNormalizedStatus(result.body) : result.body
-        if (result.statusCode === 200 && parseObject(answer)?.status === 'failed' && !await retire().catch(() => false)) {
+        const ends = result.statusCode === 200 ? parseObject(answer)?.status === 'failed' : JOB_GONE_STATUSES.has(result.statusCode)
+        if (ends && !await retire().catch(() => false)) {
           pending(200, 'unknown', 'video_status_unavailable', 'The video job status could not be recorded; poll again')
           return
         }
-        response.writeHead(result.statusCode, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+        response.writeHead(result.statusCode, { 'content-type': 'application/json', 'cache-control': 'no-store', ...(ends ? RETIRED : {}) })
         response.end(Buffer.from(answer))
         return
       }
       const code = isJson ? sellerErrorCode(result.body) : null
+      if (JOB_GONE_STATUSES.has(result.statusCode)) {
+        if (!await retire().catch(() => false)) {
+          pending(200, 'unknown', 'video_status_unavailable', 'The video job status could not be recorded; poll again')
+          return
+        }
+        reply(result.statusCode, { error: { code: code ?? 'video_download_unavailable', message: 'Video download unavailable' } }, RETIRED)
+        return
+      }
       if (RETURNED_STATUSES.has(result.statusCode)) { error(result.statusCode, code ?? 'video_download_unavailable'); return }
       // The seller answered, so it is reachable; it just could not read the job's state right now.
       pending(200, 'unknown', code ?? 'video_status_unavailable', 'The seller could not read the video job status right now; poll again')

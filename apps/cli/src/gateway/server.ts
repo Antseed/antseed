@@ -2,7 +2,7 @@ import { timingSafeEqual } from 'node:crypto'
 import * as http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { nativeVideoAcceptance, nativeVideoRoute, type NativeVideoRoute } from '@antseed/api-adapter'
-import { DEFAULT_BUYER_IDENTITY, VIDEO_PRICE_HEADER } from '@antseed/node'
+import { DEFAULT_BUYER_IDENTITY, VIDEO_JOB_RETIRED_HEADER, VIDEO_PRICE_HEADER } from '@antseed/node'
 import { SPEND_ATTRIBUTION_HEADER } from '../proxy/spend-attribution.js'
 import { BUYER_IDENTITY_HEADER, MAX_VIDEO_COST_HEADER } from '../proxy/request-utils.js'
 import { GATEWAY_CONTROL_HEADER, ROUTING_POLICY_HEADER, encodePolicyHeader, meaningfulPolicy, policyAllowsModel, type RoutingPolicy } from '../routing-policy/policy.js'
@@ -324,10 +324,13 @@ export class GatewayServer {
     const policy = this._routingPolicy(res, route, key, context, preset, model)
     if (!policy.allowed) return
     const video = nativeVideoRoute({ method, path: route.prefix, body })
-    const admission = this._admit(res, route, key, context, {
-      videoCreate: video?.action === 'create',
-      ...(video?.action === 'retrieve' && video.resourceId ? { videoJob: videoJobKey(video.protocol, video.resourceId) } : {}),
-    })
+    const videoJob = video?.action === 'retrieve' && video.resourceId ? videoJobKey(video.protocol, video.resourceId) : undefined
+    // Only the key that created a video job may retrieve it: its delivery is charged to the key that downloads it.
+    if (video?.action === 'retrieve' && !this._ownsVideoJob(key, videoJob, video.resourceId)) {
+      sendError(res, 404, 'invalid_request_error', 'video_route_not_found', 'Unknown video job')
+      return
+    }
+    const admission = this._admit(res, route, key, context, { videoCreate: video?.action === 'create', ...(videoJob ? { videoJob } : {}) })
     if (!admission) return
     const { tag } = admission
 
@@ -482,33 +485,36 @@ export class GatewayServer {
     return null
   }
 
+  /** Whether `key` created the video job, as remembered by its commitment or, for older jobs, the request log. */
+  private _ownsVideoJob(key: ApiKeyRecord, job: string | undefined, jobId: string | undefined): boolean {
+    if (!job || !jobId) return false
+    const owner = this._options.accounting.videoJobOwner(job) ?? this._options.store.findVideoJobCreator(jobId)
+    return owner === key.id
+  }
+
   /**
-   * Keeps an accepted video's price counted against the caps until it is
-   * delivered (then its charge settles like any request's) or will never be:
-   * the job reports `failed` (the buyer then retires it, so it can never be
-   * delivered or charged), or the buyer answers that it does not know the
-   * job. Any other error (a malformed poll, a seller that cannot be reached)
-   * keeps the commitment, which expires on its own.
+   * Accounting for a video request once answered. An accepted create records
+   * its job: the key that owns it and, for a key with caps, the price it keeps
+   * counted until the buyer's charge for its delivery arrives. That price is
+   * the buyer's (set only by the buyer), never more than the allowance the
+   * create held; without a readable price the whole allowance stays held. A
+   * retrieve the buyer marks as retiring the job (it failed, its seller no
+   * longer has it, or the buyer has no record of it) releases the job: it can
+   * never be delivered or charged. Nothing a seller sends can release it.
    */
-  private _settleVideo(
-    request: ForwardedRequest,
-    status: number,
-    outcome: { videoJobId: string | null; videoPriceUsdc: number; videoDelivered: boolean; poll: Buffer[] | null; error: Buffer[] },
-  ): void {
+  private _settleVideo(request: ForwardedRequest, outcome: { videoJobId: string | null; priceHeader: string; retired: boolean }): void {
     const video = request.video
     if (!video) return
     const accounting = this._options.accounting
     if (video.action === 'create') {
-      if (outcome.videoJobId) accounting.commitVideo(request.tag, videoJobKey(video.protocol, outcome.videoJobId), outcome.videoPriceUsdc)
+      if (!outcome.videoJobId) return
+      const allowance = request.remainingUsdc
+      const price = /^\d{1,15}$/.test(outcome.priceHeader) ? Number(outcome.priceHeader) : null
+      const amount = allowance === null ? 0 : Math.min(allowance, price ?? allowance)
+      accounting.commitVideo(request.tag, videoJobKey(video.protocol, outcome.videoJobId), amount)
       return
     }
-    if (!video.resourceId) return
-    const job = videoJobKey(video.protocol, video.resourceId)
-    if (outcome.videoDelivered) accounting.deliverVideo(request.tag, job)
-    else if (
-      (status === 200 && outcome.poll && videoPollFailed(Buffer.concat(outcome.poll)))
-      || (status === 404 && errorCode(Buffer.concat(outcome.error)) === 'video_route_not_found')
-    ) accounting.dropVideo(job)
+    if (video.resourceId && outcome.retired) accounting.dropVideo(videoJobKey(video.protocol, video.resourceId))
   }
 
   /**
@@ -541,9 +547,9 @@ export class GatewayServer {
       let videoDelivered = false
       // A retrieve answered with the file; it is delivered (and charged) only once that stream ends.
       let videoStream = false
-      // The buyer's price for an accepted create, and the start of a status poll's answer (it says whether the job failed).
-      let videoPriceUsdc = 0
-      let videoPollChunks: Buffer[] | null = null
+      // The buyer's price for an accepted create, and whether the buyer retired a retrieved job.
+      let videoPriceHeader = ''
+      let videoRetired = false
       // Token counts the response reports, kept on the request until (or if
       // the buyer never reports) its spend.
       let usageReader: ResponseUsageReader | null = null
@@ -572,10 +578,17 @@ export class GatewayServer {
         } catch (error) {
           this._log(`gateway could not record request ${tag}: ${errorMessage(error)}`)
         }
-        this._settleVideo(request, status, { videoJobId, videoPriceUsdc, videoDelivered, poll: videoPollChunks, error: errorChunks })
-        // Only the retrieve that delivers a video is charged: a create or a status poll holds nothing once answered.
-        if (request.video && !videoDelivered) this._options.accounting.release(tag)
-        else this._options.accounting.finish(tag)
+        const accounting = this._options.accounting
+        try {
+          this._settleVideo(request, { videoJobId, priceHeader: videoPriceHeader, retired: videoRetired })
+        } catch (error) {
+          this._log(`gateway could not account for video request ${tag}: ${errorMessage(error)}`)
+        }
+        // Only the retrieve that delivers a video is charged, and a job that still holds its price covers that
+        // charge until it arrives: a create, a status poll or such a delivery holds nothing once answered.
+        const job = request.video?.resourceId ? videoJobKey(request.video.protocol, request.video.resourceId) : null
+        if (request.video && (!videoDelivered || (job !== null && accounting.videoJobHeldUsdc(job) > 0))) accounting.release(tag)
+        else accounting.finish(tag)
         this._exporter.record({
           tag, method, path: request.requestPath, model: request.model, status, startedAt, finishedAt,
           keyId: key.id, workspaceId: key.workspaceId, memberId: key.ownerMemberId, endUser, sellerPeerId, latencyMs,
@@ -624,10 +637,10 @@ export class GatewayServer {
           servedFree = !request.video && freeSellerPricing(upstreamRes.headers)
           if (request.video?.action === 'create' && status >= 200 && status < 300) {
             videoCreateChunks = collectPrefix(upstreamRes, MAX_ERROR_BODY_BYTES)
-            videoPriceUsdc = Number(firstHeader(upstreamRes.headers[VIDEO_PRICE_HEADER])) || 0
+            videoPriceHeader = firstHeader(upstreamRes.headers[VIDEO_PRICE_HEADER])
           }
           videoStream = request.video?.action === 'retrieve' && status === 200 && contentType.startsWith('video/')
-          if (request.video?.action === 'retrieve' && status === 200 && !videoStream) videoPollChunks = collectPrefix(upstreamRes, MAX_ERROR_BODY_BYTES)
+          videoRetired = request.video?.action === 'retrieve' && firstHeader(upstreamRes.headers[VIDEO_JOB_RETIRED_HEADER]) === '1'
           if (observability.logContent) responseChunks = collectPrefix(upstreamRes, MAX_LOGGED_CONTENT_BYTES)
           if (status >= 400) errorChunks = collectPrefix(upstreamRes, MAX_ERROR_BODY_BYTES)
           // A delivered video is an MP4 stream with no usage to read.
@@ -955,25 +968,6 @@ function sendError(res: http.ServerResponse, status: number, type: string, code:
 function sendUnauthorized(res: http.ServerResponse, code: string, message: string): void {
   res.setHeader('www-authenticate', 'Bearer')
   sendError(res, 401, 'authentication_error', code, message)
-}
-
-/** Whether a video status answer says the job failed (the buyer normalizes every seller's status to `failed`). */
-function videoPollFailed(body: Buffer): boolean {
-  try {
-    return (JSON.parse(body.toString('utf8')) as { status?: unknown }).status === 'failed'
-  } catch {
-    return false
-  }
-}
-
-/** The `error.code` of a JSON error answer, if any. */
-function errorCode(body: Buffer): string | null {
-  try {
-    const code = (JSON.parse(body.toString('utf8')) as { error?: { code?: unknown } }).error?.code
-    return typeof code === 'string' ? code : null
-  } catch {
-    return null
-  }
 }
 
 /** The request body, or null once it exceeds MAX_BODY_BYTES (the rest is drained, not kept). */

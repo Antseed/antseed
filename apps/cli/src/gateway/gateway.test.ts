@@ -496,12 +496,13 @@ test('a video create tells the buyer what is left of the key caps; other request
   const gateway = await startGateway(store, buyer.port)
   try {
     const create = '{"model":"seedance","prompt":"An ant","duration":"5s"}'
-    assert.equal((await request(gateway.port, '/api/v1/video/queue', { method: 'POST', key: capped.secret, body: create })).status, 200)
     assert.equal((await request(gateway.port, '/v1/chat/completions', { method: 'POST', key: capped.secret, body: '{"model":"m"}' })).status, 200)
+    await waitFor(() => gateway.accounting.heldUsdc(capped.key.id) === 0, 2_000)
+    assert.equal((await request(gateway.port, '/api/v1/video/queue', { method: 'POST', key: capped.secret, body: create })).status, 200)
     assert.equal((await request(gateway.port, '/api/v1/video/queue', { method: 'POST', key: open.secret, body: create })).status, 200)
     // A client cannot raise its own cap.
     assert.equal((await request(gateway.port, '/api/v1/video/queue', { method: 'POST', key: open.secret, body: create, headers: { 'x-antseed-max-video-usdc': '99000000' } })).status, 200)
-    assert.deepEqual(buyer.captured.map(({ headers }) => headers['x-antseed-max-video-usdc'] ?? null), ['1500000', null, null, null])
+    assert.deepEqual(buyer.captured.map(({ headers }) => headers['x-antseed-max-video-usdc'] ?? null), [null, '1500000', null, null])
   } finally {
     await gateway.stop()
     await buyer.close()
@@ -509,20 +510,24 @@ test('a video create tells the buyer what is left of the key caps; other request
   }
 })
 
-test('a video create and a status poll hold nothing once answered; only the delivery keeps its hold', async () => {
+test('video creates, polls and deliveries hold no request hold once answered; a job the buyer does not price holds its whole allowance', async () => {
   const { store, cleanup } = tempDataDir()
   const buyer = await videoJobBuyer(0)
   const { key, secret } = store.createKey({ label: 'Video', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: 1_000_000, monthly: null, total: null }, expiresAt: null })
   const gateway = await startGateway(store, buyer.port, 300_000, null, 60_000)
+  const job = videoJobKey('venice-video', 'job-7')
   try {
     assert.equal((await request(gateway.port, '/api/v1/video/queue', { method: 'POST', key: secret, body: '{"model":"seedance","prompt":"An ant"}' })).status, 200)
-    await waitFor(() => gateway.accounting.heldUsdc(key.id) === 0)
+    // No price from the buyer: the $1 the create was allowed stays held for the job.
+    await waitFor(() => gateway.accounting.heldUsdc(key.id) === 1_000_000)
+    // The job's own poll and delivery are admitted although its price fills the cap, and leave no request hold.
     assert.equal((await request(gateway.port, '/api/v1/video/retrieve', { method: 'POST', key: secret, body: '{"model":"seedance","queue_id":"job-7"}' })).status, 200)
-    await waitFor(() => gateway.accounting.heldUsdc(key.id) === 0)
-    // The second retrieve delivers the MP4: it may still be charged, so its hold stays for the grace period.
+    await waitFor(() => gateway.accounting.heldUsdc(key.id, job) === 0)
     assert.equal((await request(gateway.port, '/api/v1/video/retrieve', { method: 'POST', key: secret, body: '{"model":"seedance","queue_id":"job-7"}' })).status, 200)
     await waitFor(() => store.listRequests({ keyIds: null, keyId: key.id }).some((row) => row.video?.action === 'delivery'))
-    assert.equal(gateway.accounting.heldUsdc(key.id), 300_000)
+    // Until the delivery's charge arrives (none does here) the job itself still holds its price.
+    await waitFor(() => gateway.accounting.heldUsdc(key.id, job) === 0)
+    assert.equal(gateway.accounting.heldUsdc(key.id), 1_000_000)
   } finally {
     await gateway.stop()
     await buyer.close()
@@ -539,12 +544,15 @@ test('a video create and a status poll hold nothing once answered; only the deli
  * buyer, one ending in `-bad` is refused as a malformed request, any other is
  * still processing.
  */
-async function pricedVideoBuyer(priceUsdc: number, createDelayMs = 0) {
+async function pricedVideoBuyer(priceUsdc: number, createDelayMs = 0, priceHeader: string | string[] = String(priceUsdc)) {
   const caps: Array<string | null> = []
+  const feed = new SpendAttributionFeed()
+  const retired = { 'x-antseed-video-job-retired': '1' }
   const server = http.createServer((req, res) => {
     if (req.url?.startsWith('/_antseed/attributed-spend')) {
+      const after = Number(new URL(req.url, 'http://localhost').searchParams.get('after') ?? '0')
       res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ ok: true, bootId: 'boot', events: [], next: 0 }))
+      res.end(JSON.stringify({ ok: true, ...feed.page(after) }))
       return
     }
     const chunks: Buffer[] = []
@@ -561,14 +569,14 @@ async function pricedVideoBuyer(priceUsdc: number, createDelayMs = 0) {
           return
         }
         setTimeout(() => {
-          res.writeHead(200, { ...headers, 'content-type': 'application/json', 'x-antseed-video-price-usdc': String(priceUsdc) })
+          res.writeHead(200, { ...headers, 'content-type': 'application/json', 'x-antseed-video-price-usdc': priceHeader })
           res.end(JSON.stringify({ queue_id: body.job }))
         }, createDelayMs)
         return
       }
       if (body.queue_id?.endsWith('-gone') || body.queue_id?.endsWith('-bad')) {
         const gone = body.queue_id.endsWith('-gone')
-        res.writeHead(gone ? 404 : 400, { ...headers, 'content-type': 'application/json' })
+        res.writeHead(gone ? 404 : 400, { ...headers, 'content-type': 'application/json', ...(gone ? retired : {}) })
         res.end(JSON.stringify({ error: gone ? { code: 'video_route_not_found', message: 'Unknown video job' } : { code: 'invalid_required_parameters', message: 'Malformed' } }))
         return
       }
@@ -579,27 +587,33 @@ async function pricedVideoBuyer(priceUsdc: number, createDelayMs = 0) {
         return
       }
       if (body.queue_id?.endsWith('-done')) {
+        // The buyer charges the delivery; its spend reaches the gateway through the feed.
+        feed.track(headers['x-antseed-request-id'], req.headers[SPEND_ATTRIBUTION_HEADER] as string)
+        feed.record({ requestId: headers['x-antseed-request-id'], buyerIdentity: DEFAULT_BUYER_IDENTITY, sellerPeerId: 'seller', amountUsdc: String(priceUsdc), inputTokens: '0', cachedInputTokens: '0', outputTokens: '0', outputImages: '0' })
         res.writeHead(200, { ...headers, 'content-type': 'video/mp4' })
         res.end(Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from('ftypisom'), randomBytes(64)]))
         return
       }
-      res.writeHead(200, { ...headers, 'content-type': 'application/json' })
-      res.end(JSON.stringify({ status: body.queue_id?.endsWith('-fail') ? 'failed' : 'processing' }))
+      const failed = body.queue_id?.endsWith('-fail') === true
+      res.writeHead(200, { ...headers, 'content-type': 'application/json', ...(failed ? retired : {}) })
+      res.end(JSON.stringify({ status: failed ? 'failed' : 'processing' }))
     })
   })
   const port = await listen(server)
-  return { port, caps, close: () => new Promise<void>((resolve) => server.close(() => resolve())) }
+  return { port, caps, close: () => new Promise<void>((resolve) => server.close(() => { feed.close(); resolve() })) }
 }
 
-async function videoGateway(priceUsdc: number, dailyCap: number, createDelayMs = 0) {
+async function videoGateway(priceUsdc: number, dailyCap: number, createDelayMs = 0, priceHeader?: string | string[]) {
   const { store, cleanup } = tempDataDir()
-  const buyer = await pricedVideoBuyer(priceUsdc, createDelayMs)
+  const buyer = await pricedVideoBuyer(priceUsdc, createDelayMs, priceHeader)
   const { key, secret } = store.createKey({ label: 'Video', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: dailyCap, monthly: null, total: null }, expiresAt: null })
+  const other = store.createKey({ label: 'Other', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
   const gateway = await startGateway(store, buyer.port, 100_000, null, 60_000)
   return {
     store, key, buyer, gateway,
     create: (job: string) => request(gateway.port, '/api/v1/video/queue', { method: 'POST', key: secret, body: JSON.stringify({ model: 'seedance', prompt: 'An ant', duration: '8s', job }) }),
-    poll: (job: string) => request(gateway.port, '/api/v1/video/retrieve', { method: 'POST', key: secret, body: JSON.stringify({ model: 'seedance', queue_id: job }) }),
+    poll: (job: string, as: string = secret) => request(gateway.port, '/api/v1/video/retrieve', { method: 'POST', key: as, body: JSON.stringify({ model: 'seedance', queue_id: job }) }),
+    otherSecret: other.secret,
     close: async () => {
       await gateway.stop()
       await buyer.close()
@@ -680,7 +694,7 @@ test('a video download that breaks off keeps the job committed', async () => {
   }
 })
 
-test('a video job that fails stops counting, and a delivered one counts until its charge settles', async () => {
+test('a job the buyer retires stops counting, and a delivered one counts until its charge arrives', async () => {
   const video = await videoGateway(400_000, 1_000_000)
   const held = () => video.gateway.accounting.heldUsdc(video.key.id)
   try {
@@ -689,13 +703,70 @@ test('a video job that fails stops counting, and a delivered one counts until it
     await waitFor(() => held() === 800_000)
     assert.equal((await video.poll('job-fail')).status, 200)
     await waitFor(() => held() === 400_000)
-    // The delivery's request hold takes over the job's price until its spend arrives (none does here).
+    // Delivered: the job still holds its price (no request hold) until the buyer's charge arrives, then the ledger has it.
     assert.equal((await video.poll('job-done')).status, 200)
     await waitFor(() => video.store.listRequests({ keyIds: null, keyId: video.key.id }).some((row) => row.video?.action === 'delivery'))
     assert.equal(held(), 400_000)
-    assert.equal(video.gateway.accounting.heldUsdc(video.key.id, videoJobKey('venice-video', 'job-done')), 400_000, 'a request hold now, no longer a commitment')
+    await video.gateway.feed.pollOnce()
+    assert.equal(held(), 0)
+    assert.equal(video.store.periodSpend(video.key.id).total, 400_000, 'counted once, as spend')
+    // Its owner may download it again (the buyer does not charge twice).
+    assert.equal((await video.poll('job-done')).status, 200)
   } finally {
     await video.close()
+  }
+})
+
+test('only the key that created a video job may retrieve it', async () => {
+  const video = await videoGateway(400_000, 1_000_000)
+  try {
+    assert.equal((await video.create('job-done')).status, 200)
+    const stolen = await video.poll('job-done', video.otherSecret)
+    assert.equal(stolen.status, 404)
+    assert.equal(JSON.parse(stolen.body).error.code, 'video_route_not_found')
+    assert.equal((await video.poll('job-unknown')).status, 404, 'a job this gateway never created is refused too')
+    assert.equal((await video.poll('job-done')).status, 200)
+  } finally {
+    await video.close()
+  }
+})
+
+test('without a single readable price from the buyer, an accepted job holds its whole allowance', async () => {
+  // A seller copy of the price header next to the buyer's arrives joined ("1, 400000"): not a price.
+  for (const header of [['1', '400000'], 'lots']) {
+    const video = await videoGateway(400_000, 1_000_000, 0, header)
+    try {
+      assert.equal((await video.create('job-1')).status, 200)
+      await waitFor(() => video.gateway.accounting.heldUsdc(video.key.id) === 1_000_000)
+    } finally {
+      await video.close()
+    }
+  }
+  // A price above the allowance is held at the allowance.
+  const video = await videoGateway(400_000, 1_000_000, 0, '9000000')
+  try {
+    assert.equal((await video.create('job-1')).status, 200)
+    await waitFor(() => video.gateway.accounting.heldUsdc(video.key.id) === 1_000_000)
+  } finally {
+    await video.close()
+  }
+})
+
+test('a revoked key\'s jobs stop counting against its workspace', () => {
+  const { store, cleanup } = tempDataDir()
+  try {
+    const { key } = store.createKey({ label: 'Video', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
+    const accounting = new GatewayAccounting(store, { holdUsdc: 100_000 })
+    const create = accounting.admit(key)
+    assert.ok(create.ok)
+    accounting.commitVideo(create.tag, videoJobKey('venice-video', 'job-1'), 600_000)
+    accounting.release(create.tag)
+    assert.equal(accounting.heldForWorkspace(key.workspaceId), 600_000)
+    store.revokeKey(key.id)
+    assert.equal(accounting.heldForWorkspace(key.workspaceId), 0)
+    accounting.dispose()
+  } finally {
+    cleanup()
   }
 })
 
@@ -706,6 +777,7 @@ test('a video delivery whose spend has not arrived is pending, like any charged 
   const gateway = await startGateway(store, buyer.port)
   try {
     const retrieve = '{"model":"seedance","queue_id":"job-7"}'
+    await request(gateway.port, '/api/v1/video/queue', { method: 'POST', key: secret, body: '{"model":"seedance","prompt":"An ant"}' })
     await request(gateway.port, '/api/v1/video/retrieve', { method: 'POST', key: secret, body: retrieve })
     await request(gateway.port, '/api/v1/video/retrieve', { method: 'POST', key: secret, body: retrieve })
     const delivery = store.listRequests({ keyIds: null, keyId: key.id }).find((row) => row.video?.action === 'delivery')

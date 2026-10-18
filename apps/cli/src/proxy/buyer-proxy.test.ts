@@ -1589,9 +1589,11 @@ test('a video job that reports failed is retired: later retrieves never reach th
     const failed = await retrieve()
     assert.equal(failed.statusCode, 200)
     assert.equal(JSON.parse(failed.body).status, 'failed')
+    assert.equal(failed.headers['x-antseed-video-job-retired'], '1', 'a gateway may release the job')
     const after = await retrieve()
     assert.equal(after.statusCode, 404, after.body)
     assert.equal(JSON.parse(after.body).error.code, 'video_route_not_found')
+    assert.equal(after.headers['x-antseed-video-job-retired'], '1')
     assert.equal(retrieves, 1, 'the retired job is never sent to the seller again')
     assert.equal(persisted, 2, 'the route is saved when accepted and again when retired')
   }
@@ -1626,6 +1628,33 @@ test('a retrieve queued behind one that retires the job as failed never reaches 
   assert.equal(video.calls.retrieves, 1)
 })
 
+test('a job its seller no longer has is retired; a status still processing is not', async () => {
+  const peer = makePeer('a', ['venice'])
+  peer.providerServiceApiProtocols = { venice: { services: { 'video-model': ['venice-video'] } } }
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+  ;(proxy as any)._persistResourceRoutes = async () => {}
+  ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: SerializedHttpRequest) =>
+    ({ requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ queue_id: 'job' })) })
+  const answers = [
+    // A seller cannot release a job by naming the buyer's own code, or by setting the buyer's marker: only the buyer's retirement counts.
+    { statusCode: 200, headers: { 'content-type': 'application/json', 'X-Antseed-Video-Job-Retired': '1' }, body: { status: 'PROCESSING' } },
+    { statusCode: 404, headers: { 'content-type': 'application/json' }, body: { error: { code: 'video_route_not_found' } } },
+  ]
+  ;(proxy as any)._node.sendRequestStream = async (_peer: PeerInfo, request: SerializedHttpRequest) => {
+    const answer = answers.shift()!
+    return { requestId: request.requestId, statusCode: answer.statusCode, headers: answer.headers, body: Buffer.from(JSON.stringify(answer.body)) }
+  }
+  assert.equal((await invokeProxy(proxy, makeProxyRequest({ path: '/api/v1/video/queue', body: { model: 'video-model', prompt: 'cat', duration: '5s' } }))).statusCode, 200)
+  const retrieve = () => invokeProxy(proxy, makeProxyRequest({ method: 'POST', path: '/api/v1/video/retrieve', body: { model: 'video-model', queue_id: 'job' } }))
+  const processing = await retrieve()
+  assert.equal(processing.headers['x-antseed-video-job-retired'], undefined)
+  const gone = await retrieve()
+  assert.equal(gone.statusCode, 404)
+  assert.equal(gone.headers['x-antseed-video-job-retired'], '1', 'the buyer retired it: the seller no longer has it')
+  assert.equal((await retrieve()).statusCode, 404)
+  assert.equal(answers.length, 0, 'the retired job is not sent to the seller again')
+})
+
 test('a failed job whose retirement cannot be saved is reported as unknown and kept', async () => {
   let failWrites = false
   const video = failingVideoProxy(async () => { if (failWrites) throw new Error('disk full') }, async () => ({ status: 'FAILED' }))
@@ -1634,6 +1663,7 @@ test('a failed job whose retirement cannot be saved is reported as unknown and k
   const unsaved = await video.retrieve()
   assert.equal(unsaved.statusCode, 200)
   assert.deepEqual([JSON.parse(unsaved.body).status, JSON.parse(unsaved.body).retryable], ['unknown', true])
+  assert.equal(unsaved.headers['x-antseed-video-job-retired'], undefined, 'not retired, so a gateway keeps the job held')
   // The route was put back, so the job is still polled (and retired once the write succeeds).
   failWrites = false
   assert.equal(JSON.parse((await video.retrieve()).body).status, 'failed')

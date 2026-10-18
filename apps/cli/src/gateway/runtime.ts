@@ -155,6 +155,7 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
     holdUsdc: parseBaseUnits(config.payments?.maxPerRequestUsdc ?? DEFAULT_MAX_PER_REQUEST_USDC),
     // The buyer's limit for one video, read from the same config the buyer runs with.
     ...(config.payments?.maxVideoRequestUsdc ? { maxVideoRequestUsdc: parseBaseUnits(config.payments.maxVideoRequestUsdc) } : {}),
+    ...(options.onLog ? { onLog: options.onLog } : {}),
   })
   const spendFeed = new SpendFeedPoller({
     buyerPort,
