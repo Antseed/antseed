@@ -11,10 +11,12 @@
  * HTTP status.
  */
 import type { RoutingPolicy } from '../../routing-policy/policy.js'
+import type { RouteSelection, ServedSelection } from '../../proxy/route-selection.js'
 import type { InstallKind } from '../../update/install-method.js'
 import type { RootUpdateProgress } from '../../update/root-updater.js'
 
 export type { RoutingPolicy, ModelRoute, RoutingSort } from '../../routing-policy/policy.js'
+export type { RouteSelection, ServedSelection } from '../../proxy/route-selection.js'
 export type { OperatorRelation, OperatorState, OperatorAuthorization, WorkspaceOperatorSummary } from './operator-types.js'
 
 export const CONSOLE_BASE_PATH = '/console'
@@ -372,6 +374,8 @@ export interface RequestLogEntry {
 
 /** GET /requests/:tag → one entry, with bodies when content logging was on for it. */
 export interface RequestDetail extends RequestLogEntry {
+  /** Model-routed requests: why automatic routing picked the seller that served it. Null for pinned or older requests. */
+  routeSelection: ServedSelection | null
   requestBody: string | null
   responseBody: string | null
 }
@@ -817,6 +821,8 @@ export interface RoutePreview {
     inputUsdPerMillion: number | null
     outputUsdPerMillion: number | null
     trustScore: number | null
+    /** Eligible sellers: the numbers automatic routing ranks them by. Null when ineligible. */
+    selection: RouteSelection | null
   }>
 }
 

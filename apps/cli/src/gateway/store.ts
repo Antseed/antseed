@@ -19,6 +19,7 @@ import {
 } from './limits.js'
 import { splitPinnedModel } from './pinned-model.js'
 import { MIGRATIONS } from './store-migrations.js'
+import { parseServedSelection, type ServedSelection } from '../proxy/route-selection.js'
 import { requestVideoJob } from './video-jobs.js'
 
 export type ApiKeySource = 'created' | 'tunnel-env'
@@ -297,6 +298,8 @@ export interface RequestOutcome {
   router?: RequestRouter | null
   /** The model (service) that answered, as the buyer reported it. */
   servedModel?: string | null
+  /** Model-routed requests: why automatic routing picked the seller that served it. */
+  routeSelection?: ServedSelection | null
 }
 
 /** The routing service that ranked a request, and which of its recommendations served it. */
@@ -435,6 +438,7 @@ export interface RequestLogRow {
 
 /** One request with its bodies (null unless content logging was on for it). */
 export interface RequestDetailRow extends RequestLogRow {
+  routeSelection: ServedSelection | null
   requestBody: string | null
   responseBody: string | null
 }
@@ -1190,13 +1194,15 @@ export class GatewayStore {
         video_job_id = COALESCE(?, video_job_id),
         video_action = CASE WHEN ? = 1 AND video_action = 'poll' THEN 'delivery' ELSE video_action END,
         router_peer_id = COALESCE(?, router_peer_id), router_service = COALESCE(?, router_service),
-        router_rank = COALESCE(?, router_rank), served_model = COALESCE(?, served_model)
+        router_rank = COALESCE(?, router_rank), served_model = COALESCE(?, served_model),
+        route_selection = COALESCE(?, route_selection)
       WHERE tag = ?
     `).run(
       outcome.sellerPeerId ?? null, outcome.sellerPeerId ?? null, routerPeerId, routerPeerId,
       outcome.latencyMs ?? null, outcome.firstTokenMs ?? null, outcome.tokensPerSecond ?? null,
       outcome.endUser ?? null, outcome.servedFree ? 1 : 0, outcome.videoJobId?.slice(0, 256) ?? null, outcome.videoDelivered ? 1 : 0,
-      routerPeerId, router?.service?.slice(0, 200) ?? null, router?.rank ?? null, outcome.servedModel?.slice(0, 200) ?? null, tag,
+      routerPeerId, router?.service?.slice(0, 200) ?? null, router?.rank ?? null, outcome.servedModel?.slice(0, 200) ?? null,
+      outcome.routeSelection ? JSON.stringify(outcome.routeSelection) : null, tag,
     )
     // Spend can reach the ledger before the response names its router.
     if (routerPeerId) {
@@ -1387,7 +1393,7 @@ export class GatewayStore {
           r.member_id, r.end_user, r.method, r.path, r.model, r.status, r.seller_peer_id, r.latency_ms, r.first_token_ms, r.tokens_per_second, r.error_code, r.error_message,
           r.served_free, r.usage_input_tokens, r.usage_cached_input_tokens, r.usage_output_tokens, r.video_action, r.video_job_id,
           r.router_peer_id, r.router_service, r.router_rank, r.served_model
-          ${withBodies ? ', r.request_body, r.response_body' : ''}
+          ${withBodies ? ', r.request_body, r.response_body, r.route_selection' : ''}
         FROM gateway_requests r LEFT JOIN api_keys k ON k.id = r.key_id
         ${whereClause(where)}
         ORDER BY r.started_at DESC, r.tag DESC LIMIT ?
@@ -1458,7 +1464,11 @@ export class GatewayStore {
         jobId: row['video_job_id'] as string | null,
         chargedUsdc: (row['video_charged'] as number | null) ?? null,
       },
-      ...(withBodies ? { requestBody: row['request_body'] as string | null, responseBody: row['response_body'] as string | null } : {}),
+      ...(withBodies ? {
+        routeSelection: storedRouteSelection(row['route_selection']),
+        requestBody: row['request_body'] as string | null,
+        responseBody: row['response_body'] as string | null,
+      } : {}),
       }
     })
   }
@@ -2251,5 +2261,14 @@ function depositRecord(row: DepositRow): DepositRecord {
       ? { byId: row.approved_by_id, byLabel: row.approved_by_label, at: row.approved_at, note: row.approval_note }
       : null,
     recordedAt: row.recorded_at,
+  }
+}
+
+function storedRouteSelection(value: unknown): ServedSelection | null {
+  if (typeof value !== 'string') return null
+  try {
+    return parseServedSelection(JSON.parse(value))
+  } catch {
+    return null
   }
 }

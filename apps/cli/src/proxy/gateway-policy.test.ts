@@ -8,6 +8,7 @@ import type { PeerInfo, SerializedHttpRequest } from '@antseed/node'
 import { BuyerProxy, type BuyerBalanceReader, type BuyerProxyConfig } from './buyer-proxy.js'
 import { BUYER_IDENTITY_HEADER } from './request-utils.js'
 import { SPEND_ATTRIBUTION_HEADER } from './spend-attribution.js'
+import { decodeServedSelection, ROUTE_SELECTION_HEADER, type RouteSelection } from './route-selection.js'
 import {
   GATEWAY_CONTROL_HEADER,
   GATEWAY_CONTROL_SECRET_FILE,
@@ -250,8 +251,11 @@ test('route-preview shares routing logic and explains ineligible sellers', async
   assert.equal(body.model, 'gpt-5')
   const byId = new Map(body.candidates.map((candidate) => [candidate['peerId'], candidate]))
   assert.deepEqual(Object.keys(body.candidates[0]!).sort(), [
-    'displayName', 'eligible', 'inputUsdPerMillion', 'outputUsdPerMillion', 'peerId', 'rank', 'reasons', 'trustScore',
+    'displayName', 'eligible', 'inputUsdPerMillion', 'outputUsdPerMillion', 'peerId', 'rank', 'reasons', 'selection', 'trustScore',
   ])
+  // Only eligible sellers carry the numbers routing ranked them by.
+  assert.equal(byId.get(pricey.peerId)?.['selection'], null)
+  assert.equal((byId.get(cheap.peerId)?.['selection'] as { coolingDown?: boolean } | null)?.coolingDown, true)
   assert.equal(byId.get(pricey.peerId)?.['eligible'], false)
   assert.deepEqual(byId.get(pricey.peerId)?.['reasons'], ['input price $9 over cap $5'])
   assert.deepEqual(byId.get(tee.peerId)?.['reasons'], ['trust 40 below 60'])
@@ -265,6 +269,80 @@ test('route-preview shares routing logic and explains ineligible sellers', async
 
   const bad = await fetch(`${h.url}/_antseed/route-preview?model=gpt-5`, { headers: { [GATEWAY_CONTROL_HEADER]: SECRET, [ROUTING_POLICY_HEADER]: '!!' } })
   assert.equal(bad.status, 400)
+})
+
+test('route-preview explains each eligible seller with the numbers routing ranked it by', async (t) => {
+  const twin = makePeer('d', { input: 1, output: 1, trust: 99 })
+  const h = await startHarness(t, [cheap, twin], {}, true)
+  const proxy = h.proxy as any
+  for (let i = 0; i < 6; i += 1) proxy._recordSellerSuccess(cheap.peerId, 'gpt-5', { firstTokenMs: 400, streamMs: 2000, outputTokens: 200, streamed: true })
+  for (let i = 0; i < 4; i += 1) proxy._recordSellerFailure(twin.peerId, 'other-model', 'seller-5xx')
+
+  const res = await fetch(`${h.url}/_antseed/route-preview?model=gpt-5`, { headers: withPolicy({}) })
+  const body = await res.json() as { candidates: Array<{ peerId: string; rank: number | null; selection: RouteSelection | null }> }
+  const byId = new Map(body.candidates.map((candidate) => [candidate.peerId, candidate]))
+  const best = byId.get(cheap.peerId)!.selection!
+  assert.equal(byId.get(cheap.peerId)!.rank, 1)
+  assert.equal(best.record, 'model')
+  assert.ok(best.observations > 5.9 && best.observations <= 6)
+  assert.ok(best.successRate > 0.8)
+  assert.equal(best.firstTokenMs, 400)
+  assert.equal(best.tokensPerSecond, 100)
+  assert.equal(best.failing, false)
+  assert.equal(best.stale, false)
+  // Failures on its other models count against the twin at half weight.
+  const borrowed = byId.get(twin.peerId)!.selection!
+  assert.equal(borrowed.record, 'other-models')
+  assert.ok(borrowed.successRate < best.successRate)
+  assert.equal(borrowed.lastFailureReason, 'seller-5xx')
+  assert.ok(borrowed.expectedCostUsd > best.expectedCostUsd)
+  // Without routing preferences the buyer orders by trust and spreads nothing.
+  assert.equal(best.ordering, 'trust')
+  assert.equal(best.poolSize, 0)
+  assert.equal(best.sharesTraffic, false)
+  const sorted = await fetch(`${h.url}/_antseed/route-preview?model=gpt-5`, { headers: withPolicy({ sort: 'price' }) })
+  const sortedBody = await sorted.json() as { candidates: Array<{ selection: RouteSelection | null }> }
+  assert.ok(sortedBody.candidates.every((candidate) => candidate.selection?.ordering === 'price'))
+})
+
+test('route-preview shows the sellers that share a model\'s traffic and their share', async (t) => {
+  const twin = makePeer('d', { input: 1, output: 1, trust: 99 })
+  const h = await startHarness(t, [cheap, twin], { adaptiveRouting: { explorationRate: 0 }, routingPreferences: { ...prefs60, minTrustScore: 0 } })
+  const res = await fetch(`${h.url}/_antseed/route-preview?model=gpt-5`, { headers: withPolicy({}) })
+  const body = await res.json() as { candidates: Array<{ selection: RouteSelection | null }> }
+  const shares = body.candidates.map((candidate) => candidate.selection!)
+  assert.ok(shares.every((selection) => selection.ordering === 'expected-cost' && selection.sharesTraffic && selection.poolSize === 2))
+  assert.ok(Math.abs(shares.reduce((sum, selection) => sum + selection.trafficShare!, 0) - 1) < 1e-9)
+})
+
+test('a served request names its seller\'s rank and how it was picked, and a failover says so', async (t) => {
+  const third = makePeer('c', { input: 0.5, output: 0.5, trust: 99 })
+  const h = await startHarness(t, [cheap, pricey, third])
+  const ok = await chat(h, withPolicy({}))
+  const served = decodeServedSelection(ok.headers.get(ROUTE_SELECTION_HEADER) ?? undefined)
+  assert.equal(served?.rank, 1)
+  assert.equal(served?.attempt, 0)
+  assert.equal(served?.pick, 'order')
+  assert.equal(served?.ordering, 'trust')
+  assert.equal(served?.of, 3)
+
+  ;(h.proxy as any)._node.sendRequest = async (peer: PeerInfo, request: SerializedHttpRequest) => {
+    const status = peer.peerId === pricey.peerId ? 503 : 200
+    return { requestId: request.requestId, statusCode: status, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
+  }
+  const failover = await chat(h, withPolicy({ modelRoutes: { 'gpt-5': { peerIds: [pricey.peerId, cheap.peerId] } } }))
+  const next = decodeServedSelection(failover.headers.get(ROUTE_SELECTION_HEADER) ?? undefined)
+  assert.equal(next?.rank, 2)
+  assert.equal(next?.attempt, 1)
+  assert.equal(next?.pick, 'failover')
+  assert.equal(next?.routeChainPosition, 2)
+})
+
+test('a malformed or oversized route-selection header decodes to null', () => {
+  assert.equal(decodeServedSelection(undefined), null)
+  assert.equal(decodeServedSelection('!!'), null)
+  assert.equal(decodeServedSelection(Buffer.from(JSON.stringify({ rank: 1 })).toString('base64url')), null)
+  assert.equal(decodeServedSelection('a'.repeat(4096)), null)
 })
 
 test('requireTee only admits sellers advertising the TEE verifier, on automatic, pinned and preview paths', async (t) => {

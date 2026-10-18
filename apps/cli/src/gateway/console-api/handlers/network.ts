@@ -1,11 +1,11 @@
 /** Sellers the buyer knows about, and which of them a request would route to. */
 import { resolvePolicy } from '../../policy-resolver.js'
 import { buyerLimits, listNetworkModels, listNetworkPeers, listNetworkRouters, previewRoute, type PreviewTarget } from '../../services/network.js'
-import { canSeeWorkspace, requireOrgAdmin } from '../access.js'
+import { audit, canSeeWorkspace, requireOrgAdmin } from '../access.js'
 import type { ConsoleDeps } from '../deps.js'
 import { ConsoleError, type ConsoleRequest, type ConsoleRouter } from '../router.js'
 import type { BuyerLimits, NetworkModel, NetworkRouter, Peer, RoutePreview } from '../types.js'
-import { defaultBuyerClient, type BuyerClient } from './network-buyer.js'
+import { buyerJson, defaultBuyerClient, type BuyerClient } from './network-buyer.js'
 
 /** Seams for tests; production uses the defaults. */
 export interface NetworkRouteOverrides {
@@ -67,4 +67,18 @@ export function registerNetworkRoutes(router: ConsoleRouter, deps: ConsoleDeps, 
   /** The buyer's hard limits, which apply to every key whatever its policy. */
   router.add('GET', '/routing/buyer-limits', async (): Promise<BuyerLimits> => buyerLimits(deps.configPath, buyer),
     { allow: ['member', 'token', 'key'] })
+
+  /**
+   * Forgets what the buyer has seen of a seller (successes, failures, speed),
+   * so automatic routing gives it a fresh start. Org admins only.
+   */
+  router.add('POST', '/routing/seller-history/reset', async (request): Promise<{ ok: true }> => {
+    orgAdmin(request.principal, deps.store)
+    const body = request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {}
+    const peerId = typeof body['peerId'] === 'string' ? body['peerId'].trim().toLowerCase().replace(/^0x/, '') : ''
+    if (!/^[0-9a-f]{40}$/.test(peerId)) throw new ConsoleError(400, 'invalid_peer', 'peerId must be a 40-character hex peer id.')
+    await buyerJson(buyer, '/_antseed/peer-health/clear', { method: 'POST', body: { peerId } })
+    audit(deps, request, 'routing.seller_history.reset', { kind: 'peer', id: peerId, label: null }, {})
+    return { ok: true }
+  })
 }

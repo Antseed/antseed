@@ -1,8 +1,49 @@
 import type {
-  AdminToken, ApiKey, AuditEntry, AuthConfig, Channel, ChainInfo, Invite, Member, NetworkModel, NetworkModelOffer, NetworkRouter, Peer, PeerList, Preset, RequestDetail, RoutingPolicy, Settings, Workspace, WorkspaceRole,
+  AdminToken, ApiKey, AuditEntry, AuthConfig, Channel, ChainInfo, Invite, Member, NetworkModel, NetworkModelOffer, NetworkRouter, Peer, PeerList, Preset, RequestDetail, RoutingPolicy, Settings, Workspace, WorkspaceRole, RouteSelection, ServedSelection,
 } from '../api/types'
 
 /** Obvious fake peer ids for the mock: 0xfa1e…0001 etc. */
+
+/** What the fake buyer reports of its seller at `rank` (1-based) among `of`: the top two share traffic, the fourth fails lately. */
+export function mockRouteSelection(rank: number, of: number, seed: number, now = Date.now()): RouteSelection {
+  const pool = Math.min(2, of)
+  const failing = rank === 4
+  const success = failing ? 0.38 : [0.97, 0.93, 0.88][rank - 1] ?? 0.8
+  const fresh = rank === 3 && seed % 2 === 0
+  return {
+    expectedCostUsd: (0.0011 + rank * 0.0004) / success,
+    expectedPriceUsd: 0.0011 + rank * 0.0004,
+    expectedSeconds: 2.4 + rank * 0.6,
+    successRate: fresh ? 0.8 : success,
+    observations: fresh ? 0 : Math.max(1, 34 - rank * 7 + (seed % 5)),
+    record: fresh ? 'none' : rank === 3 ? 'other-models' : 'model',
+    firstTokenMs: fresh ? null : 280 + rank * 140,
+    tokensPerSecond: fresh ? null : 92 - rank * 14,
+    lastSuccessAt: fresh ? null : now - rank * 40_000,
+    lastFailureAt: failing ? now - 3 * 60_000 : rank === 2 ? now - 25 * 60_000 : null,
+    lastFailureReason: failing ? 'seller 503' : rank === 2 ? 'timeout before first token' : null,
+    failing,
+    coolingDown: false,
+    stale: fresh,
+    ordering: 'expected-cost',
+    sharesTraffic: rank <= pool && pool > 1,
+    trafficShare: rank <= pool && pool > 1 ? (rank === 1 ? 0.62 : 0.38) : null,
+    poolSize: pool,
+    channel: rank === 3 ? 'new' : 'open',
+    inFlight: rank === 1 ? 2 : 0,
+    maxConcurrency: 8,
+    routeChainPosition: null,
+  }
+}
+
+const PICKS: Array<ServedSelection['pick']> = ['spread', 'spread', 'conversation', 'spread', 'failover', 'spread', 'exploration', 'spread']
+
+function servedSelection(index: number, now: number): ServedSelection {
+  const pick = PICKS[index % PICKS.length]!
+  const rank = pick === 'failover' ? 2 : pick === 'exploration' ? 3 : index % 3 === 0 ? 2 : 1
+  return { ...mockRouteSelection(rank, 4, index, now), rank, of: 4, attempt: pick === 'failover' ? 1 : 0, pick }
+}
+
 export const fakePeerId = (index: number) => `0xfa1e${'0'.repeat(32)}${String(index).padStart(4, '0')}`
 export const fakeAddress = (index: number) => `0x${'00'.repeat(18)}${String(index).padStart(4, '0')}`
 
@@ -125,7 +166,7 @@ export function seed() {
       return {
         tag: `req_${String(index).padStart(5, '0')}`, startedAt, finishedAt: startedAt + 60, keyId: k.id, keyLabel: k.label, workspaceId: k.workspaceId, memberId: k.ownerMemberId,
         endUser: null, method: 'GET', path: '/v1/models', model: null, status: 200, sellerPeerId: null, latencyMs: 60, firstTokenMs: null, tokensPerSecond: null, spent: null,
-        inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, errorCode: null, errorMessage: null, requestBody: null, responseBody: null,
+        inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, errorCode: null, errorMessage: null, routeSelection: null, requestBody: null, responseBody: null,
       }
     }
     return {
@@ -144,6 +185,7 @@ export function seed() {
       ...(servedFree ? { servedFree: true } : {}),
       errorCode: failed ? 'seller_unavailable' : rankingFailed ? 'routing_error' : null,
       errorMessage: failed ? 'No seller accepted the request in time (fake seller timed out).' : rankingFailed ? 'Selected router returned no eligible recommendation' : null,
+      routeSelection: routed || failed || rankingFailed ? null : servedSelection(index, now),
       requestBody: index % 6 === 0 ? JSON.stringify({ model: models[index % models.length], messages: [{ role: 'user', content: 'Summarise this fake ticket.' }] }) : null,
       responseBody: index % 6 === 0 && !failed ? JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'A short fake summary.' } }] }) : null,
     }

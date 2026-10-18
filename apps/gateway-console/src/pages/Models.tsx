@@ -1,47 +1,32 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { BrandIcon, Button, DataTable, IconButton, TextField, modelFamilyLabel } from '@antseed/ui'
-import type { NetworkModel, NetworkModelOffer, NetworkRouter, PeerTeeScope } from '../api/types'
+import { api } from '../api'
+import type { NetworkModel, NetworkRouter } from '../api/types'
+import { useConsole } from '../app/context'
 import { ApiCall } from '../components/ApiCall'
+import { context, ModelDetails, modelTeeScope, score } from '../components/ModelDetails'
 import { CopyIdButton, useCopy } from '../components/copy-actions'
 import { FilterMenu, type FilterOption } from '../components/FilterMenu'
 import { Icon } from '../components/icons'
 import { TeeBadge } from '../components/TeeBadge'
 import { VerificationLinks } from '../components/VerificationLinks'
-import { PanelRow, PanelSection, SplitView, type SidePanelContent } from '../components/SidePanel'
-import { Badge, CodeBlock, CopyButton, DetailList, EmptyState, LoadingRows, Mono, PageHeader, PageLink, Panel, QueryView, SelectField } from '../components/ui'
+import { PanelSection, SplitView, type SidePanelContent } from '../components/SidePanel'
+import { Badge, CodeBlock, CopyButton, DetailList, EmptyState, LoadingRows, Mono, PageHeader, PageLink, Panel, QueryView } from '../components/ui'
 import {
   CATALOG_TYPE_LABELS, catalogEntries, catalogFacets, EMPTY_CATALOG_FILTER, entryBrand, entryInputPrice, entryName, entrySellers, entryType,
   favoriteEntries, filterActive, filterCatalog, type CatalogEntry, type CatalogFilter, type CatalogType,
 } from '../lib/catalog'
-import { formatLatency, formatNumber, formatPriceRange, formatSpeed, formatTokens, formatUsd, shortId } from '../lib/format'
-import { CAPABILITY_LABELS, findModel, MODEL_TYPE_LABELS, priceSummary } from '../lib/models'
+import { formatNumber, formatPriceRange, formatUsd, shortId } from '../lib/format'
+import { findModel } from '../lib/models'
 import { panelPath, panelSelection } from '../lib/nav'
-import { useFavorites, useModels, useRouters, useToggleFavorite } from '../lib/queries'
+import { qk, useFavorites, useModels, useRouters, useToggleFavorite } from '../lib/queries'
 import { navigate, useLocation } from '../lib/router'
-import { modelCallFormat, pinnedModelId } from '../lib/snippets'
 import { loadStored, saveStored } from '../lib/stored'
 
 const FILTER_KEY = 'antseed-console-models:filter'
 /** Shown at the top while nothing is filtered, like the desktop's Favorites frame. */
 const FAVORITES_LABEL = 'Favorites'
-
-function score(value: number | null): string {
-  return value === null ? '—' : String(Math.round(value))
-}
-
-function context(value: number | null): string {
-  return value === null ? '—' : formatTokens(value)
-}
-
-/** The best TEE any seller of the model has verified. */
-function modelTeeScope(model: NetworkModel): PeerTeeScope | null {
-  if (model.fullTeeSellers > 0) return 'end-to-end'
-  return model.offers.some((offer) => offer.teeScope === 'seller-node') ? 'seller-node' : null
-}
-
-function offerName(offer: NetworkModelOffer): string {
-  return offer.displayName ?? shortId(offer.peerId, 8, 4)
-}
 
 function routerSeller(router: NetworkRouter): string {
   return router.sellerName ?? shortId(router.peerId, 8, 4)
@@ -126,7 +111,7 @@ export default function Models() {
       : undefined,
     body: models.isLoading || routers.isLoading ? <LoadingRows rows={6} />
       : selectedRouter ? <RouterPanelBody key={selectedRouter.id} router={selectedRouter} />
-      : selectedModel ? <ModelPanelBody key={selectedModel.id} model={selectedModel} />
+      : selectedModel ? <ModelsPageDetails key={selectedModel.id} model={selectedModel} />
       : <EmptyState icon={<Icon.models size={18} />} title="Model not found" body={`No provider on the network offers ${selectedId} right now.`} />,
   }
 
@@ -231,93 +216,15 @@ export default function Models() {
   )
 }
 
-/** `''` routes automatically; otherwise the `<peerId>:<serviceId>` of the pinned offer. */
-type Route = string
-
-function offerKey(offer: NetworkModelOffer): string {
-  return `${offer.peerId}:${offer.serviceId}`
-}
-
-/** The side panel for one model: what it is, who offers it, and how to call it. */
-function ModelPanelBody({ model }: { model: NetworkModel }) {
-  const [route, setRoute] = useState<Route>('')
-  const pinned = model.offers.find((offer) => offerKey(offer) === route) ?? null
-  const callModel = pinned ? pinnedModelId(pinned.peerId, pinned.serviceId) : model.id
-  const format = modelCallFormat(model.type, pinned)
-  const perImage = model.offers.some((offer) => offer.usdPerImage !== null)
-
-  return (
-    <>
-      <div className="gc-stack gc-stack--tight">
-        <span className="gc-seller__meta">
-          <span className="gc-peer-id"><Mono title={model.id}>{model.id}</Mono><CopyButton iconOnly value={model.id} label="Copy model id" /></span>
-          <Badge>{MODEL_TYPE_LABELS[model.type]}</Badge>
-          {model.free && <Badge tone="success">Free</Badge>}
-          <TeeBadge tee={model.teeSellers > 0} scope={modelTeeScope(model)} />
-        </span>
-        <DetailList items={[
-          ['Context', context(model.contextLength)],
-          ['Capabilities', model.capabilities.length
-            ? <span className="gc-badges">{model.capabilities.map((capability) => <Badge key={capability}>{CAPABILITY_LABELS[capability]}</Badge>)}</span>
-            : '—'],
-          ['Tags', model.tags.length ? <span className="gc-badges">{model.tags.map((tag) => <Badge key={tag}>{tag}</Badge>)}</span> : '—'],
-          ['Aliases', model.aliases.length ? <Mono>{model.aliases.join(', ')}</Mono> : '—'],
-          ...(perImage ? [] : [
-            ['Input $/M', formatPriceRange(model.inputUsdPerMillion)] as [string, string],
-            ['Output $/M', formatPriceRange(model.outputUsdPerMillion)] as [string, string],
-          ]),
-        ]} />
-      </div>
-
-      <PanelSection title={`Providers (${model.offers.length})`}>
-        {model.offers.length === 0 ? <p className="gc-fineprint">No provider offers this model right now.</p> : (
-          <ul className="gc-panel-rows" aria-label="Providers offering this model">
-            {model.offers.map((offer) => {
-              const id = pinnedModelId(offer.peerId, offer.serviceId)
-              const on = route === offerKey(offer)
-              return (
-                <PanelRow key={offerKey(offer)} selected={on}
-                  title={<PageLink to={panelPath('providers', offer.peerId)}>{offerName(offer)}</PageLink>}
-                  meta={<>
-                    <span>{priceSummary(offer)}</span>
-                    <span>Trust {score(offer.trustScore)}</span>
-                    {offer.firstTokenMsP50 !== null && <span>{formatLatency(offer.firstTokenMsP50)} first token</span>}
-                    {offer.tokensPerSecondP50 !== null && <span>{formatSpeed(offer.tokensPerSecondP50)}</span>}
-                    {offer.serviceId !== model.id && <Mono>{offer.serviceId}</Mono>}
-                  </>}
-                  badges={(offer.verificationLinks?.length || offer.tee || offer.free) && (
-                    <div className="gc-badges">
-                      <VerificationLinks links={offer.verificationLinks} />
-                      <TeeBadge tee={offer.tee} scope={offer.teeScope} />
-                      {offer.free && <Badge tone="success">Free</Badge>}
-                    </div>
-                  )}
-                  actions={<>
-                    <CopyButton iconOnly value={id} label={`Copy ${offerName(offer)}'s model id (peer@model)`} />
-                    <Button size="sm" variant={on ? 'outline' : 'ghost'} aria-pressed={on} title="Use this provider in the API call below"
-                      onClick={() => setRoute(on ? '' : offerKey(offer))}>{on ? 'Pinned' : 'Pin'}</Button>
-                  </>} />
-              )
-            })}
-          </ul>
-        )}
-      </PanelSection>
-
-      <PanelSection title="API call"
-        actions={model.offers.length > 0 && (
-          <SelectField size="sm" aria-label="Route the call" value={route} onChange={setRoute}
-            options={[{ value: '', label: 'Best provider (automatic)' }, ...model.offers.map((offer) => ({ value: offerKey(offer), label: offerName(offer) }))]} />
-        )}>
-        <p className="gc-fineprint">
-          {pinned
-            ? <>Pinned to {offerName(pinned)} with <code>{shortId(callModel, 10, 12)}</code>.</>
-            : <>The gateway picks the best provider for <code>{model.id}</code> under your routing policy.</>}
-        </p>
-        <ApiCall id="gc-model-call" model={callModel} format={format}
-          unsupported={`${MODEL_TYPE_LABELS[model.type]} models are not served through the gateway's /v1 API.`} />
-      </PanelSection>
-    </>
-  )
+/** A model's panel on the Models page, with how automatic routing picks its sellers for this workspace. */
+function ModelsPageDetails({ model }: { model: NetworkModel }) {
+  const { workspace } = useConsole()
+  const preview = useQuery({
+    queryKey: qk.routePreview({ model: model.id, workspace: workspace.id }),
+    queryFn: () => api.network.routePreview({ model: model.id, workspace: workspace.id }),
+    staleTime: 30_000,
+  })
+  return <ModelDetails model={model} preview={preview.data} previewLoading={preview.isLoading} />
 }
 
 /** The routing setting most routers expose, shown with a default the request can override. */

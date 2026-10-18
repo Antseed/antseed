@@ -122,6 +122,7 @@ before(async () => {
   buyer = await startFakeBuyer({
     'GET /_antseed/peers': () => (peersDown ? { status: 500, body: { error: 'boom' } } : { body: PEERS_BODY }),
     'GET /_antseed/peer-health': () => ({ body: HEALTH_BODY }),
+    'POST /_antseed/peer-health/clear': () => ({ body: { ok: true } }),
     'GET /v1/models': (req) => modelsStatus !== 200
       ? { status: modelsStatus, body: { error: 'Buyer is not ready yet.' } }
       : { body: new URL(req.url, 'http://x').searchParams.get('type') === 'router' ? ROUTERS_BODY : MODELS_BODY },
@@ -133,7 +134,7 @@ before(async () => {
         model: new URL(req.url, 'http://x').searchParams.get('model'),
         candidates: [
           { peerId: PEER_A, displayName: null, rank: 1, eligible: true, reasons: ['cheapest'], inputUsdPerMillion: 0.5, outputUsdPerMillion: 1.5, trustScore: null },
-          { peerId: PEER_C, displayName: 'Named By Buyer', rank: null, eligible: false, reasons: ['blocked by workspace'], inputUsdPerMillion: null, outputUsdPerMillion: null, trustScore: 40 },
+          { peerId: PEER_C, displayName: 'Named By Buyer', rank: null, eligible: false, reasons: ['blocked by workspace'], inputUsdPerMillion: null, outputUsdPerMillion: null, trustScore: 40, selection: null },
         ],
         buyer: { minReputation: 40, requireVerified: true },
       },
@@ -146,7 +147,9 @@ after(async () => {
 })
 
 const KEY_WORKSPACES: Record<string, string> = { key_team: 'ws_team', key_other: 'ws_other' }
+const audits: string[] = []
 const store = {
+  recordAudit: (entry: { action: string; target: { id: string | null } | null }) => { audits.push(`${entry.action} ${entry.target?.id}`) },
   peerStats: (since: number) => {
     assert.equal(since, NOW - 24 * 60 * 60 * 1000)
     return [{ peerId: PEER_A, requests: 17, latencyMsP50: 840, firstTokenMsP50: 300, tokensPerSecondP50: 55.5 }]
@@ -412,7 +415,7 @@ test('GET routers asks the buyer for routing services without a policy', async (
 
 test('candidate enrichment fills names and trust from the peer list', () => {
   const candidates = enrichCandidates([{ peerId: PEER_A, eligible: true, reasons: [] }, { eligible: true }], PEERS_BODY)
-  assert.deepEqual(candidates, [{ peerId: PEER_A, displayName: 'Fake TEE Seller', rank: null, eligible: true, reasons: [], inputUsdPerMillion: null, outputUsdPerMillion: null, trustScore: 72 }])
+  assert.deepEqual(candidates, [{ peerId: PEER_A, displayName: 'Fake TEE Seller', rank: null, eligible: true, reasons: [], inputUsdPerMillion: null, outputUsdPerMillion: null, trustScore: 72, selection: null }])
 })
 
 test('GET route-preview sends the resolved policy and enriches candidates', async () => {
@@ -424,12 +427,38 @@ test('GET route-preview sends the resolved policy and enriches candidates', asyn
   assert.deepEqual(preview.policy, { allowedModels: ['open-model-a'], blockedPeerIds: [PEER_C], sort: 'price' })
   assert.deepEqual(preview.sources.map((source) => source.level), ['buyer', 'gateway', 'workspace'])
   assert.deepEqual(preview.candidates, [
-    { peerId: PEER_A, displayName: 'Fake TEE Seller', rank: 1, eligible: true, reasons: ['cheapest'], inputUsdPerMillion: 0.5, outputUsdPerMillion: 1.5, trustScore: 72 },
-    { peerId: PEER_C, displayName: 'Named By Buyer', rank: null, eligible: false, reasons: ['blocked by workspace'], inputUsdPerMillion: null, outputUsdPerMillion: null, trustScore: 40 },
+    { peerId: PEER_A, displayName: 'Fake TEE Seller', rank: 1, eligible: true, reasons: ['cheapest'], inputUsdPerMillion: 0.5, outputUsdPerMillion: 1.5, trustScore: 72, selection: null },
+    { peerId: PEER_C, displayName: 'Named By Buyer', rank: null, eligible: false, reasons: ['blocked by workspace'], inputUsdPerMillion: null, outputUsdPerMillion: null, trustScore: 40, selection: null },
   ])
   const sent = lastRequest(buyer, (url) => url.startsWith('/_antseed/route-preview'))
   assert.equal(sent?.url, '/_antseed/route-preview?model=open-model-a')
   assert.deepEqual(decodePolicyHeader(String(sent?.headers[ROUTING_POLICY_HEADER])), preview.policy)
+})
+
+test('candidate enrichment passes the buyer\'s selection numbers through and drops malformed ones', () => {
+  const selection = {
+    expectedCostUsd: 0.002, expectedPriceUsd: 0.0015, expectedSeconds: 3, successRate: 0.96, observations: 12, record: 'model',
+    firstTokenMs: 420, tokensPerSecond: 80, lastSuccessAt: NOW, lastFailureAt: null, lastFailureReason: null,
+    failing: false, coolingDown: false, stale: false, ordering: 'expected-cost', sharesTraffic: true, trafficShare: 0.6, poolSize: 2,
+    channel: 'open', inFlight: 1, maxConcurrency: 8, routeChainPosition: null,
+  }
+  const [good, bad] = enrichCandidates([
+    { peerId: PEER_A, eligible: true, reasons: [], selection },
+    { peerId: PEER_B, eligible: true, reasons: [], selection: { ...selection, record: 'guess' } },
+  ], PEERS_BODY)
+  assert.deepEqual(good?.selection, selection)
+  assert.equal(bad?.selection, null)
+})
+
+test('POST routing/seller-history/reset clears the buyer\'s record of a seller, for org admins only', async () => {
+  audits.length = 0
+  assert.deepEqual(await call(setup(), 'POST', '/routing/seller-history/reset', orgAdmin, { peerId: `0x${PEER_A.toUpperCase()}` }), { ok: true })
+  const sent = lastRequest(buyer, (url) => url === '/_antseed/peer-health/clear')
+  assert.equal(sent?.method, 'POST')
+  assert.deepEqual(sent?.body, { peerId: PEER_A })
+  assert.deepEqual(audits, [`routing.seller_history.reset ${PEER_A}`])
+  await rejectsWith(call(setup(), 'POST', '/routing/seller-history/reset', member, { peerId: PEER_A }), 403)
+  await rejectsWith(call(setup(), 'POST', '/routing/seller-history/reset', orgAdmin, { peerId: 'nope' }), 400, 'invalid_peer')
 })
 
 test('GET route-preview shows the buyer hard limits as the buyer source', async () => {

@@ -66,14 +66,15 @@ Conventions:
 | `GET /status` | Gateway version, public URL, buyer reachability, and how reachable the gateway is (`exposure.mode`: `local`, `lan` or `public`) |
 | `GET /usage` | Totals, optionally grouped with `groupBy` (`hour`, `day`, `model`, `key`, `member`, `peer`, `workspace` or `user`; two comma-separated for a split). Filters: `from`, `to`, `workspace`, `key`, `member`, `model` |
 | `GET /usage/export.csv` | The same data as CSV |
-| `GET /requests`, `GET /requests/:tag` | The request log, newest first (`limit`, `before`), and one request |
+| `GET /requests`, `GET /requests/:tag` | The request log, newest first (`limit`, `before`), and one request; one request adds `routeSelection`, why automatic routing picked its seller |
 | `GET /audit` | The audit log. Filters: `actor`, `action`, `limit`, `before` |
 | `GET /keys`, `POST /keys`, `PATCH /keys/:id`, `POST /keys/:id/rotate`, `POST /keys/:id/revoke` | API keys. See [API keys](/docs/gateway/api) for what a key holds |
 | `GET /workspaces`, `POST /workspaces`, `GET /workspaces/:id`, `PATCH /workspaces/:id`, `DELETE /workspaces/:id` | Workspaces |
 | `GET /workspaces/:id/members`, `PUT /workspaces/:id/members/:memberId`, `DELETE /workspaces/:id/members/:memberId` | Workspace membership and roles |
 | `GET /members`, `PATCH /members/:id`, `POST /members/:id/disable`, `POST /members/:id/enable` | Members |
 | `GET /invites`, `POST /invites`, `DELETE /invites/:id` | Invites. `POST` returns the single-use link |
-| `GET /routing`, `PUT /routing`, `GET /route-preview` | The gateway-wide routing policy and the route preview |
+| `GET /routing`, `PUT /routing`, `GET /route-preview` | The gateway-wide routing policy and the route preview; each eligible candidate has `selection`, the numbers automatic routing ranks it by |
+| `POST /routing/seller-history/reset` | Org admins: `{ peerId }` clears what the buyer has seen of a seller, so routing gives it a fresh start |
 | `GET /peer-lists`, `POST /peer-lists`, `PATCH /peer-lists/:id`, `DELETE /peer-lists/:id` | Saved peer lists |
 | `GET /presets`, `POST /presets`, `PATCH /presets/:id`, `DELETE /presets/:id` | Presets |
 | `GET /peers`, `GET /models` | The providers and models the buyer sees |

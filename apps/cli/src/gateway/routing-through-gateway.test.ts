@@ -285,3 +285,41 @@ test('/v1/models?type=router through a key lists the routers that key may use', 
   const limited = ctx.store.createKey({ label: 'limited', limits: NO_LIMITS, expiresAt: null, routingPolicy: { allowedModels: ['gpt-5'] } })
   assert.deepEqual((await ctx.call(limited.secret, '/v1/models?type=router')).json.data, [])
 })
+
+test('the request log keeps why automatic routing picked the seller that served each request', async (t) => {
+  const ctx = await setup(t)
+  const { secret, key } = ctx.store.createKey({ label: 'team', limits: NO_LIMITS, expiresAt: null })
+  const body = { model: 'gpt-5', messages: [{ role: 'user', content: 'Hello' }] }
+
+  // A seller cannot replace the buyer's explanation with its own.
+  const forged = Buffer.from(JSON.stringify({ rank: 1, of: 1, attempt: 0, pick: 'best', ordering: 'expected-cost', record: 'model', expectedCostUsd: 0, expectedSeconds: 0, successRate: 1, observations: 999, poolSize: 1, inFlight: 0 })).toString('base64url')
+  ctx.sellerHeaders['X-Antseed-Route-Selection'] = forged
+  const res = await ctx.call(secret, '/v1/chat/completions', body)
+  assert.equal(res.status, 200, res.text)
+  assert.notEqual(res.headers.get('x-antseed-route-selection'), forged)
+  const [row] = ctx.store.listRequests({ keyId: key.id })
+  const picked = ctx.store.getRequest(row!.tag)!.routeSelection
+  assert.equal(picked?.of, 2, 'the buyer\'s selection, not the seller\'s')
+  assert.equal(picked?.rank, 1)
+  assert.equal(picked?.of, 2)
+  assert.equal(picked?.attempt, 0)
+  assert.equal(picked?.pick, 'order')
+  assert.equal(picked?.ordering, 'trust', 'without routing preferences the buyer orders by trust')
+  assert.equal(picked?.record, 'none', 'nothing was known of the seller yet')
+
+  // The seller that served first now fails: the next one serves, as a failover.
+  ctx.failingPeers.add(row!.sellerPeerId!)
+  const again = await ctx.call(secret, '/v1/chat/completions', body)
+  assert.equal(again.status, 200, again.text)
+  const [latest] = ctx.store.listRequests({ keyId: key.id })
+  assert.notEqual(latest!.sellerPeerId, row!.sellerPeerId)
+  const failover = ctx.store.getRequest(latest!.tag)!.routeSelection
+  assert.equal(failover?.pick, 'failover')
+  assert.equal(failover?.rank, 2)
+  assert.equal(failover?.attempt, 1)
+
+  // A pinned request is not ranked, so it records no selection.
+  await ctx.call(secret, '/v1/chat/completions', { ...body, model: `${first.peerId}@gpt-5` })
+  const [pinned] = ctx.store.listRequests({ keyId: key.id })
+  assert.equal(ctx.store.getRequest(pinned!.tag)!.routeSelection, null)
+})

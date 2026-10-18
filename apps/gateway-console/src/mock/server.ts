@@ -13,13 +13,14 @@
 import type {
   AdminToken, ApiKey, AuditEntry, BuyerLimits, DepositConfirmation, GatewayExposure, GatewayExposureMode, GatewayUpdate, Me, MeResponse, Member, RequestDetail, RequestLogEntry, RoutePreview, RoutingPolicy,
   UsageGroupBy, Workspace, WorkspaceRole,
+  RouteSelection,
 } from '../api/types'
 import { LIMIT_PERIODS } from '../lib/format'
 import { MASKED_VALUE } from '../lib/headers'
 import { tighterLimits } from '../lib/key-layers'
 import { samePeerId } from '../lib/peer-id'
 import { combinePolicies, expandLists } from '../lib/policy-match'
-import { fakeAddress, mockNetworkModels, mockNetworkRouters, seed } from './data'
+import { fakeAddress, mockNetworkModels, mockNetworkRouters, mockRouteSelection, seed } from './data'
 import { mockChatModels, mockChatStream, mockChatThread, mockChatThreads, mockDeleteChatThread } from './chat'
 import { mockOperatorState, OPERATOR_SCENARIOS, scenarioOperator, type OperatorScenario } from './operator'
 
@@ -379,10 +380,11 @@ function preview(query: URLSearchParams): RoutePreview {
       return {
         peerId: peer.peerId, displayName: peer.name, rank: null, eligible,
         reasons: eligible ? [] : [`buyer config: trust ${Math.round(peer.reputation ?? 0)} below ${minTrust}`],
-        inputUsdPerMillion: peer.inputUsdPerMillion, outputUsdPerMillion: peer.outputUsdPerMillion, trustScore: peer.reputation,
+        inputUsdPerMillion: peer.inputUsdPerMillion, outputUsdPerMillion: peer.outputUsdPerMillion, trustScore: peer.reputation, selection: null as RouteSelection | null,
       }
     })
-    chatCandidates.filter((c) => c.eligible).sort((a, b) => (a.inputUsdPerMillion ?? 0) - (b.inputUsdPerMillion ?? 0)).forEach((c, index) => { c.rank = index + 1 })
+    const ready = chatCandidates.filter((c) => c.eligible).sort((a, b) => (a.inputUsdPerMillion ?? 0) - (b.inputUsdPerMillion ?? 0))
+    ready.forEach((c, index) => { c.rank = index + 1; c.selection = mockRouteSelection(index + 1, ready.length, index) })
     return { model, policy, sources, modelAllowed, candidates: chatCandidates }
   }
   const candidates = db.peers.filter((peer) => peer.services.some((service) => service.service === model)).map((peer) => {
@@ -397,9 +399,10 @@ function preview(query: URLSearchParams): RoutePreview {
     if (policy.requireTee && !peer.tee) reasons.push('no TEE')
     if (policy.requireVerified && !peer.verified) reasons.push('not verified')
     if (policy.maxInputUsdPerMillion !== undefined && (service.inputUsdPerMillion ?? 0) > policy.maxInputUsdPerMillion) reasons.push('over input price cap')
-    return { peerId: peer.peerId, displayName: peer.displayName, rank: null as number | null, eligible: reasons.length === 0, reasons, inputUsdPerMillion: service.inputUsdPerMillion, outputUsdPerMillion: service.outputUsdPerMillion, trustScore: peer.trustScore }
+    return { peerId: peer.peerId, displayName: peer.displayName, rank: null as number | null, eligible: reasons.length === 0, reasons, inputUsdPerMillion: service.inputUsdPerMillion, outputUsdPerMillion: service.outputUsdPerMillion, trustScore: peer.trustScore, selection: null as RouteSelection | null }
   })
-  candidates.filter((c) => c.eligible).sort((a, b) => (a.inputUsdPerMillion ?? 0) - (b.inputUsdPerMillion ?? 0)).forEach((c, index) => { c.rank = index + 1; c.reasons.push(index === 0 ? 'lowest price' : 'balanced score') })
+  const ready = candidates.filter((c) => c.eligible).sort((a, b) => (a.inputUsdPerMillion ?? 0) - (b.inputUsdPerMillion ?? 0))
+  ready.forEach((c, index) => { c.rank = index + 1; c.selection = mockRouteSelection(index + 1, ready.length, index) })
   return { model, policy, sources, modelAllowed, candidates }
 }
 

@@ -1,4 +1,5 @@
 import type { PeerInfo, SerializedHttpRequest } from '@antseed/node'
+import { ROUTE_SELECTION_HEADER } from './route-selection.js'
 import { extractUsage, toNonNegativeInt } from '@antseed/api-adapter'
 import { pickProviderForPeer } from './routing.js'
 import { extractRequestedService } from './request-utils.js'
@@ -330,14 +331,16 @@ export const ROUTER_PEER_ID_HEADER = 'x-antseed-router-peer-id'
 export const ROUTER_SERVICE_HEADER = 'x-antseed-router-service'
 export const ROUTER_RANK_HEADER = 'x-antseed-router-rank'
 
-const ROUTER_HEADERS = new Set([ROUTER_PEER_ID_HEADER, ROUTER_SERVICE_HEADER, ROUTER_RANK_HEADER])
+/** Headers only the buyer sets: which router ranked a request, and why routing picked its seller. */
+const BUYER_ROUTING_HEADERS = new Set([ROUTER_PEER_ID_HEADER, ROUTER_SERVICE_HEADER, ROUTER_RANK_HEADER, ROUTE_SELECTION_HEADER])
 
 /**
- * A seller's headers without router headers: only the buyer says which router
- * ranked a request, so a seller can neither change nor invent that.
+ * A seller's headers without the buyer's routing headers: only the buyer says
+ * which router ranked a request and why its seller was picked, so a seller can
+ * neither change nor invent that.
  */
 export function withoutRouterHeaders(headers: Record<string, string>): Record<string, string> {
-  return Object.fromEntries(Object.entries(headers).filter(([name]) => !ROUTER_HEADERS.has(name.toLowerCase())))
+  return Object.fromEntries(Object.entries(headers).filter(([name]) => !BUYER_ROUTING_HEADERS.has(name.toLowerCase())))
 }
 
 export function attachAntseedTelemetryHeaders(

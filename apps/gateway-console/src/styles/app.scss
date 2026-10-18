@@ -476,11 +476,44 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 }
 
 /* Routing preview */
-.gc-sources { display: flex; flex-wrap: wrap; gap: 0.5rem; }
-.gc-source { flex: 1 1 10rem; padding: 0.5rem 0.625rem; border: 1px solid var(--as-border); border-radius: var(--as-radius-md); background: var(--as-bg-surface); }
-.gc-source--result { border-color: var(--as-border-strong); background: var(--as-bg-muted); }
-.gc-source__level { font-size: 0.75rem; font-weight: 500; color: var(--as-text-muted); }
-.gc-source__policy { font-size: 0.8125rem; margin-top: 0.125rem; }
+/* Routing: the rule chain, one numbered step per level. */
+.gc-funnel { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.gc-funnel__step {
+  display: flex; gap: 0.875rem; padding: 0.875rem 0;
+  & + & { border-top: 1px solid var(--as-border); }
+}
+.gc-funnel__step--result { margin-top: 0.25rem; padding: 0.875rem; border: 1px solid var(--as-border-strong); border-radius: var(--as-radius-md); background: var(--as-bg-muted); }
+.gc-funnel__index {
+  flex: none; display: grid; place-items: center; width: 1.625rem; height: 1.625rem; border-radius: 999px;
+  border: 1px solid var(--as-border-strong); font-size: 0.75rem; font-weight: 600; color: var(--as-text-secondary); font-variant-numeric: tabular-nums;
+}
+.gc-funnel__body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.25rem; }
+.gc-funnel__head { display: flex; align-items: center; gap: 0.5rem; min-height: 1.625rem; }
+.gc-funnel__title { font-weight: 600; }
+.gc-funnel__action { margin-left: auto; }
+.gc-funnel__rules { margin: 0.25rem 0 0; padding-left: 1.1rem; font-size: 0.875rem; display: flex; flex-direction: column; gap: 0.125rem; }
+.gc-funnel__none { margin: 0.25rem 0 0; font-size: 0.875rem; color: var(--as-text-muted); }
+.gc-funnel__impact { margin: 0.25rem 0 0; font-size: 0.75rem; color: var(--as-text-muted); }
+.gc-funnel__impact--on { color: var(--as-text-primary); font-weight: 550; }
+.gc-funnel__note { list-style: none; padding-bottom: 0.75rem; }
+
+/* Routing: "Try a request". */
+.gc-try__summary { margin: 0.25rem 0 0; display: flex; align-items: center; gap: 0.5rem; }
+.gc-model-chooser { max-width: 22rem; justify-content: flex-start; }
+.gc-model-chooser__mark { display: inline-flex; margin-right: 0.5rem; }
+.gc-model-chooser__caret { display: inline-flex; margin-left: 0.5rem; opacity: 0.6; }
+
+/* A searchable list of choices in a dialog (the model chooser). */
+.gc-choice-list { list-style: none; margin: 0; padding: 0; max-height: min(28rem, 60vh); overflow-y: auto; border: 1px solid var(--as-border); border-radius: var(--as-radius-md); }
+.gc-choice {
+  display: flex; align-items: center; gap: 0.75rem; width: 100%; padding: 0.625rem 0.75rem; border: 0; background: none; text-align: left; color: inherit; cursor: pointer; font: inherit;
+  &:hover, &:focus-visible { background: var(--as-bg-muted); outline: none; }
+}
+li + li > .gc-choice { border-top: 1px solid var(--as-border); }
+.gc-choice--on { background: var(--as-bg-muted); }
+.gc-choice__main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.125rem; }
+.gc-choice__title { display: inline-flex; align-items: center; gap: 0.375rem; font-weight: 550; }
+.gc-choice__meta { display: flex; flex-wrap: wrap; gap: 0 0.75rem; font-size: 0.75rem; color: var(--as-text-muted); }
 
 /* Funding */
 .gc-kv { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; padding: 0.5rem 0.625rem; border-radius: var(--as-radius-md); background: var(--as-bg-muted); font-size: 0.8125rem;

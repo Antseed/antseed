@@ -51,6 +51,7 @@ import {
   type SweepReceiptPayload,
   VIDEO_JOB_RETIRED_HEADER,
 } from '@antseed/node'
+import { encodeServedSelection, ROUTE_SELECTION_HEADER, type RouteSelection, type ServedSelection } from './route-selection.js'
 import { canonicalModelKey } from '@antseed/node/model-identity'
 import {
   createStreamingAdapter,
@@ -315,6 +316,8 @@ interface ModelRouteVerdict {
   /** 1-based dispatch order for eligible sellers. */
   rank: number | null
   reasons: string[]
+  /** Eligible sellers: the numbers automatic routing ranked it by. */
+  selection?: RouteSelection
 }
 
 interface RoutePreviewCandidate {
@@ -326,6 +329,7 @@ interface RoutePreviewCandidate {
   inputUsdPerMillion: number | null
   outputUsdPerMillion: number | null
   trustScore: number | null
+  selection: RouteSelection | null
 }
 
 type RequestPolicyResult =
@@ -1736,7 +1740,9 @@ export class BuyerProxy {
       now,
       affinityKey: input.affinityKey ?? null,
       ...this._adaptiveRouting,
-      ...(input.deterministic ? { spreadTolerance: 0, explorationRate: 0 } : {}),
+      // The preview keeps the real sharing pool (so it can show who shares the
+      // traffic) but always draws its first seller and never probes.
+      ...(input.deterministic ? { random: () => 0, explorationRate: 0 } : {}),
     })
     // Without routing preferences the buyer ranks by reputation, as before;
     // health only moves sellers that fail often behind the others.
@@ -1764,6 +1770,7 @@ export class BuyerProxy {
     // Conversation affinity is a soft preference: it only reorders sellers the
     // policy already allows, and yields to an explicit per-model route.
     const preferredPeerId = input.preferredPeerId
+    let conversationFirst = false
     if (preferredPeerId && !findModelRoute(effectivePolicy, requestedService)) {
       const preferredIndex = candidates.findIndex((candidate) => (
         candidate.peer.peerId.toLowerCase() === preferredPeerId
@@ -1774,7 +1781,17 @@ export class BuyerProxy {
         const [preferred] = candidates.splice(preferredIndex, 1)
         if (preferred) candidates.unshift(preferred)
       }
+      conversationFirst = preferredIndex >= 0
     }
+    // How the eligible sellers were put in order. Only the buyer's adaptive
+    // order, unsorted by the policy and with no route chain, spreads traffic.
+    const policySort = effectivePolicy?.sort && effectivePolicy.sort !== 'balanced' ? effectivePolicy.sort : null
+    const selectionOrdering: RouteSelection['ordering'] = policySort ?? (routingPreferences ? 'expected-cost' : 'trust')
+    const spreads = selectionOrdering === 'expected-cost' && !chainPosition?.size
+    const pool = spreads ? adaptive.pool : []
+    const poolWeight = (candidate: (typeof ranked)[number]): number => 1 / Math.max(healthOf(candidate).score, 1e-9) ** 2
+    const poolTotal = pool.reduce((sum, candidate) => sum + poolWeight(candidate), 0)
+    const selections = new Map<(typeof ranked)[number], RouteSelection>()
     candidates.forEach((candidate, index) => {
       const verdict = verdicts.get(candidate.peerId)
       if (!verdict) return
@@ -1785,15 +1802,53 @@ export class BuyerProxy {
       const health = healthOf(candidate)
       if (isCooling(candidate)) verdict.reasons.push('cooling down (tried last)')
       else if (health.unhealthy) verdict.reasons.push(`failing lately: ${health.stats?.lastFailureReason ?? 'failed requests'} (tried after healthy sellers)`)
-      if (adaptive.pool.length > 1 && adaptive.pool.includes(candidate)) verdict.reasons.push(`shares traffic with ${adaptive.pool.length - 1} other seller(s)`)
+      if (pool.length > 1 && pool.includes(candidate)) verdict.reasons.push(`shares traffic with ${pool.length - 1} other seller(s)`)
       if (modelRouteTotalPrice(candidate) === 0) verdict.reasons.push('free')
       verdict.reasons.push(`success ~${Math.round(health.successProbability * 100)}%${health.stats ? '' : ' (no data yet)'}`)
       const latency = this._peerLatency(candidate.peerId, candidate.serviceId)
       if (latency !== null) verdict.reasons.push(`first token ~${Math.round(latency)}ms`)
       const throughput = this._peerThroughput(candidate.peerId, candidate.serviceId)
       if (throughput !== null) verdict.reasons.push(`~${Math.round(throughput)} tok/s`)
+      const healthKey = this._healthServiceKey(candidate.serviceId)
+      const stats = health.stats
+      const inPool = pool.includes(candidate)
+      const maxConcurrency = typeof candidate.peer.maxConcurrency === 'number' && candidate.peer.maxConcurrency > 0 ? candidate.peer.maxConcurrency : null
+      const selection: RouteSelection = {
+        expectedCostUsd: health.score,
+        expectedPriceUsd: health.expectedPriceUsd,
+        expectedSeconds: health.expectedSeconds,
+        successRate: health.successProbability,
+        observations: stats ? stats.successes + stats.failures : 0,
+        record: !stats ? 'none' : this._sellerHealth.hasRecord(candidate.peerId, healthKey) ? 'model' : 'other-models',
+        firstTokenMs: latency,
+        tokensPerSecond: throughput,
+        lastSuccessAt: stats && stats.lastSuccessAt > 0 ? stats.lastSuccessAt : null,
+        lastFailureAt: stats && stats.lastFailureAt > 0 ? stats.lastFailureAt : null,
+        lastFailureReason: stats?.lastFailureReason ?? null,
+        failing: health.unhealthy,
+        coolingDown: isCooling(candidate),
+        stale: health.stale,
+        ordering: selectionOrdering,
+        sharesTraffic: inPool && pool.length > 1,
+        trafficShare: inPool && pool.length > 1 && poolTotal > 0 ? poolWeight(candidate) / poolTotal : null,
+        poolSize: pool.length,
+        channel: modelRouteTotalPrice(candidate) === 0 ? 'free' : openChannels ? (openChannels.has(candidate.peerId.toLowerCase()) ? 'open' : 'new') : null,
+        inFlight: this._inFlightBySeller.get(candidate.peerId.toLowerCase()) ?? 0,
+        maxConcurrency,
+        routeChainPosition: position !== undefined ? position + 1 : null,
+      }
+      verdict.selection = selection
+      selections.set(candidate, selection)
     })
-    return { candidates, verdicts: [...verdicts.values()], effectivePolicy, explored: adaptive.explored }
+    // How the first seller came to be first, for the request's record.
+    const first = candidates[0]
+    let firstPick: ServedSelection['pick'] = 'order'
+    if (first) {
+      if (first === adaptive.explored) firstPick = 'exploration'
+      else if (conversationFirst || (input.affinityKey && pool.length > 1 && pool.includes(first) && first === adaptive.ordered[0])) firstPick = 'conversation'
+      else if (first === adaptive.ordered[0] && pool.includes(first)) firstPick = pool.length > 1 ? 'spread' : 'best'
+    }
+    return { candidates, verdicts: [...verdicts.values()], effectivePolicy, explored: adaptive.explored, selections, firstPick }
   }
 
   /**
@@ -1854,6 +1909,7 @@ export class BuyerProxy {
         inputUsdPerMillion: verdict.offer.inputUsdPerMillion ?? null,
         outputUsdPerMillion: verdict.offer.outputUsdPerMillion ?? null,
         trustScore: normalizedModelReputationScore(verdict.peer),
+        selection: modelAllowed && verdict.eligible ? verdict.selection ?? null : null,
       }))
       .sort((a, b) => (a.rank ?? Number.POSITIVE_INFINITY) - (b.rank ?? Number.POSITIVE_INFINITY)
         || a.peerId.localeCompare(b.peerId))
@@ -4258,7 +4314,7 @@ export class BuyerProxy {
       }
 
       const router = this._node.router
-      const { candidates, effectivePolicy, explored } = this._planModelRoutes({
+      const { candidates, effectivePolicy, explored, selections, firstPick } = this._planModelRoutes({
         modelPeers,
         modelPlans,
         request: serializedReq,
@@ -4353,6 +4409,18 @@ export class BuyerProxy {
           }
         }
 
+        // Why this seller serves the request, for the gateway's request log. A
+        // seller that fails is replaced by the next one's before any header goes out.
+        const selection = selections.get(selected)
+        if (selection && !res.headersSent) {
+          res.setHeader(ROUTE_SELECTION_HEADER, encodeServedSelection({
+            ...selection,
+            rank: index + 1,
+            of: candidates.length,
+            attempt: index,
+            pick: index === 0 ? firstPick : failedSellers.size > 0 || lastRetry !== null ? 'failover' : 'order',
+          }))
+        }
         for (let peerAttempt = 0; peerAttempt < MODEL_RATE_LIMIT_MAX_ATTEMPTS_PER_PEER; peerAttempt += 1) {
           log(
             `Auto-selected peer ${selected.peer.peerId.slice(0, 12)}... for model="${requestedService}" `
