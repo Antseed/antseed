@@ -53,6 +53,10 @@
       "import": "./dist/model-identity.js",
       "types": "./dist/model-identity.d.ts"
     },
+    "./model-metadata": {
+      "import": "./dist/model-metadata.js",
+      "types": "./dist/model-metadata.d.ts"
+    },
     "./model-routing": {
       "import": "./dist/routing/model-route-ranking.js",
       "types": "./dist/routing/model-route-ranking.d.ts"

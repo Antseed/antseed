@@ -8,9 +8,8 @@ import {
   ViewIcon,
   ViewOffSlashIcon,
 } from '@hugeicons/core-free-icons';
-import { Modal } from '@antseed/ui';
+import { BrandIcon, Modal } from '@antseed/ui';
 import type { PublicTunnelStatus, TunnelConsoleStatus, TunnelProvider } from '../../../types/bridge';
-import { BrandIcon } from '../brand/BrandIcon';
 import formStyles from '../views/VprToolsView.module.scss';
 import noticeStyles from '../views/FundingStatusNotice.module.scss';
 import styles from './PublicEndpointModal.module.scss';

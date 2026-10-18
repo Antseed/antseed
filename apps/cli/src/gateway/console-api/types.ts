@@ -651,6 +651,49 @@ export type NetworkModelType = 'text' | 'image' | 'decision' | 'video'
 /** A feature at least one seller of the model advertises. */
 export type NetworkModelCapability = 'toolUse' | 'reasoning' | 'structuredOutput' | 'vision'
 
+/** A setting a router accepts in a request's `routing` object, as its routing protocol defines it. */
+export type NetworkRouterOption = {
+  key: string
+  label: string
+  description?: string
+} & (
+  | { type: 'integer' | 'number'; minimum?: number; maximum?: number; default?: number }
+  | { type: 'boolean'; default?: boolean }
+  | { type: 'string'; values?: string[]; default?: string }
+)
+
+/**
+ * A routing service on the network: sent as the model, it picks the model
+ * (and seller) for each request among the ones the caller's policy allows.
+ */
+export interface NetworkRouter {
+  /** `<peerId>@<serviceId>`: the model to send to route through it. */
+  id: string
+  peerId: string
+  serviceId: string
+  provider: string
+  /** The router's name, e.g. "Levanto Router". */
+  name: string
+  /** The seller offering it, by its display name. */
+  sellerName: string | null
+  /** Its routing protocol, e.g. `irp-suggest`. */
+  protocol: string
+  options: NetworkRouterOption[]
+  /** USD per ranking; null when not advertised. */
+  priceUsdPerRequest: number | null
+  free: boolean
+  /** Models it can rank, by the router's own names (`*`: any model); null when its list is unavailable. */
+  models: string[] | null
+  trustScore: number | null
+  verified: boolean
+  verificationLinks: PeerVerificationLink[]
+}
+
+/** `GET /favorites`: the model and router ids the caller starred, oldest first. */
+export interface FavoriteModels {
+  models: string[]
+}
+
 /** One seller's offer of a network model. */
 export interface NetworkModelOffer {
   peerId: string
@@ -692,6 +735,8 @@ export interface NetworkModel {
   name: string
   aliases: string[]
   type: NetworkModelType
+  /** Release-owned tags for the model (Coding, Reasoning, Vision, Open weights…); sellers cannot add any. */
+  tags: string[]
   /** Largest context window a seller advertises; null when none does. */
   contextLength: number | null
   capabilities: NetworkModelCapability[]

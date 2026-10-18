@@ -19,7 +19,7 @@ import { MASKED_VALUE } from '../lib/headers'
 import { tighterLimits } from '../lib/key-layers'
 import { samePeerId } from '../lib/peer-id'
 import { combinePolicies, expandLists } from '../lib/policy-match'
-import { fakeAddress, mockNetworkModels, seed } from './data'
+import { fakeAddress, mockNetworkModels, mockNetworkRouters, seed } from './data'
 import { mockChatModels, mockChatStream, mockChatThread, mockChatThreads, mockDeleteChatThread } from './chat'
 import { mockOperatorState, OPERATOR_SCENARIOS, scenarioOperator, type OperatorScenario } from './operator'
 
@@ -30,6 +30,8 @@ class MockError extends Error {
 }
 
 const db = seed()
+/** The mock viewer's starred models: two to start, so the Favorites table shows. */
+const favorites = new Set<string>(['qwen3-coder-480b', `${db.peers[0]!.peerId}@fake-router`])
 const SESSION_KEY = 'antseed-console-mock-session'
 const roleMembers: Record<string, string> = { owner: 'mem_owner', admin: 'mem_ali', member: 'mem_sam', wsadmin: 'mem_wade' }
 /** Sign-ins newer than this count as fresh for operator authorization. */
@@ -854,6 +856,10 @@ const routes: Array<[string, string, Handler]> = [
 
   ['GET', '/peers', () => db.peers],
   ['GET', '/models', () => mockNetworkModels(db.peers)],
+  ['GET', '/routers', () => mockNetworkRouters(db.peers)],
+  ['GET', '/favorites', () => ({ models: [...favorites] })],
+  ['PUT', '/favorites/:model', ({ params }) => { favorites.delete(params['model']!); favorites.add(params['model']!) }],
+  ['DELETE', '/favorites/:model', ({ params }) => { favorites.delete(params['model']!) }],
   ['GET', '/route-preview', ({ query }) => preview(query)],
   ['GET', '/routing', () => { currentMember(); return db.gatewayPolicy }],
   ['GET', '/routing/buyer-limits', () => buyerLimits()],

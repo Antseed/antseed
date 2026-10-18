@@ -3,9 +3,9 @@ import { after, before, test } from 'node:test'
 import { decodePolicyHeader, GATEWAY_CONTROL_HEADER, ROUTING_POLICY_HEADER, type RoutingPolicy } from '../../../routing-policy/policy.js'
 import type { ResolvedPolicy } from '../../policy-resolver.js'
 import { ConsoleRouter, type Principal } from '../router.js'
-import type { BuyerLimits, NetworkModel, Peer, RoutePreview } from '../types.js'
+import type { BuyerLimits, NetworkModel, NetworkRouter, Peer, RoutePreview } from '../types.js'
 import { registerNetworkRoutes, type NetworkRouteOverrides } from './network.js'
-import { enrichCandidates, mapNetworkModels, mapPeers, peerServices, teeScopes, teeVerifiedPeers } from './network-mapping.js'
+import { enrichCandidates, mapNetworkModels, mapNetworkRouters, mapPeers, peerServices, teeScopes, teeVerifiedPeers } from './network-mapping.js'
 import {
   call,
   fakeCanSeeWorkspace,
@@ -122,9 +122,9 @@ before(async () => {
   buyer = await startFakeBuyer({
     'GET /_antseed/peers': () => (peersDown ? { status: 500, body: { error: 'boom' } } : { body: PEERS_BODY }),
     'GET /_antseed/peer-health': () => ({ body: HEALTH_BODY }),
-    'GET /v1/models': () => modelsStatus === 200
-      ? { body: MODELS_BODY }
-      : { status: modelsStatus, body: { error: 'Buyer is not ready yet.' } },
+    'GET /v1/models': (req) => modelsStatus !== 200
+      ? { status: modelsStatus, body: { error: 'Buyer is not ready yet.' } }
+      : { body: new URL(req.url, 'http://x').searchParams.get('type') === 'router' ? ROUTERS_BODY : MODELS_BODY },
     'GET /_antseed/verification': () => verificationAllowed
       ? { body: TEE_SNAPSHOT }
       : { status: 403, body: { error: 'Local verification authorization required' } },
@@ -288,6 +288,7 @@ test('network models merge the buyer catalog with the peer list', () => {
     name: 'Open Model A',
     aliases: ['open-model-a-latest'],
     type: 'text',
+    tags: [],
     contextLength: 128_000,
     capabilities: ['toolUse', 'vision'],
     sellers: 2,
@@ -367,6 +368,44 @@ test('GET models still answers when the peer list fails', async () => {
   } finally {
     peersDown = false
   }
+})
+
+// ── Routers ──────────────────────────────────────────────────────────────
+
+const ROUTERS_BODY = {
+  object: 'list',
+  data: [{
+    id: 'fake-route', name: 'Fake Router', object: 'model', created: 0, owned_by: 'antseed', type: 'router',
+    peers: [
+      {
+        peerId: PEER_A, displayName: 'Fake TEE Seller', provider: 'fake-routing', serviceId: 'fake-route', protocol: 'irp-suggest',
+        options: [{ key: 'cost_quality_tradeoff', type: 'integer', label: 'Cost vs. quality', minimum: 0, maximum: 10, default: 5 }, { key: 'broken' }],
+        model: `${PEER_A}@fake-route`, priceUsdPerRequest: 0, models: ['*'],
+      },
+      { peerId: PEER_C, provider: 'fake-routing', serviceId: 'fake-route', protocol: 'irp-suggest', options: [], model: `${PEER_C}@fake-route`, priceUsdPerRequest: 0.001, models: null },
+      { provider: 'no-peer' },
+    ],
+  }],
+}
+
+test('network routers list one router per seller, with trust from the peer list', () => {
+  const peers = mapPeers({ peers: PEERS_BODY, health: null, verification: null, stats: [], now: NOW })
+  const [a, c] = mapNetworkRouters(ROUTERS_BODY, peers) as [NetworkRouter, NetworkRouter]
+  assert.equal(mapNetworkRouters(ROUTERS_BODY, peers).length, 2, 'offers without a peer are skipped')
+  assert.deepEqual(a, {
+    id: `${PEER_A}@fake-route`, peerId: PEER_A, serviceId: 'fake-route', provider: 'fake-routing', name: 'Fake Router',
+    sellerName: 'Fake TEE Seller', protocol: 'irp-suggest',
+    options: [{ key: 'cost_quality_tradeoff', type: 'integer', label: 'Cost vs. quality', minimum: 0, maximum: 10, default: 5 }],
+    priceUsdPerRequest: 0, free: true, models: ['*'], trustScore: 72, verified: false, verificationLinks: [],
+  })
+  assert.deepEqual([c.sellerName, c.free, c.priceUsdPerRequest, c.models, c.trustScore], [null, false, 0.001, null, null], 'a seller the peer list does not know yet')
+})
+
+test('GET routers asks the buyer for routing services without a policy', async () => {
+  const routers = await call(setup(), 'GET', '/routers', member) as NetworkRouter[]
+  assert.deepEqual(routers.map((router) => router.id), [`${PEER_A}@fake-route`, `${PEER_C}@fake-route`])
+  const sent = lastRequest(buyer, (url) => url === '/v1/models?type=router')
+  assert.equal(sent?.headers[ROUTING_POLICY_HEADER], undefined)
 })
 
 // ── Route preview ────────────────────────────────────────────────────────

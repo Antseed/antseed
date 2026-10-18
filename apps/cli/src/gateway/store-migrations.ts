@@ -333,4 +333,14 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE gateway_requests ADD COLUMN video_job_id TEXT;
   CREATE INDEX gateway_requests_video_job ON gateway_requests(video_job_id) WHERE video_job_id IS NOT NULL;
   `,
+  // Models and routers a console member (or an API-key session) starred, listed first on the Models page.
+  `
+  CREATE TABLE favorite_models (
+    owner_kind TEXT NOT NULL CHECK (owner_kind IN ('member', 'key')),
+    owner_id TEXT NOT NULL,
+    model TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (owner_kind, owner_id, model)
+  );
+  `,
 ]

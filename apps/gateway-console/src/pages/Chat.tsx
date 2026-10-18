@@ -31,19 +31,17 @@ import { Shimmer } from '@/chat/components/ai-elements/shimmer'
 import { Suggestion } from '@/chat/components/ai-elements/suggestion'
 import { Spinner } from '@/chat/components/ui/spinner'
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput, type ToolPart } from '@/chat/components/ai-elements/tool'
+import { loadStored, saveStored } from '../lib/stored'
 
 type ChatMessage = UIMessage<ChatMessageMetadata>
 
 const STORE_PREFIX = 'antseed-console-chat'
 
 function load<T>(key: string, fallback: T): T {
-  try {
-    const raw = localStorage.getItem(`${STORE_PREFIX}:${key}`)
-    return raw ? JSON.parse(raw) as T : fallback
-  } catch { return fallback }
+  return loadStored(`${STORE_PREFIX}:${key}`, fallback)
 }
 function save(key: string, value: unknown): void {
-  try { localStorage.setItem(`${STORE_PREFIX}:${key}`, JSON.stringify(value)) } catch { /* storage unavailable */ }
+  saveStored(`${STORE_PREFIX}:${key}`, value)
 }
 
 function newChatId(): string {

@@ -66,7 +66,7 @@ test('eighteen processes opening a v2 database at once migrate it exactly once',
     const store = new GatewayStore(dir)
     try {
       assert.equal(store.database.pragma('user_version', { simple: true }), MIGRATIONS.length)
-      assert.equal(MIGRATIONS.length, 9, 'the console schema, chat history, free-seller requests, deposits, pinned-model splitting, response speed and video jobs are seven migrations on top of the two that shipped')
+      assert.equal(MIGRATIONS.length, 10, 'the console schema, chat history, free-seller requests, deposits, pinned-model splitting, response speed, video jobs and favorite models are eight migrations on top of the two that shipped')
       assert.equal(store.spendByPeriod({ keyId: 'key_team' }).total, 250_000, 'rollups were backfilled once')
       assert.deepEqual(store.listWorkspaces().map((ws) => ws.buyerIdentity), ['default', 'team-a'])
       assert.equal((store.database.prepare('SELECT COUNT(*) AS n FROM auth_schema_version').get() as { n: number }).n, 1)

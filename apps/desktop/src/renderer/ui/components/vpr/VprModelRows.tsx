@@ -6,7 +6,7 @@ import { favoriteModelKey } from '../../../modules/catalog/favorites';
 import { sameCanonicalModel } from '../../../modules/catalog/model-identity';
 import { modelCapabilitySummary } from '../../../modules/catalog/model-capabilities';
 import { modelTagsFor } from '../../../modules/catalog/model-metadata';
-import { BrandIcon } from '../brand/BrandIcon';
+import { BrandIcon } from '@antseed/ui';
 import { InfoTooltip } from '../InfoTooltip';
 import { formatUsdShort, VprBadge } from './VprKit';
 import styles from './VprModelRows.module.scss';

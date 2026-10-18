@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type ApiClient } from '../api'
 import type { Workspace } from '../api/types'
 import { isDepositPending } from './channels'
@@ -40,6 +40,8 @@ export const qk = {
   chatThread: (workspaceId: string, threadId: string) => ['chat-thread', workspaceId, threadId] as const,
   peers: ['peers'] as const,
   models: ['models'] as const,
+  routers: ['routers'] as const,
+  favorites: ['favorites'] as const,
   peerLists: ['peer-lists'] as const,
   gatewayPolicy: ['routing', 'gateway'] as const,
   buyerLimits: ['routing', 'buyer-limits'] as const,
@@ -66,6 +68,33 @@ export function usePeers(enabled = true) {
 /** Every model on the network, with the sellers offering it. */
 export function useModels() {
   return useQuery({ queryKey: qk.models, queryFn: api.network.models, staleTime: 30_000 })
+}
+
+/** Every routing service on the network. An older gateway has no list: no routers, not an error. */
+export function useRouters() {
+  return useQuery({ queryKey: qk.routers, queryFn: () => api.network.routers().catch(() => []), staleTime: 30_000 })
+}
+
+/** The caller's starred model and router ids, oldest first; empty when the gateway keeps none (an older one, or an admin token). */
+export function useFavorites() {
+  return useQuery({ queryKey: qk.favorites, queryFn: () => api.favorites.list().then((body) => body.models).catch(() => [] as string[]), staleTime: 60_000 })
+}
+
+/** Stars or unstars a model or router, showing the change at once and undoing it if the save fails. */
+export function useToggleFavorite() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, favorite }: { id: string; favorite: boolean }) => (favorite ? api.favorites.add(id) : api.favorites.remove(id)),
+    onMutate: async ({ id, favorite }) => {
+      await queryClient.cancelQueries({ queryKey: qk.favorites })
+      const previous = queryClient.getQueryData<string[]>(qk.favorites)
+      queryClient.setQueryData<string[]>(qk.favorites, (current = []) =>
+        favorite ? [...current.filter((entry) => entry !== id), id] : current.filter((entry) => entry !== id))
+      return { previous }
+    },
+    onError: (_error, _input, context) => { if (context?.previous) queryClient.setQueryData(qk.favorites, context.previous) },
+    onSettled: () => { void queryClient.invalidateQueries({ queryKey: qk.favorites }) },
+  })
 }
 
 export function usePeerLists(enabled = true) {

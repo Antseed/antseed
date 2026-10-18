@@ -6,6 +6,8 @@ import { useDialogBehavior } from './useDialogBehavior';
 export type DrawerSide = 'left' | 'right';
 
 export interface DrawerProps {
+  /** Buttons beside the close button in the header (e.g. star, share). */
+  actions?: ReactNode;
   backdropClassName?: string;
   bodyClassName?: string;
   children: ReactNode;
@@ -28,6 +30,7 @@ function CloseIcon() {
 }
 
 export function Drawer({
+  actions,
   backdropClassName,
   bodyClassName,
   children,
@@ -115,9 +118,12 @@ export function Drawer({
                 <h2 className="as-drawer__title" id={titleId}>{title}</h2>
                 {subtitle && <p className="as-drawer__subtitle" id={subtitleId}>{subtitle}</p>}
               </div>
-              <button type="button" className="as-drawer__close" onClick={closeDrawer} aria-label={closeLabel}>
-                <CloseIcon />
-              </button>
+              <div className="as-drawer__actions">
+                {actions}
+                <button type="button" className="as-drawer__close" onClick={closeDrawer} aria-label={closeLabel}>
+                  <CloseIcon />
+                </button>
+              </div>
             </header>
             <div className={bodyClasses}>{children}</div>
           </aside>

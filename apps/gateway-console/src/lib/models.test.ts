@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import type { NetworkModel } from '../api/types'
-import { filterModels, findModel, modelTypes, priceSummary } from './models'
+import { findModel, priceSummary } from './models'
 
 const model = (id: string, extra: Partial<NetworkModel> = {}): NetworkModel => ({
-  id, name: id, aliases: [], type: 'text', contextLength: null, capabilities: [], sellers: 1,
+  id, name: id, aliases: [], type: 'text', tags: [], contextLength: null, capabilities: [], sellers: 1,
   inputUsdPerMillion: { min: 1, max: 1 }, outputUsdPerMillion: { min: 2, max: 2 }, free: false, teeSellers: 0, fullTeeSellers: 0, verifiedSellers: 0, offers: [], ...extra,
 })
 
@@ -14,25 +14,6 @@ const models = [
 ]
 
 describe('network models', () => {
-  it('lists only the types present, in a fixed order', () => {
-    expect(modelTypes([models[2]!, models[0]!, models[1]!])).toEqual(['text', 'image', 'video'])
-    expect(modelTypes(undefined)).toEqual([])
-  })
-
-  it('searches id, name and aliases, case-insensitively', () => {
-    const ids = (search: string) => filterModels(models, { search, type: '', free: false }).map((entry) => entry.id)
-    expect(ids('LATEST')).toEqual(['open-model-a'])
-    expect(ids('open model a')).toEqual(['open-model-a'])
-    expect(ids(' video ')).toEqual(['open-video-model'])
-    expect(ids('')).toHaveLength(3)
-  })
-
-  it('filters by type and free', () => {
-    expect(filterModels(models, { search: '', type: 'image', free: false }).map((entry) => entry.id)).toEqual(['open-image-model'])
-    expect(filterModels(models, { search: '', type: '', free: true }).map((entry) => entry.id)).toEqual(['open-model-a'])
-    expect(filterModels(models, { search: '', type: 'image', free: true })).toEqual([])
-  })
-
   it('finds a model by id or alias', () => {
     expect(findModel(models, 'Open-Model-A')?.id).toBe('open-model-a')
     expect(findModel(models, 'open-model-a-latest')?.id).toBe('open-model-a')

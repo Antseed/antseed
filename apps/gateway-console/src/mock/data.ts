@@ -1,5 +1,5 @@
 import type {
-  AdminToken, ApiKey, AuditEntry, AuthConfig, Channel, ChainInfo, Invite, Member, NetworkModel, NetworkModelOffer, Peer, PeerList, Preset, RequestDetail, RoutingPolicy, Settings, Workspace, WorkspaceRole,
+  AdminToken, ApiKey, AuditEntry, AuthConfig, Channel, ChainInfo, Invite, Member, NetworkModel, NetworkModelOffer, NetworkRouter, Peer, PeerList, Preset, RequestDetail, RoutingPolicy, Settings, Workspace, WorkspaceRole,
 } from '../api/types'
 
 /** Obvious fake peer ids for the mock: 0xfa1e…0001 etc. */
@@ -216,7 +216,7 @@ export function mockNetworkModels(peers: readonly Peer[]): NetworkModel[] {
   return entries.map(([id, list, type]) => {
     const ranked = [...list].sort((a, b) => (b.reputationScore ?? -1) - (a.reputationScore ?? -1))
     return {
-      id, name: id, aliases: id.includes('.') ? [id.replace(/\./g, '-')] : [], type,
+      id, name: id, aliases: id.includes('.') ? [id.replace(/\./g, '-')] : [], type, tags: mockTags(id),
       contextLength: range(ranked.map((offer) => offer.contextLength))?.max ?? null,
       capabilities: type === 'text' ? (id.includes('qwen3-coder') || id.includes('kimi') ? ['toolUse', 'structuredOutput'] : ['toolUse']) : [],
       sellers: ranked.length,
@@ -229,4 +229,29 @@ export function mockNetworkModels(peers: readonly Peer[]): NetworkModel[] {
       offers: ranked,
     }
   })
+}
+
+/** Fake release tags, by model name (the real ones come from the gateway's model registry). */
+function mockTags(id: string): string[] {
+  const tags: string[] = []
+  if (id.includes('coder')) tags.push('Coding')
+  if (/r1|thinking|kimi/.test(id)) tags.push('Reasoning')
+  if (id.includes('vl')) tags.push('Vision')
+  if (/llama|qwen|deepseek|gpt-oss|glm|gemma|olmo/.test(id)) tags.push('Open weights')
+  if (/flash|schnell|air/.test(id)) tags.push('Fast')
+  return tags
+}
+
+/** Fake routing services: one free, one charging per ranking. */
+export function mockNetworkRouters(peers: readonly Peer[]): NetworkRouter[] {
+  const option = { key: 'cost_quality_tradeoff', type: 'integer' as const, label: 'Cost vs. quality', minimum: 0, maximum: 10, default: 5,
+    description: '0 picks the best quality regardless of price; 10 picks the cheapest acceptable model.' }
+  return [
+    { id: `${peers[0]!.peerId}@fake-router`, peerId: peers[0]!.peerId, serviceId: 'fake-router', provider: 'fake-routing', name: 'Fake Router Iota',
+      sellerName: peers[0]!.displayName, protocol: 'irp-suggest', options: [option], priceUsdPerRequest: 0, free: true, models: ['*'],
+      trustScore: peers[0]!.trustScore, verified: peers[0]!.verified, verificationLinks: peers[0]!.verificationLinks },
+    { id: `${peers[2]!.peerId}@fake-quality-router`, peerId: peers[2]!.peerId, serviceId: 'fake-quality-router', provider: 'fake-routing', name: 'Fake Quality Router',
+      sellerName: peers[2]!.displayName, protocol: 'irp-suggest', options: [option], priceUsdPerRequest: 0.0005, free: false,
+      models: ['deepseek-v3.1', 'qwen3-coder-480b', 'kimi-k2'], trustScore: peers[2]!.trustScore, verified: peers[2]!.verified, verificationLinks: peers[2]!.verificationLinks },
+  ]
 }

@@ -12,7 +12,7 @@ import {
   selectFavoriteVprCatalog,
   selectRecommendedVprCatalog,
 } from '../../../modules/catalog/recommended';
-import { BrandIcon } from '../brand/BrandIcon';
+import { BrandIcon } from '@antseed/ui';
 import styles from './VprModelDropdown.module.scss';
 import { VprRouterOptions } from '../vpr/VprRouterOptions';
 import { useUiSelector } from '../../hooks/useUiSelector';
