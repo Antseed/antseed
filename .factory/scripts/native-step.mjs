@@ -1,211 +1,177 @@
 #!/usr/bin/env node
-// Run one factory step in a native coding agent (Claude Code or Codex) inside a visible Herdr pane.
+// Run one factory step as a fresh, pinned Claude Code session in a Herdr pane, wait for it, audit it.
 //
-//   node .factory/scripts/native-step.mjs --step build --slug <slug> --agent codex --model gpt-6.1-sol \
-//     --template .factory/prompts/build.md [--var sent_back=...] [--answer-file .factory/tasks/<slug>/build.md] \
-//     [--effort medium] [--timeout-min 40] [--interactive]
+//   node native-step.mjs --slug <slug> --stage <stage> --tag <step tag> --model <model> --mode writer|reader
+//     --pane <herdr pane> --cwd <dir> --prompt <prompt file> --answer-prefix <WORD> --out <final message file>
+//     [--effort high] [--timeout-min 45] [--stall-min 6] [--add-dir <dir>]... [--keep-pane]
 //
-// --template fills {slug} and every --var key=value into .factory/tasks/<slug>/<step>.prompt.md.
-// --answer-file prints `ANSWER <STEP> <slug> ...` from that file's last matching line, only if the step rewrote it.
+// The session gets its own --settings file: the audit proxy as ANTHROPIC_BASE_URL, the GesundAI pin and
+// x-factory-step headers, every model alias and the subagent model set to --model (subagents cannot drift),
+// DISABLE_AUTOUPDATER, and a deny list for every GitHub write. As belt and braces the session's git has an
+// unusable push URL and gh an unusable token, so a push or PR cannot happen even through `bash -c`.
+// Writers: acceptEdits + an explicit tool allowlist (root refuses --dangerously-skip-permissions).
+// Readers: plan mode, Read/Grep/Glob and read-only git only; their review is their final message.
 //
-// Opens a pane labelled "<step> <round> · <agent> · <model>" next to the Prime lead, starts the agent
-// there pinned to GesundAI, sends the prompt, waits until the agent is idle, and appends
-// {step, round, agent, session_id, pane, model, started_at, ended_at, status, resume} to
-// .factory/tasks/<slug>/sessions.jsonl. The pane stays open until the next step opens, so the human
-// can watch, type into it, or resume it later. Without Herdr it falls back to `claude -p` / `codex exec`.
-// --interactive (needs Herdr): start the agent, send the prompt, record the session as `interactive`, and
-// exit at once. The conversation then continues in the pane with the human; the step's file is the hand-off.
-import { execFileSync, spawn, spawnSync } from 'node:child_process'
+// Completion: Herdr reports idle/done and the transcript's last entry is a finished assistant message.
+// Stall: not idle, no new audit-log request and no transcript growth for --stall-min minutes, and no tool
+// call in flight: the pane is read (saved as evidence) and nudged with Enter once; a second stall fails.
+// Exit: 0 answered, 1 no answer line, 2 audit failed, 3 stalled or timed out, 4 could not start.
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { AUDIT_URL, PEER, auditRows, auditStep, herdr, runDir, sh } from '../lib/common.mjs'
 
-const GESUNDAI_PEER = '983e9de990b9ac8d36d373db5d0b49a4d7f7d826'
-const BUYER_URL = process.env.ANTSEED_BUYER_URL ?? 'http://localhost:8377'
-
-function arg(name, fallback) {
-  const index = process.argv.indexOf(`--${name}`)
-  if (index > 0 && process.argv[index + 1]) return process.argv[index + 1]
-  if (fallback === undefined) throw new Error(`missing --${name}`)
+const argv = process.argv.slice(2)
+const opt = (name, fallback) => {
+  const i = argv.indexOf(`--${name}`)
+  if (i >= 0 && argv[i + 1] !== undefined) return argv[i + 1]
+  if (fallback === undefined) { console.error(`missing --${name}`); process.exit(4) }
   return fallback
 }
+const opts = (name) => argv.flatMap((v, i) => (v === `--${name}` ? [argv[i + 1]] : []))
 
-const step = arg('step')
-const slug = arg('slug')
-const agent = arg('agent', 'claude')
-if (!['claude', 'codex'].includes(agent)) throw new Error(`--agent must be claude or codex, got ${agent}`)
-const model = arg('model')
-const effort = arg('effort', '')
-const templateFile = arg('template', '')
-const promptFileArg = arg('prompt-file', '')
-if (!templateFile && !promptFileArg) throw new Error('pass --template <file> or --prompt-file <file>')
-const vars = { slug }
-process.argv.forEach((value, index) => {
-  if (value !== '--var') return
-  const [key, ...rest] = String(process.argv[index + 1] ?? '').split('=')
-  vars[key] = rest.join('=')
-})
-const timeoutMs = Number(arg('timeout-min', '40')) * 60_000
-const answerFile = arg('answer-file', '')
-const interactive = process.argv.includes('--interactive')
-const repo = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim()
-const taskDir = join(repo, '.factory', 'tasks', slug)
-mkdirSync(taskDir, { recursive: true })
-const promptFile = templateFile ? join(taskDir, `${step}.prompt.md`) : resolve(promptFileArg)
-if (templateFile) {
-  const filled = readFileSync(resolve(repo, templateFile), 'utf8').replace(/\{(\w+)\}/g, (match, key) => (key in vars ? vars[key] : match))
-  writeFileSync(promptFile, filled)
+const slug = opt('slug'), stage = opt('stage'), tag = opt('tag'), model = opt('model'), mode = opt('mode')
+const pane = opt('pane'), cwd = resolve(opt('cwd')), promptFile = resolve(opt('prompt'))
+const answerPrefix = opt('answer-prefix'), outFile = resolve(opt('out'))
+const effort = opt('effort', 'high'), timeoutMs = Number(opt('timeout-min', '45')) * 60_000
+const stallMs = Number(opt('stall-min', '6')) * 60_000
+const dir = runDir(slug)
+mkdirSync(join(dir, 'settings'), { recursive: true })
+mkdirSync(join(dir, 'sessions'), { recursive: true })
+
+const DENY = [
+  'Bash(git push:*)', 'Bash(git push)', 'Bash(gh pr create:*)', 'Bash(gh pr merge:*)', 'Bash(gh pr comment:*)',
+  'Bash(gh pr review:*)', 'Bash(gh pr edit:*)', 'Bash(gh pr close:*)', 'Bash(gh pr ready:*)', 'Bash(gh issue:*)',
+  'Bash(gh api:*)', 'Bash(gh repo:*)', 'Bash(pnpm sandbox mainnet:*)', 'Bash(git stash:*)',
+]
+const WRITER_TOOLS = ['Bash', 'Edit', 'Write', 'Read', 'Glob', 'Grep', 'TodoWrite', 'Task']
+const READER_TOOLS = ['Read', 'Grep', 'Glob', 'Bash(git diff:*)', 'Bash(git log:*)', 'Bash(git show:*)']
+const NEVER = ['AskUserQuestion', 'EnterPlanMode', 'WebFetch', 'WebSearch']
+const READER_NEVER = ['Edit', 'Write', 'NotebookEdit', 'ExitPlanMode', 'Task']
+
+const settingsFile = join(dir, 'settings', `${tag.replaceAll('/', '_')}.json`)
+const env = {
+  ANTHROPIC_BASE_URL: AUDIT_URL,
+  ANTHROPIC_CUSTOM_HEADERS: ['x-antseed-system-proxy-source: claude-code', `x-antseed-pin-peer: ${PEER}`, `x-factory-step: ${tag}`].join('\n'),
+  ANTHROPIC_MODEL: model,
+  ANTHROPIC_DEFAULT_OPUS_MODEL: model,
+  ANTHROPIC_DEFAULT_SONNET_MODEL: model,
+  ANTHROPIC_DEFAULT_HAIKU_MODEL: model,
+  ANTHROPIC_SMALL_FAST_MODEL: model,
+  CLAUDE_CODE_SUBAGENT_MODEL: model,
+  DISABLE_AUTOUPDATER: '1',
+  GIT_CONFIG_COUNT: '1',
+  GIT_CONFIG_KEY_0: 'remote.origin.pushurl',
+  GIT_CONFIG_VALUE_0: 'factory-sessions-never-push:none',
+  GH_TOKEN: 'factory-sessions-have-no-github-access',
 }
-const prompt = readFileSync(promptFile, 'utf8')
-let sessionId = agent === 'claude' ? randomUUID() : ''
-const sessionsFile = join(taskDir, 'sessions.jsonl')
-const round = 1 + (existsSync(sessionsFile) ? readFileSync(sessionsFile, 'utf8').split('\n').filter((line) => line.includes(`"step":"${step}"`)).length : 0)
+const allow = mode === 'reader' ? READER_TOOLS : WRITER_TOOLS
+const deny = mode === 'reader' ? [...DENY, ...NEVER, ...READER_NEVER] : [...DENY, ...NEVER]
+writeFileSync(settingsFile, JSON.stringify({ env, permissions: { allow, deny } }, null, 2) + '\n')
+
+const sessionId = randomUUID()
+const name = `f-${stage}-${sessionId.slice(0, 6)}`.toLowerCase().replace(/[^a-z0-9_-]/g, '-').slice(0, 32)
+const claudeArgs = [
+  '--model', model, '--settings', settingsFile, '--session-id', sessionId, '--name', `${slug} · ${tag.split('/').pop()} · ${model}`,
+  '--effort', effort, '--permission-mode', mode === 'reader' ? 'plan' : 'acceptEdits',
+  '--allowedTools', ...allow, '--disallowedTools', ...deny,
+  '--add-dir', dir, ...opts('add-dir').flatMap((d) => ['--add-dir', d]),
+]
+const transcript = join(homedir(), '.claude', 'projects', cwd.replace(/[^a-zA-Z0-9]/g, '-'), `${sessionId}.jsonl`)
 const startedAt = new Date().toISOString()
-
-const NODE24_BIN = process.env.FACTORY_NODE_BIN ?? join(process.env.HOME ?? '', '.volta/tools/image/node/24.21.0/bin')
-const shellEnvFile = join(taskDir, `${step}.shell-env.sh`)
-writeFileSync(shellEnvFile, `export PATH="${NODE24_BIN}:$PATH"\n`)
-const shellPath = `${NODE24_BIN}:${process.env.PATH ?? ''}`
-const env = agent === 'claude'
-  ? {
-      CLAUDE_ENV_FILE: shellEnvFile,
-      ANTHROPIC_BASE_URL: BUYER_URL,
-      ANTHROPIC_AUTH_TOKEN: 'antseed',
-      ANTHROPIC_API_KEY: '',
-      ANTHROPIC_CUSTOM_HEADERS: `x-antseed-pin-peer: ${GESUNDAI_PEER}`,
-    }
-  : { GESUNDAI_KEY: 'antseed', PATH: shellPath }
-const agentArgs = agent === 'claude'
-  ? [
-      '--session-id', sessionId,
-      '--model', model,
-      '--name', `${step} · ${slug}`,
-      '--permission-mode', 'bypassPermissions',
-      ...(effort ? ['--effort', effort] : []),
-    ]
-  : [
-      '--model', model,
-      '-c', 'model_provider="gesundai"',
-      '-c', `model_providers.gesundai={name="GesundAI",base_url="${BUYER_URL}/v1",wire_api="responses",env_key="GESUNDAI_KEY",http_headers={"x-antseed-pin-peer"="${GESUNDAI_PEER}"}}`,
-      '-c', `shell_environment_policy.set={PATH="${shellPath}"}`,
-      '-c', `projects={"${repo}"={trust_level="trusted"}}`,
-      ...(effort ? ['-c', `model_reasoning_effort="${effort}"`] : []),
-      '--dangerously-bypass-approvals-and-sandbox',
-      '--cd', repo,
-    ]
-
-function record(status, extra = {}) {
-  const resume = !sessionId ? '' : agent === 'claude' ? `claude --resume ${sessionId}` : `codex resume ${sessionId}`
-  const entry = { step, round, agent, session_id: sessionId, model, started_at: startedAt, ended_at: new Date().toISOString(), status, resume, ...extra }
-  appendFileSync(sessionsFile, `${JSON.stringify(entry)}\n`)
-  console.log(JSON.stringify(entry))
+const record = (status, extra = {}) => {
+  const entry = { slug, stage, tag, model, mode, pane, herdr_agent: name, session_id: sessionId, settings: settingsFile, transcript, started_at: startedAt,
+    ended_at: new Date().toISOString(), status, resume: `cd ${cwd} && claude --resume ${sessionId} --settings ${settingsFile}`,
+    command: `claude ${claudeArgs.map((a) => (/[\s*()]/.test(a) ? `'${a}'` : a)).join(' ')}`, ...extra }
+  appendFileSync(join(dir, 'sessions.jsonl'), JSON.stringify(entry) + '\n')
+}
+const log = (msg) => console.log(`[${new Date().toISOString().slice(11, 19)}] ${tag}: ${msg}`)
+const snap = (label) => {
+  const r = sh('herdr', ['pane', 'read', pane, '--source', 'recent-unwrapped', '--lines', '60'])
+  const file = join(dir, 'sessions', `${tag.replaceAll('/', '_')}-${label}.txt`)
+  writeFileSync(file, r.stdout ?? '')
+  return file
 }
 
-function findCodexSession() {
-  const root = join(process.env.HOME ?? '', '.codex', 'sessions')
-  const started = Date.parse(startedAt)
-  const day = new Date(started)
-  const dirs = [0, 1].map((offset) => {
-    const date = new Date(day.getTime() + offset * 86_400_000)
-    return join(root, String(date.getFullYear()), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0'))
-  })
-  for (const dir of dirs) {
-    if (!existsSync(dir)) continue
-    for (const name of readdirSync(dir).sort().reverse()) {
-      const file = join(dir, name)
-      if (statSync(file).mtimeMs < started) continue
-      const meta = JSON.parse(readFileSync(file, 'utf8').split('\n', 1)[0]).payload ?? {}
-      if (resolve(meta.cwd ?? '') === repo && Date.parse(meta.timestamp) >= started - 5000) return meta.id
-    }
+herdr(['pane', 'rename', pane, `${tag.split('/').pop()} · ${model}`])
+log(`starting claude ${model} (${mode}) in ${pane}, session ${sessionId}`)
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const screenText = () => (sh('herdr', ['pane', 'read', pane, '--source', 'visible']).stdout ?? '').replace(/\s+/g, ' ')
+const start = sh('herdr', ['agent', 'start', name, '--kind', 'claude', '--pane', pane, '--timeout', '120000', '--', ...claudeArgs])
+// A first launch in a new worktree shows the folder-trust dialog, and Herdr may already report the agent as
+// ready. The factory created that folder, so accept it. The default option is "No, exit": move down first.
+for (let i = 0; i < 8; i += 1) {
+  if (/Yes, I trust this folder/.test(screenText())) {
+    log('folder trust dialog: choosing "Yes, I trust this folder" (the factory created this folder)')
+    sh('herdr', ['pane', 'send-keys', pane, 'down'])
+    await sleep(700)
+    sh('herdr', ['pane', 'send-keys', pane, 'enter'])
+    await sleep(3000)
+    sh('herdr', ['agent', 'wait', name, '--until', 'idle', '--until', 'done', '--timeout', '60000'])
+    break
   }
-  return ''
+  if (/accept edits on|plan mode on/.test(screenText())) break
+  await sleep(1500)
+}
+const ready = sh('herdr', ['agent', 'get', name])
+if (!/"agent_status":"(idle|done)"/.test(ready.stdout ?? '') || /trust this folder/.test(screenText())) {
+  log(`could not start: ${start.out.slice(0, 400)} ${ready.out.slice(0, 300)}`)
+  record('start-failed', { snapshot: snap('start') })
+  process.exit(4)
 }
 
-function herdr(args, options = {}) {
-  const out = execFileSync('herdr', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...options })
-  try { return JSON.parse(out).result } catch { return out }
+const instruction = `Read ${promptFile} with the Read tool and follow it exactly. Work autonomously: never ask questions, nobody will answer. Your last message must end with the final answer line that file asks for.`
+const prompted = sh('herdr', ['agent', 'prompt', name, instruction, '--wait', '--timeout', '90000'])
+log(`prompt submitted (${prompted.status === 0 ? 'ok' : prompted.out.slice(0, 200)})`)
+
+function transcriptState() {
+  if (!existsSync(transcript)) return { size: 0, done: false, text: '' }
+  const lines = readFileSync(transcript, 'utf8').split('\n').filter(Boolean).flatMap((l) => { try { return [JSON.parse(l)] } catch { return [] } })
+  const turns = lines.filter((e) => e.type === 'assistant' || e.type === 'user')
+  const last = turns.at(-1)
+  const lastAssistant = [...turns].reverse().find((e) => e.type === 'assistant')
+  const id = lastAssistant?.message?.id
+  const blocks = turns.filter((e) => e.type === 'assistant' && e.message?.id === id).flatMap((e) => e.message?.content ?? [])
+  const pendingTool = last?.type === 'assistant' && blocks.some((b) => b.type === 'tool_use')
+  const text = blocks.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim()
+  return { size: statSync(transcript).size, done: last?.type === 'assistant' && !pendingTool && text.length > 0, pendingTool, text }
 }
 
-function findFactoryTab() {
-  const workspace = process.env.HERDR_WORKSPACE_ID
-  const tabs = herdr(['tab', 'list', ...(workspace ? ['--workspace', workspace] : [])]).tabs ?? []
-  const allPanes = herdr(['pane', 'list']).panes ?? []
-  const lead = allPanes.find((pane) => pane.agent === 'prime-agent' && resolve(pane.cwd ?? '') === repo)
-  if (lead) return { tab: lead.tab_id, anchor: lead.pane_id }
-  const panes = allPanes.filter((pane) => !workspace || pane.workspace_id === workspace)
-  const tab = tabs.find((candidate) => candidate.label?.includes('factory')) ?? tabs[0]
-  return { tab: tab?.tab_id, anchor: panes.find((pane) => pane.tab_id === tab?.tab_id)?.pane_id }
-}
-
-if (process.env.HERDR_ENV !== '1' && !process.env.HERDR_WORKSPACE_ID) {
-  if (interactive) throw new Error('--interactive needs Herdr (run inside a Herdr pane or set HERDR_WORKSPACE_ID)')
-  const [command, args] = agent === 'claude' ? ['claude', ['-p', ...agentArgs, prompt]] : ['codex', ['exec', ...agentArgs.filter((value) => value !== '--cd' && value !== repo), prompt]]
-  const result = spawnSync(command, args, { cwd: repo, env: { ...process.env, ...env }, stdio: 'inherit', timeout: timeoutMs })
-  record(result.status === 0 ? 'done' : 'failed', { mode: 'print' })
-  process.exit(result.status ?? 1)
-}
-
-if (process.platform === 'darwin') spawn('caffeinate', ['-i', '-w', String(process.pid)], { stdio: 'ignore', detached: true }).unref()
-const { tab, anchor } = findFactoryTab()
-for (const old of herdr(['pane', 'list']).panes ?? []) {
-  if (old.tab_id === tab && /^(shape|plan|build|review|verify)( \d+)? · (claude|codex)/.test(old.label ?? '') && old.agent_status !== 'working') {
-    spawnSync('herdr', ['pane', 'close', old.pane_id])
-  }
-}
-const split = herdr(['pane', 'split', anchor, '--direction', 'right', '--cwd', repo, '--no-focus', ...Object.entries(env).map(([key, value]) => ['--env', `${key}=${value}`]).flat()])
-const pane = split.pane.pane_id
-herdr(['pane', 'rename', pane, `${step} ${round} · ${agent} · ${model}${effort ? `·${effort}` : ''}`])
-const agentName = `${step}${round}-${slug}`.toLowerCase().replace(/[^a-z0-9_-]/g, '-').slice(0, 32)
-let started = false
-for (let attempt = 0; attempt < 20 && !started; attempt += 1) {
-  try {
-    herdr(['agent', 'start', agentName, '--kind', agent, '--pane', pane, '--timeout', '120000', '--', ...agentArgs])
-    started = true
-  } catch (error) {
-    if (!String(error.stderr ?? '').includes('agent_pane_busy')) {
-      spawnSync('herdr', ['pane', 'close', pane])
-      throw error
-    }
-    await new Promise((done) => setTimeout(done, 500))
-  }
-}
-if (!started) throw new Error(`pane ${pane} never became an available shell`)
-console.log(`${step}: ${agent} in pane ${pane}${sessionId ? ` (session ${sessionId})` : ''}`)
-
-const instruction = `Read and follow the instructions in ${promptFile} exactly. When you are done, your last message must be the final answer line it asks for.`
-if (interactive) {
-  const sent = spawnSync('herdr', ['agent', 'prompt', agentName, instruction], { encoding: 'utf8' })
-  if (sent.status !== 0) throw new Error(`could not send the prompt to ${agentName}: ${sent.stderr}`)
-  record('interactive', { pane, herdr_agent: agentName, mode: 'herdr' })
-  console.log(`${step} is running interactively in pane ${pane}; talk to it there.`)
-  process.exit(0)
-}
-const wait = spawnSync('herdr', ['agent', 'prompt', agentName, instruction, '--wait', '--timeout', String(timeoutMs)], { encoding: 'utf8' })
-let state = ''
-try { state = JSON.parse(wait.stdout).result?.agent?.agent_status ?? '' } catch {}
 const deadline = Date.now() + timeoutMs
-while (wait.status !== 0 && !['idle', 'done', 'blocked'].includes(state) && Date.now() < deadline) {
-  const again = spawnSync('herdr', ['agent', 'wait', agentName, '--timeout', String(Math.min(60000, deadline - Date.now()))], { encoding: 'utf8' })
-  try { state = JSON.parse(again.stdout).result?.agent?.agent_status ?? state } catch {}
-  if (again.status !== 0 && !String(again.stderr ?? '').includes('timeout')) await new Promise((done) => setTimeout(done, 2000))
+let lastActivity = Date.now(), lastRows = auditRows(tag).length, lastSize = 0, nudged = 0, idleStreak = 0, status = 'timeout'
+while (Date.now() < deadline) {
+  await new Promise((r) => setTimeout(r, 15_000))
+  const agent = herdr(['agent', 'get', name])?.agent
+  const state = agent?.agent_status ?? 'gone'
+  const rows = auditRows(tag).length
+  const t = transcriptState()
+  if (rows !== lastRows || t.size !== lastSize) { lastActivity = Date.now(); lastRows = rows; lastSize = t.size; nudged = Math.min(nudged, 1) }
+  if (state === 'gone') { status = 'exited'; break }
+  if ((state === 'idle' || state === 'done') && t.done) { if (++idleStreak >= 2) { status = 'done'; break } } else idleStreak = 0
+  const quietMs = Date.now() - lastActivity
+  if (quietMs > stallMs && !(state === 'working' && t.pendingTool)) {
+    const evidence = snap(`stall-${nudged + 1}`)
+    if (nudged === 0) {
+      log(`stalled ${Math.round(quietMs / 60000)} min (state ${state}, no audit rows, no transcript growth): pressing Enter once; screen saved to ${evidence}`)
+      sh('herdr', ['agent', 'send-keys', name, 'enter'])
+      nudged = 1; lastActivity = Date.now()
+    } else {
+      log(`still stalled after the nudge; giving up. Screen: ${evidence}`)
+      sh('herdr', ['notification', 'show', `factory ${slug}: ${tag} stalled`, '--body', `pane ${pane}; screen in ${evidence}`, '--sound', 'request'])
+      status = 'stalled'; break
+    }
+  }
 }
-const status = state === 'blocked' ? 'blocked' : wait.status === 0 || ['idle', 'done'].includes(state) ? 'done' : 'timeout'
-let finalPane = pane
-try {
-  const info = herdr(['agent', 'get', agentName]).agent
-  finalPane = info?.pane_id ?? pane
-  if (!sessionId && info?.agent_session?.kind === 'id') sessionId = info.agent_session.value
-} catch {}
-if (!sessionId && agent === 'codex') sessionId = findCodexSession()
-record(status, { pane: finalPane, herdr_agent: agentName, mode: 'herdr' })
-if (status === 'blocked') {
-  spawnSync('herdr', ['notification', 'show', `factory: ${step} needs you`, '--body', `pane ${finalPane} is waiting for input`, '--sound', 'request'])
-}
-if (answerFile) {
-  const path = resolve(repo, answerFile)
-  const fresh = existsSync(path) && statSync(path).mtimeMs >= Date.parse(startedAt)
-  const pattern = new RegExp(`^${step.toUpperCase()} \\S+ \\S+.*$`, 'gm')
-  const line = fresh ? [...readFileSync(path, 'utf8').matchAll(pattern)].at(-1)?.[0]?.trim() : undefined
-  console.log(`ANSWER ${line ?? `${step.toUpperCase()} ${slug} ${status === 'done' ? 'NO_ANSWER' : status.toUpperCase()}`}`)
-}
-process.exit(status === 'done' ? 0 : 1)
+
+const t = transcriptState()
+writeFileSync(outFile, t.text + '\n')
+const audit = auditStep(tag, model)
+writeFileSync(join(dir, 'sessions', `${tag.replaceAll('/', '_')}-audit.json`), JSON.stringify(audit, null, 2) + '\n')
+const answer = t.text.split('\n').map((l) => l.trim()).filter(Boolean).at(-1) ?? ''
+const answered = status === 'done' && answer.startsWith(`${answerPrefix} `)
+record(status, { answer, audit: { ok: audit.ok, messages: audit.messages, problems: audit.problems }, out: outFile })
+log(`${status}; audit ${audit.ok ? 'ok' : 'FAILED'} (${audit.messages} requests, peers ${audit.peers.join(',')}, ${JSON.stringify(audit.by_status)})${audit.ok ? '' : ` ${audit.problems.join('; ')}`}`)
+console.log(`ANSWER ${answered ? answer : `${answerPrefix} NO_ANSWER ${status}`}`)
+if (!argv.includes('--keep-pane') && status === 'done' && audit.ok) sh('herdr', ['pane', 'close', pane])
+process.exit(!audit.ok ? 2 : status === 'stalled' || status === 'timeout' ? 3 : answered ? 0 : 1)
