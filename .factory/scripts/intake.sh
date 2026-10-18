@@ -19,7 +19,7 @@ case "$mode" in
     [ "$(node -e 'console.log(JSON.parse(process.argv[1]).state)' "$json")" = OPEN ] || echo "warning: issue #$ref is not OPEN" >&2
     state "$slug" issue "$ref"
     # A slug that already starts with the issue number does not get it twice.
-    if [[ "$slug" == "$ref-"* ]]; then state "$slug" branch "fix/$slug"; else state "$slug" branch "fix/$ref-$slug"; fi ;;
+    if [ "$slug" = "$ref" ] || [[ "$slug" == "$ref-"* ]]; then state "$slug" branch "fix/$slug"; else state "$slug" branch "fix/$ref-$slug"; fi ;;
   --task-file)
     [ -f "$ref" ] || die "no task file $ref"
     cp "$ref" "$rd/task.md"; state "$slug" issue ""; state "$slug" branch "fix/$slug" ;;
