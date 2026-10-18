@@ -273,6 +273,18 @@ async function blast() {
   if (!step.answer.startsWith(`BLAST ${slug} `)) stop('FAILED', `blast radius gave no answer: ${step.answer}`)
 }
 
+// Everything a reader needs, as files: readers run in plan mode and must not depend on Bash being approved.
+function reviewInput() {
+  const dir = join(RD, 'review-input'), files = join(dir, 'files')
+  mkdirSync(files, { recursive: true })
+  writeFileSync(join(dir, 'diff.patch'), sh('git', ['-C', S.worktree, 'diff', `${S.base}..HEAD`]).stdout)
+  writeFileSync(join(dir, 'log.txt'), sh('git', ['-C', S.worktree, 'log', '--stat', `${S.base}..HEAD`]).stdout)
+  for (const f of sh('git', ['-C', S.worktree, 'diff', '--name-only', `${S.base}..HEAD`]).stdout.split('\n').filter(Boolean)) {
+    mkdirSync(join(files, f, '..'), { recursive: true })
+    writeFileSync(join(files, f), sh('git', ['-C', S.worktree, 'show', `HEAD:${f}`]).stdout)
+  }
+}
+
 const intent = () => {
   const plan = read(join(RD, 'test-plan.md'))
   const sec = (h) => (plan.split(`\n## ${h}\n`)[1] ?? '').split('\n## ')[0].trim().replace(/\s+/g, ' ')
@@ -286,6 +298,7 @@ async function review() {
   for (let round = startRound; round <= MODELS.max_review_rounds; round += 1) {
     S = saveState(slug, { review_round: round })
     const before = snapshot()
+    reviewInput()
     const labels = ['A', 'B', 'C']
     const done = (i) => lastLine(read(join(RD, `review-r${round}-${reviewers[i]}.md`))).startsWith(`REVIEW ${slug} ${labels[i]} `)
     const todo = reviewers.map((m, i) => i).filter((i) => !done(i))
@@ -298,7 +311,14 @@ async function review() {
     const ran = await Promise.all(todo.map((i) => runStep({ readonly: true, stage: 'review', round, suffix: `-${reviewers[i]}`, template: 'review.md', prefix: 'REVIEW', cwd: S.worktree,
       pane: panes[i], model: reviewers[i], mode: 'reader', extra: { reviewer: labels[i], intent: intent() } }).then((st) => ({ ...st, i }))))
     ran.forEach(auditGate); readOnly(before, 'a reviewer'); tripwire('review')
-    for (const st of ran) writeFileSync(join(RD, `review-r${round}-${reviewers[st.i]}.md`), read(st.out))
+    // Non-200 responses mean some calls were refused (plan mode asks the model's safety classifier about
+    // unlisted Bash; gpt-6-astra answers it with a 400). The judge sees that next to the review.
+    for (const st of ran) {
+      const audit = JSON.parse(read(join(RD, 'sessions', `${st.tag.replaceAll('/', '_')}-audit.json`)) || '{}')
+      const refused = Object.entries(audit.by_status ?? {}).filter(([code]) => code !== '200').map(([code, n]) => `${n}x HTTP ${code}`)
+      const note = refused.length ? `\n\n> Factory audit note: this session got ${refused.join(', ')} from the model; calls that needed the safety classifier were refused. Weigh what it could not check.\n` : ''
+      writeFileSync(join(RD, `review-r${round}-${reviewers[st.i]}.md`), note + read(st.out))
+    }
     const files = reviewers.map((m) => join(RD, `review-r${round}-${m}.md`))
     const steps = reviewers.map((m, i) => ({ answer: lastLine(read(files[i])) }))
     const missing = steps.filter((s) => !s.answer.startsWith(`REVIEW ${slug} `))

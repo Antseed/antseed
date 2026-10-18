@@ -5,9 +5,9 @@ Read with the Read tool: `{skills}/interrogate/SKILL.md` (Steps 4, 5 and the Out
 The reviews (one per model, separate pinned sessions):
 {review_files}
 Intent: {intent}
-The change: `git -C {worktree} diff {base}..HEAD`. Context: `{run_dir}/test-plan.md`, `{run_dir}/blast-radius.md`, `{verify_dir}/gate.json`, `{verify_dir}/verify.md`.{previous_judgment}
+The change: `{run_dir}/review-input/diff.patch` (changed files at HEAD under `{run_dir}/review-input/files/`). A review that starts with a factory audit note could not run some checks: weigh it accordingly. Context: `{run_dir}/test-plan.md`, `{run_dir}/blast-radius.md`, `{verify_dir}/gate.json`, `{verify_dir}/verify.md`.{previous_judgment}
 
-You are READ-ONLY (plan mode). Do not call ExitPlanMode.
+You are READ-ONLY (plan mode): use Read, Grep and Glob, write no decision-log rows, do not call ExitPlanMode.
 1. Merge findings that describe the same issue; note which models raised each. Independent agreement is the strongest signal.
 2. Trace every finding to real call sites before you keep it (Hypothetical vs. Actual). Dismiss "I would have done it differently".
 3. Bucket every finding: Act on (would block a real PR: correctness, security, a test that does not prove the behavior, a contradiction of the task), Consider, Noted, Dismissed, each with the models and a one-line rationale. For each Act on item give one concrete instruction a fixer can carry out.
