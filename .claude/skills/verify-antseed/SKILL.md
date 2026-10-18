@@ -72,7 +72,7 @@ Read-only. It checks the Node major against `.nvmrc`, `pnpm`, `anvil`, `forge` w
 - A scenario is `e2e/sandbox/scenarios/<name>.mjs` with `meta`, `topology` and `run(sb)`. Drive the buyer like a client: `sb.chat()` goes through the buyer proxy, `sb.desktop()` through the desktop UI. Read state with `sb.channels()`, `sb.buyerBalance()`, `sb.settledEvents(id)` and `sb.mockRequests(id)`. Control the network with `sb.stopBuyer()`, `sb.stopSeller(id)` and `sb.warp(seconds)`.
 - Assert with `sb.check(name, ok, detail)`. Put the observed and expected values in `detail`: the failing line in the output is the evidence.
 - `sb.faults.loseNeedAuths(count)` makes the buyer drop its next `count` seller NeedAuth frames, and `sb.faults.lostNeedAuths()` returns what it dropped since that call. Arming clears the list, and every buyer start disarms the fault. Use a fault only to reach a state that no public path produces, and say why in a comment.
-- Desktop: `const ui = await sb.desktop()`, then `ui.sendChat(prompt)`, `ui.screenshot(name)` and `ui.page` (Playwright). Prefer `getByRole` and `getByLabel`. On a headless Linux server, run `xvfb-run -a pnpm sandbox run desktop-chat`.
+- Desktop: `const ui = await sb.desktop()`, then `ui.sendChat(prompt)`, `ui.screenshot(name)` and `ui.page` (Playwright). Prefer `getByRole` and `getByLabel`. On a headless Linux server, run `xvfb-run -a pnpm sandbox run desktop-chat --chain local`. Without `--chain`, `desktop-chat`, `chat-basic` and `routing-smoke` run on their first target, the fork.
 - Journeys with exact steps: [`features/README.md`](features/README.md).
 
 ## Fix a bug red to green
@@ -84,6 +84,7 @@ The sandbox lives on a sandbox branch, not on `main`. The fix lives on a branch 
    ```bash
    git worktree add -b scratch/<N> ../<repo>-<N>-scratch <sandbox-branch>
    cd ../<repo>-<N>-scratch
+   git fetch origin
    git merge-base --is-ancestor origin/main HEAD || git merge origin/main
    git submodule update --init packages/contracts/lib/forge-std && pnpm install && pnpm run build
    ```
@@ -95,13 +96,14 @@ The sandbox lives on a sandbox branch, not on `main`. The fix lives on a branch 
 5. **Fix it in a worktree from `origin/main`.** Write a failing unit test in the owning package, then the smallest fix that the evidence justifies:
 
    ```bash
+   git fetch origin
    git worktree add -b fix/<N>-<slug> ../<repo>-fix-<N> origin/main
    ```
 
    Never create the fix branch inside the scratch worktree: the untracked scenario would follow it. Commit only if the user asked for a fix PR (`CLAUDE.md`). Then the PR has two commits, the failing test and then the fix. Without that request, leave the fix uncommitted.
 6. **Prove it passes.** Bring the fix into the scratch worktree, rebuild, and rerun the scenario. It must pass.
    - Committed fix: `git cherry-pick <test-sha> <fix-sha>`.
-   - Uncommitted fix: `git -C ../<repo>-fix-<N> diff | git apply`.
+   - Uncommitted fix: `git -C ../<repo>-fix-<N> add -N . && git -C ../<repo>-fix-<N> diff --binary HEAD | git apply`. Plain `git diff` leaves out new files (the new unit test) and staged changes. Check that `git status --short` in the scratch lists every file the fix changed.
    - Rebuild the changed packages (doctor names them), then run `run-with-evidence.mjs issue-<N>-<slug> --chain local`.
 7. **Run the regressions** in the scratch worktree: the required runs for the fixed path from [Decide what to prove](#decide-what-to-prove), at least `payment-flow --chain local` and `chat-basic --chain local` for a payment bug. Each reports one `KNOWN` result for the cooperative close defect:
    - `payment-flow`: `KNOWN cooperative close charges exactly the delivered work`, settled 36 against 18 delivered.
@@ -121,11 +123,11 @@ Run scenarios through the evidence helper:
 .claude/skills/verify-antseed/scripts/run-with-evidence.mjs <scenario> --chain local [--keep] [--strict] [--slot NAME]
 ```
 
-It runs `node e2e/sandbox/cli.mjs run` (what `pnpm sandbox run` runs) with the same flags, shows the output, and exits with the run's code. It refuses to start while this worktree's sandbox is running. It forwards Ctrl+C and SIGTERM to the run, so the run still tears down. It adds three things to the report directory `~/.antseed-sandbox/<name>/reports/<timestamp>-<scenario>/`:
+It runs `node e2e/sandbox/cli.mjs run` (what `pnpm sandbox run` runs) with the same flags, shows the output, and exits with the run's code. It refuses to start while this worktree's sandbox is running or starting. On Ctrl+C, SIGTERM or SIGHUP it stops the run, then runs `node e2e/sandbox/cli.mjs down` itself, because the killed run never reaches its own teardown and the supervisor runs detached. It still files the transcript: into the report directory if the scenario had started, else into `~/.antseed-sandbox/<name>/logs/evidence-<timestamp>-<scenario>.log`. It adds three things to the report directory `~/.antseed-sandbox/<name>/reports/<timestamp>-<scenario>/`:
 
 - `checks.log`: the `PASS`, `FAIL` and `KNOWN` lines, the error, and the report path. Paste these lines into PR bodies.
 - `run-output.log`: the whole console transcript.
-- `logs/`: the supervisor, seller and Anvil log lines written during the run. The sandbox appends to its logs across runs, so these are the only per-run copy.
+- `logs/`: the supervisor, seller, Anvil and forge log lines written during the run. The sandbox appends to its logs across runs, so these are the only per-run copy.
 
 The sandbox itself writes `index.html`, `report.json`, `events.jsonl` and `metrics.json` there, plus `screenshots/`, `video/desktop.webm` and `desktop-main.log` for desktop runs. `pnpm sandbox down` keeps the whole directory.
 
@@ -159,7 +161,7 @@ Run both from the worktree root.
 
 The sandbox cannot do these yet. Treat each as a known limit, not as a reason to skip a required run.
 
-- **Seller payment and pricing knobs.** A topology cannot set a seller's `minBudgetPerRequest` or per-model pricing. Scenarios get the built-in defaults.
+- **Seller payment knobs.** A topology cannot set a seller's `minBudgetPerRequest`, so scenarios get the default (0.5 USDC). Per-model pricing is settable: `topology.sellers[].providers.<name>.services.<model>.pricing`, which `sb.mockCostPerChat()` reads.
 - **`sb.request()` for other endpoints.** `sb.chat()` drives only `/v1/chat/completions`. No helper drives `/v1/responses`.
 - **RPC fault injection.** No proxy sits between the nodes and Anvil to delay, drop or fail RPC calls.
 - **Transport faults.** The only fault is NeedAuth loss, and it wraps the buyer payment manager's public `handleNeedAuth` (see [`features/payment-catch-up-402.md`](features/payment-catch-up-402.md)). A frame-level fault on the payment channel between buyer and seller would be cleaner.

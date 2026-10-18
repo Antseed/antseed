@@ -170,9 +170,9 @@ Playwright on the sandbox buyer (sandbox wallet, chats stored in the sandbox, te
 
 1. Run the desktop unit tests and typecheck, then rebuild so Playwright runs the changed
    code: `pnpm --filter @antseed/desktop run build:main && pnpm --filter @antseed/desktop run build:renderer`.
-2. Run `pnpm sandbox run desktop-chat` (the chat send/reply/payment path) plus any new
+2. Run `pnpm sandbox run desktop-chat --chain local` (the chat send/reply/payment path) plus any new
    scenario for the changed feature. A visible window opens while it runs; tell the user.
-   On a headless Linux server, use `xvfb-run -a pnpm sandbox run desktop-chat`.
+   On a headless Linux server, use `xvfb-run -a pnpm sandbox run desktop-chat --chain local`.
 3. For a feature not covered yet, write a scenario in `e2e/sandbox/scenarios/desktop-<name>.mjs`
    with `requires: ['desktop']`. Pattern:
    ```js
@@ -191,7 +191,7 @@ Playwright on the sandbox buyer (sandbox wallet, chats stored in the sandbox, te
    UI and the back end (status, channels, mock requests).
    On a failure, look at `screenshots/*chat-timeout*.png` and the video first: the error
    text includes what the screen showed.
-6. For pure visual review the user wants to do by hand, offer `pnpm sandbox run desktop-chat --keep`
+6. For pure visual review the user wants to do by hand, offer `pnpm sandbox run desktop-chat --chain local --keep`
    then `pnpm sandbox desktop`. On a Linux server with Tailscale, offer `pnpm sandbox share` instead:
    the user gets a tailnet link to the running desktop in their browser (see "Share" in
    `e2e/sandbox/README.md`). Give them the printed URL, and remind them that `pnpm sandbox down`
