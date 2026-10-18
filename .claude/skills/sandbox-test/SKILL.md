@@ -8,7 +8,7 @@ description: Test the current worktree's changes end to end with pnpm sandbox. C
 Runs the worktree's changes through `pnpm sandbox` (see `e2e/sandbox/README.md`) and
 reports what passed, what failed and which metrics moved. The **verify-antseed** skill
 (`.claude/skills/verify-antseed/SKILL.md`) layers on this one: which scenario a change
-requires, the red-to-green bug protocol, evidence for PR bodies, and the feature map.
+requires and when a change is proven, the red-to-green bug protocol, and evidence for PR bodies.
 
 ## Rules
 
