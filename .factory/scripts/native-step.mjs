@@ -15,7 +15,7 @@
 // Completion: Herdr reports idle/done and the transcript's last entry is a finished assistant message.
 // Stall: not idle, no new audit-log request and no transcript growth for --stall-min minutes, and no tool
 // call in flight: the pane is read (saved as evidence) and nudged with Enter once; a second stall fails.
-// Exit: 0 answered, 1 no answer line, 2 audit failed, 3 stalled or timed out, 4 could not start.
+// Exit: 0 answered, 1 no answer line, 2 audit failed, 3 stalled or timed out, 4 could not start, 5 permission prompt.
 import { randomUUID } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
@@ -48,6 +48,14 @@ const READER_NEVER = ['Edit', 'Write', 'NotebookEdit', 'ExitPlanMode', 'Task']
 
 const settingsFile = join(dir, 'settings', `${tag.replaceAll('/', '_')}.json`)
 const env = sessionEnv(model, tag)
+// Claude Code asks before any write under the project's `.claude/` (and `~/.claude/`), even in acceptEdits mode,
+// and no configured allow rule satisfies that check (tested in 2.1.302: `Edit(//<root>/.claude/**)` and the grant's
+// own `Edit(/.claude/**)`, in the settings file and in --allowedTools, all still prompt). Only the prompt's own
+// session grant does. So a stage whose project root is one of its write roots gets that grant from the factory,
+// deterministically: native-step answers exactly that prompt with "allow ... this project's .claude folder for this
+// session". Every other permission prompt is refused and fails the step.
+const writeRoots = mode === 'writer' ? opts('write-root').map((d) => resolve(d)) : []
+const mayGrantClaudeDir = writeRoots.includes(cwd)
 const allow = mode === 'reader' ? READER_TOOLS : WRITER_TOOLS
 const deny = mode === 'reader' ? [...DENY, ...NEVER, ...READER_NEVER] : [...DENY, ...NEVER]
 writeFileSync(settingsFile, JSON.stringify({ env, permissions: { allow, deny } }, null, 2) + '\n')
@@ -118,9 +126,11 @@ function transcriptState() {
   const lastAssistant = [...turns].reverse().find((e) => e.type === 'assistant')
   const id = lastAssistant?.message?.id
   const blocks = turns.filter((e) => e.type === 'assistant' && e.message?.id === id).flatMap((e) => e.message?.content ?? [])
-  const pendingTool = last?.type === 'assistant' && blocks.some((b) => b.type === 'tool_use')
+  const answered = new Set(lines.flatMap((e) => (Array.isArray(e.message?.content) ? e.message.content : []).filter((b) => b.type === 'tool_result').map((b) => b.tool_use_id)))
+  const pending = last?.type === 'assistant' ? blocks.filter((b) => b.type === 'tool_use' && !answered.has(b.id)) : []
+  const pendingTool = pending.length > 0
   const text = blocks.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim()
-  return { size: statSync(transcript).size, done: last?.type === 'assistant' && !pendingTool && text.length > 0, pendingTool, text }
+  return { size: statSync(transcript).size, done: last?.type === 'assistant' && !pendingTool && text.length > 0, pendingTool, pending, text }
 }
 
 // Background Bash jobs of the session write to /tmp/claude-<uid>/<cwd>/<session>/tasks/*.output; their growth is activity.
@@ -130,11 +140,13 @@ const taskBytes = () => { try { return readdirSync(tasksDir).reduce((n, f) => n 
 // the factory presses Escape to interrupt it and tells the session to carry on without it (once).
 const toolCeilingMs = Number(opt('tool-ceiling-min', '20')) * 60_000
 let toolInterrupted = false
+const firstSeen = new Map(), granted = new Set()
+const FILE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit'])
 
 const deadline = Date.now() + timeoutMs
 let lastActivity = Date.now(), lastRows = auditRows(tag).length, lastSize = 0, lastTasks = 0, nudged = 0, idleStreak = 0, status = 'timeout'
 while (Date.now() < deadline) {
-  await new Promise((r) => setTimeout(r, 15_000))
+  await new Promise((r) => setTimeout(r, 5_000))
   const agent = herdr(['agent', 'get', name])?.agent
   const state = agent?.agent_status ?? 'gone'
   const rows = auditRows(tag).length
@@ -142,6 +154,38 @@ while (Date.now() < deadline) {
   const tasks = taskBytes()
   if (rows !== lastRows || t.size !== lastSize || tasks !== lastTasks) { lastActivity = Date.now(); lastRows = rows; lastSize = t.size; lastTasks = tasks; nudged = Math.min(nudged, 1) }
   if (state === 'gone') { status = 'exited'; break }
+  // Permission prompts are detected from the transcript, not the screen (a narrow pane renders the prompt one
+  // character per line, and Herdr may then report `done` instead of `blocked`). Under acceptEdits a file tool runs
+  // at once, so a Write/Edit with no tool_result after 10 s is waiting on a prompt; its file_path says what for.
+  // Any other tool waiting while the agent is not `working` (or Herdr says `blocked`) is a prompt too.
+  // Nobody answers a prompt here except this exact case: a file under the session's own write root's `.claude/`,
+  // where native-step selects Claude Code's session grant (option 2). Everything else is refused with Escape and
+  // fails the step at once. Enter is never pressed while a tool call is pending (it would pick the default "Yes").
+  const now = Date.now()
+  for (const p of t.pending ?? []) if (!firstSeen.has(p.id)) firstSeen.set(p.id, now)
+  const waited = (p) => now - (firstSeen.get(p.id) ?? now)
+  const fileWait = (t.pending ?? []).find((p) => FILE_TOOLS.has(p.name) && (state === 'blocked' || waited(p) > 10_000))
+  const otherWait = (t.pending ?? []).find((p) => !FILE_TOOLS.has(p.name) && waited(p) > 20_000 && state !== 'working')
+  if (state === 'blocked' || fileWait || otherWait) {
+    const target = fileWait?.input?.file_path ?? fileWait?.input?.notebook_path ?? ''
+    if (fileWait && mayGrantClaudeDir && !granted.has(fileWait.id) && resolve(target).startsWith(`${cwd}/.claude/`)) {
+      granted.add(fileWait.id)
+      const evidence = snap(`claude-dir-grant-${granted.size}`)
+      log(`${fileWait.name} of ${target} waits on Claude Code's .claude/ prompt inside the session's own write root: selecting the session grant (option 2); screen saved to ${evidence}`)
+      sh('herdr', ['agent', 'send-keys', name, 'down'])
+      await sleep(500)
+      sh('herdr', ['agent', 'send-keys', name, 'enter'])
+      firstSeen.set(fileWait.id, Date.now())
+      lastActivity = Date.now()
+      continue
+    }
+    const what = fileWait ? `${fileWait.name} of ${target}` : otherWait ? `${otherWait.name} ${JSON.stringify(otherWait.input).slice(0, 120)}` : `Herdr state blocked`
+    const evidence = snap('permission-prompt')
+    log(`permission prompt: ${what}${fileWait && granted.has(fileWait.id) ? ' (still waiting after the grant)' : ''}; refusing it with Escape and failing the step; screen saved to ${evidence}`)
+    sh('herdr', ['agent', 'send-keys', name, 'esc'])
+    sh('herdr', ['notification', 'show', `factory ${slug}: ${tag} hit a permission prompt`, '--body', `${what}`.slice(0, 180), '--sound', 'request'])
+    status = 'permission-prompt'; break
+  }
   if ((state === 'idle' || state === 'done') && t.done) { if (++idleStreak >= 2) { status = 'done'; break } } else idleStreak = 0
   const quietMs = Date.now() - lastActivity
   if (state === 'working' && t.pendingTool && quietMs > toolCeilingMs) {
@@ -158,7 +202,7 @@ while (Date.now() < deadline) {
     toolInterrupted = true; lastActivity = Date.now()
     continue
   }
-  if (quietMs > stallMs && !(state === 'working' && t.pendingTool)) {
+  if (quietMs > stallMs && !t.pendingTool) {
     const evidence = snap(`stall-${nudged + 1}`)
     if (nudged === 0) {
       log(`stalled ${Math.round(quietMs / 60000)} min (state ${state}, no audit rows, no transcript growth): pressing Enter once; screen saved to ${evidence}`)
@@ -182,4 +226,4 @@ record(status, { answer, audit: { ok: audit.ok, messages: audit.messages, proble
 log(`${status}; audit ${audit.ok ? 'ok' : 'FAILED'} (${audit.messages} requests, peers ${audit.peers.join(',')}, ${JSON.stringify(audit.by_status)})${audit.ok ? '' : ` ${audit.problems.join('; ')}`}`)
 console.log(`ANSWER ${answered ? answer : `${answerPrefix} NO_ANSWER ${status}`}`)
 if (!argv.includes('--keep-pane') && status === 'done' && audit.ok) sh('herdr', ['pane', 'close', pane])
-process.exit(!audit.ok ? 2 : status === 'stalled' || status === 'timeout' ? 3 : answered ? 0 : 1)
+process.exit(!audit.ok ? 2 : status === 'permission-prompt' ? 5 : status === 'stalled' || status === 'timeout' ? 3 : answered ? 0 : 1)
