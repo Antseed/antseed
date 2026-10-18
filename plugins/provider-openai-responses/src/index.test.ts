@@ -354,6 +354,7 @@ describe('provider-openai-responses plugin', () => {
         user: 'user-123',
         temperature: 0.2,
         top_p: 0.9,
+        max_output_tokens: 16000,
         stream: false,
       })),
     });
@@ -365,6 +366,8 @@ describe('provider-openai-responses plugin', () => {
     expect(body.user).toBeUndefined();
     expect(body.temperature).toBeUndefined();
     expect(body.top_p).toBeUndefined();
+    // The upstream enforces the caller's output cap, so it must reach it.
+    expect(body.max_output_tokens).toBe(16000);
     rmSync(dirname(authFile), { recursive: true, force: true });
   });
 
@@ -539,6 +542,66 @@ describe('provider-openai-responses plugin', () => {
     const body = JSON.parse(new TextDecoder().decode(response.body)) as Record<string, unknown>;
     expect(body.id).toBe('resp_2');
     expect(body.output_text).toBe('hello');
+    rmSync(dirname(authFile), { recursive: true, force: true });
+  });
+
+  it('collapses a Responses SSE that hit max_output_tokens into JSON for non-stream callers', async () => {
+    const authFile = writeAuthFile({
+      tokens: {
+        access_token: makeJwt({}),
+        account_id: 'acct-file',
+      },
+    });
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        'event: response.output_item.done\n'
+          + 'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_1","role":"assistant","status":"incomplete","content":[{"type":"output_text","text":"1\\n2\\n3","annotations":[]}]}}\n\n'
+          + 'event: response.incomplete\n'
+          + 'data: {"type":"response.incomplete","response":{"id":"resp_3","object":"response","model":"gpt-5.5","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[],"usage":{"input_tokens":3,"output_tokens":16,"total_tokens":19}}}\n\n',
+        {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        },
+      ),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const provider = plugin.createProvider({
+      OPENAI_RESPONSES_AUTH_FILE: authFile,
+      ANTSEED_ALLOWED_SERVICES: 'gpt-5.5',
+    });
+
+    const response = await provider.handleRequest({
+      requestId: 'req-incomplete-stream',
+      method: 'POST',
+      path: '/v1/responses',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: new TextEncoder().encode(JSON.stringify({
+        model: 'gpt-5.5',
+        input: 'count',
+        max_output_tokens: 16,
+        stream: false,
+      })),
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toBe('application/json');
+    const body = JSON.parse(new TextDecoder().decode(response.body)) as Record<string, unknown>;
+    expect(body.id).toBe('resp_3');
+    expect(body.status).toBe('incomplete');
+    expect(body.incomplete_details).toEqual({ reason: 'max_output_tokens' });
+    expect(body.usage).toEqual({ input_tokens: 3, output_tokens: 16, total_tokens: 19 });
+    expect(body.output).toEqual([
+      {
+        type: 'message',
+        id: 'msg_1',
+        role: 'assistant',
+        status: 'incomplete',
+        content: [{ type: 'output_text', text: '1\n2\n3', annotations: [] }],
+      },
+    ]);
     rmSync(dirname(authFile), { recursive: true, force: true });
   });
 
