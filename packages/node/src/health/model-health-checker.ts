@@ -215,6 +215,7 @@ export class ModelHealthChecker {
     const [account, models] = await Promise.all([
       checkProvider.checkUpstreamAccount
         ? timed('account check', () => checkProvider.checkUpstreamAccount!())
+          .then((result) => result ?? undefined)
           .catch((err): UpstreamAccountStatus => ({ status: 'unknown', reason: `account check failed: ${err instanceof Error ? err.message : err}` }))
         : undefined,
       checkProvider.checkServiceHealth
@@ -227,6 +228,7 @@ export class ModelHealthChecker {
         ? undefined
         : models?.[service] ?? { status: 'unknown', reason: 'model check gave no result' };
       const results = [account, model].filter((result): result is UpstreamAccountStatus => result !== undefined);
+      if (results.length === 0) return { status: 'unknown', reason: 'no check ran' };
       return results.find((result) => result.status === 'unavailable')
         ?? results.find((result) => result.status === 'unknown')
         ?? { status: 'available', balanceUsd: balance };

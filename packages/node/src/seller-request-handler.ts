@@ -1111,8 +1111,11 @@ export class SellerRequestHandler {
     const requestedProvider = this._extractRequestedProvider(request);
     const videoRoute = nativeVideoRoute(request);
     const providers = this._deps.providers;
+    // A download of an existing job still matches after health checks stop
+    // advertising its service; only the job's owner gets past the ownership check.
     const matchesService = (provider: Provider): boolean =>
-      provider.services.includes(requestedService) && (!videoRoute || Boolean(provider.serviceApiProtocols?.[requestedService]?.includes(videoRoute.protocol)));
+      (provider.services.includes(requestedService) || videoRoute?.action === 'retrieve')
+      && (!videoRoute || Boolean(provider.serviceApiProtocols?.[requestedService]?.includes(videoRoute.protocol)));
 
     let provider: Provider | undefined;
     if (requestedProvider) {

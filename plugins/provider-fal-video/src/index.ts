@@ -236,10 +236,14 @@ const plugin: AntseedProviderPlugin = {
       }
     };
 
+    // Health checks remove services from `services`; downloads of jobs that
+    // were already created still use the configured list.
+    const configuredServices = new Set(services);
     const route = (request: SerializedHttpRequest) => {
       const videoRoute = nativeVideoRoute(request);
       const service = requestService(request);
-      return { videoRoute, service: service && services.includes(service) ? service : undefined };
+      const known = videoRoute?.action === 'retrieve' ? configuredServices.has(service ?? '') : services.includes(service ?? '');
+      return { videoRoute, service: service && known ? service : undefined };
     };
 
     let active = 0;
@@ -313,13 +317,13 @@ const plugin: AntseedProviderPlugin = {
           return [service, { status: 'available' }];
         }));
       },
-      async checkUpstreamAccount(): Promise<UpstreamAccountStatus> {
-        if (!balanceCheck) return { status: 'unknown', reason: 'fal balance check is off (key lacks billing:usage:read)' };
+      async checkUpstreamAccount(): Promise<UpstreamAccountStatus | null> {
+        if (!balanceCheck) return null;
         const account = await readFalAccount(FAL_PLATFORM_URL, authorization);
         if (account.status === 'no_permission') {
           balanceCheck = false;
           warnOnce(FAL_BALANCE_CHECK_OFF);
-          return { status: 'unknown', reason: 'fal balance check is off (key lacks billing:usage:read)' };
+          return null;
         }
         if (account.status === 'rejected') return { status: 'unavailable', reason: account.reason };
         if (account.status === 'unknown') return account;
