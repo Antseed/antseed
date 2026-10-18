@@ -398,8 +398,11 @@ function parseResponsesSse(text: string): { body: Record<string, unknown>; statu
       .find((line) => line.startsWith('event: '))
       ?.slice('event: '.length)
       .trim();
+    // `response.incomplete` ends a stream that hit `max_output_tokens`; it carries
+    // the partial answer like `response.completed`.
     if (
       event !== 'response.completed'
+      && event !== 'response.incomplete'
       && event !== 'response.failed'
       && event !== 'error'
       && event !== 'response.output_item.done'
