@@ -69,6 +69,8 @@ async function setup(t: TestContext) {
   // Sellers that refuse with a 503 (unpaid), so the next recommendation is tried; an empty ranking fails the router.
   const failingPeers = new Set<string>()
   const ranking = { empty: false }
+  // Headers every seller adds to its answers (a dishonest one may name a router).
+  const sellerHeaders: Record<string, string> = {}
   let proxy: BuyerProxy
   const node = {
     router: { allowsPeerForPolicy: () => true, onResult: () => {} },
@@ -78,14 +80,14 @@ async function setup(t: TestContext) {
       try { body = JSON.parse(Buffer.from(request.body).toString('utf8')) } catch { /* the ranking body is not inspected */ }
       sent.push({ peerId: peer.peerId, body })
       if (failingPeers.has(peer.peerId)) {
-        return { requestId: request.requestId, statusCode: 503, headers: { 'content-type': 'application/json' }, body: Buffer.from('{"error":{"message":"busy"}}') }
+        return { requestId: request.requestId, statusCode: 503, headers: { 'content-type': 'application/json', ...sellerHeaders }, body: Buffer.from('{"error":{"message":"busy"}}') }
       }
       ;(proxy as any)._spendAttribution.record({
         requestId: request.requestId, sellerPeerId: peer.peerId,
         amountUsdc: String(peer.peerId === router.peerId ? RANKING_USDC : INFERENCE_USDC),
         inputTokens: '10', cachedInputTokens: '0', outputTokens: '5', outputImages: '0',
       })
-      return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{"choices":[]}') }
+      return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json', ...sellerHeaders }, body: Buffer.from('{"choices":[]}') }
     },
   }
   // The routing service: ranks the candidates it is sent, best trust first, and is paid through the buyer.
@@ -141,7 +143,7 @@ async function setup(t: TestContext) {
     try { json = JSON.parse(text) } catch { /* not json */ }
     return { status: res.status, json, text, headers: res.headers }
   }
-  return { store, feed, call, sent, rankedCandidates, failingPeers, ranking }
+  return { store, feed, call, sent, rankedCandidates, failingPeers, ranking, sellerHeaders }
 }
 
 const chatBody = { model: ROUTER_MODEL, messages: [{ role: 'user', content: 'Hello' }], routing: { cost_quality_tradeoff: 7 } }
@@ -196,6 +198,32 @@ test('a routed request served by the router\'s second pick records that rank', a
   const [row] = ctx.store.listRequests({ keyId: key.id })
   assert.equal(row!.sellerPeerId, first.peerId)
   assert.deepEqual(row!.router, { peerId: router.peerId, service: 'alpha-route', rank: 2 })
+})
+
+test('a seller cannot name a router: its router headers are dropped on routed and direct requests', async (t) => {
+  const ctx = await setup(t)
+  const { secret, key } = ctx.store.createKey({ label: 'team', limits: NO_LIMITS, expiresAt: null, routingPolicy: null })
+  const fake = 'f'.repeat(40)
+  Object.assign(ctx.sellerHeaders, { 'X-Antseed-Router-Peer-Id': fake, 'x-antseed-router-service': 'fake-route', 'x-antseed-router-rank': '9' })
+
+  const routed = await ctx.call(secret, '/v1/chat/completions', chatBody)
+  assert.equal(routed.status, 200, routed.text)
+  assert.equal(routed.headers.get('x-antseed-router-peer-id'), router.peerId)
+  assert.equal(routed.headers.get('x-antseed-router-rank'), '1')
+
+  ctx.failingPeers.add(second.peerId)
+  ctx.failingPeers.add(first.peerId)
+  const refused = await ctx.call(secret, '/v1/chat/completions', { ...chatBody, model: `${first.peerId}@gpt-5` })
+  assert.equal(refused.headers.get('x-antseed-router-peer-id'), null, 'a seller refusal names no router either')
+  ctx.failingPeers.clear()
+
+  const direct = await ctx.call(secret, '/v1/chat/completions', { model: 'gpt-5', messages: [{ role: 'user', content: 'Hello' }] })
+  assert.equal(direct.status, 200, direct.text)
+  assert.equal(direct.headers.get('x-antseed-router-peer-id'), null)
+
+  const rows = ctx.store.listRequests({ keyId: key.id })
+  assert.deepEqual(rows.map((row) => row.router?.peerId ?? null), [null, null, router.peerId], 'only the routed request has a router, and the real one')
+  assert.equal(ctx.store.listRequests({ keyId: key.id, routerPeerId: fake }).length, 0)
 })
 
 test('a failed ranking is logged against the router, with no seller', async (t) => {

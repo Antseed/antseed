@@ -106,6 +106,7 @@ import {
   ROUTER_PEER_ID_HEADER,
   ROUTER_RANK_HEADER,
   ROUTER_SERVICE_HEADER,
+  withoutRouterHeaders,
   attachStreamingAntseedHeaders,
 } from './telemetry.js'
 import { DEFAULT_BUYER_PEER_REFRESH_INTERVAL_MS } from '../config/defaults.js'
@@ -645,7 +646,8 @@ function dispatchFailure(statusCode: number, responseHeaders: Record<string, str
 
 function writeDispatchFailure(res: ServerResponse, result: DispatchFailure): void {
   if (res.headersSent || res.writableEnded) return
-  res.writeHead(result.statusCode, result.responseHeaders)
+  // A refusal can carry the seller's own headers: never let it name a router.
+  res.writeHead(result.statusCode, withoutRouterHeaders(result.responseHeaders))
   res.end(result.responseBody)
 }
 

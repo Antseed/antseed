@@ -329,6 +329,16 @@ export const ROUTER_PEER_ID_HEADER = 'x-antseed-router-peer-id'
 export const ROUTER_SERVICE_HEADER = 'x-antseed-router-service'
 export const ROUTER_RANK_HEADER = 'x-antseed-router-rank'
 
+const ROUTER_HEADERS = new Set([ROUTER_PEER_ID_HEADER, ROUTER_SERVICE_HEADER, ROUTER_RANK_HEADER])
+
+/**
+ * A seller's headers without router headers: only the buyer says which router
+ * ranked a request, so a seller can neither change nor invent that.
+ */
+export function withoutRouterHeaders(headers: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(headers).filter(([name]) => !ROUTER_HEADERS.has(name.toLowerCase())))
+}
+
 export function attachAntseedTelemetryHeaders(
   upstreamHeaders: Record<string, string>,
   selectedPeer: PeerInfo,
@@ -336,7 +346,7 @@ export function attachAntseedTelemetryHeaders(
   requestId: string,
   latencyMs: number,
 ): Record<string, string> {
-  const headers: Record<string, string> = { ...upstreamHeaders }
+  const headers: Record<string, string> = withoutRouterHeaders(upstreamHeaders)
   headers['x-antseed-request-id'] = requestId
   headers['x-antseed-latency-ms'] = String(Math.max(0, Math.floor(latencyMs)))
   setPeerIdentityHeaders(headers, selectedPeer)
@@ -369,7 +379,7 @@ export function attachStreamingAntseedHeaders(
   request: SerializedHttpRequest,
   firstTokenMs?: number,
 ): Record<string, string> {
-  const headers: Record<string, string> = { ...upstreamHeaders }
+  const headers: Record<string, string> = withoutRouterHeaders(upstreamHeaders)
   headers['x-antseed-request-id'] = request.requestId
   if (firstTokenMs !== undefined) headers['x-antseed-first-token-ms'] = String(Math.max(0, Math.floor(firstTokenMs)))
   setPeerIdentityHeaders(headers, selectedPeer)
