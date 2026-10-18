@@ -1915,6 +1915,16 @@ describe('SellerPaymentManager', () => {
       vi.useRealTimers();
     });
 
+    /** A new manager over the same store, as after a seller restart. */
+    function restartManager(): SellerPaymentManager {
+      return new SellerPaymentManager(sellerIdentity, {
+        rpcUrl: 'http://127.0.0.1:8545',
+        channelsContractAddress: CONTRACT_ADDR,
+        chainId: CHAIN_ID,
+        dataDir: tempDir,
+      }, store);
+    }
+
     async function nextRetryPass(): Promise<void> {
       vi.setSystemTime(Date.now() + TIMED_OUT_CLOSE_RETRY_INTERVAL_MS);
       await manager.checkTimeouts();
@@ -1983,19 +1993,40 @@ describe('SellerPaymentManager', () => {
       expect(store.getChannel(openChannelId)!.status).toBe(CHANNEL_STATUS.SETTLED);
     });
 
-    it('stops reading a channel the buyer already withdrew', async () => {
+    it('records a channel the buyer already withdrew and stops reading it, also after a restart', async () => {
       const channelId = makeChannelId(92);
       storeTimedOutChannel(channelId);
       const getSession = vi.spyOn(manager.channelsClient, 'getSession').mockResolvedValue(
-        makeOnChainChannel(buyerIdentity, sellerIdentity, { status: 3 }),
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { settled: 300_000n, status: 3 }),
       );
 
       await manager.checkTimeouts();
       await nextRetryPass();
-
       expect(getSession).toHaveBeenCalledOnce();
-      expect(manager.channelsClient.close).not.toHaveBeenCalled();
       expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.TIMEOUT);
+      expect(store.getChannel(channelId)!.settledAmount).toBe('300000');
+
+      const restarted = restartManager();
+      const restartedGetSession = vi.spyOn(restarted.channelsClient, 'getSession');
+      await restarted.checkTimeouts();
+      expect(restartedGetSession).not.toHaveBeenCalled();
+      expect(manager.channelsClient.close).not.toHaveBeenCalled();
+    });
+
+    it('keeps retrying a channel still open on-chain after more than a day and a restart', async () => {
+      const channelId = makeChannelId(93);
+      storeTimedOutChannel(channelId);
+      vi.setSystemTime(Date.now() + 3 * 24 * 60 * 60_000);
+
+      const restarted = restartManager();
+      vi.spyOn(restarted.channelsClient, 'getSession').mockResolvedValue(
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 1_000_000n, settled: 500_000n, status: 1 }),
+      );
+      const close = vi.spyOn(restarted.channelsClient, 'close').mockResolvedValue('0xclose-hash');
+      await restarted.checkTimeouts();
+
+      expect(close).toHaveBeenCalledWith(expect.anything(), channelId, 600_000n, '0x1234', AUTH_SIG);
+      expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.SETTLED);
     });
   });
 

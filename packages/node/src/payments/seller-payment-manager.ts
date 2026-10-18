@@ -80,12 +80,6 @@ export const ONE_OFF_CHANNEL_TTL_MS = 24 * 60 * 60_000;
 export const ONE_OFF_UNCLAIMED_TTL_MS = 10 * 60_000;
 /** How often channels whose close was given up on are retried. */
 export const TIMED_OUT_CLOSE_RETRY_INTERVAL_MS = 10 * 60_000;
-/**
- * Channels in timeout status are retried while their row was updated within
- * this window. A failed retry refreshes the row, so a channel that stays open
- * on-chain keeps being retried; one that ended on-chain ages out.
- */
-const TIMED_OUT_CLOSE_RETRY_WINDOW_MS = 24 * 60 * 60_000;
 /** Most timed-out channels retried in one pass. */
 const TIMED_OUT_CLOSE_RETRY_BATCH = 20;
 /** Slow-cadence attempts with the buyer's latest auth before closing at the settled amount (~1 hour). */
@@ -235,8 +229,6 @@ export class SellerPaymentManager {
   private _lastTimedOutCloseRetryAt = 0;
   /** Slow-cadence close attempts per timed-out channel, using the buyer's latest auth. */
   private readonly _timedOutCloseAttempts = new Map<string, number>();
-  /** Timed-out channels already confirmed ended on-chain; not read again this run. */
-  private readonly _timedOutChannelsEnded = new Set<string>();
 
   constructor(identity: Identity, config: SellerPaymentConfig, channelStore: ChannelStore) {
     this._config = config;
@@ -1894,20 +1886,24 @@ export class SellerPaymentManager {
    * reserve. Runs at a slow cadence. The buyer's latest SpendingAuth is tried
    * first; once that keeps failing the channel is closed at the amount already
    * settled on-chain, which releases the rest of the reserve to the buyer.
+   *
+   * A channel stays eligible, however old, until a settlement is recorded for
+   * it: on a successful close, or once the chain shows it ended. Each attempt
+   * refreshes the row, so the batch moves on to channels not tried yet.
    */
   private async _retryTimedOutCloses(): Promise<void> {
     const now = Date.now();
     if (now - this._lastTimedOutCloseRetryAt < TIMED_OUT_CLOSE_RETRY_INTERVAL_MS) return;
     this._lastTimedOutCloseRetryAt = now;
 
-    // Skip ended channels before taking the batch so they cannot fill it. A
-    // failed retry refreshes its row, moving it behind channels not yet tried.
-    const channels = this._channelStore
-      .getRecentChannelsByStatus(CHANNEL_ROLE.SELLER, CHANNEL_STATUS.TIMEOUT, now - TIMED_OUT_CLOSE_RETRY_WINDOW_MS)
-      .filter((channel) => !this._timedOutChannelsEnded.has(channel.sessionId) && !this._closingChannels.has(channel.sessionId))
-      .slice(0, TIMED_OUT_CLOSE_RETRY_BATCH);
+    const channels = this._channelStore.getUnsettledChannelsByStatus(
+      CHANNEL_ROLE.SELLER,
+      CHANNEL_STATUS.TIMEOUT,
+      TIMED_OUT_CLOSE_RETRY_BATCH,
+    );
     for (const channel of channels) {
       const channelId = channel.sessionId;
+      if (this._closingChannels.has(channelId)) continue;
       try {
         const state = classifyOnChainChannel(await this._channelsClient.getSession(channelId));
         if (state.status === CHANNEL_STATUS.SETTLED) {
@@ -1915,10 +1911,16 @@ export class SellerPaymentManager {
           this._timedOutCloseAttempts.delete(channelId);
           continue;
         }
-        if (state.status !== CHANNEL_STATUS.ACTIVE) {
-          // Withdrawn by the buyer, or unreadable: nothing left for the seller to close.
-          this._timedOutChannelsEnded.add(channelId);
+        if (!state.exists || state.status === CHANNEL_STATUS.TIMEOUT) {
+          // Withdrawn by the buyer: nothing left for the seller to close.
+          const settled = state.exists ? state.channel.settled : 0n;
+          this._channelStore.updateChannelStatus(channelId, CHANNEL_STATUS.TIMEOUT, settled.toString());
           this._timedOutCloseAttempts.delete(channelId);
+          continue;
+        }
+        if (state.status !== CHANNEL_STATUS.ACTIVE) {
+          // Partial RPC data; read it again on a later pass.
+          this._channelStore.updateChannelStatus(channelId, CHANNEL_STATUS.TIMEOUT);
           continue;
         }
 
@@ -1950,13 +1952,13 @@ export class SellerPaymentManager {
         if (useAuth && !this._isRetryableTxSubmissionFailure(closeResult.error)) {
           this._timedOutCloseAttempts.set(channelId, attempts + 1);
         }
-        // Refresh the row so a channel still open on-chain stays in the retry window.
         this._channelStore.updateChannelStatus(channelId, CHANNEL_STATUS.TIMEOUT);
         debugWarn(
           `[SellerPayment] Retry close of timed-out channel ${channelId.slice(0, 18)}... failed: ` +
           `${this._formatError(closeResult.error)}`,
         );
       } catch (err) {
+        this._channelStore.updateChannelStatus(channelId, CHANNEL_STATUS.TIMEOUT);
         debugWarn(`[SellerPayment] Failed to retry timed-out channel ${channelId.slice(0, 18)}...: ${this._formatError(err)}`);
       }
     }
