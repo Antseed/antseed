@@ -358,4 +358,14 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE ledger_entries ADD COLUMN router_peer_id TEXT;
   ALTER TABLE request_rollups ADD COLUMN router_peer_id TEXT;
   `,
+  // Models and routers a console member (or an API-key session) starred, listed first on the Models page.
+  `
+  CREATE TABLE favorite_models (
+    owner_kind TEXT NOT NULL CHECK (owner_kind IN ('member', 'key')),
+    owner_id TEXT NOT NULL,
+    model TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (owner_kind, owner_id, model)
+  );
+  `,
 ]

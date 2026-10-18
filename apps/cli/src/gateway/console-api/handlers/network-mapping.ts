@@ -1,8 +1,9 @@
 /** Pure mapping from the buyer's peer, health and verification views to the console's `Peer`. */
 import { collectPeerVerificationLinks } from '@antseed/node/discovery'
 import { parseVerifierCapabilities } from '@antseed/node/verifier-capabilities'
+import { modelTagsFor } from '@antseed/node/model-metadata'
 import { TEE_VERIFIER_ID, teeScope, type TeeClaim, type TeeScope } from '@antseed/node/tee-status'
-import type { NetworkModel, NetworkModelCapability, NetworkModelOffer, NetworkModelType, Peer, RoutePreview } from '../types.js'
+import type { NetworkModel, NetworkModelCapability, NetworkModelOffer, NetworkModelType, NetworkRouter, NetworkRouterOption, Peer, RoutePreview } from '../types.js'
 
 type Row = Record<string, unknown>
 
@@ -181,6 +182,49 @@ function strings(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
 }
 
+const ROUTER_OPTION_TYPES = new Set(['integer', 'number', 'boolean', 'string'])
+
+function routerOptions(value: unknown): NetworkRouterOption[] {
+  return rows(value).flatMap((row): NetworkRouterOption[] => {
+    const key = str(row['key'])
+    const type = str(row['type'])
+    if (!key || !type || !ROUTER_OPTION_TYPES.has(type)) return []
+    return [{ ...row, key, label: str(row['label']) ?? key, type } as NetworkRouterOption]
+  })
+}
+
+/**
+ * The buyer's `/v1/models?type=router` (one entry per routing service, each
+ * seller offering it under `peers`) as one router per seller, with trust and
+ * verification from the console's peer list.
+ */
+export function mapNetworkRouters(body: unknown, peers: readonly Peer[]): NetworkRouter[] {
+  const known = new Map(peers.map((peer) => [peerKey(peer.peerId), peer]))
+  return rows(asRecord(body)['data']).flatMap((row) => rows(row['peers']).flatMap((offer): NetworkRouter[] => {
+    const peerId = str(offer['peerId'])
+    const serviceId = str(offer['serviceId']) ?? str(row['id'])
+    if (!peerId || !serviceId) return []
+    const peer = known.get(peerKey(peerId))
+    const price = num(offer['priceUsdPerRequest'])
+    return [{
+      id: str(offer['model']) ?? `${peerId}@${serviceId}`,
+      peerId,
+      serviceId,
+      provider: str(offer['provider']) ?? '',
+      name: str(row['name']) ?? serviceId,
+      sellerName: str(offer['displayName']) ?? peer?.displayName ?? null,
+      protocol: str(offer['protocol']) ?? '',
+      options: routerOptions(offer['options']),
+      priceUsdPerRequest: price,
+      free: price === 0,
+      models: Array.isArray(offer['models']) ? strings(offer['models']) : null,
+      trustScore: peer?.trustScore ?? null,
+      verified: peer?.verified ?? false,
+      verificationLinks: peer?.verificationLinks ?? [],
+    }]
+  }))
+}
+
 /**
  * The buyer's `/v1/models` (one entry per model, each seller's offer under
  * `peers`) for the console, with verification, trust and this gateway's
@@ -237,6 +281,7 @@ export function mapNetworkModels(body: unknown, peers: readonly Peer[]): Network
       name: str(row['name']) ?? id,
       aliases: strings(row['aliases']).filter((alias) => alias !== id),
       type,
+      tags: modelTagsFor(id),
       contextLength: range(offers.map((offer) => offer.contextLength))?.max ?? num(row['context_length']),
       capabilities,
       sellers: new Set(offers.map((offer) => peerKey(offer.peerId))).size,

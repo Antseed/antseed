@@ -1,5 +1,6 @@
 import type { ConsoleRegistrar } from '../server.js'
 import { registerAdminTokenRoutes } from './admin-tokens.js'
+import { registerFavoriteRoutes } from './favorites.js'
 import { registerKeyRoutes } from './keys.js'
 import { registerOrgRoutes } from './org.js'
 import { registerPeerListRoutes } from './peer-lists.js'
@@ -24,4 +25,5 @@ export const coreConsoleRegistrars: ConsoleRegistrar[] = [
   registerSettingsRoutes,
   registerStatusRoutes,
   registerUpdateRoutes,
+  registerFavoriteRoutes,
 ]

@@ -1,6 +1,6 @@
 import type {
   AdminToken, ApiKey, ApiKeyInput, AuditEntry, AuthConfig, BuyerLimits, BuyerSettingsInput, Channel, ChainInfo, DepositConfirmation, DepositWatch, Enrollment,
-  GatewayStatus, GatewayUpdate, Invite, InviteInput, Member, MemberInput, MeResponse, ObservabilitySettings, OperatorAuthorization, OperatorState, WorkspaceOperatorSummary, ChatContext, ChatModel, ChatThread, ChatThreadDetail, NetworkModel, Peer, PeerList, Preset,
+  GatewayStatus, GatewayUpdate, Invite, InviteInput, Member, MemberInput, MeResponse, ObservabilitySettings, OperatorAuthorization, OperatorState, WorkspaceOperatorSummary, ChatContext, ChatModel, ChatThread, ChatThreadDetail, FavoriteModels, NetworkModel, NetworkRouter, Peer, PeerList, Preset,
   RequestDetail, RequestLogEntry, Rewards, RoutePreview, RoutingPolicy, Settings, SpendLimits, UsageGroupBy, UsageReport, Wallet, Workspace,
   WorkspaceInput, WorkspaceRole,
 } from './types'
@@ -198,6 +198,12 @@ export function createApiClient(fetchImpl: FetchLike = (input, init) => fetch(in
       request: (tag: string) => get<RequestDetail>(`/requests/${id(tag)}`),
       exportUrl: (filter: RequestQuery & { groupBy?: UsageGroupBy }) => `${base}/usage/export.csv${buildQuery(filter)}`,
     },
+    favorites: {
+      /** Model and router ids the caller starred, oldest first. */
+      list: () => get<FavoriteModels>('/favorites'),
+      add: (model: string) => request<void>('PUT', `/favorites/${id(model)}`),
+      remove: (model: string) => del(`/favorites/${id(model)}`),
+    },
     audit: {
       list: (filter: AuditQuery & { before?: string; limit?: number }) => get<{ entries: AuditEntry[]; nextBefore: string | null }>('/audit', filter),
     },
@@ -245,6 +251,8 @@ export function createApiClient(fetchImpl: FetchLike = (input, init) => fetch(in
       peers: () => get<Peer[]>('/peers'),
       /** Every model on the network, unfiltered, with the sellers offering it. */
       models: () => get<NetworkModel[]>('/models'),
+      /** Every routing service on the network, one per seller offering it. */
+      routers: () => get<NetworkRouter[]>('/routers'),
       routePreview: (query: { model: string; workspace?: string; key?: string; member?: string; preset?: string }) => get<RoutePreview>('/route-preview', query),
       gatewayPolicy: () => get<RoutingPolicy>('/routing'),
       buyerLimits: () => get<BuyerLimits>('/routing/buyer-limits'),

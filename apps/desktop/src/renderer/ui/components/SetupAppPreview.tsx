@@ -8,7 +8,7 @@ import {
   PreferenceHorizontalIcon,
   SquarePowerIcon,
 } from '@hugeicons/core-free-icons';
-import { BrandIcon, type BrandKey } from './brand/BrandIcon';
+import { BrandIcon, type BrandKey } from '@antseed/ui';
 import styles from './SetupAppPreview.module.scss';
 
 /* Everything in the walkthrough is hard-coded: it plays during first-run

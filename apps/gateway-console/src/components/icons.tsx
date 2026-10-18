@@ -33,6 +33,8 @@ export const Icon = {
   audit: (p: IconProps) => <Svg {...p}><path d="M9 4h6a1 1 0 0 1 1 1v1H8V5a1 1 0 0 1 1-1Z" /><path d="M8 6H6a1 1 0 0 0-1 1v13a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V7a1 1 0 0 0-1-1h-2M9 12h6M9 16h4" /></Svg>,
   copy: (p: IconProps) => <Svg {...p}><rect x="9" y="9" width="12" height="12" rx="2" /><path d="M5 15V5a2 2 0 0 1 2-2h10" /></Svg>,
   check: (p: IconProps) => <Svg {...p}><path d="m5 12 5 5L20 7" /></Svg>,
+  star: (p: IconProps) => <Svg {...p}><path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z" /></Svg>,
+  starFilled: (p: IconProps) => <Svg {...p}><path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z" fill="currentColor" /></Svg>,
   right: (p: IconProps) => <Svg {...p}><path d="m9 6 6 6-6 6" /></Svg>,
   left: (p: IconProps) => <Svg {...p}><path d="m15 6-6 6 6 6" /></Svg>,
   qr: (p: IconProps) => <Svg {...p}><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><path d="M14 14h3v3M21 14v.01M14 21h3M20 18v3" /></Svg>,

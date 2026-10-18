@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react';
+import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
 export interface ActionMenuItem {
@@ -10,6 +10,10 @@ export interface ActionMenuItem {
   description?: ReactNode;
   /** Set on every item to make a single-choice menu: the checked one shows a check mark. */
   checked?: boolean;
+  /** Shown before the label, e.g. a brand mark. */
+  icon?: ReactNode;
+  /** A heading shown above the first item of each run of items with the same section. */
+  section?: string;
 }
 
 export interface ActionMenuProps {
@@ -25,6 +29,11 @@ export interface ActionMenuProps {
   align?: 'start' | 'end';
   /** Menu width in px (default 176). */
   width?: number;
+  /**
+   * A multiple-choice menu (filters): every item is a checkbox (`checked`), and
+   * choosing one keeps the menu open so several can be toggled in a row.
+   */
+  multiple?: boolean;
 }
 
 function MoreIcon() {
@@ -52,7 +61,7 @@ function CheckIcon() {
  * positioning, so scrolling table wrappers never clip it. Arrow keys move,
  * Escape closes and returns focus to the trigger.
  */
-export function ActionMenu({ label, items, trigger, className, triggerStyle = 'icon', align = 'end', width = MENU_WIDTH }: ActionMenuProps) {
+export function ActionMenu({ label, items, trigger, className, triggerStyle = 'icon', align = 'end', width = MENU_WIDTH, multiple = false }: ActionMenuProps) {
   const entries = items.filter(Boolean) as ActionMenuItem[];
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState<CSSProperties>({});
@@ -68,10 +77,11 @@ export function ActionMenu({ label, items, trigger, className, triggerStyle = 'i
   useLayoutEffect(() => {
     if (!open || !triggerRef.current) return;
     const rect = triggerRef.current.getBoundingClientRect();
-    const height = entries.reduce((sum, item) => sum + (item.description ? 50 : 34), 10);
+    const sections = entries.filter((item, index) => item.section && item.section !== entries[index - 1]?.section).length;
+    const height = Math.min(entries.reduce((sum, item) => sum + (item.description ? 50 : 34), 10 + sections * 28), window.innerHeight - 16);
     const below = rect.bottom + 4 + height <= window.innerHeight;
     const left = Math.max(8, Math.min(align === 'start' ? rect.left : rect.right - width, window.innerWidth - width - 8));
-    setPosition(below ? { top: rect.bottom + 4, left } : { top: Math.max(8, rect.top - 4 - height), left });
+    setPosition({ ...(below ? { top: rect.bottom + 4 } : { top: Math.max(8, rect.top - 4 - height) }), left, maxHeight: height });
     // A single-choice menu opens on the current choice.
     const start = menuRef.current?.querySelector<HTMLElement>('[aria-checked="true"]:not([disabled])')
       ?? menuRef.current?.querySelector<HTMLElement>('[role^="menuitem"]:not([disabled])');
@@ -85,13 +95,18 @@ export function ActionMenu({ label, items, trigger, className, triggerStyle = 'i
       if (menuRef.current?.contains(target) || triggerRef.current?.contains(target)) return;
       close(false);
     };
-    const onScroll = () => close(false);
+    // The page moving under the menu closes it; scrolling the menu's own (long) list does not.
+    const onScroll = (event: Event) => {
+      if (event.target instanceof Node && menuRef.current?.contains(event.target)) return;
+      close(false);
+    };
+    const onResize = () => close(false);
     document.addEventListener('mousedown', onPointer);
-    window.addEventListener('resize', onScroll);
+    window.addEventListener('resize', onResize);
     window.addEventListener('scroll', onScroll, true);
     return () => {
       document.removeEventListener('mousedown', onPointer);
-      window.removeEventListener('resize', onScroll);
+      window.removeEventListener('resize', onResize);
       window.removeEventListener('scroll', onScroll, true);
     };
   }, [open, close]);
@@ -158,25 +173,30 @@ export function ActionMenu({ label, items, trigger, className, triggerStyle = 'i
           onClick={(event) => event.stopPropagation()}
         >
           {entries.map((item, index) => (
-            <button
-              key={index}
-              type="button"
-              role={item.checked === undefined ? 'menuitem' : 'menuitemradio'}
-              aria-checked={item.checked}
-              tabIndex={-1}
-              disabled={item.disabled}
-              className={['as-action-menu__item', item.tone === 'danger' ? 'as-action-menu__item--danger' : null, item.checked !== undefined ? 'as-action-menu__item--choice' : null].filter(Boolean).join(' ')}
-              onClick={() => {
-                close(true);
-                item.onSelect();
-              }}
-            >
-              {item.checked !== undefined && <span className="as-action-menu__check">{item.checked ? <CheckIcon /> : null}</span>}
-              <span className="as-action-menu__text">
-                <span className="as-action-menu__label">{item.label}</span>
-                {item.description && <span className="as-action-menu__description">{item.description}</span>}
-              </span>
-            </button>
+            <Fragment key={index}>
+              {item.section && item.section !== entries[index - 1]?.section && (
+                <div className="as-action-menu__section" role="presentation">{item.section}</div>
+              )}
+              <button
+                type="button"
+                role={item.checked === undefined ? 'menuitem' : multiple ? 'menuitemcheckbox' : 'menuitemradio'}
+                aria-checked={item.checked}
+                tabIndex={-1}
+                disabled={item.disabled}
+                className={['as-action-menu__item', item.tone === 'danger' ? 'as-action-menu__item--danger' : null, item.checked !== undefined || item.icon ? 'as-action-menu__item--choice' : null].filter(Boolean).join(' ')}
+                onClick={() => {
+                  if (!multiple) close(true);
+                  item.onSelect();
+                }}
+              >
+                {item.checked !== undefined && <span className="as-action-menu__check">{item.checked ? <CheckIcon /> : null}</span>}
+                {item.icon && <span className="as-action-menu__icon" aria-hidden="true">{item.icon}</span>}
+                <span className="as-action-menu__text">
+                  <span className="as-action-menu__label">{item.label}</span>
+                  {item.description && <span className="as-action-menu__description">{item.description}</span>}
+                </span>
+              </button>
+            </Fragment>
           ))}
         </div>,
         document.body,

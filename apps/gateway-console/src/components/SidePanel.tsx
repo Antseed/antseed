@@ -5,6 +5,8 @@ export interface SidePanelContent {
   title: ReactNode
   subtitle?: ReactNode
   eyebrow?: ReactNode
+  /** Header buttons beside the close button. */
+  actions?: ReactNode
   body: ReactNode
 }
 
@@ -27,7 +29,7 @@ export function SplitView({ list, panel, onClose, closeLabel = 'Close panel' }: 
     <>
       {list}
       <Drawer isOpen={panel !== null} onClose={onClose} closeLabel={closeLabel} className="gc-side-panel"
-        title={shown?.title ?? ''} subtitle={shown?.subtitle} eyebrow={shown?.eyebrow}>
+        title={shown?.title ?? ''} subtitle={shown?.subtitle} eyebrow={shown?.eyebrow} actions={shown?.actions}>
         {shown?.body}
       </Drawer>
     </>

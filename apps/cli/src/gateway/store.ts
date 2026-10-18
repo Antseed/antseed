@@ -74,6 +74,12 @@ export interface WorkspaceRecord {
 }
 
 /** Whose chat history: a console member's, or an API key holder's (the CLI and key sessions). */
+/** Who starred a model: a console member, or an API-key session. */
+export interface FavoriteOwner {
+  kind: 'member' | 'key'
+  id: string
+}
+
 export interface ChatThreadOwner {
   kind: 'member' | 'key'
   id: string
@@ -1891,6 +1897,26 @@ export class GatewayStore {
 
   deleteChatThread(id: string): boolean {
     return this._stmt('DELETE FROM chat_threads WHERE id = ?').run(id).changes > 0
+  }
+
+  // ── Favorite models ─────────────────────────────────────────────────────
+
+  /** Model and router ids the owner starred, oldest first. */
+  listFavoriteModels(owner: FavoriteOwner): string[] {
+    return this._stmt('SELECT model FROM favorite_models WHERE owner_kind = ? AND owner_id = ? ORDER BY created_at, model')
+      .pluck().all(owner.kind, owner.id) as string[]
+  }
+
+  /** Stars or unstars a model; false when that changed nothing. */
+  setFavoriteModel(owner: FavoriteOwner, model: string, favorite: boolean): boolean {
+    const result = favorite
+      ? this._stmt('INSERT OR IGNORE INTO favorite_models (owner_kind, owner_id, model, created_at) VALUES (?, ?, ?, ?)').run(owner.kind, owner.id, model, this._now())
+      : this._stmt('DELETE FROM favorite_models WHERE owner_kind = ? AND owner_id = ? AND model = ?').run(owner.kind, owner.id, model)
+    return result.changes > 0
+  }
+
+  countFavoriteModels(owner: FavoriteOwner): number {
+    return this._stmt('SELECT COUNT(*) FROM favorite_models WHERE owner_kind = ? AND owner_id = ?').pluck().get(owner.kind, owner.id) as number
   }
 
   // ── Deposits (confirmations) ────────────────────────────────────────────

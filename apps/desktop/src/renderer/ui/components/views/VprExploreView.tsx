@@ -29,7 +29,7 @@ import {
   type VprCatalogSort,
 } from '../../../modules/catalog/view-models';
 import { findCatalogEntry, sortFreeModelsByPriority } from '../../../modules/catalog/model-catalog';
-import { availableModelFamilies } from '../../../modules/catalog/model-families';
+import { availableModelFamilies, BrandIcon } from '@antseed/ui';
 import { loadFavoriteModels } from '../../../modules/catalog/favorites';
 import { availableModelTags } from '../../../modules/catalog/model-metadata';
 import { setVprModelPageTarget, setVprRouterPageTarget } from '../../../modules/catalog/model-page-target';
@@ -43,7 +43,6 @@ import { useRetainedState } from '../../hooks/useRetainedState';
 import { projectTeeBrowseCatalog, teeBrowseCache } from '../../../modules/catalog/tee-browse';
 import { VprTeeFilter, VprTeeNotice } from '../vpr/VprTeeAvailability';
 import type { ViewName } from '../../types';
-import { BrandIcon } from '../brand/BrandIcon';
 import { VprFilterDropdown, VprMultiFilterDropdown, type VprFilterOption } from '../vpr/VprFilterDropdown';
 import { VprModelRowList } from '../vpr/VprModelRows';
 import { VprPage, VprSearch } from '../vpr/VprKit';
