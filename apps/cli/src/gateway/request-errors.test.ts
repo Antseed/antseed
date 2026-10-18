@@ -131,6 +131,36 @@ test('a request waits for a restarting buyer instead of failing, and gives up af
   }
 })
 
+test('a capped video create does not wait for a restarting buyer, which may come back without its price check', async () => {
+  const { store, cleanup } = tempDataDir()
+  const accounting = new GatewayAccounting(store, { holdUsdc: 1_000, settleGraceMs: 10 })
+  const gateway = new GatewayServer({
+    store, accounting, buyerPort: await closedPort(), buyerRestartHoldMs: 5_000, identityAddress: async () => null,
+    spendFeedState: () => 'reporting' as const, refreshSpendFeed: async () => {}, videoBudgetEnforced: () => true,
+  })
+  try {
+    const { key, secret } = store.createKey({ label: 'k', limits: { daily: 1_000_000, monthly: null, total: null }, expiresAt: null })
+    const port = await gateway.start()
+    const startedAt = Date.now()
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request({ hostname: '127.0.0.1', port, path: '/api/v1/video/queue', method: 'POST', headers: { authorization: `Bearer ${secret}`, 'content-type': 'application/json' } }, (res) => {
+        res.resume()
+        resolve(res.statusCode ?? 0)
+      })
+      req.on('error', reject)
+      req.end('{"model":"seedance","prompt":"An ant","duration":"8s"}')
+    })
+    assert.equal(status, 502)
+    assert.ok(Date.now() - startedAt < 2_000, 'answered at once')
+    assert.equal(accounting.heldUsdc(key.id), 0)
+    assert.deepEqual(store.listVideoCommitments(Date.now()), [], 'no reservation is left')
+  } finally {
+    await gateway.stop()
+    accounting.dispose()
+    cleanup()
+  }
+})
+
 test('a client that leaves while its request waits for the buyer is recorded as its cancel', async () => {
   const { store, cleanup } = tempDataDir()
   const accounting = new GatewayAccounting(store, { holdUsdc: 1_000, settleGraceMs: 10 })

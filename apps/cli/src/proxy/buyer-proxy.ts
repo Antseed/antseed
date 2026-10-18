@@ -1,4 +1,4 @@
-import { nativeVideoRoute } from '@antseed/api-adapter'
+import { nativeVideoRoute, type NativeVideoProtocol } from '@antseed/api-adapter'
 import { ResourceRoutes } from './resource-routes.js'
 import { prepareVideoRequest, recordVideoAcceptance } from './native-video-proxy.js'
 import { downloadVideo } from './video-download.js'
@@ -49,6 +49,7 @@ import {
   type SerializedHttpResponse,
   type SerializedHttpResponseChunk,
   type SweepReceiptPayload,
+  VIDEO_JOB_RETIRED_HEADER,
 } from '@antseed/node'
 import { canonicalModelKey } from '@antseed/node/model-identity'
 import {
@@ -75,6 +76,7 @@ import {
   SYSTEM_PROXY_SOURCE_HEADER,
   SYSTEM_ROUTED_MODEL_HEADER,
   BUYER_IDENTITY_HEADER,
+  MAX_VIDEO_COST_HEADER,
   normalizePeerId,
   takeRoutingOptions,
   type RequestRoutingOptions,
@@ -794,6 +796,11 @@ export function sanitizePeerBuyerFaultMarker(response: SerializedHttpResponse): 
     : response
 }
 
+/** A non-negative integer amount of USDC base units, or null when absent or malformed. */
+function parseUsdcBaseUnits(value: string | undefined): bigint | null {
+  return value && /^\d{1,15}$/.test(value) ? BigInt(value) : null
+}
+
 function buyerFaultStatusCode(faultCode: string | null): number {
   switch (faultCode) {
     case 'invalid-request': return 400
@@ -1179,6 +1186,12 @@ export class BuyerProxy {
 
   private _stateWriteChain: Promise<void> = Promise.resolve()
   private readonly _resourceRoutes = new ResourceRoutes()
+  /** Retrieves of one video job run one at a time, so a job retired as failed cannot be delivered by a retrieve already under way. */
+  private readonly _videoJobQueues = new Map<string, Promise<void>>()
+  /** Jobs whose retirement is being saved: left out of the saved routes, still routable in memory until the save succeeds. */
+  /** The saved video routes existed but could not be read at start (see `start`). */
+  private _resourceRoutesUnread = false
+  private readonly _retiringVideoJobs = new Set<string>()
 
   private _cachedPeers: PeerInfo[] = []
   private _cacheLastUpdatedAtMs = 0
@@ -2057,7 +2070,13 @@ export class BuyerProxy {
     try {
       const state = JSON.parse(await readFile(this._stateFile, 'utf8'))
       this._resourceRoutes.hydrate(state.resourceRoutes)
-    } catch {}
+    } catch (error) {
+      // Routes that could not be read may come back on a later start: until then no job is said to be retired.
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        this._resourceRoutesUnread = true
+        console.warn(`[buyer-proxy] Could not read saved video routes: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
     // Adopt persisted session overrides (peer pin, default routed model) so
     // they survive daemon restart. A --peer CLI flag beats the persisted pin
     // at startup; runtime `connection set` writes still take over via the
@@ -2312,8 +2331,47 @@ export class BuyerProxy {
     return this._stateWriteChain
   }
 
+  private async _serializeVideoJob(job: string, run: () => Promise<void>): Promise<void> {
+    const previous = this._videoJobQueues.get(job) ?? Promise.resolve()
+    const current = previous.then(run, run)
+    const tail = current.catch(() => {})
+    this._videoJobQueues.set(job, tail)
+    try {
+      await current
+    } finally {
+      if (this._videoJobQueues.get(job) === tail) this._videoJobQueues.delete(job)
+    }
+  }
+
+  /**
+   * Retires a video job that failed or that its seller no longer has: later
+   * retrieves get `video_route_not_found` and never reach the seller, so it can
+   * never be delivered or charged, and a gateway may release the price it held
+   * for it. False (route kept) when the retirement could not be saved, so a
+   * restart cannot bring the job back.
+   */
+  private async _retireVideoJob(protocol: NativeVideoProtocol, resourceId: string): Promise<boolean> {
+    if (!this._resourceRoutes.resolve(protocol, resourceId)) return true
+    // The route stays usable until the retirement is saved: a retrieve arriving meanwhile waits its turn
+    // (retrieves of one job run one at a time) instead of seeing the job as gone before that is durable.
+    const key = `${protocol}\n${resourceId}`
+    this._retiringVideoJobs.add(key)
+    try {
+      await this._persistResourceRoutes()
+      this._resourceRoutes.forget(protocol, resourceId)
+      return true
+    } catch (error) {
+      console.error('[proxy] Retired video route was not saved; the job is kept:', error)
+      return false
+    } finally {
+      this._retiringVideoJobs.delete(key)
+    }
+  }
+
   private async _persistResourceRoutes(): Promise<void> {
-    const write = this._stateWriteChain.then(() => mergeJsonStateFile(this._stateDir, this._stateFile, { resourceRoutes: this._resourceRoutes.snapshot() }))
+    const write = this._stateWriteChain.then(() => mergeJsonStateFile(this._stateDir, this._stateFile, {
+      resourceRoutes: this._resourceRoutes.snapshot().filter((route) => !this._retiringVideoJobs.has(`${route.protocol}\n${route.resourceId}`)),
+    }))
     this._stateWriteChain = write.catch(() => {})
     return write
   }
@@ -3706,7 +3764,10 @@ export class BuyerProxy {
       // Re-classify with the body: some APIs (Venice) carry the job ID in it.
       const prepared = prepareVideoRequest(nativeVideoRoute(serializedReq) ?? nativeVideo, serializedReq.headers, this._resourceRoutes)
       if ('error' in prepared) {
-        res.writeHead(prepared.error.statusCode, { 'content-type': 'application/json' })
+        // No route for the job: this buyer can never deliver or charge it. Unless its saved routes could not be
+        // read at start, when the job may still be there on the next one.
+        const retired = prepared.error.body.error.code === 'video_route_not_found' && !this._resourceRoutesUnread ? { [VIDEO_JOB_RETIRED_HEADER]: '1' } : {}
+        res.writeHead(prepared.error.statusCode, { 'content-type': 'application/json', ...retired })
         res.end(JSON.stringify(prepared.error.body))
         return
       }
@@ -4750,6 +4811,7 @@ export class BuyerProxy {
       'x-antseed-pin-peer': _pinPeer,
       'x-antseed-prefer-peer': _preferPeer,
       [BUYER_IDENTITY_HEADER]: buyerIdentity,
+      [MAX_VIDEO_COST_HEADER]: maxVideoCostHeader,
       [REQUIRED_PARAMETERS_HEADER]: _requiredParameters,
       'x-vpr-session-id': _vprSession,
       // Legacy desktop builds (pre AntStation → VPR rename) still send this.
@@ -4832,9 +4894,18 @@ export class BuyerProxy {
     const wantsStreaming = clientWantsStreaming && !videoRoute
     if (videoRoute?.action === 'retrieve') {
       // The seller hands a job only to the buyer that created it: retrieve with the same wallet.
-      await downloadVideo(requestForPeer, res, (request, callbacks, signal) => this._node.sendRequestStream(selectedPeer, request, callbacks, {
-        signal, pinned: true, ...(buyerIdentity ? { buyerIdentity } : {}),
-      }), requestSignal)
+      const { protocol, resourceId } = videoRoute
+      await this._serializeVideoJob(`${protocol}\n${resourceId ?? ''}`, async () => {
+        // Checked again in turn: a retrieve queued behind one that retired the job must not reach the seller.
+        if (!resourceId || !this._resourceRoutes.resolve(protocol, resourceId)) {
+          res.writeHead(404, { 'content-type': 'application/json', [VIDEO_JOB_RETIRED_HEADER]: '1' })
+          res.end(JSON.stringify({ error: { code: 'video_route_not_found', message: 'Unknown video job' } }))
+          return
+        }
+        await downloadVideo(requestForPeer, res, (request, callbacks, signal) => this._node.sendRequestStream(selectedPeer, request, callbacks, {
+          signal, pinned: true, ...(buyerIdentity ? { buyerIdentity } : {}),
+        }), requestSignal, () => this._retireVideoJob(protocol, resourceId))
+      })
       return { done: true }
     }
     const peerResponseProtocol = selectedRoutePlan.selection?.targetProtocol ?? requestProtocol
@@ -5010,10 +5081,12 @@ export class BuyerProxy {
         res.end(Buffer.from(responseForClient.body))
         return { done: true, emptyAnswer: answeredEmpty }
       } else {
+        const maxVideoCostUsdc = videoRoute?.action === 'create' ? parseUsdcBaseUnits(maxVideoCostHeader) : null
         const upstreamResponse = await this._node.sendRequest(selectedPeer, requestForPeer, {
           signal: attemptSignal,
           pinned,
           ...(buyerIdentity ? { buyerIdentity } : {}),
+          ...(maxVideoCostUsdc !== null ? { maxVideoCostUsdc } : {}),
         })
         if (upstreamResponse.statusCode >= 400 && !adaptResponse) {
           log(`Upstream raw error detail: ${summarizeErrorResponse(upstreamResponse)}`)

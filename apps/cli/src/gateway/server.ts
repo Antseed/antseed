@@ -2,11 +2,11 @@ import { timingSafeEqual } from 'node:crypto'
 import * as http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { nativeVideoAcceptance, nativeVideoRoute, type NativeVideoRoute } from '@antseed/api-adapter'
-import { DEFAULT_BUYER_IDENTITY } from '@antseed/node'
+import { DEFAULT_BUYER_IDENTITY, VIDEO_JOB_RETIRED_HEADER, VIDEO_PRICE_HEADER } from '@antseed/node'
 import { SPEND_ATTRIBUTION_HEADER } from '../proxy/spend-attribution.js'
-import { BUYER_IDENTITY_HEADER } from '../proxy/request-utils.js'
+import { BUYER_IDENTITY_HEADER, MAX_VIDEO_COST_HEADER } from '../proxy/request-utils.js'
 import { GATEWAY_CONTROL_HEADER, ROUTING_POLICY_HEADER, encodePolicyHeader, meaningfulPolicy, policyAllowsModel, type RoutingPolicy } from '../routing-policy/policy.js'
-import { effectiveKeyLimits, newRequestTag, type GatewayAccounting, type KeyContext } from './accounting.js'
+import { effectiveKeyLimits, newRequestTag, videoJobKey, type AdmitOptions, type GatewayAccounting, type KeyContext } from './accounting.js'
 import { errorMessage } from './errors.js'
 import { isClientCredentialHeader } from '../proxy/credential-headers.js'
 import { parseBearerToken } from './keys.js'
@@ -137,6 +137,8 @@ interface ForwardedRequest {
   modelListPolicy: RoutingPolicy | null
   /** A native video create or retrieve: only the retrieve that delivers the file is charged. */
   video: NativeVideoRoute | null
+  /** Room left under the key's caps at admission (a video create's reserved allowance); null when nothing is capped. */
+  remainingUsdc: number | null
 }
 
 export interface GatewayServerOptions {
@@ -147,6 +149,12 @@ export interface GatewayServerOptions {
   identityAddress: (buyerIdentity: string) => Promise<string | null>
   spendFeedState: () => SpendFeedState
   refreshSpendFeed: () => Promise<void>
+  /**
+   * Whether the buyer refuses a video priced above the room it is told about
+   * (older buyers ignore it). Without it, video creates of capped keys are
+   * refused: the price must be checked before a job starts.
+   */
+  videoBudgetEnforced?: () => boolean
   /** x402 top-ups into a key's buyer wallet; null disables `POST /v1/key/topup`. */
   topup?: GatewayTopupOptions | null
   listenPort?: number
@@ -292,7 +300,14 @@ export class GatewayServer {
 
     // Caps are only as good as the spend that reaches the ledger, so a key
     // with caps fails closed while its buyer is not reporting spend.
-    if (route.paid && this._options.accounting.hasBudgets(key, context) && !await this._spendFeedReporting(res)) return
+    if (route.paid && this._options.accounting.hasBudgets(key, context)) {
+      if (!await this._spendFeedReporting(res)) return
+      // Caps count accepted video jobs; refuse rather than admit against commitments that could be lost.
+      if (!this._options.accounting.videoCommitmentsReady()) {
+        sendError(res, 503, 'api_error', 'spend_tracking_unavailable', 'Spend limits cannot be applied right now: video jobs could not be stored. Try again shortly.')
+        return
+      }
+    }
 
     let body = await readBody(req)
     if (!body) return sendBodyTooLarge(res)
@@ -321,8 +336,21 @@ export class GatewayServer {
 
     const policy = this._routingPolicy(res, route, key, context, preset, model)
     if (!policy.allowed) return
-    const tag = this._admit(res, route, key, context)
-    if (!tag) return
+    const video = nativeVideoRoute({ method, path: route.prefix, body })
+    const videoJob = video?.action === 'retrieve' && video.resourceId ? videoJobKey(video.protocol, video.resourceId) : undefined
+    // Only the key that created a video job may retrieve it: its delivery is charged to the key that downloads it.
+    if (video?.action === 'retrieve' && !this._ownsVideoJob(key, videoJob, video.resourceId)) {
+      sendError(res, 404, 'invalid_request_error', 'video_route_not_found', 'Unknown video job')
+      return
+    }
+    // Read from the buyer now, not from the last poll: a buyer just replaced by an older one must not start the job.
+    if (video?.action === 'create' && route.paid && this._options.accounting.hasBudgets(key, context) && !await this._videoBudgetEnforced()) {
+      sendError(res, 503, 'api_error', 'buyer_upgrade_required', 'Videos cannot be started on a key with spend limits until the Antseed buyer is updated: this buyer cannot check a video\'s price against the limit before it starts.')
+      return
+    }
+    const admission = this._admit(res, route, key, context, { videoCreate: video?.action === 'create', ...(videoJob ? { videoJob } : {}) })
+    if (!admission) return
+    const { tag } = admission
 
     const request: ForwardedRequest = {
       tag,
@@ -337,7 +365,8 @@ export class GatewayServer {
       body,
       policyHeaders: policy.headers,
       modelListPolicy: route.prefix === '/v1/models' && policy.policy.allowedModels ? policy.policy : null,
-      video: nativeVideoRoute({ method, path: route.prefix, body }),
+      video,
+      remainingUsdc: admission.remainingUsdc,
     }
     try {
       this._options.store.startRequest({
@@ -355,7 +384,8 @@ export class GatewayServer {
       })
       this._options.store.touchKey(key.id)
     } catch (error) {
-      // Nothing was sent; the hold must not keep counting against the caps.
+      // Nothing was sent; the hold (and a create's reservation) must not keep counting against the caps.
+      this._options.accounting.videoNotAccepted(tag)
       this._options.accounting.release(tag)
       throw error
     }
@@ -465,13 +495,71 @@ export class GatewayServer {
   }
 
   /** The request's tag; a paid request is admitted against its budgets first (402 answered here when one is spent). */
-  private _admit(res: http.ServerResponse, route: CanonicalRoute, key: ApiKeyRecord, context: KeyContext): string | null {
-    if (!route.paid) return newRequestTag()
-    const admission = this._options.accounting.admit(key, context)
-    if (admission.ok) return admission.tag
+  private _admit(res: http.ServerResponse, route: CanonicalRoute, key: ApiKeyRecord, context: KeyContext, video: AdmitOptions): { tag: string; remainingUsdc: number | null } | null {
+    if (!route.paid) return { tag: newRequestTag(), remainingUsdc: null }
+    const admission = this._options.accounting.admit(key, context, video)
+    if (admission.ok) return { tag: admission.tag, remainingUsdc: admission.remainingUsdc }
+    if (admission.breach === null) {
+      if (admission.reason === 'video_pricing') {
+        res.setHeader('retry-after', '5')
+        sendError(res, 429, 'rate_limit_error', 'video_pricing_in_progress', 'A video started on this spend limit is still being priced and holds the room it may cost. Retry in a few seconds.')
+      } else {
+        sendError(res, 503, 'api_error', 'spend_tracking_unavailable', 'Spend limits cannot be applied right now: video jobs could not be stored. Try again shortly.')
+      }
+      return null
+    }
     this._log(`gateway spend limit reached: key=${key.id} level=${admission.breach.level ?? 'key'} period=${admission.breach.period}`)
     sendJson(res, 402, { error: spendLimitError(admission.breach) })
     return null
+  }
+
+  private async _videoBudgetEnforced(): Promise<boolean> {
+    if (!this._options.videoBudgetEnforced) return false
+    try {
+      await this._options.refreshSpendFeed()
+    } catch {
+      return false
+    }
+    return this._options.videoBudgetEnforced()
+  }
+
+  /** Whether `key` created the video job, as remembered by its commitment or, for older jobs, the request log. */
+  private _ownsVideoJob(key: ApiKeyRecord, job: string | undefined, jobId: string | undefined): boolean {
+    if (!job || !jobId) return false
+    const owner = this._options.accounting.videoJobOwner(job) ?? this._options.store.findVideoJobCreator(jobId)
+    return owner === key.id
+  }
+
+  /**
+   * Accounting for a video request once answered. An accepted create records
+   * its job: the key that owns it and, for a key with caps, the price it keeps
+   * counted until the buyer's charge for its delivery arrives. That price is
+   * the buyer's (set only by the buyer), never more than the allowance the
+   * create held; without a readable price the whole allowance stays held. A
+   * retrieve the buyer marks as retiring the job (it failed, its seller no
+   * longer has it, or the buyer has no record of it) releases the job: it can
+   * never be delivered or charged. Nothing a seller sends can release it.
+   */
+  private _settleVideo(request: ForwardedRequest, outcome: { videoJobId: string | null; priceHeader: string; retired: boolean; delivered: boolean }): void {
+    const video = request.video
+    if (!video) return
+    const accounting = this._options.accounting
+    if (video.action === 'create') {
+      if (!outcome.videoJobId) {
+        accounting.videoNotAccepted(request.tag)
+        return
+      }
+      const allowance = request.remainingUsdc
+      const price = /^\d{1,15}$/.test(outcome.priceHeader) ? Number(outcome.priceHeader) : null
+      // A key without caps has no allowance: it records the buyer's price, so caps added later count the job.
+      const amount = allowance === null ? price ?? 0 : Math.min(allowance, price ?? allowance)
+      accounting.commitVideo(request.tag, videoJobKey(video.protocol, outcome.videoJobId), amount)
+      return
+    }
+    if (!video.resourceId) return
+    const job = videoJobKey(video.protocol, video.resourceId)
+    if (outcome.retired) accounting.dropVideo(job)
+    else if (outcome.delivered) accounting.videoDelivered(job)
   }
 
   /**
@@ -502,6 +590,11 @@ export class GatewayServer {
       // Video: the start of a create's answer (it names the job) and whether a retrieve delivered the file.
       let videoCreateChunks: Buffer[] | null = null
       let videoDelivered = false
+      // A retrieve answered with the file; it is delivered (and charged) only once that stream ends.
+      let videoStream = false
+      // The buyer's price for an accepted create, and whether the buyer retired a retrieved job.
+      let videoPriceHeader = ''
+      let videoRetired = false
       // Token counts the response reports, kept on the request until (or if
       // the buyer never reports) its spend.
       let usageReader: ResponseUsageReader | null = null
@@ -515,21 +608,42 @@ export class GatewayServer {
         const latencyMs = reportedLatency ?? finishedAt - startedAt
         const responseContent = observability.logContent ? truncateContent(Buffer.concat(responseChunks)) : null
         const store = this._options.store
+        // Read from the answer itself: the job's accounting must not depend on the request log being writable.
+        let videoJobId: string | null = null
+        try {
+          videoJobId = videoCreateChunks && request.video
+            ? nativeVideoAcceptance(request.video.protocol, { requestId: tag, statusCode: status, headers: {}, body: Buffer.concat(videoCreateChunks) })
+            : null
+        } catch (error) {
+          this._log(`gateway could not read video acceptance for ${tag}: ${errorMessage(error)}`)
+        }
+        const usage = usageReader?.result() ?? null
+        const tokensPerSecond = firstTokenMs !== null ? outputTokensPerSecond(usage?.outputTokens ?? 0, finishedAt - respondedAt) : null
+        try {
+          // First, and apart from the rest: the job ID is what lets its key retrieve it after a restart.
+          store.recordRequestOutcome(tag, { sellerPeerId, latencyMs, firstTokenMs, tokensPerSecond, endUser, servedFree, videoJobId, videoDelivered })
+        } catch (error) {
+          this._log(`gateway could not record request ${tag}: ${errorMessage(error)}`)
+        }
         try {
           const error = status >= 400 ? gatewayError ?? parseErrorBody(Buffer.concat(errorChunks), status) : null
           store.finishRequest(tag, { status, buyerRequestId, error })
-          const usage = usageReader?.result() ?? null
-          const tokensPerSecond = firstTokenMs !== null ? outputTokensPerSecond(usage?.outputTokens ?? 0, finishedAt - respondedAt) : null
-          const videoJobId = videoCreateChunks && request.video
-            ? nativeVideoAcceptance(request.video.protocol, { requestId: tag, statusCode: status, headers: {}, body: Buffer.concat(videoCreateChunks) })
-            : null
-          store.recordRequestOutcome(tag, { sellerPeerId, latencyMs, firstTokenMs, tokensPerSecond, endUser, servedFree, videoJobId, videoDelivered })
           if (usage) store.recordResponseUsage(tag, usage)
           if (observability.logContent) store.recordRequestContent(tag, { requestBody: requestContent, responseBody: responseContent })
         } catch (error) {
           this._log(`gateway could not record request ${tag}: ${errorMessage(error)}`)
         }
-        this._options.accounting.finish(tag)
+        const accounting = this._options.accounting
+        try {
+          this._settleVideo(request, { videoJobId, priceHeader: videoPriceHeader, retired: videoRetired, delivered: videoDelivered })
+        } catch (error) {
+          this._log(`gateway could not account for video request ${tag}: ${errorMessage(error)}`)
+        }
+        // Only the retrieve that delivers a video is charged, and a job that still holds its price covers that
+        // charge until it arrives: a create, a status poll or such a delivery holds nothing once answered.
+        const job = request.video?.resourceId ? videoJobKey(request.video.protocol, request.video.resourceId) : null
+        if (request.video && (!videoDelivered || (job !== null && accounting.videoJobHeldUsdc(job) > 0))) accounting.release(tag)
+        else accounting.finish(tag)
         this._exporter.record({
           tag, method, path: request.requestPath, model: request.model, status, startedAt, finishedAt,
           keyId: key.id, workspaceId: key.workspaceId, memberId: key.ownerMemberId, endUser, sellerPeerId, latencyMs,
@@ -543,6 +657,10 @@ export class GatewayServer {
       headers['content-length'] = String(body.length)
       headers['x-antseed-system-proxy-source'] = tunnelRequestSource(req.headers)
       headers[SPEND_ATTRIBUTION_HEADER] = tag
+      // The buyer prices the video and refuses one that costs more than the key has left.
+      if (request.video?.action === 'create' && request.remainingUsdc !== null) {
+        headers[MAX_VIDEO_COST_HEADER] = String(Math.max(0, Math.floor(request.remainingUsdc)))
+      }
       if (key.buyerIdentity !== DEFAULT_BUYER_IDENTITY) {
         headers[BUYER_IDENTITY_HEADER] = key.buyerIdentity
         // The buyer lets only its gateway pay from a non-default wallet.
@@ -572,8 +690,12 @@ export class GatewayServer {
           const contentType = firstHeader(upstreamRes.headers['content-type']).toLowerCase()
           // A video is priced per second, not per token: zero token prices do not make it free.
           servedFree = !request.video && freeSellerPricing(upstreamRes.headers)
-          if (request.video?.action === 'create' && status >= 200 && status < 300) videoCreateChunks = collectPrefix(upstreamRes, MAX_ERROR_BODY_BYTES)
-          videoDelivered = request.video?.action === 'retrieve' && status === 200 && contentType.startsWith('video/')
+          if (request.video?.action === 'create' && status >= 200 && status < 300) {
+            videoCreateChunks = collectPrefix(upstreamRes, MAX_ERROR_BODY_BYTES)
+            videoPriceHeader = firstHeader(upstreamRes.headers[VIDEO_PRICE_HEADER])
+          }
+          videoStream = request.video?.action === 'retrieve' && status === 200 && contentType.startsWith('video/')
+          videoRetired = request.video?.action === 'retrieve' && firstHeader(upstreamRes.headers[VIDEO_JOB_RETIRED_HEADER]) === '1'
           if (observability.logContent) responseChunks = collectPrefix(upstreamRes, MAX_LOGGED_CONTENT_BYTES)
           if (status >= 400) errorChunks = collectPrefix(upstreamRes, MAX_ERROR_BODY_BYTES)
           // A delivered video is an MP4 stream with no usage to read.
@@ -583,7 +705,11 @@ export class GatewayServer {
             if (!HOP_BY_HOP.has(name.toLowerCase()) && value !== undefined) responseHeaders[name] = value
           }
           responseHeaders.connection = 'close'
-          upstreamRes.once('error', () => finish!(status, buyerRequestId))
+          upstreamRes.once('error', () => {
+            finish!(status, buyerRequestId)
+            // The buyer's answer broke off: end the client's too, rather than leave it waiting.
+            res.destroy()
+          })
           res.once('close', () => finish!(status, buyerRequestId))
           const modelListPolicy = request.modelListPolicy
           if (modelListPolicy && status === 200) {
@@ -599,7 +725,11 @@ export class GatewayServer {
           }
           res.writeHead(status, responseHeaders)
           upstreamRes.pipe(res)
-          upstreamRes.once('end', () => finish!(status, buyerRequestId))
+          upstreamRes.once('end', () => {
+            // An interrupted download is not charged: the job stays committed until it is downloaded in full.
+            videoDelivered = videoStream
+            finish!(status, buyerRequestId)
+          })
         })
 
         upstream.on('error', (error) => {
@@ -615,7 +745,9 @@ export class GatewayServer {
               refusedSince = Date.now()
               this._log(`gateway holding request until the buyer is back: key=${key.id}`)
             }
-            if (this._holdForBuyer(refusedSince)) {
+            // A capped video create is not held: the buyer that comes back may be an older one, which would
+            // start the job without checking its price (see `_videoBudgetEnforced`).
+            if (!(request.video?.action === 'create' && request.remainingUsdc !== null) && this._holdForBuyer(refusedSince)) {
               retryTimer = setTimeout(send, BUYER_RETRY_INTERVAL_MS)
               return
             }
@@ -1020,6 +1152,7 @@ const STRIPPED_HEADERS = new Set([
   'content-length',
   SPEND_ATTRIBUTION_HEADER,
   BUYER_IDENTITY_HEADER,
+  MAX_VIDEO_COST_HEADER,
   ROUTING_POLICY_HEADER,
   GATEWAY_CONTROL_HEADER,
   GATEWAY_INTERNAL_KEY_HEADER,

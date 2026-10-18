@@ -7,12 +7,14 @@ import type { RequestStreamCallbacks, SerializedHttpRequest, SerializedHttpRespo
 const request: SerializedHttpRequest = { requestId: 'download', method: 'POST', path: '/api/v1/video/retrieve', headers: { 'content-type': 'application/json' }, body: Buffer.from('{"queue_id":"task"}') }
 const video = Buffer.alloc(3 * 1024 * 1024 + 17, 42)
 const start: SerializedHttpResponse = { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'video/mp4', 'content-length': String(video.length) }, body: new Uint8Array() }
+/** The final answer once the buyer accepted the file as the finished video. */
+const accepted: SerializedHttpResponse = { ...start, headers: { ...start.headers, 'x-antseed-video-delivered': '1' } }
 
-async function serve(send: (request: SerializedHttpRequest, callbacks: RequestStreamCallbacks, signal: AbortSignal) => Promise<SerializedHttpResponse>, run: (url: string) => Promise<void>) {
+async function serve(send: (request: SerializedHttpRequest, callbacks: RequestStreamCallbacks, signal: AbortSignal) => Promise<SerializedHttpResponse>, run: (url: string) => Promise<void>, retire?: () => Promise<boolean>) {
   const server = createServer((_incoming, response) => {
     const abort = new AbortController()
     response.on('close', () => abort.abort())
-    void downloadVideo(request, response, send, abort.signal)
+    void downloadVideo(request, response, send, abort.signal, retire)
   })
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
   try { await run(`http://127.0.0.1:${(server.address() as { port: number }).port}`) }
@@ -32,7 +34,7 @@ test('streams several MB with one request and no ranges', async () => {
     for (let offset = 0; offset < video.length; offset += 65536) {
       await callbacks.onResponseChunk!({ requestId: sent.requestId, data: video.subarray(offset, offset + 65536), done: false })
     }
-    return start
+    return accepted
   }, async url => {
     const response = await fetch(url)
     assert.equal(response.status, 200)
@@ -40,6 +42,36 @@ test('streams several MB with one request and no ranges', async () => {
     assert.deepEqual(Buffer.from(await response.arrayBuffer()), video)
   })
   assert.equal(calls, 1)
+})
+
+test('cuts off a stream the buyer did not accept as the finished video, so it never ends like a delivery, and retires the job', async () => {
+  let retired = 0
+  await serve(async (sent, callbacks) => {
+    callbacks.onResponseStart!(start, { streaming: true })
+    await callbacks.onResponseChunk!({ requestId: sent.requestId, data: video, done: false })
+    // A complete, well-formed stream that the buyer did not accept (too short or unreadable): not charged, not delivered.
+    return start
+  }, async url => {
+    const response = await fetch(url)
+    assert.equal(response.status, 200)
+    await assert.rejects(response.arrayBuffer())
+  }, async () => { retired += 1; return true })
+  // It would only be rejected again: retired, so the next poll says it is gone and a gateway stops holding its price.
+  assert.equal(retired, 1)
+})
+
+test('cuts off a good video whose delivery the buyer could not save, but keeps its job for another download', async () => {
+  let retired = 0
+  const unrecorded: SerializedHttpResponse = { ...start, headers: { ...start.headers, 'x-antseed-video-delivered': 'unrecorded' } }
+  await serve(async (sent, callbacks) => {
+    callbacks.onResponseStart!(start, { streaming: true })
+    await callbacks.onResponseChunk!({ requestId: sent.requestId, data: video, done: false })
+    return unrecorded
+  }, async url => {
+    const response = await fetch(url)
+    await assert.rejects(response.arrayBuffer())
+  }, async () => { retired += 1; return true })
+  assert.equal(retired, 0)
 })
 
 test('returns errors before a stream starts', async () => {
