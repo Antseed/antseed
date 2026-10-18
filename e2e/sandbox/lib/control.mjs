@@ -76,6 +76,8 @@ export function controlClient({ url, token }) {
     warp: (seconds) => call('POST', '/chain/warp', { seconds }),
     stopSeller: (id) => call('POST', `/sellers/${id}/stop`),
     startSeller: (id) => call('POST', `/sellers/${id}/start`, {}, 180_000),
+    stopBuyer: () => call('POST', '/buyer/stop'),
+    startBuyer: () => call('POST', '/buyer/start', {}, 180_000),
     setMockLatency: (id, latencyMs) => call('POST', `/sellers/${id}/mock`, { latencyMs }),
     mockRequests: (id) => call('GET', `/sellers/${id}/mock`),
     shutdown: () => call('POST', '/shutdown', {}, 10_000),

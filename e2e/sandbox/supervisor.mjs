@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Long-lived sandbox owner: Anvil fork, private bootstrap, mocks, seller workers, buyer + proxy, control API.
+// Long-lived sandbox owner: Anvil (Base fork or local chain), private bootstrap, mocks, seller workers, buyer + proxy, control API.
 // Started detached by `pnpm sandbox up`; stopped by `pnpm sandbox down` (POST /shutdown) or SIGTERM.
 import assert from 'node:assert/strict';
 import { fork, spawn } from 'node:child_process';
@@ -10,11 +10,11 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bindUpstream, listModels } from './lib/config.mjs';
 import { blocksInUse, copyIn, pruneCache, resolveForkBlock, seedFromLegacy, writeBack } from './lib/cache.mjs';
-import { chainReader, prepareChain } from './lib/chain.mjs';
+import { chainReader, LOCAL_DEPLOYER_KEY, prepareChain, prepareLocalChain } from './lib/chain.mjs';
 import { newToken, startControlServer } from './lib/control.mjs';
-import { assertLocalUrl, isolatedEnv, listenWithRetry } from './lib/env.mjs';
+import { assertLocalUrl, isolatedEnv, listenWithRetry, redactingStream } from './lib/env.mjs';
 import { acquireLock, ownProcessEntry, processStartTime, releaseLock } from './lib/lock.mjs';
-import { saveJson, validateManifest, MANIFEST_VERSION } from './lib/manifest.mjs';
+import { saveJson, validateManifest, MANIFEST_VERSION, SANDBOX_CHAIN_IDS } from './lib/manifest.mjs';
 import { startMock } from './lib/mock.mjs';
 import { paymentsConfig, sandboxNodeOptions } from './lib/node-options.mjs';
 import { resetRunState, sandboxPaths } from './lib/paths.mjs';
@@ -27,6 +27,10 @@ const paths = sandboxPaths(root, name);
 const plan = JSON.parse(await readFile(join(paths.config, 'plan.json'), 'utf8'));
 // Secrets never go into plan.json: the fork RPC URL and live API keys arrive via env and are read before it is cleaned.
 const forkUrl = process.env.ANTSEED_SANDBOX_FORK_URL;
+// forge needs the real HOME for its solc cache (~/.svm, ~/.foundry); every AntSeed process keeps the private one.
+const toolHome = process.env.ANTSEED_SANDBOX_TOOL_HOME;
+const target = plan.target ?? 'fork';
+const local = target === 'local';
 const liveEnv = Object.fromEntries((plan.liveKeys ?? []).map((key) => [key, process.env[key]]));
 const log = (message) => console.log(`[supervisor] ${new Date().toISOString()} ${message}`);
 const waitFor = async (check, label, timeoutMs = 60_000, intervalMs = 200) => {
@@ -49,18 +53,21 @@ async function writeManifest(patch) {
   await saveJson(paths.manifest, manifest);
 }
 
+/** Anvil on a free loopback port: a Base fork at `block` when forkUrl is set, otherwise an empty chain 31337. */
 async function startAnvil(forkUrl, block) {
   const logStream = createWriteStream(join(paths.logs, 'anvil.log'), { flags: 'a' });
+  const expectedChainId = `0x${(forkUrl ? SANDBOX_CHAIN_IDS.fork : SANDBOX_CHAIN_IDS.local).toString(16)}`;
   const { port, value: child } = await listenWithRetry(async (candidate) => {
     const args = [
-      '--fork-url', forkUrl, '--fork-block-number', String(block), '--chain-id', '8453',
+      ...(forkUrl
+        ? ['--fork-url', forkUrl, '--fork-block-number', String(block), '--chain-id', String(SANDBOX_CHAIN_IDS.fork), '--no-rate-limit', '--retries', '20', '--timeout', '120000']
+        : ['--chain-id', String(SANDBOX_CHAIN_IDS.local)]),
       '--host', '127.0.0.1', '--port', String(candidate),
-      '--no-rate-limit', '--retries', '20', '--timeout', '120000',
       '--disable-min-priority-fee', '--base-fee', '0', '--gas-price', '0',
     ];
     const spawned = spawn('anvil', args, { env: isolatedEnv(process.env, paths.anvilHome), stdio: ['ignore', 'pipe', 'pipe'] });
-    spawned.stdout.pipe(logStream, { end: false });
-    spawned.stderr.pipe(logStream, { end: false });
+    spawned.stdout.pipe(redactingStream(forkUrl)).pipe(logStream, { end: false });
+    spawned.stderr.pipe(redactingStream(forkUrl)).pipe(logStream, { end: false });
     const rpcUrl = `http://127.0.0.1:${candidate}`;
     try {
       await waitFor(async () => {
@@ -71,7 +78,7 @@ async function startAnvil(forkUrl, block) {
         }
         try {
           const response = await fetch(rpcUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_chainId', params: [] }), signal: AbortSignal.timeout(2000) });
-          return (await response.json()).result === '0x2105';
+          return (await response.json()).result === expectedChainId;
         } catch {
           return false;
         }
@@ -83,6 +90,23 @@ async function startAnvil(forkUrl, block) {
     return spawned;
   });
   return { child, port, rpcUrl: `http://127.0.0.1:${port}` };
+}
+
+/** Deploys packages/contracts from source onto the local Anvil with the same script CI uses (script/Deploy.s.sol). */
+async function deployLocalContracts(rpcUrl) {
+  const logStream = createWriteStream(join(paths.logs, 'forge.log'), { flags: 'a' });
+  const contracts = join(repo, 'packages/contracts');
+  const env = { ...process.env, ...(toolHome ? { HOME: toolHome } : {}), DEPLOYER_PRIVATE_KEY: LOCAL_DEPLOYER_KEY, FOUNDRY_BROADCAST: join(paths.anvilHome, 'broadcast'), FOUNDRY_DISABLE_NIGHTLY_WARNING: '1' };
+  const forge = async (args, label) => {
+    const child = spawn('forge', args, { cwd: contracts, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    child.stdout.pipe(logStream, { end: false });
+    child.stderr.pipe(logStream, { end: false });
+    const [code, signal] = await once(child, 'exit');
+    if (code !== 0) throw new Error(`${label} failed with ${code ?? signal} (see logs/forge.log)${signal === 'SIGKILL' || code === 137 ? '; solc was likely killed for memory (via_ir needs ~6 GB)' : ''}`);
+  };
+  // Compile only what Deploy.s.sol needs first: the full test suite under via_ir needs far more memory and time.
+  await forge(['build', '--skip', 'test', '--skip', '*.t.sol'], 'forge build');
+  await forge(['script', 'script/Deploy.s.sol', '--rpc-url', rpcUrl, '--broadcast', '--skip', 'test', '--skip', '*.t.sol'], 'forge script Deploy.s.sol');
 }
 
 function spawnSeller(seller, env) {
@@ -124,7 +148,47 @@ async function stopSellerWorker(id) {
   return true;
 }
 
+let buyerRuntime = null;
+
+/** Starts the buyer node and its BuyerProxy (on `port`, or a free one the first time). */
+async function startBuyer(port) {
+  const { sdk, BuyerProxy, bootstrapNodes, payments, chain, routingPreferences } = buyerRuntime;
+  state.buyer = new sdk.AntseedNode(sandboxNodeOptions({ role: 'buyer', dataDir: paths.buyer, bootstrapNodes, payments }));
+  await state.buyer.start();
+  const launch = async (candidatePort) => {
+    await saveJson(manifest.buyerConfig, {
+      buyer: { proxyPort: candidatePort, minPeerReputation: 0, routingPreferences, ...(plan.topology.buyer.maxPricing ? { maxPricing: plan.topology.buyer.maxPricing } : {}) },
+      payments: { crypto: { ...chain, networkStatsUrl: '', explorerApiUrl: '' } },
+      network: { bootstrapNodes: bootstrapNodes.map((n) => `${n.host}:${n.port}`) },
+      relayer: { enabled: false },
+    });
+    const { loadConfig } = await import(join(repo, 'apps/cli/dist/config/loader.js'));
+    const loaded = await loadConfig(manifest.buyerConfig);
+    const candidate = new BuyerProxy({ node: state.buyer, port: candidatePort, dataDir: paths.buyer, configPath: manifest.buyerConfig, routingPreferences: loaded.buyer.routingPreferences, backgroundRefreshIntervalMs: 60_000 });
+    await candidate.start();
+    return candidate;
+  };
+  if (port) {
+    state.proxy = await launch(port);
+    return port;
+  }
+  const started = await listenWithRetry(launch);
+  state.proxy = started.value;
+  return started.port;
+}
+
+/** Stops the buyer proxy and node; sellers see the peer disconnect (settle-on-disconnect). */
+async function stopBuyer() {
+  if (!state.buyer) return false;
+  await state.proxy?.stop();
+  await state.buyer.stop();
+  state.proxy = null;
+  state.buyer = null;
+  return true;
+}
+
 async function discover(sellerIds) {
+  if (!state.buyer) return;
   await waitFor(async () => {
     for (const id of sellerIds) state.workers.get(id)?.child.send({ type: 'announce' });
     const peers = await state.buyer.discoverPeers();
@@ -139,6 +203,7 @@ async function closeChannels(sellerIds) {
   for (const id of sellerIds) {
     const seller = manifest.sellers.find((entry) => entry.id === id);
     if (!seller) throw Object.assign(new Error(`Unknown seller ${id}`), { statusCode: 404 });
+    if (!state.buyer) { results[id] = 'buyer-offline'; continue; }
     const active = state.buyer.getActiveBuyerChannels().filter((channel) => channel.peerId === seller.peerId);
     if (active.length === 0) { results[id] = 'no-channel'; continue; }
     if (!state.workers.has(id)) { results[id] = 'seller-offline'; continue; }
@@ -150,7 +215,7 @@ async function closeChannels(sellerIds) {
     }, `channel close for ${id}`, 180_000, 2000);
     results[id] = 'closed';
   }
-  await waitFor(async () => (await state.reader.buyerBalance(manifest.buyer.address)).reserved === 0n || Object.values(results).includes('seller-offline'), 'reserves released', 120_000, 500);
+  await waitFor(async () => (await state.reader.buyerBalance(manifest.buyer.address)).reserved === 0n || Object.values(results).some((result) => result.endsWith('-offline')), 'reserves released', 120_000, 500);
   const balance = await state.reader.buyerBalance(manifest.buyer.address);
   return { results, buyer: { availableMicroUsdc: String(balance.available), reservedMicroUsdc: String(balance.reserved) } };
 }
@@ -172,7 +237,8 @@ async function liveStatus() {
       buyer: { address: manifest.buyer.address, availableMicroUsdc: String(balance.available), reservedMicroUsdc: String(balance.reserved), usdcMicro: String(await state.reader.usdcBalance(manifest.buyer.address)) },
       sellers,
       peersSeenByBuyer: peers,
-      channels: state.buyer.getActiveBuyerChannels(),
+      buyerOnline: Boolean(state.buyer),
+      channels: state.buyer?.getActiveBuyerChannels() ?? [],
       chainBlock: await state.reader.provider.getBlockNumber(),
     },
   };
@@ -236,28 +302,36 @@ async function main() {
   for (const dir of [paths.home, join(paths.home, '.antseed'), paths.anvilHome, paths.buyer, paths.sellers, paths.logs, paths.reports]) {
     await mkdir(dir, { recursive: true, mode: 0o700 });
   }
-  log(`Fresh fork run: cleared ${wiped.length} stale state entries (identities kept)`);
+  log(`Fresh ${target} run: cleared ${wiped.length} stale state entries (identities kept)`);
   const clean = isolatedEnv(process.env, paths.home, plan.verbose ? { ANTSEED_DEBUG: '1' } : {});
   for (const key of Object.keys(process.env)) if (!(key in clean)) delete process.env[key];
   Object.assign(process.env, clean);
 
   manifest = {
-    version: MANIFEST_VERSION, name, target: 'fork', running: false, starting: true, dir: paths.dir, worktree: plan.worktree,
+    version: MANIFEST_VERSION, name, target, running: false, starting: true, dir: paths.dir, worktree: plan.worktree,
     supervisor: ownProcessEntry(), home: paths.home, buyerDir: paths.buyer, buyerConfig: join(paths.buyer, 'config.json'),
-    chainId: 8453, configHash: plan.configHash, configOrigin: plan.configOrigin, upstream: plan.upstream,
+    chainId: SANDBOX_CHAIN_IDS[target], configHash: plan.configHash, configOrigin: plan.configOrigin, upstream: plan.upstream,
     topology: plan.topology, startedAt: new Date().toISOString(),
     rpcUrl: 'http://127.0.0.1:1', proxyUrl: 'http://127.0.0.1:1', sellers: [],
   };
   await saveJson(paths.manifest, manifest);
 
-  log(`Seeded shared fork cache: ${(await seedFromLegacy(plan.cacheHome, plan.legacyCacheHome)) ?? 'not needed'}`);
-  const fork = await resolveForkBlock({ forkUrl: forkUrl, cacheHome: plan.cacheHome, explicitBlock: plan.topology.chain.block });
-  const copied = await copyIn(plan.cacheHome, paths.anvilHome, fork.block);
-  log(`Fork block ${fork.block} (${fork.source}); private cache copy: ${copied ? 'warm' : 'cold'}`);
-  await writeManifest({ forkBlock: fork.block, forkCache: { ...fork, copied } });
-  state.anvil = await startAnvil(forkUrl, fork.block);
-  await writeManifest({ rpcUrl: state.anvil.rpcUrl, anvil: { pid: state.anvil.child.pid, startedAt: processStartTime(state.anvil.child.pid), port: state.anvil.port } });
-  log(`Anvil fork on ${state.anvil.rpcUrl}`);
+  if (local) {
+    state.anvil = await startAnvil(null);
+    await writeManifest({ rpcUrl: state.anvil.rpcUrl, anvil: { pid: state.anvil.child.pid, startedAt: processStartTime(state.anvil.child.pid), port: state.anvil.port } });
+    log(`Local Anvil (chain ${SANDBOX_CHAIN_IDS.local}) on ${state.anvil.rpcUrl}; deploying packages/contracts from source`);
+    await deployLocalContracts(state.anvil.rpcUrl);
+    log('Contracts deployed with script/Deploy.s.sol');
+  } else {
+    log(`Seeded shared fork cache: ${(await seedFromLegacy(plan.cacheHome, plan.legacyCacheHome)) ?? 'not needed'}`);
+    const fork = await resolveForkBlock({ forkUrl: forkUrl, cacheHome: plan.cacheHome, explicitBlock: plan.topology.chain.block });
+    const copied = await copyIn(plan.cacheHome, paths.anvilHome, fork.block);
+    log(`Fork block ${fork.block} (${fork.source}); private cache copy: ${copied ? 'warm' : 'cold'}`);
+    await writeManifest({ forkBlock: fork.block, forkCache: { ...fork, copied } });
+    state.anvil = await startAnvil(forkUrl, fork.block);
+    await writeManifest({ rpcUrl: state.anvil.rpcUrl, anvil: { pid: state.anvil.child.pid, startedAt: processStartTime(state.anvil.child.pid), port: state.anvil.port } });
+    log(`Anvil fork on ${state.anvil.rpcUrl}`);
+  }
 
   const sdk = await import(join(repo, 'packages/node/dist/index.js'));
   const { BuyerProxy } = await import(join(repo, 'apps/cli/dist/proxy/buyer-proxy.js'));
@@ -267,13 +341,13 @@ async function main() {
     await mkdir(paths.seller(seller.id), { recursive: true, mode: 0o700 });
     sellerIdentities.push({ id: seller.id, identity: await sdk.loadOrCreateIdentity(paths.seller(seller.id)) });
   }
-  const chainState = await prepareChain({
+  const chainState = await (local ? prepareLocalChain : prepareChain)({
     rpcUrl: state.anvil.rpcUrl, sdk, sellers: sellerIdentities, buyer: buyerIdentity,
     depositMicros: BigInt(plan.topology.buyer.depositMicros), log,
   });
   state.reader = chainReader(state.anvil.rpcUrl, chainState.chain);
   const chainTimestamp = Number((await state.reader.provider.getBlock('latest')).timestamp);
-  const payments = paymentsConfig(chainState.chain, state.anvil.rpcUrl, { chainTimestamp });
+  const payments = paymentsConfig(chainState.chain, state.anvil.rpcUrl, { chainTimestamp, ...(plan.topology.payments?.settlementIdleMs ? { settlementIdleMs: plan.topology.payments.settlementIdleMs } : {}) });
 
   state.bootstrap = new sdk.DHTNode({ peerId: sdk.toPeerId('0'.repeat(40)), port: 0, bindHost: '127.0.0.1', bootstrapNodes: [], reannounceIntervalMs: 60_000, operationTimeoutMs: 5000, allowPrivateIPs: true });
   await state.bootstrap.start();
@@ -298,23 +372,9 @@ async function main() {
     log(`Seller ${seller.id} peer ${worker.info.peerId}`);
   }
 
-  state.buyer = new sdk.AntseedNode(sandboxNodeOptions({ role: 'buyer', dataDir: paths.buyer, bootstrapNodes, payments }));
-  await state.buyer.start();
   const routingPreferences = buyerRoutingPreferences(plan.topology, sellers.map((seller) => seller.peerId));
-  const { port: proxyPort, value: proxy } = await listenWithRetry(async (port) => {
-    await saveJson(manifest.buyerConfig, {
-      buyer: { proxyPort: port, minPeerReputation: 0, routingPreferences, ...(plan.topology.buyer.maxPricing ? { maxPricing: plan.topology.buyer.maxPricing } : {}) },
-      payments: { crypto: { ...chainState.chain, networkStatsUrl: '', explorerApiUrl: '' } },
-      network: { bootstrapNodes: bootstrapNodes.map((n) => `${n.host}:${n.port}`) },
-      relayer: { enabled: false },
-    });
-    const { loadConfig } = await import(join(repo, 'apps/cli/dist/config/loader.js'));
-    const loaded = await loadConfig(manifest.buyerConfig);
-    const candidate = new BuyerProxy({ node: state.buyer, port, dataDir: paths.buyer, configPath: manifest.buyerConfig, routingPreferences: loaded.buyer.routingPreferences, backgroundRefreshIntervalMs: 60_000 });
-    await candidate.start();
-    return candidate;
-  });
-  state.proxy = proxy;
+  buyerRuntime = { sdk, BuyerProxy, bootstrapNodes, payments, chain: chainState.chain, routingPreferences };
+  const proxyPort = await startBuyer();
   const proxyUrl = `http://127.0.0.1:${proxyPort}`;
   assertLocalUrl(proxyUrl, 'proxyUrl');
   const buyerStatus = await (await fetch(`${proxyUrl}/_antseed/status`)).json();
@@ -359,6 +419,21 @@ async function main() {
         const worker = await startSellerWorker(spec);
         await writeManifest({ sellers: manifest.sellers.map((seller) => (seller.id === params.id ? { ...seller, process: worker.process, online: true, dhtPort: worker.info.dhtPort, signalingPort: worker.info.signalingPort } : seller)) });
         await discover([params.id]);
+        return { started: true };
+      },
+      'POST /buyer/stop': async () => {
+        const stopped = await stopBuyer();
+        await writeManifest({ buyerOnline: false });
+        log('Buyer node and proxy stopped (control request)');
+        return { stopped };
+      },
+      'POST /buyer/start': async () => {
+        if (state.buyer) return { started: false };
+        await startBuyer(manifest.proxyPort);
+        const status = await (await fetch(`${manifest.proxyUrl}/_antseed/status`)).json();
+        await writeManifest({ buyerOnline: true, buyerStartedAt: status.startedAt });
+        await discover(manifest.sellers.filter((seller) => state.workers.has(seller.id)).map((seller) => seller.id));
+        log('Buyer node and proxy restarted on the same port');
         return { started: true };
       },
       'POST /sellers/:id/mock': ({ params, body }) => {

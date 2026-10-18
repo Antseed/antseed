@@ -1,6 +1,6 @@
 export const meta = {
   description: 'Two sellers with different mock latency: pinned and auto-routed chats stay inside the sandbox, per-seller settlement is exact.',
-  targets: ['fork'],
+  targets: ['fork', 'local'],
   requires: ['mockControl'],
 };
 

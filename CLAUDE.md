@@ -18,6 +18,19 @@ their own message. Auto-committing every tweak produces a noisy history of
 one-line commits that has to be squashed later. Do not chain `edit → build
 → commit → push` as a reflex — even if prior turns in the same session did.
 
+## Sandbox testing (propose, don't auto-run)
+
+After changing payments, routing, discovery, the buyer proxy, provider plugins,
+`packages/node`, or desktop features, **propose** an end-to-end check in the
+worktree sandbox (`pnpm sandbox`, see `e2e/sandbox/README.md`) using the
+`sandbox-test` skill (`.claude/skills/sandbox-test/SKILL.md`). Show the planned
+scenarios and commands and wait for the user's yes before starting anything.
+Never use `--live` (real upstream spend) unless the user asks for it. For
+buyer, proxy or routing changes, also propose the real-network check
+(`pnpm sandbox run mainnet-smoke --chain mainnet --real-funds`, case 3 in the
+sandbox README) as a separate step: it spends real USDC from the test wallet,
+so run it only after an explicit yes.
+
 ## Changelog policy for PRs
 
 When opening a PR, update `CHANGELOG.md` for any user-facing package, CLI,

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Full sandbox flow against a real Base fork: up -> run <scenario> -> down, plus isolation checks.
-// Needs anvil on PATH, a built workspace and network access to a Base RPC (BASE_MAINNET_RPC_URL or the default).
+// Needs anvil on PATH, a built workspace and BASE_MAINNET_RPC_URL (shell or the worktree .env.local).
 // Usage: node e2e/sandbox/test/e2e-flow.mjs [scenario...]   (default: chat-basic)
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';

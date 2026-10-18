@@ -5,6 +5,8 @@ import path from 'node:path';
 import test from 'node:test';
 import {
   isAttachOnly,
+  isIsolatedProfile,
+  machineWideChangesDisabled,
   preserveSandboxTrustFloor,
   readAttachOnlyIdentityHex,
   resolveBuyerStateDir,
@@ -18,11 +20,35 @@ test('isAttachOnly only accepts the explicit flag', () => {
   assert.equal(isAttachOnly({ ANTSEED_DESKTOP_ATTACH_ONLY: 'true' }), false);
 });
 
+test('isolated profiles and attach-only desktops both disable machine-wide changes', () => {
+  const profile = { ANTSEED_DESKTOP_ISOLATED_PROFILE: '1' };
+  assert.equal(isIsolatedProfile(profile), true);
+  assert.equal(isIsolatedProfile({ ANTSEED_DESKTOP_ISOLATED_PROFILE: 'yes' }), false);
+  assert.equal(isAttachOnly(profile), false);
+  assert.equal(machineWideChangesDisabled(profile), true);
+  assert.equal(machineWideChangesDisabled(ATTACH), true);
+  assert.equal(machineWideChangesDisabled({}), false);
+});
+
 test('buyer state follows the connect data dir and defaults to ~/.antseed', () => {
   assert.equal(resolveBuyerStateDir({}, '/home/u'), path.join('/home/u', '.antseed'));
   assert.equal(resolveBuyerStateDir({ ANTSEED_DESKTOP_CONNECT_DATA_DIR: '  ' }, '/home/u'), path.join('/home/u', '.antseed'));
   assert.equal(resolveBuyerStateDir({ ANTSEED_DESKTOP_CONNECT_DATA_DIR: '/tmp/sb/buyer' }, '/home/u'), '/tmp/sb/buyer');
   assert.equal(resolveBuyerStateDir({ ANTSEED_DESKTOP_CONNECT_DATA_DIR: '~/sb/buyer' }, '/home/u'), path.join('/home/u', 'sb/buyer'));
+});
+
+test('attach-only chat data lives under the sandbox buyer dir, never ~/.antseed', async () => {
+  const env = { ANTSEED_DESKTOP_ATTACH_ONLY: '1', ANTSEED_DESKTOP_CONNECT_DATA_DIR: '/tmp/sb/buyer' };
+  const saved = { ...process.env };
+  Object.assign(process.env, env);
+  try {
+    const paths = await import(`../chat/paths.js?attach=${Date.now()}`);
+    assert.equal(paths.ANTSEED_HOME_DIR, path.join('/tmp/sb/buyer', 'desktop'));
+    assert.equal(paths.CHAT_DATA_DIR, path.join('/tmp/sb/buyer', 'desktop', 'chat'));
+  } finally {
+    for (const key of Object.keys(env)) delete process.env[key];
+    Object.assign(process.env, saved);
+  }
 });
 
 test('trust floor is forced to 0 only in attach-only mode and keeps other preferences', () => {

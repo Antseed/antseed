@@ -3,7 +3,9 @@ import { sanitizeConfig } from './config.mjs';
 export const MAX_SELLERS = 8;
 const SELLER_ID = /^[a-z0-9][a-z0-9-]{0,23}$/;
 export const TARGET_CAPABILITIES = {
-  fork: new Set(['warpTime', 'sellerControl', 'mockControl', 'liveUpstream']),
+  fork: new Set(['warpTime', 'sellerControl', 'mockControl', 'liveUpstream', 'desktop', 'buyerControl']),
+  local: new Set(['warpTime', 'sellerControl', 'mockControl', 'liveUpstream', 'desktop', 'buyerControl', 'sourceContracts']),
+  mainnet: new Set(['desktop', 'realFunds']),
 };
 
 function microsFromUsdc(value, label) {
@@ -40,6 +42,8 @@ export function normalizeTopology(topology = {}, source, overrides = {}) {
   const buyerIn = topology.buyer ?? {};
   const depositUsdc = overrides.depositUsdc ?? buyerIn.depositUsdc ?? '10';
   const block = overrides.block ?? topology.chain?.block;
+  const settlementIdleMs = topology.payments?.settlementIdleMs;
+  if (settlementIdleMs !== undefined && !(Number.isInteger(settlementIdleMs) && settlementIdleMs >= 1000 && settlementIdleMs <= 600_000)) throw new Error('payments.settlementIdleMs must be 1000-600000');
   if (block !== undefined && !(/^\d+$/.test(String(block)) && Number.isSafeInteger(Number(block)))) throw new Error('block must be a block number');
   return {
     sellers,
@@ -49,6 +53,7 @@ export function normalizeTopology(topology = {}, source, overrides = {}) {
       ...(buyerIn.maxPricing ?? source.buyer.maxPricing ? { maxPricing: structuredClone(buyerIn.maxPricing ?? source.buyer.maxPricing) } : {}),
     },
     chain: { ...(block !== undefined ? { block: Number(block) } : {}) },
+    payments: { ...(settlementIdleMs !== undefined ? { settlementIdleMs } : {}) },
   };
 }
 
@@ -78,6 +83,15 @@ export function assertScenarioSupported(scenario, target) {
   if (!capabilities) throw new Error(`Unknown target ${target}`);
   const missing = scenario.requires.filter((capability) => !capabilities.has(capability));
   if (missing.length) throw new Error(`Target ${target} lacks ${missing.join(', ')} required by ${scenario.name}`);
+}
+
+/**
+ * Chain target for a run: an explicit --chain wins (and must match a running sandbox), then the running
+ * sandbox's chain, then the scenario's first listed target.
+ */
+export function chooseTarget(scenario, { requested, running } = {}) {
+  if (requested && running && requested !== running) throw new Error(`Sandbox is running on chain ${running}, not ${requested}; run pnpm sandbox down first or use --slot`);
+  return requested ?? running ?? scenario.targets[0];
 }
 
 /** Two topologies are compatible when they produce the same sellers/models; used before reusing a running sandbox. */

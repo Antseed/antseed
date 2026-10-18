@@ -1,4 +1,5 @@
 import { createServer } from 'node:net';
+import { Transform } from 'node:stream';
 
 const STRIPPED = /^(ANTSEED_|OPENAI_|ANTHROPIC_|VENICE_|FLOW_|FORK_|SANDBOX_KEY_|BASE_MAINNET_RPC_URL$|LOCAL_LLM_|TYPESAFE_)/;
 export const FORBIDDEN_PORTS = new Set([6881, 6882, 8377, 3117]);
@@ -105,4 +106,32 @@ export function resolveLiveKeys(names, { env = process.env, fileValues = {} } = 
     else missing.push(name);
   }
   return { values, sources, missing };
+}
+
+export const FORK_RPC_ENV = 'BASE_MAINNET_RPC_URL';
+
+/** Line-by-line transform that replaces every occurrence of `secret` (e.g. the fork RPC URL) before it reaches a log. */
+export function redactingStream(secret, replacement = '<BASE_MAINNET_RPC_URL>') {
+  let pending = '';
+  const scrub = (text) => (secret ? text.split(secret).join(replacement) : text);
+  return new Transform({
+    transform(chunk, _encoding, callback) {
+      const lines = (pending + chunk.toString('utf8')).split('\n');
+      pending = lines.pop();
+      callback(null, lines.length ? `${lines.map(scrub).join('\n')}\n` : '');
+    },
+    flush(callback) { callback(null, scrub(pending)); },
+  });
+}
+
+/**
+ * The Base RPC Anvil forks from. Required: the shell wins, then the worktree's gitignored
+ * `.env.local`. Public gateways rate-limit fork reads, so there is no default. Never logs the URL.
+ */
+export function resolveForkUrl({ env = process.env, fileValues = {}, envFile = '.env.local' } = {}) {
+  const fromShell = env[FORK_RPC_ENV]?.trim();
+  const value = fromShell || fileValues[FORK_RPC_ENV]?.trim();
+  if (!value) throw new Error(`${FORK_RPC_ENV} is required (a dedicated Base mainnet RPC with an API key); put it in ${envFile} or export it`);
+  if (!/^https?:\/\//.test(value)) throw new Error(`${FORK_RPC_ENV} must be HTTP(S)`);
+  return { url: value, source: fromShell ? 'shell' : envFile };
 }

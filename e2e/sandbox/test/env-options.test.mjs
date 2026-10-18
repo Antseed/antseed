@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:net';
 import { describe, it } from 'node:test';
-import { assertLocalUrl, assertNetworkOptions, FORBIDDEN_PORTS, freePort, isolatedEnv, listenWithRetry, parseEnvFile, resolveLiveKeys } from '../lib/env.mjs';
+import { assertLocalUrl, assertNetworkOptions, FORBIDDEN_PORTS, freePort, isolatedEnv, listenWithRetry, parseEnvFile, redactingStream, resolveForkUrl, resolveLiveKeys } from '../lib/env.mjs';
 import { validateManifest, MANIFEST_VERSION } from '../lib/manifest.mjs';
 import { sandboxNodeOptions } from '../lib/node-options.mjs';
 import { parseArgs } from '../lib/options.mjs';
@@ -100,12 +100,15 @@ describe('manifest validation', () => {
 
   it('accepts a well-formed manifest', () => {
     assert.equal(validateManifest(good(), { dir }).name, 'wt-a-12345678');
+    assert.equal(validateManifest({ ...good(), target: 'local', chainId: 31337 }, { dir }).target, 'local');
   });
 
   it('rejects unsafe manifests', () => {
     const cases = [
       [(m) => { m.version = 99; }, /Unsupported/],
       [(m) => { m.chainId = 1; }, /chainId/],
+      [(m) => { m.target = 'local'; }, /chainId must be 31337/],
+      [(m) => { m.target = 'mainnet'; }, /Unknown sandbox target/],
       [(m) => { m.proxyUrl = 'http://0.0.0.0:1'; }, /proxyUrl/],
       [(m) => { m.supervisor = { pid: 10 }; }, /supervisor/],
       [(m) => { m.sellers[0].signalingPort = 6882; }, /default AntSeed port/],
@@ -129,6 +132,7 @@ describe('parseArgs', () => {
     assert.deepEqual([options.command, options.config, options.live, options.depositUsdc, options.block, options.slot], ['up', 'c.json', true, '2.5', '123', 'b']);
     assert.equal(parseArgs(['run', 'chat-basic', '--strict']).scenario, 'chat-basic');
     assert.equal(parseArgs(['--', 'status']).command, 'status');
+    assert.equal(parseArgs(['run', 'payment-flow', '--chain', 'local']).chain, 'local');
     assert.equal(parseArgs([]).command, 'help');
   });
 
@@ -140,6 +144,8 @@ describe('parseArgs', () => {
     assert.throws(() => parseArgs(['up', '--deposit-usdc', '0']), /USDC amount/);
     assert.throws(() => parseArgs(['up', '--deposit-usdc', '1.1234567']), /USDC amount/);
     assert.throws(() => parseArgs(['run']), /Usage/);
+    assert.throws(() => parseArgs(['up', '--chain', 'sepolia']), /--chain must be one of fork, local, mainnet/);
+    assert.throws(() => parseArgs(['up', '--chain', 'mainnet']), /--real-funds/);
     assert.throws(() => parseArgs(['run', '../evil']), /Invalid scenario/);
     assert.throws(() => parseArgs(['up', '--slot', 'A B']), /Invalid sandbox slot/);
   });
@@ -164,5 +170,27 @@ describe('live key env files', () => {
 
   it('parses --env-file', () => {
     assert.equal(parseArgs(['up', '--live', '--env-file', 'keys.env']).envFile, 'keys.env');
+  });
+});
+
+describe('fork RPC', () => {
+  it('requires BASE_MAINNET_RPC_URL, preferring the shell over .env.local', () => {
+    assert.throws(() => resolveForkUrl({ env: {}, fileValues: {} }), /BASE_MAINNET_RPC_URL is required/);
+    assert.throws(() => resolveForkUrl({ env: {}, fileValues: { BASE_MAINNET_RPC_URL: 'ws://x' } }), /must be HTTP/);
+    assert.deepEqual(resolveForkUrl({ env: {}, fileValues: { BASE_MAINNET_RPC_URL: 'https://file' }, envFile: '.env.local' }), { url: 'https://file', source: '.env.local' });
+    assert.deepEqual(resolveForkUrl({ env: { BASE_MAINNET_RPC_URL: 'https://shell' }, fileValues: { BASE_MAINNET_RPC_URL: 'https://file' } }), { url: 'https://shell', source: 'shell' });
+  });
+});
+
+describe('redactingStream', () => {
+  it('removes the secret even when it spans chunks', async () => {
+    const stream = redactingStream('https://rpc/key123');
+    let out = '';
+    stream.on('data', (chunk) => { out += chunk; });
+    stream.write('Endpoint: https://rpc/ke');
+    stream.write('y123\nnext line\ntail https://rpc/key123');
+    stream.end();
+    await new Promise((resolve) => stream.on('end', resolve));
+    assert.equal(out, 'Endpoint: <BASE_MAINNET_RPC_URL>\nnext line\ntail <BASE_MAINNET_RPC_URL>');
   });
 });

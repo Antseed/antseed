@@ -4,6 +4,8 @@ import { assertLocalUrl, isLoopbackHost } from './env.mjs';
 import { isInside } from './paths.mjs';
 
 export const MANIFEST_VERSION = 1;
+/** Sandbox targets and the EVM chain each runs: a Base mainnet fork or a plain local Anvil with source-deployed contracts. */
+export const SANDBOX_CHAIN_IDS = { fork: 8453, local: 31337 };
 
 export async function saveJson(path, value, mode = 0o600) {
   const tmp = `${path}.${process.pid}.tmp`;
@@ -30,7 +32,10 @@ function assertProcess(entry, label) {
 export function validateManifest(manifest, { dir } = {}) {
   if (!manifest || manifest.version !== MANIFEST_VERSION) throw new Error('Unsupported or missing sandbox manifest');
   if (!/^wt-[a-z0-9-]+$/.test(manifest.name)) throw new Error('Invalid sandbox name in manifest');
-  if (manifest.chainId !== 8453) throw new Error('Manifest chainId must be 8453 (Base fork)');
+  const target = manifest.target ?? 'fork';
+  const expectedChainId = SANDBOX_CHAIN_IDS[target];
+  if (!expectedChainId) throw new Error(`Unknown sandbox target ${target}`);
+  if (manifest.chainId !== expectedChainId) throw new Error(`Manifest chainId must be ${expectedChainId} for target ${target}`);
   assertLocalUrl(manifest.rpcUrl, 'rpcUrl');
   assertLocalUrl(manifest.proxyUrl, 'proxyUrl');
   if (manifest.controlUrl) assertLocalUrl(manifest.controlUrl, 'controlUrl');

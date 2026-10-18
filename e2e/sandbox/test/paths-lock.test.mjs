@@ -130,7 +130,8 @@ describe('locks', () => {
     try {
       Object.assign(process.env, { LANG: 'de_DE.UTF-8', LC_TIME: 'de_DE.UTF-8' });
       delete process.env.LC_ALL;
-      assert.match(processStartTime(process.pid), /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) /);
+      const expected = process.platform === 'linux' ? /^boot\+\d+$/ : /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) /;
+      assert.match(processStartTime(process.pid), expected);
     } finally {
       for (const [key, value] of Object.entries(original)) {
         if (value === undefined) delete process.env[key];

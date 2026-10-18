@@ -89,7 +89,7 @@ describe('scenario api', () => {
   };
   const chain = { depositsContractAddress: '0x' + '1'.repeat(40), usdcContractAddress: '0x' + '2'.repeat(40), channelsContractAddress: '0x' + '3'.repeat(40) };
 
-  it('records checks, known issues and mock pricing', () => {
+  it('records checks, known issues and mock pricing', async () => {
     const sb = createSandboxApi({ manifest, control: {}, eventsPath: '/dev/null', chain });
     try {
       sb.check('ok', true);
@@ -101,17 +101,17 @@ describe('scenario api', () => {
       assert.deepEqual(summary.checks.map((entry) => [entry.name, entry.ok]), [['ok', true], ['bad', false]]);
       assert.deepEqual(summary.knownIssues, [{ name: 'tracked', ok: false, issue: 'bug-123', detail: { a: 1 } }]);
     } finally {
-      sb.dispose();
+      await sb.dispose();
     }
   });
 
-  it('known issues fail the run under --strict', () => {
+  it('known issues fail the run under --strict', async () => {
     const sb = createSandboxApi({ manifest, control: {}, eventsPath: '/dev/null', chain, strict: true });
     try {
       assert.throws(() => sb.knownIssue('tracked', false, {}, 'bug-123'), /known issue: bug-123/);
       assert.doesNotThrow(() => sb.knownIssue('fixed', true, {}, 'bug-123'));
     } finally {
-      sb.dispose();
+      await sb.dispose();
     }
   });
 

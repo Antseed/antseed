@@ -1,6 +1,6 @@
 export const meta = {
   description: 'Catalog, one non-streaming and one streaming chat, receipts, then exact on-chain settlement with zero reserves after close.',
-  targets: ['fork'],
+  targets: ['fork', 'local'],
   requires: [],
 };
 

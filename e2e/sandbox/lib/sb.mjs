@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { appendFile } from 'node:fs/promises';
 import { chainReader, verifySettlement } from './chain.mjs';
+import { launchDesktop } from './desktop.mjs';
 import { assertLocalUrl } from './env.mjs';
 import { MOCK_USAGE } from './mock.mjs';
 
@@ -30,7 +31,7 @@ function percentile(values, p) {
  * The object every scenario receives. Talks to the buyer proxy like a real client and to the
  * supervisor control API for privileged actions. Records events, checks and metrics for the report.
  */
-export function createSandboxApi({ manifest, control, eventsPath, chain, strict = false }) {
+export function createSandboxApi({ manifest, control, eventsPath, chain, strict = false, repo, reportDir, trace = false }) {
   assertLocalUrl(manifest.proxyUrl, 'proxyUrl');
   const checks = [];
   const knownIssues = [];
@@ -42,6 +43,7 @@ export function createSandboxApi({ manifest, control, eventsPath, chain, strict 
     await appendFile(eventsPath, `${JSON.stringify({ at: new Date().toISOString(), type, ...data })}\n`);
   };
   const proxy = async (path, init = {}) => fetch(`${manifest.proxyUrl}${path}`, { ...init, signal: AbortSignal.timeout(init.timeoutMs ?? 120_000) });
+  const desktops = [];
 
   const sb = {
     manifest,
@@ -54,6 +56,13 @@ export function createSandboxApi({ manifest, control, eventsPath, chain, strict 
       return seller;
     },
     event,
+    /** Launches the attach-only desktop on this sandbox's buyer under Playwright (closed automatically after the run). */
+    async desktop() {
+      assert(repo && reportDir, 'desktop() needs the repo and report directory');
+      const ui = await launchDesktop({ repo, manifest, reportDir, event, trace });
+      desktops.push(ui);
+      return ui;
+    },
     check(name, ok, detail) {
       checks.push({ name, ok: Boolean(ok), ...(detail !== undefined ? { detail } : {}) });
       assert(ok, `${name}${detail !== undefined ? `: ${typeof detail === 'string' ? detail : JSON.stringify(detail)}` : ''}`);
@@ -159,8 +168,39 @@ export function createSandboxApi({ manifest, control, eventsPath, chain, strict 
     warp: async (seconds) => { await event('warp', { seconds }); return control.warp(seconds); },
     stopSeller: async (id) => { await event('seller-stop', { id }); return control.stopSeller(id); },
     startSeller: async (id) => { await event('seller-start', { id }); return control.startSeller(id); },
+    /** Stops the buyer node and proxy, like a user quitting: sellers see the disconnect and settle on their own. */
+    stopBuyer: async () => { await event('buyer-stop'); return control.stopBuyer(); },
+    /** Restarts the buyer node and proxy on the same proxy URL and rediscovers online sellers. */
+    startBuyer: async () => { await event('buyer-start'); return control.startBuyer(); },
+    /** Polls until the predicate returns a truthy value (default 60s); returns it. */
+    async waitFor(predicate, label, { timeoutMs = 60_000, intervalMs = 500 } = {}) {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        const value = await predicate();
+        if (value) return value;
+        await new Promise((resolveWait) => setTimeout(resolveWait, intervalMs));
+      }
+      throw new Error(`Timed out after ${timeoutMs}ms waiting for ${label}`);
+    },
     setMockLatency: async (id, latencyMs) => { await event('mock-latency', { id, latencyMs }); return control.setMockLatency(id, latencyMs); },
     buyerBalance: () => reader.buyerBalance(manifest.buyer.address),
+    /** On-chain state of a channel: { status (1 Active, 2 Settled, 3 TimedOut), deposit, settled, closeRequestedAt }. */
+    channelState: (channelId) => reader.channelState(channelId),
+    /**
+     * The buyer's unilateral exit, sent on-chain behind the buyer node's back (like another device or a
+     * recovery tool would): requestClose now, withdraw after the 15 min grace (warp first).
+     */
+    async buyerRequestClose(channelId) {
+      await event('buyer-request-close', { channelId });
+      return reader.sendAs(manifest.buyer.address, 'requestClose', [channelId]);
+    },
+    async buyerWithdraw(channelId) {
+      await event('buyer-withdraw', { channelId });
+      return reader.sendAs(manifest.buyer.address, 'withdraw', [channelId]);
+    },
+    usdcBalance: (address) => reader.usdcBalance(address),
+    /** On-chain ChannelSettled events between the buyer and a seller since the sandbox started. */
+    settledEvents: (sellerId) => reader.settledEvents(manifest.buyer.address, sb.seller(sellerId).address, manifest.chainStartBlock),
     /** Exact on-chain settlement against what the buyer signed; call after closeAll(). */
     async assertSettlementMatchesSigned(expectedBySeller) {
       const expected = expectedBySeller ?? await sb.signedBySeller();
@@ -173,7 +213,10 @@ export function createSandboxApi({ manifest, control, eventsPath, chain, strict 
       const latencies = requests.filter((entry) => entry.status === 200).map((entry) => entry.latencyMs);
       return { checks, knownIssues, metrics: { ...metrics, requests: requests.length, latencyP50Ms: percentile(latencies, 50), latencyP95Ms: percentile(latencies, 95) }, requests };
     },
-    dispose() { reader.close(); },
+    async dispose() {
+      for (const ui of desktops.splice(0)) await ui.close();
+      reader.close();
+    },
   };
   return sb;
 }

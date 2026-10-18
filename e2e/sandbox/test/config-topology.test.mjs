@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { assertNoInlineSecrets, bindUpstream, configHash, DEFAULT_SOURCE_CONFIG, listModels, loadSourceConfig, resolveConfigSource, sanitizeConfig } from '../lib/config.mjs';
-import { assertScenarioSupported, buyerRoutingPreferences, MAX_SELLERS, normalizeTopology, topologyFingerprint, validateScenarioModule } from '../lib/topology.mjs';
+import { assertScenarioSupported, buyerRoutingPreferences, chooseTarget, MAX_SELLERS, normalizeTopology, topologyFingerprint, validateScenarioModule } from '../lib/topology.mjs';
 
 const tmp = await mkdtemp(join(tmpdir(), 'sandbox-config-'));
 after(() => rm(tmp, { recursive: true, force: true }));
@@ -149,6 +149,12 @@ describe('topology', () => {
     assert.equal(topology.buyer.routingPreferences.preferLowLatency, false);
   });
 
+  it('validates per-topology payment settings', () => {
+    assert.deepEqual(normalizeTopology({}, source).payments, {});
+    assert.equal(normalizeTopology({ payments: { settlementIdleMs: 5000 } }, source).payments.settlementIdleMs, 5000);
+    assert.throws(() => normalizeTopology({ payments: { settlementIdleMs: 10 } }, source), /settlementIdleMs/);
+  });
+
   it('rejects bad topologies', () => {
     assert.throws(() => normalizeTopology({ sellers: [] }, source), /at least one seller/);
     assert.throws(() => normalizeTopology({ sellers: [{ id: 'a' }, { id: 'a' }] }, source), /Duplicate seller/);
@@ -184,10 +190,20 @@ describe('scenario modules', () => {
     assert.throws(() => assertScenarioSupported(validateScenarioModule({ run() {}, meta: { requires: ['teleport'] } }, 't'), 'fork'), /lacks teleport/);
   });
 
+  it('chooses the chain target from --chain, the running sandbox, then the scenario', () => {
+    const scenario = validateScenarioModule({ run() {}, meta: { targets: ['local', 'fork'] } }, 'x');
+    assert.equal(chooseTarget(scenario), 'local');
+    assert.equal(chooseTarget(scenario, { running: 'fork' }), 'fork');
+    assert.equal(chooseTarget(scenario, { requested: 'fork' }), 'fork');
+    assert.throws(() => chooseTarget(scenario, { requested: 'local', running: 'fork' }), /running on chain fork/);
+    assert.doesNotThrow(() => assertScenarioSupported(validateScenarioModule({ run() {}, meta: { targets: ['local'], requires: ['sourceContracts'] } }, 'y'), 'local'));
+    assert.throws(() => assertScenarioSupported(validateScenarioModule({ run() {}, meta: { requires: ['sourceContracts'] } }, 'z'), 'fork'), /lacks sourceContracts/);
+  });
+
   it('every shipped scenario is valid', async () => {
-    for (const name of ['chat-basic', 'routing-smoke']) {
+    for (const name of ['chat-basic', 'routing-smoke', 'desktop-chat', 'payment-flow']) {
       const scenario = validateScenarioModule(await import(`../scenarios/${name}.mjs`), name);
-      assertScenarioSupported(scenario, 'fork');
+      for (const target of scenario.targets) assertScenarioSupported(scenario, target);
       assert.ok(scenario.description);
       normalizeTopology(scenario.topology, sanitizeConfig(DEFAULT_SOURCE_CONFIG).cleaned);
     }

@@ -15,7 +15,7 @@ import type { RuntimeProcessState } from '../runtime/process-manager.js';
 import { isWindowsProxyPointingAt, parseRegQueryValue, windowsProxyRestoreWrites } from './windows-state.js';
 import { systemProxySnapshotPath } from './paths.js';
 import { DEFAULT_SYSTEM_PROXY_PORT } from './profiles.js';
-import { isAttachOnly } from '../runtime/attach-only.js';
+import { machineWideChangesDisabled } from '../runtime/attach-only.js';
 
 export function getEnabledNetworkServices(): string[] {
   try {
@@ -139,7 +139,7 @@ export function notifyWindowsProxyChanged(): void {
 }
 
 export function clearOsSystemProxy(port = DEFAULT_SYSTEM_PROXY_PORT): void {
-  if (isAttachOnly()) return;
+  if (machineWideChangesDisabled()) return;
   if (process.platform === 'darwin') {
     for (const service of getEnabledNetworkServices()) {
       try {
@@ -170,7 +170,7 @@ export function clearOsSystemProxy(port = DEFAULT_SYSTEM_PROXY_PORT): void {
 }
 
 export function restoreOsSystemProxySnapshot(rawSnapshot: unknown): boolean {
-  if (isAttachOnly()) return false;
+  if (machineWideChangesDisabled()) return false;
   if (!rawSnapshot || typeof rawSnapshot !== 'object' || Array.isArray(rawSnapshot)) return false;
   const snapshot = rawSnapshot as Record<string, unknown>;
   if (snapshot['platform'] === 'darwin') {
@@ -212,7 +212,7 @@ export function restoreOsSystemProxySnapshot(rawSnapshot: unknown): boolean {
 }
 
 export async function restoreOsSystemProxy(port = DEFAULT_SYSTEM_PROXY_PORT): Promise<void> {
-  if (isAttachOnly()) return;
+  if (machineWideChangesDisabled()) return;
   try {
     const raw = readFileSync(systemProxySnapshotPath(), 'utf8');
     const restored = restoreOsSystemProxySnapshot(JSON.parse(raw) as unknown);
@@ -234,7 +234,7 @@ export async function restoreOsSystemProxy(port = DEFAULT_SYSTEM_PROXY_PORT): Pr
  * long to quit at logout/shutdown).
  */
 export function restoreOsSystemProxySync(port = DEFAULT_SYSTEM_PROXY_PORT): void {
-  if (isAttachOnly()) return;
+  if (machineWideChangesDisabled()) return;
   try {
     const raw = readFileSync(systemProxySnapshotPath(), 'utf8');
     if (restoreOsSystemProxySnapshot(JSON.parse(raw) as unknown)) {

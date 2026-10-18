@@ -1,14 +1,14 @@
 import { assertNetworkOptions } from './env.mjs';
 
-/** Payment wiring for the fork, pointing at production contract addresses on the local Anvil RPC. */
-export function paymentsConfig(chain, rpcUrl, { chainTimestamp } = {}) {
+/** Payment wiring for the sandbox chain (fork: production addresses; local: base-local addresses), always on the local Anvil RPC. */
+export function paymentsConfig(chain, rpcUrl, { chainTimestamp, settlementIdleMs = 600_000 } = {}) {
   const now = Math.floor(Date.now() / 1000);
   const skew = chainTimestamp ? Math.max(0, chainTimestamp - now) : 0;
   return {
     enabled: true,
     rpcUrl,
     fallbackRpcUrls: [],
-    chainId: 8453,
+    chainId: chain.evmChainId ?? 8453,
     depositsAddress: chain.depositsContractAddress,
     channelsAddress: chain.channelsContractAddress,
     stakingAddress: chain.stakingContractAddress,
@@ -21,7 +21,7 @@ export function paymentsConfig(chain, rpcUrl, { chainTimestamp } = {}) {
     maxReserveAmountUsdc: '1000000',
     // The fork clock runs ahead of wall time after the stake-activation warp; auth deadlines must cover it.
     defaultAuthDurationSecs: skew + 90_000,
-    settlementIdleMs: 600_000,
+    settlementIdleMs,
   };
 }
 

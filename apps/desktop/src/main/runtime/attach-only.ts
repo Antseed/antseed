@@ -9,6 +9,21 @@ export function isAttachOnly(env: NodeJS.ProcessEnv = process.env): boolean {
   return env[ATTACH_ONLY_ENV] === '1';
 }
 
+// A full desktop (its own buyer, wallet and plugins) launched by the sandbox
+// with HOME pointed at a throwaway profile. It runs next to the developer's
+// real desktop, so it must not touch machine-wide state: the login keychain
+// (a mock keychain encrypts the profile identity instead) or OS proxy settings.
+export const ISOLATED_PROFILE_ENV = 'ANTSEED_DESKTOP_ISOLATED_PROFILE';
+
+export function isIsolatedProfile(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env[ISOLATED_PROFILE_ENV] === '1';
+}
+
+/** True for any sandbox-launched desktop: OS proxy settings and connected-app changes are off. */
+export function machineWideChangesDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return isAttachOnly(env) || isIsolatedProfile(env);
+}
+
 export function resolveBuyerStateDir(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string {
   const connectDataDir = env[CONNECT_DATA_DIR_ENV]?.trim();
   if (!connectDataDir) return path.join(home, '.antseed');

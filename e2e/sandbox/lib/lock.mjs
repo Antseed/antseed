@@ -1,14 +1,36 @@
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { mkdir, open, readFile, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { hostname } from 'node:os';
 
-/** Start time of a PID as reported by ps (stable across the process lifetime), or null if gone. */
+/**
+ * Start time of a PID as reported by ps (stable across the process lifetime), or null if gone.
+ * Zombies count as gone: they have exited and only wait to be reaped (PID 1 in a container may never do it).
+ */
 export function processStartTime(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return null;
-  const result = spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } });
-  const value = result.status === 0 ? result.stdout.trim() : '';
-  return value || null;
+  if (process.platform === 'linux') return linuxStartTime(pid);
+  const result = spawnSync('ps', ['-o', 'stat=', '-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } });
+  const match = result.status === 0 ? /^\s*(\S+)\s+(.+?)\s*$/.exec(result.stdout) : null;
+  if (!match || match[1].startsWith('Z')) return null;
+  return match[2];
+}
+
+/**
+ * Linux: boot-relative start ticks from /proc (field 22). Unlike ps lstart, which is derived from the
+ * current wall clock, this does not drift when the clock jumps (VM or laptop resume).
+ */
+function linuxStartTime(pid) {
+  let stat;
+  try {
+    stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+  } catch {
+    return null;
+  }
+  const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+  if (fields[0] === 'Z' || fields[0] === 'X' || !fields[19]) return null;
+  return `boot+${fields[19]}`;
 }
 
 export function isPidAlive(pid) {
