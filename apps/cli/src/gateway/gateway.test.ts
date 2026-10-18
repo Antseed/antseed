@@ -1004,6 +1004,72 @@ test('an undelivered video stays committed for as long as the buyer can still ch
   }
 })
 
+test('a charge on a video job lowers what the job holds by that much, whatever request of the job it names', () => {
+  const { store, cleanup } = tempDataDir()
+  try {
+    const { key } = store.createKey({ label: 'Video', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: 5_000_000, monthly: null, total: null }, expiresAt: null })
+    const accounting = new GatewayAccounting(store, { holdUsdc: 100_000 })
+    const job = videoJobKey('venice-video', 'job-1')
+    const create = accounting.admit(key, undefined, { videoCreate: true })
+    assert.ok(create.ok)
+    accounting.commitVideo(create.tag, job, 5_000_000)
+    accounting.release(create.tag)
+    // A status poll of the job that the seller bills $0.30 (for example a headroom request) frees only $0.30.
+    store.startRequest({ tag: 'poll-tag', keyId: key.id, buyerIdentity: DEFAULT_BUYER_IDENTITY, method: 'POST', path: '/api/v1/video/retrieve', model: null, startedAt: 0, video: { action: 'poll', jobId: 'job-1' } })
+    const event = { seq: 1, tag: 'poll-tag', requestId: 'r', buyerIdentity: DEFAULT_BUYER_IDENTITY, sellerPeerId: 's', amountUsdc: '300000', inputTokens: '0', cachedInputTokens: '0', outputTokens: '0', outputImages: '0', at: Date.now() }
+    accounting.ingest('boot', [event])
+    assert.equal(accounting.heldUsdc(key.id), 4_700_000)
+    assert.equal(store.periodSpend(key.id).daily, 300_000, 'spend plus what the job holds is still $5')
+    accounting.dispose()
+  } finally {
+    cleanup()
+  }
+})
+
+test('a delivered video that is never charged stops holding its price an hour after delivery', () => {
+  const { store, cleanup } = tempDataDir()
+  let now = Date.UTC(2026, 0, 1)
+  try {
+    const { key } = store.createKey({ label: 'Video', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: 1_000_000, monthly: null, total: null }, expiresAt: null })
+    const accounting = new GatewayAccounting(store, { holdUsdc: 100_000, now: () => now })
+    const job = videoJobKey('venice-video', 'job-1')
+    const create = accounting.admit(key, undefined, { videoCreate: true })
+    assert.ok(create.ok)
+    accounting.commitVideo(create.tag, job, 600_000)
+    accounting.release(create.tag)
+    accounting.videoDelivered(job)
+    now += 59 * 60_000
+    assert.equal(accounting.heldUsdc(key.id), 600_000, 'its charge may still be on the way')
+    now += 2 * 60_000
+    assert.equal(accounting.heldUsdc(key.id), 0)
+    assert.equal(accounting.videoJobOwner(job), key.id, 'its owner can still download it again')
+    accounting.dispose()
+    assert.equal(new GatewayAccounting(store, { holdUsdc: 100_000, now: () => now }).heldUsdc(key.id), 0, 'stored that way')
+  } finally {
+    cleanup()
+  }
+})
+
+test('a job created while its key had no caps counts once caps are added', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await pricedVideoBuyer(600_000)
+  const { key, secret } = store.createKey({ label: 'Video', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
+  const gateway = await startGateway(store, buyer.port, 100_000, null, 60_000)
+  try {
+    assert.equal((await request(gateway.port, '/api/v1/video/queue', { method: 'POST', key: secret, body: '{"model":"seedance","prompt":"An ant","duration":"8s","job":"job-1"}' })).status, 200)
+    await waitFor(() => gateway.accounting.heldUsdc(key.id) === 600_000)
+    const capped = store.updateKey(key.id, { limits: { daily: 1_000_000, monthly: null, total: null } })
+    const next = gateway.accounting.admit(capped, undefined, { videoCreate: true })
+    assert.ok(next.ok)
+    assert.equal(next.remainingUsdc, 400_000)
+    gateway.accounting.release(next.tag)
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    cleanup()
+  }
+})
+
 test('a video create reserves up to the buyer video limit, configured or default', () => {
   const { store, cleanup } = tempDataDir()
   try {

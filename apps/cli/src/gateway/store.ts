@@ -239,6 +239,8 @@ export interface VideoCommitmentRecord {
   workspaceId: string
   amountUsdc: number
   expiresAt: number
+  /** When a retrieve last streamed the whole file; null until then. */
+  deliveredAt: number | null
 }
 
 export interface GatewayRequestStart {
@@ -1078,8 +1080,8 @@ export class GatewayStore {
   /** Accepted video jobs whose price still counts against the caps (see GatewayAccounting). */
   listVideoCommitments(now: number): VideoCommitmentRecord[] {
     this._stmt('DELETE FROM video_commitments WHERE expires_at <= ?').run(now)
-    return (this._stmt('SELECT job, key_id, member_id, workspace_id, amount_usdc, expires_at FROM video_commitments').all() as Array<{
-      job: string; key_id: string; member_id: string | null; workspace_id: string; amount_usdc: number; expires_at: number
+    return (this._stmt('SELECT job, key_id, member_id, workspace_id, amount_usdc, expires_at, delivered_at FROM video_commitments').all() as Array<{
+      job: string; key_id: string; member_id: string | null; workspace_id: string; amount_usdc: number; expires_at: number; delivered_at: number | null
     }>).map((row) => ({
       job: row.job,
       keyId: row.key_id,
@@ -1087,12 +1089,13 @@ export class GatewayStore {
       workspaceId: row.workspace_id,
       amountUsdc: row.amount_usdc,
       expiresAt: row.expires_at,
+      deliveredAt: row.delivered_at,
     }))
   }
 
   saveVideoCommitment(record: VideoCommitmentRecord): void {
-    this._stmt(`INSERT OR REPLACE INTO video_commitments (job, key_id, member_id, workspace_id, amount_usdc, expires_at)
-      VALUES (?, ?, ?, ?, ?, ?)`).run(record.job, record.keyId, record.memberId, record.workspaceId, record.amountUsdc, record.expiresAt)
+    this._stmt(`INSERT OR REPLACE INTO video_commitments (job, key_id, member_id, workspace_id, amount_usdc, expires_at, delivered_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`).run(record.job, record.keyId, record.memberId, record.workspaceId, record.amountUsdc, record.expiresAt, record.deliveredAt)
   }
 
   deleteVideoCommitment(job: string): void {

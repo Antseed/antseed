@@ -34,6 +34,14 @@ const DEFAULT_SETTLE_GRACE_MS = 60_000
  */
 const DEFAULT_VIDEO_COMMITMENT_MS = 30 * 24 * 60 * 60_000
 
+/**
+ * A delivered video is charged right after its file is received; if no charge
+ * has arrived this long after a complete delivery, none will (the buyer had no
+ * billing for the job, or the seller did not bill it), and the job stops
+ * holding its price.
+ */
+const DELIVERY_CHARGE_WAIT_MS = 60 * 60_000
+
 /** The buyer's default limit for one video ($5), when its config sets none. */
 export const DEFAULT_MAX_VIDEO_REQUEST_USDC = 5_000_000
 
@@ -145,14 +153,25 @@ export class GatewayAccounting {
     const isActive = (keyId: string): boolean => {
       let result = active.get(keyId)
       if (result === undefined) {
-        result = this._store.getKey(keyId)?.status === 'active'
+        try {
+          result = this._store.getKey(keyId)?.status !== 'revoked'
+        } catch {
+          // Unreadable: keep counting it, the safe side.
+          result = true
+        }
         active.set(keyId, result)
       }
       return result
     }
     for (const [job, commitment] of this._videoCommitments) {
-      if (commitment.expiresAt <= now) this._forgetVideo(job)
-      else if (commitment.amountUsdc > 0 && job !== excludeVideoJob && match(commitment) && isActive(commitment.keyId)) held += commitment.amountUsdc
+      if (commitment.expiresAt <= now) {
+        this._forgetVideo(job)
+        continue
+      }
+      if (commitment.amountUsdc > 0 && commitment.deliveredAt !== null && now - commitment.deliveredAt >= DELIVERY_CHARGE_WAIT_MS) {
+        this._setVideoHeld(job, commitment, 0)
+      }
+      if (commitment.amountUsdc > 0 && job !== excludeVideoJob && match(commitment) && isActive(commitment.keyId)) held += commitment.amountUsdc
     }
     return held
   }
@@ -162,7 +181,8 @@ export class GatewayAccounting {
    * key may retrieve it) and keep `amountUsdc` counted against the caps of the
    * key, member and workspace the create was admitted for until the buyer's
    * charge for its delivery arrives, the buyer retires the job, or the record
-   * expires. `amountUsdc` is 0 for a key without caps.
+   * expires. A key without caps records the price too, so caps added later
+   * count the job.
    */
   commitVideo(tag: string, job: string, amountUsdc: number): void {
     const hold = this._holds.get(tag)
@@ -173,6 +193,7 @@ export class GatewayAccounting {
       workspaceId: hold.workspaceId,
       amountUsdc: Math.max(0, Math.floor(amountUsdc)),
       expiresAt: this._now() + this._videoCommitmentMs,
+      deliveredAt: null,
     }
     this._videoCommitments.set(job, commitment)
     this._write(() => this._store.saveVideoCommitment({ job, ...commitment }))
@@ -197,15 +218,28 @@ export class GatewayAccounting {
     if (this._videoCommitments.has(job)) this._forgetVideo(job)
   }
 
+  /** A retrieve streamed the job's whole file: its charge should follow (see DELIVERY_CHARGE_WAIT_MS). */
+  videoDelivered(job: string): void {
+    const commitment = this._videoCommitments.get(job)
+    if (!commitment || commitment.deliveredAt !== null) return
+    commitment.deliveredAt = this._now()
+    this._write(() => this._store.saveVideoCommitment({ job, ...commitment }))
+  }
+
   /**
-   * The buyer charged a delivery of the job: the charge is in the ledger now,
-   * so the job holds nothing more. Ownership stays, so its owner can download
-   * it again (the buyer does not charge twice).
+   * The buyer charged `amountUsdc` for the job's delivery: that much is in the
+   * ledger now, so the job holds that much less. Spend plus what the job still
+   * holds stays the same, whatever request the charge names. Ownership stays,
+   * so its owner can download it again (the buyer does not charge twice).
    */
-  private _videoCharged(job: string): void {
+  private _videoCharged(job: string, amountUsdc: number): void {
     const commitment = this._videoCommitments.get(job)
     if (!commitment || commitment.amountUsdc === 0) return
-    commitment.amountUsdc = 0
+    this._setVideoHeld(job, commitment, Math.max(0, commitment.amountUsdc - amountUsdc))
+  }
+
+  private _setVideoHeld(job: string, commitment: VideoCommitment, amountUsdc: number): void {
+    commitment.amountUsdc = amountUsdc
     this._write(() => this._store.saveVideoCommitment({ job, ...commitment }))
   }
 
@@ -336,7 +370,7 @@ export class GatewayAccounting {
       if (!inserted) continue
       recorded += 1
       // The delivery of a video job was charged: the job's commitment is now spend.
-      if (request.videoJob) this._videoCharged(request.videoJob)
+      if (request.videoJob) this._videoCharged(request.videoJob, parseBaseUnits(event.amountUsdc))
       // Settled spend replaces that much of the request's worst-case hold.
       // The rest stays until the grace period ends: one request can sign
       // several deltas, and later ones still need to be covered.

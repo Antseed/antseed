@@ -502,7 +502,7 @@ export class GatewayServer {
    * longer has it, or the buyer has no record of it) releases the job: it can
    * never be delivered or charged. Nothing a seller sends can release it.
    */
-  private _settleVideo(request: ForwardedRequest, outcome: { videoJobId: string | null; priceHeader: string; retired: boolean }): void {
+  private _settleVideo(request: ForwardedRequest, outcome: { videoJobId: string | null; priceHeader: string; retired: boolean; delivered: boolean }): void {
     const video = request.video
     if (!video) return
     const accounting = this._options.accounting
@@ -510,11 +510,15 @@ export class GatewayServer {
       if (!outcome.videoJobId) return
       const allowance = request.remainingUsdc
       const price = /^\d{1,15}$/.test(outcome.priceHeader) ? Number(outcome.priceHeader) : null
-      const amount = allowance === null ? 0 : Math.min(allowance, price ?? allowance)
+      // A key without caps has no allowance: it records the buyer's price, so caps added later count the job.
+      const amount = allowance === null ? price ?? 0 : Math.min(allowance, price ?? allowance)
       accounting.commitVideo(request.tag, videoJobKey(video.protocol, outcome.videoJobId), amount)
       return
     }
-    if (video.resourceId && outcome.retired) accounting.dropVideo(videoJobKey(video.protocol, video.resourceId))
+    if (!video.resourceId) return
+    const job = videoJobKey(video.protocol, video.resourceId)
+    if (outcome.retired) accounting.dropVideo(job)
+    else if (outcome.delivered) accounting.videoDelivered(job)
   }
 
   /**
@@ -580,7 +584,7 @@ export class GatewayServer {
         }
         const accounting = this._options.accounting
         try {
-          this._settleVideo(request, { videoJobId, priceHeader: videoPriceHeader, retired: videoRetired })
+          this._settleVideo(request, { videoJobId, priceHeader: videoPriceHeader, retired: videoRetired, delivered: videoDelivered })
         } catch (error) {
           this._log(`gateway could not account for video request ${tag}: ${errorMessage(error)}`)
         }

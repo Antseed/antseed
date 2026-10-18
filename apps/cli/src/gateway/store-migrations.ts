@@ -342,7 +342,8 @@ export const MIGRATIONS: readonly string[] = [
     member_id TEXT,
     workspace_id TEXT NOT NULL,
     amount_usdc INTEGER NOT NULL,
-    expires_at INTEGER NOT NULL
+    expires_at INTEGER NOT NULL,
+    delivered_at INTEGER
   );
   `,
 ]

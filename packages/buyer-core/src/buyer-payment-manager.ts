@@ -410,6 +410,15 @@ export class BuyerPaymentManager {
     return this._config.costToleranceMultiplier ?? DEFAULT_COST_TOLERANCE;
   }
 
+  /**
+   * A video's price is fixed by the seller's advertised unit pricing, known
+   * before the job starts and reported to callers as its price: it is paid
+   * exactly, never with the tolerance that covers token estimates.
+   */
+  private _costToleranceFor(billing: BuyerRequestBillingEntry | undefined | null): number {
+    return billing?.requestFacts?.kind === 'video' ? 1 : this._costTolerance;
+  }
+
   private get _disableMetadataV2Services(): boolean {
     return this._config.disableMetadataV2Services === true;
   }
@@ -1467,7 +1476,7 @@ export class BuyerPaymentManager {
     let acceptedCost: bigint;
     if (responseStats.sellerClaimedCost != null && responseStats.sellerClaimedCost > 0n) {
       if (buyerEstimatedRequestCost > 0n) {
-        const maxAcceptable = BigInt(Math.ceil(Number(buyerEstimatedRequestCost) * this._costTolerance));
+        const maxAcceptable = BigInt(Math.ceil(Number(buyerEstimatedRequestCost) * this._costToleranceFor(requestBilling)));
         if (responseStats.sellerClaimedCost > maxAcceptable) {
           debugWarn(
             `[BuyerPayment] Seller claimed ${responseStats.sellerClaimedCost} exceeds ${this._costTolerance}x buyer estimate ${buyerEstimatedRequestCost} — capping at ${maxAcceptable}`,
@@ -1686,7 +1695,7 @@ export class BuyerPaymentManager {
             requestBilling.context,
             payload.billingUsage,
             claimedUnitCost,
-            this._costTolerance,
+            this._costToleranceFor(requestBilling),
             observedUnitUsage,
           );
           const acceptedUnitUsage = unitUsageFromReport(payload.billingUsage);
@@ -1699,7 +1708,7 @@ export class BuyerPaymentManager {
         if (sellerTotalCost > 0n && buyerEstimate <= 0n) {
           throw new Error("Positive NeedAuth total cost recomputed to zero");
         }
-        const maxAcceptable = BigInt(Math.ceil(Number(buyerEstimate) * this._costTolerance));
+        const maxAcceptable = BigInt(Math.ceil(Number(buyerEstimate) * this._costToleranceFor(requestBilling)));
         if (sellerTotalCost > maxAcceptable) {
           throw new Error(`Seller total cost ${sellerTotalCost} exceeds buyer estimate ${buyerEstimate}`);
         }
