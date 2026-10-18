@@ -29,6 +29,9 @@ const DEFAULT_SETTLE_GRACE_MS = 60_000
 /** An accepted video nobody downloads stops counting against the caps after this long. */
 const DEFAULT_VIDEO_COMMITMENT_MS = 24 * 60 * 60_000
 
+/** The most a video create reserves while it is priced: the buyer's default limit for one video ($5). */
+const MAX_VIDEO_CREATE_RESERVE_USDC = 5_000_000
+
 export interface GatewayAccountingOptions {
   /**
    * Worst-case cost of one request, reserved against the key's caps while it
@@ -69,8 +72,19 @@ export function newRequestTag(): string {
   return `gw_${randomUUID()}`
 }
 
+export interface AdmitOptions {
+  /** A video create: reserve the room it may spend (up to one video's limit) until its price is known. */
+  videoCreate?: boolean
+  /** A video job's own poll or download, admitted without that job's commitment. */
+  videoJob?: string
+}
+
 export type Admission =
-  /** `remainingUsdc`: the least room left under any cap before this request's hold; null when nothing is capped. */
+  /**
+   * `remainingUsdc`: the least room left under any cap before this request's
+   * hold, or for a video create the allowance reserved for it; null when
+   * nothing is capped.
+   */
   | { ok: true; tag: string; remainingUsdc: number | null }
   | { ok: false; breach: LimitBreach }
 
@@ -186,7 +200,7 @@ export class GatewayAccounting {
    * admitted without its own commitment (`videoJob`), which they would
    * otherwise count twice.
    */
-  admit(key: ApiKeyRecord, context: KeyContext = this._context(key), videoJob?: string): Admission {
+  admit(key: ApiKeyRecord, context: KeyContext = this._context(key), { videoCreate = false, videoJob }: AdmitOptions = {}): Admission {
     const now = this._now()
     let remainingUsdc: number | null = null
     for (const { level, limits, scope, held } of this._budgetChecks(key, context, videoJob)) {
@@ -201,12 +215,16 @@ export class GatewayAccounting {
         remainingUsdc = remainingUsdc === null ? room : Math.min(remainingUsdc, room)
       }
     }
+    // A video create may start a job worth up to the room it is told about, so it
+    // holds all of that until the buyer reports the price: two creates in flight
+    // at once cannot both be told the same room.
+    if (videoCreate && remainingUsdc !== null) remainingUsdc = Math.min(remainingUsdc, MAX_VIDEO_CREATE_RESERVE_USDC)
     const tag = newRequestTag()
     this._holds.set(tag, {
       keyId: key.id,
       memberId: key.ownerMemberId,
       workspaceId: key.workspaceId,
-      amountUsdc: this._options.holdUsdc,
+      amountUsdc: videoCreate && remainingUsdc !== null ? remainingUsdc : this._options.holdUsdc,
       finished: false,
       timer: null,
     })

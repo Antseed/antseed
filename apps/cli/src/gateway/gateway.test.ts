@@ -56,6 +56,7 @@ async function request(port: number, path: string, options: { method?: string; k
       const chunks: Buffer[] = []
       res.on('data', (chunk: Buffer) => chunks.push(chunk))
       res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8'), headers: res.headers }))
+      res.on('error', reject)
     })
     req.on('error', reject)
     req.end(options.body)
@@ -532,10 +533,11 @@ test('a video create and a status poll hold nothing once answered; only the deli
 /**
  * Buyer that prices every video at `priceUsdc` and refuses one above the cap
  * the gateway sends, as the real buyer does. A create names its job with the
- * body's `job`; a retrieve for a job ending in `-fail` reports a failed job,
- * one ending in `-done` delivers the file, any other is still processing.
+ * body's `job` and answers after `createDelayMs`; a retrieve for a job ending
+ * in `-fail` reports a failed job, one ending in `-done` delivers the file, one
+ * ending in `-cut` breaks off mid-file, any other is still processing.
  */
-async function pricedVideoBuyer(priceUsdc: number) {
+async function pricedVideoBuyer(priceUsdc: number, createDelayMs = 0) {
   const caps: Array<string | null> = []
   const server = http.createServer((req, res) => {
     if (req.url?.startsWith('/_antseed/attributed-spend')) {
@@ -556,8 +558,16 @@ async function pricedVideoBuyer(priceUsdc: number) {
           res.end(JSON.stringify({ error: { code: 'buyer-budget-too-low', message: 'Video costs more than the spend limit has left' } }))
           return
         }
-        res.writeHead(200, { ...headers, 'content-type': 'application/json', 'x-antseed-video-price-usdc': String(priceUsdc) })
-        res.end(JSON.stringify({ queue_id: body.job }))
+        setTimeout(() => {
+          res.writeHead(200, { ...headers, 'content-type': 'application/json', 'x-antseed-video-price-usdc': String(priceUsdc) })
+          res.end(JSON.stringify({ queue_id: body.job }))
+        }, createDelayMs)
+        return
+      }
+      if (body.queue_id?.endsWith('-cut')) {
+        res.writeHead(200, { ...headers, 'content-type': 'video/mp4' })
+        res.write(Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from('ftypisom')]))
+        setTimeout(() => res.destroy(), 20)
         return
       }
       if (body.queue_id?.endsWith('-done')) {
@@ -573,9 +583,9 @@ async function pricedVideoBuyer(priceUsdc: number) {
   return { port, caps, close: () => new Promise<void>((resolve) => server.close(() => resolve())) }
 }
 
-async function videoGateway(priceUsdc: number, dailyCap: number) {
+async function videoGateway(priceUsdc: number, dailyCap: number, createDelayMs = 0) {
   const { store, cleanup } = tempDataDir()
-  const buyer = await pricedVideoBuyer(priceUsdc)
+  const buyer = await pricedVideoBuyer(priceUsdc, createDelayMs)
   const { key, secret } = store.createKey({ label: 'Video', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: dailyCap, monthly: null, total: null }, expiresAt: null })
   const gateway = await startGateway(store, buyer.port, 100_000, null, 60_000)
   return {
@@ -601,12 +611,41 @@ test('an accepted video stays counted against the caps, so two videos cannot sha
     assert.deepEqual(video.buyer.caps, ['1000000', '400000'])
     await waitFor(() => held() === 600_000)
     // The job's own polls are admitted without its own price, which they would otherwise count twice.
-    const own = video.gateway.accounting.admit(video.key, undefined, videoJobKey('venice-video', 'job-1'))
+    const own = video.gateway.accounting.admit(video.key, undefined, { videoJob: videoJobKey('venice-video', 'job-1') })
     assert.ok(own.ok)
     assert.equal(own.remainingUsdc, 1_000_000)
     video.gateway.accounting.release(own.tag)
     assert.equal((await video.poll('job-1')).status, 200)
     await waitFor(() => held() === 600_000)
+  } finally {
+    await video.close()
+  }
+})
+
+test('video creates in flight at once cannot both be told the same room', async () => {
+  const video = await videoGateway(600_000, 1_000_000, 100)
+  try {
+    // The first create holds the whole $1 it may spend until its price is known, so the second is refused at once.
+    const [first, second] = await Promise.all([video.create('job-1'), new Promise((resolve) => setTimeout(resolve, 20)).then(() => video.create('job-2'))])
+    assert.deepEqual([first.status, second.status], [200, 402])
+    assert.deepEqual(video.buyer.caps, ['1000000'])
+    // Once priced, only the job's $0.60 stays committed.
+    await waitFor(() => video.gateway.accounting.heldUsdc(video.key.id) === 600_000)
+  } finally {
+    await video.close()
+  }
+})
+
+test('a video download that breaks off keeps the job committed', async () => {
+  const video = await videoGateway(400_000, 1_000_000)
+  const job = videoJobKey('venice-video', 'job-cut')
+  try {
+    assert.equal((await video.create('job-cut')).status, 200)
+    await waitFor(() => video.gateway.accounting.heldUsdc(video.key.id) === 400_000)
+    await video.poll('job-cut').catch(() => null)
+    // No request holds remain, and the job's price is still a commitment (leaving the job out drops it).
+    await waitFor(() => video.gateway.accounting.heldUsdc(video.key.id, job) === 0)
+    assert.equal(video.gateway.accounting.heldUsdc(video.key.id), 400_000)
   } finally {
     await video.close()
   }

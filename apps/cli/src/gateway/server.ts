@@ -6,7 +6,7 @@ import { DEFAULT_BUYER_IDENTITY, VIDEO_PRICE_HEADER } from '@antseed/node'
 import { SPEND_ATTRIBUTION_HEADER } from '../proxy/spend-attribution.js'
 import { BUYER_IDENTITY_HEADER, MAX_VIDEO_COST_HEADER } from '../proxy/request-utils.js'
 import { GATEWAY_CONTROL_HEADER, ROUTING_POLICY_HEADER, encodePolicyHeader, meaningfulPolicy, policyAllowsModel, type RoutingPolicy } from '../routing-policy/policy.js'
-import { effectiveKeyLimits, newRequestTag, videoJobKey, type GatewayAccounting, type KeyContext } from './accounting.js'
+import { effectiveKeyLimits, newRequestTag, videoJobKey, type AdmitOptions, type GatewayAccounting, type KeyContext } from './accounting.js'
 import { errorMessage } from './errors.js'
 import { isClientCredentialHeader } from '../proxy/credential-headers.js'
 import { parseBearerToken } from './keys.js'
@@ -137,7 +137,7 @@ interface ForwardedRequest {
   modelListPolicy: RoutingPolicy | null
   /** A native video create or retrieve: only the retrieve that delivers the file is charged. */
   video: NativeVideoRoute | null
-  /** Room left under the key's caps at admission; null when nothing is capped. */
+  /** Room left under the key's caps at admission (a video create's reserved allowance); null when nothing is capped. */
   remainingUsdc: number | null
 }
 
@@ -324,7 +324,10 @@ export class GatewayServer {
     const policy = this._routingPolicy(res, route, key, context, preset, model)
     if (!policy.allowed) return
     const video = nativeVideoRoute({ method, path: route.prefix, body })
-    const admission = this._admit(res, route, key, context, video?.action === 'retrieve' && video.resourceId ? videoJobKey(video.protocol, video.resourceId) : undefined)
+    const admission = this._admit(res, route, key, context, {
+      videoCreate: video?.action === 'create',
+      ...(video?.action === 'retrieve' && video.resourceId ? { videoJob: videoJobKey(video.protocol, video.resourceId) } : {}),
+    })
     if (!admission) return
     const { tag } = admission
 
@@ -470,9 +473,9 @@ export class GatewayServer {
   }
 
   /** The request's tag; a paid request is admitted against its budgets first (402 answered here when one is spent). */
-  private _admit(res: http.ServerResponse, route: CanonicalRoute, key: ApiKeyRecord, context: KeyContext, videoJob?: string): { tag: string; remainingUsdc: number | null } | null {
+  private _admit(res: http.ServerResponse, route: CanonicalRoute, key: ApiKeyRecord, context: KeyContext, video: AdmitOptions): { tag: string; remainingUsdc: number | null } | null {
     if (!route.paid) return { tag: newRequestTag(), remainingUsdc: null }
-    const admission = this._options.accounting.admit(key, context, videoJob)
+    const admission = this._options.accounting.admit(key, context, video)
     if (admission.ok) return { tag: admission.tag, remainingUsdc: admission.remainingUsdc }
     this._log(`gateway spend limit reached: key=${key.id} level=${admission.breach.level ?? 'key'} period=${admission.breach.period}`)
     sendJson(res, 402, { error: spendLimitError(admission.breach) })
@@ -530,6 +533,8 @@ export class GatewayServer {
       // Video: the start of a create's answer (it names the job) and whether a retrieve delivered the file.
       let videoCreateChunks: Buffer[] | null = null
       let videoDelivered = false
+      // A retrieve answered with the file; it is delivered (and charged) only once that stream ends.
+      let videoStream = false
       // The buyer's price for an accepted create, and the start of a status poll's answer (it says whether the job failed).
       let videoPriceUsdc = 0
       let videoPollChunks: Buffer[] | null = null
@@ -615,8 +620,8 @@ export class GatewayServer {
             videoCreateChunks = collectPrefix(upstreamRes, MAX_ERROR_BODY_BYTES)
             videoPriceUsdc = Number(firstHeader(upstreamRes.headers[VIDEO_PRICE_HEADER])) || 0
           }
-          videoDelivered = request.video?.action === 'retrieve' && status === 200 && contentType.startsWith('video/')
-          if (request.video?.action === 'retrieve' && status === 200 && !videoDelivered) videoPollChunks = collectPrefix(upstreamRes, MAX_ERROR_BODY_BYTES)
+          videoStream = request.video?.action === 'retrieve' && status === 200 && contentType.startsWith('video/')
+          if (request.video?.action === 'retrieve' && status === 200 && !videoStream) videoPollChunks = collectPrefix(upstreamRes, MAX_ERROR_BODY_BYTES)
           if (observability.logContent) responseChunks = collectPrefix(upstreamRes, MAX_LOGGED_CONTENT_BYTES)
           if (status >= 400) errorChunks = collectPrefix(upstreamRes, MAX_ERROR_BODY_BYTES)
           // A delivered video is an MP4 stream with no usage to read.
@@ -626,7 +631,11 @@ export class GatewayServer {
             if (!HOP_BY_HOP.has(name.toLowerCase()) && value !== undefined) responseHeaders[name] = value
           }
           responseHeaders.connection = 'close'
-          upstreamRes.once('error', () => finish!(status, buyerRequestId))
+          upstreamRes.once('error', () => {
+            finish!(status, buyerRequestId)
+            // The buyer's answer broke off: end the client's too, rather than leave it waiting.
+            res.destroy()
+          })
           res.once('close', () => finish!(status, buyerRequestId))
           const modelListPolicy = request.modelListPolicy
           if (modelListPolicy && status === 200) {
@@ -642,7 +651,11 @@ export class GatewayServer {
           }
           res.writeHead(status, responseHeaders)
           upstreamRes.pipe(res)
-          upstreamRes.once('end', () => finish!(status, buyerRequestId))
+          upstreamRes.once('end', () => {
+            // An interrupted download is not charged: the job stays committed until it is downloaded in full.
+            videoDelivered = videoStream
+            finish!(status, buyerRequestId)
+          })
         })
 
         upstream.on('error', (error) => {
