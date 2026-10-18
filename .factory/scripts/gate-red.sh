@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Gate after the red stage: the failing test, committed alone, fails on origin/main for the stated reason.
-# Usage: gate-red.sh <slug>      writes runs/<slug>/gate/red.json and evidence/red.txt (verbatim run)
+# Gate after the red stage: the failing test, committed alone, fails on origin/main for the stated reason,
+# both in the task worktree and in a fresh worktree (so a test that only fails, or only loads, because of
+# local build leftovers is caught before any fix is written).
+# Usage: gate-red.sh <slug>      writes runs/<slug>/gate/red.json, evidence/red.txt and evidence/red-fresh.txt
 set -uo pipefail
 . "$(dirname "$0")/common.sh"
 slug="$1"; rd="$(run_dir "$slug")"; mkdir -p "$rd/gate" "$rd/evidence"
 wt="$(state "$slug" worktree)"; base="$(state "$slug" base)"; plan="$rd/test-plan.md"
-cmd="$(first_code "$plan" "Test command")"; sig="$(first_code "$plan" "Red signature")"
+cmd="$(first_code "$plan" "Test command")"; sig="$(first_code "$plan" "Red signature")"; pkg="$(first_code "$plan" "Owning package")"
 fails=()
 mapfile -t cs < <(commits "$wt" "$base")
 [ "${#cs[@]}" -eq 1 ] || fails+=("need exactly 1 commit on origin/main, have ${#cs[@]}")
@@ -21,6 +23,7 @@ if [ -n "$cmd" ]; then
   (cd "$wt" && bash -c "$cmd") > "$rd/evidence/red.txt" 2>&1; status=$?
   printf '\n# %s at %s -> exit %s\n' "$cmd" "$(git -C "$wt" log --format='%h %s' -1)" "$status" >> "$rd/evidence/red.txt"
   reason="$("$FACTORY/scripts/red-reason.sh" fail "$status" "$rd/evidence/red.txt" "$sig")" || fails+=("$(echo "$reason" | tail -1)")
+  [ "${#cs[@]}" -ge 1 ] && { fresh="$("$FACTORY/scripts/red-green.sh" "$wt" "${cs[0]}" fail "$cmd" "$rd/evidence/red-fresh.txt" "$sig" "$pkg" 2>&1)" || fails+=("fresh worktree: $(echo "$fresh" | tail -1)"); }
 fi
 node -e '
   const [file, cmd, sig, ...fails] = process.argv.slice(1)

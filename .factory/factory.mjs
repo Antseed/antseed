@@ -185,8 +185,18 @@ async function intake() {
   stop('FAILED', 'intake gate failed twice')
 }
 
+// A resumed run does not redo committed work: if the stage's commits already exist, its gate runs first and
+// the session is skipped when the gate passes (idempotent resume).
+const commitCount = () => Number(sh('git', ['-C', S.worktree, 'rev-list', '--count', `${S.base}..HEAD`]).stdout.trim())
+
 async function red() {
   let note = ''
+  if (commitCount() >= 1) {
+    const g = script('gate-red.sh', [slug]); process.stdout.write(g.out)
+    event(slug, 'red-gate', g.status ? 'fail' : 'pass', `resume, existing test commit: ${lastLine(g.out)}`)
+    if (!g.status) return
+    note = `\nSent back by the red gate: ${lastLine(g.out)}\nGate details: ${join(RD, 'gate', 'red.json')}. Leave exactly one test-only commit (amend it).\n`
+  }
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     const step = await runStep({ stage: 'red', round: attempt, template: 'red.md', prefix: 'RED', cwd: S.worktree, extra: { sent_back: note } })
     auditGate(step); tripwire('red')
@@ -209,6 +219,11 @@ function green(label) {
 
 async function fix() {
   let note = ''
+  if (commitCount() === 2) {
+    const g = green('fix')
+    if (!g.status) return
+    note = `\nSent back by the green gate: ${lastLine(g.out)}\nDetails: ${join(RD, 'gate', 'green-fix.json')}. Keep exactly two commits (test, fix).\n`
+  }
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     const step = await runStep({ stage: 'fix', round: attempt, template: 'fix.md', prefix: 'FIX', cwd: S.worktree, extra: { sent_back: note } })
     auditGate(step); tripwire('fix')

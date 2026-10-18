@@ -11,7 +11,7 @@ set -uo pipefail
 . "$(dirname "$0")/common.sh"
 slug="$1"; label="$2"; rd="$(run_dir "$slug")"; mkdir -p "$rd/gate" "$rd/evidence"
 wt="$(state "$slug" worktree)"; base="$(state "$slug" base)"; branch="$(state "$slug" branch)"; plan="$rd/test-plan.md"
-cmd="$(first_code "$plan" "Test command")"; sig="$(first_code "$plan" "Red signature")"
+cmd="$(first_code "$plan" "Test command")"; sig="$(first_code "$plan" "Red signature")"; pkg="$(first_code "$plan" "Owning package")"
 rows="$rd/gate/green-$label.tsv"; : > "$rows"
 record() { printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$rows"; echo "$2 $1: $3"; }
 
@@ -31,9 +31,9 @@ git -C "$wt" log --format=%B "$base..HEAD" | grep -Eiq '\b(fix(e[sd])?|close[sd]
   && record wording fail "a commit message would auto-close an issue; use Refs #n" || record wording pass "no auto-close keywords"
 if [ -z "$cmd" ] || [ -z "$c1" ]; then record red fail "no test command or no test commit"; record green fail "skipped"
 else
-  r="$("$FACTORY/scripts/red-green.sh" "$wt" "$c1" fail "$cmd" "$rd/evidence/red-fresh.txt" "$sig" 2>&1)" \
+  r="$("$FACTORY/scripts/red-green.sh" "$wt" "$c1" fail "$cmd" "$rd/evidence/red-fresh.txt" "$sig" "$pkg" 2>&1)" \
     && record red pass "$(echo "$r" | tail -1)" || record red fail "$(echo "$r" | tail -1)"
-  g="$("$FACTORY/scripts/red-green.sh" "$wt" HEAD pass "$cmd" "$rd/evidence/green.txt" 2>&1)" \
+  g="$("$FACTORY/scripts/red-green.sh" "$wt" HEAD pass "$cmd" "$rd/evidence/green.txt" "" "$pkg" 2>&1)" \
     && record green pass "$(echo "$g" | tail -1)" || record green fail "$(echo "$g" | tail -1)"
 fi
 [ -z "$(remote_branch_sha "$wt" "$branch")" ] && [ "$(cd "$wt" && gh pr list --head "$branch" --state all --json number --jq length)" = 0 ] \
