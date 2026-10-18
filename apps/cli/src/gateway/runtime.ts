@@ -194,6 +194,7 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
     identityAddress,
     spendFeedState: () => spendFeed.state,
     refreshSpendFeed: () => spendFeed.pollOnce(),
+    videoBudgetEnforced: () => spendFeed.videoBudgetEnforced,
     listenPort: options.listenPort,
     listenHost,
     onLog: options.onLog,

@@ -44,6 +44,13 @@ export interface AttributedSpendEvent {
   at: number
 }
 
+/**
+ * The buyer refuses a video priced above the gateway's `x-antseed-max-video-usdc`
+ * before it starts, and reports the price it accepted. A gateway applies a
+ * key's caps to video creates only through a buyer that says so.
+ */
+export const VIDEO_BUDGET_CAPABILITY = 'video-budget'
+
 export interface AttributedSpendPage {
   /**
    * Identifies the event sequence. A feed backed by a file keeps it (and its
@@ -56,6 +63,8 @@ export interface AttributedSpendPage {
   /** Pass back as `after` on the next poll. */
   cursor: number
   events: AttributedSpendEvent[]
+  /** What this buyer supports for the gateway (absent on older buyers). */
+  capabilities?: string[]
 }
 
 export interface SpendAttributionFeedOptions {
@@ -190,7 +199,8 @@ export class SpendAttributionFeed {
    */
   page(after: number, options: { ack?: boolean } = {}): AttributedSpendPage {
     const cursorIn = Number.isSafeInteger(after) ? Math.max(after, 0) : 0
-    if (!this._db.open) return { bootId: this.bootId, oldestSeq: cursorIn + 1, cursor: cursorIn, events: [] }
+    const capabilities = [VIDEO_BUDGET_CAPABILITY]
+    if (!this._db.open) return { bootId: this.bootId, oldestSeq: cursorIn + 1, cursor: cursorIn, events: [], capabilities }
     if (options.ack && cursorIn > 0) this._ack.run(cursorIn, cursorIn)
     const rows = this._select.all(cursorIn, MAX_EVENTS_PER_PAGE) as SpendEventRow[]
     const events = rows.map(toEvent)
@@ -200,6 +210,7 @@ export class SpendAttributionFeed {
       oldestSeq: (this._oldest.get() as { seq: number }).seq,
       cursor: last ? last.seq : cursorIn,
       events,
+      capabilities,
     }
   }
 

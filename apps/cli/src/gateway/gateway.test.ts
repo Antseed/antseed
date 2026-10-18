@@ -138,6 +138,7 @@ async function startGateway(store: GatewayStore, buyerPort: number, holdUsdc = 3
     identityAddress: async (name) => (name === 'team-a' ? '0x00000000000000000000000000000000000000aa' : null),
     spendFeedState: () => feed.state,
     refreshSpendFeed: () => feed.pollOnce(),
+    videoBudgetEnforced: () => feed.videoBudgetEnforced,
     onLog: (message) => logs.push(message),
   })
   const port = await server.start()
@@ -544,7 +545,7 @@ test('video creates, polls and deliveries hold no request hold once answered; a 
  * buyer, one ending in `-bad` is refused as a malformed request, any other is
  * still processing.
  */
-async function pricedVideoBuyer(priceUsdc: number, createDelayMs = 0, priceHeader: string | string[] = String(priceUsdc)) {
+async function pricedVideoBuyer(priceUsdc: number, createDelayMs = 0, priceHeader: string | string[] = String(priceUsdc), legacy = false) {
   const caps: Array<string | null> = []
   const feed = new SpendAttributionFeed()
   const retired = { 'x-antseed-video-job-retired': '1' }
@@ -552,7 +553,10 @@ async function pricedVideoBuyer(priceUsdc: number, createDelayMs = 0, priceHeade
     if (req.url?.startsWith('/_antseed/attributed-spend')) {
       const after = Number(new URL(req.url, 'http://localhost').searchParams.get('after') ?? '0')
       res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ ok: true, ...feed.page(after) }))
+      const page = feed.page(after)
+      // An older buyer reports spend but not that it checks video prices against the room it is told about.
+      if (legacy) delete page.capabilities
+      res.end(JSON.stringify({ ok: true, ...page }))
       return
     }
     const chunks: Buffer[] = []
@@ -1162,6 +1166,30 @@ test('a capped video create whose reservation cannot be stored is refused before
     assert.equal(video.gateway.accounting.heldUsdc(video.key.id), 0)
   } finally {
     await video.close()
+  }
+})
+
+test('video creates of capped keys are refused through a buyer that cannot check their price; uncapped keys still create', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await pricedVideoBuyer(2_000_000, 0, '2000000', true)
+  const capped = store.createKey({ label: 'Capped', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: 500_000, monthly: null, total: null }, expiresAt: null })
+  const open = store.createKey({ label: 'Open', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
+  const gateway = await startGateway(store, buyer.port, 100_000, null, 60_000)
+  const create = (secret: string, job: string) => request(gateway.port, '/api/v1/video/queue', { method: 'POST', key: secret, body: JSON.stringify({ model: 'seedance', prompt: 'An ant', duration: '8s', job }) })
+  try {
+    // That buyer would start the $2 video on a key with $0.50 left.
+    const refused = await create(capped.secret, 'job-1')
+    assert.equal(refused.status, 503)
+    assert.equal(JSON.parse(refused.body).error.code, 'buyer_upgrade_required')
+    assert.deepEqual(buyer.caps, [], 'never sent')
+    assert.equal(gateway.accounting.heldUsdc(capped.key.id), 0)
+    // A key without caps has no price to check: its videos still run.
+    assert.equal((await create(open.secret, 'job-2')).status, 200)
+    assert.equal((await request(gateway.port, '/api/v1/video/retrieve', { method: 'POST', key: open.secret, body: '{"model":"seedance","queue_id":"job-2"}' })).status, 200)
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    cleanup()
   }
 })
 

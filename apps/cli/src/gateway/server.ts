@@ -149,6 +149,12 @@ export interface GatewayServerOptions {
   identityAddress: (buyerIdentity: string) => Promise<string | null>
   spendFeedState: () => SpendFeedState
   refreshSpendFeed: () => Promise<void>
+  /**
+   * Whether the buyer refuses a video priced above the room it is told about
+   * (older buyers ignore it). Without it, video creates of capped keys are
+   * refused: the price must be checked before a job starts.
+   */
+  videoBudgetEnforced?: () => boolean
   /** x402 top-ups into a key's buyer wallet; null disables `POST /v1/key/topup`. */
   topup?: GatewayTopupOptions | null
   listenPort?: number
@@ -337,6 +343,11 @@ export class GatewayServer {
       sendError(res, 404, 'invalid_request_error', 'video_route_not_found', 'Unknown video job')
       return
     }
+    // Read from the buyer now, not from the last poll: a buyer just replaced by an older one must not start the job.
+    if (video?.action === 'create' && route.paid && this._options.accounting.hasBudgets(key, context) && !await this._videoBudgetEnforced()) {
+      sendError(res, 503, 'api_error', 'buyer_upgrade_required', 'Videos cannot be started on a key with spend limits until the Antseed buyer is updated: this buyer cannot check a video\'s price against the limit before it starts.')
+      return
+    }
     const admission = this._admit(res, route, key, context, { videoCreate: video?.action === 'create', ...(videoJob ? { videoJob } : {}) })
     if (!admission) return
     const { tag } = admission
@@ -495,6 +506,16 @@ export class GatewayServer {
     this._log(`gateway spend limit reached: key=${key.id} level=${admission.breach.level ?? 'key'} period=${admission.breach.period}`)
     sendJson(res, 402, { error: spendLimitError(admission.breach) })
     return null
+  }
+
+  private async _videoBudgetEnforced(): Promise<boolean> {
+    if (!this._options.videoBudgetEnforced) return false
+    try {
+      await this._options.refreshSpendFeed()
+    } catch {
+      return false
+    }
+    return this._options.videoBudgetEnforced()
   }
 
   /** Whether `key` created the video job, as remembered by its commitment or, for older jobs, the request log. */
