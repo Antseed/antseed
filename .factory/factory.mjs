@@ -281,20 +281,29 @@ const intent = () => {
 
 async function review() {
   const reviewers = MODELS.stages.review.models
-  for (let round = (S.review_round ?? 0) + 1; round <= MODELS.max_review_rounds; round += 1) {
+  // Resume: a round whose judgment is missing is redone, and reviews already answered in it are reused.
+  const startRound = S.review_round && !existsSync(join(RD, `judgment-r${S.review_round}.md`)) ? S.review_round : (S.review_round ?? 0) + 1
+  for (let round = startRound; round <= MODELS.max_review_rounds; round += 1) {
     S = saveState(slug, { review_round: round })
     const before = snapshot()
-    const anchor = reviewTab(round)
-    const panes = [anchor, newPane(S.worktree, anchor, 'right')]
-    panes.push(newPane(S.worktree, panes[1], 'down'))
     const labels = ['A', 'B', 'C']
-    const steps = await Promise.all(reviewers.map((model, i) => runStep({ readonly: true, stage: 'review', round, suffix: `-${model}`, template: 'review.md', prefix: 'REVIEW', cwd: S.worktree,
-      pane: panes[i], model, mode: 'reader', extra: { reviewer: labels[i], intent: intent() } })))
-    steps.forEach(auditGate); readOnly(before, 'a reviewer'); tripwire('review')
-    const files = steps.map((s, i) => { const f = join(RD, `review-r${round}-${reviewers[i]}.md`); writeFileSync(f, read(s.out)); return f })
+    const done = (i) => lastLine(read(join(RD, `review-r${round}-${reviewers[i]}.md`))).startsWith(`REVIEW ${slug} ${labels[i]} `)
+    const todo = reviewers.map((m, i) => i).filter((i) => !done(i))
+    if (todo.length < reviewers.length) event(slug, `review r${round}`, 'resume', `reusing answered reviews: ${reviewers.filter((m, i) => done(i)).join(', ')}`)
+    const panes = {}
+    if (todo.length) {
+      const anchor = reviewTab(round)
+      todo.forEach((i, k) => { panes[i] = k === 0 ? anchor : newPane(S.worktree, panes[todo[k - 1]], k === 1 ? 'right' : 'down') })
+    }
+    const ran = await Promise.all(todo.map((i) => runStep({ readonly: true, stage: 'review', round, suffix: `-${reviewers[i]}`, template: 'review.md', prefix: 'REVIEW', cwd: S.worktree,
+      pane: panes[i], model: reviewers[i], mode: 'reader', extra: { reviewer: labels[i], intent: intent() } }).then((st) => ({ ...st, i }))))
+    ran.forEach(auditGate); readOnly(before, 'a reviewer'); tripwire('review')
+    for (const st of ran) writeFileSync(join(RD, `review-r${round}-${reviewers[st.i]}.md`), read(st.out))
+    const files = reviewers.map((m) => join(RD, `review-r${round}-${m}.md`))
+    const steps = reviewers.map((m, i) => ({ answer: lastLine(read(files[i])) }))
     const missing = steps.filter((s) => !s.answer.startsWith(`REVIEW ${slug} `))
     if (missing.length) stop('FAILED', `${missing.length} reviewer(s) gave no review: ${missing.map((s) => s.answer).join(' | ')}`)
-    const judge = await runStep({ readonly: true, stage: 'judge', round, template: 'judge.md', prefix: 'JUDGE', cwd: S.worktree, mode: 'reader', pane: newPane(S.worktree, panes[0], 'down'),
+    const judge = await runStep({ readonly: true, stage: 'judge', round, template: 'judge.md', prefix: 'JUDGE', cwd: S.worktree, mode: 'reader',
       extra: { intent: intent(), review_files: files.map((f, i) => `- Reviewer ${labels[i]} (${reviewers[i]}): ${f}`).join('\n'),
         previous_judgment: round > 1 ? ` The previous round's judgment, whose Act-on items were since fixed: ${join(RD, `judgment-r${round - 1}.md`)}.` : '' } })
     auditGate(judge); readOnly(before, 'the judge'); tripwire('judge')
