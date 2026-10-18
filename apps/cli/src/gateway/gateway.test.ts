@@ -908,6 +908,30 @@ test('an accepted video stays committed across a gateway restart until it is dro
   }
 })
 
+test('an undelivered video stays committed for as long as the buyer can still charge it (30 days)', () => {
+  const { store, cleanup } = tempDataDir()
+  let now = Date.UTC(2026, 0, 1)
+  const day = 24 * 60 * 60_000
+  try {
+    const { key } = store.createKey({ label: 'Video', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: null, monthly: null, total: 1_000_000 }, expiresAt: null })
+    const accounting = new GatewayAccounting(store, { holdUsdc: 100_000, now: () => now })
+    const create = accounting.admit(key, undefined, { videoCreate: true })
+    assert.ok(create.ok)
+    accounting.commitVideo(create.tag, videoJobKey('venice-video', 'old-job'), 600_000)
+    accounting.release(create.tag)
+    now += 29 * day
+    const later = accounting.admit(key, undefined, { videoCreate: true })
+    assert.ok(later.ok)
+    assert.equal(later.remainingUsdc, 400_000, 'a month-old job that can still be downloaded still counts')
+    accounting.release(later.tag)
+    now += 2 * day
+    assert.equal(accounting.heldUsdc(key.id), 0)
+    accounting.dispose()
+  } finally {
+    cleanup()
+  }
+})
+
 test('a video create reserves up to the buyer video limit, configured or default', () => {
   const { store, cleanup } = tempDataDir()
   try {

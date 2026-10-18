@@ -26,8 +26,12 @@ export function effectiveKeyLimits(key: Pick<ApiKeyRecord, 'limits' | 'ownerLimi
 /** Spend can be signed after the response ends (seller-initiated auth). */
 const DEFAULT_SETTLE_GRACE_MS = 60_000
 
-/** An accepted video nobody downloads stops counting against the caps after this long. */
-const DEFAULT_VIDEO_COMMITMENT_MS = 24 * 60 * 60_000
+/**
+ * An accepted video nobody downloads stops counting against the caps after
+ * this long: as long as the buyer keeps the job's route and billing (30 days),
+ * so a video that can still be delivered and charged is never forgotten first.
+ */
+const DEFAULT_VIDEO_COMMITMENT_MS = 30 * 24 * 60 * 60_000
 
 /** The buyer's default limit for one video ($5), when its config sets none. */
 export const DEFAULT_MAX_VIDEO_REQUEST_USDC = 5_000_000
