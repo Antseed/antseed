@@ -38,7 +38,13 @@ p(S.issue ? `Refs #${S.issue}` : 'No GitHub issue: this is a task-file run (a se
 
 // 4: the fix, from the fix commit's own explanation.
 const fixBody = git('log', '--format=%b', '-1', commits[1]).split('\n\n')[0].replace(/\s+/g, ' ').trim()
-p('## Fix', '', fixBody, '')
+// Deliberate scope from the run's scope note (runs/<slug>/scope.json); every listed path must exist at HEAD.
+const scope = JSON.parse(read('scope.json') || '{}')
+const unchanged = scope.left_unchanged ?? []
+for (const u of unchanged) if (sh('git', ['-C', S.worktree, 'cat-file', '-e', `HEAD:${u.path}`]).status !== 0) throw new Error(`scope.json lists ${u.path}, which does not exist at HEAD`)
+const list = unchanged.map((u) => `\`${u.path}\``)
+const joined = list.length > 1 ? `${list.slice(0, -1).join(', ')} and ${list.at(-1)}` : list[0]
+p('## Fix', '', fixBody + (unchanged.length ? ` Deliberately left unchanged (${scope.decided_by}'s scope decision: ${scope.decision}): ${joined}. ${scope.reason}` : ''), '')
 
 // 2 + 3: test level, test file, the red that matters, the green summary.
 const red = read('evidence/red-fresh.txt').split('\n')
@@ -102,7 +108,8 @@ const fact = ((blast.split('## The one fact')[1] ?? '').split('\n## ')[0].match(
 p('<details><summary>Full evidence</summary>', '', 'All red assertions (commit 1, fresh checkout):', '', '```')
 for (const f of fails) p(...f.map(clean))
 p(redSummary, '```', '', 'Verification commands (fix branch, and a local sandbox checkout that adds these two commits to the sandbox stack; never pushed):', '', '| Where | Command | Exit |', '| --- | --- | --- |')
-for (const r of (gate.results ?? []).filter((x) => x.phase !== 'before')) p(`| ${r.phase === 'fix' ? 'fix branch' : 'sandbox'} | \`${clean(r.cmd).replace(/\|/g, '\\|')}\` | ${r.exit} |`)
+const where = { before: 'sandbox, without this change', after: 'sandbox, with this change', fix: 'fix branch' }
+for (const r of gate.results ?? []) p(`| ${where[r.phase] ?? r.phase} | \`${clean(r.cmd).replace(/\|/g, '\\|')}\` | ${r.exit} |`)
 for (const s of gate.scenarios ?? []) {
   const lines = read(`${vdir}/after-${s.scenario}.txt`).split('\n').filter((l) => /\[sandbox\] (PASS|FAIL|KNOWN|Error)\b/.test(l)).map((l) => clean(l.trim()))
   p('', `\`${s.scenario}\` with this change (without it: exit ${s.before}, with it: exit ${s.after}):`, '', '```', ...lines, '```')
