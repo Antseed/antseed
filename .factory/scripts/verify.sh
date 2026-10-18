@@ -20,7 +20,7 @@ run() {
   local phase="$1" kind="$2" id="$3" dir="$4" cmd="$5" started status
   started=$(date +%s)
   echo "== [$phase] $cmd (in $dir)"
-  (cd "$dir" && timeout 1800 bash -c "$cmd") > "$out/$id.txt" 2>&1; status=$?
+  "$FACTORY/scripts/run-bounded.sh" 1800 "$dir" "$cmd" > "$out/$id.txt" 2>&1; status=$?
   printf '\n# %s (in %s) -> exit %s\n' "$cmd" "$dir" "$status" >> "$out/$id.txt"
   # Sandbox reports live under ~/.antseed-sandbox; keep a copy so the evidence resolves after cleanup.
   report="$(grep -oE '\[sandbox\] (PASSED|FAILED): .+/report\.json' "$out/$id.txt" | tail -1 | sed -E 's/^\[sandbox\] (PASSED|FAILED): //; s#/report\.json$##')"
