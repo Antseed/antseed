@@ -1570,6 +1570,33 @@ test('a video create passes the caller spend cap to the buyer and never to the s
   ])
 })
 
+test('a video job that reports failed is retired: later retrieves never reach the seller, so it cannot be charged', async () => {
+  for (const upstream of [{ status: 'FAILED' }, { status: 'COMPLETED' }]) {
+    const peer = makePeer('a', ['venice'])
+    peer.providerServiceApiProtocols = { venice: { services: { 'video-model': ['venice-video'] } } }
+    const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+    let persisted = 0
+    ;(proxy as any)._persistResourceRoutes = async () => { persisted += 1 }
+    ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: SerializedHttpRequest) =>
+      ({ requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ queue_id: 'job' })) })
+    let retrieves = 0
+    ;(proxy as any)._node.sendRequestStream = async (_peer: PeerInfo, request: SerializedHttpRequest) => {
+      retrieves += 1
+      return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify(upstream)) }
+    }
+    assert.equal((await invokeProxy(proxy, makeProxyRequest({ path: '/api/v1/video/queue', body: { model: 'video-model', prompt: 'cat', duration: '5s' } }))).statusCode, 200)
+    const retrieve = () => invokeProxy(proxy, makeProxyRequest({ method: 'POST', path: '/api/v1/video/retrieve', body: { model: 'video-model', queue_id: 'job' } }))
+    const failed = await retrieve()
+    assert.equal(failed.statusCode, 200)
+    assert.equal(JSON.parse(failed.body).status, 'failed')
+    const after = await retrieve()
+    assert.equal(after.statusCode, 404, after.body)
+    assert.equal(JSON.parse(after.body).error.code, 'video_route_not_found')
+    assert.equal(retrieves, 1, 'the retired job is never sent to the seller again')
+    assert.equal(persisted, 2, 'the route is saved when accepted and again when retired')
+  }
+})
+
 test('native resource follow-ups fail when the recorded provider loses support instead of switching providers', async () => {
   for (const provider of ['venice'] as const) {
     const protocol = 'venice-video'

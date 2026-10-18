@@ -485,7 +485,8 @@ export class GatewayServer {
   /**
    * Keeps an accepted video's price counted against the caps until it is
    * delivered (then its charge settles like any request's) or will never be:
-   * the job reports `failed`, or the buyer answers that it does not know the
+   * the job reports `failed` (the buyer then retires it, so it can never be
+   * delivered or charged), or the buyer answers that it does not know the
    * job. Any other error (a malformed poll, a seller that cannot be reached)
    * keeps the commitment, which expires on its own.
    */

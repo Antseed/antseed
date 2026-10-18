@@ -4839,9 +4839,14 @@ export class BuyerProxy {
     const wantsStreaming = clientWantsStreaming && !videoRoute
     if (videoRoute?.action === 'retrieve') {
       // The seller hands a job only to the buyer that created it: retrieve with the same wallet.
-      await downloadVideo(requestForPeer, res, (request, callbacks, signal) => this._node.sendRequestStream(selectedPeer, request, callbacks, {
+      const outcome = await downloadVideo(requestForPeer, res, (request, callbacks, signal) => this._node.sendRequestStream(selectedPeer, request, callbacks, {
         signal, pinned: true, ...(buyerIdentity ? { buyerIdentity } : {}),
       }), requestSignal)
+      // A failed job is retired: later retrieves get `video_route_not_found` and never reach the seller, so it
+      // can never be delivered or charged, and a gateway may release the price it held for it.
+      if (outcome === 'failed' && videoRoute.resourceId && this._resourceRoutes.forget(videoRoute.protocol, videoRoute.resourceId)) {
+        await this._persistResourceRoutes().catch(error => console.error('[proxy] Retired video route was not persisted:', error))
+      }
       return { done: true }
     }
     const peerResponseProtocol = selectedRoutePlan.selection?.targetProtocol ?? requestProtocol

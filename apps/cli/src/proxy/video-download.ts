@@ -69,7 +69,12 @@ function sellerErrorCode(body: Uint8Array): string | null {
 }
 
 /** Streams a finished video from the seller that owns the job to the client. */
-export async function downloadVideo(request: SerializedHttpRequest, response: ServerResponse, send: SendDownload, clientSignal: AbortSignal): Promise<void> {
+/**
+ * Streams a finished video, or answers the job's status. Resolves `'failed'`
+ * when the answer says the job failed (including a JSON `completed` with no
+ * video), so the caller can retire the job.
+ */
+export async function downloadVideo(request: SerializedHttpRequest, response: ServerResponse, send: SendDownload, clientSignal: AbortSignal): Promise<'failed' | null> {
   const reply = (httpStatus: number, body: Record<string, unknown>) => {
     response.writeHead(httpStatus, { 'content-type': 'application/json', 'cache-control': 'no-store' })
     response.end(JSON.stringify(body))
@@ -77,7 +82,7 @@ export async function downloadVideo(request: SerializedHttpRequest, response: Se
   const error = (httpStatus: number, code: string) => reply(httpStatus, { error: { code, message: 'Video download unavailable' } })
   const pending = (httpStatus: number, status: 'unknown' | 'seller_unreachable', code: string, message: string) =>
     reply(httpStatus, { status, retryable: true, error: { code, message } })
-  if (activeDownloads >= 2) { error(429, 'video_download_busy'); return }
+  if (activeDownloads >= 2) { error(429, 'video_download_busy'); return null }
   activeDownloads += 1
   const signal = AbortSignal.any([clientSignal, AbortSignal.timeout(5 * 60_000)])
   const headers = Object.fromEntries(Object.entries(request.headers).filter(([key]) => !['range', 'if-range', 'content-length', 'accept-encoding'].includes(key.toLowerCase())))
@@ -108,22 +113,25 @@ export async function downloadVideo(request: SerializedHttpRequest, response: Se
       // A JSON answer instead of a stream: a status such as Venice "PROCESSING", or a seller error.
       const isJson = result.headers['content-type']?.startsWith('application/json') === true
       if (isJson && result.statusCode < 500) {
+        const answer = result.statusCode === 200 ? withNormalizedStatus(result.body) : result.body
         response.writeHead(result.statusCode, { 'content-type': 'application/json', 'cache-control': 'no-store' })
-        response.end(Buffer.from(result.statusCode === 200 ? withNormalizedStatus(result.body) : result.body))
-        return
+        response.end(Buffer.from(answer))
+        return result.statusCode === 200 && parseObject(answer)?.status === 'failed' ? 'failed' : null
       }
       const code = isJson ? sellerErrorCode(result.body) : null
-      if (RETURNED_STATUSES.has(result.statusCode)) { error(result.statusCode, code ?? 'video_download_unavailable'); return }
+      if (RETURNED_STATUSES.has(result.statusCode)) { error(result.statusCode, code ?? 'video_download_unavailable'); return null }
       // The seller answered, so it is reachable; it just could not read the job's state right now.
       pending(200, 'unknown', code ?? 'video_status_unavailable', 'The seller could not read the video job status right now; poll again')
-      return
+      return null
     }
     if (result.statusCode !== 200 || (length !== null && received !== length)) throw new Error('Incomplete video')
     response.end()
+    return null
   } catch {
     if (response.headersSent || clientSignal.aborted) response.destroy()
     else if (sellerAnswered) error(502, 'video_download_failed')
     else pending(signal.aborted ? 504 : 502, 'seller_unreachable', 'video_download_failed', 'The seller holding this video job could not be reached; the job is kept, poll again later')
+    return null
   } finally {
     activeDownloads -= 1
   }
