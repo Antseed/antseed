@@ -72,3 +72,11 @@ test('a stream that reports an error partway through is detected', () => {
   assert.equal(hasStreamError(SSE_TYPE, sse({ choices: [{ delta: { content: 'ok' } }], error: null })), false)
   assert.equal(hasStreamError(JSON_TYPE, json({ error: { message: 'not a stream' } })), false)
 })
+
+test('an error at the end of a stream larger than 4 MiB is still detected', () => {
+  const chunk = 'data: {"choices":[{"delta":{"content":"' + 'x'.repeat(1000) + '"}}]}\n\n'
+  const long = chunk.repeat(Math.ceil((5 * 1024 * 1024) / chunk.length))
+  assert.equal(hasStreamError(SSE_TYPE, Buffer.from(long + 'event: error\ndata: upstream failed\n\n')), true)
+  assert.equal(hasStreamError(SSE_TYPE, Buffer.from(long + 'data: {"type":"response.failed"}\n\n')), true)
+  assert.equal(hasStreamError(SSE_TYPE, Buffer.from(long + 'data: [DONE]\n\n')), false)
+})

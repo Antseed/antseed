@@ -144,6 +144,8 @@ export function isEmptyAnswer(contentType: string | undefined, body: Uint8Array)
   return content.recognised && !content.answered && !content.truncated
 }
 
+const STREAM_ERROR_TAIL_BYTES = 256 * 1024
+
 /**
  * True when a stream reported a failure partway through: an `event: error`
  * frame (what a seller sends when its provider throws after the stream
@@ -153,8 +155,11 @@ export function isEmptyAnswer(contentType: string | undefined, body: Uint8Array)
  */
 export function hasStreamError(contentType: string | undefined, body: Uint8Array): boolean {
   if (!(contentType ?? '').toLowerCase().includes('text/event-stream')) return false
-  if (body.length > 4 * 1024 * 1024) return false
-  for (const line of Buffer.from(body).toString('utf8').split('\n')) {
+  // A stream stops at its error, so the error is at the end: a long stream
+  // needs only its tail read (from the first whole line in it).
+  let lines = Buffer.from(body.subarray(Math.max(0, body.length - STREAM_ERROR_TAIL_BYTES))).toString('utf8').split('\n')
+  if (body.length > STREAM_ERROR_TAIL_BYTES) lines = lines.slice(1)
+  for (const line of lines) {
     const trimmed = line.trim()
     if (trimmed === 'event: error' || trimmed === 'event:error') return true
     if (!trimmed.startsWith('data:')) continue

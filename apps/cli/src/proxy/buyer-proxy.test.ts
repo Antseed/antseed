@@ -5677,7 +5677,7 @@ test('a stream that breaks after its headers does not prove an earlier rejection
   assert.equal(sellerHealthOf(proxy, pricier, clock.now()).successes, 0)
 })
 
-test('a stream whose provider fails after partial text is not a served answer', async () => {
+for (const [label, partialBytes] of [['short', 0], ['larger than 4 MiB', 5 * 1024 * 1024]] as const) test(`a stream whose provider fails after partial text is not a served answer (${label})`, async () => {
   const clock = makeTestClock()
   const { cheap, pricier } = makeModelSellers()
   const proxy = makeBuyerProxyWithPeers([cheap, pricier], [cheap, pricier], permissiveRouter(), clock.now, priceAndTrustPreferences)
@@ -5700,7 +5700,8 @@ test('a stream whose provider fails after partial text is not a served answer', 
     callbacks.onResponseStart({ requestId: request.requestId, statusCode: 200, headers, body: new Uint8Array() }, { streaming: true })
     // The seller's wire behavior when its provider throws mid-stream: an
     // error frame, then a normal terminal chunk.
-    const text = Buffer.from('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n')
+    const line = 'data: {"choices":[{"delta":{"content":"' + 'x'.repeat(1000) + '"}}]}\n\n'
+    const text = Buffer.from(partialBytes === 0 ? 'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n' : line.repeat(Math.ceil(partialBytes / line.length)))
     const errorFrame = Buffer.from('event: error\ndata: upstream failed\n\n')
     callbacks.onResponseChunk({ requestId: request.requestId, data: text, done: false })
     callbacks.onResponseChunk({ requestId: request.requestId, data: errorFrame, done: false })
