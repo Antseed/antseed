@@ -27,7 +27,7 @@ import {
   type BuyerChannelStore,
   type StoredChannel,
 } from './channel-store-types.js';
-import { classifyOnChainChannel } from './channel-session-state.js';
+import { classifyOnChainChannel, type OnChainChannelState } from './channel-session-state.js';
 import { peerIdToAddress } from '@antseed/protocol/peer-id';
 import { debugLog, debugWarn } from './debug.js';
 import type { SellerAddressResolver } from './seller-address-resolver.js';
@@ -77,6 +77,8 @@ const ONE_OFF_ACK_TIMEOUT_MS = 45_000;
  * AuthAck gets the same one-off 402 back.
  */
 const ONE_OFF_CHAIN_CONFIRM_GRACE_MS = 15_000;
+/** Upper bound on stored sessions for one seller checked against the chain in a single pass. */
+const MAX_STALE_SESSION_CHECKS = 5;
 /** Emitter interface — subset of EventEmitter used by the negotiator. */
 export interface NegotiationEmitter {
   emit(event: string, ...args: unknown[]): boolean;
@@ -682,6 +684,14 @@ export class BuyerPaymentNegotiator {
         `[BuyerNegotiator] Seller ${peerId.slice(0, 12)}... declined to close ` +
         `${result.channelId.slice(0, 18)}...: ${result.code ?? 'unknown'} — ${result.reason ?? 'no reason given'}`,
       );
+      // The seller has no record of this channel. Drop ours as well once the
+      // chain confirms it is no longer open; a channel that is still open
+      // holds a reserve and is kept.
+      if (result.code === 'no_channel' && await this._retireSessionsClosedOnChain(peerId)) {
+        this._lockedPeers.delete(peerId);
+        this._firstRequestSent.delete(peerId);
+        this._lastResponseCost.delete(peerId);
+      }
     }
 
     return result;
@@ -888,6 +898,10 @@ export class BuyerPaymentNegotiator {
       if (recovered) {
         return { action: 'retry' };
       }
+
+      // Older stored sessions for this seller (e.g. from a reserve that never
+      // locked) would each block a fresh reserve; check every one on-chain.
+      await this._retireSessionsClosedOnChain(peer.peerId);
 
       if (this._bpm.getActiveSession(peer.peerId)) {
         if (await this._canRetireStaleSessionWithoutOnChainProof()) {
@@ -1503,18 +1517,7 @@ export class BuyerPaymentNegotiator {
       return false;
     }
 
-    if (onChain.status === CHANNEL_STATUS.SETTLED) {
-      this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.SETTLED, onChain.channel.settled);
-      return false;
-    }
-
-    if (onChain.status === CHANNEL_STATUS.TIMEOUT) {
-      this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.TIMEOUT);
-      return false;
-    }
-
-    if (onChain.status !== 'active') {
-      this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.GHOST);
+    if (this._retireIfNotOpenOnChain(peer.peerId, onChain)) {
       return false;
     }
 
@@ -1610,6 +1613,42 @@ export class BuyerPaymentNegotiator {
     });
     this._lockedPeers.add(peer.peerId);
     return true;
+  }
+
+  /**
+   * Retire the seller's stored session when the chain shows its channel is no
+   * longer open, recording how it ended. Returns whether it was retired.
+   */
+  private _retireIfNotOpenOnChain(peerId: string, onChain: OnChainChannelState): boolean {
+    if (onChain.status === CHANNEL_STATUS.ACTIVE) {
+      return false;
+    }
+    if (onChain.status === CHANNEL_STATUS.SETTLED) {
+      this._bpm.retireSession(peerId, CHANNEL_STATUS.SETTLED, onChain.channel.settled);
+    } else if (onChain.status === CHANNEL_STATUS.TIMEOUT) {
+      this._bpm.retireSession(peerId, CHANNEL_STATUS.TIMEOUT);
+    } else {
+      this._bpm.retireSession(peerId, CHANNEL_STATUS.GHOST);
+    }
+    return true;
+  }
+
+  /**
+   * Check the seller's stored sessions against their own channels on-chain,
+   * newest first, retiring each one that is no longer open. Stops at the first
+   * channel that is still open or cannot be read. Returns whether any session
+   * was retired.
+   */
+  private async _retireSessionsClosedOnChain(peerId: string): Promise<boolean> {
+    let retired = false;
+    for (let i = 0; i < MAX_STALE_SESSION_CHECKS; i++) {
+      const session = this._bpm.getActiveSession(peerId);
+      if (!session) break;
+      const onChain = await this._getOnChainSessionState(session.sessionId);
+      if (onChain === null || !this._retireIfNotOpenOnChain(peerId, onChain)) break;
+      retired = true;
+    }
+    return retired;
   }
 
   private async _canRetireStaleSessionWithoutOnChainProof(): Promise<boolean> {
