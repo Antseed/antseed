@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
-import { SellerPaymentManager, type SellerPaymentConfig } from '../src/payments/seller-payment-manager.js';
+import { SellerPaymentManager, TIMED_OUT_CLOSE_RETRY_INTERVAL_MS, type SellerPaymentConfig } from '../src/payments/seller-payment-manager.js';
 import { ChannelStore, CHANNEL_ROLE, CHANNEL_STATUS } from '../src/payments/channel-store.js';
 import type { PaymentMux } from '../src/p2p/payment-mux.js';
 import type { Identity } from '../src/p2p/identity.js';
@@ -1875,6 +1875,105 @@ describe('SellerPaymentManager', () => {
     resolveClose('0xclose-hash');
     await Promise.all([first, second]);
     expect(manager.channelsClient.close).toHaveBeenCalledOnce();
+  });
+
+  describe('timed-out channel close retry', () => {
+    const AUTH_SIG = '0x' + 'aa'.repeat(65);
+
+    function storeTimedOutChannel(channelId: string): void {
+      const now = Date.now();
+      store.upsertChannel({
+        sessionId: channelId,
+        peerId: buyerIdentity.peerId,
+        role: CHANNEL_ROLE.SELLER,
+        sellerEvmAddr: sellerIdentity.wallet.address,
+        buyerEvmAddr: buyerIdentity.wallet.address,
+        nonce: 0,
+        authMax: '600000',
+        deadline: Math.floor(now / 1000) + 3600,
+        previousSessionId: '0x' + '00'.repeat(32),
+        previousConsumption: '1000000',
+        tokensDelivered: '600000',
+        requestCount: 3,
+        reservedAt: now,
+        settledAt: null,
+        settledAmount: null,
+        status: CHANNEL_STATUS.TIMEOUT,
+        latestBuyerSig: null,
+        latestSpendingAuthSig: AUTH_SIG,
+        latestMetadata: '0x1234',
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    async function nextRetryPass(): Promise<void> {
+      vi.setSystemTime(Date.now() + TIMED_OUT_CLOSE_RETRY_INTERVAL_MS);
+      await manager.checkTimeouts();
+    }
+
+    it('retries a channel still open on-chain with the latest auth, then closes at the settled amount', async () => {
+      const channelId = makeChannelId(90);
+      storeTimedOutChannel(channelId);
+      vi.spyOn(manager.channelsClient, 'getSession').mockResolvedValue(
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 1_000_000n, settled: 500_000n, status: 1 }),
+      );
+      const close = vi.spyOn(manager.channelsClient, 'close').mockRejectedValue(new Error('estimate failed'));
+
+      await manager.checkTimeouts();
+      await manager.checkTimeouts();
+      expect(close).toHaveBeenCalledOnce();
+
+      for (let i = 1; i < 6; i++) await nextRetryPass();
+      expect(close).toHaveBeenCalledTimes(6);
+      for (const call of close.mock.calls) {
+        expect(call.slice(1)).toEqual([channelId, 600_000n, '0x1234', AUTH_SIG]);
+      }
+      expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.TIMEOUT);
+
+      close.mockResolvedValue('0xclose-hash');
+      await nextRetryPass();
+      expect(close).toHaveBeenLastCalledWith(expect.anything(), channelId, 500_000n, '0x', '0x');
+      expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.SETTLED);
+      expect(store.getChannel(channelId)!.settledAmount).toBe('500000');
+    });
+
+    it('marks a channel settled once it is settled on-chain', async () => {
+      const channelId = makeChannelId(91);
+      storeTimedOutChannel(channelId);
+      vi.spyOn(manager.channelsClient, 'getSession').mockResolvedValue(
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { settled: 700_000n, status: 2 }),
+      );
+
+      await manager.checkTimeouts();
+
+      expect(manager.channelsClient.close).not.toHaveBeenCalled();
+      expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.SETTLED);
+      expect(store.getChannel(channelId)!.settledAmount).toBe('700000');
+    });
+
+    it('stops reading a channel the buyer already withdrew', async () => {
+      const channelId = makeChannelId(92);
+      storeTimedOutChannel(channelId);
+      const getSession = vi.spyOn(manager.channelsClient, 'getSession').mockResolvedValue(
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { status: 3 }),
+      );
+
+      await manager.checkTimeouts();
+      await nextRetryPass();
+
+      expect(getSession).toHaveBeenCalledOnce();
+      expect(manager.channelsClient.close).not.toHaveBeenCalled();
+      expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.TIMEOUT);
+    });
   });
 
   it('test_getPaymentRequirements: returns payment requirements payload', () => {
