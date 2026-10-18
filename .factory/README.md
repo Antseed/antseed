@@ -62,7 +62,7 @@ When a stage hits something that is the human's call, or a finding (a bug that d
 
 ## Files
 
-`factory.mjs` (driver), `lib/common.mjs`, `scripts/` (common.sh, intake.sh, preflight.sh, worktree.sh, native-step.mjs, gate-red.sh, gate-green.sh, red-green.sh, red-reason.sh, security-check.mjs, verify-plan.mjs, verify.sh, sandbox-scratch.sh, verify-gate.mjs, publish.sh, recheck.sh, audit-summary.mjs, pin-proxy.py), `prompts/` (\_preamble plus one per session kind), `inputs/`, `models.md`. Run state: `runs/<slug>/` (gitignored).
+`factory.mjs` (driver), `lib/common.mjs`, `scripts/` (common.sh, intake.sh, preflight.sh, worktree.sh, native-step.mjs, gate-red.sh, gate-green.sh, red-green.sh, red-reason.sh, security-check.mjs, verify-plan.mjs, verify.sh, sandbox-scratch.sh, verify-gate.mjs, publish.sh, recheck.sh, audit-summary.mjs, pin-proxy.py), `prompts/` (\_preamble plus one per session kind), `inputs/`, `models.md`. Run state: `runs/<slug>/` (gitignored). A run's deliberate scope decisions go in `runs/<slug>/scope.json` (`decided_by`, `decision`, `left_unchanged[]` with `path`, `what`, `source`, and `reason`). The PR body states them under `## Fix` and fails if a listed path does not exist at HEAD.
 
 Environment: `FACTORY_AUDIT_URL`, `FACTORY_AUDIT_LOG`, `FACTORY_WT_ROOT` (default `/root/.herdr/worktrees/antseed`), `FACTORY_SANDBOX_REF` (default `origin/codex/sandbox-stack`), `FACTORY_NODE_BIN`, `PSTACK_DIR`, `FACTORY_ALLOW_PUBLISH`.
 
