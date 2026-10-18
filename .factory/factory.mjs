@@ -3,7 +3,7 @@
 // anything a model should judge. Every judgment step is a fresh pinned Claude Code session in its own Herdr
 // pane (scripts/native-step.mjs). Run it inside Herdr.
 //
-//   node .factory/factory.mjs run --slug <slug> (--issue <n> | --task-file <file>) [--note-file <file>] [--from <stage>] [--until <stage>]
+//   node .factory/factory.mjs run --slug <slug> (--issue <n> | --task-file <file>) [--note-file <file>] [--workspace <label>] [--from <stage>] [--until <stage>]
 //   node .factory/factory.mjs status --slug <slug>
 //
 // Stages: intake red fix verify blast-radius review no-comments publish reflect. Publish is always a dry run
@@ -12,6 +12,7 @@
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { ensureWorkspace, workspaceExists } from './lib/workspace.mjs'
 import { AUDIT_LOG, FACTORY, MODELS, PSTACK, SANDBOX_REF, SKILLS, WT_ROOT, decide, event, herdr, lastLine, loadState, needsInput, read, runDir, saveState, sh } from './lib/common.mjs'
 
 const STAGES = ['intake', 'red', 'fix', 'verify', 'blast-radius', 'review', 'no-comments', 'publish', 'reflect']
@@ -44,12 +45,21 @@ const wants = (stage) => STAGES.indexOf(stage) >= from && STAGES.indexOf(stage) 
 let S = loadState(slug)
 
 // ---------- Herdr layout: one tab per run; its root pane follows the event log ----------
+// Every run lives in its own Herdr workspace (--workspace <label>, default bug-<issue> or <slug>): the run tab,
+// every stage pane, the reviewers and the judge. Runs whose state predates this keep their recorded tab.
+const runWorkspace = () => S.workspace ?? S.tab?.split(':')[0]
 function ensureTab() {
   const tab = S.tab && herdr(['tab', 'get', S.tab])
-  if (tab?.tab) return
-  const created = herdr(['tab', 'create', '--workspace', process.env.HERDR_WORKSPACE_ID, '--cwd', FACTORY, '--label', `factory ${slug}`, '--no-focus'])
+  if (tab?.tab && (!S.workspace || workspaceExists(S.workspace))) return
+  const label = opt('workspace') ?? S.workspace_label ?? (S.issue ? `bug-${S.issue}` : slug)
+  const ws = ensureWorkspace(label, FACTORY, S.workspace)
+  let created = ws.created ? { tab: { tab_id: ws.tab }, root_pane: { pane_id: ws.rootPane } } : null
+  if (!created) created = herdr(['tab', 'create', '--workspace', ws.id, '--cwd', FACTORY, '--label', `factory ${slug}`, '--no-focus'])
   if (!created?.root_pane) throw new Error('could not create the run tab')
-  S = saveState(slug, { tab: created.tab.tab_id, root_pane: created.root_pane.pane_id })
+  S = saveState(slug, { workspace: ws.id, workspace_label: label, tab: created.tab.tab_id, root_pane: created.root_pane.pane_id })
+  event(slug, 'workspace', ws.created ? 'created' : 'reused', `${label} = ${ws.id}`)
+  if (ws.created) decide(slug, 'workspace', `run lives in its own Herdr workspace ${label} (${ws.id})`, 'stage panes, reviewers and judge never land in another workspace', 'state.json', 'created')
+  sh('herdr', ['tab', 'rename', S.tab, `factory ${slug}`])
   sh('herdr', ['pane', 'rename', S.root_pane, `factory ${slug} · events`])
   sh('herdr', ['pane', 'run', S.root_pane, `touch ${join(RD, 'events.jsonl')} && tail -n 50 -F ${join(RD, 'events.jsonl')}`])
 }
@@ -59,7 +69,7 @@ function newPane(cwd, anchor = S.root_pane, direction = 'right') {
   return r.pane.pane_id
 }
 function reviewTab(round) {
-  const t = herdr(['tab', 'create', '--workspace', process.env.HERDR_WORKSPACE_ID, '--cwd', S.worktree, '--label', `factory ${slug} review r${round}`, '--no-focus'])
+  const t = herdr(['tab', 'create', '--workspace', runWorkspace(), '--cwd', S.worktree, '--label', `factory ${slug} review r${round}`, '--no-focus'])
   if (!t?.root_pane) throw new Error('could not create the review tab')
   return t.root_pane.pane_id
 }

@@ -15,7 +15,7 @@ node .factory/factory.mjs run --slug <slug> --from red --until fix     # a range
 node .factory/factory.mjs status --slug <slug>
 ```
 
-The driver opens a `factory <slug>` tab in the current Herdr workspace. Its left pane follows `runs/<slug>/events.jsonl`; each session gets a pane next to it (the review round gets its own tab with three panes plus the judge). A pane closes when its session finished and passed its audit; a failed one stays open for inspection. `runs/<slug>/sessions.jsonl` has every session's settings file, transcript path, audit result and `claude --resume` command.
+Each run lives in its own Herdr workspace: `--workspace <label>`, default `bug-<issue>` (or `<slug>` for a task file). The driver creates it, records its id in the run state, and reuses it on resume. It refuses a label that belongs to someone else's workspace. Every stage pane, the reviewers and the judge spawn there, and no other workspace is touched (`scripts/check-workspace.mjs` proves it). The run tab is `factory <slug>`. Its left pane follows `runs/<slug>/events.jsonl`; each session gets a pane next to it (the review round gets its own tab with three panes plus the judge). A pane closes when its session finished and passed its audit; a failed one stays open for inspection. `runs/<slug>/sessions.jsonl` has every session's settings file, transcript path, audit result and `claude --resume` command.
 
 Publish is always a dry run: `publish.sh` refuses a real publish unless `--publish` is passed and `FACTORY_ALLOW_PUBLISH=1` is set, and nothing in this round sets either.
 
