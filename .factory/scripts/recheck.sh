@@ -7,7 +7,7 @@ set -uo pipefail
 . "$(dirname "$0")/common.sh"
 slug="$1"; dry=false; [ "${2:-}" = "--dry-run" ] && dry=true
 rd="$(run_dir "$slug")"; wt="$(state "$slug" worktree)"; base="$(state "$slug" base)"; mkdir -p "$rd/recheck"
-cmd="$(first_code "$rd/test-plan.md" "Test command")"; sig="$(first_code "$rd/test-plan.md" "Red signature")"; fail=0
+cmd="$(first_code "$rd/test-plan.md" "Test command")"; sig="$(first_code "$rd/test-plan.md" "Red signature")"; pkg="$(first_code "$rd/test-plan.md" "Owning package")"; fail=0
 mapfile -t cs < <(commits "$wt" "$base"); head="$(git -C "$wt" rev-parse HEAD)"
 [ "${#cs[@]}" -eq 2 ] || { echo "RECHECK commits: ${#cs[@]}, need 2"; fail=1; }
 if $dry; then
@@ -23,7 +23,7 @@ else
     console.log(bad.length ? `RECHECK pr FAIL ${bad.join(", ")}` : `RECHECK pr OK #${p.number}: draft, open, base main, 2 commits, head ${head.slice(0, 9)}`)
     process.exit(bad.length ? 1 : 0)' "$pr" "$head" "${cs[0]}" || fail=1
 fi
-"$FACTORY/scripts/red-green.sh" "$wt" "${cs[0]}" fail "$cmd" "$rd/recheck/red.txt" "$sig" || fail=1
-"$FACTORY/scripts/red-green.sh" "$wt" "$head" pass "$cmd" "$rd/recheck/green.txt" || fail=1
+"$FACTORY/scripts/red-green.sh" "$wt" "${cs[0]}" fail "$cmd" "$rd/recheck/red.txt" "$sig" "$pkg" || fail=1
+"$FACTORY/scripts/red-green.sh" "$wt" "$head" pass "$cmd" "$rd/recheck/green.txt" "" "$pkg" || fail=1
 if [ "$fail" = 0 ]; then echo "RECHECK $slug PASS"; decide "$slug" recheck "red at ${cs[0]:0:9}, green at ${head:0:9}, fresh worktrees" "independent re-check" "recheck/" "PASS"
 else echo "RECHECK $slug FAIL"; exit 1; fi
