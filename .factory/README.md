@@ -1,87 +1,75 @@
-# Agent factory
+# Claude bug-fix factory
 
-How agents build changes in this repo. Prime Agent runs the workflow; each step is a sub-agent with its own model and a fixed list of skills.
+Local tooling on branch `tooling/claude-factory` (never pushed). It takes one GitHub issue (read only) or a task file to a local `fix/<issue>-<slug>` branch that is ready for a **draft** PR against `main`: a failing test commit, a fix commit, verify-antseed evidence, three-model review, and a PR body with the verbatim red and green output. Every judgment step is a fresh Claude Code session pinned to the AntSeed peer GesundAI, in its own Herdr pane. Every gate is a script. No model decides whether a gate passed.
+
+It replaces the codex/Prime factory imported in the first commit of this branch (codex/, machines/, the shape interview, mockups and verify-feature are gone). The Claude-only draft in `/root/.herdr/factory-draft` was the starting point for the scripts; see "What changed from the draft".
 
 ## Run it
 
-One task, one worktree, one Herdr subproject. Two commands, with you in between:
+From a Herdr pane in this worktree:
 
 ```
-.factory/scripts/factory-shape.sh <slug> "a vague idea in one sentence"   # interview -> brief.md
-.factory/scripts/factory-start.sh <slug>                                   # plan -> build -> review -> verify
+node .factory/factory.mjs run --slug <slug> --issue <n>              # or --task-file <file>
+node .factory/factory.mjs run --slug <slug> --from verify             # resume at a stage (state in runs/<slug>/)
+node .factory/factory.mjs run --slug <slug> --from red --until fix     # a range of stages
+node .factory/factory.mjs status --slug <slug>
 ```
 
-**Shape (the interview).** The task can be one vague sentence. The shaper (Claude Code, opus, `.agents/skills/explore-unknowns` adapted from dzhng/skills) first researches on its own: the code (`how`), what happens today (it runs it), prior art, what could break (`blast-radius`), and for anything visible a sandbox screenshot plus 2-3 mockups (`ui-mockup`). Then it interviews you in its pane in the task's `factory` tab. Herdr notifies you and marks the pane as waiting. It asks one question at a time, with lettered options and its recommendation, so you can answer with a letter (or `ok`). It goes through four stages: what's settled, open questions, your unstated taste, and landmines. After about five answers it offers to answer the rest for you, based on the preferences it has seen. It only does that if you say yes, and each such answer is labeled. Type `defaults`, `skip to map` or `stop` at any time. It writes `tasks/<slug>/brief.md` with acceptance criteria in your words and a decision ledger (each decision, why, and who made it). You can leave and come back; the pane waits. `factory-shape.sh --auto` skips the questions and decides with its recommendations. For small, clear tasks skip shaping: `factory-start.sh <slug> <task file>`.
+The driver opens a `factory <slug>` tab in the current Herdr workspace. Its left pane follows `runs/<slug>/events.jsonl`; each session gets a pane next to it (the review round gets its own tab with three panes plus the judge). A pane closes when its session finished and passed its audit; a failed one stays open for inspection. `runs/<slug>/sessions.jsonl` has every session's settings file, transcript path, audit result and `claude --resume` command.
 
-`factory-start` refuses to build while the interview isn't finished or has OPEN decisions (`--force` overrides).
+Publish is always a dry run: `publish.sh` refuses a real publish unless `--publish` is passed and `FACTORY_ALLOW_PUBLISH=1` is set, and nothing in this round sets either.
 
-**Your wishes all the way through.** The plan quotes every acceptance criterion from the task and brief word for word. The builder logs every decision the plan didn't settle in `tasks/<slug>/choices.md` with its confidence; `check.sh` fails without it. Review audits each choice (`ok`, `question`, `contradicts` = blocking, plus `unlogged` choices it finds in the diff). Verify checks your criteria and decisions as you wrote them, not the plan's version. `verify.md` opens with "Your wishes" (✓/✗ per wish with evidence) and "Choices the agents made for you" (least confident first), and the notification says how many wishes were met and how many choices to look at.
+## Stages
 
-Both commands use `scripts/factory-worktree.sh`: the first one creates `../factory-<slug>` on branch `factory/<slug>`, copies this worktree's uncommitted changes and `.env.local` into it, opens it as its own Herdr workspace with a `factory` tab, then installs and builds on Node 24; the second reuses it. `factory-start` then starts Prime in that tab and starts the run. Tasks in different worktrees run in parallel.
+| # | Stage | Who | pstack / repo skills (read by path) | Gate (script) | Launch command |
+| --- | --- | --- | --- | --- | --- |
+| 0 | preflight | `scripts/preflight.sh` | none | inside Herdr; claude, Node 24, Foundry, gh auth; the pstack skills exist; the sandbox stack has verify-antseed; every model in `inputs/models.json` answers a pinned ping through the audit proxy from GesundAI; the branch is not on the remote and has no PR | `scripts/preflight.sh <slug>` (run by `intake`) |
+| 1 | intake | `scripts/intake.sh` (`gh issue view`, read only) + `scripts/worktree.sh` (fresh `origin/main`, `--no-track`, install, build) + Claude opus-5.5 | sharpen; poteto-mode bug-fix playbook (reproduce); principle-test-behavior-not-implementation; repo CLAUDE.md; verify-antseed "Decide what to prove" (unit unless only a sandbox scenario reproduces it) | fix worktree unchanged (HEAD and status); `test-plan.md` starts `Status: final`, has all 11 sections, a backticked Test command and Red signature, Proof `unit` or `sandbox: <scenario>`; `NOT_REPRODUCED` pauses (a finding). One retry. | `factory.mjs run --slug S --issue N --until intake` |
+| 2 | red | Claude opus-5.5 | tdd; principle-test-behavior-not-implementation; principle-sequence-verifiable-units | `gate-red.sh`: exactly one commit, test files only, clean tree, no auto-close keyword; the Test command fails, the output contains the Red signature and no setup-error marker; output saved verbatim as `evidence/red.txt`. `NO_RED` pauses. One retry. | `--from red --until red` |
+| 3 | fix | Claude opus-5.5 | principle-fix-root-causes; poteto-mode bug-fix playbook; typescript-best-practices; principle-subtract-before-you-add | `gate-green.sh fix`: clean; exactly two commits, no merges, commit 1 test-only, commit 2 touches source; no auto-close; red at commit 1 and green at HEAD, each in a fresh throwaway worktree with its own `pnpm install` (`red-green.sh`); tripwire. One retry. | `--from fix --until fix` |
+| 4 | verify | `scripts/verify.sh` (+ merge-resolve session on scratch conflicts) then Claude opus-5.5 | verify-antseed + sandbox-test (from the sandbox stack); principle-prove-it-works; principle-explain-the-number | `verify-plan.mjs` maps the diff to the verify-antseed table (`inputs/verify-rows.json`), adds the keys/signing/spend-caps row for security-critical changes and the owning packages' test + typecheck; for sandbox rows: scratch worktree (sandbox stack + `origin/main` + the two commits), doctor first, every scenario without the fix (baseline, once per base) and with it, rebuild before each, `pnpm sandbox down`. `verify-gate.mjs`: all unit commands exit 0, doctor exit 0, each scenario exit 0 with the fix or failing identically without it (pre-existing, reported), torn down. Plus the session's `VERIFY <slug> PASS`. A failure pauses. | `--from verify --until verify` |
+| 5 | blast radius | Claude opus-5.5 | blast-radius; how | fix worktree unchanged; `blast-radius.md`; answer `BLAST <slug> DONE` or `RISK <n>` (risks go to the reviewers) | `--from blast-radius --until blast-radius` |
+| 6 | review | three Claude Code sessions in plan mode, read only, in parallel: claude-opus-5.5, claude-fable-5.1, gpt-6-astra; then a judge (opus-5.5, plan mode) | interrogate SKILL.md + references/reviewer-prompt.md, rubric.md, code-quality-review.md (reviewers); interrogate Steps 4-5 + references/lead-judgment.md (judge) | fix worktree unchanged; each reviewer answered; every session's audit on its own model; judge answers `JUDGE <slug> ACT_ON <n>`. n > 0: an act-on writer session fixes only the Act-on items, `gate-green.sh act-on-r<n>`, verify again, review again; at most 2 rounds, then pause. | `--from review --until review` |
+| 7 | no-comments | Claude opus-5.5 (spawns `pstack:comment-sicko`, pinned) | no-comments; agents/comment-sicko.md | if the tree changed: `gate-green.sh no-comments` and verify again (label `nc`) | `--from no-comments --until no-comments` |
+| 8 | publish | `scripts/publish.sh` (no model) | none | refuses unless the last green gate, verify gate, verify session and judgment (Act on 0) all hold for HEAD, the tree is clean, two commits, branch not on the remote, no PR. Writes `pr-body.md` (verbatim red and green, verify table and sandbox checks, review summary, blast-radius fact, security marker). Dry run prints the push and `gh pr create --draft --base main` commands and stops; `recheck.sh --dry-run` re-runs red at commit 1 and green at HEAD in fresh worktrees and prints the `gh pr view` checks it would make. | `--from publish --until publish` |
+| 9 | reflect | Claude opus-5.5 | reflect (+ its references); correct; show-me-your-work audit | never blocks; runs after every run, failed or paused too. Writes `reflect.md`: proposals (Accepted / Rejected / Backlog) and mistake classes, nothing applied. | `--from reflect` |
 
-**When something goes wrong, you hear about it.** `factory-start` runs the factory through `scripts/factory_run.py`, which also starts a watcher in the lead's kernel. It logs every run event to `tasks/<slug>/events.jsonl`. When the run ends, fails or pauses, it writes `tasks/<slug>/outcome.md` (PASS / FAILED / PAUSED plus the reason) and sends a Herdr notification. A run only counts as PASS when verify answered `VERIFY <slug> PASS`; "finished" with nothing built is FAILED.
+After every session: the audit check (model, pin, peer per step tag) and a tripwire (`git ls-remote` and `gh pr list` for the branch). Throughout: `runs/<slug>/decisions.tsv` (show-me-your-work, written by the driver, the scripts and every session through pstack's `log.sh`), `events.jsonl`, `sessions.jsonl`, `audit-summary.md`, `outcome.md`.
 
-**Plan can't lose its work.** The planner writes a draft `plan.md` (`Status: draft`, `TODO:` where unknown) in its first few tool calls and rewrites it after each finding. Scouts write to `tasks/<slug>/scouts/<area>-<model>.md`, and existing reports are reused instead of re-scouted. After plan, `plan-check` (`scripts/plan-check.mjs`) reads `plan.md` from disk, not the planner's reply: `Status: final`, no TODO and all required sections go to build. Otherwise plan runs once more and continues from its draft. This covers the empty replies and worker crashes that killed earlier runs.
+## Sessions
 
-When it finishes:
+`scripts/native-step.mjs` starts one session: `herdr agent start <name> --kind claude --pane <pane> -- claude --model <m> --settings <file> --session-id <uuid> --effort <e> --permission-mode <mode> --allowedTools ... --disallowedTools ... --add-dir <run dir> ...`, then `herdr agent prompt` with "Read <prompt file> and follow it". The prompt file is `prompts/_preamble.md` (the hard rules) plus the stage prompt, rendered into `runs/<slug>/prompts/`.
 
-```
-.factory/scripts/factory-finish.sh <slug>                # writes /tmp/factory-<slug>.patch with only the task's changes
-git apply /tmp/factory-<slug>.patch                       # in whichever worktree should get the change
-```
+- **Writers**: `--permission-mode acceptEdits --allowedTools Bash Edit Write Read Glob Grep TodoWrite Task` (root refuses `--dangerously-skip-permissions`).
+- **Readers** (reviewers, judge): `--permission-mode plan --allowedTools Read Grep Glob 'Bash(git diff:*)' 'Bash(git log:*)' 'Bash(git show:*)'`; Edit, Write, NotebookEdit, ExitPlanMode and Task disallowed. Their review is their final message, which the driver reads from the session transcript (`~/.claude/projects/<cwd>/<session-id>.jsonl`).
+- **Denied for everyone** (settings `permissions.deny` and `--disallowedTools`): `git push`, `gh pr create|merge|comment|review|edit|close|ready`, `gh issue *`, `gh api`, `gh repo`, `pnpm sandbox mainnet`, `git stash`, AskUserQuestion, EnterPlanMode, WebFetch, WebSearch. Deny rules match command prefixes, so `git -C <dir> push` slips past them (the smoke test showed it). The settings env therefore also sets an unusable `remote.origin.pushurl` (`GIT_CONFIG_*`) and an unusable `GH_TOKEN`: no session can push or reach GitHub at all. Only `publish.sh`, run by the driver, could.
+- **Model pin**: see `models.md`.
+- **Folder trust**: a new worktree shows Claude Code's trust dialog, whose default is "No, exit". native-step selects "Yes, I trust this folder" because the factory created that folder.
+- **Completion**: Herdr reports idle or done twice in a row and the transcript ends with a finished assistant message.
+- **Stalls**: if a session is not idle, makes no audit-log request and its transcript does not grow for `stall_min` (6) minutes, and no tool call is in flight, native-step saves the screen and presses Enter once (a notice overlay can hold a session). A second stall fails the step with a notification. Long builds or sandbox runs are tool calls in flight and do not count.
 
-Nothing is committed. Remove the worktree with `herdr worktree remove` when you are done.
+## Inputs (factory files, never committed to the repo or the sandbox branch)
 
-Manual run in the current worktree: put the task in `.factory/current-task.md`, then in Prime: `from rlm.factory import import_machine; import_machine(".factory/machines/tdd-factory/MACHINE.md"); await rlm.factory.run("tdd-factory")`.
+- `inputs/models.json`: model, effort, mode and timeout per stage; stall minutes; review rounds.
+- `inputs/verify-rows.json`: the verify-antseed table as data. `node scripts/verify-plan.mjs --audit` checks that every command still appears verbatim in the skill on the sandbox stack.
+- `inputs/security-critical-paths.json`: 16 globs and 3 content markers (keys, signing, identity, payments, spend caps, contracts), each with a reason. A match forces the keys/signing/spend-caps row and flags the PR: `[security-critical] ` title prefix, a body marker, and the `security-critical` label if the repo has one (the factory never creates labels or edits issues). `node scripts/security-check.mjs --audit` checks every glob still matches a file on `origin/main`.
+- `inputs/claude-md-invariants.md`: the proposed `## Invariants` section for the repo's CLAUDE.md, each invariant with what enforces it.
 
-Watch: every native step opens a pane next to the Prime lead, labelled `<step> <round> · <agent> · <model>` (e.g. `build 1 · codex · gpt-6.1-sol·medium`). The previous step's pane closes when the next one opens. herdr-radar marks each pane working, waiting on you (`?`) or done. `tasks/<slug>/sessions.jsonl` lists every session with its resume command (`codex resume <id>` / `claude --resume <id>`).
+## NEEDS INPUT
 
-Prerequisites: the AntSeed buyer on 8377 with GesundAI reachable, the `gesundai` provider in `~/.prime/agent/models.json` (see `models.md`), `claude` and `codex` on PATH, Node 24 under Volta.
+When a stage hits something that is the human's call, or a finding (a bug that does not reproduce, a red that does not fail, a verify failure, Act-on items left after two rounds), the driver appends it to `runs/<slug>/NEEDS-INPUT.md`, sends a Herdr notification, stops the blocked stages, and still runs reflect. Sessions may append their own items and keep working on what is not blocked.
 
-## Workflow
+## Files
 
-```
-(shape: brief + mockups, you answer)
-   │
-plan ──> build ──> review ──(pass)──> verify ──(pass)──> done: notification + report/video
-           ^          │                   │
-           └─(fail)───┴───────(fail)──────┘   at most 3 builds
-```
+`factory.mjs` (driver), `lib/common.mjs`, `scripts/` (common.sh, intake.sh, preflight.sh, worktree.sh, native-step.mjs, gate-red.sh, gate-green.sh, red-green.sh, red-reason.sh, security-check.mjs, verify-plan.mjs, verify.sh, sandbox-scratch.sh, verify-gate.mjs, publish.sh, recheck.sh, audit-summary.mjs, pin-proxy.py), `prompts/` (\_preamble plus one per session kind), `inputs/`, `models.md`. Run state: `runs/<slug>/` (gitignored).
 
-| Step | Plain meaning | Model | Must use these skills | Writes |
-|---|---|---|---|---|
-| shape (before the run, interview) | What does the user really want? How do others do it, what could it look like? | Claude Code, opus (in a Herdr pane, talks to you) | `explore-unknowns`, `how`, `blast-radius`, `ui-mockup` (UI), `unslop` | `brief.md` (acceptance criteria, decision ledger), `design/` |
-| plan (read-only) | What changes, what exactly does the user see, and how will we know it works? | Prime, opus | `how`, `blast-radius`, `principle-model-the-domain`, `principle-subtract-before-you-add` | `plan.md` with user-facing copy, gate commands, acceptance checks and visual target |
-| plan-check | Is plan.md really finished? | script (`plan-check.mjs`), sonnet low runner | none | `PLAN <slug> …` to build, or `PLAN_MISSING` back to plan (once) |
-| build | Failing test first, then the smallest fix | Codex, gpt-6.1-sol (in a Herdr pane) | `tdd`, `typescript-best-practices`, `principle-type-system-discipline`, `principle-test-behavior-not-implementation`, `principle-fix-root-causes` | code, tests, scenarios, `build.md`, `choices.md` |
-| review (fresh, no edits) | Is the code right? | `scripts/check.sh`, then Claude Code, opus (in a Herdr pane) | `principle-prove-it-works`, `unslop`, interrogate's rubric | `checks.json`, `review.json` (incl. choice verdicts), `review.md` |
-| verify (fresh, no edits) | Does it work for a user, and does it make sense? | Claude Code, opus (in a Herdr pane) | `verify-feature`, `sandbox-test`, `principle-prove-it-works`, `unslop` | `verify.json` (incl. wishes), `verify.md` (wishes and choices first), sandbox report + video |
+Environment: `FACTORY_AUDIT_URL`, `FACTORY_AUDIT_LOG`, `FACTORY_WT_ROOT` (default `/root/.herdr/worktrees/antseed`), `FACTORY_SANDBOX_REF` (default `origin/codex/sandbox-stack`), `FACTORY_NODE_BIN`, `PSTACK_DIR`, `FACTORY_ALLOW_PUBLISH`.
 
-- Review: first `scripts/check.sh <slug>` runs the checks that need no judgment, on Node 24, and writes `checks.json`: scope (only the build's files changed against the baseline), tests are real (`scripts/prove-tests-fail.sh` checks the new tests fail without the fix in a throwaway worktree, never `git stash`), and every gate command. Then one reviewer (Claude, so a different family from the GPT builder) reads the diff and tries to reproduce bugs. A concrete bug with a repro blocks; taste notes do not. Text that matches the plan's user-facing copy is not a finding.
-- Verify runs the plan's acceptance checks against the real thing: sandbox scenarios (`pnpm sandbox`, mocks only, never `--live`), the built CLI against the sandbox buyer, or desktop scenarios with screenshots and video. For UI tasks it screenshots the changed screen and has a vision model compare before, mockup and after (`scripts/describe-image.mjs`).
+## What changed from the draft
 
-Models and fallbacks: `models.md`.
-
-## Native steps
-
-`scripts/native-step.mjs` runs one step in a native harness: `--agent codex` (build) or `--agent claude` (review, verify). It fills the step's template from `prompts/<step>.md` into `tasks/<slug>/<step>.prompt.md`, splits a pane next to the Prime lead, starts the agent pinned to GesundAI with Node 24 on its shell PATH and no permission prompts, sends the prompt, waits until the agent is idle (it keeps waiting if you move the pane), records the session in `sessions.jsonl`, and prints `ANSWER <line>` from the last result line of the step's file (`build.md`, `review.md`, `verify.md`), only if the step rewrote that file. The Prime state for each native step is a thin runner: one command, then it repeats the ANSWER line. It also keeps the Mac awake while a step runs. If an agent stops to ask something, you get a Herdr notification.
-
-## Output size limit
-
-Prime keeps only about 160 characters of each step's final answer and passes that to the next step. So each step ends with one line (`PLAN <slug> <path>`, `BUILD <slug> GREEN`, `REVIEW <slug> PASS`, `VERIFY <slug> PASS`, or a `*_FAIL` form that loops back to build) and writes everything else to `.factory/tasks/<slug>/`.
-
-## Where things live
-
-| Layer | Place | Answers |
-|---|---|---|
-| Workflow | `machines/tdd-factory/MACHINE.md` | which step runs when, which model, when to loop |
-| Step role | `prompts/<step>.md` for native steps; the plan prompt in the machine | what this step does, its limits, its output |
-| Method | `.agents/skills/<name>/SKILL.md` | how to do one technique |
-| Shared rules | `CLAUDE.md` / `AGENTS.md` | rules for every session |
-| Task state | `tasks/<slug>/` (gitignored) | plan, build notes, review and verify reports, evidence |
-
-## After a run
-
-Run the `correct` skill when agents keep repeating the same mistake. It turns the mistake into a type, lint or test so it can't happen again.
-
-pstack skills are adapted from cursor/plugins (MIT, Lauren Tan). See `.agents/skills/PSTACK-LICENSE`. `explore-unknowns` is from dzhng/skills (MIT, David Zhang), license in its folder.
+- Stages follow the brief: intake (sharpen into a test plan) replaces plan; red and fix are separate sessions with separate gates instead of one build step; blast radius is its own stage; no-comments and reflect are added.
+- Review uses three models in separate sessions (the draft had three lenses on one model) and a reader permission mode; reviews come from the transcript, not from files the reviewer writes.
+- The shared audit proxy on 18377 is used instead of a per-run proxy, and its log is checked per step tag; preflight pings every model, not only opus.
+- Verify is a script first (rows from the table as data, doctor first, baseline without the fix, the rest with it) and a judging session second. The draft let a session drive the sandbox and trusted its report.
+- Red has a "stated reason": the plan's Red signature must appear in the failing output, and setup errors do not count.
+- The trust dialog, stall detection, unusable push URL and GitHub token, and the security-critical inputs are new.
