@@ -81,6 +81,9 @@ export function seed() {
     tokensPerSecondP50: [88, 62, 41, 24, 70, null, 95, 110][index]!,
     requests24h: [912, 340, 120, 55, 20, 0, 0, 210][index]!,
   }))
+  // A routing service: sells rankings, not models, so it lists none.
+  const fakeRouter: Peer = { ...peers[7]!, peerId: fakePeerId(9), displayName: 'Fake Router Iota', services: [], verified: false, verificationLinks: [], tee: false, teeScope: null, washFlagged: false, requests24h: 48 }
+  peers.push(fakeRouter)
   const peerLists: PeerList[] = [
     { id: 'pl_own', name: 'Our sellers', description: 'Sellers we run ourselves', peerIds: [fakePeerId(1), fakePeerId(3)], createdAt: now - 5 * DAY },
   ]
@@ -113,6 +116,10 @@ export function seed() {
     // The newest request still waits for its spend; one an hour or so old never got any; a few were served free.
     const costPending = index === 0 || index === 2
     const servedFree = !failed && index % 13 === 4
+    // Every 7th request names the fake router as its model; it picks the model, and request 16's ranking failed.
+    const routed = index % 7 === 2
+    const rankingFailed = index === 16
+    const pickedModel = models[(index + 2) % models.length]!
     // Every 11th request lists the models: no model, no seller, no tokens.
     if (index % 11 === 3) {
       return {
@@ -124,14 +131,19 @@ export function seed() {
     return {
       tag: `req_${String(index).padStart(5, '0')}`, startedAt, finishedAt: startedAt + 900 + (index % 9) * 120, keyId: k.id, keyLabel: k.label,
       workspaceId: k.workspaceId, memberId: k.ownerMemberId, endUser: index % 4 === 0 ? `user-${index % 7}` : null, method: 'POST',
-      path: index % 3 === 0 ? '/v1/messages' : '/v1/chat/completions', model: models[index % models.length]!, status: failed ? 502 : 200,
-      sellerPeerId: failed ? null : peer.peerId, latencyMs: failed ? null : 300 + (index % 11) * 90,
-      firstTokenMs: failed || index % 3 === 1 ? null : 250 + (index % 7) * 60, tokensPerSecond: failed || index % 3 === 1 ? null : 40 + (index % 8) * 9, spent: failed || costPending || servedFree ? null : ((input * 0.6 + output * 2) / 1e6).toFixed(6),
-      inputTokens: input, cachedInputTokens: index % 5 === 0 ? Math.floor(input / 2) : 0, outputTokens: failed ? 0 : output,
+      path: index % 3 === 0 ? '/v1/messages' : '/v1/chat/completions', model: routed ? 'fake-router' : models[index % models.length]!, status: failed || rankingFailed ? 502 : 200,
+      sellerPeerId: failed || rankingFailed ? null : peer.peerId, latencyMs: failed || rankingFailed ? null : 300 + (index % 11) * 90,
+      ...(routed ? {
+        router: { peerId: fakeRouter.peerId, service: 'fake-router', rank: rankingFailed ? null : index % 21 === 9 ? 2 : 1 },
+        ...(rankingFailed ? {} : { servedModel: pickedModel, routingSpent: costPending ? null : '0.000100' }),
+      } : {}),
+      firstTokenMs: failed || rankingFailed || index % 3 === 1 ? null : 250 + (index % 7) * 60, tokensPerSecond: failed || rankingFailed || index % 3 === 1 ? null : 40 + (index % 8) * 9,
+      spent: failed || rankingFailed || costPending || servedFree ? null : ((input * 0.6 + output * 2) / 1e6 + (routed ? 0.0001 : 0)).toFixed(6),
+      inputTokens: rankingFailed ? 0 : input, cachedInputTokens: !rankingFailed && index % 5 === 0 ? Math.floor(input / 2) : 0, outputTokens: failed || rankingFailed ? 0 : output,
       ...(costPending ? { costPending: true } : {}),
       ...(servedFree ? { servedFree: true } : {}),
-      errorCode: failed ? 'seller_unavailable' : null,
-      errorMessage: failed ? 'No seller accepted the request in time (fake seller timed out).' : null,
+      errorCode: failed ? 'seller_unavailable' : rankingFailed ? 'routing_error' : null,
+      errorMessage: failed ? 'No seller accepted the request in time (fake seller timed out).' : rankingFailed ? 'Selected router returned no eligible recommendation' : null,
       requestBody: index % 6 === 0 ? JSON.stringify({ model: models[index % models.length], messages: [{ role: 'user', content: 'Summarise this fake ticket.' }] }) : null,
       responseBody: index % 6 === 0 && !failed ? JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'A short fake summary.' } }] }) : null,
     }

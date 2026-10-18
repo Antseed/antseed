@@ -282,6 +282,8 @@ export interface UsageFilter {
   workspace?: string
   key?: string
   member?: string
+  /** Only requests this routing service ranked (its peer id). */
+  router?: string
   from?: number
   to?: number
 }

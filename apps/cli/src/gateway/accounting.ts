@@ -188,6 +188,7 @@ export class GatewayAccounting {
         memberId: request.memberId,
         model: request.model,
         endUser: request.endUser,
+        routingFee: event.purpose === 'routing',
       })
       if (!inserted) continue
       recorded += 1

@@ -130,6 +130,11 @@ describe('costStatus', () => {
     expect(costStatus({ ...base, spent: null, servedFree: true }, NOW)).toBe('free')
     expect(costStatus({ ...base, spent: null, servedFree: true }, NOW + COST_PENDING_MS * 2)).toBe('free')
   })
+  it('stays pending while a routed request has only its router\'s fee', () => {
+    expect(costStatus({ ...base, spent: '0.000100', costPending: true }, NOW)).toBe('pending')
+    expect(costStatus({ ...base, spent: '0.000100', costPending: true }, NOW - 1000 + COST_PENDING_MS)).toBe('not-recorded')
+    expect(costStatus({ ...base, spent: '0.020100' }, NOW)).toBe('spent')
+  })
   it('has nothing to show for a failed request', () => {
     expect(costStatus({ ...base, spent: null }, NOW)).toBeNull()
   })

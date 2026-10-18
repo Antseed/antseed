@@ -218,10 +218,11 @@ export function costStatus(
   entry: Pick<RequestLogEntry, 'spent' | 'servedFree' | 'costPending' | 'startedAt' | 'finishedAt' | 'video'>,
   now: number,
 ): 'spent' | 'free' | 'pending' | 'not-recorded' | 'video-charged' | 'on-delivery' | 'not-charged' | null {
-  if (entry.spent !== null) return 'spent'
+  // A routed request can have its router's fee while the seller's spend is still to come.
+  if (entry.spent !== null && !entry.costPending) return 'spent'
   if (entry.video?.action === 'create') return entry.video.charged !== null ? 'video-charged' : 'on-delivery'
   if (entry.video?.action === 'poll') return 'not-charged'
   if (entry.servedFree) return 'free'
-  if (!entry.costPending) return null
+  if (!entry.costPending) return entry.spent !== null ? 'spent' : null
   return now - (entry.finishedAt ?? entry.startedAt) < COST_PENDING_MS ? 'pending' : 'not-recorded'
 }

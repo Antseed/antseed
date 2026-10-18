@@ -10,6 +10,7 @@ import {
   decodeCursor,
   listRequestPage,
   parseGroupBy,
+  parseRouterFilter,
   parseSearch,
   parseStatusFilter,
   parseTime,
@@ -23,7 +24,7 @@ import { parsePositiveInteger } from '../parse-positive-integer.js'
 import { addBundleExportOptions, runBundleExport, type BundleExportOptions } from './migrate.js'
 import { formatTime, printJson, requireKey, requireMember, requireWorkspace, withGateway } from './shared.js'
 
-interface FilterOptions { workspace?: string; key?: string; member?: string; model?: string; from?: string; to?: string }
+interface FilterOptions { workspace?: string; key?: string; member?: string; model?: string; router?: string; from?: string; to?: string }
 interface LogOptions extends FilterOptions { status?: string; search?: string }
 
 function addFilterOptions(cmd: Command): Command {
@@ -32,6 +33,7 @@ function addFilterOptions(cmd: Command): Command {
     .option('--key <id>', 'only this API key')
     .option('--member <member>', 'only keys owned by this member (id or email)')
     .option('--model <model>', 'only this model')
+    .option('--router <peerId>', 'only requests this routing service ranked')
     .option('--from <time>', 'from this time (ISO date or epoch ms)')
     .option('--to <time>', 'up to this time (ISO date or epoch ms)')
 }
@@ -39,7 +41,7 @@ function addFilterOptions(cmd: Command): Command {
 function addLogFilterOptions(cmd: Command): Command {
   return addFilterOptions(cmd)
     .option('--status <status>', 'success, error, or an HTTP status code')
-    .option('--search <text>', 'substring of the model, key, end user, tag, seller, path or error')
+    .option('--search <text>', 'substring of the model, key, end user, tag, seller, router, path or error')
 }
 
 /** The operator sees every key: no `keyIds` scoping. */
@@ -50,6 +52,7 @@ function usageFilter(store: GatewayStore, options: FilterOptions): UsageFilter {
     keyId: options.key ? requireKey(store, options.key).id : null,
     memberId: options.member ? requireMember(store, options.member).id : null,
     model: options.model?.trim() || null,
+    routerPeerId: parseRouterFilter(options.router),
   }
 }
 
@@ -72,13 +75,19 @@ function statusCell(entry: RequestLogEntry): string {
   return entry.status < 400 ? chalk.green(String(entry.status)) : chalk.red(`${entry.status}${entry.errorCode ? ` ${entry.errorCode}` : ''}`)
 }
 
+/** The model asked for, and the one a router picked for it (`levanto-router → opus-5.5`). */
+function modelCell(entry: RequestLogEntry): string {
+  const model = entry.model ?? '-'
+  return entry.servedModel ? `${model} → ${entry.servedModel}` : model
+}
+
 function logLine(entry: RequestLogEntry): string {
   return [
     formatTime(entry.startedAt),
     entry.tag,
     statusCell(entry),
     entry.keyLabel ?? entry.keyId ?? '-',
-    entry.model ?? '-',
+    modelCell(entry),
     entry.sellerPeerId ? entry.sellerPeerId.slice(0, 10) : '-',
     entry.latencyMs === null ? '-' : `${entry.latencyMs}ms`,
     `${entry.inputTokens ?? 0}/${entry.outputTokens ?? 0} tok`,
@@ -120,7 +129,7 @@ export function registerGatewayActivityCommands(gateway: Command): void {
     gateway.command('usage')
       .description('Spend, requests and tokens over a period (default: the last 30 days), optionally grouped'),
   )
-    .option('--group-by <field>', 'day, model, key, member, peer, workspace or user')
+    .option('--group-by <field>', 'day, model, key, member, peer, router, workspace or user')
     .option('--json', 'print machine-readable JSON', false)
     .action((options: FilterOptions & { groupBy?: string; json: boolean }, cmd: Command) => withGateway(cmd, ({ store }) => {
       const report = usageReport(store, usageFilter(store, options), {
@@ -200,7 +209,11 @@ export function registerGatewayActivityCommands(gateway: Command): void {
       console.log(`${chalk.bold(detail.tag)}  ${statusCell(detail)}  ${detail.method} ${detail.path}`)
       console.log(`Started: ${new Date(detail.startedAt).toISOString()}${detail.finishedAt ? `, finished after ${detail.finishedAt - detail.startedAt}ms` : ' (in flight)'}`)
       console.log(`Key: ${detail.keyLabel ?? '-'} (${detail.keyId ?? '-'}), workspace ${workspace}, member ${detail.memberId ?? '-'}, end user ${detail.endUser ?? '-'}`)
-      console.log(`Model: ${detail.model ?? '-'}  Seller: ${detail.sellerPeerId ?? '-'}  Latency: ${detail.latencyMs ?? '-'}ms`)
+      console.log(`Model: ${modelCell(detail)}  Seller: ${detail.sellerPeerId ?? '-'}  Latency: ${detail.latencyMs ?? '-'}ms`)
+      if (detail.router) {
+        const pick = detail.router.rank === null ? 'ranking failed' : `served by pick #${detail.router.rank}`
+        console.log(`Router: ${detail.router.peerId}${detail.router.service ? `@${detail.router.service}` : ''} (${pick})  Routing fee: ${money(detail.routingSpent ?? null)}`)
+      }
       console.log(`Tokens: ${detail.inputTokens ?? 0} in (${detail.cachedInputTokens ?? 0} cached), ${detail.outputTokens ?? 0} out  Spent: ${money(detail.spent)}`)
       if (detail.errorCode || detail.errorMessage) console.log(chalk.red(`Error: ${detail.errorCode ?? ''} ${detail.errorMessage ?? ''}`.trim()))
       if (detail.requestBody !== null) console.log(`${chalk.bold('Request body:')}\n${detail.requestBody}`)

@@ -103,6 +103,9 @@ import {
 import {
   computeResponseTelemetry,
   attachAntseedTelemetryHeaders,
+  ROUTER_PEER_ID_HEADER,
+  ROUTER_RANK_HEADER,
+  ROUTER_SERVICE_HEADER,
   attachStreamingAntseedHeaders,
 } from './telemetry.js'
 import { DEFAULT_BUYER_PEER_REFRESH_INTERVAL_MS } from '../config/defaults.js'
@@ -3849,6 +3852,11 @@ export class BuyerProxy {
     const { request, requiredParameters, requestPolicy, signal, routingConversationKey, spendAttributionTag } = context
     const conversationId = this._trackRouterConversation(context)
     if (conversationId && selection.service) this._conversations.setLastRouter(conversationId, `${selection.service.peerId}@${selection.service.serviceId}`)
+    // Merged into whatever answer this request gets, so a gateway can tell routed requests (and failed rankings) apart.
+    if (selection.service) {
+      res.setHeader(ROUTER_PEER_ID_HEADER, selection.service.peerId.toLowerCase())
+      res.setHeader(ROUTER_SERVICE_HEADER, selection.service.serviceId)
+    }
     let recommendations: RouteRecommendation[]
     try {
       const client = this._modelRoutingClient
@@ -3865,7 +3873,7 @@ export class BuyerProxy {
         ...(request.headers[BUYER_IDENTITY_HEADER] ? { buyerIdentity: request.headers[BUYER_IDENTITY_HEADER] } : {}),
         signal: AbortSignal.any([signal, AbortSignal.timeout(120_000)]),
         onRoutingRequest: requestId => {
-          if (spendAttributionTag) this._spendAttribution.track(requestId, spendAttributionTag)
+          if (spendAttributionTag) this._spendAttribution.track(requestId, spendAttributionTag, 'routing')
           if (conversationId) this._trackRequestConversation(requestId, conversationId, undefined, 'routing')
         },
       })
@@ -3887,9 +3895,10 @@ export class BuyerProxy {
     }
 
     let lastFailure: DispatchFailure | null = null
-    for (const recommendation of recommendations) {
+    for (const [index, recommendation] of recommendations.entries()) {
       // Never switch sellers once the user has disconnected or a response has started.
       if (signal.aborted || res.headersSent || res.writableEnded) return
+      res.setHeader(ROUTER_RANK_HEADER, String(index + 1))
       // Each attempt has its own billing ID, but all attempts count as one chat turn.
       const attempt = requestForRecommendation(request, recommendation, randomUUID())
       if (spendAttributionTag) this._spendAttribution.track(attempt.requestId, spendAttributionTag)

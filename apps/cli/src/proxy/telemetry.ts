@@ -320,6 +320,15 @@ export function computeResponseTelemetry(
   }
 }
 
+/**
+ * Response headers of a request a routing service ranked: the router's peer
+ * and service, and which of its recommendations (1 = its first pick) served
+ * the request. Router-path failures carry the router's peer and service too.
+ */
+export const ROUTER_PEER_ID_HEADER = 'x-antseed-router-peer-id'
+export const ROUTER_SERVICE_HEADER = 'x-antseed-router-service'
+export const ROUTER_RANK_HEADER = 'x-antseed-router-rank'
+
 export function attachAntseedTelemetryHeaders(
   upstreamHeaders: Record<string, string>,
   selectedPeer: PeerInfo,
@@ -364,6 +373,8 @@ export function attachStreamingAntseedHeaders(
   headers['x-antseed-request-id'] = request.requestId
   if (firstTokenMs !== undefined) headers['x-antseed-first-token-ms'] = String(Math.max(0, Math.floor(firstTokenMs)))
   setPeerIdentityHeaders(headers, selectedPeer)
-  setPricingHeaders(headers, resolvePeerPricing(selectedPeer, pickProviderForPeer(selectedPeer, request), extractRequestedService(request)))
+  const service = extractRequestedService(request)
+  if (service) headers['x-antseed-service'] = service
+  setPricingHeaders(headers, resolvePeerPricing(selectedPeer, pickProviderForPeer(selectedPeer, request), service))
   return headers
 }

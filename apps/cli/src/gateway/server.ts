@@ -4,6 +4,7 @@ import type { AddressInfo } from 'node:net'
 import { nativeVideoAcceptance, nativeVideoRoute, type NativeVideoRoute } from '@antseed/api-adapter'
 import { DEFAULT_BUYER_IDENTITY } from '@antseed/node'
 import { SPEND_ATTRIBUTION_HEADER } from '../proxy/spend-attribution.js'
+import { ROUTER_PEER_ID_HEADER, ROUTER_RANK_HEADER, ROUTER_SERVICE_HEADER } from '../proxy/telemetry.js'
 import { BUYER_IDENTITY_HEADER } from '../proxy/request-utils.js'
 import { GATEWAY_CONTROL_HEADER, ROUTING_POLICY_HEADER, encodePolicyHeader, meaningfulPolicy, policyAllowsModel, type RoutingPolicy } from '../routing-policy/policy.js'
 import { effectiveKeyLimits, newRequestTag, type GatewayAccounting, type KeyContext } from './accounting.js'
@@ -32,7 +33,7 @@ import {
   type X402Asset,
   type X402Facilitator,
 } from './x402.js'
-import type { ApiKeyRecord, GatewayStore, PresetRecord, RequestError } from './store.js'
+import type { ApiKeyRecord, GatewayStore, PresetRecord, RequestError, RequestRouter } from './store.js'
 
 /**
  * The gateway's own components (the console chat agent) call `/v1` as a key
@@ -494,6 +495,8 @@ export class GatewayServer {
       let errorChunks: Buffer[] = []
       let gatewayError: RequestError | null = null
       let sellerPeerId: string | null = null
+      let servedModel: string | null = null
+      let router: RequestRouter | null = null
       let reportedLatency: number | null = null
       // Streamed answers: the buyer's time to the seller's first frame, and when that frame reached the gateway.
       let firstTokenMs: number | null = null
@@ -523,7 +526,7 @@ export class GatewayServer {
           const videoJobId = videoCreateChunks && request.video
             ? nativeVideoAcceptance(request.video.protocol, { requestId: tag, statusCode: status, headers: {}, body: Buffer.concat(videoCreateChunks) })
             : null
-          store.recordRequestOutcome(tag, { sellerPeerId, latencyMs, firstTokenMs, tokensPerSecond, endUser, servedFree, videoJobId, videoDelivered })
+          store.recordRequestOutcome(tag, { sellerPeerId, latencyMs, firstTokenMs, tokensPerSecond, endUser, servedFree, videoJobId, videoDelivered, router, servedModel })
           if (usage) store.recordResponseUsage(tag, usage)
           if (observability.logContent) store.recordRequestContent(tag, { requestBody: requestContent, responseBody: responseContent })
         } catch (error) {
@@ -566,6 +569,8 @@ export class GatewayServer {
           const status = upstreamRes.statusCode ?? 502
           const buyerRequestId = firstHeader(upstreamRes.headers['x-antseed-request-id']) || null
           sellerPeerId = firstHeader(upstreamRes.headers['x-antseed-peer-id']).slice(0, 200) || null
+          servedModel = firstHeader(upstreamRes.headers['x-antseed-service']).slice(0, 200) || null
+          router = routerHeaders(upstreamRes.headers)
           reportedLatency = latencyHeader(firstHeader(upstreamRes.headers['x-antseed-latency-ms']))
           firstTokenMs = status < 400 ? latencyHeader(firstHeader(upstreamRes.headers['x-antseed-first-token-ms'])) : null
           respondedAt = Date.now()
@@ -1003,6 +1008,18 @@ const MIN_SPEED_OUTPUT_TOKENS = 20
 
 function outputTokensPerSecond(outputTokens: number, streamMs: number): number | null {
   return outputTokens >= MIN_SPEED_OUTPUT_TOKENS && streamMs > 0 ? Math.round((outputTokens / (streamMs / 1000)) * 10) / 10 : null
+}
+
+/** The routing service that ranked a request, from the buyer's router headers; null when none did. */
+function routerHeaders(headers: http.IncomingHttpHeaders): RequestRouter | null {
+  const peerId = firstHeader(headers[ROUTER_PEER_ID_HEADER]).trim().toLowerCase()
+  if (!/^[0-9a-f]{40}$/.test(peerId)) return null
+  const rank = Number(firstHeader(headers[ROUTER_RANK_HEADER]))
+  return {
+    peerId,
+    service: firstHeader(headers[ROUTER_SERVICE_HEADER]).slice(0, 200) || null,
+    rank: Number.isSafeInteger(rank) && rank > 0 ? rank : null,
+  }
 }
 
 function latencyHeader(value: string): number | null {
