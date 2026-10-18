@@ -1,6 +1,6 @@
 {
   "name": "@antseed/provider-venice-video",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Venice video API relay for AntSeed",
   "type": "module",
   "files": [
