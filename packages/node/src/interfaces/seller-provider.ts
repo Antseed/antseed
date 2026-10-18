@@ -92,9 +92,11 @@ export interface Provider {
    * Optional free check of the seller's upstream account: is the key valid
    * and the account funded? Called once per sweep, separately from the model
    * check. `unavailable` counts as a failed check for every image and video
-   * service of this provider.
+   * service of this provider. `null` means the provider cannot run this check
+   * (for example its key lacks the permission), so the model check alone
+   * decides; `unknown` is for a check that ran but could not tell.
    */
-  checkUpstreamAccount?(): Promise<UpstreamAccountStatus>;
+  checkUpstreamAccount?(): Promise<UpstreamAccountStatus | null>;
 }
 
 /**

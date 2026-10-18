@@ -184,6 +184,18 @@ it('reports a job as FAILED without a reason when fal gives none', async () => {
   expect(parse(response.body)).toEqual({ status: 'FAILED' });
 });
 
+it('downloads an existing job after health checks unadvertise its model, but refuses new jobs', async () => {
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce(Response.json({ status: 'IN_PROGRESS' }));
+  vi.stubGlobal('fetch', fetchMock);
+  const provider = plugin.createProvider(config) as Provider;
+  provider.services.splice(0);
+  expect(parse((await stream(provider)).body)).toEqual({ status: 'IN_PROGRESS' });
+  const create = await provider.handleRequest(request('/fal/v1/video/queue', { model: MODEL, service: MODEL, prompt: 'x' }, { 'x-antseed-buyer-peer-id': 'buyer' }));
+  expect(create.statusCode).toBe(400);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});
+
 it('streams the finished video from the fal media URL without the seller key', async () => {
   const bytes = new Uint8Array(3 * 1024 * 1024 + 17).fill(7);
   const fetchMock = vi.fn()
@@ -324,7 +336,7 @@ describe('checkServiceHealth and checkUpstreamAccount', () => {
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledWith(`[fal-video] ${FAL_BALANCE_CHECK_OFF}`);
     for (let i = 0; i < 2; i++) {
-      expect(await provider.checkUpstreamAccount!()).toMatchObject({ status: 'unknown', reason: expect.stringContaining('billing:usage:read') });
+      expect(await provider.checkUpstreamAccount!()).toBeNull();
     }
     expect(fetchMock.mock.calls.filter(([url]) => url.includes('/account/billing'))).toHaveLength(1);
     expect(warn).toHaveBeenCalledTimes(1);

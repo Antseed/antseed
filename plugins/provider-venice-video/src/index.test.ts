@@ -150,6 +150,16 @@ it('rebuilds retrieve requests and returns Venice JSON status', async () => {
   expect(JSON.parse(Buffer.from(init.body).toString())).toEqual({ model: 'wan-2.5', queue_id: 'queue-1', delete_media_on_completion: true });
 });
 
+it('downloads an existing job after health checks unadvertise its model, but refuses new jobs', async () => {
+  const fetchMock = vi.fn().mockResolvedValue(Response.json({ status: 'PROCESSING' }));
+  vi.stubGlobal('fetch', fetchMock);
+  const provider = plugin.createProvider(config) as Provider;
+  provider.services.splice(0);
+  expect(JSON.parse(Buffer.from((await stream(provider)).body).toString())).toEqual({ status: 'PROCESSING' });
+  expect((await provider.handleRequest(request('/api/v1/video/queue', { model: 'wan-2.5', prompt: 'cat' }))).statusCode).toBe(400);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});
+
 it('streams finished MP4s in bounded chunks', async () => {
   const bytes = new Uint8Array(3 * 1024 * 1024 + 17).fill(7);
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(bytes, { headers: { 'content-type': 'video/mp4', 'content-length': String(bytes.length) } })));

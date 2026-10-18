@@ -398,9 +398,9 @@ describe('ModelHealthChecker free media health checks', () => {
     if (answer instanceof Error) throw answer;
     return answer;
   };
-  function makeCheckedProvider(answers: Array<Results | Error>, accounts?: UpstreamAccountStatus[]) {
+  function makeCheckedProvider(answers: Array<Results | Error>, accounts?: Array<UpstreamAccountStatus | null>) {
     const checkServiceHealth = vi.fn(async (_services: string[]): Promise<Results> => next(answers));
-    const checkUpstreamAccount = accounts ? vi.fn(async (): Promise<UpstreamAccountStatus> => next(accounts)) : undefined;
+    const checkUpstreamAccount = accounts ? vi.fn(async (): Promise<UpstreamAccountStatus | null> => next(accounts)) : undefined;
     const handleRequest = vi.fn(async (req: SerializedHttpRequest) => jsonResponse(req.requestId, 200));
     const provider = makeProvider({
       name: 'venice-video',
@@ -462,6 +462,16 @@ describe('ModelHealthChecker free media health checks', () => {
     for (let i = 0; i < 3; i++) await checker.runSweep();
     expect(provider.services).toEqual(['wan-2.5', 'kling-2']);
     expect(checker.getSnapshot().every((s) => s.consecutiveFailures === 0)).toBe(true);
+  });
+
+  it('lets the model check alone hide and restore a model when the account check cannot run', async () => {
+    const gone = both({ status: 'unavailable', reason: 'fal no longer offers this endpoint' }, { status: 'available' });
+    const { provider } = makeCheckedProvider([gone, available], [null]);
+    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1 });
+    await checker.runSweep();
+    expect(provider.services).toEqual(['kling-2']);
+    await checker.runSweep();
+    expect([...provider.services].sort()).toEqual(['kling-2', 'wan-2.5']);
   });
 
   it('uses the account check alone when the provider has no model check', async () => {

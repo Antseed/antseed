@@ -901,6 +901,15 @@ describe('SellerRequestHandler payment pricing selection', () => {
     expect(handler.matchProvider(request)).toBe(recorded);
   });
 
+  it('still routes downloads of existing video jobs after health checks unadvertise the service', () => {
+    const provider = makeProvider(0, 0, { name: 'venice-video', services: [], serviceApiProtocols: { 'video-model': ['venice-video'] } });
+    const handler = makeSellerRequestHandler({ providers: [provider], sellerPaymentManager: null, sessionTracker: null, channelsClient: null, announcer: null, emit: () => false });
+    const request = (path: string, body: { model: string }): SerializedHttpRequest => ({ requestId: 'video', method: 'POST', path, headers: { 'x-antseed-service': body.model }, body: Buffer.from(JSON.stringify(body)) });
+    expect(handler.matchProvider(request('/api/v1/video/retrieve', { model: 'video-model', queue_id: 'job' }))).toBe(provider);
+    expect(handler.matchProvider(request('/api/v1/video/queue', { model: 'video-model', prompt: 'x' }))).toBeUndefined();
+    expect(handler.matchProvider(request('/api/v1/video/retrieve', { model: 'other-model', queue_id: 'job' }))).toBeUndefined();
+  });
+
   it('does not touch payment state for free responses even when a paid session exists', async () => {
     const provider = makeProvider(0, 0, { name: 'free-tier', services: ['local-test'] });
     provider.handleRequest = vi.fn(async (req) => ({

@@ -248,10 +248,14 @@ const plugin: AntseedProviderPlugin = {
       },
     });
 
+    // Health checks remove services from `services`; downloads of jobs that
+    // were already created still use the configured list.
+    const configuredServices = new Set(services);
     const route = (request: SerializedHttpRequest) => {
       const videoRoute = nativeVideoRoute(request);
       const service = requestService(request);
-      return { videoRoute, service: service && services.includes(service) ? service : undefined };
+      const known = videoRoute?.action === 'retrieve' ? configuredServices.has(service ?? '') : services.includes(service ?? '');
+      return { videoRoute, service: service && known ? service : undefined };
     };
 
     // Announces the queue fields each model takes, so buyers send only those.
