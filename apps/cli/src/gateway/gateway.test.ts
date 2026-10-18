@@ -1026,6 +1026,38 @@ test('a charge on a video job lowers what the job holds by that much, whatever r
   }
 })
 
+test('an opening fee charged on a video create is never held twice, whether it arrives before or after the job is accepted', () => {
+  for (const feeFirst of [true, false]) {
+    const { store, cleanup } = tempDataDir()
+    try {
+      const { key } = store.createKey({ label: 'Video', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: 5_000_000, monthly: null, total: null }, expiresAt: null })
+      const accounting = new GatewayAccounting(store, { holdUsdc: 100_000 })
+      const job = videoJobKey('venice-video', 'job-1')
+      const create = accounting.admit(key, undefined, { videoCreate: true })
+      assert.ok(create.ok)
+      store.startRequest({ tag: create.tag, keyId: key.id, buyerIdentity: DEFAULT_BUYER_IDENTITY, method: 'POST', path: '/api/v1/video/queue', model: null, startedAt: 0, video: { action: 'create', jobId: null } })
+      // The one-off channel's $0.30 opening fee counts toward the $4.20 video.
+      const fee = { seq: 1, tag: create.tag, requestId: 'r', buyerIdentity: DEFAULT_BUYER_IDENTITY, sellerPeerId: 's', amountUsdc: '300000', inputTokens: '0', cachedInputTokens: '0', outputTokens: '0', outputImages: '0', at: Date.now() }
+      if (feeFirst) accounting.ingest('boot', [fee])
+      store.recordRequestOutcome(create.tag, { sellerPeerId: 's', latencyMs: 1, firstTokenMs: null, tokensPerSecond: null, endUser: null, servedFree: false, videoJobId: 'job-1', videoDelivered: false })
+      accounting.commitVideo(create.tag, job, 4_200_000)
+      accounting.release(create.tag)
+      if (!feeFirst) accounting.ingest('boot', [fee])
+      assert.equal(accounting.heldUsdc(key.id), 3_900_000, 'only what is not spent yet is held')
+      assert.equal(store.periodSpend(key.id).daily, 300_000)
+      // The delivery charges the rest: nothing stays held.
+      store.startRequest({ tag: 'delivery', keyId: key.id, buyerIdentity: DEFAULT_BUYER_IDENTITY, method: 'POST', path: '/api/v1/video/retrieve', model: null, startedAt: 0, video: { action: 'poll', jobId: 'job-1' } })
+      store.recordRequestOutcome('delivery', { videoDelivered: true })
+      accounting.ingest('boot', [{ ...fee, seq: 2, tag: 'delivery', amountUsdc: '3900000' }])
+      assert.equal(accounting.heldUsdc(key.id), 0)
+      assert.equal(store.periodSpend(key.id).daily, 4_200_000)
+      accounting.dispose()
+    } finally {
+      cleanup()
+    }
+  }
+})
+
 test('a job that holds its price can always be polled and downloaded, even after other spend fills the cap', () => {
   const { store, cleanup } = tempDataDir()
   try {

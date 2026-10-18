@@ -115,7 +115,7 @@ interface Harness {
   providerCreates: SerializedHttpRequest[];
   sentAuths: SpendingAuthPayload[];
   releaseTopUp(): void;
-  send(request: SerializedHttpRequest): ReturnType<BuyerRequestHandler['sendRequest']>;
+  send(request: SerializedHttpRequest, stream?: { onResponseStart(): void; onResponseChunk(): void }): ReturnType<BuyerRequestHandler['sendRequest']>;
   videoRequest(requestId: string, duration?: string): SerializedHttpRequest;
   retrieveRequest(requestId: string, queueId: string): SerializedHttpRequest;
   chatRequest(requestId: string): SerializedHttpRequest;
@@ -382,7 +382,7 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
       reserve, topUp, close, providerCreates, sentAuths,
       disconnect: () => seller.onBuyerDisconnect(buyerIdentity.peerId),
       releaseTopUp: () => { expect(releaseTopUp).not.toBeNull(); releaseTopUp!(); },
-      send: (request) => buyerHandler.sendRequest(peer, request, request.path.endsWith('/video/retrieve') ? { onResponseStart() {}, onResponseChunk() {} } : undefined),
+      send: (request, stream) => buyerHandler.sendRequest(peer, request, stream ?? (request.path.endsWith('/video/retrieve') ? { onResponseStart() {}, onResponseChunk() {} } : undefined)),
       videoRequest,
       retrieveRequest,
       chatRequest,
@@ -479,6 +479,34 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     // The chat channel is still open and still at its own spend.
     expect(h.chain.get(h.sessionChannelId())).toMatchObject({ settled: 0n, status: 1 });
     expect(h.buyer.getCumulativeAmount(h.peer.peerId)).toBe(CHAT_DELIVERED);
+  });
+
+  it('records a delivery whose request billing other requests evicted while it streamed', async () => {
+    const h = setup();
+    await h.send(h.videoRequest('video-1'));
+    await h.settle();
+    const { channelId } = onlyOneOff(h);
+
+    const evict = () => { for (let i = 0; i < 600; i += 1) h.buyer.trackRequestBilling(`other-${i}`, { context: { service: 'chat' } } as never); };
+    const delivered = await h.send(h.retrieveRequest('retrieve-1', 'job-1'), { onResponseStart: evict, onResponseChunk() {} });
+    expect(delivered.statusCode).toBe(200);
+    expect(delivered.headers['x-antseed-video-delivered']).toBe('1');
+    await h.settle();
+
+    expect(h.close.mock.calls.find((call) => call[1] === channelId)?.[2]).toBe(VIDEO_PRICE);
+    // Delivered once and never again: the job is no longer chargeable.
+    expect(h.buyer.trackVideoRetrieve(h.peer.peerId, 'venice-video', 'job-1', 'retrieve-2')).toBe(false);
+  });
+
+  it('does not mark a download delivered when its job is no longer tracked', async () => {
+    const h = setup();
+    await h.send(h.videoRequest('video-1'));
+    await h.settle();
+
+    // Another path ended the job while its file streamed: the stream is not a delivery the job can be charged for.
+    const forget = () => { (h.buyer as unknown as { _videoJobs: Map<string, unknown> })._videoJobs.clear(); };
+    const response = await h.send(h.retrieveRequest('retrieve-1', 'job-1'), { onResponseStart: forget, onResponseChunk() {} });
+    expect(response.headers['x-antseed-video-delivered']).toBeUndefined();
   });
 
   it('still charges the video on delivery after the chat session is cleaned up', async () => {

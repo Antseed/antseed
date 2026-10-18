@@ -212,6 +212,10 @@ export class BuyerRequestHandler {
     const trackedVideoRetrieve = Boolean(
       videoRoute && videoJobId && this._deps.negotiator?.bpm?.trackVideoRetrieve(peer.peerId, videoRoute.protocol, videoJobId, req.requestId),
     );
+    // Read now: the job's billing may leave the request cache while a long download streams.
+    const videoDuration = trackedVideoRetrieve && videoRoute && videoJobId
+      ? this._deps.negotiator?.bpm?.videoJobDuration(peer.peerId, videoRoute.protocol, videoJobId)
+      : undefined;
 
     let startTime = Date.now();
 
@@ -467,7 +471,7 @@ export class BuyerRequestHandler {
       if (!isFreeService) {
         negotiator.estimateCostFromResponse(peer, retriedResponse, requestedService, req.requestId);
       }
-      const retriedDelivered = this._recordVideoDelivery(peer, req, retriedResponse, trackedVideoRetrieve, videoRoute, videoJobId);
+      const retriedDelivered = this._recordVideoDelivery(peer, retriedResponse, trackedVideoRetrieve, videoDuration, videoRoute, videoJobId, req.requestId);
       this._recordResponseAuth(peer, req, retriedResponse, requestedService, verificationMux);
       return withVideoDelivered(adaptPeerResponse(retriedResponse), retriedDelivered);
     }
@@ -475,33 +479,31 @@ export class BuyerRequestHandler {
     if (negotiator && !isFreeService) {
       negotiator.estimateCostFromResponse(peer, response, requestedService, req.requestId);
     }
-    const videoDelivered = this._recordVideoDelivery(peer, req, response, trackedVideoRetrieve, videoRoute, videoJobId);
+    const videoDelivered = this._recordVideoDelivery(peer, response, trackedVideoRetrieve, videoDuration, videoRoute, videoJobId, req.requestId);
     this._recordResponseAuth(peer, req, response, requestedService, verificationMux);
     return withVideoDelivered(adaptPeerResponse(response), videoDelivered);
   }
 
   /**
    * Whether a retrieve's answer is the finished video (readable, close enough
-   * to the requested duration); for a tracked job, records the delivery, which
-   * lets the seller's charge for it be signed.
+   * to the requested duration). For a tracked job it is only once the delivery
+   * is recorded, which ends the job (it is charged once, and never again): a
+   * delivery that could not be recorded is not one, so the job is not taken
+   * as delivered while it can still be charged.
    */
   private _recordVideoDelivery(
     peer: BuyerPeerView,
-    req: SerializedHttpRequest,
     response: SerializedHttpResponse,
     tracked: boolean,
+    duration: number | undefined,
     videoRoute: ReturnType<typeof nativeVideoRoute>,
     videoJobId: string | undefined,
+    requestId: string,
   ): boolean {
     if (videoRoute?.action !== 'retrieve' || !videoJobId) return false;
-    if (!nativeVideoDelivered(response, this._requestedVideoDuration(req.requestId))) return false;
-    if (tracked) this._deps.negotiator?.bpm?.recordVideoDelivered(peer.peerId, videoRoute.protocol, videoJobId, req.requestId);
-    return true;
-  }
-
-  private _requestedVideoDuration(requestId: string): number | undefined {
-    const facts = this._deps.negotiator?.bpm?.getRequestBilling(requestId)?.requestFacts;
-    return facts?.kind === 'video' ? facts.video.duration : undefined;
+    if (!nativeVideoDelivered(response, duration)) return false;
+    if (!tracked) return true;
+    return this._deps.negotiator?.bpm?.recordVideoDelivered(peer.peerId, videoRoute.protocol, videoJobId, requestId) === true;
   }
 
   private _prepareDirectFreeUsageOpen(peer: BuyerPeerView, conn: BuyerConnection): void {

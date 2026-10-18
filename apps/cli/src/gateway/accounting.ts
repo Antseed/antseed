@@ -183,15 +183,26 @@ export class GatewayAccounting {
    * charge for its delivery arrives, the buyer retires the job, or the record
    * expires. A key without caps records the price too, so caps added later
    * count the job.
+   *
+   * Part of the price may already be spent by the create itself (a one-off
+   * channel's opening fee counts toward the video): what is already in the
+   * ledger is not held again, and a charge on the create that arrives later
+   * lowers the commitment like any other charge of the job (see `ingest`).
    */
   commitVideo(tag: string, job: string, amountUsdc: number): void {
     const hold = this._holds.get(tag)
     if (!hold) return
+    let spent = 0
+    try {
+      spent = this._store.spendForRequest(tag)
+    } catch {
+      // Unreadable now: hold the whole price, never less than the job can still be charged.
+    }
     const commitment: VideoCommitment = {
       keyId: hold.keyId,
       memberId: hold.memberId,
       workspaceId: hold.workspaceId,
-      amountUsdc: Math.max(0, Math.floor(amountUsdc)),
+      amountUsdc: Math.max(0, Math.floor(amountUsdc) - spent),
       expiresAt: this._now() + this._videoCommitmentMs,
       deliveredAt: null,
     }
@@ -405,7 +416,7 @@ export class GatewayAccounting {
       })
       if (!inserted) continue
       recorded += 1
-      // The delivery of a video job was charged: the job's commitment is now spend.
+      // A charge of a video job (its create's opening fee, a poll or its delivery): that much of its commitment is now spend.
       if (request.videoJob) this._videoCharged(request.videoJob, parseBaseUnits(event.amountUsdc))
       // Settled spend replaces that much of the request's worst-case hold.
       // The rest stays until the grace period ends: one request can sign

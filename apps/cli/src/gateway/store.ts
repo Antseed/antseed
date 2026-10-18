@@ -1229,7 +1229,7 @@ export class GatewayStore {
     memberId: string | null
     model: string | null
     endUser: string | null
-    /** A video retrieve's job, keyed like `videoJobKey`. */
+    /** The video job of an accepted create, a status poll or a delivery, keyed like `videoJobKey`. */
     videoJob: string | null
   } | null {
     const row = this._stmt(`SELECT key_id, buyer_identity, workspace_id, member_id, model, end_user, path, video_action, video_job_id
@@ -1239,9 +1239,17 @@ export class GatewayStore {
     return row
       ? {
         keyId: row.key_id, buyerIdentity: row.buyer_identity, workspaceId: row.workspace_id, memberId: row.member_id, model: row.model, endUser: row.end_user,
-        videoJob: row.video_action === 'poll' || row.video_action === 'delivery' ? requestVideoJob(row.path, row.video_job_id) : null,
+        videoJob: row.video_action === 'create' || row.video_action === 'poll' || row.video_action === 'delivery'
+          ? requestVideoJob(row.path, row.video_job_id)
+          : null,
       }
       : null
+  }
+
+  /** The spend recorded so far on one request. */
+  spendForRequest(tag: string): number {
+    const row = this._stmt("SELECT -COALESCE(SUM(amount_usdc), 0) AS spent FROM ledger_entries WHERE kind = 'spend' AND request_tag = ?").get(tag) as { spent: number }
+    return row.spent
   }
 
   /** The key whose create, logged by this gateway, started the video job (jobs created before video commitments were stored). */

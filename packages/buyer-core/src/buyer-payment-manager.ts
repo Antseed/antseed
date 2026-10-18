@@ -2348,15 +2348,23 @@ export class BuyerPaymentManager {
    * Record that the buyer received the finished video. Only now may the
    * seller's NeedAuth for the job's price be signed, and only once.
    */
-  recordVideoDelivered(sellerPeerId: string, protocol: string, jobId: string, requestId: string): void {
+  recordVideoDelivered(sellerPeerId: string, protocol: string, jobId: string, requestId: string): boolean {
     const key = videoJobKey(sellerPeerId, protocol, jobId);
     const job = this._videoJobs.get(key);
-    const entry = this._requestBillingEntries.get(requestId);
-    const facts = entry?.requestFacts;
-    if (!job || facts?.kind !== 'video') return;
+    // The job's own facts, not the request's cache entry, which other requests may have evicted meanwhile.
+    const facts = job?.requestFacts;
+    if (!job || facts?.kind !== 'video') return false;
+    if (!this._requestBillingEntries.has(requestId)) this.trackVideoRetrieve(sellerPeerId, protocol, jobId, requestId);
     this._videoJobs.delete(key);
     if (job.oneOffChannelId) this._persistVideoJob(job.oneOffChannelId, null);
     this.recordObservedUnitUsage(requestId, nativeVideoUnitUsage(facts.video));
+    return true;
+  }
+
+  /** The duration a tracked video job asked for, if it is tracked. */
+  videoJobDuration(sellerPeerId: string, protocol: string, jobId: string): number | undefined {
+    const facts = this._videoJobs.get(videoJobKey(sellerPeerId, protocol, jobId))?.requestFacts;
+    return facts?.kind === 'video' ? facts.video.duration : undefined;
   }
 
   /** Store (or clear) the undelivered job on its one-off channel row. */
