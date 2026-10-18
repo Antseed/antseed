@@ -70,6 +70,7 @@ function vars(extra = {}) {
   return {
     slug, skills: SKILLS, pstack: PSTACK, factory: FACTORY, run_dir: RD, worktree: S.worktree ?? '(not created yet)', base: S.base ?? '', branch: S.branch ?? '',
     issue, sandbox_ref: SANDBOX_REF, scratch: `${WT_ROOT}/scratch-${slug}`, refs_line: S.issue ? `, and ends with the line \`Refs #${S.issue}\`` : '',
+    verify_skill: join(FACTORY, '..', '.claude/skills/verify-antseed/SKILL.md'), sandbox_test_skill: join(FACTORY, '..', '.claude/skills/sandbox-test/SKILL.md'),
     sent_back: '', verify_dir: join(RD, 'verify', S.last_verify ?? 'r1'), ...extra,
   }
 }

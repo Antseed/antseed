@@ -11,9 +11,10 @@ const globRe = (g) => new RegExp('^' + g.replace(/[.+^${}()|[\]\\]/g, '\\$&').re
 const table = JSON.parse(readFileSync(join(FACTORY, 'inputs', 'verify-rows.json'), 'utf8'))
 
 if (process.argv[2] === '--audit') {
-  const skill = sh('git', ['-C', FACTORY, 'show', `${SANDBOX_REF}:.claude/skills/verify-antseed/SKILL.md`]).stdout
+  // The factory branch is rebased on the sandbox stack, so the skill is a file next to the factory.
+  const skill = readFileSync(join(FACTORY, '..', '.claude/skills/verify-antseed/SKILL.md'), 'utf8')
   const missing = table.rows.flatMap((r) => [...r.unit, ...(r.scratch_build ?? [])].filter((c) => !skill.includes(c)).map((c) => `${r.id}: ${c}`))
-  console.log(missing.length ? `VERIFY_ROWS_AUDIT FAIL not in the skill: ${missing.join(' | ')}` : `VERIFY_ROWS_AUDIT OK every row command is in ${SANDBOX_REF}'s verify-antseed table`)
+  console.log(missing.length ? `VERIFY_ROWS_AUDIT FAIL not in the skill: ${missing.join(' | ')}` : `VERIFY_ROWS_AUDIT OK every row command is in this branch's verify-antseed table`)
   process.exit(missing.length ? 1 : 0)
 }
 
