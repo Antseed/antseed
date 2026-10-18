@@ -208,4 +208,45 @@ describe('BuyerPaymentNegotiator', () => {
       expect(bpm.openOneOffChannel).not.toHaveBeenCalled();
     });
   });
+
+  describe('video spend cap from the caller', () => {
+    const peer: BuyerPeerView = { peerId: toPeerId('7'.repeat(40)) };
+    // 8 s at $0.10/s: $0.80.
+    const request = {
+      requestId: 'video-create',
+      method: 'POST',
+      path: '/api/v1/video/queue',
+      headers: { 'content-type': 'application/json' },
+      body: new TextEncoder().encode(JSON.stringify({ model: 'wan-2.5', prompt: 'An ant', duration: '8s' })),
+    };
+    const route = {
+      sellerPeerId: peer.peerId,
+      provider: 'venice',
+      service: 'wan-2.5',
+      serviceApiProtocol: 'venice-video' as const,
+      unitModel: { version: 1 as const, components: [{ unit: 'video_seconds' as const, priceUsd: 0.1 }] },
+    };
+
+    function makeNegotiator() {
+      const bpm = { maxVideoRequestUsdc: 5_000_000n, trackRequestBilling: vi.fn(), trackRequestService: vi.fn() };
+      const negotiator = Object.create(BuyerPaymentNegotiator.prototype) as BuyerPaymentNegotiator;
+      Object.assign(negotiator as object, { _bpm: bpm });
+      return { negotiator, bpm };
+    }
+
+    it('refuses a video priced above what the caller has left, before anything is sent', () => {
+      const { negotiator, bpm } = makeNegotiator();
+      expect(() => negotiator.trackRequestBillingContext(request, 'wan-2.5', route, 799_999n))
+        .toThrow(/Video costs 0\.8\d* USDC, more than the 0\.79\d* USDC left/);
+      expect(bpm.trackRequestBilling).not.toHaveBeenCalled();
+    });
+
+    it('accepts a video the caller can still afford, and any video without a cap', () => {
+      const { negotiator, bpm } = makeNegotiator();
+      negotiator.trackRequestBillingContext(request, 'wan-2.5', route, 800_000n);
+      negotiator.trackRequestBillingContext(request, 'wan-2.5', route);
+      expect(bpm.trackRequestBilling).toHaveBeenCalledTimes(2);
+      expect(bpm.trackRequestBilling.mock.calls[0]![1]).toMatchObject({ estimatedCostUsdc: 800_000n });
+    });
+  });
 });

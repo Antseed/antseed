@@ -58,7 +58,8 @@ export function newRequestTag(): string {
 }
 
 export type Admission =
-  | { ok: true; tag: string }
+  /** `remainingUsdc`: the least room left under any cap before this request's hold; null when nothing is capped. */
+  | { ok: true; tag: string; remainingUsdc: number | null }
   | { ok: false; breach: LimitBreach }
 
 /**
@@ -128,11 +129,18 @@ export class GatewayAccounting {
    */
   admit(key: ApiKeyRecord, context: KeyContext = this._context(key)): Admission {
     const now = this._now()
+    let remainingUsdc: number | null = null
     for (const { level, limits, scope, held } of this._budgetChecks(key, context)) {
       const periods = cappedPeriods(limits)
       if (periods.length === 0) continue
-      const breach = findLimitBreach(limits, this._store.spendByPeriod(scope, now, periods), held(), now)
+      const spent = this._store.spendByPeriod(scope, now, periods)
+      const heldUsdc = held()
+      const breach = findLimitBreach(limits, spent, heldUsdc, now)
       if (breach) return { ok: false, breach: { ...breach, level } }
+      for (const period of periods) {
+        const room = (limits[period] ?? 0) - (spent[period] ?? 0) - heldUsdc
+        remainingUsdc = remainingUsdc === null ? room : Math.min(remainingUsdc, room)
+      }
     }
     const tag = newRequestTag()
     this._holds.set(tag, {
@@ -143,7 +151,7 @@ export class GatewayAccounting {
       finished: false,
       timer: null,
     })
-    return { ok: true, tag }
+    return { ok: true, tag, remainingUsdc }
   }
 
   /** Drops a hold at once, for a request that never reached the buyer. */

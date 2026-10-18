@@ -303,10 +303,16 @@ export class BuyerPaymentNegotiator {
     return this._muxes.get(peerId);
   }
 
+  /**
+   * `maxVideoCostUsdc` is the most the caller may spend on this request (for
+   * example what is left of a gateway key's spend limit): a video priced above
+   * it is refused before any job starts.
+   */
   trackRequestBillingContext(
     request: SerializedHttpRequest,
     service: string,
     route: SelectedBillingRoute | null,
+    maxVideoCostUsdc?: bigint,
   ): void {
     if (route) {
       const isVideo = Boolean(nativeVideoRoute(request));
@@ -330,6 +336,12 @@ export class BuyerPaymentNegotiator {
       if (estimatedCost > this._bpm.maxVideoRequestUsdc) {
         throw buyerFault(
           `Video costs ${formatUsdc(estimatedCost)} USDC, limit is ${formatUsdc(this._bpm.maxVideoRequestUsdc)} USDC`,
+          'buyer-budget-too-low',
+        );
+      }
+      if (isVideo && maxVideoCostUsdc !== undefined && estimatedCost > maxVideoCostUsdc) {
+        throw buyerFault(
+          `Video costs ${formatUsdc(estimatedCost)} USDC, more than the ${formatUsdc(maxVideoCostUsdc)} USDC left on this spend limit`,
           'buyer-budget-too-low',
         );
       }

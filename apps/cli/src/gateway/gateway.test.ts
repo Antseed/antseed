@@ -32,6 +32,15 @@ async function listen(server: http.Server): Promise<number> {
   return (server.address() as { port: number }).port
 }
 
+/** Resolves once `check` holds; fails after `timeoutMs`. */
+async function waitFor(check: () => boolean, timeoutMs = 1_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error('condition not met in time')
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+}
+
 async function request(port: number, path: string, options: { method?: string; key?: string; body?: string; headers?: http.OutgoingHttpHeaders } = {}) {
   return new Promise<{ status: number; body: string; headers: http.IncomingHttpHeaders }>((resolve, reject) => {
     const req = http.request({
@@ -112,8 +121,8 @@ async function fakeBuyer(options: { costUsdc?: number; spendFeed?: boolean; repo
   return { port, captured, close: () => new Promise<void>((resolve) => server.close(() => { feed.close(); resolve() })) }
 }
 
-async function startGateway(store: GatewayStore, buyerPort: number, holdUsdc = 300_000, topup: GatewayTopupOptions | null = null) {
-  const accounting = new GatewayAccounting(store, { holdUsdc, settleGraceMs: 50 })
+async function startGateway(store: GatewayStore, buyerPort: number, holdUsdc = 300_000, topup: GatewayTopupOptions | null = null, settleGraceMs = 50) {
+  const accounting = new GatewayAccounting(store, { holdUsdc, settleGraceMs })
   const feed = new SpendFeedPoller({
     buyerPort,
     onPage: (page) => { accounting.ingest(page.bootId, page.events) },
@@ -471,6 +480,48 @@ test('a video job is charged on its delivery: the create shows that charge and n
     assert.deepEqual([rows['poll']!.spentUsdc, rows['poll']!.servedFree, rows['poll']!.costPending], [null, false, false])
     assert.deepEqual([rows['delivery']!.spentUsdc, rows['delivery']!.video!.jobId, rows['delivery']!.costPending], [330_000, 'job-7', false])
     assert.equal(store.periodSpend(key.id).total, 330_000, 'the job is counted once')
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    cleanup()
+  }
+})
+
+test('a video create tells the buyer what is left of the key caps; other requests and uncapped keys do not', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await fakeBuyer()
+  const capped = store.createKey({ label: 'Capped', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: 2_000_000, monthly: 1_500_000, total: null }, expiresAt: null })
+  const open = store.createKey({ label: 'Open', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
+  const gateway = await startGateway(store, buyer.port)
+  try {
+    const create = '{"model":"seedance","prompt":"An ant","duration":"5s"}'
+    assert.equal((await request(gateway.port, '/api/v1/video/queue', { method: 'POST', key: capped.secret, body: create })).status, 200)
+    assert.equal((await request(gateway.port, '/v1/chat/completions', { method: 'POST', key: capped.secret, body: '{"model":"m"}' })).status, 200)
+    assert.equal((await request(gateway.port, '/api/v1/video/queue', { method: 'POST', key: open.secret, body: create })).status, 200)
+    // A client cannot raise its own cap.
+    assert.equal((await request(gateway.port, '/api/v1/video/queue', { method: 'POST', key: open.secret, body: create, headers: { 'x-antseed-max-video-usdc': '99000000' } })).status, 200)
+    assert.deepEqual(buyer.captured.map(({ headers }) => headers['x-antseed-max-video-usdc'] ?? null), ['1500000', null, null, null])
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    cleanup()
+  }
+})
+
+test('a video create and a status poll hold nothing once answered; only the delivery keeps its hold', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await videoJobBuyer(0)
+  const { key, secret } = store.createKey({ label: 'Video', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: 1_000_000, monthly: null, total: null }, expiresAt: null })
+  const gateway = await startGateway(store, buyer.port, 300_000, null, 60_000)
+  try {
+    assert.equal((await request(gateway.port, '/api/v1/video/queue', { method: 'POST', key: secret, body: '{"model":"seedance","prompt":"An ant"}' })).status, 200)
+    await waitFor(() => gateway.accounting.heldUsdc(key.id) === 0)
+    assert.equal((await request(gateway.port, '/api/v1/video/retrieve', { method: 'POST', key: secret, body: '{"model":"seedance","queue_id":"job-7"}' })).status, 200)
+    await waitFor(() => gateway.accounting.heldUsdc(key.id) === 0)
+    // The second retrieve delivers the MP4: it may still be charged, so its hold stays for the grace period.
+    assert.equal((await request(gateway.port, '/api/v1/video/retrieve', { method: 'POST', key: secret, body: '{"model":"seedance","queue_id":"job-7"}' })).status, 200)
+    await waitFor(() => store.listRequests({ keyIds: null, keyId: key.id }).some((row) => row.video?.action === 'delivery'))
+    assert.equal(gateway.accounting.heldUsdc(key.id), 300_000)
   } finally {
     await gateway.stop()
     await buyer.close()

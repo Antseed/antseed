@@ -75,6 +75,7 @@ import {
   SYSTEM_PROXY_SOURCE_HEADER,
   SYSTEM_ROUTED_MODEL_HEADER,
   BUYER_IDENTITY_HEADER,
+  MAX_VIDEO_COST_HEADER,
   normalizePeerId,
   takeRoutingOptions,
   type RequestRoutingOptions,
@@ -792,6 +793,11 @@ export function sanitizePeerBuyerFaultMarker(response: SerializedHttpResponse): 
   return changed
     ? { ...response, body: Buffer.from(JSON.stringify(parsed)) }
     : response
+}
+
+/** A non-negative integer amount of USDC base units, or null when absent or malformed. */
+function parseUsdcBaseUnits(value: string | undefined): bigint | null {
+  return value && /^\d{1,15}$/.test(value) ? BigInt(value) : null
 }
 
 function buyerFaultStatusCode(faultCode: string | null): number {
@@ -4750,6 +4756,7 @@ export class BuyerProxy {
       'x-antseed-pin-peer': _pinPeer,
       'x-antseed-prefer-peer': _preferPeer,
       [BUYER_IDENTITY_HEADER]: buyerIdentity,
+      [MAX_VIDEO_COST_HEADER]: maxVideoCostHeader,
       [REQUIRED_PARAMETERS_HEADER]: _requiredParameters,
       'x-vpr-session-id': _vprSession,
       // Legacy desktop builds (pre AntStation → VPR rename) still send this.
@@ -5010,10 +5017,12 @@ export class BuyerProxy {
         res.end(Buffer.from(responseForClient.body))
         return { done: true, emptyAnswer: answeredEmpty }
       } else {
+        const maxVideoCostUsdc = videoRoute?.action === 'create' ? parseUsdcBaseUnits(maxVideoCostHeader) : null
         const upstreamResponse = await this._node.sendRequest(selectedPeer, requestForPeer, {
           signal: attemptSignal,
           pinned,
           ...(buyerIdentity ? { buyerIdentity } : {}),
+          ...(maxVideoCostUsdc !== null ? { maxVideoCostUsdc } : {}),
         })
         if (upstreamResponse.statusCode >= 400 && !adaptResponse) {
           log(`Upstream raw error detail: ${summarizeErrorResponse(upstreamResponse)}`)

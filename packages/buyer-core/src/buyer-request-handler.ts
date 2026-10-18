@@ -53,6 +53,8 @@ export interface RequestExecutionOptions {
   controlPlane?: boolean;
   /** Present peer failures as coming from an explicitly pinned route. */
   pinned?: boolean;
+  /** Refuse a video create priced above this many USDC base units (the caller's remaining budget). */
+  maxVideoCostUsdc?: bigint;
 }
 
 export interface BuyerRequestHandlerConfig {
@@ -162,7 +164,7 @@ export class BuyerRequestHandler {
             `Cannot send paid ${requestProtocol} request for service "${requestedService}" without service unit billing metadata`,
           );
         }
-        negotiator.trackRequestBillingContext(req, requestedService, billingRoute);
+        negotiator.trackRequestBillingContext(req, requestedService, billingRoute, options?.maxVideoCostUsdc);
       }
     } else if (requestedService && isFreeService && this._deps.freeUsageManager) {
       this._deps.freeUsageManager.trackRequestService(req.requestId, requestedService);

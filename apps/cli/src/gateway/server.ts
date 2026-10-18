@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net'
 import { nativeVideoAcceptance, nativeVideoRoute, type NativeVideoRoute } from '@antseed/api-adapter'
 import { DEFAULT_BUYER_IDENTITY } from '@antseed/node'
 import { SPEND_ATTRIBUTION_HEADER } from '../proxy/spend-attribution.js'
-import { BUYER_IDENTITY_HEADER } from '../proxy/request-utils.js'
+import { BUYER_IDENTITY_HEADER, MAX_VIDEO_COST_HEADER } from '../proxy/request-utils.js'
 import { GATEWAY_CONTROL_HEADER, ROUTING_POLICY_HEADER, encodePolicyHeader, meaningfulPolicy, policyAllowsModel, type RoutingPolicy } from '../routing-policy/policy.js'
 import { effectiveKeyLimits, newRequestTag, type GatewayAccounting, type KeyContext } from './accounting.js'
 import { errorMessage } from './errors.js'
@@ -137,6 +137,8 @@ interface ForwardedRequest {
   modelListPolicy: RoutingPolicy | null
   /** A native video create or retrieve: only the retrieve that delivers the file is charged. */
   video: NativeVideoRoute | null
+  /** Room left under the key's caps at admission; null when nothing is capped. */
+  remainingUsdc: number | null
 }
 
 export interface GatewayServerOptions {
@@ -321,8 +323,9 @@ export class GatewayServer {
 
     const policy = this._routingPolicy(res, route, key, context, preset, model)
     if (!policy.allowed) return
-    const tag = this._admit(res, route, key, context)
-    if (!tag) return
+    const admission = this._admit(res, route, key, context)
+    if (!admission) return
+    const { tag } = admission
 
     const request: ForwardedRequest = {
       tag,
@@ -338,6 +341,7 @@ export class GatewayServer {
       policyHeaders: policy.headers,
       modelListPolicy: route.prefix === '/v1/models' && policy.policy.allowedModels ? policy.policy : null,
       video: nativeVideoRoute({ method, path: route.prefix, body }),
+      remainingUsdc: admission.remainingUsdc,
     }
     try {
       this._options.store.startRequest({
@@ -465,10 +469,10 @@ export class GatewayServer {
   }
 
   /** The request's tag; a paid request is admitted against its budgets first (402 answered here when one is spent). */
-  private _admit(res: http.ServerResponse, route: CanonicalRoute, key: ApiKeyRecord, context: KeyContext): string | null {
-    if (!route.paid) return newRequestTag()
+  private _admit(res: http.ServerResponse, route: CanonicalRoute, key: ApiKeyRecord, context: KeyContext): { tag: string; remainingUsdc: number | null } | null {
+    if (!route.paid) return { tag: newRequestTag(), remainingUsdc: null }
     const admission = this._options.accounting.admit(key, context)
-    if (admission.ok) return admission.tag
+    if (admission.ok) return { tag: admission.tag, remainingUsdc: admission.remainingUsdc }
     this._log(`gateway spend limit reached: key=${key.id} level=${admission.breach.level ?? 'key'} period=${admission.breach.period}`)
     sendJson(res, 402, { error: spendLimitError(admission.breach) })
     return null
@@ -529,7 +533,9 @@ export class GatewayServer {
         } catch (error) {
           this._log(`gateway could not record request ${tag}: ${errorMessage(error)}`)
         }
-        this._options.accounting.finish(tag)
+        // Only the retrieve that delivers a video is charged: a create or a status poll holds nothing once answered.
+        if (request.video && !videoDelivered) this._options.accounting.release(tag)
+        else this._options.accounting.finish(tag)
         this._exporter.record({
           tag, method, path: request.requestPath, model: request.model, status, startedAt, finishedAt,
           keyId: key.id, workspaceId: key.workspaceId, memberId: key.ownerMemberId, endUser, sellerPeerId, latencyMs,
@@ -543,6 +549,10 @@ export class GatewayServer {
       headers['content-length'] = String(body.length)
       headers['x-antseed-system-proxy-source'] = tunnelRequestSource(req.headers)
       headers[SPEND_ATTRIBUTION_HEADER] = tag
+      // The buyer prices the video and refuses one that costs more than the key has left.
+      if (request.video?.action === 'create' && request.remainingUsdc !== null) {
+        headers[MAX_VIDEO_COST_HEADER] = String(Math.max(0, Math.floor(request.remainingUsdc)))
+      }
       if (key.buyerIdentity !== DEFAULT_BUYER_IDENTITY) {
         headers[BUYER_IDENTITY_HEADER] = key.buyerIdentity
         // The buyer lets only its gateway pay from a non-default wallet.
@@ -1020,6 +1030,7 @@ const STRIPPED_HEADERS = new Set([
   'content-length',
   SPEND_ATTRIBUTION_HEADER,
   BUYER_IDENTITY_HEADER,
+  MAX_VIDEO_COST_HEADER,
   ROUTING_POLICY_HEADER,
   GATEWAY_CONTROL_HEADER,
   GATEWAY_INTERNAL_KEY_HEADER,
