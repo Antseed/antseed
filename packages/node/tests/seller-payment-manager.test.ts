@@ -1960,6 +1960,29 @@ describe('SellerPaymentManager', () => {
       expect(store.getChannel(channelId)!.settledAmount).toBe('700000');
     });
 
+    it('does not let withdrawn channels fill the retry batch', async () => {
+      const withdrawn = Array.from({ length: 20 }, (_, i) => makeChannelId(100 + i));
+      for (const channelId of withdrawn) {
+        storeTimedOutChannel(channelId);
+        vi.setSystemTime(Date.now() + 1);
+      }
+      const openChannelId = makeChannelId(130);
+      storeTimedOutChannel(openChannelId);
+      vi.spyOn(manager.channelsClient, 'getSession').mockImplementation(async (channelId: string) =>
+        makeOnChainChannel(buyerIdentity, sellerIdentity, channelId === openChannelId
+          ? { deposit: 1_000_000n, settled: 500_000n, status: 1 }
+          : { status: 3 }),
+      );
+      const close = vi.spyOn(manager.channelsClient, 'close');
+
+      await manager.checkTimeouts();
+      expect(close).not.toHaveBeenCalled();
+
+      await nextRetryPass();
+      expect(close).toHaveBeenCalledWith(expect.anything(), openChannelId, 600_000n, '0x1234', AUTH_SIG);
+      expect(store.getChannel(openChannelId)!.status).toBe(CHANNEL_STATUS.SETTLED);
+    });
+
     it('stops reading a channel the buyer already withdrew', async () => {
       const channelId = makeChannelId(92);
       storeTimedOutChannel(channelId);

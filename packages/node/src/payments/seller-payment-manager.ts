@@ -1900,15 +1900,14 @@ export class SellerPaymentManager {
     if (now - this._lastTimedOutCloseRetryAt < TIMED_OUT_CLOSE_RETRY_INTERVAL_MS) return;
     this._lastTimedOutCloseRetryAt = now;
 
-    const channels = this._channelStore.getRecentChannelsByStatus(
-      CHANNEL_ROLE.SELLER,
-      CHANNEL_STATUS.TIMEOUT,
-      now - TIMED_OUT_CLOSE_RETRY_WINDOW_MS,
-      TIMED_OUT_CLOSE_RETRY_BATCH,
-    );
+    // Skip ended channels before taking the batch so they cannot fill it. A
+    // failed retry refreshes its row, moving it behind channels not yet tried.
+    const channels = this._channelStore
+      .getRecentChannelsByStatus(CHANNEL_ROLE.SELLER, CHANNEL_STATUS.TIMEOUT, now - TIMED_OUT_CLOSE_RETRY_WINDOW_MS)
+      .filter((channel) => !this._timedOutChannelsEnded.has(channel.sessionId) && !this._closingChannels.has(channel.sessionId))
+      .slice(0, TIMED_OUT_CLOSE_RETRY_BATCH);
     for (const channel of channels) {
       const channelId = channel.sessionId;
-      if (this._timedOutChannelsEnded.has(channelId) || this._closingChannels.has(channelId)) continue;
       try {
         const state = classifyOnChainChannel(await this._channelsClient.getSession(channelId));
         if (state.status === CHANNEL_STATUS.SETTLED) {

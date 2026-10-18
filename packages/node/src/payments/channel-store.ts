@@ -201,7 +201,7 @@ export class ChannelStore {
         'SELECT * FROM payment_channels WHERE channel_kind = ? AND status = ? AND updated_at < ? ORDER BY updated_at LIMIT 100',
       ),
       getRecentByStatus: this._db.prepare(
-        'SELECT * FROM payment_channels WHERE role = ? AND status = ? AND updated_at >= ? ORDER BY updated_at LIMIT ?',
+        'SELECT * FROM payment_channels WHERE role = ? AND status = ? AND updated_at >= ? ORDER BY updated_at',
       ),
       insertReceipt: this._db.prepare(`
         INSERT INTO payment_receipts (
@@ -465,8 +465,8 @@ export class ChannelStore {
   }
 
   /** Channels of any kind in `status` last updated at or after `updatedSince` (ms), oldest first. */
-  getRecentChannelsByStatus(role: ChannelRole, status: ChannelStatus, updatedSince: number, limit = 100): StoredChannel[] {
-    const rows = this._stmts.getRecentByStatus.all(role, status, updatedSince, limit) as ChannelRow[];
+  getRecentChannelsByStatus(role: ChannelRole, status: ChannelStatus, updatedSince: number): StoredChannel[] {
+    const rows = this._stmts.getRecentByStatus.all(role, status, updatedSince) as ChannelRow[];
     return rows.map(rowToChannel);
   }
 
