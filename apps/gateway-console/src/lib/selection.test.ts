@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { RoutePreview, RouteSelection, ServedSelection } from '../api/types'
-import { healthWarning, neverReason, previewListsSellers, orderingSummary, pickSummary, previewSort, rankCandidates, recordSummary, selectionFacts, selectionHeadline } from './selection'
+import { healthWarning, neverReason, previewListsSellers, routingPlaces, orderingSummary, pickSummary, previewSort, rankCandidates, recordSummary, selectionFacts, selectionHeadline } from './selection'
 
 const NOW = 1_700_000_000_000
 
@@ -95,6 +95,19 @@ describe('ranking a preview', () => {
     expect(previewListsSellers(undefined)).toBe(false)
     expect(previewListsSellers({ ...preview(undefined, []), modelAllowed: false })).toBe(false)
     expect(previewListsSellers(preview(undefined, peers))).toBe(true)
+  })
+
+  it('places each seller for the Providers routing column', () => {
+    const places = routingPlaces(preview(undefined, peers), [{ peerId: 'A', firstTokenMsP50: null }])
+    expect(places.get('b')).toEqual({ order: 0, rank: 1, reason: null })
+    expect(places.get('a')).toEqual({ order: 1, rank: 2, reason: null })
+    expect(places.get('cheap')).toEqual({ order: 10_000, rank: null, reason: 'trust 10 below 70' })
+  })
+
+  it('filters out every seller of a model the policy refuses', () => {
+    const places = routingPlaces({ ...preview(undefined, []), modelAllowed: false }, [{ peerId: 'X', firstTokenMsP50: null }, { peerId: 'y', firstTokenMsP50: 5 }])
+    expect(places.get('x')).toEqual({ order: 10_000, rank: null, reason: 'your routing policy does not allow this model' })
+    expect(places.get('y')?.reason).toBe('your routing policy does not allow this model')
   })
 
   it('says why a seller is never selected', () => {

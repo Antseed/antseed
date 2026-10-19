@@ -130,9 +130,11 @@ export function rankCandidates(preview: RoutePreview, latencyOf: (peerId: string
   return { inRange, never }
 }
 
+const MODEL_REFUSED = 'your routing policy does not allow this model'
+
 /** Why routing never selects a seller, as one phrase. */
 export function neverReason(candidate: Candidate, modelAllowed = true): string {
-  if (!modelAllowed) return 'your routing policy does not allow this model'
+  if (!modelAllowed) return MODEL_REFUSED
   return candidate.reasons.join(' · ') || 'outside your routing settings'
 }
 
@@ -142,4 +144,25 @@ export function neverReason(candidate: Candidate, modelAllowed = true): string {
  */
 export function previewListsSellers(preview: RoutePreview | undefined): boolean {
   return !!preview && preview.candidates.length > 0
+}
+
+/** Where routing puts a seller for one model: its place in range, or why it is filtered out. */
+export interface RoutingPlace { order: number; rank: number | null; reason: string | null }
+
+/**
+ * Each seller's place for a preview's model, keyed by lower-case peer id. A
+ * model the policy refuses comes back without candidates, so every seller in
+ * `peers` is filtered out with that reason.
+ */
+export function routingPlaces(preview: RoutePreview, peers: ReadonlyArray<{ peerId: string; firstTokenMsP50: number | null }>): Map<string, RoutingPlace> {
+  const places = new Map<string, RoutingPlace>()
+  if (!preview.modelAllowed) {
+    peers.forEach((peer, index) => places.set(peer.peerId.toLowerCase(), { order: 10_000 + index, rank: null, reason: MODEL_REFUSED }))
+    return places
+  }
+  const latency = new Map(peers.map((peer) => [peer.peerId.toLowerCase(), peer.firstTokenMsP50]))
+  const { inRange, never } = rankCandidates(preview, (peerId) => latency.get(peerId.toLowerCase()) ?? null)
+  inRange.forEach((candidate, index) => places.set(candidate.peerId.toLowerCase(), { order: index, rank: candidate.rank, reason: null }))
+  never.forEach((candidate, index) => places.set(candidate.peerId.toLowerCase(), { order: 10_000 + index, rank: null, reason: neverReason(candidate) }))
+  return places
 }

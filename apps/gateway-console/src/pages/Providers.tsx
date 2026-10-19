@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { DataTable, TextField } from '@antseed/ui'
 import { api } from '../api'
-import type { Peer, RoutePreview } from '../api/types'
+import type { Peer } from '../api/types'
 import { copyModelIdItem, CopyIdButton, useCopy } from '../components/copy-actions'
 import { Icon } from '../components/icons'
 import { PeerActionDialog } from '../components/PeerActionDialog'
@@ -18,24 +18,11 @@ import { samePeerId } from '../lib/peer-id'
 import { filterPeers, inputPrice, isFreePeer, outputPrice, priceRange, type PeerFilter } from '../lib/peers'
 import { hasReputationData } from '../lib/policy-match'
 import { modelsFromPeers, qk, usePeers } from '../lib/queries'
-import { neverReason, rankCandidates } from '../lib/selection'
+import { routingPlaces, type RoutingPlace } from '../lib/selection'
 import { navigate, useLocation } from '../lib/router'
 import { ProviderPanelBody, providerName } from './ProviderDetail'
 
 type PeerActionKind = 'allow' | 'block' | 'prefer'
-
-/** Where routing puts a seller for one model: its place in range, or why it is never selected. */
-interface RoutingPlace { order: number; rank: number | null; reason: string | null }
-
-function routingPlaces(preview: RoutePreview, peers: readonly Peer[]): Map<string, RoutingPlace> {
-  const latency = new Map(peers.map((peer) => [peer.peerId.toLowerCase(), peer.firstTokenMsP50]))
-  const { inRange, never } = rankCandidates(preview, (peerId) => latency.get(peerId.toLowerCase()) ?? null)
-  const places = new Map<string, RoutingPlace>()
-  if (preview.modelAllowed) inRange.forEach((candidate, index) => places.set(candidate.peerId.toLowerCase(), { order: index, rank: candidate.rank, reason: null }))
-  const out = preview.modelAllowed ? never : [...inRange, ...never]
-  out.forEach((candidate, index) => places.set(candidate.peerId.toLowerCase(), { order: 10_000 + index, rank: null, reason: neverReason(candidate, preview.modelAllowed) }))
-  return places
-}
 
 function RoutingCell({ place }: { place: RoutingPlace | undefined }) {
   if (!place) return <span className="gc-muted">—</span>
