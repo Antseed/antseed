@@ -125,7 +125,7 @@ test('invite output shows the link, the raw invite and what is left', () => {
 
 test('status covers inviter, invite bonus and invitees', () => {
   const hiddenInvites = { available: false, indexed: false, payable: '0', claimableEpochs: [], referredCount: 0, invites: null };
-  const hiddenReferee = { available: false, referrer: null, boundEpoch: null, windowEnd: null, weeksLeft: null, payable: '0', claimableEpochs: [] };
+  const hiddenReferee = { available: false, indexed: false, referrer: null, boundEpoch: null, windowEnd: null, weeksLeft: null, payable: '0', claimableEpochs: [] };
   const base: ReferralStatus = { configured: true, state: null, referee: hiddenReferee, invites: hiddenInvites };
   assert.deepEqual(strip(formatReferralStatus({ ...base, configured: false })), ['Referrals are not available on this network.']);
   assert.deepEqual(strip(formatReferralStatus(base)), [
@@ -136,12 +136,20 @@ test('status covers inviter, invite bonus and invitees', () => {
     'Invite from 0xe05f…cfF7 pending. Binds with your first paid or free request.');
   assert.deepEqual(strip(formatReferralStatus({
     ...base,
-    referee: { available: true, referrer: '0xe05fcC23807536bEe418f142D19fa0d21BB0cfF7', boundEpoch: 30, windowEnd: 42, weeksLeft: 9, payable: '1500000000000000000', claimableEpochs: [31] },
+    referee: { available: true, indexed: true, referrer: '0xe05fcC23807536bEe418f142D19fa0d21BB0cfF7', boundEpoch: 30, windowEnd: 42, weeksLeft: 9, payable: '1500000000000000000', claimableEpochs: [31] },
     invites: { available: true, indexed: true, payable: '250000000000000000', claimableEpochs: [31], referredCount: 2, invites: { epoch: 34, quota: 5, used: 2, left: 3 } },
   })), [
     'Invited by 0xe05f…cfF7 (week 30).',
     'Invite bonus: 9 weeks left · 1.5 ANTS payable. Paid to your authorized wallet.',
     'Your invites: 2 invited · 0.25 ANTS payable · 3 of 5 invites left this week.',
+  ]);
+  // An on-chain binding without Antscan: the inviter is known, the bonus window and amount are not.
+  assert.deepEqual(strip(formatReferralStatus({
+    ...base,
+    referee: { ...hiddenReferee, available: true, referrer: '0xe05fcC23807536bEe418f142D19fa0d21BB0cfF7' },
+  })), [
+    'Invited by 0xe05f…cfF7.',
+    'Invite stats unavailable right now.',
   ]);
   // Without Antscan the count and allowance are on-chain reads; only the payable amount is unknown.
   assert.deepEqual(strip(formatReferralStatus({

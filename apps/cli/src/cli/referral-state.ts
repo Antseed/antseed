@@ -41,33 +41,46 @@ export function shortWallet(address: string): string {
   return `${address.slice(0, 6)}…${address.slice(-4)}`
 }
 
+/** Where the client agent the buyer signs comes from. */
+export type ClientAgentSource = 'env' | 'config' | 'default' | 'none'
+
+/** The client agent a buyer signs, where it came from, and the client kind whose default applies. */
+export interface ClientAgentAttribution {
+  agentId: number | null
+  source: ClientAgentSource
+  client: 'cli' | 'desktop'
+}
+
+/**
+ * The client agent a buyer signs into settlement metadata: an ERC-8004 agent
+ * id from ANTSEED_CLIENT_AGENT_ID (third-party clients), then
+ * `buyer.clientAgentId`, then the chain-config id for this client kind
+ * (ANTSEED_CLIENT_KIND, set to "desktop" by Desktop; "cli" otherwise).
+ * Without any of those the metadata carries no client word.
+ */
+export function resolveClientAgentId(options: ClientAgentOptions, env: NodeJS.ProcessEnv = process.env): ClientAgentAttribution {
+  const client = env['ANTSEED_CLIENT_KIND'] === 'desktop' ? 'desktop' : 'cli'
+  const fromEnv = parseClientAgentId(env['ANTSEED_CLIENT_AGENT_ID'])
+  if (fromEnv) return { agentId: fromEnv, source: 'env', client }
+  if (options.clientAgentId && options.clientAgentId > 0) return { agentId: options.clientAgentId, source: 'config', client }
+  const fromChain = options.clientAgentIds?.[client]
+  return fromChain && fromChain > 0 ? { agentId: fromChain, source: 'default', client } : { agentId: null, source: 'none', client }
+}
+
 /**
  * Resolve the attribution the buyer appends to signed settlement metadata:
- * the redeemed invite until it is bound, and the client.
- *
- * The client is an ERC-8004 agent id: ANTSEED_CLIENT_AGENT_ID (third-party
- * clients), then `buyer.clientAgentId`, then the chain-config id for this
- * client kind (ANTSEED_CLIENT_KIND, set to "desktop" by Desktop; "cli"
- * otherwise). Without any of those the metadata carries no client word.
+ * the redeemed invite until it is bound, and the client (`resolveClientAgentId`).
  */
 export function resolveBuyerAttribution(options: ClientAgentOptions & {
   referralState: ReferralState | null
   env?: NodeJS.ProcessEnv
 }): { clientId?: string; invite?: ReferralInvite } {
   const invite = pendingInvite(options.referralState)
-  const agentId = resolveClientAgentId(options, options.env ?? process.env)
+  const { agentId } = resolveClientAgentId(options, options.env ?? process.env)
   return {
     ...(agentId ? { clientId: clientIdFromAgentId(agentId) } : {}),
     ...(invite ? { invite } : {}),
   }
-}
-
-function resolveClientAgentId(options: ClientAgentOptions, env: NodeJS.ProcessEnv): number | undefined {
-  const fromEnv = parseClientAgentId(env['ANTSEED_CLIENT_AGENT_ID'])
-  if (fromEnv) return fromEnv
-  if (options.clientAgentId && options.clientAgentId > 0) return options.clientAgentId
-  const fromChain = options.clientAgentIds?.[env['ANTSEED_CLIENT_KIND'] === 'desktop' ? 'desktop' : 'cli']
-  return fromChain && fromChain > 0 ? fromChain : undefined
 }
 
 type AttributionTarget = { dir: string; address: string; mtime: number | null; carrying: boolean; syncing?: Promise<void> }

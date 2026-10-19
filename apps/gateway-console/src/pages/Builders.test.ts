@@ -75,7 +75,7 @@ const { default: Builders } = await import('./Builders')
 const view = (agentId: number | null): BuildersView => ({
   available: false,
   agentId,
-  effective: { agentId, source: agentId !== null ? 'config' : 'default' },
+  effective: { agentId, source: agentId !== null ? 'config' : 'default', client: 'cli', runtime: true },
   agent: null,
 })
 
@@ -141,5 +141,20 @@ describe('Builders agent dialog', () => {
     render()
     click('Set agent')
     expect(agentField(render())).toBe('')
+  })
+})
+
+describe('Builders client agent source', () => {
+  it('labels an agent the buyer did not report as an estimate, in one line', () => {
+    ui.data = { ...view(42), effective: { agentId: 42, source: 'config', client: 'cli', runtime: false } }
+    const html = render()
+    expect(html.match(/Estimated from this gateway&#x27;s settings/g)).toHaveLength(1)
+    ui.data = view(42)
+    expect(render()).not.toContain('Estimated')
+  })
+
+  it('says when ANTSEED_CLIENT_AGENT_ID on the buyer overrides the saved agent', () => {
+    ui.data = { ...view(5), effective: { agentId: 7, source: 'env', client: 'cli', runtime: true } }
+    expect(render()).toContain('ANTSEED_CLIENT_AGENT_ID on the buyer overrides the agent set here (#5)')
   })
 })

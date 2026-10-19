@@ -429,7 +429,14 @@ export interface CreatedInviteView {
 
 /** The buyer account as a referee: its inviter and the two-sided bonus. */
 export interface RefereeView {
+  /** The chain has a Referrals contract and the binding is known (from Antscan or `referrerOf`). */
   available: boolean;
+  /**
+   * Antscan reports the bonus. When false, `referrer` is the on-chain binding,
+   * while `boundEpoch`, `windowEnd`, `weeksLeft` (null), `payable` ('0') and
+   * `claimableEpochs` ([]) are unknown: a claim scans recent epochs on-chain.
+   */
+  indexed: boolean;
   /** Null while not bound. */
   referrer: string | null;
   boundEpoch: number | null;

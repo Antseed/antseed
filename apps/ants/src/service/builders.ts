@@ -45,7 +45,8 @@ export async function builders(ctx: AntsContext, agentIds: number[]): Promise<Bu
   const indexer = ctx.indexer();
   const [ownerEntries, indexed] = await Promise.all([
     Promise.all(candidates.map(async (id) => [id, await agentOwner(ctx, id)] as const)),
-    indexer?.builders ? indexer.builders(candidates) : null,
+    // Antscan is optional: a timeout, HTTP error or an explorer without the endpoint leaves amounts unknown.
+    indexer?.builders ? indexer.builders(candidates).catch(() => null) : null,
   ]);
   const owners = new Map(ownerEntries);
   const rewards = new Map(indexed?.available ? indexed.agents.map((agent) => [agent.agentId, agent]) : []);

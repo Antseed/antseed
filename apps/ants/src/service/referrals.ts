@@ -1,4 +1,4 @@
-import { getAddress } from 'ethers';
+import { ZeroAddress, getAddress } from 'ethers';
 import type { AbstractSigner } from 'ethers';
 import {
   INVITE_VALIDITY_EPOCHS,
@@ -21,22 +21,24 @@ import { silentReporter, type StepReporter } from './steps.js';
 
 const HIDDEN_REFERRAL: ReferralView = { available: false, indexed: false, payable: '0', claimableEpochs: [], referredCount: 0, invites: null };
 const HIDDEN_REFEREE: RefereeView = {
-  available: false, referrer: null, boundEpoch: null, windowEnd: null, weeksLeft: null, payable: '0', claimableEpochs: [], canBind: null,
+  available: false, indexed: false, referrer: null, boundEpoch: null, windowEnd: null, weeksLeft: null, payable: '0', claimableEpochs: [], canBind: null,
 };
 
 /**
  * The dashboard wallet's referral card. Counts, invites and payable amounts
  * come from Antscan (`explorerApiUrl`), never from per-epoch RPC scans.
- * Without an explorer, or one that does not index referrals, the card stays
+ * Without an explorer, or one that does not index referrals or fails (timeout,
+ * HTTP error, an older explorer without the endpoint), the card stays
  * available (invites and claims only need the contract): the invite allowance
  * and referred count are bounded on-chain views, and the payable amount is
  * unknown (`indexed: false`); `claimReferralRewards` scans for it on-chain.
+ * Failures of those on-chain reads still reject.
  */
 export async function referral(ctx: AntsContext, dataDir: string | null = null): Promise<ReferralView> {
   const client = ctx.chain.referralsAddress ? ctx.referrals() : null;
   if (!client) return HIDDEN_REFERRAL;
   const scope = referralScope(ctx, ctx.address);
-  const indexed = await indexedReferrer(ctx.indexer(), ctx.address);
+  const indexed = await indexedReferrer(ctx.indexer(), ctx.address).catch(() => null);
   if (!indexed) {
     const [invites, referredCount] = await Promise.all([onChainInvites(client, ctx.address), client.referredCount(ctx.address)]);
     return {
@@ -232,6 +234,7 @@ function refereeView(binding: IndexedReferralBinding | null): RefereeView {
   const { refereeWindowEnd: windowEnd, currentEpoch } = binding;
   return {
     available: true,
+    indexed: true,
     referrer: binding.referrer ? getAddress(binding.referrer) : null,
     boundEpoch: binding.boundEpoch,
     windowEnd,
@@ -242,10 +245,26 @@ function refereeView(binding: IndexedReferralBinding | null): RefereeView {
   };
 }
 
-/** The dashboard's buyer account as a referee. */
+/**
+ * The dashboard's buyer account as a referee. Antscan reports the binding,
+ * window and payable bonus. When it is unset, does not index referrals, or
+ * fails, the binding is read on-chain (`referrerOf`) and the window and
+ * amount are unknown (`indexed: false`); `claimRefereeRewards` then scans
+ * for payable epochs on-chain. Hidden without a Referrals contract, or when
+ * the on-chain read fails too.
+ */
 export async function refereeBonus(ctx: AntsContext): Promise<RefereeView> {
-  if (!ctx.chain.referralsAddress) return HIDDEN_REFEREE;
-  return refereeView(await referralBinding(ctx.indexer(), ctx.buyerAddress));
+  const client = ctx.chain.referralsAddress ? ctx.referrals() : null;
+  if (!client) return HIDDEN_REFEREE;
+  const binding = await referralBinding(ctx.indexer(), ctx.buyerAddress);
+  if (binding) return refereeView(binding);
+  let referrer: string;
+  try {
+    referrer = getAddress(await client.referrerOf(ctx.buyerAddress));
+  } catch {
+    return HIDDEN_REFEREE;
+  }
+  return { ...HIDDEN_REFEREE, available: true, referrer: referrer === ZeroAddress ? null : referrer };
 }
 
 /**

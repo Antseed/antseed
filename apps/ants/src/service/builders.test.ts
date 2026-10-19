@@ -1,6 +1,7 @@
 import { makeError } from 'ethers';
 import { describe, expect, it, vi } from 'vitest';
 import type { AntsContext } from './context.js';
+import { createIndexer, type Indexer } from './indexer.js';
 import { builders, claimBuilderRewards, registerClientAgent } from './builders.js';
 
 const wallet = '0x0000000000000000000000000000000000000001';
@@ -66,6 +67,39 @@ describe('builders program', () => {
     });
     expect(identity.getAgentWallet).toHaveBeenCalledWith(9);
     expect(clientRewards.pendingRewards).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { name: 'times out', failure: new Error('The operation was aborted due to timeout') },
+    { name: 'returns HTTP 500', failure: new Error('Antscan responded 500') },
+  ])('stays available with ownership and unknown amounts when the explorer $name', async ({ failure }) => {
+    const { ctx, indexer, identity } = fixture();
+    indexer.builders.mockRejectedValue(failure);
+    expect(await builders(ctx, [9])).toEqual({
+      available: true,
+      indexed: false,
+      agents: [
+        { agentId: 5, owner: wallet, owned: true, firstParty: 'cli', payable: '0', claimableEpochs: [] },
+        { agentId: 9, owner: other, owned: false, firstParty: null, payable: '0', claimableEpochs: [] },
+      ],
+    });
+    expect(identity.getAgentWallet).toHaveBeenCalledWith(9);
+  });
+
+  it('stays available when an older explorer has no builders endpoint (404)', async () => {
+    const { ctx } = fixture();
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ error: 'Not Found' }), { status: 404 })) as unknown as typeof fetch;
+    const antscan = createIndexer('https://antscan.test', fetchImpl) as Indexer;
+    (ctx as unknown as { indexer: () => Indexer }).indexer = () => antscan;
+    expect(await builders(ctx, [9])).toMatchObject({ available: true, indexed: false, agents: [{ agentId: 5, owned: true }, { agentId: 9, owner: other }] });
+    expect(fetchImpl).toHaveBeenCalled();
+  });
+
+  it('still fails when the required ownership read fails', async () => {
+    const { ctx, identity, indexer } = fixture();
+    indexer.builders.mockRejectedValue(new Error('antscan down'));
+    identity.getAgentWallet.mockRejectedValue(new Error('rpc down'));
+    await expect(builders(ctx, [9])).rejects.toThrow('rpc down');
   });
 
   it('without an explorer, registers agents and claims through the bounded on-chain epoch scan', async () => {

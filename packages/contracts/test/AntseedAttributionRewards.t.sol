@@ -318,6 +318,97 @@ contract AntseedReferralProgramIntegrationTest is Test {
         assertEq(stats.getBuyerMetadataStats(1, newcomer).totalRequestCount, 3);
     }
 
+    function _preview(address who, Invite memory inv) private view returns (bytes4 failure) {
+        (, failure) = referrals.previewInvite(who, inv.epoch, inv.index, inv.r, inv.vs);
+    }
+
+    /// The ledger records first usage lazily. A buyer whose only settlement
+    /// nothing has observed since must still be judged by it: the preview
+    /// must reject exactly what the settlement will, since its ledger
+    /// callback records that usage before the binding is attempted.
+    function test_previewRejectsAnUnobservedOldBuyerLikeTheSettlement() public {
+        _settle(newcomer, none, 10e6); // first recognized usage in epoch 20, never observed
+        gate.setCurrentEpoch(23); // three epochs later, no callback or flush in between
+        accounting.setBuyerPoints(22, referrer, 1e6);
+        Invite memory inv = _invite(REFERRER_KEY, 23, 0);
+
+        (bool seen, uint256 firstEpoch) = ledger.firstUsageEpoch(newcomer);
+        assertTrue(seen);
+        assertEq(firstEpoch, 20);
+        assertFalse(referrals.isNewBuyer(newcomer));
+        assertEq(_preview(newcomer, inv), AntseedReferrals.NotNewBuyer.selector);
+
+        vm.expectEmit(true, false, false, true, address(stats));
+        emit AntseedStatsV2.InviteForwarded(newcomer, 23, 0, false, AntseedReferrals.NotNewBuyer.selector);
+        _settle(newcomer, inv, 7e6);
+        assertEq(referrals.referrerOf(newcomer), address(0));
+        assertFalse(referrals.inviteUsed(referrer, 23, 0));
+    }
+
+    /// At the edge of the new-buyer window the unobserved usage still
+    /// qualifies, and the preview and the settlement agree on that too.
+    function test_previewAcceptsAnUnobservedRecentBuyerLikeTheSettlement() public {
+        _settle(newcomer, none, 10e6); // epoch 20, never observed
+        gate.setCurrentEpoch(22);
+        accounting.setBuyerPoints(21, referrer, 1e6);
+        Invite memory inv = _invite(REFERRER_KEY, 22, 0);
+
+        assertTrue(referrals.isNewBuyer(newcomer));
+        assertEq(_preview(newcomer, inv), bytes4(0));
+
+        vm.expectEmit(true, false, false, true, address(stats));
+        emit AntseedStatsV2.InviteForwarded(newcomer, 22, 0, true, bytes4(0));
+        _settle(newcomer, inv, 7e6);
+        assertEq(referrals.referrerOf(newcomer), referrer);
+    }
+
+    /// Usage settled before the ledger was wired into Stats has no cursor
+    /// at all. It counts as epoch 0, so the buyer is not new, before and
+    /// during the settlement alike.
+    function test_previewRejectsUsagePredatingTheLedgerLikeTheSettlement() public {
+        stats.setAttributionUsage(address(0));
+        _settle(newcomer, none, 10e6); // recognized, but the ledger never saw it
+        stats.setAttributionUsage(address(ledger));
+
+        Invite memory inv = _invite(REFERRER_KEY, 20, 0);
+        (bool seen, uint256 firstEpoch) = ledger.firstUsageEpoch(newcomer);
+        assertTrue(seen);
+        assertEq(firstEpoch, 0);
+        assertFalse(referrals.isNewBuyer(newcomer));
+        assertEq(_preview(newcomer, inv), AntseedReferrals.NotNewBuyer.selector);
+
+        vm.expectEmit(true, false, false, true, address(stats));
+        emit AntseedStatsV2.InviteForwarded(newcomer, 20, 0, false, AntseedReferrals.NotNewBuyer.selector);
+        _settle(newcomer, inv, 1e6);
+        assertEq(referrals.referrerOf(newcomer), address(0));
+        assertFalse(referrals.inviteUsed(referrer, 20, 0));
+    }
+
+    /// A buyer with no recognized usage (only free settlements, or none at
+    /// all) stays new, and the invite it previews binds.
+    function test_previewAcceptsAGenuinelyNewBuyerLikeTheSettlement() public {
+        _settle(newcomer, none, 0); // free usage: a cursor, but no recognized points
+        gate.setCurrentEpoch(23);
+        accounting.setBuyerPoints(22, referrer, 1e6);
+        Invite memory inv = _invite(REFERRER_KEY, 23, 0);
+
+        (bool seen,) = ledger.firstUsageEpoch(newcomer);
+        assertFalse(seen);
+        assertTrue(referrals.isNewBuyer(newcomer));
+        assertEq(_preview(newcomer, inv), bytes4(0));
+        assertTrue(referrals.isNewBuyer(buyer)); // never settled at all
+        assertEq(_preview(buyer, inv), bytes4(0));
+
+        vm.expectEmit(true, false, false, true, address(stats));
+        emit AntseedStatsV2.InviteForwarded(newcomer, 23, 0, true, bytes4(0));
+        _settle(newcomer, inv, 5e6);
+        assertEq(referrals.referrerOf(newcomer), referrer);
+        uint256 firstEpoch;
+        (seen, firstEpoch) = ledger.firstUsageEpoch(newcomer);
+        assertTrue(seen);
+        assertEq(firstEpoch, 23); // the binding settlement is its first usage
+    }
+
     function test_selfInviteIsRejectedButTheSettlementSucceeds() public {
         vm.expectEmit(true, false, false, true, address(stats));
         emit AntseedStatsV2.InviteForwarded(referrer, 20, 0, false, AntseedReferrals.SelfReferral.selector);

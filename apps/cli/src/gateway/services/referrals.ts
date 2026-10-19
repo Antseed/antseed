@@ -31,7 +31,8 @@ import type { BuilderAgent, Builders, CreatedInvite, Referee, Referrals } from '
 import { errorMessage } from '../errors.js'
 import { recordAudit, type Actor, type ServiceContext } from './context.js'
 import { patchConfigFile, requestBuyerRestart, type SettingsContext } from './settings.js'
-import type { BuyerClient } from '../console-api/handlers/network-buyer.js'
+import { optionalBuyerJson, type BuyerClient } from '../console-api/handlers/network-buyer.js'
+import { resolveClientAgentId, type ClientAgentAttribution } from '../../cli/referral-state.js'
 
 /** Where a buyer identity's referral.json lives: the data dir for the default wallet, else the identity's directory. */
 export function referralStateDir(dataDir: string, buyerIdentity: string): string {
@@ -162,37 +163,62 @@ export async function configuredClientAgentId(configPath: string): Promise<numbe
   return typeof id === 'number' && id > 0 ? id : null
 }
 
-/** What the buyer signs as its client: the same precedence as `resolveBuyerAttribution`. */
-export function effectiveClientAgent(
-  configured: number | null,
-  chainIds: { cli?: number } | undefined,
-  env: NodeJS.ProcessEnv = process.env,
-): Builders['effective'] {
-  const fromEnv = parseClientAgentId(env['ANTSEED_CLIENT_AGENT_ID'])
-  if (fromEnv) return { agentId: fromEnv, source: 'env' }
-  if (configured) return { agentId: configured, source: 'config' }
-  if (chainIds?.cli && chainIds.cli > 0) return { agentId: chainIds.cli, source: 'default' }
-  return { agentId: null, source: 'none' }
+/** A client-agent attribution a buyer reported, or null when the value is not one. */
+function parseAttribution(value: unknown): ClientAgentAttribution | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const raw = value as Record<string, unknown>
+  const source = raw['source']
+  if (source !== 'env' && source !== 'config' && source !== 'default' && source !== 'none') return null
+  const agentId = raw['agentId'] === null ? null : parseClientAgentId(raw['agentId']) ?? undefined
+  if (agentId === undefined || (agentId === null) !== (source === 'none')) return null
+  return { agentId, source, client: raw['client'] === 'desktop' ? 'desktop' : 'cli' }
 }
 
-/** The configured and effective client agent, without the rewards read (which needs the explorer). */
-export async function readBuilderSettings(chain: AntsChainConfig, configPath: string, env: NodeJS.ProcessEnv = process.env): Promise<Builders> {
-  const agentId = await configuredClientAgentId(configPath)
-  return { available: false, agentId, effective: effectiveClientAgent(agentId, chain.clientAgentIds, env), agent: null }
+/**
+ * The client agent the running buyer reports it signs (`GET /_antseed/status`).
+ * Null when there is no buyer to ask, it does not answer, or it predates the
+ * report. The buyer may run with a different environment than this process
+ * (`gateway start --no-buyer`), so only its own answer is authoritative.
+ */
+export async function runtimeClientAgent(buyer: BuyerClient | null): Promise<ClientAgentAttribution | null> {
+  if (!buyer) return null
+  const status = await optionalBuyerJson(buyer, '/_antseed/status', { timeoutMs: 2_000 })
+  return parseAttribution(status?.['attribution'])
 }
 
-/** The gateway's client agent and what the builders program owes it (Antscan; the owner over RPC). */
-export async function readBuilders(ctx: AntsContext, configPath: string, env: NodeJS.ProcessEnv = process.env): Promise<Builders> {
-  const { agentId, effective } = await readBuilderSettings(ctx.chain, configPath, env)
-  if (!effective.agentId) return { available: false, agentId, effective, agent: null }
+/** This process's estimate of what a buyer started with `env` and the configured agent would sign. */
+function estimatedClientAgent(configured: number | null, chain: AntsChainConfig, env: NodeJS.ProcessEnv): Builders['effective'] {
+  return { ...resolveClientAgentId({ clientAgentId: configured ?? undefined, clientAgentIds: chain.clientAgentIds }, env), runtime: false }
+}
+
+/**
+ * The configured and effective client agent, without the rewards read (which
+ * needs the explorer). The effective agent is the running buyer's own report;
+ * without one it is estimated from this process's environment and the config
+ * (`runtime: false`).
+ */
+export async function readBuilderSettings(chain: AntsChainConfig, configPath: string, buyer: BuyerClient | null, env: NodeJS.ProcessEnv = process.env): Promise<Builders> {
+  const [agentId, runtime] = await Promise.all([configuredClientAgentId(configPath), runtimeClientAgent(buyer)])
+  const effective = runtime ? { ...runtime, runtime: true } : estimatedClientAgent(agentId, chain, env)
+  return { available: false, agentId, effective, agent: null }
+}
+
+/** What the builders program owes a client agent (Antscan; the owner over RPC). */
+export async function readBuilderAgent(ctx: AntsContext, agentId: number | null): Promise<Pick<Builders, 'available' | 'agent'>> {
   // The console claims the epochs listed here, so the rewards need Antscan: without it, skip the ownerOf reads too.
-  if (!ctx.indexer()) return { available: false, agentId, effective, agent: null }
-  const view = await readBuilderAgents(ctx, [effective.agentId])
-  const found = view.indexed ? view.agents.find((agent) => agent.agentId === effective.agentId) : undefined
+  if (!agentId || !ctx.indexer()) return { available: false, agent: null }
+  const view = await readBuilderAgents(ctx, [agentId])
+  const found = view.indexed ? view.agents.find((agent) => agent.agentId === agentId) : undefined
   const agent: BuilderAgent | null = found
     ? { agentId: found.agentId, owner: found.owner, firstParty: found.firstParty, payableAnts: ants(found.payable), claimableEpochs: found.claimableEpochs }
     : null
-  return { available: view.indexed, agentId, effective, agent }
+  return { available: view.indexed, agent }
+}
+
+/** The gateway's client agent, as the running buyer signs it, and what the builders program owes it. */
+export async function readBuilders(ctx: AntsContext, configPath: string, buyer: BuyerClient | null, env: NodeJS.ProcessEnv = process.env): Promise<Builders> {
+  const settings = await readBuilderSettings(ctx.chain, configPath, buyer, env)
+  return { ...settings, ...(await readBuilderAgent(ctx, settings.effective.agentId)) }
 }
 
 function parseAgentId(value: unknown): number | null {
@@ -208,14 +234,20 @@ function parseAgentId(value: unknown): number | null {
  * Set (or clear) the client agent the gateway's buyer credits its usage to,
  * then restart the buyer so it signs the new client id. An id the identity
  * registry does not know is refused when the chain can answer.
+ *
+ * Returns the agent the buyer signs from here on: the running buyer's report
+ * when it was not restarted, else what the restarted buyer will sign. A
+ * restart keeps the buyer's environment, so an ANTSEED_CLIENT_AGENT_ID it
+ * runs with still wins over the saved agent (`source: 'env'`).
  */
 export async function setBuilderAgent(
   settings: SettingsContext,
   actor: Actor,
   body: unknown,
   ctx: AntsContext,
-  buyer: BuyerClient,
-): Promise<{ restartRequired: boolean }> {
+  buyer: BuyerClient | null,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<{ restartRequired: boolean; agentId: number | null; effective: Builders['effective'] }> {
   const input = body && typeof body === 'object' ? (body as Record<string, unknown>)['agentId'] : undefined
   if (input === undefined) throw new ConsoleError(400, 'invalid_agent', 'agentId is required (null clears it).')
   const agentId = parseAgentId(input)
@@ -230,8 +262,10 @@ export async function setBuilderAgent(
       }
     }
   }
-  const previous = await configuredClientAgentId(settings.configPath)
-  if (previous === agentId) return { restartRequired: false }
+  // Asked before the restart: the running buyer says whether its environment overrides the config.
+  const [previous, before] = await Promise.all([configuredClientAgentId(settings.configPath), runtimeClientAgent(buyer)])
+  const running = (): Builders['effective'] => before ? { ...before, runtime: true } : estimatedClientAgent(agentId, ctx.chain, env)
+  if (previous === agentId) return { restartRequired: false, agentId, effective: running() }
   await patchConfigFile(settings.configPath, (config) => {
     const buyerConfig = config['buyer'] && typeof config['buyer'] === 'object' && !Array.isArray(config['buyer'])
       ? config['buyer'] as Record<string, unknown>
@@ -241,5 +275,14 @@ export async function setBuilderAgent(
   })
   recordAudit(settings, actor, 'builders.update', { kind: 'settings', id: 'builders', label: 'Builders program' }, { agentId, previous })
   settings.log('console: client agent changed; restarting the buyer')
-  return { restartRequired: await requestBuyerRestart(settings, buyer) }
+  const restartRequired = buyer ? await requestBuyerRestart(settings, buyer) : true
+  // Not restarted: the running buyer keeps signing what it reported.
+  if (restartRequired) return { restartRequired, agentId, effective: running() }
+  if (before?.source === 'env') {
+    settings.log(`console: ANTSEED_CLIENT_AGENT_ID=${before.agentId} on the buyer overrides the saved client agent`)
+    return { restartRequired, agentId, effective: { ...before, runtime: false } }
+  }
+  // The restarted buyer has not reported yet: what it will sign under the new config, for its client kind.
+  const restartedEnv = before ? { ANTSEED_CLIENT_KIND: before.client } : env
+  return { restartRequired, agentId, effective: estimatedClientAgent(agentId, ctx.chain, restartedEnv) }
 }

@@ -5,7 +5,7 @@ import { Wallet, getAddress, zeroPadValue } from 'ethers';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { decodeInvite, recordIssuedInvite, recoverInviter } from '@antseed/node';
 import type { AntsContext } from './context.js';
-import type { IndexedReferrer, Indexer } from './indexer.js';
+import { createIndexer, type IndexedReferrer, type Indexer } from './indexer.js';
 import {
   InviteQuotaError,
   claimRefereeRewards,
@@ -55,6 +55,8 @@ function fixture(options: { referrals?: boolean; explorer?: boolean; indexed?: P
     inviteQuota: vi.fn(async (_referrer: string, epoch: number) => (epoch === 40 ? 4 : 0)),
     inviteUsed: vi.fn(async (_referrer: string, _epoch: number, index: number) => index === 1),
     referredCount: vi.fn(async () => 3),
+    // The buyer is bound on-chain to `referrer`.
+    referrerOf: vi.fn(async (_buyer: string) => referrer.toLowerCase()),
     // Epochs 30 and 33 hold an unclaimed, final referee bonus.
     pendingRefereeReward: vi.fn(async (_buyer: string, epoch: number) => (epoch === 30 || epoch === 33 ? 5n : 0n)),
   };
@@ -67,6 +69,14 @@ function fixture(options: { referrals?: boolean; explorer?: boolean; indexed?: P
     requireSigner: () => ({}),
   } as unknown as AntsContext;
   return { ctx, indexer, client };
+}
+
+/** A real Antscan client against an older explorer: every referrals endpoint answers 404. */
+function useOlderExplorer(ctx: AntsContext): ReturnType<typeof vi.fn> {
+  const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ error: 'Not Found' }), { status: 404 }));
+  const antscan = createIndexer('https://antscan.test', fetchImpl as unknown as typeof fetch) as Indexer;
+  (ctx as unknown as { indexer: () => Indexer }).indexer = () => antscan;
+  return fetchImpl;
 }
 
 const dirs: string[] = [];
@@ -130,6 +140,31 @@ describe('referral card', () => {
     expect(client.inviteUsed.mock.calls.map(([, epoch, index]) => [epoch, index])).toEqual([[40, 0], [40, 1], [40, 2], [40, 3]]);
     expect(client.pendingRewards).not.toHaveBeenCalled();
     expect(client.pendingReward).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { name: 'times out', failure: new Error('The operation was aborted due to timeout') },
+    { name: 'returns HTTP 500', failure: new Error('Antscan responded 500') },
+  ])('stays available with on-chain invites and count when the explorer $name', async ({ failure }) => {
+    const { ctx, indexer } = fixture();
+    indexer.referrer.mockRejectedValue(failure);
+    expect(await referral(ctx)).toEqual({
+      available: true, indexed: false, payable: '0', claimableEpochs: [], referredCount: 3, invites: { epoch: 40, quota: 4, used: 1, left: 3 },
+    });
+  });
+
+  it('stays available when an older explorer has no referrals endpoint (404)', async () => {
+    const { ctx } = fixture();
+    const fetchImpl = useOlderExplorer(ctx);
+    expect(await referral(ctx)).toMatchObject({ available: true, indexed: false, referredCount: 3, invites: { quota: 4, left: 3 } });
+    expect(fetchImpl).toHaveBeenCalled();
+  });
+
+  it('still fails when a required on-chain read fails', async () => {
+    const { ctx, indexer, client } = fixture();
+    indexer.referrer.mockRejectedValue(new Error('antscan down'));
+    client.referredCount.mockRejectedValue(new Error('rpc down'));
+    await expect(referral(ctx)).rejects.toThrow('rpc down');
   });
 
   it('counts on-chain bound invites together with those handed out from this install', async () => {
@@ -261,17 +296,50 @@ describe('invites', () => {
 
 describe('referee bonus', () => {
   it('reports the inviter, weeks left and payable amount from Antscan', async () => {
-    expect(await refereeBonus(fixture().ctx)).toEqual({
-      available: true, referrer, boundEpoch: 20, windowEnd: 32, weeksLeft: 10, payable: '900', claimableEpochs: [20, 21],
+    const { ctx, client } = fixture();
+    expect(await refereeBonus(ctx)).toEqual({
+      available: true, indexed: true, referrer, boundEpoch: 20, windowEnd: 32, weeksLeft: 10, payable: '900', claimableEpochs: [20, 21],
     });
+    expect(client.referrerOf).not.toHaveBeenCalled();
     expect(await refereeBonus(fixture({ binding: { currentEpoch: null } }).ctx)).toMatchObject({ weeksLeft: null });
     expect(await refereeBonus(fixture({ binding: { currentEpoch: 40 } }).ctx)).toMatchObject({ weeksLeft: 0 });
   });
 
-  it('is hidden without referrals or an explorer that indexes them', async () => {
-    expect((await refereeBonus(fixture({ referrals: false }).ctx)).available).toBe(false);
-    expect((await refereeBonus(fixture({ explorer: false }).ctx)).available).toBe(false);
-    expect((await refereeBonus(fixture({ binding: { available: false } }).ctx)).available).toBe(false);
+  it('is hidden without a referrals contract', async () => {
+    expect(await refereeBonus(fixture({ referrals: false }).ctx)).toEqual({
+      available: false, indexed: false, referrer: null, boundEpoch: null, windowEnd: null, weeksLeft: null, payable: '0', claimableEpochs: [], canBind: null,
+    });
+  });
+
+  it.each([
+    { name: 'no explorer is configured', options: { explorer: false } },
+    { name: 'the explorer does not index referrals', options: { binding: { available: false } } },
+  ])('reads the binding on-chain when $name, bonus unknown', async ({ options }) => {
+    const { ctx, client } = fixture(options);
+    expect(await refereeBonus(ctx)).toEqual({
+      available: true, indexed: false, referrer, boundEpoch: null, windowEnd: null, weeksLeft: null, payable: '0', claimableEpochs: [], canBind: null,
+    });
+    expect(client.referrerOf).toHaveBeenCalledWith(buyer);
+    expect(client.pendingRefereeReward).not.toHaveBeenCalled();
+  });
+
+  it('reads the binding on-chain when the explorer fails or has no referrals endpoint (404)', async () => {
+    const failing = fixture();
+    failing.indexer.referralBinding.mockRejectedValue(new Error('Antscan responded 500'));
+    expect(await refereeBonus(failing.ctx)).toMatchObject({ available: true, indexed: false, referrer });
+    const older = fixture();
+    const fetchImpl = useOlderExplorer(older.ctx);
+    expect(await refereeBonus(older.ctx)).toMatchObject({ available: true, indexed: false, referrer });
+    expect(fetchImpl).toHaveBeenCalled();
+  });
+
+  it('reports no inviter for a buyer unbound on-chain, and hides the bonus when that read fails too', async () => {
+    const unbound = fixture({ explorer: false });
+    unbound.client.referrerOf.mockResolvedValue('0x0000000000000000000000000000000000000000');
+    expect(await refereeBonus(unbound.ctx)).toMatchObject({ available: true, indexed: false, referrer: null });
+    const failing = fixture({ explorer: false });
+    failing.client.referrerOf.mockRejectedValue(new Error('rpc down'));
+    expect(await refereeBonus(failing.ctx)).toMatchObject({ available: false, referrer: null });
   });
 
   it('claims the payable epochs for the buyer account', async () => {
@@ -328,7 +396,7 @@ describe('referee bonus', () => {
 
   it('reads the bonus straight from an explorer URL', async () => {
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify(binding))) as unknown as typeof fetch;
-    expect(await refereeBonusFromExplorer('https://antscan.test', buyer, fetchImpl)).toMatchObject({ referrer, payable: '900' });
+    expect(await refereeBonusFromExplorer('https://antscan.test', buyer, fetchImpl)).toMatchObject({ indexed: true, referrer, payable: '900' });
     expect((await refereeBonusFromExplorer(undefined, buyer, fetchImpl)).available).toBe(false);
   });
 });

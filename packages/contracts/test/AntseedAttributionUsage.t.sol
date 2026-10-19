@@ -440,6 +440,39 @@ contract AntseedAttributionUsageTest is Test {
         assertEq(epoch, 0);
     }
 
+    function test_firstUsageViewIncludesUsageNotYetObserved() public {
+        _settle(desktop, 0); // free usage: a cursor, but no recognized points
+        (bool seen,) = ledger.firstUsageEpoch(buyer);
+        assertFalse(seen);
+
+        accounting.setCurrentEpoch(22);
+        _settle(desktop, 4); // first recognized usage, settled in 22, not observed yet
+        accounting.setCurrentEpoch(25);
+        (bool viewSeen, uint256 viewEpoch) = ledger.firstUsageEpoch(buyer);
+        assertTrue(viewSeen);
+        assertEq(viewEpoch, 22);
+
+        // The observation records exactly what the view reported.
+        vm.expectEmit(true, true, false, false);
+        emit AntseedAttributionUsage.FirstUsageRecorded(buyer, 22);
+        _flush();
+        (bool seen_, uint256 epoch) = ledger.firstUsageEpoch(buyer);
+        assertTrue(seen_);
+        assertEq(epoch, viewEpoch);
+    }
+
+    function test_firstUsageViewCountsUsagePredatingTheLedgerAsEpochZero() public {
+        accounting.settle(buyer, 100); // no callback ever preceded it
+        (bool seen, uint256 epoch) = ledger.firstUsageEpoch(buyer);
+        assertTrue(seen);
+        assertEq(epoch, 0);
+
+        _settle(desktop, 5); // the first observation records the same
+        (seen, epoch) = ledger.firstUsageEpoch(buyer);
+        assertTrue(seen);
+        assertEq(epoch, 0);
+    }
+
     function test_firstUsageIsRecordedWhilePaused() public {
         ledger.pause();
         _settle(desktop, 5);

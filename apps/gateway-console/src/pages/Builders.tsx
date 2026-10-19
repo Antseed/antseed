@@ -12,11 +12,14 @@ import { qk, useChain } from '../lib/queries'
 
 const ReferralClaim = lazy(() => import('../wallet/ReferralClaim'))
 
-const SOURCE_LABELS: Record<BuildersView['effective']['source'], string> = {
-  env: 'ANTSEED_CLIENT_AGENT_ID on the gateway host',
-  config: 'Set for this gateway',
-  default: 'Antseed CLI default',
-  none: 'Not set',
+function sourceLabel(effective: BuildersView['effective']): string {
+  const label = {
+    env: 'ANTSEED_CLIENT_AGENT_ID on the buyer',
+    config: 'Set for this gateway',
+    default: `Antseed ${effective.client === 'desktop' ? 'Desktop' : 'CLI'} default`,
+    none: 'Not set',
+  }[effective.source]
+  return effective.runtime ? label : `${label} (estimated)`
 }
 
 export default function Builders() {
@@ -38,7 +41,7 @@ export default function Builders() {
             <>
               {data.restartRequired && <Alert tone="warning">Saved. The buyer could not restart itself: restart it to start signing the new client agent.</Alert>}
               <div className="gc-grid gc-grid--3">
-                <StatTile label="Client agent" value={data.effective.agentId !== null ? `#${data.effective.agentId}` : 'None'} sub={SOURCE_LABELS[data.effective.source]} />
+                <StatTile label="Client agent" value={data.effective.agentId !== null ? `#${data.effective.agentId}` : 'None'} sub={sourceLabel(data.effective)} />
                 <StatTile label="Paid to" value={agent?.owner ? <Mono title={agent.owner}>{shortId(agent.owner)}</Mono> : '—'}
                   sub={agent && !agent.owner ? 'Not registered' : 'The agent owner'} />
                 <StatTile label="Ready to claim" value={data.available && agent ? formatAnts(agent.payableAnts) : '—'} />
@@ -48,14 +51,17 @@ export default function Builders() {
                 actions={<Button size="sm" variant="outline" onClick={() => setEditing(true)}>{data.agentId !== null ? 'Change' : 'Set agent'}</Button>}>
                 <DetailList items={[
                   ['Agent', data.effective.agentId !== null ? <>#{data.effective.agentId} {agent?.firstParty ? <Badge>Antseed {agent.firstParty === 'cli' ? 'CLI' : 'Desktop'}</Badge> : null}</> : 'None'],
-                  ['Source', SOURCE_LABELS[data.effective.source]],
+                  ['Source', sourceLabel(data.effective)],
                   ['Owner', agent?.owner ? <Mono title={agent.owner}>{agent.owner}</Mono> : '—'],
                 ]} />
-                {data.effective.source === 'default' && (
-                  <p className="gc-fineprint">This gateway's usage currently credits Antseed's own CLI agent. Set your agent to earn the builders share yourself.</p>
+                {!data.effective.runtime && (
+                  <p className="gc-fineprint">Estimated from this gateway's settings: the buyer did not report the agent it signs.</p>
                 )}
-                {data.effective.source === 'env' && data.agentId !== null && data.agentId !== data.effective.agentId && (
-                  <p className="gc-fineprint">ANTSEED_CLIENT_AGENT_ID overrides the agent set here (#{data.agentId}).</p>
+                {data.effective.source === 'default' && (
+                  <p className="gc-fineprint">This gateway's usage currently credits Antseed's own {data.effective.client === 'desktop' ? 'Desktop' : 'CLI'} agent. Set your agent to earn the builders share yourself.</p>
+                )}
+                {data.effective.source === 'env' && data.agentId !== data.effective.agentId && (
+                  <p className="gc-fineprint">ANTSEED_CLIENT_AGENT_ID on the buyer overrides {data.agentId !== null ? <>the agent set here (#{data.agentId})</> : 'the default'}; remove it there and restart the buyer to use the saved agent.</p>
                 )}
               </Panel>
 

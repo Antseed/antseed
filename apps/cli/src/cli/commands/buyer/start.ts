@@ -13,7 +13,7 @@ import { AntseedNode, DepositRelayClient, DepositsClient, getInstance, peerRelay
 import type { Identity, NodePaymentsConfig } from '@antseed/node'
 import { OFFICIAL_BOOTSTRAP_NODES, parseBootstrapList, toBootstrapConfig } from '@antseed/node/discovery'
 import { setupShutdownHandler } from '../../shutdown.js'
-import { BuyerAttributionSync, referralLookup as buyerReferralLookup, referralVerifier, resolveBuyerAttribution } from '../../referral-state.js'
+import { BuyerAttributionSync, referralLookup as buyerReferralLookup, referralVerifier, resolveBuyerAttribution, resolveClientAgentId } from '../../referral-state.js'
 import { walletPassphraseForStart } from '../../wallet-passphrase.js'
 import { loadRouterPlugin, loadVerifierPlugin, buildPluginConfig, getPackageVersions } from '../../../plugins/loader.js'
 import { ensurePluginsUpToDate } from '../../../plugins/drift.js'
@@ -611,6 +611,8 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         routingPreferences: effectiveBuyerConfig.routingPreferences,
         minPeerReputation: effectiveBuyerConfig.minPeerReputation,
         settingOverrides: buyerSettingOverrides({ buyerOverrides: runtimeOverrides, verifierFlags }),
+        // Reported on /_antseed/status, so a gateway (possibly launched with a different environment) shows what this process signs.
+        clientAgent: resolveClientAgentId(attributionOptions),
         backgroundRefreshIntervalMs: effectiveBuyerConfig.peerRefreshIntervalMs,
         ...(verifierPolicy ? { verifier: verifierPolicy } : {}),
         ...(chainReader ? { balanceReader: chainReader } : {}),

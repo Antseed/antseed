@@ -75,7 +75,9 @@ let builderAgent: number | null = null
 const CLI_AGENT = 1
 
 export function mockBuilders(): Builders {
-  const effective: Builders['effective'] = builderAgent !== null ? { agentId: builderAgent, source: 'config' } : { agentId: CLI_AGENT, source: 'default' }
+  const effective: Builders['effective'] = builderAgent !== null
+    ? { agentId: builderAgent, source: 'config', client: 'cli', runtime: true }
+    : { agentId: CLI_AGENT, source: 'default', client: 'cli', runtime: true }
   const firstParty = effective.agentId === CLI_AGENT ? 'cli' as const : null
   return {
     available: true,

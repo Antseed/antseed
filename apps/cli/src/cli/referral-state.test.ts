@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { clearReferralInvite, encodeInvite, readReferralState, saveReferralInvite } from '@antseed/node';
-import { BuyerAttributionSync, resolveBuyerAttribution } from './referral-state.js';
+import { BuyerAttributionSync, resolveBuyerAttribution, resolveClientAgentId } from './referral-state.js';
 
 const REFERRER = '0x1111111111111111111111111111111111111111';
 const INVITE = { epoch: 42n, index: 7n, r: `0x${'aa'.repeat(32)}`, vs: `0x${'bb'.repeat(32)}` };
@@ -32,6 +32,15 @@ test('buyer attribution resolves the client agent id from env, config, then chai
 
   const none = resolveBuyerAttribution({ referralState: null, env: {} });
   assert.deepEqual(none, {});
+});
+
+test('the client agent resolver reports where the id came from and which client default applies', () => {
+  const chain = { cli: 11, desktop: 12 };
+  assert.deepEqual(resolveClientAgentId({ clientAgentId: 5, clientAgentIds: chain }, { ANTSEED_CLIENT_AGENT_ID: '7' }), { agentId: 7, source: 'env', client: 'cli' });
+  assert.deepEqual(resolveClientAgentId({ clientAgentId: 5, clientAgentIds: chain }, {}), { agentId: 5, source: 'config', client: 'cli' });
+  assert.deepEqual(resolveClientAgentId({ clientAgentIds: chain }, {}), { agentId: 11, source: 'default', client: 'cli' });
+  assert.deepEqual(resolveClientAgentId({ clientAgentIds: chain }, { ANTSEED_CLIENT_KIND: 'desktop' }), { agentId: 12, source: 'default', client: 'desktop' });
+  assert.deepEqual(resolveClientAgentId({}, {}), { agentId: null, source: 'none', client: 'cli' });
 });
 
 test('buyer attribution carries a pending invite until it is bound, keeping the client', () => {

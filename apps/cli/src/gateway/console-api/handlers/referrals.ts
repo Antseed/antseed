@@ -12,7 +12,7 @@ import { errorMessage } from '../../errors.js'
 import {
   clearWorkspaceInvite,
   createWorkspaceInvite,
-  readBuilders,
+  readBuilderAgent,
   readBuilderSettings,
   readReferrals,
   redeemWorkspaceInvite,
@@ -128,11 +128,14 @@ export function registerReferralRoutes(router: ConsoleRouter, deps: ConsoleDeps,
     return referrals(ws.stateDir, address, true)
   })
 
-  const builders = async (fresh = false): Promise<Builders> => {
-    if (fresh) cache.invalidate('builders')
+  // The buyer's report of the agent it signs is a cheap local call, read on
+  // every request; only the explorer read of that agent's rewards is cached.
+  const builderRewards = async (ctx: AntsContext, agentId: number | null, fresh = false): Promise<Pick<Builders, 'available' | 'agent'>> => {
+    const key = `builders:${agentId ?? 'none'}`
+    if (fresh) cache.invalidate(key)
     try {
-      const read = await cache.read('builders', { ttlMs: BUILDERS_TTL_MS, staleWhileRevalidateMs: BUILDERS_TTL_MS },
-        async () => readBuilders(context(await resolveChain(), ZeroAddress), deps.configPath, overrides.env))
+      const read = await cache.read(key, { ttlMs: BUILDERS_TTL_MS, staleWhileRevalidateMs: BUILDERS_TTL_MS },
+        async () => readBuilderAgent(ctx, agentId))
       return read.value
     } catch (err) {
       throw new ConsoleError(502, 'builders_unavailable', `The builders program could not be read: ${errorMessage(err)}`)
@@ -141,15 +144,18 @@ export function registerReferralRoutes(router: ConsoleRouter, deps: ConsoleDeps,
 
   router.add('GET', '/builders', async (request): Promise<Builders> => {
     requireOrgAdmin(request.principal, deps.store)
-    return builders(request.query.get('fresh') === '1')
+    const chain = await resolveChain()
+    const settings = await readBuilderSettings(chain, deps.configPath, buyer, overrides.env)
+    return { ...settings, ...(await builderRewards(context(chain, ZeroAddress), settings.effective.agentId, request.query.get('fresh') === '1')) }
   })
 
   router.add('PUT', '/builders', async (request): Promise<Builders> => {
     requireOrgAdmin(request.principal, deps.store)
     const chain = await resolveChain()
-    const { restartRequired } = await setBuilderAgent(deps, requestActor(deps, request), request.body, context(chain, ZeroAddress), buyer)
+    const ctx = context(chain, ZeroAddress)
+    const { restartRequired, agentId, effective } = await setBuilderAgent(deps, requestActor(deps, request), request.body, ctx, buyer, overrides.env)
     // The agent is saved by now: an unreachable explorer only leaves its rewards unknown.
-    const view = await builders(true).catch(() => readBuilderSettings(chain, deps.configPath, overrides.env))
-    return restartRequired ? { ...view, restartRequired: true } : view
+    const rewards = await builderRewards(ctx, effective.agentId, true).catch(() => ({ available: false, agent: null }))
+    return { agentId, effective, ...rewards, ...(restartRequired ? { restartRequired: true } : {}) }
   })
 }

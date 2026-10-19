@@ -37,8 +37,10 @@ interface IAntseedAttributionDeposits {
  *         of that buyer's share; afterwards the referrer earns all of it.
  *
  *         First usage: the ledger also remembers the epoch of each buyer's
- *         first recognized usage (`firstUsageEpoch`), which AntseedReferrals
- *         uses to accept bindings only from new buyers.
+ *         first recognized usage, which AntseedReferrals uses to accept
+ *         bindings only from new buyers. It is recorded lazily, but
+ *         `firstUsageEpoch` also derives a not-yet-observed one, so it is
+ *         exact at any time.
  *
  *         Points here are the same weighted points AntseedUsageAccounting
  *         records for the buyer — policy-scaled and pool-weighted, so wash
@@ -216,12 +218,20 @@ contract AntseedAttributionUsage is Ownable2Step, Pausable {
     }
 
     /// @notice Epoch of the buyer's first recognized usage. `seen` is false
-    ///         while none has been observed. Usage that already existed when
-    ///         the ledger first observed the buyer reports epoch 0.
+    ///         while the buyer has none. Usage that predates the ledger
+    ///         reports epoch 0.
+    ///
+    ///         Effective, not just stored: the ledger records the first usage
+    ///         lazily, at the buyer's next callback or flush, so a settlement
+    ///         nothing has observed yet is derived here exactly as that
+    ///         observation would record it (`_unrecordedFirstUsage`). The
+    ///         answer therefore never changes when the observation lands, so
+    ///         AntseedReferrals' `previewInvite` (before a settlement) and its
+    ///         binding (after this settlement's callback) agree.
     function firstUsageEpoch(address buyer) external view returns (bool seen, uint256 epoch) {
         uint256 stored = _firstUsage[buyer];
-        if (stored == 0) return (false, 0);
-        return (true, stored - 1);
+        if (stored != 0) return (true, stored - 1);
+        return _unrecordedFirstUsage(buyer, _cursors[buyer], _cumulativePoints(buyer));
     }
 
     /// @notice Oldest epoch that can still receive credits.
@@ -237,23 +247,51 @@ contract AntseedAttributionUsage is Ownable2Step, Pausable {
     ///      before attribution existed is not credited to anyone.
     ///
     ///      Also records the buyer's first recognized usage. Cumulative points
-    ///      only grow, so the baseline leaves zero exactly once: the growth then
-    ///      belongs to settlements made in the cursor's epoch, or, on the very
-    ///      first observation, to usage predating the ledger (epoch 0). Later
-    ///      calls never reach the extra storage access.
+    ///      only grow, so the baseline leaves zero exactly once; see
+    ///      `_unrecordedFirstUsage` for the epoch it records.
     function _advance(address buyer, Cursor storage cursor) internal returns (uint256 delta) {
-        uint256 current = usageAccounting.buyerUsageTotal(buyer).weightedPoints;
+        uint256 current = _cumulativePoints(buyer);
         uint256 baseline = cursor.weightedPoints;
-        // Cursor packs into uint128; the accounting's cumulative weighted points
-        // stay far below that, but never revert a settlement over it.
-        if (current > type(uint128).max) current = type(uint128).max;
+        (bool first, uint256 firstEpoch) = _unrecordedFirstUsage(buyer, cursor, current);
         cursor.weightedPoints = uint128(current);
-        if (baseline == 0 && current != 0 && _firstUsage[buyer] == 0) {
-            uint256 firstEpoch = cursor.initialized ? cursor.epoch : 0;
+        if (first) {
             _firstUsage[buyer] = firstEpoch + 1;
             emit FirstUsageRecorded(buyer, firstEpoch);
         }
         if (cursor.initialized && current > baseline) delta = current - baseline;
+    }
+
+    /// @dev The first usage an observation of `current` cumulative points
+    ///      records now, if any. Shared by `_advance` and `firstUsageEpoch` so
+    ///      the view and the recording can never disagree:
+    ///        - nothing when the buyer's first usage is already stored, the
+    ///          baseline is non-zero (it only leaves zero by recording one), or
+    ///          the buyer still has no recognized points;
+    ///        - otherwise the growth belongs to settlements made in the
+    ///          cursor's epoch: every settlement calls back before it accrues,
+    ///          so points beyond a zero baseline settled in that epoch, however
+    ///          many epochs ago;
+    ///        - with no cursor at all, points exist that no callback preceded:
+    ///          usage predating the ledger (or the Stats wiring), whose epoch
+    ///          is unknown and is taken as 0, the oldest possible, so such a
+    ///          buyer is never mistaken for a new one.
+    ///      The baseline check comes first: it shares the cursor's slot, so
+    ///      later observations never reach the extra storage access.
+    function _unrecordedFirstUsage(address buyer, Cursor storage cursor, uint256 current)
+        internal
+        view
+        returns (bool first, uint256 epoch)
+    {
+        if (cursor.weightedPoints != 0 || current == 0 || _firstUsage[buyer] != 0) return (false, 0);
+        return (true, cursor.initialized ? cursor.epoch : 0);
+    }
+
+    /// @dev The buyer's cumulative weighted points, clamped to the cursor's
+    ///      uint128: the accounting's totals stay far below that, but a
+    ///      settlement must never revert over it.
+    function _cumulativePoints(address buyer) internal view returns (uint256 current) {
+        current = usageAccounting.buyerUsageTotal(buyer).weightedPoints;
+        if (current > type(uint128).max) current = type(uint128).max;
     }
 
     /// @dev Credit `delta` only when attribution is enabled now and was

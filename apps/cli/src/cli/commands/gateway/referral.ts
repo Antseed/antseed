@@ -74,17 +74,32 @@ function printReferrals(record: WorkspaceRecord, view: Referrals): void {
   }
 }
 
+function clientAgentSourceLabel(effective: Builders['effective']): string {
+  if (effective.source === 'default') return `the Antseed ${effective.client === 'desktop' ? 'Desktop' : 'CLI'} default`
+  return { env: 'ANTSEED_CLIENT_AGENT_ID', config: 'buyer.clientAgentId', none: 'not set' }[effective.source]
+}
+
+/** A plain note when ANTSEED_CLIENT_AGENT_ID on the buyer wins over the saved agent; null otherwise. */
+function envOverrideNote(saved: number | null, effective: Builders['effective']): string | null {
+  if (effective.source !== 'env' || effective.agentId === saved) return null
+  return `ANTSEED_CLIENT_AGENT_ID=${effective.agentId} on the buyer overrides ${saved !== null ? `the saved agent (${saved})` : 'the default'}; remove it from the buyer's environment and restart it to use the saved agent.`
+}
+
+const ESTIMATED_NOTE = 'Estimated from this gateway\'s settings: the buyer did not report the agent it signs (not running, restarting, or an older version).'
+
 function printBuilders(view: Builders): void {
   const { effective } = view
-  const sourceLabel = { env: 'ANTSEED_CLIENT_AGENT_ID', config: 'buyer.clientAgentId', default: 'the Antseed CLI default', none: 'not set' }[effective.source]
-  console.log(`Client agent: ${effective.agentId ?? chalk.yellow('none')}  ${chalk.dim(`(${sourceLabel})`)}`)
+  console.log(`Client agent: ${effective.agentId ?? chalk.yellow('none')}  ${chalk.dim(`(${clientAgentSourceLabel(effective)}${effective.runtime ? '' : ', estimated'})`)}`)
+  if (!effective.runtime) console.log(chalk.dim(ESTIMATED_NOTE))
+  const override = envOverrideNote(view.agentId, effective)
+  if (override) console.log(chalk.yellow(override))
   if (!view.available || !view.agent) {
     console.log(chalk.dim('Builders program data is not available on this network.'))
     return
   }
   console.log(`Owner (paid): ${view.agent.owner ?? chalk.yellow('not registered')}`)
   console.log(`Payable: ${view.agent.payableAnts} ANTS${view.agent.claimableEpochs.length ? ` (epochs ${view.agent.claimableEpochs.join(', ')})` : ''}`)
-  if (effective.source === 'default') console.log(chalk.dim('Usage through this gateway currently credits the Antseed CLI. Set your own agent: antseed gateway builders set <agentId>'))
+  if (effective.source === 'default') console.log(chalk.dim(`Usage through this gateway currently credits the Antseed ${effective.client === 'desktop' ? 'Desktop' : 'CLI'}. Set your own agent: antseed gateway builders set <agentId>`))
 }
 
 export function registerGatewayReferralCommands(gateway: Command): void {
@@ -145,12 +160,12 @@ export function registerGatewayReferralCommands(gateway: Command): void {
   const builders = gateway.command('builders')
     .description('The builders program: the ERC-8004 client agent this gateway\'s usage credits, and its rewards')
 
-  builders.command('status')
-    .description('Show the client agent the buyer signs and what the builders program owes it')
-    .option('--json', 'print machine-readable JSON', false)
+  addBuyerPortOption(builders.command('status')
+    .description('Show the client agent the running buyer signs and what the builders program owes it')
+    .option('--json', 'print machine-readable JSON', false))
     .action((options: { json: boolean }, cmd: Command) => withGateway(cmd, async (gateway) => {
       const chain = await referralCliRuntime.resolveChain(gateway.configPath)
-      const view = await readBuilders(gatewayAntsContext({ chain, address: ZeroAddress }), gateway.configPath)
+      const view = await readBuilders(gatewayAntsContext({ chain, address: ZeroAddress }), gateway.configPath, await gateway.buyer().catch(() => null))
       if (options.json) printJson(view)
       else printBuilders(view)
     }))
@@ -162,8 +177,10 @@ export function registerGatewayReferralCommands(gateway: Command): void {
       const chain = await referralCliRuntime.resolveChain(gateway.configPath)
       const agentId = value.trim().toLowerCase() === 'none' ? null : value.trim()
       const settings = { ...gateway.ctx, configPath: gateway.configPath, publicUrl: null, buyerPort: await gateway.buyerPort() }
-      const { restartRequired } = await setBuilderAgent(settings, gateway.actor, { agentId }, gatewayAntsContext({ chain, address: ZeroAddress }), await gateway.buyer())
-      console.log(agentId === null ? 'Client agent cleared.' : `Client agent set to ${agentId}.`)
-      if (restartRequired) console.log(chalk.yellow('Restart the buyer to apply it (it could not restart itself).'))
+      const result = await setBuilderAgent(settings, gateway.actor, { agentId }, gatewayAntsContext({ chain, address: ZeroAddress }), await gateway.buyer().catch(() => null))
+      console.log(result.agentId === null ? 'Client agent cleared.' : `Client agent set to ${result.agentId}.`)
+      if (result.restartRequired) console.log(chalk.yellow('Restart the buyer to apply it (it could not restart itself).'))
+      const override = envOverrideNote(result.agentId, result.effective)
+      if (override) console.log(chalk.yellow(override))
     }))
 }

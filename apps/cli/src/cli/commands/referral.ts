@@ -141,7 +141,7 @@ export async function referralStatus(context: ReferralCommandContext): Promise<R
   return {
     configured,
     state,
-    referee: referee ?? { available: false, referrer: null, boundEpoch: null, windowEnd: null, weeksLeft: null, payable: '0', claimableEpochs: [] },
+    referee: referee ?? { available: false, indexed: false, referrer: null, boundEpoch: null, windowEnd: null, weeksLeft: null, payable: '0', claimableEpochs: [] },
     invites: invites ?? { available: false, indexed: false, payable: '0', claimableEpochs: [], referredCount: 0, invites: null },
   }
 }
@@ -158,7 +158,8 @@ export function formatReferralStatus(status: ReferralStatus): string[] {
   const boundTo = referee.referrer ?? (state?.state === 'bound' ? state.referrer : undefined)
   if (boundTo) {
     lines.push(`Invited by ${shortWallet(boundTo)}${referee.boundEpoch !== null ? ` (week ${referee.boundEpoch})` : ''}.`)
-    if (referee.available) {
+    // The window and payable amount are Antscan's; without it only the binding is known.
+    if (referee.available && referee.indexed) {
       const window = referee.weeksLeft === null
         ? (referee.windowEnd !== null ? `through week ${referee.windowEnd}` : 'active')
         : referee.weeksLeft > 0 ? `${referee.weeksLeft} ${referee.weeksLeft === 1 ? 'week' : 'weeks'} left` : 'ended'

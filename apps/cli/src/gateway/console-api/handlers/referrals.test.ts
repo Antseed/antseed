@@ -9,6 +9,7 @@ import { buyerIdentityDir } from '../../../buyer-identities/store.js'
 import { ConsoleError, ConsoleRouter } from '../router.js'
 import { addActiveMember, memberPrincipal, tempDataDir, testDeps } from '../test-support.js'
 import type { Builders, CreatedInvite, Referrals } from '../types.js'
+import type { BuyerClient } from './network-buyer.js'
 import { call, startFakeBuyer, type FakeBuyer } from './network-test-helpers.js'
 import { registerReferralRoutes } from './referrals.js'
 
@@ -235,7 +236,8 @@ test('builders: org admins see the effective agent, set their own (restarting th
 
   const initial = await call(router, 'GET', '/builders', principal) as Builders
   assert.equal(initial.agentId, null)
-  assert.deepEqual(initial.effective, { agentId: 1, source: 'default' })
+  // The fake buyer does not report its attribution (an older buyer): the gateway estimates it.
+  assert.deepEqual(initial.effective, { agentId: 1, source: 'default', client: 'cli', runtime: false })
   assert.equal(initial.agent?.owner, OWNER)
   assert.equal(initial.agent?.payableAnts, '4')
 
@@ -243,7 +245,7 @@ test('builders: org admins see the effective agent, set their own (restarting th
   await rejects(call(router, 'PUT', '/builders', principal, { agentId: -3 }), 400, 'invalid_agent')
 
   const saved = await call(router, 'PUT', '/builders', principal, { agentId: 7 }) as Builders
-  assert.deepEqual(saved.effective, { agentId: 7, source: 'config' })
+  assert.deepEqual(saved.effective, { agentId: 7, source: 'config', client: 'cli', runtime: false })
   assert.equal(saved.restartRequired, undefined)
   assert.equal(JSON.parse(readFileSync(configPath, 'utf8')).buyer.clientAgentId, 7)
   assert.equal(restarts.length, 1)
@@ -263,12 +265,76 @@ test('builders: saving an agent succeeds while the explorer is down, with its re
   explorerDown = true
   try {
     const saved = await call(router, 'PUT', '/builders', principal, { agentId: 7 }) as Builders
-    assert.deepEqual(saved.effective, { agentId: 7, source: 'config' })
+    assert.deepEqual(saved.effective, { agentId: 7, source: 'config', client: 'cli', runtime: false })
     assert.equal(saved.available, false)
     assert.equal(saved.agent, null)
     assert.equal(JSON.parse(readFileSync(configPath, 'utf8')).buyer.clientAgentId, 7)
-    await rejects(call(router, 'GET', '/builders', principal), 502, 'builders_unavailable')
+    // An explorer outage leaves the rewards unknown; the agent is still shown.
+    const view = await call(router, 'GET', '/builders', principal) as Builders
+    assert.equal(view.agentId, 7)
+    assert.equal(view.effective.agentId, 7)
+    assert.equal(view.available, false)
+    assert.equal(view.agent, null)
   } finally {
     explorerDown = false
+  }
+})
+
+test('builders: the view shows what the running buyer signs, not the gateway\'s own environment', async () => {
+  const principal = memberPrincipal(store, orgAdmin.id)
+  const original = readFileSync(configPath, 'utf8')
+  writeFileSync(configPath, JSON.stringify({ buyer: { proxyPort: 8377, clientAgentId: 5 } }))
+  const restarted: string[] = []
+  // A buyer launched on its own (`gateway start --no-buyer`) with ANTSEED_CLIENT_AGENT_ID=7.
+  const separate = await startFakeBuyer({
+    'GET /_antseed/status': () => ({ body: { ok: true, peerCount: 3, attribution: { agentId: 7, source: 'env', client: 'cli' } } }),
+    'POST /_antseed/restart': () => { restarted.push('restart'); return { body: { ok: true } } },
+  })
+  const gatewayEnv = { ANTSEED_CLIENT_AGENT_ID: '9' }
+  const routes = (client: BuyerClient) => {
+    const r = new ConsoleRouter()
+    registerReferralRoutes(r, testDeps(store, dir, { configPath }), { buyer: client, resolveChain: async () => CHAIN, context: fakeContext, env: gatewayEnv })
+    return r
+  }
+  try {
+    const live = routes(separate.client)
+    const view = await call(live, 'GET', '/builders', principal) as Builders
+    assert.equal(view.agentId, 5)
+    assert.deepEqual(view.effective, { agentId: 7, source: 'env', client: 'cli', runtime: true })
+    // Rewards are looked up for the agent the buyer signs.
+    assert.equal(view.agent?.agentId, 7)
+
+    // Saving another agent restarts the buyer, but its environment still overrides the config.
+    const saved = await call(live, 'PUT', '/builders', principal, { agentId: 1 }) as Builders
+    assert.equal(restarted.length, 1)
+    assert.equal(saved.agentId, 1)
+    assert.deepEqual(saved.effective, { agentId: 7, source: 'env', client: 'cli', runtime: false })
+    assert.equal(saved.agent?.agentId, 7)
+
+    // Buyer unreachable: the gateway's own estimate, labelled as one.
+    const down = routes(async () => { throw new Error('connect ECONNREFUSED 127.0.0.1:8377') })
+    const estimated = await call(down, 'GET', '/builders', principal) as Builders
+    assert.deepEqual(estimated.effective, { agentId: 9, source: 'env', client: 'cli', runtime: false })
+    const notRestarted = await call(down, 'PUT', '/builders', principal, { agentId: 7 }) as Builders
+    assert.equal(notRestarted.restartRequired, true)
+    assert.deepEqual(notRestarted.effective, { agentId: 9, source: 'env', client: 'cli', runtime: false })
+  } finally {
+    await separate.close()
+    writeFileSync(configPath, original)
+  }
+})
+
+test('builders: a buyer that reports a config-sourced agent is shown as the runtime value, including the desktop default', async () => {
+  const principal = memberPrincipal(store, orgAdmin.id)
+  const desktop = await startFakeBuyer({
+    'GET /_antseed/status': () => ({ body: { ok: true, attribution: { agentId: 2, source: 'default', client: 'desktop' } } }),
+  })
+  try {
+    const r = new ConsoleRouter()
+    registerReferralRoutes(r, testDeps(store, dir, { configPath }), { buyer: desktop.client, resolveChain: async () => CHAIN, context: fakeContext, env: {} })
+    const view = await call(r, 'GET', '/builders', principal) as Builders
+    assert.deepEqual(view.effective, { agentId: 2, source: 'default', client: 'desktop', runtime: true })
+  } finally {
+    await desktop.close()
   }
 })

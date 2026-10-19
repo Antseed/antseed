@@ -149,6 +149,7 @@ import { TeeControl } from './tee-control.js'
 import { ChainReadCache } from './chain-read-cache.js'
 import { isClientCredentialHeader } from './credential-headers.js'
 import { loadConfig } from '../config/loader.js'
+import type { ClientAgentAttribution } from '../cli/referral-state.js'
 import { InvalidRouterOptionsError, ModelRoutingClient, routingClientAdapter, routingProtocolOfTarget, validateRouterOptions, type ModelRoutingClientApi } from '@antseed/router-core'
 import {
   GATEWAY_CONTROL_HEADER,
@@ -260,6 +261,12 @@ export interface BuyerProxyConfig {
    * the gateway so its settings page can say a config edit will not apply.
    */
   settingOverrides?: string[]
+  /**
+   * The ERC-8004 client agent this buyer signs into settlement metadata and
+   * where it came from, reported on `GET /_antseed/status` so a separately
+   * launched gateway shows this process's attribution, not its own guess.
+   */
+  clientAgent?: ClientAgentAttribution
 }
 
 /** The DepositsClient reads `GET /_antseed/balances` needs. */
@@ -1267,6 +1274,7 @@ export class BuyerProxy {
   private readonly _balanceCache = new ChainReadCache()
   private readonly _restartHandler: (() => void | Promise<void>) | null
   private readonly _settingOverrides: string[]
+  private readonly _clientAgent: ClientAgentAttribution | null
   private _restartRequested = false
   /** A restarted buyer is a new process, so its start is the last accepted restart. */
   private readonly _restartAllowedAt: number
@@ -1277,6 +1285,7 @@ export class BuyerProxy {
     this._restartHandler = config.onRestartRequested ?? null
     this._restartAllowedAt = Date.now() + (config.minRestartIntervalMs ?? MIN_RESTART_INTERVAL_MS)
     this._settingOverrides = [...(config.settingOverrides ?? [])]
+    this._clientAgent = config.clientAgent ? { ...config.clientAgent } : null
     this._node = config.node
     this._modelRoutingClient = config.modelRoutingClient ?? new ModelRoutingClient()
     this._verifier = config.verifier
@@ -2926,6 +2935,8 @@ export class BuyerProxy {
         peersUpdatedAt: this._cacheLastUpdatedAtMs > 0 ? this._cacheLastUpdatedAtMs : null,
         startedAt: this._startedAtMs,
         uptimeMs: this._startedAtMs > 0 ? Date.now() - this._startedAtMs : 0,
+        // The client agent this process signs (ANTSEED_CLIENT_AGENT_ID, config or the chain default).
+        ...(this._clientAgent ? { attribution: this._clientAgent } : {}),
       }))
       return
     }

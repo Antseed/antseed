@@ -136,22 +136,25 @@ export function InviteRow({ view }: { view: ReferralView }) {
   );
 }
 
-/** The buyer account's two-sided invite bonus: weeks left in the window, payable now, and a permissionless claim paid to its authorized wallet (operator). */
+/**
+ * The buyer account's two-sided invite bonus: weeks left in the window, payable now, and a permissionless claim paid to its authorized wallet (operator).
+ * Without Antscan the binding is an on-chain read and the amount is unknown; the claim then scans recent weeks on-chain.
+ */
 function RefereeBonusRow() {
   const dashboard = useConfig();
   const page = usePageData('referrals:referee', api.referee, 60_000);
   const view = page.data;
   if (!view?.available || !view.referrer) return null;
   const epochs = view.claimableEpochs.length;
-  if (view.weeksLeft === 0 && isZero(view.payable)) return null;
+  if (view.indexed && view.weeksLeft === 0 && isZero(view.payable)) return null;
   const weeks = view.weeksLeft === null ? null : `${view.weeksLeft} ${view.weeksLeft === 1 ? 'week' : 'weeks'} left`;
   return (
-    <BucketRow visible name="Invite bonus" amount={view.payable} amountDetail={weeks ?? undefined}
-      note={<>Invited by <AddressLink value={view.referrer} />. Paid to your authorized wallet.</>}
+    <BucketRow visible name="Invite bonus" amount={view.indexed ? view.payable : null} amountDetail={weeks ?? undefined}
+      note={<>Invited by <AddressLink value={view.referrer} />. Paid to your authorized wallet.{view.indexed ? null : ` ${ON_CHAIN_CLAIM}`}</>}
       actions={<ActionButton label="Claim" title="Claim invite bonus" path="/api/referrals/referee/claim" body={{}}
-        disabled={dashboard.readOnly || isZero(view.payable)}
+        disabled={dashboard.readOnly || (view.indexed && isZero(view.payable))}
         disabledReason={dashboard.readOnly ? 'Connect a wallet with a signer to claim.' : 'Nothing to claim yet.'}
-        summary={[['Payable now', `${formatAnts(view.payable, 4)} ANTS`], ['Weeks', String(epochs)]]} />} />
+        summary={view.indexed ? [['Payable now', `${formatAnts(view.payable, 4)} ANTS`], ['Weeks', String(epochs)]] : [['Weeks', 'Found on-chain when claiming']]} />} />
   );
 }
 
@@ -327,7 +330,10 @@ function BuyerRewardsCard({ data }: { data: RewardsView }) {
   const [authorizing, setAuthorizing] = useState(false);
   // The invite bonus is claimed in this card too (its row below), so the headline includes it.
   const referee = usePageData('referrals:referee', api.referee, 60_000).data;
-  const inviteBonus = referee?.available && referee.referrer ? referee.payable : '0';
+  const bound = referee?.available && referee.referrer ? referee : null;
+  const inviteBonus = bound?.indexed ? bound.payable : '0';
+  // Without Antscan a bound buyer's invite bonus is unknown, so the headline never says there is nothing to claim.
+  const bonusUnknown = !!bound && !bound.indexed;
   const amount = sumBig([data.buyerUsage.total, data.legacy.buyer, inviteBonus]);
   const operator = data.buyerUsage.operator;
   const authorized = !!operator && operator.toLowerCase() === (dashboard.walletAddress ?? dashboard.address).toLowerCase() && !dashboard.readOnly;
@@ -349,7 +355,7 @@ function BuyerRewardsCard({ data }: { data: RewardsView }) {
     <div className="tile-label">Buyer rewards</div>
     <p className="hint">Earned by buyer account <AddressLink value={dashboard.buyerAddress ?? dashboard.address} />.</p>
     <div className="hero-value"><RewardAmount>{formatAnts(amount, 4)}</RewardAmount><span className="unit">ANTS</span><RewardRefreshStatus /></div>
-    {isZero(amount) ? <p className="hero-sub muted">Nothing to claim yet. Rewards accrue at each epoch boundary.</p> : null}
+    {isZero(amount) && !bonusUnknown ? <p className="hero-sub muted">Nothing to claim yet. Rewards accrue at each epoch boundary.</p> : null}
     {!operator ? <p className="hint">Authorize a wallet to claim or stake this buyer’s rewards.</p> : !authorized ? <p className="hint">Connect the authorized wallet <AddressLink value={operator} /> on {dashboard.chainId} to claim or stake.</p> : null}
     {authorized && dashboard.selectedAddress && operator?.toLowerCase() !== dashboard.selectedAddress.toLowerCase() ? <p className="hint">Buyer rewards and positions created by staking them belong to operator <AddressLink value={operator!} />. Select that address to manage those positions.</p> : null}
     {showAuthorization || showWalletConnection ? <div className="hero-actions">

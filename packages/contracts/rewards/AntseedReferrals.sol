@@ -68,8 +68,11 @@ interface IAntseedReferralUsageLedger {
  *         Only new buyers can bind: one whose first recognized usage
  *         (`AntseedAttributionUsage.firstUsageEpoch`) is at most
  *         `NEW_BUYER_EPOCHS` epochs before the current one, or that has none
- *         yet. The attribution ledger credits only usage recorded after the
- *         binding.
+ *         yet. That view includes usage the ledger has not observed yet
+ *         (and counts usage predating the ledger as epoch 0), so a preview
+ *         made before a settlement and the binding made during it, after the
+ *         ledger's callback, give the same answer. The attribution ledger
+ *         credits only usage recorded after the binding.
  *
  *         Rewards: an AntseedEmissionsGate controller. Each epoch's bucket is
  *         split pro rata to the ledger's referral points: every referred
@@ -384,6 +387,9 @@ contract AntseedReferrals is AntseedEpochShareRewards, EIP712 {
         if (recipient == address(0)) revert RewardRecipientUnavailable();
     }
 
+    /// @dev The ledger's first usage is effective (it includes usage not yet
+    ///      observed), so this answers the same before and after a
+    ///      settlement's ledger callback.
     function _isNewBuyer(address buyer, uint256 currentEpoch) internal view returns (bool) {
         (bool seen, uint256 firstEpoch) = attributionUsage.firstUsageEpoch(buyer);
         return !seen || firstEpoch + NEW_BUYER_EPOCHS >= currentEpoch;

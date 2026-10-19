@@ -615,11 +615,20 @@ export interface Builders {
   /** The client agent set for this gateway (`buyer.clientAgentId`); null when unset. */
   agentId: number | null
   /**
-   * What the buyer signs into settlement metadata: ANTSEED_CLIENT_AGENT_ID
-   * (`env`), the configured id (`config`), the chain's Antseed CLI id
-   * (`default`), or nothing (`none`).
+   * What the buyer signs into settlement metadata: ANTSEED_CLIENT_AGENT_ID in
+   * the buyer's environment (`env`), the configured id (`config`), the
+   * chain's id for the buyer's client kind (`default`; `client` says Antseed
+   * CLI or Desktop), or nothing (`none`). `runtime` is true when the running
+   * buyer reported it; false when the buyer could not be asked (or was just
+   * restarted) and this is the gateway's estimate from its own environment
+   * and the config.
    */
-  effective: { agentId: number | null; source: 'env' | 'config' | 'default' | 'none' }
+  effective: {
+    agentId: number | null
+    source: 'env' | 'config' | 'default' | 'none'
+    client: 'cli' | 'desktop'
+    runtime: boolean
+  }
   /** The effective agent's registration and rewards; null when none. */
   agent: BuilderAgent | null
   /** Set by PUT when the buyer could not restart itself to apply the change. */

@@ -528,7 +528,7 @@ describe('reward row actions and confirmations', () => {
   });
 
   it('shows the invite bonus next to buyer rewards with a claim', () => {
-    state.referee = { available: true, referrer: pool, boundEpoch: 20, windowEnd: 32, weeksLeft: 10, payable: ants(6), claimableEpochs: [20, 21] };
+    state.referee = { available: true, indexed: true, referrer: pool, boundEpoch: 20, windowEnd: 32, weeksLeft: 10, payable: ants(6), claimableEpochs: [20, 21] };
     const html = render();
     const card = html.slice(html.indexOf('Buyer rewards'));
     expect(card).toContain('Invite bonus');
@@ -539,17 +539,41 @@ describe('reward row actions and confirmations', () => {
     expect(claim.disabled).toBe(false);
   });
 
+  it('keeps the invite-bonus claim without an explorer, with the amount unknown', () => {
+    state.rewards!.buyerUsage.total = '0';
+    state.rewards!.legacy.buyer = '0';
+    state.referee = { available: true, indexed: false, referrer: pool, boundEpoch: null, windowEnd: null, weeksLeft: null, payable: '0', claimableEpochs: [] };
+    const html = render();
+    const card = html.slice(html.indexOf('Buyer rewards'));
+    expect(card).toContain('Invite bonus');
+    expect(card).toContain(`title="${pool}"`);
+    expect(card).toContain('Claim checks the last 26 weeks on-chain.');
+    // No false zero: the row shows an unknown amount and the headline never says there is nothing to claim.
+    expect(card).toContain('<span>—</span>');
+    expect(card).not.toContain('Nothing to claim yet.');
+    const claim = action('Claim invite bonus');
+    expect(claim).toMatchObject({ disabled: false, path: '/api/referrals/referee/claim' });
+    expect(summary(claim)).toContain('Found on-chain when claiming');
+  });
+
+  it('hides the invite bonus without an explorer for a buyer unbound on-chain or an unreadable binding', () => {
+    state.referee = { available: true, indexed: false, referrer: null, boundEpoch: null, windowEnd: null, weeksLeft: null, payable: '0', claimableEpochs: [] };
+    expect(render()).not.toContain('Invite bonus');
+    state.referee = { available: false, indexed: false, referrer: null, boundEpoch: null, windowEnd: null, weeksLeft: null, payable: '0', claimableEpochs: [] };
+    expect(render()).not.toContain('Invite bonus');
+  });
+
   it('counts the invite bonus in the buyer rewards headline', () => {
     const before = render();
     expect(before).toContain('1,250');
-    state.referee = { available: true, referrer: pool, boundEpoch: 20, windowEnd: 32, weeksLeft: 10, payable: ants(300), claimableEpochs: [20] };
+    state.referee = { available: true, indexed: true, referrer: pool, boundEpoch: 20, windowEnd: 32, weeksLeft: 10, payable: ants(300), claimableEpochs: [20] };
     expect(render()).toContain('1,550');
   });
 
   it('hides the invite bonus when unbound or the window ended with nothing payable', () => {
-    state.referee = { available: true, referrer: null, boundEpoch: null, windowEnd: null, weeksLeft: null, payable: '0', claimableEpochs: [] };
+    state.referee = { available: true, indexed: true, referrer: null, boundEpoch: null, windowEnd: null, weeksLeft: null, payable: '0', claimableEpochs: [] };
     expect(render()).not.toContain('Invite bonus');
-    state.referee = { available: true, referrer: pool, boundEpoch: 1, windowEnd: 13, weeksLeft: 0, payable: '0', claimableEpochs: [] };
+    state.referee = { available: true, indexed: true, referrer: pool, boundEpoch: 1, windowEnd: 13, weeksLeft: 0, payable: '0', claimableEpochs: [] };
     expect(render()).not.toContain('Invite bonus');
   });
 });
