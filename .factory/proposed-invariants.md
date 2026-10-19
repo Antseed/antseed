@@ -1,6 +1,6 @@
 # Proposed `## Invariants` section for the repo's CLAUDE.md
 
-A factory input, not a repo change: nothing here is committed to `main` or to the sandbox branch. Paste the section below into `CLAUDE.md` once a human agrees with it. Every invariant names what enforces it today; "nothing" means a reviewer is the only guard, and that row is a candidate for the `correct` skill (make it a test, type or lint).
+A proposal, not a repo change: nothing here is committed to `main` or to the sandbox branch. Paste the section below into `CLAUDE.md` once a human agrees with it. Every invariant names what enforces it today; "nothing" means a reviewer is the only guard, and that row is a candidate for the `correct` skill (make it a test, type or lint).
 
 Grounded on origin/main `c78e8bc54` (2026-10-18) and the verify-antseed skill on `origin/codex/sandbox-stack` `b04d74922`.
 
@@ -8,7 +8,7 @@ Grounded on origin/main `c78e8bc54` (2026-10-18) and the verify-antseed skill on
 
 ## Invariants
 
-Break one of these and the change is wrong, however green the build is. Changes to the paths in the security-critical list (`.factory/inputs/security-critical-paths.json` in the factory) always run the verify-antseed "keys, signing or spend caps" row.
+Break one of these and the change is wrong, however green the build is. Changes to the paths in the security-critical list (the "Security-critical changes" list in the verify-antseed skill) always run the verify-antseed "keys, signing or spend caps" row.
 
 | # | Invariant | Where it lives | Enforced by |
 | --- | --- | --- | --- |
@@ -23,6 +23,6 @@ Break one of these and the change is wrong, however green the build is. Changes 
 | 9 | SQLite schema changes are new numbered migrations; an existing migration file is never edited. | `packages/node/src/storage/migrations/` | nothing automated (CLAUDE.md rule) |
 | 10 | Subscription-based provider plugins are for testing only; no code or doc presents them as a resale path. | `plugins/provider-claude-*` | nothing automated (CLAUDE.md rule) |
 | 11 | Agents and tests never touch `~/.antseed`, the OS keychain or port 8377, and sandbox runs use `--chain local` unless a human said yes to `--live`, `--real-funds` or mainnet. | `e2e/sandbox/` (sandbox stack) | sandbox CLI refusals; the factory's session settings |
-| 12 | A bug-fix PR is two commits: the failing test alone (red on `main`), then the fix (green). | every fix PR | the factory's `gate-green.sh` and `recheck.sh`; nothing in CI |
+| 12 | A bug-fix PR is two commits: the failing test alone (red on `main`), then the fix (green). | every fix PR | the verify-antseed skill's `prove.sh`; nothing in CI |
 
 Stale fact found while grounding this: CLAUDE.md's "Smart Contracts" tree lists `packages/contracts/AntseedChannels.sol` and siblings at the package root; on `main` they live in `packages/contracts/payments/`, `staking/`, `emissions/` and so on.
