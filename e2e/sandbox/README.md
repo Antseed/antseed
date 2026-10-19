@@ -63,7 +63,7 @@ pnpm sandbox desktop             # dev mode: Vite hot reload for the renderer, t
 pnpm sandbox:attach              # one step: starts or reuses routing-smoke, then opens the desktop
 ```
 
-`pnpm sandbox desktop` is the interactive loop. Renderer edits show up immediately; main-process edits recompile on save and load when you quit and rerun the command. It runs next to your normal desktop with its own ports and data.
+`pnpm sandbox desktop` is the interactive loop. Renderer edits show up immediately; main-process edits recompile on save and load when you quit and rerun the command. It runs next to your normal desktop with its own ports and data. Add `--cdp-port N` to also open Chrome DevTools Protocol on `127.0.0.1:N`, so an agent can drive it with `agent-browser connect N`.
 
 For an agent-run check with evidence, use `pnpm sandbox run desktop-chat` (built desktop under Playwright: screenshots, video, renderer errors). Rebuild first: `pnpm --filter @antseed/desktop run build`. Write a scenario with `sb.desktop()` for a new desktop feature (see [Desktop automation](#desktop-automation)).
 

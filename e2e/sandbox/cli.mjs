@@ -10,7 +10,7 @@ import { resolveInstancePorts } from '../../apps/desktop/scripts/dev-instance-co
 import { legacyCacheHome, sharedCacheHome } from './lib/cache.mjs';
 import { loadSourceConfig, resolveConfigSource } from './lib/config.mjs';
 import { loadControlClient } from './lib/control.mjs';
-import { isolatedEnv, parseEnvFile, resolveForkUrl, resolveLiveKeys } from './lib/env.mjs';
+import { FORBIDDEN_PORTS, isolatedEnv, parseEnvFile, resolveForkUrl, resolveLiveKeys } from './lib/env.mjs';
 import { inspectLock, isOwnedProcessAlive, killOwned } from './lib/lock.mjs';
 import { readJson, saveJson, validateManifest } from './lib/manifest.mjs';
 import { HELP, parseArgs } from './lib/options.mjs';
@@ -419,6 +419,11 @@ async function desktop(options, ctx) {
   const response = await fetch(`${manifest.proxyUrl}/_antseed/status`, { signal: AbortSignal.timeout(5000) }).then((r) => r.json()).catch(() => null);
   if (!response?.ok || response.startedAt !== manifest.buyerStartedAt) throw new Error('Sandbox buyer is not healthy; refusing to start a desktop (it would start its own buyer)');
   const instance = await chooseDesktopInstance(manifest.desktopInstance ?? manifest.name);
+  const cdpPort = options.cdpPort === undefined ? undefined : Number(options.cdpPort);
+  if (cdpPort !== undefined) {
+    if (FORBIDDEN_PORTS.has(cdpPort) || Object.values(resolveInstancePorts(instance)).includes(cdpPort)) throw new Error(`--cdp-port ${cdpPort} collides with an AntSeed or desktop instance port`);
+    if (await portOpen(cdpPort)) throw new Error(`--cdp-port ${cdpPort} is already in use`);
+  }
   // Keep the real macOS HOME for Electron's login Keychain. Attach-only mode
   // reads the sandbox wallet/config through explicit paths below and never
   // falls back to HOME for its buyer state.
@@ -429,7 +434,9 @@ async function desktop(options, ctx) {
     ANTSEED_DESKTOP_CONNECT_DATA_DIR: manifest.buyerDir,
     ANTSEED_PROXY_URL: manifest.proxyUrl,
     ANTSEED_BASE_RPC_URL: manifest.rpcUrl,
+    ...(cdpPort === undefined ? {} : { ANTSEED_DESKTOP_CDP_PORT: String(cdpPort) }),
   });
+  if (cdpPort !== undefined) say(`CDP on 127.0.0.1:${cdpPort} (agent-browser connect ${cdpPort})`);
   say(`Attaching desktop instance ${instance} to ${manifest.proxyUrl} (attach-only, sandbox wallet)`);
   const child = spawn('pnpm', ['dev:desktop:instance', instance], { cwd: repo, env, stdio: 'inherit' });
   for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => child.kill(signal));

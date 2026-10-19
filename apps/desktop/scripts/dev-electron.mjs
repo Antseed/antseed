@@ -18,7 +18,9 @@ child.once('exit', (code, signal) => {
     process.exitCode = code ?? (signal ? 1 : 0);
     return;
   }
-  child = spawn('pnpm', ['exec', 'electron', '.', ...process.argv.slice(2)], {
+  const cdpPort = process.env.ANTSEED_DESKTOP_CDP_PORT;
+  const cdpArgs = cdpPort ? [`--remote-debugging-port=${cdpPort}`, '--remote-debugging-address=127.0.0.1'] : [];
+  child = spawn('pnpm', ['exec', 'electron', '.', ...cdpArgs, ...process.argv.slice(2)], {
     env: { ...process.env, VITE_DEV_SERVER_URL: `http://127.0.0.1:${port}` },
     stdio: 'inherit',
   });

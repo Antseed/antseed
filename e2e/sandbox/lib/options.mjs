@@ -2,7 +2,7 @@ import { DEFAULT_SLOT, validateSlot } from './paths.mjs';
 
 export const CHAIN_TARGETS = new Set(['fork', 'local', 'mainnet']);
 export const COMMANDS = new Set(['up', 'down', 'status', 'desktop', 'run', 'logs', 'list', 'report', 'share', 'mainnet', 'help']);
-const VALUE_FLAGS = { '--config': 'config', '--deposit-usdc': 'depositUsdc', '--block': 'block', '--slot': 'slot', '--scenario': 'scenario', '--timeout': 'timeout', '--env-file': 'envFile', '--port': 'port', '--host': 'host', '--chain': 'chain', '--idle': 'idle' };
+const VALUE_FLAGS = { '--config': 'config', '--deposit-usdc': 'depositUsdc', '--block': 'block', '--slot': 'slot', '--scenario': 'scenario', '--timeout': 'timeout', '--env-file': 'envFile', '--port': 'port', '--host': 'host', '--chain': 'chain', '--idle': 'idle', '--cdp-port': 'cdpPort' };
 const BOOL_FLAGS = { '--live': 'live', '--verbose': 'verbose', '--json': 'json', '--env': 'env', '--follow': 'follow', '--keep': 'keep', '--force': 'force', '--strict': 'strict', '--serve': 'serve', '--trace': 'trace', '--open': 'open', '--stop': 'stop', '--fresh': 'fresh', '--no-tailscale': 'noTailscale', '--real-funds': 'realFunds', '--dev': 'dev', '--help': 'help', '-h': 'help' };
 
 export function parseArgs(argv) {
@@ -44,6 +44,10 @@ export function parseArgs(argv) {
   }
   if (options.chain === 'mainnet' && !['run', 'mainnet'].includes(command)) throw new Error('--chain mainnet is only for pnpm sandbox run (use pnpm sandbox mainnet for an interactive desktop)');
   if (options.port !== undefined && !/^\d+$/.test(options.port)) throw new Error('--port must be a port number');
+  if (options.cdpPort !== undefined) {
+    if (command !== 'desktop') throw new Error('--cdp-port is only for pnpm sandbox desktop');
+    if (!(/^\d+$/.test(options.cdpPort) && Number(options.cdpPort) >= 1024 && Number(options.cdpPort) <= 65535)) throw new Error('--cdp-port must be a port number 1024-65535');
+  }
   if (options.host !== undefined && !/^[0-9a-zA-Z.:-]+$/.test(options.host)) throw new Error('--host must be a hostname or IP');
   if (command === 'report' && options.positional.length > 1) throw new Error('Usage: pnpm sandbox report [run-dir-name] [--open] [--serve]');
   if (command === 'logs' && options.positional.length > 1) throw new Error('Usage: pnpm sandbox logs [component]');
@@ -65,6 +69,7 @@ export const HELP = `pnpm sandbox <command> [options]
             --strict  also fail on known issues (recorded in report.json either way)
             --trace   also record a Playwright trace of desktop scenarios (large; npx playwright show-trace)
   desktop   Attach-only Electron desktop to this sandbox's buyer
+            --cdp-port N  also open Chrome DevTools Protocol on 127.0.0.1:N (agent-browser connect N)
   mainnet   Full desktop with its own buyer from this worktree on the REAL network, paying from the test
             wallet (ANTSEED_SANDBOX_MAINNET_IDENTITY_HEX); isolated profile, mock keychain, no OS proxy
             --real-funds (required)  --dev (Vite hot reload)  --fresh (reset the profile)
