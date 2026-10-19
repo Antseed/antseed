@@ -1,59 +1,65 @@
 ---
 slug: routing-is-becoming-a-market
-title: "Routing Is Becoming a Market"
+title: "Introducing Routers on Antseed"
 authors: [antseed]
 tags: [routing, routers, open standard, buyers, sellers, Levanto]
-description: "You shouldn't have to pick a model before you ask. Now a router can choose the model and the seller for you, and anyone can offer to be that router. It's built on an open standard we wrote with Levanto Labs."
+description: "Choose a router you trust, and let it pick the model and seller for each request. Antseed is an open market for routers, with room for different approaches, protocols, and standards."
 keywords: [ai model routing, llm router, inference routing protocol, open routing standard, antseed routing, levanto sage router, cost quality tradeoff, model router marketplace]
 date: 2026-10-14
 ---
 
-Until now, using Antseed started with a question you shouldn't have to answer: which model do you want?
+Using a powerful AI model for every request can waste money on simple tasks. A cheaper model may struggle with harder ones. Getting the balance right means knowing which model to use, and when.
 
-Now you don't have to. Just ask, and a router picks the model and the seller for you. Anyone can offer to be that router, and you choose whose picks to trust.
+We're introducing routers on Antseed to make those decisions for you.
 
 <!-- truncate -->
 
-## Before: you pick the model first
+## How routing works
 
-Before you've typed a word, you choose a model. A big, expensive one for the hard stuff, or a small, cheap one for quick questions.
+There are two choices behind an AI request: which model should answer, and which seller should run it. A seller is a provider offering access to that model on the Antseed network.
 
-But you don't know yet how hard your next message will be. Pick the strong model and you overpay for every easy question. Pick the cheap one and the hard question gets a weak answer. Then you switch models by hand, and do it all again.
+Antseed already chooses between sellers for a selected model. A router can also choose the model itself. It ranks the available model and seller combinations, and Antseed uses that ranking to send your request.
 
-Once you've chosen, Antseed looks at every seller on the network that offers that model. It drops the ones it doesn't trust enough and picks the cheapest of the rest. If that seller fails, it moves on to the next one. It's a good rule, and it stays as the default.
+Routers can take different approaches. Some evaluate the request to match it to a model's strengths. Others use benchmark scores or prioritize low prices.
 
-## Now: ask and get the best model for the task
+### One agent, different tasks
 
-A router takes over the first step. You send your message, and the router decides which model should answer and which seller should run it. It looks at what kind of task it is, so a coding question goes to a model that's strong at code, and a writing task goes to one that writes well. An easy question can go to a fast, cheap model. A hard one can go to a stronger model, without you touching anything.
+Imagine a coding agent working through a feature. A router that evaluates each task could send difficult debugging work to a more capable model, then use a cheaper one to summarize the changes. You keep working with the same agent while the router handles those choices.
 
-That decision is more than "cheapest". A seller that already holds your whole conversation in its cache can cost less than one with a lower price tag, and a router can see that. You still decide what matters most, with three settings:
+## What you choose
 
-- **Best quality:** the strongest models, at the highest price.
-- **Balanced:** good answers at a moderate price. This is the default.
-- **Lowest cost:** the cheapest model that can handle the request.
+Start by selecting a router. Antseed remembers your choice and uses it for subsequent requests. You can switch routers or return to a specific model whenever you want.
 
-## The power of an open market
+You also set your preference for quality and cost:
 
-Antseed is already an open market for models: anyone can sell one, and sellers compete on price and quality. Routing joins it. Anyone can offer a routing service, set a price per ranking, and compete to give the best one.
+- **Best quality:** prioritize answer quality.
+- **Balanced:** balance quality and cost. This is the initial setting.
+- **Lowest cost:** prioritize lower cost.
 
-An open market also makes room for new ideas. Anyone can try their own approach to routing, put it on the network, and let users decide whether it's better. The best routers rise to the top, and you get to use them.
+Each router applies these preferences through its own method, using the models available to it.
 
-Here are the first routers:
+## The first routers
 
-- **[Levanto Labs](https://levanto.ai)** routes with Sage, their own decision model.
-- **[Decision Models](https://decisionmodels.io)** offers a Jev-based router. It's [open source](https://github.com/fstandhartinger/auto-model-router).
-- **Antseed's free router** is one we built ourselves. Anyone can host it, and it sends each request to the best free models on the network.
+The initial lineup is planned to include:
 
-## An open standard, built with Levanto
+- **Sage**, the router from [Levanto Labs](https://levanto.ai), aims to lower inference costs while preserving answer quality. Levanto reports 39% lower cost than Opus at the same accuracy in its benchmark.
+- **A Jev-based router from [Decision Models](https://decisionmodels.io)**, with an [open-source implementation](https://github.com/fstandhartinger/auto-model-router) you can inspect and adapt to your own needs.
+- **Antseed's free router** helps you choose among free models without paying a routing fee. Anyone can host it; it ranks models using benchmark scores, rather than evaluating each question's difficulty.
 
-Today, every routing product works differently, and most routers are built for one specific platform. A tool built for one router can't use another.
+None is automatically selected for you. Routers may charge for their service; the cost of running the model is billed separately.
 
-So we wrote the [Inference Routing Protocol](https://github.com/inference-routing/spec/blob/main/SPEC.md) with Levanto Labs: a common language for routers. Any router that speaks it works with any app that does, and you can swap one for another without changing anything else.
+## Build a router people can use
 
-We want this to become the industry standard for routing.
+Anyone can offer a router on Antseed, set a price for its service, and earn when people use it. Builders get access to the network's model providers and users, so they can focus on improving how requests are matched to models. Users can try different routers and choose based on the answers and costs they see in their own work.
 
-## Try it, or build one
+Builders can integrate using their own protocol or an existing standard. The [Inference Routing Protocol](https://github.com/inference-routing/spec/blob/main/SPEC.md), developed with Levanto Labs, is one option. It defines how an app asks a router to rank candidates and how the router returns its recommendations. Antseed remains open to other protocols and standards as well.
 
-**Want better answers without picking a model?** [Install Antseed](/docs/install), choose a router, and just ask.
+## Better choices for your agents
 
-**Building a router?** Antseed is permissionless, so anyone can offer their router. Read the [spec](https://github.com/inference-routing/spec/blob/main/SPEC.md) and put yours on the network.
+Routing brings more of Antseed's value into each request. Your agents can access different models, sellers compete to serve them on price and reliability, and routers compete to choose the right combination for the work at hand.
+
+Together, those choices create more opportunities to save: a less expensive model for a simple task, a better-priced seller for the same model, or a more capable model when the work needs it. You choose how to balance quality and cost, and your router handles the decisions request by request.
+
+That's what we're building Antseed for: a place where your agents can get the capabilities they need at competitive prices, with the freedom to choose who provides them. Opening routing to more builders gives the whole network more ways to improve those decisions.
+
+[Get started with Antseed](/docs/install).
