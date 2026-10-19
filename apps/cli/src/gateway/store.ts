@@ -1952,10 +1952,11 @@ export class GatewayStore {
   }
 
   /** Sets (or with null clears) who approved a deposit. */
-  setDepositApproval(workspaceId: string, txHash: string, approval: { byId: string | null; byLabel: string; note: string | null } | null): DepositRecord | null {
+  /** `approval.at` keeps an approval's original time when it is carried over; a new approval is stamped now. */
+  setDepositApproval(workspaceId: string, txHash: string, approval: { byId: string | null; byLabel: string; note: string | null; at?: number } | null): DepositRecord | null {
     if (approval) {
       this._stmt('UPDATE deposits SET approved_by_id = ?, approved_by_label = ?, approved_at = ?, approval_note = ? WHERE workspace_id = ? AND tx_hash = ?')
-        .run(approval.byId, approval.byLabel, this._now(), approval.note, workspaceId, txHash.toLowerCase())
+        .run(approval.byId, approval.byLabel, approval.at ?? this._now(), approval.note, workspaceId, txHash.toLowerCase())
     } else {
       this._stmt('UPDATE deposits SET approved_by_id = NULL, approved_by_label = NULL, approved_at = NULL, approval_note = NULL WHERE workspace_id = ? AND tx_hash = ?')
         .run(workspaceId, txHash.toLowerCase())

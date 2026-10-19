@@ -67,12 +67,10 @@ test('not a deposit to this wallet: another wallet, a failed transaction, a forg
   assert.equal(await verifyDeposit(provider(null), CHAIN, SWEEP_TX, WALLET), null)
 })
 
-test('a log query the RPC refuses leaves the sources empty, not the confirmation', async () => {
+test('a log query the RPC refuses fails the sweep, to be checked again, rather than losing its funding', async () => {
   const chain = provider({ status: 1, logs: [deposited(WALLET, 1_000_000n, SWEEP_TX), swept(WALLET, 1_000_000n, 50_000n, SWEEP_TX)] })
   chain.getLogs = async () => { throw new Error('block range too large') }
-  const result = await verifyDeposit(chain, CHAIN, SWEEP_TX, WALLET)
-  assert.equal(result?.creditedUsdc, 1_000_000)
-  assert.deepEqual(result?.sources, [])
+  await assert.rejects(verifyDeposit(chain, CHAIN, SWEEP_TX, WALLET), /block range too large/)
 })
 
 test('USDC sent to the wallet is a transfer: the amount, and who sent it', async () => {

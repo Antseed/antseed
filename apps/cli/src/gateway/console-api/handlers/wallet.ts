@@ -238,7 +238,7 @@ export function registerWalletRoutes(router: ConsoleRouter, deps: ConsoleDeps, o
     const approved = deps.store.listDeposits(ws.record.id)
       .find((deposit) => deposit.kind === 'relay' && deposit.approval && deposit.sources.some((source) => source.txHash === transfer.txHash))?.approval
     if (!approved) return transfer
-    return deps.store.setDepositApproval(ws.record.id, transfer.txHash, { byId: approved.byId, byLabel: approved.byLabel, note: approved.note }) ?? transfer
+    return deps.store.setDepositApproval(ws.record.id, transfer.txHash, { byId: approved.byId, byLabel: approved.byLabel, note: approved.note, at: approved.at }) ?? transfer
   }
 
   /**
@@ -260,8 +260,34 @@ export function registerWalletRoutes(router: ConsoleRouter, deps: ConsoleDeps, o
   }
   /** `<workspace>:<tx>` funding transactions that turned out not to be transfers to its wallet; not checked again. */
   const notTransfers = new Set<string>()
-  /** Money that came in (transfers to the wallet, direct deposits); sweeps are moves inside the workspace. */
-  const listed = (deposit: DepositRecord): boolean => deposit.kind !== 'relay'
+  /**
+   * `<workspace>:<tx>` checks that failed (RPC busy, funding lookup refused),
+   * retried after a backoff from one minute up to an hour so a failing RPC
+   * is not asked again on every page load.
+   */
+  const retries = new Map<string, { failures: number; at: number }>()
+  const due = (ws: WorkspaceWallet, txHash: string): boolean => (retries.get(`${ws.record.id}:${txHash}`)?.at ?? 0) <= deps.now()
+  const check = async (ws: WorkspaceWallet, txHash: string, what: string): Promise<DepositRecord | null | undefined> => {
+    const key = `${ws.record.id}:${txHash}`
+    try {
+      const result = await recordDeposit(ws, txHash)
+      retries.delete(key)
+      return result
+    } catch (err) {
+      const failures = (retries.get(key)?.failures ?? 0) + 1
+      retries.set(key, { failures, at: deps.now() + Math.min(60_000 * 2 ** (failures - 1), 3_600_000) })
+      deps.log(`console: ${what} ${txHash} not verified yet: ${errorMessage(err)}`)
+      return undefined
+    }
+  }
+  /**
+   * Money that came in: transfers to the wallet and direct deposits. Sweeps
+   * are moves inside the workspace and stay out, except one approved before
+   * transfers were listed whose funding transfer is not recorded: it keeps
+   * its approval visible until that transfer inherits it.
+   */
+  const listed = (deposit: DepositRecord, ws: WorkspaceWallet): boolean =>
+    deposit.kind !== 'relay' || (!!deposit.approval && !deposit.sources.some((source) => deps.store.getDeposit(ws.record.id, source.txHash)))
   const TX_HASH_RE = /^0x[0-9a-fA-F]{64}$/
   const depositOf = (ws: WorkspaceWallet, request: ConsoleRequest): DepositRecord => {
     const found = deps.store.getDeposit(ws.record.id, request.params['tx'] ?? '')
@@ -275,14 +301,11 @@ export function registerWalletRoutes(router: ConsoleRouter, deps: ConsoleDeps, o
     const history = await optionalBuyerJson(buyer, withIdentity('/_antseed/deposits/history', ws.buyerIdentity))
     const recorded = Array.isArray(history?.['deposits']) ? history['deposits'] as Array<Record<string, unknown>> : []
     const fresh = recorded.map((entry) => String(entry['txHash'] ?? '')).filter((hash) => TX_HASH_RE.test(hash) && !deps.store.getDeposit(ws.record.id, hash))
-    for (const txHash of fresh.slice(0, 10)) {
-      await recordDeposit(ws, txHash).catch((err: unknown) => deps.log(`console: deposit ${txHash} not verified yet: ${errorMessage(err)}`))
+    for (const txHash of fresh.filter((hash) => due(ws, hash)).slice(0, 10)) await check(ws, txHash, 'deposit')
+    for (const txHash of unrecordedFunding(ws).filter((hash) => due(ws, hash)).slice(0, 10)) {
+      if (await check(ws, txHash, 'transfer') === null) notTransfers.add(`${ws.record.id}:${txHash}`)
     }
-    for (const txHash of unrecordedFunding(ws).slice(0, 10)) {
-      const transfer = await recordDeposit(ws, txHash).catch((err: unknown) => { deps.log(`console: transfer ${txHash} not verified yet: ${errorMessage(err)}`); return undefined })
-      if (transfer === null) notTransfers.add(`${ws.record.id}:${txHash}`)
-    }
-    return deps.store.listDeposits(ws.record.id).filter(listed).map((deposit) => confirmation(deposit, ws))
+    return deps.store.listDeposits(ws.record.id).filter((deposit) => listed(deposit, ws)).map((deposit) => confirmation(deposit, ws))
   })
 
   router.add('POST', '/workspaces/:id/deposits', async (request): Promise<DepositConfirmation> => {
@@ -291,7 +314,7 @@ export function registerWalletRoutes(router: ConsoleRouter, deps: ConsoleDeps, o
     if (!TX_HASH_RE.test(txHash)) throw new ConsoleError(400, 'invalid_tx_hash', 'Paste the transaction hash (0x followed by 64 hex characters).')
     const deposit = await recordDeposit(ws, txHash)
     if (!deposit) throw new ConsoleError(404, 'not_a_deposit', `That transaction did not send USDC to the ${ws.record.name} wallet or deposit to it.`)
-    if (!listed(deposit)) {
+    if (deposit.kind === 'relay') {
       throw new ConsoleError(422, 'internal_sweep', 'That transaction moved USDC already in the workspace wallet into its credits. Paste the transaction that sent the USDC to the wallet instead.')
     }
     audit(deps, request, 'deposit.add', { kind: 'workspace', id: ws.record.id, label: ws.record.name }, { txHash: deposit.txHash })

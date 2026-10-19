@@ -23,6 +23,9 @@ const PAST = `0x${'b2'.repeat(32)}`
 const NOT_OURS = `0x${'c3'.repeat(32)}`
 const SENT_EARLIER = `0x${'f6'.repeat(32)}`
 const FUNDED_APPROVED = `0x${'d7'.repeat(32)}`
+const FLAKY = `0x${'a3'.repeat(32)}` // a sweep whose funding lookup fails at first
+const SENT_LATE = `0x${'f8'.repeat(32)}` // the transfer that funded it
+const APPROVED_LONG_AGO = 1_600_000_000_000
 const CHAIN = { chainId: 'base-sepolia', evmChainId: 84532, rpcUrl: 'http://127.0.0.1:1' } as AntsChainConfig
 
 let dir: string
@@ -30,6 +33,8 @@ let store: GatewayStore
 let buyer: FakeBuyer
 let workspaceId: string
 let ownerId: string
+const laterHistory: Array<Record<string, unknown>> = []
+let flakyFailures = 0
 
 before(async () => {
   dir = mkdtempSync(join(tmpdir(), 'antseed-deposits-'))
@@ -40,6 +45,7 @@ before(async () => {
     'GET /_antseed/deposits/history': () => ({ body: { ok: true, address: WALLET, deposits: [
       { txHash: RECORDED, creditedBaseUnits: '1000000', at: 1 },
       { txHash: RECORDED_LATER, creditedBaseUnits: '1000000', at: 2 },
+      ...laterHistory,
     ] } }),
   })
 })
@@ -56,9 +62,9 @@ const sweep = (txHash: string, wallet: string, sources: Verified['sources']): Ve
   ({ txHash, wallet, kind: 'relay', creditedUsdc: 1_000_000, feeUsdc: 50_000, blockNumber: 10, blockTime: 10_000, sources })
 
 const verified: string[] = []
-function setup(): ConsoleRouter {
+function setup(now?: () => number): ConsoleRouter {
   const router = new ConsoleRouter()
-  registerWalletRoutes(router, fakeDeps(store), {
+  registerWalletRoutes(router, fakeDeps(store, now), {
     buyer: buyer.client,
     requireWorkspaceAccess: fakeRequireWorkspaceAccess,
     walletAddress: async (identity) => (identity === 'team' ? TEAM_WALLET : WALLET),
@@ -71,6 +77,10 @@ function setup(): ConsoleRouter {
       switch (txHash) {
         case RECORDED: return sweep(txHash, wallet, [{ from: MINTED_FROM, amountUsdc: 500_000_000, txHash: SENT }])
         case RECORDED_LATER: return sweep(txHash, wallet, []) // its funding transfer was outside the lookback
+        case FLAKY:
+          if (flakyFailures-- > 0) throw new Error('rate limited')
+          return sweep(txHash, wallet, [{ from: PAYER, amountUsdc: 20_000_000, txHash: SENT_LATE }])
+        case SENT_LATE: return transfer(txHash, wallet, PAYER, 20_000_000, 11)
         case SENT: return transfer(txHash, wallet, MINTED_FROM, 500_000_000, 9)
         case SENT_EARLIER: return transfer(txHash, wallet, PAYER, 7_000_000, 3)
         case FUNDED_APPROVED: return transfer(txHash, wallet, PAYER, 40_000_000, 4)
@@ -107,12 +117,39 @@ test('listing shows the transfer that funded the sweeps, once, and not the sweep
 test('a sweep approved before transfers were listed hands its approval to the transfer that funded it', async () => {
   const approvedSweep = { ...sweep(`0x${'a9'.repeat(32)}`, WALLET, [{ from: PAYER, amountUsdc: 40_000_000, txHash: FUNDED_APPROVED }]), workspaceId }
   store.insertDeposit(approvedSweep)
-  store.setDepositApproval(workspaceId, approvedSweep.txHash, { byId: null, byLabel: 'Owner', note: 'October' })
+  store.setDepositApproval(workspaceId, approvedSweep.txHash, { byId: null, byLabel: 'Owner', note: 'October', at: APPROVED_LONG_AGO })
   const list = await call(setup(), 'GET', `/workspaces/${workspaceId}/deposits`, admin()) as DepositConfirmation[]
   const funded = list.find((deposit) => deposit.txHash === FUNDED_APPROVED)
   assert.equal(funded?.approval?.by, 'Owner')
   assert.equal(funded?.approval?.note, 'October')
+  assert.equal(funded?.approval?.at, APPROVED_LONG_AGO, 'the approval keeps its original time')
   assert.ok(!list.some((deposit) => deposit.kind === 'relay'), 'sweeps are not listed')
+})
+
+test('an approved sweep whose funding transfer is unknown stays listed with its approval', async () => {
+  const orphan = { ...sweep(`0x${'aa'.repeat(32)}`, WALLET, []), workspaceId }
+  store.insertDeposit(orphan)
+  const list = await call(setup(), 'GET', `/workspaces/${workspaceId}/deposits`, admin()) as DepositConfirmation[]
+  assert.ok(!list.some((deposit) => deposit.txHash === orphan.txHash), 'an unapproved one is a move inside the workspace')
+  store.setDepositApproval(workspaceId, orphan.txHash, { byId: null, byLabel: 'Owner', note: null })
+  const approved = await call(setup(), 'GET', `/workspaces/${workspaceId}/deposits`, admin()) as DepositConfirmation[]
+  assert.equal(approved.find((deposit) => deposit.txHash === orphan.txHash)?.approval?.by, 'Owner')
+})
+
+test('a sweep whose check fails is checked again after a backoff, and its transfer is then listed', async () => {
+  let now = 1_700_000_000_000
+  const router = setup(() => now)
+  laterHistory.push({ txHash: FLAKY, creditedBaseUnits: '20000000', at: 3 })
+  flakyFailures = 1
+  const before = verified.filter((hash) => hash === FLAKY).length
+  await call(router, 'GET', `/workspaces/${workspaceId}/deposits`, admin())
+  assert.equal(store.getDeposit(workspaceId, FLAKY), null, 'not stored without its funding')
+  await call(router, 'GET', `/workspaces/${workspaceId}/deposits`, admin())
+  assert.equal(verified.filter((hash) => hash === FLAKY).length - before, 1, 'not asked again before the backoff')
+  now += 60_000
+  const list = await call(router, 'GET', `/workspaces/${workspaceId}/deposits`, admin()) as DepositConfirmation[]
+  assert.equal(store.getDeposit(workspaceId, FLAKY)?.kind, 'relay')
+  assert.equal(list.find((deposit) => deposit.txHash === SENT_LATE)?.sent, '20.000000')
 })
 
 test('one transaction paying two workspace wallets is a confirmation in each, approved separately', async () => {

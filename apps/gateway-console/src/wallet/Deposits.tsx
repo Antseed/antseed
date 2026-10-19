@@ -33,6 +33,8 @@ function usdc(amount: string): string {
  */
 function sourceSummary(deposit: DepositConfirmation): string {
   if (deposit.kind === 'direct') return deposit.sources[0] ? `Deposit from wallet ${shortId(deposit.sources[0].from)}` : 'Deposit from a connected wallet'
+  // Listed only when approved before transfers were listed and its transfer is not known.
+  if (deposit.kind === 'relay') return 'Moved into the credits'
   if (deposit.sources.length === 0) return 'Sent to the workspace wallet'
   if (deposit.sources.every((source) => source.minted)) return 'Exchange or card (new USDC)'
   const wallets = [...new Set(deposit.sources.filter((source) => !source.minted).map((source) => shortId(source.from)))]

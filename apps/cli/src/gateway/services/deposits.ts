@@ -63,9 +63,9 @@ function parse(abi: Interface, log: Log) {
 
 /**
  * The deposit `txHash` credited to `wallet`, or null when the transaction
- * failed or neither credited the wallet nor sent it USDC. Where a sweep's
- * money came from is best effort: an RPC that refuses the log query leaves
- * `sources` empty.
+ * failed or neither credited the wallet nor sent it USDC. A sweep whose
+ * funding lookup fails throws, so the caller retries it rather than storing
+ * a sweep that names no transfer; a direct deposit's payer is best effort.
  */
 export async function verifyDeposit(provider: DepositChainProvider, chain: DepositChain, txHash: string, wallet: string): Promise<VerifiedDeposit | null> {
   const receipt = await provider.getTransactionReceipt(txHash)
@@ -89,7 +89,7 @@ export async function verifyDeposit(provider: DepositChainProvider, chain: Depos
   const block = await provider.getBlock(receipt.blockNumber)
   const kind = swept !== null ? 'relay' : 'direct'
   const sources = kind === 'relay'
-    ? await incomingTransfers(provider, chain, wallet, receipt.blockNumber, receipt.hash, credited + (fee ?? 0n)).catch(() => [])
+    ? await incomingTransfers(provider, chain, wallet, receipt.blockNumber, receipt.hash, credited + (fee ?? 0n))
     : await directPayer(provider, chain, receipt).catch(() => [])
   return {
     txHash: receipt.hash.toLowerCase(),
