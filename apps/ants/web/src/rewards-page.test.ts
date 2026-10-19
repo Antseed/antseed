@@ -6,9 +6,9 @@ import { AppContext, type AppValue } from './app-context';
 import type { ActionButtonProps } from './components/Confirm';
 import { RewardsPage } from './pages/Rewards';
 
-const state = vi.hoisted(() => ({ rewards: null as RewardsView | null, pools: [] as PoolView[], actions: [] as ActionButtonProps[], configReady: true, configLoading: false, configError: null as string | null, rewardsLoading: false, rewardsError: null as string | null, reconciling: false, builders: null as BuildersView | null, referral: null as ReferralView | null, referredBuyers: null as ReferredBuyersView | null, referee: null as RefereeView | null }));
-vi.mock('./data', () => ({ usePageData: (key: string | null) => ({
-  data: key === 'rewards' ? state.rewards : key === 'referrals' ? state.referral : key === 'referrals:buyers' ? state.referredBuyers : key === 'referrals:referee' ? state.referee : key?.startsWith('builders:') ? state.builders : key === 'pools' ? { pools: state.pools } : key === 'positions:current' && state.configReady ? { config: { minStakeEpochs: 1, maxStakeEpochs: 104, stakeActivationDelay: 1 } } : null,
+const state = vi.hoisted(() => ({ rewards: null as RewardsView | null, pools: [] as PoolView[], actions: [] as ActionButtonProps[], configReady: true, configLoading: false, configError: null as string | null, rewardsLoading: false, rewardsError: null as string | null, reconciling: false, builders: null as BuildersView | null, referral: null as ReferralView | null, referredBuyers: null as ReferredBuyersView | null, referee: null as RefereeView | null, keys: [] as Array<string | null> }));
+vi.mock('./data', () => ({ usePageData: (key: string | null) => (state.keys.push(key), {
+  data: key === 'rewards' ? state.rewards : key === 'referrals' || key?.startsWith('referrals@') ? state.referral : key === 'referrals:buyers' ? state.referredBuyers : key === 'referrals:referee' ? state.referee : key?.startsWith('builders:') ? state.builders : key === 'pools' ? { pools: state.pools } : key === 'positions:current' && state.configReady ? { config: { minStakeEpochs: 1, maxStakeEpochs: 104, stakeActivationDelay: 1 } } : null,
   error: key === 'rewards' ? state.rewardsError : key === 'positions:current' ? state.configError : null,
   loading: key === 'rewards' ? state.rewardsLoading : key === 'positions:current' && state.configLoading,
   reconciling: key === 'rewards' && state.reconciling,
@@ -509,6 +509,19 @@ describe('reward row actions and confirmations', () => {
     expect(card).toContain('Create invite');
     expect(card).toContain('of 5 left this week');
     expect(card).not.toContain('?ref=');
+  });
+
+  it('reads the referral card again when the epoch changes, so last week\'s exhausted allowance does not stick', () => {
+    state.referral = { available: true, indexed: true, payable: '0', claimableEpochs: [], referredCount: 0, invites: { epoch: 23, quota: 3, used: 3, left: 0 } };
+    state.keys = [];
+    render();
+    expect(state.keys).toContain('referrals@23');
+    const next = { ...context, overview: { ...context.overview!, epoch: { ...context.overview!.epoch, current: 24 } } } as AppValue;
+    state.keys = [];
+    renderToStaticMarkup(createElement(AppContext.Provider, { value: next }, createElement(RewardsPage)));
+    // A new key: the data hook has no cached view for it and fetches it.
+    expect(state.keys).toContain('referrals@24');
+    expect(state.keys).not.toContain('referrals@23');
   });
 
   it('explains why no invites can be created without last week\'s activity', () => {

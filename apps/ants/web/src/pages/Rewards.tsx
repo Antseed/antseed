@@ -57,9 +57,19 @@ const NO_INVITE_QUOTA = 'Invites unlock after at least 1 USDC of usage or sales 
 /** Without Antscan, claims find payable weeks with the services' bounded on-chain scan. */
 const ON_CHAIN_CLAIM = 'Claim checks the last 26 weeks on-chain.';
 
+/**
+ * The referral card's cache key follows the epoch: the 60s staleness only
+ * applies on mount, so a page left open across a week boundary would keep
+ * last week's (possibly exhausted) allowance. A new epoch is a new key, read
+ * again right away.
+ */
+export function referralCardKey(epoch: number | null): string {
+  return epoch === null ? 'referrals' : `referrals@${epoch}`;
+}
+
 function ReferralRewardsCard() {
   const dashboard = useConfig();
-  const page = usePageData('referrals', api.referral, 60_000);
+  const page = usePageData(referralCardKey(useEpochInfo()?.current ?? null), api.referral, 60_000);
   const view = page.data;
   if (view && !view.available) return null;
   const epochs = view?.claimableEpochs.length ?? 0;

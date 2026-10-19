@@ -338,3 +338,42 @@ test('builders: a buyer that reports a config-sourced agent is shown as the runt
     await desktop.close()
   }
 })
+
+test('builders: saving the same agent again retries a restart that did not take effect', async () => {
+  const principal = memberPrincipal(store, orgAdmin.id)
+  const original = readFileSync(configPath, 'utf8')
+  writeFileSync(configPath, JSON.stringify({ buyer: { proxyPort: 8377 } }))
+  let signs = { agentId: 1, source: 'default', client: 'cli' }
+  let cooldown = true
+  const restarted: string[] = []
+  const supervised = await startFakeBuyer({
+    'GET /_antseed/status': () => ({ body: { ok: true, attribution: signs } }),
+    // The first request lands in the supervisor's restart cooldown.
+    'POST /_antseed/restart': () => {
+      restarted.push('restart')
+      return cooldown ? { status: 429, body: { ok: false, error: 'restart_cooldown' } } : { body: { ok: true } }
+    },
+  })
+  try {
+    const r = new ConsoleRouter()
+    registerReferralRoutes(r, testDeps(store, dir, { configPath }), { buyer: supervised.client, resolveChain: async () => CHAIN, context: fakeContext, env: {} })
+    const first = await call(r, 'PUT', '/builders', principal, { agentId: 7 }) as Builders
+    assert.equal(first.restartRequired, true)
+    assert.equal(JSON.parse(readFileSync(configPath, 'utf8')).buyer.clientAgentId, 7)
+    assert.equal(restarted.length, 1)
+
+    // Same agent after the cooldown: the buyer still signs the default, so it is restarted again.
+    cooldown = false
+    const retried = await call(r, 'PUT', '/builders', principal, { agentId: 7 }) as Builders
+    assert.equal(retried.restartRequired, undefined)
+    assert.equal(restarted.length, 2)
+
+    // Once the buyer signs the saved agent, saving it again is a no-op.
+    signs = { agentId: 7, source: 'config', client: 'cli' }
+    await call(r, 'PUT', '/builders', principal, { agentId: 7 })
+    assert.equal(restarted.length, 2)
+  } finally {
+    await supervised.close()
+    writeFileSync(configPath, original)
+  }
+})

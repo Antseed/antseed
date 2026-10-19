@@ -265,16 +265,25 @@ export async function setBuilderAgent(
   // Asked before the restart: the running buyer says whether its environment overrides the config.
   const [previous, before] = await Promise.all([configuredClientAgentId(settings.configPath), runtimeClientAgent(buyer)])
   const running = (): Builders['effective'] => before ? { ...before, runtime: true } : estimatedClientAgent(agentId, ctx.chain, env)
-  if (previous === agentId) return { restartRequired: false, agentId, effective: running() }
-  await patchConfigFile(settings.configPath, (config) => {
-    const buyerConfig = config['buyer'] && typeof config['buyer'] === 'object' && !Array.isArray(config['buyer'])
-      ? config['buyer'] as Record<string, unknown>
-      : (config['buyer'] = {}) as Record<string, unknown>
-    if (agentId === null) delete buyerConfig['clientAgentId']
-    else buyerConfig['clientAgentId'] = agentId
-  })
-  recordAudit(settings, actor, 'builders.update', { kind: 'settings', id: 'builders', label: 'Builders program' }, { agentId, previous })
-  settings.log('console: client agent changed; restarting the buyer')
+  if (previous === agentId) {
+    // Saved already, but an earlier restart may have failed (cooldown, buyer
+    // down): a buyer still signing something other than the saved agent, not
+    // because its environment overrides it, is restarted again.
+    const expected = before ? estimatedClientAgent(agentId, ctx.chain, { ANTSEED_CLIENT_KIND: before.client }) : null
+    const stale = !!before && !!expected && before.source !== 'env' && before.agentId !== expected.agentId
+    if (!stale) return { restartRequired: false, agentId, effective: running() }
+    settings.log('console: the buyer still signs the previous client agent; restarting it')
+  } else {
+    await patchConfigFile(settings.configPath, (config) => {
+      const buyerConfig = config['buyer'] && typeof config['buyer'] === 'object' && !Array.isArray(config['buyer'])
+        ? config['buyer'] as Record<string, unknown>
+        : (config['buyer'] = {}) as Record<string, unknown>
+      if (agentId === null) delete buyerConfig['clientAgentId']
+      else buyerConfig['clientAgentId'] = agentId
+    })
+    recordAudit(settings, actor, 'builders.update', { kind: 'settings', id: 'builders', label: 'Builders program' }, { agentId, previous })
+    settings.log('console: client agent changed; restarting the buyer')
+  }
   const restartRequired = buyer ? await requestBuyerRestart(settings, buyer) : true
   // Not restarted: the running buyer keeps signing what it reported.
   if (restartRequired) return { restartRequired, agentId, effective: running() }
