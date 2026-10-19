@@ -99,7 +99,10 @@ export class BuyerFreeUsageManager {
           services: [],
         }
       : metadata;
-    return this._attribution ? { ...base, attribution: this._attribution } : base;
+    // The current attribution replaces whatever earlier metadata carried, so
+    // clearing it (or hydrating without one) stops signing the old client/invite.
+    const { attribution: _previous, ...rest } = base;
+    return this._attribution ? { ...rest, attribution: this._attribution } : rest;
   }
 
   private _advanceUsageMetadata(

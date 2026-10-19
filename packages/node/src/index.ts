@@ -231,16 +231,19 @@ export {
 } from './payments/invites.js';
 export {
   clearReferralInvite,
-  issuedInviteIndices,
   normalizeReferrer,
   pendingInvite,
+  readIssuedInviteIndices,
   readReferralState,
   recordIssuedInvite,
   referralStateMtimeMs,
+  referrerOfLookup,
   saveReferralInvite,
   syncReferralState,
   writeReferralState,
   type ReferralLookup,
+  type ReferralLookups,
+  type ReferralScope,
   type ReferralState,
 } from './payments/referral-state.js';
 export { ClientRewardsClient, type ClientRewardsClientConfig, type ClientEpochReward } from './payments/evm/client-rewards-client.js';

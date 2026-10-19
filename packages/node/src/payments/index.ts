@@ -111,16 +111,19 @@ export {
 } from './invites.js';
 export {
   clearReferralInvite,
-  issuedInviteIndices,
   normalizeReferrer,
   pendingInvite,
+  readIssuedInviteIndices,
   readReferralState,
   recordIssuedInvite,
   referralStateMtimeMs,
+  referrerOfLookup,
   saveReferralInvite,
   syncReferralState,
   writeReferralState,
   type ReferralLookup,
+  type ReferralLookups,
+  type ReferralScope,
   type ReferralState,
 } from './referral-state.js';
 export { ClientRewardsClient } from './evm/client-rewards-client.js';

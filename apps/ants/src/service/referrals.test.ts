@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Wallet, getAddress, zeroPadValue } from 'ethers';
@@ -22,6 +22,8 @@ const wallet = '0x0000000000000000000000000000000000000001';
 const buyer = '0x0000000000000000000000000000000000000002';
 const referrer = getAddress('0xabcdef0000000000000000000000000000000003');
 const referralsAddress = '0x1111111111111111111111111111111111111111';
+/** The dashboard wallet as a signer on the fixture deployment (issued-invite indices are scoped to it). */
+const signerScope = { wallet, chainId: 8453, referralsAddress };
 
 const indexedReferrer: IndexedReferrer = {
   available: true,
@@ -44,6 +46,8 @@ function fixture(options: { referrals?: boolean; explorer?: boolean; indexed?: P
     referralBinding: vi.fn(async () => ({ ...binding, ...options.binding })),
   };
   const client = {
+    currentEpoch: vi.fn(async () => 24),
+    pendingRefereeReward: vi.fn(async (_buyer: string, epoch: number) => (epoch === 20 || epoch === 22 ? 5n : 0n)),
     pendingRewards: vi.fn(async () => [{ epoch: 7, amount: 1n }]),
     claimEpochs: vi.fn(async () => '0xhash'),
     claimRefereeEpochs: vi.fn(async () => '0xreferee'),
@@ -51,7 +55,7 @@ function fixture(options: { referrals?: boolean; explorer?: boolean; indexed?: P
   const ctx = {
     address: wallet,
     buyerAddress: buyer,
-    chain: options.referrals === false ? {} : { referralsAddress },
+    chain: options.referrals === false ? {} : { referralsAddress, evmChainId: 8453 },
     referrals: () => (options.referrals === false ? null : client),
     indexer: () => (options.explorer === false ? null : indexer),
     requireSigner: () => ({}),
@@ -80,18 +84,22 @@ describe('referral card', () => {
   it('counts invites already handed out from this install', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ants-referral-'));
     dirs.push(dir);
-    await recordIssuedInvite(dir, 30, 0);
-    await recordIssuedInvite(dir, 30, 1);
+    await recordIssuedInvite(dir, signerScope, 30, 0);
+    await recordIssuedInvite(dir, signerScope, 30, 1);
+    expect((await referral(fixture().ctx, dir)).invites).toEqual({ epoch: 30, quota: 5, used: 2, left: 3 });
+    // Invites another wallet or deployment handed out do not count.
+    await recordIssuedInvite(dir, { ...signerScope, wallet: buyer }, 30, 2);
+    await recordIssuedInvite(dir, { ...signerScope, chainId: 84532 }, 30, 3);
     expect((await referral(fixture().ctx, dir)).invites).toEqual({ epoch: 30, quota: 5, used: 2, left: 3 });
   });
 
   it('counts |bound ∪ handed out| against the quota', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ants-referral-'));
     dirs.push(dir);
-    await recordIssuedInvite(dir, 30, 2);
+    await recordIssuedInvite(dir, signerScope, 30, 2);
     const indexed = { invites: { epoch: 30, quota: 7, used: 1, usedIndices: [4] } };
     expect((await referral(fixture({ indexed }).ctx, dir)).invites).toEqual({ epoch: 30, quota: 7, used: 2, left: 5 });
-    await recordIssuedInvite(dir, 30, 4); // the bound one, handed out here too
+    await recordIssuedInvite(dir, signerScope, 30, 4); // the bound one, handed out here too
     expect((await referral(fixture({ indexed }).ctx, dir)).invites).toEqual({ epoch: 30, quota: 7, used: 2, left: 5 });
   });
 
@@ -146,6 +154,21 @@ describe('invites', () => {
       .rejects.toThrow('All 3 invites for this week are taken');
   });
 
+  it('counts every used index without Antscan, even when the pick was free at once', async () => {
+    const client = inviteClient({ used: [0] });
+    const created = await issueInvite({ client, indexer: null, signer: new Wallet(key), chainId: 8453, referralsAddress, dataDir: null, random: () => 0.99 });
+    expect(created).toMatchObject({ index: 2, left: 1 });
+    expect(client.inviteUsed.mock.calls.map((call) => call[2]).sort()).toEqual([0, 1, 2]);
+  });
+
+  it('re-picks when the on-chain check finds an index Antscan has not indexed yet', async () => {
+    const client = inviteClient({ used: [0, 1] });
+    const indexer = { referrer: vi.fn(async () => ({ ...indexedReferrer, invites: { epoch: 30, quota: 3, used: 1, usedIndices: [0] } })) } as unknown as Indexer;
+    const created = await issueInvite({ client, indexer, signer: new Wallet(key), chainId: 8453, referralsAddress, dataDir: null, random: () => 0 });
+    expect(created).toMatchObject({ index: 2, left: 0 });
+    expect(client.inviteUsed.mock.calls.map((call) => call[2])).toEqual([1, 2]);
+  });
+
   it('takes epoch, quota and used invites from Antscan when it reports them', async () => {
     const client = inviteClient();
     const indexer = { referrer: vi.fn(async () => ({ ...indexedReferrer, invites: { epoch: 30, quota: 4, used: 2, usedIndices: [0, 1] } })) } as unknown as Indexer;
@@ -160,6 +183,40 @@ describe('invites', () => {
     const pick = (random: () => number) => issueInvite({ client: inviteClient(), indexer, signer: new Wallet(key), chainId: 8453, referralsAddress, dataDir: null, random });
     expect((await pick(() => 0)).index).toBe(1);
     expect((await pick(() => 0.99)).index).toBe(3);
+  });
+
+  it('hands the last free slot to only one of two concurrent requests', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ants-invite-'));
+    dirs.push(dir);
+    const client = inviteClient({ quota: 2, used: [0] });
+    // A slow on-chain check: unserialized, both requests would pick and sign index 1.
+    client.inviteUsed.mockImplementation(async (_referrer: string, _epoch: number, index: number) => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return index === 0;
+    });
+    const issue = () => issueInvite({ client, indexer: null, signer: new Wallet(key), chainId: 8453, referralsAddress, dataDir: dir, random: () => 0 });
+    const results = await Promise.allSettled([issue(), issue()]);
+    const created = results.filter((result) => result.status === 'fulfilled');
+    const refused = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+    expect(created).toHaveLength(1);
+    expect(refused).toHaveLength(1);
+    expect(refused[0]!.reason).toBeInstanceOf(InviteQuotaError);
+    expect((created[0] as PromiseFulfilledResult<{ index: number }>).value.index).toBe(1);
+  });
+
+  it('waits for another process holding the data dir\'s invite lock', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ants-invite-'));
+    dirs.push(dir);
+    const lock = join(dir, 'referral-invite.lock');
+    // A live process (our parent) holds the lock.
+    await writeFile(lock, JSON.stringify({ pid: process.ppid, at: Date.now() }));
+    const client = inviteClient({ quota: 3, used: [0] });
+    const issuing = issueInvite({ client, indexer: null, signer: new Wallet(key), chainId: 8453, referralsAddress, dataDir: dir, random: () => 0 });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(client.inviteUsed).not.toHaveBeenCalled();
+    await rm(lock);
+    expect((await issuing).index).toBe(1);
+    await expect(readFile(lock, 'utf8')).rejects.toThrow();
   });
 
   it('refuses without last week\'s activity', async () => {
@@ -191,6 +248,37 @@ describe('referee bonus', () => {
     await expect(claimRefereeRewards(fixture({ binding: { refereeClaimableEpochs: [] } }).ctx)).rejects.toThrow('No invite bonus');
   });
 
+  it('treats an available empty Antscan answer as authoritative, without scanning RPC', async () => {
+    const { ctx, client } = fixture({ binding: { refereeClaimableEpochs: [] } });
+    await expect(claimRefereeRewards(ctx)).rejects.toThrow('No invite bonus');
+    expect(client.pendingRefereeReward).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['unset', { explorer: false }],
+    ['not indexing referrals', { binding: { available: false } }],
+  ] as const)('claims the epochs payable on-chain when the explorer is %s', async (_label, options) => {
+    const { ctx, client } = fixture(options);
+    expect(await claimRefereeRewards(ctx)).toEqual({ hash: '0xreferee', epochs: [20, 22] });
+    expect(client.pendingRefereeReward).toHaveBeenCalledWith(buyer, 22);
+    expect(client.pendingRefereeReward).not.toHaveBeenCalledWith(buyer, 23); // not claimable yet
+    expect(client.claimRefereeEpochs).toHaveBeenCalledWith({}, buyer, [20, 22]);
+  });
+
+  it('claims the epochs payable on-chain when the explorer request fails', async () => {
+    const { ctx, client, indexer } = fixture();
+    indexer.referralBinding.mockRejectedValueOnce(new Error('Antscan unavailable'));
+    expect(await claimRefereeRewards(ctx)).toEqual({ hash: '0xreferee', epochs: [20, 22] });
+    expect(client.currentEpoch).toHaveBeenCalledOnce();
+  });
+
+  it('never scans RPC to show the bonus', async () => {
+    const { ctx, client } = fixture({ explorer: false });
+    expect((await refereeBonus(ctx)).available).toBe(false);
+    expect(client.currentEpoch).not.toHaveBeenCalled();
+    expect(client.pendingRefereeReward).not.toHaveBeenCalled();
+  });
+
   it('reads the bonus straight from an explorer URL', async () => {
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify(binding))) as unknown as typeof fetch;
     expect(await refereeBonusFromExplorer('https://antscan.test', buyer, fetchImpl)).toMatchObject({ referrer, payable: '900' });
@@ -208,6 +296,13 @@ describe('referral claim', () => {
 
   it('falls back to the on-chain epoch scan only without an explorer', async () => {
     const { ctx, client } = fixture({ explorer: false });
+    expect(await claimReferralRewards(ctx)).toEqual({ hash: '0xhash', epochs: [7] });
+    expect(client.pendingRewards).toHaveBeenCalledWith(wallet);
+  });
+
+  it('falls back to the on-chain epoch scan when the explorer request fails', async () => {
+    const { ctx, client, indexer } = fixture();
+    indexer.referrer.mockRejectedValueOnce(new Error('Antscan unavailable'));
     expect(await claimReferralRewards(ctx)).toEqual({ hash: '0xhash', epochs: [7] });
     expect(client.pendingRewards).toHaveBeenCalledWith(wallet);
   });

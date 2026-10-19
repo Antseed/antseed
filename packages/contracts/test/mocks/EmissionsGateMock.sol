@@ -11,6 +11,12 @@ contract EmissionsGateMock is ERC20 {
     address public emissionsReserve = address(0x4E5E);
     mapping(address => mapping(uint256 => uint256)) private _budget;
     mapping(address => mapping(uint256 => uint256)) public minted;
+    /// Per-epoch burn cap shared by every controller (the real gate's
+    /// `BURN_CAP_BPS` share of the epoch emission). Unset means 0: nothing
+    /// burns, so tests must model the cap explicitly to see any burn.
+    mapping(uint256 => uint256) public epochBurnCap;
+    /// Burn already consumed this epoch by any controller's remainder.
+    mapping(uint256 => uint256) public epochBurnedAmount;
 
     error EpochNotFinalized();
     error BucketBudgetExceeded();
@@ -26,6 +32,15 @@ contract EmissionsGateMock is ERC20 {
         _budget[controller][epoch] = amount;
     }
 
+    function setEpochBurnCap(uint256 epoch, uint256 cap) external {
+        epochBurnCap[epoch] = cap;
+    }
+
+    /// Simulate other controllers having already burned part of the cap.
+    function setEpochBurned(uint256 epoch, uint256 amount) external {
+        epochBurnedAmount[epoch] = amount;
+    }
+
     function controllerEpochBudget(address controller, uint256 epoch) external view returns (uint256) {
         return _budget[controller][epoch];
     }
@@ -35,17 +50,24 @@ contract EmissionsGateMock is ERC20 {
         _mint(recipient, amount);
     }
 
-    /// 30% burn / 70% reserve, as the real gate does below its burn cap.
+    /// Mirrors AntseedEmissionsGate.claimRemainder: burn up to whatever is
+    /// left of the epoch's shared burn cap, reserve the excess.
     function claimRemainder(uint256 epoch, address reserveRecipient, uint256 amount)
         external
         returns (uint256 burnedAmount, uint256 reserveAmount)
     {
         if (reserveRecipient != emissionsReserve) revert InvalidValue();
         _charge(epoch, amount);
-        burnedAmount = (amount * 30) / 100;
+        uint256 burnCap = epochBurnCap[epoch];
+        uint256 alreadyBurned = epochBurnedAmount[epoch];
+        if (alreadyBurned < burnCap) {
+            uint256 remainingBurn = burnCap - alreadyBurned;
+            burnedAmount = amount < remainingBurn ? amount : remainingBurn;
+            epochBurnedAmount[epoch] = alreadyBurned + burnedAmount;
+        }
         reserveAmount = amount - burnedAmount;
-        _mint(DEAD_ADDRESS, burnedAmount);
-        _mint(reserveRecipient, reserveAmount);
+        if (burnedAmount != 0) _mint(DEAD_ADDRESS, burnedAmount);
+        if (reserveAmount != 0) _mint(reserveRecipient, reserveAmount);
     }
 
     function _charge(uint256 epoch, uint256 amount) private {

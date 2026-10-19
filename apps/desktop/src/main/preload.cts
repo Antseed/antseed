@@ -514,6 +514,7 @@ const api = {
   referralGetStatus: () => ipcRenderer.invoke('referral:get-status'),
   referralCheckInvite: (value: string) => ipcRenderer.invoke('referral:check-invite', value),
   referralRedeemInvite: (value: string) => ipcRenderer.invoke('referral:redeem-invite', value),
+  referralClearInvite: () => ipcRenderer.invoke('referral:clear-invite'),
   referralGetInvites: () => ipcRenderer.invoke('referral:get-invites'),
   referralCreateInvite: () => ipcRenderer.invoke('referral:create-invite'),
   referralGetReferee: () => ipcRenderer.invoke('referral:get-referee'),

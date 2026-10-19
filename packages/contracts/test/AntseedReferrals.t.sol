@@ -6,6 +6,8 @@ import "forge-std/Test.sol";
 import { AntseedReferrals } from "../rewards/AntseedReferrals.sol";
 import { AntseedEpochShareRewards } from "../emissions/AntseedEpochShareRewards.sol";
 import { EmissionsGateMock } from "./mocks/EmissionsGateMock.sol";
+import { AntseedEmissionsGate } from "../emissions/AntseedEmissionsGate.sol";
+import { ANTSToken } from "../core/ANTSToken.sol";
 
 contract ReferralUsageAccountingMock {
     uint256 public currentEpoch = 10;
@@ -374,11 +376,15 @@ contract AntseedReferralsTest is Test {
         referrals.settleEpochRemainder(10);
 
         gate.setCurrentEpoch(12);
+        // The epoch's shared burn cap is untouched and larger than the bucket:
+        // the whole bucket burns, nothing reaches the reserve.
+        gate.setEpochBurnCap(10, 150 ether);
         (uint256 burned, uint256 reserved) = referrals.settleEpochRemainder(10);
-        assertEq(burned, 30 ether);
-        assertEq(reserved, 70 ether);
-        assertEq(gate.balanceOf(gate.DEAD_ADDRESS()), 30 ether);
-        assertEq(gate.balanceOf(gate.emissionsReserve()), 70 ether);
+        assertEq(burned, 100 ether);
+        assertEq(reserved, 0);
+        assertEq(gate.balanceOf(gate.DEAD_ADDRESS()), 100 ether);
+        assertEq(gate.balanceOf(gate.emissionsReserve()), 0);
+        assertEq(gate.epochBurnedAmount(10), 100 ether);
         assertTrue(referrals.epochFrozen(10));
         assertEq(referrals.frozenTotalPoints(10), 0);
         vm.expectRevert(AntseedEpochShareRewards.AlreadyClaimed.selector);
@@ -397,6 +403,34 @@ contract AntseedReferralsTest is Test {
         referrals.settleEpochRemainder(11);
         referrals.claim(referrer, 11);
         assertEq(gate.balanceOf(REFERRER_OPERATOR), 100 ether);
+    }
+
+    function test_sweepBurnsOnlyWhatIsLeftOfAPartlyConsumedBurnCap() public {
+        gate.setBudget(address(referrals), 10, 100 ether);
+        gate.setCurrentEpoch(12);
+        gate.setEpochBurnCap(10, 150 ether);
+        gate.setEpochBurned(10, 110 ether); // other controllers already swept 110 of the 150 cap
+
+        (uint256 burned, uint256 reserved) = referrals.settleEpochRemainder(10);
+        assertEq(burned, 40 ether);
+        assertEq(reserved, 60 ether);
+        assertEq(gate.balanceOf(gate.DEAD_ADDRESS()), 40 ether);
+        assertEq(gate.balanceOf(gate.emissionsReserve()), 60 ether);
+        assertEq(gate.epochBurnedAmount(10), 150 ether);
+    }
+
+    function test_sweepReservesEverythingOnceTheBurnCapIsExhausted() public {
+        gate.setBudget(address(referrals), 10, 100 ether);
+        gate.setCurrentEpoch(12);
+        gate.setEpochBurnCap(10, 150 ether);
+        gate.setEpochBurned(10, 150 ether);
+
+        (uint256 burned, uint256 reserved) = referrals.settleEpochRemainder(10);
+        assertEq(burned, 0);
+        assertEq(reserved, 100 ether);
+        assertEq(gate.balanceOf(gate.DEAD_ADDRESS()), 0);
+        assertEq(gate.balanceOf(gate.emissionsReserve()), 100 ether);
+        assertEq(gate.epochBurnedAmount(10), 150 ether);
     }
 
     function test_refereeAndReferrerSplitTheBucketWithDistinctKeys() public {
@@ -505,5 +539,101 @@ contract AntseedReferralsTest is Test {
         referrals.claimRefereeEpochs(buyer, epochs);
         assertEq(gate.balanceOf(operator), 10 ether);
         assertEq(gate.balanceOf(buyer), 0);
+    }
+}
+
+/// @notice Empty-epoch sweeps against the real AntseedEmissionsGate: the burn
+///         side of a remainder is capped by the epoch's burn cap, which every
+///         controller's remainder shares, and only the excess is reserved.
+contract AntseedReferralsGateSweepTest is Test {
+    address private constant KNOWN_ANTS_TOKEN = 0xa87EE81b2C0Bc659307ca2D9ffdC38514DD85263;
+    bytes32 private constant REFERRALS_MINTER_ID = keccak256("test.referrals");
+    bytes32 private constant SWEEPER_MINTER_ID = keccak256("test.sweeper");
+    uint32 private constant REFERRALS_SHARE_BPS = 10_000; // 10%: 500k of a 5M epoch
+    uint256 private constant EPOCH = 5;
+
+    address private teamWallet = address(0x7EA3);
+    address private reserve = address(0x5E5E);
+    address private sweeper = address(0x5EE9);
+
+    ANTSToken private token;
+    AntseedEmissionsGate private gate;
+    AntseedReferrals private referrals;
+
+    function setUp() public {
+        deployCodeTo("ANTSToken.sol:ANTSToken", KNOWN_ANTS_TOKEN);
+        token = ANTSToken(KNOWN_ANTS_TOKEN);
+
+        _warpToEpoch(EPOCH - 1);
+        gate = new AntseedEmissionsGate(teamWallet, reserve, 15_000, 15_000);
+        token.setRegistry(address(gate));
+        gate.fundLegacyEscrow(address(0xE5C0));
+
+        referrals = new AntseedReferrals(
+            address(gate),
+            address(new ReferralUsageAccountingMock()),
+            address(new ReferralDepositsMock()),
+            address(new ReferrerLedgerMock()),
+            address(0x57A75)
+        );
+        gate.setMinter(REFERRALS_MINTER_ID, address(referrals), REFERRALS_SHARE_BPS, true);
+    }
+
+    function _warpToEpoch(uint256 epoch) private {
+        vm.warp(1_775_728_461 + 7 days * epoch + 1);
+    }
+
+    function _bucket() private view returns (uint256) {
+        return gate.minterEpochBudget(REFERRALS_MINTER_ID, EPOCH);
+    }
+
+    function _burnCap() private view returns (uint256) {
+        return (gate.getEpochEmission(EPOCH) * gate.BURN_CAP_BPS()) / gate.SHARE_DENOMINATOR();
+    }
+
+    /// @dev Another controller sweeps its whole `shareBps` bucket first,
+    ///      consuming that much of the shared burn cap.
+    function _otherControllerSweepsFirst(uint32 shareBps) private returns (uint256 burned) {
+        _warpToEpoch(EPOCH - 1);
+        gate.setMinter(SWEEPER_MINTER_ID, sweeper, shareBps, true);
+        _warpToEpoch(EPOCH + 2);
+        uint256 amount = gate.minterEpochBudget(SWEEPER_MINTER_ID, EPOCH);
+        vm.prank(sweeper);
+        (burned,) = gate.claimRemainder(EPOCH, reserve, amount);
+    }
+
+    function _assertSweep(uint256 expectedBurned) private {
+        uint256 bucket = _bucket();
+        uint256 burnedBefore = gate.epochBurnedAmount(EPOCH);
+        uint256 deadBefore = token.balanceOf(gate.DEAD_ADDRESS());
+        uint256 reserveBefore = token.balanceOf(reserve);
+
+        (uint256 burned, uint256 reserved) = referrals.settleEpochRemainder(EPOCH);
+
+        assertEq(burned, expectedBurned, "burned");
+        assertEq(reserved, bucket - expectedBurned, "reserved");
+        assertEq(token.balanceOf(gate.DEAD_ADDRESS()) - deadBefore, expectedBurned, "dead balance");
+        assertEq(token.balanceOf(reserve) - reserveBefore, bucket - expectedBurned, "reserve balance");
+        assertEq(gate.epochBurnedAmount(EPOCH), burnedBefore + expectedBurned, "epoch burned");
+        assertLe(gate.epochBurnedAmount(EPOCH), _burnCap(), "burn cap exceeded");
+        assertEq(gate.minterEpochMinted(REFERRALS_MINTER_ID, EPOCH), bucket, "bucket fully minted");
+    }
+
+    function test_unusedBurnCapBurnsTheWholeBucket() public {
+        _warpToEpoch(EPOCH + 2);
+        assertEq(_bucket(), 500_000e18);
+        assertEq(_burnCap(), 1_500_000e18);
+        _assertSweep(500_000e18);
+    }
+
+    function test_partlyConsumedBurnCapBurnsOnlyTheRemainingCap() public {
+        assertEq(_otherControllerSweepsFirst(25_000), 1_250_000e18);
+        _assertSweep(250_000e18); // 1.5M cap - 1.25M already burned
+        assertEq(gate.epochBurnedAmount(EPOCH), _burnCap());
+    }
+
+    function test_exhaustedBurnCapReservesTheWholeBucket() public {
+        assertEq(_otherControllerSweepsFirst(30_000), 1_500_000e18);
+        _assertSweep(0);
     }
 }

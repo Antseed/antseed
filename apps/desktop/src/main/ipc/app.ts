@@ -25,6 +25,7 @@ import {
 } from '../telemetry/runtime.js';
 import {
   checkReferralInvite,
+  clearPendingReferralInvite,
   createReferralInvite,
   getRefereeBonus,
   getReferralInvites,
@@ -74,6 +75,7 @@ export function registerAppIpc(): void {
   ipcMain.handle('referral:get-status', () => getReferralStatus());
   ipcMain.handle('referral:check-invite', (_event, value: string) => checkReferralInvite(String(value ?? '')));
   ipcMain.handle('referral:redeem-invite', (_event, value: string) => redeemReferralInvite(String(value ?? '')));
+  ipcMain.handle('referral:clear-invite', () => clearPendingReferralInvite());
   ipcMain.handle('referral:get-invites', () => getReferralInvites());
   ipcMain.handle('referral:create-invite', () => createReferralInvite());
   ipcMain.handle('referral:get-referee', () => getRefereeBonus());

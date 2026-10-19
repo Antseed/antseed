@@ -444,6 +444,7 @@ export type DesktopBridge = {
   referralGetStatus?: () => Promise<ReferralStatus>;
   referralCheckInvite?: (value: string) => Promise<InviteCheckResult>;
   referralRedeemInvite?: (value: string) => Promise<InviteCheckResult>;
+  referralClearInvite?: () => Promise<ReferralStatus>;
   referralGetInvites?: () => Promise<ReferralInvites>;
   referralCreateInvite?: () => Promise<CreateInviteResult>;
   referralGetReferee?: () => Promise<RefereeBonus>;

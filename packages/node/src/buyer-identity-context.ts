@@ -1,4 +1,5 @@
 import type { Identity } from "./p2p/identity.js";
+import type { UsageAttribution } from "./payments/evm/signatures.js";
 import type { PeerId, PeerInfo } from "./types/peer.js";
 import type { SerializedHttpRequest, SerializedHttpResponse } from "./types/http.js";
 import { ConnectionState } from "./types/connection.js";
@@ -61,6 +62,8 @@ export interface BuyerIdentityContextOptions {
     freeUsageContractAddress: string;
     defaultAuthDurationSecs: number;
     disableMetadataV2Services: boolean;
+    /** Client id only: the default wallet's invite is not this identity's to carry. */
+    attribution?: UsageAttribution;
   } | null;
   requestHandler: {
     requestTimeoutMs?: number;

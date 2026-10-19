@@ -1,6 +1,6 @@
 import { Button, Card } from '../components/ui';
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
-import type { ClaimRequest, CreatedInviteView, PoolView, ReferralView, ReferredBuyerView, RestakeRequest, RewardBucket, RewardsView, StakeUsageRequest } from '../../../src/api-types';
+import type { ClaimRequest, CreatedInviteView, InviteAllowanceView, JobView, PoolView, ReferralView, ReferredBuyerView, RestakeRequest, RewardBucket, RewardsView, StakeUsageRequest } from '../../../src/api-types';
 import { request, api } from '../api';
 import { BuyerWalletAction } from '../wallet';
 import { useConfig, useEpochInfo } from '../app-context';
@@ -69,7 +69,7 @@ function ReferralRewardsCard() {
         <div className="hero-value"><RewardAmount>{formatAnts(view.payable, 4)}</RewardAmount><span className="unit">ANTS</span></div>
         <p className="hero-sub muted">Payable now</p>
         <div className="buckets">
-          <InviteRow view={view} />
+          <InviteRow view={view} onCreated={page.refresh} />
           <BucketRow visible name="Payable now" amount={view.payable}
             amountDetail={`${formatInt(view.referredCount)} ${view.referredCount === 1 ? 'referred buyer' : 'referred buyers'}`}
             note={epochs > 0 ? `${epochs} ${epochs === 1 ? 'week is' : 'weeks are'} ready to claim.` : 'Weeks become claimable one week after they end.'}
@@ -84,22 +84,34 @@ function ReferralRewardsCard() {
   );
 }
 
+/**
+ * The invite allowance to show: the refreshed one, lowered by an invite just
+ * created for the same epoch (until the refetch counts it). A created invite
+ * only stands in for the allowance of its own epoch, never a later one.
+ */
+export function inviteAllowance(invites: InviteAllowanceView | null, created: CreatedInviteView | null): { quota: number | null; left: number | null } {
+  if (!created || (invites && invites.epoch > created.epoch)) return { quota: invites?.quota ?? null, left: invites?.left ?? null };
+  if (!invites || created.epoch > invites.epoch) return { quota: created.quota, left: created.left };
+  return { quota: invites.quota, left: Math.min(invites.left, created.left) };
+}
+
 /** Create a single-use invite link (signed off-chain by the dashboard wallet) and show what is left this week. */
-function InviteRow({ view }: { view: ReferralView }) {
+function InviteRow({ view, onCreated }: { view: ReferralView; onCreated: () => void }) {
   const dashboard = useConfig();
   const [created, setCreated] = useState<CreatedInviteView | null>(null);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const quota = created?.quota ?? view.invites?.quota ?? null;
-  const left = created?.left ?? view.invites?.left ?? null;
+  const { quota, left } = inviteAllowance(view.invites, created);
   const unavailable = dashboard.readOnly ? 'Connect a wallet with a signer to create invites.'
     : dashboard.browserWallet ? 'Invites are signed by the local Antseed wallet. Run `antseed referral invite` instead.'
       : quota === 0 ? NO_INVITE_QUOTA
         : left === 0 ? 'All invites for this week are taken. More unlock next week.' : null;
   const create = async () => {
     setCreating(true); setError(null);
-    try { setCreated(await api.createInvite()); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    try {
+      setCreated(await api.createInvite());
+      onCreated(); // re-read the allowance so it does not rest on this snapshot
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setCreating(false); }
   };
   return (
@@ -177,6 +189,51 @@ function writeBuilderIds(chainId: string, ids: number[]): void {
   }
 }
 
+const HANDLED_REGISTER_JOBS_KEY = 'antseed.ants.handledBuilderRegisterJobs';
+const MAX_HANDLED_REGISTER_JOBS = 100;
+/**
+ * Register jobs whose agent was already added. The job list outlives the
+ * card (and, from the server journal, a reload), so this lives outside the
+ * component and in storage; otherwise a removed agent comes back on return.
+ */
+const handledRegisterJobs = new Set<string>(readHandledRegisterJobs());
+
+function readHandledRegisterJobs(): string[] {
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(HANDLED_REGISTER_JOBS_KEY) ?? '[]');
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Agents from newly finished register jobs that are not tracked yet, marking
+ * those jobs handled (once ever, so Remove sticks). Null when nothing changes.
+ */
+export function takeRegisteredAgents(jobs: JobView[], ids: number[]): number[] | null {
+  const finished = jobs.filter((job) => job.kind === 'builder-register' && job.status === 'done');
+  if (!finished.length) return null;
+  for (const id of readHandledRegisterJobs()) handledRegisterJobs.add(id); // another tab may have handled some
+  const registered: number[] = [];
+  let handled = false;
+  for (const job of finished) {
+    if (handledRegisterJobs.has(job.id)) continue;
+    handledRegisterJobs.add(job.id);
+    handled = true;
+    const agentId = (job.result as { agentId?: unknown } | undefined)?.agentId;
+    if (typeof agentId === 'number' && !ids.includes(agentId) && !registered.includes(agentId)) registered.push(agentId);
+  }
+  if (handled) {
+    try {
+      window.localStorage.setItem(HANDLED_REGISTER_JOBS_KEY, JSON.stringify([...handledRegisterJobs].slice(-MAX_HANDLED_REGISTER_JOBS)));
+    } catch {
+      /* storage unavailable: the in-memory set still covers this page load */
+    }
+  }
+  return registered.length ? [...ids, ...registered] : null;
+}
+
 /**
  * Builders program: emission rewards for apps built on Antseed, per client
  * ERC-8004 agent. No cheap on-chain lookup lists the agents a wallet owns, so
@@ -196,16 +253,9 @@ function BuildersCard() {
 
   const save = (next: number[]) => { setIds(next); writeBuilderIds(dashboard.chainId, next); };
   // A client agent registered from this card starts tracked (once per job, so Remove sticks).
-  const handledJobs = useRef(new Set<string>());
   useEffect(() => {
-    const registered: number[] = [];
-    for (const job of jobs) {
-      if (job.kind !== 'builder-register' || job.status !== 'done' || handledJobs.current.has(job.id)) continue;
-      handledJobs.current.add(job.id);
-      const agentId = (job.result as { agentId?: unknown } | undefined)?.agentId;
-      if (typeof agentId === 'number' && !ids.includes(agentId)) registered.push(agentId);
-    }
-    if (registered.length) save([...ids, ...new Set(registered)]);
+    const next = takeRegisteredAgents(jobs, ids);
+    if (next) save(next);
   }, [jobs]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (view && !view.available) return null;

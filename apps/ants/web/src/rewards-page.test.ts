@@ -1,19 +1,30 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { BuildersView, PoolView, RefereeView, ReferralView, ReferredBuyersView, RewardsView } from '../../src/api-types';
+import type { BuildersView, CreatedInviteView, JobView, PoolView, RefereeView, ReferralView, ReferredBuyersView, RewardsView } from '../../src/api-types';
 import { AppContext, type AppValue } from './app-context';
 import type { ActionButtonProps } from './components/Confirm';
-import { RewardsPage } from './pages/Rewards';
+import { RewardsPage, inviteAllowance, takeRegisteredAgents } from './pages/Rewards';
 
-const state = vi.hoisted(() => ({ rewards: null as RewardsView | null, pools: [] as PoolView[], actions: [] as ActionButtonProps[], configReady: true, configLoading: false, configError: null as string | null, rewardsLoading: false, rewardsError: null as string | null, reconciling: false, builders: null as BuildersView | null, referral: null as ReferralView | null, referredBuyers: null as ReferredBuyersView | null, referee: null as RefereeView | null }));
+const state = vi.hoisted(() => ({ rewards: null as RewardsView | null, pools: [] as PoolView[], actions: [] as ActionButtonProps[], configReady: true, configLoading: false, configError: null as string | null, rewardsLoading: false, rewardsError: null as string | null, reconciling: false, builders: null as BuildersView | null, referral: null as ReferralView | null, referredBuyers: null as ReferredBuyersView | null, referee: null as RefereeView | null, refreshed: [] as string[], buttons: [] as Array<{ children?: unknown; onClick?: () => unknown; disabled?: boolean }>, createInvite: null as null | (() => Promise<CreatedInviteView>) }));
 vi.mock('./data', () => ({ usePageData: (key: string | null) => ({
   data: key === 'rewards' ? state.rewards : key === 'referrals' ? state.referral : key === 'referrals:buyers' ? state.referredBuyers : key === 'referrals:referee' ? state.referee : key?.startsWith('builders:') ? state.builders : key === 'pools' ? { pools: state.pools } : key === 'positions:current' && state.configReady ? { config: { minStakeEpochs: 1, maxStakeEpochs: 104, stakeActivationDelay: 1 } } : null,
   error: key === 'rewards' ? state.rewardsError : key === 'positions:current' ? state.configError : null,
   loading: key === 'rewards' ? state.rewardsLoading : key === 'positions:current' && state.configLoading,
   reconciling: key === 'rewards' && state.reconciling,
-  refresh: () => {},
+  refresh: () => { state.refreshed.push(key ?? ''); },
 }) }));
+vi.mock('./components/ui', async original => {
+  const actual = await original<typeof import('./components/ui')>();
+  return { ...actual, Button: (props: Parameters<typeof actual.Button>[0]) => {
+    state.buttons.push(props as (typeof state.buttons)[number]);
+    return createElement(actual.Button, props);
+  } };
+});
+vi.mock('./api', async original => {
+  const actual = await original<typeof import('./api')>();
+  return { ...actual, api: { ...actual.api, createInvite: () => state.createInvite!() } };
+});
 vi.mock('./wallet', () => ({ BuyerWalletAction: () => null }));
 vi.mock('./components/Confirm', () => ({ ActionButton: (props: ActionButtonProps) => {
   state.actions.push(props);
@@ -45,6 +56,9 @@ function action(title: string) {
 
 beforeEach(() => {
   state.actions = [];
+  state.refreshed = [];
+  state.buttons = [];
+  state.createInvite = null;
   state.pools = [];
   state.configReady = true;
   state.configLoading = false;
@@ -513,5 +527,78 @@ describe('reward row actions and confirmations', () => {
     expect(render()).not.toContain('Invite bonus');
     state.referee = { available: true, referrer: pool, boundEpoch: 1, windowEnd: 13, weeksLeft: 0, payable: '0', claimableEpochs: [] };
     expect(render()).not.toContain('Invite bonus');
+  });
+
+  it('re-reads the invite allowance after creating an invite', async () => {
+    state.referral = { available: true, payable: '0', claimableEpochs: [], referredCount: 0, invites: { epoch: 23, quota: 1, used: 0, left: 1 } };
+    const created: CreatedInviteView = { invite: 'abc', link: 'https://antseed.com/invite/abc', epoch: 23, index: 0, quota: 1, left: 0, expiresEpoch: 27 };
+    const createInvite = vi.fn(async () => created);
+    state.createInvite = createInvite;
+    render();
+    const button = state.buttons.find((props) => props.children === 'Create invite');
+    expect(button?.disabled).toBe(false);
+    await button!.onClick!();
+    expect(createInvite).toHaveBeenCalledOnce();
+    expect(state.refreshed).toContain('referrals');
+  });
+});
+
+describe('invite allowance after creating an invite', () => {
+  const allowance = (epoch: number, quota: number, left: number) => ({ epoch, quota, used: quota - left, left });
+  const created = (epoch: number, quota: number, left: number): CreatedInviteView => ({ invite: 'x', link: 'https://antseed.com/invite/x', epoch, index: 0, quota, left, expiresEpoch: epoch + 4 });
+
+  it('holds the created count against a refetch that has not counted it yet, then follows the next epoch', () => {
+    const last = created(23, 1, 0); // the last invite of the week
+    expect(inviteAllowance(allowance(23, 1, 1), last)).toEqual({ quota: 1, left: 0 }); // stale refetch
+    expect(inviteAllowance(allowance(23, 1, 0), last)).toEqual({ quota: 1, left: 0 });
+    // The next week's allowance replaces the exhausted snapshot.
+    expect(inviteAllowance(allowance(24, 3, 3), last)).toEqual({ quota: 3, left: 3 });
+  });
+
+  it('uses the created snapshot only while no allowance for its epoch or a later one is loaded', () => {
+    expect(inviteAllowance(null, created(23, 2, 1))).toEqual({ quota: 2, left: 1 });
+    expect(inviteAllowance(allowance(22, 5, 0), created(23, 2, 1))).toEqual({ quota: 2, left: 1 });
+    expect(inviteAllowance(allowance(23, 5, 4), null)).toEqual({ quota: 5, left: 4 });
+    expect(inviteAllowance(null, null)).toEqual({ quota: null, left: null });
+  });
+});
+
+describe('client agents registered from the builders card', () => {
+  const job = (id: string, agentId: number, status: JobView['status'] = 'done'): JobView => ({ id, kind: 'builder-register', status, steps: [], startedAt: 1, result: { agentId } });
+  const storage = new Map<string, string>();
+  const stubWindow = () => vi.stubGlobal('window', { localStorage: {
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => { storage.set(key, value); },
+  } });
+
+  beforeEach(() => {
+    storage.clear();
+    stubWindow();
+    return () => { vi.unstubAllGlobals(); };
+  });
+
+  it('tracks a registered agent once, so a removal survives leaving Rewards and returning', () => {
+    const jobs = [job('register-1', 31)];
+    // Register: the finished job adds the agent.
+    expect(takeRegisteredAgents(jobs, [5])).toEqual([5, 31]);
+    // Remove it, leave Rewards and come back: the card remounts with the same job list.
+    expect(takeRegisteredAgents(jobs, [5])).toBeNull();
+    // A later registration still lands.
+    expect(takeRegisteredAgents([job('register-2', 32), ...jobs], [5])).toEqual([5, 32]);
+  });
+
+  it('remembers handled jobs across a reload that restores the job journal', async () => {
+    expect(takeRegisteredAgents([job('register-reload', 34)], [])).toEqual([34]);
+    vi.resetModules();
+    stubWindow();
+    const reloaded = await import('./pages/Rewards');
+    expect(reloaded.takeRegisteredAgents([job('register-reload', 34)], [])).toBeNull();
+  });
+
+  it('ignores unfinished jobs and still works without storage', () => {
+    expect(takeRegisteredAgents([job('register-3', 33, 'running')], [])).toBeNull();
+    vi.stubGlobal('window', { localStorage: { getItem: () => { throw new Error('denied'); }, setItem: () => { throw new Error('denied'); } } });
+    expect(takeRegisteredAgents([job('register-3', 33)], [])).toEqual([33]);
+    expect(takeRegisteredAgents([job('register-3', 33)], [])).toBeNull();
   });
 });

@@ -70,7 +70,7 @@ export async function builders(ctx: AntsContext, agentIds: number[]): Promise<Bu
  * Claim every payable epoch for one client agent, one transaction per epoch
  * (the contract has no batch claim). Anyone may send it; the contract always
  * pays the agent owner. Epochs come from Antscan, falling back to the RPC
- * epoch scan only when no explorer is configured.
+ * epoch scan when Antscan is unset, does not index builders, or fails.
  */
 export async function claimBuilderRewards(
   ctx: AntsContext,
@@ -83,9 +83,12 @@ export async function claimBuilderRewards(
   const signer = ctx.requireSigner();
   const owner = await agentOwner(ctx, agentId);
   if (!owner) throw new Error(`Agent ${agentId} is not registered in the ERC-8004 identity registry.`);
+  // Antscan's answer is authoritative only when it is available; unset,
+  // unsupported or failing, fall back to the on-chain epoch scan.
   const indexer = ctx.indexer();
-  const epochs = indexer?.builders
-    ? (await indexer.builders([agentId])).agents.find((agent) => agent.agentId === agentId)?.claimableEpochs ?? []
+  const indexed = indexer?.builders ? await indexer.builders([agentId]).catch(() => null) : null;
+  const epochs = indexed?.available
+    ? indexed.agents.find((agent) => agent.agentId === agentId)?.claimableEpochs ?? []
     : (await client.pendingRewards(agentId)).map((entry) => entry.epoch);
   if (epochs.length === 0) throw new Error(`No builder rewards are payable yet for agent ${agentId}.`);
   const hashes: string[] = [];

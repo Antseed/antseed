@@ -16,7 +16,8 @@ export function receiveInviteLink(invite: string): void {
   for (const listener of listeners) listener(invite);
 }
 
-function useIncomingInvite(onInvite: (invite: string) => void): void {
+/** Calls `onInvite` with a link's invite: the one already waiting, then each new one. */
+export function useIncomingInvite(onInvite: (invite: string) => void): void {
   useEffect(() => {
     if (incomingInvite) onInvite(incomingInvite);
     listeners.add(onInvite);
@@ -27,6 +28,8 @@ function useIncomingInvite(onInvite: (invite: string) => void): void {
 type Props = {
   /** Called after an invite was saved as pending. */
   onRedeemed?: (result: Extract<InviteCheckResult, { ok: true }>) => void;
+  /** Shows a Cancel link (replacing a pending invite: keep the current one). */
+  onCancel?: () => void;
 };
 
 /**
@@ -34,7 +37,7 @@ type Props = {
  * (through IPC) as it is entered, then saves it as pending: the buyer daemon
  * carries it until the first settlement binds it.
  */
-export function InviteCodeField({ onRedeemed }: Props) {
+export function InviteCodeField({ onRedeemed, onCancel }: Props) {
   // Start from a link that arrived before this field mounted (navigating to it).
   const [value, setValue] = useState(() => incomingInvite ?? '');
   const [check, setCheck] = useState<InviteCheckResult | null>(null);
@@ -108,6 +111,7 @@ export function InviteCodeField({ onRedeemed }: Props) {
       <Button size="sm" onClick={() => void redeem()} disabled={!check?.ok || saving} aria-busy={saving}>
         {saving ? 'Saving…' : 'Use invite'}
       </Button>
+      {onCancel ? <Button size="sm" variant="link" onClick={onCancel}>Cancel</Button> : null}
     </div>
   );
 }

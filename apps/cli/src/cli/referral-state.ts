@@ -1,5 +1,14 @@
 import { referralBindingFromExplorer } from '@antseed/ants'
-import { clientIdFromAgentId, pendingInvite, type ReferralInvite, type ReferralLookup, type ReferralState } from '@antseed/node'
+import {
+  clientIdFromAgentId,
+  pendingInvite,
+  referrerOfLookup,
+  type ReferralInvite,
+  type ReferralLookups,
+  type ReferralScope,
+  type ReferralState,
+  type ReferralsClient,
+} from '@antseed/node'
 
 /**
  * CLI side of the referral flow. The state file and its transitions live in
@@ -13,10 +22,24 @@ type ClientAgentOptions = {
   clientAgentIds?: { cli?: number; desktop?: number } | undefined
 }
 
-/** Antscan lookup of the buyer's bound referrer (no RPC), or null without referrals or an explorer. */
-export function referralLookup(chain: { referralsAddress?: string | undefined; explorerApiUrl?: string | undefined }): ReferralLookup | null {
-  const { referralsAddress, explorerApiUrl } = chain
-  return referralsAddress && explorerApiUrl ? (buyer) => referralBindingFromExplorer(explorerApiUrl, buyer) : null
+/** `wallet` on the configured referrals deployment, or null when referrals are not deployed. */
+export function referralScope(chain: { evmChainId: number; referralsAddress?: string | undefined }, wallet: string): ReferralScope | null {
+  return chain.referralsAddress ? { wallet, chainId: chain.evmChainId, referralsAddress: chain.referralsAddress } : null
+}
+
+/**
+ * How the buyer's binding is learned (see `syncReferralState`): Antscan is
+ * the RPC-free trigger, and only once it reports a binding is `referrerOf`
+ * read, once, on the configured contract (`client`) before the invite is
+ * dropped. Nothing is looked up without a referrals client.
+ */
+export function referralLookups(options: { explorerApiUrl?: string | undefined; client: Pick<ReferralsClient, 'referrerOf'> | null }): ReferralLookups {
+  const { explorerApiUrl, client } = options
+  if (!client) return {}
+  return {
+    explorer: explorerApiUrl ? (buyer) => referralBindingFromExplorer(explorerApiUrl, buyer) : null,
+    chain: referrerOfLookup(client),
+  }
 }
 
 export function shortWallet(address: string): string {

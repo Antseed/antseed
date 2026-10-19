@@ -9,11 +9,11 @@ import { getGlobalOptions } from '../types.js'
 import pkg from '../../../../package.json' with { type: 'json' }
 import { watchForUpdates } from '../../../update/watch.js'
 import { loadConfig } from '../../../config/loader.js'
-import { AntseedNode, DepositRelayClient, DepositsClient, getInstance, peerRelaysSweeps, readReferralState, referralStateMtimeMs, resolveChainConfig, syncReferralState } from '@antseed/node'
+import { AntseedNode, DepositRelayClient, DepositsClient, ReferralsClient, getInstance, peerRelaysSweeps, referralStateMtimeMs, resolveChainConfig, syncReferralState } from '@antseed/node'
 import type { Identity, NodePaymentsConfig } from '@antseed/node'
 import { OFFICIAL_BOOTSTRAP_NODES, parseBootstrapList, toBootstrapConfig } from '@antseed/node/discovery'
 import { setupShutdownHandler } from '../../shutdown.js'
-import { referralLookup as buyerReferralLookup, resolveBuyerAttribution } from '../../referral-state.js'
+import { referralLookups, referralScope, resolveBuyerAttribution } from '../../referral-state.js'
 import { walletPassphraseForStart } from '../../wallet-passphrase.js'
 import { loadRouterPlugin, loadVerifierPlugin, buildPluginConfig, getPackageVersions } from '../../../plugins/loader.js'
 import { ensurePluginsUpToDate } from '../../../plugins/drift.js'
@@ -337,17 +337,25 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       // Client / invite attribution appended to every buyer-signed settlement
       // metadata blob. AntseedStatsV2 binds a redeemed invite on-chain at the
       // first settlement (paid or free) that carries it; the daemon only has
-      // to carry it. Whether it is bound yet comes from Antscan, not an RPC read.
+      // to carry it. Whether it is bound yet comes from Antscan, confirmed by
+      // one `referrerOf` read when Antscan reports it. The invite is scoped to
+      // the default wallet, known once the node started, so the daemon starts
+      // with the client id and picks the invite up right after start.
       const explorerApiUrl = cryptoOverrides?.explorerApiUrl ?? chainConfig.explorerApiUrl
-      const referralLookup = buyerReferralLookup({ referralsAddress: chainConfig.referralsAddress, explorerApiUrl })
+      const referralsClient = chainConfig.referralsAddress
+        ? new ReferralsClient({
+          rpcUrl: chainConfig.rpcUrl,
+          ...(chainConfig.fallbackRpcUrls ? { fallbackRpcUrls: chainConfig.fallbackRpcUrls } : {}),
+          contractAddress: chainConfig.referralsAddress,
+          evmChainId: chainConfig.evmChainId,
+        })
+        : null
+      const lookups = referralLookups({ explorerApiUrl, client: referralsClient })
       const attributionOptions = {
         clientAgentId: effectiveBuyerConfig.clientAgentId,
         clientAgentIds: chainConfig.clientAgentIds,
       }
-      const initialAttribution = resolveBuyerAttribution({
-        referralState: await readReferralState(globalOpts.dataDir),
-        ...attributionOptions,
-      })
+      const initialAttribution = resolveBuyerAttribution({ referralState: null, ...attributionOptions })
 
       // Advisory only: a transient RPC failure at launch must not disable
       // payments for the whole session. Buyer payments sign off-chain, and the
@@ -466,19 +474,19 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
 
       // Keep the signed attribution in step with referral.json (`antseed
       // referral redeem` or Desktop writes it, possibly after the daemon
-      // started) and drop the invite once Antscan shows it bound. The file's
+      // started) and drop the invite once it is bound on-chain. The file's
       // mtime short-circuits the poll only while no invite is carried: binding
       // happens on-chain without touching the file, and every settlement that
       // still carries a bound invite costs the seller a reverting bindReferral
       // call inside AntseedStatsV2.
       let attributionTimer: NodeJS.Timeout | null = null
       if (paymentsConfig?.enabled) {
-        const buyerAddress = node.identity!.wallet.address
+        const scope = referralScope(chainConfig, node.identity!.wallet.address)
         let lastMtime = await referralStateMtimeMs(globalOpts.dataDir)
-        let carrying = !!initialAttribution.invite
+        let carrying = false
         const refreshAttribution = async (force: boolean) => {
           if (!force && !carrying && (await referralStateMtimeMs(globalOpts.dataDir)) === lastMtime) return
-          const referralState = await syncReferralState(globalOpts.dataDir, buyerAddress, referralLookup)
+          const referralState = scope ? await syncReferralState(globalOpts.dataDir, scope, lookups) : null
           lastMtime = await referralStateMtimeMs(globalOpts.dataDir)
           const attribution = resolveBuyerAttribution({ referralState, ...attributionOptions })
           if (attribution.invite && (force || !carrying)) {

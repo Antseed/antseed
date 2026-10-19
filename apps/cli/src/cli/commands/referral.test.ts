@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { Wallet, type HDNodeWallet } from 'ethers';
 import { AntsContext, type CreatedInviteView } from '@antseed/ants';
-import { decodeInvite, encodeInvite, readReferralState, recoverInviter, signInvite } from '@antseed/node';
+import { decodeInvite, encodeInvite, readReferralState, recoverInviter, signInvite, writeReferralState } from '@antseed/node';
 import {
   createReferralInvite,
   formatInviteCreated,
@@ -18,6 +18,7 @@ import {
 const REFERRALS = '0x1111111111111111111111111111111111111111';
 const DOMAIN = { chainId: 8453, referralsAddress: REFERRALS };
 const BUYER = '0x2222222222222222222222222222222222222222';
+const SCOPE = { wallet: BUYER, ...DOMAIN };
 const strip = (lines: string[]) => lines.map((line) => line.replace(/\u001b\[[0-9;]*m/g, ''));
 
 async function withDataDir(work: (dir: string) => Promise<void>): Promise<void> {
@@ -41,17 +42,36 @@ test('invite signs a free index with this wallet and remembers it', async () => 
       inviteQuota: async () => 3,
       inviteUsed: async (_referrer: string, _epoch: number, index: number) => used.has(index),
     };
-    const first = await createReferralInvite(context(dir, wallet, client) as never);
+    // The pick (the last free index) is free at once; the used index 0 still counts.
+    const first = await createReferralInvite(context(dir, wallet, client) as never, () => 0.99);
     assert.equal(first.epoch, 30);
-    assert.ok([1, 2].includes(first.index));
+    assert.equal(first.index, 2);
     assert.equal(first.left, 1);
     assert.equal(first.link, `https://antseed.com/invite/${first.invite}`);
     assert.equal(recoverInviter(decodeInvite(first.invite), DOMAIN), wallet.address);
 
-    const second = await createReferralInvite(context(dir, wallet, client) as never);
-    assert.equal(second.index, 3 - first.index);
+    const second = await createReferralInvite(context(dir, wallet, client) as never, () => 0);
+    assert.equal(second.index, 1);
     assert.equal(second.left, 0);
-    await assert.rejects(createReferralInvite(context(dir, wallet, client) as never), /All 3 invites for this week are taken/);
+    await assert.rejects(createReferralInvite(context(dir, wallet, client) as never, () => 0), /All 3 invites for this week are taken/);
+  });
+});
+
+test('invite re-picks when the chosen index is already used on-chain', async () => {
+  await withDataDir(async (dir) => {
+    const wallet = Wallet.createRandom();
+    const probed: number[] = [];
+    const client = {
+      currentEpoch: async () => { throw new Error('no RPC epoch read'); },
+      inviteQuota: async () => { throw new Error('no RPC quota read'); },
+      // Antscan has not indexed the binding of index 2 yet.
+      inviteUsed: async (_referrer: string, _epoch: number, index: number) => { probed.push(index); return index === 2; },
+    };
+    const indexer = { referrer: async () => ({ available: true, currentEpoch: 31, invites: { epoch: 31, quota: 4, used: 2, usedIndices: [0, 1] }, referredCount: 2, payable: '0', claimableEpochs: [], buyers: [] }) };
+    const created = await createReferralInvite(context(dir, wallet, client, indexer) as never, () => 0);
+    assert.equal(created.index, 3);
+    assert.equal(created.left, 0);
+    assert.deepEqual(probed, [2, 3]);
   });
 });
 
@@ -64,9 +84,8 @@ test('invite reads epoch, quota and bound invites from Antscan when it reports t
       inviteUsed: async () => false,
     };
     const indexer = { referrer: async () => ({ available: true, currentEpoch: 31, invites: { epoch: 31, quota: 5, used: 2, usedIndices: [0, 1] }, referredCount: 2, payable: '0', claimableEpochs: [], buyers: [] }) };
-    const created = await createReferralInvite(context(dir, wallet, client, indexer) as never);
-    assert.deepEqual([created.epoch, created.quota, created.left], [31, 5, 2]);
-    assert.ok([2, 3, 4].includes(created.index));
+    const created = await createReferralInvite(context(dir, wallet, client, indexer) as never, () => 0.5);
+    assert.deepEqual([created.epoch, created.quota, created.left, created.index], [31, 5, 2, 3]);
   });
 });
 
@@ -82,16 +101,29 @@ test('redeem saves a valid invite as pending and refuses an invalid one with the
     const referrer = Wallet.createRandom();
     const invite = encodeInvite(await signInvite(referrer, DOMAIN, 30, 0));
     const ok = { previewInvite: async () => ({ referrer: referrer.address, failure: null }) };
-    const saved = await redeemReferralInvite({ client: ok, dataDir: dir, buyer: BUYER, value: `https://antseed.com/invite/${invite}` });
+    const saved = await redeemReferralInvite({ client: ok, dataDir: dir, scope: SCOPE, value: `https://antseed.com/invite/${invite}` });
     assert.equal(saved.ok, true);
-    assert.deepEqual(await readReferralState(dir).then((state) => [state?.state, state?.invite, state?.referrer]), ['invited', invite, referrer.address]);
+    assert.deepEqual(await readReferralState(dir, SCOPE).then((state) => [state?.state, state?.invite, state?.referrer]), ['invited', invite, referrer.address]);
     assert.match(strip(formatRedeemResult(saved)).join('\n'), /Invite from 0x.{4}….{4} saved\.\nBinds with your first paid or free request through `antseed buyer start` \(before week 34\)\./);
 
     const used = { previewInvite: async () => ({ referrer: referrer.address, failure: 'InviteAlreadyUsed' as const }) };
-    const refused = await redeemReferralInvite({ client: used, dataDir: dir, buyer: BUYER, value: invite });
+    const refused = await redeemReferralInvite({ client: used, dataDir: dir, scope: SCOPE, value: invite });
     assert.deepEqual(strip(formatRedeemResult(refused)), ["Can't use this invite: This invite was already used."]);
-    const garbage = await redeemReferralInvite({ client: used, dataDir: dir, buyer: BUYER, value: 'not-an-invite' });
+    const garbage = await redeemReferralInvite({ client: used, dataDir: dir, scope: SCOPE, value: 'not-an-invite' });
     assert.deepEqual(strip(formatRedeemResult(garbage)), ["Can't use this invite: Not a valid invite."]);
+  });
+});
+
+test('redeem on another deployment is not blocked by a binding made on the first one', async () => {
+  await withDataDir(async (dir) => {
+    const referrer = Wallet.createRandom();
+    await writeReferralState(dir, SCOPE, { state: 'bound', referrer: referrer.address });
+    const otherDomain = { chainId: 84532, referralsAddress: '0x3333333333333333333333333333333333333333' };
+    const invite = encodeInvite(await signInvite(referrer, otherDomain, 30, 1));
+    const ok = { previewInvite: async () => ({ referrer: referrer.address, failure: null }) };
+    const saved = await redeemReferralInvite({ client: ok, dataDir: dir, scope: { wallet: BUYER, ...otherDomain }, value: invite });
+    assert.equal(saved.state?.state, 'invited');
+    assert.equal((await readReferralState(dir, SCOPE))?.state, 'bound');
   });
 });
 

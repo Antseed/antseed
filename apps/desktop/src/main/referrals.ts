@@ -6,14 +6,19 @@
  * bind, save it as pending in `<connect data dir>/referral.json` (shared with
  * the CLI via @antseed/node). The buyer daemon carries it in the metadata it
  * signs until AntseedStatsV2 binds it on a settlement; Antscan reports the
- * binding. Inviting: we sign a fresh invite with the identity wallet (no
+ * binding and one `referrerOf` read confirms it. State is scoped to the
+ * wallet and the configured referrals deployment. Until it binds, a pending
+ * invite can be replaced or removed. Inviting: we sign a fresh invite with the identity wallet (no
  * transaction). Lists and payable amounts come from Antscan only.
  */
 import { getAddress } from 'ethers';
 import {
   checkInvite,
+  clearReferralInvite,
+  referrerOfLookup,
   saveReferralInvite,
   syncReferralState,
+  type ReferralScope,
 } from '@antseed/node';
 import {
   AntsContext,
@@ -93,21 +98,31 @@ async function referralContext(): Promise<{ chain: AntsChainConfig & { referrals
   return { chain: chain as AntsChainConfig & { referralsAddress: string }, wallet: identity.wallet };
 }
 
-export async function getReferralStatus(): Promise<ReferralStatus> {
-  const context = await referralContext().catch(() => null);
-  if (!context) return DARK_STATUS;
-  const { chain, wallet } = context;
-  const state = await syncReferralState(
-    resolveConnectDataDir(),
-    wallet.address,
-    (buyer) => referralBindingFromExplorer(chain.explorerApiUrl, buyer),
-  );
+function scopeOf(context: NonNullable<Awaited<ReturnType<typeof referralContext>>>): ReferralScope {
+  return { wallet: context.wallet.address, chainId: context.chain.evmChainId, referralsAddress: context.chain.referralsAddress };
+}
+
+function statusOf(state: Awaited<ReturnType<typeof syncReferralState>>): ReferralStatus {
   return {
     configured: true,
     state: state?.state ?? 'none',
     referrer: state?.state === 'none' ? null : state?.referrer ?? null,
     invite: state?.state === 'invited' ? state.invite ?? null : null,
   };
+}
+
+export async function getReferralStatus(): Promise<ReferralStatus> {
+  const context = await referralContext().catch(() => null);
+  if (!context) return DARK_STATUS;
+  const { chain, wallet } = context;
+  // Antscan only hints the binding; `referrerOf` on the configured contract
+  // confirms it (one view call) before the pending invite is dropped.
+  const client = new AntsContext({ chain, address: wallet.address }).referrals();
+  const state = await syncReferralState(resolveConnectDataDir(), scopeOf(context), {
+    explorer: (buyer) => referralBindingFromExplorer(chain.explorerApiUrl, buyer),
+    chain: client ? referrerOfLookup(client) : null,
+  });
+  return statusOf(state);
 }
 
 /** Decode an invite or link and run `previewInvite` for this wallet (one view call). */
@@ -126,17 +141,26 @@ export async function checkReferralInvite(value: string): Promise<InviteCheckRes
   }
 }
 
-/** Check the invite again and save it as pending so the buyer daemon carries it. */
+/** Check the invite again and save it as pending (replacing an unbound one) so the buyer daemon carries it. */
 export async function redeemReferralInvite(value: string): Promise<InviteCheckResult> {
   const checked = await checkReferralInvite(value);
   if (!checked.ok) return checked;
   try {
-    const saved = await saveReferralInvite(resolveConnectDataDir(), checked.invite, checked.referrer);
+    const context = await referralContext();
+    if (!context) return { ok: false, reason: 'Invites are not available on this network.' };
+    const saved = await saveReferralInvite(resolveConnectDataDir(), scopeOf(context), checked.invite, checked.referrer);
     if (saved.state === 'bound') return { ok: false, reason: 'This wallet already has an inviter.' };
     return checked;
   } catch (error) {
     return { ok: false, reason: errorText(error) };
   }
+}
+
+/** Drop the pending invite (expired, or used by someone else first). A binding is kept. */
+export async function clearPendingReferralInvite(): Promise<ReferralStatus> {
+  const context = await referralContext().catch(() => null);
+  if (!context) return DARK_STATUS;
+  return statusOf(await clearReferralInvite(resolveConnectDataDir(), scopeOf(context)));
 }
 
 /**

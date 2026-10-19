@@ -103,6 +103,26 @@ describe('builders program', () => {
     expect(clientRewards.pendingRewards).toHaveBeenCalledWith(9);
   });
 
+  it('falls back to the on-chain epoch scan when Antscan does not index the builders program', async () => {
+    const { ctx, clientRewards, indexer } = fixture();
+    indexer.builders.mockResolvedValueOnce({ available: false, agents: [] });
+    expect(await claimBuilderRewards(ctx, 9)).toMatchObject({ epochs: [8], hashes: ['0xhash8'] });
+    expect(clientRewards.pendingRewards).toHaveBeenCalledWith(9);
+  });
+
+  it('falls back to the on-chain epoch scan when the Antscan request fails', async () => {
+    const { ctx, clientRewards, indexer } = fixture();
+    indexer.builders.mockRejectedValueOnce(new Error('Antscan unavailable'));
+    expect(await claimBuilderRewards(ctx, 9)).toMatchObject({ epochs: [8], hashes: ['0xhash8'] });
+    expect(clientRewards.pendingRewards).toHaveBeenCalledWith(9);
+  });
+
+  it('trusts an available Antscan answer with nothing payable, without scanning RPC', async () => {
+    const { ctx, clientRewards } = fixture();
+    await expect(claimBuilderRewards(ctx, 6)).rejects.toThrow('No builder rewards');
+    expect(clientRewards.pendingRewards).not.toHaveBeenCalled();
+  });
+
   it('refuses unregistered agents, invalid ids and empty claims without sending', async () => {
     const { ctx, clientRewards } = fixture();
     await expect(claimBuilderRewards(ctx, 404)).rejects.toThrow('not registered');

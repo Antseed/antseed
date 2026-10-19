@@ -92,6 +92,26 @@ describe('selected account browser sessions', () => {
     expect(stake).not.toHaveBeenCalled();
   });
 
+  it('lets the selected buyer\'s distinct operator claim its invite bonus, and the selected wallet too', async () => {
+    const { selected, operator, connect, action } = await setup();
+    const claimReferee = vi.spyOn(service, 'claimRefereeRewards').mockResolvedValue({ hash: '0xreferee', epochs: [3] });
+    await connect(operator.address);
+    expect((await action('/api/referrals/referee/claim')).status).toBe('done');
+    expect(claimReferee).toHaveBeenCalledOnce();
+    await connect(selected.address);
+    expect((await action('/api/referrals/referee/claim')).status).toBe('done');
+    expect(claimReferee).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects an invite bonus claim from a wallet that is neither the selected account nor its operator', async () => {
+    const { operator, getOperator, connect, action } = await setup();
+    const claimReferee = vi.spyOn(service, 'claimRefereeRewards').mockResolvedValue({ hash: '0xreferee', epochs: [3] });
+    await connect(operator.address);
+    getOperator.mockResolvedValue(Wallet.createRandom().address);
+    expect((await action('/api/referrals/referee/claim')).error).toContain('Wallet mismatch');
+    expect(claimReferee).not.toHaveBeenCalled();
+  });
+
   it('rechecks operator permissions before actions and fails closed on RPC errors', async () => {
     const { operator, getOperator, connect, action } = await setup();
     const claim = vi.spyOn(service, 'claim').mockResolvedValue({} as never);

@@ -12,7 +12,7 @@ import { bytesToHex } from '../src/utils/hex.js';
 import { toPeerId } from '../src/types/peer.js';
 import { estimateCostFromBytes } from '../src/payments/pricing.js';
 import { decodeSpendingAuth, encodeSpendingAuth } from '@antseed/protocol/payment-codec';
-import { getServiceMetadataId, MAX_METADATA_SERVICES } from '@antseed/protocol/signatures';
+import { decodeMetadataAttribution, getServiceMetadataId, MAX_METADATA_SERVICES } from '@antseed/protocol/signatures';
 import type { SpendingAuthPayload } from '@antseed/protocol/messages';
 import { captureUnitBillingContext } from '@antseed/buyer-core';
 
@@ -197,6 +197,45 @@ describe('BuyerPaymentManager', () => {
     // before it verifies the ReserveAuth, so a stale zero hash rejects every open.
     expect(sent.metadata.length).toBe(2 + 14 * 64); // 7 v4 head words + offset + 5 tail words + services length
     expect(sent.metadataHash).toBe(keccak256(sent.metadata));
+  });
+
+  it('replaces and clears the attribution carried in later signed metadata', async () => {
+    const clientId = '0x' + '00'.repeat(31) + '2a';
+    const invite = { epoch: 42n, index: 7n, r: '0x' + '11'.repeat(32), vs: '0x' + '22'.repeat(32) };
+    const sellerPeerId = fakePeerId('seller-attr-clear');
+    manager.setAttribution({ clientId, invite });
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    manager.handleAuthAck(sellerPeerId, { channelId });
+    const usage = { inputBytes: SAMPLE_INPUT, outputBytes: SAMPLE_OUTPUT, sellerClaimedCost: 100n };
+
+    const attributed = await manager.signPerRequestAuth(sellerPeerId, usage);
+    expect(decodeMetadataAttribution(attributed.payload.metadata)).toEqual({ clientId, invite });
+
+    manager.setAttribution({ clientId });
+    const clientOnly = await manager.signPerRequestAuth(sellerPeerId, usage);
+    expect(decodeMetadataAttribution(clientOnly.payload.metadata)).toEqual({ clientId, invite: null });
+
+    manager.setAttribution(undefined);
+    const cleared = await manager.signPerRequestAuth(sellerPeerId, usage);
+    expect(decodeMetadataAttribution(cleared.payload.metadata)).toBeNull();
+    expect(cleared.payload.metadataHash).toBe(keccak256(cleared.payload.metadata));
+  });
+
+  it('drops persisted attribution when hydrating without a configured one', async () => {
+    const invite = { epoch: 42n, index: 7n, r: '0x' + '11'.repeat(32), vs: '0x' + '22'.repeat(32) };
+    const sellerPeerId = fakePeerId('seller-attr-hydrate');
+    manager.setAttribution({ clientId: '0x' + '00'.repeat(31) + '2a', invite });
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    manager.handleAuthAck(sellerPeerId, { channelId });
+    await manager.signPerRequestAuth(sellerPeerId, { inputBytes: SAMPLE_INPUT, outputBytes: SAMPLE_OUTPUT, sellerClaimedCost: 100n });
+
+    store.close();
+    store = new ChannelStore(tempDir);
+    manager = new BuyerPaymentManager(identity, makeConfig(tempDir), store);
+    manager.setSigner(identity.wallet);
+
+    const { payload } = await manager.signPerRequestAuth(sellerPeerId, { inputBytes: SAMPLE_INPUT, outputBytes: SAMPLE_OUTPUT, sellerClaimedCost: 150n });
+    expect(decodeMetadataAttribution(payload.metadata)).toBeNull();
   });
 
   it('does not transmit ReserveAuth when durable persistence fails', async () => {
