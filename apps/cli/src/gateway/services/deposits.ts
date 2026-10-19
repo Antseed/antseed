@@ -3,17 +3,20 @@
  * against its transaction receipt so the confirmation states only what the
  * chain shows.
  *
- * Two kinds of deposit credit a wallet:
- * - relay: USDC is sent to the workspace wallet (from a wallet, an exchange,
- *   or minted straight in by the USDC issuer for a card purchase) and a
- *   relayer sweeps it into AntseedDeposits, keeping a fixed fee
- *   (`SweepExecuted`). Where the USDC came from is the USDC `Transfer`s into
- *   the wallet shortly before the sweep, found with one bounded log query.
+ * Three kinds:
+ * - transfer: USDC sent to the workspace wallet (from a wallet, an exchange,
+ *   or minted straight in by the USDC issuer for a card purchase). This is
+ *   the money coming in; a sweep's sources name the transfers that funded it.
+ * - relay: a relayer sweeps the wallet into AntseedDeposits, keeping a fixed
+ *   fee (`SweepExecuted`). A move inside the workspace, not new money: one
+ *   transfer can be swept in several pieces. Where the USDC came from is the
+ *   USDC `Transfer`s into the wallet shortly before the sweep, found with one
+ *   bounded log query.
  * - direct: a connected wallet deposits for the workspace wallet itself
  *   (`Deposited` without a sweep); the payer is the transaction's sender.
  */
 import { Interface, getAddress, type Log, type TransactionReceipt } from 'ethers'
-import type { DepositSource } from '../store.js'
+import type { DepositKind, DepositSource } from '../store.js'
 
 /** Public RPCs cap log queries at about 1000 blocks; on Base that is the half hour before the sweep. */
 export const SOURCE_LOOKBACK_BLOCKS = 999
@@ -39,7 +42,7 @@ export interface DepositChainProvider {
 export interface VerifiedDeposit {
   txHash: string
   wallet: string
-  kind: 'relay' | 'direct'
+  kind: DepositKind
   creditedUsdc: number
   feeUsdc: number
   blockNumber: number
@@ -60,8 +63,9 @@ function parse(abi: Interface, log: Log) {
 
 /**
  * The deposit `txHash` credited to `wallet`, or null when the transaction
- * failed or credited another wallet (or nothing). Where the money came from
- * is best effort: an RPC that refuses the log query leaves `sources` empty.
+ * failed or neither credited the wallet nor sent it USDC. Where a sweep's
+ * money came from is best effort: an RPC that refuses the log query leaves
+ * `sources` empty.
  */
 export async function verifyDeposit(provider: DepositChainProvider, chain: DepositChain, txHash: string, wallet: string): Promise<VerifiedDeposit | null> {
   const receipt = await provider.getTransactionReceipt(txHash)
@@ -81,7 +85,7 @@ export async function verifyDeposit(provider: DepositChainProvider, chain: Depos
       }
     }
   }
-  if (credited === null) return null
+  if (credited === null) return transferIn(provider, chain, receipt, wallet)
   const block = await provider.getBlock(receipt.blockNumber)
   const kind = swept !== null ? 'relay' : 'direct'
   const sources = kind === 'relay'
@@ -97,6 +101,49 @@ export async function verifyDeposit(provider: DepositChainProvider, chain: Depos
     blockTime: (block?.timestamp ?? 0) * 1000,
     sources,
   }
+}
+
+/** Sent by the protocol's own contracts, so not money coming in. */
+function fromProtocol(chain: DepositChain, from: string): boolean {
+  return same(from, chain.depositsContractAddress) || same(from, chain.depositRelayAddress)
+}
+
+/** USDC `Transfer`s into `wallet` among `logs`, per transaction. */
+function transfersTo(chain: DepositChain, wallet: string, logs: readonly Log[]): Map<string, DepositSource[]> {
+  const byTx = new Map<string, DepositSource[]>()
+  for (const log of logs) {
+    if (!same(log.address, chain.usdcContractAddress)) continue
+    const event = parse(USDC_ABI, log)
+    if (event?.name !== 'Transfer' || !same(event.args[1] as string, wallet)) continue
+    const from = event.args[0] as string
+    if (same(from, wallet) || fromProtocol(chain, from)) continue
+    const txHash = log.transactionHash.toLowerCase()
+    const sources = byTx.get(txHash) ?? []
+    sources.push({ from: getAddress(from), amountUsdc: Number(event.args[2] as bigint), txHash })
+    byTx.set(txHash, sources)
+  }
+  return byTx
+}
+
+function transferDeposit(txHash: string, wallet: string, blockNumber: number, blockTime: number, sources: DepositSource[]): VerifiedDeposit {
+  return {
+    txHash,
+    wallet: getAddress(wallet),
+    kind: 'transfer',
+    creditedUsdc: sources.reduce((sum, source) => sum + source.amountUsdc, 0),
+    feeUsdc: 0,
+    blockNumber,
+    blockTime,
+    sources,
+  }
+}
+
+/** A transaction that sent USDC to the wallet, without depositing it. */
+async function transferIn(provider: DepositChainProvider, chain: DepositChain, receipt: TransactionReceipt, wallet: string): Promise<VerifiedDeposit | null> {
+  const sources = transfersTo(chain, wallet, receipt.logs).get(receipt.hash.toLowerCase())
+  if (!sources?.length) return null
+  const block = await provider.getBlock(receipt.blockNumber)
+  return transferDeposit(receipt.hash.toLowerCase(), wallet, receipt.blockNumber, (block?.timestamp ?? 0) * 1000, sources)
 }
 
 /**

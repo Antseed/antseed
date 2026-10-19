@@ -442,8 +442,11 @@ export interface DepositConfirmation {
   txHash: string
   /** A short reference for the confirmation, from the transaction hash. */
   reference: string
-  /** relay: USDC sent to the wallet and swept in by a relayer, which keeps a fixed fee; direct: deposited by a connected wallet. */
-  kind: 'relay' | 'direct'
+  /**
+   * transfer: USDC sent to the workspace wallet; direct: deposited by a connected wallet. Both are listed.
+   * relay: the wallet swept into the credits by a relayer, which keeps a fixed fee: a move inside the workspace, not listed.
+   */
+  kind: 'transfer' | 'relay' | 'direct'
   wallet: string
   workspaceId: string
   workspaceName: string
@@ -454,7 +457,7 @@ export interface DepositConfirmation {
   blockNumber: number
   /** Epoch ms of the block. */
   time: number
-  /** Where the USDC came from; empty when the chain could not be searched. `minted`: the USDC issuer minted it into the wallet (a card purchase). */
+  /** Where the USDC came from; empty when the chain could not be searched. `minted`: the USDC issuer minted it into the wallet (an exchange withdrawal or a card purchase). */
   sources: Array<{ from: string; amount: Usdc; txHash: string; minted: boolean }>
   approval: { by: string; at: number; note: string | null } | null
 }

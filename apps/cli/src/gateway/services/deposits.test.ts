@@ -74,3 +74,14 @@ test('a log query the RPC refuses leaves the sources empty, not the confirmation
   assert.equal(result?.creditedUsdc, 1_000_000)
   assert.deepEqual(result?.sources, [])
 })
+
+test('USDC sent to the wallet is a transfer: the amount, and who sent it', async () => {
+  const result = await verifyDeposit(provider({ status: 1, logs: [transfer(PAYER, WALLET, 40_000_000n, FUND_TX)] }), CHAIN, FUND_TX, WALLET)
+  assert.equal(result?.kind, 'transfer')
+  assert.equal(result?.creditedUsdc, 40_000_000)
+  assert.equal(result?.feeUsdc, 0)
+  assert.deepEqual(result?.sources, [{ from: PAYER, amountUsdc: 40_000_000, txHash: FUND_TX }])
+  // USDC sent elsewhere, or by the protocol's own contracts, is not money coming in.
+  assert.equal(await verifyDeposit(provider({ status: 1, logs: [transfer(PAYER, RELAYER, 1n, FUND_TX)] }), CHAIN, FUND_TX, WALLET), null)
+  assert.equal(await verifyDeposit(provider({ status: 1, logs: [transfer(DEPOSITS, WALLET, 1n, FUND_TX)] }), CHAIN, FUND_TX, WALLET), null)
+})

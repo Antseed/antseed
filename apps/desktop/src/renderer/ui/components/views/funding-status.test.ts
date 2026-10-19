@@ -113,7 +113,7 @@ test('a pending top-up that covers the next session is shown as depositing, not 
   assert.equal(status.kind, 'depositing');
 });
 
-test('a top-up smaller than the fee is explained, not hidden', () => {
+test('a top-up below the deposit floor is explained, not hidden', () => {
   const status = deriveFundingStatus({ ...base, available: '5', wallet: '0.03' });
   assert.equal(status.kind, 'wallet-dust');
   assert.equal(status.tone, 'info');
@@ -130,8 +130,20 @@ test('a top-up larger than sub-minimum headroom waits, like the watcher', () => 
 });
 
 test('a top-up that fits the remaining headroom still deposits', () => {
-  const status = deriveFundingStatus({ ...base, available: '7.5', creditLimit: '8', wallet: '0.4' });
+  const status = deriveFundingStatus({ ...base, available: '5', creditLimit: '8', wallet: '2' });
   assert.equal(status.kind, 'depositing');
+});
+
+test('a top-up below the deposit floor is held, like the watcher', () => {
+  const status = deriveFundingStatus({ ...base, available: '5', wallet: '0.4' });
+  assert.equal(status.kind, 'wallet-dust');
+});
+
+test('a clamped top-up waits until half the credit limit is free', () => {
+  const waiting = deriveFundingStatus({ ...base, available: '30', creditLimit: '50', wallet: '40' });
+  assert.equal(waiting.kind, 'wallet-at-limit');
+  const ready = deriveFundingStatus({ ...base, available: '25', creditLimit: '50', wallet: '40' });
+  assert.equal(ready.kind, 'depositing');
 });
 
 test('closed or zero-held channels are not listed as sessions', () => {

@@ -1935,8 +1935,9 @@ export class GatewayStore {
     return (this._stmt('SELECT * FROM deposits WHERE workspace_id = ? ORDER BY block_time DESC').all(workspaceId) as DepositRow[]).map(depositRecord)
   }
 
-  getDeposit(txHash: string): DepositRecord | null {
-    const row = this._stmt('SELECT * FROM deposits WHERE tx_hash = ?').get(txHash.toLowerCase()) as DepositRow | undefined
+  /** A workspace's deposit; one transaction can pay several workspace wallets, so it is keyed by both. */
+  getDeposit(workspaceId: string, txHash: string): DepositRecord | null {
+    const row = this._stmt('SELECT * FROM deposits WHERE workspace_id = ? AND tx_hash = ?').get(workspaceId, txHash.toLowerCase()) as DepositRow | undefined
     return row ? depositRecord(row) : null
   }
 
@@ -1944,22 +1945,22 @@ export class GatewayStore {
   insertDeposit(input: Omit<DepositRecord, 'approval' | 'recordedAt'>): DepositRecord {
     this._stmt(`
       INSERT INTO deposits (tx_hash, workspace_id, wallet, kind, credited_usdc, fee_usdc, block_number, block_time, sources, recorded_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (tx_hash) DO NOTHING
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (workspace_id, tx_hash) DO NOTHING
     `).run(input.txHash.toLowerCase(), input.workspaceId, input.wallet.toLowerCase(), input.kind, input.creditedUsdc, input.feeUsdc,
       input.blockNumber, input.blockTime, JSON.stringify(input.sources), this._now())
-    return this.getDeposit(input.txHash)!
+    return this.getDeposit(input.workspaceId, input.txHash)!
   }
 
   /** Sets (or with null clears) who approved a deposit. */
-  setDepositApproval(txHash: string, approval: { byId: string | null; byLabel: string; note: string | null } | null): DepositRecord | null {
+  setDepositApproval(workspaceId: string, txHash: string, approval: { byId: string | null; byLabel: string; note: string | null } | null): DepositRecord | null {
     if (approval) {
-      this._stmt('UPDATE deposits SET approved_by_id = ?, approved_by_label = ?, approved_at = ?, approval_note = ? WHERE tx_hash = ?')
-        .run(approval.byId, approval.byLabel, this._now(), approval.note, txHash.toLowerCase())
+      this._stmt('UPDATE deposits SET approved_by_id = ?, approved_by_label = ?, approved_at = ?, approval_note = ? WHERE workspace_id = ? AND tx_hash = ?')
+        .run(approval.byId, approval.byLabel, this._now(), approval.note, workspaceId, txHash.toLowerCase())
     } else {
-      this._stmt('UPDATE deposits SET approved_by_id = NULL, approved_by_label = NULL, approved_at = NULL, approval_note = NULL WHERE tx_hash = ?')
-        .run(txHash.toLowerCase())
+      this._stmt('UPDATE deposits SET approved_by_id = NULL, approved_by_label = NULL, approved_at = NULL, approval_note = NULL WHERE workspace_id = ? AND tx_hash = ?')
+        .run(workspaceId, txHash.toLowerCase())
     }
-    return this.getDeposit(txHash)
+    return this.getDeposit(workspaceId, txHash)
   }
 
   // ── Settings ────────────────────────────────────────────────────────────
@@ -2213,13 +2214,19 @@ export interface DepositSource {
   txHash: string
 }
 
+export type DepositKind = 'transfer' | 'relay' | 'direct'
+
 /** A deposit credited to a workspace wallet, verified against its transaction receipt. */
 export interface DepositRecord {
   txHash: string
   workspaceId: string
   wallet: string
-  /** relay: USDC sent to the wallet and swept in by a relayer (fee taken); direct: deposited by a connected wallet. */
-  kind: 'relay' | 'direct'
+  /**
+   * transfer: USDC sent to the workspace wallet (from a wallet, an exchange, or minted in for a card purchase);
+   * relay: a relayer's sweep of the wallet into the credits (fee taken), internal to the workspace;
+   * direct: deposited into the credits by a connected wallet.
+   */
+  kind: DepositKind
   creditedUsdc: number
   feeUsdc: number
   blockNumber: number
@@ -2233,7 +2240,7 @@ interface DepositRow {
   tx_hash: string
   workspace_id: string
   wallet: string
-  kind: 'relay' | 'direct'
+  kind: DepositKind
   credited_usdc: number
   fee_usdc: number
   block_number: number

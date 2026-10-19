@@ -26,11 +26,15 @@ function usdc(amount: string): string {
   return `${value !== 0 && Math.abs(value) < 0.01 ? value.toFixed(6).replace(/0+$/, '') : value.toFixed(2)} USDC`
 }
 
-/** Where the USDC came from, in a few words. */
+/**
+ * Where the USDC came from, in a few words. Minted USDC comes straight from
+ * the issuer: an exchange withdrawal (Coinbase mints on Base) or a card
+ * purchase, which the chain cannot tell apart.
+ */
 function sourceSummary(deposit: DepositConfirmation): string {
-  if (deposit.kind === 'direct') return deposit.sources[0] ? `Wallet ${shortId(deposit.sources[0].from)}` : 'Connected wallet'
+  if (deposit.kind === 'direct') return deposit.sources[0] ? `Deposit from wallet ${shortId(deposit.sources[0].from)}` : 'Deposit from a connected wallet'
   if (deposit.sources.length === 0) return 'Sent to the workspace wallet'
-  if (deposit.sources.every((source) => source.minted)) return 'Card purchase'
+  if (deposit.sources.every((source) => source.minted)) return 'Exchange or card (new USDC)'
   const wallets = [...new Set(deposit.sources.filter((source) => !source.minted).map((source) => shortId(source.from)))]
   return wallets.length === 1 ? `Wallet ${wallets[0]}` : `${wallets.length} transfers`
 }
@@ -72,7 +76,7 @@ function AddDepositModal({ isOpen, workspaceId, onClose }: { isOpen: boolean; wo
   })
   return (
     <Modal isOpen={isOpen} onClose={onClose} size="sm" title="Add a past deposit"
-      subtitle="Deposits are listed as they arrive. For one made before this list existed, paste the transaction that credited it: the sweep, or your deposit from a connected wallet.">
+      subtitle="USDC sent to the workspace wallet is listed once it starts moving into the credits. For a missing one, paste the transaction that sent it to the wallet, or your deposit from a connected wallet.">
       <div className="gc-stack">
         <TextField label="Transaction hash" placeholder="0x…" value={txHash} onChange={(event) => setTxHash(event.target.value)} spellCheck={false} />
         {add.error ? <p className="gc-warn">{errorMessage(add.error)}</p> : null}
@@ -97,7 +101,7 @@ export function DepositsPanel({ workspaceId }: { workspaceId: string }) {
   })
   return (
     <section id="gc-deposits" className="gc-anchor">
-      <Panel flush title="Deposits" description="USDC credited to this workspace. Approve a deposit to record it as an expense, and keep its confirmation for your books."
+      <Panel flush title="Deposits" description="USDC sent to this workspace's wallet, and deposits from connected wallets. Approve one to record it as an expense, and keep its confirmation for your books."
         actions={<Button size="sm" variant="outline" onClick={() => setAdding(true)}>Add a past deposit</Button>}>
         <QueryView query={deposits}>
           {(list) => (
@@ -108,7 +112,7 @@ export function DepositsPanel({ workspaceId }: { workspaceId: string }) {
                 !deposit.approval && { label: 'Approve…', onSelect: () => setApproving(deposit) },
                 deposit.approval && { label: 'Remove approval', onSelect: () => unapprove.mutate(deposit) },
               ]}
-              empty={<EmptyState icon={<Icon.wallet size={18} />} title="No deposits yet" body="Deposits show up here once they are credited. Add an earlier one by its transaction." />}
+              empty={<EmptyState icon={<Icon.wallet size={18} />} title="No deposits yet" body="USDC sent to the workspace wallet shows up here once it starts moving into the credits, usually within a minute. Add a missing one by its transaction." />}
               columns={[
                 { key: 'date', header: 'Date', render: (deposit) => formatDateTime(deposit.time) },
                 {
@@ -179,12 +183,12 @@ export function DepositConfirmationPage({ txHash }: { txHash: string }) {
                   <Line label="Workspace">{deposit.workspaceName}</Line>
                   <Line label="Gateway">{gatewayAddress.replace(/^https?:\/\//, '')}</Line>
                   <Line label="Date">{new Date(deposit.time).toUTCString().replace('GMT', 'UTC')}</Line>
-                  <Line label="Amount sent">{usdc(deposit.sent)}</Line>
+                  <Line label={deposit.kind === 'transfer' ? 'Amount received' : 'Amount sent'}>{usdc(deposit.sent)}</Line>
                   {deposit.kind === 'relay' && <Line label="Relay fee">{usdc(deposit.fee)}</Line>}
-                  <Line label="Credited to the balance">{usdc(deposit.credited)}</Line>
+                  {deposit.kind !== 'transfer' && <Line label="Credited to the balance">{usdc(deposit.credited)}</Line>}
                   <Line label="Network">{chain.data?.name ?? 'Base'} · USDC</Line>
                   <Line label="Workspace wallet"><Mono>{deposit.wallet}</Mono></Line>
-                  <Line label="Deposit transaction">{txLink(deposit.txHash)}</Line>
+                  <Line label={deposit.kind === 'transfer' ? 'Transaction' : 'Deposit transaction'}>{txLink(deposit.txHash)}</Line>
                   <Line label="Funded from">
                     {deposit.sources.length === 0
                       ? <span className="gc-muted">Not found on-chain within the half hour before the deposit.</span>
@@ -192,7 +196,7 @@ export function DepositConfirmationPage({ txHash }: { txHash: string }) {
                         <ul className="gc-doc__sources">
                           {deposit.sources.map((source) => (
                             <li key={source.txHash}>
-                              {usdc(source.amount)} {source.minted ? 'minted into the wallet by the USDC issuer (a card purchase)' : <>from <Mono>{source.from}</Mono></>}
+                              {usdc(source.amount)} {source.minted ? 'minted into the wallet by the USDC issuer (an exchange withdrawal or a card purchase)' : <>from <Mono>{source.from}</Mono></>}
                               <br />{txLink(source.txHash)}
                             </li>
                           ))}
@@ -207,7 +211,9 @@ export function DepositConfirmationPage({ txHash }: { txHash: string }) {
                 </dl>
                 <footer className="gc-doc__foot">
                   Issued by this Antseed gateway from the transaction records on {chain.data?.name ?? 'Base'}, which anyone can check with the links above.
-                  The amount moved into the workspace's prepaid credits, which pay AI providers per request. This is a confirmation of the deposit, not an invoice.
+                  {deposit.kind === 'transfer'
+                    ? <>The USDC moves from the workspace wallet into its prepaid credits automatically, less a fixed relay fee per move; the credits pay AI providers per request. This is a confirmation of the transfer, not an invoice.</>
+                    : <>The amount moved into the workspace's prepaid credits, which pay AI providers per request. This is a confirmation of the deposit, not an invoice.</>}
                 </footer>
               </article>
               <div className="gc-inline gc-no-print">
