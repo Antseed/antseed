@@ -254,3 +254,22 @@ test('a recheck may turn a first DIFF into UNDETERMINED, but never on reused pro
   )
   assert.throws(() => validateAuditMatchesSummary(first, summary('UNDETERMINED', 'SAME'), null), /recheck evidence missing/)
 })
+
+test('submits one SAME per seller and model, but every DIFF', async () => {
+  const names = ['model-a', 'model-a-fast', 'model-a-alias']
+  const sameHashes = names.map((name) => serviceHash(name)).sort()
+  await withRun([
+    ...names.map((service) => ({ ...audit('1', randomWallet(), 'model-a'), service })),
+    { ...audit('1', randomWallet(), 'model-a', 'DIFF'), service: 'model-a-fake' },
+    audit('2', sellers[1]!, 'model-a'),
+  ], async ({ prepared }) => {
+    const [entry] = prepared.audits as [PreparedModelAudit]
+    const seller1 = entry.results.filter((result) => result.agentId === 1n)
+    assert.deepEqual(seller1.filter((result) => result.verdict === VERIFIER_VERDICT.SAME).map((result) => result.serviceHash), [sameHashes[0]])
+    assert.deepEqual(seller1.filter((result) => result.verdict === VERIFIER_VERDICT.DIFF).map((result) => result.serviceHash), [serviceHash('model-a-fake')])
+    assert.equal(entry.results.filter((result) => result.agentId === 2n).length, 1)
+    assert.equal(prepared.excluded.length, 2)
+    for (const exclusion of prepared.excluded) assert.match(exclusion.reason, /bonus counts once per model/)
+    assert.equal(entry.evidence.excluded.length, 2)
+  })
+})

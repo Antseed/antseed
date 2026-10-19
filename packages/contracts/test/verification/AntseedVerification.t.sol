@@ -402,9 +402,23 @@ contract AntseedVerificationTest is Test {
         _audit(seller, MODEL_A, agentId, SERVICE_A, SAME);
     }
 
-    function test_rejectsUnknownAgent() public {
-        _expectAuditRevert(AntseedVerification.UnknownAgent.selector);
+    function test_skipsUnknownAgentWithoutFailingTheBatch() public {
+        IAntseedVerification.ServiceResult[] memory results = new IAntseedVerification.ServiceResult[](2);
+        results[0] = _result(agentId, SERVICE_A, SAME);
+        results[1] = _result(999, SERVICE_A, DIFF);
+        vm.expectEmit(address(verification));
+        emit AntseedVerification.UnknownAgentSkipped(999, MODEL_A);
+        vm.prank(auditorA);
+        verification.submitModelAudit(EPOCH, MODEL_A, _evidence(), "", results);
+        assertTrue(verification.isVerified(agentId), "known agents in the batch still count");
+        assertEq(uint8(verification.serviceStatus(999, SERVICE_A).verdict), uint8(IAntseedVerification.Verdict.NONE));
+        assertEq(verification.agentStatus(999).diffCount, 0);
+        assertEq(verification.epochCredits(EPOCH), 1);
+    }
+
+    function test_unknownAgentAloneEarnsNoCredit() public {
         _audit(auditorA, MODEL_A, 999, SERVICE_A, SAME);
+        assertEq(verification.epochCredits(EPOCH), 0);
     }
 
     function testFuzz_rejectsZeroAgent(uint8 verdictSeed) public {

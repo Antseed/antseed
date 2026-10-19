@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -48,6 +48,38 @@ test('PID locks reject live owners and recover stale owners', async () => {
     const current = JSON.parse(await readFile(path, 'utf8')) as { pid: number }
     assert.equal(current.pid, process.pid)
     await recovered.release()
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('PID locks treat a fresh unreadable lock as held, not stale', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-lock-'))
+  const path = join(directory, 'run.lock')
+  try {
+    await writeFile(path, '')
+    await assert.rejects(acquirePidFileLock(path), /already active/)
+    assert.equal(await readFile(path, 'utf8'), '', 'the other owner keeps its lock')
+    const old = new Date(Date.now() - 120_000)
+    await utimes(path, old, old)
+    const recovered = await acquirePidFileLock(path)
+    await recovered.release()
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('PID locks never expose a partly written lock and leave no temporary files', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-lock-'))
+  const path = join(directory, 'run.lock')
+  try {
+    const results = await Promise.allSettled(Array.from({ length: 8 }, () => acquirePidFileLock(path)))
+    const held = results.filter((result) => result.status === 'fulfilled')
+    assert.equal(held.length, 1)
+    const current = JSON.parse(await readFile(path, 'utf8')) as { pid: number }
+    assert.equal(current.pid, process.pid)
+    await (held[0] as PromiseFulfilledResult<{ release(): Promise<void> }>).value.release()
+    assert.deepEqual(await readdir(directory), [])
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

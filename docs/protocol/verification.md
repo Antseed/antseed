@@ -110,6 +110,9 @@ services whose verdicts still count. `isVerified(agentId)` is true while at leas
 them is SAME and none is DIFF. Each agent keeps one small SAME/DIFF counter per epoch, so
 these reads sum at most `validityEpochs` counters however many services the agent has.
 
+Results for agents the identity registry cannot resolve (for example burned ones) are
+skipped with `UnknownAgentSkipped` instead of failing the whole submission.
+
 The owner can `clearServiceStatuses(agentIds, serviceHashes)` to reset wrong results,
 many seller services in one call.
 Revoking an auditor (`setAuditor(auditor, false)`) stops new submissions; its verdicts
@@ -124,6 +127,12 @@ Each verified service adds `bonusBps` (`100` = +1%, capped at +50% in total); ea
 service subtracts `penaltyBps` (uncapped, so points can reach 0 but never go negative).
 A DIFF only affects its own service: the seller's other verified services keep their
 bonus. Buyer points always pass through.
+
+The bonus is meant to count once per model, so a seller cannot farm it by listing one
+model under many service names. `antseed verifier submit` enforces this off-chain: per
+seller and model it submits only one SAME (the service with the lowest service hash) and
+lists the other SAME services in the evidence as excluded. Every DIFF and UNDETERMINED
+result is still submitted, so each fake name keeps its own penalty.
 
 `bonusBps` (0 to 5,000) and `penaltyBps` (any value) are owner-settable; M003 launches
 both at 0. The policy applies only from `pointsStartEpoch` on (owner-set; off until

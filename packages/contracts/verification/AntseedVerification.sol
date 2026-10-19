@@ -24,6 +24,8 @@ interface IEmissionsGateSource {
 ///         off-chain before submitting it.
 ///         Each agent keeps per-epoch SAME and DIFF counters, so its status sums only the last
 ///         `validityEpochs` epochs and older verdicts drop out without any cleanup.
+///         Results for agents the identity registry cannot resolve (e.g. burned) are skipped with
+///         `UnknownAgentSkipped`, so one stale agent does not fail the whole audit.
 ///
 ///         Epochs come from the emissions gate pinned at deployment; audits revert without it.
 ///
@@ -99,6 +101,7 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
     event AuditCredited(uint256 indexed epoch, address indexed auditor, bytes32 indexed modelHash);
     event AuditorRewardClaimed(uint256 indexed epoch, address indexed auditor, uint256 amount);
     event AuditorCreditsVoided(uint256 indexed epoch, address indexed auditor, uint256 credits);
+    event UnknownAgentSkipped(uint256 indexed agentId, bytes32 indexed modelHash);
 
     error InvalidAddress();
     error InvalidValue();
@@ -227,6 +230,7 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
         if (epoch != expectedEpoch) revert EpochChanged();
 
         bool staked;
+        bool skipAgent;
         uint256 previousAgent;
         bytes32 previousService;
         for (uint256 i = 0; i < count; i++) {
@@ -236,11 +240,16 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
                     || (result.agentId == previousAgent && result.serviceHash <= previousService)
             ) revert InvalidResults();
             if (i == 0 || result.agentId != previousAgent) {
-                if (msg.sender == _agentOwner(result.agentId)) revert SelfAudit();
-                if (!staked) staked = _hasPoolPower(result.agentId, epoch);
+                if (result.agentId == 0) revert UnknownAgent();
+                (bool known, address owner) = _agentOwner(result.agentId);
+                if (known && msg.sender == owner) revert SelfAudit();
+                skipAgent = !known;
+                if (skipAgent) emit UnknownAgentSkipped(result.agentId, modelHash);
+                else if (!staked) staked = _hasPoolPower(result.agentId, epoch);
                 previousAgent = result.agentId;
             }
             previousService = result.serviceHash;
+            if (skipAgent) continue;
             emit ServiceAudited(result.agentId, result.serviceHash, msg.sender, modelHash, result.verdict);
             _applyResult(result.agentId, result.serviceHash, modelHash, result.verdict, epoch);
         }
@@ -409,13 +418,12 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
         emit SellerPoolsSet(sellerPools_);
     }
 
-    function _agentOwner(uint256 agentId) private view returns (address) {
-        if (agentId == 0) revert UnknownAgent();
-        try IERC8004Registry(registry.identityRegistry()).ownerOf(agentId) returns (address owner) {
-            if (owner == address(0)) revert UnknownAgent();
-            return owner;
+    /// @dev `known` is false for agents the identity registry cannot resolve, e.g. burned ones.
+    function _agentOwner(uint256 agentId) private view returns (bool known, address owner) {
+        try IERC8004Registry(registry.identityRegistry()).ownerOf(agentId) returns (address agentOwner) {
+            return (agentOwner != address(0), agentOwner);
         } catch {
-            revert UnknownAgent();
+            return (false, address(0));
         }
     }
 

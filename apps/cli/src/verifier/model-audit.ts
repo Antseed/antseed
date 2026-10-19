@@ -298,6 +298,7 @@ export async function prepareModelAudits(input: {
       accepted.push({ agentId, result, evidence, recheckEvidence })
     }
 
+    keepOneSamePerSeller(accepted, excluded)
     allExcluded.push(...excluded.map((entry) => ({ ...entry, model })))
     if (accepted.length === 0 || referenceModel === null) continue
     accepted.sort((left, right) => compareResults(
@@ -415,6 +416,39 @@ export async function prepareModelAudits(input: {
     }
   }
   return { audits, excluded: allExcluded }
+}
+
+/**
+ * The seller bonus is meant to count once per verified model, but the contract counts SAME services.
+ * So each seller gets at most one SAME per model on-chain: the one with the lowest service hash,
+ * which every auditor picks the same way. Extra SAMEs stay in the evidence as excluded; DIFF and
+ * UNDETERMINED results are always submitted.
+ */
+function keepOneSamePerSeller(
+  accepted: Array<{ agentId: bigint; result: ModelAuditSummaryV1['results'][number] }>,
+  excluded: ExcludedSellerAuditV1[],
+): void {
+  const kept = new Map<string, { service: string; hash: string }>()
+  for (const { agentId, result } of accepted) {
+    if (result.status !== 'SAME') continue
+    const hash = serviceHash(result.service)
+    const current = kept.get(agentId.toString())
+    if (!current || hash < current.hash) kept.set(agentId.toString(), { service: result.service, hash })
+  }
+  for (let index = accepted.length - 1; index >= 0; index -= 1) {
+    const { agentId, result } = accepted[index]!
+    if (result.status !== 'SAME') continue
+    const keep = kept.get(agentId.toString())!
+    if (serviceHash(result.service) === keep.hash) continue
+    accepted.splice(index, 1)
+    excluded.push({
+      peerId: result.peerId,
+      agentId: result.agentId,
+      service: result.service,
+      auditId: result.auditId,
+      reason: `seller already verified for this model via ${keep.service}; the bonus counts once per model`,
+    })
+  }
 }
 
 export async function writeModelAuditEvidence(prepared: PreparedModelAudit): Promise<void> {
