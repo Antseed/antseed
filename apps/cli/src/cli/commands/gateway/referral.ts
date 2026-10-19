@@ -45,19 +45,23 @@ async function resolve(gateway: CliGateway, idOrName: string): Promise<Resolved>
 
 function printReferrals(record: WorkspaceRecord, view: Referrals): void {
   console.log(`${chalk.bold(record.name)} ${chalk.dim(record.id)}  wallet ${view.address}`)
-  if (!view.available) {
-    console.log(chalk.dim('Referrals are not available on this network (no referrals contract or explorer).'))
+  if (!view.invitesAvailable) {
+    console.log(chalk.dim('Referrals are not available on this network (no referrals contract).'))
     return
   }
   const invites = view.invites
   console.log(invites
     ? `Invites this epoch (${invites.epoch}): ${invites.left} of ${invites.quota} left`
     : 'Invites this epoch: unknown')
-  console.log(`Referred buyers: ${view.referredCount}  ·  payable ${view.payableAnts} ANTS${view.claimableEpochs.length ? ` (epochs ${view.claimableEpochs.join(', ')})` : ''}`)
-  const total = view.buyers.reduce((sum, buyer) => sum + BigInt(buyer.points || '0'), 0n)
-  for (const buyer of view.buyers) {
-    const share = total > 0n ? `${Number((BigInt(buyer.points || '0') * 10_000n) / total) / 100}% of points` : 'no points yet'
-    console.log(chalk.dim(`  ${buyer.buyer}  ${share}  ${buyer.ants} ANTS${buyer.pendingPoints !== '0' ? '  (earning this epoch)' : ''}`))
+  if (view.available) {
+    console.log(`Referred buyers: ${view.referredCount}  ·  payable ${view.payableAnts} ANTS${view.claimableEpochs.length ? ` (epochs ${view.claimableEpochs.join(', ')})` : ''}`)
+    const total = view.buyers.reduce((sum, buyer) => sum + BigInt(buyer.points || '0'), 0n)
+    for (const buyer of view.buyers) {
+      const share = total > 0n ? `${Number((BigInt(buyer.points || '0') * 10_000n) / total) / 100}% of points` : 'no points yet'
+      console.log(chalk.dim(`  ${buyer.buyer}  ${share}  ${buyer.ants} ANTS${buyer.pendingPoints !== '0' ? '  (earning this epoch)' : ''}`))
+    }
+  } else {
+    console.log(chalk.dim('Referred buyers and rewards: unknown (the gateway has no explorer that indexes referrals). Invites still work.'))
   }
   const referee = view.referee
   if (referee.state === 'bound') {
@@ -133,8 +137,8 @@ export function registerGatewayReferralCommands(gateway: Command): void {
     .description('Drop an invite a workspace wallet carries but that is not bound yet')
     .argument('<workspace>', 'workspace id or name')
     .action((idOrName: string, _options: unknown, cmd: Command) => withGateway(cmd, async (gateway) => {
-      const workspace = requireWorkspace(gateway.store, idOrName)
-      await clearWorkspaceInvite(referralStateDir(gateway.dataDir, workspace.buyerIdentity), gateway.actor, gateway.ctx, workspace)
+      const { workspace, chain, address, stateDir } = await resolve(gateway, idOrName)
+      await clearWorkspaceInvite(gatewayAntsContext({ chain, address, buyerAddress: address }), stateDir, gateway.actor, gateway.ctx, workspace)
       console.log('No invite is carried now.')
     }))
 

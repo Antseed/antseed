@@ -91,7 +91,7 @@ export class BuyerFreeUsageManager {
   }
 
   private _sanitizeMetadata(metadata: FreeUsageMetadata): FreeUsageMetadata {
-    const base: FreeUsageMetadata = this._disableMetadataV2Services
+    const { attribution: _previous, ...base }: FreeUsageMetadata = this._disableMetadataV2Services
       ? {
           cumulativeInputTokens: metadata.cumulativeInputTokens,
           cumulativeOutputTokens: metadata.cumulativeOutputTokens,
@@ -99,6 +99,8 @@ export class BuyerFreeUsageManager {
           services: [],
         }
       : metadata;
+    // Attribution always comes from the current setting, so clearing it drops
+    // a previous client or invite instead of carrying it into the next auth.
     return this._attribution ? { ...base, attribution: this._attribution } : base;
   }
 

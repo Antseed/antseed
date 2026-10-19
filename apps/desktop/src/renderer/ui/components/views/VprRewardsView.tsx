@@ -171,19 +171,28 @@ function invitePoints(points: string, pendingPoints: string): string {
  */
 export function VprInvitesCard({ invites }: { invites: ReferralInvites | null }) {
   const [created, setCreated] = useState<CreateInviteResult | null>(null);
+  const [lastIssued, setLastIssued] = useState<Extract<CreateInviteResult, { ok: true }> | null>(null);
   const [creating, setCreating] = useState(false);
   const [copied, setCopied] = useState(false);
   if (!invites?.available) return null;
   const allowance = invites.allowance;
-  const link = created?.ok ? created.link : null;
-  const left = created?.ok ? created.left : allowance?.left ?? null;
+  // The latest invite stays shown (and copyable) when creating another fails.
+  const issued = created?.ok ? created : lastIssued;
+  const link = issued?.link ?? null;
+  const left = issued ? issued.left : allowance?.left ?? null;
+  const quota = issued ? issued.quota : allowance?.quota ?? null;
   const noQuota = allowance?.quota === 0 || (created?.ok === false && created.noQuota);
   const create = async () => {
     const createInvite = window.antseedDesktop?.referralCreateInvite;
     if (!createInvite || creating) return;
     setCreating(true);
     try {
-      setCreated(await createInvite());
+      const result = await createInvite();
+      setCreated(result);
+      if (result.ok) {
+        setLastIssued(result);
+        setCopied(false);
+      }
     } catch (error) {
       setCreated({ ok: false, reason: error instanceof Error ? error.message : String(error), noQuota: false });
     } finally {
@@ -197,7 +206,7 @@ export function VprInvitesCard({ invites }: { invites: ReferralInvites | null })
       window.setTimeout(() => setCopied(false), 1500);
     });
   };
-  const leftHint = left !== null && allowance ? `${formatInt(left)} of ${formatInt(allowance.quota)} left this week.` : null;
+  const leftHint = left !== null && quota !== null ? `${formatInt(left)} of ${formatInt(quota)} left this week.` : null;
   const hint = noQuota
     ? NO_QUOTA_HINT
     : link
@@ -213,12 +222,15 @@ export function VprInvitesCard({ invites }: { invites: ReferralInvites | null })
       <VprSettingRow
         title="Invite someone"
         hint={hint}
-        control={link ? (
-          <Button size="sm" variant="outline" onClick={copy}>{copied ? 'Copied' : 'Copy'}</Button>
-        ) : (
-          <Button size="sm" variant="outline" onClick={() => void create()} disabled={creating || noQuota || left === 0} aria-busy={creating}>
-            {creating ? 'Creating…' : 'Create link'}
-          </Button>
+        control={(
+          <>
+            {link ? <Button size="sm" variant="outline" onClick={copy}>{copied ? 'Copied' : 'Copy'}</Button> : null}
+            {link && (noQuota || left === 0) ? null : (
+              <Button size="sm" variant={link ? 'link' : 'outline'} onClick={() => void create()} disabled={creating || noQuota || left === 0} aria-busy={creating}>
+                {creating ? 'Creating…' : link ? 'Create another link' : 'Create link'}
+              </Button>
+            )}
+          </>
         )}
       />
       {created?.ok === false && !created.noQuota ? <span className={styles.errorNote}>{created.reason}</span> : null}

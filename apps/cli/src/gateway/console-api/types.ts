@@ -574,12 +574,15 @@ export interface Referee {
 }
 
 export interface Referrals {
+  /** The explorer reports this wallet's referrals: counts, referred buyers and payable rewards below are real, not placeholders. */
   available: boolean
+  /** The network has a referrals contract, so invites can be created, redeemed and removed (over RPC) with or without an explorer. */
+  invitesAvailable: boolean
   address: string
   /** This epoch's invite allowance; null when the explorer does not report it. */
   invites: InviteAllowance | null
   referredCount: number
-  /** Referral ANTS payable now; paid to the authorized wallet, or the workspace wallet when none is set. */
+  /** Referral ANTS payable now; paid to the workspace's authorized wallet (the contract has no other recipient). */
   payableAnts: string
   claimableEpochs: number[]
   buyers: ReferredBuyer[]

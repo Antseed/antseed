@@ -7,6 +7,7 @@ import {
   issueInvite,
   refereeBonusFromExplorer,
   referral,
+  referralScope,
   type AntsChainConfig,
   type CreatedInviteView,
   type RefereeView,
@@ -19,13 +20,14 @@ import {
   saveReferralInvite,
   syncReferralState,
   type InviteCheck,
+  type ReferralScope,
   type ReferralState,
   type ReferralsClient,
 } from '@antseed/node'
 import { getGlobalOptions } from './types.js'
 import { loadConfig } from '../../config/loader.js'
 import { loadCryptoContext, requireCryptoConfig } from '../payment-utils.js'
-import { referralLookup, shortWallet } from '../referral-state.js'
+import { referralLookup, referralVerifier, shortWallet } from '../referral-state.js'
 import { printJson } from './ants/shared.js'
 
 /**
@@ -55,6 +57,12 @@ function requireReferrals(context: ReferralCommandContext): ReferralsClient {
   const client = context.ctx.referrals()
   if (!client || !context.chain.referralsAddress) throw new Error(NOT_AVAILABLE)
   return client
+}
+
+function requireScope(context: ReferralCommandContext): ReferralScope {
+  const scope = referralScope(context.ctx)
+  if (!scope) throw new Error(NOT_AVAILABLE)
+  return scope
 }
 
 // ─── invite ─────────────────────────────────────────────────────────
@@ -91,12 +99,13 @@ export function formatInviteCreated(created: CreatedInviteView): string[] {
 export async function redeemReferralInvite(options: {
   client: Pick<ReferralsClient, 'previewInvite'>
   dataDir: string
+  scope: ReferralScope
   buyer: string
   value: string
 }): Promise<InviteCheck & { state?: ReferralState }> {
   const check = await checkInvite(options.client, options.buyer, options.value)
   if (!check.ok) return check
-  const state = await saveReferralInvite(options.dataDir, check.encoded, check.referrer)
+  const state = await saveReferralInvite(options.dataDir, options.scope, check.encoded, check.referrer)
   return { ...check, state }
 }
 
@@ -120,10 +129,12 @@ export type ReferralStatus = {
 
 export async function referralStatus(context: ReferralCommandContext): Promise<ReferralStatus> {
   const { ctx, chain, dataDir } = context
-  const configured = !!chain.referralsAddress
+  const scope = referralScope(ctx)
+  const configured = !!scope
   const lookup = referralLookup(chain)
+  const verify = referralVerifier(ctx.referrals())
   const [state, referee, invites] = await Promise.all([
-    syncReferralState(dataDir, ctx.address, lookup).catch(() => readReferralState(dataDir)),
+    scope ? syncReferralState(dataDir, scope, ctx.address, lookup, verify).catch(() => readReferralState(dataDir, scope)) : null,
     configured ? refereeBonusFromExplorer(chain.explorerApiUrl, ctx.address) : null,
     configured ? referral(ctx, dataDir).catch(() => null) : null,
   ])
@@ -214,7 +225,7 @@ How it works:
     .description('Use an invite (code or link) for 12 weeks of bonus $ANTS; binds with your first paid or free request (new wallets only)')
     .option('--json', 'output as JSON', false)
     .action(async (value: string, options: { json?: boolean }, command: Command) => run(command, async (context) => {
-      const result = await redeemReferralInvite({ client: requireReferrals(context), dataDir: context.dataDir, buyer: context.ctx.address, value })
+      const result = await redeemReferralInvite({ client: requireReferrals(context), dataDir: context.dataDir, scope: requireScope(context), buyer: context.ctx.address, value })
       if (!result.ok) process.exitCode = 1
       if (options.json) return printJson(result)
       for (const line of formatRedeemResult(result)) console.log(line)

@@ -60,17 +60,20 @@ export default function Referrals() {
       <PageHeader title="Referrals"
         description="Invite new buyers with this workspace's wallet. You earn ANTS on their usage; they earn a bonus on it for 12 weeks." />
       <QueryView query={referrals} rows={4}>
-        {(data) => !data.available ? (
+        {(data) => !data.invitesAvailable ? (
           <EmptyState icon={<Icon.referrals size={18} />} title="Referrals are not available here"
-            body="This network has no referrals contract, or the gateway has no explorer (Antscan) to read them from." />
+            body="This network has no referrals contract." />
         ) : (
           <>
             <div className="gc-grid gc-grid--3">
               <StatTile label="Invites left this week" value={data.invites ? `${data.invites.left} of ${data.invites.quota}` : '—'}
                 sub={data.invites ? `Epoch ${data.invites.epoch}` : undefined} />
-              <StatTile label="Referred buyers" value={String(data.referredCount)} />
-              <StatTile label="Ready to claim" value={formatAnts(data.payableAnts)} />
+              <StatTile label="Referred buyers" value={data.available ? String(data.referredCount) : '—'} />
+              <StatTile label="Ready to claim" value={data.available ? formatAnts(data.payableAnts) : '—'} />
             </div>
+            {!data.available && (
+              <p className="gc-muted" role="status">Referred buyers and rewards need an explorer (Antscan) that indexes referrals; invites still work.</p>
+            )}
 
             <Panel title="Invite someone" description="Each invite is single use and works for 4 weeks, for a buyer that is new to Antseed.">
               <div className="gc-summary-row">
@@ -96,28 +99,34 @@ export default function Referrals() {
                 : null}
             </Panel>
 
-            <Panel>
-              <div className="gc-summary-row">
-                <div className="gc-summary-row__text">
-                  <span className="gc-strong">{antsIsPositive(data.payableAnts) ? `${formatAnts(data.payableAnts)} referral rewards ready` : 'No referral rewards to claim yet'}</span>
-                  <span className="gc-fineprint">
-                    Paid to {authorized ? <>the authorized wallet {shortId(authorized)}</> : <>the workspace wallet {shortId(data.address)} (no authorized wallet is set)</>}.
-                  </span>
-                </div>
-                <Button size="sm" variant="outline" disabled={data.claimableEpochs.length === 0}
-                  onClick={() => setClaim({
-                    target: { kind: 'referrer', address: data.address, epochs: data.claimableEpochs },
-                    recipient: authorized ?? data.address,
-                    title: 'Claim referral rewards',
-                  })}>
-                  Claim
-                </Button>
-              </div>
-            </Panel>
+            {data.available && (
+              <>
+                <Panel>
+                  <div className="gc-summary-row">
+                    <div className="gc-summary-row__text">
+                      <span className="gc-strong">{antsIsPositive(data.payableAnts) ? `${formatAnts(data.payableAnts)} referral rewards ready` : 'No referral rewards to claim yet'}</span>
+                      <span className="gc-fineprint">
+                        {authorized
+                          ? <>Paid to the authorized wallet {shortId(authorized)}.</>
+                          : <>Referral rewards are paid only to an authorized wallet, and none is set. Authorize one on <PageLink to="wallet">Wallet &amp; Funding</PageLink>.</>}
+                      </span>
+                    </div>
+                    <Button size="sm" variant="outline" disabled={!authorized || data.claimableEpochs.length === 0}
+                      onClick={() => setClaim({
+                        target: { kind: 'referrer', address: data.address, epochs: data.claimableEpochs },
+                        recipient: authorized,
+                        title: 'Claim referral rewards',
+                      })}>
+                      Claim
+                    </Button>
+                  </div>
+                </Panel>
 
-            <Panel flush title="Referred buyers" description="Share is each buyer's part of your referral points, from their weighted usage. ANTS are earned once an epoch becomes claimable.">
-              <ReferredBuyers buyers={data.buyers} />
-            </Panel>
+                <Panel flush title="Referred buyers" description="Share is each buyer's part of your referral points, from their weighted usage. ANTS are earned once an epoch becomes claimable.">
+                  <ReferredBuyers buyers={data.buyers} />
+                </Panel>
+              </>
+            )}
 
             <RefereePanel data={data} authorized={authorized} onClaim={(referee) => setClaim({
               target: { kind: 'referee', address: data.address, epochs: referee.claimableEpochs },
@@ -145,9 +154,11 @@ export default function Referrals() {
                 <ChainGate chain={chain.data} error={chain.error}>
                   {(info) => (
                     <Suspense fallback={<LoadingRows rows={2} />}>
-                      <ReferralClaim target={claim.target} chain={info} recipient={claim.recipient} onDone={() => {
-                        toast('Rewards claimed')
-                        setClaim(null)
+                      <ReferralClaim target={claim.target} chain={info} recipient={claim.recipient} onClaimed={(complete) => {
+                        if (complete) {
+                          toast('Rewards claimed')
+                          setClaim(null)
+                        }
                         // Skip the gateway's one-minute cache so the claimed epochs drop out now.
                         void api.referrals.get(workspace.id, true).then((fresh) => queryClient.setQueryData(qk.referrals(workspace.id), fresh), () => undefined)
                       }} />

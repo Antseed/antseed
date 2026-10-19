@@ -31,6 +31,7 @@ export function mockReferrals(workspaceId: string, address: string): Referrals {
   const current = state(workspaceId)
   return {
     available: true,
+    invitesAvailable: true,
     address,
     invites: { epoch: EPOCH, quota: QUOTA, used: current.issued, left: Math.max(0, QUOTA - current.issued) },
     referredCount: 2,

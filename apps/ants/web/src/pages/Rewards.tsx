@@ -177,13 +177,41 @@ function writeBuilderIds(chainId: string, ids: number[]): void {
   }
 }
 
+const BUILDER_JOBS_KEY = 'antseed.ants.builderRegisterJobs';
+const BUILDER_JOBS_KEPT = 100;
+/** Handled registration jobs while storage is unavailable: they then outlive remounts, not reloads. */
+const handledJobsFallback = new Map<string, string[]>();
+
+/**
+ * Registration jobs whose agent was already added, per chain. The job journal
+ * outlives this card and the page, so this must too, or Remove would not stick.
+ */
+function readHandledJobs(chainId: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(`${BUILDER_JOBS_KEY}:${chainId}`) ?? '[]');
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : [];
+  } catch {
+    return handledJobsFallback.get(chainId) ?? [];
+  }
+}
+
+function writeHandledJobs(chainId: string, jobIds: string[]): void {
+  const kept = jobIds.slice(-BUILDER_JOBS_KEPT);
+  handledJobsFallback.set(chainId, kept);
+  try {
+    window.localStorage.setItem(`${BUILDER_JOBS_KEY}:${chainId}`, JSON.stringify(kept));
+  } catch {
+    /* storage unavailable */
+  }
+}
+
 /**
  * Builders program: emission rewards for apps built on Antseed, per client
  * ERC-8004 agent. No cheap on-chain lookup lists the agents a wallet owns, so
  * the user adds ids here (remembered per chain); the server adds the chain's
  * first-party client ids this wallet owns.
  */
-function BuildersCard() {
+export function BuildersCard() {
   const dashboard = useConfig();
   const jobs = useJobList();
   const [ids, setIds] = useState(() => readBuilderIds(dashboard.chainId));
@@ -196,12 +224,15 @@ function BuildersCard() {
 
   const save = (next: number[]) => { setIds(next); writeBuilderIds(dashboard.chainId, next); };
   // A client agent registered from this card starts tracked (once per job, so Remove sticks).
-  const handledJobs = useRef(new Set<string>());
   useEffect(() => {
+    const done = jobs.filter((job) => job.kind === 'builder-register' && job.status === 'done');
+    if (!done.length) return;
+    const handled = readHandledJobs(dashboard.chainId);
+    const fresh = done.filter((job) => !handled.includes(job.id));
+    if (!fresh.length) return;
+    writeHandledJobs(dashboard.chainId, [...handled, ...fresh.map((job) => job.id)]);
     const registered: number[] = [];
-    for (const job of jobs) {
-      if (job.kind !== 'builder-register' || job.status !== 'done' || handledJobs.current.has(job.id)) continue;
-      handledJobs.current.add(job.id);
+    for (const job of fresh) {
       const agentId = (job.result as { agentId?: unknown } | undefined)?.agentId;
       if (typeof agentId === 'number' && !ids.includes(agentId)) registered.push(agentId);
     }

@@ -14,6 +14,7 @@ import { registerReferralRoutes } from './referrals.js'
 
 // Obvious fakes: fixed test keys and addresses, never real ones.
 const TEAM_WALLET = new Wallet(`0x${'22'.repeat(32)}`)
+const SOLO_WALLET = new Wallet(`0x${'44'.repeat(32)}`)
 const INVITER = new Wallet(`0x${'33'.repeat(32)}`)
 const OWNER = `0x${'0a'.repeat(20)}`
 const REFERRED = `0x${'0c'.repeat(20)}`
@@ -23,6 +24,8 @@ const CHAIN = {
   clientAgentIds: { cli: 1 }, explorerApiUrl: 'https://explorer.example.test',
 } as unknown as AntsChainConfig
 const DOMAIN = { chainId: 31337, referralsAddress: CHAIN.referralsAddress! }
+/** The same referrals contract and RPC, but no explorer to index it. */
+const NO_EXPLORER_CHAIN = { ...CHAIN, explorerApiUrl: undefined } as unknown as AntsChainConfig
 
 let preview: InvitePreview = { referrer: INVITER.address, failure: null }
 const registered = new Set([1, 7])
@@ -75,11 +78,14 @@ const team = store.createWorkspace({ name: 'Team', buyerIdentity: 'team-a', wall
 const wsAdmin = addActiveMember(store, 'Workspace admin', { workspaces: [{ workspaceId: team.id, role: 'admin' }] })
 const plainMember = addActiveMember(store, 'Member', { workspaces: [{ workspaceId: team.id, role: 'member' }] })
 const orgAdmin = addActiveMember(store, 'Org admin', { orgRole: 'admin' })
+const solo = store.createWorkspace({ name: 'Solo', buyerIdentity: 'solo', walletAddress: SOLO_WALLET.address })
+const soloAdmin = addActiveMember(store, 'Solo admin', { workspaces: [{ workspaceId: solo.id, role: 'admin' }] })
 const configPath = join(dir, 'config.json')
 writeFileSync(configPath, JSON.stringify({ buyer: { proxyPort: 8377 } }))
 const restarts: string[] = []
 let buyer: FakeBuyer
 const router = new ConsoleRouter()
+const noExplorerRouter = new ConsoleRouter()
 
 before(async () => {
   buyer = await startFakeBuyer({ 'POST /_antseed/restart': () => { restarts.push('restart'); return { body: { ok: true } } } })
@@ -89,6 +95,14 @@ before(async () => {
     context: fakeContext,
     walletAddress: async (name) => (name === 'team-a' ? TEAM_WALLET.address : null),
     loadSigner: async (name) => (name === 'team-a' ? TEAM_WALLET : null),
+    env: {},
+  })
+  registerReferralRoutes(noExplorerRouter, testDeps(store, dir, { configPath }), {
+    buyer: buyer.client,
+    resolveChain: async () => NO_EXPLORER_CHAIN,
+    context: (chain, address, signer) => ({ ...fakeContext(chain, address, signer), indexer: () => null }) as AntsContext,
+    walletAddress: async (name) => (name === 'solo' ? SOLO_WALLET.address : null),
+    loadSigner: async (name) => (name === 'solo' ? SOLO_WALLET : null),
     env: {},
   })
 })
@@ -115,6 +129,7 @@ async function rejects(promise: Promise<unknown>, status: number, code: string):
 test('workspace admins read referrals with ANTS in display units; plain members cannot', async () => {
   const view = await call(router, 'GET', `/workspaces/${team.id}/referrals`, asAdmin()) as Referrals
   assert.equal(view.available, true)
+  assert.equal(view.invitesAvailable, true)
   assert.equal(view.address, TEAM_WALLET.address)
   assert.equal(view.payableAnts, '2.5')
   assert.deepEqual(view.claimableEpochs, [17, 18])
@@ -130,10 +145,10 @@ test('an invite is signed by the workspace wallet and remembered in its own refe
   assert.equal(recoverInviter(decodeInvite(created.invite), DOMAIN), TEAM_WALLET.address)
   assert.equal(created.epoch, 20)
   assert.equal(created.expiresEpoch, 24)
-  const state = await readReferralState(buyerIdentityDir(dir, 'team-a'))
+  const state = await readReferralState(buyerIdentityDir(dir, 'team-a'), DOMAIN)
   assert.deepEqual(state?.issued, { epoch: 20, indices: [created.index] })
   // Nothing was written to the default wallet's file.
-  assert.equal(await readReferralState(dir), null)
+  assert.equal(await readReferralState(dir, DOMAIN), null)
   const view = await call(router, 'GET', `/workspaces/${team.id}/referrals`, asAdmin()) as Referrals
   assert.equal(view.invites?.left, 2)
 })
@@ -150,11 +165,37 @@ test('redeeming checks the contract preview, then the workspace wallet carries t
   assert.equal(view.referee.pendingInvite, invite)
   assert.equal(view.referee.referrer, INVITER.address)
   assert.equal(view.referee.inviteExpiresEpoch, 24)
-  assert.equal((await readReferralState(buyerIdentityDir(dir, 'team-a')))?.state, 'invited')
+  assert.equal((await readReferralState(buyerIdentityDir(dir, 'team-a'), DOMAIN))?.state, 'invited')
 
   const cleared = await call(router, 'DELETE', `/workspaces/${team.id}/referrals/redeem`, asAdmin()) as Referrals
   assert.equal(cleared.referee.state, 'none')
   await rejects(call(router, 'POST', `/workspaces/${team.id}/referrals/redeem`, asAdmin(), { invite: 'nonsense' }), 400, 'invalid_invite')
+})
+
+test('without an explorer, invites are still created, redeemed and removed; only the indexed statistics are unknown', async () => {
+  const principal = memberPrincipal(store, soloAdmin.id)
+  const view = await call(noExplorerRouter, 'GET', `/workspaces/${solo.id}/referrals`, principal) as Referrals
+  assert.equal(view.available, false)
+  assert.equal(view.invitesAvailable, true)
+  assert.equal(view.invites, null)
+  assert.deepEqual(view.buyers, [])
+  assert.equal(view.referee.state, 'none')
+  assert.equal(view.referee.canRedeem, null)
+
+  // Epoch and quota come from the referrals contract over RPC.
+  const created = await call(noExplorerRouter, 'POST', `/workspaces/${solo.id}/referrals/invites`, principal) as CreatedInvite
+  assert.equal(recoverInviter(decodeInvite(created.invite), DOMAIN), SOLO_WALLET.address)
+  assert.equal(created.epoch, 20)
+  assert.equal(created.quota, 3)
+
+  preview = { referrer: INVITER.address, failure: null }
+  const invite = encodeInvite(await signInvite(INVITER, DOMAIN, 20, 2))
+  const redeemed = await call(noExplorerRouter, 'POST', `/workspaces/${solo.id}/referrals/redeem`, principal, { invite }) as Referrals
+  assert.equal(redeemed.referee.state, 'invited')
+  assert.equal(redeemed.referee.referrer, INVITER.address)
+
+  const cleared = await call(noExplorerRouter, 'DELETE', `/workspaces/${solo.id}/referrals/redeem`, principal) as Referrals
+  assert.equal(cleared.referee.state, 'none')
 })
 
 test('builders: org admins see the effective agent, set their own (restarting the buyer) and cannot set an unregistered one', async () => {

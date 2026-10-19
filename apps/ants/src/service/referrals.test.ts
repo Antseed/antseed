@@ -22,6 +22,7 @@ const wallet = '0x0000000000000000000000000000000000000001';
 const buyer = '0x0000000000000000000000000000000000000002';
 const referrer = getAddress('0xabcdef0000000000000000000000000000000003');
 const referralsAddress = '0x1111111111111111111111111111111111111111';
+const scope = { chainId: 8453, referralsAddress };
 
 const indexedReferrer: IndexedReferrer = {
   available: true,
@@ -47,11 +48,14 @@ function fixture(options: { referrals?: boolean; explorer?: boolean; indexed?: P
     pendingRewards: vi.fn(async () => [{ epoch: 7, amount: 1n }]),
     claimEpochs: vi.fn(async () => '0xhash'),
     claimRefereeEpochs: vi.fn(async () => '0xreferee'),
+    currentEpoch: vi.fn(async () => 40),
+    // Epochs 30 and 33 hold an unclaimed, final referee bonus.
+    pendingRefereeReward: vi.fn(async (_buyer: string, epoch: number) => (epoch === 30 || epoch === 33 ? 5n : 0n)),
   };
   const ctx = {
     address: wallet,
     buyerAddress: buyer,
-    chain: options.referrals === false ? {} : { referralsAddress },
+    chain: options.referrals === false ? { evmChainId: 8453 } : { evmChainId: 8453, referralsAddress },
     referrals: () => (options.referrals === false ? null : client),
     indexer: () => (options.explorer === false ? null : indexer),
     requireSigner: () => ({}),
@@ -80,18 +84,18 @@ describe('referral card', () => {
   it('counts invites already handed out from this install', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ants-referral-'));
     dirs.push(dir);
-    await recordIssuedInvite(dir, 30, 0);
-    await recordIssuedInvite(dir, 30, 1);
+    await recordIssuedInvite(dir, scope, 30, 0);
+    await recordIssuedInvite(dir, scope, 30, 1);
     expect((await referral(fixture().ctx, dir)).invites).toEqual({ epoch: 30, quota: 5, used: 2, left: 3 });
   });
 
   it('counts |bound ∪ handed out| against the quota', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ants-referral-'));
     dirs.push(dir);
-    await recordIssuedInvite(dir, 30, 2);
+    await recordIssuedInvite(dir, scope, 30, 2);
     const indexed = { invites: { epoch: 30, quota: 7, used: 1, usedIndices: [4] } };
     expect((await referral(fixture({ indexed }).ctx, dir)).invites).toEqual({ epoch: 30, quota: 7, used: 2, left: 5 });
-    await recordIssuedInvite(dir, 30, 4); // the bound one, handed out here too
+    await recordIssuedInvite(dir, scope, 30, 4); // the bound one, handed out here too
     expect((await referral(fixture({ indexed }).ctx, dir)).invites).toEqual({ epoch: 30, quota: 7, used: 2, left: 5 });
   });
 
@@ -146,6 +150,24 @@ describe('invites', () => {
       .rejects.toThrow('All 3 invites for this week are taken');
   });
 
+  it('hands the last free index to exactly one of two concurrent requests', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ants-invite-'));
+    dirs.push(dir);
+    const client = inviteClient({ quota: 2, used: [0] });
+    // Slow on-chain checks widen the window in which both requests read the state.
+    client.inviteUsed.mockImplementation(async (_referrer, _epoch, index) => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return index === 0;
+    });
+    const issue = () => issueInvite({ client, indexer: null, signer: new Wallet(key), chainId: 8453, referralsAddress, dataDir: dir, random: () => 0 });
+    const results = await Promise.allSettled([issue(), issue()]);
+    const created = results.filter((result) => result.status === 'fulfilled');
+    expect(created).toHaveLength(1);
+    expect((created[0] as PromiseFulfilledResult<{ index: number }>).value.index).toBe(1);
+    const refused = results.find((result) => result.status === 'rejected') as PromiseRejectedResult;
+    expect(refused.reason).toBeInstanceOf(InviteQuotaError);
+  });
+
   it('takes epoch, quota and used invites from Antscan when it reports them', async () => {
     const client = inviteClient();
     const indexer = { referrer: vi.fn(async () => ({ ...indexedReferrer, invites: { epoch: 30, quota: 4, used: 2, usedIndices: [0, 1] } })) } as unknown as Indexer;
@@ -188,7 +210,39 @@ describe('referee bonus', () => {
     const { ctx, client } = fixture();
     expect(await claimRefereeRewards(ctx)).toEqual({ hash: '0xreferee', epochs: [20, 21] });
     expect(client.claimRefereeEpochs).toHaveBeenCalledWith({}, buyer, [20, 21]);
+    expect(client.pendingRefereeReward).not.toHaveBeenCalled();
     await expect(claimRefereeRewards(fixture({ binding: { refereeClaimableEpochs: [] } }).ctx)).rejects.toThrow('No invite bonus');
+  });
+
+  it.each([
+    { name: 'no explorer is configured', options: { explorer: false } },
+    { name: 'the explorer does not index referrals', options: { binding: { available: false } } },
+  ])('scans finalized epochs on-chain when $name', async ({ options }) => {
+    const { ctx, client } = fixture(options);
+    expect(await claimRefereeRewards(ctx)).toEqual({ hash: '0xreferee', epochs: [30, 33] });
+    expect(client.claimRefereeEpochs).toHaveBeenCalledWith({}, buyer, [30, 33]);
+    // The 26 claimable epochs up to 38: epoch 39 is in its settlement grace, 40 is current.
+    const scanned = client.pendingRefereeReward.mock.calls.map(([, epoch]) => epoch);
+    expect(scanned).toEqual(Array.from({ length: 26 }, (_, i) => 13 + i));
+    expect(client.pendingRefereeReward.mock.calls.every(([address]) => address === buyer)).toBe(true);
+  });
+
+  it('scans on-chain when the explorer request fails', async () => {
+    const { ctx, client, indexer } = fixture();
+    indexer.referralBinding.mockRejectedValue(new Error('Antscan unavailable'));
+    expect(await claimRefereeRewards(ctx)).toEqual({ hash: '0xreferee', epochs: [30, 33] });
+    expect(client.claimRefereeEpochs).toHaveBeenCalledWith({}, buyer, [30, 33]);
+  });
+
+  it('refuses when the on-chain scan finds nothing payable, and scans nothing before the first claimable epoch', async () => {
+    const { ctx, client } = fixture({ explorer: false });
+    client.pendingRefereeReward.mockResolvedValue(0n);
+    await expect(claimRefereeRewards(ctx)).rejects.toThrow('No invite bonus');
+    client.currentEpoch.mockResolvedValue(1);
+    client.pendingRefereeReward.mockClear();
+    await expect(claimRefereeRewards(ctx)).rejects.toThrow('No invite bonus');
+    expect(client.pendingRefereeReward).not.toHaveBeenCalled();
+    expect(client.claimRefereeEpochs).not.toHaveBeenCalled();
   });
 
   it('reads the bonus straight from an explorer URL', async () => {
@@ -206,8 +260,15 @@ describe('referral claim', () => {
     expect(client.pendingRewards).not.toHaveBeenCalled();
   });
 
-  it('falls back to the on-chain epoch scan only without an explorer', async () => {
+  it('falls back to the on-chain epoch scan without an explorer', async () => {
     const { ctx, client } = fixture({ explorer: false });
+    expect(await claimReferralRewards(ctx)).toEqual({ hash: '0xhash', epochs: [7] });
+    expect(client.pendingRewards).toHaveBeenCalledWith(wallet);
+  });
+
+  it('falls back to the on-chain epoch scan when the explorer request fails', async () => {
+    const { ctx, client, indexer } = fixture();
+    indexer.referrer.mockRejectedValueOnce(new Error('antscan down'));
     expect(await claimReferralRewards(ctx)).toEqual({ hash: '0xhash', epochs: [7] });
     expect(client.pendingRewards).toHaveBeenCalledWith(wallet);
   });

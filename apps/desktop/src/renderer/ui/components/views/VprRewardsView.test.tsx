@@ -1,5 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
-import { expect, it, vi } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
+import { shallowRender, type AnyElement } from '../../test/shallowRender';
 import { receiveInviteLink } from '../InviteCodeField';
 import { VprInvitesCard, VprRefereeBonusCard, VprReferralCard, VprRewardsView, pendingHeadline } from './VprRewardsView';
 
@@ -55,6 +56,47 @@ it('offers to create an invite with the invites left this week', () => {
   expect(html).not.toContain('Total ·');
 });
 
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+it('keeps Copy and offers another link after each invite while quota remains', async () => {
+  const issued = ['first', 'second', 'third'].map((invite, index) => ({
+    ok: true as const, invite, link: `https://antseed.com/invite/${invite}`, left: 2 - index, quota: 5, expiresEpoch: 34,
+  }));
+  const referralCreateInvite = vi.fn(async () => issued[referralCreateInvite.mock.calls.length - 1]!);
+  const writeText = vi.fn(async () => {});
+  vi.stubGlobal('window', globalThis);
+  vi.stubGlobal('antseedDesktop', { referralCreateInvite });
+  vi.stubGlobal('navigator', { clipboard: { writeText } });
+
+  const card = shallowRender(<VprInvitesCard invites={{ available: true, listed: true, allowance: ALLOWANCE, buyers: [], totals: TOTALS, error: null }} />);
+  const row = () => card.findAll((el) => el.props.title === 'Invite someone')[0] as AnyElement;
+  const click = async (label: string) => {
+    (card.button(label).props.onClick as () => void)();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+  expect(row().props.hint).toBe('3 of 5 left this week.');
+  expect(card.hasButton('Copy')).toBe(false);
+
+  await click('Create link');
+  expect(row().props.hint).toBe('https://antseed.com/invite/first · 2 of 5 left this week.');
+  expect(card.hasButton('Copy')).toBe(true);
+
+  await click('Create another link');
+  expect(row().props.hint).toBe('https://antseed.com/invite/second · 1 of 5 left this week.');
+  await click('Copy');
+  expect(writeText).toHaveBeenCalledWith('https://antseed.com/invite/second');
+
+  // The last invite of the week: Copy stays, Create another goes away.
+  await click('Create another link');
+  expect(row().props.hint).toBe('https://antseed.com/invite/third · 0 of 5 left this week.');
+  expect(card.hasButton('Copy')).toBe(true);
+  expect(card.hasButton('Create another link')).toBe(false);
+  expect(referralCreateInvite).toHaveBeenCalledTimes(3);
+  card.unmount();
+});
+
 it('explains why there are no invites without last week\'s activity', () => {
   const html = renderToStaticMarkup(<VprInvitesCard invites={{ available: true, listed: true, allowance: { epoch: 30, quota: 0, used: 0, left: 0 }, buyers: [], totals: TOTALS, error: null }} />);
   expect(html).toContain('Invites unlock after at least 1 USDC of usage or sales in the previous week.');
@@ -101,16 +143,18 @@ it('offers "Have an invite?" on Rewards while the wallet has no inviter and no p
   expect(html).not.toContain('Invited by');
 });
 
-it('shows the inviter instead of the field once an invite is pending or bound', () => {
+it('shows the inviter instead of the field once an invite is pending (replaceable) or bound', () => {
   const pending = renderToStaticMarkup(<VprReferralCard status={{ ...REFERRAL, state: 'invited', referrer: INVITER, invite: 'abc' }} />);
   expect(pending).toContain('data-row="Invited by"');
   expect(pending).toContain('0x1111...1111');
   expect(pending).toContain('Pending. Binds with your first paid or free request.');
+  expect(pending).toContain('Replace invite');
   expect(pending).not.toContain('Invite code');
 
   const bound = renderToStaticMarkup(<VprReferralCard status={{ ...REFERRAL, state: 'bound', referrer: INVITER }} />);
   expect(bound).toContain('Bound on-chain.');
   expect(bound).not.toContain('Use invite');
+  expect(bound).not.toContain('Replace invite');
 });
 
 it('hides the invite card until the status loads and on networks without referrals', () => {

@@ -136,8 +136,9 @@ Binds with your first paid or free request through `antseed buyer start` (before
 Then you earn bonus $ANTS on your usage for 12 weeks.
 ```
 
-The invite is stored in `<data-dir>/referral.json`, and `antseed buyer start`
-carries it until it binds. `antseed referral status` shows your inviter, your
+The invite is stored in `<data-dir>/referral.json`, kept separately for each
+network, and `antseed buyer start` carries it until the Referrals contract
+shows it bound. `antseed referral status` shows your inviter, your
 bonus and your own invites:
 
 ```text

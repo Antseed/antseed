@@ -239,8 +239,11 @@ export {
   referralStateMtimeMs,
   saveReferralInvite,
   syncReferralState,
+  updateReferralState,
+  withIssuedInvite,
   writeReferralState,
   type ReferralLookup,
+  type ReferralScope,
   type ReferralState,
 } from './payments/referral-state.js';
 export { ClientRewardsClient, type ClientRewardsClientConfig, type ClientEpochReward } from './payments/evm/client-rewards-client.js';

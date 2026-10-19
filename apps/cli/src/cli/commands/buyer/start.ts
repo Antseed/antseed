@@ -9,11 +9,11 @@ import { getGlobalOptions } from '../types.js'
 import pkg from '../../../../package.json' with { type: 'json' }
 import { watchForUpdates } from '../../../update/watch.js'
 import { loadConfig } from '../../../config/loader.js'
-import { AntseedNode, DepositRelayClient, DepositsClient, getInstance, peerRelaysSweeps, readReferralState, resolveChainConfig } from '@antseed/node'
+import { AntseedNode, DepositRelayClient, DepositsClient, getInstance, peerRelaysSweeps, readReferralState, ReferralsClient, resolveChainConfig, type ReferralScope } from '@antseed/node'
 import type { Identity, NodePaymentsConfig } from '@antseed/node'
 import { OFFICIAL_BOOTSTRAP_NODES, parseBootstrapList, toBootstrapConfig } from '@antseed/node/discovery'
 import { setupShutdownHandler } from '../../shutdown.js'
-import { BuyerAttributionSync, referralLookup as buyerReferralLookup, resolveBuyerAttribution } from '../../referral-state.js'
+import { BuyerAttributionSync, referralLookup as buyerReferralLookup, referralVerifier, resolveBuyerAttribution } from '../../referral-state.js'
 import { walletPassphraseForStart } from '../../wallet-passphrase.js'
 import { loadRouterPlugin, loadVerifierPlugin, buildPluginConfig, getPackageVersions } from '../../../plugins/loader.js'
 import { ensurePluginsUpToDate } from '../../../plugins/drift.js'
@@ -338,15 +338,27 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       // Client / invite attribution appended to every buyer-signed settlement
       // metadata blob. AntseedStatsV2 binds a redeemed invite on-chain at the
       // first settlement (paid or free) that carries it; the daemon only has
-      // to carry it. Whether it is bound yet comes from Antscan, not an RPC read.
+      // to carry it. Antscan reports when it is bound, and one `referrerOf`
+      // read confirms it before the invite is dropped.
       const explorerApiUrl = cryptoOverrides?.explorerApiUrl ?? chainConfig.explorerApiUrl
       const referralLookup = buyerReferralLookup({ referralsAddress: chainConfig.referralsAddress, explorerApiUrl })
+      const referralScope: ReferralScope | null = chainConfig.referralsAddress
+        ? { chainId: chainConfig.evmChainId, referralsAddress: chainConfig.referralsAddress }
+        : null
+      const referralCheck = referralVerifier(chainConfig.referralsAddress
+        ? new ReferralsClient({
+            rpcUrl: chainConfig.rpcUrl,
+            ...(chainConfig.fallbackRpcUrls ? { fallbackRpcUrls: chainConfig.fallbackRpcUrls } : {}),
+            contractAddress: chainConfig.referralsAddress,
+            evmChainId: chainConfig.evmChainId,
+          })
+        : null)
       const attributionOptions = {
         clientAgentId: effectiveBuyerConfig.clientAgentId,
         clientAgentIds: chainConfig.clientAgentIds,
       }
       const initialAttribution = resolveBuyerAttribution({
-        referralState: await readReferralState(globalOpts.dataDir),
+        referralState: referralScope ? await readReferralState(globalOpts.dataDir, referralScope) : null,
         ...attributionOptions,
       })
 
@@ -470,7 +482,9 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       const attributionSync = paymentsConfig?.enabled
         ? new BuyerAttributionSync({
             ...attributionOptions,
+            scope: referralScope,
             lookup: referralLookup,
+            verify: referralCheck,
             apply: (attribution, identity) => node.setBuyerAttribution(attribution, identity),
             log: (message) => console.log(chalk.dim(message)),
           })
@@ -558,9 +572,10 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       // deposit watcher once watchers can run (see below).
       let createDepositWatcher: ((identity: Identity, shared?: boolean) => DepositWatcher) | null = null
       const identityWatchers: DepositWatcher[] = []
-      const buyerIdentities = new BuyerIdentityLoader(node, globalOpts.dataDir, (name, identity) => {
+      const buyerIdentities = new BuyerIdentityLoader(node, globalOpts.dataDir, async (name, identity) => {
         console.log(chalk.dim(`Buyer identity ${name} loaded (${identity.wallet.address})`))
-        void attributionSync?.track(name, buyerIdentityDir(globalOpts.dataDir, name), identity.wallet.address).catch(() => {})
+        // Awaited: the identity serves no request before its saved invite is applied.
+        await attributionSync?.track(name, buyerIdentityDir(globalOpts.dataDir, name), identity.wallet.address).catch(() => {})
         if (!createDepositWatcher) return
         // Every identity (workspace wallet) gets its own watcher so the gateway
         // can read and promote it via /_antseed/deposits/*?identity=<name>.

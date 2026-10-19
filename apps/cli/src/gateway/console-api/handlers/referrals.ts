@@ -124,7 +124,7 @@ export function registerReferralRoutes(router: ConsoleRouter, deps: ConsoleDeps,
   router.add('DELETE', '/workspaces/:id/referrals/redeem', async (request): Promise<Referrals> => {
     const ws = workspace(request)
     const address = await addressOf(ws.buyerIdentity)
-    await clearWorkspaceInvite(ws.stateDir, requestActor(deps, request), deps, ws.record)
+    await clearWorkspaceInvite(context(await resolveChain(), address), ws.stateDir, requestActor(deps, request), deps, ws.record)
     return referrals(ws.stateDir, address, true)
   })
 

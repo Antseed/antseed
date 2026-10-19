@@ -366,19 +366,58 @@ contract AntseedReferralsTest is Test {
         assertEq(gate.balanceOf(REFERRER_OPERATOR), 5 ether);
     }
 
+    /// Sweeps another controller's remainder into the same epoch's burn cap first.
+    function _otherControllerSweeps(uint256 epoch, uint256 amount) private returns (uint256 burned) {
+        address otherController = address(0xC0FFEE);
+        address reserve = gate.emissionsReserve();
+        gate.setBudget(otherController, epoch, amount);
+        vm.prank(otherController);
+        (burned,) = gate.claimRemainder(epoch, reserve, amount);
+    }
+
+    function test_remainderCrossingTheEpochBurnCapSendsOnlyTheExcessToReserve() public {
+        gate.setBudget(address(referrals), 10, 100 ether);
+        gate.setEpochEmission(10, 200 ether); // burn cap 60, shared by every controller
+        gate.setCurrentEpoch(12);
+        assertEq(_otherControllerSweeps(10, 20 ether), 20 ether);
+
+        (uint256 burned, uint256 reserved) = referrals.settleEpochRemainder(10);
+        assertEq(burned, 40 ether); // only what is left of the cap
+        assertEq(reserved, 60 ether);
+        assertEq(gate.epochBurnedAmount(10), 60 ether);
+        assertEq(gate.balanceOf(gate.DEAD_ADDRESS()), 60 ether);
+        assertEq(gate.balanceOf(gate.emissionsReserve()), 60 ether);
+    }
+
+    function test_remainderAfterAnotherControllerExhaustsTheBurnCapGoesToReserve() public {
+        gate.setBudget(address(referrals), 10, 100 ether);
+        gate.setEpochEmission(10, 200 ether); // burn cap 60
+        gate.setCurrentEpoch(12);
+        assertEq(_otherControllerSweeps(10, 80 ether), 60 ether); // exhausts the cap, 20 to reserve
+
+        (uint256 burned, uint256 reserved) = referrals.settleEpochRemainder(10);
+        assertEq(burned, 0);
+        assertEq(reserved, 100 ether);
+        assertEq(gate.epochBurnedAmount(10), 60 ether);
+        assertEq(gate.balanceOf(gate.DEAD_ADDRESS()), 60 ether);
+        assertEq(gate.balanceOf(gate.emissionsReserve()), 120 ether);
+    }
+
     function test_epochWithoutPointsIsSweptToBurnAndReserve() public {
         _withOperators();
         gate.setBudget(address(referrals), 10, 100 ether);
+        gate.setEpochEmission(10, 1000 ether); // burn cap 300: the whole remainder fits under it
         gate.setCurrentEpoch(11);
         vm.expectRevert(AntseedEpochShareRewards.EpochNotClaimable.selector);
         referrals.settleEpochRemainder(10);
 
         gate.setCurrentEpoch(12);
         (uint256 burned, uint256 reserved) = referrals.settleEpochRemainder(10);
-        assertEq(burned, 30 ether);
-        assertEq(reserved, 70 ether);
-        assertEq(gate.balanceOf(gate.DEAD_ADDRESS()), 30 ether);
-        assertEq(gate.balanceOf(gate.emissionsReserve()), 70 ether);
+        assertEq(burned, 100 ether);
+        assertEq(reserved, 0);
+        assertEq(gate.balanceOf(gate.DEAD_ADDRESS()), 100 ether);
+        assertEq(gate.balanceOf(gate.emissionsReserve()), 0);
+        assertEq(gate.epochBurnedAmount(10), 100 ether);
         assertTrue(referrals.epochFrozen(10));
         assertEq(referrals.frozenTotalPoints(10), 0);
         vm.expectRevert(AntseedEpochShareRewards.AlreadyClaimed.selector);

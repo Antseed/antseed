@@ -6,7 +6,8 @@
  * bind, save it as pending in `<connect data dir>/referral.json` (shared with
  * the CLI via @antseed/node). The buyer daemon carries it in the metadata it
  * signs until AntseedStatsV2 binds it on a settlement; Antscan reports the
- * binding. Inviting: we sign a fresh invite with the identity wallet (no
+ * binding and the Referrals contract confirms it. State is kept per network
+ * (chain id + Referrals contract) in that file. Inviting: we sign a fresh invite with the identity wallet (no
  * transaction). Lists and payable amounts come from Antscan only.
  */
 import { getAddress } from 'ethers';
@@ -24,6 +25,7 @@ import {
   referral,
   referralBindingFromExplorer,
   referredBuyers,
+  referralScope,
   type AntsChainConfig,
 } from '@antseed/ants/service';
 import { ensureSecureIdentity, getSecureIdentity } from './identity.js';
@@ -97,10 +99,13 @@ export async function getReferralStatus(): Promise<ReferralStatus> {
   const context = await referralContext().catch(() => null);
   if (!context) return DARK_STATUS;
   const { chain, wallet } = context;
+  const contract = new AntsContext({ chain, address: wallet.address }).referrals();
   const state = await syncReferralState(
     resolveConnectDataDir(),
+    referralScope({ chain })!,
     wallet.address,
     (buyer) => referralBindingFromExplorer(chain.explorerApiUrl, buyer),
+    contract ? (buyer) => contract.referrerOf(buyer) : null,
   );
   return {
     configured: true,
@@ -131,7 +136,9 @@ export async function redeemReferralInvite(value: string): Promise<InviteCheckRe
   const checked = await checkReferralInvite(value);
   if (!checked.ok) return checked;
   try {
-    const saved = await saveReferralInvite(resolveConnectDataDir(), checked.invite, checked.referrer);
+    const context = await referralContext();
+    if (!context) return { ok: false, reason: 'Invites are not available on this network.' };
+    const saved = await saveReferralInvite(resolveConnectDataDir(), referralScope(context)!, checked.invite, checked.referrer);
     if (saved.state === 'bound') return { ok: false, reason: 'This wallet already has an inviter.' };
     return checked;
   } catch (error) {

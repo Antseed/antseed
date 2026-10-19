@@ -85,9 +85,12 @@ export default function Builders() {
                     {(info) => (
                       <Suspense fallback={<LoadingRows rows={2} />}>
                         <ReferralClaim target={{ kind: 'builder', agentId: agent.agentId, epochs: agent.claimableEpochs }} chain={info} recipient={agent.owner}
-                          onDone={() => {
-                            toast('Rewards claimed')
-                            setClaiming(false)
+                          onClaimed={(complete) => {
+                            if (complete) {
+                              toast('Rewards claimed')
+                              setClaiming(false)
+                            }
+                            // Part way too: the epochs that confirmed drop out of the view.
                             void api.referrals.builders(true).then((fresh) => queryClient.setQueryData(qk.builders, fresh), () => undefined)
                           }} />
                       </Suspense>

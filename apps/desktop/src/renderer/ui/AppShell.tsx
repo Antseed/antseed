@@ -141,7 +141,8 @@ export function AppShell() {
   }, [handleSelectView]);
 
   // antseed://invite/<invite>: prefill the invite field (setup screen, or
-  // Rewards once the app is in use; Preferences shares the same field).
+  // Rewards once the app is in use; Preferences shares the same field). A
+  // pending invite that never bound opens its replace field for the link.
   const showSetupRef = useRef(showSetup);
   showSetupRef.current = showSetup;
   useEffect(() => {

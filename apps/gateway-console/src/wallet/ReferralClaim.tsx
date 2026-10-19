@@ -1,8 +1,10 @@
+import { useState } from 'react'
 import { useAccount, useConfig, useWriteContract } from 'wagmi'
-import { simulateContract } from 'wagmi/actions'
+import { readContract, simulateContract } from 'wagmi/actions'
 import { Alert, Button } from '@antseed/ui'
 import type { ChainInfo } from '../api/types'
 import { contractAddress } from '../lib/chain'
+import { claimedOnChain, claimSteps, unclaimedEpochs } from '../lib/claims'
 import { shortId } from '../lib/format'
 import { CLIENT_REWARDS_CLAIM_ABI, REFERRALS_CLAIM_ABI } from './operator-abi'
 import { ConnectedWallet, ConnectWalletButton } from './ConnectWallet'
@@ -27,45 +29,73 @@ interface Props {
   chain: ChainInfo
   /** Where the ANTS go, for the copy above the button. */
   recipient: string | null
-  onDone: () => void
+  /**
+   * After transactions confirmed: `complete` once the whole claim did, false
+   * when a later one failed part way (the rewards view is stale either way).
+   */
+  onClaimed: (complete: boolean) => void
 }
 
-function steps(target: ClaimTarget, chain: ChainInfo, account: `0x${string}` | undefined, config: ReturnType<typeof useConfig>, write: ReturnType<typeof useWriteContract>['writeContractAsync']): TxStep[] | null {
-  const chainId = chain.chainId
-  if (target.kind === 'builder') {
-    const contract = contractAddress(chain, 'clientRewards')
-    if (!contract) return null
-    return target.epochs.map((epoch) => {
-      const args = [BigInt(target.agentId), BigInt(epoch)] as const
-      return {
-        label: `Claim epoch ${epoch}`,
-        check: () => simulateContract(config, { account, address: contract, abi: CLIENT_REWARDS_CLAIM_ABI, functionName: 'claim', args, chainId }),
-        send: () => write({ address: contract, abi: CLIENT_REWARDS_CLAIM_ABI, functionName: 'claim', args, chainId }),
-      }
-    })
-  }
-  const contract = contractAddress(chain, 'referrals')
-  if (!contract) return null
-  const functionName = target.kind === 'referrer' ? 'claimEpochs' : 'claimRefereeEpochs'
-  const args = [target.address as `0x${string}`, target.epochs.map(BigInt)] as const
-  return [{
-    label: target.kind === 'referrer' ? 'Claim referral rewards' : 'Claim the invite bonus',
-    check: () => simulateContract(config, { account, address: contract, abi: REFERRALS_CLAIM_ABI, functionName, args, chainId }),
-    send: () => write({ address: contract, abi: REFERRALS_CLAIM_ABI, functionName, args, chainId }),
-  }]
-}
-
-function Claim({ target, chain, recipient, onDone }: Props) {
+function Claim({ target, chain, recipient, onClaimed }: Props) {
   const { address } = useAccount()
   const config = useConfig()
   const runner = useTxRunner(chain.chainId)
   const { writeContractAsync } = useWriteContract()
-  const planned = steps(target, chain, address, config, writeContractAsync)
+  // Epochs confirmed while this dialog is open; a retry leaves them out.
+  const [claimed, setClaimed] = useState<ReadonlySet<number>>(() => new Set())
+  const [checking, setChecking] = useState(false)
+  const builder = target.kind === 'builder'
+  const contract = contractAddress(chain, builder ? 'clientRewards' : 'referrals')
+  const epochs = unclaimedEpochs(target.epochs, claimed)
 
-  if (!planned) {
-    return <Alert tone="warning">The gateway did not report the {target.kind === 'builder' ? 'builders rewards' : 'referrals'} contract address.</Alert>
+  if (!contract) {
+    return <Alert tone="warning">The gateway did not report the {builder ? 'builders rewards' : 'referrals'} contract address.</Alert>
   }
-  const transactions = planned.length
+  const chainId = chain.chainId
+  const markClaimed = (done: readonly number[]) => setClaimed((previous) => new Set([...previous, ...done]))
+  const plan = (pending: readonly number[], onConfirmed: (done: readonly number[]) => void): TxStep[] => {
+    if (target.kind === 'builder') {
+      const args = (epoch: number) => [BigInt(target.agentId), BigInt(epoch)] as const
+      return claimSteps(pending, true, {
+        label: ([epoch]) => `Claim epoch ${epoch}`,
+        check: ([epoch]) => simulateContract(config, { account: address, address: contract, abi: CLIENT_REWARDS_CLAIM_ABI, functionName: 'claim', args: args(epoch!), chainId }),
+        send: ([epoch]) => writeContractAsync({ address: contract, abi: CLIENT_REWARDS_CLAIM_ABI, functionName: 'claim', args: args(epoch!), chainId }),
+        onClaimed: onConfirmed,
+      })
+    }
+    const functionName = target.kind === 'referrer' ? 'claimEpochs' : 'claimRefereeEpochs'
+    const args = (batch: readonly number[]) => [target.address as `0x${string}`, batch.map(BigInt)] as const
+    return claimSteps(pending, false, {
+      label: () => target.kind === 'referrer' ? 'Claim referral rewards' : 'Claim the invite bonus',
+      check: (batch) => simulateContract(config, { account: address, address: contract, abi: REFERRALS_CLAIM_ABI, functionName, args: args(batch), chainId }),
+      send: (batch) => writeContractAsync({ address: contract, abi: REFERRALS_CLAIM_ABI, functionName, args: args(batch), chainId }),
+      onClaimed: onConfirmed,
+    })
+  }
+
+  const claim = async () => {
+    let pending = epochs
+    if (target.kind === 'builder') {
+      // Epochs an earlier attempt confirmed may still be listed by the explorer.
+      setChecking(true)
+      const agentId = BigInt(target.agentId)
+      const done = await claimedOnChain(pending, (epoch) => readContract(config, {
+        address: contract, abi: CLIENT_REWARDS_CLAIM_ABI, functionName: 'claimed', args: [agentId, BigInt(epoch)], chainId,
+      })).finally(() => setChecking(false))
+      if (done.length > 0) {
+        markClaimed(done)
+        pending = unclaimedEpochs(pending, new Set(done))
+        if (pending.length === 0) return onClaimed(true)
+      }
+    }
+    let confirmed = 0
+    const hash = await runner.run(plan(pending, (done) => { confirmed += 1; markClaimed(done) }))
+    if (hash) onClaimed(true)
+    else if (confirmed > 0) onClaimed(false)
+  }
+
+  const transactions = builder ? epochs.length : Math.min(epochs.length, 1)
+  const busy = runner.running || checking
   return (
     <div className="gc-stack">
       <p className="gc-fineprint">
@@ -73,14 +103,11 @@ function Claim({ target, chain, recipient, onDone }: Props) {
       </p>
       <TxFeedback chain={chain} runner={runner} done="Rewards claimed." />
       {address ? (
-        <Button disabled={runner.running || transactions === 0} onClick={async () => {
-          const hash = await runner.run(planned)
-          if (hash) onDone()
-        }}>
-          {runner.running ? 'Claiming…' : transactions === 1 ? 'Claim' : `Claim (${transactions} transactions)`}
+        <Button disabled={busy || transactions === 0} onClick={() => void claim()}>
+          {busy ? 'Claiming…' : transactions === 0 ? 'Nothing to claim' : transactions === 1 ? 'Claim' : `Claim (${transactions} transactions)`}
         </Button>
       ) : <ConnectWalletButton />}
-      {transactions > 1 && <p className="gc-fineprint">The builders contract claims one epoch per transaction.</p>}
+      {builder && transactions > 1 && <p className="gc-fineprint">The builders contract claims one epoch per transaction.</p>}
     </div>
   )
 }

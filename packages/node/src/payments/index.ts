@@ -119,8 +119,11 @@ export {
   referralStateMtimeMs,
   saveReferralInvite,
   syncReferralState,
+  updateReferralState,
+  withIssuedInvite,
   writeReferralState,
   type ReferralLookup,
+  type ReferralScope,
   type ReferralState,
 } from './referral-state.js';
 export { ClientRewardsClient } from './evm/client-rewards-client.js';

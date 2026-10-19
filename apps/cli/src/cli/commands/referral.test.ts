@@ -82,15 +82,15 @@ test('redeem saves a valid invite as pending and refuses an invalid one with the
     const referrer = Wallet.createRandom();
     const invite = encodeInvite(await signInvite(referrer, DOMAIN, 30, 0));
     const ok = { previewInvite: async () => ({ referrer: referrer.address, failure: null }) };
-    const saved = await redeemReferralInvite({ client: ok, dataDir: dir, buyer: BUYER, value: `https://antseed.com/invite/${invite}` });
+    const saved = await redeemReferralInvite({ client: ok, dataDir: dir, scope: DOMAIN, buyer: BUYER, value: `https://antseed.com/invite/${invite}` });
     assert.equal(saved.ok, true);
-    assert.deepEqual(await readReferralState(dir).then((state) => [state?.state, state?.invite, state?.referrer]), ['invited', invite, referrer.address]);
+    assert.deepEqual(await readReferralState(dir, DOMAIN).then((state) => [state?.state, state?.invite, state?.referrer]), ['invited', invite, referrer.address]);
     assert.match(strip(formatRedeemResult(saved)).join('\n'), /Invite from 0x.{4}….{4} saved\.\nBinds with your first paid or free request through `antseed buyer start` \(before week 34\)\./);
 
     const used = { previewInvite: async () => ({ referrer: referrer.address, failure: 'InviteAlreadyUsed' as const }) };
-    const refused = await redeemReferralInvite({ client: used, dataDir: dir, buyer: BUYER, value: invite });
+    const refused = await redeemReferralInvite({ client: used, dataDir: dir, scope: DOMAIN, buyer: BUYER, value: invite });
     assert.deepEqual(strip(formatRedeemResult(refused)), ["Can't use this invite: This invite was already used."]);
-    const garbage = await redeemReferralInvite({ client: used, dataDir: dir, buyer: BUYER, value: 'not-an-invite' });
+    const garbage = await redeemReferralInvite({ client: used, dataDir: dir, scope: DOMAIN, buyer: BUYER, value: 'not-an-invite' });
     assert.deepEqual(strip(formatRedeemResult(garbage)), ["Can't use this invite: Not a valid invite."]);
   });
 });

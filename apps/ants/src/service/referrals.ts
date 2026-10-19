@@ -7,8 +7,11 @@ import {
   issuedInviteIndices,
   nextInviteIndex,
   readReferralState,
-  recordIssuedInvite,
   signInvite,
+  updateReferralState,
+  withIssuedInvite,
+  type ReferralInvite,
+  type ReferralScope,
   type ReferralsClient,
 } from '@antseed/node';
 import type { CreatedInviteView, InviteAllowanceView, RefereeView, ReferralView, ReferredBuyersView } from '../api-types.js';
@@ -34,7 +37,7 @@ export async function referral(ctx: AntsContext, dataDir: string | null = null):
     payable: indexed.payable,
     claimableEpochs: indexed.claimableEpochs,
     referredCount: indexed.referredCount,
-    invites: indexed.invites ? allowanceView(indexed.invites, await issuedIndices(dataDir, indexed.invites.epoch)) : null,
+    invites: indexed.invites ? allowanceView(indexed.invites, await issuedIndices(dataDir, referralScope(ctx), indexed.invites.epoch)) : null,
   };
 }
 
@@ -51,8 +54,14 @@ async function indexedReferrer(indexer: Indexer | null, address: string): Promis
   return indexed.available ? indexed : null;
 }
 
-async function issuedIndices(dataDir: string | null, epoch: number): Promise<number[]> {
-  return dataDir ? issuedInviteIndices(await readReferralState(dataDir), epoch) : [];
+async function issuedIndices(dataDir: string | null, scope: ReferralScope | null, epoch: number): Promise<number[]> {
+  return dataDir && scope ? issuedInviteIndices(await readReferralState(dataDir, scope), epoch) : [];
+}
+
+/** The Referrals deployment `ctx` points at, which scopes local referral state. */
+export function referralScope(ctx: Pick<AntsContext, 'chain'>): ReferralScope | null {
+  const { evmChainId, referralsAddress } = ctx.chain;
+  return referralsAddress ? { chainId: evmChainId, referralsAddress } : null;
 }
 
 /** Invites gone this epoch: |bound ∪ handed out here| (the bound count alone when Antscan lists no indexes). */
@@ -82,6 +91,9 @@ export const NO_INVITE_QUOTA_MESSAGE = 'Invites unlock after at least 1 USDC of 
  * else from the `currentEpoch` / `inviteQuota` views. The index is a random
  * free one (see `nextInviteIndex`), checked with `inviteUsed` and remembered
  * in `<dataDir>/referral.json` so this install never hands it out twice.
+ * Picking, signing and recording run under the state file's lock, so
+ * concurrent requests (or CLI, Desktop and the dashboard sharing the data
+ * dir) never hand out the same index.
  */
 export async function issueInvite(options: {
   client: Pick<ReferralsClient, 'currentEpoch' | 'inviteQuota' | 'inviteUsed'>;
@@ -99,17 +111,20 @@ export async function issueInvite(options: {
   const quota = indexed?.invites ? indexed.invites.quota : await options.client.inviteQuota(referrer, epoch);
   if (quota === 0) throw new InviteQuotaError(NO_INVITE_QUOTA_MESSAGE, 0);
 
-  const issued = await issuedIndices(options.dataDir, epoch);
-  const taken = new Set([...(indexed?.invites?.usedIndices ?? []), ...issued]);
-  let index = nextInviteIndex(quota, taken, options.random);
-  while (index !== null && await options.client.inviteUsed(referrer, epoch, index)) {
-    taken.add(index);
-    index = nextInviteIndex(quota, taken, options.random);
-  }
-  if (index === null) throw new InviteQuotaError(`All ${quota} invites for this week are taken. More unlock next week.`, quota);
-
-  const invite = await signInvite(options.signer, { chainId: options.chainId, referralsAddress: options.referralsAddress }, epoch, index);
-  if (options.dataDir) await recordIssuedInvite(options.dataDir, epoch, index);
+  const scope: ReferralScope = { chainId: options.chainId, referralsAddress: options.referralsAddress };
+  const allocate = async (issued: number[]): Promise<{ index: number; taken: Set<number>; invite: ReferralInvite }> => {
+    const taken = new Set([...(indexed?.invites?.usedIndices ?? []), ...issued]);
+    let index = nextInviteIndex(quota, taken, options.random);
+    while (index !== null && await options.client.inviteUsed(referrer, epoch, index)) {
+      taken.add(index);
+      index = nextInviteIndex(quota, taken, options.random);
+    }
+    if (index === null) throw new InviteQuotaError(`All ${quota} invites for this week are taken. More unlock next week.`, quota);
+    return { index, taken, invite: await signInvite(options.signer, scope, epoch, index) };
+  };
+  const { index, taken, invite } = options.dataDir
+    ? await allocateRecorded(options.dataDir, scope, epoch, allocate)
+    : await allocate([]);
   const encoded = encodeInvite(invite);
   return {
     invite: encoded,
@@ -120,6 +135,22 @@ export async function issueInvite(options: {
     left: Math.max(0, quota - takenCount(indexed?.invites ?? null, taken.add(index), quota)),
     expiresEpoch: epoch + INVITE_VALIDITY_EPOCHS,
   };
+}
+
+/** Run `allocate` on this install's issued indices and record its pick, all under the state lock. */
+async function allocateRecorded<T extends { index: number }>(
+  dataDir: string,
+  scope: ReferralScope,
+  epoch: number,
+  allocate: (issued: number[]) => Promise<T>,
+): Promise<T> {
+  const picked: T[] = [];
+  await updateReferralState(dataDir, scope, async (current) => {
+    const allocated = await allocate(issuedInviteIndices(current, epoch));
+    picked.push(allocated);
+    return withIssuedInvite(current, epoch, allocated.index);
+  });
+  return picked[0]!;
 }
 
 /** `issueInvite` for the dashboard wallet. */
@@ -192,7 +223,8 @@ export async function claimReferralRewards(
 ): Promise<{ hash: string; epochs: number[] }> {
   const client = ctx.referrals();
   if (!client) throw new Error('Referrals are not configured for this chain.');
-  const indexed = await indexedReferrer(ctx.indexer(), ctx.address);
+  // An unreachable explorer falls back to the on-chain scan, like the referee claim.
+  const indexed = await indexedReferrer(ctx.indexer(), ctx.address).catch(() => null);
   const epochs = indexed ? indexed.claimableEpochs : (await client.pendingRewards(ctx.address)).map((entry) => entry.epoch);
   if (epochs.length === 0) throw new Error('No referral rewards are payable yet.');
   await report(`Claiming referral rewards for ${epochs.length} ${epochs.length === 1 ? 'epoch' : 'epochs'}`);
@@ -201,10 +233,33 @@ export async function claimReferralRewards(
   return { hash, epochs };
 }
 
+/** Claimable epochs the on-chain referee scan reads back, as many as the referrer fallback. */
+const REFEREE_LOOKBACK_EPOCHS = 26;
+
 /**
- * Claim the buyer account's referee bonus for the epochs Antscan reports
- * payable. Permissionless: the dashboard wallet sends it, and the contract
- * always pays the buyer's Deposits operator.
+ * Epochs with a non-zero payable referee bonus for `buyer`, scanning the last
+ * `lookback` claimable epochs with `pendingRefereeReward` (zero for epochs not
+ * yet final, already claimed, or outside the bonus window). Fallback for when
+ * Antscan cannot say which epochs are payable.
+ */
+async function pendingRefereeEpochs(
+  client: Pick<ReferralsClient, 'currentEpoch' | 'pendingRefereeReward'>,
+  buyer: string,
+  lookback = REFEREE_LOOKBACK_EPOCHS,
+): Promise<number[]> {
+  const latestClaimable = (await client.currentEpoch()) - 2; // one finalized epoch plus the settlement grace epoch
+  if (latestClaimable < 0) return [];
+  const from = Math.max(0, latestClaimable - lookback + 1);
+  const epochs = Array.from({ length: latestClaimable - from + 1 }, (_, i) => from + i);
+  const amounts = await Promise.all(epochs.map((epoch) => client.pendingRefereeReward(buyer, epoch)));
+  return epochs.filter((_, i) => amounts[i]! > 0n);
+}
+
+/**
+ * Claim the buyer account's referee bonus. The epochs come from Antscan; when
+ * it is unset, does not index referrals, or is unreachable, a bounded on-chain
+ * scan finds them instead. Permissionless: the dashboard wallet sends it, and
+ * the contract always pays the buyer's Deposits operator.
  */
 export async function claimRefereeRewards(
   ctx: AntsContext,
@@ -212,7 +267,8 @@ export async function claimRefereeRewards(
 ): Promise<{ hash: string; epochs: number[] }> {
   const client = ctx.referrals();
   if (!client) throw new Error('Referrals are not configured for this chain.');
-  const { claimableEpochs: epochs } = await refereeBonus(ctx);
+  const binding = await referralBinding(ctx.indexer(), ctx.buyerAddress);
+  const epochs = binding ? binding.refereeClaimableEpochs : await pendingRefereeEpochs(client, ctx.buyerAddress);
   if (epochs.length === 0) throw new Error('No invite bonus is payable yet.');
   await report(`Claiming your invite bonus for ${epochs.length} ${epochs.length === 1 ? 'epoch' : 'epochs'}`);
   const hash = await client.claimRefereeEpochs(ctx.requireSigner(), ctx.buyerAddress, epochs);

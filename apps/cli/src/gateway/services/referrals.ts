@@ -18,10 +18,11 @@ import {
   referral,
   referredBuyers,
   refereeBonus,
+  referralScope,
   type AntsChainConfig,
   type AntsContext,
 } from '@antseed/ants'
-import { checkInvite, clearReferralInvite, DEFAULT_BUYER_IDENTITY, inviteExpiryEpoch, decodeInvite, readReferralState, saveReferralInvite } from '@antseed/node'
+import { checkInvite, clearReferralInvite, DEFAULT_BUYER_IDENTITY, inviteExpiryEpoch, decodeInvite, readReferralState, saveReferralInvite, type ReferralState } from '@antseed/node'
 import { isError } from 'ethers'
 import { buyerIdentityDir } from '../../buyer-identities/store.js'
 import { loadConfig } from '../../config/loader.js'
@@ -46,9 +47,15 @@ function ants(baseUnits: string): string {
   return formatAntsExact(baseUnits || '0')
 }
 
+/** The wallet's local referral state for `ctx`'s Referrals deployment; null without one. */
+async function readLocalReferral(ctx: AntsContext, stateDir: string): Promise<ReferralState | null> {
+  const scope = referralScope(ctx)
+  return scope ? readReferralState(stateDir, scope) : null
+}
+
 /** The referee side: the local state file (what the buyer carries) joined with Antscan's binding. */
 async function readReferee(ctx: AntsContext, stateDir: string): Promise<Referee> {
-  const [state, bonus] = await Promise.all([readReferralState(stateDir), refereeBonus(ctx)])
+  const [state, bonus] = await Promise.all([readLocalReferral(ctx, stateDir), refereeBonus(ctx)])
   const bound = bonus.referrer !== null || state?.state === 'bound'
   const pending = !bound && state?.state === 'invited' && state.invite ? state.invite : null
   let inviteExpiresEpoch: number | null = null
@@ -79,6 +86,7 @@ export async function readReferrals(ctx: AntsContext, stateDir: string): Promise
   const [view, referred, referee] = await Promise.all([referral(ctx, stateDir), referredBuyers(ctx), readReferee(ctx, stateDir)])
   return {
     available: view.available,
+    invitesAvailable: Boolean(ctx.chain.referralsAddress),
     address: ctx.address,
     invites: view.invites,
     referredCount: view.referredCount,
@@ -111,24 +119,27 @@ export async function createWorkspaceInvite(ctx: AntsContext, stateDir: string, 
  */
 export async function redeemWorkspaceInvite(ctx: AntsContext, stateDir: string, value: unknown, actor: Actor, service: ServiceContext, workspace: { id: string; name: string }): Promise<void> {
   const client = ctx.referrals()
-  if (!client) throw new ConsoleError(409, 'referrals_unavailable', 'Referrals are not available on this network.')
+  const scope = referralScope(ctx)
+  if (!client || !scope) throw new ConsoleError(409, 'referrals_unavailable', 'Referrals are not available on this network.')
   if (typeof value !== 'string' || value.trim() === '') throw new ConsoleError(400, 'invalid_invite', 'invite must be an invite code or link.')
-  const current = await readReferralState(stateDir)
+  const current = await readReferralState(stateDir, scope)
   if (current?.state === 'bound') throw new ConsoleError(409, 'already_bound', 'This wallet is already bound to a referrer.')
   const check = await checkInvite(client, ctx.buyerAddress, value.trim()).catch((err: unknown) => {
     throw new ConsoleError(502, 'invite_check_failed', `The invite could not be checked: ${errorMessage(err)}`)
   })
   if (!check.ok) throw new ConsoleError(400, 'invalid_invite', check.reason, check.failure ? { failure: check.failure } : undefined)
-  await saveReferralInvite(stateDir, check.encoded, check.referrer)
+  await saveReferralInvite(stateDir, scope, check.encoded, check.referrer)
   recordAudit(service, actor, 'referral.redeem', { kind: 'workspace', id: workspace.id, label: workspace.name }, { referrer: check.referrer })
 }
 
 /** Drop an invite the wallet carries but that is not bound yet. */
-export async function clearWorkspaceInvite(stateDir: string, actor: Actor, service: ServiceContext, workspace: { id: string; name: string }): Promise<void> {
-  const current = await readReferralState(stateDir)
+export async function clearWorkspaceInvite(ctx: AntsContext, stateDir: string, actor: Actor, service: ServiceContext, workspace: { id: string; name: string }): Promise<void> {
+  const scope = referralScope(ctx)
+  if (!scope) return
+  const current = await readReferralState(stateDir, scope)
   if (current?.state === 'bound') throw new ConsoleError(409, 'already_bound', 'A bound referral is permanent.')
   if (current?.state !== 'invited') return
-  await clearReferralInvite(stateDir)
+  await clearReferralInvite(stateDir, scope)
   recordAudit(service, actor, 'referral.clear', { kind: 'workspace', id: workspace.id, label: workspace.name }, {})
 }
 
