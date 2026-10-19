@@ -5,7 +5,7 @@ import { api, errorMessage, isApiError, type SaveOptions } from '../api'
 import type { Peer, RoutingPolicy } from '../api/types'
 import { useConsole, useScopeFilter } from '../app/context'
 import { isOrgAdmin, isWorkspaceAdmin } from '../lib/nav'
-import { applyPeerActionToScope, describePeerOutcome, loadScopePolicy, previewQueryFor, type PeerOutcome, type PeerScope } from '../lib/peer-actions'
+import { applyPeerActionToScope, describePeerOutcome, loadScopePolicy, peerActionModels, previewQueryFor, type PeerOutcome, type PeerScope } from '../lib/peer-actions'
 import { narrowedSummary } from '../lib/key-layers'
 import { blockEmptiesAllowList, describePolicy, type PeerAction } from '../lib/policy'
 import { POLICY_GROUPS, useKeys, useMembers } from '../lib/queries'
@@ -77,10 +77,8 @@ export function PeerActionDialog({ peer, action, onClose, peers, model: forModel
   const keys = useKeys(scopeFilter, kind === 'key')
 
   useEffect(() => { setTargetId('') }, [kind])
-  useEffect(() => {
-    const offered = forModel && peer?.services.find((service) => service.service.toLowerCase() === forModel.toLowerCase())
-    setModel(offered ? offered.service : peer?.services[0]?.service ?? '')
-  }, [peer, forModel])
+  const models = peerActionModels(peer?.services ?? [], forModel)
+  useEffect(() => { setModel(models.initial) }, [peer, models.initial])
 
   const keyOptions = (keys.data ?? []).filter((key) => key.status === 'active' && (wsAdmin || key.ownerMemberId === me.member.id))
   const scope = scopeFor(kind, targetId, workspace.id, wsAdmin)
@@ -150,7 +148,7 @@ export function PeerActionDialog({ peer, action, onClose, peers, model: forModel
         )}
         {action === 'prefer' && peer && (
           <SelectField label="For model" value={model} onChange={setModel}
-            options={peer.services.map((service) => ({ value: service.service, label: service.service }))}
+            options={models.options.map((option) => ({ value: option, label: option }))}
             hint="The seller goes first in this model's fallback chain." />
         )}
         <CurrentPolicy fetching={current.isFetching} error={current.error} ready={ready} policy={policy} />
