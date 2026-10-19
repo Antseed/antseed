@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
-import { deriveFundingStatus, formatUsd, usdcToBaseUnits, type FundingInputs } from './funding-status';
+import { deriveFundingStatus, formatUsd, sweepAmountNeeded, usdcToBaseUnits, type FundingInputs } from './funding-status';
 
 const base: FundingInputs = {
   available: '0',
@@ -157,4 +157,11 @@ test('closed or zero-held channels are not listed as sessions', () => {
   });
   assert.equal(status.sessions.length, 0);
   assert.match(status.title, /open sessions/);
+});
+
+test('a top-up to a funded account still needs the minimum deposit plus the fee, net of the wallet', () => {
+  // $1 minimum, $0.05 fee: a $0.50 top-up into an empty wallet would sit there unswept.
+  assert.equal(sweepAmountNeeded(1_000_000n, 50_000n, 0n), 1_050_000n);
+  assert.equal(sweepAmountNeeded(1_000_000n, 50_000n, 500_000n), 550_000n);
+  assert.equal(sweepAmountNeeded(1_000_000n, 50_000n, 2_000_000n), 0n);
 });

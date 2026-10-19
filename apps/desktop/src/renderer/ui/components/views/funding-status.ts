@@ -105,6 +105,16 @@ export function shortfallBaseUnits(need: bigint, have: bigint): bigint {
 }
 
 /**
+ * What one more payment to the wallet must add before the deposit watcher
+ * moves it into the credits: every sweep (not only the first) needs the
+ * contract's minimum deposit plus the relay fee, net of what already sits in
+ * the wallet. Zero when the wallet already holds enough.
+ */
+export function sweepAmountNeeded(minDeposit: bigint, fee: bigint, wallet: bigint): bigint {
+  return shortfallBaseUnits(minDeposit + fee, wallet);
+}
+
+/**
  * Base units → "$1.05". Balances round to the nearest cent; amounts the user
  * must send round up, so a shortfall is never understated.
  */
