@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { encodeInvite } from '@antseed/node';
-import { referralLookups, referralScope, resolveBuyerAttribution } from './referral-state.js';
+import { referralLookups, referralScope, resolveBuyerAttribution, watchReferralAttribution } from './referral-state.js';
 
 const REFERRER = '0x1111111111111111111111111111111111111111';
 const BUYER = '0x2222222222222222222222222222222222222222';
@@ -46,4 +46,55 @@ test('referral scope and lookups follow the configured referrals contract', asyn
   const withExplorer = referralLookups({ explorerApiUrl: 'https://antscan.example', client: { referrerOf: async () => REFERRER } });
   assert.equal(typeof withExplorer.explorer, 'function');
   assert.equal(await withExplorer.chain!(BUYER), REFERRER);
+});
+
+test('the saved invite is applied before the explorer answers, and the background sync drops it once bound', async () => {
+  const { mkdtemp, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { saveReferralInvite } = await import('@antseed/node');
+  const dataDir = await mkdtemp(join(tmpdir(), 'antseed-referral-watch-'));
+  const scope = { wallet: BUYER, chainId: 8453, referralsAddress: REFERRER };
+  try {
+    await saveReferralInvite(dataDir, scope, encodeInvite(INVITE), REFERRER);
+    let answerExplorer!: (referrer: string | null) => void;
+    let markExplorerCalled!: () => void;
+    const explorerCalled = new Promise<void>((resolve) => { markExplorerCalled = resolve; });
+    const lookups = {
+      explorer: () => {
+        markExplorerCalled();
+        return new Promise<string | null>((resolve) => { answerExplorer = resolve; });
+      },
+      chain: async () => REFERRER,
+    };
+    const applied: Array<ReturnType<typeof resolveBuyerAttribution>> = [];
+    const watch = await watchReferralAttribution({ dataDir, scope, lookups, clientAgentId: 5, env: {}, apply: (a) => applied.push(a) });
+    try {
+      // Startup (the proxy) continues here: the invite is already installed
+      // although the explorer has not answered yet.
+      assert.equal(applied.length, 1);
+      assert.deepEqual(applied[0]!.invite, INVITE);
+      assert.equal(BigInt(applied[0]!.clientId!), 5n);
+
+      await explorerCalled;
+      answerExplorer(REFERRER);
+      await watch.synced;
+      assert.equal(applied.length, 2);
+      assert.equal(applied[1]!.invite, undefined);
+      assert.equal(BigInt(applied[1]!.clientId!), 5n);
+    } finally {
+      watch.stop();
+    }
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test('referral attribution without a referrals deployment applies only the client id', async () => {
+  const applied: Array<ReturnType<typeof resolveBuyerAttribution>> = [];
+  const watch = await watchReferralAttribution({ dataDir: '/nonexistent-antseed-dir', scope: null, lookups: {}, clientAgentId: 5, env: {}, apply: (a) => applied.push(a) });
+  await watch.synced;
+  watch.stop();
+  assert.ok(applied.length >= 1);
+  for (const attribution of applied) assert.equal(attribution.invite, undefined);
 });

@@ -9,12 +9,12 @@ import {
   readIssuedInviteIndices,
   recordIssuedInvite,
   signInvite,
+  withFileLock,
   type ReferralScope,
   type ReferralsClient,
 } from '@antseed/node';
 import type { CreatedInviteView, InviteAllowanceView, RefereeView, ReferralView, ReferredBuyersView } from '../api-types.js';
 import type { AntsContext } from './context.js';
-import { withFileLock } from './file-lock.js';
 import { createIndexer, type IndexedReferralBinding, type IndexedReferrer, type Indexer } from './indexer.js';
 import { silentReporter, type StepReporter } from './steps.js';
 
@@ -83,8 +83,11 @@ export const NO_INVITE_QUOTA_MESSAGE = 'Invites unlock after at least 1 USDC of 
 
 /**
  * Sign a fresh invite for the current epoch with `signer` (the referrer).
- * Epoch, quota and bound invites come from Antscan when it reports them,
- * else from the `currentEpoch` / `inviteQuota` views. The index is a random
+ * Epoch and quota always come from the `currentEpoch` / `inviteQuota` views
+ * (issuing is user-triggered, so the RPC is fine): a lagging Antscan could
+ * otherwise keep last week's exhausted allowance or sign an expired invite.
+ * Antscan's bound indexes are used only when they are for that same epoch,
+ * else every index is checked with `inviteUsed`. The index is a random
  * free one (see `nextInviteIndex`), checked with `inviteUsed` and remembered
  * in `<dataDir>/referral.json` (per signer and deployment) so this install
  * never hands it out twice.
@@ -103,25 +106,29 @@ export async function issueInvite(options: {
   random?: () => number;
 }): Promise<CreatedInviteView> {
   const referrer = await options.signer.getAddress();
-  const indexed = await indexedReferrer(options.indexer, referrer).catch(() => null);
-  const epoch = indexed?.invites?.epoch ?? await options.client.currentEpoch();
-  const quota = indexed?.invites ? indexed.invites.quota : await options.client.inviteQuota(referrer, epoch);
+  const [epoch, indexed] = await Promise.all([
+    options.client.currentEpoch(),
+    indexedReferrer(options.indexer, referrer).catch(() => null),
+  ]);
+  const quota = await options.client.inviteQuota(referrer, epoch);
   if (quota === 0) throw new InviteQuotaError(NO_INVITE_QUOTA_MESSAGE, 0);
+  // Antscan's bound indexes, only when they describe the verified epoch.
+  const explorer = indexed?.invites?.epoch === epoch ? indexed.invites : null;
 
   const scope = { wallet: referrer, chainId: options.chainId, referralsAddress: options.referralsAddress };
   const allocate = async (): Promise<CreatedInviteView> => {
     const issued = await issuedIndices(options.dataDir, scope, epoch);
-    const taken = new Set([...(indexed?.invites?.usedIndices ?? []), ...issued]);
+    const taken = new Set([...(explorer?.usedIndices ?? []), ...issued]);
     // Without Antscan's bound indexes, check every other index once (one view
     // call each) so both the pick and the count left are exact. With them,
     // only the pick is checked, in case Antscan lags a fresh binding.
-    if (!indexed?.invites) {
+    if (!explorer) {
       const unknown = Array.from({ length: quota }, (_, index) => index).filter((index) => !taken.has(index));
       const used = await Promise.all(unknown.map((index) => options.client.inviteUsed(referrer, epoch, index)));
       unknown.forEach((index, i) => { if (used[i]) taken.add(index); });
     }
     let index = nextInviteIndex(quota, taken, options.random);
-    while (index !== null && indexed?.invites && await options.client.inviteUsed(referrer, epoch, index)) {
+    while (index !== null && explorer && await options.client.inviteUsed(referrer, epoch, index)) {
       taken.add(index);
       index = nextInviteIndex(quota, taken, options.random);
     }
@@ -136,14 +143,20 @@ export async function issueInvite(options: {
       epoch,
       index,
       quota,
-      left: Math.max(0, quota - takenCount(indexed?.invites ?? null, taken.add(index), quota)),
+      left: Math.max(0, quota - takenCount(explorer, taken.add(index), quota)),
       expiresEpoch: epoch + INVITE_VALIDITY_EPOCHS,
     };
   };
   return options.dataDir ? withFileLock(inviteLockPath(options.dataDir), allocate) : allocate();
 }
 
-/** Guards invite allocation in `dataDir` across every process that issues from it. */
+/**
+ * Guards invite allocation in `dataDir` across every process that issues from
+ * it. It is separate from the short `referral.lock` that every referral-file
+ * update takes (`recordIssuedInvite` takes it inside this one), so a slow
+ * allocation never blocks a redemption or a daemon sync. The order is always
+ * allocation → file, and file-lock holders never take this one: no deadlock.
+ */
 function inviteLockPath(dataDir: string): string {
   return join(dataDir, 'referral-invite.lock');
 }

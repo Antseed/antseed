@@ -246,6 +246,7 @@ export {
   type ReferralScope,
   type ReferralState,
 } from './payments/referral-state.js';
+export { FileLockTimeoutError, withFileLock, type FileLockOptions } from './utils/file-lock.js';
 export { ClientRewardsClient, type ClientRewardsClientConfig, type ClientEpochReward } from './payments/evm/client-rewards-client.js';
 export { WashTradingRegistryClient, validateSellerProofArtifact, sellerProofId, type WashTradingRegistryClientConfig, type WashTradingSellerStatus, type WashTradingProofStatus, type WashTradingRegistryConfig, type SellerProofArtifact, type SellerProofSubmissionStep, type BlockAuthenticationChunk, type BlockReference } from './payments/evm/wash-trading-registry-client.js';
 export { PointsPolicyRegistryClient, type PointsPolicyRegistryClientConfig } from './payments/evm/points-policy-registry-client.js';

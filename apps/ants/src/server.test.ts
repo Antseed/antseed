@@ -112,6 +112,26 @@ describe('selected account browser sessions', () => {
     expect(claimReferee).not.toHaveBeenCalled();
   });
 
+  it('lets the selected referrer\'s distinct operator claim its referral rewards, and the selected wallet too', async () => {
+    const { selected, operator, connect, action } = await setup();
+    const claimReferral = vi.spyOn(service, 'claimReferralRewards').mockResolvedValue({ hash: '0xreferral', epochs: [3] });
+    await connect(operator.address);
+    expect((await action('/api/referrals/claim')).status).toBe('done');
+    expect(claimReferral).toHaveBeenCalledOnce();
+    await connect(selected.address);
+    expect((await action('/api/referrals/claim')).status).toBe('done');
+    expect(claimReferral).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects a referral claim from a wallet that is neither the selected account nor its operator', async () => {
+    const { operator, getOperator, connect, action } = await setup();
+    const claimReferral = vi.spyOn(service, 'claimReferralRewards').mockResolvedValue({ hash: '0xreferral', epochs: [3] });
+    await connect(operator.address);
+    getOperator.mockResolvedValue(Wallet.createRandom().address);
+    expect((await action('/api/referrals/claim')).error).toContain('Wallet mismatch');
+    expect(claimReferral).not.toHaveBeenCalled();
+  });
+
   it('rechecks operator permissions before actions and fails closed on RPC errors', async () => {
     const { operator, getOperator, connect, action } = await setup();
     const claim = vi.spyOn(service, 'claim').mockResolvedValue({} as never);

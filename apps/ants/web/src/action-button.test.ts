@@ -50,6 +50,7 @@ describe('direct action submission', () => {
   it.each([
     { path: '/api/rewards/claim', body: { scope: 'buyer', buckets: ['buyer'] } },
     { path: '/api/rewards/stake-usage', body: { side: 'buyer', stakeAgentId: 42, epochs: 4 } },
+    { path: '/api/referrals/claim', body: {} },
     { path: '/api/referrals/referee/claim', body: {} },
   ])('allows buyer actions using the operator gas balance: $path', async request => {
     mocks.app.mockReturnValue({ config: { readOnly: false, selectedAddress: '0xaaa', walletAddress: '0xbbb' }, overview: { wallet: { eth: '0', signingWalletEth: '1' } } });

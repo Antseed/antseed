@@ -120,9 +120,10 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext): voi
               const body = (request.body ?? {}) as Partial<ClaimRequest & StakeUsageRequest>;
               const buyerOnly = (kind === 'claim' && body.scope === 'buyer') || (kind === 'stake-usage' && body.side === 'buyer');
               const wallet = await ctx.requireSigner().getAddress();
-              // The referee claim is permissionless and always pays the buyer's operator,
-              // so either the selected wallet or that operator may send it.
-              await assertSelectedWallet(ctx, context.selectedAddress, wallet, kind === 'referee-claim' ? 'connection' : buyerOnly ? 'buyer' : 'wallet');
+              // Referral and referee claims always pay the selected account's Deposits
+              // operator, so either the selected wallet or that operator may send them.
+              const referralClaim = kind === 'referral-claim' || kind === 'referee-claim';
+              await assertSelectedWallet(ctx, context.selectedAddress, wallet, referralClaim ? 'connection' : buyerOnly ? 'buyer' : 'wallet');
               if (kind === 'claim' && body.scope !== 'wallet' && body.buckets?.includes('buyer')) {
                 await assertSelectedWallet(ctx, context.selectedAddress, wallet, 'buyer');
               }

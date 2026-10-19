@@ -163,24 +163,43 @@ describe('invites', () => {
 
   it('re-picks when the on-chain check finds an index Antscan has not indexed yet', async () => {
     const client = inviteClient({ used: [0, 1] });
-    const indexer = { referrer: vi.fn(async () => ({ ...indexedReferrer, invites: { epoch: 30, quota: 3, used: 1, usedIndices: [0] } })) } as unknown as Indexer;
+    const indexer = { referrer: vi.fn(async () => ({ ...indexedReferrer, invites: { epoch: 42, quota: 3, used: 1, usedIndices: [0] } })) } as unknown as Indexer;
     const created = await issueInvite({ client, indexer, signer: new Wallet(key), chainId: 8453, referralsAddress, dataDir: null, random: () => 0 });
     expect(created).toMatchObject({ index: 2, left: 0 });
     expect(client.inviteUsed.mock.calls.map((call) => call[2])).toEqual([1, 2]);
   });
 
-  it('takes epoch, quota and used invites from Antscan when it reports them', async () => {
-    const client = inviteClient();
-    const indexer = { referrer: vi.fn(async () => ({ ...indexedReferrer, invites: { epoch: 30, quota: 4, used: 2, usedIndices: [0, 1] } })) } as unknown as Indexer;
+  it('verifies epoch and quota on-chain, and takes the used invites from Antscan for that epoch', async () => {
+    const client = inviteClient({ quota: 4 });
+    const indexer = { referrer: vi.fn(async () => ({ ...indexedReferrer, invites: { epoch: 42, quota: 9, used: 2, usedIndices: [0, 1] } })) } as unknown as Indexer;
     const created = await issueInvite({ client, indexer, signer: new Wallet(key), chainId: 8453, referralsAddress, dataDir: null, random: () => 0 });
-    expect(created).toMatchObject({ epoch: 30, index: 2, quota: 4, left: 1 });
-    expect(client.currentEpoch).not.toHaveBeenCalled();
-    expect(client.inviteQuota).not.toHaveBeenCalled();
+    expect(created).toMatchObject({ epoch: 42, index: 2, quota: 4, left: 1 });
+    expect(client.inviteQuota).toHaveBeenCalledWith(new Wallet(key).address, 42);
+    expect(client.inviteUsed.mock.calls.map((call) => call[2])).toEqual([2]);
+  });
+
+  it('issues this week\'s fresh allowance when Antscan still reports last week exhausted', async () => {
+    const client = inviteClient({ quota: 2 });
+    // Cached across the epoch boundary: epoch 41, every invite bound.
+    const indexer = { referrer: vi.fn(async () => ({ ...indexedReferrer, currentEpoch: 41, invites: { epoch: 41, quota: 2, used: 2, usedIndices: [0, 1] } })) } as unknown as Indexer;
+    const created = await issueInvite({ client, indexer, signer: new Wallet(key), chainId: 8453, referralsAddress, dataDir: null, random: () => 0 });
+    expect(created).toMatchObject({ epoch: 42, index: 0, quota: 2, left: 1, expiresEpoch: 46 });
+    // Last week's indexes are ignored: both of this week's are checked on-chain.
+    expect(client.inviteUsed.mock.calls.map((call) => [call[1], call[2]]).sort()).toEqual([[42, 0], [42, 1]]);
+  });
+
+  it('never signs for an epoch from an explorer response older than the validity window', async () => {
+    const client = inviteClient({ quota: 3, used: [0] });
+    const indexer = { referrer: vi.fn(async () => ({ ...indexedReferrer, currentEpoch: 30, invites: { epoch: 30, quota: 5, used: 0, usedIndices: [] } })) } as unknown as Indexer;
+    const created = await issueInvite({ client, indexer, signer: new Wallet(key), chainId: 8453, referralsAddress, dataDir: null, random: () => 0 });
+    expect(created).toMatchObject({ epoch: 42, index: 1, quota: 3, left: 1 });
+    expect(decodeInvite(created.invite).epoch).toBe(42n);
+    expect(client.inviteQuota).toHaveBeenCalledWith(new Wallet(key).address, 42);
   });
 
   it('never picks an index Antscan reports used, and picks at random among the rest', async () => {
-    const indexer = { referrer: vi.fn(async () => ({ ...indexedReferrer, invites: { epoch: 30, quota: 4, used: 2, usedIndices: [0, 2] } })) } as unknown as Indexer;
-    const pick = (random: () => number) => issueInvite({ client: inviteClient(), indexer, signer: new Wallet(key), chainId: 8453, referralsAddress, dataDir: null, random });
+    const indexer = { referrer: vi.fn(async () => ({ ...indexedReferrer, invites: { epoch: 42, quota: 4, used: 2, usedIndices: [0, 2] } })) } as unknown as Indexer;
+    const pick = (random: () => number) => issueInvite({ client: inviteClient({ quota: 4 }), indexer, signer: new Wallet(key), chainId: 8453, referralsAddress, dataDir: null, random });
     expect((await pick(() => 0)).index).toBe(1);
     expect((await pick(() => 0.99)).index).toBe(3);
   });

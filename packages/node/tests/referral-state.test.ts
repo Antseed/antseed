@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -173,6 +173,52 @@ describe('referral state', () => {
     expect(await readIssuedInviteIndices(dir, signer, 30)).toEqual([2]);
     expect(await recordIssuedInvite(dir, signer, 30, 0)).toEqual([0, 2]);
     expect(JSON.parse(await readFile(join(dir, 'referral.json'), 'utf8')).legacy?.issued).toBeUndefined();
+  });
+
+  it('keeps every overlapping update: issued invites and referee records all survive', async () => {
+    const dir = await dataDir();
+    const signer = { ...SCOPE, wallet: REFERRER };
+    const otherBuyer = { ...SCOPE, wallet: OTHER_REFERRER };
+    await saveReferralInvite(dir, otherBuyer, ENCODED_2, REFERRER);
+    await Promise.all([
+      ...Array.from({ length: 12 }, (_, index) => recordIssuedInvite(dir, signer, 30, index)),
+      saveReferralInvite(dir, SCOPE, ENCODED, REFERRER),
+      clearReferralInvite(dir, otherBuyer),
+      writeReferralState(dir, OTHER_CHAIN, { state: 'bound', referrer: REFERRER }),
+    ]);
+    expect(await readIssuedInviteIndices(dir, signer, 30)).toEqual(Array.from({ length: 12 }, (_, index) => index));
+    expect(await readReferralState(dir, SCOPE)).toMatchObject({ state: 'invited', invite: ENCODED });
+    expect(await readReferralState(dir, otherBuyer)).toMatchObject({ state: 'none' });
+    expect(await readReferralState(dir, OTHER_CHAIN)).toMatchObject({ state: 'bound', referrer: REFERRER });
+    expect((await readdir(dir)).sort()).toEqual(['referral.json']); // no temporary or lock files left
+  });
+
+  it('waits for another process holding the referral lock before writing', async () => {
+    const dir = await dataDir();
+    const signer = { ...SCOPE, wallet: REFERRER };
+    const lock = join(dir, 'referral.lock');
+    await writeFile(lock, JSON.stringify({ pid: process.ppid })); // a live process
+    let saved = false;
+    const saving = saveReferralInvite(dir, SCOPE, ENCODED, REFERRER).then(() => { saved = true; });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(saved).toBe(false);
+    // The other process records an issued invite, then releases the lock.
+    await writeFile(join(dir, 'referral.json'), JSON.stringify({ version: 2, referees: {}, issued: { [`8453:${SCOPE.referralsAddress}:${REFERRER}`]: { epoch: 30, indices: [4] } } }));
+    await rm(lock);
+    await saving;
+    expect(await readIssuedInviteIndices(dir, signer, 30)).toEqual([4]);
+    expect((await readReferralState(dir, SCOPE))?.state).toBe('invited');
+  });
+
+  it('never lets a legacy check erase an invite redeemed while it ran', async () => {
+    const dir = await dataDir();
+    await writeFile(join(dir, 'referral.json'), JSON.stringify({ state: 'bound', referrer: REFERRER }));
+    const chain = async () => {
+      await saveReferralInvite(dir, SCOPE, ENCODED, OTHER_REFERRER);
+      return null; // unbound on this deployment
+    };
+    await syncReferralState(dir, SCOPE, { chain });
+    expect(await readReferralState(dir, SCOPE)).toMatchObject({ state: 'invited', invite: ENCODED, referrer: OTHER_REFERRER });
   });
 
   it('ignores files from the retired network-matching design', async () => {

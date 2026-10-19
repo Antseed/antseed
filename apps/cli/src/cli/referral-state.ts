@@ -2,7 +2,10 @@ import { referralBindingFromExplorer } from '@antseed/ants'
 import {
   clientIdFromAgentId,
   pendingInvite,
+  readReferralState,
+  referralStateMtimeMs,
   referrerOfLookup,
+  syncReferralState,
   type ReferralInvite,
   type ReferralLookups,
   type ReferralScope,
@@ -65,6 +68,68 @@ export function resolveBuyerAttribution(options: ClientAgentOptions & {
     ...(agentId ? { clientId: clientIdFromAgentId(agentId) } : {}),
     ...(invite ? { invite } : {}),
   }
+}
+
+export type BuyerAttribution = ReturnType<typeof resolveBuyerAttribution>
+
+export type ReferralAttributionWatch = {
+  /** Settles once the first explorer/chain sync has been applied (never rejects). */
+  synced: Promise<void>
+  stop(): void
+}
+
+/**
+ * Install the buyer's referral attribution and keep it in step with
+ * referral.json. Resolves once the locally saved invite has been applied
+ * (a plain file read, no explorer or RPC), so the caller can start serving
+ * requests knowing the first signed settlement already carries it. The
+ * explorer/chain sync that drops a bound invite runs afterward in the
+ * background, then every `intervalMs`.
+ *
+ * The file's mtime short-circuits the poll only while no invite is carried:
+ * binding happens on-chain without touching the file, and every settlement
+ * that still carries a bound invite costs the seller a reverting bindReferral
+ * call inside AntseedStatsV2.
+ */
+export async function watchReferralAttribution(options: ClientAgentOptions & {
+  dataDir: string
+  scope: ReferralScope | null
+  lookups: ReferralLookups
+  apply: (attribution: BuyerAttribution) => void
+  log?: ((message: string) => void) | undefined
+  intervalMs?: number | undefined
+  env?: NodeJS.ProcessEnv
+}): Promise<ReferralAttributionWatch> {
+  const { dataDir, scope, lookups, apply, log } = options
+  const attributionOptions = { clientAgentId: options.clientAgentId, clientAgentIds: options.clientAgentIds, ...(options.env ? { env: options.env } : {}) }
+  let carrying = false
+  let lastMtime = await referralStateMtimeMs(dataDir)
+  // A slow sync must not overwrite the result of a newer read.
+  let generation = 0
+  const install = (referralState: ReferralState | null, current: number): void => {
+    if (current !== generation) return
+    const attribution = resolveBuyerAttribution({ referralState, ...attributionOptions })
+    if (attribution.invite && !carrying) {
+      log?.(`Referral: carrying the invite from ${referralState?.referrer?.slice(0, 10) ?? 'your inviter'}… until a settlement binds it on-chain.`)
+    } else if (!attribution.invite && carrying && referralState?.state === 'bound') {
+      log?.('Referral: invite is bound on-chain; no longer carried in signed metadata.')
+    }
+    carrying = !!attribution.invite
+    apply(attribution)
+  }
+  const sync = async (force: boolean): Promise<void> => {
+    if (!force && !carrying && (await referralStateMtimeMs(dataDir)) === lastMtime) return
+    const current = ++generation
+    const referralState = scope ? await syncReferralState(dataDir, scope, lookups) : null
+    lastMtime = await referralStateMtimeMs(dataDir)
+    install(referralState, current)
+  }
+
+  install(scope ? await readReferralState(dataDir, scope).catch(() => null) : null, ++generation)
+  const synced = sync(true).catch(() => {})
+  const timer = setInterval(() => { void sync(false).catch(() => {}) }, options.intervalMs ?? 60_000)
+  timer.unref()
+  return { synced, stop: () => clearInterval(timer) }
 }
 
 function resolveClientAgentId(options: ClientAgentOptions, env: NodeJS.ProcessEnv): number | undefined {

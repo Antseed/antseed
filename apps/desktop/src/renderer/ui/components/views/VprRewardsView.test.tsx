@@ -1,7 +1,22 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { expect, it, vi } from 'vitest';
 import { receiveInviteLink } from '../InviteCodeField';
-import { VprInvitesCard, VprRefereeBonusCard, VprReferralCard, VprRewardsView, pendingHeadline } from './VprRewardsView';
+import {
+  NO_INVITE_CREATION,
+  VprInvitesCard,
+  VprInvitesCardBody,
+  VprRefereeBonusCard,
+  VprReferralCard,
+  VprRewardsView,
+  createInviteOnce,
+  inviteCardState,
+  latestOnly,
+  nextInviteCreation,
+  pendingHeadline,
+  startRewardsRefresh,
+  type InviteCreation,
+} from './VprRewardsView';
+import type { CreateInviteResult, RefereeBonus, ReferralInvites } from '../../../types/bridge';
 
 vi.mock('../../hooks/useActions', () => ({ useActions: () => ({ refreshPaymentSummary: vi.fn() }) }));
 vi.mock('../../hooks/useUiSelector', () => ({ shallowEqual: () => true, useUiSelector: () => ({ rewards: { available: true, pendingAnts: '12', currentEpoch: 24, transfersEnabled: false }, loading: false }) }));
@@ -122,4 +137,125 @@ it('prefills the Rewards invite field from an antseed://invite link', () => {
   receiveInviteLink('AbCdEf_invite');
   const html = renderToStaticMarkup(<VprReferralCard status={{ ...REFERRAL, state: 'none' }} />);
   expect(html).toContain('value="AbCdEf_invite"');
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => { resolve = r; });
+  return { promise, resolve };
+}
+
+function refreshTarget() {
+  const events = new EventTarget();
+  return {
+    addEventListener: events.addEventListener.bind(events),
+    removeEventListener: events.removeEventListener.bind(events),
+    setInterval: (fn: () => void, ms: number) => setInterval(fn, ms) as unknown as number,
+    clearInterval: (id: number) => clearInterval(id),
+    focus: () => events.dispatchEvent(new Event('focus')),
+  } as unknown as Window & { focus(): void };
+}
+
+it('refreshes on entry, on window focus and on the poll interval, and stops on cleanup', () => {
+  vi.useFakeTimers();
+  try {
+    const target = refreshTarget();
+    const calls: boolean[] = [];
+    const stop = startRewardsRefresh((force) => calls.push(force), 60_000, target);
+    expect(calls).toEqual([true]);
+    target.focus();
+    expect(calls).toEqual([true, true]);
+    vi.advanceTimersByTime(60_000);
+    expect(calls).toEqual([true, true, false]);
+    stop();
+    target.focus();
+    vi.advanceTimersByTime(120_000);
+    expect(calls).toEqual([true, true, false]);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('picks up a claimed invite bonus on focus, ignoring a slower earlier response', async () => {
+  const before: RefereeBonus = { available: true, weeksLeft: 9, payable: '4.5', claimableEpochs: [28] };
+  const after: RefereeBonus = { available: true, weeksLeft: 9, payable: '0', claimableEpochs: [] };
+  const responses = [deferred<RefereeBonus>(), deferred<RefereeBonus>()];
+  let call = 0;
+  let bonus: RefereeBonus | null = null;
+  const loader = latestOnly(() => responses[call++]!.promise, (next) => { bonus = next; });
+  const target = refreshTarget();
+  const stop = startRewardsRefresh(() => loader.run(), 60_000, target);
+  // Back from the browser claim: focus starts a second read.
+  target.focus();
+  responses[1]!.resolve(after);
+  await responses[1]!.promise;
+  responses[0]!.resolve(before);
+  await responses[0]!.promise;
+  await Promise.resolve();
+  expect(bonus).toEqual(after);
+  expect(pendingHeadline({ available: true, pendingAnts: '12' }, bonus).pending).toBe('12');
+  const html = renderToStaticMarkup(<VprRefereeBonusCard bonus={bonus} />);
+  expect(html).toContain('0.00 $ANTS payable');
+  expect(html).toMatch(/disabled=""[^>]*>Claim/);
+  stop();
+
+  // Nothing lands after unmount.
+  const late = deferred<RefereeBonus>();
+  const disposed = latestOnly(() => late.promise, (next) => { bonus = next; });
+  disposed.run();
+  disposed.dispose();
+  late.resolve(before);
+  await late.promise;
+  await Promise.resolve();
+  expect(bonus).toEqual(after);
+});
+
+const INVITES: ReferralInvites = { available: true, listed: true, allowance: ALLOWANCE, buyers: [], totals: TOTALS, error: null };
+
+it('creates two single-use invites in a row on the same card', async () => {
+  const results: CreateInviteResult[] = [
+    { ok: true, invite: 'one', link: 'https://antseed.com/invite/FirstInviteCode01', left: 2, quota: 5, expiresEpoch: 34 },
+    { ok: true, invite: 'two', link: 'https://antseed.com/invite/SecondInviteCode2', left: 1, quota: 5, expiresEpoch: 34 },
+  ];
+  const createInvite = vi.fn(async () => results.shift()!);
+  let creation: InviteCreation = NO_INVITE_CREATION;
+  const render = () => renderToStaticMarkup(
+    <VprInvitesCardBody invites={INVITES} creation={creation} creating={false} copied={false} onCreate={() => {}} onCopy={() => {}} />,
+  );
+  expect(render()).toContain('Create link');
+
+  creation = nextInviteCreation(creation, await createInviteOnce(createInvite, ALLOWANCE.epoch));
+  let html = render();
+  expect(html).toContain('antseed.com/invite/FirstI…de01');
+  expect(html).toContain('2 of 5 left this week.');
+  expect(html).toContain('Copy');
+  expect(html).toContain('Create another');
+
+  // Antscan still reports the pre-creation allowance: the creation's count wins.
+  creation = nextInviteCreation(creation, await createInviteOnce(createInvite, ALLOWANCE.epoch));
+  html = render();
+  expect(createInvite).toHaveBeenCalledTimes(2);
+  expect(html).toContain('antseed.com/invite/Second…ode2');
+  expect(html).toContain('1 of 5 left this week.');
+  expect(html).toContain('Create another');
+});
+
+it('drops "Create another" once the week\'s invites are used, and keeps the link after a failed create', async () => {
+  const last: CreateInviteResult = { ok: true, invite: 'x', link: 'https://antseed.com/invite/LastInviteCodeXY', left: 0, quota: 5, expiresEpoch: 34 };
+  let creation = nextInviteCreation(NO_INVITE_CREATION, { result: last, epoch: ALLOWANCE.epoch });
+  expect(inviteCardState(INVITES, creation)).toMatchObject({ left: 0, canCreate: false });
+  expect(renderToStaticMarkup(
+    <VprInvitesCardBody invites={INVITES} creation={creation} creating={false} copied={false} onCreate={() => {}} onCopy={() => {}} />,
+  )).not.toContain('Create another');
+
+  // A new week resets the count from the refreshed allowance.
+  expect(inviteCardState({ ...INVITES, allowance: { epoch: 31, quota: 5, used: 0, left: 5 } }, creation)).toMatchObject({ left: 5, canCreate: true });
+
+  const failed = await createInviteOnce(async () => { throw new Error('signer locked'); }, ALLOWANCE.epoch);
+  creation = nextInviteCreation(creation, failed);
+  const html = renderToStaticMarkup(
+    <VprInvitesCardBody invites={INVITES} creation={creation} creating={false} copied={false} onCreate={() => {}} onCopy={() => {}} />,
+  );
+  expect(html).toContain('antseed.com/invite/LastIn…deXY');
+  expect(html).toContain('signer locked');
 });

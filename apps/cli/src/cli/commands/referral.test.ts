@@ -62,8 +62,8 @@ test('invite re-picks when the chosen index is already used on-chain', async () 
     const wallet = Wallet.createRandom();
     const probed: number[] = [];
     const client = {
-      currentEpoch: async () => { throw new Error('no RPC epoch read'); },
-      inviteQuota: async () => { throw new Error('no RPC quota read'); },
+      currentEpoch: async () => 31,
+      inviteQuota: async () => 4,
       // Antscan has not indexed the binding of index 2 yet.
       inviteUsed: async (_referrer: string, _epoch: number, index: number) => { probed.push(index); return index === 2; },
     };
@@ -75,17 +75,29 @@ test('invite re-picks when the chosen index is already used on-chain', async () 
   });
 });
 
-test('invite reads epoch, quota and bound invites from Antscan when it reports them', async () => {
+test('invite verifies epoch and quota on-chain and takes bound invites from Antscan for that epoch', async () => {
   await withDataDir(async (dir) => {
     const wallet = Wallet.createRandom();
+    const probed: number[] = [];
     const client = {
-      currentEpoch: async () => { throw new Error('no RPC epoch read'); },
-      inviteQuota: async () => { throw new Error('no RPC quota read'); },
-      inviteUsed: async () => false,
+      currentEpoch: async () => 31,
+      inviteQuota: async () => 5,
+      inviteUsed: async (_referrer: string, _epoch: number, index: number) => { probed.push(index); return false; },
     };
     const indexer = { referrer: async () => ({ available: true, currentEpoch: 31, invites: { epoch: 31, quota: 5, used: 2, usedIndices: [0, 1] }, referredCount: 2, payable: '0', claimableEpochs: [], buyers: [] }) };
     const created = await createReferralInvite(context(dir, wallet, client, indexer) as never, () => 0.5);
     assert.deepEqual([created.epoch, created.quota, created.left, created.index], [31, 5, 2, 3]);
+    assert.deepEqual(probed, [3]); // only the pick: Antscan's indexes cover the rest
+  });
+});
+
+test('invite ignores Antscan bound invites from another epoch', async () => {
+  await withDataDir(async (dir) => {
+    const wallet = Wallet.createRandom();
+    const client = { currentEpoch: async () => 32, inviteQuota: async () => 2, inviteUsed: async () => false };
+    const indexer = { referrer: async () => ({ available: true, currentEpoch: 31, invites: { epoch: 31, quota: 2, used: 2, usedIndices: [0, 1] }, referredCount: 2, payable: '0', claimableEpochs: [], buyers: [] }) };
+    const created = await createReferralInvite(context(dir, wallet, client, indexer) as never, () => 0);
+    assert.deepEqual([created.epoch, created.quota, created.index, created.left], [32, 2, 0, 1]);
   });
 });
 

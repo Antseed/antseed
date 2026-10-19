@@ -9,11 +9,11 @@ import { getGlobalOptions } from '../types.js'
 import pkg from '../../../../package.json' with { type: 'json' }
 import { watchForUpdates } from '../../../update/watch.js'
 import { loadConfig } from '../../../config/loader.js'
-import { AntseedNode, DepositRelayClient, DepositsClient, ReferralsClient, getInstance, peerRelaysSweeps, referralStateMtimeMs, resolveChainConfig, syncReferralState } from '@antseed/node'
+import { AntseedNode, DepositRelayClient, DepositsClient, ReferralsClient, getInstance, peerRelaysSweeps, resolveChainConfig } from '@antseed/node'
 import type { Identity, NodePaymentsConfig } from '@antseed/node'
 import { OFFICIAL_BOOTSTRAP_NODES, parseBootstrapList, toBootstrapConfig } from '@antseed/node/discovery'
 import { setupShutdownHandler } from '../../shutdown.js'
-import { referralLookups, referralScope, resolveBuyerAttribution } from '../../referral-state.js'
+import { referralLookups, referralScope, resolveBuyerAttribution, watchReferralAttribution } from '../../referral-state.js'
 import { walletPassphraseForStart } from '../../wallet-passphrase.js'
 import { loadRouterPlugin, loadVerifierPlugin, buildPluginConfig, getPackageVersions } from '../../../plugins/loader.js'
 import { ensurePluginsUpToDate } from '../../../plugins/drift.js'
@@ -340,7 +340,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       // to carry it. Whether it is bound yet comes from Antscan, confirmed by
       // one `referrerOf` read when Antscan reports it. The invite is scoped to
       // the default wallet, known once the node started, so the daemon starts
-      // with the client id and picks the invite up right after start.
+      // with the client id and installs the saved invite before the proxy listens.
       const explorerApiUrl = cryptoOverrides?.explorerApiUrl ?? chainConfig.explorerApiUrl
       const referralsClient = chainConfig.referralsAddress
         ? new ReferralsClient({
@@ -474,32 +474,19 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
 
       // Keep the signed attribution in step with referral.json (`antseed
       // referral redeem` or Desktop writes it, possibly after the daemon
-      // started) and drop the invite once it is bound on-chain. The file's
-      // mtime short-circuits the poll only while no invite is carried: binding
-      // happens on-chain without touching the file, and every settlement that
-      // still carries a bound invite costs the seller a reverting bindReferral
-      // call inside AntseedStatsV2.
-      let attributionTimer: NodeJS.Timeout | null = null
+      // started) and drop the invite once it is bound on-chain. The saved
+      // invite is applied from the local file before the proxy listens, so
+      // the first request carries it; a slow explorer only delays dropping it.
+      let attributionWatch: Awaited<ReturnType<typeof watchReferralAttribution>> | null = null
       if (paymentsConfig?.enabled) {
-        const scope = referralScope(chainConfig, node.identity!.wallet.address)
-        let lastMtime = await referralStateMtimeMs(globalOpts.dataDir)
-        let carrying = false
-        const refreshAttribution = async (force: boolean) => {
-          if (!force && !carrying && (await referralStateMtimeMs(globalOpts.dataDir)) === lastMtime) return
-          const referralState = scope ? await syncReferralState(globalOpts.dataDir, scope, lookups) : null
-          lastMtime = await referralStateMtimeMs(globalOpts.dataDir)
-          const attribution = resolveBuyerAttribution({ referralState, ...attributionOptions })
-          if (attribution.invite && (force || !carrying)) {
-            console.log(chalk.dim(`Referral: carrying the invite from ${referralState?.referrer?.slice(0, 10) ?? 'your inviter'}… until a settlement binds it on-chain.`))
-          } else if (!attribution.invite && carrying && referralState?.state === 'bound') {
-            console.log(chalk.dim('Referral: invite is bound on-chain; no longer carried in signed metadata.'))
-          }
-          carrying = !!attribution.invite
-          node.setBuyerAttribution(attribution)
-        }
-        void refreshAttribution(true).catch(() => {})
-        attributionTimer = setInterval(() => { void refreshAttribution(false).catch(() => {}) }, 60_000)
-        attributionTimer.unref()
+        attributionWatch = await watchReferralAttribution({
+          dataDir: globalOpts.dataDir,
+          scope: referralScope(chainConfig, node.identity!.wallet.address),
+          lookups,
+          ...attributionOptions,
+          apply: (attribution) => node.setBuyerAttribution(attribution),
+          log: (message) => console.log(chalk.dim(message)),
+        })
       }
 
       // The gateway's chain reads for workspace wallets (balances, their deposit
@@ -638,7 +625,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       // and stops whatever has started by the time it runs.
       const shutdown = async (): Promise<void> => {
         nodeSpinner.start('Shutting down...')
-        if (attributionTimer) clearInterval(attributionTimer)
+        attributionWatch?.stop()
         depositWatcher?.stop()
         for (const watcher of identityWatchers) watcher.stop()
         depositWatchHub?.stop()

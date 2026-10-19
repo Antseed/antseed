@@ -1,5 +1,5 @@
 import { StakingButton } from '../StakingButton';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '@antseed/ui';
 import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
 import { useActions } from '../../hooks/useActions';
@@ -39,30 +39,29 @@ export function VprRewardsView({ onSelectView }: Props) {
 
   // Force-refresh on entry and whenever the window regains focus — after
   // claiming in the browser pay popup the user lands straight back here, and
-  // the 55s summary throttle would otherwise show the pre-claim numbers.
-  useEffect(() => {
-    actions.refreshPaymentSummary(true);
-    const timer = window.setInterval(() => actions.refreshPaymentSummary(), PAYMENT_SUMMARY_POLL_MS);
-    const onFocus = () => actions.refreshPaymentSummary(true);
-    window.addEventListener('focus', onFocus);
-    return () => {
-      window.clearInterval(timer);
-      window.removeEventListener('focus', onFocus);
-    };
-  }, [actions]);
-
+  // the 55s summary throttle would otherwise show the pre-claim numbers. The
+  // invite bonus and invites are claimed and created the same way, so they
+  // follow the summary.
   const [invites, setInvites] = useState<ReferralInvites | null>(null);
   const [bonus, setBonus] = useState<RefereeBonus | null>(null);
+  const invitesLoader = useRef<LatestOnly | null>(null);
   useEffect(() => {
-    let cancelled = false;
-    void window.antseedDesktop?.referralGetInvites?.()
-      .then((next) => { if (!cancelled) setInvites(next); })
-      .catch(() => {});
-    void window.antseedDesktop?.referralGetReferee?.()
-      .then((next) => { if (!cancelled) setBonus(next); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, []);
+    const loadInvites = latestOnly(() => window.antseedDesktop?.referralGetInvites?.(), setInvites);
+    const loadBonus = latestOnly(() => window.antseedDesktop?.referralGetReferee?.(), setBonus);
+    invitesLoader.current = loadInvites;
+    const stop = startRewardsRefresh((force) => {
+      actions.refreshPaymentSummary(force);
+      loadInvites.run();
+      loadBonus.run();
+    }, PAYMENT_SUMMARY_POLL_MS);
+    return () => {
+      stop();
+      loadInvites.dispose();
+      loadBonus.dispose();
+      invitesLoader.current = null;
+    };
+  }, [actions]);
+  const reloadInvites = useCallback(() => invitesLoader.current?.run(), []);
 
   // Re-read after redeeming: the field gives way to the pending inviter.
   const [referral, setReferral] = useState<ReferralStatus | null>(null);
@@ -118,7 +117,7 @@ export function VprRewardsView({ onSelectView }: Props) {
 
         <span className={styles.errorNote}>Copy a link to use your wallet in another browser.</span>
 
-        <VprInvitesCard invites={invites} />
+        <VprInvitesCard invites={invites} onCreated={reloadInvites} />
 
         <VprCard className={styles.aboutCard}>
           <span className={styles.aboutTitle}>About $ANTS</span>
@@ -134,6 +133,44 @@ export function VprRewardsView({ onSelectView }: Props) {
       </VprPage>
     </section>
   );
+}
+
+type RefreshTarget = Pick<Window, 'addEventListener' | 'removeEventListener' | 'setInterval' | 'clearInterval'>;
+
+/**
+ * Run `refresh(true)` now and whenever the window regains focus, and
+ * `refresh(false)` every `intervalMs`. Returns the cleanup.
+ */
+export function startRewardsRefresh(refresh: (force: boolean) => void, intervalMs: number, target: RefreshTarget = window): () => void {
+  refresh(true);
+  const timer = target.setInterval(() => refresh(false), intervalMs);
+  const onFocus = () => refresh(true);
+  target.addEventListener('focus', onFocus);
+  return () => {
+    target.clearInterval(timer);
+    target.removeEventListener('focus', onFocus);
+  };
+}
+
+export type LatestOnly = { run(): void; dispose(): void };
+
+/**
+ * Re-runnable read whose result is applied only when it is the latest one
+ * started and the view is still mounted, so a slow earlier response cannot
+ * overwrite a newer one. Failures keep the current value.
+ */
+export function latestOnly<T>(load: () => Promise<T> | undefined, apply: (value: T) => void): LatestOnly {
+  let generation = 0;
+  let disposed = false;
+  return {
+    run() {
+      const current = ++generation;
+      void load()
+        ?.then((value) => { if (!disposed && current === generation) apply(value); })
+        .catch(() => {});
+    },
+    dispose() { disposed = true; },
+  };
 }
 
 /**
@@ -164,45 +201,120 @@ function invitePoints(points: string, pendingPoints: string): string {
     : `${formatInt(points)} pts`;
 }
 
+/** The latest create attempt on this card, with the allowance week it was made in. */
+export type CreatedInvite = { result: CreateInviteResult; epoch: number | null };
+
+/** The card's create history: the latest link, and the latest failure since. */
+export type InviteCreation = {
+  latest: CreatedInvite | null;
+  failure: { reason: string; noQuota: boolean } | null;
+};
+
+export const NO_INVITE_CREATION: InviteCreation = { latest: null, failure: null };
+
+/** Fold a create attempt in: a new link replaces the old one; a failure keeps it. */
+export function nextInviteCreation(current: InviteCreation, attempt: CreatedInvite): InviteCreation {
+  return attempt.result.ok
+    ? { latest: attempt, failure: null }
+    : { latest: current.latest, failure: { reason: attempt.result.reason, noQuota: attempt.result.noQuota } };
+}
+
+/** Create one invite; a failure becomes a result the card shows. */
+export async function createInviteOnce(
+  createInvite: () => Promise<CreateInviteResult>,
+  epoch: number | null,
+): Promise<CreatedInvite> {
+  try {
+    return { result: await createInvite(), epoch };
+  } catch (error) {
+    return { result: { ok: false, reason: error instanceof Error ? error.message : String(error), noQuota: false }, epoch };
+  }
+}
+
+/**
+ * What the invite row shows: the latest link, the invites left this week and
+ * whether another can be created. The count from the latest creation wins
+ * over a lagging Antscan allowance for the same week; a new week resets it.
+ */
+export function inviteCardState(invites: ReferralInvites, creation: InviteCreation): {
+  link: string | null;
+  left: number | null;
+  noQuota: boolean;
+  canCreate: boolean;
+} {
+  const allowance = invites.allowance;
+  const latest = creation.latest;
+  const result = latest?.result.ok ? latest.result : null;
+  const link = result?.link ?? null;
+  const sameWeek = !allowance || latest?.epoch === allowance.epoch;
+  const left = result && sameWeek
+    ? Math.min(result.left, allowance?.left ?? result.left)
+    : allowance?.left ?? null;
+  const noQuota = allowance?.quota === 0 || !!creation.failure?.noQuota;
+  return { link, left, noQuota, canCreate: !noQuota && left !== 0 };
+}
+
 /**
  * Referrer view: the invite link and what each invited buyer brought in
  * (from Antscan), laid out like the balance breakdown rows with a total.
- * Hidden without referrals; the list is hidden without an explorer.
+ * Hidden without referrals; the list is hidden without an explorer. Each
+ * link is single-use, so another can be created while invites are left.
  */
-export function VprInvitesCard({ invites }: { invites: ReferralInvites | null }) {
-  const [created, setCreated] = useState<CreateInviteResult | null>(null);
+export function VprInvitesCard({ invites, onCreated }: { invites: ReferralInvites | null; onCreated?: () => void }) {
+  const [creation, setCreation] = useState<InviteCreation>(NO_INVITE_CREATION);
   const [creating, setCreating] = useState(false);
   const [copied, setCopied] = useState(false);
   if (!invites?.available) return null;
-  const allowance = invites.allowance;
-  const link = created?.ok ? created.link : null;
-  const left = created?.ok ? created.left : allowance?.left ?? null;
-  const noQuota = allowance?.quota === 0 || (created?.ok === false && created.noQuota);
   const create = async () => {
     const createInvite = window.antseedDesktop?.referralCreateInvite;
     if (!createInvite || creating) return;
     setCreating(true);
     try {
-      setCreated(await createInvite());
-    } catch (error) {
-      setCreated({ ok: false, reason: error instanceof Error ? error.message : String(error), noQuota: false });
+      const attempt = await createInviteOnce(createInvite, invites.allowance?.epoch ?? null);
+      setCreation((current) => nextInviteCreation(current, attempt));
+      if (attempt.result.ok) {
+        setCopied(false);
+        onCreated?.();
+      }
     } finally {
       setCreating(false);
     }
   };
-  const copy = () => {
-    if (!link) return;
+  const copy = (link: string) => {
     void navigator.clipboard.writeText(link).then(() => {
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1500);
     });
   };
+  return (
+    <VprInvitesCardBody
+      invites={invites}
+      creation={creation}
+      creating={creating}
+      copied={copied}
+      onCreate={() => void create()}
+      onCopy={copy}
+    />
+  );
+}
+
+export function VprInvitesCardBody({ invites, creation, creating, copied, onCreate, onCopy }: {
+  invites: ReferralInvites;
+  creation: InviteCreation;
+  creating: boolean;
+  copied: boolean;
+  onCreate: () => void;
+  onCopy: (link: string) => void;
+}) {
+  const allowance = invites.allowance;
+  const { link, left, noQuota, canCreate } = inviteCardState(invites, creation);
   const leftHint = left !== null && allowance ? `${formatInt(left)} of ${formatInt(allowance.quota)} left this week.` : null;
   const hint = noQuota
     ? NO_QUOTA_HINT
     : link
       ? [shortInviteLink(link), leftHint].filter(Boolean).join(' · ')
       : leftHint ?? 'Single-use link, valid for 4 weeks.';
+  const failure = creation.failure && !creation.failure.noQuota ? creation.failure.reason : null;
   const count = invites.buyers.length;
   return (
     <VprCard className={styles.aboutCard}>
@@ -214,14 +326,21 @@ export function VprInvitesCard({ invites }: { invites: ReferralInvites | null })
         title="Invite someone"
         hint={hint}
         control={link ? (
-          <Button size="sm" variant="outline" onClick={copy}>{copied ? 'Copied' : 'Copy'}</Button>
+          <span className={styles.inviteActions}>
+            {canCreate ? (
+              <Button size="sm" variant="link" onClick={onCreate} disabled={creating} aria-busy={creating}>
+                {creating ? 'Creating…' : 'Create another'}
+              </Button>
+            ) : null}
+            <Button size="sm" variant="outline" onClick={() => onCopy(link)}>{copied ? 'Copied' : 'Copy'}</Button>
+          </span>
         ) : (
-          <Button size="sm" variant="outline" onClick={() => void create()} disabled={creating || noQuota || left === 0} aria-busy={creating}>
+          <Button size="sm" variant="outline" onClick={onCreate} disabled={creating || !canCreate} aria-busy={creating}>
             {creating ? 'Creating…' : 'Create link'}
           </Button>
         )}
       />
-      {created?.ok === false && !created.noQuota ? <span className={styles.errorNote}>{created.reason}</span> : null}
+      {failure ? <span className={styles.errorNote}>{failure}</span> : null}
       {invites.listed && count > 0 ? (
         <div className={`${breakdown.breakdown} ${styles.invites}`} role="table" aria-label="Invited wallets">
           <div className={`${breakdown.row} ${styles.inviteHeader}`} role="row">
