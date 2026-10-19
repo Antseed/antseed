@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { RoutePreview, RouteSelection, ServedSelection } from '../api/types'
-import { healthWarning, neverReason, orderingSummary, pickSummary, previewSort, rankCandidates, recordSummary, selectionFacts, selectionHeadline } from './selection'
+import { healthWarning, neverReason, previewListsSellers, orderingSummary, pickSummary, previewSort, rankCandidates, recordSummary, selectionFacts, selectionHeadline } from './selection'
 
 const NOW = 1_700_000_000_000
 
@@ -89,6 +89,12 @@ describe('ranking a preview', () => {
   it('takes the sort from the buyer when the policy sets none', () => {
     expect(previewSort(preview(undefined, [candidate('x', { eligible: true, rank: 1, selection: { ...base, ordering: 'trust' } })]))).toBe('trust')
     expect(previewSort(preview(undefined, peers))).toBe('balanced')
+  })
+
+  it('falls back to the catalog when a refused model comes back without sellers', () => {
+    expect(previewListsSellers(undefined)).toBe(false)
+    expect(previewListsSellers({ ...preview(undefined, []), modelAllowed: false })).toBe(false)
+    expect(previewListsSellers(preview(undefined, peers))).toBe(true)
   })
 
   it('says why a seller is never selected', () => {

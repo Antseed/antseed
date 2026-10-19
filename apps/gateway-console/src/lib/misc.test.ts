@@ -108,3 +108,11 @@ describe('routing and snippets', () => {
     expect(snippets[2]!.code).toContain("authToken: 'as_secret'")
   })
 })
+
+describe('policy groups', () => {
+  it('refresh the chat route preview after a policy change', async () => {
+    const { POLICY_GROUPS } = await import('./queries')
+    expect(POLICY_GROUPS).toContain('routing')
+    expect(POLICY_GROUPS).toContain('chat-route-preview')
+  })
+})

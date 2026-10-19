@@ -135,3 +135,11 @@ export function neverReason(candidate: Candidate, modelAllowed = true): string {
   if (!modelAllowed) return 'your routing policy does not allow this model'
   return candidate.reasons.join(' · ') || 'outside your routing settings'
 }
+
+/**
+ * Whether a preview names the model's sellers. A model the policy refuses
+ * comes back with no candidates, so the catalog's own offer list is shown instead.
+ */
+export function previewListsSellers(preview: RoutePreview | undefined): boolean {
+  return !!preview && preview.candidates.length > 0
+}

@@ -6,6 +6,7 @@ import { CAPABILITY_LABELS, MODEL_TYPE_LABELS, priceSummary } from '../lib/model
 import { panelPath } from '../lib/nav'
 import { modelCallFormat, pinnedModelId } from '../lib/snippets'
 import { ApiCall } from './ApiCall'
+import { previewListsSellers } from '../lib/selection'
 import { SellerSelection, type SellerRowExtras } from './SellerSelection'
 import { PanelRow, PanelSection } from './SidePanel'
 import { TeeBadge } from './TeeBadge'
@@ -115,10 +116,11 @@ export function ModelDetails({ model, preview, previewLoading, pin }: {
         ]} />
       </div>
 
-      {preview || previewLoading
+      {previewListsSellers(preview) || previewLoading
         ? <SellerSelection preview={preview} loading={previewLoading} row={offerRow} latencyOf={latencyOf} pin={pin} />
         : (
           <PanelSection title={`Providers (${model.offers.length})`}>
+            {preview && !preview.modelAllowed && <p className="gc-fineprint">Your routing policy does not allow this model: requests for it are refused.</p>}
             {model.offers.length === 0 ? <p className="gc-fineprint">No provider offers this model right now.</p> : (
               <ul className="gc-panel-rows" aria-label="Providers offering this model">
                 {model.offers.map((offer) => {
