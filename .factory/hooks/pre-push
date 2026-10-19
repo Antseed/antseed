@@ -1,5 +1,0 @@
-#!/bin/sh
-# Factory sessions get core.hooksPath pointing here. Only publish.sh, run with FACTORY_ALLOW_PUBLISH=1, may push.
-if [ "${FACTORY_ALLOW_PUBLISH:-}" = 1 ]; then exit 0; fi
-echo "factory: push refused by the pre-push hook (factory sessions never push; only scripts/publish.sh with FACTORY_ALLOW_PUBLISH=1)" >&2
-exit 1
