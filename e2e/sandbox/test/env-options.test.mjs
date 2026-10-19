@@ -134,6 +134,7 @@ describe('parseArgs', () => {
     assert.equal(parseArgs(['--', 'status']).command, 'status');
     assert.equal(parseArgs(['run', 'payment-flow', '--chain', 'local']).chain, 'local');
     assert.equal(parseArgs([]).command, 'help');
+    assert.equal(parseArgs(['desktop', '--cdp-port', '9333']).cdpPort, '9333');
   });
 
   it('rejects bad input', () => {
@@ -148,6 +149,9 @@ describe('parseArgs', () => {
     assert.throws(() => parseArgs(['up', '--chain', 'mainnet']), /--real-funds/);
     assert.throws(() => parseArgs(['run', '../evil']), /Invalid scenario/);
     assert.throws(() => parseArgs(['up', '--slot', 'A B']), /Invalid sandbox slot/);
+    assert.throws(() => parseArgs(['up', '--cdp-port', '9333']), /only for pnpm sandbox desktop/);
+    assert.throws(() => parseArgs(['desktop', '--cdp-port', '80']), /1024-65535/);
+    assert.throws(() => parseArgs(['desktop', '--cdp-port', 'x']), /1024-65535/);
   });
 });
 

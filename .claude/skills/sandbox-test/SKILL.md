@@ -75,7 +75,7 @@ Every run writes `~/.antseed-sandbox/<name>/reports/<timestamp>-<scenario>/`: `i
 - On a headless Linux server or VPS: `xvfb-run -a pnpm sandbox run desktop-chat --chain local`.
 - After the run, open `screenshots/` and `video/desktop.webm` and say what they show; read `desktop-main.log` for main-process errors. A chat timeout saves `screenshots/*chat-timeout*.png` and puts the visible screen text in the error.
 - A new desktop scenario: `e2e/sandbox/scenarios/desktop-<name>.mjs` with `requires: ['desktop']`, `const ui = await sb.desktop()`, role and label selectors (`getByRole`, `getByLabel`), `ui.screenshot(name)`, and `sb.check('no renderer errors', ui.errors.length === 0, ui.errors)`. If an element has no accessible name, add an `aria-label` as part of the change.
-- Hands-on review: `pnpm sandbox run desktop-chat --chain local --keep`, then `pnpm sandbox desktop` (Vite hot reload, attach-only), or `pnpm sandbox:attach`.
+- Hands-on review: `pnpm sandbox run desktop-chat --chain local --keep`, then `pnpm sandbox desktop` (Vite hot reload, attach-only; `--cdp-port N` for agent-browser), or `pnpm sandbox:attach`.
 
 ## 7. Share (Linux server)
 

@@ -5,11 +5,11 @@ description: Prove an AntSeed change works end to end on this worktree's isolate
 
 # Verify AntSeed
 
-This skill says what to prove, when a scenario is required, and what evidence to keep. It is the only map from a changed path to what must run. The **sandbox-test** skill (`.claude/skills/sandbox-test/SKILL.md`) is the how-to for running it: prerequisites, commands, chains, reports, desktop under `xvfb-run`, share. `e2e/sandbox/README.md` is the reference for every command and the `sb` API.
+This skill says what to prove, when a scenario is required, and what evidence to keep. It is the only map from a changed path to what must run. `features/` is the user-facing feature map (pstack's create-verification-skill shape): one recipe per feature, from the user's point of view, and the table below links each row to it. The **sandbox-test** skill (`.claude/skills/sandbox-test/SKILL.md`) is the how-to for running it: prerequisites, commands, chains, reports, desktop under `xvfb-run`, share. `e2e/sandbox/README.md` is the reference for every command and the `sb` API.
 
 ## Autonomy
 
-Once the user has discussed a change, implement and verify it without asking first. That covers builds, unit tests, new scenarios, `pnpm sandbox run <scenario> --chain local`, `--chain fork` when doctor reports a fork RPC, and desktop QA runs (`sb.desktop()`, `xvfb-run`).
+Once the user has discussed a change, implement and verify it without asking first (pstack's never-block-on-the-human). That covers builds, unit tests, new scenarios, `pnpm sandbox run <scenario> --chain local`, `--chain fork` when doctor reports a fork RPC, and desktop QA runs (`sb.desktop()`, `xvfb-run`).
 
 Get an explicit yes for each run of:
 
@@ -20,18 +20,18 @@ These rules hold in every run:
 
 - Never touch `~/.antseed`, the OS keychain, port 8377, or processes the sandbox did not start.
 - Tear down only with `pnpm sandbox down`. Use `--force` only with the user's approval.
-- Report a `KNOWN` result as known. Never turn a `knownIssue` into a pass, and never weaken a check to make a run pass.
-- Never commit or push unless asked (`CLAUDE.md`).
+- Report a `KNOWN` result as known. Never turn a `knownIssue` into a pass, and never weaken a check to make a run pass (pstack: never relax the predicate).
+- Commit and push only as `CLAUDE.md` allows.
 
 ## Decide what to prove
 
-Add a sandbox scenario only when a unit test can't reproduce the bug. Every change runs the row it matches. For any other path, the owning package's unit tests are the proof (`pnpm --filter <pkg> test`). `packages/contracts/**` also needs `cd packages/contracts && forge test` and `pnpm sandbox run payment-flow --chain local`. `e2e/sandbox/**` needs `pnpm test:sandbox` and a run of each changed scenario. Provider plugins other than `plugins/provider-openai` have no mock upstream, so their unit tests are the proof unless the user approves `--live`. For buyer, buyer-proxy or routing changes, propose the real-network check (`pnpm sandbox run mainnet-smoke --chain mainnet --real-funds`, case 3 in `e2e/sandbox/README.md`) as a separate step after these runs pass: it spends real USDC and needs an explicit yes.
+Add a sandbox scenario only when a unit test can't reproduce the bug. Every change runs the row it matches. For any other path, the owning package's unit tests are the proof (`pnpm --filter <pkg> test`). A change to CLI output also gets the transcript from [CLI](features/cli.md). `packages/contracts/**` also needs `cd packages/contracts && forge test` and `pnpm sandbox run payment-flow --chain local`. `e2e/sandbox/**` needs `pnpm test:sandbox` and a run of each changed scenario. Provider plugins other than `plugins/provider-openai` have no mock upstream, so their unit tests are the proof unless the user approves `--live`. For buyer, buyer-proxy or routing changes, propose the real-network check (`pnpm sandbox run mainnet-smoke --chain mainnet --real-funds`, case 3 in `e2e/sandbox/README.md`) as a separate step after these runs pass: it spends real USDC and needs an explicit yes.
 
 | If you change… | Run | It's proven when |
 | --- | --- | --- |
-| buyer payments or SpendingAuth: `packages/buyer-core/**`, `packages/node/src/payments/**`, `packages/node/src/seller-request-handler.ts` | `pnpm --filter @antseed/buyer-core test` (`buyer-payment-negotiator.test.ts`, `channel-usage-accounting.test.ts`, `pricing.test.ts`), `pnpm --filter @antseed/node test tests/buyer-payment-manager.test.ts tests/buyer-payment-negotiator.test.ts tests/payment-flow-integration.test.ts`, then `pnpm sandbox run payment-flow --chain local` and every `e2e/sandbox/scenarios/issue-*.mjs` | The tests pass and `payment-flow` prints `PASSED`. That means: three paid chats on one channel with a growing cumulative SpendingAuth, a reserve locked on-chain, settle-on-disconnect that charges exactly the delivered work and releases the reserve, a fresh channel after reconnect, and on-chain settlement equal to what the buyer signed. |
-| the buyer proxy or routing: `apps/cli/src/proxy/**`, `packages/node/src/discovery/**`, `packages/router-core/**`, `plugins/router-local/**` | `pnpm sandbox run chat-basic --chain local`. For pinned or multi-seller routing, also `pnpm sandbox run routing-smoke --chain local` | `chat-basic` prints `PASSED`: the catalog lists the seller's models, a non-streaming and a streaming chat through the proxy answer with usage, the upstream saw exactly two chats, one channel holds both receipts, and settlement is exact. `chat-basic` sends model-only requests to one seller and does not pin. `routing-smoke` pins `<peerId>@<model>` to each of two sellers, auto-routes six more chats, and checks that the buyer sees only sandbox sellers. |
-| the desktop chat UI: `apps/desktop/**` | `pnpm --filter @antseed/desktop run build:main && pnpm --filter @antseed/desktop run build:renderer`, then `pnpm sandbox run desktop-chat --chain local`. On a headless Linux server or VPS: `xvfb-run -a pnpm sandbox run desktop-chat --chain local` | `desktop-chat` prints `PASSED`: the desktop shows `Port: <proxy port>`, a chat sent from the composer shows the sandbox seller's reply, the upstream saw it, the channel signed a nonzero amount, the renderer logged no errors, and settlement is exact. Open `screenshots/` and `video/desktop.webm` in the report and say what they show. |
+| buyer payments or SpendingAuth: `packages/buyer-core/**`, `packages/node/src/payments/**`, `packages/node/src/seller-request-handler.ts` | [payments](features/payments.md): `pnpm --filter @antseed/buyer-core test` (`buyer-payment-negotiator.test.ts`, `channel-usage-accounting.test.ts`, `pricing.test.ts`), `pnpm --filter @antseed/node test tests/buyer-payment-manager.test.ts tests/buyer-payment-negotiator.test.ts tests/payment-flow-integration.test.ts`, then `pnpm sandbox run payment-flow --chain local` and every `e2e/sandbox/scenarios/issue-*.mjs` | The tests pass and `payment-flow` prints `PASSED`. That means: three paid chats on one channel with a growing cumulative SpendingAuth, a reserve locked on-chain, settle-on-disconnect that charges exactly the delivered work and releases the reserve, a fresh channel after reconnect, and on-chain settlement equal to what the buyer signed. |
+| the buyer proxy or routing: `apps/cli/src/proxy/**`, `packages/node/src/discovery/**`, `packages/router-core/**`, `plugins/router-local/**` | [proxy chat](features/proxy-chat.md) and [routing](features/routing.md): `pnpm sandbox run chat-basic --chain local`. For pinned or multi-seller routing, also `pnpm sandbox run routing-smoke --chain local` | `chat-basic` prints `PASSED`: the catalog lists the seller's models, a non-streaming and a streaming chat through the proxy answer with usage, the upstream saw exactly two chats, one channel holds both receipts, and settlement is exact. `chat-basic` sends model-only requests to one seller and does not pin. `routing-smoke` pins `<peerId>@<model>` to each of two sellers, auto-routes six more chats, and checks that the buyer sees only sandbox sellers. |
+| the desktop chat UI: `apps/desktop/**` | [desktop chat](features/desktop-chat.md): `pnpm --filter @antseed/desktop run build:main && pnpm --filter @antseed/desktop run build:renderer`, then `pnpm sandbox run desktop-chat --chain local`. On a headless Linux server or VPS: `xvfb-run -a pnpm sandbox run desktop-chat --chain local` | `desktop-chat` prints `PASSED`: the desktop shows `Port: <proxy port>`, a chat sent from the composer shows the sandbox seller's reply, the upstream saw it, the channel signed a nonzero amount, the renderer logged no errors, and settlement is exact. Open `screenshots/` and `video/desktop.webm` in the report and say what they show. |
 | keys, signing or spend caps: `packages/node/src/p2p/identity.ts`, `packages/protocol/src/signatures.ts`, `apps/desktop/src/main/identity.ts`, `maxPerRequestUsdc`, `maxReserveAmountUsdc` | `pnpm --filter @antseed/node test tests/identity.test.ts tests/evm-keypair.test.ts tests/eip712-contract-compat.test.ts tests/buyer-payment-manager.test.ts` and `pnpm --filter @antseed/protocol test src/signatures.test.ts` | All pass. These cover identity persistence, the derived EVM wallet, SpendingAuth and ReserveAuth EIP-712 signatures against the contract's typehash and golden vectors, and the overdraft (`verifiedCost + maxPerRequestUsdc`) and reserve-ceiling caps. No sandbox scenario covers keys or caps. There is no dedicated always-run security suite: CI runs every package's tests (`pnpm -r run test`). `apps/desktop/src/main/identity.ts` has no test. |
 
 ### Gotchas
@@ -74,6 +74,30 @@ Each worktree gets its own sandbox (`wt-<basename>-<hash>`, state in `~/.antseed
 
 Read-only. It checks the Node major against `.nvmrc`, `pnpm`, `anvil`, `forge` with forge-std, whether a fork RPC is configured (without printing it), that every package the sandbox loads has `dist/` newer than `src/`, the desktop build, `DISPLAY` or `xvfb-run` on Linux, and the live sandbox (chain, upstream, sellers online, peers the buyer sees, open channels). It prints `OK`, `WARN` or `FAIL` lines. It exits 1 on any `FAIL` and 2 outside an AntSeed worktree. Run it before the first drive and whenever a run behaves unexpectedly. A stale `dist/` is the most common reason a fix "does not work" in the sandbox.
 
+## Security-critical changes
+
+A change is security-critical when it touches one of these paths, or adds or removes a line that matches `maxPerRequestUsdc|maxReserveAmountUsdc`, `signTypedData|SpendingAuth|ReserveAuth` or `privateKey|mnemonic|keychain|keytar`:
+
+- keys and identity: `packages/node/src/p2p/identity.ts`, `packages/node/src/p2p/identity-envelope.ts`, `packages/web-sdk/src/identity.ts`, `apps/desktop/src/main/identity.ts`, `apps/cli/src/cli/wallet-passphrase.ts`
+- peer channel and payment frames: `packages/node/src/p2p/secure-channel.ts`, `packages/node/src/p2p/payment-codec.ts`, `packages/node/src/p2p/payment-mux.ts`
+- signing and payments: `packages/protocol/src/signatures.ts`, `packages/node/src/payments/**`, `packages/node/src/seller-request-handler.ts`, `packages/buyer-core/**`, `apps/desktop/src/main/payments/**`, `apps/cli/src/gateway/services/operator.ts`, `apps/cli/src/gateway/console-api/handlers/wallet*.ts`
+- contracts: `packages/contracts/**`
+
+A security-critical change always runs the keys, signing or spend caps row, on top of its own row. Its PR title starts with `[security-critical] ` and its body says which paths it touches.
+
+## What counts as proof
+
+A task states its exit condition as checks from this skill before any code changes. A verifier that did not write the change runs these checks on the head commit and shows each command, its exit code and the lines that matter. A claim without that output is not proof.
+
+- **Bug fix.** Reproduce on the surface the report names (pstack's Bug fix: the proxy, the desktop or the chain, through its feature recipe), because a unit test shows branch behavior, not the bug's absence. Then the first commit changes only test files. That commit fails on `main` with the bug's own words in the output (the red signature), and the head passes. When a unit test can't reproduce it (pstack's tdd: no test beats a bad test), the red is an `issue-*` sandbox scenario per [Fix a bug red to green](#fix-a-bug-red-to-green). Run both with `scripts/prove.sh`, which uses a fresh worktree so local leftovers cannot fake a result, and rejects a red caused by a setup error such as `Cannot find module`.
+  `scripts/prove.sh <first commit> fail "<test command>" "<red signature>" <owning package>`, then `scripts/prove.sh HEAD pass "<test command>" "" <owning package>`.
+- **Refactor.** The first commit holds only tests that pin today's behavior. They pass at that commit and at the head (`prove.sh <first commit> pass ...`, `prove.sh HEAD pass ...`).
+- **Feature.** The matching row's tests pass at the head, plus a test that shows the new behavior, driven on its surface through the feature recipe.
+- **User-visible change.** A change to what a user sees in the desktop or the CLI also gets review evidence for the operator: the desktop run's screenshots and video plus an agent-browser walk through the changed screens (`pnpm sandbox desktop --cdp-port N`, recipe in [desktop chat](features/desktop-chat.md)), or the CLI transcript, named in the PR's Verification.
+- **Every kind.** The matching row of [Decide what to prove](#decide-what-to-prove) passes, and the owning packages' `test` and `typecheck` pass.
+- **Sandbox rows.** Run each required scenario once without the change and once with it, in the scratch worktree, doctor first. A scenario that fails the same way without the change is pre-existing: report it, do not block on it, and say whether the change could be involved. A scenario that fails only with the change fails the verification.
+- **Not proven.** A doctor `FAIL` or a broken build means the environment, not the change: report it as blocked, not as failed. "Inconclusive" is a failure.
+
 ## Drive
 
 - A scenario is `e2e/sandbox/scenarios/<name>.mjs` with `meta`, `topology` and `run(sb)`. Drive the buyer like a client: `sb.chat()` goes through the buyer proxy, `sb.desktop()` through the desktop UI. Read state with `sb.channels()`, `sb.buyerBalance()`, `sb.settledEvents(id)` and `sb.mockRequests(id)`. Control the network with `sb.stopBuyer()`, `sb.stopSeller(id)` and `sb.warp(seconds)`.
@@ -100,7 +124,7 @@ The sandbox lives on a sandbox branch, not on `main`. The fix lives on a branch 
    Resolve merge conflicts minimally and record each resolution. `CHANGELOG.md` conflicts most often.
 2. **Write the scenario first.** In the scratch worktree, create `e2e/sandbox/scenarios/issue-<N>-<slug>.mjs`. Encode the bug as plain `sb.check`s, never `knownIssue`. Start with a fresh-sandbox check, as `issue-1200-spendingauth-catchup.mjs` does. Add the name to the scenario list in `e2e/sandbox/test/config-topology.test.mjs`.
 3. **Prove it fails.** Run `.claude/skills/verify-antseed/scripts/run-with-evidence.mjs issue-<N>-<slug> --chain local` on the unfixed code. It must fail on the check that states the issue, with the issue's numbers in `detail`. Keep the report directory. Its `checks.log` is the red evidence. If the scenario will not fail, stop and report why before you change product code.
-4. **Find the root cause.** Form hypotheses and rule them out with runtime evidence: `pnpm sandbox logs supervisor`, `pnpm sandbox logs seller-<id>`, the report's `events.jsonl` and `logs/`, and a `--keep` run inspected with `pnpm sandbox status`.
+4. **Find the root cause** (pstack's Bug fix and fix-root-causes). The runtime evidence here: `pnpm sandbox logs supervisor`, `pnpm sandbox logs seller-<id>`, the report's `events.jsonl` and `logs/`, and a `--keep` run inspected with `pnpm sandbox status`.
 5. **Fix it in a worktree from `origin/main`.** Write a failing unit test in the owning package, then the smallest fix that the evidence justifies:
 
    ```bash
@@ -157,9 +181,10 @@ To show a report from a server, start `pnpm sandbox report --serve --port 8799` 
 | Script | Invocation | Writes |
 | --- | --- | --- |
 | `scripts/doctor.mjs` | `.claude/skills/verify-antseed/scripts/doctor.mjs [--slot NAME]` | nothing (read-only) |
+| `scripts/prove.sh` | `.claude/skills/verify-antseed/scripts/prove.sh <commit> fail\|pass "<test command>" [red signature] [owning package]` | nothing (a temporary worktree it removes) |
 | `scripts/run-with-evidence.mjs` | `.claude/skills/verify-antseed/scripts/run-with-evidence.mjs <scenario> [run flags]` | `checks.log`, `run-output.log` and `logs/` in the run's report directory |
 
-Run both from the worktree root.
+Run them from the worktree root, or by absolute path from another worktree.
 
 ## Gaps
 
@@ -171,11 +196,14 @@ The sandbox cannot do these yet. Treat each as a known limit, not as a reason to
 - **Transport faults.** The only fault is NeedAuth loss, and it wraps the buyer payment manager's public `handleNeedAuth`. No public setting leaves a buyer under-signed: the buyer's `costToleranceMultiplier` is not in the node's payment config, and the sandbox fixes `maxPerRequestUsdc` at 5 USDC. A frame-level fault on the payment channel between buyer and seller would be cleaner.
 - **Security-critical tests.** There is no dedicated always-run suite for keys, signing and spend caps. CI runs every package's tests, and the desktop's `apps/desktop/src/main/identity.ts` has no test.
 - **Checkout and wallet flows.** No harness drives the card checkout, deposits or withdrawals in the desktop.
+- **Gateway.** No scenario covers `apps/cli/src/gateway/**` or its console. Its unit tests and typecheck are the proof, and the PR says no scenario proves it.
+- **CLI driver.** No scenario drives the CLI. [CLI](features/cli.md) captures a transcript by hand.
 - **Routing beyond the buyer's own routing.** `routing-smoke` covers model-only and pinned routing between sandbox sellers. Scenarios for routing services and other routing behavior live elsewhere.
 - **`mainnet-smoke` has never run funded.** Case 3 is untested with a real wallet.
 - **`pnpm sandbox share` is untested on a real server with Tailscale.**
 - **Network simulation and failpoints** are separate branches, not in this sandbox.
+- **Desktop on headless Linux.** On a Debian VPS under `xvfb-run -a`, `desktop-chat` timed out at `page.waitForLoadState` and the run never exited after the failed launch (the Electron process tree stayed up until killed). The cause is unverified; `--disable-gpu` does not fix it. Give `desktop-chat` a hard deadline there and report a timeout as blocked.
 
 ## Keep this skill honest
 
-When a scenario, a test file or a command named in [Decide what to prove](#decide-what-to-prove) changes, update its row. If the pstack plugin is installed, its `/maintain-verification-skill` skill audits this skill against the code. Run it when a row looks stale.
+When a scenario, a test file or a command named in [Decide what to prove](#decide-what-to-prove) changes, update its row. pstack's maintain-verification-skill audits `features/` against the code: run it with this skill's path (`.claude/skills/verify-antseed`). When a feature changes, update its file, and add a file for a new user-facing feature.
