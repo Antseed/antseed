@@ -16,7 +16,9 @@ const PAYER = `0x${'22'.repeat(20)}`
 const RECORDED = `0x${'a1'.repeat(32)}`
 const PAST = `0x${'b2'.repeat(32)}`
 const NOT_OURS = `0x${'c3'.repeat(32)}`
-const CHAIN = { chainId: 'base-sepolia', evmChainId: 84532, rpcUrl: 'http://127.0.0.1:1' } as AntsChainConfig
+const SENT = `0x${'e5'.repeat(32)}`
+const SENT_EARLIER = `0x${'f6'.repeat(32)}`
+const CHAIN = { chainId: 'base-sepolia', evmChainId: 84532, rpcUrl: 'http://127.0.0.1:1', usdcContractAddress: `0x${'f0'.repeat(20)}` } as AntsChainConfig
 
 let dir: string
 let store: GatewayStore
@@ -41,6 +43,8 @@ after(async () => {
 })
 
 const verified: string[] = []
+const scanned: Array<[number, number]> = []
+let head = 5_000
 function setup(): ConsoleRouter {
   const router = new ConsoleRouter()
   registerWalletRoutes(router, fakeDeps(store), {
@@ -51,11 +55,20 @@ function setup(): ConsoleRouter {
     verifyDeposit: async (_chain, txHash, wallet) => {
       verified.push(txHash)
       if (txHash === NOT_OURS || wallet !== WALLET) return null
+      if (txHash === SENT_EARLIER) {
+        return { txHash, wallet, kind: 'transfer', creditedUsdc: 7_000_000, feeUsdc: 0, blockNumber: 3, blockTime: 1_698_000_000_000, sources: [{ from: PAYER, amountUsdc: 7_000_000, txHash }] }
+      }
       return {
         txHash, wallet, kind: txHash === PAST ? 'direct' : 'relay',
         creditedUsdc: 1_000_000, feeUsdc: txHash === PAST ? 0 : 50_000, blockNumber: 10, blockTime: 1_699_000_000_000,
         sources: [{ from: txHash === PAST ? PAYER : '0x0000000000000000000000000000000000000000', amountUsdc: 1_050_000, txHash: `0x${'d4'.repeat(32)}` }],
       }
+    },
+    headBlock: async () => head,
+    scanTransfers: async (_chain, wallet, fromBlock, toBlock) => {
+      scanned.push([fromBlock, toBlock])
+      if (wallet !== WALLET.toLowerCase() || fromBlock > 9 || toBlock < 9) return []
+      return [{ txHash: SENT, wallet, kind: 'transfer', creditedUsdc: 25_000_000, feeUsdc: 0, blockNumber: 9, blockTime: 1_698_900_000_000, sources: [{ from: PAYER, amountUsdc: 25_000_000, txHash: SENT }] }]
     },
   })
   return router
@@ -64,18 +77,46 @@ function setup(): ConsoleRouter {
 const admin = () => memberPrincipal(ownerId, { [workspaceId]: 'admin' }, 'owner')
 const plainMember = () => memberPrincipal(ownerId, { [workspaceId]: 'member' })
 
-test('listing verifies the deposits the buyer recorded, once', async () => {
+test('listing shows the USDC sent to the wallet, found by scanning from just before the first sweep; sweeps stay internal', async () => {
   const router = setup()
   const first = await call(router, 'GET', `/workspaces/${workspaceId}/deposits`, admin()) as DepositConfirmation[]
-  assert.equal(first.length, 1)
-  assert.equal(first[0]!.txHash, RECORDED)
-  assert.equal(first[0]!.sent, '1.050000')
-  assert.equal(first[0]!.credited, '1.000000')
-  assert.equal(first[0]!.fee, '0.050000')
-  assert.equal(first[0]!.sources[0]!.minted, true)
-  assert.match(first[0]!.reference, /^DEP-A1A1A1A1$/)
+  // The buyer's sweep (block 10) is verified and kept, the scan starts a lookback before it, and only the transfer is listed.
+  assert.equal(store.getDeposit(RECORDED)?.kind, 'relay')
+  assert.equal(scanned[0]![0], 0)
+  assert.equal(scanned.at(-1)![1], head - 2, 'the newest blocks wait for the next scan')
+  assert.deepEqual(first.map((deposit) => deposit.txHash), [SENT])
+  assert.equal(first[0]!.kind, 'transfer')
+  assert.equal(first[0]!.sent, '25.000000')
+  assert.equal(first[0]!.credited, '25.000000')
+  assert.equal(first[0]!.fee, '0.000000')
+  assert.equal(first[0]!.sources[0]!.from, PAYER)
+  assert.match(first[0]!.reference, /^DEP-E5E5E5E5$/)
+
+  // The next listing scans only the new blocks, and verifies the sweep no more.
+  scanned.length = 0
+  head += 1_500
   await call(router, 'GET', `/workspaces/${workspaceId}/deposits`, admin())
+  assert.deepEqual(scanned, [[4_999, 5_998], [5_999, 6_498]])
   assert.equal(verified.filter((hash) => hash === RECORDED).length, 1, 'a stored deposit is not verified again')
+})
+
+test('a sweep approved before transfers were listed hands its approval to the transfer that funded it', async () => {
+  const FUNDED = `0x${'d4'.repeat(32)}` // the fake sweep's source
+  const approvedSweep = { txHash: `0x${'a9'.repeat(32)}`, wallet: WALLET, kind: 'relay' as const, creditedUsdc: 1, feeUsdc: 0, blockNumber: 1, blockTime: 1,
+    sources: [{ from: PAYER, amountUsdc: 1, txHash: FUNDED }], workspaceId }
+  store.insertDeposit(approvedSweep)
+  store.setDepositApproval(approvedSweep.txHash, { byId: null, byLabel: 'Owner', note: 'October' })
+  const router = new ConsoleRouter()
+  registerWalletRoutes(router, fakeDeps(store), {
+    buyer: buyer.client, requireWorkspaceAccess: fakeRequireWorkspaceAccess, walletAddress: async () => WALLET, resolveChain: async () => CHAIN,
+    verifyDeposit: async () => null, headBlock: async () => head + 10,
+    scanTransfers: async (_chain, wallet, fromBlock) => fromBlock > head ? [] : [{ txHash: FUNDED, wallet, kind: 'transfer', creditedUsdc: 500_000_000, feeUsdc: 0, blockNumber: head, blockTime: 2, sources: [{ from: PAYER, amountUsdc: 500_000_000, txHash: FUNDED }] }],
+  })
+  const list = await call(router, 'GET', `/workspaces/${workspaceId}/deposits`, admin()) as DepositConfirmation[]
+  const transfer = list.find((deposit) => deposit.txHash === FUNDED)
+  assert.equal(transfer?.approval?.by, 'Owner')
+  assert.equal(transfer?.approval?.note, 'October')
+  assert.ok(!list.some((deposit) => deposit.kind === 'relay'), 'sweeps are not listed')
 })
 
 test('members cannot see deposits', async () => {
@@ -87,8 +128,13 @@ test('a past deposit is added by its transaction, and only if it credited this w
   const added = await call(router, 'POST', `/workspaces/${workspaceId}/deposits`, admin(), { txHash: PAST }) as DepositConfirmation
   assert.equal(added.kind, 'direct')
   assert.equal(added.sources[0]!.from, PAYER)
+  const sent = await call(router, 'POST', `/workspaces/${workspaceId}/deposits`, admin(), { txHash: SENT_EARLIER }) as DepositConfirmation
+  assert.equal(sent.kind, 'transfer')
+  assert.equal(sent.sent, '7.000000')
   await rejectsWith(call(router, 'POST', `/workspaces/${workspaceId}/deposits`, admin(), { txHash: NOT_OURS }), 404)
   await rejectsWith(call(router, 'POST', `/workspaces/${workspaceId}/deposits`, admin(), { txHash: 'nope' }), 400)
+  // A sweep is a move inside the workspace: the transfer that funded it is what to add.
+  await rejectsWith(call(router, 'POST', `/workspaces/${workspaceId}/deposits`, admin(), { txHash: RECORDED }), 422)
 })
 
 test('approving records who approved, with a note, and can be undone', async () => {

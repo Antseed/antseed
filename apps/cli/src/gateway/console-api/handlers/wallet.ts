@@ -20,7 +20,7 @@ import type { WorkspaceRecord } from '../../store.js'
 import type { Channel, ChainInfo, DepositConfirmation, DepositWatch, Rewards, Wallet } from '../types.js'
 import type { DepositRecord } from '../../store.js'
 import { usdcToDecimalString } from '../../money.js'
-import { verifyDeposit, type VerifiedDeposit } from '../../services/deposits.js'
+import { scanTransfers, SOURCE_LOOKBACK_BLOCKS, verifyDeposit, type DepositChain, type VerifiedDeposit } from '../../services/deposits.js'
 import { buyerJson, defaultBuyerClient, optionalBuyerJson, withIdentity, type BuyerClient } from './network-buyer.js'
 import { antseedPayBaseUrl, buildCardLink, CARD_PROVIDERS, type CardProvider } from './wallet-card-link.js'
 import { applyChannelChainState, chainInfo, channelChainHints, mapBalances, mapChannels, mapDepositWatch, mapRewards, record, type ChannelChainState } from './wallet-mapping.js'
@@ -35,6 +35,16 @@ const OPEN_CHANNEL_STATUSES = new Set(['active', 'open', 'closing', 'withdrawabl
 const CHANNEL_CLOSE_TIMEOUT_MS = 70_000
 /** After a failed rewards read, the chain is not asked again for this long (the last value is served, marked stale). */
 const REWARDS_ERROR_RETRY_MS = 30_000
+/** Blocks per log query when scanning for USDC sent to a workspace wallet (public RPCs cap a query at about 1000). */
+const SCAN_CHUNK_BLOCKS = SOURCE_LOOKBACK_BLOCKS + 1
+/** Log queries a scan runs at once. */
+const SCAN_PARALLEL = 4
+/** The newest blocks are left for the next scan, so a reorg of the tip is not recorded. */
+const SCAN_CONFIRMATIONS = 2
+/** A wallet with no recorded deposits is scanned from about a day back (Base: 2 s blocks). */
+const SCAN_FIRST_LOOKBACK_BLOCKS = 43_200
+/** How long a deposits listing waits for a scan; a longer one carries on and the next listing shows the rest. */
+const SCAN_WAIT_MS = 4_000
 /** One rewards reader per process: one ANTS context and provider per chain. */
 const sharedRewardsReader = createRewardsReader()
 
@@ -63,6 +73,10 @@ export interface WalletRouteOverrides {
   payBaseUrl?: () => string
   /** A deposit to `wallet` as its transaction receipt shows it; null when the transaction credited no such deposit. */
   verifyDeposit?: (chain: AntsChainConfig, txHash: string, wallet: string) => Promise<VerifiedDeposit | null>
+  /** USDC sent to `wallet` in blocks `fromBlock`..`toBlock` (one log query's worth). */
+  scanTransfers?: (chain: AntsChainConfig, wallet: string, fromBlock: number, toBlock: number) => Promise<VerifiedDeposit[]>
+  /** The chain's latest block number. */
+  headBlock?: (chain: AntsChainConfig) => Promise<number>
   /** The buyer's current AntseedDeposits operator nonce (live read). */
   operatorNonce?: (chain: AntsChainConfig, buyer: string) => Promise<bigint>
   /** The buyer's current AntseedDeposits operator, null when none (live read). */
@@ -195,16 +209,15 @@ export function registerWalletRoutes(router: ConsoleRouter, deps: ConsoleDeps, o
   })
 
   // ── Deposit confirmations ──
-  const verify = overrides.verifyDeposit ?? ((chain: AntsChainConfig, txHash: string, wallet: string) => verifyDeposit(
-    gatewayChainProvider(chain) as unknown as Parameters<typeof verifyDeposit>[0],
-    {
-      depositsContractAddress: chain.depositsContractAddress ?? '',
-      depositRelayAddress: (chain as AntsChainConfig & { depositRelayAddress?: string }).depositRelayAddress,
-      usdcContractAddress: chain.usdcContractAddress ?? '',
-    },
-    txHash,
-    wallet,
-  ))
+  const depositChain = (chain: AntsChainConfig): DepositChain => ({
+    depositsContractAddress: chain.depositsContractAddress ?? '',
+    depositRelayAddress: (chain as AntsChainConfig & { depositRelayAddress?: string }).depositRelayAddress,
+    usdcContractAddress: chain.usdcContractAddress ?? '',
+  })
+  const depositProvider = (chain: AntsChainConfig) => gatewayChainProvider(chain) as unknown as Parameters<typeof verifyDeposit>[0]
+  const verify = overrides.verifyDeposit ?? ((chain: AntsChainConfig, txHash: string, wallet: string) => verifyDeposit(depositProvider(chain), depositChain(chain), txHash, wallet))
+  const scan = overrides.scanTransfers ?? ((chain: AntsChainConfig, wallet: string, fromBlock: number, toBlock: number) => scanTransfers(depositProvider(chain), depositChain(chain), wallet, fromBlock, toBlock))
+  const headBlock = overrides.headBlock ?? ((chain: AntsChainConfig) => gatewayChainProvider(chain).getBlockNumber())
   const confirmation = (deposit: DepositRecord, ws: WorkspaceWallet): DepositConfirmation => ({
     txHash: deposit.txHash,
     reference: `DEP-${deposit.txHash.slice(2, 10).toUpperCase()}`,
@@ -230,6 +243,66 @@ export function registerWalletRoutes(router: ConsoleRouter, deps: ConsoleDeps, o
     if (!verified) return null
     return deps.store.insertDeposit({ ...verified, workspaceId: ws.record.id })
   }
+
+  /**
+   * Stores a transfer found by a scan. A sweep approved before transfers were
+   * listed hands its approval to the transfer that funded it, so the books
+   * keep it without listing the money twice.
+   */
+  const recordTransfer = (ws: WorkspaceWallet, transfer: VerifiedDeposit): void => {
+    if (deps.store.getDeposit(transfer.txHash)) return
+    deps.store.insertDeposit({ ...transfer, workspaceId: ws.record.id })
+    const approvedSweep = deps.store.listDeposits(ws.record.id)
+      .find((deposit) => deposit.kind === 'relay' && deposit.approval && deposit.sources.some((source) => source.txHash === transfer.txHash))
+    if (approvedSweep?.approval) {
+      const { byId, byLabel, note } = approvedSweep.approval
+      deps.store.setDepositApproval(transfer.txHash, { byId, byLabel, note })
+    }
+  }
+
+  /**
+   * Records the USDC sent to the workspace wallet since the last scan,
+   * walking the chain forward from a per-wallet cursor. The first scan starts
+   * just before the wallet's earliest recorded deposit (so the transfers its
+   * sweeps came from are found), or about a day back for a new wallet.
+   */
+  const scanWallet = async (ws: WorkspaceWallet, address: string): Promise<void> => {
+    const chain = await resolveChain()
+    if (!chain.usdcContractAddress) return
+    const head = (await headBlock(chain)) - SCAN_CONFIRMATIONS
+    let next = deps.store.getDepositScan(address)
+    if (next === null) {
+      const earliest = deps.store.listDeposits(ws.record.id).filter((deposit) => deposit.wallet === address.toLowerCase()).at(-1)
+      next = Math.max(0, earliest ? earliest.blockNumber - SOURCE_LOOKBACK_BLOCKS : head - SCAN_FIRST_LOOKBACK_BLOCKS)
+    }
+    while (next <= head) {
+      const ranges: Array<[number, number]> = []
+      for (let from = next; from <= head && ranges.length < SCAN_PARALLEL; from += SCAN_CHUNK_BLOCKS) ranges.push([from, Math.min(head, from + SCAN_CHUNK_BLOCKS - 1)])
+      const found = await Promise.all(ranges.map(([from, to]) => scan(chain, address, from, to)))
+      for (const transfer of found.flat()) recordTransfer(ws, transfer)
+      next = ranges.at(-1)![1] + 1
+      deps.store.setDepositScan(address, next)
+    }
+  }
+  const scans = new Map<string, Promise<void>>()
+  /** One scan per wallet at a time; waits for it up to `SCAN_WAIT_MS`. */
+  const scanWalletOnce = async (ws: WorkspaceWallet): Promise<void> => {
+    const address = await addressOf(ws)
+    if (!address) return
+    const key = address.toLowerCase()
+    let running = scans.get(key)
+    if (!running) {
+      running = scanWallet(ws, key)
+        .catch((err: unknown) => deps.log(`console: scanning ${key} for transfers stopped: ${errorMessage(err)}`))
+        .finally(() => scans.delete(key))
+      scans.set(key, running)
+    }
+    let timer: NodeJS.Timeout | undefined
+    await Promise.race([running, new Promise<void>((resolve) => { timer = setTimeout(resolve, SCAN_WAIT_MS); timer.unref?.() })])
+    clearTimeout(timer)
+  }
+  /** Money that came in (transfers to the wallet, direct deposits); sweeps are moves inside the workspace. */
+  const listed = (deposit: DepositRecord): boolean => deposit.kind !== 'relay'
   const TX_HASH_RE = /^0x[0-9a-fA-F]{64}$/
   const depositOf = (ws: WorkspaceWallet, request: ConsoleRequest): DepositRecord => {
     const found = deps.store.getDeposit(request.params['tx'] ?? '')
@@ -246,15 +319,19 @@ export function registerWalletRoutes(router: ConsoleRouter, deps: ConsoleDeps, o
     for (const txHash of fresh.slice(0, 10)) {
       await recordDeposit(ws, txHash).catch((err: unknown) => deps.log(`console: deposit ${txHash} not verified yet: ${errorMessage(err)}`))
     }
-    return deps.store.listDeposits(ws.record.id).map((deposit) => confirmation(deposit, ws))
+    await scanWalletOnce(ws)
+    return deps.store.listDeposits(ws.record.id).filter(listed).map((deposit) => confirmation(deposit, ws))
   })
 
   router.add('POST', '/workspaces/:id/deposits', async (request): Promise<DepositConfirmation> => {
     const ws = workspace(request, 'admin')
     const txHash = String(record(request.body)['txHash'] ?? '').trim()
-    if (!TX_HASH_RE.test(txHash)) throw new ConsoleError(400, 'invalid_tx_hash', 'Paste the deposit transaction hash (0x followed by 64 hex characters).')
+    if (!TX_HASH_RE.test(txHash)) throw new ConsoleError(400, 'invalid_tx_hash', 'Paste the transaction hash (0x followed by 64 hex characters).')
     const deposit = await recordDeposit(ws, txHash)
-    if (!deposit) throw new ConsoleError(404, 'not_a_deposit', `That transaction did not credit a deposit to the ${ws.record.name} wallet.`)
+    if (!deposit) throw new ConsoleError(404, 'not_a_deposit', `That transaction did not send USDC to the ${ws.record.name} wallet or deposit to it.`)
+    if (!listed(deposit)) {
+      throw new ConsoleError(422, 'internal_sweep', 'That transaction moved USDC already in the workspace wallet into its credits. Paste the transaction that sent the USDC to the wallet instead.')
+    }
     audit(deps, request, 'deposit.add', { kind: 'workspace', id: ws.record.id, label: ws.record.name }, { txHash: deposit.txHash })
     return confirmation(deposit, ws)
   })

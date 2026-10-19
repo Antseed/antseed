@@ -20,10 +20,10 @@ export type DepositWatchPhase = 'deferred' | 'received' | 'sweeping' | 'credited
 /**
  * Why a sweep is waiting instead of running.
  * below-minimum — the wallet can't cover the relay fee plus the contract's
- *   first-deposit floor (or, once funded, more than the fee). More USDC must
- *   arrive before anything moves.
- * credit-limit — the deposits balance is at the buyer's credit limit; the
- *   wallet tops up automatically as spending frees headroom.
+ *   deposit floor (applied to every sweep, not only the first). More USDC
+ *   must arrive before anything moves.
+ * credit-limit — the deposits balance is at (or near) the buyer's credit
+ *   limit; the wallet tops up automatically once spending frees half of it.
  */
 export type DepositDeferReason = 'below-minimum' | 'credit-limit'
 
@@ -130,11 +130,19 @@ const SWEEP_RETRY_COOLDOWN_MS = 60_000
 // AntseedDeposits enforces a minimum first deposit (net of the fee). Read
 // from the contract; this is the fallback when the read fails.
 const MIN_FIRST_DEPOSIT_BASE_UNITS = 1_000_000n
-// Minimum top-up when the sweep is clamped by the credit-limit headroom.
-// Without a floor, a wallet holding more than the remaining headroom would
-// grind it into the limit gap in dust increments — paying the fixed relay
-// fee on each sliver every time spending frees a few cents of headroom.
+// Minimum top-up when the sweep is clamped by the credit-limit headroom:
+// at least this much, and at least TOPUP_LIMIT_DIVISOR-th of the credit
+// limit. Without it, a wallet holding more than the remaining headroom
+// grinds into the limit gap in small increments — a sweep (and its fixed
+// relay fee, and a deposit row) every time spending frees a dollar or two.
 const MIN_TOPUP_BASE_UNITS = 1_000_000n
+const TOPUP_LIMIT_DIVISOR = 2n
+
+/** The smallest headroom a clamped top-up waits for (mirrored in the desktop's funding-status). */
+export function minTopupBaseUnits(creditLimit: bigint): bigint {
+  const share = creditLimit / TOPUP_LIMIT_DIVISOR
+  return share > MIN_TOPUP_BASE_UNITS ? share : MIN_TOPUP_BASE_UNITS
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -340,10 +348,11 @@ export class DepositWatcher {
     ])
 
     const depositsBalance = deposits.available + deposits.reserved
-    // Below the sweepable minimum (fee, plus the contract's first-deposit
-    // floor) — keep waiting; more USDC may still be on the way. Say so, so
-    // the UI can ask for the shortfall instead of spinning on "preparing".
-    const minRequired = depositsBalance === 0n ? minFirstDeposit + fee : fee + 1n
+    // Below the sweepable minimum (fee, plus the contract's deposit floor —
+    // applied to every sweep, not only the first, so dust never pays a relay
+    // fee on its own) — keep waiting; more USDC may still be on the way. Say
+    // so, so the UI can ask for the shortfall instead of spinning on "preparing".
+    const minRequired = minFirstDeposit + fee
     if (usdcBalance < minRequired) {
       this._emitDeferred({
         reason: 'below-minimum',
@@ -361,9 +370,9 @@ export class DepositWatcher {
       this._emitDeferred({ reason: 'credit-limit' })
       return
     }
-    // Headroom-clamped top-up: wait until at least MIN_TOPUP_BASE_UNITS of
-    // headroom is free instead of sweeping fee-heavy slivers repeatedly.
-    if (usdcBalance - fee > headroom && headroom < MIN_TOPUP_BASE_UNITS) {
+    // Headroom-clamped top-up: wait until a sizeable share of the limit is
+    // free instead of sweeping small slivers repeatedly.
+    if (usdcBalance - fee > headroom && headroom < minTopupBaseUnits(creditLimit)) {
       this._emitDeferred({ reason: 'credit-limit' })
       return
     }
