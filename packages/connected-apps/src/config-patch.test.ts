@@ -290,6 +290,46 @@ test('applyConfigPatch (droid) refuses to replace an existing antseed custom mod
   });
 });
 
+test('applyConfigPatch (droid) takes over its own entries when the restore state is gone', async () => {
+  await withTempConfig(async (dir) => {
+    const configPath = path.join(dir, 'settings.json');
+    const user = { model: 'my-model', displayName: 'Mine', baseUrl: 'https://example.test/v1', provider: 'generic-chat-completion-api' };
+    await writeFile(configPath, `${JSON.stringify({
+      model: 'gpt-5-codex',
+      customModels: [
+        user,
+        { model: 'antseed', id: 'custom:Antseed-Auto-0', displayName: 'Antseed', baseUrl: 'http://localhost:8377/v1' },
+        { model: 'claude-opus-5', id: 'custom:Antseed-1', displayName: 'Claude Opus 5', baseUrl: 'http://localhost:8377/v1' },
+      ],
+      sessionDefaultSettings: { model: 'custom:Antseed-Auto-0' },
+    }, null, 2)}\n`, 'utf8');
+    const patch = makeDroidPatch(configPath);
+
+    applyConfigPatch(patch, PEER_ID, 8377, { models: [{ label: 'Claude Fable 5.1', model: 'claude-fable-5.1' }] });
+    const patched = JSON.parse(await readFile(configPath, 'utf8'));
+    assert.deepEqual(patched.customModels.map((m: { model: string }) => m.model), ['my-model', 'antseed', 'claude-fable-5.1']);
+
+    assert.equal(removeConfigPatch(patch), true);
+    const restored = JSON.parse(await readFile(configPath, 'utf8'));
+    assert.deepEqual(restored.customModels, [user]);
+    assert.equal(restored.model, 'gpt-5-codex');
+    assert.equal(restored.sessionDefaultSettings?.model, undefined);
+  });
+});
+
+test('removeConfigPatch (droid) keeps an empty customModels list the user had', async () => {
+  await withTempConfig(async (dir) => {
+    const configPath = path.join(dir, 'settings.json');
+    const original = '{\n  "model": "claude-opus",\n  "customModels": []\n}\n';
+    await writeFile(configPath, original, 'utf8');
+    const patch = makeDroidPatch(configPath);
+
+    applyConfigPatch(patch, PEER_ID, 8377);
+    assert.equal(removeConfigPatch(patch), true);
+    assert.equal(await readFile(configPath, 'utf8'), original);
+  });
+});
+
 test('removeConfigPatch (droid) removes a config created entirely by Antseed', async () => {
   await withTempConfig(async (dir) => {
     const configPath = path.join(dir, 'settings.json');
@@ -1134,6 +1174,57 @@ test('Claude Code patch removes a settings file it created', async () => {
 });
 
 // --- T3 Code ---
+
+test('T3 Code disconnect restores a user-owned antseed provider it replaced', async () => {
+  await withTempConfig(async (_dir, configPath) => {
+    const userAntseed = {
+      driver: 'claudeAgent',
+      displayName: 'My Antseed',
+      environment: [{ name: 'ANTHROPIC_API_KEY', value: 'mine', sensitive: true }],
+      enabled: false,
+      config: { customModels: ['my-model'] },
+    };
+    await writeFile(configPath, JSON.stringify({ theme: 'dark', providerInstances: { antseed: userAntseed } }), 'utf8');
+    const patch = makeT3CodePatch(configPath);
+
+    applyConfigPatch(patch, PEER_ID, 9456, { models: [{ label: 'Claude Fable 5.1', model: 'claude-fable-5.1' }] });
+    applyConfigPatch(patch, PEER_ID, 9456, { models: [{ label: 'Claude Opus 5.5', model: 'claude-opus-5.5' }] });
+    assert.equal(removeConfigPatch(patch), true);
+
+    const config = JSON.parse(await readFile(configPath, 'utf8')) as Record<string, unknown>;
+    assert.deepEqual(config, { theme: 'dark', providerInstances: { antseed: userAntseed } });
+    assert.equal(existsSync(`${configPath}.antseed.state.json`), false);
+  });
+});
+
+test('T3 Code disconnect removes the antseed provider when the user had none', async () => {
+  await withTempConfig(async (_dir, configPath) => {
+    const original = { theme: 'dark', providerInstances: { codex: { driver: 'codex' } } };
+    await writeFile(configPath, JSON.stringify(original), 'utf8');
+    const patch = makeT3CodePatch(configPath);
+
+    applyConfigPatch(patch, PEER_ID, 9456, { models: [{ label: 'Claude Opus 5.5', model: 'claude-opus-5.5' }] });
+    applyConfigPatch(patch, PEER_ID, 9456, { models: [{ label: 'Claude Fable 5.1', model: 'claude-fable-5.1' }] });
+    assert.equal(removeConfigPatch(patch), true);
+
+    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), original);
+  });
+});
+
+test('T3 Code reconnect keeps the original user entry instead of saving our own', async () => {
+  await withTempConfig(async (_dir, configPath) => {
+    const userAntseed = { driver: 'claudeAgent', displayName: 'Mine', environment: [], config: { customModels: [] } };
+    await writeFile(configPath, JSON.stringify({ providerInstances: { antseed: userAntseed } }), 'utf8');
+    const patch = makeT3CodePatch(configPath);
+
+    applyConfigPatch(patch, PEER_ID, 9456);
+    applyConfigPatch(patch, PEER_ID, 9456);
+    applyConfigPatch(patch, PEER_ID, 9456);
+    assert.equal(removeConfigPatch(patch), true);
+
+    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), { providerInstances: { antseed: userAntseed } });
+  });
+});
 
 test('T3 Code patch adds Antseed Claude provider and preserves existing settings', async () => {
   await withTempConfig(async (_dir, configPath) => {

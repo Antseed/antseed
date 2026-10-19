@@ -534,6 +534,11 @@ export async function startSystemProxyRuntime(opts: SystemProxyStartRequest): Pr
     return await startSystemProxyRuntimeInner(opts);
   } finally {
     systemProxyStartsInFlight -= 1;
+    // A star toggled mid-connect may have missed the list this connect wrote.
+    if (systemProxyStartsInFlight === 0 && modelListRefreshPending) {
+      modelListRefreshPending = false;
+      void refreshConnectedAppModelLists().catch(() => undefined);
+    }
   }
 }
 
@@ -705,11 +710,16 @@ export async function startSystemProxyRuntimeInner(opts: SystemProxyStartRequest
  * Codex, OpenCode, Hermes, ...) after the starred models change, so a new star
  * reaches their pickers without a reconnect. Same route, same apps; nothing
  * is restarted, so apps that read their config only at launch pick the list
- * up when next opened. Skipped while a connect is running: it writes the list
- * itself.
+ * up when next opened. While a connect is running it is queued and runs once
+ * that connect finishes.
  */
+let modelListRefreshPending = false;
+
 export async function refreshConnectedAppModelLists(): Promise<void> {
-  if (systemProxyStartsInFlight > 0) return;
+  if (systemProxyStartsInFlight > 0) {
+    modelListRefreshPending = true;
+    return;
+  }
   const state = getSystemProxyProcessState();
   const metadata = runtimeMetadata(state);
   const peerId = typeof metadata['peerId'] === 'string' ? metadata['peerId'] : '';

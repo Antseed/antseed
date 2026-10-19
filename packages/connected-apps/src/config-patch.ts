@@ -945,8 +945,11 @@ function applyDroidModelToFile(
   const customModels = droidCustomModels(config, filePath);
   const existingSessionDefaultSettings = droidSessionDefaultSettings(config, filePath);
   const state = readDroidPatchState(filePath);
-  const matchingModels = customModels.filter((model) => isDroidModel(model, patch.providerKey) || isManagedDroidModel(model));
-  if (matchingModels.length > 0 && !state) {
+  // Entries carrying our `custom:Antseed-` id are ours even when the restore
+  // state file is gone (e.g. deleted, or written by another data dir); only a
+  // user's own entry named like the provider key is refused.
+  const userModels = customModels.filter((model) => isDroidModel(model, patch.providerKey) && !isManagedDroidModel(model));
+  if (userModels.length > 0 && !state) {
     throw new Error(
       `Droid already defines a custom model named ${patch.providerKey} in ${filePath}; refusing to overwrite it.`,
     );
@@ -954,12 +957,17 @@ function applyDroidModelToFile(
   if (!state) {
     const modelPresent = Object.prototype.hasOwnProperty.call(config, 'model');
     const sessionDefaultSettingsPresent = existingSessionDefaultSettings !== undefined;
+    // A managed default left behind by a lost state is not the user's to restore.
     const sessionDefaultModelPresent = existingSessionDefaultSettings !== undefined
-      && Object.prototype.hasOwnProperty.call(existingSessionDefaultSettings, 'model');
+      && Object.prototype.hasOwnProperty.call(existingSessionDefaultSettings, 'model')
+      && !(typeof existingSessionDefaultSettings['model'] === 'string'
+        && (existingSessionDefaultSettings['model'] as string).startsWith(DROID_MODEL_ID_PREFIX));
     writeDroidPatchState(filePath, {
       version: 2,
       configExisted,
-      customModelsPresent,
+      // A list holding only leftover managed entries was ours; an empty list is the user's.
+      customModelsPresent: customModelsPresent
+        && (customModels.length === 0 || customModels.some((model) => !isManagedDroidModel(model))),
       modelPresent,
       ...(modelPresent ? { modelValue: config['model'] } : {}),
       sessionDefaultSettingsPresent,
@@ -1996,11 +2004,56 @@ function removeClaudeCodeSettingsFromFile(
   return changed;
 }
 
+/**
+ * T3 Code keeps providers in `providerInstances`. Antseed owns only its own
+ * `<providerKey>` entry: the first connect saves whatever entry was there (or
+ * the fact there was none) to a sidecar state file, so disconnect can put the
+ * user's own entry back. Reconnects and model-list refreshes keep that saved
+ * original instead of overwriting it again.
+ */
+type T3CodeState = { version: 1; hadInstance: boolean; instance?: JsonObject };
+
+function t3CodeStatePath(filePath: string): string {
+  return `${filePath}.antseed.state.json`;
+}
+
+function readT3CodeState(filePath: string): T3CodeState | null {
+  const state = tryReadConfigPatchFile(t3CodeStatePath(filePath));
+  if (!state) return null;
+  if (state['version'] !== 1 || typeof state['hadInstance'] !== 'boolean') {
+    throw new Error(`Invalid Antseed T3 Code restore state at ${t3CodeStatePath(filePath)}`);
+  }
+  const instance = state['instance'];
+  return {
+    version: 1,
+    hadInstance: state['hadInstance'],
+    ...(instance && typeof instance === 'object' && !Array.isArray(instance) ? { instance: instance as JsonObject } : {}),
+  };
+}
+
+function deleteT3CodeState(filePath: string): void {
+  try {
+    unlinkSync(t3CodeStatePath(filePath));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+}
+
 function applyT3CodeConfigPatch(patch: T3CodeConfigPatchDef, buyerPort: number, models: readonly ConnectedAppModel[]): void {
   const filePath = expandTilde(patch.configPath);
   backupConfigFile(filePath);
   const config = readConfigPatchFile(filePath);
   const providerInstances = asObject(config['providerInstances']);
+  const existing = providerInstances[patch.providerKey];
+  if (!readT3CodeState(filePath)) {
+    const hadInstance = existing !== undefined;
+    const isObject = existing !== null && typeof existing === 'object' && !Array.isArray(existing);
+    writeJsonFile(t3CodeStatePath(filePath), {
+      version: 1,
+      hadInstance,
+      ...(hadInstance && isObject ? { instance: existing as JsonObject } : {}),
+    });
+  }
   const customModels = connectedAppCatalog(models).map((entry) => entry.model);
   providerInstances[patch.providerKey] = {
     driver: 'claudeAgent',
@@ -2026,24 +2079,31 @@ function applyT3CodeConfigPatch(patch: T3CodeConfigPatchDef, buyerPort: number, 
 
 function removeT3CodeConfigPatch(patch: T3CodeConfigPatchDef): boolean {
   const filePath = expandTilde(patch.configPath);
+  const state = readT3CodeState(filePath);
   const config = tryReadConfigPatchFile(filePath);
-  if (!config) return false;
-  const providerInstances = config['providerInstances'];
-  if (!providerInstances || typeof providerInstances !== 'object' || Array.isArray(providerInstances)) return false;
-  const instance = (providerInstances as JsonObject)[patch.providerKey];
-  if (!instance || typeof instance !== 'object' || Array.isArray(instance)) return false;
-  const environment = (instance as JsonObject)['environment'];
+  if (!config) {
+    if (state) deleteT3CodeState(filePath);
+    return false;
+  }
+  const providerInstances = asObject(config['providerInstances']);
+  const instance = providerInstances[patch.providerKey];
+  const environment = asObject(instance)['environment'];
   const ownsInstance = Array.isArray(environment) && environment.some((variable) => {
-    if (!variable || typeof variable !== 'object' || Array.isArray(variable)) return false;
-    const value = (variable as JsonObject)['value'];
-    return (variable as JsonObject)['name'] === 'ANTHROPIC_BASE_URL'
-      && isLoopbackHost(typeof value === 'string' ? value : undefined);
+    const entry = asObject(variable);
+    return entry['name'] === 'ANTHROPIC_BASE_URL'
+      && isLoopbackHost(typeof entry['value'] === 'string' ? entry['value'] : undefined);
   });
-  if (!ownsInstance) return false;
-  delete (providerInstances as JsonObject)[patch.providerKey];
-  if (Object.keys(providerInstances as JsonObject).length === 0) delete config['providerInstances'];
+  if (!ownsInstance && !state) return false;
+  if (state?.hadInstance && state.instance) {
+    providerInstances[patch.providerKey] = state.instance;
+  } else {
+    delete providerInstances[patch.providerKey];
+  }
+  if (Object.keys(providerInstances).length === 0) delete config['providerInstances'];
+  else config['providerInstances'] = providerInstances;
   backupConfigFile(filePath);
   writeJsonFile(filePath, config);
+  deleteT3CodeState(filePath);
   return true;
 }
 
