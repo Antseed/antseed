@@ -19,6 +19,7 @@ import { parseBootstrapList, toBootstrapConfig } from '@antseed/node/discovery'
 import { buildBuyerBootstrapEntries } from './start.js'
 import {
   DepositWatcher,
+  reserveBaseUnits,
   type DepositWatchEvent,
 } from '../../../proxy/deposit-watcher.js'
 import { daemonDepositsStatus, daemonSetWatchMode } from './daemon.js'
@@ -265,6 +266,7 @@ async function watchStandalone(
     depositsClient: createDepositsClient(config),
     relayClient: createDepositRelayClient(config),
     usdcAddress: crypto.usdcContractAddress,
+    sessionReserveBaseUnits: reserveBaseUnits(config.payments?.maxReserveAmountUsdc),
     evmChainId: crypto.evmChainId,
     depositRelayAddress: crypto.depositRelayAddress,
     dispatch: async (payload) => (await ensureNode()).dispatchSweepRequest(payload),

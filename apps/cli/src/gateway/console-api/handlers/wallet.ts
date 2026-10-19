@@ -20,7 +20,7 @@ import type { WorkspaceRecord } from '../../store.js'
 import type { Channel, ChainInfo, DepositConfirmation, DepositWatch, Rewards, Wallet } from '../types.js'
 import type { DepositRecord } from '../../store.js'
 import { usdcToDecimalString } from '../../money.js'
-import { verifyDeposit, type DepositChain, type VerifiedDeposit } from '../../services/deposits.js'
+import { ReceiptUnavailableError, verifyDeposit, type DepositChain, type VerifiedDeposit } from '../../services/deposits.js'
 import { buyerJson, defaultBuyerClient, optionalBuyerJson, withIdentity, type BuyerClient } from './network-buyer.js'
 import { antseedPayBaseUrl, buildCardLink, CARD_PROVIDERS, type CardProvider } from './wallet-card-link.js'
 import { applyChannelChainState, chainInfo, channelChainHints, mapBalances, mapChannels, mapDepositWatch, mapRewards, record, type ChannelChainState } from './wallet-mapping.js'
@@ -324,7 +324,10 @@ export function registerWalletRoutes(router: ConsoleRouter, deps: ConsoleDeps, o
     const ws = workspace(request, 'admin')
     const txHash = String(record(request.body)['txHash'] ?? '').trim()
     if (!TX_HASH_RE.test(txHash)) throw new ConsoleError(400, 'invalid_tx_hash', 'Paste the transaction hash (0x followed by 64 hex characters).')
-    const deposit = await recordDeposit(ws, txHash)
+    const deposit = await recordDeposit(ws, txHash).catch((err: unknown) => {
+      if (err instanceof ReceiptUnavailableError) throw new ConsoleError(404, 'not_found', 'That transaction is not on the chain yet. Try again in a minute.')
+      throw err
+    })
     if (!deposit) throw new ConsoleError(404, 'not_a_deposit', `That transaction did not send USDC to the ${ws.record.name} wallet or deposit to it.`)
     if (deposit.kind === 'relay') {
       throw new ConsoleError(422, 'internal_sweep', 'That transaction moved USDC already in the workspace wallet into its credits. Paste the transaction that sent the USDC to the wallet instead.')

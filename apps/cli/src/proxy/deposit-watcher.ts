@@ -105,6 +105,8 @@ export interface DepositWatcherDeps {
    * Without it the watcher polls on its own timer (one-shot commands).
    */
   scheduler?: DepositWatchScheduler
+  /** What a new session reserves (the buyer's `maxReserveAmountUsdc`); defaults to $1. */
+  sessionReserveBaseUnits?: bigint
 }
 
 /** What a shared poll loop needs from a watcher; `DepositWatchHub` implements the other side. */
@@ -138,7 +140,7 @@ const MIN_FIRST_DEPOSIT_BASE_UNITS = 1_000_000n
 const MIN_TOPUP_BASE_UNITS = 1_000_000n
 const TOPUP_LIMIT_DIVISOR = 2n
 // The half-limit share applies only while the spendable credits still cover
-// a new session's reservation (the buyer's default $1 block). Below that,
+// a new session's reservation (the buyer's maxReserveAmountUsdc). Below that,
 // nothing new can be paid for until a refill lands, so the top-up goes as
 // soon as the $1 minimum fits.
 const SESSION_RESERVE_BASE_UNITS = 1_000_000n
@@ -147,6 +149,11 @@ const SESSION_RESERVE_BASE_UNITS = 1_000_000n
 export function minTopupBaseUnits(creditLimit: bigint): bigint {
   const share = creditLimit / TOPUP_LIMIT_DIVISOR
   return share > MIN_TOPUP_BASE_UNITS ? share : MIN_TOPUP_BASE_UNITS
+}
+
+/** A configured `maxReserveAmountUsdc` (base units) as the watcher's session reserve; undefined (the $1 default) when unset or malformed. */
+export function reserveBaseUnits(value: string | undefined): bigint | undefined {
+  return value && /^\d+$/.test(value) && BigInt(value) > 0n ? BigInt(value) : undefined
 }
 
 function sleep(ms: number): Promise<void> {
@@ -378,7 +385,8 @@ export class DepositWatcher {
     // Headroom-clamped top-up: wait until a sizeable share of the limit is
     // free instead of sweeping small slivers repeatedly — or only the $1
     // minimum when the credits free to spend can no longer open a session.
-    const topupFloor = deposits.available >= SESSION_RESERVE_BASE_UNITS ? minTopupBaseUnits(creditLimit) : MIN_TOPUP_BASE_UNITS
+    const sessionReserve = this._deps.sessionReserveBaseUnits ?? SESSION_RESERVE_BASE_UNITS
+    const topupFloor = deposits.available >= sessionReserve ? minTopupBaseUnits(creditLimit) : MIN_TOPUP_BASE_UNITS
     if (usdcBalance - fee > headroom && headroom < topupFloor) {
       this._emitDeferred({ reason: 'credit-limit' })
       return

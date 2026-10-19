@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, before, test } from 'node:test'
 import type { AntsChainConfig } from '@antseed/ants'
-import type { VerifiedDeposit as Verified } from '../../services/deposits.js'
+import { ReceiptUnavailableError, type VerifiedDeposit as Verified } from '../../services/deposits.js'
 import { GatewayStore } from '../../store.js'
 import { ConsoleRouter } from '../router.js'
 import type { DepositConfirmation } from '../types.js'
@@ -27,6 +27,8 @@ const LEGACY = `0x${'ab'.repeat(32)}` // a sweep an older gateway stored naming 
 const SENT_LEGACY = `0x${'f9'.repeat(32)}` // the transfer that funded it
 const FLAKY = `0x${'a3'.repeat(32)}` // a sweep whose funding lookup fails at first
 const SENT_LATE = `0x${'f8'.repeat(32)}` // the transfer that funded it
+const SWEPT_FRESH = `0x${'a4'.repeat(32)}` // a sweep of a transfer…
+const SENT_UNINDEXED = `0x${'fa'.repeat(32)}` // …whose receipt the RPC does not have at first
 const APPROVED_LONG_AGO = 1_600_000_000_000
 const CHAIN = { chainId: 'base-sepolia', evmChainId: 84532, rpcUrl: 'http://127.0.0.1:1' } as AntsChainConfig
 
@@ -37,6 +39,7 @@ let workspaceId: string
 let ownerId: string
 const laterHistory: Array<Record<string, unknown>> = []
 let flakyFailures = 0
+let unindexed = 0
 
 before(async () => {
   dir = mkdtempSync(join(tmpdir(), 'antseed-deposits-'))
@@ -83,6 +86,10 @@ function setup(now?: () => number): ConsoleRouter {
           if (flakyFailures-- > 0) throw new Error('rate limited')
           return sweep(txHash, wallet, [{ from: PAYER, amountUsdc: 20_000_000, txHash: SENT_LATE }])
         case SENT_LATE: return transfer(txHash, wallet, PAYER, 20_000_000, 11)
+        case SWEPT_FRESH: return sweep(txHash, wallet, [{ from: PAYER, amountUsdc: 3_000_000, txHash: SENT_UNINDEXED }])
+        case SENT_UNINDEXED:
+          if (unindexed-- > 0) throw new ReceiptUnavailableError(txHash)
+          return transfer(txHash, wallet, PAYER, 3_000_000, 12)
         case SENT: return transfer(txHash, wallet, MINTED_FROM, 500_000_000, 9)
         case SENT_EARLIER: return transfer(txHash, wallet, PAYER, 7_000_000, 3)
         case FUNDED_APPROVED: return transfer(txHash, wallet, PAYER, 40_000_000, 4)
@@ -167,6 +174,18 @@ test('a sweep whose check fails is checked again after a backoff, and its transf
   const list = await call(router, 'GET', `/workspaces/${workspaceId}/deposits`, admin()) as DepositConfirmation[]
   assert.equal(store.getDeposit(workspaceId, FLAKY)?.kind, 'relay')
   assert.equal(list.find((deposit) => deposit.txHash === SENT_LATE)?.sent, '20.000000')
+})
+
+test('a funding transfer whose receipt is not available yet is checked again, not dropped', async () => {
+  let now = 1_700_000_000_000
+  const router = setup(() => now)
+  laterHistory.push({ txHash: SWEPT_FRESH, creditedBaseUnits: '2950000', at: 4 })
+  unindexed = 1
+  const first = await call(router, 'GET', `/workspaces/${workspaceId}/deposits`, admin()) as DepositConfirmation[]
+  assert.ok(!first.some((deposit) => deposit.txHash === SENT_UNINDEXED))
+  now += 60_000
+  const later = await call(router, 'GET', `/workspaces/${workspaceId}/deposits`, admin()) as DepositConfirmation[]
+  assert.equal(later.find((deposit) => deposit.txHash === SENT_UNINDEXED)?.sent, '3.000000')
 })
 
 test('one transaction paying two workspace wallets is a confirmation in each, approved separately', async () => {

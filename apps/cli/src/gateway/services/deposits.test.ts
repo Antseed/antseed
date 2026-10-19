@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { AbiCoder, Interface, zeroPadValue, type Log, type TransactionReceipt } from 'ethers'
-import { SOURCE_LOOKBACK_BLOCKS, verifyDeposit, type DepositChainProvider } from './deposits.js'
+import { ReceiptUnavailableError, SOURCE_LOOKBACK_BLOCKS, verifyDeposit, type DepositChainProvider } from './deposits.js'
 
 // Obvious fakes: fixed test addresses and hashes, never real ones.
 const DEPOSITS = `0x${'d0'.repeat(20)}`
@@ -64,7 +64,8 @@ test('not a deposit to this wallet: another wallet, a failed transaction, a forg
   assert.equal(await verifyDeposit(provider({ status: 0, logs: [deposited(WALLET, 1n, SWEEP_TX)] }), CHAIN, SWEEP_TX, WALLET), null)
   const forged = { ...deposited(WALLET, 1n, SWEEP_TX), address: `0x${'66'.repeat(20)}` } as Log
   assert.equal(await verifyDeposit(provider({ status: 1, logs: [forged] }), CHAIN, SWEEP_TX, WALLET), null)
-  assert.equal(await verifyDeposit(provider(null), CHAIN, SWEEP_TX, WALLET), null)
+  // No receipt (yet) is not a verdict: the caller retries.
+  await assert.rejects(verifyDeposit(provider(null), CHAIN, SWEEP_TX, WALLET), ReceiptUnavailableError)
 })
 
 test('a log query the RPC refuses fails the sweep, to be checked again, rather than losing its funding', async () => {

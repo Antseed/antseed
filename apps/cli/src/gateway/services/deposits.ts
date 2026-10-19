@@ -61,15 +61,25 @@ function parse(abi: Interface, log: Log) {
   }
 }
 
+/** The RPC has no receipt for the transaction (yet): retry later rather than conclude it is not a deposit. */
+export class ReceiptUnavailableError extends Error {
+  constructor(txHash: string) {
+    super(`no receipt for ${txHash} yet`)
+    this.name = 'ReceiptUnavailableError'
+  }
+}
+
 /**
  * The deposit `txHash` credited to `wallet`, or null when the transaction
- * failed or neither credited the wallet nor sent it USDC. A sweep whose
+ * failed or neither credited the wallet nor sent it USDC. A missing receipt
+ * throws ReceiptUnavailableError (the RPC may not have it yet). A sweep whose
  * funding lookup fails throws, so the caller retries it rather than storing
  * a sweep that names no transfer; a direct deposit's payer is best effort.
  */
 export async function verifyDeposit(provider: DepositChainProvider, chain: DepositChain, txHash: string, wallet: string): Promise<VerifiedDeposit | null> {
   const receipt = await provider.getTransactionReceipt(txHash)
-  if (!receipt || receipt.status !== 1) return null
+  if (!receipt) throw new ReceiptUnavailableError(txHash)
+  if (receipt.status !== 1) return null
   let credited: bigint | null = null
   let fee: bigint | null = null
   let swept: bigint | null = null
