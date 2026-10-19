@@ -94,6 +94,7 @@ import {
   CHANNEL_KIND,
   CHANNEL_ROLE,
   CHANNEL_STATUS,
+  type StoredChannel,
 } from "./payments/index.js";
 import { debugLog, debugWarn } from "./utils/debug.js";
 import { parsePublicAddress } from "./discovery/public-address.js";
@@ -186,6 +187,14 @@ export type BuyerChannelSummary = {
   /** Last local cumulative usage/auth update for this channel. */
   updatedAt: number;
   status: string;
+  /** `paid` session channel or `one_off` request channel. */
+  channelKind: string;
+  /**
+   * True only for the session the buyer is currently using with this seller:
+   * the one a cooperative close reaches. Older rows still marked active (a
+   * session the buyer moved on from) are not live.
+   */
+  live: boolean;
   requestCount: number;
   tokensDelivered: string;
   outputTokens: string;
@@ -1280,7 +1289,7 @@ export class AntseedNode extends EventEmitter {
    */
   async requestChannelClose(
     sellerPeerId: string,
-    opts: { includeAuth?: boolean; timeoutMs?: number; buyerIdentity?: string } = {},
+    opts: { includeAuth?: boolean; timeoutMs?: number; buyerIdentity?: string; channelId?: string } = {},
   ): Promise<CloseChannelResultPayload> {
     const { buyerIdentity, ...closeOptions } = opts;
     const context = this._buyerContext(buyerIdentity);
@@ -1423,63 +1432,49 @@ export class AntseedNode extends EventEmitter {
   getActiveBuyerChannels(buyerIdentity?: string): BuyerChannelSummary[] {
     const { address: buyerAddress, paymentManager } = this._buyerAccount(buyerIdentity);
     if (!buyerAddress || !this._channelStore) return [];
-    const stored = this._channelStore.getBuyerPaymentChannels(buyerAddress)
-      .filter((channel) => channel.status === CHANNEL_STATUS.ACTIVE);
-    return stored.map((c) => {
-      const liveReserve = c.channelKind === CHANNEL_KIND.ONE_OFF
-        ? BigInt(c.confirmedReserveAmount ?? '0')
-        : paymentManager?.getReserveCeiling(c.peerId);
-      return {
-        channelId: c.sessionId,
-        peerId: c.peerId,
-        seller: c.sellerEvmAddr,
-        buyer: c.buyerEvmAddr,
-        reserveCeiling: liveReserve != null && liveReserve > 0n ? liveReserve.toString() : null,
-        cumulativeSigned: c.authMax,
-        settledAmount: c.settledAmount,
-        deadline: c.deadline,
-        reservedAt: c.reservedAt,
-        updatedAt: c.updatedAt,
-        status: c.status,
-        requestCount: c.requestCount,
-        tokensDelivered: c.tokensDelivered,
-        // Buyer rows overload previousConsumption as cumulative output tokens
-        // (see getBuyerUsageTotals).
-        outputTokens: c.previousConsumption,
-      };
-    });
+    return this._channelStore.getBuyerPaymentChannels(buyerAddress)
+      .filter((channel) => channel.status === CHANNEL_STATUS.ACTIVE)
+      .map((channel) => this._buyerChannelSummary(channel, paymentManager));
   }
 
   /** All buyer channels (any local status), used for history views. */
   getAllBuyerChannels(buyerIdentity?: string): BuyerChannelSummary[] {
     const { address: buyerAddress, paymentManager } = this._buyerAccount(buyerIdentity);
     if (!buyerAddress || !this._channelStore) return [];
-    const stored = this._channelStore.getBuyerPaymentChannels(buyerAddress);
-    return stored.map((c) => {
-      const liveReserve = c.status === CHANNEL_STATUS.ACTIVE
-        ? c.channelKind === CHANNEL_KIND.ONE_OFF
-          ? BigInt(c.confirmedReserveAmount ?? '0')
-          : paymentManager?.getReserveCeiling(c.peerId)
-        : null;
-      return {
-        channelId: c.sessionId,
-        peerId: c.peerId,
-        seller: c.sellerEvmAddr,
-        buyer: c.buyerEvmAddr,
-        reserveCeiling: liveReserve != null && liveReserve > 0n ? liveReserve.toString() : null,
-        cumulativeSigned: c.authMax,
-        settledAmount: c.settledAmount,
-        deadline: c.deadline,
-        reservedAt: c.reservedAt,
-        updatedAt: c.updatedAt,
-        status: c.status,
-        requestCount: c.requestCount,
-        tokensDelivered: c.tokensDelivered,
-        // Buyer rows overload previousConsumption as cumulative output tokens
-        // (see getBuyerUsageTotals).
-        outputTokens: c.previousConsumption,
-      };
-    });
+    return this._channelStore.getBuyerPaymentChannels(buyerAddress)
+      .map((channel) => this._buyerChannelSummary(channel, paymentManager));
+  }
+
+  private _buyerChannelSummary(c: StoredChannel, paymentManager: BuyerPaymentManager | null): BuyerChannelSummary {
+    const active = c.status === CHANNEL_STATUS.ACTIVE;
+    const oneOff = c.channelKind === CHANNEL_KIND.ONE_OFF;
+    // Only the session the buyer is using with this seller is live; older
+    // rows the store still calls active are not, and its reserve is not theirs.
+    const live = active && !oneOff && paymentManager?.getActiveSession(c.peerId)?.sessionId === c.sessionId;
+    const liveReserve = !active ? null
+      : oneOff ? BigInt(c.confirmedReserveAmount ?? '0')
+      : live ? paymentManager?.getReserveCeiling(c.peerId)
+      : null;
+    return {
+      channelId: c.sessionId,
+      peerId: c.peerId,
+      seller: c.sellerEvmAddr,
+      buyer: c.buyerEvmAddr,
+      reserveCeiling: liveReserve != null && liveReserve > 0n ? liveReserve.toString() : null,
+      cumulativeSigned: c.authMax,
+      settledAmount: c.settledAmount,
+      deadline: c.deadline,
+      reservedAt: c.reservedAt,
+      updatedAt: c.updatedAt,
+      status: c.status,
+      channelKind: c.channelKind ?? CHANNEL_KIND.PAID,
+      live,
+      requestCount: c.requestCount,
+      tokensDelivered: c.tokensDelivered,
+      // Buyer rows overload previousConsumption as cumulative output tokens
+      // (see getBuyerUsageTotals).
+      outputTokens: c.previousConsumption,
+    };
   }
 
   /**

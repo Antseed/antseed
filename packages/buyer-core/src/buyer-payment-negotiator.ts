@@ -630,11 +630,13 @@ export class BuyerPaymentNegotiator {
   async requestChannelClose(
     peerId: PeerId,
     conn: BuyerConnection,
-    { includeAuth = true, timeoutMs = CLOSE_REQUEST_TIMEOUT_MS, maxCumulative }: {
+    { includeAuth = true, timeoutMs = CLOSE_REQUEST_TIMEOUT_MS, maxCumulative, channelId }: {
       includeAuth?: boolean;
       timeoutMs?: number;
       /** Cap the attached authorization (e.g. at the on-chain deposit). */
       maxCumulative?: bigint;
+      /** Close only when this is the live session: the seller is only ever asked about that one. */
+      channelId?: string;
     } = {},
   ): Promise<CloseChannelResultPayload> {
     if (this._pendingCloseRequests.has(peerId)) {
@@ -644,6 +646,12 @@ export class BuyerPaymentNegotiator {
     const session = this._bpm.getActiveSession(peerId);
     if (!session) {
       throw new Error(`No active payment channel with seller ${peerId.slice(0, 12)}...`);
+    }
+    if (channelId && session.sessionId.toLowerCase() !== channelId.toLowerCase()) {
+      throw new Error(
+        `Channel ${channelId.slice(0, 18)}... is not the live channel with seller ${peerId.slice(0, 12)}..., ` +
+        `so the seller cannot close it. Use the on-chain request-close flow instead.`,
+      );
     }
 
     // Flush any SpendingAuth the buyer still owes for the last response first —
