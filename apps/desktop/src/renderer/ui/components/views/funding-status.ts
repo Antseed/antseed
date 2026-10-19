@@ -223,11 +223,11 @@ export function deriveFundingStatus(inputs: FundingInputs): FundingStatus {
   // An unread credit limit (0) must not read as "at the limit".
   const headroom = creditLimit === 0n ? wallet : creditLimit > deposited ? creditLimit - deposited : 0n;
   // Mirrors the watcher: every sweep credits at least the deposit floor, and
-  // one clamped by headroom waits until half the limit is free, unless the
-  // available credits can no longer open a session.
+  // one clamped by headroom waits until half the limit is free, or only $1
+  // when the available credits can no longer open a session.
   const sweepNeeds = minFirst + fee;
-  const waitsForHeadroom = headroom === 0n
-    || (wallet - fee > headroom && headroom < minTopupBaseUnits(creditLimit) && available >= SESSION_RESERVE_BASE_UNITS);
+  const topupFloor = available >= SESSION_RESERVE_BASE_UNITS ? minTopupBaseUnits(creditLimit) : MIN_TOPUP_BASE_UNITS;
+  const waitsForHeadroom = headroom === 0n || (wallet - fee > headroom && headroom < topupFloor);
   const walletSweepable = wallet >= sweepNeeds && !waitsForHeadroom;
   const walletAtLimit = wallet >= sweepNeeds && waitsForHeadroom && creditLimit > 0n;
 

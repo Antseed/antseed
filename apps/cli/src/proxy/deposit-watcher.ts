@@ -137,9 +137,10 @@ const MIN_FIRST_DEPOSIT_BASE_UNITS = 1_000_000n
 // relay fee, and a deposit row) every time spending frees a dollar or two.
 const MIN_TOPUP_BASE_UNITS = 1_000_000n
 const TOPUP_LIMIT_DIVISOR = 2n
-// …but only while the spendable credits still cover a new session's
-// reservation (the buyer's default $1 block). Below that, nothing new can be
-// paid for until a refill lands, so whatever headroom there is gets swept now.
+// The half-limit share applies only while the spendable credits still cover
+// a new session's reservation (the buyer's default $1 block). Below that,
+// nothing new can be paid for until a refill lands, so the top-up goes as
+// soon as the $1 minimum fits.
 const SESSION_RESERVE_BASE_UNITS = 1_000_000n
 
 /** The smallest headroom a clamped top-up waits for (mirrored in the desktop's funding-status). */
@@ -375,9 +376,10 @@ export class DepositWatcher {
       return
     }
     // Headroom-clamped top-up: wait until a sizeable share of the limit is
-    // free instead of sweeping small slivers repeatedly — unless the credits
-    // free to spend can no longer open a session (the rest is reserved).
-    if (usdcBalance - fee > headroom && headroom < minTopupBaseUnits(creditLimit) && deposits.available >= SESSION_RESERVE_BASE_UNITS) {
+    // free instead of sweeping small slivers repeatedly — or only the $1
+    // minimum when the credits free to spend can no longer open a session.
+    const topupFloor = deposits.available >= SESSION_RESERVE_BASE_UNITS ? minTopupBaseUnits(creditLimit) : MIN_TOPUP_BASE_UNITS
+    if (usdcBalance - fee > headroom && headroom < topupFloor) {
       this._emitDeferred({ reason: 'credit-limit' })
       return
     }
