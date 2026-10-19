@@ -49,15 +49,24 @@ export const ERC20_ABI = [
 const GAS_BUFFER_NUMERATOR = 130n;
 const GAS_BUFFER_DENOMINATOR = 100n;
 
+/**
+ * Next nonce and reservation lock per chain and signer, shared by every client
+ * in the process. A seller signs with one wallet from several clients
+ * (channels, free usage, ...); per-client cursors let two of them pick the
+ * same nonce, and the second send fails with "replacement fee too low".
+ */
+const nonceCursors = new Map<string, number>();
+const nonceLocks = new Map<string, Promise<void>>();
+
 export abstract class BaseEvmClient {
   protected _provider: AbstractProvider;
   protected readonly _contractAddress: string;
-  protected readonly _nonceCursor = new Map<string, number>();
-  private readonly _nonceLocks = new Map<string, Promise<void>>();
+  private readonly _nonceScope: string;
 
   constructor(rpcUrl: string, contractAddress: string, fallbackRpcUrls?: string[], evmChainId?: number) {
     this._provider = buildProvider(rpcUrl, fallbackRpcUrls, evmChainId);
     this._contractAddress = contractAddress;
+    this._nonceScope = evmChainId ? `chain:${evmChainId}` : `rpc:${rpcUrl}`;
   }
 
   get provider(): AbstractProvider { return this._provider; }
@@ -133,7 +142,7 @@ export abstract class BaseEvmClient {
       populated.gasLimit = (estimated * GAS_BUFFER_NUMERATOR) / GAS_BUFFER_DENOMINATOR;
       return await connected.sendTransaction(populated);
     } catch (err) {
-      this._nonceCursor.delete(signerAddress);
+      nonceCursors.delete(this._nonceKey(signerAddress));
       throw err;
     }
   }
@@ -141,20 +150,25 @@ export abstract class BaseEvmClient {
   protected async _reserveNonce(address: string): Promise<number> {
     // Serialize nonce reservation per address to prevent concurrent calls
     // from reading the same network nonce before either updates the cursor
-    const prev = this._nonceLocks.get(address) ?? Promise.resolve();
+    const key = this._nonceKey(address);
+    const prev = nonceLocks.get(key) ?? Promise.resolve();
     let resolve: () => void;
     const lock = new Promise<void>(r => { resolve = r; });
-    this._nonceLocks.set(address, lock);
+    nonceLocks.set(key, lock);
 
     await prev;
     try {
       const networkNonce = await this._provider.getTransactionCount(address, 'pending');
-      const cachedNext = this._nonceCursor.get(address);
+      const cachedNext = nonceCursors.get(key);
       const nonce = cachedNext === undefined ? networkNonce : Math.max(networkNonce, cachedNext);
-      this._nonceCursor.set(address, nonce + 1);
+      nonceCursors.set(key, nonce + 1);
       return nonce;
     } finally {
       resolve!();
     }
+  }
+
+  private _nonceKey(address: string): string {
+    return `${this._nonceScope}:${address}`;
   }
 }
