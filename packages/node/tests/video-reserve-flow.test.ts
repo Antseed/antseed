@@ -811,6 +811,31 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     expect(failedSpends).toEqual([]);
   });
 
+  it('reports the serious fee once when an AuthAck and an on-chain confirmation overlap', async () => {
+    const h = setup({ topUpBehavior: 'slow' });
+    await openChannelWithChat(h);
+    const spends: string[] = [];
+    h.buyer.setSpendListener((event) => { spends.push(event.amountUsdc); });
+    const pending = h.send(h.videoRequest('video-1'));
+    await vi.waitFor(() => expect(h.topUp).toHaveBeenCalledOnce());
+    const [channelId] = h.oneOffChannelIds();
+
+    // Hold both confirmations inside the channel-store flush.
+    let releaseFlush!: () => void;
+    const flushed = new Promise<void>((resolve) => { releaseFlush = resolve; });
+    Object.assign((h.buyer as unknown as { _channelStore: object })._channelStore, { flush: () => flushed });
+    const confirmations = Promise.all([
+      h.buyer.handleAuthAck(h.peer.peerId, { channelId: channelId! }),
+      h.buyer.confirmOneOffChannelOnChain(channelId!, VIDEO_PRICE),
+    ]);
+    releaseFlush();
+    await confirmations;
+    h.releaseTopUp();
+    expect((await pending).statusCode).toBe(200);
+
+    expect(spends).toEqual([SERIOUS_FEE.toString()]);
+  });
+
   it('does not evict a just-reserved channel the chain read does not show yet', async () => {
     const h = setup();
     await openChannelWithChat(h);

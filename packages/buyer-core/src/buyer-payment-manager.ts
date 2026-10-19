@@ -2117,11 +2117,15 @@ export class BuyerPaymentManager {
         });
         await this._channelStore.flush?.();
       }
-      state.confirmed = true;
-      // The serious fee counts as spent only once the channel holds it: a
-      // channel the seller never opened (or released at 0) charged nothing.
-      if (state.cumulative > 0n) this._reportUnitSpend(state.sellerPeerId, state.requestId, state.cumulative);
-      debugLog(`[BuyerPayment] One-off channel confirmed: ${channelId.slice(0, 18)}...`);
+      // Re-checked after the flush: an AuthAck and an on-chain confirmation
+      // can both get here, and only the first may report the fee.
+      if (!state.confirmed) {
+        state.confirmed = true;
+        // The serious fee counts as spent only once the channel holds it: a
+        // channel the seller never opened (or released at 0) charged nothing.
+        if (state.cumulative > 0n) this._reportUnitSpend(state.sellerPeerId, state.requestId, state.cumulative);
+        debugLog(`[BuyerPayment] One-off channel confirmed: ${channelId.slice(0, 18)}...`);
+      }
     }
     for (const waiter of state.ackWaiters.splice(0)) waiter(true);
   }
