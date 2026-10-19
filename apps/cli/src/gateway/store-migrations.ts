@@ -373,4 +373,34 @@ export const MIGRATIONS: readonly string[] = [
   `
   ALTER TABLE gateway_requests ADD COLUMN route_selection TEXT;
   `,
+  // Deposit confirmations also cover USDC sent to the workspace wallet ('transfer'): the transfers that
+  // funded its sweeps. One transaction can pay several workspace wallets (an exchange's batched
+  // withdrawal), so a deposit is keyed by workspace and transaction. SQLite cannot widen a CHECK or
+  // change a primary key, so the table is rebuilt.
+  `
+  CREATE TABLE deposits_v2 (
+    tx_hash TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    wallet TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('relay', 'direct', 'transfer')),
+    credited_usdc INTEGER NOT NULL,
+    fee_usdc INTEGER NOT NULL DEFAULT 0,
+    block_number INTEGER NOT NULL,
+    block_time INTEGER NOT NULL,
+    sources TEXT NOT NULL DEFAULT '[]',
+    approved_by_id TEXT,
+    approved_by_label TEXT,
+    approved_at INTEGER,
+    approval_note TEXT,
+    recorded_at INTEGER NOT NULL,
+    PRIMARY KEY (workspace_id, tx_hash)
+  );
+  INSERT INTO deposits_v2 (tx_hash, workspace_id, wallet, kind, credited_usdc, fee_usdc, block_number, block_time, sources,
+    approved_by_id, approved_by_label, approved_at, approval_note, recorded_at)
+  SELECT tx_hash, workspace_id, wallet, kind, credited_usdc, fee_usdc, block_number, block_time, sources,
+    approved_by_id, approved_by_label, approved_at, approval_note, recorded_at FROM deposits;
+  DROP TABLE deposits;
+  ALTER TABLE deposits_v2 RENAME TO deposits;
+  CREATE INDEX deposits_workspace ON deposits(workspace_id, block_time);
+  `,
 ]

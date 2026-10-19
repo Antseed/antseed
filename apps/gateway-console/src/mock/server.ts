@@ -114,21 +114,21 @@ function keySession(): ApiKey | null {
 
 const DAY_MS = 86_400_000
 const mockDepositsByWorkspace = new Map<string, DepositConfirmation[]>()
-/** A card purchase (minted, approved), a transfer from a wallet, and a direct deposit from a connected wallet. */
+/** New USDC from an exchange or card (minted, approved), a transfer from a wallet, and a direct deposit from a connected wallet. */
 function mockDeposits(workspaceId: string): DepositConfirmation[] {
   const existing = mockDepositsByWorkspace.get(workspaceId)
   if (existing) return existing
   const ws = db.workspaces.find((entry) => entry.id === workspaceId)
   const wallet = ws?.walletAddress ?? '0x0000000000000000000000000000000000000001'
-  const base = { kind: 'relay' as const, wallet, workspaceId, workspaceName: ws?.name ?? 'Default', blockNumber: 52633916 }
+  const base = { kind: 'transfer' as const, wallet, workspaceId, workspaceName: ws?.name ?? 'Default', blockNumber: 52633916, fee: '0.000000' }
   const hash = (n: string) => `0x${n.repeat(64).slice(0, 64)}`
   const list: DepositConfirmation[] = [
-    { ...base, txHash: hash('a1'), reference: 'DEP-A1A1A1A1', sent: '25.050000', credited: '25.000000', fee: '0.050000', time: Date.now() - 2 * DAY_MS,
-      sources: [{ from: '0x0000000000000000000000000000000000000000', amount: '25.050000', txHash: hash('b2'), minted: true }],
+    { ...base, txHash: hash('b2'), reference: 'DEP-B2B2B2B2', sent: '500.000000', credited: '500.000000', time: Date.now() - 2 * DAY_MS,
+      sources: [{ from: '0x0000000000000000000000000000000000000000', amount: '500.000000', txHash: hash('b2'), minted: true }],
       approval: { by: 'Ali Admin (ali@example.com)', at: Date.now() - DAY_MS, note: 'October AI budget' } },
-    { ...base, txHash: hash('c3'), reference: 'DEP-C3C3C3C3', sent: '100.050000', credited: '100.000000', fee: '0.050000', time: Date.now() - 6 * DAY_MS,
-      sources: [{ from: '0x4f3a9c1b2d5e6f708192a3b4c5d6e7f8091a2b3c', amount: '100.050000', txHash: hash('d4'), minted: false }], approval: null },
-    { ...base, kind: 'direct', txHash: hash('e5'), reference: 'DEP-E5E5E5E5', sent: '50.000000', credited: '50.000000', fee: '0.000000', time: Date.now() - 12 * DAY_MS,
+    { ...base, txHash: hash('d4'), reference: 'DEP-D4D4D4D4', sent: '100.000000', credited: '100.000000', time: Date.now() - 6 * DAY_MS,
+      sources: [{ from: '0x4f3a9c1b2d5e6f708192a3b4c5d6e7f8091a2b3c', amount: '100.000000', txHash: hash('d4'), minted: false }], approval: null },
+    { ...base, kind: 'direct', txHash: hash('e5'), reference: 'DEP-E5E5E5E5', sent: '50.000000', credited: '50.000000', time: Date.now() - 12 * DAY_MS,
       sources: [{ from: '0x9b8a7c6d5e4f30211b2c3d4e5f6a7b8c9d0e1f2a', amount: '50.000000', txHash: hash('e5'), minted: false }], approval: null },
   ]
   mockDepositsByWorkspace.set(workspaceId, list)
@@ -791,7 +791,7 @@ const routes: Array<[string, string, Handler]> = [
   ['GET', '/workspaces/:id/deposits', ({ params }) => mockDeposits(params['id'] ?? '')],
   ['POST', '/workspaces/:id/deposits', ({ params, body }) => {
     const txHash = String(body?.txHash ?? '').toLowerCase()
-    if (!/^0x[0-9a-f]{64}$/.test(txHash)) throw new MockError(400, 'invalid_tx_hash', 'Paste the deposit transaction hash (0x followed by 64 hex characters).')
+    if (!/^0x[0-9a-f]{64}$/.test(txHash)) throw new MockError(400, 'invalid_tx_hash', 'Paste the transaction hash (0x followed by 64 hex characters).')
     const list = mockDeposits(params['id'] ?? '')
     const known = list.find((entry) => entry.txHash === txHash)
     if (known) return known

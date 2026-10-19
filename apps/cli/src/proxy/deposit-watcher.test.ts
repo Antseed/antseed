@@ -114,9 +114,9 @@ test('deposit watcher sweeps incoming USDC and reports received → sweeping →
 test('deposit watcher clamps the sweep to credit-limit headroom', async (t) => {
   const chain: FakeChain = {
     walletBalance: 10_000_000n, // 10 USDC in the wallet…
-    depositsAvailable: 6_000_000n,
+    depositsAvailable: 4_000_000n,
     depositsReserved: 0n,
-    creditLimit: 8_000_000n, // …but only 2 USDC of headroom left
+    creditLimit: 8_000_000n, // …but only 4 USDC (half the limit) of headroom left
     authorizationUsed: false,
   }
   const { watcher, events, dispatched, cleanup } = await makeWatcher(chain)
@@ -126,8 +126,99 @@ test('deposit watcher clamps the sweep to credit-limit headroom', async (t) => {
   await waitFor(() => events.some((e) => e.phase === 'credited'))
 
   assert.equal(dispatched.length, 1)
-  // headroom (2 USDC) + fee, leaving the rest in the wallet for later.
-  assert.equal(dispatched[0]!.amount, (2_000_000n + FEE).toString())
+  // headroom (4 USDC) + fee, leaving the rest in the wallet for later.
+  assert.equal(dispatched[0]!.amount, (4_000_000n + FEE).toString())
+})
+
+test('deposit watcher waits for half the credit limit to free up before a clamped top-up', async (t) => {
+  const chain: FakeChain = {
+    walletBalance: 10_000_000n,
+    depositsAvailable: 6_000_000n,
+    depositsReserved: 0n,
+    creditLimit: 8_000_000n, // 2 USDC of headroom: a sliver, not a top-up
+    authorizationUsed: false,
+  }
+  const { watcher, events, dispatched, cleanup } = await makeWatcher(chain)
+  t.after(async () => { watcher.stop(); await cleanup() })
+
+  watcher.promote()
+  await waitFor(() => events.some((e) => e.phase === 'deferred'))
+
+  assert.equal(dispatched.length, 0)
+  assert.equal(events.find((e) => e.phase === 'deferred')!.reason, 'credit-limit')
+})
+
+test('deposit watcher refills the headroom it has when reserved credits leave nothing to spend', async (t) => {
+  const chain: FakeChain = {
+    walletBalance: 10_000_000n,
+    depositsAvailable: 0n, // nothing left to open a new session with…
+    depositsReserved: 5_000_000n, // …because the rest is reserved in open channels
+    creditLimit: 8_000_000n, // 3 USDC of headroom: below half the limit, but needed now
+    authorizationUsed: false,
+  }
+  const { watcher, events, dispatched, cleanup } = await makeWatcher(chain)
+  t.after(async () => { watcher.stop(); await cleanup() })
+
+  watcher.promote()
+  await waitFor(() => events.some((e) => e.phase === 'credited'))
+
+  assert.equal(dispatched.length, 1)
+  assert.equal(dispatched[0]!.amount, (3_000_000n + FEE).toString())
+})
+
+test('deposit watcher still waits for $1 of headroom when reserved credits leave nothing to spend', async (t) => {
+  const chain: FakeChain = {
+    walletBalance: 10_000_000n,
+    depositsAvailable: 0n,
+    depositsReserved: 49_990_000n,
+    creditLimit: 50_000_000n, // $0.01 of headroom: a fee for nothing
+    authorizationUsed: false,
+  }
+  const { watcher, events, dispatched, cleanup } = await makeWatcher(chain)
+  t.after(async () => { watcher.stop(); await cleanup() })
+
+  watcher.promote()
+  await waitFor(() => events.some((e) => e.phase === 'deferred'))
+
+  assert.equal(dispatched.length, 0)
+  assert.equal(events.find((e) => e.phase === 'deferred')!.reason, 'credit-limit')
+})
+
+test('deposit watcher refills when available credits cannot cover the configured session reserve', async (t) => {
+  const chain: FakeChain = {
+    walletBalance: 10_000_000n,
+    depositsAvailable: 1_500_000n, // $1.50: above $1, below the $2 this buyer reserves per session
+    depositsReserved: 5_000_000n,
+    creditLimit: 8_000_000n, // $1.50 of headroom, below half the limit
+    authorizationUsed: false,
+  }
+  const { watcher, events, dispatched, cleanup } = await makeWatcher(chain, { sessionReserveBaseUnits: 2_000_000n })
+  t.after(async () => { watcher.stop(); await cleanup() })
+
+  watcher.promote()
+  await waitFor(() => events.some((e) => e.phase === 'credited'))
+
+  assert.equal(dispatched[0]!.amount, (1_500_000n + FEE).toString())
+})
+
+test('deposit watcher holds dust below the deposit floor on a funded account', async (t) => {
+  const chain: FakeChain = {
+    walletBalance: 500_000n, // $0.50 — would credit $0.45 after the fee
+    depositsAvailable: 5_000_000n,
+    depositsReserved: 0n,
+    creditLimit: 50_000_000n,
+    authorizationUsed: false,
+  }
+  const { watcher, events, dispatched, cleanup } = await makeWatcher(chain)
+  t.after(async () => { watcher.stop(); await cleanup() })
+
+  watcher.promote()
+  await waitFor(() => events.some((e) => e.phase === 'deferred'))
+
+  assert.equal(dispatched.length, 0)
+  const deferred = events.find((e) => e.phase === 'deferred')!
+  assert.equal(deferred.reason, 'below-minimum')
+  assert.equal(deferred.minRequiredBaseUnits, (1_000_000n + FEE).toString())
 })
 
 test('deposit watcher defers when the deposits balance is at its credit limit', async (t) => {
