@@ -43,6 +43,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Sellers: payment transactions sent from one wallet by different contract clients (for example a free-usage `record()` and a video channel `reserve()`) no longer pick the same nonce. The second one used to fail with "replacement fee too low", so the seller never opened the video payment channel and the buyer got `buyer-reserve-topup-timeout`. Nonces are now tracked per wallet and chain across the whole process, each transaction is sent before the next one takes a nonce, and a transaction that fails before it is sent no longer makes the next one reuse a nonce that is still pending.
 - Gateway console and desktop: **Close channel** (asking the seller to close) is offered only on the channel the buyer is using with that seller. Older channels with the same seller that are still open on-chain offer **Close on chain**. Before, the request named only the seller, so it could never close the row you picked and could close the live channel instead. The close request now carries the channel id, and the buyer refuses one that is not the live channel.
 - Gateway console: asking a seller to close a channel no longer fails after 5 seconds with "The buyer is not reachable: The operation was aborted due to timeout". The gateway now waits past the buyer's one-minute wait for the seller's answer.
 - Gateway console: a payment channel that never reached the chain is shown as `expired` and stops counting as open once its reserve deadline passes.

@@ -49,15 +49,24 @@ export const ERC20_ABI = [
 const GAS_BUFFER_NUMERATOR = 130n;
 const GAS_BUFFER_DENOMINATOR = 100n;
 
+/**
+ * Next nonce and reservation lock per chain and signer, shared by every client
+ * in the process. A seller signs with one wallet from several clients
+ * (channels, free usage, ...); per-client cursors let two of them pick the
+ * same nonce, and the second send fails with "replacement fee too low".
+ */
+const nonceCursors = new Map<string, number>();
+const nonceLocks = new Map<string, Promise<void>>();
+
 export abstract class BaseEvmClient {
   protected _provider: AbstractProvider;
   protected readonly _contractAddress: string;
-  protected readonly _nonceCursor = new Map<string, number>();
-  private readonly _nonceLocks = new Map<string, Promise<void>>();
+  private readonly _nonceScope: string;
 
   constructor(rpcUrl: string, contractAddress: string, fallbackRpcUrls?: string[], evmChainId?: number) {
     this._provider = buildProvider(rpcUrl, fallbackRpcUrls, evmChainId);
     this._contractAddress = contractAddress;
+    this._nonceScope = evmChainId ? `chain:${evmChainId}` : `rpc:${rpcUrl}`;
   }
 
   get provider(): AbstractProvider { return this._provider; }
@@ -114,47 +123,49 @@ export abstract class BaseEvmClient {
     return this._execWrite(signer, abi, method, ...args);
   }
 
-  /**
-   * Reserve a nonce, apply the gas buffer, and broadcast. On any failure —
-   * estimateGas revert, RPC timeout, submission error — roll back the nonce
-   * cursor. `_reserveNonce` reads `getTransactionCount(..., 'pending')` on
-   * the next call, so an in-flight tx (if sendTransaction failed after the
-   * node accepted it) is still accounted for and we won't reuse its nonce.
-   */
+  /** Apply the gas buffer and broadcast on the signer's next nonce. */
   private async _sendBuffered(
     connected: AbstractSigner,
     signerAddress: string,
     populated: TransactionRequest,
   ): Promise<TransactionResponse> {
-    const nonce = await this._reserveNonce(signerAddress);
-    populated.nonce = nonce;
-    try {
+    return this._sendWithNonce(signerAddress, async (nonce) => {
+      populated.nonce = nonce;
       const estimated = await connected.estimateGas(populated);
       populated.gasLimit = (estimated * GAS_BUFFER_NUMERATOR) / GAS_BUFFER_DENOMINATOR;
-      return await connected.sendTransaction(populated);
-    } catch (err) {
-      this._nonceCursor.delete(signerAddress);
-      throw err;
-    }
+      return connected.sendTransaction(populated);
+    });
   }
 
-  protected async _reserveNonce(address: string): Promise<number> {
-    // Serialize nonce reservation per address to prevent concurrent calls
-    // from reading the same network nonce before either updates the cursor
-    const prev = this._nonceLocks.get(address) ?? Promise.resolve();
-    let resolve: () => void;
-    const lock = new Promise<void>(r => { resolve = r; });
-    this._nonceLocks.set(address, lock);
+  /**
+   * Run `send` with the signer's next nonce. The wallet's lock is held until
+   * `send` returns (the node accepted the tx), and the cursor only moves past
+   * a nonce once its tx is sent. A failed send (estimateGas revert, RPC
+   * error) leaves the cursor alone, so its nonce goes to the next tx; the
+   * pending count may not include txs that were sent but not yet mined, so
+   * it cannot be trusted alone.
+   */
+  protected async _sendWithNonce<T>(address: string, send: (nonce: number) => Promise<T>): Promise<T> {
+    const key = this._nonceKey(address);
+    const prev = nonceLocks.get(key) ?? Promise.resolve();
+    let release: () => void;
+    const lock = new Promise<void>(r => { release = r; });
+    nonceLocks.set(key, lock);
 
     await prev;
     try {
       const networkNonce = await this._provider.getTransactionCount(address, 'pending');
-      const cachedNext = this._nonceCursor.get(address);
+      const cachedNext = nonceCursors.get(key);
       const nonce = cachedNext === undefined ? networkNonce : Math.max(networkNonce, cachedNext);
-      this._nonceCursor.set(address, nonce + 1);
-      return nonce;
+      const result = await send(nonce);
+      nonceCursors.set(key, nonce + 1);
+      return result;
     } finally {
-      resolve!();
+      release!();
     }
+  }
+
+  private _nonceKey(address: string): string {
+    return `${this._nonceScope}:${address}`;
   }
 }
