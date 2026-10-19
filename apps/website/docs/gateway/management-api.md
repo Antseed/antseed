@@ -75,7 +75,7 @@ Conventions:
 | `GET /invites`, `POST /invites`, `DELETE /invites/:id` | Invites. `POST` returns the single-use link |
 | `GET /routing`, `PUT /routing`, `GET /route-preview` | The gateway-wide routing policy and the route preview; each eligible candidate has `selection`, the numbers automatic routing ranks it by |
 | `POST /routing/seller-history/reset` | Org admins: `{ peerId }` clears what the buyer has seen of a seller, so routing gives it a fresh start |
-| `GET /peer-lists`, `POST /peer-lists`, `PATCH /peer-lists/:id`, `DELETE /peer-lists/:id` | Saved peer lists |
+| `GET /peer-lists`, `POST /peer-lists`, `PATCH /peer-lists/:id`, `DELETE /peer-lists/:id` | Seller lists (peer lists): named groups of sellers that policies allow or block |
 | `GET /presets`, `POST /presets`, `PATCH /presets/:id`, `DELETE /presets/:id` | Presets |
 | `GET /peers`, `GET /models` | The providers and models the buyer sees |
 | `GET /settings`, `PATCH /settings/buyer`, `PUT /settings/observability` | Buyer and observability settings |

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { RouteSelection, ServedSelection } from '../api/types'
-import { healthWarning, orderingSummary, pickSummary, recordSummary, selectionFacts } from './selection'
+import { healthWarning, orderingSummary, pickSummary, recordSummary, selectionFacts, selectionHeadline } from './selection'
 
 const NOW = 1_700_000_000_000
 
@@ -36,6 +36,11 @@ describe('seller selection explanations', () => {
     expect(trust[0]).toBe('96% success over 12 recent requests')
     expect(trust).toContain('first request opens a payment channel (~5 s)')
     expect(trust).toContain('at capacity (8/8 in flight): tried after sellers with room')
+  })
+
+  it('fits the numbers that set a seller\'s place on one line', () => {
+    expect(selectionHeadline(base)).toBe('96% success (12 recent) · 420 ms first token · 80\u00a0tok/s · 60% of traffic · $0.0021 per answer')
+    expect(selectionHeadline({ ...base, record: 'none', firstTokenMs: null, tokensPerSecond: null, sharesTraffic: false, ordering: 'trust' })).toBe('no requests yet')
   })
 
   it('warns about failing and cooling-down sellers with the last failure', () => {

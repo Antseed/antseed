@@ -436,8 +436,16 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 
 /* Policy editor (in a dialog): templates row, two dense columns, advanced options collapsed. */
 .gc-policy { display: flex; flex-direction: column; gap: 1rem; container-type: inline-size; }
-.gc-policy__templates { display: flex; flex-wrap: wrap; align-items: center; gap: 0.375rem 0.5rem; padding-bottom: 1rem; border-bottom: 1px solid var(--as-border); }
-.gc-policy__clear { margin-left: auto; }
+.gc-policy__top { display: flex; flex-direction: column; gap: 0.75rem; }
+.gc-policy__summary { display: flex; flex-direction: column; gap: 0.25rem; padding: 0.75rem 0.875rem; border: 1px solid var(--as-border); border-radius: var(--as-radius-md); background: var(--as-bg-muted); }
+.gc-policy__summary-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0.25rem 1rem; font-size: 0.875rem; }
+.gc-policy__top > .as-field { align-self: flex-start; width: min(100%, 26rem); }
+.gc-policy__group { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.5rem 2rem; padding-top: 1rem; border-top: 1px solid var(--as-border);
+  h3 { margin: 0; font-size: 0.9375rem; font-weight: 600; }
+}
+@container (min-width: 44rem) { .gc-policy__group { grid-template-columns: 13rem minmax(0, 1fr); } }
+.gc-policy__group-head { display: flex; flex-direction: column; gap: 0.25rem; }
+.gc-policy__group-body { display: flex; flex-direction: column; gap: 0.75rem; min-width: 0; > .gc-slider { max-width: 24rem; } > .as-segmented, > [role="radiogroup"] { align-self: flex-start; } }
 .gc-policy__cols { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1.25rem; }
 @container (min-width: 40rem) {
   .gc-policy__cols { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.5rem 2rem; }
@@ -449,7 +457,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .gc-policy__switches { display: flex; flex-wrap: wrap; gap: 0.5rem 1.25rem; }
 .gc-policy__pair { display: flex; flex-wrap: wrap; gap: 0.75rem; > .as-field { flex: 1 1 9rem; } }
 .gc-policy__advanced { display: flex; flex-direction: column; gap: 0.5rem; }
-.gc-policy__caps { display: flex; flex-wrap: wrap; gap: 0.75rem; }
+.gc-policy__caps { display: grid; grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr)); gap: 0.75rem; > .as-field { min-width: 0; } }
 .gc-num { flex: 0 0 auto; width: 8.5rem; }
 .gc-num--wide { width: 12rem; }
 .gc-policy__section > .gc-slider { max-width: 22rem; }
@@ -784,3 +792,28 @@ li + li > .gc-choice { border-top: 1px solid var(--as-border); }
 }
 .gc-star.as-icon-button[aria-pressed="true"] { color: var(--as-text-primary); }
 .gc-section-label { margin: 0 0 0.5rem; color: var(--as-text-muted); font-size: 0.75rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+
+/* The ⓘ next to a setting's label, with a small tooltip that floats over the page. */
+.gc-info-label { display: inline-flex; align-items: center; gap: 0.25rem; }
+.gc-tip { position: relative; display: inline-flex; }
+.gc-tip__button {
+  display: inline-grid; place-items: center; width: 1.25rem; height: 1.25rem; padding: 0; border: 0; border-radius: 999px;
+  background: none; color: var(--as-text-muted); cursor: help;
+  &:hover, &:focus-visible { color: var(--as-text-primary); outline: none; }
+  &:focus-visible { box-shadow: 0 0 0 2px var(--as-border-strong); }
+}
+.gc-tip__bubble {
+  position: absolute; z-index: 20; top: calc(100% + 0.375rem); left: -0.5rem; width: max-content; max-width: min(19rem, 80vw);
+  padding: 0.5rem 0.625rem; border: 1px solid var(--as-border); border-radius: var(--as-radius-md); background: var(--as-bg-surface);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.08); font-size: 0.75rem; line-height: 1.45; font-weight: 400; color: var(--as-text-secondary);
+  visibility: hidden; opacity: 0; transition: opacity 120ms ease;
+  a { color: var(--as-text-primary); text-decoration: underline; text-underline-offset: 2px; }
+}
+.gc-tip__title { display: block; margin-bottom: 0.125rem; font-weight: 600; color: var(--as-text-primary); }
+.gc-tip:hover .gc-tip__bubble, .gc-tip:focus-within .gc-tip__bubble, .gc-tip--open .gc-tip__bubble { visibility: visible; opacity: 1; }
+
+/* Text that opens something, styled like a link (a seller list's name). */
+.gc-link-button { padding: 0; border: 0; background: none; font: inherit; color: var(--as-text-primary); text-decoration: underline; text-decoration-color: var(--as-border-strong); text-underline-offset: 3px; cursor: pointer;
+  &:hover { text-decoration-color: currentColor; }
+  &:focus-visible { outline: 2px solid var(--as-border-strong); outline-offset: 2px; border-radius: 2px; }
+}

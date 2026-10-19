@@ -287,16 +287,16 @@ export type TemplateId = 'cheapest' | 'trusted' | 'tee' | 'own'
 
 export const POLICY_TEMPLATES: Array<{ id: TemplateId; label: string; description: string }> = [
   { id: 'cheapest', label: 'Cheapest', description: 'Lowest price first, free sellers ahead.' },
-  { id: 'trusted', label: 'Most trusted', description: 'Trust 70+ and reputation 60+, ranked by trust.' },
+  { id: 'trusted', label: 'Most trusted', description: 'Trust 70+, ranked by trust.' },
   { id: 'tee', label: 'TEE only', description: 'Only sellers running in a trusted execution environment.' },
-  { id: 'own', label: 'Own peers only', description: 'Only sellers in one of your peer lists.' },
+  { id: 'own', label: 'Own peers only', description: 'Only sellers in one of your seller lists.' },
 ]
 
 /** A starting policy for a template. `own` needs the peer ids of the chosen list. */
 export function templatePolicy(id: TemplateId, ownPeerIds: string[] = []): RoutingPolicy {
   switch (id) {
     case 'cheapest': return { sort: 'price', preferFreePeers: true }
-    case 'trusted': return { sort: 'trust', minTrustScore: 70, minReputation: 60 }
+    case 'trusted': return { sort: 'trust', minTrustScore: 70 }
     case 'tee': return { requireTee: true }
     case 'own': return { allowedPeerIds: unique(ownPeerIds) }
   }

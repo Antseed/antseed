@@ -7,7 +7,8 @@ import { useConsole, useScopeFilter } from '../app/context'
 import { CANCELLED, usePolicySaveGuard } from '../components/PolicySaveGuard'
 import { PolicyEditor } from '../components/PolicyEditor'
 import { draftStatus } from '../components/PolicyField'
-import { previewQuery, TryRequestPanel, type TryRequestState } from '../components/RoutePreview'
+import { previewQuery, TryRequest, type TryRequestState } from '../components/RoutePreview'
+import { PeerListsPanel } from '../components/PeerLists'
 import { Badge, ErrorAlert, LoadingRows, PageHeader, PageLink, Panel } from '../components/ui'
 import { isOrgAdmin, isWorkspaceAdmin } from '../lib/nav'
 import { buyerPolicy, draftToPolicy, policyOrNull, policyToDraft, type PolicyDraft } from '../lib/policy'
@@ -220,6 +221,7 @@ const TRY_KEY = 'antseed-console-routing:try'
 
 export default function Routing() {
   const { workspace } = useConsole()
+  const peers = usePeers()
   const models = useModels()
   const favorites = useFavorites()
   const [state, setState] = useState<TryRequestState>(() => ({ target: 'workspace', targetId: '', model: loadStored<string | null>(TRY_KEY, null) }))
@@ -231,7 +233,11 @@ export default function Routing() {
     const busiest = [...models.data].filter((model) => model.type === 'text').sort((a, b) => b.offers.length - a.offers.length)[0] ?? models.data[0]!
     setState((current) => ({ ...current, model: starred ?? busiest.id }))
   }, [models.data, favorites.data, state.model])
-  const query = previewQuery(state, workspace.id)
+  // The preview runs once someone opens "Try a request"; the rules then show what each level does to that model.
+  const [tryOpen, setTryOpen] = useState(false)
+  const [tried, setTried] = useState(false)
+  const openTry = () => { setTried(true); setTryOpen(true) }
+  const query = tried ? previewQuery(state, workspace.id) : null
   const preview = useQuery({
     queryKey: qk.routePreview(query ?? {}),
     queryFn: () => api.network.routePreview(query as { model: string }),
@@ -240,9 +246,14 @@ export default function Routing() {
   })
   return (
     <div className="gc-page">
-      <PageHeader title="Routing" description="Which sellers serve your requests, and why. Try a model to see its route, then change the rules that shape it." />
-      <TryRequestPanel state={state} onChange={setState} preview={{ data: query ? preview.data : undefined, isFetching: preview.isFetching, error: preview.error }} />
+      <PageHeader title="Routing" description="The rules that decide which sellers serve your requests. Try a request to see where one for a model goes, and why."
+        actions={<Button variant="brand" onClick={openTry}>Try a request</Button>} />
       <RuleChain preview={query && preview.data?.model === state.model ? preview.data : undefined} />
+      <PeerListsPanel peers={peers.data} />
+      <Modal isOpen={tryOpen} onClose={() => setTryOpen(false)} size="xl" title="Try a request"
+        subtitle="Pick a model to see which sellers a request goes to, in what order, and what keeps the others out.">
+        <TryRequest state={state} onChange={setState} preview={{ data: query ? preview.data : undefined, isFetching: preview.isFetching, error: preview.error }} />
+      </Modal>
     </div>
   )
 }

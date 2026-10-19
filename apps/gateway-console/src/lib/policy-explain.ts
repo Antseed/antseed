@@ -15,7 +15,10 @@ function names(peerIds: readonly string[], peers: readonly Peer[] | undefined, m
 }
 
 function listNames(ids: readonly string[] | undefined, lists: readonly PeerList[]): string {
-  return (ids ?? []).map((id) => `the “${lists.find((list) => list.id === id)?.name ?? id}” list`).join(', ')
+  return (ids ?? []).map((id) => {
+    const list = lists.find((entry) => entry.id === id)
+    return list ? `the “${list.name}” seller list (${list.peerIds.length})` : 'a deleted seller list'
+  }).join(', ')
 }
 
 /** The policy as short sentences, most restrictive first. Empty when it adds nothing. */

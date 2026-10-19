@@ -4,11 +4,10 @@ import type { Peer } from '../api/types'
 import { copyModelIdItem, CopyIdButton, useCopy } from '../components/copy-actions'
 import { Icon } from '../components/icons'
 import { PeerActionDialog } from '../components/PeerActionDialog'
-import { PeerListsPanel } from '../components/PeerLists'
 import { TeeBadge } from '../components/TeeBadge'
 import { VerificationLinks } from '../components/VerificationLinks'
 import { SplitView, type SidePanelContent } from '../components/SidePanel'
-import { Badge, EmptyState, LoadingRows, Mono, PageHeader, Panel, QueryView, SelectField, Switch } from '../components/ui'
+import { Badge, EmptyState, LoadingRows, Mono, PageHeader, PageLink, Panel, QueryView, SelectField, Switch } from '../components/ui'
 import { formatLatency, formatNumber, formatPriceRange, formatSpeed, shortId } from '../lib/format'
 import { panelPath, panelSelection } from '../lib/nav'
 import { samePeerId } from '../lib/peer-id'
@@ -99,7 +98,7 @@ export default function Providers() {
           )}
         </QueryView>
       </Panel>
-      <PeerListsPanel peers={peers.data} />
+      <p className="gc-fineprint">Group sellers to allow or block together under <PageLink to="routing">Routing → Seller lists</PageLink>.</p>
     </div>
   )
 

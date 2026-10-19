@@ -29,10 +29,10 @@ describe('policy sentences', () => {
     ])
   })
 
-  it('is empty for no policy, and names peer lists', () => {
+  it('is empty for no policy, and names seller lists', () => {
     expect(policySentences(null, PEERS)).toEqual([])
     expect(policySentences({ allowedPeerLists: ['pl_1'] }, PEERS, [{ id: 'pl_1', name: 'Ours', description: null, peerIds: [A], createdAt: 0 }]))
-      .toEqual(['Only these sellers: the “Ours” list.'])
+      .toEqual(['Only these sellers: the “Ours” seller list (1).'])
   })
 })
 

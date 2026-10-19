@@ -7,7 +7,7 @@ import { isOrgAdmin } from '../lib/nav'
 import { qk, usePeerLists } from '../lib/queries'
 import { useConsole } from '../app/context'
 import { Icon } from './icons'
-import { PeerPicker } from './PeerPicker'
+import { PeerPicker, peerName } from './PeerPicker'
 import { ConfirmDialog, EmptyState, ErrorAlert, Panel, QueryView } from './ui'
 
 function PeerListForm({ initial, peers, onDone }: { initial: PeerList | null; peers?: readonly Peer[]; onDone: () => void }) {
@@ -37,8 +37,18 @@ function PeerListForm({ initial, peers, onDone }: { initial: PeerList | null; pe
   )
 }
 
-/** Named sets of sellers, used by policy editors (allow/block) and the "Own peers only" template. */
-export function PeerListsPanel({ peers }: { peers?: readonly Peer[] }) {
+const LISTS_HELP = 'Named groups of sellers that routing rules allow or block in one step. Editing a list changes every rule that uses it.'
+
+function sellerNames(list: PeerList, peers: readonly Peer[] | undefined): string {
+  const names = list.peerIds.map((peerId) => peerName(peers, peerId))
+  return names.length <= 4 ? names.join(', ') : `${names.slice(0, 4).join(', ')} and ${names.length - 4} more`
+}
+
+/**
+ * Named sets of sellers ("peer lists" in the CLI and API), which routing
+ * policies allow or block in one step. Organization admins edit them.
+ */
+export function PeerListsPanel({ peers, inDialog = false }: { peers?: readonly Peer[]; inDialog?: boolean }) {
   const { viewer } = useConsole()
   // The API lets only organization admins create, edit or delete lists.
   const canEdit = isOrgAdmin(viewer)
@@ -51,29 +61,66 @@ export function PeerListsPanel({ peers }: { peers?: readonly Peer[] }) {
     invalidate: [qk.peerLists],
   })
   return (
-    <Panel flush title="Peer lists" description="Named groups of sellers to allow or block in one step."
+    <Panel flush={!inDialog} title={inDialog ? undefined : 'Seller lists'} description={inDialog ? undefined : `${LISTS_HELP}${canEdit ? '' : ' Organization admins edit them.'}`}
       actions={canEdit && <Button size="sm" variant="outline" leadingIcon={<Icon.plus size={14} />} onClick={() => setEditing('new')}>New list</Button>}>
       <QueryView query={lists}>
         {(rows) => (
-          <DataTable<PeerList> label="Peer lists" rows={rows} rowKey={(list) => list.id} rowLabel={(list) => list.name}
+          <DataTable<PeerList> label="Seller lists" rows={rows} rowKey={(list) => list.id} rowLabel={(list) => list.name}
             actions={(list) => canEdit ? [
               { label: 'Edit', onSelect: () => setEditing(list) },
               { label: 'Delete', tone: 'danger' as const, onSelect: () => setDeleting(list) },
             ] : []}
-            empty={<EmptyState icon={<Icon.network size={18} />} title="No peer lists" body="Group sellers you trust, or ones you run yourself." />}
+            empty={<EmptyState icon={<Icon.network size={18} />} title="No seller lists" body="Group sellers you trust, or ones you run yourself, then allow or block the whole group in a routing rule." />}
             columns={[
               { key: 'name', header: 'Name', render: (list) => <span className="gc-strong">{list.name}</span> },
-              { key: 'desc', header: 'Description', secondary: true, render: (list) => <span className="gc-muted">{list.description ?? '—'}</span> },
-              { key: 'count', header: 'Sellers', align: 'right', render: (list) => list.peerIds.length },
+              { key: 'sellers', header: 'Sellers', render: (list) => <span className="gc-muted">{list.peerIds.length ? sellerNames(list, peers) : 'Empty'}</span> },
+              { key: 'count', header: 'Count', align: 'right', secondary: true, render: (list) => list.peerIds.length },
+              { key: 'desc', header: 'Description', secondary: true, optional: true, render: (list) => <span className="gc-muted">{list.description ?? '—'}</span> },
             ]} />
         )}
       </QueryView>
-      <Modal isOpen={editing !== null} onClose={() => setEditing(null)} title={editing === 'new' ? 'New peer list' : 'Edit peer list'} size="lg">
+      <Modal isOpen={editing !== null} onClose={() => setEditing(null)} title={editing === 'new' ? 'New seller list' : 'Edit seller list'} size="lg">
         {editing !== null && <PeerListForm initial={editing === 'new' ? null : editing} peers={peers} onDone={() => setEditing(null)} />}
       </Modal>
       <ConfirmDialog isOpen={deleting !== null} busy={remove.isPending} error={remove.error} onClose={() => setDeleting(null)}
         onConfirm={() => deleting && remove.mutate(deleting)} title="Delete this list?" confirmLabel="Delete"
         body="Policies refer to lists by reference: once deleted, the list adds no sellers to them. An allow list made only of deleted lists lets no seller serve." />
     </Panel>
+  )
+}
+
+/** "Manage seller lists": the lists in a dialog, over whatever opened it (a policy editor). */
+export function SellerListsButton({ peers }: { peers?: readonly Peer[] }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <>
+      <Button variant="link" size="sm" onClick={() => setOpen(true)}>Manage seller lists</Button>
+      <Modal isOpen={open} onClose={() => setOpen(false)} title="Seller lists" subtitle={LISTS_HELP} size="lg">
+        <PeerListsPanel peers={peers} inDialog />
+      </Modal>
+    </>
+  )
+}
+
+/**
+ * A seller list's name as a link that opens the list: its editor for
+ * organization admins, its sellers for everyone else.
+ */
+export function SellerListLink({ list, peers }: { list: PeerList; peers?: readonly Peer[] }) {
+  const { viewer } = useConsole()
+  const canEdit = isOrgAdmin(viewer)
+  const [open, setOpen] = useState(false)
+  return (
+    <>
+      <button type="button" className="gc-link-button" title={canEdit ? `Edit the “${list.name}” list` : `See the “${list.name}” list`} onClick={() => setOpen(true)}>
+        {list.name}
+      </button>
+      <Modal isOpen={open} onClose={() => setOpen(false)} title={canEdit ? 'Edit seller list' : list.name} size="lg"
+        subtitle={canEdit ? undefined : 'Organization admins edit seller lists.'}>
+        {canEdit
+          ? <PeerListForm initial={list} peers={peers} onDone={() => setOpen(false)} />
+          : <p>{list.peerIds.length ? sellerNames(list, peers) : 'No sellers yet.'}</p>}
+      </Modal>
+    </>
   )
 }
