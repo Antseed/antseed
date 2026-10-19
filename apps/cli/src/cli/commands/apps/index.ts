@@ -14,10 +14,13 @@ import {
   type ConnectedAppStatus,
   type ConnectedAppModel,
 } from '@antseed/connected-apps'
+import { curatedPickerModels } from '@antseed/node/model-lineup'
+import { DEFAULT_MODEL_ROUTING_PREFERENCES } from '@antseed/node/model-routing'
 import { mkdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { getGlobalOptions } from '../types.js'
 import { parsePositiveInteger } from '../parse-positive-integer.js'
+import { loadConfig } from '../../../config/loader.js'
 
 /** Bump when a field of the --json output changes meaning or is removed. */
 export const APPS_JSON_SCHEMA_VERSION = 1
@@ -111,18 +114,13 @@ function ensureStateDir(ctx: AppsContext): string {
   return targets
 }
 
-/** A model reports reasoning when the model or any seller offering it announces support. */
-function reportsReasoning(entry: Record<string, unknown>): boolean {
-  const announces = (value: unknown) => Boolean(value && typeof value === 'object'
-    && (value as Record<string, unknown>)['reasoning'] === true)
-  if (announces(entry['capabilities'])) return true
-  const peers = entry['peers']
-  return Array.isArray(peers) && peers.some((peer) => (
-    Boolean(peer && typeof peer === 'object') && announces((peer as Record<string, unknown>)['capabilities'])
-  ))
-}
-
-export async function fetchConnectedAppModels(buyerPort: number): Promise<ConnectedAppModel[]> {
+/**
+ * The model list the desktop's picker offers (the AI VPN selection, starred
+ * models, then the Recommended lineup), built from the running buyer's text
+ * models and the buyer config. Empty (Antseed Auto only) when the buyer does
+ * not answer within 1.5 s.
+ */
+export async function fetchConnectedAppModels(ctx: AppsContext, buyerPort: number): Promise<ConnectedAppModel[]> {
   try {
     const response = await fetch(`http://127.0.0.1:${buyerPort}/v1/models?type=text`, {
       headers: { accept: 'application/json' },
@@ -131,13 +129,11 @@ export async function fetchConnectedAppModels(buyerPort: number): Promise<Connec
     if (!response.ok) return []
     const body = await response.json() as { data?: unknown }
     if (!Array.isArray(body.data)) return []
-    return body.data.flatMap((entry) => {
-      if (!entry || typeof entry !== 'object') return []
-      const id = (entry as Record<string, unknown>)['id']
-      const name = (entry as Record<string, unknown>)['name']
-      const reasoning = reportsReasoning(entry as Record<string, unknown>)
-      if (typeof id !== 'string' || id.trim().length === 0) return []
-      return [{ model: id, label: typeof name === 'string' && name.trim() ? name : id, ...(reasoning ? { reasoning } : {}) }]
+    const buyer = await loadConfig(ctx.configPath).then((config) => config.buyer, () => null)
+    return curatedPickerModels(body.data, {
+      preferences: buyer?.routingPreferences ?? DEFAULT_MODEL_ROUTING_PREFERENCES,
+      favoriteModels: buyer?.favoriteModels ?? [],
+      defaultRoutedModel: readDefaultRoutedModel(ctx.dataDir),
     })
   } catch {
     return []
@@ -153,7 +149,7 @@ export async function connectApp(ctx: AppsContext, name: string, buyerPort?: num
   const port = buyerPort ?? resolveDefaultBuyerPort(ctx)
   const warnings = readDefaultRoutedModel(ctx.dataDir) ? [] : [NO_DEFAULT_ROUTE_WARNING]
   try {
-    const models = configPatchListsModels(profile.configPatch.format) ? await fetchConnectedAppModels(port) : []
+    const models = configPatchListsModels(profile.configPatch.format) ? await fetchConnectedAppModels(ctx, port) : []
     writeConfigPatch(profile.configPatch, port, { wslTargetsFile: ensureStateDir(ctx), models })
   } catch (err) {
     return {

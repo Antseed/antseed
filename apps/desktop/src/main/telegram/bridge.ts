@@ -29,6 +29,8 @@ import {
 } from './store.js';
 import { LOCALHOST_URL } from '../constants.js';
 import { asErrorMessage } from '../utils.js';
+import { connectedAppPickerModels } from '../connected-apps/picker-models.js';
+import { sameCanonicalModel } from '@antseed/node/model-identity';
 
 function telegramModelPickerText(current: string, hasModels: boolean): string {
   const explanation = current === 'antseed'
@@ -170,7 +172,7 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
   /** Snapshot behind the /model keyboard; gen invalidates stale keyboards. */
   let modelPick: {
     gen: number;
-    options: Array<{ id: string; label: string; peerId: string; provider: string; favorite?: boolean }>;
+    options: Array<{ id: string; label: string; provider: string; favorite?: boolean }>;
     chatId: number;
     messageId: number;
   } | null = null;
@@ -414,11 +416,11 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
         bareModel = routed.service;
       }
       if (bareModel) return { service: bareModel };
-      // No stored route (fresh install, or a route the policy rejects).
-      // Mirror the app's picker: the renderer-pushed curated list (favorites
-      // first) when available, otherwise the first discovered catalog entry.
-      const picked = (engine.getModelPicker()?.models ?? []).find((model) => model.routePeerId);
-      if (picked) return { service: picked.serviceId };
+      // No stored route (fresh install, or a route the policy rejects): the
+      // first model of the curated list every Antseed model picker offers
+      // (starred models first), otherwise the first discovered catalog entry.
+      const [picked] = await connectedAppPickerModels(await engine.getProxyPort());
+      if (picked) return { service: picked.model };
       const chosen = entries.find((entry) => entry.peerId);
       if (chosen) return { service: chosen.id };
     } catch {
@@ -428,40 +430,17 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
   };
 
   const showModelPicker = async (): Promise<void> => {
-    const options: NonNullable<typeof modelPick>['options'] = [];
-    // The renderer-pushed curated list — the exact rows the app's model
-    // dropdown shows (starred favorites first, then the recommended lineup).
-    const picker = engine.getModelPicker();
-    for (const model of picker?.models ?? []) {
-      if (!model.routePeerId) continue;
-      options.push({
-        id: model.routeServiceId ?? model.serviceId,
-        label: model.label || model.serviceId,
-        peerId: model.routePeerId,
-        provider: model.routeProvider ?? model.provider,
-        favorite: model.favorite,
-      });
-      if (options.length >= MODEL_PICK_LIMIT) break;
-    }
-    if (options.length === 0) {
-      // No renderer push yet (early after launch) — fall back to the
-      // policy-filtered catalog: one row per model, best-ranked peer first.
-      let entries: Awaited<ReturnType<PiChatEngine['discoverServiceCatalog']>> = [];
-      try {
-        entries = await engine.discoverServiceCatalog();
-      } catch {
-        // Fall through to the empty-catalog message.
-      }
-      const seen = new Set<string>();
-      for (const entry of entries) {
-        if (!entry.peerId) continue;
-        const key = entry.id.trim().toLowerCase();
-        if (seen.has(key)) continue;
-        seen.add(key);
-        options.push({ id: entry.id, label: entry.label || entry.id, peerId: entry.peerId, provider: entry.provider });
-        if (options.length >= MODEL_PICK_LIMIT) break;
-      }
-    }
+    // The curated list every Antseed model picker offers (connected apps,
+    // Claude Desktop, `antseed apps connect`): starred models first, then the
+    // Recommended lineup. Picks are model-only; the buyer chooses the seller.
+    const options: NonNullable<typeof modelPick>['options'] = (await connectedAppPickerModels(await engine.getProxyPort()))
+      .slice(0, MODEL_PICK_LIMIT)
+      .map((model) => ({
+        id: model.model,
+        label: model.label,
+        provider: model.provider,
+        ...(model.favorite ? { favorite: true } : {}),
+      }));
     const current = (await resolveDefaultRoute()).service?.trim().toLowerCase() ?? '';
     if (options.length === 0) {
       void sendToOwner(telegramModelPickerText(current, false));
@@ -472,7 +451,7 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
     const keyboard: TgReplyMarkup = {
       inline_keyboard: options.map((option, index) => ([{
         text: [
-          option.id.trim().toLowerCase() === current ? '✓ ' : '',
+          current && sameCanonicalModel(option.id, current) ? '✓ ' : '',
           option.favorite ? '★ ' : '',
           option.label,
         ].join(''),

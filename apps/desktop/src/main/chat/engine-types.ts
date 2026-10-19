@@ -6,7 +6,6 @@
  * what forced these three types out of their original home.
  */
 import type { IpcMain } from 'electron';
-import type { ModelPickerSnapshot } from '../../shared/model-picker.js';
 import type { AgentSession } from '@mariozechner/pi-coding-agent';
 import type { ChatStreamStopReason } from './stream-stop.js';
 import type {
@@ -46,8 +45,6 @@ export type RegisterPiChatHandlersOptions = {
   recordDiscoveryFailed?: (
     input: TelemetryEventProperties['discovery_failed'],
   ) => void | Promise<void>;
-  /** Called with each curated model-picker snapshot the renderer pushes. */
-  onModelPickerSynced?: (snapshot: ModelPickerSnapshot) => void;
 };
 
 export type ChatStreamErrorPayload = {

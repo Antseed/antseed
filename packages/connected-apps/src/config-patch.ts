@@ -54,7 +54,7 @@ function connectedAppCatalog(models: readonly ConnectedAppModel[]): ConnectedApp
   return catalog;
 }
 /** Config formats whose patch writes the AntSeed model catalog into the app's own model picker. */
-const MODEL_LIST_FORMATS: ReadonlySet<string> = new Set(['opencode', 'codex', 'droid', 'pi', 'crush', 'zed', 'hermes', 't3code']);
+const MODEL_LIST_FORMATS: ReadonlySet<string> = new Set(['opencode', 'codex', 'droid', 'pi', 'crush', 'zed', 'hermes', 't3code', 'claude-code']);
 
 /** Whether connecting this format lists the AntSeed catalog in the app's model picker. */
 export function configPatchListsModels(format: string | undefined): boolean {
@@ -586,7 +586,7 @@ export function writeConfigPatch(patch: ConfigPatchDef, buyerPort: number, optio
     return;
   }
   if (patch.format === 'claude-code') {
-    applyClaudeCodeConfigPatch(patch, buyerPort, wslTargetsFile);
+    applyClaudeCodeConfigPatch(patch, buyerPort, wslTargetsFile, models);
     return;
   }
   if (patch.format === 't3code') {
@@ -1646,6 +1646,9 @@ function applyHermesConfigPatch(patch: HermesConfigPatchDef, buyerPort: number, 
       originator: 'hermes',
     },
     default_model: ROUTED_MODEL_ALIAS,
+    // Hermes otherwise replaces this list with the buyer's whole /v1/models
+    // network list, which has no Antseed Auto row.
+    discover_models: false,
     models: Object.fromEntries(connectedAppCatalog(models).map((entry) => [entry.model, {
       context_length: ANTSEED_MODEL_CONTEXT_WINDOW,
     }])),
@@ -1771,6 +1774,8 @@ type ClaudeCodePatchState = {
   readonly envPresent: boolean;
   readonly env: Readonly<Record<ClaudeCodeManagedEnvKey, ClaudeCodeSavedValue>>;
   readonly model: ClaudeCodeSavedValue;
+  /** Absent in state written before Antseed managed the picker. */
+  readonly modelPicker?: ClaudeCodeSavedValue;
 };
 
 function claudeCodePatchStatePath(filePath: string): string {
@@ -1812,7 +1817,32 @@ function readClaudeCodePatchState(filePath: string): ClaudeCodePatchState | null
     envPresent: state['envPresent'],
     env: savedEnv,
     model: readSavedValue(state['model'], statePath, 'model'),
+    ...(state['modelPicker'] !== undefined
+      ? { modelPicker: readSavedValue(state['modelPicker'], statePath, 'modelPicker') }
+      : {}),
   };
+}
+
+/**
+ * Claude Code's `/model` picker: Antseed Auto, then the curated models,
+ * replacing Claude's own rows (which would otherwise send Claude model ids
+ * the buyer has no meaning for). Named like Claude Desktop's picker. Claude
+ * Code shows "Custom model (<id>)" for an empty description, hence "-".
+ */
+function claudeCodeModelPicker(models: readonly ConnectedAppModel[]): JsonObject {
+  return {
+    replaceBuiltInOptions: true,
+    options: connectedAppCatalog(models).map((entry) => entry.model === ROUTED_MODEL_ALIAS
+      ? { model: entry.model, label: ROUTED_MODEL_ALIAS_LABEL, description: 'Uses the model selected in the AI VPN' }
+      : { model: entry.model, label: `${entry.label} (Antseed)`, description: '-' }),
+  };
+}
+
+/** A picker this patch wrote: Antseed Auto is its first row. */
+function isAntseedClaudeCodePicker(value: unknown): boolean {
+  const options = value && typeof value === 'object' && !Array.isArray(value) ? (value as JsonObject)['options'] : undefined;
+  const first = Array.isArray(options) ? options[0] : undefined;
+  return !!first && typeof first === 'object' && (first as JsonObject)['model'] === ROUTED_MODEL_ALIAS;
 }
 
 function writeClaudeCodePatchState(filePath: string, state: ClaudeCodePatchState): void {
@@ -1836,11 +1866,16 @@ function claudeCodeEnv(config: JsonObject, filePath: string): JsonObject | undef
   return env as JsonObject;
 }
 
-function applyClaudeCodeConfigPatch(patch: ClaudeCodeConfigPatchDef, buyerPort: number, wslTargetsFile?: string): void {
+function applyClaudeCodeConfigPatch(
+  patch: ClaudeCodeConfigPatchDef,
+  buyerPort: number,
+  wslTargetsFile: string | undefined,
+  models: readonly ConnectedAppModel[],
+): void {
   const filePath = expandTilde(patch.configPath);
   const baseURL = patch.baseURL.replace('{buyerPort}', String(buyerPort));
   if (patch.installProbe !== 'claude') {
-    applyClaudeCodeSettingsToFile(filePath, patch, baseURL);
+    applyClaudeCodeSettingsToFile(filePath, patch, baseURL, models);
     return;
   }
   applyWithInstallProbe({
@@ -1849,16 +1884,22 @@ function applyClaudeCodeConfigPatch(patch: ClaudeCodeConfigPatchDef, buyerPort: 
     posix: { configPath: patch.configPath },
     baseURL,
     wslTargetsFile,
-    write: (paths, url) => applyClaudeCodeSettingsToFile(paths.configPath, patch, url),
+    write: (paths, url) => applyClaudeCodeSettingsToFile(paths.configPath, patch, url, models),
   });
 }
 
-function applyClaudeCodeSettingsToFile(filePath: string, patch: ClaudeCodeConfigPatchDef, baseURL: string): void {
+function applyClaudeCodeSettingsToFile(
+  filePath: string,
+  patch: ClaudeCodeConfigPatchDef,
+  baseURL: string,
+  models: readonly ConnectedAppModel[],
+): void {
   const configExisted = existsSync(filePath);
   backupConfigFile(filePath);
   const config = readConfigPatchFile(filePath);
   const existingEnv = claudeCodeEnv(config, filePath);
-  if (!readClaudeCodePatchState(filePath)) {
+  const state = readClaudeCodePatchState(filePath);
+  if (!state) {
     const envSource = existingEnv ?? {};
     writeClaudeCodePatchState(filePath, {
       version: 1,
@@ -1866,6 +1907,14 @@ function applyClaudeCodeSettingsToFile(filePath: string, patch: ClaudeCodeConfig
       envPresent: existingEnv !== undefined,
       env: Object.fromEntries(CLAUDE_CODE_MANAGED_ENV_KEYS.map((key) => [key, savedValue(envSource, key)])) as Record<ClaudeCodeManagedEnvKey, ClaudeCodeSavedValue>,
       model: savedValue(config, 'model'),
+      modelPicker: savedValue(config, 'modelPicker'),
+    });
+  } else if (!state.modelPicker) {
+    // Connected before Antseed managed the picker: keep the user's own picker
+    // (if any) for disconnect before replacing it.
+    writeClaudeCodePatchState(filePath, {
+      ...state,
+      modelPicker: isAntseedClaudeCodePicker(config['modelPicker']) ? { present: false } : savedValue(config, 'modelPicker'),
     });
   }
 
@@ -1876,6 +1925,7 @@ function applyClaudeCodeSettingsToFile(filePath: string, patch: ClaudeCodeConfig
   env['ANTHROPIC_CUSTOM_HEADERS'] = CLAUDE_CODE_SOURCE_HEADER;
   config['env'] = env;
   config['model'] = ROUTED_MODEL_ALIAS;
+  config['modelPicker'] = claudeCodeModelPicker(models);
   writeJsonFile(filePath, config);
 }
 
@@ -1930,6 +1980,10 @@ function removeClaudeCodeSettingsFromFile(
   }
   if (config['model'] === ROUTED_MODEL_ALIAS) {
     restoreSavedValue(config, 'model', state.model);
+    changed = true;
+  }
+  if (isAntseedClaudeCodePicker(config['modelPicker'])) {
+    restoreSavedValue(config, 'modelPicker', state.modelPicker ?? { present: false });
     changed = true;
   }
 
@@ -2121,9 +2175,8 @@ function applyClaudeDesktopConfigPatch(patch: ClaudeDesktopConfigPatchDef, buyer
   // would shadow it.
   delete profile['inferenceModels'];
   // Claude's published model catalog (fetched from downloads.claude.ai on 3p
-  // boots) relabels picker entries by id, so "Antseed Auto" behind
-  // claude-fable-5 would show as "Fable 5" and every curated slot as the
-  // Claude model whose id it borrows. The gateway's display names are the
+  // boots) relabels picker entries by id, so every curated slot would show
+  // as the Claude model whose id it borrows. The gateway's display names are the
   // real labels; keep the catalog off so they win.
   profile['modelCatalogEnabled'] = false;
   writeJsonFile(paths.profile, profile);

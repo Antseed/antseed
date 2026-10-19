@@ -1056,6 +1056,55 @@ test('Claude Code patch routes through the AI VPN alias and restores managed set
   });
 });
 
+test('Claude Code patch lists Antseed Auto and the curated models in /model, and restores the user picker', async () => {
+  await withTempConfig(async (dir) => {
+    const configPath = path.join(dir, 'settings.json');
+    const userPicker = { options: [{ model: 'claude-opus-5', label: 'Mine' }] };
+    await writeFile(configPath, JSON.stringify({ modelPicker: userPicker }), 'utf8');
+    const patch = makeClaudeCodePatch(configPath);
+    applyConfigPatch(patch, PEER_ID, 8377, { models: [
+      { label: 'GPT 5.6 Sol', model: 'gpt-5.6-sol' },
+      { label: 'Claude Opus 5.5', model: 'claude-opus-5-5' },
+    ] });
+
+    const config = JSON.parse(await readFile(configPath, 'utf8')) as Record<string, any>;
+    assert.deepEqual(config['modelPicker'], {
+      replaceBuiltInOptions: true,
+      options: [
+        { model: 'antseed', label: 'Antseed Auto', description: 'Uses the model selected in the AI VPN' },
+        { model: 'gpt-5.6-sol', label: 'GPT 5.6 Sol (Antseed)', description: '-' },
+        { model: 'claude-opus-5-5', label: 'Claude Opus 5.5 (Antseed)', description: '-' },
+      ],
+    });
+
+    // A reconnect rewrites the list but keeps the user's picker for disconnect.
+    applyConfigPatch(patch, PEER_ID, 8377, { models: [{ label: 'Kimi K3', model: 'kimi-k3' }] });
+    const reconnected = JSON.parse(await readFile(configPath, 'utf8')) as Record<string, any>;
+    assert.deepEqual(reconnected['modelPicker']['options'].map((row: { model: string }) => row.model), ['antseed', 'kimi-k3']);
+
+    assert.equal(removeConfigPatch(patch), true);
+    const restored = JSON.parse(await readFile(configPath, 'utf8')) as Record<string, unknown>;
+    assert.deepEqual(restored['modelPicker'], userPicker);
+  });
+});
+
+test('Claude Code patch adds the picker to a connection made before it managed one', async () => {
+  await withTempConfig(async (dir) => {
+    const configPath = path.join(dir, 'settings.json');
+    const patch = makeClaudeCodePatch(configPath);
+    applyConfigPatch(patch, PEER_ID, 8377);
+    // State as written by the older patch: no modelPicker entry.
+    const statePath = `${configPath}.antseed.state.json`;
+    const state = JSON.parse(await readFile(statePath, 'utf8')) as Record<string, unknown>;
+    delete state['modelPicker'];
+    await writeFile(statePath, JSON.stringify(state), 'utf8');
+
+    applyConfigPatch(patch, PEER_ID, 8377, { models: [{ label: 'Kimi K3', model: 'kimi-k3' }] });
+    assert.equal(removeConfigPatch(patch), true);
+    assert.equal(existsSync(configPath), false);
+  });
+});
+
 test('Claude Code patch removal keeps user edits to managed keys', async () => {
   await withTempConfig(async (dir) => {
     const configPath = path.join(dir, 'settings.json');
@@ -1211,6 +1260,8 @@ test('applyConfigPatch (hermes) adds Antseed provider and selects it', async () 
     assert.equal(config['providers']['antseed']['api'], 'http://localhost:8377/v1');
     assert.equal(config['providers']['antseed']['transport'], 'chat_completions');
     assert.deepEqual(config['providers']['antseed']['extra_headers'], { originator: 'hermes' });
+    // Hermes would otherwise replace the curated list with the buyer's full /v1/models list.
+    assert.equal(config['providers']['antseed']['discover_models'], false);
     assert.equal(config['providers']['antseed']['default_model'], 'antseed');
     assert.equal(config['providers']['antseed']['models']['antseed']['context_length'], ANTSEED_MODEL_CONTEXT_WINDOW);
     assert.deepEqual(config['model'], {

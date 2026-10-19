@@ -28,11 +28,10 @@ import { getNetworkSnapshot, lookupPeer, type DashboardNetworkPeer } from '../ru
 import type { ProcessManager, RuntimeMode, RuntimeProcessState } from '../runtime/process-manager.js';
 import { applyWindowView, getMainWindow } from '../ui/window.js';
 import { updateDesktopTray } from '../ui/tray.js';
-import { pushClaudeDesktopModels } from '../connected-apps/claude-desktop-models.js';
+import { connectedAppPickerModels } from '../connected-apps/picker-models.js';
 import {
   applyConfigPatch,
   removeConfigPatch,
-  type ConnectedAppModel,
 } from '@antseed/connected-apps/config-patch';
 import {
   DEFAULT_SYSTEM_PROXY_PORT,
@@ -69,15 +68,11 @@ export type SystemProxyDeps = {
 };
 
 let injected: SystemProxyDeps | null = null;
-let connectedAppModelSource: () => readonly ConnectedAppModel[] = () => [];
 
 export function initSystemProxyRuntime(deps: SystemProxyDeps): void {
   injected = deps;
 }
 
-export function setConnectedAppModelSource(source: () => readonly ConnectedAppModel[]): void {
-  connectedAppModelSource = source;
-}
 
 function deps(): SystemProxyDeps {
   if (!injected) {
@@ -588,20 +583,19 @@ export async function startSystemProxyRuntimeInner(opts: SystemProxyStartRequest
   // call was asked to *add* is rethrown, after the survivors are fully wired.
   const failedConfigPatchProfiles = new Set<string>();
   let newProfileConnectError: Error | null = null;
+  // Configs select Auto by default and list the curated picker models (the
+  // AI VPN selection, starred models, then the Recommended lineup).
+  const pickerModels = configPatchProfiles.length > 0
+    ? await connectedAppPickerModels(buyerProxyPort, defaultRoute.model ? `${defaultRoute.peerId}@${defaultRoute.model}` : null)
+    : [];
   for (const name of configPatchProfiles) {
     const profile = SYSTEM_PROXY_PROFILES.find((p) => p.name === name);
     if (!profile?.configPatch) continue;
     try {
-      if (profile.configPatch.format === 'claude-desktop') {
-        // Claude Desktop lists models from the buyer's /claude-desktop route;
-        // make sure it has the curated picker rows before Claude asks.
-        await pushClaudeDesktopModels(buyerProxyPort);
-      }
-      // Configs select Auto by default and list the curated picker models.
       // The buyer's default starts new chats; existing chats keep their model.
       applyConfigPatch(profile.configPatch, defaultRoute.peerId, buyerProxyPort, {
         wslTargetsFile: systemProxyWslTargetsPath(),
-        models: connectedAppModelSource(),
+        models: pickerModels,
       });
       deps().appendLog('system-proxy', 'system', `${profile.label}: connected by config patch (peer=${shortTrayPeerId(defaultRoute.peerId)}, model=${defaultRoute.model || 'auto'} via selection)`);
     } catch (err) {
@@ -704,6 +698,43 @@ export async function startSystemProxyRuntimeInner(opts: SystemProxyStartRequest
     throw newProfileConnectError;
   }
   return getSystemProxyProcessState();
+}
+
+/**
+ * Rewrite the model list of every connected config-patch app (Claude Code,
+ * Codex, OpenCode, Hermes, ...) after the starred models change, so a new star
+ * reaches their pickers without a reconnect. Same route, same apps; nothing
+ * is restarted, so apps that read their config only at launch pick the list
+ * up when next opened. Skipped while a connect is running: it writes the list
+ * itself.
+ */
+export async function refreshConnectedAppModelLists(): Promise<void> {
+  if (systemProxyStartsInFlight > 0) return;
+  const state = getSystemProxyProcessState();
+  const metadata = runtimeMetadata(state);
+  const peerId = typeof metadata['peerId'] === 'string' ? metadata['peerId'] : '';
+  const profiles = readStringArray(metadata['activeProfileNames']).filter((name) => isConfigPatchProfileName(name));
+  if (!peerId || profiles.length === 0) return;
+  const opts: SystemProxyStartRequest = {
+    peerId,
+    defaultModel: typeof metadata['defaultModel'] === 'string' ? metadata['defaultModel'] : undefined,
+    toolRoutes: metadata['toolRoutes'] as SystemProxyStartRequest['toolRoutes'],
+  };
+  const route = routeForTool(opts, '');
+  const buyerProxyPort = await resolveBuyerProxyPort();
+  const models = await connectedAppPickerModels(buyerProxyPort, route.model ? `${route.peerId}@${route.model}` : null);
+  for (const name of profiles) {
+    const profile = SYSTEM_PROXY_PROFILES.find((p) => p.name === name);
+    if (!profile?.configPatch) continue;
+    try {
+      applyConfigPatch(profile.configPatch, route.peerId, buyerProxyPort, {
+        wslTargetsFile: systemProxyWslTargetsPath(),
+        models,
+      });
+    } catch (err) {
+      deps().appendLog('system-proxy', 'system', `${profile.label}: model list refresh failed — ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 }
 
 export async function restartSystemProxyRuntime(opts: SystemProxyStartRequest): Promise<RuntimeProcessState | null> {

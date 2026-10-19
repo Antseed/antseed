@@ -8,6 +8,7 @@ import { isMultiInstanceDevelopment } from '../dev-instance.js';
 import type { LogEvent } from '../runtime/log-parser.js';
 import type { ProcessManager, RuntimeProcessState } from '../runtime/process-manager.js';
 import { resolveBuyerProxyPort } from '../runtime/active-config.js';
+import { refreshConnectedAppModelLists } from '../system-proxy/runtime.js';
 import { isCompatibleSharedBuyer, refreshSharedBuyerAttachment } from '../runtime/shared-buyer.js';
 import { resolveConnectDataDir } from '../runtime/process-manager.js';
 import { requestTeeSnapshot } from '../runtime/tee-verification.js';
@@ -376,6 +377,24 @@ export function registerRuntimeIpc(deps: RuntimeIpcDeps): void {
       }
     },
   );
+
+  // Starred models only (buyer.favoriteModels, read by connected apps' model
+  // lists): a plain config merge, without the session resets a settings save
+  // needs, since a star toggle changes nothing the buyer or payments use.
+  ipcMain.handle('runtime:set-favorite-models', async (_event, raw: unknown): Promise<ApiResult> => {
+    if (!Array.isArray(raw) || !raw.every((key) => typeof key === 'string' && key.length > 0 && key.length <= 200)) {
+      return { ok: false, data: null, error: 'favoriteModels must be a list of model keys', status: null };
+    }
+    try {
+      // mergeConfig merges `buyer` one level deep, keeping its other fields.
+      await mergeConfig({ buyer: { favoriteModels: [...new Set(raw as string[])] } }, ACTIVE_CONFIG_PATH);
+      // Connected apps list starred models, so rewrite their model lists now.
+      void refreshConnectedAppModelLists().catch(() => undefined);
+      return { ok: true, data: null, error: null, status: 200 };
+    } catch (err) {
+      return { ok: false, data: null, error: err instanceof Error ? err.message : String(err), status: null };
+    }
+  });
 
   ipcMain.handle('runtime:scan-network', async () => {
     try {

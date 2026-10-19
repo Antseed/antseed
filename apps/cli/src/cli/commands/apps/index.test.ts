@@ -311,12 +311,18 @@ const CATALOG_APPS: { name: string; dir: string; read: (ws: Workspace) => Promis
   },
 ]
 
-test('apps connect writes the buyer model catalog into every in-app model picker', async () => {
+test('apps connect writes the curated Recommended lineup into every in-app model picker', async () => {
   const requests: string[] = []
   const { server, port } = await startFakeBuyer((req, res) => {
     requests.push(req.url ?? '')
     res.setHeader('content-type', 'application/json')
-    res.end(JSON.stringify({ object: 'list', data: [{ id: 'model-a', name: 'Model A', peers: [{ capabilities: {} }, { capabilities: { reasoning: true } }] }, { id: 'model-b', peers: [{ capabilities: { reasoning: false } }] }] }))
+    // The buyer lists every network model; connect writes only the curated
+    // Recommended lineup the desktop picker offers (aion-2.0 is not in it).
+    res.end(JSON.stringify({ object: 'list', data: [
+      { id: 'aion-2.0', name: 'Aion 2.0', type: 'text', peers: [{ peerId: 'p1' }, { peerId: 'p2' }, { peerId: 'p3' }] },
+      { id: 'gpt-5.6-sol', name: 'GPT 5.6 Sol', type: 'text', peers: [{ peerId: 'p1', capabilities: { reasoning: false } }] },
+      { id: 'claude-opus-5', name: 'Claude Opus 5', type: 'text', peers: [{ peerId: 'p1', capabilities: {} }, { peerId: 'p2', capabilities: { reasoning: true } }] },
+    ] }))
   })
   const ws = await createWorkspace()
   try {
@@ -324,10 +330,10 @@ test('apps connect writes the buyer model catalog into every in-app model picker
       await mkdir(homePath(ws, app.dir), { recursive: true })
       const connected = await runAsync(ws, ['apps', 'connect', app.name, '--port', String(port)])
       assert.equal(connected.ok, true, connected.error)
-      assert.deepEqual(await app.read(ws), ['antseed', 'model-a', 'model-b'], app.name)
+      assert.deepEqual(await app.read(ws), ['antseed', 'claude-opus-5', 'gpt-5.6-sol'], app.name)
       if (app.name === 'codex') {
         const catalog = JSON.parse(await readFile(join(ws.home, '.codex', 'config.toml.antseed.models.json'), 'utf8')) as { models: { slug: string; supported_reasoning_levels: unknown[] }[] }
-        assert.deepEqual(catalog.models.map((model) => [model.slug, model.supported_reasoning_levels.length > 0]), [['antseed', true], ['model-a', true], ['model-b', false]])
+        assert.deepEqual(catalog.models.map((model) => [model.slug, model.supported_reasoning_levels.length > 0]), [['antseed', true], ['claude-opus-5', true], ['gpt-5.6-sol', false]])
       }
       const disconnected = await runAsync(ws, ['apps', 'disconnect', app.name])
       assert.equal(disconnected.ok, true, disconnected.error)
@@ -336,6 +342,34 @@ test('apps connect writes the buyer model catalog into every in-app model picker
     assert.equal(existsSync(join(ws.home, '.codex', 'config.toml.antseed.models.json')), false)
     assert.ok(requests.length >= CATALOG_APPS.length)
     assert.ok(requests.every((url) => url === '/v1/models?type=text'), requests.join(', '))
+  } finally {
+    server.close()
+    await rm(ws.home, { recursive: true, force: true })
+  }
+})
+
+test('apps connect lists the AI VPN selection and starred models before the lineup', async () => {
+  const { server, port } = await startFakeBuyer((_req, res) => {
+    res.setHeader('content-type', 'application/json')
+    res.end(JSON.stringify({ object: 'list', data: [
+      { id: 'claude-opus-5', name: 'Claude Opus 5', type: 'text', peers: [{ peerId: 'p1' }] },
+      { id: 'aion-2.0', name: 'Aion 2.0', type: 'text', peers: [{ peerId: 'p1' }] },
+      { id: 'kimi-k2.6', name: 'Kimi K2.6', type: 'text', peers: [{ peerId: 'p1' }] },
+      { id: 'blocked-only', name: 'Blocked', type: 'text', peers: [{ peerId: '0x' + 'b'.repeat(40) }] },
+    ] }))
+  })
+  const ws = await createWorkspace()
+  try {
+    await writeFile(ws.configPath, JSON.stringify({ buyer: {
+      favoriteModels: ['aion20', 'blockedonly'],
+      routingPreferences: { blockedPeerIds: ['0x' + 'b'.repeat(40)] },
+    } }), 'utf8')
+    await writeFile(join(ws.dataDir, 'buyer.state.json'), JSON.stringify({ defaultRoutedModel: `${'a'.repeat(40)}@kimi-k2.6` }), 'utf8')
+    await mkdir(homePath(ws, '~/.pi/agent'), { recursive: true })
+    const connected = await runAsync(ws, ['apps', 'connect', 'pi', '--port', String(port)])
+    assert.equal(connected.ok, true, connected.error)
+    const pi = JSON.parse(await readFile(join(ws.home, '.pi', 'agent', 'models.json'), 'utf8')) as { providers: { antseed: { models: { id: string }[] } } }
+    assert.deepEqual(pi.providers.antseed.models.map((model) => model.id), ['antseed', 'kimi-k2.6', 'aion-2.0', 'claude-opus-5'])
   } finally {
     server.close()
     await rm(ws.home, { recursive: true, force: true })

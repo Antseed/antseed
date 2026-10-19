@@ -139,6 +139,6 @@ test('mergeWithDefaultAppProfiles lets external profiles override same-name defa
 
 test('model-picker tool slugs come from apps whose config lists the AntSeed catalog', () => {
   assert.deepEqual([...MODEL_PICKER_TOOL_SLUGS].sort(), [
-    'codex', 'crush', 'droid', 'gooeypi', 'hermes', 'hermes-agent', 'opencode', 'pi', 'prime-agent', 't3code', 'zed',
+    'claude-code', 'codex', 'crush', 'droid', 'gooeypi', 'hermes', 'hermes-agent', 'opencode', 'pi', 'prime-agent', 't3code', 'zed',
   ]);
 });

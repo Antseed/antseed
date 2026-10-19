@@ -230,6 +230,9 @@ const api = {
   ): Promise<DataResult> {
     return ipcRenderer.invoke('runtime:update-config', config) as Promise<DataResult>;
   },
+  setFavoriteModels(favoriteModels: string[]): Promise<DataResult> {
+    return ipcRenderer.invoke('runtime:set-favorite-models', favoriteModels) as Promise<DataResult>;
+  },
   scanNetwork(): Promise<DataResult> {
     return ipcRenderer.invoke('runtime:scan-network') as Promise<DataResult>;
   },
@@ -314,9 +317,6 @@ const api = {
   },
   chatSetBuyerDefaultRoute(payload: { selection: import('../shared/routing-selection.js').DesktopRoutingSelection }): Promise<{ ok: boolean; error?: string }> {
     return ipcRenderer.invoke('chat:set-buyer-default-route', payload);
-  },
-  chatSyncModelPicker(payload: unknown): Promise<{ ok: boolean }> {
-    return ipcRenderer.invoke('chat:sync-model-picker', payload);
   },
   chatAiGetProxyStatus(): Promise<{ ok: boolean; data: { running: boolean; port: number } }> {
     return ipcRenderer.invoke('chat:ai-get-proxy-status');

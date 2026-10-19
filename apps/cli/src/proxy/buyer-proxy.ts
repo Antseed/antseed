@@ -2,7 +2,7 @@ import { nativeVideoRoute, type NativeVideoProtocol } from '@antseed/api-adapter
 import { ResourceRoutes } from './resource-routes.js'
 import { prepareVideoRequest, recordVideoAcceptance } from './native-video-proxy.js'
 import { downloadVideo } from './video-download.js'
-import { CLAUDE_DESKTOP_SOURCE, ClaudeDesktopRoute, claudeDesktopSubpath, parseModels } from './claude-desktop-route.js'
+import { CLAUDE_DESKTOP_SOURCE, ClaudeDesktopRoute, claudeDesktopSubpath } from './claude-desktop-route.js'
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { buildRoutingServices, findPinnedRoutingService } from './routing-services.js'
@@ -55,6 +55,8 @@ import {
 import { encodeServedSelection, ROUTE_SELECTION_HEADER, type RouteSelection, type ServedSelection } from './route-selection.js'
 import { canonicalModelKey } from '@antseed/node/model-identity'
 import { MODEL_PICKER_TOOL_SLUGS } from '@antseed/connected-apps'
+import { curatedPickerModels } from '@antseed/node/model-lineup'
+import { DEFAULT_MODEL_ROUTING_PREFERENCES } from '@antseed/node/model-routing'
 import {
   createStreamingAdapter,
   detectRequestServiceApiProtocol,
@@ -217,6 +219,8 @@ export interface BuyerProxyConfig {
   configPath?: string
   /** Price + trust preferences used for model-only automatic routing. */
   routingPreferences?: ModelRoutingPreferences
+  /** Models starred in the desktop app (`buyer.favoriteModels`), listed first in Claude Desktop's picker. */
+  favoriteModels?: string[]
   /** How often to refresh the peer list from DHT in the background (ms). Default: 300000 (5 min) */
   backgroundRefreshIntervalMs?: number
   /**
@@ -1191,6 +1195,7 @@ export class BuyerProxy {
   private _stateWatchDebounce: ReturnType<typeof setTimeout> | null = null
   private _configWatchDebounce: ReturnType<typeof setTimeout> | null = null
   private _routingPreferences: ModelRoutingPreferences | null
+  private _favoriteModels: string[]
 
   private _stateWriteChain: Promise<void> = Promise.resolve()
   private readonly _resourceRoutes = new ResourceRoutes()
@@ -1304,6 +1309,7 @@ export class BuyerProxy {
           blockedPeerIds: [...config.routingPreferences.blockedPeerIds],
         }
       : null
+    this._favoriteModels = [...(config.favoriteModels ?? [])]
     this._now = config.now ?? (() => Date.now())
     this._adaptiveRouting = { ...config.adaptiveRouting }
     this._server = createServer((req, res) => {
@@ -2360,6 +2366,7 @@ export class BuyerProxy {
         allowedPeerIds: [...next.allowedPeerIds],
         blockedPeerIds: [...next.blockedPeerIds],
       }
+      this._favoriteModels = [...(config.buyer.favoriteModels ?? [])]
       // `minPeerReputation` (like max pricing) is not reloaded: the router
       // plugin enforces it with the value it started with, so it applies on
       // restart only, and the proxy keeps the same value to stay in step.
@@ -3065,26 +3072,6 @@ export class BuyerProxy {
       return
     }
 
-    if (path === '/_antseed/claude-desktop/models' && method === 'POST') {
-      const chunks: Buffer[] = []
-      for await (const chunk of req) chunks.push(chunk as Buffer)
-      let models: ReturnType<typeof parseModels> = null
-      try {
-        models = parseModels((JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>).models)
-      } catch {
-        // falls through to the 400 below
-      }
-      if (!models) {
-        res.writeHead(400, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({ ok: false, error: 'body must be {"models":[{"label","model"}]}' }))
-        return
-      }
-      this._claudeDesktop.setPushedModels(models)
-      res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ ok: true, count: models.length }))
-      return
-    }
-
     if (path === '/_antseed/route' && method === 'GET') {
       res.writeHead(200, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ ok: true, model: this._defaultRoutedModel, router: this._defaultRouterJson }))
@@ -3668,16 +3655,23 @@ export class BuyerProxy {
       && policyExclusionReasons(this._buyerHardPolicy(), facts).length === 0
   }
 
-  /** Claude Desktop's picker: network models behind Claude's own ids (see claude-desktop-route.ts). */
+  /**
+   * Claude Desktop's picker: network models behind Claude's own ids (see
+   * claude-desktop-route.ts), the same curated list every connected app gets
+   * (@antseed/node/model-lineup).
+   */
   private async _handleClaudeDesktopModels(res: ServerResponse): Promise<void> {
-    const ranked = buildNetworkModels(await this._getPeers(), this._now(), {
+    const networkModels = buildNetworkModels(await this._getPeers(), this._now(), {
       routingPreferences: this._routingPreferences,
       peerHealth: this._peerHealth,
     })
-      .filter((entry) => entry.type === 'text')
-      .map((entry) => ({ label: entry.name, model: entry.id }))
+    const curated = curatedPickerModels(networkModels, {
+      preferences: this._routingPreferences ?? DEFAULT_MODEL_ROUTING_PREFERENCES,
+      favoriteModels: this._favoriteModels,
+      defaultRoutedModel: this._defaultRoutedModel,
+    })
     res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(JSON.stringify(this._claudeDesktop.modelsResponse(ranked)))
+    res.end(JSON.stringify(this._claudeDesktop.modelsResponse(curated)))
   }
 
   private async _handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {

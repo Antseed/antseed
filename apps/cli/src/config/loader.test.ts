@@ -81,6 +81,16 @@ test('loadConfig merges partial model routing preferences with defaults', async 
   );
 });
 
+test('loadConfig keeps the desktop\'s starred models and drops non-string entries', async () => {
+  await withTempConfig(
+    JSON.stringify({ buyer: { favoriteModels: ['claudeopus5', 7, '', 'gpt56sol'] } }),
+    async (configPath) => {
+      const config = await loadConfig(configPath);
+      assert.deepEqual(config.buyer.favoriteModels, ['claudeopus5', 'gpt56sol']);
+    },
+  );
+});
+
 test('loadConfig rejects invalid model routing peer ids', async () => {
   await withTempConfig(
     JSON.stringify({ buyer: { routingPreferences: { blockedPeerIds: ['not-a-peer'] } } }),
