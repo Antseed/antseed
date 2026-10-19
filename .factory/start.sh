@@ -77,8 +77,8 @@ done
 for c in claude bun gh node; do command -v "$c" >/dev/null || die "$c is required"; done
 models="$(curl -fsS -m 10 "$MODEL_URL/v1/models")" || die "the AntSeed buyer at $MODEL_URL does not answer"
 for m in "$LEAD" claude-fable-5.1 gpt-6-astra gpt-6.1-sol; do
-  node -e 'const [d,m,p]=process.argv.slice(1);process.exit(JSON.parse(d).data.some(x=>x.id===m&&x.peers.some(q=>q.peerId===p))?0:1)' \
-    "$models" "$m" "$GESUNDAI" || die "GesundAI does not serve $m right now"
+  printf '%s' "$models" | node -e 'const [m,p]=process.argv.slice(1);const d=JSON.parse(require("fs").readFileSync(0,"utf8"))
+process.exit(d.data.some(x=>x.id===m&&x.peers.some(q=>q.peerId===p))?0:1)' "$m" "$GESUNDAI" || die "GesundAI does not serve $m right now"
 done
 run="$FACTORY/runs/$slug"; wt="$(dirname "$REPO")/fix-$slug"; branch="fix/$slug"
 orch() { bun "$PSTACK/skills/poteto-mode/scripts/orch/orch.ts" --store "$run/orch" "$@"; }
