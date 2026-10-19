@@ -1950,19 +1950,6 @@ export class GatewayStore {
     return this.getDeposit(input.txHash)!
   }
 
-  /** The first block not yet scanned for USDC sent to `wallet`; null before the first scan. */
-  getDepositScan(wallet: string): number | null {
-    const row = this._stmt('SELECT next_block FROM deposit_scans WHERE wallet = ?').get(wallet.toLowerCase()) as { next_block: number } | undefined
-    return row ? row.next_block : null
-  }
-
-  setDepositScan(wallet: string, nextBlock: number): void {
-    this._stmt(`
-      INSERT INTO deposit_scans (wallet, next_block, updated_at) VALUES (?, ?, ?)
-      ON CONFLICT (wallet) DO UPDATE SET next_block = excluded.next_block, updated_at = excluded.updated_at
-    `).run(wallet.toLowerCase(), nextBlock, this._now())
-  }
-
   /** Sets (or with null clears) who approved a deposit. */
   setDepositApproval(txHash: string, approval: { byId: string | null; byLabel: string; note: string | null } | null): DepositRecord | null {
     if (approval) {

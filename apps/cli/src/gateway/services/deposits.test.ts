@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { AbiCoder, Interface, zeroPadValue, type Log, type TransactionReceipt } from 'ethers'
-import { scanTransfers, SOURCE_LOOKBACK_BLOCKS, verifyDeposit, type DepositChainProvider } from './deposits.js'
+import { SOURCE_LOOKBACK_BLOCKS, verifyDeposit, type DepositChainProvider } from './deposits.js'
 
 // Obvious fakes: fixed test addresses and hashes, never real ones.
 const DEPOSITS = `0x${'d0'.repeat(20)}`
@@ -84,20 +84,4 @@ test('USDC sent to the wallet is a transfer: the amount, and who sent it', async
   // USDC sent elsewhere, or by the protocol's own contracts, is not money coming in.
   assert.equal(await verifyDeposit(provider({ status: 1, logs: [transfer(PAYER, RELAYER, 1n, FUND_TX)] }), CHAIN, FUND_TX, WALLET), null)
   assert.equal(await verifyDeposit(provider({ status: 1, logs: [transfer(DEPOSITS, WALLET, 1n, FUND_TX)] }), CHAIN, FUND_TX, WALLET), null)
-})
-
-test('a scan finds each transaction that sent USDC to the wallet, with its block time', async () => {
-  const OTHER_TX = `0x${'c3'.repeat(32)}`
-  const at = (entry: Log, blockNumber: number) => ({ ...entry, blockNumber }) as Log
-  const chain = provider(null, [
-    at(transfer('0x0000000000000000000000000000000000000000', WALLET, 25_000_000n, FUND_TX), 120),
-    at(transfer(PAYER, WALLET, 1_000_000n, OTHER_TX), 130),
-    at(transfer(PAYER, WALLET, 2_000_000n, OTHER_TX), 130),
-  ])
-  const found = await scanTransfers(chain, CHAIN, WALLET, 100, 199)
-  assert.deepEqual(chain.queries[0], { address: USDC, topics: [abi.getEvent('Transfer')!.topicHash, null, topic(WALLET)], fromBlock: 100, toBlock: 199 })
-  assert.deepEqual(found.map((entry) => [entry.txHash, entry.kind, entry.creditedUsdc, entry.blockNumber, entry.blockTime, entry.sources.length]), [
-    [FUND_TX, 'transfer', 25_000_000, 120, 1_700_000_000_000, 1],
-    [OTHER_TX, 'transfer', 3_000_000, 130, 1_700_000_000_000, 2],
-  ])
 })

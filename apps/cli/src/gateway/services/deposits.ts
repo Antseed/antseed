@@ -6,7 +6,7 @@
  * Three kinds:
  * - transfer: USDC sent to the workspace wallet (from a wallet, an exchange,
  *   or minted straight in by the USDC issuer for a card purchase). This is
- *   the money coming in; `scanTransfers` finds them as they arrive.
+ *   the money coming in; a sweep's sources name the transfers that funded it.
  * - relay: a relayer sweeps the wallet into AntseedDeposits, keeping a fixed
  *   fee (`SweepExecuted`). A move inside the workspace, not new money: one
  *   transfer can be swept in several pieces. Where the USDC came from is the
@@ -37,7 +37,6 @@ export interface DepositChainProvider {
   getTransaction(hash: string): Promise<{ from: string } | null>
   getBlock(block: number): Promise<{ timestamp: number } | null>
   getLogs(filter: { address: string; topics: Array<string | null>; fromBlock: number; toBlock: number }): Promise<Log[]>
-  getBlockNumber?(): Promise<number>
 }
 
 export interface VerifiedDeposit {
@@ -145,28 +144,6 @@ async function transferIn(provider: DepositChainProvider, chain: DepositChain, r
   if (!sources?.length) return null
   const block = await provider.getBlock(receipt.blockNumber)
   return transferDeposit(receipt.hash.toLowerCase(), wallet, receipt.blockNumber, (block?.timestamp ?? 0) * 1000, sources)
-}
-
-/**
- * USDC sent to `wallet` in blocks `fromBlock`..`toBlock` (at most
- * `SOURCE_LOOKBACK_BLOCKS + 1` of them: one log query), one per transaction.
- */
-export async function scanTransfers(provider: DepositChainProvider, chain: DepositChain, wallet: string, fromBlock: number, toBlock: number): Promise<VerifiedDeposit[]> {
-  const logs = await provider.getLogs({
-    address: chain.usdcContractAddress,
-    topics: [USDC_ABI.getEvent('Transfer')!.topicHash, null, `0x${wallet.toLowerCase().replace(/^0x/, '').padStart(64, '0')}`],
-    fromBlock,
-    toBlock,
-  })
-  const blockOf = new Map(logs.map((log) => [log.transactionHash.toLowerCase(), log.blockNumber]))
-  const times = new Map<number, number>()
-  const found: VerifiedDeposit[] = []
-  for (const [txHash, sources] of transfersTo(chain, wallet, logs)) {
-    const blockNumber = blockOf.get(txHash)!
-    if (!times.has(blockNumber)) times.set(blockNumber, ((await provider.getBlock(blockNumber))?.timestamp ?? 0) * 1000)
-    found.push(transferDeposit(txHash, wallet, blockNumber, times.get(blockNumber)!, sources))
-  }
-  return found
 }
 
 /**

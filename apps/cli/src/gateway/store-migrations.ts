@@ -373,8 +373,8 @@ export const MIGRATIONS: readonly string[] = [
   `
   ALTER TABLE gateway_requests ADD COLUMN route_selection TEXT;
   `,
-  // Deposit confirmations also cover USDC sent to the workspace wallet ('transfer'), found by scanning the
-  // chain forward from a per-wallet cursor. SQLite cannot widen a CHECK, so the table is rebuilt.
+  // Deposit confirmations also cover USDC sent to the workspace wallet ('transfer'): the transfers that
+  // funded its sweeps. SQLite cannot widen a CHECK, so the table is rebuilt.
   `
   CREATE TABLE deposits_v2 (
     tx_hash TEXT PRIMARY KEY,
@@ -399,10 +399,5 @@ export const MIGRATIONS: readonly string[] = [
   DROP TABLE deposits;
   ALTER TABLE deposits_v2 RENAME TO deposits;
   CREATE INDEX deposits_workspace ON deposits(workspace_id, block_time);
-  CREATE TABLE deposit_scans (
-    wallet TEXT PRIMARY KEY,
-    next_block INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-  );
   `,
 ]

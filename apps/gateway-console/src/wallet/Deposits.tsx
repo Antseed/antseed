@@ -76,7 +76,7 @@ function AddDepositModal({ isOpen, workspaceId, onClose }: { isOpen: boolean; wo
   })
   return (
     <Modal isOpen={isOpen} onClose={onClose} size="sm" title="Add a past deposit"
-      subtitle="USDC sent to the workspace wallet is listed as it arrives. For an earlier one, paste the transaction that sent it to the wallet, or your deposit from a connected wallet.">
+      subtitle="USDC sent to the workspace wallet is listed once it starts moving into the credits. For a missing one, paste the transaction that sent it to the wallet, or your deposit from a connected wallet.">
       <div className="gc-stack">
         <TextField label="Transaction hash" placeholder="0x…" value={txHash} onChange={(event) => setTxHash(event.target.value)} spellCheck={false} />
         {add.error ? <p className="gc-warn">{errorMessage(add.error)}</p> : null}
@@ -112,7 +112,7 @@ export function DepositsPanel({ workspaceId }: { workspaceId: string }) {
                 !deposit.approval && { label: 'Approve…', onSelect: () => setApproving(deposit) },
                 deposit.approval && { label: 'Remove approval', onSelect: () => unapprove.mutate(deposit) },
               ]}
-              empty={<EmptyState icon={<Icon.wallet size={18} />} title="No deposits yet" body="USDC sent to the workspace wallet shows up here within a minute. Add an earlier one by its transaction." />}
+              empty={<EmptyState icon={<Icon.wallet size={18} />} title="No deposits yet" body="USDC sent to the workspace wallet shows up here once it starts moving into the credits, usually within a minute. Add a missing one by its transaction." />}
               columns={[
                 { key: 'date', header: 'Date', render: (deposit) => formatDateTime(deposit.time) },
                 {

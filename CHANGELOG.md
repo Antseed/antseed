@@ -9,11 +9,11 @@ This project uses selective package publishing. Each release entry lists the pub
 ### Changed
 
 - Gateway console: **Deposits** on **Wallet & Funding** lists the money that came into the workspace: each transfer of USDC to the workspace wallet, and each direct deposit from a connected wallet. Each has a printable confirmation and can be approved.
-  - The gateway finds transfers to the wallet as they arrive, by scanning the chain forward from where it last stopped. The first scan starts just before the wallet's earliest recorded deposit, so transfers made before this change are found too.
+  - A transfer is listed once its USDC starts moving into the credits, usually within a minute. It is the transfer the move's own on-chain check found (USDC sent to the wallet in the half hour before), so the list needs no extra search of the chain, and transfers made before this change are listed too. A transfer the check missed can be added with **Add a past deposit**.
   - The automatic moves (sweeps) from the wallet into the credits are no longer listed. One transfer is often moved in several small pieces, so listing them counted the money more than once. A sweep approved earlier hands its approval to the transfer it came from.
   - New USDC minted into the wallet is labelled **Exchange or card (new USDC)** instead of **Card purchase**. Exchange withdrawals (such as Coinbase on Base) arrive the same way as card purchases.
   - **Add a past deposit** takes the transaction that sent USDC to the wallet. A pasted sweep is refused, with a request for that transaction instead.
-  - Gateway database migration 14 rebuilds the deposits table to accept the new `transfer` kind and adds a per-wallet scan cursor. Console API: `DepositConfirmation.kind` can be `transfer`.
+  - Gateway database migration 14 rebuilds the deposits table to accept the new `transfer` kind. Console API: `DepositConfirmation.kind` can be `transfer`.
 - CLI buyer and desktop: automatic deposits move USDC from the deposit wallet into the credits in fewer, larger pieces.
   - Every move credits at least the contract's minimum deposit ($1), not only the first one, so small leftovers wait for more USDC instead of each paying the relay fee.
   - When the wallet holds more than the credit limit allows, the top-up waits until half the limit is free (at least $1), instead of moving a dollar or two every time spending frees some room.
