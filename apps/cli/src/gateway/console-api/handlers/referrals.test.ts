@@ -8,7 +8,7 @@ import { decodeInvite, encodeInvite, readReferralState, recoverInviter, referral
 import { buyerIdentityDir } from '../../../buyer-identities/store.js'
 import { ConsoleError, ConsoleRouter } from '../router.js'
 import { addActiveMember, memberPrincipal, tempDataDir, testDeps } from '../test-support.js'
-import type { Builders, CreatedInvite, Referrals } from '../types.js'
+import type { BuilderAgent, Builders, CreatedInvite, ReferralClaimables, Referrals } from '../types.js'
 import type { BuyerClient } from './network-buyer.js'
 import { call, startFakeBuyer, type FakeBuyer } from './network-test-helpers.js'
 import { registerReferralRoutes } from './referrals.js'
@@ -32,6 +32,17 @@ const NO_EXPLORER_CHAIN = { ...CHAIN, explorerApiUrl: undefined } as unknown as 
 let preview: InvitePreview = { referrer: INVITER.address, failure: null }
 const registered = new Set([1, 7])
 let explorerDown = false
+
+/** On-chain payable rewards (base units) by epoch; the fakes answer `pending*Rewards` range reads from these. */
+const ONE_ANTS = 10n ** 18n
+const referrerOnChain = new Map<number, bigint>([[3, 3n * ONE_ANTS], [9, ONE_ANTS / 2n]])
+const refereeOnChain = new Map<number, bigint>([[5, 2n * ONE_ANTS]])
+const builderOnChain = new Map<number, bigint>([[4, 7n * ONE_ANTS]])
+type Range = { fromEpoch: number; toEpoch: number }
+const inRange = (rewards: Map<number, bigint>, range: Range) =>
+  [...rewards].filter(([epoch]) => epoch >= range.fromEpoch && epoch <= range.toEpoch).map(([epoch, amount]) => ({ epoch, amount }))
+/** Every range the fakes were asked for, to show discovery reads the chain. */
+const scanned: string[] = []
 
 /** A context whose indexer, referrals client and identity registry are in-memory fakes. */
 function fakeContext(chain: AntsChainConfig, address: string, signer?: AbstractSigner): AntsContext {
@@ -70,8 +81,17 @@ function fakeContext(chain: AntsChainConfig, address: string, signer?: AbstractS
       inviteUsed: async () => false,
       referredCount: async () => 1,
       previewInvite: async () => preview,
+      // Read only by the on-chain claim discovery: every wallet here was bound by INVITER in epoch 2.
+      referralOf: async () => ({ referrer: INVITER.address, epoch: 2 }),
+      firstRewardEpoch: async () => 1,
+      pendingRewards: async (_referrer: string, range: Range) => { scanned.push(`referrer ${range.fromEpoch}-${range.toEpoch}`); return inRange(referrerOnChain, range) },
+      pendingRefereeRewards: async (_buyer: string, range: Range) => { scanned.push(`referee ${range.fromEpoch}-${range.toEpoch}`); return inRange(refereeOnChain, range) },
     }),
-    clientRewards: () => ({}),
+    clientRewards: () => ({
+      currentEpoch: async () => 20,
+      firstRewardEpoch: async () => 1,
+      pendingRewards: async (_agentId: number, range: Range) => { scanned.push(`builder ${range.fromEpoch}-${range.toEpoch}`); return inRange(builderOnChain, range) },
+    }),
     identity: () => ({
       getAgentWallet: async (id: number) => {
         if (!registered.has(id)) throw Object.assign(new Error('execution reverted'), { code: 'CALL_EXCEPTION' })
@@ -238,6 +258,8 @@ test('builders: org admins see the effective agent, set their own (restarting th
   assert.equal(initial.agentId, null)
   // The fake buyer does not report its attribution (an older buyer): the gateway estimates it.
   assert.deepEqual(initial.effective, { agentId: 1, source: 'default', client: 'cli', runtime: false })
+  assert.equal(initial.available, true)
+  assert.equal(initial.indexed, true)
   assert.equal(initial.agent?.owner, OWNER)
   assert.equal(initial.agent?.payableAnts, '4')
 
@@ -266,15 +288,18 @@ test('builders: saving an agent succeeds while the explorer is down, with its re
   try {
     const saved = await call(router, 'PUT', '/builders', principal, { agentId: 7 }) as Builders
     assert.deepEqual(saved.effective, { agentId: 7, source: 'config', client: 'cli', runtime: false })
-    assert.equal(saved.available, false)
-    assert.equal(saved.agent, null)
+    // Claims stay available (the rewards contract is configured); only the amounts are unknown.
+    assert.equal(saved.available, true)
+    assert.equal(saved.indexed, false)
+    assert.deepEqual(saved.agent, { agentId: 7, owner: OWNER, firstParty: null, payableAnts: '0', claimableEpochs: [] })
     assert.equal(JSON.parse(readFileSync(configPath, 'utf8')).buyer.clientAgentId, 7)
-    // An explorer outage leaves the rewards unknown; the agent is still shown.
+    // An explorer outage leaves the rewards unknown; the agent and its owner are still shown.
     const view = await call(router, 'GET', '/builders', principal) as Builders
     assert.equal(view.agentId, 7)
     assert.equal(view.effective.agentId, 7)
-    assert.equal(view.available, false)
-    assert.equal(view.agent, null)
+    assert.equal(view.available, true)
+    assert.equal(view.indexed, false)
+    assert.equal(view.agent?.owner, OWNER)
   } finally {
     explorerDown = false
   }
@@ -374,6 +399,91 @@ test('builders: saving the same agent again retries a restart that did not take 
     assert.equal(restarted.length, 2)
   } finally {
     await supervised.close()
+    writeFileSync(configPath, original)
+  }
+})
+
+test('without an explorer, the referral rewards and invite bonus are found on-chain for the browser to claim', async () => {
+  const principal = memberPrincipal(store, soloAdmin.id)
+  const view = await call(noExplorerRouter, 'GET', `/workspaces/${solo.id}/referrals`, principal) as Referrals
+  assert.equal(view.available, false)
+  assert.equal(view.referee.indexed, false)
+  scanned.length = 0
+  const found = await call(noExplorerRouter, 'GET', `/workspaces/${solo.id}/referrals/claimable`, principal) as ReferralClaimables
+  assert.deepEqual(found, {
+    referrer: { payableAnts: '3.5', claimableEpochs: [3, 9] },
+    referee: { payableAnts: '2', claimableEpochs: [5] },
+  })
+  // Current epoch 20: up to the latest claimable epoch 18, from the program's first epoch (1) or the binding epoch (2).
+  assert.deepEqual(scanned.sort(), ['referee 2-18', 'referrer 1-18'])
+  // Same access rule as the referrals view: workspace admins only.
+  await rejects(call(router, 'GET', `/workspaces/${team.id}/referrals/claimable`, memberPrincipal(store, plainMember.id)), 403, 'forbidden')
+})
+
+test('with a failing explorer, the rewards are still found on-chain', async () => {
+  explorerDown = true
+  try {
+    const view = await call(router, 'GET', `/workspaces/${team.id}/referrals?fresh=1`, asAdmin()) as Referrals
+    assert.equal(view.available, false)
+    const found = await call(router, 'GET', `/workspaces/${team.id}/referrals/claimable`, asAdmin()) as ReferralClaimables
+    assert.deepEqual(found.referrer.claimableEpochs, [3, 9])
+    assert.deepEqual(found.referee.claimableEpochs, [5])
+
+    const principal = memberPrincipal(store, orgAdmin.id)
+    const builders = await call(router, 'GET', '/builders?fresh=1', principal) as Builders
+    assert.equal(builders.available, true)
+    assert.equal(builders.indexed, false)
+    const agent = await call(router, 'GET', '/builders/claimable', principal) as BuilderAgent
+    assert.equal(agent.agentId, builders.effective.agentId)
+    assert.equal(agent.owner, OWNER)
+    assert.equal(agent.payableAnts, '7')
+    assert.deepEqual(agent.claimableEpochs, [4])
+  } finally {
+    explorerDown = false
+  }
+})
+
+test('without an explorer, the builders view keeps the agent and its claim, found on-chain', async () => {
+  const principal = memberPrincipal(store, orgAdmin.id)
+  const original = readFileSync(configPath, 'utf8')
+  writeFileSync(configPath, JSON.stringify({ buyer: { proxyPort: 8377, clientAgentId: 7 } }))
+  try {
+    const view = await call(noExplorerRouter, 'GET', '/builders?fresh=1', principal) as Builders
+    assert.equal(view.available, true)
+    assert.equal(view.indexed, false)
+    assert.deepEqual(view.agent, { agentId: 7, owner: OWNER, firstParty: null, payableAnts: '0', claimableEpochs: [] })
+    scanned.length = 0
+    const agent = await call(noExplorerRouter, 'GET', '/builders/claimable', principal) as BuilderAgent
+    assert.deepEqual(agent, { agentId: 7, owner: OWNER, firstParty: null, payableAnts: '7', claimableEpochs: [4] })
+    assert.deepEqual(scanned, ['builder 1-18'])
+    // Org admins only, like the builders view.
+    await rejects(call(noExplorerRouter, 'GET', '/builders/claimable', asAdmin()), 403, 'forbidden')
+  } finally {
+    writeFileSync(configPath, original)
+  }
+})
+
+test('claim discovery refuses networks without the contracts, and an unregistered agent is not scanned', async () => {
+  const principal = memberPrincipal(store, orgAdmin.id)
+  const bare = new ConsoleRouter()
+  const noContracts = { ...NO_EXPLORER_CHAIN, referralsAddress: undefined, clientRewardsAddress: undefined } as unknown as AntsChainConfig
+  registerReferralRoutes(bare, testDeps(store, dir, { configPath }), {
+    buyer: buyer.client, resolveChain: async () => noContracts, context: fakeContext,
+    walletAddress: async () => TEAM_WALLET.address, env: {},
+  })
+  await rejects(call(bare, 'GET', `/workspaces/${team.id}/referrals/claimable`, asAdmin()), 409, 'referrals_unavailable')
+  await rejects(call(bare, 'GET', '/builders/claimable', principal), 409, 'builders_unavailable')
+  const builders = await call(bare, 'GET', '/builders', principal) as Builders
+  assert.equal(builders.available, false)
+
+  const original = readFileSync(configPath, 'utf8')
+  writeFileSync(configPath, JSON.stringify({ buyer: { proxyPort: 8377, clientAgentId: 42 } }))
+  try {
+    scanned.length = 0
+    const agent = await call(noExplorerRouter, 'GET', '/builders/claimable', principal) as BuilderAgent
+    assert.deepEqual(agent, { agentId: 42, owner: null, firstParty: null, payableAnts: '0', claimableEpochs: [] })
+    assert.deepEqual(scanned, [])
+  } finally {
     writeFileSync(configPath, original)
   }
 })

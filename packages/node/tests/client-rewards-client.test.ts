@@ -17,6 +17,18 @@ describe('ClientRewardsClient', () => {
     expect(pending.mock.calls.every((call) => call[0] === 7)).toBe(true);
   });
 
+  it('scans an explicit epoch range without reading the current epoch', async () => {
+    const rewards = client();
+    const current = vi.spyOn(rewards, 'currentEpoch');
+    const pending = vi.spyOn(rewards, 'pendingReward').mockImplementation(async (_agentId, epoch) => (epoch === 3 ? 9n : 0n));
+    expect(await rewards.pendingRewards(7, { fromEpoch: 2, toEpoch: 4 })).toEqual([{ epoch: 3, amount: 9n }]);
+    expect(pending.mock.calls.map((call) => call[1])).toEqual([2, 3, 4]);
+    expect(current).not.toHaveBeenCalled();
+    pending.mockClear();
+    expect(await rewards.pendingRewards(7, { fromEpoch: 5, toEpoch: 4 })).toEqual([]);
+    expect(pending).not.toHaveBeenCalled();
+  });
+
   it('returns nothing before any epoch is claimable', async () => {
     const rewards = client();
     vi.spyOn(rewards, 'currentEpoch').mockResolvedValue(1);

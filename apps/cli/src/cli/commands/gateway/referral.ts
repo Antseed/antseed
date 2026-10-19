@@ -61,11 +61,11 @@ function printReferrals(record: WorkspaceRecord, view: Referrals): void {
       console.log(chalk.dim(`  ${buyer.buyer}  ${share}  ${buyer.ants} ANTS${buyer.pendingPoints !== '0' ? '  (earning this epoch)' : ''}`))
     }
   } else {
-    console.log(chalk.dim('Referred buyers and rewards: unknown (the gateway has no explorer that indexes referrals). Invites still work.'))
+    console.log(chalk.dim('Referred buyers and rewards: unknown (the gateway has no explorer that indexes referrals). Invites still work, and Find rewards on the console\'s Referrals page checks the chain for claims.'))
   }
   const referee = view.referee
   if (referee.state === 'bound') {
-    console.log(`Invited by ${referee.referrer ?? 'unknown'}${referee.weeksLeft !== null ? `  ·  ${referee.weeksLeft} bonus week(s) left` : ''}  ·  bonus payable ${referee.payableAnts} ANTS`)
+    console.log(`Invited by ${referee.referrer ?? 'unknown'}${referee.weeksLeft !== null ? `  ·  ${referee.weeksLeft} bonus week(s) left` : ''}  ·  bonus payable ${referee.indexed ? `${referee.payableAnts} ANTS` : 'unknown'}`)
   } else if (referee.state === 'invited') {
     console.log(`Carrying an invite from ${referee.referrer ?? 'unknown'} until a settlement binds it${referee.inviteExpiresEpoch !== null ? ` (before epoch ${referee.inviteExpiresEpoch})` : ''}.`)
   }
@@ -93,12 +93,16 @@ function printBuilders(view: Builders): void {
   if (!effective.runtime) console.log(chalk.dim(ESTIMATED_NOTE))
   const override = envOverrideNote(view.agentId, effective)
   if (override) console.log(chalk.yellow(override))
-  if (!view.available || !view.agent) {
-    console.log(chalk.dim('Builders program data is not available on this network.'))
+  if (!view.available) {
+    console.log(chalk.dim('The builders program is not available on this network (no client rewards contract).'))
     return
   }
-  console.log(`Owner (paid): ${view.agent.owner ?? chalk.yellow('not registered')}`)
-  console.log(`Payable: ${view.agent.payableAnts} ANTS${view.agent.claimableEpochs.length ? ` (epochs ${view.agent.claimableEpochs.join(', ')})` : ''}`)
+  if (view.agent) {
+    console.log(`Owner (paid): ${view.agent.owner ?? chalk.yellow('not registered')}`)
+    console.log(view.indexed
+      ? `Payable: ${view.agent.payableAnts} ANTS${view.agent.claimableEpochs.length ? ` (epochs ${view.agent.claimableEpochs.join(', ')})` : ''}`
+      : chalk.dim('Payable: unknown (no explorer indexes the builders program). Find rewards on the console\'s Builders page checks the chain.'))
+  }
   if (effective.source === 'default') console.log(chalk.dim(`Usage through this gateway currently credits the Antseed ${effective.client === 'desktop' ? 'Desktop' : 'CLI'}. Set your own agent: antseed gateway builders set <agentId>`))
 }
 

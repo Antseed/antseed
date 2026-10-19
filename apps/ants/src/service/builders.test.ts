@@ -19,8 +19,14 @@ function fixture(options: { clientRewards?: boolean; explorer?: boolean } = {}) 
   };
   // `${agentId}:${epoch}` for every claim that confirmed on-chain.
   const claimedOnChain = new Set<string>();
+  // On-chain payable rewards by agent and epoch: agent 9 is owed epoch 8.
+  const payable = new Map<number, Map<number, bigint>>([[9, new Map([[8, 1n]])]]);
   const clientRewards = {
-    pendingRewards: vi.fn(async (agentId: number) => agentId === 9 ? [{ epoch: 8, amount: 1n }] : []),
+    currentEpoch: vi.fn(async () => 40),
+    // The emissions gate's first payable epoch.
+    firstRewardEpoch: vi.fn(async () => 2),
+    pendingRewards: vi.fn(async (agentId: number, range: { fromEpoch: number; toEpoch: number }) =>
+      [...(payable.get(agentId) ?? [])].filter(([epoch]) => epoch >= range.fromEpoch && epoch <= range.toEpoch).map(([epoch, amount]) => ({ epoch, amount }))),
     claimed: vi.fn(async (agentId: number, epoch: number) => claimedOnChain.has(`${agentId}:${epoch}`)),
     claim: vi.fn(async (_signer: unknown, agentId: number, epoch: number) => {
       claimedOnChain.add(`${agentId}:${epoch}`);
@@ -44,7 +50,7 @@ function fixture(options: { clientRewards?: boolean; explorer?: boolean } = {}) 
     requireSigner: () => ({}),
     invalidate: vi.fn(),
   } as unknown as AntsContext;
-  return { ctx, identity, clientRewards, indexer, claimedOnChain };
+  return { ctx, identity, clientRewards, indexer, claimedOnChain, payable };
 }
 
 describe('builders program', () => {
@@ -102,13 +108,13 @@ describe('builders program', () => {
     await expect(builders(ctx, [9])).rejects.toThrow('rpc down');
   });
 
-  it('without an explorer, registers agents and claims through the bounded on-chain epoch scan', async () => {
+  it('without an explorer, registers agents and claims through the on-chain epoch discovery', async () => {
     const { ctx, clientRewards, identity } = fixture({ explorer: false });
     expect(await registerClientAgent(ctx)).toEqual({ agentId: 31 });
     expect(identity.register).toHaveBeenCalledTimes(1);
     expect((await builders(ctx, [9])).agents.find((agent) => agent.agentId === 9)).toMatchObject({ owner: other, payable: '0' });
     expect(await claimBuilderRewards(ctx, 9)).toEqual({ agentId: 9, owner: other, epochs: [8], hashes: ['0xhash8'] });
-    expect(clientRewards.pendingRewards).toHaveBeenCalledWith(9);
+    expect(clientRewards.pendingRewards).toHaveBeenCalledWith(9, expect.anything());
     expect(clientRewards.claim).toHaveBeenCalledWith({}, 9, 8);
   });
 
@@ -202,21 +208,38 @@ describe('builders program', () => {
   it('falls back to the on-chain epoch scan for a claim only without an explorer', async () => {
     const { ctx, clientRewards } = fixture({ explorer: false });
     expect(await claimBuilderRewards(ctx, 9)).toMatchObject({ epochs: [8], hashes: ['0xhash8'] });
-    expect(clientRewards.pendingRewards).toHaveBeenCalledWith(9);
+    expect(clientRewards.pendingRewards).toHaveBeenCalledWith(9, expect.anything());
   });
 
   it('falls back to the on-chain epoch scan for a claim when the explorer request fails', async () => {
     const { ctx, clientRewards, indexer } = fixture();
     indexer.builders.mockRejectedValueOnce(new Error('fetch failed'));
     expect(await claimBuilderRewards(ctx, 9)).toMatchObject({ epochs: [8], hashes: ['0xhash8'] });
-    expect(clientRewards.pendingRewards).toHaveBeenCalledWith(9);
+    expect(clientRewards.pendingRewards).toHaveBeenCalledWith(9, expect.anything());
   });
 
   it('falls back to the on-chain epoch scan for a claim when the explorer does not index builders', async () => {
     const { ctx, clientRewards, indexer } = fixture();
     indexer.builders.mockResolvedValueOnce({ available: false, agents: [] });
     expect(await claimBuilderRewards(ctx, 9)).toMatchObject({ epochs: [8], hashes: ['0xhash8'] });
-    expect(clientRewards.pendingRewards).toHaveBeenCalledWith(9);
+    expect(clientRewards.pendingRewards).toHaveBeenCalledWith(9, expect.anything());
+  });
+
+  it('finds a reward older than 26 epochs, paging back to the first payable epoch in bounded batches', async () => {
+    const { ctx, clientRewards, payable } = fixture({ explorer: false });
+    payable.set(9, new Map([[5, 7n]]));
+    expect(await claimBuilderRewards(ctx, 9)).toMatchObject({ epochs: [5], hashes: ['0xhash5'] });
+    // Current 40: the latest claimable epoch is 38; the gate pays from epoch 2.
+    expect(clientRewards.pendingRewards.mock.calls).toEqual([[9, { fromEpoch: 13, toEpoch: 38 }], [9, { fromEpoch: 2, toEpoch: 12 }]]);
+  });
+
+  it('pages back to the chain config\'s first rewarded epoch when the gate cannot be read', async () => {
+    const { ctx, clientRewards } = fixture({ explorer: false });
+    clientRewards.firstRewardEpoch.mockRejectedValue(new Error('rpc down'));
+    (ctx.chain as { recognizedUsage?: unknown }).recognizedUsage = { status: 'active', effectiveEpoch: 30 };
+    // Epoch 8 predates the configured first epoch, so nothing is found.
+    await expect(claimBuilderRewards(ctx, 9)).rejects.toThrow('No builder rewards');
+    expect(clientRewards.pendingRewards.mock.calls).toEqual([[9, { fromEpoch: 30, toEpoch: 38 }]]);
   });
 
   it('trusts an available explorer answer with no payable epochs over the on-chain scan', async () => {

@@ -1,6 +1,7 @@
 import { Contract } from 'ethers';
 import type { AbstractSigner } from 'ethers';
 import { BaseEvmClient } from './base-evm-client.js';
+import { controllerFirstEpoch, scanEpochRewards, type EpochRange, type EpochReward } from './epoch-rewards.js';
 
 export interface ClientRewardsClientConfig {
   rpcUrl: string;
@@ -9,14 +10,12 @@ export interface ClientRewardsClientConfig {
   evmChainId?: number;
 }
 
-export interface ClientEpochReward {
-  epoch: number;
-  amount: bigint;
-}
+export type ClientEpochReward = EpochReward;
 
 const CLIENT_REWARDS_ABI = [
   'function attributionUsage() external view returns (address)',
   'function identityRegistry() external view returns (address)',
+  'function emissionsGate() external view returns (address)',
   'function isClaimable(uint256 epoch) external view returns (bool)',
   'function claimed(uint256 clientAgentId, uint256 epoch) external view returns (bool)',
   'function pendingReward(uint256 clientAgentId, uint256 epoch) external view returns (uint256)',
@@ -57,18 +56,20 @@ export class ClientRewardsClient extends BaseEvmClient {
     return Number(await contract.getFunction('currentEpoch')());
   }
 
+  /** The first epoch this contract can pay a reward for (its emissions gate's `effectiveEpoch`). */
+  firstRewardEpoch(): Promise<number> {
+    return controllerFirstEpoch(this.contract(), this._provider);
+  }
+
   /**
-   * Epochs with a non-zero payable reward for `clientAgentId`, scanning the
-   * last `lookback` claimable epochs (unclaimed, claimable, budget available).
+   * Epochs with a non-zero payable reward for `clientAgentId`, oldest first:
+   * the last `range` claimable epochs, or the epochs of an explicit range
+   * (each read is one call, so page through long histories in bounded
+   * ranges). Zero for epochs not yet claimable, already claimed, or without
+   * budget.
    */
-  async pendingRewards(clientAgentId: number, lookback = 26): Promise<ClientEpochReward[]> {
-    const current = await this.currentEpoch();
-    const latestClaimable = current - 2; // one finalized epoch plus the settlement grace epoch
-    if (latestClaimable < 0) return [];
-    const from = Math.max(0, latestClaimable - lookback + 1);
-    const epochs = Array.from({ length: latestClaimable - from + 1 }, (_, i) => from + i);
-    const amounts = await Promise.all(epochs.map((epoch) => this.pendingReward(clientAgentId, epoch)));
-    return epochs.map((epoch, i) => ({ epoch, amount: amounts[i]! })).filter((entry) => entry.amount > 0n);
+  pendingRewards(clientAgentId: number, range: number | EpochRange = 26): Promise<ClientEpochReward[]> {
+    return scanEpochRewards(range, () => this.currentEpoch(), (epoch) => this.pendingReward(clientAgentId, epoch));
   }
 
   /** Mint the client's share of `epoch` to its agent owner; any signer may send it. */

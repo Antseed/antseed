@@ -326,10 +326,28 @@ export function VprReferralCard({ status, onRedeemed }: { status: ReferralStatus
 /**
  * Referee view: the bonus this wallet earns for being invited (from Antscan).
  * Claiming pays the authorized wallet (operator), so like the buyer rewards
- * it opens the shared rewards dashboard. Hidden until bound.
+ * it opens the shared rewards dashboard. Hidden until bound. Without Antscan
+ * the amount is unknown and Claim stays available: the dashboard finds the
+ * payable weeks on-chain.
  */
 export function VprRefereeBonusCard({ bonus }: { bonus: RefereeBonus | null }) {
   if (!bonus?.available) return null;
+  if (!bonus.indexed) {
+    return (
+      <VprCard className={styles.aboutCard}>
+        <span className={styles.aboutTitle}>Invite bonus</span>
+        <VprSettingRow
+          title="Payable amount unknown"
+          hint="From your inviter. The rewards dashboard finds what is payable on-chain. Paid to your authorized wallet."
+          control={(
+            <StakingButton page="rewards" className={styles.claimButton}>
+              Claim ↗
+            </StakingButton>
+          )}
+        />
+      </VprCard>
+    );
+  }
   const claimable = bonus.claimableEpochs.length > 0;
   const windowHint = bonus.weeksLeft === null
     ? 'From your inviter.'

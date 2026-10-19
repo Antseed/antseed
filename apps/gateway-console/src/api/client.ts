@@ -1,7 +1,7 @@
 import type {
-  AdminToken, ApiKey, ApiKeyInput, AuditEntry, AuthConfig, Builders, BuyerLimits, BuyerSettingsInput, Channel, ChainInfo, CreatedInvite, DepositConfirmation, DepositWatch, Enrollment,
+  AdminToken, ApiKey, ApiKeyInput, AuditEntry, AuthConfig, BuilderAgent, Builders, BuyerLimits, BuyerSettingsInput, Channel, ChainInfo, CreatedInvite, DepositConfirmation, DepositWatch, Enrollment,
   GatewayStatus, GatewayUpdate, Invite, InviteInput, Member, MemberInput, MeResponse, ObservabilitySettings, OperatorAuthorization, OperatorState, WorkspaceOperatorSummary, ChatContext, ChatModel, ChatThread, ChatThreadDetail, FavoriteModels, NetworkModel, NetworkRouter, Peer, PeerList, Preset,
-  Referrals, RequestDetail, RequestLogEntry, Rewards, RoutePreview, RoutingPolicy, Settings, SpendLimits, UsageGroupBy, UsageReport, Wallet, Workspace,
+  ReferralClaimables, Referrals, RequestDetail, RequestLogEntry, Rewards, RoutePreview, RoutingPolicy, Settings, SpendLimits, UsageGroupBy, UsageReport, Wallet, Workspace,
   WorkspaceInput, WorkspaceRole,
 } from './types'
 
@@ -248,7 +248,11 @@ export function createApiClient(fetchImpl: FetchLike = (input, init) => fetch(in
       /** `invalid_invite` carries the contract's reason (already used, expired, not a new buyer…). */
       redeem: (workspaceId: string, invite: string) => post<Referrals>(`/workspaces/${id(workspaceId)}/referrals/redeem`, { invite }),
       clearInvite: (workspaceId: string) => request<Referrals>('DELETE', `/workspaces/${id(workspaceId)}/referrals/redeem`),
+      /** The workspace wallet's payable referral rewards and invite bonus, found on-chain (for when the view is not indexed). */
+      claimable: (workspaceId: string) => get<ReferralClaimables>(`/workspaces/${id(workspaceId)}/referrals/claimable`),
       builders: (fresh = false) => get<Builders>('/builders', { fresh: fresh ? 1 : undefined }),
+      /** The effective client agent's payable builders rewards, found on-chain (for when the view is not indexed). */
+      builderClaimable: () => get<BuilderAgent>('/builders/claimable'),
       /** Restarts the buyer; `restartRequired` when it cannot restart itself. */
       setBuilderAgent: (agentId: number | null) => put<Builders>('/builders', { agentId }),
     },

@@ -2,6 +2,7 @@ import { Contract, id } from 'ethers';
 import type { AbstractSigner } from 'ethers';
 import type { ReferralInvite } from '@antseed/protocol/signatures';
 import { BaseEvmClient } from './base-evm-client.js';
+import { controllerFirstEpoch, scanEpochRewards, type EpochRange, type EpochReward } from './epoch-rewards.js';
 
 export interface ReferralsClientConfig {
   rpcUrl: string;
@@ -10,10 +11,7 @@ export interface ReferralsClientConfig {
   evmChainId?: number;
 }
 
-export interface ReferralEpochReward {
-  epoch: number;
-  amount: bigint;
-}
+export type ReferralEpochReward = EpochReward;
 
 /** `previewInvite` result: the recovered referrer and the bind failure (null when it would bind). */
 export interface InvitePreview {
@@ -51,6 +49,7 @@ const REFERRALS_ABI = [
   'function pendingRefereeReward(address buyer, uint256 epoch) external view returns (uint256)',
   'function settleEpochRemainder(uint256 epoch) external returns (uint256 burnedAmount, uint256 reserveAmount)',
   'function usageAccounting() external view returns (address)',
+  'function emissionsGate() external view returns (address)',
   'function claim(address referrer, uint256 epoch) external',
   'function claimEpochs(address referrer, uint256[] epochs) external',
   'function claimReferee(address buyer, uint256 epoch) external',
@@ -93,6 +92,12 @@ export class ReferralsClient extends BaseEvmClient {
     return this.contract().getFunction('referrerOf')(buyer);
   }
 
+  /** The buyer's referrer (zero while unbound) and the epoch it was bound in. */
+  async referralOf(buyer: string): Promise<{ referrer: string; epoch: number }> {
+    const [referrer, epoch] = await this.contract().getFunction('referralOf')(buyer) as [string, bigint];
+    return { referrer, epoch: Number(epoch) };
+  }
+
   async referredCount(referrer: string): Promise<number> {
     return Number(await this.contract().getFunction('referredCount')(referrer));
   }
@@ -127,19 +132,25 @@ export class ReferralsClient extends BaseEvmClient {
     return Number(await contract.getFunction('currentEpoch')());
   }
 
+  /** The first epoch this contract can pay a reward for (its emissions gate's `effectiveEpoch`). */
+  firstRewardEpoch(): Promise<number> {
+    return controllerFirstEpoch(this.contract(), this._provider);
+  }
+
   /**
-   * Epochs with a non-zero payable reward for `referrer`, scanning the last
-   * `lookback` claimable epochs (unclaimed, claimable, budget available).
+   * Epochs with a non-zero payable reward for `referrer`, oldest first: the
+   * last `range` claimable epochs, or the epochs of an explicit range (each
+   * read is one call, so page through long histories in bounded ranges).
+   * Zero for epochs not yet claimable, already claimed, or without budget.
    * Fallback for when no explorer indexes referrals.
    */
-  async pendingRewards(referrer: string, lookback = 26): Promise<ReferralEpochReward[]> {
-    const current = await this.currentEpoch();
-    const latestClaimable = current - 2; // one finalized epoch plus the settlement grace epoch
-    if (latestClaimable < 0) return [];
-    const from = Math.max(0, latestClaimable - lookback + 1);
-    const epochs = Array.from({ length: latestClaimable - from + 1 }, (_, i) => from + i);
-    const amounts = await Promise.all(epochs.map((epoch) => this.pendingReward(referrer, epoch)));
-    return epochs.map((epoch, i) => ({ epoch, amount: amounts[i]! })).filter((entry) => entry.amount > 0n);
+  pendingRewards(referrer: string, range: number | EpochRange = 26): Promise<ReferralEpochReward[]> {
+    return scanEpochRewards(range, () => this.currentEpoch(), (epoch) => this.pendingReward(referrer, epoch));
+  }
+
+  /** `pendingRewards` for the referee bonus of `buyer` (`pendingRefereeReward`). */
+  pendingRefereeRewards(buyer: string, range: number | EpochRange = 26): Promise<ReferralEpochReward[]> {
+    return scanEpochRewards(range, () => this.currentEpoch(), (epoch) => this.pendingRefereeReward(buyer, epoch));
   }
 
   claim(signer: AbstractSigner, referrer: string, epoch: number): Promise<string> {

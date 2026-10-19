@@ -435,7 +435,7 @@ describe('reward row actions and confirmations', () => {
     const html = render();
     const card = html.slice(html.indexOf('aria-label="Builders program"'));
     expect(card).toContain('Payable amounts need Antscan; registration and claims work without it.');
-    expect(card).toContain('Claim checks the last 26 weeks on-chain.');
+    expect(card).toContain('Claim finds the payable weeks on-chain.');
     // No false zero: neither a headline total nor per-agent amounts.
     expect(card).not.toContain('hero-value');
     expect(card).toContain('<span>—</span>');
@@ -560,7 +560,7 @@ describe('reward row actions and confirmations', () => {
     const card = html.slice(html.indexOf('Buyer rewards'));
     expect(card).toContain('Invite bonus');
     expect(card).toContain(`title="${pool}"`);
-    expect(card).toContain('Claim checks the last 26 weeks on-chain.');
+    expect(card).toContain('Claim finds the payable weeks on-chain.');
     // No false zero: the row shows an unknown amount and the headline never says there is nothing to claim.
     expect(card).toContain('<span>—</span>');
     expect(card).not.toContain('Nothing to claim yet.');

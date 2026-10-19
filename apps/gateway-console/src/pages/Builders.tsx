@@ -2,7 +2,7 @@ import { lazy, Suspense, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Alert, Button, LoadingRows, Modal, TextField, useToast } from '@antseed/ui'
 import { api } from '../api'
-import type { Builders as BuildersView } from '../api/types'
+import type { BuilderAgent, Builders as BuildersView, ClaimableRewards } from '../api/types'
 import { ChainGate } from '../components/ChainGate'
 import { Badge, DetailList, ErrorAlert, Mono, PageHeader, Panel, QueryView, StatTile } from '../components/ui'
 import { antsIsPositive, formatAnts } from '../lib/ants'
@@ -29,6 +29,15 @@ export default function Builders() {
   const chain = useChain()
   const [editing, setEditing] = useState(false)
   const [claiming, setClaiming] = useState(false)
+  // Without an explorer the agent's payable epochs are found on-chain on request.
+  const [found, setFound] = useState<BuilderAgent | null>(null)
+  const discover = useConsoleMutation({
+    mutationFn: () => api.referrals.builderClaimable(),
+    onSuccess: (result) => {
+      setFound(result)
+      if (result.owner && result.claimableEpochs.length > 0) setClaiming(true)
+    },
+  })
 
   return (
     <div className="gc-page">
@@ -37,6 +46,10 @@ export default function Builders() {
       <QueryView query={builders} rows={3}>
         {(data) => {
           const agent = data.agent
+          // The explorer's rewards when it indexes them, else what "Find rewards" found on-chain for this agent; null while unknown.
+          const rewards: ClaimableRewards | null = !agent ? null
+            : data.indexed ? { payableAnts: agent.payableAnts, claimableEpochs: agent.claimableEpochs }
+            : found?.agentId === agent.agentId ? found : null
           return (
             <>
               {data.restartRequired && <Alert tone="warning">Saved. The buyer could not restart itself: restart it to start signing the new client agent.</Alert>}
@@ -44,7 +57,7 @@ export default function Builders() {
                 <StatTile label="Client agent" value={data.effective.agentId !== null ? `#${data.effective.agentId}` : 'None'} sub={sourceLabel(data.effective)} />
                 <StatTile label="Paid to" value={agent?.owner ? <Mono title={agent.owner}>{shortId(agent.owner)}</Mono> : '—'}
                   sub={agent && !agent.owner ? 'Not registered' : 'The agent owner'} />
-                <StatTile label="Ready to claim" value={data.available && agent ? formatAnts(agent.payableAnts) : '—'} />
+                <StatTile label="Ready to claim" value={rewards ? formatAnts(rewards.payableAnts) : '—'} />
               </div>
 
               <Panel title="Client agent" description="Every request through this gateway signs this agent id into its settlement metadata."
@@ -65,37 +78,49 @@ export default function Builders() {
                 )}
               </Panel>
 
-              {data.available && agent ? (
+              {!data.available ? (
+                <Alert tone="info">The builders program is not available on this network (no rewards contract).</Alert>
+              ) : agent ? (
                 <Panel>
                   <div className="gc-summary-row">
                     <div className="gc-summary-row__text">
-                      <span className="gc-strong">{antsIsPositive(agent.payableAnts) ? `${formatAnts(agent.payableAnts)} ready to claim` : 'Nothing to claim yet'}</span>
+                      <span className="gc-strong">
+                        {!rewards ? 'Rewards not checked yet' : antsIsPositive(rewards.payableAnts) ? `${formatAnts(rewards.payableAnts)} ready to claim` : 'Nothing to claim yet'}
+                      </span>
                       <span className="gc-fineprint">
                         {agent.owner ? <>Anyone can send the claim; the ANTS go to the agent owner {shortId(agent.owner)}.</> : 'The agent is not registered, so nothing can be paid.'}
                         {agent.firstParty ? ' This is an Antseed agent, so its rewards are Antseed\'s.' : ''}
                       </span>
                     </div>
-                    <Button size="sm" variant="outline" disabled={!agent.owner || agent.claimableEpochs.length === 0} onClick={() => setClaiming(true)}>Claim</Button>
+                    {rewards ? (
+                      <Button size="sm" variant="outline" disabled={!agent.owner || rewards.claimableEpochs.length === 0} onClick={() => setClaiming(true)}>Claim</Button>
+                    ) : (
+                      <Button size="sm" variant="outline" disabled={!agent.owner || discover.isPending} onClick={() => discover.mutate()}>
+                        {discover.isPending ? 'Finding…' : 'Find rewards'}
+                      </Button>
+                    )}
                   </div>
+                  {!data.indexed && <p className="gc-fineprint">No explorer indexes builders rewards here; Find rewards checks the chain.</p>}
+                  {discover.error ? <ErrorAlert error={discover.error} title="Could not find rewards" /> : null}
                 </Panel>
-              ) : (
-                <Alert tone="info">Builders program data is not available on this network (no rewards contract, or no explorer to read it from).</Alert>
-              )}
+              ) : null}
 
               {/* Mounted only while open, so each open starts from the saved agent with no stale draft or error. */}
               {editing && <AgentDialog current={data.agentId} onClose={() => setEditing(false)} />}
 
               <Modal isOpen={claiming} onClose={() => setClaiming(false)} title="Claim builders rewards"
-                subtitle={agent ? `${formatAnts(agent.payableAnts)} for agent #${agent.agentId}.` : undefined}>
-                {agent && (
+                subtitle={agent && rewards ? `${formatAnts(rewards.payableAnts)} for agent #${agent.agentId}.` : undefined}>
+                {agent && rewards && (
                   <ChainGate chain={chain.data} error={chain.error}>
                     {(info) => (
                       <Suspense fallback={<LoadingRows rows={2} />}>
-                        <ReferralClaim target={{ kind: 'builder', agentId: agent.agentId, epochs: agent.claimableEpochs }} chain={info} recipient={agent.owner}
+                        <ReferralClaim target={{ kind: 'builder', agentId: agent.agentId, epochs: rewards.claimableEpochs }} chain={info} recipient={agent.owner}
                           onClaimed={(complete) => {
                             if (complete) {
                               toast('Rewards claimed')
                               setClaiming(false)
+                              // What was found on-chain is claimed now; Find rewards checks again.
+                              setFound(null)
                             }
                             // Part way too: the epochs that confirmed drop out of the view.
                             void api.referrals.builders(true).then((fresh) => queryClient.setQueryData(qk.builders, fresh), () => undefined)

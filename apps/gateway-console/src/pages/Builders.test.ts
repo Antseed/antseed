@@ -13,6 +13,7 @@ const ui = vi.hoisted(() => ({
   buttons: new Map<string, () => void>(),
   modals: new Map<string, { isOpen: boolean; onClose: () => void }>(),
   change: undefined as ((event: { target: { value: string } }) => void) | undefined,
+  builderClaimable: undefined as unknown as ReturnType<typeof vi.fn>,
 }))
 
 vi.mock('react', async (original) => {
@@ -37,9 +38,9 @@ vi.mock('@antseed/ui', () => ({
   Alert: ({ children }: { children: ReactNode }) => createElement('div', null, children),
   LoadingRows: () => null,
   useToast: () => () => {},
-  Button: ({ children, onClick }: { children: ReactNode; onClick?: () => void }) => {
+  Button: ({ children, onClick, disabled }: { children: ReactNode; onClick?: () => void; disabled?: boolean }) => {
     if (onClick) ui.buttons.set(text(children), onClick)
-    return createElement('button', null, children)
+    return createElement('button', { disabled }, children)
   },
   // Renders its content even while closed, so a mounted-but-hidden dialog shows up.
   Modal: ({ isOpen, onClose, title, children }: { isOpen: boolean; onClose: () => void; title: string; children: ReactNode }) => {
@@ -62,9 +63,19 @@ vi.mock('../components/ui', () => {
 })
 vi.mock('../components/ChainGate', () => ({ ChainGate: () => null }))
 vi.mock('../wallet/ReferralClaim', () => ({ default: () => null }))
-vi.mock('../api', () => ({ api: { referrals: { builders: vi.fn(), setBuilderAgent: vi.fn() } } }))
+vi.mock('../api', () => {
+  ui.builderClaimable = vi.fn()
+  return { api: { referrals: { builders: vi.fn(), setBuilderAgent: vi.fn(), builderClaimable: ui.builderClaimable } } }
+})
 vi.mock('../lib/queries', () => ({ qk: { builders: ['builders'] }, useChain: () => ({ data: undefined, error: null }) }))
-vi.mock('../lib/mutations', () => ({ useConsoleMutation: () => ({ mutate: vi.fn(), isPending: false, error: null }) }))
+// A write that resolves at once: mutate runs the request and its onSuccess in the same call.
+vi.mock('../lib/mutations', () => ({
+  useConsoleMutation: (options: { mutationFn: (variables: unknown) => unknown; onSuccess?: (data: unknown, variables: unknown) => void }) => ({
+    mutate: (variables?: unknown) => options.onSuccess?.(options.mutationFn(variables), variables),
+    isPending: false,
+    error: null,
+  }),
+}))
 vi.mock('@tanstack/react-query', () => ({
   useQueryClient: () => ({ setQueryData: vi.fn() }),
   useQuery: () => ({ data: ui.data, error: null, isLoading: false, refetch: () => {} }),
@@ -74,6 +85,7 @@ const { default: Builders } = await import('./Builders')
 
 const view = (agentId: number | null): BuildersView => ({
   available: false,
+  indexed: false,
   agentId,
   effective: { agentId, source: agentId !== null ? 'config' : 'default', client: 'cli', runtime: true },
   agent: null,
@@ -156,5 +168,52 @@ describe('Builders client agent source', () => {
   it('says when ANTSEED_CLIENT_AGENT_ID on the buyer overrides the saved agent', () => {
     ui.data = { ...view(5), effective: { agentId: 7, source: 'env', client: 'cli', runtime: true } }
     expect(render()).toContain('ANTSEED_CLIENT_AGENT_ID on the buyer overrides the agent set here (#5)')
+  })
+})
+
+describe('Builders claims without an explorer', () => {
+  const owner = '0x0000000000000000000000000000000000000008'
+  const unindexed = (): BuildersView => ({
+    ...view(42),
+    available: true,
+    agent: { agentId: 42, owner, firstParty: null, payableAnts: '0', claimableEpochs: [] },
+  })
+
+  beforeEach(() => {
+    ui.builderClaimable.mockReset().mockReturnValue({ agentId: 42, owner, firstParty: null, payableAnts: '18.6', claimableEpochs: [3, 9] })
+  })
+
+  it('keeps the claim controls, with the amount unknown until found on-chain', () => {
+    ui.data = unindexed()
+    const html = render()
+    expect(html).toContain('Rewards not checked yet')
+    expect(html).toContain('<button>Find rewards</button>')
+    expect(html.match(/Find rewards checks the chain/g)).toHaveLength(1)
+    expect(html).not.toContain('not available on this network')
+  })
+
+  it('finds the payable epochs on-chain, then opens the claim', () => {
+    ui.data = unindexed()
+    render()
+    click('Find rewards')
+    expect(ui.builderClaimable).toHaveBeenCalledTimes(1)
+    const html = render()
+    expect(ui.modals.get('Claim builders rewards')?.isOpen).toBe(true)
+    expect(html).toContain('18.6 ANTS ready to claim')
+    expect(html).toContain('<button>Claim</button>')
+  })
+
+  it('ignores rewards found for an agent that is no longer the effective one', () => {
+    ui.data = unindexed()
+    render()
+    click('Find rewards')
+    ui.modals.get('Claim builders rewards')?.onClose()
+    ui.data = { ...unindexed(), agent: { ...unindexed().agent!, agentId: 7 } }
+    expect(render()).toContain('Rewards not checked yet')
+  })
+
+  it('says the program is unavailable only without a rewards contract', () => {
+    ui.data = view(42)
+    expect(render()).toContain('The builders program is not available on this network')
   })
 })

@@ -17,6 +17,7 @@ import {
 import type { CreatedInviteView, InviteAllowanceView, RefereeView, ReferralView, ReferredBuyersView } from '../api-types.js';
 import type { AntsContext } from './context.js';
 import { createIndexer, type IndexedInvites, type IndexedReferralBinding, type IndexedReferrer, type Indexer } from './indexer.js';
+import { discoverRefereeEpochs, discoverReferrerEpochs } from './reward-discovery.js';
 import { silentReporter, type StepReporter } from './steps.js';
 
 const HIDDEN_REFERRAL: ReferralView = { available: false, indexed: false, payable: '0', claimableEpochs: [], referredCount: 0, invites: null };
@@ -257,8 +258,8 @@ function refereeView(binding: IndexedReferralBinding | null): RefereeView {
  * The dashboard's buyer account as a referee. Antscan reports the binding,
  * window and payable bonus. When it is unset, does not index referrals, or
  * fails, the binding is read on-chain (`referrerOf`) and the window and
- * amount are unknown (`indexed: false`); `claimRefereeRewards` then scans
- * for payable epochs on-chain. Hidden without a Referrals contract, or when
+ * amount are unknown (`indexed: false`); `claimRefereeRewards` then finds
+ * the payable epochs on-chain. Hidden without a Referrals contract, or when
  * the on-chain read fails too.
  */
 export async function refereeBonus(ctx: AntsContext): Promise<RefereeView> {
@@ -277,10 +278,11 @@ export async function refereeBonus(ctx: AntsContext): Promise<RefereeView> {
 
 /**
  * Claim every epoch with a payable referral reward for the dashboard wallet.
- * The epochs come from Antscan; the RPC epoch scan is only the fallback when
- * no explorer is configured. Antscan can lag a claim that just confirmed, so
- * its epochs are narrowed to those `pendingReward` still pays: `claimEpochs`
- * skips the rest anyway, but a list that is entirely claimed would revert.
+ * The epochs come from Antscan; without one (or when it fails) the on-chain
+ * discovery pages back through every epoch the program can pay. Antscan can
+ * lag a claim that just confirmed, so its epochs are narrowed to those
+ * `pendingReward` still pays: `claimEpochs` skips the rest anyway, but a list
+ * that is entirely claimed would revert.
  */
 export async function claimReferralRewards(
   ctx: AntsContext,
@@ -288,11 +290,11 @@ export async function claimReferralRewards(
 ): Promise<{ hash: string; epochs: number[] }> {
   const client = ctx.referrals();
   if (!client) throw new Error('Referrals are not configured for this chain.');
-  // An unreachable explorer falls back to the on-chain scan, like the referee claim.
+  // An unreachable explorer falls back to the on-chain discovery, like the referee claim.
   const indexed = await indexedReferrer(ctx.indexer(), ctx.address).catch(() => null);
   const epochs = indexed
     ? await stillPayable(indexed.claimableEpochs, (epoch) => client.pendingReward(ctx.address, epoch))
-    : (await client.pendingRewards(ctx.address)).map((entry) => entry.epoch);
+    : (await discoverReferrerEpochs(ctx, ctx.address)).epochs;
   if (epochs.length === 0) throw new Error('No referral rewards are payable yet.');
   await report(`Claiming referral rewards for ${epochs.length} ${epochs.length === 1 ? 'epoch' : 'epochs'}`);
   const hash = await client.claimEpochs(ctx.requireSigner(), ctx.address, epochs);
@@ -306,33 +308,13 @@ async function stillPayable(epochs: number[], pending: (epoch: number) => Promis
   return epochs.filter((_, i) => amounts[i]! > 0n);
 }
 
-/** Claimable epochs the on-chain referee scan reads back, as many as the referrer fallback. */
-const REFEREE_LOOKBACK_EPOCHS = 26;
-
-/**
- * Epochs with a non-zero payable referee bonus for `buyer`, scanning the last
- * `lookback` claimable epochs with `pendingRefereeReward` (zero for epochs not
- * yet final, already claimed, or outside the bonus window). Fallback for when
- * Antscan cannot say which epochs are payable.
- */
-async function pendingRefereeEpochs(
-  client: Pick<ReferralsClient, 'currentEpoch' | 'pendingRefereeReward'>,
-  buyer: string,
-  lookback = REFEREE_LOOKBACK_EPOCHS,
-): Promise<number[]> {
-  const latestClaimable = (await client.currentEpoch()) - 2; // one finalized epoch plus the settlement grace epoch
-  if (latestClaimable < 0) return [];
-  const from = Math.max(0, latestClaimable - lookback + 1);
-  const epochs = Array.from({ length: latestClaimable - from + 1 }, (_, i) => from + i);
-  return stillPayable(epochs, (epoch) => client.pendingRefereeReward(buyer, epoch));
-}
-
 /**
  * Claim the buyer account's referee bonus. The epochs come from Antscan,
  * narrowed to those `pendingRefereeReward` still pays (Antscan can lag a
  * claim that just confirmed); when it is unset, does not index referrals, or
- * is unreachable, a bounded on-chain scan finds them instead. Permissionless: the dashboard wallet sends it, and
- * the contract always pays the buyer's Deposits operator.
+ * is unreachable, the on-chain discovery finds them from the binding epoch
+ * on. Permissionless: the dashboard wallet sends it, and the contract always
+ * pays the buyer's Deposits operator.
  */
 export async function claimRefereeRewards(
   ctx: AntsContext,
@@ -343,7 +325,7 @@ export async function claimRefereeRewards(
   const binding = await referralBinding(ctx.indexer(), ctx.buyerAddress);
   const epochs = binding
     ? await stillPayable(binding.refereeClaimableEpochs, (epoch) => client.pendingRefereeReward(ctx.buyerAddress, epoch))
-    : await pendingRefereeEpochs(client, ctx.buyerAddress);
+    : (await discoverRefereeEpochs(ctx, ctx.buyerAddress)).epochs;
   if (epochs.length === 0) throw new Error('No invite bonus is payable yet.');
   await report(`Claiming your invite bonus for ${epochs.length} ${epochs.length === 1 ? 'epoch' : 'epochs'}`);
   const hash = await client.claimRefereeEpochs(ctx.requireSigner(), ctx.buyerAddress, epochs);

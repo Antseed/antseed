@@ -1,7 +1,9 @@
 /**
  * Referrals (per workspace wallet) and the builders program (gateway-wide);
  * rules in `services/referrals.ts`. Reads come from the chain's explorer
- * and are cached briefly; claims are sent from the browser.
+ * and are cached briefly; claims are sent from the browser. The `claimable`
+ * routes find payable epochs over RPC on demand, for when the explorer does
+ * not list them; they are not cached, so a re-check after a claim is fresh.
  */
 import { resolveAntsChain, type AntsChainConfig, type AntsContext } from '@antseed/ants'
 import { DEFAULT_BUYER_IDENTITY } from '@antseed/node'
@@ -12,6 +14,8 @@ import { errorMessage } from '../../errors.js'
 import {
   clearWorkspaceInvite,
   createWorkspaceInvite,
+  discoverBuilderClaim,
+  discoverReferralClaims,
   readBuilderAgent,
   readBuilderSettings,
   readReferrals,
@@ -24,7 +28,7 @@ import type { WorkspaceRecord } from '../../store.js'
 import { requestActor, requireOrgAdmin, requireWorkspaceAccess } from '../access.js'
 import type { ConsoleDeps } from '../deps.js'
 import { ConsoleError, type ConsoleRequest, type ConsoleRouter } from '../router.js'
-import type { Builders, CreatedInvite, Referrals } from '../types.js'
+import type { BuilderAgent, Builders, CreatedInvite, ReferralClaimables, Referrals } from '../types.js'
 import { defaultBuyerClient, type BuyerClient } from './network-buyer.js'
 import { gatewayAntsContext } from './wallet-chain.js'
 import { record } from './wallet-mapping.js'
@@ -105,6 +109,12 @@ export function registerReferralRoutes(router: ConsoleRouter, deps: ConsoleDeps,
     return referrals(ws.stateDir, await addressOf(ws.buyerIdentity), request.query.get('fresh') === '1')
   })
 
+  router.add('GET', '/workspaces/:id/referrals/claimable', async (request): Promise<ReferralClaimables> => {
+    const ws = workspace(request)
+    const address = await addressOf(ws.buyerIdentity)
+    return discoverReferralClaims(context(await resolveChain(), address))
+  })
+
   router.add('POST', '/workspaces/:id/referrals/invites', async (request): Promise<CreatedInvite> => {
     const ws = workspace(request)
     const signer = await signerOf(ws.buyerIdentity)
@@ -130,7 +140,7 @@ export function registerReferralRoutes(router: ConsoleRouter, deps: ConsoleDeps,
 
   // The buyer's report of the agent it signs is a cheap local call, read on
   // every request; only the explorer read of that agent's rewards is cached.
-  const builderRewards = async (ctx: AntsContext, agentId: number | null, fresh = false): Promise<Pick<Builders, 'available' | 'agent'>> => {
+  const builderRewards = async (ctx: AntsContext, agentId: number | null, fresh = false): Promise<Pick<Builders, 'available' | 'indexed' | 'agent'>> => {
     const key = `builders:${agentId ?? 'none'}`
     if (fresh) cache.invalidate(key)
     try {
@@ -154,8 +164,15 @@ export function registerReferralRoutes(router: ConsoleRouter, deps: ConsoleDeps,
     const chain = await resolveChain()
     const ctx = context(chain, ZeroAddress)
     const { restartRequired, agentId, effective } = await setBuilderAgent(deps, requestActor(deps, request), request.body, ctx, buyer, overrides.env)
-    // The agent is saved by now: an unreachable explorer only leaves its rewards unknown.
-    const rewards = await builderRewards(ctx, effective.agentId, true).catch(() => ({ available: false, agent: null }))
+    // The agent is saved by now: a failed read only leaves its rewards unknown.
+    const rewards = await builderRewards(ctx, effective.agentId, true).catch(() => ({ available: Boolean(chain.clientRewardsAddress), indexed: false, agent: null }))
     return { agentId, effective, ...rewards, ...(restartRequired ? { restartRequired: true } : {}) }
+  })
+
+  router.add('GET', '/builders/claimable', async (request): Promise<BuilderAgent> => {
+    requireOrgAdmin(request.principal, deps.store)
+    const chain = await resolveChain()
+    const settings = await readBuilderSettings(chain, deps.configPath, buyer, overrides.env)
+    return discoverBuilderClaim(context(chain, ZeroAddress), settings.effective.agentId)
   })
 }

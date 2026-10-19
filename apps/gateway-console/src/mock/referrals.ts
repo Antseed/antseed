@@ -1,4 +1,4 @@
-import type { Builders, CreatedInvite, Referee, Referrals } from '../api/types'
+import type { BuilderAgent, Builders, CreatedInvite, Referee, ReferralClaimables, Referrals } from '../api/types'
 import { fakeAddress } from './data'
 
 /** In-memory referral state per workspace for the mock API. */
@@ -19,17 +19,18 @@ function state(workspaceId: string): MockReferralState {
     found = {
       issued: 1,
       referee: bound
-        ? { state: 'bound', referrer: fakeAddress(201), pendingInvite: null, inviteExpiresEpoch: null, boundEpoch: 10, windowEnd: 22, weeksLeft: 8, payableAnts: '6.4', claimableEpochs: [12, 13], canRedeem: false }
-        : { state: 'none', referrer: null, pendingInvite: null, inviteExpiresEpoch: null, boundEpoch: null, windowEnd: null, weeksLeft: null, payableAnts: '0', claimableEpochs: [], canRedeem: true },
+        ? { state: 'bound', referrer: fakeAddress(201), pendingInvite: null, inviteExpiresEpoch: null, boundEpoch: 10, windowEnd: 22, weeksLeft: 8, payableAnts: '6.4', claimableEpochs: [12, 13], canRedeem: false, indexed: true }
+        : { state: 'none', referrer: null, pendingInvite: null, inviteExpiresEpoch: null, boundEpoch: null, windowEnd: null, weeksLeft: null, payableAnts: '0', claimableEpochs: [], canRedeem: true, indexed: true },
     }
     states.set(workspaceId, found)
   }
   return found
 }
 
-export function mockReferrals(workspaceId: string, address: string): Referrals {
+/** `indexed: false` plays a gateway without an explorer: counts and rewards unknown, the bonus window too. */
+export function mockReferrals(workspaceId: string, address: string, indexed = true): Referrals {
   const current = state(workspaceId)
-  return {
+  const view: Referrals = {
     available: true,
     invitesAvailable: true,
     address,
@@ -42,6 +43,20 @@ export function mockReferrals(workspaceId: string, address: string): Referrals {
       { buyer: fakeAddress(302), boundEpoch: 13, points: '52000', ants: '2.75', pendingPoints: '0' },
     ],
     referee: current.referee,
+  }
+  if (indexed) return view
+  return {
+    ...view, available: false, referredCount: 0, payableAnts: '0', claimableEpochs: [], buyers: [],
+    referee: { ...current.referee, boundEpoch: null, windowEnd: null, weeksLeft: null, payableAnts: '0', claimableEpochs: [], indexed: false },
+  }
+}
+
+/** What the on-chain discovery finds for the workspace wallet: the same rewards the explorer would list. */
+export function mockReferralClaimables(workspaceId: string): ReferralClaimables {
+  const { referee } = state(workspaceId)
+  return {
+    referrer: { payableAnts: '12.5', claimableEpochs: [12, 13] },
+    referee: referee.state === 'bound' ? { payableAnts: '6.4', claimableEpochs: [12, 13] } : { payableAnts: '0', claimableEpochs: [] },
   }
 }
 
@@ -71,28 +86,41 @@ export function mockClearInvite(workspaceId: string): void {
   }
 }
 
-let builderAgent: number | null = null
+let builderAgentId: number | null = null
 const CLI_AGENT = 1
 
-export function mockBuilders(): Builders {
-  const effective: Builders['effective'] = builderAgent !== null
-    ? { agentId: builderAgent, source: 'config', client: 'cli', runtime: true }
-    : { agentId: CLI_AGENT, source: 'default', client: 'cli', runtime: true }
-  const firstParty = effective.agentId === CLI_AGENT ? 'cli' as const : null
+function builderAgent(): BuilderAgent {
+  const agentId = builderAgentId ?? CLI_AGENT
+  const firstParty = agentId === CLI_AGENT ? 'cli' as const : null
   return {
-    available: true,
-    agentId: builderAgent,
-    effective,
-    agent: {
-      agentId: effective.agentId!,
-      owner: firstParty ? fakeAddress(401) : fakeAddress(8),
-      firstParty,
-      payableAnts: firstParty ? '310.2' : '18.6',
-      claimableEpochs: [12, 13, 14],
-    },
+    agentId,
+    owner: firstParty ? fakeAddress(401) : fakeAddress(8),
+    firstParty,
+    payableAnts: firstParty ? '310.2' : '18.6',
+    claimableEpochs: [12, 13, 14],
   }
 }
 
+/** `indexed: false` plays a gateway without an explorer: the agent's rewards are unknown. */
+export function mockBuilders(indexed = true): Builders {
+  const effective: Builders['effective'] = builderAgentId !== null
+    ? { agentId: builderAgentId, source: 'config', client: 'cli', runtime: true }
+    : { agentId: CLI_AGENT, source: 'default', client: 'cli', runtime: true }
+  const agent = builderAgent()
+  return {
+    available: true,
+    indexed,
+    agentId: builderAgentId,
+    effective,
+    agent: indexed ? agent : { ...agent, payableAnts: '0', claimableEpochs: [] },
+  }
+}
+
+/** What the on-chain discovery finds for the effective agent. */
+export function mockBuilderClaimable(): BuilderAgent {
+  return builderAgent()
+}
+
 export function mockSetBuilderAgent(agentId: number | null): void {
-  builderAgent = agentId
+  builderAgentId = agentId
 }

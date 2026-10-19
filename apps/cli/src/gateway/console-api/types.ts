@@ -528,13 +528,17 @@ export interface ChainInfo {
 // POST   /workspaces/:id/referrals/invites    → CreatedInvite    (signed off-chain with the workspace wallet; no transaction)
 // POST   /workspaces/:id/referrals/redeem     { invite } → Referrals   (400 `invalid_invite` with the reason)
 // DELETE /workspaces/:id/referrals/redeem     → Referrals        (drops an invite that is not bound yet)
+// GET    /workspaces/:id/referrals/claimable  → ReferralClaimables (on-chain; for when the explorer lists no epochs)
 // GET    /builders                            → Builders         (org admins)
 // PUT    /builders                            { agentId: number | null } → Builders (+ restartRequired)
+// GET    /builders/claimable                  → BuilderAgent     (org admins; the effective agent, on-chain)
 //
-// Counts, invites and payable amounts come from the chain's explorer
-// (Antscan); `available` is false when referrals or the explorer are not
-// configured for the chain. Claims are sent from the browser: every claim is
-// permissionless and the contracts pick the recipient.
+// Counts, referred buyers and payable amounts come from the chain's explorer
+// (Antscan) when it indexes them. Invites and claims only need the contracts:
+// without an explorer (or with one that fails), the `claimable` routes find
+// the payable epochs over RPC, paging back through every epoch the program
+// can pay. Claims are sent from the browser: every claim is permissionless
+// and the contracts pick the recipient.
 
 export interface InviteAllowance {
   epoch: number
@@ -571,12 +575,14 @@ export interface Referee {
   claimableEpochs: number[]
   /** False once the wallet is no longer new to Antseed, so no invite can bind it; null when unknown. */
   canRedeem: boolean | null
+  /** The explorer reported the bonus: `payableAnts` and `claimableEpochs` are real, not placeholders. */
+  indexed: boolean
 }
 
 export interface Referrals {
   /** The explorer reports this wallet's referrals: counts, referred buyers and payable rewards below are real, not placeholders. */
   available: boolean
-  /** The network has a referrals contract, so invites can be created, redeemed and removed (over RPC) with or without an explorer. */
+  /** The network has a referrals contract, so invites can be created, redeemed and removed, and rewards claimed (over RPC), with or without an explorer. */
   invitesAvailable: boolean
   address: string
   /** This epoch's invite allowance; null when the explorer does not report it. */
@@ -587,6 +593,21 @@ export interface Referrals {
   claimableEpochs: number[]
   buyers: ReferredBuyer[]
   referee: Referee
+}
+
+/** Payable rewards found on-chain. */
+export interface ClaimableRewards {
+  /** ANTS payable now, in display units. */
+  payableAnts: string
+  claimableEpochs: number[]
+}
+
+/** What the workspace wallet can claim now, read from the referrals contract. */
+export interface ReferralClaimables {
+  /** Its referral rewards (paid to the workspace's authorized wallet). */
+  referrer: ClaimableRewards
+  /** Its own invite bonus; nothing while it is not bound. */
+  referee: ClaimableRewards
 }
 
 export interface CreatedInvite {
@@ -611,7 +632,10 @@ export interface BuilderAgent {
 }
 
 export interface Builders {
+  /** The network has a builders rewards contract, so the agent's rewards can be claimed (over RPC) with or without an explorer. */
   available: boolean
+  /** The explorer reported the agent's rewards: `agent.payableAnts` and `agent.claimableEpochs` are real, not placeholders. */
+  indexed: boolean
   /** The client agent set for this gateway (`buyer.clientAgentId`); null when unset. */
   agentId: number | null
   /**

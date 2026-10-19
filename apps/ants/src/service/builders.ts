@@ -3,6 +3,7 @@ import type { ClientRewardsClient } from '@antseed/node';
 import type { BuilderAgentView, BuildersView } from '../api-types.js';
 import { compareBuilderAgents, MAX_BUILDER_AGENTS } from '../builders-view.js';
 import type { AntsContext } from './context.js';
+import { discoverBuilderEpochs } from './reward-discovery.js';
 import { assertAgentId, silentReporter, type StepReporter } from './steps.js';
 
 export { MAX_BUILDER_AGENTS };
@@ -27,8 +28,8 @@ async function agentOwner(ctx: AntsContext, agentId: number): Promise<string | n
  * does not index) is read over RPC. Available whenever the client rewards
  * contract is configured, so registration and claims work without Antscan;
  * then `indexed` is false and payable amounts are unknown (a per-agent RPC
- * epoch scan is too heavy for a polled view; `claimBuilderRewards` runs it
- * once, for the agent being claimed). Each request names at most
+ * epoch scan is too heavy for a polled view; `claimBuilderRewards` and
+ * `discoverBuilderEpochs` run it on demand, for one agent). Each request names at most
  * `MAX_BUILDER_AGENTS` ids (the card reads more in batches); a larger request
  * is refused, never cut.
  */
@@ -68,7 +69,8 @@ export async function builders(ctx: AntsContext, agentIds: number[]): Promise<Bu
  * Claim every payable epoch for one client agent, one transaction per epoch
  * (the contract has no batch claim). Anyone may send it; the contract always
  * pays the agent owner. Epochs come from Antscan; when it is unset, does not
- * index the builders program, or is unreachable, the RPC epoch scan names them.
+ * index the builders program, or is unreachable, the on-chain discovery pages
+ * back through every epoch the program can pay.
  * A successful indexed answer is authoritative, even when it lists no epochs,
  * except that epochs the contract already marks `claimed` are dropped: Antscan
  * can lag a claim that just confirmed, and resending it would revert with
@@ -89,7 +91,7 @@ export async function claimBuilderRewards(
   const indexed = indexer?.builders ? await indexer.builders([agentId]).catch(() => null) : null;
   const epochs = indexed?.available
     ? await unclaimedEpochs(client, agentId, indexed.agents.find((agent) => agent.agentId === agentId)?.claimableEpochs ?? [])
-    : (await client.pendingRewards(agentId)).map((entry) => entry.epoch);
+    : (await discoverBuilderEpochs(ctx, agentId)).epochs;
   if (epochs.length === 0) throw new Error(`No builder rewards are payable yet for agent ${agentId}.`);
   const hashes: string[] = [];
   for (const [index, epoch] of epochs.entries()) {

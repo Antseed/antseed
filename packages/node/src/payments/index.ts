@@ -91,6 +91,7 @@ export type { UsageAccountingClientConfig, UsagePoints, UsageTotals } from './ev
 export { UsageRewardsClient } from './evm/usage-rewards-client.js';
 export type { UsageRewardsClientConfig, DynamicUsageConfig } from './evm/usage-rewards-client.js';
 export { ReferralsClient, inviteFailureOf, type ReferralsClientConfig, type ReferralEpochReward, type InviteFailure, type InvitePreview } from './evm/referrals-client.js';
+export { latestClaimableEpoch, type EpochRange, type EpochReward } from './evm/epoch-rewards.js';
 export {
   INVITE_DEEP_LINK_BASE,
   INVITE_LINK_BASE,

@@ -44,8 +44,21 @@ function fixture(options: { referrals?: boolean; explorer?: boolean; indexed?: P
     referrer: vi.fn(async () => ({ ...indexedReferrer, ...options.indexed })),
     referralBinding: vi.fn(async () => ({ ...binding, ...options.binding })),
   };
+  // On-chain payable referrer rewards by epoch (what the discovery finds without Antscan).
+  const referrerPayable = new Map<number, bigint>([[7, 1n]]);
+  const inRange = (epoch: number, range: { fromEpoch: number; toEpoch: number }) => epoch >= range.fromEpoch && epoch <= range.toEpoch;
   const client = {
-    pendingRewards: vi.fn(async () => [{ epoch: 7, amount: 1n }]),
+    pendingRewards: vi.fn(async (_referrer: string, range: { fromEpoch: number; toEpoch: number }) =>
+      [...referrerPayable].filter(([epoch]) => inRange(epoch, range)).map(([epoch, amount]) => ({ epoch, amount }))),
+    // Per-epoch referee reads, so a test can steer the scan through `pendingRefereeReward`.
+    pendingRefereeRewards: vi.fn(async (address: string, range: { fromEpoch: number; toEpoch: number }) => {
+      const epochs = Array.from({ length: range.toEpoch - range.fromEpoch + 1 }, (_, i) => range.fromEpoch + i);
+      const amounts = await Promise.all(epochs.map((epoch) => client.pendingRefereeReward(address, epoch)));
+      return epochs.map((epoch, i) => ({ epoch, amount: amounts[i]! })).filter((entry) => entry.amount > 0n);
+    }),
+    // The emissions gate pays from epoch 2; the buyer was bound in epoch 2 too.
+    firstRewardEpoch: vi.fn(async () => 2),
+    referralOf: vi.fn(async (_buyer: string) => ({ referrer: referrer.toLowerCase(), epoch: 2 })),
     // Every referrer epoch Antscan lists is still unclaimed unless a test says otherwise.
     pendingReward: vi.fn(async (_referrer: string, _epoch: number) => 1n),
     claimEpochs: vi.fn(async () => '0xhash'),
@@ -68,7 +81,7 @@ function fixture(options: { referrals?: boolean; explorer?: boolean; indexed?: P
     indexer: () => (options.explorer === false ? null : indexer),
     requireSigner: () => ({}),
   } as unknown as AntsContext;
-  return { ctx, indexer, client };
+  return { ctx, indexer, client, referrerPayable };
 }
 
 /** A real Antscan client against an older explorer: every referrals endpoint answers 404. */
@@ -191,11 +204,11 @@ describe('referral card', () => {
     expect((await referral(fixture({ explorer: false }).ctx, dir)).invites).toEqual({ epoch: 40, quota: 4, used: 2, left: 2 });
   });
 
-  it('without an explorer, its claim goes through the bounded on-chain epoch scan', async () => {
+  it('without an explorer, its claim goes through the on-chain epoch discovery', async () => {
     const { ctx, client } = fixture({ explorer: false });
     expect((await referral(ctx)).available).toBe(true);
     expect(await claimReferralRewards(ctx)).toEqual({ hash: '0xhash', epochs: [7] });
-    expect(client.pendingRewards).toHaveBeenCalledWith(wallet);
+    expect(client.pendingRewards).toHaveBeenCalledWith(wallet, expect.anything());
     expect(client.claimEpochs).toHaveBeenCalledWith({}, wallet, [7]);
   });
 });
@@ -363,7 +376,7 @@ describe('referee bonus', () => {
     client.pendingRefereeReward.mockResolvedValue(5n);
     expect(await claimRefereeRewards(ctx)).toEqual({ hash: '0xreferee', epochs: [20, 21] });
     expect(client.claimRefereeEpochs).toHaveBeenCalledWith({}, buyer, [20, 21]);
-    // Only the epochs Antscan named are checked, never the 26-epoch scan.
+    // Only the epochs Antscan named are checked, never the on-chain discovery.
     expect(client.pendingRefereeReward.mock.calls).toEqual([[buyer, 20], [buyer, 21]]);
     await expect(claimRefereeRewards(fixture({ binding: { refereeClaimableEpochs: [] } }).ctx)).rejects.toThrow('No invite bonus');
   });
@@ -386,10 +399,27 @@ describe('referee bonus', () => {
     const { ctx, client } = fixture(options);
     expect(await claimRefereeRewards(ctx)).toEqual({ hash: '0xreferee', epochs: [30, 33] });
     expect(client.claimRefereeEpochs).toHaveBeenCalledWith({}, buyer, [30, 33]);
-    // The 26 claimable epochs up to 38: epoch 39 is in its settlement grace, 40 is current.
+    // Up to 38 (epoch 39 is in its settlement grace, 40 is current), back to the binding epoch 2, 26 epochs per batch.
+    expect(client.pendingRefereeRewards.mock.calls.map(([, range]) => range)).toEqual([{ fromEpoch: 13, toEpoch: 38 }, { fromEpoch: 2, toEpoch: 12 }]);
     const scanned = client.pendingRefereeReward.mock.calls.map(([, epoch]) => epoch);
-    expect(scanned).toEqual(Array.from({ length: 26 }, (_, i) => 13 + i));
+    expect(scanned.sort((a, b) => a - b)).toEqual(Array.from({ length: 37 }, (_, i) => 2 + i));
     expect(client.pendingRefereeReward.mock.calls.every(([address]) => address === buyer)).toBe(true);
+  });
+
+  it('claims an unclaimed bonus older than 26 epochs, scanning nothing before the binding epoch', async () => {
+    const { ctx, client } = fixture({ explorer: false });
+    client.referralOf.mockResolvedValue({ referrer: referrer.toLowerCase(), epoch: 8 });
+    client.pendingRefereeReward.mockImplementation(async (_buyer: string, epoch: number) => (epoch === 10 ? 4n : 0n));
+    expect(await claimRefereeRewards(ctx)).toEqual({ hash: '0xreferee', epochs: [10] });
+    expect(client.claimRefereeEpochs).toHaveBeenCalledWith({}, buyer, [10]);
+    expect(client.pendingRefereeRewards.mock.calls.map(([, range]) => range)).toEqual([{ fromEpoch: 13, toEpoch: 38 }, { fromEpoch: 8, toEpoch: 12 }]);
+  });
+
+  it('finds nothing for a buyer unbound on-chain, without scanning', async () => {
+    const { ctx, client } = fixture({ explorer: false });
+    client.referralOf.mockResolvedValue({ referrer: '0x0000000000000000000000000000000000000000', epoch: 0 });
+    await expect(claimRefereeRewards(ctx)).rejects.toThrow('No invite bonus');
+    expect(client.pendingRefereeRewards).not.toHaveBeenCalled();
   });
 
   it('scans on-chain when the explorer request fails', async () => {
@@ -429,14 +459,23 @@ describe('referral claim', () => {
   it('falls back to the on-chain epoch scan without an explorer', async () => {
     const { ctx, client } = fixture({ explorer: false });
     expect(await claimReferralRewards(ctx)).toEqual({ hash: '0xhash', epochs: [7] });
-    expect(client.pendingRewards).toHaveBeenCalledWith(wallet);
+    expect(client.pendingRewards).toHaveBeenCalledWith(wallet, expect.anything());
+  });
+
+  it('claims a reward older than 26 epochs, paging back to the program\'s first epoch in bounded batches', async () => {
+    const { ctx, client, referrerPayable } = fixture({ explorer: false });
+    referrerPayable.clear();
+    referrerPayable.set(10, 3n);
+    expect(await claimReferralRewards(ctx)).toEqual({ hash: '0xhash', epochs: [10] });
+    expect(client.claimEpochs).toHaveBeenCalledWith({}, wallet, [10]);
+    expect(client.pendingRewards.mock.calls).toEqual([[wallet, { fromEpoch: 13, toEpoch: 38 }], [wallet, { fromEpoch: 2, toEpoch: 12 }]]);
   });
 
   it('falls back to the on-chain epoch scan when the explorer request fails', async () => {
     const { ctx, client, indexer } = fixture();
     indexer.referrer.mockRejectedValueOnce(new Error('antscan down'));
     expect(await claimReferralRewards(ctx)).toEqual({ hash: '0xhash', epochs: [7] });
-    expect(client.pendingRewards).toHaveBeenCalledWith(wallet);
+    expect(client.pendingRewards).toHaveBeenCalledWith(wallet, expect.anything());
   });
 
   it('refuses when nothing is payable', async () => {

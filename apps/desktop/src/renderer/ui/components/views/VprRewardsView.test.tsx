@@ -18,8 +18,8 @@ it('opens buyer claims and staking through the shared dashboard at their respect
 });
 
 it('refreshes the invite bonus with usage rewards when the window regains focus after a claim', async () => {
-  const unclaimed = { available: true, weeksLeft: 9, payable: '4.5', claimableEpochs: [28] };
-  const claimed = { available: true, weeksLeft: 9, payable: '0', claimableEpochs: [] };
+  const unclaimed = { available: true, indexed: true, weeksLeft: 9, payable: '4.5', claimableEpochs: [28] };
+  const claimed = { available: true, indexed: true, weeksLeft: 9, payable: '0', claimableEpochs: [] };
   let bonus = unclaimed;
   const referralGetReferee = vi.fn(async () => bonus);
   const referralGetInvites = vi.fn(async () => null);
@@ -250,16 +250,24 @@ it('hides invites when referrals are not configured', () => {
 });
 
 it('shows the referee bonus with weeks left and claims through the rewards dashboard', () => {
-  const html = renderToStaticMarkup(<VprRefereeBonusCard bonus={{ available: true, weeksLeft: 9, payable: '4.5', claimableEpochs: [28] }} />);
+  const html = renderToStaticMarkup(<VprRefereeBonusCard bonus={{ available: true, indexed: true, weeksLeft: 9, payable: '4.5', claimableEpochs: [28] }} />);
   expect(html).toContain('Invite bonus');
   expect(html).toContain('4.50 $ANTS payable');
   expect(html).toContain('9 weeks left.');
   expect(html).toContain('data-dashboard-page="rewards">Claim');
-  expect(renderToStaticMarkup(<VprRefereeBonusCard bonus={{ available: false, weeksLeft: null, payable: '0', claimableEpochs: [] }} />)).toBe('');
+  expect(renderToStaticMarkup(<VprRefereeBonusCard bonus={{ available: false, indexed: false, weeksLeft: null, payable: '0', claimableEpochs: [] }} />)).toBe('');
+});
+
+it('keeps the invite-bonus claim without Antscan, with the amount unknown', () => {
+  const html = renderToStaticMarkup(<VprRefereeBonusCard bonus={{ available: true, indexed: false, weeksLeft: null, payable: '0', claimableEpochs: [] }} />);
+  expect(html).toContain('Payable amount unknown');
+  expect(html).toContain('finds what is payable on-chain');
+  expect(html).toContain('data-dashboard-page="rewards">Claim');
+  expect(html).not.toContain('disabled');
 });
 
 it('counts the invite bonus in the Pending $ANTS headline', () => {
-  const bonus = { available: true, weeksLeft: 10, payable: '300', claimableEpochs: [20] };
+  const bonus = { available: true, indexed: true, weeksLeft: 10, payable: '300', claimableEpochs: [20] };
   expect(pendingHeadline({ available: true, pendingAnts: '0' }, bonus)).toEqual({ pending: '300', bonusPayable: 300 });
   expect(pendingHeadline({ available: true, pendingAnts: '12.5' }, bonus).pending).toBe('312.5');
   expect(pendingHeadline({ available: true, pendingAnts: '12.5' }, null).pending).toBe('12.5');

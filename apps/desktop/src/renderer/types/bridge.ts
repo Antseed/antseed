@@ -33,6 +33,8 @@ export type CreateInviteResult =
 /** The referee bonus (from Antscan); payable is a decimal ANTS string paid to the operator. */
 export type RefereeBonus = {
   available: boolean;
+  /** Antscan reports the bonus; when false the wallet is bound on-chain and `payable`/`weeksLeft` are unknown. */
+  indexed: boolean;
   weeksLeft: number | null;
   payable: string;
   claimableEpochs: number[];

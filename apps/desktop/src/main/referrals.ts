@@ -21,7 +21,7 @@ import {
   InviteQuotaError,
   formatAntsExact,
   issueInvite,
-  refereeBonusFromExplorer,
+  refereeBonus,
   referral,
   referralBindingFromExplorer,
   referredBuyers,
@@ -58,13 +58,15 @@ export type CreateInviteResult =
 /** The two-sided bonus this wallet earns as a referee (from Antscan). Payable is a decimal ANTS string. */
 export type RefereeBonus = {
   available: boolean;
+  /** Antscan reports the bonus; when false the wallet is bound on-chain and `payable`/`weeksLeft` are unknown. */
+  indexed: boolean;
   weeksLeft: number | null;
   payable: string;
   claimableEpochs: number[];
 };
 
 const DARK_STATUS: ReferralStatus = { configured: false, state: 'none', referrer: null, invite: null };
-const NO_BONUS: RefereeBonus = { available: false, weeksLeft: null, payable: '0', claimableEpochs: [] };
+const NO_BONUS: RefereeBonus = { available: false, indexed: false, weeksLeft: null, payable: '0', claimableEpochs: [] };
 
 function errorText(error: unknown): string {
   return friendlyNetworkError(error);
@@ -171,10 +173,12 @@ export async function getRefereeBonus(): Promise<RefereeBonus> {
   const context = await referralContext().catch(() => null);
   if (!context) return NO_BONUS;
   try {
-    const view = await refereeBonusFromExplorer(context.chain.explorerApiUrl, context.wallet.address);
+    // Antscan when it reports the bonus, else the on-chain binding (`referrerOf`) with the amount unknown.
+    const view = await refereeBonus(new AntsContext({ chain: context.chain, address: context.wallet.address }));
     if (!view.available || !view.referrer) return NO_BONUS;
     return {
       available: true,
+      indexed: view.indexed,
       weeksLeft: view.weeksLeft,
       payable: formatAntsExact(view.payable),
       claimableEpochs: view.claimableEpochs,

@@ -17,6 +17,8 @@ const ui = vi.hoisted(() => ({
   modals: new Map<string, boolean>(),
   change: undefined as ((event: { target: { value: string } }) => void) | undefined,
   createInvite: undefined as unknown as ReturnType<typeof vi.fn>,
+  claimable: undefined as unknown as ReturnType<typeof vi.fn>,
+  operator: null as string | null,
 }))
 
 vi.mock('react', async (original) => {
@@ -72,14 +74,15 @@ vi.mock('../wallet/ReferralClaim', () => ({ default: () => null }))
 vi.mock('../app/context', () => ({ useConsole: () => ({ workspace: { id: ui.workspaceId } }) }))
 vi.mock('../api', () => {
   ui.createInvite = vi.fn()
-  return { api: { referrals: { get: vi.fn(), createInvite: ui.createInvite, redeem: vi.fn(), clearInvite: vi.fn() } }, isApiError: () => false }
+  ui.claimable = vi.fn()
+  return { api: { referrals: { get: vi.fn(), createInvite: ui.createInvite, redeem: vi.fn(), clearInvite: vi.fn(), claimable: ui.claimable } }, isApiError: () => false }
 })
-vi.mock('../lib/operator', () => ({ useOperator: () => ({ data: undefined }) }))
+vi.mock('../lib/operator', () => ({ useOperator: () => ({ data: ui.operator ? { operator: ui.operator } : undefined }) }))
 vi.mock('../lib/queries', () => ({ qk: { referrals: (id: string) => ['referrals', id] }, useChain: () => ({ data: undefined, error: null }) }))
 // A write that resolves at once: mutate runs the request and its onSuccess in the same call.
 vi.mock('../lib/mutations', () => ({
-  useConsoleMutation: (options: { mutationFn: () => unknown; onSuccess?: (data: unknown) => void }) => ({
-    mutate: () => options.onSuccess?.(options.mutationFn()),
+  useConsoleMutation: (options: { mutationFn: (variables: unknown) => unknown; onSuccess?: (data: unknown, variables: unknown) => void }) => ({
+    mutate: (variables?: unknown) => options.onSuccess?.(options.mutationFn(variables), variables),
     isPending: false,
     error: null,
   }),
@@ -103,7 +106,7 @@ const view = (): ReferralsView => ({
   buyers: [],
   referee: {
     state: 'none', referrer: null, pendingInvite: null, inviteExpiresEpoch: null, boundEpoch: null,
-    windowEnd: null, weeksLeft: null, payableAnts: '0', claimableEpochs: [], canRedeem: true,
+    windowEnd: null, weeksLeft: null, payableAnts: '0', claimableEpochs: [], canRedeem: true, indexed: false,
   },
 })
 
@@ -138,6 +141,11 @@ beforeEach(() => {
   ui.data = view()
   mountedKey = undefined
   ui.createInvite.mockReset().mockReturnValue(invite)
+  ui.claimable.mockReset().mockReturnValue({
+    referrer: { payableAnts: '12.5', claimableEpochs: [3] },
+    referee: { payableAnts: '0', claimableEpochs: [] },
+  })
+  ui.operator = null
 })
 
 describe('Referrals across workspace switches', () => {
@@ -180,5 +188,65 @@ describe('Referrals across workspace switches', () => {
     ui.workspaceId = 'ws-b'
     render()
     expect(ui.modals.get('Invite created')).toBe(false)
+  })
+})
+
+describe('Referrals claims without an explorer', () => {
+  const bound = (): ReferralsView => ({
+    ...view(),
+    referee: { ...view().referee, state: 'bound', referrer: '0x0000000000000000000000000000000000000002', canRedeem: false, indexed: false },
+  })
+
+  it('keeps the referral and bonus claim controls, with the amounts unknown until found on-chain', () => {
+    ui.data = bound()
+    const html = render()
+    expect(html).toContain('Referral rewards not checked yet')
+    expect(html).toContain('Bonus not checked yet.')
+    // No bonus window is known, so none is claimed to be over.
+    expect(html).not.toContain('Bonus window over')
+    expect(html.match(/>Find rewards</g)).toHaveLength(2)
+    expect(html.match(/Find rewards checks the chain/g)).toHaveLength(1)
+  })
+
+  it('finds the referral epochs on-chain, then claims them with the authorized wallet', () => {
+    ui.operator = '0x0000000000000000000000000000000000000009'
+    render()
+    click('Find rewards')
+    expect(ui.claimable).toHaveBeenCalledWith('ws-a')
+    const html = render()
+    expect(ui.modals.get('Claim referral rewards')).toBe(true)
+    expect(html).toContain('12.5 ANTS referral rewards ready')
+    expect(html).not.toContain('Referral rewards not checked yet')
+  })
+
+  it('finds the invite bonus on-chain, then claims it', () => {
+    ui.data = bound()
+    ui.operator = '0x0000000000000000000000000000000000000009'
+    ui.claimable.mockReturnValue({ referrer: { payableAnts: '0', claimableEpochs: [] }, referee: { payableAnts: '6.4', claimableEpochs: [4] } })
+    render()
+    // The bonus row's Find rewards (rendered after the referral row's).
+    click('Find rewards')
+    const html = render()
+    expect(ui.modals.get('Claim the invite bonus')).toBe(true)
+    expect(html).toContain('6.4 ANTS bonus ready.')
+    expect(html).toContain('No referral rewards to claim yet')
+  })
+
+  it('shows what was found when nothing can be paid yet, without opening a claim', () => {
+    ui.claimable.mockReturnValue({ referrer: { payableAnts: '0', claimableEpochs: [] }, referee: { payableAnts: '0', claimableEpochs: [] } })
+    ui.operator = '0x0000000000000000000000000000000000000009'
+    render()
+    click('Find rewards')
+    const html = render()
+    expect(html).toContain('No referral rewards to claim yet')
+    expect(ui.modals.get('Claim referral rewards')).toBeUndefined()
+    expect(/<button disabled="">Claim<\/button>/.test(html)).toBe(true)
+  })
+
+  it('claims the indexed rewards directly when the explorer reports them', () => {
+    ui.data = { ...bound(), available: true, payableAnts: '4', claimableEpochs: [2], referee: { ...bound().referee, indexed: true, payableAnts: '1', claimableEpochs: [2] } }
+    const html = render()
+    expect(html).not.toContain('Find rewards')
+    expect(html).toContain('4 ANTS referral rewards ready')
   })
 })

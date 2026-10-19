@@ -8,11 +8,16 @@
  * Counts, allowances and payable amounts come from Antscan via the shared
  * @antseed/ants services; invite checks are one `previewInvite` view. Claims
  * are not made here: they are permissionless, so the console sends them
- * from the browser and the contracts pick the recipient.
+ * from the browser and the contracts pick the recipient. Without an explorer
+ * the console asks for the payable epochs on demand (`discoverReferralClaims`,
+ * `discoverBuilderClaim`), found over RPC by the shared on-chain discovery.
  */
 import {
   builders as readBuilderAgents,
   createInvite,
+  discoverBuilderEpochs,
+  discoverRefereeEpochs,
+  discoverReferrerEpochs,
   formatAntsExact,
   InviteQuotaError,
   referral,
@@ -21,13 +26,14 @@ import {
   referralScope,
   type AntsChainConfig,
   type AntsContext,
+  type DiscoveredRewards,
 } from '@antseed/ants'
 import { checkInvite, clearReferralInvite, DEFAULT_BUYER_IDENTITY, inviteExpiryEpoch, decodeInvite, readReferralState, saveReferralInvite, type ReferralState } from '@antseed/node'
 import { isError } from 'ethers'
 import { buyerIdentityDir } from '../../buyer-identities/store.js'
 import { loadConfig, parseClientAgentId } from '../../config/loader.js'
 import { ConsoleError } from '../console-api/router.js'
-import type { BuilderAgent, Builders, CreatedInvite, Referee, Referrals } from '../console-api/types.js'
+import type { BuilderAgent, Builders, ClaimableRewards, CreatedInvite, Referee, ReferralClaimables, Referrals } from '../console-api/types.js'
 import { errorMessage } from '../errors.js'
 import { recordAudit, type Actor, type ServiceContext } from './context.js'
 import { patchConfigFile, requestBuyerRestart, type SettingsContext } from './settings.js'
@@ -41,7 +47,7 @@ export function referralStateDir(dataDir: string, buyerIdentity: string): string
 
 const HIDDEN_REFEREE: Referee = {
   state: 'none', referrer: null, pendingInvite: null, inviteExpiresEpoch: null,
-  boundEpoch: null, windowEnd: null, weeksLeft: null, payableAnts: '0', claimableEpochs: [], canRedeem: null,
+  boundEpoch: null, windowEnd: null, weeksLeft: null, payableAnts: '0', claimableEpochs: [], canRedeem: null, indexed: false,
 }
 
 const UNINDEXED_REFERRAL: Awaited<ReturnType<typeof referral>> = { available: false, indexed: false, payable: '0', claimableEpochs: [], referredCount: 0, invites: null }
@@ -81,6 +87,7 @@ async function readReferee(ctx: AntsContext, stateDir: string): Promise<Referee>
     payableAnts: ants(bonus.payable),
     claimableEpochs: bonus.claimableEpochs,
     canRedeem: bound ? false : bonus.canBind ?? null,
+    indexed: bonus.indexed,
   }
 }
 
@@ -88,8 +95,9 @@ async function readReferee(ctx: AntsContext, stateDir: string): Promise<Referee>
 export async function readReferrals(ctx: AntsContext, stateDir: string): Promise<Referrals> {
   // Antscan's statistics are optional: without it the allowance comes from
   // the contract, counts and rewards are unknown, and invites (RPC and the
-  // local state) keep working. The console claims the epochs listed here, so
-  // rewards count as available only when Antscan reported them.
+  // local state) keep working. `available` says whether the rewards listed
+  // here are Antscan's; otherwise the console finds them on demand
+  // (`discoverReferralClaims`) and claims those.
   const [view, referred, referee] = await Promise.all([
     referral(ctx, stateDir).catch(() => UNINDEXED_REFERRAL),
     referredBuyers(ctx).catch(() => ({ available: false, buyers: [] })),
@@ -105,6 +113,26 @@ export async function readReferrals(ctx: AntsContext, stateDir: string): Promise
     claimableEpochs: view.claimableEpochs,
     buyers: referred.buyers.map((buyer) => ({ ...buyer, ants: ants(buyer.ants) })),
     referee,
+  }
+}
+
+function claimable(found: DiscoveredRewards): ClaimableRewards {
+  return { payableAnts: ants(found.payable), claimableEpochs: found.epochs }
+}
+
+/**
+ * What the workspace wallet (`ctx.address`, also its buyer) can claim now,
+ * found on-chain: every epoch with a payable referral reward or invite bonus,
+ * back to the first the program pays. For when the explorer does not list
+ * them; RPC only, so it works without one.
+ */
+export async function discoverReferralClaims(ctx: AntsContext): Promise<ReferralClaimables> {
+  if (!ctx.chain.referralsAddress) throw new ConsoleError(409, 'referrals_unavailable', 'Referrals are not available on this network.')
+  try {
+    const [referrer, referee] = await Promise.all([discoverReferrerEpochs(ctx, ctx.address), discoverRefereeEpochs(ctx, ctx.buyerAddress)])
+    return { referrer: claimable(referrer), referee: claimable(referee) }
+  } catch (err) {
+    throw new ConsoleError(502, 'rewards_unreadable', `Payable rewards could not be read from the chain: ${errorMessage(err)}`)
   }
 }
 
@@ -192,30 +220,68 @@ function estimatedClientAgent(configured: number | null, chain: AntsChainConfig,
 }
 
 /**
- * The configured and effective client agent, without the rewards read (which
- * needs the explorer). The effective agent is the running buyer's own report;
+ * The configured and effective client agent, without the agent's chain and
+ * explorer reads (`readBuilderAgent`). The effective agent is the running buyer's own report;
  * without one it is estimated from this process's environment and the config
  * (`runtime: false`).
  */
 export async function readBuilderSettings(chain: AntsChainConfig, configPath: string, buyer: BuyerClient | null, env: NodeJS.ProcessEnv = process.env): Promise<Builders> {
   const [agentId, runtime] = await Promise.all([configuredClientAgentId(configPath), runtimeClientAgent(buyer)])
   const effective = runtime ? { ...runtime, runtime: true } : estimatedClientAgent(agentId, chain, env)
-  return { available: false, agentId, effective, agent: null }
+  return { available: false, indexed: false, agentId, effective, agent: null }
 }
 
-/** What the builders program owes a client agent (Antscan; the owner over RPC). */
-export async function readBuilderAgent(ctx: AntsContext, agentId: number | null): Promise<Pick<Builders, 'available' | 'agent'>> {
-  // The console claims the epochs listed here, so the rewards need Antscan: without it, skip the ownerOf reads too.
-  if (!agentId || !ctx.indexer()) return { available: false, agent: null }
+/**
+ * The client agent's registration (owner over RPC) and, when Antscan
+ * reports them, what the builders program owes it. Without Antscan the
+ * rewards are unknown (`indexed: false`) and the console finds them on
+ * demand (`discoverBuilderClaim`).
+ */
+export async function readBuilderAgent(ctx: AntsContext, agentId: number | null): Promise<Pick<Builders, 'available' | 'indexed' | 'agent'>> {
+  if (!agentId || !ctx.chain.clientRewardsAddress) return { available: Boolean(ctx.chain.clientRewardsAddress), indexed: false, agent: null }
   const view = await readBuilderAgents(ctx, [agentId])
-  const found = view.indexed ? view.agents.find((agent) => agent.agentId === agentId) : undefined
+  const found = view.agents.find((agent) => agent.agentId === agentId)
   const agent: BuilderAgent | null = found
-    ? { agentId: found.agentId, owner: found.owner, firstParty: found.firstParty, payableAnts: ants(found.payable), claimableEpochs: found.claimableEpochs }
+    ? {
+        agentId: found.agentId, owner: found.owner, firstParty: found.firstParty,
+        payableAnts: view.indexed ? ants(found.payable) : '0', claimableEpochs: view.indexed ? found.claimableEpochs : [],
+      }
     : null
-  return { available: view.indexed, agent }
+  return { available: view.available, indexed: view.indexed, agent }
 }
 
-/** The gateway's client agent, as the running buyer signs it, and what the builders program owes it. */
+/** The ERC-8004 owner of `agentId`, or null when it is not registered (ownerOf reverts). */
+async function agentOwner(ctx: AntsContext, agentId: number): Promise<string | null> {
+  const identity = ctx.identity()
+  if (!identity) return null
+  try {
+    return await identity.getAgentWallet(agentId)
+  } catch (err) {
+    if (isError(err, 'CALL_EXCEPTION')) return null
+    throw err
+  }
+}
+
+/**
+ * Every epoch the builders program can pay `agentId` now, found on-chain
+ * (back to the first epoch the program pays), with the owner it pays. For
+ * when the explorer does not list them. An unregistered agent can be paid
+ * nothing, so it is not scanned.
+ */
+export async function discoverBuilderClaim(ctx: AntsContext, agentId: number | null): Promise<BuilderAgent> {
+  if (!ctx.chain.clientRewardsAddress) throw new ConsoleError(409, 'builders_unavailable', 'The builders program is not available on this network.')
+  if (!agentId) throw new ConsoleError(409, 'no_client_agent', 'This gateway credits no client agent.')
+  const firstParty = ctx.chain.clientAgentIds?.cli === agentId ? 'cli' : ctx.chain.clientAgentIds?.desktop === agentId ? 'desktop' : null
+  try {
+    const owner = await agentOwner(ctx, agentId)
+    const found = owner ? await discoverBuilderEpochs(ctx, agentId) : { epochs: [], payable: '0' }
+    return { agentId, owner, firstParty, ...claimable(found) }
+  } catch (err) {
+    throw new ConsoleError(502, 'rewards_unreadable', `Payable rewards could not be read from the chain: ${errorMessage(err)}`)
+  }
+}
+
+/** The gateway's client agent, as the running buyer signs it, and what the builders program owes it (when Antscan reports it). */
 export async function readBuilders(ctx: AntsContext, configPath: string, buyer: BuyerClient | null, env: NodeJS.ProcessEnv = process.env): Promise<Builders> {
   const settings = await readBuilderSettings(ctx.chain, configPath, buyer, env)
   return { ...settings, ...(await readBuilderAgent(ctx, settings.effective.agentId)) }

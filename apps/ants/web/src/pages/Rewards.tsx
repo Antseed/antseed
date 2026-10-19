@@ -54,8 +54,8 @@ function shortInviteLink(link: string): string {
 }
 
 const NO_INVITE_QUOTA = 'Invites unlock after at least 1 USDC of usage or sales in the previous week.';
-/** Without Antscan, claims find payable weeks with the services' bounded on-chain scan. */
-const ON_CHAIN_CLAIM = 'Claim checks the last 26 weeks on-chain.';
+/** Without Antscan, claims find every payable week on-chain (`discover*Epochs` in the services). */
+const ON_CHAIN_CLAIM = 'Claim finds the payable weeks on-chain.';
 
 /**
  * The referral card's cache key follows the epoch: the 60s staleness only

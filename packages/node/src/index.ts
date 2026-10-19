@@ -211,6 +211,7 @@ export { pendingEpochRewards, claimEpochRewards, claimBuyerEpochRewards, preview
 export { PositionInitClient, type PositionInitClientConfig } from './payments/evm/position-init-client.js';
 export { EmissionsGateClient, GATE_MINTERS, gateMinterId, type EmissionsGateClientConfig, type GateMinter } from './payments/evm/emissions-gate-client.js';
 export { ReferralsClient, inviteFailureOf, type ReferralsClientConfig, type ReferralEpochReward, type InviteFailure, type InvitePreview } from './payments/evm/referrals-client.js';
+export { latestClaimableEpoch, type EpochRange, type EpochReward } from './payments/evm/epoch-rewards.js';
 export {
   INVITE_DEEP_LINK_BASE,
   INVITE_LINK_BASE,
