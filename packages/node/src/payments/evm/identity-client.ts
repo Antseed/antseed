@@ -42,11 +42,10 @@ export class IdentityClient extends BaseEvmClient {
     const contract = new Contract(this._contractAddress, IDENTITY_REGISTRY_ABI, connected);
 
     let tx: { wait(): Promise<{ hash: string; logs: Array<{ topics: string[]; data: string }> } | null> };
-    const nonce = await this._reserveNonce(signerAddress);
     if (metadataURI) {
-      tx = await contract.getFunction('register(string)')(metadataURI, { nonce });
+      tx = await this._sendWithNonce(signerAddress, (nonce) => contract.getFunction('register(string)')(metadataURI, { nonce }));
     } else {
-      tx = await contract.getFunction('register()')({ nonce });
+      tx = await this._sendWithNonce(signerAddress, (nonce) => contract.getFunction('register()')({ nonce }));
     }
     const receipt = await tx.wait();
     if (!receipt) throw new Error('Transaction was dropped or replaced');

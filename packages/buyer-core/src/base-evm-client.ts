@@ -123,37 +123,33 @@ export abstract class BaseEvmClient {
     return this._execWrite(signer, abi, method, ...args);
   }
 
-  /**
-   * Reserve a nonce, apply the gas buffer, and broadcast. On any failure —
-   * estimateGas revert, RPC timeout, submission error — roll back the nonce
-   * cursor. `_reserveNonce` reads `getTransactionCount(..., 'pending')` on
-   * the next call, so an in-flight tx (if sendTransaction failed after the
-   * node accepted it) is still accounted for and we won't reuse its nonce.
-   */
+  /** Apply the gas buffer and broadcast on the signer's next nonce. */
   private async _sendBuffered(
     connected: AbstractSigner,
     signerAddress: string,
     populated: TransactionRequest,
   ): Promise<TransactionResponse> {
-    const nonce = await this._reserveNonce(signerAddress);
-    populated.nonce = nonce;
-    try {
+    return this._sendWithNonce(signerAddress, async (nonce) => {
+      populated.nonce = nonce;
       const estimated = await connected.estimateGas(populated);
       populated.gasLimit = (estimated * GAS_BUFFER_NUMERATOR) / GAS_BUFFER_DENOMINATOR;
-      return await connected.sendTransaction(populated);
-    } catch (err) {
-      nonceCursors.delete(this._nonceKey(signerAddress));
-      throw err;
-    }
+      return connected.sendTransaction(populated);
+    });
   }
 
-  protected async _reserveNonce(address: string): Promise<number> {
-    // Serialize nonce reservation per address to prevent concurrent calls
-    // from reading the same network nonce before either updates the cursor
+  /**
+   * Run `send` with the signer's next nonce. The wallet's lock is held until
+   * `send` returns (the node accepted the tx), and the cursor only moves past
+   * a nonce once its tx is sent. A failed send (estimateGas revert, RPC
+   * error) leaves the cursor alone, so its nonce goes to the next tx; the
+   * pending count may not include txs that were sent but not yet mined, so
+   * it cannot be trusted alone.
+   */
+  protected async _sendWithNonce<T>(address: string, send: (nonce: number) => Promise<T>): Promise<T> {
     const key = this._nonceKey(address);
     const prev = nonceLocks.get(key) ?? Promise.resolve();
-    let resolve: () => void;
-    const lock = new Promise<void>(r => { resolve = r; });
+    let release: () => void;
+    const lock = new Promise<void>(r => { release = r; });
     nonceLocks.set(key, lock);
 
     await prev;
@@ -161,10 +157,11 @@ export abstract class BaseEvmClient {
       const networkNonce = await this._provider.getTransactionCount(address, 'pending');
       const cachedNext = nonceCursors.get(key);
       const nonce = cachedNext === undefined ? networkNonce : Math.max(networkNonce, cachedNext);
+      const result = await send(nonce);
       nonceCursors.set(key, nonce + 1);
-      return nonce;
+      return result;
     } finally {
-      resolve!();
+      release!();
     }
   }
 
