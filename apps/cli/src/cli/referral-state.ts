@@ -131,10 +131,13 @@ export class BuyerAttributionSync {
   }
 
   private async _sync(key: string, target: AttributionTarget, force: boolean): Promise<void> {
-    if (!force && !target.carrying && (await referralStateMtimeMs(target.dir)) === target.mtime) return
+    // Taken before the state is read: a write landing during the sync then
+    // differs from the cached time and is picked up by the next poll.
+    const mtime = await referralStateMtimeMs(target.dir)
+    if (!force && !target.carrying && mtime === target.mtime) return
     const { scope, lookup, verify } = this._options
     const referralState = scope ? await syncReferralState(target.dir, scope, target.address, lookup, verify ?? null) : null
-    target.mtime = await referralStateMtimeMs(target.dir)
+    target.mtime = mtime
     // Tracking may have been replaced while the lookups ran.
     if (this._targets.get(key) !== target) return
     this._apply(key, target, referralState, force)

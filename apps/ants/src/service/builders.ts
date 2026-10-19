@@ -1,10 +1,10 @@
 import { isError } from 'ethers';
 import type { BuilderAgentView, BuildersView } from '../api-types.js';
+import { compareBuilderAgents, MAX_BUILDER_AGENTS } from '../builders-view.js';
 import type { AntsContext } from './context.js';
 import { assertAgentId, silentReporter, type StepReporter } from './steps.js';
 
-/** Each agent costs an ownerOf read; keep one request bounded. */
-export const MAX_BUILDER_AGENTS = 20;
+export { MAX_BUILDER_AGENTS };
 
 /** ERC-8004 owner of `agentId`, or null when the id is not minted (ownerOf reverts). */
 async function agentOwner(ctx: AntsContext, agentId: number): Promise<string | null> {
@@ -24,12 +24,14 @@ async function agentOwner(ctx: AntsContext, agentId: number): Promise<string | n
  * wallet's agents cheaply, so third-party builders name their ids. Payable
  * amounts come from Antscan; only agent ownership (`ownerOf`, which Antscan
  * does not index) is read over RPC. Hidden without an explorer that indexes
- * the builders program.
+ * the builders program. Each request names at most `MAX_BUILDER_AGENTS` ids
+ * (the card reads more in batches); a larger request is refused, never cut.
  */
 export async function builders(ctx: AntsContext, agentIds: number[]): Promise<BuildersView> {
   const indexer = ctx.indexer();
   if (!ctx.chain.clientRewardsAddress || !indexer?.builders) return { available: false, agents: [] };
-  const requested = [...new Set(agentIds.filter((id) => Number.isSafeInteger(id) && id > 0))].slice(0, MAX_BUILDER_AGENTS);
+  const requested = [...new Set(agentIds.filter((id) => Number.isSafeInteger(id) && id > 0))];
+  if (requested.length > MAX_BUILDER_AGENTS) throw new Error(`Request at most ${MAX_BUILDER_AGENTS} client agent ids at a time.`);
   const firstParty = new Map<number, 'cli' | 'desktop'>();
   for (const kind of ['cli', 'desktop'] as const) {
     const id = ctx.chain.clientAgentIds?.[kind];
@@ -53,24 +55,16 @@ export async function builders(ctx: AntsContext, agentIds: number[]): Promise<Bu
     payable: rewards.get(agentId)?.payable ?? '0',
     claimableEpochs: rewards.get(agentId)?.claimableEpochs ?? [],
   }));
-  // Agents this wallet is paid for first (first-party before user-added), then
-  // the rest; within a group, the largest payable amount leads.
-  const rank = (agent: BuilderAgentView) => (agent.owned ? (agent.firstParty ? 0 : 1) : 2);
-  const byPayableDesc = (a: BuilderAgentView, b: BuilderAgentView) => {
-    const diff = BigInt(b.payable) - BigInt(a.payable);
-    if (diff > 0n) return 1;
-    if (diff < 0n) return -1;
-    return 0;
-  };
-  agents.sort((a, b) => rank(a) - rank(b) || byPayableDesc(a, b));
+  agents.sort(compareBuilderAgents);
   return { available: true, agents };
 }
 
 /**
  * Claim every payable epoch for one client agent, one transaction per epoch
  * (the contract has no batch claim). Anyone may send it; the contract always
- * pays the agent owner. Epochs come from Antscan, falling back to the RPC
- * epoch scan only when no explorer is configured.
+ * pays the agent owner. Epochs come from Antscan; when it is unset, does not
+ * index the builders program, or is unreachable, the RPC epoch scan names them.
+ * A successful indexed answer is authoritative, even when it lists no epochs.
  */
 export async function claimBuilderRewards(
   ctx: AntsContext,
@@ -84,8 +78,9 @@ export async function claimBuilderRewards(
   const owner = await agentOwner(ctx, agentId);
   if (!owner) throw new Error(`Agent ${agentId} is not registered in the ERC-8004 identity registry.`);
   const indexer = ctx.indexer();
-  const epochs = indexer?.builders
-    ? (await indexer.builders([agentId])).agents.find((agent) => agent.agentId === agentId)?.claimableEpochs ?? []
+  const indexed = indexer?.builders ? await indexer.builders([agentId]).catch(() => null) : null;
+  const epochs = indexed?.available
+    ? indexed.agents.find((agent) => agent.agentId === agentId)?.claimableEpochs ?? []
     : (await client.pendingRewards(agentId)).map((entry) => entry.epoch);
   if (epochs.length === 0) throw new Error(`No builder rewards are payable yet for agent ${agentId}.`);
   const hashes: string[] = [];

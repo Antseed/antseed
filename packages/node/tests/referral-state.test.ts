@@ -2,7 +2,7 @@ import { access, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Wallet } from 'ethers';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   clearReferralInvite,
   issuedInviteIndices,
@@ -11,6 +11,7 @@ import {
   recordIssuedInvite,
   saveReferralInvite,
   syncReferralState,
+  takeOverStaleLock,
   updateReferralState,
   withIssuedInvite,
   writeReferralState,
@@ -205,5 +206,85 @@ describe('referral state', () => {
     await recordIssuedInvite(dir, SCOPE, 30, 1);
     expect(issuedInviteIndices(await readReferralState(dir, SCOPE), 30)).toEqual([0, 1]);
     await expect(access(lock)).rejects.toThrow();
+  });
+
+  // Fresh module instances share no in-process queue, so they contend on the
+  // lock file exactly as separate CLI, Desktop and daemon processes do.
+  async function separateWriter(): Promise<typeof import('../src/payments/referral-state.js')> {
+    vi.resetModules();
+    return import('../src/payments/referral-state.js');
+  }
+
+  it('lets exactly one of two writers recovering the same stale lock take the last slot', async () => {
+    const dir = await dataDir();
+    const lock = join(dir, 'referral.json.lock');
+    for (let round = 0; round < 5; round += 1) {
+      await rm(join(dir, 'referral.json'), { force: true });
+      await recordIssuedInvite(dir, SCOPE, 30, 0);
+      await writeFile(lock, 'crashed-holder\n');
+      const old = new Date(Date.now() - 60_000);
+      await utimes(lock, old, old);
+      const writers = await Promise.all([separateWriter(), separateWriter()]);
+      const allocate = (writer: (typeof writers)[number]) => {
+        let won = false;
+        return writer.updateReferralState(dir, SCOPE, async (current) => {
+          if (writer.issuedInviteIndices(current, 30).includes(1)) return null;
+          await new Promise((resolve) => setTimeout(resolve, 15));
+          won = true;
+          return writer.withIssuedInvite(current, 30, 1);
+        }).then(() => won);
+      };
+      const results = await Promise.all(writers.map(allocate));
+      expect(results.filter(Boolean)).toHaveLength(1);
+      expect(issuedInviteIndices(await readReferralState(dir, SCOPE), 30)).toEqual([0, 1]);
+      await expect(access(lock)).rejects.toThrow();
+    }
+  });
+
+  it('keeps every update from writers in separate processes', async () => {
+    const dir = await dataDir();
+    const writers = await Promise.all([separateWriter(), separateWriter(), separateWriter()]);
+    await Promise.all(Array.from({ length: 15 }, (_, index) => writers[index % 3]!.recordIssuedInvite(dir, SCOPE, 30, index)));
+    expect(issuedInviteIndices(await readReferralState(dir, SCOPE), 30)).toEqual(Array.from({ length: 15 }, (_, index) => index));
+  });
+
+  it('never removes a lock another holder now owns', async () => {
+    const dir = await dataDir();
+    const lock = join(dir, 'referral.json.lock');
+    const writer = await separateWriter();
+    let release: () => void = () => {};
+    const held = writer.updateReferralState(dir, SCOPE, () => new Promise((resolve) => {
+      release = () => resolve(null);
+    }));
+    while (!(await readFile(lock, 'utf8').catch(() => ''))) await new Promise((resolve) => setTimeout(resolve, 5));
+    // Someone replaces the lock (e.g. after taking it over); the first holder's release must leave it.
+    await writeFile(lock, 'other-holder\n');
+    release();
+    await held;
+    expect((await readFile(lock, 'utf8')).trim()).toBe('other-holder');
+  });
+
+  it('recovers a stale lock only while it is still the same stale lock', async () => {
+    const dir = await dataDir();
+    const lock = join(dir, 'referral.json.lock');
+    const old = new Date(Date.now() - 60_000);
+    // Seen stale as "crashed", but another recoverer already replaced it with its own lock.
+    await writeFile(lock, 'fresh-holder\n');
+    await takeOverStaleLock(lock, 'crashed');
+    expect((await readFile(lock, 'utf8')).trim()).toBe('fresh-holder');
+    // Same holder, but its heartbeat refreshed it since.
+    await writeFile(lock, 'crashed\n');
+    await takeOverStaleLock(lock, 'crashed');
+    expect((await readFile(lock, 'utf8')).trim()).toBe('crashed');
+    // Another recovery is in progress: leave it to that one.
+    await utimes(lock, old, old);
+    await writeFile(`${lock}.takeover`, 'other-recoverer\n');
+    await takeOverStaleLock(lock, 'crashed');
+    expect((await readFile(lock, 'utf8')).trim()).toBe('crashed');
+    await rm(`${lock}.takeover`);
+    // Still the same stale lock: removed.
+    await takeOverStaleLock(lock, 'crashed');
+    await expect(access(lock)).rejects.toThrow();
+    await expect(access(`${lock}.takeover`)).rejects.toThrow();
   });
 });

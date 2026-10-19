@@ -43,6 +43,8 @@ const HIDDEN_REFEREE: Referee = {
   boundEpoch: null, windowEnd: null, weeksLeft: null, payableAnts: '0', claimableEpochs: [], canRedeem: null,
 }
 
+const UNINDEXED_REFERRAL: Awaited<ReturnType<typeof referral>> = { available: false, payable: '0', claimableEpochs: [], referredCount: 0, invites: null }
+
 function ants(baseUnits: string): string {
   return formatAntsExact(baseUnits || '0')
 }
@@ -83,7 +85,13 @@ async function readReferee(ctx: AntsContext, stateDir: string): Promise<Referee>
 
 /** A workspace wallet's referrals: its invites and referred buyers, and its own invite bonus. */
 export async function readReferrals(ctx: AntsContext, stateDir: string): Promise<Referrals> {
-  const [view, referred, referee] = await Promise.all([referral(ctx, stateDir), referredBuyers(ctx), readReferee(ctx, stateDir)])
+  // Antscan's statistics are optional: when it fails the view degrades to
+  // unknown counts, and invites (RPC and the local state) keep working.
+  const [view, referred, referee] = await Promise.all([
+    referral(ctx, stateDir).catch(() => UNINDEXED_REFERRAL),
+    referredBuyers(ctx).catch(() => ({ available: false, buyers: [] })),
+    readReferee(ctx, stateDir),
+  ])
   return {
     available: view.available,
     invitesAvailable: Boolean(ctx.chain.referralsAddress),

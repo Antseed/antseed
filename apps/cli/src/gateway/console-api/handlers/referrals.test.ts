@@ -40,14 +40,20 @@ function fakeContext(chain: AntsChainConfig, address: string, signer?: AbstractS
     signer,
     requireSigner: () => { if (!signer) throw new Error('no signer'); return signer },
     indexer: () => ({
-      referrer: async () => ({
+      referrer: async () => {
+        if (explorerDown) throw new Error('Explorer unreachable: fetch failed')
+        return {
         available: true, currentEpoch: 20, referredCount: 1, payable: '2500000000000000000', claimableEpochs: [17, 18],
         invites: { epoch: 20, quota: 3, used: 0, usedIndices: [] },
         buyers: [{ buyer: REFERRED, boundEpoch: 12, points: '9000', ants: '1000000000000000000', pendingPoints: '0' }],
-      }),
-      referralBinding: async () => ({
-        available: true, referrer: null, boundEpoch: null, refereeWindowEnd: null, refereePayable: '0', refereeClaimableEpochs: [], currentEpoch: 20, canBind: true,
-      }),
+        }
+      },
+      referralBinding: async () => {
+        if (explorerDown) throw new Error('Explorer unreachable: fetch failed')
+        return {
+          available: true, referrer: null, boundEpoch: null, refereeWindowEnd: null, refereePayable: '0', refereeClaimableEpochs: [], currentEpoch: 20, canBind: true,
+        }
+      },
       builders: async (ids: number[]) => {
         if (explorerDown) throw new Error('Explorer unreachable: fetch failed')
         return {
@@ -196,6 +202,28 @@ test('without an explorer, invites are still created, redeemed and removed; only
 
   const cleared = await call(noExplorerRouter, 'DELETE', `/workspaces/${solo.id}/referrals/redeem`, principal) as Referrals
   assert.equal(cleared.referee.state, 'none')
+})
+
+test('an unreachable explorer degrades the view; invites and their changes still succeed', async () => {
+  explorerDown = true
+  try {
+    const view = await call(router, 'GET', `/workspaces/${team.id}/referrals?fresh=1`, asAdmin()) as Referrals
+    assert.equal(view.available, false)
+    assert.equal(view.invitesAvailable, true)
+    assert.deepEqual(view.buyers, [])
+
+    const created = await call(router, 'POST', `/workspaces/${team.id}/referrals/invites`, asAdmin()) as CreatedInvite
+    assert.equal(created.epoch, 20)
+
+    preview = { referrer: INVITER.address, failure: null }
+    const invite = encodeInvite(await signInvite(INVITER, DOMAIN, 20, 2))
+    const redeemed = await call(router, 'POST', `/workspaces/${team.id}/referrals/redeem`, asAdmin(), { invite }) as Referrals
+    assert.equal(redeemed.referee.state, 'invited')
+    const cleared = await call(router, 'DELETE', `/workspaces/${team.id}/referrals/redeem`, asAdmin()) as Referrals
+    assert.equal(cleared.referee.state, 'none')
+  } finally {
+    explorerDown = false
+  }
 })
 
 test('builders: org admins see the effective agent, set their own (restarting the buyer) and cannot set an unregistered one', async () => {

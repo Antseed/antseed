@@ -81,6 +81,14 @@ describe('builders program', () => {
     expect(view.agents.map((agent) => agent.agentId)).toEqual([5, 12, 13, 9]);
   });
 
+  it('refuses more ids than one request reads instead of dropping the rest', async () => {
+    const { ctx, indexer } = fixture();
+    const ids = Array.from({ length: 21 }, (_, i) => i + 100);
+    await expect(builders(ctx, ids)).rejects.toThrow('at most 20');
+    expect(indexer.builders).not.toHaveBeenCalled();
+    expect((await builders(ctx, ids.slice(0, 20))).agents.map((agent) => agent.agentId)).toEqual(expect.arrayContaining(ids.slice(0, 20)));
+  });
+
   it('fails the read on an RPC error rather than treating the agent as unregistered', async () => {
     const { ctx, identity } = fixture();
     identity.getAgentWallet.mockRejectedValueOnce(new Error('rate limited'));
@@ -101,6 +109,27 @@ describe('builders program', () => {
     const { ctx, clientRewards } = fixture({ explorer: false });
     expect(await claimBuilderRewards(ctx, 9)).toMatchObject({ epochs: [8], hashes: ['0xhash8'] });
     expect(clientRewards.pendingRewards).toHaveBeenCalledWith(9);
+  });
+
+  it('falls back to the on-chain epoch scan for a claim when the explorer request fails', async () => {
+    const { ctx, clientRewards, indexer } = fixture();
+    indexer.builders.mockRejectedValueOnce(new Error('fetch failed'));
+    expect(await claimBuilderRewards(ctx, 9)).toMatchObject({ epochs: [8], hashes: ['0xhash8'] });
+    expect(clientRewards.pendingRewards).toHaveBeenCalledWith(9);
+  });
+
+  it('falls back to the on-chain epoch scan for a claim when the explorer does not index builders', async () => {
+    const { ctx, clientRewards, indexer } = fixture();
+    indexer.builders.mockResolvedValueOnce({ available: false, agents: [] });
+    expect(await claimBuilderRewards(ctx, 9)).toMatchObject({ epochs: [8], hashes: ['0xhash8'] });
+    expect(clientRewards.pendingRewards).toHaveBeenCalledWith(9);
+  });
+
+  it('trusts an available explorer answer with no payable epochs over the on-chain scan', async () => {
+    const { ctx, clientRewards } = fixture();
+    await expect(claimBuilderRewards(ctx, 9)).rejects.toThrow('No builder rewards');
+    expect(clientRewards.pendingRewards).not.toHaveBeenCalled();
+    expect(clientRewards.claim).not.toHaveBeenCalled();
   });
 
   it('refuses unregistered agents, invalid ids and empty claims without sending', async () => {

@@ -1,10 +1,12 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, expect, it, vi } from 'vitest';
-import { shallowRender, type AnyElement } from '../../test/shallowRender';
+import { shallowRender, textOf, type AnyElement } from '../../test/shallowRender';
 import { receiveInviteLink } from '../InviteCodeField';
 import { VprInvitesCard, VprRefereeBonusCard, VprReferralCard, VprRewardsView, pendingHeadline } from './VprRewardsView';
 
-vi.mock('../../hooks/useActions', () => ({ useActions: () => ({ refreshPaymentSummary: vi.fn() }) }));
+// One stable actions object, like the real hook, so effects keyed on it don't re-run every render.
+const actions = vi.hoisted(() => ({ refreshPaymentSummary: vi.fn() }));
+vi.mock('../../hooks/useActions', () => ({ useActions: () => actions }));
 vi.mock('../../hooks/useUiSelector', () => ({ shallowEqual: () => true, useUiSelector: () => ({ rewards: { available: true, pendingAnts: '12', currentEpoch: 24, transfersEnabled: false }, loading: false }) }));
 vi.mock('../StakingButton', () => ({ StakingButton: ({ children, page = 'stake', disabled }: { children: React.ReactNode; page?: string; disabled?: boolean }) => <button data-dashboard-page={page} disabled={disabled}>{children}</button> }));
 vi.mock('../vpr/VprKit', () => ({ VprPage: ({ children }: { children: React.ReactNode }) => <main>{children}</main>, VprCard: ({ children }: { children: React.ReactNode }) => <div>{children}</div>, VprBadge: ({ children }: { children: React.ReactNode }) => <span>{children}</span>, VprSettingRow: ({ title, hint, control }: { title: string; hint?: string; control: React.ReactNode }) => <div data-row={title}>{hint}{control}</div> }));
@@ -13,6 +15,49 @@ it('opens buyer claims and staking through the shared dashboard at their respect
   const html = renderToStaticMarkup(<VprRewardsView />);
   expect(html).toContain('data-dashboard-page="rewards">Claim rewards');
   expect(html).toContain('data-dashboard-page="stake">Manage staking');
+});
+
+it('refreshes the invite bonus with usage rewards when the window regains focus after a claim', async () => {
+  const unclaimed = { available: true, weeksLeft: 9, payable: '4.5', claimableEpochs: [28] };
+  const claimed = { available: true, weeksLeft: 9, payable: '0', claimableEpochs: [] };
+  let bonus = unclaimed;
+  const referralGetReferee = vi.fn(async () => bonus);
+  const referralGetInvites = vi.fn(async () => null);
+  const win = Object.assign(new EventTarget(), {
+    antseedDesktop: { referralGetReferee, referralGetInvites },
+    setInterval: globalThis.setInterval.bind(globalThis),
+    clearInterval: globalThis.clearInterval.bind(globalThis),
+  });
+  vi.stubGlobal('window', win);
+  actions.refreshPaymentSummary.mockClear();
+
+  const view = shallowRender(<VprRewardsView />);
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+  // The value right after the "Pending $ANTS" label in the hero.
+  const pendingTotal = () => {
+    const hero = view.findAll((el) => Array.isArray(el.props.children) && textOf(el.props.children[0]) === 'Pending $ANTS')[0]!;
+    return textOf((hero.props.children as unknown[])[1]);
+  };
+  const bonusCard = () => renderToStaticMarkup(view.findAll((el) => el.type === VprRefereeBonusCard)[0]!);
+  await settle();
+  // Usage pending 12 plus the 4.5 bonus, claimable.
+  expect(pendingTotal()).toBe('16.50');
+  expect(bonusCard()).toMatch(/<button data-dashboard-page="rewards">Claim/);
+
+  // Claimed in the browser dashboard, then back to the app.
+  bonus = claimed;
+  win.dispatchEvent(new Event('focus'));
+  await settle();
+  expect(actions.refreshPaymentSummary).toHaveBeenLastCalledWith(true);
+  expect(referralGetReferee).toHaveBeenCalledTimes(2);
+  expect(referralGetInvites).toHaveBeenCalledTimes(2);
+  expect(pendingTotal()).toBe('12.00');
+  expect(bonusCard()).toMatch(/<button data-dashboard-page="rewards" disabled="">Claim/);
+
+  // Unmounted: no more focus refreshes.
+  view.unmount();
+  win.dispatchEvent(new Event('focus'));
+  expect(referralGetReferee).toHaveBeenCalledTimes(2);
 });
 
 const BUYER = '0x2222222222222222222222222222222222222222';

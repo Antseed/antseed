@@ -39,30 +39,38 @@ export function VprRewardsView({ onSelectView }: Props) {
 
   // Force-refresh on entry and whenever the window regains focus — after
   // claiming in the browser pay popup the user lands straight back here, and
-  // the 55s summary throttle would otherwise show the pre-claim numbers.
-  useEffect(() => {
-    actions.refreshPaymentSummary(true);
-    const timer = window.setInterval(() => actions.refreshPaymentSummary(), PAYMENT_SUMMARY_POLL_MS);
-    const onFocus = () => actions.refreshPaymentSummary(true);
-    window.addEventListener('focus', onFocus);
-    return () => {
-      window.clearInterval(timer);
-      window.removeEventListener('focus', onFocus);
-    };
-  }, [actions]);
-
+  // the 55s summary throttle would otherwise show the pre-claim numbers. The
+  // invite bonus and invites (claimed on the same page) follow the same cycle.
   const [invites, setInvites] = useState<ReferralInvites | null>(null);
   const [bonus, setBonus] = useState<RefereeBonus | null>(null);
   useEffect(() => {
     let cancelled = false;
-    void window.antseedDesktop?.referralGetInvites?.()
-      .then((next) => { if (!cancelled) setInvites(next); })
-      .catch(() => {});
-    void window.antseedDesktop?.referralGetReferee?.()
-      .then((next) => { if (!cancelled) setBonus(next); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, []);
+    let latest = 0;
+    // Only the newest read lands, so a slow pre-claim response can't win.
+    const loadReferralRewards = () => {
+      const request = ++latest;
+      const current = () => !cancelled && request === latest;
+      void window.antseedDesktop?.referralGetInvites?.()
+        .then((next) => { if (current()) setInvites(next); })
+        .catch(() => {});
+      void window.antseedDesktop?.referralGetReferee?.()
+        .then((next) => { if (current()) setBonus(next); })
+        .catch(() => {});
+    };
+    const refresh = (force: boolean) => {
+      actions.refreshPaymentSummary(force);
+      loadReferralRewards();
+    };
+    refresh(true);
+    const timer = window.setInterval(() => refresh(false), PAYMENT_SUMMARY_POLL_MS);
+    const onFocus = () => refresh(true);
+    window.addEventListener('focus', onFocus);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [actions]);
 
   // Re-read after redeeming: the field gives way to the pending inviter.
   const [referral, setReferral] = useState<ReferralStatus | null>(null);

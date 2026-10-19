@@ -35,6 +35,8 @@ function context(dataDir: string, wallet: HDNodeWallet, client: Record<string, u
 test('invite signs a free index with this wallet and remembers it', async () => {
   await withDataDir(async (dir) => {
     const wallet = Wallet.createRandom();
+    // Index 0 is used on-chain. The index is picked at random, so whether 0 is
+    // probed (and counted) first varies; the picks and the final refusal do not.
     const used = new Set([0]);
     const client = {
       currentEpoch: async () => 30,
@@ -44,13 +46,14 @@ test('invite signs a free index with this wallet and remembers it', async () => 
     const first = await createReferralInvite(context(dir, wallet, client) as never);
     assert.equal(first.epoch, 30);
     assert.ok([1, 2].includes(first.index));
-    assert.equal(first.left, 1);
+    assert.ok(first.left <= 2);
     assert.equal(first.link, `https://antseed.com/invite/${first.invite}`);
     assert.equal(recoverInviter(decodeInvite(first.invite), DOMAIN), wallet.address);
 
     const second = await createReferralInvite(context(dir, wallet, client) as never);
     assert.equal(second.index, 3 - first.index);
-    assert.equal(second.left, 0);
+    assert.ok(second.left <= 1);
+    assert.deepEqual((await readReferralState(dir, DOMAIN))?.issued, { epoch: 30, indices: [1, 2] });
     await assert.rejects(createReferralInvite(context(dir, wallet, client) as never), /All 3 invites for this week are taken/);
   });
 });

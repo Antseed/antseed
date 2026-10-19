@@ -170,11 +170,26 @@ contract AntseedStatsV2 is IAntseedStats, Ownable {
         uint256 outputDelta = cumulativeOutputTokens - snapshot.outputTokens;
         uint256 requestDelta = cumulativeRequestCount - snapshot.requestCount;
 
+        // Counters are buyer-signed and unbounded, so another channel of the
+        // same buyer and agent can push an aggregate to the brink. An
+        // overflowing add would revert and roll back the attribution forwards
+        // above, leaving the ledger's cursor on the previous settlement's
+        // client while Channels still accrues this one. Skip token stats
+        // instead, before touching the snapshot, so it stays in step with the
+        // aggregates it has been counted into.
+        BuyerMetadataStats storage stats = _buyerMetadataStats[agentId][buyer];
+        if (
+            inputDelta > type(uint256).max - stats.totalInputTokens
+                || outputDelta > type(uint256).max - stats.totalOutputTokens
+                || requestDelta > type(uint256).max - stats.totalRequestCount
+        ) {
+            return; // aggregate would overflow — skip silently
+        }
+
         snapshot.inputTokens = cumulativeInputTokens;
         snapshot.outputTokens = cumulativeOutputTokens;
         snapshot.requestCount = cumulativeRequestCount;
 
-        BuyerMetadataStats storage stats = _buyerMetadataStats[agentId][buyer];
         stats.totalInputTokens += inputDelta;
         stats.totalOutputTokens += outputDelta;
         stats.totalRequestCount += requestDelta;

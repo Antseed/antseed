@@ -1,6 +1,7 @@
 import { Button, Card } from '../components/ui';
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { ClaimRequest, CreatedInviteView, PoolView, ReferralView, ReferredBuyerView, RestakeRequest, RewardBucket, RewardsView, StakeUsageRequest } from '../../../src/api-types';
+import { readBuildersInBatches } from '../../../src/builders-view';
 import { request, api } from '../api';
 import { BuyerWalletAction } from '../wallet';
 import { useConfig, useEpochInfo } from '../app-context';
@@ -209,14 +210,15 @@ function writeHandledJobs(chainId: string, jobIds: string[]): void {
  * Builders program: emission rewards for apps built on Antseed, per client
  * ERC-8004 agent. No cheap on-chain lookup lists the agents a wallet owns, so
  * the user adds ids here (remembered per chain); the server adds the chain's
- * first-party client ids this wallet owns.
+ * first-party client ids this wallet owns. Ids are read in bounded batches, so
+ * every tracked agent stays listed with its Remove control.
  */
 export function BuildersCard() {
   const dashboard = useConfig();
   const jobs = useJobList();
   const [ids, setIds] = useState(() => readBuilderIds(dashboard.chainId));
   const [draft, setDraft] = useState('');
-  const page = usePageData(`builders:${dashboard.chainId}:${[...ids].sort((a, b) => a - b).join(',')}`, () => api.builders(ids), 60_000);
+  const page = usePageData(`builders:${dashboard.chainId}:${[...ids].sort((a, b) => a - b).join(',')}`, () => readBuildersInBatches(ids, api.builders), 60_000);
   // Keep the last list on screen while a changed id set loads.
   const lastView = useRef(page.data);
   if (page.data) lastView.current = page.data;

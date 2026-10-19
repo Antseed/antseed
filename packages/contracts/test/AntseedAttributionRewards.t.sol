@@ -365,4 +365,51 @@ contract AntseedReferralProgramIntegrationTest is Test {
         assertEq(ledger.clientEpochPoints(20, desktop), 10e6);
         assertEq(ledger.referrerEpochPoints(20, referrer), 10e6);
     }
+
+    /// An overflowing token aggregate must not roll back the attribution
+    /// forwards: Channels swallows a Stats revert and still accrues the
+    /// settlement, so a reverted forward would leave the cursor on the
+    /// previous client and lose the invite.
+    function test_overflowingTokenAggregateKeepsTheClientCursorAndBinding() public {
+        vm.startPrank(address(0xD1));
+        uint256 desktop = identity.register();
+        uint256 cli = identity.register();
+        vm.stopPrank();
+        uint256[] memory services = new uint256[](0);
+
+        // Channel A drives the buyer/agent input aggregate to the maximum.
+        bytes memory maxed = abi.encode(
+            uint256(3), type(uint256).max, uint256(1), uint256(1), uint256(0), services,
+            bytes32(desktop), none.epoch, none.index, none.r, none.vs
+        );
+        _settleWith(buyer, maxed, 10e6);
+
+        // Channel B is monotonic on its own but overflows the aggregate.
+        Invite memory inv = _invite(REFERRER_KEY, 20, 0);
+        bytes memory overflowing = abi.encode(
+            uint256(3), uint256(1), uint256(1), uint256(1), uint256(0), services,
+            bytes32(cli), inv.epoch, inv.index, inv.r, inv.vs
+        );
+        vm.expectEmit(true, false, false, true, address(stats));
+        emit AntseedStatsV2.InviteForwarded(buyer, 20, 0, true, bytes4(0));
+        vm.prank(channels);
+        // As Channels._syncExternalMetadata does: a revert would be swallowed.
+        try stats.recordMetadata(1, buyer, bytes32(uint256(0xB)), overflowing) {} catch {}
+        accounting.settle(buyer, 4e6);
+
+        assertEq(referrals.referrerOf(buyer), referrer);
+        assertTrue(referrals.inviteUsed(referrer, 20, 0));
+        (uint256 pending, uint256 pendingClient,) = ledger.pendingCredit(buyer);
+        assertEq(pending, 4e6);
+        assertEq(pendingClient, cli);
+
+        _flush(buyer);
+        assertEq(ledger.clientEpochPoints(20, desktop), 10e6);
+        assertEq(ledger.clientEpochPoints(20, cli), 4e6);
+        assertEq(ledger.referrerEpochPoints(20, referrer), 4e6); // bound after the first settlement's credit
+
+        // Token stats skipped the overflowing settlement entirely.
+        assertEq(stats.getBuyerMetadataStats(1, buyer).totalInputTokens, type(uint256).max);
+        assertEq(stats.getBuyerMetadataStats(1, buyer).totalRequestCount, 1);
+    }
 }

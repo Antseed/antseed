@@ -207,6 +207,55 @@ contract AntseedStatsV2Test is Test {
         assertEq(buyerStats.totalInputTokens, 100);
     }
 
+    function test_recordMetadata_overflowingAggregateSkipsStatsButKeepsForwards() public {
+        vm.prank(writer);
+        stats.recordMetadata(agentId, buyer, bytes32("chan-A"), _v3(type(uint256).max, 5, 1, true));
+
+        // Channel B is monotonic on its own but would overflow the buyer's
+        // input aggregate: the forwards land and the call does not revert.
+        clientId = bytes32(uint256(43));
+        inviteIndex = 8;
+        vm.recordLogs();
+        vm.prank(writer);
+        stats.recordMetadata(agentId, buyer, bytes32("chan-B"), _v3(1, 5, 1, true));
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        for (uint256 i = 0; i < logs.length; i++) {
+            assertTrue(logs[i].topics[0] != AntseedStatsV2.MetadataRecorded.selector);
+        }
+        assertEq(clientUsage.calls(), 2);
+        assertEq(clientUsage.lastClient(), 43);
+        assertEq(binder.calls(), 2);
+        assertEq(binder.lastIndex(), 8);
+
+        IAntseedStats.BuyerMetadataStats memory buyerStats = stats.getBuyerMetadataStats(agentId, buyer);
+        assertEq(buyerStats.totalInputTokens, type(uint256).max);
+        assertEq(buyerStats.totalOutputTokens, 5);
+        assertEq(buyerStats.totalRequestCount, 1);
+
+        // Channel B's snapshot did not advance: under an aggregate with room,
+        // its full cumulative counters are still counted.
+        vm.prank(writer);
+        stats.recordMetadata(agentId + 1, buyer, bytes32("chan-B"), _v3(1, 5, 1, false));
+        buyerStats = stats.getBuyerMetadataStats(agentId + 1, buyer);
+        assertEq(buyerStats.totalInputTokens, 1);
+        assertEq(buyerStats.totalOutputTokens, 5);
+        assertEq(buyerStats.totalRequestCount, 1);
+    }
+
+    function test_recordMetadata_overflowingOutputOrRequestAggregateIsSkipped() public {
+        vm.startPrank(writer);
+        stats.recordMetadata(agentId, buyer, bytes32("chan-A"), _v3(1, type(uint256).max, 0, false));
+        stats.recordMetadata(agentId, buyer, bytes32("chan-B"), _v3(1, 1, 1, false)); // output overflows
+        stats.recordMetadata(agentId, buyer, bytes32("chan-C"), _v3(1, 0, type(uint256).max, false));
+        stats.recordMetadata(agentId, buyer, bytes32("chan-D"), _v3(1, 0, 1, false)); // request overflows
+        vm.stopPrank();
+        IAntseedStats.BuyerMetadataStats memory buyerStats = stats.getBuyerMetadataStats(agentId, buyer);
+        assertEq(buyerStats.totalInputTokens, 2); // chan-A and chan-C only
+        assertEq(buyerStats.totalOutputTokens, type(uint256).max);
+        assertEq(buyerStats.totalRequestCount, type(uint256).max);
+        assertEq(clientUsage.calls(), 4);
+    }
+
     function test_recordMetadata_tailWithoutInviteForwardsOnlyTheClient() public {
         inviteR = bytes32(0);
         inviteVs = bytes32(0);

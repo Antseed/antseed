@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import fs, { mkdtempSync, rmSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { encodeInvite, readReferralState, saveReferralInvite } from '@antseed/node';
+import { clearReferralInvite, encodeInvite, readReferralState, saveReferralInvite } from '@antseed/node';
 import { BuyerAttributionSync, resolveBuyerAttribution } from './referral-state.js';
 
 const REFERRER = '0x1111111111111111111111111111111111111111';
@@ -115,6 +116,42 @@ test('attribution sync keeps a carried invite when only the explorer reports a b
     assert.ok(applied.length >= 2 && applied.every(Boolean));
     assert.equal((await readReferralState(root, SCOPE))?.state, 'invited');
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a replacement saved while a poll reads the state is applied by the next poll', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'antseed-attribution-'));
+  const realStat = fs.promises.stat;
+  try {
+    await saveReferralInvite(root, SCOPE, encodeInvite(INVITE), REFERRER);
+    await clearReferralInvite(root, SCOPE);
+    const applied: boolean[] = [];
+    const sync = new BuyerAttributionSync({ scope: SCOPE, lookup: null, verify: null, apply: (attribution) => applied.push(!!attribution.invite) });
+    await sync.track(undefined, root, '0x2222222222222222222222222222222222222222');
+    await sync.refreshAll(); // lets the background check started by track settle
+    assert.deepEqual(applied, [false]);
+
+    // Another process saves a new invite right as the poll stats the state file.
+    let armed = true;
+    fs.promises.stat = (async (...args: Parameters<typeof realStat>) => {
+      if (armed && String(args[0]).endsWith('referral.json')) {
+        armed = false;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        await saveReferralInvite(root, SCOPE, encodeInvite({ ...INVITE, index: 8n }), REFERRER);
+      }
+      return realStat(...args);
+    }) as typeof realStat;
+    syncBuiltinESMExports();
+    await sync.refreshAll(true);
+    fs.promises.stat = realStat;
+    syncBuiltinESMExports();
+
+    await sync.refreshAll();
+    assert.equal(applied.at(-1), true);
+  } finally {
+    fs.promises.stat = realStat;
+    syncBuiltinESMExports();
     rmSync(root, { recursive: true, force: true });
   }
 });
