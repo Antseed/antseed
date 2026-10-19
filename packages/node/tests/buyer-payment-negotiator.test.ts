@@ -9,6 +9,8 @@ import { CHANNEL_ROLE, CHANNEL_STATUS, type ChannelStore, type StoredChannel } f
 import type { Identity } from '../src/p2p/identity.js';
 import type { PeerConnection } from '../src/p2p/connection-manager.js';
 import type { PaymentRequiredPayload } from '../src/types/protocol.js';
+import { AntseedNode } from '../src/node.js';
+import { METADATA_VERSION } from '../src/discovery/peer-metadata.js';
 
 const enc = new TextEncoder();
 
@@ -342,6 +344,21 @@ describe('BuyerPaymentNegotiator', () => {
       expect(bpm.retireSession).not.toHaveBeenCalled();
       expect(bpm.authorizeSpending).not.toHaveBeenCalled();
       expect(result.action).toBe('retry');
+    });
+
+    it('passes no pricing map when the seller announces no providers', async () => {
+      const unpriced = (new AntseedNode({ role: 'buyer' }) as unknown as { _lookupResultToPeerInfo(result: unknown): PeerInfo })
+        ._lookupResultToPeerInfo({
+          host: '127.0.0.1',
+          port: 6882,
+          metadata: { peerId: SELLER_PEER_ID, version: METADATA_VERSION, providers: [], region: 'test', timestamp: Date.now(), signature: 'b'.repeat(130) },
+        });
+
+      await simulateSuccessfulNegotiation(negotiator, bpm, unpriced, conn);
+
+      expect(bpm.authorizeSpending).toHaveBeenCalledOnce();
+      const [, , , , , pricingMap] = (bpm.authorizeSpending as ReturnType<typeof vi.fn>).mock.calls[0]!;
+      expect(pricingMap).toBeUndefined();
     });
 
     it('forwards requiredCumulativeAmount from the 402 body as the catch-up target', async () => {

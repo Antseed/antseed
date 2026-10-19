@@ -12,6 +12,7 @@ import { ResourceRoutes } from './resource-routes.js'
 import {
   ANTSEED_BUYER_FAULT_ERROR_CODE,
   ANTSEED_FAULT_ATTRIBUTION_HEADER,
+  AntseedNode,
   CONNECTION_CAPABILITY_COOPERATIVE_CLOSE_V1,
   CONNECTION_CAPABILITY_RELAYS_SWEEPS_V1,
   adaptPeerFaultErrorResponse,
@@ -22,6 +23,7 @@ import {
   type RouteRecommendation,
   type SerializedHttpRequest,
   type PeerInfo,
+  type ProviderAnnouncement,
   type SerializedHttpResponse,
 } from '@antseed/node'
 
@@ -2160,21 +2162,110 @@ test('sweep control endpoint validates and dispatches sequentially via the runni
   assert.deepEqual(JSON.parse(missing.body), { ok: true, receipt: null })
 })
 
-test('peer refresh drops services a seller stopped advertising', () => {
-  const advertised = makePeer('a', ['venice-video'])
-  advertised.providerPricing = { 'venice-video': { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 }, services: { 'video-model': { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } } }
-  advertised.providerServiceApiProtocols = { 'venice-video': { services: { 'video-model': ['venice-video'] } } }
-  advertised.lastReachedAt = Date.now() - 1000
-  const proxy = makeBuyerProxyWithPeers([])
-  ;(proxy as any)._replacePeers([advertised])
-  const unadvertised = makePeer('a', [])
-  ;(proxy as any)._replacePeers([unadvertised])
-  const cached = (proxy as any)._cachedPeers as PeerInfo[]
-  assert.equal(cached.length, 1)
-  assert.deepEqual(cached[0]!.providers, [])
-  assert.equal(cached[0]!.providerPricing, undefined)
-  assert.equal(cached[0]!.providerServiceApiProtocols, undefined)
-  assert.equal(cached[0]!.lastReachedAt, advertised.lastReachedAt)
+const CATALOG_FIELDS = [
+  'providerPricing',
+  'providerServiceCategories',
+  'providerServiceApiProtocols',
+  'providerServiceUnitBillingModels',
+  'providerServiceCapabilities',
+] as const
+
+const videoAnnouncement: ProviderAnnouncement = {
+  provider: 'venice-video',
+  services: ['video-model'],
+  defaultPricing: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
+  servicePricing: { 'video-model': { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } },
+  serviceCategories: { 'video-model': ['video'] },
+  serviceApiProtocols: { 'video-model': ['venice-video'] },
+  serviceUnitBillingModels: { 'video-model': { 'venice-video': { version: 1, components: [{ unit: 'video_generations', priceUsd: 0.5 }] } } },
+  serviceCapabilities: { 'video-model': { outputs: ['video'] } },
+  maxConcurrency: 1,
+  currentLoad: 0,
+}
+
+/** Peers come from a real AntseedNode's converter over whatever `announce` last set, so the proxy sees the shape discovery produces, not a hand-built PeerInfo. */
+function makeBuyerProxyDiscovering(dataDir?: string): { proxy: BuyerProxy; announce: (providers: ProviderAnnouncement[]) => void } {
+  const converter = new AntseedNode({ role: 'buyer' }) as unknown as { _lookupResultToPeerInfo(result: unknown): PeerInfo }
+  let providers: ProviderAnnouncement[] = []
+  const proxy = new BuyerProxy({ adaptiveRouting: { spreadTolerance: 0, explorationRate: 0 },
+    port: 0,
+    dataDir: dataDir ?? '/tmp/antseed-test',
+    node: {
+      router: null,
+      discoverPeers: async () => [converter._lookupResultToPeerInfo({
+        host: '127.0.0.1',
+        port: 6882,
+        metadata: { peerId: 'a'.repeat(40), version: 12, providers, region: 'test', timestamp: Date.now(), signature: 'b'.repeat(130) },
+      })],
+    } as any,
+  })
+  if (!dataDir) (proxy as any)._mergeStateFile = async () => {}
+  return { proxy, announce: (next) => { providers = next } }
+}
+
+async function refreshAndReadCatalog(proxy: BuyerProxy): Promise<{ models: string[]; peer: Record<string, unknown> }> {
+  const refresh = await invokeProxy(proxy, makeProxyRequest({ path: '/_antseed/peers/refresh' }))
+  assert.equal(refresh.statusCode, 200, refresh.body)
+  const models = JSON.parse((await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path: '/v1/models' }))).body) as { data: Array<{ id: string }> }
+  const peers = JSON.parse((await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path: '/_antseed/peers' }))).body) as { peers: Array<Record<string, unknown>> }
+  assert.equal(peers.peers.length, 1)
+  return { models: models.data.map((model) => model.id), peer: peers.peers[0]! }
+}
+
+function catalogEntryCounts(peer: Record<string, unknown>): Record<string, number> {
+  return Object.fromEntries(CATALOG_FIELDS.map((field) => [field, Object.keys((peer[field] as object | undefined) ?? {}).length]))
+}
+
+test('peer refresh drops services a seller stopped advertising', async () => {
+  const { proxy, announce } = makeBuyerProxyDiscovering()
+  announce([videoAnnouncement])
+  const advertised = await refreshAndReadCatalog(proxy)
+  assert.deepEqual(advertised.models, ['video-model'])
+  assert.deepEqual(catalogEntryCounts(advertised.peer), Object.fromEntries(CATALOG_FIELDS.map((field) => [field, 1])))
+  const reachedAt = Date.now() - 1000
+  ;(proxy as any)._cachedPeers[0].lastReachedAt = reachedAt
+
+  announce([])
+  const withdrawn = await refreshAndReadCatalog(proxy)
+  assert.deepEqual(withdrawn.models, [])
+  assert.deepEqual(withdrawn.peer['providers'], [])
+  assert.deepEqual(catalogEntryCounts(withdrawn.peer), Object.fromEntries(CATALOG_FIELDS.map((field) => [field, 0])))
+  assert.equal((proxy as any)._cachedPeers[0].lastReachedAt, reachedAt)
+})
+
+test('a seller catalog withdrawn before a restart stays withdrawn after it', async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-withdrawn-catalog-'))
+  context.after(() => rm(directory, { recursive: true, force: true }))
+  const { proxy, announce } = makeBuyerProxyDiscovering(directory)
+  const restore = async () => parsePersistedPeers(JSON.parse(await readFile(join(directory, 'buyer.state.json'), 'utf8')), Date.now())
+  announce([videoAnnouncement])
+  await refreshAndReadCatalog(proxy)
+  const [advertised] = await restore()
+  assert.deepEqual(catalogEntryCounts(advertised as unknown as Record<string, unknown>), Object.fromEntries(CATALOG_FIELDS.map((field) => [field, 1])))
+
+  announce([])
+  await refreshAndReadCatalog(proxy)
+  const [withdrawn] = await restore()
+  assert.deepEqual(withdrawn!.providers, [])
+  assert.deepEqual(catalogEntryCounts(withdrawn as unknown as Record<string, unknown>), Object.fromEntries(CATALOG_FIELDS.map((field) => [field, 0])))
+})
+
+test('peer refresh drops catalog details a seller stopped announcing for a service it still offers', async () => {
+  const { proxy, announce } = makeBuyerProxyDiscovering()
+  announce([videoAnnouncement])
+  await refreshAndReadCatalog(proxy)
+
+  const { serviceCategories, serviceApiProtocols, serviceUnitBillingModels, serviceCapabilities, ...pricingOnly } = videoAnnouncement
+  announce([pricingOnly])
+  const refreshed = await refreshAndReadCatalog(proxy)
+  assert.deepEqual(refreshed.models, ['video-model'])
+  assert.deepEqual(catalogEntryCounts(refreshed.peer), {
+    providerPricing: 1,
+    providerServiceCategories: 0,
+    providerServiceApiProtocols: 0,
+    providerServiceUnitBillingModels: 0,
+    providerServiceCapabilities: 0,
+  })
 })
 
 test('peer refresh control endpoint triggers immediate refresh', async () => {
