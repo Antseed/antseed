@@ -48,13 +48,20 @@ export async function referral(ctx: AntsContext, dataDir: string | null = null):
       invites: allowanceView(invites, await issuedIndices(dataDir, scope, invites.epoch)),
     };
   }
+  // Antscan may still serve last week after the contract rolled over: its
+  // allowance only counts for the contract's current epoch, else the
+  // contract's own allowance is read (Antscan's is kept if that read fails).
+  const epoch = await client.currentEpoch().catch(() => null);
+  const invites = indexed.invites && (epoch === null || indexed.invites.epoch === epoch)
+    ? indexed.invites
+    : epoch === null ? null : await onChainInvites(client, ctx.address, epoch).catch(() => indexed.invites);
   return {
     available: true,
     indexed: true,
     payable: indexed.payable,
     claimableEpochs: indexed.claimableEpochs,
     referredCount: indexed.referredCount,
-    invites: indexed.invites ? allowanceView(indexed.invites, await issuedIndices(dataDir, scope, indexed.invites.epoch)) : null,
+    invites: invites ? allowanceView(invites, await issuedIndices(dataDir, scope, invites.epoch)) : null,
   };
 }
 
@@ -62,8 +69,9 @@ export async function referral(ctx: AntsContext, dataDir: string | null = null):
 async function onChainInvites(
   client: Pick<ReferralsClient, 'currentEpoch' | 'inviteQuota' | 'inviteUsed'>,
   referrer: string,
+  knownEpoch?: number,
 ): Promise<IndexedInvites> {
-  const epoch = await client.currentEpoch();
+  const epoch = knownEpoch ?? await client.currentEpoch();
   const quota = await client.inviteQuota(referrer, epoch);
   const indexes = Array.from({ length: quota }, (_, index) => index);
   const used = await Promise.all(indexes.map((index) => client.inviteUsed(referrer, epoch, index)));

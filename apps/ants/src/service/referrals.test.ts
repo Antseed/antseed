@@ -39,7 +39,7 @@ const binding = {
   refereePayable: '900', refereeClaimableEpochs: [20, 21], currentEpoch: 23,
 };
 
-function fixture(options: { referrals?: boolean; explorer?: boolean; indexed?: Partial<IndexedReferrer>; binding?: Partial<typeof binding> } = {}) {
+function fixture(options: { referrals?: boolean; explorer?: boolean; indexed?: Partial<IndexedReferrer>; binding?: Partial<typeof binding>; chainEpoch?: number } = {}) {
   const indexer = {
     referrer: vi.fn(async () => ({ ...indexedReferrer, ...options.indexed })),
     referralBinding: vi.fn(async () => ({ ...binding, ...options.binding })),
@@ -50,7 +50,7 @@ function fixture(options: { referrals?: boolean; explorer?: boolean; indexed?: P
     pendingReward: vi.fn(async (_referrer: string, _epoch: number) => 1n),
     claimEpochs: vi.fn(async () => '0xhash'),
     claimRefereeEpochs: vi.fn(async () => '0xreferee'),
-    currentEpoch: vi.fn(async () => 40),
+    currentEpoch: vi.fn(async () => options.chainEpoch ?? 40),
     // Without Antscan: 4 invites in epoch 40, index 1 already bound; 3 buyers referred.
     inviteQuota: vi.fn(async (_referrer: string, epoch: number) => (epoch === 40 ? 4 : 0)),
     inviteUsed: vi.fn(async (_referrer: string, _epoch: number, index: number) => index === 1),
@@ -86,7 +86,7 @@ afterEach(async () => {
 
 describe('referral card', () => {
   it('reads counts, invites and payable epochs from Antscan, never the RPC epoch scan', async () => {
-    const { ctx, client } = fixture();
+    const { ctx, client } = fixture({ chainEpoch: 30 });
     expect(await referral(ctx)).toEqual({
       available: true,
       indexed: true,
@@ -104,7 +104,7 @@ describe('referral card', () => {
     dirs.push(dir);
     await recordIssuedInvite(dir, scope, 30, 0);
     await recordIssuedInvite(dir, scope, 30, 1);
-    expect((await referral(fixture().ctx, dir)).invites).toEqual({ epoch: 30, quota: 5, used: 2, left: 3 });
+    expect((await referral(fixture({ chainEpoch: 30 }).ctx, dir)).invites).toEqual({ epoch: 30, quota: 5, used: 2, left: 3 });
   });
 
   it('counts |bound ∪ handed out| against the quota', async () => {
@@ -112,9 +112,25 @@ describe('referral card', () => {
     dirs.push(dir);
     await recordIssuedInvite(dir, scope, 30, 2);
     const indexed = { invites: { epoch: 30, quota: 7, used: 1, usedIndices: [4] } };
-    expect((await referral(fixture({ indexed }).ctx, dir)).invites).toEqual({ epoch: 30, quota: 7, used: 2, left: 5 });
+    expect((await referral(fixture({ indexed, chainEpoch: 30 }).ctx, dir)).invites).toEqual({ epoch: 30, quota: 7, used: 2, left: 5 });
     await recordIssuedInvite(dir, scope, 30, 4); // the bound one, handed out here too
-    expect((await referral(fixture({ indexed }).ctx, dir)).invites).toEqual({ epoch: 30, quota: 7, used: 2, left: 5 });
+    expect((await referral(fixture({ indexed, chainEpoch: 30 }).ctx, dir)).invites).toEqual({ epoch: 30, quota: 7, used: 2, left: 5 });
+  });
+
+  it('reads this week\'s allowance on-chain while Antscan still serves an exhausted last week', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ants-referral-'));
+    dirs.push(dir);
+    await recordIssuedInvite(dir, scope, 40, 0);
+    const indexed = { invites: { epoch: 39, quota: 3, used: 3, usedIndices: [0, 1, 2] } };
+    const { ctx } = fixture({ indexed });
+    // The contract: 4 invites in epoch 40, index 1 bound, index 0 handed out here.
+    expect((await referral(ctx, dir)).invites).toEqual({ epoch: 40, quota: 4, used: 2, left: 2 });
+  });
+
+  it('keeps Antscan\'s allowance when the contract clock cannot be read', async () => {
+    const { ctx, client } = fixture();
+    client.currentEpoch.mockRejectedValue(new Error('rpc down'));
+    expect((await referral(ctx)).invites).toEqual({ epoch: 30, quota: 5, used: 1, left: 4 });
   });
 
   it('is hidden only without a referrals contract', async () => {
