@@ -1,14 +1,17 @@
 import { useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Button, DataTable, Modal, TextField } from '@antseed/ui'
 import { api } from '../api'
 import type { Peer, PeerList } from '../api/types'
+import { submitOnly } from '../lib/forms'
 import { useConsoleMutation } from '../lib/mutations'
 import { isOrgAdmin } from '../lib/nav'
 import { qk, usePeerLists } from '../lib/queries'
 import { useConsole } from '../app/context'
 import { Icon } from './icons'
 import { PeerPicker, peerName } from './PeerPicker'
-import { ConfirmDialog, EmptyState, ErrorAlert, Panel, QueryView } from './ui'
+import { ConfirmDialog, EmptyState, ErrorAlert, Mono, Panel, QueryView } from './ui'
+import { shortId } from '../lib/format'
 
 function PeerListForm({ initial, peers, onDone }: { initial: PeerList | null; peers?: readonly Peer[]; onDone: () => void }) {
   const [name, setName] = useState(initial?.name ?? '')
@@ -23,7 +26,7 @@ function PeerListForm({ initial, peers, onDone }: { initial: PeerList | null; pe
     invalidate: [qk.peerLists],
   })
   return (
-    <form className="gc-stack" onSubmit={(event) => { event.preventDefault(); save.mutate() }}>
+    <form className="gc-stack" onSubmit={submitOnly(() => save.mutate())}>
       <TextField label="Name" required placeholder="e.g. Our own sellers" value={name} onChange={(event) => setName(event.target.value)} />
       <TextField label="Description" value={description} onChange={(event) => setDescription(event.target.value)} />
       <PeerPicker label="Sellers" value={peerIds} onChange={setPeerIds} peers={peers} />
@@ -95,9 +98,13 @@ export function SellerListsButton({ peers }: { peers?: readonly Peer[] }) {
   return (
     <>
       <Button variant="link" size="sm" onClick={() => setOpen(true)}>Manage seller lists</Button>
-      <Modal isOpen={open} onClose={() => setOpen(false)} title="Seller lists" subtitle={LISTS_HELP} size="lg">
-        <PeerListsPanel peers={peers} inDialog />
-      </Modal>
+      {/* Outside any enclosing form (a key's policy editor): no nested forms. */}
+      {createPortal(
+        <Modal isOpen={open} onClose={() => setOpen(false)} title="Seller lists" subtitle={LISTS_HELP} size="lg">
+          <PeerListsPanel peers={peers} inDialog />
+        </Modal>,
+        document.body,
+      )}
     </>
   )
 }
@@ -115,12 +122,18 @@ export function SellerListLink({ list, peers }: { list: PeerList; peers?: readon
       <button type="button" className="gc-link-button" title={canEdit ? `Edit the “${list.name}” list` : `See the “${list.name}” list`} onClick={() => setOpen(true)}>
         {list.name}
       </button>
-      <Modal isOpen={open} onClose={() => setOpen(false)} title={canEdit ? 'Edit seller list' : list.name} size="lg"
-        subtitle={canEdit ? undefined : 'Organization admins edit seller lists.'}>
-        {canEdit
-          ? <PeerListForm initial={list} peers={peers} onDone={() => setOpen(false)} />
-          : <p>{list.peerIds.length ? sellerNames(list, peers) : 'No sellers yet.'}</p>}
-      </Modal>
+      {/* Outside any enclosing form (a key's policy editor): no nested forms. */}
+      {createPortal(
+        <Modal isOpen={open} onClose={() => setOpen(false)} title={canEdit ? 'Edit seller list' : list.name} size="lg"
+          subtitle={canEdit ? undefined : `${list.peerIds.length} seller${list.peerIds.length === 1 ? '' : 's'}. Organization admins edit seller lists.`}>
+          {canEdit
+            ? <PeerListForm initial={list} peers={peers} onDone={() => setOpen(false)} />
+            : list.peerIds.length
+              ? <ul className="gc-plain-list">{list.peerIds.map((peerId) => <li key={peerId}>{peerName(peers, peerId)} <Mono>{shortId(peerId, 6, 4)}</Mono></li>)}</ul>
+              : <p className="gc-muted">No sellers yet.</p>}
+        </Modal>,
+        document.body,
+      )}
     </>
   )
 }
