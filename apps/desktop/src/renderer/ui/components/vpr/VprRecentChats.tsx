@@ -14,7 +14,7 @@ import {
   shortSessionId,
 } from '../../../modules/routing/conversations';
 import { displayToolName } from '../../../modules/routing/tool-names';
-import { BrandIcon } from '../brand/BrandIcon';
+import { BrandIcon } from '@antseed/ui';
 import styles from './VprRecentChats.module.scss';
 
 /* Chat rows sampled on the card — the full list lives on the Chats page. */

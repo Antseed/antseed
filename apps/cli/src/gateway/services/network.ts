@@ -1,8 +1,8 @@
 import { loadConfig } from '../../config/loader.js'
 import { isRoutingPolicy, policyAllowsModel, type RoutingPolicy } from '../../routing-policy/policy.js'
 import { buyerJson, optionalBuyerJson, type BuyerClient } from '../console-api/handlers/network-buyer.js'
-import { enrichCandidates, mapNetworkModels, mapPeers, type PeerStat } from '../console-api/handlers/network-mapping.js'
-import type { BuyerLimits, NetworkModel, Peer, RoutePreview } from '../console-api/types.js'
+import { enrichCandidates, mapNetworkModels, mapNetworkRouters, mapPeers, type PeerStat } from '../console-api/handlers/network-mapping.js'
+import type { BuyerLimits, NetworkModel, NetworkRouter, Peer, RoutePreview } from '../console-api/types.js'
 import { resolvePolicy, type PolicyTarget } from '../policy-resolver.js'
 import type { GatewayStore } from '../store.js'
 
@@ -55,6 +55,18 @@ export async function listNetworkModels(store: GatewayStore, buyer: BuyerClient,
     listNetworkPeers(store, buyer, now).catch((): Peer[] => []),
   ])
   return mapNetworkModels(models, peers)
+}
+
+/**
+ * Every routing service on the network, as the buyer's `GET /v1/models?type=router`
+ * lists it without a routing policy, one per seller offering it.
+ */
+export async function listNetworkRouters(store: GatewayStore, buyer: BuyerClient, now: number): Promise<NetworkRouter[]> {
+  const [routers, peers] = await Promise.all([
+    buyerJson(buyer, '/v1/models?type=router'),
+    listNetworkPeers(store, buyer, now).catch((): Peer[] => []),
+  ])
+  return mapNetworkRouters(routers, peers)
 }
 
 /**

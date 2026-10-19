@@ -20,6 +20,7 @@ import {
   ZERO_METADATA,
   ZERO_METADATA_HASH,
   computeChannelId,
+  boundServiceMetadata,
 } from '@antseed/protocol/signatures';
 import type { SpendingAuthMessage, SpendingAuthMetadata } from '@antseed/protocol/signatures';
 import { debugLog, debugWarn } from './debug.js';
@@ -132,6 +133,8 @@ interface StoredBuyerRequestBillingEntry extends BuyerRequestBillingEntry {
   createdAtMs: number;
   /** Video jobs only: the one-off channel that pays for the job. */
   oneOffChannelId?: string;
+  /** A video retrieve the buyer did not take as the job's delivery: no NeedAuth for it waits for one. */
+  notDelivered?: boolean;
 }
 
 /** Identity of a not-yet-opened buyer channel: fresh salt, derived channelId, auth deadline. */
@@ -234,7 +237,7 @@ export class BuyerPaymentManager {
    * the fact.
    */
   private readonly _requestBillingEntries = new Map<string, StoredBuyerRequestBillingEntry>();
-  private readonly _observedUsageWaiters = new Map<string, Array<(usage: UnitBillingUsage) => void>>();
+  private readonly _observedUsageWaiters = new Map<string, Array<(usage: UnitBillingUsage | undefined) => void>>();
 
   /** sellerPeerId -> full pricing map (defaults + per-service overrides from peer metadata / 402) */
   private readonly _sessionPricing = new Map<string, { defaults: ServicePricing; services: Record<string, ServicePricing> }>();
@@ -259,6 +262,8 @@ export class BuyerPaymentManager {
    * receives the finished video.
    */
   private readonly _videoJobs = new Map<string, StoredBuyerRequestBillingEntry>();
+  /** Delivered jobs whose stored copy could not be cleared yet, by job key: their one-off channel. */
+  private readonly _unsavedVideoDeliveries = new Map<string, string>();
   /** One-off channels keyed by channelId. Never a seller's session channel. */
   private readonly _oneOffChannels = new Map<string, OneOffChannelState>();
 
@@ -409,13 +414,24 @@ export class BuyerPaymentManager {
     return this._config.costToleranceMultiplier ?? DEFAULT_COST_TOLERANCE;
   }
 
+  /**
+   * A video's price is fixed by the seller's advertised unit pricing, known
+   * before the job starts and reported to callers as its price: it is paid
+   * exactly, never with the tolerance that covers token estimates.
+   */
+  private _costToleranceFor(billing: BuyerRequestBillingEntry | undefined | null): number {
+    return billing?.requestFacts?.kind === 'video' ? 1 : this._costTolerance;
+  }
+
   private get _disableMetadataV2Services(): boolean {
     return this._config.disableMetadataV2Services === true;
   }
 
   private _sanitizeMetadata(metadata: SpendingAuthMetadata | undefined): SpendingAuthMetadata {
     const current = metadata ?? ZERO_METADATA;
-    if (!this._disableMetadataV2Services) return current;
+    // Bounds service lists persisted before MAX_METADATA_SERVICES existed, so a
+    // channel whose SpendingAuth outgrew the payment frame can be signed again.
+    if (!this._disableMetadataV2Services) return boundServiceMetadata(current);
     return {
       cumulativeInputTokens: current.cumulativeInputTokens,
       cumulativeOutputTokens: current.cumulativeOutputTokens,
@@ -617,14 +633,19 @@ export class BuyerPaymentManager {
    */
   async buildCloseChannelRequest(
     sellerPeerId: string,
-    { includeAuth = true }: { includeAuth?: boolean } = {},
+    { includeAuth = true, maxCumulative }: { includeAuth?: boolean; maxCumulative?: bigint } = {},
   ): Promise<CloseChannelRequestPayload> {
     const session = this.getActiveSession(sellerPeerId);
     if (!session) {
       throw buyerFault(`[BuyerPayment] No active session for seller ${sellerPeerId.slice(0, 12)}...`, 'buyer-session-state');
     }
 
-    const cumulativeAmount = this._cumulativeAmount.get(sellerPeerId) ?? BigInt(session.authMax);
+    const signedCumulative = this._cumulativeAmount.get(sellerPeerId) ?? BigInt(session.authMax);
+    // The contract rejects a close above the channel's deposit, so a close
+    // authorization above it could never settle. Capping it there still covers
+    // everything the seller could claim.
+    const capped = maxCumulative != null && signedCumulative > maxCumulative;
+    const cumulativeAmount = capped ? maxCumulative : signedCumulative;
     if (!includeAuth || cumulativeAmount <= 0n) {
       return { version: 1, channelId: session.sessionId };
     }
@@ -643,13 +664,17 @@ export class BuyerPaymentManager {
       metadataMsg,
     );
     const encodedMetadata = encodeMetadata(currentMeta);
-    await this._commitAuthorization({
-      ...session,
-      latestBuyerSig: spendingAuthSig,
-      latestSpendingAuthSig: spendingAuthSig,
-      latestMetadata: encodedMetadata,
-      updatedAt: Date.now(),
-    }, currentMeta);
+    if (!capped) {
+      // A capped close authorization is below the signed high-water mark; keep
+      // the persisted latest authorization consistent with authMax.
+      await this._commitAuthorization({
+        ...session,
+        latestBuyerSig: spendingAuthSig,
+        latestSpendingAuthSig: spendingAuthSig,
+        latestMetadata: encodedMetadata,
+        updatedAt: Date.now(),
+      }, currentMeta);
+    }
 
     return {
       version: 1,
@@ -1455,7 +1480,7 @@ export class BuyerPaymentManager {
     let acceptedCost: bigint;
     if (responseStats.sellerClaimedCost != null && responseStats.sellerClaimedCost > 0n) {
       if (buyerEstimatedRequestCost > 0n) {
-        const maxAcceptable = BigInt(Math.ceil(Number(buyerEstimatedRequestCost) * this._costTolerance));
+        const maxAcceptable = BigInt(Math.ceil(Number(buyerEstimatedRequestCost) * this._costToleranceFor(requestBilling)));
         if (responseStats.sellerClaimedCost > maxAcceptable) {
           debugWarn(
             `[BuyerPayment] Seller claimed ${responseStats.sellerClaimedCost} exceeds ${this._costTolerance}x buyer estimate ${buyerEstimatedRequestCost} — capping at ${maxAcceptable}`,
@@ -1674,7 +1699,7 @@ export class BuyerPaymentManager {
             requestBilling.context,
             payload.billingUsage,
             claimedUnitCost,
-            this._costTolerance,
+            this._costToleranceFor(requestBilling),
             observedUnitUsage,
           );
           const acceptedUnitUsage = unitUsageFromReport(payload.billingUsage);
@@ -1687,7 +1712,7 @@ export class BuyerPaymentManager {
         if (sellerTotalCost > 0n && buyerEstimate <= 0n) {
           throw new Error("Positive NeedAuth total cost recomputed to zero");
         }
-        const maxAcceptable = BigInt(Math.ceil(Number(buyerEstimate) * this._costTolerance));
+        const maxAcceptable = BigInt(Math.ceil(Number(buyerEstimate) * this._costToleranceFor(requestBilling)));
         if (sellerTotalCost > maxAcceptable) {
           throw new Error(`Seller total cost ${sellerTotalCost} exceeds buyer estimate ${buyerEstimate}`);
         }
@@ -2024,7 +2049,6 @@ export class BuyerPaymentManager {
       ...(reserveBatch ? { reserveBatch } : {}),
       oneOffRequestId: requestId,
     });
-    if (requiredCumulative > 0n) this._reportUnitSpend(sellerPeerId, requestId, requiredCumulative);
     debugLog(`[BuyerPayment] One-off channel ${channelId.slice(0, 18)}... sent for request ${requestId} (price=${price}, fee=${requiredCumulative})`);
     return channelId;
   }
@@ -2093,8 +2117,15 @@ export class BuyerPaymentManager {
         });
         await this._channelStore.flush?.();
       }
-      state.confirmed = true;
-      debugLog(`[BuyerPayment] One-off channel confirmed: ${channelId.slice(0, 18)}...`);
+      // Re-checked after the flush: an AuthAck and an on-chain confirmation
+      // can both get here, and only the first may report the fee.
+      if (!state.confirmed) {
+        state.confirmed = true;
+        // The serious fee counts as spent only once the channel holds it: a
+        // channel the seller never opened (or released at 0) charged nothing.
+        if (state.cumulative > 0n) this._reportUnitSpend(state.sellerPeerId, state.requestId, state.cumulative);
+        debugLog(`[BuyerPayment] One-off channel confirmed: ${channelId.slice(0, 18)}...`);
+      }
     }
     for (const waiter of state.ackWaiters.splice(0)) waiter(true);
   }
@@ -2233,15 +2264,26 @@ export class BuyerPaymentManager {
     }
   }
 
+  /** Nothing was delivered for the request: a NeedAuth waiting for it is judged now, as after the wait. */
+  private _noObservedUnitUsage(requestId: string): void {
+    const entry = this._requestBillingEntries.get(requestId);
+    if (entry) entry.notDelivered = true;
+    const waiters = this._observedUsageWaiters.get(requestId);
+    if (!waiters) return;
+    this._observedUsageWaiters.delete(requestId);
+    for (const waiter of waiters) waiter(undefined);
+  }
+
   /** Wait for observed unit usage while the buyer's response path catches up. */
   private _waitForObservedUnitUsage(
     requestId: string,
     timeoutMs: number,
   ): Promise<UnitBillingUsage | undefined> {
-    const existing = this._requestBillingEntries.get(requestId)?.observedUnitUsage;
-    if (existing) return Promise.resolve(existing);
+    const entry = this._requestBillingEntries.get(requestId);
+    if (entry?.observedUnitUsage) return Promise.resolve(entry.observedUnitUsage);
+    if (entry?.notDelivered) return Promise.resolve(undefined);
     return new Promise((resolve) => {
-      const onUsage = (usage: UnitBillingUsage): void => {
+      const onUsage = (usage: UnitBillingUsage | undefined): void => {
         clearTimeout(timer);
         resolve(usage);
       };
@@ -2301,7 +2343,11 @@ export class BuyerPaymentManager {
     while (this._videoJobs.size > MAX_VIDEO_JOBS) {
       const oldest = this._videoJobs.keys().next().value;
       if (oldest === undefined) break;
+      const evicted = this._videoJobs.get(oldest);
       this._videoJobs.delete(oldest);
+      // Gone for good, also after a restart: a job this buyer stopped tracking is never charged, and a later
+      // download of it may already have been taken as delivered.
+      if (evicted?.oneOffChannelId) this._persistVideoJob(evicted.oneOffChannelId, null);
     }
   }
 
@@ -2322,30 +2368,66 @@ export class BuyerPaymentManager {
   /**
    * Record that the buyer received the finished video. Only now may the
    * seller's NeedAuth for the job's price be signed, and only once.
+   * `untracked`: the buyer no longer has the job (it can never be charged).
+   * `unsaved`: the delivery is recorded (the seller's charge is signed, so it
+   * is paid for what it delivered) but the job could not be removed from
+   * storage yet, where a restart would find it again; until that is saved
+   * (see `videoDeliveryUnsaved`) the download is not reported as delivered,
+   * so a gateway keeps the price held until the charge reaches it.
    */
-  recordVideoDelivered(sellerPeerId: string, protocol: string, jobId: string, requestId: string): void {
+  recordVideoDelivered(sellerPeerId: string, protocol: string, jobId: string, requestId: string): 'recorded' | 'unsaved' | 'untracked' {
     const key = videoJobKey(sellerPeerId, protocol, jobId);
     const job = this._videoJobs.get(key);
-    const entry = this._requestBillingEntries.get(requestId);
-    const facts = entry?.requestFacts;
-    if (!job || facts?.kind !== 'video') return;
+    // The job's own facts, not the request's cache entry, which other requests may have evicted meanwhile.
+    const facts = job?.requestFacts;
+    if (!job || facts?.kind !== 'video') {
+      this._noObservedUnitUsage(requestId);
+      return 'untracked';
+    }
+    const saved = !job.oneOffChannelId || this._persistVideoJob(job.oneOffChannelId, null);
+    if (!this._requestBillingEntries.has(requestId)) this.trackVideoRetrieve(sellerPeerId, protocol, jobId, requestId);
     this._videoJobs.delete(key);
-    if (job.oneOffChannelId) this._persistVideoJob(job.oneOffChannelId, null);
+    if (!saved) this._unsavedVideoDeliveries.set(key, job.oneOffChannelId!);
     this.recordObservedUnitUsage(requestId, nativeVideoUnitUsage(facts.video));
+    return saved ? 'recorded' : 'unsaved';
+  }
+
+  /**
+   * Whether a delivered job's stored copy is still to be cleared (retried
+   * now). While it is, a restart could restore the job, so another download
+   * of it is not reported as delivered either; its one-off channel never pays
+   * more than the price already signed.
+   */
+  videoDeliveryUnsaved(sellerPeerId: string, protocol: string, jobId: string): boolean {
+    const key = videoJobKey(sellerPeerId, protocol, jobId);
+    const channelId = this._unsavedVideoDeliveries.get(key);
+    if (channelId === undefined) return false;
+    if (!this._persistVideoJob(channelId, null)) return true;
+    this._unsavedVideoDeliveries.delete(key);
+    return false;
+  }
+
+  /** The duration a tracked video job asked for, if it is tracked. */
+  videoJobDuration(sellerPeerId: string, protocol: string, jobId: string): number | undefined {
+    const facts = this._videoJobs.get(videoJobKey(sellerPeerId, protocol, jobId))?.requestFacts;
+    return facts?.kind === 'video' ? facts.video.duration : undefined;
   }
 
   /** Store (or clear) the undelivered job on its one-off channel row. */
-  private _persistVideoJob(channelId: string, job: PersistedVideoJob | null): void {
-    const channel = this._channelStore.getChannel(channelId);
-    if (!channel) return;
+  /** Whether the job is stored as given (true too when its channel is gone: nothing can restore the job). */
+  private _persistVideoJob(channelId: string, job: PersistedVideoJob | null): boolean {
     try {
+      const channel = this._channelStore.getChannel(channelId);
+      if (!channel) return true;
       this._channelStore.upsertChannel({
         ...channel,
         oneOffVideoJob: job ? JSON.stringify(job, (_key, value) => typeof value === 'bigint' ? { $bigint: value.toString() } : value) : null,
         updatedAt: Date.now(),
       });
+      return true;
     } catch (err) {
       debugWarn(`[BuyerPayment] Failed to persist video job for ${channelId.slice(0, 18)}...: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
     }
   }
 

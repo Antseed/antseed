@@ -341,6 +341,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   & + & { border-top: 1px solid var(--as-border); }
 }
 .gc-panel-row--on { background: var(--as-bg-muted); }
+.gc-panel-row--muted .gc-panel-row__title, .gc-panel-row--muted .gc-panel-row__title a { color: var(--as-text-secondary); font-weight: 500; }
 .gc-panel-row__main { flex: 1; min-width: 0; }
 .gc-panel-row__title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; }
 .gc-panel-row__meta {
@@ -348,6 +349,8 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   color: var(--as-text-muted); font-size: 0.75rem; font-variant-numeric: tabular-nums;
   code { overflow-wrap: anywhere; }
 }
+/* A seller routing never selects: the reason leads its row, on a line of its own. */
+.gc-never { flex-basis: 100%; color: var(--as-text-secondary); }
 .gc-panel-row__actions { display: flex; align-items: center; gap: 0.25rem; flex: 0 0 auto; }
 
 .gc-grid { display: grid; gap: 0.875rem; }
@@ -436,8 +439,16 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 
 /* Policy editor (in a dialog): templates row, two dense columns, advanced options collapsed. */
 .gc-policy { display: flex; flex-direction: column; gap: 1rem; container-type: inline-size; }
-.gc-policy__templates { display: flex; flex-wrap: wrap; align-items: center; gap: 0.375rem 0.5rem; padding-bottom: 1rem; border-bottom: 1px solid var(--as-border); }
-.gc-policy__clear { margin-left: auto; }
+.gc-policy__top { display: flex; flex-direction: column; gap: 0.75rem; }
+.gc-policy__summary { display: flex; flex-direction: column; gap: 0.25rem; padding: 0.75rem 0.875rem; border: 1px solid var(--as-border); border-radius: var(--as-radius-md); background: var(--as-bg-muted); }
+.gc-policy__summary-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0.25rem 1rem; font-size: 0.875rem; }
+.gc-policy__top > .as-field { align-self: flex-start; width: min(100%, 26rem); }
+.gc-policy__group { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.5rem 2rem; padding-top: 1rem; border-top: 1px solid var(--as-border);
+  h3 { margin: 0; font-size: 0.9375rem; font-weight: 600; }
+}
+@container (min-width: 44rem) { .gc-policy__group { grid-template-columns: 13rem minmax(0, 1fr); } }
+.gc-policy__group-head { display: flex; flex-direction: column; gap: 0.25rem; }
+.gc-policy__group-body { display: flex; flex-direction: column; gap: 0.75rem; min-width: 0; > .gc-slider { max-width: 24rem; } > .as-segmented, > [role="radiogroup"] { align-self: flex-start; } }
 .gc-policy__cols { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1.25rem; }
 @container (min-width: 40rem) {
   .gc-policy__cols { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.5rem 2rem; }
@@ -449,7 +460,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .gc-policy__switches { display: flex; flex-wrap: wrap; gap: 0.5rem 1.25rem; }
 .gc-policy__pair { display: flex; flex-wrap: wrap; gap: 0.75rem; > .as-field { flex: 1 1 9rem; } }
 .gc-policy__advanced { display: flex; flex-direction: column; gap: 0.5rem; }
-.gc-policy__caps { display: flex; flex-wrap: wrap; gap: 0.75rem; }
+.gc-policy__caps { display: grid; grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr)); gap: 0.75rem; > .as-field { min-width: 0; } }
 .gc-num { flex: 0 0 auto; width: 8.5rem; }
 .gc-num--wide { width: 12rem; }
 .gc-policy__section > .gc-slider { max-width: 22rem; }
@@ -476,11 +487,44 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 }
 
 /* Routing preview */
-.gc-sources { display: flex; flex-wrap: wrap; gap: 0.5rem; }
-.gc-source { flex: 1 1 10rem; padding: 0.5rem 0.625rem; border: 1px solid var(--as-border); border-radius: var(--as-radius-md); background: var(--as-bg-surface); }
-.gc-source--result { border-color: var(--as-border-strong); background: var(--as-bg-muted); }
-.gc-source__level { font-size: 0.75rem; font-weight: 500; color: var(--as-text-muted); }
-.gc-source__policy { font-size: 0.8125rem; margin-top: 0.125rem; }
+/* Routing: the rule chain, one numbered step per level. */
+.gc-funnel { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.gc-funnel__step {
+  display: flex; gap: 0.875rem; padding: 0.875rem 0;
+  & + & { border-top: 1px solid var(--as-border); }
+}
+.gc-funnel__step--result { margin-top: 0.25rem; padding: 0.875rem; border: 1px solid var(--as-border-strong); border-radius: var(--as-radius-md); background: var(--as-bg-muted); }
+.gc-funnel__index {
+  flex: none; display: grid; place-items: center; width: 1.625rem; height: 1.625rem; border-radius: 999px;
+  border: 1px solid var(--as-border-strong); font-size: 0.75rem; font-weight: 600; color: var(--as-text-secondary); font-variant-numeric: tabular-nums;
+}
+.gc-funnel__body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.25rem; }
+.gc-funnel__head { display: flex; align-items: center; gap: 0.5rem; min-height: 1.625rem; }
+.gc-funnel__title { font-weight: 600; }
+.gc-funnel__action { margin-left: auto; }
+.gc-funnel__rules { margin: 0.25rem 0 0; padding-left: 1.1rem; font-size: 0.875rem; display: flex; flex-direction: column; gap: 0.125rem; }
+.gc-funnel__none { margin: 0.25rem 0 0; font-size: 0.875rem; color: var(--as-text-muted); }
+.gc-funnel__impact { margin: 0.25rem 0 0; font-size: 0.75rem; color: var(--as-text-muted); }
+.gc-funnel__impact--on { color: var(--as-text-primary); font-weight: 550; }
+.gc-funnel__note { list-style: none; padding-bottom: 0.75rem; }
+
+/* Routing: "Try a request". */
+.gc-try__summary { margin: 0.25rem 0 0; display: flex; align-items: center; gap: 0.5rem; }
+.gc-model-chooser { max-width: 22rem; justify-content: flex-start; }
+.gc-model-chooser__mark { display: inline-flex; margin-right: 0.5rem; }
+.gc-model-chooser__caret { display: inline-flex; margin-left: 0.5rem; opacity: 0.6; }
+
+/* A searchable list of choices in a dialog (the model chooser). */
+.gc-choice-list { list-style: none; margin: 0; padding: 0; max-height: min(28rem, 60vh); overflow-y: auto; border: 1px solid var(--as-border); border-radius: var(--as-radius-md); }
+.gc-choice {
+  display: flex; align-items: center; gap: 0.75rem; width: 100%; padding: 0.625rem 0.75rem; border: 0; background: none; text-align: left; color: inherit; cursor: pointer; font: inherit;
+  &:hover, &:focus-visible { background: var(--as-bg-muted); outline: none; }
+}
+li + li > .gc-choice { border-top: 1px solid var(--as-border); }
+.gc-choice--on { background: var(--as-bg-muted); }
+.gc-choice__main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.125rem; }
+.gc-choice__title { display: inline-flex; align-items: center; gap: 0.375rem; font-weight: 550; }
+.gc-choice__meta { display: flex; flex-wrap: wrap; gap: 0 0.75rem; font-size: 0.75rem; color: var(--as-text-muted); }
 
 /* Funding */
 .gc-kv { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; padding: 0.5rem 0.625rem; border-radius: var(--as-radius-md); background: var(--as-bg-muted); font-size: 0.8125rem;
@@ -737,3 +781,44 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   .gc-doc .gc-link, .gc-doc .gc-mono { color: #000; }
   .gc-doc__row dt, .gc-doc__ref, .gc-doc__foot { color: #444; }
 }
+
+/* Models page: checklist filter buttons, starred rows, brand marks. */
+.gc-filter-menu { display: inline-flex; align-items: center; gap: 0.375rem; }
+.gc-filter-menu__count {
+  display: inline-flex; align-items: center; justify-content: center; min-width: 1.125rem; height: 1.125rem; padding: 0 0.3125rem;
+  border-radius: 999px; background: var(--as-text-primary); color: var(--as-bg-surface); font-size: 0.6875rem; font-weight: 600;
+}
+.gc-model-name { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+.gc-model-name__mark { flex: 0 0 auto; display: inline-flex; width: 20px; height: 20px; align-items: center; justify-content: center; color: var(--as-text-secondary); }
+.gc-star.as-icon-button { flex: 0 0 auto; border-color: transparent; color: var(--as-text-muted);
+  &:hover:not(:disabled) { color: var(--as-text-primary); }
+}
+.gc-star.as-icon-button[aria-pressed="true"] { color: var(--as-text-primary); }
+.gc-section-label { margin: 0 0 0.5rem; color: var(--as-text-muted); font-size: 0.75rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+
+/* The ⓘ next to a setting's label, with a small tooltip that floats over the page. */
+.gc-info-label { display: inline-flex; align-items: center; gap: 0.25rem; }
+.gc-tip { position: relative; display: inline-flex; }
+.gc-tip__button {
+  display: inline-grid; place-items: center; width: 1.25rem; height: 1.25rem; padding: 0; border: 0; border-radius: 999px;
+  background: none; color: var(--as-text-muted); cursor: help;
+  &:hover, &:focus-visible { color: var(--as-text-primary); outline: none; }
+  &:focus-visible { box-shadow: 0 0 0 2px var(--as-border-strong); }
+}
+.gc-tip__bubble {
+  position: absolute; z-index: 20; top: calc(100% + 0.375rem); left: -0.5rem; width: max-content; max-width: min(19rem, 80vw);
+  padding: 0.5rem 0.625rem; border: 1px solid var(--as-border); border-radius: var(--as-radius-md); background: var(--as-bg-surface);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.08); font-size: 0.75rem; line-height: 1.45; font-weight: 400; color: var(--as-text-secondary);
+  visibility: hidden; opacity: 0; transition: opacity 120ms ease;
+  a { color: var(--as-text-primary); text-decoration: underline; text-underline-offset: 2px; }
+}
+.gc-tip__title { display: block; margin-bottom: 0.125rem; font-weight: 600; color: var(--as-text-primary); }
+.gc-tip:hover .gc-tip__bubble, .gc-tip:focus-within .gc-tip__bubble, .gc-tip--open .gc-tip__bubble { visibility: visible; opacity: 1; }
+
+/* Text that opens something, styled like a link (a seller list's name). */
+.gc-link-button { padding: 0; border: 0; background: none; font: inherit; color: var(--as-text-primary); text-decoration: underline; text-decoration-color: var(--as-border-strong); text-underline-offset: 3px; cursor: pointer;
+  &:hover { text-decoration-color: currentColor; }
+  &:focus-visible { outline: 2px solid var(--as-border-strong); outline-offset: 2px; border-radius: 2px; }
+}
+
+.gc-plain-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 0.375rem; li { display: flex; gap: 0.5rem; align-items: baseline; flex-wrap: wrap; } code, .gc-mono { color: var(--as-text-muted); } }

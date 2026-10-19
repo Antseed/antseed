@@ -130,3 +130,16 @@ export function describePeerOutcome(input: {
   }
   return { tone: changed ? 'success' : 'info', text: `${head}.${candidate.rank ? ` It ranks #${candidate.rank} for ${model}.` : ''}` }
 }
+
+/**
+ * The models Prefer can target for a seller, and the one to start on. A
+ * model given by the caller (the route preview's requested model) is kept
+ * as-is even when the seller advertises it under another id, so the
+ * preference lands on the model the requests ask for.
+ */
+export function peerActionModels(services: ReadonlyArray<{ service: string }>, forModel?: string): { options: string[]; initial: string } {
+  const advertised = services.map((service) => service.service)
+  if (!forModel) return { options: advertised, initial: advertised[0] ?? '' }
+  const rest = advertised.filter((service) => service.toLowerCase() !== forModel.toLowerCase())
+  return { options: [forModel, ...rest], initial: forModel }
+}

@@ -10,6 +10,12 @@ export type { BadgeProps, BadgeTone } from './primitives/Badge';
 export { Button } from './primitives/Button';
 export type { ButtonProps, ButtonSize, ButtonVariant } from './primitives/Button';
 
+export { BrandIcon, isThemeAwareAppBrand, resolveBrandKey } from './brand/BrandIcon';
+export type { BrandIconProps, BrandKey } from './brand/BrandIcon';
+
+export { availableModelFamilies, modelFamilyLabel } from './brand/model-families';
+export type { ModelFamilySource } from './brand/model-families';
+
 export { Card } from './primitives/Card';
 export type { CardProps, CardTone } from './primitives/Card';
 

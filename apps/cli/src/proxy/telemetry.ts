@@ -1,4 +1,5 @@
 import type { PeerInfo, SerializedHttpRequest } from '@antseed/node'
+import { ROUTE_SELECTION_HEADER } from './route-selection.js'
 import { extractUsage, toNonNegativeInt } from '@antseed/api-adapter'
 import { pickProviderForPeer } from './routing.js'
 import { extractRequestedService } from './request-utils.js'
@@ -320,6 +321,28 @@ export function computeResponseTelemetry(
   }
 }
 
+/**
+ * Response headers of a request a routing service ranked: the router's peer
+ * and service, and which of its recommendations (1 = its first pick) was tried
+ * last: it served the request, unless the response is the last refusal. A
+ * failed ranking carries the router's peer and service only.
+ */
+export const ROUTER_PEER_ID_HEADER = 'x-antseed-router-peer-id'
+export const ROUTER_SERVICE_HEADER = 'x-antseed-router-service'
+export const ROUTER_RANK_HEADER = 'x-antseed-router-rank'
+
+/** Headers only the buyer sets: which router ranked a request, and why routing picked its seller. */
+const BUYER_ROUTING_HEADERS = new Set([ROUTER_PEER_ID_HEADER, ROUTER_SERVICE_HEADER, ROUTER_RANK_HEADER, ROUTE_SELECTION_HEADER])
+
+/**
+ * A seller's headers without the buyer's routing headers: only the buyer says
+ * which router ranked a request and why its seller was picked, so a seller can
+ * neither change nor invent that.
+ */
+export function withoutRouterHeaders(headers: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(headers).filter(([name]) => !BUYER_ROUTING_HEADERS.has(name.toLowerCase())))
+}
+
 export function attachAntseedTelemetryHeaders(
   upstreamHeaders: Record<string, string>,
   selectedPeer: PeerInfo,
@@ -327,7 +350,7 @@ export function attachAntseedTelemetryHeaders(
   requestId: string,
   latencyMs: number,
 ): Record<string, string> {
-  const headers: Record<string, string> = { ...upstreamHeaders }
+  const headers: Record<string, string> = withoutRouterHeaders(upstreamHeaders)
   headers['x-antseed-request-id'] = requestId
   headers['x-antseed-latency-ms'] = String(Math.max(0, Math.floor(latencyMs)))
   setPeerIdentityHeaders(headers, selectedPeer)
@@ -360,10 +383,12 @@ export function attachStreamingAntseedHeaders(
   request: SerializedHttpRequest,
   firstTokenMs?: number,
 ): Record<string, string> {
-  const headers: Record<string, string> = { ...upstreamHeaders }
+  const headers: Record<string, string> = withoutRouterHeaders(upstreamHeaders)
   headers['x-antseed-request-id'] = request.requestId
   if (firstTokenMs !== undefined) headers['x-antseed-first-token-ms'] = String(Math.max(0, Math.floor(firstTokenMs)))
   setPeerIdentityHeaders(headers, selectedPeer)
-  setPricingHeaders(headers, resolvePeerPricing(selectedPeer, pickProviderForPeer(selectedPeer, request), extractRequestedService(request)))
+  const service = extractRequestedService(request)
+  if (service) headers['x-antseed-service'] = service
+  setPricingHeaders(headers, resolvePeerPricing(selectedPeer, pickProviderForPeer(selectedPeer, request), service))
   return headers
 }

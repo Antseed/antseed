@@ -108,13 +108,14 @@ export async function requestSellerAssistedClose(
   peerId: string,
   bridge: DesktopBridge | undefined,
   refresh: { credits: () => Promise<void>; summary: () => Promise<void> },
+  channelId?: string,
 ): Promise<ChannelCloseFeedback> {
   if (!bridge?.paymentsRequestCooperativeClose) {
     return { tone: 'error', message: 'Seller-assisted close is unavailable. The channel is unchanged.' };
   }
   let response: Awaited<ReturnType<NonNullable<DesktopBridge['paymentsRequestCooperativeClose']>>>;
   try {
-    response = await bridge.paymentsRequestCooperativeClose({ peerId });
+    response = await bridge.paymentsRequestCooperativeClose({ peerId, ...(channelId ? { channelId } : {}) });
   } catch {
     return { tone: 'error', message: 'The seller could not be reached. The channel is unchanged.' };
   }

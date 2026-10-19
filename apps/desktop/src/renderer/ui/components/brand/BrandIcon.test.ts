@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { test } from 'vitest';
-import { BrandIcon, isThemeAwareAppBrand, resolveBrandKey } from './BrandIcon.js';
+import { BrandIcon, isThemeAwareAppBrand, resolveBrandKey } from '@antseed/ui';
 
 test('model family wins over the transport provider slug', () => {
   // Sellers advertise models over a protocol whose provider slug ("openai",

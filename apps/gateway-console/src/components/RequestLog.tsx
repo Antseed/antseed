@@ -1,12 +1,13 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { Alert, Button, DataTable, Drawer } from '@antseed/ui'
 import { api, isApiError, type RequestQuery } from '../api'
-import type { RequestDetail, RequestLogEntry } from '../api/types'
+import type { RequestDetail, RequestLogEntry, RequestRouterInfo, ServedSelection } from '../api/types'
 import { formatDateTime, formatLatency, formatNumber, formatSpeed, formatUsd } from '../lib/format'
 import { qk, usePeers } from '../lib/queries'
 import { peerName } from './PeerPicker'
-import { costStatus } from '../lib/usage'
+import { costStatus, routerOutcome } from '../lib/usage'
+import { healthWarning, pickSummary, selectionFacts } from '../lib/selection'
 import { Badge, CodeBlock, DetailList, EmptyState, ErrorAlert, LoadingRows, Mono } from './ui'
 import { Icon } from './icons'
 
@@ -48,6 +49,38 @@ function SellerName({ peerId, full = false }: { peerId: string; full?: boolean }
   return <div className="gc-stack gc-stack--tight"><span>{name}</span><Mono>{peerId}</Mono></div>
 }
 
+/** The model asked for, and the one a router picked for it (`levanto-router → opus-5.5`). */
+function ModelName({ entry }: { entry: Pick<RequestLogEntry, 'model' | 'servedModel'> }) {
+  if (!entry.servedModel) return <>{entry.model ?? '—'}</>
+  return <>{entry.model ?? '—'} <span className="gc-muted">→ {entry.servedModel}</span></>
+}
+
+function modelTitle(entry: RequestLogEntry): string {
+  const model = entry.model ?? 'Request'
+  return entry.servedModel ? `${model} → ${entry.servedModel}` : model
+}
+
+/** The routing service that ranked a request, by name, with its service and which pick served the request (or failed). */
+function RouterDetail({ router, status }: { router: RequestRouterInfo; status: number | null }) {
+  const peers = usePeers()
+  return (
+    <div className="gc-stack gc-stack--tight">
+      <span>{peerName(peers.data, router.peerId)}</span>
+      <Mono>{router.peerId}</Mono>
+      <span className="gc-muted">{router.service ? `${router.service} · ` : ''}{routerOutcome(router.rank, status)}</span>
+    </div>
+  )
+}
+
+/** A routed request's ranking fee; none once its cost is settled means the router charged nothing. */
+function RoutingFee({ entry }: { entry: RequestLogEntry }) {
+  if (entry.routingSpent) return <>{formatUsd(entry.routingSpent)}</>
+  const status = costStatus(entry, Date.now())
+  if (status === 'pending') return <span className="gc-muted">pending</span>
+  if (status === 'spent' || status === 'free') return <span className="gc-muted" title="The router reported no charge for this ranking">Free</span>
+  return <span className="gc-muted">—</span>
+}
+
 /** Pretty-prints JSON bodies; anything else is shown as is. */
 function formatBody(body: string): string {
   try { return JSON.stringify(JSON.parse(body), null, 2) } catch { return body }
@@ -70,6 +103,18 @@ function RequestBodies({ detail }: { detail: RequestDetail }) {
   )
 }
 
+/** Why automatic routing sent the request to its seller: how it was picked, and what the buyer had seen of the seller then. */
+function WhySeller({ selection, at }: { selection: ServedSelection; at: number }) {
+  const warning = healthWarning(selection, at)
+  return (
+    <div className="gc-stack gc-stack--tight">
+      <span>{pickSummary(selection)}</span>
+      <span className="gc-muted">At the time: {selectionFacts(selection).join(' · ')}</span>
+      {warning && <span className="gc-muted">{warning}</span>}
+    </div>
+  )
+}
+
 function RequestDetailView({ entry }: { entry: RequestLogEntry }) {
   const detail = useQuery({
     queryKey: qk.request(entry.tag),
@@ -78,7 +123,7 @@ function RequestDetailView({ entry }: { entry: RequestLogEntry }) {
     staleTime: 60_000,
   })
   // Older gateways have no detail route; the list row still has everything but the bodies.
-  const data: RequestLogEntry & Partial<Pick<RequestDetail, 'requestBody' | 'responseBody'>> = detail.data ?? entry
+  const data: RequestLogEntry & Partial<Pick<RequestDetail, 'routeSelection' | 'requestBody' | 'responseBody'>> = detail.data ?? entry
   const missingRoute = isApiError(detail.error) && detail.error.status === 404
   return (
     <>
@@ -88,10 +133,12 @@ function RequestDetailView({ entry }: { entry: RequestLogEntry }) {
       <DetailList items={[
         ['Status', statusBadge(data.status)],
         ['Request', <Mono key="p">{data.method} {data.path}</Mono>],
-        ['Model', data.model ?? '—'],
+        ['Model', <ModelName key="m" entry={data} />],
         ['Key', data.keyLabel],
         ['End user', data.endUser ?? '—'],
+        ...(data.router ? [['Router', <RouterDetail key="r" router={data.router} status={data.status} />] as [string, ReactNode]] : []),
         ['Seller', data.sellerPeerId ? <SellerName key="s" peerId={data.sellerPeerId} full /> : '—'],
+        ...(data.routeSelection ? [['Why this seller', <WhySeller key="w" selection={data.routeSelection} at={data.startedAt} />] as [string, ReactNode]] : []),
         ['First token', formatLatency(data.firstTokenMs)],
         ['Speed', formatSpeed(data.tokensPerSecond)],
         ['Duration', data.finishedAt ? formatLatency(data.finishedAt - data.startedAt) : '—'],
@@ -99,6 +146,7 @@ function RequestDetailView({ entry }: { entry: RequestLogEntry }) {
         ['Cached input', formatNumber(data.cachedInputTokens)],
         ['Output tokens', formatNumber(data.outputTokens)],
         ['Cost', <Cost key="c" entry={data} />],
+        ...(data.router ? [['Routing fee', <RoutingFee key="f" entry={data} />] as [string, ReactNode]] : []),
         ['Tag', <Mono key="t">{data.tag}</Mono>],
       ]} />
       {detail.isLoading && <LoadingRows rows={2} />}
@@ -136,7 +184,7 @@ export function RequestLog({ filter, showKey = true }: { filter: RequestFilter; 
           { key: 'model', header: 'Model', render: (row) => (
             <span className="gc-ellipsis">
               {/* Requests without a model (the model list) show their endpoint, muted. */}
-              {row.model ?? <span className="gc-muted">{row.method} {row.path}</span>}
+              {row.model ? <ModelName entry={row} /> : <span className="gc-muted">{row.method} {row.path}</span>}
               {row.status !== null && row.status >= 400 ? <span className="gc-narrow-only"> {statusBadge(row.status)}</span> : null}
             </span>
           ) },
@@ -154,7 +202,7 @@ export function RequestLog({ filter, showKey = true }: { filter: RequestFilter; 
           </Button>
         </div>
       )}
-      <Drawer isOpen={selected !== null} onClose={() => setSelected(null)} title={selected?.model ?? 'Request'}
+      <Drawer isOpen={selected !== null} onClose={() => setSelected(null)} title={selected ? modelTitle(selected) : 'Request'}
         subtitle={selected ? formatDateTime(selected.startedAt) : undefined} eyebrow="Request">
         {selected && <RequestDetailView key={selected.tag} entry={selected} />}
       </Drawer>

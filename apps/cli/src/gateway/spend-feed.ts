@@ -1,4 +1,4 @@
-import type { AttributedSpendPage } from '../proxy/spend-attribution.js'
+import { VIDEO_BUDGET_CAPABILITY, type AttributedSpendPage } from '../proxy/spend-attribution.js'
 import { GATEWAY_CONTROL_HEADER } from '../routing-policy/policy.js'
 
 const DEFAULT_POLL_INTERVAL_MS = 2_000
@@ -35,6 +35,7 @@ export class SpendFeedPoller {
   private _bootId: string | null = null
   private _after = 0
   private _state: SpendFeedState = 'unreachable'
+  private _videoBudget = false
   private _timer: ReturnType<typeof setInterval> | null = null
   private _polling: Promise<void> | null = null
 
@@ -42,6 +43,11 @@ export class SpendFeedPoller {
 
   get state(): SpendFeedState {
     return this._state
+  }
+
+  /** Whether the buyer, as last read, refuses videos priced above a key's room (see VIDEO_BUDGET_CAPABILITY). */
+  get videoBudgetEnforced(): boolean {
+    return this._state === 'reporting' && this._videoBudget
   }
 
   start(): void {
@@ -97,6 +103,7 @@ export class SpendFeedPoller {
         this._setState('unsupported')
         return
       }
+      this._videoBudget = Array.isArray(page.capabilities) && page.capabilities.includes(VIDEO_BUDGET_CAPABILITY)
       this._setState('reporting')
       if (page.bootId !== this._bootId) {
         // A different feed (an in-memory one after a buyer restart, or a

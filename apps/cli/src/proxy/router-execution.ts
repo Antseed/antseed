@@ -68,7 +68,10 @@ export function eligibleRouterCandidates(
 ): ExecutionCandidate[] {
   const protocol = detectRequestServiceApiProtocol(request)
   const explicitProvider = getExplicitProviderOverride(request)
-  const candidates: ExecutionCandidate[] = []
+  // A seller may advertise one model under several names (`glm-5.3`, `glm-5-3`, `z-ai-glm-5-3`)
+  // that all resolve to the same service. Keep one destination per seller, provider and service:
+  // routing protocols require unique candidate IDs. The cheapest advertised offer wins.
+  const candidatesByKey = new Map<string, ExecutionCandidate>()
   const offers = buildNetworkServiceOffers(peers)
   // As in automatic routing, a missing cached-input price lowers a seller's effective reputation
   // only when some seller of the same request does advertise one.
@@ -96,9 +99,16 @@ export function eligibleRouterCandidates(
       preferCachedPricing,
       offer.inputUsdPerMillion === 0 && offer.outputUsdPerMillion === 0,
     )
-    if (!preferences || isModelRouteEligible({ ...candidate, effectiveReputationScore }, preferences)) candidates.push(candidate)
+    if (preferences && !isModelRouteEligible({ ...candidate, effectiveReputationScore }, preferences)) continue
+    const key = JSON.stringify([candidate.peerId, candidate.provider, candidate.serviceId])
+    const existing = candidatesByKey.get(key)
+    if (!existing || routeCandidatePrice(candidate) < routeCandidatePrice(existing)) candidatesByKey.set(key, candidate)
   }
-  return candidates
+  return [...candidatesByKey.values()]
+}
+
+function routeCandidatePrice(candidate: Pick<RouteCandidate, 'inputUsdPerMillion' | 'outputUsdPerMillion'>): number {
+  return candidate.inputUsdPerMillion + candidate.outputUsdPerMillion
 }
 
 /**

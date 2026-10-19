@@ -336,6 +336,8 @@ const PROTOCOL_BASELINE_FIELDS: Partial<Record<ServiceApiProtocol, readonly stri
   'openai-responses': ['model', 'input', 'stream'],
   'anthropic-messages': ['model', 'messages', 'max_tokens', 'stream'],
   'typesafe-systemone': ['model', 'state', 'questions'],
+  'venice-video': ['model'],
+  'fal-video': ['model'],
 }
 
 /**

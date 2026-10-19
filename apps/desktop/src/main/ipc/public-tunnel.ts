@@ -8,6 +8,7 @@ import { resolveConnectDataDir } from '../runtime/process-manager.js';
 import { loadPublicTunnelSettings, savePublicTunnelSettings, type TunnelProvider } from '../public-tunnel/store.js';
 import { createPublicTunnelLifecycle, type PublicTunnelStatus } from '../public-tunnel/lifecycle.js';
 import { createTunnelConsole, parseTunnelLocation } from '../public-tunnel/console.js';
+import { consoleUpdatePaths, consoleUpdaterEnv } from '../public-tunnel/console-updates.js';
 
 const STATUS_ATTEMPTS = 60;
 const STATUS_INTERVAL_MS = 250;
@@ -70,6 +71,8 @@ export function registerPublicTunnelIpc(deps: { processManager: ProcessManager }
           NGROK_AUTHTOKEN: provider === 'ngrok' ? tunnelToken : '',
           ANTSEED_TUNNEL_PUBLIC_URL: publicUrl,
           ANTSEED_TUNNEL_API_KEY: apiKey,
+          // The console's Update button asks the app to update itself.
+          ...consoleUpdaterEnv(consoleUpdatePaths(resolveConnectDataDir())),
         },
       });
     },

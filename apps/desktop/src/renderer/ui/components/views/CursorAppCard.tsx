@@ -8,9 +8,8 @@ import {
   ViewIcon,
   ViewOffSlashIcon,
 } from '@hugeicons/core-free-icons';
-import { Modal } from '@antseed/ui';
+import { BrandIcon, Modal } from '@antseed/ui';
 import { usePublicEndpointModal } from '../tunnels/PublicEndpointModal';
-import { BrandIcon } from '../brand/BrandIcon';
 import styles from './VprToolsView.module.scss';
 import { recordUserAction } from '../../../modules/telemetry/actions';
 

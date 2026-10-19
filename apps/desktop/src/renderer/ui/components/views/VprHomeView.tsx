@@ -36,7 +36,7 @@ import { useEverFunded } from '../../hooks/useEverFunded';
 import type { ViewName } from '../../types';
 import { OverlayScrollArea } from '../OverlayScrollArea';
 import { BottomNotice } from '../BottomNotice';
-import { BrandIcon, isThemeAwareAppBrand, resolveBrandKey } from '../brand/BrandIcon';
+import { BrandIcon, isThemeAwareAppBrand, resolveBrandKey } from '@antseed/ui';
 import { VprModelRowList } from '../vpr/VprModelRows';
 import { hasSeenChats, rememberSeenChats, VprRecentChatsCard } from '../vpr/VprRecentChats';
 import { conversationRoutedPeerName } from '../../../modules/routing/conversations';

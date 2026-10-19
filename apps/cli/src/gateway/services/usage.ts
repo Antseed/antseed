@@ -3,7 +3,7 @@ import type { RequestDetail, RequestLogEntry, UsageReport, UsageSplit, UsageTota
 import { usdcToDecimalString } from '../money.js'
 import type { GatewayStore, RequestCursor, RequestLogFilter, RequestLogRow, UsageFilter, UsageGroupBy, UsageSplitRow, UsageTotalsRow } from '../store.js'
 
-const USAGE_GROUP_BYS: readonly UsageGroupBy[] = ['hour', 'day', 'model', 'key', 'member', 'peer', 'workspace', 'user']
+const USAGE_GROUP_BYS: readonly UsageGroupBy[] = ['hour', 'day', 'model', 'key', 'member', 'peer', 'router', 'workspace', 'user']
 const DAY_MS = 24 * 60 * 60 * 1000
 const DEFAULT_USAGE_RANGE_MS = 30 * DAY_MS
 const MAX_REQUEST_PAGE = 200
@@ -50,6 +50,13 @@ export function parseGrouping(groupByRaw: string | null | undefined, splitByRaw:
   return { groupBy, splitBy }
 }
 
+/** A router filter: a 40-hex peer id; null when absent. */
+export function parseRouterFilter(raw: string | null | undefined): string | null {
+  const peerId = raw?.trim().toLowerCase() || null
+  if (peerId && !/^[0-9a-f]{40}$/.test(peerId)) throw badRequest('router must be a routing service peer id (40 hex characters)')
+  return peerId
+}
+
 export function parseSearch(raw: string | null | undefined): string | null {
   const q = raw?.trim() || null
   if (q && q.length > MAX_QUERY) throw badRequest(`q is longer than ${MAX_QUERY} characters`)
@@ -90,10 +97,13 @@ export function requestDto(row: RequestLogRow): RequestLogEntry {
     model: row.model,
     status: row.status,
     sellerPeerId: row.sellerPeerId,
+    ...(row.servedModel ? { servedModel: row.servedModel } : {}),
+    ...(row.router ? { router: row.router } : {}),
     latencyMs: row.latencyMs,
     firstTokenMs: row.firstTokenMs,
     tokensPerSecond: row.tokensPerSecond,
     spent: row.spentUsdc === null ? null : usdcToDecimalString(row.spentUsdc),
+    ...(row.routingSpentUsdc !== null ? { routingSpent: usdcToDecimalString(row.routingSpentUsdc) } : {}),
     inputTokens: row.inputTokens,
     cachedInputTokens: row.cachedInputTokens,
     outputTokens: row.outputTokens,
@@ -190,14 +200,21 @@ export function listRequestPage(
 export function requestDetail(store: GatewayStore, tag: string, keyIds: readonly string[] | null): RequestDetail {
   const row = store.getRequest(tag, keyIds)
   if (!row) throw notFound('Request')
-  return { ...requestDto(row), requestBody: row.requestBody, responseBody: row.responseBody }
+  return { ...requestDto(row), routeSelection: row.routeSelection, requestBody: row.requestBody, responseBody: row.responseBody }
+}
+
+type CsvEntry = RequestLogEntry & { routerPeerId: string | null; routerService: string | null; routerRank: number | null }
+
+/** The log entry with its router flattened into columns. */
+function csvEntry(entry: RequestLogEntry): CsvEntry {
+  return { ...entry, routerPeerId: entry.router?.peerId ?? null, routerService: entry.router?.service ?? null, routerRank: entry.router?.rank ?? null }
 }
 
 /** Explicit export columns: never request or response bodies. */
-const CSV_COLUMNS: ReadonlyArray<keyof RequestLogEntry> = [
+const CSV_COLUMNS: ReadonlyArray<keyof CsvEntry> = [
   'tag', 'startedAt', 'finishedAt', 'keyId', 'keyLabel', 'workspaceId', 'memberId', 'endUser', 'method', 'path',
-  'model', 'status', 'sellerPeerId', 'latencyMs', 'firstTokenMs', 'tokensPerSecond', 'spent', 'inputTokens', 'cachedInputTokens', 'outputTokens',
-  'errorCode', 'errorMessage',
+  'model', 'servedModel', 'status', 'sellerPeerId', 'routerPeerId', 'routerService', 'routerRank', 'latencyMs', 'firstTokenMs', 'tokensPerSecond', 'spent', 'inputTokens', 'cachedInputTokens', 'outputTokens',
+  'routingSpent', 'errorCode', 'errorMessage',
 ]
 
 /** RFC 4180 quoting; cells that a spreadsheet would run as a formula are prefixed with a quote. */
@@ -226,7 +243,7 @@ export function* requestCsvChunks(
     if (rows.length === 0) break
     let chunk = ''
     for (const row of rows) {
-      const entry = requestDto(row)
+      const entry = csvEntry(requestDto(row))
       chunk += `${CSV_COLUMNS.map((column) => csvCell(entry[column])).join(',')}\r\n`
     }
     yield chunk

@@ -231,6 +231,10 @@ function makeSpmMock(overrides: Record<string, unknown> = {}): any {
     endBillableRequest: vi.fn(() => { inFlight -= 1; }),
     hasInFlightRequests: () => inFlight > 0,
     hasClosingChannel: () => false,
+    // The real one waits for in-flight requests, then settles.
+    closeSessionWhenIdle(buyerPeerId: string) {
+      return this.settleSession(buyerPeerId);
+    },
     ...oneOffSpmMock(),
     ...overrides,
   };

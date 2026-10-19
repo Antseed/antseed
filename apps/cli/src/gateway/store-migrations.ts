@@ -333,4 +333,44 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE gateway_requests ADD COLUMN video_job_id TEXT;
   CREATE INDEX gateway_requests_video_job ON gateway_requests(video_job_id) WHERE video_job_id IS NOT NULL;
   `,
+  // Accepted video jobs not yet delivered: their price counts against the caps of whoever created them until the
+  // video is delivered, the job fails or the row expires, also across gateway restarts.
+  `
+  CREATE TABLE video_commitments (
+    job TEXT PRIMARY KEY,
+    key_id TEXT NOT NULL,
+    member_id TEXT,
+    workspace_id TEXT NOT NULL,
+    amount_usdc INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    delivered_at INTEGER
+  );
+  `,
+  // Requests a routing service ranked: the router (peer and service), which of its recommendations served
+  // the request (1 = its first pick) and the model that answered. Spend that paid a router for its ranking
+  // is a routing fee; every spend of a routed request names its router, so usage can group by router.
+  `
+  ALTER TABLE gateway_requests ADD COLUMN router_peer_id TEXT;
+  ALTER TABLE gateway_requests ADD COLUMN router_service TEXT;
+  ALTER TABLE gateway_requests ADD COLUMN router_rank INTEGER;
+  ALTER TABLE gateway_requests ADD COLUMN served_model TEXT;
+  ALTER TABLE ledger_entries ADD COLUMN routing_fee INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE ledger_entries ADD COLUMN router_peer_id TEXT;
+  ALTER TABLE request_rollups ADD COLUMN router_peer_id TEXT;
+  `,
+  // Models and routers a console member (or an API-key session) starred, listed first on the Models page.
+  `
+  CREATE TABLE favorite_models (
+    owner_kind TEXT NOT NULL CHECK (owner_kind IN ('member', 'key')),
+    owner_id TEXT NOT NULL,
+    model TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (owner_kind, owner_id, model)
+  );
+  `,
+  // Model-routed requests: why automatic routing picked the seller that served it (its rank, how it was
+  // picked and the numbers it was ranked by), as the buyer reported it.
+  `
+  ALTER TABLE gateway_requests ADD COLUMN route_selection TEXT;
+  `,
 ]

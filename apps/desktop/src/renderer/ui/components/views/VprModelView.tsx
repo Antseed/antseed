@@ -24,7 +24,7 @@ import type { DiscoverRow, DiscoverVerificationLink } from '../../../core/state'
 import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
 import { useActions } from '../../hooks/useActions';
 import type { ViewName } from '../../types';
-import { BrandIcon } from '../brand/BrandIcon';
+import { BrandIcon } from '@antseed/ui';
 import { InfoTooltip } from '../InfoTooltip';
 import { formatUsdShort, VprBadge, VprCard, VprPage, VprSettingRow, VprStatRow, VprStatTile, VprToggle } from '../vpr/VprKit';
 import styles from './VprModelView.module.scss';

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { Add01Icon, ArrowDown01Icon, ArrowLeft01Icon, ArrowReloadHorizontalIcon, ArrowRight01Icon, ArrowUpRight01Icon, Copy01Icon, Settings02Icon, SquareLock01Icon, Tick02Icon } from '@hugeicons/core-free-icons';
-import { Modal } from '@antseed/ui';
+import { BrandIcon, isThemeAwareAppBrand, Modal, resolveBrandKey } from '@antseed/ui';
 import type { InstalledAppEntry, SystemProxyProfileSummary } from '../../../types/bridge';
 import { chooseBestVprRoute, isPeerRoutable } from '../../../modules/routing/select';
 import { routesForSelectedModel } from '../../../modules/catalog/view-models';
@@ -15,7 +15,6 @@ import {
 } from '../../../modules/routing/tools';
 import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
 import { useActions } from '../../hooks/useActions';
-import { BrandIcon, isThemeAwareAppBrand, resolveBrandKey } from '../brand/BrandIcon';
 import { VprBadge, VprPage, VprSearch } from '../vpr/VprKit';
 import { TelegramBotCard } from './TelegramBotCard';
 import { CursorAppCard } from './CursorAppCard';

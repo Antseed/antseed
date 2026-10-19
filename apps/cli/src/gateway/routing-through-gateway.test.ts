@@ -66,6 +66,11 @@ async function setup(t: TestContext) {
   // The network: every send is charged and recorded against its request, like a paid seller.
   const sent: Sent[] = []
   const rankedCandidates: string[][] = []
+  // Sellers that refuse with a 503 (unpaid), so the next recommendation is tried; an empty ranking fails the router.
+  const failingPeers = new Set<string>()
+  const ranking = { empty: false }
+  // Headers every seller adds to its answers (a dishonest one may name a router).
+  const sellerHeaders: Record<string, string> = {}
   let proxy: BuyerProxy
   const node = {
     router: { allowsPeerForPolicy: () => true, onResult: () => {} },
@@ -74,12 +79,15 @@ async function setup(t: TestContext) {
       let body: Record<string, unknown> | null = null
       try { body = JSON.parse(Buffer.from(request.body).toString('utf8')) } catch { /* the ranking body is not inspected */ }
       sent.push({ peerId: peer.peerId, body })
+      if (failingPeers.has(peer.peerId)) {
+        return { requestId: request.requestId, statusCode: 503, headers: { 'content-type': 'application/json', ...sellerHeaders }, body: Buffer.from('{"error":{"message":"busy"}}') }
+      }
       ;(proxy as any)._spendAttribution.record({
         requestId: request.requestId, sellerPeerId: peer.peerId,
         amountUsdc: String(peer.peerId === router.peerId ? RANKING_USDC : INFERENCE_USDC),
         inputTokens: '10', cachedInputTokens: '0', outputTokens: '5', outputImages: '0',
       })
-      return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{"choices":[]}') }
+      return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json', ...sellerHeaders }, body: Buffer.from('{"choices":[]}') }
     },
   }
   // The routing service: ranks the candidates it is sent, best trust first, and is paid through the buyer.
@@ -92,12 +100,13 @@ async function setup(t: TestContext) {
         { requestId: `${request.requestId}-rank`, method: 'POST', path: '/v1/routing/rank', headers: {}, body: new Uint8Array() })
       const byTrust = peers.filter((peer) => candidates.some((candidate) => candidate.peerId === peer.peerId))
         .sort((a, b) => (b.onChainReputationScore ?? 0) - (a.onChainReputationScore ?? 0))
+      if (ranking.empty) return []
       const routes = byTrust.map((peer) => ({ serviceId: 'gpt-5', peerId: peer.peerId, provider: 'openai' }))
       assert.equal(context.acceptRecommendations(routes), true)
       return routes
     },
   }
-  proxy = new BuyerProxy({ port: 0, dataDir: join(dir, 'buyer'), node: node as any, modelRoutingClient: modelRoutingClient as any })
+  proxy = new BuyerProxy({ adaptiveRouting: { spreadTolerance: 0, explorationRate: 0 }, port: 0, dataDir: join(dir, 'buyer'), node: node as any, modelRoutingClient: modelRoutingClient as any })
   ;(proxy as any)._getPeers = async () => [first, second, router]
   ;(proxy as any)._cacheLastUpdatedAtMs = Date.now()
   ;(proxy as any)._mergeStateFile = async () => {}
@@ -132,9 +141,9 @@ async function setup(t: TestContext) {
     const text = await res.text()
     let json: any = null
     try { json = JSON.parse(text) } catch { /* not json */ }
-    return { status: res.status, json, text }
+    return { status: res.status, json, text, headers: res.headers }
   }
-  return { store, feed, call, sent, rankedCandidates }
+  return { store, feed, call, sent, rankedCandidates, failingPeers, ranking, sellerHeaders }
 }
 
 const chatBody = { model: ROUTER_MODEL, messages: [{ role: 'user', content: 'Hello' }], routing: { cost_quality_tradeoff: 7 } }
@@ -151,14 +160,98 @@ test('a key naming a routing service gets an answer from the seller it picked, a
   assert.equal(inference['routing'], undefined, 'routing options never reach the seller')
   assert.equal(inference['model'], 'gpt-5')
 
+  assert.equal(res.headers.get('x-antseed-router-peer-id'), router.peerId, 'the client sees which router ranked it')
+  assert.equal(res.headers.get('x-antseed-router-service'), 'alpha-route')
+  assert.equal(res.headers.get('x-antseed-router-rank'), '1')
+
   const [row] = ctx.store.listRequests({ keyId: key.id })
   assert.equal(row!.status, 200)
   assert.equal(row!.model, 'alpha-route')
   assert.equal(row!.sellerPeerId, first.peerId, 'the log names the seller that answered')
+  assert.equal(row!.servedModel, 'gpt-5', 'and the model the router picked')
+  assert.deepEqual(row!.router, { peerId: router.peerId, service: 'alpha-route', rank: 1 })
 
-  // Both the ranking and the inference are charged to the key.
+  // Both the ranking and the inference are charged to the key; the ranking is told apart as the router's fee.
   await ctx.feed.pollOnce()
   assert.equal(ctx.store.keyUsageSummaries([key.id], 0).get(key.id)!.spentUsdc, RANKING_USDC + INFERENCE_USDC)
+  const settled = ctx.store.getRequest(row!.tag)!
+  assert.equal(settled.spentUsdc, RANKING_USDC + INFERENCE_USDC)
+  assert.equal(settled.routingSpentUsdc, RANKING_USDC)
+  assert.equal(settled.costPending, false)
+
+  // Usage groups by router and the log filters by it.
+  const byRouter = ctx.store.usageReport({ keyId: key.id }, 'router')
+  assert.deepEqual(byRouter.groups.map((group) => [group.group, group.requests, group.spentUsdc]), [[router.peerId, 1, RANKING_USDC + INFERENCE_USDC]])
+  assert.equal(ctx.store.listRequests({ keyId: key.id, routerPeerId: router.peerId }).length, 1)
+  assert.equal(ctx.store.listRequests({ keyId: key.id, routerPeerId: first.peerId }).length, 0)
+})
+
+test('a routed request served by the router\'s second pick records that rank', async (t) => {
+  const ctx = await setup(t)
+  const { secret, key } = ctx.store.createKey({ label: 'team', limits: NO_LIMITS, expiresAt: null, routingPolicy: null })
+  ctx.failingPeers.add(second.peerId)
+
+  const res = await ctx.call(secret, '/v1/chat/completions', chatBody)
+  assert.equal(res.status, 200, res.text)
+  assert.deepEqual(ctx.sent.map((entry) => entry.peerId), [router.peerId, second.peerId, first.peerId])
+  assert.equal(res.headers.get('x-antseed-router-rank'), '2')
+  const [row] = ctx.store.listRequests({ keyId: key.id })
+  assert.equal(row!.sellerPeerId, first.peerId)
+  assert.deepEqual(row!.router, { peerId: router.peerId, service: 'alpha-route', rank: 2 })
+})
+
+test('a seller cannot name a router: its router headers are dropped on routed and direct requests', async (t) => {
+  const ctx = await setup(t)
+  const { secret, key } = ctx.store.createKey({ label: 'team', limits: NO_LIMITS, expiresAt: null, routingPolicy: null })
+  const fake = 'f'.repeat(40)
+  Object.assign(ctx.sellerHeaders, { 'X-Antseed-Router-Peer-Id': fake, 'x-antseed-router-service': 'fake-route', 'x-antseed-router-rank': '9' })
+
+  const routed = await ctx.call(secret, '/v1/chat/completions', chatBody)
+  assert.equal(routed.status, 200, routed.text)
+  assert.equal(routed.headers.get('x-antseed-router-peer-id'), router.peerId)
+  assert.equal(routed.headers.get('x-antseed-router-rank'), '1')
+
+  ctx.failingPeers.add(second.peerId)
+  ctx.failingPeers.add(first.peerId)
+  const refused = await ctx.call(secret, '/v1/chat/completions', { ...chatBody, model: `${first.peerId}@gpt-5` })
+  assert.equal(refused.headers.get('x-antseed-router-peer-id'), null, 'a seller refusal names no router either')
+  ctx.failingPeers.clear()
+
+  const direct = await ctx.call(secret, '/v1/chat/completions', { model: 'gpt-5', messages: [{ role: 'user', content: 'Hello' }] })
+  assert.equal(direct.status, 200, direct.text)
+  assert.equal(direct.headers.get('x-antseed-router-peer-id'), null)
+
+  const rows = ctx.store.listRequests({ keyId: key.id })
+  assert.deepEqual(rows.map((row) => row.router?.peerId ?? null), [null, null, router.peerId], 'only the routed request has a router, and the real one')
+  assert.equal(ctx.store.listRequests({ keyId: key.id, routerPeerId: fake }).length, 0)
+})
+
+test('when every recommended seller refuses, the log keeps the last pick tried and the failure', async (t) => {
+  const ctx = await setup(t)
+  const { secret, key } = ctx.store.createKey({ label: 'team', limits: NO_LIMITS, expiresAt: null, routingPolicy: null })
+  ctx.failingPeers.add(first.peerId)
+  ctx.failingPeers.add(second.peerId)
+
+  const res = await ctx.call(secret, '/v1/chat/completions', chatBody)
+  assert.equal(res.status, 503, res.text)
+  assert.deepEqual(ctx.sent.map((entry) => entry.peerId), [router.peerId, second.peerId, first.peerId])
+  const [row] = ctx.store.listRequests({ keyId: key.id })
+  assert.equal(row!.status, 503)
+  assert.deepEqual(row!.router, { peerId: router.peerId, service: 'alpha-route', rank: 2 }, 'rank 2 was tried last, not served')
+})
+
+test('a failed ranking is logged against the router, with no seller', async (t) => {
+  const ctx = await setup(t)
+  const { secret, key } = ctx.store.createKey({ label: 'team', limits: NO_LIMITS, expiresAt: null, routingPolicy: null })
+  ctx.ranking.empty = true
+
+  const res = await ctx.call(secret, '/v1/chat/completions', chatBody)
+  assert.equal(res.status, 502, res.text)
+  assert.equal(res.headers.get('x-antseed-router-peer-id'), router.peerId)
+  const [row] = ctx.store.listRequests({ keyId: key.id })
+  assert.equal(row!.status, 502)
+  assert.equal(row!.sellerPeerId, null, 'the router is not reported as the seller')
+  assert.deepEqual(row!.router, { peerId: router.peerId, service: 'alpha-route', rank: null })
 })
 
 test('a key limited to other models cannot use a routing service, and no ranking is bought', async (t) => {
@@ -191,4 +284,42 @@ test('/v1/models?type=router through a key lists the routers that key may use', 
 
   const limited = ctx.store.createKey({ label: 'limited', limits: NO_LIMITS, expiresAt: null, routingPolicy: { allowedModels: ['gpt-5'] } })
   assert.deepEqual((await ctx.call(limited.secret, '/v1/models?type=router')).json.data, [])
+})
+
+test('the request log keeps why automatic routing picked the seller that served each request', async (t) => {
+  const ctx = await setup(t)
+  const { secret, key } = ctx.store.createKey({ label: 'team', limits: NO_LIMITS, expiresAt: null })
+  const body = { model: 'gpt-5', messages: [{ role: 'user', content: 'Hello' }] }
+
+  // A seller cannot replace the buyer's explanation with its own.
+  const forged = Buffer.from(JSON.stringify({ rank: 1, of: 1, attempt: 0, pick: 'best', ordering: 'expected-cost', record: 'model', expectedCostUsd: 0, expectedSeconds: 0, successRate: 1, observations: 999, poolSize: 1, inFlight: 0 })).toString('base64url')
+  ctx.sellerHeaders['X-Antseed-Route-Selection'] = forged
+  const res = await ctx.call(secret, '/v1/chat/completions', body)
+  assert.equal(res.status, 200, res.text)
+  assert.notEqual(res.headers.get('x-antseed-route-selection'), forged)
+  const [row] = ctx.store.listRequests({ keyId: key.id })
+  const picked = ctx.store.getRequest(row!.tag)!.routeSelection
+  assert.equal(picked?.of, 2, 'the buyer\'s selection, not the seller\'s')
+  assert.equal(picked?.rank, 1)
+  assert.equal(picked?.of, 2)
+  assert.equal(picked?.attempt, 0)
+  assert.equal(picked?.pick, 'order')
+  assert.equal(picked?.ordering, 'trust', 'without routing preferences the buyer orders by trust')
+  assert.equal(picked?.record, 'none', 'nothing was known of the seller yet')
+
+  // The seller that served first now fails: the next one serves, as a failover.
+  ctx.failingPeers.add(row!.sellerPeerId!)
+  const again = await ctx.call(secret, '/v1/chat/completions', body)
+  assert.equal(again.status, 200, again.text)
+  const [latest] = ctx.store.listRequests({ keyId: key.id })
+  assert.notEqual(latest!.sellerPeerId, row!.sellerPeerId)
+  const failover = ctx.store.getRequest(latest!.tag)!.routeSelection
+  assert.equal(failover?.pick, 'failover')
+  assert.equal(failover?.rank, 2)
+  assert.equal(failover?.attempt, 1)
+
+  // A pinned request is not ranked, so it records no selection.
+  await ctx.call(secret, '/v1/chat/completions', { ...body, model: `${first.peerId}@gpt-5` })
+  const [pinned] = ctx.store.listRequests({ keyId: key.id })
+  assert.equal(ctx.store.getRequest(pinned!.tag)!.routeSelection, null)
 })

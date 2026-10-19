@@ -1,6 +1,6 @@
 import { once } from 'node:events'
 import type { ServerResponse } from 'node:http'
-import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, VIDEO_DOWNLOAD_MAX_BYTES, type RequestStreamCallbacks, type SerializedHttpRequest, type SerializedHttpResponse } from '@antseed/node'
+import { VIDEO_DELIVERED_HEADER, VIDEO_DELIVERY_UNRECORDED, VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_JOB_RETIRED_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, VIDEO_DOWNLOAD_MAX_BYTES, type RequestStreamCallbacks, type SerializedHttpRequest, type SerializedHttpResponse } from '@antseed/node'
 
 type SendDownload = (request: SerializedHttpRequest, callbacks: RequestStreamCallbacks, signal: AbortSignal) => Promise<SerializedHttpResponse>
 let activeDownloads = 0
@@ -10,7 +10,56 @@ const SELLER_ERROR_CODES = new Set([
   'video_download_failed', 'video_download_unavailable', 'video_download_busy', 'video_status_unavailable',
   'unsupported_video_download', 'unsupported_video_request', 'resource_ownership_unavailable',
 ])
-const RETURNED_STATUSES = new Set([400, 404, 409, 410, 413, 429, 502, 503, 504])
+const RETURNED_STATUSES = new Set([400, 404, 409, 410, 413, 429])
+/** The seller no longer has the job: it can never be delivered. */
+const JOB_GONE_STATUSES = new Set([404, 410])
+const RETIRED = { [VIDEO_JOB_RETIRED_HEADER]: '1' }
+const PROCESSING_STATUSES = new Set(['PROCESSING', 'QUEUED', 'PENDING', 'IN_QUEUE', 'IN_PROGRESS', 'RUNNING'])
+const FAILED_STATUSES = new Set(['FAILED', 'ERROR', 'CANCELLED', 'CANCELED'])
+
+/**
+ * One status vocabulary for every video seller and plugin version:
+ * - `processing` / `failed`: what the seller reported (`upstream_status` keeps its word). A JSON `completed`
+ *   becomes `failed` (`video_not_delivered`): a finished video arrives as the MP4 stream itself.
+ * - `unknown` (200): the seller answered but could not read the job's state right now; poll again.
+ * - `seller_unreachable` (502/504): the seller could not be reached; the job is kept, poll again later.
+ */
+export type VideoJobStatus = 'processing' | 'failed' | 'completed' | 'unknown' | 'seller_unreachable'
+
+export function normalizeVideoStatus(status: unknown): VideoJobStatus | null {
+  if (typeof status !== 'string') return null
+  const upper = status.toUpperCase()
+  if (PROCESSING_STATUSES.has(upper)) return 'processing'
+  if (FAILED_STATUSES.has(upper)) return 'failed'
+  if (upper === 'COMPLETED') return 'completed'
+  return null
+}
+
+function parseObject(body: Uint8Array): Record<string, unknown> | null {
+  if (body.length > 1024 * 1024) return null
+  try {
+    const parsed = JSON.parse(Buffer.from(body).toString('utf8')) as unknown
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null
+  } catch {
+    return null
+  }
+}
+
+/** A seller's JSON status answer with `status` mapped to the shared vocabulary; unchanged when it has no known status. */
+function withNormalizedStatus(body: Uint8Array): Uint8Array {
+  const parsed = parseObject(body)
+  const status = normalizeVideoStatus(parsed?.status)
+  if (!parsed || !status) return body
+  // Finished videos arrive as an MP4 stream, so a JSON "completed" means the seller will not deliver one.
+  if (status === 'completed') {
+    return Buffer.from(JSON.stringify({
+      status: 'failed',
+      upstream_status: parsed.status,
+      error: { code: 'video_not_delivered', message: 'The seller reported the job as completed but did not send the video' },
+    }))
+  }
+  return Buffer.from(JSON.stringify({ ...parsed, status, upstream_status: parsed.status }))
+}
 
 function sellerErrorCode(body: Uint8Array): string | null {
   if (body.length > 4096) return null
@@ -23,21 +72,40 @@ function sellerErrorCode(body: Uint8Array): string | null {
 }
 
 /** Streams a finished video from the seller that owns the job to the client. */
-export async function downloadVideo(request: SerializedHttpRequest, response: ServerResponse, send: SendDownload, clientSignal: AbortSignal): Promise<void> {
-  const error = (status: number, code: string) => {
-    response.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' })
-    response.end(JSON.stringify({ error: { code, message: 'Video download unavailable' } }))
+/**
+ * Streams a finished video, or answers the job's status. Before an answer that
+ * ends the job (it failed, including a JSON `completed` with no video, or the
+ * seller answers 404/410: it no longer has the job), `retire` must durably
+ * retire it; that answer then carries VIDEO_JOB_RETIRED_HEADER. When the job
+ * cannot be retired, the answer is a retryable `unknown` instead, so no caller
+ * treats the job as finished while it can still be charged.
+ */
+export async function downloadVideo(
+  request: SerializedHttpRequest,
+  response: ServerResponse,
+  send: SendDownload,
+  clientSignal: AbortSignal,
+  retire: () => Promise<boolean> = async () => true,
+): Promise<void> {
+  const reply = (httpStatus: number, body: Record<string, unknown>, extraHeaders: Record<string, string> = {}) => {
+    response.writeHead(httpStatus, { 'content-type': 'application/json', 'cache-control': 'no-store', ...extraHeaders })
+    response.end(JSON.stringify(body))
   }
+  const error = (httpStatus: number, code: string) => reply(httpStatus, { error: { code, message: 'Video download unavailable' } })
+  const pending = (httpStatus: number, status: 'unknown' | 'seller_unreachable', code: string, message: string) =>
+    reply(httpStatus, { status, retryable: true, error: { code, message } })
   if (activeDownloads >= 2) { error(429, 'video_download_busy'); return }
   activeDownloads += 1
   const signal = AbortSignal.any([clientSignal, AbortSignal.timeout(5 * 60_000)])
   const headers = Object.fromEntries(Object.entries(request.headers).filter(([key]) => !['range', 'if-range', 'content-length', 'accept-encoding'].includes(key.toLowerCase())))
   let length: number | null = null
   let received = 0
+  let sellerAnswered = false
   try {
     const body = request.method === 'GET' ? new Uint8Array(0) : request.body
     const result = await send({ ...request, headers: { ...headers, [VIDEO_DOWNLOAD_STREAM_HEADER]: VIDEO_DOWNLOAD_STREAM_VERSION }, body }, {
       onResponseStart: (start, metadata) => {
+        sellerAnswered = true
         if (!metadata.streaming) return
         const lengthHeader = start.headers['content-length']
         length = lengthHeader === undefined ? null : Number(lengthHeader)
@@ -55,20 +123,47 @@ export async function downloadVideo(request: SerializedHttpRequest, response: Se
     signal.throwIfAborted()
     if (!response.headersSent) {
       // A JSON answer instead of a stream: a status such as Venice "PROCESSING", or a seller error.
-      if (result.headers['content-type']?.startsWith('application/json') && result.statusCode < 500) {
-        response.writeHead(result.statusCode, { 'content-type': 'application/json', 'cache-control': 'no-store' })
-        response.end(Buffer.from(result.body))
+      const isJson = result.headers['content-type']?.startsWith('application/json') === true
+      if (isJson && result.statusCode < 500) {
+        const answer = result.statusCode === 200 ? withNormalizedStatus(result.body) : result.body
+        const ends = result.statusCode === 200 ? parseObject(answer)?.status === 'failed' : JOB_GONE_STATUSES.has(result.statusCode)
+        if (ends && !await retire().catch(() => false)) {
+          pending(200, 'unknown', 'video_status_unavailable', 'The video job status could not be recorded; poll again')
+          return
+        }
+        response.writeHead(result.statusCode, { 'content-type': 'application/json', 'cache-control': 'no-store', ...(ends ? RETIRED : {}) })
+        response.end(Buffer.from(answer))
         return
       }
-      const code = result.headers['content-type']?.startsWith('application/json') ? sellerErrorCode(result.body) : null
-      error(RETURNED_STATUSES.has(result.statusCode) ? result.statusCode : 502, code ?? 'video_download_unavailable')
+      const code = isJson ? sellerErrorCode(result.body) : null
+      if (JOB_GONE_STATUSES.has(result.statusCode)) {
+        if (!await retire().catch(() => false)) {
+          pending(200, 'unknown', 'video_status_unavailable', 'The video job status could not be recorded; poll again')
+          return
+        }
+        reply(result.statusCode, { error: { code: code ?? 'video_download_unavailable', message: 'Video download unavailable' } }, RETIRED)
+        return
+      }
+      if (RETURNED_STATUSES.has(result.statusCode)) { error(result.statusCode, code ?? 'video_download_unavailable'); return }
+      // The seller answered, so it is reachable; it just could not read the job's state right now.
+      pending(200, 'unknown', code ?? 'video_status_unavailable', 'The seller could not read the video job status right now; poll again')
       return
     }
     if (result.statusCode !== 200 || (length !== null && received !== length)) throw new Error('Incomplete video')
+    // Only a file the buyer accepted as the finished video is a delivery (and is charged). Any other stream is cut
+    // off, so no client or gateway takes it for one. A rejected file is retired first (it would only be rejected
+    // again), so the next poll answers it is gone and a gateway stops holding its price; a good file whose delivery
+    // could not be saved keeps its job, so it can be downloaded again.
+    const delivered = result.headers[VIDEO_DELIVERED_HEADER]
+    if (delivered !== '1') {
+      if (delivered !== VIDEO_DELIVERY_UNRECORDED) await retire().catch(() => false)
+      throw new Error('Video not accepted')
+    }
     response.end()
   } catch {
     if (response.headersSent || clientSignal.aborted) response.destroy()
-    else error(signal.aborted ? 504 : 502, 'video_download_failed')
+    else if (sellerAnswered) error(502, 'video_download_failed')
+    else pending(signal.aborted ? 504 : 502, 'seller_unreachable', 'video_download_failed', 'The seller holding this video job could not be reached; the job is kept, poll again later')
   } finally {
     activeDownloads -= 1
   }

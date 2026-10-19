@@ -78,7 +78,7 @@ function Channels({ workspaceId, canCooperate, onAuthorize }: { workspaceId: str
   }, [nextReady])
 
   const close = useConsoleMutation({
-    mutationFn: (channel: Channel) => api.wallet.closeChannel(workspaceId, channel.peerId),
+    mutationFn: (channel: Channel) => api.wallet.closeChannel(workspaceId, channel.peerId, channel.channelId),
     onSuccess: () => {
       setDialog(null)
       toast('Channel closed by the seller')

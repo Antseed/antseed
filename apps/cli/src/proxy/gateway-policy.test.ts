@@ -8,6 +8,7 @@ import type { PeerInfo, SerializedHttpRequest } from '@antseed/node'
 import { BuyerProxy, type BuyerBalanceReader, type BuyerProxyConfig } from './buyer-proxy.js'
 import { BUYER_IDENTITY_HEADER } from './request-utils.js'
 import { SPEND_ATTRIBUTION_HEADER } from './spend-attribution.js'
+import { decodeServedSelection, ROUTE_SELECTION_HEADER, type RouteSelection } from './route-selection.js'
 import {
   GATEWAY_CONTROL_HEADER,
   GATEWAY_CONTROL_SECRET_FILE,
@@ -58,7 +59,7 @@ async function startHarness(t: TestContext, peers: PeerInfo[], extra: Partial<Bu
       return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
     },
   }
-  proxy = new BuyerProxy({ port: 0, dataDir, node: node as any, ...extra })
+  proxy = new BuyerProxy({ adaptiveRouting: { spreadTolerance: 0, explorationRate: 0 }, port: 0, dataDir, node: node as any, ...extra })
   ;(proxy as any)._getPeers = async () => peers
   ;(proxy as any)._cacheLastUpdatedAtMs = Date.now()
   ;(proxy as any)._mergeStateFile = async () => {}
@@ -250,8 +251,11 @@ test('route-preview shares routing logic and explains ineligible sellers', async
   assert.equal(body.model, 'gpt-5')
   const byId = new Map(body.candidates.map((candidate) => [candidate['peerId'], candidate]))
   assert.deepEqual(Object.keys(body.candidates[0]!).sort(), [
-    'displayName', 'eligible', 'inputUsdPerMillion', 'outputUsdPerMillion', 'peerId', 'rank', 'reasons', 'trustScore',
+    'displayName', 'eligible', 'inputUsdPerMillion', 'outputUsdPerMillion', 'peerId', 'rank', 'reasons', 'selection', 'trustScore',
   ])
+  // Only eligible sellers carry the numbers routing ranked them by.
+  assert.equal(byId.get(pricey.peerId)?.['selection'], null)
+  assert.equal((byId.get(cheap.peerId)?.['selection'] as { coolingDown?: boolean } | null)?.coolingDown, true)
   assert.equal(byId.get(pricey.peerId)?.['eligible'], false)
   assert.deepEqual(byId.get(pricey.peerId)?.['reasons'], ['input price $9 over cap $5'])
   assert.deepEqual(byId.get(tee.peerId)?.['reasons'], ['trust 40 below 60'])
@@ -265,6 +269,80 @@ test('route-preview shares routing logic and explains ineligible sellers', async
 
   const bad = await fetch(`${h.url}/_antseed/route-preview?model=gpt-5`, { headers: { [GATEWAY_CONTROL_HEADER]: SECRET, [ROUTING_POLICY_HEADER]: '!!' } })
   assert.equal(bad.status, 400)
+})
+
+test('route-preview explains each eligible seller with the numbers routing ranked it by', async (t) => {
+  const twin = makePeer('d', { input: 1, output: 1, trust: 99 })
+  const h = await startHarness(t, [cheap, twin], {}, true)
+  const proxy = h.proxy as any
+  for (let i = 0; i < 6; i += 1) proxy._recordSellerSuccess(cheap.peerId, 'gpt-5', { firstTokenMs: 400, streamMs: 2000, outputTokens: 200, streamed: true })
+  for (let i = 0; i < 4; i += 1) proxy._recordSellerFailure(twin.peerId, 'other-model', 'seller-5xx')
+
+  const res = await fetch(`${h.url}/_antseed/route-preview?model=gpt-5`, { headers: withPolicy({}) })
+  const body = await res.json() as { candidates: Array<{ peerId: string; rank: number | null; selection: RouteSelection | null }> }
+  const byId = new Map(body.candidates.map((candidate) => [candidate.peerId, candidate]))
+  const best = byId.get(cheap.peerId)!.selection!
+  assert.equal(byId.get(cheap.peerId)!.rank, 1)
+  assert.equal(best.record, 'model')
+  assert.ok(best.observations > 5.9 && best.observations <= 6)
+  assert.ok(best.successRate > 0.8)
+  assert.equal(best.firstTokenMs, 400)
+  assert.equal(best.tokensPerSecond, 100)
+  assert.equal(best.failing, false)
+  assert.equal(best.stale, false)
+  // Failures on its other models count against the twin at half weight.
+  const borrowed = byId.get(twin.peerId)!.selection!
+  assert.equal(borrowed.record, 'other-models')
+  assert.ok(borrowed.successRate < best.successRate)
+  assert.equal(borrowed.lastFailureReason, 'seller-5xx')
+  assert.ok(borrowed.expectedCostUsd > best.expectedCostUsd)
+  // Without routing preferences the buyer orders by trust and spreads nothing.
+  assert.equal(best.ordering, 'trust')
+  assert.equal(best.poolSize, 0)
+  assert.equal(best.sharesTraffic, false)
+  const sorted = await fetch(`${h.url}/_antseed/route-preview?model=gpt-5`, { headers: withPolicy({ sort: 'price' }) })
+  const sortedBody = await sorted.json() as { candidates: Array<{ selection: RouteSelection | null }> }
+  assert.ok(sortedBody.candidates.every((candidate) => candidate.selection?.ordering === 'price'))
+})
+
+test('route-preview shows the sellers that share a model\'s traffic and their share', async (t) => {
+  const twin = makePeer('d', { input: 1, output: 1, trust: 99 })
+  const h = await startHarness(t, [cheap, twin], { adaptiveRouting: { explorationRate: 0 }, routingPreferences: { ...prefs60, minTrustScore: 0 } })
+  const res = await fetch(`${h.url}/_antseed/route-preview?model=gpt-5`, { headers: withPolicy({}) })
+  const body = await res.json() as { candidates: Array<{ selection: RouteSelection | null }> }
+  const shares = body.candidates.map((candidate) => candidate.selection!)
+  assert.ok(shares.every((selection) => selection.ordering === 'expected-cost' && selection.sharesTraffic && selection.poolSize === 2))
+  assert.ok(Math.abs(shares.reduce((sum, selection) => sum + selection.trafficShare!, 0) - 1) < 1e-9)
+})
+
+test('a served request names its seller\'s rank and how it was picked, and a failover says so', async (t) => {
+  const third = makePeer('c', { input: 0.5, output: 0.5, trust: 99 })
+  const h = await startHarness(t, [cheap, pricey, third])
+  const ok = await chat(h, withPolicy({}))
+  const served = decodeServedSelection(ok.headers.get(ROUTE_SELECTION_HEADER) ?? undefined)
+  assert.equal(served?.rank, 1)
+  assert.equal(served?.attempt, 0)
+  assert.equal(served?.pick, 'order')
+  assert.equal(served?.ordering, 'trust')
+  assert.equal(served?.of, 3)
+
+  ;(h.proxy as any)._node.sendRequest = async (peer: PeerInfo, request: SerializedHttpRequest) => {
+    const status = peer.peerId === pricey.peerId ? 503 : 200
+    return { requestId: request.requestId, statusCode: status, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
+  }
+  const failover = await chat(h, withPolicy({ modelRoutes: { 'gpt-5': { peerIds: [pricey.peerId, cheap.peerId] } } }))
+  const next = decodeServedSelection(failover.headers.get(ROUTE_SELECTION_HEADER) ?? undefined)
+  assert.equal(next?.rank, 2)
+  assert.equal(next?.attempt, 1)
+  assert.equal(next?.pick, 'failover')
+  assert.equal(next?.routeChainPosition, 2)
+})
+
+test('a malformed or oversized route-selection header decodes to null', () => {
+  assert.equal(decodeServedSelection(undefined), null)
+  assert.equal(decodeServedSelection('!!'), null)
+  assert.equal(decodeServedSelection(Buffer.from(JSON.stringify({ rank: 1 })).toString('base64url')), null)
+  assert.equal(decodeServedSelection('a'.repeat(4096)), null)
 })
 
 test('requireTee only admits sellers advertising the TEE verifier, on automatic, pinned and preview paths', async (t) => {
@@ -560,9 +638,9 @@ test('without a control secret the attributed-spend feed stays readable and unac
 test('latency and throughput are measured per seller and model', async (t) => {
   const h = await startHarness(t, [cheap])
   const proxy = h.proxy as any
-  proxy._recordPeerSpeed(cheap.peerId, 'gpt-5', 100, 1000, 50)
-  proxy._recordPeerSpeed(cheap.peerId, 'GPT-5', 200, 1000, 100)
-  proxy._recordPeerSpeed(cheap.peerId, 'big-model', 5000, 1000, 5)
+  proxy._recordSellerSuccess(cheap.peerId, 'gpt-5', { firstTokenMs: 100, streamMs: 1000, outputTokens: 50, streamed: true })
+  proxy._recordSellerSuccess(cheap.peerId, 'GPT-5', { firstTokenMs: 200, streamMs: 1000, outputTokens: 100, streamed: true })
+  proxy._recordSellerSuccess(cheap.peerId, 'big-model', { firstTokenMs: 5000, streamMs: 1000, outputTokens: 5, streamed: true })
   assert.equal(proxy._peerLatency(cheap.peerId, 'gpt-5'), 130)
   assert.equal(proxy._peerThroughput(cheap.peerId, 'gpt-5'), 65)
   assert.equal(proxy._peerLatency(cheap.peerId, 'big-model'), 5000)
@@ -570,7 +648,7 @@ test('latency and throughput are measured per seller and model', async (t) => {
   assert.equal(proxy._peerLatency(cheap.peerId, 'other'), null)
 })
 
-test('a streamed answer records time to first frame and tokens per second; a non-streamed one records neither', async (t) => {
+test('a streamed answer records time to first frame and tokens per second; a non-streamed one only an estimate of when it started', async (t) => {
   const h = await startHarness(t, [cheap])
   const proxy = h.proxy as any
   const sse = 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":40,"total_tokens":50}}\n\ndata: [DONE]\n\n'
@@ -594,7 +672,8 @@ test('a streamed answer records time to first frame and tokens per second; a non
 
   const h2 = await startHarness(t, [cheap])
   assert.equal((await chat(h2)).status, 200)
-  assert.equal((h2.proxy as any)._peerLatency(cheap.peerId, 'gpt-5'), null)
+  assert.notEqual((h2.proxy as any)._peerLatency(cheap.peerId, 'gpt-5'), null)
+  assert.equal((h2.proxy as any)._peerThroughput(cheap.peerId, 'gpt-5'), null)
 })
 
 test('gateway-policy automatic routing falls back to a free seller when a paid one cannot be funded, and remembers only the seller that answered', async (t) => {
