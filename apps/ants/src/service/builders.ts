@@ -1,10 +1,9 @@
 import { isError } from 'ethers';
-import type { BuilderAgentView, BuildersView } from '../api-types.js';
+import { MAX_BUILDER_AGENTS, type BuilderAgentView, type BuildersView } from '../api-types.js';
 import type { AntsContext } from './context.js';
 import { assertAgentId, silentReporter, type StepReporter } from './steps.js';
 
-/** Each agent costs an ownerOf read; keep one request bounded. */
-export const MAX_BUILDER_AGENTS = 20;
+export { MAX_BUILDER_AGENTS };
 
 /** ERC-8004 owner of `agentId`, or null when the id is not minted (ownerOf reverts). */
 async function agentOwner(ctx: AntsContext, agentId: number): Promise<string | null> {

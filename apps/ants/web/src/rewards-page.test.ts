@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BuildersView, CreatedInviteView, JobView, PoolView, RefereeView, ReferralView, ReferredBuyersView, RewardsView } from '../../src/api-types';
 import { AppContext, type AppValue } from './app-context';
 import type { ActionButtonProps } from './components/Confirm';
-import { RewardsPage, inviteAllowance, takeRegisteredAgents } from './pages/Rewards';
+import { BUILDER_LIMIT_HINT, RewardsPage, inviteAllowance, inviteErrorFor, inviteRowState, missingBuilderIds, takeRegisteredAgents } from './pages/Rewards';
 
 const state = vi.hoisted(() => ({ rewards: null as RewardsView | null, pools: [] as PoolView[], actions: [] as ActionButtonProps[], configReady: true, configLoading: false, configError: null as string | null, rewardsLoading: false, rewardsError: null as string | null, reconciling: false, builders: null as BuildersView | null, referral: null as ReferralView | null, referredBuyers: null as ReferredBuyersView | null, referee: null as RefereeView | null, refreshed: [] as string[], buttons: [] as Array<{ children?: unknown; onClick?: () => unknown; disabled?: boolean }>, createInvite: null as null | (() => Promise<CreatedInviteView>) }));
 vi.mock('./data', () => ({ usePageData: (key: string | null) => ({
@@ -440,6 +440,25 @@ describe('reward row actions and confirmations', () => {
     expect(card).toContain('<div class="hero-value">4<span class="unit">ANTS</span>');
   });
 
+  it('keeps every tracked agent removable past the 20-agent limit and stops adding at it', () => {
+    const storage = new Map<string, string>();
+    const tracked = Array.from({ length: 21 }, (_, index) => index + 1); // saved before the limit was enforced
+    storage.set('antseed.ants.builderAgentIds:base-mainnet', JSON.stringify(tracked));
+    vi.stubGlobal('window', { localStorage: { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => { storage.set(key, value); } } });
+    try {
+      // The read covers the first 20; agent #21 is not in the response.
+      state.builders = { available: true, agents: tracked.slice(0, 20).map((agentId) => ({ agentId, owner: pool, owned: false, firstParty: null, payable: '0', claimableEpochs: [] })) };
+      const html = render();
+      const card = html.slice(html.indexOf('Builders program'));
+      expect(card).toContain('Agent #21');
+      expect(card).toContain('Data unavailable: only the first 20 tracked agents are read.');
+      const removes = state.buttons.filter((props) => props.children === 'Remove');
+      expect(removes).toHaveLength(21);
+      expect(state.buttons.find((props) => props.children === 'Add')?.disabled).toBe(true);
+      expect(card).toContain(BUILDER_LIMIT_HINT);
+    } finally { vi.unstubAllGlobals(); }
+  });
+
   it('hides the builders program when the chain has no client rewards contract', () => {
     state.builders = { available: false, agents: [] };
     expect(render()).not.toContain('Builders program');
@@ -492,6 +511,30 @@ describe('reward row actions and confirmations', () => {
     const card = render().slice(render().indexOf('Referral rewards'));
     expect(card).toContain('Invites unlock after at least 1 USDC of usage or sales in the previous week.');
     expect(card).toMatch(/<button[^>]*disabled=""[^>]*><span class="btn__label">Create invite<\/span>/);
+    // Antscan's allowance is advisory: a recheck through the server's on-chain create stays available.
+    expect(card).toMatch(/<button class="link-button">Check again<\/button>/);
+  });
+
+  it('rechecks on-chain when Antscan still reports an exhausted previous week', async () => {
+    state.referral = { available: true, payable: '0', claimableEpochs: [], referredCount: 0, invites: { epoch: 22, quota: 2, used: 2, left: 0 } };
+    const created: CreatedInviteView = { invite: 'n', link: 'https://antseed.com/invite/n', epoch: 23, index: 0, quota: 3, left: 2, expiresEpoch: 27 };
+    const createInvite = vi.fn(async () => created);
+    state.createInvite = createInvite;
+    const card = render().slice(render().indexOf('Referral rewards'));
+    expect(card).toContain('All invites for this week are taken.');
+    expect(card).toContain('Check again');
+    // The created invite's newer week replaces the stale allowance.
+    expect(inviteAllowance(state.referral.invites, created)).toEqual({ quota: 3, left: 2 });
+    expect(inviteRowState({}, 3, 2)).toEqual({ blocked: null, exhausted: null });
+  });
+
+  it('scopes a failed create to its week, so a newer allowance clears it', () => {
+    const failure = { message: 'Invites unlock after at least 1 USDC of usage or sales in the previous week.', epoch: 23 };
+    expect(inviteErrorFor(failure, { epoch: 23, quota: 0, used: 0, left: 0 })).toBe(failure.message);
+    expect(inviteErrorFor(failure, null)).toBe(failure.message);
+    expect(inviteErrorFor(failure, { epoch: 24, quota: 3, used: 0, left: 3 })).toBeNull();
+    expect(inviteRowState({}, 3, 3)).toEqual({ blocked: null, exhausted: null });
+    expect(inviteRowState({ readOnly: true }, 0, 0).exhausted).toBeNull();
   });
 
   it('points browser-wallet sessions to the CLI instead of failing to sign', () => {
@@ -580,25 +623,36 @@ describe('client agents registered from the builders card', () => {
   it('tracks a registered agent once, so a removal survives leaving Rewards and returning', () => {
     const jobs = [job('register-1', 31)];
     // Register: the finished job adds the agent.
-    expect(takeRegisteredAgents(jobs, [5])).toEqual([5, 31]);
+    expect(takeRegisteredAgents(jobs, [5])).toEqual({ ids: [5, 31], untracked: [] });
     // Remove it, leave Rewards and come back: the card remounts with the same job list.
     expect(takeRegisteredAgents(jobs, [5])).toBeNull();
     // A later registration still lands.
-    expect(takeRegisteredAgents([job('register-2', 32), ...jobs], [5])).toEqual([5, 32]);
+    expect(takeRegisteredAgents([job('register-2', 32), ...jobs], [5])).toEqual({ ids: [5, 32], untracked: [] });
   });
 
   it('remembers handled jobs across a reload that restores the job journal', async () => {
-    expect(takeRegisteredAgents([job('register-reload', 34)], [])).toEqual([34]);
+    expect(takeRegisteredAgents([job('register-reload', 34)], [])).toEqual({ ids: [34], untracked: [] });
     vi.resetModules();
     stubWindow();
     const reloaded = await import('./pages/Rewards');
     expect(reloaded.takeRegisteredAgents([job('register-reload', 34)], [])).toBeNull();
   });
 
+  it('does not track a registered agent past the limit, and names it instead', () => {
+    const full = Array.from({ length: 20 }, (_, index) => index + 1);
+    expect(takeRegisteredAgents([job('register-full', 21)], full)).toEqual({ ids: full, untracked: [21] });
+    expect(takeRegisteredAgents([job('register-room', 22)], full.slice(0, 19))).toEqual({ ids: [...full.slice(0, 19), 22], untracked: [] });
+  });
+
+  it('lists tracked ids the builders response left out', () => {
+    const view = { available: true, agents: [{ agentId: 5, owner: null, owned: false, firstParty: null, payable: '0', claimableEpochs: [] }] };
+    expect(missingBuilderIds([5, 21, 7], view)).toEqual([21, 7]);
+  });
+
   it('ignores unfinished jobs and still works without storage', () => {
     expect(takeRegisteredAgents([job('register-3', 33, 'running')], [])).toBeNull();
     vi.stubGlobal('window', { localStorage: { getItem: () => { throw new Error('denied'); }, setItem: () => { throw new Error('denied'); } } });
-    expect(takeRegisteredAgents([job('register-3', 33)], [])).toEqual([33]);
+    expect(takeRegisteredAgents([job('register-3', 33)], [])).toEqual({ ids: [33], untracked: [] });
     expect(takeRegisteredAgents([job('register-3', 33)], [])).toBeNull();
   });
 });

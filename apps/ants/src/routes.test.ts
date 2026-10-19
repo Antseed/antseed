@@ -158,6 +158,14 @@ describe('dashboard API', () => {
     expect(service.builders.mock.calls[0]![1]).toEqual([3, 9]);
   });
 
+  it('caps builder agent ids in requested order, so a later id never displaces an earlier one', async () => {
+    const app = setup(true);
+    service.builders.mockResolvedValue({ available: true, agents: [] });
+    const tracked = [...Array.from({ length: 20 }, (_, index) => index + 10), 1];
+    await app.inject(`/api/builders?agentIds=${tracked.join(',')}`);
+    expect(service.builders.mock.calls.at(-1)![1]).toEqual(tracked.slice(0, 20));
+  });
+
   it('serves referred buyers from one cached Antscan read', async () => {
     const app = setup(true);
     const view = { available: true, buyers: [{ buyer: '0xabc', boundEpoch: 3, points: '10', ants: '5', pendingPoints: '0' }] };

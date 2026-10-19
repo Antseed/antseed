@@ -90,4 +90,57 @@ describe('file lock', () => {
     expect(entered).toBe(true); // only after the holder finished
     expect(await exited).toBe(0);
   }, 15_000);
+  it('lets only one of two processes reclaiming the same abandoned lock in at a time', async () => {
+    const lock = await lockPath();
+    await withFileLock(lock, async () => undefined); // creates the directory
+    await writeFile(lock, JSON.stringify({ pid: 2 ** 22 + 12_345 })); // a dead owner
+    const inside = `${lock}.inside`;
+    const overlap = `${lock}.overlap`;
+    // Each reclaimer pauses once it judged the lock abandoned, until its go
+    // file appears; its critical section records any overlap with the other.
+    const reclaimer = (name: string) => {
+      const go = `${lock}.go-${name}`;
+      const child = spawn(process.execPath, ['--input-type=module', '-e', `
+        import { access, appendFile, rm, writeFile } from 'node:fs/promises';
+        const { withFileLock } = await import(${JSON.stringify(LOCK_MODULE)});
+        const exists = (path) => access(path).then(() => true, () => false);
+        const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        await withFileLock(${JSON.stringify(lock)}, async () => {
+          if (await exists(${JSON.stringify(inside)})) await writeFile(${JSON.stringify(overlap)}, ${JSON.stringify(name)});
+          await writeFile(${JSON.stringify(inside)}, ${JSON.stringify(name)});
+          process.stdout.write('entered\\n');
+          await sleep(300);
+          await rm(${JSON.stringify(inside)}, { force: true });
+        }, {
+          retryMs: 10,
+          timeoutMs: 10_000,
+          beforeReclaim: async () => {
+            process.stdout.write('inspected\\n');
+            while (!(await exists(${JSON.stringify(go)}))) await sleep(10);
+          },
+        });
+      `], { stdio: ['ignore', 'pipe', 'inherit'] });
+      let output = '';
+      const waiters: Array<() => void> = [];
+      child.stdout.on('data', (chunk: Buffer) => { output += chunk.toString(); waiters.splice(0).forEach((wake) => wake()); });
+      const said = (line: string) => new Promise<void>((resolve, reject) => {
+        const check = () => (output.includes(line) ? resolve() : waiters.push(check));
+        child.on('exit', () => reject(new Error(`${name} exited before printing ${line}`)));
+        check();
+      });
+      const exited = new Promise<number | null>((resolve) => child.on('exit', resolve));
+      return { said, exited, release: () => writeFile(go, 'go') };
+    };
+    const a = reclaimer('a');
+    const b = reclaimer('b');
+    await Promise.all([a.said('inspected'), b.said('inspected')]);
+    // Both saw the same abandoned lock. One reclaims it and enters; only then
+    // does the other continue, and it must not remove the fresh lock.
+    await a.release();
+    await a.said('entered');
+    await b.release();
+    expect(await Promise.all([a.exited, b.exited])).toEqual([0, 0]);
+    await expect(access(overlap)).rejects.toThrow();
+    await expect(access(`${lock}.recover`)).rejects.toThrow();
+  }, 20_000);
 });

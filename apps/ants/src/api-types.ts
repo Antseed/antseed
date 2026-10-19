@@ -467,6 +467,9 @@ export interface BuilderAgentView {
   claimableEpochs: number[];
 }
 
+/** Client agent ids one builders read covers (each costs an ownerOf read); the card tracks at most this many. */
+export const MAX_BUILDER_AGENTS = 20;
+
 export interface BuildersView {
   available: boolean;
   /** Requested ids plus the chain's first-party client ids this wallet owns. */

@@ -68,7 +68,8 @@ export type ReferralInvites = {
 };
 
 export type CreateInviteResult =
-  | { ok: true; invite: string; link: string; left: number; quota: number; expiresEpoch: number }
+  /** `epoch`: the on-chain week the invite was issued in (it can be ahead of Antscan's allowance). */
+  | { ok: true; invite: string; link: string; epoch: number; left: number; quota: number; expiresEpoch: number }
   | { ok: false; reason: string; noQuota: boolean };
 
 /** The two-sided bonus this wallet earns as a referee (from Antscan). Payable is a decimal ANTS string. */
@@ -116,7 +117,8 @@ export async function getReferralStatus(): Promise<ReferralStatus> {
   if (!context) return DARK_STATUS;
   const { chain, wallet } = context;
   // Antscan only hints the binding; `referrerOf` on the configured contract
-  // confirms it (one view call) before the pending invite is dropped.
+  // confirms it before the pending invite is dropped, and is also read on a
+  // backoff while Antscan is missing, failing or still reports it unbound.
   const client = new AntsContext({ chain, address: wallet.address }).referrals();
   const state = await syncReferralState(resolveConnectDataDir(), scopeOf(context), {
     explorer: (buyer) => referralBindingFromExplorer(chain.explorerApiUrl, buyer),
@@ -204,7 +206,7 @@ export async function createReferralInvite(): Promise<CreateInviteResult> {
       referralsAddress: context.chain.referralsAddress,
       dataDir: resolveConnectDataDir(),
     });
-    return { ok: true, invite: created.invite, link: created.link, left: created.left, quota: created.quota, expiresEpoch: created.expiresEpoch };
+    return { ok: true, invite: created.invite, link: created.link, epoch: created.epoch, left: created.left, quota: created.quota, expiresEpoch: created.expiresEpoch };
   } catch (error) {
     return { ok: false, reason: errorText(error), noQuota: error instanceof InviteQuotaError && error.quota === 0 };
   }

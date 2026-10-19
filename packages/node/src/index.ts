@@ -236,6 +236,8 @@ export {
   readIssuedInviteIndices,
   readReferralState,
   recordIssuedInvite,
+  REFERRAL_CHAIN_RECHECK_MAX_MS,
+  REFERRAL_CHAIN_RECHECK_MIN_MS,
   referralStateMtimeMs,
   referrerOfLookup,
   saveReferralInvite,
@@ -245,6 +247,7 @@ export {
   type ReferralLookups,
   type ReferralScope,
   type ReferralState,
+  type SyncReferralOptions,
 } from './payments/referral-state.js';
 export { FileLockTimeoutError, withFileLock, type FileLockOptions } from './utils/file-lock.js';
 export { ClientRewardsClient, type ClientRewardsClientConfig, type ClientEpochReward } from './payments/evm/client-rewards-client.js';

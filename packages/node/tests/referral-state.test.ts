@@ -8,6 +8,8 @@ import {
   readIssuedInviteIndices,
   readReferralState,
   recordIssuedInvite,
+  REFERRAL_CHAIN_RECHECK_MAX_MS,
+  REFERRAL_CHAIN_RECHECK_MIN_MS,
   referrerOfLookup,
   saveReferralInvite,
   syncReferralState,
@@ -57,17 +59,81 @@ describe('referral state', () => {
   it('records a binding only once referrerOf confirms what Antscan reports', async () => {
     const dir = await dataDir();
     await saveReferralInvite(dir, SCOPE, ENCODED, REFERRER);
-    const chain = counted(async () => REFERRER.toLowerCase());
-    expect(await syncReferralState(dir, SCOPE, { explorer: async () => undefined, chain })).toMatchObject({ state: 'invited' });
-    expect(await syncReferralState(dir, SCOPE, { explorer: async () => null, chain })).toMatchObject({ state: 'invited' });
-    expect(await syncReferralState(dir, SCOPE, { explorer: async () => { throw new Error('offline'); }, chain })).toMatchObject({ state: 'invited' });
-    expect(chain.calls).toBe(0);
-
-    const bound = await syncReferralState(dir, SCOPE, { explorer: async () => REFERRER, chain });
+    let onChain: string | null = null;
+    const chain = counted(async () => onChain);
+    const now = () => 0;
+    // The first sync reconciles with the chain once; until the backoff
+    // elapses, only an Antscan hint reads it again.
+    expect(await syncReferralState(dir, SCOPE, { explorer: async () => null, chain }, { now })).toMatchObject({ state: 'invited' });
     expect(chain.calls).toBe(1);
+    expect(await syncReferralState(dir, SCOPE, { explorer: async () => undefined, chain }, { now })).toMatchObject({ state: 'invited' });
+    expect(await syncReferralState(dir, SCOPE, { explorer: async () => { throw new Error('offline'); }, chain }, { now })).toMatchObject({ state: 'invited' });
+    expect(chain.calls).toBe(1);
+
+    onChain = REFERRER.toLowerCase();
+    const bound = await syncReferralState(dir, SCOPE, { explorer: async () => REFERRER, chain }, { now });
+    expect(chain.calls).toBe(2);
     expect(bound).toMatchObject({ state: 'bound', referrer: REFERRER });
     expect(bound?.invite).toBeUndefined();
     expect(pendingInvite(await readReferralState(dir, SCOPE))).toBeNull();
+  });
+
+  it('binds a pending invite with only the chain lookup', async () => {
+    const dir = await dataDir();
+    await saveReferralInvite(dir, SCOPE, ENCODED, REFERRER);
+    expect(await syncReferralState(dir, SCOPE, { explorer: null, chain: async () => REFERRER })).toMatchObject({ state: 'bound', referrer: REFERRER });
+    expect(pendingInvite(await readReferralState(dir, SCOPE))).toBeNull();
+
+    const chainOnly = await dataDir();
+    await saveReferralInvite(chainOnly, SCOPE, ENCODED, REFERRER);
+    expect(await syncReferralState(chainOnly, SCOPE, { chain: async () => REFERRER })).toMatchObject({ state: 'bound', referrer: REFERRER });
+  });
+
+  it('reconciles with the chain while the explorer is down', async () => {
+    const dir = await dataDir();
+    await saveReferralInvite(dir, SCOPE, ENCODED, REFERRER);
+    let onChain: string | null = null;
+    const chain = counted(async () => onChain);
+    const explorer = async (): Promise<string | null> => { throw new Error('offline'); };
+    let clock = 0;
+    const now = () => clock;
+    expect(await syncReferralState(dir, SCOPE, { explorer, chain }, { now })).toMatchObject({ state: 'invited' });
+    onChain = REFERRER; // a settlement binds it
+    clock = REFERRAL_CHAIN_RECHECK_MIN_MS - 1;
+    expect(await syncReferralState(dir, SCOPE, { explorer, chain }, { now })).toMatchObject({ state: 'invited' });
+    clock = REFERRAL_CHAIN_RECHECK_MIN_MS;
+    expect(await syncReferralState(dir, SCOPE, { explorer, chain }, { now })).toMatchObject({ state: 'bound', referrer: REFERRER });
+    expect(chain.calls).toBe(2);
+  });
+
+  it('backs off referrerOf reads while Antscan does not report a binding', async () => {
+    const dir = await dataDir();
+    await saveReferralInvite(dir, SCOPE, ENCODED, REFERRER);
+    const chain = counted(async () => null);
+    let hint: string | null = null;
+    const lookups = { explorer: async () => hint, chain };
+    const minute = 60_000;
+    const callsAt = async (minutes: number[]) => {
+      const calls: number[] = [];
+      for (const at of minutes) {
+        await syncReferralState(dir, SCOPE, lookups, { now: () => at * minute });
+        calls.push(chain.calls);
+      }
+      return calls;
+    };
+    // Every minute for over two hours: reads at 0, 10, 30, 70, then hourly.
+    const minutes = Array.from({ length: 131 }, (_, at) => at);
+    const calls = await callsAt(minutes);
+    expect(minutes.filter((at) => calls[at] !== (calls[at - 1] ?? 0))).toEqual([0, 10, 30, 70, 130]);
+    expect(REFERRAL_CHAIN_RECHECK_MAX_MS).toBe(60 * minute);
+
+    // A hint reads it at once, but a hint the chain keeps denying waits.
+    hint = REFERRER;
+    expect(await callsAt([131, 132, 133])).toEqual([6, 6, 6]);
+    // A newly redeemed invite starts over.
+    await saveReferralInvite(dir, SCOPE, ENCODED_2, OTHER_REFERRER);
+    hint = null;
+    expect(await callsAt([134, 135])).toEqual([7, 7]);
   });
 
   it('keeps the pending invite when the configured contract does not confirm the binding', async () => {

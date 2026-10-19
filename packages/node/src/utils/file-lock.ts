@@ -19,6 +19,12 @@ export interface FileLockOptions {
   timeoutMs?: number;
   /** Poll interval while another process holds the lock. */
   retryMs?: number;
+  /**
+   * Test hook: runs after a lock was judged abandoned and before it is
+   * reclaimed, so tests can line up competing reclaimers.
+   * @internal
+   */
+  beforeReclaim?: () => Promise<void>;
 }
 
 /** Thrown when another process kept the lock for longer than `timeoutMs`. */
@@ -78,7 +84,7 @@ async function acquire(lockPath: string, staleMs: number, options: FileLockOptio
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
     }
-    if (await breakIfStale(lockPath, staleMs)) continue;
+    if (await breakIfStale(lockPath, staleMs, options.beforeReclaim)) continue;
     if (Date.now() >= deadline) throw new FileLockTimeoutError(lockPath);
     await new Promise((resolve) => setTimeout(resolve, retryMs));
   }
@@ -95,28 +101,86 @@ async function refresh(lockPath: string, token: string): Promise<void> {
   }
 }
 
-/**
- * Remove a lock left by a dead process, by this process (queued callers never
- * overlap), or one nobody refreshed for `staleMs` (its owner is hung, or
- * crashed and its pid now belongs to another process). A refreshed lock of a
- * live owner is never removed.
- */
-async function breakIfStale(lockPath: string, staleMs: number): Promise<boolean> {
-  let content: string;
-  let mtimeMs: number;
+type LockSnapshot = { content: string; mtimeMs: number };
+
+async function inspect(path: string): Promise<LockSnapshot | null> {
   try {
-    [content, { mtimeMs }] = await Promise.all([readFile(lockPath, 'utf8'), stat(lockPath)]);
+    const [content, { mtimeMs }] = await Promise.all([readFile(path, 'utf8'), stat(path)]);
+    return { content, mtimeMs };
   } catch {
-    return true; // released meanwhile: retry at once
+    return null;
   }
-  const pid = ownerPid(content);
-  // A lock being written has no content yet; give its owner the stale window.
-  const stale = (pid !== null && (pid === process.pid || !alive(pid))) || Date.now() - mtimeMs > staleMs;
-  if (!stale) return false;
-  // Only remove the lock we judged stale, not one a racing process just took.
-  if (await readFile(lockPath, 'utf8').catch(() => null) !== content) return true;
-  await rm(lockPath, { force: true });
-  return true;
+}
+
+/**
+ * Abandoned: left by a dead process, by this process (queued callers never
+ * overlap), or not refreshed for `staleMs` (its owner is hung, or crashed and
+ * its pid now belongs to another process). A lock being written has no
+ * content yet; its owner gets the stale window.
+ */
+function abandoned(lock: LockSnapshot, staleMs: number): boolean {
+  const pid = ownerPid(lock.content);
+  return (pid !== null && (pid === process.pid || !alive(pid))) || Date.now() - lock.mtimeMs > staleMs;
+}
+
+/**
+ * Remove an abandoned lock. A refreshed lock of a live owner is never removed.
+ *
+ * Reading the lock and then unlinking its path are two steps, so two
+ * reclaimers that judged the same lock abandoned could otherwise both unlink
+ * it, the second deleting the fresh lock the first just took. Reclaiming is
+ * therefore serialized by `<lock>.recover`, created exclusively and holding
+ * its owner's pid, and the lock is re-read while holding it: only the very
+ * lock judged abandoned, still abandoned, is removed. Anyone who sees the
+ * recovery lock taken waits and retries. It is held for a few file
+ * operations only, so it is broken only when its owner died (or is this
+ * process), never for its age: a live reclaimer that stalls just delays the
+ * others until it continues or exits.
+ */
+async function breakIfStale(lockPath: string, staleMs: number, beforeReclaim?: () => Promise<void>): Promise<boolean> {
+  const seen = await inspect(lockPath);
+  if (!seen) return true; // released meanwhile: retry at once
+  if (!abandoned(seen, staleMs)) return false;
+  await beforeReclaim?.();
+  const recovery = await takeRecoveryLock(lockPath, staleMs);
+  if (!recovery) return false; // another process is reclaiming it
+  try {
+    const current = await inspect(lockPath);
+    // Retaken meanwhile (another reclaimer finished first): judge it afresh.
+    if (!current || current.content !== seen.content || !abandoned(current, staleMs)) return true;
+    await rm(lockPath, { force: true });
+    return true;
+  } finally {
+    await releaseLock(recoveryPath(lockPath), recovery);
+  }
+}
+
+function recoveryPath(lockPath: string): string {
+  return `${lockPath}.recover`;
+}
+
+/** Our token once we hold `<lock>.recover`; null while a live process holds it. */
+async function takeRecoveryLock(lockPath: string, staleMs: number): Promise<string | null> {
+  const path = recoveryPath(lockPath);
+  const token = JSON.stringify({ pid: process.pid, at: Date.now(), nonce: Math.random().toString(36).slice(2) });
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const handle = await open(path, 'wx', 0o600);
+      try { await handle.writeFile(token); } finally { await handle.close(); }
+      return token;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
+    const held = await inspect(path);
+    if (!held) continue; // released meanwhile
+    const pid = ownerPid(held.content);
+    // Its owner died (a crash mid-reclaim); an empty one is only abandoned
+    // when its owner never wrote its pid within the stale window.
+    const dead = pid !== null ? pid === process.pid || !alive(pid) : Date.now() - held.mtimeMs > staleMs;
+    if (!dead) return null;
+    if (await readFile(path, 'utf8').catch(() => null) === held.content) await rm(path, { force: true });
+  }
+  return null;
 }
 
 function ownerPid(content: string): number | null {

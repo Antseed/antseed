@@ -90,6 +90,43 @@ test('the saved invite is applied before the explorer answers, and the backgroun
   }
 });
 
+test('an invite saved while the watcher reads the state is applied by a later poll', async () => {
+  const { mkdtemp, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { saveReferralInvite, syncReferralState, writeReferralState } = await import('@antseed/node');
+  const dataDir = await mkdtemp(join(tmpdir(), 'antseed-referral-watch-'));
+  const scope = { wallet: BUYER, chainId: 8453, referralsAddress: REFERRER };
+  try {
+    await writeReferralState(dataDir, scope, { state: 'none' });
+    let raced = false
+    // The first sync reads "none"; another process redeems an invite before
+    // the watcher looks at the file again.
+    const syncState: typeof syncReferralState = async (...args) => {
+      const state = await syncReferralState(...args)
+      if (!raced) {
+        raced = true
+        await new Promise((resolve) => setTimeout(resolve, 10))
+        await saveReferralInvite(dataDir, scope, encodeInvite(INVITE), REFERRER)
+      }
+      return state
+    }
+    const applied: Array<ReturnType<typeof resolveBuyerAttribution>> = [];
+    const watch = await watchReferralAttribution({ dataDir, scope, lookups: {}, clientAgentId: 5, env: {}, intervalMs: 100, syncState, apply: (a) => applied.push(a) });
+    try {
+      await watch.synced;
+      assert.equal(applied[0]!.invite, undefined);
+      const deadline = Date.now() + 2_000;
+      while (!applied.at(-1)!.invite && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+      assert.deepEqual(applied.at(-1)!.invite, INVITE);
+    } finally {
+      watch.stop();
+    }
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test('referral attribution without a referrals deployment applies only the client id', async () => {
   const applied: Array<ReturnType<typeof resolveBuyerAttribution>> = [];
   const watch = await watchReferralAttribution({ dataDir: '/nonexistent-antseed-dir', scope: null, lookups: {}, clientAgentId: 5, env: {}, apply: (a) => applied.push(a) });

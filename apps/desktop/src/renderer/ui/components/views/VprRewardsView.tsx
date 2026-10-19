@@ -204,10 +204,10 @@ function invitePoints(points: string, pendingPoints: string): string {
 /** The latest create attempt on this card, with the allowance week it was made in. */
 export type CreatedInvite = { result: CreateInviteResult; epoch: number | null };
 
-/** The card's create history: the latest link, and the latest failure since. */
+/** The card's create history: the latest link, and the latest failure since (with the allowance week it was tried in). */
 export type InviteCreation = {
   latest: CreatedInvite | null;
-  failure: { reason: string; noQuota: boolean } | null;
+  failure: { reason: string; noQuota: boolean; epoch: number | null } | null;
 };
 
 export const NO_INVITE_CREATION: InviteCreation = { latest: null, failure: null };
@@ -216,29 +216,45 @@ export const NO_INVITE_CREATION: InviteCreation = { latest: null, failure: null 
 export function nextInviteCreation(current: InviteCreation, attempt: CreatedInvite): InviteCreation {
   return attempt.result.ok
     ? { latest: attempt, failure: null }
-    : { latest: current.latest, failure: { reason: attempt.result.reason, noQuota: attempt.result.noQuota } };
+    : { latest: current.latest, failure: { reason: attempt.result.reason, noQuota: attempt.result.noQuota, epoch: attempt.epoch } };
 }
 
-/** Create one invite; a failure becomes a result the card shows. */
+/**
+ * Create one invite; a failure becomes a result the card shows. A created
+ * invite is dated by the on-chain week it was issued in; a failure by the
+ * allowance week shown when it was tried.
+ */
 export async function createInviteOnce(
   createInvite: () => Promise<CreateInviteResult>,
   epoch: number | null,
 ): Promise<CreatedInvite> {
   try {
-    return { result: await createInvite(), epoch };
+    const result = await createInvite();
+    return { result, epoch: result.ok && typeof result.epoch === 'number' ? result.epoch : epoch };
   } catch (error) {
     return { result: { ok: false, reason: error instanceof Error ? error.message : String(error), noQuota: false }, epoch };
   }
 }
 
+/** Whether the latest failure still describes the allowance week shown; a newer week's allowance supersedes it. */
+export function inviteFailureCurrent(invites: ReferralInvites, creation: InviteCreation): boolean {
+  const failure = creation.failure;
+  const allowance = invites.allowance;
+  return !!failure && (!allowance || failure.epoch === null || failure.epoch >= allowance.epoch);
+}
+
 /**
  * What the invite row shows: the latest link, the invites left this week and
  * whether another can be created. The count from the latest creation wins
- * over a lagging Antscan allowance for the same week; a new week resets it.
+ * over a lagging Antscan allowance for the same week; a new week resets it,
+ * and clears a no-quota answer from an earlier week. None of this is final:
+ * when creation looks unavailable the card still offers "Check again", since
+ * the main process reads the epoch and quota on-chain before signing.
  */
 export function inviteCardState(invites: ReferralInvites, creation: InviteCreation): {
   link: string | null;
   left: number | null;
+  quota: number | null;
   noQuota: boolean;
   canCreate: boolean;
 } {
@@ -246,12 +262,16 @@ export function inviteCardState(invites: ReferralInvites, creation: InviteCreati
   const latest = creation.latest;
   const result = latest?.result.ok ? latest.result : null;
   const link = result?.link ?? null;
-  const sameWeek = !allowance || latest?.epoch === allowance.epoch;
-  const left = result && sameWeek
-    ? Math.min(result.left, allowance?.left ?? result.left)
-    : allowance?.left ?? null;
-  const noQuota = allowance?.quota === 0 || !!creation.failure?.noQuota;
-  return { link, left, noQuota, canCreate: !noQuota && left !== 0 };
+  // A creation for the allowance's week, or a later one Antscan has not reached, stands in for it.
+  const createdWeek = latest?.epoch ?? null;
+  const sameWeek = !!allowance && createdWeek === allowance.epoch;
+  const laterWeek = !!result && (!allowance || (createdWeek !== null && createdWeek > allowance.epoch));
+  const left = result && sameWeek ? Math.min(result.left, allowance!.left)
+    : result && laterWeek ? result.left
+      : allowance?.left ?? null;
+  const quota = result && laterWeek ? result.quota : allowance?.quota ?? null;
+  const noQuota = (!laterWeek && allowance?.quota === 0) || (inviteFailureCurrent(invites, creation) && !!creation.failure?.noQuota);
+  return { link, left, quota, noQuota, canCreate: !noQuota && left !== 0 };
 }
 
 /**
@@ -306,15 +326,14 @@ export function VprInvitesCardBody({ invites, creation, creating, copied, onCrea
   onCreate: () => void;
   onCopy: (link: string) => void;
 }) {
-  const allowance = invites.allowance;
-  const { link, left, noQuota, canCreate } = inviteCardState(invites, creation);
-  const leftHint = left !== null && allowance ? `${formatInt(left)} of ${formatInt(allowance.quota)} left this week.` : null;
+  const { link, left, quota, noQuota, canCreate } = inviteCardState(invites, creation);
+  const leftHint = left !== null && quota !== null ? `${formatInt(left)} of ${formatInt(quota)} left this week.` : null;
   const hint = noQuota
     ? NO_QUOTA_HINT
     : link
       ? [shortInviteLink(link), leftHint].filter(Boolean).join(' · ')
       : leftHint ?? 'Single-use link, valid for 4 weeks.';
-  const failure = creation.failure && !creation.failure.noQuota ? creation.failure.reason : null;
+  const failure = creation.failure && !creation.failure.noQuota && inviteFailureCurrent(invites, creation) ? creation.failure.reason : null;
   const count = invites.buyers.length;
   return (
     <VprCard className={styles.aboutCard}>
@@ -327,16 +346,19 @@ export function VprInvitesCardBody({ invites, creation, creating, copied, onCrea
         hint={hint}
         control={link ? (
           <span className={styles.inviteActions}>
-            {canCreate ? (
-              <Button size="sm" variant="link" onClick={onCreate} disabled={creating} aria-busy={creating}>
-                {creating ? 'Creating…' : 'Create another'}
-              </Button>
-            ) : null}
+            <Button size="sm" variant="link" onClick={onCreate} disabled={creating} aria-busy={creating}>
+              {creating ? (canCreate ? 'Creating…' : 'Checking…') : canCreate ? 'Create another' : 'Check again'}
+            </Button>
             <Button size="sm" variant="outline" onClick={() => onCopy(link)}>{copied ? 'Copied' : 'Copy'}</Button>
           </span>
-        ) : (
-          <Button size="sm" variant="outline" onClick={onCreate} disabled={creating || !canCreate} aria-busy={creating}>
+        ) : canCreate ? (
+          <Button size="sm" variant="outline" onClick={onCreate} disabled={creating} aria-busy={creating}>
             {creating ? 'Creating…' : 'Create link'}
+          </Button>
+        ) : (
+          // The allowance can lag a new week; the main process checks it on-chain.
+          <Button size="sm" variant="link" onClick={onCreate} disabled={creating} aria-busy={creating}>
+            {creating ? 'Checking…' : 'Check again'}
           </Button>
         )}
       />

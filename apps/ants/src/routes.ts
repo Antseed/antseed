@@ -17,6 +17,7 @@ import type {
   StakeRequest, MoveRequest, SplitRequest, MergeRequest, ExtendRequest, MaxLockRequest, WithdrawRequest,
   ClaimRequest, RestakeRequest, StakeUsageRequest, SubmitProofRequest, CompoundRequest, BuilderClaimRequest,
 } from './api-types.js';
+import { MAX_BUILDER_AGENTS } from './api-types.js';
 
 export interface RouteContext {
   ctx: AntsContext;
@@ -96,7 +97,9 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext): voi
   });
   app.get('/api/referrals/buyers', (_request, reply) => respond(reply, () => cached('referrals:buyers', () => referredBuyers(ctx))));
   app.get<{ Querystring: { agentIds?: string } }>('/api/builders', (request, reply) => {
-    const agentIds = [...new Set((request.query.agentIds ?? '').split(',').map(Number).filter((id) => Number.isSafeInteger(id) && id > 0))].sort((a, b) => a - b);
+    // Cap in requested order before sorting for the cache key, so a later id never displaces an earlier one.
+    const agentIds = [...new Set((request.query.agentIds ?? '').split(',').map(Number).filter((id) => Number.isSafeInteger(id) && id > 0))]
+      .slice(0, MAX_BUILDER_AGENTS).sort((a, b) => a - b);
     return respond(reply, () => cached(`builders:${agentIds.join(',')}`, () => builders(ctx, agentIds)));
   });
   app.post<{ Body: { positionIds: number[] } }>('/api/positions/withdraw/preview', (request, reply) => respond(reply, () => previewWithdraw(ctx, request.body?.positionIds ?? [])));

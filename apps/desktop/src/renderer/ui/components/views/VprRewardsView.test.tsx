@@ -73,7 +73,10 @@ it('offers to create an invite with the invites left this week', () => {
 it('explains why there are no invites without last week\'s activity', () => {
   const html = renderToStaticMarkup(<VprInvitesCard invites={{ available: true, listed: true, allowance: { epoch: 30, quota: 0, used: 0, left: 0 }, buyers: [], totals: TOTALS, error: null }} />);
   expect(html).toContain('Invites unlock after at least 1 USDC of usage or sales in the previous week.');
-  expect(html).toMatch(/disabled=""[^>]*><span class="as-button__label">Create link/);
+  // Antscan's allowance is advisory: the on-chain recheck stays one click away.
+  expect(html).not.toContain('Create link');
+  expect(html).toContain('Check again');
+  expect(html).not.toMatch(/disabled=""[^>]*><span class="as-button__label">Check again/);
 });
 
 it('still offers invites when no explorer lists referrals', () => {
@@ -214,8 +217,8 @@ const INVITES: ReferralInvites = { available: true, listed: true, allowance: ALL
 
 it('creates two single-use invites in a row on the same card', async () => {
   const results: CreateInviteResult[] = [
-    { ok: true, invite: 'one', link: 'https://antseed.com/invite/FirstInviteCode01', left: 2, quota: 5, expiresEpoch: 34 },
-    { ok: true, invite: 'two', link: 'https://antseed.com/invite/SecondInviteCode2', left: 1, quota: 5, expiresEpoch: 34 },
+    { ok: true, invite: 'one', link: 'https://antseed.com/invite/FirstInviteCode01', epoch: 30, left: 2, quota: 5, expiresEpoch: 34 },
+    { ok: true, invite: 'two', link: 'https://antseed.com/invite/SecondInviteCode2', epoch: 30, left: 1, quota: 5, expiresEpoch: 34 },
   ];
   const createInvite = vi.fn(async () => results.shift()!);
   let creation: InviteCreation = NO_INVITE_CREATION;
@@ -241,12 +244,15 @@ it('creates two single-use invites in a row on the same card', async () => {
 });
 
 it('drops "Create another" once the week\'s invites are used, and keeps the link after a failed create', async () => {
-  const last: CreateInviteResult = { ok: true, invite: 'x', link: 'https://antseed.com/invite/LastInviteCodeXY', left: 0, quota: 5, expiresEpoch: 34 };
+  const last: CreateInviteResult = { ok: true, invite: 'x', link: 'https://antseed.com/invite/LastInviteCodeXY', epoch: 30, left: 0, quota: 5, expiresEpoch: 34 };
   let creation = nextInviteCreation(NO_INVITE_CREATION, { result: last, epoch: ALLOWANCE.epoch });
   expect(inviteCardState(INVITES, creation)).toMatchObject({ left: 0, canCreate: false });
   expect(renderToStaticMarkup(
     <VprInvitesCardBody invites={INVITES} creation={creation} creating={false} copied={false} onCreate={() => {}} onCopy={() => {}} />,
   )).not.toContain('Create another');
+  expect(renderToStaticMarkup(
+    <VprInvitesCardBody invites={INVITES} creation={creation} creating={false} copied={false} onCreate={() => {}} onCopy={() => {}} />,
+  )).toContain('Check again');
 
   // A new week resets the count from the refreshed allowance.
   expect(inviteCardState({ ...INVITES, allowance: { epoch: 31, quota: 5, used: 0, left: 5 } }, creation)).toMatchObject({ left: 5, canCreate: true });
@@ -258,4 +264,41 @@ it('drops "Create another" once the week\'s invites are used, and keeps the link
   );
   expect(html).toContain('antseed.com/invite/LastIn…deXY');
   expect(html).toContain('signer locked');
+});
+
+it('keeps an on-chain recheck when Antscan still reports an exhausted previous week', async () => {
+  // Antscan is still on week 30 with nothing left; the chain has moved to week 31.
+  const stale: ReferralInvites = { ...INVITES, allowance: { epoch: 30, quota: 5, used: 5, left: 0 } };
+  expect(inviteCardState(stale, NO_INVITE_CREATION)).toMatchObject({ left: 0, canCreate: false });
+  const onCreate = vi.fn();
+  const html = renderToStaticMarkup(<VprInvitesCardBody invites={stale} creation={NO_INVITE_CREATION} creating={false} copied={false} onCreate={onCreate} onCopy={() => {}} />);
+  expect(html).toContain('Check again');
+  expect(html).not.toMatch(/disabled=""[^>]*><span class="as-button__label">Check again/);
+
+  // The recheck goes through the main-process create, which answers from the chain.
+  const fresh: CreateInviteResult = { ok: true, invite: 'n', link: 'https://antseed.com/invite/NewWeekInviteCode', epoch: 31, left: 4, quota: 5, expiresEpoch: 35 };
+  const creation = nextInviteCreation(NO_INVITE_CREATION, await createInviteOnce(async () => fresh, 30));
+  // The new week's count stands in for the lagging allowance, so another can be created.
+  expect(inviteCardState(stale, creation)).toMatchObject({ link: fresh.link, left: 4, quota: 5, canCreate: true });
+  const html2 = renderToStaticMarkup(<VprInvitesCardBody invites={stale} creation={creation} creating={false} copied={false} onCreate={onCreate} onCopy={() => {}} />);
+  expect(html2).toContain('antseed.com/invite/NewWee…Code');
+  expect(html2).toContain('4 of 5 left this week.');
+  expect(html2).toContain('Create another');
+});
+
+it('clears a no-quota answer once a newer week\'s allowance has invites', async () => {
+  const noQuota: CreateInviteResult = { ok: false, reason: 'Invites unlock after at least 1 USDC of usage or sales in the previous week.', noQuota: true };
+  const creation = nextInviteCreation(NO_INVITE_CREATION, await createInviteOnce(async () => noQuota, 30));
+  expect(creation.failure).toMatchObject({ noQuota: true, epoch: 30 });
+  // Same week: the chain's answer stands, but the recheck is still offered.
+  expect(inviteCardState(INVITES, creation)).toMatchObject({ noQuota: true, canCreate: false });
+  expect(renderToStaticMarkup(<VprInvitesCardBody invites={INVITES} creation={creation} creating={false} copied={false} onCreate={() => {}} onCopy={() => {}} />)).toContain('Check again');
+
+  // The next poll brings week 31 with a fresh quota: creation is back.
+  const refreshed: ReferralInvites = { ...INVITES, allowance: { epoch: 31, quota: 3, used: 0, left: 3 } };
+  expect(inviteCardState(refreshed, creation)).toMatchObject({ noQuota: false, left: 3, canCreate: true });
+  const html = renderToStaticMarkup(<VprInvitesCardBody invites={refreshed} creation={creation} creating={false} copied={false} onCreate={() => {}} onCopy={() => {}} />);
+  expect(html).toContain('Create link');
+  expect(html).toContain('3 of 3 left this week.');
+  expect(html).not.toContain('Invites unlock after');
 });

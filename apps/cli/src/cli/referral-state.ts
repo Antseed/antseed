@@ -32,9 +32,10 @@ export function referralScope(chain: { evmChainId: number; referralsAddress?: st
 
 /**
  * How the buyer's binding is learned (see `syncReferralState`): Antscan is
- * the RPC-free trigger, and only once it reports a binding is `referrerOf`
- * read, once, on the configured contract (`client`) before the invite is
- * dropped. Nothing is looked up without a referrals client.
+ * the RPC-free trigger, and `referrerOf` on the configured contract
+ * (`client`) confirms a binding before the invite is dropped; without
+ * Antscan, or while it reports none, `referrerOf` is read on a backoff
+ * instead. Nothing is looked up without a referrals client.
  */
 export function referralLookups(options: { explorerApiUrl?: string | undefined; client: Pick<ReferralsClient, 'referrerOf'> | null }): ReferralLookups {
   const { explorerApiUrl, client } = options
@@ -99,8 +100,11 @@ export async function watchReferralAttribution(options: ClientAgentOptions & {
   log?: ((message: string) => void) | undefined
   intervalMs?: number | undefined
   env?: NodeJS.ProcessEnv
+  /** Overridable for tests. */
+  syncState?: typeof syncReferralState
 }): Promise<ReferralAttributionWatch> {
   const { dataDir, scope, lookups, apply, log } = options
+  const syncState = options.syncState ?? syncReferralState
   const attributionOptions = { clientAgentId: options.clientAgentId, clientAgentIds: options.clientAgentIds, ...(options.env ? { env: options.env } : {}) }
   let carrying = false
   let lastMtime = await referralStateMtimeMs(dataDir)
@@ -118,10 +122,15 @@ export async function watchReferralAttribution(options: ClientAgentOptions & {
     apply(attribution)
   }
   const sync = async (force: boolean): Promise<void> => {
-    if (!force && !carrying && (await referralStateMtimeMs(dataDir)) === lastMtime) return
+    // Taken before the read, so the state installed is never newer than the
+    // mtime remembered for it: a write that lands during the read leaves a
+    // newer mtime on the file, and the next poll reads again.
+    const mtime = await referralStateMtimeMs(dataDir)
+    if (!force && !carrying && mtime === lastMtime) return
     const current = ++generation
-    const referralState = scope ? await syncReferralState(dataDir, scope, lookups) : null
-    lastMtime = await referralStateMtimeMs(dataDir)
+    const referralState = scope ? await syncState(dataDir, scope, lookups) : null
+    if (current !== generation) return
+    lastMtime = mtime
     install(referralState, current)
   }
 

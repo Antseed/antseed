@@ -27,7 +27,8 @@ export type ReferralInvites = {
 };
 
 export type CreateInviteResult =
-  | { ok: true; invite: string; link: string; left: number; quota: number; expiresEpoch: number }
+  /** `epoch`: the on-chain week the invite was issued in (it can be ahead of Antscan's allowance). */
+  | { ok: true; invite: string; link: string; epoch: number; left: number; quota: number; expiresEpoch: number }
   | { ok: false; reason: string; noQuota: boolean };
 
 /** The referee bonus (from Antscan); payable is a decimal ANTS string paid to the operator. */

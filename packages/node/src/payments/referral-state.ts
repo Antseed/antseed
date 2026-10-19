@@ -281,26 +281,67 @@ async function ask(lookup: ReferralLookup | null | undefined, buyer: string): Pr
   return referrer === ZeroAddress ? null : referrer ?? undefined;
 }
 
+/** Shortest and longest wait between `referrerOf` reads while Antscan does not report a binding. */
+export const REFERRAL_CHAIN_RECHECK_MIN_MS = 10 * 60_000;
+export const REFERRAL_CHAIN_RECHECK_MAX_MS = 60 * 60_000;
+
+/**
+ * When `referrerOf` may next be read for a pending invite, by data directory
+ * and scope. Kept in memory: each process reads at most once per backoff
+ * window (plus once per Antscan hint), and a restart only costs one read.
+ */
+type ChainRecheck = { invite: string; nextAt: number; delayMs: number; hinted: boolean };
+const chainRechecks = new Map<string, ChainRecheck>();
+
+export type SyncReferralOptions = {
+  /** Clock for the `referrerOf` backoff; tests only. */
+  now?: () => number;
+};
+
 /**
  * Re-read this scope's state and record a binding once it is confirmed on
  * the configured deployment, so the daemon stops carrying the invite.
  *
- * While an invite is pending, Antscan (`explorer`) is the cheap trigger: only
- * when it reports a binding is `referrerOf` (`chain`) read, once, and only its
- * answer is persisted. An unknown or unconfirmed answer keeps the invite. A
- * legacy `bound` record is checked with `referrerOf` directly and becomes
- * this scope's binding, or `none` when the buyer is unbound here.
+ * While an invite is pending, Antscan (`explorer`) is the cheap trigger: when
+ * it reports a binding, `referrerOf` (`chain`) is read, and only its answer
+ * is persisted. Antscan may be absent, down, or not index this deployment,
+ * so `referrerOf` is also read on a backoff while Antscan does not report a
+ * binding: at once, then after REFERRAL_CHAIN_RECHECK_MIN_MS, doubling up to
+ * REFERRAL_CHAIN_RECHECK_MAX_MS. A hint Antscan repeats without the chain
+ * confirming it waits for that schedule too, so RPC reads stay bounded. An
+ * unknown or unconfirmed answer keeps the invite. A legacy `bound` record is
+ * checked with `referrerOf` directly and becomes this scope's binding, or
+ * `none` when the buyer is unbound here.
  */
 export async function syncReferralState(
   dataDir: string,
   scope: ReferralScope,
   lookups: ReferralLookups,
+  options: SyncReferralOptions = {},
 ): Promise<ReferralState | null> {
+  const now = options.now ?? Date.now;
   const state = await readReferralState(dataDir, scope);
+  const recheckKey = `${dataDir}\0${scopeKey(scope)}`;
+  if (state?.state !== 'invited') chainRechecks.delete(recheckKey);
   if (state?.state === 'invited') {
-    if (!(await ask(lookups.explorer, scope.wallet))) return state;
+    const hint = await ask(lookups.explorer, scope.wallet);
+    if (!lookups.chain) return state;
+    let recheck = chainRechecks.get(recheckKey);
+    if (!recheck || recheck.invite !== state.invite) {
+      recheck = { invite: state.invite ?? '', nextAt: 0, delayMs: REFERRAL_CHAIN_RECHECK_MIN_MS, hinted: false };
+      chainRechecks.set(recheckKey, recheck);
+    }
+    const due = now() >= recheck.nextAt;
+    if (!due && !(hint && !recheck.hinted)) return state;
+    // Book the read before awaiting it, so concurrent syncs do not repeat it.
+    if (due) {
+      recheck.nextAt = now() + recheck.delayMs;
+      recheck.delayMs = Math.min(recheck.delayMs * 2, REFERRAL_CHAIN_RECHECK_MAX_MS);
+    }
+    recheck.hinted = !!hint;
     const bound = await ask(lookups.chain, scope.wallet);
     if (!bound) return state;
+    chainRechecks.delete(recheckKey);
     // A confirmed binding is final, whatever was saved during the lookups.
     const boundState: ReferralState = { state: 'bound', referrer: bound };
     return writeReferralState(dataDir, scope, boundState).catch(() => boundState);
