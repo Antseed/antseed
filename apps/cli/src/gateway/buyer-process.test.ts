@@ -7,8 +7,8 @@ import { PassThrough } from 'node:stream'
 import { test } from 'node:test'
 import type { ChildProcess } from 'node:child_process'
 import { FileIdentityStore } from '@antseed/node'
-import { BUYER_RESTART_EXIT_CODE } from '../proxy/buyer-proxy.js'
-import { GatewayBuyer, spawnCliBuyer } from './buyer-process.js'
+import { BUYER_RESTART_EXIT_CODE, BUYER_SHUTDOWN_DEADLINE_MS } from '../proxy/buyer-proxy.js'
+import { BUYER_STOP_TIMEOUT_MS, GatewayBuyer, spawnCliBuyer } from './buyer-process.js'
 
 class FakeChild extends EventEmitter {
   stdout = new PassThrough()
@@ -89,6 +89,33 @@ test('stop terminates the buyer and does not restart it', async () => {
   assert.deepEqual(children[0]!.killed, ['SIGTERM'])
   await waitForRestart()
   assert.equal(children.length, 1)
+})
+
+test('lets a draining buyer finish its own shutdown before killing it', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const child = new FakeChild()
+  // A buyer still draining requests ignores SIGTERM until it is done.
+  child.kill = (signal) => {
+    child.killed.push(signal)
+    if (signal === 'SIGKILL') child.exit(null, signal)
+    return true
+  }
+  const buyer = new GatewayBuyer({
+    buyerPort: 28377,
+    dataDir: '/data',
+    configPath: '/data/config.json',
+    verbose: false,
+    onLog: () => {},
+    spawnBuyer: () => child as unknown as ChildProcess,
+  })
+  buyer.start()
+  const stopped = buyer.stop()
+
+  t.mock.timers.tick(BUYER_SHUTDOWN_DEADLINE_MS)
+  assert.deepEqual(child.killed, ['SIGTERM'])
+  t.mock.timers.tick(BUYER_STOP_TIMEOUT_MS - BUYER_SHUTDOWN_DEADLINE_MS)
+  assert.deepEqual(child.killed, ['SIGTERM', 'SIGKILL'])
+  await stopped
 })
 
 test('hands the wallet passphrase to the buyer on stdin, not in its environment', async () => {

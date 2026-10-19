@@ -1,5 +1,4 @@
-import { Button } from '@antseed/ui';
-import { BrandIcon } from '../brand/BrandIcon';
+import { BrandIcon, Button } from '@antseed/ui';
 import styles from './AppsOnboarding.module.scss';
 
 /* First-visit coach mark for the Apps screen: one tooltip pointing at the

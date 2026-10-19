@@ -1,6 +1,7 @@
 import type { BuyerAddressBook } from '../services/wallet-address.js'
 import type { HostFacts } from '../exposure.js'
 import type { GatewayStore } from '../store.js'
+import type { GatewayUpdates } from '../updates.js'
 import type { AuthConfig, Member } from './types.js'
 
 /** What every console route module gets. */
@@ -46,4 +47,6 @@ export interface ConsoleDeps {
   listenHost?: string
   /** Host facts for exposure checks; inspected at startup when absent (tests inject them). */
   hostFacts?: HostFacts
+  /** Antseed update checks for `/update`; created from `dataDir` and `version` when absent (tests inject them). */
+  updates?: GatewayUpdates
 }

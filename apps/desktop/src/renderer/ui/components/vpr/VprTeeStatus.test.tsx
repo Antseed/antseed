@@ -2,34 +2,45 @@ import assert from 'node:assert/strict';
 import { test, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { TEE_BADGE_MAX_AGE_MS, TEE_MAX_AGE_MS, type TeeEvidence } from '@antseed/node/tee-status';
+import { TEE_BADGE_MAX_AGE_MS, TEE_MAX_AGE_MS, TEE_PROVIDER_CLAIM, type TeeEvidence } from '@antseed/node/tee-status';
 import { VprTeeStatus } from './VprTeeStatus';
 import modelRowStyles from './VprModelRows.module.scss';
 import kitStyles from './VprKit.module.scss';
 
 vi.mock('../InfoTooltip', () => ({ InfoTooltip: ({ content, children, align }: { content: ReactNode; children: ReactNode; align?: 'left' | 'right' }) => <div data-tooltip-align={align}>{children}{content}</div> }));
 
-const evidence: TeeEvidence = { peerId: 'seller', verifierId: 'antseed-verifier', fingerprint: 'caps', checkedAt: 100, expiresAt: 200, claims: [], sellerNodeVerified: true };
+const evidence: TeeEvidence = { peerId: 'seller', verifierId: 'antseed-verifier', fingerprint: 'caps', checkedAt: 100, expiresAt: 200, claims: [{ claim: TEE_PROVIDER_CLAIM, ok: true }], sellerNodeVerified: true };
 const props = { now: 150, checking: false, available: true };
 
 test('a cached seller badge remains visible for a day but disappears at expiry', () => {
   const cached = { ...evidence, expiresAt: evidence.checkedAt + TEE_BADGE_MAX_AGE_MS };
   for (const now of [evidence.checkedAt + TEE_MAX_AGE_MS, cached.expiresAt - 1]) {
-    assert.match(renderToStaticMarkup(<VprTeeStatus {...props} now={now} evidence={cached} />), />TEE</);
+    assert.match(renderToStaticMarkup(<VprTeeStatus {...props} now={now} evidence={cached} />), />Full TEE</);
   }
   assert.equal(renderToStaticMarkup(<VprTeeStatus {...props} now={cached.expiresAt} evidence={cached} />), '');
 });
 
 test('only a current successful check shows the TEE badge with the requested accessible tooltip', () => {
   const markup = renderToStaticMarkup(<VprTeeStatus {...props} evidence={evidence} className="seller-badge" />);
-  assert.match(markup, />TEE</);
+  assert.match(markup, />Full TEE</);
+  assert.match(markup, /Model provider<span[^>]*><svg[^]*?<\/svg>TEE</);
   assert.match(markup, /We use TEEs to enhance user privacy\./);
   assert.match(markup, /tabindex="0"/);
   assert.match(markup, /class="seller-badge"/);
   assert.match(markup, /data-tooltip-align="left"/);
-  assert.ok(markup.includes(`class="${modelRowStyles.modelTag}"`));
+  assert.ok(markup.includes(`class="${modelRowStyles.modelTag} `));
   assert.ok(!markup.includes(kitStyles.badgeGreen));
   assert.doesNotMatch(markup, /Checking|Seller node verified|TEE advertised|Verification unavailable|Verification failed|Technical details|Last checked|Verify now|Recheck|<button|<details/);
+});
+
+test('a seller whose upstream provider is not TEE-attested gets a distinct Partial TEE badge', () => {
+  for (const claims of [[], [{ claim: TEE_PROVIDER_CLAIM, ok: false }]]) {
+    const markup = renderToStaticMarkup(<VprTeeStatus {...props} evidence={{ ...evidence, claims }} />);
+    assert.match(markup, />Partial TEE</);
+    assert.match(markup, /Model provider<span[^>]*><svg[^]*?<\/svg>not TEE</);
+    assert.match(markup, /upstream model provider is not TEE-attested/);
+    assert.doesNotMatch(markup, /Full TEE/);
+  }
 });
 
 test('absent, expired, failed, unavailable, and in-progress checks leave no badge or wrapper', () => {

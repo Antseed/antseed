@@ -1,6 +1,6 @@
 {
   "name": "@antseed/node",
-  "version": "0.2.139",
+  "version": "0.2.150",
   "description": "Antseed Network protocol SDK — P2P inference marketplace",
   "type": "module",
   "files": [
@@ -52,6 +52,10 @@
     "./model-identity": {
       "import": "./dist/model-identity.js",
       "types": "./dist/model-identity.d.ts"
+    },
+    "./model-metadata": {
+      "import": "./dist/model-metadata.js",
+      "types": "./dist/model-metadata.d.ts"
     },
     "./model-routing": {
       "import": "./dist/routing/model-route-ranking.js",

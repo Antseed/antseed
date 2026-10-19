@@ -6,7 +6,7 @@ import type {
   VprRoutingPreferences,
 } from '../../core/state';
 import { sameCanonicalModel } from './model-identity';
-import { modelFamilyLabel } from './model-families';
+import { modelFamilyLabel } from '@antseed/ui';
 import { modelTagsFor } from './model-metadata';
 import { modelPinKey, vprModelPinFor, type VprModelPins } from '../routing/model-pins';
 import { chooseBestVprRoute } from '../routing/select';

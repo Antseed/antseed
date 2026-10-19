@@ -1,9 +1,11 @@
 import type { Command } from 'commander'
 import chalk from 'chalk'
+import pkg from '../../../../package.json' with { type: 'json' }
 import { loadConfig } from '../../../config/loader.js'
 import { gatewayConsole, normalizePublicUrl } from '../../../gateway/console.js'
 import { detectExposure, detectHostFacts, unencryptedWalletWarning } from '../../../gateway/exposure.js'
 import { startGatewayRuntime, type GatewayRuntime } from '../../../gateway/runtime.js'
+import { createGatewayUpdates } from '../../../gateway/updates.js'
 import { setupShutdownHandler } from '../../shutdown.js'
 import { walletPassphraseForStart } from '../../wallet-passphrase.js'
 import { getGlobalOptions } from '../types.js'
@@ -71,6 +73,7 @@ export function registerGatewayCommands(program: Command): void {
       const passphraseSet = await walletPassphraseForStart(globalOptions.dataDir) !== null
       const buyerPort = options.buyerPort ?? (await loadConfig(globalOptions.config)).buyer.proxyPort
       const buyer = options.buyer ? await startGatewayBuyer(buyerPort, globalOptions, log) : null
+      const updates = createGatewayUpdates({ dataDir: globalOptions.dataDir, current: pkg.version, log })
       let runtime: GatewayRuntime
       try {
         runtime = await startGatewayRuntime({
@@ -89,6 +92,7 @@ export function registerGatewayCommands(program: Command): void {
                   log,
                   // Only when every request reaches the gateway through Cloudflare, which sets CF-Connecting-IP.
                   trustCloudflareHeaders: process.env['ANTSEED_TRUST_CLOUDFLARE_HEADERS'] === '1',
+                  updates,
                 }),
               }
             : {}),
@@ -110,7 +114,9 @@ export function registerGatewayCommands(program: Command): void {
       }
       const walletWarning = await unencryptedWalletWarning(globalOptions.dataDir, passphraseSet)
       if (walletWarning) console.log(chalk.yellow(walletWarning))
+      updates.watch()
       setupShutdownHandler(async () => {
+        updates.stop()
         await runtime.stop()
         console.log(chalk.dim('API-key gateway stopped.'))
       })

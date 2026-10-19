@@ -110,7 +110,7 @@ before(async () => {
       body: {
         ok: true,
         channels: [
-          { channelId: '0xchannel', peerId: PEER_A, seller: OPERATOR, reserveCeiling: '5000000', cumulativeSigned: '1250000', reservedAt: 1_700_000_000_000, status: 'active', sellerDisplayName: ' Fake Seller ', cooperativeCloseSupported: true },
+          { channelId: '0xchannel', peerId: PEER_A, seller: OPERATOR, reserveCeiling: '5000000', cumulativeSigned: '1250000', reservedAt: 1_700_000_000_000, deadline: 1_600_000_000, status: 'active', sellerDisplayName: ' Fake Seller ', cooperativeCloseSupported: true },
           { channelId: '0xold', peerId: PEER_A, reserveCeiling: null, cumulativeSigned: '42', reservedAt: 0, status: 'settled', sellerDisplayName: null, cooperativeCloseSupported: true },
           { peerId: PEER_A },
         ],
@@ -272,6 +272,9 @@ test('channel mapping', () => {
   assert.equal(mapChannel({ peerId: PEER_A }), null)
   const mapped = mapChannel({ sessionId: '0xs', sellerPeerId: PEER_A, latestCumulativeAmount: '10', status: 'open', cooperativeCloseSupported: true })
   assert.deepEqual(mapped, { channelId: '0xs', peerId: PEER_A, sellerName: null, status: 'open', reserved: '0.000000', spent: '0.000010', openedAt: null, canCooperativeClose: true, closeRequestedAt: null, settled: null })
+  // A row the buyer is no longer using cannot be closed by the seller.
+  assert.equal(mapChannel({ channelId: '0xs', peerId: PEER_A, status: 'active', cooperativeCloseSupported: true, live: false })?.canCooperativeClose, false)
+  assert.equal(mapChannel({ channelId: '0xs', peerId: PEER_A, status: 'active', cooperativeCloseSupported: true, live: true })?.canCooperativeClose, true)
 })
 
 test('GET channels passes all=1 and the identity', async () => {
@@ -324,6 +327,37 @@ test('applyChannelChainState maps close requests and ignores unknown channels', 
   assert.equal(closing.closeRequestedAt, 1_000_000)
   assert.equal(closing.canCooperativeClose, false)
   assert.equal(applyChannelChainState(base, { status: 1, deposit: 1_000_000n, settled: 0n, closeRequestedAt: 1000n }, 1000 + 900).status, 'withdrawable')
+  // No on-chain record: kept while the reserve can still land, expired after its deadline.
+  const none = { status: 0, deposit: 0n, settled: 0n, closeRequestedAt: 0n }
+  assert.equal(applyChannelChainState(base, none, 500, 1000), base)
+  const expired = applyChannelChainState(base, none, 1001, 1000)
+  assert.equal(expired.status, 'expired')
+  assert.equal(expired.reserved, '0.000000')
+  assert.equal(expired.canCooperativeClose, false)
+})
+
+test('GET channels hides a row the chain never recorded once its deadline passed', async () => {
+  const sellerArgs: Array<ReadonlyMap<string, string>> = []
+  const router = setup({
+    readChannelStates: async (_chain, _ids, sellers) => {
+      sellerArgs.push(sellers)
+      return new Map([['0xchannel', { status: 0, deposit: 0n, settled: 0n, closeRequestedAt: 0n }]])
+    },
+  })
+  assert.deepEqual(await call(router, 'GET', '/workspaces/ws_team/channels', member), [])
+  const [expired] = await call(router, 'GET', '/workspaces/ws_team/channels?all=1', member) as Channel[]
+  assert.equal(expired?.status, 'expired')
+  // The seller address goes along, so a facade seller's channel is looked up behind the facade.
+  assert.equal(sellerArgs[0]?.get('0xchannel'), OPERATOR)
+})
+
+test('POST channels/close names the chosen channel and waits past the seller timeout', async () => {
+  const timeouts: Array<number | undefined> = []
+  const router = setup({ buyer: (path, init) => { timeouts.push(init?.timeoutMs); return buyer.client(path, init) } })
+  const channelId = `0x${'ab'.repeat(32)}`
+  assert.deepEqual(await call(router, 'POST', '/workspaces/ws_team/channels/close', orgAdmin, { peerId: PEER_A, channelId }), { ok: true })
+  assert.deepEqual(lastRequest(buyer, (url) => url === '/_antseed/channels/close')?.body, { peerId: PEER_A, channelId, includeAuth: true, identity: 'team-a' })
+  assert.ok((timeouts.at(-1) ?? 0) > 60_000)
 })
 
 test('POST channels/close needs an org admin', async () => {
@@ -336,6 +370,7 @@ test('POST channels/close needs an org admin', async () => {
   const sent = lastRequest(buyer, (url) => url === '/_antseed/channels/close')
   assert.deepEqual(sent?.body, { peerId: PEER_A, includeAuth: true, identity: 'team-a' })
   await rejectsWith(call(router, 'POST', '/workspaces/ws_team/channels/close', orgAdmin, { peerId: 'nope' }), 400, 'invalid_peer')
+  await rejectsWith(call(router, 'POST', '/workspaces/ws_team/channels/close', orgAdmin, { peerId: PEER_A, channelId: '0xnope' }), 400, 'invalid_channel')
   closeResult = { version: 1, channelId: '0xchannel', status: 'rejected', code: 'busy', reason: 'seller busy' }
   try {
     await rejectsWith(call(router, 'POST', '/workspaces/ws_team/channels/close', orgAdmin, { peerId: PEER_A }), 409, 'close_rejected')

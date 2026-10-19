@@ -30,6 +30,10 @@ Actions that send transactions show progress, transaction links and a final noti
 
 In the desktop app (AI VPN), open **Rewards** and choose **Manage staking ↗** or **Claim rewards ↗**. Both open this dashboard in your system browser, using the desktop app's network and buyer account.
 
+### From the gateway console
+
+In the [gateway console](/docs/gateway), **Staking** has the **Sellers** and **My positions** pages for the open workspace's buyer account, and staking rewards are on **Rewards** next to the workspace's buyer rewards. Workspace admins and organization admins can open them. The Seller, Network and Addresses pages are only in the standalone dashboard. Connect your own wallet in the page's toolbar to sign: the gateway never signs staking transactions, and each one is recorded in the audit log.
+
 ## Choose a seller and stake
 
 The **Sellers** page lists seller pools with their APY range, total active stake (**TVL**), last-epoch settled volume and your own stake. Click a seller for its volume history, share of network volume, models served and yield details.

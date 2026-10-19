@@ -22,9 +22,9 @@ describe('chat pickers', () => {
     const preview: RoutePreview = {
       model: 'm', policy: {}, sources: [], modelAllowed: true,
       candidates: [
-        { peerId: 'AA', displayName: null, rank: 2, eligible: true, reasons: [], inputUsdPerMillion: 0.06, outputUsdPerMillion: 0.19, trustScore: 74 },
-        { peerId: 'bb', displayName: null, rank: null, eligible: false, reasons: ['buyer config: trust 58 below 60'], inputUsdPerMillion: 0, outputUsdPerMillion: 0, trustScore: 58 },
-        { peerId: 'cc', displayName: null, rank: 1, eligible: true, reasons: [], inputUsdPerMillion: 0.05, outputUsdPerMillion: 0.1, trustScore: 70 },
+        { peerId: 'AA', displayName: null, rank: 2, eligible: true, reasons: [], inputUsdPerMillion: 0.06, outputUsdPerMillion: 0.19, trustScore: 74, selection: null },
+        { peerId: 'bb', displayName: null, rank: null, eligible: false, reasons: ['buyer config: trust 58 below 60'], inputUsdPerMillion: 0, outputUsdPerMillion: 0, trustScore: 58, selection: null },
+        { peerId: 'cc', displayName: null, rank: 1, eligible: true, reasons: [], inputUsdPerMillion: 0.05, outputUsdPerMillion: 0.1, trustScore: 70, selection: null },
       ],
     }
     const verdicts = verdictsFrom(preview)

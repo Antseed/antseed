@@ -111,6 +111,7 @@ const sidebars: SidebarsConfig = {
         'protocol/discovery',
         'protocol/transport',
         'protocol/payments',
+        'protocol/model-routing',
         'protocol/reputation',
         'protocol/security',
         'protocol/recognized-usage',

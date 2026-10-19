@@ -1,9 +1,9 @@
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Provider, ProviderStreamCallbacks, SerializedHttpRequest } from '@antseed/node';
-import plugin from './index.js';
+import plugin, { veniceAcceptsEndFrame, veniceInputParameters } from './index.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -28,6 +28,88 @@ it('advertises Venice video services and requires seller configuration', () => {
   const provider = plugin.createProvider(config) as Provider;
   expect(provider.serviceApiProtocols).toEqual({ 'wan-2.5': ['venice-video'] });
   expect(provider.serviceCapabilities?.['wan-2.5']).toMatchObject({ outputs: ['video'] });
+});
+
+const veniceModel = (id: string, constraints: Record<string, unknown>) => ({ id, model_spec: { constraints } });
+
+it('derives each model\'s queue fields from Venice constraints and the announced frames', () => {
+  const imageToVideo = veniceModel('seedance', { model_type: 'image-to-video', resolutions: ['720p'], aspect_ratios: [], audio_configurable: true });
+  expect(veniceInputParameters(imageToVideo)).toEqual(['audio', 'duration', 'image_url', 'prompt', 'resolution']);
+  expect(veniceInputParameters(imageToVideo, ['first_frame', 'last_frame'])).toEqual(['audio', 'duration', 'end_image_url', 'image_url', 'prompt', 'resolution']);
+  expect(veniceInputParameters(veniceModel('wan', { model_type: 'text-to-video', resolutions: ['720p'], aspect_ratios: ['16:9'], audio_configurable: false }), []))
+    .toEqual(['aspect_ratio', 'duration', 'prompt', 'resolution']);
+  expect(veniceInputParameters(undefined)).toBeNull();
+});
+
+it('announces queue fields from the Venice model list and keeps configured ones', async () => {
+  const fetchMock = vi.fn().mockResolvedValue(Response.json({ data: [
+    veniceModel('wan-2.5', { model_type: 'image-to-video', resolutions: ['720p'], aspect_ratios: [], audio_configurable: false }),
+  ] }));
+  vi.stubGlobal('fetch', fetchMock);
+  const provider = plugin.createProvider({ ...config, ANTSEED_SERVICE_CAPABILITIES_JSON: JSON.stringify({ 'wan-2.5': { video: { inputs: ['first_frame', 'last_frame'] } } }) }) as Provider;
+  await provider.init!();
+  const [url, init] = fetchMock.mock.calls[0]!;
+  expect(url).toBe('https://api.venice.ai/api/v1/models?type=video');
+  expect(init).toMatchObject({ redirect: 'error', headers: { authorization: 'Bearer seller-secret' } });
+  expect(provider.serviceCapabilities?.['wan-2.5']?.supportedParameters).toEqual(['duration', 'end_image_url', 'image_url', 'prompt', 'resolution']);
+
+  fetchMock.mockClear();
+  const configured = plugin.createProvider({ ...config, ANTSEED_SERVICE_CAPABILITIES_JSON: JSON.stringify({ 'wan-2.5': { supportedParameters: ['prompt'] } }) }) as Provider;
+  await configured.init!();
+  expect(fetchMock).not.toHaveBeenCalled();
+  expect(configured.serviceCapabilities?.['wan-2.5']?.supportedParameters).toEqual(['prompt']);
+});
+
+const invalid = (details: Record<string, unknown>) => Response.json({ error: 'Invalid request parameters', details: { _errors: [], duration: { _errors: ['Invalid enum value'] }, ...details } }, { status: 400 });
+
+it('asks Venice for free whether a model takes a last frame', async () => {
+  const fetchMock = vi.fn().mockResolvedValue(invalid({}));
+  vi.stubGlobal('fetch', fetchMock);
+  expect(await veniceAcceptsEndFrame('https://api.venice.ai', 'seller-secret', 'seedance')).toBe(true);
+  const [url, init] = fetchMock.mock.calls[0]!;
+  expect(url).toBe('https://api.venice.ai/api/v1/video/queue');
+  expect(JSON.parse(init.body)).toMatchObject({ model: 'seedance', prompt: '', duration: '999s' });
+
+  fetchMock.mockResolvedValue(invalid({ end_image_url: { _errors: ['This model does not support end_image_url'] } }));
+  expect(await veniceAcceptsEndFrame('https://api.venice.ai', 'k', 'wan-2.6')).toBe(false);
+  fetchMock.mockResolvedValue(Response.json({ queue_id: 'started' }));
+  expect(await veniceAcceptsEndFrame('https://api.venice.ai', 'k', 'm')).toBeNull();
+  fetchMock.mockResolvedValue(Response.json({ error: 'Invalid request parameters', details: { prompt: { _errors: ['required'] } } }, { status: 400 }));
+  expect(await veniceAcceptsEndFrame('https://api.venice.ai', 'k', 'm')).toBeNull();
+  fetchMock.mockResolvedValue(Response.json({ error: 'Too many requests' }, { status: 429 }));
+  expect(await veniceAcceptsEndFrame('https://api.venice.ai', 'k', 'm')).toBeNull();
+});
+
+it('announces end_image_url for image-to-video models Venice says take a last frame, unless frames are configured', async () => {
+  const models = Response.json({ data: [veniceModel('wan-2.5', { model_type: 'image-to-video', resolutions: [], aspect_ratios: [], audio_configurable: false })] });
+  const fetchMock = vi.fn().mockResolvedValueOnce(models.clone()).mockResolvedValueOnce(invalid({}));
+  vi.stubGlobal('fetch', fetchMock);
+  const provider = plugin.createProvider(config) as Provider;
+  await provider.init!();
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(provider.serviceCapabilities?.['wan-2.5']?.supportedParameters).toEqual(['duration', 'end_image_url', 'image_url', 'prompt']);
+
+  fetchMock.mockReset().mockResolvedValueOnce(models.clone()).mockResolvedValueOnce(invalid({ end_image_url: { _errors: ['This model does not support end_image_url'] } }));
+  const firstOnly = plugin.createProvider(config) as Provider;
+  await firstOnly.init!();
+  expect(firstOnly.serviceCapabilities?.['wan-2.5']?.supportedParameters).toEqual(['duration', 'image_url', 'prompt']);
+
+  fetchMock.mockReset().mockResolvedValueOnce(models.clone());
+  const configured = plugin.createProvider({ ...config, ANTSEED_SERVICE_CAPABILITIES_JSON: JSON.stringify({ 'wan-2.5': { video: { inputs: ['first_frame'] } } }) }) as Provider;
+  await configured.init!();
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(configured.serviceCapabilities?.['wan-2.5']?.supportedParameters).toEqual(['duration', 'image_url', 'prompt']);
+});
+
+it('starts without queue fields when the Venice model list is unavailable or lacks the model', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
+  const offline = plugin.createProvider(config) as Provider;
+  await offline.init!();
+  expect(offline.serviceCapabilities?.['wan-2.5']).toEqual({ outputs: ['video'] });
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({ data: [] })));
+  const missing = plugin.createProvider(config) as Provider;
+  await missing.init!();
+  expect(missing.serviceCapabilities?.['wan-2.5']).toEqual({ outputs: ['video'] });
 });
 
 it('relays queue bodies without the AntSeed service field, with seller auth and without AntSeed headers', async () => {
@@ -123,4 +205,76 @@ it('keeps private-model download URLs across a seller restart', async () => {
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }
+});
+
+describe('checkServiceHealth and checkUpstreamAccount', () => {
+  const twoModels = { ...config, ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: JSON.stringify({
+    'wan-2.5': { 'venice-video': { version: 1, components: [{ unit: 'video_generations', priceUsd: 0.1 }] } },
+    'kling-2': { 'venice-video': { version: 1, components: [{ unit: 'video_generations', priceUsd: 0.1 }] } },
+  }), ANTSEED_ALLOWED_SERVICES: 'wan-2.5,kling-2' };
+  const account = (data: object, status = 200) => Response.json({ data }, { status });
+  const models = (ids: string[]) => Response.json({ data: ids.map(id => ({ id, model_spec: { offline: false } })) });
+  const mockVenice = (accountResponse: Response | Error, modelsResponse: Response | Error = models(['wan-2.5', 'kling-2'])) => {
+    const fetchMock = vi.fn(async (url: string) => {
+      const response = url.includes('/api_keys/rate_limits') ? accountResponse : modelsResponse;
+      if (response instanceof Error) throw response;
+      return response;
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  };
+  const provider = (cfg: Record<string, string> = twoModels) => plugin.createProvider(cfg) as Provider;
+  const check = (cfg?: Record<string, string>) => provider(cfg).checkServiceHealth!(['wan-2.5', 'kling-2']);
+  const checkAccount = (cfg?: Record<string, string>) => provider(cfg).checkUpstreamAccount!();
+  const funded = { accessPermitted: true, balances: { USD: 3, DIEM: 1.5, BUNDLED_CREDITS: 0 } };
+
+  it('reads the key and total balance from the free account endpoint', async () => {
+    const fetchMock = mockVenice(account(funded));
+    expect(await checkAccount()).toEqual({ status: 'available', balanceUsd: 4.5 });
+    const [accountUrl, accountInit] = fetchMock.mock.calls[0]!;
+    expect(accountUrl).toBe('https://api.venice.ai/api/v1/api_keys/rate_limits');
+    expect(accountInit).toMatchObject({ headers: { authorization: 'Bearer seller-secret' } });
+    expect(accountInit?.method).toBeUndefined();
+  });
+
+  it('reports an empty balance or one at the configured minimum as unavailable', async () => {
+    mockVenice(account({ accessPermitted: true, balances: { USD: 0, DIEM: 0 } }));
+    expect(await checkAccount()).toMatchObject({ status: 'unavailable', reason: expect.stringContaining('$0.00') });
+    mockVenice(account(funded));
+    expect(await checkAccount({ ...twoModels, VENICE_VIDEO_MIN_BALANCE_USD: '5' })).toMatchObject({ status: 'unavailable' });
+    expect(() => plugin.createProvider({ ...twoModels, VENICE_VIDEO_MIN_BALANCE_USD: '-1' })).toThrow('VENICE_VIDEO_MIN_BALANCE_USD');
+  });
+
+  it('reports a rejected key or blocked API access as unavailable', async () => {
+    mockVenice(Response.json({ error: 'Authentication failed' }, { status: 401 }));
+    expect(await checkAccount()).toMatchObject({ status: 'unavailable', reason: expect.stringContaining('HTTP 401') });
+    mockVenice(account({ ...funded, accessPermitted: false }));
+    expect(await checkAccount()).toMatchObject({ status: 'unavailable', reason: expect.stringContaining('not permitted') });
+  });
+
+  it('checks each model against Venice\'s public model list, without the key', async () => {
+    const fetchMock = mockVenice(account(funded), models(['wan-2.5']));
+    expect(await check()).toEqual({
+      'wan-2.5': { status: 'available' },
+      'kling-2': { status: 'unavailable', reason: 'Venice no longer offers this model' },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('https://api.venice.ai/api/v1/models?type=video');
+    expect(init?.headers).toBeUndefined();
+  });
+
+  it('reports unknown when the model list can not be read', async () => {
+    for (const response of [new Error('network down'), Response.json({}, { status: 503 }), Response.json({ data: [] })]) {
+      mockVenice(account(funded), response);
+      expect((await check())['wan-2.5']).toMatchObject({ status: 'unknown' });
+    }
+  });
+
+  it('reports unknown when the account can not be read', async () => {
+    mockVenice(new Error('network down'));
+    expect(await checkAccount()).toMatchObject({ status: 'unknown' });
+    mockVenice(Response.json({}, { status: 500 }));
+    expect(await checkAccount()).toMatchObject({ status: 'unknown' });
+  });
 });

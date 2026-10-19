@@ -8,6 +8,7 @@
  * set of engine state this run touches; nothing else is reachable from it.
  */
 import { randomUUID } from 'node:crypto';
+import { RESPONSE_ROUTE_ENTRY } from './response-route.js';
 import { existsSync } from 'node:fs';
 import type { AgentSessionEvent, ExtensionAPI } from '@mariozechner/pi-coding-agent';
 import {
@@ -437,6 +438,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     );
 
     const turnMetaQueue: AiMessageMeta[] = [];
+    let finalAssistantCreatedAt: number | undefined;
     const toolArgsById = new Map<string, Record<string, unknown>>();
     // Pi's native streaming handles all API formats (anthropic-messages,
     // openai-completions, openai-responses) via model.api + model.baseUrl.
@@ -742,6 +744,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
             }
           }
           const assistantMessage = message as AssistantMessage & { meta?: AiMessageMeta };
+          finalAssistantCreatedAt = assistantMessage.timestamp;
           assistantMessage.meta = parsedMeta;
           pendingAssistantMessage = mergeAssistantMessagesForUi(
             pendingAssistantMessage,
@@ -877,13 +880,20 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       if (completedAssistantMessage) {
         const routed = await fetchProxyConversationRoute(proxyPort, conversationId);
         if (routed?.peerId) {
-          completedAssistantMessage.meta = {
-            ...(completedAssistantMessage.meta ?? {}),
+          const peerLabel = getServiceCatalogEntries().find((entry) => entry.peerId === routed.peerId)?.peerLabel;
+          // The seller's own name, without the "(1d90f467)" id suffix the catalog label carries.
+          const peerName = peerLabel?.replace(/\s*\([^)]*\)\s*$/, '').trim() || undefined;
+          const route = {
             peerId: routed.peerId,
             service: routed.service,
+            ...(peerName ? { peerName } : {}),
+            ...(routed.router ? { router: routed.router } : {}),
           };
+          completedAssistantMessage.meta = { ...(completedAssistantMessage.meta ?? {}), ...route };
+          if (finalAssistantCreatedAt) {
+            sessionManager.appendCustomEntry(RESPONSE_ROUTE_ENTRY, { createdAt: finalAssistantCreatedAt, ...route });
+          }
           preferredPeerByConversationId.set(conversationId, routed.peerId);
-          const peerLabel = getServiceCatalogEntries().find((entry) => entry.peerId === routed.peerId)?.peerLabel;
           await store.setPeer(conversationId, routed.peerId, peerLabel, routeMode);
         }
         sendToRenderer('chat:ai-done', {

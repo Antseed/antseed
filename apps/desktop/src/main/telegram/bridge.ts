@@ -30,6 +30,15 @@ import {
 import { LOCALHOST_URL } from '../constants.js';
 import { asErrorMessage } from '../utils.js';
 
+function telegramModelPickerText(current: string, hasModels: boolean): string {
+  const explanation = current === 'antseed'
+    ? 'A router is active for new chats; there is no fixed default model. Picking a model leaves router mode.\n\n'
+    : '';
+  return explanation + (hasModels
+    ? 'Pick a model — it applies to this chat and becomes the default in the app:'
+    : 'No models discovered yet — try again in a moment.');
+}
+
 export type TelegramBridgeStatus = {
   configured: boolean;
   running: boolean;
@@ -373,8 +382,10 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
     let routed: { peerId: string; service: string } | null = null;
     try {
       const port = await engine.getProxyPort();
-      const response = await fetch(`${LOCALHOST_URL}:${port}/_antseed/route`);
-      const body = await response.json() as { ok?: boolean; model?: string | null };
+      const response = await fetch(`${LOCALHOST_URL}:${port}/_antseed/route`, { signal: AbortSignal.timeout(5_000) });
+      if (!response.ok) throw new Error(`Read route failed (${response.status})`);
+      const body = await response.json() as { ok?: boolean; model?: string | null; router?: unknown };
+      if (!body.model && body.router) return { service: 'antseed' };
       const model = typeof body.model === 'string' ? body.model.trim() : '';
       const at = model.indexOf('@');
       if (at > 0) {
@@ -451,11 +462,11 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
         if (options.length >= MODEL_PICK_LIMIT) break;
       }
     }
+    const current = (await resolveDefaultRoute()).service?.trim().toLowerCase() ?? '';
     if (options.length === 0) {
-      void sendToOwner('No models discovered yet — try again in a moment.');
+      void sendToOwner(telegramModelPickerText(current, false));
       return;
     }
-    const current = (await resolveDefaultRoute()).service?.trim().toLowerCase() ?? '';
     modelPickGen += 1;
     const gen = modelPickGen;
     const keyboard: TgReplyMarkup = {
@@ -468,7 +479,7 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
         callback_data: `mdl:${String(gen)}:${String(index)}`,
       }])),
     };
-    const sent = await sendToOwner('Pick a model — it applies to this chat and becomes the default in the app:', keyboard);
+    const sent = await sendToOwner(telegramModelPickerText(current, true), keyboard);
     if (sent && settings?.ownerChatId != null) {
       modelPick = { gen, options, chatId: settings.ownerChatId, messageId: sent.message_id };
     }

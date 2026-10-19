@@ -47,8 +47,30 @@ import {
   selectTargetProtocolForRequest,
 } from '@antseed/api-adapter';
 import { parseResponseUsage } from './utils/response-usage.js';
+import { routingProtocolForPath, routingProtocolOf, routingRequestOf, routingWireProtocol, ROUTING_PROTOCOLS, type RoutingProtocol } from '@antseed/protocol/routing';
 
 type ProviderTokenPricing = import('./interfaces/seller-provider.js').ProviderTokenPricingUsdPerMillion;
+
+/** A seller's services of one routing protocol. */
+function routingServices(providers: readonly Provider[], protocol: RoutingProtocol): Array<{ provider: Provider; service: string }> {
+  return providers.flatMap(provider => provider.services
+    .filter(service => routingProtocolOf(provider.serviceApiProtocols?.[service]) === protocol)
+    .map(service => ({ provider, service })));
+}
+
+/**
+ * Routing protocols whose requests do not name a service (`oneServicePerSeller`) let a seller
+ * offer at most one service of that protocol; the request path then addresses it.
+ */
+export function assertSingleRoutingService(providers: readonly Provider[]): void {
+  for (const protocol of ROUTING_PROTOCOLS) {
+    if (!routingWireProtocol(protocol).oneServicePerSeller) continue;
+    const found = routingServices(providers, protocol);
+    if (found.length > 1) {
+      throw new Error(`A seller can offer at most one ${protocol} routing service; found ${found.map(entry => `${entry.provider.name}/${entry.service}`).join(', ')}`);
+    }
+  }
+}
 
 function isZeroTokenPricing(pricing: ProviderTokenPricing): boolean {
   return pricing.inputUsdPerMillion === 0
@@ -159,6 +181,12 @@ export class SellerRequestHandler {
       if (request.method === 'GET' && (pathOnly === '/v1/models' || pathOnly.startsWith('/v1/models/'))) {
         const modelsResponse = this._handleModelsRequest(request);
         mux.sendProxyResponse(modelsResponse);
+        return;
+      }
+
+      const routingRequest = routingRequestOf(request.method, request.path);
+      if (routingRequest?.action === 'catalog') {
+        mux.sendProxyResponse(await this._handleRoutingCatalog(request, buyerPeerId, routingRequest.protocol));
         return;
       }
 
@@ -529,7 +557,7 @@ export class SellerRequestHandler {
                 // Default settleSession() performs final close(); do not use
                 // settleOnly here because exhausted channels must release the
                 // buyer's unused reserve before the buyer opens a replacement.
-                void spm.settleSession(buyerPeerId).catch((err) => {
+                void spm.closeSessionWhenIdle(buyerPeerId).catch((err) => {
                   debugWarn(`[SellerHandler] Failed to close exhausted session: ${err instanceof Error ? err.message : err}`);
                 });
               }
@@ -1008,6 +1036,29 @@ export class SellerRequestHandler {
 
   // -- Local /v1/models handler --
 
+  /**
+   * Free router catalog (for `irp-suggest`, `GET /v1/routing/models`): forward to this seller's
+   * service of that routing protocol. Not rate-limited here; the router limits its own catalog,
+   * keyed on the authenticated buyer id this seller stamps on the request, as on paid requests.
+   * Local failures use the routing protocol's own error format.
+   */
+  private async _handleRoutingCatalog(request: SerializedHttpRequest, buyerPeerId: string, protocol: RoutingProtocol): Promise<SerializedHttpResponse> {
+    const wire = routingWireProtocol(protocol);
+    const failure = (statusCode: number, reason: 'no-router' | 'unavailable', detail: string): SerializedHttpResponse => {
+      const { contentType, body } = wire.errorResponse(statusCode, reason, detail);
+      return { requestId: request.requestId, statusCode, headers: { 'content-type': contentType }, body };
+    };
+    const provider = routingServices(this._deps.providers, protocol)[0]?.provider;
+    if (!provider) return failure(404, 'no-router', `This seller offers no ${protocol} routing service.`);
+    setTrustedHeader(request.headers, 'x-antseed-buyer-peer-id', buyerPeerId);
+    try {
+      const response = await provider.handleRequest(request);
+      return { ...response, requestId: request.requestId };
+    } catch (error) {
+      return failure(503, 'unavailable', `Routing catalog failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   private _handleModelsRequest(request: SerializedHttpRequest): SerializedHttpResponse {
     const allServices = this._deps.providers.flatMap((p) => p.services);
     const now = Math.floor(Date.now() / 1000);
@@ -1125,6 +1176,11 @@ export class SellerRequestHandler {
   }
 
   private _extractRequestedService(request: SerializedHttpRequest): string | null {
+    // Routing protocols whose paths name no service address this seller's single service of that protocol.
+    const routingProtocol = routingProtocolForPath(request.path);
+    if (routingProtocol && routingWireProtocol(routingProtocol).oneServicePerSeller) {
+      return routingServices(this._deps.providers, routingProtocol)[0]?.service ?? null;
+    }
     if (nativeVideoRoute(request)) return requestService(request) ?? null;
     const body = extractRequestBodyFields(request.headers, request.body);
     const service = body?.["service"] ?? body?.["model"];

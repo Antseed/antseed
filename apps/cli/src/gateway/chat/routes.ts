@@ -61,11 +61,16 @@ const THREAD_ID_RE = /^[A-Za-z0-9_-]{1,64}$/
 const PEER_ID_RE = /^(0x)?[0-9a-fA-F]{40}$/
 const newMessageId = createIdGenerator({ prefix: 'msg', size: 16 })
 
-const SYSTEM_PROMPT = `You are the assistant of an Antseed gateway. Antseed is a peer-to-peer network of AI providers; this chat runs on the organization's gateway, on a model the user picked.
-
-You can use tools. Search and read the web for anything current or factual you are unsure about, and cite the pages you used. You also have a private scratch directory for this conversation: write files there when a result is long or the user asks for one.
-
-Answer in Markdown. Be direct.`
+/** The chat's system prompt, describing only the tools this request has (the user can switch them off). */
+export function systemPrompt(tools: Record<string, unknown>): string {
+  const lines = ['You are the assistant of an Antseed gateway. Antseed is a peer-to-peer network of AI providers; this chat runs on the organization\'s gateway, on a model the user picked.', '']
+  if ('web_search' in tools) lines.push('Search and read the web for anything current or factual you are unsure about, and cite the pages you used.')
+  if ('write_file' in tools) lines.push('You have a private scratch directory for this conversation: write files there when a result is long or the user asks for one.')
+  if (SHELL_TOOL in tools) lines.push('You can run shell commands in that directory; the user approves each one before it runs.')
+  if (Object.keys(tools).length === 0) lines.push('You have no tools in this conversation: answer from what you know, and say when something may be out of date.')
+  lines.push('', 'Answer in Markdown. Be direct.')
+  return lines.join('\n')
+}
 
 export interface ChatRouteOptions {
   /** The gateway's listen port, known once it is listening. */
@@ -191,7 +196,7 @@ export function chatRouteRegistrar(options: ChatRouteOptions) {
     }, allow)
 
     router.add('POST', '/chat', async (request) => {
-      const body = (request.body ?? {}) as { id?: unknown; workspaceId?: unknown; model?: unknown; peerId?: unknown; messages?: unknown }
+      const body = (request.body ?? {}) as { id?: unknown; workspaceId?: unknown; model?: unknown; peerId?: unknown; messages?: unknown; tools?: unknown }
       const caller = chatter(request, typeof body.workspaceId === 'string' ? body.workspaceId : null)
       const model = typeof body.model === 'string' ? body.model.trim() : ''
       if (!model || model.length > 200) throw new ConsoleError(400, 'invalid_model', 'Pick a model')
@@ -231,10 +236,14 @@ export function chatRouteRegistrar(options: ChatRouteOptions) {
       const known = modelsCache.get(caller.keyId)?.models.find((entry) => entry.id === model)
       const pinned = pinnedPeerId ? known?.peers.find((peer) => peer.peerId === pinnedPeerId) : undefined
       const canUseTools = known ? (pinned ? pinned.toolUse : known.toolUse) : true
+      // The chat's tool switches: each one off only when the request says false (older clients send none).
+      const wanted = (body.tools && typeof body.tools === 'object' ? body.tools : {}) as Record<string, unknown>
       const tools = canUseTools
         ? chatTools({
           sandboxDir: join(deps.dataDir, 'gateway', 'chat', caller.dirName, threadId),
-          allowShell: caller.admin,
+          allowShell: caller.admin && wanted['shell'] !== false,
+          web: wanted['web'] !== false,
+          files: wanted['files'] !== false,
           approvedCommandCalls,
           braveApiKey: options.braveApiKey ?? null,
         })
@@ -253,7 +262,7 @@ export function chatRouteRegistrar(options: ChatRouteOptions) {
       request.res.once('close', () => { if (!request.res.writableFinished) abort.abort() })
       const result = streamText({
         model: provider.chatModel(pinnedPeerId ? `${pinnedPeerId}@${model}` : model),
-        system: SYSTEM_PROMPT,
+        system: systemPrompt(tools),
         messages: await convertToModelMessages(messages, { tools, ignoreIncompleteToolCalls: true }),
         tools,
         // Every shell command waits for the user's Approve; the request is signed so a client cannot forge one.

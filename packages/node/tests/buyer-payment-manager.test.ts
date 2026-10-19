@@ -11,6 +11,10 @@ import type { Identity } from '../src/p2p/identity.js';
 import { bytesToHex } from '../src/utils/hex.js';
 import { toPeerId } from '../src/types/peer.js';
 import { estimateCostFromBytes } from '../src/payments/pricing.js';
+import { decodeSpendingAuth, encodeSpendingAuth } from '@antseed/protocol/payment-codec';
+import { getServiceMetadataId, MAX_METADATA_SERVICES } from '@antseed/protocol/signatures';
+import type { SpendingAuthPayload } from '@antseed/protocol/messages';
+import { captureUnitBillingContext } from '@antseed/buyer-core';
 
 const enc = new TextEncoder();
 
@@ -1153,6 +1157,50 @@ describe('BuyerPaymentManager', () => {
     expect(totals.outputImages).toBe(2n);
   });
 
+  it('handleNeedAuth pays a video exactly its price: no token tolerance above it', async () => {
+    const sellerPeerId = fakePeerId('seller-video-exact');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    const unitModel = { version: 1 as const, components: [{ unit: 'video_seconds' as const, priceUsd: 0.1 }] };
+    const captured = captureUnitBillingContext({
+      sellerPeerId,
+      provider: 'venice',
+      service: 'wan-2.5',
+      serviceApiProtocol: 'venice-video',
+      request: {
+        requestId: 'req-video-exact',
+        method: 'POST',
+        path: '/api/v1/video/queue',
+        headers: { 'content-type': 'application/json' },
+        body: new TextEncoder().encode(JSON.stringify({ model: 'wan-2.5', prompt: 'An ant', duration: '8s' })),
+      },
+    });
+    manager.trackRequestBilling('req-video-exact', {
+      context: captured.context,
+      requestFacts: captured.requestFacts,
+      estimatedCostUsdc: 800_000n,
+      unitModel,
+    });
+    manager.recordObservedUnitUsage('req-video-exact', { units: { video_seconds: 8 } });
+    mux.sentSpendingAuths.length = 0;
+    const needAuth = (cost: bigint) => ({
+      channelId,
+      requestId: 'req-video-exact',
+      requiredCumulativeAmount: cost.toString(),
+      currentAcceptedCumulative: '0',
+      deposit: '5000000',
+      lastRequestCost: cost.toString(),
+      inputTokens: '0',
+      outputTokens: '0',
+      billingUsage: { version: 1 as const, units: { video_seconds: '8' } },
+    });
+
+    // $1.00 is within the 1.4x tolerance of $0.80, but a video's price is exact.
+    await manager.handleNeedAuth(sellerPeerId, needAuth(1_000_000n), mux);
+    expect(mux.sentSpendingAuths.length).toBe(0);
+    await manager.handleNeedAuth(sellerPeerId, needAuth(800_000n), mux);
+    expect(mux.sentSpendingAuths.length).toBe(1);
+  });
+
   it('handleNeedAuth rejects image billingUsage claiming more images than the buyer observed', async () => {
     const sellerPeerId = fakePeerId('seller-image-observed');
     const channelId = await manager.authorizeSpending(
@@ -1896,6 +1944,62 @@ describe('BuyerPaymentManager', () => {
     expect(resentChannelId).toBe(channelId);
     expect(mux.sentSpendingAuths).toHaveLength(1);
     expect((mux.sentSpendingAuths[0] as Record<string, unknown>).cumulativeAmount).toBe('0');
+  });
+
+  it('re-signs a channel whose persisted service list outgrew the payment frame', async () => {
+    const sellerPeerId = fakePeerId('seller-oversized-metadata');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 50_000n, TEST_PRICING);
+    // A channel persisted before the service cap: ~110 services made each
+    // SpendingAuth larger than the 64 KiB payment frame.
+    store.replaceMetadataServiceTotals(channelId, Array.from({ length: 110 }, (_, i) => ({
+      serviceId: getServiceMetadataId(`legacy-model-${i}`),
+      cumulativeAmount: BigInt(1_000 + i),
+      cumulativeInputTokens: 10n,
+      cumulativeCachedInputTokens: 0n,
+      cumulativeOutputTokens: 20n,
+      cumulativeRequestCount: 1n,
+      cumulativeOutputImages: 1n,
+      cumulativeVideoGenerations: 0n,
+      cumulativeVideoSeconds: 0n,
+    })));
+    store.close();
+
+    store = new ChannelStore(tempDir);
+    manager = new BuyerPaymentManager(identity, makeConfig(tempDir), store);
+    manager.setSigner(identity.wallet);
+    mux = createMockPaymentMux();
+
+    expect(await manager.resendCurrentSpendingAuth(sellerPeerId, mux)).toBe(channelId);
+    const resent = mux.sentSpendingAuths[0] as SpendingAuthPayload;
+    // What the seller's codec does with the frame: it must decode, and the
+    // signed hash must match the folded metadata it carries.
+    const received = decodeSpendingAuth(encodeSpendingAuth(resent));
+    expect(keccak256(received.metadata)).toBe(received.metadataHash);
+    const services = decodeMetadataServices(received.metadata);
+    expect(services).toHaveLength(MAX_METADATA_SERVICES);
+    expect(services.reduce((sum, s) => sum + s.cumulativeRequestCount, 0n)).toBe(110n);
+    // The folded list is persisted, so the next restart signs the same metadata.
+    expect(store.getMetadataServiceTotals(channelId)).toHaveLength(MAX_METADATA_SERVICES);
+  });
+
+  it('caps a close authorization at the given deposit without persisting it', async () => {
+    const sellerPeerId = fakePeerId('seller-close-cap');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 50_000n, TEST_PRICING);
+    manager.handleAuthAck(sellerPeerId, { channelId: (mux.sentSpendingAuths[0] as Record<string, string>).channelId! });
+    await manager.signPerRequestAuth(
+      sellerPeerId,
+      { inputBytes: SAMPLE_INPUT, outputBytes: SAMPLE_OUTPUT, sellerClaimedCost: 10_000n },
+    );
+    const signed = manager.getCumulativeAmount(sellerPeerId);
+    const persistedSig = store.getChannel(channelId)!.latestSpendingAuthSig;
+
+    const capped = await manager.buildCloseChannelRequest(sellerPeerId, { maxCumulative: signed - 1n });
+    expect(capped.cumulativeAmount).toBe((signed - 1n).toString());
+    expect(store.getChannel(channelId)!.latestSpendingAuthSig).toBe(persistedSig);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(signed);
+
+    const uncapped = await manager.buildCloseChannelRequest(sellerPeerId, { maxCumulative: signed + 1n });
+    expect(uncapped.cumulativeAmount).toBe(signed.toString());
   });
 
   it('extendCurrentSpendingAuth raises cumulative for an exhausted active session without changing metadata', async () => {

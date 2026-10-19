@@ -17,32 +17,38 @@ The first time you open **Chat** in a workspace, the gateway creates an API key 
 - Your routing policies apply, and the model list follows them.
 - Each request shows up in **Activity** and **Logs** under the **Web chat** key.
 
-Below the message box, the page shows which key pays, what it spent this month (against its monthly cap, if any) and an estimate of what the current chat cost. The estimate uses the provider's advertised prices; the amount actually paid is in **Logs**.
+The bar at the top of the chat shows an estimate of what the current chat has cost, from the providers' advertised prices; the amount actually paid is in **Logs**. The **Web chat** key, and what it spent, is on the **Keys** page.
 
 An organization admin who opens a workspace they are not a member of gets an unowned key labelled `Web chat (<their name>)`.
 
 ## Pick a model and a provider
 
-1. Choose a model in the model picker. Models with free offers are marked **Free offers**; others show their price range.
-2. Choose a seller, or keep **Auto: the gateway picks the best offer each turn**. With Auto, the page shows which provider automatic routing would pick right now.
+1. Choose a model in the bar at the top. Models with free offers are marked **Free**.
+2. Next to it, choose a seller, or keep **Auto**, which picks the best offer each turn. Hover it to see the seller Auto would pick right now, its prices, and why: how Auto ranks sellers, the minimum trust it requires, and a cheaper seller it skips and the reason.
 3. Type your message.
 
-Every answer shows which provider served it, the tokens used and the estimated cost. Pinning a provider sends every turn to it. If it stops offering the model, the page offers **Use Auto**.
+Under every answer, one line shows the provider that served it, its trust score and the estimated cost. Hover the provider for the model, its prices, the tokens used and its peer id. On the latest answer:
+
+- **Pin** sends every following turn to that provider.
+- **Try another seller** answers the same question again with the next provider routing ranks, and pins it.
+
+If a pinned provider stops offering the model, the page offers **Use Auto**.
 
 If no free provider offers the model and the wallet is empty, the page links to **Add funds**. See [Funding](/docs/gateway/funding).
 
 ## Tools
 
-On models that can use tools, the agent can:
+On models that can use tools, switches in the message box choose what the agent may do. Your choice is remembered on this browser.
 
-- Search the web and read web pages.
-- Read and write files in a private scratch directory for the conversation, on the gateway host.
+- **Web**: search the web and read web pages.
+- **Files**: read and write files in a private scratch directory for the conversation, on the gateway host.
+- **Shell** (organization admins, off by default): see below.
 
 Models that cannot use tools answer as plain chat. Web search uses Brave Search when the gateway has `ANTSEED_BRAVE_API_KEY` set, and DuckDuckGo otherwise.
 
 ### Shell commands (organization admins)
 
-Organization owners and admins also get a shell tool. It runs commands in the chat's scratch directory, as the gateway's own operating-system user, with a 60-second timeout.
+Organization owners and admins can switch on a shell tool. It runs commands in the chat's scratch directory, as the gateway's own operating-system user, with a 60-second timeout.
 
 No command runs on the model's say-so. Each one stops the answer and asks **Run this command on the gateway host?**, showing the exact command, with **Approve** and **Deny**. Approve only commands you understand: the model's output comes from a network provider and from any page it read, either of which can try to steer it.
 
@@ -52,7 +58,7 @@ A shell command has the gateway user's permissions, including access to its data
 
 ## Conversations
 
-Your conversations are stored on the gateway and listed on the left of the page. Each member sees only their own. Delete one from its row.
+Your conversations are stored on the gateway and listed on the left of the page (on a phone, under the chats button at the top left). Each member sees only their own. Delete one from its row.
 
 ## Chat from the terminal
 

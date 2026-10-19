@@ -1,15 +1,8 @@
 import { useEffect, useState } from 'react';
+import { host } from './host';
+import { PAGES, type Page } from './pages';
 
-/** Sidebar navigation, grouped. `addresses` is a real route reached from the Network page. */
-export const NAV_GROUPS = [
-  { label: 'Market', items: [{ id: 'stake', label: 'Sellers' }] },
-  { label: 'You', items: [{ id: 'positions', label: 'My positions' }, { id: 'rewards', label: 'Rewards' }, { id: 'seller', label: 'Seller' }] },
-  { label: 'Protocol', items: [{ id: 'network', label: 'Network' }, { id: 'addresses', label: 'Addresses' }] },
-] as const;
-
-export const PAGES = ['stake', 'positions', 'rewards', 'seller', 'network', 'addresses'] as const;
-
-export type Page = (typeof PAGES)[number];
+export { NAV_GROUPS, PAGES, PAGE_AREAS, type Page, type PageArea } from './pages';
 
 /** Routes from earlier sidebar layouts map onto the current pages. */
 const REDIRECTS: Record<string, Page> = {
@@ -38,13 +31,15 @@ export function parseRoute(hash: string): Route {
   const segments = pathPart.split('/').filter(Boolean);
   const first = segments[0];
   const redirect = first !== undefined ? REDIRECTS[first] : undefined;
-  const page: Page = isPage(first) ? first : (redirect ?? 'stake');
+  const named: Page = isPage(first) ? first : (redirect ?? 'stake');
+  const shown = host().pages;
+  const page = shown.includes(named) ? named : (shown[0] ?? named);
   return { page, segments: segments.slice(1), query: new URLSearchParams(queryPart), redirected: redirect !== undefined };
 }
 
 function readRoute(): Route {
-  const route = parseRoute(window.location.hash);
-  if (route.redirected) window.history.replaceState(null, '', href(route.page));
+  const route = parseRoute(host().currentPath());
+  if (route.redirected) host().replace(route.page);
   return route;
 }
 
@@ -52,12 +47,11 @@ export function useRoute(): Route {
   const [route, setRoute] = useState<Route>(readRoute);
   useEffect(() => {
     const onChange = () => setRoute(readRoute());
-    window.addEventListener('hashchange', onChange);
-    return () => window.removeEventListener('hashchange', onChange);
+    return host().subscribe(onChange);
   }, []);
   return route;
 }
 
 export function href(page: Page, ...rest: Array<string | number>): string {
-  return `#/${[page, ...rest].join('/')}`;
+  return host().href([page, ...rest].join('/'));
 }

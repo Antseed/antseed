@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { VprMark } from './VprLogo';
-import { BrandIcon, type BrandKey } from './brand/BrandIcon';
+import { BrandIcon, type BrandKey } from '@antseed/ui';
 import { SetupAppPreview } from './SetupAppPreview';
 import { canonicalModelKey } from '../../modules/catalog/model-identity';
 import { shallowEqual, useUiSelector } from '../hooks/useUiSelector';

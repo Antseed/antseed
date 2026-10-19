@@ -5,12 +5,13 @@ import { useConsole, useScopeFilter } from '../app/context'
 import { useGatewayBaseUrl } from '../components/copy-actions'
 import { PeerActionDialog } from '../components/PeerActionDialog'
 import { PanelRow, PanelSection } from '../components/SidePanel'
+import { TeeBadge } from '../components/TeeBadge'
 import { VerificationLinks } from '../components/VerificationLinks'
 import {
   Badge, CodeBlock, CopyButton, Figure, Mono, PageLink, SelectField, TabPanel, Tabs,
 } from '../components/ui'
 import { formatAnts } from '../lib/ants'
-import { formatDateTime, formatLatency, formatNumber, formatRelative, shortId } from '../lib/format'
+import { formatDateTime, formatLatency, formatNumber, formatRelative, formatSpeed, shortId } from '../lib/format'
 import { priceSummary } from '../lib/models'
 import { isWorkspaceAdmin } from '../lib/nav'
 import { isFreePeer } from '../lib/peers'
@@ -46,7 +47,7 @@ function ProviderMeta({ peer }: { peer: Peer }) {
     <span className="gc-seller__meta">
       <span className="gc-peer-id"><Mono title={peer.peerId}>{shortId(peer.peerId, 6, 4)}</Mono><CopyButton iconOnly value={peer.peerId} label="Copy peer id" /></span>
       <VerificationLinks links={peer.verificationLinks} />
-      {peer.tee && <Badge tone="info">TEE</Badge>}
+      <TeeBadge tee={peer.tee} scope={peer.teeScope} />
       {isFreePeer(peer, '') && <Badge tone="success">Free</Badge>}
       {peer.washFlagged && <Badge tone="danger">Flagged</Badge>}
       {coolingDown && <Badge tone="warning">Cooling down</Badge>}
@@ -63,7 +64,8 @@ function ProviderStats({ peer, showReputation }: { peer: Peer; showReputation: b
       {showReputation && <Figure label="Reputation" value={score(peer.reputationScore)} />}
       <Figure label="Stake" value={peer.stakeAnts ? formatAnts(peer.stakeAnts) : '—'} />
       <Figure label="Network usage share" value={peer.usageShareBps === null ? '—' : `${(peer.usageShareBps / 100).toFixed(2)}%`} />
-      <Figure label="Latency p50 (this gateway)" value={formatLatency(peer.latencyMsP50)} />
+      <Figure label="First token p50 (this gateway)" value={formatLatency(peer.firstTokenMsP50)} />
+      <Figure label="Speed p50 (this gateway)" value={formatSpeed(peer.tokensPerSecondP50)} />
       <Figure label="Requests, 24h (this gateway)" value={formatNumber(peer.requests24h)} />
       <Figure label="Failure streak" value={coolingDown ? `${peer.health.failureStreak}, cooling down until ${formatDateTime(peer.health.coolingDownUntil)}` : String(peer.health.failureStreak)} />
     </div>
