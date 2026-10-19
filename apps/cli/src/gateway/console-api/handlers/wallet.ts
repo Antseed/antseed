@@ -224,6 +224,7 @@ export function registerWalletRoutes(router: ConsoleRouter, deps: ConsoleDeps, o
     const address = await addressOf(ws)
     if (!address) throw new ConsoleError(409, 'wallet_unavailable', 'This workspace has no wallet address yet.')
     const verified = await verify(await resolveChain(), txHash, address)
+    lookedUp.add(`${ws.record.id}:${txHash.toLowerCase()}`)
     if (!verified) return null
     const stored = deps.store.insertDeposit({ ...verified, workspaceId: ws.record.id })
     return stored.kind === 'transfer' ? inheritSweepApproval(ws, stored) : stored
@@ -231,15 +232,27 @@ export function registerWalletRoutes(router: ConsoleRouter, deps: ConsoleDeps, o
 
   /**
    * A sweep approved before transfers were listed hands its approval to the
-   * transfer that funded it, so the books keep it without listing the money twice.
+   * transfer that funded it, so the books keep it without listing the money
+   * twice. Only a sweep that moved exactly what its transfers sent: one that
+   * moved part of a transfer (held back at the credit limit) approved that
+   * part, not the whole transfer, so it stays listed and the transfer waits
+   * for its own approval.
    */
   const inheritSweepApproval = (ws: WorkspaceWallet, transfer: DepositRecord): DepositRecord => {
     if (transfer.approval) return transfer
     const approved = deps.store.listDeposits(ws.record.id)
-      .find((deposit) => deposit.kind === 'relay' && deposit.approval && deposit.sources.some((source) => source.txHash === transfer.txHash))?.approval
+      .find((deposit) => deposit.kind === 'relay' && deposit.approval && movedAllItsTransfers(deposit) && deposit.sources.some((source) => source.txHash === transfer.txHash))?.approval
     if (!approved) return transfer
     return deps.store.setDepositApproval(ws.record.id, transfer.txHash, { byId: approved.byId, byLabel: approved.byLabel, note: approved.note, at: approved.at }) ?? transfer
   }
+  const movedAllItsTransfers = (sweep: DepositRecord): boolean =>
+    sweep.sources.length > 0 && sweep.creditedUsdc + sweep.feeUsdc === sweep.sources.reduce((sum, source) => sum + source.amountUsdc, 0)
+  /** Every transfer that funded this sweep carries the sweep's own approval. */
+  const approvalHandedOver = (sweep: DepositRecord, ws: WorkspaceWallet): boolean =>
+    sweep.sources.length > 0 && sweep.sources.every((source) => {
+      const approval = deps.store.getDeposit(ws.record.id, source.txHash)?.approval
+      return !!approval && approval.at === sweep.approval?.at && approval.byLabel === sweep.approval.byLabel
+    })
 
   /**
    * The transfers that funded this workspace's sweeps, not yet recorded. Each
@@ -257,6 +270,29 @@ export function registerWalletRoutes(router: ConsoleRouter, deps: ConsoleDeps, o
       }
     }
     return [...hashes]
+  }
+  /** `<workspace>:<tx>` transactions checked on-chain by this process. */
+  const lookedUp = new Set<string>()
+  /**
+   * Sweeps stored naming no transfer, not yet checked by this process: a
+   * gateway before this one stored a sweep whose funding lookup failed that
+   * way. Each is looked up again once (with the same backoff when it fails),
+   * so the transfer that funded it can be found and listed.
+   */
+  const unknownFunding = (ws: WorkspaceWallet): DepositRecord[] =>
+    deps.store.listDeposits(ws.record.id).filter((deposit) => deposit.kind === 'relay' && deposit.sources.length === 0 && !lookedUp.has(`${ws.record.id}:${deposit.txHash}`))
+  const refreshSources = async (ws: WorkspaceWallet, sweep: DepositRecord): Promise<void> => {
+    const key = `${ws.record.id}:${sweep.txHash}`
+    try {
+      const verified = await verify(await resolveChain(), sweep.txHash, sweep.wallet)
+      lookedUp.add(key)
+      retries.delete(key)
+      if (verified?.kind === 'relay' && verified.sources.length) deps.store.setDepositSources(ws.record.id, sweep.txHash, verified.sources)
+    } catch (err) {
+      const failures = (retries.get(key)?.failures ?? 0) + 1
+      retries.set(key, { failures, at: deps.now() + Math.min(60_000 * 2 ** (failures - 1), 3_600_000) })
+      deps.log(`console: funding of sweep ${sweep.txHash} not found yet: ${errorMessage(err)}`)
+    }
   }
   /** `<workspace>:<tx>` funding transactions that turned out not to be transfers to its wallet; not checked again. */
   const notTransfers = new Set<string>()
@@ -283,11 +319,12 @@ export function registerWalletRoutes(router: ConsoleRouter, deps: ConsoleDeps, o
   /**
    * Money that came in: transfers to the wallet and direct deposits. Sweeps
    * are moves inside the workspace and stay out, except one approved before
-   * transfers were listed whose funding transfer is not recorded: it keeps
-   * its approval visible until that transfer inherits it.
+   * transfers were listed whose approval its funding transfers do not carry
+   * (not recorded yet, or the sweep moved only part of them): it keeps its
+   * approval visible, for the amount it approved.
    */
   const listed = (deposit: DepositRecord, ws: WorkspaceWallet): boolean =>
-    deposit.kind !== 'relay' || (!!deposit.approval && !deposit.sources.some((source) => deps.store.getDeposit(ws.record.id, source.txHash)))
+    deposit.kind !== 'relay' || (!!deposit.approval && !approvalHandedOver(deposit, ws))
   const TX_HASH_RE = /^0x[0-9a-fA-F]{64}$/
   const depositOf = (ws: WorkspaceWallet, request: ConsoleRequest): DepositRecord => {
     const found = deps.store.getDeposit(ws.record.id, request.params['tx'] ?? '')
@@ -302,6 +339,7 @@ export function registerWalletRoutes(router: ConsoleRouter, deps: ConsoleDeps, o
     const recorded = Array.isArray(history?.['deposits']) ? history['deposits'] as Array<Record<string, unknown>> : []
     const fresh = recorded.map((entry) => String(entry['txHash'] ?? '')).filter((hash) => TX_HASH_RE.test(hash) && !deps.store.getDeposit(ws.record.id, hash))
     for (const txHash of fresh.filter((hash) => due(ws, hash)).slice(0, 10)) await check(ws, txHash, 'deposit')
+    for (const sweep of unknownFunding(ws).filter((deposit) => due(ws, deposit.txHash)).slice(0, 10)) await refreshSources(ws, sweep)
     for (const txHash of unrecordedFunding(ws).filter((hash) => due(ws, hash)).slice(0, 10)) {
       if (await check(ws, txHash, 'transfer') === null) notTransfers.add(`${ws.record.id}:${txHash}`)
     }

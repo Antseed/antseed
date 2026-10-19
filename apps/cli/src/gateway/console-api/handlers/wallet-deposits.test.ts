@@ -23,6 +23,9 @@ const PAST = `0x${'b2'.repeat(32)}`
 const NOT_OURS = `0x${'c3'.repeat(32)}`
 const SENT_EARLIER = `0x${'f6'.repeat(32)}`
 const FUNDED_APPROVED = `0x${'d7'.repeat(32)}`
+const FUNDED_PARTLY = `0x${'d8'.repeat(32)}` // a transfer an approved sweep moved only part of
+const LEGACY = `0x${'ab'.repeat(32)}` // a sweep an older gateway stored naming no transfer (its funding lookup failed)
+const SENT_LEGACY = `0x${'f9'.repeat(32)}` // the transfer that funded it
 const FLAKY = `0x${'a3'.repeat(32)}` // a sweep whose funding lookup fails at first
 const SENT_LATE = `0x${'f8'.repeat(32)}` // the transfer that funded it
 const APPROVED_LONG_AGO = 1_600_000_000_000
@@ -84,6 +87,9 @@ function setup(now?: () => number): ConsoleRouter {
         case SENT: return transfer(txHash, wallet, MINTED_FROM, 500_000_000, 9)
         case SENT_EARLIER: return transfer(txHash, wallet, PAYER, 7_000_000, 3)
         case FUNDED_APPROVED: return transfer(txHash, wallet, PAYER, 40_000_000, 4)
+        case FUNDED_PARTLY: return transfer(txHash, wallet, PAYER, 40_000_000, 5)
+        case LEGACY: return sweep(txHash, wallet, [{ from: PAYER, amountUsdc: 1_050_000, txHash: SENT_LEGACY }])
+        case SENT_LEGACY: return transfer(txHash, wallet, PAYER, 1_050_000, 6)
         case PAST: return { txHash, wallet, kind: 'direct', creditedUsdc: 1_000_000, feeUsdc: 0, blockNumber: 10, blockTime: 1_699_000_000_000, sources: [{ from: PAYER, amountUsdc: 1_000_000, txHash }] }
         default: return null
       }
@@ -115,7 +121,7 @@ test('listing shows the transfer that funded the sweeps, once, and not the sweep
 })
 
 test('a sweep approved before transfers were listed hands its approval to the transfer that funded it', async () => {
-  const approvedSweep = { ...sweep(`0x${'a9'.repeat(32)}`, WALLET, [{ from: PAYER, amountUsdc: 40_000_000, txHash: FUNDED_APPROVED }]), workspaceId }
+  const approvedSweep = { ...sweep(`0x${'a9'.repeat(32)}`, WALLET, [{ from: PAYER, amountUsdc: 40_000_000, txHash: FUNDED_APPROVED }]), creditedUsdc: 39_950_000, workspaceId }
   store.insertDeposit(approvedSweep)
   store.setDepositApproval(workspaceId, approvedSweep.txHash, { byId: null, byLabel: 'Owner', note: 'October', at: APPROVED_LONG_AGO })
   const list = await call(setup(), 'GET', `/workspaces/${workspaceId}/deposits`, admin()) as DepositConfirmation[]
@@ -124,6 +130,30 @@ test('a sweep approved before transfers were listed hands its approval to the tr
   assert.equal(funded?.approval?.note, 'October')
   assert.equal(funded?.approval?.at, APPROVED_LONG_AGO, 'the approval keeps its original time')
   assert.ok(!list.some((deposit) => deposit.kind === 'relay'), 'sweeps are not listed')
+})
+
+test('a sweep that moved only part of a transfer keeps its approval, and the transfer waits for its own', async () => {
+  const partial = { ...sweep(`0x${'ac'.repeat(32)}`, WALLET, [{ from: PAYER, amountUsdc: 40_000_000, txHash: FUNDED_PARTLY }]), workspaceId }
+  store.insertDeposit(partial)
+  store.setDepositApproval(workspaceId, partial.txHash, { byId: null, byLabel: 'Owner', note: 'first dollar', at: APPROVED_LONG_AGO })
+  const list = await call(setup(), 'GET', `/workspaces/${workspaceId}/deposits`, admin()) as DepositConfirmation[]
+  const funded = list.find((deposit) => deposit.txHash === FUNDED_PARTLY)
+  assert.equal(funded?.sent, '40.000000')
+  assert.equal(funded?.approval, null, 'approving $1.05 of it did not approve $40')
+  const kept = list.find((deposit) => deposit.txHash === partial.txHash)
+  assert.equal(kept?.sent, '1.050000')
+  assert.equal(kept?.approval?.note, 'first dollar')
+})
+
+test('a sweep stored naming no transfer is looked up again, once, and its transfer is then listed', async () => {
+  store.insertDeposit({ ...sweep(LEGACY, WALLET, []), workspaceId })
+  const router = setup()
+  const before = verified.filter((hash) => hash === LEGACY).length
+  const list = await call(router, 'GET', `/workspaces/${workspaceId}/deposits`, admin()) as DepositConfirmation[]
+  assert.equal(store.getDeposit(workspaceId, LEGACY)?.sources[0]?.txHash, SENT_LEGACY)
+  assert.equal(list.find((deposit) => deposit.txHash === SENT_LEGACY)?.sent, '1.050000')
+  await call(router, 'GET', `/workspaces/${workspaceId}/deposits`, admin())
+  assert.equal(verified.filter((hash) => hash === LEGACY).length - before, 1, 'looked up once')
 })
 
 test('an approved sweep whose funding transfer is unknown stays listed with its approval', async () => {

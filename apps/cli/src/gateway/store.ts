@@ -1951,6 +1951,12 @@ export class GatewayStore {
     return this.getDeposit(input.workspaceId, input.txHash)!
   }
 
+  /** Replaces where a deposit's USDC came from, keeping its approval (a sweep whose funding lookup once failed). */
+  setDepositSources(workspaceId: string, txHash: string, sources: DepositSource[]): DepositRecord | null {
+    this._stmt('UPDATE deposits SET sources = ? WHERE workspace_id = ? AND tx_hash = ?').run(JSON.stringify(sources), workspaceId, txHash.toLowerCase())
+    return this.getDeposit(workspaceId, txHash)
+  }
+
   /** Sets (or with null clears) who approved a deposit. */
   /** `approval.at` keeps an approval's original time when it is carried over; a new approval is stamped now. */
   setDepositApproval(workspaceId: string, txHash: string, approval: { byId: string | null; byLabel: string; note: string | null; at?: number } | null): DepositRecord | null {

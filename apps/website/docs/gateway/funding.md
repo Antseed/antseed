@@ -60,7 +60,7 @@ For the Default workspace, use your data directory itself. Card checkout is only
 
 The gateway checks every deposit against its transaction on Base, so the confirmation states only what the chain shows, with links to check it. It confirms a transfer into the workspace's prepaid credits and is not an invoice: no seller or other party issues one for a deposit.
 
-A transfer is listed once its USDC starts moving into the credits, usually within a minute. A move into the credits that was approved before transfers were listed stays listed, as **Moved into the credits**, until the transfer that funded it is found. For one that is missing, **Add a past deposit** takes the transaction that sent the USDC to the wallet, or your own deposit from a connected wallet.
+A transfer is listed once its USDC starts moving into the credits, usually within a minute. A move into the credits that was approved before transfers were listed stays listed, as **Moved into the credits**, until the transfer that funded it is found; the transfer then carries that approval. When the move took only part of the transfer, it stays listed with its approval for that part, and the transfer needs its own approval. For one that is missing, **Add a past deposit** takes the transaction that sent the USDC to the wallet, or your own deposit from a connected wallet.
 
 ## Balance and channels
 
