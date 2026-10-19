@@ -61,6 +61,8 @@ export type ShallowRender = {
   button(label: string): AnyElement;
   /** Whether an element with an onClick and this label is present. */
   hasButton(label: string): boolean;
+  /** Render again with a new element's props, keeping hook state (a parent re-render). */
+  rerender(element: ReactElement): void;
   unmount(): void;
 };
 
@@ -68,7 +70,7 @@ export function shallowRender(element: ReactElement): ShallowRender {
   const component = element.type;
   if (typeof component !== 'function') throw new Error('shallowRender expects a function component element');
   const render = component as (props: unknown) => ReactNode;
-  const props = element.props;
+  let props = element.props;
 
   const hooks: Hook[] = [];
   let cursor = 0;
@@ -179,6 +181,11 @@ export function shallowRender(element: ReactElement): ShallowRender {
       return match;
     },
     hasButton: (label) => clickable(label).length > 0,
+    rerender(next) {
+      if (next.type !== component) throw new Error('rerender expects the same component');
+      props = next.props;
+      flush();
+    },
     unmount() {
       mounted = false;
       for (const hook of hooks) {

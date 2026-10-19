@@ -58,18 +58,30 @@ test('invite signs a free index with this wallet and remembers it', async () => 
   });
 });
 
-test('invite reads epoch, quota and bound invites from Antscan when it reports them', async () => {
+test('invite reads epoch and quota on-chain and skips the invites Antscan reports bound that epoch', async () => {
   await withDataDir(async (dir) => {
     const wallet = Wallet.createRandom();
+    const probed: number[] = [];
     const client = {
-      currentEpoch: async () => { throw new Error('no RPC epoch read'); },
-      inviteQuota: async () => { throw new Error('no RPC quota read'); },
-      inviteUsed: async () => false,
+      currentEpoch: async () => 31,
+      inviteQuota: async (_referrer: string, epoch: number) => (epoch === 31 ? 5 : 0),
+      inviteUsed: async (_referrer: string, _epoch: number, index: number) => { probed.push(index); return false; },
     };
     const indexer = { referrer: async () => ({ available: true, currentEpoch: 31, invites: { epoch: 31, quota: 5, used: 2, usedIndices: [0, 1] }, referredCount: 2, payable: '0', claimableEpochs: [], buyers: [] }) };
     const created = await createReferralInvite(context(dir, wallet, client, indexer) as never);
     assert.deepEqual([created.epoch, created.quota, created.left], [31, 5, 2]);
     assert.ok([2, 3, 4].includes(created.index));
+    assert.deepEqual(probed, [created.index]);
+  });
+});
+
+test('invite ignores an Antscan answer from an earlier epoch', async () => {
+  await withDataDir(async (dir) => {
+    const wallet = Wallet.createRandom();
+    const client = { currentEpoch: async () => 32, inviteQuota: async () => 2, inviteUsed: async () => false };
+    const indexer = { referrer: async () => ({ available: true, currentEpoch: 31, invites: { epoch: 31, quota: 0, used: 0, usedIndices: [] }, referredCount: 0, payable: '0', claimableEpochs: [], buyers: [] }) };
+    const created = await createReferralInvite(context(dir, wallet, client, indexer) as never);
+    assert.deepEqual([created.epoch, created.quota, created.left, created.expiresEpoch], [32, 2, 1, 36]);
   });
 });
 

@@ -1,4 +1,5 @@
 import { isError } from 'ethers';
+import type { ClientRewardsClient } from '@antseed/node';
 import type { BuilderAgentView, BuildersView } from '../api-types.js';
 import { compareBuilderAgents, MAX_BUILDER_AGENTS } from '../builders-view.js';
 import type { AntsContext } from './context.js';
@@ -64,7 +65,10 @@ export async function builders(ctx: AntsContext, agentIds: number[]): Promise<Bu
  * (the contract has no batch claim). Anyone may send it; the contract always
  * pays the agent owner. Epochs come from Antscan; when it is unset, does not
  * index the builders program, or is unreachable, the RPC epoch scan names them.
- * A successful indexed answer is authoritative, even when it lists no epochs.
+ * A successful indexed answer is authoritative, even when it lists no epochs,
+ * except that epochs the contract already marks `claimed` are dropped: Antscan
+ * can lag a claim that just confirmed, and resending it would revert with
+ * AlreadyClaimed before the later epochs are reached.
  */
 export async function claimBuilderRewards(
   ctx: AntsContext,
@@ -80,7 +84,7 @@ export async function claimBuilderRewards(
   const indexer = ctx.indexer();
   const indexed = indexer?.builders ? await indexer.builders([agentId]).catch(() => null) : null;
   const epochs = indexed?.available
-    ? indexed.agents.find((agent) => agent.agentId === agentId)?.claimableEpochs ?? []
+    ? await unclaimedEpochs(client, agentId, indexed.agents.find((agent) => agent.agentId === agentId)?.claimableEpochs ?? [])
     : (await client.pendingRewards(agentId)).map((entry) => entry.epoch);
   if (epochs.length === 0) throw new Error(`No builder rewards are payable yet for agent ${agentId}.`);
   const hashes: string[] = [];
@@ -91,6 +95,16 @@ export async function claimBuilderRewards(
     await report(`Epoch ${epoch} claimed`, hash);
   }
   return { agentId, owner, epochs, hashes };
+}
+
+/** `epochs` without the ones already claimed on-chain for `agentId`, in order. */
+async function unclaimedEpochs(
+  client: Pick<ClientRewardsClient, 'claimed'>,
+  agentId: number,
+  epochs: number[],
+): Promise<number[]> {
+  const claimed = await Promise.all(epochs.map((epoch) => client.claimed(agentId, epoch)));
+  return epochs.filter((_, i) => !claimed[i]);
 }
 
 /** Mint a new ERC-8004 agent owned by this wallet to identify a client app. */

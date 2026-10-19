@@ -172,37 +172,62 @@ function invitePoints(points: string, pendingPoints: string): string {
     : `${formatInt(points)} pts`;
 }
 
+type IssuedInvite = Extract<CreateInviteResult, { ok: true }>;
+type CreateFailure = Extract<CreateInviteResult, { ok: false }>;
+/** A creation result tagged with the allowance week it was made in (null: no allowance reported). */
+type InWeek<T> = T & { epoch: number | null };
+
+/**
+ * Invites left this week. A creation's counts only apply in the week it was
+ * issued, and only while the refreshed allowance predates it (reports more
+ * left); a newer week, or invites issued elsewhere, show as the server reports.
+ */
+function inviteAllowance(
+  allowance: ReferralInvites['allowance'],
+  issued: InWeek<IssuedInvite> | null,
+): { left: number | null; quota: number | null } {
+  if (!issued || issued.epoch !== (allowance?.epoch ?? null)) {
+    return { left: allowance?.left ?? null, quota: allowance?.quota ?? null };
+  }
+  return allowance
+    ? { left: Math.min(allowance.left, issued.left), quota: allowance.quota }
+    : { left: issued.left, quota: issued.quota };
+}
+
 /**
  * Referrer view: the invite link and what each invited buyer brought in
  * (from Antscan), laid out like the balance breakdown rows with a total.
  * Hidden without referrals; the list is hidden without an explorer.
  */
 export function VprInvitesCard({ invites }: { invites: ReferralInvites | null }) {
-  const [created, setCreated] = useState<CreateInviteResult | null>(null);
-  const [lastIssued, setLastIssued] = useState<Extract<CreateInviteResult, { ok: true }> | null>(null);
+  // The latest invite stays copyable across refreshes, weeks and failed retries.
+  const [issued, setIssued] = useState<InWeek<IssuedInvite> | null>(null);
+  const [failure, setFailure] = useState<InWeek<CreateFailure> | null>(null);
   const [creating, setCreating] = useState(false);
   const [copied, setCopied] = useState(false);
   if (!invites?.available) return null;
   const allowance = invites.allowance;
-  // The latest invite stays shown (and copyable) when creating another fails.
-  const issued = created?.ok ? created : lastIssued;
+  const epoch = allowance?.epoch ?? null;
   const link = issued?.link ?? null;
-  const left = issued ? issued.left : allowance?.left ?? null;
-  const quota = issued ? issued.quota : allowance?.quota ?? null;
-  const noQuota = allowance?.quota === 0 || (created?.ok === false && created.noQuota);
+  const { left, quota } = inviteAllowance(allowance, issued);
+  // A failure (e.g. no quota) only holds for the week it happened in.
+  const failed = failure && failure.epoch === epoch ? failure : null;
+  const noQuota = allowance?.quota === 0 || !!failed?.noQuota;
   const create = async () => {
     const createInvite = window.antseedDesktop?.referralCreateInvite;
     if (!createInvite || creating) return;
     setCreating(true);
     try {
       const result = await createInvite();
-      setCreated(result);
       if (result.ok) {
-        setLastIssued(result);
+        setIssued({ ...result, epoch });
+        setFailure(null);
         setCopied(false);
+      } else {
+        setFailure({ ...result, epoch });
       }
     } catch (error) {
-      setCreated({ ok: false, reason: error instanceof Error ? error.message : String(error), noQuota: false });
+      setFailure({ ok: false, reason: error instanceof Error ? error.message : String(error), noQuota: false, epoch });
     } finally {
       setCreating(false);
     }
@@ -241,7 +266,7 @@ export function VprInvitesCard({ invites }: { invites: ReferralInvites | null })
           </>
         )}
       />
-      {created?.ok === false && !created.noQuota ? <span className={styles.errorNote}>{created.reason}</span> : null}
+      {failed && !failed.noQuota ? <span className={styles.errorNote}>{failed.reason}</span> : null}
       {invites.listed && count > 0 ? (
         <div className={`${breakdown.breakdown} ${styles.invites}`} role="table" aria-label="Invited wallets">
           <div className={`${breakdown.row} ${styles.inviteHeader}`} role="row">

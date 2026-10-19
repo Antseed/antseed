@@ -1,6 +1,6 @@
 import { Button, Card } from '../components/ui';
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
-import type { ClaimRequest, CreatedInviteView, PoolView, ReferralView, ReferredBuyerView, RestakeRequest, RewardBucket, RewardsView, StakeUsageRequest } from '../../../src/api-types';
+import type { ClaimRequest, CreatedInviteView, InviteAllowanceView, PoolView, ReferralView, ReferredBuyerView, RestakeRequest, RewardBucket, RewardsView, StakeUsageRequest } from '../../../src/api-types';
 import { readBuildersInBatches } from '../../../src/builders-view';
 import { request, api } from '../api';
 import { BuyerWalletAction } from '../wallet';
@@ -85,22 +85,36 @@ function ReferralRewardsCard() {
   );
 }
 
+/**
+ * Invites left this week. The last created invite's counts only apply in its
+ * week, and only while the refreshed allowance predates it (reports more
+ * left); a newer week, or invites another client issued, show as reported.
+ */
+function inviteAllowance(invites: InviteAllowanceView | null, created: CreatedInviteView | null): { quota: number | null; left: number | null } {
+  if (!invites) return { quota: created?.quota ?? null, left: created?.left ?? null };
+  if (created?.epoch !== invites.epoch) return { quota: invites.quota, left: invites.left };
+  return { quota: invites.quota, left: Math.min(invites.left, created.left) };
+}
+
 /** Create a single-use invite link (signed off-chain by the dashboard wallet) and show what is left this week. */
-function InviteRow({ view }: { view: ReferralView }) {
+export function InviteRow({ view }: { view: ReferralView }) {
   const dashboard = useConfig();
+  // The last link stays copyable across refreshes; its counts only reconcile with the allowance (see inviteAllowance).
   const [created, setCreated] = useState<CreatedInviteView | null>(null);
   const [creating, setCreating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const quota = created?.quota ?? view.invites?.quota ?? null;
-  const left = created?.left ?? view.invites?.left ?? null;
+  // A failure only holds for the week it happened in (null: no allowance reported).
+  const [failure, setFailure] = useState<{ message: string; epoch: number | null } | null>(null);
+  const epoch = view.invites?.epoch ?? null;
+  const error = failure && failure.epoch === epoch ? failure.message : null;
+  const { quota, left } = inviteAllowance(view.invites, created);
   const unavailable = dashboard.readOnly ? 'Connect a wallet with a signer to create invites.'
     : dashboard.browserWallet ? 'Invites are signed by the local Antseed wallet. Run `antseed referral invite` instead.'
       : quota === 0 ? NO_INVITE_QUOTA
         : left === 0 ? 'All invites for this week are taken. More unlock next week.' : null;
   const create = async () => {
-    setCreating(true); setError(null);
+    setCreating(true); setFailure(null);
     try { setCreated(await api.createInvite()); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    catch (cause) { setFailure({ message: cause instanceof Error ? cause.message : String(cause), epoch }); }
     finally { setCreating(false); }
   };
   return (

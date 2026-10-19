@@ -76,7 +76,8 @@ export default function Builders() {
                 <Alert tone="info">Builders program data is not available on this network (no rewards contract, or no explorer to read it from).</Alert>
               )}
 
-              <AgentDialog isOpen={editing} current={data.agentId} onClose={() => setEditing(false)} />
+              {/* Mounted only while open, so each open starts from the saved agent with no stale draft or error. */}
+              {editing && <AgentDialog current={data.agentId} onClose={() => setEditing(false)} />}
 
               <Modal isOpen={claiming} onClose={() => setClaiming(false)} title="Claim builders rewards"
                 subtitle={agent ? `${formatAnts(agent.payableAnts)} for agent #${agent.agentId}.` : undefined}>
@@ -106,7 +107,7 @@ export default function Builders() {
   )
 }
 
-function AgentDialog({ isOpen, current, onClose }: { isOpen: boolean; current: number | null; onClose: () => void }) {
+function AgentDialog({ current, onClose }: { current: number | null; onClose: () => void }) {
   const queryClient = useQueryClient()
   const [value, setValue] = useState(current !== null ? String(current) : '')
   const trimmed = value.trim()
@@ -117,7 +118,7 @@ function AgentDialog({ isOpen, current, onClose }: { isOpen: boolean; current: n
     toast: (view) => view.restartRequired ? null : 'Client agent saved; the buyer is restarting',
   })
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title="Client agent"
+    <Modal isOpen onClose={onClose} title="Client agent"
       subtitle="Your app's ERC-8004 agent id. Changing it restarts the buyer, which briefly interrupts requests.">
       <form className="gc-stack" onSubmit={(event) => { event.preventDefault(); save.mutate(trimmed === '' ? null : Number(trimmed)) }}>
         <TextField label="Agent id" inputMode="numeric" value={value} onChange={(event) => setValue(event.target.value)}

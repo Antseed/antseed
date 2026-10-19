@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, rm, stat, utimes, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { getAddress, ZeroAddress } from 'ethers';
 import type { ReferralInvite } from '@antseed/protocol/signatures';
 import { decodeInvite, recoverInviter, type InviteDomain } from './invites.js';
@@ -335,13 +335,25 @@ function keepIssued(state: ReferralState | null): Pick<ReferralState, 'issued'> 
   return state?.issued ? { issued: state.issued } : {};
 }
 
+/** How often an explorer's "not bound yet" is double-checked on-chain. */
+export const REFERRAL_RECHECK_MS = 10 * 60_000;
+const lastOnChainCheck = new Map<string, number>();
+
+export interface SyncReferralOptions {
+  /** Minimum time between on-chain checks while the explorer reports no binding. */
+  recheckMs?: number;
+  now?: () => number;
+}
+
 /**
  * Re-read the state file and, once a pending invite is bound, record it so
- * the daemon stops carrying the invite. `lookup` (Antscan, no RPC) is only a
- * hint: the binding is recorded once `verify` (the Referrals contract's
- * `referrerOf`) confirms it, and without a verifier the invite stays pending.
- * Without `lookup`, `verify` is asked directly. An unknown answer keeps the
- * local state.
+ * the daemon stops carrying the invite. The binding is recorded only once
+ * `verify` (the Referrals contract's `referrerOf`) confirms it; without a
+ * verifier the invite stays pending. `lookup` (Antscan, no RPC) is a fast
+ * path: a reported binding is verified right away, an explorer failure or
+ * unknown answer falls back to `verify`, and "not bound" is still checked
+ * on-chain every `recheckMs`, so a lagging or broken explorer cannot keep a
+ * bound invite pending. An unknown answer from `verify` keeps the local state.
  */
 export async function syncReferralState(
   dataDir: string,
@@ -349,10 +361,20 @@ export async function syncReferralState(
   buyer: string,
   lookup: ReferralLookup | null,
   verify: ReferralLookup | null = null,
+  options: SyncReferralOptions = {},
 ): Promise<ReferralState | null> {
   const state = await readReferralState(dataDir, scope);
   if (state?.state !== 'invited' || !verify) return state;
-  if (lookup && !normalizeReferrer(await lookup(buyer).catch(() => undefined))) return state;
+  if (lookup) {
+    const hinted = await lookup(buyer).catch(() => undefined);
+    if (hinted === null || (hinted !== undefined && !normalizeReferrer(hinted))) {
+      const key = `${resolve(dataDir)}|${scopeKey(scope)}|${buyer.toLowerCase()}`;
+      const now = (options.now ?? Date.now)();
+      const last = lastOnChainCheck.get(key);
+      if (last !== undefined && now - last < (options.recheckMs ?? REFERRAL_RECHECK_MS)) return state;
+      lastOnChainCheck.set(key, now);
+    }
+  }
   const bound = normalizeReferrer(await verify(buyer).catch(() => undefined));
   if (!bound) return state;
   const boundState: ReferralState = { ...keepIssued(state), state: 'bound', referrer: bound };

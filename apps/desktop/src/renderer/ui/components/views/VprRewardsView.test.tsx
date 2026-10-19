@@ -142,6 +142,51 @@ it('keeps Copy and offers another link after each invite while quota remains', a
   card.unmount();
 });
 
+const invitesIn = (allowance: { epoch: number; quota: number; used: number; left: number }) => ({ available: true, listed: true, allowance, buyers: [], totals: TOTALS, error: null });
+
+it('offers another link once a new week brings invites after the last one was created', async () => {
+  const referralCreateInvite = vi.fn(async () => ({ ok: true as const, invite: 'last', link: 'https://antseed.com/invite/last', left: 0, quota: 5, expiresEpoch: 34 }));
+  vi.stubGlobal('window', globalThis);
+  vi.stubGlobal('antseedDesktop', { referralCreateInvite });
+
+  const card = shallowRender(<VprInvitesCard invites={invitesIn({ epoch: 30, quota: 5, used: 4, left: 1 })} />);
+  const row = () => card.findAll((el) => el.props.title === 'Invite someone')[0] as AnyElement;
+  (card.button('Create link').props.onClick as () => void)();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(row().props.hint).toBe('https://antseed.com/invite/last · 0 of 5 left this week.');
+  expect(card.hasButton('Create another link')).toBe(false);
+
+  // A refresh read before the invite was created doesn't bring the used invite back.
+  card.rerender(<VprInvitesCard invites={invitesIn({ epoch: 30, quota: 5, used: 4, left: 1 })} />);
+  expect(row().props.hint).toBe('https://antseed.com/invite/last · 0 of 5 left this week.');
+  expect(card.hasButton('Create another link')).toBe(false);
+
+  // The minute/focus refresh after the rollover: the new week's allowance wins, the link stays copyable.
+  card.rerender(<VprInvitesCard invites={invitesIn({ epoch: 31, quota: 3, used: 0, left: 3 })} />);
+  expect(row().props.hint).toBe('https://antseed.com/invite/last · 3 of 3 left this week.');
+  expect(card.hasButton('Copy')).toBe(true);
+  expect(card.button('Create another link').props.disabled).toBe(false);
+  card.unmount();
+});
+
+it('keeps a no-quota failure to the week it happened in', async () => {
+  const referralCreateInvite = vi.fn(async () => ({ ok: false as const, reason: 'No invites this week.', noQuota: true }));
+  vi.stubGlobal('window', globalThis);
+  vi.stubGlobal('antseedDesktop', { referralCreateInvite });
+
+  const card = shallowRender(<VprInvitesCard invites={invitesIn({ epoch: 30, quota: 5, used: 4, left: 1 })} />);
+  const row = () => card.findAll((el) => el.props.title === 'Invite someone')[0] as AnyElement;
+  (card.button('Create link').props.onClick as () => void)();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(row().props.hint).toBe('Invites unlock after at least 1 USDC of usage or sales in the previous week.');
+  expect(card.button('Create link').props.disabled).toBe(true);
+
+  card.rerender(<VprInvitesCard invites={invitesIn({ epoch: 31, quota: 2, used: 0, left: 2 })} />);
+  expect(row().props.hint).toBe('2 of 2 left this week.');
+  expect(card.button('Create link').props.disabled).toBe(false);
+  card.unmount();
+});
+
 it('explains why there are no invites without last week\'s activity', () => {
   const html = renderToStaticMarkup(<VprInvitesCard invites={{ available: true, listed: true, allowance: { epoch: 30, quota: 0, used: 0, left: 0 }, buyers: [], totals: TOTALS, error: null }} />);
   expect(html).toContain('Invites unlock after at least 1 USDC of usage or sales in the previous week.');

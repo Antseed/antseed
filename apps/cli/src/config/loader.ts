@@ -564,10 +564,16 @@ function mergeBuyerConfig(
 }
 
 /** `buyer.clientAgentId`: a positive integer ERC-8004 agent id, else the default. */
+/** An ERC-8004 agent id: a positive safe integer, or a string of decimal digits for one. */
+export function parseClientAgentId(value: unknown): number | undefined {
+  const parsed = typeof value === 'string' ? (/^\s*\d+\s*$/.test(value) ? Number(value) : Number.NaN) : value;
+  return typeof parsed === 'number' && Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
 function normalizeClientAgentId(value: unknown, fallback: number | undefined): number | undefined {
   if (value === undefined || value === null) return fallback;
-  const parsed = typeof value === 'string' ? Number.parseInt(value, 10) : value;
-  if (typeof parsed === 'number' && Number.isInteger(parsed) && parsed > 0) return parsed;
+  const parsed = parseClientAgentId(value);
+  if (parsed !== undefined) return parsed;
   console.warn(`Ignoring invalid buyer.clientAgentId ${JSON.stringify(value)}: expected a positive integer agent id.`);
   return fallback;
 }

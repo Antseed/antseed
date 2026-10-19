@@ -25,7 +25,7 @@ import {
 import { checkInvite, clearReferralInvite, DEFAULT_BUYER_IDENTITY, inviteExpiryEpoch, decodeInvite, readReferralState, saveReferralInvite, type ReferralState } from '@antseed/node'
 import { isError } from 'ethers'
 import { buyerIdentityDir } from '../../buyer-identities/store.js'
-import { loadConfig } from '../../config/loader.js'
+import { loadConfig, parseClientAgentId } from '../../config/loader.js'
 import { ConsoleError } from '../console-api/router.js'
 import type { BuilderAgent, Builders, CreatedInvite, Referee, Referrals } from '../console-api/types.js'
 import { errorMessage } from '../errors.js'
@@ -166,8 +166,8 @@ export function effectiveClientAgent(
   chainIds: { cli?: number } | undefined,
   env: NodeJS.ProcessEnv = process.env,
 ): Builders['effective'] {
-  const fromEnv = Number.parseInt(env['ANTSEED_CLIENT_AGENT_ID'] ?? '', 10)
-  if (Number.isInteger(fromEnv) && fromEnv > 0) return { agentId: fromEnv, source: 'env' }
+  const fromEnv = parseClientAgentId(env['ANTSEED_CLIENT_AGENT_ID'])
+  if (fromEnv) return { agentId: fromEnv, source: 'env' }
   if (configured) return { agentId: configured, source: 'config' }
   if (chainIds?.cli && chainIds.cli > 0) return { agentId: chainIds.cli, source: 'default' }
   return { agentId: null, source: 'none' }
@@ -193,8 +193,8 @@ export async function readBuilders(ctx: AntsContext, configPath: string, env: No
 
 function parseAgentId(value: unknown): number | null {
   if (value === null) return null
-  const id = typeof value === 'string' && /^\d+$/.test(value.trim()) ? Number(value.trim()) : value
-  if (typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0) {
+  const id = parseClientAgentId(value)
+  if (id === undefined) {
     throw new ConsoleError(400, 'invalid_agent', 'agentId must be a positive integer ERC-8004 agent id, or null to clear it.')
   }
   return id

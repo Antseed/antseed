@@ -19,6 +19,10 @@ test('buyer attribution resolves the client agent id from env, config, then chai
 
   const fromConfig = resolveBuyerAttribution({ referralState: null, clientAgentId: 5, clientAgentIds: chain, env: {} });
   assert.equal(BigInt(fromConfig.clientId!), 5n);
+  for (const invalid of ['7garbage', '7.5', '9007199254740993', '1e3']) {
+    const ignored = resolveBuyerAttribution({ referralState: null, clientAgentId: 5, clientAgentIds: chain, env: { ANTSEED_CLIENT_AGENT_ID: invalid } });
+    assert.equal(BigInt(ignored.clientId!), 5n, `env ${invalid} was used`);
+  }
 
   const cli = resolveBuyerAttribution({ referralState: null, clientAgentIds: chain, env: {} });
   assert.equal(BigInt(cli.clientId!), 11n);

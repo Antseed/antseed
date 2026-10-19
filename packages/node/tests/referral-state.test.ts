@@ -52,14 +52,40 @@ describe('referral state', () => {
   it('records a binding once the contract confirms what Antscan reports', async () => {
     const dir = await dataDir();
     await saveReferralInvite(dir, SCOPE, ENCODED, REFERRER);
-    const onChain = async () => REFERRER.toLowerCase();
-    expect(await syncReferralState(dir, SCOPE, BUYER, async () => undefined, onChain)).toMatchObject({ state: 'invited' });
-    expect(await syncReferralState(dir, SCOPE, BUYER, async () => null, onChain)).toMatchObject({ state: 'invited' });
-    expect(await syncReferralState(dir, SCOPE, BUYER, async () => { throw new Error('offline'); }, onChain)).toMatchObject({ state: 'invited' });
-    const bound = await syncReferralState(dir, SCOPE, BUYER, async () => REFERRER.toLowerCase(), onChain);
+    const notYet = async () => null;
+    expect(await syncReferralState(dir, SCOPE, BUYER, async () => null, notYet)).toMatchObject({ state: 'invited' });
+    const bound = await syncReferralState(dir, SCOPE, BUYER, async () => REFERRER.toLowerCase(), async () => REFERRER.toLowerCase());
     expect(bound).toMatchObject({ state: 'bound', referrer: REFERRER });
     expect(bound?.invite).toBeUndefined();
     expect(pendingInvite(await readReferralState(dir, SCOPE))).toBeNull();
+  });
+
+  it('falls back to the contract when Antscan fails or cannot say', async () => {
+    for (const explorer of [async () => undefined, async () => { throw new Error('offline'); }]) {
+      const dir = await dataDir();
+      await saveReferralInvite(dir, SCOPE, ENCODED, REFERRER);
+      expect(await syncReferralState(dir, SCOPE, BUYER, explorer, async () => REFERRER)).toMatchObject({ state: 'bound', referrer: REFERRER });
+    }
+  });
+
+  it('re-checks a stale "not bound" from Antscan on-chain at a bounded cadence', async () => {
+    const dir = await dataDir();
+    await saveReferralInvite(dir, SCOPE, ENCODED, REFERRER);
+    let now = 1_000_000;
+    let onChain: string | null = null;
+    let checks = 0;
+    const verify = async () => { checks += 1; return onChain; };
+    const stale = async () => null;
+    const options = { recheckMs: 60_000, now: () => now };
+    expect(await syncReferralState(dir, SCOPE, BUYER, stale, verify, options)).toMatchObject({ state: 'invited' });
+    expect(checks).toBe(1);
+    onChain = REFERRER;
+    now += 30_000;
+    expect(await syncReferralState(dir, SCOPE, BUYER, stale, verify, options)).toMatchObject({ state: 'invited' });
+    expect(checks).toBe(1);
+    now += 30_000;
+    expect(await syncReferralState(dir, SCOPE, BUYER, stale, verify, options)).toMatchObject({ state: 'bound', referrer: REFERRER });
+    expect(checks).toBe(2);
   });
 
   it('keeps the invite pending when Antscan reports a binding the contract does not', async () => {

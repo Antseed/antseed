@@ -19,7 +19,14 @@ type Decoded = {raw: string; invite: Invite | null; referrer: string | null};
 
 function inviteFromPath(pathname: string): string {
   const match = /\/invite\/([^/?#]+)\/?$/.exec(pathname);
-  return match ? decodeURIComponent(match[1]) : '';
+  if (!match) return '';
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    // Malformed percent-encoding (e.g. /invite/%25, which the router hands
+    // over as /invite/%): '' makes decodeInvite show the invalid-link state.
+    return '';
+  }
 }
 
 export default function InvitePage() {

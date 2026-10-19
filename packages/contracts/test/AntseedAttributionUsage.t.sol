@@ -261,15 +261,86 @@ contract AntseedAttributionUsageTest is Test {
 
         ledger.unpause();
         accounting.setCurrentEpoch(22);
-        _settle(cli, 0);
-        // Only growth since the last (paused) observation is credited, to the
-        // client and epoch of that observation — never the pre-pause cursor.
+        // The final paused settlement (300) is observed after the unpause but
+        // was made while attribution was off: it is dropped, not credited.
+        vm.expectEmit(true, false, false, true);
+        emit AntseedAttributionUsage.UsageDroppedWhilePaused(buyer, 300);
+        _settle(cli, 7);
         assertEq(ledger.clientEpochPoints(20, desktop), 0);
-        assertEq(ledger.clientEpochPoints(21, cli), 300);
+        assertEq(ledger.clientEpochPoints(21, cli), 0);
+        assertEq(ledger.totalClientPointsByEpoch(21), 0);
         assertEq(ledger.referrerEpochPoints(20, referrer), 0);
-        assertEq(ledger.referrerEpochPoints(21, referrer), 300);
+        assertEq(ledger.referrerEpochPoints(21, referrer), 0);
+        assertEq(ledger.refereeEpochPoints(21, buyer), 0);
+        assertEq(ledger.clientTotalPoints(cli), 0);
+        assertEq(ledger.referrerTotalPoints(referrer), 0);
+
+        // Settlements made after the unpause are credited normally.
+        (uint256 pending, uint256 pendingClient, uint256 pendingEpoch) = ledger.pendingCredit(buyer);
+        assertEq(pending, 7);
+        assertEq(pendingClient, cli);
+        assertEq(pendingEpoch, 22);
+        _flush();
+        assertEq(ledger.clientEpochPoints(22, cli), 7);
+        assertEq(ledger.referrerEpochPoints(22, referrer), 7);
+        assertEq(ledger.refereeEpochPoints(22, buyer), 7);
+    }
+
+    function test_flushAfterUnpauseDropsTheFinalPausedSettlement() public {
+        referrals.bind(buyer, referrer);
+        _settle(desktop, 10);
+        ledger.pause();
+        _settle(cli, 300); // the buyer's last settlement, made while paused
+
+        ledger.unpause();
         (uint256 pending,,) = ledger.pendingCredit(buyer);
         assertEq(pending, 0);
+        vm.expectEmit(true, false, false, true);
+        emit AntseedAttributionUsage.UsageDroppedWhilePaused(buyer, 300);
+        _flush();
+
+        // Nothing was credited: the pre-pause settlement was observed while
+        // paused, and the paused settlement is ineligible after the unpause.
+        assertEq(ledger.clientEpochPoints(20, cli), 0);
+        assertEq(ledger.clientTotalPoints(cli), 0);
+        assertEq(ledger.totalClientPointsByEpoch(20), 0);
+        assertEq(ledger.totalReferralPointsByEpoch(20), 0);
+        assertEq(ledger.referrerTotalPoints(referrer), 0);
+        assertEq(ledger.refereeTotalPoints(buyer), 0);
+
+        // The baseline moved past the dropped points: a second flush is a
+        // no-op and the next settlement credits only its own points.
+        _flush();
+        _settle(desktop, 4);
+        _flush();
+        assertEq(ledger.clientEpochPoints(20, desktop), 4);
+        assertEq(ledger.referrerEpochPoints(20, referrer), 4);
+        assertEq(ledger.refereeEpochPoints(20, buyer), 4);
+    }
+
+    function test_recordAfterUnpauseDropsTheFinalPausedSettlement() public {
+        referrals.bind(buyer, referrer);
+        _settle(desktop, 10);
+        _settle(desktop, 0); // credit the pre-pause settlement
+        assertEq(ledger.clientEpochPoints(20, desktop), 10);
+        assertEq(ledger.referrerEpochPoints(20, referrer), 10);
+
+        ledger.pause();
+        _settle(cli, 300);
+        ledger.unpause();
+
+        vm.expectEmit(true, false, false, true);
+        emit AntseedAttributionUsage.UsageDroppedWhilePaused(buyer, 300);
+        _settle(desktop, 6);
+        assertEq(ledger.clientEpochPoints(20, cli), 0);
+        assertEq(ledger.clientEpochPoints(20, desktop), 10);
+        assertEq(ledger.referrerEpochPoints(20, referrer), 10);
+        assertEq(ledger.refereeEpochPoints(20, buyer), 10);
+
+        _flush();
+        assertEq(ledger.clientEpochPoints(20, desktop), 16);
+        assertEq(ledger.referrerEpochPoints(20, referrer), 16);
+        assertEq(ledger.refereeEpochPoints(20, buyer), 16);
     }
 
     function test_constructorRejectsACodelessIdentityRegistry() public {

@@ -71,12 +71,16 @@ interface IAntseedAttributionDeposits {
  */
 contract AntseedAttributionUsage is Ownable2Step, Pausable {
     /// @dev One slot per buyer: last observed cumulative weighted points, the
-    ///      client of the most recent settlement, and the epoch it settled in.
+    ///      client of the most recent settlement, the epoch it settled in, and
+    ///      whether attribution was enabled when it settled. A settlement made
+    ///      while paused is never credited, even if it is observed after the
+    ///      unpause (its points accrue only after its own callback).
     struct Cursor {
         uint128 weightedPoints;
         uint64 clientAgentId;
         uint32 epoch;
         bool initialized;
+        bool eligible;
     }
 
     /// @notice Epochs that stay open for late credits after they end. Equals
@@ -159,30 +163,30 @@ contract AntseedAttributionUsage is Ownable2Step, Pausable {
     ///         would leave the cursor stale and hand the whole backlog to that
     ///         stale client and epoch on the next successful call. While
     ///         paused the cursor still moves; the growth it passes over is
-    ///         dropped (attribution is off), not deferred.
+    ///         dropped (attribution is off), not deferred. A settlement made
+    ///         while paused is marked ineligible, so its points are dropped
+    ///         too when they are observed after the unpause.
     function record(address buyer, uint256 clientAgentId) external {
         if (msg.sender != recorder) revert NotRecorder();
         if (buyer == address(0)) revert InvalidAddress();
 
+        bool enabled = !paused();
         Cursor storage cursor = _cursors[buyer];
-        uint256 delta = _advance(buyer, cursor);
-        if (!paused()) {
-            _credit(buyer, cursor, delta);
-        } else if (delta != 0) {
-            emit UsageDroppedWhilePaused(buyer, delta);
-        }
+        _creditOrDrop(buyer, cursor, _advance(buyer, cursor), enabled);
 
         cursor.clientAgentId = uint64(_registeredClient(clientAgentId));
         cursor.epoch = uint32(_atLeastFirstRewarded(usageAccounting.currentEpoch()));
         cursor.initialized = true;
+        cursor.eligible = enabled;
     }
 
     /// @notice Credit points that landed after each buyer's latest settlement.
     ///         Permissionless; a no-op for buyers with nothing outstanding.
+    ///         Points of a settlement made while paused are dropped, not credited.
     function flush(address[] calldata buyers) external whenNotPaused {
         for (uint256 i = 0; i < buyers.length; i++) {
             Cursor storage cursor = _cursors[buyers[i]];
-            if (cursor.initialized) _credit(buyers[i], cursor, _advance(buyers[i], cursor));
+            if (cursor.initialized) _creditOrDrop(buyers[i], cursor, _advance(buyers[i], cursor), true);
         }
     }
 
@@ -195,10 +199,12 @@ contract AntseedAttributionUsage is Ownable2Step, Pausable {
 
     /// @notice Weighted points recorded for the buyer but not yet credited
     ///         (the buyer's latest settlement), with the client and epoch
-    ///         they would be credited to if flushed now.
+    ///         they would be credited to if flushed now. Zero points when that
+    ///         settlement was made while paused: flushing drops them.
     function pendingCredit(address buyer) external view returns (uint256 points, uint256 clientAgentId, uint256 epoch) {
         Cursor storage cursor = _cursors[buyer];
         if (!cursor.initialized) return (0, 0, 0);
+        if (!cursor.eligible) return (0, cursor.clientAgentId, _creditEpoch(cursor.epoch));
         uint256 current = usageAccounting.buyerUsageTotal(buyer).weightedPoints;
         points = current > cursor.weightedPoints ? current - cursor.weightedPoints : 0;
         return (points, cursor.clientAgentId, _creditEpoch(cursor.epoch));
@@ -248,6 +254,18 @@ contract AntseedAttributionUsage is Ownable2Step, Pausable {
             emit FirstUsageRecorded(buyer, firstEpoch);
         }
         if (cursor.initialized && current > baseline) delta = current - baseline;
+    }
+
+    /// @dev Credit `delta` only when attribution is enabled now and was
+    ///      enabled when the cursor's settlement was recorded; otherwise the
+    ///      baseline has already moved past it and it is dropped.
+    function _creditOrDrop(address buyer, Cursor storage cursor, uint256 delta, bool enabledNow) internal {
+        if (delta == 0) return;
+        if (enabledNow && cursor.eligible) {
+            _credit(buyer, cursor, delta);
+        } else {
+            emit UsageDroppedWhilePaused(buyer, delta);
+        }
     }
 
     /// @dev Credit `delta` to the cursor's client and epoch and to the

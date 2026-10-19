@@ -262,13 +262,15 @@ test('loadConfig carries buyer.clientAgentId through the merge and drops invalid
       assert.equal(config.buyer.clientAgentId, 12);
     }
   );
-  await withTempConfig(
-    JSON.stringify({ buyer: { clientAgentId: -3 } }),
-    async (configPath) => {
-      const config = await loadConfig(configPath);
-      assert.equal(config.buyer.clientAgentId, undefined);
-    }
-  );
+  for (const invalid of [-3, '12.5', '12garbage', '0x10', '', 12.5, 2 ** 53, 1e100, '9007199254740993']) {
+    await withTempConfig(
+      JSON.stringify({ buyer: { clientAgentId: invalid } }),
+      async (configPath) => {
+        const config = await loadConfig(configPath);
+        assert.equal(config.buyer.clientAgentId, undefined, `accepted ${JSON.stringify(invalid)}`);
+      }
+    );
+  }
   await withTempConfig(
     JSON.stringify({ buyer: { proxyPort: 9123 } }),
     async (configPath) => {

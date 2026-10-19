@@ -46,6 +46,8 @@ function fixture(options: { referrals?: boolean; explorer?: boolean; indexed?: P
   };
   const client = {
     pendingRewards: vi.fn(async () => [{ epoch: 7, amount: 1n }]),
+    // Every referrer epoch Antscan lists is still unclaimed unless a test says otherwise.
+    pendingReward: vi.fn(async (_referrer: string, _epoch: number) => 1n),
     claimEpochs: vi.fn(async () => '0xhash'),
     claimRefereeEpochs: vi.fn(async () => '0xreferee'),
     currentEpoch: vi.fn(async () => 40),
@@ -168,18 +170,39 @@ describe('invites', () => {
     expect(refused.reason).toBeInstanceOf(InviteQuotaError);
   });
 
-  it('takes epoch, quota and used invites from Antscan when it reports them', async () => {
-    const client = inviteClient();
-    const indexer = { referrer: vi.fn(async () => ({ ...indexedReferrer, invites: { epoch: 30, quota: 4, used: 2, usedIndices: [0, 1] } })) } as unknown as Indexer;
+  const indexerReporting = (invites: NonNullable<IndexedReferrer['invites']>) =>
+    ({ referrer: vi.fn(async () => ({ ...indexedReferrer, currentEpoch: invites.epoch, invites })) }) as unknown as Indexer;
+
+  it('reads epoch and quota on-chain, and skips the indexes Antscan reports bound for that epoch', async () => {
+    const client = inviteClient({ quota: 4 });
+    const indexer = indexerReporting({ epoch: 42, quota: 4, used: 2, usedIndices: [0, 1] });
     const created = await issueInvite({ client, indexer, signer: new Wallet(key), chainId: 8453, referralsAddress, dataDir: null, random: () => 0 });
-    expect(created).toMatchObject({ epoch: 30, index: 2, quota: 4, left: 1 });
-    expect(client.currentEpoch).not.toHaveBeenCalled();
-    expect(client.inviteQuota).not.toHaveBeenCalled();
+    expect(created).toMatchObject({ epoch: 42, index: 2, quota: 4, left: 1 });
+    expect(client.currentEpoch).toHaveBeenCalledTimes(1);
+    expect(client.inviteQuota).toHaveBeenCalledWith(new Wallet(key).address, 42);
+    expect(client.inviteUsed.mock.calls.map(([, , index]) => index)).toEqual([2]);
+  });
+
+  it('issues after an epoch rollover even while Antscan still reports last week\'s zero quota', async () => {
+    const client = inviteClient({ quota: 3 });
+    const indexer = indexerReporting({ epoch: 41, quota: 0, used: 0, usedIndices: [] });
+    const created = await issueInvite({ client, indexer, signer: new Wallet(key), chainId: 8453, referralsAddress, dataDir: null, random: () => 0 });
+    expect(created).toMatchObject({ epoch: 42, index: 0, quota: 3, left: 2, expiresEpoch: 46 });
+  });
+
+  it('never signs for an Antscan epoch outside the validity window, nor uses its bound indexes', async () => {
+    const client = inviteClient({ quota: 2 });
+    const indexer = indexerReporting({ epoch: 30, quota: 5, used: 1, usedIndices: [0] });
+    const signer = new Wallet(key);
+    const created = await issueInvite({ client, indexer, signer, chainId: 8453, referralsAddress, dataDir: null, random: () => 0 });
+    expect(created).toMatchObject({ epoch: 42, index: 0, quota: 2, left: 1, expiresEpoch: 46 });
+    expect(decodeInvite(created.invite).epoch).toBe(42n);
+    expect(client.inviteQuota).toHaveBeenCalledWith(signer.address, 42);
   });
 
   it('never picks an index Antscan reports used, and picks at random among the rest', async () => {
-    const indexer = { referrer: vi.fn(async () => ({ ...indexedReferrer, invites: { epoch: 30, quota: 4, used: 2, usedIndices: [0, 2] } })) } as unknown as Indexer;
-    const pick = (random: () => number) => issueInvite({ client: inviteClient(), indexer, signer: new Wallet(key), chainId: 8453, referralsAddress, dataDir: null, random });
+    const indexer = indexerReporting({ epoch: 42, quota: 4, used: 2, usedIndices: [0, 2] });
+    const pick = (random: () => number) => issueInvite({ client: inviteClient({ quota: 4 }), indexer, signer: new Wallet(key), chainId: 8453, referralsAddress, dataDir: null, random });
     expect((await pick(() => 0)).index).toBe(1);
     expect((await pick(() => 0.99)).index).toBe(3);
   });
@@ -208,10 +231,23 @@ describe('referee bonus', () => {
 
   it('claims the payable epochs for the buyer account', async () => {
     const { ctx, client } = fixture();
+    client.pendingRefereeReward.mockResolvedValue(5n);
     expect(await claimRefereeRewards(ctx)).toEqual({ hash: '0xreferee', epochs: [20, 21] });
     expect(client.claimRefereeEpochs).toHaveBeenCalledWith({}, buyer, [20, 21]);
-    expect(client.pendingRefereeReward).not.toHaveBeenCalled();
+    // Only the epochs Antscan named are checked, never the 26-epoch scan.
+    expect(client.pendingRefereeReward.mock.calls).toEqual([[buyer, 20], [buyer, 21]]);
     await expect(claimRefereeRewards(fixture({ binding: { refereeClaimableEpochs: [] } }).ctx)).rejects.toThrow('No invite bonus');
+  });
+
+  it('drops epochs Antscan still lists after they were claimed on-chain', async () => {
+    const { ctx, client } = fixture();
+    client.pendingRefereeReward.mockImplementation(async (_buyer: string, epoch: number) => (epoch === 21 ? 5n : 0n));
+    expect(await claimRefereeRewards(ctx)).toEqual({ hash: '0xreferee', epochs: [21] });
+    expect(client.claimRefereeEpochs).toHaveBeenCalledWith({}, buyer, [21]);
+    client.pendingRefereeReward.mockResolvedValue(0n);
+    client.claimRefereeEpochs.mockClear();
+    await expect(claimRefereeRewards(ctx)).rejects.toThrow('No invite bonus');
+    expect(client.claimRefereeEpochs).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -258,6 +294,7 @@ describe('referral claim', () => {
     expect(await claimReferralRewards(ctx)).toEqual({ hash: '0xhash', epochs: [3, 5] });
     expect(client.claimEpochs).toHaveBeenCalledWith({}, wallet, [3, 5]);
     expect(client.pendingRewards).not.toHaveBeenCalled();
+    expect(client.pendingReward.mock.calls).toEqual([[wallet, 3], [wallet, 5]]);
   });
 
   it('falls back to the on-chain epoch scan without an explorer', async () => {
@@ -275,6 +312,17 @@ describe('referral claim', () => {
 
   it('refuses when nothing is payable', async () => {
     const { ctx, client } = fixture({ indexed: { claimableEpochs: [] } });
+    await expect(claimReferralRewards(ctx)).rejects.toThrow('No referral rewards');
+    expect(client.claimEpochs).not.toHaveBeenCalled();
+  });
+
+  it('drops epochs Antscan still lists after they were claimed on-chain', async () => {
+    const { ctx, client } = fixture();
+    client.pendingReward.mockImplementation(async (_referrer: string, epoch: number) => (epoch === 5 ? 1n : 0n));
+    expect(await claimReferralRewards(ctx)).toEqual({ hash: '0xhash', epochs: [5] });
+    expect(client.claimEpochs).toHaveBeenCalledWith({}, wallet, [5]);
+    client.pendingReward.mockResolvedValue(0n);
+    client.claimEpochs.mockClear();
     await expect(claimReferralRewards(ctx)).rejects.toThrow('No referral rewards');
     expect(client.claimEpochs).not.toHaveBeenCalled();
   });
