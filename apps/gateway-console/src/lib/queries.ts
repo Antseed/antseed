@@ -50,8 +50,8 @@ export const qk = {
   adminTokens: ['admin-tokens'] as const,
 }
 
-/** Every resource group a routing-policy change can affect. */
-export const POLICY_GROUPS = ['routing', 'workspaces', 'members', 'keys', 'presets'] as const
+/** Every resource group a routing-policy change can affect, including the chat's own route preview. */
+export const POLICY_GROUPS = ['routing', 'workspaces', 'members', 'keys', 'presets', 'chat-route-preview'] as const
 
 export function workspaceQuery(workspaceId: string, client: ApiClient = api) {
   return { queryKey: qk.workspace(workspaceId), queryFn: (): Promise<Workspace> => client.workspaces.get(workspaceId) }

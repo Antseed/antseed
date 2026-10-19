@@ -109,7 +109,7 @@ export function TryRequest({ state, onChange, preview }: {
             <Badge tone={eligible > 0 ? 'success' : 'warning'}>{eligible} of {data.candidates.length}</Badge>{' '}
             {eligible > 0 ? `sellers can serve ${data.model}.` : `No seller can serve ${data.model} with these rules.`}
           </p>
-          <SellerSelection title="Sellers, in the order they are tried" preview={data} loading={preview.isFetching && !data} skippedOpen
+          <SellerSelection title="Sellers, in the order they are tried" preview={data} loading={preview.isFetching && !data}
             explainSkipped={(candidate) => <Exclusions exclusions={exclusionsFor(data, candidate, peers.data, lists.data ?? [])} />} />
         </div>
       )}
