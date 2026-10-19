@@ -3383,11 +3383,14 @@ export class BuyerProxy {
       let peerId: string
       let includeAuth = true
       let identityParam: string | undefined
+      let channelId: string | undefined
       try {
         const body = JSON.parse(Buffer.concat(chunks).toString())
         peerId = String(body.peerId ?? '')
         if (body.includeAuth === false) includeAuth = false
         if (typeof body.identity === 'string') identityParam = body.identity
+        // Optional: refuse unless this is the live channel with the seller.
+        if (typeof body.channelId === 'string' && body.channelId) channelId = body.channelId
       } catch {
         res.writeHead(400, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ ok: false, error: 'Invalid JSON body' }))
@@ -3406,7 +3409,7 @@ export class BuyerProxy {
       try {
         const identity = await this._resolveBuyerIdentity(identityParam)
         if (identity === undefined) throw new Error('Unknown buyer identity')
-        const result = await this._node.requestChannelClose(peerId, { includeAuth, ...(identity ? { buyerIdentity: identity } : {}) })
+        const result = await this._node.requestChannelClose(peerId, { includeAuth, ...(channelId ? { channelId } : {}), ...(identity ? { buyerIdentity: identity } : {}) })
         log(
           `Cooperative close of ${result.channelId.slice(0, 18)}... with ${peerId.slice(0, 12)}...: ` +
           `${result.status}${result.code ? ` (${result.code})` : ''}`,

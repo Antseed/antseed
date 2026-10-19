@@ -37,6 +37,8 @@ describe('buyer payment channel summaries', () => {
   let store: ChannelStore;
   let node: AntseedNode;
   const getReserveCeiling = vi.fn(() => 1_000_000n);
+  // The live session with the seller is 'chat'.
+  const getActiveSession = vi.fn(() => ({ sessionId: 'chat' }));
 
   beforeEach(() => {
     dataDir = mkdtempSync(join(tmpdir(), 'antseed-buyer-channels-'));
@@ -46,7 +48,7 @@ describe('buyer payment channel summaries', () => {
     Object.assign(node, {
       _identity: { wallet: { address: buyerAddress } },
       _channelStore: store,
-      _buyerPaymentManager: { getReserveCeiling },
+      _buyerPaymentManager: { getReserveCeiling, getActiveSession },
     });
     for (const channel of [
       makeChannel('chat'),
@@ -83,5 +85,14 @@ describe('buyer payment channel summaries', () => {
       expect(channels.find((channel) => channel.channelId === 'video')?.reserveCeiling).toBe('4200000');
       expect(channels.find((channel) => channel.channelId === 'chat')?.reserveCeiling).toBeNull();
     }
+  });
+
+  it('marks only the live session live and gives older active rows no reserve', () => {
+    store.upsertChannel(makeChannel('older-chat', { reservedAt: 0 }));
+    const active = node.getActiveBuyerChannels();
+    expect(active.find((channel) => channel.channelId === 'chat')).toMatchObject({ live: true, channelKind: CHANNEL_KIND.PAID, reserveCeiling: '1000000' });
+    expect(active.find((channel) => channel.channelId === 'older-chat')).toMatchObject({ live: false, reserveCeiling: null });
+    expect(active.find((channel) => channel.channelId === 'video')).toMatchObject({ live: false, channelKind: CHANNEL_KIND.ONE_OFF });
+    expect(node.getAllBuyerChannels().find((channel) => channel.channelId === 'settled-video')?.live).toBe(false);
   });
 });

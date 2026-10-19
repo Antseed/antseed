@@ -851,7 +851,7 @@ const routes: Array<[string, string, Handler]> = [
   ['POST', '/workspaces/:id/channels/close', ({ params, body }) => {
     requireOrgAdmin()
     const list = db.channels[params['id']!] ?? []
-    const ch = list.find((c) => c.peerId === body.peerId)
+    const ch = list.find((c) => (body.channelId ? c.channelId === body.channelId : c.peerId === body.peerId))
     if (ch?.sellerName === 'Fake Seller Beta') throw new MockError(502, 'buyer_error', `A channel close request is already in flight for ${String(body.peerId).slice(0, 12)}...`)
     if (ch) { ch.status = 'settled'; ch.canCooperativeClose = false; ch.settled = ch.spent; ch.reserved = '0.000000' }
     return { ok: true }

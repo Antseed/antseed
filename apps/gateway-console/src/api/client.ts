@@ -233,7 +233,7 @@ export function createApiClient(fetchImpl: FetchLike = (input, init) => fetch(in
       /** `fresh` re-reads the channels from the chain now (after a close request or withdrawal). */
       channels: (workspaceId: string, all = false, fresh = false) =>
         get<Channel[]>(`/workspaces/${id(workspaceId)}/channels`, { all: all ? 1 : undefined, fresh: fresh ? 1 : undefined }),
-      closeChannel: (workspaceId: string, peerId: string) => post<{ ok: true }>(`/workspaces/${id(workspaceId)}/channels/close`, { peerId }),
+      closeChannel: (workspaceId: string, peerId: string, channelId: string) => post<{ ok: true }>(`/workspaces/${id(workspaceId)}/channels/close`, { peerId, channelId }),
       rewards: (workspaceId: string) => get<Rewards>(`/workspaces/${id(workspaceId)}/rewards`),
       chain: () => get<ChainInfo>('/chain'),
     },

@@ -750,6 +750,83 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     expect(h.chain.get(h.sessionChannelId())).toMatchObject({ status: 1 });
   });
 
+  it('retries a top-up whose RPC node has not seen the reserve yet', async () => {
+    const h = setup();
+    await openChannelWithChat(h);
+    h.topUp.mockImplementationOnce(async () => {
+      throw new Error('estimateGas reverted data="0xac853123"');
+    });
+
+    const response = await h.send(h.videoRequest('video-1'));
+    await h.settle();
+
+    expect(response.statusCode).toBe(200);
+    expect(h.topUp).toHaveBeenCalledTimes(2);
+    expect(h.close).not.toHaveBeenCalled();
+  });
+
+  it('keeps a reserved channel whose top-up and release both failed, and closes it on the next check', async () => {
+    const h = setup({ topUpBehavior: 'revert' });
+    await openChannelWithChat(h);
+    const landOnChain = h.close.getMockImplementation()!;
+    h.close.mockImplementationOnce(async () => {
+      throw new Error('execution reverted: ChannelNotActive');
+    });
+
+    // The buyer keeps waiting for the channel while the seller still holds it.
+    const pending = h.send(h.videoRequest('video-1'));
+    pending.catch(() => undefined);
+    await vi.waitFor(() => expect(h.close).toHaveBeenCalledOnce());
+
+    const sessionId = h.sessionChannelId();
+    const [videoChannel] = [...h.chain.keys()].filter((channelId) => channelId !== sessionId);
+    expect(h.chain.get(videoChannel!)).toMatchObject({ status: 1 });
+    // The seller still knows the channel, so it is not orphaned on-chain.
+    expect(h.seller.isOneOffChannel(videoChannel!)).toBe(true);
+
+    h.close.mockImplementation(landOnChain);
+    await h.seller.checkTimeouts();
+    await expect(pending).rejects.toMatchObject({ code: 'buyer-session-state' });
+
+    expect(h.close).toHaveBeenCalledTimes(2);
+    expect(h.close.mock.calls[1]![1]).toBe(videoChannel);
+    expect(h.close.mock.calls[1]![2]).toBe(0n);
+    expect(h.chain.get(videoChannel!)).toMatchObject({ settled: 0n, status: 2 });
+    expect(h.seller.isOneOffChannel(videoChannel!)).toBe(false);
+  });
+
+  it('reports the serious fee as spent only once the channel holds it', async () => {
+    const opened = setup();
+    await openChannelWithChat(opened);
+    const openedSpends: string[] = [];
+    opened.buyer.setSpendListener((event) => { openedSpends.push(event.amountUsdc); });
+    expect((await opened.send(opened.videoRequest('video-1'))).statusCode).toBe(200);
+    expect(openedSpends).toEqual([SERIOUS_FEE.toString()]);
+
+    const failed = setup({ topUpBehavior: 'revert' });
+    await openChannelWithChat(failed);
+    const failedSpends: string[] = [];
+    failed.buyer.setSpendListener((event) => { failedSpends.push(event.amountUsdc); });
+    await expect(failed.send(failed.videoRequest('video-1'))).rejects.toMatchObject({ code: 'buyer-session-state' });
+    expect(failedSpends).toEqual([]);
+  });
+
+  it('does not evict a just-reserved channel the chain read does not show yet', async () => {
+    const h = setup();
+    await openChannelWithChat(h);
+    const response = await h.send(h.videoRequest('video-1'));
+    await h.settle();
+    expect(response.statusCode).toBe(200);
+    const { channelId } = onlyOneOff(h);
+    const record = h.chain.get(channelId)!;
+    h.chain.delete(channelId);
+
+    await h.seller.checkTimeouts();
+
+    expect(h.seller.isOneOffChannel(channelId)).toBe(true);
+    h.chain.set(channelId, record);
+  });
+
   it('does not open a channel for an invalid create', async () => {
     const h = setup();
     await openChannelWithChat(h);

@@ -23,7 +23,7 @@ import { usdcToDecimalString } from '../../money.js'
 import { verifyDeposit, type VerifiedDeposit } from '../../services/deposits.js'
 import { buyerJson, defaultBuyerClient, optionalBuyerJson, withIdentity, type BuyerClient } from './network-buyer.js'
 import { antseedPayBaseUrl, buildCardLink, CARD_PROVIDERS, type CardProvider } from './wallet-card-link.js'
-import { applyChannelChainState, chainInfo, mapBalances, mapChannels, mapDepositWatch, mapRewards, record, type ChannelChainState } from './wallet-mapping.js'
+import { applyChannelChainState, chainInfo, channelDeadlines, mapBalances, mapChannels, mapDepositWatch, mapRewards, record, type ChannelChainState } from './wallet-mapping.js'
 import { createRewardsReader, gatewayChainProvider, readChannelStates as readChannelStatesOnChain, REWARDS_TTL_MS } from './wallet-chain.js'
 import { registerOperatorRoutes } from './wallet-operator.js'
 
@@ -31,6 +31,8 @@ import { registerOperatorRoutes } from './wallet-operator.js'
 const CHANNELS_TTL_MS = 30_000
 /** Rows the buyer still counts as open; the chain may say otherwise. */
 const OPEN_CHANNEL_STATUSES = new Set(['active', 'open', 'closing', 'withdrawable'])
+/** Above the buyer's 60 s wait for a seller's close answer, so its own error comes back. */
+const CHANNEL_CLOSE_TIMEOUT_MS = 70_000
 /** After a failed rewards read, the chain is not asked again for this long (the last value is served, marked stale). */
 const REWARDS_ERROR_RETRY_MS = 30_000
 /** One rewards reader per process: one ANTS context and provider per chain. */
@@ -299,7 +301,9 @@ export function registerWalletRoutes(router: ConsoleRouter, deps: ConsoleDeps, o
   router.add('GET', '/workspaces/:id/channels', async (request): Promise<Channel[]> => {
     const ws = workspace(request)
     const all = request.query.get('all') === '1'
-    const channels = mapChannels(await buyerJson(buyer, withIdentity(`/_antseed/channels${all ? '?all=1' : ''}`, ws.buyerIdentity)))
+    const body = await buyerJson(buyer, withIdentity(`/_antseed/channels${all ? '?all=1' : ''}`, ws.buyerIdentity))
+    const channels = mapChannels(body)
+    const deadlines = channelDeadlines(body)
     // The buyer's store can call a channel active long after a seller settled
     // it, and reports its configured maximum as the reserve; the chain decides both.
     const ids = channels.filter((channel) => OPEN_CHANNEL_STATUSES.has(channel.status)).map((channel) => channel.channelId).sort()
@@ -315,7 +319,7 @@ export function registerWalletRoutes(router: ConsoleRouter, deps: ConsoleDeps, o
       }
     }
     const nowSeconds = Math.floor(deps.now() / 1000)
-    const reconciled = channels.map((channel) => applyChannelChainState(channel, states.get(channel.channelId), nowSeconds))
+    const reconciled = channels.map((channel) => applyChannelChainState(channel, states.get(channel.channelId), nowSeconds, deadlines.get(channel.channelId) ?? null))
     return all ? reconciled : reconciled.filter((channel) => OPEN_CHANNEL_STATUSES.has(channel.status))
   })
 
@@ -326,9 +330,16 @@ export function registerWalletRoutes(router: ConsoleRouter, deps: ConsoleDeps, o
     if (typeof peerId !== 'string' || !/^(0x)?[0-9a-fA-F]{40}$/.test(peerId.trim())) {
       throw new ConsoleError(400, 'invalid_peer', 'peerId must be a 40-character hex peer id.')
     }
+    // The row the person chose; the buyer refuses unless it is the live channel with that seller.
+    const channelId = record(request.body)['channelId']
+    if (channelId !== undefined && (typeof channelId !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(channelId))) {
+      throw new ConsoleError(400, 'invalid_channel', 'channelId must be a 32-byte hex channel id.')
+    }
     const result = record((await buyerJson(buyer, '/_antseed/channels/close', {
       method: 'POST',
-      body: { peerId: peerId.trim().toLowerCase().replace(/^0x/, ''), includeAuth: true, identity: ws.buyerIdentity },
+      body: { peerId: peerId.trim().toLowerCase().replace(/^0x/, ''), ...(channelId ? { channelId } : {}), includeAuth: true, identity: ws.buyerIdentity },
+      // The buyer waits up to a minute for the seller's answer.
+      timeoutMs: CHANNEL_CLOSE_TIMEOUT_MS,
     }))['result'])
     if (result['status'] === 'rejected') {
       throw new ConsoleError(409, 'close_rejected', `The seller declined to close the channel (${rejectionReason(result)}).`)

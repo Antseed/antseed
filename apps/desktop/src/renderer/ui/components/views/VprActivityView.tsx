@@ -134,7 +134,7 @@ export function VprActivityView({ onSelectView }: Props) {
     const feedback = await requestSellerAssistedClose(peerId, window.antseedDesktop, {
       credits: () => actions.refreshCredits(),
       summary: () => actions.refreshPaymentSummary(true),
-    });
+    }, channelId);
     setCloseFeedback((current) => ({ ...current, [channelId]: feedback }));
     if (feedback.tone === 'error') {
       setOnChainFallbackChannelIds((current) => new Set(current).add(channelId));

@@ -402,13 +402,14 @@ export function registerPaymentsIpc(): void {
     return { ok: true, data: channels, error: null };
   });
 
-  ipcMain.handle('payments:request-cooperative-close', async (_event, opts?: { peerId?: string }) => {
+  ipcMain.handle('payments:request-cooperative-close', async (_event, opts?: { peerId?: string; channelId?: string }) => {
     const peerId = typeof opts?.peerId === 'string' ? opts.peerId.trim() : '';
     if (!peerId) {
       return { ok: false, result: null, error: 'Invalid peerId' };
     }
+    const channelId = typeof opts?.channelId === 'string' ? opts.channelId.trim() : '';
     try {
-      const result = await requestCooperativeChannelClose(peerId);
+      const result = await requestCooperativeChannelClose(peerId, channelId || undefined);
       invalidateChainReads();
       return { ok: true, result, error: null };
     } catch (err) {
