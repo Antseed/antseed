@@ -374,10 +374,12 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE gateway_requests ADD COLUMN route_selection TEXT;
   `,
   // Deposit confirmations also cover USDC sent to the workspace wallet ('transfer'): the transfers that
-  // funded its sweeps. SQLite cannot widen a CHECK, so the table is rebuilt.
+  // funded its sweeps. One transaction can pay several workspace wallets (an exchange's batched
+  // withdrawal), so a deposit is keyed by workspace and transaction. SQLite cannot widen a CHECK or
+  // change a primary key, so the table is rebuilt.
   `
   CREATE TABLE deposits_v2 (
-    tx_hash TEXT PRIMARY KEY,
+    tx_hash TEXT NOT NULL,
     workspace_id TEXT NOT NULL,
     wallet TEXT NOT NULL,
     kind TEXT NOT NULL CHECK (kind IN ('relay', 'direct', 'transfer')),
@@ -390,7 +392,8 @@ export const MIGRATIONS: readonly string[] = [
     approved_by_label TEXT,
     approved_at INTEGER,
     approval_note TEXT,
-    recorded_at INTEGER NOT NULL
+    recorded_at INTEGER NOT NULL,
+    PRIMARY KEY (workspace_id, tx_hash)
   );
   INSERT INTO deposits_v2 (tx_hash, workspace_id, wallet, kind, credited_usdc, fee_usdc, block_number, block_time, sources,
     approved_by_id, approved_by_label, approved_at, approval_note, recorded_at)

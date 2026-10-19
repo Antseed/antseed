@@ -13,6 +13,7 @@ import { registerWalletRoutes } from './wallet.js'
 
 // Obvious fakes: fixed test addresses and hashes, never real ones.
 const WALLET = `0x${'11'.repeat(20)}`
+const TEAM_WALLET = `0x${'33'.repeat(20)}`
 const PAYER = `0x${'22'.repeat(20)}`
 const MINTED_FROM = '0x0000000000000000000000000000000000000000'
 const RECORDED = `0x${'a1'.repeat(32)}` // a sweep the buyer recorded…
@@ -60,10 +61,12 @@ function setup(): ConsoleRouter {
   registerWalletRoutes(router, fakeDeps(store), {
     buyer: buyer.client,
     requireWorkspaceAccess: fakeRequireWorkspaceAccess,
-    walletAddress: async () => WALLET,
+    walletAddress: async (identity) => (identity === 'team' ? TEAM_WALLET : WALLET),
     resolveChain: async () => CHAIN,
     verifyDeposit: async (_chain, txHash, wallet) => {
       verified.push(txHash)
+      // One batched withdrawal (SENT) paid both workspace wallets.
+      if (wallet === TEAM_WALLET) return txHash === SENT ? transfer(txHash, wallet, MINTED_FROM, 300_000_000, 9) : null
       if (txHash === NOT_OURS || wallet !== WALLET) return null
       switch (txHash) {
         case RECORDED: return sweep(txHash, wallet, [{ from: MINTED_FROM, amountUsdc: 500_000_000, txHash: SENT }])
@@ -85,8 +88,8 @@ const plainMember = () => memberPrincipal(ownerId, { [workspaceId]: 'member' })
 test('listing shows the transfer that funded the sweeps, once, and not the sweeps', async () => {
   const router = setup()
   const first = await call(router, 'GET', `/workspaces/${workspaceId}/deposits`, admin()) as DepositConfirmation[]
-  assert.equal(store.getDeposit(RECORDED)?.kind, 'relay')
-  assert.equal(store.getDeposit(RECORDED_LATER)?.kind, 'relay')
+  assert.equal(store.getDeposit(workspaceId, RECORDED)?.kind, 'relay')
+  assert.equal(store.getDeposit(workspaceId, RECORDED_LATER)?.kind, 'relay')
   assert.deepEqual(first.map((deposit) => deposit.txHash), [SENT])
   assert.equal(first[0]!.kind, 'transfer')
   assert.equal(first[0]!.sent, '500.000000')
@@ -104,12 +107,25 @@ test('listing shows the transfer that funded the sweeps, once, and not the sweep
 test('a sweep approved before transfers were listed hands its approval to the transfer that funded it', async () => {
   const approvedSweep = { ...sweep(`0x${'a9'.repeat(32)}`, WALLET, [{ from: PAYER, amountUsdc: 40_000_000, txHash: FUNDED_APPROVED }]), workspaceId }
   store.insertDeposit(approvedSweep)
-  store.setDepositApproval(approvedSweep.txHash, { byId: null, byLabel: 'Owner', note: 'October' })
+  store.setDepositApproval(workspaceId, approvedSweep.txHash, { byId: null, byLabel: 'Owner', note: 'October' })
   const list = await call(setup(), 'GET', `/workspaces/${workspaceId}/deposits`, admin()) as DepositConfirmation[]
   const funded = list.find((deposit) => deposit.txHash === FUNDED_APPROVED)
   assert.equal(funded?.approval?.by, 'Owner')
   assert.equal(funded?.approval?.note, 'October')
   assert.ok(!list.some((deposit) => deposit.kind === 'relay'), 'sweeps are not listed')
+})
+
+test('one transaction paying two workspace wallets is a confirmation in each, approved separately', async () => {
+  const team = store.createWorkspace({ name: 'Team', buyerIdentity: 'team' })
+  const teamAdmin = memberPrincipal(ownerId, { [workspaceId]: 'admin', [team.id]: 'admin' }, 'owner')
+  const router = setup()
+  const teamCopy = await call(router, 'POST', `/workspaces/${team.id}/deposits`, teamAdmin, { txHash: SENT }) as DepositConfirmation
+  assert.equal(teamCopy.sent, '300.000000')
+  assert.equal(teamCopy.wallet, TEAM_WALLET)
+  await call(router, 'PUT', `/workspaces/${team.id}/deposits/${SENT}/approval`, teamAdmin, { note: 'team budget' })
+  const ours = (await call(router, 'GET', `/workspaces/${workspaceId}/deposits`, admin()) as DepositConfirmation[]).find((deposit) => deposit.txHash === SENT)
+  assert.equal(ours?.sent, '500.000000')
+  assert.equal(ours?.approval, null, "the other workspace's approval stays its own")
 })
 
 test('members cannot see deposits', async () => {
