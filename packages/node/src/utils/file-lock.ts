@@ -1,5 +1,6 @@
-import { mkdir, open, readFile, rm, stat, utimes } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { createHash } from 'node:crypto';
+import { mkdir, open, readdir, readFile, rm, stat, utimes } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
 
 /**
  * Tails of the in-process queues, one per lock path. Kept on `globalThis` so
@@ -20,11 +21,12 @@ export interface FileLockOptions {
   /** Poll interval while another process holds the lock. */
   retryMs?: number;
   /**
-   * Test hook: runs after a lock was judged abandoned and before it is
-   * reclaimed, so tests can line up competing reclaimers.
+   * Test hook: runs before each attempt to claim an abandoned lock (`claim`
+   * is the claim file about to be created), so tests can line up competing
+   * reclaimers.
    * @internal
    */
-  beforeReclaim?: () => Promise<void>;
+  beforeReclaim?: (claim: string) => Promise<void>;
 }
 
 /** Thrown when another process kept the lock for longer than `timeoutMs`. */
@@ -126,61 +128,71 @@ function abandoned(lock: LockSnapshot, staleMs: number): boolean {
 /**
  * Remove an abandoned lock. A refreshed lock of a live owner is never removed.
  *
- * Reading the lock and then unlinking its path are two steps, so two
- * reclaimers that judged the same lock abandoned could otherwise both unlink
- * it, the second deleting the fresh lock the first just took. Reclaiming is
- * therefore serialized by `<lock>.recover`, created exclusively and holding
- * its owner's pid, and the lock is re-read while holding it: only the very
- * lock judged abandoned, still abandoned, is removed. Anyone who sees the
- * recovery lock taken waits and retries. It is held for a few file
- * operations only, so it is broken only when its owner died (or is this
- * process), never for its age: a live reclaimer that stalls just delays the
- * others until it continues or exits.
+ * Reading a lock and unlinking its path are two steps, so two reclaimers that
+ * judged the same lock abandoned could otherwise both unlink it, the second
+ * deleting the fresh lock the first just took. So only the one process that
+ * exclusively creates `<lock>.reclaim-<digest of the abandoned content>` may
+ * remove it. That name belongs to this one abandoned lock, so a claim never
+ * has to be deleted for another reclaimer to proceed: whoever loses the
+ * create waits and re-reads. If the claimant itself died, its claim is
+ * abandoned in turn and is claimed the same way, one level deeper
+ * (`<claim>-<digest of the claim>`). Claims are cleaned up after the lock is
+ * removed; a late reclaimer that recreates one finds a different lock and
+ * leaves it alone.
  */
-async function breakIfStale(lockPath: string, staleMs: number, beforeReclaim?: () => Promise<void>): Promise<boolean> {
+async function breakIfStale(lockPath: string, staleMs: number, beforeReclaim?: (claim: string) => Promise<void>): Promise<boolean> {
   const seen = await inspect(lockPath);
   if (!seen) return true; // released meanwhile: retry at once
   if (!abandoned(seen, staleMs)) return false;
-  await beforeReclaim?.();
-  const recovery = await takeRecoveryLock(lockPath, staleMs);
-  if (!recovery) return false; // another process is reclaiming it
-  try {
+  const base = `${lockPath}.reclaim-${digest(seen.content)}`;
+  const claim = await claimAbandoned(base, staleMs, beforeReclaim);
+  if (claim === 'busy') return false; // a live process is reclaiming it
+  if (claim === 'won') {
+    // Only the claimant removes the lock it claimed; retaken meanwhile, it is judged afresh.
     const current = await inspect(lockPath);
-    // Retaken meanwhile (another reclaimer finished first): judge it afresh.
-    if (!current || current.content !== seen.content || !abandoned(current, staleMs)) return true;
-    await rm(lockPath, { force: true });
-    return true;
-  } finally {
-    await releaseLock(recoveryPath(lockPath), recovery);
+    if (current && current.content === seen.content) await rm(lockPath, { force: true });
+    await removeClaims(base);
   }
+  return true;
 }
 
-function recoveryPath(lockPath: string): string {
-  return `${lockPath}.recover`;
-}
-
-/** Our token once we hold `<lock>.recover`; null while a live process holds it. */
-async function takeRecoveryLock(lockPath: string, staleMs: number): Promise<string | null> {
-  const path = recoveryPath(lockPath);
-  const token = JSON.stringify({ pid: process.pid, at: Date.now(), nonce: Math.random().toString(36).slice(2) });
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+/**
+ * Exclusively create `path`, or claim it in turn when its creator died.
+ * 'gone' means the claim was cleaned up meanwhile: the lock was reclaimed.
+ */
+async function claimAbandoned(path: string, staleMs: number, beforeReclaim?: (claim: string) => Promise<void>): Promise<'won' | 'busy' | 'gone'> {
+  for (let depth = 0; depth < 8; depth += 1) {
+    await beforeReclaim?.(path);
+    const token = JSON.stringify({ pid: process.pid, at: Date.now(), nonce: Math.random().toString(36).slice(2) });
     try {
       const handle = await open(path, 'wx', 0o600);
       try { await handle.writeFile(token); } finally { await handle.close(); }
-      return token;
+      return 'won';
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
     }
     const held = await inspect(path);
-    if (!held) continue; // released meanwhile
+    if (!held) return 'gone';
+    // A claim is held for a few file operations only, so it is abandoned only
+    // when its creator died (or is this process), never for its age; an empty
+    // one only when its creator never wrote its pid within the stale window.
     const pid = ownerPid(held.content);
-    // Its owner died (a crash mid-reclaim); an empty one is only abandoned
-    // when its owner never wrote its pid within the stale window.
     const dead = pid !== null ? pid === process.pid || !alive(pid) : Date.now() - held.mtimeMs > staleMs;
-    if (!dead) return null;
-    if (await readFile(path, 'utf8').catch(() => null) === held.content) await rm(path, { force: true });
+    if (!dead) return 'busy';
+    path = `${path}-${digest(held.content)}`;
   }
-  return null;
+  return 'busy';
+}
+
+/** Remove `base` and every deeper claim on it. */
+async function removeClaims(base: string): Promise<void> {
+  const prefix = basename(base);
+  const names = await readdir(dirname(base)).catch(() => [] as string[]);
+  await Promise.all(names.filter((name) => name.startsWith(prefix)).map((name) => rm(join(dirname(base), name), { force: true })));
+}
+
+function digest(content: string): string {
+  return createHash('sha256').update(content).digest('hex').slice(0, 16);
 }
 
 function ownerPid(content: string): number | null {

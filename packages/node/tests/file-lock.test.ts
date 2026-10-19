@@ -1,7 +1,8 @@
 import { spawn } from 'node:child_process';
-import { access, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { access, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { FileLockTimeoutError, withFileLock } from '../src/utils/file-lock.js';
@@ -90,6 +91,7 @@ describe('file lock', () => {
     expect(entered).toBe(true); // only after the holder finished
     expect(await exited).toBe(0);
   }, 15_000);
+
   it('lets only one of two processes reclaiming the same abandoned lock in at a time', async () => {
     const lock = await lockPath();
     await withFileLock(lock, async () => undefined); // creates the directory
@@ -141,6 +143,62 @@ describe('file lock', () => {
     await b.release();
     expect(await Promise.all([a.exited, b.exited])).toEqual([0, 0]);
     await expect(access(overlap)).rejects.toThrow();
-    await expect(access(`${lock}.recover`)).rejects.toThrow();
+    expect((await readdir(dirname(lock))).filter((name) => name.includes('.reclaim-'))).toEqual([]);
+  }, 20_000);
+
+  it('lets only one of two processes reclaim a lock whose first reclaimer died mid-claim', async () => {
+    const lock = await lockPath();
+    await withFileLock(lock, async () => undefined); // creates the directory
+    const dead = JSON.stringify({ pid: 2 ** 22 + 12_345 });
+    await writeFile(lock, dead);
+    // The first reclaimer died holding its claim on that abandoned lock.
+    const claim = `${lock}.reclaim-${createHash('sha256').update(dead).digest('hex').slice(0, 16)}`;
+    await writeFile(claim, JSON.stringify({ pid: 2 ** 22 + 12_346 }));
+    const inside = `${lock}.inside`;
+    const overlap = `${lock}.overlap`;
+    // Each reclaimer pauses once it judged the dead claim abandoned too.
+    const reclaimer = (name: string) => {
+      const go = `${lock}.go-${name}`;
+      const child = spawn(process.execPath, ['--input-type=module', '-e', `
+        import { access, rm, writeFile } from 'node:fs/promises';
+        const { withFileLock } = await import(${JSON.stringify(LOCK_MODULE)});
+        const exists = (path) => access(path).then(() => true, () => false);
+        const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        await withFileLock(${JSON.stringify(lock)}, async () => {
+          if (await exists(${JSON.stringify(inside)})) await writeFile(${JSON.stringify(overlap)}, ${JSON.stringify(name)});
+          await writeFile(${JSON.stringify(inside)}, ${JSON.stringify(name)});
+          process.stdout.write('entered\\n');
+          await sleep(300);
+          await rm(${JSON.stringify(inside)}, { force: true });
+        }, {
+          retryMs: 10,
+          timeoutMs: 10_000,
+          beforeReclaim: async (path) => {
+            if (path === ${JSON.stringify(claim)}) return;
+            process.stdout.write('inspected\\n');
+            while (!(await exists(${JSON.stringify(go)}))) await sleep(10);
+          },
+        });
+      `], { stdio: ['ignore', 'pipe', 'inherit'] });
+      let output = '';
+      const waiters: Array<() => void> = [];
+      child.stdout.on('data', (chunk: Buffer) => { output += chunk.toString(); waiters.splice(0).forEach((wake) => wake()); });
+      const said = (line: string) => new Promise<void>((resolve, reject) => {
+        const check = () => (output.includes(line) ? resolve() : waiters.push(check));
+        child.on('exit', () => reject(new Error(`${name} exited before printing ${line}`)));
+        check();
+      });
+      const exited = new Promise<number | null>((resolve) => child.on('exit', resolve));
+      return { said, exited, release: () => writeFile(go, 'go') };
+    };
+    const a = reclaimer('a');
+    const b = reclaimer('b');
+    await Promise.all([a.said('inspected'), b.said('inspected')]);
+    await a.release();
+    await a.said('entered');
+    await b.release();
+    expect(await Promise.all([a.exited, b.exited])).toEqual([0, 0]);
+    await expect(access(overlap)).rejects.toThrow();
+    expect((await readdir(dirname(lock))).filter((name) => name.includes('.reclaim-'))).toEqual([]);
   }, 20_000);
 });
