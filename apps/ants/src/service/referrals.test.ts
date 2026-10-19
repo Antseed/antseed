@@ -51,6 +51,10 @@ function fixture(options: { referrals?: boolean; explorer?: boolean; indexed?: P
     claimEpochs: vi.fn(async () => '0xhash'),
     claimRefereeEpochs: vi.fn(async () => '0xreferee'),
     currentEpoch: vi.fn(async () => 40),
+    // Without Antscan: 4 invites in epoch 40, index 1 already bound; 3 buyers referred.
+    inviteQuota: vi.fn(async (_referrer: string, epoch: number) => (epoch === 40 ? 4 : 0)),
+    inviteUsed: vi.fn(async (_referrer: string, _epoch: number, index: number) => index === 1),
+    referredCount: vi.fn(async () => 3),
     // Epochs 30 and 33 hold an unclaimed, final referee bonus.
     pendingRefereeReward: vi.fn(async (_buyer: string, epoch: number) => (epoch === 30 || epoch === 33 ? 5n : 0n)),
   };
@@ -75,12 +79,14 @@ describe('referral card', () => {
     const { ctx, client } = fixture();
     expect(await referral(ctx)).toEqual({
       available: true,
+      indexed: true,
       payable: '700',
       claimableEpochs: [3, 5],
       referredCount: 2,
       invites: { epoch: 30, quota: 5, used: 1, left: 4 },
     });
     expect(client.pendingRewards).not.toHaveBeenCalled();
+    expect(client.inviteUsed).not.toHaveBeenCalled();
   });
 
   it('counts invites already handed out from this install', async () => {
@@ -101,11 +107,45 @@ describe('referral card', () => {
     expect((await referral(fixture({ indexed }).ctx, dir)).invites).toEqual({ epoch: 30, quota: 7, used: 2, left: 5 });
   });
 
-  it('is hidden without a referrals contract, an explorer, or an explorer that indexes referrals', async () => {
-    const hidden = { available: false, payable: '0', claimableEpochs: [], referredCount: 0, invites: null };
-    expect(await referral(fixture({ referrals: false }).ctx)).toEqual(hidden);
-    expect(await referral(fixture({ explorer: false }).ctx)).toEqual(hidden);
-    expect(await referral(fixture({ indexed: { available: false } }).ctx)).toEqual(hidden);
+  it('is hidden only without a referrals contract', async () => {
+    expect(await referral(fixture({ referrals: false }).ctx)).toEqual({
+      available: false, indexed: false, payable: '0', claimableEpochs: [], referredCount: 0, invites: null,
+    });
+  });
+
+  it.each([
+    { name: 'no explorer is configured', options: { explorer: false } },
+    { name: 'the explorer does not index referrals', options: { indexed: { available: false } } },
+  ])('stays available with on-chain invites and count when $name, payable unknown', async ({ options }) => {
+    const { ctx, client } = fixture(options);
+    expect(await referral(ctx)).toEqual({
+      available: true,
+      indexed: false,
+      payable: '0',
+      claimableEpochs: [],
+      referredCount: 3,
+      invites: { epoch: 40, quota: 4, used: 1, left: 3 },
+    });
+    // The allowance reads one `inviteUsed` per index in quota; the payable scan is left to the claim.
+    expect(client.inviteUsed.mock.calls.map(([, epoch, index]) => [epoch, index])).toEqual([[40, 0], [40, 1], [40, 2], [40, 3]]);
+    expect(client.pendingRewards).not.toHaveBeenCalled();
+    expect(client.pendingReward).not.toHaveBeenCalled();
+  });
+
+  it('counts on-chain bound invites together with those handed out from this install', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ants-referral-'));
+    dirs.push(dir);
+    await recordIssuedInvite(dir, scope, 40, 1); // the bound one, handed out here too
+    await recordIssuedInvite(dir, scope, 40, 3);
+    expect((await referral(fixture({ explorer: false }).ctx, dir)).invites).toEqual({ epoch: 40, quota: 4, used: 2, left: 2 });
+  });
+
+  it('without an explorer, its claim goes through the bounded on-chain epoch scan', async () => {
+    const { ctx, client } = fixture({ explorer: false });
+    expect((await referral(ctx)).available).toBe(true);
+    expect(await claimReferralRewards(ctx)).toEqual({ hash: '0xhash', epochs: [7] });
+    expect(client.pendingRewards).toHaveBeenCalledWith(wallet);
+    expect(client.claimEpochs).toHaveBeenCalledWith({}, wallet, [7]);
   });
 });
 

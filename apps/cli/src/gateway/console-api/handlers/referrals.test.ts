@@ -67,6 +67,7 @@ function fakeContext(chain: AntsChainConfig, address: string, signer?: AbstractS
       currentEpoch: async () => 20,
       inviteQuota: async () => 3,
       inviteUsed: async () => false,
+      referredCount: async () => 1,
       previewInvite: async () => preview,
     }),
     clientRewards: () => ({}),
@@ -184,7 +185,8 @@ test('without an explorer, invites are still created, redeemed and removed; only
   const view = await call(noExplorerRouter, 'GET', `/workspaces/${solo.id}/referrals`, principal) as Referrals
   assert.equal(view.available, false)
   assert.equal(view.invitesAvailable, true)
-  assert.equal(view.invites, null)
+  // This week's allowance is read from the referrals contract.
+  assert.deepEqual(view.invites, { epoch: 20, quota: 3, used: 0, left: 3 })
   assert.deepEqual(view.buyers, [])
   assert.equal(view.referee.state, 'none')
   assert.equal(view.referee.canRedeem, null)

@@ -54,6 +54,8 @@ function shortInviteLink(link: string): string {
 }
 
 const NO_INVITE_QUOTA = 'Invites unlock after at least 1 USDC of usage or sales in the previous week.';
+/** Without Antscan, claims find payable weeks with the services' bounded on-chain scan. */
+const ON_CHAIN_CLAIM = 'Claim checks the last 26 weeks on-chain.';
 
 function ReferralRewardsCard() {
   const dashboard = useConfig();
@@ -67,19 +69,21 @@ function ReferralRewardsCard() {
       <p className="hint">Invite new buyers with single-use invites. You earn from their usage, and they get 12 weeks of bonus ANTS.</p>
       {page.error ? <ErrorBox error={page.error} onRetry={page.refresh} /> : null}
       {view ? <>
-        <div className="hero-value"><RewardAmount>{formatAnts(view.payable, 4)}</RewardAmount><span className="unit">ANTS</span></div>
-        <p className="hero-sub muted">Payable now</p>
+        {view.indexed ? <>
+          <div className="hero-value"><RewardAmount>{formatAnts(view.payable, 4)}</RewardAmount><span className="unit">ANTS</span></div>
+          <p className="hero-sub muted">Payable now</p>
+        </> : <p className="hint">Payable amounts and referred buyers need Antscan; invites and claims work without it.</p>}
         <div className="buckets">
           <InviteRow view={view} />
-          <BucketRow visible name="Payable now" amount={view.payable}
+          <BucketRow visible name="Payable now" amount={view.indexed ? view.payable : null}
             amountDetail={`${formatInt(view.referredCount)} ${view.referredCount === 1 ? 'referred buyer' : 'referred buyers'}`}
-            note={epochs > 0 ? `${epochs} ${epochs === 1 ? 'week is' : 'weeks are'} ready to claim.` : 'Weeks become claimable one week after they end.'}
+            note={!view.indexed ? ON_CHAIN_CLAIM : epochs > 0 ? `${epochs} ${epochs === 1 ? 'week is' : 'weeks are'} ready to claim.` : 'Weeks become claimable one week after they end.'}
             actions={<ActionButton label="Claim" title="Claim referral rewards" path="/api/referrals/claim" body={{}}
-              disabled={dashboard.readOnly || isZero(view.payable)}
+              disabled={dashboard.readOnly || (view.indexed && isZero(view.payable))}
               disabledReason={dashboard.readOnly ? 'Connect a wallet with a signer to claim.' : 'Nothing to claim yet.'}
-              summary={[['Payable now', `${formatAnts(view.payable, 4)} ANTS`], ['Weeks', String(epochs)]]} />} />
+              summary={view.indexed ? [['Payable now', `${formatAnts(view.payable, 4)} ANTS`], ['Weeks', String(epochs)]] : [['Weeks', 'Found on-chain when claiming']]} />} />
         </div>
-        <ReferredBuyersTable />
+        {view.indexed ? <ReferredBuyersTable /> : null}
       </> : null}
     </Card>
   );
@@ -265,23 +269,27 @@ export function BuildersCard() {
       <p className="hint">Built an app on Antseed? Register it as a client agent, send its id with settlements, and earn a weekly share of the builders bucket.</p>
       {page.error ? <ErrorBox error={page.error} onRetry={page.refresh} /> : null}
       {view ? <>
-        <div className="hero-value"><RewardAmount>{formatAnts(sumBig(view.agents.filter((agent) => agent.owned).map((agent) => agent.payable)), 4)}</RewardAmount><span className="unit">ANTS</span></div>
-        <p className="hero-sub muted">Payable now to this wallet</p>
+        {view.indexed ? <>
+          <div className="hero-value"><RewardAmount>{formatAnts(sumBig(view.agents.filter((agent) => agent.owned).map((agent) => agent.payable)), 4)}</RewardAmount><span className="unit">ANTS</span></div>
+          <p className="hero-sub muted">Payable now to this wallet</p>
+        </> : <p className="hint">Payable amounts need Antscan; registration and claims work without it.</p>}
         <div className="buckets">
           {view.agents.map((agent) => {
             const epochs = agent.claimableEpochs.length;
             const name = agent.firstParty ? `${FIRST_PARTY_NAMES[agent.firstParty]} · agent #${agent.agentId}` : `Agent #${agent.agentId}`;
+            const timing = !view.indexed ? `${ON_CHAIN_CLAIM} Each week is its own claim transaction.`
+              : epochs > 1 ? 'Each week is its own claim transaction.' : epochs === 0 ? 'Weeks become claimable one week after they end.' : '';
             return (
-              <BucketRow key={agent.agentId} visible name={name} amount={agent.payable}
+              <BucketRow key={agent.agentId} visible name={name} amount={view.indexed ? agent.payable : null}
                 amountDetail={epochs > 0 ? `${epochs} ${epochs === 1 ? 'week' : 'weeks'} payable` : undefined}
                 note={agent.owner
-                  ? <>Paid to {agent.owned ? 'this wallet' : <AddressLink value={agent.owner} />}. {epochs > 1 ? 'Each week is its own claim transaction.' : epochs === 0 ? 'Weeks become claimable one week after they end.' : ''}</>
+                  ? <>Paid to {agent.owned ? 'this wallet' : <AddressLink value={agent.owner} />}. {timing}</>
                   : 'Not a registered ERC-8004 agent on this chain.'}
                 actions={<>
                   <ActionButton label="Claim" title={`Claim builder rewards · agent #${agent.agentId}`} path="/api/builders/claim" body={{ agentId: agent.agentId }}
-                    disabled={dashboard.readOnly || !agent.owner || isZero(agent.payable)}
+                    disabled={dashboard.readOnly || !agent.owner || (view.indexed && isZero(agent.payable))}
                     disabledReason={dashboard.readOnly ? 'Connect a wallet with a signer to claim.' : !agent.owner ? 'This agent id is not registered.' : 'Nothing to claim yet.'}
-                    summary={[['Payable now', `${formatAnts(agent.payable, 4)} ANTS`], ['Weeks', String(epochs)]]} />
+                    summary={view.indexed ? [['Payable now', `${formatAnts(agent.payable, 4)} ANTS`], ['Weeks', String(epochs)]] : [['Weeks', 'Found on-chain when claiming']]} />
                   {ids.includes(agent.agentId) ? <Button variant="outline" size="sm" onClick={() => save(ids.filter((id) => id !== agent.agentId))}>Remove</Button> : null}
                 </>} />
             );
@@ -462,8 +470,8 @@ function RewardsBody({ data, onRefresh }: { data: RewardsView; onRefresh: () => 
   );
 }
 
-/** `amount` is an ANTS base-unit string by default; `amountKind="count"` renders a plain integer with no unit. */
-function BucketRow({ visible, name, note, amount, amountKind = 'ants', amountDetail, actions }: { visible: boolean; name: string; note?: ReactNode; amount: string; amountKind?: 'ants' | 'count'; amountDetail?: string; actions: ReactNode }) {
+/** `amount` is an ANTS base-unit string by default; `amountKind="count"` renders a plain integer with no unit; null renders "—" (unknown). */
+function BucketRow({ visible, name, note, amount, amountKind = 'ants', amountDetail, actions }: { visible: boolean; name: string; note?: ReactNode; amount: string | null; amountKind?: 'ants' | 'count'; amountDetail?: string; actions: ReactNode }) {
   if (!visible) return null;
   return (
     <div className="bucket">
@@ -472,9 +480,10 @@ function BucketRow({ visible, name, note, amount, amountKind = 'ants', amountDet
         {note ? <div className="bucket-note">{note}</div> : null}
       </div>
       <div className={`bucket-amount mono${amountDetail ? ' bucket-amount--detailed' : ''}`}>
-        {amountKind === 'count'
-          ? <span><RewardAmount>{formatInt(amount)}</RewardAmount></span>
-          : <span><RewardAmount>{formatAnts(amount, 4)}</RewardAmount> <span className="unit">ANTS</span></span>}
+        {amount === null ? <span>—</span>
+          : amountKind === 'count'
+            ? <span><RewardAmount>{formatInt(amount)}</RewardAmount></span>
+            : <span><RewardAmount>{formatAnts(amount, 4)}</RewardAmount> <span className="unit">ANTS</span></span>}
         {amountDetail ? <span className="bucket-amount-detail"><RewardAmount>{amountDetail}</RewardAmount></span> : null}
       </div>
       <div className="bucket-actions">{actions}</div>

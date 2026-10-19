@@ -142,7 +142,7 @@ export async function referralStatus(context: ReferralCommandContext): Promise<R
     configured,
     state,
     referee: referee ?? { available: false, referrer: null, boundEpoch: null, windowEnd: null, weeksLeft: null, payable: '0', claimableEpochs: [] },
-    invites: invites ?? { available: false, payable: '0', claimableEpochs: [], referredCount: 0, invites: null },
+    invites: invites ?? { available: false, indexed: false, payable: '0', claimableEpochs: [], referredCount: 0, invites: null },
   }
 }
 
@@ -171,12 +171,14 @@ export function formatReferralStatus(status: ReferralStatus): string[] {
   }
 
   if (invites.available) {
-    const parts = [`${invites.referredCount} invited`, `${antsAmount(invites.payable)} payable`]
+    // Without Antscan the count and allowance are on-chain reads; the payable amount is unknown.
+    const parts = [`${invites.referredCount} invited`, ...(invites.indexed ? [`${antsAmount(invites.payable)} payable`] : [])]
     if (invites.invites) parts.push(invites.invites.quota === 0 ? 'no invites this week' : `${invites.invites.left} of ${invites.invites.quota} invites left this week`)
     lines.push(`Your invites: ${parts.join(' · ')}.`)
     if (invites.invites?.quota === 0) lines.push(chalk.dim('Invites unlock after at least 1 USDC of usage or sales in the previous week.'))
+    if (!invites.indexed) lines.push(chalk.dim('Payable rewards need an Antscan explorer; claims on the ANTS dashboard check recent weeks on-chain.'))
   } else {
-    lines.push(chalk.dim('Invite stats unavailable (no Antscan explorer configured).'))
+    lines.push(chalk.dim('Invite stats unavailable right now.'))
   }
   return lines
 }

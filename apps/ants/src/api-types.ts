@@ -395,13 +395,20 @@ export interface InviteAllowanceView {
 }
 
 export interface ReferralView {
+  /** The chain has a Referrals contract: invites and claims work, with or without Antscan. */
   available: boolean;
+  /**
+   * Antscan reports this wallet's referrals. When false, `invites` and
+   * `referredCount` are on-chain reads, while `payable` ('0') and
+   * `claimableEpochs` ([]) are unknown: a claim scans recent epochs on-chain.
+   */
+  indexed: boolean;
   /** ANTS payable now across claimable epochs (base units). */
   payable: string;
   /** Epochs with a payable reward, oldest first. */
   claimableEpochs: number[];
   referredCount: number;
-  /** Null when Antscan does not report invites. */
+  /** Null when neither Antscan nor the contract reports invites. */
   invites: InviteAllowanceView | null;
 }
 
@@ -470,7 +477,13 @@ export interface BuilderAgentView {
 }
 
 export interface BuildersView {
+  /** The chain has a client rewards contract: registration and claims work, with or without Antscan. */
   available: boolean;
+  /**
+   * Antscan reports the payable amounts. When false, each agent's `payable`
+   * ('0') and `claimableEpochs` ([]) are unknown: a claim scans recent epochs on-chain.
+   */
+  indexed: boolean;
   /** Requested ids plus the chain's first-party client ids this wallet owns. */
   agents: BuilderAgentView[];
 }

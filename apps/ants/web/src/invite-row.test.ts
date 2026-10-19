@@ -35,7 +35,7 @@ vi.mock('./components/ui', async original => ({
 }));
 
 const context = { config: { address: '0x0000000000000000000000000000000000000001', chainId: 'base-mainnet', evmChainId: 8453, readOnly: false } } as AppValue;
-const viewIn = (invites: InviteAllowanceView | null): ReferralView => ({ available: true, payable: '0', claimableEpochs: [], referredCount: 0, invites });
+const viewIn = (invites: InviteAllowanceView | null): ReferralView => ({ available: true, indexed: true, payable: '0', claimableEpochs: [], referredCount: 0, invites });
 
 function render(view: ReferralView) {
   state.cursor = 0;
@@ -106,5 +106,18 @@ describe('invite row allowance', () => {
     expect(html).not.toContain('role="alert"');
     expect(html).toContain(left(5, 5));
     expect(button('Create invite').disabled).toBe(false);
+  });
+
+  it('creates invites from the on-chain allowance when no explorer indexes referrals', async () => {
+    const unindexed: ReferralView = { ...viewIn({ epoch: 40, quota: 4, used: 1, left: 3 }), indexed: false };
+    const link = 'https://antseed.com/invite/OnChainInvite123';
+    state.createInvite = async () => ({ invite: 'OnChainInvite123', link, epoch: 40, index: 2, quota: 4, left: 2, expiresEpoch: 44 });
+    expect(render(unindexed)).toContain(left(3, 4));
+    expect(button('Create invite').disabled).toBe(false);
+
+    await click('Create invite');
+    const html = render(unindexed);
+    expect(html).toContain(left(2, 4));
+    expect(html).toContain('antseed.com/invite/OnChai…e123');
   });
 });

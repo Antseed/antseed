@@ -24,13 +24,16 @@ async function agentOwner(ctx: AntsContext, agentId: number): Promise<string | n
  * first-party client ids this wallet owns. No registry call enumerates a
  * wallet's agents cheaply, so third-party builders name their ids. Payable
  * amounts come from Antscan; only agent ownership (`ownerOf`, which Antscan
- * does not index) is read over RPC. Hidden without an explorer that indexes
- * the builders program. Each request names at most `MAX_BUILDER_AGENTS` ids
- * (the card reads more in batches); a larger request is refused, never cut.
+ * does not index) is read over RPC. Available whenever the client rewards
+ * contract is configured, so registration and claims work without Antscan;
+ * then `indexed` is false and payable amounts are unknown (a per-agent RPC
+ * epoch scan is too heavy for a polled view; `claimBuilderRewards` runs it
+ * once, for the agent being claimed). Each request names at most
+ * `MAX_BUILDER_AGENTS` ids (the card reads more in batches); a larger request
+ * is refused, never cut.
  */
 export async function builders(ctx: AntsContext, agentIds: number[]): Promise<BuildersView> {
-  const indexer = ctx.indexer();
-  if (!ctx.chain.clientRewardsAddress || !indexer?.builders) return { available: false, agents: [] };
+  if (!ctx.chain.clientRewardsAddress) return { available: false, indexed: false, agents: [] };
   const requested = [...new Set(agentIds.filter((id) => Number.isSafeInteger(id) && id > 0))];
   if (requested.length > MAX_BUILDER_AGENTS) throw new Error(`Request at most ${MAX_BUILDER_AGENTS} client agent ids at a time.`);
   const firstParty = new Map<number, 'cli' | 'desktop'>();
@@ -39,13 +42,13 @@ export async function builders(ctx: AntsContext, agentIds: number[]): Promise<Bu
     if (id) firstParty.set(id, kind);
   }
   const candidates = [...new Set([...requested, ...firstParty.keys()])];
+  const indexer = ctx.indexer();
   const [ownerEntries, indexed] = await Promise.all([
     Promise.all(candidates.map(async (id) => [id, await agentOwner(ctx, id)] as const)),
-    indexer.builders(candidates),
+    indexer?.builders ? indexer.builders(candidates) : null,
   ]);
-  if (!indexed.available) return { available: false, agents: [] };
   const owners = new Map(ownerEntries);
-  const rewards = new Map(indexed.agents.map((agent) => [agent.agentId, agent]));
+  const rewards = new Map(indexed?.available ? indexed.agents.map((agent) => [agent.agentId, agent]) : []);
   const ownedByWallet = (id: number) => owners.get(id)?.toLowerCase() === ctx.address.toLowerCase();
   const shown = candidates.filter((id) => requested.includes(id) || ownedByWallet(id));
   const agents = shown.map((agentId): BuilderAgentView => ({
@@ -57,7 +60,7 @@ export async function builders(ctx: AntsContext, agentIds: number[]): Promise<Bu
     claimableEpochs: rewards.get(agentId)?.claimableEpochs ?? [],
   }));
   agents.sort(compareBuilderAgents);
-  return { available: true, agents };
+  return { available: true, indexed: !!indexed?.available, agents };
 }
 
 /**

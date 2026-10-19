@@ -47,12 +47,35 @@ function fixture(options: { clientRewards?: boolean; explorer?: boolean } = {}) 
 }
 
 describe('builders program', () => {
-  it('reports unavailable without a client rewards contract or an explorer, never scanning RPC epochs', async () => {
-    expect(await builders(fixture({ clientRewards: false }).ctx, [5])).toEqual({ available: false, agents: [] });
-    const { ctx, clientRewards, identity } = fixture({ explorer: false });
-    expect(await builders(ctx, [5])).toEqual({ available: false, agents: [] });
-    expect(clientRewards.pendingRewards).not.toHaveBeenCalled();
+  it('reports unavailable without a client rewards contract', async () => {
+    const { ctx, identity } = fixture({ clientRewards: false });
+    expect(await builders(ctx, [5])).toEqual({ available: false, indexed: false, agents: [] });
     expect(identity.getAgentWallet).not.toHaveBeenCalled();
+  });
+
+  it('stays available without an explorer: owners over RPC, payable unknown, never scanning RPC epochs', async () => {
+    const { ctx, clientRewards, identity } = fixture({ explorer: false });
+    expect(await builders(ctx, [9, 404])).toEqual({
+      available: true,
+      indexed: false,
+      agents: [
+        { agentId: 5, owner: wallet, owned: true, firstParty: 'cli', payable: '0', claimableEpochs: [] },
+        { agentId: 9, owner: other, owned: false, firstParty: null, payable: '0', claimableEpochs: [] },
+        { agentId: 404, owner: null, owned: false, firstParty: null, payable: '0', claimableEpochs: [] },
+      ],
+    });
+    expect(identity.getAgentWallet).toHaveBeenCalledWith(9);
+    expect(clientRewards.pendingRewards).not.toHaveBeenCalled();
+  });
+
+  it('without an explorer, registers agents and claims through the bounded on-chain epoch scan', async () => {
+    const { ctx, clientRewards, identity } = fixture({ explorer: false });
+    expect(await registerClientAgent(ctx)).toEqual({ agentId: 31 });
+    expect(identity.register).toHaveBeenCalledTimes(1);
+    expect((await builders(ctx, [9])).agents.find((agent) => agent.agentId === 9)).toMatchObject({ owner: other, payable: '0' });
+    expect(await claimBuilderRewards(ctx, 9)).toEqual({ agentId: 9, owner: other, epochs: [8], hashes: ['0xhash8'] });
+    expect(clientRewards.pendingRewards).toHaveBeenCalledWith(9);
+    expect(clientRewards.claim).toHaveBeenCalledWith({}, 9, 8);
   });
 
   it('reads payable amounts for every candidate in one Antscan request', async () => {
@@ -63,10 +86,13 @@ describe('builders program', () => {
     expect(clientRewards.pendingRewards).not.toHaveBeenCalled();
   });
 
-  it('hides the card when Antscan does not index the builders program', async () => {
-    const { ctx, indexer } = fixture();
+  it('keeps the card, with payable amounts unknown, when Antscan does not index the builders program', async () => {
+    const { ctx, indexer, clientRewards } = fixture();
     indexer.builders.mockResolvedValueOnce({ available: false, agents: [] });
-    expect(await builders(ctx, [9])).toEqual({ available: false, agents: [] });
+    const view = await builders(ctx, [9]);
+    expect(view).toMatchObject({ available: true, indexed: false });
+    expect(view.agents.map((agent) => [agent.agentId, agent.payable, agent.claimableEpochs])).toEqual([[5, '0', []], [9, '0', []]]);
+    expect(clientRewards.pendingRewards).not.toHaveBeenCalled();
   });
 
   it('adds first-party ids this wallet owns and keeps requested ids of any owner', async () => {

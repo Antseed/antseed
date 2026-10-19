@@ -16,29 +16,57 @@ import {
 } from '@antseed/node';
 import type { CreatedInviteView, InviteAllowanceView, RefereeView, ReferralView, ReferredBuyersView } from '../api-types.js';
 import type { AntsContext } from './context.js';
-import { createIndexer, type IndexedReferralBinding, type IndexedReferrer, type Indexer } from './indexer.js';
+import { createIndexer, type IndexedInvites, type IndexedReferralBinding, type IndexedReferrer, type Indexer } from './indexer.js';
 import { silentReporter, type StepReporter } from './steps.js';
 
-const HIDDEN_REFERRAL: ReferralView = { available: false, payable: '0', claimableEpochs: [], referredCount: 0, invites: null };
+const HIDDEN_REFERRAL: ReferralView = { available: false, indexed: false, payable: '0', claimableEpochs: [], referredCount: 0, invites: null };
 const HIDDEN_REFEREE: RefereeView = {
   available: false, referrer: null, boundEpoch: null, windowEnd: null, weeksLeft: null, payable: '0', claimableEpochs: [], canBind: null,
 };
 
 /**
  * The dashboard wallet's referral card. Counts, invites and payable amounts
- * come from Antscan (`explorerApiUrl`), never from per-epoch RPC scans;
- * without an explorer, or one that does not index referrals, the card is hidden.
+ * come from Antscan (`explorerApiUrl`), never from per-epoch RPC scans.
+ * Without an explorer, or one that does not index referrals, the card stays
+ * available (invites and claims only need the contract): the invite allowance
+ * and referred count are bounded on-chain views, and the payable amount is
+ * unknown (`indexed: false`); `claimReferralRewards` scans for it on-chain.
  */
 export async function referral(ctx: AntsContext, dataDir: string | null = null): Promise<ReferralView> {
-  const indexed = ctx.chain.referralsAddress ? await indexedReferrer(ctx.indexer(), ctx.address) : null;
-  if (!indexed) return HIDDEN_REFERRAL;
+  const client = ctx.chain.referralsAddress ? ctx.referrals() : null;
+  if (!client) return HIDDEN_REFERRAL;
+  const scope = referralScope(ctx, ctx.address);
+  const indexed = await indexedReferrer(ctx.indexer(), ctx.address);
+  if (!indexed) {
+    const [invites, referredCount] = await Promise.all([onChainInvites(client, ctx.address), client.referredCount(ctx.address)]);
+    return {
+      ...HIDDEN_REFERRAL,
+      available: true,
+      referredCount,
+      invites: allowanceView(invites, await issuedIndices(dataDir, scope, invites.epoch)),
+    };
+  }
   return {
     available: true,
+    indexed: true,
     payable: indexed.payable,
     claimableEpochs: indexed.claimableEpochs,
     referredCount: indexed.referredCount,
-    invites: indexed.invites ? allowanceView(indexed.invites, await issuedIndices(dataDir, referralScope(ctx, ctx.address), indexed.invites.epoch)) : null,
+    invites: indexed.invites ? allowanceView(indexed.invites, await issuedIndices(dataDir, scope, indexed.invites.epoch)) : null,
   };
+}
+
+/** This epoch's invites from the contract: its quota and which indexes are bound (`inviteUsed`, at most `MAX_INVITES_PER_EPOCH` reads). */
+async function onChainInvites(
+  client: Pick<ReferralsClient, 'currentEpoch' | 'inviteQuota' | 'inviteUsed'>,
+  referrer: string,
+): Promise<IndexedInvites> {
+  const epoch = await client.currentEpoch();
+  const quota = await client.inviteQuota(referrer, epoch);
+  const indexes = Array.from({ length: quota }, (_, index) => index);
+  const used = await Promise.all(indexes.map((index) => client.inviteUsed(referrer, epoch, index)));
+  const usedIndices = indexes.filter((index) => used[index]);
+  return { epoch, quota, used: usedIndices.length, usedIndices };
 }
 
 /** Buyers the dashboard wallet referred, with the points and ANTS each brought in (from Antscan). */
@@ -70,7 +98,7 @@ function takenCount(invites: IndexedReferrer['invites'], taken: Set<number>, quo
   return Math.max(invites?.used ?? 0, inQuota);
 }
 
-function allowanceView(invites: NonNullable<IndexedReferrer['invites']>, issued: number[]): InviteAllowanceView {
+function allowanceView(invites: IndexedInvites, issued: number[]): InviteAllowanceView {
   const used = takenCount(invites, new Set([...invites.usedIndices, ...issued]), invites.quota);
   return { epoch: invites.epoch, quota: invites.quota, used, left: Math.max(0, invites.quota - used) };
 }

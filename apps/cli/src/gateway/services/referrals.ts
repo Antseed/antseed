@@ -43,7 +43,7 @@ const HIDDEN_REFEREE: Referee = {
   boundEpoch: null, windowEnd: null, weeksLeft: null, payableAnts: '0', claimableEpochs: [], canRedeem: null,
 }
 
-const UNINDEXED_REFERRAL: Awaited<ReturnType<typeof referral>> = { available: false, payable: '0', claimableEpochs: [], referredCount: 0, invites: null }
+const UNINDEXED_REFERRAL: Awaited<ReturnType<typeof referral>> = { available: false, indexed: false, payable: '0', claimableEpochs: [], referredCount: 0, invites: null }
 
 function ants(baseUnits: string): string {
   return formatAntsExact(baseUnits || '0')
@@ -85,15 +85,17 @@ async function readReferee(ctx: AntsContext, stateDir: string): Promise<Referee>
 
 /** A workspace wallet's referrals: its invites and referred buyers, and its own invite bonus. */
 export async function readReferrals(ctx: AntsContext, stateDir: string): Promise<Referrals> {
-  // Antscan's statistics are optional: when it fails the view degrades to
-  // unknown counts, and invites (RPC and the local state) keep working.
+  // Antscan's statistics are optional: without it the allowance comes from
+  // the contract, counts and rewards are unknown, and invites (RPC and the
+  // local state) keep working. The console claims the epochs listed here, so
+  // rewards count as available only when Antscan reported them.
   const [view, referred, referee] = await Promise.all([
     referral(ctx, stateDir).catch(() => UNINDEXED_REFERRAL),
     referredBuyers(ctx).catch(() => ({ available: false, buyers: [] })),
     readReferee(ctx, stateDir),
   ])
   return {
-    available: view.available,
+    available: view.indexed,
     invitesAvailable: Boolean(ctx.chain.referralsAddress),
     address: ctx.address,
     invites: view.invites,
@@ -173,22 +175,24 @@ export function effectiveClientAgent(
   return { agentId: null, source: 'none' }
 }
 
-/** The gateway's client agent and what the builders program owes it (Antscan; the owner over RPC). */
 /** The configured and effective client agent, without the rewards read (which needs the explorer). */
 export async function readBuilderSettings(chain: AntsChainConfig, configPath: string, env: NodeJS.ProcessEnv = process.env): Promise<Builders> {
   const agentId = await configuredClientAgentId(configPath)
   return { available: false, agentId, effective: effectiveClientAgent(agentId, chain.clientAgentIds, env), agent: null }
 }
 
+/** The gateway's client agent and what the builders program owes it (Antscan; the owner over RPC). */
 export async function readBuilders(ctx: AntsContext, configPath: string, env: NodeJS.ProcessEnv = process.env): Promise<Builders> {
   const { agentId, effective } = await readBuilderSettings(ctx.chain, configPath, env)
   if (!effective.agentId) return { available: false, agentId, effective, agent: null }
+  // The console claims the epochs listed here, so the rewards need Antscan: without it, skip the ownerOf reads too.
+  if (!ctx.indexer()) return { available: false, agentId, effective, agent: null }
   const view = await readBuilderAgents(ctx, [effective.agentId])
-  const found = view.agents.find((agent) => agent.agentId === effective.agentId)
+  const found = view.indexed ? view.agents.find((agent) => agent.agentId === effective.agentId) : undefined
   const agent: BuilderAgent | null = found
     ? { agentId: found.agentId, owner: found.owner, firstParty: found.firstParty, payableAnts: ants(found.payable), claimableEpochs: found.claimableEpochs }
     : null
-  return { available: view.available, agentId, effective, agent }
+  return { available: view.indexed, agentId, effective, agent }
 }
 
 function parseAgentId(value: unknown): number | null {

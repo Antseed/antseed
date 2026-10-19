@@ -29,10 +29,12 @@ export async function readBuildersInBatches(
   for (let i = 0; i < ids.length; i += MAX_BUILDER_AGENTS) batches.push(ids.slice(i, i + MAX_BUILDER_AGENTS));
   if (batches.length === 0) batches.push([]); // still reads the first-party ids this wallet owns
   const agents = new Map<number, BuilderAgentView>();
+  let indexed = true;
   for (const batch of batches) {
     const view = await read(batch);
-    if (!view.available) return { available: false, agents: [] };
+    if (!view.available) return { available: false, indexed: false, agents: [] };
+    indexed &&= view.indexed;
     for (const agent of view.agents) if (!agents.has(agent.agentId)) agents.set(agent.agentId, agent);
   }
-  return { available: true, agents: [...agents.values()].sort(compareBuilderAgents) };
+  return { available: true, indexed, agents: [...agents.values()].sort(compareBuilderAgents) };
 }

@@ -402,7 +402,7 @@ describe('reward row actions and confirmations', () => {
   });
 
   it('lists builder agents with per-agent claims, enabled only for a registered agent with a payable reward', () => {
-    state.builders = { available: true, agents: [
+    state.builders = { available: true, indexed: true, agents: [
       { agentId: 5, owner: wallet, owned: true, firstParty: 'cli', payable: ants(3), claimableEpochs: [20, 21] },
       { agentId: 9, owner: pool, owned: false, firstParty: null, payable: '0', claimableEpochs: [] },
       { agentId: 404, owner: null, owned: false, firstParty: null, payable: ants(1), claimableEpochs: [21] },
@@ -417,7 +417,7 @@ describe('reward row actions and confirmations', () => {
   });
 
   it('totals only the builder rewards this wallet owns', () => {
-    state.builders = { available: true, agents: [
+    state.builders = { available: true, indexed: true, agents: [
       { agentId: 5, owner: wallet, owned: true, firstParty: 'cli', payable: ants(4), claimableEpochs: [21] },
       { agentId: 1234, owner: pool, owned: false, firstParty: null, payable: ants(7), claimableEpochs: [21] },
     ] };
@@ -426,13 +426,34 @@ describe('reward row actions and confirmations', () => {
     expect(card).toContain('<div class="hero-value">4<span class="unit">ANTS</span>');
   });
 
+  it('keeps builder registration and claims without an explorer, with payable amounts unknown', () => {
+    state.builders = { available: true, indexed: false, agents: [
+      { agentId: 5, owner: wallet, owned: true, firstParty: 'cli', payable: '0', claimableEpochs: [] },
+      { agentId: 9, owner: pool, owned: false, firstParty: null, payable: '0', claimableEpochs: [] },
+      { agentId: 404, owner: null, owned: false, firstParty: null, payable: '0', claimableEpochs: [] },
+    ] };
+    const html = render();
+    const card = html.slice(html.indexOf('aria-label="Builders program"'));
+    expect(card).toContain('Payable amounts need Antscan; registration and claims work without it.');
+    expect(card).toContain('Claim checks the last 26 weeks on-chain.');
+    // No false zero: neither a headline total nor per-agent amounts.
+    expect(card).not.toContain('hero-value');
+    expect(card).toContain('<span>—</span>');
+    // The claim scans payable weeks on-chain, so it is offered for every registered agent.
+    expect(action('Claim builder rewards · agent #5')).toMatchObject({ disabled: false, body: { agentId: 5 } });
+    expect(action('Claim builder rewards · agent #9').disabled).toBe(false);
+    expect(action('Claim builder rewards · agent #404').disabled).toBe(true);
+    expect(summary(action('Claim builder rewards · agent #5'))).toContain('Found on-chain when claiming');
+    expect(action('Register client agent')).toMatchObject({ disabled: false, path: '/api/builders/register' });
+  });
+
   it('hides the builders program when the chain has no client rewards contract', () => {
-    state.builders = { available: false, agents: [] };
+    state.builders = { available: false, indexed: false, agents: [] };
     expect(render()).not.toContain('Builders program');
   });
 
   it('lists referred buyers with the points, pending points and ANTS earned each brought in', () => {
-    state.referral = { available: true, payable: '0', claimableEpochs: [], referredCount: 2, invites: { epoch: 23, quota: 5, used: 1, left: 4 } };
+    state.referral = { available: true, indexed: true, payable: '0', claimableEpochs: [], referredCount: 2, invites: { epoch: 23, quota: 5, used: 1, left: 4 } };
     state.referredBuyers = { available: true, buyers: [
       { buyer: pool, boundEpoch: 4, points: '12500', ants: ants(3), pendingPoints: '0' },
       { buyer: wallet, boundEpoch: 9, points: '250', ants: '0', pendingPoints: '250' },
@@ -451,21 +472,38 @@ describe('reward row actions and confirmations', () => {
   });
 
   it('shows an empty referred-buyers table until someone joins', () => {
-    state.referral = { available: true, payable: '0', claimableEpochs: [], referredCount: 0, invites: null };
+    state.referral = { available: true, indexed: true, payable: '0', claimableEpochs: [], referredCount: 0, invites: null };
     state.referredBuyers = { available: true, buyers: [] };
     expect(render()).toContain('No referred buyers yet.');
   });
 
   it('hides the referral card and its table when referrals are not configured', () => {
-    state.referral = { available: false, payable: '0', claimableEpochs: [], referredCount: 0, invites: null };
+    state.referral = { available: false, indexed: false, payable: '0', claimableEpochs: [], referredCount: 0, invites: null };
     state.referredBuyers = { available: false, buyers: [] };
     const html = render();
     expect(html).not.toContain('Referral rewards');
     expect(html).not.toContain('No referred buyers yet.');
   });
 
+  it('keeps invite creation and the referral claim without an explorer, with payable amounts unknown', () => {
+    state.referral = { available: true, indexed: false, payable: '0', claimableEpochs: [], referredCount: 1, invites: { epoch: 23, quota: 3, used: 1, left: 2 } };
+    state.referredBuyers = { available: false, buyers: [] };
+    const html = render();
+    const card = html.slice(html.indexOf('aria-label="Referral rewards"'), html.indexOf('aria-label="Builders program"') > 0 ? html.indexOf('aria-label="Builders program"') : undefined);
+    expect(card).toContain('Payable amounts and referred buyers need Antscan; invites and claims work without it.');
+    expect(card).toMatch(/<button[^>]*><span class="btn__label">Create invite<\/span>/);
+    expect(card).not.toMatch(/<button[^>]*disabled=""[^>]*><span class="btn__label">Create invite<\/span>/);
+    expect(card).toContain('of 3 left this week');
+    expect(card).toContain('1 referred buyer');
+    expect(card).not.toContain('hero-value');
+    expect(card).not.toContain('No referred buyers yet.');
+    const claim = action('Claim referral rewards');
+    expect(claim).toMatchObject({ disabled: false, path: '/api/referrals/claim' });
+    expect(summary(claim)).toContain('Found on-chain when claiming');
+  });
+
   it('offers a single-use invite with the invites left this week', () => {
-    state.referral = { available: true, payable: '0', claimableEpochs: [], referredCount: 0, invites: { epoch: 23, quota: 5, used: 1, left: 4 } };
+    state.referral = { available: true, indexed: true, payable: '0', claimableEpochs: [], referredCount: 0, invites: { epoch: 23, quota: 5, used: 1, left: 4 } };
     const html = render();
     const card = html.slice(html.indexOf('Referral rewards'));
     expect(card).toContain('Create invite');
@@ -474,14 +512,14 @@ describe('reward row actions and confirmations', () => {
   });
 
   it('explains why no invites can be created without last week\'s activity', () => {
-    state.referral = { available: true, payable: '0', claimableEpochs: [], referredCount: 0, invites: { epoch: 23, quota: 0, used: 0, left: 0 } };
+    state.referral = { available: true, indexed: true, payable: '0', claimableEpochs: [], referredCount: 0, invites: { epoch: 23, quota: 0, used: 0, left: 0 } };
     const card = render().slice(render().indexOf('Referral rewards'));
     expect(card).toContain('Invites unlock after at least 1 USDC of usage or sales in the previous week.');
     expect(card).toMatch(/<button[^>]*disabled=""[^>]*><span class="btn__label">Create invite<\/span>/);
   });
 
   it('points browser-wallet sessions to the CLI instead of failing to sign', () => {
-    state.referral = { available: true, payable: '0', claimableEpochs: [], referredCount: 0, invites: { epoch: 23, quota: 5, used: 0, left: 5 } };
+    state.referral = { available: true, indexed: true, payable: '0', claimableEpochs: [], referredCount: 0, invites: { epoch: 23, quota: 5, used: 0, left: 5 } };
     const original = context.config.browserWallet;
     context.config.browserWallet = true;
     try {

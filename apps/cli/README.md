@@ -521,7 +521,9 @@ The inviter's rewards are paid only to its authorized wallet too, so an inviter
 and open in `antseed ants` (Desktop's Claim buttons open the same dashboard).
 
 **Status.** `antseed referral status` reads the binding, the bonus and your
-invitees from Antscan, and is hidden without an explorer:
+invitees from Antscan. Without an explorer it still shows your invited count
+and this week's invites from the Referrals contract; payable amounts need
+Antscan:
 
 ```text
 $ antseed referral status

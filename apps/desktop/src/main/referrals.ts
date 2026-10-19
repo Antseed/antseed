@@ -55,7 +55,7 @@ export type ReferralInvites = {
   available: boolean;
   /** False when no Antscan explorer lists this network's referrals. */
   listed: boolean;
-  /** Invites for this week; null when Antscan does not report them. */
+  /** Invites for this week (Antscan, else the Referrals contract); null when neither reports them. */
   allowance: InviteAllowance | null;
   /** `pendingPoints`: usage in weeks that are not claimable yet (no ANTS value yet). */
   buyers: Array<{ buyer: string; points: string; ants: string; pendingPoints: string }>;
@@ -147,15 +147,21 @@ export async function redeemReferralInvite(value: string): Promise<InviteCheckRe
 
 /**
  * This wallet as a referrer: this week's invite allowance and what each
- * invited buyer brought in, all from Antscan (never an RPC scan).
+ * invited buyer brought in, from Antscan (never an RPC epoch scan). Without
+ * an explorer that lists referrals, the allowance is the contract's own
+ * bounded read, and invites keep working even when that read fails.
  */
 export async function getReferralInvites(): Promise<ReferralInvites> {
   const context = await referralContext().catch(() => null);
   if (!context) return NO_INVITES;
   try {
     const ctx = new AntsContext({ chain: context.chain, address: context.wallet.address });
-    const [card, view] = await Promise.all([referral(ctx, resolveConnectDataDir()), referredBuyers(ctx)]);
-    if (!view.available) return { ...NO_INVITES, available: true };
+    const [cardRead, viewRead] = await Promise.allSettled([referral(ctx, resolveConnectDataDir()), referredBuyers(ctx)]);
+    if (viewRead.status === 'rejected') throw viewRead.reason;
+    const view = viewRead.value;
+    if (!view.available) return { ...NO_INVITES, available: true, allowance: cardRead.status === 'fulfilled' ? cardRead.value.invites : null };
+    if (cardRead.status === 'rejected') throw cardRead.reason;
+    const card = cardRead.value;
     const sum = (key: 'points' | 'ants' | 'pendingPoints') => view.buyers.reduce((total, row) => total + BigInt(row[key]), 0n).toString();
     return {
       available: true,

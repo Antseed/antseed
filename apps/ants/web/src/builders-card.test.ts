@@ -11,6 +11,8 @@ const state = vi.hoisted(() => ({
   view: null as BuildersView | null,
   load: null as (() => Promise<BuildersView>) | null,
   requests: [] as number[][],
+  actions: [] as Array<{ title: string; disabled?: boolean; path: string }>,
+  indexed: true,
 }));
 // Effects run during the server render, so each render is a mount that processes the job list.
 vi.mock('react', async original => ({
@@ -23,7 +25,7 @@ const unowned = (agentId: number) => ({ agentId, owner: null, owned: false, firs
 vi.mock('./data', () => ({ usePageData: (key: string | null, load: () => Promise<BuildersView>) => {
   state.load = load;
   const ids = (key ?? '').split(':')[2]?.split(',').filter(Boolean).map(Number) ?? [];
-  const data: BuildersView = state.view ?? { available: true, agents: ids.map(unowned) };
+  const data: BuildersView = state.view ?? { available: true, indexed: state.indexed, agents: ids.map(unowned) };
   return { data, error: null, loading: false, reconciling: false, refresh: () => {} };
 } }));
 // The server reads at most 20 requested ids per request and adds the owned first-party CLI agent.
@@ -33,11 +35,14 @@ vi.mock('./api', async original => {
     state.requests.push(ids);
     if (ids.length > 20) throw new Error('Request at most 20 client agent ids at a time.');
     const cli = { ...unowned(5), owner: '0x0000000000000000000000000000000000000001', owned: true, firstParty: 'cli' as const };
-    return { available: true, agents: [cli, ...ids.map(unowned)] };
+    return { available: true, indexed: state.indexed, agents: [cli, ...ids.map(unowned)] };
   } } };
 });
 vi.mock('./wallet', () => ({ BuyerWalletAction: () => null }));
-vi.mock('./components/Confirm', () => ({ ActionButton: () => null }));
+vi.mock('./components/Confirm', () => ({ ActionButton: (props: { title: string; disabled?: boolean; path: string }) => {
+  state.actions.push(props);
+  return null;
+} }));
 vi.mock('./components/ui', async original => ({
   ...await original<typeof import('./components/ui')>(),
   Button: (props: { children: ReactNode; onClick?: () => void }) => {
@@ -54,6 +59,7 @@ const registration: JobView = { id: 'register-1', kind: 'builder-register', stat
 
 function mount() {
   state.buttons = [];
+  state.actions = [];
   return renderToStaticMarkup(createElement(AppContext.Provider, { value: context }, createElement(BuildersCard)));
 }
 
@@ -63,6 +69,7 @@ beforeEach(() => {
   state.view = null;
   state.load = null;
   state.requests = [];
+  state.indexed = true;
   vi.stubGlobal('window', { localStorage: {
     getItem: (key: string) => storage.get(key) ?? null,
     setItem: (key: string, value: string) => { storage.set(key, value); },
@@ -117,5 +124,23 @@ describe('builders card tracked agents', () => {
     expect(removes).toHaveLength(22);
     removes[21]!.onClick!();
     expect(tracked()).toEqual(added);
+  });
+});
+
+describe('builders card without an explorer', () => {
+  it('still adds, registers and claims agents, read in batches with payable amounts unknown', async () => {
+    state.indexed = false;
+    storage.set(`antseed.ants.builderAgentIds:${chainId}`, JSON.stringify([9]));
+    mount();
+    state.view = await state.load!();
+    expect(state.view).toMatchObject({ available: true, indexed: false });
+
+    const markup = mount();
+    expect(markup).toContain('Antseed CLI · agent #5');
+    expect(markup).toContain('Payable amounts need Antscan; registration and claims work without it.');
+    expect(markup).not.toContain('hero-value');
+    expect(state.buttons.some((button) => button.children === 'Add')).toBe(true);
+    expect(state.actions.find((action) => action.path === '/api/builders/register')?.disabled).toBe(false);
+    expect(state.actions.find((action) => action.title === 'Claim builder rewards · agent #5')?.disabled).toBe(false);
   });
 });

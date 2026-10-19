@@ -151,7 +151,7 @@ describe('dashboard API', () => {
 
   it('normalizes builder agent ids so one id set shares one cached read', async () => {
     const app = setup(true);
-    service.builders.mockResolvedValue({ available: true, agents: [] });
+    service.builders.mockResolvedValue({ available: true, indexed: true, agents: [] });
     await app.inject('/api/builders?agentIds=9,3,abc,3,-1');
     await app.inject('/api/builders?agentIds=3,9');
     expect(service.builders).toHaveBeenCalledTimes(1);
