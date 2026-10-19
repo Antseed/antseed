@@ -311,7 +311,9 @@ const toInvites = (value: unknown): IndexedInvites | null => {
   const quota = countOrNull(row['quota']);
   if (epoch === null || quota === null) return null;
   const usedIndices = [...new Set(epochList(Array.isArray(row['usedIndexes']) ? row['usedIndexes'] : row['used']))].sort((a, b) => a - b);
-  const used = Math.max(countOrNull(row['used']) ?? 0, usedIndices.length);
+  // An index list in `used` is not a count (`Number([4])` would read as 4).
+  const usedCount = Array.isArray(row['used']) ? 0 : countOrNull(row['used']) ?? 0;
+  const used = Math.max(usedCount, usedIndices.length);
   return { epoch, quota, used, usedIndices };
 };
 const toBuilderAgent = (row: Record<string, unknown>): IndexedBuilderAgent => ({

@@ -98,3 +98,22 @@ it('opens the replace field for an antseed://invite link, before or after the ro
   expect((row.root as AnyElement).type).toBe(InviteCodeField);
   row.unmount();
 });
+
+it('drops "Checking…" when the invite is cleared while its check is still running', async () => {
+  let settle: (result: unknown) => void = () => {};
+  vi.stubGlobal('antseedDesktop', {
+    referralCheckInvite: vi.fn(() => new Promise((resolve) => { settle = resolve; })),
+    referralRedeemInvite: vi.fn(),
+  });
+  const field = shallowRender(<InviteCodeField />);
+  const prompt = inviteInput(field).props.hint;
+
+  (inviteInput(field).props.onChange as (event: unknown) => void)({ target: { value: 'slow-invite' } });
+  await vi.advanceTimersByTimeAsync(300);
+  expect(inviteInput(field).props.hint).toBe('Checking…');
+
+  (inviteInput(field).props.onChange as (event: unknown) => void)({ target: { value: '' } });
+  settle({ ok: true, referrer: NEW_INVITER, invite: 'slow-invite' });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(inviteInput(field).props.hint).toBe(prompt);
+});

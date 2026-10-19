@@ -57,6 +57,8 @@ export function InviteCodeField({ onRedeemed, prompt = INVITE_PROMPT, onCancel }
   useEffect(() => {
     const trimmed = value.trim();
     setCheck(null);
+    // A check still running for the previous value no longer reports back.
+    setChecking(false);
     if (!trimmed) return undefined;
     let cancelled = false;
     const timer = window.setTimeout(() => {

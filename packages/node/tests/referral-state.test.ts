@@ -104,13 +104,34 @@ describe('referral state', () => {
     expect(await syncReferralState(dir, SCOPE, null, async () => REFERRER)).toMatchObject({ state: 'bound', referrer: REFERRER });
   });
 
-  it('only asks while an invite is pending', async () => {
+  it('never asks again once bound', async () => {
     const dir = await dataDir();
-    await writeReferralState(dir, SCOPE, { state: 'none' });
+    await writeReferralState(dir, SCOPE, { state: 'bound', referrer: REFERRER });
     let calls = 0;
     const count = async () => { calls += 1; return REFERRER; };
     await syncReferralState(dir, SCOPE, count, count);
     expect(calls).toBe(0);
+  });
+
+  it('records a binding the contract already holds for a wallet with nothing on record', async () => {
+    // A bound wallet imported into a fresh data dir: no file at all.
+    const dir = await dataDir();
+    let explorerCalls = 0;
+    const explorer = async () => { explorerCalls += 1; return null; };
+    expect(await syncReferralState(dir, SCOPE, explorer, async () => REFERRER.toLowerCase())).toMatchObject({ state: 'bound', referrer: REFERRER });
+    expect(await readReferralState(dir, SCOPE)).toMatchObject({ state: 'bound', referrer: REFERRER });
+    expect(explorerCalls).toBe(0);
+
+    // A cleared invite ('none') is checked too, and issued indices survive.
+    const other = await dataDir();
+    await writeReferralState(other, SCOPE, { state: 'none', issued: { epoch: 30, indices: [1] } });
+    expect(await syncReferralState(other, SCOPE, null, async () => REFERRER)).toMatchObject({ state: 'bound', issued: { epoch: 30, indices: [1] } });
+
+    // Unbound or unknown on-chain leaves nothing recorded.
+    const unbound = await dataDir();
+    expect(await syncReferralState(unbound, SCOPE, null, async () => ZERO)).toBeNull();
+    expect(await syncReferralState(unbound, SCOPE, null, async () => { throw new Error('rpc down'); })).toBeNull();
+    expect(await readReferralState(unbound, SCOPE)).toBeNull();
   });
 
   it('keeps writes made while a binding was being checked', async () => {

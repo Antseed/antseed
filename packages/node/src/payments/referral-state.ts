@@ -355,6 +355,10 @@ export interface SyncReferralOptions {
  * unknown answer falls back to `verify`, and "not bound" is still checked
  * on-chain every `recheckMs`, so a lagging or broken explorer cannot keep a
  * bound invite pending. An unknown answer from `verify` keeps the local state.
+ *
+ * With no pending invite on record (no state, or `none`), the contract is
+ * asked directly: a wallet imported into a fresh data dir, or bound from
+ * another install, may already be bound, and that binding is recorded.
  */
 export async function syncReferralState(
   dataDir: string,
@@ -364,7 +368,8 @@ export async function syncReferralState(
   options: SyncReferralOptions = {},
 ): Promise<ReferralState | null> {
   const state = await readReferralState(dataDir, scope);
-  if (state?.state !== 'invited' || !verify) return state;
+  if (state?.state === 'bound' || !verify) return state;
+  if (state?.state !== 'invited') return recordExistingBinding(dataDir, scope, state, verify);
   if (lookup) {
     const hinted = await lookup(scope.wallet).catch(() => undefined);
     if (hinted === null || (hinted !== undefined && !normalizeReferrer(hinted))) {
@@ -382,5 +387,21 @@ export async function syncReferralState(
   // issued index, a replaced invite) is kept, not overwritten.
   return updateReferralState(dataDir, scope, (latest) =>
     latest?.state === 'invited' && latest.invite === state.invite ? { ...boundState, ...keepIssued(latest) } : null,
+  ).catch(() => boundState);
+}
+
+/** Record a binding the contract already holds for a wallet with nothing pending here. */
+async function recordExistingBinding(
+  dataDir: string,
+  scope: ReferralScope,
+  state: ReferralState | null,
+  verify: ReferralLookup,
+): Promise<ReferralState | null> {
+  const bound = normalizeReferrer(await verify(scope.wallet).catch(() => undefined));
+  if (!bound) return state;
+  const boundState: ReferralState = { ...keepIssued(state), state: 'bound', referrer: bound };
+  // A binding is final: it replaces whatever was written meanwhile, keeping issued indices.
+  return updateReferralState(dataDir, scope, (latest) =>
+    latest?.state === 'bound' ? null : { ...boundState, ...keepIssued(latest) },
   ).catch(() => boundState);
 }
