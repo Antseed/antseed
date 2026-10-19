@@ -77,6 +77,12 @@ export function formatLatency(ms: number | null | undefined): string {
   return ms >= 1000 ? `${(ms / 1000).toFixed(ms >= 10_000 ? 0 : 1)} s` : `${Math.round(ms)} ms`
 }
 
+/** Output speed, e.g. "55 tok/s". */
+export function formatSpeed(tokensPerSecond: number | null | undefined): string {
+  if (tokensPerSecond === null || tokensPerSecond === undefined) return '—'
+  return `${Math.round(tokensPerSecond)}\u00a0tok/s`
+}
+
 export function formatDuration(ms: number | null | undefined): string {
   if (ms === null || ms === undefined) return '—'
   const minutes = Math.floor(ms / 60_000)

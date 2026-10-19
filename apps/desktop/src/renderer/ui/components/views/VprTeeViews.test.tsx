@@ -83,14 +83,14 @@ test('verified TEE badge follows the seller name outside the pin button', () => 
   initialize();
   verification.evidence = [{
     peerId: 'tee', verifierId: 'antseed-verifier', fingerprint: 'caps',
-    checkedAt: 500, expiresAt: 2000, sellerNodeVerified: true, claims: [],
+    checkedAt: 500, expiresAt: 2000, sellerNodeVerified: true, claims: [{ claim: 'antseed-verifier:seller-provider-tee-genuine', ok: true }],
   }];
   const markup = renderToStaticMarkup(<VprModelView />);
   const nameStart = markup.indexOf(`class="${styles.sellerNameLabel}">TEE Seller</span>`);
   const badgeStart = markup.indexOf(`class="${styles.sellerVerification}"`, nameStart);
   const metaStart = markup.indexOf(`class="${styles.sellerMeta}"`, nameStart);
   assert.ok(nameStart >= 0 && badgeStart > nameStart && badgeStart < metaStart);
-  assert.match(markup.slice(badgeStart, metaStart), /tabindex="0".*aria-label="TEE\. We use TEEs to enhance user privacy\."/);
+  assert.match(markup.slice(badgeStart, metaStart), /tabindex="0".*aria-label="Full TEE\. We use TEEs to enhance user privacy\."/);
   const button = markup.match(/<button[^>]*aria-label="Pin TEE Seller"[^>]*>(.*?)<\/button>/);
   assert.ok(button);
   assert.equal(button[1], '');
@@ -110,7 +110,7 @@ test('identity links and verified TEE badges coexist outside the seller pin butt
   ];
   verification.evidence = [{
     peerId: 'tee', verifierId: 'antseed-verifier', fingerprint: 'caps',
-    checkedAt: 500, expiresAt: 2000, sellerNodeVerified: true, claims: [],
+    checkedAt: 500, expiresAt: 2000, sellerNodeVerified: true, claims: [{ claim: 'antseed-verifier:seller-provider-tee-genuine', ok: true }],
   }];
   const markup = renderToStaticMarkup(<VprModelView />);
   const nameStart = markup.indexOf(`class="${styles.sellerNameLabel}">TEE Seller</span>`);
@@ -119,7 +119,7 @@ test('identity links and verified TEE badges coexist outside the seller pin butt
   assert.match(badges, /aria-label="Seller identity badges"/);
   assert.match(badges, /href="https:\/\/example.com"/);
   assert.match(badges, /aria-label="Verified GitHub: example"/);
-  assert.match(badges, /aria-label="TEE\. We use TEEs to enhance user privacy\."/);
+  assert.match(badges, /aria-label="Full TEE\. We use TEEs to enhance user privacy\."/);
   assert.match(markup, /<button[^>]*aria-label="Pin TEE Seller"[^>]*><\/button>/);
   assert.doesNotMatch(badges, /<button/);
   assert.deepEqual(state.vprRouteSelection, selection);

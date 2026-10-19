@@ -94,6 +94,18 @@ export function isEntireBalanceLocked(wallet: { available: Usdc; reserved: Usdc;
  * What the USDC waiting in the workspace wallet is doing. Near the credit
  * limit it stays there and tops the credits up as they are spent.
  */
+/**
+ * USDC that arrived in the workspace wallet and is on its way into the credits (a card payment or a
+ * transfer the buyer has not deposited yet). Not USDC held back because the credits are at their limit.
+ */
+export function isDepositPending(wallet: { available: Usdc; reserved: Usdc; walletUsdc: Usdc; creditLimit: Usdc | null }): boolean {
+  const inWallet = usdcToNumber(wallet.walletUsdc)
+  if (inWallet <= 0) return false
+  const limit = wallet.creditLimit === null ? 0 : usdcToNumber(wallet.creditLimit)
+  const headroom = Math.max(0, limit - usdcToNumber(wallet.available) - usdcToNumber(wallet.reserved))
+  return !(limit > 0 && inWallet > headroom)
+}
+
 export function walletUsdcMessage(wallet: { available: Usdc; reserved: Usdc; walletUsdc: Usdc; creditLimit: Usdc | null }): string {
   const inWallet = usdcToNumber(wallet.walletUsdc)
   const limit = wallet.creditLimit === null ? 0 : usdcToNumber(wallet.creditLimit)
@@ -113,6 +125,7 @@ export function cooperativeCloseError(message: string): string {
   if (text.includes('pending_auth') || text.includes('latest payment authorization')) return 'The seller is waiting for the latest payment authorization. Try again shortly, or close on chain.'
   if (text.includes('no_channel') || text.includes('no longer has this channel')) return 'The seller no longer has this channel open. It may already be settled; refresh the list, or close on chain.'
   if (text.includes('did not answer') || text.includes('not connected') || text.includes('could not be found') || text.includes('disconnected')) return 'The seller did not answer. Close on chain instead: it does not need the seller.'
+  if (text.includes('not the live channel')) return 'The seller can only close the channel it is serving now, and this is an older one. Close it on chain instead: it does not need the seller.'
   if (text.includes('does not support cooperative close')) return 'This seller does not support a cooperative close. Close on chain instead.'
   return `${message} The channel is unchanged; close on chain instead.`
 }

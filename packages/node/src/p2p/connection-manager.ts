@@ -132,6 +132,12 @@ const LINE_SEPARATOR = "\n";
 const INITIAL_LINE_TIMEOUT_MS = 10_000;
 const MAX_INITIAL_LINE_BYTES = 8 * 1024;
 const TCP_KEEPALIVE_INITIAL_DELAY_MS = 10_000;
+/**
+ * Most a data channel may hold queued before a send fails the connection. Large
+ * uploads queue far more than SCTP sends at once, so a queued send is normal; only
+ * a channel that stops draining reaches this.
+ */
+const MAX_DATA_CHANNEL_BUFFERED_BYTES = 64 * 1024 * 1024;
 export const INBOUND_REFUSED_MESSAGE = "This seller does not accept connections from your location.";
 const LOCAL_CONNECTION_CAPABILITIES = [
   CONNECTION_CAPABILITY_RESPONSE_AUTH_V1,
@@ -340,8 +346,9 @@ export class PeerConnection extends EventEmitter {
         this.fail(wrapped);
         throw wrapped;
       }
-      if (!ok) {
-        const err = new Error(`Failed to send data to ${this.remotePeerId}`);
+      // false means the message was queued, not sent yet; it is still delivered.
+      if (!ok && this._dataChannel.bufferedAmount() > MAX_DATA_CHANNEL_BUFFERED_BYTES) {
+        const err = new Error(`Failed to send data to ${this.remotePeerId}: data channel is not draining`);
         this.fail(err);
         throw err;
       }

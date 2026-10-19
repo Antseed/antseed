@@ -119,7 +119,8 @@ export function mapChannel(value: unknown): Channel | null {
     reserved: baseUnitsToUsdc(reserved),
     spent: baseUnitsToUsdc(spent),
     openedAt: count(raw['reservedAt']),
-    canCooperativeClose: raw['cooperativeCloseSupported'] === true && (status === 'active' || status === 'open'),
+    // Only the live session can be closed by the seller; a buyer that predates `live` omits it.
+    canCooperativeClose: raw['cooperativeCloseSupported'] === true && raw['live'] !== false && (status === 'active' || status === 'open'),
     closeRequestedAt: null,
     settled: null,
   }
@@ -139,10 +140,17 @@ export interface ChannelChainState {
  * is not always observed), and its `reserveCeiling` falls back to the
  * configured per-channel maximum for a channel it has not touched since it
  * started. Where the chain answered, its status and locked deposit win.
- * Status 0 (no record yet, e.g. a reserve still landing) keeps the local row.
+ * Status 0 (no record yet, e.g. a reserve still landing) keeps the local row
+ * until its reserve deadline passes: the reserve can no longer land then, so
+ * the row is 'expired' and holds nothing.
  */
-export function applyChannelChainState(channel: Channel, state: ChannelChainState | undefined, nowSeconds: number): Channel {
-  if (!state || state.status === 0) return channel
+export function applyChannelChainState(channel: Channel, state: ChannelChainState | undefined, nowSeconds: number, deadline: number | null = null): Channel {
+  if (!state) return channel
+  if (state.status === 0) {
+    return deadline !== null && deadline > 0 && nowSeconds > deadline
+      ? { ...channel, status: 'expired', reserved: '0.000000', canCooperativeClose: false }
+      : channel
+  }
   let status = channel.status
   if (state.status === 2) status = 'settled'
   else if (state.status === 3) status = 'timedout'
@@ -156,6 +164,23 @@ export function applyChannelChainState(channel: Channel, state: ChannelChainStat
     closeRequestedAt: open && state.closeRequestedAt > 0n ? Number(state.closeRequestedAt) * 1000 : null,
     settled: baseUnitsToUsdc(state.settled),
   }
+}
+
+/** Each buyer channel row's reserve `deadline` (unix seconds) and seller address, by channel id. */
+export function channelChainHints(body: unknown): { deadlines: Map<string, number>; sellers: Map<string, string> } {
+  const rows = record(body)['channels']
+  const deadlines = new Map<string, number>()
+  const sellers = new Map<string, string>()
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const raw = record(row)
+    const id = text(raw['channelId']) ?? text(raw['sessionId'])
+    if (!id) continue
+    const deadline = count(raw['deadline'])
+    if (deadline !== null) deadlines.set(id, deadline)
+    const seller = text(raw['seller'])
+    if (seller) sellers.set(id, seller)
+  }
+  return { deadlines, sellers }
 }
 
 export function mapChannels(body: unknown): Channel[] {

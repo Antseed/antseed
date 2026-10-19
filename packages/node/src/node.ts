@@ -66,6 +66,7 @@ import {
 } from "./types/protocol.js";
 import { VerificationStorage } from "./verification/storage.js";
 import { VerificationSampler } from "./verification/samples.js";
+import type { ResponseAuthSink } from "@antseed/buyer-core";
 import { FrameDecoder, encodeFrame } from "./p2p/message-protocol.js";
 import { KeepaliveManager, buildPongPayload } from "./p2p/keepalive.js";
 import { MessageType } from "./types/protocol.js";
@@ -94,6 +95,7 @@ import {
   CHANNEL_KIND,
   CHANNEL_ROLE,
   CHANNEL_STATUS,
+  type StoredChannel,
 } from "./payments/index.js";
 import { debugLog, debugWarn } from "./utils/debug.js";
 import { parsePublicAddress } from "./discovery/public-address.js";
@@ -105,7 +107,7 @@ import { SellerAddressResolver } from "./discovery/seller-address-resolver.js";
 import { Contract as EthersContract } from "ethers";
 import { SellerPaymentManager, type SellerPaymentConfig } from "./payments/seller-payment-manager.js";
 import { IdentityClient } from "./payments/evm/identity-client.js";
-import { SellerRequestHandler } from "./seller-request-handler.js";
+import { SellerRequestHandler, assertSingleRoutingService } from "./seller-request-handler.js";
 import {
   BuyerRequestHandler,
   type RequestStreamCallbacks,
@@ -186,6 +188,14 @@ export type BuyerChannelSummary = {
   /** Last local cumulative usage/auth update for this channel. */
   updatedAt: number;
   status: string;
+  /** `paid` session channel or `one_off` request channel. */
+  channelKind: string;
+  /**
+   * True only for the session the buyer is currently using with this seller:
+   * the one a cooperative close reaches. Older rows still marked active (a
+   * session the buyer moved on from) are not live.
+   */
+  live: boolean;
   requestCount: number;
   tokensDelivered: string;
   outputTokens: string;
@@ -403,6 +413,17 @@ const DEFAULT_SWEEP_OFFER_TIMEOUT_MS = 3_000;
 /** Don't offer a sweep whose authorization expires too soon to safely land —
  *  mirrors MIN_REMAINING_VALIDITY_SECS in the seller-side relayer. */
 const MIN_SWEEP_DISPATCH_VALIDITY_SECS = 30;
+
+/** Verdict on one seller-signed response receipt, emitted as `response-auth`. */
+export interface ResponseAuthEvent {
+  requestId: string;
+  /** The peer the request was sent to (not the receipt's claim). */
+  sellerPeerId: string;
+  /** The service the request was routed to. */
+  advertisedService: string;
+  verified: boolean;
+  verificationError: string | null;
+}
 
 export class AntseedNode extends EventEmitter {
   private _config: NodeConfig;
@@ -1278,7 +1299,7 @@ export class AntseedNode extends EventEmitter {
    */
   async requestChannelClose(
     sellerPeerId: string,
-    opts: { includeAuth?: boolean; timeoutMs?: number; buyerIdentity?: string } = {},
+    opts: { includeAuth?: boolean; timeoutMs?: number; buyerIdentity?: string; channelId?: string } = {},
   ): Promise<CloseChannelResultPayload> {
     const { buyerIdentity, ...closeOptions } = opts;
     const context = this._buyerContext(buyerIdentity);
@@ -1421,63 +1442,49 @@ export class AntseedNode extends EventEmitter {
   getActiveBuyerChannels(buyerIdentity?: string): BuyerChannelSummary[] {
     const { address: buyerAddress, paymentManager } = this._buyerAccount(buyerIdentity);
     if (!buyerAddress || !this._channelStore) return [];
-    const stored = this._channelStore.getBuyerPaymentChannels(buyerAddress)
-      .filter((channel) => channel.status === CHANNEL_STATUS.ACTIVE);
-    return stored.map((c) => {
-      const liveReserve = c.channelKind === CHANNEL_KIND.ONE_OFF
-        ? BigInt(c.confirmedReserveAmount ?? '0')
-        : paymentManager?.getReserveCeiling(c.peerId);
-      return {
-        channelId: c.sessionId,
-        peerId: c.peerId,
-        seller: c.sellerEvmAddr,
-        buyer: c.buyerEvmAddr,
-        reserveCeiling: liveReserve != null && liveReserve > 0n ? liveReserve.toString() : null,
-        cumulativeSigned: c.authMax,
-        settledAmount: c.settledAmount,
-        deadline: c.deadline,
-        reservedAt: c.reservedAt,
-        updatedAt: c.updatedAt,
-        status: c.status,
-        requestCount: c.requestCount,
-        tokensDelivered: c.tokensDelivered,
-        // Buyer rows overload previousConsumption as cumulative output tokens
-        // (see getBuyerUsageTotals).
-        outputTokens: c.previousConsumption,
-      };
-    });
+    return this._channelStore.getBuyerPaymentChannels(buyerAddress)
+      .filter((channel) => channel.status === CHANNEL_STATUS.ACTIVE)
+      .map((channel) => this._buyerChannelSummary(channel, paymentManager));
   }
 
   /** All buyer channels (any local status), used for history views. */
   getAllBuyerChannels(buyerIdentity?: string): BuyerChannelSummary[] {
     const { address: buyerAddress, paymentManager } = this._buyerAccount(buyerIdentity);
     if (!buyerAddress || !this._channelStore) return [];
-    const stored = this._channelStore.getBuyerPaymentChannels(buyerAddress);
-    return stored.map((c) => {
-      const liveReserve = c.status === CHANNEL_STATUS.ACTIVE
-        ? c.channelKind === CHANNEL_KIND.ONE_OFF
-          ? BigInt(c.confirmedReserveAmount ?? '0')
-          : paymentManager?.getReserveCeiling(c.peerId)
-        : null;
-      return {
-        channelId: c.sessionId,
-        peerId: c.peerId,
-        seller: c.sellerEvmAddr,
-        buyer: c.buyerEvmAddr,
-        reserveCeiling: liveReserve != null && liveReserve > 0n ? liveReserve.toString() : null,
-        cumulativeSigned: c.authMax,
-        settledAmount: c.settledAmount,
-        deadline: c.deadline,
-        reservedAt: c.reservedAt,
-        updatedAt: c.updatedAt,
-        status: c.status,
-        requestCount: c.requestCount,
-        tokensDelivered: c.tokensDelivered,
-        // Buyer rows overload previousConsumption as cumulative output tokens
-        // (see getBuyerUsageTotals).
-        outputTokens: c.previousConsumption,
-      };
-    });
+    return this._channelStore.getBuyerPaymentChannels(buyerAddress)
+      .map((channel) => this._buyerChannelSummary(channel, paymentManager));
+  }
+
+  private _buyerChannelSummary(c: StoredChannel, paymentManager: BuyerPaymentManager | null): BuyerChannelSummary {
+    const active = c.status === CHANNEL_STATUS.ACTIVE;
+    const oneOff = c.channelKind === CHANNEL_KIND.ONE_OFF;
+    // Only the session the buyer is using with this seller is live; older
+    // rows the store still calls active are not, and its reserve is not theirs.
+    const live = active && !oneOff && paymentManager?.getActiveSession(c.peerId)?.sessionId === c.sessionId;
+    const liveReserve = !active ? null
+      : oneOff ? BigInt(c.confirmedReserveAmount ?? '0')
+      : live ? paymentManager?.getReserveCeiling(c.peerId)
+      : null;
+    return {
+      channelId: c.sessionId,
+      peerId: c.peerId,
+      seller: c.sellerEvmAddr,
+      buyer: c.buyerEvmAddr,
+      reserveCeiling: liveReserve != null && liveReserve > 0n ? liveReserve.toString() : null,
+      cumulativeSigned: c.authMax,
+      settledAmount: c.settledAmount,
+      deadline: c.deadline,
+      reservedAt: c.reservedAt,
+      updatedAt: c.updatedAt,
+      status: c.status,
+      channelKind: c.channelKind ?? CHANNEL_KIND.PAID,
+      live,
+      requestCount: c.requestCount,
+      tokensDelivered: c.tokensDelivered,
+      // Buyer rows overload previousConsumption as cumulative output tokens
+      // (see getBuyerUsageTotals).
+      outputTokens: c.previousConsumption,
+    };
   }
 
   /**
@@ -1654,7 +1661,7 @@ export class AntseedNode extends EventEmitter {
         depositsClient: this._depositsClient,
         channelsClient: this._channelsClient,
         sellerAddressResolver: this._sellerAddressResolver,
-        verificationStorage: this._verificationStorage,
+        verificationStorage: this._responseAuthSink,
         verificationSampler: this._verificationSampler,
         peerCapabilities: this._peerCapabilities,
         isChainReachable: () => this._rpcHealth?.reachable ?? true,
@@ -1750,6 +1757,11 @@ export class AntseedNode extends EventEmitter {
           paymentMux.handleFrame(frame).catch((err) => {
             const message = err instanceof Error ? err.message : String(err);
             debugWarn(`[Node] Failed to handle payment frame from ${peerId.slice(0, 12)}...: ${message}`);
+            // A SpendingAuth too large to decode will be resent the same way on
+            // every catch-up, wedging the channel; rotate it instead.
+            if (frame.type === MessageType.SpendingAuth && /payload too large/i.test(message)) {
+              this._sellerPaymentManager?.blockChannelForBuyer(peerId, message);
+            }
           });
         } else if (verificationMux && VerificationMux.isVerificationMessage(frame.type)) {
           verificationMux.handleFrame(frame).catch((err) => {
@@ -1838,6 +1850,7 @@ export class AntseedNode extends EventEmitter {
     const dhtPort = this._config.dhtPort ?? 6881;
     const signalingPort = this._config.signalingPort ?? 6882;
     debugLog(`[Node] Starting seller — DHT port=${dhtPort}, signaling port=${signalingPort}`);
+    assertSingleRoutingService(this._providers);
 
     const dataDir = this._config.dataDir ?? join(homedir(), ".antseed");
     try {
@@ -2113,7 +2126,7 @@ export class AntseedNode extends EventEmitter {
         localPeerId: identity.peerId,
         negotiator: this._buyerNegotiator,
         freeUsageManager: this._buyerFreeUsageManager,
-        verificationStorage: this._verificationStorage,
+        verificationStorage: this._responseAuthSink,
         verificationSampler: this._verificationSampler,
         getConnection: (peer) => this._getOrCreateConnection(peer as PeerInfo),
         getMux: (peerId, conn) => this._getOrCreateMux(peerId, conn as PeerConnection),
@@ -2462,6 +2475,29 @@ export class AntseedNode extends EventEmitter {
       debugWarn(`[Node] Failed to load payment balances: ${err instanceof Error ? err.message : err}`);
     });
   }
+
+  /**
+   * Stores each seller-signed response receipt and reports its verdict as a
+   * `response-auth` event, so the buyer's routing can demote a seller whose
+   * receipts do not match what it sent. Reported even without storage, and
+   * only with the request's own context: the seller and service a receipt
+   * names are the seller's claim, and must not decide who gets the blame.
+   */
+  private readonly _responseAuthSink: ResponseAuthSink = {
+    insertResponseAuth: (record, context) => {
+      if (context) {
+        const event: ResponseAuthEvent = {
+          requestId: record.requestId,
+          sellerPeerId: context.sellerPeerId,
+          advertisedService: context.requestedService,
+          verified: record.verified,
+          verificationError: record.verificationError,
+        };
+        this.emit('response-auth', event);
+      }
+      this._verificationStorage?.insertResponseAuth(record);
+    },
+  };
 
   private _initializeVerificationStorage(dataDir: string): void {
     if (this._verificationStorage) return;

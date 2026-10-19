@@ -1,8 +1,8 @@
 import { loadConfig } from '../../config/loader.js'
 import { isRoutingPolicy, policyAllowsModel, type RoutingPolicy } from '../../routing-policy/policy.js'
 import { buyerJson, optionalBuyerJson, type BuyerClient } from '../console-api/handlers/network-buyer.js'
-import { enrichCandidates, mapNetworkModels, mapPeers, type PeerStat } from '../console-api/handlers/network-mapping.js'
-import type { BuyerLimits, NetworkModel, Peer, RoutePreview } from '../console-api/types.js'
+import { enrichCandidates, mapNetworkModels, mapNetworkRouters, mapPeers, type PeerStat } from '../console-api/handlers/network-mapping.js'
+import type { BuyerLimits, NetworkModel, NetworkRouter, Peer, RoutePreview } from '../console-api/types.js'
 import { resolvePolicy, type PolicyTarget } from '../policy-resolver.js'
 import type { GatewayStore } from '../store.js'
 
@@ -10,6 +10,9 @@ const DAY_MS = 24 * 60 * 60 * 1000
 const PINNED_MODEL_RE = /^(?:0x)?[0-9a-f]{40}@(.+)$/i
 /** Model name the buyer-limits read previews; no seller serves it, so it is cheap. */
 const PROBE_MODEL = '__probe__'
+/** How long before the gateway asks the buyer to attest the same TEE seller again. */
+const TEE_CHECK_RETRY_MS = 10 * 60 * 1000
+const teeCheckAttempts = new Map<string, number>()
 
 export type PreviewTarget = Pick<PolicyTarget, 'keyId' | 'workspaceId' | 'memberId' | 'presetSlug'>
 
@@ -22,7 +25,22 @@ export async function listNetworkPeers(store: GatewayStore, buyer: BuyerClient, 
     optionalBuyerJson(buyer, '/_antseed/verification'),
   ])
   const stats = store.peerStats(now - DAY_MS) as PeerStat[]
-  return mapPeers({ peers, health, verification, stats, now })
+  const mapped = mapPeers({ peers, health, verification, stats, now })
+  if (verification?.['verificationEnabled'] === true) checkUnattestedTeePeer(buyer, mapped, now)
+  return mapped
+}
+
+/**
+ * Asks the buyer, in the background, to attest one TEE-capable seller it has no current
+ * result for, so a later list can tell full TEE from seller-only TEE. One per call: the buyer
+ * accepts a check a second.
+ */
+function checkUnattestedTeePeer(buyer: BuyerClient, peers: readonly Peer[], now: number): void {
+  const next = peers.find((peer) => peer.tee && peer.teeScope === null
+    && now - (teeCheckAttempts.get(peer.peerId) ?? -Infinity) >= TEE_CHECK_RETRY_MS)
+  if (!next) return
+  teeCheckAttempts.set(next.peerId, now)
+  void buyer('/_antseed/verification/check', { method: 'POST', body: { peerId: next.peerId } }).catch(() => {})
 }
 
 /**
@@ -37,6 +55,18 @@ export async function listNetworkModels(store: GatewayStore, buyer: BuyerClient,
     listNetworkPeers(store, buyer, now).catch((): Peer[] => []),
   ])
   return mapNetworkModels(models, peers)
+}
+
+/**
+ * Every routing service on the network, as the buyer's `GET /v1/models?type=router`
+ * lists it without a routing policy, one per seller offering it.
+ */
+export async function listNetworkRouters(store: GatewayStore, buyer: BuyerClient, now: number): Promise<NetworkRouter[]> {
+  const [routers, peers] = await Promise.all([
+    buyerJson(buyer, '/v1/models?type=router'),
+    listNetworkPeers(store, buyer, now).catch((): Peer[] => []),
+  ])
+  return mapNetworkRouters(routers, peers)
 }
 
 /**

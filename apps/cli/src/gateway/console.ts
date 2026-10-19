@@ -1,10 +1,12 @@
 import pkg from '../../package.json' with { type: 'json' }
+import type { GatewayUpdates } from './updates.js'
 import { createConsoleAuth, type ConsoleAuthService } from './auth/index.js'
 import { activeMember, requestActor, requireOrgAdmin } from './console-api/access.js'
 import type { ConsoleDeps } from './console-api/deps.js'
 import { coreConsoleRegistrars } from './console-api/handlers/index.js'
 import { registerNetworkRoutes } from './console-api/handlers/network.js'
 import { registerReferralRoutes } from './console-api/handlers/referrals.js'
+import { registerStakingRoutes } from './console-api/handlers/staking.js'
 import { registerWalletRoutes } from './console-api/handlers/wallet.js'
 import { ConsoleError, respond, type ConsoleRouter } from './console-api/router.js'
 import { apiKeyDto, memberDto } from './console-api/serialize.js'
@@ -68,6 +70,8 @@ export interface GatewayConsoleOptions {
   distDir?: string
   /** Published through the gateway's own Cloudflare tunnel; see ConsoleDeps.trustCloudflareHeaders. */
   trustCloudflareHeaders?: boolean
+  /** The running gateway's update checks; the console makes its own when absent. */
+  updates?: GatewayUpdates
 }
 
 /** The `createConsole` hook `startGatewayRuntime` takes: console API, auth and web app. */
@@ -87,6 +91,7 @@ export function gatewayConsole(options: GatewayConsoleOptions): (context: Gatewa
       spendFeedState: context.spendFeedState,
       x402Enabled: context.x402Enabled,
       trustCloudflareHeaders: options.trustCloudflareHeaders === true,
+      ...(options.updates ? { updates: options.updates } : {}),
     }
     const deps: ConsoleDeps = { ...base, listenHost: context.listenHost }
     const auth = createConsoleAuth(base, {
@@ -101,6 +106,7 @@ export function gatewayConsole(options: GatewayConsoleOptions): (context: Gatewa
       ...coreConsoleRegistrars,
       registerWalletRoutes,
       registerReferralRoutes,
+      registerStakingRoutes,
       registerNetworkRoutes,
       registerCredentialRoutes(auth),
       recoveryRouteRegistrar((memberId) => auth.createEnrollment(memberId)),

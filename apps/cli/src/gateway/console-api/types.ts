@@ -11,8 +11,12 @@
  * HTTP status.
  */
 import type { RoutingPolicy } from '../../routing-policy/policy.js'
+import type { RouteSelection, ServedSelection } from '../../proxy/route-selection.js'
+import type { InstallKind } from '../../update/install-method.js'
+import type { RootUpdateProgress } from '../../update/root-updater.js'
 
 export type { RoutingPolicy, ModelRoute, RoutingSort } from '../../routing-policy/policy.js'
+export type { RouteSelection, ServedSelection } from '../../proxy/route-selection.js'
 export type { OperatorRelation, OperatorState, OperatorAuthorization, WorkspaceOperatorSummary } from './operator-types.js'
 
 export const CONSOLE_BASE_PATH = '/console'
@@ -274,7 +278,7 @@ export interface AdminToken {
 // ── Usage & activity ────────────────────────────────────────────────────
 
 /** `hour` and `day` group by UTC hour (`YYYY-MM-DDTHH`) and day (`YYYY-MM-DD`), oldest first. */
-export type UsageGroupBy = 'hour' | 'day' | 'model' | 'key' | 'member' | 'peer' | 'workspace' | 'user'
+export type UsageGroupBy = 'hour' | 'day' | 'model' | 'key' | 'member' | 'peer' | 'router' | 'workspace' | 'user'
 
 // GET /usage?workspace=&key=&member=&from=&to=&groupBy=&splitBy=   → UsageReport
 //   splitBy (needs groupBy, must differ) adds `splits` to each group, e.g. groupBy=day&splitBy=model
@@ -305,6 +309,18 @@ export interface UsageTotals {
   outputTokens: number
 }
 
+/** The routing service that ranked a request. */
+export interface RequestRouterInfo {
+  peerId: string
+  /** The router's service id, e.g. `levanto-router`. */
+  service: string | null
+  /**
+   * The recommendation tried last, 1 = the router's first pick: the one that served the request, or, when the
+   * request failed, the last one refused (the ones before it were refused too). Null when the ranking failed.
+   */
+  rank: number | null
+}
+
 export interface RequestLogEntry {
   tag: string
   startedAt: number
@@ -319,9 +335,20 @@ export interface RequestLogEntry {
   path: string
   model: string | null
   status: number | null
+  /** The seller that served the request (for a routed request, the one the router picked). */
   sellerPeerId: string | null
+  /** The model that answered, when it differs from `model` (a router picked it). */
+  servedModel?: string | null
+  /** The routing service that ranked the request, when one did. */
+  router?: RequestRouterInfo | null
   latencyMs: number | null
+  /** Streamed answers: time from sending to the seller's first frame, measured by the buyer. */
+  firstTokenMs: number | null
+  /** Streamed answers of 20+ output tokens: output tokens per second after the first frame. */
+  tokensPerSecond: number | null
   spent: Usdc | null
+  /** The part of `spent` that paid the router for its ranking (routed requests only). */
+  routingSpent?: Usdc | null
   inputTokens: number
   cachedInputTokens: number
   outputTokens: number
@@ -337,10 +364,18 @@ export interface RequestLogEntry {
    * Token counts meanwhile come from the response's own usage.
    */
   costPending?: boolean
+  /**
+   * A native video request. A job is charged once, on the retrieve that
+   * delivers its file (`delivery`); its create and status polls cost nothing.
+   * `charged` is a create's job charge, null until its video is delivered.
+   */
+  video?: { action: 'create' | 'poll' | 'delivery'; jobId: string | null; charged: Usdc | null }
 }
 
 /** GET /requests/:tag → one entry, with bodies when content logging was on for it. */
 export interface RequestDetail extends RequestLogEntry {
+  /** Model-routed requests: why automatic routing picked the seller that served it. Null for pinned or older requests. */
+  routeSelection: ServedSelection | null
   requestBody: string | null
   responseBody: string | null
 }
@@ -396,6 +431,32 @@ export interface OperatorAuth {
   /** Operator nonce as a decimal string. */
   nonce: string
   signature: string
+}
+
+// Workspace admins: deposits credited to the workspace wallet, with who approved each (deposit confirmations).
+// GET    /workspaces/:id/deposits                 → DepositConfirmation[] (newest first; new ones the buyer recorded are verified first)
+// POST   /workspaces/:id/deposits { txHash }      → DepositConfirmation (adds a deposit by its transaction, e.g. one made before this was recorded)
+// PUT    /workspaces/:id/deposits/:tx/approval { note? } → DepositConfirmation
+// DELETE /workspaces/:id/deposits/:tx/approval   → DepositConfirmation
+export interface DepositConfirmation {
+  txHash: string
+  /** A short reference for the confirmation, from the transaction hash. */
+  reference: string
+  /** relay: USDC sent to the wallet and swept in by a relayer, which keeps a fixed fee; direct: deposited by a connected wallet. */
+  kind: 'relay' | 'direct'
+  wallet: string
+  workspaceId: string
+  workspaceName: string
+  /** What left the payer's side: credited + fee. */
+  sent: Usdc
+  credited: Usdc
+  fee: Usdc
+  blockNumber: number
+  /** Epoch ms of the block. */
+  time: number
+  /** Where the USDC came from; empty when the chain could not be searched. `minted`: the USDC issuer minted it into the wallet (a card purchase). */
+  sources: Array<{ from: string; amount: Usdc; txHash: string; minted: boolean }>
+  approval: { by: string; at: number; note: string | null } | null
 }
 
 export interface DepositWatch {
@@ -669,6 +730,9 @@ export interface PeerVerificationLink {
   href: string
 }
 
+/** Mirrors `TeeScope` in `@antseed/node/tee-status`, which the console cannot import. */
+export type PeerTeeScope = 'end-to-end' | 'seller-node'
+
 export interface Peer {
   peerId: string
   displayName: string | null
@@ -688,13 +752,21 @@ export interface Peer {
   /** Verified domain and GitHub claims; empty when none checked out. */
   verificationLinks: PeerVerificationLink[]
   tee: boolean
+  /**
+   * How far a current TEE attestation reaches: 'end-to-end' (seller node and its model
+   * provider) or 'seller-node' (the provider behind it is not TEE-attested). Null when the
+   * seller is not TEE-capable or the buyer has not verified it yet.
+   */
+  teeScope: PeerTeeScope | null
   stakeAnts: string | null
   usageShareBps: number | null
   washFlagged: boolean
   lastSeen: number | null
   health: { failureStreak: number; coolingDownUntil: number | null }
-  /** Measured by this gateway over its recent requests. */
+  /** Medians over this gateway's recent requests: total time, time to first token, and output tokens per second. */
   latencyMsP50: number | null
+  firstTokenMsP50: number | null
+  tokensPerSecondP50: number | null
   requests24h: number
 }
 
@@ -702,6 +774,49 @@ export type NetworkModelType = 'text' | 'image' | 'decision' | 'video'
 
 /** A feature at least one seller of the model advertises. */
 export type NetworkModelCapability = 'toolUse' | 'reasoning' | 'structuredOutput' | 'vision'
+
+/** A setting a router accepts in a request's `routing` object, as its routing protocol defines it. */
+export type NetworkRouterOption = {
+  key: string
+  label: string
+  description?: string
+} & (
+  | { type: 'integer' | 'number'; minimum?: number; maximum?: number; default?: number }
+  | { type: 'boolean'; default?: boolean }
+  | { type: 'string'; values?: string[]; default?: string }
+)
+
+/**
+ * A routing service on the network: sent as the model, it picks the model
+ * (and seller) for each request among the ones the caller's policy allows.
+ */
+export interface NetworkRouter {
+  /** `<peerId>@<serviceId>`: the model to send to route through it. */
+  id: string
+  peerId: string
+  serviceId: string
+  provider: string
+  /** The router's name, e.g. "Levanto Router". */
+  name: string
+  /** The seller offering it, by its display name. */
+  sellerName: string | null
+  /** Its routing protocol, e.g. `irp-suggest`. */
+  protocol: string
+  options: NetworkRouterOption[]
+  /** USD per ranking; null when not advertised. */
+  priceUsdPerRequest: number | null
+  free: boolean
+  /** Models it can rank, by the router's own names (`*`: any model); null when its list is unavailable. */
+  models: string[] | null
+  trustScore: number | null
+  verified: boolean
+  verificationLinks: PeerVerificationLink[]
+}
+
+/** `GET /favorites`: the model and router ids the caller starred, oldest first. */
+export interface FavoriteModels {
+  models: string[]
+}
 
 /** One seller's offer of a network model. */
 export interface NetworkModelOffer {
@@ -726,8 +841,16 @@ export interface NetworkModelOffer {
   /** The seller's verified domain and GitHub claims. */
   verificationLinks: PeerVerificationLink[]
   tee: boolean
-  /** Measured by this gateway over its recent requests. */
+  /**
+   * How far a current TEE attestation reaches: 'end-to-end' (seller node and its model
+   * provider) or 'seller-node' (the provider behind it is not TEE-attested). Null when the
+   * seller is not TEE-capable or the buyer has not verified it yet.
+   */
+  teeScope: PeerTeeScope | null
+  /** Medians over this gateway's recent requests: total time, time to first token, and output tokens per second. */
   latencyMsP50: number | null
+  firstTokenMsP50: number | null
+  tokensPerSecondP50: number | null
 }
 
 /** A model on the network, merged across the sellers that offer it (aliases included). */
@@ -736,6 +859,8 @@ export interface NetworkModel {
   name: string
   aliases: string[]
   type: NetworkModelType
+  /** Release-owned tags for the model (Coding, Reasoning, Vision, Open weights…); sellers cannot add any. */
+  tags: string[]
   /** Largest context window a seller advertises; null when none does. */
   contextLength: number | null
   capabilities: NetworkModelCapability[]
@@ -746,6 +871,8 @@ export interface NetworkModel {
   /** At least one offer is free. */
   free: boolean
   teeSellers: number
+  /** Sellers whose TEE attestation reaches end to end, through their model provider. */
+  fullTeeSellers: number
   verifiedSellers: number
   /** In the buyer's routing order. */
   offers: NetworkModelOffer[]
@@ -795,6 +922,8 @@ export interface RoutePreview {
     inputUsdPerMillion: number | null
     outputUsdPerMillion: number | null
     trustScore: number | null
+    /** Eligible sellers: the numbers automatic routing ranks them by. Null when ineligible. */
+    selection: RouteSelection | null
   }>
 }
 
@@ -842,6 +971,46 @@ export interface GatewayStatus {
    * (`listenHost` null, `reasons` empty).
    */
   exposure?: GatewayExposure
+}
+
+// GET   /update                    → GatewayUpdate  (org admins)
+// POST  /update/check              → GatewayUpdate  (asks npm now)
+// POST  /update                    → GatewayUpdate  (installer servers and the desktop app; body {action: 'download' | 'install'}:
+//                                     download fetches the latest version, install switches to it and restarts; default install)
+export interface GatewayUpdate {
+  /**
+   * What updates: `cli` is @antseed/cli from npm; `desktop` is the desktop
+   * app running this gateway, whose own updater reports the versions below.
+   */
+  product: 'cli' | 'desktop'
+  /** The running version (of the CLI, or of the desktop app). */
+  current: string
+  /** The newest version at the last check (npm's `latest`, or the app's newest release); null before the first answer. */
+  latest: string | null
+  available: boolean
+  /** When npm was last asked (ms); null when never. */
+  checkedAt: number | null
+  /** Why the last check failed; null when it worked. */
+  checkError: string | null
+  /** `NO_UPDATE_NOTIFIER`, `ANTSEED_NO_UPDATE_CHECK` or `CI` turned background checks off. */
+  checksDisabled: boolean
+  /**
+   * `console`: `POST /update` downloads and installs it (servers set up by the gateway
+   * installer, and the desktop app); `command`: run `command` on the gateway
+   * host; `none`: it updates some other way.
+   */
+  apply: 'console' | 'command' | 'none'
+  install: InstallKind
+  command: string | null
+  /** One line on how this install updates. */
+  note: string
+  /** The update service's pending request or last run; null when `apply` is not `console` or it never ran. */
+  progress: RootUpdateProgress | null
+  /**
+   * A version downloaded and waiting for Restart & update: newer than
+   * `current`, whatever npm's `latest` has moved on to since. Null when none.
+   */
+  downloaded: string | null
 }
 
 /**

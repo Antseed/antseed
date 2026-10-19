@@ -115,7 +115,7 @@ interface Harness {
   providerCreates: SerializedHttpRequest[];
   sentAuths: SpendingAuthPayload[];
   releaseTopUp(): void;
-  send(request: SerializedHttpRequest): ReturnType<BuyerRequestHandler['sendRequest']>;
+  send(request: SerializedHttpRequest, stream?: { onResponseStart(): void; onResponseChunk(): void }): ReturnType<BuyerRequestHandler['sendRequest']>;
   videoRequest(requestId: string, duration?: string): SerializedHttpRequest;
   retrieveRequest(requestId: string, queueId: string): SerializedHttpRequest;
   chatRequest(requestId: string): SerializedHttpRequest;
@@ -382,11 +382,18 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
       reserve, topUp, close, providerCreates, sentAuths,
       disconnect: () => seller.onBuyerDisconnect(buyerIdentity.peerId),
       releaseTopUp: () => { expect(releaseTopUp).not.toBeNull(); releaseTopUp!(); },
-      send: (request) => buyerHandler.sendRequest(peer, request, request.path.endsWith('/video/retrieve') ? { onResponseStart() {}, onResponseChunk() {} } : undefined),
+      send: (request, stream) => buyerHandler.sendRequest(peer, request, stream ?? (request.path.endsWith('/video/retrieve') ? { onResponseStart() {}, onResponseChunk() {} } : undefined)),
       videoRequest,
       retrieveRequest,
       chatRequest,
-      settle: async () => { await negotiator.drainPendingNeedAuth(); await new Promise((resolve) => setTimeout(resolve, 20)); },
+      // Several rounds: a delivery's charge (NeedAuth → SpendingAuth → close) crosses the wire more than once,
+      // and one fixed wait was too short on a loaded machine.
+      settle: async () => {
+        for (let round = 0; round < 4; round += 1) {
+          await negotiator.drainPendingNeedAuth();
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+      },
       restartBuyer: () => new BuyerPaymentManager(buyerIdentity, buyerConfig, buyerStore),
     };
   }
@@ -479,6 +486,65 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     // The chat channel is still open and still at its own spend.
     expect(h.chain.get(h.sessionChannelId())).toMatchObject({ settled: 0n, status: 1 });
     expect(h.buyer.getCumulativeAmount(h.peer.peerId)).toBe(CHAT_DELIVERED);
+  });
+
+  it('records a delivery whose request billing other requests evicted while it streamed', async () => {
+    const h = setup();
+    await h.send(h.videoRequest('video-1'));
+    await h.settle();
+    const { channelId } = onlyOneOff(h);
+
+    const evict = () => { for (let i = 0; i < 600; i += 1) h.buyer.trackRequestBilling(`other-${i}`, { context: { service: 'chat' } } as never); };
+    const delivered = await h.send(h.retrieveRequest('retrieve-1', 'job-1'), { onResponseStart: evict, onResponseChunk() {} });
+    expect(delivered.statusCode).toBe(200);
+    expect(delivered.headers['x-antseed-video-delivered']).toBe('1');
+    await h.settle();
+
+    expect(h.close.mock.calls.find((call) => call[1] === channelId)?.[2]).toBe(VIDEO_PRICE);
+    // Delivered once and never again: the job is no longer chargeable.
+    expect(h.buyer.trackVideoRetrieve(h.peer.peerId, 'venice-video', 'job-1', 'retrieve-2')).toBe(false);
+  });
+
+  it('pays the seller but does not report a delivery while the job cannot be removed from storage', async () => {
+    const h = setup();
+    await h.send(h.videoRequest('video-1'));
+    await h.settle();
+
+    // A job still stored comes back after a restart and could be charged again: the download is not a delivery.
+    const store = (h.buyer as unknown as { _channelStore: { upsertChannel: (record: { oneOffVideoJob?: string | null }) => unknown } })._channelStore;
+    const upsert = store.upsertChannel.bind(store);
+    let failing: ReturnType<typeof vi.spyOn> | null = null;
+    // Only the write that clears the delivered job fails (for example a lock held just then).
+    const failWrites = () => {
+      failing = vi.spyOn(store, 'upsertChannel').mockImplementation((record) => {
+        if (record.oneOffVideoJob === null) throw new Error('database is locked');
+        return upsert(record);
+      });
+    };
+    const response = await h.send(h.retrieveRequest('retrieve-1', 'job-1'), { onResponseStart: failWrites, onResponseChunk() {} });
+    // The file is fine and the seller is paid for it, but the job is not reported delivered (nor retired).
+    expect(response.headers['x-antseed-video-delivered']).toBe('unrecorded');
+    await h.settle();
+    expect(h.close).toHaveBeenCalledOnce();
+    expect(h.close.mock.calls[0]![2]).toBe(VIDEO_PRICE);
+    expect((await h.send(h.retrieveRequest('retrieve-2', 'job-1'))).headers['x-antseed-video-delivered']).toBe('unrecorded');
+
+    failing!.mockRestore();
+    const again = await h.send(h.retrieveRequest('retrieve-3', 'job-1'));
+    expect(again.headers['x-antseed-video-delivered']).toBe('1');
+    await h.settle();
+    expect(h.close).toHaveBeenCalledOnce();
+  });
+
+  it('does not mark a download delivered when its job is no longer tracked', async () => {
+    const h = setup();
+    await h.send(h.videoRequest('video-1'));
+    await h.settle();
+
+    // Another path ended the job while its file streamed: the stream is not a delivery the job can be charged for.
+    const forget = () => { (h.buyer as unknown as { _videoJobs: Map<string, unknown> })._videoJobs.clear(); };
+    const response = await h.send(h.retrieveRequest('retrieve-1', 'job-1'), { onResponseStart: forget, onResponseChunk() {} });
+    expect(response.headers['x-antseed-video-delivered']).toBeUndefined();
   });
 
   it('still charges the video on delivery after the chat session is cleaned up', async () => {
@@ -682,6 +748,108 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     expect(h.chain.get(videoChannels[0]!)).toMatchObject({ settled: 0n, status: 2 });
     expect(h.buyer.getOneOffChannelForRequest(h.peer.peerId, 'video-1')).toBeNull();
     expect(h.chain.get(h.sessionChannelId())).toMatchObject({ status: 1 });
+  });
+
+  it('retries a top-up whose RPC node has not seen the reserve yet', async () => {
+    const h = setup();
+    await openChannelWithChat(h);
+    h.topUp.mockImplementationOnce(async () => {
+      throw new Error('estimateGas reverted data="0xac853123"');
+    });
+
+    const response = await h.send(h.videoRequest('video-1'));
+    await h.settle();
+
+    expect(response.statusCode).toBe(200);
+    expect(h.topUp).toHaveBeenCalledTimes(2);
+    expect(h.close).not.toHaveBeenCalled();
+  });
+
+  it('keeps a reserved channel whose top-up and release both failed, and closes it on the next check', async () => {
+    const h = setup({ topUpBehavior: 'revert' });
+    await openChannelWithChat(h);
+    const landOnChain = h.close.getMockImplementation()!;
+    h.close.mockImplementationOnce(async () => {
+      throw new Error('execution reverted: ChannelNotActive');
+    });
+
+    // The buyer keeps waiting for the channel while the seller still holds it.
+    const pending = h.send(h.videoRequest('video-1'));
+    pending.catch(() => undefined);
+    await vi.waitFor(() => expect(h.close).toHaveBeenCalledOnce());
+
+    const sessionId = h.sessionChannelId();
+    const [videoChannel] = [...h.chain.keys()].filter((channelId) => channelId !== sessionId);
+    expect(h.chain.get(videoChannel!)).toMatchObject({ status: 1 });
+    // The seller still knows the channel, so it is not orphaned on-chain.
+    expect(h.seller.isOneOffChannel(videoChannel!)).toBe(true);
+
+    h.close.mockImplementation(landOnChain);
+    await h.seller.checkTimeouts();
+    await expect(pending).rejects.toMatchObject({ code: 'buyer-session-state' });
+
+    expect(h.close).toHaveBeenCalledTimes(2);
+    expect(h.close.mock.calls[1]![1]).toBe(videoChannel);
+    expect(h.close.mock.calls[1]![2]).toBe(0n);
+    expect(h.chain.get(videoChannel!)).toMatchObject({ settled: 0n, status: 2 });
+    expect(h.seller.isOneOffChannel(videoChannel!)).toBe(false);
+  });
+
+  it('reports the serious fee as spent only once the channel holds it', async () => {
+    const opened = setup();
+    await openChannelWithChat(opened);
+    const openedSpends: string[] = [];
+    opened.buyer.setSpendListener((event) => { openedSpends.push(event.amountUsdc); });
+    expect((await opened.send(opened.videoRequest('video-1'))).statusCode).toBe(200);
+    expect(openedSpends).toEqual([SERIOUS_FEE.toString()]);
+
+    const failed = setup({ topUpBehavior: 'revert' });
+    await openChannelWithChat(failed);
+    const failedSpends: string[] = [];
+    failed.buyer.setSpendListener((event) => { failedSpends.push(event.amountUsdc); });
+    await expect(failed.send(failed.videoRequest('video-1'))).rejects.toMatchObject({ code: 'buyer-session-state' });
+    expect(failedSpends).toEqual([]);
+  });
+
+  it('reports the serious fee once when an AuthAck and an on-chain confirmation overlap', async () => {
+    const h = setup({ topUpBehavior: 'slow' });
+    await openChannelWithChat(h);
+    const spends: string[] = [];
+    h.buyer.setSpendListener((event) => { spends.push(event.amountUsdc); });
+    const pending = h.send(h.videoRequest('video-1'));
+    await vi.waitFor(() => expect(h.topUp).toHaveBeenCalledOnce());
+    const [channelId] = h.oneOffChannelIds();
+
+    // Hold both confirmations inside the channel-store flush.
+    let releaseFlush!: () => void;
+    const flushed = new Promise<void>((resolve) => { releaseFlush = resolve; });
+    Object.assign((h.buyer as unknown as { _channelStore: object })._channelStore, { flush: () => flushed });
+    const confirmations = Promise.all([
+      h.buyer.handleAuthAck(h.peer.peerId, { channelId: channelId! }),
+      h.buyer.confirmOneOffChannelOnChain(channelId!, VIDEO_PRICE),
+    ]);
+    releaseFlush();
+    await confirmations;
+    h.releaseTopUp();
+    expect((await pending).statusCode).toBe(200);
+
+    expect(spends).toEqual([SERIOUS_FEE.toString()]);
+  });
+
+  it('does not evict a just-reserved channel the chain read does not show yet', async () => {
+    const h = setup();
+    await openChannelWithChat(h);
+    const response = await h.send(h.videoRequest('video-1'));
+    await h.settle();
+    expect(response.statusCode).toBe(200);
+    const { channelId } = onlyOneOff(h);
+    const record = h.chain.get(channelId)!;
+    h.chain.delete(channelId);
+
+    await h.seller.checkTimeouts();
+
+    expect(h.seller.isOneOffChannel(channelId)).toBe(true);
+    h.chain.set(channelId, record);
   });
 
   it('does not open a channel for an invalid create', async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { passedSellerNodeClaims, isFreshSellerNodeEvidence, TEE_REQUIRED_CLAIMS, type TeeEvidence } from './tee-status.js';
+import { passedSellerNodeClaims, isFreshSellerNodeEvidence, teeScope, TEE_PROVIDER_CLAIM, TEE_REQUIRED_CLAIMS, type TeeEvidence } from './tee-status.js';
 
 describe('seller-node TEE evidence', () => {
   const claims = TEE_REQUIRED_CLAIMS.map((claim) => ({ claim, ok: true }));
@@ -19,5 +19,11 @@ describe('seller-node TEE evidence', () => {
     expect(isFreshSellerNodeEvidence({ ...evidence, sellerNodeVerified: false }, 150)).toBe(false);
     expect(isFreshSellerNodeEvidence({ ...evidence, unavailable: true }, 150)).toBe(false);
     expect(isFreshSellerNodeEvidence({ ...evidence, checking: true }, 150)).toBe(false);
+  });
+  it('is end-to-end only when the provider TEE claim passes', () => {
+    expect(teeScope({ claims })).toBe('seller-node');
+    expect(teeScope({ claims: [...claims, { claim: TEE_PROVIDER_CLAIM, ok: true }] })).toBe('end-to-end');
+    expect(teeScope({ claims: [...claims, { claim: TEE_PROVIDER_CLAIM, ok: false }] })).toBe('seller-node');
+    expect(teeScope({ claims: [...claims, { claim: TEE_PROVIDER_CLAIM, ok: true }, { claim: TEE_PROVIDER_CLAIM, ok: false }] })).toBe('seller-node');
   });
 });

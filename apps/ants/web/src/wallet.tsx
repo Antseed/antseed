@@ -11,6 +11,7 @@ import { WalletReadinessContext, walletReadiness } from './wallet-readiness';
 import { walletFailure } from '../../src/wallet-errors';
 import { WalletPromptGate } from './wallet-prompt';
 import { WalletResultDelivery } from './wallet-result';
+import { host } from './host';
 import type { BrowserTransaction } from '../../src/browser-signer';
 import '@rainbow-me/rainbowkit/styles.css';
 
@@ -27,6 +28,8 @@ export function WalletProvider({ config, children }: { config: DashboardConfig; 
     transports: { [config.evmChainId]: http() },
   }), [config.chainId, config.evmChainId, config.walletRpcUrl]);
   if (!config.browserWallet) return <>{children}</>;
+  // An embedding host already provides wagmi and RainbowKit for the same chain.
+  if (host().embedded) return <WalletSession config={config}>{children}</WalletSession>;
   return <WalletRoot config={wagmi}><QueryClientProvider client={queries}><RainbowKitProvider theme={walletTheme}><WalletSession config={config}>{children}</WalletSession></RainbowKitProvider></QueryClientProvider></WalletRoot>;
 }
 

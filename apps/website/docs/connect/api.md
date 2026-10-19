@@ -53,7 +53,7 @@ curl http://localhost:8377/v1/chat/completions \
 | `POST /v1/systemone` | Typed questions to decision models; see the [decisions skill](https://github.com/AntSeed/antseed/tree/main/skills/antseed-decisions) |
 | `POST /api/v1/video/queue`, `POST /api/v1/video/retrieve` | Venice-format video jobs |
 | `POST /fal/v1/video/queue`, `POST /fal/v1/video/retrieve` | fal-format video jobs, with the fal endpoint id as `model` |
-| `GET /v1/models`, `GET /v1/models/<id>` | Network-wide model catalog, answered locally and free. Filter with `?type=text`, `images`, `videos` or `decisions` |
+| `GET /v1/models`, `GET /v1/models/<id>` | Network-wide model catalog, answered locally and free. Filter with `?type=text`, `images`, `videos` or `decisions`. Routing services are listed only under `?type=router` |
 
 Your tool's format does not need to match the seller's. The proxy translates between Anthropic Messages, OpenAI Chat Completions and OpenAI Responses when needed. Image endpoints are never translated: the seller must serve `openai-images`.
 
@@ -83,7 +83,8 @@ The `model` field controls routing:
 |---|---|
 | `<peerId>@deepseek-v4-flash` | Pins this request to one seller. No failover. |
 | `deepseek-v4-flash` | Automatic routing: the buyer picks the cheapest seller of that model that passes your minimum trust score, and fails over after retryable errors. See [Routing and catalog](/docs/api/routing). |
-| `antseed` | Follows the model or seller picked in the desktop app. Returns `no_default_route` when the app has no selection. |
+| `<routerPeerId>@<routerServiceId>` | A routing service picks the model and seller for each request. See [Use a routing service](/docs/api/routing#use-a-routing-service). |
+| `antseed` | Follows the model, seller or router picked in the desktop app. Returns `no_default_route` when the app has no selection. |
 
 The peer id is 40 hex characters, with or without `0x`. The prefix is stripped before the request reaches the seller.
 
@@ -143,6 +144,8 @@ Streaming responses carry only the request id, seller identity and price headers
 |---|---|---|
 | 400 | `missing_routing_target` | The request has no model and no pin. |
 | 400 | `no_default_route` | `model: "antseed"` was sent but the desktop app has no model selected. |
+| 400 | `invalid_routing` | A routing service serves the request and the body's `routing` object is malformed or has a setting the router's protocol does not accept (for `irp-suggest`: `cost_quality_tradeoff`, an integer from 0 to 10). On other requests a `routing` object is removed and ignored. |
+| 422 | `no_eligible_candidates` | A routing service was named, but no allowed model is left for it to rank. Nothing was charged. |
 | 402 | `insufficient_deposits` | Not enough USDC deposited. Run `antseed buyer deposit`. |
 | 413 | `upload_body_too_large` | The request is larger than the seller's upload limit. |
 | 502 | `model_not_found` | No seller your routing preferences allow offers this model. |

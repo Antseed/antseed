@@ -46,6 +46,12 @@ async function fakeBuyer(options: { costUsdc?: number } = {}) {
           amountUsdc: String(options.costUsdc), inputTokens: '10', cachedInputTokens: '0', outputTokens: '5', outputImages: '0',
         })
       }
+      if (Buffer.concat(chunks).toString('utf8').includes('"stream":true')) {
+        res.writeHead(200, { 'content-type': 'text/event-stream', 'x-antseed-request-id': requestId, 'x-antseed-peer-id': 'f00d', 'x-antseed-first-token-ms': '150' })
+        res.write('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n')
+        setTimeout(() => res.end('data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":40,"total_tokens":50}}\n\ndata: [DONE]\n\n'), 200)
+        return
+      }
       res.writeHead(200, { 'content-type': 'application/json', 'x-antseed-request-id': requestId, 'x-antseed-peer-id': 'f00d', 'x-antseed-latency-ms': '321' })
       res.end('{"answer":"ok"}')
     })
@@ -102,6 +108,25 @@ async function setup(options: { costUsdc?: number; controlSecret?: string | null
     },
   }
 }
+
+test('a streamed answer logs the buyer\'s time to first token and the output speed', async () => {
+  const ctx = await setup()
+  try {
+    const { secret, key } = ctx.store.createKey({ label: 'k', limits: NO_LIMITS, expiresAt: null })
+    assert.equal((await ctx.send(secret, '/v1/chat/completions', { model: 'm', stream: true })).status, 200)
+    await ctx.send(secret, '/v1/chat/completions', { model: 'm' })
+    const [plain, streamed] = ctx.store.listRequests({ keyId: key.id })
+    assert.equal(streamed!.firstTokenMs, 150)
+    assert.ok(streamed!.tokensPerSecond! > 100 && streamed!.tokensPerSecond! <= 205, `40 tokens over ~200ms (${streamed!.tokensPerSecond})`)
+    assert.equal(plain!.firstTokenMs, null, 'a non-streamed answer has no first token')
+    assert.equal(plain!.tokensPerSecond, null)
+    const [stat] = ctx.store.peerStats(0)
+    assert.equal(stat!.firstTokenMsP50, 150)
+    assert.equal(stat!.tokensPerSecondP50, streamed!.tokensPerSecond)
+  } finally {
+    await ctx.close()
+  }
+})
 
 test('the effective policy goes to the buyer with the control secret; client copies are dropped', async () => {
   const ctx = await setup()
@@ -160,6 +185,25 @@ test('allowedModels is enforced by the gateway, including pinned peer@model', as
     assert.equal((await ctx.send(secret, '/v1/messages', { model: 'other-model' })).status, 403)
     assert.equal((await ctx.send(secret, '/v1/responses', {})).status, 403, 'no model under an allow list')
     assert.equal(ctx.buyer.captured.length, 2)
+  } finally {
+    await ctx.close()
+  }
+})
+
+test('a routing service pinned as the model passes the allow list like any model, with its routing options', async () => {
+  const ctx = await setup()
+  try {
+    const router = `${'d'.repeat(40)}@alpha-route`
+    const open = ctx.store.createKey({ label: 'open', limits: NO_LIMITS, expiresAt: null })
+    const body = { model: router, messages: [], routing: { cost_quality_tradeoff: 8 } }
+    assert.equal((await ctx.send(open.secret, '/v1/chat/completions', body)).status, 200)
+    assert.deepEqual(JSON.parse(ctx.buyer.captured.at(-1)!.body).routing, { cost_quality_tradeoff: 8 })
+    const limited = ctx.store.createKey({ label: 'limited', limits: NO_LIMITS, expiresAt: null, routingPolicy: { allowedModels: ['good-model'] } })
+    const refused = await ctx.send(limited.secret, '/v1/chat/completions', body)
+    assert.equal(refused.status, 403)
+    assert.equal(refused.body.error.code, 'model_not_allowed')
+    const allowed = ctx.store.createKey({ label: 'router', limits: NO_LIMITS, expiresAt: null, routingPolicy: { allowedModels: ['alpha-route'] } })
+    assert.equal((await ctx.send(allowed.secret, '/v1/chat/completions', body)).status, 200)
   } finally {
     await ctx.close()
   }
@@ -230,6 +274,74 @@ test('@preset/<slug> rewrites the request and narrows the policy', async () => {
     const missing = await ctx.send(secret, '/v1/chat/completions', { model: '@preset/nope' })
     assert.equal(missing.status, 400)
     assert.equal(missing.body.error.code, 'preset_not_found')
+  } finally {
+    await ctx.close()
+  }
+})
+
+test('a body too large to be sniffed still runs its preset and keeps its caps', async () => {
+  const ctx = await setup()
+  try {
+    // Caps are only worth anything if the preset is applied: an unresolved
+    // `@preset/` alias must never reach the buyer as a model name.
+    const { secret, key } = ctx.store.createKey({ label: 'k', limits: NO_LIMITS, expiresAt: null, routingPolicy: { allowedModels: ['fast-model'] } })
+    ctx.store.createPreset({
+      slug: 'cap', name: 'Cap', workspaceId: key.workspaceId, model: 'fast-model',
+      routingPolicy: { maxInputUsdPerMillion: 5_000, maxOutputUsdPerMillion: 10_000 }, systemPrompt: null, params: {},
+    })
+    const large = { model: '@preset/cap', messages: [{ role: 'user', content: 'x'.repeat(5 * 1024 * 1024) }] }
+    const response = await ctx.send(secret, '/v1/chat/completions', large)
+    assert.equal(response.status, 200)
+    const forwarded = ctx.buyer.captured[0]!
+    assert.equal(JSON.parse(forwarded.body).model, 'fast-model')
+    assert.ok(!forwarded.body.includes('@preset/'), 'the alias never reaches the buyer')
+    const policy = decodePolicyHeader(forwarded.headers[ROUTING_POLICY_HEADER] as string)
+    assert.ok(policy, 'the preset cap reaches the buyer')
+    assert.equal(policy.maxInputUsdPerMillion, 5_000)
+    assert.equal(policy.maxOutputUsdPerMillion, 10_000)
+    assert.deepEqual(policy.allowedModels, ['fast-model'])
+    assert.equal(ctx.store.listRequests({ keyId: key.id })[0]!.model, 'fast-model', 'the ledger records the model that is bought')
+
+    const unknown = await ctx.send(secret, '/v1/chat/completions', { model: '@preset/nope', messages: [{ role: 'user', content: 'x'.repeat(5 * 1024 * 1024) }] })
+    assert.equal(unknown.status, 400)
+    assert.equal(unknown.body.error.code, 'preset_not_found')
+    assert.equal(ctx.buyer.captured.length, 1, 'nothing is forwarded for an unknown preset')
+  } finally {
+    await ctx.close()
+  }
+})
+
+test('a large body never forwards an unresolved @preset/ alias to the buyer', async () => {
+  const ctx = await setup()
+  try {
+    // The production symptom: with nothing else to stop it, an alias the
+    // gateway failed to resolve went out as a model name and the buyer
+    // answered `model_not_found` — the caps looked broken but were never read.
+    const { secret } = ctx.store.createKey({ label: 'open', limits: NO_LIMITS, expiresAt: null })
+    ctx.store.createPreset({ slug: 'cap', name: 'Cap', workspaceId: null, model: 'fast-model', routingPolicy: null, systemPrompt: null, params: {} })
+    const large = { model: '@preset/cap', messages: [{ role: 'user', content: 'x'.repeat(5 * 1024 * 1024) }] }
+    assert.equal((await ctx.send(secret, '/v1/chat/completions', large)).status, 200)
+    const forwarded = ctx.buyer.captured[0]!
+    assert.equal(JSON.parse(forwarded.body).model, 'fast-model')
+    assert.ok(!forwarded.body.includes('@preset/'), 'the alias never reaches the buyer as a model')
+
+    const unroutable = await ctx.send(secret, '/v1/chat/completions', { model: '@preset/nope', messages: [{ role: 'user', content: 'x'.repeat(5 * 1024 * 1024) }] })
+    assert.equal(unroutable.status, 400, 'an unresolvable alias is refused, never forwarded')
+    assert.equal(ctx.buyer.captured.length, 1)
+  } finally {
+    await ctx.close()
+  }
+})
+
+test('a body too large to be sniffed is still allow-listed and accounted by its model', async () => {
+  const ctx = await setup()
+  try {
+    const { secret, key } = ctx.store.createKey({ label: 'k', limits: NO_LIMITS, expiresAt: null, routingPolicy: { allowedModels: ['good-model'] } })
+    const withContent = (body: Record<string, unknown>) => ({ ...body, messages: [{ role: 'user', content: 'x'.repeat(5 * 1024 * 1024) }] })
+    assert.equal((await ctx.send(secret, '/v1/chat/completions', withContent({ model: 'good-model' }))).status, 200)
+    assert.equal((await ctx.send(secret, '/v1/chat/completions', withContent({ model: 'other-model' }))).status, 403, 'a large body cannot smuggle a disallowed model past the allow list')
+    assert.equal((await ctx.send(secret, '/v1/chat/completions', withContent({ model: 'good-model', service: 'other-model' }))).status, 403, 'nor past it through a service')
+    assert.equal(ctx.store.listRequests({ keyId: key.id }).map((row) => row.model).filter(Boolean).join(','), 'good-model')
   } finally {
     await ctx.close()
   }

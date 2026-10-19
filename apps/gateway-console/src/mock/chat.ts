@@ -64,6 +64,11 @@ export function mockDeleteChatThread(id: string): void {
   threads.delete(id)
 }
 
+function retryBase(stored: unknown[], incoming: { id: string } | undefined): unknown[] {
+  const at = incoming ? stored.findIndex((message) => (message as { id?: string }).id === incoming.id) : -1
+  return at >= 0 ? stored.slice(0, at) : stored
+}
+
 export function mockChatStream(body: { id?: string; model?: string; peerId?: string | null; messages?: Array<{ id: string; role: string; parts: Array<{ type: string; text?: string }> }> }): Response {
   const model = body.model ?? 'kimi-k3'
   const pinned = body.peerId ?? null
@@ -104,7 +109,8 @@ export function mockChatStream(body: { id?: string; model?: string; peerId?: str
   const text = user?.parts.find((part) => part.type === 'text')?.text ?? 'New conversation'
   const save = (answer: unknown[]) => threads.set(id, {
     id, title: previous?.title ?? text.slice(0, 80), model, peerId: pinned, createdAt: previous?.createdAt ?? Date.now(), updatedAt: Date.now(),
-    messages: [...(previous?.messages ?? []), ...(user ? [user] : []), ...answer],
+    // Like the gateway: re-sending a stored message (a retry) replaces everything after it.
+    messages: [...retryBase(previous?.messages ?? [], user), ...(user ? [user] : []), ...answer],
   })
   save([])
   const encoder = new TextEncoder()

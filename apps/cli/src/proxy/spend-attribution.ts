@@ -42,7 +42,19 @@ export interface AttributedSpendEvent {
   outputTokens: string
   outputImages: string
   at: number
+  /** `routing`: the spend paid a routing service for a ranking, not a seller for inference. */
+  purpose?: SpendPurpose
 }
+
+/** What a request's spend paid for; inference when unset. */
+export type SpendPurpose = 'routing'
+
+/**
+ * The buyer refuses a video priced above the gateway's `x-antseed-max-video-usdc`
+ * before it starts, and reports the price it accepted. A gateway applies a
+ * key's caps to video creates only through a buyer that says so.
+ */
+export const VIDEO_BUDGET_CAPABILITY = 'video-budget'
 
 export interface AttributedSpendPage {
   /**
@@ -56,6 +68,8 @@ export interface AttributedSpendPage {
   /** Pass back as `after` on the next poll. */
   cursor: number
   events: AttributedSpendEvent[]
+  /** What this buyer supports for the gateway (absent on older buyers). */
+  capabilities?: string[]
 }
 
 export interface SpendAttributionFeedOptions {
@@ -87,6 +101,9 @@ export class SpendAttributionFeed {
   private readonly _track: Database.Statement
   private readonly _lookup: Database.Statement
   private readonly _pruneTags: Database.Statement
+  private readonly _trackPurpose: Database.Statement
+  private readonly _clearPurpose: Database.Statement
+  private readonly _prunePurposes: Database.Statement
   private readonly _insert: Database.Statement
   private readonly _select: Database.Statement
   private readonly _oldest: Database.Statement
@@ -117,14 +134,24 @@ export class SpendAttributionFeed {
       );
       CREATE INDEX IF NOT EXISTS spend_events_time ON spend_events(at);
     `)
+    // Added after the first release. Routing purchases get their own table rather than a request_tags
+    // column, so an older buyer (one rolled back to) can still write request_tags by position.
+    this._db.exec('CREATE TABLE IF NOT EXISTS request_purposes (request_id TEXT PRIMARY KEY, purpose TEXT NOT NULL, tracked_at INTEGER NOT NULL)')
+    addColumnIfMissing(this._db, 'spend_events', 'purpose TEXT')
     this._db.prepare("INSERT OR IGNORE INTO feed_meta VALUES ('feed_id', ?), ('acked_seq', '0')").run(randomUUID())
     this.bootId = (this._db.prepare("SELECT value FROM feed_meta WHERE key = 'feed_id'").get() as { value: string }).value
-    this._track = this._db.prepare('INSERT OR REPLACE INTO request_tags VALUES (?, ?, ?)')
+    this._track = this._db.prepare('INSERT OR REPLACE INTO request_tags (request_id, tag, tracked_at) VALUES (?, ?, ?)')
+    this._trackPurpose = this._db.prepare('INSERT OR REPLACE INTO request_purposes (request_id, purpose, tracked_at) VALUES (?, ?, ?)')
+    this._clearPurpose = this._db.prepare('DELETE FROM request_purposes WHERE request_id = ?')
     this._pruneTags = this._db.prepare('DELETE FROM request_tags WHERE tracked_at < ?')
-    this._lookup = this._db.prepare('SELECT tag FROM request_tags WHERE request_id = ? AND tracked_at >= ?')
+    this._prunePurposes = this._db.prepare('DELETE FROM request_purposes WHERE tracked_at < ?')
+    this._lookup = this._db.prepare(`
+      SELECT t.tag, p.purpose FROM request_tags t LEFT JOIN request_purposes p ON p.request_id = t.request_id
+      WHERE t.request_id = ? AND t.tracked_at >= ?
+    `)
     this._insert = this._db.prepare(`
-      INSERT INTO spend_events (tag, request_id, buyer_identity, seller_peer_id, amount_usdc, input_tokens, cached_input_tokens, output_tokens, output_images, at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO spend_events (tag, request_id, buyer_identity, seller_peer_id, amount_usdc, input_tokens, cached_input_tokens, output_tokens, output_images, at, purpose)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     this._select = this._db.prepare('SELECT * FROM spend_events WHERE seq > ? ORDER BY seq LIMIT ?')
     // The next seq when the table is empty: sqlite_sequence remembers the last one handed out.
@@ -142,11 +169,14 @@ export class SpendAttributionFeed {
     this._prune(this._now())
   }
 
-  track(requestId: string, tag: string): void {
+  /** `purpose` marks a request whose spend buys something other than inference (a router's ranking). */
+  track(requestId: string, tag: string, purpose: SpendPurpose | null = null): void {
     if (!this._db.open) return
     const now = this._now()
     this._prune(now)
     this._track.run(requestId, tag, now)
+    if (purpose) this._trackPurpose.run(requestId, purpose, now)
+    else this._clearPurpose.run(requestId)
   }
 
   close(): void {
@@ -170,16 +200,17 @@ export class SpendAttributionFeed {
     for (const [recentTag, at] of recentTags) if (at < now - UNTAGGED_SPEND_WINDOW_MS) recentTags.delete(recentTag)
     // Without a request id the spend can only be attributed when exactly one
     // tag (one gateway key's request) is using this identity on this seller.
-    const tag = event.requestId
-      ? (this._lookup.get(event.requestId, now - TAG_RETENTION_MS) as { tag: string } | undefined)?.tag
-      : recentTags.size === 1 ? [...recentTags.keys()][0] : undefined
+    const tracked = event.requestId
+      ? this._lookup.get(event.requestId, now - TAG_RETENTION_MS) as { tag: string; purpose: SpendPurpose | null } | undefined
+      : undefined
+    const tag = event.requestId ? tracked?.tag : recentTags.size === 1 ? [...recentTags.keys()][0] : undefined
     if (!tag) return
     recentTags.set(tag, now)
     this._recentTagsBySeller.set(sellerKey, recentTags)
     this._prune(now)
     this._insert.run(
       tag, event.requestId, event.buyerIdentity ?? 'default', event.sellerPeerId, event.amountUsdc,
-      event.inputTokens, event.cachedInputTokens, event.outputTokens, event.outputImages, now,
+      event.inputTokens, event.cachedInputTokens, event.outputTokens, event.outputImages, now, tracked?.purpose ?? null,
     )
   }
 
@@ -190,7 +221,8 @@ export class SpendAttributionFeed {
    */
   page(after: number, options: { ack?: boolean } = {}): AttributedSpendPage {
     const cursorIn = Number.isSafeInteger(after) ? Math.max(after, 0) : 0
-    if (!this._db.open) return { bootId: this.bootId, oldestSeq: cursorIn + 1, cursor: cursorIn, events: [] }
+    const capabilities = [VIDEO_BUDGET_CAPABILITY]
+    if (!this._db.open) return { bootId: this.bootId, oldestSeq: cursorIn + 1, cursor: cursorIn, events: [], capabilities }
     if (options.ack && cursorIn > 0) this._ack.run(cursorIn, cursorIn)
     const rows = this._select.all(cursorIn, MAX_EVENTS_PER_PAGE) as SpendEventRow[]
     const events = rows.map(toEvent)
@@ -200,6 +232,7 @@ export class SpendAttributionFeed {
       oldestSeq: (this._oldest.get() as { seq: number }).seq,
       cursor: last ? last.seq : cursorIn,
       events,
+      capabilities,
     }
   }
 
@@ -207,6 +240,7 @@ export class SpendAttributionFeed {
     if (this._lastPruneAt !== null && now - this._lastPruneAt < PRUNE_INTERVAL_MS) return
     this._lastPruneAt = now
     this._pruneTags.run(now - TAG_RETENTION_MS)
+    this._prunePurposes.run(now - TAG_RETENTION_MS)
     this._pruneEvents.run(now - ACKED_RETENTION_MS, now - UNACKED_RETENTION_MS, MAX_STORED_EVENTS)
   }
 }
@@ -223,6 +257,7 @@ interface SpendEventRow {
   output_tokens: string
   output_images: string
   at: number
+  purpose: SpendPurpose | null
 }
 
 function toEvent(row: SpendEventRow): AttributedSpendEvent {
@@ -238,7 +273,14 @@ function toEvent(row: SpendEventRow): AttributedSpendEvent {
     outputTokens: row.output_tokens,
     outputImages: row.output_images,
     at: row.at,
+    ...(row.purpose ? { purpose: row.purpose } : {}),
   }
+}
+
+function addColumnIfMissing(db: Database.Database, table: string, column: string): void {
+  const name = column.split(' ')[0]
+  const columns = db.prepare(`SELECT name FROM pragma_table_info(?)`).all(table) as Array<{ name: string }>
+  if (!columns.some((existing) => existing.name === name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column}`)
 }
 
 /** The feed's database file, or a temporary one when it has none or the file cannot be opened. */

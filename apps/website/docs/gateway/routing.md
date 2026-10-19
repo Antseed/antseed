@@ -11,21 +11,26 @@ A routing policy decides which providers may serve a request and how the eligibl
 
 ## What a policy can say
 
+The policy editor groups its settings under **Sellers**, **Quality** (the minimum trust score, and TEE or verified sellers only), **Price limits**, **Models** and **Ranking**. Its **What this level does** box states the policy in plain sentences as you edit it, and says how many providers can still serve.
+
 | Setting | Meaning |
 |---|---|
-| **Which sellers may serve** | **Any seller**, or **Only these**: chosen providers or saved peer lists |
-| **Blocked sellers**, **Blocked peer lists** | Providers that never serve |
-| **Minimum trust score** | 0 to 100. See [Trust score](/docs/reputation). |
+| **Which sellers may serve** | **Any seller**, or **Only these**: chosen providers or seller lists |
+| **Never use**, **Never use these lists** | Providers that never serve |
+| **Minimum trust score** | 0 to 100, from the seller's settled service history, recognized usage, staking power and verified identity. The ⓘ next to it in the editor explains the parts. See [Trust score](/docs/reputation). |
 | **TEE sellers only** | Only providers that advertise running models in a trusted execution environment (TEE) |
 | **Verified sellers only** | Only providers whose responses pass a verifier, such as a TEE attestation check |
-| **Sort by** | **Balanced**, **Lowest price**, **Lowest latency** or **Highest trust**. **Balanced** keeps the buyer's automatic order: the cheapest provider that passes the trust minimum, with trust only breaking ties (see [Router plugin API](/docs/router-api)). |
+| **Sort by** | **Balanced**, **Lowest price**, **Lowest latency** or **Highest trust**. **Balanced** keeps the buyer's automatic order: the cheapest provider that passes the trust minimum, with trust only breaking ties (see [Router plugin API](/docs/router-api)). **Lowest latency** ranks by time to first token, which the buyer measures per provider and model on streamed answers; providers it hasn't measured yet come after the measured ones. |
 | **Free sellers first** | Rank free providers ahead of paid ones |
 | **Which models may be used** | **Any model**, or **Only these models**. Requests for other models get `403 model_not_allowed`. |
-| **Price caps** | Maximum input, output and cached-input price per million tokens, and price per image |
+| **Price limits** | Maximum input, output and cached-input price per million tokens, and price per image |
 | **Fallback chains** | For a model, an ordered list of providers to try first. **Strict** allows only those providers. |
-| **Reputation** | Minimum reputation, 0 to 100 |
 
-The policy editor also offers starting points: **Cheapest**, **Most trusted** (trust 70+ and reputation 60+, ranked by trust), **TEE only** and **Own peers only** (only providers in one of your peer lists).
+**Start from…** in the editor offers starting points: **Cheapest**, **Most trusted** (trust 70+, ranked by trust), **TEE only**, or only the providers of one seller list.
+
+## Seller lists
+
+A seller list is a named group of providers that a policy allows or blocks in one step: for example the sellers you run yourself, or ones you trust. Organization admins manage them under **Routing → Seller lists**, or from the policy editor: **Manage seller lists** opens them all, and clicking a list's name opens that list. Editing a list changes every policy that uses it. The CLI (`antseed gateway peer-list`) and the management API (`/peer-lists`) call them peer lists.
 
 **TEE sellers only** checks what providers advertise, so it works whether or not your buyer verifies responses. **Verified sellers only** requires your buyer to verify them. [Verify TEE providers](/docs/verify-tee) explains the difference and how to turn verification on.
 
@@ -54,15 +59,39 @@ Policies also apply to pinned requests (`<peerId>@<model>`): a client cannot get
 
 ## Edit policies
 
-- **Routing** shows the **Gateway default** and **This workspace** tabs, and **Effective for this workspace**: what keys in the workspace get before member, key and preset policies narrow it.
+- **Routing** lists every level under **Rules that apply**, top to bottom, each one in plain sentences ("Never uses …", "Only sellers with trust 40 or more"). The list ends with **Effective for** the workspace: what keys in the workspace get before member, key and preset policies narrow it. **Edit** (or **Add rules**) opens a level's editor; members see the levels they cannot change read-only.
 - **Members** and **Keys** have a policy section when you edit a member or a key.
 - On **Providers**, **Allow**, **Prefer** and **Block** add one provider to the policy at the scope you choose and keep the rest of that policy. See [Models and providers](/docs/gateway/models).
 
 When a save would leave no provider able to serve, or asks for more than the levels above allow, the console asks you to confirm.
 
-## Route preview
+## Try a request
 
-**Route preview** on the **Routing** page shows, for a model and a workspace, key, member or preset, which providers would serve a request and in what order, and why the others are excluded: blocked, over a price cap, below the trust minimum, and so on. Exclusions caused by the buyer settings read `buyer config: …`, for example `buyer config: reputation 30 below 40`.
+**Try a request** on the **Routing** page opens a dialog that shows the route for one model. Choose the model from a searchable list; it starts with your first starred model, or else the most offered one. Choose who is asking: the workspace, a key, a member or a preset.
+
+The result appears at once:
+
+- the providers that would serve the request, in the order they are tried, with the numbers routing ranks them by;
+- with **All**, each filtered-out provider with its reason, and the level whose rule keeps it out, for example **Gateway default** blocks it, or **Buyer config** requires trust 60+ (it has 55).
+
+After you try a model, each level in **Rules that apply** says how many of its providers that level keeps out.
+
+## How automatic routing picks a seller
+
+Among the providers a policy allows, the buyer ranks by what it has seen them do. With buyer routing preferences set, it ranks by the expected cost of one good answer: the price plus the time it takes, divided by the share of requests the provider answered recently. Providers within 30% of the best share the traffic, cheaper and more reliable ones more often, and requests of one conversation stay on one provider so its prompt cache keeps working. Without routing preferences it ranks by trust. A policy's **Cheapest** or **Lowest latency** sort and its route chains reorder the list. In every order, providers failing lately go after the healthy ones, and cooling-down ones go last.
+
+To see this for a model, open it on the **Models** page, or press the ⓘ button next to the model in **Chat**. **Providers** lists the providers **in range**, in the order automatic routing tries them. Switch to **All** (or press **Show them** under the list) to add the ones your routing settings filter out, dimmed, each with the reason. For each provider in range it shows:
+
+- the expected cost per good answer;
+- the success rate and how many recent requests it is based on (a provider new to this model borrows its record on other models at half weight, and one with no record is assumed to succeed 80% of the time);
+- first token and speed;
+- its share of the traffic;
+- whether a payment channel is open;
+- how many requests it is serving.
+
+A failing provider shows its last error. Org admins can **Reset history** to give it a fresh start. **All** adds the providers routing filters out, with the reason. **Allow…** on a filtered-out provider (and **Prefer**/**Block** in its ⋯ menu) changes the policy at the level you choose, then says whether it can now serve the model. On the **Providers** page, pick a model to get a **Routing** column and the same order. In the chat, **Pin** sends the conversation to one provider. **Try a request** on **Routing** shows the same list.
+
+Every request that routing picked a provider for records why. Open it in **Logs** to see **Why this seller**. It says how the provider was picked: drawn from the providers sharing the traffic, the best on its own, kept for the conversation, a probe of a provider with no recent record, a failover after the providers before it failed, or the policy's order. It also shows what the buyer had seen of the provider at that moment. Requests pinned to a provider, and requests logged before this version, show none.
 
 ## Presets
 

@@ -156,6 +156,24 @@ function priceCapReasons(label: string, price: number | null, cap: number | unde
 }
 
 /**
+ * The policy as it applies to a routing service, which is paid per ranking
+ * and returns no inference: without the token and image price caps, and
+ * without `requireVerified` (verification proves which model a seller ran).
+ * `requireTee` still applies, since a router reads the whole conversation.
+ */
+export function routingServicePolicy(policy: RoutingPolicy): RoutingPolicy {
+  const {
+    maxInputUsdPerMillion: _input,
+    maxOutputUsdPerMillion: _output,
+    maxCachedInputUsdPerMillion: _cached,
+    maxImageUsdPerImage: _image,
+    requireVerified: _verified,
+    ...rest
+  } = policy
+  return rest
+}
+
+/**
  * Why the policy forbids a hard pin (`peer@model`, `x-antseed-pin-peer`,
  * session pin): the seller-level checks plus a strict model route that does
  * not list the pinned seller.
@@ -191,6 +209,8 @@ export interface PolicyOrderingAccessors<T> {
   /** Recent latency in ms, or null when the buyer has not measured this seller. */
   latencyMs: (candidate: T) => number | null
   coolingDown: (candidate: T) => boolean
+  /** Failing often lately: tried after every healthy seller, before cooling-down ones. */
+  unhealthy?: (candidate: T) => boolean
 }
 
 export interface PolicyOrdering<T> {
@@ -226,10 +246,12 @@ export function orderByPolicy<T>(
 ): PolicyOrdering<T> {
   const indexed = candidates.map((candidate, index) => ({ candidate, index }))
   const sort = policy.sort ?? 'balanced'
+  // Cooling-down sellers go last and unhealthy ones just before them,
+  // whatever the sort or route chain says: neither should take the next request.
+  const backoff = (candidate: T): number => (get.coolingDown(candidate) ? 2 : get.unhealthy?.(candidate) ? 1 : 0)
   indexed.sort((a, b) => {
-    const coolingA = get.coolingDown(a.candidate)
-    const coolingB = get.coolingDown(b.candidate)
-    if (coolingA !== coolingB) return coolingA ? 1 : -1
+    const backoffOrder = backoff(a.candidate) - backoff(b.candidate)
+    if (backoffOrder !== 0) return backoffOrder
     if (policy.preferFreePeers) {
       const freeA = get.totalPrice(a.candidate) === 0
       const freeB = get.totalPrice(b.candidate) === 0
@@ -252,9 +274,8 @@ export function orderByPolicy<T>(
     const inChain = ordered
       .filter((candidate) => chainPosition.has(normalizePeerId(get.peerId(candidate))))
       .sort((a, b) => {
-        const coolingA = get.coolingDown(a)
-        const coolingB = get.coolingDown(b)
-        if (coolingA !== coolingB) return coolingA ? 1 : -1
+        const backoffOrder = backoff(a) - backoff(b)
+        if (backoffOrder !== 0) return backoffOrder
         return chainPosition.get(normalizePeerId(get.peerId(a)))! - chainPosition.get(normalizePeerId(get.peerId(b)))!
       })
     const rest = ordered.filter((candidate) => !chainPosition.has(normalizePeerId(get.peerId(candidate))))

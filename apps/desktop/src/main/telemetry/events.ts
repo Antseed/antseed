@@ -16,7 +16,7 @@
  */
 
 import type { TelemetryActionSurface, TelemetryAppName, TelemetryUserAction } from '../../shared/telemetry.js';
-import { modelMetadataFor } from '../../shared/model-metadata.js';
+import { modelMetadataFor } from '@antseed/node/model-metadata';
 
 export const TELEMETRY_SCHEMA_VERSION = 1;
 

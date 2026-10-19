@@ -8,7 +8,7 @@ import { GATEWAY_CONTROL_HEADER, GATEWAY_CONTROL_SECRET_ENV, ROUTING_POLICY_HEAD
 import { buyerFetch, loadOrCreateControlSecret, recordGatewayBuyerPort, runningGatewayBuyerPort } from './buyer-control.js'
 import { OtlpExporter, tracesUrl } from './observability.js'
 import { GATEWAY_ROUTING_SETTING, checkPolicyInput, isEmptyPolicy, policyInputProblem, resolvePolicy } from './policy-resolver.js'
-import { applyPreset, effectiveRequestModel, extractEndUser, sniffMultipartModel } from './request-shaping.js'
+import { applyPreset, effectiveRequestModel, extractEndUser } from './request-shaping.js'
 import { DEFAULT_WORKSPACE_ID, type PresetRecord } from './store.js'
 import { tempDataDir } from './console-api/test-support.js'
 
@@ -90,15 +90,24 @@ test('end user and multipart model are read from the request', () => {
   assert.equal(extractEndUser({}, undefined), null)
   const boundary = 'XyZ'
   const form = Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="prompt"\r\n\r\nhello\r\n--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nimage-model\r\n--${boundary}--\r\n`)
-  assert.equal(sniffMultipartModel(form, `multipart/form-data; boundary=${boundary}`), 'image-model')
-  assert.equal(sniffMultipartModel(form, 'application/json'), null)
   const multipart = `multipart/form-data; boundary=${boundary}`
   assert.equal(effectiveRequestModel(null, form, multipart), 'image-model')
+  assert.equal(effectiveRequestModel(null, form, 'application/json'), null, 'a JSON content type is not read as a form')
   const withService = Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="service"\r\n\r\nother-image\r\n${form.toString('latin1')}`)
   assert.equal(effectiveRequestModel(null, withService, multipart), 'other-image', 'service wins, as the buyer reads it')
   assert.equal(effectiveRequestModel({ model: 'm', service: 's' }, Buffer.alloc(0), 'application/json'), 's')
   assert.equal(effectiveRequestModel({ model: ' m ' }, Buffer.alloc(0), 'application/json'), 'm')
   assert.equal(effectiveRequestModel({ model: 'm', service: 7 }, Buffer.alloc(0), 'application/json'), null)
+
+  // The buyer's parser reads the whole form and skips file parts, so the model
+  // is found wherever it sits: the gateway must not read the form differently.
+  const file = Buffer.alloc(5 * 1024 * 1024, 0x41)
+  const late = Buffer.concat([
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="image"; filename="big.png"\r\nContent-Type: image/png\r\n\r\n`),
+    file,
+    Buffer.from(`\r\n--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nlate-model\r\n--${boundary}--\r\n`),
+  ])
+  assert.equal(effectiveRequestModel(null, late, multipart), 'late-model', 'a model past the first bytes of a large upload is still read')
 })
 
 test('a preset drops a client service so the buyer routes by the preset\'s model', () => {

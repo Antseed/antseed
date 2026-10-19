@@ -5,7 +5,7 @@ import { createConsoleAuth } from '../../../gateway/auth/index.js'
 import { readConsoleLocation } from '../../../gateway/console.js'
 import { observabilitySettings } from '../../../gateway/observability.js'
 import { listNetworkPeers } from '../../../gateway/services/network.js'
-import type { BuyerSettings, BuyerSettingsInput } from '../../../gateway/console-api/types.js'
+import type { BuyerSettings, BuyerSettingsInput, Peer } from '../../../gateway/console-api/types.js'
 import { readSettings, setObservabilitySettings, updateBuyerSettings, type SettingsContext } from '../../../gateway/services/settings.js'
 import { sameRoutingModel } from '../../../routing-policy/policy.js'
 import { collect } from './policy-options.js'
@@ -287,6 +287,14 @@ function buyerPatchFromOptions(options: SetBuyerOptions, current: BuyerSettings)
   return patch
 }
 
+/** The TEE column: how far a verified attestation reaches, or that it is only advertised so far. */
+function teeLabel(peer: Peer): string {
+  if (!peer.tee) return '-'
+  if (peer.teeScope === 'end-to-end') return chalk.green('full')
+  if (peer.teeScope === 'seller-node') return chalk.yellow('partial')
+  return chalk.dim('unverified')
+}
+
 export function registerGatewayPeersCommand(gateway: Command): void {
   addBuyerPortOption(
     gateway.command('peers')
@@ -318,7 +326,7 @@ export function registerGatewayPeersCommand(gateway: Command): void {
           peer.peerId,
           peer.displayName ?? '-',
           peer.trustScore ?? '-',
-          peer.tee ? chalk.green('yes') : '-',
+          teeLabel(peer),
           peer.services.length > 3 ? `${peer.services.slice(0, 3).map((service) => service.service).join(', ')} +${peer.services.length - 3}` : peer.services.map((service) => service.service).join(', ') || '-',
           range(prices),
           range(outs),
@@ -327,5 +335,8 @@ export function registerGatewayPeersCommand(gateway: Command): void {
         ])
       }
       console.log(table.toString())
+      if (peers.some((peer) => peer.tee)) {
+        console.log(chalk.dim('TEE: full = seller node and its model provider attested; partial = seller node only, its model provider may see requests; unverified = advertised, not attested yet.'))
+      }
     }))
 }

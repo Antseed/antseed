@@ -23,6 +23,7 @@ const loaders: Record<PageId, () => Promise<{ default: ComponentType }>> = {
   rewards: () => import('../pages/Rewards'),
   referrals: () => import('../pages/Referrals'),
   builders: () => import('../pages/Builders'),
+  staking: () => import('../pages/Staking'),
   providers: () => import('../pages/Providers'),
   models: () => import('../pages/Models'),
   routing: () => import('../pages/Routing'),

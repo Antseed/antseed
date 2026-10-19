@@ -19,7 +19,7 @@ const ACTION_FILTERS = [
   { value: 'invite', label: 'Invites' },
   { value: 'workspace', label: 'Workspaces' },
   { value: 'routing', label: 'Gateway routing' },
-  { value: 'peer_list', label: 'Peer lists' },
+  { value: 'peer_list', label: 'Seller lists' },
   { value: 'preset', label: 'Presets' },
   { value: 'wallet', label: 'Wallets' },
   { value: 'channel', label: 'Channels' },

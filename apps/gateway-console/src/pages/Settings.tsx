@@ -14,9 +14,11 @@ import { clearMaskedValues, endpointOriginChanged, headersToText, maskedHeaderNa
 import { useConsoleMutation } from '../lib/mutations'
 import { isOverridden } from '../lib/settings'
 import { BuyerSettingsEditor } from '../components/BuyerSettingsEditor'
+import { UpdatePanel } from '../components/UpdatePanel'
 import { qk, useAdminTokens, useStatus } from '../lib/queries'
 
 type Tab = 'general' | 'buyer' | 'observability' | 'tokens' | 'auth'
+const TABS: readonly Tab[] = ['general', 'buyer', 'observability', 'tokens', 'auth']
 
 function General() {
   const status = useStatus()
@@ -26,7 +28,6 @@ function General() {
         {(data) => (
           <DetailList items={[
             ['Public URL', data.publicUrl ? <Mono key="u">{data.publicUrl}</Mono> : <span className="gc-muted">Not set. Clients use this console's address.</span>],
-            ['Version', data.version],
             ['Buyer', data.buyer.reachable ? <Badge key="b" tone="success">Connected</Badge> : <Badge key="b" tone="danger">Unreachable</Badge>],
             ['Sellers seen', String(data.buyer.peers)],
             ['Spend feed', data.spendFeed],
@@ -190,7 +191,11 @@ function SettingsSection({ tab, settings }: { tab: Tab; settings: SettingsData }
 }
 
 export default function Settings() {
-  const [tab, setTab] = useState<Tab>('general')
+  // `?tab=buyer` opens a section directly (the routing editor links to the buyer's floors).
+  const [tab, setTab] = useState<Tab>(() => {
+    const requested = new URLSearchParams(window.location.search).get('tab')
+    return TABS.includes(requested as Tab) ? requested as Tab : 'general'
+  })
   const settings = useQuery({ queryKey: qk.settings, queryFn: api.settings.get })
   useEffect(() => { window.scrollTo?.(0, 0) }, [tab])
   return (
@@ -201,7 +206,7 @@ export default function Settings() {
         { id: 'tokens', label: 'Management tokens' }, { id: 'auth', label: 'Sign-in' },
       ]} />
       <TabPanel tabsId="gc-settings" tab={tab} className="gc-stack">
-        {tab === 'general' && <General />}
+        {tab === 'general' && <><General /><UpdatePanel /></>}
         {tab === 'tokens' && <Tokens />}
         {(tab === 'buyer' || tab === 'observability' || tab === 'auth') && (
           <QueryView query={settings}>

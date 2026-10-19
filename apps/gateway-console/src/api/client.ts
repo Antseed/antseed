@@ -1,6 +1,6 @@
 import type {
-  AdminToken, ApiKey, ApiKeyInput, AuditEntry, AuthConfig, Builders, BuyerLimits, BuyerSettingsInput, Channel, ChainInfo, CreatedInvite, DepositWatch, Enrollment,
-  GatewayStatus, Invite, InviteInput, Member, MemberInput, MeResponse, ObservabilitySettings, OperatorAuthorization, OperatorState, WorkspaceOperatorSummary, ChatContext, ChatModel, ChatThread, ChatThreadDetail, NetworkModel, Peer, PeerList, Preset,
+  AdminToken, ApiKey, ApiKeyInput, AuditEntry, AuthConfig, Builders, BuyerLimits, BuyerSettingsInput, Channel, ChainInfo, CreatedInvite, DepositConfirmation, DepositWatch, Enrollment,
+  GatewayStatus, GatewayUpdate, Invite, InviteInput, Member, MemberInput, MeResponse, ObservabilitySettings, OperatorAuthorization, OperatorState, WorkspaceOperatorSummary, ChatContext, ChatModel, ChatThread, ChatThreadDetail, FavoriteModels, NetworkModel, NetworkRouter, Peer, PeerList, Preset,
   Referrals, RequestDetail, RequestLogEntry, Rewards, RoutePreview, RoutingPolicy, Settings, SpendLimits, UsageGroupBy, UsageReport, Wallet, Workspace,
   WorkspaceInput, WorkspaceRole,
 } from './types'
@@ -39,6 +39,8 @@ export const ERROR_COPY: Record<string, string> = {
   empty_allow_list: 'This allow list is empty, so no seller could serve. Confirm to save it anyway.',
   last_credential: 'You cannot remove your only sign-in method, or you could not sign in again. Add another passkey or wallet first.',
   credential_exists: 'This passkey or wallet is already registered.',
+  update_unsupported: 'This gateway cannot update itself from the console. Run the update command on its host.',
+  update_in_progress: 'An update is already running. Try again when it is done.',
   max_keys_reached: 'You already have as many keys as you are allowed. Revoke one, or ask an admin to raise your limit.',
   referrals_unavailable: 'Referrals are not available on this network yet.',
   already_bound: 'This wallet is already bound to a referrer. A referral binding is permanent.',
@@ -199,6 +201,12 @@ export function createApiClient(fetchImpl: FetchLike = (input, init) => fetch(in
       request: (tag: string) => get<RequestDetail>(`/requests/${id(tag)}`),
       exportUrl: (filter: RequestQuery & { groupBy?: UsageGroupBy }) => `${base}/usage/export.csv${buildQuery(filter)}`,
     },
+    favorites: {
+      /** Model and router ids the caller starred, oldest first. */
+      list: () => get<FavoriteModels>('/favorites'),
+      add: (model: string) => request<void>('PUT', `/favorites/${id(model)}`),
+      remove: (model: string) => del(`/favorites/${id(model)}`),
+    },
     audit: {
       list: (filter: AuditQuery & { before?: string; limit?: number }) => get<{ entries: AuditEntry[]; nextBefore: string | null }>('/audit', filter),
     },
@@ -207,6 +215,13 @@ export function createApiClient(fetchImpl: FetchLike = (input, init) => fetch(in
       cardLink: (workspaceId: string, amountUsd: number, provider: 'crossmint' | 'stripe') =>
         post<{ url: string }>(`/workspaces/${id(workspaceId)}/wallet/card-link`, { amountUsd, provider }),
       watch: (workspaceId: string, mode: 'active' | 'background') => post<DepositWatch>(`/workspaces/${id(workspaceId)}/wallet/watch`, { mode }),
+      /** Deposits credited to the workspace wallet, with their approval (deposit confirmations). */
+      deposits: (workspaceId: string) => get<DepositConfirmation[]>(`/workspaces/${id(workspaceId)}/deposits`),
+      addDeposit: (workspaceId: string, txHash: string) => post<DepositConfirmation>(`/workspaces/${id(workspaceId)}/deposits`, { txHash }),
+      approveDeposit: (workspaceId: string, txHash: string, note: string | null) =>
+        put<DepositConfirmation>(`/workspaces/${id(workspaceId)}/deposits/${id(txHash)}/approval`, { note }),
+      unapproveDeposit: (workspaceId: string, txHash: string) =>
+        request<DepositConfirmation>('DELETE', `/workspaces/${id(workspaceId)}/deposits/${id(txHash)}/approval`),
       /** The authorized wallet (AntseedDeposits operator); `fresh` re-reads the chain (the gateway throttles it). */
       operator: (workspaceId: string, fresh = false) =>
         get<OperatorState>(`/workspaces/${id(workspaceId)}/wallet/operator`, { fresh: fresh ? 1 : undefined }),
@@ -221,7 +236,7 @@ export function createApiClient(fetchImpl: FetchLike = (input, init) => fetch(in
       /** `fresh` re-reads the channels from the chain now (after a close request or withdrawal). */
       channels: (workspaceId: string, all = false, fresh = false) =>
         get<Channel[]>(`/workspaces/${id(workspaceId)}/channels`, { all: all ? 1 : undefined, fresh: fresh ? 1 : undefined }),
-      closeChannel: (workspaceId: string, peerId: string) => post<{ ok: true }>(`/workspaces/${id(workspaceId)}/channels/close`, { peerId }),
+      closeChannel: (workspaceId: string, peerId: string, channelId: string) => post<{ ok: true }>(`/workspaces/${id(workspaceId)}/channels/close`, { peerId, channelId }),
       rewards: (workspaceId: string) => get<Rewards>(`/workspaces/${id(workspaceId)}/rewards`),
       chain: () => get<ChainInfo>('/chain'),
     },
@@ -251,7 +266,11 @@ export function createApiClient(fetchImpl: FetchLike = (input, init) => fetch(in
       peers: () => get<Peer[]>('/peers'),
       /** Every model on the network, unfiltered, with the sellers offering it. */
       models: () => get<NetworkModel[]>('/models'),
+      /** Every routing service on the network, one per seller offering it. */
+      routers: () => get<NetworkRouter[]>('/routers'),
       routePreview: (query: { model: string; workspace?: string; key?: string; member?: string; preset?: string }) => get<RoutePreview>('/route-preview', query),
+      /** Org admins: forget what the buyer has seen of a seller, so automatic routing gives it a fresh start. */
+      resetSellerHistory: (peerId: string) => post<{ ok: true }>('/routing/seller-history/reset', { peerId }),
       gatewayPolicy: () => get<RoutingPolicy>('/routing'),
       buyerLimits: () => get<BuyerLimits>('/routing/buyer-limits'),
       /** The body is the policy itself, so save flags go in the query string. */
@@ -275,6 +294,12 @@ export function createApiClient(fetchImpl: FetchLike = (input, init) => fetch(in
       updateBuyer: (input: BuyerSettingsInput) => patch<SettingsResult>('/settings/buyer', input),
       setObservability: (input: ObservabilitySettings) => put<SettingsResult>('/settings/observability', input),
     },
+    update: {
+      get: () => get<GatewayUpdate>('/update'),
+      check: () => post<GatewayUpdate>('/update/check'),
+      /** `download` fetches the new version; `install` switches to it and restarts. */
+      apply: (action: 'download' | 'install') => post<GatewayUpdate>('/update', { action }),
+    },
   }
 }
 
@@ -282,6 +307,8 @@ export interface UsageFilter {
   workspace?: string
   key?: string
   member?: string
+  /** Only requests this routing service ranked (its peer id). */
+  router?: string
   from?: number
   to?: number
 }

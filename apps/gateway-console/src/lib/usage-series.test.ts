@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { UsageReport } from '../api/types'
 import {
-  COST_PENDING_MS, OTHERS_GROUP, OTHER_SERIES, bucketReports, chartGrouping, columnRequests, costStatus, groupLabel, groupStart, rangeBuckets, stackSeries, tokenSeries,
+  COST_PENDING_MS, OTHERS_GROUP, OTHER_SERIES, bucketReports, chartGrouping, columnRequests, costStatus, groupLabel, groupStart, rangeBuckets, routerOutcome, stackSeries, tokenSeries,
 } from './usage'
 
 const NOW = Date.UTC(2026, 9, 8, 15, 30)
@@ -116,6 +116,17 @@ describe('one-request chart data', () => {
   })
 })
 
+describe('routerOutcome', () => {
+  it('names the pick that served a request, and never says a failed one was served', () => {
+    expect(routerOutcome(1, 200)).toBe('its first pick served it')
+    expect(routerOutcome(2, 200)).toBe('its pick #2 served it (the ones before failed)')
+    expect(routerOutcome(1, 503)).toBe('its first pick failed')
+    expect(routerOutcome(2, 503)).toBe('its picks #1–2 all failed')
+    expect(routerOutcome(2, null)).toBe('trying its pick #2')
+    expect(routerOutcome(null, 502)).toBe('ranking failed')
+  })
+})
+
 describe('costStatus', () => {
   const base = { startedAt: NOW - 2000, finishedAt: NOW - 1000 }
   it('shows spend once recorded', () => {
@@ -130,8 +141,20 @@ describe('costStatus', () => {
     expect(costStatus({ ...base, spent: null, servedFree: true }, NOW)).toBe('free')
     expect(costStatus({ ...base, spent: null, servedFree: true }, NOW + COST_PENDING_MS * 2)).toBe('free')
   })
+  it('stays pending while a routed request has only its router\'s fee', () => {
+    expect(costStatus({ ...base, spent: '0.000100', costPending: true }, NOW)).toBe('pending')
+    expect(costStatus({ ...base, spent: '0.000100', costPending: true }, NOW - 1000 + COST_PENDING_MS)).toBe('not-recorded')
+    expect(costStatus({ ...base, spent: '0.020100' }, NOW)).toBe('spent')
+  })
   it('has nothing to show for a failed request', () => {
     expect(costStatus({ ...base, spent: null }, NOW)).toBeNull()
+  })
+  it('shows a video create its job charge, on delivery until then, and never pends on a status poll', () => {
+    expect(costStatus({ ...base, spent: null, servedFree: true, video: { action: 'create', jobId: 'j', charged: null } }, NOW + COST_PENDING_MS * 2)).toBe('on-delivery')
+    expect(costStatus({ ...base, spent: null, video: { action: 'create', jobId: 'j', charged: '0.330000' } }, NOW)).toBe('video-charged')
+    expect(costStatus({ ...base, spent: null, video: { action: 'poll', jobId: 'j', charged: null } }, NOW + COST_PENDING_MS * 2)).toBe('not-charged')
+    expect(costStatus({ ...base, spent: '0.330000', video: { action: 'delivery', jobId: 'j', charged: null } }, NOW)).toBe('spent')
+    expect(costStatus({ ...base, spent: null, costPending: true, video: { action: 'delivery', jobId: 'j', charged: null } }, NOW)).toBe('pending')
   })
 })
 

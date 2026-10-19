@@ -6,6 +6,8 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { createConnection } from 'node:net'
 import { getGlobalOptions } from '../types.js'
+import pkg from '../../../../package.json' with { type: 'json' }
+import { watchForUpdates } from '../../../update/watch.js'
 import { loadConfig } from '../../../config/loader.js'
 import { AntseedNode, DepositRelayClient, DepositsClient, getInstance, peerRelaysSweeps, readReferralState, resolveChainConfig } from '@antseed/node'
 import type { Identity, NodePaymentsConfig } from '@antseed/node'
@@ -16,7 +18,7 @@ import { walletPassphraseForStart } from '../../wallet-passphrase.js'
 import { loadRouterPlugin, loadVerifierPlugin, buildPluginConfig, getPackageVersions } from '../../../plugins/loader.js'
 import { ensurePluginsUpToDate } from '../../../plugins/drift.js'
 import { resolvePluginPackage } from '../../../plugins/registry.js'
-import { BUYER_RESTART_EXIT_CODE, BuyerProxy, type DepositWatcherAbsenceReason } from '../../../proxy/buyer-proxy.js'
+import { BUYER_RESTART_EXIT_CODE, BUYER_SHUTDOWN_DEADLINE_MS, BuyerProxy, type DepositWatcherAbsenceReason } from '../../../proxy/buyer-proxy.js'
 import { DEPOSIT_WATCH_ACTIVE_INTERVAL_MS, DepositWatcher } from '../../../proxy/deposit-watcher.js'
 import { DepositWatchHub } from '../../../proxy/deposit-watch-hub.js'
 import { CachedBuyerChainReader, constantRelayReads } from '../../../proxy/buyer-chain-reader.js'
@@ -28,8 +30,7 @@ import { curatedVerifierIds, resolveVerifierPolicy, type VerifierPolicy } from '
 import { buyerSettingOverrides, resolveEffectiveBuyerConfig, type BuyerRuntimeOverrides } from '../../../config/effective.js'
 import type { BuyerCLIConfig } from '../../../config/types.js'
 
-/** How long a graceful shutdown may take before the process exits anyway. */
-const SHUTDOWN_DEADLINE_MS = 15_000
+const SHUTDOWN_DEADLINE_MS = BUYER_SHUTDOWN_DEADLINE_MS
 
 interface LocalSeederInfo {
   dhtPort: number
@@ -398,6 +399,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
           // seller can extract via an inflated 402 target (per 402 round trip).
           maxPerRequestUsdc: config.payments?.maxPerRequestUsdc ?? '300000',
           maxReserveAmountUsdc: config.payments?.maxReserveAmountUsdc ?? '1000000',
+          ...(config.payments?.maxVideoRequestUsdc ? { maxVideoRequestUsdc: config.payments.maxVideoRequestUsdc } : {}),
           disableMetadataV2Services: effectiveBuyerConfig.disableMetadataV2Services,
         }
       }
@@ -692,7 +694,12 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
           // cadence. The default wallet keeps its earlier behavior.
           ...(shared && effectiveBuyerConfig.autoSweep === false ? { idleIntervalMs: null } : {}),
           onEvent: (event) => {
-            if (event.phase === 'credited') proxy.invalidateBalances(identity.wallet.address)
+            if (event.phase !== 'credited') return
+            proxy.invalidateBalances(identity.wallet.address)
+            // Kept for the gateway's deposit confirmations; the hash can arrive in a second 'credited' event.
+            if (event.txHash && event.amountBaseUnits) {
+              proxy.recordDeposit(identity.wallet.address, { txHash: event.txHash, creditedBaseUnits: event.amountBaseUnits, at: event.at })
+            }
           },
           usdcAddress: chainConfig.usdcContractAddress,
           evmChainId: chainConfig.evmChainId,
@@ -742,6 +749,10 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       console.log(chalk.dim('Filter debug logs: antseed buyer start --log-filter ProxyMux'))
       console.log('')
 
-      setupShutdownHandler(() => runShutdown())
+      // A buyer the gateway runs leaves this to the gateway, which tells its console too.
+      const updateWatch = process.env['ANTSEED_SUPERVISED'] === '1' || process.env['ANTSEED_UPDATER_REQUEST']
+        ? null
+        : watchForUpdates({ dataDir: globalOpts.dataDir, current: pkg.version, running: 'buyer', log: (line) => console.log(chalk.yellow(line)) })
+      setupShutdownHandler(() => { updateWatch?.stop(); return runShutdown() })
     })
 }

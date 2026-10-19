@@ -6,7 +6,7 @@ const ids = (orgRole: 'owner' | 'admin' | 'member', workspaceRole: 'admin' | 'me
 
 describe('role-based navigation', () => {
   it('shows everything to owners and org admins', () => {
-    const all = ['overview', 'chat', 'activity', 'logs', 'keys', 'presets', 'wallet', 'rewards', 'referrals', 'providers', 'models', 'routing', 'members', 'workspaces', 'builders', 'audit', 'settings']
+    const all = ['overview', 'chat', 'activity', 'logs', 'keys', 'presets', 'wallet', 'rewards', 'referrals', 'staking', 'providers', 'models', 'routing', 'members', 'workspaces', 'builders', 'audit', 'settings']
     expect(ids('owner', null)).toEqual(all)
     expect(ids('admin', 'member')).toEqual(all)
   })

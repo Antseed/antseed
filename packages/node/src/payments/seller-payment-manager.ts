@@ -45,6 +45,9 @@ export interface SellerPaymentConfig {
 
 /** Default minimum budget per request: $0.50 USDC (base units). */
 const DEFAULT_MIN_BUDGET_PER_REQUEST = '500000';
+/** How long a channel close waits for requests already being served before it goes ahead. */
+const IDLE_CLOSE_DRAIN_MS = 15 * 60_000;
+const IDLE_CLOSE_POLL_MS = 250;
 
 /** ~200× typical Base settle gas cost at 0.006 gwei. */
 export const DEFAULT_MIN_SETTLE_DELTA_STR = '2000';
@@ -65,6 +68,13 @@ const INSUFFICIENT_BALANCE_SELECTOR = '0xf4d678b8';
 const IN_FLIGHT_TX_LIMIT_PHRASE = 'in-flight transaction limit';
 /** Backoff stays well inside the buyer's 30-second AuthAck timeout. */
 const RESERVE_BACKPRESSURE_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000, 4_000] as const;
+/**
+ * Retries for a write that follows a reserve and reverts ChannelNotActive:
+ * the RPC node serving it has not seen the reserve's block yet.
+ */
+const CHANNEL_VISIBILITY_RETRY_DELAYS_MS = [500, 1_000, 2_000, 4_000] as const;
+/** `ChannelNotActive()` selector, matched when ethers could not decode the revert. */
+const CHANNEL_NOT_ACTIVE_SELECTOR = '0xac853123';
 
 /** How long a one-off plan offered in a 402 stays valid for the buyer's opening auth. */
 const ONE_OFF_PLAN_TTL_MS = 2 * 60_000;
@@ -73,8 +83,20 @@ const ONE_OFF_PLAN_TTL_MS = 2 * 60_000;
  * releasing the buyer's reserve. Long enough to finish and download a video.
  */
 export const ONE_OFF_CHANNEL_TTL_MS = 24 * 60 * 60_000;
+/**
+ * A channel reserved this recently may not show on-chain yet: an RPC can
+ * return the reserve receipt before its reads serve that block. Within this
+ * window a missing channel is checked again later instead of being evicted.
+ */
+export const RESERVE_VISIBILITY_GRACE_MS = 5 * 60_000;
 /** A one-off channel whose request never started is closed after this long. */
 export const ONE_OFF_UNCLAIMED_TTL_MS = 10 * 60_000;
+/** How often channels whose close was given up on are retried. */
+export const TIMED_OUT_CLOSE_RETRY_INTERVAL_MS = 10 * 60_000;
+/** Most timed-out channels retried in one pass. */
+const TIMED_OUT_CLOSE_RETRY_BATCH = 20;
+/** Slow-cadence attempts with the buyer's latest auth before closing at the settled amount (~1 hour). */
+const TIMED_OUT_AUTH_CLOSE_ATTEMPTS = 6;
 
 interface PendingOneOffPlan {
   openingReserveAmount: bigint;
@@ -175,6 +197,8 @@ export class SellerPaymentManager {
 
   /** Channels that must not serve more paid work until closed/renegotiated. */
   private readonly _blockedChannels = new Set<string>();
+  /** channelId -> close waiting for in-flight requests (closeSessionWhenIdle). */
+  private readonly _idleCloses = new Map<string, Promise<void>>();
 
   /**
    * channelId -> in-flight close() result. Every close path shares this map so
@@ -213,6 +237,11 @@ export class SellerPaymentManager {
 
   /** Max close() retries before giving up (buyer must requestClose on-chain) */
   private static readonly MAX_CLOSE_RETRIES = 3;
+
+  /** When timed-out channels were last retried (ms). */
+  private _lastTimedOutCloseRetryAt = 0;
+  /** Slow-cadence close attempts per timed-out channel, using the buyer's latest auth. */
+  private readonly _timedOutCloseAttempts = new Map<string, number>();
 
   constructor(identity: Identity, config: SellerPaymentConfig, channelStore: ChannelStore) {
     this._config = config;
@@ -301,6 +330,7 @@ export class SellerPaymentManager {
           await this._channelsClient.getSession(channel.sessionId),
         );
 
+        if (!onChainState.exists && this._mayNotBeVisibleYet(channel)) continue;
         if (!onChainState.exists || (onChainState.status !== 'active' && onChainState.status !== 'unknown')) {
           this._evictStaleChannel(channel.sessionId, channel.peerId, `on-chain status=${onChainState.exists ? onChainState.status : 'missing'}`);
           evicted++;
@@ -346,6 +376,11 @@ export class SellerPaymentManager {
     if (evicted > 0) {
       debugLog(`[SellerPayment] Startup validation: evicted ${evicted}/${activeChannels.length} stale channel(s)`);
     }
+  }
+
+  /** Reserved too recently for a missing on-chain record to mean the channel is gone. */
+  private _mayNotBeVisibleYet(channel: StoredChannel): boolean {
+    return Date.now() - channel.reservedAt < RESERVE_VISIBILITY_GRACE_MS;
   }
 
   private _evictStaleChannel(
@@ -1103,9 +1138,39 @@ export class SellerPaymentManager {
       BigInt(reserveDeadline),
       payload.spendingAuthSig,
     ));
+    const now = Date.now();
+    const { seller: sellerEvmAddr } = await this._resolvedAddresses!;
     if (batch) {
+      // Record the reserve before the top-up: if anything below fails, the
+      // channel still holds the buyer's funds and must stay known so the
+      // one-off check closes it, rather than leaving an orphan on-chain.
+      this._channelStore.upsertChannel({
+        sessionId: channelId,
+        peerId: buyerPeerId,
+        role: CHANNEL_ROLE.SELLER,
+        channelKind: CHANNEL_KIND.ONE_OFF,
+        oneOffRequestId: requestId,
+        sellerEvmAddr,
+        buyerEvmAddr,
+        nonce: 0,
+        authMax: '0',
+        previousConsumption: openingReserve.toString(), // repurposed: stores reserveMax
+        deadline: reserveDeadline,
+        previousSessionId: '',
+        tokensDelivered: '0',
+        requestCount: 0,
+        reservedAt: now,
+        settledAt: null,
+        settledAmount: null,
+        status: CHANNEL_STATUS.ACTIVE,
+        latestBuyerSig: payload.spendingAuthSig,
+        latestSpendingAuthSig: null,
+        latestMetadata: payload.metadata,
+        createdAt: now,
+        updatedAt: now,
+      });
       try {
-        await this._channelsClient.topUp(
+        await this._retryUntilChannelVisible(channelId, 'top-up', () => this._channelsClient.topUp(
           this._signer,
           channelId,
           latestAuth.cumulativeAmount,
@@ -1114,19 +1179,17 @@ export class SellerPaymentManager {
           finalReserve,
           BigInt(finalDeadline),
           batch.reserveAuthSig,
-        );
+        ));
       } catch (err) {
-        try {
-          await this._channelsClient.close(this._signer, channelId, 0n, encodeMetadata(ZERO_METADATA), '0x');
-        } catch (closeErr) {
-          debugWarn(`[SellerPayment] Failed to release one-off reserve after top-up failure: ${this._formatError(closeErr)}`);
+        this._oneOffChannelIds.add(channelId);
+        this._reserveMax.set(channelId, openingReserve);
+        if (!(await this.closeOneOffChannel(channelId, 'top-up failed'))) {
+          debugWarn(`[SellerPayment] Failed to release one-off reserve after top-up failure; the one-off check retries the close`);
         }
         throw err;
       }
     }
 
-    const now = Date.now();
-    const { seller: sellerEvmAddr } = await this._resolvedAddresses!;
     const session: StoredChannel = {
       sessionId: channelId,
       peerId: buyerPeerId,
@@ -1225,6 +1288,7 @@ export class SellerPaymentManager {
     for (const channel of this._channelStore.getActiveChannels(CHANNEL_ROLE.SELLER, CHANNEL_KIND.ONE_OFF)) {
       try {
         const state = classifyOnChainChannel(await this._channelsClient.getSession(channel.sessionId));
+        if (!state.exists && this._mayNotBeVisibleYet(channel)) continue;
         if (!state.exists || (state.status !== 'active' && state.status !== 'unknown')) {
           this._evictStaleChannel(channel.sessionId, channel.peerId, `one-off on-chain status=${state.exists ? state.status : 'missing'}`);
           continue;
@@ -1318,6 +1382,24 @@ export class SellerPaymentManager {
           `[SellerPayment] Reserve hit transaction backpressure for ${channelId.slice(0, 18)}... ` +
           `— retrying in ${delayMs}ms: ${this._formatError(err)}`,
         );
+        await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+  }
+
+  private async _retryUntilChannelVisible(
+    channelId: string,
+    label: string,
+    submit: () => Promise<string>,
+  ): Promise<string> {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await submit();
+      } catch (err) {
+        const delayMs = CHANNEL_VISIBILITY_RETRY_DELAYS_MS[attempt];
+        const text = this._flattenErrorText(err);
+        if (delayMs === undefined || !(text.includes('ChannelNotActive') || text.includes(CHANNEL_NOT_ACTIVE_SELECTOR))) throw err;
+        debugWarn(`[SellerPayment] ${label} for ${channelId.slice(0, 18)}... does not see the reserve yet — retrying in ${delayMs}ms`);
         await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
       }
     }
@@ -1831,6 +1913,7 @@ export class SellerPaymentManager {
         const onChainState = classifyOnChainChannel(
           await this._channelsClient.getSession(channel.sessionId),
         );
+        if (!onChainState.exists && this._mayNotBeVisibleYet(channel)) continue;
         if (!onChainState.exists || (onChainState.status !== 'active' && onChainState.status !== 'unknown')) {
           this._evictStaleChannel(channel.sessionId, channel.peerId, `periodic check: on-chain status=${onChainState.exists ? onChainState.status : 'missing'}`);
           continue;
@@ -1869,6 +1952,92 @@ export class SellerPaymentManager {
         debugWarn(`[SellerPayment] Failed to process channel ${channel.sessionId.slice(0, 18)}...: ${err instanceof Error ? err.message : err}`);
       }
     }
+
+    await this._retryTimedOutCloses();
+  }
+
+  /**
+   * Retry closing channels whose close attempts were exhausted (status
+   * timeout) but which may still be open on-chain, holding the buyer's
+   * reserve. Runs at a slow cadence. The buyer's latest SpendingAuth is tried
+   * first; once that keeps failing the channel is closed at the amount already
+   * settled on-chain, which releases the rest of the reserve to the buyer.
+   *
+   * A channel stays eligible, however old, until a settlement is recorded for
+   * it: on a successful close, or once the chain shows it ended. Each attempt
+   * refreshes the row, so the batch moves on to channels not tried yet.
+   */
+  private async _retryTimedOutCloses(): Promise<void> {
+    const now = Date.now();
+    if (now - this._lastTimedOutCloseRetryAt < TIMED_OUT_CLOSE_RETRY_INTERVAL_MS) return;
+    this._lastTimedOutCloseRetryAt = now;
+
+    const channels = this._channelStore.getUnsettledChannelsByStatus(
+      CHANNEL_ROLE.SELLER,
+      CHANNEL_STATUS.TIMEOUT,
+      TIMED_OUT_CLOSE_RETRY_BATCH,
+    );
+    for (const channel of channels) {
+      const channelId = channel.sessionId;
+      if (this._closingChannels.has(channelId)) continue;
+      try {
+        const state = classifyOnChainChannel(await this._channelsClient.getSession(channelId));
+        if (state.status === CHANNEL_STATUS.SETTLED) {
+          this._channelStore.updateChannelStatus(channelId, CHANNEL_STATUS.SETTLED, state.channel.settled.toString());
+          this._timedOutCloseAttempts.delete(channelId);
+          continue;
+        }
+        if (!state.exists || state.status === CHANNEL_STATUS.TIMEOUT) {
+          // Withdrawn by the buyer: nothing left for the seller to close.
+          const settled = state.exists ? state.channel.settled : 0n;
+          this._channelStore.updateChannelStatus(channelId, CHANNEL_STATUS.TIMEOUT, settled.toString());
+          this._timedOutCloseAttempts.delete(channelId);
+          continue;
+        }
+        if (state.status !== CHANNEL_STATUS.ACTIVE) {
+          // Partial RPC data; read it again on a later pass.
+          this._channelStore.updateChannelStatus(channelId, CHANNEL_STATUS.TIMEOUT);
+          continue;
+        }
+
+        const attempts = this._timedOutCloseAttempts.get(channelId) ?? 0;
+        const authAmount = BigInt(channel.authMax || '0');
+        const authSig = channel.latestSpendingAuthSig;
+        const authUsable = attempts < TIMED_OUT_AUTH_CLOSE_ATTEMPTS
+          && authAmount > state.channel.settled
+          && authAmount <= state.channel.deposit;
+        // Closing at the settled amount needs no signature; the contract skips verification.
+        const { amount, metadata, sig, useAuth } = authSig && authUsable
+          ? { amount: authAmount, metadata: channel.latestMetadata || encodeMetadata(ZERO_METADATA), sig: authSig, useAuth: true }
+          : { amount: state.channel.settled, metadata: '0x', sig: '0x', useAuth: false };
+
+        debugLog(
+          `[SellerPayment] Retrying close of timed-out channel ${channelId.slice(0, 18)}... ` +
+          `at ${amount} (${useAuth ? 'latest auth' : 'settled amount'})`,
+        );
+        const closeResult = await this._submitClose(
+          channelId,
+          amount,
+          () => this._channelsClient.close(this._signer, channelId, amount, metadata, sig),
+        );
+        if (closeResult.closed) {
+          this._channelStore.updateChannelStatus(channelId, CHANNEL_STATUS.SETTLED, closeResult.amount.toString());
+          this._timedOutCloseAttempts.delete(channelId);
+          continue;
+        }
+        if (useAuth && !this._isRetryableTxSubmissionFailure(closeResult.error)) {
+          this._timedOutCloseAttempts.set(channelId, attempts + 1);
+        }
+        this._channelStore.updateChannelStatus(channelId, CHANNEL_STATUS.TIMEOUT);
+        debugWarn(
+          `[SellerPayment] Retry close of timed-out channel ${channelId.slice(0, 18)}... failed: ` +
+          `${this._formatError(closeResult.error)}`,
+        );
+      } catch (err) {
+        this._channelStore.updateChannelStatus(channelId, CHANNEL_STATUS.TIMEOUT);
+        debugWarn(`[SellerPayment] Failed to retry timed-out channel ${channelId.slice(0, 18)}...: ${this._formatError(err)}`);
+      }
+    }
   }
 
   /**
@@ -1881,6 +2050,9 @@ export class SellerPaymentManager {
    */
   private async _closeSupersededChannel(channel: StoredChannel): Promise<boolean> {
     const channelId = channel.sessionId;
+    // Requests still being served bill this channel; the buyer retries the
+    // replacement once they are done.
+    if (this.hasInFlightRequests(channel.peerId)) return false;
     const accepted = this._acceptedCumulative.get(channelId)
       ?? this._restorePersistedSpendingAuth(channel)
       ?? 0n;
@@ -1974,6 +2146,62 @@ export class SellerPaymentManager {
   }
 
   // ── Queries ───────────────────────────────────────────────────
+
+  /**
+   * Stop serving a buyer's channel when its SpendingAuth can no longer be
+   * received (e.g. it exceeds the payment frame limit). The close at the last
+   * accepted auth starts right away, so the buyer's reserve is on its way back
+   * before the next request answers 402 channel_exhausted and the buyer opens
+   * a replacement, instead of retrying the same channel forever.
+   */
+  blockChannelForBuyer(buyerPeerId: string, reason: string): boolean {
+    const session = this._channelStore.getActiveChannelByPeer(buyerPeerId, CHANNEL_ROLE.SELLER);
+    if (!session || this._blockedChannels.has(session.sessionId)) return false;
+    this._blockedChannels.add(session.sessionId);
+    debugWarn(
+      `[SellerPayment] Blocking channel ${session.sessionId.slice(0, 18)}... for buyer ${buyerPeerId.slice(0, 12)}...: ${reason}`,
+    );
+    void this.closeSessionWhenIdle(buyerPeerId).catch((err) => {
+      debugWarn(`[SellerPayment] Failed to close blocked channel ${session.sessionId.slice(0, 18)}...: ${this._formatError(err)}`);
+    });
+    return true;
+  }
+
+  /**
+   * Close the buyer's active channel once the requests it is already serving
+   * have recorded their spend on it; one close per channel however many
+   * callers ask. Requests admitted earlier would otherwise lose their billing
+   * or charge it to a replacement channel.
+   */
+  closeSessionWhenIdle(buyerPeerId: string): Promise<void> {
+    const session = this._channelStore.getActiveChannelByPeer(buyerPeerId, CHANNEL_ROLE.SELLER);
+    if (!session) return Promise.resolve();
+    const channelId = session.sessionId;
+    const pending = this._idleCloses.get(channelId);
+    if (pending) return pending;
+    const close = (async () => {
+      const drainDeadline = Date.now() + IDLE_CLOSE_DRAIN_MS;
+      while (this.hasInFlightRequests(buyerPeerId) && Date.now() < drainDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, IDLE_CLOSE_POLL_MS));
+      }
+      if (this._channelStore.getActiveChannelByPeer(buyerPeerId, CHANNEL_ROLE.SELLER)?.sessionId !== channelId) return;
+      if ((this._acceptedCumulative.get(channelId) ?? 0n) > 0n || !this._blockedChannels.has(channelId)) {
+        await this.settleSession(buyerPeerId);
+        return;
+      }
+      // A blocked channel with nothing accepted: settleSession would only
+      // defer to the timeout checker and forget the block. Close at the
+      // on-chain settled amount (no signature needed) so the reserve is
+      // released now; if that fails the channel stays blocked and the timeout
+      // checker retries.
+      const onChain = classifyOnChainChannel(await this._channelsClient.getSession(channelId));
+      if (onChain.status === 'active') {
+        await this._closeWithoutAuth(channelId, buyerPeerId, onChain.channel.settled);
+      }
+    })().finally(() => this._idleCloses.delete(channelId));
+    this._idleCloses.set(channelId, close);
+    return close;
+  }
 
   hasSession(buyerPeerId: string): boolean {
     return this._activeBuyers.has(buyerPeerId);

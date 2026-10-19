@@ -1,7 +1,7 @@
 import { HugeiconsIcon } from '@hugeicons/react';
 import { ArrowRight01Icon, ArrowUpRight01Icon, GlobalIcon } from '@hugeicons/core-free-icons';
 import { usePublicEndpointModal } from '../tunnels/PublicEndpointModal';
-import { BrandIcon } from '../brand/BrandIcon';
+import { BrandIcon } from '@antseed/ui';
 import { VprPage } from '../vpr/VprKit';
 import styles from './VprToolsView.module.scss';
 import tunnelStyles from './VprTunnelsView.module.scss';

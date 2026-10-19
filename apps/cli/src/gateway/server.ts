@@ -1,11 +1,14 @@
 import { timingSafeEqual } from 'node:crypto'
 import * as http from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { DEFAULT_BUYER_IDENTITY } from '@antseed/node'
+import { nativeVideoAcceptance, nativeVideoRoute, type NativeVideoRoute } from '@antseed/api-adapter'
+import { DEFAULT_BUYER_IDENTITY, VIDEO_JOB_RETIRED_HEADER, VIDEO_PRICE_HEADER } from '@antseed/node'
 import { SPEND_ATTRIBUTION_HEADER } from '../proxy/spend-attribution.js'
-import { BUYER_IDENTITY_HEADER } from '../proxy/request-utils.js'
+import { decodeServedSelection, ROUTE_SELECTION_HEADER, type ServedSelection } from '../proxy/route-selection.js'
+import { ROUTER_PEER_ID_HEADER, ROUTER_RANK_HEADER, ROUTER_SERVICE_HEADER } from '../proxy/telemetry.js'
+import { BUYER_IDENTITY_HEADER, MAX_VIDEO_COST_HEADER } from '../proxy/request-utils.js'
 import { GATEWAY_CONTROL_HEADER, ROUTING_POLICY_HEADER, encodePolicyHeader, meaningfulPolicy, policyAllowsModel, type RoutingPolicy } from '../routing-policy/policy.js'
-import { effectiveKeyLimits, newRequestTag, type GatewayAccounting, type KeyContext } from './accounting.js'
+import { effectiveKeyLimits, newRequestTag, videoJobKey, type AdmitOptions, type GatewayAccounting, type KeyContext } from './accounting.js'
 import { errorMessage } from './errors.js'
 import { isClientCredentialHeader } from '../proxy/credential-headers.js'
 import { parseBearerToken } from './keys.js'
@@ -31,7 +34,7 @@ import {
   type X402Asset,
   type X402Facilitator,
 } from './x402.js'
-import type { ApiKeyRecord, GatewayStore, PresetRecord, RequestError } from './store.js'
+import type { ApiKeyRecord, GatewayStore, PresetRecord, RequestError, RequestRouter } from './store.js'
 
 /**
  * The gateway's own components (the console chat agent) call `/v1` as a key
@@ -51,15 +54,27 @@ const HOP_BY_HOP = new Set([
   'upgrade',
 ])
 
-/** Bodies are buffered to read the model for metrics; the buyer buffers them too. */
-const MAX_MODEL_SNIFF_BYTES = 4 * 1024 * 1024
-/** Largest request body the gateway accepts, matching the buyer's default upload limit. */
+/**
+ * Largest request body the gateway accepts, matching the buyer's default
+ * upload limit. Every accepted body is parsed to read its model, the way the
+ * buyer reads it: that model decides the preset, the allow list and the
+ * accounting, so the two must never disagree about it.
+ */
 const MAX_BODY_BYTES = 64 * 1024 * 1024
 /** How much of a failed response is read for its error code and message. */
 const MAX_ERROR_BODY_BYTES = 16 * 1024
 const MAX_ERROR_MESSAGE_CHARS = 500
 /** Request and response bodies kept per request while content logging is on. */
 const MAX_LOGGED_CONTENT_BYTES = 64 * 1024
+/**
+ * A buyer that refuses connections is restarting (an update, a console
+ * restart): requests wait this long for it instead of failing. It covers the
+ * buyer's shutdown drain and its startup.
+ */
+const BUYER_RESTART_HOLD_MS = 120_000
+const BUYER_RETRY_INTERVAL_MS = 500
+/** On shutdown, requests in flight get this long to finish before they are closed. */
+const SHUTDOWN_DRAIN_MS = 60_000
 const RETENTION_SWEEP_MS = 60 * 60 * 1000
 const DAY_MS = 24 * 60 * 60 * 1000
 /** Why a key with caps cannot be served while its buyer's spend feed is not reporting. */
@@ -85,6 +100,11 @@ const ALLOWED_ROUTES: ReadonlyArray<{ method: string; prefix: string; paid: bool
   { method: 'POST', prefix: '/v1/responses', paid: true },
   { method: 'POST', prefix: '/v1/images/generations', paid: true },
   { method: 'POST', prefix: '/v1/images/edits', paid: true },
+  // Native video jobs, as the buyer serves them: queue, then poll retrieve until it streams the MP4 (charged on delivery).
+  { method: 'POST', prefix: '/api/v1/video/queue', paid: true },
+  { method: 'POST', prefix: '/api/v1/video/retrieve', paid: true },
+  { method: 'POST', prefix: '/fal/v1/video/queue', paid: true },
+  { method: 'POST', prefix: '/fal/v1/video/retrieve', paid: true },
 ]
 
 interface CanonicalRoute {
@@ -117,6 +137,10 @@ interface ForwardedRequest {
    * narrowed to here, since without a control secret the buyer never sees it.
    */
   modelListPolicy: RoutingPolicy | null
+  /** A native video create or retrieve: only the retrieve that delivers the file is charged. */
+  video: NativeVideoRoute | null
+  /** Room left under the key's caps at admission (a video create's reserved allowance); null when nothing is capped. */
+  remainingUsdc: number | null
 }
 
 export interface GatewayServerOptions {
@@ -127,6 +151,12 @@ export interface GatewayServerOptions {
   identityAddress: (buyerIdentity: string) => Promise<string | null>
   spendFeedState: () => SpendFeedState
   refreshSpendFeed: () => Promise<void>
+  /**
+   * Whether the buyer refuses a video priced above the room it is told about
+   * (older buyers ignore it). Without it, video creates of capped keys are
+   * refused: the price must be checked before a job starts.
+   */
+  videoBudgetEnforced?: () => boolean
   /** x402 top-ups into a key's buyer wallet; null disables `POST /v1/key/topup`. */
   topup?: GatewayTopupOptions | null
   listenPort?: number
@@ -144,6 +174,10 @@ export interface GatewayServerOptions {
   console?: { handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<boolean> } | null
   /** Span exporter; defaults to one reading the observability settings from the store. */
   exporter?: OtlpExporter
+  /** How long a request waits for a buyer that refuses connections (restarting); default BUYER_RESTART_HOLD_MS. */
+  buyerRestartHoldMs?: number
+  /** How long `stop()` lets requests in flight finish before closing them; default SHUTDOWN_DRAIN_MS. */
+  shutdownDrainMs?: number
 }
 
 export interface GatewayTopupOptions {
@@ -220,9 +254,23 @@ export class GatewayServer {
     this._port = 0
     if (this._retentionTimer) clearInterval(this._retentionTimer)
     this._retentionTimer = null
+    if (!server) {
+      await this._exporter.stop()
+      return
+    }
+    // Stop accepting (a proxy in front retries elsewhere or waits for the next
+    // process), let requests in flight finish, then close what is left.
+    const closed = new Promise<void>((resolve) => server.close(() => resolve()))
+    const drain = setTimeout(() => server.closeAllConnections(), this._options.shutdownDrainMs ?? SHUTDOWN_DRAIN_MS)
+    drain.unref?.()
+    await closed
+    clearTimeout(drain)
     await this._exporter.stop()
-    if (!server) return
-    await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
+
+  /** Whether the gateway should keep waiting for a buyer that has refused connections since `since`. */
+  private _holdForBuyer(since: number): boolean {
+    return this._server !== null && Date.now() - since < (this._options.buyerRestartHoldMs ?? BUYER_RESTART_HOLD_MS)
   }
 
   private _log(message: string): void {
@@ -254,7 +302,14 @@ export class GatewayServer {
 
     // Caps are only as good as the spend that reaches the ledger, so a key
     // with caps fails closed while its buyer is not reporting spend.
-    if (route.paid && this._options.accounting.hasBudgets(key, context) && !await this._spendFeedReporting(res)) return
+    if (route.paid && this._options.accounting.hasBudgets(key, context)) {
+      if (!await this._spendFeedReporting(res)) return
+      // Caps count accepted video jobs; refuse rather than admit against commitments that could be lost.
+      if (!this._options.accounting.videoCommitmentsReady()) {
+        sendError(res, 503, 'api_error', 'spend_tracking_unavailable', 'Spend limits cannot be applied right now: video jobs could not be stored. Try again shortly.')
+        return
+      }
+    }
 
     let body = await readBody(req)
     if (!body) return sendBodyTooLarge(res)
@@ -283,8 +338,21 @@ export class GatewayServer {
 
     const policy = this._routingPolicy(res, route, key, context, preset, model)
     if (!policy.allowed) return
-    const tag = this._admit(res, route, key, context)
-    if (!tag) return
+    const video = nativeVideoRoute({ method, path: route.prefix, body })
+    const videoJob = video?.action === 'retrieve' && video.resourceId ? videoJobKey(video.protocol, video.resourceId) : undefined
+    // Only the key that created a video job may retrieve it: its delivery is charged to the key that downloads it.
+    if (video?.action === 'retrieve' && !this._ownsVideoJob(key, videoJob, video.resourceId)) {
+      sendError(res, 404, 'invalid_request_error', 'video_route_not_found', 'Unknown video job')
+      return
+    }
+    // Read from the buyer now, not from the last poll: a buyer just replaced by an older one must not start the job.
+    if (video?.action === 'create' && route.paid && this._options.accounting.hasBudgets(key, context) && !await this._videoBudgetEnforced()) {
+      sendError(res, 503, 'api_error', 'buyer_upgrade_required', 'Videos cannot be started on a key with spend limits until the Antseed buyer is updated: this buyer cannot check a video\'s price against the limit before it starts.')
+      return
+    }
+    const admission = this._admit(res, route, key, context, { videoCreate: video?.action === 'create', ...(videoJob ? { videoJob } : {}) })
+    if (!admission) return
+    const { tag } = admission
 
     const request: ForwardedRequest = {
       tag,
@@ -299,6 +367,8 @@ export class GatewayServer {
       body,
       policyHeaders: policy.headers,
       modelListPolicy: route.prefix === '/v1/models' && policy.policy.allowedModels ? policy.policy : null,
+      video,
+      remainingUsdc: admission.remainingUsdc,
     }
     try {
       this._options.store.startRequest({
@@ -312,10 +382,12 @@ export class GatewayServer {
         workspaceId: key.workspaceId,
         memberId: key.ownerMemberId,
         endUser: request.endUser,
+        video: request.video && { action: request.video.action === 'create' ? 'create' : 'poll', jobId: request.video.resourceId ?? null },
       })
       this._options.store.touchKey(key.id)
     } catch (error) {
-      // Nothing was sent; the hold must not keep counting against the caps.
+      // Nothing was sent; the hold (and a create's reservation) must not keep counting against the caps.
+      this._options.accounting.videoNotAccepted(tag)
       this._options.accounting.release(tag)
       throw error
     }
@@ -372,7 +444,15 @@ export class GatewayServer {
   private async _spendFeedReporting(res: http.ServerResponse): Promise<boolean> {
     if (this._options.spendFeedState() === 'reporting') return true
     await this._options.refreshSpendFeed()
-    const state = this._options.spendFeedState()
+    let state = this._options.spendFeedState()
+    // A buyer that is restarting reports again once it is back.
+    const since = Date.now()
+    while (state === 'unreachable' && !res.destroyed && this._holdForBuyer(since)) {
+      await new Promise((resolve) => setTimeout(resolve, BUYER_RETRY_INTERVAL_MS))
+      await this._options.refreshSpendFeed()
+      state = this._options.spendFeedState()
+    }
+    if (res.destroyed) return false
     if (state === 'reporting') return true
     sendError(res, 503, 'api_error', 'spend_tracking_unavailable', SPEND_FEED_UNAVAILABLE_MESSAGES[state])
     return false
@@ -417,13 +497,71 @@ export class GatewayServer {
   }
 
   /** The request's tag; a paid request is admitted against its budgets first (402 answered here when one is spent). */
-  private _admit(res: http.ServerResponse, route: CanonicalRoute, key: ApiKeyRecord, context: KeyContext): string | null {
-    if (!route.paid) return newRequestTag()
-    const admission = this._options.accounting.admit(key, context)
-    if (admission.ok) return admission.tag
+  private _admit(res: http.ServerResponse, route: CanonicalRoute, key: ApiKeyRecord, context: KeyContext, video: AdmitOptions): { tag: string; remainingUsdc: number | null } | null {
+    if (!route.paid) return { tag: newRequestTag(), remainingUsdc: null }
+    const admission = this._options.accounting.admit(key, context, video)
+    if (admission.ok) return { tag: admission.tag, remainingUsdc: admission.remainingUsdc }
+    if (admission.breach === null) {
+      if (admission.reason === 'video_pricing') {
+        res.setHeader('retry-after', '5')
+        sendError(res, 429, 'rate_limit_error', 'video_pricing_in_progress', 'A video started on this spend limit is still being priced and holds the room it may cost. Retry in a few seconds.')
+      } else {
+        sendError(res, 503, 'api_error', 'spend_tracking_unavailable', 'Spend limits cannot be applied right now: video jobs could not be stored. Try again shortly.')
+      }
+      return null
+    }
     this._log(`gateway spend limit reached: key=${key.id} level=${admission.breach.level ?? 'key'} period=${admission.breach.period}`)
     sendJson(res, 402, { error: spendLimitError(admission.breach) })
     return null
+  }
+
+  private async _videoBudgetEnforced(): Promise<boolean> {
+    if (!this._options.videoBudgetEnforced) return false
+    try {
+      await this._options.refreshSpendFeed()
+    } catch {
+      return false
+    }
+    return this._options.videoBudgetEnforced()
+  }
+
+  /** Whether `key` created the video job, as remembered by its commitment or, for older jobs, the request log. */
+  private _ownsVideoJob(key: ApiKeyRecord, job: string | undefined, jobId: string | undefined): boolean {
+    if (!job || !jobId) return false
+    const owner = this._options.accounting.videoJobOwner(job) ?? this._options.store.findVideoJobCreator(jobId)
+    return owner === key.id
+  }
+
+  /**
+   * Accounting for a video request once answered. An accepted create records
+   * its job: the key that owns it and, for a key with caps, the price it keeps
+   * counted until the buyer's charge for its delivery arrives. That price is
+   * the buyer's (set only by the buyer), never more than the allowance the
+   * create held; without a readable price the whole allowance stays held. A
+   * retrieve the buyer marks as retiring the job (it failed, its seller no
+   * longer has it, or the buyer has no record of it) releases the job: it can
+   * never be delivered or charged. Nothing a seller sends can release it.
+   */
+  private _settleVideo(request: ForwardedRequest, outcome: { videoJobId: string | null; priceHeader: string; retired: boolean; delivered: boolean }): void {
+    const video = request.video
+    if (!video) return
+    const accounting = this._options.accounting
+    if (video.action === 'create') {
+      if (!outcome.videoJobId) {
+        accounting.videoNotAccepted(request.tag)
+        return
+      }
+      const allowance = request.remainingUsdc
+      const price = /^\d{1,15}$/.test(outcome.priceHeader) ? Number(outcome.priceHeader) : null
+      // A key without caps has no allowance: it records the buyer's price, so caps added later count the job.
+      const amount = allowance === null ? price ?? 0 : Math.min(allowance, price ?? allowance)
+      accounting.commitVideo(request.tag, videoJobKey(video.protocol, outcome.videoJobId), amount)
+      return
+    }
+    if (!video.resourceId) return
+    const job = videoJobKey(video.protocol, video.resourceId)
+    if (outcome.retired) accounting.dropVideo(job)
+    else if (outcome.delivered) accounting.videoDelivered(job)
   }
 
   /**
@@ -446,31 +584,71 @@ export class GatewayServer {
       let errorChunks: Buffer[] = []
       let gatewayError: RequestError | null = null
       let sellerPeerId: string | null = null
+      let servedModel: string | null = null
+      let routeSelection: ServedSelection | null = null
+      let router: RequestRouter | null = null
       let reportedLatency: number | null = null
+      // Streamed answers: the buyer's time to the seller's first frame, and when that frame reached the gateway.
+      let firstTokenMs: number | null = null
+      let respondedAt = 0
       let servedFree = false
+      // Video: the start of a create's answer (it names the job) and whether a retrieve delivered the file.
+      let videoCreateChunks: Buffer[] | null = null
+      let videoDelivered = false
+      // A retrieve answered with the file; it is delivered (and charged) only once that stream ends.
+      let videoStream = false
+      // The buyer's price for an accepted create, and whether the buyer retired a retrieved job.
+      let videoPriceHeader = ''
+      let videoRetired = false
       // Token counts the response reports, kept on the request until (or if
       // the buyer never reports) its spend.
       let usageReader: ResponseUsageReader | null = null
 
+      let clientClosed = false
       let finished = false
-      finish = (status: number, buyerRequestId: string | null): void => {
+      finish =(status: number, buyerRequestId: string | null): void => {
         if (finished) return
         finished = true
         const finishedAt = Date.now()
         const latencyMs = reportedLatency ?? finishedAt - startedAt
         const responseContent = observability.logContent ? truncateContent(Buffer.concat(responseChunks)) : null
         const store = this._options.store
+        // Read from the answer itself: the job's accounting must not depend on the request log being writable.
+        let videoJobId: string | null = null
+        try {
+          videoJobId = videoCreateChunks && request.video
+            ? nativeVideoAcceptance(request.video.protocol, { requestId: tag, statusCode: status, headers: {}, body: Buffer.concat(videoCreateChunks) })
+            : null
+        } catch (error) {
+          this._log(`gateway could not read video acceptance for ${tag}: ${errorMessage(error)}`)
+        }
+        const usage = usageReader?.result() ?? null
+        const tokensPerSecond = firstTokenMs !== null ? outputTokensPerSecond(usage?.outputTokens ?? 0, finishedAt - respondedAt) : null
+        try {
+          // First, and apart from the rest: the job ID is what lets its key retrieve it after a restart.
+          store.recordRequestOutcome(tag, { sellerPeerId, latencyMs, firstTokenMs, tokensPerSecond, endUser, servedFree, videoJobId, videoDelivered, router, servedModel, routeSelection })
+        } catch (error) {
+          this._log(`gateway could not record request ${tag}: ${errorMessage(error)}`)
+        }
         try {
           const error = status >= 400 ? gatewayError ?? parseErrorBody(Buffer.concat(errorChunks), status) : null
           store.finishRequest(tag, { status, buyerRequestId, error })
-          store.recordRequestOutcome(tag, { sellerPeerId, latencyMs, endUser, servedFree })
-          const usage = usageReader?.result() ?? null
           if (usage) store.recordResponseUsage(tag, usage)
           if (observability.logContent) store.recordRequestContent(tag, { requestBody: requestContent, responseBody: responseContent })
         } catch (error) {
           this._log(`gateway could not record request ${tag}: ${errorMessage(error)}`)
         }
-        this._options.accounting.finish(tag)
+        const accounting = this._options.accounting
+        try {
+          this._settleVideo(request, { videoJobId, priceHeader: videoPriceHeader, retired: videoRetired, delivered: videoDelivered })
+        } catch (error) {
+          this._log(`gateway could not account for video request ${tag}: ${errorMessage(error)}`)
+        }
+        // Only the retrieve that delivers a video is charged, and a job that still holds its price covers that
+        // charge until it arrives: a create, a status poll or such a delivery holds nothing once answered.
+        const job = request.video?.resourceId ? videoJobKey(request.video.protocol, request.video.resourceId) : null
+        if (request.video && (!videoDelivered || (job !== null && accounting.videoJobHeldUsdc(job) > 0))) accounting.release(tag)
+        else accounting.finish(tag)
         this._exporter.record({
           tag, method, path: request.requestPath, model: request.model, status, startedAt, finishedAt,
           keyId: key.id, workspaceId: key.workspaceId, memberId: key.ownerMemberId, endUser, sellerPeerId, latencyMs,
@@ -484,6 +662,10 @@ export class GatewayServer {
       headers['content-length'] = String(body.length)
       headers['x-antseed-system-proxy-source'] = tunnelRequestSource(req.headers)
       headers[SPEND_ATTRIBUTION_HEADER] = tag
+      // The buyer prices the video and refuses one that costs more than the key has left.
+      if (request.video?.action === 'create' && request.remainingUsdc !== null) {
+        headers[MAX_VIDEO_COST_HEADER] = String(Math.max(0, Math.floor(request.remainingUsdc)))
+      }
       if (key.buyerIdentity !== DEFAULT_BUYER_IDENTITY) {
         headers[BUYER_IDENTITY_HEADER] = key.buyerIdentity
         // The buyer lets only its gateway pay from a non-default wallet.
@@ -491,61 +673,136 @@ export class GatewayServer {
         if (controlSecret) headers[GATEWAY_CONTROL_HEADER] = controlSecret
       }
 
-      const upstream = http.request({
-        hostname: '127.0.0.1',
-        port: buyerPort,
-        method,
-        path: request.buyerPath,
-        headers,
-      }, (upstreamRes) => {
-        const status = upstreamRes.statusCode ?? 502
-        const buyerRequestId = firstHeader(upstreamRes.headers['x-antseed-request-id']) || null
-        sellerPeerId = firstHeader(upstreamRes.headers['x-antseed-peer-id']).slice(0, 200) || null
-        reportedLatency = latencyHeader(firstHeader(upstreamRes.headers['x-antseed-latency-ms']))
-        servedFree = freeSellerPricing(upstreamRes.headers)
-        if (observability.logContent) responseChunks = collectPrefix(upstreamRes, MAX_LOGGED_CONTENT_BYTES)
-        if (status >= 400) errorChunks = collectPrefix(upstreamRes, MAX_ERROR_BODY_BYTES)
-        else if (request.model !== null) usageReader = readUsage(upstreamRes, (message) => this._log(message))
-        const responseHeaders: http.OutgoingHttpHeaders = {}
-        for (const [name, value] of Object.entries(upstreamRes.headers)) {
-          if (!HOP_BY_HOP.has(name.toLowerCase()) && value !== undefined) responseHeaders[name] = value
-        }
-        responseHeaders.connection = 'close'
-        upstreamRes.once('error', () => finish!(status, buyerRequestId))
-        res.once('close', () => finish!(status, buyerRequestId))
-        const modelListPolicy = request.modelListPolicy
-        if (modelListPolicy && status === 200) {
-          const chunks: Buffer[] = []
-          upstreamRes.on('data', (chunk: Buffer) => chunks.push(chunk))
+      let upstream: http.ClientRequest
+      // Set while the request waits for a restarting buyer.
+      let retryTimer: ReturnType<typeof setTimeout> | null = null
+      let refusedSince: number | null = null
+      const send = (): void => {
+        retryTimer = null
+        upstream = http.request({
+          hostname: '127.0.0.1',
+          port: buyerPort,
+          method,
+          path: request.buyerPath,
+          headers,
+        }, (upstreamRes) => {
+          const status = upstreamRes.statusCode ?? 502
+          const buyerRequestId = firstHeader(upstreamRes.headers['x-antseed-request-id']) || null
+          sellerPeerId = firstHeader(upstreamRes.headers['x-antseed-peer-id']).slice(0, 200) || null
+          servedModel = firstHeader(upstreamRes.headers['x-antseed-service']).slice(0, 200) || null
+          router = routerHeaders(upstreamRes.headers)
+          routeSelection = decodeServedSelection(upstreamRes.headers[ROUTE_SELECTION_HEADER])
+          reportedLatency = latencyHeader(firstHeader(upstreamRes.headers['x-antseed-latency-ms']))
+          firstTokenMs = status < 400 ? latencyHeader(firstHeader(upstreamRes.headers['x-antseed-first-token-ms'])) : null
+          respondedAt = Date.now()
+          const contentType = firstHeader(upstreamRes.headers['content-type']).toLowerCase()
+          // A video is priced per second, not per token: zero token prices do not make it free.
+          servedFree = !request.video && freeSellerPricing(upstreamRes.headers)
+          if (request.video?.action === 'create' && status >= 200 && status < 300) {
+            videoCreateChunks = collectPrefix(upstreamRes, MAX_ERROR_BODY_BYTES)
+            videoPriceHeader = firstHeader(upstreamRes.headers[VIDEO_PRICE_HEADER])
+          }
+          videoStream = request.video?.action === 'retrieve' && status === 200 && contentType.startsWith('video/')
+          videoRetired = request.video?.action === 'retrieve' && firstHeader(upstreamRes.headers[VIDEO_JOB_RETIRED_HEADER]) === '1'
+          if (observability.logContent) responseChunks = collectPrefix(upstreamRes, MAX_LOGGED_CONTENT_BYTES)
+          if (status >= 400) errorChunks = collectPrefix(upstreamRes, MAX_ERROR_BODY_BYTES)
+          // A delivered video is an MP4 stream with no usage to read.
+          else if (request.model !== null && !contentType.startsWith('video/')) usageReader = readUsage(upstreamRes, (message) => this._log(message))
+          const responseHeaders: http.OutgoingHttpHeaders = {}
+          for (const [name, value] of Object.entries(upstreamRes.headers)) {
+            if (!HOP_BY_HOP.has(name.toLowerCase()) && value !== undefined) responseHeaders[name] = value
+          }
+          responseHeaders.connection = 'close'
+          // The request log is keyed by this tag. The buyer's x-antseed-request-id is a different id.
+          responseHeaders['x-antseed-gateway-tag'] = tag
+          upstreamRes.once('error', () => {
+            finish!(status, buyerRequestId)
+            // The buyer's answer broke off: end the client's too, rather than leave it waiting.
+            res.destroy()
+          })
+          res.once('close', () => finish!(status, buyerRequestId))
+          const modelListPolicy = request.modelListPolicy
+          if (modelListPolicy && status === 200) {
+            const chunks: Buffer[] = []
+            upstreamRes.on('data', (chunk: Buffer) => chunks.push(chunk))
+            upstreamRes.once('end', () => {
+              const listing = filterModelList(Buffer.concat(chunks), modelListPolicy)
+              res.writeHead(status, { ...responseHeaders, 'content-length': String(listing.length) })
+              res.end(listing)
+              finish!(status, buyerRequestId)
+            })
+            return
+          }
+          res.writeHead(status, responseHeaders)
+          upstreamRes.pipe(res)
           upstreamRes.once('end', () => {
-            const listing = filterModelList(Buffer.concat(chunks), modelListPolicy)
-            res.writeHead(status, { ...responseHeaders, 'content-length': String(listing.length) })
-            res.end(listing)
+            // An interrupted download is not charged: the job stays committed until it is downloaded in full.
+            videoDelivered = videoStream
             finish!(status, buyerRequestId)
           })
+        })
+
+        upstream.on('error', (error) => {
+          // Destroying the buyer request for a client that left fails it too; that is the client's cancel, not a buyer outage.
+          if (clientClosed) {
+            closedByClient()
+            return
+          }
+          // Refused: the buyer never saw the request and is restarting, so it is safe to send again.
+          const refused = (error as NodeJS.ErrnoException).code === 'ECONNREFUSED'
+          if (refused) {
+            if (refusedSince === null) {
+              refusedSince = Date.now()
+              this._log(`gateway holding request until the buyer is back: key=${key.id}`)
+            }
+            // A capped video create is not held: the buyer that comes back may be an older one, which would
+            // start the job without checking its price (see `_videoBudgetEnforced`).
+            if (!(request.video?.action === 'create' && request.remainingUsdc !== null) && this._holdForBuyer(refusedSince)) {
+              retryTimer = setTimeout(send, BUYER_RETRY_INTERVAL_MS)
+              return
+            }
+          }
+          this._log(`gateway upstream error: ${error.message}`)
+          gatewayError = { code: 'buyer_unavailable', message: 'Antseed buyer proxy is unavailable' }
+          finish!(502, null)
+          // Never accepted, so never signed for: no spend can follow.
+          if (refused) this._options.accounting.release(tag)
+          if (!res.headersSent) {
+            sendError(res, 502, 'api_error', 'buyer_unavailable', 'Antseed buyer proxy is unavailable')
+          } else {
+            res.destroy()
+          }
+        })
+        upstream.end(body)
+      }
+      const closedByClient = (): void => {
+        // stop() closes what is left after its drain; that is not the client's cancel.
+        if (this._server === null) {
+          this._log(`gateway stopped before the buyer answered: key=${key.id}`)
+          gatewayError = { code: 'gateway_stopping', message: 'The gateway stopped before the buyer answered' }
+          finish!(503, null)
           return
         }
-        res.writeHead(status, responseHeaders)
-        upstreamRes.pipe(res)
-        upstreamRes.once('end', () => finish!(status, buyerRequestId))
-      })
-
-      upstream.on('error', (error) => {
-        this._log(`gateway upstream error: ${error.message}`)
-        gatewayError = { code: 'buyer_unavailable', message: 'Antseed buyer proxy is unavailable' }
-        finish!(502, null)
-        if (!res.headersSent) {
-          sendError(res, 502, 'api_error', 'buyer_unavailable', 'Antseed buyer proxy is unavailable')
-        } else {
-          res.destroy()
-        }
-      })
+        this._log(`gateway client closed before the buyer answered: key=${key.id}`)
+        gatewayError = { code: 'client_closed_request', message: 'Client closed the request before the buyer answered' }
+        finish!(499, null)
+      }
       // A client that disconnects mid-stream should stop the paid request too.
       res.once('close', () => {
-        if (!res.writableFinished) upstream.destroy()
+        if (res.writableFinished) return
+        clientClosed = true
+        if (retryTimer) {
+          // Waiting for the buyer, which never saw this request.
+          clearTimeout(retryTimer)
+          retryTimer = null
+          closedByClient()
+          this._options.accounting.release(tag)
+        } else {
+          upstream.destroy()
+        }
       })
       sentToBuyer = true
-      upstream.end(body)
+      send()
     } catch (error) {
       this._log(`gateway error after admission: ${errorMessage(error)}`)
       if (finish) finish(500, null)
@@ -726,21 +983,38 @@ export class GatewayServer {
  * 402 is the status a client-facing payment flow will answer with, so a key
  * that hits its cap already gets the shape a top-up offer can extend.
  */
-function spendLimitError(breach: LimitBreach) {
+export function spendLimitError(breach: LimitBreach) {
   const label = breach.period === 'total' ? 'lifetime' : breach.period
   const level = breach.level ?? 'key'
+  const remaining = Math.max(0, breach.limitUsdc - breach.spentUsdc)
   return {
     type: 'insufficient_quota',
     code: 'spend_limit_reached',
-    message: `${budgetHolder(level)} reached its ${label} spend limit of ${formatUsdc(breach.limitUsdc)}.`,
+    message: spendLimitMessage(budgetHolder(level), label, breach, remaining),
     limit: {
       level,
       period: breach.period,
       limit_usd: usdcToDecimalString(breach.limitUsdc),
       spent_usd: usdcToDecimalString(breach.spentUsdc),
+      remaining_usd: usdcToDecimalString(remaining),
+      held_usd: usdcToDecimalString(breach.heldUsdc),
       resets_at: breach.resetsAt === null ? null : new Date(breach.resetsAt).toISOString(),
     },
   }
+}
+
+/**
+ * A limit is also refused before it is spent: requests still running (or not yet charged) hold up to
+ * the per-request maximum each, so a small cap can be full while little is spent. Say so, with what is left.
+ */
+function spendLimitMessage(holder: string, label: string, breach: LimitBreach, remaining: number): string {
+  const limit = formatUsdc(breach.limitUsdc)
+  if (remaining === 0) return `${holder} reached its ${label} spend limit of ${limit}.`
+  const held = breach.heldUsdc > 0
+    ? `, and requests still running or not yet charged may use up to ${formatUsdc(breach.heldUsdc)} of it`
+    : ''
+  return `${holder} has ${formatUsdc(remaining)} left of its ${label} spend limit of ${limit} (${formatUsdc(breach.spentUsdc)} spent)${held}. `
+    + 'The next request could cost more than what is left, so it was not sent. Try again once running requests are charged, or raise the limit.'
 }
 
 function budgetHolder(level: NonNullable<LimitBreach['level']>): string {
@@ -782,9 +1056,9 @@ function sendBodyTooLarge(res: http.ServerResponse): void {
   sendError(res, 413, 'invalid_request_error', 'request_too_large', `Request bodies are limited to ${MAX_BODY_BYTES / 1024 / 1024} MiB`)
 }
 
-/** A JSON object body, or null (empty, too large to inspect, not JSON, not an object). */
+/** A JSON object body, or null (empty, not JSON, not an object). */
 function parseJsonBody(body: Buffer, contentType: string | undefined): Record<string, unknown> | null {
-  if (body.length === 0 || body.length > MAX_MODEL_SNIFF_BYTES) return null
+  if (body.length === 0) return null
   if (contentType && !contentType.includes('json')) return null
   try {
     return jsonObject(JSON.parse(body.toString('utf8')))
@@ -866,6 +1140,25 @@ function freeSellerPricing(headers: http.IncomingHttpHeaders): boolean {
   return price('x-antseed-input-usd-per-million') === 0 && price('x-antseed-output-usd-per-million') === 0 && (cached === null || cached === 0)
 }
 
+/** Answers with fewer output tokens say little about generation speed (the buyer ranks by the same rule). */
+const MIN_SPEED_OUTPUT_TOKENS = 20
+
+function outputTokensPerSecond(outputTokens: number, streamMs: number): number | null {
+  return outputTokens >= MIN_SPEED_OUTPUT_TOKENS && streamMs > 0 ? Math.round((outputTokens / (streamMs / 1000)) * 10) / 10 : null
+}
+
+/** The routing service that ranked a request, from the buyer's router headers; null when none did. */
+function routerHeaders(headers: http.IncomingHttpHeaders): RequestRouter | null {
+  const peerId = firstHeader(headers[ROUTER_PEER_ID_HEADER]).trim().toLowerCase()
+  if (!/^[0-9a-f]{40}$/.test(peerId)) return null
+  const rank = Number(firstHeader(headers[ROUTER_RANK_HEADER]))
+  return {
+    peerId,
+    service: firstHeader(headers[ROUTER_SERVICE_HEADER]).slice(0, 200) || null,
+    rank: Number.isSafeInteger(rank) && rank > 0 ? rank : null,
+  }
+}
+
 function latencyHeader(value: string): number | null {
   const latency = Number(value)
   return value && Number.isFinite(latency) && latency >= 0 ? Math.floor(latency) : null
@@ -881,6 +1174,7 @@ const STRIPPED_HEADERS = new Set([
   'content-length',
   SPEND_ATTRIBUTION_HEADER,
   BUYER_IDENTITY_HEADER,
+  MAX_VIDEO_COST_HEADER,
   ROUTING_POLICY_HEADER,
   GATEWAY_CONTROL_HEADER,
   GATEWAY_INTERNAL_KEY_HEADER,
