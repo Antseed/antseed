@@ -93,11 +93,11 @@ export function PeerListsPanel({ peers, inDialog = false }: { peers?: readonly P
 }
 
 /** "Manage seller lists": the lists in a dialog, over whatever opened it (a policy editor). */
-export function SellerListsButton({ peers }: { peers?: readonly Peer[] }) {
+export function SellerListsButton({ peers, label = 'Manage seller lists' }: { peers?: readonly Peer[]; label?: string }) {
   const [open, setOpen] = useState(false)
   return (
     <>
-      <Button variant="link" size="sm" onClick={() => setOpen(true)}>Manage seller lists</Button>
+      <Button variant="link" size="sm" onClick={() => setOpen(true)}>{label}</Button>
       {/* Outside any enclosing form (a key's policy editor): no nested forms. */}
       {createPortal(
         <Modal isOpen={open} onClose={() => setOpen(false)} title="Seller lists" subtitle={LISTS_HELP} size="lg">
