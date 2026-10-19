@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { DataTable, TextField } from '@antseed/ui'
-import type { Peer } from '../api/types'
+import { api } from '../api'
+import type { Peer, RoutePreview } from '../api/types'
 import { copyModelIdItem, CopyIdButton, useCopy } from '../components/copy-actions'
 import { Icon } from '../components/icons'
 import { PeerActionDialog } from '../components/PeerActionDialog'
@@ -15,11 +17,36 @@ import { SellerListsButton } from '../components/PeerLists'
 import { samePeerId } from '../lib/peer-id'
 import { filterPeers, inputPrice, isFreePeer, outputPrice, priceRange, type PeerFilter } from '../lib/peers'
 import { hasReputationData } from '../lib/policy-match'
-import { modelsFromPeers, usePeers } from '../lib/queries'
+import { modelsFromPeers, qk, usePeers } from '../lib/queries'
+import { neverReason, rankCandidates } from '../lib/selection'
 import { navigate, useLocation } from '../lib/router'
 import { ProviderPanelBody, providerName } from './ProviderDetail'
 
 type PeerActionKind = 'allow' | 'block' | 'prefer'
+
+/** Where routing puts a seller for one model: its place in range, or why it is never selected. */
+interface RoutingPlace { order: number; rank: number | null; reason: string | null }
+
+function routingPlaces(preview: RoutePreview, peers: readonly Peer[]): Map<string, RoutingPlace> {
+  const latency = new Map(peers.map((peer) => [peer.peerId.toLowerCase(), peer.firstTokenMsP50]))
+  const { inRange, never } = rankCandidates(preview, (peerId) => latency.get(peerId.toLowerCase()) ?? null)
+  const places = new Map<string, RoutingPlace>()
+  if (preview.modelAllowed) inRange.forEach((candidate, index) => places.set(candidate.peerId.toLowerCase(), { order: index, rank: candidate.rank, reason: null }))
+  const out = preview.modelAllowed ? never : [...inRange, ...never]
+  out.forEach((candidate, index) => places.set(candidate.peerId.toLowerCase(), { order: 10_000 + index, rank: null, reason: neverReason(candidate, preview.modelAllowed) }))
+  return places
+}
+
+function RoutingCell({ place }: { place: RoutingPlace | undefined }) {
+  if (!place) return <span className="gc-muted">—</span>
+  if (place.reason === null) return <span className="gc-strong">#{place.rank} in range</span>
+  return (
+    <div className="gc-cell-lines">
+      <div>Filtered out</div>
+      <div className="gc-muted gc-ellipsis" title={place.reason}>{place.reason}</div>
+    </div>
+  )
+}
 
 function score(value: number | null): string {
   return value === null ? '—' : String(Math.round(value))
@@ -43,7 +70,7 @@ function ProviderBadges({ peer, model }: { peer: Peer; model: string }) {
  * with copyable ids, an API call, and Allow / Prefer / Block.
  */
 export default function Providers() {
-  const { viewer } = useConsole()
+  const { viewer, workspace } = useConsole()
   const location = useLocation()
   const selectedId = panelSelection(location.rest)
   const peers = usePeers()
@@ -53,6 +80,13 @@ export default function Providers() {
   const models = useMemo(() => modelsFromPeers(peers.data), [peers.data])
   const showReputation = hasReputationData(peers.data)
   const copy = useCopy()
+  const preview = useQuery({
+    queryKey: qk.routePreview({ model: filter.model, workspace: workspace.id }),
+    queryFn: () => api.network.routePreview({ model: filter.model, workspace: workspace.id }),
+    enabled: filter.model !== '',
+    staleTime: 30_000,
+  })
+  const places = useMemo(() => (filter.model && preview.data ? routingPlaces(preview.data, peers.data ?? []) : null), [filter.model, preview.data, peers.data])
   const set = <K extends keyof PeerFilter>(key: K, value: PeerFilter[K]) => setFilter((current) => ({ ...current, [key]: value }))
 
   const panel: SidePanelContent | null = selectedId === null ? null : {
@@ -68,7 +102,7 @@ export default function Providers() {
       <Panel flush>
         <QueryView query={peers} rows={8}>
           {(all) => (
-            <DataTable<Peer> label="Providers" rows={filterPeers(all, filter)} rowKey={(peer) => peer.peerId}
+            <DataTable<Peer> key={places ? `routing:${filter.model}` : 'all'} label="Providers" rows={filterPeers(all, filter)} rowKey={(peer) => peer.peerId}
               selectedKey={selected?.peerId ?? null}
               onRowClick={(peer) => navigate(panelPath('providers', peer.peerId))}
               rowLabel={(peer) => providerName(peer)}
@@ -78,7 +112,7 @@ export default function Providers() {
                 { label: 'Prefer…', onSelect: () => setAction({ peer, kind: 'prefer' }) },
                 { label: 'Block…', tone: 'danger' as const, onSelect: () => setAction({ peer, kind: 'block' }) },
               ]}
-              initialSort={{ key: 'trust', direction: 'desc' }}
+              initialSort={places ? { key: 'routing', direction: 'asc' } : { key: 'trust', direction: 'desc' }}
               empty={<EmptyState icon={<Icon.providers size={18} />} title={all.length ? 'No providers match these filters' : 'No providers found yet'} body={all.length ? undefined : 'The buyer is still discovering the network. Check back in a minute.'} />}
               columns={[
                 { key: 'name', header: 'Provider', sortValue: (peer) => peer.displayName ?? peer.peerId, render: (peer) => (
@@ -88,6 +122,8 @@ export default function Providers() {
                     <ProviderBadges peer={peer} model={filter.model} />
                   </div>
                 ), after: (peer) => <CopyIdButton value={peer.peerId} label={`Copy peer id ${peer.peerId}`} /> },
+                ...(places ? [{ key: 'routing', header: 'Routing', sortValue: (peer: Peer) => places.get(peer.peerId.toLowerCase())?.order ?? 20_000,
+                  render: (peer: Peer) => <RoutingCell place={places.get(peer.peerId.toLowerCase())} /> }] : []),
                 { key: 'identity', header: 'Domain / GitHub', secondary: true, render: (peer) => peer.verificationLinks?.length ? <VerificationLinks links={peer.verificationLinks} /> : <span className="gc-muted">—</span> },
                 { key: 'models', header: 'Models', secondary: true, optional: true, render: (peer) => <span className="gc-muted">{peer.services.length}</span> },
                 { key: 'input', header: 'Input $/M', align: 'right', sortValue: (peer) => inputPrice(peer, filter.model), render: (peer) => formatPriceRange(priceRange(peer, 'inputUsdPerMillion', filter.model)) },
@@ -120,6 +156,11 @@ export default function Providers() {
         <Switch checked={filter.tee} onChange={(value) => set('tee', value)} label="TEE" />
         <Switch checked={filter.free} onChange={(value) => set('free', value)} label="Free" />
       </div>
+      <p className="gc-fineprint">
+        {filter.model
+          ? <>Ordered the way your routing policy tries sellers for <code>{filter.model}</code>: the ones in range first, then the ones it filters out, with the reason.</>
+          : 'Pick a model to order providers the way your routing policy tries them and see which ones it filters out, and why.'}
+      </p>
       <SplitView list={list} panel={panel} onClose={() => navigate('providers')} closeLabel="Close provider" />
       {action && <PeerActionDialog peer={action.peer} action={action.kind} peers={peers.data} onClose={() => setAction(null)} />}
     </div>

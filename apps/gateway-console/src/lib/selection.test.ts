@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { RouteSelection, ServedSelection } from '../api/types'
-import { healthWarning, orderingSummary, pickSummary, recordSummary, selectionFacts, selectionHeadline } from './selection'
+import type { RoutePreview, RouteSelection, ServedSelection } from '../api/types'
+import { healthWarning, neverReason, orderingSummary, pickSummary, previewSort, rankCandidates, recordSummary, selectionFacts, selectionHeadline } from './selection'
 
 const NOW = 1_700_000_000_000
 
@@ -58,5 +58,42 @@ describe('seller selection explanations', () => {
     expect(pickSummary(served({ pick: 'order', routeChainPosition: 1 }))).toMatch(/^Seller #1 in your routing policy's route/)
     expect(pickSummary(served({ pick: 'conversation' }))).toMatch(/prompt cache/)
     expect(pickSummary(served({ pick: 'exploration', rank: 3 }))).toMatch(/^A probe/)
+  })
+})
+
+describe('ranking a preview', () => {
+  const candidate = (peerId: string, patch: Partial<RoutePreview['candidates'][number]>): RoutePreview['candidates'][number] => ({
+    peerId, displayName: null, rank: null, eligible: false, reasons: [], inputUsdPerMillion: 1, outputUsdPerMillion: 2, trustScore: 50, selection: null, ...patch,
+  })
+  const preview = (sort: RoutePreview['policy']['sort'], candidates: RoutePreview['candidates']): RoutePreview =>
+    ({ model: 'm', policy: sort ? { sort } : {}, sources: [], modelAllowed: true, candidates })
+  const peers = [
+    candidate('a', { eligible: true, rank: 2, selection: base }),
+    candidate('b', { eligible: true, rank: 1, selection: base }),
+    candidate('cheap', { inputUsdPerMillion: 0.1, outputUsdPerMillion: 0.2, trustScore: 10, reasons: ['trust 10 below 70'] }),
+    candidate('trusted', { inputUsdPerMillion: 3, outputUsdPerMillion: 9, trustScore: 90, reasons: ['over input price cap'] }),
+    candidate('unpriced', { inputUsdPerMillion: null, outputUsdPerMillion: null, trustScore: null }),
+  ]
+
+  it('keeps sellers in range in the order they are tried', () => {
+    expect(rankCandidates(preview(undefined, peers)).inRange.map((c) => c.peerId)).toEqual(['b', 'a'])
+  })
+
+  it('orders the sellers it never selects by the same sort', () => {
+    expect(rankCandidates(preview(undefined, peers)).never.map((c) => c.peerId)).toEqual(['cheap', 'trusted', 'unpriced'])
+    expect(rankCandidates(preview('trust', peers)).never.map((c) => c.peerId)).toEqual(['trusted', 'cheap', 'unpriced'])
+    const latency = rankCandidates(preview('latency', peers), (id) => (id === 'unpriced' ? 100 : id === 'trusted' ? 900 : null))
+    expect(latency.never.map((c) => c.peerId)).toEqual(['unpriced', 'trusted', 'cheap'])
+  })
+
+  it('takes the sort from the buyer when the policy sets none', () => {
+    expect(previewSort(preview(undefined, [candidate('x', { eligible: true, rank: 1, selection: { ...base, ordering: 'trust' } })]))).toBe('trust')
+    expect(previewSort(preview(undefined, peers))).toBe('balanced')
+  })
+
+  it('says why a seller is never selected', () => {
+    expect(neverReason(peers[2]!)).toBe('trust 10 below 70')
+    expect(neverReason(peers[4]!)).toBe('outside your routing settings')
+    expect(neverReason(peers[2]!, false)).toBe('your routing policy does not allow this model')
   })
 })

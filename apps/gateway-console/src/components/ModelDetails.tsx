@@ -1,12 +1,12 @@
 import { useState } from 'react'
 import { Button } from '@antseed/ui'
 import type { NetworkModel, NetworkModelOffer, PeerTeeScope, RoutePreview } from '../api/types'
-import { formatLatency, formatPriceRange, formatSpeed, formatTokens, shortId } from '../lib/format'
+import { formatPriceRange, formatTokens, shortId } from '../lib/format'
 import { CAPABILITY_LABELS, MODEL_TYPE_LABELS, priceSummary } from '../lib/models'
 import { panelPath } from '../lib/nav'
 import { modelCallFormat, pinnedModelId } from '../lib/snippets'
 import { ApiCall } from './ApiCall'
-import { SellerSelection } from './SellerSelection'
+import { SellerSelection, type SellerRowExtras } from './SellerSelection'
 import { PanelRow, PanelSection } from './SidePanel'
 import { TeeBadge } from './TeeBadge'
 import { Badge, CopyButton, DetailList, Mono, PageLink, SelectField } from './ui'
@@ -61,6 +61,36 @@ export function ModelDetails({ model, preview, previewLoading, pin }: {
   const callModel = pinnedOffer ? pinnedModelId(pinnedOffer.peerId, pinnedOffer.serviceId) : model.id
   const format = modelCallFormat(model.type, pinnedOffer)
   const perImage = model.offers.some((offer) => offer.usdPerImage !== null)
+  const offersOf = (peerId: string) => model.offers.filter((offer) => offer.peerId.toLowerCase() === peerId.toLowerCase())
+  const latencyOf = (peerId: string) => offersOf(peerId)[0]?.firstTokenMsP50 ?? null
+  /** An offer's price, trust and identity, with copy and Pin, for its seller's row. */
+  const offerExtras = (offers: NetworkModelOffer[]): SellerRowExtras => {
+    const offer = offers[0]
+    if (!offer) return {}
+    return {
+      selected: offers.some((entry) => route === offerKey(entry)),
+      meta: <>
+        <span>{priceSummary(offer)}</span>
+        <span>Trust {score(offer.trustScore)}</span>
+        {offers.map((entry) => entry.serviceId !== model.id && <Mono key={entry.serviceId}>{entry.serviceId}</Mono>)}
+      </>,
+      badges: (offer.verificationLinks?.length || offer.tee || offer.free) ? <>
+        <VerificationLinks links={offer.verificationLinks} />
+        <TeeBadge tee={offer.tee} scope={offer.teeScope} />
+        {offer.free && <Badge tone="success">Free</Badge>}
+      </> : undefined,
+      actions: <>{offers.map((entry) => {
+        const on = route === offerKey(entry)
+        return <span key={entry.serviceId} className="gc-inline">
+          <CopyButton iconOnly value={pinnedModelId(entry.peerId, entry.serviceId)} label={`Copy ${offerName(entry)}'s model id (peer@model)`} />
+          <Button size="sm" variant={on ? 'outline' : 'ghost'} aria-pressed={on}
+            title={pin ? 'Send this chat to this provider' : 'Use this provider in the API call below'}
+            onClick={() => setRoute(on ? '' : offerKey(entry))}>{on ? 'Pinned' : 'Pin'}</Button>
+        </span>
+      })}</>,
+    }
+  }
+  const offerRow = (peerId: string) => offerExtras(offersOf(peerId))
 
   return (
     <>
@@ -85,42 +115,22 @@ export function ModelDetails({ model, preview, previewLoading, pin }: {
         ]} />
       </div>
 
-      <SellerSelection preview={preview} loading={previewLoading} pin={pin} />
-
-      <PanelSection title={`Providers (${model.offers.length})`}>
-        {model.offers.length === 0 ? <p className="gc-fineprint">No provider offers this model right now.</p> : (
-          <ul className="gc-panel-rows" aria-label="Providers offering this model">
-            {model.offers.map((offer) => {
-              const id = pinnedModelId(offer.peerId, offer.serviceId)
-              const on = route === offerKey(offer)
-              return (
-                <PanelRow key={offerKey(offer)} selected={on}
-                  title={<PageLink to={panelPath('providers', offer.peerId)}>{offerName(offer)}</PageLink>}
-                  meta={<>
-                    <span>{priceSummary(offer)}</span>
-                    <span>Trust {score(offer.trustScore)}</span>
-                    {offer.firstTokenMsP50 !== null && <span>{formatLatency(offer.firstTokenMsP50)} first token</span>}
-                    {offer.tokensPerSecondP50 !== null && <span>{formatSpeed(offer.tokensPerSecondP50)}</span>}
-                    {offer.serviceId !== model.id && <Mono>{offer.serviceId}</Mono>}
-                  </>}
-                  badges={(offer.verificationLinks?.length || offer.tee || offer.free) && (
-                    <div className="gc-badges">
-                      <VerificationLinks links={offer.verificationLinks} />
-                      <TeeBadge tee={offer.tee} scope={offer.teeScope} />
-                      {offer.free && <Badge tone="success">Free</Badge>}
-                    </div>
-                  )}
-                  actions={<>
-                    <CopyButton iconOnly value={id} label={`Copy ${offerName(offer)}'s model id (peer@model)`} />
-                    <Button size="sm" variant={on ? 'outline' : 'ghost'} aria-pressed={on}
-                      title={pin ? 'Send this chat to this provider' : 'Use this provider in the API call below'}
-                      onClick={() => setRoute(on ? '' : offerKey(offer))}>{on ? 'Pinned' : 'Pin'}</Button>
-                  </>} />
-              )
-            })}
-          </ul>
+      {preview || previewLoading
+        ? <SellerSelection preview={preview} loading={previewLoading} row={offerRow} latencyOf={latencyOf} pin={pin} />
+        : (
+          <PanelSection title={`Providers (${model.offers.length})`}>
+            {model.offers.length === 0 ? <p className="gc-fineprint">No provider offers this model right now.</p> : (
+              <ul className="gc-panel-rows" aria-label="Providers offering this model">
+                {model.offers.map((offer) => {
+                  const extras = offerExtras([offer])
+                  return <PanelRow key={offerKey(offer)} selected={extras.selected}
+                    title={<PageLink to={panelPath('providers', offer.peerId)}>{offerName(offer)}</PageLink>}
+                    meta={extras.meta} badges={extras.badges} actions={extras.actions} />
+                })}
+              </ul>
+            )}
+          </PanelSection>
         )}
-      </PanelSection>
 
       <PanelSection title="API call"
         actions={model.offers.length > 0 && (

@@ -3,7 +3,7 @@
  * model's sellers, what it has seen of each, and why a request went where it
  * did. Built from the numbers the buyer reports (`RouteSelection`).
  */
-import type { RouteSelection, ServedSelection } from '../api/types'
+import type { RoutePreview, RouteSelection, RoutingSort, ServedSelection } from '../api/types'
 import { formatLatency, formatRelative, formatSpeed, formatUsd } from './format'
 
 /** How the sellers are ordered, in one sentence. */
@@ -100,4 +100,38 @@ export function pickSummary(served: ServedSelection): string {
           ? `The most trusted healthy seller (${place}).`
           : `First in the order your routing policy sets (${place}).`
   }
+}
+
+type Candidate = RoutePreview['candidates'][number]
+
+/** The sort a preview's routing applies: the policy's own, else what the buyer reports. */
+export function previewSort(preview: RoutePreview): RoutingSort {
+  if (preview.policy.sort) return preview.policy.sort
+  const ordering = preview.candidates.find((candidate) => candidate.selection)?.selection?.ordering
+  return ordering === 'trust' || ordering === 'price' || ordering === 'latency' ? ordering : 'balanced'
+}
+
+const byPrice = (candidate: Candidate) => (candidate.inputUsdPerMillion ?? Infinity) + (candidate.outputUsdPerMillion ?? Infinity)
+const byTrust = (candidate: Candidate) => -(candidate.trustScore ?? -1)
+
+/**
+ * A preview's sellers split the way routing sees them: the ones in range, in
+ * the order they are tried, and the ones it never selects, ordered by the same
+ * sort (`latency` sellers come from `latencyOf`, unknown last).
+ */
+export function rankCandidates(preview: RoutePreview, latencyOf: (peerId: string) => number | null = () => null): { inRange: Candidate[]; never: Candidate[] } {
+  const inRange = preview.candidates.filter((candidate) => candidate.eligible).sort((a, b) => (a.rank ?? 1e9) - (b.rank ?? 1e9))
+  const sort = previewSort(preview)
+  const key = sort === 'trust' ? byTrust
+    : sort === 'latency' ? (candidate: Candidate) => latencyOf(candidate.peerId) ?? Infinity
+    : byPrice
+  const never = preview.candidates.filter((candidate) => !candidate.eligible)
+    .sort((a, b) => key(a) - key(b) || byTrust(a) - byTrust(b))
+  return { inRange, never }
+}
+
+/** Why routing never selects a seller, as one phrase. */
+export function neverReason(candidate: Candidate, modelAllowed = true): string {
+  if (!modelAllowed) return 'your routing policy does not allow this model'
+  return candidate.reasons.join(' · ') || 'outside your routing settings'
 }

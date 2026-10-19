@@ -49,7 +49,14 @@ const ACTION_COPY: Record<Exclude<PeerAction, 'clear'>, { title: string; verb: s
  * scope's current policy is loaded fresh from the API right before the
  * patch, so the write never drops settings it did not mean to change.
  */
-export function PeerActionDialog({ peer, action, onClose, peers }: { peer: Peer | null; action: Exclude<PeerAction, 'clear'>; onClose: () => void; peers?: readonly Peer[] }) {
+export function PeerActionDialog({ peer, action, onClose, peers, model: forModel }: {
+  peer: Peer | null
+  action: Exclude<PeerAction, 'clear'>
+  onClose: () => void
+  peers?: readonly Peer[]
+  /** The model the action is for (Prefer's fallback chain, and the check afterwards); the seller's first model otherwise. */
+  model?: string
+}) {
   const { viewer, workspace, me } = useConsole()
   const scopeFilter = useScopeFilter()
   const queryClient = useQueryClient()
@@ -70,7 +77,10 @@ export function PeerActionDialog({ peer, action, onClose, peers }: { peer: Peer 
   const keys = useKeys(scopeFilter, kind === 'key')
 
   useEffect(() => { setTargetId('') }, [kind])
-  useEffect(() => { setModel(peer?.services[0]?.service ?? '') }, [peer])
+  useEffect(() => {
+    const offered = forModel && peer?.services.find((service) => service.service.toLowerCase() === forModel.toLowerCase())
+    setModel(offered ? offered.service : peer?.services[0]?.service ?? '')
+  }, [peer, forModel])
 
   const keyOptions = (keys.data ?? []).filter((key) => key.status === 'active' && (wsAdmin || key.ownerMemberId === me.member.id))
   const scope = scopeFor(kind, targetId, workspace.id, wsAdmin)
