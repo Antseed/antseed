@@ -75,7 +75,8 @@ export function PeerListsPanel({ peers, inDialog = false }: { peers?: readonly P
             ] : []}
             empty={<EmptyState icon={<Icon.network size={18} />} title="No seller lists" body="Group sellers you trust, or ones you run yourself, then allow or block the whole group in a routing rule." />}
             columns={[
-              { key: 'name', header: 'Name', render: (list) => <span className="gc-strong">{list.name}</span> },
+              // The name opens the whole list: its editor for org admins, every seller for everyone else.
+              { key: 'name', header: 'Name', render: (list) => <span className="gc-strong"><SellerListLink list={list} peers={peers} /></span> },
               { key: 'sellers', header: 'Sellers', render: (list) => <span className="gc-muted">{list.peerIds.length ? sellerNames(list, peers) : 'Empty'}</span> },
               { key: 'count', header: 'Count', align: 'right', secondary: true, render: (list) => list.peerIds.length },
               { key: 'desc', header: 'Description', secondary: true, optional: true, render: (list) => <span className="gc-muted">{list.description ?? '—'}</span> },
