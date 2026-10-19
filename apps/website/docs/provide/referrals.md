@@ -147,8 +147,10 @@ Invite bonus: <n> weeks left · <amount> ANTS payable. Paid to your authorized w
 Your invites: <n> invited · <amount> ANTS payable · <left> of <quota> invites left this week.
 ```
 
-Invite lists, bonus amounts and binding status come from the Antscan explorer;
-without one configured they are hidden.
+Referred-buyer lists and payable amounts come from the Antscan explorer.
+Without one, your inviter, how many buyers you invited and this week's invites
+left are read from the Referrals contract instead, and claims find the payable
+weeks on-chain.
 
 ## What both sides earn
 

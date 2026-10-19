@@ -203,6 +203,24 @@ describe('Builders claims without an explorer', () => {
     expect(html).toContain('<button>Claim</button>')
   })
 
+  it('offers to check again after an empty on-chain lookup, and finds rewards that became payable', () => {
+    ui.data = unindexed()
+    ui.builderClaimable.mockReturnValue({ agentId: 42, owner, firstParty: null, payableAnts: '0', claimableEpochs: [] })
+    render()
+    click('Find rewards')
+    let html = render()
+    expect(html).toContain('Nothing to claim yet')
+    expect(html).toContain('<button>Check again</button>')
+    expect(ui.modals.get('Claim builders rewards')?.isOpen).not.toBe(true)
+
+    ui.builderClaimable.mockReturnValue({ agentId: 42, owner, firstParty: null, payableAnts: '2', claimableEpochs: [5] })
+    click('Check again')
+    expect(ui.builderClaimable).toHaveBeenCalledTimes(2)
+    html = render()
+    expect(html).toContain('2 ANTS ready to claim')
+    expect(ui.modals.get('Claim builders rewards')?.isOpen).toBe(true)
+  })
+
   it('ignores rewards found for an agent that is no longer the effective one', () => {
     ui.data = unindexed()
     render()

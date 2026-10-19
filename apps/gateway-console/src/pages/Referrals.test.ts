@@ -240,7 +240,16 @@ describe('Referrals claims without an explorer', () => {
     const html = render()
     expect(html).toContain('No referral rewards to claim yet')
     expect(ui.modals.get('Claim referral rewards')).toBeUndefined()
-    expect(/<button disabled="">Claim<\/button>/.test(html)).toBe(true)
+    // Weeks become payable later: the lookup stays available instead of a disabled Claim.
+    expect(html).toContain('>Check again<')
+    expect(html).not.toContain('>Claim<')
+
+    // Rewards become payable; checking again on the same page finds and opens them.
+    ui.claimable.mockReturnValue({ referrer: { payableAnts: '3', claimableEpochs: [4] }, referee: { payableAnts: '0', claimableEpochs: [] } })
+    click('Check again')
+    expect(ui.claimable).toHaveBeenCalledTimes(2)
+    render()
+    expect(ui.modals.get('Claim referral rewards')).toBe(true)
   })
 
   it('claims the indexed rewards directly when the explorer reports them', () => {

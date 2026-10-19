@@ -144,7 +144,7 @@ function WorkspaceReferrals() {
                         : <>Referral rewards are paid only to an authorized wallet, and none is set. Authorize one on <PageLink to="wallet">Wallet &amp; Funding</PageLink>.</>}
                     </span>
                   </div>
-                  <RewardAction rewards={referrerRewards} authorized={authorized} finding={discover.isPending} label="Claim"
+                  <RewardAction rewards={referrerRewards} onChain={!data.available} authorized={authorized} finding={discover.isPending} label="Claim"
                     onFind={() => discover.mutate({ kind: 'referrer', address: data.address })} onClaim={(epochs) => openClaim('referrer', data.address, epochs)} />
                 </div>
                 {discover.error && discover.variables?.kind === 'referrer' ? <ErrorAlert error={discover.error} title="Could not find rewards" /> : null}
@@ -220,20 +220,23 @@ function ReferredBuyers({ buyers }: { buyers: ReferralsView['buyers'] }) {
 
 /**
  * Claim when the rewards are known (from the explorer, or found on-chain);
- * otherwise "Find rewards", which looks them up on-chain first.
+ * otherwise "Find rewards", which looks them up on-chain first. An on-chain
+ * lookup that found nothing offers "Check again": weeks become payable later.
  */
-function RewardAction({ rewards, authorized, finding, label, onFind, onClaim }: {
+function RewardAction({ rewards, onChain, authorized, finding, label, onFind, onClaim }: {
   rewards: ClaimableRewards | null
+  /** The rewards come from the on-chain lookup (no explorer indexes them). */
+  onChain: boolean
   authorized: string | null
   finding: boolean
   label: string
   onFind: () => void
   onClaim: (epochs: number[]) => void
 }) {
-  if (!rewards) {
+  if (!rewards || (onChain && rewards.claimableEpochs.length === 0)) {
     return (
       <Button size="sm" variant="outline" disabled={finding} onClick={onFind}>
-        {finding ? 'Finding…' : 'Find rewards'}
+        {finding ? 'Finding…' : rewards ? 'Check again' : 'Find rewards'}
       </Button>
     )
   }
@@ -287,7 +290,7 @@ function RefereePanel({ data, rewards, authorized, finding, findError, onFind, o
                 : <>The bonus is paid only to an authorized wallet, and none is set. Authorize one on <PageLink to="wallet">Wallet &amp; Funding</PageLink>.</>}
             </span>
           </div>
-          <RewardAction rewards={rewards} authorized={authorized} finding={finding} label="Claim bonus" onFind={onFind} onClaim={onClaim} />
+          <RewardAction rewards={rewards} onChain={!data.referee.indexed} authorized={authorized} finding={finding} label="Claim bonus" onFind={onFind} onClaim={onClaim} />
         </div>
         {findError ? <ErrorAlert error={findError} title="Could not find the bonus" /> : null}
       </Panel>

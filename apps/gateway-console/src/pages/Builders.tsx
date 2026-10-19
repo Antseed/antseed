@@ -92,11 +92,12 @@ export default function Builders() {
                         {agent.firstParty ? ' This is an Antseed agent, so its rewards are Antseed\'s.' : ''}
                       </span>
                     </div>
-                    {rewards ? (
+                    {/* An on-chain lookup that found nothing offers "Check again": weeks become payable later. */}
+                    {rewards && (data.indexed || rewards.claimableEpochs.length > 0) ? (
                       <Button size="sm" variant="outline" disabled={!agent.owner || rewards.claimableEpochs.length === 0} onClick={() => setClaiming(true)}>Claim</Button>
                     ) : (
                       <Button size="sm" variant="outline" disabled={!agent.owner || discover.isPending} onClick={() => discover.mutate()}>
-                        {discover.isPending ? 'Finding…' : 'Find rewards'}
+                        {discover.isPending ? 'Finding…' : rewards ? 'Check again' : 'Find rewards'}
                       </Button>
                     )}
                   </div>
