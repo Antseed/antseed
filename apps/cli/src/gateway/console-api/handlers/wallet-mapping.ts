@@ -166,17 +166,21 @@ export function applyChannelChainState(channel: Channel, state: ChannelChainStat
   }
 }
 
-/** `deadline` (unix seconds) of each buyer channel row, by channel id. */
-export function channelDeadlines(body: unknown): Map<string, number> {
+/** Each buyer channel row's reserve `deadline` (unix seconds) and seller address, by channel id. */
+export function channelChainHints(body: unknown): { deadlines: Map<string, number>; sellers: Map<string, string> } {
   const rows = record(body)['channels']
   const deadlines = new Map<string, number>()
+  const sellers = new Map<string, string>()
   for (const row of Array.isArray(rows) ? rows : []) {
     const raw = record(row)
     const id = text(raw['channelId']) ?? text(raw['sessionId'])
+    if (!id) continue
     const deadline = count(raw['deadline'])
-    if (id && deadline !== null) deadlines.set(id, deadline)
+    if (deadline !== null) deadlines.set(id, deadline)
+    const seller = text(raw['seller'])
+    if (seller) sellers.set(id, seller)
   }
-  return deadlines
+  return { deadlines, sellers }
 }
 
 export function mapChannels(body: unknown): Channel[] {

@@ -337,10 +337,18 @@ test('applyChannelChainState maps close requests and ignores unknown channels', 
 })
 
 test('GET channels hides a row the chain never recorded once its deadline passed', async () => {
-  const router = setup({ readChannelStates: async () => new Map([['0xchannel', { status: 0, deposit: 0n, settled: 0n, closeRequestedAt: 0n }]]) })
+  const sellerArgs: Array<ReadonlyMap<string, string>> = []
+  const router = setup({
+    readChannelStates: async (_chain, _ids, sellers) => {
+      sellerArgs.push(sellers)
+      return new Map([['0xchannel', { status: 0, deposit: 0n, settled: 0n, closeRequestedAt: 0n }]])
+    },
+  })
   assert.deepEqual(await call(router, 'GET', '/workspaces/ws_team/channels', member), [])
   const [expired] = await call(router, 'GET', '/workspaces/ws_team/channels?all=1', member) as Channel[]
   assert.equal(expired?.status, 'expired')
+  // The seller address goes along, so a facade seller's channel is looked up behind the facade.
+  assert.equal(sellerArgs[0]?.get('0xchannel'), OPERATOR)
 })
 
 test('POST channels/close names the chosen channel and waits past the seller timeout', async () => {

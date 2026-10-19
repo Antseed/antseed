@@ -23,7 +23,7 @@ import { usdcToDecimalString } from '../../money.js'
 import { verifyDeposit, type VerifiedDeposit } from '../../services/deposits.js'
 import { buyerJson, defaultBuyerClient, optionalBuyerJson, withIdentity, type BuyerClient } from './network-buyer.js'
 import { antseedPayBaseUrl, buildCardLink, CARD_PROVIDERS, type CardProvider } from './wallet-card-link.js'
-import { applyChannelChainState, chainInfo, channelDeadlines, mapBalances, mapChannels, mapDepositWatch, mapRewards, record, type ChannelChainState } from './wallet-mapping.js'
+import { applyChannelChainState, chainInfo, channelChainHints, mapBalances, mapChannels, mapDepositWatch, mapRewards, record, type ChannelChainState } from './wallet-mapping.js'
 import { createRewardsReader, gatewayChainProvider, readChannelStates as readChannelStatesOnChain, REWARDS_TTL_MS } from './wallet-chain.js'
 import { registerOperatorRoutes } from './wallet-operator.js'
 
@@ -59,7 +59,7 @@ export interface WalletRouteOverrides {
   /** Buyer rewards, with the legacy epochs a claim may name (`legacyEpochs`, empty when unknown). */
   readRewards?: (chain: AntsChainConfig, address: string) => Promise<RewardsView & { legacyEpochs?: number[] }>
   /** On-chain records of these channels (AntseedChannels); ids that could not be read are left out. */
-  readChannelStates?: (chain: AntsChainConfig, channelIds: string[]) => Promise<Map<string, ChannelChainState>>
+  readChannelStates?: (chain: AntsChainConfig, channelIds: string[], sellers: ReadonlyMap<string, string>) => Promise<Map<string, ChannelChainState>>
   payBaseUrl?: () => string
   /** A deposit to `wallet` as its transaction receipt shows it; null when the transaction credited no such deposit. */
   verifyDeposit?: (chain: AntsChainConfig, txHash: string, wallet: string) => Promise<VerifiedDeposit | null>
@@ -303,7 +303,7 @@ export function registerWalletRoutes(router: ConsoleRouter, deps: ConsoleDeps, o
     const all = request.query.get('all') === '1'
     const body = await buyerJson(buyer, withIdentity(`/_antseed/channels${all ? '?all=1' : ''}`, ws.buyerIdentity))
     const channels = mapChannels(body)
-    const deadlines = channelDeadlines(body)
+    const { deadlines, sellers } = channelChainHints(body)
     // The buyer's store can call a channel active long after a seller settled
     // it, and reports its configured maximum as the reserve; the chain decides both.
     const ids = channels.filter((channel) => OPEN_CHANNEL_STATUSES.has(channel.status)).map((channel) => channel.channelId).sort()
@@ -313,7 +313,7 @@ export function registerWalletRoutes(router: ConsoleRouter, deps: ConsoleDeps, o
     if (ids.length > 0) {
       try {
         states = (await chainCache.read(`channels:${createHash('sha256').update(ids.join(',')).digest('hex')}`, { ttlMs: CHANNELS_TTL_MS },
-          async () => readChannelStates(await resolveChain(), ids))).value
+          async () => readChannelStates(await resolveChain(), ids, sellers))).value
       } catch {
         // Unreadable chain: show what the buyer knows rather than nothing.
       }
