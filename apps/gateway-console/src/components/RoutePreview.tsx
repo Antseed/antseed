@@ -7,7 +7,7 @@ import { useFavorites, useKeys, useModels, usePeerLists, usePeers, usePresets, u
 import { useScopeFilter } from '../app/context'
 import { ModelChooser } from './ModelChooser'
 import { SellerSelection } from './SellerSelection'
-import { Badge, EmptyState, ErrorAlert, Panel, SelectField } from './ui'
+import { Badge, EmptyState, ErrorAlert, SelectField } from './ui'
 
 export type PreviewTarget = 'workspace' | 'key' | 'member' | 'preset'
 
@@ -54,9 +54,9 @@ function Exclusions({ exclusions }: { exclusions: LevelExclusion[] }) {
 /**
  * Pick a model (and, optionally, a key, member or preset) and see at once
  * which sellers a request would go to, in order and why, and which rule
- * keeps each of the others out.
+ * keeps each of the others out. The Routing page shows it in a dialog.
  */
-export function TryRequestPanel({ state, onChange, preview }: {
+export function TryRequest({ state, onChange, preview }: {
   state: TryRequestState
   onChange: (state: TryRequestState) => void
   preview: { data: RoutePreview | undefined; isFetching: boolean; error: unknown }
@@ -78,7 +78,7 @@ export function TryRequestPanel({ state, onChange, preview }: {
     : []
 
   return (
-    <Panel title="Try a request" description="Pick a model to see which sellers a request goes to, in what order, and what keeps the others out.">
+    <div className="gc-stack">
       <div className="gc-toolbar">
         <ModelChooser models={models.data} loading={models.isLoading} value={state.model} favorites={favorites.data}
           onChange={(model) => onChange({ ...state, model })} />
@@ -113,6 +113,6 @@ export function TryRequestPanel({ state, onChange, preview }: {
             explainSkipped={(candidate) => <Exclusions exclusions={exclusionsFor(data, candidate, peers.data, lists.data ?? [])} />} />
         </div>
       )}
-    </Panel>
+    </div>
   )
 }

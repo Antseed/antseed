@@ -65,6 +65,19 @@ export function selectionFacts(selection: RouteSelection): string[] {
   return facts
 }
 
+/** The few numbers that set a seller's place, for one compact line: success, speed, traffic share, expected cost. */
+export function selectionHeadline(selection: RouteSelection): string {
+  const parts: string[] = []
+  parts.push(selection.record === 'none'
+    ? 'no requests yet'
+    : `${percent(selection.successRate)} success (${Math.round(selection.observations)} recent${selection.record === 'other-models' ? ', other models' : ''})`)
+  if (selection.firstTokenMs !== null) parts.push(`${formatLatency(selection.firstTokenMs)} first token`)
+  if (selection.tokensPerSecond !== null) parts.push(formatSpeed(selection.tokensPerSecond))
+  if (selection.sharesTraffic && selection.trafficShare !== null) parts.push(`${percent(selection.trafficShare)} of traffic`)
+  if (selection.ordering === 'expected-cost') parts.push(`${formatUsd(selection.expectedCostUsd)} per answer`)
+  return parts.join(' · ')
+}
+
 /** How a served request's seller came to serve it, in one sentence. */
 export function pickSummary(served: ServedSelection): string {
   const place = `#${served.rank} of ${served.of} eligible seller${served.of === 1 ? '' : 's'}`

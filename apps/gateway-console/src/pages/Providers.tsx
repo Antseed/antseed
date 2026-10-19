@@ -4,13 +4,14 @@ import type { Peer } from '../api/types'
 import { copyModelIdItem, CopyIdButton, useCopy } from '../components/copy-actions'
 import { Icon } from '../components/icons'
 import { PeerActionDialog } from '../components/PeerActionDialog'
-import { PeerListsPanel } from '../components/PeerLists'
 import { TeeBadge } from '../components/TeeBadge'
 import { VerificationLinks } from '../components/VerificationLinks'
 import { SplitView, type SidePanelContent } from '../components/SidePanel'
-import { Badge, EmptyState, LoadingRows, Mono, PageHeader, Panel, QueryView, SelectField, Switch } from '../components/ui'
+import { Badge, EmptyState, LoadingRows, Mono, PageHeader, PageLink, Panel, QueryView, SelectField, Switch } from '../components/ui'
 import { formatLatency, formatNumber, formatPriceRange, formatSpeed, shortId } from '../lib/format'
-import { panelPath, panelSelection } from '../lib/nav'
+import { canOpen, panelPath, panelSelection } from '../lib/nav'
+import { useConsole } from '../app/context'
+import { SellerListsButton } from '../components/PeerLists'
 import { samePeerId } from '../lib/peer-id'
 import { filterPeers, inputPrice, isFreePeer, outputPrice, priceRange, type PeerFilter } from '../lib/peers'
 import { hasReputationData } from '../lib/policy-match'
@@ -42,6 +43,7 @@ function ProviderBadges({ peer, model }: { peer: Peer; model: string }) {
  * with copyable ids, an API call, and Allow / Prefer / Block.
  */
 export default function Providers() {
+  const { viewer } = useConsole()
   const location = useLocation()
   const selectedId = panelSelection(location.rest)
   const peers = usePeers()
@@ -99,7 +101,11 @@ export default function Providers() {
           )}
         </QueryView>
       </Panel>
-      <PeerListsPanel peers={peers.data} />
+      {/* Seller lists live on Routing, which only workspace admins open; everyone else sees them here in a dialog. */}
+      <p className="gc-fineprint">
+        Seller lists group sellers that routing rules allow or block together:{' '}
+        {canOpen('routing', viewer) ? <PageLink to="routing">Routing → Seller lists</PageLink> : <SellerListsButton peers={peers.data} label="See seller lists" />}.
+      </p>
     </div>
   )
 

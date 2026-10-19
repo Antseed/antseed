@@ -67,7 +67,7 @@ antseed gateway export --from 2026-10-01 --output october.csv
 
 ## Audit log
 
-**Audit log** (organization owners and admins) records who changed what, with the time, the actor and their IP address: sign-ins and refused sign-ins, invites, members, workspaces, API keys, gateway routing, peer lists, presets, wallets and authorized-wallet changes, channel closes, settings and management tokens. Filter it by who or by kind of action, and click an entry for its details. Changes made from the CLI are recorded as `antseed CLI`.
+**Audit log** (organization owners and admins) records who changed what, with the time, the actor and their IP address: sign-ins and refused sign-ins, invites, members, workspaces, API keys, gateway routing, seller lists, presets, wallets and authorized-wallet changes, channel closes, settings and management tokens. Filter it by who or by kind of action, and click an entry for its details. Changes made from the CLI are recorded as `antseed CLI`.
 
 ```bash
 antseed gateway audit --action key --limit 50

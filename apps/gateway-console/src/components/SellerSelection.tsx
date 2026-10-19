@@ -6,7 +6,7 @@ import { useConsole } from '../app/context'
 import { useConsoleMutation } from '../lib/mutations'
 import { isOrgAdmin, panelPath } from '../lib/nav'
 import { qk } from '../lib/queries'
-import { healthWarning, orderingSummary, selectionFacts } from '../lib/selection'
+import { healthWarning, orderingSummary, selectionHeadline } from '../lib/selection'
 import { shortId } from '../lib/format'
 import { PanelRow, PanelSection } from './SidePanel'
 import { Badge, LoadingRows, PageLink } from './ui'
@@ -70,17 +70,17 @@ export function SellerSelection({ preview, loading, pin, title = 'Seller selecti
                   <span className="gc-muted">#{candidate.rank}</span>{' '}
                   <PageLink to={panelPath('providers', candidate.peerId)}>{candidateName(candidate)}</PageLink>
                 </>}
-                meta={selection
-                  ? selectionFacts(selection).map((fact) => <span key={fact}>{fact}</span>)
-                  : candidate.reasons.map((reason) => <span key={reason}>{reason}</span>)}
-                badges={(selection?.sharesTraffic || warning || selection?.stale || selection?.channel === 'free' || selection?.routeChainPosition) && (
+                meta={<span>{selection ? selectionHeadline(selection) : candidate.reasons.join(' · ')}</span>}
+                badges={(warning || (selection && (selection.record === 'none' || selection.channel !== 'open' && selection.channel !== null || selection.routeChainPosition !== null
+                  || (selection.maxConcurrency !== null && selection.inFlight >= selection.maxConcurrency)))) && (
                   <div className="gc-stack gc-stack--tight">
                     <div className="gc-badges">
                       {selection?.routeChainPosition != null && <Badge>Route #{selection.routeChainPosition}</Badge>}
-                      {selection?.sharesTraffic && <Badge>Shares traffic</Badge>}
                       {selection?.channel === 'free' && <Badge tone="success">Free</Badge>}
+                      {selection?.channel === 'new' && <Badge title="The first request reserves a payment channel (about 5 s)">New channel</Badge>}
+                      {selection?.record === 'none' && <Badge title="No requests yet: assumed to succeed 80% of the time">New</Badge>}
+                      {selection && selection.maxConcurrency !== null && selection.inFlight >= selection.maxConcurrency && <Badge tone="warning">At capacity</Badge>}
                       {selection?.coolingDown ? <Badge tone="warning">Cooling down</Badge> : selection?.failing ? <Badge tone="warning">Failing</Badge> : null}
-                      {selection?.stale && !selection.failing && !selection.coolingDown && <Badge>{selection.record === 'none' ? 'New' : 'Not seen lately'}</Badge>}
                     </div>
                     {warning && <span className="gc-fineprint">{warning}</span>}
                   </div>
