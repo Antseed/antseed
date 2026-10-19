@@ -226,33 +226,8 @@ export function registerWalletRoutes(router: ConsoleRouter, deps: ConsoleDeps, o
     const verified = await verify(await resolveChain(), txHash, address)
     lookedUp.add(`${ws.record.id}:${txHash.toLowerCase()}`)
     if (!verified) return null
-    const stored = deps.store.insertDeposit({ ...verified, workspaceId: ws.record.id })
-    return stored.kind === 'transfer' ? inheritSweepApproval(ws, stored) : stored
+    return deps.store.insertDeposit({ ...verified, workspaceId: ws.record.id })
   }
-
-  /**
-   * A sweep approved before transfers were listed hands its approval to the
-   * transfer that funded it, so the books keep it without listing the money
-   * twice. Only a sweep that moved exactly what its transfers sent: one that
-   * moved part of a transfer (held back at the credit limit) approved that
-   * part, not the whole transfer, so it stays listed and the transfer waits
-   * for its own approval.
-   */
-  const inheritSweepApproval = (ws: WorkspaceWallet, transfer: DepositRecord): DepositRecord => {
-    if (transfer.approval) return transfer
-    const approved = deps.store.listDeposits(ws.record.id)
-      .find((deposit) => deposit.kind === 'relay' && deposit.approval && movedAllItsTransfers(deposit) && deposit.sources.some((source) => source.txHash === transfer.txHash))?.approval
-    if (!approved) return transfer
-    return deps.store.setDepositApproval(ws.record.id, transfer.txHash, { byId: approved.byId, byLabel: approved.byLabel, note: approved.note, at: approved.at }) ?? transfer
-  }
-  const movedAllItsTransfers = (sweep: DepositRecord): boolean =>
-    sweep.sources.length > 0 && sweep.creditedUsdc + sweep.feeUsdc === sweep.sources.reduce((sum, source) => sum + source.amountUsdc, 0)
-  /** Every transfer that funded this sweep carries the sweep's own approval. */
-  const approvalHandedOver = (sweep: DepositRecord, ws: WorkspaceWallet): boolean =>
-    sweep.sources.length > 0 && sweep.sources.every((source) => {
-      const approval = deps.store.getDeposit(ws.record.id, source.txHash)?.approval
-      return !!approval && approval.at === sweep.approval?.at && approval.byLabel === sweep.approval.byLabel
-    })
 
   /**
    * The transfers that funded this workspace's sweeps, not yet recorded. Each
@@ -319,12 +294,11 @@ export function registerWalletRoutes(router: ConsoleRouter, deps: ConsoleDeps, o
   /**
    * Money that came in: transfers to the wallet and direct deposits. Sweeps
    * are moves inside the workspace and stay out, except one approved before
-   * transfers were listed whose approval its funding transfers do not carry
-   * (not recorded yet, or the sweep moved only part of them): it keeps its
-   * approval visible, for the amount it approved.
+   * transfers were listed: it stays listed with its approval, for the amount
+   * it moved. Its approval is not carried over to the transfer that funded
+   * it, which is approved on its own.
    */
-  const listed = (deposit: DepositRecord, ws: WorkspaceWallet): boolean =>
-    deposit.kind !== 'relay' || (!!deposit.approval && !approvalHandedOver(deposit, ws))
+  const listed = (deposit: DepositRecord): boolean => deposit.kind !== 'relay' || !!deposit.approval
   const TX_HASH_RE = /^0x[0-9a-fA-F]{64}$/
   const depositOf = (ws: WorkspaceWallet, request: ConsoleRequest): DepositRecord => {
     const found = deps.store.getDeposit(ws.record.id, request.params['tx'] ?? '')
@@ -343,7 +317,7 @@ export function registerWalletRoutes(router: ConsoleRouter, deps: ConsoleDeps, o
     for (const txHash of unrecordedFunding(ws).filter((hash) => due(ws, hash)).slice(0, 10)) {
       if (await check(ws, txHash, 'transfer') === null) notTransfers.add(`${ws.record.id}:${txHash}`)
     }
-    return deps.store.listDeposits(ws.record.id).filter((deposit) => listed(deposit, ws)).map((deposit) => confirmation(deposit, ws))
+    return deps.store.listDeposits(ws.record.id).filter(listed).map((deposit) => confirmation(deposit, ws))
   })
 
   router.add('POST', '/workspaces/:id/deposits', async (request): Promise<DepositConfirmation> => {
