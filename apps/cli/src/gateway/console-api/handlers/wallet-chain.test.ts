@@ -14,7 +14,7 @@ const PROBE = new Interface(['function channelsAddress() view returns (address)'
 const id = (n: number): string => `0x${n.toString(16).padStart(64, '0')}`
 
 /** A chain without Multicall3, so every read is a plain eth_call this fake answers. */
-function fakeProvider(records: Record<string, Record<string, { deposit: bigint; status: number }>>, opts: { probeFails?: boolean } = {}): AbstractProvider {
+function fakeProvider(records: Record<string, Record<string, { deposit: bigint; status: number }>>, opts: { probeFails?: boolean; underlyingReverts?: boolean } = {}): AbstractProvider {
   return {
     getCode: async () => '0x',
     call: async ({ to, data }: { to: string; data: string }) => {
@@ -23,6 +23,7 @@ function fakeProvider(records: Record<string, Record<string, { deposit: bigint; 
         if (opts.probeFails) throw new Error('rpc timeout')
         return target === FACADE ? AbiCoder.defaultAbiCoder().encode(['address'], [UNDERLYING]) : '0x'
       }
+      if (opts.underlyingReverts && target === UNDERLYING) throw Object.assign(new Error('execution reverted'), { code: 'CALL_EXCEPTION', data: '0x' })
       const [channelId] = CHANNELS.decodeFunctionData('channels', data)
       const record = records[target]?.[channelId as string] ?? { deposit: 0n, status: 0 }
       return CHANNELS.encodeFunctionResult('channels', [CANONICAL, FACADE, record.deposit, 0n, `0x${'00'.repeat(32)}`, 0n, 0n, 0n, record.status])
@@ -43,5 +44,10 @@ test('readChannelStates reads a channel missing on the canonical contract behind
 
 test('readChannelStates leaves out a missing channel whose facade could not be checked', async () => {
   const states = await readChannelStates(CHAIN, [id(2)], new Map([[id(2), FACADE]]), fakeProvider({}, { probeFails: true }))
+  assert.equal(states.has(id(2)), false)
+})
+
+test('readChannelStates leaves out a facade channel its own contract could not read', async () => {
+  const states = await readChannelStates(CHAIN, [id(2)], new Map([[id(2), FACADE]]), fakeProvider({}, { underlyingReverts: true }))
   assert.equal(states.has(id(2)), false)
 })

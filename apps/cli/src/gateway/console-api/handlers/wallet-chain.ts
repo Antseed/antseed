@@ -113,7 +113,10 @@ export async function readChannelStates(
     for (const [index, seller] of facadeSellers.entries()) {
       const underlying = probes[index]?.[0]
       if (typeof underlying !== 'string' || underlying === ZeroAddress || underlying.toLowerCase() === canonical.toLowerCase()) continue
-      await readChannelsAt(provider, underlying, bySeller.get(seller)!, states)
+      // The canonical miss says nothing for a facade's channel: only its own contract's answer counts.
+      const facadeChannelIds = bySeller.get(seller)!
+      for (const channelId of facadeChannelIds) states.delete(channelId)
+      await readChannelsAt(provider, underlying, facadeChannelIds, states)
     }
   } catch {
     for (const channelIds of bySeller.values()) for (const channelId of channelIds) states.delete(channelId)
