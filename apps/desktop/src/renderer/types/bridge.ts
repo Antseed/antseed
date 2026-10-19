@@ -454,7 +454,7 @@ export type DesktopBridge = {
   paymentsGetBuyerUsage?: () => Promise<{ ok: boolean; data: DesktopBuyerUsageTotals | null; error: string | null; lastActivityAt?: number | null }>;
   paymentsGetBuyerSpendHistory?: () => Promise<{ ok: boolean; data: DesktopBuyerSpendHistory | null; error: string | null }>;
   paymentsGetChannels?: (opts?: { fresh?: boolean }) => Promise<{ ok: boolean; data: DesktopPaymentChannelSummary[]; error: string | null }>;
-  paymentsRequestCooperativeClose?: (opts: { peerId: string }) => Promise<{
+  paymentsRequestCooperativeClose?: (opts: { peerId: string; channelId?: string }) => Promise<{
     ok: boolean;
     result: CooperativeCloseResult | null;
     error: string | null;

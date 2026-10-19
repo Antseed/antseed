@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
-import { SellerPaymentManager, TIMED_OUT_CLOSE_RETRY_INTERVAL_MS, type SellerPaymentConfig } from '../src/payments/seller-payment-manager.js';
+import { SellerPaymentManager, RESERVE_VISIBILITY_GRACE_MS, TIMED_OUT_CLOSE_RETRY_INTERVAL_MS, type SellerPaymentConfig } from '../src/payments/seller-payment-manager.js';
 import { ChannelStore, CHANNEL_ROLE, CHANNEL_STATUS } from '../src/payments/channel-store.js';
 import type { PaymentMux } from '../src/p2p/payment-mux.js';
 import type { Identity } from '../src/p2p/identity.js';
@@ -2107,7 +2107,7 @@ describe('SellerPaymentManager', () => {
 
     it('evicts channel that no longer exists on-chain', async () => {
       const channelId = makeChannelId(30);
-      seedChannel(store, channelId, buyerIdentity, sellerIdentity);
+      seedChannel(store, channelId, buyerIdentity, sellerIdentity, { reservedAt: Date.now() - RESERVE_VISIBILITY_GRACE_MS - 1 });
 
       const mgr = makeFreshManager();
       expect(mgr.hasSession(buyerIdentity.peerId)).toBe(true);
@@ -2118,6 +2118,19 @@ describe('SellerPaymentManager', () => {
 
       expect(mgr.hasSession(buyerIdentity.peerId)).toBe(false);
       expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.SETTLED);
+    });
+
+    it('keeps a just-reserved channel the chain read does not show yet', async () => {
+      const channelId = makeChannelId(29);
+      seedChannel(store, channelId, buyerIdentity, sellerIdentity);
+
+      const mgr = makeFreshManager();
+      vi.spyOn(mgr.channelsClient, 'getSession').mockResolvedValue(ZERO_CHANNEL);
+
+      await mgr.validateHydratedChannels();
+
+      expect(mgr.hasSession(buyerIdentity.peerId)).toBe(true);
+      expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.ACTIVE);
     });
 
     it('evicts channel with settled on-chain status', async () => {

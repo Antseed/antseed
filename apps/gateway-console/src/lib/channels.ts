@@ -125,6 +125,7 @@ export function cooperativeCloseError(message: string): string {
   if (text.includes('pending_auth') || text.includes('latest payment authorization')) return 'The seller is waiting for the latest payment authorization. Try again shortly, or close on chain.'
   if (text.includes('no_channel') || text.includes('no longer has this channel')) return 'The seller no longer has this channel open. It may already be settled; refresh the list, or close on chain.'
   if (text.includes('did not answer') || text.includes('not connected') || text.includes('could not be found') || text.includes('disconnected')) return 'The seller did not answer. Close on chain instead: it does not need the seller.'
+  if (text.includes('not the live channel')) return 'The seller can only close the channel it is serving now, and this is an older one. Close it on chain instead: it does not need the seller.'
   if (text.includes('does not support cooperative close')) return 'This seller does not support a cooperative close. Close on chain instead.'
   return `${message} The channel is unchanged; close on chain instead.`
 }

@@ -68,6 +68,13 @@ const INSUFFICIENT_BALANCE_SELECTOR = '0xf4d678b8';
 const IN_FLIGHT_TX_LIMIT_PHRASE = 'in-flight transaction limit';
 /** Backoff stays well inside the buyer's 30-second AuthAck timeout. */
 const RESERVE_BACKPRESSURE_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000, 4_000] as const;
+/**
+ * Retries for a write that follows a reserve and reverts ChannelNotActive:
+ * the RPC node serving it has not seen the reserve's block yet.
+ */
+const CHANNEL_VISIBILITY_RETRY_DELAYS_MS = [500, 1_000, 2_000, 4_000] as const;
+/** `ChannelNotActive()` selector, matched when ethers could not decode the revert. */
+const CHANNEL_NOT_ACTIVE_SELECTOR = '0xac853123';
 
 /** How long a one-off plan offered in a 402 stays valid for the buyer's opening auth. */
 const ONE_OFF_PLAN_TTL_MS = 2 * 60_000;
@@ -76,6 +83,12 @@ const ONE_OFF_PLAN_TTL_MS = 2 * 60_000;
  * releasing the buyer's reserve. Long enough to finish and download a video.
  */
 export const ONE_OFF_CHANNEL_TTL_MS = 24 * 60 * 60_000;
+/**
+ * A channel reserved this recently may not show on-chain yet: an RPC can
+ * return the reserve receipt before its reads serve that block. Within this
+ * window a missing channel is checked again later instead of being evicted.
+ */
+export const RESERVE_VISIBILITY_GRACE_MS = 5 * 60_000;
 /** A one-off channel whose request never started is closed after this long. */
 export const ONE_OFF_UNCLAIMED_TTL_MS = 10 * 60_000;
 /** How often channels whose close was given up on are retried. */
@@ -317,6 +330,7 @@ export class SellerPaymentManager {
           await this._channelsClient.getSession(channel.sessionId),
         );
 
+        if (!onChainState.exists && this._mayNotBeVisibleYet(channel)) continue;
         if (!onChainState.exists || (onChainState.status !== 'active' && onChainState.status !== 'unknown')) {
           this._evictStaleChannel(channel.sessionId, channel.peerId, `on-chain status=${onChainState.exists ? onChainState.status : 'missing'}`);
           evicted++;
@@ -362,6 +376,11 @@ export class SellerPaymentManager {
     if (evicted > 0) {
       debugLog(`[SellerPayment] Startup validation: evicted ${evicted}/${activeChannels.length} stale channel(s)`);
     }
+  }
+
+  /** Reserved too recently for a missing on-chain record to mean the channel is gone. */
+  private _mayNotBeVisibleYet(channel: StoredChannel): boolean {
+    return Date.now() - channel.reservedAt < RESERVE_VISIBILITY_GRACE_MS;
   }
 
   private _evictStaleChannel(
@@ -1110,9 +1129,39 @@ export class SellerPaymentManager {
       BigInt(reserveDeadline),
       payload.spendingAuthSig,
     ));
+    const now = Date.now();
+    const { seller: sellerEvmAddr } = await this._resolvedAddresses!;
     if (batch) {
+      // Record the reserve before the top-up: if anything below fails, the
+      // channel still holds the buyer's funds and must stay known so the
+      // one-off check closes it, rather than leaving an orphan on-chain.
+      this._channelStore.upsertChannel({
+        sessionId: channelId,
+        peerId: buyerPeerId,
+        role: CHANNEL_ROLE.SELLER,
+        channelKind: CHANNEL_KIND.ONE_OFF,
+        oneOffRequestId: requestId,
+        sellerEvmAddr,
+        buyerEvmAddr,
+        nonce: 0,
+        authMax: '0',
+        previousConsumption: openingReserve.toString(), // repurposed: stores reserveMax
+        deadline: reserveDeadline,
+        previousSessionId: '',
+        tokensDelivered: '0',
+        requestCount: 0,
+        reservedAt: now,
+        settledAt: null,
+        settledAmount: null,
+        status: CHANNEL_STATUS.ACTIVE,
+        latestBuyerSig: payload.spendingAuthSig,
+        latestSpendingAuthSig: null,
+        latestMetadata: payload.metadata,
+        createdAt: now,
+        updatedAt: now,
+      });
       try {
-        await this._channelsClient.topUp(
+        await this._retryUntilChannelVisible(channelId, 'top-up', () => this._channelsClient.topUp(
           this._signer,
           channelId,
           latestAuth.cumulativeAmount,
@@ -1121,19 +1170,17 @@ export class SellerPaymentManager {
           finalReserve,
           BigInt(finalDeadline),
           batch.reserveAuthSig,
-        );
+        ));
       } catch (err) {
-        try {
-          await this._channelsClient.close(this._signer, channelId, 0n, encodeMetadata(ZERO_METADATA), '0x');
-        } catch (closeErr) {
-          debugWarn(`[SellerPayment] Failed to release one-off reserve after top-up failure: ${this._formatError(closeErr)}`);
+        this._oneOffChannelIds.add(channelId);
+        this._reserveMax.set(channelId, openingReserve);
+        if (!(await this.closeOneOffChannel(channelId, 'top-up failed'))) {
+          debugWarn(`[SellerPayment] Failed to release one-off reserve after top-up failure; the one-off check retries the close`);
         }
         throw err;
       }
     }
 
-    const now = Date.now();
-    const { seller: sellerEvmAddr } = await this._resolvedAddresses!;
     const session: StoredChannel = {
       sessionId: channelId,
       peerId: buyerPeerId,
@@ -1232,6 +1279,7 @@ export class SellerPaymentManager {
     for (const channel of this._channelStore.getActiveChannels(CHANNEL_ROLE.SELLER, CHANNEL_KIND.ONE_OFF)) {
       try {
         const state = classifyOnChainChannel(await this._channelsClient.getSession(channel.sessionId));
+        if (!state.exists && this._mayNotBeVisibleYet(channel)) continue;
         if (!state.exists || (state.status !== 'active' && state.status !== 'unknown')) {
           this._evictStaleChannel(channel.sessionId, channel.peerId, `one-off on-chain status=${state.exists ? state.status : 'missing'}`);
           continue;
@@ -1325,6 +1373,24 @@ export class SellerPaymentManager {
           `[SellerPayment] Reserve hit transaction backpressure for ${channelId.slice(0, 18)}... ` +
           `— retrying in ${delayMs}ms: ${this._formatError(err)}`,
         );
+        await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+  }
+
+  private async _retryUntilChannelVisible(
+    channelId: string,
+    label: string,
+    submit: () => Promise<string>,
+  ): Promise<string> {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await submit();
+      } catch (err) {
+        const delayMs = CHANNEL_VISIBILITY_RETRY_DELAYS_MS[attempt];
+        const text = this._flattenErrorText(err);
+        if (delayMs === undefined || !(text.includes('ChannelNotActive') || text.includes(CHANNEL_NOT_ACTIVE_SELECTOR))) throw err;
+        debugWarn(`[SellerPayment] ${label} for ${channelId.slice(0, 18)}... does not see the reserve yet — retrying in ${delayMs}ms`);
         await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
       }
     }
@@ -1838,6 +1904,7 @@ export class SellerPaymentManager {
         const onChainState = classifyOnChainChannel(
           await this._channelsClient.getSession(channel.sessionId),
         );
+        if (!onChainState.exists && this._mayNotBeVisibleYet(channel)) continue;
         if (!onChainState.exists || (onChainState.status !== 'active' && onChainState.status !== 'unknown')) {
           this._evictStaleChannel(channel.sessionId, channel.peerId, `periodic check: on-chain status=${onChainState.exists ? onChainState.status : 'missing'}`);
           continue;

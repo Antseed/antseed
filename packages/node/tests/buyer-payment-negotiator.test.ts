@@ -1136,6 +1136,21 @@ describe('BuyerPaymentNegotiator', () => {
       await expect(negotiator.requestChannelClose(SELLER_PEER_ID, conn)).rejects.toThrow(/No active payment channel/);
     });
 
+    it('refuses a channel that is not the live session and sends nothing', async () => {
+      const older = '0x' + '99'.repeat(32);
+      await expect(negotiator.requestChannelClose(SELLER_PEER_ID, conn, { channelId: older }))
+        .rejects.toThrow(/not the live channel/);
+      expect(conn.send).not.toHaveBeenCalled();
+    });
+
+    it('accepts the live session id in any case', async () => {
+      const live = makeActiveSession(SELLER_PEER_ID).sessionId;
+      const promise = negotiator.requestChannelClose(SELLER_PEER_ID, conn, { channelId: live.toUpperCase().replace(/^0X/, '0x') });
+      await vi.waitFor(() => expect(conn.send).toHaveBeenCalled());
+      replyWithResult({ version: 1, channelId: CHANNEL_ID, status: 'closed', finalAmount: '750000' });
+      expect((await promise).status).toBe('closed');
+    });
+
     it('does not transmit close when the pre-close authorization is not durable', async () => {
       vi.spyOn(negotiator, 'sendPostResponseAuthTo')
         .mockRejectedValue(new Error('IndexedDB persistence failed'));
