@@ -2753,12 +2753,6 @@ export class AntseedNode extends EventEmitter {
       }
     }
 
-    const hasProviderPricing = Object.keys(providerPricingEntries).length > 0;
-    const hasProviderServiceCategories = Object.keys(providerServiceCategoryEntries).length > 0;
-    const hasProviderServiceApiProtocols = Object.keys(providerServiceApiProtocolEntries).length > 0;
-    const hasProviderServiceUnitBillingModels = Object.keys(providerServiceUnitBillingModelEntries).length > 0;
-    const hasProviderServiceCapabilities = Object.keys(providerServiceCapabilityEntries).length > 0;
-
     return {
       peerId: result.metadata.peerId,
       displayName,
@@ -2775,11 +2769,11 @@ export class AntseedNode extends EventEmitter {
         ? { capabilities: [...result.metadata.capabilities] }
         : {}),
       publicAddress: this._resolvePublicAddress(result),
-      ...(hasProviderPricing ? { providerPricing: providerPricingEntries } : {}),
-      ...(hasProviderServiceCategories ? { providerServiceCategories: providerServiceCategoryEntries } : {}),
-      ...(hasProviderServiceApiProtocols ? { providerServiceApiProtocols: providerServiceApiProtocolEntries } : {}),
-      ...(hasProviderServiceUnitBillingModels ? { providerServiceUnitBillingModels: providerServiceUnitBillingModelEntries } : {}),
-      ...(hasProviderServiceCapabilities ? { providerServiceCapabilities: providerServiceCapabilityEntries } : {}),
+      providerPricing: providerPricingEntries,
+      providerServiceCategories: providerServiceCategoryEntries,
+      providerServiceApiProtocols: providerServiceApiProtocolEntries,
+      providerServiceUnitBillingModels: providerServiceUnitBillingModelEntries,
+      providerServiceCapabilities: providerServiceCapabilityEntries,
       defaultInputUsdPerMillion: firstProvider?.defaultPricing.inputUsdPerMillion,
       defaultOutputUsdPerMillion: firstProvider?.defaultPricing.outputUsdPerMillion,
       defaultCachedInputUsdPerMillion: firstProvider?.defaultPricing.cachedInputUsdPerMillion,

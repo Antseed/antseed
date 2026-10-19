@@ -60,15 +60,23 @@ export interface PeerInfo {
   capabilities?: string[];
   /** Seller-reported reputation score (0-100). */
   reputationScore?: number;
-  /** Provider/service-aware pricing map announced by seller. */
+  /**
+   * Provider/service-aware pricing map announced by seller.
+   *
+   * Discovery always sets this and the four `providerService*` maps below,
+   * `{}` when the seller announces nothing, so spreading a fresh peer over a
+   * cached one drops what the seller withdrew. A PeerInfo from elsewhere
+   * (saved state, built by hand) may leave them out: check for entries, not
+   * for the field.
+   */
   providerPricing?: Record<string, ProviderPricingMatrixEntry>;
-  /** Provider/service category tags announced by seller. */
+  /** Provider/service category tags announced by seller. `{}` when it announces none; see `providerPricing`. */
   providerServiceCategories?: Record<string, ProviderServiceCategoryMatrixEntry>;
-  /** Provider/service API protocols announced by seller. */
+  /** Provider/service API protocols announced by seller. `{}` when it announces none; see `providerPricing`. */
   providerServiceApiProtocols?: Record<string, ProviderServiceApiProtocolMatrixEntry>;
-  /** Provider/service/protocol unit billing models announced by seller. */
+  /** Provider/service/protocol unit billing models announced by seller. `{}` when it announces none; see `providerPricing`. */
   providerServiceUnitBillingModels?: Record<string, ProviderServiceUnitBillingModelMatrixEntry>;
-  /** Provider/service model capability hints announced by seller. */
+  /** Provider/service model capability hints announced by seller. `{}` when it announces none; see `providerPricing`. */
   providerServiceCapabilities?: Record<string, ProviderServiceCapabilityMatrixEntry>;
   /** Deterministic fallback default input price (USD per 1M tokens). */
   defaultInputUsdPerMillion?: number;

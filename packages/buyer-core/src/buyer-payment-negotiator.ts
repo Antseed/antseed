@@ -1279,21 +1279,20 @@ export class BuyerPaymentNegotiator {
       outputUsdPerMillion: peer.defaultOutputUsdPerMillion ?? 0,
       cachedInputUsdPerMillion: peer.defaultCachedInputUsdPerMillion,
     };
-    if (defaults.inputUsdPerMillion === 0 && defaults.outputUsdPerMillion === 0 && !peer.providerPricing) {
+    const providerPricing = Object.values(peer.providerPricing ?? {});
+    if (defaults.inputUsdPerMillion === 0 && defaults.outputUsdPerMillion === 0 && providerPricing.length === 0) {
       return undefined;
     }
 
     const services: Record<string, ServicePricing> = {};
-    if (peer.providerPricing) {
-      for (const entry of Object.values(peer.providerPricing)) {
-        if (entry.services) {
-          for (const [serviceName, sp] of Object.entries(entry.services)) {
-            services[serviceName] = {
-              inputUsdPerMillion: sp.inputUsdPerMillion,
-              outputUsdPerMillion: sp.outputUsdPerMillion,
-              cachedInputUsdPerMillion: sp.cachedInputUsdPerMillion,
-            };
-          }
+    for (const entry of providerPricing) {
+      if (entry.services) {
+        for (const [serviceName, sp] of Object.entries(entry.services)) {
+          services[serviceName] = {
+            inputUsdPerMillion: sp.inputUsdPerMillion,
+            outputUsdPerMillion: sp.outputUsdPerMillion,
+            cachedInputUsdPerMillion: sp.cachedInputUsdPerMillion,
+          };
         }
       }
     }
