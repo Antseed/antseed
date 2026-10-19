@@ -146,6 +146,12 @@ test('a clamped top-up waits until half the credit limit is free', () => {
   assert.equal(ready.kind, 'depositing');
 });
 
+test('a clamped top-up does not wait when reserved credits leave nothing to spend', () => {
+  // $8 limit, $5 reserved, $0 available: the $3 of headroom is swept now, like the watcher.
+  const status = deriveFundingStatus({ ...base, available: '0', reserved: '5', creditLimit: '8', wallet: '10' });
+  assert.equal(status.kind, 'depositing');
+});
+
 test('closed or zero-held channels are not listed as sessions', () => {
   const status = deriveFundingStatus({
     ...base,
