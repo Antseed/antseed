@@ -104,9 +104,13 @@ prompt="$(node -e 'const fs=require("fs");const [f,...kv]=process.argv.slice(1);
 for(let i=0;i<kv.length;i+=2)s=s.split("{"+kv[i]+"}").join(kv[i+1]);process.stdout.write(s)' "$FACTORY/RUN.md" \
   slug "$slug" run "$run" worktree "$wt" branch "$branch" base "$(cat "$run/base")" key "$key" pstack "$PSTACK" \
   factory "$FACTORY" tools "$REPO")"
-echo "Task ($run/task.md):"; sed -n 1,15p "$run/task.md"; read -r -p "Start the run? [Enter] " _
+flags=(--model "$LEAD" --settings "$run/settings.json" --setting-sources project,local --strict-mcp-config
+  --plugin-dir "$PSTACK" --plugin-dir "$FACTORY/plugin" --add-dir "$run" --add-dir "$PSTACK" --add-dir "$REPO"
+  --permission-mode acceptEdits -n "factory $slug")
 cd "$wt"
-exec claude --model "$LEAD" --settings "$run/settings.json" \
-  --setting-sources project,local --strict-mcp-config --plugin-dir "$PSTACK" --plugin-dir "$FACTORY" \
-  --add-dir "$run" --add-dir "$PSTACK" --add-dir "$REPO" \
-  --permission-mode acceptEdits -n "factory $slug" "$prompt"
+# FACTORY_RESUME=<session id> reopens a run's session with today's settings and flags (after a restart or a fix here).
+if [ -n "${FACTORY_RESUME:-}" ]; then
+  exec claude "${flags[@]}" --resume "$FACTORY_RESUME" "The factory restarted this session with updated settings. Continue the run where you left off."
+fi
+echo "Task ($run/task.md):"; sed -n 1,15p "$run/task.md"; read -r -p "Start the run? [Enter] " _
+exec claude "${flags[@]}" "$prompt"

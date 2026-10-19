@@ -19,8 +19,8 @@ pstack does the work. The factory is glue: it says where things are, maps pstack
 | orch | pstack | The ledger (a verdict per head SHA) and the gates (questions for you, each with a default) |
 | `RUN.md` | ours | The first message: the task, the exit condition, where AntSeed's files are, the Claude Code mapping |
 | `pstack-models.md` | ours | pstack's per-role model table (`pstack-models.mdc` in Cursor): opus writes code, astra verifies, panels mix opus, fable, astra and sol |
-| `agents/astra.md`, `agents/sol.md` | ours | Two general agents pinned to `gpt-6-astra` and `gpt-6.1-sol`, so a role can run on an OpenAI model. Opus is the parent model, fable is `model: "fable"` |
-| `start.sh` | ours | Worktree, task file, orch store, session settings (model pin, no push, Bash sandbox), then `claude` with pstack and this plugin |
+| `plugin/agents/astra.md`, `plugin/agents/sol.md` | ours | Two general agents pinned to `gpt-6-astra` and `gpt-6.1-sol`, so a role can run on an OpenAI model. Opus is the parent model, fable is `model: "fable"` |
+| `start.sh` | ours | Worktree, task file, orch store, session settings (model pin, no push, Bash sandbox), then `claude` with pstack and this plugin. `FACTORY_RESUME=<session id>` reopens a run's session with the current settings |
 | `.claude/skills/verify-antseed` | ours | pstack's verification skill shape: what to run per changed path, the `features/` map, what counts as proof, security-critical paths, `prove.sh` |
 | `packages/*/CLAUDE.md`, `apps/*/CLAUDE.md` | ours | Per area: what it owns, its boundaries, its invariants and what enforces each, what to ask first |
 
@@ -33,7 +33,7 @@ pstack does the work. The factory is glue: it says where things are, maps pstack
 ## Files
 
 - `start.sh`, `RUN.md`, `pstack-models.md`
-- `.claude-plugin/plugin.json` and `agents/`: this folder is a Claude Code plugin
+- `plugin/`: a Claude Code plugin (its own folder: a plugin dir is read-only to the session, and `runs/` must stay writable)
 - `git-hooks/pre-push`
 - `check-push-gap.sh`: pushes to a local fixture and proves every known route is refused under the session settings
 - `proposed-invariants.md`: the `## Invariants` section proposed for the root `CLAUDE.md`
