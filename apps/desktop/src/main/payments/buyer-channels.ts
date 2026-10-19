@@ -93,14 +93,6 @@ const EMPTY_BUYER_USAGE_TOTALS: DesktopBuyerUsageTotals = {
   services: [],
 };
 
-export const EMPTY_REWARDS_SUMMARY: DesktopRewardsSummary = {
-  available: false,
-  pendingAnts: '0',
-  currentEpoch: null,
-  transfersEnabled: false,
-  error: null,
-};
-
 function readNumberField(raw: Record<string, unknown>, key: string): number {
   const value = raw[key];
   const numeric = typeof value === 'number' ? value : Number(value);

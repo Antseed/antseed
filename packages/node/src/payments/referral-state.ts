@@ -18,10 +18,10 @@ import { decodeInvite, recoverInviter, type InviteDomain } from './invites.js';
  * `issued` remembers the invites this wallet handed out in its latest issue
  * epoch, so the next one gets a fresh index even before either is used.
  *
- * Each Referrals deployment (chain id + contract, the invite's EIP-712
- * domain) keeps its own state in the file, so switching networks with the
- * same data directory neither reuses another deployment's binding nor its
- * pending invite or issued indices.
+ * Each wallet keeps its own state per Referrals deployment (chain id +
+ * contract, the invite's EIP-712 domain), so neither switching networks nor
+ * replacing the wallet that uses the data directory reuses another
+ * binding, pending invite or issued indices.
  */
 export type ReferralState = {
   state: 'none' | 'invited' | 'bound';
@@ -35,8 +35,8 @@ export type ReferralState = {
   updatedAt?: string;
 };
 
-/** The Referrals deployment a state belongs to: the invite's EIP-712 domain. */
-export type ReferralScope = InviteDomain;
+/** Whose state it is: the wallet, on a Referrals deployment (the invite's EIP-712 domain). */
+export type ReferralScope = InviteDomain & { wallet: string };
 
 /**
  * The buyer's bound referrer: an address, null while unbound, or undefined
@@ -68,7 +68,7 @@ function referralStatePath(dataDir: string): string {
 }
 
 function scopeKey(scope: ReferralScope): string {
-  return `${scope.chainId}:${getAddress(scope.referralsAddress).toLowerCase()}`;
+  return `${scope.chainId}:${getAddress(scope.referralsAddress).toLowerCase()}:${getAddress(scope.wallet).toLowerCase()}`;
 }
 
 function validState(value: unknown): ReferralState | null {
@@ -95,7 +95,8 @@ async function readStateFile(dataDir: string): Promise<ReferralStateFile> {
 
 /**
  * A pre-scoped state belongs to `scope` only when it holds a pending invite
- * signed for that deployment by the recorded referrer. A bound state carries
+ * signed for that deployment by the recorded referrer (the first wallet that
+ * writes its state there takes it over). A bound state carries
  * nothing that names its deployment, so it is never assumed bound on any of
  * them: the wallet reads as unbound and redemption is checked on-chain again.
  */
@@ -107,7 +108,7 @@ function adoptLegacy(legacy: ReferralState | undefined, scope: ReferralScope): R
   } catch {
     return null;
   }
-  const signer = recoverInviter(invite, scope);
+  const signer = recoverInviter(invite, { chainId: scope.chainId, referralsAddress: scope.referralsAddress });
   return signer && signer === normalizeReferrer(legacy.referrer) ? legacy : null;
 }
 
@@ -358,7 +359,6 @@ export interface SyncReferralOptions {
 export async function syncReferralState(
   dataDir: string,
   scope: ReferralScope,
-  buyer: string,
   lookup: ReferralLookup | null,
   verify: ReferralLookup | null = null,
   options: SyncReferralOptions = {},
@@ -366,16 +366,16 @@ export async function syncReferralState(
   const state = await readReferralState(dataDir, scope);
   if (state?.state !== 'invited' || !verify) return state;
   if (lookup) {
-    const hinted = await lookup(buyer).catch(() => undefined);
+    const hinted = await lookup(scope.wallet).catch(() => undefined);
     if (hinted === null || (hinted !== undefined && !normalizeReferrer(hinted))) {
-      const key = `${resolve(dataDir)}|${scopeKey(scope)}|${buyer.toLowerCase()}`;
+      const key = `${resolve(dataDir)}|${scopeKey(scope)}`;
       const now = (options.now ?? Date.now)();
       const last = lastOnChainCheck.get(key);
       if (last !== undefined && now - last < (options.recheckMs ?? REFERRAL_RECHECK_MS)) return state;
       lastOnChainCheck.set(key, now);
     }
   }
-  const bound = normalizeReferrer(await verify(buyer).catch(() => undefined));
+  const bound = normalizeReferrer(await verify(scope.wallet).catch(() => undefined));
   if (!bound) return state;
   const boundState: ReferralState = { ...keepIssued(state), state: 'bound', referrer: bound };
   // Applied to the latest state: a write made while the lookups ran (an

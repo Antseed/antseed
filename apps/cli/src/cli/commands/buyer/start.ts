@@ -9,7 +9,7 @@ import { getGlobalOptions } from '../types.js'
 import pkg from '../../../../package.json' with { type: 'json' }
 import { watchForUpdates } from '../../../update/watch.js'
 import { loadConfig } from '../../../config/loader.js'
-import { AntseedNode, DepositRelayClient, DepositsClient, getInstance, peerRelaysSweeps, readReferralState, ReferralsClient, resolveChainConfig, type ReferralScope } from '@antseed/node'
+import { AntseedNode, DepositRelayClient, DepositsClient, getInstance, peerRelaysSweeps, ReferralsClient, resolveChainConfig, type InviteDomain } from '@antseed/node'
 import type { Identity, NodePaymentsConfig } from '@antseed/node'
 import { OFFICIAL_BOOTSTRAP_NODES, parseBootstrapList, toBootstrapConfig } from '@antseed/node/discovery'
 import { setupShutdownHandler } from '../../shutdown.js'
@@ -342,7 +342,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       // read confirms it before the invite is dropped.
       const explorerApiUrl = cryptoOverrides?.explorerApiUrl ?? chainConfig.explorerApiUrl
       const referralLookup = buyerReferralLookup({ referralsAddress: chainConfig.referralsAddress, explorerApiUrl })
-      const referralScope: ReferralScope | null = chainConfig.referralsAddress
+      const referralDeployment: InviteDomain | null = chainConfig.referralsAddress
         ? { chainId: chainConfig.evmChainId, referralsAddress: chainConfig.referralsAddress }
         : null
       const referralCheck = referralVerifier(chainConfig.referralsAddress
@@ -357,10 +357,9 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         clientAgentId: effectiveBuyerConfig.clientAgentId,
         clientAgentIds: chainConfig.clientAgentIds,
       }
-      const initialAttribution = resolveBuyerAttribution({
-        referralState: referralScope ? await readReferralState(globalOpts.dataDir, referralScope) : null,
-        ...attributionOptions,
-      })
+      // The client id only: each wallet's saved invite is applied when it is
+      // tracked below, before the proxy accepts its first request.
+      const initialAttribution = resolveBuyerAttribution({ referralState: null, ...attributionOptions })
 
       // Advisory only: a transient RPC failure at launch must not disable
       // payments for the whole session. Buyer payments sign off-chain, and the
@@ -482,7 +481,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       const attributionSync = paymentsConfig?.enabled
         ? new BuyerAttributionSync({
             ...attributionOptions,
-            scope: referralScope,
+            deployment: referralDeployment,
             lookup: referralLookup,
             verify: referralCheck,
             apply: (attribution, identity) => node.setBuyerAttribution(attribution, identity),
@@ -491,7 +490,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         : null
       let attributionTimer: NodeJS.Timeout | null = null
       if (attributionSync) {
-        void attributionSync.track(undefined, globalOpts.dataDir, node.identity!.wallet.address).catch(() => {})
+        await attributionSync.track(undefined, globalOpts.dataDir, node.identity!.wallet.address).catch(() => {})
         attributionTimer = setInterval(() => { void attributionSync.refreshAll() }, 60_000)
         attributionTimer.unref()
       }

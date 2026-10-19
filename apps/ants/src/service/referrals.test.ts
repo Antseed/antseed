@@ -22,7 +22,7 @@ const wallet = '0x0000000000000000000000000000000000000001';
 const buyer = '0x0000000000000000000000000000000000000002';
 const referrer = getAddress('0xabcdef0000000000000000000000000000000003');
 const referralsAddress = '0x1111111111111111111111111111111111111111';
-const scope = { chainId: 8453, referralsAddress };
+const scope = { chainId: 8453, referralsAddress, wallet };
 
 const indexedReferrer: IndexedReferrer = {
   available: true,
@@ -150,6 +150,11 @@ describe('invites', () => {
     expect(second.left).toBe(0);
     await expect(issueInvite({ client, indexer: null, signer, chainId: 8453, referralsAddress, dataDir: dir, random: () => 0 }))
       .rejects.toThrow('All 3 invites for this week are taken');
+
+    // Another wallet using the same data dir starts with its own issued indices.
+    const replacement = Wallet.createRandom();
+    const fresh = await issueInvite({ client: inviteClient({ used: [0] }), indexer: null, signer: replacement, chainId: 8453, referralsAddress, dataDir: dir, random: () => 0 });
+    expect(fresh.index).toBe(1);
   });
 
   it('hands the last free index to exactly one of two concurrent requests', async () => {

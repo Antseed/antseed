@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { after, before, test } from 'node:test'
 import { Wallet, type AbstractSigner } from 'ethers'
 import type { AntsChainConfig, AntsContext } from '@antseed/ants'
-import { decodeInvite, encodeInvite, readReferralState, recoverInviter, signInvite, type InvitePreview } from '@antseed/node'
+import { decodeInvite, encodeInvite, readReferralState, recoverInviter, referralStateMtimeMs, signInvite, type InvitePreview } from '@antseed/node'
 import { buyerIdentityDir } from '../../../buyer-identities/store.js'
 import { ConsoleError, ConsoleRouter } from '../router.js'
 import { addActiveMember, memberPrincipal, tempDataDir, testDeps } from '../test-support.js'
@@ -24,6 +24,7 @@ const CHAIN = {
   clientAgentIds: { cli: 1 }, explorerApiUrl: 'https://explorer.example.test',
 } as unknown as AntsChainConfig
 const DOMAIN = { chainId: 31337, referralsAddress: CHAIN.referralsAddress! }
+const TEAM_SCOPE = { ...DOMAIN, wallet: TEAM_WALLET.address }
 /** The same referrals contract and RPC, but no explorer to index it. */
 const NO_EXPLORER_CHAIN = { ...CHAIN, explorerApiUrl: undefined } as unknown as AntsChainConfig
 
@@ -151,10 +152,10 @@ test('an invite is signed by the workspace wallet and remembered in its own refe
   assert.equal(recoverInviter(decodeInvite(created.invite), DOMAIN), TEAM_WALLET.address)
   assert.equal(created.epoch, 20)
   assert.equal(created.expiresEpoch, 24)
-  const state = await readReferralState(buyerIdentityDir(dir, 'team-a'), DOMAIN)
+  const state = await readReferralState(buyerIdentityDir(dir, 'team-a'), TEAM_SCOPE)
   assert.deepEqual(state?.issued, { epoch: 20, indices: [created.index] })
   // Nothing was written to the default wallet's file.
-  assert.equal(await readReferralState(dir, DOMAIN), null)
+  assert.equal(await referralStateMtimeMs(dir), null)
   const view = await call(router, 'GET', `/workspaces/${team.id}/referrals`, asAdmin()) as Referrals
   assert.equal(view.invites?.left, 2)
 })
@@ -171,7 +172,7 @@ test('redeeming checks the contract preview, then the workspace wallet carries t
   assert.equal(view.referee.pendingInvite, invite)
   assert.equal(view.referee.referrer, INVITER.address)
   assert.equal(view.referee.inviteExpiresEpoch, 24)
-  assert.equal((await readReferralState(buyerIdentityDir(dir, 'team-a'), DOMAIN))?.state, 'invited')
+  assert.equal((await readReferralState(buyerIdentityDir(dir, 'team-a'), TEAM_SCOPE))?.state, 'invited')
 
   const cleared = await call(router, 'DELETE', `/workspaces/${team.id}/referrals/redeem`, asAdmin()) as Referrals
   assert.equal(cleared.referee.state, 'none')

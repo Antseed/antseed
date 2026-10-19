@@ -51,7 +51,7 @@ function ants(baseUnits: string): string {
 
 /** The wallet's local referral state for `ctx`'s Referrals deployment; null without one. */
 async function readLocalReferral(ctx: AntsContext, stateDir: string): Promise<ReferralState | null> {
-  const scope = referralScope(ctx)
+  const scope = referralScope(ctx, ctx.buyerAddress)
   return scope ? readReferralState(stateDir, scope) : null
 }
 
@@ -127,7 +127,7 @@ export async function createWorkspaceInvite(ctx: AntsContext, stateDir: string, 
  */
 export async function redeemWorkspaceInvite(ctx: AntsContext, stateDir: string, value: unknown, actor: Actor, service: ServiceContext, workspace: { id: string; name: string }): Promise<void> {
   const client = ctx.referrals()
-  const scope = referralScope(ctx)
+  const scope = referralScope(ctx, ctx.buyerAddress)
   if (!client || !scope) throw new ConsoleError(409, 'referrals_unavailable', 'Referrals are not available on this network.')
   if (typeof value !== 'string' || value.trim() === '') throw new ConsoleError(400, 'invalid_invite', 'invite must be an invite code or link.')
   const current = await readReferralState(stateDir, scope)
@@ -142,7 +142,7 @@ export async function redeemWorkspaceInvite(ctx: AntsContext, stateDir: string, 
 
 /** Drop an invite the wallet carries but that is not bound yet. */
 export async function clearWorkspaceInvite(ctx: AntsContext, stateDir: string, actor: Actor, service: ServiceContext, workspace: { id: string; name: string }): Promise<void> {
-  const scope = referralScope(ctx)
+  const scope = referralScope(ctx, ctx.buyerAddress)
   if (!scope) return
   const current = await readReferralState(stateDir, scope)
   if (current?.state === 'bound') throw new ConsoleError(409, 'already_bound', 'A bound referral is permanent.')

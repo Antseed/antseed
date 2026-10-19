@@ -502,7 +502,7 @@ usage at most 2 weeks ago), and only someone else's invite: an invite signed
 by the buyer itself, by its authorized wallet, or by another wallet with the
 same authorized wallet is rejected. `antseed referral redeem <invite|link>`
 checks the invite on-chain with `previewInvite` and saves it to
-`<data-dir>/referral.json` (kept separately for each network). While `antseed buyer start` runs, the invite rides
+`<data-dir>/referral.json` (kept separately for each wallet and network). While `antseed buyer start` runs, the invite rides
 in the metadata the buyer already signs and binds on its first settlement,
 paid or free. A binding is permanent.
 

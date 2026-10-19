@@ -9,7 +9,8 @@ import { BuyerAttributionSync, resolveBuyerAttribution } from './referral-state.
 
 const REFERRER = '0x1111111111111111111111111111111111111111';
 const INVITE = { epoch: 42n, index: 7n, r: `0x${'aa'.repeat(32)}`, vs: `0x${'bb'.repeat(32)}` };
-const SCOPE = { chainId: 8453, referralsAddress: '0x4444444444444444444444444444444444444444' };
+const DEPLOYMENT = { chainId: 8453, referralsAddress: '0x4444444444444444444444444444444444444444' };
+const scopeOf = (wallet: string) => ({ ...DEPLOYMENT, wallet });
 
 test('buyer attribution resolves the client agent id from env, config, then chain config', () => {
   const chain = { cli: 11, desktop: 12 };
@@ -49,12 +50,12 @@ test('attribution sync gives each wallet its own invite and drops it once bound'
   const DEFAULT_WALLET = '0x2222222222222222222222222222222222222222';
   const TEAM_WALLET = '0x3333333333333333333333333333333333333333';
   try {
-    await saveReferralInvite(identityDir, SCOPE, encodeInvite(INVITE), REFERRER);
+    await saveReferralInvite(identityDir, scopeOf(TEAM_WALLET), encodeInvite(INVITE), REFERRER);
     const bound = new Map<string, string>();
     const applied: Array<{ identity: string | undefined; invite: boolean; clientId: string | undefined }> = [];
     const sync = new BuyerAttributionSync({
       clientAgentId: 5,
-      scope: SCOPE,
+      deployment: DEPLOYMENT,
       lookup: async (buyer) => bound.get(buyer) ?? null,
       verify: async (buyer) => bound.get(buyer) ?? null,
       apply: (attribution, identity) => applied.push({ identity, invite: !!attribution.invite, clientId: attribution.clientId }),
@@ -73,7 +74,7 @@ test('attribution sync gives each wallet its own invite and drops it once bound'
     applied.length = 0;
     await sync.refreshAll();
     assert.deepEqual(applied.map(({ identity, invite }) => [identity, invite]), [['team-a', false]]);
-    assert.equal((await readReferralState(identityDir, SCOPE))?.state, 'bound');
+    assert.equal((await readReferralState(identityDir, scopeOf(TEAM_WALLET)))?.state, 'bound');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -83,12 +84,12 @@ test('a tracked wallet carries its saved invite before a slow explorer answers',
   const root = mkdtempSync(join(tmpdir(), 'antseed-attribution-'));
   const TEAM_WALLET = '0x3333333333333333333333333333333333333333';
   try {
-    await saveReferralInvite(root, SCOPE, encodeInvite(INVITE), REFERRER);
+    await saveReferralInvite(root, scopeOf(TEAM_WALLET), encodeInvite(INVITE), REFERRER);
     let answer: (value: string | null) => void = () => {};
     const explorer = new Promise<string | null>((resolve) => { answer = resolve; });
     const applied: boolean[] = [];
     const sync = new BuyerAttributionSync({
-      scope: SCOPE,
+      deployment: DEPLOYMENT,
       lookup: () => explorer,
       verify: async () => null,
       apply: (attribution) => applied.push(!!attribution.invite),
@@ -107,10 +108,10 @@ test('a tracked wallet carries its saved invite before a slow explorer answers',
 test('attribution sync keeps a carried invite when only the explorer reports a binding', async () => {
   const root = mkdtempSync(join(tmpdir(), 'antseed-attribution-'));
   try {
-    await saveReferralInvite(root, SCOPE, encodeInvite(INVITE), REFERRER);
+    await saveReferralInvite(root, scopeOf('0x2222222222222222222222222222222222222222'), encodeInvite(INVITE), REFERRER);
     const applied: boolean[] = [];
     const sync = new BuyerAttributionSync({
-      scope: SCOPE,
+      deployment: DEPLOYMENT,
       lookup: async () => REFERRER,
       verify: async () => '0x0000000000000000000000000000000000000000',
       apply: (attribution) => applied.push(!!attribution.invite),
@@ -118,7 +119,7 @@ test('attribution sync keeps a carried invite when only the explorer reports a b
     await sync.track(undefined, root, '0x2222222222222222222222222222222222222222');
     await sync.refreshAll();
     assert.ok(applied.length >= 2 && applied.every(Boolean));
-    assert.equal((await readReferralState(root, SCOPE))?.state, 'invited');
+    assert.equal((await readReferralState(root, scopeOf('0x2222222222222222222222222222222222222222')))?.state, 'invited');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -128,10 +129,10 @@ test('a replacement saved while a poll reads the state is applied by the next po
   const root = mkdtempSync(join(tmpdir(), 'antseed-attribution-'));
   const realStat = fs.promises.stat;
   try {
-    await saveReferralInvite(root, SCOPE, encodeInvite(INVITE), REFERRER);
-    await clearReferralInvite(root, SCOPE);
+    await saveReferralInvite(root, scopeOf('0x2222222222222222222222222222222222222222'), encodeInvite(INVITE), REFERRER);
+    await clearReferralInvite(root, scopeOf('0x2222222222222222222222222222222222222222'));
     const applied: boolean[] = [];
-    const sync = new BuyerAttributionSync({ scope: SCOPE, lookup: null, verify: null, apply: (attribution) => applied.push(!!attribution.invite) });
+    const sync = new BuyerAttributionSync({ deployment: DEPLOYMENT, lookup: null, verify: null, apply: (attribution) => applied.push(!!attribution.invite) });
     await sync.track(undefined, root, '0x2222222222222222222222222222222222222222');
     await sync.refreshAll(); // lets the background check started by track settle
     assert.deepEqual(applied, [false]);
@@ -142,7 +143,7 @@ test('a replacement saved while a poll reads the state is applied by the next po
       if (armed && String(args[0]).endsWith('referral.json')) {
         armed = false;
         await new Promise((resolve) => setTimeout(resolve, 20));
-        await saveReferralInvite(root, SCOPE, encodeInvite({ ...INVITE, index: 8n }), REFERRER);
+        await saveReferralInvite(root, scopeOf('0x2222222222222222222222222222222222222222'), encodeInvite({ ...INVITE, index: 8n }), REFERRER);
       }
       return realStat(...args);
     }) as typeof realStat;
@@ -156,6 +157,20 @@ test('a replacement saved while a poll reads the state is applied by the next po
   } finally {
     fs.promises.stat = realStat;
     syncBuiltinESMExports();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a different wallet using the same data dir never carries the previous wallet\'s invite', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'antseed-attribution-'));
+  try {
+    await saveReferralInvite(root, scopeOf('0x2222222222222222222222222222222222222222'), encodeInvite(INVITE), REFERRER);
+    const applied: boolean[] = [];
+    const sync = new BuyerAttributionSync({ deployment: DEPLOYMENT, lookup: null, verify: null, apply: (attribution) => applied.push(!!attribution.invite) });
+    await sync.track(undefined, root, '0x5555555555555555555555555555555555555555');
+    await sync.refreshAll(true);
+    assert.deepEqual(applied, [false, false]);
+  } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });

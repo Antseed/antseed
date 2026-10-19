@@ -187,6 +187,50 @@ it('keeps a no-quota failure to the week it happened in', async () => {
   card.unmount();
 });
 
+// Without an explorer the allowance is null, so a refresh can't tell whether a week has turned.
+const unlisted = () => ({ available: true, listed: false, allowance: null, buyers: [], totals: TOTALS, error: null });
+
+it('offers a retry after a no-quota failure once a refresh reports no allowance', async () => {
+  const referralCreateInvite = vi.fn(async () => ({ ok: false as const, reason: 'No invites this week.', noQuota: true }));
+  vi.stubGlobal('window', globalThis);
+  vi.stubGlobal('antseedDesktop', { referralCreateInvite });
+
+  const card = shallowRender(<VprInvitesCard invites={unlisted()} />);
+  const row = () => card.findAll((el) => el.props.title === 'Invite someone')[0] as AnyElement;
+  (card.button('Create link').props.onClick as () => void)();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(row().props.hint).toBe('Invites unlock after at least 1 USDC of usage or sales in the previous week.');
+  expect(card.button('Create link').props.disabled).toBe(true);
+
+  // The next refresh (maybe in a new week): the retry is back and creation enforces the quota.
+  card.rerender(<VprInvitesCard invites={unlisted()} />);
+  expect(row().props.hint).toBe('Single-use link, valid for 4 weeks.');
+  expect(card.button('Create link').props.disabled).toBe(false);
+  (card.button('Create link').props.onClick as () => void)();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(referralCreateInvite).toHaveBeenCalledTimes(2);
+  card.unmount();
+});
+
+it('offers another link after the last one once a refresh reports no allowance, keeping it copyable', async () => {
+  const referralCreateInvite = vi.fn(async () => ({ ok: true as const, invite: 'last', link: 'https://antseed.com/invite/last', left: 0, quota: 5, expiresEpoch: 34 }));
+  vi.stubGlobal('window', globalThis);
+  vi.stubGlobal('antseedDesktop', { referralCreateInvite });
+
+  const card = shallowRender(<VprInvitesCard invites={unlisted()} />);
+  const row = () => card.findAll((el) => el.props.title === 'Invite someone')[0] as AnyElement;
+  (card.button('Create link').props.onClick as () => void)();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(row().props.hint).toBe('https://antseed.com/invite/last · 0 of 5 left this week.');
+  expect(card.hasButton('Create another link')).toBe(false);
+
+  card.rerender(<VprInvitesCard invites={unlisted()} />);
+  expect(row().props.hint).toBe('https://antseed.com/invite/last');
+  expect(card.hasButton('Copy')).toBe(true);
+  expect(card.button('Create another link').props.disabled).toBe(false);
+  card.unmount();
+});
+
 it('explains why there are no invites without last week\'s activity', () => {
   const html = renderToStaticMarkup(<VprInvitesCard invites={{ available: true, listed: true, allowance: { epoch: 30, quota: 0, used: 0, left: 0 }, buyers: [], totals: TOTALS, error: null }} />);
   expect(html).toContain('Invites unlock after at least 1 USDC of usage or sales in the previous week.');

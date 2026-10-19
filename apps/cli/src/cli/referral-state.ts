@@ -5,6 +5,7 @@ import {
   readReferralState,
   referralStateMtimeMs,
   syncReferralState,
+  type InviteDomain,
   type ReferralInvite,
   type ReferralLookup,
   type ReferralScope,
@@ -86,8 +87,8 @@ export class BuyerAttributionSync {
   private readonly _targets = new Map<string, AttributionTarget>()
 
   constructor(private readonly _options: ClientAgentOptions & {
-    /** The Referrals deployment whose state is read; null without referrals (client attribution only). */
-    scope: ReferralScope | null
+    /** The Referrals deployment whose state each wallet reads; null without referrals (client attribution only). */
+    deployment: InviteDomain | null
     lookup: ReferralLookup | null
     /** On-chain confirmation of a binding `lookup` reports (see `syncReferralState`). */
     verify?: ReferralLookup | null
@@ -106,7 +107,8 @@ export class BuyerAttributionSync {
     const key = identity ?? ''
     const target: AttributionTarget = { dir, address, mtime: await referralStateMtimeMs(dir), carrying: false }
     this._targets.set(key, target)
-    const referralState = this._options.scope ? await readReferralState(dir, this._options.scope).catch(() => null) : null
+    const scope = this._scope(target)
+    const referralState = scope ? await readReferralState(dir, scope).catch(() => null) : null
     this._apply(key, target, referralState, true)
     // Only a carried invite has a binding to check; anything else waits for the file to change.
     void this._refresh(key, false).catch(() => {})
@@ -136,12 +138,19 @@ export class BuyerAttributionSync {
     // differs from the cached time and is picked up by the next poll.
     const mtime = await referralStateMtimeMs(target.dir)
     if (!force && !target.carrying && mtime === target.mtime) return
-    const { scope, lookup, verify } = this._options
-    const referralState = scope ? await syncReferralState(target.dir, scope, target.address, lookup, verify ?? null) : null
+    const { lookup, verify } = this._options
+    const scope = this._scope(target)
+    const referralState = scope ? await syncReferralState(target.dir, scope, lookup, verify ?? null) : null
     target.mtime = mtime
     // Tracking may have been replaced while the lookups ran.
     if (this._targets.get(key) !== target) return
     this._apply(key, target, referralState, force)
+  }
+
+  /** The wallet's own state on the deployment: a data dir reused by another wallet never hands it this one's. */
+  private _scope(target: AttributionTarget): ReferralScope | null {
+    const { deployment } = this._options
+    return deployment ? { ...deployment, wallet: target.address } : null
   }
 
   private _apply(key: string, target: AttributionTarget, referralState: ReferralState | null, force: boolean): void {

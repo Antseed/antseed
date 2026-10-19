@@ -102,8 +102,7 @@ export async function getReferralStatus(): Promise<ReferralStatus> {
   const contract = new AntsContext({ chain, address: wallet.address }).referrals();
   const state = await syncReferralState(
     resolveConnectDataDir(),
-    referralScope({ chain })!,
-    wallet.address,
+    referralScope({ chain }, wallet.address)!,
     (buyer) => referralBindingFromExplorer(chain.explorerApiUrl, buyer),
     contract ? (buyer) => contract.referrerOf(buyer) : null,
   );
@@ -138,7 +137,7 @@ export async function redeemReferralInvite(value: string): Promise<InviteCheckRe
   try {
     const context = await referralContext();
     if (!context) return { ok: false, reason: 'Invites are not available on this network.' };
-    const saved = await saveReferralInvite(resolveConnectDataDir(), referralScope(context)!, checked.invite, checked.referrer);
+    const saved = await saveReferralInvite(resolveConnectDataDir(), referralScope(context, context.wallet.address)!, checked.invite, checked.referrer);
     if (saved.state === 'bound') return { ok: false, reason: 'This wallet already has an inviter.' };
     return checked;
   } catch (error) {

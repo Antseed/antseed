@@ -37,7 +37,7 @@ export async function referral(ctx: AntsContext, dataDir: string | null = null):
     payable: indexed.payable,
     claimableEpochs: indexed.claimableEpochs,
     referredCount: indexed.referredCount,
-    invites: indexed.invites ? allowanceView(indexed.invites, await issuedIndices(dataDir, referralScope(ctx), indexed.invites.epoch)) : null,
+    invites: indexed.invites ? allowanceView(indexed.invites, await issuedIndices(dataDir, referralScope(ctx, ctx.address), indexed.invites.epoch)) : null,
   };
 }
 
@@ -58,10 +58,10 @@ async function issuedIndices(dataDir: string | null, scope: ReferralScope | null
   return dataDir && scope ? issuedInviteIndices(await readReferralState(dataDir, scope), epoch) : [];
 }
 
-/** The Referrals deployment `ctx` points at, which scopes local referral state. */
-export function referralScope(ctx: Pick<AntsContext, 'chain'>): ReferralScope | null {
+/** `wallet`'s local referral state on the Referrals deployment `ctx` points at. */
+export function referralScope(ctx: Pick<AntsContext, 'chain'>, wallet: string): ReferralScope | null {
   const { evmChainId, referralsAddress } = ctx.chain;
-  return referralsAddress ? { chainId: evmChainId, referralsAddress } : null;
+  return referralsAddress ? { chainId: evmChainId, referralsAddress, wallet } : null;
 }
 
 /** Invites gone this epoch: |bound ∪ handed out here| (the bound count alone when Antscan lists no indexes). */
@@ -118,7 +118,8 @@ export async function issueInvite(options: {
   if (quota === 0) throw new InviteQuotaError(NO_INVITE_QUOTA_MESSAGE, 0);
   const indexedInvites = indexed?.invites?.epoch === epoch ? indexed.invites : null;
 
-  const scope: ReferralScope = { chainId: options.chainId, referralsAddress: options.referralsAddress };
+  const domain = { chainId: options.chainId, referralsAddress: options.referralsAddress };
+  const scope: ReferralScope = { ...domain, wallet: referrer };
   const allocate = async (issued: number[]): Promise<{ index: number; taken: Set<number>; invite: ReferralInvite }> => {
     const taken = new Set([...(indexedInvites?.usedIndices ?? []), ...issued]);
     let index = nextInviteIndex(quota, taken, options.random);
@@ -127,7 +128,7 @@ export async function issueInvite(options: {
       index = nextInviteIndex(quota, taken, options.random);
     }
     if (index === null) throw new InviteQuotaError(`All ${quota} invites for this week are taken. More unlock next week.`, quota);
-    return { index, taken, invite: await signInvite(options.signer, scope, epoch, index) };
+    return { index, taken, invite: await signInvite(options.signer, domain, epoch, index) };
   };
   const { index, taken, invite } = options.dataDir
     ? await allocateRecorded(options.dataDir, scope, epoch, allocate)

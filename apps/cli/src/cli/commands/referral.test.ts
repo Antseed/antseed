@@ -18,6 +18,7 @@ import {
 const REFERRALS = '0x1111111111111111111111111111111111111111';
 const DOMAIN = { chainId: 8453, referralsAddress: REFERRALS };
 const BUYER = '0x2222222222222222222222222222222222222222';
+const SCOPE = { ...DOMAIN, wallet: BUYER };
 const strip = (lines: string[]) => lines.map((line) => line.replace(/\u001b\[[0-9;]*m/g, ''));
 
 async function withDataDir(work: (dir: string) => Promise<void>): Promise<void> {
@@ -53,7 +54,7 @@ test('invite signs a free index with this wallet and remembers it', async () => 
     const second = await createReferralInvite(context(dir, wallet, client) as never);
     assert.equal(second.index, 3 - first.index);
     assert.ok(second.left <= 1);
-    assert.deepEqual((await readReferralState(dir, DOMAIN))?.issued, { epoch: 30, indices: [1, 2] });
+    assert.deepEqual((await readReferralState(dir, { ...DOMAIN, wallet: wallet.address }))?.issued, { epoch: 30, indices: [1, 2] });
     await assert.rejects(createReferralInvite(context(dir, wallet, client) as never), /All 3 invites for this week are taken/);
   });
 });
@@ -97,15 +98,15 @@ test('redeem saves a valid invite as pending and refuses an invalid one with the
     const referrer = Wallet.createRandom();
     const invite = encodeInvite(await signInvite(referrer, DOMAIN, 30, 0));
     const ok = { previewInvite: async () => ({ referrer: referrer.address, failure: null }) };
-    const saved = await redeemReferralInvite({ client: ok, dataDir: dir, scope: DOMAIN, buyer: BUYER, value: `https://antseed.com/invite/${invite}` });
+    const saved = await redeemReferralInvite({ client: ok, dataDir: dir, scope: SCOPE, value: `https://antseed.com/invite/${invite}` });
     assert.equal(saved.ok, true);
-    assert.deepEqual(await readReferralState(dir, DOMAIN).then((state) => [state?.state, state?.invite, state?.referrer]), ['invited', invite, referrer.address]);
+    assert.deepEqual(await readReferralState(dir, SCOPE).then((state) => [state?.state, state?.invite, state?.referrer]), ['invited', invite, referrer.address]);
     assert.match(strip(formatRedeemResult(saved)).join('\n'), /Invite from 0x.{4}….{4} saved\.\nBinds with your first paid or free request through `antseed buyer start` \(before week 34\)\./);
 
     const used = { previewInvite: async () => ({ referrer: referrer.address, failure: 'InviteAlreadyUsed' as const }) };
-    const refused = await redeemReferralInvite({ client: used, dataDir: dir, scope: DOMAIN, buyer: BUYER, value: invite });
+    const refused = await redeemReferralInvite({ client: used, dataDir: dir, scope: SCOPE, value: invite });
     assert.deepEqual(strip(formatRedeemResult(refused)), ["Can't use this invite: This invite was already used."]);
-    const garbage = await redeemReferralInvite({ client: used, dataDir: dir, scope: DOMAIN, buyer: BUYER, value: 'not-an-invite' });
+    const garbage = await redeemReferralInvite({ client: used, dataDir: dir, scope: SCOPE, value: 'not-an-invite' });
     assert.deepEqual(strip(formatRedeemResult(garbage)), ["Can't use this invite: Not a valid invite."]);
   });
 });

@@ -22,8 +22,8 @@ const REFERRER = '0x1111111111111111111111111111111111111111';
 const BUYER = '0x2222222222222222222222222222222222222222';
 const INVITE = { epoch: 42n, index: 7n, r: `0x${'aa'.repeat(32)}`, vs: `0x${'bb'.repeat(32)}` };
 const ENCODED = encodeInvite(INVITE);
-const SCOPE = { chainId: 8453, referralsAddress: '0x3333333333333333333333333333333333333333' };
-const OTHER_SCOPE = { chainId: 84532, referralsAddress: '0x4444444444444444444444444444444444444444' };
+const SCOPE = { chainId: 8453, referralsAddress: '0x3333333333333333333333333333333333333333', wallet: BUYER };
+const OTHER_SCOPE = { chainId: 84532, referralsAddress: '0x4444444444444444444444444444444444444444', wallet: BUYER };
 const ZERO = '0x0000000000000000000000000000000000000000';
 
 const dirs: string[] = [];
@@ -53,8 +53,8 @@ describe('referral state', () => {
     const dir = await dataDir();
     await saveReferralInvite(dir, SCOPE, ENCODED, REFERRER);
     const notYet = async () => null;
-    expect(await syncReferralState(dir, SCOPE, BUYER, async () => null, notYet)).toMatchObject({ state: 'invited' });
-    const bound = await syncReferralState(dir, SCOPE, BUYER, async () => REFERRER.toLowerCase(), async () => REFERRER.toLowerCase());
+    expect(await syncReferralState(dir, SCOPE, async () => null, notYet)).toMatchObject({ state: 'invited' });
+    const bound = await syncReferralState(dir, SCOPE, async () => REFERRER.toLowerCase(), async () => REFERRER.toLowerCase());
     expect(bound).toMatchObject({ state: 'bound', referrer: REFERRER });
     expect(bound?.invite).toBeUndefined();
     expect(pendingInvite(await readReferralState(dir, SCOPE))).toBeNull();
@@ -64,7 +64,7 @@ describe('referral state', () => {
     for (const explorer of [async () => undefined, async () => { throw new Error('offline'); }]) {
       const dir = await dataDir();
       await saveReferralInvite(dir, SCOPE, ENCODED, REFERRER);
-      expect(await syncReferralState(dir, SCOPE, BUYER, explorer, async () => REFERRER)).toMatchObject({ state: 'bound', referrer: REFERRER });
+      expect(await syncReferralState(dir, SCOPE, explorer, async () => REFERRER)).toMatchObject({ state: 'bound', referrer: REFERRER });
     }
   });
 
@@ -77,14 +77,14 @@ describe('referral state', () => {
     const verify = async () => { checks += 1; return onChain; };
     const stale = async () => null;
     const options = { recheckMs: 60_000, now: () => now };
-    expect(await syncReferralState(dir, SCOPE, BUYER, stale, verify, options)).toMatchObject({ state: 'invited' });
+    expect(await syncReferralState(dir, SCOPE, stale, verify, options)).toMatchObject({ state: 'invited' });
     expect(checks).toBe(1);
     onChain = REFERRER;
     now += 30_000;
-    expect(await syncReferralState(dir, SCOPE, BUYER, stale, verify, options)).toMatchObject({ state: 'invited' });
+    expect(await syncReferralState(dir, SCOPE, stale, verify, options)).toMatchObject({ state: 'invited' });
     expect(checks).toBe(1);
     now += 30_000;
-    expect(await syncReferralState(dir, SCOPE, BUYER, stale, verify, options)).toMatchObject({ state: 'bound', referrer: REFERRER });
+    expect(await syncReferralState(dir, SCOPE, stale, verify, options)).toMatchObject({ state: 'bound', referrer: REFERRER });
     expect(checks).toBe(2);
   });
 
@@ -92,16 +92,16 @@ describe('referral state', () => {
     const dir = await dataDir();
     await saveReferralInvite(dir, SCOPE, ENCODED, REFERRER);
     const explorer = async () => REFERRER;
-    expect(await syncReferralState(dir, SCOPE, BUYER, explorer, async () => ZERO)).toMatchObject({ state: 'invited', invite: ENCODED });
-    expect(await syncReferralState(dir, SCOPE, BUYER, explorer, async () => { throw new Error('rpc down'); })).toMatchObject({ state: 'invited' });
-    expect(await syncReferralState(dir, SCOPE, BUYER, explorer, null)).toMatchObject({ state: 'invited' });
+    expect(await syncReferralState(dir, SCOPE, explorer, async () => ZERO)).toMatchObject({ state: 'invited', invite: ENCODED });
+    expect(await syncReferralState(dir, SCOPE, explorer, async () => { throw new Error('rpc down'); })).toMatchObject({ state: 'invited' });
+    expect(await syncReferralState(dir, SCOPE, explorer, null)).toMatchObject({ state: 'invited' });
     expect(pendingInvite(await readReferralState(dir, SCOPE))).toEqual(INVITE);
   });
 
   it('asks the contract directly without an explorer', async () => {
     const dir = await dataDir();
     await saveReferralInvite(dir, SCOPE, ENCODED, REFERRER);
-    expect(await syncReferralState(dir, SCOPE, BUYER, null, async () => REFERRER)).toMatchObject({ state: 'bound', referrer: REFERRER });
+    expect(await syncReferralState(dir, SCOPE, null, async () => REFERRER)).toMatchObject({ state: 'bound', referrer: REFERRER });
   });
 
   it('only asks while an invite is pending', async () => {
@@ -109,14 +109,14 @@ describe('referral state', () => {
     await writeReferralState(dir, SCOPE, { state: 'none' });
     let calls = 0;
     const count = async () => { calls += 1; return REFERRER; };
-    await syncReferralState(dir, SCOPE, BUYER, count, count);
+    await syncReferralState(dir, SCOPE, count, count);
     expect(calls).toBe(0);
   });
 
   it('keeps writes made while a binding was being checked', async () => {
     const dir = await dataDir();
     await saveReferralInvite(dir, SCOPE, ENCODED, REFERRER);
-    const bound = await syncReferralState(dir, SCOPE, BUYER, null, async () => {
+    const bound = await syncReferralState(dir, SCOPE, null, async () => {
       await recordIssuedInvite(dir, SCOPE, 30, 4);
       return REFERRER;
     });
@@ -167,6 +167,19 @@ describe('referral state', () => {
     expect(await readReferralState(dir, SCOPE)).toMatchObject({ state: 'bound', referrer: REFERRER, issued: { epoch: 30, indices: [2] } });
     // Scope keys ignore address casing.
     expect(await readReferralState(dir, { ...SCOPE, referralsAddress: SCOPE.referralsAddress.toUpperCase().replace('0X', '0x') })).toMatchObject({ state: 'bound' });
+  });
+
+  it('keeps each wallet separate when the data dir changes hands', async () => {
+    const dir = await dataDir();
+    const other = { ...SCOPE, wallet: REFERRER };
+    await writeReferralState(dir, SCOPE, { state: 'bound', referrer: REFERRER });
+    await recordIssuedInvite(dir, SCOPE, 30, 2);
+    expect(await readReferralState(dir, other)).toBeNull();
+    expect(await saveReferralInvite(dir, other, ENCODED, REFERRER)).toMatchObject({ state: 'invited', invite: ENCODED });
+    expect(issuedInviteIndices(await readReferralState(dir, other), 30)).toEqual([]);
+    expect(await readReferralState(dir, SCOPE)).toMatchObject({ state: 'bound', issued: { epoch: 30, indices: [2] } });
+    // Scope keys ignore wallet casing.
+    expect(await readReferralState(dir, { ...SCOPE, wallet: BUYER.toUpperCase().replace('0X', '0x') })).toMatchObject({ state: 'bound' });
   });
 
   it('adopts a pre-scoped pending invite only into the deployment that signed it', async () => {

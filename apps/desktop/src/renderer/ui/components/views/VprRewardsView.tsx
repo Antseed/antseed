@@ -174,8 +174,17 @@ function invitePoints(points: string, pendingPoints: string): string {
 
 type IssuedInvite = Extract<CreateInviteResult, { ok: true }>;
 type CreateFailure = Extract<CreateInviteResult, { ok: false }>;
-/** A creation result tagged with the allowance week it was made in (null: no allowance reported). */
-type InWeek<T> = T & { epoch: number | null };
+/**
+ * The allowance week a creation result belongs to: the reported epoch, or,
+ * when no allowance is reported, the read it was made against. Without an
+ * epoch there is no telling whether a week has turned, so a result then holds
+ * only until the next refresh, and creating again lets the RPC-backed
+ * creation enforce the quota (its error is shown).
+ */
+type Week = number | ReferralInvites;
+const weekOf = (invites: ReferralInvites): Week => invites.allowance?.epoch ?? invites;
+/** A creation result tagged with the week it was made in. */
+type InWeek<T> = T & { week: Week };
 
 /**
  * Invites left this week. A creation's counts only apply in the week it was
@@ -183,10 +192,11 @@ type InWeek<T> = T & { epoch: number | null };
  * left); a newer week, or invites issued elsewhere, show as the server reports.
  */
 function inviteAllowance(
-  allowance: ReferralInvites['allowance'],
+  invites: ReferralInvites,
   issued: InWeek<IssuedInvite> | null,
 ): { left: number | null; quota: number | null } {
-  if (!issued || issued.epoch !== (allowance?.epoch ?? null)) {
+  const allowance = invites.allowance;
+  if (!issued || issued.week !== weekOf(invites)) {
     return { left: allowance?.left ?? null, quota: allowance?.quota ?? null };
   }
   return allowance
@@ -207,11 +217,11 @@ export function VprInvitesCard({ invites }: { invites: ReferralInvites | null })
   const [copied, setCopied] = useState(false);
   if (!invites?.available) return null;
   const allowance = invites.allowance;
-  const epoch = allowance?.epoch ?? null;
+  const week = weekOf(invites);
   const link = issued?.link ?? null;
-  const { left, quota } = inviteAllowance(allowance, issued);
+  const { left, quota } = inviteAllowance(invites, issued);
   // A failure (e.g. no quota) only holds for the week it happened in.
-  const failed = failure && failure.epoch === epoch ? failure : null;
+  const failed = failure && failure.week === week ? failure : null;
   const noQuota = allowance?.quota === 0 || !!failed?.noQuota;
   const create = async () => {
     const createInvite = window.antseedDesktop?.referralCreateInvite;
@@ -220,14 +230,14 @@ export function VprInvitesCard({ invites }: { invites: ReferralInvites | null })
     try {
       const result = await createInvite();
       if (result.ok) {
-        setIssued({ ...result, epoch });
+        setIssued({ ...result, week });
         setFailure(null);
         setCopied(false);
       } else {
-        setFailure({ ...result, epoch });
+        setFailure({ ...result, week });
       }
     } catch (error) {
-      setFailure({ ok: false, reason: error instanceof Error ? error.message : String(error), noQuota: false, epoch });
+      setFailure({ ok: false, reason: error instanceof Error ? error.message : String(error), noQuota: false, week });
     } finally {
       setCreating(false);
     }

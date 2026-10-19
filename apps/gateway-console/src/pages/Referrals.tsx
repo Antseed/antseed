@@ -39,6 +39,14 @@ function toBigInt(value: string): bigint {
 
 export default function Referrals() {
   const { workspace } = useConsole()
+  // The console keeps this page mounted across workspace switches; keying the body
+  // by workspace drops the invite draft, mutation feedback, created invite and claim
+  // selection together, so nothing typed or chosen in one workspace acts on another.
+  return <WorkspaceReferrals key={workspace.id} />
+}
+
+function WorkspaceReferrals() {
+  const { workspace } = useConsole()
   const queryClient = useQueryClient()
   const toast = useToast()
   const referrals = useQuery({ queryKey: qk.referrals(workspace.id), queryFn: () => api.referrals.get(workspace.id) })
