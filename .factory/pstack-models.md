@@ -11,9 +11,12 @@ How a model name becomes an `Agent` call in Claude Code:
 | `astra` (`gpt-6-astra`) | `subagent_type: astra` |
 | `sol` (`gpt-6.1-sol`) | `subagent_type: sol` |
 
+A read-only role (pstack's `readonly: true`) uses `reviewer`, `astra-reviewer` or `sol-reviewer` instead. The budget line sets the Agent `effort` parameter's starting level, adjusted per poteto-mode's Subagents section.
+
 A `grok-*` or other Cursor slug named in a skill means the role's line below. Every model goes through the AntSeed buyer pinned to GesundAI, and `start.sh` stops if GesundAI does not serve one of them.
 
 ```
+# budget: large (xhigh)
 feature, refactoring: opus
 bug-fix: opus
 perf-issue: opus
