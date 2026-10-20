@@ -58,13 +58,30 @@ describe('ExposedSseStream', () => {
     const events = decode(stream.push(encode(start + delta))).split('\n').filter(Boolean).map((line) => JSON.parse(line.slice(6)));
     expect(events[1].usage.estimated_cost).toBe(0.00024);
   });
+
+  it('keeps a character split across chunks intact while other streams decode in between', () => {
+    const [a, b] = [new ExposedSseStream(cost), new ExposedSseStream(cost)];
+    const textA = 'data: {"choices":[{"delta":{"content":"héllo"}}]}\n';
+    const textB = 'data: {"choices":[{"delta":{"content":"wörld"}}]}\n';
+    const [bytesA, bytesB] = [encode(textA), encode(textB)];
+    // Cut both streams inside their two-byte character.
+    const cutA = textA.indexOf('é') + 1;
+    const cutB = textB.indexOf('ö') + 1;
+    let outA = decode(a.push(bytesA.slice(0, cutA)));
+    let outB = decode(b.push(bytesB.slice(0, cutB)));
+    exposedJsonBody(encode(upstreamCompletion), cost);
+    outB += decode(b.push(bytesB.slice(cutB))) + decode(b.flush());
+    outA += decode(a.push(bytesA.slice(cutA))) + decode(a.flush());
+    expect(outA).toBe(textA);
+    expect(outB).toBe(textB);
+  });
 });
 
 describe('seller response bodies', () => {
   const request: SerializedHttpRequest = { requestId: 'r1', method: 'POST', path: '/v1/chat/completions', headers: {}, body: new Uint8Array(0) };
-  const execute = (provider: Partial<Provider>, callbacks?: ProviderStreamCallbacks) =>
+  const execute = (provider: Partial<Provider>, callbacks?: ProviderStreamCallbacks, req = request) =>
     (Object.create(SellerRequestHandler.prototype) as { _executeRequest: (p: Partial<Provider>, r: SerializedHttpRequest, c?: SellerCost, s?: ProviderStreamCallbacks) => Promise<SerializedHttpResponse> })
-      ._executeRequest(provider, request, cost, callbacks);
+      ._executeRequest(provider, req, cost, callbacks);
 
   it('carry the seller\'s price in a JSON response', async () => {
     const response = await execute({ handleRequest: async () => ({ requestId: 'r1', statusCode: 200, headers: { 'content-type': 'application/json' }, body: encode(upstreamCompletion) }) });
@@ -89,5 +106,29 @@ describe('seller response bodies', () => {
     expect(delivered).not.toContain('9e-7');
     expect(sent.at(-1)?.done).toBe(true);
     expect(decode(response.body)).toBe(delivered);
+  });
+
+  it('carry it in a stream without a content type to a request that accepts one', async () => {
+    const usageEvent = `data: ${JSON.stringify({ choices: [], provider: 'SomeHost', usage: { prompt_tokens: 600, completion_tokens: 300, cost: 0.0001, estimated_cost: 9e-7 } })}\n\n`;
+    const sent: SerializedHttpResponseChunk[] = [];
+    const stream = (headers: Record<string, string>) => async (_request: SerializedHttpRequest, callbacks: ProviderStreamCallbacks) => {
+      const start = { requestId: 'r1', statusCode: 200, headers, body: new Uint8Array(0) };
+      callbacks.onResponseStart(start);
+      callbacks.onResponseChunk({ requestId: 'r1', data: encode(usageEvent), done: true });
+      return { ...start, body: encode(usageEvent) };
+    };
+    const callbacks: ProviderStreamCallbacks = { onResponseStart: () => {}, onResponseChunk: (chunk) => { sent.push(chunk); } };
+    const sse = { ...request, headers: { Accept: 'text/event-stream' } };
+    const response = await execute({ handleRequest: async () => { throw new Error('unused'); }, handleRequestStream: stream({ 'x-antseed-streaming': '1' }) }, callbacks, sse);
+    const delivered = sent.map((chunk) => decode(chunk.data)).join('');
+    expect(delivered).toContain('"estimated_cost":0.0018');
+    expect(delivered).not.toContain('"cost":');
+    expect(delivered).not.toContain('SomeHost');
+    expect(decode(response.body)).toBe(delivered);
+
+    // A binary download without a content type passes through byte for byte.
+    sent.length = 0;
+    await execute({ handleRequest: async () => { throw new Error('unused'); }, handleRequestStream: stream({ 'x-antseed-streaming': '1' }) }, callbacks);
+    expect(decode(sent[0]!.data)).toBe(usageEvent);
   });
 });

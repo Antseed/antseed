@@ -1354,7 +1354,7 @@ export class SellerRequestHandler {
       const response = await provider.handleRequestStream(request, {
         ...streamCallbacks,
         onResponseStart: (start) => {
-          if (isEventStream(start.headers)) events = new ExposedSseStream(sellerCost);
+          if (isEventStream(request, start)) events = new ExposedSseStream(sellerCost);
           streamCallbacks.onResponseStart(withHeaders(start));
         },
         onResponseChunk: (chunk) => {
@@ -1454,11 +1454,23 @@ export class SellerRequestHandler {
 }
 
 function contentTypeOf(headers: Record<string, string>): string {
-  return Object.entries(headers).find(([name]) => name.toLowerCase() === 'content-type')?.[1]?.toLowerCase() ?? '';
+  return headerOf(headers, 'content-type').toLowerCase();
 }
 
-function isEventStream(headers: Record<string, string>): boolean {
-  return contentTypeOf(headers).includes('text/event-stream');
+/**
+ * Whether a response is a server-sent event stream: its content type says so,
+ * or, like HttpRelay assumes, a successful response without a content type to
+ * a request that accepts one.
+ */
+function isEventStream(request: SerializedHttpRequest, response: Pick<SerializedHttpResponse, 'statusCode' | 'headers'>): boolean {
+  const contentType = contentTypeOf(response.headers);
+  if (contentType) return contentType.includes('text/event-stream');
+  const accept = headerOf(request.headers, 'accept').toLowerCase();
+  return accept.includes('text/event-stream') && response.statusCode >= 200 && response.statusCode < 300;
+}
+
+function headerOf(headers: Record<string, string>, name: string): string {
+  return Object.entries(headers).find(([key]) => key.toLowerCase() === name)?.[1] ?? '';
 }
 
 /** A JSON response priced at the seller's own cost, without the upstream's. */

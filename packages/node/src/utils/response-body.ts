@@ -14,7 +14,6 @@ const UPSTREAM_USAGE_FIELDS = ['estimated_cost', 'cost', 'cost_details', 'is_byo
 export type SellerCost = (usage: TokenUsage) => number;
 
 const encoder = new TextEncoder();
-const decoder = new TextDecoder();
 
 /** The usage objects a response or stream event carries (top level, Responses API, Anthropic stream start). */
 function usageObjects(record: Record<string, unknown>): Record<string, unknown>[] {
@@ -63,7 +62,7 @@ function mayCarryCost(text: string): boolean {
 
 /** A JSON response body priced at the seller's own cost; other bodies unchanged. */
 export function exposedJsonBody(body: Uint8Array, cost?: SellerCost): Uint8Array {
-  const text = decoder.decode(body);
+  const text = new TextDecoder().decode(body);
   if (!mayCarryCost(text)) return body;
   try {
     const parsed: unknown = JSON.parse(text);
@@ -82,12 +81,15 @@ export function exposedJsonBody(body: Uint8Array, cost?: SellerCost): Uint8Array
  */
 export class ExposedSseStream {
   private _pending = '';
+  // Each stream decodes on its own, since a character split across chunks
+  // leaves partial bytes in the decoder until the next chunk.
+  private readonly _decoder = new TextDecoder();
   private readonly _totals: TokenUsage = { inputTokens: 0, outputTokens: 0, freshInputTokens: 0, cachedInputTokens: 0 };
 
   constructor(private readonly _cost?: SellerCost) {}
 
   push(data: Uint8Array): Uint8Array {
-    const text = this._pending + decoder.decode(data, { stream: true });
+    const text = this._pending + this._decoder.decode(data, { stream: true });
     const end = text.lastIndexOf('\n');
     if (end < 0) {
       this._pending = text;
@@ -98,7 +100,7 @@ export class ExposedSseStream {
   }
 
   flush(): Uint8Array {
-    const rest = this._pending + decoder.decode();
+    const rest = this._pending + this._decoder.decode();
     this._pending = '';
     return rest ? encoder.encode(this._line(rest)) : new Uint8Array(0);
   }
