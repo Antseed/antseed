@@ -13,12 +13,13 @@ test('seller reputation explains the trust formula part by part', () => {
       usage: { score: 10, shareBps: 1_000, epoch: 11 },
       power: { score: 5, shareBps: 1_000, epoch: 12 },
       identity: { score: 20, kind: 'github', claim: 'portfolio' },
+      freeModels: { score: 5, service: 'free-model' },
       washFlagged: false,
     },
   } as DiscoverRow;
   assert.equal(
     sellerReputationExplanation(route),
-    'Trust 6.5/10 = history 3.0 + usage 1.0 + power 0.5 + identity 2.0 GitHub. Not flagged for wash trading.',
+    'Trust 6.5/10 = history 3.0 + usage 1.0 + power 0.5 + identity 2.0 GitHub + free models 0.5. Not flagged for wash trading.',
   );
 });
 
@@ -26,7 +27,7 @@ test('seller reputation shows n/a, none and 0 for missing trust parts', () => {
   const route = {
     effectiveReputationScore: 0,
     onChainReputationScore: 0,
-    trust: { score: 0, history: null, usage: null, power: null, identity: null, washFlagged: null },
+    trust: { score: 0, history: null, usage: null, power: null, identity: null, freeModels: null, washFlagged: null },
   } as DiscoverRow;
   assert.equal(
     sellerReputationExplanation(route),
@@ -44,6 +45,7 @@ test('seller reputation calls out proven wash traders', () => {
       usage: { score: 38, shareBps: 7_000, epoch: 11 },
       power: { score: 5, shareBps: 20, epoch: 12 },
       identity: null,
+      freeModels: null,
       washFlagged: true,
     },
   } as DiscoverRow;
