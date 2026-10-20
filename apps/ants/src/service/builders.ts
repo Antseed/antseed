@@ -86,9 +86,16 @@ export async function claimBuilderRewards(
   // unsupported or failing, fall back to the on-chain epoch scan.
   const indexer = ctx.indexer();
   const indexed = indexer?.builders ? await indexer.builders([agentId]).catch(() => null) : null;
-  const epochs = indexed?.available
+  const listed = indexed?.available
     ? indexed.agents.find((agent) => agent.agentId === agentId)?.claimableEpochs ?? []
     : (await client.pendingRewards(agentId)).map((entry) => entry.epoch);
+  // Antscan can lag a claim (an earlier partial run, or anyone else: claims
+  // are permissionless), and the contract reverts on an epoch already paid, so
+  // its epochs are rechecked on-chain before each one is sent.
+  const epochs = indexed?.available
+    ? (await Promise.all(listed.map(async (epoch) => ((await client.pendingReward(agentId, epoch)) > 0n ? epoch : null))))
+      .filter((epoch): epoch is number => epoch !== null)
+    : listed;
   if (epochs.length === 0) throw new Error(`No builder rewards are payable yet for agent ${agentId}.`);
   const hashes: string[] = [];
   for (const [index, epoch] of epochs.entries()) {

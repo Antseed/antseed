@@ -45,6 +45,8 @@ it('lists each invited buyer with points, pending points and ANTS earned, plus a
       { buyer: OTHER, points: '250', ants: '0', pendingPoints: '250' },
     ],
     totals: { points: '12750', ants: '3.456', pendingPoints: '250' },
+    payable: '0',
+    claimableEpochs: [],
     error: null,
   }} />);
   expect(html).toContain('Your invites');
@@ -62,7 +64,7 @@ it('lists each invited buyer with points, pending points and ANTS earned, plus a
 });
 
 it('offers to create an invite with the invites left this week', () => {
-  const html = renderToStaticMarkup(<VprInvitesCard invites={{ available: true, listed: true, allowance: ALLOWANCE, buyers: [], totals: TOTALS, error: null }} />);
+  const html = renderToStaticMarkup(<VprInvitesCard invites={{ available: true, listed: true, allowance: ALLOWANCE, buyers: [], totals: TOTALS, payable: '0', claimableEpochs: [], error: null }} />);
   expect(html).toContain('data-row="Invite someone"');
   expect(html).toContain('3 of 5 left this week.');
   expect(html).toContain('Create link');
@@ -71,7 +73,7 @@ it('offers to create an invite with the invites left this week', () => {
 });
 
 it('explains why there are no invites without last week\'s activity', () => {
-  const html = renderToStaticMarkup(<VprInvitesCard invites={{ available: true, listed: true, allowance: { epoch: 30, quota: 0, used: 0, left: 0 }, buyers: [], totals: TOTALS, error: null }} />);
+  const html = renderToStaticMarkup(<VprInvitesCard invites={{ available: true, listed: true, allowance: { epoch: 30, quota: 0, used: 0, left: 0 }, buyers: [], totals: TOTALS, payable: '0', claimableEpochs: [], error: null }} />);
   expect(html).toContain('Invites unlock after at least 1 USDC of usage or sales in the previous week.');
   // Antscan's allowance is advisory: the on-chain recheck stays one click away.
   expect(html).not.toContain('Create link');
@@ -80,14 +82,14 @@ it('explains why there are no invites without last week\'s activity', () => {
 });
 
 it('still offers invites when no explorer lists referrals', () => {
-  const html = renderToStaticMarkup(<VprInvitesCard invites={{ available: true, listed: false, allowance: null, buyers: [], totals: TOTALS, error: null }} />);
+  const html = renderToStaticMarkup(<VprInvitesCard invites={{ available: true, listed: false, allowance: null, buyers: [], totals: TOTALS, payable: '0', claimableEpochs: [], error: null }} />);
   expect(html).toContain('Create link');
   expect(html).not.toContain('No one has joined');
   expect(html).not.toContain('Invited wallet');
 });
 
 it('hides invites when referrals are not configured', () => {
-  expect(renderToStaticMarkup(<VprInvitesCard invites={{ available: false, listed: false, allowance: null, buyers: [], totals: TOTALS, error: null }} />)).toBe('');
+  expect(renderToStaticMarkup(<VprInvitesCard invites={{ available: false, listed: false, allowance: null, buyers: [], totals: TOTALS, payable: '0', claimableEpochs: [], error: null }} />)).toBe('');
   expect(renderToStaticMarkup(<VprInvitesCard invites={null} />)).toBe('');
 });
 
@@ -213,7 +215,7 @@ it('picks up a claimed invite bonus on focus, ignoring a slower earlier response
   expect(bonus).toEqual(after);
 });
 
-const INVITES: ReferralInvites = { available: true, listed: true, allowance: ALLOWANCE, buyers: [], totals: TOTALS, error: null };
+const INVITES: ReferralInvites = { available: true, listed: true, allowance: ALLOWANCE, buyers: [], totals: TOTALS, payable: '0', claimableEpochs: [], error: null };
 
 it('creates two single-use invites in a row on the same card', async () => {
   const results: CreateInviteResult[] = [
@@ -301,4 +303,13 @@ it('clears a no-quota answer once a newer week\'s allowance has invites', async 
   expect(html).toContain('Create link');
   expect(html).toContain('3 of 3 left this week.');
   expect(html).not.toContain('Invites unlock after');
+});
+
+it('inviter rewards get their own claim action, even with no buyer rewards or invite bonus', () => {
+  const payable = renderToStaticMarkup(<VprInvitesCard invites={{ ...INVITES, payable: '2.5', claimableEpochs: [28, 29] }} />);
+  expect(payable).toContain('2.50 $ANTS payable');
+  expect(payable).toContain('From your invites. Paid to your authorized wallet.');
+  expect(payable).toContain('Claim ↗');
+  const nothing = renderToStaticMarkup(<VprInvitesCard invites={INVITES} />);
+  expect(nothing).not.toContain('From your invites.');
 });

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
-import { mkdir, open, readdir, readFile, rm, stat, utimes } from 'node:fs/promises';
-import { basename, dirname, join } from 'node:path';
+import { mkdirSync, realpathSync } from 'node:fs';
+import { open, readdir, readFile, rm, stat, utimes } from 'node:fs/promises';
+import { basename, dirname, join, resolve as resolvePath } from 'node:path';
 
 /**
  * Tails of the in-process queues, one per lock path. Kept on `globalThis` so
@@ -49,7 +50,10 @@ export class FileLockTimeoutError extends Error {
  * instead. Only a lock whose owner is gone, or whose heartbeat stopped for
  * `staleMs`, is broken.
  */
-export async function withFileLock<T>(lockPath: string, task: () => Promise<T>, options: FileLockOptions = {}): Promise<T> {
+export async function withFileLock<T>(path: string, task: () => Promise<T>, options: FileLockOptions = {}): Promise<T> {
+  // One spelling per lock, so callers in this process always share its queue
+  // (a lock held by this pid under another spelling would look left over).
+  const lockPath = canonicalLockPath(path);
   const previous = queues.get(lockPath) ?? Promise.resolve();
   let done!: () => void;
   const gate = new Promise<void>((resolve) => { done = resolve; });
@@ -73,9 +77,18 @@ export async function withFileLock<T>(lockPath: string, task: () => Promise<T>, 
   }
 }
 
+/**
+ * Absolute path with the directory's symlinks resolved (the directory is
+ * created first). Synchronous, so callers still queue in call order.
+ */
+function canonicalLockPath(path: string): string {
+  const absolute = resolvePath(path);
+  mkdirSync(dirname(absolute), { recursive: true });
+  return join(realpathSync(dirname(absolute)), basename(absolute));
+}
+
 async function acquire(lockPath: string, staleMs: number, options: FileLockOptions): Promise<string> {
   const { timeoutMs = 10_000, retryMs = 50 } = options;
-  await mkdir(dirname(lockPath), { recursive: true });
   const token = JSON.stringify({ pid: process.pid, at: Date.now(), nonce: Math.random().toString(36).slice(2) });
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -148,9 +161,11 @@ async function breakIfStale(lockPath: string, staleMs: number, beforeReclaim?: (
   const claim = await claimAbandoned(base, staleMs, beforeReclaim);
   if (claim === 'busy') return false; // a live process is reclaiming it
   if (claim === 'won') {
-    // Only the claimant removes the lock it claimed; retaken meanwhile, it is judged afresh.
+    // Only the claimant removes the lock it claimed, and only while it is still
+    // abandoned: retaken meanwhile, or refreshed by a holder that was merely
+    // slow, it is judged afresh.
     const current = await inspect(lockPath);
-    if (current && current.content === seen.content) await rm(lockPath, { force: true });
+    if (current && current.content === seen.content && abandoned(current, staleMs)) await rm(lockPath, { force: true });
     await removeClaims(base);
   }
   return true;

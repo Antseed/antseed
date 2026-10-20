@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { access, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { FileLockTimeoutError, withFileLock } from '../src/utils/file-lock.js';
@@ -63,6 +63,37 @@ describe('file lock', () => {
     const old = new Date(Date.now() - 60_000);
     await utimes(lock, old, old);
     expect(await withFileLock(lock, async () => 'stale', { timeoutMs: 200, staleMs: 30_000 })).toBe('stale');
+  });
+
+  it('leaves a lock alone when its slow holder refreshed it while the contender claimed it', async () => {
+    const lock = await lockPath();
+    await withFileLock(lock, async () => undefined); // creates the directory
+    const held = JSON.stringify({ pid: process.ppid }); // a live process
+    await writeFile(lock, held);
+    const old = new Date(Date.now() - 60_000);
+    await utimes(lock, old, old); // looks abandoned: its heartbeat stopped
+    const refreshOnce = async () => {
+      const now = new Date();
+      await utimes(lock, now, now); // the holder wakes up and refreshes it
+    };
+    await expect(withFileLock(lock, async () => 'entered', { staleMs: 30_000, timeoutMs: 150, retryMs: 10, beforeReclaim: refreshOnce }))
+      .rejects.toBeInstanceOf(FileLockTimeoutError);
+    expect(await readFile(lock, 'utf8')).toBe(held);
+    expect((await readdir(dirname(lock))).filter((name) => name.includes('.reclaim-'))).toEqual([]);
+  });
+
+  it('queues relative and absolute spellings of the same lock together', async () => {
+    const lock = await lockPath();
+    await withFileLock(lock, async () => undefined); // creates the directory
+    const order: string[] = [];
+    const task = (name: string, path: string) => withFileLock(path, async () => {
+      order.push(`${name}:start`);
+      await sleep(20);
+      order.push(`${name}:end`);
+    }, { timeoutMs: 1_000, retryMs: 5 });
+    const relativeSpelling = relative(process.cwd(), join(dirname(lock), '.', '..', 'nested', basename(lock)));
+    await Promise.all([task('absolute', lock), task('relative', relativeSpelling)]);
+    expect(order).toEqual(['absolute:start', 'absolute:end', 'relative:start', 'relative:end']);
   });
 
   it('never lets a contender in while another live process still holds the lock, however long', async () => {

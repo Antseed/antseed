@@ -25,7 +25,7 @@ export function CommandChip({command, size = 'lg', dark = false, token, classNam
   return (
     <button
       type="button"
-      className={`${styles.chip} ${size === 'md' ? styles.md : ''} ${dark ? styles.dark : ''} ${copied ? styles.copied : ''} ${className ?? ''}`}
+      className={`${styles.chip} ${size === 'md' ? styles.md : ''} ${dark ? styles.dark : ''} ${token ? styles.wrap : ''} ${copied ? styles.copied : ''} ${className ?? ''}`}
       onClick={copy}
       aria-label={`Copy command: ${command}`}
       title="Copy to clipboard">

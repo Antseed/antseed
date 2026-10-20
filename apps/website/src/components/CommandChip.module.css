@@ -111,6 +111,24 @@
   .icon { flex-shrink: 0; margin-top: 1px; }
 }
 
+/* A command carrying a long token (an invite) is wider than the content area
+   at any width, so it wraps at every breakpoint, not just on phones. Two
+   classes, so it wins over `.chip`/`.md` whatever order the minifier emits. */
+.chip.wrap {
+  height: auto;
+  min-height: 46px;
+  padding-top: 12px;
+  padding-bottom: 12px;
+  white-space: normal;
+  text-align: left;
+  border-radius: 18px;
+  align-items: flex-start;
+}
+.wrap .cmd { flex: 1; overflow-wrap: normal; line-height: 18px; }
+.wrap .token { word-break: break-all; }
+.wrap .prompt { line-height: 18px; }
+.wrap .icon { flex-shrink: 0; margin-top: 1px; }
+
 /* On the ink closing bands */
 .dark {
   border-color: rgba(255, 255, 255, 0.22);

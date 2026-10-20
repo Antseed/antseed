@@ -64,6 +64,10 @@ export type ReferralInvites = {
   buyers: Array<{ buyer: string; points: string; ants: string; pendingPoints: string }>;
   /** Sums over `buyers`. */
   totals: { points: string; ants: string; pendingPoints: string };
+  /** Inviter rewards payable now, claimed on the rewards dashboard. */
+  payable: string;
+  /** Epochs with a payable inviter reward; empty when nothing is claimable. */
+  claimableEpochs: number[];
   error: string | null;
 };
 
@@ -82,7 +86,7 @@ export type RefereeBonus = {
 
 const DARK_STATUS: ReferralStatus = { configured: false, state: 'none', referrer: null, invite: null };
 const NO_TOTALS = { points: '0', ants: '0', pendingPoints: '0' };
-const NO_INVITES: ReferralInvites = { available: false, listed: false, allowance: null, buyers: [], totals: NO_TOTALS, error: null };
+const NO_INVITES: ReferralInvites = { available: false, listed: false, allowance: null, buyers: [], totals: NO_TOTALS, payable: '0', claimableEpochs: [], error: null };
 const NO_BONUS: RefereeBonus = { available: false, weeksLeft: null, payable: '0', claimableEpochs: [] };
 
 function errorText(error: unknown): string {
@@ -183,6 +187,8 @@ export async function getReferralInvites(): Promise<ReferralInvites> {
       allowance: card.invites,
       buyers: view.buyers.map((row) => ({ buyer: getAddress(row.buyer), points: row.points, ants: formatAntsExact(row.ants), pendingPoints: row.pendingPoints })),
       totals: { points: sum('points'), ants: formatAntsExact(sum('ants')), pendingPoints: sum('pendingPoints') },
+      payable: formatAntsExact(card.payable),
+      claimableEpochs: card.claimableEpochs,
       error: null,
     };
   } catch (error) {

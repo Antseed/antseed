@@ -23,6 +23,10 @@ export type ReferralInvites = {
   /** `pendingPoints`: usage in weeks that are not claimable yet (no ANTS value yet). */
   buyers: Array<{ buyer: string; points: string; ants: string; pendingPoints: string }>;
   totals: { points: string; ants: string; pendingPoints: string };
+  /** Inviter rewards payable now (decimal ANTS), claimed on the rewards dashboard. */
+  payable: string;
+  /** Epochs with a payable inviter reward; empty when nothing is claimable. */
+  claimableEpochs: number[];
   error: string | null;
 };
 

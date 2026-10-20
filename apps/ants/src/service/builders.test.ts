@@ -18,6 +18,7 @@ function fixture(options: { clientRewards?: boolean; explorer?: boolean } = {}) 
   };
   const clientRewards = {
     pendingRewards: vi.fn(async (agentId: number) => agentId === 9 ? [{ epoch: 8, amount: 1n }] : []),
+    pendingReward: vi.fn(async (_agentId: number, _epoch: number) => 1n),
     claim: vi.fn(async (_signer: unknown, _agentId: number, epoch: number) => `0xhash${epoch}`),
   };
   const indexer = {
@@ -95,6 +96,16 @@ describe('builders program', () => {
     expect(clientRewards.claim).toHaveBeenNthCalledWith(2, {}, 5, 4);
     expect(report).toHaveBeenCalledWith('Epoch 3 claimed', '0xhash3');
     expect(report).toHaveBeenCalledWith('Epoch 4 claimed', '0xhash4');
+  });
+
+  it('skips epochs Antscan still lists after they were claimed, and claims the rest', async () => {
+    const { ctx, clientRewards } = fixture();
+    clientRewards.pendingReward.mockImplementation(async (_agentId: number, epoch: number) => (epoch === 3 ? 0n : 7n));
+    expect(await claimBuilderRewards(ctx, 5)).toMatchObject({ epochs: [4], hashes: ['0xhash4'] });
+    expect(clientRewards.claim).toHaveBeenCalledTimes(1);
+    expect(clientRewards.claim).toHaveBeenCalledWith({}, 5, 4);
+    clientRewards.pendingReward.mockResolvedValue(0n);
+    await expect(claimBuilderRewards(ctx, 5)).rejects.toThrow('No builder rewards');
   });
 
   it('falls back to the on-chain epoch scan for a claim only without an explorer', async () => {

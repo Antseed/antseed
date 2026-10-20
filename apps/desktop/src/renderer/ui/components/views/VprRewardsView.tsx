@@ -387,6 +387,18 @@ export function VprInvitesCardBody({ invites, creation, creating, copied, onCrea
           </span>
         </div>
       ) : null}
+      {invites.claimableEpochs.length > 0 ? (
+        // Inviter rewards are not in the buyer summary behind "Claim rewards".
+        <VprSettingRow
+          title={`${formatCredits(invites.payable)} $ANTS payable`}
+          hint="From your invites. Paid to your authorized wallet."
+          control={(
+            <StakingButton page="rewards" className={styles.claimButton}>
+              Claim ↗
+            </StakingButton>
+          )}
+        />
+      ) : null}
       {invites.listed && count === 0 && !invites.error
         ? <span className={styles.aboutText}>No one has joined with your invites yet.</span>
         : null}
