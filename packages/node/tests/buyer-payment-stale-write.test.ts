@@ -585,11 +585,12 @@ describe('a payment write that awaited while the seller channel moved on', () =>
     beforeEach(() => setup());
 
     it.each([
-      { write: 'resent SpendingAuth (resendCurrentSpendingAuth)', start: () => manager.resendCurrentSpendingAuth(SELLER, mux) },
-      { write: 'close authorization (buildCloseChannelRequest)', start: () => manager.buildCloseChannelRequest(SELLER) },
-    ])('$write keeps the higher authorization stored', async ({ start }) => {
+      { write: 'resent SpendingAuth (resendCurrentSpendingAuth)', start: () => manager.resendCurrentSpendingAuth(SELLER, mux), outcome: 'completed' },
+      { write: 'close authorization (buildCloseChannelRequest)', start: () => manager.buildCloseChannelRequest(SELLER), outcome: 'buyer-session-state' },
+    ])('$write keeps the higher authorization stored and sends nothing lower', async ({ start, outcome: expected }) => {
       const channelId = await openChannel();
       await spend(channelId, 10_000n);
+      const sentBefore = mux.sent.length;
       const commit = store.commitAuthorization.bind(store);
       let write: Promise<string> | null = null;
       vi.spyOn(store, 'commitAuthorization').mockImplementation((channel, totals) => {
@@ -602,8 +603,76 @@ describe('a payment write that awaited while the seller channel moved on', () =>
 
       const higher = mux.sent.find((payload) => payload.cumulativeAmount === '38000');
       const stored = store.getChannel(channelId);
-      expect({ authMax: stored?.authMax, latestSpendingAuthSig: stored?.latestSpendingAuthSig, outcome })
-        .toEqual({ authMax: '38000', latestSpendingAuthSig: higher?.spendingAuthSig, outcome: 'buyer-session-state' });
+      expect({
+        authMax: stored?.authMax,
+        latestSpendingAuthSig: stored?.latestSpendingAuthSig,
+        sent: mux.sent.slice(sentBefore).map((payload) => payload.cumulativeAmount),
+        outcome,
+      }).toEqual({ authMax: '38000', latestSpendingAuthSig: higher?.spendingAuthSig, sent: ['38000'], outcome: expected });
+    });
+  });
+
+  describe('in BuyerPaymentManager, a reserve write that a SpendingAuth signed past', () => {
+    beforeEach(() => setup());
+
+    function heldBalance(): { arrived: Promise<void>; release(): void } {
+      const balance = gate();
+      vi.spyOn(manager, 'getBalance').mockImplementationOnce(async () => {
+        balance.arrive();
+        await balance.opened;
+        return PLENTY;
+      });
+      return { arrived: balance.arrived, release: balance.open };
+    }
+
+    /** A top-up the seller has not confirmed, whose ReserveAuth a replay must sign again. */
+    async function pendingTopUpNearItsDeadline(): Promise<void> {
+      await manager.topUpReserve(SELLER, mux);
+      const later = Date.now() + 2 * 3_600_000;
+      vi.spyOn(Date, 'now').mockReturnValue(later);
+    }
+
+    it.each([
+      { write: 'reserve top-up (topUpReserve) held at the deposit balance read', before: null, hold: heldBalance, start: () => manager.topUpReserve(SELLER, mux), ceiling: 2n * RESERVE },
+      { write: 'reserve top-up (topUpReserve) held at the signer', before: null, hold: heldSignature, start: () => manager.topUpReserve(SELLER, mux), ceiling: 2n * RESERVE },
+      { write: 'reserve replay (resendReserveAuth) held at the signer', before: null, hold: heldSignature, start: () => manager.resendReserveAuth(SELLER, mux), ceiling: RESERVE },
+      { write: 'pending reserve replay (resendPendingReserveAuth) held at the signer', before: pendingTopUpNearItsDeadline, hold: heldSignature, start: () => manager.resendPendingReserveAuth(SELLER, mux), ceiling: 2n * RESERVE },
+    ])('$write is sent and stored over the higher authorization', async ({ before, hold, start, ceiling }) => {
+      const channelId = await openChannel();
+      await spend(channelId, 10_000n);
+      await before?.();
+      const held = hold();
+      const write = settle(start());
+      await held.arrived;
+      await spend(channelId, 28_000n);
+      const higher = mux.sent.at(-1);
+      const sentBefore = mux.sent.length;
+      held.release();
+      const outcome = await write;
+
+      const reserves = mux.sent.slice(sentBefore);
+      const stored = store.getChannel(channelId);
+      expect({
+        outcome,
+        sent: reserves.map(({ cumulativeAmount, reserveMaxAmount }) => ({ cumulativeAmount, reserveMaxAmount })),
+        ceiling: manager.getReserveCeiling(SELLER),
+        stored: {
+          authMax: stored?.authMax,
+          latestSpendingAuthSig: stored?.latestSpendingAuthSig,
+          reserveMaxAmount: stored?.reserveMaxAmount,
+          latestReserveAuthSig: stored?.latestReserveAuthSig,
+        },
+      }).toEqual({
+        outcome: 'completed',
+        sent: [{ cumulativeAmount: '38000', reserveMaxAmount: ceiling.toString() }],
+        ceiling,
+        stored: {
+          authMax: '38000',
+          latestSpendingAuthSig: higher?.spendingAuthSig,
+          reserveMaxAmount: ceiling.toString(),
+          latestReserveAuthSig: reserves[0]?.spendingAuthSig,
+        },
+      });
     });
   });
 
@@ -706,6 +775,63 @@ describe('a payment write that awaited while the seller channel moved on', () =>
 
       expect(await newChannelAfter(result)).toEqual(untouched());
       expect(result.outcome).toBe('buyer-session-state');
+    });
+
+    /** What a budget-exhausted 402 left on the channel, after the seller's catch-up NeedAuth for more signed past it. */
+    function afterCatchUp(channelId: string, outcome: string, sent: { mock: { calls: unknown[][] } }): Record<string, unknown> {
+      return {
+        outcome,
+        status: store.getChannel(channelId)?.status,
+        committed: store.getChannel(channelId)?.authMax,
+        inMemory: manager.getCumulativeAmount(SELLER),
+        sent: sent.mock.calls.map(([payload]) => (payload as SpendingAuthPayload).cumulativeAmount),
+      };
+    }
+
+    const caughtUp = { outcome: 'retry', status: CHANNEL_STATUS.ACTIVE, committed: '38000', inMemory: 38_000n, sent: ['38000'] };
+
+    function actionOf(write: Promise<{ action: string }>): Promise<string> {
+      return write.then(({ action }) => action, (err: unknown) => String((err as { code?: unknown } | null)?.code ?? 'failed'));
+    }
+
+    it('402 catch-up held at the signer while the seller\'s catch-up NeedAuth signs higher', async () => {
+      setupNegotiator();
+      const channelId = await openChannel(pmux);
+      await spend(channelId, 10_000n, pmux);
+      onChain.set(channelId, chainInfo(1, RESERVE));
+      const sent = vi.spyOn(pmux, 'sendSpendingAuth');
+      const held = heldSignature();
+      const write = actionOf(negotiator.handle402(make402({ minBudgetPerRequest: '10000', requiredCumulativeAmount: '20000' }), PEER, conn, REQUEST));
+      await held.arrived;
+      await manager.handleNeedAuth(SELLER, needAuth(channelId, 28_000n), pmux);
+      held.release();
+
+      expect(afterCatchUp(channelId, await write, sent)).toEqual(caughtUp);
+    });
+
+    it('402 catch-up while the seller\'s higher catch-up NeedAuth is still being saved', async () => {
+      setupNegotiator();
+      const channelId = await openChannel(pmux);
+      await spend(channelId, 10_000n, pmux);
+      onChain.set(channelId, chainInfo(1, RESERVE));
+      const sent = vi.spyOn(pmux, 'sendSpendingAuth');
+      const saving = gate();
+      const commit = store.commitAuthorization.bind(store);
+      vi.spyOn(store, 'commitAuthorization').mockImplementation(async (channel, totals) => {
+        commit(channel, totals);
+        if (channel.authMax !== '38000') return;
+        vi.mocked(store.commitAuthorization).mockImplementation(commit);
+        saving.arrive();
+        await saving.opened;
+      });
+      const higher = manager.handleNeedAuth(SELLER, needAuth(channelId, 28_000n), pmux);
+      await saving.arrived;
+
+      const outcome = await actionOf(negotiator.handle402(make402({ minBudgetPerRequest: '10000', requiredCumulativeAmount: '20000' }), PEER, conn, REQUEST));
+      saving.open();
+      await higher;
+
+      expect(afterCatchUp(channelId, outcome, sent)).toEqual(caughtUp);
     });
 
     /** Replace the seller's channel, then handle a 402 the seller sent about the old one. */
