@@ -62,8 +62,15 @@ describe('file lock', () => {
     // A running pid is not the owner of a lock taken before this boot.
     await writeFile(lock, JSON.stringify({ pid: process.ppid, at: Date.now() - uptime() * 1000 - 60_000 }));
     expect(await withFileLock(lock, async () => 'before boot', { timeoutMs: 2_000 })).toBe('before boot');
-    // pid 1 runs since boot, so it may own a lock taken a minute ago: however
-    // old, the lock stays.
+  });
+
+  // `ps` reports process start times, and pid 1 runs since boot, on POSIX only.
+  it.skipIf(process.platform === 'win32')('breaks a lock whose pid now belongs to a process started after it was taken, never its running owner\'s', async () => {
+    const lock = await lockPath();
+    await withFileLock(lock, async () => undefined);
+    await writeFile(lock, JSON.stringify({ pid: process.ppid, at: Date.now() - uptime() * 1000 + 1_000 }));
+    expect(await withFileLock(lock, async () => 'recycled', { timeoutMs: 2_000, staleMs: 30 })).toBe('recycled');
+    // pid 1 may own a lock taken a minute ago: however old, the lock stays.
     await writeFile(lock, JSON.stringify({ pid: 1, at: Date.now() - 60_000 }));
     const old = new Date(Date.now() - 60_000);
     await utimes(lock, old, old);
@@ -71,12 +78,26 @@ describe('file lock', () => {
       .rejects.toBeInstanceOf(FileLockTimeoutError);
   });
 
-  // `ps` reports process start times on POSIX only.
-  it.skipIf(process.platform === 'win32')('breaks a lock whose pid now belongs to a process started after it was taken', async () => {
+  it('recovers an abandoned lock whose reclaimer left a claim taken before this boot', async () => {
     const lock = await lockPath();
-    await withFileLock(lock, async () => undefined);
-    await writeFile(lock, JSON.stringify({ pid: process.ppid, at: Date.now() - uptime() * 1000 + 1_000 }));
-    expect(await withFileLock(lock, async () => 'recycled', { timeoutMs: 2_000, staleMs: 30 })).toBe('recycled');
+    await withFileLock(lock, async () => undefined); // creates the directory
+    const dead = JSON.stringify({ pid: 2 ** 22 + 12_345 });
+    await writeFile(lock, dead);
+    const claim = `${lock}.reclaim-${createHash('sha256').update(dead).digest('hex').slice(0, 16)}`;
+    // Its pid runs again, but the claim predates this boot.
+    await writeFile(claim, JSON.stringify({ pid: process.ppid, at: Date.now() - uptime() * 1000 - 60_000 }));
+    expect(await withFileLock(lock, async () => 'recovered', { timeoutMs: 2_000, retryMs: 10 })).toBe('recovered');
+    expect((await readdir(dirname(lock))).filter((name) => name.includes('.reclaim-'))).toEqual([]);
+  });
+
+  it.skipIf(process.platform === 'win32')('recovers an abandoned lock whose reclaimer left a claim its recycled pid does not own', async () => {
+    const lock = await lockPath();
+    await withFileLock(lock, async () => undefined); // creates the directory
+    const dead = JSON.stringify({ pid: 2 ** 22 + 12_345 });
+    await writeFile(lock, dead);
+    const claim = `${lock}.reclaim-${createHash('sha256').update(dead).digest('hex').slice(0, 16)}`;
+    await writeFile(claim, JSON.stringify({ pid: process.ppid, at: Date.now() - uptime() * 1000 + 1_000 }));
+    expect(await withFileLock(lock, async () => 'recovered', { timeoutMs: 2_000, staleMs: 30, retryMs: 10 })).toBe('recovered');
   });
 
   it('leaves a lock alone when another process retook it while the contender claimed it', async () => {

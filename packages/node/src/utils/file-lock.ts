@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, realpathSync } from 'node:fs';
-import { link, open, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { link, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { uptime } from 'node:os';
 import { basename, dirname, join, resolve as resolvePath } from 'node:path';
 
@@ -46,6 +46,17 @@ export class FileLockTimeoutError extends Error {
   constructor(lockPath: string) {
     super(`Another Antseed process is holding ${lockPath}. Try again in a moment.`);
     this.name = 'FileLockTimeoutError';
+    this.lockPath = lockPath;
+  }
+}
+
+/** Thrown when the lock's directory cannot hard-link files (some FAT or network drives). */
+export class FileLockUnsupportedError extends Error {
+  readonly lockPath: string;
+
+  constructor(lockPath: string, cause: unknown) {
+    super(`Antseed cannot lock files in ${dirname(lockPath)}: this drive does not support hard links. Move the Antseed data directory to a local disk.`, { cause });
+    this.name = 'FileLockUnsupportedError';
     this.lockPath = lockPath;
   }
 }
@@ -121,8 +132,8 @@ async function inspect(path: string): Promise<LockSnapshot | null> {
  * overlap), or by a process whose pid now belongs to another one: the lock
  * predates this boot, or (checked once it is `staleMs` old) the pid's process
  * started after the lock was taken. A lock always appears with its owner
- * record; one without (written without hard links by a creator that died
- * mid-way, or corrupt) is broken after the stale window.
+ * record; one without (corrupt, or left by an older version that wrote it
+ * after creating it) is broken after the stale window.
  */
 async function abandoned(lock: LockSnapshot, staleMs: number): Promise<boolean> {
   const owner = ownerOf(lock.content);
@@ -203,12 +214,9 @@ async function claimAbandoned(path: string, staleMs: number, hooks: FileLockOpti
     if (await createExclusive(path, token, hooks.beforePublish)) return 'won';
     const held = await inspect(path);
     if (!held) return 'gone';
-    // A claim is held for a few file operations only, so it is abandoned only
-    // when its creator died (or is this process), never for its age; an empty
-    // one only when its creator never wrote its pid within the stale window.
-    const pid = ownerOf(held.content)?.pid;
-    const dead = pid !== undefined ? pid === process.pid || !alive(pid) : Date.now() - held.mtimeMs > staleMs;
-    if (!dead) return 'busy';
+    // Judged like the lock itself: abandoned once its creator is gone (dead,
+    // or its pid recycled), never for its age while that creator runs.
+    if (!(await abandoned(held, staleMs))) return 'busy';
     path = `${path}-${digest(held.content)}`;
   }
   return 'busy';
@@ -218,8 +226,8 @@ async function claimAbandoned(path: string, staleMs: number, hooks: FileLockOpti
  * Create `path` holding `content`, or return false when it exists. The file is
  * written under a private name and hard-linked into place, so `path` never
  * appears without its owner record: a creator paused mid-way has published
- * nothing a contender could take for abandoned. Where hard links are not
- * supported, it is created and then written at once.
+ * nothing a contender could take for abandoned. A directory without hard
+ * links fails: creating and then writing would reopen that window.
  */
 async function createExclusive(path: string, content: string, beforePublish?: (path: string) => Promise<void>): Promise<boolean> {
   // A leading dot keeps it out of `removeClaims`' prefix match.
@@ -232,17 +240,10 @@ async function createExclusive(path: string, content: string, beforePublish?: (p
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === 'EEXIST') return false;
-    if (code !== 'EPERM' && code !== 'ENOTSUP' && code !== 'ENOSYS' && code !== 'EXDEV') throw error;
+    if (code === 'EPERM' || code === 'ENOTSUP' || code === 'ENOSYS' || code === 'EXDEV') throw new FileLockUnsupportedError(path, error);
+    throw error;
   } finally {
     await rm(staged, { force: true });
-  }
-  try {
-    const handle = await open(path, 'wx', 0o600);
-    try { await handle.writeFile(content); } finally { await handle.close(); }
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
-    throw error;
   }
 }
 

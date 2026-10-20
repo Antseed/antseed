@@ -49,7 +49,9 @@ export function InviteCodeField({ onRedeemed, onCancel }: Props) {
 
   useEffect(() => {
     const trimmed = value.trim();
+    // A check still running for the previous value no longer applies.
     setCheck(null);
+    setChecking(false);
     if (!trimmed) return undefined;
     let cancelled = false;
     const timer = window.setTimeout(() => {
