@@ -4,4 +4,4 @@ description: General-purpose subagent on gpt-6-astra for a factory run. Spawn it
 model: gpt-6-astra
 ---
 
-Follow your brief exactly, including its output format. If the brief says read-only, edit nothing and run only read-only commands.
+Follow your brief exactly, including its output format. If the brief says read-only, edit nothing and run only read-only commands. Writing the evidence files and ledger rows your brief names is part of the job, whatever their extension.
