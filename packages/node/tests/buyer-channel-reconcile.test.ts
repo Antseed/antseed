@@ -341,6 +341,22 @@ describe('buyer channel reconcile against the chain', () => {
     expect(bpm.getActiveSession(sellerPeer(1))).toBeNull();
   });
 
+  it('forgets a retired seller\'s lock and unsigned response, so nothing more is signed for that seller', async () => {
+    store.upsertChannel(row(CURRENT, SELLER));
+    chain.set(CURRENT, onChain(buyer.wallet.address, 1));
+    startBuyer();
+    await lockSeller();
+    respond();
+    chain.set(CURRENT, onChain(buyer.wallet.address, 2, 300_000n));
+    const sent = spendingAuthsSent().length;
+
+    await negotiator.reconcileChannelsWithChain();
+
+    expect(status(CURRENT)).toBe(CHANNEL_STATUS.SETTLED);
+    await expect(negotiator.sendPostResponseAuthTo(SELLER, sellerConn)).resolves.toBeUndefined();
+    expect(spendingAuthsSent()).toHaveLength(sent);
+  });
+
   it('keeps the channel of a seller with a close request in flight, then retires it once the request ends', async () => {
     store.upsertChannel(row(channelId(1), sellerPeer(1)));
     chain.set(channelId(1), onChain(buyer.wallet.address, 2, 300_000n));

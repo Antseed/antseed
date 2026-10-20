@@ -28,7 +28,7 @@ import {
   type StoredChannel,
 } from './channel-store-types.js';
 import { classifyOnChainChannel, type OnChainChannelState } from './channel-session-state.js';
-import { reconcileStoredChannels, type ChannelReconcileResult } from './channel-reconcile.js';
+import { closedOnChain, reconcileStoredChannels, type ChannelReconcileResult } from './channel-reconcile.js';
 import { peerIdToAddress } from '@antseed/protocol/peer-id';
 import { debugLog, debugWarn } from './debug.js';
 import type { SellerAddressResolver } from './seller-address-resolver.js';
@@ -707,9 +707,7 @@ export class BuyerPaymentNegotiator {
       const finalAmount = result.finalAmount != null ? safeBigInt(result.finalAmount) : null;
       if (stillLive) {
         this._bpm.retireSession(peerId, CHANNEL_STATUS.SETTLED, finalAmount ?? undefined);
-        this._lockedPeers.delete(peerId);
-        this._firstRequestSent.delete(peerId);
-        this._lastResponseCost.delete(peerId);
+        this._forgetSellerSession(peerId);
       }
       debugLog(
         `[BuyerNegotiator] Seller ${peerId.slice(0, 12)}... closed channel ` +
@@ -730,9 +728,7 @@ export class BuyerPaymentNegotiator {
       // chain confirms it is no longer open; a channel that is still open
       // holds a reserve and is kept.
       if (result.code === 'no_channel' && stillLive && await this._retireSessionsClosedOnChain(peerId)) {
-        this._lockedPeers.delete(peerId);
-        this._firstRequestSent.delete(peerId);
-        this._lastResponseCost.delete(peerId);
+        this._forgetSellerSession(peerId);
       }
     }
 
@@ -935,8 +931,7 @@ export class BuyerPaymentNegotiator {
       // 'ghost' rather than 'settled' — buyer hasn't observed the on-chain
       // settle land. Matches the other buyer-side give-up-locally callsites.
       this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.GHOST);
-      this._lockedPeers.delete(peer.peerId);
-      this._firstRequestSent.delete(peer.peerId);
+      this._forgetSellerSession(peer.peerId);
     } else if (hasActiveSession) {
       const recovered = await this._recoverExistingSession(
         peer,
@@ -966,8 +961,7 @@ export class BuyerPaymentNegotiator {
         );
       }
 
-      this._lockedPeers.delete(peer.peerId);
-      this._firstRequestSent.delete(peer.peerId);
+      this._forgetSellerSession(peer.peerId);
     }
 
     // Check if we can pay before attempting negotiation
@@ -1285,17 +1279,11 @@ export class BuyerPaymentNegotiator {
       sessions: {
         mayEndSession: (peerId, closure) =>
           !this._paymentWork.has(peerId)
-          && !this._negotiationLocks.has(peerId)
-          && !this._pendingCloseRequests.has(peerId)
-          && !this._pendingPaymentRequired.has(peerId)
           // A connected seller can still be sent a replayed ReserveAuth, the one way a missing channel opens.
           && (closure.status !== CHANNEL_STATUS.GHOST || !this._muxes.has(peerId as PeerId)),
         sessionEnded: (peerId) => {
           this._bpm.cleanupSession(peerId);
-          this._lockedPeers.delete(peerId);
-          this._firstRequestSent.delete(peerId);
-          this._lastResponseCost.delete(peerId);
-          this._resentForTarget.delete(peerId);
+          this._forgetSellerSession(peerId);
         },
         oneOffEnded: (channelId) => this._bpm.forgetOneOffChannel(channelId),
       },
@@ -1305,10 +1293,9 @@ export class BuyerPaymentNegotiator {
   }
 
   /**
-   * Count payment work for a seller while it runs. Such work reads the
-   * seller's current session, awaits, then writes per-seller state, so a
-   * reconcile that ended the session during the await would let it write the
-   * retired channel's cumulative into whichever channel replaced it.
+   * Count payment work for a seller while it runs, so the reconcile pass does
+   * not end the session under it. Work whose session ends during an await
+   * stops with nothing written, so the work would fail instead of finishing.
    */
   private async _withPaymentWork<T>(peerId: string, work: () => Promise<T>): Promise<T> {
     this._paymentWork.set(peerId, (this._paymentWork.get(peerId) ?? 0) + 1);
@@ -1319,6 +1306,14 @@ export class BuyerPaymentNegotiator {
       if (left > 0) this._paymentWork.set(peerId, left);
       else this._paymentWork.delete(peerId);
     }
+  }
+
+  /** Drop what this negotiator holds for a seller's session once that session is retired. */
+  private _forgetSellerSession(peerId: string): void {
+    this._lockedPeers.delete(peerId);
+    this._firstRequestSent.delete(peerId);
+    this._lastResponseCost.delete(peerId);
+    this._resentForTarget.delete(peerId);
   }
 
   /** Wait for in-flight NeedAuth handlers to complete (settlement safety). */
@@ -1723,8 +1718,7 @@ export class BuyerPaymentNegotiator {
           `(cumulative=${cumulativeAfter}); retiring session`,
         );
         this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.GHOST);
-        this._lockedPeers.delete(peer.peerId);
-        this._firstRequestSent.delete(peer.peerId);
+        this._forgetSellerSession(peer.peerId);
         return false;
       }
     } else if (!recoveredBeforeTopUp) {
@@ -1761,10 +1755,9 @@ export class BuyerPaymentNegotiator {
     if (onChain.status === CHANNEL_STATUS.ACTIVE) {
       return false;
     }
-    if (onChain.status === CHANNEL_STATUS.SETTLED) {
-      this._bpm.retireSession(peerId, CHANNEL_STATUS.SETTLED, onChain.channel.settled);
-    } else if (onChain.status === CHANNEL_STATUS.TIMEOUT) {
-      this._bpm.retireSession(peerId, CHANNEL_STATUS.TIMEOUT);
+    const closure = closedOnChain(onChain);
+    if (closure) {
+      this._bpm.retireSession(peerId, closure.status, closure.settledAmount);
     } else {
       this._bpm.retireSession(peerId, CHANNEL_STATUS.GHOST);
     }

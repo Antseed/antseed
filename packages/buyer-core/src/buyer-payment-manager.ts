@@ -974,7 +974,7 @@ export class BuyerPaymentManager {
     return true;
   }
 
-  /** Null, with nothing written, once the session is no longer live. */
+  /** Null, with the per-seller cumulative left as it was, once the session is no longer live. */
   private async _commitUpdatedSpendingAuth(
     session: StoredChannel,
     sellerPeerId: string,

@@ -478,6 +478,7 @@ export class AntseedNode extends EventEmitter {
   /** Periodic timeout checker interval. */
   private _timeoutCheckerInterval: ReturnType<typeof setInterval> | null = null;
   private _buyerReconcileTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly _buyerReconcileRuns = new Set<Promise<void>>();
   /** Block cursor for CloseRequested event polling. */
   private _closeRequestedFromBlock: number = 0;
   /** Seller session lifecycle tracking (metering, settlement). */
@@ -713,6 +714,10 @@ export class AntseedNode extends EventEmitter {
     if (this._buyerNegotiator) {
       await new Promise<void>((resolve) => setTimeout(resolve, 500));
       await this._buyerNegotiator.drainPendingNeedAuth();
+    }
+    // A reconcile run writes the channel store, which is closed below.
+    while (this._buyerReconcileRuns.size > 0) {
+      await Promise.all([...this._buyerReconcileRuns]);
     }
 
     // End all active buyer payment sessions before shutdown
@@ -1556,9 +1561,16 @@ export class AntseedNode extends EventEmitter {
    * Bring every buyer identity's stored channels in line with the chain:
    * retire each row the chain shows settled, withdrawn, or never opened. Runs
    * on its own at buyer start, whenever the chain RPC becomes reachable, when
-   * an identity is added, and every 5 minutes.
+   * an identity is added, and every 5 minutes. stop() waits for runs in flight.
    */
-  async reconcileBuyerChannels(): Promise<void> {
+  reconcileBuyerChannels(): Promise<void> {
+    const run = this._reconcileBuyerChannels();
+    this._buyerReconcileRuns.add(run);
+    void run.then(() => this._buyerReconcileRuns.delete(run));
+    return run;
+  }
+
+  private async _reconcileBuyerChannels(): Promise<void> {
     const negotiators = [this._buyerNegotiator, ...[...this._buyerIdentities.values()].map((context) => context.negotiator)];
     for (const negotiator of negotiators) {
       if (!negotiator) continue;

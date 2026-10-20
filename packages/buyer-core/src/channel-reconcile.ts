@@ -167,13 +167,20 @@ function closureFromChain(row: StoredChannel, reading: ChainReading): ChannelClo
   switch (state.status) {
     case CHANNEL_STATUS.SETTLED:
     case CHANNEL_STATUS.TIMEOUT:
-      return { status: state.status, settledAmount: state.channel.settled };
+      return closedOnChain(state);
     case 'missing':
       return reserveCanNeverLand(row, reading.readAtSec) ? { status: CHANNEL_STATUS.GHOST } : null;
     case CHANNEL_STATUS.ACTIVE:
     case 'unknown':
       return null;
   }
+}
+
+/** How a channel the chain shows Settled or TimedOut ended, with what the seller was paid; null for any other state. */
+export function closedOnChain(state: OnChainChannelState): Extract<ChannelClosure, { settledAmount: bigint }> | null {
+  return state.status === CHANNEL_STATUS.SETTLED || state.status === CHANNEL_STATUS.TIMEOUT
+    ? { status: state.status, settledAmount: state.channel.settled }
+    : null;
 }
 
 /**

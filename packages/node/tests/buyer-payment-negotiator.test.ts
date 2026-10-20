@@ -453,6 +453,30 @@ describe('BuyerPaymentNegotiator', () => {
         expect(result.action).toBe('retry');
       });
 
+      it('resends first on the channel that replaced an exhausted one, even for the same target', async () => {
+        setSigned(5_600_000n);
+        await negotiator.handle402(make402Response(catchUp), peer, conn, makeRequest());
+        (bpm.retireSession as ReturnType<typeof vi.fn>).mockImplementation(() => {
+          (bpm.getActiveSession as ReturnType<typeof vi.fn>).mockReturnValue(null);
+        });
+        (bpm.authorizeSpending as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+          (bpm.getActiveSession as ReturnType<typeof vi.fn>).mockReturnValue({ ...makeActiveSession(peer.peerId), sessionId: '0x' + 'ef'.repeat(32) });
+          (bpm.isLockConfirmed as ReturnType<typeof vi.fn>).mockReturnValue(true);
+        });
+        await negotiator.handle402(make402Response({ ...catchUp, code: 'channel_exhausted' }), peer, conn, makeRequest());
+        const close = vi.spyOn(negotiator, 'requestChannelClose').mockResolvedValue({
+          channelId: '0x' + 'ef'.repeat(32),
+          status: 'rejected',
+          code: 'busy',
+        });
+
+        const result = await negotiator.handle402(make402Response(catchUp), peer, conn, makeRequest());
+
+        expect(close).not.toHaveBeenCalled();
+        expect(bpm.resendCurrentSpendingAuth).toHaveBeenCalledTimes(2);
+        expect(result.action).toBe('retry');
+      });
+
       it('closes at the deposit right away when the signed cumulative exceeds it', async () => {
         // 30.39 USDC signed against a 6 USDC deposit: no resend could be
         // accepted and the contract rejects a close above the deposit.
@@ -690,7 +714,7 @@ describe('BuyerPaymentNegotiator', () => {
       const result = await negotiator.handle402(make402Response(), peer, conn, makeRequest());
 
       expect(bpm.retireSession).toHaveBeenNthCalledWith(1, peer.peerId, CHANNEL_STATUS.SETTLED, 40_000n);
-      expect(bpm.retireSession).toHaveBeenNthCalledWith(2, peer.peerId, CHANNEL_STATUS.TIMEOUT);
+      expect(bpm.retireSession).toHaveBeenNthCalledWith(2, peer.peerId, CHANNEL_STATUS.TIMEOUT, 40_000n);
       expect(bpm.authorizeSpending).toHaveBeenCalled();
       expect(result.action).toBe('retry');
     });

@@ -183,4 +183,60 @@ describe('buyer channel counts after a reconcile with the chain', () => {
     expect(node.getActiveBuyerChannels()).toEqual([]);
     expect(node.getActiveBuyerChannels('alt')).toEqual([]);
   });
+
+  it('stops only after a reconcile pass in flight has written its retirements', async () => {
+    const main = buyerIdentity();
+    const channel = makeChannel('0x' + 'c1'.repeat(32), { buyerEvmAddr: main.wallet.address });
+    store.upsertChannel(channel);
+    const order: string[] = [];
+    let releaseRead!: () => void;
+    const readReleased = new Promise<void>((resolve) => { releaseRead = resolve; });
+    // Past stop()'s 500 ms NeedAuth grace, so only a drain can make stop wait for the pass.
+    setTimeout(releaseRead, 800).unref();
+    const chain = {
+      getSession: vi.fn(async () => {
+        await readReleased;
+        return {
+          buyer: main.wallet.address,
+          seller: channel.sellerEvmAddr,
+          deposit: 1_000_000n,
+          settled: 400_000n,
+          metadataHash: '0x' + '00'.repeat(32),
+          deadline: 0n,
+          settledAt: 0n,
+          closeRequestedAt: 0n,
+          status: 2,
+        } as ChannelInfo;
+      }),
+    } as unknown as ChannelsClient;
+    const account = buyerAccount(main, chain);
+    const retire = store.updateChannelStatus.bind(store);
+    vi.spyOn(store, 'updateChannelStatus').mockImplementation((...args) => {
+      order.push('retired');
+      retire(...args);
+    });
+    vi.spyOn(account.negotiator, 'cleanup').mockImplementation(() => {
+      order.push('cleanup');
+      releaseRead();
+    });
+    const close = store.close.bind(store);
+    vi.spyOn(store, 'close').mockImplementation(() => {
+      order.push('store closed');
+      close();
+    });
+    const node = new AntseedNode({ role: 'buyer' });
+    Object.assign(node, {
+      _started: true,
+      _identity: main,
+      _channelStore: store,
+      _buyerPaymentManager: account.paymentManager,
+      _buyerNegotiator: account.negotiator,
+    });
+
+    const pass = node.reconcileBuyerChannels();
+    await node.stop();
+    await pass;
+
+    expect(order).toEqual(['retired', 'cleanup', 'store closed']);
+  });
 });
