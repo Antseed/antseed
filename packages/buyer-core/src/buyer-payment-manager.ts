@@ -175,6 +175,15 @@ interface PendingReserveAuthorization {
 }
 
 /**
+ * How committing a signed SpendingAuth ended. `superseded`: a concurrent write
+ * committed a higher cumulative while this one was signed, so nothing was
+ * written and its target is already met. `retired`: the channel stopped being
+ * live, before the write or during it.
+ */
+type CommitOutcome = 'committed' | 'superseded' | 'retired';
+type DroppedCommit = Exclude<CommitOutcome, 'committed'>;
+
+/**
  * One request's newly authorized spend, reported as it is signed.
  *
  * Both the buyer-initiated (signPerRequestAuth) and seller-initiated
@@ -491,17 +500,12 @@ export class BuyerPaymentManager {
       : this.getActiveSession(channel.peerId)?.sessionId === channel.sessionId;
   }
 
-  /**
-   * Commit an authorization to a live channel. False, with nothing written,
-   * once the channel stopped being live or holds a higher signed cumulative
-   * than `channel.authMax` (a concurrent write committed past this one while
-   * it was signed). False, with nothing written after, once it stopped being
-   * live during the commit.
-   */
-  private async _commitLive(channel: StoredChannel, metadata: SpendingAuthMetadata): Promise<boolean> {
-    if (!this._isLive(channel) || BigInt(channel.authMax) < this._highestSigned(channel)) return false;
+  /** Commit a SpendingAuth to a live channel, unless a higher one was committed while it was signed. */
+  private async _commitLive(channel: StoredChannel, metadata: SpendingAuthMetadata): Promise<CommitOutcome> {
+    if (!this._isLive(channel)) return 'retired';
+    if (BigInt(channel.authMax) < this._highestSigned(channel)) return 'superseded';
     await this._commitAuthorization(channel, metadata);
-    return this._isLive(channel);
+    return this._isLive(channel) ? 'committed' : 'retired';
   }
 
   /** The highest cumulative signed on a live channel: in memory, or committed to the store. */
@@ -563,7 +567,7 @@ export class BuyerPaymentManager {
     };
     const spendingAuthSig = await signSpendingAuth(this._signer, this._channelsDomain, metadataMsg);
 
-    const live = await this._commitLive({
+    const outcome = await this._commitLive({
       ...session,
       authMax: cumulativeAmount.toString(),
       latestBuyerSig: spendingAuthSig,
@@ -571,7 +575,9 @@ export class BuyerPaymentManager {
       latestMetadata: encodedMetadata,
       updatedAt: Date.now(),
     }, currentMeta);
-    if (!live) throw writeDropped(sellerPeerId);
+    if (outcome === 'retired') throw writeDropped(sellerPeerId);
+    // The higher authorization committed meanwhile was sent by its own writer.
+    if (outcome === 'superseded') return session.sessionId;
 
     paymentMux.sendSpendingAuth({
       channelId: session.sessionId,
@@ -636,7 +642,9 @@ export class BuyerPaymentManager {
       nextCumulative,
       currentMeta,
     );
-    if (!spendingAuth) throw writeDropped(sellerPeerId);
+    if (spendingAuth === 'retired') throw writeDropped(sellerPeerId);
+    // A SpendingAuth committed while this one was signed already signed past the target.
+    if (spendingAuth === 'superseded') return session.sessionId;
     this._verifiedCost.set(sellerPeerId, reopened.verifiedCost);
     this._reportSpend({
       sellerPeerId,
@@ -712,7 +720,7 @@ export class BuyerPaymentManager {
         latestSpendingAuthSig: spendingAuthSig,
         latestMetadata: encodedMetadata,
         updatedAt: Date.now(),
-      }, currentMeta);
+      }, currentMeta) === 'committed';
     if (!live) throw writeDropped(sellerPeerId);
 
     return {
@@ -944,20 +952,24 @@ export class BuyerPaymentManager {
   /**
    * Durably persist a pending ReserveAuth, then transmit it and adopt the new
    * ceiling in memory. Shared by reserve replay, pending-reserve replay, and
-   * reserve top-ups. False, with nothing sent or adopted, once the session is
-   * no longer live.
+   * reserve top-ups. The reserve fields go over the stored row, not `session`:
+   * a SpendingAuth committed while the ReserveAuth was signed keeps its higher
+   * cumulative, which is also the one sent. False, with nothing sent or
+   * adopted, once the session is no longer live.
    */
   private async _commitAndSendReserveAuth(
     session: StoredChannel,
     sellerPeerId: string,
     pending: PendingReserveAuthorization,
     paymentMux: PaymentMux,
-    options: { cumulativeAmount?: string; initialReserveAmount?: string } = {},
+    options: { initialReserveAmount?: string } = {},
   ): Promise<boolean> {
+    const current = this._isLive(session) ? this._channelStore.getChannel(session.sessionId) : null;
+    if (!current) return false;
     const metadata = this._sanitizeMetadata(this._metadata.get(sellerPeerId));
     const encodedMetadata = encodeMetadata(metadata);
-    const live = await this._commitLive({
-      ...session,
+    await this._commitAuthorization({
+      ...current,
       deadline: pending.deadline,
       latestBuyerSig: pending.signature,
       latestMetadata: encodedMetadata,
@@ -972,12 +984,12 @@ export class BuyerPaymentManager {
       confirmedReserveAmount: pending.confirmedAmount.toString(),
       updatedAt: Date.now(),
     }, metadata);
-    if (!live) return false;
+    if (!this._isLive(session)) return false;
     this._pendingReserveAuth.set(sellerPeerId, pending);
 
     paymentMux.sendSpendingAuth({
       channelId: session.sessionId,
-      cumulativeAmount: options.cumulativeAmount ?? session.authMax,
+      cumulativeAmount: current.authMax,
       metadataHash: computeMetadataHash(metadata),
       metadata: encodedMetadata,
       spendingAuthSig: pending.signature,
@@ -989,31 +1001,31 @@ export class BuyerPaymentManager {
     return true;
   }
 
-  /** Null, with the per-seller cumulative left as it was, once the session is no longer live. */
+  /** A dropped commit leaves the per-seller cumulative as it was; see `_commitLive`. */
   private async _commitUpdatedSpendingAuth(
     session: StoredChannel,
     sellerPeerId: string,
     cumulativeAmount: bigint,
     metadata: SpendingAuthMetadata,
-  ): Promise<SpendingAuthPayload | null> {
+  ): Promise<SpendingAuthPayload | DroppedCommit> {
     const sanitizedMetadata = this._sanitizeMetadata(metadata);
     const spendingAuth = await this._signAndCommitSpendingAuth(
       session,
       cumulativeAmount,
       sanitizedMetadata,
     );
-    if (!spendingAuth) return null;
+    if (typeof spendingAuth === 'string') return spendingAuth;
 
     this._cumulativeAmount.set(sellerPeerId, cumulativeAmount);
     return spendingAuth;
   }
 
-  /** Null once the channel is no longer live; see `_commitLive`. */
+  /** See `_commitLive` for a dropped commit. */
   private async _signAndCommitSpendingAuth(
     channel: StoredChannel,
     cumulativeAmount: bigint,
     metadata: SpendingAuthMetadata,
-  ): Promise<SpendingAuthPayload | null> {
+  ): Promise<SpendingAuthPayload | DroppedCommit> {
     const sanitizedMetadata = this._sanitizeMetadata(metadata);
     const metadataHash = computeMetadataHash(sanitizedMetadata);
     const encodedMetadata = encodeMetadata(sanitizedMetadata);
@@ -1023,7 +1035,7 @@ export class BuyerPaymentManager {
       metadataHash,
     });
 
-    const live = await this._commitLive({
+    const outcome = await this._commitLive({
       ...channel,
       authMax: cumulativeAmount.toString(),
       latestBuyerSig: spendingAuthSig,
@@ -1031,7 +1043,7 @@ export class BuyerPaymentManager {
       latestMetadata: encodedMetadata,
       updatedAt: Date.now(),
     }, sanitizedMetadata);
-    if (!live) return null;
+    if (outcome !== 'committed') return outcome;
 
     return {
       channelId: channel.sessionId,
@@ -1610,7 +1622,7 @@ export class BuyerPaymentManager {
     const spendingAuthSig = await signSpendingAuth(this._signer, channelsDomain, metadataMsg);
 
     // Persist updated cumulative values to BuyerChannelStore
-    const live = await this._commitLive({
+    const outcome = await this._commitLive({
       ...session,
       authMax: newAmount.toString(),
       requestCount: Number(newMeta.cumulativeRequestCount),
@@ -1619,7 +1631,7 @@ export class BuyerPaymentManager {
       latestMetadata: encodedMetadata,
       updatedAt: Date.now(),
     }, newMeta);
-    if (!live) throw writeDropped(sellerPeerId);
+    if (outcome !== 'committed') throw writeDropped(sellerPeerId);
 
     this._cumulativeAmount.set(sellerPeerId, newAmount);
     this._verifiedCost.set(sellerPeerId, nextVerifiedCost);
@@ -1921,7 +1933,7 @@ export class BuyerPaymentManager {
       effectiveAmount,
       newMeta,
     );
-    if (!spendingAuth) return;
+    if (typeof spendingAuth === 'string') return;
     this._verifiedCost.set(sellerPeerId, nextVerifiedCost);
     this._metadata.set(sellerPeerId, newMeta);
     if (deliveredResponse && !alreadyCounted) {
@@ -1997,7 +2009,6 @@ export class BuyerPaymentManager {
 
     const reserveAuthSig = await this._signReserveAuth(session.sessionId, newCeiling, deadline);
 
-    const currentCumulative = this._cumulativeAmount.get(sellerPeerId) ?? 0n;
     const salt = this._reserveSalt.get(sellerPeerId) ?? '0x' + '00'.repeat(32);
     const pending: PendingReserveAuthorization = {
       signature: reserveAuthSig,
@@ -2010,7 +2021,6 @@ export class BuyerPaymentManager {
     // Send ReserveAuth sig with reserve fields (same pattern as initial authorizeSpending).
     // The seller uses this to call topUp() on-chain with the new maxAmount.
     const sent = await this._commitAndSendReserveAuth(session, sellerPeerId, pending, paymentMux, {
-      cumulativeAmount: currentCumulative.toString(),
       initialReserveAmount: session.initialReserveAmount ?? prevCeiling.toString(),
     });
     if (sent) debugLog(`[BuyerPayment] topUpReserve sent: newCeiling=${newCeiling}`);
@@ -2234,7 +2244,7 @@ export class BuyerPaymentManager {
       videoSeconds: countVideoSeconds(usage),
     });
     const spendingAuth = await this._signAndCommitSpendingAuth(channel, state.price, metadata);
-    if (!spendingAuth) return;
+    if (typeof spendingAuth === 'string') return;
     this._reportUnitSpend(sellerPeerId, requestId, state.price - state.cumulative);
     state.cumulative = state.price;
     paymentMux.sendSpendingAuth(spendingAuth);

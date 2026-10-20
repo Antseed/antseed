@@ -587,7 +587,7 @@ describe('BuyerPaymentNegotiator', () => {
       await simulateSuccessfulNegotiation(negotiator, bpm, peer, conn);
       (bpm.authorizeSpending as ReturnType<typeof vi.fn>).mockClear();
 
-      const activeSession = makeActiveSession(peer.peerId);
+      const activeSession = { ...makeActiveSession(peer.peerId), authMax: '500' };
       (bpm.getActiveSession as ReturnType<typeof vi.fn>).mockReturnValue(activeSession);
       // Collapsed overdraft: extend is a no-op, so cumulative is identical before and after.
       (bpm.getCumulativeAmount as ReturnType<typeof vi.fn>).mockReturnValue(500n);

@@ -1743,7 +1743,11 @@ export class BuyerPaymentNegotiator {
         requestId,
       );
       this._assertLiveChannel(peer.peerId, session.sessionId);
-      const cumulativeAfter = this._bpm.getCumulativeAmount(peer.peerId);
+      // A higher SpendingAuth committed while the catch-up was signed counts
+      // too, though its writer may not have adopted it in memory yet.
+      const inMemory = this._bpm.getCumulativeAmount(peer.peerId);
+      const committed = BigInt(this._bpm.getActiveSession(peer.peerId)?.authMax ?? '0');
+      const cumulativeAfter = committed > inMemory ? committed : inMemory;
       if (cumulativeAfter <= cumulativeBefore) {
         // extendCurrentSpendingAuth was a no-op — the overdraft window and reserve ceiling
         // are both wedged. Retire the session so the caller negotiates a fresh channel
