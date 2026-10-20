@@ -14,7 +14,7 @@ import type { PeerConnection } from '../src/p2p/connection-manager.js';
 import type { PeerInfo } from '../src/types/peer.js';
 import { toPeerId } from '../src/types/peer.js';
 import type { SerializedHttpResponse, SerializedHttpRequest } from '../src/types/http.js';
-import type { NeedAuthPayload, SpendingAuthPayload } from '@antseed/protocol/messages';
+import { computeOneOffChannelPlan, type NeedAuthPayload, type SpendingAuthPayload } from '@antseed/protocol/messages';
 
 const enc = new TextEncoder();
 const SELLER = toPeerId('b'.repeat(40));
@@ -428,6 +428,47 @@ describe('a payment write that awaited while the seller channel was replaced', (
 
       expect(await newChannelAfter({ oldChannelId, newChannelId, outcome, sentAfterRetire: [] })).toEqual(untouched());
       expect(outcome).toBe('buyer-session-state');
+    });
+
+    it('one-off video NeedAuth held at the signer while its channel is retired', async () => {
+      const video = {
+        context: { sellerPeerId: SELLER, service: 'video-model', provider: 'venice', serviceApiProtocol: 'venice-video', unitLimits: { video_generations: 1 } },
+        requestFacts: { kind: 'video', video: { protocol: 'venice-video', action: 'create' } },
+        unitModel: { version: 1, components: [{ unit: 'video_generations', priceUsd: 4.2 }] },
+        estimatedCostUsdc: 4_200_000n,
+      } as never;
+      manager.trackRequestBilling('video-request', video);
+      const channelId = await manager.openOneOffChannel(SELLER, 'video-request', computeOneOffChannelPlan(4_200_000n, 1_000_000n, 6_500n), mux);
+      await manager.handleAuthAck(SELLER, { version: 1, channelId } as never);
+      manager.trackVideoJob(SELLER, 'venice-video', 'job-1', video, 'video-request');
+      manager.trackVideoRetrieve(SELLER, 'venice-video', 'job-1', 'retrieve-request');
+      manager.recordVideoDelivered(SELLER, 'venice-video', 'job-1', 'retrieve-request');
+      const spent: string[] = [];
+      manager.setSpendListener((event) => { spent.push(event.amountUsdc); });
+      const held = signer.holdNextSignature();
+      const write = manager.handleNeedAuth(SELLER, {
+        channelId,
+        requestId: 'retrieve-request',
+        requiredCumulativeAmount: '4200000',
+        currentAcceptedCumulative: '650000',
+        deposit: '4200000',
+        lastRequestCost: '4200000',
+        inputTokens: '0',
+        outputTokens: '0',
+        billingUsage: { version: 1, units: { video_generations: '1' } },
+      } as NeedAuthPayload, mux);
+
+      await held.arrived;
+      manager.retireOneOffChannel(channelId);
+      const sentBefore = mux.sent.length;
+      held.open();
+      await write;
+
+      expect({
+        status: store.getChannel(channelId)?.status,
+        sentAfterRetire: mux.sent.slice(sentBefore).length,
+        spent,
+      }).toEqual({ status: CHANNEL_STATUS.SETTLED, sentAfterRetire: 0, spent: [] });
     });
   });
 

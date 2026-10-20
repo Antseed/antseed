@@ -612,7 +612,7 @@ export class BuyerPaymentNegotiator {
       this._lastResponseCost.delete(peer.peerId);
       debugLog(`[BuyerNegotiator] Per-request SpendingAuth sent to ${peer.peerId.slice(0, 12)}... cumulative=${payload.cumulativeAmount}`);
 
-      if (topUpNeeded) {
+      if (topUpNeeded && this._isLiveChannel(peer.peerId, payload.channelId)) {
         debugLog(`[BuyerNegotiator] Reserve top-up needed for ${peer.peerId.slice(0, 12)}...`);
         await this._bpm.topUpReserve(peer.peerId, pmux);
       }
@@ -673,6 +673,9 @@ export class BuyerPaymentNegotiator {
     // outstanding response authorization fails, abort rather than signing and
     // transmitting another authorization from non-durable in-memory state.
     await this.sendPostResponseAuthTo(peerId, conn);
+    if (!this._isLiveChannel(peerId, session.sessionId)) {
+      throw new Error(`Payment channel ${session.sessionId.slice(0, 18)}... with seller ${peerId.slice(0, 12)}... was retired before it could be closed`);
+    }
 
     const pmux = this.getOrCreatePaymentMux(peerId, conn);
     const payload = await this._bpm.buildCloseChannelRequest(peerId, { includeAuth, maxCumulative });
@@ -697,12 +700,17 @@ export class BuyerPaymentNegotiator {
       }
     });
 
+    // The answer can arrive after the session was retired and replaced: only
+    // the channel this request asked about is the caller's to end.
+    const stillLive = this._isLiveChannel(peerId, session.sessionId);
     if (result.status === 'closed') {
       const finalAmount = result.finalAmount != null ? safeBigInt(result.finalAmount) : null;
-      this._bpm.retireSession(peerId, CHANNEL_STATUS.SETTLED, finalAmount ?? undefined);
-      this._lockedPeers.delete(peerId);
-      this._firstRequestSent.delete(peerId);
-      this._lastResponseCost.delete(peerId);
+      if (stillLive) {
+        this._bpm.retireSession(peerId, CHANNEL_STATUS.SETTLED, finalAmount ?? undefined);
+        this._lockedPeers.delete(peerId);
+        this._firstRequestSent.delete(peerId);
+        this._lastResponseCost.delete(peerId);
+      }
       debugLog(
         `[BuyerNegotiator] Seller ${peerId.slice(0, 12)}... closed channel ` +
         `${result.channelId.slice(0, 18)}... at ${result.finalAmount ?? '?'} (tx=${result.txHash ?? '?'})`,
@@ -721,7 +729,7 @@ export class BuyerPaymentNegotiator {
       // The seller has no record of this channel. Drop ours as well once the
       // chain confirms it is no longer open; a channel that is still open
       // holds a reserve and is kept.
-      if (result.code === 'no_channel' && await this._retireSessionsClosedOnChain(peerId)) {
+      if (result.code === 'no_channel' && stillLive && await this._retireSessionsClosedOnChain(peerId)) {
         this._lockedPeers.delete(peerId);
         this._firstRequestSent.delete(peerId);
         this._lastResponseCost.delete(peerId);
@@ -946,10 +954,9 @@ export class BuyerPaymentNegotiator {
       // locked) would each block a fresh reserve; check every one on-chain.
       await this._retireSessionsClosedOnChain(peer.peerId);
 
-      if (this._bpm.getActiveSession(peer.peerId)) {
-        if (await this._canRetireStaleSessionWithoutOnChainProof()) {
-          this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.GHOST);
-        }
+      const stale = this._bpm.getActiveSession(peer.peerId);
+      if (stale && await this._canRetireStaleSessionWithoutOnChainProof() && this._isLiveChannel(peer.peerId, stale.sessionId)) {
+        this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.GHOST);
       }
 
       if (this._bpm.getActiveSession(peer.peerId)) {
@@ -1612,6 +1619,7 @@ export class BuyerPaymentNegotiator {
     if (onChain === null) {
       return false;
     }
+    this._assertLiveChannel(peer.peerId, session.sessionId);
 
     if (!onChain.exists) {
       if (this._bpm.canReplayReserveAuth(peer.peerId)) {
@@ -1634,6 +1642,7 @@ export class BuyerPaymentNegotiator {
 
     const pmux = this.getOrCreatePaymentMux(peer.peerId, conn);
     await this._bpm.reconcileReserveAmount(peer.peerId, onChain.channel.deposit);
+    this._assertLiveChannel(peer.peerId, session.sessionId);
     const hasPendingReserve = this._bpm.hasPendingReserveAuth(peer.peerId);
     let recoveredBeforeTopUp = false;
     if (requireFreshAck) {
@@ -1653,6 +1662,7 @@ export class BuyerPaymentNegotiator {
     }
     if (hasPendingReserve) {
       await this._bpm.resendPendingReserveAuth(peer.peerId, pmux);
+      this._assertLiveChannel(peer.peerId, session.sessionId);
     }
     const signedCumulative = this._bpm.getCumulativeAmount(peer.peerId);
     const deposit = onChain.channel.deposit;
@@ -1702,6 +1712,7 @@ export class BuyerPaymentNegotiator {
         targetCumulative != null && targetCumulative > 0n ? targetCumulative : undefined,
         requestId,
       );
+      this._assertLiveChannel(peer.peerId, session.sessionId);
       const cumulativeAfter = this._bpm.getCumulativeAmount(peer.peerId);
       if (cumulativeAfter <= cumulativeBefore) {
         // extendCurrentSpendingAuth was a no-op — the overdraft window and reserve ceiling
@@ -1724,6 +1735,22 @@ export class BuyerPaymentNegotiator {
     });
     this._lockedPeers.add(peer.peerId);
     return true;
+  }
+
+  /**
+   * Whether `channelId` is still the seller's live session. Work that read the
+   * session and awaited must not act on a channel that replaced it: the
+   * seller's 402 target, a chain read and a close answer all describe the old one.
+   */
+  private _isLiveChannel(peerId: string, channelId: string): boolean {
+    return this._bpm.getActiveSession(peerId)?.sessionId === channelId;
+  }
+
+  /** Fails the way a vanished session fails a payment call. */
+  private _assertLiveChannel(peerId: string, channelId: string): void {
+    if (!this._isLiveChannel(peerId, channelId)) {
+      throw buyerFault(`[BuyerNegotiator] Session ${channelId.slice(0, 18)}... with ${peerId.slice(0, 12)}... was retired during recovery`, 'buyer-session-state');
+    }
   }
 
   /**
@@ -1756,7 +1783,7 @@ export class BuyerPaymentNegotiator {
       const session = this._bpm.getActiveSession(peerId);
       if (!session) break;
       const onChain = await this._getOnChainSessionState(session.sessionId);
-      if (onChain === null || !this._retireIfNotOpenOnChain(peerId, onChain)) break;
+      if (onChain === null || !this._isLiveChannel(peerId, session.sessionId) || !this._retireIfNotOpenOnChain(peerId, onChain)) break;
       retired = true;
     }
     return retired;
