@@ -566,8 +566,8 @@ function mergeBuyerConfig(
 /** `buyer.clientAgentId`: a positive integer ERC-8004 agent id, else the default. */
 function normalizeClientAgentId(value: unknown, fallback: number | undefined): number | undefined {
   if (value === undefined || value === null) return fallback;
-  const parsed = typeof value === 'string' ? Number.parseInt(value, 10) : value;
-  if (typeof parsed === 'number' && Number.isInteger(parsed) && parsed > 0) return parsed;
+  const parsed = typeof value === 'string' ? (/^\s*\d+\s*$/.test(value) ? Number(value) : NaN) : value;
+  if (typeof parsed === 'number' && Number.isSafeInteger(parsed) && parsed > 0) return parsed;
   console.warn(`Ignoring invalid buyer.clientAgentId ${JSON.stringify(value)}: expected a positive integer agent id.`);
   return fallback;
 }

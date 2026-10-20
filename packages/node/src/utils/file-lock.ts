@@ -1,6 +1,8 @@
+import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, realpathSync } from 'node:fs';
-import { open, readdir, readFile, rm, stat, utimes } from 'node:fs/promises';
+import { open, readdir, readFile, rm, stat } from 'node:fs/promises';
+import { uptime } from 'node:os';
 import { basename, dirname, join, resolve as resolvePath } from 'node:path';
 
 /**
@@ -13,8 +15,9 @@ const queues: Map<string, Promise<void>> = ((globalThis as Record<symbol, unknow
 
 export interface FileLockOptions {
   /**
-   * A lock whose heartbeat stopped for this long is broken: its owner is hung,
-   * or crashed and its pid was recycled. A live holder refreshes it well within.
+   * A lock held this long by a running pid is checked for a recycled pid (one
+   * that started after the lock was taken); a lock with no pid yet (its owner
+   * died creating it) is broken. A lock whose owner still runs never is.
    */
   staleMs?: number;
   /** Give up waiting for another holder after this long. */
@@ -45,10 +48,10 @@ export class FileLockTimeoutError extends Error {
  * Run `task` while holding `lockPath`: callers in this process queue behind
  * each other, and other processes sharing the directory (CLI, Desktop, the
  * dashboard) are kept out by an exclusively created lock file holding the
- * owner's pid. While `task` runs, the holder refreshes the file's mtime, so
- * a live owner is never evicted however long it takes; contenders time out
- * instead. Only a lock whose owner is gone, or whose heartbeat stopped for
- * `staleMs`, is broken.
+ * owner's pid. A running owner is never evicted, however long it takes or
+ * however long it is paused, since it would keep writing after losing the
+ * lock; contenders time out instead. Only a lock whose owner is gone (dead,
+ * or its pid recycled) is broken.
  */
 export async function withFileLock<T>(path: string, task: () => Promise<T>, options: FileLockOptions = {}): Promise<T> {
   // One spelling per lock, so callers in this process always share its queue
@@ -63,12 +66,9 @@ export async function withFileLock<T>(path: string, task: () => Promise<T>, opti
   try {
     const staleMs = options.staleMs ?? 30_000;
     const token = await acquire(lockPath, staleMs, options);
-    const heartbeat = setInterval(() => { void refresh(lockPath, token); }, Math.max(10, Math.floor(staleMs / 3)));
-    heartbeat.unref?.();
     try {
       return await task();
     } finally {
-      clearInterval(heartbeat);
       await releaseLock(lockPath, token);
     }
   } finally {
@@ -105,17 +105,6 @@ async function acquire(lockPath: string, staleMs: number, options: FileLockOptio
   }
 }
 
-/** Keep our lock's mtime fresh; never touch a lock another process took. */
-async function refresh(lockPath: string, token: string): Promise<void> {
-  try {
-    if (await readFile(lockPath, 'utf8') !== token) return;
-    const now = new Date();
-    await utimes(lockPath, now, now);
-  } catch {
-    // released meanwhile
-  }
-}
-
 type LockSnapshot = { content: string; mtimeMs: number };
 
 async function inspect(path: string): Promise<LockSnapshot | null> {
@@ -129,17 +118,49 @@ async function inspect(path: string): Promise<LockSnapshot | null> {
 
 /**
  * Abandoned: left by a dead process, by this process (queued callers never
- * overlap), or not refreshed for `staleMs` (its owner is hung, or crashed and
- * its pid now belongs to another process). A lock being written has no
- * content yet; its owner gets the stale window.
+ * overlap), or by a process whose pid now belongs to another one: the lock
+ * predates this boot, or (checked once it is `staleMs` old) the pid's process
+ * started after the lock was taken. A lock being written has no content yet;
+ * its owner gets the stale window.
  */
-function abandoned(lock: LockSnapshot, staleMs: number): boolean {
-  const pid = ownerPid(lock.content);
-  return (pid !== null && (pid === process.pid || !alive(pid))) || Date.now() - lock.mtimeMs > staleMs;
+async function abandoned(lock: LockSnapshot, staleMs: number): Promise<boolean> {
+  const owner = ownerOf(lock.content);
+  if (!owner) return Date.now() - lock.mtimeMs > staleMs;
+  if (owner.pid === process.pid || !alive(owner.pid)) return true;
+  if (owner.at === null || Date.now() - owner.at <= staleMs) return false;
+  if (owner.at < Date.now() - uptime() * 1000) return true;
+  // Contenders poll often; ask `ps` about the same owner once per stale window.
+  const key = `${owner.pid}:${owner.at}`;
+  let cached = starts.get(key);
+  if (!cached || Date.now() - cached.checkedAt > staleMs) {
+    cached = { checkedAt: Date.now(), started: processStart(owner.pid) };
+    starts.set(key, cached);
+    if (starts.size > 64) starts.delete(starts.keys().next().value!);
+  }
+  const started = await cached.started;
+  return started !== null && started > owner.at + START_SLACK_MS;
+}
+
+/** `ps` reports elapsed time in whole seconds. */
+const START_SLACK_MS = 2_000;
+const starts = new Map<string, { checkedAt: number; started: Promise<number | null> }>();
+
+/** When `pid` started (from `ps`, to the second), or null where unknown. */
+function processStart(pid: number): Promise<number | null> {
+  if (process.platform === 'win32') return Promise.resolve(null);
+  return new Promise((resolve) => {
+    execFile('ps', ['-o', 'etime=', '-p', String(pid)], { timeout: 2_000 }, (error, stdout) => {
+      // [[dd-]hh:]mm:ss
+      const match = error ? null : /^\s*(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)\s*$/.exec(stdout);
+      if (!match) return resolve(null);
+      const [days, hours, minutes, seconds] = match.slice(1).map((part) => Number(part ?? 0));
+      resolve(Date.now() - (((days! * 24 + hours!) * 60 + minutes!) * 60 + seconds!) * 1000);
+    });
+  });
 }
 
 /**
- * Remove an abandoned lock. A refreshed lock of a live owner is never removed.
+ * Remove an abandoned lock. The lock of a running owner is never removed.
  *
  * Reading a lock and unlinking its path are two steps, so two reclaimers that
  * judged the same lock abandoned could otherwise both unlink it, the second
@@ -156,16 +177,15 @@ function abandoned(lock: LockSnapshot, staleMs: number): boolean {
 async function breakIfStale(lockPath: string, staleMs: number, beforeReclaim?: (claim: string) => Promise<void>): Promise<boolean> {
   const seen = await inspect(lockPath);
   if (!seen) return true; // released meanwhile: retry at once
-  if (!abandoned(seen, staleMs)) return false;
+  if (!(await abandoned(seen, staleMs))) return false;
   const base = `${lockPath}.reclaim-${digest(seen.content)}`;
   const claim = await claimAbandoned(base, staleMs, beforeReclaim);
   if (claim === 'busy') return false; // a live process is reclaiming it
   if (claim === 'won') {
     // Only the claimant removes the lock it claimed, and only while it is still
-    // abandoned: retaken meanwhile, or refreshed by a holder that was merely
-    // slow, it is judged afresh.
+    // that abandoned lock: retaken meanwhile, it is judged afresh.
     const current = await inspect(lockPath);
-    if (current && current.content === seen.content && abandoned(current, staleMs)) await rm(lockPath, { force: true });
+    if (current && current.content === seen.content && await abandoned(current, staleMs)) await rm(lockPath, { force: true });
     await removeClaims(base);
   }
   return true;
@@ -191,8 +211,8 @@ async function claimAbandoned(path: string, staleMs: number, beforeReclaim?: (cl
     // A claim is held for a few file operations only, so it is abandoned only
     // when its creator died (or is this process), never for its age; an empty
     // one only when its creator never wrote its pid within the stale window.
-    const pid = ownerPid(held.content);
-    const dead = pid !== null ? pid === process.pid || !alive(pid) : Date.now() - held.mtimeMs > staleMs;
+    const pid = ownerOf(held.content)?.pid;
+    const dead = pid !== undefined ? pid === process.pid || !alive(pid) : Date.now() - held.mtimeMs > staleMs;
     if (!dead) return 'busy';
     path = `${path}-${digest(held.content)}`;
   }
@@ -210,10 +230,12 @@ function digest(content: string): string {
   return createHash('sha256').update(content).digest('hex').slice(0, 16);
 }
 
-function ownerPid(content: string): number | null {
+/** The owner's pid and when it took the lock (null when not recorded). */
+function ownerOf(content: string): { pid: number; at: number | null } | null {
   try {
-    const pid = (JSON.parse(content) as { pid?: unknown }).pid;
-    return typeof pid === 'number' && Number.isSafeInteger(pid) && pid > 0 ? pid : null;
+    const { pid, at } = JSON.parse(content) as { pid?: unknown; at?: unknown };
+    if (typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 0) return null;
+    return { pid, at: typeof at === 'number' && Number.isFinite(at) ? at : null };
   } catch {
     return null;
   }
@@ -229,6 +251,6 @@ function alive(pid: number): boolean {
 }
 
 async function releaseLock(lockPath: string, token: string): Promise<void> {
-  // Never remove a lock another process took after ours was broken as stale.
+  // Never remove a lock another process took (ours was taken for left over).
   if (await readFile(lockPath, 'utf8').catch(() => null) === token) await rm(lockPath, { force: true });
 }

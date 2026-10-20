@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { access, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { access, appendFile, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
+import { tmpdir, uptime } from 'node:os';
 import { basename, dirname, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -54,31 +54,36 @@ describe('file lock', () => {
     expect(await waiting).toBe('after');
   });
 
-  it('breaks a lock left by a dead process or whose heartbeat stopped for the stale window', async () => {
+  it('breaks a lock left by a dead process, or by one whose pid was recycled', async () => {
     const lock = await lockPath();
     await withFileLock(lock, async () => undefined);
     await writeFile(lock, JSON.stringify({ pid: 2 ** 22 + 12_345 })); // above any real pid
     expect(await withFileLock(lock, async () => 'dead owner', { timeoutMs: 200 })).toBe('dead owner');
-    await writeFile(lock, JSON.stringify({ pid: process.ppid }));
+    // A running pid is not the owner of a lock taken before this boot, or
+    // before that pid's process started.
+    const boot = Date.now() - uptime() * 1000;
+    await writeFile(lock, JSON.stringify({ pid: process.ppid, at: boot - 60_000 }));
+    expect(await withFileLock(lock, async () => 'before boot', { timeoutMs: 2_000 })).toBe('before boot');
+    await writeFile(lock, JSON.stringify({ pid: process.ppid, at: boot + 1_000 }));
+    expect(await withFileLock(lock, async () => 'recycled', { timeoutMs: 2_000, staleMs: 30 })).toBe('recycled');
+    // pid 1 runs since boot, so it may own a lock taken a minute ago: however
+    // old, the lock stays.
+    await writeFile(lock, JSON.stringify({ pid: 1, at: Date.now() - 60_000 }));
     const old = new Date(Date.now() - 60_000);
     await utimes(lock, old, old);
-    expect(await withFileLock(lock, async () => 'stale', { timeoutMs: 200, staleMs: 30_000 })).toBe('stale');
+    await expect(withFileLock(lock, async () => 'never', { timeoutMs: 300, staleMs: 30, retryMs: 10 }))
+      .rejects.toBeInstanceOf(FileLockTimeoutError);
   });
 
-  it('leaves a lock alone when its slow holder refreshed it while the contender claimed it', async () => {
+  it('leaves a lock alone when another process retook it while the contender claimed it', async () => {
     const lock = await lockPath();
     await withFileLock(lock, async () => undefined); // creates the directory
-    const held = JSON.stringify({ pid: process.ppid }); // a live process
-    await writeFile(lock, held);
-    const old = new Date(Date.now() - 60_000);
-    await utimes(lock, old, old); // looks abandoned: its heartbeat stopped
-    const refreshOnce = async () => {
-      const now = new Date();
-      await utimes(lock, now, now); // the holder wakes up and refreshes it
-    };
-    await expect(withFileLock(lock, async () => 'entered', { staleMs: 30_000, timeoutMs: 150, retryMs: 10, beforeReclaim: refreshOnce }))
+    await writeFile(lock, JSON.stringify({ pid: 2 ** 22 + 12_345 })); // a dead owner
+    const retaken = JSON.stringify({ pid: process.ppid, at: Date.now() }); // a live process
+    const retake = () => writeFile(lock, retaken);
+    await expect(withFileLock(lock, async () => 'entered', { staleMs: 30_000, timeoutMs: 150, retryMs: 10, beforeReclaim: retake }))
       .rejects.toBeInstanceOf(FileLockTimeoutError);
-    expect(await readFile(lock, 'utf8')).toBe(held);
+    expect(await readFile(lock, 'utf8')).toBe(retaken);
     expect((await readdir(dirname(lock))).filter((name) => name.includes('.reclaim-'))).toEqual([]);
   });
 
@@ -96,18 +101,20 @@ describe('file lock', () => {
     expect(order).toEqual(['absolute:start', 'absolute:end', 'relative:start', 'relative:end']);
   });
 
-  it('never lets a contender in while another live process still holds the lock, however long', async () => {
+  it('never lets a contender in while another process holds the lock, even paused past the stale window', async () => {
     const lock = await lockPath();
-    const marker = `${lock}.child-done`;
-    // A separate process (Node strips the module's types) holds the lock for
-    // several stale windows, then marks that it left its critical section.
+    const log = `${lock}.log`;
+    // A separate process (Node strips the module's types) records entering and
+    // leaving its critical section; it is paused inside it for several stale
+    // windows, as a hung or suspended holder would be.
     const child = spawn(process.execPath, ['--input-type=module', '-e', `
-      import { writeFile } from 'node:fs/promises';
+      import { appendFile } from 'node:fs/promises';
       const { withFileLock } = await import(${JSON.stringify(LOCK_MODULE)});
       await withFileLock(${JSON.stringify(lock)}, async () => {
+        await appendFile(${JSON.stringify(log)}, 'child:start\\n');
         process.stdout.write('locked\\n');
-        await new Promise((resolve) => setTimeout(resolve, 900));
-        await writeFile(${JSON.stringify(marker)}, 'done');
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        await appendFile(${JSON.stringify(log)}, 'child:end\\n');
       }, { staleMs: 150 });
     `], { stdio: ['ignore', 'pipe', 'inherit'] });
     const exited = new Promise<number | null>((resolve) => child.on('exit', resolve));
@@ -115,12 +122,17 @@ describe('file lock', () => {
       child.stdout.on('data', (chunk: Buffer) => { if (chunk.toString().includes('locked')) resolve(); });
       child.on('exit', () => reject(new Error('child exited before locking')));
     });
-    await sleep(400); // well past the old age-based stale window
-    await expect(withFileLock(lock, async () => 'entered', { staleMs: 150, timeoutMs: 200, retryMs: 10 }))
-      .rejects.toBeInstanceOf(FileLockTimeoutError);
-    const entered = await withFileLock(lock, async () => access(marker).then(() => true, () => false), { staleMs: 150, timeoutMs: 5_000, retryMs: 10 });
-    expect(entered).toBe(true); // only after the holder finished
+    child.kill('SIGSTOP');
+    try {
+      await sleep(400); // well past the stale window
+      await expect(withFileLock(lock, async () => 'entered', { staleMs: 150, timeoutMs: 400, retryMs: 10 }))
+        .rejects.toBeInstanceOf(FileLockTimeoutError);
+    } finally {
+      child.kill('SIGCONT');
+    }
+    await withFileLock(lock, async () => appendFile(log, 'parent:start\nparent:end\n'), { staleMs: 150, timeoutMs: 5_000, retryMs: 10 });
     expect(await exited).toBe(0);
+    expect((await readFile(log, 'utf8')).trim().split('\n')).toEqual(['child:start', 'child:end', 'parent:start', 'parent:end']);
   }, 15_000);
 
   it('lets only one of two processes reclaiming the same abandoned lock in at a time', async () => {
