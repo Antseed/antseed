@@ -516,7 +516,7 @@ describe('BuyerPaymentNegotiator', () => {
 
       const result = await negotiator.handle402(response, peer, conn, makeRequest());
 
-      expect(bpm.retireSession).toHaveBeenCalledWith(peer.peerId, CHANNEL_STATUS.GHOST);
+      expect(bpm.retireSession).toHaveBeenCalledWith(peer.peerId, CHANNEL_STATUS.GHOST, undefined, activeSession.sessionId);
       // Critical: no futile signing on the dead channel.
       expect(bpm.extendCurrentSpendingAuth).not.toHaveBeenCalled();
       expect(bpm.resendCurrentSpendingAuth).not.toHaveBeenCalled();
@@ -552,7 +552,7 @@ describe('BuyerPaymentNegotiator', () => {
 
       const result = await negotiator.handle402(response, peer, conn, makeRequest());
 
-      expect(bpm.retireSession).toHaveBeenCalledWith(peer.peerId, CHANNEL_STATUS.GHOST);
+      expect(bpm.retireSession).toHaveBeenCalledWith(peer.peerId, CHANNEL_STATUS.GHOST, undefined, activeSession.sessionId);
       expect(bpm.extendCurrentSpendingAuth).not.toHaveBeenCalled();
       expect(bpm.authorizeSpending).toHaveBeenCalled();
       expect(result.action).toBe('retry');
@@ -585,7 +585,7 @@ describe('BuyerPaymentNegotiator', () => {
       }), peer, conn, makeRequest());
 
       expect(bpm.extendCurrentSpendingAuth).toHaveBeenCalled();
-      expect(bpm.retireSession).toHaveBeenCalledWith(peer.peerId, CHANNEL_STATUS.GHOST);
+      expect(bpm.retireSession).toHaveBeenCalledWith(peer.peerId, CHANNEL_STATUS.GHOST, undefined, activeSession.sessionId);
       expect(bpm.authorizeSpending).toHaveBeenCalled();
       expect(result.action).toBe('retry');
     });
@@ -617,7 +617,7 @@ describe('BuyerPaymentNegotiator', () => {
 
       const result = await negotiator.handle402(make402Response(), peer, conn, makeRequest());
 
-      expect(bpm.retireSession).toHaveBeenCalledWith(peer.peerId, CHANNEL_STATUS.GHOST);
+      expect(bpm.retireSession).toHaveBeenCalledWith(peer.peerId, CHANNEL_STATUS.GHOST, undefined, activeSession.sessionId);
       expect(bpm.authorizeSpending).toHaveBeenCalled();
       expect(result.action).toBe('retry');
     });
@@ -658,7 +658,7 @@ describe('BuyerPaymentNegotiator', () => {
 
       const result = await negotiator.handle402(make402Response(), peer, conn, makeRequest());
 
-      expect(bpm.retireSession).toHaveBeenCalledWith(peer.peerId, CHANNEL_STATUS.GHOST);
+      expect(bpm.retireSession).toHaveBeenCalledWith(peer.peerId, CHANNEL_STATUS.GHOST, undefined, activeSession.sessionId);
       expect(bpm.authorizeSpending).toHaveBeenCalled();
       expect(result.action).toBe('retry');
     });
@@ -692,8 +692,8 @@ describe('BuyerPaymentNegotiator', () => {
 
       const result = await negotiator.handle402(make402Response(), peer, conn, makeRequest());
 
-      expect(bpm.retireSession).toHaveBeenNthCalledWith(1, peer.peerId, CHANNEL_STATUS.SETTLED, 40_000n);
-      expect(bpm.retireSession).toHaveBeenNthCalledWith(2, peer.peerId, CHANNEL_STATUS.TIMEOUT);
+      expect(bpm.retireSession).toHaveBeenNthCalledWith(1, peer.peerId, CHANNEL_STATUS.SETTLED, 40_000n, newer.sessionId);
+      expect(bpm.retireSession).toHaveBeenNthCalledWith(2, peer.peerId, CHANNEL_STATUS.TIMEOUT, undefined, older.sessionId);
       expect(bpm.authorizeSpending).toHaveBeenCalled();
       expect(result.action).toBe('retry');
     });
@@ -712,7 +712,7 @@ describe('BuyerPaymentNegotiator', () => {
 
       const result = await negotiator.handle402(make402Response(), peer, conn, makeRequest());
 
-      expect(bpm.retireSession).toHaveBeenCalledWith(peer.peerId, CHANNEL_STATUS.GHOST);
+      expect(bpm.retireSession).toHaveBeenCalledWith(peer.peerId, CHANNEL_STATUS.GHOST, undefined, activeSession.sessionId);
       expect(bpm.authorizeSpending).toHaveBeenCalled();
       expect(result.action).toBe('retry');
     });
@@ -722,7 +722,8 @@ describe('BuyerPaymentNegotiator', () => {
       (bpm.getActiveSession as ReturnType<typeof vi.fn>)
         .mockReturnValueOnce(activeSession)
         .mockReturnValueOnce(activeSession)
-        .mockReturnValueOnce(null);
+        .mockReturnValueOnce(activeSession)
+        .mockReturnValue(null);
       (channelsClient.getSession as ReturnType<typeof vi.fn>).mockResolvedValue({
         buyer: '0x' + '11'.repeat(20),
         seller: '0x' + '22'.repeat(20),
@@ -741,7 +742,7 @@ describe('BuyerPaymentNegotiator', () => {
 
       const result = await negotiator.handle402(make402Response(), peer, conn, makeRequest());
 
-      expect(bpm.retireSession).toHaveBeenCalledWith(peer.peerId, CHANNEL_STATUS.GHOST);
+      expect(bpm.retireSession).toHaveBeenCalledWith(peer.peerId, CHANNEL_STATUS.GHOST, undefined, activeSession.sessionId);
       expect(bpm.authorizeSpending).toHaveBeenCalled();
       expect(result.action).toBe('retry');
     });
@@ -1175,7 +1176,7 @@ describe('BuyerPaymentNegotiator', () => {
       const result = await promise;
       expect(result.status).toBe('closed');
       expect(result.txHash).toBe('0x' + 'bb'.repeat(32));
-      expect(bpm.retireSession).toHaveBeenCalledWith(SELLER_PEER_ID, CHANNEL_STATUS.SETTLED, 750_000n);
+      expect(bpm.retireSession).toHaveBeenCalledWith(SELLER_PEER_ID, CHANNEL_STATUS.SETTLED, 750_000n, CHANNEL_ID);
       expect(emitter.emit).toHaveBeenCalledWith('payment:channel-closed', expect.objectContaining({
         peerId: SELLER_PEER_ID,
         channelId: CHANNEL_ID,
@@ -1204,6 +1205,7 @@ describe('BuyerPaymentNegotiator', () => {
       (bpm.getActiveSession as ReturnType<typeof vi.fn>)
         .mockReturnValueOnce(makeActiveSession(SELLER_PEER_ID))
         .mockReturnValueOnce(makeActiveSession(SELLER_PEER_ID))
+        .mockReturnValueOnce(makeActiveSession(SELLER_PEER_ID))
         .mockReturnValue(null);
       (channelsClient.getSession as ReturnType<typeof vi.fn>).mockResolvedValue({
         buyer: '0x' + '11'.repeat(20),
@@ -1222,7 +1224,7 @@ describe('BuyerPaymentNegotiator', () => {
 
       const result = await promise;
       expect(result.code).toBe('no_channel');
-      expect(bpm.retireSession).toHaveBeenCalledWith(SELLER_PEER_ID, CHANNEL_STATUS.SETTLED, 750_000n);
+      expect(bpm.retireSession).toHaveBeenCalledWith(SELLER_PEER_ID, CHANNEL_STATUS.SETTLED, 750_000n, CHANNEL_ID);
     });
 
     it('keeps the session when the seller has no record but the channel is still open on-chain', async () => {

@@ -687,7 +687,9 @@ export class BuyerPaymentNegotiator {
 
     if (result.status === 'closed') {
       const finalAmount = result.finalAmount != null ? safeBigInt(result.finalAmount) : null;
-      this._bpm.retireSession(peerId, CHANNEL_STATUS.SETTLED, finalAmount ?? undefined);
+      // Scope the retirement to the channel the seller closed: a late reply
+      // must not retire a newer channel that opened for the same seller.
+      this._bpm.retireSession(peerId, CHANNEL_STATUS.SETTLED, finalAmount ?? undefined, result.channelId);
       this._lockedPeers.delete(peerId);
       this._firstRequestSent.delete(peerId);
       this._lastResponseCost.delete(peerId);
@@ -895,7 +897,8 @@ export class BuyerPaymentNegotiator {
       || (responseAlreadyHasRequirements && directPaymentBody?.code === PAYMENT_CODE_CHANNEL_EXHAUSTED)
       || (requiredCumulativeTarget != null && sellerReserveMax != null && requiredCumulativeTarget > sellerReserveMax);
 
-    const hasActiveSession = hadLockedSession || this._bpm.getActiveSession(peer.peerId) != null;
+    const activeSessionBeforeRecovery = this._bpm.getActiveSession(peer.peerId);
+    const hasActiveSession = hadLockedSession || activeSessionBeforeRecovery != null;
 
     if (channelExhausted && hasActiveSession) {
       debugLog(
@@ -905,7 +908,7 @@ export class BuyerPaymentNegotiator {
       );
       // 'ghost' rather than 'settled' — buyer hasn't observed the on-chain
       // settle land. Matches the other buyer-side give-up-locally callsites.
-      this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.GHOST);
+      this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.GHOST, undefined, activeSessionBeforeRecovery?.sessionId);
       this._lockedPeers.delete(peer.peerId);
       this._firstRequestSent.delete(peer.peerId);
     } else if (hasActiveSession) {
@@ -927,7 +930,7 @@ export class BuyerPaymentNegotiator {
 
       if (this._bpm.getActiveSession(peer.peerId)) {
         if (await this._canRetireStaleSessionWithoutOnChainProof()) {
-          this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.GHOST);
+          this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.GHOST, undefined, activeSessionBeforeRecovery?.sessionId);
         }
       }
 
@@ -1515,7 +1518,7 @@ export class BuyerPaymentNegotiator {
     }
 
     if (!this._channelsClient) {
-      this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.GHOST);
+      this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.GHOST, undefined, session.sessionId);
       return false;
     }
 
@@ -1535,11 +1538,11 @@ export class BuyerPaymentNegotiator {
         return true;
       }
 
-      this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.GHOST);
+      this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.GHOST, undefined, session.sessionId);
       return false;
     }
 
-    if (this._retireIfNotOpenOnChain(peer.peerId, onChain)) {
+    if (this._retireIfNotOpenOnChain(peer.peerId, onChain, session.sessionId)) {
       return false;
     }
 
@@ -1622,7 +1625,7 @@ export class BuyerPaymentNegotiator {
           `[BuyerNegotiator] extendCurrentSpendingAuth made no progress for ${peer.peerId.slice(0, 12)}... ` +
           `(cumulative=${cumulativeAfter}); retiring session`,
         );
-        this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.GHOST);
+        this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.GHOST, undefined, session.sessionId);
         this._lockedPeers.delete(peer.peerId);
         this._firstRequestSent.delete(peer.peerId);
         return false;
@@ -1640,17 +1643,33 @@ export class BuyerPaymentNegotiator {
   /**
    * Retire the seller's stored session when the chain shows its channel is no
    * longer open, recording how it ended. Returns whether it was retired.
+   *
+   * `expectedSessionId` is the channel the on-chain state was read for. The
+   * retirement only happens when that channel is still the active one for the
+   * peer: a newer channel that opened while the chain read was in flight holds
+   * its own reserve and must not be retired with this channel's outcome.
    */
-  private _retireIfNotOpenOnChain(peerId: string, onChain: OnChainChannelState): boolean {
+  private _retireIfNotOpenOnChain(
+    peerId: string,
+    onChain: OnChainChannelState,
+    expectedSessionId?: string,
+  ): boolean {
     if (onChain.status === CHANNEL_STATUS.ACTIVE) {
       return false;
     }
+    if (expectedSessionId !== undefined && expectedSessionId !== null) {
+      const active = this._bpm.getActiveSession(peerId);
+      if (!active || active.sessionId.toLowerCase() !== expectedSessionId.toLowerCase()) {
+        // The channel this state was read for is no longer the active one.
+        return false;
+      }
+    }
     if (onChain.status === CHANNEL_STATUS.SETTLED) {
-      this._bpm.retireSession(peerId, CHANNEL_STATUS.SETTLED, onChain.channel.settled);
+      this._bpm.retireSession(peerId, CHANNEL_STATUS.SETTLED, onChain.channel.settled, expectedSessionId);
     } else if (onChain.status === CHANNEL_STATUS.TIMEOUT) {
-      this._bpm.retireSession(peerId, CHANNEL_STATUS.TIMEOUT);
+      this._bpm.retireSession(peerId, CHANNEL_STATUS.TIMEOUT, undefined, expectedSessionId);
     } else {
-      this._bpm.retireSession(peerId, CHANNEL_STATUS.GHOST);
+      this._bpm.retireSession(peerId, CHANNEL_STATUS.GHOST, undefined, expectedSessionId);
     }
     return true;
   }
@@ -1667,7 +1686,7 @@ export class BuyerPaymentNegotiator {
       const session = this._bpm.getActiveSession(peerId);
       if (!session) break;
       const onChain = await this._getOnChainSessionState(session.sessionId);
-      if (onChain === null || !this._retireIfNotOpenOnChain(peerId, onChain)) break;
+      if (onChain === null || !this._retireIfNotOpenOnChain(peerId, onChain, session.sessionId)) break;
       retired = true;
     }
     return retired;

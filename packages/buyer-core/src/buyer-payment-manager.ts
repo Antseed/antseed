@@ -479,19 +479,45 @@ export class BuyerPaymentManager {
     return this._channelStore.getActiveChannelByPeerAndBuyer(sellerPeerId, CHANNEL_ROLE.BUYER, this._identity.wallet.address);
   }
 
+  /**
+   * Retire the buyer's payment session with a seller.
+   *
+   * `expectedSessionId` scopes the retirement to one specific channel. Without
+   * it the call retires whichever channel is *currently active* for the peer.
+   * That is wrong when the caller is holding a late result for an older
+   * channel: a cooperative close or an on-chain reconciliation that resolves
+   * after a fresh channel was opened would retire the *new* channel and mark
+   * it settled with the old channel's amount — stranding its on-chain reserve
+   * while the local row claims it is already settled.
+   *
+   * When the active channel is not the expected one the call is a no-op: the
+   * newer channel keeps its status and its in-memory state.
+   */
   retireSession(
     sellerPeerId: string,
     status: typeof CHANNEL_STATUS.SETTLED | typeof CHANNEL_STATUS.TIMEOUT | typeof CHANNEL_STATUS.GHOST,
     settledAmount?: bigint,
+    expectedSessionId?: string,
   ): void {
     const session = this.getActiveSession(sellerPeerId);
-    if (session) {
-      this._channelStore.updateChannelStatus(
-        session.sessionId,
-        status,
-        settledAmount !== undefined ? settledAmount.toString() : undefined,
-      );
+    if (!session) {
+      this.cleanupSession(sellerPeerId);
+      return;
     }
+    if (
+      expectedSessionId !== undefined
+      && expectedSessionId !== null
+      && session.sessionId.toLowerCase() !== expectedSessionId.toLowerCase()
+    ) {
+      // The channel that is active now is a different (newer) one than the
+      // channel this call was about. Retiring it would strand its reserve.
+      return;
+    }
+    this._channelStore.updateChannelStatus(
+      session.sessionId,
+      status,
+      settledAmount !== undefined ? settledAmount.toString() : undefined,
+    );
     this.cleanupSession(sellerPeerId);
   }
 

@@ -209,6 +209,75 @@ describe('BuyerPaymentNegotiator', () => {
     });
   });
 
+  describe('channel-scoped retirement', () => {
+    const peerId = toPeerId('8'.repeat(40));
+    const OLD_CHANNEL = `0x${'a'.repeat(64)}`;
+    const NEW_CHANNEL = `0x${'b'.repeat(64)}`;
+
+    function settledState(settled: bigint) {
+      return {
+        exists: true as const,
+        status: 'settled' as const,
+        channel: {
+          buyer: '0x5EF698bF25d8A81ceeDB27caFE989fBBE9735558',
+          seller: '0xc3cf17082a164C4cf3504D50962668649D327662',
+          deposit: 1_000_000n,
+          settled,
+          metadataHash: `0x${'0'.repeat(64)}`,
+          deadline: 0n,
+          settledAt: 0n,
+          closeRequestedAt: 0n,
+          status: 2,
+        },
+      };
+    }
+
+    function makeNegotiator(activeSessionId: string | null) {
+      const retireSession = vi.fn();
+      const bpm = {
+        getActiveSession: vi.fn(() => (activeSessionId ? { sessionId: activeSessionId } : null)),
+        retireSession,
+      };
+      const negotiator = Object.create(BuyerPaymentNegotiator.prototype) as BuyerPaymentNegotiator;
+      Object.assign(negotiator as object, { _bpm: bpm });
+      return { negotiator, bpm, retireSession };
+    }
+
+    it('does not retire a newer channel with an older channel on-chain state', () => {
+      const { negotiator, retireSession } = makeNegotiator(NEW_CHANNEL);
+
+      const retired = (negotiator as unknown as {
+        _retireIfNotOpenOnChain(peerId: string, onChain: unknown, expectedSessionId?: string): boolean;
+      })._retireIfNotOpenOnChain(peerId, settledState(3767n), OLD_CHANNEL);
+
+      expect(retired).toBe(false);
+      expect(retireSession).not.toHaveBeenCalled();
+    });
+
+    it('retires the channel whose on-chain state was read', () => {
+      const { negotiator, retireSession } = makeNegotiator(NEW_CHANNEL);
+
+      const retired = (negotiator as unknown as {
+        _retireIfNotOpenOnChain(peerId: string, onChain: unknown, expectedSessionId?: string): boolean;
+      })._retireIfNotOpenOnChain(peerId, settledState(3767n), NEW_CHANNEL);
+
+      expect(retired).toBe(true);
+      expect(retireSession).toHaveBeenCalledTimes(1);
+      expect(retireSession).toHaveBeenCalledWith(peerId, 'settled', 3767n, NEW_CHANNEL);
+    });
+
+    it('does not retire anything when the expected channel is no longer active', () => {
+      const { negotiator, retireSession } = makeNegotiator(null);
+
+      const retired = (negotiator as unknown as {
+        _retireIfNotOpenOnChain(peerId: string, onChain: unknown, expectedSessionId?: string): boolean;
+      })._retireIfNotOpenOnChain(peerId, settledState(3767n), OLD_CHANNEL);
+
+      expect(retired).toBe(false);
+      expect(retireSession).not.toHaveBeenCalled();
+    });
+  });
+
   describe('video spend cap from the caller', () => {
     const peer: BuyerPeerView = { peerId: toPeerId('7'.repeat(40)) };
     // 8 s at $0.10/s: $0.80.
