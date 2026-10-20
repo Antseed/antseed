@@ -1,4 +1,4 @@
-import type { PeerInfo, SerializedHttpRequest } from '@antseed/node'
+import { isExposedResponseHeader, type PeerInfo, type SerializedHttpRequest } from '@antseed/node'
 import { ROUTE_SELECTION_HEADER } from './route-selection.js'
 import { extractUsage, toNonNegativeInt } from '@antseed/api-adapter'
 import { pickProviderForPeer } from './routing.js'
@@ -335,12 +335,17 @@ export const ROUTER_RANK_HEADER = 'x-antseed-router-rank'
 const BUYER_ROUTING_HEADERS = new Set([ROUTER_PEER_ID_HEADER, ROUTER_SERVICE_HEADER, ROUTER_RANK_HEADER, ROUTE_SELECTION_HEADER])
 
 /**
- * A seller's headers without the buyer's routing headers: only the buyer says
- * which router ranked a request and why its seller was picked, so a seller can
- * neither change nor invent that.
+ * The seller's headers a buyer passes on to its client: Antseed's own and the
+ * generic ones clients act on, without the buyer's routing headers (only the
+ * buyer says which router ranked a request and why its seller was picked, so a
+ * seller can neither change nor invent that). Anything else a seller relays
+ * from its upstream API, such as that account's usage or session ids, is
+ * dropped here too, so sellers on older versions that still pass it on are
+ * covered (`isExposedResponseHeader` is the same rule a seller applies).
  */
 export function withoutRouterHeaders(headers: Record<string, string>): Record<string, string> {
-  return Object.fromEntries(Object.entries(headers).filter(([name]) => !BUYER_ROUTING_HEADERS.has(name.toLowerCase())))
+  return Object.fromEntries(Object.entries(headers).filter(([name]) =>
+    isExposedResponseHeader(name) && !BUYER_ROUTING_HEADERS.has(name.toLowerCase())))
 }
 
 export function attachAntseedTelemetryHeaders(

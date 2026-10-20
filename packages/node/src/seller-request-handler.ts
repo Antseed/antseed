@@ -46,7 +46,9 @@ import {
   extractRequestBodyFields,
   selectTargetProtocolForRequest,
 } from '@antseed/api-adapter';
-import { parseResponseUsage } from './utils/response-usage.js';
+import { parseResponseUsage, type ResponseUsage } from './utils/response-usage.js';
+import { exposedResponseHeaders } from './utils/response-headers.js';
+import { ExposedSseStream, exposedJsonBody, type SellerCost } from './utils/response-body.js';
 import { routingProtocolForPath, routingProtocolOf, routingRequestOf, routingWireProtocol, ROUTING_PROTOCOLS, type RoutingProtocol } from '@antseed/protocol/routing';
 
 type ProviderTokenPricing = import('./interfaces/seller-provider.js').ProviderTokenPricingUsdPerMillion;
@@ -657,7 +659,10 @@ export class SellerRequestHandler {
       this.adjustProviderLoad(provider.name, 1);
       try {
         try {
-          let response = await this._executeRequest(provider, request, {
+          // Token-priced services show the buyer the seller's own price in the body; a per-unit
+          // charge (images, video) is settled on delivery, so no estimate is shown for those.
+          const sellerCost: SellerCost | undefined = unitBillingModel ? undefined : (usage) => tokenCostUsd(usage, requestPricing);
+          let response = await this._executeRequest(provider, request, sellerCost, {
             signal: isDownload ? mux.downloadSignal(request.requestId) : undefined,
             onResponseStart: (streamResponseStart) => {
               if (isDownload) downloadHash = createStreamingResponseHash(streamResponseStart);
@@ -1336,12 +1341,35 @@ export class SellerRequestHandler {
   private async _executeRequest(
     provider: Provider,
     request: SerializedHttpRequest,
+    sellerCost?: SellerCost,
     streamCallbacks?: ProviderStreamCallbacks,
   ): Promise<SerializedHttpResponse> {
+    // Every provider's response goes through here, so no plugin can expose its
+    // upstream's own headers or costs: the body's cost is the seller's price.
+    const withHeaders = (response: SerializedHttpResponse): SerializedHttpResponse =>
+      ({ ...response, headers: exposedResponseHeaders(response.headers) });
     if (streamCallbacks && provider.handleRequestStream) {
-      return provider.handleRequestStream(request, streamCallbacks);
+      let events = null as ExposedSseStream | null;
+      const sent: Uint8Array[] = [];
+      const response = await provider.handleRequestStream(request, {
+        ...streamCallbacks,
+        onResponseStart: (start) => {
+          if (isEventStream(start.headers)) events = new ExposedSseStream(sellerCost);
+          streamCallbacks.onResponseStart(withHeaders(start));
+        },
+        onResponseChunk: (chunk) => {
+          if (!events) return streamCallbacks.onResponseChunk(chunk);
+          const data = chunk.done ? concatBytes([events.push(chunk.data), events.flush()]) : events.push(chunk.data);
+          sent.push(data);
+          if (!chunk.done && data.length === 0) return;
+          return streamCallbacks.onResponseChunk({ ...chunk, data });
+        },
+      });
+      // The returned body is what the buyer was sent, so usage and payment read the same bytes.
+      if (events && response.body?.length) return { ...withHeaders(response), body: concatBytes(sent) };
+      return withExposedBody(withHeaders(response), sellerCost);
     }
-    return provider.handleRequest(request);
+    return withExposedBody(withHeaders(await provider.handleRequest(request)), sellerCost);
   }
 
   private _sendNeedAuthBestEffort(
@@ -1423,4 +1451,37 @@ export class SellerRequestHandler {
       debugWarn(`[SellerHandler] Failed to send ResponseAuth for ${request.requestId.slice(0, 8)}: ${err instanceof Error ? err.message : err}`);
     }
   }
+}
+
+function contentTypeOf(headers: Record<string, string>): string {
+  return Object.entries(headers).find(([name]) => name.toLowerCase() === 'content-type')?.[1]?.toLowerCase() ?? '';
+}
+
+function isEventStream(headers: Record<string, string>): boolean {
+  return contentTypeOf(headers).includes('text/event-stream');
+}
+
+/** A JSON response priced at the seller's own cost, without the upstream's. */
+function withExposedBody(response: SerializedHttpResponse, sellerCost?: SellerCost): SerializedHttpResponse {
+  if (!response.body?.length || !contentTypeOf(response.headers).includes('json')) return response;
+  const body = exposedJsonBody(response.body, sellerCost);
+  return body === response.body ? response : { ...response, body };
+}
+
+function concatBytes(parts: Uint8Array[]): Uint8Array {
+  const out = new Uint8Array(parts.reduce((total, part) => total + part.byteLength, 0));
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.byteLength;
+  }
+  return out;
+}
+
+/** What the seller charges for these tokens, in USD: `computeCostUsdc` before rounding to USDC units. */
+function tokenCostUsd(usage: ResponseUsage, pricing: ProviderTokenPricing): number {
+  const cachedPrice = pricing.cachedInputUsdPerMillion ?? pricing.inputUsdPerMillion;
+  return (usage.freshInputTokens * pricing.inputUsdPerMillion
+    + usage.cachedInputTokens * cachedPrice
+    + usage.outputTokens * pricing.outputUsdPerMillion) / 1_000_000;
 }
