@@ -81,7 +81,6 @@ function setLifetimeUsage(uiState: ReturnType<typeof createInitialUiState>, requ
     totalOutputTokens: '20000',
     totalSettlements: 0,
     uniqueSellers: 1,
-    activeChannels: 0,
     services: [{
       serviceIdHash: 'hash',
       serviceName: 'gpt-5.6-sol',

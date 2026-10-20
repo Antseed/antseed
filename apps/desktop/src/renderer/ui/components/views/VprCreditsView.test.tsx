@@ -51,7 +51,7 @@ function settledChannel(index: number): DesktopPaymentChannelSummary {
   });
 }
 
-function withState(activeChannels: number, creditsChannels: DesktopPaymentChannelSummary[]) {
+function withState(creditsChannels: DesktopPaymentChannelSummary[], daemonActiveChannels: number) {
   fakeState = {
     creditsChannels,
     creditsBuyerUsage: {
@@ -60,7 +60,7 @@ function withState(activeChannels: number, creditsChannels: DesktopPaymentChanne
       totalOutputTokens: '0',
       totalSettlements: 0,
       uniqueSellers: 0,
-      activeChannels,
+      activeChannels: daemonActiveChannels,
       services: [],
     },
   } as unknown as RendererUiState;
@@ -71,13 +71,13 @@ function tileText(): string {
 }
 
 describe('Credits payment channels tile', () => {
-  it('counts no channels when every local active row is settled on-chain', () => {
-    withState(6, Array.from({ length: 6 }, (_, i) => settledChannel(i)));
+  it('ignores the daemon\'s local active count when the chain shows the channels settled', () => {
+    withState(Array.from({ length: 6 }, (_, i) => settledChannel(i)), 6);
     expect(tileText()).toContain('Payment channels 0 active');
   });
 
   it('counts the funded open channels Activity lists', () => {
-    withState(2, [
+    withState([
       channel({
         channelId: '0xopen',
         status: 'active',
@@ -86,7 +86,7 @@ describe('Credits payment channels tile', () => {
         cumulativeSigned: '750000',
       }),
       settledChannel(0),
-    ]);
+    ], 2);
     expect(tileText()).toContain('Payment channels 1 active');
   });
 });
