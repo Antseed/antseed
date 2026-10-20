@@ -187,3 +187,17 @@ test('request log records outcomes and content, prunes by age, and reports peer 
     cleanup()
   }
 })
+
+test('favorite models list in starring order even when they share a timestamp', () => {
+  const { dir, cleanup } = tempDir()
+  try {
+    const store = new GatewayStore(dir, () => 1_000)
+    const owner = { kind: 'member' as const, id: 'm1' }
+    store.setFavoriteModel(owner, 'zeta/model', true)
+    store.setFavoriteModel(owner, 'alpha/model', true)
+    assert.deepEqual(store.listFavoriteModels(owner), ['zeta/model', 'alpha/model'])
+    store.close()
+  } finally {
+    cleanup()
+  }
+})

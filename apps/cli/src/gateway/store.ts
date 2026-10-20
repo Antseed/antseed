@@ -1913,7 +1913,7 @@ export class GatewayStore {
 
   /** Model and router ids the owner starred, oldest first. */
   listFavoriteModels(owner: FavoriteOwner): string[] {
-    return this._stmt('SELECT model FROM favorite_models WHERE owner_kind = ? AND owner_id = ? ORDER BY created_at, model')
+    return this._stmt('SELECT model FROM favorite_models WHERE owner_kind = ? AND owner_id = ? ORDER BY created_at, rowid')
       .pluck().all(owner.kind, owner.id) as string[]
   }
 
