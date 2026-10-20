@@ -23,6 +23,7 @@ describe('BuyerPaymentNegotiator', () => {
       _channelStore: null,
       _waitForLockConfirmation: async () => {},
       _lockedPeers: new Set(),
+      _paymentWork: new Map(),
       _emit: { emit: vi.fn() },
     });
 
@@ -93,6 +94,7 @@ describe('BuyerPaymentNegotiator', () => {
         _lockedPeers: new Set([peer.peerId]),
         _bufferedPaymentRequired: new Map(),
         _pendingNeedAuth: new Set(),
+        _paymentWork: new Map(),
         _oneOffLocks: new Map(),
         _topUpThresholdBps: null,
         _firstSignCapValue: null,

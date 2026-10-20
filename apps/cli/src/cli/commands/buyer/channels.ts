@@ -2,7 +2,8 @@ import type { Command } from 'commander';
 import chalk from 'chalk';
 import { loadOrCreateIdentity } from '@antseed/node';
 import { getGlobalOptions } from '../types.js';
-import { formatUsdc, openChannelStore, shortId } from '../../payment-utils.js';
+import { formatUsdc, openChannelStore, reconcileLocalBuyerChannels, shortId } from '../../payment-utils.js';
+import { loadConfig } from '../../../config/loader.js';
 import { registerBuyerChannelWithdrawCommands } from './channel-withdraw.js';
 
 function statusColor(status: string): string {
@@ -27,6 +28,7 @@ function subtractBigintFloor(left: string | null | undefined, right: string | nu
 async function listBuyerChannels(buyerCmd: Command, options: { status?: string; limit?: string; json?: boolean }): Promise<void> {
   const globalOpts = getGlobalOptions(buyerCmd);
 
+  const config = await loadConfig(globalOpts.config);
   const identity = await loadOrCreateIdentity(globalOpts.dataDir);
   const buyerAddress = identity.wallet.address;
 
@@ -40,6 +42,7 @@ async function listBuyerChannels(buyerCmd: Command, options: { status?: string; 
   }
 
   try {
+    await reconcileLocalBuyerChannels(store, config, globalOpts.dataDir);
     const limit = parseInt(options.limit as string, 10) || 20;
     const statusFilter = options.status as string | undefined;
 
@@ -84,7 +87,7 @@ export function registerBuyerChannelsCommand(buyerCmd: Command): void {
 
   channelsCmd
     .command('list')
-    .description('List payment channels from local store')
+    .description('List payment channels from the local store, after checking active ones on-chain')
     .option('--status <status>', 'filter by status: active, settled, timeout, ghost')
     .option('--limit <number>', 'max number of channels to show', '20')
     .option('--json', 'output as JSON', false)

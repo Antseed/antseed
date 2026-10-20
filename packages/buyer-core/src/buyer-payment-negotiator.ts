@@ -28,6 +28,7 @@ import {
   type StoredChannel,
 } from './channel-store-types.js';
 import { classifyOnChainChannel, type OnChainChannelState } from './channel-session-state.js';
+import { reconcileStoredChannels, type ChannelReconcileResult } from './channel-reconcile.js';
 import { peerIdToAddress } from '@antseed/protocol/peer-id';
 import { debugLog, debugWarn } from './debug.js';
 import type { SellerAddressResolver } from './seller-address-resolver.js';
@@ -194,6 +195,9 @@ export class BuyerPaymentNegotiator {
     reject: (err: Error) => void;
     timer: ReturnType<typeof setTimeout>;
   }>();
+  /** Payment calls in flight per seller peerId, counted by `_withPaymentWork`. */
+  private readonly _paymentWork = new Map<string, number>();
+  private _reconciling: Promise<ChannelReconcileResult> | null = null;
 
   constructor(
     identity: BuyerIdentity,
@@ -259,7 +263,7 @@ export class BuyerPaymentNegotiator {
     });
 
     pmux.onNeedAuth((payload) => {
-      const p = this._bpm.handleNeedAuth(peerId, payload, pmux);
+      const p = this._withPaymentWork(peerId, () => this._bpm.handleNeedAuth(peerId, payload, pmux));
       this._pendingNeedAuth.add(p);
       return p.finally(() => {
         this._pendingNeedAuth.delete(p);
@@ -388,7 +392,7 @@ export class BuyerPaymentNegotiator {
     }
     // Skip if cost data was already consumed by post-response auth
     if (!this._lastResponseCost.has(peer.peerId)) return;
-    await this._sendPerRequestAuth(peer.peerId, conn);
+    await this._withPaymentWork(peer.peerId, () => this._sendPerRequestAuth(peer.peerId, conn));
   }
 
   /**
@@ -559,7 +563,7 @@ export class BuyerPaymentNegotiator {
       );
     }
 
-    const recovered = await this._recoverExistingSession(peer, conn);
+    const recovered = await this._withPaymentWork(peer.peerId, () => this._recoverExistingSession(peer, conn));
     if (!recovered && this._bpm.hasPendingReserveAuth(peer.peerId)) {
       throw buyerFault(
         `Unable to reconcile pending reserve for ${peer.peerId.slice(0, 12)}...`,
@@ -581,7 +585,7 @@ export class BuyerPaymentNegotiator {
   async sendPostResponseAuthTo(peerId: PeerId, conn: BuyerConnection): Promise<void> {
     if (!this._lockedPeers.has(peerId)) return;
     if (!this._lastResponseCost.has(peerId)) return;
-    await this._sendPerRequestAuth(peerId, conn);
+    await this._withPaymentWork(peerId, () => this._sendPerRequestAuth(peerId, conn));
   }
 
   private async _sendPerRequestAuth(peerId: PeerId, conn: BuyerConnection): Promise<void> {
@@ -627,10 +631,10 @@ export class BuyerPaymentNegotiator {
    * serving requests, or be owed for work the buyer hasn't signed for), so it
    * resolves rather than throws; only "we never got an answer" throws.
    */
-  async requestChannelClose(
+  requestChannelClose(
     peerId: PeerId,
     conn: BuyerConnection,
-    { includeAuth = true, timeoutMs = CLOSE_REQUEST_TIMEOUT_MS, maxCumulative, channelId }: {
+    options: {
       includeAuth?: boolean;
       timeoutMs?: number;
       /** Cap the attached authorization (e.g. at the on-chain deposit). */
@@ -638,6 +642,14 @@ export class BuyerPaymentNegotiator {
       /** Close only when this is the live session: the seller is only ever asked about that one. */
       channelId?: string;
     } = {},
+  ): Promise<CloseChannelResultPayload> {
+    return this._withPaymentWork(peerId, () => this._requestChannelClose(peerId, conn, options));
+  }
+
+  private async _requestChannelClose(
+    peerId: PeerId,
+    conn: BuyerConnection,
+    { includeAuth = true, timeoutMs = CLOSE_REQUEST_TIMEOUT_MS, maxCumulative, channelId }: Parameters<BuyerPaymentNegotiator['requestChannelClose']>[2] = {},
   ): Promise<CloseChannelResultPayload> {
     if (this._pendingCloseRequests.has(peerId)) {
       throw new Error(`A channel close request is already in flight for ${peerId.slice(0, 12)}...`);
@@ -719,7 +731,16 @@ export class BuyerPaymentNegotiator {
     return result;
   }
 
-  async handle402(
+  handle402(
+    response: SerializedHttpResponse,
+    peer: BuyerPeerView,
+    conn: BuyerConnection,
+    req: SerializedHttpRequest,
+  ): Promise<Handle402Result> {
+    return this._withPaymentWork(peer.peerId, () => this._handle402(response, peer, conn, req));
+  }
+
+  private async _handle402(
     response: SerializedHttpResponse,
     peer: BuyerPeerView,
     conn: BuyerConnection,
@@ -1101,7 +1122,15 @@ export class BuyerPaymentNegotiator {
     }
   }
 
-  async applyExternalSpendingAuth(
+  applyExternalSpendingAuth(
+    peer: BuyerPeerView,
+    conn: BuyerConnection,
+    headerValue: string,
+  ): Promise<void> {
+    return this._withPaymentWork(peer.peerId, () => this._applyExternalSpendingAuth(peer, conn, headerValue));
+  }
+
+  private async _applyExternalSpendingAuth(
     peer: BuyerPeerView,
     conn: BuyerConnection,
     headerValue: string,
@@ -1223,6 +1252,66 @@ export class BuyerPaymentNegotiator {
     this._lockedPeers.delete(peerId);
     this._firstRequestSent.delete(peerId);
     this._lastResponseCost.delete(peerId);
+  }
+
+  /**
+   * Retire this buyer's stored channels the chain shows can never move money
+   * again, for every seller. A seller with payment work in flight (a 402, a
+   * close request, a NeedAuth, a SpendingAuth being signed) keeps its current
+   * channel, and a connected seller keeps a never-opened one: the 402 and close
+   * paths own those. Concurrent calls share one pass. Never throws on chain errors.
+   */
+  reconcileChannelsWithChain(): Promise<ChannelReconcileResult> {
+    this._reconciling ??= this._reconcileOnce().finally(() => {
+      this._reconciling = null;
+    });
+    return this._reconciling;
+  }
+
+  private async _reconcileOnce(): Promise<ChannelReconcileResult> {
+    if (!this._channelStore) return { retired: [], unchecked: 0 };
+    const chainReadable = !this._isChainReachable || this._isChainReachable();
+    const result = await reconcileStoredChannels({
+      store: this._channelStore,
+      channels: chainReadable ? this._channelsClient : null,
+      buyerEvmAddr: this._identity.wallet.address,
+      sessions: {
+        mayEndSession: (peerId, closure) =>
+          !this._paymentWork.has(peerId)
+          && !this._negotiationLocks.has(peerId)
+          && !this._pendingCloseRequests.has(peerId)
+          && !this._pendingPaymentRequired.has(peerId)
+          // A connected seller can still be sent a replayed ReserveAuth, the one way a missing channel opens.
+          && (closure.status !== CHANNEL_STATUS.GHOST || !this._muxes.has(peerId as PeerId)),
+        sessionEnded: (peerId) => {
+          this._bpm.cleanupSession(peerId);
+          this._lockedPeers.delete(peerId);
+          this._firstRequestSent.delete(peerId);
+          this._lastResponseCost.delete(peerId);
+          this._resentForTarget.delete(peerId);
+        },
+        oneOffEnded: (channelId) => this._bpm.forgetOneOffChannel(channelId),
+      },
+    });
+    if (result.readError !== undefined) this._onChainReadFailure?.();
+    return result;
+  }
+
+  /**
+   * Count payment work for a seller while it runs. Such work reads the
+   * seller's current session, awaits, then writes per-seller state, so a
+   * reconcile that ended the session during the await would let it write the
+   * retired channel's cumulative into whichever channel replaced it.
+   */
+  private async _withPaymentWork<T>(peerId: string, work: () => Promise<T>): Promise<T> {
+    this._paymentWork.set(peerId, (this._paymentWork.get(peerId) ?? 0) + 1);
+    try {
+      return await work();
+    } finally {
+      const left = (this._paymentWork.get(peerId) ?? 1) - 1;
+      if (left > 0) this._paymentWork.set(peerId, left);
+      else this._paymentWork.delete(peerId);
+    }
   }
 
   /** Wait for in-flight NeedAuth handlers to complete (settlement safety). */

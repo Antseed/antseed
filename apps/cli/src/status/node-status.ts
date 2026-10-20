@@ -43,6 +43,20 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
+/**
+ * Whether the buyer process that last wrote this data dir's buyer.state.json
+ * (`antseed buyer start`, which the desktop app also runs) is still alive.
+ * A pid reused by another process reads as alive.
+ */
+export async function isBuyerProcessAlive(dataDir: string): Promise<boolean> {
+  try {
+    const state = JSON.parse(await readFile(join(dataDir, 'buyer.state.json'), 'utf-8')) as Record<string, unknown>;
+    return typeof state.pid === 'number' && isProcessAlive(state.pid);
+  } catch {
+    return false;
+  }
+}
+
 interface LoadedStateFile {
   path: string;
   data: Record<string, unknown>;

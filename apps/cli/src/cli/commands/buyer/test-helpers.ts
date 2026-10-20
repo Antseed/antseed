@@ -76,6 +76,7 @@ export const MISSING_ON_CHAIN: ChannelInfo = {
 
 export interface BuyerCommandHarness {
   buyer: string;
+  dataDir: string;
   seed(...rows: StoredChannel[]): void;
   channel(sessionId: string): StoredChannel | null;
   /** Run `antseed buyer <args>` against the chain given per channel id (an Error makes that read fail). */
@@ -103,6 +104,7 @@ export async function buyerCommandHarness(context: TestContext): Promise<BuyerCo
 
   return {
     buyer: identity.wallet.address,
+    dataDir,
     seed: (...rows) => withStore((store) => rows.forEach((row) => store.upsertChannel(row))),
     channel: (sessionId) => withStore((store) => store.getChannel(sessionId)),
     async run(register, args, chain) {

@@ -2098,11 +2098,17 @@ export class BuyerPaymentManager {
    * still open on-chain, the buyer can still requestClose() it.
    */
   retireOneOffChannel(channelId: string, status: typeof CHANNEL_STATUS[keyof typeof CHANNEL_STATUS] = CHANNEL_STATUS.SETTLED): void {
+    if (!this._oneOffChannels.has(channelId)) return;
+    this.forgetOneOffChannel(channelId);
+    this._channelStore.updateChannelStatus(channelId, status);
+  }
+
+  /** Drop a one-off channel's in-memory state, failing anyone still waiting for its AuthAck. The store is not touched. */
+  forgetOneOffChannel(channelId: string): void {
     const state = this._oneOffChannels.get(channelId);
     if (!state) return;
     this._oneOffChannels.delete(channelId);
     for (const waiter of state.ackWaiters.splice(0)) waiter(false);
-    this._channelStore.updateChannelStatus(channelId, status);
   }
 
   private async _confirmOneOffChannel(channelId: string, state: OneOffChannelState): Promise<void> {
