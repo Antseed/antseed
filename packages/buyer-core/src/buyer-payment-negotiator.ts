@@ -563,7 +563,7 @@ export class BuyerPaymentNegotiator {
       );
     }
 
-    const recovered = await this._withPaymentWork(peer.peerId, () => this._recoverExistingSession(peer, conn));
+    const recovered = await this._withPaymentWork(peer.peerId, () => this._recoverExistingSession(peer, conn, this._bpm.getActiveSession(peer.peerId)));
     if (!recovered && this._bpm.hasPendingReserveAuth(peer.peerId)) {
       throw buyerFault(
         `Unable to reconcile pending reserve for ${peer.peerId.slice(0, 12)}...`,
@@ -920,7 +920,20 @@ export class BuyerPaymentNegotiator {
       || (responseAlreadyHasRequirements && directPaymentBody?.code === PAYMENT_CODE_CHANNEL_EXHAUSTED)
       || (requiredCumulativeTarget != null && sellerReserveMax != null && requiredCumulativeTarget > sellerReserveMax);
 
-    const hasActiveSession = hadLockedSession || this._bpm.getActiveSession(peer.peerId) != null;
+    // A 402 about a channel the buyer has since replaced describes that
+    // channel: its target and exhaustion say nothing about the live one.
+    const paymentChannelId = buffered?.channelId
+      ?? (responseAlreadyHasRequirements && typeof directPaymentBody?.channelId === 'string' ? directPaymentBody.channelId : null);
+    const session = this._bpm.getActiveSession(peer.peerId);
+    if (session && paymentChannelId != null && paymentChannelId.toLowerCase() !== session.sessionId.toLowerCase()) {
+      debugLog(
+        `[BuyerNegotiator] 402 from ${peer.peerId.slice(0, 12)}... is about channel ${paymentChannelId.slice(0, 18)}..., ` +
+        `not the live ${session.sessionId.slice(0, 18)}... — retrying`,
+      );
+      return { action: 'retry' };
+    }
+
+    const hasActiveSession = hadLockedSession || session != null;
 
     if (channelExhausted && hasActiveSession) {
       debugLog(
@@ -936,6 +949,7 @@ export class BuyerPaymentNegotiator {
       const recovered = await this._recoverExistingSession(
         peer,
         conn,
+        session,
         existingSessionBudgetRequest,
         requiredCumulativeTarget,
         requiredCumulativeTarget == null,
@@ -1592,15 +1606,16 @@ export class BuyerPaymentNegotiator {
     });
   }
 
+  /** Recover `session`, the seller's live channel when this is called. */
   private async _recoverExistingSession(
     peer: BuyerPeerView,
     conn: BuyerConnection,
+    session: StoredChannel | null,
     minBudgetPerRequest: bigint | null = null,
     targetCumulative: bigint | null = null,
     requireFreshAck = false,
     requestId?: string,
   ): Promise<boolean> {
-    const session = this._bpm.getActiveSession(peer.peerId);
     if (!session) {
       return false;
     }

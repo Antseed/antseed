@@ -536,7 +536,7 @@ describe('BuyerPaymentNegotiator', () => {
         currentSpent: '11009626',
         currentAcceptedCumulative: '10998222',
         reserveMaxAmount: '11000000',
-        channelId: '0x' + 'cd'.repeat(32),
+        channelId: activeSession.sessionId,
       });
 
       const result = await negotiator.handle402(response, peer, conn, makeRequest());
@@ -572,7 +572,7 @@ describe('BuyerPaymentNegotiator', () => {
         suggestedAmount: '1000000',
         requiredCumulativeAmount: '11019626',
         reserveMaxAmount: '11000000',
-        channelId: '0x' + 'cd'.repeat(32),
+        channelId: activeSession.sessionId,
       });
 
       const result = await negotiator.handle402(response, peer, conn, makeRequest());

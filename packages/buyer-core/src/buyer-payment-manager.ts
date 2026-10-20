@@ -491,11 +491,26 @@ export class BuyerPaymentManager {
       : this.getActiveSession(channel.peerId)?.sessionId === channel.sessionId;
   }
 
-  /** Commit an authorization to a live channel. False, with nothing written after, once it stopped being live before or during the commit. */
+  /**
+   * Commit an authorization to a live channel. False, with nothing written,
+   * once the channel stopped being live or holds a higher signed cumulative
+   * than `channel.authMax` (a concurrent write committed past this one while
+   * it was signed). False, with nothing written after, once it stopped being
+   * live during the commit.
+   */
   private async _commitLive(channel: StoredChannel, metadata: SpendingAuthMetadata): Promise<boolean> {
-    if (!this._isLive(channel)) return false;
+    if (!this._isLive(channel) || BigInt(channel.authMax) < this._highestSigned(channel)) return false;
     await this._commitAuthorization(channel, metadata);
     return this._isLive(channel);
+  }
+
+  /** The highest cumulative signed on a live channel: in memory, or committed to the store. */
+  private _highestSigned(channel: StoredChannel): bigint {
+    const committed = BigInt(this._channelStore.getChannel(channel.sessionId)?.authMax ?? '0');
+    const inMemory = (channel.channelKind === CHANNEL_KIND.ONE_OFF
+      ? this._oneOffChannels.get(channel.sessionId)?.cumulative
+      : this._cumulativeAmount.get(channel.peerId)) ?? 0n;
+    return committed > inMemory ? committed : inMemory;
   }
 
   retireSession(
@@ -550,12 +565,13 @@ export class BuyerPaymentManager {
 
     const live = await this._commitLive({
       ...session,
+      authMax: cumulativeAmount.toString(),
       latestBuyerSig: spendingAuthSig,
       latestSpendingAuthSig: spendingAuthSig,
       latestMetadata: encodedMetadata,
       updatedAt: Date.now(),
     }, currentMeta);
-    if (!live) throw sessionReplaced(sellerPeerId);
+    if (!live) throw writeDropped(sellerPeerId);
 
     paymentMux.sendSpendingAuth({
       channelId: session.sessionId,
@@ -620,7 +636,7 @@ export class BuyerPaymentManager {
       nextCumulative,
       currentMeta,
     );
-    if (!spendingAuth) throw sessionReplaced(sellerPeerId);
+    if (!spendingAuth) throw writeDropped(sellerPeerId);
     this._verifiedCost.set(sellerPeerId, reopened.verifiedCost);
     this._reportSpend({
       sellerPeerId,
@@ -691,12 +707,13 @@ export class BuyerPaymentManager {
       ? this._isLive(session)
       : await this._commitLive({
         ...session,
+        authMax: cumulativeAmount.toString(),
         latestBuyerSig: spendingAuthSig,
         latestSpendingAuthSig: spendingAuthSig,
         latestMetadata: encodedMetadata,
         updatedAt: Date.now(),
       }, currentMeta);
-    if (!live) throw sessionReplaced(sellerPeerId);
+    if (!live) throw writeDropped(sellerPeerId);
 
     return {
       version: 1,
@@ -740,7 +757,7 @@ export class BuyerPaymentManager {
     const live = await this._commitAndSendReserveAuth(session, sellerPeerId, pending, paymentMux, {
       initialReserveAmount: maxAmount.toString(),
     });
-    if (!live) throw sessionReplaced(sellerPeerId);
+    if (!live) throw writeDropped(sellerPeerId);
 
     return session.sessionId;
   }
@@ -1604,7 +1621,7 @@ export class BuyerPaymentManager {
       latestMetadata: encodedMetadata,
       updatedAt: Date.now(),
     }, newMeta);
-    if (!live) throw sessionReplaced(sellerPeerId);
+    if (!live) throw writeDropped(sellerPeerId);
 
     this._cumulativeAmount.set(sellerPeerId, newAmount);
     this._verifiedCost.set(sellerPeerId, nextVerifiedCost);
@@ -1670,7 +1687,7 @@ export class BuyerPaymentManager {
     const buyerBillingContext = requestBilling?.context;
 
     const requiredCumulativeAmount = BigInt(payload.requiredCumulativeAmount);
-    const currentCumulative = this._cumulativeAmount.get(sellerPeerId) ?? 0n;
+    let currentCumulative = this._cumulativeAmount.get(sellerPeerId) ?? 0n;
 
     // Reject stale/lower NeedAuth (monotonicity guard)
     if (requiredCumulativeAmount <= currentCumulative) {
@@ -1725,6 +1742,9 @@ export class BuyerPaymentManager {
               ? await this._waitForObservedUnitUsage(payload.requestId, OBSERVED_UNIT_USAGE_WAIT_MS)
               : undefined);
           if (!this._isLive(session)) return;
+          // Another NeedAuth may have signed past this one during the wait.
+          currentCumulative = this._cumulativeAmount.get(sellerPeerId) ?? 0n;
+          if (requiredCumulativeAmount <= currentCumulative) return;
           const claimedUnitCost = sellerTotalCost > tokenEstimate
             ? sellerTotalCost - tokenEstimate
             : 0n;
@@ -2567,8 +2587,11 @@ export class BuyerPaymentManager {
   // parseResponseCost removed — cost data now flows through NeedAuth on PaymentMux.
 }
 
-function sessionReplaced(sellerPeerId: string): Error {
-  return buyerFault(`[BuyerPayment] Session for seller ${sellerPeerId.slice(0, 12)}... was retired while being signed`, 'buyer-session-state');
+function writeDropped(sellerPeerId: string): Error {
+  return buyerFault(
+    `[BuyerPayment] Authorization for seller ${sellerPeerId.slice(0, 12)}... was dropped: its session was retired, or signed higher, while it was being signed`,
+    'buyer-session-state',
+  );
 }
 
 function videoJobKey(sellerPeerId: string, protocol: string, jobId: string): string {
