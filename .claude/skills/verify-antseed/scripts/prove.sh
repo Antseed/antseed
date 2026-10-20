@@ -8,7 +8,8 @@
 # The fresh worktree gets `pnpm install`, the forge-std submodule when the command runs forge, and a build of the owning
 # package's workspace dependencies, nothing else, so leftovers in your working tree cannot fake a result.
 # Prints PROVE OK or PROVE MISMATCH with the reason and the log path. Exit 0 when the result is the one expected,
-# 1 when not, 2 when the setup broke. Logs are kept in $PROVE_LOGS (default: a temporary directory).
+# 1 when not, 2 when the setup broke. Logs are kept in $PROVE_LOGS (default: a temporary directory). The throwaway
+# worktree goes under $PROVE_TMP, else $TMPDIR, else /tmp: a sandboxed agent sets PROVE_TMP to a folder it can write.
 set -uo pipefail
 commit="${1:-}"; expect="${2:-}"; cmd="${3:-}"; signature="${4:-}"; pkg="${5:-}"
 usage() { echo "usage: prove.sh <commit> fail|pass \"<test command>\" [red signature] [owning package]" >&2; exit 2; }
@@ -24,7 +25,8 @@ if [ "$expect" = fail ]; then
   other="$(git -C "$repo" diff-tree --no-commit-id --name-only -r "$sha" | grep -Ev "$TESTS" || true)"
   [ -z "$other" ] || { echo "$other" | head -5; echo "PROVE MISMATCH the red commit changes more than tests"; exit 1; }
 fi
-logs="${PROVE_LOGS:-$(mktemp -d)}"; mkdir -p "$logs"; tmp="$(mktemp -d)"; tree="$tmp/tree"
+root="${PROVE_TMP:-${TMPDIR:-/tmp}}"; mkdir -p "$root" || exit 2
+logs="${PROVE_LOGS:-$(mktemp -d "$root/prove-logs.XXXXXX")}"; mkdir -p "$logs"; tmp="$(mktemp -d "$root/prove.XXXXXX")" || exit 2; tree="$tmp/tree"
 out="$logs/${sha:0:9}-$expect.out.txt"; setup="$logs/${sha:0:9}-$expect.setup.txt"
 trap 'git -C "$repo" worktree remove --force "$tree" >/dev/null 2>&1' EXIT
 git -C "$repo" worktree add -q --detach "$tree" "$sha" || exit 2

@@ -21,4 +21,4 @@ Owns the Electron app: the main process (`src/main/`), the renderer (`src/render
 
 ## Prove it
 
-The verify-antseed skill decides what proves a change here. `pnpm --filter @antseed/desktop test` and `typecheck` always run.
+The verify-antseed skill decides what proves a change here. `pnpm --filter @antseed/desktop test` (it type-checks the main process through `build:main`) and `pnpm --filter @antseed/desktop run typecheck:renderer` always run. The package has no plain `typecheck` script.

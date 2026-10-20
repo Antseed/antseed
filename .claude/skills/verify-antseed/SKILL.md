@@ -43,6 +43,7 @@ Add a sandbox scenario only when a unit test can't reproduce the bug. Every chan
 - When doctor flags a stale `dist/`, run `pnpm run build`, or the changed package's build plus its dependents. The sandbox loads `dist/`, so an unbuilt fix looks like a fix that does not work.
 - The `BuyerPaymentManager` tests live in `packages/node/tests/`, not in `packages/buyer-core`. The class moved to buyer-core, and `packages/node/src/payments/buyer-payment-manager.ts` re-exports it.
 - On this base, `payment:spend` events do not report the negotiator's catch-up. Read `cumulativeSigned` from `sb.channels()` instead. It is a decimal string of micro-USDC, so compare it as `BigInt`.
+- Inside an agent's Bash sandbox (macOS Seatbelt), the desktop test `Linux afterPack sets the sandbox helper mode before archiving` fails with `actual: 493, expected: 2541`: the sandbox refuses the setuid bit. That is the environment, not the change. Run `pnpm --filter @antseed/desktop test` outside the sandbox (the operator's shell or CI) for that one result, and never skip or loosen the test.
 - `--chain fork` runs the production contracts. A contract change shows up only on `--chain local`.
 - `withdraw()` after `sb.buyerRequestClose()` needs `sb.warp(15 * 60 + 60)` first. Waiting in wall-clock time does not move Anvil's clock.
 - A desktop chat that times out saves `screenshots/chat-timeout.png` and puts the visible screen text in the error. Read those and the video before you change the scenario.
@@ -87,16 +88,15 @@ A security-critical change always runs the keys, signing or spend caps row, on t
 
 ## What counts as proof
 
-A task states its exit condition as checks from this skill before any code changes. A verifier that did not write the change runs these checks on the head commit and shows each command, its exit code and the lines that matter. A claim without that output is not proof.
+pstack's playbooks say what proof each kind of change needs (Bug fix steps 1, 4 and 5, Refactoring, Feature step 5, the tdd skill) and who gives the verdict (Shipping step 1). This section adds only AntSeed's surfaces and commands. Show each command, its exit code and the lines that matter.
 
-- **Bug fix.** Reproduce on the surface the report names (pstack's Bug fix: the proxy, the desktop or the chain, through its feature recipe), because a unit test shows branch behavior, not the bug's absence. Then the first commit changes only test files. That commit fails on `main` with the bug's own words in the output (the red signature), and the head passes. When a unit test can't reproduce it (pstack's tdd: no test beats a bad test), the red is an `issue-*` sandbox scenario per [Fix a bug red to green](#fix-a-bug-red-to-green). Run both with `scripts/prove.sh`, which uses a fresh worktree so local leftovers cannot fake a result, and rejects a red caused by a setup error such as `Cannot find module`.
+- **Bug fix.** The surface the report names is the proxy, the desktop or the chain, driven through its feature recipe. When a cheap unit test reproduces the bug, a test-only first commit fails on `main` with the bug's own words (the red signature) and the head passes, per Bug fix step 5. When reproducing it needs a seller, the buyer proxy and an on-chain settlement, the red is an `issue-*` sandbox scenario per [Fix a bug red to green](#fix-a-bug-red-to-green). Check both with `scripts/prove.sh`. It uses a fresh worktree so local leftovers cannot fake a result, and it rejects a red caused by a setup error such as `Cannot find module`.
   `scripts/prove.sh <first commit> fail "<test command>" "<red signature>" <owning package>`, then `scripts/prove.sh HEAD pass "<test command>" "" <owning package>`.
-- **Refactor.** The first commit holds only tests that pin today's behavior. They pass at that commit and at the head (`prove.sh <first commit> pass ...`, `prove.sh HEAD pass ...`).
-- **Feature.** The matching row's tests pass at the head, plus a test that shows the new behavior, driven on its surface through the feature recipe.
-- **User-visible change.** A change to what a user sees in the desktop or the CLI also gets review evidence for the operator: the desktop run's screenshots and video plus an agent-browser walk through the changed screens (`pnpm sandbox desktop --cdp-port N`, recipe in [desktop chat](features/desktop-chat.md)), or the CLI transcript, named in the PR's Verification.
-- **Every kind.** The matching row of [Decide what to prove](#decide-what-to-prove) passes, and the owning packages' `test` and `typecheck` pass.
+- **Refactor.** Pin today's behavior first (Refactoring), then check it with `prove.sh <first commit> pass ...` and `prove.sh HEAD pass ...`.
+- **User-visible change.** A change to what a user sees in the desktop or the CLI also gets review evidence for the operator. For the desktop, that is the run's screenshots and video plus an agent-browser walk through the changed screens (`pnpm sandbox desktop --cdp-port N`, recipe in [desktop chat](features/desktop-chat.md)). For the CLI, it is the transcript. Name the evidence in the PR's Verification.
+- **Every kind.** The matching row of [Decide what to prove](#decide-what-to-prove) passes, and so do the owning packages' checks named in their `CLAUDE.md`.
 - **Sandbox rows.** Run each required scenario once without the change and once with it, in the scratch worktree, doctor first. A scenario that fails the same way without the change is pre-existing: report it, do not block on it, and say whether the change could be involved. A scenario that fails only with the change fails the verification.
-- **Not proven.** A doctor `FAIL` or a broken build means the environment, not the change: report it as blocked, not as failed. "Inconclusive" is a failure.
+- **Blocked.** A doctor `FAIL` or a broken build means the environment, not the change. Report it as blocked (`verifier-blocked`), not as failed.
 
 ## Drive
 
@@ -107,7 +107,7 @@ A task states its exit condition as checks from this skill before any code chang
 
 ## Fix a bug red to green
 
-Reproduce the bug with a failing unit test in the owning package first. If the unit test reproduces it, that test is the red and the green, the fix PR is the failing test plus the fix (steps 5 and 8), and the regressions are the matching row of [Decide what to prove](#decide-what-to-prove). Follow steps 1 to 9 only when a unit test can't reproduce the bug: when it shows only across a seller, the buyer proxy and an on-chain settlement. `issue-1200-spendingauth-catchup.mjs` is the worked example. It proves on-chain what #1200's unit test proves for one method: the seller settles the over-signed amount.
+Try a failing unit test in the owning package first. If it reproduces the bug, that test is the red and the green, the fix PR is the failing test plus the fix (steps 5 and 8), and the regressions are the matching row of [Decide what to prove](#decide-what-to-prove). Follow steps 1 to 9 only when a unit test can't reproduce the bug: when it shows only across a seller, the buyer proxy and an on-chain settlement. `issue-1200-spendingauth-catchup.mjs` is the worked example. It proves on-chain what #1200's unit test proves for one method: the seller settles the over-signed amount.
 
 The sandbox lives on a sandbox branch, not on `main`. The fix lives on a branch from `origin/main`. A scratch worktree combines both for the sandbox runs and is never pushed.
 
@@ -125,20 +125,20 @@ The sandbox lives on a sandbox branch, not on `main`. The fix lives on a branch 
 2. **Write the scenario first.** In the scratch worktree, create `e2e/sandbox/scenarios/issue-<N>-<slug>.mjs`. Encode the bug as plain `sb.check`s, never `knownIssue`. Start with a fresh-sandbox check, as `issue-1200-spendingauth-catchup.mjs` does. Add the name to the scenario list in `e2e/sandbox/test/config-topology.test.mjs`.
 3. **Prove it fails.** Run `.claude/skills/verify-antseed/scripts/run-with-evidence.mjs issue-<N>-<slug> --chain local` on the unfixed code. It must fail on the check that states the issue, with the issue's numbers in `detail`. Keep the report directory. Its `checks.log` is the red evidence. If the scenario will not fail, stop and report why before you change product code.
 4. **Find the root cause** (pstack's Bug fix and fix-root-causes). The runtime evidence here: `pnpm sandbox logs supervisor`, `pnpm sandbox logs seller-<id>`, the report's `events.jsonl` and `logs/`, and a `--keep` run inspected with `pnpm sandbox status`.
-5. **Fix it in a worktree from `origin/main`.** Write a failing unit test in the owning package, then the smallest fix that the evidence justifies:
+5. **Fix it in a worktree from `origin/main`.** Make the smallest fix the evidence justifies. Add a unit test only where one can pin the mechanism the scenario found (pstack's tdd: no test beats a bad test):
 
    ```bash
    git fetch origin
    git worktree add -b fix/<N>-<slug> ../<repo>-fix-<N> origin/main
    ```
 
-   Never create the fix branch inside the scratch worktree: the untracked scenario would follow it. Commit only if the user asked for a fix PR (`CLAUDE.md`). Then the PR has two commits, the failing test and then the fix. Without that request, leave the fix uncommitted.
+   Never create the fix branch inside the scratch worktree: the untracked scenario would follow it. Commit only if the user asked for a fix PR (`CLAUDE.md`). With a unit test, the PR has two commits, the failing test and then the fix. Without that request, leave the fix uncommitted.
 6. **Prove it passes.** Bring the fix into the scratch worktree, rebuild, and rerun the scenario. It must pass.
    - Committed fix: `git cherry-pick <test-sha> <fix-sha>`.
    - Uncommitted fix: `git -C ../<repo>-fix-<N> add -N . && git -C ../<repo>-fix-<N> diff --binary HEAD | git apply`. Plain `git diff` leaves out new files (the new unit test) and staged changes. Check that `git status --short` in the scratch lists every file the fix changed.
    - Rebuild the changed packages (doctor names them), then run `run-with-evidence.mjs issue-<N>-<slug> --chain local`.
 7. **Run the regressions** in the scratch worktree: the matching row of [Decide what to prove](#decide-what-to-prove), plus `chat-basic --chain local` for a payment bug. The cooperative-close `KNOWN` results are expected (see [Gotchas](#gotchas)).
-8. **Run the owning package's checks** in the fix worktree: `pnpm --filter <pkg> test` and `pnpm --filter <pkg> run typecheck`.
+8. **Run the owning package's checks** in the fix worktree, as its `CLAUDE.md` names them under Prove it.
 9. **Tear down:** `pnpm sandbox down` in every worktree that ran a sandbox.
 
 Sandbox files never go into the fix PR. The issue scenario lands on the sandbox branch in its own commit, when the user asks for one. Paste the red and green `checks.log` lines verbatim into the PR body (see [Evidence](#evidence)).

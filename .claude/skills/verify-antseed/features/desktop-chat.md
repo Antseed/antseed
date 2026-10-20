@@ -29,7 +29,7 @@ Preconditions:
 agent-browser drives the sandbox desktop over CDP. The scripted proof still runs; this shows a reviewer what changed.
 
 - **Launch** with a sandbox up: `pnpm sandbox desktop --cdp-port 9333` (any free port from 1024; it refuses 8377, the desktop's own ports and a busy port, and listens on 127.0.0.1 only). Needs `npm i -g agent-browser`.
-- **Connect**: `agent-browser connect 9333`, then `agent-browser tab` and pick the `http://127.0.0.1:<renderer port>/` tab with `agent-browser tab t<n>`. Dev mode also opens DevTools and float windows, and agent-browser may switch to them; re-check the tab when a snapshot shows DevTools.
+- **Connect**: `agent-browser connect 9333` (inside a sandboxed agent session, pass `--cdp 9333` on every command instead, because `connect` there launches a Chrome the sandbox stops), then `agent-browser tab` and pick the `http://127.0.0.1:<renderer port>/` tab with `agent-browser tab t<n>`. Dev mode also opens DevTools and float windows, and agent-browser may switch to them; re-check the tab when a snapshot shows DevTools.
 - **Check it is the sandbox**: `agent-browser snapshot -i` shows `Add credits, balance $10.00` (the sandbox deposit) and the reply line names the sandbox seller's peer id from `pnpm sandbox status`.
 - **Record** with `agent-browser record start <run>/review/desktop.webm` before the first action and `agent-browser record stop` after the last.
 - **Act** by ref or role: `agent-browser click @e4` (Chat), `agent-browser fill @<composer> "..."`, `agent-browser press Enter`, re-snapshotting after each state change.
