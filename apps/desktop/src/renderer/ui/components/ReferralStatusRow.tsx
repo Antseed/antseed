@@ -11,6 +11,22 @@ const REFERRAL_HINTS: Record<Exclude<ReferralStatus['state'], 'none'>, string> =
   invited: 'Pending. Binds with your first paid or free request.',
 };
 
+export const REMOVE_FAILED = 'Could not remove it. Try again.';
+
+/**
+ * Remove the pending invite; returns the error to show, or null once removed
+ * (`onRemoved` then reloads the status). A failure keeps the invite pending.
+ */
+export async function removePendingInvite(clearInvite: () => Promise<unknown>, onRemoved?: () => void): Promise<string | null> {
+  try {
+    await clearInvite();
+  } catch {
+    return REMOVE_FAILED;
+  }
+  onRemoved?.();
+  return null;
+}
+
 type Props = {
   status: ReferralStatus;
   /** Called after the pending invite was saved, replaced or removed (reload the status). */
@@ -29,6 +45,7 @@ type Props = {
 export function ReferralStatusRow({ status, onRedeemed, initialChanging = false }: Props) {
   const [changing, setChanging] = useState(initialChanging);
   const [removing, setRemoving] = useState(false);
+  const [removeError, setRemoveError] = useState<string | null>(null);
   const pending = status.state === 'invited';
 
   useIncomingInvite(useCallback(() => setChanging(true), []));
@@ -41,12 +58,9 @@ export function ReferralStatusRow({ status, onRedeemed, initialChanging = false 
     const clearInvite = window.antseedDesktop?.referralClearInvite;
     if (!clearInvite) return;
     setRemoving(true);
-    try {
-      await clearInvite();
-      onRedeemed?.();
-    } finally {
-      setRemoving(false);
-    }
+    setRemoveError(null);
+    setRemoveError(await removePendingInvite(clearInvite, onRedeemed));
+    setRemoving(false);
   };
 
   return (
@@ -60,6 +74,7 @@ export function ReferralStatusRow({ status, onRedeemed, initialChanging = false 
           </span>
           {pending ? (
             <>
+              {removeError ? <span role="alert" className={styles.error}>{removeError}</span> : null}
               <Button size="sm" variant="link" onClick={() => setChanging(true)} disabled={removing}>Change</Button>
               <Button size="sm" variant="link" onClick={() => void remove()} disabled={removing} aria-busy={removing}>
                 {removing ? 'Removing…' : 'Remove'}

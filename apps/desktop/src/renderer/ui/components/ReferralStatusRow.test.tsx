@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { ReferralStatus } from '../../types/bridge';
-import { ReferralStatusRow } from './ReferralStatusRow';
+import { REMOVE_FAILED, ReferralStatusRow, removePendingInvite } from './ReferralStatusRow';
 
 const REFERRER = '0xe05fcC23807536bEe418f142D19fa0d21BB0cfF7';
 const invited: ReferralStatus = { configured: true, state: 'invited', referrer: REFERRER, invite: 'AQAe' };
@@ -13,6 +13,14 @@ describe('ReferralStatusRow', () => {
     expect(html).toContain('Pending. Binds with your first paid or free request.');
     expect(buttons(html)).toEqual(['Change', 'Remove']);
     expect(html).not.toContain('name="invite-code"');
+  });
+
+  it('reports a failed removal and keeps the invite pending', async () => {
+    const onRemoved = vi.fn();
+    expect(await removePendingInvite(async () => { throw new Error('lock busy'); }, onRemoved)).toBe(REMOVE_FAILED);
+    expect(onRemoved).not.toHaveBeenCalled();
+    expect(await removePendingInvite(async () => undefined, onRemoved)).toBeNull();
+    expect(onRemoved).toHaveBeenCalledTimes(1);
   });
 
   it('keeps a binding final', () => {

@@ -151,8 +151,11 @@ export function AppShell() {
       receiveInviteLink(invite);
       if (!showSetupRef.current) handleSelectView('rewards');
     };
+    // Subscribe first: asking for the held invite tells the main process this
+    // renderer is listening, so later links are pushed instead of held.
+    const unsubscribe = bridge?.onReferralDeepLink?.(open);
     void bridge?.referralTakeDeepLink?.().then(open).catch(() => {});
-    return bridge?.onReferralDeepLink?.(open);
+    return unsubscribe;
   }, [handleSelectView]);
 
   useEffect(() => {

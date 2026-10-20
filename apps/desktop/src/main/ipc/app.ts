@@ -79,7 +79,7 @@ export function registerAppIpc(): void {
   ipcMain.handle('referral:get-invites', () => getReferralInvites());
   ipcMain.handle('referral:create-invite', () => createReferralInvite());
   ipcMain.handle('referral:get-referee', () => getRefereeBonus());
-  ipcMain.handle('referral:take-deep-link', () => takePendingInviteLink());
+  ipcMain.handle('referral:take-deep-link', (event) => takePendingInviteLink(event.sender));
 
   // Returns the macOS UI language (e.g. 'he', 'ar-EG', 'en-US') as Electron sees
   // it. This is the same locale that drives the system window-chrome direction,

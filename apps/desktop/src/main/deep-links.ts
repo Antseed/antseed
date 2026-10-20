@@ -3,16 +3,19 @@
  * antseed.com/invite/<invite>). macOS delivers them through `open-url`;
  * Windows and Linux start a second instance with the URL in argv, which the
  * single-instance lock hands to this one via `second-instance`. The invite is
- * kept until the renderer takes it, then pushed live on `referral:deep-link`.
+ * held until the renderer has subscribed to `referral:deep-link` and asks for
+ * it (see InviteLinkQueue); later links are pushed live.
  */
 import path from 'node:path';
-import { app, type BrowserWindow } from 'electron';
+import { app, type BrowserWindow, type WebContents } from 'electron';
+import { InviteLinkQueue } from './deep-link-queue.js';
 
 export const DEEP_LINK_SCHEME = 'antseed';
 
-let pendingInvite: string | null = null;
-/** Sends the invite to a live window; false while there is none yet. */
-let deliver: ((invite: string) => boolean) | null = null;
+const links = new InviteLinkQueue<WebContents>((contents, invite) => contents.send('referral:deep-link', invite));
+/** The main window, once it exists, and how to bring it forward. */
+let target: { getWindow: () => BrowserWindow | null; show: () => void } | null = null;
+const watched = new WeakSet<WebContents>();
 
 /** The invite in an `antseed://invite/<invite>` URL, or null for anything else. */
 export function inviteFromDeepLink(url: string): string | null {
@@ -23,7 +26,8 @@ export function inviteFromDeepLink(url: string): string | null {
 function handleUrl(url: string): void {
   const invite = inviteFromDeepLink(url);
   if (!invite) return;
-  pendingInvite = deliver?.(invite) ? null : invite;
+  target?.show();
+  links.receive(invite, target?.getWindow()?.webContents ?? null);
 }
 
 function handleArgv(argv: string[]): void {
@@ -54,20 +58,20 @@ export function registerDeepLinks(options: { singleInstance: boolean; onSecondIn
   return true;
 }
 
-/** Push invites to the renderer once a window exists (and focus it). */
+/** Push invites to the main window's renderer once it is ready (and focus it). */
 export function deliverDeepLinksTo(getWindow: () => BrowserWindow | null, show: () => void): void {
-  deliver = (invite) => {
-    show();
-    const window = getWindow();
-    if (!window || window.webContents.isLoading()) return false;
-    window.webContents.send('referral:deep-link', invite);
-    return true;
-  };
+  target = { getWindow, show };
 }
 
-/** The invite from the link that launched or focused the app, once. */
-export function takePendingInviteLink(): string | null {
-  const invite = pendingInvite;
-  pendingInvite = null;
-  return invite;
+/**
+ * The renderer `sender` subscribed to `referral:deep-link`: hand it the invite
+ * held so far, once, and push later ones to it until it navigates away.
+ */
+export function takePendingInviteLink(sender: WebContents): string | null {
+  if (!watched.has(sender)) {
+    watched.add(sender);
+    sender.on('did-start-loading', () => links.reset(sender));
+    sender.once('destroyed', () => links.reset(sender));
+  }
+  return links.take(sender);
 }
