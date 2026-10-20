@@ -581,6 +581,32 @@ describe('a payment write that awaited while the seller channel moved on', () =>
     });
   });
 
+  describe('in BuyerPaymentManager, a write that read the cumulative while a higher one was being saved', () => {
+    beforeEach(() => setup());
+
+    it.each([
+      { write: 'resent SpendingAuth (resendCurrentSpendingAuth)', start: () => manager.resendCurrentSpendingAuth(SELLER, mux) },
+      { write: 'close authorization (buildCloseChannelRequest)', start: () => manager.buildCloseChannelRequest(SELLER) },
+    ])('$write keeps the higher authorization stored', async ({ start }) => {
+      const channelId = await openChannel();
+      await spend(channelId, 10_000n);
+      const commit = store.commitAuthorization.bind(store);
+      let write: Promise<string> | null = null;
+      vi.spyOn(store, 'commitAuthorization').mockImplementation((channel, totals) => {
+        commit(channel, totals);
+        if (!write && channel.authMax === '38000') write = settle(start());
+      });
+
+      await spend(channelId, 28_000n);
+      const outcome = await write;
+
+      const higher = mux.sent.find((payload) => payload.cumulativeAmount === '38000');
+      const stored = store.getChannel(channelId);
+      expect({ authMax: stored?.authMax, latestSpendingAuthSig: stored?.latestSpendingAuthSig, outcome })
+        .toEqual({ authMax: '38000', latestSpendingAuthSig: higher?.spendingAuthSig, outcome: 'buyer-session-state' });
+    });
+  });
+
   describe('in BuyerPaymentNegotiator', () => {
     let conn: PeerConnection;
     let pmux: PaymentMux;

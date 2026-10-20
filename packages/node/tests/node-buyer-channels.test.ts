@@ -104,14 +104,14 @@ describe('buyer payment channel summaries', () => {
   });
 });
 
+function buyerIdentity(): Identity {
+  const wallet = new Wallet('0x' + randomBytes(32).toString('hex'));
+  return { wallet, peerId: toPeerId(wallet.address.slice(2).toLowerCase()), privateKey: Buffer.from(wallet.privateKey.slice(2), 'hex') };
+}
+
 describe('buyer channel counts after a reconcile with the chain', () => {
   let dataDir: string;
   let store: ChannelStore;
-
-  function buyerIdentity(): Identity {
-    const wallet = new Wallet('0x' + randomBytes(32).toString('hex'));
-    return { wallet, peerId: toPeerId(wallet.address.slice(2).toLowerCase()), privateKey: Buffer.from(wallet.privateKey.slice(2), 'hex') };
-  }
 
   function buyerAccount(identity: Identity, chain: ChannelsClient) {
     const paymentManager = new BuyerPaymentManager(identity, {
@@ -276,14 +276,17 @@ describe('the buyer channel reconcile pass a node runs on its own', () => {
     return { passes: () => pass.mock.calls.length };
   }
 
-  it('runs one at buyer start by default', async () => {
+  it('runs one at buyer start and when a buyer identity is added, by default', async () => {
     const { passes } = await startPayingBuyer({});
+    const atStart = passes();
+    await node!.addBuyerIdentity('alt', buyerIdentity());
 
-    expect(passes()).toBeGreaterThan(0);
+    expect({ atStart: atStart > 0, afterAdd: passes() > atStart }).toEqual({ atStart: true, afterAdd: true });
   });
 
-  it('starts none with autoReconcileBuyerChannels off', async () => {
+  it('starts none with autoReconcileBuyerChannels off, at start or when a buyer identity is added', async () => {
     const { passes } = await startPayingBuyer({ autoReconcileBuyerChannels: false });
+    await node!.addBuyerIdentity('alt', buyerIdentity());
 
     expect(passes()).toBe(0);
   });
