@@ -278,6 +278,136 @@ describe('BuyerPaymentNegotiator', () => {
     });
   });
 
+  describe('a channel replaced while a result is in flight', () => {
+    const peer: BuyerPeerView = { peerId: toPeerId('6'.repeat(40)) };
+    const connection = { state: ConnectionState.Connected } as BuyerConnection;
+    const CHANNEL_A = `0x${'a1'.repeat(32)}`;
+    const CHANNEL_B = `0x${'b2'.repeat(32)}`;
+
+    function chainState(deposit: bigint) {
+      return {
+        buyer: '0x' + '11'.repeat(20),
+        seller: '0x' + '22'.repeat(20),
+        deposit,
+        settled: 0n,
+        metadataHash: '0x' + '00'.repeat(32),
+        deadline: 0n,
+        settledAt: 0n,
+        closeRequestedAt: 0n,
+        status: 1,
+      };
+    }
+
+    it('recovers the replacement instead of applying the replaced channel on-chain state', async () => {
+      let active = CHANNEL_A;
+      let releaseFirstRead: (() => void) | null = null;
+      const firstRead = new Promise<void>((resolve) => { releaseFirstRead = resolve; });
+      let reads = 0;
+      const getSession = vi.fn(async (channelId: string) => {
+        reads += 1;
+        if (reads === 1) {
+          // The read of channel A stays pending while A is replaced.
+          await firstRead;
+          return chainState(1_000_000n);
+        }
+        return chainState(2_000_000n);
+      });
+      const bpm = {
+        getActiveSession: vi.fn(() => ({ sessionId: active })),
+        reconcileReserveAmount: vi.fn(async () => {}),
+        resendCurrentSpendingAuth: vi.fn(async () => {}),
+        resendPendingReserveAuth: vi.fn(async () => {}),
+        hasPendingReserveAuth: vi.fn(() => false),
+        canReplayReserveAuth: vi.fn(() => false),
+        clearLockConfirmation: vi.fn(),
+        getCumulativeAmount: vi.fn(() => 0n),
+        retireSession: vi.fn(),
+      };
+      const negotiator = Object.create(BuyerPaymentNegotiator.prototype) as BuyerPaymentNegotiator;
+      Object.assign(negotiator as object, {
+        _bpm: bpm,
+        _channelsClient: { getSession },
+        _lockedPeers: new Set<string>(),
+        _firstRequestSent: new Set<string>(),
+        _resentForTarget: new Map(),
+        getOrCreatePaymentMux: () => ({}),
+        _waitForLockConfirmation: async () => {},
+      });
+
+      const recovery = (negotiator as unknown as {
+        _recoverExistingSession(peer: BuyerPeerView, conn: BuyerConnection): Promise<boolean>;
+      })._recoverExistingSession(peer, connection);
+      await vi.waitFor(() => expect(getSession).toHaveBeenCalled());
+
+      // A replacement channel becomes active while channel A's state is read.
+      active = CHANNEL_B;
+      releaseFirstRead!();
+
+      expect(await recovery).toBe(true);
+      // The stale result is not applied to the replacement: the replacement's
+      // own deposit is reconciled, never channel A's.
+      expect(getSession).toHaveBeenCalledTimes(2);
+      expect(getSession.mock.calls[1]![0]).toBe(CHANNEL_B);
+      expect(bpm.reconcileReserveAmount).toHaveBeenCalledTimes(1);
+      expect(bpm.reconcileReserveAmount).toHaveBeenCalledWith(peer.peerId, 2_000_000n);
+      expect(bpm.reconcileReserveAmount).not.toHaveBeenCalledWith(peer.peerId, 1_000_000n);
+      expect(bpm.retireSession).not.toHaveBeenCalled();
+    });
+
+    it('keeps the replacement channel lock and response cost when a close reply is late', async () => {
+      let active = CHANNEL_A;
+      const sent: unknown[] = [];
+      const conn = {
+        state: ConnectionState.Connected,
+        send: vi.fn((data: unknown) => { sent.push(data); }),
+        on: vi.fn(),
+        off: vi.fn(),
+      } as unknown as BuyerConnection;
+      const bpm = {
+        getActiveSession: vi.fn(() => ({ sessionId: active })),
+        buildCloseChannelRequest: vi.fn(async () => ({ version: 1, channelId: CHANNEL_A })),
+        // The manager's guard: channel A is no longer the active one.
+        retireSession: vi.fn(() => false),
+        handleAuthAck: vi.fn(),
+      };
+      const negotiator = Object.create(BuyerPaymentNegotiator.prototype) as BuyerPaymentNegotiator;
+      const lockedPeers = new Set<string>([peer.peerId]);
+      const lastResponseCost = new Map([[peer.peerId, { costUsdc: 1_000n }]]);
+      Object.assign(negotiator as object, {
+        _bpm: bpm,
+        _identity: { wallet: { address: `0x${'6'.repeat(40)}` } },
+        _lockedPeers: lockedPeers,
+        _firstRequestSent: new Set<string>([peer.peerId]),
+        _lastResponseCost: lastResponseCost,
+        _pendingCloseRequests: new Map(),
+        _muxes: new Map(),
+        _freeUsageManager: null,
+        _emit: { emit: vi.fn() },
+        drainPendingNeedAuth: async () => {},
+        sendPostResponseAuthTo: async () => {},
+      });
+
+      const close = negotiator.requestChannelClose(peer.peerId, conn);
+      await vi.waitFor(() => expect(sent.length).toBeGreaterThan(0));
+
+      // A replacement channel becomes active while the seller answers.
+      active = CHANNEL_B;
+      await negotiator.getOrCreatePaymentMux(peer.peerId, conn).handleFrame({
+        type: 0x5A,
+        messageId: 1,
+        payload: new TextEncoder().encode(JSON.stringify({
+          version: 1, channelId: CHANNEL_A, status: 'closed', finalAmount: '0',
+        })),
+      });
+
+      await close;
+      expect(bpm.retireSession).toHaveBeenCalledWith(peer.peerId, 'settled', 0n, CHANNEL_A);
+      // The replacement keeps its lock and its outstanding response cost.
+      expect(lockedPeers.has(peer.peerId)).toBe(true);
+      expect(lastResponseCost.has(peer.peerId)).toBe(true);
+    });
+  });
+
   describe('video spend cap from the caller', () => {
     const peer: BuyerPeerView = { peerId: toPeerId('7'.repeat(40)) };
     // 8 s at $0.10/s: $0.80.

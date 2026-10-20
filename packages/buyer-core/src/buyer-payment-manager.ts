@@ -492,17 +492,20 @@ export class BuyerPaymentManager {
    *
    * When the active channel is not the expected one the call is a no-op: the
    * newer channel keeps its status and its in-memory state.
+   *
+   * Returns whether the session was retired, so a caller can tell a real
+   * retirement from a result that belonged to a channel that has been replaced.
    */
   retireSession(
     sellerPeerId: string,
     status: typeof CHANNEL_STATUS.SETTLED | typeof CHANNEL_STATUS.TIMEOUT | typeof CHANNEL_STATUS.GHOST,
     settledAmount?: bigint,
     expectedSessionId?: string,
-  ): void {
+  ): boolean {
     const session = this.getActiveSession(sellerPeerId);
     if (!session) {
       this.cleanupSession(sellerPeerId);
-      return;
+      return false;
     }
     if (
       expectedSessionId !== undefined
@@ -511,7 +514,7 @@ export class BuyerPaymentManager {
     ) {
       // The channel that is active now is a different (newer) one than the
       // channel this call was about. Retiring it would strand its reserve.
-      return;
+      return false;
     }
     this._channelStore.updateChannelStatus(
       session.sessionId,
@@ -519,6 +522,7 @@ export class BuyerPaymentManager {
       settledAmount !== undefined ? settledAmount.toString() : undefined,
     );
     this.cleanupSession(sellerPeerId);
+    return true;
   }
 
   canReplayReserveAuth(sellerPeerId: string): boolean {
