@@ -24,12 +24,15 @@ const HIDDEN_REFEREE: RefereeView = {
 };
 
 /**
- * The dashboard wallet's referral card. Counts, invites and payable amounts
- * come from Antscan (`explorerApiUrl`), never from per-epoch RPC scans;
- * without an explorer, or one that does not index referrals, the card is hidden.
+ * The buyer account's referral card: it is the referrer, since its wallet
+ * signed the invites (Desktop's identity, or the CLI's), even while its
+ * authorized operator is the connected wallet. Counts, invites and payable
+ * amounts come from Antscan (`explorerApiUrl`), never from per-epoch RPC
+ * scans; without an explorer, or one that does not index referrals, the card
+ * is hidden.
  */
 export async function referral(ctx: AntsContext, dataDir: string | null = null): Promise<ReferralView> {
-  const indexed = ctx.chain.referralsAddress ? await indexedReferrer(ctx.indexer(), ctx.address) : null;
+  const indexed = ctx.chain.referralsAddress ? await indexedReferrer(ctx.indexer(), ctx.buyerAddress) : null;
   if (!indexed) return HIDDEN_REFERRAL;
   return {
     available: true,
@@ -37,14 +40,14 @@ export async function referral(ctx: AntsContext, dataDir: string | null = null):
     claimableEpochs: indexed.claimableEpochs,
     referredCount: indexed.referredCount,
     invites: indexed.invites
-      ? allowanceView(indexed.invites, await issuedIndices(dataDir, { wallet: ctx.address, chainId: ctx.chain.evmChainId, referralsAddress: ctx.chain.referralsAddress! }, indexed.invites.epoch))
+      ? allowanceView(indexed.invites, await issuedIndices(dataDir, { wallet: ctx.buyerAddress, chainId: ctx.chain.evmChainId, referralsAddress: ctx.chain.referralsAddress! }, indexed.invites.epoch))
       : null,
   };
 }
 
-/** Buyers the dashboard wallet referred, with the points and ANTS each brought in (from Antscan). */
+/** Buyers the buyer account referred, with the points and ANTS each brought in (from Antscan). */
 export async function referredBuyers(ctx: AntsContext): Promise<ReferredBuyersView> {
-  const indexed = ctx.chain.referralsAddress ? await indexedReferrer(ctx.indexer(), ctx.address) : null;
+  const indexed = ctx.chain.referralsAddress ? await indexedReferrer(ctx.indexer(), ctx.buyerAddress) : null;
   if (!indexed) return { available: false, buyers: [] };
   return { available: true, buyers: indexed.buyers };
 }
@@ -161,13 +164,20 @@ function inviteLockPath(dataDir: string): string {
   return join(dataDir, 'referral-invite.lock');
 }
 
-/** `issueInvite` for the dashboard wallet. */
+/**
+ * `issueInvite` for the buyer account. Only its own wallet can sign its
+ * invites: an operator signing them would hand out the operator's invites.
+ */
 export async function createInvite(ctx: AntsContext, dataDir: string | null = null, report: StepReporter = silentReporter): Promise<CreatedInviteView> {
   const client = ctx.referrals();
   if (!client || !ctx.chain.referralsAddress) throw new Error('Referrals are not configured for this chain.');
+  const signer = ctx.requireSigner();
+  if ((await signer.getAddress()).toLowerCase() !== ctx.buyerAddress.toLowerCase()) {
+    throw new Error(`Invites are signed by ${ctx.buyerAddress}. Create them in Antseed, or connect that wallet.`);
+  }
   await report('Signing an invite');
   const created = await issueInvite({
-    client, indexer: ctx.indexer(), signer: ctx.requireSigner(), chainId: ctx.chain.evmChainId, referralsAddress: ctx.chain.referralsAddress, dataDir,
+    client, indexer: ctx.indexer(), signer, chainId: ctx.chain.evmChainId, referralsAddress: ctx.chain.referralsAddress, dataDir,
   });
   await report('Invite created');
   return created;
@@ -231,11 +241,12 @@ export async function claimReferralRewards(
 ): Promise<{ hash: string; epochs: number[] }> {
   const client = ctx.referrals();
   if (!client) throw new Error('Referrals are not configured for this chain.');
-  const indexed = await indexedReferrer(ctx.indexer(), ctx.address).catch(() => null);
-  const epochs = indexed ? indexed.claimableEpochs : (await client.pendingRewards(ctx.address)).map((entry) => entry.epoch);
+  // The buyer account is the referrer (see `referral`); any wallet may send it.
+  const indexed = await indexedReferrer(ctx.indexer(), ctx.buyerAddress).catch(() => null);
+  const epochs = indexed ? indexed.claimableEpochs : (await client.pendingRewards(ctx.buyerAddress)).map((entry) => entry.epoch);
   if (epochs.length === 0) throw new Error('No referral rewards are payable yet.');
   await report(`Claiming referral rewards for ${epochs.length} ${epochs.length === 1 ? 'epoch' : 'epochs'}`);
-  const hash = await client.claimEpochs(ctx.requireSigner(), ctx.address, epochs);
+  const hash = await client.claimEpochs(ctx.requireSigner(), ctx.buyerAddress, epochs);
   await report('Referral rewards claimed', hash);
   return { hash, epochs };
 }

@@ -10,6 +10,7 @@ import {
   InviteQuotaError,
   claimRefereeRewards,
   claimReferralRewards,
+  createInvite,
   issueInvite,
   refereeBonus,
   refereeBonusFromExplorer,
@@ -22,8 +23,8 @@ const wallet = '0x0000000000000000000000000000000000000001';
 const buyer = '0x0000000000000000000000000000000000000002';
 const referrer = getAddress('0xabcdef0000000000000000000000000000000003');
 const referralsAddress = '0x1111111111111111111111111111111111111111';
-/** The dashboard wallet as a signer on the fixture deployment (issued-invite indices are scoped to it). */
-const signerScope = { wallet, chainId: 8453, referralsAddress };
+/** The buyer account, the referrer, on the fixture deployment (issued-invite indices are scoped to it). */
+const signerScope = { wallet: buyer, chainId: 8453, referralsAddress };
 
 const indexedReferrer: IndexedReferrer = {
   available: true,
@@ -87,8 +88,8 @@ describe('referral card', () => {
     await recordIssuedInvite(dir, signerScope, 30, 0);
     await recordIssuedInvite(dir, signerScope, 30, 1);
     expect((await referral(fixture().ctx, dir)).invites).toEqual({ epoch: 30, quota: 5, used: 2, left: 3 });
-    // Invites another wallet or deployment handed out do not count.
-    await recordIssuedInvite(dir, { ...signerScope, wallet: buyer }, 30, 2);
+    // Invites another wallet (the connected operator) or deployment handed out do not count.
+    await recordIssuedInvite(dir, { ...signerScope, wallet }, 30, 2);
     await recordIssuedInvite(dir, { ...signerScope, chainId: 84532 }, 30, 3);
     expect((await referral(fixture().ctx, dir)).invites).toEqual({ epoch: 30, quota: 5, used: 2, left: 3 });
   });
@@ -112,10 +113,10 @@ describe('referral card', () => {
 });
 
 describe('referred buyers', () => {
-  it('lists the buyers Antscan attributes to the wallet', async () => {
+  it('lists the buyers Antscan attributes to the buyer account, not the connected wallet', async () => {
     const { ctx, indexer } = fixture();
     expect(await referredBuyers(ctx)).toEqual({ available: true, buyers: indexedReferrer.buyers });
-    expect(indexer.referrer).toHaveBeenCalledWith(wallet);
+    expect(indexer.referrer).toHaveBeenCalledWith(buyer);
   });
 
   it('hides the list rather than scanning RPC when no explorer is configured', async () => {
@@ -305,25 +306,36 @@ describe('referee bonus', () => {
   });
 });
 
-describe('referral claim', () => {
-  it('claims the epochs Antscan reports payable', async () => {
+describe('dashboard invites', () => {
+  it('signs invites only with the buyer account\'s own wallet, never its operator\'s', async () => {
     const { ctx, client } = fixture();
+    const operator = Wallet.createRandom();
+    const operatorCtx = { ...ctx, buyerAddress: buyer, requireSigner: () => operator } as unknown as AntsContext;
+    await expect(createInvite(operatorCtx)).rejects.toThrow(`Invites are signed by ${buyer}`);
+    expect(client.currentEpoch).not.toHaveBeenCalled();
+  });
+});
+
+describe('referral claim', () => {
+  it('claims the epochs Antscan reports payable for the buyer account, whichever wallet sends it', async () => {
+    const { ctx, client, indexer } = fixture();
     expect(await claimReferralRewards(ctx)).toEqual({ hash: '0xhash', epochs: [3, 5] });
-    expect(client.claimEpochs).toHaveBeenCalledWith({}, wallet, [3, 5]);
+    expect(indexer.referrer).toHaveBeenCalledWith(buyer);
+    expect(client.claimEpochs).toHaveBeenCalledWith({}, buyer, [3, 5]);
     expect(client.pendingRewards).not.toHaveBeenCalled();
   });
 
   it('falls back to the on-chain epoch scan only without an explorer', async () => {
     const { ctx, client } = fixture({ explorer: false });
     expect(await claimReferralRewards(ctx)).toEqual({ hash: '0xhash', epochs: [7] });
-    expect(client.pendingRewards).toHaveBeenCalledWith(wallet);
+    expect(client.pendingRewards).toHaveBeenCalledWith(buyer);
   });
 
   it('falls back to the on-chain epoch scan when the explorer request fails', async () => {
     const { ctx, client, indexer } = fixture();
     indexer.referrer.mockRejectedValueOnce(new Error('Antscan unavailable'));
     expect(await claimReferralRewards(ctx)).toEqual({ hash: '0xhash', epochs: [7] });
-    expect(client.pendingRewards).toHaveBeenCalledWith(wallet);
+    expect(client.pendingRewards).toHaveBeenCalledWith(buyer);
   });
 
   it('refuses when nothing is payable', async () => {

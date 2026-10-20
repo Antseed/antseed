@@ -140,11 +140,18 @@ describe('referral state', () => {
     const dir = await dataDir();
     await saveReferralInvite(dir, SCOPE, ENCODED, REFERRER);
     const explorer = async () => REFERRER;
+    let clock = 0;
+    const now = () => clock;
     // Antscan indexes another deployment, or is wrong.
-    expect(await syncReferralState(dir, SCOPE, { explorer, chain: async () => null })).toMatchObject({ state: 'invited', invite: ENCODED });
-    // referrerOf unavailable.
-    expect(await syncReferralState(dir, SCOPE, { explorer, chain: async () => { throw new Error('rpc down'); } })).toMatchObject({ state: 'invited' });
-    expect(await syncReferralState(dir, SCOPE, { explorer })).toMatchObject({ state: 'invited' });
+    const denies = counted(async () => null);
+    expect(await syncReferralState(dir, SCOPE, { explorer, chain: denies }, { now })).toMatchObject({ state: 'invited', invite: ENCODED });
+    expect(denies.calls).toBe(1);
+    // referrerOf unavailable, once the backoff lets it be read again.
+    clock = REFERRAL_CHAIN_RECHECK_MIN_MS;
+    const down = counted(async () => { throw new Error('rpc down'); });
+    expect(await syncReferralState(dir, SCOPE, { explorer, chain: down }, { now })).toMatchObject({ state: 'invited' });
+    expect(down.calls).toBe(1);
+    expect(await syncReferralState(dir, SCOPE, { explorer }, { now })).toMatchObject({ state: 'invited' });
     expect(pendingInvite(await readReferralState(dir, SCOPE))).toEqual(INVITE);
   });
 
