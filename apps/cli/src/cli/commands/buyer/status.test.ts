@@ -121,6 +121,24 @@ test('buyer status leaves the current channel to a running buyer and still retir
   assert.equal(harness.channel(OLDER_CHANNEL)?.status, 'settled');
 });
 
+test('buyer status leaves the current channel to a running buyer that belongs to another user', async (context) => {
+  const harness = await buyerCommandHarness(context);
+  seedCurrentAndOlder(harness);
+  const otherUsersBuyer = 424_242;
+  writeBuyerState(harness.dataDir, otherUsersBuyer);
+  const kill = process.kill.bind(process);
+  context.mock.method(process, 'kill', (pid: number, signal?: string | number) => {
+    if (pid !== otherUsersBuyer) return kill(pid, signal);
+    throw Object.assign(new Error(`kill EPERM`), { code: 'EPERM' });
+  });
+
+  const { stdout } = await harness.run(registerBuyerStatusCommand, ['status', '--json'], bothSettledOnChain(harness.buyer));
+
+  assert.equal(activeChannels(stdout), 1);
+  assert.equal(harness.channel(CHANNEL)?.status, 'active');
+  assert.equal(harness.channel(OLDER_CHANNEL)?.status, 'settled');
+});
+
 test('buyer status retires the current channel when the buyer that wrote the state file has exited', async (context) => {
   const harness = await buyerCommandHarness(context);
   seedCurrentAndOlder(harness);

@@ -1,3 +1,4 @@
+import { isHexString } from 'ethers';
 import type { BuyerIdentity } from './interfaces.js';
 import type { BuyerConnection } from './interfaces.js';
 import { PaymentMux } from './payment-mux.js';
@@ -674,7 +675,10 @@ export class BuyerPaymentNegotiator {
     // transmitting another authorization from non-durable in-memory state.
     await this.sendPostResponseAuthTo(peerId, conn);
     if (!this._isLiveChannel(peerId, session.sessionId)) {
-      throw new Error(`Payment channel ${session.sessionId.slice(0, 18)}... with seller ${peerId.slice(0, 12)}... was retired before it could be closed`);
+      throw buyerFault(
+        `Payment channel ${session.sessionId.slice(0, 18)}... with seller ${peerId.slice(0, 12)}... was retired before it could be closed`,
+        'buyer-session-state',
+      );
     }
 
     const pmux = this.getOrCreatePaymentMux(peerId, conn);
@@ -708,6 +712,15 @@ export class BuyerPaymentNegotiator {
       if (stillLive) {
         this._bpm.retireSession(peerId, CHANNEL_STATUS.SETTLED, finalAmount ?? undefined);
         this._forgetSellerSession(peerId);
+      } else {
+        // A row that already ended with an amount (the chain's, for example) keeps it.
+        const store = this._channelStore;
+        const asked = store?.getChannel(session.sessionId);
+        const endedWithAmount = asked?.settledAmount != null
+          && (asked.status === CHANNEL_STATUS.SETTLED || asked.status === CHANNEL_STATUS.TIMEOUT);
+        if (store && asked && !endedWithAmount) {
+          store.updateChannelStatus(session.sessionId, CHANNEL_STATUS.SETTLED, finalAmount?.toString());
+        }
       }
       debugLog(
         `[BuyerNegotiator] Seller ${peerId.slice(0, 12)}... closed channel ` +
@@ -1169,6 +1182,13 @@ export class BuyerPaymentNegotiator {
     } catch {
       throw buyerFault(
         'Invalid x-antseed-spending-auth header: failed to decode',
+        'invalid-spending-auth-header',
+      );
+    }
+    // The channelId becomes a stored channel row's key, read back by every reconcile pass.
+    if (!isHexString(payload.channelId, 32)) {
+      throw buyerFault(
+        'Invalid x-antseed-spending-auth header: channelId is not a 32-byte hex string',
         'invalid-spending-auth-header',
       );
     }

@@ -5,7 +5,7 @@ import { ConnectionState, toPeerId } from '@antseed/protocol';
 import type { OneOffChannelPlan } from '@antseed/protocol/messages';
 
 describe('BuyerPaymentNegotiator', () => {
-  it('decodes a browser-compatible external spending auth header', async () => {
+  describe('external spending auth header', () => {
     const payload = {
       channelId: `0x${'1'.repeat(64)}`,
       cumulativeAmount: '1000',
@@ -13,25 +13,50 @@ describe('BuyerPaymentNegotiator', () => {
       metadata: '0x00',
       spendingAuthSig: '0x1234',
     };
-    const bytes = new TextEncoder().encode(JSON.stringify(payload));
-    const header = btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join(''));
-    const sendSpendingAuth = vi.fn();
-    const negotiator = Object.create(BuyerPaymentNegotiator.prototype) as BuyerPaymentNegotiator;
-    Object.assign(negotiator as object, {
-      getOrCreatePaymentMux: () => ({ sendSpendingAuth }),
-      _resolveSellerAddr: async () => `0x${'3'.repeat(40)}`,
-      _channelStore: null,
-      _waitForLockConfirmation: async () => {},
-      _lockedPeers: new Set(),
-      _paymentWork: new Map(),
-      _emit: { emit: vi.fn() },
-    });
-
     const peer: BuyerPeerView = { peerId: toPeerId('4'.repeat(40)) };
     const connection = { state: ConnectionState.Connected, send: vi.fn(), on: vi.fn(), off: vi.fn() } as unknown as BuyerConnection;
-    await negotiator.applyExternalSpendingAuth(peer, connection, header);
 
-    expect(sendSpendingAuth).toHaveBeenCalledWith(payload);
+    function header(value: Record<string, unknown>): string {
+      const bytes = new TextEncoder().encode(JSON.stringify(value));
+      return btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join(''));
+    }
+
+    function negotiatorWith(channelStore: object | null) {
+      const sendSpendingAuth = vi.fn();
+      const negotiator = Object.create(BuyerPaymentNegotiator.prototype) as BuyerPaymentNegotiator;
+      Object.assign(negotiator as object, {
+        getOrCreatePaymentMux: () => ({ sendSpendingAuth }),
+        _resolveSellerAddr: async () => `0x${'3'.repeat(40)}`,
+        _channelStore: channelStore,
+        _waitForLockConfirmation: async () => {},
+        _lockedPeers: new Set(),
+        _paymentWork: new Map(),
+        _emit: { emit: vi.fn() },
+      });
+      return { negotiator, sendSpendingAuth };
+    }
+
+    it('decodes a browser-compatible header', async () => {
+      const { negotiator, sendSpendingAuth } = negotiatorWith(null);
+
+      await negotiator.applyExternalSpendingAuth(peer, connection, header(payload));
+
+      expect(sendSpendingAuth).toHaveBeenCalledWith(payload);
+    });
+
+    it.each([
+      ['not hex', 'channel-1'],
+      ['shorter than 32 bytes', `0x${'1'.repeat(62)}`],
+      ['not a string', 7],
+    ])('rejects a channelId that is %s, storing and sending nothing', async (_shape, channelId) => {
+      const store = { commitAuthorization: vi.fn(), upsertChannel: vi.fn() };
+      const { negotiator, sendSpendingAuth } = negotiatorWith(store);
+
+      await expect(negotiator.applyExternalSpendingAuth(peer, connection, header({ ...payload, channelId })))
+        .rejects.toMatchObject({ code: 'invalid-spending-auth-header' });
+      expect({ stored: store.commitAuthorization.mock.calls.length + store.upsertChannel.mock.calls.length, sent: sendSpendingAuth.mock.calls.length })
+        .toEqual({ stored: 0, sent: 0 });
+    });
   });
 
   describe('one-off video channels', () => {

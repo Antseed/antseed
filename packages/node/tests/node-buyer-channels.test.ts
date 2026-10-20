@@ -4,7 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Wallet } from 'ethers';
-import { AntseedNode } from '../src/node.js';
+import { AntseedNode, type NodeConfig } from '../src/node.js';
 import { ChannelStore, CHANNEL_KIND, CHANNEL_ROLE, CHANNEL_STATUS, type StoredChannel } from '../src/payments/channel-store.js';
 import { BuyerPaymentManager } from '../src/payments/buyer-payment-manager.js';
 import { BuyerPaymentNegotiator } from '../src/payments/buyer-payment-negotiator.js';
@@ -238,5 +238,53 @@ describe('buyer channel counts after a reconcile with the chain', () => {
     await pass;
 
     expect(order).toEqual(['retired', 'cleanup', 'store closed']);
+  });
+});
+
+describe('the buyer channel reconcile pass a node runs on its own', () => {
+  let dataDir: string;
+  let node: AntseedNode | null = null;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'antseed-buyer-auto-reconcile-'));
+  });
+
+  afterEach(async () => {
+    await node?.stop();
+    node = null;
+    vi.restoreAllMocks();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  async function startPayingBuyer(config: Partial<NodeConfig>): Promise<{ passes: () => number }> {
+    const pass = vi.spyOn(BuyerPaymentNegotiator.prototype, 'reconcileChannelsWithChain');
+    node = new AntseedNode({
+      role: 'buyer',
+      dataDir,
+      bootstrapNodes: [],
+      noOfficialBootstrap: true,
+      payments: {
+        enabled: true,
+        rpcUrl: 'http://127.0.0.1:1',
+        depositsAddress: '0x' + 'dd'.repeat(20),
+        channelsAddress: '0x' + 'cc'.repeat(20),
+        usdcAddress: '0x' + 'ee'.repeat(20),
+      },
+      ...config,
+    });
+    await node.start();
+    return { passes: () => pass.mock.calls.length };
+  }
+
+  it('runs one at buyer start by default', async () => {
+    const { passes } = await startPayingBuyer({});
+
+    expect(passes()).toBeGreaterThan(0);
+  });
+
+  it('starts none with autoReconcileBuyerChannels off', async () => {
+    const { passes } = await startPayingBuyer({ autoReconcileBuyerChannels: false });
+
+    expect(passes()).toBe(0);
   });
 });

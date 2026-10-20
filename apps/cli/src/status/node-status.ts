@@ -33,13 +33,14 @@ const STATE_FILES: Array<{ name: string; role: 'seller' | 'buyer' }> = [
 /**
  * Check if a process with the given PID is alive.
  * Uses `process.kill(pid, 0)` which checks existence without sending a signal.
+ * EPERM means the process exists but belongs to another user.
  */
 function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
   }
 }
 

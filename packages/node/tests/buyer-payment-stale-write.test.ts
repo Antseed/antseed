@@ -407,7 +407,7 @@ describe('a payment write that awaited while the seller channel moved on', () =>
       const race = await replaceWhileHeld(held, write, oldChannelId);
 
       expect(await newChannelAfter(race)).toEqual(untouched());
-      expect(race.outcome).toBe('failed');
+      expect(race.outcome).toBe('buyer-session-state');
     });
 
     it('close authorization (buildCloseChannelRequest) held at the signer', async () => {
@@ -769,7 +769,7 @@ describe('a payment write that awaited while the seller channel moved on', () =>
         ...await newChannelAfter(result),
         closeRequestedFor: closeRequests.mock.calls.map(([payload]) => payload.channelId === oldChannelId ? 'old' : 'new'),
       }).toEqual({ ...untouched(), closeRequestedFor: [] });
-      expect(result.outcome).toBe('failed');
+      expect(result.outcome).toBe('buyer-session-state');
     });
 
     it('channel close answered closed after the channel was replaced', async () => {
@@ -791,6 +791,32 @@ describe('a payment write that awaited while the seller channel moved on', () =>
 
       expect(await newChannelAfter(result)).toEqual(untouched());
       expect(result.outcome).toBe('completed');
+    });
+
+    it.each([
+      { endedAs: 'ghost', ending: [CHANNEL_STATUS.GHOST, undefined], recorded: '40000' },
+      { endedAs: 'settled with an amount', ending: [CHANNEL_STATUS.SETTLED, OLD_SPENT], recorded: OLD_SPENT.toString() },
+    ] as const)('channel close answered closed after the channel ended as $endedAs and was replaced', async ({ ending, recorded }) => {
+      setupNegotiator();
+      const oldChannelId = await oldChannel(pmux);
+      const closeRequests = vi.spyOn(pmux, 'sendCloseChannelRequest');
+      const write = negotiator.requestChannelClose(SELLER, conn, { timeoutMs: 5_000 });
+      await vi.waitFor(() => expect(closeRequests).toHaveBeenCalled());
+      manager.retireSession(SELLER, ...ending);
+      const newChannelId = await openChannel(pmux);
+
+      void pmux.handleFrame({
+        type: MessageType.CloseChannelResult,
+        messageId: 2,
+        payload: enc.encode(JSON.stringify({ channelId: oldChannelId, status: 'closed', finalAmount: '40000', txHash: '0x' + '12'.repeat(32) })),
+      });
+      const outcome = await settle(write);
+
+      const asked = store.getChannel(oldChannelId);
+      expect({ status: asked?.status, settledAmount: asked?.settledAmount })
+        .toEqual({ status: CHANNEL_STATUS.SETTLED, settledAmount: recorded });
+      expect(await newChannelAfter({ oldChannelId, newChannelId, outcome, sentAfterRetire: [] })).toEqual(untouched());
+      expect(outcome).toBe('completed');
     });
 
     it('channel close answered no_channel after the channel was replaced', async () => {

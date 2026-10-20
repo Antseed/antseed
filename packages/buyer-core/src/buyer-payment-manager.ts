@@ -787,9 +787,7 @@ export class BuyerPaymentManager {
       pending = { ...pending, signature, deadline };
     }
 
-    if (!await this._commitAndSendReserveAuth(session, sellerPeerId, pending, paymentMux)) {
-      throw new Error(`[BuyerPayment] Pending reserve for seller ${sellerPeerId.slice(0, 12)}... was replaced`);
-    }
+    if (!await this._commitAndSendReserveAuth(session, sellerPeerId, pending, paymentMux)) throw writeDropped(sellerPeerId);
     return session.sessionId;
   }
 

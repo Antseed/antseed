@@ -352,6 +352,7 @@ export function registerNetworkPeerCommand(networkCmd: Command): void {
           dhtOperationTimeoutMs: 30_000,
           metadataFetchTimeoutMs: effectiveBuyerConfig.metadataFetchTimeoutMs,
           ...(paymentsConfig ? { payments: paymentsConfig } : {}),
+          autoReconcileBuyerChannels: false,
         });
         try {
           await node.start();

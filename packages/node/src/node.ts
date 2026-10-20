@@ -321,6 +321,13 @@ export interface NodeConfig {
   dhtOperationTimeoutMs?: number;
   /** Optional seller-side payment runtime wiring. */
   payments?: NodePaymentsConfig;
+  /**
+   * Buyer only: run the channel reconcile pass on its own (at start, when the
+   * chain RPC recovers, when a buyer identity is added, and every 5 minutes).
+   * Default true. Turn it off for a short-lived node that only looks peers up:
+   * it shares the data dir, and so the channel store, of the buyer that owns it.
+   */
+  autoReconcileBuyerChannels?: boolean;
   /** Optional per-address request limit for zero-priced seller services. */
   freeTier?: SellerFreeTierConfig;
   /** Seller free-usage on-chain record batching. */
@@ -1561,7 +1568,8 @@ export class AntseedNode extends EventEmitter {
    * Bring every buyer identity's stored channels in line with the chain:
    * retire each row the chain shows settled, withdrawn, or never opened. Runs
    * on its own at buyer start, whenever the chain RPC becomes reachable, when
-   * an identity is added, and every 5 minutes. stop() waits for runs in flight.
+   * an identity is added, and every 5 minutes, unless
+   * `autoReconcileBuyerChannels` is false. stop() waits for runs in flight.
    */
   reconcileBuyerChannels(): Promise<void> {
     const run = this._reconcileBuyerChannels();
@@ -1695,7 +1703,7 @@ export class AntseedNode extends EventEmitter {
       emit: (event, payload) => { this.emit(event, payload); },
     });
     this._buyerIdentities.set(name, context);
-    void this.reconcileBuyerChannels();
+    if (this._config.autoReconcileBuyerChannels !== false) void this.reconcileBuyerChannels();
     debugLog(`[Node] Buyer identity "${name}" loaded (wallet=${identity.wallet.address.slice(0, 10)}...)`);
     return { name, address: identity.wallet.address };
   }
@@ -2161,7 +2169,7 @@ export class AntseedNode extends EventEmitter {
       },
     );
 
-    if (this._buyerNegotiator) {
+    if (this._buyerNegotiator && this._config.autoReconcileBuyerChannels !== false) {
       const reconcile = (): void => { void this.reconcileBuyerChannels(); };
       this._rpcHealth?.onReady(reconcile);
       reconcile();
