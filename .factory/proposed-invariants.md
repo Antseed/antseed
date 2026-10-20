@@ -23,6 +23,6 @@ Break one of these and the change is wrong, however green the build is. Changes 
 | 9 | SQLite schema changes are new numbered migrations; an existing migration file is never edited. | `packages/node/src/storage/migrations/` | nothing automated (CLAUDE.md rule) |
 | 10 | Subscription-based provider plugins are for testing only; no code or doc presents them as a resale path. | `plugins/provider-claude-*` | nothing automated (CLAUDE.md rule) |
 | 11 | Agents and tests never touch `~/.antseed`, the OS keychain or port 8377, and sandbox runs use `--chain local` unless a human said yes to `--live`, `--real-funds` or mainnet. | `e2e/sandbox/` (sandbox stack) | sandbox CLI refusals; the factory's session settings |
-| 12 | A bug-fix PR is two commits: the failing test alone (red on `main`), then the fix (green). | every fix PR | the verify-antseed skill's `prove.sh`; nothing in CI |
+| 12 | A bug-fix PR with a cheap unit-test repro is two commits: the failing test alone (red on `main`), then the fix (green). Otherwise the red is a sandbox scenario. | every fix PR | the verify-antseed skill's `prove.sh`; nothing in CI |
 
 Stale fact found while grounding this: CLAUDE.md's "Smart Contracts" tree lists `packages/contracts/AntseedChannels.sol` and siblings at the package root; on `main` they live in `packages/contracts/payments/`, `staking/`, `emissions/` and so on.

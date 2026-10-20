@@ -1,5 +1,5 @@
 {
   "name": "antseed-factory",
   "version": "0.1.0",
-  "description": "The AntSeed factory's reviewer agents: one per model, for pstack's interrogate."
+  "description": "The AntSeed factory's agents: astra and sol, plus read-only reviewers for pstack roles."
 }
