@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, realpathSync } from 'node:fs';
-import { open, readdir, readFile, rm, stat } from 'node:fs/promises';
+import { link, open, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { uptime } from 'node:os';
 import { basename, dirname, join, resolve as resolvePath } from 'node:path';
 
@@ -31,6 +31,12 @@ export interface FileLockOptions {
    * @internal
    */
   beforeReclaim?: (claim: string) => Promise<void>;
+  /**
+   * Test hook: runs once a lock or claim file is fully written but not yet
+   * published at `path`.
+   * @internal
+   */
+  beforePublish?: (path: string) => Promise<void>;
 }
 
 /** Thrown when another process kept the lock for longer than `timeoutMs`. */
@@ -92,14 +98,8 @@ async function acquire(lockPath: string, staleMs: number, options: FileLockOptio
   const token = JSON.stringify({ pid: process.pid, at: Date.now(), nonce: Math.random().toString(36).slice(2) });
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    try {
-      const handle = await open(lockPath, 'wx', 0o600);
-      try { await handle.writeFile(token); } finally { await handle.close(); }
-      return token;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-    }
-    if (await breakIfStale(lockPath, staleMs, options.beforeReclaim)) continue;
+    if (await createExclusive(lockPath, token, options.beforePublish)) return token;
+    if (await breakIfStale(lockPath, staleMs, options)) continue;
     if (Date.now() >= deadline) throw new FileLockTimeoutError(lockPath);
     await new Promise((resolve) => setTimeout(resolve, retryMs));
   }
@@ -120,8 +120,9 @@ async function inspect(path: string): Promise<LockSnapshot | null> {
  * Abandoned: left by a dead process, by this process (queued callers never
  * overlap), or by a process whose pid now belongs to another one: the lock
  * predates this boot, or (checked once it is `staleMs` old) the pid's process
- * started after the lock was taken. A lock being written has no content yet;
- * its owner gets the stale window.
+ * started after the lock was taken. A lock always appears with its owner
+ * record; one without (written without hard links by a creator that died
+ * mid-way, or corrupt) is broken after the stale window.
  */
 async function abandoned(lock: LockSnapshot, staleMs: number): Promise<boolean> {
   const owner = ownerOf(lock.content);
@@ -174,12 +175,12 @@ function processStart(pid: number): Promise<number | null> {
  * removed; a late reclaimer that recreates one finds a different lock and
  * leaves it alone.
  */
-async function breakIfStale(lockPath: string, staleMs: number, beforeReclaim?: (claim: string) => Promise<void>): Promise<boolean> {
+async function breakIfStale(lockPath: string, staleMs: number, hooks: FileLockOptions): Promise<boolean> {
   const seen = await inspect(lockPath);
   if (!seen) return true; // released meanwhile: retry at once
   if (!(await abandoned(seen, staleMs))) return false;
   const base = `${lockPath}.reclaim-${digest(seen.content)}`;
-  const claim = await claimAbandoned(base, staleMs, beforeReclaim);
+  const claim = await claimAbandoned(base, staleMs, hooks);
   if (claim === 'busy') return false; // a live process is reclaiming it
   if (claim === 'won') {
     // Only the claimant removes the lock it claimed, and only while it is still
@@ -195,17 +196,11 @@ async function breakIfStale(lockPath: string, staleMs: number, beforeReclaim?: (
  * Exclusively create `path`, or claim it in turn when its creator died.
  * 'gone' means the claim was cleaned up meanwhile: the lock was reclaimed.
  */
-async function claimAbandoned(path: string, staleMs: number, beforeReclaim?: (claim: string) => Promise<void>): Promise<'won' | 'busy' | 'gone'> {
+async function claimAbandoned(path: string, staleMs: number, hooks: FileLockOptions): Promise<'won' | 'busy' | 'gone'> {
   for (let depth = 0; depth < 8; depth += 1) {
-    await beforeReclaim?.(path);
+    await hooks.beforeReclaim?.(path);
     const token = JSON.stringify({ pid: process.pid, at: Date.now(), nonce: Math.random().toString(36).slice(2) });
-    try {
-      const handle = await open(path, 'wx', 0o600);
-      try { await handle.writeFile(token); } finally { await handle.close(); }
-      return 'won';
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-    }
+    if (await createExclusive(path, token, hooks.beforePublish)) return 'won';
     const held = await inspect(path);
     if (!held) return 'gone';
     // A claim is held for a few file operations only, so it is abandoned only
@@ -217,6 +212,38 @@ async function claimAbandoned(path: string, staleMs: number, beforeReclaim?: (cl
     path = `${path}-${digest(held.content)}`;
   }
   return 'busy';
+}
+
+/**
+ * Create `path` holding `content`, or return false when it exists. The file is
+ * written under a private name and hard-linked into place, so `path` never
+ * appears without its owner record: a creator paused mid-way has published
+ * nothing a contender could take for abandoned. Where hard links are not
+ * supported, it is created and then written at once.
+ */
+async function createExclusive(path: string, content: string, beforePublish?: (path: string) => Promise<void>): Promise<boolean> {
+  // A leading dot keeps it out of `removeClaims`' prefix match.
+  const staged = join(dirname(path), `.${basename(path)}.${process.pid}-${Math.random().toString(36).slice(2)}`);
+  await writeFile(staged, content, { mode: 0o600, flag: 'wx' });
+  try {
+    await beforePublish?.(path);
+    await link(staged, path);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'EEXIST') return false;
+    if (code !== 'EPERM' && code !== 'ENOTSUP' && code !== 'ENOSYS' && code !== 'EXDEV') throw error;
+  } finally {
+    await rm(staged, { force: true });
+  }
+  try {
+    const handle = await open(path, 'wx', 0o600);
+    try { await handle.writeFile(content); } finally { await handle.close(); }
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+    throw error;
+  }
 }
 
 /** Remove `base` and every deeper claim on it. */

@@ -12,6 +12,7 @@ import {
   type ReferralState,
   type ReferralsClient,
 } from '@antseed/node'
+import { parseClientAgentId } from '../config/loader.js'
 
 /**
  * CLI side of the referral flow. The state file and its transitions live in
@@ -142,8 +143,12 @@ export async function watchReferralAttribution(options: ClientAgentOptions & {
 }
 
 function resolveClientAgentId(options: ClientAgentOptions, env: NodeJS.ProcessEnv): number | undefined {
-  const fromEnv = Number.parseInt(env['ANTSEED_CLIENT_AGENT_ID'] ?? '', 10)
-  if (Number.isInteger(fromEnv) && fromEnv > 0) return fromEnv
+  const raw = env['ANTSEED_CLIENT_AGENT_ID']
+  if (raw !== undefined && raw.trim() !== '') {
+    const fromEnv = parseClientAgentId(raw)
+    if (fromEnv !== null) return fromEnv
+    console.warn(`Ignoring invalid ANTSEED_CLIENT_AGENT_ID ${JSON.stringify(raw)}: expected a positive integer agent id.`)
+  }
   if (options.clientAgentId && options.clientAgentId > 0) return options.clientAgentId
   const fromChain = options.clientAgentIds?.[env['ANTSEED_CLIENT_KIND'] === 'desktop' ? 'desktop' : 'cli']
   return fromChain && fromChain > 0 ? fromChain : undefined

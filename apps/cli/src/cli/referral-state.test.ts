@@ -25,6 +25,13 @@ test('buyer attribution resolves the client agent id from env, config, then chai
   assert.deepEqual(none, {});
 });
 
+test('buyer attribution ignores a malformed ANTSEED_CLIENT_AGENT_ID and falls back to the configured id', () => {
+  for (const value of ['12.5', '12junk', '1e3', '0x0c', '-4', '0', '9007199254740993']) {
+    const resolved = resolveBuyerAttribution({ referralState: null, clientAgentId: 5, env: { ANTSEED_CLIENT_AGENT_ID: value } });
+    assert.equal(BigInt(resolved.clientId!), 5n, `${value} is not an agent id`);
+  }
+});
+
 test('buyer attribution carries a pending invite until it is bound, keeping the client', () => {
   const invited = resolveBuyerAttribution({ referralState: { state: 'invited', invite: encodeInvite(INVITE), referrer: REFERRER }, clientAgentId: 5, env: {} });
   assert.deepEqual(invited.invite, INVITE);
