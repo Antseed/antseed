@@ -1,241 +1,74 @@
-# CLAUDE.md -- Agent Context for AntSeed Monorepo
+# AntSeed monorepo
 
-## Commit & push policy (IMPORTANT)
+AntSeed is a peer-to-peer AI services network. Providers sell differentiated AI services, and buyers route each request to the best peer and pay per request in USDC on Base.
 
-**Never commit or push unless explicitly asked.** Default workflow:
+## Working rules
 
-1. Make the requested edits.
-2. Run typecheck / build / tests to verify the change is sound.
-3. **Stop.** Leave changes in the working tree (staged or unstaged). Report
-   what you did and wait.
+- **Never commit or push unless asked.** Make the edit, run the checks, then stop and report. Commit or push only when the user says so ("commit", "push", "open a PR", or a commit or PR skill), even if earlier turns committed. The user batches edits into one reviewed commit.
+- **Verify in the sandbox; ask before spending.** After a change to payments, routing, discovery, the buyer proxy, plugins, `packages/node` or the desktop, run `pnpm sandbox` (`e2e/sandbox/README.md`).
+  - verify-antseed maps a changed path to what must run and what evidence to keep. sandbox-test is the how-to.
+  - No ask needed for builds, tests, scenarios, `--chain local` or fork runs, and desktop QA.
+  - Each `--live`, `--real-funds` or mainnet run needs a yes. For a buyer, proxy or routing change, propose `pnpm sandbox run mainnet-smoke --chain mainnet --real-funds` as a separate step.
+  - Tear down only with `pnpm sandbox down`. Never weaken a check or turn a `KNOWN` result into a pass.
+- **Changelog.** A PR with a user-facing change (package, CLI, desktop, protocol, config or docs behavior) updates `CHANGELOG.md`. A PR without one says so in its description.
+- **Facts about AntSeed** in docs or marketing (pricing, payment flow, CLI behavior, what is free) come only from this repo or antseed.com. Never use general knowledge, a web search or a doc's silence. If you can't verify a fact, say so.
+- **Not resale, not crypto-only.** Providers must add value: TEE, skills, agents, fine-tunes or a managed product. `provider-claude-code` and `provider-claude-oauth` are for testing only. Buyers can fund by card checkout in the desktop (region-gated), an exchange withdrawal or another wallet (`apps/website/docs/gateway/funding.md`). Never describe AntSeed as crypto-only, or as needing crypto already.
 
-Only commit/push when the user explicitly says so — e.g. "commit", "push",
-"/commit", "ship it", "open a PR", or invokes the `commit`, `commit-amos`,
-`pr-create`, or `pr-merge` skills.
+## Design principles
 
-Rationale: the user batches related edits into a single reviewed commit with
-their own message. Auto-committing every tweak produces a noisy history of
-one-line commits that has to be squashed later. Do not chain `edit → build
-→ commit → push` as a reflex — even if prior turns in the same session did.
+AntSeed is a credibly neutral marketplace: it carries the standards buyers and sellers already use and makes none of its own.
 
-## Sandbox testing (run isolated checks, ask before spending)
+- **Standards, intact.** Buyers call the standard APIs: Anthropic Messages, OpenAI Chat Completions, Responses and Images, IRP and the vendors' video APIs. A tool built for one works unchanged against the buyer proxy. A request passes natively when the seller speaks its protocol, and is translated only when the seller doesn't. AntSeed's own data goes in `x-antseed-*` headers and the P2P frame. A new upstream is a protocol id for its existing standard, never an AntSeed format.
+- **Neutral.** No seller, router, model or protocol is favored in code. Routing ranks by declared factors, and a router is a service the buyer picks.
+- **Extend at the edges.** An upstream is a plugin, and a reward rule is a policy contract. The core gains interfaces, not special cases.
+- **Thin hosts.** The desktop and the gateway run the CLI buyer and call its `/_antseed/*` API. A host change covers that whole host. Buyer behavior goes in the CLI, not in a host, and not in the core because a host needs it.
+- **Stable money, swappable logic.** Whatever holds funds changes rarely. The logic around it sits behind interfaces.
 
-After changing payments, routing, discovery, the buyer proxy, provider plugins,
-`packages/node`, or desktop features, verify the change end to end in the
-worktree sandbox (`pnpm sandbox`, see `e2e/sandbox/README.md`). The
-`verify-antseed` skill (`.claude/skills/verify-antseed/SKILL.md`) says which
-scenario a changed path requires, the red-to-green protocol for bug fixes, and
-what evidence to keep, and it is the only map from a changed path to what must
-run; the `sandbox-test` skill (`.claude/skills/sandbox-test/SKILL.md`) is the
-how-to for running the sandbox (commands, chains, reports, desktop, share).
+## Invariants
 
-Once a change has been discussed, implement and test it without asking first:
-builds, unit tests, new scenarios, isolated `--chain local` runs (or fork runs
-when `.env.local` has the RPC), and desktop QA. Only these need an explicit yes
-for each run: `--live` (real upstream spend), `--real-funds`, and any mainnet
-run (`--chain mainnet`, `pnpm sandbox mainnet`). For buyer, proxy or routing
-changes, propose the real-network check
-(`pnpm sandbox run mainnet-smoke --chain mainnet --real-funds`, case 3 in the
-sandbox README) as a separate step: it spends real USDC from the test wallet.
-Never touch `~/.antseed`, the keychain or port 8377, tear down only with
-`pnpm sandbox down`, and never weaken a check or turn a `KNOWN` result into a pass.
+| Invariant | Enforced by |
+| --- | --- |
+| USDC is integer base units (6 decimals). It is `bigint` through `packages/buyer-core/src/usdc-utils.ts`; only the gateway (`money.ts`) uses safe-integer `number`. Never a float. | `packages/buyer-core/src/pricing.test.ts` (positive values only) |
+| Identity keys are never logged, printed, sent to a peer or written outside the identity store. | `packages/node/tests/identity.test.ts` (persistence only); desktop identity has no test |
+| Agents and tests never touch `~/.antseed`, the keychain or port 8377. | sandbox CLI refusals; factory session settings |
+| A bug fix with a cheap unit-test repro is two commits: the failing test, then the fix. | verify-antseed `prove.sh` |
+| A change on verify-antseed's high blast radius paths runs its keys, signing or spend caps row. | verify-antseed |
 
-## Changelog policy for PRs
+## Map
 
-When opening a PR, update `CHANGELOG.md` for any user-facing package, CLI,
-desktop, protocol, configuration, or documentation behavior change. If a PR has
-no user-facing change, say that explicitly in the PR description.
+`guide` marks a `CLAUDE.md` with what is specific to that area. Read it before you change the area. A package's own `test` and `typecheck` always run, unless its guide names other commands. verify-antseed decides what else proves the change.
 
-## Project Overview
-AntSeed is a peer-to-peer AI services network. Providers offer differentiated
-AI services and buyers route requests to the best available peer. This monorepo
-contains the core SDK, provider/router plugins, CLI, desktop app, dashboard,
-and website.
+| Path | What |
+| --- | --- |
+| `packages/protocol` (guide) | Wire format, codecs, EIP-712 signatures |
+| `packages/api-adapter` (guide) | Translation between API standards |
+| `packages/buyer-core` (guide) | The buyer. Environment-free, so the CLI and the browser run the same code |
+| `packages/node` (guide) | Runtime: P2P, discovery, metering, sqlite, plugin host |
+| `packages/provider-core` | Building blocks for provider plugins (`BaseProvider`, `HttpRelay`) |
+| `packages/router-core` (guide) | Peer scoring and the routing-service client |
+| `packages/web-sdk` (guide) | Browser buyer |
+| `packages/contracts` (guide) | Solidity contracts (Foundry). Map in its `README.md` |
+| `packages/antseed-verifier`, `connected-apps`, `ant-agent`, `ui`, `wallet-config` | Seller attestation; local AI tool setup; knowledge agents; shared UI; wallet constants |
+| `plugins/` (guide) | One plugin per upstream |
+| `apps/cli` (guide), `apps/cli/src/gateway` (guide) | The `antseed` command, the buyer proxy, the gateway |
+| `apps/desktop` (guide) | Electron app |
+| `apps/gateway-console`, `payments`, `ants`, `relay`, `network-stats`, `website`, `diem-staking`, `download-proxy` | Web apps and services, each with a `package.json` description |
+| `e2e/`, `docs/protocol/` | Sandbox and scenarios; protocol spec and plugin templates |
 
-**Important context for all documentation and code:** AntSeed is NOT for raw
-resale of API keys or subscription access. Providers must add value (TEE, skills,
-agents, fine-tuned models, managed products). Subscription-based plugins
-(provider-claude-code, provider-claude-oauth) are for testing/development only.
-Reselling subscription credentials violates upstream provider terms of service.
+Dependency direction: `protocol` and `api-adapter` ← `buyer-core` ← `node` ← `provider-core` and `router-core` ← `plugins` ← `cli` ← `desktop`. `web-sdk` uses `buyer-core` and `protocol`. Cross-package references use `workspace:*`.
 
-**AntSeed is not a crypto company.** Settlement happens in USDC on Base, but
-buyers are not required to already hold or handle crypto: the desktop app
-offers a card checkout (Stripe-backed onramp, region-gated) alongside crypto
-funding, and USDC can be funded from an exchange withdrawal, another wallet,
-or a card on-ramp (see `apps/website/docs/gateway/funding.md`,
-`apps/desktop/src/renderer/ui/components/views/VprDepositView.tsx`, and
-`apps/cli/README.md`). Never describe AntSeed as crypto-only, wallet-only, or
-as requiring the user to already own cryptocurrency.
+## Payment flow
 
-**When writing marketing or blog content that states a fact about AntSeed**
-(pricing, payment flow, CLI behavior, protocol mechanics, what is or isn't
-free) — source it only from this repository (code, docs, CHANGELOG) or the
-live antseed.com website. Never state an AntSeed-specific fact from general
-knowledge, a web search, or inference from silence in a doc (e.g. "the doc
-doesn't mention a free tier, so there must not be one" is not a valid basis
-for a claim). If a fact can't be verified from those two sources, say so
-explicitly rather than asserting it.
+1. The buyer deposits USDC into `AntseedDeposits`.
+2. The buyer signs a ReserveAuth off-chain, and the seller calls `reserve()` on `AntseedChannels`.
+3. For each request, the buyer signs a SpendingAuth with a growing `cumulativeAmount`.
+4. The seller calls `settle()` or `close()` with the latest one.
+5. If the seller disappears, the buyer calls `requestClose()`, then `withdraw()` after 15 minutes.
 
-## Repository Structure
-```
-packages/           Core libraries (published to npm as @antseed/*)
-  node/             Core protocol SDK — P2P, discovery, metering, payments
-  provider-core/    Shared provider infrastructure
-  router-core/      Shared router infrastructure
-plugins/            Provider and router plugins (extend core)
-  provider-anthropic/     Anthropic API key provider
-  provider-claude-code/   Claude Code keychain provider
-  provider-claude-oauth/  Claude OAuth provider
-  provider-openai/        OpenAI-compatible provider (OpenAI, Together, OpenRouter)
-  provider-local-llm/     Local LLM (Ollama/llama.cpp) provider
-  router-local/           Local router (Claude Code, Aider, Continue.dev)
-apps/               Applications
-  cli/              CLI tool (@antseed/cli) — bin: antseed
-  desktop/          Electron desktop app
-  dashboard/        Web dashboard (Fastify server + React frontend)
-  ants/             ANTS staking dashboard (@antseed/ants: Fastify server + React web + service layer shared with the CLI)
-  website/          Marketing website (React + Vite + Tailwind)
-e2e/                End-to-end tests
-docs/protocol/      Protocol specification and plugin templates
-```
+## Commands and toolchain
 
-## Tech Stack
-- **Development runtime**: Node.js 24 (pinned in `.nvmrc` and Volta), ES modules throughout. Published package engine ranges and Electron's embedded runtime are separate from this development pin.
-- **Language**: TypeScript 5.x with strict mode
-- **Package Manager**: pnpm workspaces
-- **Build**: tsc for libraries, Vite for web apps and Electron renderer
-- **Test**: vitest for all packages
-- **Native Modules**: better-sqlite3, node-datachannel (in packages/node)
-
-## Dependency Graph
-```
-@antseed/node (no internal deps)
-  ├── @antseed/provider-core (peer: node)
-  │     └── provider-anthropic, provider-claude-code, provider-claude-oauth,
-  │         provider-openai, provider-local-llm
-  ├── @antseed/router-core (peer: node)
-  │     └── router-local
-  ├── antseed-dashboard (peer: node)
-  │     └── @antseed/cli (depends: node + dashboard)
-  │           └── @antseed/desktop (builds: cli + dashboard)
-  └── @antseed/website (standalone, no internal deps)
-```
-
-## Key Commands
-```bash
-pnpm install          # Install all dependencies
-pnpm run build        # Build all packages in dependency order
-pnpm run test         # Run all tests
-pnpm run typecheck    # Type-check all packages
-pnpm run clean        # Remove all dist/ directories
-```
-
-## Nix
-`flake.nix` provides a dev shell (`nix develop`) and a buildable CLI package:
-`nix build .#` / `nix run .# -- <args>` produces/runs `antseed` from
-`apps/cli` (esbuild bundle + pinned native prebuilds for better-sqlite3,
-node-datachannel, keytar). The prebuild versions/hashes in `flake.nix` must be
-updated when those dependencies change in `pnpm-lock.yaml`.
-
-## Build Order
-Build must respect: node -> provider-core/router-core -> plugins -> dashboard -> cli -> desktop.
-The root build script handles this via tiered execution.
-
-## Internal Dependencies
-All cross-package references use `workspace:*` protocol in package.json.
-Peer dependencies (e.g., @antseed/node) are declared in peerDependencies
-and resolved via the workspace.
-
-## Plugin Architecture
-- Provider plugins implement the `AntseedProviderPlugin` interface from @antseed/node
-- Router plugins implement the `AntseedRouterPlugin` interface from @antseed/node
-- Both extend shared infrastructure from provider-core / router-core
-- The CLI loads plugins dynamically via the registry in apps/cli/src/plugins/registry.ts
-
-## Smart Contracts
-```
-packages/contracts/
-├── interfaces/              Shared Solidity interfaces (IAntseed*.sol, IERC8004Registry.sol)
-├── AntseedRegistry.sol      Central address book for all protocol contracts
-├── AntseedStaking.sol       Seller staking (holds stake USDC, binds to agentId)
-├── AntseedDeposits.sol      Buyer deposits, seller payouts (holds buyer USDC)
-├── AntseedChannels.sol      Payment channel lifecycle, ReserveAuth + SpendingAuth (swappable, holds NO USDC)
-├── AntseedEmissions.sol     ANTS token emissions (USDC volume-based)
-├── AntseedSlashing.sol      Swappable slashing logic for staked sellers
-├── AntseedSubPool.sol       Subscription pool
-├── ANTSToken.sol            ANTS ERC-20 token (52M max supply)
-├── MockERC8004Registry.sol  Mock ERC-8004 IdentityRegistry (local testing only)
-└── MockUSDC.sol             Test USDC
-```
-Identity uses the deployed ERC-8004 IdentityRegistry (Base: `0x8004A169...`).
-Feedback uses the deployed ERC-8004 ReputationRegistry (Base: `0x8004BAa1...`).
-All contracts use OpenZeppelin Ownable, ReentrancyGuard, SafeERC20.
-Build/test: `cd packages/contracts && forge build && forge test`
-
-### Payment Flow (Cumulative Streaming SpendingAuth)
-1. Buyer deposits USDC into AntseedDeposits
-2. Buyer signs ReserveAuth(channelId, maxAmount, deadline) off-chain
-3. Seller calls `reserve()` on AntseedChannels with buyer's ReserveAuth sig → Deposits.lockForChannel()
-4. Per request: buyer signs SpendingAuth(channelId, cumulativeAmount, metadataHash)
-5. Seller calls `settle()` or `close()` with latest SpendingAuth → Deposits.chargeAndCreditPayouts()
-6. If seller disappears: buyer calls `requestClose()` → `withdraw()` after 15min grace
-
-EIP-712 domain: name="AntseedChannels", version="1"
-
-### Contract Separation Design
-- **Stable contracts** (Staking, Deposits) hold funds and rarely change
-- **Swappable contract** (Channels) holds no USDC — can be redeployed by re-pointing stable contracts
-- Buyer never needs gas — all on-chain actions are seller-initiated or permissionless
-
-## Local Testing (Full Payment Flow)
-
-Prerequisites: `anvil` (from Foundry) and `cast` must be installed.
-
-```bash
-# 1. Start local chain
-anvil &
-
-# 2. Build everything
-pnpm run build
-
-# 3. Deploy contracts + fund wallets + register seller + stake + deposit
-./scripts/setup-local-test.sh
-
-# 4. Start seller (in a separate terminal)
-node apps/cli/dist/cli/index.js --data-dir ~/.antseed-seller seed \
-  --provider openai-responses --verbose --config ~/.antseed-seller/config.json
-
-# 5. Start desktop (in a separate terminal)
-cd apps/desktop && npm run dev
-```
-
-In the desktop app, go to Settings > Chain Config and set:
-- Chain ID: `base-local`
-- RPC URL: `http://127.0.0.1:8545`
-- Deposits: `0x0165878A594ca255338adfa4d48449f69242Eb8F`
-- Channels: `0xa513E6E4b8f2a923D98304ec87F64353C4D5C853`
-
-Then start a chat — the payment flow (ReserveAuth → per-request SpendingAuth → settle/close) runs automatically.
-
-## Native Modules
-packages/node has native dependencies (better-sqlite3, node-datachannel).
-After install, a postinstall script patches ethers type declarations.
-The desktop app has a script to rebuild native modules for Electron's Node version.
-
-## SQLite Migrations
-Schema changes use a lightweight migration framework in `packages/node/src/storage/`.
-```
-storage/
-  migrate.ts                              # Runner: schema_version table + transactional apply
-  migrations/
-    channels/                             # payment_channels, payment_receipts
-      001_create_tables.ts
-      002_add_auth_sig_columns.ts
-      index.ts                            # Collects all channel migrations
-    metering/                             # metering_events, usage_receipts, sessions, etc.
-      001_create_tables.ts
-      index.ts                            # Collects all metering migrations
-```
-To add a new migration: create `NNN_name.ts` exporting `{ migration: Migration }`,
-add it to the domain's `index.ts`. Use `/add-migration` skill for scaffolding.
-Never modify an existing migration file — always create a new one.
+- **Commands.** `pnpm install`, then `pnpm run build`, `test`, `typecheck` and `clean`. `build` runs the tiers in `package.json` in dependency order.
+- **Toolchain.** Node 24 (`.nvmrc`, Volta), TypeScript strict, ES modules and pnpm workspaces. Libraries build with tsc, and web apps and the renderer with Vite. Tests use vitest, except `apps/cli` and the desktop main process, which use `node --test`.
+- **Native modules.** better-sqlite3 and node-datachannel, in `packages/node`. The desktop rebuilds them for Electron's Node.
+- **Contracts.** `cd packages/contracts && forge build && forge test`.
+- **Nix.** `nix develop` gives a dev shell, and `nix build .#` builds the CLI. Update the prebuild hashes in `flake.nix` when those native dependencies change in `pnpm-lock.yaml`.

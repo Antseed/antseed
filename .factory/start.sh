@@ -64,6 +64,9 @@ if (gitdir) {
   const home = require('os').homedir()
   out.sandbox = {
     enabled: true, allowUnsandboxedCommands: false,
+    // forge panics inside the macOS sandbox, so sandbox-run.sh (one --chain local scenario run) runs outside it.
+    // The deny rules still apply to it. Only the bare command matches: no cd, pipe or && around it.
+    excludedCommands: [`${factory}/sandbox-run.sh:*`],
     filesystem: { allowWrite: [gitdir, `${common}/objects`, `${common}/refs`, `${common}/logs`, `${common}/worktrees`, run, `${home}/.antseed-sandbox`, store].filter(Boolean) },
     // agent-browser's daemon talks over a Unix socket in the run dir; only that folder is allowed.
     network: { allowedDomains: ['registry.npmjs.org', 'localhost', '127.0.0.1'], allowLocalBinding: true, allowUnixSockets: [`${run}/agent-browser`] },
@@ -105,6 +108,17 @@ fi
 if [ ! -s "$run/base" ]; then retry git -C "$REPO" fetch -q origin main || die "cannot fetch origin/main"; git -C "$REPO" rev-parse origin/main > "$run/base"; fi
 [ -d "$wt" ] || git -C "$REPO" worktree add -q --no-track -b "$branch" "$wt" "$(cat "$run/base")"
 [ -f "$run/orch/ledger.tsv" ] || orch init >/dev/null
+# pstack's standing orders (preferences.md): every brief pastes them as STANDING.
+if [ ! -s "$run/orch/preferences.md" ]; then
+  for line in "Work only in your brief's SCOPE; never push, merge, rebase another branch or open a PR." \
+    "The root CLAUDE.md and the touched areas' CLAUDE.md bind you, including their Ask first lines." \
+    "Sandbox runs use --chain local only; never touch ~/.antseed, the keychain or port 8377; run the CLI only with --data-dir under the run dir." \
+    "Never weaken a check or turn a KNOWN result into a pass." \
+    "Run only the checks for the touched paths; the full suites run once, in the verifier at the code-ready head." \
+    "Check your own screenshots, videos and logs; report one line each with its path, never the raw output."; do
+    orch standing add "$line" >/dev/null
+  done
+fi
 
 # Prepare outside the session's sandbox, where GitHub and the shared .git are reachable: the session can't fetch
 # submodules or register worktrees there. The scratch worktree is the sandbox branch with origin/main merged in
@@ -133,10 +147,12 @@ prep "$wt"; prep "$scratch"
 key=1; [ -f "$run/issue" ] && key="$(cat "$run/issue")"
 settings "$run/settings.json" "$wt" "$run"
 
-prompt="$(node -e 'const fs=require("fs");const [f,...kv]=process.argv.slice(1);let s=fs.readFileSync(f,"utf8")
-for(let i=0;i<kv.length;i+=2)s=s.split("{"+kv[i]+"}").join(kv[i+1]);process.stdout.write(s)' "$FACTORY/RUN.md" \
+fill() { node -e 'const fs=require("fs");const [f,...kv]=process.argv.slice(1);let s=fs.readFileSync(f,"utf8")
+for(let i=0;i<kv.length;i+=2)s=s.split("{"+kv[i]+"}").join(kv[i+1]);process.stdout.write(s)' "$1" \
   slug "$slug" run "$run" worktree "$wt" branch "$branch" base "$(cat "$run/base")" key "$key" pstack "$PSTACK" \
-  factory "$FACTORY" tools "$REPO")"
+  factory "$FACTORY" tools "$REPO"; }
+fill "$FACTORY/orchestrator.md" > "$run/orchestrator.md"   # refreshed on every start, so a resumed run reads today's dispatcher
+prompt="$(fill "$FACTORY/RUN.md")"
 flags=(--model "$LEAD" --settings "$run/settings.json" --setting-sources project,local --strict-mcp-config
   --plugin-dir "$PSTACK" --plugin-dir "$FACTORY/plugin" --add-dir "$run" --add-dir "$PSTACK" --add-dir "$REPO"
   --permission-mode acceptEdits -n "factory $slug")
