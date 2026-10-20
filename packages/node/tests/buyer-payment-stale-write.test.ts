@@ -14,7 +14,9 @@ import type { PeerConnection } from '../src/p2p/connection-manager.js';
 import type { PeerInfo } from '../src/types/peer.js';
 import { toPeerId } from '../src/types/peer.js';
 import type { SerializedHttpResponse, SerializedHttpRequest } from '../src/types/http.js';
-import { computeOneOffChannelPlan, type NeedAuthPayload, type SpendingAuthPayload } from '@antseed/protocol/messages';
+import * as codec from '../src/p2p/payment-codec.js';
+import { MessageType } from '../src/types/protocol.js';
+import { computeOneOffChannelPlan, type NeedAuthPayload, type PaymentRequiredPayload, type SpendingAuthPayload } from '@antseed/protocol/messages';
 
 const enc = new TextEncoder();
 const SELLER = toPeerId('b'.repeat(40));
@@ -30,6 +32,22 @@ const PROBE = {
 };
 const OLD_SPENT = 50_000n;
 const PLENTY = { available: 10n ** 12n, reserved: 0n };
+/** Two 1024x1024 images at $0.004: an 8000-unit request. */
+const IMAGE_BILLING = {
+  context: {
+    sellerPeerId: SELLER,
+    provider: 'openai',
+    service: 'gpt-image-2',
+    serviceApiProtocol: 'openai-images',
+    attributes: { model: 'gpt-image-2', size: '1024x1024' },
+  },
+  requestFacts: { kind: 'image', image: {} },
+  tokenPricing: PRICING,
+  unitModel: {
+    version: 1,
+    components: [{ unit: 'output_images', priceUsd: 0.004, match: { size: '1024x1024' } }],
+  },
+} as never;
 
 interface Gate {
   arrived: Promise<void>;
@@ -130,7 +148,7 @@ interface Race {
   sentAfterRetire: SpendingAuthPayload[];
 }
 
-describe('a payment write that awaited while the seller channel was replaced', () => {
+describe('a payment write that awaited while the seller channel moved on', () => {
   let tempDir: string;
   let identity: Identity;
   let signer: HeldSigner;
@@ -479,38 +497,87 @@ describe('a payment write that awaited while the seller channel was replaced', (
       const oldChannelId = await openChannel();
       await spend(oldChannelId, 100_000n);
       await spend(oldChannelId, 100_000n);
-      manager.trackRequestBilling('req-image', {
-        context: {
-          sellerPeerId: SELLER,
-          provider: 'openai',
-          service: 'gpt-image-2',
-          serviceApiProtocol: 'openai-images',
-          attributes: { model: 'gpt-image-2', size: '1024x1024' },
-        },
-        requestFacts: { kind: 'image', image: {} },
-        tokenPricing: PRICING,
-        unitModel: {
-          version: 1,
-          components: [{ unit: 'output_images', priceUsd: 0.004, match: { size: '1024x1024' } }],
-        },
-      } as never);
-      const write = manager.handleNeedAuth(SELLER, needAuth(oldChannelId, 8_000n, {
-        requestId: 'req-image',
-        requiredCumulativeAmount: '300000',
-        inputTokens: '0',
-        freshInputTokens: '0',
-        cachedInputTokens: '0',
-        outputTokens: '0',
-        billingUsage: { version: 1, units: { output_images: '2' } },
-      } as Partial<NeedAuthPayload>), mux);
+      manager.trackRequestBilling('req-image', IMAGE_BILLING);
+      const write = manager.handleNeedAuth(SELLER, imageNeedAuth(oldChannelId, 300_000n), mux);
 
       const race = await replaceWhileHeld({
         arrived: Promise.resolve(),
-        release: () => manager.recordObservedUnitUsage('req-image', { units: { output_images: 2 } }),
+        release: deliverImages,
       }, write, oldChannelId);
 
       expect(await newChannelAfter(race)).toEqual(untouched());
       expect(race.outcome).toBe('completed');
+    });
+  });
+
+  /** The image request's NeedAuth: it waits for the buyer to see the images delivered. */
+  function imageNeedAuth(channelId: string, requiredCumulativeAmount: bigint): NeedAuthPayload {
+    return needAuth(channelId, 8_000n, {
+      requestId: 'req-image',
+      requiredCumulativeAmount: requiredCumulativeAmount.toString(),
+      inputTokens: '0',
+      freshInputTokens: '0',
+      cachedInputTokens: '0',
+      outputTokens: '0',
+      billingUsage: { version: 1, units: { output_images: '2' } },
+    } as Partial<NeedAuthPayload>);
+  }
+
+  function deliverImages(): void {
+    manager.recordObservedUnitUsage('req-image', { units: { output_images: 2 } });
+  }
+
+  describe('in BuyerPaymentManager, a NeedAuth that a later one signed past', () => {
+    beforeEach(() => setup());
+
+    function signedOn(channelId: string, sentBefore: number): Record<string, unknown> {
+      return {
+        committed: store.getChannel(channelId)?.authMax,
+        inMemory: manager.getCumulativeAmount(SELLER),
+        sent: mux.sent.slice(sentBefore).map((payload) => payload.cumulativeAmount),
+      };
+    }
+
+    it('held at the usage wait, leaves the higher cumulative committed and in memory', async () => {
+      const channelId = await openChannel();
+      const sentBefore = mux.sent.length;
+      manager.trackRequestBilling('req-image', IMAGE_BILLING);
+      const earlier = manager.handleNeedAuth(SELLER, imageNeedAuth(channelId, 8_000n), mux);
+      await manager.handleNeedAuth(SELLER, needAuth(channelId, 28_000n), mux);
+      deliverImages();
+      await earlier;
+
+      expect(signedOn(channelId, sentBefore)).toEqual({ committed: '28000', inMemory: 28_000n, sent: ['28000'] });
+    });
+
+    it('held at the signer, leaves the higher cumulative committed and in memory', async () => {
+      const channelId = await openChannel();
+      const sentBefore = mux.sent.length;
+      const held = signer.holdNextSignature();
+      const earlier = manager.handleNeedAuth(SELLER, needAuth(channelId, 8_000n), mux);
+      await held.arrived;
+      await manager.handleNeedAuth(SELLER, needAuth(channelId, 28_000n), mux);
+      held.open();
+      await earlier;
+
+      expect(signedOn(channelId, sentBefore)).toEqual({ committed: '28000', inMemory: 28_000n, sent: ['28000'] });
+    });
+
+    it('held at the usage wait, signs and reports only what the later one left', async () => {
+      const channelId = await openChannel();
+      const sentBefore = mux.sent.length;
+      const reported: bigint[] = [];
+      manager.setSpendListener((event) => { reported.push(BigInt(event.amountUsdc)); });
+      manager.trackRequestBilling('req-image', IMAGE_BILLING);
+      const earlier = manager.handleNeedAuth(SELLER, imageNeedAuth(channelId, 28_000n), mux);
+      await manager.handleNeedAuth(SELLER, needAuth(channelId, 20_000n), mux);
+      deliverImages();
+      await earlier;
+
+      expect({
+        ...signedOn(channelId, sentBefore),
+        reported: reported.reduce((sum, amount) => sum + amount, 0n),
+      }).toEqual({ committed: '28000', inMemory: 28_000n, sent: ['20000', '28000'], reported: 28_000n });
     });
   });
 
@@ -613,6 +680,36 @@ describe('a payment write that awaited while the seller channel was replaced', (
 
       expect(await newChannelAfter(result)).toEqual(untouched());
       expect(result.outcome).toBe('buyer-session-state');
+    });
+
+    /** Replace the seller's channel, then handle a 402 the seller sent about the old one. */
+    async function staleFor402(requirements: Partial<PaymentRequiredPayload>, via: 'body' | 'PaymentRequired'): Promise<Race> {
+      const oldChannelId = await oldChannel(pmux);
+      const newChannelId = replaceNow();
+      onChain.set(newChannelId, chainInfo(1, RESERVE));
+      const aboutOld = { minBudgetPerRequest: '10000', suggestedAmount: '1000000', ...requirements, channelId: oldChannelId };
+      if (via === 'PaymentRequired') {
+        await pmux.handleFrame({
+          type: MessageType.PaymentRequired,
+          messageId: 3,
+          payload: codec.encodePaymentRequired({ ...aboutOld, requestId: REQUEST.requestId }),
+        });
+      }
+      const result = await negotiator.handle402(make402(via === 'body' ? aboutOld : {}), PEER, conn, REQUEST);
+      return { oldChannelId, newChannelId, outcome: result.action, sentAfterRetire: [] };
+    }
+
+    it.each([
+      { about: 'says the old channel is exhausted', via: 'body', requirements: { requiredCumulativeAmount: '60000', reserveMaxAmount: OLD_SPENT.toString(), code: 'channel_exhausted' } },
+      { about: 'asks the old channel to catch up', via: 'body', requirements: { requiredCumulativeAmount: '60000' } },
+      { about: 'asks the old channel to catch up', via: 'PaymentRequired', requirements: { requiredCumulativeAmount: '60000' } },
+    ] as const)('402 that $about, in its $via, handled after the new channel is committed', async ({ via, requirements }) => {
+      setupNegotiator();
+
+      const result = await staleFor402(requirements, via);
+
+      expect(await newChannelAfter(result)).toEqual(untouched());
+      expect(result.outcome).toBe('retry');
     });
 
     it('402 held at the on-chain check of stored sessions', async () => {
