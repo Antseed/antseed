@@ -7,6 +7,8 @@ import test, { type TestContext } from 'node:test'
 import type { PeerInfo, SerializedHttpRequest } from '@antseed/node'
 import { BuyerProxy, type BuyerBalanceReader, type BuyerProxyConfig } from './buyer-proxy.js'
 import { BUYER_IDENTITY_HEADER } from './request-utils.js'
+import { SPEND_ATTRIBUTION_HEADER } from './spend-attribution.js'
+import { decodeServedSelection, ROUTE_SELECTION_HEADER, type RouteSelection } from './route-selection.js'
 import {
   GATEWAY_CONTROL_HEADER,
   GATEWAY_CONTROL_SECRET_FILE,
@@ -57,7 +59,7 @@ async function startHarness(t: TestContext, peers: PeerInfo[], extra: Partial<Bu
       return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
     },
   }
-  proxy = new BuyerProxy({ port: 0, dataDir, node: node as any, ...extra })
+  proxy = new BuyerProxy({ adaptiveRouting: { spreadTolerance: 0, explorationRate: 0 }, port: 0, dataDir, node: node as any, ...extra })
   ;(proxy as any)._getPeers = async () => peers
   ;(proxy as any)._cacheLastUpdatedAtMs = Date.now()
   ;(proxy as any)._mergeStateFile = async () => {}
@@ -249,8 +251,11 @@ test('route-preview shares routing logic and explains ineligible sellers', async
   assert.equal(body.model, 'gpt-5')
   const byId = new Map(body.candidates.map((candidate) => [candidate['peerId'], candidate]))
   assert.deepEqual(Object.keys(body.candidates[0]!).sort(), [
-    'displayName', 'eligible', 'inputUsdPerMillion', 'outputUsdPerMillion', 'peerId', 'rank', 'reasons', 'trustScore',
+    'displayName', 'eligible', 'inputUsdPerMillion', 'outputUsdPerMillion', 'peerId', 'rank', 'reasons', 'selection', 'trustScore',
   ])
+  // Only eligible sellers carry the numbers routing ranked them by.
+  assert.equal(byId.get(pricey.peerId)?.['selection'], null)
+  assert.equal((byId.get(cheap.peerId)?.['selection'] as { coolingDown?: boolean } | null)?.coolingDown, true)
   assert.equal(byId.get(pricey.peerId)?.['eligible'], false)
   assert.deepEqual(byId.get(pricey.peerId)?.['reasons'], ['input price $9 over cap $5'])
   assert.deepEqual(byId.get(tee.peerId)?.['reasons'], ['trust 40 below 60'])
@@ -264,6 +269,80 @@ test('route-preview shares routing logic and explains ineligible sellers', async
 
   const bad = await fetch(`${h.url}/_antseed/route-preview?model=gpt-5`, { headers: { [GATEWAY_CONTROL_HEADER]: SECRET, [ROUTING_POLICY_HEADER]: '!!' } })
   assert.equal(bad.status, 400)
+})
+
+test('route-preview explains each eligible seller with the numbers routing ranked it by', async (t) => {
+  const twin = makePeer('d', { input: 1, output: 1, trust: 99 })
+  const h = await startHarness(t, [cheap, twin], {}, true)
+  const proxy = h.proxy as any
+  for (let i = 0; i < 6; i += 1) proxy._recordSellerSuccess(cheap.peerId, 'gpt-5', { firstTokenMs: 400, streamMs: 2000, outputTokens: 200, streamed: true })
+  for (let i = 0; i < 4; i += 1) proxy._recordSellerFailure(twin.peerId, 'other-model', 'seller-5xx')
+
+  const res = await fetch(`${h.url}/_antseed/route-preview?model=gpt-5`, { headers: withPolicy({}) })
+  const body = await res.json() as { candidates: Array<{ peerId: string; rank: number | null; selection: RouteSelection | null }> }
+  const byId = new Map(body.candidates.map((candidate) => [candidate.peerId, candidate]))
+  const best = byId.get(cheap.peerId)!.selection!
+  assert.equal(byId.get(cheap.peerId)!.rank, 1)
+  assert.equal(best.record, 'model')
+  assert.ok(best.observations > 5.9 && best.observations <= 6)
+  assert.ok(best.successRate > 0.8)
+  assert.equal(best.firstTokenMs, 400)
+  assert.equal(best.tokensPerSecond, 100)
+  assert.equal(best.failing, false)
+  assert.equal(best.stale, false)
+  // Failures on its other models count against the twin at half weight.
+  const borrowed = byId.get(twin.peerId)!.selection!
+  assert.equal(borrowed.record, 'other-models')
+  assert.ok(borrowed.successRate < best.successRate)
+  assert.equal(borrowed.lastFailureReason, 'seller-5xx')
+  assert.ok(borrowed.expectedCostUsd > best.expectedCostUsd)
+  // Without routing preferences the buyer orders by trust and spreads nothing.
+  assert.equal(best.ordering, 'trust')
+  assert.equal(best.poolSize, 0)
+  assert.equal(best.sharesTraffic, false)
+  const sorted = await fetch(`${h.url}/_antseed/route-preview?model=gpt-5`, { headers: withPolicy({ sort: 'price' }) })
+  const sortedBody = await sorted.json() as { candidates: Array<{ selection: RouteSelection | null }> }
+  assert.ok(sortedBody.candidates.every((candidate) => candidate.selection?.ordering === 'price'))
+})
+
+test('route-preview shows the sellers that share a model\'s traffic and their share', async (t) => {
+  const twin = makePeer('d', { input: 1, output: 1, trust: 99 })
+  const h = await startHarness(t, [cheap, twin], { adaptiveRouting: { explorationRate: 0 }, routingPreferences: { ...prefs60, minTrustScore: 0 } })
+  const res = await fetch(`${h.url}/_antseed/route-preview?model=gpt-5`, { headers: withPolicy({}) })
+  const body = await res.json() as { candidates: Array<{ selection: RouteSelection | null }> }
+  const shares = body.candidates.map((candidate) => candidate.selection!)
+  assert.ok(shares.every((selection) => selection.ordering === 'expected-cost' && selection.sharesTraffic && selection.poolSize === 2))
+  assert.ok(Math.abs(shares.reduce((sum, selection) => sum + selection.trafficShare!, 0) - 1) < 1e-9)
+})
+
+test('a served request names its seller\'s rank and how it was picked, and a failover says so', async (t) => {
+  const third = makePeer('c', { input: 0.5, output: 0.5, trust: 99 })
+  const h = await startHarness(t, [cheap, pricey, third])
+  const ok = await chat(h, withPolicy({}))
+  const served = decodeServedSelection(ok.headers.get(ROUTE_SELECTION_HEADER) ?? undefined)
+  assert.equal(served?.rank, 1)
+  assert.equal(served?.attempt, 0)
+  assert.equal(served?.pick, 'order')
+  assert.equal(served?.ordering, 'trust')
+  assert.equal(served?.of, 3)
+
+  ;(h.proxy as any)._node.sendRequest = async (peer: PeerInfo, request: SerializedHttpRequest) => {
+    const status = peer.peerId === pricey.peerId ? 503 : 200
+    return { requestId: request.requestId, statusCode: status, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
+  }
+  const failover = await chat(h, withPolicy({ modelRoutes: { 'gpt-5': { peerIds: [pricey.peerId, cheap.peerId] } } }))
+  const next = decodeServedSelection(failover.headers.get(ROUTE_SELECTION_HEADER) ?? undefined)
+  assert.equal(next?.rank, 2)
+  assert.equal(next?.attempt, 1)
+  assert.equal(next?.pick, 'failover')
+  assert.equal(next?.routeChainPosition, 2)
+})
+
+test('a malformed or oversized route-selection header decodes to null', () => {
+  assert.equal(decodeServedSelection(undefined), null)
+  assert.equal(decodeServedSelection('!!'), null)
+  assert.equal(decodeServedSelection(Buffer.from(JSON.stringify({ rank: 1 })).toString('base64url')), null)
+  assert.equal(decodeServedSelection('a'.repeat(4096)), null)
 })
 
 test('requireTee only admits sellers advertising the TEE verifier, on automatic, pinned and preview paths', async (t) => {
@@ -556,14 +635,45 @@ test('without a control secret the attributed-spend feed stays readable and unac
   assert.equal(((await res.json()) as any).ok, true)
 })
 
-test('latency is measured per seller and model', async (t) => {
+test('latency and throughput are measured per seller and model', async (t) => {
   const h = await startHarness(t, [cheap])
-  ;(h.proxy as any)._recordPeerLatency(cheap.peerId, 'gpt-5', 100)
-  ;(h.proxy as any)._recordPeerLatency(cheap.peerId, 'GPT-5', 200)
-  ;(h.proxy as any)._recordPeerLatency(cheap.peerId, 'big-model', 5000)
-  assert.equal((h.proxy as any)._peerLatency(cheap.peerId, 'gpt-5'), 130)
-  assert.equal((h.proxy as any)._peerLatency(cheap.peerId, 'big-model'), 5000)
-  assert.equal((h.proxy as any)._peerLatency(cheap.peerId, 'other'), null)
+  const proxy = h.proxy as any
+  proxy._recordSellerSuccess(cheap.peerId, 'gpt-5', { firstTokenMs: 100, streamMs: 1000, outputTokens: 50, streamed: true })
+  proxy._recordSellerSuccess(cheap.peerId, 'GPT-5', { firstTokenMs: 200, streamMs: 1000, outputTokens: 100, streamed: true })
+  proxy._recordSellerSuccess(cheap.peerId, 'big-model', { firstTokenMs: 5000, streamMs: 1000, outputTokens: 5, streamed: true })
+  assert.equal(proxy._peerLatency(cheap.peerId, 'gpt-5'), 130)
+  assert.equal(proxy._peerThroughput(cheap.peerId, 'gpt-5'), 65)
+  assert.equal(proxy._peerLatency(cheap.peerId, 'big-model'), 5000)
+  assert.equal(proxy._peerThroughput(cheap.peerId, 'big-model'), null, 'too few tokens to measure speed')
+  assert.equal(proxy._peerLatency(cheap.peerId, 'other'), null)
+})
+
+test('a streamed answer records time to first frame and tokens per second; a non-streamed one only an estimate of when it started', async (t) => {
+  const h = await startHarness(t, [cheap])
+  const proxy = h.proxy as any
+  const sse = 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":40,"total_tokens":50}}\n\ndata: [DONE]\n\n'
+  proxy._node.sendRequestStream = async (_peer: PeerInfo, request: SerializedHttpRequest, callbacks: any) => {
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    callbacks.onResponseStart({ requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'text/event-stream' }, body: new Uint8Array() }, { streaming: true })
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    callbacks.onResponseChunk({ requestId: request.requestId, data: Buffer.from(sse), done: true })
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'text/event-stream' }, body: Buffer.from(sse) }
+  }
+  const streamed = await fetch(`${h.url}/v1/chat/completions`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'gpt-5', messages: [], stream: true }),
+  })
+  assert.equal(streamed.status, 200)
+  await streamed.text()
+  const latency = proxy._peerLatency(cheap.peerId, 'gpt-5')
+  const throughput = proxy._peerThroughput(cheap.peerId, 'gpt-5')
+  assert.ok(latency >= 45 && latency < 200, `time to first frame, not the whole answer (${latency})`)
+  assert.ok(throughput > 100 && throughput <= 205, `40 tokens over ~200ms (${throughput})`)
+
+  const h2 = await startHarness(t, [cheap])
+  assert.equal((await chat(h2)).status, 200)
+  assert.notEqual((h2.proxy as any)._peerLatency(cheap.peerId, 'gpt-5'), null)
+  assert.equal((h2.proxy as any)._peerThroughput(cheap.peerId, 'gpt-5'), null)
 })
 
 test('gateway-policy automatic routing falls back to a free seller when a paid one cannot be funded, and remembers only the seller that answered', async (t) => {
@@ -655,4 +765,126 @@ test('a seller that answers with an error does not become the chat\'s route', as
   const res = await chat(h, { 'x-antseed-chat-session-id': 'thread-err' })
   assert.equal(res.status, 400)
   assert.equal((h.proxy as any)._conversations.get('antseed-chat:thread-err')?.pinnedModel ?? null, null)
+})
+
+function makeRoutingPeer(seed: string): PeerInfo {
+  return {
+    peerId: seed.repeat(40) as PeerInfo['peerId'],
+    lastSeen: Date.now(),
+    providers: ['alpha'],
+    onChainReputationScore: 90,
+    metadata: {
+      peerId: seed.repeat(40), version: 12, timestamp: Date.now(), signature: '', region: 'test',
+      providers: [{ provider: 'alpha', services: ['alpha-route'], maxConcurrency: 1, currentLoad: 0,
+        defaultPricing: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
+        serviceApiProtocols: { 'alpha-route': ['irp-suggest'] },
+        serviceUnitBillingModels: { 'alpha-route': { 'irp-suggest': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } } },
+      }],
+    } as unknown as NonNullable<PeerInfo['metadata']>,
+  }
+}
+
+function routerClient(recommend: PeerInfo, contexts: Array<{ options?: Record<string, unknown>; candidates: Array<{ peerId?: string }> }> = []) {
+  return {
+    listModels: async () => [{ id: 'gpt-5' }],
+    async selectRoute(_request: SerializedHttpRequest, _peers: PeerInfo[], context: any) {
+      contexts.push(context)
+      // Pay for the ranking through the buyer's send path, as the real client does.
+      await context.sendRequest(_peers.find((peer) => peer.peerId === context.routingService.peerId)!,
+        { requestId: `rank-${contexts.length}`, method: 'POST', path: '/v1/routing/rank', headers: {}, body: new Uint8Array() })
+      const routes = [{ serviceId: 'gpt-5', peerId: recommend.peerId, provider: 'openai' }]
+      assert.equal(context.acceptRecommendations(routes), true)
+      return routes
+    },
+  }
+}
+
+test('a pinned routing service ranks only the sellers the key policy allows and is paid by the key identity', async (t) => {
+  const router = makeRoutingPeer('d')
+  const contexts: Array<{ options?: Record<string, unknown>; candidates: Array<{ peerId?: string }> }> = []
+  const h = await startHarness(t, [cheap, pricey, router], { modelRoutingClient: routerClient(cheap, contexts) as any })
+  ;(h.proxy as any)._buyerIdentities = { ensure: async (name: string) => name === 'team-a' }
+  const res = await fetch(`${h.url}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...withPolicy({ blockedPeerIds: [pricey.peerId] }), [BUYER_IDENTITY_HEADER]: 'team-a' },
+    body: JSON.stringify({ model: `${router.peerId}@alpha-route`, messages: [{ role: 'user', content: 'Hello' }], routing: { cost_quality_tradeoff: 8 } }),
+  })
+  assert.equal(res.status, 200, await res.text())
+  assert.equal(contexts.length, 1)
+  assert.equal(contexts[0]!.options?.cost_quality_tradeoff, 8)
+  assert.deepEqual(contexts[0]!.candidates.map((candidate) => candidate.peerId), [cheap.peerId])
+  assert.deepEqual(h.dispatched.map((entry) => [entry.peerId, entry.buyerIdentity]), [[router.peerId, 'team-a'], [cheap.peerId, 'team-a']])
+})
+
+test('a pinned routing service the key policy blocks is refused before any ranking is bought', async (t) => {
+  const router = makeRoutingPeer('d')
+  const contexts: Array<{ options?: Record<string, unknown>; candidates: Array<{ peerId?: string }> }> = []
+  const h = await startHarness(t, [cheap, router], { modelRoutingClient: routerClient(cheap, contexts) as any })
+  const res = await chat(h, withPolicy({ blockedPeerIds: [router.peerId] }), `${router.peerId}@alpha-route`)
+  assert.equal(res.status, 403)
+  assert.equal(((await res.json()) as any).error.code, 'peer_not_allowed')
+  assert.equal(contexts.length, 0)
+  assert.equal(h.dispatched.length, 0)
+})
+
+test('a pinned routing service is held to the key policy\'s seller rules and model allow list, but not its token price caps', async (t) => {
+  const router = makeRoutingPeer('d')
+  const contexts: Array<{ options?: Record<string, unknown>; candidates: Array<{ peerId?: string }> }> = []
+  const h = await startHarness(t, [cheap, router], { modelRoutingClient: routerClient(cheap, contexts) as any })
+  const model = `${router.peerId}@alpha-route`
+
+  const lowTrust = await chat(h, withPolicy({ minReputation: 95 }), model)
+  assert.equal(lowTrust.status, 403)
+  const lowTrustError = ((await lowTrust.json()) as any).error
+  assert.equal(lowTrustError.code, 'peer_not_allowed')
+  assert.match(lowTrustError.message, /reputation 90 below 95/)
+
+  const notAllowed = await chat(h, withPolicy({ allowedModels: ['gpt-5'] }), model)
+  assert.equal(notAllowed.status, 403)
+  assert.equal(((await notAllowed.json()) as any).error.code, 'model_not_allowed')
+  assert.equal(contexts.length, 0)
+  assert.equal(h.dispatched.length, 0)
+
+  const tee = await chat(h, withPolicy({ requireTee: true }), model)
+  assert.equal(tee.status, 403)
+  assert.match(((await tee.json()) as any).error.message, /no TEE/)
+  assert.equal(contexts.length, 0)
+
+  const capped = await chat(h, withPolicy({ maxInputUsdPerMillion: 5, maxOutputUsdPerMillion: 5 }), model)
+  assert.equal(capped.status, 200, await capped.text())
+  assert.equal(contexts.length, 1)
+})
+
+test('spend on a pinned router, ranking and inference, is attributed to the gateway key', async (t) => {
+  const router = makeRoutingPeer('d')
+  const h = await startHarness(t, [cheap, router], { modelRoutingClient: routerClient(cheap) as any })
+  const feed = (h.proxy as any)._spendAttribution
+  const send = (h.proxy as any)._node.sendRequest
+  ;(h.proxy as any)._node.sendRequest = async (peer: PeerInfo, request: SerializedHttpRequest, options?: { buyerIdentity?: string }) => {
+    feed.record({ requestId: request.requestId, sellerPeerId: peer.peerId, amountUsdc: peer.peerId === router.peerId ? '1000' : '25000',
+      inputTokens: '0', cachedInputTokens: '0', outputTokens: '0', outputImages: '0' })
+    return send(peer, request, options)
+  }
+  const res = await fetch(`${h.url}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', [SPEND_ATTRIBUTION_HEADER]: 'gw_key1' },
+    body: JSON.stringify({ model: `${router.peerId}@alpha-route`, messages: [{ role: 'user', content: 'Hello' }] }),
+  })
+  assert.equal(res.status, 200, await res.text())
+  const events = feed.page(0).events as Array<{ tag: string; sellerPeerId: string; amountUsdc: string }>
+  assert.deepEqual(events.map((event) => [event.tag, event.sellerPeerId, event.amountUsdc]),
+    [['gw_key1', router.peerId, '1000'], ['gw_key1', cheap.peerId, '25000']])
+})
+
+test('/v1/models?type=router lists only routers the key policy allows, with only its allowed models', async (t) => {
+  const router = makeRoutingPeer('d')
+  const h = await startHarness(t, [cheap, router], { modelRoutingClient: routerClient(cheap) as any })
+  const list = async (policy: RoutingPolicy) => {
+    const res = await fetch(`${h.url}/v1/models?type=router`, { headers: withPolicy(policy) })
+    assert.equal(res.status, 200)
+    return ((await res.json()) as any).data as Array<{ id: string; peers: Array<{ models: string[] | null }> }>
+  }
+  assert.deepEqual((await list({ allowedModels: ['alpha-route', 'gpt-5'] })).map((entry) => [entry.id, entry.peers[0]!.models]), [['alpha-route', ['gpt-5']]])
+  assert.deepEqual(await list({ allowedModels: ['gpt-5'] }), [])
+  assert.deepEqual(await list({ blockedPeerIds: [router.peerId] }), [])
 })

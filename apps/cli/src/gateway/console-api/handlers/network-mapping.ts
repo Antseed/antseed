@@ -1,8 +1,10 @@
 /** Pure mapping from the buyer's peer, health and verification views to the console's `Peer`. */
 import { collectPeerVerificationLinks } from '@antseed/node/discovery'
 import { parseVerifierCapabilities } from '@antseed/node/verifier-capabilities'
-import { TEE_VERIFIER_ID } from '@antseed/node/tee-status'
-import type { NetworkModel, NetworkModelCapability, NetworkModelOffer, NetworkModelType, Peer, RoutePreview } from '../types.js'
+import { modelTagsFor } from '@antseed/node/model-metadata'
+import { TEE_VERIFIER_ID, teeScope, type TeeClaim, type TeeScope } from '@antseed/node/tee-status'
+import type { NetworkModel, NetworkModelCapability, NetworkModelOffer, NetworkModelType, NetworkRouter, NetworkRouterOption, Peer, RoutePreview } from '../types.js'
+import { parseRouteSelection } from '../../../proxy/route-selection.js'
 
 type Row = Record<string, unknown>
 
@@ -30,6 +32,8 @@ export interface PeerStat {
   peerId: string
   requests: number
   latencyMsP50: number | null
+  firstTokenMsP50?: number | null
+  tokensPerSecondP50?: number | null
 }
 
 /** One entry per advertised service, priced from the service's own entry or the provider default. */
@@ -67,18 +71,27 @@ export function peerServices(row: Row): Peer['services'] {
   return services
 }
 
-/** Peer ids with a current, passing TEE attestation in a `/_antseed/verification` snapshot. */
-export function teeVerifiedPeers(snapshot: unknown, now: number): Set<string> {
-  const verified = new Set<string>()
+/**
+ * Peer ids with a current, passing TEE attestation in a `/_antseed/verification` snapshot,
+ * mapped to how far it reaches: the seller node only, or end to end through its provider.
+ */
+export function teeScopes(snapshot: unknown, now: number): Map<string, TeeScope> {
+  const scopes = new Map<string, TeeScope>()
   for (const evidence of rows(asRecord(snapshot)['evidence'])) {
     if (evidence['verifierId'] !== TEE_VERIFIER_ID || evidence['sellerNodeVerified'] !== true) continue
     if (evidence['checking'] === true || evidence['unavailable'] === true) continue
     const expiresAt = num(evidence['expiresAt'])
     if (expiresAt !== null && expiresAt <= now) continue
     const peerId = str(evidence['peerId'])
-    if (peerId) verified.add(peerKey(peerId))
+    const claims = rows(evidence['claims']).filter((claim): claim is Row & TeeClaim => typeof claim['claim'] === 'string')
+    if (peerId) scopes.set(peerKey(peerId), teeScope({ claims }))
   }
-  return verified
+  return scopes
+}
+
+/** Peer ids with a current, passing TEE attestation in a `/_antseed/verification` snapshot. */
+export function teeVerifiedPeers(snapshot: unknown, now: number): Set<string> {
+  return new Set(teeScopes(snapshot, now).keys())
 }
 
 /**
@@ -95,7 +108,7 @@ export function mapPeers(input: {
 }): Peer[] {
   const health = new Map(rows(asRecord(input.health)['peers']).map((row) => [peerKey(String(row['peerId'] ?? '')), row]))
   const stats = new Map(input.stats.map((row) => [peerKey(row.peerId), row]))
-  const teeVerified = input.verification ? teeVerifiedPeers(input.verification, input.now) : null
+  const teeVerified = input.verification ? teeScopes(input.verification, input.now) : null
   return rows(asRecord(input.peers)['peers']).flatMap((row): Peer[] => {
     const peerId = str(row['peerId'])
     if (!peerId) return []
@@ -121,6 +134,7 @@ export function mapPeers(input: {
       verified,
       verificationLinks: collectPeerVerificationLinks(row),
       tee,
+      teeScope: tee ? teeVerified?.get(key) ?? null : null,
       stakeAnts: stake === null ? null : String(stake),
       usageShareBps: num(row['onChainUsageShareBps']),
       washFlagged: row['onChainWashFlagged'] === true || trust['washFlagged'] === true,
@@ -130,6 +144,8 @@ export function mapPeers(input: {
         coolingDownUntil: coolingDown ? num(healthRow?.['cooldownUntil']) : null,
       },
       latencyMsP50: stat?.latencyMsP50 ?? null,
+      firstTokenMsP50: stat?.firstTokenMsP50 ?? null,
+      tokensPerSecondP50: stat?.tokensPerSecondP50 ?? null,
       requests24h: stat?.requests ?? 0,
     }]
   })
@@ -152,6 +168,7 @@ export function enrichCandidates(candidates: unknown, peers: unknown): RoutePrev
       inputUsdPerMillion: num(row['inputUsdPerMillion']),
       outputUsdPerMillion: num(row['outputUsdPerMillion']),
       trustScore: num(row['trustScore']) ?? trust,
+      selection: parseRouteSelection(row['selection']),
     }]
   })
 }
@@ -165,6 +182,49 @@ function range(values: Array<number | null>): { min: number; max: number } | nul
 
 function strings(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+}
+
+const ROUTER_OPTION_TYPES = new Set(['integer', 'number', 'boolean', 'string'])
+
+function routerOptions(value: unknown): NetworkRouterOption[] {
+  return rows(value).flatMap((row): NetworkRouterOption[] => {
+    const key = str(row['key'])
+    const type = str(row['type'])
+    if (!key || !type || !ROUTER_OPTION_TYPES.has(type)) return []
+    return [{ ...row, key, label: str(row['label']) ?? key, type } as NetworkRouterOption]
+  })
+}
+
+/**
+ * The buyer's `/v1/models?type=router` (one entry per routing service, each
+ * seller offering it under `peers`) as one router per seller, with trust and
+ * verification from the console's peer list.
+ */
+export function mapNetworkRouters(body: unknown, peers: readonly Peer[]): NetworkRouter[] {
+  const known = new Map(peers.map((peer) => [peerKey(peer.peerId), peer]))
+  return rows(asRecord(body)['data']).flatMap((row) => rows(row['peers']).flatMap((offer): NetworkRouter[] => {
+    const peerId = str(offer['peerId'])
+    const serviceId = str(offer['serviceId']) ?? str(row['id'])
+    if (!peerId || !serviceId) return []
+    const peer = known.get(peerKey(peerId))
+    const price = num(offer['priceUsdPerRequest'])
+    return [{
+      id: str(offer['model']) ?? `${peerId}@${serviceId}`,
+      peerId,
+      serviceId,
+      provider: str(offer['provider']) ?? '',
+      name: str(row['name']) ?? serviceId,
+      sellerName: str(offer['displayName']) ?? peer?.displayName ?? null,
+      protocol: str(offer['protocol']) ?? '',
+      options: routerOptions(offer['options']),
+      priceUsdPerRequest: price,
+      free: price === 0,
+      models: Array.isArray(offer['models']) ? strings(offer['models']) : null,
+      trustScore: peer?.trustScore ?? null,
+      verified: peer?.verified ?? false,
+      verificationLinks: peer?.verificationLinks ?? [],
+    }]
+  }))
 }
 
 /**
@@ -205,7 +265,10 @@ export function mapNetworkModels(body: unknown, peers: readonly Peer[]): Network
         verified: peer?.verified ?? false,
         verificationLinks: peer?.verificationLinks ?? [],
         tee: strings(offer['advertisedVerifierIds']).includes(TEE_VERIFIER_ID) || (peer?.tee ?? false),
+        teeScope: peer?.teeScope ?? null,
         latencyMsP50: peer?.latencyMsP50 ?? null,
+        firstTokenMsP50: peer?.firstTokenMsP50 ?? null,
+        tokensPerSecondP50: peer?.tokensPerSecondP50 ?? null,
       }]
     })
     const capabilityRows = rows(row['peers']).map((offer) => asRecord(offer['capabilities']))
@@ -220,6 +283,7 @@ export function mapNetworkModels(body: unknown, peers: readonly Peer[]): Network
       name: str(row['name']) ?? id,
       aliases: strings(row['aliases']).filter((alias) => alias !== id),
       type,
+      tags: modelTagsFor(id),
       contextLength: range(offers.map((offer) => offer.contextLength))?.max ?? num(row['context_length']),
       capabilities,
       sellers: new Set(offers.map((offer) => peerKey(offer.peerId))).size,
@@ -227,6 +291,7 @@ export function mapNetworkModels(body: unknown, peers: readonly Peer[]): Network
       outputUsdPerMillion: range(offers.map((offer) => offer.outputUsdPerMillion)),
       free: offers.some((offer) => offer.free),
       teeSellers: offers.filter((offer) => offer.tee).length,
+      fullTeeSellers: offers.filter((offer) => offer.teeScope === 'end-to-end').length,
       verifiedSellers: offers.filter((offer) => offer.verified).length,
       offers,
     }]

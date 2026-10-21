@@ -227,20 +227,40 @@ export interface ServiceMetadataDelta {
   videoSeconds?: bigint;
 }
 
-export function withServiceMetadata<T extends { services?: SpendingAuthServiceMetadata[] }>(
-  metadata: T,
-  service: string | undefined,
-  delta: ServiceMetadataDelta,
-): T {
-  if (!service || service.trim().length === 0) return metadata;
+/**
+ * Most service entries one metadata blob carries. Every SpendingAuth repeats the
+ * full metadata (twice when it carries a reserve batch), so an unbounded list
+ * grows with each distinct service a channel uses until the payment frame
+ * exceeds the 64 KiB payload limit and the seller drops every later auth.
+ * 32 entries keep a batched SpendingAuth well under that limit.
+ */
+export const MAX_METADATA_SERVICES = 32;
 
-  const serviceId = getServiceMetadataId(service);
-  const byServiceId = new Map<string, SpendingAuthServiceMetadata>();
-  for (const entry of metadata.services ?? []) {
-    byServiceId.set(entry.serviceId, { ...entry });
-  }
+/**
+ * Service entry that collects usage of services beyond MAX_METADATA_SERVICES.
+ * Attribution only: the aggregate counters still include every request.
+ */
+export const OTHER_SERVICES_METADATA_ID = id('antseed:other-services');
 
-  const existing = byServiceId.get(serviceId) ?? {
+function addServiceTotals(
+  target: SpendingAuthServiceMetadata,
+  source: SpendingAuthServiceMetadata,
+): SpendingAuthServiceMetadata {
+  return {
+    serviceId: target.serviceId,
+    cumulativeAmount: target.cumulativeAmount + source.cumulativeAmount,
+    cumulativeInputTokens: target.cumulativeInputTokens + source.cumulativeInputTokens,
+    cumulativeCachedInputTokens: target.cumulativeCachedInputTokens + source.cumulativeCachedInputTokens,
+    cumulativeOutputTokens: target.cumulativeOutputTokens + source.cumulativeOutputTokens,
+    cumulativeRequestCount: target.cumulativeRequestCount + source.cumulativeRequestCount,
+    cumulativeOutputImages: target.cumulativeOutputImages + source.cumulativeOutputImages,
+    cumulativeVideoGenerations: (target.cumulativeVideoGenerations ?? 0n) + (source.cumulativeVideoGenerations ?? 0n),
+    cumulativeVideoSeconds: (target.cumulativeVideoSeconds ?? 0n) + (source.cumulativeVideoSeconds ?? 0n),
+  };
+}
+
+function emptyServiceTotals(serviceId: string): SpendingAuthServiceMetadata {
+  return {
     serviceId,
     cumulativeAmount: 0n,
     cumulativeInputTokens: 0n,
@@ -251,6 +271,61 @@ export function withServiceMetadata<T extends { services?: SpendingAuthServiceMe
     cumulativeVideoGenerations: 0n,
     cumulativeVideoSeconds: 0n,
   };
+}
+
+function sortServices(services: Iterable<SpendingAuthServiceMetadata>): SpendingAuthServiceMetadata[] {
+  return [...services].sort((a, b) =>
+    a.serviceId < b.serviceId ? -1 : a.serviceId > b.serviceId ? 1 : 0,
+  );
+}
+
+/**
+ * Fold a service list that is longer than MAX_METADATA_SERVICES (metadata
+ * persisted before the cap existed) into the largest services by amount plus
+ * the OTHER_SERVICES_METADATA_ID entry. Lists within the cap are returned
+ * unchanged, so this is a no-op once accumulation goes through
+ * withServiceMetadata.
+ */
+export function boundServiceMetadata<T extends { services?: SpendingAuthServiceMetadata[] }>(metadata: T): T {
+  const services = metadata.services ?? [];
+  if (services.length <= MAX_METADATA_SERVICES) return metadata;
+
+  let other = emptyServiceTotals(OTHER_SERVICES_METADATA_ID);
+  const explicit: SpendingAuthServiceMetadata[] = [];
+  for (const entry of services) {
+    if (entry.serviceId === OTHER_SERVICES_METADATA_ID) other = addServiceTotals(other, entry);
+    else explicit.push(entry);
+  }
+  explicit.sort((a, b) =>
+    a.cumulativeAmount !== b.cumulativeAmount
+      ? (a.cumulativeAmount > b.cumulativeAmount ? -1 : 1)
+      : (a.serviceId < b.serviceId ? -1 : a.serviceId > b.serviceId ? 1 : 0),
+  );
+  const kept = explicit.slice(0, MAX_METADATA_SERVICES - 1);
+  for (const entry of explicit.slice(MAX_METADATA_SERVICES - 1)) other = addServiceTotals(other, entry);
+  return { ...metadata, services: sortServices([...kept, other]) };
+}
+
+export function withServiceMetadata<T extends { services?: SpendingAuthServiceMetadata[] }>(
+  metadata: T,
+  service: string | undefined,
+  delta: ServiceMetadataDelta,
+): T {
+  if (!service || service.trim().length === 0) return metadata;
+
+  const byServiceId = new Map<string, SpendingAuthServiceMetadata>();
+  for (const entry of boundServiceMetadata(metadata).services ?? []) {
+    byServiceId.set(entry.serviceId, { ...entry });
+  }
+  let serviceId = getServiceMetadataId(service);
+  const explicitCount = [...byServiceId.keys()].filter((key) => key !== OTHER_SERVICES_METADATA_ID).length;
+  if (!byServiceId.has(serviceId) && explicitCount >= MAX_METADATA_SERVICES - 1) {
+    // Services already listed keep their own entry (their totals only grow);
+    // new ones past the cap share the overflow entry.
+    serviceId = OTHER_SERVICES_METADATA_ID;
+  }
+
+  const existing = byServiceId.get(serviceId) ?? emptyServiceTotals(serviceId);
 
   byServiceId.set(serviceId, {
     serviceId,
@@ -264,12 +339,7 @@ export function withServiceMetadata<T extends { services?: SpendingAuthServiceMe
     cumulativeVideoSeconds: (existing.cumulativeVideoSeconds ?? 0n) + (delta.videoSeconds ?? 0n),
   });
 
-  return {
-    ...metadata,
-    services: [...byServiceId.values()].sort((a, b) =>
-      a.serviceId < b.serviceId ? -1 : a.serviceId > b.serviceId ? 1 : 0,
-    ),
-  };
+  return { ...metadata, services: sortServices(byServiceId.values()) };
 }
 
 export function computeMetadataHash(metadata: SpendingAuthMetadata): string {

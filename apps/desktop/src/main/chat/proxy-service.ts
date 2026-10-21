@@ -94,14 +94,14 @@ export function makeProxyService(
 export async function fetchProxyConversationRoute(
   port: number,
   conversationId: string,
-): Promise<{ peerId: string; service: string } | null> {
+): Promise<{ peerId: string; service: string; router: string | null } | null> {
   try {
     const id = encodeURIComponent(`vpr:${conversationId}`);
     const response = await fetch(`${LOCALHOST_URL}:${port}/_antseed/conversations/${id}`, {
       signal: AbortSignal.timeout(2_000),
     });
     if (!response.ok) return null;
-    const payload = await response.json() as { conversation?: { lastModel?: unknown } };
+    const payload = await response.json() as { conversation?: { lastModel?: unknown; lastRouter?: unknown } };
     const lastModel = typeof payload.conversation?.lastModel === 'string'
       ? payload.conversation.lastModel.trim()
       : '';
@@ -110,6 +110,10 @@ export async function fetchProxyConversationRoute(
     return {
       peerId: lastModel.slice(0, separator),
       service: lastModel.slice(separator + 1),
+      // The routing service that chose this model, when one did.
+      router: typeof payload.conversation?.lastRouter === 'string' && payload.conversation.lastRouter.trim()
+        ? payload.conversation.lastRouter.trim()
+        : null,
     };
   } catch {
     return null;

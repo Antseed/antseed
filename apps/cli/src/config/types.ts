@@ -287,6 +287,8 @@ export interface PaymentsCLIConfig {
   maxPerRequestUsdc?: string;
   /** Maximum total USDC the buyer will reserve in a single SpendingAuth in base units. Default: "1000000" ($1.00). */
   maxReserveAmountUsdc?: string;
+  /** Most the buyer pays for one video in base units; a gateway reserves up to this while a video is priced. Default: "5000000" ($5.00). */
+  maxVideoRequestUsdc?: string;
   /**
    * Optional on-chain seller contract (e.g. DiemStakingProxy). When set, the
    * peer publishes it in metadata; buyers verify the binding via

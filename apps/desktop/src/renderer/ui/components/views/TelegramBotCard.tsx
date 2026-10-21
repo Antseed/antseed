@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { ArrowUpRight01Icon, Copy01Icon, Settings02Icon, Tick02Icon } from '@hugeicons/core-free-icons';
-import { Modal } from '@antseed/ui';
+import { BrandIcon, Modal } from '@antseed/ui';
 import type { TelegramBridgeStatus } from '../../../types/bridge';
-import { BrandIcon } from '../brand/BrandIcon';
 import styles from './VprToolsView.module.scss';
 import { recordUserAction } from '../../../modules/telemetry/actions';
 

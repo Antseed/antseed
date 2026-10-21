@@ -1,6 +1,6 @@
-import type { Provider } from '../interfaces/seller-provider.js';
+import type { Provider, ServiceHealthStatus, UpstreamAccountStatus } from '../interfaces/seller-provider.js';
 import type { SerializedHttpRequest } from '../types/http.js';
-import { isNativeVideoProtocol, type ServiceApiProtocol } from '../types/service-api.js';
+import { isNativeVideoProtocol, isRoutingProtocol, type ServiceApiProtocol } from '../types/service-api.js';
 import { debugLog, debugWarn } from '../utils/debug.js';
 
 /** Default sweep interval. Each sweep sends one 1-token probe per advertised service. */
@@ -181,10 +181,75 @@ export class ModelHealthChecker {
         }
       }
 
+      const hasFreeCheck = (candidate?: Provider) => Boolean(candidate?.checkServiceHealth || candidate?.checkUpstreamAccount);
+      const checkProvider = hasFreeCheck(target.probeProvider) ? target.probeProvider! : provider;
+      const checked = hasFreeCheck(checkProvider)
+        ? [...services].filter((service) => !supportsHealthProbe(resolveProbeProtocol(provider, service)))
+        : [];
+      if (checked.length > 0) {
+        await this._checkServices(target, checkProvider, checked);
+      }
       for (const service of services) {
         if (this._stopped) return;
+        if (checked.includes(service)) continue;
         await this._probeService(target, service);
       }
+    }
+  }
+
+  /**
+   * Run the provider's free checks for services the probe skips: the
+   * upstream account check (key valid, account funded) once, and the model
+   * check (model still offered) for every service. A service is unavailable
+   * when either check says so, and available only when no check is unsure.
+   * `unavailable` counts as a failed check, `available` re-advertises,
+   * `unknown` changes nothing.
+   */
+  private async _checkServices(target: ModelHealthTarget, checkProvider: Provider, services: string[]): Promise<void> {
+    const provider = target.provider;
+    const timed = <T>(label: string, check: () => Promise<T>) => withTimeout(
+      Promise.resolve().then(check),
+      this._probeTimeoutMs,
+      `${label} for ${provider.name} timed out after ${this._probeTimeoutMs}ms`,
+    );
+    const [account, models] = await Promise.all([
+      checkProvider.checkUpstreamAccount
+        ? timed('account check', () => checkProvider.checkUpstreamAccount!())
+          .catch((err): UpstreamAccountStatus => ({ status: 'unknown', reason: `account check failed: ${err instanceof Error ? err.message : err}` }))
+        : undefined,
+      checkProvider.checkServiceHealth
+        ? timed('model check', () => checkProvider.checkServiceHealth!(services)).catch(() => null)
+        : undefined,
+    ]);
+    const balance = account?.status === 'available' ? account.balanceUsd : undefined;
+    const combine = (service: string): UpstreamAccountStatus => {
+      const model: ServiceHealthStatus | undefined = models === undefined
+        ? undefined
+        : models?.[service] ?? { status: 'unknown', reason: 'model check gave no result' };
+      const results = [account, model].filter((result): result is UpstreamAccountStatus => result !== undefined);
+      return results.find((result) => result.status === 'unavailable')
+        ?? results.find((result) => result.status === 'unknown')
+        ?? { status: 'available', balanceUsd: balance };
+    };
+    for (const service of services) {
+      if (this._stopped) return;
+      const result = combine(service);
+      const state = this._stateFor(provider.name, service);
+      if (result.status === 'unknown') {
+        debugLog(`[ModelHealth] ${provider.name}/${service}: inconclusive (${result.reason ?? 'no result'})`);
+        continue;
+      }
+      state.lastProbeAt = Date.now();
+      state.lastStatusCode = null;
+      if (result.status === 'unavailable') {
+        state.lastDetail = result.reason;
+        this._recordFailure(provider, state);
+        continue;
+      }
+      state.consecutiveFailures = 0;
+      if (!state.removed) continue;
+      state.lastDetail = balance === undefined ? 'Account check passed' : `Account check passed (balance $${balance.toFixed(2)})`;
+      this._restoreService(provider, state);
     }
   }
 
@@ -255,9 +320,13 @@ export class ModelHealthChecker {
       return;
     }
 
+    this._recordFailure(provider, state);
+  }
+
+  private _recordFailure(provider: Provider, state: ServiceHealthState): void {
     state.consecutiveFailures += 1;
     debugWarn(
-      `[ModelHealth] ${provider.name}/${service}: probe failed `
+      `[ModelHealth] ${provider.name}/${state.service}: health check failed `
       + `(${state.consecutiveFailures}/${this._failureThreshold}) — ${state.lastDetail}`,
     );
     if (!state.removed && state.consecutiveFailures >= this._failureThreshold) {
@@ -330,9 +399,7 @@ function resolveProbeProtocol(provider: Provider, service: string): ServiceApiPr
 }
 
 export function supportsHealthProbe(protocol: ServiceApiProtocol): boolean {
-  // Image generations cost real money per probe; everything else has a
-  // near-free minimal request shape.
-  return protocol !== 'openai-images' && !isNativeVideoProtocol(protocol);
+  return protocol !== 'openai-images' && !isRoutingProtocol(protocol) && !isNativeVideoProtocol(protocol);
 }
 
 /**

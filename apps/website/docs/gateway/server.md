@@ -163,7 +163,24 @@ You can also set **Base RPC URL** under **Settings → Buyer → Payments**. A v
 
 ## Upgrade
 
-Run the installer again with the same options. It upgrades the CLI and rewrites the services. Existing wallets and keys are kept, and no new key is created.
+**Settings → General → Updates** in the console shows the running version and npm's latest `@antseed/cli`. The gateway checks every 30 minutes and logs the first time it sees a newer version; **Check now** asks at once. Owners and admins also see a one-line notice above every page when a newer version is out, until they dismiss that version. Nothing installs until you choose to.
+
+Updating takes two steps, as in the desktop app:
+
+1. **Download** installs the new version next to the running one. The gateway keeps serving on the old version.
+2. **Restart & update** switches to it and restarts the buyer and gateway. The console reloads once the gateway is back.
+
+`antseed update` on the server does both at once. The services run as the unprivileged `antseed` user and cannot change `/opt/antseed`, so the console and `antseed update` only create `/var/lib/antseed/update-request`. The installer's `antseed-update.path` unit then starts the root `antseed-update.service`, which installs `@antseed/cli@latest` (the request can only pick the step, not another version) and records the result in `/var/lib/antseed-update/status.json`. **Restart & update** installs the version that was downloaded, even if npm has a newer one by then. Like the installer, the service runs `npm install` as root, so the package's install scripts, and those of its native dependencies, run as root too. An update the service could not finish (stopped, timed out after 15 minutes, or cut off by a reboot) shows as failed, and the services go back to the previous version when it was stopped part way. Logs: `journalctl -u antseed-update`.
+
+An update does not interrupt the gateway:
+
+- The new version is installed in its own `/opt/antseed/releases/<version>` while the running one keeps serving. `/opt/antseed/current` points at the version in use.
+- The buyer restarts first. The gateway holds requests that arrive meanwhile and sends them once the buyer is back.
+- Then the gateway restarts, and Caddy holds requests until it is back (up to 75 s). With a Cloudflare tunnel, the tunnel reconnects instead, so requests sent in those few seconds fail.
+- Each service gets up to a minute to finish the requests it is serving before it stops.
+- If the buyer or the gateway does not answer on the new version within two minutes, both go back to the previous version and the console shows why. Servers installed before this existed get the update service by re-running the installer once. A gateway not set up by the installer shows the command to run on its host instead.
+
+Run the installer again with the same options to upgrade the CLI and Node.js and rewrite the services. Existing wallets and keys are kept, and no new key is created.
 
 ## Uninstall
 

@@ -201,8 +201,7 @@ export class EmissionsClient extends BaseEvmClient {
     const connected = this._ensureConnected(signer);
     const signerAddress = await connected.getAddress();
     const contract = new Contract(this._contractAddress, EMISSIONS_ABI, connected);
-    const nonce = await this._reserveNonce(signerAddress);
-    const tx = await contract.getFunction('flushReserve')({ nonce });
+    const tx = await this._sendWithNonce(signerAddress, (nonce) => contract.getFunction('flushReserve')({ nonce }));
     const receipt = await tx.wait();
     if (!receipt) throw new Error('Transaction was dropped or replaced');
     return receipt.hash;

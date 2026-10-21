@@ -1,4 +1,4 @@
-import type { ChatModel, ChatModelPeer, RoutePreview } from '../api/types'
+import type { ChatModel, ChatModelPeer, RoutePreview, RouteSelection } from '../api/types'
 
 /** Filters and orderings for the chat's model and seller pickers (like the desktop app's model browser). */
 
@@ -65,12 +65,14 @@ export interface PeerVerdict {
   rank: number | null
   eligible: boolean
   reasons: string[]
+  /** Eligible sellers: what routing has seen of them. */
+  selection: RouteSelection | null
 }
 
 export function verdictsFrom(preview: RoutePreview | undefined): Map<string, PeerVerdict> {
   const verdicts = new Map<string, PeerVerdict>()
   for (const candidate of preview?.candidates ?? []) {
-    verdicts.set(candidate.peerId.toLowerCase(), { rank: candidate.rank, eligible: candidate.eligible, reasons: candidate.reasons })
+    verdicts.set(candidate.peerId.toLowerCase(), { rank: candidate.rank, eligible: candidate.eligible, reasons: candidate.reasons, selection: candidate.selection })
   }
   return verdicts
 }

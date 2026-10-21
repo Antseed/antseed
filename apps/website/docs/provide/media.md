@@ -35,7 +35,43 @@ A unit billing model maps a protocol key to a list of priced components:
 
 A component can carry a `match` object to price tiers. Match keys are `model`, `size`, `quality` and `resolution`, compared with the request's values. Every billed unit must match a component: a request that matches none is refused, not served for free.
 
-Image and video services stay advertised without health checks, because a probe would generate a paid result.
+Image and video services are not health-probed, because a probe would generate a paid result. The Venice and fal video plugins instead check for free on each health sweep: Venice reads the key's balance and its public model list, and fal reads its model list, plus the balance when `FAL_VIDEO_API_KEY` has fal's `billing:usage:read` permission. Without that permission the fal seller logs at startup that its balance check is off, and keeps selling. A model that fails these checks is unadvertised, and advertised again once they pass.
+
+## Routing services
+
+A routing service ranks other sellers for a buyer request; it does not serve inference. Routing is a service category, not one API: each routing API is its own service API protocol with its own provider plugin, and none is a default. Today's routing protocol is `irp-suggest` ([Inference Routing Protocol](https://github.com/inference-routing/spec) suggest-only mode). Bill one `completed_requests` unit per well-formed ranking. IRP paths name no service, so a seller can offer only one `irp-suggest` service.
+
+```json title="provider service settings"
+{
+  "services": ["alpha-route"],
+  "serviceApiProtocols": { "alpha-route": ["irp-suggest"] },
+  "serviceUnitBillingModels": {
+    "alpha-route": {
+      "irp-suggest": { "version": 1, "components": [{ "unit": "completed_requests", "priceUsd": 0.001 }] }
+    }
+  }
+}
+```
+
+The ranking price is separate from the token price of the seller that serves the inference. Errors and malformed rankings are not billed. Older buyers reject announcements containing `completed_requests`, so run routing services on separate peers until buyers upgrade. See [Model Routing](/docs/model-routing).
+
+Routing plugins:
+
+- `irp-router` serves any IRP router you run or use, forwarding both IRP endpoints to its URL:
+
+```bash
+antseed config seller add-provider router --plugin irp-router --base-url https://router.example.com
+antseed config seller add-service router my-router --input 0 --output 0
+```
+
+- `free-model-router` answers the IRP endpoints itself, lists `*` so buyers send candidates from their own catalog, ranks the free ones by their live Artificial Analysis score, and is free by default:
+
+```bash
+antseed config seller add-provider router --plugin free-model-router
+antseed config seller add-service router free-model-router --input 0 --output 0
+```
+
+Free rankings count toward `seller.freeTier` like any other free service.
 
 ## Image services
 
@@ -96,6 +132,8 @@ antseed config seller add-service video <video-model> \
 
 The service ID is sent unchanged as `model` to your API, so don't set `--upstream`. A `status` of `FAILED`, `ERROR` or `CANCELLED` ends the job unpaid.
 
+At startup the plugin also reads `GET /api/v1/models?type=video` and announces the queue fields each model takes as `supportedParameters`, so buyers send only those. If your server has no model list, set `supportedParameters` in `--capabilities` yourself, for example `["duration","image_url","prompt","resolution"]`.
+
 ### fal.ai models
 
 The `fal-video` plugin relays fal's queue API. The service ID must be the fal endpoint ID (at most 64 characters), and every service needs `fal-video` pricing:
@@ -107,6 +145,8 @@ antseed config seller add-provider fal --plugin fal-video
 antseed config seller add-service fal <fal-endpoint-id> \
   --unit-billing-models '{"fal-video":{"version":1,"components":[{"unit":"video_seconds","priceUsd":0.1}]}}'
 ```
+
+Requests are passed to fal unchanged. At startup the seller announces each endpoint's input field names from fal's schema as `supportedParameters`, so buyers can use the model's own field names (for example `start_image_url` for Kling V3).
 
 ### Video pricing
 

@@ -52,6 +52,18 @@ export const TRUSTED_PROVIDER_PLUGINS: TrustedPlugin[] = [
     description: 'TypeSafe System One decision-model provider (API key)',
     package: '@antseed/provider-typesafe',
   },
+  {
+    name: 'irp-router',
+    type: 'provider',
+    description: 'IRP routing service backed by any Inference Routing Protocol router (URL + optional key)',
+    package: '@antseed/provider-irp-router',
+  },
+  {
+    name: 'free-model-router',
+    type: 'provider',
+    description: 'IRP routing service that ranks the best free models among a buyer\'s candidates',
+    package: '@antseed/provider-free-model-router',
+  },
 ]
 
 export const TRUSTED_ROUTER_PLUGINS: TrustedPlugin[] = [

@@ -82,6 +82,7 @@ export class ChannelStore {
     getMaxNonce: Database.Statement;
     listAll: Database.Statement;
     getTimedOut: Database.Statement;
+    getUnsettledByStatus: Database.Statement;
     insertReceipt: Database.Statement;
     getReceipts: Database.Statement;
     updateReceiptAck: Database.Statement;
@@ -198,6 +199,9 @@ export class ChannelStore {
       ),
       getTimedOut: this._db.prepare(
         'SELECT * FROM payment_channels WHERE channel_kind = ? AND status = ? AND updated_at < ? ORDER BY updated_at LIMIT 100',
+      ),
+      getUnsettledByStatus: this._db.prepare(
+        'SELECT * FROM payment_channels WHERE role = ? AND status = ? AND settled_at IS NULL ORDER BY updated_at LIMIT ?',
       ),
       insertReceipt: this._db.prepare(`
         INSERT INTO payment_receipts (
@@ -457,6 +461,12 @@ export class ChannelStore {
   getTimedOutChannels(timeoutSeconds: number, channelKind: ChannelKind = CHANNEL_KIND.PAID): StoredChannel[] {
     const cutoff = Date.now() - timeoutSeconds * 1000;
     const rows = this._stmts.getTimedOut.all(channelKind, CHANNEL_STATUS.ACTIVE, cutoff) as ChannelRow[];
+    return rows.map(rowToChannel);
+  }
+
+  /** Channels of any kind in `status` with no settlement recorded, least recently updated first. */
+  getUnsettledChannelsByStatus(role: ChannelRole, status: ChannelStatus, limit = 100): StoredChannel[] {
+    const rows = this._stmts.getUnsettledByStatus.all(role, status, limit) as ChannelRow[];
     return rows.map(rowToChannel);
   }
 

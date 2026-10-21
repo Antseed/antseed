@@ -1,4 +1,4 @@
-import { shouldEmitDebugLine, type PeerInfo, type SerializedHttpRequest, type SerializedHttpResponse } from '@antseed/node'
+import { isRouterOptions, shouldEmitDebugLine, type PeerInfo, type RouterOptions, type SerializedHttpRequest, type SerializedHttpResponse } from '@antseed/node'
 import { extractRequestBodyFields, nativeVideoRoute, parseJsonObject, requestService } from '@antseed/api-adapter'
 
 function isTruthyDebugValue(value: string | undefined): boolean {
@@ -321,6 +321,11 @@ export const SYSTEM_PROXY_SOURCE_HEADER = 'x-antseed-system-proxy-source'
     means the default identity. Local to the buyer — stripped before dispatch. */
 export const BUYER_IDENTITY_HEADER = 'x-antseed-buyer-identity'
 
+/** The most a video create may cost, in USDC base units (the gateway sends what
+    is left of the key's spend limits). Can only lower the buyer's own video
+    limit. Local to the buyer — stripped before dispatch. */
+export const MAX_VIDEO_COST_HEADER = 'x-antseed-max-video-usdc'
+
 /**
  * Replace a proxy-assigned model with the chat's pinned route. Only used for
  * requests carrying SYSTEM_ROUTED_MODEL_HEADER — client-chosen models are
@@ -399,4 +404,35 @@ export function rewritePeerPinnedServiceInBody(
 
   const { body: rewritten, headers: updatedHeaders } = encodeRewrittenJsonBody(obj, headers)
   return { body: rewritten, headers: updatedHeaders, pinnedPeerId: parsed.peerId }
+}
+
+/**
+ * Per-request router settings: the body's optional `routing` object, in the serving router's
+ * protocol terms (for `irp-suggest`: `{ "cost_quality_tradeoff": 0-10 }`). They are checked
+ * against that router's protocol only once the request is known to go through a router.
+ */
+export type RequestRoutingOptions = RouterOptions
+
+/**
+ * Reads and removes the body's `routing` object, so it never reaches a seller.
+ * It only applies when the request is served through a routing service. A malformed one is
+ * still removed; `invalid` carries the error for the caller to report only when a router is
+ * used, so other requests drop it silently.
+ */
+export function takeRoutingOptions(
+  request: SerializedHttpRequest,
+): { kind: 'none' } | { kind: 'options'; request: SerializedHttpRequest; options: RequestRoutingOptions; invalid?: string } {
+  if (!getHeader(request.headers, 'content-type').toLowerCase().includes('application/json') || request.body.length === 0) {
+    return { kind: 'none' }
+  }
+  const obj = parseJsonObject(request.body)
+  if (!obj || !('routing' in obj)) return { kind: 'none' }
+  const routing = obj['routing']
+  delete obj['routing']
+  const { body, headers } = encodeRewrittenJsonBody(obj, request.headers)
+  const stripped = { ...request, body, headers }
+  if (routing === null || routing === undefined) return { kind: 'options', request: stripped, options: {} }
+  return isRouterOptions(routing)
+    ? { kind: 'options', request: stripped, options: { ...routing } }
+    : { kind: 'options', request: stripped, options: {}, invalid: '`routing` must be an object of router settings with string, number or boolean values.' }
 }

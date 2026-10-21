@@ -5,7 +5,7 @@ import type { VprFloatApp, VprFloatData } from '../../types/bridge';
 import { conversationAge, conversationMatchesApp } from '../../modules/routing/conversations';
 import { displayToolName } from '../../modules/routing/tool-names';
 import { VprMark } from '../components/VprLogo';
-import { BrandIcon, isThemeAwareAppBrand, resolveBrandKey } from '../components/brand/BrandIcon';
+import { BrandIcon, isThemeAwareAppBrand, resolveBrandKey } from '@antseed/ui';
 import { OverlayScrollArea } from '../components/OverlayScrollArea';
 import { VprBackTitle } from '../components/vpr/VprKit';
 import { VprModelRowList } from '../components/vpr/VprModelRows';

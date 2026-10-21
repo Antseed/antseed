@@ -55,7 +55,7 @@ export function App() {
   }, []);
 
   if (unauthorized) return <AuthGate />;
-  return <Shell theme={theme} toggleTheme={toggleTheme} />;
+  return <Dashboard theme={theme} toggleTheme={toggleTheme} />;
 }
 
 function AuthGate() {
@@ -85,7 +85,11 @@ function AuthGate() {
   );
 }
 
-function Shell({ theme, toggleTheme }: { theme: Theme; toggleTheme: () => void }) {
+/**
+ * The dashboard below the auth gate: config, overview, wallet session, jobs and
+ * the current page. The standalone app and the gateway console both render it.
+ */
+export function Dashboard({ theme, toggleTheme }: { theme: Theme; toggleTheme: () => void }) {
   const config = usePageData('config', api.config, Number.POSITIVE_INFINITY);
   const overview = usePageData('overview', api.overview);
   const route = useRoute();

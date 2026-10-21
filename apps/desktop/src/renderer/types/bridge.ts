@@ -355,9 +355,10 @@ export type DesktopBridge = {
   onTelegramStatusChanged?: (handler: (data: TelegramBridgeStatus) => void) => () => void;
   chatAiAbort?: (conversationId?: string) => Promise<{ ok: boolean }>;
   chatAiSelectPeer?: (payload: { conversationId?: string | null; peerId?: string | null; service?: string | null; provider?: string | null; routeMode?: 'auto' | 'pinned' | null }) => Promise<{ ok: boolean; error?: string }>;
-  chatSetBuyerDefaultRoute?: (payload: { peerId?: string; service: string }) => Promise<{ ok: boolean; error?: string }>;
+  chatGetRoutingServices?: () => Promise<{ ok: boolean; services?: import('../../shared/routing-selection.js').RoutingServiceEntry[]; error?: string }>;
+  chatSetBuyerDefaultRoute?: (payload: { selection: import('../../shared/routing-selection.js').DesktopRoutingSelection }) => Promise<{ ok: boolean; error?: string }>;
   chatSyncModelPicker?: (payload: import('../../shared/model-picker.js').ModelPickerSnapshot) => Promise<{ ok: boolean }>;
-  onChatDefaultRouteChanged?: (handler: (data: { peerId: string; service: string; provider: string | null }) => void) => () => void;
+  onChatDefaultRouteChanged?: (handler: (data: { peerId: string; service: string; provider: string | null; router?: import('../../shared/routing-selection.js').DesktopRouterSelection }) => void) => () => void;
   chatAiGetProxyStatus?: () => Promise<{ ok: boolean; data: { running: boolean; port: number } }>;
   apiTryProxyRequest?: (params: {
     port: number;
@@ -450,10 +451,12 @@ export type DesktopBridge = {
   paymentsOpenCardProvider?: (opts?: { providerId?: string; amountUsdc?: string }) => Promise<{ ok: boolean; url?: string; error?: string }>;
   /** Closes any app-owned Fun checkout/sign-in popup windows (login-only flows produce no deposit, so the deposit watcher can't close them). */
   paymentsCloseCheckoutWindows?: () => Promise<{ ok: boolean }>;
+  /** The buyer proxy's metering stats for one seller; null when the proxy is unreachable. */
+  paymentsGetPeerMetering?: (peerId: string) => Promise<Record<string, unknown> | null>;
   paymentsGetBuyerUsage?: () => Promise<{ ok: boolean; data: DesktopBuyerUsageTotals | null; error: string | null; lastActivityAt?: number | null }>;
   paymentsGetBuyerSpendHistory?: () => Promise<{ ok: boolean; data: DesktopBuyerSpendHistory | null; error: string | null }>;
   paymentsGetChannels?: (opts?: { fresh?: boolean }) => Promise<{ ok: boolean; data: DesktopPaymentChannelSummary[]; error: string | null }>;
-  paymentsRequestCooperativeClose?: (opts: { peerId: string }) => Promise<{
+  paymentsRequestCooperativeClose?: (opts: { peerId: string; channelId?: string }) => Promise<{
     ok: boolean;
     result: CooperativeCloseResult | null;
     error: string | null;

@@ -24,6 +24,7 @@ import type { BuyerFreeUsageManager } from './buyer-free-usage-manager.js';
 import { verifyResponseAuth, createStreamingResponseHash } from './response-auth.js';
 import { encodeHttpRequest, encodeHttpResponse } from '@antseed/protocol/request-codec';
 import { isFreeUnitBillingModel } from '@antseed/protocol/billing';
+import { findRoutingService, routingProtocolForPath, routingWireProtocol } from '@antseed/protocol/routing';
 import { isUnitBilledProtocol } from './unit-billing.js';
 import type { ServiceApiProtocol } from '@antseed/protocol/service-api';
 import {
@@ -47,6 +48,30 @@ export interface RequestStreamCallbacks {
   onResponseChunk?: (chunk: SerializedHttpResponseChunk) => void | Promise<void>;
 }
 
+/** On an accepted video create: the job's price in USDC base units, charged when the video is delivered. Set by the buyer only. */
+export const VIDEO_PRICE_HEADER = 'x-antseed-video-price-usdc';
+
+/**
+ * On a video retrieve answer: the buyer has retired the job (it failed, the
+ * seller no longer has it, or the buyer has no record of it), so it can never
+ * be delivered or charged. Set by the buyer only.
+ */
+export const VIDEO_JOB_RETIRED_HEADER = 'x-antseed-video-job-retired';
+
+/**
+ * On a video retrieve answer: `1` when the buyer accepted the streamed file
+ * as the finished video (readable, close enough to the requested duration)
+ * and recorded its delivery. A stream without it was not a delivery.
+ * `unrecorded` when the file is fine but the buyer could not yet save that
+ * the job is done: not reported as a delivery, but the job is not given up
+ * and may be downloaded again. Set by the buyer only.
+ */
+export const VIDEO_DELIVERED_HEADER = 'x-antseed-video-delivered';
+export const VIDEO_DELIVERY_UNRECORDED = 'unrecorded';
+
+/** Headers only the buyer may set: a seller's copy (in any letter case) is dropped from its responses. */
+const BUYER_ONLY_RESPONSE_HEADERS: ReadonlySet<string> = new Set([ANTSEED_FAULT_ATTRIBUTION_HEADER, VIDEO_PRICE_HEADER, VIDEO_JOB_RETIRED_HEADER, VIDEO_DELIVERED_HEADER]);
+
 export interface RequestExecutionOptions {
   signal?: AbortSignal;
   /** Skip payment/free-usage machinery for internal control-plane requests. */
@@ -55,6 +80,8 @@ export interface RequestExecutionOptions {
   pinned?: boolean;
   /** Persist exact signed request/response preimages for portable verifier evidence. */
   captureResponseAuthPreimages?: boolean;
+  /** Refuse a video create priced above this many USDC base units (the caller's remaining budget). */
+  maxVideoCostUsdc?: bigint;
 }
 
 export interface BuyerRequestHandlerConfig {
@@ -131,10 +158,16 @@ export class BuyerRequestHandler {
     }
 
     // Track which service the buyer requested so auth validation uses buyer's own pricing.
-    const requestedService = options?.controlPlane ? undefined : extractServiceFromBody(req);
+    const requestedService = options?.controlPlane ? undefined : extractRequestedService(peer, req);
     const requestProtocol = options?.controlPlane ? null : detectRequestServiceApiProtocol(req);
-    const adaptPeerResponse = (response: SerializedHttpResponse): SerializedHttpResponse =>
-      adaptPeerFaultErrorResponse(response, requestProtocol, { pinned: options?.pinned });
+    // Set when a video create is priced; reported on its accepted response so the caller can reserve it until delivery.
+    let videoPriceUsdc: bigint | undefined;
+    const adaptPeerResponse = (response: SerializedHttpResponse): SerializedHttpResponse => {
+      const adapted = adaptPeerFaultErrorResponse(response, requestProtocol, { pinned: options?.pinned });
+      if (videoPriceUsdc === undefined || adapted.statusCode < 200 || adapted.statusCode >= 300) return adapted;
+      const headers = Object.fromEntries(Object.entries(adapted.headers).filter(([name]) => name.toLowerCase() !== VIDEO_PRICE_HEADER));
+      return { ...adapted, headers: { ...headers, [VIDEO_PRICE_HEADER]: videoPriceUsdc.toString() } };
+    };
     const billingRoute = requestedService ? selectBillingRoute(peer, req, requestedService) : null;
     // Decide free vs paid from the resolved route (provider + protocol), mirroring
     // the seller's per-request gate so both sides classify the request the same way.
@@ -143,6 +176,8 @@ export class BuyerRequestHandler {
     const isFreeService = videoRoute?.action === 'retrieve' || (requestedService
       ? (billingRoute ? isBillingRouteFree(billingRoute) : isPeerServiceFree(peer, requestedService))
       : false);
+    // A free video costs nothing: say so, so a caller does not hold its whole budget for it.
+    if (videoRoute?.action === 'create' && isFreeService) videoPriceUsdc = 0n;
     if (negotiator && requestedService) {
       if (isFreeService) {
         negotiator.trackFreeUsageRequestService(req.requestId, requestedService);
@@ -164,7 +199,8 @@ export class BuyerRequestHandler {
             `Cannot send paid ${requestProtocol} request for service "${requestedService}" without service unit billing metadata`,
           );
         }
-        negotiator.trackRequestBillingContext(req, requestedService, billingRoute);
+        const price = negotiator.trackRequestBillingContext(req, requestedService, billingRoute, options?.maxVideoCostUsdc);
+        if (videoRoute?.action === 'create') videoPriceUsdc = price;
       }
     } else if (requestedService && isFreeService && this._deps.freeUsageManager) {
       this._deps.freeUsageManager.trackRequestService(req.requestId, requestedService);
@@ -182,6 +218,10 @@ export class BuyerRequestHandler {
     const trackedVideoRetrieve = Boolean(
       videoRoute && videoJobId && this._deps.negotiator?.bpm?.trackVideoRetrieve(peer.peerId, videoRoute.protocol, videoJobId, req.requestId),
     );
+    // Read now: the job's billing may leave the request cache while a long download streams.
+    const videoDuration = trackedVideoRetrieve && videoRoute && videoJobId
+      ? this._deps.negotiator?.bpm?.videoJobDuration(peer.peerId, videoRoute.protocol, videoJobId)
+      : undefined;
 
     let startTime = Date.now();
 
@@ -437,6 +477,7 @@ export class BuyerRequestHandler {
       if (!isFreeService) {
         negotiator.estimateCostFromResponse(peer, retriedResponse, requestedService, req.requestId);
       }
+      const retriedDelivered = this._recordVideoDelivery(peer, retriedResponse, trackedVideoRetrieve, videoDuration, videoRoute, videoJobId, req.requestId);
       this._recordResponseAuth(
         peer,
         req,
@@ -445,19 +486,13 @@ export class BuyerRequestHandler {
         verificationMux,
         options?.captureResponseAuthPreimages === true,
       );
-      return adaptPeerResponse(retriedResponse);
+      return withVideoDelivered(adaptPeerResponse(retriedResponse), retriedDelivered);
     }
 
     if (negotiator && !isFreeService) {
       negotiator.estimateCostFromResponse(peer, response, requestedService, req.requestId);
     }
-    if (
-      trackedVideoRetrieve && videoRoute && videoJobId
-      && nativeVideoDelivered(response, this._requestedVideoDuration(req.requestId))
-    ) {
-      this._deps.negotiator?.bpm?.recordVideoDelivered(peer.peerId, videoRoute.protocol, videoJobId, req.requestId);
-    }
-
+    const videoDelivered = this._recordVideoDelivery(peer, response, trackedVideoRetrieve, videoDuration, videoRoute, videoJobId, req.requestId);
     this._recordResponseAuth(
       peer,
       req,
@@ -466,12 +501,34 @@ export class BuyerRequestHandler {
       verificationMux,
       options?.captureResponseAuthPreimages === true,
     );
-    return adaptPeerResponse(response);
+    return withVideoDelivered(adaptPeerResponse(response), videoDelivered);
   }
 
-  private _requestedVideoDuration(requestId: string): number | undefined {
-    const facts = this._deps.negotiator?.bpm?.getRequestBilling(requestId)?.requestFacts;
-    return facts?.kind === 'video' ? facts.video.duration : undefined;
+  /**
+   * Whether a retrieve's answer is the finished video (readable, close enough
+   * to the requested duration). For a tracked job it is only once the delivery
+   * is recorded, which ends the job (it is charged once, and never again): a
+   * delivery whose job could not be removed from storage is `unrecorded`: the
+   * file is fine and the job is not given up, but it is not reported as
+   * delivered until the buyer has saved that it is done.
+   */
+  private _recordVideoDelivery(
+    peer: BuyerPeerView,
+    response: SerializedHttpResponse,
+    tracked: boolean,
+    duration: number | undefined,
+    videoRoute: ReturnType<typeof nativeVideoRoute>,
+    videoJobId: string | undefined,
+    requestId: string,
+  ): VideoDelivery {
+    if (videoRoute?.action !== 'retrieve' || !videoJobId) return null;
+    if (!nativeVideoDelivered(response, duration)) return null;
+    if (!tracked) {
+      return this._deps.negotiator?.bpm?.videoDeliveryUnsaved(peer.peerId, videoRoute.protocol, videoJobId) === true ? 'unrecorded' : 'delivered';
+    }
+    const recorded = this._deps.negotiator?.bpm?.recordVideoDelivered(peer.peerId, videoRoute.protocol, videoJobId, requestId);
+    if (recorded === 'recorded') return 'delivered';
+    return recorded === 'unsaved' ? 'unrecorded' : null;
   }
 
   private _prepareDirectFreeUsageOpen(peer: BuyerPeerView, conn: BuyerConnection): void {
@@ -547,7 +604,7 @@ export class BuyerRequestHandler {
           responsePreimage: capturePreimages
             ? encodeHttpResponse(stripStreamingHeader(response))
             : null,
-        });
+        }, { sellerPeerId: peer.peerId, requestedService: advertisedService });
 
         void this._deps.verificationSampler?.maybeStoreResponseAuthSample({
           request,
@@ -565,8 +622,15 @@ export class BuyerRequestHandler {
   }
 }
 
-/** Extract the service/model name from a JSON or multipart request body, or undefined if not found. */
-function extractServiceFromBody(request: SerializedHttpRequest): string | undefined {
+/**
+ * The requested service: on a routing protocol whose paths name no service, the peer's single
+ * service of that protocol; else `service`/`model` from a JSON or multipart body.
+ */
+function extractRequestedService(peer: BuyerPeerView, request: SerializedHttpRequest): string | undefined {
+  const routingProtocol = routingProtocolForPath(request.path);
+  if (routingProtocol && routingWireProtocol(routingProtocol).oneServicePerSeller) {
+    return findRoutingService(peer.providerServiceApiProtocols, routingProtocol)?.serviceId;
+  }
   if (nativeVideoRoute(request)) return requestService(request);
   const parsed = extractRequestBodyFields(request.headers, request.body);
   const service = parsed?.service ?? parsed?.model;
@@ -698,12 +762,20 @@ export function stripPeerControlledResponseHeaders(
 ): SerializedHttpResponse {
   const headers = Object.fromEntries(
     Object.entries(response.headers).filter(
-      ([name]) => name.toLowerCase() !== ANTSEED_FAULT_ATTRIBUTION_HEADER,
+      ([name]) => !BUYER_ONLY_RESPONSE_HEADERS.has(name.toLowerCase()),
     ),
   );
   return Object.keys(headers).length === Object.keys(response.headers).length
     ? response
     : { ...response, headers };
+}
+
+/** Marks a retrieve answer the buyer accepted as the finished video. */
+type VideoDelivery = 'delivered' | 'unrecorded' | null;
+
+function withVideoDelivered(response: SerializedHttpResponse, delivery: VideoDelivery): SerializedHttpResponse {
+  if (delivery === null) return response;
+  return { ...response, headers: { ...response.headers, [VIDEO_DELIVERED_HEADER]: delivery === 'delivered' ? '1' : VIDEO_DELIVERY_UNRECORDED } };
 }
 
 /** True when a 402 body carries the seller's payment_required contract (flat or wrapped). */

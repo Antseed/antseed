@@ -22,12 +22,12 @@ The **Overview** page shows this week's spend against the workspace budgets, the
 
 ## Logs
 
-**Logs** lists every request through the workspace's keys, newest first, with its model, key, provider, status, latency, tokens and cost. Search by model, key, end user or error, and filter by key, model, status (**Succeeded** or **Failed**) and a UTC date range.
+**Logs** lists every request through the workspace's keys, newest first, with its model, key, provider, status, time to first token, output speed, tokens and cost. Search by model, key, end user or error, and filter by key, model, status (**Succeeded** or **Failed**) and a UTC date range.
 
 Click a request to open its details:
 
 - Status, method and path, model, key, end user and provider (peer id).
-- Latency, duration, input, cached input and output tokens, and cost.
+- Time to first token and output speed (streamed requests only), duration, input, cached input and output tokens, and cost.
 - The request's tag, which identifies it in the CLI and exports.
 - For a failed request, its error code and message.
 - With content logging on, the request and response bodies.
@@ -67,7 +67,7 @@ antseed gateway export --from 2026-10-01 --output october.csv
 
 ## Audit log
 
-**Audit log** (organization owners and admins) records who changed what, with the time, the actor and their IP address: sign-ins and refused sign-ins, invites, members, workspaces, API keys, gateway routing, peer lists, presets, wallets and authorized-wallet changes, channel closes, settings and management tokens. Filter it by who or by kind of action, and click an entry for its details. Changes made from the CLI are recorded as `antseed CLI`.
+**Audit log** (organization owners and admins) records who changed what, with the time, the actor and their IP address: sign-ins and refused sign-ins, invites, members, workspaces, API keys, gateway routing, seller lists, presets, wallets and authorized-wallet changes, channel closes, settings and management tokens. Filter it by who or by kind of action, and click an entry for its details. Changes made from the CLI are recorded as `antseed CLI`.
 
 ```bash
 antseed gateway audit --action key --limit 50

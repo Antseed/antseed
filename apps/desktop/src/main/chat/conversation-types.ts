@@ -46,6 +46,10 @@ export type AiMessageMeta = {
   peerMaxConcurrency?: number;
   provider?: string;
   service?: string;
+  /** Display name of the seller that served the reply, when known. */
+  peerName?: string;
+  /** Routing service (`<peerId>@<serviceId>`) that chose the model; absent when the user chose it. */
+  router?: string;
   requestId?: string;
   routeRequestId?: string;
   latencyMs?: number;

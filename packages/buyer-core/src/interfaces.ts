@@ -73,9 +73,19 @@ export interface StoredResponseAuth extends ResponseAuthPayload {
   responsePreimage?: Uint8Array | null;
 }
 
+/**
+ * Who a receipt is for, from the buyer's own request: the peer it sent the
+ * request to and the service it asked for. A receipt's own peer and service
+ * fields are whatever the seller wrote, so only these can be trusted.
+ */
+export interface ResponseAuthContext {
+  sellerPeerId: string;
+  requestedService: string;
+}
+
 /** Sink for seller-signed per-response receipts (sqlite on node, optional elsewhere). */
 export interface ResponseAuthSink {
-  insertResponseAuth(record: StoredResponseAuth): void;
+  insertResponseAuth(record: StoredResponseAuth, context?: ResponseAuthContext): void;
 }
 
 export interface ResponseAuthSampleInput {

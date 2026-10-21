@@ -27,10 +27,14 @@ export const SESSION_RESERVE_BASE_UNITS = 1_000_000n;
 
 /**
  * The deposit watcher's smallest headroom-clamped top-up: when the wallet
- * holds more than the remaining credit-limit headroom, it waits until at
- * least this much headroom is free (MIN_TOPUP_BASE_UNITS in deposit-watcher).
+ * holds more than the remaining credit-limit headroom, it waits until half
+ * the limit (at least $1) is free (minTopupBaseUnits in deposit-watcher).
  */
 export const MIN_TOPUP_BASE_UNITS = 1_000_000n;
+export function minTopupBaseUnits(creditLimit: bigint): bigint {
+  const share = creditLimit / 2n;
+  return share > MIN_TOPUP_BASE_UNITS ? share : MIN_TOPUP_BASE_UNITS;
+}
 
 export type FundingStatusKind =
   | 'loading'
@@ -98,6 +102,16 @@ export function usdcToBaseUnits(value: string | null | undefined): bigint {
 /** How much more is needed to reach `need` from `have` (never negative). */
 export function shortfallBaseUnits(need: bigint, have: bigint): bigint {
   return need > have ? need - have : 0n;
+}
+
+/**
+ * What one more payment to the wallet must add before the deposit watcher
+ * moves it into the credits: every sweep (not only the first) needs the
+ * contract's minimum deposit plus the relay fee, net of what already sits in
+ * the wallet. Zero when the wallet already holds enough.
+ */
+export function sweepAmountNeeded(minDeposit: bigint, fee: bigint, wallet: bigint): bigint {
+  return shortfallBaseUnits(minDeposit + fee, wallet);
 }
 
 /**
@@ -208,10 +222,14 @@ export function deriveFundingStatus(inputs: FundingInputs): FundingStatus {
   // ── Credits exist; a top-up may be waiting in the wallet. ──
   // An unread credit limit (0) must not read as "at the limit".
   const headroom = creditLimit === 0n ? wallet : creditLimit > deposited ? creditLimit - deposited : 0n;
-  // Mirrors the watcher: a sweep clamped by headroom waits for a full top-up.
-  const waitsForHeadroom = headroom === 0n || (wallet - fee > headroom && headroom < MIN_TOPUP_BASE_UNITS);
-  const walletSweepable = wallet > fee && !waitsForHeadroom;
-  const walletAtLimit = wallet > fee && waitsForHeadroom && creditLimit > 0n;
+  // Mirrors the watcher: every sweep credits at least the deposit floor, and
+  // one clamped by headroom waits until half the limit is free, or only $1
+  // when the available credits can no longer open a session.
+  const sweepNeeds = minFirst + fee;
+  const topupFloor = available >= SESSION_RESERVE_BASE_UNITS ? minTopupBaseUnits(creditLimit) : MIN_TOPUP_BASE_UNITS;
+  const waitsForHeadroom = headroom === 0n || (wallet - fee > headroom && headroom < topupFloor);
+  const walletSweepable = wallet >= sweepNeeds && !waitsForHeadroom;
+  const walletAtLimit = wallet >= sweepNeeds && waitsForHeadroom && creditLimit > 0n;
 
   if (available < SESSION_RESERVE_BASE_UNITS) {
     // Money already on its way covers it — say so instead of asking for more.
@@ -246,7 +264,7 @@ export function deriveFundingStatus(inputs: FundingInputs): FundingStatus {
       'wallet-at-limit',
       'info',
       `${formatUsd(wallet)} waiting to top up your credits`,
-      "You're at your credit limit; this tops you up automatically as you spend.",
+      "You're near your credit limit; this tops you up automatically once you've spent half of it.",
     );
   }
   if (walletSweepable) return depositing();
@@ -255,7 +273,7 @@ export function deriveFundingStatus(inputs: FundingInputs): FundingStatus {
       'wallet-dust',
       'info',
       `${formatUsd(wallet)} waiting in your deposit wallet`,
-      `It's less than the ${feeText} network fee, so it's added with your next deposit.`,
+      `Deposits start at ${formatUsd(sweepNeeds)} (${formatUsd(minFirst)} + ${feeText} network fee), so it's added with your next one.`,
     );
   }
   return status('ready', 'ok', 'Ready to use', '');

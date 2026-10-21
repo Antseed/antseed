@@ -77,6 +77,8 @@ npm install -g @antseed/cli
 antseed --version
 ```
 
+`antseed update` installs newer versions later; see [Updating](/docs/commands#updating).
+
 Start the local buyer proxy:
 
 ```bash

@@ -39,3 +39,40 @@
   text-underline-offset: 3px;
   cursor: pointer;
 }
+
+.scope {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 220px;
+}
+
+.hops {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 16px;
+  padding-bottom: 6px;
+  margin-bottom: 2px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-primary);
+}
+
+.hop {
+  display: contents;
+  white-space: nowrap;
+}
+
+.hopStatus {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-weight: 600;
+}
+
+.hopOpen .hopStatus {
+  color: var(--text-muted);
+}
+
+.scopeTag {
+  gap: 4px;
+}

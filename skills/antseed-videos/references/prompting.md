@@ -28,10 +28,13 @@ Weak prompts usually stop at subject and motion and get a static camera in an un
 
 When a start frame (and end frame) is used, the image fixes the subject, scene, and style. The video prompt should be **motion + camera**: what moves, how fast, how the camera behaves, and where the shot ends. Do not re-describe the picture or a different scene; contradicting the frame causes jumps. Repeat one short style phrase so the model keeps it.
 
+## Reference-to-video
+
+Reference images keep a subject or style consistent; they do not set the opening shot, and the video's shape comes from `aspect_ratio`, not the images. The video prompt describes the whole scene, as in text-to-video, and says how each image is used ("the ant from @Image1 surfs a wave", "in the style of @Image2"). Use `@ImageN` names only for models that document them (Kling O3, Seedance 2.0 and 2.5 R2V, Gemini Omni Flash); otherwise describe the subject in words. Good references are clean, well-lit, one subject each, with a plain background, and at least 300 px on the short side for Venice.
+
 ## Frame prompts (for antseed-images)
 
-Make frames at the video's aspect ratio. Image sellers may return a different shape, so check each saved frame. A frame with the wrong shape is not reliably handled: some models keep the frame's shape, others reframe it.
-
+Ask for the video's aspect ratio when making frames. The frame's shape sets the video's shape whenever `aspect_ratio` is not sent ([requests.md](requests.md#aspect-ratio)). Image models often ignore the requested ratio, so crop every saved frame with `fit_frame` before the video step; this is the normal path, not a fallback. Keep the subject near the center of the frame prompt so the crop does not cut it off. A frame with the wrong shape is not reliably handled: some video models keep its shape and others reframe it.
 
 - A frame is a still: framing (wide, medium, close-up), subject pose, background, light, at one instant.
 - First and last frames share the same style phrase, subject wording, setting, and aspect ratio, and differ only in pose, position, or framing.
@@ -41,7 +44,7 @@ Make frames at the video's aspect ratio. Image sellers may return a different sh
 
 ## Per-model notes
 
-- **Seedance 2.0 / 2.5** (Venice `seedance-*-basic`): Venice's formula is *Subject + Motion + Environment + Camera movement or cut + Aesthetics + Audio*. Image-to-video variants take a first frame and optionally a last frame, and derive the aspect ratio from the image (do not send `aspect_ratio`). Strong at cinematic camera language: dolly zoom, rack focus, tracking shot, POV switch, handheld. Seedance 2.5 image-to-video runs up to 30 s. The Fast tier is lower fidelity (max 720p).
+- **Seedance 2.0 / 2.5** (Venice `seedance-*-basic`): Venice's formula is *Subject + Motion + Environment + Camera movement or cut + Aesthetics + Audio*. Image-to-video variants take a first frame and optionally a last frame, and derive the aspect ratio from the image. Strong at cinematic camera language: dolly zoom, rack focus, tracking shot, POV switch, handheld. Seedance 2.5 image-to-video runs up to 30 s. The Fast tier is lower fidelity (max 720p).
 - **MiniMax H3**: MiniMax's own API accepts a first frame, a last frame, or both; on Venice, use only the frames the seller advertises. In text-to-video, camera instructions can be placed in square brackets right after the description they apply to, for example `[pan]`, `[zoom]`, `[static]`. Prompts can be up to 7000 characters.
 - **Wan 3.0** (Alibaba): image-to-video prompt = *Motion + Camera movement*; use "fixed camera" to hold still. For several shots in one clip, number them with timings: `Shot 1 [0-3 s] ..., Shot 2 [3-6 s] ...`. Spoken lines in quotes are kept verbatim; write "No dialogue." to suppress speech.
 - **Veo 3.1** (Google): describe subject, action, style, camera position and motion, composition, focus, and ambiance. Audio: put dialogue in quotes and name sound effects and ambient noise explicitly. For things to avoid, list the unwanted elements ("wall, frame") rather than writing "no walls".

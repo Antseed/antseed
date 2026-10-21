@@ -5,10 +5,12 @@ import { delimiter, join } from 'node:path'
 import type { Command } from 'commander'
 import chalk from 'chalk'
 import ora from 'ora'
+import pkg from '../../../../package.json' with { type: 'json' }
 import { getGlobalOptions } from '../types.js'
 import { setupShutdownHandler } from '../../shutdown.js'
 import { errorMessage } from '../../../gateway/errors.js'
 import { startGatewayRuntime, type GatewayRuntime } from '../../../gateway/runtime.js'
+import { createGatewayUpdates } from '../../../gateway/updates.js'
 import { DEFAULT_GATEWAY_PORT, startGatewayBuyer, topupConfig } from '../gateway/shared.js'
 import { printConsoleInfo } from '../gateway/index.js'
 import { CONSOLE_LOCATION_SETTING, gatewayConsole, normalizePublicUrl } from '../../../gateway/console.js'
@@ -170,6 +172,7 @@ export function registerTunnelStartCommand(cmd: Command): void {
 
       const topup = topupConfig()
       const buyer = options.buyer ? await startGatewayBuyer(buyerPort, globalOptions, log) : null
+      const updates = createGatewayUpdates({ dataDir, current: pkg.version, log })
       const spinner = ora('Starting authenticated API gateway...').start()
       let gateway: GatewayRuntime
       try {
@@ -181,7 +184,7 @@ export function registerTunnelStartCommand(cmd: Command): void {
           environmentApiKey: apiKey || null,
           ...(topup ? { topup } : {}),
           ...(options.console
-            ? { createConsole: gatewayConsole({ dataDir, configPath: globalOptions.config, publicUrl: consolePublicUrl, log, trustCloudflareHeaders: provider === 'cloudflare' }) }
+            ? { createConsole: gatewayConsole({ dataDir, configPath: globalOptions.config, publicUrl: consolePublicUrl, log, trustCloudflareHeaders: provider === 'cloudflare', updates }) }
             : {}),
           onLog: log,
         })
@@ -251,10 +254,13 @@ export function registerTunnelStartCommand(cmd: Command): void {
         gateway.store.setSetting(CONSOLE_LOCATION_SETTING, { publicUrl: consoleOrigin, port: gateway.port })
       }
       printConsoleInfo(gateway, `${consoleOrigin}/console`)
+      updates.watch()
 
       setupShutdownHandler(async () => {
-        tunnelProcess?.kill('SIGTERM')
+        updates.stop()
+        // The gateway drains its requests in flight through the tunnel first.
         await gateway.stop()
+        tunnelProcess?.kill('SIGTERM')
         await unlink(tunnelPidFile(dataDir)).catch(() => undefined)
         await unlink(tunnelStateFile(dataDir)).catch(() => undefined)
         console.log(chalk.dim('Public HTTPS tunnel stopped.'))

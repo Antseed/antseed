@@ -51,6 +51,17 @@ antseed --data-dir ~/.antseed/buyer-identities/<identity> buyer deposit --no-wat
 
 For the Default workspace, use your data directory itself. Card checkout is only in the console.
 
+## Deposit confirmations
+
+**Deposits** on **Wallet & Funding** lists the money that came into the workspace, for workspace admins and organization admins: each transfer of USDC to the workspace wallet, and each direct deposit from a connected wallet. For each one it shows the date, the amount, where the USDC came from (a wallet, or new USDC from an exchange withdrawal or a card purchase) and whether someone approved it. The automatic moves from the wallet into the credits are not listed: one transfer can be moved in several pieces, and listing them would count the money twice.
+
+- **Approve** records your name, email and the time on the deposit, with an optional note such as a purchase order number. The approval is in the audit log, and **Remove approval** takes it back.
+- Click the amount or **View confirmation** for a printable confirmation: the workspace, the date, the amount, the workspace wallet, the transaction, where the USDC came from, and the approval. **Print or save as PDF** saves it for your books.
+
+The gateway checks every deposit against its transaction on Base, so the confirmation states only what the chain shows, with links to check it. It confirms a transfer into the workspace's prepaid credits and is not an invoice: no seller or other party issues one for a deposit.
+
+A transfer is listed once its USDC starts moving into the credits, usually within a minute. A move into the credits that was approved before transfers were listed stays listed with its approval, as **Moved into the credits**, for the amount it moved. The transfer that funded it is listed too and is approved on its own. For one that is missing, **Add a past deposit** takes the transaction that sent the USDC to the wallet, or your own deposit from a connected wallet.
+
 ## Balance and channels
 
 The **Balance** panel shows:
@@ -96,7 +107,7 @@ From the CLI, `antseed gateway workspace operator show <workspace>` reads the au
 
 ## Rewards
 
-**Rewards** shows the ANTS the workspace's usage has earned per epoch, what is ready to claim, and the authorized wallet. **Claim rewards** sends them to the authorized wallet, which you connect in the browser to sign. Without an authorized wallet, nothing can be claimed. [Recognized usage](/docs/recognized-usage) explains how rewards are earned.
+**Rewards** shows the ANTS the workspace's usage has earned per epoch, what is ready to claim, and the authorized wallet. **Claim rewards** sends them to the authorized wallet, which you connect in the browser to sign. Without an authorized wallet, nothing can be claimed. [Recognized usage](/docs/recognized-usage) explains how rewards are earned. Below them, **Staking rewards** shows what your staked positions have earned, to claim or restake with the wallet that holds them. To stake ANTS, including the workspace's buyer rewards, or to manage positions, open **Staking**; see [ANTS staking](/docs/provide/staking).
 
 ## Without a gateway
 

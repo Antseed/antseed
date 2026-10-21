@@ -1,0 +1,61 @@
+@use 'sass:meta';
+
+/* The dashboard inside another app (the gateway console). Every base and
+   component rule is scoped under `.ants-embed`, and the --pc-* roles map onto
+   the host's tokens, so the pages follow the host's theme and stay neutral.
+   Colour is kept for meaning: positive state, pending, slashing and errors. */
+
+.ants-embed {
+  --pc-bg: var(--page-bg);
+  --pc-panel: var(--card-bg);
+  --pc-panel-2: var(--box-bg);
+  --pc-ink: var(--text-primary);
+  --pc-sub: var(--text-secondary);
+  --pc-faint: var(--text-muted);
+  --pc-line: var(--border);
+  --pc-line-strong: var(--border-2);
+  --pc-btn: var(--accent);
+  --pc-btn-hover: var(--accent);
+  --pc-btn-ink: var(--accent-contrast);
+  --pc-accent: var(--success);
+  --pc-accent-bg: var(--success-dim);
+  --pc-accent-line: var(--success-border);
+  --pc-danger: var(--danger);
+  --pc-danger-bg: var(--danger-dim);
+  --pc-danger-line: var(--danger-border);
+  --pc-danger-ink: var(--page-bg);
+  --pc-ok: var(--success);
+  --pc-ok-bg: var(--success-dim);
+  --pc-ok-line: var(--success-border);
+  --pc-amber: var(--amber);
+  --pc-amber-bg: var(--amber-dim);
+  --pc-amber-line: var(--amber-border);
+  --pc-blue: var(--info);
+  --pc-shadow: none;
+  --pc-shadow-float: 0 24px 64px rgba(0, 0, 0, 0.28);
+  --pc-backdrop: rgba(0, 0, 0, 0.45);
+  --pc-glow: 0 0 0 1px var(--accent-border);
+  --pc-grid: transparent;
+  --font-sans: var(--gc-font, inherit);
+  --font-mono: var(--gc-mono, ui-monospace, Menlo, monospace);
+
+  font-family: var(--font-sans);
+  color: var(--pc-ink);
+  font-size: 14px;
+  line-height: 1.5;
+
+  @include meta.load-css('./styles/base');
+  @include meta.load-css('./styles/components');
+
+  .app--embedded { display: block; min-height: 0; }
+  .app--embedded > .main { max-width: none; margin: 0; padding: 0; }
+}
+
+.embedded-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-bottom: 18px;
+}
+.embedded-toolbar__wallet { margin-left: auto; min-width: 0; }

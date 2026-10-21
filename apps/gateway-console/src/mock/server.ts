@@ -11,15 +11,16 @@
  * member of Default and an admin of Research.
  */
 import type {
-  AdminToken, ApiKey, AuditEntry, BuyerLimits, GatewayExposure, GatewayExposureMode, Me, MeResponse, Member, RequestDetail, RequestLogEntry, RoutePreview, RoutingPolicy,
+  AdminToken, ApiKey, AuditEntry, BuyerLimits, DepositConfirmation, GatewayExposure, GatewayExposureMode, GatewayUpdate, Me, MeResponse, Member, RequestDetail, RequestLogEntry, RoutePreview, RoutingPolicy,
   UsageGroupBy, Workspace, WorkspaceRole,
+  RouteSelection,
 } from '../api/types'
 import { LIMIT_PERIODS } from '../lib/format'
 import { MASKED_VALUE } from '../lib/headers'
 import { tighterLimits } from '../lib/key-layers'
 import { samePeerId } from '../lib/peer-id'
 import { combinePolicies, expandLists } from '../lib/policy-match'
-import { fakeAddress, mockNetworkModels, seed } from './data'
+import { fakeAddress, mockNetworkModels, mockNetworkRouters, mockRouteSelection, seed } from './data'
 import { mockChatModels, mockChatStream, mockChatThread, mockChatThreads, mockDeleteChatThread } from './chat'
 import { mockOperatorState, OPERATOR_SCENARIOS, scenarioOperator, type OperatorScenario } from './operator'
 
@@ -30,6 +31,8 @@ class MockError extends Error {
 }
 
 const db = seed()
+/** The mock viewer's starred models: two to start, so the Favorites table shows. */
+const favorites = new Set<string>(['qwen3-coder-480b', `${db.peers[0]!.peerId}@fake-router`])
 const SESSION_KEY = 'antseed-console-mock-session'
 const roleMembers: Record<string, string> = { owner: 'mem_owner', admin: 'mem_ali', member: 'mem_sam', wsadmin: 'mem_wade' }
 /** Sign-ins newer than this count as fresh for operator authorization. */
@@ -107,6 +110,29 @@ function siweMessage(address: string): { message: string } {
 
 function keySession(): ApiKey | null {
   return session() === 'key' ? db.keys[2]! : null
+}
+
+const DAY_MS = 86_400_000
+const mockDepositsByWorkspace = new Map<string, DepositConfirmation[]>()
+/** New USDC from an exchange or card (minted, approved), a transfer from a wallet, and a direct deposit from a connected wallet. */
+function mockDeposits(workspaceId: string): DepositConfirmation[] {
+  const existing = mockDepositsByWorkspace.get(workspaceId)
+  if (existing) return existing
+  const ws = db.workspaces.find((entry) => entry.id === workspaceId)
+  const wallet = ws?.walletAddress ?? '0x0000000000000000000000000000000000000001'
+  const base = { kind: 'transfer' as const, wallet, workspaceId, workspaceName: ws?.name ?? 'Default', blockNumber: 52633916, fee: '0.000000' }
+  const hash = (n: string) => `0x${n.repeat(64).slice(0, 64)}`
+  const list: DepositConfirmation[] = [
+    { ...base, txHash: hash('b2'), reference: 'DEP-B2B2B2B2', sent: '500.000000', credited: '500.000000', time: Date.now() - 2 * DAY_MS,
+      sources: [{ from: '0x0000000000000000000000000000000000000000', amount: '500.000000', txHash: hash('b2'), minted: true }],
+      approval: { by: 'Ali Admin (ali@example.com)', at: Date.now() - DAY_MS, note: 'October AI budget' } },
+    { ...base, txHash: hash('d4'), reference: 'DEP-D4D4D4D4', sent: '100.000000', credited: '100.000000', time: Date.now() - 6 * DAY_MS,
+      sources: [{ from: '0x4f3a9c1b2d5e6f708192a3b4c5d6e7f8091a2b3c', amount: '100.000000', txHash: hash('d4'), minted: false }], approval: null },
+    { ...base, kind: 'direct', txHash: hash('e5'), reference: 'DEP-E5E5E5E5', sent: '50.000000', credited: '50.000000', time: Date.now() - 12 * DAY_MS,
+      sources: [{ from: '0x9b8a7c6d5e4f30211b2c3d4e5f6a7b8c9d0e1f2a', amount: '50.000000', txHash: hash('e5'), minted: false }], approval: null },
+  ]
+  mockDepositsByWorkspace.set(workspaceId, list)
+  return list
 }
 
 function currentMember(): Member {
@@ -220,6 +246,7 @@ function filterRequests(query: URLSearchParams): RequestDetail[] {
     && (!query.get('key') || request.keyId === query.get('key'))
     && (!query.get('member') || request.memberId === query.get('member'))
     && (!query.get('model') || (request.model ?? '').includes(query.get('model')!))
+    && (!query.get('router') || request.router?.peerId === query.get('router'))
     && (!query.get('status') || (query.get('status') === 'error' ? (request.status ?? 0) >= 400 : (request.status ?? 0) < 400))
     && (!q || [request.model, request.keyLabel, request.endUser, request.path, request.errorCode, request.errorMessage].some((field) => (field ?? '').toLowerCase().includes(q)))
     && request.startedAt >= from && request.startedAt <= to)
@@ -267,6 +294,7 @@ function groupKey(row: RequestLogEntry, groupBy: UsageGroupBy): [string, string]
     case 'key': return [row.keyId, row.keyLabel]
     case 'member': return [row.memberId ?? 'none', db.members.find((m) => m.id === row.memberId)?.label ?? 'None']
     case 'peer': return [row.sellerPeerId ?? 'none', db.peers.find((p) => p.peerId === row.sellerPeerId)?.displayName ?? row.sellerPeerId ?? 'No seller']
+    case 'router': return [row.router?.peerId ?? '', db.peers.find((p) => p.peerId === row.router?.peerId)?.displayName ?? row.router?.peerId ?? 'Not routed']
     case 'workspace': return [row.workspaceId, db.workspaces.find((w) => w.id === row.workspaceId)?.name ?? row.workspaceId]
     case 'user': return [row.endUser ?? 'none', row.endUser ?? 'Not sent']
   }
@@ -352,10 +380,11 @@ function preview(query: URLSearchParams): RoutePreview {
       return {
         peerId: peer.peerId, displayName: peer.name, rank: null, eligible,
         reasons: eligible ? [] : [`buyer config: trust ${Math.round(peer.reputation ?? 0)} below ${minTrust}`],
-        inputUsdPerMillion: peer.inputUsdPerMillion, outputUsdPerMillion: peer.outputUsdPerMillion, trustScore: peer.reputation,
+        inputUsdPerMillion: peer.inputUsdPerMillion, outputUsdPerMillion: peer.outputUsdPerMillion, trustScore: peer.reputation, selection: null as RouteSelection | null,
       }
     })
-    chatCandidates.filter((c) => c.eligible).sort((a, b) => (a.inputUsdPerMillion ?? 0) - (b.inputUsdPerMillion ?? 0)).forEach((c, index) => { c.rank = index + 1 })
+    const ready = chatCandidates.filter((c) => c.eligible).sort((a, b) => (a.inputUsdPerMillion ?? 0) - (b.inputUsdPerMillion ?? 0))
+    ready.forEach((c, index) => { c.rank = index + 1; c.selection = mockRouteSelection(index + 1, ready.length, index) })
     return { model, policy, sources, modelAllowed, candidates: chatCandidates }
   }
   const candidates = db.peers.filter((peer) => peer.services.some((service) => service.service === model)).map((peer) => {
@@ -370,9 +399,10 @@ function preview(query: URLSearchParams): RoutePreview {
     if (policy.requireTee && !peer.tee) reasons.push('no TEE')
     if (policy.requireVerified && !peer.verified) reasons.push('not verified')
     if (policy.maxInputUsdPerMillion !== undefined && (service.inputUsdPerMillion ?? 0) > policy.maxInputUsdPerMillion) reasons.push('over input price cap')
-    return { peerId: peer.peerId, displayName: peer.displayName, rank: null as number | null, eligible: reasons.length === 0, reasons, inputUsdPerMillion: service.inputUsdPerMillion, outputUsdPerMillion: service.outputUsdPerMillion, trustScore: peer.trustScore }
+    return { peerId: peer.peerId, displayName: peer.displayName, rank: null as number | null, eligible: reasons.length === 0, reasons, inputUsdPerMillion: service.inputUsdPerMillion, outputUsdPerMillion: service.outputUsdPerMillion, trustScore: peer.trustScore, selection: null as RouteSelection | null }
   })
-  candidates.filter((c) => c.eligible).sort((a, b) => (a.inputUsdPerMillion ?? 0) - (b.inputUsdPerMillion ?? 0)).forEach((c, index) => { c.rank = index + 1; c.reasons.push(index === 0 ? 'lowest price' : 'balanced score') })
+  const ready = candidates.filter((c) => c.eligible).sort((a, b) => (a.inputUsdPerMillion ?? 0) - (b.inputUsdPerMillion ?? 0))
+  ready.forEach((c, index) => { c.rank = index + 1; c.selection = mockRouteSelection(index + 1, ready.length, index) })
   return { model, policy, sources, modelAllowed, candidates }
 }
 
@@ -758,9 +788,39 @@ const routes: Array<[string, string, Handler]> = [
     return { entries: page.rows, nextBefore: page.nextBefore }
   }],
 
+  ['GET', '/workspaces/:id/deposits', ({ params }) => mockDeposits(params['id'] ?? '')],
+  ['POST', '/workspaces/:id/deposits', ({ params, body }) => {
+    const txHash = String(body?.txHash ?? '').toLowerCase()
+    if (!/^0x[0-9a-f]{64}$/.test(txHash)) throw new MockError(400, 'invalid_tx_hash', 'Paste the transaction hash (0x followed by 64 hex characters).')
+    const list = mockDeposits(params['id'] ?? '')
+    const known = list.find((entry) => entry.txHash === txHash)
+    if (known) return known
+    const added = { ...list[0]!, txHash, reference: `DEP-${txHash.slice(2, 10).toUpperCase()}`, time: Date.now() - 9 * DAY_MS, approval: null }
+    list.push(added)
+    return added
+  }],
+  ['PUT', '/workspaces/:id/deposits/:tx/approval', ({ params, body }) => {
+    const deposit = mockDeposits(params['id'] ?? '').find((entry) => entry.txHash === params['tx'])
+    if (!deposit) throw new MockError(404, 'not_found', 'Deposit not found.')
+    const me = currentMember()
+    deposit.approval = { by: me.email ? `${me.label} (${me.email})` : me.label, at: Date.now(), note: typeof body?.note === 'string' && body.note ? body.note : null }
+    return deposit
+  }],
+  ['DELETE', '/workspaces/:id/deposits/:tx/approval', ({ params }) => {
+    const deposit = mockDeposits(params['id'] ?? '').find((entry) => entry.txHash === params['tx'])
+    if (!deposit) throw new MockError(404, 'not_found', 'Deposit not found.')
+    deposit.approval = null
+    return deposit
+  }],
   ['GET', '/workspaces/:id/wallet', ({ params }) => {
     const { workspace: ws } = requireWorkspace(params['id']!, 'admin')
-    return { buyerIdentity: ws.buyerIdentity, address: ws.walletAddress, available: ws.isDefault ? '231.540000' : '0.120000', reserved: ws.isDefault ? '15.000000' : '0.000000', walletUsdc: '0.000000', creditLimit: '5000.000000', operator: currentOperator(ws, currentMember()), deposit: mockDepositWatch() }
+    // ?deposit=pending: $9.81 waits in the wallet for 8 seconds after load, then moves into the credits.
+    const pendingDeposit = new URLSearchParams(window.location.search).get('deposit') === 'pending'
+    const landed = pendingDeposit && performance.now() > 8_000
+    // ?balance=locked: nothing available, everything reserved in channels.
+    const locked = new URLSearchParams(window.location.search).get('balance') === 'locked'
+    const available = locked ? '0.000000' : ws.isDefault ? (landed ? '241.350000' : '231.540000') : '0.120000'
+    return { buyerIdentity: ws.buyerIdentity, address: ws.walletAddress, available, reserved: ws.isDefault ? '15.000000' : '0.000000', walletUsdc: pendingDeposit && !landed && ws.isDefault ? '9.810000' : '0.000000', creditLimit: '5000.000000', operator: currentOperator(ws, currentMember()), deposit: mockDepositWatch() }
   }],
   ['POST', '/workspaces/:id/wallet/card-link', ({ params, body }) => { requireWorkspace(params['id']!, 'admin'); return { url: `https://antseed-pay.com/?address=${fakeAddress(1)}&currency=USD&amount=${body?.amountUsd ?? 10}&integration=${body?.provider === 'stripe' ? 'stripe' : 'crossmint'}` } }],
   ['POST', '/workspaces/:id/wallet/watch', ({ params, body }) => { requireWorkspace(params['id']!, 'admin'); if (body.mode === 'active') depositDemoStartedAt ??= Date.now(); return { ...mockDepositWatch(), mode: body.mode } }],
@@ -791,7 +851,7 @@ const routes: Array<[string, string, Handler]> = [
   ['POST', '/workspaces/:id/channels/close', ({ params, body }) => {
     requireOrgAdmin()
     const list = db.channels[params['id']!] ?? []
-    const ch = list.find((c) => c.peerId === body.peerId)
+    const ch = list.find((c) => (body.channelId ? c.channelId === body.channelId : c.peerId === body.peerId))
     if (ch?.sellerName === 'Fake Seller Beta') throw new MockError(502, 'buyer_error', `A channel close request is already in flight for ${String(body.peerId).slice(0, 12)}...`)
     if (ch) { ch.status = 'settled'; ch.canCooperativeClose = false; ch.settled = ch.spent; ch.reserved = '0.000000' }
     return { ok: true }
@@ -801,6 +861,10 @@ const routes: Array<[string, string, Handler]> = [
 
   ['GET', '/peers', () => db.peers],
   ['GET', '/models', () => mockNetworkModels(db.peers)],
+  ['GET', '/routers', () => mockNetworkRouters(db.peers)],
+  ['GET', '/favorites', () => ({ models: [...favorites] })],
+  ['PUT', '/favorites/:model', ({ params }) => { favorites.delete(params['model']!); favorites.add(params['model']!) }],
+  ['DELETE', '/favorites/:model', ({ params }) => { favorites.delete(params['model']!) }],
   ['GET', '/route-preview', ({ query }) => preview(query)],
   ['GET', '/routing', () => { currentMember(); return db.gatewayPolicy }],
   ['GET', '/routing/buyer-limits', () => buyerLimits()],
@@ -827,6 +891,20 @@ const routes: Array<[string, string, Handler]> = [
   ['DELETE', '/presets/:id', ({ params }) => { editablePreset(params['id']); db.presets = db.presets.filter((x) => x.id !== params['id']) }],
 
   ['GET', '/status', () => ({ version: '0.1.0-mock', publicUrl: mockExposure === 'public' ? db.settings.publicUrl : null, buyer: { reachable: true, peers: db.peers.length, dhtNodes: 42, uptimeMs: 26 * 3600_000 }, spendFeed: 'local', x402: true, exposure: exposureFor(mockExposure) })],
+  ['GET', '/update', () => { requireOrgAdmin(); return mockUpdate() }],
+  ['POST', '/update/check', () => { requireOrgAdmin(); mockUpdateState.checkedAt = Date.now(); return mockUpdate() }],
+  ['POST', '/update', ({ body }) => {
+    requireOrgAdmin()
+    const update = mockUpdate()
+    if (update.apply !== 'console') throw new MockError(409, 'update_unsupported', `On its host, run: ${update.command}`)
+    if (!update.available) throw new MockError(409, 'up_to_date', 'Already the latest version')
+    const action = body?.action === 'download' ? 'download' : 'install'
+    if (action === 'download' && mockUpdateState.downloaded) return update
+    mockUpdateState.requestedAt = Date.now()
+    mockUpdateState.action = action
+    if (action === 'install') audit('gateway.update')
+    return mockUpdate()
+  }],
   ['GET', '/settings', () => { requireOrgAdmin(); return maskedSettings() }],
   ['PATCH', '/settings/buyer', ({ body }) => {
     requireOrgAdmin()
@@ -847,6 +925,55 @@ const routes: Array<[string, string, Handler]> = [
   }],
   ['PUT', '/settings/observability', ({ body }) => { requireOrgAdmin(); db.settings.observability = observability(body); return maskedSettings() }],
 ]
+
+/**
+ * `?update=available|command|current|desktop` on the first load picks what
+ * `/update` reports (default available; desktop is a gateway in the desktop
+ * app). An applied update waits 3 s for the update service, installs for
+ * 5 s, then reports the new version.
+ */
+const mockUpdateState = {
+  mode: 'available' as 'available' | 'command' | 'current' | 'desktop',
+  current: '0.1.180',
+  checkedAt: Date.now() - 20 * 60_000,
+  requestedAt: null as number | null,
+  action: 'install' as 'download' | 'install',
+  downloaded: false,
+}
+function mockUpdate(): GatewayUpdate {
+  const mode = mockUpdateState.mode
+  if (mode === 'desktop' && mockUpdateState.current === '0.1.180') mockUpdateState.current = '0.2.62'
+  const latest = mode === 'current' ? mockUpdateState.current : mode === 'desktop' ? '0.2.63' : '0.1.193'
+  const base: GatewayUpdate = {
+    product: mode === 'desktop' ? 'desktop' : 'cli',
+    current: mockUpdateState.current, latest, available: latest !== mockUpdateState.current, checkedAt: mockUpdateState.checkedAt, checkError: null, checksDisabled: false,
+    apply: mode === 'command' ? 'command' : 'console', install: mode === 'command' ? 'npm' : mode === 'desktop' ? 'desktop' : 'installer',
+    command: mode === 'command' ? 'npm install -g @antseed/cli@latest' : mode === 'desktop' ? null : 'antseed update',
+    note: mode === 'command' ? 'Installed globally with npm.'
+      : mode === 'desktop' ? 'Bundled with the desktop app, which installs the update and restarts.'
+      : 'Installed by the gateway installer; its root update service installs new versions and restarts the services.',
+    progress: null,
+    downloaded: null,
+  }
+  const at = mockUpdateState.requestedAt
+  const action = mockUpdateState.action
+  if (at === null) {
+    return mockUpdateState.downloaded
+      ? { ...base, downloaded: latest, progress: { state: 'ready', action: 'download', from: base.current, to: latest, startedAt: 1, finishedAt: 2, error: null } }
+      : base
+  }
+  const elapsed = Date.now() - at
+  if (elapsed < 1_500) return { ...base, progress: { state: 'requested', action, from: null, to: null, startedAt: at, finishedAt: null, error: null } }
+  if (elapsed < 6_000) return { ...base, progress: { state: 'running', action, from: base.current, to: latest, startedAt: at + 1_500, finishedAt: null, error: null } }
+  mockUpdateState.requestedAt = null
+  if (action === 'download') {
+    mockUpdateState.downloaded = true
+    return mockUpdate()
+  }
+  mockUpdateState.current = latest
+  mockUpdateState.downloaded = false
+  return { ...base, current: latest, available: false, progress: { state: 'succeeded', action, from: base.current, to: latest, startedAt: at + 1_500, finishedAt: at + 6_000, error: null } }
+}
 
 /** `?exposure=local|lan|public` on the first load picks what `/status` reports (default public). */
 let mockExposure: GatewayExposureMode = 'public'
@@ -888,6 +1015,10 @@ export function installMockApi(): void {
   const realFetch = window.fetch.bind(window)
   const exposureParam = new URLSearchParams(window.location.search).get('exposure')
   if (exposureParam === 'local' || exposureParam === 'lan' || exposureParam === 'public') mockExposure = exposureParam
+  const updateParam = new URLSearchParams(window.location.search).get('update')
+  if (updateParam === 'available' || updateParam === 'command' || updateParam === 'current' || updateParam === 'desktop') mockUpdateState.mode = updateParam
+  // `?update=ready`: the new version is downloaded and waits for Restart & update.
+  if (updateParam === 'ready') mockUpdateState.downloaded = true
   // `?mock=empty`: a gateway nothing has run through yet (no keys, no traffic), for the getting-started Overview.
   if (new URLSearchParams(window.location.search).get('mock') === 'empty') {
     db.keys.length = 0
@@ -896,6 +1027,14 @@ export function installMockApi(): void {
   }
   session()
   lastSignInAt = Date.now() - FRESH_MS - 1
+  // Staking pages read a live dashboard backend when Vite proxies one (`ANTSEED_ANTS_URL`);
+  // wallet actions then sign against that backend's chain.
+  const antsProxy = import.meta.env['VITE_ANTS_PROXY'] === '1'
+  const antsChain = antsProxy
+    ? realFetch('/__ants/api/config').then((response) => response.json()).then(({ data }: { data: { evmChainId: number; chainId: string; walletRpcUrl?: string } }) => {
+      db.chain = { ...db.chain, chainId: data.evmChainId, name: data.chainId, rpcUrl: data.walletRpcUrl ?? null, explorerUrl: null }
+    }).catch(() => undefined)
+    : Promise.resolve()
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(requestUrl(input), window.location.origin)
     if (!url.pathname.startsWith('/console/api/')) return realFetch(input, init)
@@ -903,6 +1042,12 @@ export function installMockApi(): void {
     const path = url.pathname.slice('/console/api'.length)
     await new Promise((resolve) => setTimeout(resolve, 150 + Math.random() * 200))
     if (method !== 'GET' && new Headers(init?.headers).get('x-antseed-console') !== '1') return json(403, { error: { code: 'csrf', message: 'Missing CSRF header.' } })
+    const staking = /^\/workspaces\/[^/]+\/ants\/(.+)$/.exec(path)
+    if (staking) {
+      if (!antsProxy) return json(503, { ok: false, error: 'The mock has no staking backend. Start `antseed ants --no-open` (or scripts/ants-sandbox.mjs) and run Vite with ANTSEED_ANTS_URL set to its URL.' })
+      return realFetch(`/__ants/api/${staking[1]}${url.search}`, { method, headers: { 'content-type': 'application/json' }, ...(init?.body ? { body: init.body } : {}) })
+    }
+    if (path === '/chain') await antsChain
     if (method !== 'GET' && keySession() && !path.startsWith('/auth/')) return json(403, { error: { code: 'forbidden', message: 'API-key sessions are read-only' } })
     if (method === 'POST' && path === '/chat') return mockChatStream(init?.body ? JSON.parse(String(init.body)) : {})
     const route = match(method, path)
@@ -916,5 +1061,5 @@ export function installMockApi(): void {
       return json(500, { error: { code: 'mock_error', message: String(error) } })
     }
   }
-  console.info('[antseed console] Mock API active. Switch identity with ?as=owner|admin|wsadmin|member|key|out, reachability with ?exposure=local|lan|public')
+  console.info('[antseed console] Mock API active. Switch identity with ?as=owner|admin|wsadmin|member|key|out, reachability with ?exposure=local|lan|public, updates with ?update=available|command|current|desktop')
 }

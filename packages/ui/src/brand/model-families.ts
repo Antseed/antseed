@@ -1,5 +1,7 @@
-import type { VprModelCatalogEntry } from '../../core/state';
-import { resolveBrandKey, type BrandKey } from '../../ui/components/brand/BrandIcon';
+import { resolveBrandKey, type BrandKey } from './BrandIcon';
+
+/** What a family is read from: the provider slug and the model's display label. */
+export type ModelFamilySource = { provider: string; label: string };
 
 /**
  * Model family (lab/vendor) names for catalog filtering, keyed by the brand
@@ -23,13 +25,13 @@ const FAMILY_LABELS: Partial<Record<BrandKey, string>> = {
   llama: 'Meta',
 };
 
-export function modelFamilyLabel(entry: Pick<VprModelCatalogEntry, 'provider' | 'label'>): string | null {
+export function modelFamilyLabel(entry: ModelFamilySource): string | null {
   return FAMILY_LABELS[resolveBrandKey(entry.provider, entry.label)] ?? null;
 }
 
 /** Unique family names present in the catalog, alphabetized for the filter pill. */
 export function availableModelFamilies(
-  entries: readonly Pick<VprModelCatalogEntry, 'provider' | 'label'>[],
+  entries: readonly ModelFamilySource[],
 ): string[] {
   const families = new Set<string>();
   for (const entry of entries) {

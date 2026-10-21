@@ -30,25 +30,25 @@ Routing policies apply to pinned requests too: a pinned provider that your polic
 Click a model to open its panel:
 
 - The model id with a copy button, its type, context length, capabilities (tool use, reasoning, structured output, vision) and aliases.
-- **Providers**: every provider offering the model, with its price, trust score and latency. Each row has a copy button for the pinned id `<peerId>@<model>`, verified domain or GitHub links when the provider has them, and a link to the provider on **Providers**.
+- **Providers**: every provider offering the model, with its price, trust score, time to first token and output speed. Each row has a copy button for the pinned id `<peerId>@<model>`, verified domain or GitHub links when the provider has them, and a link to the provider on **Providers**.
 - **API call**: a request for the model. The selector defaults to **Best provider (automatic)**. Pick a provider in it, or click **Pin** on a provider row, to get the pinned version instead.
 
-Image models get a `/v1/images/generations` call. Video models are listed but are not served through the gateway's `/v1` API.
+Image models get a `/v1/images/generations` call. Video models are served through the gateway's [video job routes](/docs/gateway/api#supported-routes), which the panel does not generate a call for yet.
 
 The Models page shows the whole network, without any routing policy applied. A client calling `GET /v1/models` with an API key that has an allow list of models only sees the models that key may use.
 
 ## Providers page
 
-**Providers** lists the providers the gateway's buyer knows, with prices, trust score, reputation (when available), the latency this gateway measured, and how many requests this gateway sent them in the last 24 hours. Filter by name, peer id or model, or turn on **Domain or GitHub**, **TEE** or **Free**. Badges show **TEE**, **Free**, **Flagged** and **Cooling down** (a provider that failed recently and is skipped for a while).
+**Providers** lists the providers the gateway's buyer knows, with prices, trust score, reputation (when available), the median time to first token and output speed (tokens per second) on this gateway's streamed requests, and how many requests this gateway sent them in the last 24 hours. Filter by name, peer id or model, or turn on **Domain or GitHub**, **TEE** or **Free**. Badges show **TEE**, **Free**, **Flagged** and **Cooling down** (a provider that failed recently and is skipped for a while).
 
 Click a provider to open its panel:
 
-- Its peer id with a copy button, verified links, trust score, stake, network usage share, latency and recent failures.
+- Its peer id with a copy button, verified links, trust score, stake, network usage share, time to first token, output speed and recent failures.
 - **Allow**, **Prefer** and **Block**, which add this provider to a routing policy. You choose the scope in **Apply to**: the gateway default, a workspace's organization or workspace policy, a member or an API key. The other settings of that policy stay as they are. See [Routing policies and presets](/docs/gateway/routing).
 - **Models**: each model the provider offers, with its price, the API it speaks, a copy button for `<peerId>@<model>` and an **API call** button.
 - **API call**: ready-to-run requests pinned to this provider.
 
-Below the list, **Peer lists** holds named groups of providers that routing policies can allow or block in one step.
+Named groups of providers that routing policies allow or block in one step are managed under **Routing → Seller lists**. See [Seller lists](/docs/gateway/routing#seller-lists).
 
 Panel addresses can be bookmarked or shared: `/console/models/<model>` and `/console/providers/<peerId>`. Older `/console/network/…` links open **Providers**.
 

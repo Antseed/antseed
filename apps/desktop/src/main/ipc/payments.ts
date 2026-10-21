@@ -59,7 +59,7 @@ import {
   startPaymentsPortal,
 } from '../payments/portal.js';
 import { closeCheckoutWindows, openCheckoutPopup } from '../payments/checkout-window.js';
-import { resolveCardProviderUrl, signAntseedPayUrl } from '@antseed/payments/card-link';
+import { antseedPayLinkAmount, resolveCardProviderUrl, signAntseedPayUrl } from '@antseed/payments/card-link';
 import { createPeerPayCheckout } from '../payments/peer-pay.js';
 import { getMainWindow } from '../ui/window.js';
 import {
@@ -160,7 +160,15 @@ export function registerPaymentsIpc(): void {
         openCheckoutPopup(checkoutUrl, getMainWindow());
         return { ok: true };
       }
-      const amountStr = hasAmount ? String(amount) : '';
+      // Antseed Pay refuses a link without an amount, or with one outside
+      // its $1–$200 / two-decimal rules, as "invalid or was altered" — and the
+      // Add Credits chooser opens it with no amount entered. Sign the amount
+      // the page accepts (the entered one, else the $20 default);
+      // the user can still change it on the page.
+      const payPage = payPageProvider(provider.id);
+      const amountStr = payPage
+        ? antseedPayLinkAmount(hasAmount ? amount : '')
+        : hasAmount ? String(amount) : '';
       let parsed: URL;
       try {
         parsed = resolveCardProviderUrl(provider.url, identity.wallet.address, amountStr);
@@ -171,7 +179,6 @@ export function registerPaymentsIpc(): void {
       // Antseed Pay authenticates the request: a personal-sign signature over
       // the buyer address, currency and amount (see @antseed/payments/card-link,
       // shared with the gateway console so both build the same link).
-      const payPage = payPageProvider(provider.id);
       if (payPage) {
         await signAntseedPayUrl(parsed, { wallet: identity.wallet, amount: amountStr, integration: payPage });
       }
@@ -354,6 +361,11 @@ export function registerPaymentsIpc(): void {
     }
   });
 
+  ipcMain.handle('payments:get-peer-metering', async (_event, peerId: unknown): Promise<Record<string, unknown> | null> => {
+    if (typeof peerId !== 'string' || peerId.length === 0) return null;
+    return fetchBuyerProxyJson(`/_antseed/metering/${encodeURIComponent(peerId)}`);
+  });
+
   ipcMain.handle('payments:get-buyer-usage', async (): Promise<{ ok: boolean; data: DesktopBuyerUsageTotals | null; error: string | null; lastActivityAt: number | null }> => {
     const body = await fetchBuyerProxyJson('/_antseed/buyer-usage');
     if (!body) {
@@ -395,13 +407,14 @@ export function registerPaymentsIpc(): void {
     return { ok: true, data: channels, error: null };
   });
 
-  ipcMain.handle('payments:request-cooperative-close', async (_event, opts?: { peerId?: string }) => {
+  ipcMain.handle('payments:request-cooperative-close', async (_event, opts?: { peerId?: string; channelId?: string }) => {
     const peerId = typeof opts?.peerId === 'string' ? opts.peerId.trim() : '';
     if (!peerId) {
       return { ok: false, result: null, error: 'Invalid peerId' };
     }
+    const channelId = typeof opts?.channelId === 'string' ? opts.channelId.trim() : '';
     try {
-      const result = await requestCooperativeChannelClose(peerId);
+      const result = await requestCooperativeChannelClose(peerId, channelId || undefined);
       invalidateChainReads();
       return { ok: true, result, error: null };
     } catch (err) {

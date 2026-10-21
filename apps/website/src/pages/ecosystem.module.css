@@ -268,6 +268,46 @@
   font-style: normal;
 }
 
+.previewSeed {
+  padding: 14px;
+  background: #0e1a38;
+  color: #f4efe6;
+}
+
+.previewSeed .previewTop span {
+  color: #d4a074;
+  font-size: 16px;
+}
+
+.seedAsk {
+  margin-top: 14px;
+  padding: 11px 13px;
+  border: 1px solid rgba(212, 160, 116, 0.32);
+  border-radius: 10px;
+  background: #16244a;
+  font-family: var(--as-font-data);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.seedSteps {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.seedSteps span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: #e6eaf2;
+}
+
+.seedSteps b {
+  color: #d4a074;
+}
+
 .previewDiem {
   padding: 16px;
   background:

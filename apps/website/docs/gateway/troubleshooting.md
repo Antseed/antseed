@@ -19,21 +19,26 @@ Find the error code or symptom, then apply the fix. API errors from the gateway 
 | `401 invalid_api_key` | The key is wrong, or isn't a key of this gateway. | Check the `Authorization: Bearer` header and the base URL. |
 | `401 key_revoked`, `401 key_expired` | The key was revoked, its owner was disabled, or it passed its expiry date. | Create a new key, or ask an admin to. See [API keys](/docs/gateway/api). |
 | `402 spend_limit_reached` | A budget ran out: the key's, its owner's or its workspace's. `error.limit` says which `level` (`key`, `member` or `workspace`), which `period`, and `resets_at`. | Wait for `resets_at`, or have an admin raise the limit. See [Budgets and spend limits](/docs/gateway/budgets). |
-| `403 model_not_allowed` | A routing policy on the key, its owner, its workspace or the gateway has an allow list of models, and the request named another model, or none. | Use an allowed model, or have an admin add it. The **Routing** page's route preview shows the effective policy. See [Routing policies and presets](/docs/gateway/routing). |
+| `403 model_not_allowed` | A routing policy on the key, its owner, its workspace or the gateway has an allow list of models, and the request named another model, or none. | Use an allowed model, or have an admin add it. **Try a request** on the **Routing** page names the level whose rule blocks the model. See [Routing policies and presets](/docs/gateway/routing). |
 | `400 preset_not_found` | The request used `@preset/<slug>` with a slug that doesn't exist. | Check the slug on the **Presets** page. |
 | `502 buyer_unavailable` | The gateway can't reach its buyer. | Check that the buyer is running (`journalctl -u antseed-buyer` on an installed server) and that `--buyer-port` matches it. |
 | `503 spend_tracking_unavailable` | The gateway can't confirm spend with the buyer, so it won't let paid requests through. See [below](#503-spend_tracking_unavailable). | |
+| `422 buyer-budget-too-low` | A video costs more than is left under the key's limits. | Use a cheaper or shorter video, or have an admin raise the limit. See [Videos](/docs/gateway/budgets#videos). |
+| `404 video_route_not_found` | The video job is unknown, failed, or was created with another key. | Poll and download a video with the key that created it. |
+| `429 video_pricing_in_progress` | A video started on the same limit is still being priced and holds what it may cost. | Retry after the `Retry-After` seconds. |
+| `503 buyer_upgrade_required` | A key with limits created a video, and the buyer is too old to check the price against the limit. | Upgrade the buyer to the gateway's version. |
 | `503 routing_policy_unavailable`, `503 buyer_policy_unsupported` | The key has a policy that restricts sellers, and the buyer can't apply it. | Upgrade the buyer to the gateway's version, and run both with the same data dir. |
 
 Requests the gateway refuses itself (an invalid key, a disallowed model, a spent budget) are not added to the request log.
 
 ### 503 spend_tracking_unavailable
 
-The message says which of three causes applies:
+The message says which of four causes applies:
 
 - **"The buyer for this API key is not reachable."** The buyer isn't running, or listens on another port. Start it, or point the gateway at it with `--buyer-port`.
 - **"…does not report spend to this gateway; the buyer rejected the gateway control secret…"** The gateway and buyer don't share the control secret in `<data-dir>/gateway/buyer-control.secret`. Run both with the same `--data-dir`, or set `ANTSEED_GATEWAY_CONTROL_SECRET` to the same value for both.
 - **"…does not report spend; upgrade it to enforce spend limits."** The buyer is older than the gateway. Upgrade the CLI (on a server, re-run the [installer](/docs/gateway/server#upgrade)).
+- **"…video jobs could not be stored."** The gateway could not write its database (for example, another process holds it locked). It retries on the next request.
 
 ## Console problems
 

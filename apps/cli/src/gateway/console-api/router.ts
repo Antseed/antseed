@@ -62,7 +62,7 @@ export interface Route {
 
 /**
  * Minimal method + path router. Patterns use `:name` segments, e.g.
- * `/workspaces/:id/members/:memberId`. Feature modules export a
+ * `/workspaces/:id/members/:memberId`, and may end in `*` for the rest of the path. Feature modules export a
  * `register…Routes(router, deps)` function that calls `router.add`.
  */
 export class ConsoleRouter {
@@ -77,10 +77,14 @@ export class ConsoleRouter {
     for (const route of this._routes) {
       if (route.method !== method.toUpperCase()) continue
       const pattern = route.pattern.split('/').filter(Boolean)
-      if (pattern.length !== segments.length) continue
+      // A trailing `*` matches one or more further segments, kept as written in `params['*']`.
+      const rest = pattern[pattern.length - 1] === '*'
+      const fixed = rest ? pattern.length - 1 : pattern.length
+      if (rest ? segments.length <= fixed : pattern.length !== segments.length) continue
       const params: Record<string, string> = {}
+      if (rest) params['*'] = segments.slice(fixed).join('/')
       let ok = true
-      for (let index = 0; index < pattern.length; index += 1) {
+      for (let index = 0; index < fixed; index += 1) {
         const part = pattern[index]!
         const segment = segments[index]!
         if (part.startsWith(':')) {

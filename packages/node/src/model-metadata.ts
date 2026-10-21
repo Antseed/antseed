@@ -1,4 +1,4 @@
-import { canonicalModelKey } from '@antseed/node/model-identity';
+import { canonicalModelKey } from './model-identity.js';
 import registry from './model-metadata.json' with { type: 'json' };
 
 export type ModelMetadata = {
@@ -36,4 +36,22 @@ for (const [registeredId, metadata] of Object.entries(modelMetadataRegistry.mode
 /** Release-owned model metadata that cannot be expanded by a seller. */
 export function modelMetadataFor(serviceId: string): ModelMetadata | null {
   return metadataByCanonicalKey.get(canonicalModelKey(serviceId)) ?? null;
+}
+
+/** Tags the model pickers do not offer as filters. */
+const HIDDEN_MODEL_TAGS = new Set(['Video input']);
+
+/** The reviewed tags of a model (e.g. Coding, Reasoning, Vision), as the model pickers show them. */
+export function modelTagsFor(serviceId: string): string[] {
+  return (modelMetadataFor(serviceId)?.tags ?? [])
+    .filter((tag) => !HIDDEN_MODEL_TAGS.has(tag));
+}
+
+/** Every tag the given models carry, deduplicated and alphabetized. */
+export function availableModelTags(serviceIds: readonly string[]): string[] {
+  const tags = new Set<string>();
+  for (const serviceId of serviceIds) {
+    for (const tag of modelTagsFor(serviceId)) tags.add(tag);
+  }
+  return [...tags].sort((a, b) => a.localeCompare(b));
 }

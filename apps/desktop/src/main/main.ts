@@ -11,6 +11,7 @@ import electronUpdater from 'electron-updater';
 const { autoUpdater } = electronUpdater;
 import {
   ProcessManager,
+  resolveConnectDataDir,
   type RuntimeMode,
   type RuntimeProcessState,
   type StartOptions,
@@ -95,6 +96,7 @@ import { createTelemetryService } from './telemetry/telemetry.js';
 import { setTelemetryService } from './telemetry/runtime.js';
 import { firstChatDepositSnapshot } from './telemetry/events.js';
 import { refreshCreditsInfo } from './payments/credits.js';
+import { consoleUpdatePaths, createConsoleUpdates } from './public-tunnel/console-updates.js';
 
 // Re-export types that may be used by other main-process modules
 export type { LogEvent, RuntimeActivityEvent } from './runtime/log-parser.js';
@@ -597,6 +599,38 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('app:get-update-status', () => lastUpdateStatus);
 
+  // The gateway console the public tunnel serves can ask for an update too
+  // (see public-tunnel/console-updates.ts), in the banner's two steps:
+  // Download, then Restart & update. An install asked for before the
+  // download finished restarts as soon as it is ready, since nobody may be
+  // at this computer to click.
+  let installWhenReady = false;
+  // What electron-updater holds downloaded; unlike updateVersion, an error does not clear it.
+  let downloadedVersion: string | null = null;
+  const consoleUpdates = createConsoleUpdates({
+    paths: consoleUpdatePaths(resolveConnectDataDir()),
+    appVersion: app.getVersion(),
+    // A finished download stays usable after a failed install (the banner then shows the error).
+    download: () => {
+      if (updatePhase === 'ready' && downloadedVersion) consoleUpdates.downloaded(downloadedVersion);
+      else startUpdateDownload();
+    },
+    install: async () => {
+      installWhenReady = true;
+      if (updatePhase === 'ready' && downloadedVersion) {
+        updateVersion = downloadedVersion;
+        const result = await installDownloadedUpdate();
+        if (!result.ok) throw new Error(result.error);
+        return;
+      }
+      startUpdateDownload();
+    },
+    check: () => {
+      void autoUpdater.checkForUpdates().catch(() => {});
+    },
+    log: (message) => appendLog('connect', 'system', message),
+  });
+
   const clearStallWatchdog = () => {
     if (downloadStallInterval) {
       clearInterval(downloadStallInterval);
@@ -619,6 +653,8 @@ app.whenReady().then(async () => {
     isInstallingUpdate = false;
     sendUpdateStatus({ status: 'error', version: updateVersion, message, details, hint });
     updateVersion = null;
+    installWhenReady = false;
+    consoleUpdates.failed(message);
     return { ok: false, error: message, details, hint };
   };
 
@@ -664,11 +700,11 @@ app.whenReady().then(async () => {
     updateVersion = info.version;
     sendUpdateStatus({ status: 'available', version: info.version });
   });
+  autoUpdater.on('update-available', (info) => consoleUpdates.checked(info.version));
+  autoUpdater.on('update-not-available', () => consoleUpdates.checked(app.getVersion()));
 
-  ipcMain.handle('app:download-update', async (): Promise<InstallUpdateResult> => {
-    if (updatePhase === 'downloading' || updatePhase === 'ready') {
-      return { ok: true };
-    }
+  const startUpdateDownload = (): void => {
+    if (updatePhase === 'downloading' || updatePhase === 'ready') return;
     updatePhase = 'downloading';
     clearDownloadRetry();
     startStallWatchdog();
@@ -677,6 +713,10 @@ app.whenReady().then(async () => {
       // Failures surface through the 'error' event, where transient network
       // errors are retried before anything is shown.
     });
+  };
+
+  ipcMain.handle('app:download-update', async (): Promise<InstallUpdateResult> => {
+    startUpdateDownload();
     return { ok: true };
   });
   autoUpdater.on('download-progress', (progress) => {
@@ -709,6 +749,12 @@ app.whenReady().then(async () => {
     }
     pendingReadyVersion = null;
     sendUpdateStatus({ status: 'ready', version });
+    consoleUpdates.downloaded(version);
+    if (installWhenReady) {
+      void installDownloadedUpdate().then((result) => {
+        if (!result.ok) consoleUpdates.failed(result.error ?? 'the update did not install');
+      });
+    }
   };
 
   if (process.platform === 'darwin') {
@@ -723,6 +769,7 @@ app.whenReady().then(async () => {
   autoUpdater.on('update-downloaded', (info) => {
     updatePhase = 'ready';
     updateVersion = info.version;
+    downloadedVersion = info.version;
     clearStallWatchdog();
     clearDownloadRetry();
     if (updateCheckInterval) {
@@ -749,6 +796,7 @@ app.whenReady().then(async () => {
     // periodic re-check retries on its own.
     if (!isInstallingUpdate && updatePhase !== 'downloading') {
       appendLog('connect', 'system', `Auto-update check failed (will retry): ${message}`);
+      consoleUpdates.checked(null, message);
       return;
     }
 
@@ -839,7 +887,8 @@ app.whenReady().then(async () => {
     child.unref();
   };
 
-  ipcMain.handle('app:install-update', async (): Promise<InstallUpdateResult> => {
+  // Declared as a function so the console's updater above can call it.
+  async function installDownloadedUpdate(): Promise<InstallUpdateResult> {
     if (isInstallingUpdate) {
       return { ok: true };
     }
@@ -858,7 +907,9 @@ app.whenReady().then(async () => {
       isQuitting = false;
       return reportUpdateError(err, 'install failed');
     }
-  });
+  }
+  ipcMain.handle('app:install-update', () => installDownloadedUpdate());
+  consoleUpdates.start();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

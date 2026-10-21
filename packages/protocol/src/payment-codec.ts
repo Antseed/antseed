@@ -42,44 +42,57 @@ function requireFiniteNumberField(obj: Record<string, unknown>, field: string): 
 
 // --- Encoders ---
 
+/**
+ * The decoder rejects payloads over MAX_PAYLOAD_SIZE, so a larger frame would be
+ * dropped by the peer while the sender believes it was delivered. Fail at the
+ * sender instead.
+ */
+function encodePaymentJson(payload: object): Uint8Array {
+  const bytes = encoder.encode(JSON.stringify(payload));
+  if (bytes.byteLength > MAX_PAYLOAD_SIZE) {
+    throw new Error(`Payment payload too large: ${bytes.byteLength} bytes (max ${MAX_PAYLOAD_SIZE})`);
+  }
+  return bytes;
+}
+
 export function encodeSpendingAuth(payload: SpendingAuthPayload): Uint8Array {
-  return encoder.encode(JSON.stringify(payload));
+  return encodePaymentJson(payload);
 }
 
 export function encodeAuthAck(payload: AuthAckPayload): Uint8Array {
-  return encoder.encode(JSON.stringify(payload));
+  return encodePaymentJson(payload);
 }
 
 export function encodeFreeUsageOpen(payload: FreeUsageOpenPayload): Uint8Array {
-  return encoder.encode(JSON.stringify(payload));
+  return encodePaymentJson(payload);
 }
 
 export function encodeFreeUsageAuth(payload: FreeUsageAuthPayload): Uint8Array {
-  return encoder.encode(JSON.stringify(payload));
+  return encodePaymentJson(payload);
 }
 
 export function encodeFreeUsageAck(payload: FreeUsageAckPayload): Uint8Array {
-  return encoder.encode(JSON.stringify(payload));
+  return encodePaymentJson(payload);
 }
 
 export function encodeNeedFreeUsageAuth(payload: NeedFreeUsageAuthPayload): Uint8Array {
-  return encoder.encode(JSON.stringify(payload));
+  return encodePaymentJson(payload);
 }
 
 export function encodePaymentRequired(payload: PaymentRequiredPayload): Uint8Array {
-  return encoder.encode(JSON.stringify(payload));
+  return encodePaymentJson(payload);
 }
 
 export function encodeNeedAuth(payload: NeedAuthPayload): Uint8Array {
-  return encoder.encode(JSON.stringify(payload));
+  return encodePaymentJson(payload);
 }
 
 export function encodeCloseChannelRequest(payload: CloseChannelRequestPayload): Uint8Array {
-  return encoder.encode(JSON.stringify(payload));
+  return encodePaymentJson(payload);
 }
 
 export function encodeCloseChannelResult(payload: CloseChannelResultPayload): Uint8Array {
-  return encoder.encode(JSON.stringify(payload));
+  return encodePaymentJson(payload);
 }
 
 // --- Decoders (with runtime validation) ---

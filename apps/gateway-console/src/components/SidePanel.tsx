@@ -5,6 +5,8 @@ export interface SidePanelContent {
   title: ReactNode
   subtitle?: ReactNode
   eyebrow?: ReactNode
+  /** Header buttons beside the close button. */
+  actions?: ReactNode
   body: ReactNode
 }
 
@@ -27,7 +29,7 @@ export function SplitView({ list, panel, onClose, closeLabel = 'Close panel' }: 
     <>
       {list}
       <Drawer isOpen={panel !== null} onClose={onClose} closeLabel={closeLabel} className="gc-side-panel"
-        title={shown?.title ?? ''} subtitle={shown?.subtitle} eyebrow={shown?.eyebrow}>
+        title={shown?.title ?? ''} subtitle={shown?.subtitle} eyebrow={shown?.eyebrow} actions={shown?.actions}>
         {shown?.body}
       </Drawer>
     </>
@@ -48,16 +50,18 @@ export function PanelSection({ title, actions, children }: { title: ReactNode; a
 }
 
 /** A compact row in a side panel's list (a provider of a model, a model of a provider). */
-export function PanelRow({ title, meta, badges, actions, selected }: {
+export function PanelRow({ title, meta, badges, actions, selected, muted }: {
   title: ReactNode
   meta?: ReactNode
   badges?: ReactNode
   actions?: ReactNode
   /** The row the panel's API call is showing. */
   selected?: boolean
+  /** A row that is listed but out of play, e.g. a seller routing filters out. */
+  muted?: boolean
 }) {
   return (
-    <li className={selected ? 'gc-panel-row gc-panel-row--on' : 'gc-panel-row'}>
+    <li className={['gc-panel-row', selected && 'gc-panel-row--on', muted && 'gc-panel-row--muted'].filter(Boolean).join(' ')}>
       <div className="gc-panel-row__main">
         <div className="gc-panel-row__title">{title}</div>
         {meta && <div className="gc-panel-row__meta">{meta}</div>}

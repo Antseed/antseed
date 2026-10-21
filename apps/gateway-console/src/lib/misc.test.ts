@@ -51,8 +51,8 @@ describe('presets', () => {
 
 describe('peers', () => {
   const peer = (id: string, overrides: Partial<Peer>): Peer => ({
-    peerId: id, displayName: null, services: [], trustScore: null, reputationScore: null, verified: false, verificationLinks: [], tee: false, stakeAnts: null,
-    usageShareBps: null, washFlagged: false, lastSeen: null, health: { failureStreak: 0, coolingDownUntil: null }, latencyMsP50: null, requests24h: 0, ...overrides,
+    peerId: id, displayName: null, services: [], trustScore: null, reputationScore: null, verified: false, verificationLinks: [], tee: false, teeScope: null, stakeAnts: null,
+    usageShareBps: null, washFlagged: false, lastSeen: null, health: { failureStreak: 0, coolingDownUntil: null }, latencyMsP50: null, firstTokenMsP50: null, tokensPerSecondP50: null, requests24h: 0, ...overrides,
   })
   const svc = (service: string, price: number) => ({ provider: 'p', service, inputUsdPerMillion: price, outputUsdPerMillion: price, cachedInputUsdPerMillion: null, categories: [] })
   const peers = [
@@ -106,5 +106,13 @@ describe('routing and snippets', () => {
     expect(snippets[0]!.code).toContain('https://gw.example.com/v1/chat/completions')
     expect(snippets[1]!.code).toContain("baseURL: 'https://gw.example.com/v1'")
     expect(snippets[2]!.code).toContain("authToken: 'as_secret'")
+  })
+})
+
+describe('policy groups', () => {
+  it('refresh the chat route preview after a policy change', async () => {
+    const { POLICY_GROUPS } = await import('./queries')
+    expect(POLICY_GROUPS).toContain('routing')
+    expect(POLICY_GROUPS).toContain('chat-route-preview')
   })
 })

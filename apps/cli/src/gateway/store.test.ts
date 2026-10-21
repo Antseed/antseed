@@ -179,7 +179,7 @@ test('request log records outcomes and content, prunes by age, and reports peer 
     assert.equal(rows[2]!.endUser, 'user-1')
     assert.equal(store.getRequest(rows[2]!.tag)!.requestBody, '{"in":1}')
     assert.equal(rows[0]!.workspaceId, DEFAULT_WORKSPACE_ID)
-    assert.deepEqual(store.peerStats(0), [{ peerId: 'aa11', requests: 3, latencyMsP50: 200 }])
+    assert.deepEqual(store.peerStats(0), [{ peerId: 'aa11', requests: 3, latencyMsP50: 200, firstTokenMsP50: null, tokensPerSecondP50: null }])
     assert.equal(await store.pruneRequests(1_002), 2)
     assert.equal(store.listRequests({}).length, 1)
   } finally {

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
-import { SellerPaymentManager, type SellerPaymentConfig } from '../src/payments/seller-payment-manager.js';
+import { SellerPaymentManager, RESERVE_VISIBILITY_GRACE_MS, TIMED_OUT_CLOSE_RETRY_INTERVAL_MS, type SellerPaymentConfig } from '../src/payments/seller-payment-manager.js';
 import { ChannelStore, CHANNEL_ROLE, CHANNEL_STATUS } from '../src/payments/channel-store.js';
 import type { PaymentMux } from '../src/p2p/payment-mux.js';
 import type { Identity } from '../src/p2p/identity.js';
@@ -704,6 +704,113 @@ describe('SellerPaymentManager', () => {
     expect(manager.isChannelBlocked(channelId)).toBe(false);
     expect(manager.hasSession(buyerIdentity.peerId)).toBe(false);
     expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.SETTLED);
+  });
+
+  it('blocks a buyer channel whose SpendingAuth can no longer be received and closes it', async () => {
+    const channelId = makeChannelId(106);
+    const reservePayload = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      isReserve: true,
+      reserveMaxAmount: '1000000',
+    });
+    await manager.handleSpendingAuth(buyerIdentity.peerId, reservePayload, mux);
+    await manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      cumulativeAmount: 400_000n,
+      reserveMaxAmount: '1000000',
+    }), mux);
+
+    const settle = vi.spyOn(manager, 'settleSession').mockResolvedValue(undefined);
+    expect(manager.blockChannelForBuyer(buyerIdentity.peerId, 'Payment payload too large')).toBe(true);
+    expect(manager.isChannelBlocked(channelId)).toBe(true);
+    await vi.waitFor(() => expect(settle).toHaveBeenCalledWith(buyerIdentity.peerId));
+    // Already blocked, and unknown buyers have nothing to block.
+    expect(manager.blockChannelForBuyer(buyerIdentity.peerId, 'again')).toBe(false);
+    expect(manager.blockChannelForBuyer('0x' + 'ab'.repeat(20), 'unknown')).toBe(false);
+    expect(settle).toHaveBeenCalledOnce();
+  });
+
+  it('waits for requests already being served before closing a blocked channel', async () => {
+    const channelId = makeChannelId(108);
+    await manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      isReserve: true,
+      reserveMaxAmount: '1000000',
+    }), mux);
+    await manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      cumulativeAmount: 400_000n,
+      reserveMaxAmount: '1000000',
+    }), mux);
+    const settle = vi.spyOn(manager, 'settleSession').mockResolvedValue(undefined);
+
+    manager.beginBillableRequest(buyerIdentity.peerId);
+    expect(manager.blockChannelForBuyer(buyerIdentity.peerId, 'Payment payload too large')).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(settle).not.toHaveBeenCalled();
+
+    // Another request on the blocked channel asks for the same close; it
+    // joins the waiting one instead of closing now.
+    void manager.closeSessionWhenIdle(buyerIdentity.peerId);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(settle).not.toHaveBeenCalled();
+
+    // The running request records its spend on this channel, then the close starts, once.
+    manager.endBillableRequest(buyerIdentity.peerId);
+    await vi.waitFor(() => expect(settle).toHaveBeenCalledWith(buyerIdentity.peerId));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(settle).toHaveBeenCalledOnce();
+  });
+
+  it('refuses a replacement reserve while the old channel still serves a request', async () => {
+    const oldChannel = makeChannelId(109);
+    await manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, oldChannel, {
+      isReserve: true,
+      reserveMaxAmount: '1000000',
+    }), mux);
+    await manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, oldChannel, {
+      cumulativeAmount: 400_000n,
+      reserveMaxAmount: '1000000',
+    }), mux);
+    const close = vi.spyOn(manager.channelsClient, 'close');
+    manager.beginBillableRequest(buyerIdentity.peerId);
+
+    const replacement = await buildSpendingAuth(buyerIdentity, sellerIdentity, makeChannelId(110), {
+      isReserve: true,
+      reserveMaxAmount: '1000000',
+      salt: '0x' + '09'.repeat(32),
+    });
+    expect(await manager.handleSpendingAuth(buyerIdentity.peerId, replacement, mux)).toBe('rejected');
+    expect(close).not.toHaveBeenCalled();
+    expect(store.getChannel(oldChannel)!.status).toBe(CHANNEL_STATUS.ACTIVE);
+    manager.endBillableRequest(buyerIdentity.peerId);
+  });
+
+  it('closes a blocked channel with nothing accepted at the on-chain settled amount', async () => {
+    const channelId = makeChannelId(107);
+    const reservePayload = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      isReserve: true,
+      reserveMaxAmount: '1000000',
+    });
+    await manager.handleSpendingAuth(buyerIdentity.peerId, reservePayload, mux);
+    const settle = vi.spyOn(manager, 'settleSession');
+    vi.spyOn(manager.channelsClient, 'getSession').mockResolvedValue({
+      buyer: buyerIdentity.wallet.address,
+      seller: sellerIdentity.wallet.address,
+      deposit: 1_000_000n,
+      settled: 0n,
+      metadataHash: '0x' + '00'.repeat(32),
+      deadline: BigInt(Math.floor(Date.now() / 1000) + 3600),
+      settledAt: 0n,
+      closeRequestedAt: 0n,
+      status: 1,
+    } as never);
+    const close = vi.spyOn(manager.channelsClient, 'close').mockRejectedValue(new Error('rpc down'));
+
+    expect(manager.blockChannelForBuyer(buyerIdentity.peerId, 'Payment payload too large')).toBe(true);
+
+    // Unsigned close at the settled amount; settleSession would only defer and
+    // forget the block.
+    await vi.waitFor(() => expect(close).toHaveBeenCalledWith(expect.anything(), channelId, 0n, '0x', '0x'));
+    expect(settle).not.toHaveBeenCalled();
+    // The close failed, so the channel stays blocked for the next request.
+    expect(manager.isChannelBlocked(channelId)).toBe(true);
   });
 
   it('blocks the channel if permanent top-up failure cannot close immediately', async () => {
@@ -1770,6 +1877,159 @@ describe('SellerPaymentManager', () => {
     expect(manager.channelsClient.close).toHaveBeenCalledOnce();
   });
 
+  describe('timed-out channel close retry', () => {
+    const AUTH_SIG = '0x' + 'aa'.repeat(65);
+
+    function storeTimedOutChannel(channelId: string): void {
+      const now = Date.now();
+      store.upsertChannel({
+        sessionId: channelId,
+        peerId: buyerIdentity.peerId,
+        role: CHANNEL_ROLE.SELLER,
+        sellerEvmAddr: sellerIdentity.wallet.address,
+        buyerEvmAddr: buyerIdentity.wallet.address,
+        nonce: 0,
+        authMax: '600000',
+        deadline: Math.floor(now / 1000) + 3600,
+        previousSessionId: '0x' + '00'.repeat(32),
+        previousConsumption: '1000000',
+        tokensDelivered: '600000',
+        requestCount: 3,
+        reservedAt: now,
+        settledAt: null,
+        settledAmount: null,
+        status: CHANNEL_STATUS.TIMEOUT,
+        latestBuyerSig: null,
+        latestSpendingAuthSig: AUTH_SIG,
+        latestMetadata: '0x1234',
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /** A new manager over the same store, as after a seller restart. */
+    function restartManager(): SellerPaymentManager {
+      return new SellerPaymentManager(sellerIdentity, {
+        rpcUrl: 'http://127.0.0.1:8545',
+        channelsContractAddress: CONTRACT_ADDR,
+        chainId: CHAIN_ID,
+        dataDir: tempDir,
+      }, store);
+    }
+
+    async function nextRetryPass(): Promise<void> {
+      vi.setSystemTime(Date.now() + TIMED_OUT_CLOSE_RETRY_INTERVAL_MS);
+      await manager.checkTimeouts();
+    }
+
+    it('retries a channel still open on-chain with the latest auth, then closes at the settled amount', async () => {
+      const channelId = makeChannelId(90);
+      storeTimedOutChannel(channelId);
+      vi.spyOn(manager.channelsClient, 'getSession').mockResolvedValue(
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 1_000_000n, settled: 500_000n, status: 1 }),
+      );
+      const close = vi.spyOn(manager.channelsClient, 'close').mockRejectedValue(new Error('estimate failed'));
+
+      await manager.checkTimeouts();
+      await manager.checkTimeouts();
+      expect(close).toHaveBeenCalledOnce();
+
+      for (let i = 1; i < 6; i++) await nextRetryPass();
+      expect(close).toHaveBeenCalledTimes(6);
+      for (const call of close.mock.calls) {
+        expect(call.slice(1)).toEqual([channelId, 600_000n, '0x1234', AUTH_SIG]);
+      }
+      expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.TIMEOUT);
+
+      close.mockResolvedValue('0xclose-hash');
+      await nextRetryPass();
+      expect(close).toHaveBeenLastCalledWith(expect.anything(), channelId, 500_000n, '0x', '0x');
+      expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.SETTLED);
+      expect(store.getChannel(channelId)!.settledAmount).toBe('500000');
+    });
+
+    it('marks a channel settled once it is settled on-chain', async () => {
+      const channelId = makeChannelId(91);
+      storeTimedOutChannel(channelId);
+      vi.spyOn(manager.channelsClient, 'getSession').mockResolvedValue(
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { settled: 700_000n, status: 2 }),
+      );
+
+      await manager.checkTimeouts();
+
+      expect(manager.channelsClient.close).not.toHaveBeenCalled();
+      expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.SETTLED);
+      expect(store.getChannel(channelId)!.settledAmount).toBe('700000');
+    });
+
+    it('does not let withdrawn channels fill the retry batch', async () => {
+      const withdrawn = Array.from({ length: 20 }, (_, i) => makeChannelId(100 + i));
+      for (const channelId of withdrawn) {
+        storeTimedOutChannel(channelId);
+        vi.setSystemTime(Date.now() + 1);
+      }
+      const openChannelId = makeChannelId(130);
+      storeTimedOutChannel(openChannelId);
+      vi.spyOn(manager.channelsClient, 'getSession').mockImplementation(async (channelId: string) =>
+        makeOnChainChannel(buyerIdentity, sellerIdentity, channelId === openChannelId
+          ? { deposit: 1_000_000n, settled: 500_000n, status: 1 }
+          : { status: 3 }),
+      );
+      const close = vi.spyOn(manager.channelsClient, 'close');
+
+      await manager.checkTimeouts();
+      expect(close).not.toHaveBeenCalled();
+
+      await nextRetryPass();
+      expect(close).toHaveBeenCalledWith(expect.anything(), openChannelId, 600_000n, '0x1234', AUTH_SIG);
+      expect(store.getChannel(openChannelId)!.status).toBe(CHANNEL_STATUS.SETTLED);
+    });
+
+    it('records a channel the buyer already withdrew and stops reading it, also after a restart', async () => {
+      const channelId = makeChannelId(92);
+      storeTimedOutChannel(channelId);
+      const getSession = vi.spyOn(manager.channelsClient, 'getSession').mockResolvedValue(
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { settled: 300_000n, status: 3 }),
+      );
+
+      await manager.checkTimeouts();
+      await nextRetryPass();
+      expect(getSession).toHaveBeenCalledOnce();
+      expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.TIMEOUT);
+      expect(store.getChannel(channelId)!.settledAmount).toBe('300000');
+
+      const restarted = restartManager();
+      const restartedGetSession = vi.spyOn(restarted.channelsClient, 'getSession');
+      await restarted.checkTimeouts();
+      expect(restartedGetSession).not.toHaveBeenCalled();
+      expect(manager.channelsClient.close).not.toHaveBeenCalled();
+    });
+
+    it('keeps retrying a channel still open on-chain after more than a day and a restart', async () => {
+      const channelId = makeChannelId(93);
+      storeTimedOutChannel(channelId);
+      vi.setSystemTime(Date.now() + 3 * 24 * 60 * 60_000);
+
+      const restarted = restartManager();
+      vi.spyOn(restarted.channelsClient, 'getSession').mockResolvedValue(
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 1_000_000n, settled: 500_000n, status: 1 }),
+      );
+      const close = vi.spyOn(restarted.channelsClient, 'close').mockResolvedValue('0xclose-hash');
+      await restarted.checkTimeouts();
+
+      expect(close).toHaveBeenCalledWith(expect.anything(), channelId, 600_000n, '0x1234', AUTH_SIG);
+      expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.SETTLED);
+    });
+  });
+
   it('test_getPaymentRequirements: returns payment requirements payload', () => {
     const req = manager.getPaymentRequirements('test-req-1');
     expect(req).not.toBeNull();
@@ -1847,7 +2107,7 @@ describe('SellerPaymentManager', () => {
 
     it('evicts channel that no longer exists on-chain', async () => {
       const channelId = makeChannelId(30);
-      seedChannel(store, channelId, buyerIdentity, sellerIdentity);
+      seedChannel(store, channelId, buyerIdentity, sellerIdentity, { reservedAt: Date.now() - RESERVE_VISIBILITY_GRACE_MS - 1 });
 
       const mgr = makeFreshManager();
       expect(mgr.hasSession(buyerIdentity.peerId)).toBe(true);
@@ -1858,6 +2118,19 @@ describe('SellerPaymentManager', () => {
 
       expect(mgr.hasSession(buyerIdentity.peerId)).toBe(false);
       expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.SETTLED);
+    });
+
+    it('keeps a just-reserved channel the chain read does not show yet', async () => {
+      const channelId = makeChannelId(29);
+      seedChannel(store, channelId, buyerIdentity, sellerIdentity);
+
+      const mgr = makeFreshManager();
+      vi.spyOn(mgr.channelsClient, 'getSession').mockResolvedValue(ZERO_CHANNEL);
+
+      await mgr.validateHydratedChannels();
+
+      expect(mgr.hasSession(buyerIdentity.peerId)).toBe(true);
+      expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.ACTIVE);
     });
 
     it('evicts channel with settled on-chain status', async () => {
