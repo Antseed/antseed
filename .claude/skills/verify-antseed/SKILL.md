@@ -75,16 +75,16 @@ Each worktree gets its own sandbox (`wt-<basename>-<hash>`, state in `~/.antseed
 
 Read-only. It checks the Node major against `.nvmrc`, `pnpm`, `anvil`, `forge` with forge-std, whether a fork RPC is configured (without printing it), that every package the sandbox loads has `dist/` newer than `src/`, the desktop build, `DISPLAY` or `xvfb-run` on Linux, and the live sandbox (chain, upstream, sellers online, peers the buyer sees, open channels). It prints `OK`, `WARN` or `FAIL` lines. It exits 1 on any `FAIL` and 2 outside an AntSeed worktree. Run it before the first drive and whenever a run behaves unexpectedly. A stale `dist/` is the most common reason a fix "does not work" in the sandbox.
 
-## Money and key paths
+## High blast radius paths
 
-A change is on a money or key path when it touches one of these paths, or adds or removes a line that matches `maxPerRequestUsdc|maxReserveAmountUsdc`, `signTypedData|SpendingAuth|ReserveAuth` or `privateKey|mnemonic|keychain|keytar`:
+A change has a high blast radius when it touches one of these paths, or adds or removes a line that matches `maxPerRequestUsdc|maxReserveAmountUsdc`, `signTypedData|SpendingAuth|ReserveAuth` or `privateKey|mnemonic|keychain|keytar`:
 
 - keys and identity: `packages/node/src/p2p/identity.ts`, `packages/node/src/p2p/identity-envelope.ts`, `packages/web-sdk/src/identity.ts`, `apps/desktop/src/main/identity.ts`, `apps/cli/src/cli/wallet-passphrase.ts`
 - peer channel and payment frames: `packages/node/src/p2p/secure-channel.ts`, `packages/node/src/p2p/payment-codec.ts`, `packages/node/src/p2p/payment-mux.ts`
 - signing and payments: `packages/protocol/src/signatures.ts`, `packages/node/src/payments/**`, `packages/node/src/seller-request-handler.ts`, `packages/buyer-core/**`, `apps/desktop/src/main/payments/**`, `apps/cli/src/gateway/services/operator.ts`, `apps/cli/src/gateway/console-api/handlers/wallet*.ts`
 - contracts: `packages/contracts/**`
 
-Such a change always runs the keys, signing or spend caps row, on top of its own row. Its PR body has a line `Money and key paths: <paths>` naming which ones it touches.
+Such a change always runs the keys, signing or spend caps row, on top of its own row. Its PR body names the paths it touches in pstack's `## Blast Radius` section.
 
 ## What counts as proof
 
@@ -194,7 +194,7 @@ The sandbox cannot do these yet. Treat each as a known limit, not as a reason to
 - **`sb.request()` for other endpoints.** `sb.chat()` drives only `/v1/chat/completions`. No helper drives `/v1/responses`.
 - **RPC fault injection.** No proxy sits between the nodes and Anvil to delay, drop or fail RPC calls.
 - **Transport faults.** The only fault is NeedAuth loss, and it wraps the buyer payment manager's public `handleNeedAuth`. No public setting leaves a buyer under-signed: the buyer's `costToleranceMultiplier` is not in the node's payment config, and the sandbox fixes `maxPerRequestUsdc` at 5 USDC. A frame-level fault on the payment channel between buyer and seller would be cleaner.
-- **Money and key path tests.** There is no dedicated always-run suite for keys, signing and spend caps. CI runs every package's tests, and the desktop's `apps/desktop/src/main/identity.ts` has no test.
+- **High blast radius tests.** There is no dedicated always-run suite for keys, signing and spend caps. CI runs every package's tests, and the desktop's `apps/desktop/src/main/identity.ts` has no test.
 - **Checkout and wallet flows.** No harness drives the card checkout, deposits or withdrawals in the desktop.
 - **Gateway.** No scenario covers `apps/cli/src/gateway/**` or its console. Its unit tests and typecheck are the proof, and the PR says no scenario proves it.
 - **CLI driver.** No scenario drives the CLI. [CLI](features/cli.md) captures a transcript by hand.
