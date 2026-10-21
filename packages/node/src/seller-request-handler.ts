@@ -1348,16 +1348,31 @@ export class SellerRequestHandler {
     // upstream's own headers or costs: the body's cost is the seller's price.
     const withHeaders = (response: SerializedHttpResponse): SerializedHttpResponse =>
       ({ ...response, headers: exposedResponseHeaders(response.headers) });
+    // A video download is the provider's own bytes, hashed as they pass; it carries no usage.
+    const isDownload = request.headers[VIDEO_DOWNLOAD_STREAM_HEADER] === VIDEO_DOWNLOAD_STREAM_VERSION;
     if (streamCallbacks && provider.handleRequestStream) {
+      // An event stream is rewritten as it passes. A JSON body can only be rewritten
+      // whole, so it is held back and sent as the returned response instead.
+      let mode: 'events' | 'held' | 'passthrough' = 'passthrough';
       let events = null as ExposedSseStream | null;
       const sent: Uint8Array[] = [];
       const response = await provider.handleRequestStream(request, {
         ...streamCallbacks,
         onResponseStart: (start) => {
-          if (isEventStream(request, start)) events = new ExposedSseStream(sellerCost);
-          streamCallbacks.onResponseStart(withHeaders(start));
+          if (isDownload) return streamCallbacks.onResponseStart(withHeaders(start));
+          if (contentTypeOf(start.headers).includes('json')) {
+            mode = 'held';
+            return;
+          }
+          if (!isEventStream(request, start)) return streamCallbacks.onResponseStart(withHeaders(start));
+          mode = 'events';
+          events = new ExposedSseStream(sellerCost);
+          const body = start.body?.length ? events.push(start.body) : start.body;
+          if (body?.length) sent.push(body);
+          streamCallbacks.onResponseStart({ ...withHeaders(start), body });
         },
         onResponseChunk: (chunk) => {
+          if (mode === 'held') return;
           if (!events) return streamCallbacks.onResponseChunk(chunk);
           const data = chunk.done ? concatBytes([events.push(chunk.data), events.flush()]) : events.push(chunk.data);
           sent.push(data);
@@ -1366,10 +1381,12 @@ export class SellerRequestHandler {
         },
       });
       // The returned body is what the buyer was sent, so usage and payment read the same bytes.
-      if (events && response.body?.length) return { ...withHeaders(response), body: concatBytes(sent) };
-      return withExposedBody(withHeaders(response), sellerCost);
+      if (events) return { ...withHeaders(response), body: concatBytes(sent) };
+      if (isDownload) return withHeaders(response);
+      return withExposedBody(request, withHeaders(response), sellerCost);
     }
-    return withExposedBody(withHeaders(await provider.handleRequest(request)), sellerCost);
+    const response = withHeaders(await provider.handleRequest(request));
+    return isDownload ? response : withExposedBody(request, response, sellerCost);
   }
 
   private _sendNeedAuthBestEffort(
@@ -1473,9 +1490,14 @@ function headerOf(headers: Record<string, string>, name: string): string {
   return Object.entries(headers).find(([key]) => key.toLowerCase() === name)?.[1] ?? '';
 }
 
-/** A JSON response priced at the seller's own cost, without the upstream's. */
-function withExposedBody(response: SerializedHttpResponse, sellerCost?: SellerCost): SerializedHttpResponse {
-  if (!response.body?.length || !contentTypeOf(response.headers).includes('json')) return response;
+/** A whole JSON or event-stream response priced at the seller's own cost, without the upstream's. */
+function withExposedBody(request: SerializedHttpRequest, response: SerializedHttpResponse, sellerCost?: SellerCost): SerializedHttpResponse {
+  if (!response.body?.length) return response;
+  if (isEventStream(request, response)) {
+    const events = new ExposedSseStream(sellerCost);
+    return { ...response, body: concatBytes([events.push(response.body), events.flush()]) };
+  }
+  if (!contentTypeOf(response.headers).includes('json')) return response;
   const body = exposedJsonBody(response.body, sellerCost);
   return body === response.body ? response : { ...response, body };
 }

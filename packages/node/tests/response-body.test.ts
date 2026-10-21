@@ -131,4 +131,46 @@ describe('seller response bodies', () => {
     await execute({ handleRequest: async () => { throw new Error('unused'); }, handleRequestStream: stream({ 'x-antseed-streaming': '1' }) }, callbacks);
     expect(decode(sent[0]!.data)).toBe(usageEvent);
   });
+
+  it('carry it in JSON a provider streams, sent whole instead of streamed', async () => {
+    const bytes = encode(upstreamCompletion);
+    const sent: SerializedHttpResponseChunk[] = [];
+    let started = false;
+    const response = await execute({
+      handleRequest: async () => { throw new Error('unused'); },
+      handleRequestStream: async (_request, callbacks) => {
+        const start = { requestId: 'r1', statusCode: 200, headers: { 'content-type': 'application/json' }, body: bytes.slice(0, 10) };
+        callbacks.onResponseStart(start);
+        callbacks.onResponseChunk({ requestId: 'r1', data: bytes.slice(10), done: true });
+        return { ...start, body: bytes };
+      },
+    }, { onResponseStart: () => { started = true; }, onResponseChunk: (chunk) => { sent.push(chunk); } });
+    expect(started).toBe(false);
+    expect(sent).toEqual([]);
+    expect(JSON.parse(decode(response.body)).usage).toEqual({ prompt_tokens: 600, completion_tokens: 300, estimated_cost: 0.0018 });
+  });
+
+  it('carry it in a whole event stream a provider returns', async () => {
+    const usageEvent = `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 600, completion_tokens: 300, cost: 0.0001 } })}\n\ndata: [DONE]\n\n`;
+    const response = await execute({ handleRequest: async () => ({ requestId: 'r1', statusCode: 200, headers: { 'content-type': 'text/event-stream' }, body: encode(usageEvent) }) });
+    expect(decode(response.body)).toBe(`data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 600, completion_tokens: 300, estimated_cost: 0.0018 } })}\n\ndata: [DONE]\n\n`);
+  });
+
+  it('carry it in an event stream whose start already holds events', async () => {
+    const usageEvent = `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 600, completion_tokens: 300, cost: 0.0001 } })}\n\n`;
+    let startBody = '';
+    const sent: SerializedHttpResponseChunk[] = [];
+    const response = await execute({
+      handleRequest: async () => { throw new Error('unused'); },
+      handleRequestStream: async (_request, callbacks) => {
+        const start = { requestId: 'r1', statusCode: 200, headers: { 'content-type': 'text/event-stream' }, body: encode(usageEvent) };
+        callbacks.onResponseStart(start);
+        callbacks.onResponseChunk({ requestId: 'r1', data: encode('data: [DONE]\n\n'), done: true });
+        return { ...start, body: encode(usageEvent + 'data: [DONE]\n\n') };
+      },
+    }, { onResponseStart: (start) => { startBody = decode(start.body); }, onResponseChunk: (chunk) => { sent.push(chunk); } });
+    expect(startBody).toContain('"estimated_cost":0.0018');
+    expect(startBody).not.toContain('"cost":');
+    expect(decode(response.body)).toBe(startBody + sent.map((chunk) => decode(chunk.data)).join(''));
+  });
 });
