@@ -8,6 +8,9 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Changed
 
+- CLI buyer: the local buyer proxy only answers local clients. A request whose Host is a hostname other than `localhost`, or that a browser sends from a page other than a local one (an `Origin` other than a loopback address or `file://`, or a cross-site fetch), gets `403 non_local_request`. CLI tools, SDKs and local pages are unaffected, and IP-address hosts (such as the WSL relay's) still work. The API-key gateway and system proxy no longer pass the client's `Origin`, `Referer` and `Sec-Fetch-*` headers on to the buyer.
+- Desktop: the chat's per-seller usage stats are read through the main process instead of from the page.
+
 - Gateway console: **Deposits** on **Wallet & Funding** lists the money that came into the workspace: each transfer of USDC to the workspace wallet, and each direct deposit from a connected wallet. Each has a printable confirmation and can be approved.
   - A transfer is listed once its USDC starts moving into the credits, usually within a minute. It is the transfer the move's own on-chain check found (USDC sent to the wallet in the half hour before), so the list needs no extra search of the chain, and transfers made before this change are listed too. A transfer the check missed can be added with **Add a past deposit**.
   - The automatic moves (sweeps) from the wallet into the credits are no longer listed. One transfer is often moved in several small pieces, so listing them counted the money more than once. A sweep approved earlier stays listed with its approval, for the amount it moved; the transfer it came from is approved on its own.

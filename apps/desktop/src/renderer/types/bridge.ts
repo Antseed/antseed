@@ -451,6 +451,8 @@ export type DesktopBridge = {
   paymentsOpenCardProvider?: (opts?: { providerId?: string; amountUsdc?: string }) => Promise<{ ok: boolean; url?: string; error?: string }>;
   /** Closes any app-owned Fun checkout/sign-in popup windows (login-only flows produce no deposit, so the deposit watcher can't close them). */
   paymentsCloseCheckoutWindows?: () => Promise<{ ok: boolean }>;
+  /** The buyer proxy's metering stats for one seller; null when the proxy is unreachable. */
+  paymentsGetPeerMetering?: (peerId: string) => Promise<Record<string, unknown> | null>;
   paymentsGetBuyerUsage?: () => Promise<{ ok: boolean; data: DesktopBuyerUsageTotals | null; error: string | null; lastActivityAt?: number | null }>;
   paymentsGetBuyerSpendHistory?: () => Promise<{ ok: boolean; data: DesktopBuyerSpendHistory | null; error: string | null }>;
   paymentsGetChannels?: (opts?: { fresh?: boolean }) => Promise<{ ok: boolean; data: DesktopPaymentChannelSummary[]; error: string | null }>;

@@ -11,6 +11,7 @@ import { GATEWAY_CONTROL_HEADER, ROUTING_POLICY_HEADER, encodePolicyHeader, mean
 import { effectiveKeyLimits, newRequestTag, videoJobKey, type AdmitOptions, type GatewayAccounting, type KeyContext } from './accounting.js'
 import { errorMessage } from './errors.js'
 import { isClientCredentialHeader } from '../proxy/credential-headers.js'
+import { isBrowserContextHeader } from '../proxy/local-request-guard.js'
 import { parseBearerToken } from './keys.js'
 import { BUDGET_PERIODS, type LimitBreach } from './limits.js'
 import { formatUsdc, optionalUsdcToDecimalString, parseUsdToUsdc, usdcToDecimalString } from './money.js'
@@ -1190,6 +1191,9 @@ function forwardedHeaders(incoming: http.IncomingHttpHeaders): http.OutgoingHttp
     // credentials are never needed downstream (see credential-headers.ts).
     if (isClientCredentialHeader(normalized) || STRIPPED_HEADERS.has(normalized)) continue
     if (normalized.startsWith('x-forwarded-') || HOP_BY_HOP.has(normalized)) continue
+    // The key, not the client's page, decides access; the buyer refuses
+    // requests that look like they came from a web page.
+    if (isBrowserContextHeader(normalized)) continue
     headers[name] = value
   }
   return headers
