@@ -376,6 +376,7 @@ describe('BuyerPaymentNegotiator', () => {
         expect.anything(),
         85119n, // <— the catch-up target the seller asked for
         req.requestId,
+        1,
       );
       expect(result.action).toBe('retry');
     });

@@ -8,6 +8,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Changed
 
+- Buyer (`@antseed/buyer-core`, CLI, desktop): with several requests in flight to one seller, a seller's catch-up payment request (its spend ran ahead of the signed amount) is now covered in full, up to the per-request limit for each in-flight request and never beyond the channel reserve. The buyer retries while the gap shrinks (at most three attempts), and if it still falls short returns a `payment_negotiation_failed` error instead of passing through the seller's raw 402.
 - Gateway console: **Deposits** on **Wallet & Funding** lists the money that came into the workspace: each transfer of USDC to the workspace wallet, and each direct deposit from a connected wallet. Each has a printable confirmation and can be approved.
   - A transfer is listed once its USDC starts moving into the credits, usually within a minute. It is the transfer the move's own on-chain check found (USDC sent to the wallet in the half hour before), so the list needs no extra search of the chain, and transfers made before this change are listed too. A transfer the check missed can be added with **Add a past deposit**.
   - The automatic moves (sweeps) from the wallet into the credits are no longer listed. One transfer is often moved in several small pieces, so listing them counted the money more than once. A sweep approved earlier stays listed with its approval, for the amount it moved; the transfer it came from is approved on its own.

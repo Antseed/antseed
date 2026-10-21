@@ -398,6 +398,7 @@ describe('BuyerRequestHandler payment mux wiring', () => {
         getMux: vi.fn(() => ({
           sendProxyRequest,
           cancelProxyRequest: vi.fn(),
+          activeRequestCount: () => 0,
         })) as any,
         getVerificationMux: vi.fn(() => createNoopVerificationMux()) as any,
         registerPaymentMux: vi.fn(),

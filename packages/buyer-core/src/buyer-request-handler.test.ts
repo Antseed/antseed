@@ -73,7 +73,7 @@ function makeHandler(responses: SerializedHttpResponse[]) {
     verificationStorage: null,
     verificationSampler: null,
     getConnection: async () => connection as never,
-    getMux: () => ({ sendProxyRequest, cancelProxyRequest: vi.fn() } as never),
+    getMux: () => ({ sendProxyRequest, cancelProxyRequest: vi.fn(), activeRequestCount: () => 2 } as never),
     getVerificationMux: () => ({ waitForResponseAuth: vi.fn(() => new Promise(() => {})) } as never),
     registerPaymentMux: vi.fn(),
   });
@@ -99,6 +99,51 @@ describe('BuyerRequestHandler payment negotiation', () => {
 
   it('surfaces a repeated payment requirement after the single retry', async () => {
     const { handler, handle402, sendProxyRequest } = makeHandler([PAYMENT_REQUIRED, PAYMENT_REQUIRED]);
+
+    expect((await handler.sendRequest(makePeer(), makeRequest())).statusCode).toBe(402);
+    expect(handle402).toHaveBeenCalledOnce();
+    expect(sendProxyRequest).toHaveBeenCalledTimes(2);
+  });
+
+  const catchUp = (required: string, accepted: string) => response(402, {
+    error: 'payment_required',
+    minBudgetPerRequest: '10000',
+    suggestedAmount: '1000000',
+    requiredCumulativeAmount: required,
+    currentAcceptedCumulative: accepted,
+    reserveMaxAmount: '1000000',
+  });
+
+  it('keeps catching up while the seller catch-up gap shrinks', async () => {
+    const { handler, handle402, sendProxyRequest } = makeHandler([
+      catchUp('500000', '100000'), catchUp('500000', '400000'), ACCEPTED,
+    ]);
+
+    expect((await handler.sendRequest(makePeer(), makeRequest())).statusCode).toBe(200);
+    expect(handle402).toHaveBeenCalledTimes(2);
+    // Counts the in-flight requests to the seller, including this one.
+    expect(handle402).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), expect.anything(), expect.anything(), 3);
+    expect(sendProxyRequest).toHaveBeenCalledTimes(3);
+  });
+
+  it('returns a buyer error instead of the seller 402 when catch-up stays short', async () => {
+    const { handler, handle402, sendProxyRequest } = makeHandler([
+      catchUp('500000', '100000'), catchUp('500000', '300000'), catchUp('500000', '450000'),
+    ]);
+
+    const result = await handler.sendRequest(makePeer(), makeRequest());
+    expect(result.statusCode).toBe(409);
+    const body = Buffer.from(result.body).toString();
+    expect(JSON.parse(body)).toMatchObject({ error: { type: 'payment_negotiation_failed' } });
+    expect(body).not.toContain('requiredCumulativeAmount');
+    expect(handle402).toHaveBeenCalledTimes(2);
+    expect(sendProxyRequest).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not repeat a catch-up whose gap did not shrink', async () => {
+    const { handler, handle402, sendProxyRequest } = makeHandler([
+      catchUp('500000', '100000'), catchUp('600000', '100000'),
+    ]);
 
     expect((await handler.sendRequest(makePeer(), makeRequest())).statusCode).toBe(402);
     expect(handle402).toHaveBeenCalledOnce();
