@@ -148,6 +148,7 @@ import { TeeVerification } from './tee-verification.js'
 import { TeeControl } from './tee-control.js'
 import { ChainReadCache } from './chain-read-cache.js'
 import { isClientCredentialHeader } from './credential-headers.js'
+import { nonLocalRequestReason } from './local-request-guard.js'
 import { loadConfig } from '../config/loader.js'
 import { InvalidRouterOptionsError, ModelRoutingClient, routingClientAdapter, routingProtocolOfTarget, validateRouterOptions, type ModelRoutingClientApi } from '@antseed/router-core'
 import {
@@ -3653,6 +3654,17 @@ export class BuyerProxy {
     const path = req.url ?? '/'
 
     log(`${method} ${path}`)
+
+    // Every route spends from the deposit or changes local state: only local
+    // clients and local pages may reach it (see local-request-guard.ts).
+    const nonLocal = nonLocalRequestReason(req.headers)
+    if (nonLocal) {
+      log(`Request rejected: ${nonLocal}`)
+      sendJson(res, 403, {
+        error: { type: 'permission_error', code: 'non_local_request', message: `Rejected: ${nonLocal}.` },
+      })
+      return
+    }
 
     // Control-plane endpoints — handle before collecting proxy body
     if (path.startsWith('/_antseed/')) {

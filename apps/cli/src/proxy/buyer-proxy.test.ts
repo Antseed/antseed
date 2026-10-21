@@ -6239,3 +6239,32 @@ test('a seller that answers on its own retry after a 429 is not counted against'
   assert.equal(health.successes, 1)
   assert.equal(health.failures, 0)
 })
+
+test('requests from other sites never reach the paid or control routes', async () => {
+  const proxy = makeBuyerProxyWithPeers([], [])
+  let stateWrites = 0
+  ;(proxy as any)._mergeStateFile = async () => { stateWrites += 1 }
+  let sends = 0
+  ;(proxy as any)._node.sendRequest = async () => { sends += 1; throw new Error('must not route') }
+  const crossSite: Record<string, string>[] = [
+    { host: '127.0.0.1:8377', origin: 'https://evil.example', 'content-type': 'text/plain' },
+    { host: 'rebind.example:8377', origin: 'http://rebind.example:8377' },
+    { host: '127.0.0.1:8377', 'sec-fetch-site': 'cross-site' },
+  ]
+  for (const headers of crossSite) {
+    const route = await invokeProxy(proxy, makeProxyRequest({ path: '/_antseed/route', headers, body: { model: 'gpt-4o' } }))
+    assert.equal(route.statusCode, 403)
+    assert.equal(JSON.parse(route.body).error.code, 'non_local_request')
+    const paid = await invokeProxy(proxy, makeProxyRequest({ path: '/v1/chat/completions', headers }))
+    assert.equal(paid.statusCode, 403)
+  }
+  assert.equal(stateWrites, 0)
+  assert.equal(sends, 0)
+  assert.equal((proxy as any)._defaultRoutedModel, null)
+
+  const local = await invokeProxy(proxy, makeProxyRequest({
+    path: '/_antseed/route', headers: { host: 'localhost:8377', origin: 'http://localhost:5173' }, body: { model: 'gpt-4o' },
+  }))
+  assert.equal(local.statusCode, 200)
+  assert.equal(stateWrites, 1)
+})
