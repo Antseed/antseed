@@ -102,8 +102,33 @@
     overflow-wrap: anywhere;
     line-height: 18px;
   }
-  .icon { flex-shrink: 0; }
+  /* With a marked token, wrap the command at spaces and break only the token. */
+  .cmd:has(.token) { overflow-wrap: normal; }
+  .token { word-break: break-all; }
+  /* Prompt and copy icon sit on the first line of a wrapped command. */
+  .chip { align-items: flex-start; }
+  .prompt { line-height: 18px; }
+  .icon { flex-shrink: 0; margin-top: 1px; }
 }
+
+/* Commands carrying a token (an invite) are too long for one line at tablet
+   and desktop widths too: wrap them at every size, at spaces, breaking only
+   inside the token. Compound selectors so these beat .chip/.md and the phone
+   rules whatever order the minifier emits them in. */
+.chip.wrap {
+  height: auto;
+  min-height: 46px;
+  padding-top: 12px;
+  padding-bottom: 12px;
+  white-space: normal;
+  text-align: left;
+  border-radius: 18px;
+  align-items: flex-start;
+}
+.wrap .cmd { flex: 1; line-height: 18px; }
+.wrap .token { word-break: break-all; }
+.wrap .prompt { line-height: 18px; }
+.wrap .icon { flex-shrink: 0; margin-top: 1px; }
 
 /* On the ink closing bands */
 .dark {

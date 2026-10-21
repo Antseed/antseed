@@ -92,6 +92,22 @@ describe('selected account browser sessions', () => {
     expect(stake).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { url: '/api/referrals/claim', run: 'claimReferralRewards' as const },
+    { url: '/api/referrals/referee/claim', run: 'claimRefereeRewards' as const },
+  ])('lets the selected account or its operator send the permissionless $url', async ({ url, run }) => {
+    const { selected, operator, getOperator, connect, action } = await setup();
+    const claim = vi.spyOn(service, run).mockResolvedValue({ hash: '0xhash', epochs: [3] });
+    await connect(operator.address);
+    expect((await action(url)).status).toBe('done');
+    getOperator.mockResolvedValue(Wallet.createRandom().address);
+    expect((await action(url)).error).toContain('Wallet mismatch');
+    expect(claim).toHaveBeenCalledOnce();
+    await connect(selected.address);
+    expect((await action(url)).status).toBe('done');
+    expect(claim).toHaveBeenCalledTimes(2);
+  });
+
   it('rechecks operator permissions before actions and fails closed on RPC errors', async () => {
     const { operator, getOperator, connect, action } = await setup();
     const claim = vi.spyOn(service, 'claim').mockResolvedValue({} as never);

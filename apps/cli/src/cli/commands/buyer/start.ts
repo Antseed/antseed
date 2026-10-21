@@ -9,10 +9,11 @@ import { getGlobalOptions } from '../types.js'
 import pkg from '../../../../package.json' with { type: 'json' }
 import { watchForUpdates } from '../../../update/watch.js'
 import { loadConfig } from '../../../config/loader.js'
-import { AntseedNode, DepositRelayClient, DepositsClient, getInstance, peerRelaysSweeps, resolveChainConfig } from '@antseed/node'
+import { AntseedNode, DepositRelayClient, DepositsClient, getInstance, peerRelaysSweeps, ReferralsClient, resolveChainConfig, type InviteDomain } from '@antseed/node'
 import type { Identity, NodePaymentsConfig } from '@antseed/node'
 import { OFFICIAL_BOOTSTRAP_NODES, parseBootstrapList, toBootstrapConfig } from '@antseed/node/discovery'
 import { setupShutdownHandler } from '../../shutdown.js'
+import { BuyerAttributionSync, referralLookup as buyerReferralLookup, referralVerifier, resolveBuyerAttribution, resolveClientAgentId } from '../../referral-state.js'
 import { walletPassphraseForStart } from '../../wallet-passphrase.js'
 import { loadRouterPlugin, loadVerifierPlugin, buildPluginConfig, getPackageVersions } from '../../../plugins/loader.js'
 import { ensurePluginsUpToDate } from '../../../plugins/drift.js'
@@ -24,6 +25,7 @@ import { CachedBuyerChainReader, constantRelayReads } from '../../../proxy/buyer
 import { redact, sharedChainProvider } from '../../../proxy/chain-rpc.js'
 import { resolveBaseRpcUrlOverride } from '../../payment-utils.js'
 import { BuyerIdentityLoader } from '../../../buyer-identities/loader.js'
+import { buyerIdentityDir } from '../../../buyer-identities/store.js'
 import { curatedVerifierIds, resolveVerifierPolicy, type VerifierPolicy } from '../../../plugins/verifier.js'
 import { buyerSettingOverrides, resolveEffectiveBuyerConfig, type BuyerRuntimeOverrides } from '../../../config/effective.js'
 import type { BuyerCLIConfig } from '../../../config/types.js'
@@ -329,8 +331,35 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         channelsContractAddress: cryptoOverrides?.channelsContractAddress,
         freeUsageContractAddress: cryptoOverrides?.freeUsageContractAddress,
         usdcContractAddress: cryptoOverrides?.usdcContractAddress,
+        referralsAddress: cryptoOverrides?.referralsAddress,
       })
       const settlementEnabled = settlementEnv ?? true
+
+      // Client / invite attribution appended to every buyer-signed settlement
+      // metadata blob. AntseedStatsV2 binds a redeemed invite on-chain at the
+      // first settlement (paid or free) that carries it; the daemon only has
+      // to carry it. Antscan reports when it is bound, and one `referrerOf`
+      // read confirms it before the invite is dropped.
+      const explorerApiUrl = cryptoOverrides?.explorerApiUrl ?? chainConfig.explorerApiUrl
+      const referralLookup = buyerReferralLookup({ referralsAddress: chainConfig.referralsAddress, explorerApiUrl })
+      const referralDeployment: InviteDomain | null = chainConfig.referralsAddress
+        ? { chainId: chainConfig.evmChainId, referralsAddress: chainConfig.referralsAddress }
+        : null
+      const referralCheck = referralVerifier(chainConfig.referralsAddress
+        ? new ReferralsClient({
+            rpcUrl: chainConfig.rpcUrl,
+            ...(chainConfig.fallbackRpcUrls ? { fallbackRpcUrls: chainConfig.fallbackRpcUrls } : {}),
+            contractAddress: chainConfig.referralsAddress,
+            evmChainId: chainConfig.evmChainId,
+          })
+        : null)
+      const attributionOptions = {
+        clientAgentId: effectiveBuyerConfig.clientAgentId,
+        clientAgentIds: chainConfig.clientAgentIds,
+      }
+      // The client id only: each wallet's saved invite is applied when it is
+      // tracked below, before the proxy accepts its first request.
+      const initialAttribution = resolveBuyerAttribution({ referralState: null, ...attributionOptions })
 
       // Advisory only: a transient RPC failure at launch must not disable
       // payments for the whole session. Buyer payments sign off-chain, and the
@@ -364,6 +393,8 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
           // without them the usage, stake and wash parts of the score stay null.
           ...(chainConfig.stakingContractAddress ? { stakingAddress: chainConfig.stakingContractAddress } : {}),
           ...(chainConfig.identityRegistryAddress ? { identityRegistryAddress: chainConfig.identityRegistryAddress } : {}),
+          ...(chainConfig.referralsAddress ? { referralsAddress: chainConfig.referralsAddress } : {}),
+          attribution: initialAttribution,
           ...(chainConfig.sellerPoolsAddress ? { sellerPoolsAddress: chainConfig.sellerPoolsAddress } : {}),
           ...(chainConfig.usageAccountingAddress ? { usageAccountingAddress: chainConfig.usageAccountingAddress } : {}),
           ...(chainConfig.washTradingRegistryAddress ? { washTradingRegistryAddress: chainConfig.washTradingRegistryAddress } : {}),
@@ -445,9 +476,28 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         process.exit(1)
       }
 
-      // The gateway's chain reads for workspace wallets (balances, their deposit
-      // watchers) share one rate-aware provider and one cache; see
-      // proxy/chain-rpc.ts. The default wallet keeps its own clients.
+      // Each wallet's signed attribution follows its referral.json; extra
+      // buyer identities join below as they load.
+      const attributionSync = paymentsConfig?.enabled
+        ? new BuyerAttributionSync({
+            ...attributionOptions,
+            deployment: referralDeployment,
+            lookup: referralLookup,
+            verify: referralCheck,
+            apply: (attribution, identity) => node.setBuyerAttribution(attribution, identity),
+            log: (message) => console.log(chalk.dim(message)),
+          })
+        : null
+      let attributionTimer: NodeJS.Timeout | null = null
+      if (attributionSync) {
+        await attributionSync.track(undefined, globalOpts.dataDir, node.identity!.wallet.address).catch(() => {})
+        attributionTimer = setInterval(() => { void attributionSync.refreshAll() }, 60_000)
+        attributionTimer.unref()
+      }
+
+      // Every chain read this process makes for its wallets (balances, deposit
+      // watchers, the startup balance line) shares one rate-aware provider and
+      // one cache; see proxy/chain-rpc.ts.
       const chainReader = paymentsConfig?.enabled
         ? new CachedBuyerChainReader({
             provider: sharedChainProvider(chainConfig),
@@ -463,7 +513,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         evmChainId: chainConfig.evmChainId,
       })
 
-      if (paymentsConfig?.enabled) {
+      if (chainReader) {
         try {
           const identity = node.identity!
           const address = identity.wallet.address
@@ -521,8 +571,10 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       // deposit watcher once watchers can run (see below).
       let createDepositWatcher: ((identity: Identity, shared?: boolean) => DepositWatcher) | null = null
       const identityWatchers: DepositWatcher[] = []
-      const buyerIdentities = new BuyerIdentityLoader(node, globalOpts.dataDir, (name, identity) => {
+      const buyerIdentities = new BuyerIdentityLoader(node, globalOpts.dataDir, async (name, identity) => {
         console.log(chalk.dim(`Buyer identity ${name} loaded (${identity.wallet.address})`))
+        // Awaited: the identity serves no request before its saved invite is applied.
+        await attributionSync?.track(name, buyerIdentityDir(globalOpts.dataDir, name), identity.wallet.address).catch(() => {})
         if (!createDepositWatcher) return
         // Every identity (workspace wallet) gets its own watcher so the gateway
         // can read and promote it via /_antseed/deposits/*?identity=<name>.
@@ -559,6 +611,8 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         routingPreferences: effectiveBuyerConfig.routingPreferences,
         minPeerReputation: effectiveBuyerConfig.minPeerReputation,
         settingOverrides: buyerSettingOverrides({ buyerOverrides: runtimeOverrides, verifierFlags }),
+        // Reported on /_antseed/status, so a gateway (possibly launched with a different environment) shows what this process signs.
+        clientAgent: resolveClientAgentId(attributionOptions),
         backgroundRefreshIntervalMs: effectiveBuyerConfig.peerRefreshIntervalMs,
         ...(verifierPolicy ? { verifier: verifierPolicy } : {}),
         ...(chainReader ? { balanceReader: chainReader } : {}),
@@ -581,6 +635,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       // and stops whatever has started by the time it runs.
       const shutdown = async (): Promise<void> => {
         nodeSpinner.start('Shutting down...')
+        if (attributionTimer) clearInterval(attributionTimer)
         depositWatcher?.stop()
         for (const watcher of identityWatchers) watcher.stop()
         depositWatchHub?.stop()

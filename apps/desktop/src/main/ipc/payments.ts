@@ -1,4 +1,4 @@
-import { readBuyerRewardsSummary } from '../staking/buyer-rewards.js';
+import { EMPTY_REWARDS_SUMMARY, readBuyerRewardsSummary, rewardsErrorSummary } from '../staking/buyer-rewards.js';
 import { CREDITS_FRESH_MS, REWARDS_ERROR_FRESH_MS, REWARDS_FRESH_MS, cachedRead, invalidateChainReads, readKeys, refreshFresh } from '../payments/read-cache.js';
 import { resolveStakingChain } from '../staking/configuration.js';
 import { readConfig } from '../runtime/config-io.js';
@@ -22,7 +22,6 @@ import {
   type DesktopBuyerUsageTotals,
   type DesktopPaymentChannelSummary,
   type DesktopRewardsSummary,
-  EMPTY_REWARDS_SUMMARY,
   MAX_SPENDING_AUTH_BASE_UNITS,
   fetchBuyerProxyJson,
   loadBuyerChannels,
@@ -433,17 +432,11 @@ export function registerPaymentsIpc(): void {
       const data = await cachedRead(
         readKeys.rewards(address, chain.chainId),
         (cached) => (cached?.error ? REWARDS_ERROR_FRESH_MS : REWARDS_FRESH_MS),
-        () => readBuyerRewardsSummary(chain, address).catch((err: unknown): DesktopRewardsSummary => (
-          { ...EMPTY_REWARDS_SUMMARY, error: err instanceof Error ? err.message : String(err) }
-        )),
+        () => readBuyerRewardsSummary(chain, address).catch(rewardsErrorSummary),
       );
       return { ok: true, data, error: null };
     } catch (err) {
-      return {
-        ok: true,
-        data: { ...EMPTY_REWARDS_SUMMARY, error: err instanceof Error ? err.message : String(err) },
-        error: null,
-      };
+      return { ok: true, data: rewardsErrorSummary(err), error: null };
     }
   });
 }

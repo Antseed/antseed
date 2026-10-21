@@ -4,7 +4,7 @@
  * provider (and an endpoint-probing burst) per request. Balances are not
  * read here: they come from the buyer's cached `GET /_antseed/balances`.
  */
-import { AntsContext, rewards, type AntsChainConfig, type RewardsView } from '@antseed/ants'
+import { AntsContext, rewards, type AntsChainConfig, type AntsContextOptions, type RewardsView } from '@antseed/ants'
 import { multicallRead } from '@antseed/node/payments'
 import { Interface, ZeroAddress, type AbstractProvider } from 'ethers'
 import { sharedChainProvider, type ChainRpcProvider } from '../../../proxy/chain-rpc.js'
@@ -31,6 +31,11 @@ class SharedAntsContext extends AntsContext {
   override provider(): ReturnType<AntsContext['provider']> {
     return gatewayChainProvider(this.chain) as unknown as ReturnType<AntsContext['provider']>
   }
+}
+
+/** An ANTS context on the gateway's shared provider, for one wallet (with its signer for off-chain signatures). */
+export function gatewayAntsContext(options: AntsContextOptions): AntsContext {
+  return new SharedAntsContext(options)
 }
 
 /**

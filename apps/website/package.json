@@ -21,6 +21,8 @@
     "@hugeicons/react": "^1.1.5",
     "@lobehub/icons": "^5.15.0",
     "@mdx-js/react": "^3.0.0",
+    "@noble/curves": "1.9.7",
+    "@noble/hashes": "1.8.0",
     "clsx": "^2.1.0",
     "prism-react-renderer": "^2.3.0",
     "react": "^19.0.0",

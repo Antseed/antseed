@@ -525,6 +525,143 @@ export interface ChainInfo {
   contracts: Record<string, string>
 }
 
+// ── Referrals & builders ────────────────────────────────────────────────
+
+// GET    /workspaces/:id/referrals            → Referrals        (workspace admins)
+// POST   /workspaces/:id/referrals/invites    → CreatedInvite    (signed off-chain with the workspace wallet; no transaction)
+// POST   /workspaces/:id/referrals/redeem     { invite } → Referrals   (400 `invalid_invite` with the reason)
+// DELETE /workspaces/:id/referrals/redeem     → Referrals        (drops an invite that is not bound yet)
+// GET    /workspaces/:id/referrals/claimable  → ReferralClaimables (on-chain; for when the explorer lists no epochs)
+// GET    /builders                            → Builders         (org admins)
+// PUT    /builders                            { agentId: number | null } → Builders (+ restartRequired)
+// GET    /builders/claimable                  → BuilderAgent     (org admins; the effective agent, on-chain)
+//
+// Counts, referred buyers and payable amounts come from the chain's explorer
+// (Antscan) when it indexes them. Invites and claims only need the contracts:
+// without an explorer (or with one that fails), the `claimable` routes find
+// the payable epochs over RPC, paging back through every epoch the program
+// can pay. Claims are sent from the browser: every claim is permissionless
+// and the contracts pick the recipient.
+
+export interface InviteAllowance {
+  epoch: number
+  quota: number
+  used: number
+  left: number
+}
+
+export interface ReferredBuyer {
+  buyer: string
+  boundEpoch: number | null
+  /** Weighted usage points credited to the workspace for this buyer. */
+  points: string
+  /** ANTS earned from this buyer, claimed plus payable now. */
+  ants: string
+  /** Points in epochs that are not claimable yet. */
+  pendingPoints: string
+}
+
+export interface Referee {
+  /** The workspace wallet as an invited buyer: no invite, carrying one until it binds, or bound. */
+  state: 'none' | 'invited' | 'bound'
+  referrer: string | null
+  /** The invite the buyer carries in its signed metadata until a settlement binds it. */
+  pendingInvite: string | null
+  /** First epoch the carried invite no longer works in. */
+  inviteExpiresEpoch: number | null
+  boundEpoch: number | null
+  /** Last epoch of the 12-epoch bonus window. */
+  windowEnd: number | null
+  weeksLeft: number | null
+  /** Bonus ANTS payable now; paid to the workspace's authorized wallet. */
+  payableAnts: string
+  claimableEpochs: number[]
+  /** False once the wallet is no longer new to Antseed, so no invite can bind it; null when unknown. */
+  canRedeem: boolean | null
+  /** The explorer reported the bonus: `payableAnts` and `claimableEpochs` are real, not placeholders. */
+  indexed: boolean
+}
+
+export interface Referrals {
+  /** The explorer reports this wallet's referrals: counts, referred buyers and payable rewards below are real, not placeholders. */
+  available: boolean
+  /** The network has a referrals contract, so invites can be created, redeemed and removed, and rewards claimed (over RPC), with or without an explorer. */
+  invitesAvailable: boolean
+  address: string
+  /** This epoch's invite allowance; null when the explorer does not report it. */
+  invites: InviteAllowance | null
+  referredCount: number
+  /** Referral ANTS payable now; paid to the workspace's authorized wallet (the contract has no other recipient). */
+  payableAnts: string
+  claimableEpochs: number[]
+  buyers: ReferredBuyer[]
+  referee: Referee
+}
+
+/** Payable rewards found on-chain. */
+export interface ClaimableRewards {
+  /** ANTS payable now, in display units. */
+  payableAnts: string
+  claimableEpochs: number[]
+}
+
+/** What the workspace wallet can claim now, read from the referrals contract. */
+export interface ReferralClaimables {
+  /** Its referral rewards (paid to the workspace's authorized wallet). */
+  referrer: ClaimableRewards
+  /** Its own invite bonus; nothing while it is not bound. */
+  referee: ClaimableRewards
+}
+
+export interface CreatedInvite {
+  invite: string
+  link: string
+  epoch: number
+  index: number
+  quota: number
+  left: number
+  /** First epoch the invite no longer works in. */
+  expiresEpoch: number
+}
+
+export interface BuilderAgent {
+  agentId: number
+  /** ERC-8004 owner the builder rewards are paid to; null when the id is not registered. */
+  owner: string | null
+  /** The chain's own client (Antseed CLI / Desktop) when this is one of its ids. */
+  firstParty: 'cli' | 'desktop' | null
+  payableAnts: string
+  claimableEpochs: number[]
+}
+
+export interface Builders {
+  /** The network has a builders rewards contract, so the agent's rewards can be claimed (over RPC) with or without an explorer. */
+  available: boolean
+  /** The explorer reported the agent's rewards: `agent.payableAnts` and `agent.claimableEpochs` are real, not placeholders. */
+  indexed: boolean
+  /** The client agent set for this gateway (`buyer.clientAgentId`); null when unset. */
+  agentId: number | null
+  /**
+   * What the buyer signs into settlement metadata: ANTSEED_CLIENT_AGENT_ID in
+   * the buyer's environment (`env`), the configured id (`config`), the
+   * chain's id for the buyer's client kind (`default`; `client` says Antseed
+   * CLI or Desktop), or nothing (`none`). `runtime` is true when the running
+   * buyer reported it; false when the buyer could not be asked (or was just
+   * restarted) and this is the gateway's estimate from its own environment
+   * and the config.
+   */
+  effective: {
+    agentId: number | null
+    source: 'env' | 'config' | 'default' | 'none'
+    client: 'cli' | 'desktop'
+    runtime: boolean
+  }
+  /** The effective agent's registration and rewards; null when none. */
+  agent: BuilderAgent | null
+  /** Set by PUT when the buyer could not restart itself to apply the change. */
+  restartRequired?: boolean
+}
+
 // ── Chat ────────────────────────────────────────────────────────────────
 
 // Members (their "Web chat" key pays) and API-key sessions (`antseed chat`; that key pays):

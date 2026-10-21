@@ -195,6 +195,66 @@ describe('SqliteStore', () => {
     store.close();
   });
 
+  // Test: a stats-contract cutover re-reports open channels' cumulative totals
+  it('nets out a new stats contract re-reporting an open channel instead of double-counting', () => {
+    const store = new SqliteStore(':memory:');
+    store.init();
+    const channel = '0x' + 'c'.repeat(64);
+
+    // Legacy contract: two settlements on one channel.
+    store.applyBatch('base', '0xV1', [
+      makeEvent({ agentId: 3n, channelId: channel, blockNumber: 10, inputTokens: 100n, outputTokens: 50n, requestCount: 2n }),
+      makeEvent({ agentId: 3n, channelId: channel, blockNumber: 11, inputTokens: 20n, outputTokens: 10n, requestCount: 1n }),
+    ], 11);
+
+    // Simulate a DB written before the contract column existed.
+    const db = (store as unknown as { db: import('better-sqlite3').Database }).db;
+    db.exec('UPDATE seller_channel_totals SET last_contract_address = NULL');
+
+    // New contract: its first event for the channel carries the full cumulative
+    // (150 / 70 / 4), of which 120 / 60 / 3 is already indexed.
+    store.applyBatch('base', '0xV2', [
+      makeEvent({ agentId: 3n, channelId: channel, blockNumber: 20, inputTokens: 150n, outputTokens: 70n, requestCount: 4n }),
+    ], 20);
+    let totals = store.getSellerTotals(3)!;
+    assert.equal(totals.totalInputTokens, 150n);
+    assert.equal(totals.totalOutputTokens, 70n);
+    assert.equal(totals.totalRequests, 4n);
+    assert.equal(totals.settlementCount, 3);
+
+    // Later events from the new contract are ordinary deltas again, and a
+    // channel it sees first is indexed as-is.
+    store.applyBatch('base', '0xV2', [
+      makeEvent({ agentId: 3n, channelId: channel, blockNumber: 21, inputTokens: 5n, outputTokens: 1n, requestCount: 1n }),
+      makeEvent({ agentId: 3n, channelId: '0x' + 'd'.repeat(64), blockNumber: 22, inputTokens: 7n, outputTokens: 0n, requestCount: 1n }),
+    ], 22);
+    totals = store.getSellerTotals(3)!;
+    assert.equal(totals.totalInputTokens, 162n);
+    assert.equal(totals.totalOutputTokens, 71n);
+    assert.equal(totals.totalRequests, 6n);
+    assert.equal(totals.uniqueChannels, 2);
+    store.close();
+  });
+
+  it('keeps counting plain deltas when the same contract continues after the schema upgrade', () => {
+    const store = new SqliteStore(':memory:');
+    store.init();
+    const channel = '0x' + 'c'.repeat(64);
+    store.applyBatch('base', '0xV1', [
+      makeEvent({ agentId: 4n, channelId: channel, blockNumber: 10, inputTokens: 100n, requestCount: 2n }),
+    ], 10);
+    const db = (store as unknown as { db: import('better-sqlite3').Database }).db;
+    db.exec('UPDATE seller_channel_totals SET last_contract_address = NULL');
+
+    store.applyBatch('base', '0xV1', [
+      makeEvent({ agentId: 4n, channelId: channel, blockNumber: 11, inputTokens: 30n, requestCount: 1n }),
+    ], 11);
+    const totals = store.getSellerTotals(4)!;
+    assert.equal(totals.totalInputTokens, 130n);
+    assert.equal(totals.totalRequests, 3n);
+    store.close();
+  });
+
   // Test: unique buyers and channels counted across multiple events
   it('tracks unique buyers and channels per agent', () => {
     const store = new SqliteStore(':memory:');

@@ -413,6 +413,14 @@ test('a restart is refused with 429 until the minimum interval since the buyer s
   assert.equal(restarts, 0)
 })
 
+test('status reports the client agent this buyer signs, so a separately launched gateway can show it', async (t) => {
+  const h = await startHarness(t, [cheap], { clientAgent: { agentId: 7, source: 'env', client: 'cli' } })
+  const status = await (await fetch(`${h.url}/_antseed/status`)).json() as any
+  assert.deepEqual(status.attribution, { agentId: 7, source: 'env', client: 'cli' })
+  const bare = await startHarness(t, [cheap])
+  assert.equal(((await (await fetch(`${bare.url}/_antseed/status`)).json()) as any).attribution, undefined)
+})
+
 test('balances reads chain state per identity and caches it', async (t) => {
   let reads = 0
   const reader: BuyerBalanceReader = {

@@ -18,11 +18,10 @@ import {
   encodeMetadata,
   OUTPUT_IMAGE_TOKEN_EQUIVALENT,
   ZERO_METADATA,
-  ZERO_METADATA_HASH,
   computeChannelId,
   boundServiceMetadata,
 } from '@antseed/protocol/signatures';
-import type { SpendingAuthMessage, SpendingAuthMetadata } from '@antseed/protocol/signatures';
+import type { SpendingAuthMessage, SpendingAuthMetadata, UsageAttribution } from '@antseed/protocol/signatures';
 import { debugLog, debugWarn } from './debug.js';
 import { peerIdToAddress, type PeerId } from '@antseed/protocol/peer-id';
 import type { SellerAddressResolver } from './seller-address-resolver.js';
@@ -109,6 +108,8 @@ export interface BuyerPaymentConfig {
   costToleranceMultiplier?: number;
   /** Disable per-service attribution in metadata v2. Default: false. */
   disableMetadataV2Services?: boolean;
+  /** Referrer / client attribution appended to every signed metadata blob. */
+  attribution?: UsageAttribution;
   dataDir: string;
 }
 
@@ -208,6 +209,7 @@ export class BuyerPaymentManager {
   private _signer: AbstractSigner;
   private readonly _depositsClient: DepositsClient;
   private readonly _config: BuyerPaymentConfig;
+  private _attribution: UsageAttribution | undefined;
   private readonly _channelStore: BuyerChannelStore;
   /** In-memory map of active confirmed sessions by seller peerId for fast lookups. */
   private readonly _confirmedPeers = new Set<string>();
@@ -273,6 +275,7 @@ export class BuyerPaymentManager {
   constructor(identity: BuyerIdentity, config: BuyerPaymentConfig, channelStore: BuyerChannelStore, sellerAddressResolver?: SellerAddressResolver) {
     this._identity = identity;
     this._config = config;
+    this._attribution = config.attribution;
     this._sellerAddressResolver = sellerAddressResolver;
     this._signer = identity.wallet;
     this._depositsClient = new DepositsClient({
@@ -427,20 +430,29 @@ export class BuyerPaymentManager {
     return this._config.disableMetadataV2Services === true;
   }
 
+  /** Replace the client / invite attribution appended to future signed metadata. */
+  setAttribution(attribution: UsageAttribution | undefined): void {
+    this._attribution = attribution;
+  }
+
   private _sanitizeMetadata(metadata: SpendingAuthMetadata | undefined): SpendingAuthMetadata {
     const current = metadata ?? ZERO_METADATA;
     // Bounds service lists persisted before MAX_METADATA_SERVICES existed, so a
     // channel whose SpendingAuth outgrew the payment frame can be signed again.
-    if (!this._disableMetadataV2Services) return boundServiceMetadata(current);
-    return {
-      cumulativeInputTokens: current.cumulativeInputTokens,
-      cumulativeOutputTokens: current.cumulativeOutputTokens,
-      cumulativeRequestCount: current.cumulativeRequestCount,
-      cumulativeOutputImages: current.cumulativeOutputImages ?? 0n,
-      cumulativeVideoGenerations: current.cumulativeVideoGenerations ?? 0n,
-      cumulativeVideoSeconds: current.cumulativeVideoSeconds ?? 0n,
-      services: [],
-    };
+    const { attribution: _previous, ...base }: SpendingAuthMetadata = this._disableMetadataV2Services
+      ? {
+          cumulativeInputTokens: current.cumulativeInputTokens,
+          cumulativeOutputTokens: current.cumulativeOutputTokens,
+          cumulativeRequestCount: current.cumulativeRequestCount,
+          cumulativeOutputImages: current.cumulativeOutputImages ?? 0n,
+          cumulativeVideoGenerations: current.cumulativeVideoGenerations ?? 0n,
+          cumulativeVideoSeconds: current.cumulativeVideoSeconds ?? 0n,
+          services: [],
+        }
+      : boundServiceMetadata(current);
+    // Attribution always comes from the current setting, so clearing it drops
+    // a previous client or invite instead of carrying it into the next auth.
+    return this._attribution ? { ...base, attribution: this._attribution } : base;
   }
 
   private _advanceUsageMetadata(
@@ -1148,6 +1160,9 @@ export class BuyerPaymentManager {
     };
   }
 
+  // Send SpendingAuth via PaymentMux — reserve carries ReserveAuth sig.
+  // The hash must cover the metadata actually sent: with attribution set the
+  // zero metadata carries a client / invite tail, so it is not ZERO_METADATA_HASH.
   private _sendOpeningReserveAuth(
     paymentMux: PaymentMux,
     terms: NewChannelTerms,
@@ -1159,7 +1174,7 @@ export class BuyerPaymentManager {
     paymentMux.sendSpendingAuth({
       channelId: terms.channelId,
       cumulativeAmount: '0',
-      metadataHash: ZERO_METADATA_HASH,
+      metadataHash: computeMetadataHash(metadata),
       metadata: encodeMetadata(metadata),
       spendingAuthSig: openingReserveSig,
       reserveSalt: terms.salt,

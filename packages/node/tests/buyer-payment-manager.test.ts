@@ -12,7 +12,7 @@ import { bytesToHex } from '../src/utils/hex.js';
 import { toPeerId } from '../src/types/peer.js';
 import { estimateCostFromBytes } from '../src/payments/pricing.js';
 import { decodeSpendingAuth, encodeSpendingAuth } from '@antseed/protocol/payment-codec';
-import { getServiceMetadataId, MAX_METADATA_SERVICES } from '@antseed/protocol/signatures';
+import { decodeMetadataAttribution, getServiceMetadataId, MAX_METADATA_SERVICES } from '@antseed/protocol/signatures';
 import type { SpendingAuthPayload } from '@antseed/protocol/messages';
 import { captureUnitBillingContext } from '@antseed/buyer-core';
 
@@ -180,6 +180,53 @@ describe('BuyerPaymentManager', () => {
     // v4 zero metadata: seven head words (version, input, output, requests,
     // images, video generations, video seconds) + empty services array (offset + length) = 9 words.
     expect((sent.metadata as string).length).toBe(2 + 9 * 64);
+  });
+
+  it('authorizeSpending hashes the attributed initial metadata it sends', async () => {
+    const attributed = new BuyerPaymentManager(
+      identity,
+      makeConfig(tempDir, { attribution: { clientId: '0x' + '00'.repeat(31) + '2a', invite: { epoch: 42n, index: 7n, r: '0x' + '11'.repeat(32), vs: '0x' + '22'.repeat(32) } } }),
+      store,
+    );
+    attributed.setSigner(Wallet.createRandom());
+    const channelId = await attributed.authorizeSpending(fakePeerId('seller-peer-attr'), mux, 50_000n, TEST_PRICING);
+
+    expect(channelId).toMatch(/^0x[0-9a-f]{64}$/);
+    const sent = mux.sentSpendingAuths[0] as Record<string, string>;
+    // Five extra tail words: the seller pre-checks keccak(metadata) == metadataHash
+    // before it verifies the ReserveAuth, so a stale zero hash rejects every open.
+    expect(sent.metadata.length).toBe(2 + 14 * 64); // 7 v4 head words + offset + 5 tail words + services length
+    expect(sent.metadataHash).toBe(keccak256(sent.metadata));
+  });
+
+  it('stops signing a cleared attribution on the next authorization', async () => {
+    const attribution = { clientId: '0x' + '00'.repeat(31) + '2a', invite: { epoch: 42n, index: 7n, r: '0x' + '11'.repeat(32), vs: '0x' + '22'.repeat(32) } };
+    const attributed = new BuyerPaymentManager(identity, makeConfig(tempDir, { attribution }), store);
+    attributed.setSigner(Wallet.createRandom());
+    const sellerPeerId = fakePeerId('seller-peer-clear');
+    const channelId = await attributed.authorizeSpending(sellerPeerId, mux, 50_000n, TEST_PRICING);
+    expect(decodeMetadataAttribution((mux.sentSpendingAuths[0] as Record<string, string>).metadata)).not.toBeNull();
+
+    attributed.setAttribution(undefined);
+    attributed.recordResponseBytes(sellerPeerId, SAMPLE_INPUT, SAMPLE_OUTPUT);
+    mux.sentSpendingAuths.length = 0;
+    await attributed.handleNeedAuth(sellerPeerId, {
+      channelId,
+      requiredCumulativeAmount: '1001',
+      currentAcceptedCumulative: '1000',
+      deposit: '1000000',
+    }, mux);
+
+    const next = mux.sentSpendingAuths[0] as Record<string, string>;
+    expect(next).toBeDefined();
+    expect(decodeMetadataAttribution(next.metadata)).toBeNull();
+    expect(next.metadataHash).toBe(keccak256(next.metadata));
+
+    // A channel hydrated from attributed metadata without attribution set signs none either.
+    const hydrated = new BuyerPaymentManager(identity, makeConfig(tempDir), store);
+    hydrated.setSigner(Wallet.createRandom());
+    expect((hydrated as unknown as { _sanitizeMetadata(m: unknown): { attribution?: unknown } })
+      ._sanitizeMetadata({ cumulativeInputTokens: 1n, cumulativeOutputTokens: 1n, cumulativeRequestCount: 1n, services: [], attribution }).attribution).toBeUndefined();
   });
 
   it('does not transmit ReserveAuth when durable persistence fails', async () => {

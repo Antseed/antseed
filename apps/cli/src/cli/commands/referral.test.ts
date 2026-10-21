@@ -1,0 +1,163 @@
+import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test from 'node:test';
+import { Wallet, type HDNodeWallet } from 'ethers';
+import { AntsContext, type CreatedInviteView } from '@antseed/ants';
+import { decodeInvite, encodeInvite, readReferralState, recoverInviter, signInvite } from '@antseed/node';
+import {
+  createReferralInvite,
+  formatInviteCreated,
+  formatRedeemResult,
+  formatReferralStatus,
+  redeemReferralInvite,
+  type ReferralStatus,
+} from './referral.js';
+
+const REFERRALS = '0x1111111111111111111111111111111111111111';
+const DOMAIN = { chainId: 8453, referralsAddress: REFERRALS };
+const BUYER = '0x2222222222222222222222222222222222222222';
+const SCOPE = { ...DOMAIN, wallet: BUYER };
+const strip = (lines: string[]) => lines.map((line) => line.replace(/\u001b\[[0-9;]*m/g, ''));
+
+async function withDataDir(work: (dir: string) => Promise<void>): Promise<void> {
+  const dir = await mkdtemp(join(tmpdir(), 'antseed-referral-cli-'));
+  try { await work(dir); } finally { await rm(dir, { recursive: true, force: true }); }
+}
+
+function context(dataDir: string, wallet: HDNodeWallet, client: Record<string, unknown>, indexer: Record<string, unknown> | null = null) {
+  const ctx = new AntsContext({ chain: { referralsAddress: REFERRALS, evmChainId: 8453, chainId: 'base-mainnet' } as never, address: wallet.address, signer: wallet });
+  (ctx as unknown as { referrals: () => unknown }).referrals = () => client;
+  (ctx as unknown as { indexer: () => unknown }).indexer = () => indexer;
+  return { ctx, chain: ctx.chain, dataDir };
+}
+
+test('invite signs a free index with this wallet and remembers it', async () => {
+  await withDataDir(async (dir) => {
+    const wallet = Wallet.createRandom();
+    // Index 0 is used on-chain. The index is picked at random, so whether 0 is
+    // probed (and counted) first varies; the picks and the final refusal do not.
+    const used = new Set([0]);
+    const client = {
+      currentEpoch: async () => 30,
+      inviteQuota: async () => 3,
+      inviteUsed: async (_referrer: string, _epoch: number, index: number) => used.has(index),
+    };
+    const first = await createReferralInvite(context(dir, wallet, client) as never);
+    assert.equal(first.epoch, 30);
+    assert.ok([1, 2].includes(first.index));
+    assert.ok(first.left <= 2);
+    assert.equal(first.link, `https://antseed.com/invite/${first.invite}`);
+    assert.equal(recoverInviter(decodeInvite(first.invite), DOMAIN), wallet.address);
+
+    const second = await createReferralInvite(context(dir, wallet, client) as never);
+    assert.equal(second.index, 3 - first.index);
+    assert.ok(second.left <= 1);
+    assert.deepEqual((await readReferralState(dir, { ...DOMAIN, wallet: wallet.address }))?.issued, { epoch: 30, indices: [1, 2] });
+    await assert.rejects(createReferralInvite(context(dir, wallet, client) as never), /All 3 invites for this week are taken/);
+  });
+});
+
+test('invite reads epoch and quota on-chain and skips the invites Antscan reports bound that epoch', async () => {
+  await withDataDir(async (dir) => {
+    const wallet = Wallet.createRandom();
+    const probed: number[] = [];
+    const client = {
+      currentEpoch: async () => 31,
+      inviteQuota: async (_referrer: string, epoch: number) => (epoch === 31 ? 5 : 0),
+      inviteUsed: async (_referrer: string, _epoch: number, index: number) => { probed.push(index); return false; },
+    };
+    const indexer = { referrer: async () => ({ available: true, currentEpoch: 31, invites: { epoch: 31, quota: 5, used: 2, usedIndices: [0, 1] }, referredCount: 2, payable: '0', claimableEpochs: [], buyers: [] }) };
+    const created = await createReferralInvite(context(dir, wallet, client, indexer) as never);
+    assert.deepEqual([created.epoch, created.quota, created.left], [31, 5, 2]);
+    assert.ok([2, 3, 4].includes(created.index));
+    assert.deepEqual(probed, [created.index]);
+  });
+});
+
+test('invite ignores an Antscan answer from an earlier epoch', async () => {
+  await withDataDir(async (dir) => {
+    const wallet = Wallet.createRandom();
+    const client = { currentEpoch: async () => 32, inviteQuota: async () => 2, inviteUsed: async () => false };
+    const indexer = { referrer: async () => ({ available: true, currentEpoch: 31, invites: { epoch: 31, quota: 0, used: 0, usedIndices: [] }, referredCount: 0, payable: '0', claimableEpochs: [], buyers: [] }) };
+    const created = await createReferralInvite(context(dir, wallet, client, indexer) as never);
+    assert.deepEqual([created.epoch, created.quota, created.left, created.expiresEpoch], [32, 2, 1, 36]);
+  });
+});
+
+test('invite explains a zero quota', async () => {
+  await withDataDir(async (dir) => {
+    const client = { currentEpoch: async () => 30, inviteQuota: async () => 0, inviteUsed: async () => false };
+    await assert.rejects(createReferralInvite(context(dir, Wallet.createRandom(), client) as never), /at least 1 USDC of usage or sales in the previous week/);
+  });
+});
+
+test('redeem saves a valid invite as pending and refuses an invalid one with the reason', async () => {
+  await withDataDir(async (dir) => {
+    const referrer = Wallet.createRandom();
+    const invite = encodeInvite(await signInvite(referrer, DOMAIN, 30, 0));
+    const ok = { previewInvite: async () => ({ referrer: referrer.address, failure: null }) };
+    const saved = await redeemReferralInvite({ client: ok, dataDir: dir, scope: SCOPE, value: `https://antseed.com/invite/${invite}` });
+    assert.equal(saved.ok, true);
+    assert.deepEqual(await readReferralState(dir, SCOPE).then((state) => [state?.state, state?.invite, state?.referrer]), ['invited', invite, referrer.address]);
+    assert.match(strip(formatRedeemResult(saved)).join('\n'), /Invite from 0x.{4}….{4} saved\.\nBinds with your first paid or free request through `antseed buyer start` \(before week 34\)\./);
+
+    const used = { previewInvite: async () => ({ referrer: referrer.address, failure: 'InviteAlreadyUsed' as const }) };
+    const refused = await redeemReferralInvite({ client: used, dataDir: dir, scope: SCOPE, value: invite });
+    assert.deepEqual(strip(formatRedeemResult(refused)), ["Can't use this invite: This invite was already used."]);
+    const garbage = await redeemReferralInvite({ client: used, dataDir: dir, scope: SCOPE, value: 'not-an-invite' });
+    assert.deepEqual(strip(formatRedeemResult(garbage)), ["Can't use this invite: Not a valid invite."]);
+  });
+});
+
+test('invite output shows the link, the raw invite and what is left', () => {
+  const created: CreatedInviteView = { invite: 'AQAe', link: 'https://antseed.com/invite/AQAe', epoch: 30, index: 1, quota: 3, left: 1, expiresEpoch: 34 };
+  assert.deepEqual(strip(formatInviteCreated(created)), [
+    'Invite created. Share the link; it works once and expires within 4 weeks.',
+    '',
+    '  https://antseed.com/invite/AQAe',
+    '',
+    'Invite: AQAe',
+    '1 of 3 invites left this week.',
+  ]);
+});
+
+test('status covers inviter, invite bonus and invitees', () => {
+  const hiddenInvites = { available: false, indexed: false, payable: '0', claimableEpochs: [], referredCount: 0, invites: null };
+  const hiddenReferee = { available: false, indexed: false, referrer: null, boundEpoch: null, windowEnd: null, weeksLeft: null, payable: '0', claimableEpochs: [] };
+  const base: ReferralStatus = { configured: true, state: null, referee: hiddenReferee, invites: hiddenInvites };
+  assert.deepEqual(strip(formatReferralStatus({ ...base, configured: false })), ['Referrals are not available on this network.']);
+  assert.deepEqual(strip(formatReferralStatus(base)), [
+    'No inviter. Redeem an invite with: antseed referral redeem <invite>',
+    'Invite stats unavailable right now.',
+  ]);
+  assert.equal(strip(formatReferralStatus({ ...base, state: { state: 'invited', referrer: '0xe05fcC23807536bEe418f142D19fa0d21BB0cfF7' } }))[0],
+    'Invite from 0xe05f…cfF7 pending. Binds with your first paid or free request.');
+  assert.deepEqual(strip(formatReferralStatus({
+    ...base,
+    referee: { available: true, indexed: true, referrer: '0xe05fcC23807536bEe418f142D19fa0d21BB0cfF7', boundEpoch: 30, windowEnd: 42, weeksLeft: 9, payable: '1500000000000000000', claimableEpochs: [31] },
+    invites: { available: true, indexed: true, payable: '250000000000000000', claimableEpochs: [31], referredCount: 2, invites: { epoch: 34, quota: 5, used: 2, left: 3 } },
+  })), [
+    'Invited by 0xe05f…cfF7 (week 30).',
+    'Invite bonus: 9 weeks left · 1.5 ANTS payable. Paid to your authorized wallet.',
+    'Your invites: 2 invited · 0.25 ANTS payable · 3 of 5 invites left this week.',
+  ]);
+  // An on-chain binding without Antscan: the inviter is known, the bonus window and amount are not.
+  assert.deepEqual(strip(formatReferralStatus({
+    ...base,
+    referee: { ...hiddenReferee, available: true, referrer: '0xe05fcC23807536bEe418f142D19fa0d21BB0cfF7' },
+  })), [
+    'Invited by 0xe05f…cfF7.',
+    'Invite stats unavailable right now.',
+  ]);
+  // Without Antscan the count and allowance are on-chain reads; only the payable amount is unknown.
+  assert.deepEqual(strip(formatReferralStatus({
+    ...base,
+    invites: { available: true, indexed: false, payable: '0', claimableEpochs: [], referredCount: 1, invites: { epoch: 34, quota: 3, used: 1, left: 2 } },
+  })), [
+    'No inviter. Redeem an invite with: antseed referral redeem <invite>',
+    'Your invites: 1 invited · 2 of 3 invites left this week.',
+    'Payable rewards need an Antscan explorer; claims on the ANTS dashboard check recent weeks on-chain.',
+  ]);
+});

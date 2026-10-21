@@ -1,5 +1,45 @@
 export type RuntimeMode = 'connect' | 'system-proxy' | 'tunnel';
 
+/** This wallet as a referee: who invited it, or the invite it carries until bound. */
+export type ReferralStatus = {
+  /** False when referrals are not deployed on this network. */
+  configured: boolean;
+  state: 'none' | 'invited' | 'bound';
+  referrer: string | null;
+  invite: string | null;
+};
+
+export type InviteCheckResult =
+  | { ok: true; referrer: string; invite: string }
+  | { ok: false; reason: string };
+
+/** This wallet as a referrer (from Antscan); ANTS are decimal strings. */
+export type ReferralInvites = {
+  available: boolean;
+  /** False when no Antscan explorer lists this network's referrals. */
+  listed: boolean;
+  /** Invites for this week; null when Antscan does not report them. */
+  allowance: { epoch: number; quota: number; used: number; left: number } | null;
+  /** `pendingPoints`: usage in weeks that are not claimable yet (no ANTS value yet). */
+  buyers: Array<{ buyer: string; points: string; ants: string; pendingPoints: string }>;
+  totals: { points: string; ants: string; pendingPoints: string };
+  error: string | null;
+};
+
+export type CreateInviteResult =
+  | { ok: true; invite: string; link: string; left: number; quota: number; expiresEpoch: number }
+  | { ok: false; reason: string; noQuota: boolean };
+
+/** The referee bonus (from Antscan); payable is a decimal ANTS string paid to the operator. */
+export type RefereeBonus = {
+  available: boolean;
+  /** Antscan reports the bonus; when false the wallet is bound on-chain and `payable`/`weeksLeft` are unknown. */
+  indexed: boolean;
+  weeksLeft: number | null;
+  payable: string;
+  claimableEpochs: number[];
+};
+
 export type RuntimeProcessState = {
   mode: RuntimeMode;
   running: boolean;
@@ -403,6 +443,14 @@ export type DesktopBridge = {
   onFullscreenChange?: (handler: (isFullscreen: boolean) => void) => () => void;
   onWindowFocusChange?: (handler: (isFocused: boolean) => void) => () => void;
   getAppSetupStatus?: () => Promise<{ needed: boolean; complete: boolean }>;
+  referralGetStatus?: () => Promise<ReferralStatus>;
+  referralCheckInvite?: (value: string) => Promise<InviteCheckResult>;
+  referralRedeemInvite?: (value: string) => Promise<InviteCheckResult>;
+  referralGetInvites?: () => Promise<ReferralInvites>;
+  referralCreateInvite?: () => Promise<CreateInviteResult>;
+  referralGetReferee?: () => Promise<RefereeBonus>;
+  referralTakeDeepLink?: () => Promise<string | null>;
+  onReferralDeepLink?: (handler: (invite: string) => void) => () => void;
   getTelemetryStatus?: () => Promise<import('../../shared/telemetry.js').TelemetryStatus>;
   getTeeStatus?: () => Promise<import('@antseed/node/tee-status').DesktopTeeStatus>;
   checkSellerTee?: (peerId: string) => Promise<import('@antseed/node/tee-status').DesktopTeeStatus>;
