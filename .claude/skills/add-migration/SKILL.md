@@ -8,17 +8,17 @@ description: Add a new SQLite migration to the AntSeed node package. Use when ad
 ## Purpose
 Create a new numbered SQLite migration file for the AntSeed node package.
 Migrations live in `packages/node/src/storage/migrations/{domain}/` where domain
-is `channels` (payment_channels, receipts) or `metering` (events, sessions, etc.).
+is `channels` (payment_channels, receipts), `metering` (events, sessions, etc.) or `verification` (response auths).
 
 ## Quick Reference
 - Creates: `packages/node/src/storage/migrations/{domain}/{NNN}_{name}.ts`
 - Updates: `packages/node/src/storage/migrations/{domain}/index.ts`
-- Requires: domain (channels or metering), migration name, SQL statements
+- Requires: domain (channels, metering or verification), migration name, SQL statements
 - Test: `cd packages/node && pnpm test`
 
 ## Procedure
 
-1. **Determine domain**: `channels` or `metering`
+1. **Determine domain**: `channels`, `metering` or `verification`
 2. **Find next version number**: Look at existing files in the domain directory, pick next sequential number
 3. **Create migration file**: `{NNN}_{snake_case_name}.ts` exporting a `Migration` object
 4. **Register in index.ts**: Import the migration and add to the array

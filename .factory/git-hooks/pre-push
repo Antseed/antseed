@@ -1,0 +1,4 @@
+#!/bin/sh
+# Factory sessions run git with core.hooksPath pointing here. They never push; the operator pushes from their own shell.
+echo "factory: push refused (factory sessions never push; push from your own shell)" >&2
+exit 1
