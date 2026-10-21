@@ -551,18 +551,6 @@ export function isModelNotFoundResponse(response: SerializedHttpResponse): boole
  */
 const CARRY_FORWARD_TTL_MS = 2 * 60 * 60_000
 /**
- * Seller-announced catalog fields. Explicit tracking ensures stale catalog
- * (for example after health checks hide all models) is cleared on the next
- * peer refresh.
- */
-const PEER_CATALOG_FIELDS = [
-  'providerPricing',
-  'providerServiceCategories',
-  'providerServiceApiProtocols',
-  'providerServiceUnitBillingModels',
-  'providerServiceCapabilities',
-] as const satisfies readonly (keyof PeerInfo)[]
-/**
  * Requests kept in the spend-attribution map. Entries outlive their request on
  * purpose (a seller-initiated auth can land after the response), so this is
  * sized for in-flight plus recently-finished traffic, not for concurrency.
@@ -2479,16 +2467,12 @@ export class BuyerProxy {
       const metadata = peer.metadata || prev.metadata
         ? { ...(prev.metadata ?? {}), ...(peer.metadata ?? {}) } as PeerMetadata
         : undefined
+      // Discovery always sets the catalog maps (see PeerInfo.providerPricing),
+      // so this spread drops a catalog the seller withdrew.
       const mergedPeer: PeerInfo = {
         ...prev,
         ...peer,
         ...(metadata ? { metadata } : {}),
-      }
-      // The seller's announced catalog comes only from this scan: a seller
-      // that stopped advertising a service (for example after failed health
-      // checks) leaves these fields out, and the cached copy must not survive.
-      for (const field of PEER_CATALOG_FIELDS) {
-        if (peer[field] === undefined) delete mergedPeer[field]
       }
       if (prev.lastReachedAt && (!peer.lastReachedAt || prev.lastReachedAt > peer.lastReachedAt)) {
         mergedPeer.lastReachedAt = prev.lastReachedAt

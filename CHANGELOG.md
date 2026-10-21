@@ -8,6 +8,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Changed
 
+- `@antseed/node`: a discovered peer always has `providerPricing`, `providerServiceCategories`, `providerServiceApiProtocols`, `providerServiceUnitBillingModels` and `providerServiceCapabilities`. Each is `{}` when the seller announces nothing for it, instead of being left out. Check for entries (`Object.keys(...).length`), not for the field. Peers restored from saved state or built by hand can still leave the fields out.
+  - CLI buyer: `GET /_antseed/peers`, `antseed network browse --json` and `antseed network peer --json` show these fields as `{}` instead of leaving them out, and `buyer.state.json` saves `{}` instead of `null`.
+  - The buyer still drops a service or catalog detail as soon as a refresh shows the seller stopped announcing it. That now follows from the announcement itself, not from a list of fields in the proxy.
+  - `@antseed/buyer-core`: the payment negotiator treats an empty `providerPricing` like a missing one. A seller with no pricing entries and zero default prices gets no pricing map, so the buyer keeps the session pricing it already has.
 - Gateway console: **Deposits** on **Wallet & Funding** lists the money that came into the workspace: each transfer of USDC to the workspace wallet, and each direct deposit from a connected wallet. Each has a printable confirmation and can be approved.
   - A transfer is listed once its USDC starts moving into the credits, usually within a minute. It is the transfer the move's own on-chain check found (USDC sent to the wallet in the half hour before), so the list needs no extra search of the chain, and transfers made before this change are listed too. A transfer the check missed can be added with **Add a past deposit**.
   - The automatic moves (sweeps) from the wallet into the credits are no longer listed. One transfer is often moved in several small pieces, so listing them counted the money more than once. A sweep approved earlier stays listed with its approval, for the amount it moved; the transfer it came from is approved on its own.

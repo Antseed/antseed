@@ -59,6 +59,32 @@ describe('AntseedNode publicAddress override', () => {
     expect(peer.publicAddress).toBe('34.134.97.133:6882');
   });
 
+  it('keeps every announced field on the peer when the seller announces nothing, except capabilities', () => {
+    const node = new AntseedNode({ role: 'buyer' });
+    const toPeer = (metadata: PeerMetadata) => (node as any)._lookupResultToPeerInfo({ host: '34.134.97.133', port: 6882, metadata });
+    const full = toPeer(buildMetadata({
+      version: METADATA_VERSION,
+      capabilities: ['test-capability'],
+      providers: [
+        {
+          provider: 'openai',
+          services: ['gpt-image-1'],
+          defaultPricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 2, cachedInputUsdPerMillion: 0.5 },
+          servicePricing: { 'gpt-image-1': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } },
+          serviceCategories: { 'gpt-image-1': ['image'] },
+          serviceApiProtocols: { 'gpt-image-1': ['openai-images'] },
+          serviceUnitBillingModels: { 'gpt-image-1': { 'openai-images': { version: 1, components: [{ unit: 'output_images', priceUsd: 0.04 }] } } },
+          serviceCapabilities: { 'gpt-image-1': { outputs: ['image'] } },
+          maxConcurrency: 10,
+          currentLoad: 0,
+        },
+      ],
+    }));
+    const empty = toPeer(buildMetadata({ providers: [] }));
+
+    expect(Object.keys(full).filter((key) => !(key in empty))).toEqual(['capabilities']);
+  });
+
   it('maps service unit billing models only when v11 metadata includes them', () => {
     const node = new AntseedNode({ role: 'buyer' });
     const v10Peer = (node as any)._lookupResultToPeerInfo({
@@ -103,7 +129,7 @@ describe('AntseedNode publicAddress override', () => {
       }),
     });
 
-    expect(v10Peer.providerServiceUnitBillingModels).toBeUndefined();
+    expect(v10Peer.providerServiceUnitBillingModels).toEqual({});
     expect(v11Peer.providerServiceUnitBillingModels?.openai?.services['gpt-image-1']?.['openai-images']).toEqual({
       version: 1,
       components: [{ unit: 'output_images', priceUsd: 0.04 }],
