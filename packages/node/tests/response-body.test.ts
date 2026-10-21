@@ -173,4 +173,12 @@ describe('seller response bodies', () => {
     expect(startBody).not.toContain('"cost":');
     expect(decode(response.body)).toBe(startBody + sent.map((chunk) => decode(chunk.data)).join(''));
   });
+
+  it('carry it even when the buyer marks a normal request as a video download', async () => {
+    const marked = { ...request, headers: { 'x-antseed-video-download': 'video-stream-v1' } };
+    const response = await execute({ handleRequest: async () => ({ requestId: 'r1', statusCode: 200, headers: { 'content-type': 'application/json' }, body: encode(upstreamCompletion) }) }, undefined, marked);
+    const body = JSON.parse(decode(response.body));
+    expect(body.usage).toEqual({ prompt_tokens: 600, completion_tokens: 300, estimated_cost: 0.0018 });
+    expect(body.provider).toBeUndefined();
+  });
 });

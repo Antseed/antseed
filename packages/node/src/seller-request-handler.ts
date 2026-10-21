@@ -686,7 +686,7 @@ export class SellerRequestHandler {
               }
               mux.sendProxyChunk(chunk);
             },
-          });
+          }, isDownload);
           // A video is charged when the buyer downloads it, not on acceptance.
           if (videoRoute?.action === 'create') {
             response = this._acceptVideoCreate(videoRoute, request, response, buyerPeerId, requestedModel, requestBilling, unitBillingModel, oneOffChannelId);
@@ -1343,13 +1343,14 @@ export class SellerRequestHandler {
     request: SerializedHttpRequest,
     sellerCost?: SellerCost,
     streamCallbacks?: ProviderStreamCallbacks,
+    isDownload = false,
   ): Promise<SerializedHttpResponse> {
     // Every provider's response goes through here, so no plugin can expose its
     // upstream's own headers or costs: the body's cost is the seller's price.
     const withHeaders = (response: SerializedHttpResponse): SerializedHttpResponse =>
       ({ ...response, headers: exposedResponseHeaders(response.headers) });
-    // A video download is the provider's own bytes, hashed as they pass; it carries no usage.
-    const isDownload = request.headers[VIDEO_DOWNLOAD_STREAM_HEADER] === VIDEO_DOWNLOAD_STREAM_VERSION;
+    // A video download (a retrieval the router recognized, not just the buyer's header)
+    // is the provider's own bytes, hashed as they pass; it carries no usage.
     if (streamCallbacks && provider.handleRequestStream) {
       // An event stream is rewritten as it passes. A JSON body can only be rewritten
       // whole, so it is held back and sent as the returned response instead.
