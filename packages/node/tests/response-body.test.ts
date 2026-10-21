@@ -59,6 +59,36 @@ describe('ExposedSseStream', () => {
     expect(events[1].usage.estimated_cost).toBe(0.00024);
   });
 
+  it('prices an event whose JSON spans several data lines, split across chunks', () => {
+    const stream = new ExposedSseStream(cost);
+    const text = 'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
+      + 'event: usage\ndata: {"choices":[],"provider":"SomeHost","usage":\ndata: {"prompt_tokens":600,"completion_tokens":300,"cost":0.01}}\n\n'
+      + 'data: [DONE]\n\n';
+    const out = [text.indexOf('"usage"'), text.indexOf('"cost"')].concat(text.length)
+      .reduce<{ at: number; out: string }>((acc, cut) => ({ at: cut, out: acc.out + decode(stream.push(encode(text.slice(acc.at, cut)))) }), { at: 0, out: '' })
+      .out + decode(stream.flush());
+    expect(out).toBe('data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
+      + `event: usage\ndata: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 600, completion_tokens: 300, estimated_cost: 0.0018 } })}\n\n`
+      + 'data: [DONE]\n\n');
+  });
+
+  it('sends a single-line event as soon as its line ends', () => {
+    const stream = new ExposedSseStream(cost);
+    expect(decode(stream.push(encode('data: {"choices":[{"delta":{"content":"ok"}}]}\n')))).toBe('data: {"choices":[{"delta":{"content":"ok"}}]}\n');
+  });
+
+  it('leaves multi-line events that are not JSON as they were', () => {
+    const stream = new ExposedSseStream(cost);
+    const text = 'data: first\ndata: second\n\ndata: [DONE]\n\n';
+    expect(decode(stream.push(encode(text))) + decode(stream.flush())).toBe(text);
+  });
+
+  it('rewrites a held event that the stream ends without a blank line', () => {
+    const stream = new ExposedSseStream(cost);
+    const out = decode(stream.push(encode('data: {"usage":\n'))) + decode(stream.push(encode('data: {"prompt_tokens":600,"completion_tokens":300,"cost":0.01}}'))) + decode(stream.flush());
+    expect(out).toBe(`data: ${JSON.stringify({ usage: { prompt_tokens: 600, completion_tokens: 300, estimated_cost: 0.0018 } })}`);
+  });
+
   it('keeps a character split across chunks intact while other streams decode in between', () => {
     const [a, b] = [new ExposedSseStream(cost), new ExposedSseStream(cost)];
     const textA = 'data: {"choices":[{"delta":{"content":"héllo"}}]}\n';
