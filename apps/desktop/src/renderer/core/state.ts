@@ -187,8 +187,8 @@ export type VprModelCatalogEntry = {
  * (`packages/node/src/reputation/trust-score.ts`). The renderer only imports
  * `@antseed/node` subpath modules, so the shape is restated here.
  *
- *   trust = washFlagged ? 0 : history + usage + power + identity
- *   (weights 50 / 20 / 10 / 20)
+ *   trust = washFlagged ? 0 : min(100, history + usage + power + identity + freeModels)
+ *   (weights 50 / 20 / 10 / 20, plus a +5 free-model bonus)
  */
 export type TrustBreakdown = {
   /** Final trust score, 0-100. */
@@ -201,6 +201,8 @@ export type TrustBreakdown = {
   power: { score: number; shareBps: number; epoch: number } | null;
   /** Verified-identity part; `null` when no verified identity has usable history. */
   identity: { score: number; kind: 'github' | 'domain'; claim: string } | null;
+  /** Free-model bonus, +5; `null` when the seller announces no free model. */
+  freeModels: { score: number; service: string } | null;
   /** Wash-trading registry verdict; `null` when the registry is unavailable. */
   washFlagged: boolean | null;
 };

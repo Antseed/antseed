@@ -852,6 +852,7 @@ test('explicit routing-service target and tradeoff survive the local state-file 
   const { proxy } = makeRankedRoutingFixture([200])
   const client = (proxy as any)._modelRoutingClient as ModelRoutingClientApi
   const stateFile = join(directory, 'buyer.state.json')
+  ;(proxy as any)._stateDir = directory
   ;(proxy as any)._stateFile = stateFile
   const selection = { kind: 'router', service: { peerId: 'c'.repeat(40), provider: 'alpha', serviceId: 'alpha-route' }, options: { cost_quality_tradeoff: 9 } }
   const response = await invokeProxy(proxy, makeProxyRequest({ path: '/_antseed/route', body: routeBody(selection) }))

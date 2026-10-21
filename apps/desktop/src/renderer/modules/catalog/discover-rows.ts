@@ -29,6 +29,7 @@ export function normalizeTrust(raw: unknown): TrustBreakdown | null {
     usage: normalizeSharePart(asObject(value.usage)),
     power: normalizeSharePart(asObject(value.power)),
     identity: normalizeIdentityPart(asObject(value.identity)),
+    freeModels: normalizeFreeModelsPart(asObject(value.freeModels)),
     washFlagged: typeof value.washFlagged === 'boolean' ? value.washFlagged : null,
   };
 }
@@ -59,6 +60,13 @@ function normalizeIdentityPart(raw: Record<string, unknown> | null): TrustBreakd
   if (raw.kind !== 'github' && raw.kind !== 'domain') return null;
   const claim = typeof raw.claim === 'string' ? raw.claim : '';
   return { score, kind: raw.kind, claim };
+}
+
+function normalizeFreeModelsPart(raw: Record<string, unknown> | null): TrustBreakdown['freeModels'] {
+  if (!raw) return null;
+  const score = boundedScore(raw.score);
+  if (score === null || typeof raw.service !== 'string') return null;
+  return { score, service: raw.service };
 }
 
 function toNullableBigintString(v: unknown): string | null {
