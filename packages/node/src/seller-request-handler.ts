@@ -34,7 +34,7 @@ import {
 } from './types/protocol.js';
 import { VerificationMux } from './verification/verification-mux.js';
 import { createResponseAuthPayload, createStreamingResponseHash } from './verification/response-auth.js';
-import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION } from '@antseed/protocol/http';
+import { ANTSEED_STREAMING_RESPONSE_HEADER, VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION } from '@antseed/protocol/http';
 import { hasJsonContentType, tryParseJsonObject } from './utils/json-codec.js';
 import type { UnitBillingContext, UnitBillingModelV1, UnitBillingUsage, UnitBillingUsageReportV1 } from './types/billing.js';
 import { captureUnitBillingContext, computeFinalUnitBilling, estimateUnitRequestCost, isFreeUnitBillingModel, type BillingRequestFacts } from './billing/unit.js';
@@ -1477,14 +1477,16 @@ function contentTypeOf(headers: Record<string, string>): string {
 
 /**
  * Whether a response is a server-sent event stream: its content type says so,
- * or, like HttpRelay assumes, a successful response without a content type to
- * a request that accepts one.
+ * or it is a successful response without one that its provider marked as
+ * streaming (HttpRelay streams a typeless response to a request it sent
+ * accepting events) or whose request accepts events.
  */
 function isEventStream(request: SerializedHttpRequest, response: Pick<SerializedHttpResponse, 'statusCode' | 'headers'>): boolean {
   const contentType = contentTypeOf(response.headers);
   if (contentType) return contentType.includes('text/event-stream');
-  const accept = headerOf(request.headers, 'accept').toLowerCase();
-  return accept.includes('text/event-stream') && response.statusCode >= 200 && response.statusCode < 300;
+  if (response.statusCode < 200 || response.statusCode >= 300) return false;
+  return headerOf(response.headers, ANTSEED_STREAMING_RESPONSE_HEADER) === '1'
+    || headerOf(request.headers, 'accept').toLowerCase().includes('text/event-stream');
 }
 
 function headerOf(headers: Record<string, string>, name: string): string {

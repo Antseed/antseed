@@ -160,7 +160,7 @@ describe('seller response bodies', () => {
     expect(decode(response.body)).toBe(delivered);
   });
 
-  it('carry it in a stream without a content type to a request that accepts one', async () => {
+  it('carry it in a stream without a content type that the request or the provider marks as events', async () => {
     const usageEvent = `data: ${JSON.stringify({ choices: [], provider: 'SomeHost', usage: { prompt_tokens: 600, completion_tokens: 300, cost: 0.0001, estimated_cost: 9e-7 } })}\n\n`;
     const sent: SerializedHttpResponseChunk[] = [];
     const stream = (headers: Record<string, string>) => async (_request: SerializedHttpRequest, callbacks: ProviderStreamCallbacks) => {
@@ -170,17 +170,26 @@ describe('seller response bodies', () => {
       return { ...start, body: encode(usageEvent) };
     };
     const callbacks: ProviderStreamCallbacks = { onResponseStart: () => {}, onResponseChunk: (chunk) => { sent.push(chunk); } };
-    const sse = { ...request, headers: { Accept: 'text/event-stream' } };
-    const response = await execute({ handleRequest: async () => { throw new Error('unused'); }, handleRequestStream: stream({ 'x-antseed-streaming': '1' }) }, callbacks, sse);
-    const delivered = sent.map((chunk) => decode(chunk.data)).join('');
-    expect(delivered).toContain('"estimated_cost":0.0018');
-    expect(delivered).not.toContain('"cost":');
-    expect(delivered).not.toContain('SomeHost');
-    expect(decode(response.body)).toBe(delivered);
+    const streamed = { ...request, body: encode({ stream: true }) };
+    const cases: [SerializedHttpRequest, Record<string, string>][] = [
+      // The buyer asked for events.
+      [{ ...streamed, headers: { Accept: 'text/event-stream' } }, {}],
+      // The provider asked its upstream for events (HttpRelay marks the response as streaming).
+      [streamed, { 'x-antseed-streaming': '1' }],
+    ];
+    for (const [req, headers] of cases) {
+      sent.length = 0;
+      const response = await execute({ handleRequest: async () => { throw new Error('unused'); }, handleRequestStream: stream(headers) }, callbacks, req);
+      const delivered = sent.map((chunk) => decode(chunk.data)).join('');
+      expect(delivered).toContain('"estimated_cost":0.0018');
+      expect(delivered).not.toContain('"cost":');
+      expect(delivered).not.toContain('SomeHost');
+      expect(decode(response.body)).toBe(delivered);
+    }
 
-    // A binary download without a content type passes through byte for byte.
+    // A typeless stream nobody marked as events passes through byte for byte.
     sent.length = 0;
-    await execute({ handleRequest: async () => { throw new Error('unused'); }, handleRequestStream: stream({ 'x-antseed-streaming': '1' }) }, callbacks);
+    await execute({ handleRequest: async () => { throw new Error('unused'); }, handleRequestStream: stream({}) }, callbacks);
     expect(decode(sent[0]!.data)).toBe(usageEvent);
   });
 
