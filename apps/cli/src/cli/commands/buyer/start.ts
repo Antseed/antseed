@@ -9,10 +9,11 @@ import { getGlobalOptions } from '../types.js'
 import pkg from '../../../../package.json' with { type: 'json' }
 import { watchForUpdates } from '../../../update/watch.js'
 import { loadConfig } from '../../../config/loader.js'
-import { AntseedNode, DepositRelayClient, DepositsClient, getInstance, peerRelaysSweeps, resolveChainConfig } from '@antseed/node'
+import { AntseedNode, DepositRelayClient, DepositsClient, ReferralsClient, getInstance, peerRelaysSweeps, resolveChainConfig } from '@antseed/node'
 import type { Identity, NodePaymentsConfig } from '@antseed/node'
 import { OFFICIAL_BOOTSTRAP_NODES, parseBootstrapList, toBootstrapConfig } from '@antseed/node/discovery'
 import { setupShutdownHandler } from '../../shutdown.js'
+import { referralLookups, referralScope, resolveBuyerAttribution, watchReferralAttribution } from '../../referral-state.js'
 import { walletPassphraseForStart } from '../../wallet-passphrase.js'
 import { loadRouterPlugin, loadVerifierPlugin, buildPluginConfig, getPackageVersions } from '../../../plugins/loader.js'
 import { ensurePluginsUpToDate } from '../../../plugins/drift.js'
@@ -329,8 +330,32 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         channelsContractAddress: cryptoOverrides?.channelsContractAddress,
         freeUsageContractAddress: cryptoOverrides?.freeUsageContractAddress,
         usdcContractAddress: cryptoOverrides?.usdcContractAddress,
+        referralsAddress: cryptoOverrides?.referralsAddress,
       })
       const settlementEnabled = settlementEnv ?? true
+
+      // Client / invite attribution appended to every buyer-signed settlement
+      // metadata blob. AntseedStatsV2 binds a redeemed invite on-chain at the
+      // first settlement (paid or free) that carries it; the daemon only has
+      // to carry it. Whether it is bound yet comes from Antscan, confirmed by
+      // one `referrerOf` read when Antscan reports it. The invite is scoped to
+      // the default wallet, known once the node started, so the daemon starts
+      // with the client id and installs the saved invite before the proxy listens.
+      const explorerApiUrl = cryptoOverrides?.explorerApiUrl ?? chainConfig.explorerApiUrl
+      const referralsClient = chainConfig.referralsAddress
+        ? new ReferralsClient({
+          rpcUrl: chainConfig.rpcUrl,
+          ...(chainConfig.fallbackRpcUrls ? { fallbackRpcUrls: chainConfig.fallbackRpcUrls } : {}),
+          contractAddress: chainConfig.referralsAddress,
+          evmChainId: chainConfig.evmChainId,
+        })
+        : null
+      const lookups = referralLookups({ explorerApiUrl, client: referralsClient })
+      const attributionOptions = {
+        clientAgentId: effectiveBuyerConfig.clientAgentId,
+        clientAgentIds: chainConfig.clientAgentIds,
+      }
+      const initialAttribution = resolveBuyerAttribution({ referralState: null, ...attributionOptions })
 
       // Advisory only: a transient RPC failure at launch must not disable
       // payments for the whole session. Buyer payments sign off-chain, and the
@@ -364,6 +389,8 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
           // without them the usage, stake and wash parts of the score stay null.
           ...(chainConfig.stakingContractAddress ? { stakingAddress: chainConfig.stakingContractAddress } : {}),
           ...(chainConfig.identityRegistryAddress ? { identityRegistryAddress: chainConfig.identityRegistryAddress } : {}),
+          ...(chainConfig.referralsAddress ? { referralsAddress: chainConfig.referralsAddress } : {}),
+          attribution: initialAttribution,
           ...(chainConfig.sellerPoolsAddress ? { sellerPoolsAddress: chainConfig.sellerPoolsAddress } : {}),
           ...(chainConfig.usageAccountingAddress ? { usageAccountingAddress: chainConfig.usageAccountingAddress } : {}),
           ...(chainConfig.washTradingRegistryAddress ? { washTradingRegistryAddress: chainConfig.washTradingRegistryAddress } : {}),
@@ -443,6 +470,23 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       } catch (err) {
         nodeSpinner.fail(chalk.red(`Failed to connect: ${(err as Error).message}`))
         process.exit(1)
+      }
+
+      // Keep the signed attribution in step with referral.json (`antseed
+      // referral redeem` or Desktop writes it, possibly after the daemon
+      // started) and drop the invite once it is bound on-chain. The saved
+      // invite is applied from the local file before the proxy listens, so
+      // the first request carries it; a slow explorer only delays dropping it.
+      let attributionWatch: Awaited<ReturnType<typeof watchReferralAttribution>> | null = null
+      if (paymentsConfig?.enabled) {
+        attributionWatch = await watchReferralAttribution({
+          dataDir: globalOpts.dataDir,
+          scope: referralScope(chainConfig, node.identity!.wallet.address),
+          lookups,
+          ...attributionOptions,
+          apply: (attribution) => node.setBuyerAttribution(attribution),
+          log: (message) => console.log(chalk.dim(message)),
+        })
       }
 
       // The gateway's chain reads for workspace wallets (balances, their deposit
@@ -581,6 +625,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       // and stops whatever has started by the time it runs.
       const shutdown = async (): Promise<void> => {
         nodeSpinner.start('Shutting down...')
+        attributionWatch?.stop()
         depositWatcher?.stop()
         for (const watcher of identityWatchers) watcher.stop()
         depositWatchHub?.stop()

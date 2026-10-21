@@ -4,8 +4,8 @@ import {useEffect, useState} from 'react';
    Weekly epochs, 104-epoch halving. Genesis read from AntseedEmissions
    on Base mainnet (block 44469557): eth_call genesis() on
    0xF13bE52c4A3afC6AE29536f073588d01A0564088. See docs/recognized-usage. */
-const EPOCH_DURATION = 604_800; // 1 week in seconds
-const GENESIS = 1775728461; // 2026-04-09T09:54:21Z
+export const EPOCH_DURATION = 604_800; // 1 week in seconds
+export const GENESIS = 1775728461; // 2026-04-09T09:54:21Z
 export const MAX_SUPPLY = 1_040_000_000;
 export const INITIAL_EMISSION = 5_000_000;
 export const ANTS_TOKEN_ADDRESS = '0xa87EE81b2C0Bc659307ca2D9ffdC38514DD85263';

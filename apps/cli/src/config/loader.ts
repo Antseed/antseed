@@ -517,10 +517,12 @@ function mergeBuyerConfig(
       maxStreamDurationMs: defaults.maxStreamDurationMs,
       disableMetadataV2Services: defaults.disableMetadataV2Services,
       autoSweep: defaults.autoSweep,
+      ...(defaults.clientAgentId !== undefined ? { clientAgentId: defaults.clientAgentId } : {}),
       ...(normalizeBuyerVerification(undefined, defaults.verification)),
       ...(defaults.verifier ? { verifier: structuredClone(defaults.verifier) } : {}),
     };
   }
+  const clientAgentId = normalizeClientAgentId(value['clientAgentId'], defaults.clientAgentId);
   return {
     maxPricing: mergeHierarchicalPricing(defaults.maxPricing, value['maxPricing']),
     minPeerReputation: normalizeMinPeerReputation(value['minPeerReputation'], defaults.minPeerReputation),
@@ -553,11 +555,30 @@ function mergeBuyerConfig(
       defaults.autoSweep ?? true,
       'buyer.autoSweep',
     ),
+    ...(clientAgentId !== undefined ? { clientAgentId } : {}),
     ...(normalizeBuyerVerification(value['verification'], defaults.verification)),
     ...(value['verifier'] !== undefined
       ? { verifier: value['verifier'] as NonNullable<AntseedConfig['buyer']['verifier']> }
       : defaults.verifier ? { verifier: structuredClone(defaults.verifier) } : {}),
   };
+}
+
+/**
+ * A positive ERC-8004 agent id: a safe integer, or a string of decimal digits
+ * only (no fraction, exponent or trailing text); null otherwise.
+ */
+export function parseClientAgentId(value: unknown): number | null {
+  const parsed = typeof value === 'string' ? (/^\s*\d+\s*$/.test(value) ? Number(value) : NaN) : value;
+  return typeof parsed === 'number' && Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+/** `buyer.clientAgentId`: a positive integer ERC-8004 agent id, else the default. */
+function normalizeClientAgentId(value: unknown, fallback: number | undefined): number | undefined {
+  if (value === undefined || value === null) return fallback;
+  const parsed = parseClientAgentId(value);
+  if (parsed !== null) return parsed;
+  console.warn(`Ignoring invalid buyer.clientAgentId ${JSON.stringify(value)}: expected a positive integer agent id.`);
+  return fallback;
 }
 
 function normalizeBooleanConfigValue(value: unknown, defaultValue: boolean, path: string): boolean {

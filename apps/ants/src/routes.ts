@@ -11,11 +11,13 @@ import {
   overview, positions, stake, move, split, merge, extend, maxLock, previewWithdraw, withdraw,
   rewards, claim, restake, stakeUsageRewards, compound, poolsView, singlePool, usage, emissions,
   verification, proofStatus, submitProof, seller, registerBinding, claimStarter,
+  referral, referredBuyers, refereeBonus, createInvite, claimReferralRewards, claimRefereeRewards, builders, claimBuilderRewards, registerClientAgent,
 } from './service/index.js';
 import type {
   StakeRequest, MoveRequest, SplitRequest, MergeRequest, ExtendRequest, MaxLockRequest, WithdrawRequest,
-  ClaimRequest, RestakeRequest, StakeUsageRequest, SubmitProofRequest, CompoundRequest,
+  ClaimRequest, RestakeRequest, StakeUsageRequest, SubmitProofRequest, CompoundRequest, BuilderClaimRequest,
 } from './api-types.js';
+import { MAX_BUILDER_AGENTS } from './api-types.js';
 
 export interface RouteContext {
   ctx: AntsContext;
@@ -82,6 +84,24 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext): voi
   app.get<{ Querystring: { seller?: string } }>('/api/verification', (request, reply) => respond(reply, () => cached(`verification:${(request.query.seller ?? '').toLowerCase()}`, () => verification(ctx, request.query.seller || undefined))));
   app.get<{ Params: { proofId: string } }>('/api/verification/proofs/:proofId', (request, reply) => respond(reply, () => proofStatus(ctx, request.params.proofId)));
   app.get('/api/seller', (_request, reply) => respond(reply, () => cached('seller', () => seller(ctx))));
+  app.get('/api/referrals', (_request, reply) => respond(reply, () => cached('referrals', () => referral(ctx, context.dataDir))));
+  app.get('/api/referrals/referee', (_request, reply) => respond(reply, () => cached('referrals:referee', () => refereeBonus(ctx))));
+  // Signing an invite is off-chain and instant, so it answers directly instead of starting a job.
+  app.post('/api/referrals/invite', async (_request, reply) => {
+    if (!ctx.signer) return reply.status(403).send({ ok: false, error: 'The dashboard is running in read-only mode (no wallet available).' });
+    return respond(reply, async () => {
+      const created = await createInvite(ctx, context.dataDir);
+      views.invalidate(); // the card's "left this week" count changed
+      return created;
+    });
+  });
+  app.get('/api/referrals/buyers', (_request, reply) => respond(reply, () => cached('referrals:buyers', () => referredBuyers(ctx))));
+  app.get<{ Querystring: { agentIds?: string } }>('/api/builders', (request, reply) => {
+    // Cap in requested order before sorting for the cache key, so a later id never displaces an earlier one.
+    const agentIds = [...new Set((request.query.agentIds ?? '').split(',').map(Number).filter((id) => Number.isSafeInteger(id) && id > 0))]
+      .slice(0, MAX_BUILDER_AGENTS).sort((a, b) => a - b);
+    return respond(reply, () => cached(`builders:${agentIds.join(',')}`, () => builders(ctx, agentIds)));
+  });
   app.post<{ Body: { positionIds: number[] } }>('/api/positions/withdraw/preview', (request, reply) => respond(reply, () => previewWithdraw(ctx, request.body?.positionIds ?? [])));
 
   // Browser sessions share one journal across wallets; show each wallet only its own actions.
@@ -103,7 +123,10 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext): voi
               const body = (request.body ?? {}) as Partial<ClaimRequest & StakeUsageRequest>;
               const buyerOnly = (kind === 'claim' && body.scope === 'buyer') || (kind === 'stake-usage' && body.side === 'buyer');
               const wallet = await ctx.requireSigner().getAddress();
-              await assertSelectedWallet(ctx, context.selectedAddress, wallet, buyerOnly ? 'buyer' : 'wallet');
+              // Referral and referee claims always pay the selected account's Deposits
+              // operator, so either the selected wallet or that operator may send them.
+              const referralClaim = kind === 'referral-claim' || kind === 'referee-claim';
+              await assertSelectedWallet(ctx, context.selectedAddress, wallet, referralClaim ? 'connection' : buyerOnly ? 'buyer' : 'wallet');
               if (kind === 'claim' && body.scope !== 'wallet' && body.buckets?.includes('buyer')) {
                 await assertSelectedWallet(ctx, context.selectedAddress, wallet, 'buyer');
               }
@@ -143,4 +166,8 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext): voi
   action<SubmitProofRequest>('/api/verification/submit', 'verify-submit', (body, report) => submitProof(ctx, body.artifact, report));
   action<{ agentId?: number }>('/api/seller/register', 'seller-register', (body, report) => registerBinding(ctx, body?.agentId, report));
   action<Record<string, never>>('/api/seller/claim-starter', 'claim-starter', (_body, report) => claimStarter(ctx, report));
+  action<Record<string, never>>('/api/referrals/claim', 'referral-claim', (_body, report) => claimReferralRewards(ctx, report));
+  action<Record<string, never>>('/api/referrals/referee/claim', 'referee-claim', (_body, report) => claimRefereeRewards(ctx, report));
+  action<BuilderClaimRequest>('/api/builders/claim', 'builder-claim', (body, report) => claimBuilderRewards(ctx, body?.agentId, report));
+  action<Record<string, never>>('/api/builders/register', 'builder-register', (_body, report) => registerClientAgent(ctx, report));
 }

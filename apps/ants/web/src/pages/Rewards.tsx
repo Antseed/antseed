@@ -1,19 +1,22 @@
 import { Button, Card } from '../components/ui';
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
-import type { ClaimRequest, PoolView, RestakeRequest, RewardBucket, RewardsView, StakeUsageRequest } from '../../../src/api-types';
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import { MAX_BUILDER_AGENTS } from '../../../src/api-types';
+import type { BuildersView, ClaimRequest, CreatedInviteView, InviteAllowanceView, JobView, PoolView, ReferralView, ReferredBuyerView, RestakeRequest, RewardBucket, RewardsView, StakeUsageRequest } from '../../../src/api-types';
 import { request, api } from '../api';
 import { BuyerWalletAction } from '../wallet';
 import { useConfig, useEpochInfo } from '../app-context';
 import { AddressLink } from '../components/AddressLink';
 import { ActionButton } from '../components/Confirm';
 import { ErrorBox, Skeleton } from '../components/Feedback';
-import { Field, Select } from '../components/Field';
+import { Table, type Column } from '../components/Table';
+import { Field, Input, Select } from '../components/Field';
+import { useJobList } from '../jobs';
 import { LockSlider } from '../components/LockSlider';
 import { poolName } from '../components/Pools';
 import { usePageData } from '../data';
 import { host } from '../host';
 import { poolDataOptions } from '../pool-data';
-import { formatAnts, isZero, sumBig, toBigInt } from '../format';
+import { formatAnts, formatInt, isZero, sumBig, toBigInt } from '../format';
 
 const RewardRefreshContext = createContext({ updating: false, stale: false });
 
@@ -37,8 +40,326 @@ export function RewardsPage() {
         {host().buyerRewards ? <BuyerRewardsCard data={data} /> : null}
         {data.scope !== 'buyer' ? <RewardsBody onRefresh={page.refresh} data={data} />
           : host().buyerRewards ? null : <p className="hint">Connect the wallet that holds your staking positions to see its staking rewards.</p>}
+        {data.scope !== 'buyer' ? <ReferralRewardsCard /> : null}
+        {data.scope !== 'buyer' ? <BuildersCard /> : null}
       </RewardRefreshContext.Provider> : null}
     </>
+  );
+}
+
+/** `https://antseed.com/invite/<91 chars>` → `antseed.com/invite/AbCdEf…wXyZ`; Copy still copies the full link. */
+function shortInviteLink(link: string): string {
+  const match = /^https?:\/\/(.*\/invite\/)([A-Za-z0-9_-]+)$/.exec(link);
+  return match ? `${match[1]}${match[2]!.slice(0, 6)}…${match[2]!.slice(-4)}` : link;
+}
+
+const NO_INVITE_QUOTA = 'Invites unlock after at least 1 USDC of usage or sales in the previous week.';
+
+function ReferralRewardsCard() {
+  const dashboard = useConfig();
+  const page = usePageData('referrals', api.referral, 60_000);
+  const view = page.data;
+  if (view && !view.available) return null;
+  const epochs = view?.claimableEpochs.length ?? 0;
+  return (
+    <Card className="hero" aria-label="Referral rewards">
+      <div className="tile-label">Referral rewards</div>
+      <p className="hint">Invite new buyers with single-use invites. You earn from their usage, and they get 12 weeks of bonus ANTS.</p>
+      {page.error ? <ErrorBox error={page.error} onRetry={page.refresh} /> : null}
+      {view ? <>
+        <div className="hero-value"><RewardAmount>{formatAnts(view.payable, 4)}</RewardAmount><span className="unit">ANTS</span></div>
+        <p className="hero-sub muted">Payable now</p>
+        <div className="buckets">
+          <InviteRow view={view} onCreated={page.refresh} />
+          <BucketRow visible name="Payable now" amount={view.payable}
+            amountDetail={`${formatInt(view.referredCount)} ${view.referredCount === 1 ? 'referred buyer' : 'referred buyers'}`}
+            note={epochs > 0 ? `${epochs} ${epochs === 1 ? 'week is' : 'weeks are'} ready to claim.` : 'Weeks become claimable one week after they end.'}
+            actions={<ActionButton label="Claim" title="Claim referral rewards" path="/api/referrals/claim" body={{}}
+              disabled={dashboard.readOnly || isZero(view.payable)}
+              disabledReason={dashboard.readOnly ? 'Connect a wallet with a signer to claim.' : 'Nothing to claim yet.'}
+              summary={[['Payable now', `${formatAnts(view.payable, 4)} ANTS`], ['Weeks', String(epochs)]]} />} />
+        </div>
+        <ReferredBuyersTable />
+      </> : null}
+    </Card>
+  );
+}
+
+/**
+ * The invite allowance to show: the refreshed one, lowered by an invite just
+ * created for the same epoch (until the refetch counts it). A created invite
+ * only stands in for the allowance of its own epoch, never a later one.
+ */
+export function inviteAllowance(invites: InviteAllowanceView | null, created: CreatedInviteView | null): { quota: number | null; left: number | null } {
+  if (!created || (invites && invites.epoch > created.epoch)) return { quota: invites?.quota ?? null, left: invites?.left ?? null };
+  if (!invites || created.epoch > invites.epoch) return { quota: created.quota, left: created.left };
+  return { quota: invites.quota, left: Math.min(invites.left, created.left) };
+}
+
+/**
+ * Why Create invite is off. `blocked` means this session cannot sign at all.
+ * `exhausted` comes from the explorer allowance, which can lag a new week, so
+ * it is advisory: the row keeps a "Check again" link that asks the server,
+ * which reads the epoch and quota on-chain before signing.
+ */
+export function inviteRowState(session: { readOnly?: boolean; browserWallet?: boolean }, quota: number | null, left: number | null): { blocked: string | null; exhausted: string | null } {
+  const blocked = session.readOnly ? 'Connect a wallet with a signer to create invites.'
+    : session.browserWallet ? 'Invites are signed by the local Antseed wallet. Run `antseed referral invite` instead.' : null;
+  const exhausted = quota === 0 ? NO_INVITE_QUOTA
+    : left === 0 ? 'All invites for this week are taken. More unlock next week.' : null;
+  return { blocked, exhausted: blocked ? null : exhausted };
+}
+
+/** A failed create only describes the week it was tried in; a newer allowance clears it. */
+export function inviteErrorFor(error: { message: string; epoch: number | null } | null, invites: InviteAllowanceView | null): string | null {
+  if (!error) return null;
+  return invites && error.epoch !== null && invites.epoch > error.epoch ? null : error.message;
+}
+
+/** Create a single-use invite link (signed off-chain by the dashboard wallet) and show what is left this week. */
+function InviteRow({ view, onCreated }: { view: ReferralView; onCreated: () => void }) {
+  const dashboard = useConfig();
+  const [created, setCreated] = useState<CreatedInviteView | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [failure, setFailure] = useState<{ message: string; epoch: number | null } | null>(null);
+  const { quota, left } = inviteAllowance(view.invites, created);
+  const { blocked, exhausted } = inviteRowState(dashboard, quota, left);
+  const error = inviteErrorFor(failure, view.invites);
+  const create = async () => {
+    const epoch = view.invites?.epoch ?? null;
+    setCreating(true); setFailure(null);
+    try {
+      setCreated(await api.createInvite());
+      onCreated(); // re-read the allowance so it does not rest on this snapshot
+    } catch (cause) { setFailure({ message: cause instanceof Error ? cause.message : String(cause), epoch }); }
+    finally { setCreating(false); }
+  };
+  // The week may have rolled over on-chain before the allowance shows it; the server decides.
+  const recheck = exhausted
+    ? <> <button className="link-button" disabled={creating} onClick={() => void create()}>{creating ? 'Checking…' : 'Check again'}</button></>
+    : null;
+  return (
+    <BucketRow visible name="Invites" amount={String(left ?? 0)} amountKind="count"
+      amountDetail={quota !== null ? `of ${quota} left this week` : undefined}
+      note={error ? <><span role="alert">{error}</span>{recheck}</>
+        : created ? <><span className="mono" title={created.link}>{shortInviteLink(created.link)}</span>{recheck}</>
+          : exhausted ? <>{exhausted}{recheck}</>
+            : blocked ?? 'Each invite works once, for a new buyer, within 4 weeks.'}
+      actions={<>
+        {created ? <Button variant="outline" size="sm" onClick={() => { void navigator.clipboard?.writeText(created.link); }}>Copy</Button> : null}
+        <span className="btn-wrap" title={blocked ?? exhausted ?? undefined}>
+          <Button variant="outline" size="sm" disabled={!!blocked || !!exhausted || creating} onClick={() => void create()}>{creating ? 'Creating…' : 'Create invite'}</Button>
+        </span>
+      </>} />
+  );
+}
+
+/** The buyer account's two-sided invite bonus: weeks left in the window, payable now, and a permissionless claim paid to its authorized wallet (operator). */
+function RefereeBonusRow() {
+  const dashboard = useConfig();
+  const page = usePageData('referrals:referee', api.referee, 60_000);
+  const view = page.data;
+  if (!view?.available || !view.referrer) return null;
+  const epochs = view.claimableEpochs.length;
+  if (view.weeksLeft === 0 && isZero(view.payable)) return null;
+  const weeks = view.weeksLeft === null ? null : `${view.weeksLeft} ${view.weeksLeft === 1 ? 'week' : 'weeks'} left`;
+  return (
+    <BucketRow visible name="Invite bonus" amount={view.payable} amountDetail={weeks ?? undefined}
+      note={<>Invited by <AddressLink value={view.referrer} />. Paid to your authorized wallet.</>}
+      actions={<ActionButton label="Claim" title="Claim invite bonus" path="/api/referrals/referee/claim" body={{}}
+        disabled={dashboard.readOnly || isZero(view.payable)}
+        disabledReason={dashboard.readOnly ? 'Connect a wallet with a signer to claim.' : 'Nothing to claim yet.'}
+        summary={[['Payable now', `${formatAnts(view.payable, 4)} ANTS`], ['Weeks', String(epochs)]]} />} />
+  );
+}
+
+const REFERRED_BUYER_COLUMNS: Array<Column<ReferredBuyerView>> = [
+  { key: 'buyer', label: 'Buyer', render: (row) => <AddressLink value={row.buyer} /> },
+  { key: 'points', label: 'Points', align: 'right', mono: true, title: 'Weighted usage points credited to you for this buyer', render: (row) => formatInt(row.points) },
+  { key: 'pending', label: 'Pending', align: 'right', mono: true, title: 'Points from weeks that are not claimable yet; they earn ANTS once the week becomes claimable', render: (row) => isZero(row.pendingPoints) ? '—' : `${formatInt(row.pendingPoints)} pts` },
+  { key: 'ants', label: 'Earned', align: 'right', mono: true, title: 'ANTS claimed plus payable now (unlike the headline, which is payable now only)', render: (row) => `${formatAnts(row.ants, 4)} ANTS` },
+];
+
+/** Who the wallet referred and what each brought in, from Antscan. */
+function ReferredBuyersTable() {
+  const page = usePageData('referrals:buyers', api.referredBuyers, 60_000);
+  if (page.data && !page.data.available) return null;
+  return (
+    <div className="mt">
+      {page.error ? <ErrorBox error={page.error} onRetry={page.refresh} /> : null}
+      <Table columns={REFERRED_BUYER_COLUMNS} rows={page.data?.buyers ?? []} rowKey={(row) => row.buyer}
+        loading={page.loading && !page.data} empty="No referred buyers yet." />
+    </div>
+  );
+}
+
+const BUILDER_IDS_KEY = 'antseed.ants.builderAgentIds';
+const FIRST_PARTY_NAMES = { cli: 'Antseed CLI', desktop: 'Antseed Desktop' } as const;
+
+/** Client agent ids the user added, per chain. Storage can be unavailable; then the list lives for this page only. */
+function readBuilderIds(chainId: string): number[] {
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(`${BUILDER_IDS_KEY}:${chainId}`) ?? '[]');
+    return Array.isArray(parsed) ? parsed.filter((id): id is number => Number.isSafeInteger(id) && id > 0) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeBuilderIds(chainId: string, ids: number[]): void {
+  try {
+    window.localStorage.setItem(`${BUILDER_IDS_KEY}:${chainId}`, JSON.stringify(ids));
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+const HANDLED_REGISTER_JOBS_KEY = 'antseed.ants.handledBuilderRegisterJobs';
+const MAX_HANDLED_REGISTER_JOBS = 100;
+/**
+ * Register jobs whose agent was already added. The job list outlives the
+ * card (and, from the server journal, a reload), so this lives outside the
+ * component and in storage; otherwise a removed agent comes back on return.
+ */
+const handledRegisterJobs = new Set<string>(readHandledRegisterJobs());
+
+function readHandledRegisterJobs(): string[] {
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(HANDLED_REGISTER_JOBS_KEY) ?? '[]');
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Agents from newly finished register jobs that are not tracked yet, marking
+ * those jobs handled (once ever, so Remove sticks). Agents past the tracking
+ * limit come back as `untracked` instead, for the card to name. Null when
+ * nothing changes.
+ */
+export function takeRegisteredAgents(jobs: JobView[], ids: number[]): { ids: number[]; untracked: number[] } | null {
+  const finished = jobs.filter((job) => job.kind === 'builder-register' && job.status === 'done');
+  if (!finished.length) return null;
+  for (const id of readHandledRegisterJobs()) handledRegisterJobs.add(id); // another tab may have handled some
+  const registered: number[] = [];
+  let handled = false;
+  for (const job of finished) {
+    if (handledRegisterJobs.has(job.id)) continue;
+    handledRegisterJobs.add(job.id);
+    handled = true;
+    const agentId = (job.result as { agentId?: unknown } | undefined)?.agentId;
+    if (typeof agentId === 'number' && !ids.includes(agentId) && !registered.includes(agentId)) registered.push(agentId);
+  }
+  if (handled) {
+    try {
+      window.localStorage.setItem(HANDLED_REGISTER_JOBS_KEY, JSON.stringify([...handledRegisterJobs].slice(-MAX_HANDLED_REGISTER_JOBS)));
+    } catch {
+      /* storage unavailable: the in-memory set still covers this page load */
+    }
+  }
+  if (!registered.length) return null;
+  const room = Math.max(0, MAX_BUILDER_AGENTS - ids.length);
+  return { ids: [...ids, ...registered.slice(0, room)], untracked: registered.slice(room) };
+}
+
+/** Why Add is off at the tracking limit, which the builders read shares. */
+export const BUILDER_LIMIT_HINT = `Up to ${MAX_BUILDER_AGENTS} client agents can be tracked. Remove one to add another.`;
+
+/**
+ * Tracked ids the builders response left out (past the limit in a list saved
+ * before it was enforced, or not returned): each still gets a row with Remove.
+ */
+export function missingBuilderIds(ids: number[], view: BuildersView): number[] {
+  const shown = new Set(view.agents.map((agent) => agent.agentId));
+  return ids.filter((id) => !shown.has(id));
+}
+
+/**
+ * Builders program: emission rewards for apps built on Antseed, per client
+ * ERC-8004 agent. No cheap on-chain lookup lists the agents a wallet owns, so
+ * the user adds ids here (remembered per chain); the server adds the chain's
+ * first-party client ids this wallet owns.
+ */
+function BuildersCard() {
+  const dashboard = useConfig();
+  const jobs = useJobList();
+  const [ids, setIds] = useState(() => readBuilderIds(dashboard.chainId));
+  const [draft, setDraft] = useState('');
+  const [untracked, setUntracked] = useState<number[]>([]);
+  // One read covers the first MAX_BUILDER_AGENTS ids in tracked order; any past it still get a row below.
+  const requested = ids.slice(0, MAX_BUILDER_AGENTS);
+  const page = usePageData(`builders:${dashboard.chainId}:${[...requested].sort((a, b) => a - b).join(',')}`, () => api.builders(requested), 60_000);
+  // Keep the last list on screen while a changed id set loads.
+  const lastView = useRef(page.data);
+  if (page.data) lastView.current = page.data;
+  const view = page.data ?? lastView.current;
+
+  const save = (next: number[]) => { setIds(next); writeBuilderIds(dashboard.chainId, next); };
+  // A client agent registered from this card starts tracked (once per job, so Remove sticks).
+  useEffect(() => {
+    const next = takeRegisteredAgents(jobs, ids);
+    if (!next) return;
+    if (next.ids.length !== ids.length) save(next.ids);
+    if (next.untracked.length) setUntracked((current) => [...new Set([...current, ...next.untracked])]);
+  }, [jobs]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (view && !view.available) return null;
+  const draftId = Number(draft.trim());
+  const draftValid = draft.trim() !== '' && Number.isSafeInteger(draftId) && draftId > 0;
+  const atLimit = ids.length >= MAX_BUILDER_AGENTS;
+  const add = () => { if (draftValid && !atLimit && !ids.includes(draftId)) save([...ids, draftId]); setDraft(''); };
+  const remove = (agentId: number) => save(ids.filter((id) => id !== agentId));
+  // Only against the response for the current id set, so a newly added id does not flash as missing.
+  const missing = page.data ? missingBuilderIds(ids, page.data) : [];
+  return (
+    <Card className="hero" aria-label="Builders program">
+      <div className="tile-label">Builders program</div>
+      <p className="hint">Built an app on Antseed? Register it as a client agent, send its id with settlements, and earn a weekly share of the builders bucket.</p>
+      {page.error ? <ErrorBox error={page.error} onRetry={page.refresh} /> : null}
+      {view ? <>
+        <div className="hero-value"><RewardAmount>{formatAnts(sumBig(view.agents.filter((agent) => agent.owned).map((agent) => agent.payable)), 4)}</RewardAmount><span className="unit">ANTS</span></div>
+        <p className="hero-sub muted">Payable now to this wallet</p>
+        <div className="buckets">
+          {view.agents.map((agent) => {
+            const epochs = agent.claimableEpochs.length;
+            const name = agent.firstParty ? `${FIRST_PARTY_NAMES[agent.firstParty]} · agent #${agent.agentId}` : `Agent #${agent.agentId}`;
+            return (
+              <BucketRow key={agent.agentId} visible name={name} amount={agent.payable}
+                amountDetail={epochs > 0 ? `${epochs} ${epochs === 1 ? 'week' : 'weeks'} payable` : undefined}
+                note={agent.owner
+                  ? <>Paid to {agent.owned ? 'this wallet' : <AddressLink value={agent.owner} />}. {epochs > 1 ? 'Each week is its own claim transaction.' : epochs === 0 ? 'Weeks become claimable one week after they end.' : ''}</>
+                  : 'Not a registered ERC-8004 agent on this chain.'}
+                actions={<>
+                  <ActionButton label="Claim" title={`Claim builder rewards · agent #${agent.agentId}`} path="/api/builders/claim" body={{ agentId: agent.agentId }}
+                    disabled={dashboard.readOnly || !agent.owner || isZero(agent.payable)}
+                    disabledReason={dashboard.readOnly ? 'Connect a wallet with a signer to claim.' : !agent.owner ? 'This agent id is not registered.' : 'Nothing to claim yet.'}
+                    summary={[['Payable now', `${formatAnts(agent.payable, 4)} ANTS`], ['Weeks', String(epochs)]]} />
+                  {ids.includes(agent.agentId) ? <Button variant="outline" size="sm" onClick={() => remove(agent.agentId)}>Remove</Button> : null}
+                </>} />
+            );
+          })}
+          {missing.map((agentId) => (
+            <BucketRow key={agentId} visible name={`Agent #${agentId}`} amount={null}
+              note={ids.indexOf(agentId) >= MAX_BUILDER_AGENTS ? `Data unavailable: only the first ${MAX_BUILDER_AGENTS} tracked agents are read.` : 'Data unavailable.'}
+              actions={<Button variant="outline" size="sm" onClick={() => remove(agentId)}>Remove</Button>} />
+          ))}
+          {view.agents.length === 0 && missing.length === 0 ? <p className="hint">Add your app&apos;s client agent id to see its rewards.</p> : null}
+        </div>
+        <div className="form-row">
+          <Input label="Client agent id" width="sm" inputMode="numeric" value={draft}
+            onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') add(); }} />
+          <span className="btn-wrap" title={atLimit ? BUILDER_LIMIT_HINT : undefined}>
+            <Button variant="outline" size="sm" onClick={add} disabled={!draftValid || atLimit}>Add</Button>
+          </span>
+          <ActionButton label="Register client agent" title="Register client agent" path="/api/builders/register" body={{}}
+            disabled={dashboard.readOnly} disabledReason="Connect a wallet with a signer to register." />
+        </div>
+        {untracked.length ? <p className="hint">Registered {untracked.map((id) => `agent #${id}`).join(', ')} but not tracked. {BUILDER_LIMIT_HINT}</p>
+          : atLimit ? <p className="hint">{BUILDER_LIMIT_HINT}</p>
+            : <p className="hint">Track any client agent id; claims always pay its owner.</p>}
+      </> : null}
+    </Card>
   );
 }
 
@@ -58,7 +379,10 @@ function BuyerRewardsCard({ data }: { data: RewardsView }) {
   const dashboard = useConfig();
   const [authorizationError, setAuthorizationError] = useState<string | null>(null);
   const [authorizing, setAuthorizing] = useState(false);
-  const amount = sumBig([data.buyerUsage.total, data.legacy.buyer]);
+  // The invite bonus is claimed in this card too (its row below), so the headline includes it.
+  const referee = usePageData('referrals:referee', api.referee, 60_000).data;
+  const inviteBonus = referee?.available && referee.referrer ? referee.payable : '0';
+  const amount = sumBig([data.buyerUsage.total, data.legacy.buyer, inviteBonus]);
   const operator = data.buyerUsage.operator;
   const authorized = !!operator && operator.toLowerCase() === (dashboard.walletAddress ?? dashboard.address).toLowerCase() && !dashboard.readOnly;
   const showAuthorization = !operator && dashboard.canAuthorize;
@@ -102,6 +426,7 @@ function BuyerRewardsCard({ data }: { data: RewardsView }) {
         actions={<ClaimButton bucket="legacy" scope="buyer" amount={data.legacy.buyer} title="Claim legacy buyer rewards"
           disabled={!authorized || !data.legacy.buyerClaimable} reason="Connect the authorized wallet for this buyer account."
           />} />
+      <RefereeBonusRow />
     </div>
   </Card>;
 }
@@ -199,7 +524,8 @@ function RewardsBody({ data, onRefresh }: { data: RewardsView; onRefresh: () => 
   );
 }
 
-function BucketRow({ visible, name, note, amount, amountDetail, actions }: { visible: boolean; name: string; note?: ReactNode; amount: string; amountDetail?: string; actions: ReactNode }) {
+/** `amount` is an ANTS base-unit string by default; `amountKind="count"` renders a plain integer with no unit. */
+function BucketRow({ visible, name, note, amount, amountKind = 'ants', amountDetail, actions }: { visible: boolean; name: string; note?: ReactNode; amount: string | null; amountKind?: 'ants' | 'count'; amountDetail?: string; actions: ReactNode }) {
   if (!visible) return null;
   return (
     <div className="bucket">
@@ -208,7 +534,10 @@ function BucketRow({ visible, name, note, amount, amountDetail, actions }: { vis
         {note ? <div className="bucket-note">{note}</div> : null}
       </div>
       <div className={`bucket-amount mono${amountDetail ? ' bucket-amount--detailed' : ''}`}>
-        <span><RewardAmount>{formatAnts(amount, 4)}</RewardAmount> <span className="unit">ANTS</span></span>
+        {amount === null ? <span className="muted">—</span>
+          : amountKind === 'count'
+          ? <span><RewardAmount>{formatInt(amount)}</RewardAmount></span>
+          : <span><RewardAmount>{formatAnts(amount, 4)}</RewardAmount> <span className="unit">ANTS</span></span>}
         {amountDetail ? <span className="bucket-amount-detail"><RewardAmount>{amountDetail}</RewardAmount></span> : null}
       </div>
       <div className="bucket-actions">{actions}</div>

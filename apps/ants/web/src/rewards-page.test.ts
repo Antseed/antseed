@@ -1,19 +1,30 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { PoolView, RewardsView } from '../../src/api-types';
+import type { BuildersView, CreatedInviteView, JobView, PoolView, RefereeView, ReferralView, ReferredBuyersView, RewardsView } from '../../src/api-types';
 import { AppContext, type AppValue } from './app-context';
 import type { ActionButtonProps } from './components/Confirm';
-import { RewardsPage } from './pages/Rewards';
+import { BUILDER_LIMIT_HINT, RewardsPage, inviteAllowance, inviteErrorFor, inviteRowState, missingBuilderIds, takeRegisteredAgents } from './pages/Rewards';
 
-const state = vi.hoisted(() => ({ rewards: null as RewardsView | null, pools: [] as PoolView[], actions: [] as ActionButtonProps[], configReady: true, configLoading: false, configError: null as string | null, rewardsLoading: false, rewardsError: null as string | null, reconciling: false }));
+const state = vi.hoisted(() => ({ rewards: null as RewardsView | null, pools: [] as PoolView[], actions: [] as ActionButtonProps[], configReady: true, configLoading: false, configError: null as string | null, rewardsLoading: false, rewardsError: null as string | null, reconciling: false, builders: null as BuildersView | null, referral: null as ReferralView | null, referredBuyers: null as ReferredBuyersView | null, referee: null as RefereeView | null, refreshed: [] as string[], buttons: [] as Array<{ children?: unknown; onClick?: () => unknown; disabled?: boolean }>, createInvite: null as null | (() => Promise<CreatedInviteView>) }));
 vi.mock('./data', () => ({ usePageData: (key: string | null) => ({
-  data: key === 'rewards' ? state.rewards : key === 'pools' ? { pools: state.pools } : key === 'positions:current' && state.configReady ? { config: { minStakeEpochs: 1, maxStakeEpochs: 104, stakeActivationDelay: 1 } } : null,
+  data: key === 'rewards' ? state.rewards : key === 'referrals' ? state.referral : key === 'referrals:buyers' ? state.referredBuyers : key === 'referrals:referee' ? state.referee : key?.startsWith('builders:') ? state.builders : key === 'pools' ? { pools: state.pools } : key === 'positions:current' && state.configReady ? { config: { minStakeEpochs: 1, maxStakeEpochs: 104, stakeActivationDelay: 1 } } : null,
   error: key === 'rewards' ? state.rewardsError : key === 'positions:current' ? state.configError : null,
   loading: key === 'rewards' ? state.rewardsLoading : key === 'positions:current' && state.configLoading,
   reconciling: key === 'rewards' && state.reconciling,
-  refresh: () => {},
+  refresh: () => { state.refreshed.push(key ?? ''); },
 }) }));
+vi.mock('./components/ui', async original => {
+  const actual = await original<typeof import('./components/ui')>();
+  return { ...actual, Button: (props: Parameters<typeof actual.Button>[0]) => {
+    state.buttons.push(props as (typeof state.buttons)[number]);
+    return createElement(actual.Button, props);
+  } };
+});
+vi.mock('./api', async original => {
+  const actual = await original<typeof import('./api')>();
+  return { ...actual, api: { ...actual.api, createInvite: () => state.createInvite!() } };
+});
 vi.mock('./wallet', () => ({ BuyerWalletAction: () => null }));
 vi.mock('./components/Confirm', () => ({ ActionButton: (props: ActionButtonProps) => {
   state.actions.push(props);
@@ -45,6 +56,9 @@ function action(title: string) {
 
 beforeEach(() => {
   state.actions = [];
+  state.refreshed = [];
+  state.buttons = [];
+  state.createInvite = null;
   state.pools = [];
   state.configReady = true;
   state.configLoading = false;
@@ -52,6 +66,10 @@ beforeEach(() => {
   state.rewardsLoading = false;
   state.rewardsError = null;
   state.reconciling = false;
+  state.builders = null;
+  state.referral = null;
+  state.referredBuyers = null;
+  state.referee = null;
   state.rewards = {
     scope: 'all', currentEpoch: 23, firstRewardedEpoch: 22, total: ants(2200),
     staker: { total: ants(100), positions: [] },
@@ -395,5 +413,246 @@ describe('reward row actions and confirmations', () => {
     state.rewards!.locked.claimable = '0';
     render();
     expect(action('Withdraw released seller rewards').disabled).toBe(true);
+  });
+
+  it('lists builder agents with per-agent claims, enabled only for a registered agent with a payable reward', () => {
+    state.builders = { available: true, agents: [
+      { agentId: 5, owner: wallet, owned: true, firstParty: 'cli', payable: ants(3), claimableEpochs: [20, 21] },
+      { agentId: 9, owner: pool, owned: false, firstParty: null, payable: '0', claimableEpochs: [] },
+      { agentId: 404, owner: null, owned: false, firstParty: null, payable: ants(1), claimableEpochs: [21] },
+    ] };
+    const html = render();
+    expect(html).toContain('Builders program');
+    expect(html).toContain('Antseed CLI · agent #5');
+    expect(action('Claim builder rewards · agent #5')).toMatchObject({ disabled: false, body: { agentId: 5 }, path: '/api/builders/claim' });
+    expect(action('Claim builder rewards · agent #9').disabled).toBe(true);
+    expect(action('Claim builder rewards · agent #404').disabled).toBe(true);
+    expect(action('Register client agent').path).toBe('/api/builders/register');
+  });
+
+  it('totals only the builder rewards this wallet owns', () => {
+    state.builders = { available: true, agents: [
+      { agentId: 5, owner: wallet, owned: true, firstParty: 'cli', payable: ants(4), claimableEpochs: [21] },
+      { agentId: 1234, owner: pool, owned: false, firstParty: null, payable: ants(7), claimableEpochs: [21] },
+    ] };
+    const html = render();
+    const card = html.slice(html.indexOf('Builders program'));
+    expect(card).toContain('<div class="hero-value">4<span class="unit">ANTS</span>');
+  });
+
+  it('keeps every tracked agent removable past the 20-agent limit and stops adding at it', () => {
+    const storage = new Map<string, string>();
+    const tracked = Array.from({ length: 21 }, (_, index) => index + 1); // saved before the limit was enforced
+    storage.set('antseed.ants.builderAgentIds:base-mainnet', JSON.stringify(tracked));
+    vi.stubGlobal('window', { localStorage: { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => { storage.set(key, value); } } });
+    try {
+      // The read covers the first 20; agent #21 is not in the response.
+      state.builders = { available: true, agents: tracked.slice(0, 20).map((agentId) => ({ agentId, owner: pool, owned: false, firstParty: null, payable: '0', claimableEpochs: [] })) };
+      const html = render();
+      const card = html.slice(html.indexOf('Builders program'));
+      expect(card).toContain('Agent #21');
+      expect(card).toContain('Data unavailable: only the first 20 tracked agents are read.');
+      const removes = state.buttons.filter((props) => props.children === 'Remove');
+      expect(removes).toHaveLength(21);
+      expect(state.buttons.find((props) => props.children === 'Add')?.disabled).toBe(true);
+      expect(card).toContain(BUILDER_LIMIT_HINT);
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it('hides the builders program when the chain has no client rewards contract', () => {
+    state.builders = { available: false, agents: [] };
+    expect(render()).not.toContain('Builders program');
+  });
+
+  it('lists referred buyers with the points, pending points and ANTS earned each brought in', () => {
+    state.referral = { available: true, payable: '0', claimableEpochs: [], referredCount: 2, invites: { epoch: 23, quota: 5, used: 1, left: 4 } };
+    state.referredBuyers = { available: true, buyers: [
+      { buyer: pool, boundEpoch: 4, points: '12500', ants: ants(3), pendingPoints: '0' },
+      { buyer: wallet, boundEpoch: 9, points: '250', ants: '0', pendingPoints: '250' },
+    ] };
+    const html = render();
+    const card = html.slice(html.indexOf('Referral rewards'), html.indexOf('Builders program') > 0 ? html.indexOf('Builders program') : undefined);
+    expect(card).toContain('>Buyer</th>');
+    // The table sums claimed and payable, unlike the "payable now" headline.
+    expect(card).toMatch(/>Earned<\/th>/);
+    expect(card).toMatch(/>Pending<\/th>/);
+    expect(card).toContain(`title="${pool}"`);
+    expect(card).toContain('12,500');
+    expect(card).toMatch(/>3(\.0+)? ANTS<\/td>/);
+    // Usage still in an open week shows as pending points, not as nothing earned.
+    expect(card).toContain('>250 pts</td>');
+  });
+
+  it('shows an empty referred-buyers table until someone joins', () => {
+    state.referral = { available: true, payable: '0', claimableEpochs: [], referredCount: 0, invites: null };
+    state.referredBuyers = { available: true, buyers: [] };
+    expect(render()).toContain('No referred buyers yet.');
+  });
+
+  it('hides the referral card and its table when referrals are not configured', () => {
+    state.referral = { available: false, payable: '0', claimableEpochs: [], referredCount: 0, invites: null };
+    state.referredBuyers = { available: false, buyers: [] };
+    const html = render();
+    expect(html).not.toContain('Referral rewards');
+    expect(html).not.toContain('No referred buyers yet.');
+  });
+
+  it('offers a single-use invite with the invites left this week', () => {
+    state.referral = { available: true, payable: '0', claimableEpochs: [], referredCount: 0, invites: { epoch: 23, quota: 5, used: 1, left: 4 } };
+    const html = render();
+    const card = html.slice(html.indexOf('Referral rewards'));
+    expect(card).toContain('Create invite');
+    expect(card).toContain('of 5 left this week');
+    expect(card).not.toContain('?ref=');
+  });
+
+  it('explains why no invites can be created without last week\'s activity', () => {
+    state.referral = { available: true, payable: '0', claimableEpochs: [], referredCount: 0, invites: { epoch: 23, quota: 0, used: 0, left: 0 } };
+    const card = render().slice(render().indexOf('Referral rewards'));
+    expect(card).toContain('Invites unlock after at least 1 USDC of usage or sales in the previous week.');
+    expect(card).toMatch(/<button[^>]*disabled=""[^>]*><span class="btn__label">Create invite<\/span>/);
+    // Antscan's allowance is advisory: a recheck through the server's on-chain create stays available.
+    expect(card).toMatch(/<button class="link-button">Check again<\/button>/);
+  });
+
+  it('rechecks on-chain when Antscan still reports an exhausted previous week', async () => {
+    state.referral = { available: true, payable: '0', claimableEpochs: [], referredCount: 0, invites: { epoch: 22, quota: 2, used: 2, left: 0 } };
+    const created: CreatedInviteView = { invite: 'n', link: 'https://antseed.com/invite/n', epoch: 23, index: 0, quota: 3, left: 2, expiresEpoch: 27 };
+    const createInvite = vi.fn(async () => created);
+    state.createInvite = createInvite;
+    const card = render().slice(render().indexOf('Referral rewards'));
+    expect(card).toContain('All invites for this week are taken.');
+    expect(card).toContain('Check again');
+    // The created invite's newer week replaces the stale allowance.
+    expect(inviteAllowance(state.referral.invites, created)).toEqual({ quota: 3, left: 2 });
+    expect(inviteRowState({}, 3, 2)).toEqual({ blocked: null, exhausted: null });
+  });
+
+  it('scopes a failed create to its week, so a newer allowance clears it', () => {
+    const failure = { message: 'Invites unlock after at least 1 USDC of usage or sales in the previous week.', epoch: 23 };
+    expect(inviteErrorFor(failure, { epoch: 23, quota: 0, used: 0, left: 0 })).toBe(failure.message);
+    expect(inviteErrorFor(failure, null)).toBe(failure.message);
+    expect(inviteErrorFor(failure, { epoch: 24, quota: 3, used: 0, left: 3 })).toBeNull();
+    expect(inviteRowState({}, 3, 3)).toEqual({ blocked: null, exhausted: null });
+    expect(inviteRowState({ readOnly: true }, 0, 0).exhausted).toBeNull();
+  });
+
+  it('points browser-wallet sessions to the CLI instead of failing to sign', () => {
+    state.referral = { available: true, payable: '0', claimableEpochs: [], referredCount: 0, invites: { epoch: 23, quota: 5, used: 0, left: 5 } };
+    const original = context.config.browserWallet;
+    context.config.browserWallet = true;
+    try {
+      expect(render()).toContain('antseed referral invite');
+    } finally { context.config.browserWallet = original; }
+  });
+
+  it('shows the invite bonus next to buyer rewards with a claim', () => {
+    state.referee = { available: true, referrer: pool, boundEpoch: 20, windowEnd: 32, weeksLeft: 10, payable: ants(6), claimableEpochs: [20, 21] };
+    const html = render();
+    const card = html.slice(html.indexOf('Buyer rewards'));
+    expect(card).toContain('Invite bonus');
+    expect(card).toContain('10 weeks left');
+    expect(card).toContain(`title="${pool}"`);
+    const claim = action('Claim invite bonus');
+    expect(claim.path).toBe('/api/referrals/referee/claim');
+    expect(claim.disabled).toBe(false);
+  });
+
+  it('counts the invite bonus in the buyer rewards headline', () => {
+    const before = render();
+    expect(before).toContain('1,250');
+    state.referee = { available: true, referrer: pool, boundEpoch: 20, windowEnd: 32, weeksLeft: 10, payable: ants(300), claimableEpochs: [20] };
+    expect(render()).toContain('1,550');
+  });
+
+  it('hides the invite bonus when unbound or the window ended with nothing payable', () => {
+    state.referee = { available: true, referrer: null, boundEpoch: null, windowEnd: null, weeksLeft: null, payable: '0', claimableEpochs: [] };
+    expect(render()).not.toContain('Invite bonus');
+    state.referee = { available: true, referrer: pool, boundEpoch: 1, windowEnd: 13, weeksLeft: 0, payable: '0', claimableEpochs: [] };
+    expect(render()).not.toContain('Invite bonus');
+  });
+
+  it('re-reads the invite allowance after creating an invite', async () => {
+    state.referral = { available: true, payable: '0', claimableEpochs: [], referredCount: 0, invites: { epoch: 23, quota: 1, used: 0, left: 1 } };
+    const created: CreatedInviteView = { invite: 'abc', link: 'https://antseed.com/invite/abc', epoch: 23, index: 0, quota: 1, left: 0, expiresEpoch: 27 };
+    const createInvite = vi.fn(async () => created);
+    state.createInvite = createInvite;
+    render();
+    const button = state.buttons.find((props) => props.children === 'Create invite');
+    expect(button?.disabled).toBe(false);
+    await button!.onClick!();
+    expect(createInvite).toHaveBeenCalledOnce();
+    expect(state.refreshed).toContain('referrals');
+  });
+});
+
+describe('invite allowance after creating an invite', () => {
+  const allowance = (epoch: number, quota: number, left: number) => ({ epoch, quota, used: quota - left, left });
+  const created = (epoch: number, quota: number, left: number): CreatedInviteView => ({ invite: 'x', link: 'https://antseed.com/invite/x', epoch, index: 0, quota, left, expiresEpoch: epoch + 4 });
+
+  it('holds the created count against a refetch that has not counted it yet, then follows the next epoch', () => {
+    const last = created(23, 1, 0); // the last invite of the week
+    expect(inviteAllowance(allowance(23, 1, 1), last)).toEqual({ quota: 1, left: 0 }); // stale refetch
+    expect(inviteAllowance(allowance(23, 1, 0), last)).toEqual({ quota: 1, left: 0 });
+    // The next week's allowance replaces the exhausted snapshot.
+    expect(inviteAllowance(allowance(24, 3, 3), last)).toEqual({ quota: 3, left: 3 });
+  });
+
+  it('uses the created snapshot only while no allowance for its epoch or a later one is loaded', () => {
+    expect(inviteAllowance(null, created(23, 2, 1))).toEqual({ quota: 2, left: 1 });
+    expect(inviteAllowance(allowance(22, 5, 0), created(23, 2, 1))).toEqual({ quota: 2, left: 1 });
+    expect(inviteAllowance(allowance(23, 5, 4), null)).toEqual({ quota: 5, left: 4 });
+    expect(inviteAllowance(null, null)).toEqual({ quota: null, left: null });
+  });
+});
+
+describe('client agents registered from the builders card', () => {
+  const job = (id: string, agentId: number, status: JobView['status'] = 'done'): JobView => ({ id, kind: 'builder-register', status, steps: [], startedAt: 1, result: { agentId } });
+  const storage = new Map<string, string>();
+  const stubWindow = () => vi.stubGlobal('window', { localStorage: {
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => { storage.set(key, value); },
+  } });
+
+  beforeEach(() => {
+    storage.clear();
+    stubWindow();
+    return () => { vi.unstubAllGlobals(); };
+  });
+
+  it('tracks a registered agent once, so a removal survives leaving Rewards and returning', () => {
+    const jobs = [job('register-1', 31)];
+    // Register: the finished job adds the agent.
+    expect(takeRegisteredAgents(jobs, [5])).toEqual({ ids: [5, 31], untracked: [] });
+    // Remove it, leave Rewards and come back: the card remounts with the same job list.
+    expect(takeRegisteredAgents(jobs, [5])).toBeNull();
+    // A later registration still lands.
+    expect(takeRegisteredAgents([job('register-2', 32), ...jobs], [5])).toEqual({ ids: [5, 32], untracked: [] });
+  });
+
+  it('remembers handled jobs across a reload that restores the job journal', async () => {
+    expect(takeRegisteredAgents([job('register-reload', 34)], [])).toEqual({ ids: [34], untracked: [] });
+    vi.resetModules();
+    stubWindow();
+    const reloaded = await import('./pages/Rewards');
+    expect(reloaded.takeRegisteredAgents([job('register-reload', 34)], [])).toBeNull();
+  });
+
+  it('does not track a registered agent past the limit, and names it instead', () => {
+    const full = Array.from({ length: 20 }, (_, index) => index + 1);
+    expect(takeRegisteredAgents([job('register-full', 21)], full)).toEqual({ ids: full, untracked: [21] });
+    expect(takeRegisteredAgents([job('register-room', 22)], full.slice(0, 19))).toEqual({ ids: [...full.slice(0, 19), 22], untracked: [] });
+  });
+
+  it('lists tracked ids the builders response left out', () => {
+    const view = { available: true, agents: [{ agentId: 5, owner: null, owned: false, firstParty: null, payable: '0', claimableEpochs: [] }] };
+    expect(missingBuilderIds([5, 21, 7], view)).toEqual([21, 7]);
+  });
+
+  it('ignores unfinished jobs and still works without storage', () => {
+    expect(takeRegisteredAgents([job('register-3', 33, 'running')], [])).toBeNull();
+    vi.stubGlobal('window', { localStorage: { getItem: () => { throw new Error('denied'); }, setItem: () => { throw new Error('denied'); } } });
+    expect(takeRegisteredAgents([job('register-3', 33)], [])).toEqual({ ids: [33], untracked: [] });
+    expect(takeRegisteredAgents([job('register-3', 33)], [])).toBeNull();
   });
 });

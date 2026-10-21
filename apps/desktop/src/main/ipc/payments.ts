@@ -1,5 +1,7 @@
 import { readBuyerRewardsSummary } from '../staking/buyer-rewards.js';
-import { CREDITS_FRESH_MS, REWARDS_ERROR_FRESH_MS, REWARDS_FRESH_MS, cachedRead, invalidateChainReads, readKeys, refreshFresh } from '../payments/read-cache.js';
+import { cachedBuyerRewardsSummary } from '../payments/rewards-summary.js';
+import { friendlyNetworkError } from '../utils.js';
+import { CREDITS_FRESH_MS, cachedRead, invalidateChainReads, readKeys, refreshFresh } from '../payments/read-cache.js';
 import { resolveStakingChain } from '../staking/configuration.js';
 import { readConfig } from '../runtime/config-io.js';
 import { ACTIVE_CONFIG_PATH } from '../runtime/active-config.js';
@@ -427,21 +429,12 @@ export function registerPaymentsIpc(): void {
       const identity = getSecureIdentity();
       if (!identity) return { ok: true, data: EMPTY_REWARDS_SUMMARY, error: null };
       const chain = resolveStakingChain(await readConfig(ACTIVE_CONFIG_PATH));
-      const address = identity.wallet.address;
-      // The home view asks every 3s until the buyer daemon answers; rewards
-      // only change per epoch or after a claim, which invalidates this.
-      const data = await cachedRead(
-        readKeys.rewards(address, chain.chainId),
-        (cached) => (cached?.error ? REWARDS_ERROR_FRESH_MS : REWARDS_FRESH_MS),
-        () => readBuyerRewardsSummary(chain, address).catch((err: unknown): DesktopRewardsSummary => (
-          { ...EMPTY_REWARDS_SUMMARY, error: err instanceof Error ? err.message : String(err) }
-        )),
-      );
+      const data = await cachedBuyerRewardsSummary(chain, identity.wallet.address, readBuyerRewardsSummary);
       return { ok: true, data, error: null };
     } catch (err) {
       return {
         ok: true,
-        data: { ...EMPTY_REWARDS_SUMMARY, error: err instanceof Error ? err.message : String(err) },
+        data: { ...EMPTY_REWARDS_SUMMARY, error: friendlyNetworkError(err) },
         error: null,
       };
     }

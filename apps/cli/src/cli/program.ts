@@ -16,6 +16,7 @@ import { registerTunnelCommands } from './commands/tunnel/index.js';
 import { registerGatewayCommands } from './commands/gateway/index.js';
 import { registerAntsCommands } from './commands/ants/index.js';
 import { registerAppsCommands } from './commands/apps/index.js';
+import { registerReferralCommands } from './commands/referral.js';
 import { registerUpdateCommand } from './commands/update.js';
 
 import pkg from '../../package.json' with { type: 'json' };
@@ -49,6 +50,7 @@ export function createProgram(): Command {
   registerGatewayCommands(program);
   registerAntsCommands(program);
   registerAppsCommands(program);
+  registerReferralCommands(program);
   registerUpdateCommand(program);
 
   return program;

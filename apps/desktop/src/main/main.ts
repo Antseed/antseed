@@ -39,6 +39,8 @@ import { createDesktopTray } from './ui/tray.js';
 import { ensureConfig } from './runtime/config-io.js';
 import { registerAttachmentScheme, installAttachmentProtocol } from './chat/attachments/protocol.js';
 import { disableSandboxIfAppImageCannotSandbox } from './linux-sandbox.js';
+import { deliverDeepLinksTo, registerDeepLinks } from './deep-links.js';
+import { isMultiInstanceDevelopment } from './dev-instance.js';
 import {
   APP_ICON_PATH,
   APP_NAME,
@@ -139,6 +141,16 @@ async function recordTelemetryCleanShutdown(): Promise<void> {
 // *before* `app.whenReady()` fires. The actual request handler is wired
 // inside whenReady() once Electron's protocol module is usable.
 registerAttachmentScheme();
+
+// antseed://invite/<invite> links. One instance owns them (Windows and Linux
+// pass the link to a second process); dev multi-instance runs opt out.
+let showMainWindowFromDeepLink: (() => void) | null = null;
+if (!registerDeepLinks({
+  singleInstance: !isMultiInstanceDevelopment(),
+  onSecondInstance: () => showMainWindowFromDeepLink?.(),
+})) {
+  app.exit(0);
+}
 
 disableSandboxIfAppImageCannotSandbox();
 
@@ -474,6 +486,8 @@ app.whenReady().then(async () => {
   };
 
   showMainWindow();
+  showMainWindowFromDeepLink = showMainWindow;
+  deliverDeepLinksTo(getMainWindow, showMainWindow);
 
   void publicTunnelRuntime.restoreAtLaunch().then((result) => {
     if (result && !result.ok) {

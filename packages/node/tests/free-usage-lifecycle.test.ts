@@ -22,6 +22,7 @@ import {
   FREE_USAGE_OPEN_TYPES,
   computeFreeUsageChannelId,
   computeFreeUsageMetadataHash,
+  decodeMetadataAttribution,
   encodeFreeUsageMetadata,
   getServiceMetadataId,
   makeFreeUsageDomain,
@@ -325,6 +326,53 @@ describe('FreeUsage P2P lifecycle', () => {
 
       const restartedManager = new BuyerFreeUsageManager(buyer, freeUsageConfig(), undefined, store);
       expect((restartedManager as any)._sessions.get(seller.peerId).channelId).toBe(secondOpen.channelId);
+    } finally {
+      store.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('replaces, clears and does not rehydrate attribution in signed free usage metadata', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'free-usage-attribution-'));
+    const store = new ChannelStore(dir);
+    const clientId = '0x' + '00'.repeat(31) + '2a';
+    const invite = { epoch: 42n, index: 7n, r: '0x' + '11'.repeat(32), vs: '0x' + '22'.repeat(32) };
+    try {
+      const buyerManager = new BuyerFreeUsageManager(buyer, freeUsageConfig({ attribution: { clientId, invite } }), undefined, store);
+      const buyerConn = makeConn();
+      const buyerMux = new PaymentMux(buyerConn.conn as any);
+      await buyerManager.prepareOpen(sellerPeer(), buyerMux);
+      const { channelId } = decodeFreeUsageOpen(decodeSentFrame(buyerConn.frames[0]!).payload);
+      buyerManager.handleAck(seller.peerId, { channelId, acceptedSequence: '0' });
+
+      const signSequence = async (manager: BuyerFreeUsageManager, mux: PaymentMux, frames: Uint8Array[], sequence: number) => {
+        await manager.handleNeedAuth(seller.peerId, {
+          channelId,
+          requiredSequence: String(sequence),
+          currentAcceptedSequence: String(sequence - 1),
+          requestId: `req-free-attr-${sequence}`,
+          inputTokens: '4',
+          outputTokens: '2',
+        }, mux);
+        const auth = decodeFreeUsageAuth(decodeSentFrame(frames[frames.length - 1]!).payload);
+        expect(auth.metadataHash).toBe(keccak256(auth.metadata));
+        return decodeMetadataAttribution(auth.metadata);
+      };
+
+      expect(await signSequence(buyerManager, buyerMux, buyerConn.frames, 1)).toEqual({ clientId, invite });
+      buyerManager.setAttribution({ clientId });
+      expect(await signSequence(buyerManager, buyerMux, buyerConn.frames, 2)).toEqual({ clientId, invite: null });
+      buyerManager.setAttribution(undefined);
+      expect(await signSequence(buyerManager, buyerMux, buyerConn.frames, 3)).toBeNull();
+
+      // The stored latest metadata still has no tail; re-attribute it, then
+      // hydrate a manager configured without attribution.
+      buyerManager.setAttribution({ clientId, invite });
+      expect(await signSequence(buyerManager, buyerMux, buyerConn.frames, 4)).toEqual({ clientId, invite });
+      const restartedManager = new BuyerFreeUsageManager(buyer, freeUsageConfig(), undefined, store);
+      const restartedConn = makeConn();
+      const restartedMux = new PaymentMux(restartedConn.conn as any);
+      expect(await signSequence(restartedManager, restartedMux, restartedConn.frames, 5)).toBeNull();
     } finally {
       store.close();
       rmSync(dir, { recursive: true, force: true });

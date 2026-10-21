@@ -92,6 +92,46 @@ describe('selected account browser sessions', () => {
     expect(stake).not.toHaveBeenCalled();
   });
 
+  it('lets the selected buyer\'s distinct operator claim its invite bonus, and the selected wallet too', async () => {
+    const { selected, operator, connect, action } = await setup();
+    const claimReferee = vi.spyOn(service, 'claimRefereeRewards').mockResolvedValue({ hash: '0xreferee', epochs: [3] });
+    await connect(operator.address);
+    expect((await action('/api/referrals/referee/claim')).status).toBe('done');
+    expect(claimReferee).toHaveBeenCalledOnce();
+    await connect(selected.address);
+    expect((await action('/api/referrals/referee/claim')).status).toBe('done');
+    expect(claimReferee).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects an invite bonus claim from a wallet that is neither the selected account nor its operator', async () => {
+    const { operator, getOperator, connect, action } = await setup();
+    const claimReferee = vi.spyOn(service, 'claimRefereeRewards').mockResolvedValue({ hash: '0xreferee', epochs: [3] });
+    await connect(operator.address);
+    getOperator.mockResolvedValue(Wallet.createRandom().address);
+    expect((await action('/api/referrals/referee/claim')).error).toContain('Wallet mismatch');
+    expect(claimReferee).not.toHaveBeenCalled();
+  });
+
+  it('lets the selected referrer\'s distinct operator claim its referral rewards, and the selected wallet too', async () => {
+    const { selected, operator, connect, action } = await setup();
+    const claimReferral = vi.spyOn(service, 'claimReferralRewards').mockResolvedValue({ hash: '0xreferral', epochs: [3] });
+    await connect(operator.address);
+    expect((await action('/api/referrals/claim')).status).toBe('done');
+    expect(claimReferral).toHaveBeenCalledOnce();
+    await connect(selected.address);
+    expect((await action('/api/referrals/claim')).status).toBe('done');
+    expect(claimReferral).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects a referral claim from a wallet that is neither the selected account nor its operator', async () => {
+    const { operator, getOperator, connect, action } = await setup();
+    const claimReferral = vi.spyOn(service, 'claimReferralRewards').mockResolvedValue({ hash: '0xreferral', epochs: [3] });
+    await connect(operator.address);
+    getOperator.mockResolvedValue(Wallet.createRandom().address);
+    expect((await action('/api/referrals/claim')).error).toContain('Wallet mismatch');
+    expect(claimReferral).not.toHaveBeenCalled();
+  });
+
   it('rechecks operator permissions before actions and fails closed on RPC errors', async () => {
     const { operator, getOperator, connect, action } = await setup();
     const claim = vi.spyOn(service, 'claim').mockResolvedValue({} as never);
@@ -284,6 +324,39 @@ it('browser sessions ignore host signing keys and retain the original buyer acro
   expect(server.context.address).toBe(external.address);
   const disconnectedConfig = (await server.app.inject({ url: '/api/config', headers })).json().data;
   expect(disconnectedConfig).toMatchObject({ readOnly: true, address: external.address });
+});
+
+it('keeps the originating buyer as the referrer for inviter reads and claims while its operator is connected', async () => {
+  vi.spyOn(AntsContext.prototype, 'selectRpc').mockResolvedValue();
+  const dataDir = await mkdtemp(path.join(tmpdir(), 'ants-referrer-test-'));
+  directories.push(dataDir);
+  const buyer = Wallet.createRandom();
+  const operator = Wallet.createRandom();
+  // A Desktop session: the identity wallet (the buyer, which signed the invites) opens the dashboard.
+  const server = await createAntsServer({ port: 0, dataDir, signer: buyer, address: buyer.address,
+    chain: { chainId: 'base-local', evmChainId: 31337, rpcUrl: 'http://127.0.0.1:8545', fallbackRpcUrls: [], explorerApiUrl: 'https://scan', referralsAddress: '0x1111111111111111111111111111111111111111' } });
+  servers.push(server);
+  vi.spyOn(server.context, 'deposits').mockReturnValue({ getOperator: async () => operator.address } as never);
+  const referrer = vi.fn(async (address: string) => ({
+    available: true, currentEpoch: 30, referredCount: 1, payable: address === buyer.address ? '700' : '0',
+    claimableEpochs: address === buyer.address ? [3] : [], invites: null, buyers: [],
+  }));
+  vi.spyOn(server.context, 'indexer').mockReturnValue({ referrer } as never);
+  const claimEpochs = vi.fn(async () => '0xreferral');
+  vi.spyOn(server.context, 'referrals').mockReturnValue({ claimEpochs } as never);
+  const headers = { authorization: `Bearer ${server.token}` };
+  expect((await server.app.inject({ method: 'POST', url: '/api/wallet', headers, payload: { address: operator.address, chainId: 31337 } })).statusCode).toBe(200);
+  expect(server.context.address).toBe(operator.address);
+
+  const card = (await server.app.inject({ url: '/api/referrals', headers })).json().data;
+  expect(card).toMatchObject({ available: true, payable: '700', claimableEpochs: [3] });
+  const started = await server.app.inject({ method: 'POST', url: '/api/referrals/claim', headers, payload: {} });
+  expect(started.statusCode).toBe(200);
+  await vi.waitFor(() => expect(server.busy).toBe(false));
+  const job = (await server.app.inject({ url: `/api/jobs/${started.json().data.id}`, headers })).json().data;
+  expect(job.status).toBe('done');
+  expect(claimEpochs).toHaveBeenCalledWith(expect.anything(), buyer.address, [3]);
+  expect(referrer.mock.calls.every(([address]) => address === buyer.address)).toBe(true);
 });
 
 it('shows a connected wallet its own buyer rewards unless it operates the originating buyer', async () => {

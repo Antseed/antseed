@@ -1,6 +1,7 @@
 import type {Config, Plugin, PluginConfig, PluginModule} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 import integrationsPagesPlugin from './plugins/integrations-pages';
+import inviteRoutePlugin from './plugins/invite-route';
 import prismTheme from './src/lib/prismTheme';
 import {integrations as integrationEntries} from './src/integrations/integrations';
 import desktopPkg from '../desktop/package.json';
@@ -88,7 +89,7 @@ const config: Config = {
           changefreq: 'weekly',
           priority: 0.5,
           filename: 'sitemap.xml',
-          ignorePatterns: ['/tags/**', '/blog/tags/**', '/blog/archive', '/blog/authors'],
+          ignorePatterns: ['/tags/**', '/blog/tags/**', '/blog/archive', '/blog/authors', '/invite/**'],
         },
         theme: {
           customCss: './src/css/custom.css',
@@ -128,6 +129,7 @@ const config: Config = {
           {from: '/docs/guides/tee-provider', to: '/docs/provide/tee'},
           {from: '/docs/guides/payments', to: '/docs/provide/payments'},
           {from: '/docs/guides/staking', to: '/docs/provide/staking'},
+          {from: '/docs/guides/referrals', to: '/docs/provide/referrals'},
           {from: '/docs/guides/metrics', to: '/docs/provide/metrics'},
           {from: '/docs/guides/metadata-v12-upgrade', to: '/docs/metadata-v12-upgrade'},
           {from: '/docs/create-plugin', to: '/docs/provider-api'},
@@ -146,6 +148,7 @@ const config: Config = {
     ],
     statsProxyPlugin,
     integrationsPagesPlugin,
+    inviteRoutePlugin,
   ],
 
   // General Sans — the design's display/body face (Geist stays for app-chrome/mono).

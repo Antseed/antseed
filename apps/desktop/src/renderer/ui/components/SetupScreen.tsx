@@ -4,6 +4,7 @@ import { BrandIcon, type BrandKey } from '@antseed/ui';
 import { SetupAppPreview } from './SetupAppPreview';
 import { canonicalModelKey } from '../../modules/catalog/model-identity';
 import { shallowEqual, useUiSelector } from '../hooks/useUiSelector';
+import { InviteCodeField } from './InviteCodeField';
 import styles from './SetupScreen.module.scss';
 
 /** The long tail of first-run setup — catalog build plus the trust-gate wait
@@ -93,6 +94,17 @@ export function SetupScreen() {
     };
   }, shallowEqual);
 
+  // Offer the invite field only where referrals exist and this wallet has
+  // neither a pending invite nor an inviter yet.
+  const [inviteOpen, setInviteOpen] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    void window.antseedDesktop?.referralGetStatus?.()
+      .then((status) => { if (!cancelled) setInviteOpen(status.configured && status.state === 'none'); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
   const hasServices = snap.chatServiceCount > 0;
   // The whole point of first-run setup: a model the user can chat with for
   // free, confirmed by routing (a trusted free seller backs the default —
@@ -174,6 +186,12 @@ export function SetupScreen() {
                 ? 'No internet connection detected. Connect to the internet to finish setup.'
                 : 'Having trouble reaching the peer-to-peer network. A firewall or VPN on this network may be blocking it - try disconnecting the VPN or switching networks.'}
             </p>
+          )}
+
+          {inviteOpen && (
+            <div className={styles.invite}>
+              <InviteCodeField />
+            </div>
           )}
         </div>
 
