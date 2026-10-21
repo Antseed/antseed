@@ -3227,6 +3227,29 @@ test('pinned proxy request reports when the pinned peer is not discoverable', as
   assert.match(res.body, /It may be offline, not announcing, or temporarily unreachable/)
 })
 
+test('pinned proxy request looks the peer up on its own DHT topic when the refresh misses it', async () => {
+  const otherPeer = makePeer('b', ['openai'])
+  const pinnedPeer = makePeer('a', ['openai'])
+  pinnedPeer.publicAddress = '198.51.100.20:14532'
+  pinnedPeer.providerServiceApiProtocols = { openai: { services: { 'gpt-5': ['openai-chat-completions'] } } }
+  const proxy = makeBuyerProxyWithPeers([otherPeer], [otherPeer], permissiveRouter())
+  ;(proxy as any)._mergeStateFile = async () => {}
+  ;(proxy as any)._node.findPeer = async () => ({ ...pinnedPeer })
+  const attempts: string[] = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    attempts.push(peer.publicAddress ?? '')
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    headers: { 'x-antseed-pin-peer': pinnedPeer.peerId },
+    body: { model: 'gpt-5', messages: [] },
+  }))
+
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(attempts, ['198.51.100.20:14532'])
+})
+
 test('pinned proxy request surfaces a 403 without failing over to another peer', async () => {
   // An explicit pin is a hard constraint: even with another peer serving the
   // same model, the pinned peer's error is surfaced rather than re-routed.
