@@ -237,6 +237,7 @@ export {
   getDebugFilters,
   shouldEmitDebugLine,
 } from './utils/debug.js';
+export { exposedResponseHeaders, isExposedResponseHeader } from './utils/response-headers.js';
 export {
   signSpendingAuth,
   signReserveAuth,
