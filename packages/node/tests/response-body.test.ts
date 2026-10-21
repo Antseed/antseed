@@ -200,7 +200,7 @@ describe('seller response bodies', () => {
     const response = await execute({
       handleRequest: async () => { throw new Error('unused'); },
       handleRequestStream: async (_request, callbacks) => {
-        const start = { requestId: 'r1', statusCode: 200, headers: { 'content-type': 'application/json' }, body: bytes.slice(0, 10) };
+        const start = { requestId: 'r1', statusCode: 200, headers: { 'content-type': 'application/json', 'X-Antseed-Streaming': '1' }, body: bytes.slice(0, 10) };
         callbacks.onResponseStart(start);
         callbacks.onResponseChunk({ requestId: 'r1', data: bytes.slice(10), done: true });
         return { ...start, body: bytes };
@@ -208,6 +208,8 @@ describe('seller response bodies', () => {
     }, { onResponseStart: () => { started = true; }, onResponseChunk: (chunk) => { sent.push(chunk); } });
     expect(started).toBe(false);
     expect(sent).toEqual([]);
+    // Sent whole, so the buyer must not wait for stream chunks.
+    expect(response.headers).toEqual({ 'content-type': 'application/json' });
     expect(JSON.parse(decode(response.body)).usage).toEqual({ prompt_tokens: 600, completion_tokens: 300, estimated_cost: 0.0018 });
   });
 

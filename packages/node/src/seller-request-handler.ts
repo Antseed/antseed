@@ -1354,7 +1354,7 @@ export class SellerRequestHandler {
     if (streamCallbacks && provider.handleRequestStream) {
       // An event stream is rewritten as it passes. A JSON body can only be rewritten
       // whole, so it is held back and sent as the returned response instead.
-      let mode: 'events' | 'held' | 'passthrough' = 'passthrough';
+      let mode = 'passthrough' as 'events' | 'held' | 'passthrough';
       let events = null as ExposedSseStream | null;
       const sent: Uint8Array[] = [];
       const response = await provider.handleRequestStream(request, {
@@ -1384,7 +1384,9 @@ export class SellerRequestHandler {
       // The returned body is what the buyer was sent, so usage and payment read the same bytes.
       if (events) return { ...withHeaders(response), body: concatBytes(sent) };
       if (isDownload) return withHeaders(response);
-      return withExposedBody(request, withHeaders(response), sellerCost);
+      // Held JSON goes out as one complete response, which a streaming marker would leave the buyer waiting on.
+      const whole = mode === 'held' ? withoutStreamingMarker(response) : response;
+      return withExposedBody(request, withHeaders(whole), sellerCost);
     }
     const response = withHeaders(await provider.handleRequest(request));
     return isDownload ? response : withExposedBody(request, response, sellerCost);
@@ -1487,6 +1489,11 @@ function isEventStream(request: SerializedHttpRequest, response: Pick<Serialized
   if (response.statusCode < 200 || response.statusCode >= 300) return false;
   return headerOf(response.headers, ANTSEED_STREAMING_RESPONSE_HEADER) === '1'
     || headerOf(request.headers, 'accept').toLowerCase().includes('text/event-stream');
+}
+
+function withoutStreamingMarker(response: SerializedHttpResponse): SerializedHttpResponse {
+  const headers = Object.fromEntries(Object.entries(response.headers).filter(([name]) => name.toLowerCase() !== ANTSEED_STREAMING_RESPONSE_HEADER));
+  return { ...response, headers };
 }
 
 function headerOf(headers: Record<string, string>, name: string): string {
