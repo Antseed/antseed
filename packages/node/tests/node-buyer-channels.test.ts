@@ -1,9 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { AntseedNode } from '../src/node.js';
+import { Wallet } from 'ethers';
+import { AntseedNode, type NodeConfig } from '../src/node.js';
 import { ChannelStore, CHANNEL_KIND, CHANNEL_ROLE, CHANNEL_STATUS, type StoredChannel } from '../src/payments/channel-store.js';
+import { BuyerPaymentManager } from '../src/payments/buyer-payment-manager.js';
+import { BuyerPaymentNegotiator } from '../src/payments/buyer-payment-negotiator.js';
+import type { ChannelInfo, ChannelsClient } from '../src/payments/evm/channels-client.js';
+import type { Identity } from '../src/p2p/identity.js';
+import { toPeerId } from '../src/types/peer.js';
 
 const buyerAddress = '0x' + '11'.repeat(20);
 
@@ -94,5 +101,193 @@ describe('buyer payment channel summaries', () => {
     expect(active.find((channel) => channel.channelId === 'older-chat')).toMatchObject({ live: false, reserveCeiling: null });
     expect(active.find((channel) => channel.channelId === 'video')).toMatchObject({ live: false, channelKind: CHANNEL_KIND.ONE_OFF });
     expect(node.getAllBuyerChannels().find((channel) => channel.channelId === 'settled-video')?.live).toBe(false);
+  });
+});
+
+function buyerIdentity(): Identity {
+  const wallet = new Wallet('0x' + randomBytes(32).toString('hex'));
+  return { wallet, peerId: toPeerId(wallet.address.slice(2).toLowerCase()), privateKey: Buffer.from(wallet.privateKey.slice(2), 'hex') };
+}
+
+describe('buyer channel counts after a reconcile with the chain', () => {
+  let dataDir: string;
+  let store: ChannelStore;
+
+  function buyerAccount(identity: Identity, chain: ChannelsClient) {
+    const paymentManager = new BuyerPaymentManager(identity, {
+      rpcUrl: 'http://127.0.0.1:1',
+      chainId: 31337,
+      channelsContractAddress: '0x' + 'cc'.repeat(20),
+      depositsContractAddress: '0x' + 'dd'.repeat(20),
+      usdcAddress: '0x' + 'ee'.repeat(20),
+      identityRegistryAddress: '0x' + 'ff'.repeat(20),
+      defaultAuthDurationSecs: 3600,
+      maxPerRequestUsdc: 100_000n,
+      maxReserveAmountUsdc: 1_000_000n,
+      dataDir,
+    }, store);
+    const negotiator = new BuyerPaymentNegotiator(identity, paymentManager, null, chain, store, {}, { emit: () => true });
+    return { address: identity.wallet.address, paymentManager, negotiator };
+  }
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'antseed-buyer-reconcile-node-'));
+    store = new ChannelStore(dataDir);
+  });
+
+  afterEach(() => {
+    store.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it('stops counting channels the chain shows closed, for every buyer identity', async () => {
+    const main = buyerIdentity();
+    const alt = buyerIdentity();
+    const closedOnChain = new Map<string, ChannelInfo>();
+    const closeOnChain = (channel: StoredChannel, status: 2 | 3): StoredChannel => {
+      closedOnChain.set(channel.sessionId, {
+        buyer: channel.buyerEvmAddr,
+        seller: channel.sellerEvmAddr,
+        deposit: 1_000_000n,
+        settled: 400_000n,
+        metadataHash: '0x' + '00'.repeat(32),
+        deadline: 0n,
+        settledAt: 0n,
+        closeRequestedAt: 0n,
+        status,
+      });
+      return channel;
+    };
+    for (const channel of [
+      closeOnChain(makeChannel('0x' + 'a1'.repeat(32), { buyerEvmAddr: main.wallet.address }), 2),
+      closeOnChain(makeChannel('0x' + 'a2'.repeat(32), { buyerEvmAddr: main.wallet.address, channelKind: CHANNEL_KIND.ONE_OFF, peerId: '33'.repeat(20) }), 2),
+      closeOnChain(makeChannel('0x' + 'b1'.repeat(32), { buyerEvmAddr: alt.wallet.address }), 3),
+    ]) store.upsertChannel(channel);
+    const chain = { getSession: vi.fn(async (id: string) => closedOnChain.get(id)!) } as unknown as ChannelsClient;
+    const mainAccount = buyerAccount(main, chain);
+    const node = new AntseedNode({ role: 'buyer' });
+    Object.assign(node, {
+      _identity: main,
+      _channelStore: store,
+      _buyerPaymentManager: mainAccount.paymentManager,
+      _buyerNegotiator: mainAccount.negotiator,
+      _buyerIdentities: new Map([['alt', { name: 'alt', ...buyerAccount(alt, chain) }]]),
+    });
+    expect([node.getBuyerUsageTotals().activeChannels, node.getBuyerUsageTotals('alt').activeChannels]).toEqual([1, 1]);
+    expect(node.getActiveBuyerChannels()).toHaveLength(2);
+
+    await node.reconcileBuyerChannels();
+
+    expect(node.getBuyerUsageTotals().activeChannels).toBe(0);
+    expect(node.getBuyerUsageTotals('alt').activeChannels).toBe(0);
+    expect(node.getActiveBuyerChannels()).toEqual([]);
+    expect(node.getActiveBuyerChannels('alt')).toEqual([]);
+  });
+
+  it('stops only after a reconcile pass in flight has written its retirements', async () => {
+    const main = buyerIdentity();
+    const channel = makeChannel('0x' + 'c1'.repeat(32), { buyerEvmAddr: main.wallet.address });
+    store.upsertChannel(channel);
+    const order: string[] = [];
+    let releaseRead!: () => void;
+    const readReleased = new Promise<void>((resolve) => { releaseRead = resolve; });
+    // Past stop()'s 500 ms NeedAuth grace, so only a drain can make stop wait for the pass.
+    setTimeout(releaseRead, 800).unref();
+    const chain = {
+      getSession: vi.fn(async () => {
+        await readReleased;
+        return {
+          buyer: main.wallet.address,
+          seller: channel.sellerEvmAddr,
+          deposit: 1_000_000n,
+          settled: 400_000n,
+          metadataHash: '0x' + '00'.repeat(32),
+          deadline: 0n,
+          settledAt: 0n,
+          closeRequestedAt: 0n,
+          status: 2,
+        } as ChannelInfo;
+      }),
+    } as unknown as ChannelsClient;
+    const account = buyerAccount(main, chain);
+    const retire = store.updateChannelStatus.bind(store);
+    vi.spyOn(store, 'updateChannelStatus').mockImplementation((...args) => {
+      order.push('retired');
+      retire(...args);
+    });
+    vi.spyOn(account.negotiator, 'cleanup').mockImplementation(() => {
+      order.push('cleanup');
+      releaseRead();
+    });
+    const close = store.close.bind(store);
+    vi.spyOn(store, 'close').mockImplementation(() => {
+      order.push('store closed');
+      close();
+    });
+    const node = new AntseedNode({ role: 'buyer' });
+    Object.assign(node, {
+      _started: true,
+      _identity: main,
+      _channelStore: store,
+      _buyerPaymentManager: account.paymentManager,
+      _buyerNegotiator: account.negotiator,
+    });
+
+    const pass = node.reconcileBuyerChannels();
+    await node.stop();
+    await pass;
+
+    expect(order).toEqual(['retired', 'cleanup', 'store closed']);
+  });
+});
+
+describe('the buyer channel reconcile pass a node runs on its own', () => {
+  let dataDir: string;
+  let node: AntseedNode | null = null;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'antseed-buyer-auto-reconcile-'));
+  });
+
+  afterEach(async () => {
+    await node?.stop();
+    node = null;
+    vi.restoreAllMocks();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  async function startPayingBuyer(config: Partial<NodeConfig>): Promise<{ passes: () => number }> {
+    const pass = vi.spyOn(BuyerPaymentNegotiator.prototype, 'reconcileChannelsWithChain');
+    node = new AntseedNode({
+      role: 'buyer',
+      dataDir,
+      bootstrapNodes: [],
+      noOfficialBootstrap: true,
+      payments: {
+        enabled: true,
+        rpcUrl: 'http://127.0.0.1:1',
+        depositsAddress: '0x' + 'dd'.repeat(20),
+        channelsAddress: '0x' + 'cc'.repeat(20),
+        usdcAddress: '0x' + 'ee'.repeat(20),
+      },
+      ...config,
+    });
+    await node.start();
+    return { passes: () => pass.mock.calls.length };
+  }
+
+  it('runs one at buyer start and when a buyer identity is added, by default', async () => {
+    const { passes } = await startPayingBuyer({});
+    const atStart = passes();
+    await node!.addBuyerIdentity('alt', buyerIdentity());
+
+    expect({ atStart: atStart > 0, afterAdd: passes() > atStart }).toEqual({ atStart: true, afterAdd: true });
+  });
+
+  it('starts none with autoReconcileBuyerChannels off, at start or when a buyer identity is added', async () => {
+    const { passes } = await startPayingBuyer({ autoReconcileBuyerChannels: false });
+    await node!.addBuyerIdentity('alt', buyerIdentity());
+
+    expect(passes()).toBe(0);
   });
 });

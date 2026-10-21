@@ -30,7 +30,7 @@ Run the local buyer proxy (port 8377) that pays sellers. Guides: [Local buyer AP
 | `antseed buyer identity unprotect [name]` | Store encrypted wallet keys as plaintext again | `--all`, `--yes` |
 | `antseed buyer identity remove <name>` | Stop using an identity; its key is archived, not deleted | |
 | `antseed buyer activity` | Tokens, spending history, savings, active channels and claimable ANTS | `--days 7\|30\|90`, `--json` |
-| `antseed buyer metering` | Channel and usage stats from the local database | `--peer <peerId>`, `--json` |
+| `antseed buyer metering` | Channel and usage stats, after checking active channels on-chain | `--peer <peerId>`, `--json` |
 
 </CommandTable>
 
@@ -260,7 +260,7 @@ Fund the buyer and manage payment channels. Guides: [Gateway funding](/docs/gate
 | `antseed buyer balance` | Show your deposits balance | `--json` |
 | `antseed buyer withdraw <amount>` | Withdraw USDC from the deposits contract | |
 | `antseed buyer set-authorized-wallet` | Authorize an external wallet in the browser, or the buyer wallet itself | `--self`, `--no-open`, `--identity <name>` |
-| `antseed buyer channels [list]` | List payment channels from the local store | `--status active\|settled\|timeout\|ghost`, `--limit` (20) |
+| `antseed buyer channels [list]` | List payment channels from the local store, after checking active ones on-chain | `--status active\|settled\|timeout\|ghost`, `--limit` (20) |
 | `antseed buyer channels close <channelId>` | Ask the seller to close a channel now | `--no-auth` |
 | `antseed buyer channels request-close <channelId>` | Start a timeout close so reserved funds can be withdrawn after the grace period | |
 | `antseed buyer channels withdraw <channelId>` | Release reserved funds after the grace period | |

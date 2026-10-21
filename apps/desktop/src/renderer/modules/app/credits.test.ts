@@ -51,7 +51,6 @@ test('refreshPaymentSummary updates usage, spending history, channels, and rewar
         totalOutputTokens: '22',
         totalSettlements: 2,
         uniqueSellers: 1,
-        activeChannels: 1,
       },
       error: null,
     }),
