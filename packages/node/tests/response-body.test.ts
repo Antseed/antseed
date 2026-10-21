@@ -89,6 +89,28 @@ describe('ExposedSseStream', () => {
     expect(out).toBe(`data: ${JSON.stringify({ usage: { prompt_tokens: 600, completion_tokens: 300, estimated_cost: 0.0018 } })}`);
   });
 
+  it('handles CR, LF and CRLF line endings, a CRLF split across chunks included', () => {
+    const usage = (key: string) => JSON.stringify({ choices: [], usage: { prompt_tokens: 600, completion_tokens: 300, [key]: key === 'cost' ? 0.01 : 0.0018 } });
+    for (const eol of ['\r', '\n', '\r\n']) {
+      const text = `data: {"choices":[]}${eol}${eol}data: ${usage('cost')}${eol}${eol}data: [DONE]${eol}${eol}`;
+      const expected = text.replace(usage('cost'), usage('estimated_cost'));
+      for (let cut = 1; cut < text.length; cut++) {
+        const stream = new ExposedSseStream(cost);
+        const first = decode(stream.push(encode(text.slice(0, cut))));
+        const out = first + decode(stream.push(encode(text.slice(cut)))) + decode(stream.flush());
+        expect(out).toBe(expected);
+      }
+      // Whole CR-only events are sent as soon as they arrive, not at the end.
+      expect(decode(new ExposedSseStream(cost).push(encode(text)))).toBe(expected);
+    }
+  });
+
+  it('never drops a final line it could not parse', () => {
+    const stream = new ExposedSseStream(cost);
+    expect(decode(stream.push(encode('data: {"partial":')))).toBe('');
+    expect(decode(stream.flush())).toBe('data: {"partial":');
+  });
+
   it('keeps a character split across chunks intact while other streams decode in between', () => {
     const [a, b] = [new ExposedSseStream(cost), new ExposedSseStream(cost)];
     const textA = 'data: {"choices":[{"delta":{"content":"héllo"}}]}\n';
