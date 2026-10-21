@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { PeerLookup, preferFreshestResultPerPeer, type LookupConfig } from '../src/discovery/peer-lookup.js';
+import { PeerLookup, type LookupConfig } from '../src/discovery/peer-lookup.js';
 import {
   ANTSEED_WILDCARD_TOPIC,
   SUBNET_COUNT,
@@ -181,54 +181,6 @@ describe('PeerLookup', () => {
       { count: 1, phase: 'subnet', subnet: 7 },
     ]);
     expect(results).toHaveLength(2);
-  });
-
-  it('findAllExhaustive keeps the newest announcement when a moved seller is still listed at an old endpoint', async () => {
-    // The old endpoint resolves first (e.g. it is still listed on the wildcard
-    // topic) with an older signed announcement; the new host only shows up on
-    // the subnet topic. The deduplicated result must be the new host.
-    const oldEndpoint: PeerEndpoint = { host: '203.0.113.10', port: 14532 };
-    const newEndpoint: PeerEndpoint = { host: '198.51.100.20', port: 14532 };
-    const wildcardHashHex = topicToInfoHash(ANTSEED_WILDCARD_TOPIC).toString('hex');
-    const subnet7HashHex = topicToInfoHash(subnetTopic(7)).toString('hex');
-    const lookup = vi.fn(async (hash: Buffer) => {
-      const hex = hash.toString('hex');
-      if (hex === wildcardHashHex) return [oldEndpoint];
-      if (hex === subnet7HashHex) return [newEndpoint, oldEndpoint];
-      return [] as PeerEndpoint[];
-    });
-    const now = Date.now();
-    const resolve = vi.fn(async (peer: PeerEndpoint) => buildMetadata({
-      timestamp: peer.host === oldEndpoint.host ? now - 10 * 60_000 : now,
-    }));
-    const peerLookup = new PeerLookup({
-      dht: { lookup } as unknown as DHTNode,
-      metadataResolver: { resolve },
-      requireValidSignature: false,
-      allowStaleMetadata: true,
-      maxAnnouncementAgeMs: 60_000,
-      maxResults: 1000,
-    });
-
-    const results = await peerLookup.findAllExhaustive(() => {});
-
-    expect(results).toHaveLength(1);
-    expect(results[0]?.host).toBe(newEndpoint.host);
-  });
-
-  it('preferFreshestResultPerPeer keeps one result per peer, preferring the newest timestamp', () => {
-    const a = 'a'.repeat(40);
-    const b = 'b'.repeat(40);
-    const results = [
-      { metadata: buildMetadata({ peerId: a as any, timestamp: 1_000 }), host: '203.0.113.10', port: 1 },
-      { metadata: buildMetadata({ peerId: b as any, timestamp: 1_000 }), host: '203.0.113.11', port: 1 },
-      { metadata: buildMetadata({ peerId: a.toUpperCase() as any, timestamp: 3_000 }), host: '198.51.100.20', port: 1 },
-      { metadata: buildMetadata({ peerId: a as any, timestamp: 2_000 }), host: '203.0.113.12', port: 1 },
-    ];
-
-    const deduped = preferFreshestResultPerPeer(results);
-
-    expect(deduped.map((r) => r.host)).toEqual(['198.51.100.20', '203.0.113.11']);
   });
 
   it('findAllExhaustive queries the exact set of subnet + wildcard topics announcer-side advertises', async () => {

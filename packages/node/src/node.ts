@@ -868,8 +868,7 @@ export class AntseedNode extends EventEmitter {
 
   private async _lookupResultsToPeerInfos(results: LookupResult[], service?: string): Promise<PeerInfo[]> {
     // Deduplicate by peerId (DHT can return the same peer from multiple topic
-    // lookups, and from old endpoints after it moved hosts): keep the newest
-    // signed announcement so a stale endpoint cannot shadow the current one.
+    // lookups, and from old endpoints after it moved hosts)
     const peers = preferFreshestResultPerPeer(results).map((r) => this._lookupResultToPeerInfo(r));
 
     const filtered = service ? peers.filter((p) => peerOffersService(p, service)) : peers;
@@ -895,10 +894,7 @@ export class AntseedNode extends EventEmitter {
       return;
     }
     const peerLookup = this._peerLookup;
-    // Newest announcement timestamp emitted per peerId during this sweep. A
-    // later, fresher announcement (e.g. the seller's new host) is re-emitted
-    // so it replaces whatever endpoint happened to resolve first.
-    const emittedTimestamps = new Map<string, number>();
+    const emittedPeerIds = new Set<string>();
     debugLog(`[Node] Starting background exhaustive peer discovery sweep`);
     this._backgroundPeerDiscoveryPromise = (async () => {
       const results = await peerLookup.findAllExhaustive(async (partialResults, context) => {
@@ -906,9 +902,8 @@ export class AntseedNode extends EventEmitter {
         const peers: PeerInfo[] = [];
         for (const result of partialResults) {
           const peer = this._lookupResultToPeerInfo(result);
-          const emittedTimestamp = emittedTimestamps.get(peer.peerId);
-          if (emittedTimestamp !== undefined && result.metadata.timestamp <= emittedTimestamp) continue;
-          emittedTimestamps.set(peer.peerId, result.metadata.timestamp);
+          if (emittedPeerIds.has(peer.peerId)) continue;
+          emittedPeerIds.add(peer.peerId);
           peers.push(peer);
         }
         if (peers.length === 0) return;

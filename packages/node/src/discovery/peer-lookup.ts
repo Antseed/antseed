@@ -88,11 +88,8 @@ type ResolveLookupResultsOptions = {
 };
 
 /**
- * Collapse lookup results to one per peerId, keeping the newest signed
- * announcement (highest `metadata.timestamp`). A seller that moved hosts can
- * still be advertised from its previous endpoints for a while; resolution
- * order is random, so "first one wins" would let an older announcement shadow
- * the current one. Output keeps the order in which each peerId first appeared.
+ * One result per peerId, keeping the newest signed announcement: a seller
+ * that moved hosts can still be listed at its old endpoints for a while.
  */
 export function preferFreshestResultPerPeer(results: LookupResult[]): LookupResult[] {
   const best = new Map<string, LookupResult>();

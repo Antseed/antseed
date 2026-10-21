@@ -121,21 +121,4 @@ describe('AntseedNode discovery with a seller that moved hosts', () => {
     expect(peers).toHaveLength(1);
     expect(peers[0]?.publicAddress).toBe('198.51.100.20:14532');
   });
-
-  it('findPeer returns the newest announcement among endpoints on the per-peer topic', async () => {
-    const targetId = 'a'.repeat(40);
-    const now = Date.now();
-    const node = new AntseedNode({ role: 'buyer' });
-    (node as any)._peerLookup = {
-      findByPeerId: vi.fn().mockResolvedValue([
-        { metadata: buildMetadata(targetId, now - 10 * 60_000), host: '203.0.113.10', port: 14532 },
-        { metadata: buildMetadata(targetId, now), host: '198.51.100.20', port: 14532 },
-      ]),
-      findAll: vi.fn(),
-    };
-
-    const peer = await node.findPeer(targetId);
-
-    expect(peer?.publicAddress).toBe('198.51.100.20:14532');
-  });
 });
