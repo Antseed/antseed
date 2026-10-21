@@ -87,6 +87,25 @@ type ResolveLookupResultsOptions = {
   onResult?: (result: LookupResult) => void | Promise<void>;
 };
 
+/**
+ * Collapse lookup results to one per peerId, keeping the newest signed
+ * announcement (highest `metadata.timestamp`). A seller that moved hosts can
+ * still be advertised from its previous endpoints for a while; resolution
+ * order is random, so "first one wins" would let an older announcement shadow
+ * the current one. Output keeps the order in which each peerId first appeared.
+ */
+export function preferFreshestResultPerPeer(results: LookupResult[]): LookupResult[] {
+  const best = new Map<string, LookupResult>();
+  for (const result of results) {
+    const peerId = result.metadata.peerId.toLowerCase();
+    const current = best.get(peerId);
+    if (!current || result.metadata.timestamp > current.metadata.timestamp) {
+      best.set(peerId, result);
+    }
+  }
+  return [...best.values()];
+}
+
 export class PeerLookup {
   private readonly config: LookupConfig;
   private nextSubnetStart = 0;
@@ -245,15 +264,7 @@ export class PeerLookup {
   }
 
   private deduplicateResultsByPeerId(results: LookupResult[]): LookupResult[] {
-    const seen = new Set<string>();
-    const deduped: LookupResult[] = [];
-    for (const result of results) {
-      const peerId = result.metadata.peerId.toLowerCase();
-      if (seen.has(peerId)) continue;
-      seen.add(peerId);
-      deduped.push(result);
-    }
-    return deduped;
+    return preferFreshestResultPerPeer(results);
   }
 
   async findByCapability(capability: string, name?: string): Promise<LookupResult[]> {

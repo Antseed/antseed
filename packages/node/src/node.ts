@@ -45,6 +45,7 @@ import { verifyPeerMetadataGithub } from "./discovery/github-verification.js";
 import {
   PeerLookup,
   DEFAULT_LOOKUP_CONFIG,
+  preferFreshestResultPerPeer,
   type LookupConfig,
   type LookupResult,
 } from "./discovery/peer-lookup.js";
@@ -866,16 +867,10 @@ export class AntseedNode extends EventEmitter {
   }
 
   private async _lookupResultsToPeerInfos(results: LookupResult[], service?: string): Promise<PeerInfo[]> {
-    // Deduplicate by peerId (DHT can return the same peer from multiple topic lookups)
-    const seen = new Set<string>();
-    const peers: PeerInfo[] = [];
-    for (const r of results) {
-      const p = this._lookupResultToPeerInfo(r);
-      if (!seen.has(p.peerId)) {
-        seen.add(p.peerId);
-        peers.push(p);
-      }
-    }
+    // Deduplicate by peerId (DHT can return the same peer from multiple topic
+    // lookups, and from old endpoints after it moved hosts): keep the newest
+    // signed announcement so a stale endpoint cannot shadow the current one.
+    const peers = preferFreshestResultPerPeer(results).map((r) => this._lookupResultToPeerInfo(r));
 
     const filtered = service ? peers.filter((p) => peerOffersService(p, service)) : peers;
     this._attachCachedExternalVerificationResults(filtered);
@@ -900,7 +895,10 @@ export class AntseedNode extends EventEmitter {
       return;
     }
     const peerLookup = this._peerLookup;
-    const emittedPeerIds = new Set<string>();
+    // Newest announcement timestamp emitted per peerId during this sweep. A
+    // later, fresher announcement (e.g. the seller's new host) is re-emitted
+    // so it replaces whatever endpoint happened to resolve first.
+    const emittedTimestamps = new Map<string, number>();
     debugLog(`[Node] Starting background exhaustive peer discovery sweep`);
     this._backgroundPeerDiscoveryPromise = (async () => {
       const results = await peerLookup.findAllExhaustive(async (partialResults, context) => {
@@ -908,8 +906,9 @@ export class AntseedNode extends EventEmitter {
         const peers: PeerInfo[] = [];
         for (const result of partialResults) {
           const peer = this._lookupResultToPeerInfo(result);
-          if (emittedPeerIds.has(peer.peerId)) continue;
-          emittedPeerIds.add(peer.peerId);
+          const emittedTimestamp = emittedTimestamps.get(peer.peerId);
+          if (emittedTimestamp !== undefined && result.metadata.timestamp <= emittedTimestamp) continue;
+          emittedTimestamps.set(peer.peerId, result.metadata.timestamp);
           peers.push(peer);
         }
         if (peers.length === 0) return;

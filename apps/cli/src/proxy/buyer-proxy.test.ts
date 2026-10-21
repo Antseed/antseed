@@ -3227,6 +3227,98 @@ test('pinned proxy request reports when the pinned peer is not discoverable', as
   assert.match(res.body, /It may be offline, not announcing, or temporarily unreachable/)
 })
 
+function makeMovablePinnedPeer(publicAddress: string): PeerInfo {
+  const peer = makePeer('a', ['openai'])
+  peer.publicAddress = publicAddress
+  peer.providerServiceApiProtocols = {
+    openai: { services: { 'gpt-5': ['openai-chat-completions'] } },
+  }
+  return peer
+}
+
+test('pinned proxy request looks the peer up on its own DHT topic when the network refresh misses it', async () => {
+  const otherPeer = makePeer('b', ['openai'])
+  const pinnedPeer = makeMovablePinnedPeer('198.51.100.20:14532')
+  const proxy = makeBuyerProxyWithPeers([otherPeer], [otherPeer], permissiveRouter())
+  ;(proxy as any)._mergeStateFile = async () => {}
+  const lookups: string[] = []
+  ;(proxy as any)._node.findPeer = async (peerId: string) => {
+    lookups.push(peerId)
+    return { ...pinnedPeer }
+  }
+  const attempts: string[] = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    attempts.push(peer.publicAddress ?? '')
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    headers: { 'x-antseed-pin-peer': pinnedPeer.peerId },
+    body: { model: 'gpt-5', messages: [] },
+  }))
+
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(lookups, [pinnedPeer.peerId])
+  assert.deepEqual(attempts, ['198.51.100.20:14532'])
+  assert.equal((proxy as any)._cachedPeers.find((p: PeerInfo) => p.peerId === pinnedPeer.peerId)?.publicAddress, '198.51.100.20:14532')
+})
+
+test('pinned proxy request retries once at the new address after the seller moved hosts', async () => {
+  const stale = makeMovablePinnedPeer('203.0.113.10:14532')
+  const proxy = makeBuyerProxyWithPeers([stale], [stale], permissiveRouter())
+  ;(proxy as any)._mergeStateFile = async () => {}
+  ;(proxy as any)._cachedPeers = [stale]
+  ;(proxy as any)._node.findPeer = async () => ({ ...stale, publicAddress: '198.51.100.20:14532', lastSeen: Date.now() })
+  const attempts: string[] = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    attempts.push(peer.publicAddress ?? '')
+    if (peer.publicAddress === '203.0.113.10:14532') {
+      throw new Error(`Connection to ${peer.peerId} failed: connect ECONNREFUSED 203.0.113.10:14532`)
+    }
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    headers: { 'x-antseed-pin-peer': stale.peerId },
+    body: { model: 'gpt-5', messages: [] },
+  }))
+
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(attempts, ['203.0.113.10:14532', '198.51.100.20:14532'])
+  assert.equal((proxy as any)._cachedPeers.find((p: PeerInfo) => p.peerId === stale.peerId)?.publicAddress, '198.51.100.20:14532')
+})
+
+test('pinned proxy request does not retry when the per-peer lookup finds the same address', async () => {
+  const peer = makeMovablePinnedPeer('203.0.113.10:14532')
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+  ;(proxy as any)._mergeStateFile = async () => {}
+  ;(proxy as any)._cachedPeers = [peer]
+  let lookups = 0
+  ;(proxy as any)._node.findPeer = async () => {
+    lookups += 1
+    return { ...peer }
+  }
+  let attempts = 0
+  ;(proxy as any)._node.sendRequest = async () => {
+    attempts += 1
+    throw new Error(`Connection to ${peer.peerId} failed: connect ECONNREFUSED 203.0.113.10:14532`)
+  }
+
+  const first = await invokeProxy(proxy, makeProxyRequest({
+    headers: { 'x-antseed-pin-peer': peer.peerId },
+    body: { model: 'gpt-5', messages: [] },
+  }))
+  // A second failure inside the throttle window does not walk the DHT again.
+  await invokeProxy(proxy, makeProxyRequest({
+    headers: { 'x-antseed-pin-peer': peer.peerId },
+    body: { model: 'gpt-5', messages: [] },
+  }))
+
+  assert.equal(first.statusCode, 502)
+  assert.equal(attempts, 2)
+  assert.equal(lookups, 1)
+})
+
 test('pinned proxy request surfaces a 403 without failing over to another peer', async () => {
   // An explicit pin is a hard constraint: even with another peer serving the
   // same model, the pinned peer's error is surfaced rather than re-routed.

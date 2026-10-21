@@ -551,6 +551,12 @@ export function isModelNotFoundResponse(response: SerializedHttpResponse): boole
  */
 const CARRY_FORWARD_TTL_MS = 2 * 60 * 60_000
 /**
+ * Minimum spacing between per-peer DHT lookups for one pinned peer. The lookup
+ * is cheap (one infohash), but a client hammering a dead pin should not turn
+ * every failed request into a DHT walk.
+ */
+const PINNED_PEER_LOOKUP_THROTTLE_MS = 30_000
+/**
  * Seller-announced catalog fields. Explicit tracking ensures stale catalog
  * (for example after health checks hide all models) is cleared on the next
  * peer refresh.
@@ -1212,6 +1218,8 @@ export class BuyerProxy {
       nodes, so repeated empty sweeps are the reachability signal — not node count. */
   private _consecutiveEmptyDiscoveries = 0
   private _lastModelNotFoundRefreshAtMs = 0
+  private readonly _pinnedPeerLookups = new Map<string, Promise<PeerInfo | null>>()
+  private readonly _pinnedPeerLookupAtMs = new Map<string, number>()
   private _bgRefreshHandle: ReturnType<typeof setInterval> | null = null
   /**
    * Per-peer failure streaks and cooldowns. Advisory only: a cooling-down peer
@@ -2829,6 +2837,53 @@ export class BuyerProxy {
     })
 
     return this._peerRefreshPromise
+  }
+
+  /**
+   * Look one peer up on its own per-peer DHT topic and fold the result into
+   * the cache. Network-wide refreshes are budgeted and walk only a few subnet
+   * shards each, so a pinned seller that changed its public address can stay
+   * missing (or cached at its old address) for a long time; this lookup asks
+   * for exactly that peer and the node keeps its newest announcement. Throttled
+   * per peer; concurrent callers share one lookup.
+   */
+  private async _lookupPinnedPeer(peerId: string): Promise<PeerInfo | null> {
+    const node = this._node as AntseedNode & { findPeer?: AntseedNode['findPeer'] }
+    if (typeof node.findPeer !== 'function') return null
+    const key = peerId.toLowerCase()
+    const inFlight = this._pinnedPeerLookups.get(key)
+    if (inFlight) return inFlight
+    const now = this._now()
+    const lastAt = this._pinnedPeerLookupAtMs.get(key)
+    if (lastAt !== undefined && now - lastAt < PINNED_PEER_LOOKUP_THROTTLE_MS) return null
+    this._pinnedPeerLookupAtMs.set(key, now)
+
+    const lookup = (async () => {
+      log(`Looking up pinned peer ${key.slice(0, 12)}... on its per-peer DHT topic.`)
+      let found: PeerInfo | null
+      try {
+        found = await node.findPeer(key)
+      } catch (err) {
+        log(`Per-peer lookup for ${key.slice(0, 12)}... failed: ${err instanceof Error ? err.message : String(err)}`)
+        return null
+      }
+      if (!found) {
+        log(`Per-peer lookup found no announcement for ${key.slice(0, 12)}...`)
+        return null
+      }
+      const previous = this._cachedPeers.find((p) => p.peerId.toLowerCase() === key)
+      if (previous?.publicAddress && found.publicAddress && previous.publicAddress !== found.publicAddress) {
+        log(`Pinned peer ${key.slice(0, 12)}... moved from ${previous.publicAddress} to ${found.publicAddress}.`)
+      }
+      // Every other cached peer is passed through unchanged so this
+      // single-peer update cannot age anyone out of the cache.
+      this._replacePeers([found, ...this._cachedPeers.filter((p) => p.peerId.toLowerCase() !== key)])
+      return this._cachedPeers.find((p) => p.peerId.toLowerCase() === key) ?? found
+    })().finally(() => {
+      this._pinnedPeerLookups.delete(key)
+    })
+    this._pinnedPeerLookups.set(key, lookup)
+    return lookup
   }
 
   private async _getPeers(options?: { forceRefresh?: boolean }): Promise<PeerInfo[]> {
@@ -4575,6 +4630,19 @@ export class BuyerProxy {
       await refreshPeerSelection('pinned-peer routing preflight')
       pinnedDiscovered = isPinnedDiscovered()
     }
+    if (!pinnedDiscovered) {
+      // The network-wide refresh is budgeted and may not have walked the
+      // pinned peer's shard; ask for that peer directly.
+      const found = await this._lookupPinnedPeer(pinnedPeerId)
+      if (found) {
+        discoveredPeers = [found, ...discoveredPeers.filter((peer) => peer.peerId.toLowerCase() !== pinnedPeerId)]
+        ;({
+          candidatePeers: routingPeers,
+          routePlanByPeerId: routingPlans,
+        } = selectPeers(discoveredPeers))
+        pinnedDiscovered = true
+      }
+    }
 
     if (!pinnedDiscovered) {
       const logSource = serializedReq.headers['x-antseed-pin-peer']
@@ -4712,10 +4780,10 @@ export class BuyerProxy {
     }
 
     log(`Using pinned peer ${selectedPeer.peerId.slice(0, 12)}...`)
-    const result = await this._dispatchToPeer(
+    const dispatchPinned = (peer: PeerInfo): Promise<PeerDispatchResult> => this._dispatchToPeer(
       res,
       pinnedRequest,
-      selectedPeer,
+      peer,
       routingPlans,
       requestProtocol,
       requestedService,
@@ -4726,6 +4794,20 @@ export class BuyerProxy {
       false,
       routingConversationKey,
     )
+    let result = await dispatchPinned(selectedPeer)
+    // A transport failure against the cached address may mean the seller moved
+    // hosts. Look the peer up again and, only if it now announces a different
+    // address, retry there once: the request never reached the old one.
+    if (
+      !result.done && result.errorMessage && !result.timedOut && !isBuyerFault(result)
+      && !res.headersSent && !signal.aborted && selectedPeer.publicAddress
+    ) {
+      const refreshed = await this._lookupPinnedPeer(pinnedPeerId)
+      if (refreshed?.publicAddress && refreshed.publicAddress !== selectedPeer.publicAddress) {
+        log(`Retrying pinned peer ${pinnedPeerId.slice(0, 12)}... at its newly announced address ${refreshed.publicAddress}.`)
+        result = await dispatchPinned(refreshed)
+      }
+    }
     if (result.done && trackedConversationId && pinnedServiceId) {
       this._conversations.recordRoutedModel(
         trackedConversationId,
