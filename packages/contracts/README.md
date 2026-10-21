@@ -701,6 +701,13 @@ States: `ready` (M001 active, at least one install missing), `active`,
 
 ## Configuration
 
+### Verification
+
+`AntseedVerification` records model-verification audits from approved auditors and pays
+them from the verification emission bucket by audit credits, capped per model, per
+auditor and by each auditor's share of the epoch budget. Rewards stay off until the owner
+sets `rewardsStartEpoch`.
+
 Administrative parameters use their contract's dedicated setters where available.
 The emissions gate's schedule constants are immutable; do not treat legacy
 owner-configurable emissions parameters as configuration for the standard gate.
@@ -790,3 +797,30 @@ Used for testing and development. Uses MockUSDC with permissionless minting. See
 #### Base Local (Development)
 
 Local anvil chain (chain ID 31337) for development. Deploy with `forge script script/Deploy.s.sol`.
+
+### Standalone verification deployment (no policy or rewards)
+
+When the AntSeed deployer key is unavailable, a separate wallet can deploy the
+verification registry without installing `AntseedVerificationPointsPolicy` or
+touching the existing points-policy/rewards wiring. Use
+`script/DeployStandaloneVerification.s.sol` with an existing compatible
+registry and seller-pools address:
+
+```bash
+cd packages/contracts
+export EXPECTED_CHAIN_ID=84532 # or the intended chain
+export ANTSEED_REGISTRY=0x...
+export SELLER_POOLS=0x...
+export STANDALONE_OWNER=0x... # address of the new signer
+forge script script/DeployStandaloneVerification.s.sol \
+  --rpc-url "$RPC_URL" --sender "$STANDALONE_OWNER" --via-ir
+```
+
+Review the dry-run output, then repeat with a new keystore or hardware-wallet
+signer and `--broadcast`. The script deploys only `AntseedVerification`,
+optionally approves the supplied `VERIFICATION_AUDITORS`, leaves
+`rewardsStartEpoch` at `type(uint256).max`, and makes no policy-registry,
+usage-accounting, emissions-gate, or existing-registry writes. The new owner
+still needs gas, and the verification contract remains read-coupled to the
+registry's emissions source and seller-pools contract. This is not a fresh
+replacement for the complete AntSeed protocol stack.

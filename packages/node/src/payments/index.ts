@@ -36,6 +36,34 @@ export type { IdentityClientConfig } from './evm/identity-client.js';
 export { StakingClient } from './evm/staking-client.js';
 export type { StakingClientConfig } from './evm/staking-client.js';
 
+// Verifier network client
+export {
+  VerifierClient,
+  serviceHash,
+  modelHash,
+  sortServiceResults,
+  verifierVerdict,
+  VERIFIER_VERDICT,
+  MAX_RESULTS_PER_MODEL_AUDIT,
+} from './evm/verifier-client.js';
+export {
+  DEFAULT_LOG_QUERY_CHUNK_BLOCKS,
+  queryInBlockChunks,
+  resolveScanFromBlock,
+} from './evm/block-range.js';
+export type { BlockRangeOptions } from './evm/block-range.js';
+export type {
+  VerifierClientConfig,
+  ServiceResultInput,
+  SubmitModelAuditInput,
+  ServiceAuditedEvent,
+  ModelAuditedEvent,
+  AuditorCredits,
+  VerifierServiceStatus,
+  VerifierVerdict,
+  VerifierVerdictName,
+} from './evm/verifier-client.js';
+
 export {
   signSpendingAuth,
   signReserveAuth,

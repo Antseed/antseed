@@ -22,6 +22,7 @@ import type { ResponseAuthSink } from './interfaces.js';
 import type { ResponseAuthSampler } from './interfaces.js';
 import type { BuyerFreeUsageManager } from './buyer-free-usage-manager.js';
 import { verifyResponseAuth, createStreamingResponseHash } from './response-auth.js';
+import { encodeHttpRequest, encodeHttpResponse } from '@antseed/protocol/request-codec';
 import { isFreeUnitBillingModel } from '@antseed/protocol/billing';
 import { findRoutingService, routingProtocolForPath, routingWireProtocol } from '@antseed/protocol/routing';
 import { isUnitBilledProtocol } from './unit-billing.js';
@@ -77,6 +78,8 @@ export interface RequestExecutionOptions {
   controlPlane?: boolean;
   /** Present peer failures as coming from an explicitly pinned route. */
   pinned?: boolean;
+  /** Persist exact signed request/response preimages for portable verifier evidence. */
+  captureResponseAuthPreimages?: boolean;
   /** Refuse a video create priced above this many USDC base units (the caller's remaining budget). */
   maxVideoCostUsdc?: bigint;
 }
@@ -475,7 +478,14 @@ export class BuyerRequestHandler {
         negotiator.estimateCostFromResponse(peer, retriedResponse, requestedService, req.requestId);
       }
       const retriedDelivered = this._recordVideoDelivery(peer, retriedResponse, trackedVideoRetrieve, videoDuration, videoRoute, videoJobId, req.requestId);
-      this._recordResponseAuth(peer, req, retriedResponse, requestedService, verificationMux);
+      this._recordResponseAuth(
+        peer,
+        req,
+        retriedResponse,
+        requestedService,
+        verificationMux,
+        options?.captureResponseAuthPreimages === true,
+      );
       return withVideoDelivered(adaptPeerResponse(retriedResponse), retriedDelivered);
     }
 
@@ -483,7 +493,14 @@ export class BuyerRequestHandler {
       negotiator.estimateCostFromResponse(peer, response, requestedService, req.requestId);
     }
     const videoDelivered = this._recordVideoDelivery(peer, response, trackedVideoRetrieve, videoDuration, videoRoute, videoJobId, req.requestId);
-    this._recordResponseAuth(peer, req, response, requestedService, verificationMux);
+    this._recordResponseAuth(
+      peer,
+      req,
+      response,
+      requestedService,
+      verificationMux,
+      options?.captureResponseAuthPreimages === true,
+    );
     return withVideoDelivered(adaptPeerResponse(response), videoDelivered);
   }
 
@@ -542,6 +559,7 @@ export class BuyerRequestHandler {
     response: SerializedHttpResponse,
     requestedService: string | undefined,
     verificationMux: VerificationMux,
+    capturePreimages: boolean,
   ): void {
     if (!shouldExpectResponseAuth(peer, response, requestedService)) {
       return;
@@ -582,6 +600,10 @@ export class BuyerRequestHandler {
           receivedAt: Date.now(),
           verified: verification.valid,
           verificationError: verification.reason ?? null,
+          requestPreimage: capturePreimages ? encodeHttpRequest(request) : null,
+          responsePreimage: capturePreimages
+            ? encodeHttpResponse(stripStreamingHeader(response))
+            : null,
         }, { sellerPeerId: peer.peerId, requestedService: advertisedService });
 
         void this._deps.verificationSampler?.maybeStoreResponseAuthSample({
