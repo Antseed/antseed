@@ -4306,6 +4306,13 @@ export class BuyerProxy {
     }
 
     if (!explicitPeerId && requestedService) {
+      // An image edit needs a seller that takes an input image, so automatic
+      // routing requires `image` as if the caller had sent it in
+      // REQUIRED_PARAMETERS_HEADER. A pinned seller stays the caller's choice.
+      const routeRequiredParameters = serializedReq.path.split('?')[0]?.toLowerCase() === '/v1/images/edits'
+        && !requiredParameters.includes('image')
+        ? [...requiredParameters, 'image']
+        : requiredParameters
       const selectModelPeers = (candidateSources: PeerInfo[]): CandidatePeerRouteSelection =>
         selectCandidatePeersForRouting(candidateSources, requestProtocol, requestedService, explicitProvider, 'strict')
       let discoveredPeers = peers
@@ -4324,7 +4331,7 @@ export class BuyerProxy {
         requestProtocol,
         requestedService,
         explicitProvider,
-        requiredParameters,
+        requiredParameters: routeRequiredParameters,
         requestPolicy,
         preferredPeerId: preferredConversationPeerId,
         // Conversations the client identifies (session id, prompt-cache key)
@@ -4333,7 +4340,7 @@ export class BuyerProxy {
       })
       const requireVerified = effectivePolicy?.requireVerified === true
       if (candidates.length === 0) {
-        const capabilityRequired = requiredParameters.length > 0
+        const capabilityRequired = routeRequiredParameters.length > 0
         // The model exists on the network but only behind an API this
         // request does not speak (e.g. a decision model asked via chat).
         // Say so instead of claiming nobody serves it.
@@ -4358,7 +4365,7 @@ export class BuyerProxy {
             ? {
                 type: 'required_capability_unavailable',
                 code: 'required_capability_unavailable',
-                message: `No policy-allowed seller for model "${requestedService}" advertises required parameter(s): ${requiredParameters.join(', ')}.`,
+                message: `No policy-allowed seller for model "${requestedService}" advertises required parameter(s): ${routeRequiredParameters.join(', ')}.`,
                 param: REQUIRED_PARAMETERS_HEADER,
               }
             : {
