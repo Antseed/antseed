@@ -9,9 +9,11 @@ import { parse } from 'yaml';
 
 import {
   CLAUDE_DESKTOP_PROFILE_ID,
-  CLAUDE_GATEWAY_DEFAULT_PORT,
   applyConfigPatch,
+  codexCatalogPathForClient,
   claudeDesktopPatchTargets,
+  isConfigPatchConnected,
+  isConfigPatchInstalled,
   parseJsoncObject,
   readConfigPatch,
   removeConfigPatch,
@@ -21,6 +23,7 @@ import {
   type ConfigPatchDef,
   type DroidConfigPatchDef,
   type OpencodeConfigPatchDef,
+  type PiConfigPatchDef,
 } from './config-patch.js';
 import { DEFAULT_APP_PROFILES } from './defaults.js';
 
@@ -122,6 +125,7 @@ test('applyConfigPatch patches JSONC configs and writes a backup before normaliz
         name: 'Antseed Auto',
         attachment: true,
         modalities: { input: ['text', 'image'], output: ['text'] },
+        reasoning: true,
         limit: { context: ANTSEED_MODEL_CONTEXT_WINDOW, output: ANTSEED_MODEL_MAX_OUTPUT_TOKENS },
       },
     });
@@ -249,6 +253,7 @@ test('applyConfigPatch (droid) adds and selects the routed model while preservin
       baseUrl: 'http://127.0.0.1:9456/v1',
       provider: 'generic-chat-completion-api',
       maxOutputTokens: ANTSEED_MODEL_MAX_OUTPUT_TOKENS,
+      reasoningEffort: 'high',
       extraHeaders: {
         originator: 'droid',
       },
@@ -282,6 +287,46 @@ test('applyConfigPatch (droid) refuses to replace an existing antseed custom mod
     );
     assert.equal(await readFile(configPath, 'utf8'), original);
     assert.equal(existsSync(`${configPath}.antseed.state.json`), false);
+  });
+});
+
+test('applyConfigPatch (droid) takes over its own entries when the restore state is gone', async () => {
+  await withTempConfig(async (dir) => {
+    const configPath = path.join(dir, 'settings.json');
+    const user = { model: 'my-model', displayName: 'Mine', baseUrl: 'https://example.test/v1', provider: 'generic-chat-completion-api' };
+    await writeFile(configPath, `${JSON.stringify({
+      model: 'gpt-5-codex',
+      customModels: [
+        user,
+        { model: 'antseed', id: 'custom:Antseed-Auto-0', displayName: 'Antseed', baseUrl: 'http://localhost:8377/v1' },
+        { model: 'claude-opus-5', id: 'custom:Antseed-1', displayName: 'Claude Opus 5', baseUrl: 'http://localhost:8377/v1' },
+      ],
+      sessionDefaultSettings: { model: 'custom:Antseed-Auto-0' },
+    }, null, 2)}\n`, 'utf8');
+    const patch = makeDroidPatch(configPath);
+
+    applyConfigPatch(patch, PEER_ID, 8377, { models: [{ label: 'Claude Fable 5.1', model: 'claude-fable-5.1' }] });
+    const patched = JSON.parse(await readFile(configPath, 'utf8'));
+    assert.deepEqual(patched.customModels.map((m: { model: string }) => m.model), ['my-model', 'antseed', 'claude-fable-5.1']);
+
+    assert.equal(removeConfigPatch(patch), true);
+    const restored = JSON.parse(await readFile(configPath, 'utf8'));
+    assert.deepEqual(restored.customModels, [user]);
+    assert.equal(restored.model, 'gpt-5-codex');
+    assert.equal(restored.sessionDefaultSettings?.model, undefined);
+  });
+});
+
+test('removeConfigPatch (droid) keeps an empty customModels list the user had', async () => {
+  await withTempConfig(async (dir) => {
+    const configPath = path.join(dir, 'settings.json');
+    const original = '{\n  "model": "claude-opus",\n  "customModels": []\n}\n';
+    await writeFile(configPath, original, 'utf8');
+    const patch = makeDroidPatch(configPath);
+
+    applyConfigPatch(patch, PEER_ID, 8377);
+    assert.equal(removeConfigPatch(patch), true);
+    assert.equal(await readFile(configPath, 'utf8'), original);
   });
 });
 
@@ -462,6 +507,159 @@ test('removeConfigPatch (codex) keeps a model_provider selection it does not own
   });
 });
 
+test('Codex catalog starts with Auto and refreshes curated slugs on reconnect', async () => {
+  await withTempConfig(async (dir) => {
+    const configPath = path.join(dir, 'config.toml');
+    const pinned = `antseed/openai/${PEER_ID}@model/with-"quotes"`;
+    const patch = makeCodexPatch(configPath);
+    applyConfigPatch(patch, PEER_ID, 8377, { models: [{ label: 'Network "Model"', model: pinned }, { label: 'Other', model: 'other/model' }] });
+      const catalogPath = `${configPath}.antseed.models.json`;
+      const catalog = JSON.parse(await readFile(catalogPath, 'utf8'));
+      assert.equal(catalog.models[0].description, "Use this chat's model, or the AI VPN default for a new chat.");
+      assert.deepEqual(catalog.models.map((model: { slug: string; display_name: string }) => [model.slug, model.display_name]), [
+        ['antseed', 'Antseed Auto'], [pinned, 'Network "Model"'], ['other/model', 'Other'],
+      ]);
+      assert.ok(catalog.models.every((model: { context_window: number; visibility: string }) => (
+        model.context_window === ANTSEED_MODEL_CONTEXT_WINDOW && model.visibility === 'list'
+      )));
+      assert.ok((await readFile(configPath, 'utf8')).includes(`model_catalog_json = ${JSON.stringify(catalogPath)}`));
+      applyConfigPatch(patch, PEER_ID, 8378, { models: [{ label: 'New model', model: 'new/model' }] });
+      assert.deepEqual(JSON.parse(await readFile(catalogPath, 'utf8')).models.map((model: { slug: string }) => model.slug), ['antseed', 'new/model']);
+      removeConfigPatch(patch);
+      assert.equal(existsSync(catalogPath), false);
+      assert.equal(existsSync(`${configPath}.antseed.state.json`), false);
+  });
+});
+
+test('Codex catalog offers reasoning levels only where the network reports support', async () => {
+  await withTempConfig(async (dir) => {
+    const configPath = path.join(dir, 'config.toml');
+    applyConfigPatch(makeCodexPatch(configPath), PEER_ID, 8377, { models: [
+      { label: 'Thinker', model: 'thinker', reasoning: true },
+      { label: 'Plain', model: 'plain' },
+    ] });
+    const catalog = JSON.parse(await readFile(`${configPath}.antseed.models.json`, 'utf8')) as {
+      models: { slug: string; default_reasoning_level?: string; supported_reasoning_levels: { effort: string }[] }[]
+    };
+    assert.deepEqual(catalog.models.map((model) => [
+      model.slug,
+      model.default_reasoning_level ?? null,
+      model.supported_reasoning_levels.map((level) => level.effort),
+    ]), [
+      ['antseed', 'medium', ['low', 'medium', 'high', 'xhigh']],
+      ['thinker', 'medium', ['low', 'medium', 'high', 'xhigh']],
+      ['plain', null, []],
+    ]);
+  });
+});
+
+test('Codex restores exact user assignments and provider table after picker changes and reconnects', async () => {
+  await withTempConfig(async (dir) => {
+    const configPath = path.join(dir, 'config.toml');
+    const original = [
+      "model = 'custom/model@version' # keep this",
+      "model_provider = 'my-provider'",
+      'model_context_window = 42 # original context',
+      'model_catalog_json = "C:\\\\custom\\\\models.json" # custom catalog',
+      '[model_providers.antseed]',
+      'name = "My own provider"',
+      '[mcp_servers.docs]',
+      'command = "docs-server"',
+      '',
+    ].join('\n');
+    await writeFile(configPath, original, 'utf8');
+    const patch = makeCodexPatch(configPath);
+    applyConfigPatch(patch, PEER_ID, 8377);
+    applyConfigPatch(patch, PEER_ID, 8378);
+    const connected = (await readFile(configPath, 'utf8')).replace('model = "antseed"', 'model = "network/chosen-model"');
+    await writeFile(configPath, connected, 'utf8');
+    assert.equal(removeConfigPatch(patch), true);
+    const restored = await readFile(configPath, 'utf8');
+    for (const line of original.trimEnd().split('\n')) assert.ok(restored.split('\n').includes(line), line);
+    assert.ok(!restored.includes('network/chosen-model'));
+    assert.equal(removeConfigPatch(patch), false);
+  });
+});
+
+test('Codex disconnect preserves unrelated model and catalog edits made while connected', async () => {
+  await withTempConfig(async (dir) => {
+    const configPath = path.join(dir, 'config.toml');
+    const patch = makeCodexPatch(configPath);
+    applyConfigPatch(patch, PEER_ID, 8377);
+    const raw = (await readFile(configPath, 'utf8'))
+      .replace('model_provider = "antseed"', 'model_provider = "other"')
+      .replace('model = "antseed"', 'model = "other-model"')
+      .replace(/^model_catalog_json = .*$/m, 'model_catalog_json = "other.json"');
+    await writeFile(configPath, raw, 'utf8');
+    removeConfigPatch(patch);
+    const restored = await readFile(configPath, 'utf8');
+    assert.ok(restored.includes('model_provider = "other"'));
+    assert.ok(restored.includes('model = "other-model"'));
+    assert.ok(restored.includes('model_catalog_json = "other.json"'));
+    assert.equal(existsSync(`${configPath}.antseed.models.json`), false);
+  });
+});
+
+test('Codex cleans up the catalog even if the config was deleted while connected', async () => {
+  await withTempConfig(async (dir) => {
+    const configPath = path.join(dir, 'config.toml');
+    const patch = makeCodexPatch(configPath);
+    applyConfigPatch(patch, PEER_ID, 8377);
+    await rm(configPath);
+    assert.equal(removeConfigPatch(patch), true);
+    assert.equal(existsSync(`${configPath}.antseed.models.json`), false);
+    assert.equal(existsSync(`${configPath}.antseed.state.json`), false);
+  });
+});
+
+test('Codex refuses to overwrite an existing unmanaged catalog', async () => {
+  await withTempConfig(async (dir) => {
+    const configPath = path.join(dir, 'config.toml');
+    await writeFile(`${configPath}.antseed.models.json`, 'user catalog', 'utf8');
+    assert.throws(() => applyConfigPatch(makeCodexPatch(configPath), PEER_ID, 8377), /refusing to overwrite/);
+    assert.equal(await readFile(`${configPath}.antseed.models.json`, 'utf8'), 'user catalog');
+    assert.equal(existsSync(configPath), false);
+  });
+});
+
+test('Codex upgrades an alias-only connection using the original config backup', async () => {
+  await withTempConfig(async (dir) => {
+    const configPath = path.join(dir, 'config.toml');
+    const original = 'model = "original"\nmodel_provider = "custom"\nmodel_catalog_json = "custom.json"\n';
+    await writeFile(`${configPath}.antseed.bak`, original, 'utf8');
+    await writeFile(configPath, 'model = "antseed"\nmodel_provider = "antseed"\n[model_providers.antseed]\nwire_api = "responses"\n', 'utf8');
+    const patch = makeCodexPatch(configPath);
+    applyConfigPatch(patch, PEER_ID, 8377);
+    removeConfigPatch(patch);
+    assert.equal(await readFile(configPath, 'utf8'), original);
+  });
+});
+
+test('Codex disconnect restores recorded WSL configs and removes their catalogs', async () => {
+  await withTempConfig(async (dir) => {
+    const nativePath = path.join(dir, 'native', 'config.toml');
+    const wslPath = path.join(dir, 'wsl', 'config.toml');
+    const targetsPath = path.join(dir, 'targets.json');
+    await mkdir(path.dirname(wslPath));
+    const original = 'model = "wsl-original"\nmodel_catalog_json = "/home/alice/custom.json"\n';
+    await writeFile(wslPath, original, 'utf8');
+    applyConfigPatch({ ...makeCodexPatch(wslPath), baseURL: 'http://172.29.32.1:{buyerPort}/v1' } as CodexConfigPatchDef, PEER_ID, 8377);
+    await writeFile(targetsPath, JSON.stringify([{ tool: 'codex', distro: 'Ubuntu', configPath: wslPath, host: '172.29.32.1', needsRelay: true }]));
+    assert.equal(removeConfigPatch({ ...makeCodexPatch(nativePath), installProbe: 'codex' } as CodexConfigPatchDef, targetsPath), true);
+    assert.equal(await readFile(wslPath, 'utf8'), original);
+    assert.equal(existsSync(`${wslPath}.antseed.models.json`), false);
+    assert.equal(existsSync(`${wslPath}.antseed.state.json`), false);
+    assert.equal(existsSync(targetsPath), false);
+  });
+});
+
+test('Codex catalog paths use POSIX paths inside WSL and retain native paths', () => {
+  for (const root of ['\\\\wsl.localhost', '\\\\wsl$']) {
+    assert.equal(codexCatalogPathForClient(`${root}\\Ubuntu\\home\\alice\\.codex\\config.toml.antseed.models.json`), '/home/alice/.codex/config.toml.antseed.models.json');
+  }
+  assert.equal(codexCatalogPathForClient('C:\\Users\\alice\\.codex\\models.json'), 'C:\\Users\\alice\\.codex\\models.json');
+});
+
 function makePiPatch(modelsPath: string, settingsPath: string): ConfigPatchDef {
   return {
     format: 'pi',
@@ -484,7 +682,7 @@ test('applyConfigPatch (pi) writes the provider into models.json and the default
     applyConfigPatch(makePiPatch(modelsPath, settingsPath), PEER_ID, 9456);
 
     const models = JSON.parse(await readFile(modelsPath, 'utf8')) as {
-      providers: Record<string, { baseUrl?: string; api?: string; apiKey?: string; headers?: Record<string, string>; models?: Array<{ id: string; name: string; contextWindow: number; maxTokens: number }> }>;
+      providers: Record<string, { baseUrl?: string; api?: string; apiKey?: string; headers?: Record<string, string>; models?: Array<{ id: string; name: string; reasoning?: boolean; contextWindow: number; maxTokens: number }> }>;
     };
     assert.ok(models.providers.ollama);
     assert.equal(models.providers.antseed?.baseUrl, 'http://127.0.0.1:9456/v1');
@@ -492,7 +690,7 @@ test('applyConfigPatch (pi) writes the provider into models.json and the default
     assert.equal(models.providers.antseed?.apiKey, 'antseed');
     assert.deepEqual(models.providers.antseed?.headers, { originator: 'pi' });
     assert.deepEqual(models.providers.antseed?.models, [
-      { id: 'antseed', name: 'Antseed Auto', contextWindow: ANTSEED_MODEL_CONTEXT_WINDOW, maxTokens: ANTSEED_MODEL_MAX_OUTPUT_TOKENS },
+      { id: 'antseed', name: 'Antseed Auto', reasoning: true, contextWindow: ANTSEED_MODEL_CONTEXT_WINDOW, maxTokens: ANTSEED_MODEL_MAX_OUTPUT_TOKENS },
     ]);
 
     const settings = JSON.parse(await readFile(settingsPath, 'utf8')) as Record<string, unknown>;
@@ -557,6 +755,179 @@ test('removeConfigPatch (pi) keeps a default selection it does not own', async (
     const settings = JSON.parse(await readFile(settingsPath, 'utf8')) as Record<string, unknown>;
     assert.equal(settings['defaultProvider'], 'anthropic');
     assert.equal(settings['defaultModel'], 'claude');
+  });
+});
+
+test('curated catalogs reach Droid and Pi-format pickers and refresh on reconnect', async () => {
+  await withTempConfig(async (dir) => {
+    const curated = [
+      { label: 'Network A', model: `${PEER_ID}@network/a` },
+      { label: 'Duplicate Auto', model: 'antseed' },
+      { label: 'Network B', model: 'network/b' },
+    ];
+    const droidPath = path.join(dir, 'droid.json');
+    await writeFile(droidPath, JSON.stringify({ customModels: [{ model: 'local', id: 'custom:Local-0' }] }), 'utf8');
+    const droid = makeDroidPatch(droidPath);
+    applyConfigPatch(droid, PEER_ID, 8377, { models: curated });
+    let droidConfig = JSON.parse(await readFile(droidPath, 'utf8')) as { customModels: Array<Record<string, string>>; sessionDefaultSettings: Record<string, string> };
+    assert.deepEqual(droidConfig.customModels.map((model) => [model.id, model.model, model.displayName]), [
+      ['custom:Local-0', 'local', undefined],
+      ['custom:Antseed-Auto-0', 'antseed', 'Antseed Auto'],
+      ['custom:Antseed-1', `${PEER_ID}@network/a`, 'Network A'],
+      ['custom:Antseed-2', 'network/b', 'Network B'],
+    ]);
+    applyConfigPatch(droid, PEER_ID, 8377, { models: [{ label: 'Network C', model: 'network/c' }] });
+    droidConfig = JSON.parse(await readFile(droidPath, 'utf8'));
+    assert.deepEqual(droidConfig.customModels.map((model) => model.model), ['local', 'antseed', 'network/c']);
+    droidConfig.sessionDefaultSettings.model = 'custom:Antseed-1';
+    await writeFile(droidPath, JSON.stringify(droidConfig), 'utf8');
+    assert.equal(removeConfigPatch(droid), true);
+    droidConfig = JSON.parse(await readFile(droidPath, 'utf8'));
+    assert.deepEqual(droidConfig.customModels.map((model) => model.model), ['local']);
+    assert.equal(droidConfig.sessionDefaultSettings, undefined);
+
+    for (const name of ['pi', 'prime-agent', 'gooeypi']) {
+      const modelsPath = path.join(dir, `${name}-models.json`);
+      const settingsPath = path.join(dir, `${name}-settings.json`);
+      const patch = name === 'prime-agent'
+        ? { ...(makePrimeAgentPatch(modelsPath, settingsPath) as PiConfigPatchDef), installProbe: undefined }
+        : { ...(makePiPatch(modelsPath, settingsPath) as PiConfigPatchDef), originator: name };
+      applyConfigPatch(patch, PEER_ID, 8377, { models: curated });
+      const models = JSON.parse(await readFile(modelsPath, 'utf8')) as { providers: Record<string, { models: Array<{ id: string; name: string }> }> };
+      assert.deepEqual(models.providers.antseed?.models.map((model) => [model.id, model.name]), [
+        ['antseed', 'Antseed Auto'],
+        [`${PEER_ID}@network/a`, 'Network A'],
+        ['network/b', 'Network B'],
+      ], name);
+      const settings = JSON.parse(await readFile(settingsPath, 'utf8')) as Record<string, string>;
+      assert.equal(settings['defaultModel'], 'antseed');
+      assert.equal(removeConfigPatch(patch), true);
+    }
+  });
+});
+
+function makePrimeAgentPatch(modelsPath: string, settingsPath: string): ConfigPatchDef {
+  return {
+    format: 'pi',
+    configPath: modelsPath,
+    settingsPath,
+    providerKey: 'antseed',
+    baseURL: 'http://127.0.0.1:{buyerPort}/v1',
+    api: 'openai-responses',
+    originator: 'prime-agent',
+    installProbe: 'prime-agent',
+  };
+}
+
+test('readConfigPatch keeps the prime-agent install probe on pi-format patches', () => {
+  const parsed = readConfigPatch({
+    format: 'pi',
+    configPath: '~/.prime/agent/models.json',
+    settingsPath: '~/.prime/agent/settings.json',
+    providerKey: 'antseed',
+    baseURL: 'http://localhost:{buyerPort}/v1',
+    api: 'openai-responses',
+    originator: 'prime-agent',
+    installProbe: 'prime-agent',
+  }, 'prime-agent');
+  assert.equal(parsed?.format, 'pi');
+  assert.equal((parsed as { installProbe?: string }).installProbe, 'prime-agent');
+  const unknownProbe = readConfigPatch({
+    format: 'pi',
+    configPath: '~/.prime/agent/models.json',
+    settingsPath: '~/.prime/agent/settings.json',
+    providerKey: 'antseed',
+    baseURL: 'http://localhost:{buyerPort}/v1',
+    installProbe: 'not-a-tool',
+  }, 'custom');
+  assert.equal((unknownProbe as { installProbe?: string }).installProbe, undefined);
+});
+
+test('applyConfigPatch (prime-agent) connects alongside existing providers and disconnects cleanly', { skip: process.platform === 'win32' }, async () => {
+  // Skipped on Windows: the install probe would invoke real WSL discovery.
+  await withTempConfig(async (dir) => {
+    const modelsPath = path.join(dir, 'models.json');
+    const settingsPath = path.join(dir, 'settings.json');
+    await writeFile(modelsPath, JSON.stringify({
+      providers: { 'prime-inference': { baseUrl: 'https://api.pinference.ai/api/v1', apiKey: 'PRIME_API_KEY', api: 'openai-completions' } },
+    }), 'utf8');
+    await writeFile(settingsPath, JSON.stringify({ defaultProvider: 'prime-inference', defaultModel: 'qwen', theme: 'dark' }), 'utf8');
+    const patch = makePrimeAgentPatch(modelsPath, settingsPath);
+
+    applyConfigPatch(patch, PEER_ID, 9456);
+
+    const models = JSON.parse(await readFile(modelsPath, 'utf8')) as {
+      providers: Record<string, { baseUrl?: string; api?: string; apiKey?: string; headers?: Record<string, string> }>;
+    };
+    assert.ok(models.providers['prime-inference']);
+    assert.equal(models.providers.antseed?.baseUrl, 'http://127.0.0.1:9456/v1');
+    assert.equal(models.providers.antseed?.api, 'openai-responses');
+    assert.equal(models.providers.antseed?.apiKey, 'antseed');
+    assert.deepEqual(models.providers.antseed?.headers, { originator: 'prime-agent' });
+    let settings = JSON.parse(await readFile(settingsPath, 'utf8')) as Record<string, unknown>;
+    assert.equal(settings['defaultProvider'], 'antseed');
+    assert.equal(settings['defaultModel'], 'antseed');
+    assert.equal(settings['theme'], 'dark');
+    assert.equal(isConfigPatchConnected(patch), true);
+    assert.equal(isConfigPatchInstalled(patch), true);
+
+    assert.equal(removeConfigPatch(patch), true);
+
+    const after = JSON.parse(await readFile(modelsPath, 'utf8')) as { providers: Record<string, unknown> };
+    assert.equal(after.providers['antseed'], undefined);
+    assert.ok(after.providers['prime-inference']);
+    settings = JSON.parse(await readFile(settingsPath, 'utf8')) as Record<string, unknown>;
+    assert.equal(settings['defaultProvider'], undefined);
+    assert.equal(settings['defaultModel'], undefined);
+    assert.equal(settings['theme'], 'dark');
+    assert.equal(isConfigPatchConnected(patch), false);
+  });
+});
+
+test('applyConfigPatch (prime-agent) refuses to connect when Prime Agent is not installed', { skip: process.platform === 'win32' }, async () => {
+  await withTempConfig(async (dir) => {
+    const missingDir = path.join(dir, 'missing', 'agent');
+    const patch = makePrimeAgentPatch(path.join(missingDir, 'models.json'), path.join(missingDir, 'settings.json'));
+    const originalHome = process.env['HOME'];
+    const originalPath = process.env['PATH'];
+    process.env['HOME'] = dir;
+    process.env['PATH'] = '';
+    try {
+      assert.throws(() => applyConfigPatch(patch, PEER_ID, 9456), /prime-agent was not found/);
+      assert.equal(existsSync(missingDir), false);
+      assert.equal(isConfigPatchInstalled(patch), false);
+    } finally {
+      process.env['HOME'] = originalHome;
+      process.env['PATH'] = originalPath;
+    }
+  });
+});
+
+test('removeConfigPatch (prime-agent) unpatches recorded WSL targets under its own tool key', async () => {
+  await withTempConfig(async (dir) => {
+    const nativeModels = path.join(dir, 'native-models.json');
+    const nativeSettings = path.join(dir, 'native-settings.json');
+    const wslModels = path.join(dir, 'wsl-models.json');
+    const wslSettings = path.join(dir, 'wsl-settings.json');
+    const wslTargetsFile = path.join(dir, 'targets.json');
+    applyConfigPatch(
+      { ...(makePrimeAgentPatch(wslModels, wslSettings) as PiConfigPatchDef), baseURL: 'http://172.29.32.1:{buyerPort}/v1', installProbe: undefined },
+      PEER_ID,
+      9456,
+    );
+    const piTarget = { tool: 'pi', distro: 'Ubuntu', configPath: path.join(dir, 'pi-models.json'), settingsPath: path.join(dir, 'pi-settings.json'), host: '172.29.32.1', needsRelay: true };
+    await writeFile(wslTargetsFile, JSON.stringify([
+      { tool: 'prime-agent', distro: 'Ubuntu', configPath: wslModels, settingsPath: wslSettings, host: '172.29.32.1', needsRelay: true },
+      piTarget,
+    ]), 'utf8');
+
+    assert.equal(removeConfigPatch(makePrimeAgentPatch(nativeModels, nativeSettings), wslTargetsFile), true);
+
+    const models = JSON.parse(await readFile(wslModels, 'utf8')) as { providers: Record<string, unknown> };
+    assert.equal(models.providers['antseed'], undefined);
+    const settings = JSON.parse(await readFile(wslSettings, 'utf8')) as Record<string, unknown>;
+    assert.equal(settings['defaultProvider'], undefined);
+    assert.deepEqual(JSON.parse(await readFile(wslTargetsFile, 'utf8')), [piTarget]);
   });
 });
 
@@ -725,6 +1096,55 @@ test('Claude Code patch routes through the AI VPN alias and restores managed set
   });
 });
 
+test('Claude Code patch lists Antseed Auto and the curated models in /model, and restores the user picker', async () => {
+  await withTempConfig(async (dir) => {
+    const configPath = path.join(dir, 'settings.json');
+    const userPicker = { options: [{ model: 'claude-opus-5', label: 'Mine' }] };
+    await writeFile(configPath, JSON.stringify({ modelPicker: userPicker }), 'utf8');
+    const patch = makeClaudeCodePatch(configPath);
+    applyConfigPatch(patch, PEER_ID, 8377, { models: [
+      { label: 'GPT 5.6 Sol', model: 'gpt-5.6-sol' },
+      { label: 'Claude Opus 5.5', model: 'claude-opus-5-5' },
+    ] });
+
+    const config = JSON.parse(await readFile(configPath, 'utf8')) as Record<string, any>;
+    assert.deepEqual(config['modelPicker'], {
+      replaceBuiltInOptions: true,
+      options: [
+        { model: 'antseed', label: 'Antseed Auto', description: 'Uses the model selected in the AI VPN' },
+        { model: 'gpt-5.6-sol', label: 'GPT 5.6 Sol (Antseed)', description: '-' },
+        { model: 'claude-opus-5-5', label: 'Claude Opus 5.5 (Antseed)', description: '-' },
+      ],
+    });
+
+    // A reconnect rewrites the list but keeps the user's picker for disconnect.
+    applyConfigPatch(patch, PEER_ID, 8377, { models: [{ label: 'Kimi K3', model: 'kimi-k3' }] });
+    const reconnected = JSON.parse(await readFile(configPath, 'utf8')) as Record<string, any>;
+    assert.deepEqual(reconnected['modelPicker']['options'].map((row: { model: string }) => row.model), ['antseed', 'kimi-k3']);
+
+    assert.equal(removeConfigPatch(patch), true);
+    const restored = JSON.parse(await readFile(configPath, 'utf8')) as Record<string, unknown>;
+    assert.deepEqual(restored['modelPicker'], userPicker);
+  });
+});
+
+test('Claude Code patch adds the picker to a connection made before it managed one', async () => {
+  await withTempConfig(async (dir) => {
+    const configPath = path.join(dir, 'settings.json');
+    const patch = makeClaudeCodePatch(configPath);
+    applyConfigPatch(patch, PEER_ID, 8377);
+    // State as written by the older patch: no modelPicker entry.
+    const statePath = `${configPath}.antseed.state.json`;
+    const state = JSON.parse(await readFile(statePath, 'utf8')) as Record<string, unknown>;
+    delete state['modelPicker'];
+    await writeFile(statePath, JSON.stringify(state), 'utf8');
+
+    applyConfigPatch(patch, PEER_ID, 8377, { models: [{ label: 'Kimi K3', model: 'kimi-k3' }] });
+    assert.equal(removeConfigPatch(patch), true);
+    assert.equal(existsSync(configPath), false);
+  });
+});
+
 test('Claude Code patch removal keeps user edits to managed keys', async () => {
   await withTempConfig(async (dir) => {
     const configPath = path.join(dir, 'settings.json');
@@ -754,6 +1174,57 @@ test('Claude Code patch removes a settings file it created', async () => {
 });
 
 // --- T3 Code ---
+
+test('T3 Code disconnect restores a user-owned antseed provider it replaced', async () => {
+  await withTempConfig(async (_dir, configPath) => {
+    const userAntseed = {
+      driver: 'claudeAgent',
+      displayName: 'My Antseed',
+      environment: [{ name: 'ANTHROPIC_API_KEY', value: 'mine', sensitive: true }],
+      enabled: false,
+      config: { customModels: ['my-model'] },
+    };
+    await writeFile(configPath, JSON.stringify({ theme: 'dark', providerInstances: { antseed: userAntseed } }), 'utf8');
+    const patch = makeT3CodePatch(configPath);
+
+    applyConfigPatch(patch, PEER_ID, 9456, { models: [{ label: 'Claude Fable 5.1', model: 'claude-fable-5.1' }] });
+    applyConfigPatch(patch, PEER_ID, 9456, { models: [{ label: 'Claude Opus 5.5', model: 'claude-opus-5.5' }] });
+    assert.equal(removeConfigPatch(patch), true);
+
+    const config = JSON.parse(await readFile(configPath, 'utf8')) as Record<string, unknown>;
+    assert.deepEqual(config, { theme: 'dark', providerInstances: { antseed: userAntseed } });
+    assert.equal(existsSync(`${configPath}.antseed.state.json`), false);
+  });
+});
+
+test('T3 Code disconnect removes the antseed provider when the user had none', async () => {
+  await withTempConfig(async (_dir, configPath) => {
+    const original = { theme: 'dark', providerInstances: { codex: { driver: 'codex' } } };
+    await writeFile(configPath, JSON.stringify(original), 'utf8');
+    const patch = makeT3CodePatch(configPath);
+
+    applyConfigPatch(patch, PEER_ID, 9456, { models: [{ label: 'Claude Opus 5.5', model: 'claude-opus-5.5' }] });
+    applyConfigPatch(patch, PEER_ID, 9456, { models: [{ label: 'Claude Fable 5.1', model: 'claude-fable-5.1' }] });
+    assert.equal(removeConfigPatch(patch), true);
+
+    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), original);
+  });
+});
+
+test('T3 Code reconnect keeps the original user entry instead of saving our own', async () => {
+  await withTempConfig(async (_dir, configPath) => {
+    const userAntseed = { driver: 'claudeAgent', displayName: 'Mine', environment: [], config: { customModels: [] } };
+    await writeFile(configPath, JSON.stringify({ providerInstances: { antseed: userAntseed } }), 'utf8');
+    const patch = makeT3CodePatch(configPath);
+
+    applyConfigPatch(patch, PEER_ID, 9456);
+    applyConfigPatch(patch, PEER_ID, 9456);
+    applyConfigPatch(patch, PEER_ID, 9456);
+    assert.equal(removeConfigPatch(patch), true);
+
+    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), { providerInstances: { antseed: userAntseed } });
+  });
+});
 
 test('T3 Code patch adds Antseed Claude provider and preserves existing settings', async () => {
   await withTempConfig(async (_dir, configPath) => {
@@ -880,6 +1351,8 @@ test('applyConfigPatch (hermes) adds Antseed provider and selects it', async () 
     assert.equal(config['providers']['antseed']['api'], 'http://localhost:8377/v1');
     assert.equal(config['providers']['antseed']['transport'], 'chat_completions');
     assert.deepEqual(config['providers']['antseed']['extra_headers'], { originator: 'hermes' });
+    // Hermes would otherwise replace the curated list with the buyer's full /v1/models list.
+    assert.equal(config['providers']['antseed']['discover_models'], false);
     assert.equal(config['providers']['antseed']['default_model'], 'antseed');
     assert.equal(config['providers']['antseed']['models']['antseed']['context_length'], ANTSEED_MODEL_CONTEXT_WINDOW);
     assert.deepEqual(config['model'], {
@@ -1025,7 +1498,7 @@ function makeClaudeDesktopPatch(dir: string): ClaudeDesktopConfigPatchDef {
     format: 'claude-desktop',
     configPath: path.join(dir, 'Claude', 'claude_desktop_config.json'),
     thirdPartyDir: path.join(dir, 'Claude-3p'),
-    baseURL: 'http://127.0.0.1:{claudeGatewayPort}',
+    baseURL: 'http://127.0.0.1:{buyerPort}/claude-desktop',
   };
 }
 
@@ -1050,7 +1523,7 @@ test('applyConfigPatch writes the Claude third-party profile and flips both depl
     const profilePath = path.join(patch.thirdPartyDir, 'configLibrary', `${CLAUDE_DESKTOP_PROFILE_ID}.json`);
     const profile = parseJsoncObject(await readFile(profilePath, 'utf8'), profilePath);
     assert.equal(profile['inferenceProvider'], 'gateway');
-    assert.equal(profile['inferenceGatewayBaseUrl'], `http://127.0.0.1:${CLAUDE_GATEWAY_DEFAULT_PORT}`);
+    assert.equal(profile['inferenceGatewayBaseUrl'], 'http://127.0.0.1:9456/claude-desktop');
     assert.equal(profile['inferenceGatewayAuthScheme'], 'bearer');
     assert.equal(profile['deploymentDisplayName'], 'Antseed');
     assert.equal(profile['disableDeploymentModeChooser'], true);
@@ -1169,4 +1642,62 @@ test('claudeDesktopPatchTargets: a missing Packages directory just skips the MSI
   const targets = claudeDesktopPatchTargets(patch, 'win32', { APPDATA: '/r', LOCALAPPDATA: '/l' }, () => []);
   assert.equal(targets.length, 4);
   assert.equal(targets[0]!.configPath, path.join('/r', 'Claude', 'claude_desktop_config.json'));
+});
+
+test('every model-list format gets the curated catalog with reasoning where supported', async () => {
+  await withTempConfig(async (dir) => {
+    const curated = [
+      { label: 'Thinker', model: 'thinker', reasoning: true },
+      { label: 'Plain', model: 'plain' },
+    ];
+    const ids = ['antseed', 'thinker', 'plain'];
+
+    const opencodePath = path.join(dir, 'opencode.json');
+    applyConfigPatch(makePatch(opencodePath), PEER_ID, 8377, { models: curated });
+    const opencode = JSON.parse(await readFile(opencodePath, 'utf8')).provider.antseed.models as Record<string, { name: string; reasoning?: boolean }>;
+    assert.deepEqual(Object.keys(opencode), ids);
+    assert.deepEqual(ids.map((id) => opencode[id]?.reasoning === true), [true, true, false]);
+    assert.equal(opencode['thinker']?.name, 'Thinker');
+
+    const crushPath = path.join(dir, 'crush.json');
+    applyConfigPatch(makeCrushPatch(crushPath), PEER_ID, 8377, { models: curated });
+    const crush = JSON.parse(await readFile(crushPath, 'utf8')).providers.antseed.models as Array<Record<string, unknown>>;
+    assert.deepEqual(crush.map((model) => model['id']), ids);
+    assert.deepEqual(crush[1], {
+      id: 'thinker',
+      name: 'Thinker',
+      context_window: ANTSEED_MODEL_CONTEXT_WINDOW,
+      default_max_tokens: ANTSEED_MODEL_MAX_OUTPUT_TOKENS,
+      can_reason: true,
+      reasoning_levels: ['low', 'medium', 'high', 'xhigh'],
+      default_reasoning_effort: 'medium',
+    });
+    assert.equal(crush[2]?.['can_reason'], undefined);
+
+    const zedPath = path.join(dir, 'zed.json');
+    applyConfigPatch(makeZedPatch(zedPath), PEER_ID, 8377, { models: curated });
+    const zed = JSON.parse(await readFile(zedPath, 'utf8')).language_models.openai_compatible.Antseed.available_models as Array<Record<string, unknown>>;
+    assert.deepEqual(zed.map((model) => [model['name'], model['display_name']]), [['antseed', 'Antseed Auto'], ['thinker', 'Thinker'], ['plain', 'Plain']]);
+
+    const hermesPath = path.join(dir, 'hermes.yaml');
+    applyConfigPatch({ format: 'hermes', configPath: hermesPath, providerKey: 'antseed', baseURL: 'http://localhost:{buyerPort}/v1' }, PEER_ID, 8377, { models: curated });
+    const hermes = parse(await readFile(hermesPath, 'utf8')) as Record<string, any>;
+    assert.deepEqual(Object.keys(hermes['providers']['antseed']['models']), ids);
+    assert.equal(hermes['providers']['antseed']['default_model'], 'antseed');
+
+    const t3Path = path.join(dir, 't3.json');
+    applyConfigPatch(makeT3CodePatch(t3Path), PEER_ID, 8377, { models: curated });
+    const t3 = JSON.parse(await readFile(t3Path, 'utf8')).providerInstances.antseed.config.customModels;
+    assert.deepEqual(t3, ids);
+
+    const droidPath = path.join(dir, 'droid.json');
+    applyConfigPatch(makeDroidPatch(droidPath), PEER_ID, 8377, { models: curated });
+    const droid = JSON.parse(await readFile(droidPath, 'utf8')).customModels as Array<Record<string, unknown>>;
+    assert.deepEqual(droid.map((model) => model['reasoningEffort']), ['high', 'high', undefined]);
+
+    const piModels = path.join(dir, 'pi-models.json');
+    applyConfigPatch(makePiPatch(piModels, path.join(dir, 'pi-settings.json')), PEER_ID, 8377, { models: curated });
+    const pi = JSON.parse(await readFile(piModels, 'utf8')).providers.antseed.models as Array<Record<string, unknown>>;
+    assert.deepEqual(pi.map((model) => model['reasoning'] === true), [true, true, false]);
+  });
 });

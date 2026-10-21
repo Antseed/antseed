@@ -15,15 +15,67 @@ import {
 } from './wsl.js';
 
 /**
- * Model alias resolved by the buyer proxy at request time to the route
- * currently selected in the desktop (floating pill / AI VPN). Must match
+ * Model alias resolved by the buyer proxy to the chat's remembered model,
+ * or the buyer's default route for a new chat. Must match
  * ROUTED_MODEL_ALIAS in apps/cli/src/proxy/request-utils.ts.
  */
 export const ROUTED_MODEL_ALIAS = 'antseed';
 const ROUTED_MODEL_ALIAS_LABEL = 'Antseed Auto';
+
+/** A curated model offered in a connected app's own model picker. */
+export type ConnectedAppModel = {
+  readonly label: string;
+  /** Model sent to the buyer proxy when this entry is selected. */
+  readonly model: string;
+  /** The network reports reasoning-effort support; pickers offer effort levels. */
+  readonly reasoning?: boolean;
+};
+
+export type ConfigPatchOptions = {
+  readonly wslTargetsFile?: string;
+  /** Curated rows after Antseed Auto. Formats without a native catalog ignore it. */
+  readonly models?: readonly ConnectedAppModel[];
+};
+
+function normalizeConfigPatchOptions(options?: string | ConfigPatchOptions): ConfigPatchOptions {
+  return typeof options === 'string' ? { wslTargetsFile: options } : options ?? {};
+}
+
+/** Antseed Auto first, then unique non-empty curated rows. */
+function connectedAppCatalog(models: readonly ConnectedAppModel[]): ConnectedAppModel[] {
+  const seen = new Set([ROUTED_MODEL_ALIAS]);
+  const catalog: ConnectedAppModel[] = [{ label: ROUTED_MODEL_ALIAS_LABEL, model: ROUTED_MODEL_ALIAS }];
+  for (const entry of models) {
+    const model = entry.model.trim();
+    if (!model || seen.has(model)) continue;
+    seen.add(model);
+    catalog.push({ label: entry.label.trim() || model, model, ...(entry.reasoning ? { reasoning: true } : {}) });
+  }
+  return catalog;
+}
+/** Config formats whose patch writes the AntSeed model catalog into the app's own model picker. */
+const MODEL_LIST_FORMATS: ReadonlySet<string> = new Set(['opencode', 'codex', 'droid', 'pi', 'crush', 'zed', 'hermes', 't3code', 'claude-code']);
+
+/** Whether connecting this format lists the AntSeed catalog in the app's model picker. */
+export function configPatchListsModels(format: string | undefined): boolean {
+  return MODEL_LIST_FORMATS.has(format ?? 'opencode');
+}
+
+/** Auto usually routes to a strong model; concrete rows follow the network's capability. */
+function catalogEntryReasons(entry: ConnectedAppModel): boolean {
+  return entry.model === ROUTED_MODEL_ALIAS || entry.reasoning === true;
+}
+
+/** Effort levels offered where an app lets the config name them. */
+const CONNECTED_APP_REASONING_LEVELS = ['low', 'medium', 'high', 'xhigh'];
+const CONNECTED_APP_DEFAULT_REASONING = 'medium';
+/** Droid offers off/low/medium/high for custom models; this only picks the starting level. */
+const DROID_DEFAULT_REASONING = 'high';
+
 // Droid requires the `custom:` namespace to resolve this through `customModels`;
 // an unprefixed value is treated as a Factory-managed model and triggers Factory authentication.
-const DROID_ROUTED_MODEL_ID = 'custom:Antseed-Auto-0';
+const DROID_MODEL_ID_PREFIX = 'custom:Antseed-';
+const DROID_ROUTED_MODEL_ID = `${DROID_MODEL_ID_PREFIX}Auto-0`;
 
 /**
  * Config patches point a tool's own configuration at the buyer proxy. Each
@@ -85,7 +137,7 @@ export type PiConfigPatchDef = {
   readonly baseURL: string;
   readonly api: 'openai-completions' | 'openai-responses' | 'anthropic-messages';
   readonly originator?: string;
-  readonly installProbe?: 'pi';
+  readonly installProbe?: 'pi' | 'prime-agent';
 };
 
 export type CrushConfigPatchDef = {
@@ -153,9 +205,9 @@ export type T3CodeConfigPatchDef = {
  * config says `deploymentMode: "3p"` it boots against a separate profile
  * directory (`Claude-3p`) whose applied entry in `configLibrary/` names an
  * Anthropic-Messages-compatible gateway to send all inference to. The patch
- * writes that profile pointing at the desktop's local Claude gateway (see
- * apps/desktop/src/main/connected-apps/claude-desktop-gateway.ts), which serves the model catalog
- * in Anthropic's native shape and forwards requests to the buyer proxy. The
+ * writes that profile pointing at the buyer proxy's `/claude-desktop` route
+ * (see apps/cli/src/proxy/claude-desktop-route.ts), which serves the model
+ * catalog in Anthropic's native shape and routes the messages. The
  * 1p and 3p profiles are separate directories, so the user's normal Claude
  * login and state are untouched.
  */
@@ -167,7 +219,7 @@ export type ClaudeDesktopConfigPatchDef = {
   readonly configPath: string;
   /** Claude's third-party profile root (the `Claude-3p` directory). */
   readonly thirdPartyDir: string;
-  /** Gateway base URL carrying the `{claudeGatewayPort}` placeholder. */
+  /** Gateway base URL carrying the `{buyerPort}` placeholder. */
   readonly baseURL: string;
 };
 
@@ -184,12 +236,6 @@ export type ConfigPatchDef =
   | T3CodeConfigPatchDef
   | ClaudeDesktopConfigPatchDef;
 
-/**
- * Loopback port of the desktop's Claude Desktop gateway. Lives here (not in
- * the desktop's claude-desktop-gateway.ts) so this electron-free module stays the single
- * import direction: the gateway imports from config-patch, never the reverse.
- */
-export const CLAUDE_GATEWAY_DEFAULT_PORT = Number(process.env['ANTSEED_CLAUDE_GATEWAY_PORT']) || 8380;
 /** Fixed id of the managed third-party profile entry in Claude's configLibrary. */
 export const CLAUDE_DESKTOP_PROFILE_ID = '00000000-0000-4000-8000-0000a4753eed';
 const CLAUDE_DESKTOP_PROFILE_NAME = 'Antseed';
@@ -256,6 +302,7 @@ export function readConfigPatch(value: unknown, profileName: string): ConfigPatc
   if (format === 'pi') {
     const api = raw['api'];
     const originator = readString(raw, 'originator');
+    const installProbe = raw['installProbe'];
     return {
       format: 'pi',
       configPath,
@@ -264,7 +311,7 @@ export function readConfigPatch(value: unknown, profileName: string): ConfigPatc
       baseURL,
       api: api === 'openai-responses' || api === 'anthropic-messages' ? api : 'openai-completions',
       ...(originator ? { originator } : {}),
-      ...(raw['installProbe'] === 'pi' ? { installProbe: 'pi' as const } : {}),
+      ...(installProbe === 'pi' || installProbe === 'prime-agent' ? { installProbe } : {}),
     };
   }
   if (format === 'crush') {
@@ -493,41 +540,37 @@ function removeFromStringArray(config: JsonObject, key: string, value: string): 
 }
 
 /**
- * Point the tool's config at the buyer proxy. The config exposes a single
- * model — the ROUTED_MODEL_ALIAS — which the buyer resolves per request to
- * the route currently selected in the desktop (floating pill / AI VPN). Concrete
- * `<peerId>@<service>` entries are no longer written: the only place to pick
- * a model is the desktop route selector, so route changes reach running tool
- * sessions without a config rewrite.
+ * Point the tool's config at the buyer proxy, selecting Auto by default
+ * and listing curated models in formats with a native picker. The buyer
+ * resolves Auto to the chat's remembered model, or its default for a new chat.
  */
-export function applyConfigPatch(patch: ConfigPatchDef, peerId: string, buyerPort: number, wslTargetsFile?: string): void {
+export function applyConfigPatch(patch: ConfigPatchDef, peerId: string, buyerPort: number, options?: string | ConfigPatchOptions): void {
   if (!isBuyerProxyRoutablePeerId(peerId)) {
     throw new Error('Config-based routing requires a 40-character hex peer ID. Select a chain-backed peer before enabling this tool.');
   }
-  writeConfigPatch(patch, buyerPort, wslTargetsFile);
+  writeConfigPatch(patch, buyerPort, options);
 }
 
 /**
  * The config write behind applyConfigPatch, without the selected-peer guard.
- * The patched config only carries the ROUTED_MODEL_ALIAS, so no peer is
- * written either way; callers that do not own a route selection (the CLI's
- * `antseed apps connect`) use this and leave route choice to the buyer.
+ * This does not set the buyer's route; CLI callers leave routing to the buyer.
  */
-export function writeConfigPatch(patch: ConfigPatchDef, buyerPort: number, wslTargetsFile?: string): void {
+export function writeConfigPatch(patch: ConfigPatchDef, buyerPort: number, options?: string | ConfigPatchOptions): void {
+  const { wslTargetsFile, models = [] } = normalizeConfigPatchOptions(options);
   if (patch.format === 'codex') {
-    applyCodexConfigPatch(patch, buyerPort, wslTargetsFile);
+    applyCodexConfigPatch(patch, buyerPort, wslTargetsFile, models);
     return;
   }
   if (patch.format === 'droid') {
-    applyDroidConfigPatch(patch, buyerPort, wslTargetsFile);
+    applyDroidConfigPatch(patch, buyerPort, wslTargetsFile, models);
     return;
   }
   if (patch.format === 'pi') {
-    applyPiConfigPatch(patch, buyerPort, wslTargetsFile);
+    applyPiConfigPatch(patch, buyerPort, wslTargetsFile, models);
     return;
   }
   if (patch.format === 'crush') {
-    applyCrushConfigPatch(patch, buyerPort, wslTargetsFile);
+    applyCrushConfigPatch(patch, buyerPort, wslTargetsFile, models);
     return;
   }
   if (patch.format === 'goose') {
@@ -535,26 +578,26 @@ export function writeConfigPatch(patch: ConfigPatchDef, buyerPort: number, wslTa
     return;
   }
   if (patch.format === 'hermes') {
-    applyHermesConfigPatch(patch, buyerPort);
+    applyHermesConfigPatch(patch, buyerPort, models);
     return;
   }
   if (patch.format === 'zed') {
-    applyZedConfigPatch(patch, buyerPort);
+    applyZedConfigPatch(patch, buyerPort, models);
     return;
   }
   if (patch.format === 'claude-code') {
-    applyClaudeCodeConfigPatch(patch, buyerPort, wslTargetsFile);
+    applyClaudeCodeConfigPatch(patch, buyerPort, wslTargetsFile, models);
     return;
   }
   if (patch.format === 't3code') {
-    applyT3CodeConfigPatch(patch, buyerPort);
+    applyT3CodeConfigPatch(patch, buyerPort, models);
     return;
   }
   if (patch.format === 'claude-desktop') {
-    applyClaudeDesktopConfigPatch(patch);
+    applyClaudeDesktopConfigPatch(patch, buyerPort);
     return;
   }
-  applyOpencodeConfigPatch(patch, buyerPort, wslTargetsFile);
+  applyOpencodeConfigPatch(patch, buyerPort, wslTargetsFile, models);
 }
 
 /** Replace the host of a base URL, leaving scheme, port, and path untouched.
@@ -646,11 +689,16 @@ function removeWslInstalls(
   return changed;
 }
 
-function applyOpencodeConfigPatch(patch: OpencodeConfigPatchDef, buyerPort: number, wslTargetsFile?: string): void {
+function applyOpencodeConfigPatch(
+  patch: OpencodeConfigPatchDef,
+  buyerPort: number,
+  wslTargetsFile: string | undefined,
+  models: readonly ConnectedAppModel[],
+): void {
   const filePath = expandTilde(patch.configPath);
   const baseURL = patch.baseURL.replace('{buyerPort}', String(buyerPort));
   if (patch.installProbe !== 'opencode') {
-    applyOpencodeProviderToFile(filePath, patch, baseURL);
+    applyOpencodeProviderToFile(filePath, patch, baseURL, models);
     return;
   }
   applyWithInstallProbe({
@@ -659,11 +707,16 @@ function applyOpencodeConfigPatch(patch: OpencodeConfigPatchDef, buyerPort: numb
     posix: { configPath: patch.configPath },
     baseURL,
     wslTargetsFile,
-    write: (paths, url) => applyOpencodeProviderToFile(paths.configPath, patch, url),
+    write: (paths, url) => applyOpencodeProviderToFile(paths.configPath, patch, url, models),
   });
 }
 
-function applyOpencodeProviderToFile(filePath: string, patch: OpencodeConfigPatchDef, baseURL: string): void {
+function applyOpencodeProviderToFile(
+  filePath: string,
+  patch: OpencodeConfigPatchDef,
+  baseURL: string,
+  models: readonly ConnectedAppModel[],
+): void {
   backupConfigFile(filePath);
   const config = readConfigPatchFile(filePath);
 
@@ -677,14 +730,14 @@ function applyOpencodeProviderToFile(filePath: string, patch: OpencodeConfigPatc
       baseURL,
       apiKey: 'antseed',
     },
-    models: {
-      [ROUTED_MODEL_ALIAS]: {
-        name: ROUTED_MODEL_ALIAS_LABEL,
-        attachment: true,
-        modalities: { input: ['text', 'image'], output: ['text'] },
-        limit: { context: ANTSEED_MODEL_CONTEXT_WINDOW, output: ANTSEED_MODEL_MAX_OUTPUT_TOKENS },
-      },
-    },
+    models: Object.fromEntries(connectedAppCatalog(models).map((entry) => [entry.model, {
+      name: entry.label,
+      ...(entry.model === ROUTED_MODEL_ALIAS
+        ? { attachment: true, modalities: { input: ['text', 'image'], output: ['text'] } }
+        : {}),
+      ...(catalogEntryReasons(entry) ? { reasoning: true } : {}),
+      limit: { context: ANTSEED_MODEL_CONTEXT_WINDOW, output: ANTSEED_MODEL_MAX_OUTPUT_TOKENS },
+    }])),
   };
   config['provider'] = providers;
   config['model'] = `${patch.providerKey}/${ROUTED_MODEL_ALIAS}`;
@@ -842,6 +895,12 @@ function isDroidModel(value: unknown, model: string): boolean {
     && (value as JsonObject)['model'] === model);
 }
 
+function isManagedDroidModel(value: unknown): boolean {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value)
+    && typeof (value as JsonObject)['id'] === 'string'
+    && ((value as JsonObject)['id'] as string).startsWith(DROID_MODEL_ID_PREFIX));
+}
+
 function droidSessionDefaultSettings(config: JsonObject, filePath: string): JsonObject | undefined {
   const settings = config['sessionDefaultSettings'];
   if (settings === undefined) return undefined;
@@ -851,11 +910,16 @@ function droidSessionDefaultSettings(config: JsonObject, filePath: string): Json
   return settings as JsonObject;
 }
 
-function applyDroidConfigPatch(patch: DroidConfigPatchDef, buyerPort: number, wslTargetsFile?: string): void {
+function applyDroidConfigPatch(
+  patch: DroidConfigPatchDef,
+  buyerPort: number,
+  wslTargetsFile: string | undefined,
+  models: readonly ConnectedAppModel[],
+): void {
   const filePath = expandTilde(patch.configPath);
   const baseURL = patch.baseURL.replace('{buyerPort}', String(buyerPort));
   if (patch.installProbe !== 'droid') {
-    applyDroidModelToFile(filePath, patch, baseURL);
+    applyDroidModelToFile(filePath, patch, baseURL, models);
     return;
   }
   applyWithInstallProbe({
@@ -864,11 +928,16 @@ function applyDroidConfigPatch(patch: DroidConfigPatchDef, buyerPort: number, ws
     posix: { configPath: patch.configPath },
     baseURL,
     wslTargetsFile,
-    write: (paths, url) => applyDroidModelToFile(paths.configPath, patch, url),
+    write: (paths, url) => applyDroidModelToFile(paths.configPath, patch, url, models),
   });
 }
 
-function applyDroidModelToFile(filePath: string, patch: DroidConfigPatchDef, baseURL: string): void {
+function applyDroidModelToFile(
+  filePath: string,
+  patch: DroidConfigPatchDef,
+  baseURL: string,
+  models: readonly ConnectedAppModel[],
+): void {
   const configExisted = existsSync(filePath);
   backupConfigFile(filePath);
   const config = readConfigPatchFile(filePath);
@@ -876,8 +945,11 @@ function applyDroidModelToFile(filePath: string, patch: DroidConfigPatchDef, bas
   const customModels = droidCustomModels(config, filePath);
   const existingSessionDefaultSettings = droidSessionDefaultSettings(config, filePath);
   const state = readDroidPatchState(filePath);
-  const matchingModels = customModels.filter((model) => isDroidModel(model, patch.providerKey));
-  if (matchingModels.length > 0 && !state) {
+  // Entries carrying our `custom:Antseed-` id are ours even when the restore
+  // state file is gone (e.g. deleted, or written by another data dir); only a
+  // user's own entry named like the provider key is refused.
+  const userModels = customModels.filter((model) => isDroidModel(model, patch.providerKey) && !isManagedDroidModel(model));
+  if (userModels.length > 0 && !state) {
     throw new Error(
       `Droid already defines a custom model named ${patch.providerKey} in ${filePath}; refusing to overwrite it.`,
     );
@@ -885,12 +957,17 @@ function applyDroidModelToFile(filePath: string, patch: DroidConfigPatchDef, bas
   if (!state) {
     const modelPresent = Object.prototype.hasOwnProperty.call(config, 'model');
     const sessionDefaultSettingsPresent = existingSessionDefaultSettings !== undefined;
+    // A managed default left behind by a lost state is not the user's to restore.
     const sessionDefaultModelPresent = existingSessionDefaultSettings !== undefined
-      && Object.prototype.hasOwnProperty.call(existingSessionDefaultSettings, 'model');
+      && Object.prototype.hasOwnProperty.call(existingSessionDefaultSettings, 'model')
+      && !(typeof existingSessionDefaultSettings['model'] === 'string'
+        && (existingSessionDefaultSettings['model'] as string).startsWith(DROID_MODEL_ID_PREFIX));
     writeDroidPatchState(filePath, {
       version: 2,
       configExisted,
-      customModelsPresent,
+      // A list holding only leftover managed entries was ours; an empty list is the user's.
+      customModelsPresent: customModelsPresent
+        && (customModels.length === 0 || customModels.some((model) => !isManagedDroidModel(model))),
       modelPresent,
       ...(modelPresent ? { modelValue: config['model'] } : {}),
       sessionDefaultSettingsPresent,
@@ -903,16 +980,19 @@ function applyDroidModelToFile(filePath: string, patch: DroidConfigPatchDef, bas
 
   const extraHeaders = patch.originator ? { originator: patch.originator } : {};
   config['customModels'] = [
-    ...customModels.filter((model) => !isDroidModel(model, patch.providerKey)),
-    {
-      model: patch.providerKey,
-      id: DROID_ROUTED_MODEL_ID,
-      displayName: patch.providerName,
+    ...customModels.filter((model) => !isDroidModel(model, patch.providerKey) && !isManagedDroidModel(model)),
+    ...connectedAppCatalog(models).map((entry, index) => ({
+      model: entry.model === ROUTED_MODEL_ALIAS ? patch.providerKey : entry.model,
+      id: index === 0 ? DROID_ROUTED_MODEL_ID : `${DROID_MODEL_ID_PREFIX}${index}`,
+      displayName: index === 0 ? patch.providerName : entry.label,
       baseUrl: baseURL,
       provider: 'generic-chat-completion-api',
       maxOutputTokens: ANTSEED_MODEL_MAX_OUTPUT_TOKENS,
+      // Droid derives its effort list (off/low/medium/high plus this value)
+      // from the configured default; it has no per-model list field.
+      ...(catalogEntryReasons(entry) ? { reasoningEffort: DROID_DEFAULT_REASONING } : {}),
       ...(Object.keys(extraHeaders).length > 0 ? { extraHeaders } : {}),
-    },
+    })),
   ];
   const sessionDefaultSettings = existingSessionDefaultSettings ?? {};
   sessionDefaultSettings['model'] = DROID_ROUTED_MODEL_ID;
@@ -943,7 +1023,7 @@ function removeDroidModelFromFile(filePath: string, patch: DroidConfigPatchDef):
   let changed = false;
   const customModels = config['customModels'];
   if (Array.isArray(customModels)) {
-    const filtered = customModels.filter((model) => !isDroidModel(model, patch.providerKey));
+    const filtered = customModels.filter((model) => !isDroidModel(model, patch.providerKey) && !isManagedDroidModel(model));
     if (filtered.length !== customModels.length) {
       if (filtered.length === 0 && !state.customModelsPresent) delete config['customModels'];
       else config['customModels'] = filtered;
@@ -951,7 +1031,8 @@ function removeDroidModelFromFile(filePath: string, patch: DroidConfigPatchDef):
     }
   }
   const sessionDefaultSettings = droidSessionDefaultSettings(config, filePath);
-  const managedSessionDefault = sessionDefaultSettings?.['model'] === DROID_ROUTED_MODEL_ID;
+  const sessionDefaultModel = sessionDefaultSettings?.['model'];
+  const managedSessionDefault = typeof sessionDefaultModel === 'string' && sessionDefaultModel.startsWith(DROID_MODEL_ID_PREFIX);
   if (managedSessionDefault && sessionDefaultSettings) {
     if (state.sessionDefaultModelPresent) {
       sessionDefaultSettings['model'] = state.sessionDefaultModelValue;
@@ -986,6 +1067,61 @@ function removeDroidModelFromFile(filePath: string, patch: DroidConfigPatchDef):
 // `model_provider` / `model` keys are set in the region before the first
 // table header (TOML requires top-level keys there). Everything the user
 // wrote is left untouched.
+
+const CODEX_MANAGED_KEYS = ['model', 'model_provider', 'model_context_window', 'model_catalog_json'] as const;
+type CodexPatchState = {
+  version: 1;
+  original: Record<typeof CODEX_MANAGED_KEYS[number], string | null>;
+  providerTable: string[];
+};
+
+function readCodexPatchState(filePath: string): CodexPatchState | null {
+  const statePath = `${filePath}.antseed.state.json`;
+  if (!existsSync(statePath)) return null;
+  const state = JSON.parse(readFileSync(statePath, 'utf8')) as CodexPatchState;
+  if (state.version !== 1 || !state.original || !Array.isArray(state.providerTable)
+    || !state.providerTable.every((line) => typeof line === 'string')
+    || !CODEX_MANAGED_KEYS.every((key) => state.original[key] === null || typeof state.original[key] === 'string')) {
+    throw new Error(`Invalid Codex restore state at ${statePath}; refusing to overwrite it.`);
+  }
+  return state;
+}
+
+/** Windows writes through UNC, but Codex inside WSL needs a Linux path. */
+export function codexCatalogPathForClient(catalogPath: string): string {
+  const wsl = catalogPath.match(/^\\\\wsl(?:\.localhost|\$)\\[^\\]+(\\.*)$/i);
+  return wsl ? wsl[1]!.replace(/\\/g, '/') : catalogPath;
+}
+
+const CODEX_REASONING_DESCRIPTIONS: Record<string, string> = {
+  low: 'Fast responses with lighter reasoning',
+  medium: 'Balances speed and reasoning depth for everyday tasks',
+  high: 'Greater reasoning depth for complex problems',
+  xhigh: 'Extra high reasoning depth for complex problems',
+};
+const CODEX_REASONING_LEVELS = CONNECTED_APP_REASONING_LEVELS.map((effort) => ({ effort, description: CODEX_REASONING_DESCRIPTIONS[effort] }));
+
+function writeCodexCatalog(catalogPath: string, curatedModels: readonly ConnectedAppModel[]): void {
+  writeJsonFile(catalogPath, { models: connectedAppCatalog(curatedModels).map((entry, priority) => ({
+    slug: entry.model,
+    display_name: entry.label,
+    base_instructions: 'You are Codex, a coding agent working with the user in a shared workspace. Use the available tools to complete the user\'s task and follow the workspace instructions.',
+    description: entry.model === ROUTED_MODEL_ALIAS ? "Use this chat's model, or the AI VPN default for a new chat." : `Route to ${entry.label} through the AI VPN.`,
+    ...(catalogEntryReasons(entry)
+      ? { default_reasoning_level: CONNECTED_APP_DEFAULT_REASONING, supported_reasoning_levels: CODEX_REASONING_LEVELS }
+      : { supported_reasoning_levels: [] }),
+    shell_type: 'shell_command',
+    visibility: 'list',
+    supported_in_api: true,
+    priority,
+    support_verbosity: false,
+    apply_patch_tool_type: 'freeform',
+    truncation_policy: { mode: 'tokens', limit: 10000 },
+    context_window: ANTSEED_MODEL_CONTEXT_WINDOW,
+    max_context_window: ANTSEED_MODEL_CONTEXT_WINDOW,
+    experimental_supported_tools: [],
+  })) });
+}
 
 function tomlBasicString(value: string): string {
   return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
@@ -1047,11 +1183,16 @@ function removeTomlTopLevelKey(lines: readonly string[], key: string): string[] 
   return [...lines.slice(0, index), ...lines.slice(index + 1)];
 }
 
-function applyCodexConfigPatch(patch: CodexConfigPatchDef, buyerPort: number, wslTargetsFile?: string): void {
+function applyCodexConfigPatch(
+  patch: CodexConfigPatchDef,
+  buyerPort: number,
+  wslTargetsFile: string | undefined,
+  models: readonly ConnectedAppModel[],
+): void {
   const filePath = expandTilde(patch.configPath);
   const baseURL = patch.baseURL.replace('{buyerPort}', String(buyerPort));
   if (patch.installProbe !== 'codex') {
-    applyCodexProviderToFile(filePath, patch, baseURL);
+    applyCodexProviderToFile(filePath, patch, baseURL, models);
     return;
   }
   applyWithInstallProbe({
@@ -1060,18 +1201,46 @@ function applyCodexConfigPatch(patch: CodexConfigPatchDef, buyerPort: number, ws
     posix: { configPath: patch.configPath },
     baseURL,
     wslTargetsFile,
-    write: (paths, url) => applyCodexProviderToFile(paths.configPath, patch, url),
+    write: (paths, url) => applyCodexProviderToFile(paths.configPath, patch, url, models),
   });
 }
 
-function applyCodexProviderToFile(filePath: string, patch: CodexConfigPatchDef, baseURL: string): void {
-  backupConfigFile(filePath);
+function applyCodexProviderToFile(
+  filePath: string,
+  patch: CodexConfigPatchDef,
+  baseURL: string,
+  models: readonly ConnectedAppModel[],
+): void {
   const raw = existsSync(filePath) ? readFileSync(filePath, 'utf8') : '';
   let lines = raw.length > 0 ? raw.split('\n') : [];
+  const catalogPath = `${filePath}.antseed.models.json`;
+  const state = readCodexPatchState(filePath);
+  if (!state && existsSync(catalogPath)) {
+    throw new Error(`Codex catalog already exists at ${catalogPath}; refusing to overwrite it without restore state.`);
+  }
+  backupConfigFile(filePath);
+  if (!state) {
+    const baseline = readTomlTopLevelString(lines, 'model_provider') === patch.providerKey
+      && readTomlTopLevelString(lines, 'model') === ROUTED_MODEL_ALIAS
+      && existsSync(`${filePath}.antseed.bak`)
+      ? readFileSync(`${filePath}.antseed.bak`, 'utf8').split('\n') : lines;
+    const start = baseline.findIndex((line) => isCodexProviderTableHeader(line, patch.providerKey));
+    let end = start + 1;
+    while (end < baseline.length && !/^\s*\[/.test(baseline[end]!)) end++;
+    const original = Object.fromEntries(CODEX_MANAGED_KEYS.map((key) => {
+      const index = tomlTopLevelKeyIndex(baseline, key);
+      return [key, index === -1 ? null : baseline[index]!];
+    }));
+    writeJsonFile(`${filePath}.antseed.state.json`, {
+      version: 1, original, providerTable: start === -1 ? [] : baseline.slice(start, end),
+    });
+  }
+  writeCodexCatalog(catalogPath, models);
   lines = removeCodexProviderTable(lines, patch.providerKey).lines;
   lines = setTomlTopLevelString(lines, 'model_provider', patch.providerKey);
   lines = setTomlTopLevelString(lines, 'model', ROUTED_MODEL_ALIAS);
   lines = setTomlTopLevelValue(lines, 'model_context_window', String(ANTSEED_MODEL_CONTEXT_WINDOW));
+  lines = setTomlTopLevelString(lines, 'model_catalog_json', codexCatalogPathForClient(catalogPath));
   while (lines.length > 0 && lines[lines.length - 1]!.trim() === '') lines.pop();
   lines.push(
     '',
@@ -1094,21 +1263,51 @@ function removeCodexConfigPatch(patch: CodexConfigPatchDef, wslTargetsFile?: str
 }
 
 function removeCodexProviderFromFile(filePath: string, patch: CodexConfigPatchDef): boolean {
-  if (!existsSync(filePath)) return false;
+  const state = readCodexPatchState(filePath);
+  const catalogPath = `${filePath}.antseed.models.json`;
+  const cleanup = (): void => {
+    if (!state) return;
+    if (existsSync(catalogPath)) unlinkSync(catalogPath);
+    unlinkSync(`${filePath}.antseed.state.json`);
+  };
+  if (!existsSync(filePath)) {
+    cleanup();
+    return state !== null;
+  }
   const raw = readFileSync(filePath, 'utf8');
+  if (!state && (readTomlTopLevelString(raw.split('\n'), 'model_provider') !== patch.providerKey
+    || readTomlTopLevelString(raw.split('\n'), 'model') !== ROUTED_MODEL_ALIAS)) return false;
   const removal = removeCodexProviderTable(raw.split('\n'), patch.providerKey);
   let lines = removal.lines;
   let changed = removal.changed;
-  if (readTomlTopLevelString(lines, 'model_provider') === patch.providerKey) {
+  const managedProvider = readTomlTopLevelString(lines, 'model_provider') === patch.providerKey;
+  if (state) {
+    for (const key of CODEX_MANAGED_KEYS) {
+      const owned = key === 'model' ? managedProvider || readTomlTopLevelString(lines, key) === ROUTED_MODEL_ALIAS
+        : key === 'model_provider' ? managedProvider
+          : key === 'model_catalog_json' ? readTomlTopLevelString(lines, key) === codexCatalogPathForClient(catalogPath)
+            : lines[tomlTopLevelKeyIndex(lines, key)]?.trim() === `model_context_window = ${ANTSEED_MODEL_CONTEXT_WINDOW}`;
+      if (!owned) continue;
+      const original = state.original[key];
+      lines = original === null ? removeTomlTopLevelKey(lines, key) : setTomlTopLevelValue(lines, key, '');
+      if (original !== null) lines[tomlTopLevelKeyIndex(lines, key)] = original;
+      changed = true;
+    }
+    if (removal.changed && state.providerTable.length > 0) lines.push(...state.providerTable);
+  } else if (managedProvider) {
     lines = removeTomlTopLevelKey(lines, 'model_provider');
     lines = removeTomlTopLevelKey(lines, 'model');
     lines = removeTomlTopLevelKey(lines, 'model_context_window');
     changed = true;
   }
-  if (!changed) return false;
+  if (!changed) {
+    cleanup();
+    return state !== null;
+  }
   backupConfigFile(filePath);
   while (lines.length > 0 && lines[lines.length - 1]!.trim() === '') lines.pop();
   writeTextFile(filePath, lines.length > 0 ? `${lines.join('\n')}\n` : '');
+  cleanup();
   return true;
 }
 
@@ -1118,24 +1317,35 @@ function removeCodexProviderFromFile(filePath: string, patch: CodexConfigPatchDe
 // provider/model from settings.json. The apiKey is a placeholder — the buyer
 // proxy is keyless, but pi hides models that have no credential at all.
 
-function applyPiConfigPatch(patch: PiConfigPatchDef, buyerPort: number, wslTargetsFile?: string): void {
+function applyPiConfigPatch(
+  patch: PiConfigPatchDef,
+  buyerPort: number,
+  wslTargetsFile: string | undefined,
+  models: readonly ConnectedAppModel[],
+): void {
   const baseURL = patch.baseURL.replace('{buyerPort}', String(buyerPort));
   const native = { configPath: expandTilde(patch.configPath), settingsPath: expandTilde(patch.settingsPath) };
-  if (patch.installProbe !== 'pi') {
-    applyPiProviderToFiles(native.configPath, native.settingsPath, patch, baseURL);
+  if (!patch.installProbe) {
+    applyPiProviderToFiles(native.configPath, native.settingsPath, patch, baseURL, models);
     return;
   }
   applyWithInstallProbe({
-    tool: 'pi',
+    tool: patch.installProbe,
     native,
     posix: { configPath: patch.configPath, settingsPath: patch.settingsPath },
     baseURL,
     wslTargetsFile,
-    write: (paths, url) => applyPiProviderToFiles(paths.configPath, paths.settingsPath ?? native.settingsPath, patch, url),
+    write: (paths, url) => applyPiProviderToFiles(paths.configPath, paths.settingsPath ?? native.settingsPath, patch, url, models),
   });
 }
 
-function applyPiProviderToFiles(modelsPath: string, settingsPath: string, patch: PiConfigPatchDef, baseURL: string): void {
+function applyPiProviderToFiles(
+  modelsPath: string,
+  settingsPath: string,
+  patch: PiConfigPatchDef,
+  baseURL: string,
+  models: readonly ConnectedAppModel[],
+): void {
   backupConfigFile(modelsPath);
   const config = readConfigPatchFile(modelsPath);
   const providers = (config['providers'] && typeof config['providers'] === 'object' && !Array.isArray(config['providers']))
@@ -1146,14 +1356,13 @@ function applyPiProviderToFiles(modelsPath: string, settingsPath: string, patch:
     api: patch.api,
     apiKey: 'antseed',
     ...(patch.originator ? { headers: { originator: patch.originator } } : {}),
-    models: [
-      {
-        id: ROUTED_MODEL_ALIAS,
-        name: ROUTED_MODEL_ALIAS_LABEL,
-        contextWindow: ANTSEED_MODEL_CONTEXT_WINDOW,
-        maxTokens: ANTSEED_MODEL_MAX_OUTPUT_TOKENS,
-      },
-    ],
+    models: connectedAppCatalog(models).map((entry) => ({
+      id: entry.model,
+      name: entry.label,
+      ...(catalogEntryReasons(entry) ? { reasoning: true } : {}),
+      contextWindow: ANTSEED_MODEL_CONTEXT_WINDOW,
+      maxTokens: ANTSEED_MODEL_MAX_OUTPUT_TOKENS,
+    })),
   };
   config['providers'] = providers;
   writeJsonFile(modelsPath, config);
@@ -1167,8 +1376,8 @@ function applyPiProviderToFiles(modelsPath: string, settingsPath: string, patch:
 
 function removePiConfigPatch(patch: PiConfigPatchDef, wslTargetsFile?: string): boolean {
   let changed = removePiProviderFromFiles(expandTilde(patch.configPath), expandTilde(patch.settingsPath), patch);
-  if (patch.installProbe === 'pi') {
-    changed = removeWslInstalls('pi', wslTargetsFile, (target) =>
+  if (patch.installProbe) {
+    changed = removeWslInstalls(patch.installProbe, wslTargetsFile, (target) =>
       removePiProviderFromFiles(target.configPath, target.settingsPath ?? '', patch)) || changed;
   }
   return changed;
@@ -1205,11 +1414,16 @@ function asObject(value: unknown): JsonObject {
 // `type: "openai-compat"`; the default model selection lives under
 // `models.large` / `models.small` as `{ provider, model }`.
 
-function applyCrushConfigPatch(patch: CrushConfigPatchDef, buyerPort: number, wslTargetsFile?: string): void {
+function applyCrushConfigPatch(
+  patch: CrushConfigPatchDef,
+  buyerPort: number,
+  wslTargetsFile: string | undefined,
+  models: readonly ConnectedAppModel[],
+): void {
   const filePath = expandTilde(patch.configPath);
   const baseURL = patch.baseURL.replace('{buyerPort}', String(buyerPort));
   if (patch.installProbe !== 'crush') {
-    applyCrushProviderToFile(filePath, patch, baseURL);
+    applyCrushProviderToFile(filePath, patch, baseURL, models);
     return;
   }
   applyWithInstallProbe({
@@ -1218,11 +1432,16 @@ function applyCrushConfigPatch(patch: CrushConfigPatchDef, buyerPort: number, ws
     posix: { configPath: patch.wslConfigPath ?? patch.configPath },
     baseURL,
     wslTargetsFile,
-    write: (paths, url) => applyCrushProviderToFile(paths.configPath, patch, url),
+    write: (paths, url) => applyCrushProviderToFile(paths.configPath, patch, url, models),
   });
 }
 
-function applyCrushProviderToFile(filePath: string, patch: CrushConfigPatchDef, baseURL: string): void {
+function applyCrushProviderToFile(
+  filePath: string,
+  patch: CrushConfigPatchDef,
+  baseURL: string,
+  curatedModels: readonly ConnectedAppModel[],
+): void {
   backupConfigFile(filePath);
   const config = readConfigPatchFile(filePath);
   const providers = asObject(config['providers']);
@@ -1231,9 +1450,19 @@ function applyCrushProviderToFile(filePath: string, patch: CrushConfigPatchDef, 
     name: patch.providerName,
     base_url: baseURL,
     api_key: 'antseed',
-    models: [
-      { id: ROUTED_MODEL_ALIAS, name: ROUTED_MODEL_ALIAS_LABEL, context_window: ANTSEED_MODEL_CONTEXT_WINDOW, default_max_tokens: ANTSEED_MODEL_MAX_OUTPUT_TOKENS },
-    ],
+    models: connectedAppCatalog(curatedModels).map((entry) => ({
+      id: entry.model,
+      name: entry.label,
+      context_window: ANTSEED_MODEL_CONTEXT_WINDOW,
+      default_max_tokens: ANTSEED_MODEL_MAX_OUTPUT_TOKENS,
+      ...(catalogEntryReasons(entry)
+        ? {
+            can_reason: true,
+            reasoning_levels: CONNECTED_APP_REASONING_LEVELS,
+            default_reasoning_effort: CONNECTED_APP_DEFAULT_REASONING,
+          }
+        : {}),
+    })),
   };
   config['providers'] = providers;
   const models = asObject(config['models']);
@@ -1413,7 +1642,7 @@ function writeHermesConfigDocument(filePath: string, document: Document.Parsed):
   writeFileSync(filePath, document.toString(), 'utf8');
 }
 
-function applyHermesConfigPatch(patch: HermesConfigPatchDef, buyerPort: number): void {
+function applyHermesConfigPatch(patch: HermesConfigPatchDef, buyerPort: number, models: readonly ConnectedAppModel[]): void {
   const filePath = expandTilde(patch.configPath);
   const document = readHermesConfigDocument(filePath);
   backupConfigFile(filePath);
@@ -1425,11 +1654,12 @@ function applyHermesConfigPatch(patch: HermesConfigPatchDef, buyerPort: number):
       originator: 'hermes',
     },
     default_model: ROUTED_MODEL_ALIAS,
-    models: {
-      [ROUTED_MODEL_ALIAS]: {
-        context_length: ANTSEED_MODEL_CONTEXT_WINDOW,
-      },
-    },
+    // Hermes otherwise replaces this list with the buyer's whole /v1/models
+    // network list, which has no Antseed Auto row.
+    discover_models: false,
+    models: Object.fromEntries(connectedAppCatalog(models).map((entry) => [entry.model, {
+      context_length: ANTSEED_MODEL_CONTEXT_WINDOW,
+    }])),
   });
   document.setIn(['model', 'provider'], patch.providerKey);
   document.setIn(['model', 'default'], ROUTED_MODEL_ALIAS);
@@ -1467,7 +1697,7 @@ function removeHermesConfigPatch(patch: HermesConfigPatchDef): boolean {
 // Zed asks for the provider's API key once in its UI — any value satisfies
 // the keyless buyer proxy.
 
-function applyZedConfigPatch(patch: ZedConfigPatchDef, buyerPort: number): void {
+function applyZedConfigPatch(patch: ZedConfigPatchDef, buyerPort: number, models: readonly ConnectedAppModel[]): void {
   const filePath = expandTilde(patch.configPath);
   backupConfigFile(filePath);
   const config = readConfigPatchFile(filePath);
@@ -1475,9 +1705,11 @@ function applyZedConfigPatch(patch: ZedConfigPatchDef, buyerPort: number): void 
   const compatible = asObject(languageModels['openai_compatible']);
   compatible[patch.providerName] = {
     api_url: patch.baseURL.replace('{buyerPort}', String(buyerPort)),
-    available_models: [
-      { name: ROUTED_MODEL_ALIAS, display_name: ROUTED_MODEL_ALIAS_LABEL, max_tokens: ANTSEED_MODEL_CONTEXT_WINDOW },
-    ],
+    available_models: connectedAppCatalog(models).map((entry) => ({
+      name: entry.model,
+      display_name: entry.label,
+      max_tokens: ANTSEED_MODEL_CONTEXT_WINDOW,
+    })),
   };
   languageModels['openai_compatible'] = compatible;
   config['language_models'] = languageModels;
@@ -1550,6 +1782,8 @@ type ClaudeCodePatchState = {
   readonly envPresent: boolean;
   readonly env: Readonly<Record<ClaudeCodeManagedEnvKey, ClaudeCodeSavedValue>>;
   readonly model: ClaudeCodeSavedValue;
+  /** Absent in state written before Antseed managed the picker. */
+  readonly modelPicker?: ClaudeCodeSavedValue;
 };
 
 function claudeCodePatchStatePath(filePath: string): string {
@@ -1591,7 +1825,32 @@ function readClaudeCodePatchState(filePath: string): ClaudeCodePatchState | null
     envPresent: state['envPresent'],
     env: savedEnv,
     model: readSavedValue(state['model'], statePath, 'model'),
+    ...(state['modelPicker'] !== undefined
+      ? { modelPicker: readSavedValue(state['modelPicker'], statePath, 'modelPicker') }
+      : {}),
   };
+}
+
+/**
+ * Claude Code's `/model` picker: Antseed Auto, then the curated models,
+ * replacing Claude's own rows (which would otherwise send Claude model ids
+ * the buyer has no meaning for). Named like Claude Desktop's picker. Claude
+ * Code shows "Custom model (<id>)" for an empty description, hence "-".
+ */
+function claudeCodeModelPicker(models: readonly ConnectedAppModel[]): JsonObject {
+  return {
+    replaceBuiltInOptions: true,
+    options: connectedAppCatalog(models).map((entry) => entry.model === ROUTED_MODEL_ALIAS
+      ? { model: entry.model, label: ROUTED_MODEL_ALIAS_LABEL, description: 'Uses the model selected in the AI VPN' }
+      : { model: entry.model, label: `${entry.label} (Antseed)`, description: '-' }),
+  };
+}
+
+/** A picker this patch wrote: Antseed Auto is its first row. */
+function isAntseedClaudeCodePicker(value: unknown): boolean {
+  const options = value && typeof value === 'object' && !Array.isArray(value) ? (value as JsonObject)['options'] : undefined;
+  const first = Array.isArray(options) ? options[0] : undefined;
+  return !!first && typeof first === 'object' && (first as JsonObject)['model'] === ROUTED_MODEL_ALIAS;
 }
 
 function writeClaudeCodePatchState(filePath: string, state: ClaudeCodePatchState): void {
@@ -1615,11 +1874,16 @@ function claudeCodeEnv(config: JsonObject, filePath: string): JsonObject | undef
   return env as JsonObject;
 }
 
-function applyClaudeCodeConfigPatch(patch: ClaudeCodeConfigPatchDef, buyerPort: number, wslTargetsFile?: string): void {
+function applyClaudeCodeConfigPatch(
+  patch: ClaudeCodeConfigPatchDef,
+  buyerPort: number,
+  wslTargetsFile: string | undefined,
+  models: readonly ConnectedAppModel[],
+): void {
   const filePath = expandTilde(patch.configPath);
   const baseURL = patch.baseURL.replace('{buyerPort}', String(buyerPort));
   if (patch.installProbe !== 'claude') {
-    applyClaudeCodeSettingsToFile(filePath, patch, baseURL);
+    applyClaudeCodeSettingsToFile(filePath, patch, baseURL, models);
     return;
   }
   applyWithInstallProbe({
@@ -1628,16 +1892,22 @@ function applyClaudeCodeConfigPatch(patch: ClaudeCodeConfigPatchDef, buyerPort: 
     posix: { configPath: patch.configPath },
     baseURL,
     wslTargetsFile,
-    write: (paths, url) => applyClaudeCodeSettingsToFile(paths.configPath, patch, url),
+    write: (paths, url) => applyClaudeCodeSettingsToFile(paths.configPath, patch, url, models),
   });
 }
 
-function applyClaudeCodeSettingsToFile(filePath: string, patch: ClaudeCodeConfigPatchDef, baseURL: string): void {
+function applyClaudeCodeSettingsToFile(
+  filePath: string,
+  patch: ClaudeCodeConfigPatchDef,
+  baseURL: string,
+  models: readonly ConnectedAppModel[],
+): void {
   const configExisted = existsSync(filePath);
   backupConfigFile(filePath);
   const config = readConfigPatchFile(filePath);
   const existingEnv = claudeCodeEnv(config, filePath);
-  if (!readClaudeCodePatchState(filePath)) {
+  const state = readClaudeCodePatchState(filePath);
+  if (!state) {
     const envSource = existingEnv ?? {};
     writeClaudeCodePatchState(filePath, {
       version: 1,
@@ -1645,6 +1915,14 @@ function applyClaudeCodeSettingsToFile(filePath: string, patch: ClaudeCodeConfig
       envPresent: existingEnv !== undefined,
       env: Object.fromEntries(CLAUDE_CODE_MANAGED_ENV_KEYS.map((key) => [key, savedValue(envSource, key)])) as Record<ClaudeCodeManagedEnvKey, ClaudeCodeSavedValue>,
       model: savedValue(config, 'model'),
+      modelPicker: savedValue(config, 'modelPicker'),
+    });
+  } else if (!state.modelPicker) {
+    // Connected before Antseed managed the picker: keep the user's own picker
+    // (if any) for disconnect before replacing it.
+    writeClaudeCodePatchState(filePath, {
+      ...state,
+      modelPicker: isAntseedClaudeCodePicker(config['modelPicker']) ? { present: false } : savedValue(config, 'modelPicker'),
     });
   }
 
@@ -1655,6 +1933,7 @@ function applyClaudeCodeSettingsToFile(filePath: string, patch: ClaudeCodeConfig
   env['ANTHROPIC_CUSTOM_HEADERS'] = CLAUDE_CODE_SOURCE_HEADER;
   config['env'] = env;
   config['model'] = ROUTED_MODEL_ALIAS;
+  config['modelPicker'] = claudeCodeModelPicker(models);
   writeJsonFile(filePath, config);
 }
 
@@ -1711,6 +1990,10 @@ function removeClaudeCodeSettingsFromFile(
     restoreSavedValue(config, 'model', state.model);
     changed = true;
   }
+  if (isAntseedClaudeCodePicker(config['modelPicker'])) {
+    restoreSavedValue(config, 'modelPicker', state.modelPicker ?? { present: false });
+    changed = true;
+  }
 
   if (!state.configExisted && Object.keys(config).length === 0) {
     unlinkSync(filePath);
@@ -1721,12 +2004,57 @@ function removeClaudeCodeSettingsFromFile(
   return changed;
 }
 
-function applyT3CodeConfigPatch(patch: T3CodeConfigPatchDef, buyerPort: number): void {
+/**
+ * T3 Code keeps providers in `providerInstances`. Antseed owns only its own
+ * `<providerKey>` entry: the first connect saves whatever entry was there (or
+ * the fact there was none) to a sidecar state file, so disconnect can put the
+ * user's own entry back. Reconnects and model-list refreshes keep that saved
+ * original instead of overwriting it again.
+ */
+type T3CodeState = { version: 1; hadInstance: boolean; instance?: JsonObject };
+
+function t3CodeStatePath(filePath: string): string {
+  return `${filePath}.antseed.state.json`;
+}
+
+function readT3CodeState(filePath: string): T3CodeState | null {
+  const state = tryReadConfigPatchFile(t3CodeStatePath(filePath));
+  if (!state) return null;
+  if (state['version'] !== 1 || typeof state['hadInstance'] !== 'boolean') {
+    throw new Error(`Invalid Antseed T3 Code restore state at ${t3CodeStatePath(filePath)}`);
+  }
+  const instance = state['instance'];
+  return {
+    version: 1,
+    hadInstance: state['hadInstance'],
+    ...(instance && typeof instance === 'object' && !Array.isArray(instance) ? { instance: instance as JsonObject } : {}),
+  };
+}
+
+function deleteT3CodeState(filePath: string): void {
+  try {
+    unlinkSync(t3CodeStatePath(filePath));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+}
+
+function applyT3CodeConfigPatch(patch: T3CodeConfigPatchDef, buyerPort: number, models: readonly ConnectedAppModel[]): void {
   const filePath = expandTilde(patch.configPath);
   backupConfigFile(filePath);
   const config = readConfigPatchFile(filePath);
   const providerInstances = asObject(config['providerInstances']);
-  const customModels = [ROUTED_MODEL_ALIAS];
+  const existing = providerInstances[patch.providerKey];
+  if (!readT3CodeState(filePath)) {
+    const hadInstance = existing !== undefined;
+    const isObject = existing !== null && typeof existing === 'object' && !Array.isArray(existing);
+    writeJsonFile(t3CodeStatePath(filePath), {
+      version: 1,
+      hadInstance,
+      ...(hadInstance && isObject ? { instance: existing as JsonObject } : {}),
+    });
+  }
+  const customModels = connectedAppCatalog(models).map((entry) => entry.model);
   providerInstances[patch.providerKey] = {
     driver: 'claudeAgent',
     displayName: patch.providerName,
@@ -1751,24 +2079,31 @@ function applyT3CodeConfigPatch(patch: T3CodeConfigPatchDef, buyerPort: number):
 
 function removeT3CodeConfigPatch(patch: T3CodeConfigPatchDef): boolean {
   const filePath = expandTilde(patch.configPath);
+  const state = readT3CodeState(filePath);
   const config = tryReadConfigPatchFile(filePath);
-  if (!config) return false;
-  const providerInstances = config['providerInstances'];
-  if (!providerInstances || typeof providerInstances !== 'object' || Array.isArray(providerInstances)) return false;
-  const instance = (providerInstances as JsonObject)[patch.providerKey];
-  if (!instance || typeof instance !== 'object' || Array.isArray(instance)) return false;
-  const environment = (instance as JsonObject)['environment'];
+  if (!config) {
+    if (state) deleteT3CodeState(filePath);
+    return false;
+  }
+  const providerInstances = asObject(config['providerInstances']);
+  const instance = providerInstances[patch.providerKey];
+  const environment = asObject(instance)['environment'];
   const ownsInstance = Array.isArray(environment) && environment.some((variable) => {
-    if (!variable || typeof variable !== 'object' || Array.isArray(variable)) return false;
-    const value = (variable as JsonObject)['value'];
-    return (variable as JsonObject)['name'] === 'ANTHROPIC_BASE_URL'
-      && isLoopbackHost(typeof value === 'string' ? value : undefined);
+    const entry = asObject(variable);
+    return entry['name'] === 'ANTHROPIC_BASE_URL'
+      && isLoopbackHost(typeof entry['value'] === 'string' ? entry['value'] : undefined);
   });
-  if (!ownsInstance) return false;
-  delete (providerInstances as JsonObject)[patch.providerKey];
-  if (Object.keys(providerInstances as JsonObject).length === 0) delete config['providerInstances'];
+  if (!ownsInstance && !state) return false;
+  if (state?.hadInstance && state.instance) {
+    providerInstances[patch.providerKey] = state.instance;
+  } else {
+    delete providerInstances[patch.providerKey];
+  }
+  if (Object.keys(providerInstances).length === 0) delete config['providerInstances'];
+  else config['providerInstances'] = providerInstances;
   backupConfigFile(filePath);
   writeJsonFile(filePath, config);
+  deleteT3CodeState(filePath);
   return true;
 }
 
@@ -1856,7 +2191,7 @@ function isOwnClaudeDesktopMetaEntry(entry: unknown): boolean {
     && (entry as JsonObject)['id'] === CLAUDE_DESKTOP_PROFILE_ID;
 }
 
-function applyClaudeDesktopConfigPatch(patch: ClaudeDesktopConfigPatchDef): void {
+function applyClaudeDesktopConfigPatch(patch: ClaudeDesktopConfigPatchDef, buyerPort: number): void {
   const targets = claudeDesktopPatchTargets(patch);
   const target = targets.find((candidate) => existsSync(path.dirname(candidate.configPath)));
   if (!target) {
@@ -1867,7 +2202,7 @@ function applyClaudeDesktopConfigPatch(patch: ClaudeDesktopConfigPatchDef): void
     );
   }
   const normalConfigPath = target.configPath;
-  const gatewayBaseUrl = patch.baseURL.replace('{claudeGatewayPort}', String(CLAUDE_GATEWAY_DEFAULT_PORT));
+  const gatewayBaseUrl = patch.baseURL.replace('{buyerPort}', String(buyerPort));
   const paths = claudeDesktopPatchPaths(target);
 
   // Claude reads deploymentMode from the normal profile at startup and, when
@@ -1900,9 +2235,8 @@ function applyClaudeDesktopConfigPatch(patch: ClaudeDesktopConfigPatchDef): void
   // would shadow it.
   delete profile['inferenceModels'];
   // Claude's published model catalog (fetched from downloads.claude.ai on 3p
-  // boots) relabels picker entries by id, so "Antseed Auto" behind
-  // claude-fable-5 would show as "Fable 5" and every curated slot as the
-  // Claude model whose id it borrows. The gateway's display names are the
+  // boots) relabels picker entries by id, so every curated slot would show
+  // as the Claude model whose id it borrows. The gateway's display names are the
   // real labels; keep the catalog off so they win.
   profile['modelCatalogEnabled'] = false;
   writeJsonFile(paths.profile, profile);
@@ -1914,6 +2248,11 @@ function applyClaudeDesktopConfigPatch(patch: ClaudeDesktopConfigPatchDef): void
     { id: CLAUDE_DESKTOP_PROFILE_ID, name: CLAUDE_DESKTOP_PROFILE_NAME },
   ];
   writeJsonFile(paths.meta, meta);
+}
+
+/** The buyer's `/claude-desktop` route, or the desktop's former gateway root on loopback. */
+function isClaudeDesktopGatewayUrl(value: string | undefined): boolean {
+  return !!value && /^https?:\/\/(localhost|127\.0\.0\.1):\d+(\/claude-desktop)?\/?$/.test(value);
 }
 
 function removeClaudeDesktopConfigPatch(patch: ClaudeDesktopConfigPatchDef): boolean {
@@ -1936,7 +2275,7 @@ function removeClaudeDesktopTarget(target: ClaudeDesktopPatchTarget): boolean {
   const gatewayUrl = profile && typeof profile['inferenceGatewayBaseUrl'] === 'string'
     ? profile['inferenceGatewayBaseUrl']
     : undefined;
-  const ownsProfileFile = profile?.['inferenceProvider'] === 'gateway' && isLoopbackHost(gatewayUrl);
+  const ownsProfileFile = profile?.['inferenceProvider'] === 'gateway' && isClaudeDesktopGatewayUrl(gatewayUrl);
   const ownsSetup = ownsProfileFile
     || meta?.['appliedId'] === CLAUDE_DESKTOP_PROFILE_ID
     || claudeDesktopMetaEntries(meta ?? {}).some(isOwnClaudeDesktopMetaEntry);
@@ -2047,7 +2386,7 @@ function nativeConfigPatchConnected(patch: ConfigPatchDef): boolean {
         ? profile['inferenceGatewayBaseUrl']
         : undefined;
       return meta?.['appliedId'] === CLAUDE_DESKTOP_PROFILE_ID
-        || (profile?.['inferenceProvider'] === 'gateway' && isLoopbackHost(gatewayUrl));
+        || (profile?.['inferenceProvider'] === 'gateway' && isClaudeDesktopGatewayUrl(gatewayUrl));
     });
   }
   const filePath = expandTilde(patch.configPath);

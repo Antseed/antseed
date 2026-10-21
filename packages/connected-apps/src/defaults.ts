@@ -1,5 +1,6 @@
 import { homedir } from 'node:os';
 import path from 'node:path';
+import { configPatchListsModels } from './config-patch.js';
 
 /**
  * Built-in "Connected apps" catalog for the AI VPN Connected apps screen.
@@ -119,10 +120,9 @@ export const DEFAULT_APP_PROFILES: readonly Record<string, unknown>[] = [
       // derives its own candidate roots on win32 and these apply elsewhere.
       configPath: '~/Library/Application Support/Claude/claude_desktop_config.json',
       thirdPartyDir: '~/Library/Application Support/Claude-3p',
-      // Claude talks to the desktop's local Claude gateway (Anthropic-native
-      // model catalog + forwarding to the buyer proxy), not the buyer proxy
-      // directly — see apps/desktop/src/main/connected-apps/claude-desktop-gateway.ts.
-      baseURL: 'http://127.0.0.1:{claudeGatewayPort}',
+      // Claude talks to the buyer proxy's Claude Desktop route (Anthropic-native
+      // model catalog + model rewrite) — see apps/cli/src/proxy/claude-desktop-route.ts.
+      baseURL: 'http://127.0.0.1:{buyerPort}/claude-desktop',
     },
   },
   {
@@ -219,6 +219,30 @@ export const DEFAULT_APP_PROFILES: readonly Record<string, unknown>[] = [
     },
   },
   {
+    name: 'prime-agent',
+    displayName: 'Prime Agent',
+    kind: 'config-patch',
+    method: 'Config patch',
+    toolSlugs: ['prime-agent'],
+    domains: [],
+    pathPrefixes: [],
+    configPatch: {
+      // Prime Agent reads pi's models.json/settings.json schema from
+      // ~/.prime/agent on every platform. Its session engine does not pass
+      // the session id to the transport (no prompt_cache_key), so the buyer
+      // proxy keys chats from the originator header plus a synthetic
+      // first-turn key.
+      format: 'pi',
+      configPath: '~/.prime/agent/models.json',
+      settingsPath: '~/.prime/agent/settings.json',
+      providerKey: 'antseed',
+      baseURL: 'http://localhost:{buyerPort}/v1',
+      api: 'openai-responses',
+      originator: 'prime-agent',
+      installProbe: 'prime-agent',
+    },
+  },
+  {
     name: 'crush',
     displayName: 'Crush',
     kind: 'config-patch',
@@ -285,6 +309,15 @@ export const DEFAULT_APP_PROFILES: readonly Record<string, unknown>[] = [
     },
   },
 ];
+
+/**
+ * Tool slugs of built-in apps whose own model picker lists the AntSeed
+ * catalog. Their request-derived chat routes stay automatic, so concrete
+ * picker choices can update a chat without creating a desktop seller pin.
+ */
+export const MODEL_PICKER_TOOL_SLUGS: readonly string[] = DEFAULT_APP_PROFILES
+  .filter((profile) => configPatchListsModels((profile['configPatch'] as Record<string, unknown> | undefined)?.['format'] as string | undefined))
+  .flatMap((profile) => profile['toolSlugs'] as string[]);
 
 /**
  * Combine the packaged/env profile list with the built-in defaults: external

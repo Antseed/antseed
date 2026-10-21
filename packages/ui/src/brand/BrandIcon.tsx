@@ -19,6 +19,7 @@ export type BrandKey =
   | 'opencode'
   | 't3code'
   | 'pi'
+  | 'prime-agent'
   | 'crush'
   | 'goose'
   | 'zed'
@@ -107,6 +108,14 @@ const glyphs: Record<BrandKey, BrandGlyph> = {
         fill="currentColor"
         fillRule="evenodd"
       />
+    </svg>
+  ),
+  // Prime Agent — neutral terminal-prompt glyph (no official mark bundled).
+  'prime-agent': ({ size }) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect x="3.5" y="4.5" width="17" height="15" rx="3" stroke="currentColor" strokeWidth={1.7} />
+      <path d="M7.5 9.5 10.5 12l-3 2.5" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M12.5 15h4" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" />
     </svg>
   ),
   // Crush (Charm) — glamour heart in charm pink.
@@ -291,6 +300,7 @@ const MATCHERS: Array<[BrandKey, RegExp]> = [
   ['hermes', /^(?:hermes(?:-agent)?)(?: hermes(?: agent)?)?$/i],
   ['droid', /(^|[^a-z0-9])(droid|factory)([^a-z0-9]|$)/i],
   ['cursor', /(^|[^a-z0-9])cursor([^a-z0-9]|$)/i],
+  ['prime-agent', /(^|[^a-z0-9])prime[-\s]?agent([^a-z0-9]|$)/i],
   ['anthropic', /(anthropic|claude)/i],
   ['codex', /codex/i],
   ['openai', /(openai|chatgpt|gpt|gpt-)/i],

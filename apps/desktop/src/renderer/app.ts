@@ -20,7 +20,7 @@ import {
   saveFloatAutoOpen,
   saveFloatShowRoutedPeer,
 } from './modules/app/float-settings';
-import { initModelPickerSync } from './modules/catalog/picker-sync';
+import { loadFavoriteModels, VPR_FAVORITES_CHANGED_EVENT } from './modules/catalog/favorites';
 import { applyVprRouteToConnectedProxy } from './modules/routing/proxy-sync';
 import { createVprRouteSelection, findCatalogEntry } from './modules/catalog/model-catalog';
 import { resolveVprChatOption } from './modules/chat/projection';
@@ -184,6 +184,28 @@ function syncBuyerRoutingPreferences(): void {
   });
 }
 syncBuyerRoutingPreferences();
+
+// Starred models are mirrored into buyer.favoriteModels so connected apps
+// (`antseed apps connect`, Claude Desktop's buyer route, the desktop's own
+// app connect) list them first, like the in-app dropdown. The first launch
+// after upgrading copies the existing stars.
+let lastQueuedFavoriteModels = '';
+function syncBuyerFavoriteModels(): void {
+  if (!bridge?.setFavoriteModels) return;
+  const favoriteModels = [...loadFavoriteModels()].sort();
+  const serialized = JSON.stringify(favoriteModels);
+  if (serialized === lastQueuedFavoriteModels) return;
+  lastQueuedFavoriteModels = serialized;
+  void bridge.setFavoriteModels(favoriteModels).catch((err: unknown) => ({
+    ok: false, error: err instanceof Error ? err.message : String(err),
+  })).then((result) => {
+    if (result.ok) return;
+    lastQueuedFavoriteModels = '';
+    appendSystemLog(`Starred models were not saved for connected apps: ${result.error ?? 'unknown error'}`);
+  });
+}
+syncBuyerFavoriteModels();
+window.addEventListener(VPR_FAVORITES_CHANGED_EVENT, syncBuyerFavoriteModels);
 
 const {
   clearRouterPluginHint,
@@ -356,10 +378,6 @@ function sweepChatsForSellerPin(provider: string, serviceId: string, peerId: str
       void vprFloatApi.refresh();
     });
 }
-
-// Keep the main process fed with the curated model list (favorites +
-// recommended) so the Telegram /model picker matches the app's dropdown.
-initModelPickerSync({ bridge, uiState });
 
 /* ------------------------------------------------------------------ */
 /*  Runtime activity helpers                                           */

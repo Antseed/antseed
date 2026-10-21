@@ -214,7 +214,7 @@ const AGENT_FAQ = [
   },
   {
     q: 'Which agents work with Antseed?',
-    a: 'Anything that speaks the OpenAI or Anthropic API: Hermes, OpenClaw, Claude Code, Codex, OpenCode, Pi, or your own. Hermes and OpenClaw have maintained setup skills; Claude Code, Codex, and OpenCode also have CLI wrappers (<code>antseed claude</code>, <code>antseed codex</code>, <code>antseed opencode</code>). Any other agent uses its custom provider settings with the base URL and key above. <a href="/docs/agents">Read the agent guide →</a>',
+    a: 'Anything that speaks the OpenAI or Anthropic API: Hermes, OpenClaw, Claude Code, Codex, OpenCode, Pi, or your own. Hermes and OpenClaw have maintained setup skills; Claude Code, Codex, OpenCode and other supported apps connect with <code>antseed apps connect &lt;app&gt;</code>. Any other agent uses its custom provider settings with the base URL and key above. <a href="/docs/agents">Read the agent guide →</a>',
   },
   {
     q: 'My agent runs on a server. Can it still use Antseed?',

@@ -114,41 +114,41 @@ const CODING_POINTS = [
   {icon: 'pt-wallet', text: 'Pay per request, straight to the provider. No subscription.'},
 ];
 
-/* Commands from the integration guides: antseed claude / codex / opencode */
+/* Commands from the integration guides: antseed apps connect */
 const CODING_TERMINAL_BLOCKS: TBlock[] = [
   {
-    comment: '# Run Claude Code through Antseed',
+    comment: '# Point Claude Code at Antseed',
     tokens: [
       {text: '$ ', cls: 'tGreen'},
       {text: 'antseed', cls: 'tPurple'},
       {text: ' '},
-      {text: 'claude', cls: 'tBlue'},
+      {text: 'apps connect', cls: 'tBlue'},
+      {text: ' '},
+      {text: 'claude-code', cls: 'tOrange'},
     ],
   },
   {
-    comment: '# Codex, pinned to one model for this run',
+    comment: '# Codex and OpenCode too',
     tokens: [
       {text: '$ ', cls: 'tGreen'},
       {text: 'antseed', cls: 'tPurple'},
       {text: ' '},
-      {text: 'codex', cls: 'tBlue'},
+      {text: 'apps connect', cls: 'tBlue'},
+      {text: ' '},
+      {text: 'codex', cls: 'tOrange'},
+    ],
+  },
+  {
+    comment: '# Pick the model they use',
+    tokens: [
+      {text: '$ ', cls: 'tGreen'},
+      {text: 'antseed', cls: 'tPurple'},
+      {text: ' '},
+      {text: 'buyer connection set', cls: 'tBlue'},
       {text: ' '},
       {text: '--model', cls: 'tYellow'},
       {text: ' '},
       {text: 'deepseek-v4-flash', cls: 'tOrange'},
-    ],
-  },
-  {
-    comment: '# OpenCode on an open model',
-    tokens: [
-      {text: '$ ', cls: 'tGreen'},
-      {text: 'antseed', cls: 'tPurple'},
-      {text: ' '},
-      {text: 'opencode', cls: 'tBlue'},
-      {text: ' '},
-      {text: '--model', cls: 'tYellow'},
-      {text: ' '},
-      {text: 'gpt-oss-120b', cls: 'tOrange'},
     ],
   },
 ];
@@ -160,7 +160,7 @@ function PointAtLocalhost() {
       lead={
         <>
           Your local endpoint at <code className={styles.inlineCode}>localhost:8377</code> speaks
-          the OpenAI and Anthropic APIs. One command launches your tool through it.
+          the OpenAI and Anthropic APIs. One command points your tool at it.
         </>
       }
       points={CODING_POINTS}

@@ -207,6 +207,8 @@ export interface BuyerCLIConfig {
   minPeerReputation: number;
   /** Model-only auto-routing preferences shared by the proxy and Desktop. */
   routingPreferences: ModelRoutingPreferences;
+  /** Models starred in the desktop app (canonical model keys); listed first in connected apps' model pickers. */
+  favoriteModels?: string[];
   /** Local proxy listen port */
   proxyPort: number;
   /** How often the buyer refreshes its peer list from the DHT in the background (ms) */

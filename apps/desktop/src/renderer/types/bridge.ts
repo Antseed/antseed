@@ -328,6 +328,8 @@ export type DesktopBridge = {
   updateConfig?: (
     config: Record<string, unknown>,
   ) => Promise<DataResult>;
+  /** Saves the starred models to buyer.favoriteModels for connected apps' model lists. */
+  setFavoriteModels?: (favoriteModels: string[]) => Promise<DataResult>;
   scanNetwork?: () => Promise<DataResult>;
 
   onLog?: (handler: (event: LogEvent) => void) => () => void;
@@ -357,7 +359,6 @@ export type DesktopBridge = {
   chatAiSelectPeer?: (payload: { conversationId?: string | null; peerId?: string | null; service?: string | null; provider?: string | null; routeMode?: 'auto' | 'pinned' | null }) => Promise<{ ok: boolean; error?: string }>;
   chatGetRoutingServices?: () => Promise<{ ok: boolean; services?: import('../../shared/routing-selection.js').RoutingServiceEntry[]; error?: string }>;
   chatSetBuyerDefaultRoute?: (payload: { selection: import('../../shared/routing-selection.js').DesktopRoutingSelection }) => Promise<{ ok: boolean; error?: string }>;
-  chatSyncModelPicker?: (payload: import('../../shared/model-picker.js').ModelPickerSnapshot) => Promise<{ ok: boolean }>;
   onChatDefaultRouteChanged?: (handler: (data: { peerId: string; service: string; provider: string | null; router?: import('../../shared/routing-selection.js').DesktopRouterSelection }) => void) => () => void;
   chatAiGetProxyStatus?: () => Promise<{ ok: boolean; data: { running: boolean; port: number } }>;
   apiTryProxyRequest?: (params: {
@@ -596,6 +597,9 @@ export type VprFloatConversation = {
   sessionShort: string;
   /** Service id of the pinned model, or null when following the default route. */
   pinnedServiceId: string | null;
+  /** Service id the chat's latest request went to (set as soon as a seller is
+      chosen, so an in-app model switch shows before the answer finishes). */
+  routedServiceId: string | null;
   lastActiveAt: number;
   /** True while the chat is receiving traffic (recent request activity) —
       drives the green pulse on its row. */

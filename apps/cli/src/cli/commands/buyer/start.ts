@@ -557,6 +557,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         dataDir: globalOpts.dataDir,
         configPath: globalOpts.config,
         routingPreferences: effectiveBuyerConfig.routingPreferences,
+        favoriteModels: effectiveBuyerConfig.favoriteModels ?? [],
         minPeerReputation: effectiveBuyerConfig.minPeerReputation,
         settingOverrides: buyerSettingOverrides({ buyerOverrides: runtimeOverrides, verifierFlags }),
         backgroundRefreshIntervalMs: effectiveBuyerConfig.peerRefreshIntervalMs,

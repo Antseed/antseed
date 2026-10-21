@@ -4,12 +4,14 @@ import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import chalk from 'chalk'
 import { getGlobalOptions } from '../types.js'
+import { isValidRoutedModelTarget } from '../../../proxy/request-utils.js'
 
 interface BuyerStateFile {
   state: 'connected' | 'stopped'
   pid: number
   port: number
   pinnedPeerId: string | null
+  defaultRoutedModel?: string | null
   [key: string]: unknown
 }
 
@@ -66,7 +68,7 @@ export function registerBuyerConnectionCommand(buyerCmd: Command): void {
 
   connection
     .command('get')
-    .description('Show current session state (pinned peer)')
+    .description('Show current session state (pinned peer, default route)')
     .action(async () => {
       const globalOpts = getGlobalOptions(buyerCmd)
       const state = await readStateFile(globalOpts.dataDir)
@@ -79,18 +81,20 @@ export function registerBuyerConnectionCommand(buyerCmd: Command): void {
       console.log(`PID:           ${state.pid}`)
       console.log(`Port:          ${state.port}`)
       console.log(`Pinned peer:   ${state.pinnedPeerId ? chalk.cyan(state.pinnedPeerId) : chalk.dim('none')}`)
+      console.log(`Default route: ${state.defaultRoutedModel ? chalk.cyan(state.defaultRoutedModel) : chalk.dim('none')}`)
     })
 
   connection
     .command('set')
-    .description('Update the session peer pin on the running buyer proxy')
+    .description('Update the peer pin or default route on the running buyer proxy')
     .option('--peer <peerId>', 'pin all requests to a specific peer ID (40-char hex EVM address)')
+    .option('--model <model>', 'default route for the "antseed" model that connected apps use: <service> or <peerId>@<service>')
     .action(async (options) => {
       const globalOpts = getGlobalOptions(buyerCmd)
       const state = await requireRunningBuyer(globalOpts.dataDir)
 
-      if (options.peer === undefined) {
-        console.error(chalk.red('Error: specify --peer.'))
+      if (options.peer === undefined && options.model === undefined) {
+        console.error(chalk.red('Error: specify --peer and/or --model.'))
         process.exit(1)
       }
 
@@ -103,22 +107,33 @@ export function registerBuyerConnectionCommand(buyerCmd: Command): void {
         state.pinnedPeerId = peer.toLowerCase()
       }
 
+      if (options.model !== undefined) {
+        const model = String(options.model).trim()
+        if (!isValidRoutedModelTarget(model)) {
+          console.error(chalk.red('Error: --model must be <service> or <peerId>@<service>.'))
+          process.exit(1)
+        }
+        state.defaultRoutedModel = model
+      }
+
       await writeStateFile(globalOpts.dataDir, state)
 
       if (options.peer !== undefined) console.log(chalk.green(`Pinned peer set to: ${state.pinnedPeerId}`))
+      if (options.model !== undefined) console.log(chalk.green(`Default route set to: ${state.defaultRoutedModel}`))
     })
 
   connection
     .command('clear')
-    .description('Clear the session peer pin')
+    .description('Clear the session peer pin and default route')
     .action(async () => {
       const globalOpts = getGlobalOptions(buyerCmd)
       const state = await requireRunningBuyer(globalOpts.dataDir)
 
       state.pinnedPeerId = null
+      state.defaultRoutedModel = null
 
       await writeStateFile(globalOpts.dataDir, state)
 
-      console.log(chalk.green('Peer pin cleared.'))
+      console.log(chalk.green('Peer pin and default route cleared.'))
     })
 }

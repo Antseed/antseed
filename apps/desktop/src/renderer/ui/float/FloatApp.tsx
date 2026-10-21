@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { ArrowExpand02Icon, ArrowRight01Icon, ArrowShrink02Icon, ArrowUpRight01Icon, Cancel01Icon, LeftToRightListBulletIcon } from '@hugeicons/core-free-icons';
 import type { VprFloatApp, VprFloatData } from '../../types/bridge';
-import { conversationAge, conversationMatchesApp } from '../../modules/routing/conversations';
+import { catalogModelLabel, conversationAge, conversationMatchesApp } from '../../modules/routing/conversations';
 import { displayToolName } from '../../modules/routing/tool-names';
 import { VprMark } from '../components/VprLogo';
 import { BrandIcon, isThemeAwareAppBrand, resolveBrandKey } from '@antseed/ui';
@@ -176,14 +176,13 @@ export function FloatApp() {
   // "Not connected" status and the dropdown hides recent chats.
   const runtimeOn = data?.runtimeOn ?? true;
 
-  // The model that served the most recent chat (its pin, set by the buyer on
-  // the chat's first request) — shown on the pill face instead of the
-  // default selection.
+  // The model the most recent chat's latest request went to — shown on the
+  // pill face instead of the default selection.
   const recentModelLabel = useMemo(() => {
-    // Newest chat with a resolved pin — brand-new chats have none yet.
-    const recent = conversations.find((chat) => chat.pinnedServiceId)?.pinnedServiceId;
+    // Newest chat with a routed request — brand-new chats have none yet.
+    const recent = conversations.find((chat) => chat.routedServiceId)?.routedServiceId;
     if (!recent) return null;
-    return models.find((model) => model.serviceId === recent)?.label ?? recent;
+    return catalogModelLabel(models, recent);
   }, [conversations, models]);
 
   // The pill leads with the Antseed identity — the badge is always the
@@ -325,12 +324,10 @@ export function FloatApp() {
               ) : conversations.map((chat) => {
                 const app = appForTool(chat.tool);
                 const appLabel = app?.displayName ?? displayToolName(chat.tool);
-                // Name the model the chat runs on: its pin (set by the buyer
-                // on the chat's first request), falling back to the default
-                // route for chats that haven't resolved a request yet.
-                const pinnedLabel = chat.pinnedServiceId
-                  ? (models.find((model) => model.serviceId === chat.pinnedServiceId)?.label ?? chat.pinnedServiceId)
-                  : null;
+                // Name the model the chat's latest request went to (set by the
+                // buyer as soon as a seller is chosen, so an in-app switch shows
+                // before the answer), or none for chats without a request yet.
+                const pinnedLabel = chat.routedServiceId ? catalogModelLabel(models, chat.routedServiceId) : null;
                 return (
                   <button
                     type="button"

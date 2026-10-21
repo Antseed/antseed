@@ -1,4 +1,5 @@
 import type { DiscoverRow } from '../../core/state';
+import { sameCanonicalModel } from '../catalog/model-identity';
 import type { BuyerConversationSummary } from '../../types/bridge';
 import { shortPeerId } from './tools';
 
@@ -24,6 +25,23 @@ export function conversationPinnedServiceId(record: BuyerConversationSummary): s
   if (!model) return null;
   const at = model.indexOf('@');
   return at > 0 ? model.slice(at + 1) || null : model;
+}
+
+/** Service id of the route the chat's latest request went to (set as soon as a
+    seller is chosen), falling back to the pin. */
+export function conversationRoutedServiceId(record: BuyerConversationSummary): string | null {
+  const model = (record.lastModel || record.pinnedModel)?.trim() ?? '';
+  if (!model) return null;
+  const at = model.indexOf('@');
+  return at > 0 ? model.slice(at + 1) || null : model;
+}
+
+/** Catalog label for a seller's service id, matching seller spellings like
+    `opus-5.5` to the canonical catalog entry. */
+export function catalogModelLabel(catalog: ReadonlyArray<{ serviceId: string; label: string }>, serviceId: string): string {
+  const entry = catalog.find((candidate) => candidate.serviceId === serviceId)
+    ?? catalog.find((candidate) => sameCanonicalModel(candidate.serviceId, serviceId));
+  return entry?.label ?? serviceId;
 }
 
 /** Peer id of the chat's pinned route, or null while unpinned. */

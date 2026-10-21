@@ -528,6 +528,9 @@ function mergeBuyerConfig(
       defaultRoutingPreferences,
       value['routingPreferences'],
     ),
+    ...(Array.isArray(value['favoriteModels'])
+      ? { favoriteModels: value['favoriteModels'].filter((key): key is string => typeof key === 'string' && key.length > 0) }
+      : {}),
     proxyPort: typeof value['proxyPort'] === 'number'
       ? value['proxyPort']
       : defaults.proxyPort,

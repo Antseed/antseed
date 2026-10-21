@@ -17,7 +17,6 @@ import {
   type StartOptions,
 } from './runtime/process-manager.js';
 import { registerPiChatHandlers } from './chat/engine.js';
-import { setClaudeDesktopGatewayModelSource } from './connected-apps/claude-desktop-gateway.js';
 import { emitChatEvent } from './chat/event-bus.js';
 import { createTelegramBridge } from './telegram/bridge.js';
 import { ensureSecureIdentity, getSecureIdentity, hasStoredIdentity, secureIdentityEnv } from './identity.js';
@@ -92,6 +91,7 @@ import {
   DEFAULT_SYSTEM_PROXY_PORT,
 } from './system-proxy/profiles.js';
 import { resolveBuyerProxyPort } from './runtime/active-config.js';
+import { waitForBuyerTextModels } from './connected-apps/picker-models.js';
 import { createTelemetryService } from './telemetry/telemetry.js';
 import { setTelemetryService } from './telemetry/runtime.js';
 import { firstChatDepositSnapshot } from './telemetry/events.js';
@@ -108,6 +108,9 @@ export type { InstalledPlugin } from './runtime/plugins.js';
 // entry, and the default userData path derives from it too. Renaming it
 // rotates the key and orphans every existing identity.enc. User-visible
 // surfaces use APP_NAME below instead.
+
+// Bounded wait at launch for the buyer's model list before restoring connected apps.
+const CONNECTED_APP_MODELS_WAIT_MS = 15_000;
 
 let isQuitting = false;
 let isInstallingUpdate = false;
@@ -404,15 +407,6 @@ const piChatEngine = registerPiChatHandlers({
   },
 });
 
-// The Claude Desktop gateway advertises the same curated picker rows the
-// in-app dropdown (and Telegram bridge) offer, behind Claude's model ids.
-setClaudeDesktopGatewayModelSource(() => (
-  (piChatEngine.getModelPicker()?.models ?? []).map((model) => ({
-    label: model.label,
-    model: model.serviceId,
-  }))
-));
-
 // ── Telegram bridge ──
 const telegramBridge = createTelegramBridge({
   engine: piChatEngine,
@@ -535,7 +529,14 @@ app.whenReady().then(async () => {
       : undefined;
     // Sequenced after the fail-open above, or the clear could land after the
     // child has already re-armed the setting and silently disconnect it.
-    void systemProxyFailOpen.then(() => restoreSystemProxyProfilesAtLaunch({
+    // Also waits (bounded) for the buyer to list models, so the restored app
+    // configs list the curated models instead of only Auto.
+    void systemProxyFailOpen.then(async () => {
+      const modelsReady = await waitForBuyerTextModels(resolveBuyerProxyPort, CONNECTED_APP_MODELS_WAIT_MS);
+      if (!modelsReady) {
+        appendLog('system-proxy', 'system', 'Model list not ready; restoring connected apps with Auto only until the next connect.');
+      }
+    }).then(() => restoreSystemProxyProfilesAtLaunch({
       peerId: restorePeerId,
       port: DEFAULT_SYSTEM_PROXY_PORT,
       profiles: restoredProfiles,

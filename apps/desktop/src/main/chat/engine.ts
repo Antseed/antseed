@@ -53,7 +53,7 @@ import {
   type ChatServiceProtocol,
 } from './service-catalog.js';
 import { enrichDomainVerificationLinks } from '../connected-apps/domain-site-metadata.js';
-import { isNativeVideoProtocol, resolveChainConfig } from '@antseed/node';
+import { resolveChainConfig } from '@antseed/node';
 import { collectPeerVerificationLinks } from '@antseed/node/discovery';
 import { augmentChatToolPath } from './tool-env.js';
 import type { AiConversation } from './conversation-types.js';
@@ -71,10 +71,6 @@ import {
 } from './service-discovery.js';
 import { isPortReachable, resolveProxyPort } from './proxy-service.js';
 import { isChatServiceProtocol } from './normalize.js';
-import {
-  normalizeModelPickerSnapshot,
-  type ModelPickerSnapshot,
-} from '../../shared/model-picker.js';
 import {
   isPersistedPeerBindingPinned,
   PiConversationStore,
@@ -114,26 +110,10 @@ export type PiChatEngine = {
   /** Resolves a pending tool approval; returns false when the id is unknown (already decided). */
   resolveToolApproval(id: string, decision: ToolApprovalDecision): boolean;
   getProxyPort(): Promise<number>;
-  /**
-   * Discovered network service catalog, sorted the way the chat UI lists
-   * models and narrowed to entries within the buyer's routing policy — the
-   * buyer proxy refuses pinned peers outside the pricing limits, so offering
-   * them would only manufacture 502s.
-   */
-  discoverServiceCatalog(): Promise<ChatServiceCatalogEntry[]>;
-  /**
-   * Latest curated model-picker list pushed by the renderer (favorites first,
-   * then recommended — the same rows as the in-app model dropdown). Null until
-   * the renderer's first push after launch.
-   */
-  getModelPicker(): ModelPickerSnapshot | null;
+  /** The conversation's model (service id), or null when it does not exist. */
+  getConversationModel(conversationId: string): Promise<string | null>;
   /** Rebinds a conversation's model/peer — same semantics as the chat UI's model dropdown. */
   selectPeer(request: ChatPeerSelectionRequest): Promise<{ ok: boolean; error?: string }>;
-  /**
-   * Sets the buyer default route (the sticky "current model" new conversations
-   * inherit) and tells the renderer so the UI selection follows suit.
-   */
-  setDefaultRoute(peerId: string, service: string, provider?: string): Promise<{ ok: boolean; error?: string }>;
 };
 
 export function registerPiChatHandlers({
@@ -405,29 +385,6 @@ export function registerPiChatHandlers({
 
     return serviceCatalogRefreshPromise;
   };
-
-  // The catalog offered to non-renderer frontends (Telegram): only entries
-  // the buyer routing policy will actually accept. The renderer applies the
-  // same filter in chat:ai-list-discover-rows; without it here, /model
-  // offered peers the buyer proxy then rejected with a policy 502.
-  const discoverPolicyAllowedCatalog = async (): Promise<ChatServiceCatalogEntry[]> => {
-    const entries = await refreshServiceCatalogFromNetwork();
-    const buyerMaxPricing = await loadBuyerMaxPricingDefaults(configPath);
-    const eligibleEntries = entries.filter((entry) => isCatalogEntryAllowedByBuyerMax(entry, buyerMaxPricing));
-    lastBuyerEligibleServiceCatalogEntries = eligibleEntries;
-    // Telegram picks chat models from this list; native video services
-    // cannot run through the chat pipeline.
-    return eligibleEntries.filter((entry) => !isNativeVideoProtocol(entry.protocol));
-  };
-
-  // Curated model-picker snapshot pushed by the renderer — see
-  // shared/model-picker.ts. Main only caches the latest push.
-  let modelPickerSnapshot: ModelPickerSnapshot | null = null;
-  ipcMain.handle('chat:sync-model-picker', (_event, payload: unknown) => {
-    const normalized = normalizeModelPickerSnapshot(payload);
-    if (normalized) modelPickerSnapshot = normalized;
-    return { ok: normalized != null };
-  });
 
   const resolveProtocolForSend = async (serviceId: string): Promise<ChatServiceProtocol> => {
     const normalizedServiceId = serviceId.trim().toLowerCase();
@@ -1098,13 +1055,7 @@ export function registerPiChatHandlers({
     abort: abortConversations,
     resolveToolApproval,
     getProxyPort: () => resolveProxyPort(configPath),
-    discoverServiceCatalog: discoverPolicyAllowedCatalog,
-    getModelPicker: () => modelPickerSnapshot,
+    getConversationModel: async (conversationId) => (await store.get(conversationId))?.service ?? null,
     selectPeer: applyPeerSelection,
-    setDefaultRoute: async (peerId, service, provider) => {
-      const result = await setBuyerDefaultRoute({ kind: 'model', model: peerId ? `${peerId}@${service}` : service });
-      if (result.ok) sendToRenderer('chat:default-route-changed', { peerId, service, provider: provider ?? null });
-      return result;
-    },
   };
 }

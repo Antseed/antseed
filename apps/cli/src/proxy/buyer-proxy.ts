@@ -2,6 +2,7 @@ import { nativeVideoRoute, type NativeVideoProtocol } from '@antseed/api-adapter
 import { ResourceRoutes } from './resource-routes.js'
 import { prepareVideoRequest, recordVideoAcceptance } from './native-video-proxy.js'
 import { downloadVideo } from './video-download.js'
+import { CLAUDE_DESKTOP_SOURCE, ClaudeDesktopRoute, claudeDesktopSubpath } from './claude-desktop-route.js'
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { buildRoutingServices, findPinnedRoutingService } from './routing-services.js'
@@ -53,6 +54,9 @@ import {
 } from '@antseed/node'
 import { encodeServedSelection, ROUTE_SELECTION_HEADER, type RouteSelection, type ServedSelection } from './route-selection.js'
 import { canonicalModelKey } from '@antseed/node/model-identity'
+import { MODEL_PICKER_TOOL_SLUGS } from '@antseed/connected-apps'
+import { curatedPickerModels } from '@antseed/node/model-lineup'
+import { DEFAULT_MODEL_ROUTING_PREFERENCES } from '@antseed/node/model-routing'
 import {
   createStreamingAdapter,
   detectRequestServiceApiProtocol,
@@ -74,6 +78,7 @@ import {
   substituteRoutedModelAlias,
   overrideRoutedModelInBody,
   ROUTED_MODEL_ALIAS,
+  isValidRoutedModelTarget,
   SYSTEM_PROXY_SOURCE_HEADER,
   SYSTEM_ROUTED_MODEL_HEADER,
   BUYER_IDENTITY_HEADER,
@@ -214,6 +219,8 @@ export interface BuyerProxyConfig {
   configPath?: string
   /** Price + trust preferences used for model-only automatic routing. */
   routingPreferences?: ModelRoutingPreferences
+  /** Models starred in the desktop app (`buyer.favoriteModels`), listed first in Claude Desktop's picker. */
+  favoriteModels?: string[]
   /** How often to refresh the peer list from DHT in the background (ms). Default: 300000 (5 min) */
   backgroundRefreshIntervalMs?: number
   /**
@@ -458,16 +465,6 @@ async function waitForRetry(delayMs: number, signal: AbortSignal): Promise<boole
     }, delayMs)
     signal.addEventListener('abort', onAbort, { once: true })
   })
-}
-
-/**
- * A routed-model target is either a bare `<service>` (automatic peer
- * selection) or an explicit `<peerId>@<service>` pin. The `antseed` alias
- * itself can never be a target — it would recurse.
- */
-function isValidRoutedModelTarget(value: string): boolean {
-  if (value === ROUTED_MODEL_ALIAS) return false
-  return !value.includes('@') || parsePeerPinnedService(value) !== null
 }
 
 function sameRoutingServiceTarget(a: RoutingServiceTarget | undefined, b: RoutingServiceTarget | undefined): boolean {
@@ -1151,6 +1148,11 @@ function buyerIdentityName(value: string | undefined): string {
   return value?.trim().toLowerCase() ?? ''
 }
 
+/** Tool slugs carry client variants, e.g. Codex reports `codex-exec`. */
+function toolMatchesApp(tool: string, app: string): boolean {
+  return tool === app || tool.startsWith(`${app}-`)
+}
+
 function sendUnknownBuyerIdentity(res: ServerResponse): void {
   sendJson(res, 404, { ok: false, error: 'Unknown buyer identity' })
 }
@@ -1165,6 +1167,7 @@ export class BuyerProxy {
   private readonly _depositLog: DepositLog
   private readonly _stateFile: string
   private readonly _configPath: string | null
+  private readonly _claudeDesktop: ClaudeDesktopRoute
   private _stateFileWatching = false
   private _configFileWatching = false
   private _pinnedPeer: string | null
@@ -1192,6 +1195,7 @@ export class BuyerProxy {
   private _stateWatchDebounce: ReturnType<typeof setTimeout> | null = null
   private _configWatchDebounce: ReturnType<typeof setTimeout> | null = null
   private _routingPreferences: ModelRoutingPreferences | null
+  private _favoriteModels: string[]
 
   private _stateWriteChain: Promise<void> = Promise.resolve()
   private readonly _resourceRoutes = new ResourceRoutes()
@@ -1289,6 +1293,7 @@ export class BuyerProxy {
     this._stateDir = config.dataDir
     this._depositLog = new DepositLog(config.dataDir)
     this._stateFile = join(config.dataDir, 'buyer.state.json')
+    this._claudeDesktop = new ClaudeDesktopRoute(join(config.dataDir, 'claude-desktop.slots.json'))
     // Kept on disk so spend signed just before a restart still reaches the gateway.
     this._spendAttribution = new SpendAttributionFeed(undefined, {
       path: join(config.dataDir, SPEND_ATTRIBUTION_DB_FILE),
@@ -1304,6 +1309,7 @@ export class BuyerProxy {
           blockedPeerIds: [...config.routingPreferences.blockedPeerIds],
         }
       : null
+    this._favoriteModels = [...(config.favoriteModels ?? [])]
     this._now = config.now ?? (() => Date.now())
     this._adaptiveRouting = { ...config.adaptiveRouting }
     this._server = createServer((req, res) => {
@@ -2360,6 +2366,7 @@ export class BuyerProxy {
         allowedPeerIds: [...next.allowedPeerIds],
         blockedPeerIds: [...next.blockedPeerIds],
       }
+      this._favoriteModels = [...(config.buyer.favoriteModels ?? [])]
       // `minPeerReputation` (like max pricing) is not reloaded: the router
       // plugin enforces it with the value it started with, so it applies on
       // restart only, and the proxy keeps the same value to stay in step.
@@ -3648,15 +3655,47 @@ export class BuyerProxy {
       && policyExclusionReasons(this._buyerHardPolicy(), facts).length === 0
   }
 
+  /**
+   * Claude Desktop's picker: network models behind Claude's own ids (see
+   * claude-desktop-route.ts), the same curated list every connected app gets
+   * (@antseed/node/model-lineup).
+   */
+  private async _handleClaudeDesktopModels(res: ServerResponse): Promise<void> {
+    const networkModels = buildNetworkModels(await this._getPeers(), this._now(), {
+      routingPreferences: this._routingPreferences,
+      peerHealth: this._peerHealth,
+    })
+    const curated = curatedPickerModels(networkModels, {
+      preferences: this._routingPreferences ?? DEFAULT_MODEL_ROUTING_PREFERENCES,
+      favoriteModels: this._favoriteModels,
+      defaultRoutedModel: this._defaultRoutedModel,
+    })
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(this._claudeDesktop.modelsResponse(curated)))
+  }
+
   private async _handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const method = req.method ?? 'GET'
-    const path = req.url ?? '/'
+    let path = req.url ?? '/'
 
     log(`${method} ${path}`)
 
     // Control-plane endpoints — handle before collecting proxy body
     if (path.startsWith('/_antseed/')) {
       return this._handleControlPlane(req, res, method, path)
+    }
+
+    const claudeDesktopPath = claudeDesktopSubpath(path)
+    if (claudeDesktopPath !== null) {
+      if (method === 'GET' && claudeDesktopPath === '/v1/models') {
+        return this._handleClaudeDesktopModels(res)
+      }
+      if (method !== 'POST' || !claudeDesktopPath.startsWith('/v1/messages')) {
+        res.writeHead(404, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ type: 'error', error: { type: 'not_found_error', message: 'Not found' } }))
+        return
+      }
+      path = claudeDesktopPath
     }
 
     // Only proxy known API paths — reject everything else with 404
@@ -3681,19 +3720,20 @@ export class BuyerProxy {
     for await (const chunk of req) {
       chunks.push(chunk as Buffer)
     }
-    const body = Buffer.concat(chunks)
+    const rawBody = Buffer.concat(chunks)
 
     // `/v1/messages/count_tokens` sits under the completion prefix but is not
     // a turn — Anthropic tools call it before most turns to size the context.
     // Answering it locally keeps it off the wire: routed to a seller it costs
     // a full inference and answers in a shape the caller cannot read.
     if (method === 'POST' && isCountTokensPath(normalizedPath)) {
-      const inputTokens = estimateAnthropicPromptTokens(new Uint8Array(body))
+      const inputTokens = estimateAnthropicPromptTokens(new Uint8Array(rawBody))
       log(`count_tokens answered locally: ${inputTokens} tokens`)
       res.writeHead(200, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ input_tokens: inputTokens }))
       return
     }
+    const body = claudeDesktopPath !== null ? this._claudeDesktop.rewriteRequest(rawBody, { routingNote: true }) : rawBody
 
     // Build serialized request. Client credentials (provider keys, cookies)
     // never leave the machine — see credential-headers.ts for why no seller
@@ -3752,6 +3792,9 @@ export class BuyerProxy {
     // it never reaches a seller.
     const systemRoutedModel = headers[SYSTEM_ROUTED_MODEL_HEADER] === '1'
     delete headers[SYSTEM_ROUTED_MODEL_HEADER]
+    // Claude Desktop's chats are attributed by route, not by its session
+    // header, which it shares with T3 Code's Claude Code sessions.
+    if (claudeDesktopPath !== null) headers[SYSTEM_PROXY_SOURCE_HEADER] = CLAUDE_DESKTOP_SOURCE
     // Internal marker from the API-key gateway: report this request's signed
     // spend under the gateway's tag. Stripped so it never reaches a seller.
     const spendAttributionTag = parseSpendAttributionTag(headers[SPEND_ATTRIBUTION_HEADER])
@@ -3871,6 +3914,8 @@ export class BuyerProxy {
     const storedAutoRoute = storedConversation?.peerSource === 'auto' && storedConversation.pinnedModel
       ? parsePeerPinnedService(storedConversation.pinnedModel)
       : null
+    // Auto uses this chat's remembered model; the global default only starts
+    // new chats. Concrete picker requests still carry the model to switch to.
     const chatPinnedModel = storedConversation?.peerSource === 'user'
       ? storedConversation.pinnedModel
       : storedAutoRoute?.service ?? storedConversation?.pinnedModel ?? null
@@ -4127,10 +4172,8 @@ export class BuyerProxy {
       storedConversation, conversationIdentity, conversationBody } = context
     let serializedReq = context.request
     let trackedConversationId = storedConversation?.id ?? null
-    // Resolve the `antseed` model alias to the session's default route first,
-    // so the regular `<peerId>@<service>` pin rewrite below picks up the
-    // substituted value. Tool configs written by the desktop carry the alias
-    // so route changes apply to running sessions without config rewrites.
+    // Resolve the `antseed` alias to the chat's model, or the global default
+    // for a new chat, before rewriting any `<peerId>@<service>` pin.
     const aliasResult = substituteRoutedModelAlias(serializedReq.body, serializedReq.headers, effectiveRoutedModel)
     if (aliasResult.aliasRequested && !aliasResult.substituted) {
       log(`Request rejected: model alias "${ROUTED_MODEL_ALIAS}" with no default route set`)
@@ -4202,7 +4245,10 @@ export class BuyerProxy {
           || (aliasResult.substituted && parsePeerPinnedService(effectiveRoutedModel ?? ''))
           || (chatPinOverrideApplied && parsePeerPinnedService(chatPinnedModel ?? ''))
         )
-        if (explicitConversationPin) {
+        // Picker requests don't create user locks: successful concrete picks
+        // can update the automatic chat route without replacing a desktop pin.
+        const appPicker = MODEL_PICKER_TOOL_SLUGS.some((app) => toolMatchesApp(conversationIdentity.tool, app))
+        if (explicitConversationPin && !appPicker) {
           this._conversations.setPinnedModel(tracked.id, resolvedModel, 'user')
         }
         trackedConversationId = tracked.id
@@ -4431,6 +4477,9 @@ export class BuyerProxy {
             + `effective=${selected.effectiveReputationScore ?? 'unknown'} peer=${index + 1}/${candidates.length} `
             + `attempt=${peerAttempt + 1}/${MODEL_RATE_LIMIT_MAX_ATTEMPTS_PER_PEER}`,
           )
+          if (trackedConversationId) {
+            this._conversations.markRouting(trackedConversationId, `${selected.peer.peerId}@${selected.serviceId}`)
+          }
           const result = await this._dispatchToPeer(
             res,
             selected.request,
@@ -4712,6 +4761,9 @@ export class BuyerProxy {
     }
 
     log(`Using pinned peer ${selectedPeer.peerId.slice(0, 12)}...`)
+    if (trackedConversationId && pinnedServiceId) {
+      this._conversations.markRouting(trackedConversationId, `${selectedPeer.peerId}@${pinnedServiceId}`)
+    }
     const result = await this._dispatchToPeer(
       res,
       pinnedRequest,

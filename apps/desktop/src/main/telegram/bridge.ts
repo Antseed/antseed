@@ -27,17 +27,15 @@ import {
   saveTelegramSettings,
   type TelegramSettings,
 } from './store.js';
-import { LOCALHOST_URL } from '../constants.js';
 import { asErrorMessage } from '../utils.js';
-
-function telegramModelPickerText(current: string, hasModels: boolean): string {
-  const explanation = current === 'antseed'
-    ? 'A router is active for new chats; there is no fixed default model. Picking a model leaves router mode.\n\n'
-    : '';
-  return explanation + (hasModels
-    ? 'Pick a model — it applies to this chat and becomes the default in the app:'
-    : 'No models discovered yet — try again in a moment.');
-}
+import { connectedAppPickerModels } from '../connected-apps/picker-models.js';
+import {
+  ANTSEED_AUTO_MODEL,
+  telegramModelButtonText,
+  telegramModelOptions,
+  telegramModelPickerText,
+  type TelegramModelOption,
+} from './model-picker.js';
 
 export type TelegramBridgeStatus = {
   configured: boolean;
@@ -82,12 +80,12 @@ const WELCOME_TEXT = [
   OFFLINE_NOTE,
   '',
   '/new — start a fresh conversation',
-  '/model — choose which model answers',
+  '/model — choose which model answers this chat (Antseed Auto follows the AI VPN)',
   '/stop — cancel the reply in progress',
 ].join('\n');
 
 /** Inline keyboards get unwieldy past this. Sized for the app's dropdown:
- *  starred favorites plus the ~12-slot recommended lineup. */
+ *  Antseed Auto, starred favorites and the ~12-slot recommended lineup. */
 const MODEL_PICK_LIMIT = 24;
 
 const BOT_COMMANDS = [
@@ -170,7 +168,7 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
   /** Snapshot behind the /model keyboard; gen invalidates stale keyboards. */
   let modelPick: {
     gen: number;
-    options: Array<{ id: string; label: string; peerId: string; provider: string; favorite?: boolean }>;
+    options: TelegramModelOption[];
     chatId: number;
     messageId: number;
   } | null = null;
@@ -377,109 +375,30 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
 
   // ── Inbound Telegram updates ────────────────────────────────────────
 
-  const resolveDefaultRoute = async (): Promise<{ peerId?: string; service?: string }> => {
-    let bareModel = '';
-    let routed: { peerId: string; service: string } | null = null;
-    try {
-      const port = await engine.getProxyPort();
-      const response = await fetch(`${LOCALHOST_URL}:${port}/_antseed/route`, { signal: AbortSignal.timeout(5_000) });
-      if (!response.ok) throw new Error(`Read route failed (${response.status})`);
-      const body = await response.json() as { ok?: boolean; model?: string | null; router?: unknown };
-      if (!body.model && body.router) return { service: 'antseed' };
-      const model = typeof body.model === 'string' ? body.model.trim() : '';
-      const at = model.indexOf('@');
-      if (at > 0) {
-        routed = { peerId: model.slice(0, at), service: model.slice(at + 1) };
-      } else {
-        bareModel = model;
-      }
-    } catch {
-      // Buyer proxy offline or no default route — fall through to the catalog.
-    }
-    try {
-      const entries = await engine.discoverServiceCatalog();
-      if (routed) {
-        // A stored route can point at a peer the buyer routing policy now
-        // rejects (seller repriced, limits changed) — the proxy would 502
-        // every message. Trust it only while the policy-filtered catalog
-        // still lists the pair; an empty catalog just means discovery isn't
-        // ready yet, so keep the route in that case.
-        const peerId = routed.peerId.toLowerCase();
-        const service = routed.service.trim().toLowerCase();
-        const allowed = entries.length === 0 || entries.some((entry) => (
-          entry.peerId?.toLowerCase() === peerId && entry.id.trim().toLowerCase() === service
-        ));
-        if (allowed) return routed;
-        log(`Default route ${routed.peerId.slice(0, 12)}...@${routed.service} is outside the buyer routing policy — picking a fresh default.`);
-        bareModel = routed.service;
-      }
-      if (bareModel) return { service: bareModel };
-      // No stored route (fresh install, or a route the policy rejects).
-      // Mirror the app's picker: the renderer-pushed curated list (favorites
-      // first) when available, otherwise the first discovered catalog entry.
-      const picked = (engine.getModelPicker()?.models ?? []).find((model) => model.routePeerId);
-      if (picked) return { service: picked.serviceId };
-      const chosen = entries.find((entry) => entry.peerId);
-      if (chosen) return { service: chosen.id };
-    } catch {
-      // Discovery unavailable — the engine will surface the buyer error.
-    }
-    return {};
+  /** Model of the Telegram chat ('' before the first message: new chats start on Antseed Auto). */
+  const currentChatModel = async (): Promise<string> => {
+    const conversationId = settings?.activeConversationId;
+    if (!conversationId) return '';
+    return (await engine.getConversationModel(conversationId).catch(() => null)) ?? '';
   };
 
   const showModelPicker = async (): Promise<void> => {
-    const options: NonNullable<typeof modelPick>['options'] = [];
-    // The renderer-pushed curated list — the exact rows the app's model
-    // dropdown shows (starred favorites first, then the recommended lineup).
-    const picker = engine.getModelPicker();
-    for (const model of picker?.models ?? []) {
-      if (!model.routePeerId) continue;
-      options.push({
-        id: model.routeServiceId ?? model.serviceId,
-        label: model.label || model.serviceId,
-        peerId: model.routePeerId,
-        provider: model.routeProvider ?? model.provider,
-        favorite: model.favorite,
-      });
-      if (options.length >= MODEL_PICK_LIMIT) break;
-    }
-    if (options.length === 0) {
-      // No renderer push yet (early after launch) — fall back to the
-      // policy-filtered catalog: one row per model, best-ranked peer first.
-      let entries: Awaited<ReturnType<PiChatEngine['discoverServiceCatalog']>> = [];
-      try {
-        entries = await engine.discoverServiceCatalog();
-      } catch {
-        // Fall through to the empty-catalog message.
-      }
-      const seen = new Set<string>();
-      for (const entry of entries) {
-        if (!entry.peerId) continue;
-        const key = entry.id.trim().toLowerCase();
-        if (seen.has(key)) continue;
-        seen.add(key);
-        options.push({ id: entry.id, label: entry.label || entry.id, peerId: entry.peerId, provider: entry.provider });
-        if (options.length >= MODEL_PICK_LIMIT) break;
-      }
-    }
-    const current = (await resolveDefaultRoute()).service?.trim().toLowerCase() ?? '';
-    if (options.length === 0) {
-      void sendToOwner(telegramModelPickerText(current, false));
-      return;
-    }
+    // Antseed Auto, then the curated list every Antseed model picker offers
+    // (connected apps, Claude Desktop, `antseed apps connect`): starred
+    // models first, then the Recommended lineup. Picks are model-only; the
+    // buyer chooses the seller.
+    const models = await connectedAppPickerModels(await engine.getProxyPort());
+    const options = telegramModelOptions(models, MODEL_PICK_LIMIT);
+    const current = await currentChatModel();
     modelPickGen += 1;
     const gen = modelPickGen;
     const keyboard: TgReplyMarkup = {
       inline_keyboard: options.map((option, index) => ([{
-        text: [
-          option.id.trim().toLowerCase() === current ? '✓ ' : '',
-          option.favorite ? '★ ' : '',
-          option.label,
-        ].join(''),
+        text: telegramModelButtonText(option, current),
         callback_data: `mdl:${String(gen)}:${String(index)}`,
       }])),
     };
-    const sent = await sendToOwner(telegramModelPickerText(current, true), keyboard);
+    const sent = await sendToOwner(telegramModelPickerText(options.length > 1), keyboard);
     if (sent && settings?.ownerChatId != null) {
       modelPick = { gen, options, chatId: settings.ownerChatId, messageId: sent.message_id };
     }
@@ -494,37 +413,48 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
       return;
     }
     modelPick = null;
-    // Same two writes a dropdown pick in the app performs: rebind the active
-    // conversation, and move the sticky selection new conversations inherit
-    // (buyer default route + the app UI, via setDefaultRoute's notification).
+    // Applies to this Telegram chat only; the AI VPN selection in the app
+    // stays as it is. Without a chat yet, start one on the picked model.
+    let error: string | undefined;
     const conversationId = settings?.activeConversationId;
-    const rebind = conversationId
-      ? await engine.selectPeer({
-          conversationId,
-          peerId: null,
-          service: option.id,
-          provider: option.provider,
-          routeMode: 'auto',
-        })
-      : { ok: true as const };
-    await engine.setDefaultRoute('', option.id, option.provider);
-    await client.answerCallbackQuery(query.id, 'Model set').catch(() => {});
-    await client.editMessageText(pick.chatId, pick.messageId, `Model: ${option.label}`).catch(() => {});
-    if (!rebind.ok && rebind.error) {
-      log(`Conversation model update after /model failed: ${rebind.error}`);
+    if (conversationId) {
+      const rebind = await engine.selectPeer({
+        conversationId,
+        peerId: null,
+        service: option.id,
+        provider: option.provider,
+        routeMode: 'auto',
+      });
+      if (!rebind.ok) error = rebind.error ?? 'unknown error';
+    } else {
+      try {
+        await startConversation(option.id, option.provider);
+      } catch (err) {
+        error = asErrorMessage(err);
+      }
     }
+    if (error) {
+      log(`Telegram chat model update after /model failed: ${error}`);
+      await client.answerCallbackQuery(query.id, 'Could not change the model').catch(() => {});
+      return;
+    }
+    await client.answerCallbackQuery(query.id, 'Model set').catch(() => {});
+    await client.editMessageText(pick.chatId, pick.messageId, `Model for this chat: ${option.label}`).catch(() => {});
   };
 
-  const ensureConversation = async (): Promise<string> => {
-    if (settings?.activeConversationId) return settings.activeConversationId;
-    const route = await resolveDefaultRoute();
-    const conversation = await engine.createConversation(route.service, undefined, route.peerId, route.peerId ? 'pinned' : 'auto');
+  const startConversation = async (service: string, provider?: string): Promise<string> => {
+    const conversation = await engine.createConversation(service, provider, undefined, 'auto');
     bridgeConversationIds.add(conversation.id);
     if (settings) {
       settings.activeConversationId = conversation.id;
       await persistSettings();
     }
     return conversation.id;
+  };
+
+  const ensureConversation = async (): Promise<string> => {
+    if (settings?.activeConversationId) return settings.activeConversationId;
+    return await startConversation(ANTSEED_AUTO_MODEL);
   };
 
   const runUserText = async (chatId: number, text: string): Promise<void> => {

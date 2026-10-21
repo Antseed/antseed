@@ -10,6 +10,7 @@ import { useCachedResource } from '../../../modules/app/cached-resource';
 import {
   activeProfilesFromRuntimeState,
   buildVprPeerOptions,
+  peerServiceIdForModel,
   resolveVprToolRouteForPeerOptions,
 } from '../../../modules/routing/tools';
 import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
@@ -52,6 +53,10 @@ const BUILT_IN_APP_INFO: Readonly<Record<string, { description: string; websiteU
   gooeypi: {
     description: 'A graphical desktop experience powered by the Pi coding-agent ecosystem.',
     websiteUrl: 'https://pi.dev/',
+  },
+  'prime-agent': {
+    description: 'Prime Intellect’s open-source coding and research agent for long-running work.',
+    websiteUrl: 'https://github.com/PrimeIntellect-ai/prime-agent',
   },
   crush: {
     description: 'A terminal-based AI coding agent from Charm.',
@@ -175,7 +180,7 @@ export function VprToolsView() {
   const modelRoutes = useMemo(() => routesForSelectedModel(snap.discoverRows, snap.selection.model), [snap.discoverRows, snap.selection.model]);
   const bestRoute = useMemo(() => chooseBestVprRoute(modelRoutes, snap.preferences), [modelRoutes, snap.preferences]);
   const defaultPeerId = snap.selection.peerId || bestRoute?.peerId || peerOptions[0]?.peerId || '';
-  const defaultModel = snap.selection.model?.serviceId || peerOptions.find((peer) => peer.peerId === defaultPeerId)?.services[0] || '';
+  const defaultModel = peerServiceIdForModel(modelRoutes, defaultPeerId) || snap.selection.model?.serviceId || peerOptions.find((peer) => peer.peerId === defaultPeerId)?.services[0] || '';
   const activeProfiles = useMemo(() => activeProfilesFromRuntimeState(proxyState), [proxyState]);
   const activeProfileNames = useMemo(() => activeProfiles ? [...activeProfiles] : [], [activeProfiles]);
   const setupProfiles = useMemo(() => {
