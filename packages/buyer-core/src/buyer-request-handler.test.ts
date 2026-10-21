@@ -140,12 +140,14 @@ describe('BuyerRequestHandler payment negotiation', () => {
     expect(sendProxyRequest).toHaveBeenCalledTimes(3);
   });
 
-  it('does not repeat a catch-up whose gap did not shrink', async () => {
+  it('returns the buyer error without repeating a catch-up whose gap did not shrink', async () => {
     const { handler, handle402, sendProxyRequest } = makeHandler([
       catchUp('500000', '100000'), catchUp('600000', '100000'),
     ]);
 
-    expect((await handler.sendRequest(makePeer(), makeRequest())).statusCode).toBe(402);
+    const result = await handler.sendRequest(makePeer(), makeRequest());
+    expect(result.statusCode).toBe(409);
+    expect(Buffer.from(result.body).toString()).not.toContain('requiredCumulativeAmount');
     expect(handle402).toHaveBeenCalledOnce();
     expect(sendProxyRequest).toHaveBeenCalledTimes(2);
   });

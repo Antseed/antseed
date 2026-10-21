@@ -478,8 +478,8 @@ export class BuyerRequestHandler {
         retriedResponse = await executeRequest();
         const previousGap = catchUpGap(paymentResponse);
         const gap = catchUpGap(retriedResponse);
-        if (gap == null || previousGap == null || gap >= previousGap) break;
-        if (retry >= MAX_CATCH_UP_RETRIES) {
+        if (gap == null || previousGap == null) break;
+        if (gap >= previousGap || retry >= MAX_CATCH_UP_RETRIES) {
           return adaptPeerResponse(catchUpIncompleteResponse(retriedResponse));
         }
         paymentResponse = retriedResponse;
