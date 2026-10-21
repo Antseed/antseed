@@ -1,9 +1,10 @@
+import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline/promises'
 import chalk from 'chalk'
 import Table from 'cli-table3'
 import type { Command } from 'commander'
-import { getAddress } from 'ethers'
+import { getAddress, Wallet, type AbstractSigner } from 'ethers'
 import type { VerifierClient } from '@antseed/node/payments'
 import { loadConfig } from '../../../config/loader.js'
 import {
@@ -25,14 +26,18 @@ import { readVerifierRunManifest, type VerifierRunManifestV1 } from '../../../ve
 import { prepareAuditPublication, publishVerificationToPinata } from '../../../verifier/ipfs-publication.js'
 import { asError, normalized } from '../../../verifier/utils.js'
 import { createVerifierClient, loadCryptoContext } from '../../payment-utils.js'
+import { promptHidden } from '../../prompt-hidden.js'
 import { getGlobalOptions } from '../types.js'
 
 interface SubmitOptions {
   runId: string
   publishIpfs?: boolean
   dryRun?: boolean
+  publishOnly?: boolean
+  auditor?: string
   yes?: boolean
   rpcUrl?: string
+  keystore?: string
 }
 
 interface PendingModelAudit {
@@ -67,6 +72,14 @@ export function validateRunEpoch(manifest: VerifierRunManifestV1, window: EpochW
   }
 }
 
+async function loadKeystoreSigner(path: string): Promise<{ wallet: AbstractSigner; address: string }> {
+  const json = await readFile(path, 'utf8')
+  const password = process.env['ANTSEED_KEYSTORE_PASSWORD']
+    || await promptHidden(`Keystore password for ${path}: `, '--keystore needs a terminal to ask for the password.')
+  const wallet = await Wallet.fromEncryptedJson(json, password)
+  return { wallet, address: wallet.address }
+}
+
 export function registerVerifierSubmitCommand(verifierCmd: Command): void {
   verifierCmd
     .command('submit')
@@ -74,8 +87,11 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
     .requiredOption('--run-id <run-id>', 'completed verifier run ID')
     .option('--publish-ipfs', 'publish each model audit\'s public evidence to Pinata and record its ipfs:// URI')
     .option('--dry-run', 'preview the audits without publishing or broadcasting')
+    .option('--publish-only', 'with --publish-ipfs: write and publish each model audit\'s evidence and record it in the ledger, without sending transactions')
+    .option('--auditor <address>', 'with --publish-only: auditor address the evidence is written for, so no signer is needed')
     .option('--yes', 'submit without an interactive confirmation prompt')
     .option('--rpc-url <url>', 'Base JSON-RPC URL override')
+    .option('--keystore <path>', 'sign with this encrypted JSON keystore (e.g. a Foundry keystore) instead of the data-dir identity; the password is asked on the terminal')
     .action(async (options: SubmitOptions, command: Command) => {
       const globalOptions = getGlobalOptions(command)
       const config = await loadConfig(globalOptions.config)
@@ -83,7 +99,13 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       const banksDir = config.verifier?.banksDir ?? join(globalOptions.dataDir, 'verifier', 'banks')
       const manifest = await readVerifierRunManifest(evidenceDir, options.runId)
       const verifierClient = createVerifierClient(config, options.rpcUrl ? { rpcUrl: String(options.rpcUrl) } : {})
-      const { wallet, address } = await loadCryptoContext(globalOptions.dataDir)
+      if (options.publishOnly && !options.publishIpfs) throw new Error('--publish-only requires --publish-ipfs')
+      if (options.auditor && !options.publishOnly) throw new Error('--auditor is only valid with --publish-only')
+      const { wallet, address } = options.auditor
+        ? { wallet: null, address: getAddress(options.auditor) }
+        : options.keystore
+          ? await loadKeystoreSigner(options.keystore)
+          : await loadCryptoContext(globalOptions.dataDir)
       const pinataJwt = options.publishIpfs ? process.env['PINATA_JWT']?.trim() : undefined
       if (options.publishIpfs && !pinataJwt) throw new Error('PINATA_JWT is required with --publish-ipfs')
 
@@ -162,6 +184,29 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       if (options.publishIpfs) {
         console.warn(chalk.yellow('IPFS publication is public: complete audit evidence and signed exchanges will be pinned.'))
       }
+      if (options.publishOnly) {
+        let published = 0
+        let failed = 0
+        for (const { audit, previous } of toSubmit) {
+          try {
+            await writeModelAuditEvidence(audit)
+            const publication = reusablePublication(previous, audit.evidenceHash)
+              ?? await publish(evidenceDir, manifest.runId, audit, pinataJwt!)
+            ledger.models[audit.key] = ledgerEntry(audit, publication.uri, publication)
+            await writeModelAuditLedger(ledgerPath, ledger)
+            published += 1
+            console.log(chalk.green(`${audit.key}: ${publication.uri} (evidence ${audit.evidenceHash})`))
+          } catch (error) {
+            failed += 1
+            console.warn(chalk.yellow(`${audit.key}: publication failed (continuing): ${asError(error).message}`))
+          }
+        }
+        console.log(`Published: ${published}; failed: ${failed}; nothing was sent on-chain.`)
+        console.log(chalk.dim(`Ledger: ${ledgerPath}`))
+        if (failed > 0) process.exitCode = 1
+        return
+      }
+      if (!wallet) throw new Error('a signer is required to submit')
       if (!options.yes) await confirmSubmission(toSubmit.length)
 
       let submitted = 0

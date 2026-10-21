@@ -3,8 +3,8 @@
 Deploys `AntseedVerification` and `AntseedVerificationPointsPolicy`, registers the
 policy in the existing `AntseedPointsPolicyRegistry` (after the wash-trading
 policy), and optionally approves an initial auditor list. Approved auditors submit
-one audit per model; each seller service gets `SAME`, `DIFF`, or `UNDETERMINED`
-(see `docs/protocol/verification.md`). It does not change emissions, staking, or
+one audit per model; each seller service gets `SAME`, `DIFF`, or `UNDETERMINED`.
+It does not change emissions, staking, or
 protocol registry pointers. M002 is not a prerequisite.
 
 After M003:

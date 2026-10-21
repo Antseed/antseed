@@ -395,6 +395,8 @@ export function createLegacyStakingClient(config: AntseedConfig): StakingClient 
   });
 }
 
+const VERIFIER_LOG_QUERY_CHUNK_BLOCKS = 1_000
+
 /**
  * Create a VerifierClient from the CLI config.
  */
@@ -408,6 +410,7 @@ export function createVerifierClient(config: AntseedConfig, overrides?: CryptoCo
     ...fallbackClientOpts(crypto),
     contractAddress: crypto.verificationContractAddress,
     evmChainId: crypto.evmChainId,
+    logQueryChunkBlocks: VERIFIER_LOG_QUERY_CHUNK_BLOCKS,
     ...(crypto.verificationDeployBlock !== undefined ? { deploymentBlock: crypto.verificationDeployBlock } : {}),
   });
 }

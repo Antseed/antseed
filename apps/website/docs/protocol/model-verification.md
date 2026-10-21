@@ -1,7 +1,7 @@
 ---
 slug: /model-verification
 title: Model verification
-description: How Antseed checks that sellers serve the model they advertise, how results reach the chain, and what they change for sellers, buyers and auditors.
+description: How Antseed checks that sellers serve the model they advertise, how results reach the chain, and how anyone can repeat the check.
 hide_title: true
 ---
 
@@ -74,10 +74,6 @@ its approval.
 
 ```
 seller audit ──► DIFF? ──► recheck ──► evidence on IPFS ──► AntseedVerification
-                                                               │
-                                       ┌───────────────────────┼─────────────────────┐
-                                       ▼                       ▼                     ▼
-                                seller points           buyer routing         auditor credits
 ```
 
 `AntseedVerification` keeps one result per seller service (one model offer of one
@@ -92,45 +88,6 @@ seller):
   touched.
 - Auditors cannot audit sellers they own.
 
-## What it changes
-
-- **Seller rewards.** `AntseedVerificationPointsPolicy` can give verified services a
-  small bonus on recognized-usage points (capped at +50% in total) and DIFF services a
-  penalty. Both start at 0 at launch and are switched on later by the owner. See
-  [Reward policies](/docs/reward-policies).
-- **Buyer routing (planned).** Results are public on-chain. Buyer routing does not use
-  them yet; a model-verification part of the [trust score](/docs/reputation) is
-  planned.
-
-## How auditors are paid
-
-10% of each epoch's ANTS emission is reserved for verification (see
-[Recognized usage](/docs/recognized-usage)). Auditors earn **credits**: one credit for
-each model they audit in an epoch, whatever the verdicts, but only if the audit covered
-at least one staked seller. After the epoch ends, each auditor claims its share of the
-budget by credits.
-
-Safety limits stop a compromised or dishonest auditor from draining the budget:
-
-- at most one credit per model per epoch, and at most 100 credits per auditor per epoch
-- one auditor can claim at most 20% of an epoch's budget; the remainder is never minted
-- the owner can void a bad auditor's unclaimed credits, and reset many wrong results at
-  once
-
-Auditor rewards start from an owner-set epoch and stay off until then.
-
-## Limits
-
-- **Text models only.** Image and video models are not audited.
-- **Recognizable questions.** The questions look like a quiz, so a seller could try to
-  spot them and serve the real model only for those requests, or learn some of them
-  over time. Fresh random subsets, large question banks and periodic new
-  references make this harder, but it is a known risk.
-- **Model-level, not request-level.** A check shows what a seller served during the
-  audit. A seller that switches models later is caught at the next audit, not instantly.
-- **Not a quality score.** SAME means "this is the advertised model", not "this seller
-  is fast or reliable". Use [reputation](/docs/reputation) for that.
-
 ## Check a model yourself
 
 Anyone can re-run the latest published audit against a seller or any OpenAI- or
@@ -143,6 +100,3 @@ Anthropic-compatible endpoint, paying for the questions themselves:
 - The [`antseed-verify-model` agent skill](https://github.com/AntSeed/antseed/tree/main/skills/antseed-verify-model)
   asks for an endpoint, has you set its API key, runs the check and explains the
   result.
-
-Contract-level details (function names, defaults, owner settings) are in the
-[verification protocol spec](https://github.com/AntSeed/antseed/blob/main/docs/protocol/verification.md).
