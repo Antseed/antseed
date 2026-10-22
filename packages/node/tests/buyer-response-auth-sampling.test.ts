@@ -79,7 +79,7 @@ describe('BuyerRequestHandler response auth sampling', () => {
     expect(insertResponseAuth).toHaveBeenCalledWith(expect.objectContaining({
       requestPreimage: encodeHttpRequest(request),
       responsePreimage,
-    }));
+    }), { requestedService: 'sample-model', sellerPeerId: seller.peerId });
     expect(maybeStoreResponseAuthSample).toHaveBeenCalledWith(expect.objectContaining({
       request,
       response: expect.objectContaining({ headers: { 'content-type': 'application/json' } }),
