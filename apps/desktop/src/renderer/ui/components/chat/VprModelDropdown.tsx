@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo } from 'react';
+import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { ArrowDown01Icon, ArrowRight01Icon, StarIcon } from '@hugeicons/core-free-icons';
 import type { VprModelCatalogEntry } from '../../../core/state';
@@ -17,6 +17,7 @@ import styles from './VprModelDropdown.module.scss';
 import { VprRouterOptions } from '../vpr/VprRouterOptions';
 import { useUiSelector } from '../../hooks/useUiSelector';
 import { routerAutoModelLabel } from '../../../../shared/routing-selection';
+import { useModelMenuViewport } from '../../hooks/useModelMenuViewport';
 
 /* The menu shows the curated recommended lineup (frontier + free models);
    the full list lives on the Models page via the footer link. */
@@ -81,6 +82,8 @@ export function VprModelDropdown({
   routerActive = false,
 }: VprModelDropdownProps) {
   const [open, setOpen] = useState(false);
+  const closeMenu = useCallback(() => setOpen(false), []);
+  const menuRef = useModelMenuViewport(open, closeMenu);
   const routerLabel = useUiSelector((state) => routerAutoModelLabel(state.vprRouteSelection.router, state.vprRoutingServices));
   const [favorites, setFavorites] = useState(loadFavoriteModels);
   const ref = useRef<HTMLDivElement>(null);
@@ -193,7 +196,7 @@ export function VprModelDropdown({
         <HugeiconsIcon icon={ArrowDown01Icon} size={16} strokeWidth={1.5} />
       </button>
       {open && (
-        <div className={styles.modelDropdownMenu} role="listbox">
+        <div className={styles.modelDropdownMenu} role="listbox" ref={menuRef}>
           {kind === 'text' && <VprRouterOptions forConversation routerActive={routerActive} onSelect={() => setOpen(false)} />}
           {favoriteEntries.length > 0 && (
             <>

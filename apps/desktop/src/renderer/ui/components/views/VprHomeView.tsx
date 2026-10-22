@@ -48,6 +48,7 @@ import styles from './VprHomeView.module.scss';
 import { recordFirstModelShown, recordUserAction } from '../../../modules/telemetry/actions';
 import { normalizeTelemetryAppName } from '../../../../shared/telemetry.js';
 import { routerAutoModelLabel } from '../../../../shared/routing-selection';
+import { useModelMenuViewport } from '../../hooks/useModelMenuViewport';
 
 type Props = { onSelectView?: (view: ViewName) => void };
 
@@ -208,6 +209,8 @@ export function VprHomeView({ onSelectView }: Props) {
 
   const [connectingProfile, setConnectingProfile] = useState<string | null>(null);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const closeModelMenu = useCallback(() => setModelMenuOpen(false), []);
+  const modelMenuViewportRef = useModelMenuViewport(modelMenuOpen, closeModelMenu);
   const [modelChangeNotice, setModelChangeNotice] = useState<string | null>(null);
   const [favorites, setFavorites] = useState(loadFavoriteModels);
   const modelMenuRef = useRef<HTMLDivElement>(null);
@@ -256,8 +259,8 @@ export function VprHomeView({ onSelectView }: Props) {
 
   // The dropdown lists starred favorites first (marked with a star), then the
   // curated recommended lineup, with the current selection always present. The
-  // whole list is capped — favorites included — so the menu can't outgrow the
-  // hero; everything past the cap lives behind "All models".
+  // model list is capped — favorites included — with the full catalog behind
+  // "All models". Routers and models scroll together within the view.
   const dropdownEntries = useMemo(() => {
     const textCatalog = snap.catalog.filter((entry) => entry.kind === 'text');
     const favoriteEntries = selectFavoriteVprCatalog(textCatalog, favorites);
@@ -447,7 +450,7 @@ export function VprHomeView({ onSelectView }: Props) {
   /* Model picker panel — shared by the composer pill (first-timers) and the
      standalone model card (connected-apps variant). */
   const modelMenu = modelMenuOpen ? (
-        <div className={styles.modelMenu} role="listbox">
+        <div className={styles.modelMenu} role="listbox" ref={modelMenuViewportRef}>
           <VprRouterOptions onSelect={() => setModelMenuOpen(false)} />
           <VprModelRowList
             entries={dropdownEntries}

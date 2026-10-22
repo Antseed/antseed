@@ -208,7 +208,14 @@
   border-radius: 16px;
   background: var(--bg-card);
   box-shadow: var(--shadow-float);
-  overflow: hidden;
+  max-height: 380px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-app-region: no-drag;
+
+  > * {
+    flex-shrink: 0;
+  }
 }
 
 .modelMenuFooter {
