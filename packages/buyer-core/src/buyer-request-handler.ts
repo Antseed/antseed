@@ -468,12 +468,25 @@ export class BuyerRequestHandler {
       && !externalSpendingAuth
       && (!videoRoute || isPaymentRequired402(response))
     ) {
-      const result = await negotiator.handle402(response, peer, conn, req);
-      if (result.action === 'return') {
-        return adaptPeerResponse(result.response);
+      // Parallel requests can leave the seller's spend several requests ahead
+      // of the signed cumulative. Keep catching up while the gap shrinks.
+      let paymentResponse = response;
+      let retriedResponse: SerializedHttpResponse;
+      for (let retry = 1; ; retry++) {
+        const result = await negotiator.handle402(paymentResponse, peer, conn, req, mux.activeRequestCount() + 1);
+        if (result.action === 'return') {
+          return adaptPeerResponse(result.response);
+        }
+        startTime = Date.now();
+        retriedResponse = await executeRequest();
+        const previousGap = catchUpGap(paymentResponse);
+        const gap = catchUpGap(retriedResponse);
+        if (gap == null || previousGap == null) break;
+        if (gap >= previousGap || retry >= MAX_CATCH_UP_RETRIES) {
+          return adaptPeerResponse(catchUpIncompleteResponse(retriedResponse));
+        }
+        paymentResponse = retriedResponse;
       }
-      startTime = Date.now();
-      const retriedResponse = await executeRequest();
       if (!isFreeService) {
         negotiator.estimateCostFromResponse(peer, retriedResponse, requestedService, req.requestId);
       }
@@ -788,6 +801,41 @@ function isPaymentRequired402(response: SerializedHttpResponse): boolean {
   } catch {
     return false;
   }
+}
+
+/** Retries after a seller catch-up 402 (three attempts in total). */
+const MAX_CATCH_UP_RETRIES = 2;
+
+/**
+ * Unsigned spend a seller catch-up 402 asks for (required - accepted), or null
+ * when the response is not a catch-up 402 (exhausted channels carry a code).
+ */
+function catchUpGap(response: SerializedHttpResponse): bigint | null {
+  if (response.statusCode !== 402) return null;
+  try {
+    const body = JSON.parse(new TextDecoder().decode(response.body)) as Record<string, unknown>;
+    if (body.error !== 'payment_required' || body.code != null) return null;
+    const required = BigInt(String(body.requiredCumulativeAmount));
+    const accepted = BigInt(String(body.currentAcceptedCumulative));
+    if (body.reserveMaxAmount != null && required > BigInt(String(body.reserveMaxAmount))) return null;
+    return required > accepted ? required - accepted : 0n;
+  } catch {
+    return null;
+  }
+}
+
+/** Buyer-authored error for a catch-up that is still short after the retries. */
+function catchUpIncompleteResponse(response: SerializedHttpResponse): SerializedHttpResponse {
+  return {
+    ...response,
+    statusCode: 409,
+    headers: { ...response.headers, 'content-type': 'application/json' },
+    body: new TextEncoder().encode(JSON.stringify({
+      error: 'payment_negotiation_failed',
+      reason: 'catch_up_incomplete',
+      message: 'The seller is still waiting for payment of earlier requests on this channel. Retry the request.',
+    })),
+  };
 }
 
 /**

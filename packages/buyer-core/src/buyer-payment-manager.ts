@@ -554,6 +554,7 @@ export class BuyerPaymentManager {
     paymentMux: PaymentMux,
     targetCumulative?: bigint,
     requestId?: string,
+    inFlightRequests = 1,
   ): Promise<string> {
     const session = this.getActiveSession(sellerPeerId);
     if (!session) {
@@ -571,6 +572,14 @@ export class BuyerPaymentManager {
     maxSignable = reopened.maxSignable;
 
     const ceiling = this._getCeiling(sellerPeerId);
+    // A seller catch-up target covers every request served on the channel, so
+    // with several requests in flight allow one per-request window for each,
+    // still capped at the reserve ceiling.
+    if (targetCumulative != null && inFlightRequests > 1) {
+      const catchUpMax = reopened.verifiedCost
+        + this._config.maxPerRequestUsdc * BigInt(Math.floor(inFlightRequests));
+      maxSignable = catchUpMax < ceiling ? catchUpMax : ceiling;
+    }
     // Prefer the seller-supplied target when present — a raw
     // `currentCumulative + minBudgetPerRequest` advance may still fall short
     // of what the seller has already spent, producing an infinite 402 loop.

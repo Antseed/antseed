@@ -8,6 +8,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Changed
 
+- Buyer (`@antseed/buyer-core`, CLI, desktop): with several requests in flight to one seller, a seller's catch-up payment request (its spend ran ahead of the signed amount) is now covered in full, up to the per-request limit for each in-flight request and never beyond the channel reserve. The buyer retries while the gap shrinks (at most three attempts), and if the gap stops shrinking or is still not covered returns a `payment_negotiation_failed` error instead of passing through the seller's raw 402.
 - CLI buyer: the local buyer proxy only answers local clients. A request whose Host is a hostname other than `localhost`, or that a browser sends from a page other than a local one (an `Origin` other than a loopback address or `file://`, or a cross-site fetch), gets `403 non_local_request`. CLI tools, SDKs and local pages are unaffected, and IP-address hosts (such as the WSL relay's) still work. The API-key gateway and system proxy no longer pass the client's `Origin`, `Referer` and `Sec-Fetch-*` headers on to the buyer.
 - Desktop: the chat's per-seller usage stats are read through the main process instead of from the page.
 
