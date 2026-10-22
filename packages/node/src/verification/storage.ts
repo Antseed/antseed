@@ -7,6 +7,8 @@ export interface StoredResponseAuth extends ResponseAuthPayload {
   receivedAt: number;
   verified: boolean;
   verificationError: string | null;
+  requestPreimage?: Uint8Array | null;
+  responsePreimage?: Uint8Array | null;
 }
 
 export class VerificationStorage {
@@ -42,12 +44,12 @@ export class VerificationStorage {
         request_id, version, channel_id, buyer_peer_id, seller_peer_id,
         advertised_service, provider, status_code, request_hash, response_hash,
         response_started_at, response_completed_at, signature,
-        received_at, verified, verification_error
+        received_at, verified, verification_error, request_preimage, response_preimage
       ) VALUES (
         @requestId, @version, @channelId, @buyerPeerId, @sellerPeerId,
         @advertisedService, @provider, @statusCode, @requestHash, @responseHash,
         @responseStartedAt, @responseCompletedAt, @signature,
-        @receivedAt, @verified, @verificationError
+        @receivedAt, @verified, @verificationError, @requestPreimage, @responsePreimage
       )
       ON CONFLICT(request_id) DO UPDATE SET
         version = excluded.version,
@@ -64,7 +66,9 @@ export class VerificationStorage {
         signature = excluded.signature,
         received_at = excluded.received_at,
         verified = excluded.verified,
-        verification_error = excluded.verification_error
+        verification_error = excluded.verification_error,
+        request_preimage = excluded.request_preimage,
+        response_preimage = excluded.response_preimage
     `);
   }
 
@@ -86,6 +90,8 @@ export class VerificationStorage {
       receivedAt: record.receivedAt,
       verified: record.verified ? 1 : 0,
       verificationError: record.verificationError,
+      requestPreimage: record.requestPreimage ? Buffer.from(record.requestPreimage) : null,
+      responsePreimage: record.responsePreimage ? Buffer.from(record.responsePreimage) : null,
     });
   }
 
@@ -127,6 +133,8 @@ interface ResponseAuthRow {
   received_at: number;
   verified: number;
   verification_error: string | null;
+  request_preimage: Buffer | null;
+  response_preimage: Buffer | null;
 }
 
 function rowToResponseAuth(row: ResponseAuthRow): StoredResponseAuth {
@@ -147,5 +155,7 @@ function rowToResponseAuth(row: ResponseAuthRow): StoredResponseAuth {
     receivedAt: row.received_at,
     verified: row.verified === 1,
     verificationError: row.verification_error,
+    requestPreimage: row.request_preimage ? new Uint8Array(row.request_preimage) : null,
+    responsePreimage: row.response_preimage ? new Uint8Array(row.response_preimage) : null,
   };
 }

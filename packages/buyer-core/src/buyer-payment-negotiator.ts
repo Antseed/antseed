@@ -724,6 +724,7 @@ export class BuyerPaymentNegotiator {
     peer: BuyerPeerView,
     conn: BuyerConnection,
     req: SerializedHttpRequest,
+    inFlightRequests = 1,
   ): Promise<Handle402Result> {
     const hadLockedSession = this._lockedPeers.has(peer.peerId);
     const directPaymentBody = parsePaymentRequiredBody(response.body);
@@ -916,6 +917,7 @@ export class BuyerPaymentNegotiator {
         requiredCumulativeTarget,
         requiredCumulativeTarget == null,
         req.requestId,
+        inFlightRequests,
       );
       if (recovered) {
         return { action: 'retry' };
@@ -1508,6 +1510,7 @@ export class BuyerPaymentNegotiator {
     targetCumulative: bigint | null = null,
     requireFreshAck = false,
     requestId?: string,
+    inFlightRequests = 1,
   ): Promise<boolean> {
     const session = this._bpm.getActiveSession(peer.peerId);
     if (!session) {
@@ -1612,6 +1615,7 @@ export class BuyerPaymentNegotiator {
         pmux,
         targetCumulative != null && targetCumulative > 0n ? targetCumulative : undefined,
         requestId,
+        inFlightRequests,
       );
       const cumulativeAfter = this._bpm.getCumulativeAmount(peer.peerId);
       if (cumulativeAfter <= cumulativeBefore) {

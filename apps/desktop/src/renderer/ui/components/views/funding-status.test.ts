@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
-import { deriveFundingStatus, formatUsd, usdcToBaseUnits, type FundingInputs } from './funding-status';
+import { deriveFundingStatus, formatUsd, sweepAmountNeeded, usdcToBaseUnits, type FundingInputs } from './funding-status';
 
 const base: FundingInputs = {
   available: '0',
@@ -113,7 +113,7 @@ test('a pending top-up that covers the next session is shown as depositing, not 
   assert.equal(status.kind, 'depositing');
 });
 
-test('a top-up smaller than the fee is explained, not hidden', () => {
+test('a top-up below the deposit floor is explained, not hidden', () => {
   const status = deriveFundingStatus({ ...base, available: '5', wallet: '0.03' });
   assert.equal(status.kind, 'wallet-dust');
   assert.equal(status.tone, 'info');
@@ -130,8 +130,31 @@ test('a top-up larger than sub-minimum headroom waits, like the watcher', () => 
 });
 
 test('a top-up that fits the remaining headroom still deposits', () => {
-  const status = deriveFundingStatus({ ...base, available: '7.5', creditLimit: '8', wallet: '0.4' });
+  const status = deriveFundingStatus({ ...base, available: '5', creditLimit: '8', wallet: '2' });
   assert.equal(status.kind, 'depositing');
+});
+
+test('a top-up below the deposit floor is held, like the watcher', () => {
+  const status = deriveFundingStatus({ ...base, available: '5', wallet: '0.4' });
+  assert.equal(status.kind, 'wallet-dust');
+});
+
+test('a clamped top-up waits until half the credit limit is free', () => {
+  const waiting = deriveFundingStatus({ ...base, available: '30', creditLimit: '50', wallet: '40' });
+  assert.equal(waiting.kind, 'wallet-at-limit');
+  const ready = deriveFundingStatus({ ...base, available: '25', creditLimit: '50', wallet: '40' });
+  assert.equal(ready.kind, 'depositing');
+});
+
+test('a clamped top-up does not wait when reserved credits leave nothing to spend', () => {
+  // $8 limit, $5 reserved, $0 available: the $3 of headroom is swept now, like the watcher.
+  const status = deriveFundingStatus({ ...base, available: '0', reserved: '5', creditLimit: '8', wallet: '10' });
+  assert.equal(status.kind, 'depositing');
+});
+
+test('a clamped top-up with nothing to spend still waits for $1 of headroom', () => {
+  const status = deriveFundingStatus({ ...base, available: '0', reserved: '49.99', creditLimit: '50', wallet: '10' });
+  assert.notEqual(status.kind, 'depositing');
 });
 
 test('closed or zero-held channels are not listed as sessions', () => {
@@ -145,4 +168,11 @@ test('closed or zero-held channels are not listed as sessions', () => {
   });
   assert.equal(status.sessions.length, 0);
   assert.match(status.title, /open sessions/);
+});
+
+test('a top-up to a funded account still needs the minimum deposit plus the fee, net of the wallet', () => {
+  // $1 minimum, $0.05 fee: a $0.50 top-up into an empty wallet would sit there unswept.
+  assert.equal(sweepAmountNeeded(1_000_000n, 50_000n, 0n), 1_050_000n);
+  assert.equal(sweepAmountNeeded(1_000_000n, 50_000n, 500_000n), 550_000n);
+  assert.equal(sweepAmountNeeded(1_000_000n, 50_000n, 2_000_000n), 0n);
 });

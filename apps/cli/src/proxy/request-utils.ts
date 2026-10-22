@@ -360,20 +360,70 @@ function encodeRewrittenJsonBody(
   headers: Record<string, string>,
 ): { body: Uint8Array; headers: Record<string, string> } {
   const rewritten = new TextEncoder().encode(JSON.stringify(obj))
+  return { body: rewritten, headers: withContentLength(headers, rewritten.length) }
+}
+
+function withContentLength(headers: Record<string, string>, length: number): Record<string, string> {
   const updatedHeaders = { ...headers }
   if ('content-length' in updatedHeaders) {
-    updatedHeaders['content-length'] = String(rewritten.length)
+    updatedHeaders['content-length'] = String(length)
   } else if ('Content-Length' in updatedHeaders) {
-    updatedHeaders['Content-Length'] = String(rewritten.length)
+    updatedHeaders['Content-Length'] = String(length)
   }
-  return { body: rewritten, headers: updatedHeaders }
+  return updatedHeaders
+}
+
+/**
+ * Rewrites a multipart form's `peerId@model` text field to the bare model,
+ * e.g. on `/v1/images/edits`. Only that field's bytes change: the boundary and
+ * every other part, file parts included, are kept as sent.
+ */
+function rewritePeerPinnedMultipartModel(
+  body: Uint8Array,
+  headers: Record<string, string>,
+): { body: Uint8Array; headers: Record<string, string>; pinnedPeerId: string | null } {
+  const unchanged = { body, headers, pinnedPeerId: null }
+  const boundaryMatch = /^multipart\/form-data\s*;.*?boundary=(?:"([^"]+)"|([^;\s]+))/i.exec(getHeader(headers, 'content-type').trim())
+  const boundary = (boundaryMatch?.[1] ?? boundaryMatch?.[2] ?? '').trim()
+  if (!boundary) return unchanged
+
+  // latin1 maps each byte to one char, so string offsets are byte offsets.
+  const text = new TextDecoder('latin1').decode(body)
+  const delimiter = `--${boundary}`
+  let index = text.indexOf(delimiter)
+  while (index !== -1) {
+    index += delimiter.length
+    if (text.startsWith('--', index)) break
+    const headerEnd = text.indexOf('\r\n\r\n', index)
+    if (headerEnd === -1) break
+    const next = text.indexOf(`\r\n${delimiter}`, headerEnd + 4)
+    if (next === -1) break
+    const params = /content-disposition:\s*form-data\s*;([^\r\n]*)/i.exec(text.slice(index, headerEnd))?.[1]
+    if (params !== undefined && !/filename\s*=/i.test(params) && /(?:^|;)\s*name="model"/i.test(params)) {
+      const start = headerEnd + 4
+      const parsed = parsePeerPinnedService(new TextDecoder().decode(body.subarray(start, next)).trim())
+      if (!parsed) return unchanged
+      const service = new TextEncoder().encode(parsed.service)
+      const rewritten = new Uint8Array(body.length - (next - start) + service.length)
+      rewritten.set(body.subarray(0, start))
+      rewritten.set(service, start)
+      rewritten.set(body.subarray(next), start + service.length)
+      return { body: rewritten, headers: withContentLength(headers, rewritten.length), pinnedPeerId: parsed.peerId }
+    }
+    index = next + 2
+  }
+  return unchanged
 }
 
 export function rewritePeerPinnedServiceInBody(
   body: Uint8Array,
   headers: Record<string, string>,
 ): { body: Uint8Array; headers: Record<string, string>; pinnedPeerId: string | null } {
-  if (!getHeader(headers, 'content-type').toLowerCase().includes('application/json') || body.length === 0) {
+  const contentType = getHeader(headers, 'content-type').toLowerCase()
+  if (body.length > 0 && contentType.startsWith('multipart/form-data')) {
+    return rewritePeerPinnedMultipartModel(body, headers)
+  }
+  if (!contentType.includes('application/json') || body.length === 0) {
     return { body, headers, pinnedPeerId: null }
   }
   const obj = parseJsonObject(body)

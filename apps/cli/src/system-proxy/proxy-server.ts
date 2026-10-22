@@ -13,6 +13,7 @@ import type {
   SystemProxySource,
 } from './types.js'
 import { CLIENT_CREDENTIAL_HEADERS } from '../proxy/credential-headers.js'
+import { isBrowserContextHeader } from '../proxy/local-request-guard.js'
 
 const HOP_BY_HOP = new Set([
   'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
@@ -292,7 +293,9 @@ export class SystemProxyServer {
       } else {
         for (const [k, v] of Object.entries(req.headers)) {
           if (strippedHeaders.has(k.toLowerCase())) continue
-          if (k === 'host') continue
+          // The intercepted app's page context means nothing to the buyer,
+          // which refuses requests that look like they came from a web page.
+          if (k === 'host' || isBrowserContextHeader(k)) continue
           if (HOP_BY_HOP.has(k)) continue
           forwardHeaders[k] = v
         }
