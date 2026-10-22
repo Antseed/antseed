@@ -572,6 +572,7 @@ const api = {
   paymentsOpenCardProvider: (opts?: { providerId?: string; amountUsdc?: string }) => ipcRenderer.invoke('payments:open-card-provider', opts),
   paymentsCloseCheckoutWindows: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('payments:close-checkout-windows') as Promise<{ ok: boolean }>,
   paymentsGetBuyerUsage: () => ipcRenderer.invoke('payments:get-buyer-usage'),
+  paymentsGetPeerMetering: (peerId: string) => ipcRenderer.invoke('payments:get-peer-metering', peerId),
   paymentsGetBuyerSpendHistory: () => ipcRenderer.invoke('payments:get-buyer-spend-history'),
   paymentsGetChannels: (opts?: { fresh?: boolean }) => ipcRenderer.invoke('payments:get-channels', opts),
   paymentsRequestCooperativeClose: (opts: { peerId: string; channelId?: string }) => ipcRenderer.invoke('payments:request-cooperative-close', opts),

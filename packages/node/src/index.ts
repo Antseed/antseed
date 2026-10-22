@@ -298,6 +298,7 @@ export { getChainConfig, resolveChainConfig, DEFAULT_CHAIN_ID, CHAIN_CONFIGS } f
 export type { ChainConfig, RecognizedUsageDeployment } from './payments/chain-config.js';
 export { formatUsdc, parseUsdc } from './payments/usdc-utils.js';
 export { ProxyMux } from './proxy/proxy-mux.js';
+export { encodeHttpRequest, encodeHttpResponse, decodeHttpRequest, decodeHttpResponse } from './proxy/request-codec.js';
 export { SweepMux, type SweepMessageHandler } from './p2p/sweep-mux.js';
 export { encodeSweepRequest, decodeSweepRequest, encodeSweepReceipt, decodeSweepReceipt } from './p2p/sweep-codec.js';
 export {
@@ -305,6 +306,7 @@ export {
   VerificationSampler,
   VerificationStorage,
   createResponseAuthPayload,
+  encodeResponseAuthSigningPayload,
   verifyResponseAuth,
   hashRequest,
   hashResponse,
