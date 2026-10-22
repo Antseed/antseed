@@ -431,6 +431,12 @@ nav.navbar {
   color: #FFFFFF !important;
 }
 
+/* Infima drops the right padding of the last navbar item; the gateway pill
+   is that item, so restore it or the label runs into the pill's edge. */
+.navbar__items--right > .header-gateway-link:last-child {
+  padding-right: 16px;
+}
+
 .navbar__items--right .header-gateway-link:hover,
 .navbar__items--right .header-gateway-link:focus-visible {
   background: var(--as-void-cta);
@@ -1988,5 +1994,6 @@ html[data-theme='light'] .blog-wrapper .pagination-nav__link:hover {
   .navbar__items .navbar__item.dropdown > .navbar__link { padding-inline: 8px; }
   .navbar__items--right .header-download-link,
   .navbar__items--right .header-gateway-link { padding-inline: 14px; }
+  .navbar__items--right > .header-gateway-link:last-child { padding-right: 14px; }
   .navbar__items .navbar__link { white-space: nowrap; }
 }
