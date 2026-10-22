@@ -50,6 +50,8 @@
   min-width: 300px;
   max-height: 380px;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-app-region: no-drag;
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
