@@ -3284,6 +3284,38 @@ test('pinned proxy request reports when the pinned peer is not discoverable', as
   assert.match(res.body, /It may be offline, not announcing, or temporarily unreachable/)
 })
 
+test('verifier preimage capture header stays local and enables exact capture', async () => {
+  const peer = makePeer('a', ['openai'])
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+  let capturedHeaders: Record<string, string> | null = null
+  let capturedCaptureFlag: boolean | undefined
+  ;(proxy as any)._node.sendRequest = async (
+    _peer: PeerInfo,
+    request: { requestId: string; headers: Record<string, string> },
+    options: { captureResponseAuthPreimages?: boolean },
+  ) => {
+    capturedHeaders = request.headers
+    capturedCaptureFlag = options.captureResponseAuthPreimages
+    return {
+      requestId: request.requestId,
+      statusCode: 200,
+      headers: { 'content-type': 'application/json' },
+      body: Buffer.from('{"choices":[{"message":{"content":"ok"}}]}'),
+    }
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    headers: {
+      'x-antseed-pin-peer': peer.peerId,
+      'x-antseed-capture-response-auth-preimages': '1',
+    },
+  }))
+
+  assert.equal(res.statusCode, 200)
+  assert.equal(capturedHeaders?.['x-antseed-capture-response-auth-preimages'], undefined)
+  assert.equal(capturedCaptureFlag, true)
+})
+
 test('pinned proxy request surfaces a 403 without failing over to another peer', async () => {
   // An explicit pin is a hard constraint: even with another peer serving the
   // same model, the pinned peer's error is surfaced rather than re-routed.
@@ -4069,12 +4101,15 @@ test('non-stream transformed responses requests force upstream stream without st
   let sendRequestStreamCalls = 0
   let capturedRequestBody: Record<string, unknown> | null = null
   let capturedRequestHeaders: Record<string, string> | null = null
+  let capturedRequestId: string | null = null
+  const callerRequestId = '123e4567-e89b-42d3-a456-426614174000'
   const proxy = makeBuyerProxyWithPeers([peer], [peer])
   ;(proxy as any)._node.sendRequest = async (
     _peer: PeerInfo,
     request: { requestId: string; body: Uint8Array; headers: Record<string, string> },
   ) => {
     sendRequestCalls += 1
+    capturedRequestId = request.requestId
     capturedRequestBody = parseJsonBody(request.body)
     capturedRequestHeaders = request.headers
     return {
@@ -4103,6 +4138,7 @@ test('non-stream transformed responses requests force upstream stream without st
     path: '/v1/messages',
     headers: {
       'x-antseed-pin-peer': peer.peerId,
+      'x-antseed-request-id': callerRequestId,
     },
     body: {
       model: 'gpt-5.6-sol',
@@ -4116,6 +4152,9 @@ test('non-stream transformed responses requests force upstream stream without st
   assert.equal(sendRequestStreamCalls, 0)
   assert.equal(capturedRequestBody?.['stream'], true)
   assert.equal(capturedRequestHeaders?.['x-antseed-client-stream-requested'], 'false')
+  assert.equal(capturedRequestHeaders?.['x-antseed-request-id'], undefined)
+  assert.equal(capturedRequestId, callerRequestId)
+  assert.equal(res.headers['x-antseed-request-id'], callerRequestId)
   const body = JSON.parse(res.body) as { content?: Array<{ type: string; text: string }> }
   assert.equal(body.content?.[0]?.text, 'hi')
 })
@@ -6320,4 +6359,33 @@ test('a seller that answers on its own retry after a 429 is not counted against'
   const health = sellerHealthOf(proxy, cheap, clock.now())
   assert.equal(health.successes, 1)
   assert.equal(health.failures, 0)
+})
+
+test('requests from other sites never reach the paid or control routes', async () => {
+  const proxy = makeBuyerProxyWithPeers([], [])
+  let stateWrites = 0
+  ;(proxy as any)._mergeStateFile = async () => { stateWrites += 1 }
+  let sends = 0
+  ;(proxy as any)._node.sendRequest = async () => { sends += 1; throw new Error('must not route') }
+  const crossSite: Record<string, string>[] = [
+    { host: '127.0.0.1:8377', origin: 'https://evil.example', 'content-type': 'text/plain' },
+    { host: 'rebind.example:8377', origin: 'http://rebind.example:8377' },
+    { host: '127.0.0.1:8377', 'sec-fetch-site': 'cross-site' },
+  ]
+  for (const headers of crossSite) {
+    const route = await invokeProxy(proxy, makeProxyRequest({ path: '/_antseed/route', headers, body: { model: 'gpt-4o' } }))
+    assert.equal(route.statusCode, 403)
+    assert.equal(JSON.parse(route.body).error.code, 'non_local_request')
+    const paid = await invokeProxy(proxy, makeProxyRequest({ path: '/v1/chat/completions', headers }))
+    assert.equal(paid.statusCode, 403)
+  }
+  assert.equal(stateWrites, 0)
+  assert.equal(sends, 0)
+  assert.equal((proxy as any)._defaultRoutedModel, null)
+
+  const local = await invokeProxy(proxy, makeProxyRequest({
+    path: '/_antseed/route', headers: { host: 'localhost:8377', origin: 'http://localhost:5173' }, body: { model: 'gpt-4o' },
+  }))
+  assert.equal(local.statusCode, 200)
+  assert.equal(stateWrites, 1)
 })

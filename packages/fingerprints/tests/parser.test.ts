@@ -1,0 +1,116 @@
+import { describe, expect, it } from 'vitest';
+import { parseKbfAnswers } from '../src/verifiers/kbf/parser.js';
+import { KBF_PROMPT_VARIANTS, buildKbfPrompt, isKbfSamplingFieldRejection } from '../src/verifiers/kbf/prompts.js';
+import type { KbfProbe } from '../src/types.js';
+
+describe('parseKbfAnswers', () => {
+  it('parses well-formed (N) <number> lines', () => {
+    const text = '(1) 3880\n(2) 46\n(3) 299792.458';
+    expect(parseKbfAnswers(text, 3)).toEqual([3880, 46, 299792.458]);
+  });
+
+  it('is position-aware: (N) index wins over line order', () => {
+    const text = '(3) 30\n(1) 10';
+    expect(parseKbfAnswers(text, 3)).toEqual([10, null, 30]);
+  });
+
+  it('tolerates messy whitespace and separators', () => {
+    const text = '  ( 1 )   3880  \n\t(2):\t46\n 3.  1234 \n4)  55';
+    expect(parseKbfAnswers(text, 4)).toEqual([3880, 46, 1234, 55]);
+  });
+
+  it('handles commas in numbers', () => {
+    expect(parseKbfAnswers('(1) 384,400', 1)).toEqual([384400]);
+    expect(parseKbfAnswers('(1) 1,234,567.89', 1)).toEqual([1234567.89]);
+  });
+
+  it('handles scientific notation', () => {
+    expect(parseKbfAnswers('(1) 3.88e3\n(2) 1.6E-19', 2)).toEqual([3880, 1.6e-19]);
+  });
+
+  it('handles trailing units and prose around the number', () => {
+    const text = '(1) 3880°C\n(2) approximately 46 chromosomes\n(3) 687 days';
+    expect(parseKbfAnswers(text, 3)).toEqual([3880, 46, 687]);
+  });
+
+  it('preserves negative answers, including with no space after the index', () => {
+    expect(parseKbfAnswers('(1) -430\n(2)-273.15', 2)).toEqual([-430, -273.15]);
+  });
+
+  it('returns null for missing positions', () => {
+    expect(parseKbfAnswers('(1) 5\n(3) 7', 4)).toEqual([5, null, 7, null]);
+  });
+
+  it('returns null for unparseable lines', () => {
+    expect(parseKbfAnswers('(1) unknown\n(2) 42', 2)).toEqual([null, 42]);
+  });
+
+  it('ignores extra prose lines and out-of-range indices', () => {
+    const text = [
+      'Sure! Here are the answers:',
+      '(1) 100',
+      'Note that 1990 was a different value.',
+      '(9) 900',
+      '(2) 200',
+      'Hope this helps!',
+    ].join('\n');
+    expect(parseKbfAnswers(text, 2)).toEqual([100, 200]);
+  });
+
+  it('keeps the first value when an index repeats', () => {
+    expect(parseKbfAnswers('(1) 10\n(1) 20', 1)).toEqual([10]);
+  });
+
+  it('handles empty input and zero probe count', () => {
+    expect(parseKbfAnswers('', 3)).toEqual([null, null, null]);
+    expect(parseKbfAnswers('(1) 5', 0)).toEqual([]);
+  });
+
+  it('parses every line-number format emitted by the prompt variants', () => {
+    expect(parseKbfAnswers('1. 3880\n2. -46\n3. 299792.458', 3)).toEqual([3880, -46, 299792.458]);
+    expect(parseKbfAnswers('1) 3880\n2) -46\n3) 1.5', 3)).toEqual([3880, -46, 1.5]);
+    expect(parseKbfAnswers('Q1: 3880\nQ2: -46\nq3: 7', 3)).toEqual([3880, -46, 7]);
+    expect(parseKbfAnswers('Q 1: 3880\nQ 2:-46', 2)).toEqual([3880, -46]);
+  });
+
+  it('does not treat prose starting with Q as an answer line', () => {
+    expect(parseKbfAnswers('Quiz answers:\nQ1: 5', 1)).toEqual([5]);
+  });
+
+  it('round-trips answers echoed in each variant line format', () => {
+    const probes: KbfProbe[] = [1, 2, 3].map((index) => ({
+      id: `p-${index}`,
+      name: `p-${index}`,
+      domain: 'test',
+      template: `Probe ${index} is ___.`,
+      consensus: index,
+      range: [0, 10],
+      tolerance: { mode: 'absolute', value: 0 },
+    }));
+    for (const variant of KBF_PROMPT_VARIANTS) {
+      const labels = buildKbfPrompt(probes, 0, variant.id)
+        .split('\n')
+        .filter((line) => line.endsWith('is ___.'))
+        .map((line) => line.slice(0, line.indexOf(' Probe')));
+      expect(labels).toHaveLength(3);
+      const response = labels.map((label, index) => `${label} ${(index + 1) * 11}`).join('\n');
+      expect(parseKbfAnswers(response, 3)).toEqual([11, 22, 33]);
+    }
+  });
+});
+
+describe('isKbfSamplingFieldRejection', () => {
+  it('matches errors saying the endpoint does not take temperature/top_p at all', () => {
+    expect(isKbfSamplingFieldRejection(400, '{"error":{"message":"`temperature` is deprecated for this model."}}')).toBe(true);
+    expect(isKbfSamplingFieldRejection(400, 'Unsupported parameter: \'top_p\' is not supported with this model.')).toBe(true);
+    expect(isKbfSamplingFieldRejection(422, 'temperature: Extra inputs are not permitted')).toBe(true);
+    expect(isKbfSamplingFieldRejection(400, 'Parameter "temperature" was rejected. Correct or remove it and submit a new request.')).toBe(true);
+  });
+
+  it('keeps fixed-value demands, other fields and non-4xx statuses out', () => {
+    expect(isKbfSamplingFieldRejection(400, 'invalid temperature: only 0.6 is allowed for this model')).toBe(false);
+    expect(isKbfSamplingFieldRejection(400, 'Validation: Kimi request field top_p must be one of: 0.95')).toBe(false);
+    expect(isKbfSamplingFieldRejection(400, 'unsupported Chat feature for Claude Messages: n')).toBe(false);
+    expect(isKbfSamplingFieldRejection(500, '`temperature` is deprecated for this model.')).toBe(false);
+  });
+});

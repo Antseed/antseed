@@ -69,6 +69,8 @@ export interface StoredResponseAuth extends ResponseAuthPayload {
   receivedAt: number;
   verified: boolean;
   verificationError: string | null;
+  requestPreimage?: Uint8Array | null;
+  responsePreimage?: Uint8Array | null;
 }
 
 /**
