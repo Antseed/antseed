@@ -1,5 +1,4 @@
 import type { BadgeTone, DiscoverRow, RendererUiState, VprModelCatalogEntry, VprSelectedModel } from '../../core/state';
-import { LOCALHOST_URL } from '../../constants';
 import { notifyUiStateChanged, notifyUiStateChangedSync } from '../../core/store';
 import { deriveConnectBadge } from '../app/connect-badge';
 import { normalizeDiscoverRow, projectRowsToChatServiceOptions } from '../catalog/discover-rows.js';
@@ -919,8 +918,7 @@ export function initChatModule({
   };
 
   async function fetchAndApplyMeteringStats(sellerPeerId: string): Promise<void> {
-    const port = uiState.chatProxyPort;
-    if (!port) return;
+    if (!uiState.chatProxyPort || !bridge?.paymentsGetPeerMetering) return;
     try {
       const prev = {
         tokens: uiState.chatSessionTotalTokens,
@@ -931,10 +929,9 @@ export function initChatModule({
         ltTokens: uiState.chatLifetimeTotalTokens,
         ltSessions: uiState.chatLifetimeSessions,
       };
-      const url = `${LOCALHOST_URL}:${port}/_antseed/metering/${encodeURIComponent(sellerPeerId)}`;
-      const resp = await fetch(url);
-      if (!resp.ok) return;
-      const stats = (await resp.json()) as MeteringPeerStats;
+      // Read by the main process, like the other buyer-proxy reads.
+      const stats = (await bridge.paymentsGetPeerMetering(sellerPeerId)) as MeteringPeerStats | null;
+      if (!stats) return;
       if (stats.totalTokens > 0) {
         uiState.chatSessionTotalTokens = formatCompactNumber(stats.totalTokens);
       }

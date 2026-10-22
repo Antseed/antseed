@@ -11,6 +11,7 @@ import { GATEWAY_CONTROL_HEADER, ROUTING_POLICY_HEADER, encodePolicyHeader, mean
 import { effectiveKeyLimits, newRequestTag, videoJobKey, type AdmitOptions, type GatewayAccounting, type KeyContext } from './accounting.js'
 import { errorMessage } from './errors.js'
 import { isClientCredentialHeader } from '../proxy/credential-headers.js'
+import { isBrowserContextHeader } from '../proxy/local-request-guard.js'
 import { parseBearerToken } from './keys.js'
 import { BUDGET_PERIODS, type LimitBreach } from './limits.js'
 import { formatUsdc, optionalUsdcToDecimalString, parseUsdToUsdc, usdcToDecimalString } from './money.js'
@@ -1179,6 +1180,9 @@ const STRIPPED_HEADERS = new Set([
   GATEWAY_CONTROL_HEADER,
   GATEWAY_INTERNAL_KEY_HEADER,
   END_USER_HEADER,
+  // Proxy-internal hooks for the local verifier; a key holder must not choose them.
+  'x-antseed-request-id',
+  'x-antseed-capture-response-auth-preimages',
 ])
 
 /** Client headers passed on to the buyer, minus everything the key (not the client) decides. */
@@ -1190,6 +1194,9 @@ function forwardedHeaders(incoming: http.IncomingHttpHeaders): http.OutgoingHttp
     // credentials are never needed downstream (see credential-headers.ts).
     if (isClientCredentialHeader(normalized) || STRIPPED_HEADERS.has(normalized)) continue
     if (normalized.startsWith('x-forwarded-') || HOP_BY_HOP.has(normalized)) continue
+    // The key, not the client's page, decides access; the buyer refuses
+    // requests that look like they came from a web page.
+    if (isBrowserContextHeader(normalized)) continue
     headers[name] = value
   }
   return headers

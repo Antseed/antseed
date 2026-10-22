@@ -129,6 +129,14 @@ Authentication is split into chunks to bound gas, and interrupted submissions
 can resume. Backfilling a missing hash into Chainlink's store is a separate step;
 neither staging a proof nor backfilling its hashes makes it finalized.
 
+## Model verification policy
+
+`AntseedVerificationPointsPolicy` scales seller points by the seller's on-chain
+model verification results: a small bonus per verified service (capped at +50% in
+total) and a penalty per service marked DIFF. Both start at 0, so points are
+unchanged until the owner turns them on. Buyer points always pass through. See
+[Model verification](/docs/model-verification).
+
 ## Other policy interfaces
 
 Not every contract called a policy belongs to the points list. A pool-weight
