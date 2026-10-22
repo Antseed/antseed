@@ -1,6 +1,7 @@
 import type {Config, Plugin, PluginConfig, PluginModule} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 import integrationsPagesPlugin from './plugins/integrations-pages';
+import docsSearchPlugin from './plugins/docs-search';
 import prismTheme from './src/lib/prismTheme';
 import {integrations as integrationEntries} from './src/integrations/integrations';
 import desktopPkg from '../desktop/package.json';
@@ -146,6 +147,8 @@ const config: Config = {
     ],
     statsProxyPlugin,
     integrationsPagesPlugin,
+    // Docs search index for src/theme/SearchBar (the ⌘K modal).
+    docsSearchPlugin,
   ],
 
   // General Sans — the design's display/body face (Geist stays for app-chrome/mono).
@@ -297,6 +300,7 @@ const config: Config = {
           rel: 'noopener noreferrer',
           className: 'header-pricing-link',
         },
+        {type: 'search', position: 'right'},
         {
           type: 'docSidebar',
           sidebarId: 'docs',

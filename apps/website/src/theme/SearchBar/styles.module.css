@@ -1,0 +1,267 @@
+/* Navbar trigger: a search icon and the ⌘K hint. The navbar is full at every
+   width, so the "Search docs..." label only shows inside the modal. */
+.trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 6px 0 10px;
+  margin: 0 4px;
+  border: 1px solid var(--as-gray-15);
+  border-radius: 999px;
+  background: var(--as-gray-1);
+  color: var(--as-text-3);
+  font-family: var(--as-font-app);
+  font-size: 14px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.trigger:hover,
+.trigger:focus-visible {
+  border-color: var(--as-gray-3);
+  background: var(--as-white);
+}
+
+.triggerIcon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+.triggerLabel {
+  display: none;
+}
+
+.triggerKbd {
+  font-family: var(--as-font-app);
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 6px;
+  border: 1px solid var(--as-gray-2);
+  border-radius: 6px;
+  background: var(--as-white);
+  color: var(--as-text-3);
+  box-shadow: none;
+}
+
+@media (hover: none), (max-width: 1180px) {
+  .trigger {
+    width: 36px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .triggerKbd {
+    display: none;
+  }
+}
+
+/* Modal */
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--ifm-z-index-fixed) + 10);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 12vh 16px 16px;
+  background: rgba(0, 30, 18, 0.28);
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+  animation: fadeIn 0.12s ease-out;
+}
+
+.modal {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 640px;
+  max-height: min(680px, 76vh);
+  overflow: hidden;
+  border: 1px solid var(--as-gray-2);
+  border-radius: 14px;
+  background: var(--as-gray-0);
+  box-shadow: 0 24px 60px rgba(0, 30, 18, 0.22), 0 2px 8px rgba(0, 30, 18, 0.08);
+  font-family: var(--as-font-app);
+  animation: rise 0.14s ease-out;
+}
+
+.inputRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--as-gray-15);
+}
+
+.inputIcon {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  color: var(--as-text-3);
+}
+
+.input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--as-text);
+  font: inherit;
+  font-size: 17px;
+}
+
+.input::placeholder {
+  color: var(--as-text-3);
+}
+
+.input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.kbdButton,
+.footer kbd {
+  font-family: var(--as-font-app);
+  font-size: 12px;
+  line-height: 1;
+  padding: 5px 7px;
+  border: 1px solid var(--as-gray-2);
+  border-radius: 6px;
+  background: var(--as-white);
+  color: var(--as-text-3);
+  box-shadow: none;
+}
+
+.kbdButton {
+  cursor: pointer;
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.empty {
+  margin: 0;
+  padding: 36px 16px;
+  text-align: center;
+  color: var(--as-text-2);
+  font-size: 14px;
+}
+
+.results {
+  list-style: none;
+  margin: 0;
+  padding: 8px;
+}
+
+.hit {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.hitActive {
+  background: var(--as-primary-05);
+}
+
+.badge {
+  flex: none;
+  min-width: 72px;
+  margin-top: 1px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-align: center;
+  color: #fff;
+}
+
+.tone-green { background: var(--as-green-deep); }
+.tone-teal { background: #0e7490; }
+.tone-blue { background: #2563eb; }
+.tone-violet { background: #7c3aed; }
+.tone-clay { background: #b45309; }
+.tone-gray { background: var(--as-gray-7); }
+
+.hitBody {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.hitTitle {
+  color: var(--as-text);
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.hitTitle mark {
+  padding: 0;
+  background: none;
+  color: var(--as-green-deep);
+  font-weight: 600;
+}
+
+.hitMeta {
+  overflow: hidden;
+  color: var(--as-text-2);
+  font-size: 13px;
+  line-height: 1.4;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.footer {
+  display: flex;
+  gap: 20px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--as-gray-15);
+  color: var(--as-text-3);
+  font-size: 13px;
+}
+
+.footer span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.footer kbd + kbd {
+  margin-left: -1px;
+}
+
+.footer span > kbd:last-of-type {
+  margin-right: 4px;
+}
+
+@media (max-width: 640px), (hover: none) {
+  .footer {
+    display: none;
+  }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+}
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(-6px) scale(0.99); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .overlay,
+  .modal {
+    animation: none;
+  }
+}
