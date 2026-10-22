@@ -212,6 +212,7 @@ export function normalizeDiscoverRow(raw: unknown): DiscoverRow | null {
     onChainChannelCount: typeof r.onChainChannelCount === 'number' ? r.onChainChannelCount : null,
     agentId: Number(r.agentId) || 0,
     poolStakeAnts: nonNegative(r.poolStakeAnts) ?? 0,
+    boost: nonNegative(r.boost),
     onChainActiveChannelCount: Number(r.onChainActiveChannelCount) || 0,
     onChainGhostCount: Number(r.onChainGhostCount) || 0,
     onChainTotalVolumeUsdc: String(r.onChainTotalVolumeUsdc ?? '0'),

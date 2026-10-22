@@ -455,6 +455,14 @@ test('GET rewards maps buyer rewards and caches them for 5 min, then refreshes i
   await rejectsWith(call(router, 'GET', '/workspaces/ws_team/rewards', outsider), 403)
 })
 
+test('GET rewards carries the buyer wallet\'s Antseed Points, and null when the explorer could not be read', async () => {
+  const points = { epoch: 7, endsAt: 1_700_100_000_000, points: 120.5, estimatedAnts: 8.25, capped: false, potAnts: 1_000, totalPoints: 14_600, startsAt: 1_699_495_200_000, busyPointsPerDay: 3_000, history: [{ epoch: 7, points: 120.5 }, { epoch: 6, points: 40 }] }
+  const withPoints = setup({ resolveChain: async () => CHAIN, readRewards: async () => ({ ...rewardsView('0'), points }) })
+  assert.deepEqual(((await call(withPoints, 'GET', '/workspaces/ws_team/rewards', member)) as Rewards).points, points)
+  const without = setup({ resolveChain: async () => CHAIN, readRewards: async () => ({ ...rewardsView('0'), points: null }) })
+  assert.equal(((await call(without, 'GET', '/workspaces/ws_team/rewards', member)) as Rewards).points, null)
+})
+
 test('GET rewards backs off after a failed read instead of retrying the chain on every request', async () => {
   let now = 1_700_000_000_000
   let calls = 0

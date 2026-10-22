@@ -17,6 +17,7 @@ import { liveBuyerAddresses } from '../../../gateway/services/wallet-address.js'
 import { setupShutdownHandler } from '../../shutdown.js'
 import { getGlobalOptions } from '../types.js'
 import { parsePositiveInteger } from '../parse-positive-integer.js'
+import { antscanPeerBoosts, type PeerBoostSource } from '../../../gateway/services/peer-boosts.js'
 
 export const DEFAULT_GATEWAY_PORT = 8379
 
@@ -105,9 +106,13 @@ export interface CliGateway {
   buyerPort(): Promise<number>
 }
 
-/** Seams for tests; production asks the running buyer. */
-export const gatewayCliRuntime: { buyerAddresses: (buyerPort: number) => Promise<Map<string, string> | null> } = {
+/** Seams for tests; production asks the running buyer, and Antscan for boosts. */
+export const gatewayCliRuntime: {
+  buyerAddresses: (buyerPort: number) => Promise<Map<string, string> | null>
+  peerBoosts: (configPath: string) => PeerBoostSource
+} = {
   buyerAddresses: (buyerPort) => liveBuyerAddresses(buyerPort),
+  peerBoosts: (configPath) => antscanPeerBoosts(configPath),
 }
 
 export function addBuyerPortOption(cmd: Command): Command {

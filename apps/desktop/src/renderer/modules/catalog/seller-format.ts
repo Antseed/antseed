@@ -4,6 +4,29 @@ import type { DiscoverRow, TrustBreakdown } from '../../core/state';
 import { formatUsdShort } from '../../core/format';
 import { isNativeVideoProtocol } from './model-capabilities';
 
+/** Below this a seller earns its buyers no ANTS to speak of (the Points site's "0× earns nothing"). */
+export const BOOST_EARNING_MIN = 0.01;
+
+/** Antseed Points boost, as the Points site shows it: "7.2×", "16×", "<0.1×", "0×"; "—" when unknown. */
+export function formatBoost(boost: number | null | undefined): string {
+  if (boost === null || boost === undefined || Number.isNaN(boost)) return '—';
+  if (boost === 0) return '0×';
+  if (boost < 0.1) return '<0.1×';
+  return `${boost.toFixed(boost < 10 ? 1 : 0)}×`;
+}
+
+/**
+ * The seller row's boost badge text: "No points" for a free route (points are
+ * paid $ × boost, so free usage earns none whatever the pool), otherwise the
+ * boost; null when the boost is unknown (Antscan unreachable).
+ */
+export function sellerBoostLabel(route: DiscoverRow): string | null {
+  const boost = route.boost;
+  if (boost === null || boost === undefined) return null;
+  if (isFreeRoute(route)) return 'No points';
+  return boost < BOOST_EARNING_MIN ? '0× earns nothing' : formatBoost(boost);
+}
+
 /** Effective model reputation is 0-100; the UI shows it on a 10-point scale. */
 export function sellerReputationLabel(route: DiscoverRow): string {
   const score = route.effectiveReputationScore ?? route.onChainReputationScore;

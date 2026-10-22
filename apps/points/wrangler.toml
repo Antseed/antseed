@@ -1,0 +1,23 @@
+# Cloudflare Pages project for Antseed Points: the static site in dist/ plus
+# the Pages Functions in functions/ (X sign-in, wallet links, public profiles).
+#
+# One-time setup on the Cloudflare account:
+#   npx wrangler kv namespace create antseed-points-profiles   -> put the id below
+#   npx wrangler pages secret put SESSION_SECRET                 (32+ random bytes)
+#   npx wrangler pages secret put X_CLIENT_SECRET                (from the X developer app)
+# Deploy:  npm run build && npx wrangler pages deploy dist
+name = "antseed-points"
+pages_build_output_dir = "dist"
+compatibility_date = "2026-08-01"
+
+[[kv_namespaces]]
+binding = "PROFILES"
+id = "TODO-create-with-wrangler-kv-namespace-create"
+
+[vars]
+# OAuth 2.0 client id of the X developer app (not a secret). Its callback URL must be
+# <PUBLIC_URL>/api/auth/x/callback.
+X_CLIENT_ID = ""
+# The site's own origin once the domain is chosen, e.g. "https://points.example.com".
+PUBLIC_URL = ""
+BASE_RPC_URL = "https://mainnet.base.org"

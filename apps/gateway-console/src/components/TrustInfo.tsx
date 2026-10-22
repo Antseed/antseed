@@ -32,3 +32,27 @@ export function TrustTip() {
     </InfoTip>
   )
 }
+
+/** What a provider's boost means for Antseed Points, in a few lines. */
+export function BoostTip() {
+  return (
+    <InfoTip label="What is the boost?">
+      <span className="gc-tip__title">Boost: Antseed Points per $1</span>
+      Every $1 this gateway spends with a provider earns points times its boost. The boost is the ANTS staked in the
+      provider's pool, weighted by lock time: 10,000 ANTS locked for the full 104 weeks is 1×. Each week's points share
+      the buyer ANTS pot. Free usage earns no points, and a provider with nothing staked earns 0×. Routing does not use the boost.
+    </InfoTip>
+  )
+}
+
+/** What Antseed Points are and how they become ANTS. */
+export function PointsTip() {
+  return (
+    <InfoTip label="What are Antseed Points?">
+      <span className="gc-tip__title">Antseed Points</span>
+      Each $1 this workspace spends earns points times the provider's boost; free usage earns none. When the week ends,
+      the buyer ANTS pot is split by points, with at most 5% of the pot to one buyer, and the ANTS show up under Ready to
+      claim. The estimate uses this week's pot and everyone's points so far, so it moves until the week ends.
+    </InfoTip>
+  )
+}

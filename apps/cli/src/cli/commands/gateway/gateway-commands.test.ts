@@ -10,9 +10,12 @@ import { hashApiKey } from '../../../gateway/keys.js'
 import { DEFAULT_WORKSPACE_ID, GatewayStore } from '../../../gateway/store.js'
 import { printConsoleInfo, registerGatewayCommands } from './index.js'
 import { gatewayCliRuntime } from './shared.js'
+import { startFakeBuyer } from '../../../gateway/console-api/handlers/network-test-helpers.js'
+import type { Peer } from '../../../gateway/console-api/types.js'
 
-// Never ask a buyer that may be running on this machine; tests that need one inject it.
+// Never ask a buyer that may be running on this machine, or Antscan; tests that need them inject them.
 gatewayCliRuntime.buyerAddresses = async () => null
+gatewayCliRuntime.peerBoosts = () => async () => null
 
 let dataDir: string
 
@@ -264,5 +267,40 @@ describe('gateway admin-token', () => {
       assert.deepEqual(entries.map((entry) => entry.action), ['token.revoke', 'token.create', 'token.create', 'token.create'])
       assert.deepEqual(entries[0]!.actor, { kind: 'cli', id: null, label: 'antseed CLI' })
     })
+  })
+})
+
+describe('gateway peers: Antseed Points boost', () => {
+  const PAID = 'aa'.repeat(20)
+  const FREE = 'bb'.repeat(20)
+  const ZERO = 'cc'.repeat(20)
+  const seller = (peerId: string, name: string, input: number) => ({
+    peerId, displayName: name, providers: ['openai'], capabilities: [], lastSeen: 1,
+    providerPricing: { openai: { defaults: { inputUsdPerMillion: input, outputUsdPerMillion: input }, services: { 'open-model-a': { inputUsdPerMillion: input, outputUsdPerMillion: input } } } },
+  })
+
+  test('--json carries boost when Antscan answers and null when it does not; the table shows it', async (t) => {
+    const buyer = await startFakeBuyer({
+      'GET /_antseed/peers': () => ({ body: { ok: true, peers: [seller(PAID, 'Paid Seller', 2), seller(FREE, 'Free Seller', 0), seller(ZERO, 'Zero Seller', 1)] } }),
+    })
+    t.after(() => buyer.close())
+    const original = gatewayCliRuntime.peerBoosts
+    t.after(() => { gatewayCliRuntime.peerBoosts = original })
+
+    gatewayCliRuntime.peerBoosts = () => async () => new Map([[`0x${PAID}`, { boost: 15.87, agentId: 1 }], [`0x${FREE}`, { boost: 3, agentId: 2 }]])
+    const boosted = await runJson<Peer[]>('peers', '--buyer-port', String(buyer.port))
+    assert.deepEqual(boosted.map((peer) => [peer.displayName, peer.boost]), [['Paid Seller', 15.87], ['Free Seller', 3], ['Zero Seller', 0]])
+    // The skill reads `peers --model <id> --json`.
+    const forModel = await runJson<Peer[]>('peers', '--buyer-port', String(buyer.port), '--model', 'open-model-a')
+    assert.deepEqual(forModel.map((peer) => peer.boost), [15.87, 3, 0])
+    const table = await run('peers', '--buyer-port', String(buyer.port))
+    assert.match(table, /Boost/)
+    assert.match(table, /16×/)
+    assert.match(table, /no points/)
+    assert.match(table, /0×/)
+
+    gatewayCliRuntime.peerBoosts = () => async () => null
+    const unknown = await runJson<Peer[]>('peers', '--buyer-port', String(buyer.port))
+    assert.deepEqual(unknown.map((peer) => peer.boost), [null, null, null])
   })
 })

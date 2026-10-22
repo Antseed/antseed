@@ -6,15 +6,16 @@ import { useGatewayBaseUrl } from '../components/copy-actions'
 import { PeerActionDialog } from '../components/PeerActionDialog'
 import { PanelRow, PanelSection } from '../components/SidePanel'
 import { TeeBadge } from '../components/TeeBadge'
+import { BoostTip } from '../components/TrustInfo'
 import { VerificationLinks } from '../components/VerificationLinks'
 import {
   Badge, CodeBlock, CopyButton, Figure, Mono, PageLink, SelectField, TabPanel, Tabs,
 } from '../components/ui'
 import { formatAnts } from '../lib/ants'
-import { formatDateTime, formatLatency, formatNumber, formatRelative, formatSpeed, shortId } from '../lib/format'
+import { BOOST_EARNING_MIN, formatBoost, formatDateTime, formatLatency, formatNumber, formatRelative, formatSpeed, shortId } from '../lib/format'
 import { priceSummary } from '../lib/models'
 import { isWorkspaceAdmin } from '../lib/nav'
-import { isFreePeer } from '../lib/peers'
+import { isFreePeer, isPaidPeer } from '../lib/peers'
 import { useKeys, usePresets } from '../lib/queries'
 import { API_KEY_ENV, connectTabs, pinnedModelId, serviceApiFormat, type ApiFormat, type ConnectTabId } from '../lib/snippets'
 import { PresetForm } from './Presets'
@@ -51,6 +52,7 @@ function ProviderMeta({ peer }: { peer: Peer }) {
       {isFreePeer(peer, '') && <Badge tone="success">Free</Badge>}
       {peer.washFlagged && <Badge tone="danger">Flagged</Badge>}
       {coolingDown && <Badge tone="warning">Cooling down</Badge>}
+      {peer.boost !== null && peer.boost < BOOST_EARNING_MIN && isPaidPeer(peer) && <Badge tone="neutral">0× earns nothing</Badge>}
       <span className="gc-muted">Last seen {formatRelative(peer.lastSeen)}</span>
     </span>
   )
@@ -63,6 +65,7 @@ function ProviderStats({ peer, showReputation }: { peer: Peer; showReputation: b
       <Figure label="Trust score" value={score(peer.trustScore)} />
       {showReputation && <Figure label="Reputation" value={score(peer.reputationScore)} />}
       <Figure label="Stake" value={peer.stakeAnts ? formatAnts(peer.stakeAnts) : '—'} />
+      <Figure label={<span className="gc-info-label">Boost (Antseed Points per $1)<BoostTip /></span>} value={isPaidPeer(peer) ? formatBoost(peer.boost) : 'Free, no points'} />
       <Figure label="Network usage share" value={peer.usageShareBps === null ? '—' : `${(peer.usageShareBps / 100).toFixed(2)}%`} />
       <Figure label="First token p50 (this gateway)" value={formatLatency(peer.firstTokenMsP50)} />
       <Figure label="Speed p50 (this gateway)" value={formatSpeed(peer.tokensPerSecondP50)} />

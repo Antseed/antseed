@@ -26,7 +26,7 @@ export function registerNetworkRoutes(router: ConsoleRouter, deps: ConsoleDeps, 
   const orgAdmin = overrides.requireOrgAdmin ?? requireOrgAdmin
   const resolve = overrides.resolvePolicy ?? resolvePolicy
 
-  router.add('GET', '/peers', async (): Promise<Peer[]> => listNetworkPeers(deps.store, buyer, deps.now()))
+  router.add('GET', '/peers', async (): Promise<Peer[]> => listNetworkPeers(deps.store, buyer, deps.now(), deps.peerBoosts))
   /** Every model on the network with the sellers offering it; unfiltered, like `/peers`. */
   router.add('GET', '/models', async (): Promise<NetworkModel[]> => listNetworkModels(deps.store, buyer, deps.now()))
   /** Every routing service on the network; unfiltered, like `/models`. */

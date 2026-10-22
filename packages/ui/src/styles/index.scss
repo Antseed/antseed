@@ -1212,6 +1212,12 @@ body {
   min-width: 0.5rem;
 }
 
+.as-table__head-info {
+  display: inline-flex;
+  margin-left: 0.25rem;
+  vertical-align: middle;
+}
+
 /* Kebab column and open buttons */
 .as-table__actions {
   width: 2.75rem;
