@@ -7,6 +7,7 @@ import type {
   SellerProviderConfig,
   TokenPricingUsdPerMillion,
 } from './types.js';
+import { validateFreeTierStakeTiers } from '@antseed/node';
 import { validateServiceMetadata } from './service-metadata.js';
 import { parseHostPort } from './public-address.js';
 import { appendVerifierConfigErrors } from '../verifier/config-schema.js';
@@ -455,6 +456,13 @@ export function validateConfig(config: AntseedConfig): string[] {
       (!Number.isSafeInteger(freeTier.windowMs) || freeTier.windowMs < 1_000)
     ) {
       errors.push('seller.freeTier.windowMs must be a safe integer >= 1000');
+    }
+    if (freeTier.stakeTiers !== undefined) {
+      try {
+        validateFreeTierStakeTiers(freeTier.stakeTiers, 'seller.freeTier.stakeTiers');
+      } catch (err) {
+        errors.push(err instanceof Error ? err.message : String(err));
+      }
     }
   }
 

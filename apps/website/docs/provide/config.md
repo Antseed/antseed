@@ -185,7 +185,7 @@ A service is free when its token prices and all unit-billing prices are zero. Fr
 }
 ```
 
-Set at least one of the two limits. `windowMs` is a sliding window (default 24 hours, minimum 1000). A request is served only while every configured limit has room, and only served requests count. Counters are stored in the seller's `metering.db`, survive restarts, and are shared across all free services. When a buyer runs out, the seller answers HTTP 429 with `code: "free_tier_exhausted"`, a `limitedBy` field (`address` or `ip`) and a `Retry-After` header. Paid services are unaffected.
+Set at least one of the two limits. `windowMs` is a sliding window (default 24 hours, minimum 1000). A request is served only while every configured limit has room, and only served requests count. Counters are stored in the seller's `metering.db`, survive restarts, and are shared across all free services. When a buyer runs out, the seller answers HTTP 429 with `code: "free_tier_exhausted"`, a `limitedBy` field (`address`, `ip` or `stake`) and a `Retry-After` header. Paid services are unaffected.
 
 | Limit | Keyed on | Caveat |
 |---|---|---|
@@ -200,6 +200,39 @@ antseed config seller set freeTier.maxRequestsPerIp 300
 ```
 
 Remove `seller.freeTier` to make free services unlimited again.
+
+#### Staked tiers
+
+Buyers who lock ANTS in your seller pool get a larger free allowance. Their stake raises your pool weight, which multiplies the points your paid usage earns, so staked free users pay you back through your paid services. Staked tiers are on by default whenever `seller.freeTier` is set:
+
+| Staking power | ≈ ANTS locked for one year | Allowance |
+|---|---|---|
+| 520,000 | 10,000 | 5× the base limit |
+| 2,600,000 | 50,000 | 20× the base limit |
+| 10,400,000 | 200,000 | Unlimited |
+
+Staking power is ANTS × epochs (weeks) of lock remaining, the same power the seller pool uses for rewards. It is zero until a position activates in the next epoch and shrinks as the lock runs down; a max-locked position keeps 104 epochs of power. The base limit is `maxRequestsPerAddress`, or `maxRequestsPerIp` when only that is set.
+
+The seller reads power from `AntseedSellerPools` for the buyer's address and for its operator in `AntseedDeposits`, and uses whichever is larger. Every buyer address behind the same staked owner shares one counter, so adding wallets splits the allowance instead of multiplying it. Staked buyers skip the per-IP limit. Lookups are cached for 10 minutes; if the chain can't be read, buyers keep the base limits.
+
+Set your own program with `stakeTiers`, or `[]` to turn staked tiers off. Up to four tiers; `minPower` and `multiplier` must both increase, and `"unlimited"` can only be the last:
+
+```json
+{
+  "seller": {
+    "freeTier": {
+      "maxRequestsPerAddress": 100,
+      "maxRequestsPerIp": 300,
+      "stakeTiers": [
+        { "minPower": 260000, "multiplier": 10 },
+        { "minPower": 5200000, "multiplier": "unlimited" }
+      ]
+    }
+  }
+}
+```
+
+Your limits and tiers are signed into your peer metadata as `free-tier.v1.*` capabilities, so buyers, the desktop app and [Antscan](https://antscan.co/api/free-tier) can show them. Tiers are only announced when the seller can read the seller pools and deposits contracts. A staked buyer who runs out gets the same 429 with `limitedBy: "stake"`; every 429 from a seller with tiers also carries `stakeTiers` and the buyer's current `stakePower`. See [Staked free tier](/docs/staked-free-tier) for the buyer side.
 
 ### Restricted countries
 

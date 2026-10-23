@@ -51,6 +51,8 @@ describe('SellerFreeTierLimiter', () => {
       limitedBy: 'address',
       buyerAddress: `0x${BUYER}`,
       remoteIp: IP,
+      standing: null,
+      limit: 2,
     });
     // No IP limit configured: another address from the same IP is still fine.
     expect(limiter.consume({ buyerPeerId: OTHER_BUYER, service: 'free-model-a', remoteIp: IP, nowMs: 3_000 }).allowed).toBe(true);
@@ -131,8 +133,80 @@ describe('SellerFreeTierLimiter', () => {
   });
 
   it('describes the configured policy', () => {
-    expect(new SellerFreeTierLimiter({ maxRequestsPerAddress: 100, maxRequestsPerIp: 300 }).describe())
+    expect(new SellerFreeTierLimiter({ maxRequestsPerAddress: 100, maxRequestsPerIp: 300, stakeTiers: [] }).describe())
       .toBe('100 per buyer address, 300 per IP every 86400000ms');
-    expect(new SellerFreeTierLimiter({ maxRequestsPerIp: 5, windowMs: 60_000 }).describe()).toBe('5 per IP every 60000ms');
+    expect(new SellerFreeTierLimiter({ maxRequestsPerIp: 5, windowMs: 60_000, stakeTiers: [] }).describe()).toBe('5 per IP every 60000ms');
+    expect(new SellerFreeTierLimiter({ maxRequestsPerAddress: 10, stakeTiers: [{ minPower: 100, multiplier: 'unlimited' }] }).describe())
+      .toBe('10 per buyer address every 86400000ms; staked tiers 100 power: unlimited');
+  });
+
+  describe('staked tiers', () => {
+    const OWNER = '0x' + 'aa'.repeat(20);
+    const tier5x = { minPower: 100, multiplier: 5 } as const;
+    const unlimited = { minPower: 1_000, multiplier: 'unlimited' } as const;
+    const standing = (tier: typeof tier5x | typeof unlimited) => ({ owner: OWNER, power: 0n, tier });
+
+    it('shares one multiplied counter across every buyer of a staked owner and skips the IP limit', () => {
+      const storage = persistentStorage();
+      const limiter = new SellerFreeTierLimiter({ maxRequestsPerAddress: 1, maxRequestsPerIp: 1, windowMs: 60_000, stakeTiers: [tier5x] }, storage);
+      const staked = standing(tier5x);
+      const buyers = [BUYER, OTHER_BUYER, THIRD_BUYER, BUYER, OTHER_BUYER];
+      buyers.forEach((buyer, index) => {
+        expect(limiter.consume({ buyerPeerId: buyer, service: 'free', remoteIp: IP, standing: staked, nowMs: 1_000 + index }))
+          .toMatchObject({ allowed: true, remaining: 4 - index, limit: 5 });
+      });
+      expect(limiter.consume({ buyerPeerId: THIRD_BUYER, service: 'free', remoteIp: OTHER_IP, standing: staked, nowMs: 2_000 }))
+        .toMatchObject({ allowed: false, limitedBy: 'stake', limit: 5, retryAfterMs: 59_000 });
+      storage.close();
+    });
+
+    it('records but never limits unlimited owners', () => {
+      const storage = persistentStorage();
+      const limiter = new SellerFreeTierLimiter({ maxRequestsPerAddress: 1, windowMs: 60_000, stakeTiers: [tier5x, unlimited] }, storage);
+      for (let i = 0; i < 20; i += 1) {
+        expect(limiter.consume({ buyerPeerId: BUYER, service: 'free', remoteIp: IP, standing: standing(unlimited), nowMs: 1_000 + i }))
+          .toMatchObject({ allowed: true, limit: null });
+      }
+      // Staked usage still counts toward the buyer's own base counter once the stake lapses.
+      expect(limiter.consume({ buyerPeerId: BUYER, service: 'free', remoteIp: IP, nowMs: 2_000 }))
+        .toMatchObject({ allowed: false, limitedBy: 'address' });
+      storage.close();
+    });
+
+    it('applies staked tiers with in-memory accounting', () => {
+      const limiter = new SellerFreeTierLimiter({ maxRequestsPerIp: 1, windowMs: 60_000, stakeTiers: [{ minPower: 100, multiplier: 2 }] });
+      const staked = { owner: OWNER, power: 0n, tier: { minPower: 100, multiplier: 2 } };
+      expect(limiter.consume({ buyerPeerId: BUYER, service: 'free', remoteIp: IP, standing: staked, nowMs: 1 }).allowed).toBe(true);
+      expect(limiter.consume({ buyerPeerId: OTHER_BUYER, service: 'free', remoteIp: IP, standing: staked, nowMs: 2 }).allowed).toBe(true);
+      expect(limiter.consume({ buyerPeerId: THIRD_BUYER, service: 'free', remoteIp: IP, standing: staked, nowMs: 3 }))
+        .toMatchObject({ allowed: false, limitedBy: 'stake' });
+      // The IP bucket was never touched by staked requests.
+      expect(limiter.consume({ buyerPeerId: THIRD_BUYER, service: 'free', remoteIp: IP, nowMs: 4 }).allowed).toBe(true);
+    });
+
+    it('advertises tiers only while a stake resolver enforces them', () => {
+      const limiter = new SellerFreeTierLimiter({ maxRequestsPerAddress: 1000, maxRequestsPerIp: 2000 });
+      expect(limiter.capabilities()).toEqual(['free-tier.v1.base.a1000.i2000.w86400000']);
+      limiter.setStakeResolver({ resolve: async () => null } as never);
+      expect(limiter.capabilities()).toEqual([
+        'free-tier.v1.base.a1000.i2000.w86400000',
+        'free-tier.v1.tier.p520000.x5',
+        'free-tier.v1.tier.p2600000.x20',
+        'free-tier.v1.tier.p10400000.x0',
+      ]);
+    });
+
+    it('rejects invalid tier programs', () => {
+      expect(() => new SellerFreeTierLimiter({ maxRequestsPerAddress: 1, stakeTiers: [{ minPower: 0, multiplier: 2 }] })).toThrow(/minPower/);
+      expect(() => new SellerFreeTierLimiter({ maxRequestsPerAddress: 1, stakeTiers: [{ minPower: 10, multiplier: 1 }] })).toThrow(/multiplier/);
+      expect(() => new SellerFreeTierLimiter({
+        maxRequestsPerAddress: 1,
+        stakeTiers: [{ minPower: 10, multiplier: 'unlimited' }, { minPower: 20, multiplier: 5 }],
+      })).toThrow(/unlimited/);
+      expect(() => new SellerFreeTierLimiter({
+        maxRequestsPerAddress: 1,
+        stakeTiers: [{ minPower: 20, multiplier: 2 }, { minPower: 10, multiplier: 5 }],
+      })).toThrow(/greater/);
+    });
   });
 });

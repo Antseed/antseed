@@ -290,6 +290,19 @@ export { SellerFreeUsageManager } from './payments/seller-free-usage-manager.js'
 export type { SellerFreeUsageConfig } from './payments/seller-free-usage-manager.js';
 export { SellerFreeTierLimiter, DEFAULT_FREE_TIER_WINDOW_MS, normalizeRemoteIp } from './payments/seller-free-tier-limiter.js';
 export type { SellerFreeTierConfig, FreeTierDecision } from './payments/seller-free-tier-limiter.js';
+export {
+  DEFAULT_FREE_TIER_STAKE_TIERS,
+  FREE_TIER_EPOCHS_PER_YEAR,
+  MAX_FREE_TIER_STAKE_TIERS,
+  encodeFreeTierCapabilities,
+  freeTierStakeTierForPower,
+  parseFreeTierProgram,
+  powerToAntsEpochs,
+  validateFreeTierStakeTiers,
+} from './payments/free-tier-program.js';
+export type { FreeTierBaseLimits, FreeTierProgram, FreeTierStakeTier } from './payments/free-tier-program.js';
+export { FreeTierStakeResolver } from './payments/free-tier-stake-resolver.js';
+export type { FreeTierStakeReader, FreeTierStakeResolverOptions, FreeTierStakeStanding } from './payments/free-tier-stake-resolver.js';
 export { SellerPaymentManager } from './payments/seller-payment-manager.js';
 export type { SellerPaymentConfig } from './payments/seller-payment-manager.js';
 export { ChannelStore } from './payments/channel-store.js';

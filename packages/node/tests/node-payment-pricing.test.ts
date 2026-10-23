@@ -1221,12 +1221,20 @@ describe('SellerRequestHandler payment pricing selection', () => {
     const provider = makeProvider(0, 0, { name: 'free-tier', services: ['local-test'] });
     provider.handleRequest = vi.fn(async (req) => ({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ ok: true })) }));
     const consume = vi.fn()
-      .mockReturnValueOnce({ allowed: true, remaining: 0, retryAfterMs: 0, limitedBy: null, buyerAddress: `0x${'b'.repeat(40)}`, remoteIp: '203.0.113.7' })
-      .mockReturnValueOnce({ allowed: false, remaining: 0, retryAfterMs: 12_500, limitedBy: 'ip', buyerAddress: `0x${'b'.repeat(40)}`, remoteIp: '203.0.113.7' });
+      .mockReturnValueOnce({ allowed: true, remaining: 0, retryAfterMs: 0, limitedBy: null, buyerAddress: `0x${'b'.repeat(40)}`, remoteIp: '203.0.113.7', standing: null, limit: 1 })
+      .mockReturnValueOnce({ allowed: false, remaining: 0, retryAfterMs: 12_500, limitedBy: 'ip', buyerAddress: `0x${'b'.repeat(40)}`, remoteIp: '203.0.113.7', standing: null, limit: 3 });
+    const stakeTiers = [{ minPower: 520_000, multiplier: 5 }];
     const handler = makeSellerRequestHandler({
       providers: [provider],
       sellerPaymentManager: null,
-      sellerFreeTierLimiter: { maxRequestsPerAddress: 1, maxRequestsPerIp: 3, windowMs: 60_000, consume } as any,
+      sellerFreeTierLimiter: {
+        maxRequestsPerAddress: 1,
+        maxRequestsPerIp: 3,
+        windowMs: 60_000,
+        consume,
+        resolveStanding: vi.fn(async () => null),
+        program: () => ({ base: { maxRequestsPerAddress: 1, maxRequestsPerIp: 3, windowMs: 60_000 }, stakeTiers }),
+      } as any,
       sessionTracker: null,
       channelsClient: null,
       announcer: null,
@@ -1255,16 +1263,18 @@ describe('SellerRequestHandler payment pricing selection', () => {
 
     expect(provider.handleRequest).toHaveBeenCalledOnce();
     expect(consume).toHaveBeenCalledTimes(2);
-    expect(consume).toHaveBeenCalledWith({ buyerPeerId: 'b'.repeat(40), service: 'local-test', remoteIp: '203.0.113.7' });
+    expect(consume).toHaveBeenCalledWith({ buyerPeerId: 'b'.repeat(40), service: 'local-test', remoteIp: '203.0.113.7', standing: null });
     const responses = sentFrames.map((frame) => decodeHttpResponse(decodeFrame(frame)!.message.payload));
     expect(responses.map((response) => response.statusCode)).toEqual([200, 429]);
     expect(responses[1]!.headers['retry-after']).toBe('13');
     expect(JSON.parse(new TextDecoder().decode(responses[1]!.body))).toMatchObject({
-      error: { code: 'free_tier_exhausted' },
+      error: { code: 'free_tier_exhausted', message: expect.stringContaining('Stake ANTS on this seller') },
       limitedBy: 'ip',
       limit: 3,
       windowMs: 60_000,
       retryAfterSeconds: 13,
+      stakeTiers,
+      stakePower: 0,
     });
   });
 

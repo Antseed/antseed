@@ -150,6 +150,19 @@ export interface SellerFreeTierCLIConfig {
   maxRequestsPerIp?: number;
   /** Sliding-window duration in milliseconds. Default: 86400000 (24 hours). */
   windowMs?: number;
+  /**
+   * Larger allowances for buyers staked on this seller, by staking power
+   * (ANTS × epochs of lock remaining). Default: 10k/50k/200k ANTS locked for a
+   * year earn 5×, 20× and unlimited. `[]` turns staked tiers off.
+   */
+  stakeTiers?: SellerFreeTierStakeTierCLIConfig[];
+}
+
+export interface SellerFreeTierStakeTierCLIConfig {
+  /** Minimum staking power in ANTS-epochs, e.g. 520000 = 10k ANTS locked for 52 weeks. */
+  minPower: number;
+  /** Multiplier on the base allowance, or "unlimited". */
+  multiplier: number | 'unlimited';
 }
 
 /**

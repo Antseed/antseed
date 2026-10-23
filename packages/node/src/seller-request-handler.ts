@@ -11,6 +11,13 @@ import type { ChannelsClient } from './payments/evm/channels-client.js';
 import type { SellerPaymentManager } from './payments/seller-payment-manager.js';
 import type { SellerFreeUsageManager } from './payments/seller-free-usage-manager.js';
 import type { FreeTierDecision, SellerFreeTierLimiter } from './payments/seller-free-tier-limiter.js';
+import { powerToAntsEpochs } from './payments/free-tier-program.js';
+
+const FREE_TIER_EXHAUSTED_MESSAGES = {
+  address: 'This seller free tier has been exhausted for your buyer address.',
+  ip: 'This seller free tier has been exhausted for your IP address.',
+  stake: 'This seller staked free tier has been exhausted for your stake.',
+} as const;
 import { ProxyMux } from './proxy/proxy-mux.js';
 import type { PeerConnection } from './p2p/connection-manager.js';
 import type {
@@ -321,10 +328,12 @@ export class SellerRequestHandler {
         const requestedService = this._extractRequestedService(request) ?? 'unknown';
         let decision: FreeTierDecision;
         try {
+          const standing = await this._deps.sellerFreeTierLimiter.resolveStanding(buyerPeerId);
           decision = this._deps.sellerFreeTierLimiter.consume({
             buyerPeerId,
             service: requestedService,
             remoteIp: conn.remoteAddress ?? null,
+            standing,
           });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
@@ -347,11 +356,15 @@ export class SellerRequestHandler {
           const retryAfterSeconds = Math.max(1, Math.ceil(decision.retryAfterMs / 1000));
           const limiter = this._deps.sellerFreeTierLimiter;
           const limitedBy = decision.limitedBy ?? 'address';
-          const limit = limitedBy === 'ip' ? limiter.maxRequestsPerIp : limiter.maxRequestsPerAddress;
+          const limit = decision.limit;
           debugLog(
             `[SellerHandler] Free tier exhausted for ${decision.buyerAddress} ip=${decision.remoteIp ?? 'unknown'} ` +
-            `(limitedBy=${limitedBy}, limit=${limit}, windowMs=${limiter.windowMs})`,
+            `owner=${decision.standing?.owner ?? 'none'} (limitedBy=${limitedBy}, limit=${limit}, windowMs=${limiter.windowMs})`,
           );
+          const program = limiter.program();
+          const stakeHint = program.stakeTiers.length > 0
+            ? ' Stake ANTS on this seller to raise the limit.'
+            : '';
           mux.sendProxyResponse({
             requestId: request.requestId,
             statusCode: 429,
@@ -361,9 +374,7 @@ export class SellerRequestHandler {
             },
             body: new TextEncoder().encode(JSON.stringify({
               error: {
-                message: limitedBy === 'ip'
-                  ? 'This seller free tier has been exhausted for your IP address.'
-                  : 'This seller free tier has been exhausted for your buyer address.',
+                message: FREE_TIER_EXHAUSTED_MESSAGES[limitedBy] + stakeHint,
                 type: 'rate_limit_error',
                 code: 'free_tier_exhausted',
               },
@@ -371,6 +382,12 @@ export class SellerRequestHandler {
               limit,
               windowMs: limiter.windowMs,
               retryAfterSeconds,
+              ...(program.stakeTiers.length > 0
+                ? {
+                  stakeTiers: program.stakeTiers,
+                  stakePower: decision.standing ? powerToAntsEpochs(decision.standing.power) : 0,
+                }
+                : {}),
             })),
           });
           return;

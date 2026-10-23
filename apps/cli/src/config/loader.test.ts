@@ -1066,6 +1066,35 @@ test('loadConfig rejects invalid seller freeTier limits', async () => {
   }
 });
 
+test('loadConfig preserves seller freeTier stake tiers, including the [] opt-out', async () => {
+  for (const stakeTiers of [[{ minPower: 520_000, multiplier: 5 }, { minPower: 10_400_000, multiplier: 'unlimited' }], []]) {
+    await withTempConfig(
+      JSON.stringify({ seller: { freeTier: { maxRequestsPerAddress: 100, stakeTiers } } }),
+      async (configPath) => {
+        const config = await loadConfig(configPath);
+        assert.deepEqual(config.seller.freeTier?.stakeTiers, stakeTiers);
+      }
+    );
+  }
+});
+
+test('loadConfig rejects invalid seller freeTier stake tiers', async () => {
+  for (const stakeTiers of [
+    'unlimited',
+    [{ minPower: 0, multiplier: 5 }],
+    [{ minPower: 100, multiplier: 1 }],
+    [{ minPower: 200, multiplier: 5 }, { minPower: 100, multiplier: 20 }],
+    [{ minPower: 100, multiplier: 'unlimited' }, { minPower: 200, multiplier: 5 }],
+  ]) {
+    await withTempConfig(
+      JSON.stringify({ seller: { freeTier: { maxRequestsPerAddress: 100, stakeTiers } } }),
+      async (configPath) => {
+        await assert.rejects(async () => loadConfig(configPath), /seller\.freeTier\.stakeTiers/);
+      }
+    );
+  }
+});
+
 test('loadConfig preserves seller restrictedCountries, including the [] opt-out', async () => {
   for (const restrictedCountries of [['IR', 'RU'], []]) {
     await withTempConfig(

@@ -9,7 +9,8 @@ import type {
 import { runMigrations } from '../storage/migrate.js';
 import { meteringMigrations } from '../storage/migrations/metering/index.js';
 
-export type FreeTierLimitKind = 'address' | 'ip';
+/** `stake` is the shared allowance of a staked owner (the buyer or its operator). */
+export type FreeTierLimitKind = 'address' | 'ip' | 'stake';
 
 export interface FreeTierConsumption {
   allowed: boolean;
@@ -26,6 +27,13 @@ export interface FreeTierUsageInput {
   maxRequestsPerIp: number | null;
   windowMs: number;
   nowMs?: number;
+  /**
+   * Staked allowance owner. When set, the request is counted against this
+   * owner's shared counter instead of the per-address and per-IP limits.
+   */
+  allowanceOwner?: string | null;
+  /** Limit for the owner's counter; null means unlimited. */
+  maxRequestsPerOwner?: number | null;
 }
 
 export interface FreeTierLimitCheck {
@@ -401,7 +409,8 @@ export class MeteringStorage {
       this.db.prepare('DELETE FROM free_tier_usage WHERE timestamp < ?').run(windowStart);
       this.lastFreeTierPruneAt = nowMs;
     }
-    const countUsage = (column: 'buyer_address' | 'remote_ip', key: string): { count: number; oldestTimestamp: number | null } => {
+    const allowanceOwner = input.allowanceOwner?.toLowerCase() ?? '';
+    const countUsage = (column: 'buyer_address' | 'remote_ip' | 'allowance_owner', key: string): { count: number; oldestTimestamp: number | null } => {
       const row = this.db.prepare(`
         SELECT COUNT(*) AS request_count, MIN(timestamp) AS oldest_timestamp
         FROM free_tier_usage
@@ -411,18 +420,25 @@ export class MeteringStorage {
     };
     const consume = this.db.transaction((): FreeTierConsumption => {
       const checks: FreeTierLimitCheck[] = [];
-      if (input.maxRequestsPerAddress !== null) {
-        checks.push({ kind: 'address', limit: input.maxRequestsPerAddress, ...countUsage('buyer_address', buyerAddress) });
-      }
-      if (input.maxRequestsPerIp !== null && remoteIp !== '') {
-        checks.push({ kind: 'ip', limit: input.maxRequestsPerIp, ...countUsage('remote_ip', remoteIp) });
+      if (allowanceOwner !== '') {
+        const ownerLimit = input.maxRequestsPerOwner ?? null;
+        if (ownerLimit !== null) {
+          checks.push({ kind: 'stake', limit: ownerLimit, ...countUsage('allowance_owner', allowanceOwner) });
+        }
+      } else {
+        if (input.maxRequestsPerAddress !== null) {
+          checks.push({ kind: 'address', limit: input.maxRequestsPerAddress, ...countUsage('buyer_address', buyerAddress) });
+        }
+        if (input.maxRequestsPerIp !== null && remoteIp !== '') {
+          checks.push({ kind: 'ip', limit: input.maxRequestsPerIp, ...countUsage('remote_ip', remoteIp) });
+        }
       }
       const decision = evaluateFreeTierLimits(checks, input.windowMs, nowMs);
       if (decision.allowed && service !== null) {
         this.db.prepare(`
-          INSERT INTO free_tier_usage (buyer_address, remote_ip, service, timestamp)
-          VALUES (?, ?, ?, ?)
-        `).run(buyerAddress, remoteIp, service, nowMs);
+          INSERT INTO free_tier_usage (buyer_address, remote_ip, service, timestamp, allowance_owner)
+          VALUES (?, ?, ?, ?, ?)
+        `).run(buyerAddress, remoteIp, service, nowMs, allowanceOwner);
       }
       return decision;
     });

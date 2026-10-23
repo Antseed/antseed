@@ -6,6 +6,11 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Added
+
+- Seller (`@antseed/node`, CLI): staked free tier. Buyers staked on a seller get a larger free allowance by staking power (ANTS × epochs of lock remaining). Default `seller.freeTier.stakeTiers`: 520,000 / 2,600,000 / 10,400,000 power (≈10k / 50k / 200k ANTS locked for a year) earn 5×, 20× and unlimited; `[]` turns tiers off. The seller reads the power of the buyer and of its Deposits operator and uses the larger; all buyer addresses behind one staked owner share one counter, and staked buyers skip the per-IP limit. Lookups are cached for 10 minutes and fall back to the base limits when the chain can't be read. Limits and tiers are announced as signed `free-tier.v1.*` peer capabilities (no metadata version bump). Free-tier 429s carry `limitedBy: "stake"` for staked owners, plus `stakeTiers` and `stakePower` when tiers are on. Metering migration 4 adds `free_tier_usage.allowance_owner`.
+- Docs: new [Staked free tier](/docs/staked-free-tier) buyer guide and a staked-tiers section in seller configuration; blog post introducing the program.
+
 ### Changed
 
 - Buyer (`@antseed/buyer-core`, CLI, desktop): with several requests in flight to one seller, a seller's catch-up payment request (its spend ran ahead of the signed amount) is now covered in full, up to the per-request limit for each in-flight request and never beyond the channel reserve. The buyer retries while the gap shrinks (at most three attempts), and if the gap stops shrinking or is still not covered returns a `payment_negotiation_failed` error instead of passing through the seller's raw 402.

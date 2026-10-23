@@ -230,7 +230,8 @@ export class SellerFreeUsageManager {
     // Check inside the buyer lock, immediately before spending gas. Opening
     // does not consume quota; the inference handler accounts for requests.
     // Storage errors propagate so admission fails closed without an open/ack.
-    const admission = this._freeTierLimiter?.check({ buyerPeerId, remoteIp });
+    const standing = (await this._freeTierLimiter?.resolveStanding(buyerPeerId)) ?? null;
+    const admission = this._freeTierLimiter?.check({ buyerPeerId, remoteIp, standing });
     if (admission && !admission.allowed) {
       throw new Error(
         `free_tier_exhausted: limitedBy=${admission.limitedBy} ` +

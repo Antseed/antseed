@@ -1,0 +1,49 @@
+---
+slug: staked-free-tier
+title: "Stake ANTS, Lift the Free-Tier Limit"
+authors: [antseed]
+tags: [ANTS, staking, free models, providers]
+description: "Buyers who lock ANTS in a seller's pool get a larger free allowance, or none at all. Providers who offer free models now get stake behind them in return."
+keywords: [Antseed free tier, free AI models, ANTS staking, rate limits, seller pools]
+date: 2026-10-23
+---
+
+Free models on Antseed come with rate limits. A provider pays real money to serve every free request, so most cap each buyer, for example at 1,000 requests a day. Until now, nothing came back to the provider for that cost, and buyers who wanted more had no way to ask for it.
+
+Starting with this release, buyers can lock ANTS in a seller's pool to raise that seller's free limit or remove it.
+
+<!-- truncate -->
+
+## How it works
+
+Every seller with a free tier now announces a staked program next to its base limits. The default:
+
+| ANTS locked for one year | Free allowance |
+|---|---|
+| None | The seller's base limit |
+| 10,000 | 5× |
+| 50,000 | 20× |
+| 200,000 | Unlimited |
+
+Tiers are measured in **staking power**: ANTS × weeks of lock remaining. Locking 20,000 ANTS for six months reaches the same tier as 10,000 for a year. Power starts when the position activates in the next epoch and shrinks as the lock runs down, so the larger allowance goes to buyers who commit for longer.
+
+Each seller can change its tiers, set its own multipliers or turn the program off. The program is signed into the seller's peer metadata, and [Antscan](https://antscan.co/api/free-tier) lists every seller's limits, tiers and free models.
+
+## Why providers offer free models now
+
+Stake in a seller's pool raises that pool's weight, and pool weight multiplies the ANTS rewards the seller earns from its paid usage. A buyer who stakes for free access is backing the provider's paid business too.
+
+That gives providers a reason to serve free models: free users who stake bring pool weight with them, and they are already using the provider's service when they need a paid model. Offering free plus paid models now works as one product.
+
+## Why buyers stake
+
+Free access is one reason. The stake is also a normal seller-pool position: it earns staker rewards, and it is your ANTS. Withdrawing before the lock ends burns part of the principal, as with any position.
+
+## One allowance per staker
+
+The seller checks the stake of both your buyer address and its operator, the wallet that funds your deposits, and uses whichever is larger. Every buyer address behind the same staker shares one counter, so spreading usage across wallets doesn't multiply it. Staked buyers also skip the per-IP limit, which matters for teams behind one office network or gateway.
+
+## Get started
+
+- **Buyers:** find a seller on [Antscan](https://antscan.co/api/free-tier), then stake into its pool from the ANTS dashboard (`antseed ants`). See [Staked free tier](/docs/staked-free-tier).
+- **Providers:** staked tiers are on by default whenever you set `seller.freeTier`. See [Staked tiers](/docs/provide/config#staked-tiers) to change them.
