@@ -61,6 +61,10 @@ questions the seller has never seen:
 
 So one unlucky run does not mark an honest seller.
 
+To run an auditor yourself, see [Become a verifier](/docs/verify). [How audits run](/docs/verify/audits)
+covers each step in detail, and [Reference upstreams](/docs/verify/upstreams) explains how to choose
+and configure the source of the genuine model's answers.
+
 ## Public evidence
 
 Every audit is published to IPFS: the questions asked, the seller's raw responses, the

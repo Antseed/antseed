@@ -41,7 +41,7 @@ import {
 } from './reference-sizing.js'
 import { probeBankCompatibilityHash } from './probe-bank.js'
 import { safeServiceSlug } from './slug.js'
-import { resolveVerifierModelConfig, type ResolvedVerifierModelConfig } from './model-config.js'
+import { auditedVerifierModels, resolveVerifierModelConfig, type ResolvedVerifierModelConfig } from './model-config.js'
 import type { VerifierModelCatalog, VerifierReasoningEffort } from './openrouter-catalog.js'
 import {
   CANONICAL_KBF_DOMAINS,
@@ -1954,8 +1954,8 @@ function referencePricingByModel(
     const catalogPricing = catalog?.get(normalized(contrastModel))?.pricing
     const configuredPricing = Object.values(config?.referenceEndpoint?.contrastModelBank ?? {})
       .find((candidate) => normalized(candidate.upstreamModel) === normalized(contrastModel))?.pricing
-    const auditedPricing = Object.values(config?.referenceEndpoint?.models ?? {})
-      .find((candidate) => normalized(candidate.upstreamModel) === normalized(contrastModel))?.pricing
+    const auditedPricing = auditedVerifierModels(config)
+      .find(([, candidate]) => normalized(candidate.upstreamModel) === normalized(contrastModel))?.[1].pricing
     const pricing = catalogPricing ?? configuredPricing ?? auditedPricing
     if (!pricing) throw new Error(`no reference pricing is available for ${contrastModel}`)
     prices.set(normalized(contrastModel), pricing)

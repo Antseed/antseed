@@ -619,21 +619,73 @@ Provider-specific options are configured via each plugin's config schema (see `a
 
 ## Assigned Model Audits
 
-`verifier run` audits one `<model>`, every enabled model with `--all`, or the
-models assigned to an auditor with `--auditor <address>`:
+The audited models are a list built into the CLI (`src/verifier/audited-models.ts`):
+each model's service id, the aliases sellers use for it, and its OpenRouter id. A
+verifier's config never lists models. It sets the auditor and where the genuine
+answers come from:
+
+```json
+{
+  "verifier": {
+    "auditor": "0xYourAuditorAddress",
+    "keystore": "~/.foundry/keystores/auditor",
+    "referenceEndpoint": {
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "apiKeyEnv": "OPENROUTER_API_KEY",
+      "sourceId": "openrouter",
+      "trust": "trusted"
+    },
+    "upstreams": {
+      "anthropic": { "type": "anthropic", "baseUrl": "https://api.anthropic.com/v1", "apiKeyEnv": "ANTHROPIC_API_KEY" }
+    },
+    "models": {
+      "claude-opus-5.5": { "upstream": { "name": "anthropic", "model": "claude-opus-5-5" } },
+      "kimi-k3": { "enabled": false }
+    }
+  }
+}
+```
+
+A model without an `upstream` takes its genuine answers from `referenceEndpoint`
+(OpenRouter by default); only list the models you send elsewhere. `antseed
+verifier models` prints each model's source, model id and provider pin.
+
+`verifier.models.<model>` is optional and only accepts audited models. It can set
+`enabled`, `upstream`, `referenceProvider`, `contrastModels`, `excludedDomains`,
+`pricing` and `referenceRoute`. Contrast models come from the OpenRouter catalog
+unless `referenceEndpoint.contrastModelBank` is set. A model list under
+`referenceEndpoint.models` (older configs) is rejected.
+
+`verifier run` with no model audits the models assigned to the auditor in the
+current epoch and prints the assignment first:
 
 ```bash
-antseed --config ./audit-config.json verifier run --auditor 0xYourAuditorAddress
+antseed --config ./audit-config.json verifier run
 ```
+
+The auditor is `--auditor <address>`, then `verifier.auditor`, then the address
+of `verifier.keystore`, then the data-dir identity. `verifier submit` and
+`verifier rewards --claim` sign with `--keystore`, then `verifier.keystore`, then
+the data-dir identity, and refuse a signer whose address differs from
+`verifier.auditor`. `verifier run <model>` and `--all` ignore the assignment.
+
+An audit never pays a seller more than the model costs upstream. At the start of
+a run each model's price is resolved (its `upstream.pricing` or
+`referenceRoute.pricing`, then `verifier.models.<model>.pricing`, then the
+OpenRouter catalog). A seller whose input or output price is above that price
+times `verifier.auditPriceRatio` (default 1.0) is skipped with
+`price_above_reference` and listed in the published evidence. The verifier does
+not use `buyer.maxPricing` to choose sellers, but audit requests still pass the
+buyer proxy's caps, so set `buyer.maxPricing.defaults` at least as high as the
+most expensive reference price.
 
 Every `verifier run` labels its evidence with the current on-chain epoch from the
 emissions gate, the epoch `AntseedVerification` checks on submit. When no chain
 is reachable it falls back to the UTC-day epoch with a warning; that evidence
-cannot be submitted on-chain. The assignment uses the same epoch and is printed
-before the audit starts. Today every auditor is assigned every enabled
-configured model; a later release rotates models across auditors per epoch
-off-chain. `--auditor` cannot be combined with `<model>`, `--all`, or
-`--resume-run`.
+cannot be submitted on-chain. The assignment uses the same epoch. Today every
+auditor is assigned every audited model; a later release rotates models across
+auditors per epoch off-chain. `--auditor` cannot be combined with `<model>`,
+`--all`, or `--resume-run`.
 
 ## Submitting Model Audits
 
@@ -700,8 +752,8 @@ The request budget is **per model**, includes retries and requests already used
 by a compatible enrollment checkpoint, and cannot exceed a lower configured
 `referenceMaxRequestsPerBuild`. It is a request limit, not a dollar spending cap.
 Probe growth also respects `referenceMaximumProbeCount` (default 500) and the
-configured no-progress limit. `--all` applies this process to each enabled model
-with eligible sellers; it can therefore spend up to the per-model limit for each.
+configured no-progress limit. An assigned or `--all` run applies this process to
+each model with eligible sellers; it can therefore spend up to the per-model limit for each.
 
 Compatible banks retain their enrolled probes and self-test answers. New stable
 candidates are checked against the existing contrasts, with preference given to

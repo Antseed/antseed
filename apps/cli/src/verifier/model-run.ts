@@ -24,6 +24,7 @@ import {
   type TokenPricingUsdPerMillion,
 } from '@antseed/node'
 import { parsePersistedPeers } from '../proxy/buyer-proxy.js'
+import { auditPriceRejection, type AuditPriceCap } from './audit-price.js'
 import { createDomainHomogeneousKbfBatches } from './kbf-batching.js'
 import {
   deriveProxyAuditId,
@@ -206,7 +207,11 @@ export interface ModelVerificationSkip {
 
 export interface VerificationTargetPolicy {
   minReputation: number
-  maxPricing: TokenPricingUsdPerMillion
+  /**
+   * The audited model's reference price cap. A seller priced above it is skipped
+   * (`price_above_reference`) before any request is sent.
+   */
+  priceCap: AuditPriceCap
 }
 
 export async function loadBuyerProxySnapshot(dataDir: string): Promise<BuyerProxySnapshot> {
@@ -250,7 +255,7 @@ export function classifyVerificationTarget(
   | { eligible: false; code: 'model_not_advertised'; service: null; reason: string }
   | {
     eligible: false
-    code: 'missing_response_auth' | 'reputation_below_minimum' | 'price_above_maximum' | 'policy_rejected'
+    code: 'missing_response_auth' | 'reputation_below_minimum' | 'price_above_reference' | 'policy_rejected'
     service: string
     reason: string
   } {
@@ -283,22 +288,13 @@ export function classifyVerificationTarget(
       eligible: false,
       code: 'policy_rejected',
       service,
-      reason: `buyer policy could not resolve valid advertised pricing for ${service}`,
+      reason: `could not read a valid advertised price for ${service}`,
     }
   }
 
-  const maxCachedInput = policy.maxPricing.cachedInputUsdPerMillion ?? policy.maxPricing.inputUsdPerMillion
-  if (
-    offer.inputUsdPerMillion > policy.maxPricing.inputUsdPerMillion
-    || offer.outputUsdPerMillion > policy.maxPricing.outputUsdPerMillion
-    || (offer.cachedInputUsdPerMillion != null && offer.cachedInputUsdPerMillion > maxCachedInput)
-  ) {
-    return {
-      eligible: false,
-      code: 'price_above_maximum',
-      service,
-      reason: `advertised price input $${offer.inputUsdPerMillion}/M, output $${offer.outputUsdPerMillion}/M exceeds buyer maximum input $${policy.maxPricing.inputUsdPerMillion}/M, output $${policy.maxPricing.outputUsdPerMillion}/M`,
-    }
+  const priceRejection = auditPriceRejection(offer, policy.priceCap)
+  if (priceRejection) {
+    return { eligible: false, code: 'price_above_reference', service, reason: priceRejection }
   }
 
   return { eligible: true, service }

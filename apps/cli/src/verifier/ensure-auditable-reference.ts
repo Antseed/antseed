@@ -1,6 +1,7 @@
 import { join } from 'node:path'
 import type { VerifierCLIConfig } from '../config/types.js'
 import { acquirePidFileLock } from './atomic-files.js'
+import { findVerifierModel } from './model-config.js'
 import { buildModelReference } from './model-reference.js'
 import { loadConfiguredVerifierModelCatalog } from './openrouter-catalog.js'
 import {
@@ -19,6 +20,13 @@ const dependencies = {
   catalog: loadConfiguredVerifierModelCatalog,
   build: buildModelReference,
   append: appendModelReferenceToBank,
+}
+
+/** Pins a model's contrast models in a cloned config, so enrollment keeps the bank's contrasts. */
+function withContrastModels(config: VerifierCLIConfig, service: string, contrastModels: string[]): void {
+  const models = config.models ?? {}
+  const key = Object.keys(models).find((name) => findVerifierModel(config, name)?.[0] === service) ?? service
+  config.models = { ...models, [key]: { ...models[key], contrastModels: [...contrastModels] } }
 }
 
 export async function ensureAuditableReference(input: {
@@ -41,13 +49,13 @@ export async function ensureAuditableReference(input: {
       return
     }
     const initialReference = await operations.loadSeed(input.banksDir, input.model)
-    const configuredModel = input.config?.referenceEndpoint?.models[input.model]
     const config = structuredClone(input.config)
-    if (!config?.referenceEndpoint || !configuredModel || configuredModel.enabled === false) {
+    const entry = findVerifierModel(config, input.model)
+    if (!config?.referenceEndpoint || !entry || entry[1].enabled === false) {
       throw new Error(`no enabled reference configuration for ${input.model}`)
     }
     if (initialReference) {
-      config.referenceEndpoint.models[input.model]!.contrastModels = initialReference.contrasts.map((entry) => entry.model)
+      withContrastModels(config, entry[0], initialReference.contrasts.map((contrast) => contrast.model))
     }
     config.referenceMaxRequestsPerBuild = Math.min(
       input.maxRequests, config.referenceMaxRequestsPerBuild ?? input.maxRequests,
@@ -104,11 +112,11 @@ export async function enrollFreshProbes(input: {
   try {
     const bank = await operations.loadIndex(input.banksDir, input.model)
     const config = structuredClone(input.config)
-    const configuredModel = config?.referenceEndpoint?.models[input.model]
-    if (!config?.referenceEndpoint || !configuredModel || configuredModel.enabled === false) {
+    const entry = findVerifierModel(config, input.model)
+    if (!config?.referenceEndpoint || !entry || entry[1].enabled === false) {
       throw new Error(`no enabled reference configuration for ${input.model}`)
     }
-    if (bank) configuredModel.contrastModels = bank.contrastModels
+    if (bank) withContrastModels(config, entry[0], bank.contrastModels)
     config.referenceMaxRequestsPerBuild = Math.min(
       input.maxRequests, config.referenceMaxRequestsPerBuild ?? input.maxRequests,
     )

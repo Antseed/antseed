@@ -3,7 +3,10 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
+import { setAuditedModelsForTesting } from './audited-models.js'
 import { enrollFreshProbes, ensureAuditableReference } from './ensure-auditable-reference.js'
+
+setAuditedModelsForTesting({ 'model-a': { upstreamModel: 'upstream-a' } })
 import { referenceFixture } from './model-audit-fixtures.test-support.js'
 
 async function fixture(body: (input: Parameters<typeof ensureAuditableReference>[0], calls: string[], operations: NonNullable<Parameters<typeof ensureAuditableReference>[1]>) => Promise<void>) {
@@ -13,7 +16,6 @@ async function fixture(body: (input: Parameters<typeof ensureAuditableReference>
     model: 'model-a', banksDir: directory, referencesDir: join(directory, 'references'), maxRequests: 10,
     config: { referenceMaxRequestsPerBuild: 20, referenceEndpoint: {
       baseUrl: 'https://reference.test', sourceId: 'test', trust: 'trusted' as const,
-      models: { 'model-a': { upstreamModel: 'upstream-a' } },
     } },
   }
   let inspections = 0
@@ -82,7 +84,7 @@ test('top-up preserves existing contrasts rather than choosing easier substitute
   operations.loadSeed = async () => seed
   const build = operations.build
   operations.build = async (options) => {
-    assert.deepEqual(options.config!.referenceEndpoint!.models['model-a']!.contrastModels, ['difficult-contrast'])
+    assert.deepEqual(options.config!.models!['model-a']!.contrastModels, ['difficult-contrast'])
     return build(options)
   }
   await ensureAuditableReference(input, operations)
@@ -94,7 +96,7 @@ test('fresh enrollment builds a new reference that excludes every banked probe',
     calls.push('build')
     assert.equal(options.initialReference, undefined)
     assert.deepEqual([...(options.excludedProbeIds ?? [])], ['banked-1', 'banked-2'])
-    assert.deepEqual(options.config?.referenceEndpoint?.models['model-a']?.contrastModels, ['contrast-x'])
+    assert.deepEqual(options.config?.models?.['model-a']?.contrastModels, ['contrast-x'])
     assert.equal(options.config?.referenceMaxRequestsPerBuild, 10)
     return { reference: referenceFixture('model-a', 100), path: 'reference.json',
       cost: { totalUsdMicros: '3000000', requestCount: 1, models: [], purposes: [] },
