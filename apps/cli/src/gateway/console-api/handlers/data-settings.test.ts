@@ -269,3 +269,32 @@ test('presets, peer lists and the routing default are audited', async () => {
     await h.close()
   }
 })
+
+test('PUT /settings/telemetry flips telemetry.enabled in the config file, keeps other keys, and is audited', async () => {
+  const h = await harness()
+  const saved = { ...process.env }
+  process.env['POSTHOG_HOST'] = 'https://eu.i.posthog.com'
+  process.env['POSTHOG_PROJECT_API_KEY'] = 'phc_test'
+  for (const name of ['CI', 'ANTSEED_TELEMETRY', 'DO_NOT_TRACK', 'GITHUB_ACTIONS']) delete process.env[name]
+  try {
+    const path = join(h.dir, 'config.json')
+    writeFileSync(path, JSON.stringify({ custom: { keep: true } }))
+    const before = await h.as('owner', 'GET', '/settings')
+    assert.deepEqual((before.body as Settings).telemetry, { available: true, enabled: true, userDisabled: false })
+
+    const off = await h.as('owner', 'PUT', '/settings/telemetry', { enabled: false })
+    assert.equal(off.status, 200, JSON.stringify(off.body))
+    assert.deepEqual((off.body as Settings).telemetry, { available: true, enabled: false, userDisabled: true })
+    assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), { custom: { keep: true }, telemetry: { enabled: false } })
+    assert.equal(h.store.listAudit({ action: 'settings.telemetry.update' }).entries[0]?.actor.id, h.owner.id)
+
+    const bad = await h.as('owner', 'PUT', '/settings/telemetry', { enabled: 'no' })
+    assert.equal(bad.status, 400)
+
+    const on = await h.as('owner', 'PUT', '/settings/telemetry', { enabled: true })
+    assert.deepEqual((on.body as Settings).telemetry, { available: true, enabled: true, userDisabled: false })
+  } finally {
+    process.env = saved
+    await h.close()
+  }
+})

@@ -6,6 +6,7 @@ import { createServer, type Server, type IncomingMessage, type ServerResponse } 
 import { randomUUID } from 'node:crypto'
 import { buildRoutingServices, findPinnedRoutingService } from './routing-services.js'
 import { readFileSync, watchFile, unwatchFile } from 'node:fs'
+import { telemetryClientTool, telemetryProtocol, traceFor, type BuyerTelemetry } from '../telemetry/buyer.js'
 import { readFile, writeFile, rename, mkdir, readdir, stat, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
@@ -115,6 +116,7 @@ import {
 import { DEFAULT_BUYER_PEER_REFRESH_INTERVAL_MS } from '../config/defaults.js'
 import {
   extractConversationIdentity,
+  requestClientTool,
   extractFirstUserSnippet,
   isCompletionRequestPath,
   isTitleGenerationRequest,
@@ -261,6 +263,8 @@ export interface BuyerProxyConfig {
    * the gateway so its settings page can say a config edit will not apply.
    */
   settingOverrides?: string[]
+  /** Anonymous request telemetry (docs/telemetry.md); absent sends nothing. */
+  telemetry?: BuyerTelemetry
 }
 
 /** The DepositsClient reads `GET /_antseed/balances` needs. */
@@ -653,6 +657,7 @@ function dispatchFailure(statusCode: number, responseHeaders: Record<string, str
 
 function writeDispatchFailure(res: ServerResponse, result: DispatchFailure): void {
   if (res.headersSent || res.writableEnded) return
+  traceFor(res)?.noteFailure(result)
   // A refusal can carry the seller's own headers: never let it name a router.
   res.writeHead(result.statusCode, withoutRouterHeaders(result.responseHeaders))
   res.end(result.responseBody)
@@ -1268,6 +1273,7 @@ export class BuyerProxy {
   private readonly _balanceCache = new ChainReadCache()
   private readonly _restartHandler: (() => void | Promise<void>) | null
   private readonly _settingOverrides: string[]
+  private readonly _telemetry: BuyerTelemetry | null
   private _restartRequested = false
   /** A restarted buyer is a new process, so its start is the last accepted restart. */
   private readonly _restartAllowedAt: number
@@ -1278,6 +1284,7 @@ export class BuyerProxy {
     this._restartHandler = config.onRestartRequested ?? null
     this._restartAllowedAt = Date.now() + (config.minRestartIntervalMs ?? MIN_RESTART_INTERVAL_MS)
     this._settingOverrides = [...(config.settingOverrides ?? [])]
+    this._telemetry = config.telemetry ?? null
     this._node = config.node
     this._modelRoutingClient = config.modelRoutingClient ?? new ModelRoutingClient()
     this._verifier = config.verifier
@@ -2350,6 +2357,8 @@ export class BuyerProxy {
 
   private async _reloadRoutingPreferences(): Promise<void> {
     if (!this._configPath) return
+    // `telemetry.enabled` is read on its own, so a bad routing field cannot keep an opt-out from applying.
+    this._telemetry?.reloadConsent()
     try {
       const config = await loadConfig(this._configPath)
       // Read straight from the file: no CLI flag or env var overrides routing
@@ -3871,6 +3880,10 @@ export class BuyerProxy {
       ? extractConversationIdentity(serializedReq.headers, conversationBody)
       : null
     const routingConversationKey = conversationIdentity ? `${conversationIdentity.tool}:${conversationIdentity.sessionKey}` : null
+    if (isConversationRequest || nativeVideo) {
+      const trace = this._telemetry?.beginRequest(res, this._cachedPeers.length > 0)
+      if (trace) trace.clientTool = telemetryClientTool(conversationIdentity?.tool ?? requestClientTool(serializedReq.headers))
+    }
     // Internal marker from the system proxy: source profile used only for
     // local conversation attribution. Stripped here so it never reaches a seller.
     delete serializedReq.headers[SYSTEM_PROXY_SOURCE_HEADER]
@@ -3960,6 +3973,8 @@ export class BuyerProxy {
       spendAttributionTag,
     }
 
+    const trace = traceFor(res)
+    if (trace && activeSelection && useModelRouter) trace.routeMode = 'router'
     // Both paths return an inference answer; only the router path buys a recommendation first.
     if (activeSelection && useModelRouter) {
       if (invalidRouting) {
@@ -4277,6 +4292,12 @@ export class BuyerProxy {
     const explicitProvider = getExplicitProviderOverride(serializedReq)
     const explicitPeerId = getExplicitPeerIdOverride(serializedReq, effectivePinnedPeer ?? undefined, bodyPinnedPeer)
     log(`Routing hints: provider=${explicitProvider ?? 'auto'} pin-peer=${explicitPeerId ?? 'none'}`)
+    const trace = traceFor(res)
+    if (trace) {
+      trace.protocol = telemetryProtocol(requestProtocol, nativeVideo !== null)
+      trace.model = requestedService
+      if (trace.routeMode !== 'router') trace.routeMode = explicitPeerId ? 'pinned' : 'auto'
+    }
 
     if (!explicitPeerId && !requestedService) {
       log('Request rejected: no peer pinned and no model requested')
@@ -4422,6 +4443,7 @@ export class BuyerProxy {
       // when every seller fails, the client gets that answer quickly.
       let comparisonUsed = false
       const isFree = (candidate: (typeof candidates)[number]): boolean => modelRouteTotalPrice(candidate) === 0
+      if (trace) trace.freeSellersKnown = candidates.filter(isFree).length
       for (const [index, selected] of candidates.entries()) {
         if (unfunded && !isFree(selected)) continue
         if (this._verifier) {
@@ -4454,6 +4476,7 @@ export class BuyerProxy {
             + `effective=${selected.effectiveReputationScore ?? 'unknown'} peer=${index + 1}/${candidates.length} `
             + `attempt=${peerAttempt + 1}/${MODEL_RATE_LIMIT_MAX_ATTEMPTS_PER_PEER}`,
           )
+          if (trace) trace.sellerTier = isFree(selected) ? 'free' : 'paid'
           const result = await this._dispatchToPeer(
             res,
             selected.request,
@@ -4477,6 +4500,7 @@ export class BuyerProxy {
               : null,
           )
           if (result.done) {
+            if (trace && result.interrupted) trace.interrupted = result.interrupted
             // A stream that broke after its headers proves nothing for the
             // sellers before it, and counts against this one like any other
             // transport failure.
@@ -4749,6 +4773,7 @@ export class BuyerProxy {
       false,
       routingConversationKey,
     )
+    if (trace && result.done && result.interrupted) trace.interrupted = result.interrupted
     if (result.done && trackedConversationId && pinnedServiceId) {
       this._conversations.recordRoutedModel(
         trackedConversationId,
@@ -4886,6 +4911,7 @@ export class BuyerProxy {
     /** Give up on this seller if it has not started answering by then, so the next one can be tried. */
     attemptTimeoutMs: number | null = null,
   ): Promise<PeerDispatchResult> {
+    traceFor(res)?.noteAttempt(selectedPeer.peerId)
     const gatewayAutoRoute = gatewayRouted && !pinned
     const selectedRoutePlan = routePlanByPeerId.get(selectedPeer.peerId)
       ?? resolvePeerRoutePlan(selectedPeer, requestProtocol, requestedService, explicitProvider, 'lenient')
@@ -5038,6 +5064,7 @@ export class BuyerProxy {
             if (attemptTimer) clearTimeout(attemptTimer)
             streamed = true
             firstFrameAt = Date.now()
+            traceFor(res)?.noteFirstByte(firstFrameAt)
             streamStartBody = startResponse.body
             const adaptedStartResponse = streamResponseAdapter
               ? streamResponseAdapter.adaptStart(startResponse)
@@ -5096,6 +5123,7 @@ export class BuyerProxy {
         }
 
         const finishedAt = Date.now()
+        if (!streamed) traceFor(res)?.noteAnswered(finishedAt)
         const latencyMs = finishedAt - startTime
         log(`Response: ${responseForClient.statusCode} (${latencyMs}ms, ${responseForClient.body.length} bytes)`)
         if (responseForClient.statusCode >= 400) {
@@ -5232,6 +5260,7 @@ export class BuyerProxy {
         }
         const latencyMs = Date.now() - startTime
         this._markModelActivity()
+        traceFor(res)?.noteAnswered(Date.now())
 
         log(`Response: ${response.statusCode} (${latencyMs}ms, ${response.body.length} bytes)`)
         if (response.statusCode >= 400) {

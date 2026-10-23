@@ -1,4 +1,5 @@
 import type {
+  DepositStepSignal,
   FirstModelShownSignal,
   TelemetryActionSurface,
   TelemetryAppName,
@@ -67,5 +68,13 @@ export function recordFirstModelShown(signal: FirstModelShownSignal): void {
     void window.antseedDesktop?.telemetryRecordFirstModelShown?.(signal).catch(() => undefined);
   } catch {
     // Telemetry must never affect rendering.
+  }
+}
+
+export function recordDepositStep(signal: DepositStepSignal): void {
+  try {
+    void window.antseedDesktop?.telemetryRecordDepositStep?.(signal).catch(() => undefined);
+  } catch {
+    // Telemetry must never affect the deposit flow.
   }
 }

@@ -15,10 +15,12 @@
  * - Only coarse buckets for durations and amounts.
  */
 
+import { createHash } from 'node:crypto';
 import type { TelemetryActionSurface, TelemetryAppName, TelemetryUserAction } from '../../shared/telemetry.js';
 import { modelMetadataFor } from '@antseed/node/model-metadata';
 
-export const TELEMETRY_SCHEMA_VERSION = 1;
+/** 2: adds `product`, shared with the CLI, buyer and gateway (docs/telemetry.md). */
+export const TELEMETRY_SCHEMA_VERSION = 2;
 
 export type DurationBucket = 'under_30s' | '30s_2m' | '2m_5m' | 'over_5m';
 export type SessionDurationBucket = DurationBucket | 'over_30m';
@@ -53,6 +55,52 @@ export type ChatFailureCode =
   | 'stream_error'
   | 'unknown';
 export type ChatFailureStage = 'none' | 'request_validation' | 'payment' | 'user' | 'transport' | 'upstream' | 'streaming';
+/**
+ * Why a chat request failed, decided on-device from the classified stop
+ * reason and local context. Raw error text never leaves the device.
+ */
+export type ChatFailureReasonCode =
+  | 'none'
+  | 'out_of_credits'
+  | 'model_needs_paid'
+  | 'seller_dropped_before_output'
+  | 'seller_dropped_mid_answer'
+  | 'seller_5xx'
+  | 'request_rejected'
+  | 'rate_limited'
+  | 'no_seller_available'
+  | 'no_seller_yet'
+  | 'seller_unreachable'
+  | 'timeout'
+  | 'local_error'
+  | 'unknown';
+export type AttemptCountBucket = '1' | '2' | '3_plus';
+export type SecsSinceAppStartBucket = 'under_30s' | '30s_2m' | '2_10m' | 'over_10m';
+export type TtftBucket = 'none' | 'under_1s' | '1_3s' | '3_10s' | 'over_10s';
+export type DepositStep =
+  | 'method_shown'
+  | 'method_chosen'
+  | 'checkout_opened'
+  | 'checkout_reopened'
+  | 'checkout_abandoned'
+  | 'region_unsupported'
+  | 'card_declined'
+  | 'payment_submitted'
+  | 'credited';
+/**
+ * How the buyer funded. `card` = Crossmint/Stripe card checkout;
+ * `crypto_wallet` = USDC sent to the deposit address (QR), a connected wallet
+ * or a cross-chain wallet page; `payment_app` = Peer Pay (bank or payment
+ * app); `exchange` is reserved — an exchange withdrawal to the QR address is
+ * indistinguishable from a wallet transfer on device.
+ */
+export type DepositMethod = 'card' | 'crypto_wallet' | 'payment_app' | 'exchange' | 'unknown';
+export type DepositStepAmountBucket = 'le_5' | '5_10' | '10_50' | 'over_50';
+export type StepGapBucket = 'first' | 'under_10s' | '10s_1m' | '1m_5m' | 'over_5m';
+export type StartupFailureStage = 'none' | 'runtime' | 'dht' | 'peer_search' | 'models';
+export type ConnectedAppFirstRequestOutcome = 'request_seen' | 'no_request';
+export type SecsSinceConnectBucket = 'under_1m' | '1_5m' | '5_30m' | 'none';
+export type PremiumBlockedFollowup = 'deposited' | 'switched_free_model' | 'left';
 export type RouteMode = 'auto' | 'pinned';
 export type ModelPricingTier = 'free' | 'paid' | 'mixed' | 'unknown';
 export type DiscoveryFailureCode = 'timeout' | 'invalid_data' | 'io_error' | 'unknown';
@@ -110,7 +158,10 @@ export type TelemetryEventProperties = {
   };
   /** Emitted when a deposit is observed credited. */
   deposit_completed: {
+    /** The funded asset; always `usdc`. Kept for existing queries. */
     method_category: string;
+    /** The funding method last chosen in this launch (see DepositMethod). */
+    method: DepositMethod;
     amount_bucket: DepositAmountBucket;
     is_first_deposit: boolean;
     days_since_first_open: DaysSinceFirstOpen;
@@ -167,6 +218,57 @@ export type TelemetryEventProperties = {
     had_partial_output: boolean;
     duration_bucket: DurationBucket;
     has_attachments: boolean;
+    /** Fixed on-device reason; `none` for success and cancellation. */
+    failure_reason: ChatFailureReasonCode;
+    /** Exact HTTP status of the last attempt's failure (100–599), when known. */
+    http_status?: number;
+    /** Agent-level attempts: 1 + automatic retries. */
+    attempt_count: AttemptCountBucket;
+    /** A retry succeeded on a seller other than the one preferred at send. */
+    answered_by_different_seller: boolean;
+    secs_since_app_start: SecsSinceAppStartBucket;
+    peers_discovered_at_send: boolean;
+    sellers_known_bucket: OffersAvailableBucket;
+    free_sellers_known_bucket: OffersAvailableBucket;
+    /** Omitted when the balance has not been read yet. */
+    buyer_balance_zero?: boolean;
+    /** Pending privacy sign-off: only sent when TELEMETRY_SELLER_HASH_ENABLED. */
+    seller_hash?: string;
+    ttft_bucket: TtftBucket;
+  };
+  /** Funnel step through the deposit flow. */
+  deposit_step: {
+    step: DepositStep;
+    method: DepositMethod;
+    amount_bucket?: DepositStepAmountBucket;
+    secs_since_prev_step: StepGapBucket;
+  };
+  /** Once per launch: the first model became visible, or startup stalled. */
+  startup_finished: {
+    outcome: 'success' | 'failed';
+    failure_stage: StartupFailureStage;
+    duration_bucket: DurationBucket;
+  };
+  /** Once per connect: whether the connected app sent a request through the buyer. */
+  connected_app_first_request: {
+    app: TelemetryAppName;
+    outcome: ConnectedAppFirstRequestOutcome;
+    secs_since_connect: SecsSinceConnectBucket;
+  };
+  /** An unfunded buyer asked for a model only paid sellers serve. */
+  premium_blocked: {
+    public_model_id: string;
+    service_category: ServiceCategory;
+  };
+  /** What the buyer did next after premium_blocked, within the same launch. */
+  premium_blocked_followup: {
+    next_action: PremiumBlockedFollowup;
+  };
+  withdraw_started: Record<string, never>;
+  withdraw_completed: Record<string, never>;
+  /** Windows/Linux: closing the last window quits the app and stops the buyer runtime. */
+  runtime_stopped_on_window_close: {
+    runtime_was_running: boolean;
   };
   /** Emitted only when a discovery request fails. */
   discovery_failed: {
@@ -204,7 +306,7 @@ export const TELEMETRY_EVENT_ALLOWLIST: { readonly [K in TelemetryEventName]: Re
   ]),
   user_action: new Set(['action', 'surface', 'duration_bucket', 'is_first_action', 'app']),
   setup_completed: new Set(['duration_bucket']),
-  deposit_completed: new Set(['method_category', 'amount_bucket', 'is_first_deposit', 'days_since_first_open']),
+  deposit_completed: new Set(['method_category', 'method', 'amount_bucket', 'is_first_deposit', 'days_since_first_open']),
   deposit_failed: new Set(['method_category', 'failure_code', 'failure_stage', 'retryable']),
   first_chat_started: new Set(['had_deposit', 'deposit_bucket', 'days_since_first_open', 'service_category', 'has_attachments']),
   model_selected: new Set([
@@ -241,7 +343,26 @@ export const TELEMETRY_EVENT_ALLOWLIST: { readonly [K in TelemetryEventName]: Re
     'had_partial_output',
     'duration_bucket',
     'has_attachments',
+    'failure_reason',
+    'http_status',
+    'attempt_count',
+    'answered_by_different_seller',
+    'secs_since_app_start',
+    'peers_discovered_at_send',
+    'sellers_known_bucket',
+    'free_sellers_known_bucket',
+    'buyer_balance_zero',
+    'seller_hash',
+    'ttft_bucket',
   ]),
+  deposit_step: new Set(['step', 'method', 'amount_bucket', 'secs_since_prev_step']),
+  startup_finished: new Set(['outcome', 'failure_stage', 'duration_bucket']),
+  connected_app_first_request: new Set(['app', 'outcome', 'secs_since_connect']),
+  premium_blocked: new Set(['public_model_id', 'service_category']),
+  premium_blocked_followup: new Set(['next_action']),
+  withdraw_started: new Set([]),
+  withdraw_completed: new Set([]),
+  runtime_stopped_on_window_close: new Set(['runtime_was_running']),
   discovery_failed: new Set(['duration_bucket', 'failure_code']),
   app_closed: new Set(['was_crash', 'session_duration_bucket']),
 };
@@ -290,6 +411,44 @@ export const CHAT_FAILURE_STAGES: ReadonlySet<string> = new Set([
   'upstream',
   'streaming',
 ]);
+export const CHAT_FAILURE_REASONS: ReadonlySet<string> = new Set([
+  'none',
+  'out_of_credits',
+  'model_needs_paid',
+  'seller_dropped_before_output',
+  'seller_dropped_mid_answer',
+  'seller_5xx',
+  'request_rejected',
+  'rate_limited',
+  'no_seller_available',
+  'no_seller_yet',
+  'seller_unreachable',
+  'timeout',
+  'local_error',
+  'unknown',
+]);
+export const ATTEMPT_COUNT_BUCKETS: ReadonlySet<string> = new Set(['1', '2', '3_plus']);
+export const SECS_SINCE_APP_START_BUCKETS: ReadonlySet<string> = new Set(['under_30s', '30s_2m', '2_10m', 'over_10m']);
+export const TTFT_BUCKETS: ReadonlySet<string> = new Set(['none', 'under_1s', '1_3s', '3_10s', 'over_10s']);
+export const DEPOSIT_STEPS: ReadonlySet<string> = new Set([
+  'method_shown',
+  'method_chosen',
+  'checkout_opened',
+  'checkout_reopened',
+  'checkout_abandoned',
+  'region_unsupported',
+  'card_declined',
+  'payment_submitted',
+  'credited',
+]);
+export const DEPOSIT_METHODS: ReadonlySet<string> = new Set(['card', 'crypto_wallet', 'payment_app', 'exchange', 'unknown']);
+export const DEPOSIT_STEP_AMOUNT_BUCKETS: ReadonlySet<string> = new Set(['le_5', '5_10', '10_50', 'over_50']);
+export const STEP_GAP_BUCKETS: ReadonlySet<string> = new Set(['first', 'under_10s', '10s_1m', '1m_5m', 'over_5m']);
+export const STARTUP_OUTCOMES: ReadonlySet<string> = new Set(['success', 'failed']);
+export const STARTUP_FAILURE_STAGES: ReadonlySet<string> = new Set(['none', 'runtime', 'dht', 'peer_search', 'models']);
+export const CONNECTED_APP_OUTCOMES: ReadonlySet<string> = new Set(['request_seen', 'no_request']);
+export const SECS_SINCE_CONNECT_BUCKETS: ReadonlySet<string> = new Set(['under_1m', '1_5m', '5_30m', 'none']);
+export const PREMIUM_BLOCKED_FOLLOWUPS: ReadonlySet<string> = new Set(['deposited', 'switched_free_model', 'left']);
 export const ROUTE_MODES: ReadonlySet<string> = new Set(['auto', 'pinned']);
 export const MODEL_PRICING_TIERS: ReadonlySet<string> = new Set(['free', 'paid', 'mixed', 'unknown']);
 
@@ -306,6 +465,70 @@ export function sessionDurationBucket(ms: number): SessionDurationBucket {
   if (ms < 5 * 60_000) return '2m_5m';
   if (ms < 30 * 60_000) return 'over_5m';
   return 'over_30m';
+}
+
+export function attemptCountBucket(attempts: number): AttemptCountBucket {
+  if (attempts <= 1) return '1';
+  if (attempts === 2) return '2';
+  return '3_plus';
+}
+
+export function secsSinceAppStartBucket(ms: number): SecsSinceAppStartBucket {
+  if (ms < 30_000) return 'under_30s';
+  if (ms < 2 * 60_000) return '30s_2m';
+  if (ms < 10 * 60_000) return '2_10m';
+  return 'over_10m';
+}
+
+export function ttftBucket(ms: number | null): TtftBucket {
+  if (ms === null || !Number.isFinite(ms) || ms < 0) return 'none';
+  if (ms < 1_000) return 'under_1s';
+  if (ms < 3_000) return '1_3s';
+  if (ms < 10_000) return '3_10s';
+  return 'over_10s';
+}
+
+export function depositStepAmountBucket(amountUsdc: number): DepositStepAmountBucket | null {
+  if (!Number.isFinite(amountUsdc) || amountUsdc <= 0) return null;
+  if (amountUsdc <= 5) return 'le_5';
+  if (amountUsdc <= 10) return '5_10';
+  if (amountUsdc <= 50) return '10_50';
+  return 'over_50';
+}
+
+export function stepGapBucket(ms: number | null): StepGapBucket {
+  if (ms === null || !Number.isFinite(ms) || ms < 0) return 'first';
+  if (ms < 10_000) return 'under_10s';
+  if (ms < 60_000) return '10s_1m';
+  if (ms < 5 * 60_000) return '1m_5m';
+  return 'over_5m';
+}
+
+export function secsSinceConnectBucket(ms: number | null): SecsSinceConnectBucket {
+  if (ms === null || !Number.isFinite(ms) || ms < 0) return 'none';
+  if (ms < 60_000) return 'under_1m';
+  if (ms < 5 * 60_000) return '1_5m';
+  return '5_30m';
+}
+
+/** HTTP status as sent: an integer in 100–599, else undefined. */
+export function telemetryHttpStatus(statusCode: number | undefined): number | undefined {
+  return typeof statusCode === 'number' && Number.isInteger(statusCode) && statusCode >= 100 && statusCode <= 599
+    ? statusCode
+    : undefined;
+}
+
+/**
+ * Salted one-way seller identifier. PENDING PRIVACY SIGN-OFF: docs/telemetry.md
+ * promises peer IDs are never sent, and peer IDs are public on the DHT, so a
+ * fixed salt can be reversed by hashing every announced peer. Keep this OFF
+ * until that is decided; the sanitizer also drops `seller_hash` while off.
+ */
+export const TELEMETRY_SELLER_HASH_ENABLED = false;
+const SELLER_HASH_SALT = 'antseed-desktop-telemetry-seller-v1:';
+
+export function sellerHash(peerId: string): string {
+  return createHash('sha256').update(SELLER_HASH_SALT + peerId.trim().toLowerCase()).digest('hex').slice(0, 12);
 }
 
 export function depositAmountBucket(amountUsdc: number): DepositAmountBucket {
@@ -377,7 +600,7 @@ export type ModelPricingSnapshot = {
   eligibleOfferCountBucket: OffersAvailableBucket;
 };
 
-function offerPricingKind(offer: ModelOfferPricing): 'free' | 'paid' | 'unknown' {
+export function offerPricingKind(offer: ModelOfferPricing): 'free' | 'paid' | 'unknown' {
   const textPrices = [offer.inputUsdPerMillion, offer.outputUsdPerMillion, offer.cachedInputUsdPerMillion]
     .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
   const imagePrices = [offer.minImageUsdPerImage, offer.maxImageUsdPerImage]

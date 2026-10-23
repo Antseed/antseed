@@ -28,6 +28,7 @@ import {
   ensureDefaultPlugin,
 } from './runtime/plugins.js';
 import {
+  getNetworkSnapshot,
   onPeersChanged,
 } from './runtime/peer-cache.js';
 import {
@@ -94,8 +95,10 @@ import {
 import { resolveBuyerProxyPort } from './runtime/active-config.js';
 import { createTelemetryService } from './telemetry/telemetry.js';
 import { setTelemetryService } from './telemetry/runtime.js';
+import { setDesktopTelemetryHost } from './telemetry/host-env.js';
+import { syncBuyerTelemetryConsent } from './telemetry/buyer-consent.js';
 import { firstChatDepositSnapshot } from './telemetry/events.js';
-import { refreshCreditsInfo } from './payments/credits.js';
+import { cachedBuyerBalanceIsZero, refreshCreditsInfo } from './payments/credits.js';
 import { consoleUpdatePaths, createConsoleUpdates } from './public-tunnel/console-updates.js';
 
 // Re-export types that may be used by other main-process modules
@@ -108,6 +111,8 @@ export type { InstalledPlugin } from './runtime/plugins.js';
 // entry, and the default userData path derives from it too. Renaming it
 // rotates the key and orphans every existing identity.enc. User-visible
 // surfaces use APP_NAME below instead.
+
+const APP_STARTED_AT_MS = Date.now();
 
 let isQuitting = false;
 let isInstallingUpdate = false;
@@ -125,6 +130,9 @@ function initializeTelemetry(hadExistingIdentity: boolean): Promise<Awaited<Retu
     hadExistingIdentity,
   }).then(async (service) => {
     setTelemetryService(service);
+    setDesktopTelemetryHost({ sessionId: service.sessionId, available: service.available });
+    // The buyer reads its own consent from the config; keep a desktop opt-out there too.
+    if (service.isUserOptedOut()) void syncBuyerTelemetryConsent(false);
     await service.recordAppStarted();
     return service;
   }).catch(() => null);
@@ -401,6 +409,19 @@ const piChatEngine = registerPiChatHandlers({
   recordDiscoveryFailed: async (input) => {
     const telemetry = await telemetryReady;
     await telemetry?.recordDiscoveryFailed(input);
+  },
+  recordPremiumBlocked: async (input) => {
+    const telemetry = await telemetryReady;
+    await telemetry?.recordPremiumBlocked(input);
+  },
+  // Cheap, synchronous reads only: this runs on every chat send.
+  getChatSendTelemetryContext: () => {
+    const balanceZero = cachedBuyerBalanceIsZero();
+    return {
+      msSinceAppStart: Math.max(0, Date.now() - APP_STARTED_AT_MS),
+      peersDiscovered: getNetworkSnapshot().peers.some((peer) => peer.online),
+      ...(balanceZero !== undefined ? { buyerBalanceZero: balanceZero } : {}),
+    };
   },
 });
 
@@ -920,7 +941,13 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
-    app.quit();
+    // Closing the last window quits the app, which stops the buyer runtime
+    // with it. Recorded before quitting so the event is flushed briefly.
+    const runtimeWasRunning = processManager.getState().some((state) => state.running);
+    void telemetryReady
+      .then((telemetry) => telemetry?.recordRuntimeStoppedOnWindowClose(runtimeWasRunning))
+      .catch(() => {})
+      .finally(() => app.quit());
   }
 });
 

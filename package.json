@@ -27,7 +27,7 @@
   },
   "scripts": {
     "build": "pnpm run build:tier0 && pnpm run build:tier1 && pnpm run build:tier2 && pnpm run build:tier3 && pnpm run build:tier4 && pnpm run build:standalone",
-    "build:tier0": "pnpm --filter=@antseed/protocol run build && pnpm --filter=@antseed/connected-apps run build && pnpm --filter=@antseed/ui run build && pnpm --filter=@antseed/wallet-config run build && pnpm --filter=@antseed/api-adapter run build && pnpm --filter=@antseed/buyer-core run build && pnpm --filter=@antseed/fingerprints run build && pnpm --filter=@antseed/node run build",
+    "build:tier0": "pnpm --filter=@antseed/telemetry run build && pnpm --filter=@antseed/protocol run build && pnpm --filter=@antseed/connected-apps run build && pnpm --filter=@antseed/ui run build && pnpm --filter=@antseed/wallet-config run build && pnpm --filter=@antseed/api-adapter run build && pnpm --filter=@antseed/buyer-core run build && pnpm --filter=@antseed/fingerprints run build && pnpm --filter=@antseed/node run build",
     "build:tier1": "pnpm --filter=@antseed/provider-core --filter=@antseed/router-core --filter=@antseed/ant-agent --filter=@antseed/web-sdk --filter=@antseed/relay --filter=@antseed/antseed-verifier --filter=@antseed/model-verifier run build",
     "build:tier2": "pnpm --filter \"./plugins/*\" run build",
     "build:tier3": "pnpm --filter=@antseed/payments run build && pnpm --filter=@antseed/ants run build && pnpm --filter=@antseed/gateway-console run build",

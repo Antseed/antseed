@@ -170,6 +170,20 @@ function parseStatusCodeFromText(text: string): number | undefined {
   return undefined;
 }
 
+/**
+ * The status an SDK puts in front of an error body: "402 You are out of…",
+ * "502 Pinned peer …", "503 {json}". Only a leading 4xx/5xx followed by a
+ * JSON body or a capitalised sentence counts, so prose such as
+ * "429 requests remaining" or "128 tokens remaining" is not read as a status.
+ */
+function parseLeadingStatusCode(messages: readonly string[]): number | undefined {
+  for (const message of messages) {
+    const match = /^\s*([45]\d{2})\s+(?=[{A-Z])/.exec(message);
+    if (match) return Number(match[1]);
+  }
+  return undefined;
+}
+
 function parseErrorCodeFromText(text: string): string | undefined {
   const match = /\b(UND_ERR_[A-Z_]+|E[A-Z0-9_]+|ERR_[A-Z0-9_]+)\b/.exec(text);
   return match?.[1];
@@ -311,7 +325,9 @@ export function classifyChatStreamFailure({
   const buyerAuthoredMessage = embedded?.errorId && BUYER_AUTHORED_ERROR_IDS.has(embedded.errorId)
     ? embedded.message
     : undefined;
-  const statusCode = signals.statusCodes[0] ?? parseStatusCodeFromText(rawMessage);
+  const statusCode = signals.statusCodes[0]
+    ?? parseStatusCodeFromText(rawMessage)
+    ?? parseLeadingStatusCode(uniqueStrings(signals.messages));
   const errorCode = signals.errorCodes.find(Boolean) ?? parseErrorCodeFromText(rawMessage);
   // Agents often surface the proxy's JSON body as plain text, so also detect
   // the buyer-fault marker as a JSON code field inside the message. Matching

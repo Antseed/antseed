@@ -106,3 +106,36 @@ export type TelemetryStatus = {
 
 export type TelemetryStatusUpdateResult = (TelemetryStatus & { ok: true })
   | { ok: false; error: string };
+
+/**
+ * Deposit funnel steps the renderer may report. `credited` is recorded by
+ * the main process when the deposit sweep lands, so the renderer cannot
+ * send it; `checkout_reopened` is derived in main from a repeat
+ * `checkout_opened`.
+ */
+export const TELEMETRY_RENDERER_DEPOSIT_STEPS = [
+  'method_shown',
+  'method_chosen',
+  'checkout_opened',
+  'checkout_abandoned',
+] as const;
+
+export type TelemetryRendererDepositStep = (typeof TELEMETRY_RENDERER_DEPOSIT_STEPS)[number];
+
+/** Funding method family; `payment_app` is Peer Pay (Venmo, PayPal and similar). */
+export const TELEMETRY_DEPOSIT_METHODS = [
+  'card',
+  'crypto_wallet',
+  'payment_app',
+  'exchange',
+  'unknown',
+] as const;
+
+export type TelemetryDepositMethod = (typeof TELEMETRY_DEPOSIT_METHODS)[number];
+
+export type DepositStepSignal = {
+  step: TelemetryRendererDepositStep;
+  method?: TelemetryDepositMethod;
+  /** Entered amount in USDC; main reduces it to a coarse bucket. */
+  amountUsdc?: number;
+};

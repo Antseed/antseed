@@ -8,6 +8,9 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Changed
 
+- CLI, buyer and gateway: anonymous usage telemetry is now on by default, with an opt-out, like the desktop app. The first interactive command prints a one-time notice that says what is sent and how to turn it off, and the gateway prints one in its server log. Turn it off with `antseed telemetry disable` (written as `telemetry.enabled: false` in the config file, which a running buyer and gateway pick up without a restart), `ANTSEED_TELEMETRY=0` or `DO_NOT_TRACK=1`. It is always off in CI and in source builds, which bake no PostHog project. The desktop's Privacy toggle now also turns off the buyer it runs. See `docs/telemetry.md`.
+- Desktop telemetry: PostHog now derives an approximate location from the request IP at ingestion (GeoIP). The app no longer sends `$geoip_disable: true`. AntSeed uses it at country level only, for regional analysis such as card-checkout availability. The app still sends no IP or location field of its own, the IP is not stored (PostHog's "discard client IP data" stays on), and person profiles stay off. See `docs/telemetry.md`.
+- Desktop telemetry: `deposit_completed` adds `method`, the funding method chosen in the Add credits view (`card`, `crypto_wallet`, `payment_app`, `exchange` or `unknown`). `method_category` is always `usdc` and is kept for existing queries. Fixed: when an automatic retry succeeds after a failed attempt, the desktop chat no longer ends the request with the earlier attempt's error, and `chat_request_finished` reports it as a success.
 - Buyer (`@antseed/buyer-core`, CLI, desktop): with several requests in flight to one seller, a seller's catch-up payment request (its spend ran ahead of the signed amount) is now covered in full, up to the per-request limit for each in-flight request and never beyond the channel reserve. The buyer retries while the gap shrinks (at most three attempts), and if the gap stops shrinking or is still not covered returns a `payment_negotiation_failed` error instead of passing through the seller's raw 402.
 - CLI buyer: the local buyer proxy only answers local clients. A request whose Host is a hostname other than `localhost`, or that a browser sends from a page other than a local one (an `Origin` other than a loopback address or `file://`, or a cross-site fetch), gets `403 non_local_request`. CLI tools, SDKs and local pages are unaffected, and IP-address hosts (such as the WSL relay's) still work. The API-key gateway and system proxy no longer pass the client's `Origin`, `Referer` and `Sec-Fetch-*` headers on to the buyer.
 - Desktop: the chat's per-seller usage stats are read through the main process instead of from the page.
@@ -56,6 +59,34 @@ This project uses selective package publishing. Each release entry lists the pub
   - A small share of standalone requests tries a seller the buyer has no recent data on, among those it already has a channel with, so recovered sellers are noticed.
   - The route preview lists each seller's success rate, speed and whether it shares traffic; `GET /_antseed/peer-health` adds `sellerHealth`, and `POST /_antseed/peer-health/clear` also resets a seller's record. A gateway key's explicit **Cheapest**, **Most trusted** or **Lowest latency** sort and route chains still apply, with failing sellers tried last.
 - Node: `AntseedNode` emits `response-auth` with the verdict on each seller-signed response receipt, and exports the routing model as `SellerHealthBook` and `orderAdaptiveRoutes`.
+
+### Added
+
+- `@antseed/telemetry` (new package, 0.1.0): the privacy rules every AntSeed product shares, used by the CLI and the desktop. It provides the coarse buckets, the `failure_reason` taxonomy, an allowlist sanitizer, consent resolution (`DO_NOT_TRACK`, `ANTSEED_TELEMETRY`, CI, the saved choice) and a bounded, batching PostHog transport.
+- CLI: `antseed telemetry enable|disable|status` (`status --json` for scripts).
+- Gateway console: **Settings → Privacy** has a **Product telemetry** switch for org admins, like the desktop's Preferences → Privacy. It sets `telemetry.enabled` in the config file, applies without a restart and is audited as `settings.telemetry.update`. New console API: `PUT /console/api/settings/telemetry` (`{ "enabled": boolean }`), and `GET /settings` adds `telemetry` (`available`, `enabled`, `userDisabled`).
+- CLI, buyer and gateway telemetry, sent to the same PostHog project as the desktop. Every event carries `product` and `schema_version: 2`; the desktop's events now carry `product: "desktop"` too. Every value is an enum, a bucket, a boolean or a bounded count. Arguments, prompts, peer IDs, exact amounts and key, member, workspace or end-user identifiers are never sent. Documented in `docs/telemetry.md`.
+  - `cli_command_run`: the command's name from the command tree (never its arguments), its outcome and a duration bucket.
+  - `buyer_started`, and `buyer_request_finished` per model request: protocol, public model id, route mode, client tool, outcome, `failure_reason`, HTTP status, attempts, sellers tried, fallback, seller tier, time-to-first-token and duration buckets. The buyer tags its events with who started it (`buyer_host`: `desktop`, `gateway` or `standalone`) and the host's session. Each event says which journey moment it was, if any (`journey_moment`: first success, failure, cancelled, fell back, recovered). A gateway's buyer sends only the requests with a moment, one event each, and skips routine successes.
+  - `gateway_started` (listen exposure, console and x402 on or off, workspace, key and member count buckets), `gateway_daily` and `gateway_topup` (outcome and amount bucket). The gateway and its buyer send `$geoip_disable: true`.
+  - Release: `npm-publish.yml` bakes `POSTHOG_HOST` and `POSTHOG_PROJECT_API_KEY` into the CLI, as the desktop release already does.
+- Desktop telemetry: new events and fields, documented in `docs/telemetry.md`. Every value is an enum, a bucket or a boolean, and no raw errors, prompts or peer IDs are sent.
+  - `chat_request_finished` adds:
+    - `failure_reason`: the cause, such as out of credits, model needs a paid seller, seller dropped before output or mid-answer, seller 5xx, seller unreachable, no seller yet or available, timeout, or local error.
+    - The exact `http_status`.
+    - `attempt_count` and `answered_by_different_seller`.
+    - `secs_since_app_start` and `peers_discovered_at_send`.
+    - Known and free-seller buckets, and `buyer_balance_zero`.
+    - `ttft_bucket`. Sellers tried, fallback and seller tier come from the buyer's `buyer_request_finished`, which sees every attempt.
+  - The SDK status in front of an error body (`402 You are out of…`, `502 Pinned peer…`) is now parsed as the HTTP status.
+  - `seller_hash` exists behind a flag that defaults to off, pending privacy sign-off. It is not sent.
+  - New events:
+    - `deposit_step`: the Add credits funnel, with method, amount bucket and time since the previous step.
+    - `startup_finished`.
+    - `connected_app_first_request`.
+    - `premium_blocked` and `premium_blocked_followup`.
+    - `withdraw_started` and `withdraw_completed`.
+    - `runtime_stopped_on_window_close`, on Windows and Linux.
 
 ### Fixed
 
