@@ -19,5 +19,5 @@ id = "TODO-create-with-wrangler-kv-namespace-create"
 # <PUBLIC_URL>/api/auth/x/callback.
 X_CLIENT_ID = ""
 # The site's own origin once the domain is chosen, e.g. "https://points.example.com".
-PUBLIC_URL = ""
+PUBLIC_URL = "https://antseedpoints.com"
 BASE_RPC_URL = "https://mainnet.base.org"

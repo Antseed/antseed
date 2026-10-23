@@ -39,11 +39,11 @@ pnpm --filter @antseed/points build        # → dist/
 
 - Serve `dist/` as a static site, with **every unknown path falling back to `index.html`** (so `/u/<handle>` and old links work).
 - Copy the security headers from `public/_headers` (Cloudflare format) into whatever server is used. The CSP allows Antscan, the Base RPCs, WalletConnect, OpenRouter and the font hosts.
-- Once the domain is chosen: set `og:image` in `index.html` to the absolute URL (X needs it), and, if X sign-in ships, the X app's callback URL and `PUBLIC_URL`.
+- The domain is **antseedpoints.com** (already in `index.html`'s share tags). If X sign-in ships: the X app's callback URL is `https://antseedpoints.com/api/auth/x/callback`, and `PUBLIC_URL=https://antseedpoints.com`.
 - Optional: `VITE_ANTSCAN_URL` points the site at another Antscan.
 
 ## Before launch
 
 - Test **claim** and **stake rewards** with a team wallet that has real unclaimed rewards. Neither has been sent for real yet.
 - Decide on X: ship without it, or build the stateless backend in `BACKEND.md`.
-- The AI VPN and console link here as `https://points.antseed.com/me?address=…` (which lands on Your points). If the domain ends up different, build both with `VITE_POINTS_URL`.
+- The AI VPN and console link here as `https://antseedpoints.com/me?address=…` (which lands on Your points). `VITE_POINTS_URL` overrides it in both.

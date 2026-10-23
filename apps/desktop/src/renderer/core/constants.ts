@@ -23,7 +23,7 @@ export const UI_MESSAGES = {
  * The Antseed Points site; VITE_POINTS_URL overrides it at build time.
  * TODO: replace the placeholder default once the Points domain is chosen.
  */
-export const POINTS_URL: string = (import.meta.env?.VITE_POINTS_URL || 'https://points.antseed.com').replace(/\/+$/, '');
+export const POINTS_URL: string = (import.meta.env?.VITE_POINTS_URL || 'https://antseedpoints.com').replace(/\/+$/, '');
 
 /** The Points page for the buyer wallet (points belong to the buyer, not the authorized wallet). */
 export function pointsUrl(buyerAddress: string | null | undefined): string {

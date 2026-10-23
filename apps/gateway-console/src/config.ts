@@ -12,7 +12,7 @@ export const WALLETCONNECT_PROJECT_ID: string = import.meta.env['VITE_WALLETCONN
  * The Antseed Points site; set VITE_POINTS_URL to override.
  * TODO: replace the placeholder default once the Points domain is chosen.
  */
-export const POINTS_URL: string = (import.meta.env['VITE_POINTS_URL'] || 'https://points.antseed.com').replace(/\/+$/, '')
+export const POINTS_URL: string = (import.meta.env['VITE_POINTS_URL'] || 'https://antseedpoints.com').replace(/\/+$/, '')
 
 /** The Points page for a buyer address (points belong to the buyer wallet, not the authorized wallet). */
 export function pointsUrl(buyerAddress: string | null | undefined): string {
