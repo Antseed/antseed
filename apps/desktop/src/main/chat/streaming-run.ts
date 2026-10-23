@@ -500,6 +500,11 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       }
     };
 
+    const clearRetriedStreamFailure = (): void => {
+      terminalStreamError = null;
+      terminalStreamFailure = null;
+    };
+
     const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
       if (event.type === 'turn_start') {
         sendToRenderer('chat:ai-stream-start', { conversationId, turn: turnIndex });
@@ -719,6 +724,8 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
           }
 
           if (message.stopReason === 'error' || message.stopReason === 'aborted') {
+            // Provisional: Pi may auto-retry this error (auto_retry_start) and
+            // recover. It is only reported if no later attempt succeeds.
             terminalStreamError = errorMsg || rawContent || (message.stopReason === 'aborted'
               ? 'Request aborted'
               : 'The request ended unexpectedly.');
@@ -731,6 +738,9 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
             return;
           }
 
+          // A successful assistant message supersedes an earlier failed
+          // attempt that Pi retried.
+          clearRetriedStreamFailure();
           const proxyMeta = turnMetaQueue.shift();
           const parsedMeta = parseAssistantMetaFromSessionEvent(message, proxyMeta);
           const peerId = normalizePeerId(parsedMeta.peerId);
@@ -756,6 +766,10 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
 
       if (event.type === 'auto_retry_start') {
         automaticRetryAttempted = true;
+        // Pi is retrying the failed attempt: its error is no longer final, and
+        // anything it streamed belongs to the abandoned attempt.
+        clearRetriedStreamFailure();
+        hadPartialOutput = false;
         const reason = classifyChatStreamFailure({
           error: event.errorMessage,
           message: event.errorMessage,
@@ -772,13 +786,21 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       if (event.type === 'auto_retry_end') {
         if (event.success) {
           automaticRetrySucceeded = true;
+          clearRetriedStreamFailure();
           appendSystemLog(`AI stream retry succeeded on attempt ${String(event.attempt)}.`);
-        } else if (event.finalError) {
+        } else {
+          const finalError = event.finalError || 'The request ended unexpectedly.';
           const reason = classifyChatStreamFailure({
-            error: event.finalError,
-            message: event.finalError,
-            stopReason: 'error',
+            error: finalError,
+            message: finalError,
+            stopReason: finalError === 'Retry cancelled' ? 'aborted' : 'error',
           });
+          // Retries exhausted keep the last attempt's error; a retry cancelled
+          // during its backoff has none, so record the final error here.
+          if (terminalStreamFailure === null) {
+            terminalStreamError = finalError;
+            terminalStreamFailure = reason;
+          }
           appendSystemLog(`AI stream retry exhausted: ${formatChatStreamStopForLog(reason)}`);
         }
         return;
