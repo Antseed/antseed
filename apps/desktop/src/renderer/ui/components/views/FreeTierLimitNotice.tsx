@@ -2,7 +2,8 @@ import { HugeiconsIcon } from '@hugeicons/react';
 import { Cancel01Icon } from '@hugeicons/core-free-icons';
 import type { DiscoverRow } from '../../../core/state';
 import type { ChatAiStreamStopReason } from '../../../types/bridge';
-import { nextTier, openSellerPool, tierAllowance, tierAnts } from '../../../modules/catalog/free-tier';
+import { nextTier, tierAllowance, tierAnts } from '../../../modules/catalog/free-tier';
+import { useOpenSellerPool } from '../../hooks/useOpenSellerPool';
 import styles from './FundingStatusNotice.module.scss';
 
 type FreeTierLimit = NonNullable<ChatAiStreamStopReason['freeTier']>;
@@ -24,6 +25,7 @@ export function FreeTierLimitNotice({ limit, rows, onDismiss }: {
   rows: readonly DiscoverRow[];
   onDismiss: () => void;
 }): JSX.Element {
+  const stake = useOpenSellerPool();
   const row = limit.peerId ? rows.find((entry) => peerKey(entry.peerId) === peerKey(limit.peerId!)) : undefined;
   const seller = row?.peerDisplayName || row?.peerLabel || 'this seller';
   const next = nextTier(limit.stakeTiers, limit.stakePower);
@@ -41,10 +43,13 @@ export function FreeTierLimitNotice({ limit, rows, onDismiss }: {
       <span className={styles.text}>
         <span className={styles.title}>{title}</span>
         {body ? <span className={styles.body}>{body}</span> : null}
+        {stake.error ? <span className={styles.body} role="alert">{stake.error}</span> : null}
       </span>
       {next && pool > 0 ? (
         <span className={styles.actions}>
-          <button type="button" className={styles.link} onClick={() => openSellerPool(pool)}>Stake in this pool ↗</button>
+          <button type="button" className={styles.link} disabled={stake.opening} onClick={() => stake.open(pool)}>
+            {stake.opening ? 'Opening…' : 'Stake in this pool ↗'}
+          </button>
         </span>
       ) : null}
       <button type="button" className={styles.dismiss} aria-label="Dismiss" onClick={onDismiss}>

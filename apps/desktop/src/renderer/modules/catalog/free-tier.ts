@@ -28,8 +28,3 @@ export function tierAllowance(tier: FreeTierStakeTier): string {
 export function nextTier(tiers: readonly FreeTierStakeTier[], power: number): FreeTierStakeTier | null {
   return tiers.find((tier) => tier.minPower > power) ?? null;
 }
-
-/** Open the staking dashboard on one seller's pool (its agent id). */
-export function openSellerPool(agentId: number): void {
-  void window.antseedDesktop?.stakingOpen?.({ page: 'stake', pool: agentId });
-}

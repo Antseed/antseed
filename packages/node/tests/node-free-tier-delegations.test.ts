@@ -22,7 +22,7 @@ describe('default buyer free-tier delegations', () => {
   it('sends the configured delegations and picks up replacements', async () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'antseed-free-tier-node-'));
     dirs.push(dataDir);
-    const node = new AntseedNode({ role: 'buyer', dataDir, bootstrapNodes: [] });
+    const node = new AntseedNode({ role: 'buyer', dataDir, bootstrapNodes: [], noOfficialBootstrap: true });
     nodes.push(node);
     await node.start();
     expect(defaultHandlerHeader(node)).toBeNull();

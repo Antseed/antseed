@@ -53,13 +53,15 @@ describe('completed-request seller payments', () => {
   });
   it('serves the routing model list for free through the provider, under the authenticated buyer id', async () => {
     const harness = setup();
-    const headers = { ...routingHeaders, 'X-Antseed-Buyer-Peer-Id': 'f'.repeat(40) };
+    const headers = { ...routingHeaders, 'X-Antseed-Buyer-Peer-Id': 'f'.repeat(40), 'X-Antseed-Free-Tier-Delegations': 'delegations' };
     expect((await harness.send('models', { method: 'GET', path: '/v1/routing/models', headers, body: new Uint8Array() })).statusCode).toBe(200);
     const forwarded = vi.mocked(harness.provider.handleRequest).mock.calls[0]![0];
     expect(forwarded.path).toBe('/v1/routing/models');
     // The buyer-sent copy (any casing) is replaced by the id from the authenticated connection.
     expect(forwarded.headers['x-antseed-buyer-peer-id']).toBe('b'.repeat(40));
     expect(Object.keys(forwarded.headers).filter(key => key.toLowerCase() === 'x-antseed-buyer-peer-id')).toEqual(['x-antseed-buyer-peer-id']);
+    // Free-tier delegations are for the seller only and never reach a plugin.
+    expect(Object.keys(forwarded.headers).map(key => key.toLowerCase())).not.toContain('x-antseed-free-tier-delegations');
     expect(harness.spm.recordSpend).not.toHaveBeenCalled();
     expect(harness.paymentMux.sendPaymentRequired).not.toHaveBeenCalled();
   });
@@ -701,14 +703,14 @@ function makeAttestHarness() {
     provider,
     prove,
     sendPaymentRequired,
-    sendAttest: (i = 0, body = new Uint8Array([1])) => mux.handleFrame({
+    sendAttest: (i = 0, body = new Uint8Array([1]), headers: Record<string, string> = {}) => mux.handleFrame({
       type: MessageType.HttpRequest,
       messageId: i + 1,
       payload: encodeHttpRequest({
         requestId: `req-attest-${i}`,
         method: 'POST',
         path: ATTEST_ROUTE,
-        headers: {},
+        headers,
         body,
       }),
     }),
@@ -803,6 +805,13 @@ describe('SellerRequestHandler payment pricing selection', () => {
     expect(prove).toHaveBeenCalledOnce();
     expect(provider.handleRequest).not.toHaveBeenCalled();
     expect(sendPaymentRequired).not.toHaveBeenCalled();
+  });
+
+  it('never passes free-tier delegations to a prover', async () => {
+    const { prove, sendAttest } = makeAttestHarness();
+    await sendAttest(0, new Uint8Array([1]), { 'X-Antseed-Free-Tier-Delegations': 'delegations' });
+    const headers = prove.mock.calls[0]![0].headers;
+    expect(Object.keys(headers).map((key) => key.toLowerCase())).not.toContain('x-antseed-free-tier-delegations');
   });
 
   it('rate-limits the free attestation route per buyer', async () => {

@@ -1,5 +1,6 @@
 import type { FreeTierProgram } from '@antseed/node/free-tier-program';
-import { openSellerPool, tierAllowance, tierAnts } from '../../../modules/catalog/free-tier';
+import { tierAllowance, tierAnts } from '../../../modules/catalog/free-tier';
+import { useOpenSellerPool } from '../../hooks/useOpenSellerPool';
 import { InfoTooltip } from '../InfoTooltip';
 import modelRowStyles from './VprModelRows.module.scss';
 import styles from './VprFreeTierStake.module.scss';
@@ -9,6 +10,7 @@ import styles from './VprFreeTierStake.module.scss';
  * that opens staking on this seller's pool. Only stake in that pool counts.
  */
 export function VprFreeTierStake({ program, agentId }: { program: FreeTierProgram | null | undefined; agentId: number }) {
+  const pool = useOpenSellerPool();
   if (!program || program.stakeTiers.length === 0) return null;
   const content = (
     <>
@@ -22,11 +24,12 @@ export function VprFreeTierStake({ program, agentId }: { program: FreeTierProgra
       <span>Twice the ANTS for half a year counts the same.</span>
       {agentId > 0 && (
         <span>
-          <button type="button" className={styles.link} onClick={(event) => { event.stopPropagation(); openSellerPool(agentId); }}>
-            Stake in this seller's pool ↗
+          <button type="button" className={styles.link} disabled={pool.opening} onClick={(event) => { event.stopPropagation(); pool.open(agentId); }}>
+            {pool.opening ? 'Opening…' : "Stake in this seller's pool ↗"}
           </button>
         </span>
       )}
+      {pool.error ? <span role="alert">{pool.error}</span> : null}
     </>
   );
   return (

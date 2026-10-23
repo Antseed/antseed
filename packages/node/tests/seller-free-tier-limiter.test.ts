@@ -1,9 +1,17 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { Wallet } from 'ethers';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MeteringStorage } from '../src/metering/storage.js';
 import { SellerFreeTierLimiter, normalizeRemoteIp } from '../src/payments/seller-free-tier-limiter.js';
+import {
+  FREE_TIER_DELEGATION_TYPES,
+  encodeFreeTierDelegationsHeader,
+  freeTierDelegationMessage,
+  makeFreeTierDelegationDomain,
+} from '../src/payments/free-tier-delegation.js';
+import type { FreeTierStakeResolver } from '../src/payments/free-tier-stake-resolver.js';
 
 const BUYER = '11'.repeat(20);
 const OTHER_BUYER = '22'.repeat(20);
@@ -204,6 +212,23 @@ describe('SellerFreeTierLimiter', () => {
         'free-tier.v1.tier.p2600000.x20',
         'free-tier.v1.tier.p10400000.x0',
       ]);
+    });
+
+    it('forgets remembered delegations once requests stop sending them, but keeps them for channel admission', async () => {
+      const limiter = new SellerFreeTierLimiter({ maxRequestsPerAddress: 1, windowMs: 60_000, stakeTiers: [tier5x] });
+      const resolve = vi.fn(async () => null);
+      limiter.setStakeResolver({ resolve } as unknown as FreeTierStakeResolver, 8453);
+      const staker = Wallet.createRandom();
+      const delegation = { staker: staker.address, buyer: `0x${BUYER}`, expiresAt: Math.floor(Date.now() / 1000) + 3600 };
+      const signature = await staker.signTypedData(makeFreeTierDelegationDomain(8453), FREE_TIER_DELEGATION_TYPES, freeTierDelegationMessage(delegation));
+      const stakersLooked = () => resolve.mock.calls.at(-1)![1];
+
+      await limiter.resolveStanding(BUYER, encodeFreeTierDelegationsHeader([{ ...delegation, signature }]));
+      expect(stakersLooked()).toEqual([staker.address.toLowerCase()]);
+      await limiter.resolveStanding(BUYER);
+      expect(stakersLooked()).toEqual([staker.address.toLowerCase()]);
+      await limiter.resolveStanding(BUYER, '');
+      expect(stakersLooked()).toEqual([]);
     });
 
     it('rejects invalid tier programs', () => {

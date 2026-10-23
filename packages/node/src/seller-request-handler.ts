@@ -193,6 +193,10 @@ export class SellerRequestHandler {
 
     mux.onProxyRequest(async (request: SerializedHttpRequest) => {
       debugLog(`[SellerHandler] Received request: ${request.method} ${request.path} (reqId=${request.requestId.slice(0, 8)})`);
+      // Response auth signs the request as the buyer sent it, so keep its headers before removing seller-only ones.
+      const wireHeaders = { ...request.headers };
+      // Delegations are for this seller only: no route may pass them on to a provider or prover.
+      const delegationsHeader = takeHeader(request.headers, FREE_TIER_DELEGATIONS_HEADER);
 
       // Handle /v1/models locally — free metadata endpoint, no payment required.
       // Compare against the path without its query string so callers like
@@ -324,10 +328,6 @@ export class SellerRequestHandler {
       // A video retrieve is paid by its job's create, never by the free tier:
       // status polls and downloads must not use up or report free usage.
       const isFreeTierRequest = isFreeService && !isVideoRetrieve;
-      // Response auth signs the request as the buyer sent it, so keep its headers before removing seller-only ones.
-      const wireHeaders = { ...request.headers };
-      // Delegations are for this seller only: never pass them on to the provider.
-      const delegationsHeader = takeHeader(request.headers, FREE_TIER_DELEGATIONS_HEADER);
       let requestCostEstimate: ReturnType<SellerRequestHandler['_estimateRequestCostUsdc']> = null;
       try {
         requestCostEstimate = requestBilling && !isVideoRetrieve
@@ -345,7 +345,8 @@ export class SellerRequestHandler {
         const requestedService = this._extractRequestedService(request) ?? 'unknown';
         let decision: FreeTierDecision;
         try {
-          const standing = await this._deps.sellerFreeTierLimiter.resolveStanding(buyerPeerId, delegationsHeader);
+          // No header means the buyer has no codes any more: '' forgets the remembered ones.
+          const standing = await this._deps.sellerFreeTierLimiter.resolveStanding(buyerPeerId, delegationsHeader ?? '');
           decision = this._deps.sellerFreeTierLimiter.consume({
             buyerPeerId,
             service: requestedService,

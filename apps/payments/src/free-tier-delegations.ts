@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import type { FastifyInstance } from 'fastify';
 import { getAddress, isAddress } from 'ethers';
 import {
@@ -30,33 +30,56 @@ const pendingSaves = new Map<string, Promise<unknown>>();
 /**
  * Save `delegation`, replacing an earlier one from the same staker to the
  * same buyer. Other config keys are left untouched. Saves to one config file
- * run one at a time, so concurrent saves keep each other's delegations.
+ * run one at a time, so concurrent saves keep each other's delegations; a
+ * symlinked config is updated at its target and keeps its permissions.
  */
-export function saveFreeTierDelegation(configPath: string, delegation: FreeTierDelegation): Promise<FreeTierDelegation[]> {
+export async function saveFreeTierDelegation(configPath: string, delegation: FreeTierDelegation): Promise<FreeTierDelegation[]> {
+  const target = await realTarget(configPath);
   const save = async () => {
-    const config = await readConfig(configPath);
+    const config = await readConfig(target);
     const buyer = (config.buyer ?? {}) as Record<string, unknown>;
     const existing = Array.isArray(buyer.freeTierDelegations) ? buyer.freeTierDelegations as FreeTierDelegation[] : [];
     const delegations = withFreeTierDelegation(existing, delegation);
     config.buyer = { ...buyer, freeTierDelegations: delegations };
-    const temp = `${configPath}.tmp-${process.pid}-${randomUUID()}`;
+    const mode = await fileMode(target) ?? 0o600;
+    const temp = `${target}.tmp-${process.pid}-${randomUUID()}`;
     try {
-      await writeFile(temp, `${JSON.stringify(config, null, 2)}\n`, 'utf-8');
-      await rename(temp, configPath);
+      await writeFile(temp, `${JSON.stringify(config, null, 2)}\n`, { encoding: 'utf-8', mode });
+      await chmod(temp, mode);
+      await rename(temp, target);
     } catch (err) {
       await rm(temp, { force: true });
       throw err;
     }
     return delegations;
   };
-  const previous = pendingSaves.get(configPath) ?? Promise.resolve();
+  const previous = pendingSaves.get(target) ?? Promise.resolve();
   const run = previous.then(save, save);
   const settled = run.catch(() => undefined);
-  pendingSaves.set(configPath, settled);
+  pendingSaves.set(target, settled);
   void settled.then(() => {
-    if (pendingSaves.get(configPath) === settled) pendingSaves.delete(configPath);
+    if (pendingSaves.get(target) === settled) pendingSaves.delete(target);
   });
   return run;
+}
+
+/** The file a config path points to, following symlinks; the path itself when it does not exist yet. */
+async function realTarget(configPath: string): Promise<string> {
+  try {
+    return await realpath(configPath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return configPath;
+    throw err;
+  }
+}
+
+async function fileMode(path: string): Promise<number | null> {
+  try {
+    return (await stat(path)).mode & 0o777;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
+  }
 }
 
 async function readConfig(configPath: string): Promise<Record<string, unknown>> {

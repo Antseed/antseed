@@ -162,8 +162,9 @@ export class SellerFreeTierLimiter {
    * Staked standing for this buyer, or null for the base limits. Never throws.
    *
    * `delegationsHeader` is the buyer's `x-antseed-free-tier-delegations`
-   * value. Verified stakers are remembered for the buyer, so channel-open
-   * admission, which carries no request headers, sees the same standing.
+   * value, or '' when a request carried none. Verified stakers are
+   * remembered for the buyer, so channel-open admission, which passes
+   * undefined because it carries no request headers, sees the same standing.
    */
   async resolveStanding(buyerPeerId: string, delegationsHeader?: string): Promise<FreeTierStakeStanding | null> {
     if (!this._stakeResolver || this.stakeTiers.length === 0) return null;
