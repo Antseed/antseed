@@ -2508,6 +2508,63 @@ test('required parameters fail clearly when no automatic route advertises suppor
   assert.equal(dispatches, 0)
 })
 
+test('image edits route automatically only to sellers that advertise image input', async () => {
+  const boundary = 'image-edit-boundary'
+  const editForm = [
+    `--${boundary}`,
+    'Content-Disposition: form-data; name="model"',
+    '',
+    'gpt-image-2',
+    `--${boundary}`,
+    'Content-Disposition: form-data; name="image"; filename="source.png"',
+    'Content-Type: image/png',
+    '',
+    'image-bytes',
+    `--${boundary}--`,
+    '',
+  ].join('\r\n')
+  const textOnly = makePeer('a', ['openai'])
+  textOnly.reputationScore = 95
+  textOnly.providerServiceApiProtocols = { openai: { services: { 'gpt-image-2': ['openai-images'] } } }
+  textOnly.providerServiceCapabilities = {
+    openai: { services: { 'gpt-image-2': { outputs: ['image'], supportedParameters: ['size'] } } },
+  }
+  const editCapable = makePeer('b', ['openai'])
+  editCapable.reputationScore = 70
+  editCapable.providerServiceApiProtocols = { openai: { services: { 'gpt-image-2': ['openai-images'] } } }
+  editCapable.providerServiceCapabilities = {
+    openai: { services: { 'gpt-image-2': { outputs: ['image'], supportedParameters: ['image', 'size'] } } },
+  }
+  const editRequest = () => makeProxyRequest({
+    path: '/v1/images/edits',
+    headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+    rawBody: editForm,
+  })
+  const selected: string[] = []
+  const respond = async (peer: PeerInfo, request: { requestId: string }) => {
+    selected.push(peer.peerId)
+    return {
+      requestId: request.requestId,
+      statusCode: 200,
+      headers: { 'content-type': 'application/json' },
+      body: Buffer.from(JSON.stringify({ data: [{ b64_json: 'image' }] })),
+    }
+  }
+
+  const proxy = makeBuyerProxyWithPeers([textOnly, editCapable], [textOnly, editCapable], permissiveRouter())
+  ;(proxy as any)._node.sendRequest = respond
+  const res = await invokeProxy(proxy, editRequest())
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(selected, [editCapable.peerId])
+
+  const textOnlyProxy = makeBuyerProxyWithPeers([textOnly], [textOnly], permissiveRouter())
+  ;(textOnlyProxy as any)._node.sendRequest = respond
+  const refused = await invokeProxy(textOnlyProxy, editRequest())
+  assert.equal(refused.statusCode, 422)
+  assert.equal(JSON.parse(refused.body).error.code, 'required_capability_unavailable')
+  assert.deepEqual(selected, [editCapable.peerId])
+})
+
 test('pinned routes fail clearly when the seller lacks a required parameter', async () => {
   const peer = makePeer('a', ['openai'])
   peer.providerServiceApiProtocols = {
@@ -3225,6 +3282,38 @@ test('pinned proxy request reports when the pinned peer is not discoverable', as
   assert.equal(res.statusCode, 502)
   assert.match(res.body, /is not reachable right now/)
   assert.match(res.body, /It may be offline, not announcing, or temporarily unreachable/)
+})
+
+test('verifier preimage capture header stays local and enables exact capture', async () => {
+  const peer = makePeer('a', ['openai'])
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+  let capturedHeaders: Record<string, string> | null = null
+  let capturedCaptureFlag: boolean | undefined
+  ;(proxy as any)._node.sendRequest = async (
+    _peer: PeerInfo,
+    request: { requestId: string; headers: Record<string, string> },
+    options: { captureResponseAuthPreimages?: boolean },
+  ) => {
+    capturedHeaders = request.headers
+    capturedCaptureFlag = options.captureResponseAuthPreimages
+    return {
+      requestId: request.requestId,
+      statusCode: 200,
+      headers: { 'content-type': 'application/json' },
+      body: Buffer.from('{"choices":[{"message":{"content":"ok"}}]}'),
+    }
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    headers: {
+      'x-antseed-pin-peer': peer.peerId,
+      'x-antseed-capture-response-auth-preimages': '1',
+    },
+  }))
+
+  assert.equal(res.statusCode, 200)
+  assert.equal(capturedHeaders?.['x-antseed-capture-response-auth-preimages'], undefined)
+  assert.equal(capturedCaptureFlag, true)
 })
 
 test('pinned proxy request surfaces a 403 without failing over to another peer', async () => {
@@ -4012,12 +4101,15 @@ test('non-stream transformed responses requests force upstream stream without st
   let sendRequestStreamCalls = 0
   let capturedRequestBody: Record<string, unknown> | null = null
   let capturedRequestHeaders: Record<string, string> | null = null
+  let capturedRequestId: string | null = null
+  const callerRequestId = '123e4567-e89b-42d3-a456-426614174000'
   const proxy = makeBuyerProxyWithPeers([peer], [peer])
   ;(proxy as any)._node.sendRequest = async (
     _peer: PeerInfo,
     request: { requestId: string; body: Uint8Array; headers: Record<string, string> },
   ) => {
     sendRequestCalls += 1
+    capturedRequestId = request.requestId
     capturedRequestBody = parseJsonBody(request.body)
     capturedRequestHeaders = request.headers
     return {
@@ -4046,6 +4138,7 @@ test('non-stream transformed responses requests force upstream stream without st
     path: '/v1/messages',
     headers: {
       'x-antseed-pin-peer': peer.peerId,
+      'x-antseed-request-id': callerRequestId,
     },
     body: {
       model: 'gpt-5.6-sol',
@@ -4059,6 +4152,9 @@ test('non-stream transformed responses requests force upstream stream without st
   assert.equal(sendRequestStreamCalls, 0)
   assert.equal(capturedRequestBody?.['stream'], true)
   assert.equal(capturedRequestHeaders?.['x-antseed-client-stream-requested'], 'false')
+  assert.equal(capturedRequestHeaders?.['x-antseed-request-id'], undefined)
+  assert.equal(capturedRequestId, callerRequestId)
+  assert.equal(res.headers['x-antseed-request-id'], callerRequestId)
   const body = JSON.parse(res.body) as { content?: Array<{ type: string; text: string }> }
   assert.equal(body.content?.[0]?.text, 'hi')
 })
@@ -4777,6 +4873,31 @@ test('rewritePeerPinnedServiceInBody updates content-length header when present'
   const headers = { 'content-type': 'application/json', 'content-length': String(original.length) }
   const result = rewritePeerPinnedServiceInBody(original, headers)
   assert.equal(result.headers['content-length'], String(result.body.length))
+})
+
+test('rewritePeerPinnedServiceInBody strips the peer prefix from a multipart model field', () => {
+  const boundary = 'image-edit-boundary'
+  const form = (model: string): Uint8Array => new Uint8Array(Buffer.concat([
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="image"; filename="model.png"\r\nContent-Type: image/png\r\n\r\n`),
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff, 0x80]),
+    Buffer.from(`\r\n--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\n${model}`),
+    Buffer.from(`\r\n--${boundary}\r\nContent-Disposition: form-data; name="prompt"\r\n\r\nadd a hat\r\n--${boundary}--\r\n`),
+  ]))
+  const original = form(`${validPeerId}@gpt-image-2`)
+  const headers = {
+    'content-type': `multipart/form-data; boundary=${boundary}`,
+    'content-length': String(original.length),
+  }
+  const result = rewritePeerPinnedServiceInBody(original, headers)
+  assert.equal(result.pinnedPeerId, validPeerId)
+  assert.deepEqual(Buffer.from(result.body), Buffer.from(form('gpt-image-2')))
+  assert.equal(result.headers['content-length'], String(result.body.length))
+  assert.equal(result.headers['content-type'], headers['content-type'])
+
+  const unpinned = form('gpt-image-2')
+  const untouched = rewritePeerPinnedServiceInBody(unpinned, headers)
+  assert.equal(untouched.body, unpinned)
+  assert.equal(untouched.pinnedPeerId, null)
 })
 
 test('rewritePeerPinnedServiceInBody returns original when body is not JSON content-type', () => {

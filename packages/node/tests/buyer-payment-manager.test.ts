@@ -2163,6 +2163,40 @@ describe('BuyerPaymentManager', () => {
     expect(manager.getVerifiedCost(sellerPeerId)).toBe(5_000n);
   });
 
+  it('extendCurrentSpendingAuth allows one per-request window per in-flight request for a catch-up', async () => {
+    // Several parallel requests to one seller can leave its spend more than
+    // one per-request window ahead of what the buyer signed.
+    const sellerPeerId = fakePeerId('seller-parallel-catch-up');
+    const tightConfig = makeConfig(tempDir, {
+      maxPerRequestUsdc: 10_000n,
+      maxReserveAmountUsdc: 1_000_000n,
+    });
+    store.close();
+    store = new ChannelStore(tempDir);
+    manager = new BuyerPaymentManager(identity, tightConfig, store);
+    manager.setSigner(identity.wallet);
+    mux = createMockPaymentMux();
+
+    await manager.authorizeSpending(sellerPeerId, mux, 10_000n, 1_000_000n, TEST_PRICING);
+    const channelId = (mux.sentSpendingAuths[0] as Record<string, string>).channelId!;
+    manager.handleAuthAck(sellerPeerId, { channelId });
+    await manager.handleNeedAuth(sellerPeerId, {
+      channelId,
+      requiredCumulativeAmount: '5000',
+      currentAcceptedCumulative: '0',
+      deposit: '1000000',
+      lastRequestCost: '5000',
+    }, mux);
+    mux.sentSpendingAuths.length = 0;
+
+    // Three requests in flight: the signable window grows to 3 × 10_000, and
+    // an inflated target is still capped at verifiedCost + 3 × maxPerRequestUsdc.
+    await manager.extendCurrentSpendingAuth(sellerPeerId, 10_000n, mux, 1_000_000n, undefined, 3);
+    expect(mux.sentSpendingAuths).toHaveLength(1);
+    expect(BigInt((mux.sentSpendingAuths[0] as Record<string, string>).cumulativeAmount)).toBe(35_000n);
+    expect(manager.getVerifiedCost(sellerPeerId)).toBe(5_000n);
+  });
+
   it('recordAndPersistTokens continues from persisted totals after restart', async () => {
     const sellerPeerId = fakePeerId('seller-record-restart');
     await manager.authorizeSpending(sellerPeerId, mux, 50_000n, TEST_PRICING);
