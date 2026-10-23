@@ -160,6 +160,8 @@ export interface GatewayServerOptions {
   videoBudgetEnforced?: () => boolean
   /** x402 top-ups into a key's buyer wallet; null disables `POST /v1/key/topup`. */
   topup?: GatewayTopupOptions | null
+  /** Observes each settle attempt's outcome, for anonymous telemetry. Never changes the answer. */
+  onTopupOutcome?: (outcome: 'settled' | 'rejected', amountUsdc: number) => void
   listenPort?: number
   listenHost?: string
   onLog?: (message: string) => void
@@ -893,6 +895,7 @@ export class GatewayServer {
     }
     const settled = await this._settleTopup(topup, payment, requirements)
     if (!settled.success) {
+      this._notifyTopup('rejected', amountUsdc)
       this._log(`gateway top-up failed: key=${key.id} reason=${settled.errorReason ?? 'unknown'}`)
       res.setHeader(PAYMENT_RESPONSE_HEADER, encodeHeaderJson(settled))
       paymentRequired(settled.errorReason ?? 'unexpected_settle_error')
@@ -915,6 +918,7 @@ export class GatewayServer {
     } catch (error) {
       this._log(`gateway top-up settled but NOT recorded in the ledger: key=${key.id} amount=${formatUsdc(amountUsdc)} tx=${settled.transaction}: ${errorMessage(error)}`)
     }
+    this._notifyTopup('settled', amountUsdc)
     this._log(`gateway top-up: key=${key.id} identity=${key.buyerIdentity} amount=${formatUsdc(amountUsdc)} tx=${settled.transaction}`)
     res.setHeader(PAYMENT_RESPONSE_HEADER, encodeHeaderJson(settled))
     sendJson(res, 200, {
@@ -928,6 +932,14 @@ export class GatewayServer {
         credits_available: 'within about a minute',
       },
     })
+  }
+
+  private _notifyTopup(outcome: 'settled' | 'rejected', amountUsdc: number): void {
+    try {
+      this._options.onTopupOutcome?.(outcome, amountUsdc)
+    } catch {
+      // Telemetry never changes a top-up.
+    }
   }
 
   private async _settleTopup(topup: GatewayTopupOptions, payment: PaymentPayload, requirements: PaymentRequirements) {

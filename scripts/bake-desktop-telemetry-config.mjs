@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 /**
- * Bake public PostHog ingestion configuration into desktop release builds.
+ * Bake public PostHog ingestion configuration into release builds of the
+ * desktop app and the CLI (the CLI's copy also covers the buyer and the
+ * gateway it runs, and the CLI the desktop bundles). One PostHog project
+ * serves every product.
  *
- * Packaged GUI apps do not inherit the CI shell environment. This script
+ * Packaged GUI apps and npm installs do not inherit the CI shell environment. This script
  * rewrites the committed null defaults before TypeScript compilation, matching
  * the existing comparable-prices bake flow. Runtime environment variables
  * still override baked values and remain the emergency kill/config switch.
@@ -14,7 +17,10 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const target = join(root, 'apps/desktop/src/main/generated/baked-defaults.ts');
+const TARGETS = [
+  join(root, 'apps/desktop/src/main/generated/baked-defaults.ts'),
+  join(root, 'apps/cli/src/generated/baked-defaults.ts'),
+];
 const host = (process.env.POSTHOG_HOST ?? '').trim().replace(/\/+$/, '');
 const projectApiKey = (process.env.POSTHOG_PROJECT_API_KEY ?? '').trim();
 const required = process.argv.includes('--require');
@@ -40,20 +46,22 @@ if (!hostUrl || hostUrl.protocol !== 'https:') {
   process.exit(1);
 }
 
-let source = readFileSync(target, 'utf8');
-source = source.replace(
-  /export const BAKED_POSTHOG_HOST: string \| null = .*;/,
-  `export const BAKED_POSTHOG_HOST: string | null = ${JSON.stringify(host)};`,
-);
-source = source.replace(
-  /export const BAKED_POSTHOG_PROJECT_API_KEY: string \| null = .*;/,
-  `export const BAKED_POSTHOG_PROJECT_API_KEY: string | null = ${JSON.stringify(projectApiKey)};`,
-);
+for (const target of TARGETS) {
+  let source = readFileSync(target, 'utf8');
+  source = source.replace(
+    /export const BAKED_POSTHOG_HOST: string \| null = .*;/,
+    `export const BAKED_POSTHOG_HOST: string | null = ${JSON.stringify(host)};`,
+  );
+  source = source.replace(
+    /export const BAKED_POSTHOG_PROJECT_API_KEY: string \| null = .*;/,
+    `export const BAKED_POSTHOG_PROJECT_API_KEY: string | null = ${JSON.stringify(projectApiKey)};`,
+  );
 
-if (!source.includes(JSON.stringify(host)) || !source.includes(JSON.stringify(projectApiKey))) {
-  console.error('bake-desktop-telemetry-config: could not rewrite generated defaults.');
-  process.exit(1);
+  if (!source.includes(JSON.stringify(host)) || !source.includes(JSON.stringify(projectApiKey))) {
+    console.error(`bake-desktop-telemetry-config: could not rewrite ${target}.`);
+    process.exit(1);
+  }
+
+  writeFileSync(target, source);
 }
-
-writeFileSync(target, source);
-console.log(`bake-desktop-telemetry-config: baked PostHog host ${host} and project key.`);
+console.log(`bake-desktop-telemetry-config: baked PostHog host ${host} and project key (desktop and CLI).`);

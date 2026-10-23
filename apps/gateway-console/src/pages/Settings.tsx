@@ -17,8 +17,8 @@ import { BuyerSettingsEditor } from '../components/BuyerSettingsEditor'
 import { UpdatePanel } from '../components/UpdatePanel'
 import { qk, useAdminTokens, useStatus } from '../lib/queries'
 
-type Tab = 'general' | 'buyer' | 'observability' | 'tokens' | 'auth'
-const TABS: readonly Tab[] = ['general', 'buyer', 'observability', 'tokens', 'auth']
+type Tab = 'general' | 'buyer' | 'observability' | 'privacy' | 'tokens' | 'auth'
+const TABS: readonly Tab[] = ['general', 'buyer', 'observability', 'privacy', 'tokens', 'auth']
 
 function General() {
   const status = useStatus()
@@ -96,6 +96,44 @@ function Observability({ settings }: { settings: SettingsData }) {
         {save.error ? <ErrorAlert error={save.error} title="Could not save" /> : null}
         <div className="gc-actions"><Button type="submit" disabled={save.isPending}>{save.isPending ? 'Saving…' : 'Save'}</Button></div>
       </form>
+    </Panel>
+  )
+}
+
+const TELEMETRY_DOC_URL = 'https://github.com/AntSeed/antseed/blob/main/docs/telemetry.md'
+
+/** The desktop's Preferences → Privacy switch, for this gateway and its buyer. */
+function Privacy({ settings }: { settings: SettingsData }) {
+  const queryClient = useQueryClient()
+  const toast = useToast()
+  const status = settings.telemetry
+  const save = useMutation({
+    mutationFn: (enabled: boolean) => api.settings.setTelemetry(enabled),
+    onMutate: (enabled) => {
+      const previous = queryClient.getQueryData<SettingsData>(qk.settings)
+      if (previous) queryClient.setQueryData(qk.settings, { ...previous, telemetry: { ...previous.telemetry, enabled, userDisabled: !enabled } })
+      return { previous }
+    },
+    onError: (_error, _enabled, context) => {
+      if (context?.previous) queryClient.setQueryData(qk.settings, context.previous)
+    },
+    onSuccess: (data) => {
+      const { restartRequired: _restartRequired, ...next } = data
+      queryClient.setQueryData(qk.settings, next)
+      toast(next.telemetry.enabled ? 'Product telemetry on' : 'Product telemetry off')
+    },
+  })
+  return (
+    <Panel title="Privacy">
+      <div className="gc-stack">
+        <Switch checked={status.enabled} onChange={(next) => save.mutate(next)} disabled={!status.available || save.isPending}
+          label="Product telemetry"
+          description={status.available
+            ? 'Help improve AntSeed by sharing coarse feature usage and reliability information linked to the gateway\'s public on-chain address. Prompts, messages, keys, members and exact financial values are never collected, and no location is recorded for a gateway.'
+            : 'Telemetry is unavailable in this build or has been disabled by configuration.'} />
+        <div><a href={TELEMETRY_DOC_URL} target="_blank" rel="noreferrer">Review every event and privacy control</a></div>
+        {save.error ? <ErrorAlert error={save.error} title="Could not save" /> : null}
+      </div>
     </Panel>
   )
 }
@@ -187,6 +225,7 @@ function AuthMethods({ settings }: { settings: SettingsData }) {
 function SettingsSection({ tab, settings }: { tab: Tab; settings: SettingsData }) {
   if (tab === 'buyer') return <BuyerSettings settings={settings} />
   if (tab === 'observability') return <Observability settings={settings} />
+  if (tab === 'privacy') return <Privacy settings={settings} />
   return <AuthMethods settings={settings} />
 }
 
@@ -203,12 +242,12 @@ export default function Settings() {
       <PageHeader title="Settings" />
       <Tabs id="gc-settings" label="Settings sections" value={tab} onChange={setTab} tabs={[
         { id: 'general', label: 'General' }, { id: 'buyer', label: 'Buyer' }, { id: 'observability', label: 'Observability' },
-        { id: 'tokens', label: 'Management tokens' }, { id: 'auth', label: 'Sign-in' },
+        { id: 'privacy', label: 'Privacy' }, { id: 'tokens', label: 'Management tokens' }, { id: 'auth', label: 'Sign-in' },
       ]} />
       <TabPanel tabsId="gc-settings" tab={tab} className="gc-stack">
         {tab === 'general' && <><General /><UpdatePanel /></>}
         {tab === 'tokens' && <Tokens />}
-        {(tab === 'buyer' || tab === 'observability' || tab === 'auth') && (
+        {(tab === 'buyer' || tab === 'observability' || tab === 'privacy' || tab === 'auth') && (
           <QueryView query={settings}>
             {(data) => <SettingsSection tab={tab} settings={data} />}
           </QueryView>

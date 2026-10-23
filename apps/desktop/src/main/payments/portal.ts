@@ -15,6 +15,7 @@ import { LOCALHOST, LOCALHOST_URL } from '../constants.js';
 import { ACTIVE_CONFIG_PATH } from '../runtime/active-config.js';
 import { readConfig } from '../runtime/config-io.js';
 import { ensureSecureIdentity, secureIdentityEnv } from '../identity.js';
+import { getTelemetryService } from '../telemetry/runtime.js';
 import { getMainWindow } from '../ui/window.js';
 import { invalidateCreditsCache } from './credits.js';
 import { asRecord, asString } from '../utils.js';
@@ -49,6 +50,8 @@ export async function startPaymentsPortal(): Promise<void> {
         // the renderer refresh balances/channels/rewards immediately.
         focusMainWindow();
         invalidateCreditsCache();
+        // Counts only when this launch opened a withdraw.
+        void getTelemetryService()?.recordWithdrawCompleted();
         getMainWindow()?.webContents.send('payments:completed');
       },
     });

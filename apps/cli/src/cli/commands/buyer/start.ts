@@ -27,6 +27,7 @@ import { BuyerIdentityLoader } from '../../../buyer-identities/loader.js'
 import { curatedVerifierIds, resolveVerifierPolicy, type VerifierPolicy } from '../../../plugins/verifier.js'
 import { buyerSettingOverrides, resolveEffectiveBuyerConfig, type BuyerRuntimeOverrides } from '../../../config/effective.js'
 import type { BuyerCLIConfig } from '../../../config/types.js'
+import { BuyerTelemetry } from '../../../telemetry/buyer.js'
 
 const SHUTDOWN_DEADLINE_MS = BUYER_SHUTDOWN_DEADLINE_MS
 
@@ -549,7 +550,13 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         return shutdownPromise
       }
 
+      // Anonymous request telemetry (docs/telemetry.md), following `telemetry.enabled` in the config live.
+      const buyerTelemetry = new BuyerTelemetry({
+        configPath: globalOpts.config,
+        getDistinctId: () => node.identity?.wallet.address ?? null,
+      })
       const proxy = new BuyerProxy({
+        telemetry: buyerTelemetry,
         buyerIdentities,
         port: proxyPort,
         node,
@@ -585,6 +592,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         for (const watcher of identityWatchers) watcher.stop()
         depositWatchHub?.stop()
         if (ownsProxyListener) await proxy.stop()
+        await buyerTelemetry.close()
         await node.stop()
         nodeSpinner.succeed('Disconnected. All channels finalized.')
       }
@@ -609,6 +617,12 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
           process.exit(1)
         }
       }
+
+      buyerTelemetry.started({
+        paymentsEnabled: Boolean(paymentsConfig?.enabled),
+        verifierEnabled: Boolean(verifierPolicy),
+        ownsProxyPort: ownsProxyListener,
+      })
 
       // Hot-wallet deposit watcher (auto-sweep): incoming USDC is swept into
       // the deposits balance gaslessly via the relayer network. Skipped when

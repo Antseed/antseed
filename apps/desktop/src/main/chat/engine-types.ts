@@ -23,6 +23,14 @@ export type FirstModelShownTelemetryInput = Omit<
   'duration_bucket'
 >;
 
+/** Cheap, synchronous context read when a chat request is sent (telemetry only). */
+export type ChatSendTelemetryContext = {
+  msSinceAppStart: number;
+  peersDiscovered: boolean;
+  /** Undefined until the deposits balance has been read once. */
+  buyerBalanceZero?: boolean;
+};
+
 export type RegisterPiChatHandlersOptions = {
   ipcMain: IpcMain;
   sendToRenderer: (channel: string, payload: unknown) => void;
@@ -44,6 +52,10 @@ export type RegisterPiChatHandlersOptions = {
   ) => void | Promise<void>;
   recordDiscoveryFailed?: (
     input: TelemetryEventProperties['discovery_failed'],
+  ) => void | Promise<void>;
+  getChatSendTelemetryContext?: () => ChatSendTelemetryContext;
+  recordPremiumBlocked?: (
+    input: TelemetryEventProperties['premium_blocked'],
   ) => void | Promise<void>;
 };
 

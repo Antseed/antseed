@@ -8,8 +8,9 @@ import { redact } from '../../proxy/chain-rpc.js'
 import { optionalBuyerJson, type BuyerClient } from '../console-api/handlers/network-buyer.js'
 import { ConsoleError } from '../console-api/router.js'
 import { asObject, badRequest } from '../console-api/serialize.js'
-import type { AuthConfig, BuyerSettings, BuyerSettingsInput, ObservabilitySettings, Settings } from '../console-api/types.js'
+import type { AuthConfig, BuyerSettings, BuyerSettingsInput, ObservabilitySettings, Settings, TelemetrySettings } from '../console-api/types.js'
 import { errorMessage } from '../errors.js'
+import { resolveCliConsent } from '../../telemetry/settings.js'
 import { OBSERVABILITY_SETTING, observabilitySettings } from '../observability.js'
 import { recordAudit, type Actor, type ServiceContext } from './context.js'
 
@@ -217,6 +218,7 @@ export async function readSettings(
     observability: options.revealSecrets
       ? observability
       : { ...observability, otlpHeaders: Object.fromEntries(Object.keys(observability.otlpHeaders).map((name) => [name, REDACTED])) },
+    telemetry: telemetrySettings(deps.configPath),
     auth: await authConfig(deps),
   }
 }
@@ -573,4 +575,31 @@ export function setObservabilitySettings(
   })
   ctx.log(`console: observability settings changed (export ${settings.otlpEndpoint ? 'on' : 'off'}, content logging ${settings.logContent ? 'on' : 'off'})`)
   return settings
+}
+
+/** The gateway's telemetry switch, as the desktop reports its own. */
+export function telemetrySettings(configPath: string, env: NodeJS.ProcessEnv = process.env): TelemetrySettings {
+  const decision = resolveCliConsent(resolveConfigPath(configPath), env)
+  const userDisabled = !decision.enabled && decision.reason === 'user_disabled'
+  return { available: decision.enabled || userDisabled, enabled: decision.enabled, userDisabled }
+}
+
+/**
+ * Turns anonymous telemetry on or off: `telemetry.enabled` in the config
+ * file, the same switch as `antseed telemetry` and the desktop's Privacy
+ * toggle. The gateway reads it live and the buyer reloads it, so there is no
+ * restart.
+ */
+export async function setTelemetrySettings(ctx: SettingsContext, actor: Actor, body: unknown): Promise<TelemetrySettings> {
+  const enabled = asObject(body)['enabled']
+  if (typeof enabled !== 'boolean') throw badRequest('enabled must be true or false')
+  const previous = telemetrySettings(ctx.configPath)
+  await patchConfigFile(ctx.configPath, (config) => {
+    childObject(config, 'telemetry')['enabled'] = enabled
+  })
+  recordAudit(ctx, actor, 'settings.telemetry.update', { kind: 'settings', id: 'telemetry', label: 'Product telemetry' }, {
+    previousEnabled: previous.enabled, enabled,
+  })
+  ctx.log(`console: product telemetry turned ${enabled ? 'on' : 'off'}`)
+  return telemetrySettings(ctx.configPath)
 }

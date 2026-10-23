@@ -12,6 +12,8 @@ import { SpendFeedPoller } from './spend-feed.js'
 import { GatewayStore } from './store.js'
 import { X402Facilitator, type X402Asset } from './x402.js'
 import { cdpAuthorization, type CdpCredentials } from './cdp-auth.js'
+import { addressScope } from './exposure.js'
+import { GatewayTelemetry } from '../telemetry/gateway.js'
 
 const DEFAULT_MAX_PER_REQUEST_USDC = '300000'
 // AntseedDeposits takes at least 1 USDC on a first deposit, after the sweep fee.
@@ -51,6 +53,8 @@ export interface GatewayRuntimeOptions {
    * claim it and create the first one there.
    */
   createConsole?: (context: GatewayConsoleContext) => GatewayConsoleHandle | null
+  /** false: no anonymous telemetry (tests). Otherwise it follows `antseed telemetry` (docs/telemetry.md). */
+  telemetry?: false
 }
 
 /** What `createConsole` returns: the request handler plus start-up hooks. */
@@ -175,6 +179,15 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
     }
     : null
   const listenHost = options.listenHost ?? '127.0.0.1'
+  const telemetry = options.telemetry === false ? null : new GatewayTelemetry({
+    configPath: options.configPath,
+    dataDir: options.dataDir,
+    listenExposure: addressScope(listenHost),
+    consoleEnabled: Boolean(options.createConsole),
+    x402Enabled: Boolean(topup),
+    counts: () => ({ workspaces: store.listWorkspaces().length, keys: store.countActiveKeys(), members: store.listMembers().length }),
+    ...(options.onLog ? { onLog: options.onLog } : {}),
+  })
   const consoleHandler = options.createConsole?.({
     store,
     buyerPort,
@@ -198,6 +211,7 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
     listenPort: options.listenPort,
     listenHost,
     onLog: options.onLog,
+    ...(telemetry ? { onTopupOutcome: (outcome: 'settled' | 'rejected', amountUsdc: number) => telemetry.topup(outcome, BigInt(amountUsdc)) } : {}),
   })
 
   let port: number
@@ -213,6 +227,7 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
   spendFeed.start()
   await policyProbe.start()
   consoleHandler?.listening?.(port)
+  void telemetry?.start()
 
   return {
     port,
@@ -223,6 +238,7 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
       clearBuyerPortRecord()
       await server.stop()
       await spendFeed.stop()
+      await telemetry?.stop()
       accounting.dispose()
       store.close()
     },

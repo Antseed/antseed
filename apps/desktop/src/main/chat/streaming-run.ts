@@ -83,16 +83,27 @@ import {
   PiConversationStore,
 } from './conversation-store.js';
 import {
+  TELEMETRY_SELLER_HASH_ENABLED,
+  attemptCountBucket,
   classifyServiceCategory,
   durationBucket,
   httpStatusBucket,
   modelPricingSnapshot,
+  offerPricingKind,
   offersAvailableBucket,
   publicModelId,
+  secsSinceAppStartBucket,
+  sellerHash,
+  telemetryHttpStatus,
+  ttftBucket,
   type TelemetryEventProperties,
 } from '../telemetry/events.js';
 import { isNativeVideoProtocol } from '@antseed/node';
-import { classifyChatRequestFailure } from '../telemetry/classify.js';
+import {
+  chatFailureHttpStatus,
+  classifyChatFailureReason,
+  classifyChatRequestFailure,
+} from '../telemetry/classify.js';
 import {
   generateConversationTitleWithModel,
   getMessageText,
@@ -136,11 +147,17 @@ export type StreamingRunContext = {
   recordFirstChatStarted?: StreamingRunContextTelemetry['recordFirstChatStarted'];
   recordChatRequestStarted?: StreamingRunContextTelemetry['recordChatRequestStarted'];
   recordChatRequestFinished?: StreamingRunContextTelemetry['recordChatRequestFinished'];
+  getChatSendTelemetryContext?: StreamingRunContextTelemetry['getChatSendTelemetryContext'];
+  recordPremiumBlocked?: StreamingRunContextTelemetry['recordPremiumBlocked'];
 };
 
 type StreamingRunContextTelemetry = Pick<
   import('./engine-types.js').RegisterPiChatHandlersOptions,
-  'recordFirstChatStarted' | 'recordChatRequestStarted' | 'recordChatRequestFinished'
+  | 'recordFirstChatStarted'
+  | 'recordChatRequestStarted'
+  | 'recordChatRequestFinished'
+  | 'getChatSendTelemetryContext'
+  | 'recordPremiumBlocked'
 >;
 
 export type StreamingRunner = ReturnType<typeof createStreamingRunner>;
@@ -170,6 +187,8 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     recordFirstChatStarted,
     recordChatRequestStarted,
     recordChatRequestFinished,
+    getChatSendTelemetryContext,
+    recordPremiumBlocked,
   } = ctx;
 
   const runStreamingPrompt = async (
@@ -456,14 +475,42 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     let automaticRetrySucceeded = false;
     let hadPartialOutput = false;
     let telemetryFinished = false;
+    // Per-attempt state: an automatic retry starts a fresh attempt, so the
+    // final outcome, partial-output split and TTFT describe the last attempt.
+    let attemptCount = 1;
+    let attemptHadOutput = false;
+    let attemptStartedAt = Date.now();
+    let firstTokenMs: number | null = null;
+    let answeringPeerId: string | null = null;
     const requestId = randomUUID();
     const requestStartedAt = Date.now();
+    const sendContext = (() => {
+      try {
+        return getChatSendTelemetryContext?.() ?? null;
+      } catch {
+        return null;
+      }
+    })();
+    const preferredPeerAtSend = preferredPeerId;
     const eligibleOffersForService = getBuyerEligibleServiceCatalogEntries().filter((entry) => (
       entry.id.trim().toLowerCase() === normalizedServiceForCatalog
       && (routeMode !== 'pinned' || entry.peerId === preferredPeerId)
     ));
     const offersForService = eligibleOffersForService.length;
     const pricing = modelPricingSnapshot(eligibleOffersForService);
+    // Distinct sellers (and free sellers) the buyer knew for this model at
+    // send; counts only, never the peers themselves.
+    const sellersForModel = getBuyerEligibleServiceCatalogEntries().filter((entry) => (
+      entry.id.trim().toLowerCase() === normalizedServiceForCatalog
+    ));
+    const sellersKnown = new Set(sellersForModel.map((entry) => entry.peerId ?? '')).size;
+    const freeSellersKnown = new Set(sellersForModel
+      .filter((entry) => offerPricingKind(entry) === 'free')
+      .map((entry) => entry.peerId ?? '')).size;
+    const markFirstToken = (): void => {
+      attemptHadOutput = true;
+      if (firstTokenMs === null) firstTokenMs = Math.max(0, Date.now() - attemptStartedAt);
+    };
     const finishTelemetry = (
       outcome: TelemetryEventProperties['chat_request_finished']['outcome'],
       reason?: ChatStreamStopReason,
@@ -474,6 +521,26 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       const failure = reason
         ? classifyChatRequestFailure(reason, rawMessage)
         : { failureCode: 'none' as const, failureStage: 'none' as const, retryable: false };
+      const failureReason = reason && outcome === 'failed'
+        ? classifyChatFailureReason(reason, rawMessage, {
+          hadPartialOutput: attemptHadOutput,
+          peersDiscoveredAtSend: sendContext?.peersDiscovered ?? sellersKnown > 0,
+          sellersKnown,
+          freeSellersKnown,
+          ...(sendContext?.buyerBalanceZero !== undefined ? { buyerBalanceZero: sendContext.buyerBalanceZero } : {}),
+        })
+        : 'none' as const;
+      const httpStatus = reason && outcome === 'failed'
+        ? telemetryHttpStatus(chatFailureHttpStatus(reason, rawMessage))
+        : undefined;
+      // The seller that answered, or for a pinned route the one that failed.
+      // Which sellers the proxy tried, whether it fell back and their tier
+      // come from the buyer's own `buyer_request_finished`, which sees every
+      // attempt; the desktop only sees the ends.
+      const lastSellerPeerId = answeringPeerId ?? (routeMode === 'pinned' ? preferredPeerAtSend : null);
+      const answeredByOther = answeringPeerId !== null
+        && preferredPeerAtSend !== null
+        && answeringPeerId !== preferredPeerAtSend;
       const payload: TelemetryEventProperties['chat_request_finished'] = {
         request_id: requestId,
         outcome,
@@ -492,9 +559,27 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
         had_partial_output: hadPartialOutput,
         duration_bucket: durationBucket(Date.now() - requestStartedAt),
         has_attachments: (attachments?.length ?? 0) > 0,
+        failure_reason: failureReason,
+        ...(httpStatus !== undefined ? { http_status: httpStatus } : {}),
+        attempt_count: attemptCountBucket(attemptCount),
+        answered_by_different_seller: automaticRetryAttempted && answeredByOther,
+        secs_since_app_start: secsSinceAppStartBucket(sendContext?.msSinceAppStart ?? 0),
+        peers_discovered_at_send: sendContext?.peersDiscovered ?? sellersKnown > 0,
+        sellers_known_bucket: offersAvailableBucket(sellersKnown),
+        free_sellers_known_bucket: offersAvailableBucket(freeSellersKnown),
+        ...(sendContext?.buyerBalanceZero !== undefined ? { buyer_balance_zero: sendContext.buyerBalanceZero } : {}),
+        // Pending privacy sign-off; also dropped by the sanitizer while off.
+        ...(TELEMETRY_SELLER_HASH_ENABLED && lastSellerPeerId ? { seller_hash: sellerHash(lastSellerPeerId) } : {}),
+        ttft_bucket: ttftBucket(firstTokenMs),
       };
       try {
         void Promise.resolve(recordChatRequestFinished(payload)).catch(() => {});
+        if (failureReason === 'model_needs_paid' && recordPremiumBlocked) {
+          void Promise.resolve(recordPremiumBlocked({
+            public_model_id: payload.public_model_id,
+            service_category: payload.service_category,
+          })).catch(() => {});
+        }
       } catch {
         // Telemetry must never affect the chat request.
       }
@@ -522,7 +607,10 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
           return;
         }
         if (update.type === 'text_delta') {
-          if (update.delta.length > 0) hadPartialOutput = true;
+          if (update.delta.length > 0) {
+            hadPartialOutput = true;
+            markFirstToken();
+          }
           sendToRenderer('chat:ai-stream-delta', {
             conversationId,
             index: update.contentIndex,
@@ -548,6 +636,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
           return;
         }
         if (update.type === 'thinking_delta') {
+          if (update.delta.length > 0) markFirstToken();
           sendToRenderer('chat:ai-stream-delta', {
             conversationId,
             index: update.contentIndex,
@@ -565,6 +654,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
           return;
         }
         if (update.type === 'toolcall_start') {
+          markFirstToken();
           const tool = extractToolCallFromPartial(update.partial, update.contentIndex);
           if (isToolArgumentsObject(tool.arguments)) {
             toolArgsById.set(tool.id, tool.arguments);
@@ -734,6 +824,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
           const proxyMeta = turnMetaQueue.shift();
           const parsedMeta = parseAssistantMetaFromSessionEvent(message, proxyMeta);
           const peerId = normalizePeerId(parsedMeta.peerId);
+          if (peerId) answeringPeerId = peerId;
           if (peerId) {
             const prevPeerId = preferredPeerByConversationId.get(conversationId);
             preferredPeerByConversationId.set(conversationId, peerId);
@@ -756,6 +847,15 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
 
       if (event.type === 'auto_retry_start') {
         automaticRetryAttempted = true;
+        // The failed attempt is superseded: Pi replays the turn, so its
+        // terminal error must not decide the request's outcome. If the retry
+        // fails too, its own message_end sets these again.
+        terminalStreamError = null;
+        terminalStreamFailure = null;
+        attemptCount += 1;
+        attemptHadOutput = false;
+        firstTokenMs = null;
+        attemptStartedAt = Date.now() + Math.max(0, event.delayMs);
         const reason = classifyChatStreamFailure({
           error: event.errorMessage,
           message: event.errorMessage,
@@ -893,6 +993,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
           if (finalAssistantCreatedAt) {
             sessionManager.appendCustomEntry(RESPONSE_ROUTE_ENTRY, { createdAt: finalAssistantCreatedAt, ...route });
           }
+          answeringPeerId = routed.peerId;
           preferredPeerByConversationId.set(conversationId, routed.peerId);
           await store.setPeer(conversationId, routed.peerId, peerLabel, routeMode);
         }

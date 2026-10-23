@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { identityPassphraseEnv, PASSPHRASE_ENV } from '@antseed/node'
+import { TELEMETRY_HOST_ENV } from '@antseed/telemetry'
 import { PASSPHRASE_STDIN_ENV } from '../cli/wallet-passphrase.js'
 import { BUYER_RESTART_EXIT_CODE, BUYER_SHUTDOWN_DEADLINE_MS } from '../proxy/buyer-proxy.js'
 
@@ -30,7 +31,8 @@ export function spawnCliBuyer(args: string[], cli: string[] = [...process.execAr
   // buyer over its stdin, not in its environment, where the OS keeps it readable for as
   // long as the process runs. ANTSEED_PASSPHRASE_FILE is inherited and read by the buyer itself.
   const passphrase = identityPassphraseEnv()[PASSPHRASE_ENV]
-  const env: NodeJS.ProcessEnv = { ...process.env, ANTSEED_SUPERVISED: '1' }
+  // ANTSEED_TELEMETRY_HOST: the buyer reports per-minute counts tagged as the gateway's, not one event per request.
+  const env: NodeJS.ProcessEnv = { ...process.env, ANTSEED_SUPERVISED: '1', [TELEMETRY_HOST_ENV]: 'gateway' }
   delete env[PASSPHRASE_ENV]
   if (passphrase) env[PASSPHRASE_STDIN_ENV] = '1'
   const child = spawn(process.execPath, [...cli, ...args], {

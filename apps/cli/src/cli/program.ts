@@ -18,6 +18,7 @@ import { registerGatewayCommands } from './commands/gateway/index.js';
 import { registerAntsCommands } from './commands/ants/index.js';
 import { registerAppsCommands } from './commands/apps/index.js';
 import { registerUpdateCommand } from './commands/update.js';
+import { registerTelemetryCommands } from './commands/telemetry.js';
 
 import pkg from '../../package.json' with { type: 'json' };
 
@@ -52,6 +53,7 @@ export function createProgram(): Command {
   registerAntsCommands(program);
   registerAppsCommands(program);
   registerUpdateCommand(program);
+  registerTelemetryCommands(program);
 
   return program;
 }

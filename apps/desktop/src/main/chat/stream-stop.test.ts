@@ -308,3 +308,24 @@ test('a plain seller 503 stays retryable', () => {
   assert.equal(reason.statusCode, 503);
   assert.equal(reason.retryable, true);
 });
+
+test('a leading SDK status on the error body is parsed as the HTTP status', () => {
+  const cases: Array<[string, number]> = [
+    ['402 You are out of AntSeed credits for this request. Add funds in the AntSeed app, or run "antseed buyer deposit <amount>" from the CLI, then retry.', 402],
+    ['402 {"error":"payment_required","code":"insufficient_deposits"}', 402],
+    ['502 Pinned peer 1d90f467689d... is not reachable right now. It may be offline, not announcing, or temporarily unreachable.', 502],
+    ['502 P2P request failed: Connection to 1d90f467 failed', 502],
+    ['502 {"error":{"type":"model_not_found","message":"No policy-allowed peer currently serves model x"}}', 502],
+  ];
+  for (const [message, status] of cases) {
+    const reason = classifyChatStreamFailure({ error: new Error(message), stopReason: 'error' });
+    assert.equal(reason.statusCode, status, message);
+  }
+});
+
+test('leading counts in prose are still not read as a status', () => {
+  for (const message of ['429 requests remaining today', '128 tokens remaining']) {
+    const reason = classifyChatStreamFailure({ error: new Error(message), stopReason: 'error' });
+    assert.equal(reason.statusCode, undefined, message);
+  }
+});
