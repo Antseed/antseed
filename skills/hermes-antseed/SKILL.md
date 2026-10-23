@@ -1,293 +1,252 @@
 ---
 name: hermes-antseed
-description: "Connect Hermes Agent to the Antseed P2P AI network. Install and fund the buyer, configure Hermes' current providers schema, and use either the local AI VPN endpoint or its authenticated public tunnel. Use when: user asks to connect Hermes to Antseed, set up a remote Hermes agent, deposit funds, or change the routed model."
+description: "Switch a running Hermes agent's model backend to the Antseed P2P AI network, safely: check the buyer proxy and funds, pick a model that actually answers, add Antseed as a provider, test it, then make it the default. Written for the Hermes agent to follow on itself. Use when: the user asks Hermes to connect to / run on Antseed, change its Antseed model, or fix an Antseed connection."
 user-invocable: true
 metadata: { "hermes-antseed": { "emoji": "🐝" } }
 ---
 
-# Connect Hermes to Antseed
+# Run Hermes on Antseed
 
-Set up Antseed as the model backend for a Hermes agent. Antseed is a P2P network of AI service providers, and its buyer proxy routes Hermes model calls through the network. Hermes can connect locally or through the AI VPN's authenticated public endpoint.
+Antseed is a peer-to-peer market for AI inference. A **buyer proxy** runs on the user's machine at
+`http://127.0.0.1:8377/v1` (OpenAI-compatible), finds sellers, and pays them per request in USDC from the user's
+Antseed balance. You'll point Hermes at that proxy.
 
-## Picture
+## Rules (read first)
 
-```
-Hermes agent  →  local buyer proxy or HTTPS tunnel  →  Antseed P2P  →  Provider peer
-```
+You are changing the config of the model you're running on. A mistake can leave the user with an agent that can't
+reply. So:
 
-- Buyer proxy discovers providers via DHT, opens a payment channel per seller, signs per-request vouchers.
-- Exposes an OpenAI-compatible `/v1/*` endpoint configured under `providers.<name>` in `~/.hermes/config.yaml`.
-- The model ID Hermes passes is an id or alias from Antseed's network-wide `/v1/models` catalog (e.g. `minimax-m2.7`). The proxy resolves it to the selected seller's actual advertised service id.
+1. **Snapshot first, and note what you're switching from** (step 1).
+2. **Add Antseed next to the current provider, test it, and only then switch** (steps 6 and 7).
+3. **Change config only with `hermes config set`, run from the terminal tool.** Don't open, edit, copy or
+   overwrite `config.yaml` or `.env` with file tools or `cp`: the `hermes` CLI always targets the right Hermes home
+   (yours may not be `~/.hermes`, e.g. with profiles), and direct writes trigger approval prompts. Don't read
+   `.env`; it holds secrets. Never put a model id in a config *key* path
+   (`providers.antseed.models.kimi-k2.6…`), because the dots get split into nested keys. Model ids are fine as
+   *values* (`hermes config set model.default kimi-k2.6`).
+4. **Don't run `antseed buyer start` in your terminal tool.** It runs forever and dies with your session. If the
+   buyer isn't running, install it as a background service (step 3).
+5. **Don't restart your own gateway.** At the end, ask the user to send `/restart` (step 8).
+6. **No `sudo`, no deleting files.** Nothing here needs either.
+7. 🙋 marks steps that need the user. Stop, ask, and wait for their answer.
 
-When Hermes runs on the buyer machine, use the local endpoint. When it runs elsewhere, use the authenticated endpoint generated under **AI VPN → Agents → Define your internet-accessible Antseed endpoint**. Never expose port `8377` directly to the internet.
+## Step 0 — Same machine or remote? 🙋 only if unclear
 
-## Before you start
+If Hermes and the Antseed buyer (CLI or desktop app) run on the same computer, follow the steps as written. If
+Hermes runs on a server and the buyer runs on the user's own computer, read **Remote Hermes** at the end first.
 
-Ask the user anything you don't already have:
-
-- **Where Hermes is running** — beside the AI VPN/buyer proxy, or on a remote host that will use the AI VPN's authenticated HTTPS endpoint.
-- **Chain** — `base-mainnet` for real funds, `base-sepolia` for testnet. Default to `base-mainnet` unless the user says otherwise.
-
----
-
-## Install the CLI
-
-```bash
-npm install -g @antseed/cli
-antseed --version
-```
-
-Requires Node.js 20+. Latest version: `npm view @antseed/cli version`. A global `npm install` can take 1–3 minutes — use a long timeout.
-
-## Chain configuration
-
-Always create `~/.antseed/config.json` with `payments.crypto.chainId` set. Without it, the `antseed buyer deposit` CLI command fails with "No crypto payment configuration found" and the buyer proxy cannot open payment channels.
-
-```json
-{
-  "network": {},
-  "buyer": {
-    "maxPricing": {
-      "defaults": {
-        "inputUsdPerMillion": 100,
-        "outputUsdPerMillion": 100
-      }
-    }
-  },
-  "payments": {
-    "preferredMethod": "crypto",
-    "crypto": {
-      "chainId": "base-mainnet"
-    }
-  }
-}
-```
-
-**Do not hardcode contract addresses.** `@antseed/node` resolves Deposits, Channels, USDC, and the RPC URL from `chainId` via its built-in chain-config presets. Hardcoded addresses drift when contracts redeploy; the preset is the source of truth.
-
-To switch chains later, edit only `chainId` (`base-mainnet` ↔ `base-sepolia`) and restart the buyer.
-
-## Identity and the buyer wallet
-
-The buyer needs an EVM identity — a 32-byte secp256k1 private key supplied via the `ANTSEED_IDENTITY_HEX` env var (64 hex chars, optional `0x` prefix), or already present in `~/.antseed/identity.key`.
-
-The EVM address derived from that key is your **buyer wallet**. It only needs:
-
-- **USDC on the target chain** — used as payment channel reserves, deposited via the payments portal
-
-**The buyer wallet does NOT need ETH or any native token for gas.** All on-chain transactions (channel reserve, settle, close) are initiated by the seller. The buyer only signs off-chain messages.
-
-**Never move `identity.key` off the host that runs the buyer.** The hot wallet stays put. Funding happens via the payments portal running on that host (see next section), not by exporting the key to a wallet app on another machine.
-
-Check balance any time:
+## Step 1 — Snapshot and note the current model
 
 ```bash
-antseed buyer balance
+hermes backup --quick --label before-antseed
+echo "provider: $(hermes config get model.provider)  model: $(hermes config get model.default)"
 ```
 
-## Running the buyer proxy
+Keep the snapshot id it prints (e.g. `20261021-215105-before-antseed`) and the current provider and model: these
+are OLD_PROVIDER and OLD_MODEL, your way back.
 
-Foreground, for a laptop or a quick test:
+## Step 2 — Antseed CLI
 
 ```bash
-antseed buyer start
+antseed --version || echo "MISSING"
 ```
 
-For an isolated Hermes buyer, use a dedicated data directory. This is where Antseed writes `buyer.state.json`, SQLite databases, payment-channel state, and the fallback `identity.key`:
+If missing: `node --version` must be 20 or newer. Then run `npm install -g @antseed/cli`; it can take 1–3
+minutes, so use a long timeout. If Node isn't installed, 🙋 ask the user to install Node.js 20+ (nodejs.org) and
+tell you when it's done.
+
+## Step 3 — Is the buyer running?
 
 ```bash
-export BUYDIR="$HOME/.antseed-buyer-hermes"
-mkdir -p "$BUYDIR"
-ANTSEED_DATA_DIR="$BUYDIR" antseed --data-dir "$BUYDIR" buyer start
+curl -sf -m 5 http://127.0.0.1:8377/v1/models >/dev/null && echo RUNNING || echo DOWN
 ```
 
-Advanced: if Hermes must use a non-default proxy port:
+**RUNNING** (CLI service or desktop app): go to step 4.
+
+**DOWN**: install the buyer as a background service that starts at login and restarts if it crashes.
+
+macOS (launchd, no sudo):
 
 ```bash
-antseed --data-dir "$BUYDIR" buyer start --port 5005
+ANTSEED_BIN="$(command -v antseed)"; NODE_DIR="$(dirname "$(command -v node)")"
+mkdir -p "$HOME/Library/LaunchAgents" "$HOME/.antseed/logs"
+cat > "$HOME/Library/LaunchAgents/com.antseed.buyer.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.antseed.buyer</string>
+  <key>ProgramArguments</key><array><string>$ANTSEED_BIN</string><string>buyer</string><string>start</string></array>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>$NODE_DIR:/usr/local/bin:/usr/bin:/bin</string></dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>$HOME/.antseed/logs/buyer.log</string>
+  <key>StandardErrorPath</key><string>$HOME/.antseed/logs/buyer.log</string>
+</dict></plist>
+EOF
+plutil -lint "$HOME/Library/LaunchAgents/com.antseed.buyer.plist" && launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.antseed.buyer.plist"
 ```
 
-Persistent (Linux, systemd):
+Linux (systemd user service, no sudo):
 
 ```bash
-sudo tee /etc/systemd/system/antseed-buyer.service > /dev/null <<EOF
+ANTSEED_BIN="$(command -v antseed)"; NODE_DIR="$(dirname "$(command -v node)")"
+mkdir -p "$HOME/.config/systemd/user"
+cat > "$HOME/.config/systemd/user/antseed-buyer.service" <<EOF
 [Unit]
-Description=Antseed Buyer Proxy
+Description=Antseed buyer proxy
 After=network-online.target
-Wants=network-online.target
 
 [Service]
-Type=simple
-User=$USER
-Environment=ANTSEED_IDENTITY_HEX=<64-hex-no-0x>
-Environment=ANTSEED_DATA_DIR=%h/.antseed-buyer-hermes
-ExecStart=/usr/bin/env antseed --data-dir %h/.antseed-buyer-hermes buyer start
-Restart=on-failure
+ExecStart=$ANTSEED_BIN buyer start
+Environment=PATH=$NODE_DIR:/usr/local/bin:/usr/bin:/bin
+Restart=always
 RestartSec=10
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
 EOF
-
-sudo systemctl daemon-reload
-sudo systemctl enable --now antseed-buyer
+systemctl --user daemon-reload && systemctl --user enable --now antseed-buyer
 ```
 
-The service user must own the `~/.antseed/` directory that holds `config.json` and `identity.key`.
+On a Linux server, tell the user that keeping the service up after they log out needs a one-time
+`sudo loginctl enable-linger $USER` from them (🙋, don't run it yourself).
 
-The buyer startup log prints the Deposits/Channels addresses and RPC URL it bound to — glance at those to confirm it's on the chain you expected.
-
-## Funding the buyer
-
-`antseed buyer deposit` prints the buyer's funding address and a QR code (an EIP-681 payment request), then watches the hot wallet and deposits incoming USDC into the buyer's credits automatically: the node signs a gasless EIP-3009 authorization and a permissionless relayer submits the transaction on-chain for a fixed ~$0.05 USDC fee. The buyer never needs ETH. (The old `antseed payments` web portal is retired.)
+The full path to `node` matters: with nvm, Node isn't on the service's default PATH. Then wait for the buyer to
+come up (the first start can take about a minute to find sellers):
 
 ```bash
-antseed buyer deposit              # address + QR, then waits and auto-deposits incoming USDC
-antseed buyer deposit --no-watch   # just print the address + QR
+for i in $(seq 1 40); do curl -sf -m 3 http://127.0.0.1:8377/v1/models >/dev/null && { echo RUNNING; break; }; sleep 3; done
 ```
 
-Send USDC **on the Base network only** to the printed address — from any wallet, an exchange withdrawal, or a card on-ramp. While `antseed buyer start` is running, incoming hot-wallet USDC is swept into the deposits balance automatically even without `antseed buyer deposit` open (config `buyer.autoSweep`, default `true`). `antseed buyer sweep` triggers one sweep manually.
+Still down: show the user the last 30 lines of `~/.antseed/logs/buyer.log` (macOS) or
+`journalctl --user -u antseed-buyer -n 30` (Linux) and stop.
 
-After funding, confirm with `antseed buyer balance` — the "Deposits Account → Available" line should reflect the deposit (net of the relay fee). A first-ever deposit must net at least 1 USDC after the fee.
-
-### When Hermes runs on a remote host
-
-No port forwarding is needed anymore: `antseed buyer deposit` is plain terminal output, so run it inside the SSH session (the QR renders in the terminal) or just copy the printed address. The running buyer daemon on the remote host sweeps the funds automatically once they land.
-
-
-## Choose the endpoint
-
-For Hermes running on the same machine as the AI VPN or buyer proxy:
-
-```bash
-export ANTSEED_BASE_URL="http://127.0.0.1:8377/v1"
-export ANTSEED_API_KEY="antseed-p2p"
-```
-
-The local buyer proxy does not validate the key, but Hermes requires a non-empty value.
-
-For Hermes running on another machine:
-
-1. Open **Agents** in the AI VPN.
-2. Under **Define your internet-accessible Antseed endpoint**, configure and start ngrok or Cloudflare Tunnel.
-3. Copy the displayed **OpenAI base URL** and generated **API key**.
-4. Set them on the Hermes machine:
-
-```bash
-export ANTSEED_BASE_URL="https://your-endpoint.example/v1"
-export ANTSEED_API_KEY="antseed_your_generated_key"
-```
-
-The public endpoint requires `Authorization: Bearer <API_KEY>`. The tunnel accepts only the supported model API routes and forwards them to the local buyer proxy.
-
-## Model routing
-
-Pinning a peer is optional. A request that names only a model selects the highest-ranked eligible offer under the shared Price + Trust preferences, including pricing, cached-input pricing coverage, recent failures, cooldowns, and seller access rules. Peer-attributed retryable failures can advance to the next ranked offer. Explicitly pinned requests never fail over.
-
-List every model on the network — `GET /v1/models` is answered locally and covers the whole network, independent of any pinned peer:
-
-```bash
-curl -s "$ANTSEED_BASE_URL/models" -H "Authorization: Bearer $ANTSEED_API_KEY" | jq '.data[].id'
-curl -s "$ANTSEED_BASE_URL/models?type=text" -H "Authorization: Bearer $ANTSEED_API_KEY"
-curl -s "$ANTSEED_BASE_URL/models?type=images" -H "Authorization: Bearer $ANTSEED_API_KEY"
-curl -s "$ANTSEED_BASE_URL/models/<model-id>" -H "Authorization: Bearer $ANTSEED_API_KEY"
-antseed network browse                                      # table of peers and their services
-```
-
-Close aliases (e.g. `claude-opus-5` / `opus-5` / `opus5`) merge into one entry with an `aliases` array and a `peers` array of every seller serving the model in routing-preference order. Duplicate offers from one seller collapse to its cheapest matching service.
-
-### Optional: force a specific seller
-
-Three pin mechanisms override auto-selection (precedence: header > model prefix > session pin):
-
-```bash
-antseed network peer <peerId>                       # full details for one peer
-antseed buyer connection set --peer <peerId>        # session pin
-```
-
-Alternatively, pass `x-antseed-pin-peer: <peerId>` as a per-request header, or prefix the model with `<peerId>@<service-id>`.
-
-Session pins are stored in `buyer.state.json`, survive buyer-proxy restarts, and are reloaded by the running proxy. A systemd `--peer <peerId>` flag is another hard-pin option for deployments that want the route declared directly in `ExecStart=`.
-
-## Wiring Hermes to the buyer proxy
-
-Register Antseed as a named provider in `~/.hermes/config.yaml`. Current Hermes releases use the `providers:` mapping; the older `custom_providers:` list is legacy and auto-migrated by Hermes.
-
-```yaml
-model:
-  provider: antseed
-  default: antseed
-  base_url: ""
-  api_mode: chat_completions
-
-providers:
-  antseed:
-    name: Antseed
-    api: ${ANTSEED_BASE_URL}
-    api_key: ${ANTSEED_API_KEY}
-    transport: chat_completions
-    extra_headers:
-      originator: hermes
-    default_model: antseed
-    models:
-      antseed:
-        context_length: 200000
-      minimax-m2.7:
-        context_length: 200000
-      kimi-k2.6:
-        context_length: 256000
-```
-
-Notes:
-
-- Hermes expands `${ANTSEED_BASE_URL}` and `${ANTSEED_API_KEY}` placeholders at runtime. Literal values also work.
-- For a local connection, the API key can be any non-empty placeholder. For a public endpoint, it must be the generated `antseed_...` key from the AI VPN.
-- `transport: chat_completions` selects the OpenAI Chat Completions wire format supported by Hermes and the buyer proxy.
-- `models` is a mapping in current Hermes releases. Keep `antseed` to follow the current AI VPN selection and add concrete IDs returned by `GET $ANTSEED_BASE_URL/models` when needed.
-- `model.provider: antseed` selects the named provider. `model.default: antseed` follows the current AI VPN model picker rather than pinning a seller.
-
-### Auxiliary calls when using openai-responses models
-
-Some sellers serve models only through the `openai-responses` protocol, which requires streaming. Hermes auxiliary functions (title generation, context compression, etc.) make non-streaming requests and will fail with `HTTP 400: Stream must be set to true` if they hit an openai-responses-only offer.
-
-Fix: point Hermes auxiliaries at a `chat_completions` model from the same or a different peer. In `~/.hermes/config.yaml`, override the auxiliary providers that make non-streaming calls:
-
-```yaml
-auxiliary:
-  title_generation:
-    provider: antseed
-    model: minimax-m2.7   # chat_completions protocol — no streaming requirement
-  compression:
-    provider: antseed
-    model: minimax-m2.7
-```
-
-Check the available protocols with `GET /v1/models/<model-id>` and inspect each `peers[]` offer. Use `antseed network peer <peerId>` only when you need the full metadata for one seller.
-
-### Swapping the routed model
-
-Edit `model.default` (and the provider's `models` mapping if needed) and restart the Hermes systemd unit — the buyer proxy stays up, no CLI change, no contract call. Model-only requests auto-select a peer that serves the new model. Only if you pinned a peer that doesn't serve it do you need to clear the pin (`antseed buyer connection clear`) or re-pin to one that does:
-
-```bash
-sudo systemctl restart hermes
-sudo journalctl -u hermes --no-pager -n 20
-```
-
-On a remote host, the same two commands prefixed with `ssh user@host`.
-
-## Sanity check
+## Step 4 — Is there money to pay sellers? 🙋 if not
 
 ```bash
 antseed buyer balance
-curl -s "$ANTSEED_BASE_URL/models" \
-  -H "Authorization: Bearer $ANTSEED_API_KEY" | head
 ```
 
-Then send a prompt through Hermes and watch the buyer log — you should see a channel open on the first request, then per-request voucher signing.
+Read the `Deposits Account → Available` line. **0.5 USDC or more**: go to step 5. Less than that: stop and get the
+funding address:
 
-## References
+```bash
+antseed buyer deposit --no-watch
+```
 
-- Antseed integration page: `https://antseed.com/integrations/hermes/`
-- Antseed public tunnel guide: `https://antseed.com/docs/tunnels`
-- Hermes Agent provider documentation: `https://hermes-agent.nousresearch.com/docs/integrations/providers`
-- Hermes Agent source: `https://github.com/NousResearch/hermes-agent`
+Send the user the address with this message: "To pay for AI requests, add funds to Antseed: send USDC **on the Base
+network** to `<address>` (first deposit at least $1), or add funds by card in the Antseed desktop app. Tell me when
+it's sent." The running buyer picks up the deposit automatically. Re-check `antseed buyer balance` when they reply.
+The buyer never needs ETH for gas. Never ask for or handle private keys.
+
+## Step 5 — Pick models that actually answer
+
+A model being listed in `/v1/models` doesn't mean a seller you can use is serving it right now. Test with a real
+non-streaming request. Non-streaming matters, because Hermes' background helpers (titles, compression) don't
+stream.
+
+```bash
+try_model() {
+  curl -s -m 90 http://127.0.0.1:8377/v1/chat/completions \
+    -H 'Content-Type: application/json' -H 'Authorization: Bearer antseed-p2p' \
+    -d "{\"model\":\"$1\",\"stream\":false,\"max_tokens\":8,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with: ok\"}]}" \
+  | grep -q '"choices"' && echo "OK   $1" || echo "FAIL $1"
+}
+for m in kimi-k3 kimi-k2.6 glm-5.1 deepseek-v4-pro minimax-m2.7 deepseek-v4-flash; do try_model "$m"; done
+```
+
+If the user named a model, test that one first. More ids: `curl -s http://127.0.0.1:8377/v1/models` (each entry's
+`peers` list shows sellers and prices). Each test costs a fraction of a cent.
+
+- **MAIN** = the user's choice if it says OK, otherwise the first OK in the list above (strongest first).
+- **HELPER** = the first OK of `minimax-m2.7` or `deepseek-v4-flash` (cheap), otherwise MAIN.
+- Don't use the id `antseed`. It means "whatever is picked in the desktop app" and fails with `no_default_route`
+  unless the user runs the desktop app and has picked a model there.
+
+No model says OK: run `antseed buyer status` and check the balance. If it's funded, the network may be thin right
+now. Tell the user and stop; nothing has been changed yet.
+
+## Step 6 — Add Antseed as a provider, then test it before switching
+
+```bash
+hermes config set ANTSEED_API_KEY antseed-p2p                  # stored in Hermes' .env; any non-empty value works locally
+hermes config set providers.antseed.name Antseed
+hermes config set providers.antseed.base_url http://127.0.0.1:8377/v1
+hermes config set providers.antseed.key_env ANTSEED_API_KEY
+hermes config set providers.antseed.api_mode chat_completions
+hermes config set providers.antseed.default_model MAIN         # replace MAIN with the model from step 5
+```
+
+Test it while your current provider is still the default:
+
+```bash
+hermes -z "Reply with exactly: antseed-ok" --provider antseed -m MAIN
+```
+
+It must print `antseed-ok`. If it doesn't, don't switch. Check **Troubleshooting**, fix, and re-test. If you're
+stuck, remove the half-done provider with `hermes config unset providers.antseed` and report the error to the
+user.
+
+## Step 7 — Make Antseed the default
+
+```bash
+hermes config set model.provider antseed
+hermes config set model.default MAIN
+hermes config set model.base_url ""
+hermes config set model.api_mode chat_completions
+hermes config set auxiliary.title_generation.provider antseed
+hermes config set auxiliary.title_generation.model HELPER
+hermes config set auxiliary.compression.provider antseed
+hermes config set auxiliary.compression.model HELPER
+hermes -z "Reply with exactly: default-ok"
+```
+
+It must print `default-ok`. If it doesn't, switch back right away and report the error:
+
+```bash
+hermes config set model.provider OLD_PROVIDER
+hermes config set model.default OLD_MODEL
+```
+
+## Step 8 — Wrap up 🙋
+
+Run `antseed buyer metering` (a channel should show your test requests) and `antseed buyer balance`. Then send the
+user, briefly:
+
+- the model you're now on (MAIN) and the helper model (HELPER)
+- their Available balance
+- that each request is paid per use from that balance
+- how to undo: send `/snapshot restore <snapshot id from step 1>`, then `/restart`
+- the last step: **"Send `/restart` so I come back on Antseed."** (In a terminal-only session, starting a new
+  `hermes` session is enough.) Don't restart the gateway yourself.
+
+## Remote Hermes (buyer on another computer)
+
+Never expose port 8377 to the internet. On the computer that runs the buyer, the user opens the Antseed desktop
+app → **Agents** → **Define your internet-accessible Antseed endpoint**, starts the public endpoint from there, and sends
+you the **OpenAI base URL** and the generated **`antseed_…` API key** (🙋). Then:
+
+- Skip steps 2–4 on the Hermes host. Funding and the buyer live on the user's computer, so ask them to confirm it's
+  funded.
+- In step 5, replace `http://127.0.0.1:8377/v1` with their URL and `Bearer antseed-p2p` with `Bearer <their key>`.
+- In step 6, use their URL for `providers.antseed.base_url` and their key for `ANTSEED_API_KEY`.
+
+## Changing models later
+
+Repeat step 5 for the new model, then `hermes config set model.default <model>` and ask the user to send
+`/restart`. The buyer stays up and picks a seller for the new model automatically.
+
+Pinning a seller is optional and turns off failover: `antseed buyer connection set --peer <peerId>`, or
+`<peerId>@<model>` as the model id. Undo with `antseed buyer connection clear`.
+
+## Troubleshooting
+
+| Error | Meaning | Fix |
+|---|---|---|
+| `curl: (7) Failed to connect … 8377` | Buyer not running | Step 3 |
+| `no_default_route` | Model id `antseed` used without a model picked in the desktop app | Use a concrete id from step 5 |
+| `model_not_found … No policy-allowed peer currently serves model` | No seller that meets the trust/price policy serves it right now | Pick another OK model from step 5 |
+| `HTTP 400: Stream must be set to true` | Model served only over the streaming Responses protocol | Choose MAIN/HELPER that passed step 5 (non-streaming) |
+| `402` / `insufficient_deposits` | Balance too low or tied up in channel reserves | Step 4; `antseed buyer balance` shows Available vs Reserved |
+| `Unknown provider 'antseed'` | Provider block missing or keys misspelled | `hermes config get providers.antseed`, redo step 6 |
+| Hermes still answers with the old model | Gateway hasn't reloaded | User sends `/restart` |
