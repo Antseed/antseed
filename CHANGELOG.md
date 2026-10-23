@@ -8,6 +8,8 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Changed
 
+- Website: the docs have search. Press ⌘K (Ctrl+K), `/`, or the navbar search button to open it. Results update as you type, tolerate typos, and cover every docs page and section. The index is built with the site and searched in the browser, with no external service.
+- Website: the **Set up gateway** button in the navbar has its right padding back.
 - CLI buyer: the local buyer proxy only answers local clients. A request whose Host is a hostname other than `localhost`, or that a browser sends from a page other than a local one (an `Origin` other than a loopback address or `file://`, or a cross-site fetch), gets `403 non_local_request`. CLI tools, SDKs and local pages are unaffected, and IP-address hosts (such as the WSL relay's) still work. The API-key gateway and system proxy no longer pass the client's `Origin`, `Referer` and `Sec-Fetch-*` headers on to the buyer.
 - Desktop: the chat's per-seller usage stats are read through the main process instead of from the page.
 
