@@ -42,8 +42,8 @@ hermes backup --quick --label before-antseed
 echo "provider: $(hermes config get model.provider)  model: $(hermes config get model.default)"
 ```
 
-Keep the snapshot id it prints (e.g. `20261021-215105-before-antseed`) and the current provider and model: these
-are OLD_PROVIDER and OLD_MODEL, your way back.
+Keep the snapshot id it prints (e.g. `20261021-215105-before-antseed`) and tell the user the current provider and
+model.
 
 ## Step 2 — Antseed CLI
 
@@ -189,6 +189,21 @@ user.
 
 ## Step 7 — Make Antseed the default
 
+First save the 8 settings this step changes, so you can put each one back exactly (a setting that wasn't set is
+recorded as `unset`):
+
+```bash
+mkdir -p "$HOME/.antseed"
+for k in model.provider model.default model.base_url model.api_mode \
+         auxiliary.title_generation.provider auxiliary.title_generation.model \
+         auxiliary.compression.provider auxiliary.compression.model; do
+  if v="$(hermes config get "$k" 2>/dev/null </dev/null)"; then printf 'set\t%s\t%s\n' "$k" "$v"; else printf 'unset\t%s\n' "$k"; fi
+done > "$HOME/.antseed/hermes-before-antseed.tsv"
+cat "$HOME/.antseed/hermes-before-antseed.tsv"
+```
+
+Then switch:
+
 ```bash
 hermes config set model.provider antseed
 hermes config set model.default MAIN
@@ -201,12 +216,17 @@ hermes config set auxiliary.compression.model HELPER
 hermes -z "Reply with exactly: default-ok"
 ```
 
-It must print `default-ok`. If it doesn't, switch back right away and report the error:
+It must print `default-ok`. If it doesn't, put all 8 settings back right away:
 
 ```bash
-hermes config set model.provider OLD_PROVIDER
-hermes config set model.default OLD_MODEL
+while IFS=$'\t' read -r state k v; do
+  if [ "$state" = set ]; then hermes config set "$k" "$v" </dev/null; else hermes config unset "$k" </dev/null 2>/dev/null || true; fi
+done < "$HOME/.antseed/hermes-before-antseed.tsv"
+hermes -z "Reply with exactly: restored-ok"
 ```
+
+It must print `restored-ok`; then report the error to the user. If even that fails, tell the user to send
+`/snapshot restore <snapshot id from step 1>` and then `/restart`.
 
 ## Step 8 — Wrap up 🙋
 

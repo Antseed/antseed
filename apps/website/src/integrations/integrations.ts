@@ -790,7 +790,16 @@ hermes -z "Reply with exactly: antseed-ok" --provider antseed -m kimi-k3`,
       {
         kind: 'code',
         language: 'bash',
-        snippet: `hermes config set model.provider antseed
+        snippet: String.raw`# Save the 8 settings this step changes, to undo it exactly:
+mkdir -p "$HOME/.antseed"
+for k in model.provider model.default model.base_url model.api_mode \
+         auxiliary.title_generation.provider auxiliary.title_generation.model \
+         auxiliary.compression.provider auxiliary.compression.model; do
+  if v="$(hermes config get "$k" 2>/dev/null </dev/null)"; then printf 'set\t%s\t%s\n' "$k" "$v"; else printf 'unset\t%s\n' "$k"; fi
+done > "$HOME/.antseed/hermes-before-antseed.tsv"
+cat "$HOME/.antseed/hermes-before-antseed.tsv"
+
+hermes config set model.provider antseed
 hermes config set model.default kimi-k3
 hermes config set model.base_url ""
 hermes config set model.api_mode chat_completions
@@ -801,7 +810,18 @@ hermes config set auxiliary.compression.model minimax-m2.7
 
 hermes -z "Reply with exactly: default-ok"`,
         note:
-          'Makes Antseed the default. If it does not print `default-ok`, switch back with `hermes config set model.provider <old provider>` and `hermes config set model.default <old model>`.',
+          'Makes Antseed the default. If it does not print `default-ok`, put all 8 settings back with the next block.',
+      },
+      {
+        kind: 'code',
+        language: 'bash',
+        snippet: String.raw`# Only if default-ok failed: restore the saved settings
+while IFS=$'\t' read -r state k v; do
+  if [ "$state" = set ]; then hermes config set "$k" "$v" </dev/null; else hermes config unset "$k" </dev/null 2>/dev/null || true; fi
+done < "$HOME/.antseed/hermes-before-antseed.tsv"
+hermes -z "Reply with exactly: restored-ok"`,
+        note:
+          'Puts back each setting exactly as it was, including ones that were not set before. It must print `restored-ok`. If it does not, send `/snapshot restore <id>` in chat (the id from the backup), then `/restart`.',
       },
       {
         kind: 'gui',
