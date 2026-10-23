@@ -11,6 +11,7 @@ import { Link } from '../lib/router';
 import { Steps } from './Steps';
 import { useNow } from './Chrome';
 import { LinkXPanel } from './Social';
+import { UsdHint } from './UsdHint';
 
 const dayMonth = (ms: number) => new Date(ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
 const WEEK_MS = 7 * 86_400_000;
@@ -83,11 +84,13 @@ export function YourPoints({ net }: { net: Network | undefined }) {
             <span className="k">ANTS by Thursday</span>
             <span className="v">≈ {fmt(range?.expected ?? a?.estAntsNow ?? 0)}</span>
             <small>{range && range.low < range.now - 0.5 ? `likely ${fmt(range.low)} – ${fmt(range.now)}` : 'at this week’s pace'}</small>
+            <UsdHint ants={range?.expected ?? a?.estAntsNow ?? 0} className="usd-dark" />
           </div>
           <div className="yp-tile">
             <span className="k">Ready to claim</span>
             <span className={`v${loading ? ' skeleton' : ''}`}>{fmt(claimableAnts)}</span>
             <small>ANTS from past weeks</small>
+            <UsdHint ants={claimableAnts} />
           </div>
         </div>
         {range && net && range.expected >= net.pots.buyer * 0.05 - 0.5 && <div className="notice">At this week's pace you'll pass 5% of the buyer pot, so your claim will be capped at 5%. Anything above that goes to the reserve.</div>}

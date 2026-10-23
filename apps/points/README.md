@@ -24,6 +24,7 @@ Public X profiles live at `/u/<handle>` with a share card. Old paths (`/me`, `/s
 - Static React app. Every number is read in the visitor's browser from **Antscan** (REST + GraphQL) and **Base** (a few contract reads). No server is needed for any of that.
 - Estimates for "by Thursday" use the same maths everywhere (`src/lib/points.ts`, tested): this week's pace projected to the end of the week, capped at 5% per account like the contract.
 - Model discounts come from OpenRouter's public model list, matched the same way as the website's pricing card.
+- "≈ $X" under ANTS amounts uses the last lANTS sale on antseedmarkets (USDC paid ÷ ANTS in the position). It's a thin market of locked positions, so it's labelled as a rough guide.
 - **Only X sign-in needs a backend.** The code in `functions/` is a local stand-in and stores wallet ↔ X links, which the foundation can't do in production. See `BACKEND.md` for the endpoints and the store-nothing alternative. Without a backend, the X parts hide themselves and everything else works.
 
 ## Run it
@@ -38,7 +39,7 @@ pnpm --filter @antseed/points build        # → dist/
 ## Deploy
 
 - Serve `dist/` as a static site, with **every unknown path falling back to `index.html`** (so `/u/<handle>` and old links work).
-- Copy the security headers from `public/_headers` (Cloudflare format) into whatever server is used. The CSP allows Antscan, the Base RPCs, WalletConnect, OpenRouter and the font hosts.
+- Copy the security headers from `public/_headers` (Cloudflare format) into whatever server is used. The CSP allows Antscan, the Base RPCs, WalletConnect, OpenRouter, antseedmarkets and the font hosts.
 - The domain is **antseedpoints.com** (already in `index.html`'s share tags). If X sign-in ships: the X app's callback URL is `https://antseedpoints.com/api/auth/x/callback`, and `PUBLIC_URL=https://antseedpoints.com`.
 - Optional: `VITE_ANTSCAN_URL` points the site at another Antscan.
 

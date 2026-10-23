@@ -7,6 +7,7 @@ import { PixelAnt } from './Ant';
 import { ProviderPicker } from './ProviderPicker';
 import { DownloadVpnButton } from './DownloadVpn';
 import { InfoTip } from './InfoTip';
+import { UsdHint } from './UsdHint';
 
 const PRESETS = [10, 50, 250, 1000];
 
@@ -59,6 +60,7 @@ export function HeroCalc({ net }: { net: Network | undefined }) {
         <span>{fmt(est?.points ?? 0)} points ≈</span>
         <b className={`num${!net ? ' skeleton' : ''}`} style={{ color: boost === 0 && p ? '#F29A8C' : 'var(--seed)' }}>{fmt(range?.expected ?? est?.ants ?? 0)} ANTS</b>
       </div>
+      <UsdHint ants={range?.expected ?? est?.ants ?? 0} className="usd-dark" />
       <div className="hc-range" aria-label="Likely range">
         {range && range.now > 0 && (
           <div className="hc-bar"><i style={{ left: `${pct(range.low, range.now)}%`, right: 0 }} /><b style={{ left: `${pct(range.expected, range.now)}%` }} /></div>

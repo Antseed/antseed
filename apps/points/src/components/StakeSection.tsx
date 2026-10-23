@@ -8,6 +8,7 @@ import { useAccount, type Network } from '../lib/model';
 import { MAX_LOCK_EPOCHS, blendedStakerEstimate, boostFromWeight, epochStartMs } from '../lib/points';
 import { onStakeProviderPicked } from '../lib/stakePick';
 import { Steps } from './Steps';
+import { UsdHint } from './UsdHint';
 
 /** ANTS can't move until the token launches; until then only earned rewards can be staked. */
 const TGE_MS = Date.parse('2026-11-04T00:00:00Z');
@@ -152,6 +153,7 @@ export function StakeSection({ net }: { net: Network | undefined }) {
             <div>
               <div className={`stk-big${!net ? ' skeleton' : ''}`}>≈ {fmt(est)} ANTS</div>
               <span>a week from the staker pot</span>
+              <UsdHint ants={est} className="usd-dark" />
             </div>
             <ul className="stk-says">
               {provider && (
