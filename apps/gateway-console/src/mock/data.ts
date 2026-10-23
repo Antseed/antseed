@@ -113,6 +113,12 @@ export function seed() {
     // Gamma is attested end to end, Beta at the seller node only, Epsilon not checked yet.
     teeScope: index === 2 ? 'end-to-end' as const : index === 1 ? 'seller-node' as const : null,
     stakeAnts: index < 5 ? `${(index + 1) * 2500}.0` : null,
+    agentId: 86_900 + index,
+    // Delta's free models come with the default staked tiers.
+    freeTier: index === 3 ? {
+      base: { maxRequestsPerAddress: 1000, maxRequestsPerIp: null, windowMs: 86_400_000 },
+      stakeTiers: [{ minPower: 520_000, multiplier: 5 }, { minPower: 2_600_000, multiplier: 20 }, { minPower: 10_400_000, multiplier: 'unlimited' as const }],
+    } : null,
     usageShareBps: [1200, 800, 450, 300, 200, null, 90, 600][index]!,
     washFlagged: index === 6,
     lastSeen: now - index * 60_000,
@@ -252,6 +258,7 @@ export function mockNetworkModels(peers: readonly Peer[]): NetworkModel[] {
         protocols: service.apiProtocols ?? ['openai-chat-completions'], inputUsdPerMillion: service.inputUsdPerMillion,
         outputUsdPerMillion: service.outputUsdPerMillion, cachedInputUsdPerMillion: service.cachedInputUsdPerMillion, usdPerImage: null,
         contextLength: service.service.includes('llama') ? 128_000 : service.service.includes('qwen') ? 262_144 : null, free,
+        agentId: peer.agentId, freeTier: peer.freeTier,
         reputationScore: peer.reputationScore, trustScore: peer.trustScore, verified: peer.verified, verificationLinks: peer.verificationLinks, tee: peer.tee, teeScope: peer.teeScope, latencyMsP50: peer.latencyMsP50, firstTokenMsP50: peer.firstTokenMsP50, tokensPerSecondP50: peer.tokensPerSecondP50,
       })
       offers.set(service.service, list)
@@ -259,7 +266,7 @@ export function mockNetworkModels(peers: readonly Peer[]): NetworkModel[] {
   }
   const media = (id: string, type: 'image' | 'video', price: number): [string, NetworkModelOffer[], 'image' | 'video'] => [id, peers.slice(0, 2).map((peer, index) => ({
     peerId: peer.peerId, displayName: peer.displayName, serviceId: id, provider: 'fal', protocols: [], inputUsdPerMillion: null, outputUsdPerMillion: null,
-    cachedInputUsdPerMillion: null, usdPerImage: { min: price * (index + 1), max: price * (index + 1) }, contextLength: null, free: false,
+    cachedInputUsdPerMillion: null, usdPerImage: { min: price * (index + 1), max: price * (index + 1) }, contextLength: null, free: false, agentId: peer.agentId, freeTier: null,
     reputationScore: peer.reputationScore, trustScore: peer.trustScore, verified: peer.verified, verificationLinks: peer.verificationLinks, tee: peer.tee, teeScope: peer.teeScope, latencyMsP50: peer.latencyMsP50, firstTokenMsP50: peer.firstTokenMsP50, tokensPerSecondP50: peer.tokensPerSecondP50,
   })), type]
   const entries: Array<[string, NetworkModelOffer[], NetworkModel['type']]> = [

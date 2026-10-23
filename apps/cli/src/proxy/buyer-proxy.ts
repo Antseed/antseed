@@ -2961,6 +2961,7 @@ export class BuyerProxy {
         reputationScore: p.reputationScore,
         onChainReputationScore: p.onChainReputationScore ?? null,
         trust: p.trust ?? null,
+        onChainAgentId: p.onChainAgentId ?? null,
         onChainPoolStakeAnts: p.onChainPoolStakeAnts ?? null,
         onChainPoolPowerShareBps: p.onChainPoolPowerShareBps ?? null,
         onChainUsageEpoch: p.onChainUsageEpoch ?? null,
@@ -5016,7 +5017,7 @@ export class BuyerProxy {
     }
     const peerResponseProtocol = selectedRoutePlan.selection?.targetProtocol ?? requestProtocol
     const adaptPeerResponse = (response: SerializedHttpResponse): SerializedHttpResponse =>
-      adaptPeerFaultErrorResponse(response, peerResponseProtocol, { pinned })
+      adaptPeerFaultErrorResponse(response, peerResponseProtocol, { pinned, peerId: selectedPeer.peerId })
     const startTime = Date.now()
     const attemptAbort = new AbortController()
     const attemptSignal = attemptTimeoutMs ? AbortSignal.any([requestSignal, attemptAbort.signal]) : requestSignal

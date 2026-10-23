@@ -8,6 +8,8 @@ description: Lock ANTS in a seller's pool to raise or remove that seller's free-
 
 Sellers that offer free models usually cap them, for example 1,000 requests a day per buyer address. If you lock ANTS in a seller's pool, that seller raises your cap or removes it. Your stake also earns pool rewards like any other staking position.
 
+Only stake in **that seller's own pool** counts. Stake in seller A's pool raises your limit on seller A and nowhere else; to raise your limit on seller B, stake in seller B's pool.
+
 ## Default program
 
 Each seller sets its own program. Sellers that don't change it use this default:
@@ -27,7 +29,14 @@ Each seller sets its own program. Sellers that don't change it use this default:
 
 ## Check a seller's program
 
-Sellers sign their limits and tiers into their peer metadata. Antscan lists every seller that announces one, with its free services:
+Sellers sign their limits and tiers into their peer metadata, and every Antseed app shows them next to the seller's free models:
+
+- **Desktop:** on a model's page, a free seller's row shows its limit, for example "1,000 free requests a day". **Stake for more** lists its tiers and opens staking on that seller's pool.
+- **Gateway:** in a model's provider list and on a provider's page, the free limit is followed by "stake for more" and an ⓘ with the tiers and a **Stake in this seller's pool** link.
+
+When you run out, the desktop app and the gateway chat say which seller's limit ran out, when it resets and the next tier, with a link to stake in that seller's pool.
+
+Antscan lists every seller that announces a program, with its free services:
 
 ```bash
 curl https://antscan.co/api/free-tier
@@ -36,11 +45,11 @@ curl "https://antscan.co/api/free-tier?seller=0x<sellerAddress>"
 
 Each entry has the base limits (`maxRequestsPerAddress`, `maxRequestsPerIp`, `windowMs`), the seller's `onChainAgentId`, and `stakeTiers` with `minPower`, `antsLockedForYear`, `multiplier` and `maxRequests` per window.
 
-When you hit a limit, the seller answers HTTP 429 with `code: "free_tier_exhausted"`. A seller with staked tiers adds `stakeTiers` and your current `stakePower` to the response.
+When you hit a limit, your buyer returns HTTP 429 with `code: "free_tier_exhausted"` and a `free_tier` object: the seller's `peerId`, `limitedBy`, `limit`, `windowMs`, `retryAfterSeconds`, its `stakeTiers` and your current `stakePower` in that seller's pool. The message names the next tier.
 
 ## Stake on a seller
 
-The easiest way is the ANTS dashboard. Connect your wallet there and stake into the seller's pool:
+The easiest way is the ANTS dashboard. Connect your wallet there and stake into the seller's pool. The stake links in the desktop app and the gateway open that seller's pool directly:
 
 ```bash
 antseed ants
@@ -55,15 +64,21 @@ antseed ants stake 10000 --agent <agentId> --epochs 52
 
 The new allowance starts once the position activates in the next epoch. Sellers cache stake lookups for up to 10 minutes.
 
-## Share stake with your buyer
+## Share stake with a buyer
 
-Stake held by your buyer identity's own address counts automatically. Stake in any other wallet, such as the wallet that funds your deposits, counts once that wallet signs consent to share it with your buyer:
+Stake held by your buyer identity's own address counts automatically. Stake in any other wallet, yours or someone else's, counts once that wallet signs a code for your buyer address.
 
-```bash
-antseed buyer free-tier share
-```
+**The staker** opens the ANTS dashboard (`antseed ants`, desktop **Rewards → Manage staking**, or the gateway's **Staking** page), goes to **My positions → Share free tier**, enters the buyer address and signs. The signature costs no gas and moves no funds. It names that one buyer address and lasts 30, 90 or 180 days. The dashboard shows a code starting with `antseed-free-tier-` to send to the buyer.
 
-This opens a local page. Connect the staking wallet and sign. The signature costs no gas and moves no funds; it names your buyer address and lasts 90 days. Sign again to renew. Your buyer sends it to sellers with its requests, and a running buyer picks it up within a minute. Use `--identity <name>` to share with a named buyer identity, such as a gateway workspace.
+**The buyer** adds the code:
+
+- **CLI:** `antseed buyer free-tier add <code>`. Add `--identity <name>` for a named buyer identity.
+- **Desktop:** **Rewards → Staked free tier**. Paste the code and select **Add code**.
+- **Gateway:** **Staking → Staked free tier → Add code** (workspace admins). The panel shows the workspace's buyer address to send to the staker.
+
+A running buyer picks the code up within a minute and sends it to sellers with its requests. To renew, the staker signs a new code and the buyer adds it. The new code replaces the old one.
+
+If the staking wallet is on the same machine as the buyer, `antseed buyer free-tier share` opens a local page where that wallet signs, with no code to copy.
 
 Several wallets can share with the same buyer, up to 8. Their stake adds up with the buyer's own, so two wallets with 5,000 ANTS each locked for a year reach the 10,000 ANTS tier together.
 
@@ -72,7 +87,7 @@ antseed buyer free-tier list               # stakers sharing with this buyer
 antseed buyer free-tier remove 0x<staker>  # stop sending one
 ```
 
-A signature names one buyer, so nobody else can reuse it. Removing it stops your buyer sending it, but a seller that already saw it may keep honouring it until it expires. To end sharing everywhere at once, move or withdraw the stake.
+A code names one buyer, so nobody else can use it. Removing it stops your buyer sending it, but a seller that already saw it may keep honouring it until it expires. To end sharing everywhere at once, move or withdraw the stake.
 
 ## One allowance per staker
 

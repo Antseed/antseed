@@ -4,9 +4,9 @@ import { getAddress, isAddress } from 'ethers';
 import {
   DEFAULT_FREE_TIER_DELEGATION_DAYS,
   FREE_TIER_DELEGATION_TYPES,
-  MAX_FREE_TIER_DELEGATIONS,
   isFreeTierDelegationSigned,
   makeFreeTierDelegationDomain,
+  withFreeTierDelegation,
   type FreeTierDelegation,
 } from '@antseed/node';
 
@@ -32,12 +32,7 @@ export async function saveFreeTierDelegation(configPath: string, delegation: Fre
   const config = await readConfig(configPath);
   const buyer = (config.buyer ?? {}) as Record<string, unknown>;
   const existing = Array.isArray(buyer.freeTierDelegations) ? buyer.freeTierDelegations as FreeTierDelegation[] : [];
-  const sameBuyer = (entry: FreeTierDelegation) => entry.buyer.toLowerCase() === delegation.buyer.toLowerCase();
-  const kept = existing.filter((entry) => !(sameBuyer(entry) && entry.staker.toLowerCase() === delegation.staker.toLowerCase()));
-  if (kept.filter(sameBuyer).length >= MAX_FREE_TIER_DELEGATIONS) {
-    throw new Error(`This buyer already has ${MAX_FREE_TIER_DELEGATIONS} stakers; remove one first.`);
-  }
-  const delegations = [...kept, delegation];
+  const delegations = withFreeTierDelegation(existing, delegation);
   config.buyer = { ...buyer, freeTierDelegations: delegations };
   const temp = `${configPath}.tmp-${process.pid}`;
   await writeFile(temp, `${JSON.stringify(config, null, 2)}\n`, 'utf-8');

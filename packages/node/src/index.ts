@@ -78,7 +78,8 @@ export {
   type FaultAttribution,
   type AntseedErrorCode,
 } from './errors.js';
-export { adaptPeerFaultErrorResponse, VIDEO_PRICE_HEADER, VIDEO_JOB_RETIRED_HEADER, VIDEO_DELIVERED_HEADER, VIDEO_DELIVERY_UNRECORDED } from '@antseed/buyer-core';
+export { adaptPeerFaultErrorResponse, describeFreeTierLimit, FREE_TIER_EXHAUSTED_ERROR_ID, nextFreeTierStakeTier, readFreeTierLimit, VIDEO_PRICE_HEADER, VIDEO_JOB_RETIRED_HEADER, VIDEO_DELIVERED_HEADER, VIDEO_DELIVERY_UNRECORDED } from '@antseed/buyer-core';
+export type { FreeTierLimit, FreeTierLimitStakeTier } from '@antseed/buyer-core';
 
 // Submodule re-exports (commonly used)
 export {
@@ -296,6 +297,7 @@ export {
   MAX_FREE_TIER_STAKE_TIERS,
   encodeFreeTierCapabilities,
   freeTierStakeTierForPower,
+  normalizeFreeTierProgram,
   parseFreeTierProgram,
   powerToAntsEpochs,
   validateFreeTierStakeTiers,
@@ -304,14 +306,19 @@ export type { FreeTierBaseLimits, FreeTierProgram, FreeTierStakeTier } from './p
 export {
   DEFAULT_FREE_TIER_DELEGATION_DAYS,
   FREE_TIER_DELEGATIONS_HEADER,
+  FREE_TIER_DELEGATION_CODE_PREFIX,
   FREE_TIER_DELEGATION_TYPES,
   MAX_FREE_TIER_DELEGATIONS,
+  acceptFreeTierDelegationCode,
+  decodeFreeTierDelegationCode,
   decodeFreeTierDelegationsHeader,
+  encodeFreeTierDelegationCode,
   encodeFreeTierDelegationsHeader,
   freeTierDelegationMessage,
   isFreeTierDelegationSigned,
   makeFreeTierDelegationDomain,
   verifyFreeTierDelegations,
+  withFreeTierDelegation,
 } from './payments/free-tier-delegation.js';
 export type { FreeTierDelegation, VerifiedFreeTierDelegation } from './payments/free-tier-delegation.js';
 export { FreeTierStakeResolver, MAX_FREE_TIER_COUNTED_POSITIONS } from './payments/free-tier-stake-resolver.js';

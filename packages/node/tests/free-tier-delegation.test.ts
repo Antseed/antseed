@@ -2,11 +2,16 @@ import { describe, expect, it } from 'vitest';
 import { Wallet } from 'ethers';
 import {
   FREE_TIER_DELEGATION_TYPES,
+  acceptFreeTierDelegationCode,
+  decodeFreeTierDelegationCode,
   decodeFreeTierDelegationsHeader,
+  encodeFreeTierDelegationCode,
   encodeFreeTierDelegationsHeader,
+  isFreeTierDelegationSigned,
   freeTierDelegationMessage,
   makeFreeTierDelegationDomain,
   verifyFreeTierDelegations,
+  withFreeTierDelegation,
   type FreeTierDelegation,
 } from '../src/payments/free-tier-delegation.js';
 
@@ -54,5 +59,34 @@ describe('free-tier delegations', () => {
     expect(decodeFreeTierDelegationsHeader(`garbage,${valid},0x12:1:0x34`, BUYER)).toHaveLength(1);
     expect(decodeFreeTierDelegationsHeader(Array(20).fill(valid).join(','), BUYER)).toHaveLength(8);
     expect(decodeFreeTierDelegationsHeader(undefined, BUYER)).toEqual([]);
+  });
+
+  it('round-trips a shareable code and rejects malformed ones', async () => {
+    const staker = Wallet.createRandom();
+    const delegation = await sign(staker, BUYER, LATER);
+    const code = encodeFreeTierDelegationCode(delegation);
+    expect(code).toMatch(/^antseed-free-tier-[A-Za-z0-9_-]+$/);
+    const decoded = decodeFreeTierDelegationCode(`  ${code}\n`);
+    expect(decoded).toEqual({ staker: staker.address, buyer: BUYER, expiresAt: LATER, signature: delegation.signature.toLowerCase() });
+    expect(isFreeTierDelegationSigned(decoded, CHAIN_ID)).toBe(true);
+    expect(() => decodeFreeTierDelegationCode('hello')).toThrow(/should start with/);
+    expect(() => decodeFreeTierDelegationCode(code.slice(0, -10))).toThrow(/incomplete/);
+    expect(() => decodeFreeTierDelegationCode('antseed-free-tier-@@')).toThrow(/malformed/);
+  });
+
+  it('accepts a pasted code only for this buyer, unexpired and signed, and replaces the same staker', async () => {
+    const staker = Wallet.createRandom();
+    const code = encodeFreeTierDelegationCode(await sign(staker, BUYER, LATER));
+    const accepted = acceptFreeTierDelegationCode(code, BUYER, CHAIN_ID, NOW_MS);
+    expect(accepted.staker).toBe(staker.address);
+    expect(() => acceptFreeTierDelegationCode(code, OTHER_BUYER, CHAIN_ID, NOW_MS)).toThrow(/is for buyer/);
+    expect(() => acceptFreeTierDelegationCode(code, BUYER, CHAIN_ID, (LATER + 1) * 1000)).toThrow(/expired/);
+    expect(() => acceptFreeTierDelegationCode(code, BUYER, 1, NOW_MS)).toThrow(/not signed/);
+
+    const renewed = { ...accepted, expiresAt: LATER + 100 };
+    expect(withFreeTierDelegation([accepted], renewed)).toEqual([renewed]);
+    const full = await Promise.all(Array.from({ length: 8 }, () => sign(Wallet.createRandom(), BUYER, LATER)));
+    expect(() => withFreeTierDelegation(full, accepted)).toThrow(/already has 8/);
+    expect(withFreeTierDelegation(full, { ...accepted, buyer: OTHER_BUYER })).toHaveLength(9);
   });
 });

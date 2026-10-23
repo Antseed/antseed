@@ -18,6 +18,8 @@ import type { RootUpdateProgress } from '../../update/root-updater.js'
 export type { RoutingPolicy, ModelRoute, RoutingSort } from '../../routing-policy/policy.js'
 export type { RouteSelection, ServedSelection } from '../../proxy/route-selection.js'
 export type { OperatorRelation, OperatorState, OperatorAuthorization, WorkspaceOperatorSummary } from './operator-types.js'
+export type { FreeTierProgramView, FreeTierSharing, FreeTierStaker } from './free-tier-types.js'
+import type { FreeTierProgramView } from './free-tier-types.js'
 
 export const CONSOLE_BASE_PATH = '/console'
 export const CONSOLE_API_PATH = '/console/api'
@@ -590,6 +592,26 @@ export interface ChatContext {
   workspaceName: string
 }
 
+/**
+ * A chat turn a seller refused because its free tier is used up. The chat
+ * stream's error text is this object as JSON; `freeTier.peerId` names the
+ * seller whose pool raises the limit.
+ */
+export interface ChatFreeTierError {
+  code: 'free_tier_exhausted'
+  message: string
+  freeTier: {
+    peerId: string | null
+    limitedBy: 'address' | 'ip' | 'stake'
+    limit: number | null
+    windowMs: number | null
+    retryAfterSeconds: number | null
+    stakeTiers: Array<{ minPower: number; multiplier: number | 'unlimited' }>
+    /** The buyer's counted power in that seller's pool, in ANTS-epochs. */
+    stakePower: number
+  }
+}
+
 export interface ChatModel {
   id: string
   name: string
@@ -661,6 +683,10 @@ export interface Peer {
    */
   teeScope: PeerTeeScope | null
   stakeAnts: string | null
+  /** The seller's pool in the seller pools (its ERC-8004 agent id); null when it has none. */
+  agentId: number | null
+  /** The seller's free-tier program; null when it offers no free tier. */
+  freeTier: FreeTierProgramView | null
   usageShareBps: number | null
   washFlagged: boolean
   lastSeen: number | null
@@ -736,6 +762,9 @@ export interface NetworkModelOffer {
   usdPerImage: { min: number; max: number } | null
   contextLength: number | null
   free: boolean
+  /** The seller's pool (agent id) and free-tier program, for free offers; see `Peer`. */
+  agentId: number | null
+  freeTier: FreeTierProgramView | null
   /** The reputation routing ranks this offer by (0-100); null when unscored. */
   reputationScore: number | null
   trustScore: number | null

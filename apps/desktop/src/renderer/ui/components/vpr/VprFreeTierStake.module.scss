@@ -1,0 +1,35 @@
+.badge {
+  display: inline-flex;
+  border-radius: 999px;
+}
+
+.badge:focus-visible {
+  outline: 2px solid var(--text-muted);
+  outline-offset: 2px;
+}
+
+.tiers {
+  display: grid;
+  gap: 2px;
+  margin: 4px 0;
+}
+
+.tier {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.link {
+  margin-top: 2px;
+  padding: 2px 0;
+  color: var(--text-primary);
+  background: transparent;
+  border: 0;
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}

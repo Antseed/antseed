@@ -1,0 +1,87 @@
+import { useCallback, useEffect, useState } from 'react';
+import { shortAddress } from '../../../core/format';
+import type { FreeTierSharing } from '../../../types/bridge';
+import { VprCard } from '../vpr/VprKit';
+import styles from './VprRewardsView.module.scss';
+
+/**
+ * Staked free tier: a staker creates a code for this buyer in the staking
+ * dashboard (My positions → Share free tier) and the buyer pastes it here.
+ * Sellers with a staked free tier then count that stake toward this buyer.
+ */
+export function VprFreeTierCard() {
+  const bridge = typeof window === 'undefined' ? undefined : window.antseedDesktop;
+  const [sharing, setSharing] = useState<FreeTierSharing | null>(null);
+  const [code, setCode] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const apply = useCallback(async (call: Promise<{ ok: boolean; data?: FreeTierSharing; error?: string }> | undefined) => {
+    if (!call) return false;
+    const result = await call;
+    if (result.ok && result.data) {
+      setSharing(result.data);
+      setError(null);
+      return true;
+    }
+    setError(result.error ?? 'Could not update the free tier.');
+    return false;
+  }, []);
+
+  useEffect(() => {
+    void apply(bridge?.freeTierList?.());
+  }, [apply, bridge]);
+
+  const add = async () => {
+    setBusy(true);
+    try {
+      if (await apply(bridge?.freeTierAdd?.(code.trim()))) setCode('');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copyBuyer = () => {
+    if (!sharing) return;
+    void navigator.clipboard?.writeText(sharing.buyer).then(() => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    });
+  };
+
+  return (
+    <VprCard className={styles.aboutCard}>
+      <span className={styles.aboutTitle}>Staked free tier</span>
+      <span className={styles.aboutText}>
+        On each seller with a staked free tier, stake in that seller's pool raises your free limit there, including stake shared with you. Ask a staker for a code for your address
+        {sharing ? <>{' '}<button type="button" className={styles.inlineLink} onClick={copyBuyer} title={sharing.buyer}>{copied ? 'copied' : shortAddress(sharing.buyer)}</button></> : null}.
+      </span>
+      {sharing && sharing.stakers.length > 0 ? (
+        <ul className={styles.stakerList}>
+          {sharing.stakers.map((entry) => (
+            <li key={entry.staker} className={styles.stakerRow}>
+              <span className={styles.stakerAddress} title={entry.staker}>{shortAddress(entry.staker)}</span>
+              <span className={styles.aboutText}>{entry.expired ? 'Expired' : `Until ${new Date(entry.expiresAt * 1000).toLocaleDateString()}`}</span>
+              <button type="button" className={styles.inlineLink} onClick={() => void apply(bridge?.freeTierRemove?.(entry.staker))}>Remove</button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      <div className={styles.codeRow}>
+        <input
+          className={styles.codeInput}
+          placeholder="antseed-free-tier-…"
+          value={code}
+          spellCheck={false}
+          onChange={(event) => setCode(event.target.value)}
+          aria-label="Free-tier code"
+        />
+        <button type="button" className={styles.claimButton} disabled={busy || !code.trim()} onClick={() => void add()}>
+          Add code
+        </button>
+      </div>
+      {error ? <span className={styles.aboutText}>{error}</span> : null}
+    </VprCard>
+  );
+}

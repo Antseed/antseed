@@ -1,6 +1,6 @@
 import { Alert, Button } from '../components/ui';
 import { Modal } from '@antseed/ui';
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { OverviewView, PoolView, PoolsView } from '../../../src/api-types';
 import { api } from '../api';
 import { useConfig } from '../app-context';
@@ -12,6 +12,8 @@ import { usePageData } from '../data';
 import { poolDataOptions } from '../pool-data';
 import { epochStartAt, formatAnts, formatDuration, formatInt, formatUsdcCompact, formatUtc, shortAddress } from '../format';
 import { useNow } from '../hooks';
+import { host } from '../host';
+import { parseRoute } from '../router';
 
 export function StakePage() {
   const config = useConfig();
@@ -45,6 +47,14 @@ export function StakePage() {
   const listedPool = openPoolId !== null ? sortedPools.find((p) => p.agentId === openPoolId) : undefined;
   if (listedPool && pools.data) lastOpen.current = { pool: listedPool, view: pools.data };
   const open = openPoolId !== null && lastOpen.current?.pool.agentId === openPoolId ? lastOpen.current : null;
+  // `stake?pool=<agentId>` (from a seller's free-tier limit in the desktop app or gateway) opens that seller's pool once.
+  const openedLink = useRef<number | null>(null);
+  useEffect(() => {
+    const linkedPool = Number(parseRoute(host().currentPath()).query.get('pool'));
+    if (openedLink.current === linkedPool || !sortedPools.some((p) => p.agentId === linkedPool)) return;
+    openedLink.current = linkedPool;
+    setOpenPoolId(linkedPool);
+  }, [sortedPools]);
   const openSeller = (pool: PoolView) => {
     poolTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setOpenPoolId(pool.agentId);

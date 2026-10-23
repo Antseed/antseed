@@ -173,6 +173,16 @@ type ChatAiStreamStopReason = {
   message: string;
   statusCode?: number;
   errorCode?: string;
+  /** Set when a seller's free tier ran out: its limit and staked tiers (only stake in that seller's pool counts). */
+  freeTier?: {
+    peerId: string | null;
+    limitedBy: 'address' | 'ip' | 'stake';
+    limit: number | null;
+    windowMs: number | null;
+    retryAfterSeconds: number | null;
+    stakeTiers: Array<{ minPower: number; multiplier: number | 'unlimited' }>;
+    stakePower: number;
+  };
 };
 
 const api = {
@@ -565,8 +575,11 @@ const api = {
   identityImportKey: (privateKeyHex: string) => ipcRenderer.invoke('identity:import-key', privateKeyHex),
   paymentsSignSpendingAuth: (params: unknown) => ipcRenderer.invoke('payments:sign-spending-auth', params),
   paymentsGetPeerInfo: (peerId: string) => ipcRenderer.invoke('payments:get-peer-info', peerId),
-  stakingOpen: (options?: { page?: 'stake' | 'rewards' }) => ipcRenderer.invoke('staking:open', options),
-  stakingCopyLink: (options?: { page?: 'stake' | 'rewards' }) => ipcRenderer.invoke('staking:copyLink', options),
+  stakingOpen: (options?: { page?: 'stake' | 'rewards'; pool?: number }) => ipcRenderer.invoke('staking:open', options),
+  stakingCopyLink: (options?: { page?: 'stake' | 'rewards'; pool?: number }) => ipcRenderer.invoke('staking:copyLink', options),
+  freeTierList: () => ipcRenderer.invoke('freeTier:list'),
+  freeTierAdd: (code: string) => ipcRenderer.invoke('freeTier:add', code),
+  freeTierRemove: (staker: string) => ipcRenderer.invoke('freeTier:remove', staker),
   paymentsOpenPayPage: (opts: { kind?: string; amountUsdc?: string; channelId?: string }) => ipcRenderer.invoke('payments:open-pay-page', opts),
   paymentsCardProviders: () => ipcRenderer.invoke('payments:card-providers'),
   paymentsOpenCardProvider: (opts?: { providerId?: string; amountUsdc?: string }) => ipcRenderer.invoke('payments:open-card-provider', opts),

@@ -791,6 +791,7 @@ export function initChatModule({
 
   function clearChatError(): void {
     uiState.chatError = null;
+    uiState.chatFreeTierLimit = null;
     notifyUiStateChanged();
   }
 
@@ -3642,6 +3643,13 @@ export function initChatModule({
               if (bridge.chatAiAbort) void bridge.chatAiAbort(data.conversationId).catch(() => {});
             } else {
               clearPaymentRetry(data.conversationId);
+            }
+          } else if (stopReason?.freeTier) {
+            // Retrying hits the same limit; show which seller and how staking in its pool raises it.
+            clearPaymentRetry(data.conversationId);
+            if (isActiveConversation) {
+              uiState.chatFreeTierLimit = stopReason.freeTier;
+              notifyUiStateChanged();
             }
           } else if (stopReason?.retryable === false || outputAlreadyStarted || isPinned) {
             clearPaymentRetry(data.conversationId);

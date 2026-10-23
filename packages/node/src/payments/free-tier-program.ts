@@ -164,3 +164,26 @@ export function parseFreeTierProgram(capabilities: readonly string[] | undefined
   }
   return { base, stakeTiers };
 }
+
+/**
+ * A free-tier program passed on as JSON (by a buyer's catalog), validated the
+ * same way as advertised capabilities. Returns null when it is not one.
+ */
+export function normalizeFreeTierProgram(value: unknown): FreeTierProgram | null {
+  if (!value || typeof value !== 'object') return null;
+  const { base, stakeTiers } = value as Partial<Record<keyof FreeTierProgram, unknown>>;
+  if (!base || typeof base !== 'object' || !Array.isArray(stakeTiers)) return null;
+  const limits = base as Record<string, unknown>;
+  const count = (field: unknown): number | null | undefined =>
+    field === null || field === undefined ? null : Number.isSafeInteger(field) && (field as number) >= 0 ? field as number : undefined;
+  const maxRequestsPerAddress = count(limits.maxRequestsPerAddress);
+  const maxRequestsPerIp = count(limits.maxRequestsPerIp);
+  const windowMs = count(limits.windowMs);
+  if (maxRequestsPerAddress === undefined || maxRequestsPerIp === undefined || !windowMs) return null;
+  const tiers = stakeTiers.map((tier) => tier as Partial<FreeTierStakeTier>);
+  if (tiers.some((tier) => !tier || typeof tier.minPower !== 'number' || (tier.multiplier !== 'unlimited' && typeof tier.multiplier !== 'number'))) return null;
+  return parseFreeTierProgram(encodeFreeTierCapabilities({
+    base: { maxRequestsPerAddress, maxRequestsPerIp, windowMs },
+    stakeTiers: tiers as FreeTierStakeTier[],
+  }));
+}

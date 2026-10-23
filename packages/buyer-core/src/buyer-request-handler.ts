@@ -182,7 +182,7 @@ export class BuyerRequestHandler {
     // Set when a video create is priced; reported on its accepted response so the caller can reserve it until delivery.
     let videoPriceUsdc: bigint | undefined;
     const adaptPeerResponse = (response: SerializedHttpResponse): SerializedHttpResponse => {
-      const adapted = adaptPeerFaultErrorResponse(response, requestProtocol, { pinned: options?.pinned });
+      const adapted = adaptPeerFaultErrorResponse(response, requestProtocol, { pinned: options?.pinned, peerId: peer.peerId });
       if (videoPriceUsdc === undefined || adapted.statusCode < 200 || adapted.statusCode >= 300) return adapted;
       const headers = Object.fromEntries(Object.entries(adapted.headers).filter(([name]) => name.toLowerCase() !== VIDEO_PRICE_HEADER));
       return { ...adapted, headers: { ...headers, [VIDEO_PRICE_HEADER]: videoPriceUsdc.toString() } };

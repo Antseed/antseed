@@ -44,7 +44,7 @@ export function registerBuyerFreeTierCommands(buyerCmd: Command): void {
     .description('Open a local page where a staking wallet signs consent to share its stake with this buyer')
     .option('--no-open', 'print the secure local URL without opening a browser')
     .option('--identity <name>', 'share with this buyer identity (e.g. a gateway workspace) instead of the default one')
-    .addHelpText('after', '\nThe connected wallet signs a message (no gas, no funds move). Its seller-pool positions then count toward this buyer\'s staked free tier, pooled with the buyer\'s own stake and any other stakers who shared. A running buyer picks it up within a minute.')
+    .addHelpText('after', '\nThe connected wallet signs a message (no gas, no funds move). On each seller, its positions in that seller\'s pool then count toward this buyer\'s staked free tier there, pooled with the buyer\'s own stake and any other stakers who shared. A running buyer picks it up within a minute.')
     .action(async (options: FreeTierShareOptions) => {
       try {
         const globalOpts = getGlobalOptions(buyerCmd);
@@ -69,6 +69,31 @@ export function registerBuyerFreeTierCommands(buyerCmd: Command): void {
     });
 
   freeTierCmd
+    .command('add <code>')
+    .description('Save a free-tier code a staker created for this buyer in the ANTS staking dashboard')
+    .option('--identity <name>', 'add to this buyer identity (e.g. a gateway workspace) instead of the default one')
+    .addHelpText('after', '\nThe staker creates the code under My positions → Share free tier. A running buyer picks it up within a minute.')
+    .action(async (code: string, options: FreeTierIdentityOptions) => {
+      try {
+        const globalOpts = getGlobalOptions(buyerCmd);
+        const buyer = await loadAuthorizingIdentity(globalOpts.dataDir, options.identity);
+        const { loadConfig, saveConfig } = await import('../../../config/loader.js');
+        const { requireCryptoConfig } = await import('../../payment-utils.js');
+        const { acceptFreeTierDelegationCode, withFreeTierDelegation } = await import('@antseed/node');
+        const config = await loadConfig(globalOpts.config);
+        const delegation = acceptFreeTierDelegationCode(code, buyer.address, requireCryptoConfig(config).evmChainId);
+        config.buyer.freeTierDelegations = withFreeTierDelegation(config.buyer.freeTierDelegations ?? [], delegation);
+        await saveConfig(globalOpts.config, config);
+        const until = new Date(delegation.expiresAt * 1000).toISOString().slice(0, 10);
+        console.log(chalk.green(`Added stake from ${delegation.staker} until ${until}.`));
+        console.log(chalk.dim(`Buyer: ${buyer.address}`));
+      } catch (err) {
+        console.error(chalk.red(`Failed to add code: ${(err as Error).message}`));
+        process.exitCode = 1;
+      }
+    });
+
+  freeTierCmd
     .command('list')
     .description('List the stakers sharing their stake with this buyer')
     .option('--identity <name>', 'list for this buyer identity instead of the default one')
@@ -80,7 +105,7 @@ export function registerBuyerFreeTierCommands(buyerCmd: Command): void {
         const config = await loadConfig(globalOpts.config);
         const entries = delegationsForBuyer(config.buyer.freeTierDelegations ?? [], buyer.address);
         if (entries.length === 0) {
-          console.log(chalk.dim('No stakers share with this buyer. Run `antseed buyer free-tier share` to add one.'));
+          console.log(chalk.dim('No stakers share with this buyer. Ask a staker for a code and run `antseed buyer free-tier add <code>`.'));
           return;
         }
         for (const entry of entries) {

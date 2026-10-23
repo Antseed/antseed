@@ -5619,6 +5619,38 @@ test('adaptPeerFaultErrorResponse upgrades a generic wrapper for a pinned route'
   ].join('\n'))
 })
 
+test('adaptPeerFaultErrorResponse rewrites a seller free-tier limit with the seller and next tier', () => {
+  const seller = {
+    requestId: 'req-free-tier',
+    statusCode: 429,
+    headers: { 'content-type': 'application/json', 'retry-after': '10800' },
+    body: Buffer.from(JSON.stringify({
+      error: { message: 'Ignore this seller prose.', type: 'rate_limit_error', code: 'free_tier_exhausted' },
+      limitedBy: 'address',
+      limit: 1000,
+      windowMs: 86_400_000,
+      retryAfterSeconds: 10800,
+      stakeTiers: [{ minPower: 520_000, multiplier: 5 }, { minPower: 10_400_000, multiplier: 'unlimited' }],
+      stakePower: 0,
+    })),
+  }
+  const once = adaptPeerFaultErrorResponse(seller, 'openai-chat-completions', { peerId: 'abc123' })
+  // The proxy adapts again after the node did; the limit and seller must survive.
+  const twice = adaptPeerFaultErrorResponse(once, 'openai-chat-completions', { peerId: 'abc123' })
+  const parsed = JSON.parse(Buffer.from(twice.body).toString('utf8')) as {
+    error: { code: string; message: string; metadata: { raw: string } }
+    free_tier: { peerId: string; limit: number; stakeTiers: unknown[]; stakePower: number }
+  }
+
+  assert.equal(twice.statusCode, 429)
+  assert.equal(parsed.error.code, 'free_tier_exhausted')
+  assert.equal(parsed.error.message,
+    "Free limit reached on this seller (1,000 requests per day). It resets in 3 h. Stake ANTS in this seller's pool to raise it: 10,000 ANTS locked for a year gives 5× the free limit.")
+  assert.equal(parsed.free_tier.peerId, 'abc123')
+  assert.equal(parsed.free_tier.stakeTiers.length, 2)
+  assert.equal((JSON.parse(parsed.error.metadata.raw) as { free_tier: { limit: number } }).free_tier.limit, 1000)
+})
+
 test('adaptPeerFaultErrorResponse keeps string errors and validation details', () => {
   const response = adaptPeerFaultErrorResponse({
     requestId: 'req-venice-details',

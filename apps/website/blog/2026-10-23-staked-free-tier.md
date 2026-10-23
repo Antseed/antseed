@@ -27,7 +27,9 @@ Every seller with a free tier now announces a staked program next to its base li
 
 Tiers are measured in **staking power**: ANTS × weeks of lock remaining. Locking 20,000 ANTS for six months reaches the same tier as 10,000 for a year. Power starts when the position activates in the next epoch and shrinks as the lock runs down, so the larger allowance goes to buyers who commit for longer.
 
-Each seller can change its tiers, set its own multipliers or turn the program off. The program is signed into the seller's peer metadata, and [Antscan](https://antscan.co/api/free-tier) lists every seller's limits, tiers and free models.
+Only stake in that seller's own pool counts: stake with one provider raises your free limit there, not on every provider.
+
+Each seller can change its tiers, set its own multipliers or turn the program off. The program is signed into the seller's peer metadata. The desktop app and the gateway show it next to each free model ("1,000 free requests a day · stake for more"), and [Antscan](https://antscan.co/api/free-tier) lists every seller's limits, tiers and free models. When you run out, the app tells you which seller's limit ran out, when it resets and what the next tier takes, with a link straight to that seller's pool.
 
 ## Why providers offer free models now
 
@@ -41,9 +43,9 @@ Free access is one reason. The stake is also a normal seller-pool position: it e
 
 ## One allowance per staker
 
-Stake in your buyer's own address counts automatically. Stake in another wallet, such as the one that funds your deposits, counts once that wallet signs consent to share it with your buyer: one signature, no gas, valid for 90 days. Several wallets can share with the same buyer and their stake adds up. Usage is counted on the staked positions, so every buyer sharing the same stake shares one allowance, and moving a position to another wallet doesn't reset it. Staked buyers also skip the per-IP limit, which matters for teams behind one office network or gateway.
+Stake in your buyer's own address counts automatically. Stake in another wallet, such as the one that funds your deposits, counts once that wallet signs a code for your buyer in the ANTS dashboard: one signature, no gas, valid for up to 180 days. The buyer pastes the code into the CLI, the desktop app or the gateway. Several wallets can share with the same buyer and their stake adds up. Usage is counted on the staked positions, so every buyer sharing the same stake shares one allowance, and moving a position to another wallet doesn't reset it. Staked buyers also skip the per-IP limit, which matters for teams behind one office network or gateway.
 
 ## Get started
 
-- **Buyers:** find a seller on [Antscan](https://antscan.co/api/free-tier), stake into its pool from the ANTS dashboard (`antseed ants`), and run `antseed buyer free-tier share` if the stake is in another wallet. See [Staked free tier](/docs/staked-free-tier).
+- **Buyers:** pick a free model's seller in the desktop app or the gateway (or on [Antscan](https://antscan.co/api/free-tier)), stake into that seller's pool from the ANTS dashboard (`antseed ants`), and if the stake is in another wallet, add the code it signs with `antseed buyer free-tier add <code>`, in desktop Rewards or on the gateway's Staking page. See [Staked free tier](/docs/staked-free-tier).
 - **Providers:** staked tiers are on by default whenever you set `seller.freeTier`. See [Staked tiers](/docs/provide/config#staked-tiers) to change them.

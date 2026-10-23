@@ -3,6 +3,7 @@ import {
   DEFAULT_FREE_TIER_STAKE_TIERS,
   encodeFreeTierCapabilities,
   freeTierStakeTierForPower,
+  normalizeFreeTierProgram,
   parseFreeTierProgram,
   powerToAntsEpochs,
 } from '../src/payments/free-tier-program.js';
@@ -55,5 +56,17 @@ describe('free-tier program', () => {
       signature: '00'.repeat(65),
     } as never);
     expect(errors.filter((error) => error.field.startsWith('capabilities'))).toEqual([]);
+  });
+
+  it('normalizes a program passed on as JSON and rejects malformed ones', () => {
+    const program = {
+      base: { maxRequestsPerAddress: 1000, maxRequestsPerIp: null, windowMs: 86_400_000 },
+      stakeTiers: [...DEFAULT_FREE_TIER_STAKE_TIERS],
+    };
+    expect(normalizeFreeTierProgram(JSON.parse(JSON.stringify(program)))).toEqual(program);
+    expect(normalizeFreeTierProgram(null)).toBeNull();
+    expect(normalizeFreeTierProgram({ ...program, base: { ...program.base, windowMs: 0 } })).toBeNull();
+    expect(normalizeFreeTierProgram({ ...program, stakeTiers: [{ minPower: 10, multiplier: 1.5 }] })).toBeNull();
+    expect(normalizeFreeTierProgram({ ...program, stakeTiers: [{ minPower: 10, multiplier: 'lots' }] })).toBeNull();
   });
 });
