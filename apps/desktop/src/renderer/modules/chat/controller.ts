@@ -354,6 +354,7 @@ export function initChatModule({
 
   function clearTransientChatNotices(): void {
     uiState.chatError = null;
+    uiState.chatFreeTierLimit = null;
     hidePaymentApprovalCard();
   }
 
@@ -2418,6 +2419,7 @@ export function initChatModule({
     const content = text.trim();
     // Build message content — multipart with prepared attachments, or plain string
     uiState.chatError = null;
+    uiState.chatFreeTierLimit = null;
     setConversationSending(convId, true);
     void (async () => {
       let preparedAttachments: PreparedChatAttachment[];
@@ -3222,6 +3224,7 @@ export function initChatModule({
       bridge.onChatAiStreamStart((data) => {
         if (data.conversationId === uiState.chatActiveConversation) {
           uiState.chatError = null;
+          uiState.chatFreeTierLimit = null;
           notifyUiStateChanged();
         }
 
@@ -3544,6 +3547,7 @@ export function initChatModule({
             setConversationSending(data.conversationId, false);
           }
           uiState.chatError = null;
+          uiState.chatFreeTierLimit = null;
           notifyUiStateChanged();
         } else {
           if (finalizedStreamingMessage) {

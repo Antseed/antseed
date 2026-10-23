@@ -33,13 +33,18 @@ export function VprFreeTierCard() {
     void apply(bridge?.freeTierList?.());
   }, [apply, bridge]);
 
-  const add = async () => {
+  // One change at a time: each one returns the saved list the next one builds on.
+  const mutate = async (call: () => Parameters<typeof apply>[0]) => {
     setBusy(true);
     try {
-      if (await apply(bridge?.freeTierAdd?.(code.trim()))) setCode('');
+      return await apply(call());
     } finally {
       setBusy(false);
     }
+  };
+
+  const add = async () => {
+    if (await mutate(() => bridge?.freeTierAdd?.(code.trim()))) setCode('');
   };
 
   const copyBuyer = () => {
@@ -63,7 +68,7 @@ export function VprFreeTierCard() {
             <li key={entry.staker} className={styles.stakerRow}>
               <span className={styles.stakerAddress} title={entry.staker}>{shortAddress(entry.staker)}</span>
               <span className={styles.aboutText}>{entry.expired ? 'Expired' : `Until ${new Date(entry.expiresAt * 1000).toLocaleDateString()}`}</span>
-              <button type="button" className={styles.inlineLink} onClick={() => void apply(bridge?.freeTierRemove?.(entry.staker))}>Remove</button>
+              <button type="button" className={styles.inlineLink} disabled={busy} onClick={() => void mutate(() => bridge?.freeTierRemove?.(entry.staker))}>Remove</button>
             </li>
           ))}
         </ul>

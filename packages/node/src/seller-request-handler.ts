@@ -324,6 +324,8 @@ export class SellerRequestHandler {
       // A video retrieve is paid by its job's create, never by the free tier:
       // status polls and downloads must not use up or report free usage.
       const isFreeTierRequest = isFreeService && !isVideoRetrieve;
+      // Response auth signs the request as the buyer sent it, so keep its headers before removing seller-only ones.
+      const wireHeaders = { ...request.headers };
       // Delegations are for this seller only: never pass them on to the provider.
       const delegationsHeader = takeHeader(request.headers, FREE_TIER_DELEGATIONS_HEADER);
       let requestCostEstimate: ReturnType<SellerRequestHandler['_estimateRequestCostUsdc']> = null;
@@ -642,7 +644,7 @@ export class SellerRequestHandler {
 
       const responseAuthRequest: SerializedHttpRequest = {
         ...request,
-        headers: { ...request.headers },
+        headers: wireHeaders,
       };
 
       // Track active seller session at request start

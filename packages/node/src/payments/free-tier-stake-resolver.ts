@@ -127,16 +127,17 @@ export class FreeTierStakeResolver {
     const epoch = await this._currentEpoch();
     const holdings = await Promise.all(stakers.map((staker) => this._stakerPositions(staker, agentId, epoch)));
 
-    const positions = new Map<number, FreeTierStakePosition>();
-    for (const position of holdings.flat()) positions.set(position.id, position);
-    const power = [...positions.values()].reduce((sum, position) => sum + position.power, 0n);
+    const unique = new Map<number, FreeTierStakePosition>();
+    for (const position of holdings.flat()) unique.set(position.id, position);
+    // Only the positions that are charged for usage may count toward the tier,
+    // so stake left out by the cap cannot back a second, untouched allowance.
+    const counted = [...unique.values()]
+      .sort((a, b) => (a.power === b.power ? a.id - b.id : a.power > b.power ? -1 : 1))
+      .slice(0, MAX_FREE_TIER_COUNTED_POSITIONS);
+    const power = counted.reduce((sum, position) => sum + position.power, 0n);
     const tier = freeTierStakeTierForPower(this.stakeTiers, power);
     if (!tier) return null;
-    const positionIds = [...positions.values()]
-      .sort((a, b) => (a.power === b.power ? a.id - b.id : a.power > b.power ? -1 : 1))
-      .slice(0, MAX_FREE_TIER_COUNTED_POSITIONS)
-      .map((position) => position.id);
-    return { stakers, power, tier, positionIds };
+    return { stakers, power, tier, positionIds: counted.map((position) => position.id) };
   }
 
   private async _stakerPositions(staker: string, agentId: number, epoch: number): Promise<FreeTierStakePosition[]> {

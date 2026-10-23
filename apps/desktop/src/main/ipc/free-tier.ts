@@ -33,6 +33,15 @@ function sharingFor(buyer: string, delegations: readonly FreeTierDelegation[]): 
   };
 }
 
+let pendingMutation: Promise<unknown> = Promise.resolve();
+
+/** Run each read-modify-write of the saved delegations after the previous one finishes. */
+function serialized<T>(mutation: () => Promise<T>): Promise<T> {
+  const run = pendingMutation.then(mutation, mutation);
+  pendingMutation = run.catch(() => undefined);
+  return run;
+}
+
 /**
  * Staked free tier: stakers share their seller-pool stake with this buyer by
  * giving it a code from the staking dashboard. Codes are saved in config.json
@@ -55,19 +64,23 @@ export function registerFreeTierIpc(): void {
   handle('freeTier:add', async (code) => {
     if (typeof code !== 'string') throw new Error('Paste a free-tier code.');
     const buyer = await buyerAddress();
-    const config = await readConfig(ACTIVE_CONFIG_PATH);
-    const delegation = acceptFreeTierDelegationCode(code, buyer, resolveStakingChain(config).evmChainId);
-    const delegations = withFreeTierDelegation(savedDelegations(config), delegation);
-    await mergeConfig({ buyer: { freeTierDelegations: delegations } }, ACTIVE_CONFIG_PATH);
-    return sharingFor(buyer, delegations);
+    return serialized(async () => {
+      const config = await readConfig(ACTIVE_CONFIG_PATH);
+      const delegation = acceptFreeTierDelegationCode(code, buyer, resolveStakingChain(config).evmChainId);
+      const delegations = withFreeTierDelegation(savedDelegations(config), delegation);
+      await mergeConfig({ buyer: { freeTierDelegations: delegations } }, ACTIVE_CONFIG_PATH);
+      return sharingFor(buyer, delegations);
+    });
   });
 
   handle('freeTier:remove', async (staker) => {
     if (typeof staker !== 'string') throw new Error('Choose a staker to remove.');
     const buyer = await buyerAddress();
-    const delegations = savedDelegations(await readConfig(ACTIVE_CONFIG_PATH)).filter((delegation) =>
-      !(delegation.buyer.toLowerCase() === buyer.toLowerCase() && delegation.staker.toLowerCase() === staker.toLowerCase()));
-    await mergeConfig({ buyer: { freeTierDelegations: delegations } }, ACTIVE_CONFIG_PATH);
-    return sharingFor(buyer, delegations);
+    return serialized(async () => {
+      const delegations = savedDelegations(await readConfig(ACTIVE_CONFIG_PATH)).filter((delegation) =>
+        !(delegation.buyer.toLowerCase() === buyer.toLowerCase() && delegation.staker.toLowerCase() === staker.toLowerCase()));
+      await mergeConfig({ buyer: { freeTierDelegations: delegations } }, ACTIVE_CONFIG_PATH);
+      return sharingFor(buyer, delegations);
+    });
   });
 }

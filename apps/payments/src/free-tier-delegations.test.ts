@@ -54,6 +54,20 @@ describe('free-tier delegation routes', () => {
     expect(listed.delegations[0].expiresAt).toBe(expiresAt + 10);
   });
 
+  it('keeps both delegations when two stakers save at the same time', async () => {
+    const { app, configPath } = await setup();
+    const expiresAt = Math.floor(Date.now() / 1000) + 86_400;
+    const [first, second] = [Wallet.createRandom(), Wallet.createRandom()];
+    const responses = await Promise.all([first, second].map(async (staker) =>
+      app.inject({ method: 'POST', url: '/api/free-tier/delegations', payload: await signed(staker, expiresAt) })));
+    expect(responses.map((response) => response.statusCode)).toEqual([200, 200]);
+
+    const config = JSON.parse(readFileSync(configPath, 'utf-8'));
+    expect(config.buyer.proxyPort).toBe(8377);
+    expect(config.buyer.freeTierDelegations.map((entry: { staker: string }) => entry.staker).sort())
+      .toEqual([first.address, second.address].sort());
+  });
+
   it('rejects a signature from a different wallet and expired delegations', async () => {
     const { app } = await setup();
     const staker = Wallet.createRandom();

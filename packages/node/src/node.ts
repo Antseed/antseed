@@ -2128,6 +2128,7 @@ export class AntseedNode extends EventEmitter {
         getMux: (peerId, conn) => this._getOrCreateMux(peerId, conn as PeerConnection),
         getVerificationMux: (peerId, conn) => this._getOrCreateVerificationMux(peerId, conn as PeerConnection),
         registerPaymentMux: (peerId, pmux) => this._paymentMuxes.set(peerId, pmux),
+        freeTierDelegationsHeader: () => this._freeTierDelegationsHeader(identity.wallet.address),
       },
     );
 

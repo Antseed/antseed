@@ -13,7 +13,7 @@ import {
   withFreeTierDelegation,
   type FreeTierDelegation,
 } from '@antseed/node'
-import { patchConfigFile } from '../../services/settings.js'
+import { updateFreeTierDelegations } from '../../../config/free-tier-delegations.js'
 import { audit, type requireWorkspaceAccess } from '../access.js'
 import type { ConsoleDeps } from '../deps.js'
 import type { FreeTierSharing } from '../free-tier-types.js'
@@ -52,11 +52,7 @@ export function registerFreeTierRoutes(router: ConsoleRouter, deps: ConsoleDeps,
   }
 
   const writeDelegations = (mutate: (current: FreeTierDelegation[]) => FreeTierDelegation[]) =>
-    patchConfigFile(deps.configPath, (config) => {
-      const buyer = (config['buyer'] && typeof config['buyer'] === 'object' ? config['buyer'] : {}) as Record<string, unknown>
-      const current = Array.isArray(buyer['freeTierDelegations']) ? buyer['freeTierDelegations'] as FreeTierDelegation[] : []
-      config['buyer'] = { ...buyer, freeTierDelegations: mutate(current) }
-    })
+    updateFreeTierDelegations(deps.configPath, mutate)
 
   const sharing = async (buyer: string): Promise<FreeTierSharing> => {
     const now = deps.now()

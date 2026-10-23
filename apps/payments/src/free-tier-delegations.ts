@@ -1,4 +1,5 @@
-import { readFile, rename, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { readFile, rename, rm, writeFile } from 'node:fs/promises';
 import type { FastifyInstance } from 'fastify';
 import { getAddress, isAddress } from 'ethers';
 import {
@@ -24,20 +25,38 @@ export async function readFreeTierDelegations(configPath: string): Promise<FreeT
   return Array.isArray(buyer.freeTierDelegations) ? buyer.freeTierDelegations as FreeTierDelegation[] : [];
 }
 
+const pendingSaves = new Map<string, Promise<unknown>>();
+
 /**
  * Save `delegation`, replacing an earlier one from the same staker to the
- * same buyer. Other config keys are left untouched.
+ * same buyer. Other config keys are left untouched. Saves to one config file
+ * run one at a time, so concurrent saves keep each other's delegations.
  */
-export async function saveFreeTierDelegation(configPath: string, delegation: FreeTierDelegation): Promise<FreeTierDelegation[]> {
-  const config = await readConfig(configPath);
-  const buyer = (config.buyer ?? {}) as Record<string, unknown>;
-  const existing = Array.isArray(buyer.freeTierDelegations) ? buyer.freeTierDelegations as FreeTierDelegation[] : [];
-  const delegations = withFreeTierDelegation(existing, delegation);
-  config.buyer = { ...buyer, freeTierDelegations: delegations };
-  const temp = `${configPath}.tmp-${process.pid}`;
-  await writeFile(temp, `${JSON.stringify(config, null, 2)}\n`, 'utf-8');
-  await rename(temp, configPath);
-  return delegations;
+export function saveFreeTierDelegation(configPath: string, delegation: FreeTierDelegation): Promise<FreeTierDelegation[]> {
+  const save = async () => {
+    const config = await readConfig(configPath);
+    const buyer = (config.buyer ?? {}) as Record<string, unknown>;
+    const existing = Array.isArray(buyer.freeTierDelegations) ? buyer.freeTierDelegations as FreeTierDelegation[] : [];
+    const delegations = withFreeTierDelegation(existing, delegation);
+    config.buyer = { ...buyer, freeTierDelegations: delegations };
+    const temp = `${configPath}.tmp-${process.pid}-${randomUUID()}`;
+    try {
+      await writeFile(temp, `${JSON.stringify(config, null, 2)}\n`, 'utf-8');
+      await rename(temp, configPath);
+    } catch (err) {
+      await rm(temp, { force: true });
+      throw err;
+    }
+    return delegations;
+  };
+  const previous = pendingSaves.get(configPath) ?? Promise.resolve();
+  const run = previous.then(save, save);
+  const settled = run.catch(() => undefined);
+  pendingSaves.set(configPath, settled);
+  void settled.then(() => {
+    if (pendingSaves.get(configPath) === settled) pendingSaves.delete(configPath);
+  });
+  return run;
 }
 
 async function readConfig(configPath: string): Promise<Record<string, unknown>> {

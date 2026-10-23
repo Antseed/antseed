@@ -40,6 +40,16 @@ describe('FreeTierStakeResolver', () => {
     });
   });
 
+  it('counts only the positions it charges toward the tier', async () => {
+    const strong = Array.from({ length: 64 }, (_, i) => ({ id: 100 + i, power: 15n * ANTS }));
+    const weak = Array.from({ length: 14 }, (_, i) => ({ id: 200 + i, power: 9n * ANTS }));
+    const resolver = new FreeTierStakeResolver(reader({ [STAKER_A]: strong, [STAKER_B]: weak }), TIERS);
+    // All 78 positions would reach the unlimited tier, but only the strongest 64 are charged.
+    const standing = await resolver.resolve(BUYER, [STAKER_A, STAKER_B]);
+    expect(standing).toMatchObject({ power: 960n * ANTS, tier: TIERS[0] });
+    expect(standing?.positionIds).toEqual(strong.map((position) => position.id));
+  });
+
   it('counts a position once even when two stakers report it', async () => {
     const shared = { id: 5, power: 80n * ANTS };
     const resolver = new FreeTierStakeResolver(reader({ [STAKER_A]: [shared], [STAKER_B]: [shared] }), TIERS);

@@ -77,13 +77,13 @@ export function registerBuyerFreeTierCommands(buyerCmd: Command): void {
       try {
         const globalOpts = getGlobalOptions(buyerCmd);
         const buyer = await loadAuthorizingIdentity(globalOpts.dataDir, options.identity);
-        const { loadConfig, saveConfig } = await import('../../../config/loader.js');
+        const { loadConfig } = await import('../../../config/loader.js');
+        const { updateFreeTierDelegations } = await import('../../../config/free-tier-delegations.js');
         const { requireCryptoConfig } = await import('../../payment-utils.js');
         const { acceptFreeTierDelegationCode, withFreeTierDelegation } = await import('@antseed/node');
         const config = await loadConfig(globalOpts.config);
         const delegation = acceptFreeTierDelegationCode(code, buyer.address, requireCryptoConfig(config).evmChainId);
-        config.buyer.freeTierDelegations = withFreeTierDelegation(config.buyer.freeTierDelegations ?? [], delegation);
-        await saveConfig(globalOpts.config, config);
+        await updateFreeTierDelegations(globalOpts.config, (current) => withFreeTierDelegation(current, delegation));
         const until = new Date(delegation.expiresAt * 1000).toISOString().slice(0, 10);
         console.log(chalk.green(`Added stake from ${delegation.staker} until ${until}.`));
         console.log(chalk.dim(`Buyer: ${buyer.address}`));
@@ -127,16 +127,17 @@ export function registerBuyerFreeTierCommands(buyerCmd: Command): void {
       try {
         const globalOpts = getGlobalOptions(buyerCmd);
         const buyer = await loadAuthorizingIdentity(globalOpts.dataDir, options.identity);
-        const { loadConfig, saveConfig } = await import('../../../config/loader.js');
-        const config = await loadConfig(globalOpts.config);
-        const current = config.buyer.freeTierDelegations ?? [];
-        const next = withoutDelegation(current, buyer.address, staker);
-        if (next.length === current.length) {
+        const { updateFreeTierDelegations } = await import('../../../config/free-tier-delegations.js');
+        let removed = false;
+        await updateFreeTierDelegations(globalOpts.config, (current) => {
+          const next = withoutDelegation(current, buyer.address, staker);
+          removed = next.length < current.length;
+          return next;
+        });
+        if (!removed) {
           console.log(chalk.yellow(`${staker} does not share with this buyer.`));
           return;
         }
-        config.buyer.freeTierDelegations = next;
-        await saveConfig(globalOpts.config, config);
         console.log(chalk.green(`Removed ${staker}.`));
       } catch (err) {
         console.error(chalk.red(`Failed to remove staker: ${(err as Error).message}`));

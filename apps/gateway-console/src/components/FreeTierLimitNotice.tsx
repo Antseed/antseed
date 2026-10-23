@@ -35,7 +35,7 @@ export function FreeTierLimitNotice({ error, onAuto }: { error: ChatFreeTierErro
         {freeTier.retryAfterSeconds !== null && <>It resets in {formatWait(freeTier.retryAfterSeconds)}. </>}
         {next && <>Lock {tierAnts(next)} for a year in {seller}'s pool for {tierAllowance(next).toLowerCase()}; stake in other pools doesn't count here.{' '}</>}
         {next && pool !== null && <a className="font-medium underline underline-offset-2" href={href(stakeInPoolPath(pool))} onClick={linkHandler(stakeInPoolPath(pool))}>Stake in {seller}'s pool</a>}
-        {onAuto && <>{next && pool !== null ? ' or ' : ''}<button type="button" className="font-medium underline underline-offset-2" onClick={onAuto}>switch to Auto</button> to use another free seller.</>}
+        {onAuto && <>{next && pool !== null ? ' or ' : ''}<button type="button" className="font-medium underline underline-offset-2" onClick={onAuto}>switch to Auto</button> to try another seller (paid rates may apply).</>}
       </span>
     </div>
   )
