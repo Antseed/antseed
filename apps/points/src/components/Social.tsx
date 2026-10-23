@@ -8,7 +8,7 @@ import { useWallet } from '../lib/actions';
 import { avatarColor, shortAddress } from '../lib/format';
 import { Link } from '../lib/router';
 import { profileHref, signInHref, useLinkWallet, useMe, useProfiles, useSignOut, useUnlinkWallet, type PublicProfile } from '../lib/social';
-import { FOLLOW_URL } from './FollowPrompt';
+import { LINKS } from '../lib/links';
 
 export function XLogo({ size = 14 }: { size?: number }) {
   return (
@@ -146,7 +146,7 @@ export function LinkXPanel({ address, operator }: { address: Address; operator: 
         )}
         {me?.signedIn && (
           <>
-            <a className="linkish" href={FOLLOW_URL} target="_blank" rel="noopener noreferrer">Follow @antseed</a>
+            <a className="linkish" href={LINKS.followX} target="_blank" rel="noopener noreferrer">Follow @antseed</a>
             <button type="button" className="linkish" onClick={() => signOut.mutate()}>
               Signed in as @{me.handle} · sign out
             </button>

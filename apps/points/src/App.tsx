@@ -1,5 +1,5 @@
 import { Footer, Header } from './components/Chrome';
-import { FollowPrompt } from './components/FollowPrompt';
+import { XWelcome } from './components/XWelcome';
 import { useNetwork } from './lib/model';
 import { useRoute } from './lib/router';
 import { Home } from './pages/Home';
@@ -23,7 +23,7 @@ export function App() {
         {route === 'profile' && <Profile net={net} />}
       </main>
       <Footer asOfBlock={net?.asOfBlock} />
-      <FollowPrompt />
+      <XWelcome net={net} />
     </>
   );
 }

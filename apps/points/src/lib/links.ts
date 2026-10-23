@@ -12,4 +12,5 @@ export const LINKS = {
   install: `${SITE}/docs/install`,
   antscan: 'https://antscan.co',
   x: 'https://x.com/antseed',
+  followX: 'https://x.com/intent/follow?screen_name=antseed',
 };

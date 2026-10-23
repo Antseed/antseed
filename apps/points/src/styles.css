@@ -966,3 +966,25 @@ html { scroll-behavior: smooth; }
   .htabs-bar button { font-size: 14px; }
 }
 .htabs-foot .htabs-cta { display: inline-flex; align-items: center; height: 36px; padding: 0 14px; border-radius: 999px; background: var(--ink); color: var(--mint); text-decoration: none; font-size: 13.5px; }
+
+/* One flow after X sign-in: signed in → link your account → follow */
+.xw-scrim { position: fixed; inset: 0; z-index: 60; background: rgba(0, 30, 18, 0.45); display: grid; place-items: center; padding: 16px; animation: follow-in 0.25s ease-out; }
+.xw { position: relative; width: min(460px, 100%); max-height: calc(100svh - 32px); overflow: auto; background: var(--white); color: var(--ink); border-radius: 24px; padding: 26px; display: grid; gap: 18px; box-shadow: 0 40px 80px -30px rgba(0, 30, 18, 0.6); }
+.xw h2 { font-size: 26px; margin: 0; padding-right: 28px; }
+.xw-x { position: absolute; top: 14px; right: 16px; width: 32px; height: 32px; border: 0; border-radius: 50%; background: var(--sand); font-size: 20px; cursor: pointer; color: var(--slate); }
+.xw-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.xw-steps li { display: flex; align-items: center; gap: 10px; font-size: 15px; color: var(--grey); }
+.xw-steps li b { font-weight: 600; }
+.xw-steps li span { width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid var(--line); display: grid; place-items: center; font-size: 12px; flex: none; }
+.xw-steps li[data-state='done'] { color: var(--ink); }
+.xw-steps li[data-state='done'] span { background: var(--green); border-color: var(--green); }
+.xw-steps li[data-state='done'] span::after { content: '✓'; color: var(--ink); font-weight: 700; }
+.xw-steps li[data-state='now'] { color: var(--ink); }
+.xw-steps li[data-state='now'] span { border-color: var(--ink); background: var(--ink); }
+.xw-body { display: grid; gap: 12px; border-top: 1px solid var(--line); padding-top: 16px; }
+.xw-body p { margin: 0; color: var(--slate); font-size: 14.5px; line-height: 1.5; }
+.xw-field { display: grid; gap: 6px; font-size: 13.5px; font-weight: 600; }
+.xw-field input { height: 46px; border: 0; border-radius: 12px; background: var(--sand); padding: 0 14px; font: inherit; font-weight: 400; font-size: 15px; color: var(--ink); min-width: 0; }
+.xw-note { font-size: 13.5px; color: var(--slate); }
+.xw-act { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
+.xw-act .linkish { margin-left: auto; }
