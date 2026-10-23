@@ -59,6 +59,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Desktop: when a chat request fails with a temporary error (for example an overloaded seller or a dropped connection) and the automatic retry then answers, the chat shows the answer without an error under it. Before, the error from the first attempt was shown below the answer that arrived, and the request was recorded as failed in usage analytics.
 - CLI buyer and gateway: image edits (`POST /v1/images/edits`, a multipart form) honour a `peerId@model` model. The buyer pins that seller and sends the bare model, as it already did for JSON requests. Before, it looked for a seller serving the whole `peerId@model` name and answered `model_not_found`.
 - CLI buyer and gateway: automatic routing sends an image edit only to a seller that advertises the `image` parameter for the model, as if the request carried `x-antseed-required-parameters: image`. When none does, the request gets `422 required_capability_unavailable` instead of a 404 from a seller that only takes text. A pinned seller is still used as pinned.
 - CLI: `antseed verifier submit` reads verification events in 1,000-block chunks, so it works with RPC providers that limit log query ranges.
