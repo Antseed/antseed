@@ -190,8 +190,7 @@ export class SellerFreeTierLimiter {
       maxRequestsPerIp: this.maxRequestsPerIp,
       windowMs: this.windowMs,
       nowMs,
-      allowanceOwner: standing?.owner ?? null,
-      maxRequestsPerOwner: ownerLimit,
+      stake: standing ? { positionIds: standing.positionIds, limit: ownerLimit } : null,
     };
     const decision = this._storage
       ? (service === null
@@ -228,8 +227,10 @@ export class SellerFreeTierLimiter {
       checks.push({ kind, limit, count: timestamps.length, oldestTimestamp: timestamps[0] ?? null });
     };
     if (standing) {
-      // Unlimited owners are not tracked in memory: nothing would ever read the bucket.
-      if (ownerLimit !== null) track('stake', `owner:${standing.owner.toLowerCase()}`, ownerLimit);
+      // Unlimited stake is not tracked: nothing would ever read the bucket.
+      if (ownerLimit !== null) {
+        for (const positionId of standing.positionIds) track('stake', `position:${positionId}`, ownerLimit);
+      }
     } else {
       if (this.maxRequestsPerAddress !== null) track('address', `address:${buyerAddress}`, this.maxRequestsPerAddress);
       if (this.maxRequestsPerIp !== null && remoteIp !== null) track('ip', `ip:${remoteIp}`, this.maxRequestsPerIp);

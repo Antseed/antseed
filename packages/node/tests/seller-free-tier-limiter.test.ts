@@ -142,11 +142,13 @@ describe('SellerFreeTierLimiter', () => {
 
   describe('staked tiers', () => {
     const OWNER = '0x' + 'aa'.repeat(20);
+    const NEW_OWNER = '0x' + 'bb'.repeat(20);
     const tier5x = { minPower: 100, multiplier: 5 } as const;
     const unlimited = { minPower: 1_000, multiplier: 'unlimited' } as const;
-    const standing = (tier: typeof tier5x | typeof unlimited) => ({ owner: OWNER, power: 0n, tier });
+    const standing = (tier: typeof tier5x | typeof unlimited, positionIds = [1], owner = OWNER) =>
+      ({ owner, power: 0n, tier, positionIds });
 
-    it('shares one multiplied counter across every buyer of a staked owner and skips the IP limit', () => {
+    it('shares one multiplied allowance across every buyer counted on the same positions and skips the IP limit', () => {
       const storage = persistentStorage();
       const limiter = new SellerFreeTierLimiter({ maxRequestsPerAddress: 1, maxRequestsPerIp: 1, windowMs: 60_000, stakeTiers: [tier5x] }, storage);
       const staked = standing(tier5x);
@@ -160,28 +162,36 @@ describe('SellerFreeTierLimiter', () => {
       storage.close();
     });
 
-    it('records but never limits unlimited owners', () => {
-      const storage = persistentStorage();
-      const limiter = new SellerFreeTierLimiter({ maxRequestsPerAddress: 1, windowMs: 60_000, stakeTiers: [tier5x, unlimited] }, storage);
-      for (let i = 0; i < 20; i += 1) {
-        expect(limiter.consume({ buyerPeerId: BUYER, service: 'free', remoteIp: IP, standing: standing(unlimited), nowMs: 1_000 + i }))
-          .toMatchObject({ allowed: true, limit: null });
+    it('keeps a transferred position’s used allowance with the position', () => {
+      for (const storage of [persistentStorage(), null]) {
+        const limiter = new SellerFreeTierLimiter({ maxRequestsPerAddress: 1, windowMs: 60_000, stakeTiers: [tier5x] }, storage);
+        for (let i = 0; i < 5; i += 1) {
+          expect(limiter.consume({ buyerPeerId: BUYER, service: 'free', standing: standing(tier5x, [7, 8]), nowMs: 1_000 + i }).allowed).toBe(true);
+        }
+        // Position 8 moves to a fresh wallet: its new owner inherits the used allowance.
+        expect(limiter.consume({ buyerPeerId: OTHER_BUYER, service: 'free', standing: standing(tier5x, [8], NEW_OWNER), nowMs: 2_000 }))
+          .toMatchObject({ allowed: false, limitedBy: 'stake' });
+        expect(limiter.consume({ buyerPeerId: BUYER, service: 'free', standing: standing(tier5x, [7]), nowMs: 2_000 }))
+          .toMatchObject({ allowed: false, limitedBy: 'stake' });
+        // Fresh stake brings its own allowance.
+        expect(limiter.consume({ buyerPeerId: OTHER_BUYER, service: 'free', standing: standing(tier5x, [9], NEW_OWNER), nowMs: 2_000 }).allowed).toBe(true);
+        storage?.close();
       }
-      // Staked usage still counts toward the buyer's own base counter once the stake lapses.
-      expect(limiter.consume({ buyerPeerId: BUYER, service: 'free', remoteIp: IP, nowMs: 2_000 }))
-        .toMatchObject({ allowed: false, limitedBy: 'address' });
-      storage.close();
     });
 
-    it('applies staked tiers with in-memory accounting', () => {
-      const limiter = new SellerFreeTierLimiter({ maxRequestsPerIp: 1, windowMs: 60_000, stakeTiers: [{ minPower: 100, multiplier: 2 }] });
-      const staked = { owner: OWNER, power: 0n, tier: { minPower: 100, multiplier: 2 } };
-      expect(limiter.consume({ buyerPeerId: BUYER, service: 'free', remoteIp: IP, standing: staked, nowMs: 1 }).allowed).toBe(true);
-      expect(limiter.consume({ buyerPeerId: OTHER_BUYER, service: 'free', remoteIp: IP, standing: staked, nowMs: 2 }).allowed).toBe(true);
-      expect(limiter.consume({ buyerPeerId: THIRD_BUYER, service: 'free', remoteIp: IP, standing: staked, nowMs: 3 }))
-        .toMatchObject({ allowed: false, limitedBy: 'stake' });
-      // The IP bucket was never touched by staked requests.
-      expect(limiter.consume({ buyerPeerId: THIRD_BUYER, service: 'free', remoteIp: IP, nowMs: 4 }).allowed).toBe(true);
+    it('keeps staked traffic out of the base IP and address counters', () => {
+      for (const storage of [persistentStorage(), null]) {
+        const limiter = new SellerFreeTierLimiter({ maxRequestsPerAddress: 1, maxRequestsPerIp: 1, windowMs: 60_000, stakeTiers: [tier5x, unlimited] }, storage);
+        for (let i = 0; i < 3; i += 1) {
+          expect(limiter.consume({ buyerPeerId: BUYER, service: 'free', remoteIp: IP, standing: standing(unlimited), nowMs: 1_000 + i }))
+            .toMatchObject({ allowed: true, limit: null });
+        }
+        // An unstaked buyer on the same network still has its whole base allowance.
+        expect(limiter.consume({ buyerPeerId: OTHER_BUYER, service: 'free', remoteIp: IP, nowMs: 2_000 }).allowed).toBe(true);
+        // So does the staked buyer once its stake lapses.
+        expect(limiter.consume({ buyerPeerId: BUYER, service: 'free', remoteIp: OTHER_IP, nowMs: 2_000 }).allowed).toBe(true);
+        storage?.close();
+      }
     });
 
     it('advertises tiers only while a stake resolver enforces them', () => {

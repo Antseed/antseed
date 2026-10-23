@@ -181,8 +181,8 @@ export {
   validateFreeTierStakeTiers,
 } from './free-tier-program.js';
 export type { FreeTierBaseLimits, FreeTierProgram, FreeTierStakeTier } from './free-tier-program.js';
-export { FreeTierStakeResolver } from './free-tier-stake-resolver.js';
-export type { FreeTierStakeReader, FreeTierStakeResolverOptions, FreeTierStakeStanding } from './free-tier-stake-resolver.js';
+export { FreeTierStakeResolver, MAX_FREE_TIER_COUNTED_POSITIONS } from './free-tier-stake-resolver.js';
+export type { FreeTierStakePosition, FreeTierStakeReader, FreeTierStakeResolverOptions, FreeTierStakeStanding } from './free-tier-stake-resolver.js';
 
 // Buyer payment negotiator (402 handling, SpendingAuth flow, cost tracking)
 export { BuyerPaymentNegotiator } from './buyer-payment-negotiator.js';

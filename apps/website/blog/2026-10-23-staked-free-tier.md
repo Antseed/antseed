@@ -41,7 +41,7 @@ Free access is one reason. The stake is also a normal seller-pool position: it e
 
 ## One allowance per staker
 
-The seller checks the stake of both your buyer address and its operator, the wallet that funds your deposits, and uses whichever is larger. Every buyer address behind the same staker shares one counter, so spreading usage across wallets doesn't multiply it. Staked buyers also skip the per-IP limit, which matters for teams behind one office network or gateway.
+The seller checks the stake of your buyer address and, once you have paid for usage, of its operator, the wallet that funds your deposits, and uses whichever is larger. Usage is counted on the staked positions, so every buyer address behind the same stake shares one allowance, and moving a position to another wallet doesn't reset it. Staked buyers also skip the per-IP limit, which matters for teams behind one office network or gateway.
 
 ## Get started
 

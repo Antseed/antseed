@@ -1,30 +1,41 @@
 import { freeTierStakeTierForPower, type FreeTierStakeTier } from './free-tier-program.js';
 import { debugWarn } from '../utils/debug.js';
 
+/** A seller-pool position and its staking power at the current epoch. */
+export interface FreeTierStakePosition {
+  id: number;
+  /** ANTS wei × epochs of lock remaining. */
+  power: bigint;
+}
+
 /** On-chain reads the staked free tier needs. */
 export interface FreeTierStakeReader {
   /** The seller's agent id in the seller pools, or 0 when it has none. */
   sellerAgentId(): Promise<number>;
   currentEpoch(): Promise<number>;
-  /** Power (ANTS wei × epochs remaining) `staker` holds in `agentId`'s pool at `epoch`. */
-  stakerPower(staker: string, agentId: number, epoch: number): Promise<bigint>;
+  /** `staker`'s positions with power in `agentId`'s pool at `epoch`. */
+  stakerPositions(staker: string, agentId: number, epoch: number): Promise<FreeTierStakePosition[]>;
   /** The buyer's authorized operator in AntseedDeposits, or null when unset. */
   operatorOf(buyer: string): Promise<string | null>;
+  /** Whether the buyer has been charged for paid usage on-chain. */
+  hasPaidUsage(buyer: string): Promise<boolean>;
 }
 
 /** A buyer whose stake (its own or its operator's) reaches a tier on this seller. */
 export interface FreeTierStakeStanding {
-  /**
-   * Address holding the stake. Every buyer address resolving to the same
-   * owner shares one allowance counter, so adding wallets splits it.
-   */
+  /** Address holding the stake. */
   owner: string;
   power: bigint;
   tier: FreeTierStakeTier;
+  /**
+   * Positions the allowance is counted on. Usage follows the positions, not
+   * the owner, so transferring a position carries its used allowance along.
+   */
+  positionIds: number[];
 }
 
 export interface FreeTierStakeResolverOptions {
-  /** How long a buyer's standing and an owner's power are reused. Default: 10 minutes. */
+  /** How long a buyer's standing and an owner's positions are reused. Default: 10 minutes. */
   cacheTtlMs?: number;
   /** How long a failed lookup is remembered before retrying. Default: 30 seconds. */
   failureTtlMs?: number;
@@ -40,14 +51,18 @@ interface CacheEntry<T> {
 }
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
+/** Most positions one request is counted on; an owner's strongest positions come first. */
+export const MAX_FREE_TIER_COUNTED_POSITIONS = 64;
 
 /**
  * Resolves which staked tier, if any, a buyer gets on this seller.
  *
- * The buyer's own stake and its operator's stake are both considered; the
- * larger one wins and becomes the allowance owner. Any read failure resolves
- * to no tier, so the buyer keeps the base limits: an RPC outage can only make
- * the free tier stricter, never looser.
+ * The buyer's own stake counts, and so does its operator's once the buyer has
+ * paid for usage on-chain: naming an operator needs only the buyer's
+ * signature, so the paid-usage requirement keeps strangers from borrowing a
+ * staker's tier for free. The larger stake wins. Any read failure resolves to
+ * no tier, so the buyer keeps the base limits: an RPC outage can only make the
+ * free tier stricter, never looser.
  */
 export class FreeTierStakeResolver {
   private readonly _cacheTtlMs: number;
@@ -56,7 +71,7 @@ export class FreeTierStakeResolver {
   private readonly _maxEntries: number;
   private readonly _now: () => number;
   private readonly _standings = new Map<string, CacheEntry<FreeTierStakeStanding | null>>();
-  private readonly _powers = new Map<string, CacheEntry<bigint>>();
+  private readonly _positions = new Map<string, CacheEntry<FreeTierStakePosition[]>>();
   private readonly _inFlight = new Map<string, Promise<FreeTierStakeStanding | null>>();
   private _agentId: CacheEntry<number> | null = null;
   private _epoch: CacheEntry<number> | null = null;
@@ -110,30 +125,40 @@ export class FreeTierStakeResolver {
   private async _lookup(buyer: string): Promise<FreeTierStakeStanding | null> {
     const agentId = await this._sellerAgentId();
     if (agentId <= 0) return null;
-    const [epoch, operator] = await Promise.all([this._currentEpoch(), this._reader.operatorOf(buyer)]);
-    const candidates = [buyer];
-    const normalizedOperator = operator?.toLowerCase();
-    if (normalizedOperator && normalizedOperator !== ZERO_ADDRESS && normalizedOperator !== buyer) {
-      candidates.push(normalizedOperator);
-    }
-    const powers = await Promise.all(candidates.map((owner) => this._ownerPower(owner, agentId, epoch)));
+    const [epoch, operator] = await Promise.all([this._currentEpoch(), this._sharingOperator(buyer)]);
+    const owners = operator ? [buyer, operator] : [buyer];
+    const holdings = await Promise.all(owners.map((owner) => this._ownerPositions(owner, agentId, epoch)));
 
+    const powers = holdings.map((positions) => positions.reduce((sum, position) => sum + position.power, 0n));
     let bestIndex = 0;
-    for (let index = 1; index < candidates.length; index += 1) {
+    for (let index = 1; index < owners.length; index += 1) {
       if (powers[index]! > powers[bestIndex]!) bestIndex = index;
     }
-    const owner = candidates[bestIndex]!;
+    const owner = owners[bestIndex]!;
+    const positions = holdings[bestIndex]!;
     const power = powers[bestIndex]!;
     const tier = freeTierStakeTierForPower(this.stakeTiers, power);
-    return tier ? { owner, power, tier } : null;
+    if (!tier) return null;
+    const positionIds = [...positions]
+      .sort((a, b) => (a.power === b.power ? a.id - b.id : a.power > b.power ? -1 : 1))
+      .slice(0, MAX_FREE_TIER_COUNTED_POSITIONS)
+      .map((position) => position.id);
+    return { owner, power, tier, positionIds };
   }
 
-  private async _ownerPower(owner: string, agentId: number, epoch: number): Promise<bigint> {
-    const cached = this._powers.get(owner);
+  /** The buyer's operator, when it may share its stake with this buyer. */
+  private async _sharingOperator(buyer: string): Promise<string | null> {
+    const operator = (await this._reader.operatorOf(buyer))?.toLowerCase();
+    if (!operator || operator === ZERO_ADDRESS || operator === buyer) return null;
+    return (await this._reader.hasPaidUsage(buyer)) ? operator : null;
+  }
+
+  private async _ownerPositions(owner: string, agentId: number, epoch: number): Promise<FreeTierStakePosition[]> {
+    const cached = this._positions.get(owner);
     if (cached && cached.expiresAt > this._now()) return cached.value;
-    const power = await this._reader.stakerPower(owner, agentId, epoch);
-    this._remember(this._powers, owner, power, this._cacheTtlMs);
-    return power;
+    const positions = await this._reader.stakerPositions(owner, agentId, epoch);
+    this._remember(this._positions, owner, positions, this._cacheTtlMs);
+    return positions;
   }
 
   private async _sellerAgentId(): Promise<number> {

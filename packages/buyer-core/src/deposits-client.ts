@@ -80,6 +80,12 @@ export class DepositsClient extends BaseEvmClient {
     return contract.getFunction('getOperator')(buyerAddr) as Promise<string>;
   }
 
+  /** Distinct sellers that have charged this buyer; nonzero once it has paid for usage. */
+  async getUniqueSellersCharged(buyerAddr: string): Promise<bigint> {
+    const contract = new Contract(this._contractAddress, DEPOSITS_ABI, this._provider);
+    return contract.getFunction('uniqueSellersCharged')(buyerAddr) as Promise<bigint>;
+  }
+
   async getOperatorNonce(buyerAddr: string): Promise<bigint> {
     const contract = new Contract(this._contractAddress, DEPOSITS_ABI, this._provider);
     return contract.getFunction('getOperatorNonce')(buyerAddr) as Promise<bigint>;

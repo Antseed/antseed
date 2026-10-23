@@ -28,12 +28,11 @@ export interface FreeTierUsageInput {
   windowMs: number;
   nowMs?: number;
   /**
-   * Staked allowance owner. When set, the request is counted against this
-   * owner's shared counter instead of the per-address and per-IP limits.
+   * Staked allowance. When set, the request is counted on each of these
+   * seller-pool positions instead of the per-address and per-IP limits, and
+   * is admitted while every position has room. A null limit is unlimited.
    */
-  allowanceOwner?: string | null;
-  /** Limit for the owner's counter; null means unlimited. */
-  maxRequestsPerOwner?: number | null;
+  stake?: { positionIds: number[]; limit: number | null } | null;
 }
 
 export interface FreeTierLimitCheck {
@@ -398,6 +397,7 @@ export class MeteringStorage {
     const windowStart = nowMs - input.windowMs;
     const buyerAddress = input.buyerAddress.toLowerCase();
     const remoteIp = input.remoteIp ?? '';
+    const stake = input.stake ?? null;
     const pruneIntervalMs = Math.min(input.windowMs, 60 * 60_000);
     if (
       service !== null && (
@@ -407,38 +407,53 @@ export class MeteringStorage {
       )
     ) {
       this.db.prepare('DELETE FROM free_tier_usage WHERE timestamp < ?').run(windowStart);
+      this.db.prepare('DELETE FROM free_tier_position_usage WHERE timestamp < ?').run(windowStart);
       this.lastFreeTierPruneAt = nowMs;
     }
-    const allowanceOwner = input.allowanceOwner?.toLowerCase() ?? '';
-    const countUsage = (column: 'buyer_address' | 'remote_ip' | 'allowance_owner', key: string): { count: number; oldestTimestamp: number | null } => {
+    // Base limits count only unstaked requests, so staked traffic never uses
+    // up the allowance of unstaked buyers sharing an address or network.
+    const countBaseUsage = (column: 'buyer_address' | 'remote_ip', key: string): { count: number; oldestTimestamp: number | null } => {
       const row = this.db.prepare(`
         SELECT COUNT(*) AS request_count, MIN(timestamp) AS oldest_timestamp
         FROM free_tier_usage
-        WHERE ${column} = ? AND timestamp >= ?
+        WHERE ${column} = ? AND staked = 0 AND timestamp >= ?
       `).get(key, windowStart) as { request_count: number; oldest_timestamp: number | null };
+      return { count: row.request_count, oldestTimestamp: row.oldest_timestamp };
+    };
+    const countPositionUsage = (positionId: number): { count: number; oldestTimestamp: number | null } => {
+      const row = this.db.prepare(`
+        SELECT COUNT(*) AS request_count, MIN(timestamp) AS oldest_timestamp
+        FROM free_tier_position_usage
+        WHERE position_id = ? AND timestamp >= ?
+      `).get(positionId, windowStart) as { request_count: number; oldest_timestamp: number | null };
       return { count: row.request_count, oldestTimestamp: row.oldest_timestamp };
     };
     const consume = this.db.transaction((): FreeTierConsumption => {
       const checks: FreeTierLimitCheck[] = [];
-      if (allowanceOwner !== '') {
-        const ownerLimit = input.maxRequestsPerOwner ?? null;
-        if (ownerLimit !== null) {
-          checks.push({ kind: 'stake', limit: ownerLimit, ...countUsage('allowance_owner', allowanceOwner) });
+      if (stake) {
+        if (stake.limit !== null) {
+          for (const positionId of stake.positionIds) {
+            checks.push({ kind: 'stake', limit: stake.limit, ...countPositionUsage(positionId) });
+          }
         }
       } else {
         if (input.maxRequestsPerAddress !== null) {
-          checks.push({ kind: 'address', limit: input.maxRequestsPerAddress, ...countUsage('buyer_address', buyerAddress) });
+          checks.push({ kind: 'address', limit: input.maxRequestsPerAddress, ...countBaseUsage('buyer_address', buyerAddress) });
         }
         if (input.maxRequestsPerIp !== null && remoteIp !== '') {
-          checks.push({ kind: 'ip', limit: input.maxRequestsPerIp, ...countUsage('remote_ip', remoteIp) });
+          checks.push({ kind: 'ip', limit: input.maxRequestsPerIp, ...countBaseUsage('remote_ip', remoteIp) });
         }
       }
       const decision = evaluateFreeTierLimits(checks, input.windowMs, nowMs);
       if (decision.allowed && service !== null) {
         this.db.prepare(`
-          INSERT INTO free_tier_usage (buyer_address, remote_ip, service, timestamp, allowance_owner)
+          INSERT INTO free_tier_usage (buyer_address, remote_ip, service, timestamp, staked)
           VALUES (?, ?, ?, ?, ?)
-        `).run(buyerAddress, remoteIp, service, nowMs, allowanceOwner);
+        `).run(buyerAddress, remoteIp, service, nowMs, stake ? 1 : 0);
+        if (stake && stake.limit !== null) {
+          const recordPosition = this.db.prepare('INSERT INTO free_tier_position_usage (position_id, timestamp) VALUES (?, ?)');
+          for (const positionId of stake.positionIds) recordPosition.run(positionId, nowMs);
+        }
       }
       return decision;
     });
@@ -520,6 +535,7 @@ export class MeteringStorage {
     const verificationsResult = deleteVerifications.run(timestampMs);
     const sessionsResult = deleteSessions.run(timestampMs);
     const freeTierUsageResult = deleteFreeTierUsage.run(timestampMs);
+    this.db.prepare('DELETE FROM free_tier_position_usage WHERE timestamp < ?').run(timestampMs);
 
     return {
       eventsDeleted: eventsResult.changes,

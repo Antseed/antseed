@@ -213,7 +213,7 @@ Buyers who lock ANTS in your seller pool get a larger free allowance. Their stak
 
 Staking power is ANTS × epochs (weeks) of lock remaining, the same power the seller pool uses for rewards. It is zero until a position activates in the next epoch and shrinks as the lock runs down; a max-locked position keeps 104 epochs of power. The base limit is `maxRequestsPerAddress`, or `maxRequestsPerIp` when only that is set.
 
-The seller reads power from `AntseedSellerPools` for the buyer's address and for its operator in `AntseedDeposits`, and uses whichever is larger. Every buyer address behind the same staked owner shares one counter, so adding wallets splits the allowance instead of multiplying it. Staked buyers skip the per-IP limit. Lookups are cached for 10 minutes; if the chain can't be read, buyers keep the base limits.
+The seller reads power from `AntseedSellerPools` for the buyer's address and, once the buyer has paid for usage on-chain, for its operator in `AntseedDeposits`, and uses whichever is larger. Usage is counted on the staked positions themselves, so every buyer behind the same stake shares one allowance, and transferring a position to a new wallet carries its used allowance with it. Staked requests skip the per-IP limit and don't count toward the base limits of unstaked buyers. Lookups are cached for 10 minutes; if the chain can't be read, buyers keep the base limits.
 
 Set your own program with `stakeTiers`, or `[]` to turn staked tiers off. Up to four tiers; `minPower` and `multiplier` must both increase, and `"unlimited"` can only be the last:
 

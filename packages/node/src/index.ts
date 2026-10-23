@@ -301,8 +301,8 @@ export {
   validateFreeTierStakeTiers,
 } from './payments/free-tier-program.js';
 export type { FreeTierBaseLimits, FreeTierProgram, FreeTierStakeTier } from './payments/free-tier-program.js';
-export { FreeTierStakeResolver } from './payments/free-tier-stake-resolver.js';
-export type { FreeTierStakeReader, FreeTierStakeResolverOptions, FreeTierStakeStanding } from './payments/free-tier-stake-resolver.js';
+export { FreeTierStakeResolver, MAX_FREE_TIER_COUNTED_POSITIONS } from './payments/free-tier-stake-resolver.js';
+export type { FreeTierStakePosition, FreeTierStakeReader, FreeTierStakeResolverOptions, FreeTierStakeStanding } from './payments/free-tier-stake-resolver.js';
 export { SellerPaymentManager } from './payments/seller-payment-manager.js';
 export type { SellerPaymentConfig } from './payments/seller-payment-manager.js';
 export { ChannelStore } from './payments/channel-store.js';

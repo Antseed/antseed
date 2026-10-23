@@ -40,7 +40,7 @@ When you hit a limit, the seller answers HTTP 429 with `code: "free_tier_exhaust
 
 ## Stake on a seller
 
-Stake from the wallet the seller will check: your buyer identity's address, or the wallet set as its operator in `AntseedDeposits`, which is usually the wallet that funds your deposits. The seller reads both and uses whichever has more power.
+Stake from the wallet the seller will check: your buyer identity's address, or the wallet set as its operator in `AntseedDeposits`, which is usually the wallet that funds your deposits. The operator's stake only counts once the buyer has paid for usage on-chain. The seller reads both and uses whichever has more power.
 
 The easiest way is the ANTS dashboard. Connect your wallet there and stake into the seller's pool:
 
@@ -59,7 +59,7 @@ The new allowance starts once the position activates in the next epoch. Sellers 
 
 ## One allowance per staker
 
-All buyer addresses behind the same staker share one counter on that seller. An operator with five buyer wallets and a 5× tier gets 5× the base limit for all of them together, not 5× each. Staked buyers skip the seller's per-IP limit, so users behind a shared IP or a gateway are not cut off by each other.
+The seller counts usage on the staked positions, so all buyer addresses behind the same stake share one allowance on that seller. An operator with five buyer wallets and a 5× tier gets 5× the base limit for all of them together, not 5× each. Transferring a position to another wallet moves its used allowance with it. Staked buyers skip the seller's per-IP limit, so users behind a shared IP or a gateway are not cut off by each other.
 
 If the seller can't read the chain, it falls back to the base limits for that request.
 

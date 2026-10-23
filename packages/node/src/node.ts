@@ -2799,8 +2799,8 @@ export class AntseedNode extends EventEmitter {
   }
 
   /**
-   * Back staked free-tier tiers with on-chain reads: the buyer's (or its
-   * operator's) power in this seller's pool. Without the seller pools and
+   * Back staked free-tier tiers with on-chain reads: the buyer's (or, once it
+   * has paid for usage, its operator's) positions in this seller's pool. Without the seller pools and
    * deposits contracts every buyer keeps the base limits and no tiers are
    * advertised.
    */
@@ -2825,8 +2825,9 @@ export class AntseedNode extends EventEmitter {
     limiter.setStakeResolver(new FreeTierStakeResolver({
       sellerAgentId: () => sellerPools.agentIdForSeller(sellerAddress),
       currentEpoch: () => sellerPools.currentEpoch(),
-      stakerPower: (staker, agentId, epoch) => sellerPools.stakerPowerInPool(staker, agentId, epoch),
+      stakerPositions: (staker, agentId, epoch) => sellerPools.stakerPositionsInPool(staker, agentId, epoch),
       operatorOf: async (buyer) => (await depositsClient.getOperator(buyer)) || null,
+      hasPaidUsage: async (buyer) => (await depositsClient.getUniqueSellersCharged(buyer)) > 0n,
     }, limiter.stakeTiers));
     debugLog(`[Node] Staked free-tier tiers enabled (pools=${payments.sellerPoolsAddress.slice(0, 10)}...)`);
   }
