@@ -989,3 +989,13 @@ html { scroll-behavior: smooth; }
 .xw-act { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
 .xw-act .linkish { margin-left: auto; }
 .xw-alt { justify-self: start; font-size: 13.5px; }
+
+/* Header X account: "Link your wallet" until linked, then a small menu */
+button.x-me { border: 0; font: inherit; font-weight: 600; font-size: 14px; cursor: pointer; }
+.x-link { background: var(--ink); color: var(--mint); box-shadow: none; }
+.x-link:hover { background: #0b2e20; }
+.x-menu { position: relative; }
+.x-menu-list { position: absolute; right: 0; top: calc(100% + 8px); z-index: 50; min-width: 200px; background: var(--white); border-radius: 16px; padding: 6px; box-shadow: 0 20px 40px -18px rgba(0, 30, 18, 0.5); display: grid; }
+.x-menu-list > * { display: block; text-align: left; border: 0; background: transparent; font: inherit; font-size: 14.5px; font-weight: 500; color: var(--ink); text-decoration: none; padding: 10px 12px; border-radius: 10px; cursor: pointer; }
+.x-menu-list > *:hover { background: var(--sand); }
+.x-link { white-space: nowrap; padding-right: 14px; }

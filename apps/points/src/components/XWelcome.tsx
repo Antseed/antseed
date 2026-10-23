@@ -8,6 +8,7 @@ import { isAddress, shortAddress } from '../lib/format';
 import { LINKS } from '../lib/links';
 import { useAccount, type Network } from '../lib/model';
 import { useLinkWallet, useMe } from '../lib/social';
+import { onOpenWalletLink } from '../lib/xWelcome';
 import { XLogo } from './Social';
 
 const KEY = 'antseed-points.x-welcome-done';
@@ -38,30 +39,36 @@ export function XWelcome({ net }: { net: Network | undefined }) {
   const id = me?.signedIn ? me.xId ?? me.handle ?? null : null;
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState<'link' | 'follow'>('link');
+  // 'welcome' right after sign-in (all three steps); 'link' when reopened only to link a wallet.
+  const [mode, setMode] = useState<'welcome' | 'link'>('welcome');
   useEffect(() => {
     if (!id || isDone(id)) return setOpen(false);
     setOpen(true);
+    setMode('welcome');
     setStep(me?.addresses?.length ? 'follow' : 'link');
     // Open once per sign-in; later changes to `me` (like a new link) must not reset the step.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+  // Reopened on purpose (header menu, Your points): straight to connecting a wallet, done flag or not.
+  useEffect(() => onOpenWalletLink(() => { setMode('link'); setStep('link'); setOpen(true); }), []);
   if (!open || !id || !me) return null;
   const close = () => {
     markDone(id);
     setOpen(false);
   };
 
+
   return (
     <div className="xw-scrim" role="presentation">
       <div className="xw" role="dialog" aria-modal="true" aria-labelledby="xw-h">
         <button type="button" className="xw-x" aria-label="Close" onClick={close}>×</button>
-        <h2 id="xw-h" className="disp">You're in, @{me.handle}</h2>
-        <ol className="xw-steps">
+        <h2 id="xw-h" className="disp">{mode === 'link' ? 'Link a wallet' : `You're in, @${me.handle}`}</h2>
+        {mode === 'welcome' && <ol className="xw-steps">
           <li data-state="done"><span /><b>Signed in with X</b></li>
           <li data-state={step === 'link' ? 'now' : 'done'}><span /><b>Connect your wallet</b></li>
           <li data-state={step === 'follow' ? 'now' : 'todo'}><span /><b>Follow @antseed</b></li>
-        </ol>
-        {step === 'link' ? <LinkStep net={net} onDone={() => setStep('follow')} /> : <FollowStep onDone={close} />}
+        </ol>}
+        {step === 'link' ? <LinkStep net={net} onDone={() => (mode === 'link' ? close() : setStep('follow'))} /> : <FollowStep onDone={close} />}
       </div>
     </div>
   );

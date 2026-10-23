@@ -9,6 +9,7 @@ import { avatarColor, shortAddress } from '../lib/format';
 import { Link } from '../lib/router';
 import { profileHref, signInHref, useLinkWallet, useMe, useProfiles, useSignOut, useUnlinkWallet, type PublicProfile } from '../lib/social';
 import { LINKS } from '../lib/links';
+import { openWalletLink } from '../lib/xWelcome';
 
 export function XLogo({ size = 14 }: { size?: number }) {
   return (
@@ -33,6 +34,8 @@ export function Avatar({ src, name, size = 28 }: { src?: string; name: string; s
 /** Header: "Sign in with X", or your avatar and handle once signed in. Hidden when X isn't configured. */
 export function XAccountButton() {
   const me = useMe().data;
+  const signOut = useSignOut();
+  const [open, setOpen] = useState(false);
   if (!me?.xEnabled) return null;
   if (!me.signedIn || !me.handle) {
     return (
@@ -42,11 +45,31 @@ export function XAccountButton() {
       </a>
     );
   }
+  const linked = Boolean(me.addresses?.length);
+  // Signed in but no wallet linked yet: the header itself asks for it, so a skipped step is never lost.
+  if (!linked) {
+    return (
+      <button type="button" className="x-me x-link" onClick={openWalletLink} title={`Signed in as @${me.handle}`}>
+        <Avatar src={me.avatar} name={me.handle} size={30} />
+        <span>Link wallet</span>
+      </button>
+    );
+  }
   return (
-    <Link className="x-me" href={profileHref(me.handle)} title="Your profile">
-      <Avatar src={me.avatar} name={me.handle} size={30} />
-      <span className="hide-s">@{me.handle}</span>
-    </Link>
+    <div className="x-menu" onMouseLeave={() => setOpen(false)}>
+      <button type="button" className="x-me" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+        <Avatar src={me.avatar} name={me.handle} size={30} />
+        <span className="hide-s">@{me.handle}</span>
+      </button>
+      {open && (
+        <div className="x-menu-list" role="menu">
+          <Link role="menuitem" href={profileHref(me.handle)} onClick={() => setOpen(false)}>Your profile</Link>
+          <button type="button" role="menuitem" onClick={() => { setOpen(false); openWalletLink(); }}>Link another wallet</button>
+          <a role="menuitem" href={LINKS.followX} target="_blank" rel="noopener noreferrer" onClick={() => setOpen(false)}>Follow @antseed</a>
+          <button type="button" role="menuitem" onClick={() => { setOpen(false); signOut.mutate(); }}>Sign out</button>
+        </div>
+      )}
+    </div>
   );
 }
 
