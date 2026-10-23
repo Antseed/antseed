@@ -22,9 +22,11 @@ import {
   resolveReferenceRequestOverrides,
 } from './model-reference.js'
 import type { VerifierModelCatalog } from './openrouter-catalog.js'
+import { setAuditedModelsForTesting } from './audited-models.js'
 import { appendModelReferenceToBank, inspectModelProbeBankPower, loadBankEnrollmentReference } from './probe-bank.js'
 
 const MODEL = 'gpt-test'
+setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test' } })
 
 test('collector promotes reserve probes that distinguish the failing contrast first', async () => {
   const probes = reference(100).probes.slice(0, 2)
@@ -46,7 +48,7 @@ test('collector promotes reserve probes that distinguish the failing contrast fi
 test('bank top-up reuses enrolled measurements, grows against the failed contrast, and resumes without repeating calls', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-top-up-'))
   const policy = config()
-  policy.referenceEndpoint!.models[MODEL]!.contrastModels = ['contrast-test', 'contrast-other']
+  policy.models![MODEL]!.contrastModels = ['contrast-test', 'contrast-other']
   policy.referenceEndpoint!.contrastModelBank!['contrast-other'] = {
     upstreamModel: 'contrast-other', pricing: { inputUsdPerMillion: 0.1, outputUsdPerMillion: 0.2 }, capabilityRank: 2,
   }
@@ -96,17 +98,20 @@ test('bank top-up reuses enrolled measurements, grows against the failed contras
     assert.ok((await inspectModelProbeBankPower({ banksDir, model: MODEL })).selectedProbeCount)
     await expanded.finalize()
     const changedContrast = structuredClone(policy)
-    changedContrast.referenceEndpoint!.models[MODEL]!.contrastModels = ['contrast-test']
+    changedContrast.models![MODEL]!.contrastModels = ['contrast-test']
     await assert.rejects(buildModelReference({
       model: MODEL, referencesDir: directory, config: changedContrast, initialReference,
       fetchFn: async () => { throw new Error('must not mix contrast enrollments') },
     }), /incompatible/)
-    const incompatible = config()
-    incompatible.referenceEndpoint!.models[MODEL]!.upstreamModel = 'other-model'
-    await assert.rejects(buildModelReference({
-      model: MODEL, referencesDir: directory, config: incompatible, initialReference,
-      fetchFn: async () => { throw new Error('must not make paid requests') },
-    }), /incompatible/)
+    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'other-model' } })
+    try {
+      await assert.rejects(buildModelReference({
+        model: MODEL, referencesDir: directory, config: config(), initialReference,
+        fetchFn: async () => { throw new Error('must not make paid requests') },
+      }), /incompatible/)
+    } finally {
+      setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test' } })
+    }
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
@@ -116,17 +121,16 @@ function config(overrides: Partial<VerifierCLIConfig> = {}): VerifierCLIConfig {
   return {
     probeRequestTimeoutMs: 120_000,
     referenceRetryBaseDelayMs: 1,
+    models: {
+      [MODEL]: {
+        contrastModels: ['contrast-test'],
+        pricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 },
+      },
+    },
     referenceEndpoint: {
       baseUrl: 'https://reference.test/v1',
       sourceId: 'test-source',
       trust: 'trusted' as const,
-      models: {
-        [MODEL]: {
-          upstreamModel: 'upstream-test',
-          contrastModels: ['contrast-test'],
-          pricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 },
-        },
-      },
       contrastModelBank: {
         'contrast-test': {
           upstreamModel: 'contrast-test',
@@ -261,7 +265,7 @@ test('missing references fail with the explicit build command', async () => {
 test('reference build uses minimum mandatory reasoning and persists the target override', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-build-'))
   const value = config()
-  value.referenceEndpoint!.models[MODEL]!.serviceAliases = ['model.test-alias']
+  setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', serviceAliases: ['model.test-alias'] } })
   const requestBodies: Array<Record<string, unknown>> = []
   const fetchFn: typeof fetch = async (_url, init) => {
     const body = JSON.parse(String(init?.body)) as Record<string, unknown> & {
@@ -318,6 +322,7 @@ test('reference build uses minimum mandatory reasoning and persists the target o
     await built.finalize()
     await assert.rejects(readFile(join(directory, '.checkpoints', `${MODEL}.json`), 'utf8'), { code: 'ENOENT' })
   } finally {
+    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test' } })
     await rm(directory, { recursive: true, force: true })
   }
 })
@@ -331,7 +336,7 @@ test('reference build sends target requests to a native Anthropic upstream and r
     },
   })
   value.referenceEndpoint!.apiKey = 'openrouter-secret'
-  value.referenceEndpoint!.models[MODEL]!.upstream = { name: 'anthropic-native', model: 'claude-test-native' }
+  value.models![MODEL]!.upstream = { name: 'anthropic-native', model: 'claude-test-native' }
   const requests: Array<{ url: string; headers: Record<string, string>; body: Record<string, unknown> }> = []
   const fetchFn: typeof fetch = async (url, init) => {
     const body = JSON.parse(String(init?.body)) as Record<string, unknown> & {
@@ -417,7 +422,7 @@ test('the default reference endpoint records OpenRouter-style upstream provenanc
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-default-upstream-'))
   const value = config()
   value.referenceEndpoint!.baseUrl = 'https://openrouter.ai/api/v1'
-  value.referenceEndpoint!.models[MODEL]!.referenceProvider = { order: ['Provider A'] }
+  value.models![MODEL]!.referenceProvider = { order: ['Provider A'] }
   const fetchFn: typeof fetch = async (_url, init) => {
     const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
     const content = successfulContent(body.model, body.messages.at(-1)?.content ?? '')
@@ -450,7 +455,7 @@ test('reference build routes only target requests through a pinned Antseed peer'
   const requests: Array<{ url: string; headers: Record<string, string>; body: Record<string, unknown> }> = []
   const value = config()
   value.referenceEndpoint!.apiKey = 'openrouter-secret'
-  value.referenceEndpoint!.models[MODEL]!.referenceRoute = {
+  value.models![MODEL]!.referenceRoute = {
     type: 'antseed',
     service: 'fable-5-coding-only',
     peerId: '12'.repeat(20),
@@ -511,7 +516,7 @@ test('an antseed entry in verifier.upstreams routes target requests to that pinn
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-upstream-peer-'))
   const peerId = '34'.repeat(20)
   const value = config({ upstreams: { 'trusted-seller': { type: 'antseed', peerId } } })
-  value.referenceEndpoint!.models[MODEL]!.upstream = {
+  value.models![MODEL]!.upstream = {
     name: 'trusted-seller',
     model: 'seller-service',
     pricing: { inputUsdPerMillion: 0.5, outputUsdPerMillion: 1.5 },
@@ -553,7 +558,7 @@ test('Antseed reference route failures preserve cached work and never fall back'
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-route-resume-'))
   const value = config()
   value.referenceEndpoint!.apiKey = 'openrouter-secret'
-  value.referenceEndpoint!.models[MODEL]!.referenceRoute = {
+  value.models![MODEL]!.referenceRoute = {
     type: 'antseed',
     service: 'fable-5-coding-only',
     peerId: '34'.repeat(20),
@@ -865,7 +870,7 @@ test('reference build isolates an unavailable contrast after its first terminal 
   let gatedAttempts = 0
   const logs: string[] = []
   const value = config()
-  value.referenceEndpoint!.models[MODEL]!.contrastModels = ['gated-contrast', 'contrast-test']
+  value.models![MODEL]!.contrastModels = ['gated-contrast', 'contrast-test']
   value.referenceEndpoint!.contrastModelBank!['gated-contrast'] = {
     upstreamModel: 'gated-contrast',
     pricing: { inputUsdPerMillion: 0.1, outputUsdPerMillion: 0.2 },
@@ -1550,7 +1555,7 @@ test('domain exclusions preserve safe exact-request checkpoint responses', async
     const medicalPrompt = [...promptCalls.keys()].find((prompt) => prompt.includes('domain medical'))!
     const reusablePrompt = [...promptCalls.keys()].find((prompt) => prompt.includes('domain chemistry_bp'))!
     const excludedConfig = config()
-    excludedConfig.referenceEndpoint!.models[MODEL]!.excludedDomains = ['medical']
+    excludedConfig.models![MODEL]!.excludedDomains = ['medical']
     await buildModelReference({ model: MODEL, referencesDir: directory, config: excludedConfig, fetchFn })
     assert.equal(promptCalls.get(medicalPrompt), 1)
     assert.equal(promptCalls.get(reusablePrompt), 1)
@@ -1593,7 +1598,7 @@ test('checkpoint compatibility invalidates changed Antseed target routes', async
   const promptCalls = new Map<string, number>()
   let failSecondCandidateBatch = true
   const value = config()
-  value.referenceEndpoint!.models[MODEL]!.referenceRoute = {
+  value.models![MODEL]!.referenceRoute = {
     type: 'antseed', service: 'fable-5-coding-only', peerId: '56'.repeat(20),
     pricing: { inputUsdPerMillion: 0.45, outputUsdPerMillion: 1.15 },
   }
@@ -1612,7 +1617,7 @@ test('checkpoint compatibility invalidates changed Antseed target routes', async
     await assert.rejects(buildModelReference({
       model: MODEL, referencesDir: directory, config: value, buyerProxyPort: 8377, fetchFn,
     }))
-    value.referenceEndpoint!.models[MODEL]!.referenceRoute = {
+    value.models![MODEL]!.referenceRoute = {
       type: 'antseed', service: 'fable-5-reference-v2', peerId: '78'.repeat(20),
       pricing: { inputUsdPerMillion: 0.5, outputUsdPerMillion: 1.25 },
     }
@@ -1680,7 +1685,7 @@ function providerResponse(content: string, provider: string): Response {
 test('reference build pins the target upstream provider and records it', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-provider-pin-'))
   const value = config()
-  value.referenceEndpoint!.models[MODEL]!.referenceProvider = { order: ['Provider-A'] }
+  value.models![MODEL]!.referenceProvider = { order: ['Provider-A'] }
   const requestBodies: Array<Record<string, unknown>> = []
   const fetchFn: typeof fetch = async (_url, init) => {
     const body = JSON.parse(String(init?.body)) as Record<string, unknown> & {
@@ -1713,7 +1718,7 @@ test('reference build pins the target upstream provider and records it', async (
 test('reference build fails when a pinned provider is not the one that served', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-provider-mismatch-'))
   const value = config()
-  value.referenceEndpoint!.models[MODEL]!.referenceProvider = { order: ['Provider-A'] }
+  value.models![MODEL]!.referenceProvider = { order: ['Provider-A'] }
   const fetchFn: typeof fetch = async (_url, init) => {
     const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
     return providerResponse(successfulContent(body.model, body.messages.at(-1)?.content ?? ''), 'Provider-B')
@@ -1765,7 +1770,7 @@ test('unpinned reference builds record served providers and warn when they chang
 test('reference builds record contrast detection and grow until every contrast is flagged', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-contrast-detection-'))
   const value = config()
-  value.referenceEndpoint!.models[MODEL]!.contrastModels = ['contrast-test', 'close-contrast']
+  value.models![MODEL]!.contrastModels = ['contrast-test', 'close-contrast']
   value.referenceEndpoint!.contrastModelBank!['close-contrast'] = {
     upstreamModel: 'close-contrast',
     pricing: { inputUsdPerMillion: 0.1, outputUsdPerMillion: 0.2 },
@@ -1790,6 +1795,7 @@ test('reference builds record contrast detection and grow until every contrast i
 
     const capped = config({ referenceMaximumProbeCount: 100 })
     capped.referenceEndpoint = value.referenceEndpoint
+    capped.models = value.models
     await assert.rejects(
       buildModelReference({
         model: MODEL,

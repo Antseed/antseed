@@ -341,6 +341,24 @@ Browse sellers and run network infrastructure. Guides: [Routing and catalog](/do
 
 </CommandTable>
 
+## Verifier
+
+Audit sellers' model claims, submit results on-chain and claim auditor rewards. Guides: [Become a verifier](/docs/verify), [How audits run](/docs/verify/audits), [Reference upstreams](/docs/verify/upstreams).
+
+<CommandTable>
+
+| Command | Purpose | Key flags |
+|---|---|---|
+| `antseed verifier models` | List the built-in audited models and where each takes its genuine answers from | `--json` |
+| `antseed verifier reference build [model]` | Build or grow the probe bank of one audited model | `--all` (every audited model without a powered bank) |
+| `antseed verifier run [model]` | Audit the sellers your buyer has discovered, for the models assigned to your auditor (or one `<model>`) | `--all`, `--auditor <address>`, `--peer <peerId>`, `--enroll-if-needed`, `--max-enrollment-requests <n>`, `--allow-probe-reuse`, `--resume-run <runId>` |
+| `antseed verifier status` | Progress of the latest run | `--json` |
+| `antseed verifier submit` | Publish evidence and submit one audit per model (approved auditors) | `--run-id <id>`, `--dry-run`, `--publish-ipfs`, `--publish-only`, `--auditor <address>`, `--keystore <path>`, `--yes`, `--rpc-url` |
+| `antseed verifier rewards` | Credits and pending ANTS per epoch; claim finished epochs | `--epochs <list>`, `--claim`, `--yes`, `--auditor <address>`, `--rpc-url` |
+| `antseed verifier check <model>` | Re-run the latest published audit against any endpoint. Exit code 0 `SAME`, 2 `DIFF`, 3 `UNDETERMINED` | `--base-url <url>`, `--target-model <id>`, `--protocol openai\|anthropic`, `--api-key-env` (`VERIFY_API_KEY`), `--audit <ipfs://cid>`, `--ipfs-gateway`, `--out <file>`, `--json` |
+
+</CommandTable>
+
 ## Config
 
 Read and change `~/.antseed/config.json`. Guides: [Buyer configuration](/docs/buyer-config), [Provider configuration](/docs/provide/config).

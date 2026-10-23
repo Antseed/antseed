@@ -2,9 +2,9 @@ import type {
   VerifierCLIConfig,
   VerifierContrastModelConfig,
   VerifierModelPricingConfig,
-  VerifierReferenceEndpointConfig,
   VerifierReferenceModelConfig,
 } from '../config/types.js'
+import { auditedModels, findAuditedModelKey } from './audited-models.js'
 import type { VerifierModelCatalog } from './openrouter-catalog.js'
 import { normalized } from './utils.js'
 
@@ -18,28 +18,59 @@ export interface ResolvedVerifierModelConfig extends Omit<VerifierReferenceModel
   contrastModels: string[]
 }
 
+/**
+ * Every built-in audited model merged with the verifier's own settings for it
+ * (`verifier.models.<model>`), sorted by service name. The model list and each model's reference id
+ * come from `audited-models.ts`; a config cannot add models.
+ */
+export function auditedVerifierModels(
+  config: VerifierCLIConfig | undefined,
+): Array<[string, VerifierReferenceModelConfig]> {
+  const settings = new Map(Object.entries(config?.models ?? {})
+    .map(([service, value]) => [findAuditedModelKey(service) ?? service, value] as const))
+  return Object.entries(auditedModels())
+    .map(([service, model]): [string, VerifierReferenceModelConfig] => [service, {
+      ...settings.get(service),
+      upstreamModel: model.upstreamModel,
+      ...(model.serviceAliases?.length ? { serviceAliases: [...model.serviceAliases] } : {}),
+    }])
+    .sort(([left], [right]) => left.localeCompare(right))
+}
+
+/** Built-in audited models the verifier has not turned off with `verifier.models.<model>.enabled: false`. */
 export function configuredVerifierModels(config: VerifierCLIConfig | undefined): string[] {
-  return Object.entries(config?.referenceEndpoint?.models ?? {})
+  return auditedVerifierModels(config)
     .filter(([, model]) => model.enabled !== false)
     .map(([service]) => service)
-    .sort((left, right) => left.localeCompare(right))
+}
+
+/** True when contrast models are chosen from the OpenRouter catalog: the default unless a manual contrastModelBank is configured. */
+export function usesOpenRouterCatalog(config: VerifierCLIConfig | undefined): boolean {
+  return config?.contrastSelection?.catalogSource === 'openrouter'
+    || (config?.contrastSelection?.catalogSource === undefined && config?.referenceEndpoint?.contrastModelBank === undefined)
+}
+
+export function findVerifierModel(
+  config: VerifierCLIConfig | undefined,
+  requestedModel: string,
+): [string, VerifierReferenceModelConfig] | undefined {
+  const wanted = normalized(requestedModel)
+  return auditedVerifierModels(config).find(([service, model]) => [service, ...(model.serviceAliases ?? [])]
+    .some((name) => normalized(name) === wanted))
 }
 
 export function excludedVerifierDomains(
   config: VerifierCLIConfig | undefined,
   requestedModel: string,
 ): ReadonlySet<string> {
-  const endpoint = config?.referenceEndpoint
-  const entry = endpoint && findModelEntry(endpoint, requestedModel)
-  return new Set(entry?.[1].excludedDomains ?? [])
+  return new Set(findVerifierModel(config, requestedModel)?.[1].excludedDomains ?? [])
 }
 
 export function verifierModelServices(
   config: VerifierCLIConfig | undefined,
   requestedModel: string,
 ): string[] {
-  const endpoint = config?.referenceEndpoint
-  const entry = endpoint && findModelEntry(endpoint, requestedModel)
+  const entry = findVerifierModel(config, requestedModel)
   if (!entry) return [requestedModel.trim().toLowerCase()]
   return [entry[0], ...(entry[1].serviceAliases ?? [])]
     .map((service) => service.trim().toLowerCase())
@@ -55,12 +86,11 @@ export function resolveVerifierCommandModels(
   if ((model.length > 0) === all) throw new Error('provide exactly one of <model>, --all, or --auditor <address>')
   if (all) {
     const models = configuredVerifierModels(config)
-    if (models.length === 0) throw new Error('no enabled verifier models are configured')
+    if (models.length === 0) throw new Error('every audited model is disabled in verifier.models')
     return models
   }
-  const endpoint = config?.referenceEndpoint
-  const entry = endpoint && findModelEntry(endpoint, model)
-  if (!entry) throw new Error(`verifier.referenceEndpoint.models has no mapping for ${model}`)
+  const entry = findVerifierModel(config, model)
+  if (!entry) throw new Error(`${model} is not an audited model`)
   if (entry[1].enabled === false) throw new Error(`verifier model ${entry[0]} is disabled`)
   return [entry[0]]
 }
@@ -70,10 +100,9 @@ export function resolveVerifierModelConfig(
   requestedModel: string,
   catalog: VerifierModelCatalog | null = null,
 ): ResolvedVerifierModelConfig {
-  const endpoint = config?.referenceEndpoint
-  if (!endpoint) throw new Error('verifier.referenceEndpoint is required')
-  const entry = findModelEntry(endpoint, requestedModel)
-  if (!entry) throw new Error(`verifier.referenceEndpoint.models has no mapping for ${requestedModel}`)
+  if (!config?.referenceEndpoint) throw new Error('verifier.referenceEndpoint is required')
+  const entry = findVerifierModel(config, requestedModel)
+  if (!entry) throw new Error(`${requestedModel} is not an audited model`)
   const [service, model] = entry
   if (model.enabled === false) throw new Error(`verifier model ${service} is disabled`)
   const maximum = config?.contrastSelection?.maxModels ?? DEFAULT_CONTRAST_MAX_MODELS
@@ -95,7 +124,7 @@ export function resolveVerifierModelConfig(
  * An `antseed` entry in `verifier.upstreams` is the same as a per-model `referenceRoute`:
  * reference requests go through the buyer proxy, pinned to that seller.
  */
-function withAntseedUpstreamRoute(
+export function withAntseedUpstreamRoute(
   config: VerifierCLIConfig,
   model: VerifierReferenceModelConfig,
 ): VerifierReferenceModelConfig {
@@ -134,7 +163,7 @@ function selectAutomaticContrastModels(
   const maximum = config.contrastSelection?.maxModels ?? DEFAULT_CONTRAST_MAX_MODELS
   const minimumIntelligenceIndex = config.contrastSelection?.minimumIntelligenceIndex ?? 0
   const targetPrice = blendedModelPrice(pricing, inputWeight)
-  const candidates: Array<{ name: string; candidate: VerifierContrastModelConfig }> = config.contrastSelection?.catalogSource === 'openrouter'
+  const candidates: Array<{ name: string; candidate: VerifierContrastModelConfig }> = usesOpenRouterCatalog(config)
     ? [...requireCatalog(catalog).values()].flatMap((candidate) => candidate.capabilityRank === null ? [] : [{
       name: candidate.upstreamModel,
       candidate: {
@@ -168,7 +197,7 @@ function resolveTargetPricing(
   model: VerifierReferenceModelConfig,
   catalog: VerifierModelCatalog | null,
 ): VerifierModelPricingConfig {
-  if (config.contrastSelection?.catalogSource === 'openrouter') {
+  if (usesOpenRouterCatalog(config)) {
     const catalogModel = requireCatalog(catalog).get(normalized(model.upstreamModel))
     if (!catalogModel) throw new Error(`OpenRouter catalog has no priced model ${model.upstreamModel} for ${service}`)
     return catalogModel.pricing
@@ -180,11 +209,4 @@ function resolveTargetPricing(
 function requireCatalog(catalog: VerifierModelCatalog | null): VerifierModelCatalog {
   if (!catalog) throw new Error('OpenRouter model catalog must be loaded before resolving verifier models')
   return catalog
-}
-
-function findModelEntry(
-  endpoint: VerifierReferenceEndpointConfig,
-  requestedModel: string,
-): [string, VerifierReferenceModelConfig] | undefined {
-  return Object.entries(endpoint.models).find(([service]) => normalized(service) === normalized(requestedModel))
 }

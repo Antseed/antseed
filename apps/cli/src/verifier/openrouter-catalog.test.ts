@@ -10,7 +10,6 @@ const config: VerifierCLIConfig = {
     apiKeyEnv: 'OPENROUTER_TEST_KEY',
     sourceId: 'openrouter',
     trust: 'trusted',
-    models: { target: { upstreamModel: 'provider/target' } },
   },
 }
 
@@ -48,6 +47,13 @@ test('OpenRouter catalog resolves per-million pricing and Artificial Analysis sc
   }
 })
 
-test('catalog loading is disabled unless OpenRouter is configured', async () => {
-  assert.equal(await loadConfiguredVerifierModelCatalog(undefined), null)
+test('catalog loading is disabled when a manual contrast bank is configured', async () => {
+  assert.equal(await loadConfiguredVerifierModelCatalog({
+    referenceEndpoint: {
+      ...config.referenceEndpoint!,
+      contrastModelBank: { manual: {
+        upstreamModel: 'provider/manual', pricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, capabilityRank: 1,
+      } },
+    },
+  }), null)
 })

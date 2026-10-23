@@ -1,4 +1,5 @@
 import type { VerifierCLIConfig, VerifierModelPricingConfig } from '../config/types.js'
+import { usesOpenRouterCatalog } from './model-config.js'
 import { normalized } from './utils.js'
 
 export type VerifierReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
@@ -21,8 +22,19 @@ export async function loadConfiguredVerifierModelCatalog(
   config: VerifierCLIConfig | undefined,
   fetchFn: typeof fetch = fetch,
 ): Promise<VerifierModelCatalog | null> {
-  if (config?.contrastSelection?.catalogSource !== 'openrouter') return null
-  const endpoint = config.referenceEndpoint
+  if (!usesOpenRouterCatalog(config)) return null
+  return loadVerifierModelCatalog(config, fetchFn)
+}
+
+/**
+ * The `referenceEndpoint`'s model catalog (OpenRouter `/models`) with per-million prices,
+ * loaded whether or not contrast models come from it. Audits use it for reference prices.
+ */
+export async function loadVerifierModelCatalog(
+  config: VerifierCLIConfig | undefined,
+  fetchFn: typeof fetch = fetch,
+): Promise<VerifierModelCatalog> {
+  const endpoint = config?.referenceEndpoint
   if (!endpoint) throw new Error('verifier.referenceEndpoint is required')
   const apiKey = (endpoint.apiKeyEnv ? process.env[endpoint.apiKeyEnv] : undefined) ?? endpoint.apiKey
   const response = await fetchFn(`${endpoint.baseUrl.replace(/\/+$/, '')}/models`, {
