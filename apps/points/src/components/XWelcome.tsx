@@ -58,7 +58,7 @@ export function XWelcome({ net }: { net: Network | undefined }) {
         <h2 id="xw-h" className="disp">You're in, @{me.handle}</h2>
         <ol className="xw-steps">
           <li data-state="done"><span /><b>Signed in with X</b></li>
-          <li data-state={step === 'link' ? 'now' : 'done'}><span /><b>Link your Antseed account</b></li>
+          <li data-state={step === 'link' ? 'now' : 'done'}><span /><b>Connect your wallet</b></li>
           <li data-state={step === 'follow' ? 'now' : 'todo'}><span /><b>Follow @antseed</b></li>
         </ol>
         {step === 'link' ? <LinkStep net={net} onDone={() => setStep('follow')} /> : <FollowStep onDone={close} />}
@@ -71,52 +71,71 @@ function LinkStep({ net, onDone }: { net: Network | undefined; onDone: () => voi
   const me = useMe().data!;
   const { address: viewed, setAddress } = useViewedAddress();
   const wallet = useWallet();
-  const [value, setValue] = useState(viewed ?? wallet.address ?? '');
-  const account = isAddress(value) ? (value.toLowerCase() as Address) : null;
-  const acct = useAccount(account, net);
-  const operator = acct.data?.operator?.toLowerCase() ?? null;
-  const signer = wallet.address && account && (wallet.address === account || wallet.address === operator) ? wallet.address : null;
+  const [custom, setCustom] = useState(false);
+  const [value, setValue] = useState(viewed ?? '');
+  // The account looked up on the page: if the connected wallet is its reward wallet, link that account.
+  const viewedAcct = useAccount(viewed ?? null, net);
+  const viewedOperator = viewedAcct.data?.operator?.toLowerCase() ?? null;
+  const typed = isAddress(value) ? (value.toLowerCase() as Address) : null;
+  const typedAcct = useAccount(custom ? typed : null, net);
+  const typedOperator = typedAcct.data?.operator?.toLowerCase() ?? null;
+
+  // Which account this signature links: a typed one, else the looked-up account it's the reward wallet of, else the wallet itself.
+  const account: Address | null = custom
+    ? typed
+    : wallet.address
+      ? (viewed && viewedOperator === wallet.address ? viewed : wallet.address)
+      : null;
+  const operator = custom ? typedOperator : account === viewed ? viewedOperator : null;
+  const canSign = Boolean(wallet.address && account && (wallet.address === account || wallet.address === operator));
   const { signMessageAsync } = useSignMessage();
   const link = useLinkWallet();
   const error = link.error as Error | null;
 
   const submit = () => {
-    if (!account || !signer) return;
+    if (!account || !canSign || !wallet.address) return;
     link.mutate(
-      { me, address: account, sign: (message) => signMessageAsync({ message, account: signer }) },
+      { me, address: account, sign: (message) => signMessageAsync({ message, account: wallet.address! }) },
       { onSuccess: () => { setAddress(account); onDone(); } },
     );
   };
 
   return (
     <div className="xw-body">
-      <p>Prove this X account belongs with your points. It's a free signature: no transaction, no gas. Your X profile will be publicly linked to this address and its points.</p>
-      <label className="xw-field">
-        <span>Antseed account address</span>
-        <input value={value} onChange={(e) => setValue(e.target.value.trim())} placeholder="0x…" spellCheck={false} autoComplete="off" aria-invalid={Boolean(value) && !account} />
-      </label>
-      {value && !account && <span className="lookup-error">Enter a valid address beginning with 0x.</span>}
-      {account && (
+      <p>Connect the wallet you use with Antseed, or its reward wallet, and sign once. It's free: no transaction, no gas. Your X profile will be publicly linked to this address and its points.</p>
+      {custom && (
+        <>
+          <label className="xw-field">
+            <span>Antseed account address</span>
+            <input value={value} onChange={(e) => setValue(e.target.value.trim())} placeholder="0x…" spellCheck={false} autoComplete="off" aria-invalid={Boolean(value) && !typed} />
+          </label>
+          {value && !typed && <span className="lookup-error">Enter a valid address beginning with 0x.</span>}
+        </>
+      )}
+      {wallet.address && account && (
         <span className="xw-note">
-          Sign with this account{operator && operator !== account ? <>, or its reward wallet {shortAddress(operator as Address)}</> : null}.
+          {canSign
+            ? <>Linking <b>{shortAddress(account)}</b>{account !== wallet.address ? <>, signed by its reward wallet {shortAddress(wallet.address)}</> : null}.</>
+            : <>{shortAddress(wallet.address)} can't sign for {shortAddress(account)}. Connect that account{operator && operator !== account ? <> or its reward wallet {shortAddress(operator as Address)}</> : null}.</>}
         </span>
       )}
       <div className="xw-act">
-        {!account ? (
-          <button type="button" className="btn btn-ink" disabled>Link account</button>
-        ) : signer ? (
+        {wallet.address && canSign ? (
           <button type="button" className="btn btn-ink" disabled={link.isPending} onClick={submit}>{link.isPending ? 'Check your wallet…' : 'Sign to link'}</button>
         ) : (
           <ConnectButton.Custom>
             {({ account: acc, openConnectModal, openAccountModal }) => (
               <button type="button" className="btn btn-ink" onClick={acc ? openAccountModal : openConnectModal}>
-                {acc ? `Switch to ${shortAddress(account)}${operator && operator !== account ? ' or its reward wallet' : ''}` : 'Connect wallet to sign'}
+                {acc ? 'Switch wallet' : 'Connect wallet'}
               </button>
             )}
           </ConnectButton.Custom>
         )}
         <button type="button" className="linkish" onClick={onDone}>Skip for now</button>
       </div>
+      {!custom && (
+        <button type="button" className="linkish xw-alt" onClick={() => setCustom(true)}>Link a different account</button>
+      )}
       {error && <span className="lookup-error">{/reject|denied|cancel/i.test(error.message) ? 'The signature was cancelled.' : error.message}</span>}
     </div>
   );

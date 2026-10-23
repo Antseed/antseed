@@ -988,3 +988,4 @@ html { scroll-behavior: smooth; }
 .xw-note { font-size: 13.5px; color: var(--slate); }
 .xw-act { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
 .xw-act .linkish { margin-left: auto; }
+.xw-alt { justify-self: start; font-size: 13.5px; }
