@@ -153,6 +153,17 @@
   font-size: 14px;
 }
 
+.retry {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--as-green-deep);
+  font: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .results {
   list-style: none;
   margin: 0;

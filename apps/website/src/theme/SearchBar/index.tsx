@@ -44,6 +44,8 @@ type Hit = SearchResult & SearchEntry;
 
 let indexPromise: Promise<MiniSearch<SearchEntry>> | null = null;
 
+// A failed load (say, the network dropped) clears the cached promise so the
+// next call retries.
 function loadIndex(): Promise<MiniSearch<SearchEntry>> {
   indexPromise ??= import('@generated/docs-search/default/search-index.json').then((mod) => {
     const entries = (mod.default ?? mod) as SearchEntry[];
@@ -62,6 +64,9 @@ function loadIndex(): Promise<MiniSearch<SearchEntry>> {
     });
     search.addAll(entries);
     return search;
+  }).catch((error: unknown) => {
+    indexPromise = null;
+    throw error;
   });
   return indexPromise;
 }
@@ -90,21 +95,31 @@ function SearchIcon({className}: {className?: string}) {
 
 function SearchModal({onClose}: {onClose: () => void}) {
   const history = useHistory();
+  const modalRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
   const [index, setIndex] = useState<MiniSearch<SearchEntry> | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(0);
 
-  useEffect(() => {
+  const load = useCallback(() => {
+    setLoadFailed(false);
     inputRef.current?.focus();
-    loadIndex().then(setIndex);
+    loadIndex().then(setIndex, () => setLoadFailed(true));
+  }, []);
+
+  useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
+    inputRef.current?.focus();
+    load();
     const {overflow} = document.body.style;
     document.body.style.overflow = 'hidden';
     return () => {
       document.body.style.overflow = overflow;
+      opener?.focus?.();
     };
-  }, []);
+  }, [load]);
 
   const hits = useMemo<Hit[]>(() => {
     const q = query.trim();
@@ -138,16 +153,46 @@ function SearchModal({onClose}: {onClose: () => void}) {
     } else if (event.key === 'Enter' && hits[active]) {
       event.preventDefault();
       open(hits[active]);
-    } else if (event.key === 'Escape') {
-      event.preventDefault();
-      onClose();
     }
   };
+
+  // While open, Escape closes and Tab cycles inside the dialog, wherever focus
+  // is (it can land on the page when a focused button unmounts).
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onClose();
+      } else if (event.key === 'Tab') {
+        const focusable = Array.from(
+          modalRef.current?.querySelectorAll<HTMLElement>('input, button, [href], [tabindex]:not([tabindex="-1"])') ?? [],
+        );
+        if (!focusable.length) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        const current = document.activeElement;
+        const inside = !!current && !!modalRef.current?.contains(current);
+        if (!inside || (event.shiftKey ? current === first : current === last)) {
+          event.preventDefault();
+          (event.shiftKey ? last : first).focus();
+        }
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
 
   const q = query.trim();
   let body: React.ReactNode;
   if (!q) {
     body = <p className={styles.empty}>Type to search documentation</p>;
+  } else if (loadFailed) {
+    body = (
+      <p className={styles.empty}>
+        Search couldn’t load.{' '}
+        <button type="button" className={styles.retry} onClick={load}>Try again</button>
+      </p>
+    );
   } else if (!index) {
     body = <p className={styles.empty}>Loading…</p>;
   } else if (!hits.length) {
@@ -183,7 +228,7 @@ function SearchModal({onClose}: {onClose: () => void}) {
 
   return createPortal(
     <div className={styles.overlay} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className={styles.modal} role="dialog" aria-modal="true" aria-label="Search docs">
+      <div ref={modalRef} className={styles.modal} role="dialog" aria-modal="true" aria-label="Search docs">
         <div className={styles.inputRow}>
           <SearchIcon className={styles.inputIcon} />
           <input ref={inputRef} className={styles.input} type="search" placeholder="Search docs..."
@@ -230,7 +275,7 @@ export default function SearchBar(): React.ReactNode {
   return (
     <>
       <button type="button" className={clsx('docs-search-trigger', styles.trigger)} onClick={() => setOpen(true)}
-        onMouseEnter={() => void loadIndex()} aria-label="Search docs">
+        onMouseEnter={() => void loadIndex().catch(() => {})} aria-label="Search docs">
         <SearchIcon className={styles.triggerIcon} />
         <span className={styles.triggerLabel}>Search docs...</span>
         <kbd className={styles.triggerKbd}>{mac ? '⌘K' : 'Ctrl K'}</kbd>
