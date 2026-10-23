@@ -1224,6 +1224,7 @@ describe('SellerRequestHandler payment pricing selection', () => {
       .mockReturnValueOnce({ allowed: true, remaining: 0, retryAfterMs: 0, limitedBy: null, buyerAddress: `0x${'b'.repeat(40)}`, remoteIp: '203.0.113.7', standing: null, limit: 1 })
       .mockReturnValueOnce({ allowed: false, remaining: 0, retryAfterMs: 12_500, limitedBy: 'ip', buyerAddress: `0x${'b'.repeat(40)}`, remoteIp: '203.0.113.7', standing: null, limit: 3 });
     const stakeTiers = [{ minPower: 520_000, multiplier: 5 }];
+    const resolveStanding = vi.fn(async () => null);
     const handler = makeSellerRequestHandler({
       providers: [provider],
       sellerPaymentManager: null,
@@ -1232,7 +1233,7 @@ describe('SellerRequestHandler payment pricing selection', () => {
         maxRequestsPerIp: 3,
         windowMs: 60_000,
         consume,
-        resolveStanding: vi.fn(async () => null),
+        resolveStanding,
         program: () => ({ base: { maxRequestsPerAddress: 1, maxRequestsPerIp: 3, windowMs: 60_000 }, stakeTiers }),
       } as any,
       sessionTracker: null,
@@ -1255,13 +1256,16 @@ describe('SellerRequestHandler payment pricing selection', () => {
           requestId,
           method: 'POST',
           path: '/v1/chat/completions',
-          headers: { 'content-type': 'application/json' },
+          headers: { 'content-type': 'application/json', 'X-Antseed-Free-Tier-Delegations': 'delegations' },
           body: new TextEncoder().encode(JSON.stringify({ model: 'local-test' })),
         }),
       });
     }
 
     expect(provider.handleRequest).toHaveBeenCalledOnce();
+    expect(resolveStanding).toHaveBeenCalledWith('b'.repeat(40), 'delegations');
+    const forwarded = vi.mocked(provider.handleRequest).mock.calls[0]![0] as { headers: Record<string, string> };
+    expect(Object.keys(forwarded.headers).map((name) => name.toLowerCase())).not.toContain('x-antseed-free-tier-delegations');
     expect(consume).toHaveBeenCalledTimes(2);
     expect(consume).toHaveBeenCalledWith({ buyerPeerId: 'b'.repeat(40), service: 'local-test', remoteIp: '203.0.113.7', standing: null });
     const responses = sentFrames.map((frame) => decodeHttpResponse(decodeFrame(frame)!.message.payload));

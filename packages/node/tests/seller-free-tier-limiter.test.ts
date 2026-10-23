@@ -145,8 +145,8 @@ describe('SellerFreeTierLimiter', () => {
     const NEW_OWNER = '0x' + 'bb'.repeat(20);
     const tier5x = { minPower: 100, multiplier: 5 } as const;
     const unlimited = { minPower: 1_000, multiplier: 'unlimited' } as const;
-    const standing = (tier: typeof tier5x | typeof unlimited, positionIds = [1], owner = OWNER) =>
-      ({ owner, power: 0n, tier, positionIds });
+    const standing = (tier: typeof tier5x | typeof unlimited, positionIds = [1], staker = OWNER) =>
+      ({ stakers: [staker], power: 0n, tier, positionIds });
 
     it('shares one multiplied allowance across every buyer counted on the same positions and skips the IP limit', () => {
       const storage = persistentStorage();

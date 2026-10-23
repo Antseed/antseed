@@ -105,6 +105,7 @@ import { RpcHealthMonitor, type RpcHealthStatus } from "./payments/rpc-health.js
 import { SellerAddressResolver } from "./discovery/seller-address-resolver.js";
 import { SellerPoolsClient } from "./payments/evm/seller-pools-client.js";
 import { FreeTierStakeResolver } from "./payments/free-tier-stake-resolver.js";
+import { encodeFreeTierDelegationsHeader, type FreeTierDelegation } from "./payments/free-tier-delegation.js";
 import { Contract as EthersContract } from "ethers";
 import { SellerPaymentManager, type SellerPaymentConfig } from "./payments/seller-payment-manager.js";
 import { IdentityClient } from "./payments/evm/identity-client.js";
@@ -325,6 +326,12 @@ export interface NodeConfig {
   payments?: NodePaymentsConfig;
   /** Optional per-address request limit for zero-priced seller services. */
   freeTier?: SellerFreeTierConfig;
+  /**
+   * Buyer side: stakers' signed consent to count their stake toward this
+   * node's buyer identities on sellers' staked free tiers. Each identity sends
+   * only the delegations naming its own address.
+   */
+  freeTierDelegations?: FreeTierDelegation[];
   /** Seller free-usage on-chain record batching. */
   freeUsage?: { recordBatchSize?: number; recordFlushIntervalMs?: number };
   /** Seller-side deposit-sweep relayer settings (opt-out, ON by default). */
@@ -1642,6 +1649,7 @@ export class AntseedNode extends EventEmitter {
       },
       maxUploadBodyBytes: this._config.maxUploadBodyBytes,
       requireSecureTransport: this._config.requireSecureTransport,
+      freeTierDelegationsHeader: () => this._freeTierDelegationsHeader(identity.wallet.address),
       shared: {
         channelStore: this._channelStore,
         depositsClient: this._depositsClient,
@@ -2798,18 +2806,31 @@ export class AntseedNode extends EventEmitter {
     };
   }
 
+  /** Replace the buyer's free-tier delegations; later requests send the new set. */
+  setFreeTierDelegations(delegations: FreeTierDelegation[]): void {
+    this._config.freeTierDelegations = [...delegations];
+  }
+
+  /** Header value carrying the unexpired delegations to `buyerAddress`, or null when there are none. */
+  private _freeTierDelegationsHeader(buyerAddress: string): string | null {
+    const nowSeconds = Date.now() / 1000;
+    const delegations = (this._config.freeTierDelegations ?? []).filter((delegation) =>
+      delegation.buyer.toLowerCase() === buyerAddress.toLowerCase() && delegation.expiresAt > nowSeconds);
+    return delegations.length > 0 ? encodeFreeTierDelegationsHeader(delegations) : null;
+  }
+
   /**
-   * Back staked free-tier tiers with on-chain reads: the buyer's (or, once it
-   * has paid for usage, its operator's) positions in this seller's pool. Without the seller pools and
-   * deposits contracts every buyer keeps the base limits and no tiers are
-   * advertised.
+   * Back staked free-tier tiers with on-chain reads: the positions of the
+   * buyer and of every staker that signed a delegation to it in this seller's
+   * pool. Without the seller pools contract every buyer keeps the base limits
+   * and no tiers are advertised.
    */
   private _initializeFreeTierStakeResolver(identity: Identity): void {
     const limiter = this._sellerFreeTierLimiter;
     const payments = this._config.payments;
     if (!limiter || limiter.stakeTiers.length === 0) return;
-    if (!payments?.rpcUrl || !payments.sellerPoolsAddress || !this._depositsClient) {
-      debugLog("[Node] Staked free-tier tiers disabled: seller pools or deposits contract not configured");
+    if (!payments?.rpcUrl || !payments.sellerPoolsAddress) {
+      debugLog("[Node] Staked free-tier tiers disabled: seller pools contract not configured");
       return;
     }
     const sellerPools = new SellerPoolsClient({
@@ -2820,15 +2841,12 @@ export class AntseedNode extends EventEmitter {
       antsTokenAddress: "0x0000000000000000000000000000000000000000",
       ...(payments.chainId ? { evmChainId: payments.chainId } : {}),
     });
-    const depositsClient = this._depositsClient;
     const sellerAddress = this._config.sellerContract?.sellerContract ?? identity.wallet.address;
     limiter.setStakeResolver(new FreeTierStakeResolver({
       sellerAgentId: () => sellerPools.agentIdForSeller(sellerAddress),
       currentEpoch: () => sellerPools.currentEpoch(),
       stakerPositions: (staker, agentId, epoch) => sellerPools.stakerPositionsInPool(staker, agentId, epoch),
-      operatorOf: async (buyer) => (await depositsClient.getOperator(buyer)) || null,
-      hasPaidUsage: async (buyer) => (await depositsClient.getUniqueSellersCharged(buyer)) > 0n,
-    }, limiter.stakeTiers));
+    }, limiter.stakeTiers), payments.chainId ?? 8453);
     debugLog(`[Node] Staked free-tier tiers enabled (pools=${payments.sellerPoolsAddress.slice(0, 10)}...)`);
   }
 

@@ -41,9 +41,9 @@ Free access is one reason. The stake is also a normal seller-pool position: it e
 
 ## One allowance per staker
 
-The seller checks the stake of your buyer address and, once you have paid for usage, of its operator, the wallet that funds your deposits, and uses whichever is larger. Usage is counted on the staked positions, so every buyer address behind the same stake shares one allowance, and moving a position to another wallet doesn't reset it. Staked buyers also skip the per-IP limit, which matters for teams behind one office network or gateway.
+Stake in your buyer's own address counts automatically. Stake in another wallet, such as the one that funds your deposits, counts once that wallet signs consent to share it with your buyer: one signature, no gas, valid for 90 days. Several wallets can share with the same buyer and their stake adds up. Usage is counted on the staked positions, so every buyer sharing the same stake shares one allowance, and moving a position to another wallet doesn't reset it. Staked buyers also skip the per-IP limit, which matters for teams behind one office network or gateway.
 
 ## Get started
 
-- **Buyers:** find a seller on [Antscan](https://antscan.co/api/free-tier), then stake into its pool from the ANTS dashboard (`antseed ants`). See [Staked free tier](/docs/staked-free-tier).
+- **Buyers:** find a seller on [Antscan](https://antscan.co/api/free-tier), stake into its pool from the ANTS dashboard (`antseed ants`), and run `antseed buyer free-tier share` if the stake is in another wallet. See [Staked free tier](/docs/staked-free-tier).
 - **Providers:** staked tiers are on by default whenever you set `seller.freeTier`. See [Staked tiers](/docs/provide/config#staked-tiers) to change them.

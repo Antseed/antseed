@@ -301,6 +301,19 @@ export {
   validateFreeTierStakeTiers,
 } from './payments/free-tier-program.js';
 export type { FreeTierBaseLimits, FreeTierProgram, FreeTierStakeTier } from './payments/free-tier-program.js';
+export {
+  DEFAULT_FREE_TIER_DELEGATION_DAYS,
+  FREE_TIER_DELEGATIONS_HEADER,
+  FREE_TIER_DELEGATION_TYPES,
+  MAX_FREE_TIER_DELEGATIONS,
+  decodeFreeTierDelegationsHeader,
+  encodeFreeTierDelegationsHeader,
+  freeTierDelegationMessage,
+  isFreeTierDelegationSigned,
+  makeFreeTierDelegationDomain,
+  verifyFreeTierDelegations,
+} from './payments/free-tier-delegation.js';
+export type { FreeTierDelegation, VerifiedFreeTierDelegation } from './payments/free-tier-delegation.js';
 export { FreeTierStakeResolver, MAX_FREE_TIER_COUNTED_POSITIONS } from './payments/free-tier-stake-resolver.js';
 export type { FreeTierStakePosition, FreeTierStakeReader, FreeTierStakeResolverOptions, FreeTierStakeStanding } from './payments/free-tier-stake-resolver.js';
 export { SellerPaymentManager } from './payments/seller-payment-manager.js';

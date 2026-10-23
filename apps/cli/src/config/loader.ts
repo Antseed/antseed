@@ -573,6 +573,9 @@ function mergeBuyerConfig(
     ...(value['verifier'] !== undefined
       ? { verifier: value['verifier'] as NonNullable<AntseedConfig['buyer']['verifier']> }
       : defaults.verifier ? { verifier: structuredClone(defaults.verifier) } : {}),
+    ...(value['freeTierDelegations'] !== undefined
+      ? { freeTierDelegations: value['freeTierDelegations'] as NonNullable<AntseedConfig['buyer']['freeTierDelegations']> }
+      : {}),
   };
 }
 

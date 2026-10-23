@@ -3,50 +3,55 @@ import { FreeTierStakeResolver, type FreeTierStakePosition, type FreeTierStakeRe
 
 const ANTS = 10n ** 18n;
 const BUYER = '0x' + '11'.repeat(20);
-const OTHER_BUYER = '0x' + '22'.repeat(20);
-const OPERATOR = '0x' + 'aa'.repeat(20);
+const STAKER_A = '0x' + 'aa'.repeat(20);
+const STAKER_B = '0x' + 'bb'.repeat(20);
 const TIERS = [
   { minPower: 100, multiplier: 5 },
   { minPower: 1_000, multiplier: 'unlimited' as const },
 ];
 
-function reader(
-  positions: Record<string, FreeTierStakePosition[]>,
-  operators: Record<string, string> = {},
-  paidBuyers: string[] = [],
-) {
+function reader(positions: Record<string, FreeTierStakePosition[]>) {
   return {
     sellerAgentId: vi.fn(async () => 7),
     currentEpoch: vi.fn(async () => 3),
     stakerPositions: vi.fn(async (staker: string) => positions[staker] ?? []),
-    operatorOf: vi.fn(async (buyer: string) => operators[buyer] ?? null),
-    hasPaidUsage: vi.fn(async (buyer: string) => paidBuyers.includes(buyer)),
   } satisfies FreeTierStakeReader;
 }
 
 describe('FreeTierStakeResolver', () => {
   it('uses the buyer’s own stake and counts it on its positions, strongest first', async () => {
     const resolver = new FreeTierStakeResolver(reader({ [BUYER]: [{ id: 4, power: 50n * ANTS }, { id: 9, power: 100n * ANTS }] }), TIERS);
-    expect(await resolver.resolve(BUYER)).toEqual({ owner: BUYER, power: 150n * ANTS, tier: TIERS[0], positionIds: [9, 4] });
+    expect(await resolver.resolve(BUYER)).toEqual({ stakers: [BUYER], power: 150n * ANTS, tier: TIERS[0], positionIds: [9, 4] });
   });
 
-  it('shares the operator’s positions with buyers that have paid for usage', async () => {
-    const r = reader(
-      { [OPERATOR]: [{ id: 1, power: 2_000n * ANTS }] },
-      { [BUYER]: OPERATOR, [OTHER_BUYER]: OPERATOR },
-      [BUYER, OTHER_BUYER],
-    );
+  it('pools the buyer’s stake with every delegating staker’s', async () => {
+    const r = reader({
+      [BUYER]: [{ id: 1, power: 40n * ANTS }],
+      [STAKER_A]: [{ id: 2, power: 500n * ANTS }],
+      [STAKER_B]: [{ id: 3, power: 600n * ANTS }],
+    });
     const resolver = new FreeTierStakeResolver(r, TIERS);
-    expect(await resolver.resolve(BUYER)).toMatchObject({ owner: OPERATOR, positionIds: [1] });
-    expect((await resolver.resolve(OTHER_BUYER))?.tier.multiplier).toBe('unlimited');
-    // The operator's positions are read once and reused for its second buyer.
-    expect(r.stakerPositions.mock.calls.filter(([staker]) => staker === OPERATOR)).toHaveLength(1);
+    // Neither staker alone reaches the unlimited tier; together they do.
+    expect(await resolver.resolve(BUYER, [STAKER_A, STAKER_B])).toEqual({
+      stakers: [BUYER, STAKER_A, STAKER_B],
+      power: 1_140n * ANTS,
+      tier: TIERS[1],
+      positionIds: [3, 2, 1],
+    });
   });
 
-  it('ignores an operator a buyer named without ever paying for usage', async () => {
-    const r = reader({ [OPERATOR]: [{ id: 1, power: 2_000n * ANTS }] }, { [BUYER]: OPERATOR });
-    expect(await new FreeTierStakeResolver(r, TIERS).resolve(BUYER)).toBeNull();
-    expect(r.stakerPositions).not.toHaveBeenCalledWith(OPERATOR, expect.anything(), expect.anything());
+  it('counts a position once even when two stakers report it', async () => {
+    const shared = { id: 5, power: 80n * ANTS };
+    const resolver = new FreeTierStakeResolver(reader({ [STAKER_A]: [shared], [STAKER_B]: [shared] }), TIERS);
+    expect(await resolver.resolve(BUYER, [STAKER_A, STAKER_B])).toBeNull();
+  });
+
+  it('reads each staker once across buyers it delegates to', async () => {
+    const r = reader({ [STAKER_A]: [{ id: 2, power: 2_000n * ANTS }] });
+    const resolver = new FreeTierStakeResolver(r, TIERS);
+    expect((await resolver.resolve(BUYER, [STAKER_A]))?.positionIds).toEqual([2]);
+    expect((await resolver.resolve('0x' + '22'.repeat(20), [STAKER_A]))?.tier.multiplier).toBe('unlimited');
+    expect(r.stakerPositions.mock.calls.filter(([staker]) => staker === STAKER_A)).toHaveLength(1);
   });
 
   it('returns null below the first tier, without an agent id, and on read failures', async () => {
@@ -74,8 +79,8 @@ describe('FreeTierStakeResolver', () => {
   });
 
   it('falls back to base limits when the lookup is slow', async () => {
-    const slow = reader({ [BUYER]: [{ id: 1, power: 150n * ANTS }] });
-    slow.operatorOf = vi.fn(() => new Promise<string | null>(() => {}));
+    const slow = reader({});
+    slow.currentEpoch = vi.fn(() => new Promise<number>(() => {}));
     const resolver = new FreeTierStakeResolver(slow, TIERS, { lookupTimeoutMs: 10 });
     expect(await resolver.resolve(BUYER)).toBeNull();
   });

@@ -14,6 +14,11 @@ import {
   type FreeTierStakeTier,
 } from './free-tier-program.js';
 import type { FreeTierStakeResolver, FreeTierStakeStanding } from './free-tier-stake-resolver.js';
+import {
+  decodeFreeTierDelegationsHeader,
+  verifyFreeTierDelegations,
+  type VerifiedFreeTierDelegation,
+} from './free-tier-delegation.js';
 
 export interface SellerFreeTierConfig {
   /** Maximum zero-priced requests accepted from one buyer address per window. */
@@ -93,6 +98,9 @@ export class SellerFreeTierLimiter {
   private readonly _storage: MeteringStorage | null;
   private readonly _inMemoryUsage = new Map<string, number[]>();
   private _stakeResolver: FreeTierStakeResolver | null = null;
+  private _chainId = 0;
+  /** Last verified delegations per buyer address, in insertion order for eviction. */
+  private readonly _delegations = new Map<string, VerifiedFreeTierDelegation[]>();
 
   constructor(config: SellerFreeTierConfig, storage: MeteringStorage | null = null) {
     const perAddress = config.maxRequestsPerAddress;
@@ -119,9 +127,13 @@ export class SellerFreeTierLimiter {
     this._storage = storage;
   }
 
-  /** Enable staked tiers. Without a resolver every buyer gets the base limits. */
-  setStakeResolver(resolver: FreeTierStakeResolver | null): void {
+  /**
+   * Enable staked tiers. Without a resolver every buyer gets the base limits.
+   * `chainId` is the EIP-712 domain delegations are verified against.
+   */
+  setStakeResolver(resolver: FreeTierStakeResolver | null, chainId = 0): void {
     this._stakeResolver = resolver;
+    this._chainId = chainId;
   }
 
   /** Whether staked tiers are live: configured and backed by on-chain reads. */
@@ -146,10 +158,35 @@ export class SellerFreeTierLimiter {
     return encodeFreeTierCapabilities(this.program());
   }
 
-  /** Staked standing for this buyer, or null for the base limits. Never throws. */
-  async resolveStanding(buyerPeerId: string): Promise<FreeTierStakeStanding | null> {
+  /**
+   * Staked standing for this buyer, or null for the base limits. Never throws.
+   *
+   * `delegationsHeader` is the buyer's `x-antseed-free-tier-delegations`
+   * value. Verified stakers are remembered for the buyer, so channel-open
+   * admission, which carries no request headers, sees the same standing.
+   */
+  async resolveStanding(buyerPeerId: string, delegationsHeader?: string): Promise<FreeTierStakeStanding | null> {
     if (!this._stakeResolver || this.stakeTiers.length === 0) return null;
-    return this._stakeResolver.resolve(peerIdToAddress(buyerPeerId).toLowerCase());
+    const buyer = peerIdToAddress(buyerPeerId).toLowerCase();
+    if (delegationsHeader !== undefined) {
+      const delegations = decodeFreeTierDelegationsHeader(delegationsHeader, buyer);
+      this._rememberDelegations(buyer, verifyFreeTierDelegations(delegations, buyer, this._chainId));
+    }
+    const nowSeconds = Date.now() / 1000;
+    const stakers = (this._delegations.get(buyer) ?? [])
+      .filter((delegation) => delegation.expiresAt > nowSeconds)
+      .map((delegation) => delegation.staker);
+    return this._stakeResolver.resolve(buyer, stakers);
+  }
+
+  private _rememberDelegations(buyer: string, delegations: VerifiedFreeTierDelegation[]): void {
+    this._delegations.delete(buyer);
+    if (delegations.length === 0) return;
+    if (this._delegations.size >= MAX_IN_MEMORY_KEYS) {
+      const oldest = this._delegations.keys().next().value;
+      if (oldest !== undefined) this._delegations.delete(oldest);
+    }
+    this._delegations.set(buyer, delegations);
   }
 
   /** Requests per window a staked tier allows, or null when unlimited. */

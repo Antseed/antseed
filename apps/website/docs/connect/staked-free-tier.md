@@ -40,8 +40,6 @@ When you hit a limit, the seller answers HTTP 429 with `code: "free_tier_exhaust
 
 ## Stake on a seller
 
-Stake from the wallet the seller will check: your buyer identity's address, or the wallet set as its operator in `AntseedDeposits`, which is usually the wallet that funds your deposits. The operator's stake only counts once the buyer has paid for usage on-chain. The seller reads both and uses whichever has more power.
-
 The easiest way is the ANTS dashboard. Connect your wallet there and stake into the seller's pool:
 
 ```bash
@@ -57,9 +55,28 @@ antseed ants stake 10000 --agent <agentId> --epochs 52
 
 The new allowance starts once the position activates in the next epoch. Sellers cache stake lookups for up to 10 minutes.
 
+## Share stake with your buyer
+
+Stake held by your buyer identity's own address counts automatically. Stake in any other wallet, such as the wallet that funds your deposits, counts once that wallet signs consent to share it with your buyer:
+
+```bash
+antseed buyer free-tier share
+```
+
+This opens a local page. Connect the staking wallet and sign. The signature costs no gas and moves no funds; it names your buyer address and lasts 90 days. Sign again to renew. Your buyer sends it to sellers with its requests, and a running buyer picks it up within a minute. Use `--identity <name>` to share with a named buyer identity, such as a gateway workspace.
+
+Several wallets can share with the same buyer, up to 8. Their stake adds up with the buyer's own, so two wallets with 5,000 ANTS each locked for a year reach the 10,000 ANTS tier together.
+
+```bash
+antseed buyer free-tier list               # stakers sharing with this buyer
+antseed buyer free-tier remove 0x<staker>  # stop sending one
+```
+
+A signature names one buyer, so nobody else can reuse it. Removing it stops your buyer sending it, but a seller that already saw it may keep honouring it until it expires. To end sharing everywhere at once, move or withdraw the stake.
+
 ## One allowance per staker
 
-The seller counts usage on the staked positions, so all buyer addresses behind the same stake share one allowance on that seller. An operator with five buyer wallets and a 5× tier gets 5× the base limit for all of them together, not 5× each. Transferring a position to another wallet moves its used allowance with it. Staked buyers skip the seller's per-IP limit, so users behind a shared IP or a gateway are not cut off by each other.
+The seller counts usage on the staked positions, so all buyer addresses sharing the same stake share one allowance on that seller. A wallet that shares with five buyers and reaches a 5× tier gives them 5× the base limit together, not 5× each. Transferring a position to another wallet moves its used allowance with it. Staked buyers skip the seller's per-IP limit, so users behind a shared IP or a gateway are not cut off by each other.
 
 If the seller can't read the chain, it falls back to the base limits for that request.
 

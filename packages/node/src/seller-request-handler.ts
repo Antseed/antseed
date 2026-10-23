@@ -12,6 +12,7 @@ import type { SellerPaymentManager } from './payments/seller-payment-manager.js'
 import type { SellerFreeUsageManager } from './payments/seller-free-usage-manager.js';
 import type { FreeTierDecision, SellerFreeTierLimiter } from './payments/seller-free-tier-limiter.js';
 import { powerToAntsEpochs } from './payments/free-tier-program.js';
+import { FREE_TIER_DELEGATIONS_HEADER } from './payments/free-tier-delegation.js';
 
 const FREE_TIER_EXHAUSTED_MESSAGES = {
   address: 'This seller free tier has been exhausted for your buyer address.',
@@ -94,6 +95,18 @@ function setTrustedHeader(headers: Record<string, string>, name: string, value: 
     if (key.toLowerCase() === name) delete headers[key];
   }
   headers[name] = value;
+}
+
+/** Remove a header in any letter case and return its value. */
+function takeHeader(headers: Record<string, string>, name: string): string | undefined {
+  let value: string | undefined;
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === name) {
+      value = headers[key];
+      delete headers[key];
+    }
+  }
+  return value;
 }
 
 export interface SellerRequestHandlerDeps {
@@ -311,6 +324,8 @@ export class SellerRequestHandler {
       // A video retrieve is paid by its job's create, never by the free tier:
       // status polls and downloads must not use up or report free usage.
       const isFreeTierRequest = isFreeService && !isVideoRetrieve;
+      // Delegations are for this seller only: never pass them on to the provider.
+      const delegationsHeader = takeHeader(request.headers, FREE_TIER_DELEGATIONS_HEADER);
       let requestCostEstimate: ReturnType<SellerRequestHandler['_estimateRequestCostUsdc']> = null;
       try {
         requestCostEstimate = requestBilling && !isVideoRetrieve
@@ -328,7 +343,7 @@ export class SellerRequestHandler {
         const requestedService = this._extractRequestedService(request) ?? 'unknown';
         let decision: FreeTierDecision;
         try {
-          const standing = await this._deps.sellerFreeTierLimiter.resolveStanding(buyerPeerId);
+          const standing = await this._deps.sellerFreeTierLimiter.resolveStanding(buyerPeerId, delegationsHeader);
           decision = this._deps.sellerFreeTierLimiter.consume({
             buyerPeerId,
             service: requestedService,
@@ -359,7 +374,7 @@ export class SellerRequestHandler {
           const limit = decision.limit;
           debugLog(
             `[SellerHandler] Free tier exhausted for ${decision.buyerAddress} ip=${decision.remoteIp ?? 'unknown'} ` +
-            `owner=${decision.standing?.owner ?? 'none'} (limitedBy=${limitedBy}, limit=${limit}, windowMs=${limiter.windowMs})`,
+            `stakers=${decision.standing?.stakers.join('+') ?? 'none'} (limitedBy=${limitedBy}, limit=${limit}, windowMs=${limiter.windowMs})`,
           );
           const program = limiter.program();
           const stakeHint = program.stakeTiers.length > 0

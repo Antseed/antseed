@@ -181,6 +181,19 @@ export {
   validateFreeTierStakeTiers,
 } from './free-tier-program.js';
 export type { FreeTierBaseLimits, FreeTierProgram, FreeTierStakeTier } from './free-tier-program.js';
+export {
+  DEFAULT_FREE_TIER_DELEGATION_DAYS,
+  FREE_TIER_DELEGATIONS_HEADER,
+  FREE_TIER_DELEGATION_TYPES,
+  MAX_FREE_TIER_DELEGATIONS,
+  decodeFreeTierDelegationsHeader,
+  encodeFreeTierDelegationsHeader,
+  freeTierDelegationMessage,
+  isFreeTierDelegationSigned,
+  makeFreeTierDelegationDomain,
+  verifyFreeTierDelegations,
+} from './free-tier-delegation.js';
+export type { FreeTierDelegation, VerifiedFreeTierDelegation } from './free-tier-delegation.js';
 export { FreeTierStakeResolver, MAX_FREE_TIER_COUNTED_POSITIONS } from './free-tier-stake-resolver.js';
 export type { FreeTierStakePosition, FreeTierStakeReader, FreeTierStakeResolverOptions, FreeTierStakeStanding } from './free-tier-stake-resolver.js';
 

@@ -1095,6 +1095,30 @@ test('loadConfig rejects invalid seller freeTier stake tiers', async () => {
   }
 });
 
+test('loadConfig preserves buyer freeTierDelegations and rejects malformed ones', async () => {
+  const delegation = { staker: `0x${'aa'.repeat(20)}`, buyer: `0x${'11'.repeat(20)}`, expiresAt: 1_900_000_000, signature: `0x${'00'.repeat(65)}` }
+  await withTempConfig(
+    JSON.stringify({ buyer: { freeTierDelegations: [delegation] } }),
+    async (configPath) => {
+      const config = await loadConfig(configPath);
+      assert.deepEqual(config.buyer.freeTierDelegations, [delegation]);
+    }
+  );
+  for (const freeTierDelegations of [
+    'nope',
+    [{ ...delegation, staker: 'nope' }],
+    [{ ...delegation, signature: '0x12' }],
+    Array.from({ length: 9 }, (_, i) => ({ ...delegation, staker: `0x${i.toString(16).padStart(2, '0').repeat(20)}` })),
+  ]) {
+    await withTempConfig(
+      JSON.stringify({ buyer: { freeTierDelegations } }),
+      async (configPath) => {
+        await assert.rejects(async () => loadConfig(configPath), /buyer\.freeTierDelegations/);
+      }
+    );
+  }
+});
+
 test('loadConfig preserves seller restrictedCountries, including the [] opt-out', async () => {
   for (const restrictedCountries of [['IR', 'RU'], []]) {
     await withTempConfig(

@@ -1,4 +1,5 @@
 import type {
+  FreeTierDelegation,
   ServiceApiProtocol,
   ServiceCapabilities,
   UnitBillingModelV1,
@@ -260,6 +261,12 @@ export interface BuyerCLIConfig {
    * `--require-verifier` override it.
    */
   verifier?: BuyerVerifierConfig;
+  /**
+   * Stakers' signed consent to count their ANTS stake toward these buyer
+   * identities on sellers' staked free tiers. Added by
+   * `antseed buyer free-tier share`; each identity sends only its own.
+   */
+  freeTierDelegations?: FreeTierDelegation[];
 }
 
 export interface BuyerVerifierConfig {
