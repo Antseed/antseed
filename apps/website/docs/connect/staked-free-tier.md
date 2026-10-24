@@ -87,7 +87,7 @@ antseed buyer free-tier list               # stakers sharing with this buyer
 antseed buyer free-tier remove 0x<staker>  # stop sending one
 ```
 
-A code names one buyer, so nobody else can use it. Removing it stops your buyer sending it, but a seller that already saw it may keep honouring it until it expires. To end sharing everywhere at once, move or withdraw the stake.
+A code names one buyer, so nobody else can use it. Removing it stops your buyer sending it, and sellers stop counting it from the buyer's next free request. A staker can't revoke a code once signed: the buyer could keep sending it until it expires. To stop a code counting before then, move or withdraw the stake. Sellers notice when their cached stake lookups refresh, normally within ten minutes.
 
 ## One allowance per staker
 

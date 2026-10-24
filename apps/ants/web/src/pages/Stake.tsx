@@ -14,7 +14,7 @@ import { epochStartAt, formatAnts, formatDuration, formatInt, formatUsdcCompact,
 import { useNow } from '../hooks';
 import { host } from '../host';
 import { parseRoute } from '../router';
-import { linkedPoolId, poolToOpen } from '../pool-link';
+import { linkedPoolId, PoolSelection, poolToOpen } from '../pool-link';
 import type { PoolDetail } from '../api';
 
 export function StakePage() {
@@ -37,7 +37,9 @@ export function StakePage() {
   const stakeTrigger = useRef<HTMLElement | null>(null);
   const [openPoolId, setOpenPoolId] = useState<number | null>(null);
   const poolTrigger = useRef<HTMLElement | null>(null);
+  const selection = useRef(new PoolSelection());
   const closePool = () => {
+    selection.current.invalidate();
     setOpenPoolId(null);
     requestAnimationFrame(() => {
       if (poolTrigger.current?.isConnected) poolTrigger.current.focus({ preventScroll: true });
@@ -69,16 +71,22 @@ export function StakePage() {
     openedLink.current = lastOpened;
     if (agentId === null) return;
     setLinkError(null);
+    const isCurrent = selection.current.begin();
     if (sortedPools.some((p) => p.agentId === agentId)) {
       setOpenPoolId(agentId);
       return;
     }
     api.pool(agentId).then((pool) => {
+      if (!isCurrent()) return;
       setLinkedPool(pool);
       setOpenPoolId(agentId);
-    }, (err: unknown) => setLinkError(`Could not open seller ${agentId}: ${err instanceof Error ? err.message : String(err)}`));
+    }, (err: unknown) => {
+      if (isCurrent()) setLinkError(`Could not open seller ${agentId}: ${err instanceof Error ? err.message : String(err)}`);
+    });
   }, [linkedAgentId, pools.data, sortedPools]);
+  useEffect(() => () => selection.current.invalidate(), []);
   const openSeller = (pool: PoolView) => {
+    selection.current.invalidate();
     poolTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setOpenPoolId(pool.agentId);
   };

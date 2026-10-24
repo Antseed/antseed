@@ -17,3 +17,21 @@ export function poolToOpen(linked: number | null, lastOpened: number | null): { 
   if (linked === lastOpened) return { open: null, lastOpened };
   return { open: linked, lastOpened: linked };
 }
+
+/**
+ * Tracks which pool selection is current, so a slow lookup for an older link
+ * cannot replace a drawer the user opened, closed or linked to since.
+ */
+export class PoolSelection {
+  private _current = 0;
+
+  /** Start a selection; the returned check stays true until a newer selection or `invalidate()`. */
+  begin(): () => boolean {
+    const mine = ++this._current;
+    return () => mine === this._current;
+  }
+
+  invalidate(): void {
+    this._current += 1;
+  }
+}

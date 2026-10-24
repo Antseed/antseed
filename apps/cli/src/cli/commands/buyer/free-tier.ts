@@ -122,7 +122,7 @@ export function registerBuyerFreeTierCommands(buyerCmd: Command): void {
     .command('remove <staker>')
     .description('Stop sending a staker\'s delegation to sellers')
     .option('--identity <name>', 'remove from this buyer identity instead of the default one')
-    .addHelpText('after', '\nSellers that already saw the signature may keep honouring it until it expires. To end sharing everywhere at once, the staker moves or withdraws the stake.')
+    .addHelpText('after', '\nSellers stop counting it from this buyer\'s next free request. The code itself stays valid until it expires; to stop it counting anywhere sooner, the staker moves or withdraws the stake, which sellers notice within about ten minutes.')
     .action(async (staker: string, options: FreeTierIdentityOptions) => {
       try {
         const globalOpts = getGlobalOptions(buyerCmd);
