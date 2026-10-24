@@ -8,6 +8,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Changed
 
+- Gateway console: while a self-hosted gateway updates itself (**Restart & update**), the console shows the current step in plain words with a one-line explanation, an elapsed timer (mm:ss), and a step bar (step N of 5): downloading, restarting the buyer, waiting for in-flight requests to finish (up to the gateway's 90-second stop timeout), starting the new gateway, and checking it. While the gateway is down mid-update, the console says "The gateway is restarting" and keeps polling until it is back, instead of showing an error. Afterwards it shows the versions it went from and to, with how long the update took. If the update fails, it shows the error, that the gateway still runs the previous version, and how to retry.
+  - Gateway installer (`install-gateway.sh`): the root updater writes `phase`, `phaseStartedAt` and `phaseMaxMs` to `/var/lib/antseed-update/status.json` while it runs. Earlier readers ignore the new fields. Existing servers get step reporting the next time the installer runs; until then the console shows the timer without steps.
+  - Console API: `GatewayUpdate.progress` can carry `phase`, `phaseStartedAt` and `phaseMaxMs`. `antseed update` on the server prints each step as well.
+
 - Buyer (`@antseed/buyer-core`, CLI, desktop): with several requests in flight to one seller, a seller's catch-up payment request (its spend ran ahead of the signed amount) is now covered in full, up to the per-request limit for each in-flight request and never beyond the channel reserve. The buyer retries while the gap shrinks (at most three attempts), and if the gap stops shrinking or is still not covered returns a `payment_negotiation_failed` error instead of passing through the seller's raw 402.
 - Website: the docs have search. Press ⌘K (Ctrl+K), `/`, or the navbar search button to open it. Results update as you type, tolerate typos, and cover every docs page and section. The index is built with the site and searched in the browser, with no external service.
 - Website: the **Set up gateway** button in the navbar has its right padding back.

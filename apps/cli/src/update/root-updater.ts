@@ -27,6 +27,24 @@ export type RootUpdateState = 'requested' | 'running' | 'ready' | 'succeeded' | 
 /** `download` fetches the new version; `install` switches to it and restarts. */
 export type RootUpdateAction = 'download' | 'install'
 
+/**
+ * The step a running update is on, in the order an install takes them
+ * (`download` stops after `downloading`). `rolling-back` replaces the rest
+ * when the new version does not come up. The gateway serves the console,
+ * so the console cannot reach it from `draining-gateway` until it answers again.
+ */
+export type RootUpdatePhase =
+  | 'downloading'       // npm installs the new version next to the running one
+  | 'restarting-buyer'  // the buyer drains and starts on it; the gateway holds requests meanwhile
+  | 'draining-gateway'  // the gateway stops taking requests and lets those in flight finish
+  | 'starting-gateway'  // the new gateway starts
+  | 'checking'          // waiting for the new gateway to answer
+  | 'rolling-back'      // going back to the previous version
+
+export const ROOT_UPDATE_PHASES: readonly RootUpdatePhase[] = [
+  'downloading', 'restarting-buyer', 'draining-gateway', 'starting-gateway', 'checking', 'rolling-back',
+]
+
 export interface RootUpdateProgress {
   state: RootUpdateState
   action: RootUpdateAction
@@ -39,6 +57,16 @@ export interface RootUpdateProgress {
   finishedAt: number | null
   /** Why it failed, in one line; details are in `journalctl -u antseed-update`. */
   error: string | null
+  /**
+   * While running: the step it is on. Absent from updaters written before
+   * steps were reported (re-running the installer adds them) and from the
+   * desktop app's.
+   */
+  phase?: RootUpdatePhase
+  /** When `phase` started (ms). */
+  phaseStartedAt?: number
+  /** The longest `phase` can take, when bounded (the gateway's drain: its systemd stop timeout). */
+  phaseMaxMs?: number
 }
 
 /**
@@ -107,6 +135,23 @@ function readAction(value: unknown): RootUpdateAction {
 
 const STATES: ReadonlySet<string> = new Set(['running', 'ready', 'succeeded', 'failed'])
 
+function isTime(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+}
+
+/** A running update's step, when its updater reports a known one; nothing otherwise. */
+function readPhase(raw: Record<string, unknown>): Pick<RootUpdateProgress, 'phase' | 'phaseStartedAt' | 'phaseMaxMs'> {
+  const phase = raw['phase']
+  if (typeof phase !== 'string' || !(ROOT_UPDATE_PHASES as readonly string[]).includes(phase)) return {}
+  const startedAt = raw['phaseStartedAt']
+  const maxMs = raw['phaseMaxMs']
+  return {
+    phase: phase as RootUpdatePhase,
+    ...(isTime(startedAt) ? { phaseStartedAt: startedAt } : {}),
+    ...(isTime(maxMs) && maxMs > 0 ? { phaseMaxMs: maxMs } : {}),
+  }
+}
+
 /**
  * The gateway server's update service gives up after 15 minutes
  * (`TimeoutStartSec`); a run still "running" well past that was cut off
@@ -148,10 +193,13 @@ export function readRootUpdateProgress(
       startedAt: raw['startedAt'],
       finishedAt: typeof raw['finishedAt'] === 'number' ? raw['finishedAt'] : null,
       error: typeof raw['error'] === 'string' ? raw['error'].slice(0, 500) : null,
+      ...(raw['state'] === 'running' ? readPhase(raw) : {}),
     }
     const stale = options.staleAfterMs !== undefined && progress.state === 'running'
       && (options.now ?? Date.now()) - progress.startedAt > options.staleAfterMs
-    return stale ? { ...progress, state: 'failed', error: 'the update service stopped before finishing' } : progress
+    if (!stale) return progress
+    const { phase: _phase, phaseStartedAt: _phaseStartedAt, phaseMaxMs: _phaseMaxMs, ...run } = progress
+    return { ...run, state: 'failed', error: 'the update service stopped before finishing' }
   } catch {
     return null
   }
