@@ -1,8 +1,44 @@
-import { mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { once } from 'node:events';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { withFileLock } from '../src/utils/file-lock.js';
+
+const lockModule = fileURLToPath(new URL('../src/utils/file-lock.ts', import.meta.url));
+const children: ChildProcess[] = [];
+
+/** Runs `body` in a separate Node process with `withFileLock`, fs helpers and `file` in scope. */
+function runInChild(body: string, file: string): ChildProcess {
+  const script = `
+    import { readFile, writeFile } from 'node:fs/promises';
+    import { withFileLock } from ${JSON.stringify(lockModule)};
+    const file = ${JSON.stringify(file)};
+    ${body}
+  `;
+  const child = spawn(process.execPath, ['--no-warnings', '--input-type=module', '-e', script], {
+    cwd: fileURLToPath(new URL('..', import.meta.url)),
+    stdio: ['pipe', 'pipe', 'inherit'],
+  });
+  children.push(child);
+  return child;
+}
+
+/** Starts another process that holds the lock until its stdin closes. */
+async function holdInChild(file: string): Promise<ChildProcess> {
+  const child = runInChild(`
+    await withFileLock(file, async () => {
+      process.stdout.write('locked\\n');
+      process.stdin.resume();
+      await new Promise((resolve) => process.stdin.once('end', resolve));
+    });
+    process.exit(0);
+  `, file);
+  await once(child.stdout!, 'data');
+  return child;
+}
 
 describe('withFileLock', () => {
   let dir: string;
@@ -13,6 +49,7 @@ describe('withFileLock', () => {
     await writeFile(file, '[]');
   });
   afterEach(async () => {
+    for (const child of children.splice(0)) child.kill('SIGKILL');
     await rm(dir, { recursive: true, force: true });
   });
 
@@ -25,50 +62,50 @@ describe('withFileLock', () => {
   it('runs concurrent edits one at a time so none is lost', async () => {
     await Promise.all([1, 2, 3, 4].map((value) => withFileLock(file, append(value))));
     expect((JSON.parse(await readFile(file, 'utf-8')) as number[]).sort()).toEqual([1, 2, 3, 4]);
-    await expect(stat(`${file}.lock`)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('waits for a lock held by another process', async () => {
-    await writeFile(`${file}.lock`, '999\n');
+    const holder = await holdInChild(file);
     const edit = withFileLock(file, append(1));
-    await new Promise((resolve) => setTimeout(resolve, 60));
+    await new Promise((resolve) => setTimeout(resolve, 100));
     expect(JSON.parse(await readFile(file, 'utf-8'))).toEqual([]);
-    await rm(`${file}.lock`);
+    holder.stdin!.end();
     await edit;
     expect(JSON.parse(await readFile(file, 'utf-8'))).toEqual([1]);
   });
 
-  it('takes over a lock left behind by a crashed process', async () => {
-    await writeFile(`${file}.lock`, '999\n');
-    const old = new Date(Date.now() - 60_000);
-    await utimes(`${file}.lock`, old, old);
-    await withFileLock(file, append(1));
+  it('is released when its holder crashes', async () => {
+    const holder = await holdInChild(file);
+    const edit = withFileLock(file, append(1));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(JSON.parse(await readFile(file, 'utf-8'))).toEqual([]);
+    holder.kill('SIGKILL');
+    await edit;
     expect(JSON.parse(await readFile(file, 'utf-8'))).toEqual([1]);
   });
 
+  it('never lets two processes edit at once', async () => {
+    const children = [100, 200].map((base) => runInChild(`
+      for (let i = 1; i <= 10; i++) await withFileLock(file, async () => {
+        const items = JSON.parse(await readFile(file, 'utf-8'));
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        await writeFile(file, JSON.stringify([...items, ${base} + i]));
+      });
+      process.exit(0);
+    `, file));
+    await Promise.all([1, 2, 3, 4, 5].map((value) => withFileLock(file, append(value))));
+    await Promise.all(children.map((child) => new Promise((resolve) => child.once('exit', resolve))));
+    expect(JSON.parse(await readFile(file, 'utf-8'))).toHaveLength(25);
+  });
+
   it('gives up when the lock is never released', async () => {
-    await writeFile(`${file}.lock`, '999\n');
+    await holdInChild(file);
     await expect(withFileLock(file, append(1), { timeoutMs: 50 })).rejects.toThrow(/Timed out waiting/);
   });
 
   it('releases the lock when the edit fails', async () => {
     await expect(withFileLock(file, async () => { throw new Error('boom'); })).rejects.toThrow('boom');
     await withFileLock(file, append(1));
-    expect(JSON.parse(await readFile(file, 'utf-8'))).toEqual([1]);
-  });
-
-  it('never deletes a lock that is released and retaken while it waits', async () => {
-    await writeFile(`${file}.lock`, 'other\n');
-    const edit = withFileLock(file, append(1));
-    await new Promise((resolve) => setTimeout(resolve, 40));
-    // The holder releases and another process takes the lock straight away.
-    await rm(`${file}.lock`);
-    await writeFile(`${file}.lock`, 'successor\n');
-    await new Promise((resolve) => setTimeout(resolve, 60));
-    expect(await readFile(`${file}.lock`, 'utf-8')).toBe('successor\n');
-    expect(JSON.parse(await readFile(file, 'utf-8'))).toEqual([]);
-    await rm(`${file}.lock`);
-    await edit;
     expect(JSON.parse(await readFile(file, 'utf-8'))).toEqual([1]);
   });
 });
