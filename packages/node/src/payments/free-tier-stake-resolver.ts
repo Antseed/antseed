@@ -96,7 +96,7 @@ export class FreeTierStakeResolver {
 
     let pending = this._inFlight.get(key);
     if (!pending) {
-      pending = this._lookup(stakers)
+      const lookup: Promise<FreeTierStakeStanding | null> = this._lookup(stakers)
         .then(({ value: standing, expiresAt }) => {
           // A standing never outlives the stake snapshots it was derived from.
           this._remember(this._standings, key, standing, expiresAt);
@@ -107,13 +107,21 @@ export class FreeTierStakeResolver {
           this._remember(this._standings, key, null, this._now() + this._failureTtlMs);
           return null;
         })
-        .finally(() => this._inFlight.delete(key));
+        .finally(() => {
+          if (this._inFlight.get(key) === lookup) this._inFlight.delete(key);
+        });
+      pending = lookup;
       this._inFlight.set(key, pending);
     }
 
+    const current = pending;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<null>((resolve) => {
-      timer = setTimeout(() => resolve(null), this._lookupTimeoutMs);
+      timer = setTimeout(() => {
+        // A stalled lookup must not block the next request from trying again.
+        if (this._inFlight.get(key) === current) this._inFlight.delete(key);
+        resolve(null);
+      }, this._lookupTimeoutMs);
     });
     try {
       return await Promise.race([pending, timeout]);

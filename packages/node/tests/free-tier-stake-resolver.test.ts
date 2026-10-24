@@ -110,4 +110,12 @@ describe('FreeTierStakeResolver', () => {
     const resolver = new FreeTierStakeResolver(slow, TIERS, { lookupTimeoutMs: 10 });
     expect(await resolver.resolve(BUYER)).toBeNull();
   });
+
+  it('tries again after a stalled lookup times out', async () => {
+    const r = reader({ [BUYER]: [{ id: 1, power: 150n * ANTS }] });
+    r.currentEpoch = vi.fn().mockReturnValueOnce(new Promise<number>(() => {})).mockResolvedValue(3);
+    const resolver = new FreeTierStakeResolver(r, TIERS, { lookupTimeoutMs: 10 });
+    expect(await resolver.resolve(BUYER)).toBeNull();
+    expect((await resolver.resolve(BUYER))?.tier).toEqual(TIERS[0]);
+  });
 });
