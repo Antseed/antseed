@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { classifyChatStreamFailure, formatChatStreamStopForLog } from './stream-stop.js';
+import { cancelFreeTierRetry, classifyChatStreamFailure, formatChatStreamStopForLog } from './stream-stop.js';
 import { ANTSEED_BUYER_FAULT_ERROR_CODE } from '@antseed/node/types';
 
 test('classifyChatStreamFailure detects retryable upstream 502 failures', () => {
@@ -307,4 +307,81 @@ test('a plain seller 503 stays retryable', () => {
 
   assert.equal(reason.statusCode, 503);
   assert.equal(reason.retryable, true);
+});
+
+const FREE_TIER = {
+  peerId: 'ab'.repeat(20),
+  limitedBy: 'address',
+  limit: 1000,
+  windowMs: 86_400_000,
+  retryAfterSeconds: 3600,
+  stakeTiers: [{ minPower: 520_000, multiplier: 5 }],
+  stakePower: 0,
+};
+const FREE_TIER_ERROR = {
+  type: 'rate_limit_error',
+  code: 'free_tier_exhausted',
+  message: 'Free limit reached on this seller (1,000 requests per day).',
+};
+
+test('a free-tier 429 in an Anthropic error body is a non-retryable stop with its limit', () => {
+  const body = JSON.stringify({ type: 'error', error: FREE_TIER_ERROR, free_tier: FREE_TIER });
+  const reason = classifyChatStreamFailure({ error: new Error(`429 ${body}`), stopReason: 'error' });
+
+  assert.equal(reason.retryable, false);
+  assert.equal(reason.statusCode, 429);
+  assert.equal(reason.errorCode, 'free_tier_exhausted');
+  assert.equal(reason.message, FREE_TIER_ERROR.message);
+  assert.deepEqual(reason.freeTier, FREE_TIER);
+});
+
+test('a free-tier 429 carried in OpenAI metadata.raw after the message is recognized', () => {
+  const raw = JSON.stringify({ error: FREE_TIER_ERROR, free_tier: FREE_TIER });
+  const reason = classifyChatStreamFailure({ error: new Error(`429 ${FREE_TIER_ERROR.message}\n${raw}`), stopReason: 'error' });
+
+  assert.equal(reason.retryable, false);
+  assert.equal(reason.freeTier?.peerId, FREE_TIER.peerId);
+  assert.deepEqual(reason.freeTier?.stakeTiers, FREE_TIER.stakeTiers);
+});
+
+test('truncated free-tier JSON gets no limit notice, and an ordinary 429 keeps retrying', () => {
+  const truncated = `429 ${JSON.stringify({ error: FREE_TIER_ERROR, free_tier: FREE_TIER }).slice(0, -20)}`;
+  assert.equal(classifyChatStreamFailure({ error: new Error(truncated), stopReason: 'error' }).freeTier, undefined);
+
+  const ordinary = classifyChatStreamFailure({ error: new Error('429 Too Many Requests: provider rate limit'), stopReason: 'error' });
+  assert.equal(ordinary.statusCode, 429);
+  assert.equal(ordinary.retryable, true);
+  assert.equal(ordinary.freeTier, undefined);
+});
+
+test('a free-tier refusal cancels the agent backoff before any retry is sent', async () => {
+  const { AgentSession } = await import('@mariozechner/pi-coding-agent');
+  const continued: unknown[] = [];
+  const events: string[] = [];
+  // The agent's own retry path, with only the parts it touches stubbed.
+  const session = Object.assign(Object.create(AgentSession.prototype), {
+    settingsManager: { getRetrySettings: () => ({ enabled: true, maxRetries: 3, baseDelayMs: 60_000 }) },
+    agent: { state: { messages: [] }, replaceMessages: () => {}, continue: async () => { continued.push(1); } },
+    _retryAttempt: 0,
+  }) as { _emit: (event: { type: string; errorMessage?: string }) => void; _handleRetryableError: (message: unknown) => Promise<boolean>; abortRetry(): void };
+  session._emit = (event) => {
+    events.push(event.type);
+    if (event.type !== 'auto_retry_start') return;
+    const reason = classifyChatStreamFailure({ error: event.errorMessage, message: event.errorMessage, stopReason: 'error' });
+    assert.equal(cancelFreeTierRetry(reason, session), true);
+  };
+  const body = JSON.stringify({ type: 'error', error: FREE_TIER_ERROR, free_tier: FREE_TIER });
+
+  const started = Date.now();
+  const retried = await session._handleRetryableError({ role: 'assistant', stopReason: 'error', errorMessage: `429 ${body}` });
+
+  assert.equal(retried, false);
+  assert.ok(Date.now() - started < 1_000);
+  assert.deepEqual(events, ['auto_retry_start', 'auto_retry_end']);
+  assert.equal(continued.length, 0);
+});
+
+test('an ordinary 429 keeps the agent backoff', () => {
+  const reason = classifyChatStreamFailure({ error: new Error('429 Too Many Requests'), stopReason: 'error' });
+  assert.equal(cancelFreeTierRetry(reason, { abortRetry: () => assert.fail('must not cancel') }), false);
 });

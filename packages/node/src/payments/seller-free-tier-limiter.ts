@@ -6,6 +6,19 @@ import {
   type MeteringStorage,
 } from '../metering/storage.js';
 import { peerIdToAddress } from '../types/peer.js';
+import {
+  DEFAULT_FREE_TIER_STAKE_TIERS,
+  encodeFreeTierCapabilities,
+  validateFreeTierStakeTiers,
+  type FreeTierProgram,
+  type FreeTierStakeTier,
+} from './free-tier-program.js';
+import type { FreeTierStakeResolver, FreeTierStakeStanding } from './free-tier-stake-resolver.js';
+import {
+  decodeFreeTierDelegationsHeader,
+  verifyFreeTierDelegations,
+  type VerifiedFreeTierDelegation,
+} from './free-tier-delegation.js';
 
 export interface SellerFreeTierConfig {
   /** Maximum zero-priced requests accepted from one buyer address per window. */
@@ -14,12 +27,21 @@ export interface SellerFreeTierConfig {
   maxRequestsPerIp?: number;
   /** Sliding-window duration in milliseconds. Default: 24 hours. */
   windowMs?: number;
+  /**
+   * Larger allowances for buyers staked on this seller, by staking power.
+   * Default: `DEFAULT_FREE_TIER_STAKE_TIERS`. `[]` turns staked tiers off.
+   */
+  stakeTiers?: FreeTierStakeTier[];
 }
 
 export interface FreeTierDecision extends FreeTierConsumption {
   buyerAddress: string;
   /** Normalized remote IP the decision was keyed on, or null when unknown. */
   remoteIp: string | null;
+  /** Staked standing the decision used, or null for the base limits. */
+  standing: FreeTierStakeStanding | null;
+  /** Limit that applied to the binding counter; null when unlimited. */
+  limit: number | null;
 }
 
 export interface FreeTierConsumeInput {
@@ -27,6 +49,8 @@ export interface FreeTierConsumeInput {
   service: string;
   /** Raw socket remote address of the buyer connection, if known. */
   remoteIp?: string | null;
+  /** Staked standing from `resolveStanding`; omitted or null applies the base limits. */
+  standing?: FreeTierStakeStanding | null;
   nowMs?: number;
 }
 
@@ -69,9 +93,14 @@ export class SellerFreeTierLimiter {
   readonly maxRequestsPerAddress: number | null;
   readonly maxRequestsPerIp: number | null;
   readonly windowMs: number;
+  readonly stakeTiers: readonly FreeTierStakeTier[];
 
   private readonly _storage: MeteringStorage | null;
   private readonly _inMemoryUsage = new Map<string, number[]>();
+  private _stakeResolver: FreeTierStakeResolver | null = null;
+  private _chainId = 0;
+  /** Last verified delegations per buyer address, in insertion order for eviction. */
+  private readonly _delegations = new Map<string, VerifiedFreeTierDelegation[]>();
 
   constructor(config: SellerFreeTierConfig, storage: MeteringStorage | null = null) {
     const perAddress = config.maxRequestsPerAddress;
@@ -91,15 +120,90 @@ export class SellerFreeTierLimiter {
     }
     this.maxRequestsPerAddress = perAddress ?? null;
     this.maxRequestsPerIp = perIp ?? null;
+    const stakeTiers = config.stakeTiers ?? DEFAULT_FREE_TIER_STAKE_TIERS;
+    validateFreeTierStakeTiers(stakeTiers);
     this.windowMs = windowMs;
+    this.stakeTiers = Object.freeze([...stakeTiers]);
     this._storage = storage;
+  }
+
+  /**
+   * Enable staked tiers. Without a resolver every buyer gets the base limits.
+   * `chainId` is the EIP-712 domain delegations are verified against.
+   */
+  setStakeResolver(resolver: FreeTierStakeResolver | null, chainId = 0): void {
+    this._stakeResolver = resolver;
+    this._chainId = chainId;
+  }
+
+  /** Whether staked tiers are live: configured and backed by on-chain reads. */
+  get stakeTiersActive(): boolean {
+    return this._stakeResolver !== null && this.stakeTiers.length > 0;
+  }
+
+  /** The program this seller advertises; tiers only when they are enforced. */
+  program(): FreeTierProgram {
+    return {
+      base: {
+        maxRequestsPerAddress: this.maxRequestsPerAddress,
+        maxRequestsPerIp: this.maxRequestsPerIp,
+        windowMs: this.windowMs,
+      },
+      stakeTiers: this.stakeTiersActive ? [...this.stakeTiers] : [],
+    };
+  }
+
+  /** Peer-metadata capability strings advertising `program()`. */
+  capabilities(): string[] {
+    return encodeFreeTierCapabilities(this.program());
+  }
+
+  /**
+   * Staked standing for this buyer, or null for the base limits. Never throws.
+   *
+   * `delegationsHeader` is the buyer's `x-antseed-free-tier-delegations`
+   * value, or '' when a request carried none. Verified stakers are
+   * remembered for the buyer, so channel-open admission, which passes
+   * undefined because it carries no request headers, sees the same standing.
+   */
+  async resolveStanding(buyerPeerId: string, delegationsHeader?: string): Promise<FreeTierStakeStanding | null> {
+    if (!this._stakeResolver || this.stakeTiers.length === 0) return null;
+    const buyer = peerIdToAddress(buyerPeerId).toLowerCase();
+    if (delegationsHeader !== undefined) {
+      const delegations = decodeFreeTierDelegationsHeader(delegationsHeader, buyer);
+      this._rememberDelegations(buyer, verifyFreeTierDelegations(delegations, buyer, this._chainId));
+    }
+    const nowSeconds = Date.now() / 1000;
+    const stakers = (this._delegations.get(buyer) ?? [])
+      .filter((delegation) => delegation.expiresAt > nowSeconds)
+      .map((delegation) => delegation.staker);
+    return this._stakeResolver.resolve(buyer, stakers);
+  }
+
+  private _rememberDelegations(buyer: string, delegations: VerifiedFreeTierDelegation[]): void {
+    this._delegations.delete(buyer);
+    if (delegations.length === 0) return;
+    if (this._delegations.size >= MAX_IN_MEMORY_KEYS) {
+      const oldest = this._delegations.keys().next().value;
+      if (oldest !== undefined) this._delegations.delete(oldest);
+    }
+    this._delegations.set(buyer, delegations);
+  }
+
+  /** Requests per window a staked tier allows, or null when unlimited. */
+  limitForTier(tier: FreeTierStakeTier): number | null {
+    if (tier.multiplier === 'unlimited') return null;
+    const base = this.maxRequestsPerAddress ?? this.maxRequestsPerIp!;
+    return Math.min(Number.MAX_SAFE_INTEGER, base * tier.multiplier);
   }
 
   describe(): string {
     const parts: string[] = [];
     if (this.maxRequestsPerAddress !== null) parts.push(`${this.maxRequestsPerAddress} per buyer address`);
     if (this.maxRequestsPerIp !== null) parts.push(`${this.maxRequestsPerIp} per IP`);
-    return `${parts.join(', ')} every ${this.windowMs}ms`;
+    const tiers = this.stakeTiers.map((tier) =>
+      `${tier.minPower} power: ${tier.multiplier === 'unlimited' ? 'unlimited' : `${tier.multiplier}x`}`);
+    return `${parts.join(', ')} every ${this.windowMs}ms${tiers.length > 0 ? `; staked tiers ${tiers.join(', ')}` : ''}`;
   }
 
   consume(input: FreeTierConsumeInput): FreeTierDecision {
@@ -115,6 +219,8 @@ export class SellerFreeTierLimiter {
     const nowMs = input.nowMs ?? Date.now();
     const buyerAddress = peerIdToAddress(input.buyerPeerId).toLowerCase();
     const remoteIp = normalizeRemoteIp(input.remoteIp);
+    const standing = input.standing ?? null;
+    const ownerLimit = standing ? this.limitForTier(standing.tier) : null;
     const usage = {
       buyerAddress,
       remoteIp,
@@ -122,16 +228,34 @@ export class SellerFreeTierLimiter {
       maxRequestsPerIp: this.maxRequestsPerIp,
       windowMs: this.windowMs,
       nowMs,
+      stake: standing ? { positionIds: standing.positionIds, limit: ownerLimit } : null,
     };
     const decision = this._storage
       ? (service === null
         ? this._storage.checkFreeTierRequest(usage)
         : this._storage.consumeFreeTierRequest({ ...usage, service }))
-      : this._evaluateInMemory(buyerAddress, remoteIp, nowMs, service !== null);
-    return { ...decision, buyerAddress, remoteIp };
+      : this._evaluateInMemory(buyerAddress, remoteIp, standing, ownerLimit, nowMs, service !== null);
+    return { ...decision, buyerAddress, remoteIp, standing, limit: this._bindingLimit(decision, standing, ownerLimit) };
   }
 
-  private _evaluateInMemory(buyerAddress: string, remoteIp: string | null, nowMs: number, consume: boolean): FreeTierConsumption {
+  private _bindingLimit(
+    decision: FreeTierConsumption,
+    standing: FreeTierStakeStanding | null,
+    ownerLimit: number | null,
+  ): number | null {
+    if (standing) return ownerLimit;
+    if (decision.limitedBy === 'ip') return this.maxRequestsPerIp;
+    return this.maxRequestsPerAddress ?? this.maxRequestsPerIp;
+  }
+
+  private _evaluateInMemory(
+    buyerAddress: string,
+    remoteIp: string | null,
+    standing: FreeTierStakeStanding | null,
+    ownerLimit: number | null,
+    nowMs: number,
+    consume: boolean,
+  ): FreeTierConsumption {
     const windowStart = nowMs - this.windowMs;
     const buckets = new Map<string, number[]>();
     const checks: FreeTierLimitCheck[] = [];
@@ -140,8 +264,15 @@ export class SellerFreeTierLimiter {
       buckets.set(key, timestamps);
       checks.push({ kind, limit, count: timestamps.length, oldestTimestamp: timestamps[0] ?? null });
     };
-    if (this.maxRequestsPerAddress !== null) track('address', `address:${buyerAddress}`, this.maxRequestsPerAddress);
-    if (this.maxRequestsPerIp !== null && remoteIp !== null) track('ip', `ip:${remoteIp}`, this.maxRequestsPerIp);
+    if (standing) {
+      // Unlimited stake is not tracked: nothing would ever read the bucket.
+      if (ownerLimit !== null) {
+        for (const positionId of standing.positionIds) track('stake', `position:${positionId}`, ownerLimit);
+      }
+    } else {
+      if (this.maxRequestsPerAddress !== null) track('address', `address:${buyerAddress}`, this.maxRequestsPerAddress);
+      if (this.maxRequestsPerIp !== null && remoteIp !== null) track('ip', `ip:${remoteIp}`, this.maxRequestsPerIp);
+    }
 
     const decision = evaluateFreeTierLimits(checks, this.windowMs, nowMs);
     if (decision.allowed && consume) {

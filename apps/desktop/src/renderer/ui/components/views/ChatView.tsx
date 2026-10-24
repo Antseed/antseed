@@ -46,6 +46,7 @@ import { VprStackedLogo } from '../VprLogo';
 import { VprHeaderActions } from '../vpr/VprHeaderActions';
 import { cancelVoiceRecording, startVoiceRecording, stopVoiceRecording } from '../../lib/voice-recorder';
 import styles from './ChatView.module.scss';
+import { FreeTierLimitNotice } from './FreeTierLimitNotice';
 import bubbleStyles from '../chat/ChatBubble.module.scss';
 
 const SWITCH_DIALOG_DISMISSED_KEY = 'antseed:switchServiceConfirmDismissed';
@@ -240,6 +241,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
   const funding = useFundingStatus();
   const fundingKey = `${funding.kind}:${funding.title}`;
   const [dismissedFundingKey, setDismissedFundingKey] = useState<string | null>(null);
+  const [dismissedFreeTierLimit, setDismissedFreeTierLimit] = useState<unknown>(null);
   const snap = useUiSelector((state) => ({
     headlineBalanceUsdc: selectHeadlineBalanceUsdc(state),
     browserPreviewRequestId: state.browserPreviewRequestId,
@@ -252,6 +254,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
     chatDiscoverRowsLoaded: state.chatDiscoverRowsLoaded,
     chatError: state.chatError,
     chatRoutingNotice: state.chatRoutingNotice,
+    chatFreeTierLimit: state.chatFreeTierLimit,
     chatInputDisabled: state.chatInputDisabled,
     chatMessages: state.chatMessages,
     chatOpeningConversationId: state.chatOpeningConversationId,
@@ -1424,6 +1427,9 @@ export function ChatView({ onSelectView }: ChatViewProps) {
             {snap.chatError && <div className={styles.chatError}>{snap.chatError}</div>}
             {/* A successful failover is informational, not a failure — amber, not red. */}
             {snap.chatRoutingNotice && <div className={styles.chatWarning}>{snap.chatRoutingNotice}</div>}
+            {snap.chatFreeTierLimit && snap.chatFreeTierLimit !== dismissedFreeTierLimit && (
+              <FreeTierLimitNotice limit={snap.chatFreeTierLimit} rows={snap.discoverRows} onDismiss={() => setDismissedFreeTierLimit(snap.chatFreeTierLimit)} />
+            )}
             {attachmentError && <div className={styles.chatError}>{attachmentError}</div>}
             {voiceError && <div className={styles.chatError}>{voiceError}</div>}
             {attachmentWarning && <div className={styles.chatWarning}>{attachmentWarning}</div>}

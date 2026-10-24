@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto'
 import { chmod, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
+import { withFileLock } from '@antseed/node'
 import { configFromObject, loadConfig } from '../../config/loader.js'
 import type { AntseedConfig } from '../../config/types.js'
 import { redact } from '../../proxy/chain-rpc.js'
@@ -41,21 +42,6 @@ function childObject(parent: JsonObject, key: string): JsonObject {
   return created
 }
 
-/** Config edits in flight, per file: each waits for the previous one so concurrent PATCHes never lose an update. */
-const configLocks = new Map<string, Promise<void>>()
-
-async function withConfigLock<T>(path: string, task: () => Promise<T>): Promise<T> {
-  const previous = configLocks.get(path) ?? Promise.resolve()
-  const run = previous.then(task, task)
-  const settled = run.then(() => undefined, () => undefined)
-  configLocks.set(path, settled)
-  try {
-    return await run
-  } finally {
-    if (configLocks.get(path) === settled) configLocks.delete(path)
-  }
-}
-
 /** The file a (possibly symlinked) config path points at, so the edit replaces the target rather than the link. */
 async function configTarget(path: string): Promise<string> {
   try {
@@ -72,12 +58,13 @@ async function configTarget(path: string): Promise<string> {
  * included, stays as the operator wrote it), and replaces the file
  * atomically with the same mode. A file that does not parse is never
  * overwritten; a missing one is created with just the changed fields.
- * Edits are serialized in-process, and a symlinked config is written
+ * Edits are serialized across processes (CLI, gateway, payments page) by
+ * a lock file next to the config, and a symlinked config is written
  * through to its target.
  */
 export async function patchConfigFile(configPath: string, mutate: (config: JsonObject) => void): Promise<void> {
   const target = await configTarget(resolveConfigPath(configPath))
-  await withConfigLock(target, () => patchConfigTarget(target, mutate))
+  await withFileLock(target, () => patchConfigTarget(target, mutate))
 }
 
 async function patchConfigTarget(path: string, mutate: (config: JsonObject) => void): Promise<void> {

@@ -35,6 +35,7 @@ import { VprTeeFilter, VprTeeNotice } from '../vpr/VprTeeAvailability';
 import { VprTeeStatus } from '../vpr/VprTeeStatus';
 import { useTeeVerification, useTeeVisibleSellers } from '../../hooks/useTeeVerification';
 import { VprRouterView } from './VprRouterView';
+import { VprFreeTierStake } from '../vpr/VprFreeTierStake';
 
 type Props = { onSelectView?: (view: ViewName) => void };
 
@@ -511,6 +512,7 @@ function SellerRow({ route, active, auto, onClick, tee }: {
           }
           {active && <VprBadge tone="primary">{auto ? '• Auto' : 'Pinned'}</VprBadge>}
           {isFreeRoute(route) && <VprBadge tone="green">Free</VprBadge>}
+          {isFreeRoute(route) && <VprFreeTierStake program={route.freeTier} agentId={route.agentId} />}
           {hasModerationControl && <VprBadge tone="neutral">Moderation control</VprBadge>}
         </div>
         <span className={styles.sellerMeta}>

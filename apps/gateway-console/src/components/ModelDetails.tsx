@@ -9,6 +9,7 @@ import { ApiCall } from './ApiCall'
 import { previewListsSellers } from '../lib/selection'
 import { SellerSelection, type SellerRowExtras } from './SellerSelection'
 import { PanelRow, PanelSection } from './SidePanel'
+import { FreeTierInfo } from './FreeTierInfo'
 import { TeeBadge } from './TeeBadge'
 import { Badge, CopyButton, DetailList, Mono, PageLink, SelectField } from './ui'
 import { VerificationLinks } from './VerificationLinks'
@@ -71,7 +72,7 @@ export function ModelDetails({ model, preview, previewLoading, pin }: {
     return {
       selected: offers.some((entry) => route === offerKey(entry)),
       meta: <>
-        <span>{priceSummary(offer)}</span>
+        {offer.free && offer.freeTier ? <FreeTierInfo program={offer.freeTier} agentId={offer.agentId} /> : <span>{priceSummary(offer)}</span>}
         <span>Trust {score(offer.trustScore)}</span>
         {offers.map((entry) => entry.serviceId !== model.id && <Mono key={entry.serviceId}>{entry.serviceId}</Mono>)}
       </>,
