@@ -16,6 +16,7 @@ import { isOrgAdmin, isWorkspaceAdmin } from '../lib/nav'
 import { qk, useModels, useWallet } from '../lib/queries'
 import { findModel } from '../lib/models'
 import { recordSummary } from '../lib/selection'
+import { FreeTierLimitNotice, parseChatFreeTierError } from '../components/FreeTierLimitNotice'
 import { ModelDetails } from '../components/ModelDetails'
 import { SellerSelection } from '../components/SellerSelection'
 import { LoadingRows } from '../components/ui'
@@ -706,6 +707,7 @@ export default function Chat() {
   }, [error])
 
   const busy = status === 'submitted' || status === 'streaming'
+  const freeTierError = error ? parseChatFreeTierError(error.message) : null
   // This conversation's estimated cost so far; null once any answer's cost is unknown.
   const chatCost = messages.reduce<number | null>((sum, message) => {
     const cost = message.metadata?.costUsd
@@ -885,7 +887,8 @@ export default function Chat() {
           {busy && isWaitingForModel(messages.at(-1)) && (
             <div className="-mt-4 text-muted-foreground text-sm" role="status"><Shimmer duration={1}>Thinking…</Shimmer></div>
           )}
-          {error && (
+          {freeTierError && <FreeTierLimitNotice error={freeTierError} onAuto={peerId ? () => setPeerId(null) : null} />}
+          {error && !freeTierError && (
             <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm">
               {/out of AntSeed credits|insufficient_deposits/i.test(error.message)
                 ? (

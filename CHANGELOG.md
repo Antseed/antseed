@@ -12,6 +12,12 @@ This project uses selective package publishing. Each release entry lists the pub
 - Buyer (`@antseed/buyer-core`, CLI): a seller's free-tier 429 is rewritten from its numbers into a plain message naming the reset time and the next tier, with a `free_tier` object (`peerId`, `limitedBy`, `limit`, `windowMs`, `retryAfterSeconds`, `stakeTiers`, `stakePower`), in the client's own API format.
 - CLI buyer: `antseed buyer free-tier add <code>` adds a staker's `antseed-free-tier-…` code after checking its signature, buyer and expiry; `share` opens a local page where a staking wallet on the same machine signs a delegation to the buyer (no gas, 90 days); `list` and `remove <staker>` manage them. Delegations are stored in `buyer.freeTierDelegations` and a running buyer reloads them every minute. `--identity` targets a named buyer identity.
 - Gateway console API: free-tier code endpoints for workspace admins (adds and removals are audited); `Peer` and `NetworkModelOffer` gain `agentId` and `freeTier`, and the buyer's `/_antseed/peers` gains `onChainAgentId`.
+- Gateway console: starred models and routers keep the order they were starred in when two are starred in the same millisecond.
+- ANTS dashboard: **My positions → Share free tier** lets a staker sign a free-tier delegation for any buyer address (no gas, 30/90/180 days) and copy it as an `antseed-free-tier-…` code. It works the same standalone (`antseed ants`), from desktop Rewards → Manage staking, and on the gateway's Staking page. `#/stake?pool=<agentId>` opens a seller's pool.
+- Desktop and gateway: buyers add a staker's code in desktop Rewards → Staked free tier or on the gateway's Staking → Staked free tier panel (workspace admins).
+- Buyers see each seller's free tier where they pick models: desktop model pages show a free seller's limit ("1,000 free requests a day") and a **Stake for more** tooltip with its tiers; the gateway shows the same in a model's provider list and on provider pages. Only stake in that seller's own pool counts toward its tiers.
+- Desktop chat and gateway chat show a seller's free-tier 429 as a notice with a **Stake in this seller's pool** link instead of retrying.
+- Docs: new [Staked free tier](/docs/staked-free-tier) buyer guide and a staked-tiers section in seller configuration; blog post introducing the program.
 
 ### Changed
 

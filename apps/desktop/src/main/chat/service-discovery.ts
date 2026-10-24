@@ -32,6 +32,7 @@ import {
 } from './normalize.js';
 import type { DesktopVerificationLink } from '../connected-apps/domain-site-metadata.js';
 import type { TrustBreakdown } from '@antseed/node';
+import type { FreeTierProgram } from '@antseed/node/free-tier-program';
 
 export type BuyerMaxPricingDefaults = {
   inputUsdPerMillion: number;
@@ -75,6 +76,8 @@ export type DiscoverRowEntry = {
   lifetimeLastSessionAt: number | null;
   onChainChannelCount: number | null;
   agentId: number;
+  /** The seller's free-tier program; staked tiers count only stake in this seller's pool (`agentId`). */
+  freeTier: FreeTierProgram | null;
   /** ANTS actively staked in the seller's pool this epoch (whole ANTS). */
   poolStakeAnts: number;
   onChainActiveChannelCount: number;
@@ -351,6 +354,8 @@ export type BuyerStateDiscoveredPeer = {
   onChainSybilRisk: number | null;
   onChainSybilFlags: string[];
   sellerContract?: string;
+  /** The seller's free-tier program from its peer metadata; null when it offers none. */
+  freeTier: FreeTierProgram | null;
   verificationLinks: DiscoverVerificationLink[];
   peerIconUrl: string | null;
 };
@@ -499,6 +504,7 @@ export async function buildDiscoverRows(
       lifetimeLastSessionAt: stats?.lastSessionAt ?? null,
       onChainChannelCount: peerBlob?.onChainChannelCount ?? null,
       agentId,
+      freeTier: peerBlob?.freeTier ?? null,
       poolStakeAnts,
       onChainActiveChannelCount,
       onChainGhostCount,
