@@ -7,6 +7,7 @@ import {
   FREE_TIER_DELEGATION_TYPES,
   isFreeTierDelegationSigned,
   makeFreeTierDelegationDomain,
+  withFileLock,
   withFreeTierDelegation,
   type FreeTierDelegation,
 } from '@antseed/node';
@@ -25,12 +26,11 @@ export async function readFreeTierDelegations(configPath: string): Promise<FreeT
   return Array.isArray(buyer.freeTierDelegations) ? buyer.freeTierDelegations as FreeTierDelegation[] : [];
 }
 
-const pendingSaves = new Map<string, Promise<unknown>>();
-
 /**
  * Save `delegation`, replacing an earlier one from the same staker to the
- * same buyer. Other config keys are left untouched. Saves to one config file
- * run one at a time, so concurrent saves keep each other's delegations; a
+ * same buyer. Other config keys are left untouched. Edits of one config file
+ * run one at a time across processes (this page, the CLI and the gateway hold
+ * the same lock file), so concurrent edits keep each other's changes; a
  * symlinked config is updated at its target and keeps its permissions.
  */
 export async function saveFreeTierDelegation(configPath: string, delegation: FreeTierDelegation): Promise<FreeTierDelegation[]> {
@@ -53,14 +53,7 @@ export async function saveFreeTierDelegation(configPath: string, delegation: Fre
     }
     return delegations;
   };
-  const previous = pendingSaves.get(target) ?? Promise.resolve();
-  const run = previous.then(save, save);
-  const settled = run.catch(() => undefined);
-  pendingSaves.set(target, settled);
-  void settled.then(() => {
-    if (pendingSaves.get(target) === settled) pendingSaves.delete(target);
-  });
-  return run;
+  return withFileLock(target, save);
 }
 
 /** The file a config path points to, following symlinks; the path itself when it does not exist yet. */
