@@ -929,9 +929,14 @@ const routes: Array<[string, string, Handler]> = [
 /**
  * `?update=available|command|current|desktop` on the first load picks what
  * `/update` reports (default available; desktop is a gateway in the desktop
- * app). An applied update waits 3 s for the update service, installs for
- * 5 s, then reports the new version.
+ * app). An applied update waits 1.5 s for the update service, then walks
+ * the installer updater's steps (a few seconds each); the whole mock API is
+ * unreachable from the drain until the new gateway starts, as on a server.
+ * `?update=step:<phase>|restarting|succeeded|failed` freezes one state of a
+ * Restart & update (for screenshots).
  */
+type MockRun = NonNullable<GatewayUpdate['progress']>
+type MockPhase = NonNullable<MockRun['phase']>
 const mockUpdateState = {
   mode: 'available' as 'available' | 'command' | 'current' | 'desktop',
   current: '0.1.180',
@@ -939,6 +944,53 @@ const mockUpdateState = {
   requestedAt: null as number | null,
   action: 'install' as 'download' | 'install',
   downloaded: false,
+  lastRun: null as MockRun | null,
+  frozen: null as { phase: MockPhase | 'restarting' | 'succeeded' | 'failed'; at: number } | null,
+}
+/** Restart & update's steps in the mock: how long each takes, and the longest the updater says it can. */
+const MOCK_STEPS: Array<{ phase: MockPhase; ms: number; maxMs?: number }> = [
+  { phase: 'downloading', ms: 4_000 },
+  { phase: 'restarting-buyer', ms: 4_000 },
+  { phase: 'draining-gateway', ms: 8_000, maxMs: 90_000 },
+  { phase: 'starting-gateway', ms: 6_000 },
+  { phase: 'checking', ms: 500 },
+]
+const MOCK_PICKUP_MS = 1_500
+
+/** The step a mock install is on `elapsed` ms after its request, with when it started; null once done. */
+function mockStep(elapsed: number): { phase: MockPhase; startedAt: number; maxMs?: number } | null {
+  let start = MOCK_PICKUP_MS
+  for (const step of MOCK_STEPS) {
+    if (elapsed < start + step.ms) return { phase: step.phase, startedAt: start, maxMs: step.maxMs }
+    start += step.ms
+  }
+  return null
+}
+
+/** The mock gateway is down from a second into its drain until the new one has started. */
+function mockGatewayDown(now = Date.now()): boolean {
+  // Frozen on `restarting`: the page loads, then the gateway goes away.
+  if (mockUpdateState.frozen) return mockUpdateState.frozen.phase === 'restarting' && now - mockUpdateState.frozen.at > 2_500
+  const at = mockUpdateState.requestedAt
+  if (at === null || mockUpdateState.action !== 'install' || mockUpdateState.mode === 'desktop') return false
+  const step = mockStep(now - at)
+  return (step?.phase === 'draining-gateway' && now - at - step.startedAt > 1_000) || step?.phase === 'starting-gateway'
+}
+
+function frozenUpdate(base: GatewayUpdate): GatewayUpdate {
+  const frozen = mockUpdateState.frozen!
+  const latest = base.latest!
+  const run: MockRun = { state: 'running', action: 'install', from: base.current, to: latest, startedAt: frozen.at - 94_000, finishedAt: null, error: null }
+  if (frozen.phase === 'succeeded') {
+    return { ...base, current: latest, available: false, progress: { ...run, from: '0.1.180', state: 'succeeded', startedAt: frozen.at - 3 * 60_000 - 151_000, finishedAt: frozen.at - 3 * 60_000 } }
+  }
+  if (frozen.phase === 'failed') {
+    return { ...base, progress: { ...run, to: null, state: 'failed', startedAt: frozen.at - 2 * 60_000 - 80_000, finishedAt: frozen.at - 2 * 60_000, error: `the gateway did not start on ${latest}; rolled back to ${base.current}` } }
+  }
+  // `restarting`: the last status the page read before the gateway went away.
+  const phase: MockPhase = frozen.phase === 'restarting' ? 'draining-gateway' : frozen.phase
+  const maxMs = MOCK_STEPS.find((step) => step.phase === phase)?.maxMs
+  return { ...base, progress: { ...run, phase, phaseStartedAt: frozen.at - 42_000, ...(maxMs ? { phaseMaxMs: maxMs } : {}) } }
 }
 function mockUpdate(): GatewayUpdate {
   const mode = mockUpdateState.mode
@@ -952,9 +1004,10 @@ function mockUpdate(): GatewayUpdate {
     note: mode === 'command' ? 'Installed globally with npm.'
       : mode === 'desktop' ? 'Bundled with the desktop app, which installs the update and restarts.'
       : 'Installed by the gateway installer; its root update service installs new versions and restarts the services.',
-    progress: null,
+    progress: mockUpdateState.lastRun,
     downloaded: null,
   }
+  if (mockUpdateState.frozen) return frozenUpdate(base)
   const at = mockUpdateState.requestedAt
   const action = mockUpdateState.action
   if (at === null) {
@@ -963,8 +1016,18 @@ function mockUpdate(): GatewayUpdate {
       : base
   }
   const elapsed = Date.now() - at
-  if (elapsed < 1_500) return { ...base, progress: { state: 'requested', action, from: null, to: null, startedAt: at, finishedAt: null, error: null } }
-  if (elapsed < 6_000) return { ...base, progress: { state: 'running', action, from: base.current, to: latest, startedAt: at + 1_500, finishedAt: null, error: null } }
+  const startedAt = at + MOCK_PICKUP_MS
+  if (elapsed < MOCK_PICKUP_MS) return { ...base, progress: { state: 'requested', action, from: null, to: null, startedAt: at, finishedAt: null, error: null } }
+  const running: MockRun = { state: 'running', action, from: base.current, to: latest, startedAt, finishedAt: null, error: null }
+  if (mode === 'desktop') {
+    // The desktop app's updater reports no steps.
+    if (elapsed < 6_000) return { ...base, progress: running }
+  } else if (action === 'download') {
+    if (elapsed < MOCK_PICKUP_MS + MOCK_STEPS[0]!.ms) return { ...base, progress: { ...running, phase: 'downloading', phaseStartedAt: startedAt } }
+  } else {
+    const step = mockStep(elapsed)
+    if (step) return { ...base, progress: { ...running, phase: step.phase, phaseStartedAt: at + step.startedAt, ...(step.maxMs ? { phaseMaxMs: step.maxMs } : {}) } }
+  }
   mockUpdateState.requestedAt = null
   if (action === 'download') {
     mockUpdateState.downloaded = true
@@ -972,7 +1035,8 @@ function mockUpdate(): GatewayUpdate {
   }
   mockUpdateState.current = latest
   mockUpdateState.downloaded = false
-  return { ...base, current: latest, available: false, progress: { state: 'succeeded', action, from: base.current, to: latest, startedAt: at + 1_500, finishedAt: at + 6_000, error: null } }
+  mockUpdateState.lastRun = { state: 'succeeded', action, from: base.current, to: latest, startedAt, finishedAt: Date.now(), error: null }
+  return { ...base, current: latest, available: false, progress: mockUpdateState.lastRun }
 }
 
 /** `?exposure=local|lan|public` on the first load picks what `/status` reports (default public). */
@@ -1019,6 +1083,11 @@ export function installMockApi(): void {
   if (updateParam === 'available' || updateParam === 'command' || updateParam === 'current' || updateParam === 'desktop') mockUpdateState.mode = updateParam
   // `?update=ready`: the new version is downloaded and waits for Restart & update.
   if (updateParam === 'ready') mockUpdateState.downloaded = true
+  // `?update=step:<phase>|restarting|succeeded|failed`: one state of a Restart & update, frozen.
+  const frozen = updateParam?.replace(/^step:/, '')
+  if (frozen && (MOCK_STEPS.some((step) => step.phase === frozen) || frozen === 'rolling-back' || frozen === 'restarting' || frozen === 'succeeded' || frozen === 'failed')) {
+    mockUpdateState.frozen = { phase: frozen as NonNullable<typeof mockUpdateState.frozen>['phase'], at: Date.now() }
+  }
   // `?mock=empty`: a gateway nothing has run through yet (no keys, no traffic), for the getting-started Overview.
   if (new URLSearchParams(window.location.search).get('mock') === 'empty') {
     db.keys.length = 0
@@ -1041,6 +1110,8 @@ export function installMockApi(): void {
     const method = (init?.method ?? 'GET').toUpperCase()
     const path = url.pathname.slice('/console/api'.length)
     await new Promise((resolve) => setTimeout(resolve, 150 + Math.random() * 200))
+    // Mid-update the gateway (which serves the console API) is down, as on a server.
+    if (mockGatewayDown()) throw new TypeError('Failed to fetch')
     if (method !== 'GET' && new Headers(init?.headers).get('x-antseed-console') !== '1') return json(403, { error: { code: 'csrf', message: 'Missing CSRF header.' } })
     const staking = /^\/workspaces\/[^/]+\/ants\/(.+)$/.exec(path)
     if (staking) {
@@ -1061,5 +1132,5 @@ export function installMockApi(): void {
       return json(500, { error: { code: 'mock_error', message: String(error) } })
     }
   }
-  console.info('[antseed console] Mock API active. Switch identity with ?as=owner|admin|wsadmin|member|key|out, reachability with ?exposure=local|lan|public, updates with ?update=available|command|current|desktop')
+  console.info('[antseed console] Mock API active. Switch identity with ?as=owner|admin|wsadmin|member|key|out, reachability with ?exposure=local|lan|public, updates with ?update=available|command|current|desktop|ready|step:<phase>|restarting|succeeded|failed')
 }

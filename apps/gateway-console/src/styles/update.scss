@@ -10,3 +10,17 @@
   &:hover { color: var(--as-text-secondary); }
 }
 .gc-update__version { display: inline-flex; align-items: center; gap: 0.5rem; }
+
+/* A running update: the step and an elapsed timer, a thin segmented line for its place among the steps, one line on what it does. Monochrome. */
+.gc-update-notice__step::before, .gc-update-notice__time::before { content: '·'; margin-right: 0.5rem; color: var(--as-text-muted); }
+.gc-update-notice__time, .gc-update-progress__time { font-variant-numeric: tabular-nums; }
+.gc-update-progress { display: flex; flex-direction: column; gap: 0.5rem; }
+.gc-update-progress__line { display: flex; align-items: center; flex-wrap: wrap; gap: 0.25rem 0.5rem; margin: 0; color: var(--as-text-primary); }
+.gc-update-progress__time { margin-left: auto; color: var(--as-text-secondary); }
+.gc-update-progress__step-time { font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+.gc-update-steps { display: flex; gap: 0.25rem; max-width: 28rem; }
+.gc-update-steps__step { flex: 1; height: 0.1875rem; border-radius: 999px; background: var(--as-border); }
+.gc-update-steps__step--done { background: var(--as-text-primary); }
+.gc-update-steps__step--current { background: var(--as-text-muted); }
+/* A finished update: the dot .gc-attention uses, in neutral grey. */
+.gc-update-done { flex: 0 0 auto; width: 0.4375rem; height: 0.4375rem; border-radius: 999px; background: var(--as-text-muted); }

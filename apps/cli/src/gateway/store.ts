@@ -1911,7 +1911,11 @@ export class GatewayStore {
 
   // ── Favorite models ─────────────────────────────────────────────────────
 
-  /** Model and router ids the owner starred, oldest first. */
+  /**
+   * Model and router ids the owner starred, oldest first. Stars made within
+   * the same millisecond keep the order they were made in (rowid), not the
+   * ids' alphabetical order.
+   */
   listFavoriteModels(owner: FavoriteOwner): string[] {
     return this._stmt('SELECT model FROM favorite_models WHERE owner_kind = ? AND owner_id = ? ORDER BY created_at, rowid')
       .pluck().all(owner.kind, owner.id) as string[]

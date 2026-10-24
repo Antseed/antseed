@@ -16,6 +16,8 @@ export default defineConfig({
     testTimeout: 60_000,
     hookTimeout: 30_000,
     include: ['tests/**/*.test.ts'],
+    // Builds @antseed/node and the CLI once; test files must not rebuild them (see global-setup.ts).
+    globalSetup: ['./global-setup.ts'],
     pool: 'forks',
   },
 });

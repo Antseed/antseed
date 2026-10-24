@@ -39,9 +39,15 @@ jobs:
       - name: Build tier 3 (payments, ants, gateway console)
         run: pnpm run build:tier3
 
-      # CLI test script builds itself; desktop has no tests — skip tier4
+      # CLI test script builds itself; desktop has no tests — skip tier4.
+      # e2e runs after everything else: it builds packages/node and apps/cli
+      # (e2e/global-setup.ts), and a rebuild while the CLI tests import those
+      # dist/ files fails them with "does not provide an export named …".
       - name: Test
-        run: pnpm -r run test
+        run: pnpm -r --filter '!@antseed/e2e' run test
+
+      - name: Test (e2e)
+        run: pnpm --filter '@antseed/e2e' run test
 
   e2e-payment:
     name: E2E Payment Flow
