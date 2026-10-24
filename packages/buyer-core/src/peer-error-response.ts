@@ -137,6 +137,11 @@ export function describeFreeTierLimit(limit: FreeTierLimit): string {
   return `${reached}${resets}${stake}`;
 }
 
+/** Whether `response` is a seller's free-tier refusal (429 `free_tier_exhausted`). */
+export function isFreeTierExhaustedResponse(response: SerializedHttpResponse): boolean {
+  return response.statusCode === 429 && parsePeerError(response).id === FREE_TIER_EXHAUSTED_ERROR_ID;
+}
+
 function parsePeerError(response: SerializedHttpResponse): PeerErrorDetails {
   let body: Record<string, unknown> | null = null;
   try {

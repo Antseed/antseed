@@ -308,3 +308,48 @@ test('a plain seller 503 stays retryable', () => {
   assert.equal(reason.statusCode, 503);
   assert.equal(reason.retryable, true);
 });
+
+const FREE_TIER = {
+  peerId: 'ab'.repeat(20),
+  limitedBy: 'address',
+  limit: 1000,
+  windowMs: 86_400_000,
+  retryAfterSeconds: 3600,
+  stakeTiers: [{ minPower: 520_000, multiplier: 5 }],
+  stakePower: 0,
+};
+const FREE_TIER_ERROR = {
+  type: 'rate_limit_error',
+  code: 'free_tier_exhausted',
+  message: 'Free limit reached on this seller (1,000 requests per day).',
+};
+
+test('a free-tier 429 in an Anthropic error body is a non-retryable stop with its limit', () => {
+  const body = JSON.stringify({ type: 'error', error: FREE_TIER_ERROR, free_tier: FREE_TIER });
+  const reason = classifyChatStreamFailure({ error: new Error(`429 ${body}`), stopReason: 'error' });
+
+  assert.equal(reason.retryable, false);
+  assert.equal(reason.statusCode, 429);
+  assert.equal(reason.errorCode, 'free_tier_exhausted');
+  assert.equal(reason.message, FREE_TIER_ERROR.message);
+  assert.deepEqual(reason.freeTier, FREE_TIER);
+});
+
+test('a free-tier 429 carried in OpenAI metadata.raw after the message is recognized', () => {
+  const raw = JSON.stringify({ error: FREE_TIER_ERROR, free_tier: FREE_TIER });
+  const reason = classifyChatStreamFailure({ error: new Error(`429 ${FREE_TIER_ERROR.message}\n${raw}`), stopReason: 'error' });
+
+  assert.equal(reason.retryable, false);
+  assert.equal(reason.freeTier?.peerId, FREE_TIER.peerId);
+  assert.deepEqual(reason.freeTier?.stakeTiers, FREE_TIER.stakeTiers);
+});
+
+test('truncated free-tier JSON gets no limit notice, and an ordinary 429 keeps retrying', () => {
+  const truncated = `429 ${JSON.stringify({ error: FREE_TIER_ERROR, free_tier: FREE_TIER }).slice(0, -20)}`;
+  assert.equal(classifyChatStreamFailure({ error: new Error(truncated), stopReason: 'error' }).freeTier, undefined);
+
+  const ordinary = classifyChatStreamFailure({ error: new Error('429 Too Many Requests: provider rate limit'), stopReason: 'error' });
+  assert.equal(ordinary.statusCode, 429);
+  assert.equal(ordinary.retryable, true);
+  assert.equal(ordinary.freeTier, undefined);
+});

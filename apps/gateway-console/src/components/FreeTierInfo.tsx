@@ -1,6 +1,8 @@
 import type { FreeTierProgramView } from '../api/types'
 import { freeTierBaseLabel, stakeInPoolPath, tierAnts, tierMultiplier } from '../lib/free-tier'
 import { href, linkHandler } from '../lib/router'
+import { useConsole } from '../app/context'
+import { isWorkspaceAdmin } from '../lib/nav'
 import { InfoTip } from './TrustInfo'
 
 /**
@@ -8,6 +10,7 @@ import { InfoTip } from './TrustInfo'
  * ANTS in this seller's pool raises it to. Stake in other pools never counts.
  */
 export function FreeTierInfo({ program, agentId }: { program: FreeTierProgramView | null; agentId: number | null }) {
+  const canStake = isWorkspaceAdmin(useConsole().viewer)
   if (!program) return null
   const base = freeTierBaseLabel(program)
   if (program.stakeTiers.length === 0) return <span>{base ?? 'Free'}</span>
@@ -24,7 +27,9 @@ export function FreeTierInfo({ program, agentId }: { program: FreeTierProgramVie
           ))}
         </span>
         Twice the ANTS for half a year counts the same.
-        {agentId !== null && <span className="gc-free-tiers__link"><a href={href(stakeInPoolPath(agentId))} onClick={linkHandler(stakeInPoolPath(agentId))}>Stake in this seller's pool</a></span>}
+        {agentId !== null && (canStake
+          ? <span className="gc-free-tiers__link"><a href={href(stakeInPoolPath(agentId))} onClick={linkHandler(stakeInPoolPath(agentId))}>Stake in this seller's pool</a></span>
+          : <span className="gc-free-tiers__link">A workspace admin stakes for this workspace.</span>)}
       </InfoTip>
     </span>
   )

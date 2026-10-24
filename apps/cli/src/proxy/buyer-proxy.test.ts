@@ -4283,6 +4283,57 @@ test('transformed pre-stream seller errors preserve peer guidance', async () => 
   assert.match(res.body, /Original Response:.*The seller upstream is unavailable\./)
 })
 
+test('a free-tier refusal from a seller on another protocol reaches the client as JSON with its limit', async () => {
+  const peer = makePeer('a', ['openai-responses'])
+  peer.providerServiceApiProtocols = {
+    'openai-responses': {
+      services: {
+        'gpt-5.6-sol': ['openai-responses'],
+      },
+    },
+  }
+  const proxy = makeBuyerProxyWithPeers([peer], [peer])
+  ;(proxy as any)._node.sendRequestStream = async (
+    _peer: PeerInfo,
+    request: { requestId: string },
+  ) => ({
+    requestId: request.requestId,
+    statusCode: 429,
+    headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify({
+      error: { type: 'rate_limit_error', code: 'free_tier_exhausted', message: 'Seller prose.' },
+      limitedBy: 'address',
+      limit: 1000,
+      windowMs: 86_400_000,
+      retryAfterSeconds: 60,
+      stakeTiers: [{ minPower: 520_000, multiplier: 5 }],
+      stakePower: 0,
+    })),
+  })
+
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    path: '/v1/messages',
+    headers: {
+      accept: 'text/event-stream',
+      'x-antseed-pin-peer': peer.peerId,
+    },
+    body: {
+      model: 'gpt-5.6-sol',
+      max_tokens: 128,
+      stream: true,
+      messages: [{ role: 'user', content: 'hello' }],
+    },
+  }))
+
+  assert.equal(res.statusCode, 429)
+  assert.match(res.headers['content-type'] ?? '', /application\/json/)
+  const body = JSON.parse(res.body) as { type: string; error: { code: string }; free_tier: { peerId: string; limit: number } }
+  assert.equal(body.type, 'error')
+  assert.equal(body.error.code, 'free_tier_exhausted')
+  assert.equal(body.free_tier.peerId, peer.peerId)
+  assert.equal(body.free_tier.limit, 1000)
+})
+
 test('model peer prefix pins the request peer and strips the routed model', async () => {
   const pinnedPeer = makePeer('a', ['openai'])
   let capturedRequestBody: Record<string, unknown> | null = null

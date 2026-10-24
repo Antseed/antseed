@@ -88,6 +88,22 @@ describe('FreeTierStakeResolver', () => {
     expect(r.stakerPositions).toHaveBeenCalledTimes(2);
   });
 
+  it('expires a standing with the stake snapshot it was built from', async () => {
+    let now = 0;
+    const holdings: Record<string, FreeTierStakePosition[]> = { [STAKER_A]: [{ id: 2, power: 2_000n * ANTS }] };
+    const r = reader(holdings);
+    const resolver = new FreeTierStakeResolver(r, TIERS, { cacheTtlMs: 1_000, now: () => now });
+    const otherBuyer = '0x' + '22'.repeat(20);
+    expect((await resolver.resolve(BUYER, [STAKER_A]))?.tier).toEqual(TIERS[1]);
+    holdings[STAKER_A] = [];
+    // A second buyer resolves from the staker's snapshot read at time 0 ...
+    now = 900;
+    expect((await resolver.resolve(otherBuyer, [STAKER_A]))?.tier).toEqual(TIERS[1]);
+    // ... and loses the tier as soon as that snapshot expires, not a full TTL later.
+    now = 1_001;
+    expect(await resolver.resolve(otherBuyer, [STAKER_A])).toBeNull();
+  });
+
   it('falls back to base limits when the lookup is slow', async () => {
     const slow = reader({});
     slow.currentEpoch = vi.fn(() => new Promise<number>(() => {}));

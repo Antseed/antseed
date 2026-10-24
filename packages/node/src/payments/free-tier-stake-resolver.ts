@@ -97,13 +97,14 @@ export class FreeTierStakeResolver {
     let pending = this._inFlight.get(key);
     if (!pending) {
       pending = this._lookup(stakers)
-        .then((standing) => {
-          this._remember(this._standings, key, standing, this._cacheTtlMs);
+        .then(({ value: standing, expiresAt }) => {
+          // A standing never outlives the stake snapshots it was derived from.
+          this._remember(this._standings, key, standing, expiresAt);
           return standing;
         })
         .catch((err) => {
           debugWarn(`[FreeTierStake] Stake lookup failed for ${stakers[0]}: ${err instanceof Error ? err.message : err}`);
-          this._remember(this._standings, key, null, this._failureTtlMs);
+          this._remember(this._standings, key, null, this._now() + this._failureTtlMs);
           return null;
         })
         .finally(() => this._inFlight.delete(key));
@@ -121,14 +122,16 @@ export class FreeTierStakeResolver {
     }
   }
 
-  private async _lookup(stakers: string[]): Promise<FreeTierStakeStanding | null> {
+  /** The standing of `stakers`, and when the earliest snapshot it was built from expires. */
+  private async _lookup(stakers: string[]): Promise<CacheEntry<FreeTierStakeStanding | null>> {
     const agentId = await this._sellerAgentId();
-    if (agentId <= 0) return null;
+    if (agentId.value <= 0) return { value: null, expiresAt: agentId.expiresAt };
     const epoch = await this._currentEpoch();
-    const holdings = await Promise.all(stakers.map((staker) => this._stakerPositions(staker, agentId, epoch)));
+    const holdings = await Promise.all(stakers.map((staker) => this._stakerPositions(staker, agentId.value, epoch.value)));
+    const expiresAt = Math.min(agentId.expiresAt, epoch.expiresAt, ...holdings.map((entry) => entry.expiresAt));
 
     const unique = new Map<number, FreeTierStakePosition>();
-    for (const position of holdings.flat()) unique.set(position.id, position);
+    for (const position of holdings.flatMap((entry) => entry.value)) unique.set(position.id, position);
     // Only the positions that are charged for usage may count toward the tier,
     // so stake left out by the cap cannot back a second, untouched allowance.
     const counted = [...unique.values()]
@@ -136,33 +139,32 @@ export class FreeTierStakeResolver {
       .slice(0, MAX_FREE_TIER_COUNTED_POSITIONS);
     const power = counted.reduce((sum, position) => sum + position.power, 0n);
     const tier = freeTierStakeTierForPower(this.stakeTiers, power);
-    if (!tier) return null;
-    return { stakers, power, tier, positionIds: counted.map((position) => position.id) };
+    if (!tier) return { value: null, expiresAt };
+    return { value: { stakers, power, tier, positionIds: counted.map((position) => position.id) }, expiresAt };
   }
 
-  private async _stakerPositions(staker: string, agentId: number, epoch: number): Promise<FreeTierStakePosition[]> {
+  private async _stakerPositions(staker: string, agentId: number, epoch: number): Promise<CacheEntry<FreeTierStakePosition[]>> {
     const cached = this._positions.get(staker);
-    if (cached && cached.expiresAt > this._now()) return cached.value;
+    if (cached && cached.expiresAt > this._now()) return cached;
     const positions = await this._reader.stakerPositions(staker, agentId, epoch);
-    this._remember(this._positions, staker, positions, this._cacheTtlMs);
-    return positions;
+    return this._remember(this._positions, staker, positions, this._now() + this._cacheTtlMs);
   }
 
-  private async _sellerAgentId(): Promise<number> {
-    if (this._agentId && this._agentId.expiresAt > this._now()) return this._agentId.value;
+  private async _sellerAgentId(): Promise<CacheEntry<number>> {
+    if (this._agentId && this._agentId.expiresAt > this._now()) return this._agentId;
     const agentId = await this._reader.sellerAgentId();
     this._agentId = { value: agentId, expiresAt: this._now() + this._cacheTtlMs };
-    return agentId;
+    return this._agentId;
   }
 
-  private async _currentEpoch(): Promise<number> {
-    if (this._epoch && this._epoch.expiresAt > this._now()) return this._epoch.value;
+  private async _currentEpoch(): Promise<CacheEntry<number>> {
+    if (this._epoch && this._epoch.expiresAt > this._now()) return this._epoch;
     const epoch = await this._reader.currentEpoch();
     this._epoch = { value: epoch, expiresAt: this._now() + this._cacheTtlMs };
-    return epoch;
+    return this._epoch;
   }
 
-  private _remember<T>(cache: Map<string, CacheEntry<T>>, key: string, value: T, ttlMs: number): void {
+  private _remember<T>(cache: Map<string, CacheEntry<T>>, key: string, value: T, expiresAt: number): CacheEntry<T> {
     cache.delete(key);
     if (cache.size >= this._maxEntries) {
       const now = this._now();
@@ -175,6 +177,8 @@ export class FreeTierStakeResolver {
         cache.delete(oldest);
       }
     }
-    cache.set(key, { value, expiresAt: this._now() + ttlMs });
+    const entry = { value, expiresAt };
+    cache.set(key, entry);
+    return entry;
   }
 }

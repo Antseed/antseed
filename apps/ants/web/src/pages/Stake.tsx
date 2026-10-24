@@ -14,6 +14,8 @@ import { epochStartAt, formatAnts, formatDuration, formatInt, formatUsdcCompact,
 import { useNow } from '../hooks';
 import { host } from '../host';
 import { parseRoute } from '../router';
+import { linkedPoolId } from '../pool-link';
+import type { PoolDetail } from '../api';
 
 export function StakePage() {
   const config = useConfig();
@@ -44,17 +46,29 @@ export function StakePage() {
   const sortedPools = useMemo(() => sortPools(pools.data?.pools ?? []), [pools.data]);
   // Keep the open sheet mounted while the pool list refetches; a reload must not flash the page behind it.
   const lastOpen = useRef<{ pool: PoolView; view: PoolsView } | null>(null);
-  const listedPool = openPoolId !== null ? sortedPools.find((p) => p.agentId === openPoolId) : undefined;
+  // A linked seller can be missing from the listing (no indexer, or not indexed yet): it is fetched on its own.
+  const [linkedPool, setLinkedPool] = useState<PoolDetail | null>(null);
+  const [linkError, setLinkError] = useState<string | null>(null);
+  const listedPool = openPoolId !== null
+    ? sortedPools.find((p) => p.agentId === openPoolId) ?? (linkedPool?.agentId === openPoolId ? linkedPool : undefined)
+    : undefined;
   if (listedPool && pools.data) lastOpen.current = { pool: listedPool, view: pools.data };
   const open = openPoolId !== null && lastOpen.current?.pool.agentId === openPoolId ? lastOpen.current : null;
   // `stake?pool=<agentId>` (from a seller's free-tier limit in the desktop app or gateway) opens that seller's pool once.
   const openedLink = useRef<number | null>(null);
   useEffect(() => {
-    const linkedPool = Number(parseRoute(host().currentPath()).query.get('pool'));
-    if (openedLink.current === linkedPool || !sortedPools.some((p) => p.agentId === linkedPool)) return;
-    openedLink.current = linkedPool;
-    setOpenPoolId(linkedPool);
-  }, [sortedPools]);
+    const agentId = linkedPoolId(parseRoute(host().currentPath()).query);
+    if (agentId === null || openedLink.current === agentId || !pools.data) return;
+    openedLink.current = agentId;
+    if (sortedPools.some((p) => p.agentId === agentId)) {
+      setOpenPoolId(agentId);
+      return;
+    }
+    api.pool(agentId).then((pool) => {
+      setLinkedPool(pool);
+      setOpenPoolId(agentId);
+    }, (err: unknown) => setLinkError(`Could not open seller ${agentId}: ${err instanceof Error ? err.message : String(err)}`));
+  }, [pools.data, sortedPools]);
   const openSeller = (pool: PoolView) => {
     poolTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setOpenPoolId(pool.agentId);
@@ -107,6 +121,7 @@ export function StakePage() {
         }
       >
         {pools.error && !pools.data ? <ErrorBox error={pools.error} onRetry={pools.refresh} /> : null}
+        {linkError ? <div className="status-line" role="alert">{linkError}</div> : null}
         {pools.loading ? <p className="hint" role="status">{pools.data ? 'Updating sellers… Showing previously loaded data.' : 'Loading sellers…'}</p> : null}
         {!pools.loading && pools.reconciling ? <p className="hint" role="status">Updating your stake… Waiting for Antscan to include your latest transaction.</p> : null}
         {!pools.loading && (pools.partial || (pools.error && pools.data)) ? (

@@ -13,6 +13,7 @@ import {
   ANTSEED_FAULT_ATTRIBUTION_HEADER,
   ANTSEED_ATTEST_PATH,
   adaptPeerFaultErrorResponse,
+  isFreeTierExhaustedResponse,
   computeTrustScore,
   decodeSweepRequest,
   faultAttributionOf,
@@ -5018,6 +5019,12 @@ export class BuyerProxy {
     const peerResponseProtocol = selectedRoutePlan.selection?.targetProtocol ?? requestProtocol
     const adaptPeerResponse = (response: SerializedHttpResponse): SerializedHttpResponse =>
       adaptPeerFaultErrorResponse(response, peerResponseProtocol, { pinned, peerId: selectedPeer.peerId })
+    // A free-tier refusal is written by the buyer, straight in the client's protocol and as JSON
+    // even for a streamed request, so protocol conversion must not drop its `free_tier` details.
+    const adaptFreeTierRefusal = (response: SerializedHttpResponse): SerializedHttpResponse | null =>
+      isFreeTierExhaustedResponse(response)
+        ? adaptPeerFaultErrorResponse(response, requestProtocol, { pinned, peerId: selectedPeer.peerId })
+        : null
     const startTime = Date.now()
     const attemptAbort = new AbortController()
     const attemptSignal = attemptTimeoutMs ? AbortSignal.any([requestSignal, attemptAbort.signal]) : requestSignal
@@ -5082,9 +5089,11 @@ export class BuyerProxy {
         recordRouterUsage(this._modelRoutingClient, routingConversationKey, requestForPeer, response, selectedPeer, requestSignal)
 
         let responseForClient = adaptBuyerFaultErrorResponse(response, requestProtocol)
-        responseForClient = adaptPeerResponse(responseForClient)
+        const freeTierRefusal = adaptFreeTierRefusal(responseForClient)
+        responseForClient = freeTierRefusal ?? adaptPeerResponse(responseForClient)
         if (
           !streamed
+          && !freeTierRefusal
           && adaptResponse
           && responseForClient.headers[ANTSEED_FAULT_ATTRIBUTION_HEADER]?.toLowerCase() !== 'buyer'
         ) {
@@ -5219,9 +5228,11 @@ export class BuyerProxy {
           await this._persistResourceRoutes().catch(error => console.error('[proxy] Accepted video route was not persisted:', error))
         }
         let response = adaptBuyerFaultErrorResponse(upstreamResponse, requestProtocol)
-        response = adaptPeerResponse(response)
+        const freeTierRefusal = adaptFreeTierRefusal(response)
+        response = freeTierRefusal ?? adaptPeerResponse(response)
         if (
-          adaptResponse
+          !freeTierRefusal
+          && adaptResponse
           && response.headers[ANTSEED_FAULT_ATTRIBUTION_HEADER]?.toLowerCase() !== 'buyer'
         ) {
           response = adaptResponse(response)

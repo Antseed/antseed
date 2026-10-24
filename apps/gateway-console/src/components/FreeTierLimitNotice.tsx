@@ -1,4 +1,6 @@
 import type { ChatFreeTierError } from '../api/types'
+import { useConsole } from '../app/context'
+import { isWorkspaceAdmin } from '../lib/nav'
 import { nextTier, stakeInPoolPath, tierAllowance, tierAnts } from '../lib/free-tier'
 import { shortId } from '../lib/format'
 import { usePeers } from '../lib/queries'
@@ -21,6 +23,7 @@ export function parseChatFreeTierError(message: string): ChatFreeTierError | nul
  */
 export function FreeTierLimitNotice({ error, onAuto }: { error: ChatFreeTierError; onAuto: (() => void) | null }) {
   const peers = usePeers()
+  const canStake = isWorkspaceAdmin(useConsole().viewer)
   const { freeTier } = error
   const peer = freeTier.peerId ? peers.data?.find((entry) => entry.peerId.toLowerCase() === freeTier.peerId!.toLowerCase()) : undefined
   const seller = peer?.displayName ?? (freeTier.peerId ? shortId(freeTier.peerId, 6, 4) : 'this seller')
@@ -34,8 +37,9 @@ export function FreeTierLimitNotice({ error, onAuto }: { error: ChatFreeTierErro
         <span className="font-medium">{reached}</span>{' '}
         {freeTier.retryAfterSeconds !== null && <>It resets in {formatWait(freeTier.retryAfterSeconds)}. </>}
         {next && <>Lock {tierAnts(next)} for a year in {seller}'s pool for {tierAllowance(next).toLowerCase()}; stake in other pools doesn't count here.{' '}</>}
-        {next && pool !== null && <a className="font-medium underline underline-offset-2" href={href(stakeInPoolPath(pool))} onClick={linkHandler(stakeInPoolPath(pool))}>Stake in {seller}'s pool</a>}
-        {onAuto && <>{next && pool !== null ? ' or ' : ''}<button type="button" className="font-medium underline underline-offset-2" onClick={onAuto}>switch to Auto</button> to try another seller (paid rates may apply).</>}
+        {next && pool !== null && canStake && <a className="font-medium underline underline-offset-2" href={href(stakeInPoolPath(pool))} onClick={linkHandler(stakeInPoolPath(pool))}>Stake in {seller}'s pool</a>}
+        {next && pool !== null && !canStake && <>Ask a workspace admin to stake in {seller}'s pool.{' '}</>}
+        {onAuto && <>{next && pool !== null && canStake ? ' or ' : ''}<button type="button" className="font-medium underline underline-offset-2" onClick={onAuto}>switch to Auto</button> to try another seller (paid rates may apply).</>}
       </span>
     </div>
   )
