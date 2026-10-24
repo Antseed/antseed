@@ -345,7 +345,22 @@ function cloneSellerFreeTier(
     ...(value.maxRequestsPerAddress !== undefined ? { maxRequestsPerAddress: value.maxRequestsPerAddress } : {}),
     ...(value.maxRequestsPerIp !== undefined ? { maxRequestsPerIp: value.maxRequestsPerIp } : {}),
     ...(value.windowMs !== undefined ? { windowMs: value.windowMs } : {}),
+    ...(value.stakeTiers !== undefined ? { stakeTiers: value.stakeTiers.map((tier) => ({ ...tier })) } : {}),
   };
+}
+
+function normalizeSellerFreeTierStakeTiers(
+  value: unknown,
+): NonNullable<NonNullable<AntseedConfig['seller']['freeTier']>['stakeTiers']> {
+  // Malformed entries become NaN so validation reports them instead of dropping them.
+  if (!Array.isArray(value)) return [{ minPower: Number.NaN, multiplier: Number.NaN }];
+  return value.map((tier) => {
+    if (!isRecord(tier)) return { minPower: Number.NaN, multiplier: Number.NaN };
+    return {
+      minPower: toFiniteOrNaN(tier['minPower']),
+      multiplier: tier['multiplier'] === 'unlimited' ? 'unlimited' : toFiniteOrNaN(tier['multiplier']),
+    };
+  });
 }
 
 function normalizeSellerFreeTier(
@@ -365,6 +380,7 @@ function normalizeSellerFreeTier(
         ? { maxRequestsPerIp: toFiniteOrNaN(value['maxRequestsPerIp']) }
         : {}),
       ...(value['windowMs'] !== undefined ? { windowMs: toFiniteOrNaN(value['windowMs']) } : {}),
+      ...(value['stakeTiers'] !== undefined ? { stakeTiers: normalizeSellerFreeTierStakeTiers(value['stakeTiers']) } : {}),
     },
   };
 }
@@ -557,6 +573,9 @@ function mergeBuyerConfig(
     ...(value['verifier'] !== undefined
       ? { verifier: value['verifier'] as NonNullable<AntseedConfig['buyer']['verifier']> }
       : defaults.verifier ? { verifier: structuredClone(defaults.verifier) } : {}),
+    ...(value['freeTierDelegations'] !== undefined
+      ? { freeTierDelegations: value['freeTierDelegations'] as NonNullable<AntseedConfig['buyer']['freeTierDelegations']> }
+      : {}),
   };
 }
 

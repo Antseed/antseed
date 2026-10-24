@@ -49,6 +49,7 @@ import { GATEWAY_INTERNAL_KEY_HEADER } from '../server.js'
 import { createKey } from '../services/keys.js'
 import type { ChatThreadOwner, ChatThreadSummary } from '../store.js'
 import { TEE_VERIFIER_ID } from '@antseed/node/tee-status'
+import { chatErrorText } from './free-tier-error.js'
 import { chatTools, SHELL_TOOL } from './tools.js'
 
 export const CHAT_KEY_LABEL = 'Web chat'
@@ -309,7 +310,7 @@ export function chatRouteRegistrar(options: ChatRouteOptions) {
             deps.log(`gateway chat: could not save conversation ${threadId}: ${String(error)}`)
           }
         },
-        onError: (error) => (error instanceof Error ? error.message : String(error)),
+        onError: chatErrorText,
       })
       return undefined
     }, allow)

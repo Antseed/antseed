@@ -32,7 +32,7 @@ const PEERS_BODY = {
       peerId: PEER_A,
       displayName: 'Fake TEE Seller',
       providers: ['openai'],
-      capabilities: ['verifier.antseed-verifier'],
+      capabilities: ['verifier.antseed-verifier', 'free-tier.v1.base.a1000.w86400000', 'free-tier.v1.tier.p520000.x5'],
       providerPricing: {
         openai: {
           defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 },
@@ -43,6 +43,7 @@ const PEERS_BODY = {
       reputationScore: 80,
       onChainReputationScore: 61,
       trust: { score: 72, washFlagged: false },
+      onChainAgentId: 42,
       onChainPoolStakeAnts: 1200,
       onChainUsageShareBps: 250,
       onChainWashFlagged: false,
@@ -236,6 +237,11 @@ test('GET peers merges buyer peers, health and gateway stats', async () => {
     tee: true,
     teeScope: null,
     stakeAnts: '1200',
+    agentId: 42,
+    freeTier: {
+      base: { maxRequestsPerAddress: 1000, maxRequestsPerIp: null, windowMs: 86_400_000 },
+      stakeTiers: [{ minPower: 520_000, multiplier: 5 }],
+    },
     usageShareBps: 250,
     washFlagged: false,
     lastSeen: NOW - 5_000,
@@ -315,6 +321,11 @@ test('network models merge the buyer catalog with the peer list', () => {
     usdPerImage: null,
     contextLength: 128_000,
     free: false,
+    agentId: 42,
+    freeTier: {
+      base: { maxRequestsPerAddress: 1000, maxRequestsPerIp: null, windowMs: 86_400_000 },
+      stakeTiers: [{ minPower: 520_000, multiplier: 5 }],
+    },
     reputationScore: 64,
     trustScore: 72,
     verified: false,

@@ -105,7 +105,14 @@ export interface BuyerRequestHandlerDeps {
   getMux: (peerId: PeerId, conn: BuyerConnection) => ProxyMux;
   getVerificationMux: (peerId: PeerId, conn: BuyerConnection) => VerificationMux;
   registerPaymentMux: (peerId: PeerId, mux: PaymentMux) => void;
+  /**
+   * Value for the `x-antseed-free-tier-delegations` header: stakers' signed
+   * consent to count their stake for this buyer on sellers' staked free tiers.
+   */
+  freeTierDelegationsHeader?: () => string | null;
 }
+
+export const FREE_TIER_DELEGATIONS_HEADER = 'x-antseed-free-tier-delegations';
 
 /**
  * Handles buyer-side outbound request execution: connection setup, streaming,
@@ -157,13 +164,25 @@ export class BuyerRequestHandler {
       await negotiator.applyExternalSpendingAuth(peer, conn, externalSpendingAuth);
     }
 
+    // Only this node's own delegations reach the seller, never a client's copy.
+    const headersWithoutDelegations = Object.fromEntries(
+      Object.entries(req.headers).filter(([name]) => name.toLowerCase() !== FREE_TIER_DELEGATIONS_HEADER),
+    );
+    const delegationsHeader = this._deps.freeTierDelegationsHeader?.() ?? null;
+    req = {
+      ...req,
+      headers: delegationsHeader
+        ? { ...headersWithoutDelegations, [FREE_TIER_DELEGATIONS_HEADER]: delegationsHeader }
+        : headersWithoutDelegations,
+    };
+
     // Track which service the buyer requested so auth validation uses buyer's own pricing.
     const requestedService = options?.controlPlane ? undefined : extractRequestedService(peer, req);
     const requestProtocol = options?.controlPlane ? null : detectRequestServiceApiProtocol(req);
     // Set when a video create is priced; reported on its accepted response so the caller can reserve it until delivery.
     let videoPriceUsdc: bigint | undefined;
     const adaptPeerResponse = (response: SerializedHttpResponse): SerializedHttpResponse => {
-      const adapted = adaptPeerFaultErrorResponse(response, requestProtocol, { pinned: options?.pinned });
+      const adapted = adaptPeerFaultErrorResponse(response, requestProtocol, { pinned: options?.pinned, peerId: peer.peerId });
       if (videoPriceUsdc === undefined || adapted.statusCode < 200 || adapted.statusCode >= 300) return adapted;
       const headers = Object.fromEntries(Object.entries(adapted.headers).filter(([name]) => name.toLowerCase() !== VIDEO_PRICE_HEADER));
       return { ...adapted, headers: { ...headers, [VIDEO_PRICE_HEADER]: videoPriceUsdc.toString() } };

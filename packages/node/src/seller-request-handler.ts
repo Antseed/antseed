@@ -11,6 +11,14 @@ import type { ChannelsClient } from './payments/evm/channels-client.js';
 import type { SellerPaymentManager } from './payments/seller-payment-manager.js';
 import type { SellerFreeUsageManager } from './payments/seller-free-usage-manager.js';
 import type { FreeTierDecision, SellerFreeTierLimiter } from './payments/seller-free-tier-limiter.js';
+import { powerToAntsEpochs } from './payments/free-tier-program.js';
+import { FREE_TIER_DELEGATIONS_HEADER } from './payments/free-tier-delegation.js';
+
+const FREE_TIER_EXHAUSTED_MESSAGES = {
+  address: 'This seller free tier has been exhausted for your buyer address.',
+  ip: 'This seller free tier has been exhausted for your IP address.',
+  stake: 'This seller staked free tier has been exhausted for your stake.',
+} as const;
 import { ProxyMux } from './proxy/proxy-mux.js';
 import type { PeerConnection } from './p2p/connection-manager.js';
 import type {
@@ -87,6 +95,18 @@ function setTrustedHeader(headers: Record<string, string>, name: string, value: 
     if (key.toLowerCase() === name) delete headers[key];
   }
   headers[name] = value;
+}
+
+/** Remove a header in any letter case and return its value. */
+function takeHeader(headers: Record<string, string>, name: string): string | undefined {
+  let value: string | undefined;
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === name) {
+      value = headers[key];
+      delete headers[key];
+    }
+  }
+  return value;
 }
 
 export interface SellerRequestHandlerDeps {
@@ -173,6 +193,10 @@ export class SellerRequestHandler {
 
     mux.onProxyRequest(async (request: SerializedHttpRequest) => {
       debugLog(`[SellerHandler] Received request: ${request.method} ${request.path} (reqId=${request.requestId.slice(0, 8)})`);
+      // Response auth signs the request as the buyer sent it, so keep its headers before removing seller-only ones.
+      const wireHeaders = { ...request.headers };
+      // Delegations are for this seller only: no route may pass them on to a provider or prover.
+      const delegationsHeader = takeHeader(request.headers, FREE_TIER_DELEGATIONS_HEADER);
 
       // Handle /v1/models locally — free metadata endpoint, no payment required.
       // Compare against the path without its query string so callers like
@@ -321,10 +345,13 @@ export class SellerRequestHandler {
         const requestedService = this._extractRequestedService(request) ?? 'unknown';
         let decision: FreeTierDecision;
         try {
+          // No header means the buyer has no codes any more: '' forgets the remembered ones.
+          const standing = await this._deps.sellerFreeTierLimiter.resolveStanding(buyerPeerId, delegationsHeader ?? '');
           decision = this._deps.sellerFreeTierLimiter.consume({
             buyerPeerId,
             service: requestedService,
             remoteIp: conn.remoteAddress ?? null,
+            standing,
           });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
@@ -347,11 +374,15 @@ export class SellerRequestHandler {
           const retryAfterSeconds = Math.max(1, Math.ceil(decision.retryAfterMs / 1000));
           const limiter = this._deps.sellerFreeTierLimiter;
           const limitedBy = decision.limitedBy ?? 'address';
-          const limit = limitedBy === 'ip' ? limiter.maxRequestsPerIp : limiter.maxRequestsPerAddress;
+          const limit = decision.limit;
           debugLog(
             `[SellerHandler] Free tier exhausted for ${decision.buyerAddress} ip=${decision.remoteIp ?? 'unknown'} ` +
-            `(limitedBy=${limitedBy}, limit=${limit}, windowMs=${limiter.windowMs})`,
+            `stakers=${decision.standing?.stakers.join('+') ?? 'none'} (limitedBy=${limitedBy}, limit=${limit}, windowMs=${limiter.windowMs})`,
           );
+          const program = limiter.program();
+          const stakeHint = program.stakeTiers.length > 0
+            ? ' Stake ANTS on this seller to raise the limit.'
+            : '';
           mux.sendProxyResponse({
             requestId: request.requestId,
             statusCode: 429,
@@ -361,9 +392,7 @@ export class SellerRequestHandler {
             },
             body: new TextEncoder().encode(JSON.stringify({
               error: {
-                message: limitedBy === 'ip'
-                  ? 'This seller free tier has been exhausted for your IP address.'
-                  : 'This seller free tier has been exhausted for your buyer address.',
+                message: FREE_TIER_EXHAUSTED_MESSAGES[limitedBy] + stakeHint,
                 type: 'rate_limit_error',
                 code: 'free_tier_exhausted',
               },
@@ -371,6 +400,12 @@ export class SellerRequestHandler {
               limit,
               windowMs: limiter.windowMs,
               retryAfterSeconds,
+              ...(program.stakeTiers.length > 0
+                ? {
+                  stakeTiers: program.stakeTiers,
+                  stakePower: decision.standing ? powerToAntsEpochs(decision.standing.power) : 0,
+                }
+                : {}),
             })),
           });
           return;
@@ -610,7 +645,7 @@ export class SellerRequestHandler {
 
       const responseAuthRequest: SerializedHttpRequest = {
         ...request,
-        headers: { ...request.headers },
+        headers: wireHeaders,
       };
 
       // Track active seller session at request start

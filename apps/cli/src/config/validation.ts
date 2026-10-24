@@ -7,6 +7,7 @@ import type {
   SellerProviderConfig,
   TokenPricingUsdPerMillion,
 } from './types.js';
+import { MAX_FREE_TIER_DELEGATIONS, validateFreeTierStakeTiers } from '@antseed/node';
 import { validateServiceMetadata } from './service-metadata.js';
 import { parseHostPort } from './public-address.js';
 import { appendVerifierConfigErrors } from '../verifier/config-schema.js';
@@ -360,6 +361,7 @@ export function validateConfig(config: AntseedConfig): string[] {
 
   validateBuyerVerification('buyer.verification', config.buyer.verification, errors);
   validateBuyerVerifier('buyer.verifier', config.buyer.verifier, errors);
+  validateFreeTierDelegations(config.buyer.freeTierDelegations, errors);
 
   if (!Number.isInteger(config.seller.maxConcurrentBuyers) || config.seller.maxConcurrentBuyers < 1) {
     errors.push('seller.maxConcurrentBuyers must be an integer >= 1');
@@ -456,6 +458,13 @@ export function validateConfig(config: AntseedConfig): string[] {
     ) {
       errors.push('seller.freeTier.windowMs must be a safe integer >= 1000');
     }
+    if (freeTier.stakeTiers !== undefined) {
+      try {
+        validateFreeTierStakeTiers(freeTier.stakeTiers, 'seller.freeTier.stakeTiers');
+      } catch (err) {
+        errors.push(err instanceof Error ? err.message : String(err));
+      }
+    }
   }
 
   const restrictedCountries = config.seller.restrictedCountries;
@@ -506,4 +515,31 @@ export function assertValidConfig(config: AntseedConfig): void {
   if (errors.length === 0) return;
 
   throw new Error(`Invalid config:\n- ${errors.join('\n- ')}`);
+}
+
+function validateFreeTierDelegations(value: unknown, errors: string[]): void {
+  if (value === undefined) return;
+  const path = 'buyer.freeTierDelegations';
+  if (!Array.isArray(value)) {
+    errors.push(`${path} must be an array`);
+    return;
+  }
+  const perBuyer = new Map<string, number>();
+  value.forEach((entry, index) => {
+    const at = `${path}[${index}]`;
+    if (typeof entry !== 'object' || entry === null) {
+      errors.push(`${at} must be an object`);
+      return;
+    }
+    const { staker, buyer, expiresAt, signature } = entry as Record<string, unknown>;
+    for (const [key, address] of [['staker', staker], ['buyer', buyer]] as const) {
+      if (typeof address !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(address)) errors.push(`${at}.${key} must be an address`);
+    }
+    if (!Number.isSafeInteger(expiresAt) || (expiresAt as number) < 1) errors.push(`${at}.expiresAt must be a Unix time in seconds`);
+    if (typeof signature !== 'string' || !/^0x[0-9a-fA-F]{130}$/.test(signature)) errors.push(`${at}.signature must be a 65-byte hex signature`);
+    if (typeof buyer === 'string') perBuyer.set(buyer.toLowerCase(), (perBuyer.get(buyer.toLowerCase()) ?? 0) + 1);
+  });
+  for (const [buyer, count] of perBuyer) {
+    if (count > MAX_FREE_TIER_DELEGATIONS) errors.push(`${path} has ${count} delegations for ${buyer}; at most ${MAX_FREE_TIER_DELEGATIONS} count`);
+  }
 }
