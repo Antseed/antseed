@@ -310,6 +310,11 @@ export interface NodeConfig {
   maxStreamBufferBytes?: number;
   /** Maximum upload body size (bytes) a seller will accept per request. Default: 64 MiB. */
   maxUploadBodyBytes?: number;
+  /**
+   * Seller only: buyer peer IDs (40 hex chars, with or without 0x) whose requests are refused with
+   * 403 `buyer_blocked`. Change it at runtime with `setBlockedBuyers`.
+   */
+  blockedBuyers?: string[];
   /** Maximum wall time allowed for a streaming response. Default: 30 minutes. */
   maxStreamDurationMs?: number;
   /** Allow private/loopback IPs in DHT lookups. Default: false. Set true for local testing. */
@@ -434,6 +439,7 @@ export class AntseedNode extends EventEmitter {
   private _nat: NatTraversal | null = null;
   private _metering: MeteringStorage | null = null;
   private _resourceOwnership: ResourceOwnershipStore | null = null;
+  private _blockedBuyers = new Set<string>();
   private _receiptGenerator: ReceiptGenerator | null = null;
   private _balanceManager: BalanceManager | null = null;
   private _depositsClient: DepositsClient | null = null;
@@ -510,6 +516,15 @@ export class AntseedNode extends EventEmitter {
   constructor(config: NodeConfig) {
     super();
     this._config = config;
+    this.setBlockedBuyers(config.blockedBuyers ?? []);
+  }
+
+  /**
+   * Replace the buyer peer IDs this seller refuses. Requests from them get 403 `buyer_blocked` (the free
+   * `/v1/models` listing stays open) and emit `request:blocked`. Takes effect on the next request.
+   */
+  setBlockedBuyers(peerIds: string[]): void {
+    this._blockedBuyers = new Set(peerIds.map((id) => id.trim().toLowerCase().replace(/^0x/, '')).filter(Boolean));
   }
 
   get peerId(): string | null {
@@ -2006,6 +2021,7 @@ export class AntseedNode extends EventEmitter {
       announcer: this._announcer,
       maxUploadBodyBytes: this._config.maxUploadBodyBytes,
       resourceOwnershipStore: this._resourceOwnership,
+      isBuyerBlocked: (buyerPeerId) => this._blockedBuyers.has(buyerPeerId.toLowerCase().replace(/^0x/, '')),
       ...(this._config.payments?.reserveEstimateOverdraftUsdc != null
         ? { reserveEstimateOverdraftUsdc: BigInt(this._config.payments.reserveEstimateOverdraftUsdc) }
         : {}),
