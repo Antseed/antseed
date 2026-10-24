@@ -28,3 +28,11 @@ GA4_MEASUREMENT_ID = "G-DF97Q4KV2X"
 #                     read-only is enough).
 #   GA4_API_SECRET  — Measurement Protocol API secret for the GA4 property;
 #                     required for GA4 reporting.
+
+# Server-side install matching (src/match.ts) needs a KV namespace. Create one
+# with `wrangler kv namespace create ATTRIBUTION_KV`, then uncomment and fill
+# in the id. Without the binding the proxy still stamps installers and
+# verifies tokens; only the macOS / renamed-file match path is off.
+# [[kv_namespaces]]
+# binding = "ATTRIBUTION_KV"
+# id = "<namespace id>"

@@ -24,6 +24,12 @@ export type TelemetryState = {
   lastSessionHeartbeatAtMs: number | null;
   /** In-app opt-out. Defaults to false (telemetry on, opt-out model). */
   telemetryDisabled: boolean;
+  /** Random per-install id used for unattributed milestone reports (see attribution.ts). */
+  attributionInstallId: string | null;
+  /** Signed token read from the installer filename; null when no stamp reached this install. */
+  attributionToken: string | null;
+  /** Once-per-install milestones already reported. */
+  attributionSent: string[];
 };
 
 export type TelemetryStateLoadResult = {
@@ -46,6 +52,9 @@ export function defaultTelemetryState(): TelemetryState {
     lastSessionStartedAtMs: null,
     lastSessionHeartbeatAtMs: null,
     telemetryDisabled: false,
+    attributionInstallId: null,
+    attributionToken: null,
+    attributionSent: [],
   };
 }
 
@@ -59,6 +68,10 @@ function asNumberOrNull(value: unknown): number | null {
 
 function asStringOrNull(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
 }
 
 function isUuid(value: string): boolean {
@@ -88,6 +101,12 @@ function normalize(raw: unknown): TelemetryState | null {
     lastSessionStartedAtMs: asNumberOrNull(record['lastSessionStartedAtMs']),
     lastSessionHeartbeatAtMs: asNumberOrNull(record['lastSessionHeartbeatAtMs']),
     telemetryDisabled: asBoolean(record['telemetryDisabled'], false),
+    attributionInstallId: (() => {
+      const value = asStringOrNull(record['attributionInstallId']);
+      return value && isUuid(value) ? value : null;
+    })(),
+    attributionToken: asStringOrNull(record['attributionToken']),
+    attributionSent: asStringArray(record['attributionSent']),
   };
 }
 

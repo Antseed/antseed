@@ -22,6 +22,7 @@
  */
 
 import type {Target} from './assets';
+import type {UtmParams} from './referrer';
 import type {PumpResult} from './stream';
 
 export interface DownloadEvent {
@@ -40,6 +41,10 @@ export interface DownloadContext {
   userAgent: string;
   /** Cloudflare's verified-bot category (e.g. "Search Engine Crawler"), or null. */
   botCategory: string | null;
+  /** Public host the download link was clicked on (referrer.ts): none | <host> | other. */
+  referrerHost?: string;
+  /** Campaign tags carried onto the download link by the website (referrer.ts). */
+  utm?: UtmParams;
 }
 
 function baseParams(ctx: DownloadContext): Record<string, string | number> {
@@ -56,6 +61,14 @@ function baseParams(ctx: DownloadContext): Record<string, string | number> {
   };
   if (ctx.botCategory) {
     params['bot_category'] = ctx.botCategory;
+  }
+  if (ctx.referrerHost) {
+    params['referrer_host'] = ctx.referrerHost;
+  }
+  if (ctx.utm) {
+    for (const [key, value] of Object.entries(ctx.utm)) {
+      if (value) params[key] = value;
+    }
   }
   if (ctx.totalBytes !== null) {
     params['total_bytes'] = ctx.totalBytes;
@@ -145,6 +158,13 @@ const GA_SESSION_ID_RE = /^\d{8,12}$/;
 export interface GaIds {
   clientId: string | null;
   sessionId: string | null;
+  /**
+   * Used when no GA client id is available but the sender has a stable id
+   * of its own (the desktop app's random install id): keeps repeat
+   * milestones from one install under one GA4 user instead of a fresh UUID
+   * each time. Never counts as attributed.
+   */
+  fallbackClientId?: string | null;
 }
 
 /**
@@ -192,7 +212,7 @@ export async function deliverEvent(event: DownloadEvent, ga: Ga4Delivery): Promi
   await fetch(url, {
     method: 'POST',
     body: JSON.stringify({
-      client_id: ga.ids?.clientId ?? crypto.randomUUID(),
+      client_id: ga.ids?.clientId ?? ga.ids?.fallbackClientId ?? crypto.randomUUID(),
       events: [{name: event.name, params}],
     }),
   }).catch(() => {});
