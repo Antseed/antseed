@@ -56,4 +56,19 @@ describe('withFileLock', () => {
     await withFileLock(file, append(1));
     expect(JSON.parse(await readFile(file, 'utf-8'))).toEqual([1]);
   });
+
+  it('never deletes a lock that is released and retaken while it waits', async () => {
+    await writeFile(`${file}.lock`, 'other\n');
+    const edit = withFileLock(file, append(1));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    // The holder releases and another process takes the lock straight away.
+    await rm(`${file}.lock`);
+    await writeFile(`${file}.lock`, 'successor\n');
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(await readFile(`${file}.lock`, 'utf-8')).toBe('successor\n');
+    expect(JSON.parse(await readFile(file, 'utf-8'))).toEqual([]);
+    await rm(`${file}.lock`);
+    await edit;
+    expect(JSON.parse(await readFile(file, 'utf-8'))).toEqual([1]);
+  });
 });
