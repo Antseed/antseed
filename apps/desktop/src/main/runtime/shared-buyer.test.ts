@@ -2,7 +2,14 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import test from 'node:test';
 import { ProcessManager } from './process-manager.js';
-import { isCompatibleSharedBuyer, refreshSharedBuyerAttachment } from './shared-buyer.js';
+import { assertAttachOnlyRuntime, isCompatibleSharedBuyer, refreshSharedBuyerAttachment } from './shared-buyer.js';
+
+test('sandbox attach-only mode refuses a fallback buyer or another runtime', () => {
+  assert.doesNotThrow(() => assertAttachOnlyRuntime('connect', true, true));
+  assert.throws(() => assertAttachOnlyRuntime('connect', false, true), /isolated sandbox/);
+  assert.throws(() => assertAttachOnlyRuntime('seed', true, true), /isolated sandbox/);
+  assert.doesNotThrow(() => assertAttachOnlyRuntime('connect', false, false));
+});
 
 test('isCompatibleSharedBuyer accepts the Antseed status endpoint', async () => {
   const server = createServer((_request, response) => {
