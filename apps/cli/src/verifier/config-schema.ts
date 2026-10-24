@@ -105,7 +105,6 @@ const excludedDomainsSchema = z.array(canonicalDomainSchema).superRefine((domain
 })
 
 const modelSettingsShape = {
-  enabled: z.boolean().optional(),
   pricing: VerifierModelPricingSchema.optional(),
   referenceRoute: VerifierAntseedReferenceRouteSchema.optional(),
   referenceProvider: VerifierReferenceProviderSchema.optional(),
@@ -121,7 +120,11 @@ const modelSettingsShape = {
  * Optional settings for one built-in audited model (`verifier.models.<model>`). The model list
  * itself and each model's reference id are built in (`audited-models.ts`).
  */
-export const VerifierModelSettingsSchema = strictObject(modelSettingsShape)
+export const VerifierModelSettingsSchema = strictObject({
+  ...modelSettingsShape,
+  /** No longer supported: every auditor audits every model assigned to it. */
+  enabled: z.unknown().optional(),
+})
 
 /** A built-in audited model merged with the verifier's settings for it. */
 export const VerifierReferenceModelSchema = strictObject({
@@ -237,7 +240,7 @@ export const VerifierConfigSchema = strictObject({
       code: 'custom',
       path: ['referenceEndpoint', 'models'],
       message: 'is no longer supported: the audited model list is built into the CLI. '
-        + 'Remove it and put per-model settings (upstream, referenceProvider, contrastModels, excludedDomains, enabled) in verifier.models',
+        + 'Remove it and put per-model settings (upstream, referenceProvider, contrastModels, excludedDomains) in verifier.models',
     })
   }
 
@@ -263,6 +266,13 @@ export const VerifierConfigSchema = strictObject({
 
   for (const [service, model] of Object.entries(config.models ?? {})) {
     const modelPath = ['models', service] as const
+    if (model.enabled !== undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: [...modelPath, 'enabled'],
+        message: 'is no longer supported: an auditor audits every model assigned to it. Remove it',
+      })
+    }
     if (model.referenceProvider && model.referenceRoute) {
       context.addIssue({
         code: 'custom',

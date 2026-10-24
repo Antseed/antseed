@@ -97,7 +97,6 @@ const sidebars: SidebarsConfig = {
       items: [
         'verify/become-a-verifier',
         'verify/audits',
-        'verify/upstreams',
       ],
     },
     {

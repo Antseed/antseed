@@ -8,7 +8,6 @@ import { getGlobalOptions } from '../types.js'
 
 export interface VerifierModelSource {
   model: string
-  enabled: boolean
   aliases: string[]
   /** Where the genuine answers come from: `referenceEndpoint` (default) or a named upstream. */
   source: string
@@ -30,7 +29,6 @@ export function describeVerifierModelSources(config: VerifierCLIConfig | undefin
         : { source: 'referenceEndpoint', sourceType: 'default', sourceModel: settings.upstreamModel }
     return {
       model,
-      enabled: settings.enabled !== false,
       aliases: settings.serviceAliases ?? [],
       ...source,
       providerPin: settings.referenceProvider?.order ?? null,
@@ -54,11 +52,10 @@ export function registerVerifierModelsCommand(verifier: Command): void {
       console.log(endpoint
         ? chalk.dim(`Default reference: referenceEndpoint ${endpoint.baseUrl} (${endpoint.sourceId})`)
         : chalk.yellow('verifier.referenceEndpoint is not configured; reference builds will fail'))
-      const table = new Table({ head: ['Model', 'Enabled', 'Reference from', 'Model id there', 'Provider pin'] })
+      const table = new Table({ head: ['Model', 'Reference from', 'Model id there', 'Provider pin'] })
       for (const row of rows) {
         table.push([
           row.aliases.length ? `${row.model}\n${chalk.dim(row.aliases.join(', '))}` : row.model,
-          row.enabled ? 'yes' : chalk.dim('no'),
           row.sourceType === 'default' ? 'referenceEndpoint' : `${row.source} (${row.sourceType})`,
           row.sourceModel,
           row.providerPin?.join(', ') ?? '',

@@ -1,7 +1,7 @@
 ---
 title: How audits run
 slug: /verify/audits
-description: What antseed verifier run, submit and rewards do — which sellers are audited, how verdicts are decided, and how results go on-chain.
+description: What antseed verifier run, submit and rewards do — which sellers are audited, how verdicts are decided, where the genuine answers come from, and how results go on-chain.
 ---
 
 # How audits run
@@ -27,7 +27,7 @@ Running `verifier run` again in the same epoch retries only the `UNDETERMINED` s
 
 ## Which models you audit
 
-The audited models are built into the CLI, the same for every auditor. You can turn one off with `verifier.models.<model>.enabled: false`. `verifier run <model>` audits one model.
+The audited models are built into the CLI, the same for every auditor. `verifier run` audits every model assigned to you; you can't turn models off. `verifier run <model>` audits one model.
 
 ## Which sellers are audited
 
@@ -52,11 +52,37 @@ priced $17/$85 per 1M, above the claude-fable-5.1 reference $10/$50 · not audit
 
 ## Reference banks
 
-Banks live in `<data-dir>/verifier/banks`. A build stops once the bank can reliably tell the genuine model from its look-alikes, or after 2,000 requests (`verifier.referenceMaxRequestsPerBuild`). Running it again grows the bank and never replaces it. Where the genuine answers come from is set in [Reference upstreams](/docs/verify/upstreams).
+Banks live in `<data-dir>/verifier/banks`. A build stops once the bank can reliably tell the genuine model from its look-alikes, or after 2,000 requests (`verifier.referenceMaxRequestsPerBuild`). Running it again grows the bank and never replaces it. Seller audits never call the reference API: sellers are compared with the answers stored in the bank.
+
+## Reference upstreams
+
+The genuine answers come from `verifier.referenceEndpoint` (OpenRouter in the setup example), which also supplies the look-alike models and the price catalog. To take one model's genuine answers straight from its maker, add an upstream and point the model at it:
+
+```json
+{
+  "verifier": {
+    "upstreams": {
+      "anthropic": { "type": "anthropic", "baseUrl": "https://api.anthropic.com/v1", "apiKeyEnv": "ANTHROPIC_API_KEY" }
+    },
+    "models": {
+      "claude-opus-5.5": { "upstream": { "name": "anthropic", "model": "claude-opus-5-5" } }
+    }
+  }
+}
+```
+
+| `type` | Use for |
+|---|---|
+| `openai` | Any OpenAI-compatible API (OpenAI, Together, a vLLM server) |
+| `anthropic` | Anthropic's own API |
+| `openrouter` | OpenRouter, optionally pinned to one provider with `referenceProvider: { "order": ["…"] }` |
+| `antseed` | One Antseed seller you trust (`peerId`), through your running buyer. Needs `upstream.pricing` |
+
+`antseed verifier models` shows where each model's answers come from. Use a source you trust to serve the real model: if it doesn't, every audit built on it is wrong. A bank keeps one source, so changing it later needs a new bank.
 
 ## Getting approved
 
-Submitting needs an **approved auditor address**. Ask in the [Antseed Telegram community](https://t.me/antseed) or [open an issue on GitHub](https://github.com/AntSeed/antseed/issues) with the address you will submit from.
+Submitting needs an **approved auditor address**. Ask in the [Antseed Telegram community](https://t.me/antseed) with the address you will submit from.
 
 - By default this is the data-dir identity (`antseed buyer status` shows it). To sign with a keystore instead, set `verifier.keystore`.
 - It needs a little ETH on Base for the transactions.
@@ -91,9 +117,9 @@ All keys live in the `verifier` block of the config file. The most used:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `referenceEndpoint` | required | Where the genuine answers come from. See [Reference upstreams](/docs/verify/upstreams) |
+| `referenceEndpoint` | required | Where the genuine answers come from. See [Reference upstreams](#reference-upstreams) |
+| `upstreams`, `models.<model>.upstream` | | Other sources for one model's genuine answers. See [Reference upstreams](#reference-upstreams) |
 | `keystore` | | Keystore that signs `submit` and `rewards --claim` |
 | `auditor` | data-dir identity | Your approved auditor address |
 | `auditPriceRatio` | 1 | Audit sellers priced up to this multiple of the upstream price |
-| `models.<model>.enabled` | `true` | `false` stops auditing that model |
 | `models.<model>.pricing` | | The model's upstream price, if not taken from OpenRouter |

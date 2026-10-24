@@ -16,15 +16,14 @@ test('models use referenceEndpoint unless they name an upstream', () => {
       models: {
         'model.a': { referenceProvider: { order: ['Provider-A'] } },
         'model-b': { upstream: { name: 'maker', model: 'model-b-native' } },
-        'model-c': { enabled: false },
       },
     })
-    assert.deepEqual(rows.map(({ model, source, sourceType, sourceModel, enabled, providerPin }) => ({
-      model, source, sourceType, sourceModel, enabled, providerPin,
+    assert.deepEqual(rows.map(({ model, source, sourceType, sourceModel, providerPin }) => ({
+      model, source, sourceType, sourceModel, providerPin,
     })), [
-      { model: 'model-a', source: 'referenceEndpoint', sourceType: 'default', sourceModel: 'vendor/model-a', enabled: true, providerPin: ['Provider-A'] },
-      { model: 'model-b', source: 'maker', sourceType: 'anthropic', sourceModel: 'model-b-native', enabled: true, providerPin: null },
-      { model: 'model-c', source: 'referenceEndpoint', sourceType: 'default', sourceModel: 'vendor/model-c', enabled: false, providerPin: null },
+      { model: 'model-a', source: 'referenceEndpoint', sourceType: 'default', sourceModel: 'vendor/model-a', providerPin: ['Provider-A'] },
+      { model: 'model-b', source: 'maker', sourceType: 'anthropic', sourceModel: 'model-b-native', providerPin: null },
+      { model: 'model-c', source: 'referenceEndpoint', sourceType: 'default', sourceModel: 'vendor/model-c', providerPin: null },
     ])
   } finally {
     setAuditedModelsForTesting(null)

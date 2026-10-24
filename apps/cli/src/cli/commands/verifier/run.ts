@@ -132,7 +132,7 @@ export function resolveAssignedAuditModels(
     epoch: epoch.epoch,
     availableModels: configuredVerifierModels(config.verifier),
   })
-  if (assignment.models.length === 0) throw new Error('every audited model is disabled in verifier.models')
+  if (assignment.models.length === 0) throw new Error('no audited models are built into this CLI')
   return assignment
 }
 
@@ -199,7 +199,7 @@ export function registerVerifierRunCommand(verifier: Command): void {
   verifier
     .command('run [model]')
     .description('Verify live peers for the models assigned to this auditor (the default), one audited model, or every audited model')
-    .option('--all', 'verify every enabled audited model instead of the assigned ones')
+    .option('--all', 'verify every audited model instead of the assigned ones')
     .option('--auditor <address>', 'auditor address to assign models for (default: verifier.auditor, verifier.keystore, or the data-dir identity)')
     .option('--allow-probe-reuse', 'allow a seller\'s new epoch reference to reuse probes it was assigned in earlier epochs')
     .option('--peer <peerId>', 'verify only this discovered seller peer')
@@ -306,7 +306,7 @@ export function registerVerifierRunCommand(verifier: Command): void {
           if (options.all || assignedModels) {
             runModels = advertisedModels
             if (runModels.length === 0) {
-              throw new Error(`peer ${selectedPeerId} does not advertise any enabled configured verifier model`)
+              throw new Error(`peer ${selectedPeerId} does not advertise any audited model`)
             }
           } else if (advertisedModels.length === 0) {
             throw new Error(`peer ${selectedPeerId} does not advertise model ${runModels[0]}`)
@@ -943,7 +943,7 @@ export function resolveRunModels(
     }
     return [selected]
   }
-  if (resumable.length === 0) throw new Error(`resume run ${resumeManifest.runId} has no enabled configured models`)
+  if (resumable.length === 0) throw new Error(`resume run ${resumeManifest.runId} has no audited models`)
   return resumable
 }
 

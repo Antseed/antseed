@@ -25,8 +25,7 @@ function config(): VerifierCLIConfig {
     contrastSelection: { inputWeight: 0.9, maxPriceRatio: 0.3, maxModels: 3 },
     models: {
       'model-large': { pricing: { inputUsdPerMillion: 10, outputUsdPerMillion: 30 } },
-      disabled: { enabled: false, contrastModels: ['small-a'] },
-      target: { enabled: false },
+      disabled: { contrastModels: ['small-a'] },
     },
     referenceEndpoint: {
       baseUrl: 'https://reference.example/v1',
@@ -62,8 +61,8 @@ test('blended price uses the configured input weight', () => {
   assert.equal(blendedModelPrice({ inputUsdPerMillion: 10, outputUsdPerMillion: 30 }, 0.9), 12)
 })
 
-test('configured models include enabled entries only', () => {
-  assert.deepEqual(configuredVerifierModels(config()), ['model-large'])
+test('configured models are every built-in audited model', () => {
+  assert.deepEqual(configuredVerifierModels(config()), ['disabled', 'model-large', 'target'])
 })
 
 test('excluded domains apply only to their configured model', () => {
@@ -97,7 +96,7 @@ test('the audited model list is built in; config only adds settings', () => {
   try {
     const builtIn = Object.keys(AUDITED_MODELS).sort((left, right) => left.localeCompare(right))
     assert.deepEqual(configuredVerifierModels(undefined), builtIn)
-    assert.deepEqual(configuredVerifierModels({ models: { 'kimi-k3': { enabled: false } } }), builtIn.filter((model) => model !== 'kimi-k3'))
+    assert.deepEqual(configuredVerifierModels({ models: { 'kimi-k3': { excludedDomains: ['medical'] } } }), builtIn)
     const [, opus] = findVerifierModel({ models: { 'claude-opus-4.6': { excludedDomains: ['medical'] } } }, 'claude-opus-4.6')!
     assert.equal(opus.upstreamModel, 'anthropic/claude-opus-4.6')
     assert.deepEqual(opus.excludedDomains, ['medical'])
@@ -107,12 +106,11 @@ test('the audited model list is built in; config only adds settings', () => {
   }
 })
 
-test('command model resolution requires exactly one mode and configured enabled models', () => {
-  assert.deepEqual(resolveVerifierCommandModels(config(), undefined, true), ['model-large'])
+test('command model resolution requires exactly one mode and an audited model', () => {
+  assert.deepEqual(resolveVerifierCommandModels(config(), undefined, true), ['disabled', 'model-large', 'target'])
   assert.deepEqual(resolveVerifierCommandModels(config(), 'MODEL-LARGE', false), ['model-large'])
   assert.throws(() => resolveVerifierCommandModels(config(), undefined, false), /exactly one/)
   assert.throws(() => resolveVerifierCommandModels(config(), 'model-large', true), /exactly one/)
-  assert.throws(() => resolveVerifierCommandModels(config(), 'disabled', false), /disabled/)
   assert.throws(() => resolveVerifierCommandModels(config(), 'missing', false), /not an audited model/)
 })
 

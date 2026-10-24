@@ -56,7 +56,7 @@ Then open `$ANTSEED_VERIFIER_DIR/config.json` and add the chain and the referenc
 ```
 
 - `verificationContractAddress` is the verification contract on Base.
-- `referenceEndpoint` is where the genuine answers come from. The example uses OpenRouter, which serves every audited model with one key. To use other providers, see [Reference upstreams](/docs/verify/upstreams).
+- `referenceEndpoint` is where the genuine answers come from. The example uses OpenRouter, which serves every audited model with one key. To use other providers, see [Reference upstreams](/docs/verify/audits#reference-upstreams).
 - Leave `buyer.maxPricing` at the `config init` default.
 
 The audited models are built into the CLI. Set the API key and check the setup:
