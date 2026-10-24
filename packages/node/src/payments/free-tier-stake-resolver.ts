@@ -45,6 +45,8 @@ export interface FreeTierStakeResolverOptions {
 interface CacheEntry<T> {
   value: T;
   expiresAt: number;
+  /** When the read behind this entry started, so a slower, older read cannot replace a newer one. */
+  seq: number;
 }
 
 /** Most positions one request is counted on; the strongest positions come first. */
@@ -70,6 +72,7 @@ export class FreeTierStakeResolver {
   private readonly _inFlight = new Map<string, Promise<FreeTierStakeStanding | null>>();
   private _agentId: CacheEntry<number> | null = null;
   private _epoch: CacheEntry<number> | null = null;
+  private _seq = 0;
 
   constructor(
     private readonly _reader: FreeTierStakeReader,
@@ -96,15 +99,16 @@ export class FreeTierStakeResolver {
 
     let pending = this._inFlight.get(key);
     if (!pending) {
-      const lookup: Promise<FreeTierStakeStanding | null> = this._lookup(stakers)
+      const seq = ++this._seq;
+      const lookup: Promise<FreeTierStakeStanding | null> = this._lookup(stakers, seq)
         .then(({ value: standing, expiresAt }) => {
           // A standing never outlives the stake snapshots it was derived from.
-          this._remember(this._standings, key, standing, expiresAt);
-          return standing;
+          return this._remember(this._standings, key, standing, expiresAt, seq).value;
         })
         .catch((err) => {
           debugWarn(`[FreeTierStake] Stake lookup failed for ${stakers[0]}: ${err instanceof Error ? err.message : err}`);
-          this._remember(this._standings, key, null, this._now() + this._failureTtlMs);
+          // A lookup that timed out and was replaced must not overwrite its replacement's result.
+          this._remember(this._standings, key, null, this._now() + this._failureTtlMs, seq);
           return null;
         })
         .finally(() => {
@@ -131,11 +135,11 @@ export class FreeTierStakeResolver {
   }
 
   /** The standing of `stakers`, and when the earliest snapshot it was built from expires. */
-  private async _lookup(stakers: string[]): Promise<CacheEntry<FreeTierStakeStanding | null>> {
-    const agentId = await this._sellerAgentId();
+  private async _lookup(stakers: string[], seq: number): Promise<Omit<CacheEntry<FreeTierStakeStanding | null>, 'seq'>> {
+    const agentId = await this._sellerAgentId(seq);
     if (agentId.value <= 0) return { value: null, expiresAt: agentId.expiresAt };
-    const epoch = await this._currentEpoch();
-    const holdings = await Promise.all(stakers.map((staker) => this._stakerPositions(staker, agentId.value, epoch.value)));
+    const epoch = await this._currentEpoch(seq);
+    const holdings = await Promise.all(stakers.map((staker) => this._stakerPositions(staker, agentId.value, epoch.value, seq)));
     const expiresAt = Math.min(agentId.expiresAt, epoch.expiresAt, ...holdings.map((entry) => entry.expiresAt));
 
     const unique = new Map<number, FreeTierStakePosition>();
@@ -151,28 +155,31 @@ export class FreeTierStakeResolver {
     return { value: { stakers, power, tier, positionIds: counted.map((position) => position.id) }, expiresAt };
   }
 
-  private async _stakerPositions(staker: string, agentId: number, epoch: number): Promise<CacheEntry<FreeTierStakePosition[]>> {
+  private async _stakerPositions(staker: string, agentId: number, epoch: number, seq: number): Promise<CacheEntry<FreeTierStakePosition[]>> {
     const cached = this._positions.get(staker);
     if (cached && cached.expiresAt > this._now()) return cached;
     const positions = await this._reader.stakerPositions(staker, agentId, epoch);
-    return this._remember(this._positions, staker, positions, this._now() + this._cacheTtlMs);
+    return this._remember(this._positions, staker, positions, this._now() + this._cacheTtlMs, seq);
   }
 
-  private async _sellerAgentId(): Promise<CacheEntry<number>> {
+  private async _sellerAgentId(seq: number): Promise<CacheEntry<number>> {
     if (this._agentId && this._agentId.expiresAt > this._now()) return this._agentId;
     const agentId = await this._reader.sellerAgentId();
-    this._agentId = { value: agentId, expiresAt: this._now() + this._cacheTtlMs };
+    this._agentId = newer(this._agentId, { value: agentId, expiresAt: this._now() + this._cacheTtlMs, seq });
     return this._agentId;
   }
 
-  private async _currentEpoch(): Promise<CacheEntry<number>> {
+  private async _currentEpoch(seq: number): Promise<CacheEntry<number>> {
     if (this._epoch && this._epoch.expiresAt > this._now()) return this._epoch;
     const epoch = await this._reader.currentEpoch();
-    this._epoch = { value: epoch, expiresAt: this._now() + this._cacheTtlMs };
+    this._epoch = newer(this._epoch, { value: epoch, expiresAt: this._now() + this._cacheTtlMs, seq });
     return this._epoch;
   }
 
-  private _remember<T>(cache: Map<string, CacheEntry<T>>, key: string, value: T, expiresAt: number): CacheEntry<T> {
+  /** Stores `value` unless a read that started later already stored a result, which is kept and returned instead. */
+  private _remember<T>(cache: Map<string, CacheEntry<T>>, key: string, value: T, expiresAt: number, seq: number): CacheEntry<T> {
+    const existing = cache.get(key);
+    if (existing && existing.seq > seq) return existing;
     cache.delete(key);
     if (cache.size >= this._maxEntries) {
       const now = this._now();
@@ -185,8 +192,12 @@ export class FreeTierStakeResolver {
         cache.delete(oldest);
       }
     }
-    const entry = { value, expiresAt };
+    const entry = { value, expiresAt, seq };
     cache.set(key, entry);
     return entry;
   }
+}
+
+function newer<T>(existing: CacheEntry<T> | null, candidate: CacheEntry<T>): CacheEntry<T> {
+  return existing && existing.seq > candidate.seq ? existing : candidate;
 }

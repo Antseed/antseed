@@ -21,7 +21,15 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Changed
 
+- Gateway console: while a self-hosted gateway updates itself (**Restart & update**), the console shows the current step in plain words with a one-line explanation, an elapsed timer (mm:ss), and a step bar (step N of 5): downloading, restarting the buyer, waiting for in-flight requests to finish (up to the gateway's 90-second stop timeout), starting the new gateway, and checking it. While the gateway is down mid-update, the console says "The gateway is restarting" and keeps polling until it is back, instead of showing an error. Afterwards it shows the versions it went from and to, with how long the update took. If the update fails, it shows the error, that the gateway still runs the previous version, and how to retry.
+  - Gateway installer (`install-gateway.sh`): the root updater writes `phase`, `phaseStartedAt` and `phaseMaxMs` to `/var/lib/antseed-update/status.json` while it runs. Earlier readers ignore the new fields. Existing servers get step reporting the next time the installer runs; until then the console shows the timer without steps.
+  - Console API: `GatewayUpdate.progress` can carry `phase`, `phaseStartedAt` and `phaseMaxMs`. `antseed update` on the server prints each step as well.
+
 - Buyer (`@antseed/buyer-core`, CLI, desktop): with several requests in flight to one seller, a seller's catch-up payment request (its spend ran ahead of the signed amount) is now covered in full, up to the per-request limit for each in-flight request and never beyond the channel reserve. The buyer retries while the gap shrinks (at most three attempts), and if the gap stops shrinking or is still not covered returns a `payment_negotiation_failed` error instead of passing through the seller's raw 402.
+- Website: the docs have search. Press ⌘K (Ctrl+K), `/`, or the navbar search button to open it. Results update as you type, tolerate typos, and cover every docs page and section. The index is built with the site and searched in the browser, with no external service.
+- Website: the **Set up gateway** button in the navbar has its right padding back.
+- Website: the Hermes integration guide is rewritten so a Hermes agent can follow it on itself. It installs the `hermes-antseed` skill, checks that the buyer is running and funded, picks models that actually answer, adds Antseed as a provider and tests it before making it the default, and ends with `/restart`. Config changes go through `hermes config set` only. The **Run this first** box no longer generates a throwaway `ANTSEED_IDENTITY_HEX`; it says to back up `~/.antseed/identity.key` and keep the buyer running as a service.
+- Skills: `hermes-antseed` is rewritten to match, and passes Hermes' skill security scan.
 - CLI buyer: the local buyer proxy only answers local clients. A request whose Host is a hostname other than `localhost`, or that a browser sends from a page other than a local one (an `Origin` other than a loopback address or `file://`, or a cross-site fetch), gets `403 non_local_request`. CLI tools, SDKs and local pages are unaffected, and IP-address hosts (such as the WSL relay's) still work. The API-key gateway and system proxy no longer pass the client's `Origin`, `Referer` and `Sec-Fetch-*` headers on to the buyer.
 - Desktop: the chat's per-seller usage stats are read through the main process instead of from the page.
 
@@ -69,9 +77,11 @@ This project uses selective package publishing. Each release entry lists the pub
   - A small share of standalone requests tries a seller the buyer has no recent data on, among those it already has a channel with, so recovered sellers are noticed.
   - The route preview lists each seller's success rate, speed and whether it shares traffic; `GET /_antseed/peer-health` adds `sellerHealth`, and `POST /_antseed/peer-health/clear` also resets a seller's record. A gateway key's explicit **Cheapest**, **Most trusted** or **Lowest latency** sort and route chains still apply, with failing sellers tried last.
 - Node: `AntseedNode` emits `response-auth` with the verdict on each seller-signed response receipt, and exports the routing model as `SellerHealthBook` and `orderAdaptiveRoutes`.
+- Node: `FileIdentityStore` takes an optional `scrypt` cost for the keys it encrypts; the default is unchanged (`DEFAULT_SCRYPT_PARAMS`).
 
 ### Fixed
 
+- Gateway console: models and routers starred within the same millisecond are listed in the order they were starred, instead of alphabetically.
 - CLI buyer and gateway: image edits (`POST /v1/images/edits`, a multipart form) honour a `peerId@model` model. The buyer pins that seller and sends the bare model, as it already did for JSON requests. Before, it looked for a seller serving the whole `peerId@model` name and answered `model_not_found`.
 - CLI buyer and gateway: automatic routing sends an image edit only to a seller that advertises the `image` parameter for the model, as if the request carried `x-antseed-required-parameters: image`. When none does, the request gets `422 required_capability_unavailable` instead of a 404 from a seller that only takes text. A pinned seller is still used as pinned.
 - CLI: `antseed verifier submit` reads verification events in 1,000-block chunks, so it works with RPC providers that limit log query ranges.

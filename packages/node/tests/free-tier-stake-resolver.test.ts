@@ -118,4 +118,32 @@ describe('FreeTierStakeResolver', () => {
     expect(await resolver.resolve(BUYER)).toBeNull();
     expect((await resolver.resolve(BUYER))?.tier).toEqual(TIERS[0]);
   });
+
+  it('keeps a newer result when a timed-out lookup fails later', async () => {
+    const r = reader({ [BUYER]: [{ id: 1, power: 150n * ANTS }] });
+    let failStalled!: (err: Error) => void;
+    r.currentEpoch = vi.fn()
+      .mockReturnValueOnce(new Promise<number>((_, reject) => { failStalled = reject; }))
+      .mockResolvedValue(3);
+    const resolver = new FreeTierStakeResolver(r, TIERS, { lookupTimeoutMs: 10 });
+    expect(await resolver.resolve(BUYER)).toBeNull();
+    expect((await resolver.resolve(BUYER))?.tier).toEqual(TIERS[0]);
+    failStalled(new Error('rpc down'));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect((await resolver.resolve(BUYER))?.tier).toEqual(TIERS[0]);
+  });
+
+  it('keeps newer positions when an older position read finishes later', async () => {
+    const r = reader({});
+    let finishStalled!: (positions: FreeTierStakePosition[]) => void;
+    r.stakerPositions = vi.fn()
+      .mockReturnValueOnce(new Promise<FreeTierStakePosition[]>((resolve) => { finishStalled = resolve; }))
+      .mockResolvedValue([{ id: 1, power: 150n * ANTS }]);
+    const resolver = new FreeTierStakeResolver(r, TIERS, { lookupTimeoutMs: 10 });
+    expect(await resolver.resolve(BUYER)).toBeNull();
+    expect((await resolver.resolve(BUYER))?.tier).toEqual(TIERS[0]);
+    finishStalled([]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect((await resolver.resolve(BUYER, [STAKER_A]))?.tier).toEqual(TIERS[0]);
+  });
 });

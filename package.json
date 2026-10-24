@@ -36,7 +36,7 @@
     "build:diem-staking": "pnpm --filter=@antseed/diem-staking run build",
     "dev:diem-staking": "pnpm --filter=@antseed/diem-staking run dev",
     "typecheck:diem-staking": "pnpm --filter=@antseed/diem-staking run typecheck",
-    "test": "pnpm -r run test",
+    "test": "pnpm -r --filter=!@antseed/e2e run test && pnpm run test:e2e",
     "test:e2e": "pnpm --filter=@antseed/e2e run test",
     "typecheck": "pnpm -r run typecheck",
     "contracts:deploy": "node scripts/deploy-contracts.mjs",

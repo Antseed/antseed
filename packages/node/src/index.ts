@@ -238,6 +238,7 @@ export {
   getDebugFilters,
   shouldEmitDebugLine,
 } from './utils/debug.js';
+export { withFileLock, type FileLockOptions } from './utils/file-lock.js';
 export {
   signSpendingAuth,
   signReserveAuth,

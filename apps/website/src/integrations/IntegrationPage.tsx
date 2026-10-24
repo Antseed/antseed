@@ -235,12 +235,13 @@ function RunFirstBanner() {
                 The CLI flow below is for headless machines and scripts:
               </p>
               <CodeBlock
-                snippet={`# 1. Install\nnpm install -g @antseed/cli\n\n# 2. Set a buyer identity (64-char hex private key).\n#    This signs requests; it never holds USDC. Generate once, reuse forever.\nexport ANTSEED_IDENTITY_HEX=$(openssl rand -hex 32)\n\n# 3. Start the proxy on http://localhost:8377\nantseed buyer start`}
+                snippet={`# 1. Install\nnpm install -g @antseed/cli\n\n# 2. Start the proxy on http://localhost:8377\n#    First start creates your buyer wallet key at ~/.antseed/identity.key\nantseed buyer start`}
               />
               <p className={styles.runFirstHint}>
-                Save the value of <code>ANTSEED_IDENTITY_HEX</code> somewhere safe -
+                Back up <code>~/.antseed/identity.key</code> - it is your buyer wallet key, and
                 losing it means losing access to whatever USDC you've deposited under that
-                buyer address.
+                buyer address. Keep the proxy running in the background (the desktop app, or a
+                launchd/systemd service) rather than in a terminal you'll close.
               </p>
             </div>
           </li>
@@ -853,7 +854,7 @@ export default function IntegrationPage({integration}: {integration: Integration
             <h3>For agents</h3>
             <p><Ticks>{i.agentSummary}</Ticks></p>
             <p>
-              Give your agent the skill: <code>gh skill install Antseed/antseed join-buyer</code>
+              Give your agent the skill: <code>{i.agentSkill ?? 'gh skill install Antseed/antseed join-buyer'}</code>
             </p>
           </aside>
         )}
