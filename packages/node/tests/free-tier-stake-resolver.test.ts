@@ -138,7 +138,8 @@ describe('FreeTierStakeResolver', () => {
     let finishStalled!: (positions: FreeTierStakePosition[]) => void;
     r.stakerPositions = vi.fn()
       .mockReturnValueOnce(new Promise<FreeTierStakePosition[]>((resolve) => { finishStalled = resolve; }))
-      .mockResolvedValue([{ id: 1, power: 150n * ANTS }]);
+      // Only the buyer has stake, so the last check passes only if its newer positions survive.
+      .mockImplementation(async (staker: string) => (staker === BUYER ? [{ id: 1, power: 150n * ANTS }] : []));
     const resolver = new FreeTierStakeResolver(r, TIERS, { lookupTimeoutMs: 10 });
     expect(await resolver.resolve(BUYER)).toBeNull();
     expect((await resolver.resolve(BUYER))?.tier).toEqual(TIERS[0]);

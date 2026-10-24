@@ -1,4 +1,5 @@
-import { open, rm, stat } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { link, open, rename, rm, stat } from 'node:fs/promises';
 
 export interface FileLockOptions {
   /** Give up waiting for another holder after this long. Default: 10 seconds. */
@@ -42,10 +43,7 @@ async function holdingLockFile<T>(path: string, task: () => Promise<T>, options:
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
     }
-    if (await isStale(lockPath, staleMs)) {
-      await rm(lockPath, { force: true });
-      continue;
-    }
+    if (await takeOverStale(lockPath, staleMs)) continue;
     if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${lockPath}; remove it if no Antseed process is editing ${path}`);
     await new Promise((resolve) => setTimeout(resolve, RETRY_MS));
   }
@@ -56,12 +54,40 @@ async function holdingLockFile<T>(path: string, task: () => Promise<T>, options:
   }
 }
 
-async function isStale(lockPath: string, staleMs: number): Promise<boolean> {
+/**
+ * Clears a lock left behind by a crashed process, or reports that the lock
+ * was released meanwhile; either way the caller tries to take it again.
+ * The lock is first moved aside, which only one waiter can do; if what got
+ * moved turns out to be a fresh lock another waiter just took, it is put
+ * back, so a live lock is never deleted.
+ */
+async function takeOverStale(lockPath: string, staleMs: number): Promise<boolean> {
+  const seen = await mtimeMs(lockPath);
+  if (seen === null) return true;
+  if (Date.now() - seen <= staleMs) return false;
+  const aside = `${lockPath}.stale-${randomUUID()}`;
   try {
-    return Date.now() - (await stat(lockPath)).mtimeMs > staleMs;
+    await rename(lockPath, aside);
   } catch (err) {
-    // Released between our attempt and this check: try again right away.
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return true;
+    throw err;
+  }
+  const moved = await mtimeMs(aside);
+  if (moved !== null && Date.now() - moved <= staleMs) {
+    // Restore it unless someone already holds a newer lock.
+    await link(aside, lockPath).catch((err: NodeJS.ErrnoException) => {
+      if (err.code !== 'EEXIST') throw err;
+    });
+  }
+  await rm(aside, { force: true });
+  return true;
+}
+
+async function mtimeMs(path: string): Promise<number | null> {
+  try {
+    return (await stat(path)).mtimeMs;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw err;
   }
 }
