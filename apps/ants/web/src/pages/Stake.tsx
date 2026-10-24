@@ -66,6 +66,8 @@ export function StakePage() {
   }, []);
   const openedLink = useRef<number | null>(null);
   useEffect(() => {
+    // Leaving the link drops its pending lookup, so the abandoned seller cannot open later.
+    if (linkedAgentId === null) selection.current.invalidate();
     if (!pools.data) return;
     const { open: agentId, lastOpened } = poolToOpen(linkedAgentId, openedLink.current);
     openedLink.current = lastOpened;
