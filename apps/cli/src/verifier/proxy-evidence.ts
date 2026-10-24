@@ -97,7 +97,7 @@ export interface AuditCostSummaryV1 {
 export type VerificationSkipCode =
   | 'missing_response_auth'
   | 'reputation_below_minimum'
-  | 'price_above_maximum'
+  | 'price_above_reference'
   | 'policy_rejected'
   | 'stale_model_advertisement'
   | 'upstream_credentials_invalid'

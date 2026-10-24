@@ -56,7 +56,25 @@ function peer(overrides: Partial<PeerInfo> = {}): PeerInfo {
 
 const targetPolicy = {
   minReputation: 0,
-  maxPricing: { inputUsdPerMillion: 5, outputUsdPerMillion: 30 },
+  priceCap: {
+    model: 'gpt-5.6-sol',
+    reference: { inputUsdPerMillion: 5, outputUsdPerMillion: 30 },
+    source: 'catalog' as const,
+    ratio: 1,
+  },
+}
+
+function pricedAt(input: number, output: number, cachedInput?: number): PeerInfo {
+  return peer({
+    providerPricing: { test: {
+      defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 },
+      services: { 'GPT-5.6-SOL': {
+        inputUsdPerMillion: input,
+        outputUsdPerMillion: output,
+        ...(cachedInput === undefined ? {} : { cachedInputUsdPerMillion: cachedInput }),
+      } },
+    } },
+  })
 }
 
 function reference(count: number): KbfReferenceV1 {
@@ -571,7 +589,7 @@ test('target eligibility requires ResponseAuth and preserves advertised model sp
   })
 })
 
-test('target eligibility applies buyer reputation and pricing before audit', () => {
+test('target eligibility applies the buyer reputation minimum before audit', () => {
   assert.deepEqual(classifyVerificationTarget(peer({ reputationScore: 20 }), 'gpt-5.6-sol', {
     ...targetPolicy,
     minReputation: 50,
@@ -581,17 +599,48 @@ test('target eligibility applies buyer reputation and pricing before audit', () 
     service: 'GPT-5.6-SOL',
     reason: 'peer reputation 20 is below buyer minimum 50',
   })
+})
 
-  assert.deepEqual(classifyVerificationTarget(peer({
-    providerPricing: { test: {
-      defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 },
-      services: { 'GPT-5.6-SOL': { inputUsdPerMillion: 6, outputUsdPerMillion: 31 } },
-    } },
-  }), 'gpt-5.6-sol', targetPolicy), {
+test('target eligibility audits sellers priced at or below the model reference price', () => {
+  assert.deepEqual(classifyVerificationTarget(pricedAt(4, 20), 'gpt-5.6-sol', targetPolicy), {
+    eligible: true, service: 'GPT-5.6-SOL',
+  })
+  assert.deepEqual(classifyVerificationTarget(pricedAt(5, 30, 5), 'gpt-5.6-sol', targetPolicy), {
+    eligible: true, service: 'GPT-5.6-SOL',
+  })
+})
+
+test('target eligibility skips sellers priced above the model reference price', () => {
+  assert.deepEqual(classifyVerificationTarget(pricedAt(6, 31), 'gpt-5.6-sol', targetPolicy), {
     eligible: false,
-    code: 'price_above_maximum',
+    code: 'price_above_reference',
     service: 'GPT-5.6-SOL',
-    reason: 'advertised price input $6/M, output $31/M exceeds buyer maximum input $5/M, output $30/M',
+    reason: 'priced $6/$31 per 1M, above the gpt-5.6-sol reference $5/$30 · not audited',
+  })
+  // Either side above the reference is enough.
+  assert.equal((classifyVerificationTarget(pricedAt(5, 30.01), 'gpt-5.6-sol', targetPolicy) as { code?: string }).code,
+    'price_above_reference')
+  // The seller's price for the model counts, not its cheaper default.
+  assert.equal(classifyVerificationTarget(pricedAt(16.99, 84.99), 'gpt-5.6-sol', targetPolicy).eligible, false)
+})
+
+test('target eligibility compares cached input against the reference input price', () => {
+  assert.deepEqual(classifyVerificationTarget(pricedAt(5, 30, 5.5), 'gpt-5.6-sol', targetPolicy), {
+    eligible: false,
+    code: 'price_above_reference',
+    service: 'GPT-5.6-SOL',
+    reason: 'cached input priced $5.5 per 1M, above the gpt-5.6-sol reference $5/$30 input price · not audited',
+  })
+})
+
+test('auditPriceRatio allows sellers up to that multiple of the reference price', () => {
+  const tenPercent = { ...targetPolicy, priceCap: { ...targetPolicy.priceCap, ratio: 1.1 } }
+  assert.equal(classifyVerificationTarget(pricedAt(5.5, 33), 'gpt-5.6-sol', tenPercent).eligible, true)
+  assert.deepEqual(classifyVerificationTarget(pricedAt(5.6, 33), 'gpt-5.6-sol', tenPercent), {
+    eligible: false,
+    code: 'price_above_reference',
+    service: 'GPT-5.6-SOL',
+    reason: 'priced $5.6/$33 per 1M, above the gpt-5.6-sol reference $5/$30 × 1.1 · not audited',
   })
 })
 

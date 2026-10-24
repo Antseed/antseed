@@ -36,6 +36,7 @@ import {
 } from '../../../verifier/audit-concurrency.js'
 import { acquirePidFileLock } from '../../../verifier/atomic-files.js'
 import { configuredVerifierModels, resolveVerifierCommandModels, verifierModelServices } from '../../../verifier/model-config.js'
+import { describeAuditorSource, resolveAuditorAddress } from './auditor-identity.js'
 import { asError } from '../../../verifier/utils.js'
 import {
   classifyVerificationTargetServices,
@@ -45,7 +46,10 @@ import {
   type ModelVerificationFailure,
   type ModelVerificationResumeInput,
   type ModelVerificationSkip,
+  type VerificationTargetPolicy,
 } from '../../../verifier/model-run.js'
+import { describeAuditPriceCap, resolveAuditPriceCaps } from '../../../verifier/audit-price.js'
+import { loadVerifierModelCatalog } from '../../../verifier/openrouter-catalog.js'
 import {
   loadModelAuditReservation,
   reserveDiffRecheckReference,
@@ -128,12 +132,13 @@ export function resolveAssignedAuditModels(
     epoch: epoch.epoch,
     availableModels: configuredVerifierModels(config.verifier),
   })
-  if (assignment.models.length === 0) throw new Error('no enabled verifier models are configured')
+  if (assignment.models.length === 0) throw new Error('no audited models are built into this CLI')
   return assignment
 }
 
-export function printAuditAssignment(assignment: AuditAssignment, epoch: AuditEpochWindow): void {
-  console.log(`Audit assignment for ${assignment.auditor}, epoch ${assignment.epoch} (${epoch.source}), strategy ${assignment.strategy}:`)
+export function printAuditAssignment(assignment: AuditAssignment, epoch: AuditEpochWindow, auditorSource?: string): void {
+  const from = auditorSource ? ` (from ${auditorSource})` : ''
+  console.log(`Audit assignment for ${assignment.auditor}${from}, epoch ${assignment.epoch} (${epoch.source}), strategy ${assignment.strategy}:`)
   for (const model of assignment.models) console.log(`  ${model}`)
 }
 
@@ -141,6 +146,14 @@ export function validateAssignedModeOptions(modelValue: string | undefined, opti
   if (!options.auditor) return
   if (modelValue?.trim() || options.all) throw new Error('--auditor runs the assigned models; do not combine it with <model> or --all')
   if (options.resumeRun) throw new Error('--auditor cannot be combined with --resume-run')
+}
+
+/**
+ * Without `<model>`, `--all` or `--resume-run`, `verifier run` audits the models assigned to the
+ * auditor (`--auditor`, `verifier.auditor`, `verifier.keystore`, or the data-dir identity).
+ */
+export function isAssignedMode(modelValue: string | undefined, options: RunOptions): boolean {
+  return Boolean(options.auditor) || (!modelValue?.trim() && !options.all && !options.resumeRun)
 }
 
 export interface ResumeCandidate {
@@ -185,9 +198,9 @@ export function filterResumeCandidatesByPeer(
 export function registerVerifierRunCommand(verifier: Command): void {
   verifier
     .command('run [model]')
-    .description('Verify live peers for one configured model, every enabled model, or the models assigned to an auditor')
-    .option('--all', 'verify every enabled configured model')
-    .option('--auditor <address>', 'verify the models assigned to this auditor address in the current on-chain epoch')
+    .description('Verify live peers for the models assigned to this auditor (the default), one audited model, or every audited model')
+    .option('--all', 'verify every audited model instead of the assigned ones')
+    .option('--auditor <address>', 'auditor address to assign models for (default: verifier.auditor, verifier.keystore, or the data-dir identity)')
     .option('--allow-probe-reuse', 'allow a seller\'s new epoch reference to reuse probes it was assigned in earlier epochs')
     .option('--peer <peerId>', 'verify only this discovered seller peer')
     .option('--resume-run <runId>', 'repair only undetermined sellers from a compatible run')
@@ -205,9 +218,12 @@ export function registerVerifierRunCommand(verifier: Command): void {
       }
       let epochWindow = await resolveEpoch()
       let assignedModels: string[] | null = null
-      if (options.auditor) {
-        const assignment = resolveAssignedAuditModels(config, options.auditor, epochWindow)
-        printAuditAssignment(assignment, epochWindow)
+      if (isAssignedMode(modelValue, options)) {
+        const auditor = await resolveAuditorAddress({
+          config: config.verifier, dataDir: globalOptions.dataDir, flag: options.auditor,
+        })
+        const assignment = resolveAssignedAuditModels(config, auditor.address, epochWindow)
+        printAuditAssignment(assignment, epochWindow, describeAuditorSource(auditor.source))
         assignedModels = assignment.models
       }
       const selectedPeerId = options.peer ? normalizeVerifierPeerId(options.peer) : null
@@ -263,23 +279,34 @@ export function registerVerifierRunCommand(verifier: Command): void {
         let selectedPeers = selectedPeerId
           ? [selectVerifierPeer(proxy.peers, selectedPeerId)]
           : proxy.peers
-        const targetPolicy = {
-          minReputation: config.buyer.minPeerReputation,
-          maxPricing: config.buyer.maxPricing.defaults,
+        // Each audited model is audited only at or below its genuine price (OpenRouter by
+        // default). Sellers above it are skipped here, so they never get a request.
+        const priceCaps = await resolveAuditPriceCaps(
+          config.verifier, runModels, () => loadVerifierModelCatalog(config.verifier),
+        )
+        for (const [model, reason] of priceCaps.unpriced) {
+          console.warn(chalk.yellow(`SKIPPED ${model}: ${reason}`))
+          process.exitCode = 1
         }
+        runModels = runModels.filter((model) => priceCaps.caps.has(model))
+        if (runModels.length === 0) throw new Error('no audited model has a reference price; see the warnings above')
+        const targetPolicyFor = (model: string): VerificationTargetPolicy => ({
+          minReputation: config.buyer.minPeerReputation,
+          priceCap: priceCaps.caps.get(model)!,
+        })
         if (selectedPeerId && !resumeOnly) {
           const advertisedModels = runModels.filter((model) => {
             const eligibility = classifyVerificationTargetServices(
               selectedPeers[0]!,
               verifierModelServices(config.verifier, model),
-              targetPolicy,
+              targetPolicyFor(model),
             )
             return eligibility.eligible || eligibility.code !== 'model_not_advertised'
           })
-          if (options.all) {
+          if (options.all || assignedModels) {
             runModels = advertisedModels
             if (runModels.length === 0) {
-              throw new Error(`peer ${selectedPeerId} does not advertise any enabled configured verifier model`)
+              throw new Error(`peer ${selectedPeerId} does not advertise any audited model`)
             }
           } else if (advertisedModels.length === 0) {
             throw new Error(`peer ${selectedPeerId} does not advertise model ${runModels[0]}`)
@@ -290,7 +317,7 @@ export function registerVerifierRunCommand(verifier: Command): void {
           const readyModels: string[] = []
           for (const model of runModels) {
             if (!selectedPeers.some((peer) => classifyVerificationTargetServices(
-              peer, verifierModelServices(config.verifier, model), targetPolicy,
+              peer, verifierModelServices(config.verifier, model), targetPolicyFor(model),
             ).eligible)) {
               console.log(chalk.dim(`[enrollment:${model}] no eligible sellers; no enrollment calls needed`))
               readyModels.push(model)
@@ -340,7 +367,7 @@ export function registerVerifierRunCommand(verifier: Command): void {
             const services = resumeCandidate
               ? [resumeCandidate.service.toLowerCase(), ...configuredServices]
               : configuredServices
-            const eligibility = classifyVerificationTargetServices(peer, services, targetPolicy)
+            const eligibility = classifyVerificationTargetServices(peer, services, targetPolicyFor(model))
             if (eligibility.eligible) {
               const resumable = resumeCandidate
                 && resumeCandidate.service.toLowerCase() === eligibility.service.toLowerCase()
@@ -348,6 +375,7 @@ export function registerVerifierRunCommand(verifier: Command): void {
             }
             if (eligibility.code !== 'model_not_advertised') {
               const policySkip = eligibility.code !== 'missing_response_auth'
+              const priceSkip = eligibility.code === 'price_above_reference'
               skipped.push({
                 peerId: peer.peerId,
                 displayName: peer.displayName ?? null,
@@ -363,7 +391,9 @@ export function registerVerifierRunCommand(verifier: Command): void {
                   source: policySkip ? 'policy' : 'response_auth',
                   affectedBatchCount: 0,
                   totalBatchCount: 0,
-                  nextAction: policySkip ? 'adjust buyer routing policy' : 'inspect verifier evidence',
+                  nextAction: priceSkip
+                    ? 'seller must price at or below the reference'
+                    : policySkip ? 'adjust buyer routing policy' : 'inspect verifier evidence',
                 },
                 source: 'preflight',
                 auditId: null,
@@ -413,9 +443,8 @@ export function registerVerifierRunCommand(verifier: Command): void {
         console.log(chalk.dim(`Buyer proxy: ${proxy.baseUrl} (pid ${proxy.pid})`))
         if (selectedPeerId) console.log(chalk.dim(`Peer selector: ${selectedPeerId}`))
         console.log(chalk.dim('Evidence: verified ResponseAuth required for every successful batch'))
-        console.log(chalk.dim(
-          `Eligibility: reputation >= ${targetPolicy.minReputation}; maximum pricing input $${targetPolicy.maxPricing.inputUsdPerMillion}/M, output $${targetPolicy.maxPricing.outputUsdPerMillion}/M (buyer config)`,
-        ))
+        console.log(chalk.dim(`Eligibility: reputation >= ${config.buyer.minPeerReputation}; price at or below the reference:`))
+        for (const model of runModels) console.log(chalk.dim(`  ${describeAuditPriceCap(priceCaps.caps.get(model)!)}`))
         if (resumeSourceRunId) {
           console.log(chalk.dim(`Resume source: ${resumeSourceRunId} (${resumeCandidates.size} unresolved audit(s))`))
         }
@@ -914,7 +943,7 @@ export function resolveRunModels(
     }
     return [selected]
   }
-  if (resumable.length === 0) throw new Error(`resume run ${resumeManifest.runId} has no enabled configured models`)
+  if (resumable.length === 0) throw new Error(`resume run ${resumeManifest.runId} has no audited models`)
   return resumable
 }
 

@@ -11,6 +11,7 @@ import {
   writeProxyAuditEvidence,
   type ProxyAuditEvidenceV1,
 } from '../../../verifier/proxy-evidence.js'
+import { setAuditedModelsForTesting } from '../../../verifier/audited-models.js'
 import { registerVerifierCommands } from './index.js'
 import { validateRunEpoch } from './submit.js'
 import {
@@ -22,9 +23,16 @@ import {
   resolveAssignedAuditModels,
   resolveRunModels,
   selectVerifierPeer,
+  isAssignedMode,
   validateAssignedModeOptions,
   type ResumeCandidate,
 } from './run.js'
+
+setAuditedModelsForTesting({
+  'model-a': { upstreamModel: 'vendor/model-a' },
+  'model-b': { upstreamModel: 'vendor/model-b' },
+  'model-c': { upstreamModel: 'vendor/model-c' },
+})
 
 function command(): Command {
   const program = new Command().exitOverride().configureOutput({ writeErr: () => undefined, writeOut: () => undefined })
@@ -32,12 +40,12 @@ function command(): Command {
   return program
 }
 
-test('verifier exposes run, reference, status, submit, rewards, and check workflows', () => {
+test('verifier exposes run, models, reference, status, submit, rewards, and check workflows', () => {
   const verifier = command().commands.find((entry) => entry.name() === 'verifier')
   assert.ok(verifier)
   assert.deepEqual(
     verifier.commands.map((entry) => entry.name()).sort(),
-    ['check', 'reference', 'rewards', 'run', 'status', 'submit'],
+    ['check', 'models', 'reference', 'rewards', 'run', 'status', 'submit'],
   )
 })
 
@@ -125,10 +133,6 @@ test('explicit resume limits model selection to the source manifest', () => {
       apiKeyEnv: 'TEST_API_KEY',
       sourceId: 'test',
       trust: 'trusted' as const,
-      models: {
-        'model-a': { upstreamModel: 'vendor/model-a' },
-        'model-b': { upstreamModel: 'vendor/model-b' },
-      },
     },
   }
   const manifest = {
@@ -321,7 +325,7 @@ test('automatic resume ignores candidates whose archived bank reservation no lon
   }
 })
 
-test('assigned mode assigns every enabled model for the audit epoch', () => {
+test('assigned mode assigns every audited model for the audit epoch', () => {
   const config = {
     verifier: {
       referenceEndpoint: {
@@ -329,11 +333,6 @@ test('assigned mode assigns every enabled model for the audit epoch', () => {
         apiKeyEnv: 'TEST_API_KEY',
         sourceId: 'test',
         trust: 'trusted' as const,
-        models: {
-          'model-b': { upstreamModel: 'vendor/model-b' },
-          'model-a': { upstreamModel: 'vendor/model-a' },
-          'model-c': { upstreamModel: 'vendor/model-c', enabled: false },
-        },
       },
     },
   } as unknown as Parameters<typeof resolveAssignedAuditModels>[0]
@@ -342,8 +341,16 @@ test('assigned mode assigns every enabled model for the audit epoch', () => {
     auditor: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8',
     epoch: '12',
     strategy: 'all',
-    models: ['model-a', 'model-b'],
+    models: ['model-a', 'model-b', 'model-c'],
   })
+})
+
+test('a bare verifier run audits the assigned models', () => {
+  assert.equal(isAssignedMode(undefined, {}), true)
+  assert.equal(isAssignedMode(undefined, { auditor: '0x70997970c51812dc3a010c7d01b50e0d17dc79c8' }), true)
+  assert.equal(isAssignedMode('model-a', {}), false)
+  assert.equal(isAssignedMode(undefined, { all: true }), false)
+  assert.equal(isAssignedMode(undefined, { resumeRun: 'run-1' }), false)
 })
 
 test('--auditor cannot be combined with an explicit model, --all, or --resume-run', () => {

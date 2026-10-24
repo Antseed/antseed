@@ -1,10 +1,9 @@
-import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline/promises'
 import chalk from 'chalk'
 import Table from 'cli-table3'
 import type { Command } from 'commander'
-import { getAddress, Wallet, type AbstractSigner } from 'ethers'
+import { getAddress } from 'ethers'
 import type { VerifierClient } from '@antseed/node/payments'
 import { loadConfig } from '../../../config/loader.js'
 import {
@@ -25,8 +24,8 @@ import {
 import { readVerifierRunManifest, type VerifierRunManifestV1 } from '../../../verifier/audit-artifacts.js'
 import { prepareAuditPublication, publishVerificationToPinata } from '../../../verifier/ipfs-publication.js'
 import { asError, normalized } from '../../../verifier/utils.js'
-import { createVerifierClient, loadCryptoContext } from '../../payment-utils.js'
-import { promptHidden } from '../../prompt-hidden.js'
+import { createVerifierClient } from '../../payment-utils.js'
+import { resolveAuditorAddress, resolveAuditorSigner } from './auditor-identity.js'
 import { getGlobalOptions } from '../types.js'
 
 interface SubmitOptions {
@@ -72,14 +71,6 @@ export function validateRunEpoch(manifest: VerifierRunManifestV1, window: EpochW
   }
 }
 
-async function loadKeystoreSigner(path: string): Promise<{ wallet: AbstractSigner; address: string }> {
-  const json = await readFile(path, 'utf8')
-  const password = process.env['ANTSEED_KEYSTORE_PASSWORD']
-    || await promptHidden(`Keystore password for ${path}: `, '--keystore needs a terminal to ask for the password.')
-  const wallet = await Wallet.fromEncryptedJson(json, password)
-  return { wallet, address: wallet.address }
-}
-
 export function registerVerifierSubmitCommand(verifierCmd: Command): void {
   verifierCmd
     .command('submit')
@@ -91,7 +82,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
     .option('--auditor <address>', 'with --publish-only: auditor address the evidence is written for, so no signer is needed')
     .option('--yes', 'submit without an interactive confirmation prompt')
     .option('--rpc-url <url>', 'Base JSON-RPC URL override')
-    .option('--keystore <path>', 'sign with this encrypted JSON keystore (e.g. a Foundry keystore) instead of the data-dir identity; the password is asked on the terminal')
+    .option('--keystore <path>', 'sign with this encrypted JSON keystore (e.g. a Foundry keystore) instead of verifier.keystore or the data-dir identity; the password is asked on the terminal')
     .action(async (options: SubmitOptions, command: Command) => {
       const globalOptions = getGlobalOptions(command)
       const config = await loadConfig(globalOptions.config)
@@ -103,9 +94,11 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       if (options.auditor && !options.publishOnly) throw new Error('--auditor is only valid with --publish-only')
       const { wallet, address } = options.auditor
         ? { wallet: null, address: getAddress(options.auditor) }
-        : options.keystore
-          ? await loadKeystoreSigner(options.keystore)
-          : await loadCryptoContext(globalOptions.dataDir)
+        : options.publishOnly
+          ? { wallet: null, ...await resolveAuditorAddress({ config: config.verifier, dataDir: globalOptions.dataDir }) }
+          : await resolveAuditorSigner({
+            config: config.verifier, dataDir: globalOptions.dataDir, keystoreFlag: options.keystore,
+          })
       const pinataJwt = options.publishIpfs ? process.env['PINATA_JWT']?.trim() : undefined
       if (options.publishIpfs && !pinataJwt) throw new Error('PINATA_JWT is required with --publish-ipfs')
 

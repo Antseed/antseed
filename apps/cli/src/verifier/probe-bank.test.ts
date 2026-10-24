@@ -10,6 +10,7 @@ import {
   type KbfReferenceV1,
 } from '@antseed/fingerprints'
 import type { VerifierCLIConfig } from '../config/types.js'
+import { setAuditedModelsForTesting } from './audited-models.js'
 import {
   appendModelReferenceToBank,
   BANK_EXHAUSTED,
@@ -43,18 +44,22 @@ function appendReference(banksDir: string, value = reference()) {
   return appendModelReferenceToBank({ banksDir, model: 'model-a', reference: value, cost: referenceCost })
 }
 
+setAuditedModelsForTesting({
+  'model-a': { upstreamModel: 'upstream-a' },
+  'different-model': { upstreamModel: 'upstream-b' },
+})
+
 function excludedDomainConfig(model = 'model-a'): VerifierCLIConfig {
   return {
     referenceEndpoint: {
       baseUrl: 'https://reference.test/v1',
       sourceId: 'test',
       trust: 'trusted',
-      models: {
-        [model]: {
-          upstreamModel: 'upstream-a',
-          contrastModels: ['contrast-a'],
-          excludedDomains: ['medical'],
-        },
+    },
+    models: {
+      [model]: {
+        contrastModels: ['contrast-a'],
+        excludedDomains: ['medical'],
       },
     },
   }
