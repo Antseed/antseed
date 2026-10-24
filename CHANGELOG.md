@@ -56,9 +56,11 @@ This project uses selective package publishing. Each release entry lists the pub
   - A small share of standalone requests tries a seller the buyer has no recent data on, among those it already has a channel with, so recovered sellers are noticed.
   - The route preview lists each seller's success rate, speed and whether it shares traffic; `GET /_antseed/peer-health` adds `sellerHealth`, and `POST /_antseed/peer-health/clear` also resets a seller's record. A gateway key's explicit **Cheapest**, **Most trusted** or **Lowest latency** sort and route chains still apply, with failing sellers tried last.
 - Node: `AntseedNode` emits `response-auth` with the verdict on each seller-signed response receipt, and exports the routing model as `SellerHealthBook` and `orderAdaptiveRoutes`.
+- Node: `FileIdentityStore` takes an optional `scrypt` cost for the keys it encrypts; the default is unchanged (`DEFAULT_SCRYPT_PARAMS`).
 
 ### Fixed
 
+- Gateway console: models and routers starred within the same millisecond are listed in the order they were starred, instead of alphabetically.
 - CLI buyer and gateway: image edits (`POST /v1/images/edits`, a multipart form) honour a `peerId@model` model. The buyer pins that seller and sends the bare model, as it already did for JSON requests. Before, it looked for a seller serving the whole `peerId@model` name and answered `model_not_found`.
 - CLI buyer and gateway: automatic routing sends an image edit only to a seller that advertises the `image` parameter for the model, as if the request carried `x-antseed-required-parameters: image`. When none does, the request gets `422 required_capability_unavailable` instead of a 404 from a seller that only takes text. A pinned seller is still used as pinned.
 - CLI: `antseed verifier submit` reads verification events in 1,000-block chunks, so it works with RPC providers that limit log query ranges.
