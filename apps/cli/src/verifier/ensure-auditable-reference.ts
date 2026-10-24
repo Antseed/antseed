@@ -51,8 +51,8 @@ export async function ensureAuditableReference(input: {
     const initialReference = await operations.loadSeed(input.banksDir, input.model)
     const config = structuredClone(input.config)
     const entry = findVerifierModel(config, input.model)
-    if (!config?.referenceEndpoint || !entry || entry[1].enabled === false) {
-      throw new Error(`no enabled reference configuration for ${input.model}`)
+    if (!config?.referenceEndpoint || !entry) {
+      throw new Error(`no reference configuration for ${input.model}`)
     }
     if (initialReference) {
       withContrastModels(config, entry[0], initialReference.contrasts.map((contrast) => contrast.model))
@@ -113,8 +113,8 @@ export async function enrollFreshProbes(input: {
     const bank = await operations.loadIndex(input.banksDir, input.model)
     const config = structuredClone(input.config)
     const entry = findVerifierModel(config, input.model)
-    if (!config?.referenceEndpoint || !entry || entry[1].enabled === false) {
-      throw new Error(`no enabled reference configuration for ${input.model}`)
+    if (!config?.referenceEndpoint || !entry) {
+      throw new Error(`no reference configuration for ${input.model}`)
     }
     if (bank) withContrastModels(config, entry[0], bank.contrastModels)
     config.referenceMaxRequestsPerBuild = Math.min(

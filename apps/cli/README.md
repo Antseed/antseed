@@ -639,8 +639,7 @@ answers come from:
       "anthropic": { "type": "anthropic", "baseUrl": "https://api.anthropic.com/v1", "apiKeyEnv": "ANTHROPIC_API_KEY" }
     },
     "models": {
-      "claude-opus-5.5": { "upstream": { "name": "anthropic", "model": "claude-opus-5-5" } },
-      "kimi-k3": { "enabled": false }
+      "claude-opus-5.5": { "upstream": { "name": "anthropic", "model": "claude-opus-5-5" } }
     }
   }
 }
@@ -651,10 +650,11 @@ A model without an `upstream` takes its genuine answers from `referenceEndpoint`
 verifier models` prints each model's source, model id and provider pin.
 
 `verifier.models.<model>` is optional and only accepts audited models. It can set
-`enabled`, `upstream`, `referenceProvider`, `contrastModels`, `excludedDomains`,
+`upstream`, `referenceProvider`, `contrastModels`, `excludedDomains`,
 `pricing` and `referenceRoute`. Contrast models come from the OpenRouter catalog
 unless `referenceEndpoint.contrastModelBank` is set. A model list under
-`referenceEndpoint.models` (older configs) is rejected.
+`referenceEndpoint.models` (older configs) is rejected. Models can't be turned
+off: an auditor audits every model assigned to it, so `enabled` is rejected too.
 
 `verifier run` with no model audits the models assigned to the auditor in the
 current epoch and prints the assignment first:

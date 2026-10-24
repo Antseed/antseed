@@ -30,18 +30,22 @@ export function auditedVerifierModels(
     .map(([service, value]) => [findAuditedModelKey(service) ?? service, value] as const))
   return Object.entries(auditedModels())
     .map(([service, model]): [string, VerifierReferenceModelConfig] => [service, {
-      ...settings.get(service),
+      ...withoutRemovedSettings(settings.get(service)),
       upstreamModel: model.upstreamModel,
       ...(model.serviceAliases?.length ? { serviceAliases: [...model.serviceAliases] } : {}),
     }])
     .sort(([left], [right]) => left.localeCompare(right))
 }
 
-/** Built-in audited models the verifier has not turned off with `verifier.models.<model>.enabled: false`. */
+function withoutRemovedSettings<T extends { enabled?: unknown }>(value: T | undefined): Omit<T, 'enabled'> | undefined {
+  if (!value) return undefined
+  const { enabled: _removed, ...rest } = value
+  return rest
+}
+
+/** Every built-in audited model. Auditors can't turn models off: the assignment depends only on the auditor and the epoch. */
 export function configuredVerifierModels(config: VerifierCLIConfig | undefined): string[] {
-  return auditedVerifierModels(config)
-    .filter(([, model]) => model.enabled !== false)
-    .map(([service]) => service)
+  return auditedVerifierModels(config).map(([service]) => service)
 }
 
 /** True when contrast models are chosen from the OpenRouter catalog: the default unless a manual contrastModelBank is configured. */
@@ -85,13 +89,10 @@ export function resolveVerifierCommandModels(
   const model = modelValue?.trim() ?? ''
   if ((model.length > 0) === all) throw new Error('provide exactly one of <model>, --all, or --auditor <address>')
   if (all) {
-    const models = configuredVerifierModels(config)
-    if (models.length === 0) throw new Error('every audited model is disabled in verifier.models')
-    return models
+    return configuredVerifierModels(config)
   }
   const entry = findVerifierModel(config, model)
   if (!entry) throw new Error(`${model} is not an audited model`)
-  if (entry[1].enabled === false) throw new Error(`verifier model ${entry[0]} is disabled`)
   return [entry[0]]
 }
 
@@ -104,7 +105,6 @@ export function resolveVerifierModelConfig(
   const entry = findVerifierModel(config, requestedModel)
   if (!entry) throw new Error(`${requestedModel} is not an audited model`)
   const [service, model] = entry
-  if (model.enabled === false) throw new Error(`verifier model ${service} is disabled`)
   const maximum = config?.contrastSelection?.maxModels ?? DEFAULT_CONTRAST_MAX_MODELS
   const explicit = model.contrastModels?.map((value) => value.trim()).filter(Boolean)
   if (explicit && explicit.length > maximum) {

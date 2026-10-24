@@ -325,7 +325,7 @@ test('automatic resume ignores candidates whose archived bank reservation no lon
   }
 })
 
-test('assigned mode assigns every enabled model for the audit epoch', () => {
+test('assigned mode assigns every audited model for the audit epoch', () => {
   const config = {
     verifier: {
       referenceEndpoint: {
@@ -334,7 +334,6 @@ test('assigned mode assigns every enabled model for the audit epoch', () => {
         sourceId: 'test',
         trust: 'trusted' as const,
       },
-      models: { 'model-c': { enabled: false } },
     },
   } as unknown as Parameters<typeof resolveAssignedAuditModels>[0]
   const epoch = { epoch: '12', startedAt: 220, endsAt: 230, source: 'onchain' as const }
@@ -342,7 +341,7 @@ test('assigned mode assigns every enabled model for the audit epoch', () => {
     auditor: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8',
     epoch: '12',
     strategy: 'all',
-    models: ['model-a', 'model-b'],
+    models: ['model-a', 'model-b', 'model-c'],
   })
 })
 

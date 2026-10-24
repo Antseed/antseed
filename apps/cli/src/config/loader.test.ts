@@ -462,7 +462,7 @@ test('loadConfig rejects model lists: the audited models are built in', async ()
   });
   await withTempConfig(JSON.stringify({ verifier: {
     referenceEndpoint: REFERENCE_ENDPOINT,
-    models: { 'my-own-model': { enabled: true } },
+    models: { 'my-own-model': { excludedDomains: ['medical'] } },
   } }), async (configPath) => {
     await assert.rejects(loadConfig(configPath), /models\["?my-own-model"?\]? is not an audited model/);
   });
@@ -471,6 +471,12 @@ test('loadConfig rejects model lists: the audited models are built in', async ()
     models: { 'kimi-k3': { upstreamModel: 'other/kimi' } },
   } }), async (configPath) => {
     await assert.rejects(loadConfig(configPath), /models\["kimi-k3"\]\.upstreamModel is not supported/);
+  });
+  await withTempConfig(JSON.stringify({ verifier: {
+    referenceEndpoint: REFERENCE_ENDPOINT,
+    models: { 'kimi-k3': { enabled: false } },
+  } }), async (configPath) => {
+    await assert.rejects(loadConfig(configPath), /models\["kimi-k3"\]\.enabled is no longer supported/);
   });
   await withTempConfig(JSON.stringify({ verifier: {
     referenceEndpoint: REFERENCE_ENDPOINT,

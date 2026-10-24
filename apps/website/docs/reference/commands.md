@@ -343,7 +343,7 @@ Browse sellers and run network infrastructure. Guides: [Routing and catalog](/do
 
 ## Verifier
 
-Audit sellers' model claims, submit results on-chain and claim auditor rewards. Guides: [Become a verifier](/docs/verify), [How audits run](/docs/verify/audits), [Reference upstreams](/docs/verify/upstreams).
+Audit sellers' model claims, submit results on-chain and claim auditor rewards. Guides: [Become a verifier](/docs/verify), [How audits run](/docs/verify/audits).
 
 <CommandTable>
 

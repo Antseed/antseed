@@ -19,7 +19,7 @@ export interface AuditAssignment {
  * Decides which models an auditor audits in an epoch. Assignment is off-chain only: the contract
  * credits any approved auditor's model audits, so the rotation can change without a redeploy.
  *
- * Today every auditor is assigned every enabled model ('all').
+ * Today every auditor is assigned every audited model ('all').
  *
  * Planned rotation, kept deterministic so anyone can recompute and check an assignment:
  * - Candidates: the top-N popular text models of the previous on-chain epoch that are served by at
