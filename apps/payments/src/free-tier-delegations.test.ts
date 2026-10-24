@@ -1,0 +1,99 @@
+import { afterEach, describe, expect, it } from 'vitest';
+import Fastify from 'fastify';
+import { chmodSync, lstatSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Wallet } from 'ethers';
+import { FREE_TIER_DELEGATION_TYPES, freeTierDelegationMessage, makeFreeTierDelegationDomain } from '@antseed/node';
+import { registerFreeTierDelegationRoutes } from './free-tier-delegations.js';
+
+const CHAIN_ID = 8453;
+const BUYER = Wallet.createRandom().address;
+const dirs: string[] = [];
+
+afterEach(() => {
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+async function setup() {
+  const dir = mkdtempSync(join(tmpdir(), 'antseed-free-tier-'));
+  dirs.push(dir);
+  const configPath = join(dir, 'config.json');
+  writeFileSync(configPath, JSON.stringify({ buyer: { proxyPort: 8377 }, seller: { freeTier: { maxRequestsPerAddress: 5 } } }));
+  const app = Fastify();
+  registerFreeTierDelegationRoutes(app, { configPath, chainId: CHAIN_ID, buyerAddress: BUYER });
+  return { app, configPath };
+}
+
+async function signed(staker: Pick<Wallet, 'address' | 'signTypedData'>, expiresAt: number) {
+  const signature = await staker.signTypedData(
+    makeFreeTierDelegationDomain(CHAIN_ID),
+    FREE_TIER_DELEGATION_TYPES,
+    freeTierDelegationMessage({ staker: staker.address, buyer: BUYER, expiresAt }),
+  );
+  return { staker: staker.address, expiresAt, signature };
+}
+
+describe('free-tier delegation routes', () => {
+  it('saves a delegation signed by the staker, keeping the rest of the config', async () => {
+    const { app, configPath } = await setup();
+    const staker = Wallet.createRandom();
+    const expiresAt = Math.floor(Date.now() / 1000) + 86_400;
+    const response = await app.inject({ method: 'POST', url: '/api/free-tier/delegations', payload: await signed(staker, expiresAt) });
+    expect(response.statusCode).toBe(200);
+
+    const config = JSON.parse(readFileSync(configPath, 'utf-8'));
+    expect(config.buyer.proxyPort).toBe(8377);
+    expect(config.seller.freeTier.maxRequestsPerAddress).toBe(5);
+    expect(config.buyer.freeTierDelegations).toEqual([expect.objectContaining({ staker: staker.address, buyer: BUYER, expiresAt })]);
+
+    // Signing again replaces the earlier delegation instead of adding another.
+    await app.inject({ method: 'POST', url: '/api/free-tier/delegations', payload: await signed(staker, expiresAt + 10) });
+    const listed = (await app.inject({ method: 'GET', url: '/api/free-tier/delegations' })).json();
+    expect(listed.delegations).toHaveLength(1);
+    expect(listed.delegations[0].expiresAt).toBe(expiresAt + 10);
+  });
+
+  it('keeps both delegations when two stakers save at the same time', async () => {
+    const { app, configPath } = await setup();
+    const expiresAt = Math.floor(Date.now() / 1000) + 86_400;
+    const [first, second] = [Wallet.createRandom(), Wallet.createRandom()];
+    const responses = await Promise.all([first, second].map(async (staker) =>
+      app.inject({ method: 'POST', url: '/api/free-tier/delegations', payload: await signed(staker, expiresAt) })));
+    expect(responses.map((response) => response.statusCode)).toEqual([200, 200]);
+
+    const config = JSON.parse(readFileSync(configPath, 'utf-8'));
+    expect(config.buyer.proxyPort).toBe(8377);
+    expect(config.buyer.freeTierDelegations.map((entry: { staker: string }) => entry.staker).sort())
+      .toEqual([first.address, second.address].sort());
+  });
+
+  it('saves through a symlinked config to its target and keeps an owner-only mode', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'antseed-free-tier-'));
+    dirs.push(dir);
+    const target = join(dir, 'shared.json');
+    writeFileSync(target, JSON.stringify({ buyer: { proxyPort: 8377 } }));
+    chmodSync(target, 0o600);
+    const configPath = join(dir, 'config.json');
+    symlinkSync(target, configPath);
+    const app = Fastify();
+    registerFreeTierDelegationRoutes(app, { configPath, chainId: CHAIN_ID, buyerAddress: BUYER });
+
+    const staker = Wallet.createRandom();
+    const payload = await signed(staker, Math.floor(Date.now() / 1000) + 86_400);
+    expect((await app.inject({ method: 'POST', url: '/api/free-tier/delegations', payload })).statusCode).toBe(200);
+
+    expect(lstatSync(configPath).isSymbolicLink()).toBe(true);
+    expect(statSync(target).mode & 0o777).toBe(0o600);
+    expect(JSON.parse(readFileSync(target, 'utf-8')).buyer.freeTierDelegations).toEqual([expect.objectContaining({ staker: staker.address })]);
+  });
+
+  it('rejects a signature from a different wallet and expired delegations', async () => {
+    const { app } = await setup();
+    const staker = Wallet.createRandom();
+    const forged = { ...(await signed(Wallet.createRandom(), Math.floor(Date.now() / 1000) + 60)), staker: staker.address };
+    expect((await app.inject({ method: 'POST', url: '/api/free-tier/delegations', payload: forged })).statusCode).toBe(400);
+    const expired = await signed(staker, Math.floor(Date.now() / 1000) - 1);
+    expect((await app.inject({ method: 'POST', url: '/api/free-tier/delegations', payload: expired })).statusCode).toBe(400);
+  });
+});

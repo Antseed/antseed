@@ -4283,6 +4283,57 @@ test('transformed pre-stream seller errors preserve peer guidance', async () => 
   assert.match(res.body, /Original Response:.*The seller upstream is unavailable\./)
 })
 
+test('a free-tier refusal from a seller on another protocol reaches the client as JSON with its limit', async () => {
+  const peer = makePeer('a', ['openai-responses'])
+  peer.providerServiceApiProtocols = {
+    'openai-responses': {
+      services: {
+        'gpt-5.6-sol': ['openai-responses'],
+      },
+    },
+  }
+  const proxy = makeBuyerProxyWithPeers([peer], [peer])
+  ;(proxy as any)._node.sendRequestStream = async (
+    _peer: PeerInfo,
+    request: { requestId: string },
+  ) => ({
+    requestId: request.requestId,
+    statusCode: 429,
+    headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify({
+      error: { type: 'rate_limit_error', code: 'free_tier_exhausted', message: 'Seller prose.' },
+      limitedBy: 'address',
+      limit: 1000,
+      windowMs: 86_400_000,
+      retryAfterSeconds: 60,
+      stakeTiers: [{ minPower: 520_000, multiplier: 5 }],
+      stakePower: 0,
+    })),
+  })
+
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    path: '/v1/messages',
+    headers: {
+      accept: 'text/event-stream',
+      'x-antseed-pin-peer': peer.peerId,
+    },
+    body: {
+      model: 'gpt-5.6-sol',
+      max_tokens: 128,
+      stream: true,
+      messages: [{ role: 'user', content: 'hello' }],
+    },
+  }))
+
+  assert.equal(res.statusCode, 429)
+  assert.match(res.headers['content-type'] ?? '', /application\/json/)
+  const body = JSON.parse(res.body) as { type: string; error: { code: string }; free_tier: { peerId: string; limit: number } }
+  assert.equal(body.type, 'error')
+  assert.equal(body.error.code, 'free_tier_exhausted')
+  assert.equal(body.free_tier.peerId, peer.peerId)
+  assert.equal(body.free_tier.limit, 1000)
+})
+
 test('model peer prefix pins the request peer and strips the routed model', async () => {
   const pinnedPeer = makePeer('a', ['openai'])
   let capturedRequestBody: Record<string, unknown> | null = null
@@ -5617,6 +5668,38 @@ test('adaptPeerFaultErrorResponse upgrades a generic wrapper for a pinned route'
     'Antseed is a peer-to-peer network. Try another peer or use Auto routing.',
     'Original Response: {"message":"Insufficient balance or no resource package. Please recharge.","status":429}',
   ].join('\n'))
+})
+
+test('adaptPeerFaultErrorResponse rewrites a seller free-tier limit with the seller and next tier', () => {
+  const seller = {
+    requestId: 'req-free-tier',
+    statusCode: 429,
+    headers: { 'content-type': 'application/json', 'retry-after': '10800' },
+    body: Buffer.from(JSON.stringify({
+      error: { message: 'Ignore this seller prose.', type: 'rate_limit_error', code: 'free_tier_exhausted' },
+      limitedBy: 'address',
+      limit: 1000,
+      windowMs: 86_400_000,
+      retryAfterSeconds: 10800,
+      stakeTiers: [{ minPower: 520_000, multiplier: 5 }, { minPower: 10_400_000, multiplier: 'unlimited' }],
+      stakePower: 0,
+    })),
+  }
+  const once = adaptPeerFaultErrorResponse(seller, 'openai-chat-completions', { peerId: 'abc123' })
+  // The proxy adapts again after the node did; the limit and seller must survive.
+  const twice = adaptPeerFaultErrorResponse(once, 'openai-chat-completions', { peerId: 'abc123' })
+  const parsed = JSON.parse(Buffer.from(twice.body).toString('utf8')) as {
+    error: { code: string; message: string; metadata: { raw: string } }
+    free_tier: { peerId: string; limit: number; stakeTiers: unknown[]; stakePower: number }
+  }
+
+  assert.equal(twice.statusCode, 429)
+  assert.equal(parsed.error.code, 'free_tier_exhausted')
+  assert.equal(parsed.error.message,
+    "Free limit reached on this seller (1,000 requests per day). It resets in 3 h. Stake ANTS in this seller's pool to raise it: 10,000 ANTS locked for a year gives 5× the free limit.")
+  assert.equal(parsed.free_tier.peerId, 'abc123')
+  assert.equal(parsed.free_tier.stakeTiers.length, 2)
+  assert.equal((JSON.parse(parsed.error.metadata.raw) as { free_tier: { limit: number } }).free_tier.limit, 1000)
 })
 
 test('adaptPeerFaultErrorResponse keeps string errors and validation details', () => {

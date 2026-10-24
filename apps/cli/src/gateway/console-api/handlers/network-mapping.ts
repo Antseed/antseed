@@ -1,6 +1,7 @@
 /** Pure mapping from the buyer's peer, health and verification views to the console's `Peer`. */
 import { collectPeerVerificationLinks } from '@antseed/node/discovery'
 import { parseVerifierCapabilities } from '@antseed/node/verifier-capabilities'
+import { parseFreeTierProgram } from '@antseed/node/free-tier-program'
 import { modelTagsFor } from '@antseed/node/model-metadata'
 import { TEE_VERIFIER_ID, teeScope, type TeeClaim, type TeeScope } from '@antseed/node/tee-status'
 import type { NetworkModel, NetworkModelCapability, NetworkModelOffer, NetworkModelType, NetworkRouter, NetworkRouterOption, Peer, RoutePreview } from '../types.js'
@@ -122,6 +123,7 @@ export function mapPeers(input: {
     // when the buyer shares its verification snapshot.
     const verified = asRecord(row['verificationResults'])['verified'] === true || (teeVerified?.has(key) ?? false)
     const stake = num(row['onChainPoolStakeAnts'])
+    const agentId = num(row['onChainAgentId'])
     const coolingDown = healthRow?.['coolingDown'] === true
     return [{
       peerId,
@@ -136,6 +138,8 @@ export function mapPeers(input: {
       tee,
       teeScope: tee ? teeVerified?.get(key) ?? null : null,
       stakeAnts: stake === null ? null : String(stake),
+      agentId: agentId !== null && agentId > 0 ? agentId : null,
+      freeTier: parseFreeTierProgram(strings(row['capabilities'])),
       usageShareBps: num(row['onChainUsageShareBps']),
       washFlagged: row['onChainWashFlagged'] === true || trust['washFlagged'] === true,
       lastSeen: num(row['lastSeen']),
@@ -260,6 +264,8 @@ export function mapNetworkModels(body: unknown, peers: readonly Peer[]): Network
         contextLength: num(capabilities['contextWindow']),
         // Free when every advertised price is zero, and at least one is advertised.
         free: (tokenPriced || minImage !== null) && (input ?? 0) === 0 && (output ?? 0) === 0 && (maxImage ?? 0) === 0,
+        agentId: peer?.agentId ?? null,
+        freeTier: peer?.freeTier ?? null,
         reputationScore: num(offer['effectiveReputationScore']) ?? num(offer['reputationScore']),
         trustScore: peer?.trustScore ?? num(offer['onChainReputationScore']),
         verified: peer?.verified ?? false,

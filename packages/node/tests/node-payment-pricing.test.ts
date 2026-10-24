@@ -53,13 +53,15 @@ describe('completed-request seller payments', () => {
   });
   it('serves the routing model list for free through the provider, under the authenticated buyer id', async () => {
     const harness = setup();
-    const headers = { ...routingHeaders, 'X-Antseed-Buyer-Peer-Id': 'f'.repeat(40) };
+    const headers = { ...routingHeaders, 'X-Antseed-Buyer-Peer-Id': 'f'.repeat(40), 'X-Antseed-Free-Tier-Delegations': 'delegations' };
     expect((await harness.send('models', { method: 'GET', path: '/v1/routing/models', headers, body: new Uint8Array() })).statusCode).toBe(200);
     const forwarded = vi.mocked(harness.provider.handleRequest).mock.calls[0]![0];
     expect(forwarded.path).toBe('/v1/routing/models');
     // The buyer-sent copy (any casing) is replaced by the id from the authenticated connection.
     expect(forwarded.headers['x-antseed-buyer-peer-id']).toBe('b'.repeat(40));
     expect(Object.keys(forwarded.headers).filter(key => key.toLowerCase() === 'x-antseed-buyer-peer-id')).toEqual(['x-antseed-buyer-peer-id']);
+    // Free-tier delegations are for the seller only and never reach a plugin.
+    expect(Object.keys(forwarded.headers).map(key => key.toLowerCase())).not.toContain('x-antseed-free-tier-delegations');
     expect(harness.spm.recordSpend).not.toHaveBeenCalled();
     expect(harness.paymentMux.sendPaymentRequired).not.toHaveBeenCalled();
   });
@@ -701,14 +703,14 @@ function makeAttestHarness() {
     provider,
     prove,
     sendPaymentRequired,
-    sendAttest: (i = 0, body = new Uint8Array([1])) => mux.handleFrame({
+    sendAttest: (i = 0, body = new Uint8Array([1]), headers: Record<string, string> = {}) => mux.handleFrame({
       type: MessageType.HttpRequest,
       messageId: i + 1,
       payload: encodeHttpRequest({
         requestId: `req-attest-${i}`,
         method: 'POST',
         path: ATTEST_ROUTE,
-        headers: {},
+        headers,
         body,
       }),
     }),
@@ -803,6 +805,13 @@ describe('SellerRequestHandler payment pricing selection', () => {
     expect(prove).toHaveBeenCalledOnce();
     expect(provider.handleRequest).not.toHaveBeenCalled();
     expect(sendPaymentRequired).not.toHaveBeenCalled();
+  });
+
+  it('never passes free-tier delegations to a prover', async () => {
+    const { prove, sendAttest } = makeAttestHarness();
+    await sendAttest(0, new Uint8Array([1]), { 'X-Antseed-Free-Tier-Delegations': 'delegations' });
+    const headers = prove.mock.calls[0]![0].headers;
+    expect(Object.keys(headers).map((key) => key.toLowerCase())).not.toContain('x-antseed-free-tier-delegations');
   });
 
   it('rate-limits the free attestation route per buyer', async () => {
@@ -1221,12 +1230,21 @@ describe('SellerRequestHandler payment pricing selection', () => {
     const provider = makeProvider(0, 0, { name: 'free-tier', services: ['local-test'] });
     provider.handleRequest = vi.fn(async (req) => ({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ ok: true })) }));
     const consume = vi.fn()
-      .mockReturnValueOnce({ allowed: true, remaining: 0, retryAfterMs: 0, limitedBy: null, buyerAddress: `0x${'b'.repeat(40)}`, remoteIp: '203.0.113.7' })
-      .mockReturnValueOnce({ allowed: false, remaining: 0, retryAfterMs: 12_500, limitedBy: 'ip', buyerAddress: `0x${'b'.repeat(40)}`, remoteIp: '203.0.113.7' });
+      .mockReturnValueOnce({ allowed: true, remaining: 0, retryAfterMs: 0, limitedBy: null, buyerAddress: `0x${'b'.repeat(40)}`, remoteIp: '203.0.113.7', standing: null, limit: 1 })
+      .mockReturnValueOnce({ allowed: false, remaining: 0, retryAfterMs: 12_500, limitedBy: 'ip', buyerAddress: `0x${'b'.repeat(40)}`, remoteIp: '203.0.113.7', standing: null, limit: 3 });
+    const stakeTiers = [{ minPower: 520_000, multiplier: 5 }];
+    const resolveStanding = vi.fn(async () => null);
     const handler = makeSellerRequestHandler({
       providers: [provider],
       sellerPaymentManager: null,
-      sellerFreeTierLimiter: { maxRequestsPerAddress: 1, maxRequestsPerIp: 3, windowMs: 60_000, consume } as any,
+      sellerFreeTierLimiter: {
+        maxRequestsPerAddress: 1,
+        maxRequestsPerIp: 3,
+        windowMs: 60_000,
+        consume,
+        resolveStanding,
+        program: () => ({ base: { maxRequestsPerAddress: 1, maxRequestsPerIp: 3, windowMs: 60_000 }, stakeTiers }),
+      } as any,
       sessionTracker: null,
       channelsClient: null,
       announcer: null,
@@ -1247,24 +1265,29 @@ describe('SellerRequestHandler payment pricing selection', () => {
           requestId,
           method: 'POST',
           path: '/v1/chat/completions',
-          headers: { 'content-type': 'application/json' },
+          headers: { 'content-type': 'application/json', 'X-Antseed-Free-Tier-Delegations': 'delegations' },
           body: new TextEncoder().encode(JSON.stringify({ model: 'local-test' })),
         }),
       });
     }
 
     expect(provider.handleRequest).toHaveBeenCalledOnce();
+    expect(resolveStanding).toHaveBeenCalledWith('b'.repeat(40), 'delegations');
+    const forwarded = vi.mocked(provider.handleRequest).mock.calls[0]![0] as { headers: Record<string, string> };
+    expect(Object.keys(forwarded.headers).map((name) => name.toLowerCase())).not.toContain('x-antseed-free-tier-delegations');
     expect(consume).toHaveBeenCalledTimes(2);
-    expect(consume).toHaveBeenCalledWith({ buyerPeerId: 'b'.repeat(40), service: 'local-test', remoteIp: '203.0.113.7' });
+    expect(consume).toHaveBeenCalledWith({ buyerPeerId: 'b'.repeat(40), service: 'local-test', remoteIp: '203.0.113.7', standing: null });
     const responses = sentFrames.map((frame) => decodeHttpResponse(decodeFrame(frame)!.message.payload));
     expect(responses.map((response) => response.statusCode)).toEqual([200, 429]);
     expect(responses[1]!.headers['retry-after']).toBe('13');
     expect(JSON.parse(new TextDecoder().decode(responses[1]!.body))).toMatchObject({
-      error: { code: 'free_tier_exhausted' },
+      error: { code: 'free_tier_exhausted', message: expect.stringContaining('Stake ANTS on this seller') },
       limitedBy: 'ip',
       limit: 3,
       windowMs: 60_000,
       retryAfterSeconds: 13,
+      stakeTiers,
+      stakePower: 0,
     });
   });
 
