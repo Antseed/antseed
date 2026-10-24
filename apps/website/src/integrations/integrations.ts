@@ -136,6 +136,8 @@ export type Integration = {
   links?: { label: string; href: string }[];
   /** Agent-friendly machine summary used by /llms-connect.txt. */
   agentSummary?: string;
+  /** Command that installs this tool's Antseed skill. Defaults to the generic `join-buyer` skill. */
+  agentSkill?: string;
 };
 
 const ANT_PORT = 8377;
@@ -729,137 +731,171 @@ openclaw models set "antseed/antseed"`,
     logo: 'nousresearch.svg',
     category: 'agent-platform',
     format: 'openai-chat',
-    setupMinutes: 3,
+    setupMinutes: 5,
     status: 'verified',
     seoTitle: 'Run Hermes agents on any model, pay per use',
     headline: 'Run Hermes on any model',
-    oneLiner: "Nous Research's agent framework - register Antseed as a custom provider in `config.yaml`.",
+    oneLiner: "Nous Research's agent framework - add Antseed as a provider, or let Hermes set itself up.",
     description: [
-      '<strong>What Hermes is.</strong> Hermes Agent is the open-source agent framework from <a href="https://nousresearch.com/">Nous Research</a>. It is designed for autonomous, multi-step workflows and reads provider configuration from <code>~/.hermes/config.yaml</code>.',
-      '<strong>How Antseed plugs in.</strong> Current Hermes releases store named custom endpoints under the <code>providers:</code> mapping; <code>custom_providers:</code> is legacy and auto-migrated. Use the local AI VPN URL when Hermes runs beside it, or copy the authenticated URL and API key from <strong>AI VPN → Agents → Define your internet-accessible Antseed endpoint</strong> for a remote Hermes host.',
-      '<strong>One Hermes-specific gotcha.</strong> Some peers serve GPT-style models via the <code>openai-responses</code> protocol, which <em>requires</em> streaming. Hermes\' auxiliary calls (title generation, context compression) are non-streaming and will fail against those models with <code>HTTP 400: Stream must be set to true</code>. Pin auxiliary slots to a <code>chat_completions</code> model (config example below).',
+      '<strong>What Hermes is.</strong> Hermes Agent is the open-source agent framework from <a href="https://nousresearch.com/">Nous Research</a>. It runs as a long-lived gateway (Telegram, Discord, Slack, …) and reads its model provider from its config.',
+      '<strong>Fastest path: let Hermes do it.</strong> Install the <code>hermes-antseed</code> skill and tell your agent "set yourself up to run on Antseed". It snapshots its config, checks the buyer and your balance, tests which models actually answer, adds Antseed next to your current provider, switches only after a passing test, and asks you to send <code>/restart</code>.',
+      '<strong>Doing it by hand</strong> is the same steps below. Use <code>hermes config set</code> for every change instead of pasting YAML: your <code>config.yaml</code> already has a <code>model:</code> block, and a second one breaks it.',
+    ],
+    prereqs: [
+      'Hermes installed and answering (`hermes -z "hi"` replies).',
+      'The Antseed buyer running and funded on the same machine: the AI VPN desktop app, or the CLI from Run Antseed first above. Check with `antseed buyer balance` (Available should be above 0).',
     ],
     install: [
       {
-        label: 'Install or build Hermes',
-        command: '# Follow Nous Research setup at https://github.com/NousResearch/hermes-agent',
+        label: 'Option A: install the skill and let Hermes set itself up',
+        command: 'hermes skills install AntSeed/antseed/skills/hermes-antseed',
         note:
-          'Hermes is typically run as a long-lived process (often under systemd on a server). The config file `~/.hermes/config.yaml` is read at startup - changes require a restart.',
+          'Then message your agent: "Set yourself up to run on Antseed using the hermes-antseed skill." It stops to ask you if the buyer is not running or not funded, and finishes by asking you to send `/restart`. Skip the rest of this page.',
+      },
+      {
+        label: 'Option B (by hand): snapshot your config and note your current model',
+        command: 'hermes backup --quick --label before-antseed\nhermes config get model.provider\nhermes config get model.default',
+        note: 'Undo later from chat with `/snapshot restore <id>` (the id the backup prints), then `/restart`.',
       },
     ],
     configure: [
       {
-        kind: 'env',
-        vars: {
-          ANTSEED_BASE_URL: 'http://127.0.0.1:8377/v1',
-          ANTSEED_API_KEY: 'antseed-p2p',
-        },
+        kind: 'code',
+        language: 'bash',
+        snippet: String.raw`try_model() {
+  curl -s -m 90 http://127.0.0.1:8377/v1/chat/completions \
+    -H 'Content-Type: application/json' -H 'Authorization: Bearer antseed-p2p' \
+    -d "{\"model\":\"$1\",\"stream\":false,\"max_tokens\":8,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with: ok\"}]}" \
+  | grep -q '"choices"' && echo "OK   $1" || echo "FAIL $1"
+}
+for m in kimi-k3 kimi-k2.6 glm-5.1 deepseek-v4-pro minimax-m2.7 deepseek-v4-flash; do try_model "$m"; done`,
         note:
-          'Local setup: keep these defaults. Remote setup: start ngrok or Cloudflare from AI VPN → Agents and replace both values with the displayed public URL and generated `antseed_...` key.',
+          'Pick models that actually answer right now. Listed in `/v1/models` is not the same as servable: a model can be listed while no seller that meets your trust policy serves it. The test is non-streaming on purpose, because Hermes\' helper calls (titles, compression) are non-streaming. Use the first OK as your main model and a cheap OK one (`minimax-m2.7`, `deepseek-v4-flash`) as the helper. Each test costs a fraction of a cent.',
       },
       {
-        kind: 'file',
-        path: '~/.hermes/config.yaml  (merge into your existing config)',
-        language: 'yaml',
-        snippet: `model:
-  default: antseed
-  provider: antseed
-  base_url: ""
-  api_mode: chat_completions
+        kind: 'code',
+        language: 'bash',
+        snippet: `hermes config set ANTSEED_API_KEY antseed-p2p
+hermes config set providers.antseed.name Antseed
+hermes config set providers.antseed.base_url http://127.0.0.1:8377/v1
+hermes config set providers.antseed.key_env ANTSEED_API_KEY
+hermes config set providers.antseed.api_mode chat_completions
+hermes config set providers.antseed.default_model kimi-k3
 
-providers:
-  antseed:
-    name: Antseed
-    api: \${ANTSEED_BASE_URL}
-    api_key: \${ANTSEED_API_KEY}
-    transport: chat_completions
-    extra_headers:
-      originator: hermes
-    default_model: antseed
-    models:
-      antseed:
-        context_length: 200000
-      deepseek-v4-flash:
-        context_length: 128000
-      kimi-k2.6:
-        context_length: 256000
-      minimax-m2.7:
-        context_length: 200000
+# Test it before switching (your current provider is still the default):
+hermes -z "Reply with exactly: antseed-ok" --provider antseed -m kimi-k3`,
+        note:
+          'Adds Antseed next to your current provider. `ANTSEED_API_KEY` goes into Hermes\' `.env`; the local proxy accepts any non-empty value. Replace `kimi-k3` with your main model from the test above. It must print `antseed-ok` before you continue.',
+      },
+      {
+        kind: 'code',
+        language: 'bash',
+        snippet: String.raw`# Save the 8 settings this step changes, to undo it exactly:
+mkdir -p "$HOME/.antseed"
+for k in model.provider model.default model.base_url model.api_mode \
+         auxiliary.title_generation.provider auxiliary.title_generation.model \
+         auxiliary.compression.provider auxiliary.compression.model; do
+  if v="$(hermes config get "$k" 2>/dev/null </dev/null)"; then printf 'set\t%s\t%s\n' "$k" "$v"; else printf 'unset\t%s\n' "$k"; fi
+done > "$HOME/.antseed/hermes-before-antseed.tsv"
+cat "$HOME/.antseed/hermes-before-antseed.tsv"
 
-# Pin auxiliary calls to a chat_completions model so non-streaming
-# requests (title generation, compression) don't break against
-# openai-responses peers.
-auxiliary:
-  title_generation:
-    provider: antseed
-    model: minimax-m2.7
-  compression:
-    provider: antseed
-    model: minimax-m2.7`,
+hermes config set model.provider antseed
+hermes config set model.default kimi-k3
+hermes config set model.base_url ""
+hermes config set model.api_mode chat_completions
+hermes config set auxiliary.title_generation.provider antseed
+hermes config set auxiliary.title_generation.model minimax-m2.7
+hermes config set auxiliary.compression.provider antseed
+hermes config set auxiliary.compression.model minimax-m2.7
+
+hermes -z "Reply with exactly: default-ok"`,
+        note:
+          'Makes Antseed the default. If it does not print `default-ok`, put all 8 settings back with the next block.',
+      },
+      {
+        kind: 'code',
+        language: 'bash',
+        snippet: String.raw`# Only if default-ok failed: restore the saved settings
+while IFS=$'\t' read -r state k v; do
+  if [ "$state" = set ]; then hermes config set "$k" "$v" </dev/null; else hermes config unset "$k" </dev/null 2>/dev/null || true; fi
+done < "$HOME/.antseed/hermes-before-antseed.tsv"
+hermes -z "Reply with exactly: restored-ok"`,
+        note:
+          'Puts back each setting exactly as it was, including ones that were not set before. It must print `restored-ok`. If it does not, send `/snapshot restore <id>` in chat (the id from the backup), then `/restart`.',
+      },
+      {
+        kind: 'gui',
+        instructions:
+          'Remote Hermes (buyer on another computer): in the AI VPN desktop app open Agents → Define your internet-accessible Antseed endpoint and start the public endpoint. Use the displayed `/v1` URL instead of `http://127.0.0.1:8377/v1` and the generated `antseed_...` key instead of `antseed-p2p`, in both the model test and the config commands. Never expose port 8377 directly.',
       },
     ],
     modelHints: {
-      suggested: ['deepseek-v4-flash', 'kimi-k2.6', 'minimax-m2.7', 'gpt-oss-120b'],
+      suggested: ['kimi-k3', 'glm-5.1', 'deepseek-v4-pro', 'minimax-m2.7', 'deepseek-v4-flash'],
       note:
-        'The special `antseed` id follows the current AI VPN model picker. Current Hermes expects `providers.<name>.models` as a mapping, though it still migrates older lists. A local connection accepts any non-empty placeholder `api_key`; a public endpoint requires the generated `antseed_...` key from AI VPN → Agents.',
+        'Use a concrete model id that passed the test above. Do not use the id `antseed` unless you run the AI VPN desktop app and have picked a model there: on a CLI-only buyer it fails with `no_default_route`.',
     },
     test: [
       {
-        label: 'Confirm the proxy advertises the same ids your config references',
-        command: 'curl -s "$ANTSEED_BASE_URL/models" -H "Authorization: Bearer $ANTSEED_API_KEY" | jq \'.data[].id\'',
-        outputLabel: 'Example response',
-        output: `"deepseek-v4-flash"
-"glm-5"
-"gpt-oss-120b"
-"kimi-k2.6"
-"minimax-m2.7"`,
-      },
-      {
-        label: 'Restart Hermes to pick up the new provider',
-        command: 'sudo systemctl restart hermes',
-        note: 'Or whatever supervisor you use. Then check the journal: `sudo journalctl -u hermes --no-pager -n 30`.',
-      },
-      {
-        label: 'After the first request, confirm a channel opened and is being metered',
-        command: 'antseed buyer status\nantseed buyer metering',
+        label: 'Reload Hermes: send /restart in your Hermes chat',
+        command: '/restart',
+        language: 'text',
         note:
-          '`status` shows `Active channels: 1` once the first request settles (~5–15s on Base - one on-chain tx to open the channel). `metering` shows the per-peer token + USDC totals for each channel. To poll: `watch -n 1 antseed buyer metering`.',
+          'The running gateway only picks up the new model and the `ANTSEED_API_KEY` it reads from `.env` after a restart. `/restart` lets the current reply finish first. From a terminal instead: `hermes gateway restart`. Terminal-only use needs nothing: the next `hermes` session reads the new config.',
+      },
+      {
+        label: 'Confirm requests are flowing and being paid',
+        command: 'antseed buyer metering\nantseed buyer balance',
+        note:
+          'After the first request a payment channel opens (~5–15s on Base) and `metering` shows per-peer tokens and USDC. `balance` shows Available vs Reserved (funds held in open channels come back when they close).',
       },
     ],
     troubleshooting: [
       {
-        problem: '`HTTP 400: Stream must be set to true` from auxiliary calls',
-        fix:
-          'You\'re routing through a peer that serves the model via `openai-responses` (which requires streaming), but Hermes\' auxiliaries are non-streaming. Pin the `auxiliary.*` slots to a `chat_completions` model (see the config block above). Confirm a model\'s protocol with `antseed network peer <peerId>` - look for `protocols: openai-chat-completions` vs `openai-responses`.',
+        problem: '`no_default_route`',
+        fix: 'The model id `antseed` routes to the model picked in the AI VPN desktop app, and none is picked. Use a concrete id from the model test.',
       },
       {
-        problem: 'Hermes loads the provider but every call returns `no_peer_pinned`',
-        fix:
-          'This error only occurs on buyer proxies older than this release, or when a request carries no model at all. Upgrade the CLI (`npm install -g @antseed/cli`) and make sure `model.default` is set - a request that names a model auto-selects a peer. Pin a peer (`antseed buyer connection set --peer <peerId>` or `x-antseed-pin-peer` per request) only to force a specific seller.',
+        problem: '`model_not_found … No policy-allowed peer currently serves model`',
+        fix: 'No seller that meets your trust and price policy serves that model right now. Run the model test again and pick another OK model.',
+      },
+      {
+        problem: '`HTTP 400: Stream must be set to true`',
+        fix: 'The model is served only over the streaming Responses protocol, and a non-streaming Hermes call hit it. Use main and helper models that passed the non-streaming test.',
+      },
+      {
+        problem: '`402` / `insufficient_deposits`',
+        fix: 'Not enough Available balance. `antseed buyer balance` shows Available vs Reserved; add funds with `antseed buyer deposit` (USDC on Base) or by card in the AI VPN desktop app.',
+      },
+      {
+        problem: '`Unknown provider \'antseed\'`',
+        fix: 'The provider block is missing or misspelled. Check `hermes config get providers.antseed` and rerun the `hermes config set providers.antseed.*` commands.',
+      },
+      {
+        problem: 'Hermes still answers with the old model',
+        fix: 'The gateway has not reloaded. Send `/restart` in your Hermes chat or run `hermes gateway restart`.',
+      },
+      {
+        problem: 'A model id with a dot ends up as nested keys in `config.yaml`',
+        fix: '`hermes config set` splits key paths on dots, so never put a model id in a key path (`providers.antseed.models.kimi-k2.6…`). The `models:` mapping is optional; model ids are fine as values (`hermes config set model.default kimi-k2.6`).',
       },
       {
         problem: 'Hermes runs on a remote host and can\'t reach `127.0.0.1:8377`',
-        fix:
-          'Open AI VPN → Agents, expand “Define your internet-accessible Antseed endpoint,” and start ngrok or Cloudflare. Put the displayed `/v1` URL in `ANTSEED_BASE_URL` and the generated key in `ANTSEED_API_KEY`; Hermes sends `api_key` as a bearer token. Do not expose port 8377 directly.',
-      },
-      {
-        problem: 'Want to swap the routed model without restarting Antseed',
-        fix:
-          'Edit `model.default` (and `models:` if needed) in `config.yaml`, then `sudo systemctl restart hermes`. The proxy auto-selects a peer serving the new model; the buyer proxy stays up; no contract calls.',
+        fix: 'Use the AI VPN public endpoint (see the remote note in Configure). Do not expose port 8377 directly.',
       },
     ],
     links: [
       { label: 'Hermes Agent (Nous Research)', href: 'https://github.com/NousResearch/hermes-agent' },
       { label: 'Hermes AI-provider docs', href: 'https://hermes-agent.nousresearch.com/docs/integrations/providers' },
       {
-        label: 'Antseed skill: hermes-antseed (full walkthrough including systemd, remote hosts, funding)',
+        label: 'Antseed skill: hermes-antseed (the steps above, written for your Hermes agent to follow)',
         href: 'https://github.com/AntSeed/antseed/tree/main/skills/hermes-antseed',
       },
       { label: 'Antseed Agents guide', href: '/docs/agents' },
       { label: 'Antseed Public HTTPS Tunnels guide', href: '/docs/tunnels' },
     ],
+    agentSkill: 'hermes skills install AntSeed/antseed/skills/hermes-antseed',
     agentSummary:
-      'Set ANTSEED_BASE_URL and ANTSEED_API_KEY to the local AI VPN values or the public URL/key from AI VPN → Agents. In ~/.hermes/config.yaml add providers.antseed with transport=chat_completions, set model.provider and model.default to antseed, and keep models as a mapping containing the `antseed` AI VPN alias.',
+      'Install the hermes-antseed skill and follow it. In short: `hermes backup --quick`; confirm the buyer answers at http://127.0.0.1:8377/v1 and `antseed buyer balance` shows Available > 0 (else stop and ask the user to fund it); test models with a real non-streaming chat completion; add the provider with `hermes config set providers.antseed.{name,base_url,key_env,api_mode,default_model}` plus `hermes config set ANTSEED_API_KEY antseed-p2p`; verify with `hermes -z ... --provider antseed -m <model>`; only then set `model.provider antseed` and `model.default <model>`; never paste YAML, never use model id `antseed` on a CLI-only buyer, never restart your own gateway: ask the user to send /restart.',
   },
 
   /* ---------------- (Additional frameworks) ---------------- */
