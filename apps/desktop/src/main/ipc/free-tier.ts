@@ -1,5 +1,6 @@
+import { realpath } from 'node:fs/promises';
 import { ipcMain } from 'electron';
-import { acceptFreeTierDelegationCode, withFreeTierDelegation, type FreeTierDelegation } from '@antseed/node';
+import { acceptFreeTierDelegationCode, withFileLock, withFreeTierDelegation, type FreeTierDelegation } from '@antseed/node';
 import { ensureSecureIdentity, getSecureIdentity } from '../identity.js';
 import { ACTIVE_CONFIG_PATH } from '../runtime/active-config.js';
 import { mergeConfig, readConfig } from '../runtime/config-io.js';
@@ -33,13 +34,14 @@ function sharingFor(buyer: string, delegations: readonly FreeTierDelegation[]): 
   };
 }
 
-let pendingMutation: Promise<unknown> = Promise.resolve();
-
-/** Run each read-modify-write of the saved delegations after the previous one finishes. */
-function serialized<T>(mutation: () => Promise<T>): Promise<T> {
-  const run = pendingMutation.then(mutation, mutation);
-  pendingMutation = run.catch(() => undefined);
-  return run;
+/**
+ * Run each read-modify-write of the saved delegations while holding the
+ * config's lock file, which the CLI, gateway and payments page also take, so
+ * no edit from another process is lost.
+ */
+async function serialized<T>(mutation: () => Promise<T>): Promise<T> {
+  const target = await realpath(ACTIVE_CONFIG_PATH).catch(() => ACTIVE_CONFIG_PATH);
+  return withFileLock(target, mutation);
 }
 
 /**
