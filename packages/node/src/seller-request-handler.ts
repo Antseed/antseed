@@ -103,6 +103,8 @@ export interface SellerRequestHandlerDeps {
   reserveEstimateOverdraftUsdc?: bigint;
   /** Persistent buyer ownership and pending charges for stateful video jobs. Video follow-ups fail closed without it. */
   resourceOwnershipStore?: ResourceOwnershipStore | null;
+  /** Buyers the seller refuses to serve (403 `buyer_blocked`); the free `/v1/models` listing stays open. */
+  isBuyerBlocked?: (buyerPeerId: string) => boolean;
   emit: (event: string, ...args: unknown[]) => boolean;
 }
 
@@ -181,6 +183,13 @@ export class SellerRequestHandler {
       if (request.method === 'GET' && (pathOnly === '/v1/models' || pathOnly.startsWith('/v1/models/'))) {
         const modelsResponse = this._handleModelsRequest(request);
         mux.sendProxyResponse(modelsResponse);
+        return;
+      }
+
+      if (this._deps.isBuyerBlocked?.(buyerPeerId)) {
+        debugLog(`[SellerHandler] Refusing blocked buyer ${buyerPeerId.slice(0, 12)}... (reqId=${request.requestId.slice(0, 8)})`);
+        this._deps.emit('request:blocked', { buyerPeerId, requestId: request.requestId, path: pathOnly });
+        this._sendJsonError(mux, request.requestId, 403, 'buyer_blocked', 'This seller does not serve your requests.');
         return;
       }
 
