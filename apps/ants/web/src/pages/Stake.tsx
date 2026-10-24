@@ -14,7 +14,7 @@ import { epochStartAt, formatAnts, formatDuration, formatInt, formatUsdcCompact,
 import { useNow } from '../hooks';
 import { host } from '../host';
 import { parseRoute } from '../router';
-import { linkedPoolId } from '../pool-link';
+import { linkedPoolId, poolToOpen } from '../pool-link';
 import type { PoolDetail } from '../api';
 
 export function StakePage() {
@@ -55,11 +55,20 @@ export function StakePage() {
   if (listedPool && pools.data) lastOpen.current = { pool: listedPool, view: pools.data };
   const open = openPoolId !== null && lastOpen.current?.pool.agentId === openPoolId ? lastOpen.current : null;
   // `stake?pool=<agentId>` (from a seller's free-tier limit in the desktop app or gateway) opens that seller's pool once.
+  // Read reactively: the page stays mounted when only the query changes.
+  const [linkedAgentId, setLinkedAgentId] = useState<number | null>(null);
+  useEffect(() => {
+    const read = () => setLinkedAgentId(linkedPoolId(parseRoute(host().currentPath()).query));
+    read();
+    return host().subscribe(read);
+  }, []);
   const openedLink = useRef<number | null>(null);
   useEffect(() => {
-    const agentId = linkedPoolId(parseRoute(host().currentPath()).query);
-    if (agentId === null || openedLink.current === agentId || !pools.data) return;
-    openedLink.current = agentId;
+    if (!pools.data) return;
+    const { open: agentId, lastOpened } = poolToOpen(linkedAgentId, openedLink.current);
+    openedLink.current = lastOpened;
+    if (agentId === null) return;
+    setLinkError(null);
     if (sortedPools.some((p) => p.agentId === agentId)) {
       setOpenPoolId(agentId);
       return;
@@ -68,7 +77,7 @@ export function StakePage() {
       setLinkedPool(pool);
       setOpenPoolId(agentId);
     }, (err: unknown) => setLinkError(`Could not open seller ${agentId}: ${err instanceof Error ? err.message : String(err)}`));
-  }, [pools.data, sortedPools]);
+  }, [linkedAgentId, pools.data, sortedPools]);
   const openSeller = (pool: PoolView) => {
     poolTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setOpenPoolId(pool.agentId);

@@ -465,6 +465,18 @@ export function classifyChatStreamFailure({
   };
 }
 
+/**
+ * A free-tier refusal never clears on retry, so cancel the agent's automatic
+ * backoff and show the limit notice at once. Call from `auto_retry_start`:
+ * the agent arms its abort signal right after emitting it, so the cancel runs
+ * on the next microtask. Returns whether the retry was cancelled.
+ */
+export function cancelFreeTierRetry(reason: ChatStreamStopReason, session: { abortRetry(): void }): boolean {
+  if (!reason.freeTier) return false;
+  queueMicrotask(() => session.abortRetry());
+  return true;
+}
+
 export function formatChatStreamStopForLog(reason: ChatStreamStopReason): string {
   const parts: string[] = [reason.kind];
   if (reason.statusCode) {

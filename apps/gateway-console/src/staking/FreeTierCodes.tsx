@@ -52,10 +52,11 @@ export function FreeTierCodesPanel({ workspaceId }: { workspaceId: string }) {
       description={<>On each seller with a staked free tier, stake in that seller's pool raises this workspace's free limit there, including stake shared with it.
         {sharing.data ? <> Stakers create a code for this workspace's buyer address <Mono title={sharing.data.buyer}>{shortId(sharing.data.buyer)}</Mono> <CopyButton iconOnly value={sharing.data.buyer} label="Copy buyer address" /></> : null}</>}
       actions={<Button size="sm" variant="outline" onClick={() => setAdding(true)}>Add code</Button>}>
+      {remove.error ? <p className="gc-warn">Could not remove {shortId(remove.variables ?? '')}: {errorMessage(remove.error)} Try again.</p> : null}
       <QueryView query={sharing}>
         {(loaded) => (
           <DataTable<FreeTierStaker> label="Stakers" rows={loaded.stakers} rowKey={(row) => row.staker}
-            actions={(row) => [{ label: 'Remove', onSelect: () => remove.mutate(row.staker) }]}
+            actions={(row) => [{ label: 'Remove', disabled: remove.isPending, onSelect: () => remove.mutate(row.staker) }]}
             empty={<EmptyState icon={<Icon.rewards size={18} />} title="No shared stake yet" body="Ask a staker for a free-tier code for this workspace's buyer address, then add it here." />}
             columns={[
               { key: 'staker', header: 'Staker', render: (row) => <Mono title={row.staker}>{shortId(row.staker)}</Mono> },
