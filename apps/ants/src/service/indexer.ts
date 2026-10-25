@@ -24,6 +24,8 @@ export interface IndexedStakingEpoch {
   totalSellerPoints: string;
   totalWeightedPoolPoints: string;
   totalBuyerPoints: string;
+  /** Buyer points weighted by pool power (USDC 1e6 × wei ANTS·epochs); absent when the explorer does not serve it. */
+  totalWeightedBuyerPoints?: string;
   volumeUsdc: string;
   requests: string;
   stakerBudget: string;
@@ -132,7 +134,11 @@ export interface Indexer {
   sellerEpochs(epochs?: number): Promise<Map<string, IndexedSellerEpoch[]>>;
   participant(address: string, epochs?: number): Promise<IndexedParticipant>;
   epochMetrics(): Promise<IndexedEpochMetric[]>;
+  /** Settled volume per UTC day, newest first (`dayStart` in seconds). */
+  dailyVolume?(days?: number): Promise<IndexedDailyVolume[]>;
 }
+
+export interface IndexedDailyVolume { dayStart: number; volumeUsdc: string; }
 
 export class IndexerError extends Error {
   constructor(message: string, readonly url: string, readonly status?: number) {
@@ -167,6 +173,7 @@ function toStakingEpoch(row: Record<string, unknown> | null): IndexedStakingEpoc
     totalSellerPoints: str(row['totalSellerPoints']),
     totalWeightedPoolPoints: str(row['totalWeightedPoolPoints']),
     totalBuyerPoints: str(row['totalBuyerPoints']),
+    ...(row['totalWeightedBuyerPoints'] != null ? { totalWeightedBuyerPoints: str(row['totalWeightedBuyerPoints']) } : {}),
     volumeUsdc: str(row['volumeUsdc']),
     requests: str(row['requests']),
     stakerBudget: str(row['stakerBudget']),
@@ -381,6 +388,25 @@ export class AntscanIndexer implements Indexer {
   async participant(address: string, epochs = 8): Promise<IndexedParticipant> {
     const raw = await this.get<{ address: unknown; currentEpoch: unknown; seller: Record<string, unknown>[]; buyer: Record<string, unknown>[] }>(`/api/staking/participants/${address.toLowerCase()}?epochs=${epochs}`);
     return { address: address.toLowerCase(), currentEpoch: num(raw.currentEpoch), seller: (raw.seller ?? []).map(toSellerEpoch), buyer: (raw.buyer ?? []).map(toBuyerEpoch) };
+  }
+
+  async dailyVolume(days = 15): Promise<IndexedDailyVolume[]> {
+    const query = `{ dailyMetrics(orderBy: "dayStart", orderDirection: "desc", limit: ${Math.max(1, Math.floor(days))}) { items { dayStart volumeUsdc } } }`;
+    const url = `${this.baseUrl}/graphql`;
+    let response: Response;
+    try {
+      response = await this.fetchImpl(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', accept: 'application/json' },
+        body: JSON.stringify({ query }),
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      });
+    } catch (error) {
+      throw new IndexerError(`Explorer unreachable: ${(error as Error).message}`, url);
+    }
+    if (!response.ok) throw new IndexerError(`Explorer responded with HTTP ${response.status}`, url, response.status);
+    const body = await response.json() as { data?: { dailyMetrics?: { items?: Record<string, unknown>[] } } };
+    return (body.data?.dailyMetrics?.items ?? []).map((row) => ({ dayStart: num(row['dayStart']), volumeUsdc: str(row['volumeUsdc']) }));
   }
 
   async epochMetrics(): Promise<IndexedEpochMetric[]> {

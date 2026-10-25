@@ -13,7 +13,8 @@ import { chooseBestVprRoute } from '../routing/select';
 import { shortPeerId } from '../routing/tools';
 import { serviceModelKind, videoEntryStartingPrice } from './model-capabilities';
 
-export type VprCatalogSort = 'Popular' | 'Price' | 'Savings' | 'Name';
+/** 'Most ANTS' orders by the best seller boost; display only, auto routing ignores it. */
+export type VprCatalogSort = 'Popular' | 'Price' | 'Savings' | 'Most ANTS' | 'Name';
 
 export type VprCatalogFilterOptions = {
   search?: string;
@@ -121,6 +122,10 @@ export function sortVprCatalog(
           || compareByName(a, b);
       case 'Savings':
         return compareNullableDescending(a.expectedSavingsPct, b.expectedSavingsPct)
+          || compareByName(a, b);
+      case 'Most ANTS':
+        return compareNullableDescending(a.maxBoost ?? null, b.maxBoost ?? null)
+          || b.peerCount - a.peerCount
           || compareByName(a, b);
       case 'Name':
         return compareByName(a, b);

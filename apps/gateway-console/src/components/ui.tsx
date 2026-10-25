@@ -35,7 +35,7 @@ export function Mono({ children, title }: { children: ReactNode; title?: string 
 }
 
 /** A label over a value, for balance and status rows. */
-export function Figure({ label, value, strong }: { label: string; value: ReactNode; strong?: boolean }) {
+export function Figure({ label, value, strong }: { label: ReactNode; value: ReactNode; strong?: boolean }) {
   return (
     <div className="gc-figure">
       <div className="gc-figure__label">{label}</div>

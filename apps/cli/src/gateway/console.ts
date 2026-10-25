@@ -13,6 +13,7 @@ import { createConsoleApi, type ConsoleRegistrar } from './console-api/server.js
 import { recoveryRouteRegistrar } from './console-recovery.js'
 import { chatRouteRegistrar } from './chat/routes.js'
 import { removeCredential, requireMemberRecord } from './services/members.js'
+import { antscanPeerBoosts } from './services/peer-boosts.js'
 import type { GatewayConsoleContext, GatewayConsoleHandle } from './runtime.js'
 import type { ApiKeyRecord, MemberRecord } from './store.js'
 import { CONSOLE_LOCATION_SETTING, type ConsoleLocation } from './console-location.js'
@@ -91,6 +92,7 @@ export function gatewayConsole(options: GatewayConsoleOptions): (context: Gatewa
       x402Enabled: context.x402Enabled,
       trustCloudflareHeaders: options.trustCloudflareHeaders === true,
       ...(options.updates ? { updates: options.updates } : {}),
+      peerBoosts: antscanPeerBoosts(options.configPath),
     }
     const deps: ConsoleDeps = { ...base, listenHost: context.listenHost }
     const auth = createConsoleAuth(base, {

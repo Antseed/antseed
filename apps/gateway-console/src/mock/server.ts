@@ -856,7 +856,7 @@ const routes: Array<[string, string, Handler]> = [
     if (ch) { ch.status = 'settled'; ch.canCooperativeClose = false; ch.settled = ch.spent; ch.reserved = '0.000000' }
     return { ok: true }
   }],
-  ['GET', '/workspaces/:id/rewards', ({ params }) => { const { workspace, member } = requireWorkspace(params['id']!, 'admin'); return { address: workspace.walletAddress, pendingAnts: '44.75', claimedAnts: '0', epochs: [{ epoch: 12, pendingAnts: '0', claimed: true }, { epoch: 13, pendingAnts: '21.25', claimed: false }, { epoch: 14, pendingAnts: '20', claimed: false }], legacy: { pendingAnts: '3.5', contract: fakeAddress(105), epochs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] }, operator: currentOperator(workspace, member) } }],
+  ['GET', '/workspaces/:id/rewards', ({ params }) => { const { workspace, member } = requireWorkspace(params['id']!, 'admin'); return { address: workspace.walletAddress, pendingAnts: '44.75', claimedAnts: '0', epochs: [{ epoch: 12, pendingAnts: '0', claimed: true }, { epoch: 13, pendingAnts: '21.25', claimed: false }, { epoch: 14, pendingAnts: '20', claimed: false }], legacy: { pendingAnts: '3.5', contract: fakeAddress(105), epochs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] }, operator: currentOperator(workspace, member), points: { epoch: 15, endsAt: Date.now() + 2 * DAY_MS + 5 * 3_600_000, points: 1240.5, estimatedAnts: 77.53, capped: false, potAnts: 5_000, totalPoints: 80_000, startsAt: Date.now() - 4 * DAY_MS - 19 * 3_600_000, busyPointsPerDay: 24_000, history: [{ epoch: 15, points: 1240.5 }, { epoch: 14, points: 980 }, { epoch: 13, points: 1105.25 }] } } }],
   ['GET', '/chain', () => db.chain],
 
   ['GET', '/peers', () => db.peers],

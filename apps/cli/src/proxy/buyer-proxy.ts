@@ -2963,6 +2963,7 @@ export class BuyerProxy {
         trust: p.trust ?? null,
         onChainPoolStakeAnts: p.onChainPoolStakeAnts ?? null,
         onChainPoolPowerShareBps: p.onChainPoolPowerShareBps ?? null,
+        sellerContract: p.metadata?.sellerContract ?? null,
         onChainUsageEpoch: p.onChainUsageEpoch ?? null,
         onChainUsageShareBps: p.onChainUsageShareBps ?? null,
         onChainUsageLastEpochUsdcMicros: p.onChainUsageLastEpochUsdcMicros ?? null,

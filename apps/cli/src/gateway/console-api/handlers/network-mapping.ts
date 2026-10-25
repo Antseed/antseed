@@ -1,6 +1,7 @@
 /** Pure mapping from the buyer's peer, health and verification views to the console's `Peer`. */
 import { collectPeerVerificationLinks } from '@antseed/node/discovery'
 import { parseVerifierCapabilities } from '@antseed/node/verifier-capabilities'
+import type { BoostBySeller } from '@antseed/ants'
 import { modelTagsFor } from '@antseed/node/model-metadata'
 import { TEE_VERIFIER_ID, teeScope, type TeeClaim, type TeeScope } from '@antseed/node/tee-status'
 import type { NetworkModel, NetworkModelCapability, NetworkModelOffer, NetworkModelType, NetworkRouter, NetworkRouterOption, Peer, RoutePreview } from '../types.js'
@@ -95,9 +96,19 @@ export function teeVerifiedPeers(snapshot: unknown, now: number): Set<string> {
 }
 
 /**
+ * A peer's boost: its pool is bound to the seller contract it advertises, else
+ * to its own address (as `SellerAddressResolver` pays). No pool reads as 0×.
+ */
+function peerBoost(boosts: BoostBySeller | null, peerId: string, sellerContract: string | null): number | null {
+  if (!boosts) return null
+  const contract = sellerContract ? `0x${peerKey(sellerContract)}` : null
+  return (contract ? boosts.get(contract) : undefined)?.boost ?? boosts.get(`0x${peerKey(peerId)}`)?.boost ?? 0
+}
+
+/**
  * Merges the buyer's `/_antseed/peers`, `/_antseed/peer-health` and (when the
  * buyer lets the gateway read it) `/_antseed/verification` with the gateway's
- * own 24 h request stats.
+ * own 24 h request stats and, when Antscan answered, each seller's boost.
  */
 export function mapPeers(input: {
   peers: unknown
@@ -105,6 +116,7 @@ export function mapPeers(input: {
   verification: unknown | null
   stats: readonly PeerStat[]
   now: number
+  boosts?: BoostBySeller | null
 }): Peer[] {
   const health = new Map(rows(asRecord(input.health)['peers']).map((row) => [peerKey(String(row['peerId'] ?? '')), row]))
   const stats = new Map(input.stats.map((row) => [peerKey(row.peerId), row]))
@@ -136,6 +148,7 @@ export function mapPeers(input: {
       tee,
       teeScope: tee ? teeVerified?.get(key) ?? null : null,
       stakeAnts: stake === null ? null : String(stake),
+      boost: peerBoost(input.boosts ?? null, peerId, str(row['sellerContract'])),
       usageShareBps: num(row['onChainUsageShareBps']),
       washFlagged: row['onChainWashFlagged'] === true || trust['washFlagged'] === true,
       lastSeen: num(row['lastSeen']),

@@ -7,6 +7,7 @@ import type {
 import { CODING_ONLY_SUFFIX_RE, canonicalModelKey, displayModelLabel, sameCanonicalModel } from './model-identity';
 import { entryMatchText, selectRecommendedVprCatalog } from './recommended';
 import { serviceModelKind, videoRowStartingPrice } from './model-capabilities';
+import { isFreeRoute } from './seller-format';
 
 const VPR_MODEL_CATALOG_SEPARATOR = '\u0001';
 
@@ -91,6 +92,11 @@ function projectGroupToEntry(
     return best;
   }, null)?.row ?? representativeRows[0];
   const label = preferredGroupLabel(group.rows);
+  // Free usage earns no points, so only paid sellers count toward the best boost.
+  const knownBoosts = group.rows
+    .filter((row) => !isFreeRoute(row))
+    .map((row) => row.boost)
+    .filter((boost): boost is number => typeof boost === 'number');
 
   return {
     provider: representative.provider,
@@ -121,6 +127,7 @@ function projectGroupToEntry(
       totalRowPrice(row) === 0
       && (row.cachedInputUsdPerMillion === null || row.cachedInputUsdPerMillion <= 0)),
     bestPeerId: representative?.peerId ?? null,
+    maxBoost: knownBoosts.length > 0 ? Math.max(...knownBoosts) : null,
   };
 }
 

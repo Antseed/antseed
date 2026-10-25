@@ -173,6 +173,8 @@ export type VprModelCatalogEntry = {
    */
   hasEligibleFreeSeller: boolean;
   bestPeerId: string | null;
+  /** Highest Antseed Points boost among this model's sellers; null when no seller's boost is known. */
+  maxBoost?: number | null;
   /**
    * Reference/retail price for the equivalent model on the OpenRouter catalog,
    * in USD per million tokens. Used to calculate the discount shown on the
@@ -271,6 +273,8 @@ export type DiscoverRow = {
   agentId: number;
   /** ANTS actively staked in the seller's pool this epoch (whole ANTS). */
   poolStakeAnts: number;
+  /** Antseed Points per $1 spent with this seller; 0 earns nothing, null when Antscan is unreachable. */
+  boost?: number | null;
 
   // On-chain agent stats (AntseedChannels.getAgentStats)
   onChainActiveChannelCount: number;
