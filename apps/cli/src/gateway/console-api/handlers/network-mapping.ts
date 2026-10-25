@@ -1,9 +1,10 @@
 /** Pure mapping from the buyer's peer, health and verification views to the console's `Peer`. */
 import { collectPeerVerificationLinks } from '@antseed/node/discovery'
 import { parseVerifierCapabilities } from '@antseed/node/verifier-capabilities'
-import { parseFreeTierProgram } from '@antseed/node/free-tier-program'
+import { normalizeFreeTierProgram, parseFreeTierProgram, parseServiceFreeTierProgram } from '@antseed/node/free-tier-program'
 import { modelTagsFor } from '@antseed/node/model-metadata'
 import { TEE_VERIFIER_ID, teeScope, type TeeClaim, type TeeScope } from '@antseed/node/tee-status'
+import type { FreeTierProgramView } from '../free-tier-types.js'
 import type { NetworkModel, NetworkModelCapability, NetworkModelOffer, NetworkModelType, NetworkRouter, NetworkRouterOption, Peer, RoutePreview } from '../types.js'
 import { parseRouteSelection } from '../../../proxy/route-selection.js'
 
@@ -37,11 +38,18 @@ export interface PeerStat {
   tokensPerSecondP50?: number | null
 }
 
+function modelFreeTier(peer: Peer | undefined, service: string, free: boolean): FreeTierProgramView | null {
+  const entry = peer?.services.find((candidate) => candidate.service === service)
+  if (entry) return entry.freeTier ?? null
+  return free ? peer?.freeTier ?? null : null
+}
+
 /** One entry per advertised service, priced from the service's own entry or the provider default. */
 export function peerServices(row: Row): Peer['services'] {
   const pricing = asRecord(row['providerPricing'])
   const categories = asRecord(row['providerServiceCategories'])
   const protocols = asRecord(row['providerServiceApiProtocols'])
+  const capabilities = strings(row['capabilities'])
   const providers = new Set<string>([
     ...(Array.isArray(row['providers']) ? row['providers'].filter((p): p is string => typeof p === 'string') : []),
     ...Object.keys(pricing),
@@ -58,6 +66,8 @@ export function peerServices(row: Row): Peer['services'] {
       const price = { ...defaults, ...asRecord(priced[service]) }
       const tags = tagged[service]
       const apis = spoken[service]
+      const isFree = [price['inputUsdPerMillion'], price['outputUsdPerMillion'], price['cachedInputUsdPerMillion']]
+        .every((value) => (num(value) ?? 0) === 0)
       services.push({
         provider,
         service,
@@ -66,6 +76,8 @@ export function peerServices(row: Row): Peer['services'] {
         cachedInputUsdPerMillion: num(price['cachedInputUsdPerMillion']),
         categories: Array.isArray(tags) ? tags.filter((tag): tag is string => typeof tag === 'string') : [],
         ...(Array.isArray(apis) ? { apiProtocols: apis.filter((api): api is string => typeof api === 'string') } : {}),
+        // A priced service only has a free allowance of its own; the seller-wide program covers free services.
+        freeTier: isFree ? parseFreeTierProgram(capabilities, service) : parseServiceFreeTierProgram(capabilities, service),
       })
     }
   }
@@ -265,7 +277,10 @@ export function mapNetworkModels(body: unknown, peers: readonly Peer[]): Network
         // Free when every advertised price is zero, and at least one is advertised.
         free: (tokenPriced || minImage !== null) && (input ?? 0) === 0 && (output ?? 0) === 0 && (maxImage ?? 0) === 0,
         agentId: peer?.agentId ?? null,
-        freeTier: peer?.freeTier ?? null,
+        // The program this model is served under: its own, else the seller-wide
+        // one, which only covers free models. A priced model's own program is a free allowance.
+        freeTier: normalizeFreeTierProgram(offer['freeTier'])
+          ?? modelFreeTier(peer, str(offer['serviceId']) ?? id, (input ?? 0) === 0 && (output ?? 0) === 0),
         reputationScore: num(offer['effectiveReputationScore']) ?? num(offer['reputationScore']),
         trustScore: peer?.trustScore ?? num(offer['onChainReputationScore']),
         verified: peer?.verified ?? false,
@@ -295,7 +310,10 @@ export function mapNetworkModels(body: unknown, peers: readonly Peer[]): Network
       sellers: new Set(offers.map((offer) => peerKey(offer.peerId))).size,
       inputUsdPerMillion: range(offers.map((offer) => offer.inputUsdPerMillion)),
       outputUsdPerMillion: range(offers.map((offer) => offer.outputUsdPerMillion)),
-      free: offers.some((offer) => offer.free),
+      // Free to everyone: a stakers-only offer is free only to its seller's stakers.
+      free: offers.some((offer) => offer.free && !offer.freeTier?.base.stakersOnly),
+      freeForStakers: offers.some((offer) => offer.freeTier?.base.stakersOnly === true),
+      freeAllowance: offers.some((offer) => !offer.free && offer.freeTier !== null && !offer.freeTier.base.stakersOnly),
       teeSellers: offers.filter((offer) => offer.tee).length,
       fullTeeSellers: offers.filter((offer) => offer.teeScope === 'end-to-end').length,
       verifiedSellers: offers.filter((offer) => offer.verified).length,

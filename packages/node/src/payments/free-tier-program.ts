@@ -10,9 +10,22 @@
  * Sellers advertise the program in their signed peer metadata as capability
  * strings, so buyers and indexers can read it without a metadata version bump:
  *
- *   free-tier.v1.base[.a<perAddress>][.i<perIp>].w<windowMs>
- *   free-tier.v1.tier.p<minPower>.x<multiplier>      (x0 = unlimited)
+ *   free-tier.v1.base[.a<perAddress>][.i<perIp>].w<windowMs>[.s1][.t1]
+ *   free-tier.v1.tier.p<minPower>.x<multiplier>                   (x0 = unlimited)
+ *
+ * A service with its own program advertises the same strings scoped by
+ * `m<first 8 hex of keccak256(serviceId)>` after the version, e.g.
+ * `free-tier.v1.m1a2b3c4d.base.a10.w86400000.s1`. Services without one fall
+ * back to the unscoped, seller-wide program.
+ *
+ * `s1` marks a stakers-only program. `t1` on a scoped base means the program
+ * uses the seller-wide tiers, so it costs one capability string, not five.
+ *
+ * On a priced service, its own program is a free allowance: requests it covers
+ * are free, the rest are paid. The seller-wide program covers free services only.
  */
+import { id } from 'ethers';
+
 
 /** One staked tier. `minPower` is in ANTS-epochs (whole ANTS × epochs of lock remaining). */
 export interface FreeTierStakeTier {
@@ -25,6 +38,11 @@ export interface FreeTierBaseLimits {
   maxRequestsPerAddress: number | null;
   maxRequestsPerIp: number | null;
   windowMs: number;
+  /**
+   * Only buyers whose stake reaches a tier are served; the base limits are
+   * then just the unit the tier multipliers apply to.
+   */
+  stakersOnly?: boolean;
 }
 
 export interface FreeTierProgram {
@@ -45,13 +63,25 @@ export const DEFAULT_FREE_TIER_STAKE_TIERS: readonly FreeTierStakeTier[] = Objec
   { minPower: 200_000 * FREE_TIER_EPOCHS_PER_YEAR, multiplier: 'unlimited' },
 ]);
 
+/**
+ * Response header a seller sets, to `FREE_TIER_SERVED_COVERED`, on a request
+ * to a priced service that the service's free allowance covered: the buyer
+ * owes nothing for it. A buyer that ignores it pays the listed price.
+ */
+export const FREE_TIER_SERVED_HEADER = 'x-antseed-free-tier';
+export const FREE_TIER_SERVED_COVERED = 'covered';
+
 export const MAX_FREE_TIER_STAKE_TIERS = 4;
 export const MAX_FREE_TIER_MULTIPLIER = 10_000;
 
 const CAPABILITY_PREFIX = 'free-tier.v1.';
-const BASE_CAPABILITY_PREFIX = `${CAPABILITY_PREFIX}base`;
-const TIER_CAPABILITY_PREFIX = `${CAPABILITY_PREFIX}tier`;
 const ANTS_WEI = 10n ** 18n;
+const SCOPE_PATTERN = /^m[0-9a-f]{8}$/;
+
+/** Capability scope of a service's own program: `m` + the first 8 hex of keccak256(serviceId). */
+export function freeTierServiceScope(serviceId: string): string {
+  return `m${id(serviceId).slice(2, 10)}`;
+}
 
 /** Throws when `tiers` is not a valid program: increasing power, increasing multipliers, unlimited last. */
 export function validateFreeTierStakeTiers(tiers: readonly FreeTierStakeTier[], label = 'freeTier.stakeTiers'): void {
@@ -59,7 +89,8 @@ export function validateFreeTierStakeTiers(tiers: readonly FreeTierStakeTier[], 
     throw new Error(`${label} accepts at most ${MAX_FREE_TIER_STAKE_TIERS} tiers`);
   }
   let previousPower = 0;
-  let previousMultiplier = 1;
+  // A first tier may be 1x: on a stakers-only program it grants the base limits.
+  let previousMultiplier = 0;
   let sawUnlimited = false;
   tiers.forEach((tier, index) => {
     const at = `${label}[${index}]`;
@@ -79,7 +110,7 @@ export function validateFreeTierStakeTiers(tiers: readonly FreeTierStakeTier[], 
       || tier.multiplier <= previousMultiplier
       || tier.multiplier > MAX_FREE_TIER_MULTIPLIER
     ) {
-      throw new Error(`${at}.multiplier must be an integer above the previous tier (minimum 2, maximum ${MAX_FREE_TIER_MULTIPLIER}) or "unlimited"`);
+      throw new Error(`${at}.multiplier must be an integer above the previous tier (minimum 1, maximum ${MAX_FREE_TIER_MULTIPLIER}) or "unlimited"`);
     } else {
       previousMultiplier = tier.multiplier;
     }
@@ -105,33 +136,98 @@ export function powerToAntsEpochs(power: bigint): number {
   return whole > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(whole);
 }
 
-/** Capability strings advertising `program` in peer metadata. */
-export function encodeFreeTierCapabilities(program: FreeTierProgram): string[] {
+/**
+ * Capability strings advertising `program` in peer metadata: the seller-wide
+ * program, or `serviceId`'s own program when given.
+ */
+export function encodeFreeTierCapabilities(
+  program: FreeTierProgram,
+  serviceId?: string,
+  options: { sellerWideTiers?: readonly FreeTierStakeTier[] } = {},
+): string[] {
   const { base } = program;
+  const inheritTiers = serviceId !== undefined
+    && options.sellerWideTiers !== undefined
+    && program.stakeTiers.length > 0
+    && sameStakeTiers(program.stakeTiers, options.sellerWideTiers);
+  const prefix = serviceId === undefined ? CAPABILITY_PREFIX : `${CAPABILITY_PREFIX}${freeTierServiceScope(serviceId)}.`;
   const baseParts = [
-    BASE_CAPABILITY_PREFIX,
+    `${prefix}base`,
     ...(base.maxRequestsPerAddress !== null ? [`a${base.maxRequestsPerAddress}`] : []),
     ...(base.maxRequestsPerIp !== null ? [`i${base.maxRequestsPerIp}`] : []),
     `w${base.windowMs}`,
+    ...(base.stakersOnly ? ['s1'] : []),
+    ...(inheritTiers ? ['t1'] : []),
   ];
   return [
     baseParts.join('.'),
-    ...program.stakeTiers.map((tier) =>
-      `${TIER_CAPABILITY_PREFIX}.p${tier.minPower}.x${tier.multiplier === 'unlimited' ? 0 : tier.multiplier}`),
+    ...(inheritTiers ? [] : program.stakeTiers).map((tier) =>
+      `${prefix}tier.p${tier.minPower}.x${tier.multiplier === 'unlimited' ? 0 : tier.multiplier}`),
   ];
 }
 
 /**
- * Read a seller's free-tier program from its advertised capabilities.
- * Returns null when the seller advertises none or the strings are malformed.
+ * Read a seller's free-tier program from its advertised capabilities: the
+ * program `serviceId` is served under when given (its own, else the
+ * seller-wide one), otherwise the seller-wide program. Returns null when there
+ * is none or its strings are malformed.
  */
-export function parseFreeTierProgram(capabilities: readonly string[] | undefined): FreeTierProgram | null {
+export function parseFreeTierProgram(
+  capabilities: readonly string[] | undefined,
+  serviceId?: string,
+): FreeTierProgram | null {
   if (!capabilities) return null;
+  if (serviceId !== undefined) {
+    const scope = freeTierServiceScope(serviceId);
+    if (capabilities.some((capability) => capability.startsWith(`${CAPABILITY_PREFIX}${scope}.`))) {
+      return parseScopedFreeTierProgram(capabilities, scope);
+    }
+  }
+  return parseScopedFreeTierProgram(capabilities, null);
+}
+
+/**
+ * The program a buyer of `serviceId` is served under: on a free service its
+ * own or the seller-wide one, on a priced service only its own free allowance.
+ */
+export function freeTierProgramForService(
+  capabilities: readonly string[] | undefined,
+  serviceId: string,
+  priced: boolean,
+): FreeTierProgram | null {
+  return priced ? parseServiceFreeTierProgram(capabilities, serviceId) : parseFreeTierProgram(capabilities, serviceId);
+}
+
+/**
+ * Only `serviceId`'s own program, never the seller-wide fallback. A priced
+ * service's free allowance is always its own program, so this is the one to
+ * read for a paid service.
+ */
+export function parseServiceFreeTierProgram(
+  capabilities: readonly string[] | undefined,
+  serviceId: string,
+): FreeTierProgram | null {
+  if (!capabilities) return null;
+  const scope = freeTierServiceScope(serviceId);
+  if (!capabilities.some((capability) => capability.startsWith(`${CAPABILITY_PREFIX}${scope}.`))) return null;
+  return parseScopedFreeTierProgram(capabilities, scope);
+}
+
+function sameStakeTiers(a: readonly FreeTierStakeTier[], b: readonly FreeTierStakeTier[]): boolean {
+  return a.length === b.length && a.every((tier, index) =>
+    tier.minPower === b[index]!.minPower && tier.multiplier === b[index]!.multiplier);
+}
+
+function parseScopedFreeTierProgram(capabilities: readonly string[], scope: string | null): FreeTierProgram | null {
   let base: FreeTierBaseLimits | null = null;
+  let inheritTiers = false;
   const stakeTiers: FreeTierStakeTier[] = [];
   for (const capability of capabilities) {
     if (!capability.startsWith(CAPABILITY_PREFIX)) continue;
-    const [, , kind, ...fields] = capability.split('.');
+    const parts = capability.split('.');
+    const capabilityScope = SCOPE_PATTERN.test(parts[2] ?? '') ? parts[2]! : null;
+    if (capabilityScope !== scope) continue;
+    const [kind, ...fields] = parts.slice(capabilityScope === null ? 2 : 3);
     const values = new Map<string, number>();
     for (const field of fields) {
       const match = /^([a-z])(\d{1,16})$/.exec(field);
@@ -147,7 +243,9 @@ export function parseFreeTierProgram(capabilities: readonly string[] | undefined
         maxRequestsPerAddress: values.get('a') ?? null,
         maxRequestsPerIp: values.get('i') ?? null,
         windowMs,
+        ...(values.get('s') === 1 ? { stakersOnly: true } : {}),
       };
+      inheritTiers = scope !== null && values.get('t') === 1;
     } else if (kind === 'tier') {
       const minPower = values.get('p');
       const multiplier = values.get('x');
@@ -156,6 +254,11 @@ export function parseFreeTierProgram(capabilities: readonly string[] | undefined
     }
   }
   if (!base) return null;
+  if (inheritTiers) {
+    const sellerWide = parseScopedFreeTierProgram(capabilities, null);
+    if (!sellerWide) return null;
+    stakeTiers.push(...sellerWide.stakeTiers);
+  }
   stakeTiers.sort((a, b) => a.minPower - b.minPower);
   try {
     validateFreeTierStakeTiers(stakeTiers);
@@ -183,7 +286,7 @@ export function normalizeFreeTierProgram(value: unknown): FreeTierProgram | null
   const tiers = stakeTiers.map((tier) => tier as Partial<FreeTierStakeTier>);
   if (tiers.some((tier) => !tier || typeof tier.minPower !== 'number' || (tier.multiplier !== 'unlimited' && typeof tier.multiplier !== 'number'))) return null;
   return parseFreeTierProgram(encodeFreeTierCapabilities({
-    base: { maxRequestsPerAddress, maxRequestsPerIp, windowMs },
+    base: { maxRequestsPerAddress, maxRequestsPerIp, windowMs, ...(limits.stakersOnly === true ? { stakersOnly: true } : {}) },
     stakeTiers: tiers as FreeTierStakeTier[],
   }));
 }

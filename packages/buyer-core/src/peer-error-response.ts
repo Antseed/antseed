@@ -50,13 +50,18 @@ export interface FreeTierLimitStakeTier {
  */
 export interface FreeTierLimit {
   peerId: string | null;
-  limitedBy: 'address' | 'ip' | 'stake';
+  /** `stake_required`: the model is free only for buyers staked on this seller. */
+  limitedBy: 'address' | 'ip' | 'stake' | 'stake_required';
   limit: number | null;
   windowMs: number | null;
   retryAfterSeconds: number | null;
   stakeTiers: FreeTierLimitStakeTier[];
   /** The buyer's counted power in this seller's pool, in ANTS-epochs. */
   stakePower: number;
+  /** Requests per window that tier multipliers apply to; null from sellers that don't send it. */
+  baseLimit: number | null;
+  /** The model is served only to buyers whose stake reaches a tier. */
+  stakersOnly: boolean;
 }
 
 const EPOCHS_PER_YEAR = 52;
@@ -82,7 +87,9 @@ export function readFreeTierLimit(raw: Record<string, unknown> | null, peerId: s
   // A body the buyer already rewrote carries the limit under `free_tier`.
   const nested = raw.free_tier;
   const body = nested && typeof nested === 'object' && !Array.isArray(nested) ? nested as Record<string, unknown> : raw;
-  const limitedBy = body.limitedBy === 'ip' || body.limitedBy === 'stake' ? body.limitedBy : 'address';
+  const limitedBy = body.limitedBy === 'ip' || body.limitedBy === 'stake' || body.limitedBy === 'stake_required'
+    ? body.limitedBy
+    : 'address';
   return {
     peerId: peerId ?? (typeof body.peerId === 'string' ? body.peerId : null),
     limitedBy,
@@ -91,6 +98,8 @@ export function readFreeTierLimit(raw: Record<string, unknown> | null, peerId: s
     retryAfterSeconds: finiteNonNegative(body.retryAfterSeconds),
     stakeTiers: readStakeTiers(body.stakeTiers),
     stakePower: finiteNonNegative(body.stakePower) ?? 0,
+    baseLimit: finiteNonNegative(body.baseLimit),
+    stakersOnly: body.stakersOnly === true || limitedBy === 'stake_required',
   };
 }
 
@@ -116,8 +125,13 @@ function formatWindow(windowMs: number): string {
   return `per ${Math.max(1, Math.round(windowMs / 60_000))} min`;
 }
 
-function formatMultiplier(tier: FreeTierLimitStakeTier): string {
-  return tier.multiplier === 'unlimited' ? 'unlimited free use' : `${tier.multiplier}× the free limit`;
+/** What a tier allows: "5,000 free requests per day" when the base is known, else "5× the free limit". */
+function formatTierAllowance(tier: FreeTierLimitStakeTier, limit: FreeTierLimit): string {
+  if (tier.multiplier === 'unlimited') return 'unlimited free use';
+  if (limit.baseLimit !== null && limit.windowMs !== null) {
+    return `${formatCount(limit.baseLimit * tier.multiplier)} free requests ${formatWindow(limit.windowMs)}`;
+  }
+  return `${tier.multiplier}× the free limit`;
 }
 
 /** One plain sentence set for a free-tier limit, written by the buyer from the seller's numbers. */
@@ -126,13 +140,19 @@ export function describeFreeTierLimit(limit: FreeTierLimit): string {
   const size = limit.limit !== null && limit.windowMs !== null
     ? ` (${formatCount(limit.limit)} requests ${formatWindow(limit.windowMs)})`
     : '';
+  const next = nextFreeTierStakeTier(limit);
+  if (limit.limitedBy === 'stake_required') {
+    const unlock = next
+      ? ` Stake ANTS in its pool to use it: ${formatCount(Math.ceil(next.minPower / EPOCHS_PER_YEAR))} ANTS locked for a year gives ${formatTierAllowance(next, limit)}.`
+      : '';
+    return `This model is free only for buyers staked on this seller.${unlock}`;
+  }
   const reached = limit.limitedBy === 'stake'
     ? `Your staked free allowance on this seller is used up${size}.`
     : `Free limit reached on this seller${scope}${size}.`;
   const resets = limit.retryAfterSeconds !== null ? ` It resets in ${formatWait(limit.retryAfterSeconds)}.` : '';
-  const next = nextFreeTierStakeTier(limit);
   const stake = next
-    ? ` Stake ANTS in this seller's pool to raise it: ${formatCount(Math.ceil(next.minPower / EPOCHS_PER_YEAR))} ANTS locked for a year gives ${formatMultiplier(next)}.`
+    ? ` Stake ANTS in this seller's pool to raise it: ${formatCount(Math.ceil(next.minPower / EPOCHS_PER_YEAR))} ANTS locked for a year gives ${formatTierAllowance(next, limit)}.`
     : '';
   return `${reached}${resets}${stake}`;
 }

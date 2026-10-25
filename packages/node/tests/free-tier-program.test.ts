@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_FREE_TIER_STAKE_TIERS,
   encodeFreeTierCapabilities,
+  freeTierServiceScope,
   freeTierStakeTierForPower,
   normalizeFreeTierProgram,
   parseFreeTierProgram,
+  parseServiceFreeTierProgram,
   powerToAntsEpochs,
 } from '../src/payments/free-tier-program.js';
 import { validateMetadata } from '../src/discovery/metadata-validator.js';
@@ -23,6 +25,44 @@ describe('free-tier program', () => {
       expect(capability.length).toBeLessThanOrEqual(64);
       expect(capability).toMatch(/^[a-z0-9][a-z0-9.-]*$/);
     }
+  });
+
+  it('round-trips a service’s own stakers-only program within the capability limits', () => {
+    const serviceId = 'qwen/qwen3.5-397b-a17b:free';
+    const program = {
+      base: { maxRequestsPerAddress: 1_000_000, maxRequestsPerIp: 1_000_000, windowMs: 604_800_000, stakersOnly: true },
+      stakeTiers: [{ minPower: 10_400_000_000, multiplier: 10_000 }],
+    };
+    const capabilities = encodeFreeTierCapabilities(program, serviceId);
+    expect(capabilities[0]).toMatch(new RegExp(`^free-tier\\.v1\\.${freeTierServiceScope(serviceId)}\\.base\\.`));
+    for (const capability of capabilities) {
+      expect(capability.length).toBeLessThanOrEqual(64);
+      expect(capability).toMatch(/^[a-z0-9][a-z0-9.-]*$/);
+    }
+    expect(parseFreeTierProgram(capabilities, serviceId)).toEqual(program);
+    // Another service, and the seller-wide lookup, do not see a scoped program.
+    expect(parseFreeTierProgram(capabilities, 'other')).toBeNull();
+    expect(parseFreeTierProgram(capabilities)).toBeNull();
+  });
+
+  it('fills inherited service tiers from the seller-wide program', () => {
+    const sellerWide = { base: { maxRequestsPerAddress: 10, maxRequestsPerIp: null, windowMs: 86_400_000 }, stakeTiers: [...DEFAULT_FREE_TIER_STAKE_TIERS] };
+    const own = { base: { maxRequestsPerAddress: 2, maxRequestsPerIp: null, windowMs: 86_400_000 }, stakeTiers: [...DEFAULT_FREE_TIER_STAKE_TIERS] };
+    const scoped = encodeFreeTierCapabilities(own, 'm', { sellerWideTiers: sellerWide.stakeTiers });
+    expect(scoped).toHaveLength(1);
+    expect(parseFreeTierProgram([...encodeFreeTierCapabilities(sellerWide), ...scoped], 'm')).toEqual(own);
+    // Without the seller-wide strings the inherited program cannot be read.
+    expect(parseFreeTierProgram(scoped, 'm')).toBeNull();
+  });
+
+  it('reads only a service\'s own program for a priced service, never the seller-wide one', () => {
+    const sellerWide = { base: { maxRequestsPerAddress: 10, maxRequestsPerIp: null, windowMs: 86_400_000 }, stakeTiers: [] };
+    const own = { base: { maxRequestsPerAddress: 2, maxRequestsPerIp: null, windowMs: 86_400_000 }, stakeTiers: [] };
+    const capabilities = [...encodeFreeTierCapabilities(sellerWide), ...encodeFreeTierCapabilities(own, 'k3')];
+    expect(parseServiceFreeTierProgram(capabilities, 'k3')).toEqual(own);
+    expect(parseServiceFreeTierProgram(capabilities, 'flash')).toBeNull();
+    expect(parseFreeTierProgram(capabilities, 'flash')).toEqual(sellerWide);
+    expect(parseServiceFreeTierProgram(undefined, 'k3')).toBeNull();
   });
 
   it('returns null without a base entry or with malformed tiers', () => {

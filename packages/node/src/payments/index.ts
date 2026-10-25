@@ -169,12 +169,17 @@ export type { BuyerFreeUsageConfig } from './buyer-free-usage-manager.js';
 export { SellerFreeUsageManager } from './seller-free-usage-manager.js';
 export type { SellerFreeUsageConfig } from './seller-free-usage-manager.js';
 export { SellerFreeTierLimiter, DEFAULT_FREE_TIER_WINDOW_MS, normalizeRemoteIp } from './seller-free-tier-limiter.js';
-export type { SellerFreeTierConfig, FreeTierDecision } from './seller-free-tier-limiter.js';
+export type { SellerFreeTierConfig, SellerFreeTierProgramConfig, FreeTierDecision } from './seller-free-tier-limiter.js';
 export {
   DEFAULT_FREE_TIER_STAKE_TIERS,
   FREE_TIER_EPOCHS_PER_YEAR,
   MAX_FREE_TIER_STAKE_TIERS,
   encodeFreeTierCapabilities,
+  freeTierServiceScope,
+  parseServiceFreeTierProgram,
+  freeTierProgramForService,
+  FREE_TIER_SERVED_HEADER,
+  FREE_TIER_SERVED_COVERED,
   freeTierStakeTierForPower,
   normalizeFreeTierProgram,
   parseFreeTierProgram,

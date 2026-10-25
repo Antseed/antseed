@@ -1,4 +1,3 @@
-import { freeTierStakeTierForPower, type FreeTierStakeTier } from './free-tier-program.js';
 import { debugWarn } from '../utils/debug.js';
 
 /** A seller-pool position and its staking power at the current epoch. */
@@ -17,13 +16,15 @@ export interface FreeTierStakeReader {
   stakerPositions(staker: string, agentId: number, epoch: number): Promise<FreeTierStakePosition[]>;
 }
 
-/** A buyer whose own stake plus its delegated stake reaches a tier on this seller. */
+/**
+ * A buyer whose own stake plus its delegated stake has power in this seller's
+ * pool. Which tier that power earns depends on the program a request is under.
+ */
 export interface FreeTierStakeStanding {
   /** Addresses whose stake counts: the buyer and every staker that delegated to it. */
   stakers: string[];
   /** Combined power of every counted position. */
   power: bigint;
-  tier: FreeTierStakeTier;
   /**
    * Positions the allowance is counted on. Usage follows the positions, not
    * the staker, so transferring a position carries its used allowance along.
@@ -53,12 +54,12 @@ interface CacheEntry<T> {
 export const MAX_FREE_TIER_COUNTED_POSITIONS = 64;
 
 /**
- * Resolves which staked tier, if any, a buyer gets on this seller.
+ * Resolves a buyer's staked standing on this seller.
  *
  * The buyer's own stake counts, plus the stake of every staker that signed a
  * delegation to it (verified by the caller). Their positions in this seller's
  * pool are pooled: power is summed and usage is counted on every position.
- * Any read failure resolves to no tier, so the buyer keeps the base limits:
+ * Any read failure resolves to no standing, so the buyer keeps the base limits:
  * an RPC outage can only make the free tier stricter, never looser.
  */
 export class FreeTierStakeResolver {
@@ -76,7 +77,6 @@ export class FreeTierStakeResolver {
 
   constructor(
     private readonly _reader: FreeTierStakeReader,
-    readonly stakeTiers: readonly FreeTierStakeTier[],
     options: FreeTierStakeResolverOptions = {},
   ) {
     this._cacheTtlMs = options.cacheTtlMs ?? 10 * 60_000;
@@ -88,10 +88,9 @@ export class FreeTierStakeResolver {
 
   /**
    * The staked standing of `buyerAddress` together with `delegatedStakers`
-   * (already verified), or null when it gets the base limits.
+   * (already verified), or null when none of them has power in the pool.
    */
   async resolve(buyerAddress: string, delegatedStakers: readonly string[] = []): Promise<FreeTierStakeStanding | null> {
-    if (this.stakeTiers.length === 0) return null;
     const stakers = [...new Set([buyerAddress, ...delegatedStakers].map((address) => address.toLowerCase()))];
     const key = stakers.join(',');
     const cached = this._standings.get(key);
@@ -144,15 +143,14 @@ export class FreeTierStakeResolver {
 
     const unique = new Map<number, FreeTierStakePosition>();
     for (const position of holdings.flatMap((entry) => entry.value)) unique.set(position.id, position);
-    // Only the positions that are charged for usage may count toward the tier,
+    // Only the positions that are charged for usage may count toward a tier,
     // so stake left out by the cap cannot back a second, untouched allowance.
     const counted = [...unique.values()]
       .sort((a, b) => (a.power === b.power ? a.id - b.id : a.power > b.power ? -1 : 1))
       .slice(0, MAX_FREE_TIER_COUNTED_POSITIONS);
     const power = counted.reduce((sum, position) => sum + position.power, 0n);
-    const tier = freeTierStakeTierForPower(this.stakeTiers, power);
-    if (!tier) return { value: null, expiresAt };
-    return { value: { stakers, power, tier, positionIds: counted.map((position) => position.id) }, expiresAt };
+    if (power <= 0n) return { value: null, expiresAt };
+    return { value: { stakers, power, positionIds: counted.map((position) => position.id) }, expiresAt };
   }
 
   private async _stakerPositions(staker: string, agentId: number, epoch: number, seq: number): Promise<CacheEntry<FreeTierStakePosition[]>> {
