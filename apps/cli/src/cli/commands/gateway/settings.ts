@@ -9,7 +9,7 @@ import type { BuyerSettings, BuyerSettingsInput, Peer } from '../../../gateway/c
 import { readSettings, setObservabilitySettings, updateBuyerSettings, type SettingsContext } from '../../../gateway/services/settings.js'
 import { sameRoutingModel } from '../../../routing-policy/policy.js'
 import { collect } from './policy-options.js'
-import { addBuyerPortOption, parseCountOrNone, parseOnOff, printJson, withGateway, type CliGateway } from './shared.js'
+import { addBuyerPortOption, configSourceNote, parseCountOrNone, parseOnOff, printJson, withGateway, type CliGateway } from './shared.js'
 
 async function settingsContext(gateway: CliGateway): Promise<SettingsContext> {
   const publicUrl = readConsoleLocation(gateway.store)?.publicUrl ?? null
@@ -54,6 +54,9 @@ export function registerGatewaySettingsCommands(gateway: Command): void {
         ? chalk.yellow(' (set by the buyer\'s environment or flags)')
         : ''
       const list = (ids: string[]): string => (ids.length ? ids.join(', ') : 'none')
+      console.log(chalk.dim(`Config: ${gw.configPath}`))
+      const configNote = configSourceNote(gw.configPath, gw.dataDir)
+      if (configNote) console.log(chalk.yellow(`Note: ${configNote}.`))
       console.log(chalk.bold('Buyer'))
       console.log(`  Proxy port: ${buyer.proxyPort}${mark('proxyPort')}`)
       console.log(`  Max price: $${buyer.maxPricing.inputUsdPerMillion}/M in${mark('maxPricing.inputUsdPerMillion')}, $${buyer.maxPricing.outputUsdPerMillion}/M out${mark('maxPricing.outputUsdPerMillion')}${buyer.maxPricing.cachedInputUsdPerMillion === null ? '' : `, $${buyer.maxPricing.cachedInputUsdPerMillion}/M cached in`}`)
