@@ -201,6 +201,70 @@ test('loadConfig rejects invalid per-service capabilities', async () => {
   );
 });
 
+test('loadConfig reads provider fallbackUpstreams', async () => {
+  await withTempConfig(
+    JSON.stringify({
+      seller: {
+        providers: {
+          kimi: {
+            plugin: 'openai',
+            baseUrl: 'https://api.moonshot.example',
+            services: { 'kimi-k3.1-pro': {}, 'kimi-k3': {} },
+            fallbackUpstreams: [
+              {
+                baseUrl: 'https://openrouter.example/api',
+                apiKeyEnv: 'OPENROUTER_API_KEY',
+                services: { 'kimi-k3.1-pro': { upstreamModel: 'moonshotai/kimi-k3.1-pro' } },
+              },
+              { baseUrl: 'https://mirror.moonshot.example' },
+            ],
+          },
+        },
+      },
+    }),
+    async (configPath) => {
+      const config = await loadConfig(configPath);
+      assert.deepEqual(config.seller.providers['kimi']?.fallbackUpstreams, [
+        {
+          baseUrl: 'https://openrouter.example/api',
+          apiKeyEnv: 'OPENROUTER_API_KEY',
+          services: { 'kimi-k3.1-pro': { upstreamModel: 'moonshotai/kimi-k3.1-pro' } },
+        },
+        { baseUrl: 'https://mirror.moonshot.example' },
+      ]);
+    },
+  );
+});
+
+test('loadConfig rejects invalid fallbackUpstreams', async () => {
+  await withTempConfig(
+    JSON.stringify({
+      seller: {
+        providers: {
+          kimi: {
+            plugin: 'openai',
+            services: { 'kimi-k3.1-pro': {} },
+            fallbackUpstreams: [
+              { services: { 'kimi-k3.1-pro': {} } },
+              { baseUrl: 'https://openrouter.example/api', services: { 'glm-5': {} } },
+            ],
+          },
+        },
+      },
+    }),
+    async (configPath) => {
+      await assert.rejects(
+        () => loadConfig(configPath),
+        (err: Error) => {
+          assert.match(err.message, /fallbackUpstreams\[0\]\.baseUrl must be an http\(s\) URL/);
+          assert.match(err.message, /fallbackUpstreams\[1\]\.services\.glm-5 is not a service of this provider/);
+          return true;
+        },
+      );
+    },
+  );
+});
+
 test('loadConfig treats legacy buyer minPeerReputation 50 as the new default', async () => {
   await withTempConfig(
     JSON.stringify({

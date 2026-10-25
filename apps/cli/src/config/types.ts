@@ -80,10 +80,38 @@ export interface SellerProviderConfig {
    * Example: `{ "/v1/chat/completions": "/v4/chat/completions" }`
    */
   pathRewrite?: Record<string, string>;
+  /**
+   * Backup upstreams for this provider's services, tried in order when the
+   * main upstream fails before the buyer receives anything (network error,
+   * timeout, auth or credit failure, missing model, rate limit or quota, or a
+   * server error). Buyers still get the service they asked for, so the
+   * service stays advertised while any upstream is healthy.
+   * Supported by the `openai` plugin.
+   */
+  fallbackUpstreams?: SellerFallbackUpstreamConfig[];
   /** Fallback pricing used by services that don't set their own `pricing`. */
   defaults?: TokenPricingUsdPerMillion;
   /** Services offered under this provider, keyed by announced service ID. */
   services: Record<string, SellerServiceConfig>;
+}
+
+/**
+ * A backup upstream for a seller provider. It must serve the same models: a
+ * request fails over only to the model the buyer asked for, never another.
+ */
+export interface SellerFallbackUpstreamConfig {
+  /** Upstream API base URL (e.g. "https://openrouter.ai/api"). */
+  baseUrl: string;
+  /** Environment variable holding this upstream's API key. Omit to reuse the provider's key. */
+  apiKeyEnv?: string;
+  /** Path rewrites for this upstream. Defaults to the provider's `pathRewrite`. */
+  pathRewrite?: Record<string, string>;
+  /**
+   * Services this upstream serves, keyed by announced service ID, with the
+   * model name to send here when it differs from the provider's
+   * `upstreamModel`. Omit to serve every service of the provider.
+   */
+  services?: Record<string, { upstreamModel?: string }>;
 }
 
 export type DomainVerificationMethod = 'dns-txt' | 'https-well-known';
