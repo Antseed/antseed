@@ -1110,6 +1110,7 @@ test('loadConfig preserves a service freeTier program and rejects invalid ones',
     [{ maxRequestsPerAddress: 1, stakersOnly: 'yes' }, /freeTier\.stakersOnly must be a boolean/],
     [{ maxRequestsPerAddress: 1, stakeTiers: [], stakersOnly: true }, /freeTier\.stakersOnly requires at least one stake tier/],
     ['unlimited', /services\.free-model\.freeTier requires/],
+    [{ maxRequestsPerAddress: Number.MAX_SAFE_INTEGER, maxRequestsPerIp: Number.MAX_SAFE_INTEGER }, /services\.free-model\.freeTier is too large to advertise/],
   ] as const) {
     await withTempConfig(
       JSON.stringify({ seller: { providers: { openai: provider(freeTier) } } }),

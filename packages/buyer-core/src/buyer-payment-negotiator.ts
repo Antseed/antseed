@@ -363,10 +363,10 @@ export class BuyerPaymentNegotiator {
     this._freeUsageManager?.trackRequestService(requestId, service);
   }
 
-  async prepareFreeUsageOpen(peer: BuyerPeerView, conn: BuyerConnection): Promise<void> {
+  async prepareFreeUsageOpen(peer: BuyerPeerView, conn: BuyerConnection, freeTierDelegations?: string | null): Promise<void> {
     if (!this._freeUsageManager) return;
     const pmux = this.getOrCreatePaymentMux(peer.peerId, conn);
-    await this._freeUsageManager.prepareOpen(peer, pmux);
+    await this._freeUsageManager.prepareOpen(peer, pmux, freeTierDelegations);
     void this._freeUsageManager.waitForOpenAck(peer.peerId).catch((err) => {
       debugWarn(`[BuyerNegotiator] Free usage open ack unavailable for ${peer.peerId.slice(0, 12)}...: ${err instanceof Error ? err.message : err}`);
     });
