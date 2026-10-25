@@ -11,9 +11,8 @@ import type { ChannelsClient } from './payments/evm/channels-client.js';
 import type { SellerPaymentManager } from './payments/seller-payment-manager.js';
 import type { SellerFreeUsageManager } from './payments/seller-free-usage-manager.js';
 import type { FreeTierDecision, SellerFreeTierLimiter } from './payments/seller-free-tier-limiter.js';
-import { powerToAntsEpochs } from './payments/free-tier-program.js';
+import { FREE_TIER_SERVED_COVERED, FREE_TIER_SERVED_HEADER, powerToAntsEpochs } from './payments/free-tier-program.js';
 import { FREE_TIER_DELEGATIONS_HEADER } from './payments/free-tier-delegation.js';
-import { FREE_TIER_SERVED_COVERED, FREE_TIER_SERVED_HEADER } from './payments/free-tier-program.js';
 
 const FREE_TIER_EXHAUSTED_MESSAGES = {
   address: 'This seller free tier has been exhausted for your buyer address.',
@@ -99,6 +98,15 @@ function setTrustedHeader(headers: Record<string, string>, name: string, value: 
     if (key.toLowerCase() === name) delete headers[key];
   }
   headers[name] = value;
+}
+
+/**
+ * Only this seller decides whether a free allowance covered a request: drop
+ * any copy of the marker the provider sent, then set it when it applies.
+ */
+function markFreeAllowance(headers: Record<string, string>, covered: boolean): void {
+  takeHeader(headers, FREE_TIER_SERVED_HEADER);
+  if (covered) setTrustedHeader(headers, FREE_TIER_SERVED_HEADER, FREE_TIER_SERVED_COVERED);
 }
 
 /** Remove a header in any letter case and return its value. */
@@ -731,7 +739,7 @@ export class SellerRequestHandler {
           let response = await this._executeRequest(provider, request, {
             signal: isDownload ? mux.downloadSignal(request.requestId) : undefined,
             onResponseStart: (streamResponseStart) => {
-              if (coveredByAllowance) setTrustedHeader(streamResponseStart.headers, FREE_TIER_SERVED_HEADER, FREE_TIER_SERVED_COVERED);
+              markFreeAllowance(streamResponseStart.headers, coveredByAllowance);
               if (isDownload) downloadHash = createStreamingResponseHash(streamResponseStart);
               streamedResponseStarted = true;
               responseStartedAt = Date.now();
@@ -754,11 +762,11 @@ export class SellerRequestHandler {
               mux.sendProxyChunk(chunk);
             },
           });
-          // A video is charged when the buyer downloads it, not on acceptance.
-          if (coveredByAllowance && !streamedResponseStarted) {
+          if (!streamedResponseStarted) {
             response = { ...response, headers: { ...response.headers } };
-            setTrustedHeader(response.headers, FREE_TIER_SERVED_HEADER, FREE_TIER_SERVED_COVERED);
+            markFreeAllowance(response.headers, coveredByAllowance);
           }
+          // A video is charged when the buyer downloads it, not on acceptance.
           if (videoRoute?.action === 'create') {
             response = this._acceptVideoCreate(videoRoute, request, response, buyerPeerId, requestedModel, requestBilling, unitBillingModel, oneOffChannelId);
           }

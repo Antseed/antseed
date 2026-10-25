@@ -39,6 +39,7 @@ import { createHmac } from 'node:crypto'
 import { join } from 'node:path'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { convertToModelMessages, createIdGenerator, isToolUIPart, stepCountIs, streamText, type UIMessage } from 'ai'
+import { coveredByFreeAllowance } from '../../proxy/telemetry.js'
 import { GATEWAY_CONTROL_HEADER } from '../../routing-policy/policy.js'
 import { isOrgAdmin, requestActor, requireWorkspaceAccess } from '../console-api/access.js'
 import type { ConsoleDeps } from '../console-api/deps.js'
@@ -301,7 +302,7 @@ export function chatRouteRegistrar(options: ChatRouteOptions) {
           usage.cachedInputTokens += step.cachedInputTokens
           usage.outputTokens += step.outputTokens
           // The seller's free allowance covered this step: nothing was charged.
-          const covered = (part.response.headers?.['x-antseed-free-tier'] ?? '').toLowerCase() === 'covered'
+          const covered = coveredByFreeAllowance(part.response.headers ?? {})
           const stepCost = covered ? 0 : estimateCost(step, known?.peers.find((peer) => peer.peerId === peerId))
           costUsd = costUsd === null || stepCost === null ? null : costUsd + stepCost
           return metadata()

@@ -300,6 +300,7 @@ export {
   freeTierServiceScope,
   parseServiceFreeTierProgram,
   freeTierProgramForService,
+  isPricedService,
   FREE_TIER_SERVED_HEADER,
   FREE_TIER_SERVED_COVERED,
   freeTierStakeTierForPower,

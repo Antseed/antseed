@@ -377,6 +377,22 @@ describe('SellerFreeTierLimiter', () => {
       expect(parseFreeTierProgram(advertised)).toEqual(limiter.program());
     });
 
+    it('never advertises inherited tiers without the seller-wide program they point at', () => {
+      const limiter = new SellerFreeTierLimiter({ maxRequestsPerAddress: 10, services: { 'z-model': { maxRequestsPerAddress: 5, stakersOnly: true } } });
+      limiter.setStakeResolver({ resolve: async () => null } as never);
+      for (let budget = 1; budget <= 8; budget++) {
+        const advertised = limiter.capabilities(budget);
+        // Whatever fits, every advertised program reads back whole.
+        if (advertised.some((capability) => capability.includes(freeTierServiceScope('z-model')))) {
+          expect(parseFreeTierProgram(advertised, 'z-model')).toEqual(limiter.program('z-model'));
+        }
+      }
+      // Seller-wide needs 4 strings. With 3 it is skipped, and z-model then needs its 4 explicit strings too,
+      // so nothing goes out rather than an inherited base that buyers could not read.
+      expect(limiter.capabilities(3)).toEqual([]);
+      expect(limiter.capabilities(4)).toHaveLength(4);
+    });
+
     it('rejects a stakers-only program without tiers and a service program without base limits', () => {
       expect(() => new SellerFreeTierLimiter({ maxRequestsPerAddress: 1, stakeTiers: [], stakersOnly: true })).toThrow(/stakersOnly requires/);
       expect(() => new SellerFreeTierLimiter({ services: { m: { windowMs: 60_000 } } })).toThrow(/freeTier\.services\.m requires/);

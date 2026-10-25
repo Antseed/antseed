@@ -186,16 +186,41 @@ export function parseFreeTierProgram(
   return parseScopedFreeTierProgram(capabilities, null);
 }
 
+/** A service's advertised prices, as the free tier classifies them. */
+export interface FreeTierServicePrices {
+  inputUsdPerMillion?: number | null;
+  outputUsdPerMillion?: number | null;
+  cachedInputUsdPerMillion?: number | null;
+  maxImageUsdPerImage?: number | null;
+  /** Unit-billing models by API protocol (images, video, per-request fees). */
+  unitBillingModels?: Record<string, { components?: ReadonlyArray<{ priceUsd: number }> } | undefined> | null;
+}
+
+/**
+ * Whether a service charges anything, the way the seller decides it: any
+ * token price, image price or priced unit-billing component makes it paid.
+ */
+export function isPricedService(prices: FreeTierServicePrices): boolean {
+  const positive = (value: number | null | undefined) => typeof value === 'number' && value > 0;
+  if (positive(prices.inputUsdPerMillion) || positive(prices.outputUsdPerMillion)
+    || positive(prices.cachedInputUsdPerMillion) || positive(prices.maxImageUsdPerImage)) return true;
+  return Object.values(prices.unitBillingModels ?? {}).some((model) =>
+    (model?.components ?? []).some((component) => !(component.priceUsd <= 0)));
+}
+
 /**
  * The program a buyer of `serviceId` is served under: on a free service its
  * own or the seller-wide one, on a priced service only its own free allowance.
+ * Paid video is never covered (it is paid through one-off channels), so it has none.
  */
 export function freeTierProgramForService(
   capabilities: readonly string[] | undefined,
   serviceId: string,
   priced: boolean,
+  options: { video?: boolean } = {},
 ): FreeTierProgram | null {
-  return priced ? parseServiceFreeTierProgram(capabilities, serviceId) : parseFreeTierProgram(capabilities, serviceId);
+  if (!priced) return parseFreeTierProgram(capabilities, serviceId);
+  return options.video ? null : parseServiceFreeTierProgram(capabilities, serviceId);
 }
 
 /**

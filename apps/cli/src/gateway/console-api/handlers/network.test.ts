@@ -231,11 +231,30 @@ test('peer services and model offers carry a service’s own free-tier program',
   })
   const peers = mapPeers({ peers: { ...PEERS_BODY, peers: [row] }, health: HEALTH_BODY, verification: null, stats: [], now: NOW })
   const [model] = mapNetworkModels({
-    data: [{ id: 'open-model-b', peers: [{ peerId: PEER_A, provider: 'openai', serviceId: 'open-model-b', inputUsdPerMillion: 0, outputUsdPerMillion: 0 }] }],
+    // The buyer's catalog sends each offer's program; the console passes it through.
+    data: [{ id: 'open-model-b', peers: [{ peerId: PEER_A, provider: 'openai', serviceId: 'open-model-b', inputUsdPerMillion: 0, outputUsdPerMillion: 0, freeTier: b!.freeTier }] }],
   }, peers)
   assert.deepEqual(model!.offers[0]!.freeTier, b!.freeTier)
   // The seller-wide program stays on the peer.
   assert.equal(peers[0]!.freeTier?.base.stakersOnly, undefined)
+})
+
+test('peer services give a paid unit-billed service no seller-wide program', () => {
+  const row = {
+    ...PEERS_BODY.peers[0],
+    providerPricing: { fal: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 }, services: { 'paid-image': {}, 'free-image': {} } } },
+    providerServiceCategories: {},
+    providerServiceApiProtocols: { fal: { services: { 'paid-image': ['openai-images'], 'free-image': ['openai-images'] } } },
+    providerServiceUnitBillingModels: {
+      fal: { services: {
+        'paid-image': { 'openai-images': { version: 1, components: [{ unit: 'output_images', priceUsd: 0.02 }] } },
+        'free-image': { 'openai-images': { version: 1, components: [{ unit: 'output_images', priceUsd: 0 }] } },
+      } },
+    },
+  }
+  const services = peerServices(row as Record<string, unknown>)
+  assert.equal(services.find((entry) => entry.service === 'paid-image')?.freeTier, null)
+  assert.equal(services.find((entry) => entry.service === 'free-image')?.freeTier?.base.maxRequestsPerAddress, 1000)
 })
 
 test('TEE snapshot: only current passing attestations count', () => {

@@ -20,7 +20,7 @@ import {
   type PeerInfo,
 } from '@antseed/node'
 import { canonicalModelKey, preferredModelDisplayName } from '@antseed/node/model-identity'
-import { freeTierProgramForService, type FreeTierProgram } from '@antseed/node/free-tier-program'
+import { freeTierProgramForService, isPricedService, type FreeTierProgram } from '@antseed/node/free-tier-program'
 import type { RoutingProtocol } from '@antseed/node'
 import type { RouterOptionSpec } from '@antseed/router-core'
 
@@ -297,8 +297,11 @@ export function buildNetworkModels(
     if (offer.type === 'text') entry.type = 'text'
     else if (offer.type === 'image' && entry.type === 'decision') entry.type = 'image'
     const peer = peerById.get(offer.peerId)
-    const priced = (offer.inputUsdPerMillion ?? 0) > 0 || (offer.outputUsdPerMillion ?? 0) > 0 || (offer.maxImageUsdPerImage ?? 0) > 0
-    const freeTier = freeTierProgramForService(peer?.capabilities, offer.serviceId, priced)
+    const priced = isPricedService({
+      ...offer,
+      unitBillingModels: offer.unitBillingModels ?? peer?.providerServiceUnitBillingModels?.[offer.provider]?.services?.[offer.serviceId],
+    })
+    const freeTier = freeTierProgramForService(peer?.capabilities, offer.serviceId, priced, { video: offer.type === 'video' })
     entry.peers.push({
       advertisedVerifierIds: offer.advertisedVerifierIds,
       peerId: offer.peerId,
