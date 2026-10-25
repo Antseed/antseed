@@ -158,6 +158,8 @@ export class BuyerRequestHandler {
     const negotiator = options?.controlPlane ? null : this._deps.negotiator;
     if (negotiator) {
       this._deps.registerPaymentMux(peer.peerId, negotiator.getOrCreatePaymentMux(peer.peerId, conn));
+      // A retry reuses the request ID: an earlier covered attempt must not refuse this one's charge.
+      negotiator.bpm?.releaseRequestCoverage(peer.peerId, req.requestId);
     }
 
     // Extract and strip x-antseed-spending-auth header if present (external auth compatibility)
@@ -209,7 +211,7 @@ export class BuyerRequestHandler {
       if (isFreeService) {
         negotiator.trackFreeUsageRequestService(req.requestId, requestedService);
         try {
-          await negotiator.prepareFreeUsageOpen(peer, conn);
+          await negotiator.prepareFreeUsageOpen(peer, conn, delegationsHeader);
         } catch (err) {
           debugWarn(`[BuyerRequest] Failed to prepare free usage channel for ${peer.peerId.slice(0, 12)}...: ${err instanceof Error ? err.message : err}`);
         }
@@ -232,7 +234,7 @@ export class BuyerRequestHandler {
     } else if (requestedService && isFreeService && this._deps.freeUsageManager) {
       this._deps.freeUsageManager.trackRequestService(req.requestId, requestedService);
       try {
-        this._prepareDirectFreeUsageOpen(peer, conn);
+        this._prepareDirectFreeUsageOpen(peer, conn, delegationsHeader);
       } catch (err) {
         debugWarn(`[BuyerRequest] Failed to prepare free usage channel for ${peer.peerId.slice(0, 12)}...: ${err instanceof Error ? err.message : err}`);
       }
@@ -369,7 +371,7 @@ export class BuyerRequestHandler {
           if (settled) return;
           // Mark a covered response as soon as its headers arrive: the seller's
           // NeedAuth travels on another mux and must not beat this.
-          if (isCoveredByFreeAllowance(response)) negotiator?.bpm.markRequestCovered(req.requestId);
+          if (isCoveredByFreeAllowance(response)) negotiator?.bpm.markRequestCovered(peer.peerId, req.requestId);
           if (isDownload && streamStarted && !metadata.streamingStart) {
             fail(new Error('Video download interrupted'));
             return;
@@ -588,13 +590,13 @@ export class BuyerRequestHandler {
   ): void {
     if (isCoveredByFreeAllowance(response)) {
       debugLog(`[BuyerRequest] ${peer.peerId.slice(0, 12)}... served ${service ?? 'request'} from its free allowance`);
-      negotiator.bpm.markRequestCovered(requestId);
+      negotiator.bpm.markRequestCovered(peer.peerId, requestId);
       return;
     }
     negotiator.estimateCostFromResponse(peer, response, service, requestId);
   }
 
-  private _prepareDirectFreeUsageOpen(peer: BuyerPeerView, conn: BuyerConnection): void {
+  private _prepareDirectFreeUsageOpen(peer: BuyerPeerView, conn: BuyerConnection, freeTierDelegations: string | null): void {
     const freeUsage = this._deps.freeUsageManager;
     if (!freeUsage) return;
 
@@ -609,7 +611,7 @@ export class BuyerRequestHandler {
       });
     });
     this._deps.registerPaymentMux(peer.peerId, pmux);
-    void freeUsage.prepareOpen(peer, pmux)
+    void freeUsage.prepareOpen(peer, pmux, freeTierDelegations)
       .then(() => freeUsage.waitForOpenAck(peer.peerId))
       .catch((err) => {
         debugWarn(`[BuyerRequest] Free usage open ack unavailable for ${peer.peerId.slice(0, 12)}...: ${err instanceof Error ? err.message : err}`);

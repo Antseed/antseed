@@ -8,7 +8,7 @@ import type {
   SellerProviderConfig,
   TokenPricingUsdPerMillion,
 } from './types.js';
-import { MAX_FREE_TIER_DELEGATIONS, validateFreeTierStakeTiers } from '@antseed/node';
+import { MAX_FREE_TIER_DELEGATIONS, SellerFreeTierLimiter, validateFreeTierStakeTiers } from '@antseed/node';
 import { validateServiceMetadata } from './service-metadata.js';
 import { parseHostPort } from './public-address.js';
 import { appendVerifierConfigErrors } from '../verifier/config-schema.js';
@@ -451,7 +451,7 @@ export function validateConfig(config: AntseedConfig): string[] {
     for (const [serviceId, serviceCfg] of Object.entries(providerCfg.services)) {
       if (serviceCfg.freeTier === undefined) continue;
       const path = `seller.providers.${providerName}.services.${serviceId}.freeTier`;
-      validateFreeTierProgram(path, serviceCfg.freeTier, errors);
+      validateFreeTierProgram(path, serviceCfg.freeTier, errors, serviceId);
       const program = JSON.stringify(serviceCfg.freeTier);
       const previous = serviceFreeTiers.get(serviceId);
       if (previous !== undefined && previous !== program) {
@@ -538,7 +538,8 @@ function validateFreeTierDelegations(value: unknown, errors: string[]): void {
   }
 }
 
-function validateFreeTierProgram(path: string, freeTier: SellerFreeTierCLIConfig, errors: string[]): void {
+function validateFreeTierProgram(path: string, freeTier: SellerFreeTierCLIConfig, errors: string[], serviceId?: string): void {
+  const errorsBefore = errors.length;
   if (freeTier.maxRequestsPerAddress === undefined && freeTier.maxRequestsPerIp === undefined) {
     errors.push(`${path} requires maxRequestsPerAddress and/or maxRequestsPerIp`);
   }
@@ -565,5 +566,12 @@ function validateFreeTierProgram(path: string, freeTier: SellerFreeTierCLIConfig
     errors.push(`${path}.stakersOnly must be a boolean`);
   } else if (freeTier.stakersOnly && freeTier.stakeTiers?.length === 0) {
     errors.push(`${path}.stakersOnly requires at least one stake tier`);
+  }
+  if (errors.length > errorsBefore) return;
+  // Otherwise valid limits can still be too long to advertise in peer metadata.
+  try {
+    new SellerFreeTierLimiter(serviceId === undefined ? freeTier : { services: { [serviceId]: freeTier } });
+  } catch {
+    errors.push(`${path} is too large to advertise in peer metadata: lower its limits or window`);
   }
 }

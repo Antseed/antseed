@@ -63,7 +63,7 @@ function makeHandler(responses: SerializedHttpResponse[], freeTierDelegationsHea
     getOrCreatePaymentMux: vi.fn(() => ({})),
     trackRequestBillingContext: vi.fn(),
     estimateCostFromResponse: vi.fn(),
-    bpm: { clearRequestBilling: vi.fn(), markRequestCovered: vi.fn() },
+    bpm: { clearRequestBilling: vi.fn(), markRequestCovered: vi.fn(), releaseRequestCoverage: vi.fn() },
     handle402,
     applyExternalSpendingAuth: vi.fn(async () => {}),
   };
@@ -181,7 +181,10 @@ describe('BuyerRequestHandler free allowance on a priced service', () => {
     const { handler, negotiator } = makeHandler([covered]);
     expect((await handler.sendRequest(chatPeer(), chatRequest())).statusCode).toBe(200);
     expect(negotiator.estimateCostFromResponse).not.toHaveBeenCalled();
-    expect(negotiator.bpm.markRequestCovered).toHaveBeenCalledWith('chat-request');
+    expect(negotiator.bpm.releaseRequestCoverage).toHaveBeenCalledWith(chatPeer().peerId, 'chat-request');
+    expect(negotiator.bpm.releaseRequestCoverage.mock.invocationCallOrder[0])
+      .toBeLessThan(negotiator.bpm.markRequestCovered.mock.invocationCallOrder[0]!);
+    expect(negotiator.bpm.markRequestCovered).toHaveBeenCalledWith(chatPeer().peerId, 'chat-request');
   });
 
   it('expects the listed price for any other paid response', async () => {

@@ -143,6 +143,24 @@ describe('SellerFreeTierLimiter', () => {
     expect(() => new SellerFreeTierLimiter({ maxRequestsPerAddress: 1, windowMs: 999 })).toThrow(/windowMs/);
   });
 
+  it('refuses a program whose capability strings would not fit in peer metadata', () => {
+    const max = Number.MAX_SAFE_INTEGER;
+    expect(() => new SellerFreeTierLimiter({ services: { 'big-model': { maxRequestsPerAddress: max, maxRequestsPerIp: max } } }))
+      .toThrow(/freeTier\.services\.big-model is too large to advertise .* exceeds 64 characters/);
+    expect(() => new SellerFreeTierLimiter({ maxRequestsPerAddress: max, maxRequestsPerIp: max, windowMs: max }))
+      .toThrow(/freeTier is too large to advertise/);
+    // The largest limits that fit still advertise valid metadata strings.
+    const limiter = new SellerFreeTierLimiter({ services: { 'big-model': { maxRequestsPerAddress: 1_000_000_000, maxRequestsPerIp: 1_000_000_000 } } });
+    expect(limiter.capabilities().every((capability) => capability.length <= 64)).toBe(true);
+  });
+
+  it('keeps the seller-wide limits readable on the limiter', () => {
+    const limiter = new SellerFreeTierLimiter({ maxRequestsPerAddress: 100, maxRequestsPerIp: 300, windowMs: 60_000 });
+    expect([limiter.maxRequestsPerAddress, limiter.maxRequestsPerIp, limiter.windowMs]).toEqual([100, 300, 60_000]);
+    const serviceOnly = new SellerFreeTierLimiter({ services: { k3: { maxRequestsPerAddress: 5 } } });
+    expect([serviceOnly.maxRequestsPerAddress, serviceOnly.maxRequestsPerIp, serviceOnly.windowMs]).toEqual([null, null, 24 * 60 * 60_000]);
+  });
+
   it('describes the configured policy', () => {
     expect(new SellerFreeTierLimiter({ maxRequestsPerAddress: 100, maxRequestsPerIp: 300, stakeTiers: [] }).describe())
       .toBe('free models: free requests a day: 100 per buyer address, 300 per IP');

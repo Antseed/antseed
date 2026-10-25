@@ -6,6 +6,7 @@ import {
   type MeteringStorage,
 } from '../metering/storage.js';
 import { peerIdToAddress } from '../types/peer.js';
+import { MAX_PEER_CAPABILITY_LENGTH } from '../discovery/metadata-validator.js';
 import {
   DEFAULT_FREE_TIER_STAKE_TIERS,
   encodeFreeTierCapabilities,
@@ -147,6 +148,17 @@ class FreeTierPolicy {
     this.windowMs = windowMs;
     this.stakeTiers = Object.freeze([...stakeTiers]);
     this.stakersOnly = config.stakersOnly === true;
+    // Peer metadata caps each capability string; a program that cannot be
+    // advertised would fail every metadata publish, so refuse it here.
+    const serviceId = scope === '' ? undefined : scope;
+    const encodings = [
+      encodeFreeTierCapabilities(this.program(true), serviceId),
+      ...(serviceId !== undefined ? [encodeFreeTierCapabilities(this.program(true), serviceId, { sellerWideTiers: this.stakeTiers })] : []),
+    ];
+    const tooLong = encodings.flat().find((capability) => capability.length > MAX_PEER_CAPABILITY_LENGTH);
+    if (tooLong) {
+      throw new Error(`${label} is too large to advertise ("${tooLong}" exceeds ${MAX_PEER_CAPABILITY_LENGTH} characters): lower its limits or window`);
+    }
   }
 
   program(tiersActive: boolean): FreeTierProgram {
@@ -238,6 +250,25 @@ export class SellerFreeTierLimiter {
   }
 
   /**
+   * @deprecated The seller-wide program's per-address limit, or null when it
+   * has none (including a limiter with only per-service programs). Use
+   * `program(service)` for the limits a service is served under.
+   */
+  get maxRequestsPerAddress(): number | null {
+    return this._default?.maxRequestsPerAddress ?? null;
+  }
+
+  /** @deprecated The seller-wide program's per-IP limit, or null. Use `program(service)`. */
+  get maxRequestsPerIp(): number | null {
+    return this._default?.maxRequestsPerIp ?? null;
+  }
+
+  /** @deprecated The seller-wide program's window, else the default window. Use `program(service)`. */
+  get windowMs(): number {
+    return this._default?.windowMs ?? DEFAULT_FREE_TIER_WINDOW_MS;
+  }
+
+  /**
    * Enable staked tiers. Without a resolver every buyer gets the base limits.
    * `chainId` is the EIP-712 domain delegations are verified against.
    */
@@ -313,9 +344,9 @@ export class SellerFreeTierLimiter {
    * Staked standing for this buyer, or null for the base limits. Never throws.
    *
    * `delegationsHeader` is the buyer's `x-antseed-free-tier-delegations`
-   * value, or '' when a request carried none. Verified stakers are
-   * remembered for the buyer, so channel-open admission, which passes
-   * undefined because it carries no request headers, sees the same standing.
+   * value (from a request or a free usage open), or '' when a request carried
+   * none. Verified stakers are remembered for the buyer, so an open from an
+   * older buyer, which passes undefined, sees the standing of its requests.
    */
   async resolveStanding(buyerPeerId: string, delegationsHeader?: string): Promise<FreeTierStakeStanding | null> {
     if (!this._stakeResolver || !this.hasStakeTiers) return null;

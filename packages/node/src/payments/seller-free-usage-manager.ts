@@ -230,7 +230,10 @@ export class SellerFreeUsageManager {
     // Check inside the buyer lock, immediately before spending gas. Opening
     // does not consume quota; the inference handler accounts for requests.
     // Storage errors propagate so admission fails closed without an open/ack.
-    const standing = (await this._freeTierLimiter?.resolveStanding(buyerPeerId)) ?? null;
+    // The open carries the buyer's delegations, so delegated stake counts
+    // before the first request; an older buyer's open falls back to those
+    // remembered from its requests.
+    const standing = (await this._freeTierLimiter?.resolveStanding(buyerPeerId, payload.freeTierDelegations)) ?? null;
     const admission = this._freeTierLimiter?.check({ buyerPeerId, remoteIp, standing });
     if (admission && !admission.allowed) {
       throw new Error(
