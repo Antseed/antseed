@@ -28,3 +28,32 @@ export function tierAllowance(tier: FreeTierStakeTier): string {
 export function nextTier(tiers: readonly FreeTierStakeTier[], power: number): FreeTierStakeTier | null {
   return tiers.find((tier) => tier.minPower > power) ?? null;
 }
+
+/**
+ * The one-line summary of a program on a route: "1,000 free requests a day" or
+ * "Free for stakers" on a free model, and on a priced one its free allowance
+ * before the listed price applies.
+ */
+export function freeTierHeadline(program: FreeTierProgram, priced: boolean): string {
+  if (program.base.stakersOnly) return priced ? 'Free for stakers, others pay' : 'Free for stakers';
+  const base = freeTierBaseLabel(program) ?? 'Free';
+  return priced ? `${base}, then paid` : base;
+}
+
+/** What a tier allows, in requests: "5,000 free requests a day" or "Unlimited". */
+export function tierLimit(program: FreeTierProgram, tier: FreeTierStakeTier): string {
+  if (tier.multiplier === 'unlimited') return 'Unlimited';
+  const base = program.base.maxRequestsPerAddress ?? program.base.maxRequestsPerIp;
+  if (base === null) return tierAllowance(tier);
+  return `${(base * tier.multiplier).toLocaleString('en-US')} free requests ${per(program.base.windowMs)}`;
+}
+
+/**
+ * What a tier allows, from a free-tier refusal: "200 free requests a day"
+ * when the seller sent its base limit, else "5× the free limit".
+ */
+export function refusalTierAllowance(limit: { baseLimit?: number | null; windowMs: number | null }, tier: FreeTierStakeTier): string {
+  if (tier.multiplier === 'unlimited') return 'unlimited free use';
+  if (limit.baseLimit == null || limit.windowMs === null) return tierAllowance(tier).toLowerCase();
+  return `${(limit.baseLimit * tier.multiplier).toLocaleString('en-US')} free requests ${per(limit.windowMs)}`;
+}

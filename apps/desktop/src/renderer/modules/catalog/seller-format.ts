@@ -3,7 +3,7 @@
 import type { DiscoverRow, TrustBreakdown } from '../../core/state';
 import { formatUsdShort } from '../../core/format';
 import { isNativeVideoProtocol } from './model-capabilities';
-import { freeTierBaseLabel } from './free-tier';
+import { freeTierHeadline } from './free-tier';
 
 /** Effective model reputation is 0-100; the UI shows it on a 10-point scale. */
 export function sellerReputationLabel(route: DiscoverRow): string {
@@ -68,7 +68,7 @@ export function isFreeRoute(route: DiscoverRow): boolean {
 export function sellerMetaLabel(route: DiscoverRow): string {
   const parts: string[] = [];
   if (isFreeRoute(route)) {
-    parts.push((route.freeTier && freeTierBaseLabel(route.freeTier)) || 'Free');
+    parts.push(route.freeTier ? freeTierHeadline(route.freeTier, false) : 'Free');
   } else if (isNativeVideoProtocol(route.protocol)) {
     const perSecond = usdRange(route.minVideoUsdPerSecond, route.maxVideoUsdPerSecond);
     const perVideo = usdRange(route.minVideoUsdPerVideo, route.maxVideoUsdPerVideo);
@@ -89,5 +89,7 @@ export function sellerMetaLabel(route: DiscoverRow): string {
   } else {
     parts.push('Price unknown');
   }
+  // A priced route's own free allowance, before its price applies.
+  if (!isFreeRoute(route) && route.freeTier) parts.push(freeTierHeadline(route.freeTier, true));
   return parts.join(' · ');
 }

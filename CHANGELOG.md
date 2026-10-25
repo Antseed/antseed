@@ -18,8 +18,10 @@ This project uses selective package publishing. Each release entry lists the pub
 - ANTS dashboard: **My positions → Share free tier** lets a staker sign a free-tier delegation for any buyer address (no gas, 30/90/180 days) and copy it as an `antseed-free-tier-…` code. It works the same standalone (`antseed ants`), from desktop Rewards → Manage staking, and on the gateway's Staking page. `#/stake?pool=<agentId>` opens a seller's pool.
 - Desktop and gateway: buyers add a staker's code in desktop Rewards → Staked free tier or on the gateway's Staking → Staked free tier panel (workspace admins).
 - Buyers see each seller's free tier where they pick models: desktop model pages show a free seller's limit ("1,000 free requests a day") and a **Stake for more** tooltip with its tiers; the gateway shows the same in a model's provider list and on provider pages. Only stake in that seller's own pool counts toward its tiers.
+- Desktop and gateway show each model's own free-tier program, not the seller's: "Free for stakers", "Free for stakers, others pay", or a priced model's "N free requests a day, then paid", with tiers named in requests. Model lists and pickers mark **Free for stakers** and **Free allowance** models, "Free" means free to everyone, and a provider's page shows each model's program. A stakers-only refusal says how much stake unlocks the model. The ANTS dashboard and desktop Rewards mention stakers-only models.
 - Desktop chat and gateway chat show a seller's free-tier 429 as a notice with a **Stake in this seller's pool** link instead of retrying.
 - Docs: new [Staked free tier](/docs/staked-free-tier) buyer guide and a staked-tiers section in seller configuration; blog post introducing the program.
+- Docs: per-model programs, stakers-only models and stake-or-pay allowances in seller configuration and the Staked free tier guide.
 
 ### Changed
 

@@ -156,6 +156,7 @@ Any other npm package that exports a provider plugin works too. See [Provider pl
 | `seller.maxUploadBodyBytes` | 64 MiB | Largest request body accepted from a buyer; at least 1 MiB. `ANTSEED_MAX_UPLOAD_BODY_BYTES` overrides it. |
 | `seller.restrictedCountries` | `["CU","IR","KP","SY","RU"]` | Countries whose IP addresses are refused. See below. |
 | `seller.freeTier` | none | Request allowance for zero-priced services. See below. |
+| `seller.providers.<name>.services.<id>.freeTier` | none | That model's own free-tier program, in place of `seller.freeTier`. On a priced model, a free allowance before the price applies. See [Per-model programs](#per-model-programs). |
 | `seller.freeUsage` | 16 requests / 15 min | How often free usage is recorded on-chain. See below. |
 | `seller.healthCheck` | enabled, 5 min, 3 failures | Model health checks. See below. |
 | `seller.gasCheck` | enabled, 60 s, 0.00005 ETH | Pauses advertising while the seller wallet holds less ETH than `minBalanceEth`, checking every `intervalMs` (at least 10 s). Resumes once funded. |
@@ -185,7 +186,7 @@ A service is free when its token prices and all unit-billing prices are zero. Fr
 }
 ```
 
-Set at least one of the two limits. `windowMs` is a sliding window (default 24 hours, minimum 1000). A request is served only while every configured limit has room, and only served requests count. Counters are stored in the seller's `metering.db`, survive restarts, and are shared across all free services. When a buyer runs out, the seller answers HTTP 429 with `code: "free_tier_exhausted"`, a `limitedBy` field (`address`, `ip` or `stake`) and a `Retry-After` header. Paid services are unaffected.
+Set at least one of the two limits. `windowMs` is a sliding window (default 24 hours, minimum 1000). A request is served only while every configured limit has room, and only served requests count. Counters are stored in the seller's `metering.db`, survive restarts, and are shared across all free services. When a buyer runs out, the seller answers HTTP 429 with `code: "free_tier_exhausted"`, a `limitedBy` field (`address`, `ip`, `stake` or `stake_required`) and a `Retry-After` header. Paid services are unaffected unless you give one its own program; see [Per-model programs](#per-model-programs).
 
 | Limit | Keyed on | Caveat |
 |---|---|---|
@@ -215,7 +216,7 @@ Staking power is ANTS × epochs (weeks) of lock remaining, the same power the se
 
 The seller reads power from `AntseedSellerPools` for the buyer's own address plus every staker that signed a delegation to that buyer (sent in the `x-antseed-free-tier-delegations` request header, checked locally, up to 8), and adds it up. Usage is counted on the staked positions themselves, so every buyer behind the same stake shares one allowance, and transferring a position to a new wallet carries its used allowance with it. The seller strips the delegations header before the request reaches your provider. Staked requests skip the per-IP limit and don't count toward the base limits of unstaked buyers. Lookups are cached for 10 minutes; if the chain can't be read, buyers keep the base limits.
 
-Set your own program with `stakeTiers`, or `[]` to turn staked tiers off. Up to four tiers; `minPower` and `multiplier` must both increase, and `"unlimited"` can only be the last:
+Set your own program with `stakeTiers`, or `[]` to turn staked tiers off. Up to four tiers; `minPower` and `multiplier` must both increase (the first multiplier can be 1), and `"unlimited"` can only be the last:
 
 ```json
 {
@@ -233,6 +234,57 @@ Set your own program with `stakeTiers`, or `[]` to turn staked tiers off. Up to 
 ```
 
 Your limits and tiers are signed into your peer metadata as `free-tier.v1.*` capabilities, so buyers, the desktop app and [Antscan](https://antscan.co/api/free-tier) can show them. Tiers are only announced when the seller can read the seller pools and deposits contracts. A staked buyer who runs out gets the same 429 with `limitedBy: "stake"`; every 429 from a seller with tiers also carries `stakeTiers` and the buyer's current `stakePower`. See [Staked free tier](/docs/staked-free-tier) for the buyer side.
+
+#### Per-model programs
+
+Give a model its own `freeTier` under its service to set its own limits and tiers. A model with its own program uses only that program and has its own counters, so its usage never counts against your other models. Models without one use `seller.freeTier`. If there's no seller-wide program, those models stay unlimited.
+
+On a priced model, its own program is a free allowance. A request the allowance covers is served free, with no payment channel. A request past the allowance is paid at the listed price, never refused. `seller.freeTier` never applies to a priced model.
+
+Add `"stakersOnly": true` to serve the program only to buyers whose stake reaches a tier. On a free model, everyone else gets a 429 with `limitedBy: "stake_required"`. On a priced model, everyone else pays the listed price. The base limits are still required: they are what the tier multipliers apply to.
+
+This config gives a free model 100 requests a day, raised for stakers, and makes a priced model free for large stakers while everyone else pays:
+
+```json
+{
+  "seller": {
+    "providers": {
+      "my-provider": {
+        "plugin": "openai",
+        "services": {
+          "glm-5.3-flash": {
+            "pricing": { "inputUsdPerMillion": 0, "outputUsdPerMillion": 0 },
+            "freeTier": {
+              "maxRequestsPerAddress": 100,
+              "stakeTiers": [
+                { "minPower": 1000000, "multiplier": 10 },
+                { "minPower": 10000000, "multiplier": "unlimited" }
+              ]
+            }
+          },
+          "kimi-k3": {
+            "pricing": { "inputUsdPerMillion": 0.6, "outputUsdPerMillion": 2.5 },
+            "freeTier": {
+              "maxRequestsPerAddress": 200,
+              "stakersOnly": true,
+              "stakeTiers": [{ "minPower": 45000000, "multiplier": 1 }]
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+- **`glm-5.3-flash`:** 100 free requests a day for everyone. 1,000,000 power raises it to 1,000, and 10,000,000 power makes it unlimited.
+- **`kimi-k3`:** 200 free requests a day for buyers with at least 45,000,000 power, about 865,000 ANTS locked for a year. Everyone else, and a staker past 200, pays $0.60 / $2.50 per million tokens.
+
+`antseed seller start` prints each program on its own line, so you can check what you configured.
+
+Each model's program is advertised under a short hash of its id, as `free-tier.v1.m<hash>.*`. A program that uses the same tiers as `seller.freeTier` takes one capability string; one with its own tiers takes one string plus one per tier. Peer metadata allows 16 capability strings, and the node always uses 4 or 5 of them. A program that doesn't fit is still enforced, but not advertised, and the node logs a warning.
+
+A response the allowance covered carries `x-antseed-free-tier: covered`. The seller records no spend for it, and the buyer expects no charge. `config seller set` can't address a service id with a dot, so add these programs by editing the file.
 
 ### Restricted countries
 

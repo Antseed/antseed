@@ -64,7 +64,7 @@ function ProviderStats({ peer, showReputation }: { peer: Peer; showReputation: b
       <Figure label="Trust score" value={score(peer.trustScore)} />
       {showReputation && <Figure label="Reputation" value={score(peer.reputationScore)} />}
       <Figure label="Stake" value={peer.stakeAnts ? formatAnts(peer.stakeAnts) : '—'} />
-      {peer.freeTier && <Figure label="Free tier" value={<FreeTierInfo program={peer.freeTier} agentId={peer.agentId} />} />}
+      {peer.freeTier && <Figure label="Free tier (free models)" value={<FreeTierInfo program={peer.freeTier} agentId={peer.agentId} />} />}
       <Figure label="Network usage share" value={peer.usageShareBps === null ? '—' : `${(peer.usageShareBps / 100).toFixed(2)}%`} />
       <Figure label="First token p50 (this gateway)" value={formatLatency(peer.firstTokenMsP50)} />
       <Figure label="Speed p50 (this gateway)" value={formatSpeed(peer.tokensPerSecondP50)} />
@@ -72,6 +72,10 @@ function ProviderStats({ peer, showReputation }: { peer: Peer; showReputation: b
       <Figure label="Failure streak" value={coolingDown ? `${peer.health.failureStreak}, cooling down until ${formatDateTime(peer.health.coolingDownUntil)}` : String(peer.health.failureStreak)} />
     </div>
   )
+}
+
+function isFreeService(service: Service): boolean {
+  return [service.inputUsdPerMillion, service.outputUsdPerMillion, service.cachedInputUsdPerMillion].every((price) => (price ?? 0) === 0)
 }
 
 function ProviderModels({ peer, selected, onSelect }: { peer: Peer; selected: Service | null; onSelect: (service: Service) => void }) {
@@ -91,7 +95,10 @@ function ProviderModels({ peer, selected, onSelect }: { peer: Peer; selected: Se
               <PanelRow key={serviceKey(service)} selected={on}
                 title={<span className="gc-strong">{service.service}</span>}
                 meta={<>
-                  <span>{priceSummary(service)}</span>
+                  {isFreeService(service) && service.freeTier
+                    ? <FreeTierInfo program={service.freeTier} agentId={peer.agentId} />
+                    : <span>{priceSummary(service)}</span>}
+                  {!isFreeService(service) && service.freeTier && <FreeTierInfo program={service.freeTier} agentId={peer.agentId} priced />}
                   <span>{FORMAT_LABELS[serviceApiFormat(service)]}</span>
                 </>}
                 actions={<>

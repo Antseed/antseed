@@ -129,6 +129,14 @@ export function seed() {
     requests24h: [912, 340, 120, 55, 20, 0, 0, 210][index]!,
   }))
   // A routing service: sells rankings, not models, so it lists none.
+  // Beta's first model is priced, and free only for its stakers: 45M power (≈ 865k ANTS locked for a year) gets 200 a day.
+  const beta = peers[1]!
+  beta.services = beta.services.map((service, m) => m === 0 ? {
+    ...service,
+    freeTier: { base: { maxRequestsPerAddress: 200, maxRequestsPerIp: null, windowMs: 86_400_000, stakersOnly: true }, stakeTiers: [{ minPower: 45_000_000, multiplier: 1 }] },
+  } : service)
+  const delta = peers[3]!
+  delta.services = delta.services.map((service) => ({ ...service, freeTier: delta.freeTier }))
   const fakeRouter: Peer = { ...peers[7]!, peerId: fakePeerId(9), displayName: 'Fake Router Iota', services: [], verified: false, verificationLinks: [], tee: false, teeScope: null, washFlagged: false, requests24h: 48 }
   peers.push(fakeRouter)
   const peerLists: PeerList[] = [
@@ -258,7 +266,7 @@ export function mockNetworkModels(peers: readonly Peer[]): NetworkModel[] {
         protocols: service.apiProtocols ?? ['openai-chat-completions'], inputUsdPerMillion: service.inputUsdPerMillion,
         outputUsdPerMillion: service.outputUsdPerMillion, cachedInputUsdPerMillion: service.cachedInputUsdPerMillion, usdPerImage: null,
         contextLength: service.service.includes('llama') ? 128_000 : service.service.includes('qwen') ? 262_144 : null, free,
-        agentId: peer.agentId, freeTier: peer.freeTier,
+        agentId: peer.agentId, freeTier: service.freeTier ?? (free ? peer.freeTier : null),
         reputationScore: peer.reputationScore, trustScore: peer.trustScore, verified: peer.verified, verificationLinks: peer.verificationLinks, tee: peer.tee, teeScope: peer.teeScope, latencyMsP50: peer.latencyMsP50, firstTokenMsP50: peer.firstTokenMsP50, tokensPerSecondP50: peer.tokensPerSecondP50,
       })
       offers.set(service.service, list)
@@ -283,9 +291,9 @@ export function mockNetworkModels(peers: readonly Peer[]): NetworkModel[] {
       sellers: ranked.length,
       inputUsdPerMillion: range(ranked.map((offer) => offer.inputUsdPerMillion)),
       outputUsdPerMillion: range(ranked.map((offer) => offer.outputUsdPerMillion)),
-      free: ranked.some((offer) => offer.free),
-      freeForStakers: false,
-      freeAllowance: false,
+      free: ranked.some((offer) => offer.free && !offer.freeTier?.base.stakersOnly),
+      freeForStakers: ranked.some((offer) => offer.freeTier?.base.stakersOnly === true),
+      freeAllowance: ranked.some((offer) => !offer.free && offer.freeTier !== null && !offer.freeTier.base.stakersOnly),
       teeSellers: ranked.filter((offer) => offer.tee).length,
       fullTeeSellers: ranked.filter((offer) => offer.teeScope === 'end-to-end').length,
       verifiedSellers: ranked.filter((offer) => offer.verified).length,

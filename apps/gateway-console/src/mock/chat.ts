@@ -18,9 +18,13 @@ export function mockChatModels(): ChatModel[] {
   })
   return [
     {
-      id: 'kimi-k3', name: 'Kimi K3', toolUse: true, reasoning: true, vision: true, free: false, freeForStakers: false, tee: true, offers: 2, inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5,
+      id: 'kimi-k3', name: 'Kimi K3', toolUse: true, reasoning: true, vision: true, free: false, freeForStakers: true, tee: true, offers: 2, inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5,
       peers: [
-        peer(PEER_B, 'Fake Seller Beta', 0.6, 2.5, 81, { vision: true, tee: true }),
+        // Free for Beta's stakers (45M power gets 200 a day); everyone else pays.
+        peer(PEER_B, 'Fake Seller Beta', 0.6, 2.5, 81, {
+          vision: true, tee: true,
+          freeTier: { base: { maxRequestsPerAddress: 200, maxRequestsPerIp: null, windowMs: 86_400_000, stakersOnly: true }, stakeTiers: [{ minPower: 45_000_000, multiplier: 1 }] },
+        }),
         peer(PEER_A, 'Fake Seller Alpha', 0.72, 2.8, 74),
       ],
     },
@@ -140,6 +144,8 @@ function freeTierLimitStream(): Response {
       peerId: PEER_FREE, limitedBy: 'address', limit: 1000, windowMs: 86_400_000, retryAfterSeconds: 3 * 3600 + 600,
       stakeTiers: [{ minPower: 520_000, multiplier: 5 }, { minPower: 2_600_000, multiplier: 20 }, { minPower: 10_400_000, multiplier: 'unlimited' }],
       stakePower: 0,
+      baseLimit: 1000,
+      stakersOnly: false,
     },
   }
   const lines = [{ type: 'start' }, { type: 'error', errorText: JSON.stringify(error) }].map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join('')

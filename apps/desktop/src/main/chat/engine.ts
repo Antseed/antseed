@@ -55,7 +55,6 @@ import {
 import { enrichDomainVerificationLinks } from '../connected-apps/domain-site-metadata.js';
 import { isNativeVideoProtocol, resolveChainConfig } from '@antseed/node';
 import { collectPeerVerificationLinks } from '@antseed/node/discovery';
-import { parseFreeTierProgram } from '@antseed/node/free-tier-program';
 import { augmentChatToolPath } from './tool-env.js';
 import type { AiConversation } from './conversation-types.js';
 import {
@@ -634,9 +633,9 @@ export function registerPiChatHandlers({
                 ? rec.onChainSybilFlags.filter((f: unknown): f is string => typeof f === 'string')
                 : [],
               sellerContract: typeof rec.sellerContract === 'string' ? rec.sellerContract : undefined,
-              freeTier: parseFreeTierProgram(Array.isArray(rec.capabilities)
+              capabilities: Array.isArray(rec.capabilities)
                 ? rec.capabilities.filter((c: unknown): c is string => typeof c === 'string')
-                : undefined),
+                : [],
               verificationLinks: collectPeerVerificationLinks({ verificationResults: rec.verificationResults }),
               peerIconUrl: null,
             };

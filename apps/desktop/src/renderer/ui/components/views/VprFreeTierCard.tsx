@@ -59,7 +59,7 @@ export function VprFreeTierCard() {
     <VprCard className={styles.aboutCard}>
       <span className={styles.aboutTitle}>Staked free tier</span>
       <span className={styles.aboutText}>
-        On each seller with a staked free tier, stake in that seller's pool raises your free limit there, including stake shared with you. Ask a staker for a code for your address
+        On each seller with a staked free tier, stake in that seller's pool raises your free limit there, or unlocks models it offers free only to its stakers, including stake shared with you. Ask a staker for a code for your address
         {sharing ? <>{' '}<button type="button" className={styles.inlineLink} onClick={copyBuyer} title={sharing.buyer}>{copied ? 'copied' : shortAddress(sharing.buyer)}</button></> : null}.
       </span>
       {sharing && sharing.stakers.length > 0 ? (

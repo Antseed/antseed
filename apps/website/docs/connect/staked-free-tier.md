@@ -27,12 +27,19 @@ Each seller sets its own program. Sellers that don't change it use this default:
 - Power shrinks every week as the lock runs down. Extend the lock or enable max lock (a constant 104 epochs of power) to keep your tier.
 - Withdrawing before the lock ends burns part of the principal.
 
+## Programs per model
+
+A seller can set a different program for each model, with its own limits and its own counters. Using up one model's free limit leaves your allowance on the seller's other models untouched.
+
+- **Free for stakers:** a model can be free only for buyers whose stake reaches one of its tiers. Without enough stake, a free model refuses you, and the refusal says how much stake unlocks it.
+- **Stake or pay:** a priced model can have a free allowance. Requests it covers are free, with no payment channel and no charge. The rest are paid at the listed price, as usual. You need a deposit only for requests past the allowance.
+
 ## Check a seller's program
 
 Sellers sign their limits and tiers into their peer metadata, and every Antseed app shows them next to the seller's free models:
 
-- **Desktop:** on a model's page, a free seller's row shows its limit, for example "1,000 free requests a day". **Stake for more** lists its tiers and opens staking on that seller's pool.
-- **Gateway:** in a model's provider list and on a provider's page, the free limit is followed by "stake for more" and an ⓘ with the tiers and a **Stake in this seller's pool** link.
+- **Desktop:** on a model's page, each seller's row shows that model's program. Examples: "1,000 free requests a day", "Free for stakers", or after a price, "200 free requests a day, then paid". The **Stake for more**, **Free for stakers** or **Free allowance** tag lists the tiers in requests and opens staking on that seller's pool.
+- **Gateway:** model lists mark models that are free, **Free for stakers** or have a **Free allowance**. In a model's provider list and on a provider's page, each model's program has an ⓘ with its tiers and a **Stake in this seller's pool** link.
 
 When you run out, the desktop app and the gateway chat say which seller's limit ran out, when it resets and the next tier, with a link to stake in that seller's pool.
 
@@ -45,7 +52,7 @@ curl "https://antscan.co/api/free-tier?seller=0x<sellerAddress>"
 
 Each entry has the base limits (`maxRequestsPerAddress`, `maxRequestsPerIp`, `windowMs`), the seller's `onChainAgentId`, and `stakeTiers` with `minPower`, `antsLockedForYear`, `multiplier` and `maxRequests` per window.
 
-When you hit a limit, your buyer returns HTTP 429 with `code: "free_tier_exhausted"` and a `free_tier` object: the seller's `peerId`, `limitedBy`, `limit`, `windowMs`, `retryAfterSeconds`, its `stakeTiers` and your current `stakePower` in that seller's pool. The message names the next tier.
+When you hit a limit, your buyer returns HTTP 429 with `code: "free_tier_exhausted"` and a `free_tier` object: the seller's `peerId`, `limitedBy`, `limit`, `windowMs`, `retryAfterSeconds`, its `stakeTiers`, its `baseLimit` (what the tier multipliers apply to), `stakersOnly`, and your current `stakePower` in that seller's pool. The message names the next tier. On a model that is free only for stakers, `limitedBy` is `stake_required`.
 
 ## Stake on a seller
 

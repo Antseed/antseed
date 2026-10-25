@@ -84,7 +84,7 @@ function FreeTierShareForm({ sign }: { sign: Sign }) {
     <Panel title="Share free tier">
       <div className="stack">
         <div className="hint">
-          Sellers with a staked free tier raise a buyer's free limit by the staking power in their own pool. Create a code for a buyer address and send it to them: on each seller, your positions in that seller's pool then count for that buyer.
+          Sellers with a staked free tier raise a buyer's free limit by the staking power in their own pool, and some offer models free only to their stakers. Create a code for a buyer address and send it to them: on each seller, your positions in that seller's pool then count for that buyer.
           Signing costs no gas and moves no ANTS.
         </div>
         {shared ? (

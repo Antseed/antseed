@@ -511,8 +511,8 @@ function SellerRow({ route, active, auto, onClick, tee }: {
             />
           }
           {active && <VprBadge tone="primary">{auto ? '• Auto' : 'Pinned'}</VprBadge>}
-          {isFreeRoute(route) && <VprBadge tone="green">Free</VprBadge>}
-          {isFreeRoute(route) && <VprFreeTierStake program={route.freeTier} agentId={route.agentId} />}
+          {isFreeRoute(route) && !route.freeTier?.base.stakersOnly && <VprBadge tone="green">Free</VprBadge>}
+          <VprFreeTierStake program={route.freeTier} agentId={route.agentId} priced={!isFreeRoute(route)} />
           {hasModerationControl && <VprBadge tone="neutral">Moderation control</VprBadge>}
         </div>
         <span className={styles.sellerMeta}>

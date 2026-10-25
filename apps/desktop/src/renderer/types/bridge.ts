@@ -232,12 +232,16 @@ export type ChatAiStreamStopReason = {
   /** Set when a seller's free tier ran out: its limit and staked tiers (only stake in that seller's pool counts). */
   freeTier?: {
     peerId: string | null;
-    limitedBy: 'address' | 'ip' | 'stake';
+    /** `stake_required`: the model is free on that seller only for its stakers. */
+    limitedBy: 'address' | 'ip' | 'stake' | 'stake_required';
     limit: number | null;
     windowMs: number | null;
     retryAfterSeconds: number | null;
     stakeTiers: Array<{ minPower: number; multiplier: number | 'unlimited' }>;
     stakePower: number;
+    /** Requests per window the tier multipliers apply to; null from sellers that don't send it. */
+    baseLimit: number | null;
+    stakersOnly: boolean;
   };
 };
 

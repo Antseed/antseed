@@ -2,7 +2,7 @@ import { HugeiconsIcon } from '@hugeicons/react';
 import { Cancel01Icon } from '@hugeicons/core-free-icons';
 import type { DiscoverRow } from '../../../core/state';
 import type { ChatAiStreamStopReason } from '../../../types/bridge';
-import { nextTier, tierAllowance, tierAnts } from '../../../modules/catalog/free-tier';
+import { nextTier, refusalTierAllowance, tierAnts } from '../../../modules/catalog/free-tier';
 import { useOpenSellerPool } from '../../hooks/useOpenSellerPool';
 import styles from './FundingStatusNotice.module.scss';
 
@@ -30,12 +30,19 @@ export function FreeTierLimitNotice({ limit, rows, onDismiss }: {
   const seller = row?.peerDisplayName || row?.peerLabel || 'this seller';
   const next = nextTier(limit.stakeTiers, limit.stakePower);
   const pool = row?.agentId ?? 0;
-  const title = limit.limitedBy === 'stake'
-    ? `Your staked free allowance on ${seller} is used up`
-    : `Free limit reached on ${seller}`;
+  const stakersOnly = limit.limitedBy === 'stake_required';
+  const title = stakersOnly
+    ? `This model is free on ${seller} only for its stakers`
+    : limit.limitedBy === 'stake'
+      ? `Your staked free allowance on ${seller} is used up`
+      : `Free limit reached on ${seller}`;
   const body = [
-    limit.retryAfterSeconds !== null ? `Resets in ${formatWait(limit.retryAfterSeconds)}.` : '',
-    next ? `Lock ${tierAnts(next)} for a year in ${seller}'s pool for ${tierAllowance(next).toLowerCase()}. Stake in other pools doesn't count here.` : '',
+    !stakersOnly && limit.retryAfterSeconds !== null ? `Resets in ${formatWait(limit.retryAfterSeconds)}.` : '',
+    next
+      ? stakersOnly
+        ? `Lock ${tierAnts(next)} for a year in ${seller}'s pool to use it (${refusalTierAllowance(limit, next)}). Stake in other pools doesn't count here.`
+        : `Lock ${tierAnts(next)} for a year in ${seller}'s pool for ${refusalTierAllowance(limit, next)}. Stake in other pools doesn't count here.`
+      : '',
   ].filter(Boolean).join(' ');
   return (
     <div className={`${styles.notice} ${styles.card}`} role="status">

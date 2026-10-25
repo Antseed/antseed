@@ -317,6 +317,8 @@ const FREE_TIER = {
   retryAfterSeconds: 3600,
   stakeTiers: [{ minPower: 520_000, multiplier: 5 }],
   stakePower: 0,
+  baseLimit: 1000,
+  stakersOnly: false,
 };
 const FREE_TIER_ERROR = {
   type: 'rate_limit_error',
