@@ -348,6 +348,31 @@ describe('SellerFreeTierLimiter', () => {
       expect(limiter.consume({ buyerPeerId: BUYER, service: 'flash', paid: true, nowMs: 1_004 }).allowed).toBe(true);
     });
 
+    it('admits a free-usage channel only when an offered free service would still serve the buyer', () => {
+      // One free model, stakers only, and no seller-wide program.
+      const limiter = new SellerFreeTierLimiter({
+        services: {
+          'staked-model': { maxRequestsPerAddress: 1, stakeTiers: [tier5x], stakersOnly: true },
+          'paid-image': { maxRequestsPerAddress: 50 },
+        },
+      });
+      limiter.setPaidServices(['paid-image']);
+      limiter.setFreeServices(['staked-model']);
+      expect(limiter.check({ buyerPeerId: BUYER, nowMs: 1_000 })).toMatchObject({ allowed: false, limitedBy: 'stake_required' });
+      expect(limiter.check({ buyerPeerId: BUYER, standing: standing(tier5x), nowMs: 1_001 })).toMatchObject({ allowed: true });
+      // Every offered free service used up: refused, even with paid-image's allowance left.
+      const scoped = new SellerFreeTierLimiter({ services: { a: { maxRequestsPerAddress: 1 }, b: { maxRequestsPerAddress: 1 }, 'paid-image': { maxRequestsPerAddress: 50 } } });
+      scoped.setPaidServices(['paid-image']);
+      scoped.setFreeServices(['a', 'b']);
+      scoped.consume({ buyerPeerId: BUYER, service: 'a', nowMs: 1_000 });
+      expect(scoped.check({ buyerPeerId: BUYER, nowMs: 1_001 })).toMatchObject({ allowed: true });
+      scoped.consume({ buyerPeerId: BUYER, service: 'b', nowMs: 1_002 });
+      expect(scoped.check({ buyerPeerId: BUYER, nowMs: 1_003 })).toMatchObject({ allowed: false, limitedBy: 'address' });
+      // An offered free service without any program is unlimited, so the channel is always useful.
+      scoped.setFreeServices(['a', 'b', 'unlimited-model']);
+      expect(scoped.check({ buyerPeerId: BUYER, nowMs: 1_004 })).toBeNull();
+    });
+
     it('advertises service programs scoped by service, inheriting identical seller-wide tiers', () => {
       const limiter = new SellerFreeTierLimiter({
         maxRequestsPerAddress: 10,

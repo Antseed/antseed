@@ -37,3 +37,25 @@ describe('default buyer free-tier delegations', () => {
     expect(decodeFreeTierDelegationsHeader(defaultHandlerHeader(node)!, delegation.buyer)).toEqual([delegation]);
   });
 });
+
+describe('seller free-tier service classification', () => {
+  it('counts a unit-priced service as paid, like the request handler does', () => {
+    const node = new AntseedNode({ role: 'seller', bootstrapNodes: [], noOfficialBootstrap: true });
+    const free = { inputUsdPerMillion: 0, outputUsdPerMillion: 0 };
+    node.registerProvider({
+      name: 'images',
+      services: ['paid-image', 'free-image', 'paid-chat', 'free-chat'],
+      pricing: { defaults: free, services: { 'paid-chat': { inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: 0.1 } } },
+      serviceUnitBillingModels: {
+        'paid-image': { 'openai-images': { version: 1, components: [{ unit: 'output_images', priceUsd: 0.02 }] } },
+        'free-image': { 'openai-images': { version: 1, components: [{ unit: 'output_images', priceUsd: 0 }] } },
+      },
+      maxConcurrency: 1,
+      handleRequest: async () => { throw new Error('unused'); },
+      getCapacity: () => ({ current: 0, max: 1 }),
+    } as never);
+    const offered = (node as unknown as { _offeredServicesByPrice(): { paid: string[]; free: string[] } })._offeredServicesByPrice();
+    expect(offered.paid.sort()).toEqual(['paid-chat', 'paid-image']);
+    expect(offered.free.sort()).toEqual(['free-chat', 'free-image']);
+  });
+});
