@@ -10,13 +10,16 @@ const REPUTATION_DOCS = 'https://antseed.com/docs/reputation'
 export function InfoTip({ label, children, align = 'start' }: {
   label: string
   children: React.ReactNode
-  /** `end` opens the bubble leftward, for tips near the right edge (side panels). */
-  align?: 'start' | 'end'
+  /**
+   * `end` opens the bubble leftward, for tips near the right edge (side panels);
+   * `center` centres it on the icon, for tips mid-row in a narrow panel.
+   */
+  align?: 'start' | 'end' | 'center'
 }) {
   const [pinned, setPinned] = useState(false)
   const id = useId()
   return (
-    <span className={['gc-tip', pinned && 'gc-tip--open', align === 'end' && 'gc-tip--end'].filter(Boolean).join(' ')} onMouseLeave={() => setPinned(false)}>
+    <span className={['gc-tip', pinned && 'gc-tip--open', align === 'end' && 'gc-tip--end', align === 'center' && 'gc-tip--center'].filter(Boolean).join(' ')} onMouseLeave={() => setPinned(false)}>
       <button type="button" className="gc-tip__button" aria-label={label} aria-describedby={id}
         onClick={() => setPinned((open) => !open)} onBlur={() => setPinned(false)}>
         <Icon.info size={14} />

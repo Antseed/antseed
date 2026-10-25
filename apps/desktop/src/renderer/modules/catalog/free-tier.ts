@@ -40,12 +40,12 @@ export function freeTierHeadline(program: FreeTierProgram, priced: boolean): str
   return priced ? `${base}, then paid` : base;
 }
 
-/** What a tier allows, in requests: "5,000 free requests a day" or "Unlimited". */
+/** What a tier allows, in requests: "5,000 a day" or "Unlimited". */
 export function tierLimit(program: FreeTierProgram, tier: FreeTierStakeTier): string {
   if (tier.multiplier === 'unlimited') return 'Unlimited';
   const base = program.base.maxRequestsPerAddress ?? program.base.maxRequestsPerIp;
   if (base === null) return tierAllowance(tier);
-  return `${(base * tier.multiplier).toLocaleString('en-US')} free requests ${per(program.base.windowMs)}`;
+  return `${(base * tier.multiplier).toLocaleString('en-US')} ${per(program.base.windowMs)}`;
 }
 
 /**

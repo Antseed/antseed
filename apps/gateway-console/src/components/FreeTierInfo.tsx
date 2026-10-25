@@ -11,11 +11,13 @@ import { InfoTip } from './TrustInfo'
  * staked tiers, what locking ANTS in this seller's pool earns; a stakers-only
  * program serves no one below the first tier. Stake in other pools never counts.
  */
-export function FreeTierInfo({ program, agentId, priced = false }: {
+export function FreeTierInfo({ program, agentId, priced = false, align = 'end' }: {
   program: FreeTierProgramView | null
   agentId: number | null
   /** The offer has a listed price: requests past the allowance are paid. */
   priced?: boolean
+  /** Where the tiers bubble opens; `center` for rows mid-way across a narrow panel. */
+  align?: 'start' | 'end' | 'center'
 }) {
   const canStake = isWorkspaceAdmin(useConsole().viewer)
   if (!program) return null
@@ -25,7 +27,7 @@ export function FreeTierInfo({ program, agentId, priced = false }: {
   return (
     <span className="gc-inline">
       <span>{stakersOnly ? headline : `${headline} · stake for more`}</span>
-      <InfoTip label="Staked free tier" align="end">
+      <InfoTip label="Staked free tier" align={align}>
         <span className="gc-tip__title">{stakersOnly ? "Free for this seller's stakers" : "Raise this seller's free limit"}</span>
         {stakersOnly
           ? <>Lock ANTS in this seller's pool to use this model free{priced ? ' instead of paying' : ''}. {priced ? 'Without enough stake, requests are paid at the listed price.' : 'Without enough stake, this seller does not serve it.'}</>

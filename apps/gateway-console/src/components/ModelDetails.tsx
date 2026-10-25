@@ -72,8 +72,8 @@ export function ModelDetails({ model, preview, previewLoading, pin }: {
     return {
       selected: offers.some((entry) => route === offerKey(entry)),
       meta: <>
-        {offer.free && offer.freeTier ? <FreeTierInfo program={offer.freeTier} agentId={offer.agentId} /> : <span>{priceSummary(offer)}</span>}
-        {!offer.free && offer.freeTier && <FreeTierInfo program={offer.freeTier} agentId={offer.agentId} priced />}
+        {offer.free && offer.freeTier ? <FreeTierInfo program={offer.freeTier} agentId={offer.agentId} align="center" /> : <span>{priceSummary(offer)}</span>}
+        {!offer.free && offer.freeTier && <FreeTierInfo program={offer.freeTier} agentId={offer.agentId} priced align="center" />}
         <span>Trust {score(offer.trustScore)}</span>
         {offers.map((entry) => entry.serviceId !== model.id && <Mono key={entry.serviceId}>{entry.serviceId}</Mono>)}
       </>,

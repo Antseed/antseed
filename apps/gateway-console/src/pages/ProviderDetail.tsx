@@ -96,9 +96,9 @@ function ProviderModels({ peer, selected, onSelect }: { peer: Peer; selected: Se
                 title={<span className="gc-strong">{service.service}</span>}
                 meta={<>
                   {isFreeService(service) && service.freeTier
-                    ? <FreeTierInfo program={service.freeTier} agentId={peer.agentId} />
+                    ? <FreeTierInfo program={service.freeTier} agentId={peer.agentId} align="center" />
                     : <span>{priceSummary(service)}</span>}
-                  {!isFreeService(service) && service.freeTier && <FreeTierInfo program={service.freeTier} agentId={peer.agentId} priced />}
+                  {!isFreeService(service) && service.freeTier && <FreeTierInfo program={service.freeTier} agentId={peer.agentId} priced align="center" />}
                   <span>{FORMAT_LABELS[serviceApiFormat(service)]}</span>
                 </>}
                 actions={<>
