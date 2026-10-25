@@ -291,11 +291,13 @@ export class SellerFreeTierLimiter {
       ...(this._default ? [[undefined, this._default] as [undefined, FreeTierPolicy]] : []),
       ...[...this._services].sort(([a], [b]) => a.localeCompare(b)),
     ];
-    const sellerWideTiers = this._default?.program(active).stakeTiers;
+    // Service programs may point at the seller-wide tiers only once those are advertised.
+    let sellerWideTiers: FreeTierStakeTier[] | undefined;
     for (const [service, policy] of programs) {
       const strings = encodeFreeTierCapabilities(policy.program(active), service, sellerWideTiers ? { sellerWideTiers } : {});
       if (out.length + strings.length > budget) continue;
       out.push(...strings);
+      if (service === undefined) sellerWideTiers = policy.program(active).stakeTiers;
     }
     return out;
   }

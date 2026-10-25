@@ -1374,9 +1374,10 @@ describe('SellerRequestHandler payment pricing selection', () => {
     expect(resolveStanding).not.toHaveBeenCalled();
   });
 
-  it('does not apply the free-tier allowance to paid requests', async () => {
+  it('does not apply the free-tier allowance to paid requests, and drops a provider-sent allowance marker', async () => {
     const provider = makeProvider(1, 1, { name: 'paid-tier', services: ['local-test'] });
-    provider.handleRequest = vi.fn(async (req) => ({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ ok: true })) }));
+    // Only the seller may say a request was free; an upstream copy of the marker must not reach the buyer.
+    provider.handleRequest = vi.fn(async (req) => ({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json', 'X-Antseed-Free-Tier': 'covered' }, body: new TextEncoder().encode(JSON.stringify({ ok: true })) }));
     const consume = vi.fn();
     const handler = makeSellerRequestHandler({
       providers: [provider],
@@ -1409,6 +1410,9 @@ describe('SellerRequestHandler payment pricing selection', () => {
 
     expect(provider.handleRequest).toHaveBeenCalledOnce();
     expect(consume).not.toHaveBeenCalled();
+    const frame = sentFrames.map((f) => decodeFrame(f)).find((d) => d?.message.type === MessageType.HttpResponse);
+    const headers = decodeHttpResponse(frame!.message.payload).headers;
+    expect(Object.keys(headers).map((name) => name.toLowerCase())).not.toContain('x-antseed-free-tier');
   });
 
   describe('free allowance on a priced service', () => {

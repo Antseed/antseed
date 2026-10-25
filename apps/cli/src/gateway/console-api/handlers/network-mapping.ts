@@ -1,10 +1,10 @@
 /** Pure mapping from the buyer's peer, health and verification views to the console's `Peer`. */
+import { isNativeVideoProtocol } from '@antseed/node'
 import { collectPeerVerificationLinks } from '@antseed/node/discovery'
 import { parseVerifierCapabilities } from '@antseed/node/verifier-capabilities'
-import { normalizeFreeTierProgram, parseFreeTierProgram, parseServiceFreeTierProgram } from '@antseed/node/free-tier-program'
+import { freeTierProgramForService, isPricedService, normalizeFreeTierProgram, parseFreeTierProgram } from '@antseed/node/free-tier-program'
 import { modelTagsFor } from '@antseed/node/model-metadata'
 import { TEE_VERIFIER_ID, teeScope, type TeeClaim, type TeeScope } from '@antseed/node/tee-status'
-import type { FreeTierProgramView } from '../free-tier-types.js'
 import type { NetworkModel, NetworkModelCapability, NetworkModelOffer, NetworkModelType, NetworkRouter, NetworkRouterOption, Peer, RoutePreview } from '../types.js'
 import { parseRouteSelection } from '../../../proxy/route-selection.js'
 
@@ -38,17 +38,12 @@ export interface PeerStat {
   tokensPerSecondP50?: number | null
 }
 
-function modelFreeTier(peer: Peer | undefined, service: string, free: boolean): FreeTierProgramView | null {
-  const entry = peer?.services.find((candidate) => candidate.service === service)
-  if (entry) return entry.freeTier ?? null
-  return free ? peer?.freeTier ?? null : null
-}
-
 /** One entry per advertised service, priced from the service's own entry or the provider default. */
 export function peerServices(row: Row): Peer['services'] {
   const pricing = asRecord(row['providerPricing'])
   const categories = asRecord(row['providerServiceCategories'])
   const protocols = asRecord(row['providerServiceApiProtocols'])
+  const unitModels = asRecord(row['providerServiceUnitBillingModels'])
   const capabilities = strings(row['capabilities'])
   const providers = new Set<string>([
     ...(Array.isArray(row['providers']) ? row['providers'].filter((p): p is string => typeof p === 'string') : []),
@@ -66,8 +61,14 @@ export function peerServices(row: Row): Peer['services'] {
       const price = { ...defaults, ...asRecord(priced[service]) }
       const tags = tagged[service]
       const apis = spoken[service]
-      const isFree = [price['inputUsdPerMillion'], price['outputUsdPerMillion'], price['cachedInputUsdPerMillion']]
-        .every((value) => (num(value) ?? 0) === 0)
+      const billing = asRecord(asRecord(unitModels[provider])['services'])[service]
+      const paid = isPricedService({
+        inputUsdPerMillion: num(price['inputUsdPerMillion']),
+        outputUsdPerMillion: num(price['outputUsdPerMillion']),
+        cachedInputUsdPerMillion: num(price['cachedInputUsdPerMillion']),
+        unitBillingModels: billing && typeof billing === 'object' ? billing as Record<string, { components?: Array<{ priceUsd: number }> }> : null,
+      })
+      const video = Array.isArray(apis) && apis.some(isNativeVideoProtocol)
       services.push({
         provider,
         service,
@@ -77,7 +78,7 @@ export function peerServices(row: Row): Peer['services'] {
         categories: Array.isArray(tags) ? tags.filter((tag): tag is string => typeof tag === 'string') : [],
         ...(Array.isArray(apis) ? { apiProtocols: apis.filter((api): api is string => typeof api === 'string') } : {}),
         // A priced service only has a free allowance of its own; the seller-wide program covers free services.
-        freeTier: isFree ? parseFreeTierProgram(capabilities, service) : parseServiceFreeTierProgram(capabilities, service),
+        freeTier: freeTierProgramForService(capabilities, service, paid, { video }),
       })
     }
   }
@@ -279,8 +280,8 @@ export function mapNetworkModels(body: unknown, peers: readonly Peer[]): Network
         agentId: peer?.agentId ?? null,
         // The program this model is served under: its own, else the seller-wide
         // one, which only covers free models. A priced model's own program is a free allowance.
-        freeTier: normalizeFreeTierProgram(offer['freeTier'])
-          ?? modelFreeTier(peer, str(offer['serviceId']) ?? id, (input ?? 0) === 0 && (output ?? 0) === 0),
+        // The buyer's catalog classifies the offer (prices, unit billing, video) the way the seller does.
+        freeTier: normalizeFreeTierProgram(offer['freeTier']),
         reputationScore: num(offer['effectiveReputationScore']) ?? num(offer['reputationScore']),
         trustScore: peer?.trustScore ?? num(offer['onChainReputationScore']),
         verified: peer?.verified ?? false,

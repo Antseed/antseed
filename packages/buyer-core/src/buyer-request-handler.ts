@@ -367,6 +367,9 @@ export class BuyerRequestHandler {
         req,
         (response: SerializedHttpResponse, metadata) => {
           if (settled) return;
+          // Mark a covered response as soon as its headers arrive: the seller's
+          // NeedAuth travels on another mux and must not beat this.
+          if (isCoveredByFreeAllowance(response)) negotiator?.bpm.markRequestCovered(req.requestId);
           if (isDownload && streamStarted && !metadata.streamingStart) {
             fail(new Error('Video download interrupted'));
             return;
@@ -585,7 +588,7 @@ export class BuyerRequestHandler {
   ): void {
     if (isCoveredByFreeAllowance(response)) {
       debugLog(`[BuyerRequest] ${peer.peerId.slice(0, 12)}... served ${service ?? 'request'} from its free allowance`);
-      negotiator.bpm.clearRequestBilling(requestId);
+      negotiator.bpm.markRequestCovered(requestId);
       return;
     }
     negotiator.estimateCostFromResponse(peer, response, service, requestId);

@@ -41,6 +41,29 @@ test('network model offers carry the free-tier program they are served under', (
   assert.equal(offer('paid-model')?.freeTier, undefined)
 })
 
+test('paid image and video offers never inherit the seller-wide program, and paid video has no allowance', () => {
+  const sellerWide = { base: { maxRequestsPerAddress: 1000, maxRequestsPerIp: null, windowMs: 86_400_000 }, stakeTiers: [] }
+  const allowance = { base: { maxRequestsPerAddress: 5, maxRequestsPerIp: null, windowMs: 86_400_000 }, stakeTiers: [] }
+  const capabilities = [...encodeFreeTierCapabilities(sellerWide), ...encodeFreeTierCapabilities(allowance, 'paid-video')]
+  const images = { version: 1 as const, components: [{ unit: 'output_images' as const, priceUsd: 0.01 }] }
+  const video = { version: 1 as const, components: [{ unit: 'video_generations' as const, priceUsd: 0.4 }] }
+  const peer = makePeer({
+    peerId: 'd'.repeat(40),
+    providers: ['fal'],
+    providerPricing: { fal: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } },
+    providerServiceApiProtocols: { fal: { services: { 'paid-image': ['openai-images'], 'paid-video': ['fal-video'] } } },
+    providerServiceUnitBillingModels: { fal: { services: { 'paid-image': { 'openai-images': images }, 'paid-video': { 'fal-video': video } } } },
+    capabilities,
+  })
+  const models = buildNetworkModels([peer], NOW_MS)
+  const offer = (id: string) => models.find((model) => model.id === id)?.peers[0]
+  assert.ok(offer('paid-image'))
+  assert.equal(offer('paid-image')?.freeTier, undefined)
+  // Video is paid through one-off channels, so even its own allowance is never honoured.
+  assert.ok(offer('paid-video'))
+  assert.equal(offer('paid-video')?.freeTier, undefined)
+})
+
 function makePeer(overrides: Omit<Partial<PeerInfo>, 'peerId'> & { peerId: string }): PeerInfo {
   return {
     lastSeen: NOW_MS,

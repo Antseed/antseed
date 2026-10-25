@@ -746,6 +746,35 @@ describe('BuyerPaymentManager', () => {
     expect(sent.cumulativeAmount).toBe('50000');
   });
 
+  it('handleNeedAuth refuses to sign for a request the seller served from a free allowance', async () => {
+    const sellerPeerId = fakePeerId('seller-needauth-covered');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    mux.sentSpendingAuths.length = 0;
+    manager.markRequestCovered('covered-request');
+
+    await manager.handleNeedAuth(sellerPeerId, {
+      channelId,
+      requiredCumulativeAmount: '50000',
+      currentAcceptedCumulative: '10000',
+      deposit: '1000000',
+      requestId: 'covered-request',
+      lastRequestCost: '40000',
+      inputTokens: '1000',
+      outputTokens: '1000',
+    }, mux);
+    expect(mux.sentSpendingAuths).toHaveLength(0);
+
+    // Requests the allowance did not cover are still paid.
+    await manager.handleNeedAuth(sellerPeerId, {
+      channelId,
+      requiredCumulativeAmount: '50000',
+      currentAcceptedCumulative: '10000',
+      deposit: '1000000',
+      requestId: 'paid-request',
+    }, mux);
+    expect(mux.sentSpendingAuths).toHaveLength(1);
+  });
+
   it('handleNeedAuth propagates durable persistence failures without transmitting', async () => {
     const sellerPeerId = fakePeerId('seller-needauth-persist-fail');
     const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
