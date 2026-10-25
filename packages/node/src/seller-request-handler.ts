@@ -13,11 +13,13 @@ import type { SellerFreeUsageManager } from './payments/seller-free-usage-manage
 import type { FreeTierDecision, SellerFreeTierLimiter } from './payments/seller-free-tier-limiter.js';
 import { powerToAntsEpochs } from './payments/free-tier-program.js';
 import { FREE_TIER_DELEGATIONS_HEADER } from './payments/free-tier-delegation.js';
+import { FREE_TIER_SERVED_COVERED, FREE_TIER_SERVED_HEADER } from './payments/free-tier-program.js';
 
 const FREE_TIER_EXHAUSTED_MESSAGES = {
   address: 'This seller free tier has been exhausted for your buyer address.',
   ip: 'This seller free tier has been exhausted for your IP address.',
   stake: 'This seller staked free tier has been exhausted for your stake.',
+  stake_required: 'This model is free only for buyers staked on this seller.',
 } as const;
 import { ProxyMux } from './proxy/proxy-mux.js';
 import type { PeerConnection } from './p2p/connection-manager.js';
@@ -79,6 +81,8 @@ export function assertSingleRoutingService(providers: readonly Provider[]): void
     }
   }
 }
+
+const FREE_TOKEN_PRICING: ProviderTokenPricing = { inputUsdPerMillion: 0, outputUsdPerMillion: 0 };
 
 function isZeroTokenPricing(pricing: ProviderTokenPricing): boolean {
   return pricing.inputUsdPerMillion === 0
@@ -341,15 +345,41 @@ export class SellerRequestHandler {
       }
       const estimatedRequestCost = requestCostEstimate?.cost ?? 0n;
 
-      if (isFreeTierRequest && this._deps.sellerFreeTierLimiter) {
-        const requestedService = this._extractRequestedService(request) ?? 'unknown';
+      const freeTierService = this._extractRequestedService(request) ?? 'unknown';
+      const freeTierLimiter = this._deps.sellerFreeTierLimiter;
+      // A priced service with its own program serves the requests that program
+      // covers for free; the rest are paid as usual, never refused. Videos are
+      // paid through one-off channels and are not covered.
+      let coveredByAllowance = false;
+      if (!isFreeService && !videoRoute && freeTierLimiter?.appliesTo(freeTierService, { paid: true })) {
+        try {
+          const standing = await freeTierLimiter.resolveStanding(buyerPeerId, delegationsHeader ?? '');
+          const decision = freeTierLimiter.consume({
+            buyerPeerId,
+            service: freeTierService,
+            remoteIp: conn.remoteAddress ?? null,
+            standing,
+            paid: true,
+          });
+          coveredByAllowance = decision.allowed;
+          debugLog(
+            `[SellerHandler] Free allowance ${coveredByAllowance ? 'covers' : `does not cover (limitedBy=${decision.limitedBy})`} ` +
+            `${freeTierService} for ${decision.buyerAddress}`,
+          );
+        } catch (err) {
+          // Failing to account leaves the request paid: it can only cost the buyer the listed price.
+          debugWarn(`[SellerHandler] Free-allowance accounting failed for ${buyerPeerId.slice(0, 12)}..., charging as usual: ${err instanceof Error ? err.message : err}`);
+        }
+      }
+      const isServedFree = isFreeService || coveredByAllowance;
+      if (isFreeTierRequest && freeTierLimiter?.appliesTo(freeTierService)) {
         let decision: FreeTierDecision;
         try {
           // No header means the buyer has no codes any more: '' forgets the remembered ones.
-          const standing = await this._deps.sellerFreeTierLimiter.resolveStanding(buyerPeerId, delegationsHeader ?? '');
-          decision = this._deps.sellerFreeTierLimiter.consume({
+          const standing = await freeTierLimiter.resolveStanding(buyerPeerId, delegationsHeader ?? '');
+          decision = freeTierLimiter.consume({
             buyerPeerId,
-            service: requestedService,
+            service: freeTierService,
             remoteIp: conn.remoteAddress ?? null,
             standing,
           });
@@ -371,16 +401,19 @@ export class SellerRequestHandler {
           return;
         }
         if (!decision.allowed) {
-          const retryAfterSeconds = Math.max(1, Math.ceil(decision.retryAfterMs / 1000));
-          const limiter = this._deps.sellerFreeTierLimiter;
           const limitedBy = decision.limitedBy ?? 'address';
+          const program = decision.program;
+          const { windowMs } = program.base;
+          // Waiting never lifts a stakers-only refusal; only staking does.
+          const retryAfterSeconds = limitedBy === 'stake_required'
+            ? Math.ceil(windowMs / 1000)
+            : Math.max(1, Math.ceil(decision.retryAfterMs / 1000));
           const limit = decision.limit;
           debugLog(
-            `[SellerHandler] Free tier exhausted for ${decision.buyerAddress} ip=${decision.remoteIp ?? 'unknown'} ` +
-            `stakers=${decision.standing?.stakers.join('+') ?? 'none'} (limitedBy=${limitedBy}, limit=${limit}, windowMs=${limiter.windowMs})`,
+            `[SellerHandler] Free tier refused ${freeTierService} for ${decision.buyerAddress} ip=${decision.remoteIp ?? 'unknown'} ` +
+            `stakers=${decision.standing?.stakers.join('+') ?? 'none'} (limitedBy=${limitedBy}, limit=${limit}, windowMs=${windowMs})`,
           );
-          const program = limiter.program();
-          const stakeHint = program.stakeTiers.length > 0
+          const stakeHint = limitedBy !== 'stake_required' && program.stakeTiers.length > 0
             ? ' Stake ANTS on this seller to raise the limit.'
             : '';
           mux.sendProxyResponse({
@@ -398,8 +431,11 @@ export class SellerRequestHandler {
               },
               limitedBy,
               limit,
-              windowMs: limiter.windowMs,
+              windowMs,
               retryAfterSeconds,
+              // The allowance tier multipliers apply to, so a buyer can name a tier in requests.
+              baseLimit: program.base.maxRequestsPerAddress ?? program.base.maxRequestsPerIp,
+              ...(program.base.stakersOnly ? { stakersOnly: true } : {}),
               ...(program.stakeTiers.length > 0
                 ? {
                   stakeTiers: program.stakeTiers,
@@ -454,7 +490,7 @@ export class SellerRequestHandler {
       if (this._deps.channelsClient && !spmAuthorized && !oneOffChannelId) {
         // Free services skip the payment channel handshake entirely — no 402,
         // no ReserveAuth, no on-chain reserve.
-        if (isFreeService) {
+        if (isServedFree) {
           debugLog(`[SellerHandler] Free service for ${buyerPeerId.slice(0, 12)}... — skipping 402 / payment channel`);
         } else {
           const baseRequirements = spm?.getPaymentRequirements(
@@ -497,7 +533,7 @@ export class SellerRequestHandler {
       // Check budget before routing — reject if buyer hasn't authorized enough.
       // Free requests must not be blocked by an existing exhausted/blocked paid
       // payment channel for the same buyer.
-      if (spm && !isFreeService && !oneOffChannelId) {
+      if (spm && !isServedFree && !oneOffChannelId) {
         const initialSession = spm.getChannelByPeer(buyerPeerId);
         if (initialSession) {
           // Drain any in-flight SpendingAuth processing (e.g. an on-chain top-up
@@ -675,7 +711,7 @@ export class SellerRequestHandler {
       // Hold the channel open for the whole billable span — provider call,
       // spend recording, and NeedAuth — so a buyer-requested close can't land
       // between serving the request and claiming its cost.
-      const isBillable = !isFreeService && !oneOffChannelId && (spm?.hasSession(buyerPeerId) ?? false);
+      const isBillable = !isServedFree && !oneOffChannelId && (spm?.hasSession(buyerPeerId) ?? false);
       if (isBillable && spm!.hasClosingChannel(buyerPeerId)) {
         mux.sendProxyResponse({
           requestId: request.requestId,
@@ -695,6 +731,7 @@ export class SellerRequestHandler {
           let response = await this._executeRequest(provider, request, {
             signal: isDownload ? mux.downloadSignal(request.requestId) : undefined,
             onResponseStart: (streamResponseStart) => {
+              if (coveredByAllowance) setTrustedHeader(streamResponseStart.headers, FREE_TIER_SERVED_HEADER, FREE_TIER_SERVED_COVERED);
               if (isDownload) downloadHash = createStreamingResponseHash(streamResponseStart);
               streamedResponseStarted = true;
               responseStartedAt = Date.now();
@@ -718,6 +755,10 @@ export class SellerRequestHandler {
             },
           });
           // A video is charged when the buyer downloads it, not on acceptance.
+          if (coveredByAllowance && !streamedResponseStarted) {
+            response = { ...response, headers: { ...response.headers } };
+            setTrustedHeader(response.headers, FREE_TIER_SERVED_HEADER, FREE_TIER_SERVED_COVERED);
+          }
           if (videoRoute?.action === 'create') {
             response = this._acceptVideoCreate(videoRoute, request, response, buyerPeerId, requestedModel, requestBilling, unitBillingModel, oneOffChannelId);
           }
@@ -815,7 +856,8 @@ export class SellerRequestHandler {
           await this._deps.sessionTracker.recordMetering({
             buyerPeerId,
             providerName: provider.name,
-            pricing: requestPricing,
+            // A request the free allowance covered earned nothing.
+            pricing: coveredByAllowance ? FREE_TOKEN_PRICING : requestPricing,
             request,
             statusCode,
             latencyMs,
@@ -828,7 +870,7 @@ export class SellerRequestHandler {
 
         // Record spend and send NeedAuth with cost data after every request.
         // The buyer validates the cost independently and responds with SpendingAuth.
-        if (!isFreeService && !oneOffChannelId && spm?.hasSession(buyerPeerId)) {
+        if (!isServedFree && !oneOffChannelId && spm?.hasSession(buyerPeerId)) {
           const usage = responseUsage;
           const tokenCostUsdc = computeCostUsdc(
             usage.freshInputTokens,

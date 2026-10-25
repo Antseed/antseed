@@ -57,6 +57,13 @@ export interface SellerServiceConfig {
   capabilities?: ServiceCapabilities;
   /** Per-protocol non-token billing models for this service. */
   unitBillingModels?: Partial<Record<ServiceApiProtocol, UnitBillingModelV1>>;
+  /**
+   * This service's own free-tier program, with its own counters, in place of
+   * `seller.freeTier`. On a zero-priced service, set `stakersOnly` to offer it
+   * only to stakers. On a priced service it is a free allowance: requests it
+   * covers are served free, the rest are paid at the listed price.
+   */
+  freeTier?: SellerFreeTierCLIConfig;
 }
 
 /**
@@ -144,6 +151,7 @@ export interface SellerGasCheckCLIConfig {
   minBalanceEth?: number;
 }
 
+/** One free-tier program: base limits and the staked tiers above them. */
 export interface SellerFreeTierCLIConfig {
   /** Maximum zero-priced requests accepted from one buyer address per window. */
   maxRequestsPerAddress?: number;
@@ -157,6 +165,11 @@ export interface SellerFreeTierCLIConfig {
    * year earn 5×, 20× and unlimited. `[]` turns staked tiers off.
    */
   stakeTiers?: SellerFreeTierStakeTierCLIConfig[];
+  /**
+   * Serve only buyers whose stake reaches a tier. The base limits are still
+   * required: they are the allowance the tier multipliers apply to.
+   */
+  stakersOnly?: boolean;
 }
 
 export interface SellerFreeTierStakeTierCLIConfig {
@@ -213,7 +226,10 @@ export interface SellerCLIConfig {
    * advertising until it is funded again. Set `enabled: false` to opt out.
    */
   gasCheck?: SellerGasCheckCLIConfig;
-  /** Optional persistent per-address request limit for zero-priced services. */
+  /**
+   * Seller-wide free-tier program for zero-priced services. A service with its
+   * own `providers.<p>.services.<s>.freeTier` uses that instead.
+   */
   freeTier?: SellerFreeTierCLIConfig;
   /**
    * ISO country codes whose IPs are refused on connect (best effort: VPNs get

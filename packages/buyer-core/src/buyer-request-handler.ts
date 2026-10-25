@@ -113,6 +113,14 @@ export interface BuyerRequestHandlerDeps {
 }
 
 export const FREE_TIER_DELEGATIONS_HEADER = 'x-antseed-free-tier-delegations';
+/** Set to `covered` by a seller whose free allowance covered a request to a priced service. */
+export const FREE_TIER_SERVED_HEADER = 'x-antseed-free-tier';
+
+/** Whether the seller served this response from a priced service's free allowance. */
+export function isCoveredByFreeAllowance(response: SerializedHttpResponse): boolean {
+  return Object.entries(response.headers).some(([name, value]) =>
+    name.toLowerCase() === FREE_TIER_SERVED_HEADER && value.trim().toLowerCase() === 'covered');
+}
 
 /**
  * Handles buyer-side outbound request execution: connection setup, streaming,
@@ -507,7 +515,7 @@ export class BuyerRequestHandler {
         paymentResponse = retriedResponse;
       }
       if (!isFreeService) {
-        negotiator.estimateCostFromResponse(peer, retriedResponse, requestedService, req.requestId);
+        this._estimatePaidCost(negotiator, peer, retriedResponse, requestedService, req.requestId);
       }
       const retriedDelivered = this._recordVideoDelivery(peer, retriedResponse, trackedVideoRetrieve, videoDuration, videoRoute, videoJobId, req.requestId);
       this._recordResponseAuth(
@@ -522,7 +530,7 @@ export class BuyerRequestHandler {
     }
 
     if (negotiator && !isFreeService) {
-      negotiator.estimateCostFromResponse(peer, response, requestedService, req.requestId);
+      this._estimatePaidCost(negotiator, peer, response, requestedService, req.requestId);
     }
     const videoDelivered = this._recordVideoDelivery(peer, response, trackedVideoRetrieve, videoDuration, videoRoute, videoJobId, req.requestId);
     this._recordResponseAuth(
@@ -561,6 +569,26 @@ export class BuyerRequestHandler {
     const recorded = this._deps.negotiator?.bpm?.recordVideoDelivered(peer.peerId, videoRoute.protocol, videoJobId, requestId);
     if (recorded === 'recorded') return 'delivered';
     return recorded === 'unsaved' ? 'unrecorded' : null;
+  }
+
+  /**
+   * Expect a charge for a paid response, unless the seller served it from the
+   * service's free allowance: then nothing is owed, and no later NeedAuth can
+   * claim it.
+   */
+  private _estimatePaidCost(
+    negotiator: BuyerPaymentNegotiator,
+    peer: BuyerPeerView,
+    response: SerializedHttpResponse,
+    service: string | undefined,
+    requestId: string,
+  ): void {
+    if (isCoveredByFreeAllowance(response)) {
+      debugLog(`[BuyerRequest] ${peer.peerId.slice(0, 12)}... served ${service ?? 'request'} from its free allowance`);
+      negotiator.bpm.clearRequestBilling(requestId);
+      return;
+    }
+    negotiator.estimateCostFromResponse(peer, response, service, requestId);
   }
 
   private _prepareDirectFreeUsageOpen(peer: BuyerPeerView, conn: BuyerConnection): void {

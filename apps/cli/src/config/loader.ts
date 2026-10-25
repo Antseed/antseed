@@ -116,6 +116,10 @@ function normalizeSellerService(value: unknown): SellerServiceConfig | null {
   if (value['unitBillingModels'] !== undefined) {
     out.unitBillingModels = value['unitBillingModels'] as SellerServiceConfig['unitBillingModels'];
   }
+  if (value['freeTier'] !== undefined) {
+    // A non-object becomes an empty program, which validation rejects for its missing limits.
+    out.freeTier = normalizeFreeTierProgram(isRecord(value['freeTier']) ? value['freeTier'] : {});
+  }
   return out;
 }
 
@@ -346,6 +350,7 @@ function cloneSellerFreeTier(
     ...(value.maxRequestsPerIp !== undefined ? { maxRequestsPerIp: value.maxRequestsPerIp } : {}),
     ...(value.windowMs !== undefined ? { windowMs: value.windowMs } : {}),
     ...(value.stakeTiers !== undefined ? { stakeTiers: value.stakeTiers.map((tier) => ({ ...tier })) } : {}),
+    ...(value.stakersOnly !== undefined ? { stakersOnly: value.stakersOnly } : {}),
   };
 }
 
@@ -371,17 +376,21 @@ function normalizeSellerFreeTier(
     const cloned = cloneSellerFreeTier(fallback);
     return cloned ? { freeTier: cloned } : {};
   }
+  return { freeTier: normalizeFreeTierProgram(value) };
+}
+
+function normalizeFreeTierProgram(value: Record<string, unknown>): NonNullable<AntseedConfig['seller']['freeTier']> {
   return {
-    freeTier: {
-      ...(value['maxRequestsPerAddress'] !== undefined
-        ? { maxRequestsPerAddress: toFiniteOrNaN(value['maxRequestsPerAddress']) }
-        : {}),
-      ...(value['maxRequestsPerIp'] !== undefined
-        ? { maxRequestsPerIp: toFiniteOrNaN(value['maxRequestsPerIp']) }
-        : {}),
-      ...(value['windowMs'] !== undefined ? { windowMs: toFiniteOrNaN(value['windowMs']) } : {}),
-      ...(value['stakeTiers'] !== undefined ? { stakeTiers: normalizeSellerFreeTierStakeTiers(value['stakeTiers']) } : {}),
-    },
+    ...(value['maxRequestsPerAddress'] !== undefined
+      ? { maxRequestsPerAddress: toFiniteOrNaN(value['maxRequestsPerAddress']) }
+      : {}),
+    ...(value['maxRequestsPerIp'] !== undefined
+      ? { maxRequestsPerIp: toFiniteOrNaN(value['maxRequestsPerIp']) }
+      : {}),
+    ...(value['windowMs'] !== undefined ? { windowMs: toFiniteOrNaN(value['windowMs']) } : {}),
+    ...(value['stakeTiers'] !== undefined ? { stakeTiers: normalizeSellerFreeTierStakeTiers(value['stakeTiers']) } : {}),
+    // Kept as given so validation reports a non-boolean instead of reading it as false.
+    ...(value['stakersOnly'] !== undefined ? { stakersOnly: value['stakersOnly'] as boolean } : {}),
   };
 }
 

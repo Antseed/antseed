@@ -4,6 +4,7 @@ import type {
   GithubVerificationConfig,
   HierarchicalPricingConfig,
   AntseedConfig,
+  SellerFreeTierCLIConfig,
   SellerProviderConfig,
   TokenPricingUsdPerMillion,
 } from './types.js';
@@ -442,28 +443,21 @@ export function validateConfig(config: AntseedConfig): string[] {
   }
 
   if (config.seller.freeTier !== undefined) {
-    const freeTier = config.seller.freeTier;
-    if (freeTier.maxRequestsPerAddress === undefined && freeTier.maxRequestsPerIp === undefined) {
-      errors.push('seller.freeTier requires maxRequestsPerAddress and/or maxRequestsPerIp');
-    }
-    for (const key of ['maxRequestsPerAddress', 'maxRequestsPerIp'] as const) {
-      const limit = freeTier[key];
-      if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) {
-        errors.push(`seller.freeTier.${key} must be a positive safe integer`);
+    validateFreeTierProgram('seller.freeTier', config.seller.freeTier, errors);
+  }
+  // Free-tier programs are keyed by announced service id, so one id needs one program.
+  const serviceFreeTiers = new Map<string, string>();
+  for (const [providerName, providerCfg] of Object.entries(config.seller.providers)) {
+    for (const [serviceId, serviceCfg] of Object.entries(providerCfg.services)) {
+      if (serviceCfg.freeTier === undefined) continue;
+      const path = `seller.providers.${providerName}.services.${serviceId}.freeTier`;
+      validateFreeTierProgram(path, serviceCfg.freeTier, errors);
+      const program = JSON.stringify(serviceCfg.freeTier);
+      const previous = serviceFreeTiers.get(serviceId);
+      if (previous !== undefined && previous !== program) {
+        errors.push(`${path} differs from another provider's freeTier for service "${serviceId}"`);
       }
-    }
-    if (
-      freeTier.windowMs !== undefined &&
-      (!Number.isSafeInteger(freeTier.windowMs) || freeTier.windowMs < 1_000)
-    ) {
-      errors.push('seller.freeTier.windowMs must be a safe integer >= 1000');
-    }
-    if (freeTier.stakeTiers !== undefined) {
-      try {
-        validateFreeTierStakeTiers(freeTier.stakeTiers, 'seller.freeTier.stakeTiers');
-      } catch (err) {
-        errors.push(err instanceof Error ? err.message : String(err));
-      }
+      serviceFreeTiers.set(serviceId, program);
     }
   }
 
@@ -541,5 +535,35 @@ function validateFreeTierDelegations(value: unknown, errors: string[]): void {
   });
   for (const [buyer, count] of perBuyer) {
     if (count > MAX_FREE_TIER_DELEGATIONS) errors.push(`${path} has ${count} delegations for ${buyer}; at most ${MAX_FREE_TIER_DELEGATIONS} count`);
+  }
+}
+
+function validateFreeTierProgram(path: string, freeTier: SellerFreeTierCLIConfig, errors: string[]): void {
+  if (freeTier.maxRequestsPerAddress === undefined && freeTier.maxRequestsPerIp === undefined) {
+    errors.push(`${path} requires maxRequestsPerAddress and/or maxRequestsPerIp`);
+  }
+  for (const key of ['maxRequestsPerAddress', 'maxRequestsPerIp'] as const) {
+    const limit = freeTier[key];
+    if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) {
+      errors.push(`${path}.${key} must be a positive safe integer`);
+    }
+  }
+  if (
+    freeTier.windowMs !== undefined &&
+    (!Number.isSafeInteger(freeTier.windowMs) || freeTier.windowMs < 1_000)
+  ) {
+    errors.push(`${path}.windowMs must be a safe integer >= 1000`);
+  }
+  if (freeTier.stakeTiers !== undefined) {
+    try {
+      validateFreeTierStakeTiers(freeTier.stakeTiers, `${path}.stakeTiers`);
+    } catch (err) {
+      errors.push(err instanceof Error ? err.message : String(err));
+    }
+  }
+  if (freeTier.stakersOnly !== undefined && typeof freeTier.stakersOnly !== 'boolean') {
+    errors.push(`${path}.stakersOnly must be a boolean`);
+  } else if (freeTier.stakersOnly && freeTier.stakeTiers?.length === 0) {
+    errors.push(`${path}.stakersOnly requires at least one stake tier`);
   }
 }

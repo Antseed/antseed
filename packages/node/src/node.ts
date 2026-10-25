@@ -36,6 +36,7 @@ import {
 } from "./p2p/connection-manager.js";
 import {
   PeerAnnouncer,
+  builtinPeerCapabilities,
   type AnnouncerConfig,
   type SellerContractConfig,
 } from "./discovery/announcer.js";
@@ -98,6 +99,7 @@ import {
 } from "./payments/index.js";
 import { debugLog, debugWarn } from "./utils/debug.js";
 import { parsePublicAddress } from "./discovery/public-address.js";
+import { MAX_PEER_CAPABILITIES } from "./discovery/metadata-validator.js";
 import { sanitizePeerDisplayName } from "./discovery/display-name.js";
 import { BuyerPaymentManager, type BuyerPaymentConfig } from "./payments/buyer-payment-manager.js";
 import { BuyerPaymentNegotiator } from "./payments/buyer-payment-negotiator.js";
@@ -1881,6 +1883,7 @@ export class AntseedNode extends EventEmitter {
     this._sellerFreeTierLimiter = this._config.freeTier
       ? new SellerFreeTierLimiter(this._config.freeTier, this._metering)
       : null;
+    this._sellerFreeTierLimiter?.setPaidServices(this._pricedServices());
     await this._initializePayments(dataDir);
     this._warnIfFreeUsageMeteringUnavailable();
     this._initializeFreeTierStakeResolver(identity);
@@ -1939,11 +1942,12 @@ export class AntseedNode extends EventEmitter {
 
     // Set up announcer for providers
     if (this._providers.length > 0) {
-      const extraCapabilities = [
+      const baseCapabilities = [
         ...(this._connectionManager.supportsWebRtc ? [CONNECTION_CAPABILITY_WEBRTC_V1] : []),
         ...(this._config.capabilities ?? []),
-        ...(this._sellerFreeTierLimiter?.capabilities() ?? []),
       ];
+      const usedCapabilities = builtinPeerCapabilities(this._depositRelayer !== null).length + baseCapabilities.length;
+      const extraCapabilities = [...baseCapabilities, ...this._freeTierCapabilities(usedCapabilities)];
       const announcerConfig: AnnouncerConfig = {
         identity,
         dht: this._dht,
@@ -2826,10 +2830,42 @@ export class AntseedNode extends EventEmitter {
    * pool. Without the seller pools contract every buyer keeps the base limits
    * and no tiers are advertised.
    */
+  /**
+   * Free-tier programs to advertise within what is left of the peer
+   * capability limit. Programs that do not fit are still enforced; buyers
+   * learn them from the seller's refusals instead.
+   */
+  /** Services some provider charges tokens for; a free allowance on one of them never admits a free-usage channel. */
+  private _pricedServices(): string[] {
+    const priced = new Set<string>();
+    for (const provider of this._providers) {
+      for (const service of provider.services) {
+        const pricing = provider.pricing.services?.[service] ?? provider.pricing.defaults;
+        if (pricing.inputUsdPerMillion > 0 || pricing.outputUsdPerMillion > 0 || (pricing.cachedInputUsdPerMillion ?? 0) > 0) {
+          priced.add(service);
+        }
+      }
+    }
+    return [...priced];
+  }
+
+  private _freeTierCapabilities(usedCapabilities: number): string[] {
+    const limiter = this._sellerFreeTierLimiter;
+    if (!limiter) return [];
+    const capabilities = limiter.capabilities(MAX_PEER_CAPABILITIES - usedCapabilities);
+    if (capabilities.length < limiter.capabilities().length) {
+      debugWarn(
+        `[Node] Not every free-tier program fits in peer metadata (${MAX_PEER_CAPABILITIES} capabilities max); ` +
+        `the rest are enforced but not advertised`,
+      );
+    }
+    return capabilities;
+  }
+
   private _initializeFreeTierStakeResolver(identity: Identity): void {
     const limiter = this._sellerFreeTierLimiter;
     const payments = this._config.payments;
-    if (!limiter || limiter.stakeTiers.length === 0) return;
+    if (!limiter || !limiter.hasStakeTiers) return;
     if (!payments?.rpcUrl || !payments.sellerPoolsAddress) {
       debugLog("[Node] Staked free-tier tiers disabled: seller pools contract not configured");
       return;
@@ -2847,7 +2883,7 @@ export class AntseedNode extends EventEmitter {
       sellerAgentId: () => sellerPools.agentIdForSeller(sellerAddress),
       currentEpoch: () => sellerPools.currentEpoch(),
       stakerPositions: (staker, agentId, epoch) => sellerPools.stakerPositionsInPool(staker, agentId, epoch),
-    }, limiter.stakeTiers), payments.chainId ?? 8453);
+    }), payments.chainId ?? 8453);
     debugLog(`[Node] Staked free-tier tiers enabled (pools=${payments.sellerPoolsAddress.slice(0, 10)}...)`);
   }
 

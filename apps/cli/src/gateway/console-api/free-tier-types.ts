@@ -13,7 +13,13 @@
  * seller's own pool counts toward its tiers.
  */
 export interface FreeTierProgramView {
-  base: { maxRequestsPerAddress: number | null; maxRequestsPerIp: number | null; windowMs: number }
+  base: {
+    maxRequestsPerAddress: number | null
+    maxRequestsPerIp: number | null
+    windowMs: number
+    /** Only buyers whose stake reaches a tier get free use; the base limits are the unit tiers multiply. */
+    stakersOnly?: boolean
+  }
   /** `minPower` in ANTS-epochs (ANTS × weeks of lock remaining); empty when the seller has no staked tiers. */
   stakeTiers: Array<{ minPower: number; multiplier: number | 'unlimited' }>
 }

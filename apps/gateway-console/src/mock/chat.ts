@@ -14,18 +14,18 @@ const PEER_FREE = fakePeerId(4)
 
 export function mockChatModels(): ChatModel[] {
   const peer = (peerId: string, name: string, input: number, output: number, reputation: number, extra: Partial<ChatModelPeer> = {}): ChatModelPeer => ({
-    peerId, name, toolUse: true, reasoning: true, vision: false, tee: false, inputUsdPerMillion: input, outputUsdPerMillion: output, cachedInputUsdPerMillion: null, reputation, ...extra,
+    peerId, name, toolUse: true, reasoning: true, vision: false, tee: false, inputUsdPerMillion: input, outputUsdPerMillion: output, cachedInputUsdPerMillion: null, reputation, freeTier: null, ...extra,
   })
   return [
     {
-      id: 'kimi-k3', name: 'Kimi K3', toolUse: true, reasoning: true, vision: true, free: false, tee: true, offers: 2, inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5,
+      id: 'kimi-k3', name: 'Kimi K3', toolUse: true, reasoning: true, vision: true, free: false, freeForStakers: false, tee: true, offers: 2, inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5,
       peers: [
         peer(PEER_B, 'Fake Seller Beta', 0.6, 2.5, 81, { vision: true, tee: true }),
         peer(PEER_A, 'Fake Seller Alpha', 0.72, 2.8, 74),
       ],
     },
     {
-      id: 'glm-5.3-flash', name: 'GLM 5.3 Flash', toolUse: true, reasoning: true, vision: true, free: true, tee: false, offers: 3, inputUsdPerMillion: 0, outputUsdPerMillion: 0,
+      id: 'glm-5.3-flash', name: 'GLM 5.3 Flash', toolUse: true, reasoning: true, vision: true, free: true, freeForStakers: false, tee: false, offers: 3, inputUsdPerMillion: 0, outputUsdPerMillion: 0,
       peers: [
         peer(PEER_A, 'Fake Seller Alpha', 0.06, 0.19, 74, { vision: true }),
         peer(PEER_B, 'Fake Seller Beta', 0.07, 0.25, 71),
@@ -33,11 +33,11 @@ export function mockChatModels(): ChatModel[] {
       ],
     },
     {
-      id: 'qwen3-coder-480b', name: 'Qwen3 Coder 480B', toolUse: true, reasoning: false, vision: false, free: false, tee: false, offers: 1, inputUsdPerMillion: 0.4, outputUsdPerMillion: 1.6,
+      id: 'qwen3-coder-480b', name: 'Qwen3 Coder 480B', toolUse: true, reasoning: false, vision: false, free: false, freeForStakers: false, tee: false, offers: 1, inputUsdPerMillion: 0.4, outputUsdPerMillion: 1.6,
       peers: [peer(PEER_A, 'Fake Seller Alpha', 0.4, 1.6, 74, { reasoning: false })],
     },
     {
-      id: 'llama-3.3-70b', name: 'Llama 3.3 70B', toolUse: false, reasoning: false, vision: false, free: false, tee: false, offers: 1, inputUsdPerMillion: 0.12, outputUsdPerMillion: 0.3,
+      id: 'llama-3.3-70b', name: 'Llama 3.3 70B', toolUse: false, reasoning: false, vision: false, free: false, freeForStakers: false, tee: false, offers: 1, inputUsdPerMillion: 0.12, outputUsdPerMillion: 0.3,
       peers: [peer(PEER_B, 'Fake Seller Beta', 0.12, 0.3, 81, { toolUse: false, reasoning: false })],
     },
   ]

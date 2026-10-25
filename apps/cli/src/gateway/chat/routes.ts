@@ -49,6 +49,7 @@ import { GATEWAY_INTERNAL_KEY_HEADER } from '../server.js'
 import { createKey } from '../services/keys.js'
 import type { ChatThreadOwner, ChatThreadSummary } from '../store.js'
 import { TEE_VERIFIER_ID } from '@antseed/node/tee-status'
+import { normalizeFreeTierProgram } from '@antseed/node/free-tier-program'
 import { chatErrorText } from './free-tier-error.js'
 import { chatTools, SHELL_TOOL } from './tools.js'
 
@@ -299,7 +300,9 @@ export function chatRouteRegistrar(options: ChatRouteOptions) {
           usage.inputTokens += step.inputTokens
           usage.cachedInputTokens += step.cachedInputTokens
           usage.outputTokens += step.outputTokens
-          const stepCost = estimateCost(step, known?.peers.find((peer) => peer.peerId === peerId))
+          // The seller's free allowance covered this step: nothing was charged.
+          const covered = (part.response.headers?.['x-antseed-free-tier'] ?? '').toLowerCase() === 'covered'
+          const stepCost = covered ? 0 : estimateCost(step, known?.peers.find((peer) => peer.peerId === peerId))
           costUsd = costUsd === null || stepCost === null ? null : costUsd + stepCost
           return metadata()
         },
@@ -440,6 +443,7 @@ export function mapChatModels(body: unknown): ChatModel[] {
           outputUsdPerMillion: number(peer['outputUsdPerMillion']),
           cachedInputUsdPerMillion: number(peer['cachedInputUsdPerMillion']),
           reputation: number(peer['effectiveReputationScore'] ?? peer['reputationScore']),
+          freeTier: normalizeFreeTierProgram(peer['freeTier']),
         }
       })
       .sort((a, b) => (b.reputation ?? -1) - (a.reputation ?? -1))
@@ -449,7 +453,8 @@ export function mapChatModels(body: unknown): ChatModel[] {
       toolUse: Number(coverage['tool_use'] ?? 0) > 0,
       reasoning: Number(coverage['reasoning'] ?? 0) > 0 || offers.some((offer) => offer.reasoning),
       vision: offers.some((offer) => offer.vision),
-      free: offers.some((offer) => offer.inputUsdPerMillion === 0 && offer.outputUsdPerMillion === 0),
+      free: offers.some((offer) => offer.inputUsdPerMillion === 0 && offer.outputUsdPerMillion === 0 && !offer.freeTier?.base.stakersOnly),
+      freeForStakers: offers.some((offer) => offer.freeTier?.base.stakersOnly === true),
       tee: offers.some((offer) => offer.tee),
       offers: peers.length,
       inputUsdPerMillion: price('inputUsdPerMillion'),

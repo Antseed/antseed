@@ -145,6 +145,7 @@ import { estimateAnthropicPromptTokens, isCountTokensPath } from './count-tokens
 import { runVerifier, selectVerifier, verifierSupportFingerprint, type VerifierPolicy, type SellerReach, type VerifyOutcome } from '../plugins/verifier.js'
 import { TEE_VERIFIER_ID } from '@antseed/node/tee-status'
 import { parseVerifierCapabilities } from '@antseed/node/verifier-capabilities'
+import { parseServiceFreeTierProgram } from '@antseed/node/free-tier-program'
 import { TeeVerification } from './tee-verification.js'
 import { TeeControl } from './tee-control.js'
 import { ChainReadCache } from './chain-read-cache.js'
@@ -4423,9 +4424,13 @@ export class BuyerProxy {
       // answer) get one extra seller to compare against, not the whole list:
       // when every seller fails, the client gets that answer quickly.
       let comparisonUsed = false
-      const isFree = (candidate: (typeof candidates)[number]): boolean => modelRouteTotalPrice(candidate) === 0
+      // A priced model with its own free allowance may still serve a buyer
+      // without deposits: the seller answers 402 only when the allowance is out.
+      const servesUnfunded = (candidate: (typeof candidates)[number]): boolean =>
+        modelRouteTotalPrice(candidate) === 0
+        || parseServiceFreeTierProgram(candidate.peer.capabilities, candidate.serviceId) !== null
       for (const [index, selected] of candidates.entries()) {
-        if (unfunded && !isFree(selected)) continue
+        if (unfunded && !servesUnfunded(selected)) continue
         if (this._verifier) {
           const makeReach = (chosenId: string): SellerReach =>
             makeVerifierReach(this._node, selected.peer, chosenId, signal)
@@ -4515,10 +4520,10 @@ export class BuyerProxy {
             }
           }
           if (isBuyerFault(result)) {
-            const freeLeft = candidates.slice(index + 1).some(isFree)
+            const freeLeft = candidates.slice(index + 1).some(servesUnfunded)
             if (result.statusCode === 402 && freeLeft) {
               unfunded = true
-              log(`No deposits to pay peer ${selected.peer.peerId.slice(0, 12)}...; trying free sellers only.`)
+              log(`No deposits to pay peer ${selected.peer.peerId.slice(0, 12)}...; trying free sellers and free allowances only.`)
               break
             }
             return result

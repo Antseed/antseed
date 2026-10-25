@@ -63,6 +63,7 @@ function makeHandler(responses: SerializedHttpResponse[], freeTierDelegationsHea
     getOrCreatePaymentMux: vi.fn(() => ({})),
     trackRequestBillingContext: vi.fn(),
     estimateCostFromResponse: vi.fn(),
+    bpm: { clearRequestBilling: vi.fn() },
     handle402,
     applyExternalSpendingAuth: vi.fn(async () => {}),
   };
@@ -78,7 +79,7 @@ function makeHandler(responses: SerializedHttpResponse[], freeTierDelegationsHea
     registerPaymentMux: vi.fn(),
     ...(freeTierDelegationsHeader ? { freeTierDelegationsHeader } : {}),
   });
-  return { handler, handle402, sendProxyRequest };
+  return { handler, handle402, sendProxyRequest, negotiator };
 }
 
 describe('BuyerRequestHandler payment negotiation', () => {
@@ -158,6 +159,35 @@ describe('BuyerRequestHandler payment negotiation', () => {
 
     expect((await handler.sendRequest(makePeer(), makeRequest({ 'x-antseed-spending-auth': 'client-signed' }))).statusCode).toBe(402);
     expect(handle402).not.toHaveBeenCalled();
+  });
+});
+
+describe('BuyerRequestHandler free allowance on a priced service', () => {
+  const chatPeer = (): BuyerPeerView => ({
+    peerId: toPeerId('5'.repeat(40)),
+    providers: ['openai'],
+    providerPricing: { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } } },
+  } as BuyerPeerView);
+  const chatRequest = (): SerializedHttpRequest => ({
+    requestId: 'chat-request',
+    method: 'POST',
+    path: '/v1/chat/completions',
+    headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify({ model: 'k3', messages: [] })),
+  });
+
+  it('expects no charge for a response the seller covered from the allowance', async () => {
+    const covered = { ...response(200, { ok: true }), headers: { 'content-type': 'application/json', 'X-Antseed-Free-Tier': 'covered' } };
+    const { handler, negotiator } = makeHandler([covered]);
+    expect((await handler.sendRequest(chatPeer(), chatRequest())).statusCode).toBe(200);
+    expect(negotiator.estimateCostFromResponse).not.toHaveBeenCalled();
+    expect(negotiator.bpm.clearRequestBilling).toHaveBeenCalledWith('chat-request');
+  });
+
+  it('expects the listed price for any other paid response', async () => {
+    const { handler, negotiator } = makeHandler([response(200, { ok: true })]);
+    await handler.sendRequest(chatPeer(), chatRequest());
+    expect(negotiator.estimateCostFromResponse).toHaveBeenCalledOnce();
   });
 });
 

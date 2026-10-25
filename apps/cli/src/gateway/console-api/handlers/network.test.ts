@@ -5,6 +5,7 @@ import type { ResolvedPolicy } from '../../policy-resolver.js'
 import { ConsoleRouter, type Principal } from '../router.js'
 import type { BuyerLimits, NetworkModel, NetworkRouter, Peer, RoutePreview } from '../types.js'
 import { registerNetworkRoutes, type NetworkRouteOverrides } from './network.js'
+import { encodeFreeTierCapabilities } from '@antseed/node/free-tier-program'
 import { enrichCandidates, mapNetworkModels, mapNetworkRouters, mapPeers, peerServices, teeScopes, teeVerifiedPeers } from './network-mapping.js'
 import {
   call,
@@ -191,10 +192,50 @@ function setup(extra: NetworkRouteOverrides = {}): ConsoleRouter {
 // ── Peers ────────────────────────────────────────────────────────────────
 
 test('peer services price each service from its own entry or the provider default', () => {
-  assert.deepEqual(peerServices(PEERS_BODY.peers[0] as Record<string, unknown>), [
-    { provider: 'openai', service: 'open-model-a', inputUsdPerMillion: 0.5, outputUsdPerMillion: 1.5, cachedInputUsdPerMillion: 0.1, categories: ['chat', 'coding'] },
-    { provider: 'openai', service: 'open-model-b', inputUsdPerMillion: 1, outputUsdPerMillion: 2, cachedInputUsdPerMillion: null, categories: ['chat'] },
+  const freeTier = { base: { maxRequestsPerAddress: 1000, maxRequestsPerIp: null, windowMs: 86_400_000 }, stakeTiers: [{ minPower: 520_000, multiplier: 5 }] }
+  const row = {
+    ...PEERS_BODY.peers[0],
+    providerPricing: {
+      openai: {
+        ...PEERS_BODY.peers[0]!.providerPricing.openai,
+        services: { ...PEERS_BODY.peers[0]!.providerPricing.openai!.services, 'open-model-free': { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } },
+      },
+    },
+  }
+  // The seller-wide program covers the free service only; priced ones have no program of their own.
+  assert.deepEqual(peerServices(row as Record<string, unknown>), [
+    { provider: 'openai', service: 'open-model-a', inputUsdPerMillion: 0.5, outputUsdPerMillion: 1.5, cachedInputUsdPerMillion: 0.1, categories: ['chat', 'coding'], freeTier: null },
+    { provider: 'openai', service: 'open-model-free', inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: null, categories: [], freeTier },
+    { provider: 'openai', service: 'open-model-b', inputUsdPerMillion: 1, outputUsdPerMillion: 2, cachedInputUsdPerMillion: null, categories: ['chat'], freeTier: null },
   ])
+})
+
+test('peer services and model offers carry a service’s own free-tier program', () => {
+  const row = {
+    ...PEERS_BODY.peers[0],
+    capabilities: [
+      ...PEERS_BODY.peers[0]!.capabilities,
+      ...encodeFreeTierCapabilities(
+        { base: { maxRequestsPerAddress: 5, maxRequestsPerIp: null, windowMs: 86_400_000, stakersOnly: true }, stakeTiers: [{ minPower: 520_000, multiplier: 5 }] },
+        'open-model-b',
+        { sellerWideTiers: [{ minPower: 520_000, multiplier: 5 }] },
+      ),
+    ],
+  }
+  const [a, b] = peerServices(row as Record<string, unknown>)
+  // open-model-b is priced: its own program is a free allowance; open-model-a has none.
+  assert.equal(a!.freeTier, null)
+  assert.deepEqual(b!.freeTier, {
+    base: { maxRequestsPerAddress: 5, maxRequestsPerIp: null, windowMs: 86_400_000, stakersOnly: true },
+    stakeTiers: [{ minPower: 520_000, multiplier: 5 }],
+  })
+  const peers = mapPeers({ peers: { ...PEERS_BODY, peers: [row] }, health: HEALTH_BODY, verification: null, stats: [], now: NOW })
+  const [model] = mapNetworkModels({
+    data: [{ id: 'open-model-b', peers: [{ peerId: PEER_A, provider: 'openai', serviceId: 'open-model-b', inputUsdPerMillion: 0, outputUsdPerMillion: 0 }] }],
+  }, peers)
+  assert.deepEqual(model!.offers[0]!.freeTier, b!.freeTier)
+  // The seller-wide program stays on the peer.
+  assert.equal(peers[0]!.freeTier?.base.stakersOnly, undefined)
 })
 
 test('TEE snapshot: only current passing attestations count', () => {
@@ -304,6 +345,8 @@ test('network models merge the buyer catalog with the peer list', () => {
     inputUsdPerMillion: { min: 0, max: 0.5 },
     outputUsdPerMillion: { min: 0, max: 1.5 },
     free: true,
+    freeForStakers: false,
+    freeAllowance: false,
     teeSellers: 1,
     fullTeeSellers: 0,
     verifiedSellers: 1,
@@ -322,10 +365,8 @@ test('network models merge the buyer catalog with the peer list', () => {
     contextLength: 128_000,
     free: false,
     agentId: 42,
-    freeTier: {
-      base: { maxRequestsPerAddress: 1000, maxRequestsPerIp: null, windowMs: 86_400_000 },
-      stakeTiers: [{ minPower: 520_000, multiplier: 5 }],
-    },
+    // A priced offer gets no seller-wide program, only one of its own.
+    freeTier: null,
     reputationScore: 64,
     trustScore: 72,
     verified: false,

@@ -284,6 +284,8 @@ export function mockNetworkModels(peers: readonly Peer[]): NetworkModel[] {
       inputUsdPerMillion: range(ranked.map((offer) => offer.inputUsdPerMillion)),
       outputUsdPerMillion: range(ranked.map((offer) => offer.outputUsdPerMillion)),
       free: ranked.some((offer) => offer.free),
+      freeForStakers: false,
+      freeAllowance: false,
       teeSellers: ranked.filter((offer) => offer.tee).length,
       fullTeeSellers: ranked.filter((offer) => offer.teeScope === 'end-to-end').length,
       verifiedSellers: ranked.filter((offer) => offer.verified).length,

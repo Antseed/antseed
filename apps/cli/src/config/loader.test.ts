@@ -1082,7 +1082,7 @@ test('loadConfig rejects invalid seller freeTier stake tiers', async () => {
   for (const stakeTiers of [
     'unlimited',
     [{ minPower: 0, multiplier: 5 }],
-    [{ minPower: 100, multiplier: 1 }],
+    [{ minPower: 100, multiplier: 0 }],
     [{ minPower: 200, multiplier: 5 }, { minPower: 100, multiplier: 20 }],
     [{ minPower: 100, multiplier: 'unlimited' }, { minPower: 200, multiplier: 5 }],
   ]) {
@@ -1093,6 +1093,38 @@ test('loadConfig rejects invalid seller freeTier stake tiers', async () => {
       }
     );
   }
+});
+
+test('loadConfig preserves a service freeTier program and rejects invalid ones', async () => {
+  const provider = (freeTier: unknown, plugin = 'openai') => ({ plugin, services: { 'free-model': { pricing: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 }, freeTier } } });
+  const program = { maxRequestsPerAddress: 10, windowMs: 3_600_000, stakeTiers: [{ minPower: 520_000, multiplier: 5 }], stakersOnly: true };
+  await withTempConfig(
+    JSON.stringify({ seller: { providers: { openai: provider(program) } } }),
+    async (configPath) => {
+      const config = await loadConfig(configPath);
+      assert.deepEqual(config.seller.providers['openai']?.services['free-model']?.freeTier, program);
+    }
+  );
+  for (const [freeTier, error] of [
+    [{ stakersOnly: true }, /services\.free-model\.freeTier requires/],
+    [{ maxRequestsPerAddress: 1, stakersOnly: 'yes' }, /freeTier\.stakersOnly must be a boolean/],
+    [{ maxRequestsPerAddress: 1, stakeTiers: [], stakersOnly: true }, /freeTier\.stakersOnly requires at least one stake tier/],
+    ['unlimited', /services\.free-model\.freeTier requires/],
+  ] as const) {
+    await withTempConfig(
+      JSON.stringify({ seller: { providers: { openai: provider(freeTier) } } }),
+      async (configPath) => {
+        await assert.rejects(async () => loadConfig(configPath), error);
+      }
+    );
+  }
+  // One service id across providers needs one program.
+  await withTempConfig(
+    JSON.stringify({ seller: { providers: { a: provider({ maxRequestsPerAddress: 1 }), b: provider({ maxRequestsPerAddress: 2 }) } } }),
+    async (configPath) => {
+      await assert.rejects(async () => loadConfig(configPath), /differs from another provider's freeTier for service "free-model"/);
+    }
+  );
 });
 
 test('loadConfig preserves buyer freeTierDelegations and rejects malformed ones', async () => {
