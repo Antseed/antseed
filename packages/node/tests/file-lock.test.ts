@@ -93,8 +93,10 @@ describe('withFileLock', () => {
       });
       process.exit(0);
     `, file));
+    // Listen for exits before awaiting anything, so a fast child can't exit unobserved.
+    const exits = children.map((child) => once(child, 'exit'));
     await Promise.all([1, 2, 3, 4, 5].map((value) => withFileLock(file, append(value))));
-    await Promise.all(children.map((child) => new Promise((resolve) => child.once('exit', resolve))));
+    expect((await Promise.all(exits)).map(([code]) => code)).toEqual([0, 0]);
     expect(JSON.parse(await readFile(file, 'utf-8'))).toHaveLength(25);
   });
 
