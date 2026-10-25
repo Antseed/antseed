@@ -10,6 +10,7 @@ import { loadOrCreateIdentity } from "./p2p/identity.js";
 import type { PeerId } from "./types/peer.js";
 import type { PeerInfo, PeerVerificationResults, TokenPricingUsdPerMillion } from "./types/peer.js";
 import { peerIdToAddress } from "./types/peer.js";
+import { isFreeUnitBillingModel } from "./billing/unit.js";
 import type { ServiceUnitBillingModelsV1 } from "./types/billing.js";
 import type {
   SerializedHttpRequest,
@@ -1883,7 +1884,9 @@ export class AntseedNode extends EventEmitter {
     this._sellerFreeTierLimiter = this._config.freeTier
       ? new SellerFreeTierLimiter(this._config.freeTier, this._metering)
       : null;
-    this._sellerFreeTierLimiter?.setPaidServices(this._pricedServices());
+    const offered = this._offeredServicesByPrice();
+    this._sellerFreeTierLimiter?.setPaidServices(offered.paid);
+    this._sellerFreeTierLimiter?.setFreeServices(offered.free);
     await this._initializePayments(dataDir);
     this._warnIfFreeUsageMeteringUnavailable();
     this._initializeFreeTierStakeResolver(identity);
@@ -2835,18 +2838,25 @@ export class AntseedNode extends EventEmitter {
    * capability limit. Programs that do not fit are still enforced; buyers
    * learn them from the seller's refusals instead.
    */
-  /** Services some provider charges tokens for; a free allowance on one of them never admits a free-usage channel. */
-  private _pricedServices(): string[] {
-    const priced = new Set<string>();
+  /**
+   * Offered services by whether some provider charges for them (tokens or any
+   * priced unit-billing model), as the request handler decides it. A paid
+   * service's allowance never admits a free-usage channel; the free ones decide admission.
+   */
+  private _offeredServicesByPrice(): { paid: string[]; free: string[] } {
+    const paid = new Set<string>();
+    const offered = new Set<string>();
     for (const provider of this._providers) {
       for (const service of provider.services) {
+        offered.add(service);
         const pricing = provider.pricing.services?.[service] ?? provider.pricing.defaults;
-        if (pricing.inputUsdPerMillion > 0 || pricing.outputUsdPerMillion > 0 || (pricing.cachedInputUsdPerMillion ?? 0) > 0) {
-          priced.add(service);
-        }
+        const tokenPriced = pricing.inputUsdPerMillion > 0 || pricing.outputUsdPerMillion > 0 || (pricing.cachedInputUsdPerMillion ?? 0) > 0;
+        const unitPriced = Object.values(provider.serviceUnitBillingModels?.[service] ?? {})
+          .some((model) => model !== undefined && !isFreeUnitBillingModel(model));
+        if (tokenPriced || unitPriced) paid.add(service);
       }
     }
-    return [...priced];
+    return { paid: [...paid], free: [...offered].filter((service) => !paid.has(service)) };
   }
 
   private _freeTierCapabilities(usedCapabilities: number): string[] {

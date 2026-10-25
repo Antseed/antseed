@@ -220,6 +220,8 @@ export class SellerFreeTierLimiter {
   private readonly _delegations = new Map<string, VerifiedFreeTierDelegation[]>();
   /** Priced services, whose allowances never admit a free-usage channel. */
   private _paidServices: ReadonlySet<string> = new Set();
+  /** Zero-priced services this seller offers, or null when not told: they decide channel admission. */
+  private _freeServices: readonly string[] | null = null;
 
   constructor(config: SellerFreeTierConfig, storage: MeteringStorage | null = null) {
     const services = Object.entries(config.services ?? {});
@@ -268,6 +270,11 @@ export class SellerFreeTierLimiter {
    */
   setPaidServices(services: Iterable<string>): void {
     this._paidServices = new Set(services);
+  }
+
+  /** The zero-priced services this seller offers, so channel admission checks exactly their programs. */
+  setFreeServices(services: Iterable<string>): void {
+    this._freeServices = [...new Set(services)];
   }
 
   /**
@@ -360,14 +367,24 @@ export class SellerFreeTierLimiter {
 
   /**
    * Check channel-open admission without consuming an inference request.
-   * The channel serves every free service, so it is admitted when any program
-   * of a zero-priced service would still serve the buyer, or when some free
-   * service is not limited at all (no seller-wide program). Otherwise the
-   * seller-wide refusal is reported.
+   * The channel serves every free service, so it is admitted when the program
+   * of some offered free service would still serve the buyer, or when one of
+   * them is not limited at all. Otherwise the first refusal (the seller-wide
+   * one when it applies) is reported. Without the offered services (see
+   * `setFreeServices`), every program of a zero-priced service is considered,
+   * and no seller-wide program means some free service is unlimited.
    */
   check(input: Omit<FreeTierConsumeInput, 'service' | 'paid'>): FreeTierDecision | null {
-    if (!this._default) return null;
-    const policies = this._policies().filter((policy) => !this._paidServices.has(policy.scope));
+    let policies: FreeTierPolicy[];
+    if (this._freeServices) {
+      const applicable = this._freeServices.map((service) => this._policyFor(service, false));
+      if (applicable.length === 0 || applicable.some((policy) => policy === null)) return null;
+      policies = [...new Set(applicable as FreeTierPolicy[])]
+        .sort((a, b) => (a === this._default ? -1 : b === this._default ? 1 : 0));
+    } else {
+      if (!this._default) return null;
+      policies = this._policies().filter((policy) => !this._paidServices.has(policy.scope));
+    }
     const decisions = policies.map((policy) => this._evaluate(policy, input, null));
     return decisions.find((decision) => decision.allowed) ?? decisions[0]!;
   }

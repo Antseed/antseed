@@ -175,10 +175,21 @@ test('pricedSellerServices lists services that charge, by their own pricing or t
     a: {
       plugin: 'openai',
       defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 },
-      services: { k3: {}, 'free-model': { pricing: free } },
+      services: {
+        k3: {},
+        'free-model': { pricing: free },
+      },
     },
-    b: { plugin: 'openai', defaults: free, services: { 'flash-5.3': { pricing: { inputUsdPerMillion: 0.1, outputUsdPerMillion: 0 } }, other: {} } },
+    b: {
+      plugin: 'openai',
+      defaults: free,
+      services: {
+        'flash-5.3': { pricing: { inputUsdPerMillion: 0.1, outputUsdPerMillion: 0 } },
+        other: {},
+        'paid-image': { pricing: free, unitBillingModels: { 'openai-images': { version: 1, components: [{ unit: 'output_images', priceUsd: 0.02 }] } } },
+      },
+    },
   };
-  assert.deepEqual(pricedSellerServices(config.seller, ['a', 'b']).sort(), ['flash-5.3', 'k3']);
-  assert.deepEqual(pricedSellerServices(config.seller, ['b']), ['flash-5.3']);
+  assert.deepEqual(pricedSellerServices(config.seller, ['a', 'b']).sort(), ['flash-5.3', 'k3', 'paid-image']);
+  assert.deepEqual(pricedSellerServices(config.seller, ['b']), ['flash-5.3', 'paid-image']);
 });
