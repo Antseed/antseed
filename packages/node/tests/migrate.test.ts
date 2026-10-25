@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations, type Migration } from '../src/storage/migrate.js';
+import { meteringMigrations } from '../src/storage/migrations/metering/index.js';
 import { verificationMigrations } from '../src/storage/migrations/verification/index.js';
 
 describe('runMigrations', () => {
@@ -106,5 +107,15 @@ describe('runMigrations', () => {
       { version: 1, name: 'create_verification_tables' },
       { version: 2, name: 'add_verification_evidence_storage' },
     ]);
+  });
+
+  it('metering 6 and 7 add their columns once, also on a database a pre-release build migrated as 4 and 5', () => {
+    // A seller that ran the pre-release build: columns present, recorded under 4 and 5, which then were removed by hand.
+    runMigrations(db, meteringMigrations.filter((migration) => migration.version <= 3));
+    db.exec('ALTER TABLE metering_events ADD COLUMN service TEXT; ALTER TABLE metering_events ADD COLUMN error TEXT; ALTER TABLE metering_events ADD COLUMN cached_input_tokens INTEGER');
+    runMigrations(db, meteringMigrations);
+    const columns = (db.prepare('PRAGMA table_info(metering_events)').all() as { name: string }[]).map((column) => column.name);
+    expect(columns.filter((name) => ['service', 'error', 'cached_input_tokens'].includes(name))).toEqual(['service', 'error', 'cached_input_tokens']);
+    expect((db.prepare('SELECT version FROM schema_version ORDER BY version').all() as { version: number }[]).map((row) => row.version)).toEqual([1, 2, 3, 6, 7]);
   });
 });
