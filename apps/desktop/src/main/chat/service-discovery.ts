@@ -513,8 +513,8 @@ export async function buildDiscoverRows(
       lifetimeLastSessionAt: stats?.lastSessionAt ?? null,
       onChainChannelCount: peerBlob?.onChainChannelCount ?? null,
       agentId,
-      // On a free service its own or the seller-wide program; on a priced one only its own free allowance.
-      freeTier: freeTierProgramForService(peerBlob?.capabilities, entry.id, isPricedEntry(entry)),
+      // On a free service its own or the seller-wide program; on a priced one only its own free allowance (never on paid video).
+      freeTier: freeTierProgramForService(peerBlob?.capabilities, entry.id, isPricedEntry(entry), { video: isNativeVideoProtocol(entry.protocol) }),
       poolStakeAnts,
       onChainActiveChannelCount,
       onChainGhostCount,
