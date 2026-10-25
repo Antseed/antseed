@@ -18,6 +18,7 @@
  * - Requests are paced per endpoint so a burst never exceeds a few per second.
  */
 import { FetchRequest, Interface, JsonRpcProvider, Network, type JsonRpcPayload, type JsonRpcResult } from 'ethers'
+import { recordRpcCall } from './rpc-sources.js'
 
 export interface RpcTransportResponse {
   status: number
@@ -80,7 +81,7 @@ const MULTICALL = new Interface([
  * The reads folded into Multicall3 batches (as declared in the USDC,
  * AntseedDeposits and DepositRelay ABIs the buyer and gateway use, and the
  * registry, emissions and usage-rewards reads behind the console's buyer
- * rewards). Inside
+ * rewards, and the seller standing reads). Inside
  * `aggregate3` a call runs with `msg.sender` = Multicall3, so only views whose
  * answer does not depend on the caller belong here; any other `eth_call` is
  * sent on its own.
@@ -110,6 +111,23 @@ const BATCHABLE_SELECTORS = (() => {
     'function buyerEpochClaimed(address buyer, uint256 epoch) view returns (bool)',
     'function pendingBuyerReward(address buyer, uint256 epoch) view returns (uint256)',
     'function pendingEmissions(address account, uint256[] epochs) view returns (uint256 seller, uint256 buyer)',
+    // Seller standing (seller dashboard, `antseed seller status|reputation`): registration, pool and seller rewards, all naming the seller or agent.
+    'function getAgentId(address owner) view returns (uint256)',
+    'function agentSeller(uint256 agentId) view returns (address)',
+    'function getStake(address seller) view returns (uint256)',
+    'function isStakedAboveMin(address seller) view returns (bool)',
+    'function legacyStakeEligibilityEnabled() view returns (bool)',
+    'function minSellerPoolStake() view returns (uint256)',
+    'function poolActiveStakeAtEpoch(uint256 agentId, uint256 epoch) view returns (uint256)',
+    'function stakeActivationDelay() view returns (uint256)',
+    'function agentInitialized(uint256 agentId) view returns (bool)',
+    'function remainingInits() view returns (uint256)',
+    'function initAmount() view returns (uint256)',
+    'function initEndEpoch() view returns (uint256)',
+    'function agentEpochClaimed(uint256 agentId, uint256 epoch) view returns (bool)',
+    'function pendingAgentReward(uint256 agentId, uint256 epoch) view returns (uint256)',
+    'function lockedRewards(address seller) view returns (uint256)',
+    'function sellerClaimPolicy() view returns (address)',
   ])
   const selectors = new Set<string>()
   reads.forEachFunction((fragment) => selectors.add(fragment.selector))
@@ -191,6 +209,7 @@ export class ChainRpcProvider extends JsonRpcProvider {
 
   private async one(payload: JsonRpcPayload): Promise<JsonRpcResult> {
     this.counters.calls[payload.method] = (this.counters.calls[payload.method] ?? 0) + 1
+    recordRpcCall()
     const key = JSON.stringify([payload.method, payload.params])
     const constant = this.constants.get(key)
     if (constant && constant.until > this.now()) {

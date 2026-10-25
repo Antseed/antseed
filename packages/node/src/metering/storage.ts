@@ -98,13 +98,13 @@ export class MeteringStorage {
         seller_peer_id, buyer_peer_id,
         input_tokens, output_tokens, total_tokens,
         token_method, token_confidence,
-        latency_ms, status_code, was_streaming
+        latency_ms, status_code, was_streaming, service, error, cached_input_tokens
       ) VALUES (
         @eventId, @sessionId, @timestamp, @provider,
         @sellerPeerId, @buyerPeerId,
         @inputTokens, @outputTokens, @totalTokens,
         @tokenMethod, @tokenConfidence,
-        @latencyMs, @statusCode, @wasStreaming
+        @latencyMs, @statusCode, @wasStreaming, @service, @error, @cachedInputTokens
       )
     `);
 
@@ -123,6 +123,9 @@ export class MeteringStorage {
       latencyMs: event.latencyMs,
       statusCode: event.statusCode,
       wasStreaming: event.wasStreaming ? 1 : 0,
+      service: event.service ?? null,
+      error: event.error ?? null,
+      cachedInputTokens: event.cachedInputTokens ?? null,
     });
   }
 
@@ -339,6 +342,69 @@ export class MeteringStorage {
       totalTokens: row.total_tokens,
       totalCostCents: row.total_cost_cents,
     };
+  }
+
+  /**
+   * One page of the request log, newest first. Keyset pagination on the
+   * timestamp index (`before` is the previous page's last `{ timestamp, rowid }`),
+   * so a page costs the same at any depth of a multi-GB table; never OFFSET.
+   * Filters narrow the walk; `from` bounds it.
+   */
+  listEventsPage(query: MeteringEventPageQuery): MeteringEventPageRow[] {
+    const where = ['e.timestamp >= @from', 'e.timestamp <= @beforeTs', 'NOT (e.timestamp = @beforeTs AND e.rowid >= @beforeRowid)'];
+    if (query.buyerPeerId) where.push('e.buyer_peer_id = @buyer');
+    if (query.service) where.push('e.service = @service');
+    if (query.errorsOnly) where.push('e.status_code >= 400');
+    const stmt = this.db.prepare(`
+      SELECT e.rowid AS rowid, e.event_id, e.session_id, e.timestamp, e.provider, e.service, e.buyer_peer_id,
+        e.input_tokens, e.output_tokens, e.total_tokens, e.token_method, e.latency_ms, e.status_code, e.was_streaming,
+        e.error, e.cached_input_tokens, r.cost_cents AS cost_cents
+      FROM metering_events e INDEXED BY idx_events_timestamp
+      LEFT JOIN usage_receipts r ON r.session_id = e.session_id AND r.event_id = e.event_id
+      WHERE ${where.join(' AND ')}
+      ORDER BY e.timestamp DESC, e.rowid DESC
+      LIMIT @limit
+    `);
+    return stmt.all({
+      from: query.fromMs ?? 0,
+      beforeTs: query.before?.timestamp ?? Number.MAX_SAFE_INTEGER,
+      beforeRowid: query.before?.rowid ?? Number.MAX_SAFE_INTEGER,
+      buyer: query.buyerPeerId ?? null,
+      service: query.service ?? null,
+      limit: Math.max(1, Math.min(query.limit, 500)),
+    }) as MeteringEventPageRow[];
+  }
+
+  /**
+   * One request of the seller's log with everything kept about it: the event,
+   * its signed usage receipt and the buyer's check of it, and its metering session.
+   * A short id (the first characters, as the CLI prints them) matches by prefix on the primary key.
+   */
+  getEventDetail(eventId: string): MeteringEventDetailRow | null {
+    const event = this.db.prepare(`
+      SELECT e.rowid AS rowid, e.event_id, e.session_id, e.timestamp, e.provider, e.service, e.buyer_peer_id,
+        e.input_tokens, e.output_tokens, e.total_tokens, e.token_method, e.latency_ms, e.status_code, e.was_streaming,
+        e.error, e.cached_input_tokens, e.token_confidence,
+        r.cost_cents AS cost_cents, r.receipt_id, r.unit_price_cents_per_thousand_tokens AS unit_price_cents_per_thousand
+      FROM metering_events e
+      LEFT JOIN usage_receipts r ON r.session_id = e.session_id AND r.event_id = e.event_id
+      WHERE e.event_id >= @id AND e.event_id < @end
+      ORDER BY e.event_id
+      LIMIT 1
+    `).get({ id: eventId, end: eventId.length >= 36 ? `${eventId}\0` : `${eventId}\uffff` }) as MeteringEventDetailRow | undefined;
+    if (!event) return null;
+    const verification = event.receipt_id
+      ? this.db.prepare('SELECT signature_valid, buyer_total_tokens, percentage_difference, disputed FROM receipt_verifications WHERE receipt_id = ?')
+        .get(event.receipt_id) as MeteringEventDetailRow['verification'] | undefined
+      : undefined;
+    const session = this.db.prepare(
+      'SELECT started_at, ended_at, total_requests, total_tokens, total_cost_cents, avg_latency_ms FROM sessions WHERE session_id = ?',
+    ).get(event.session_id) as MeteringEventDetailRow['session'] | undefined;
+    // The request's place in its session; sessions are short, so this reads few rows.
+    const position = this.db.prepare(
+      'SELECT COUNT(*) AS n FROM metering_events WHERE session_id = ? AND (timestamp < ? OR (timestamp = ? AND rowid <= ?))',
+    ).get(event.session_id, event.timestamp, event.timestamp, event.rowid) as { n: number };
+    return { ...event, verification: verification ?? null, session: session ?? null, session_position: position.n };
   }
 
   /** Get total tokens from metering events in a time range (real-time, per-request). */
@@ -685,4 +751,45 @@ function rowToSession(row: SessionRow): SessionMetrics {
     peerSwitches: row.peer_switches,
     disputedReceipts: row.disputed_receipts,
   };
+}
+
+export interface MeteringEventPageQuery {
+  limit: number;
+  /** Newest bound (exclusive), from the previous page. */
+  before?: { timestamp: number; rowid: number };
+  fromMs?: number;
+  buyerPeerId?: string;
+  service?: string;
+  errorsOnly?: boolean;
+}
+
+export interface MeteringEventPageRow {
+  rowid: number;
+  event_id: string;
+  session_id: string;
+  timestamp: number;
+  provider: string;
+  service: string | null;
+  buyer_peer_id: string;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  token_method: string;
+  latency_ms: number;
+  status_code: number;
+  was_streaming: number;
+  error: string | null;
+  cached_input_tokens: number | null;
+  cost_cents: number | null;
+}
+
+export interface MeteringEventDetailRow extends MeteringEventPageRow {
+  token_confidence: string;
+  receipt_id: string | null;
+  unit_price_cents_per_thousand: number | null;
+  verification: { signature_valid: number; buyer_total_tokens: number; percentage_difference: number; disputed: number } | null;
+  /** The metering session (a buyer's run of requests); null until it is first saved. */
+  session: { started_at: number; ended_at: number | null; total_requests: number; total_tokens: number; total_cost_cents: number; avg_latency_ms: number } | null;
+  /** 1-based index of this request within its session. */
+  session_position: number;
 }

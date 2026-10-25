@@ -35,6 +35,15 @@ export {
   type GasHealthEvent,
   type GasHealthSnapshot,
 } from './health/gas-health-monitor.js';
+export {
+  appendSellerEvent,
+  readSellerEvents,
+  SELLER_EVENTS_FILE,
+  SELLER_EVENTS_MAX_BYTES,
+  type SellerEvent,
+  type SellerEventKind,
+  type SellerEventSeverity,
+} from './health/seller-events.js';
 // Re-exported so CLI callers can format/parse gas balances without depending
 // on ethers directly.
 export { formatEther, parseEther } from 'ethers';

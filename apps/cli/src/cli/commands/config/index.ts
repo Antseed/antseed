@@ -3,6 +3,7 @@ import chalk from 'chalk';
 import ora from 'ora';
 import { getGlobalOptions } from '../types.js';
 import { loadConfig, saveConfig } from '../../../config/loader.js';
+import { patchValidatedConfig } from '../../../config/patch.js';
 import type { AntseedConfig, SellerProviderConfig } from '../../../config/types.js';
 import { assertValidConfig } from '../../../config/validation.js';
 import {
@@ -48,9 +49,8 @@ export function registerConfigCommand(program: Command): void {
             return;
           }
         }
-        setConfigValue(config as unknown as Record<string, unknown>, key, value);
-        assertValidConfig(config);
-        await saveConfig(globalOpts.config, config);
+        // Only this key changes in the file (validated, atomic, previous file kept as config.json.bak).
+        await patchValidatedConfig(globalOpts.config, (raw) => setConfigValue(raw, key, value));
         console.log(chalk.green(`Set ${key} = ${value}`));
       } catch (err) {
         console.error(chalk.red(`Error: ${(err as Error).message}`));
@@ -392,9 +392,7 @@ async function setRoleScopedValue(
         return;
       }
     }
-    setConfigValue(config as unknown as Record<string, unknown>, fullKey, value);
-    assertValidConfig(config);
-    await saveConfig(globalOpts.config, config);
+    await patchValidatedConfig(globalOpts.config, (raw) => setConfigValue(raw, fullKey, value));
     console.log(chalk.green(`Set ${fullKey} = ${value}`));
   } catch (err) {
     console.error(chalk.red(`Error: ${(err as Error).message}`));

@@ -1,0 +1,67 @@
+import { appendFile, readFile, rename, stat } from 'node:fs/promises';
+import { join } from 'node:path';
+
+/** Seller event journal: `<dataDir>/seller-events.jsonl`, newest last. */
+export const SELLER_EVENTS_FILE = 'seller-events.jsonl';
+/** The journal is rotated to `seller-events.1.jsonl` past this size. */
+export const SELLER_EVENTS_MAX_BYTES = 1_000_000;
+
+export type SellerEventKind =
+  | 'started'
+  | 'stopped'
+  | 'crashed'
+  | 'model_down'
+  | 'model_up'
+  | 'gas_low'
+  | 'gas_ok'
+  | 'idle'
+  | 'active'
+  | 'test';
+
+export type SellerEventSeverity = 'info' | 'warning' | 'critical';
+
+export interface SellerEvent {
+  /** Unix milliseconds. */
+  at: number;
+  kind: SellerEventKind;
+  severity: SellerEventSeverity;
+  /** One line, plain text, safe to post to a chat. */
+  title: string;
+  detail?: string;
+  provider?: string;
+  service?: string;
+}
+
+const eventsPath = (dataDir: string) => join(dataDir, SELLER_EVENTS_FILE);
+const rotatedPath = (dataDir: string) => join(dataDir, 'seller-events.1.jsonl');
+
+/** Append one event, rotating the journal once it passes SELLER_EVENTS_MAX_BYTES. */
+export async function appendSellerEvent(dataDir: string, event: SellerEvent): Promise<void> {
+  const path = eventsPath(dataDir);
+  const size = await stat(path).then((s) => s.size, () => 0);
+  if (size > SELLER_EVENTS_MAX_BYTES) await rename(path, rotatedPath(dataDir)).catch(() => {});
+  await appendFile(path, `${JSON.stringify(event)}\n`);
+}
+
+function parseLines(text: string): SellerEvent[] {
+  const events: SellerEvent[] = [];
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const event = JSON.parse(line) as SellerEvent;
+      if (typeof event.at === 'number' && typeof event.kind === 'string') events.push(event);
+    } catch {
+      // A torn final line from a crash mid-write; skip it.
+    }
+  }
+  return events;
+}
+
+/** The latest `limit` events, newest first (reads the rotated file when the current one is short). */
+export async function readSellerEvents(dataDir: string, limit = 200): Promise<SellerEvent[]> {
+  const current = parseLines(await readFile(eventsPath(dataDir), 'utf-8').catch(() => ''));
+  const events = current.length >= limit
+    ? current
+    : [...parseLines(await readFile(rotatedPath(dataDir), 'utf-8').catch(() => '')), ...current];
+  return events.slice(-limit).reverse();
+}

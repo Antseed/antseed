@@ -60,6 +60,8 @@ export interface ModelHealthCheckerConfig {
 type ProbeOutcome = 'healthy' | 'unhealthy' | 'inconclusive';
 
 interface ServiceHealthState {
+  /** The provider instance this state belongs to (several can share a name, e.g. four upstreams on the openai plugin). */
+  provider: Provider;
   providerName: string;
   service: string;
   consecutiveFailures: number;
@@ -89,6 +91,8 @@ export class ModelHealthChecker {
   private readonly _probeTimeoutMs: number;
   private readonly _onChange: ModelHealthCheckerConfig['onChange'];
   private readonly _states = new Map<string, ServiceHealthState>();
+  /** Stable per-instance ids: providers are told apart by instance, not by name. */
+  private readonly _providerIds = new Map<Provider, number>();
   private _timer: ReturnType<typeof setInterval> | null = null;
   private _sweepInFlight: Promise<void> | null = null;
   private _stopped = false;
@@ -105,7 +109,7 @@ export class ModelHealthChecker {
     for (const { provider } of this._targets) {
       if (provider.healthCheckAvailable !== false) continue;
       for (const [index, service] of provider.services.entries()) {
-        const state = this._stateFor(provider.name, service);
+        const state = this._stateFor(provider, service);
         state.removed = true;
         state.removedAtIndex = index;
         state.lastDetail = 'Awaiting successful probe after initialization failure';
@@ -176,7 +180,7 @@ export class ModelHealthChecker {
       // the live array on state transitions.
       const services = new Set<string>(provider.services);
       for (const state of this._states.values()) {
-        if (state.providerName === provider.name && state.removed) {
+        if (state.provider === provider && state.removed) {
           services.add(state.service);
         }
       }
@@ -234,7 +238,7 @@ export class ModelHealthChecker {
     for (const service of services) {
       if (this._stopped) return;
       const result = combine(service);
-      const state = this._stateFor(provider.name, service);
+      const state = this._stateFor(provider, service);
       if (result.status === 'unknown') {
         debugLog(`[ModelHealth] ${provider.name}/${service}: inconclusive (${result.reason ?? 'no result'})`);
         continue;
@@ -253,12 +257,18 @@ export class ModelHealthChecker {
     }
   }
 
-  private _stateFor(providerName: string, service: string): ServiceHealthState {
-    const key = `${providerName}\0${service}`;
+  private _stateFor(provider: Provider, service: string): ServiceHealthState {
+    let id = this._providerIds.get(provider);
+    if (id === undefined) {
+      id = this._providerIds.size;
+      this._providerIds.set(provider, id);
+    }
+    const key = `${id}\0${service}`;
     let state = this._states.get(key);
     if (!state) {
       state = {
-        providerName,
+        provider,
+        providerName: provider.name,
         service,
         consecutiveFailures: 0,
         removed: false,
@@ -275,7 +285,7 @@ export class ModelHealthChecker {
   private async _probeService(target: ModelHealthTarget, service: string): Promise<void> {
     const provider = target.provider;
     const probeProvider = target.probeProvider ?? provider;
-    const state = this._stateFor(provider.name, service);
+    const state = this._stateFor(provider, service);
     state.lastProbeAt = Date.now();
 
     let outcome: ProbeOutcome;

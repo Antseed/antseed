@@ -627,6 +627,8 @@ export class SellerRequestHandler {
       let statusCode = 500;
       let responseBody: Uint8Array = new Uint8Array(0);
       let streamedResponseStarted = false;
+      // Kept in the seller's request log when the provider call throws (the status alone says little).
+      let failureMessage: string | null = null;
       const isDownload = videoRoute?.action === 'retrieve' && request.headers[VIDEO_DOWNLOAD_STREAM_HEADER] === VIDEO_DOWNLOAD_STREAM_VERSION;
       let downloadHash: ReturnType<typeof createStreamingResponseHash> | undefined;
       let heldDoneChunkData: Uint8Array | null = null;
@@ -722,6 +724,7 @@ export class SellerRequestHandler {
           }
         } catch (err) {
           const message = err instanceof Error ? err.message : "Internal error";
+          failureMessage = message;
           debugWarn(`[SellerHandler] Provider exception: provider="${provider.name}" model="${requestedModel}" buyer=${buyerPeerId.slice(0, 12)}... (${Date.now() - startTime}ms) ${message}`);
           if (videoRoute?.action === 'create') this._closeOneOffBestEffort(oneOffChannelId, 'video create failed');
           responseBody = new TextEncoder().encode(message);
@@ -788,6 +791,8 @@ export class SellerRequestHandler {
             outputBytes: responseForAuth?.streamedBody?.byteLength ?? responseBody.length,
             responseBody,
             providerUsage: responseUsage,
+            ...(requestedModel !== 'unknown' ? { service: requestedModel } : {}),
+            ...(failureMessage ? { error: failureMessage } : {}),
           });
         }
 

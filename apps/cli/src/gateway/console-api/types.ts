@@ -59,7 +59,14 @@ export interface KeySessionMe {
   key: ApiKey
 }
 
-export type MeResponse = { kind: 'member'; me: Me } | { kind: 'key'; me: KeySessionMe }
+/** A seller-only dashboard session (`antseed seller dashboard`); sees the Seller page only. */
+export interface SellerSessionMe {
+  /** The seller data directory the dashboard reads. */
+  dataDir: string
+  version: string
+}
+
+export type MeResponse = { kind: 'member'; me: Me } | { kind: 'key'; me: KeySessionMe } | { kind: 'seller'; me: SellerSessionMe }
 
 // POST /auth/setup                  { token }                         → enrollment
 // POST /auth/invite                 { token }                         → enrollment
@@ -1023,4 +1030,398 @@ export interface ObservabilitySettings {
   logContent: boolean
   /** Days to keep the request log; null keeps it forever. */
   retentionDays: number | null
+}
+
+// ── Seller monitoring ────────────────────────────────────────────────────
+// Read-only views of a seller on this host, from its data directory:
+// daemon.state.json (written every second while it runs), seller-events.jsonl
+// and metering.db. Served by the gateway console to org admins when the host
+// runs a seller, and by `antseed seller dashboard`.
+//
+// GET /seller/status            → SellerStatus  ({ available: false } when no seller is found)
+// GET /seller/events?limit=     → { events: SellerEventView[] }  (newest first, limit ≤ 500)
+// GET /seller/usage?days=       → SellerUsage   (UTC days, days ≤ 30)
+
+export interface SellerModelHealth {
+  provider: string
+  service: string
+  /** False when the seller withdrew the service after failing health probes. */
+  advertised: boolean
+  consecutiveFailures: number
+  lastProbeAt: number | null
+  lastStatusCode: number | null
+  lastDetail: string | null
+}
+
+export interface SellerGas {
+  address: string
+  depleted: boolean
+  balanceEth: number | null
+  minBalanceEth: number
+  lastCheckedAt: number | null
+}
+
+export interface SellerAlertsState {
+  /** Configured delivery channels, e.g. ['telegram', 'webhook']; empty when alerts are off. */
+  channels: string[]
+  lastSentAt: number | null
+  lastError: string | null
+}
+
+export type SellerStatus =
+  | { available: false }
+  | {
+      available: true
+      /** The daemon wrote its state in the last 15 s. */
+      running: boolean
+      dataDir: string
+      peerId: string | null
+      provider: string | null
+      startedAt: number | null
+      updatedAt: number | null
+      activeChannels: number
+      capacityUsedPercent: number
+      notices: string[]
+      models: SellerModelHealth[]
+      /** Null when the seller runs without payments or predates gas checks. */
+      gas: SellerGas | null
+      /** Null when the seller predates alerts. */
+      alerts: SellerAlertsState | null
+      version: string
+      /** Chain RPC calls per source, this process's and the seller daemon's (on the API, not the file reader). */
+      rpc?: SellerRpcDiagnostics
+    }
+
+export type SellerEventSeverity = 'info' | 'warning' | 'critical'
+
+export interface SellerEventView {
+  at: number
+  kind: string
+  severity: SellerEventSeverity
+  title: string
+  detail?: string
+  provider?: string
+  service?: string
+}
+
+export interface SellerUsageDay {
+  /** UTC day start, epoch ms. */
+  day: number
+  requests: number
+  tokens: number
+  sessions: number
+  revenueUsd: number
+}
+
+export interface SellerUsage {
+  days: SellerUsageDay[]
+  channels: { active: number; settled: number; timeout: number; ghost: number; total: number }
+  /** From the local channel ledger. */
+  deliveredUsdc: number
+  settledUsdc: number
+}
+
+// Seller settings (org admins in the gateway console; the seller dashboard session):
+// GET   /seller/settings                 → { settings: SellerSettings, alerts: SellerAlertSettings }
+// PATCH /seller/settings   SellerSettingsPatch → { settings, alerts, changed: string[] }  (applies when the seller restarts; config.json.bak keeps the previous file)
+// PATCH /seller/alerts     SellerAlertsPatch   → { settings, alerts, changed }            (applies live)
+// POST  /seller/alerts/test { channel }         → { sent: string[], errors: string[] }
+// POST  /seller/alerts/telegram/chats { botToken? } → { chats: TelegramChat[] }  (the saved token when botToken is omitted)
+// 409 config_read_only when the config file cannot be written (e.g. a ConfigMap mount).
+
+export interface SellerServicePricing {
+  provider: string
+  service: string
+  inputUsdPerMillion: number | null
+  outputUsdPerMillion: number | null
+  cachedInputUsdPerMillion: number | null
+  /** Priced by the provider's defaults (no price of its own). */
+  inherited: boolean
+}
+
+export interface SellerSettings {
+  configPath: string
+  writable: boolean
+  readOnlyReason: string | null
+  displayName: string
+  maxConcurrentBuyers: number
+  healthCheck: { enabled: boolean; intervalMs: number; failureThreshold: number }
+  gasCheck: { enabled: boolean; minBalanceEth: number }
+  freeTier: { maxRequestsPerAddress: number | null; maxRequestsPerIp: number | null; windowMs: number | null }
+  restrictedCountries: string[]
+  /** Not set in the file: the built-in list applies. */
+  restrictedCountriesDefault: boolean
+  services: SellerServicePricing[]
+}
+
+export interface SellerSettingsPatch {
+  displayName?: string
+  maxConcurrentBuyers?: number
+  healthCheck?: { enabled?: boolean; intervalMs?: number; failureThreshold?: number }
+  gasCheck?: { enabled?: boolean; minBalanceEth?: number }
+  /** null removes a limit. */
+  freeTier?: { maxRequestsPerAddress?: number | null; maxRequestsPerIp?: number | null; windowMs?: number | null }
+  /** null goes back to the built-in list. */
+  restrictedCountries?: string[] | null
+  pricing?: Array<{ provider: string; service: string; inputUsdPerMillion?: number; outputUsdPerMillion?: number; cachedInputUsdPerMillion?: number | null }>
+}
+
+export interface SellerAlertSettings {
+  writable: boolean
+  readOnlyReason: string | null
+  telegram: {
+    chatId: string | null
+    botTokenEnv: string
+    /** Whether a bot token exists; the token itself is never sent to the browser. */
+    tokenSet: boolean
+    tokenSource: 'env' | 'file' | null
+    /** Token and chat id both present: alerts go out. */
+    active: boolean
+  }
+  /** Only the host: the URL itself may carry a secret. */
+  webhook: { set: boolean; host: string | null; source: 'file' | 'config' | null }
+  idleMinutes: number | null
+  cooldownMinutes: number | null
+  minSeverity: 'info' | 'warning' | 'critical' | null
+}
+
+/** Each field: a value sets it, null clears it, absent keeps it. */
+export interface SellerAlertsPatch {
+  telegramChatId?: string | null
+  telegramBotToken?: string | null
+  webhookUrl?: string | null
+  idleMinutes?: number | null
+  cooldownMinutes?: number | null
+  minSeverity?: 'info' | 'warning' | 'critical' | null
+}
+
+export interface TelegramChat {
+  id: string
+  title: string
+  type: string
+}
+
+// Seller market, reputation and promotion (same access as the other /seller routes):
+// GET  /seller/market?refresh=1      → SellerMarket       (network snapshot cached ~15 min; refresh=1 starts a background refresh)
+// GET  /seller/reputation?refresh=1  → SellerReputation   (trust from the same snapshot; on-chain standing cached ~10 min)
+// GET  /seller/promote               → SellerPromote
+// POST /seller/promote/check         → SellerPromote      (re-checks the verification claims now)
+// PUT  /seller/promote/verifications { domains: [{ domain }], github: [{ username, repository? }] } → SellerPromote
+//   (writes seller.verifications through the settings writer; applies when the seller restarts)
+
+/** Where the market and trust numbers come from; never blocks a request. */
+export interface SellerNetworkMeta {
+  /** e.g. "gateway buyer", "local buyer daemon", "DHT discovery". */
+  source: string | null
+  refreshedAt: number | null
+  refreshing: boolean
+  error: string | null
+  peers: number
+}
+
+export interface SellerMarketOffer {
+  peerId: string
+  name: string | null
+  mine: boolean
+  inputUsdPerMillion: number | null
+  outputUsdPerMillion: number | null
+  cachedInputUsdPerMillion: number | null
+  /** (3 × input + output) / 4: a typical chat mix, for ranking. */
+  blendedUsdPerMillion: number | null
+  trustScore: number | null
+  tee: boolean
+  /** In-flight requests over capacity, 0-1; null when the seller does not say. */
+  load: number | null
+}
+
+export interface SellerMarketService {
+  provider: string
+  service: string
+  mine: { inputUsdPerMillion: number | null; outputUsdPerMillion: number | null; cachedInputUsdPerMillion: number | null; blendedUsdPerMillion: number | null }
+  /** Other sellers offering the same model. */
+  competitors: number
+  /** No one else offers it. */
+  unique: boolean
+  cheapest: { inputUsdPerMillion: number | null; outputUsdPerMillion: number | null } | null
+  median: { inputUsdPerMillion: number | null; outputUsdPerMillion: number | null } | null
+  /** 1 = cheapest by blended price, among every seller of the model (this one included). */
+  rank: number | null
+  of: number
+  /** This seller's blended price vs the other sellers' median, in percent (+ is pricier). */
+  deltaPct: number | null
+  offers: SellerMarketOffer[]
+}
+
+export interface SellerMarket {
+  network: SellerNetworkMeta
+  /** This seller was found in the snapshot. */
+  found: boolean
+  services: SellerMarketService[]
+  /** Models other sellers offer that this one does not, most widely offered first. */
+  notOffered: Array<{ service: string; sellers: number; cheapestOutputUsdPerMillion: number | null }>
+}
+
+export interface SellerTrustPart {
+  score: number
+  max: number
+}
+
+export interface SellerTrust {
+  score: number
+  history: (SellerTrustPart & { channelCount: number; volumeUsdc: number }) | null
+  usage: (SellerTrustPart & { shareBps: number; epoch: number }) | null
+  power: (SellerTrustPart & { shareBps: number; epoch: number }) | null
+  identity: (SellerTrustPart & { kind: 'github' | 'domain'; claim: string }) | null
+  freeModels: (SellerTrustPart & { service: string }) | null
+  washFlagged: boolean | null
+}
+
+export interface SellerStanding {
+  address: string
+  agentId: number
+  identityRegistered: boolean
+  registryBound: boolean
+  eligible: boolean
+  /** ANTS, decimal strings. */
+  minPoolStake: string | null
+  poolActiveStake: string
+  pool: {
+    powerShareBps: number
+    stakers: number | null
+    uniqueBuyers: number | null
+    requestCount: string | null
+    /** USDC, decimal string. */
+    lifetimeVolumeUsdc: string | null
+    /** Percent of channels that timed out unsettled. */
+    ghostRate: number | null
+    lastEpochEmission: string | null
+  } | null
+  /** Seller usage rewards waiting to be claimed, ANTS. */
+  pendingRewards: string | null
+}
+
+export interface SellerReputation {
+  network: SellerNetworkMeta
+  found: boolean
+  trust: SellerTrust | null
+  /** Position by trust score among the sellers in the snapshot. */
+  rank: { position: number; of: number } | null
+  /** One plain next step per part that has room to grow. */
+  steps: Array<{ part: 'history' | 'usage' | 'power' | 'identity' | 'freeModels' | 'wash' | 'standing'; text: string }>
+  standing: SellerStanding | null
+  standingError: string | null
+  standingRefreshedAt: number | null
+}
+
+export interface SellerVerificationStatus {
+  verified: boolean
+  checkedAt: number
+  error: string | null
+}
+
+export interface SellerPromote {
+  peerId: string | null
+  displayName: string
+  /** The seller's page on the explorer; null without a peer id or explorer. */
+  profileUrl: string | null
+  services: Array<{ provider: string; service: string; inputUsdPerMillion: number | null; outputUsdPerMillion: number | null }>
+  trustScore: number | null
+  writable: boolean
+  readOnlyReason: string | null
+  domains: Array<{ domain: string; txtName: string; txtValue: string; wellKnownUrl: string; wellKnownBody: string; status: SellerVerificationStatus | null }>
+  github: Array<{ username: string; repository: string; proofUrl: string; proofBody: string; status: SellerVerificationStatus | null }>
+}
+
+export interface SellerVerificationsInput {
+  domains: Array<{ domain: string }>
+  github: Array<{ username: string; repository?: string }>
+}
+
+// GET /seller/logs?cursor=&limit=&service=&buyer=&from=&errors=1 → SellerLogPage (newest first, keyset-paged)
+
+export interface SellerLogEntry {
+  id: string
+  at: number
+  /** Buyer peer id. */
+  buyer: string
+  sessionId: string
+  /** Model the buyer asked for; null on rows recorded before sellers kept it. */
+  service: string | null
+  provider: string
+  inputTokens: number
+  outputTokens: number
+  /** Tokens as the upstream reported them (true) or estimated from body size. */
+  exactTokens: boolean
+  /** From the signed usage receipt, in USD; null for free requests or without a receipt. */
+  costUsd: number | null
+  latencyMs: number
+  statusCode: number
+  streaming: boolean
+  /** Why it failed, from the upstream's error (null when it succeeded or on older rows). */
+  error: string | null
+  /** Input tokens the upstream served from its prompt cache, when it reported them. */
+  cachedInputTokens: number | null
+}
+
+/**
+ * One request with everything the seller kept about it (GET /seller/logs/:id):
+ * the signed usage receipt and the buyer's check of it, the buyer's run of
+ * requests it belongs to, and the payment channel that was open for the buyer then.
+ */
+export interface SellerLogDetail extends SellerLogEntry {
+  /** How sure the token count is: high (upstream usage), low (estimated from body size). */
+  tokenConfidence: string
+  receipt: {
+    id: string
+    /** Price the receipt was signed at, USD per 1M tokens. */
+    usdPerMillionTokens: number
+    /** Set once the buyer checked the receipt against its own count. */
+    buyerCheck: { signatureValid: boolean; buyerTokens: number; differencePercent: number; disputed: boolean } | null
+  } | null
+  session: {
+    id: string
+    /** 1-based position of this request in the session. */
+    position: number
+    startedAt: number | null
+    endedAt: number | null
+    requests: number | null
+    tokens: number | null
+    costUsd: number | null
+    avgLatencyMs: number | null
+  }
+  /** The buyer's payment channel open at the time; null for free requests or when none matches. */
+  channel: {
+    id: string
+    status: string
+    openedAt: number
+    settledAt: number | null
+    /** Most the buyer authorized for the channel, USD. */
+    authorizedUsd: number
+    /** Delivered (owed) on the channel so far, USD. */
+    deliveredUsd: number
+    settledUsd: number | null
+    requests: number
+  } | null
+}
+
+export interface SellerLogPage {
+  entries: SellerLogEntry[]
+  /** Pass as `cursor` for the next (older) page; null at the end. */
+  next: string | null
+}
+
+export interface SellerLogQuery {
+  cursor?: string | null
+  limit?: number
+  service?: string | null
+  buyer?: string | null
+  /** Oldest request time to include, Unix ms. */
+  from?: number | null
+  errorsOnly?: boolean
+}
+
+/** RPC calls this process made per source (and the seller daemon's, from its state file). */
+export interface SellerRpcDiagnostics {
+  process: Record<string, { total: number; lastMinute: number; perMinute: number }>
+  daemon: Record<string, { total: number; lastMinute: number; perMinute: number }> | null
 }

@@ -9,7 +9,7 @@ const ADDRESS = '0x1111111111111111111111111111111111111111';
 
 function makeMonitor(
   balances: Array<bigint | Error>,
-  overrides: { minBalanceWei?: bigint; intervalMs?: number } = {},
+  overrides: { minBalanceWei?: bigint; intervalMs?: number; relaxedIntervalMs?: number } = {},
 ): { monitor: GasHealthMonitor; events: GasHealthEvent[]; calls: string[] } {
   const events: GasHealthEvent[] = [];
   const calls: string[] = [];
@@ -97,6 +97,28 @@ describe('GasHealthMonitor', () => {
       monitor.stop();
       await vi.advanceTimersByTimeAsync(5_000);
       expect(calls).toHaveLength(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('checks a well-funded wallet only every relaxed interval, and tightens up near the line', async () => {
+    vi.useFakeTimers();
+    try {
+      const plenty = DEFAULT_MIN_GAS_BALANCE_WEI * 50n;
+      const { monitor, calls } = makeMonitor([plenty, plenty, DEFAULT_MIN_GAS_BALANCE_WEI * 2n], { intervalMs: 1_000, relaxedIntervalMs: 10_000 });
+      monitor.start();
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(9_000);
+      expect(calls).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(calls).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(calls).toHaveLength(3);
+      // 2× the minimum is not well funded: back to every second.
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(calls).toHaveLength(6);
+      monitor.stop();
     } finally {
       vi.useRealTimers();
     }

@@ -49,6 +49,12 @@ export interface MeteringEvent {
   statusCode: number;
   /** Whether the response was streamed (SSE) */
   wasStreaming: boolean;
+  /** Service (model id) the buyer asked for, when known. */
+  service?: string;
+  /** A short upstream error for a failed request (status 400 and above). */
+  error?: string;
+  /** Input tokens served from the upstream's prompt cache, when it reported them. */
+  cachedInputTokens?: number;
 }
 
 /**

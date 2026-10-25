@@ -15,6 +15,10 @@ import { chatRouteRegistrar } from './chat/routes.js'
 import { removeCredential, requireMemberRecord } from './services/members.js'
 import type { GatewayConsoleContext, GatewayConsoleHandle } from './runtime.js'
 import type { ApiKeyRecord, MemberRecord } from './store.js'
+import { resolveSellerDataDir } from '../seller-monitor/reader.js'
+import { sellerRouteRegistrar } from '../seller-monitor/routes.js'
+import { resolveSellerConfigPath } from '../seller-monitor/settings.js'
+import { buyerJson, defaultBuyerClient } from './console-api/handlers/network-buyer.js'
 import { CONSOLE_LOCATION_SETTING, type ConsoleLocation } from './console-location.js'
 
 export { CONSOLE_LOCATION_SETTING, consoleBaseUrl, normalizePublicUrl, readConsoleLocation, type ConsoleLocation } from './console-location.js'
@@ -55,6 +59,11 @@ function registerCredentialRoutes(auth: Pick<ConsoleAuthService, 'deleteCredenti
       return respond(204)
     })
   }
+}
+
+/** Objects of a JSON array (the buyer's peer rows). */
+function rows(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value) ? value.filter((row): row is Record<string, unknown> => !!row && typeof row === 'object' && !Array.isArray(row)) : []
 }
 
 export interface GatewayConsoleOptions {
@@ -109,6 +118,14 @@ export function gatewayConsole(options: GatewayConsoleOptions): (context: Gatewa
       registerCredentialRoutes(auth),
       recoveryRouteRegistrar((memberId) => auth.createEnrollment(memberId)),
       chatRouteRegistrar({ gatewayPort: () => gatewayPort, braveApiKey: (options.env ?? process.env)['ANTSEED_BRAVE_API_KEY']?.trim() || null }),
+      // A seller on this host (ANTSEED_SELLER_DATA_DIR, or the gateway's own data dir) gets a Seller page.
+      sellerRouteRegistrar({
+        // The gateway's own buyer already knows the network and scores every seller.
+        network: (routeDeps) => async () => ({ rows: rows((await buyerJson(defaultBuyerClient(routeDeps), '/_antseed/peers'))['peers']), source: 'gateway buyer' }),
+        dataDir: () => resolveSellerDataDir(options.dataDir, options.env ?? process.env),
+        configPath: (sellerDataDir) => resolveSellerConfigPath(sellerDataDir, options, options.env ?? process.env),
+        ...(options.env ? { env: options.env } : {}),
+      }),
     ], options.distDir ? { distDir: options.distDir } : {})
 
     return {

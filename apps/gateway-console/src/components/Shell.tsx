@@ -4,10 +4,10 @@ import { ActionMenu, Drawer, IconButton, LoadingRows, Logo, LogoMark } from '@an
 import { api } from '../api'
 import { useConsole } from '../app/context'
 import { useTheme, type ThemeChoice } from '../app/theme'
-import { ROLE_LABELS, visibleNav, type PageId } from '../lib/nav'
+import { isOrgAdmin, ROLE_LABELS, visibleNav, type PageId } from '../lib/nav'
 import { href, linkHandler, navigate, useLocation } from '../lib/router'
 import { useWalletAttention } from '../lib/attention'
-import { useStatus } from '../lib/queries'
+import { useSellerStatus, useStatus } from '../lib/queries'
 import { startTour, tourSeen } from '../lib/tour'
 import { AccountModal } from './AccountModal'
 import { ExposureBanner } from './ExposureBanner'
@@ -78,7 +78,8 @@ function navAttention(id: PageId, attention: ReturnType<typeof useWalletAttentio
 function Nav({ current, onNavigate }: { current: PageId | null; onNavigate?: () => void }) {
   const { viewer } = useConsole()
   const attention = useWalletAttention()
-  const items = visibleNav(viewer)
+  const seller = useSellerStatus(isOrgAdmin(viewer))
+  const items = visibleNav(viewer, { hasSeller: seller.data?.available === true })
   const groups = [...new Set(items.map((item) => item.group))]
   return (
     <nav className="gc-nav" aria-label="Console">

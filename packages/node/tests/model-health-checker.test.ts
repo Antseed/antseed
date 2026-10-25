@@ -481,3 +481,33 @@ describe('ModelHealthChecker free media health checks', () => {
     expect(wrapper.services).toEqual([]);
   });
 });
+
+describe('ModelHealthChecker with providers that share a name', () => {
+  it('probes a withdrawn service only on its own provider and keeps its upstream error', async () => {
+    // Two upstreams on the same plugin: each one's relay refuses the other's models.
+    const allowedOnly = (allowed: string[], statuses: Record<string, number[]>): ProbeHandler => async (req) => {
+      const body = JSON.parse(new TextDecoder().decode(req.body)) as { model: string };
+      if (!allowed.includes(body.model)) return jsonResponse(req.requestId, 403, { error: `Service "${body.model}" is not in the allowed list` });
+      return statusSequence(statuses)(req);
+    };
+    const upstreamA = makeProvider({ name: 'openai', services: ['model-a'], onRequest: allowedOnly(['model-a'], { 'model-a': [429, 429] }) });
+    const upstreamB = makeProvider({ name: 'openai', services: ['model-b'], onRequest: allowedOnly(['model-b'], {}) });
+    const checker = new ModelHealthChecker({ targets: [{ provider: upstreamA }, { provider: upstreamB }], failureThreshold: 2 });
+
+    const probedOnB = vi.spyOn(upstreamB, 'handleRequest');
+    await checker.runSweep();
+    await checker.runSweep();
+    expect(upstreamA.services).toEqual([]);
+    // The withdrawn model keeps its real upstream error, not the other relay's refusal.
+    expect(probedOnB.mock.calls.map(([req]) => JSON.parse(new TextDecoder().decode(req.body)).model)).not.toContain('model-a');
+    const withdrawn = checker.getSnapshot().find((entry) => entry.service === 'model-a')!;
+    expect(withdrawn).toMatchObject({ advertised: false, consecutiveFailures: 2, lastStatusCode: 429 });
+
+    // The upstream recovers: one healthy probe on its own provider restores it,
+    // and the other provider never probes it.
+    await checker.runSweep();
+    expect(upstreamA.services).toEqual(['model-a']);
+    expect(upstreamB.services).toEqual(['model-b']);
+    expect(checker.getSnapshot().every((entry) => entry.advertised && entry.consecutiveFailures === 0)).toBe(true);
+  });
+});

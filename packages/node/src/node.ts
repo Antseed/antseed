@@ -103,7 +103,7 @@ import { BuyerPaymentManager, type BuyerPaymentConfig } from "./payments/buyer-p
 import { BuyerPaymentNegotiator } from "./payments/buyer-payment-negotiator.js";
 import { RpcHealthMonitor, type RpcHealthStatus } from "./payments/rpc-health.js";
 import { SellerAddressResolver } from "./discovery/seller-address-resolver.js";
-import { Contract as EthersContract } from "ethers";
+import { Contract as EthersContract, type AbstractProvider } from "ethers";
 import { SellerPaymentManager, type SellerPaymentConfig } from "./payments/seller-payment-manager.js";
 import { IdentityClient } from "./payments/evm/identity-client.js";
 import { SellerRequestHandler, assertSingleRoutingService } from "./seller-request-handler.js";
@@ -221,6 +221,12 @@ export interface NodePaymentsConfig {
   rpcUrl?: string;
   /** Additional RPC endpoints for transparent failover via ethers FallbackProvider (quorum=1). */
   fallbackRpcUrls?: string[];
+  /**
+   * A provider the host shares for read-only chain calls (discovery's on-chain
+   * peer enrichment): e.g. one that batches into Multicall3 and backs off on
+   * 429s. Transactions always use the payment clients' own providers.
+   */
+  readProvider?: AbstractProvider;
   /** Deployed AntseedDeposits contract address */
   depositsAddress?: string;
   /** Deployed AntseedChannels contract address */
@@ -2301,7 +2307,7 @@ export class AntseedNode extends EventEmitter {
             sellerContracts.delete(sellerContract);
             sellerContracts.set(sellerContract, contract);
           } else {
-            contract = new EthersContract(sellerContract, isOperatorAbi, channelsClientRef!.provider);
+            contract = new EthersContract(sellerContract, isOperatorAbi, payments.readProvider ?? channelsClientRef!.provider);
             if (sellerContracts.size >= SELLER_CONTRACTS_MAX) {
               const oldest = sellerContracts.keys().next().value;
               if (oldest !== undefined) sellerContracts.delete(oldest);
@@ -2361,7 +2367,7 @@ export class AntseedNode extends EventEmitter {
       debugLog(`[Node] StakingClient initialized (contract=${payments.stakingAddress.slice(0, 10)}...)`);
     }
     if (this._channelsClient && payments.stakingAddress && payments.channelsAddress) {
-      this._trustSignalsClient = new TrustSignalsClient(this._channelsClient.provider, {
+      this._trustSignalsClient = new TrustSignalsClient(payments.readProvider ?? this._channelsClient.provider, {
         sellerRegistry: payments.stakingAddress,
         channels: payments.channelsAddress,
         ...(payments.sellerPoolsAddress ? { sellerPools: payments.sellerPoolsAddress } : {}),

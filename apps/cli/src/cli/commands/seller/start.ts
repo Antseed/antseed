@@ -1,13 +1,13 @@
 import type { Command } from 'commander'
 import chalk from 'chalk'
 import ora from 'ora'
-import { writeFile, unlink } from 'node:fs/promises'
+import { readFile, writeFile, unlink } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { join, resolve, isAbsolute, dirname } from 'node:path'
 import { getGlobalOptions } from '../types.js'
 import pkg from '../../../../package.json' with { type: 'json' }
 import { watchForUpdates } from '../../../update/watch.js'
-import { loadConfig } from '../../../config/loader.js'
+import { loadConfig, resolveConfigPath } from '../../../config/loader.js'
 import { DEFAULT_RESTRICTED_COUNTRIES } from '../../../config/defaults.js'
 import {
   AntseedNode,
@@ -33,6 +33,7 @@ import {
   ANTSEED_BASE_RPC_URL_ENV,
   createIdentityClient,
   createStakingClient,
+  requireCryptoConfig,
   resolveBaseRpcUrlOverride,
 } from '../../payment-utils.js'
 import type { AntseedConfig, SellerCLIConfig, SellerProviderConfig } from '../../../config/types.js'
@@ -47,9 +48,26 @@ import { AntAgentProvider, loadAntAgent, type AntAgentDefinition } from '@antsee
 import { resolvePluginPackage } from '../../../plugins/registry.js'
 import { startupReachabilityWarning } from './reachability.js'
 import { initializeProvider } from './provider-init.js'
+import { sharedChainProvider } from '../../../proxy/chain-rpc.js'
+import { rpcUsage, withRpcSource } from '../../../proxy/rpc-sources.js'
+import { SellerAlerts } from '../../../seller-alerts/alerts.js'
+import { startIdleWatch, uncleanExitEvent } from '../../../seller-alerts/lifecycle.js'
 
 function getStateFile(dataDir: string): string {
   return join(dataDir, 'daemon.state.json')
+}
+
+/** The gas monitor's last reading for daemon.state.json, in ETH (bigint is not JSON). */
+export function gasHealthState(monitor: Pick<GasHealthMonitor, 'getSnapshot'> | null) {
+  if (!monitor) return null
+  const snapshot = monitor.getSnapshot()
+  return {
+    address: snapshot.address,
+    depleted: snapshot.depleted,
+    balanceEth: snapshot.lastBalanceWei === null ? null : Number(formatEther(snapshot.lastBalanceWei)),
+    minBalanceEth: Number(formatEther(snapshot.minBalanceWei)),
+    lastCheckedAt: snapshot.lastCheckedAt,
+  }
 }
 
 export function selectSellerProviderNames(
@@ -838,6 +856,22 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       // would generate and charge for media. Providers check them with free
       // account and model-list calls instead (checkUpstreamAccount,
       // checkServiceHealth).
+      // Seller events: journaled to <dataDir>/seller-events.jsonl for the dashboard,
+      // and sent to the channels in seller.alerts (if any).
+      const alerts = new SellerAlerts({
+        dataDir: globalOpts.dataDir,
+        // Re-read on change: alert edits (dashboard, console, by hand) apply without a restart.
+        configPath: resolveConfigPath(globalOpts.config),
+        sellerName: config.identity.displayName || `seller ${(node.peerId ?? '').slice(0, 8)}`,
+        ...(node.peerId ? { peerId: node.peerId } : {}),
+        log: (line) => console.log(chalk.yellow(line)),
+      })
+      const previousState = await readFile(getStateFile(globalOpts.dataDir), 'utf-8').catch(() => null)
+      const crashed = uncleanExitEvent(previousState, Date.now())
+      if (crashed) void alerts.record(crashed)
+      void alerts.record({ kind: 'started', severity: 'info', title: `Seller started (v${pkg.version})` })
+      if (alerts.channels().length > 0) console.log(chalk.dim(`  alerts: ${alerts.channels().join(', ')}`))
+
       let healthChecker: ModelHealthChecker | null = null
       if (healthCheckEnabled && registeredProviders.length > 0) {
         healthChecker = new ModelHealthChecker({
@@ -852,8 +886,10 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           onChange: (event) => {
             if (event.status === 'removed') {
               console.log(chalk.yellow(`Model ${event.provider}/${event.service} unadvertised — failing health checks (${event.detail})`))
+              void alerts.record({ kind: 'model_down', severity: 'warning', title: `${event.service} withdrawn after ${event.consecutiveFailures} failed health checks`, detail: event.detail, provider: event.provider, service: event.service })
             } else {
               console.log(chalk.green(`Model ${event.provider}/${event.service} re-advertised — health check recovered (${event.detail})`))
+              void alerts.record({ kind: 'model_up', severity: 'info', title: `${event.service} is healthy again and advertised`, detail: event.detail, provider: event.provider, service: event.service })
             }
             void node.refreshSellerMetadata().catch(() => {})
           },
@@ -864,6 +900,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       // Operator-facing notices surfaced via daemon.state.json (seller status
       // command and desktop). Currently only the out-of-gas notice.
       let gasNotice: string | null = null
+      let gasMonitor: GasHealthMonitor | null = null
 
       // Write daemon state so dashboard and connect can discover this seeder
       const startedAt = Date.now()
@@ -983,6 +1020,12 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           tokensToday: 0,
           uptime: formatUptime(),
           notices: gasNotice ? [gasNotice] : [],
+          // Read by `antseed metrics serve --role seller` for model and gas alerts.
+          modelHealth: healthChecker?.getSnapshot() ?? [],
+          gas: gasHealthState(gasMonitor),
+          alerts: alerts.state(),
+          // Chain RPC calls this process made, per source (the dashboard and metrics exporter show them).
+          rpc: rpcUsage(),
           updatedAt: now,
           proxyPort: null,
         }
@@ -1015,6 +1058,12 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       node.on('session:updated', scheduleDaemonStateWrite)
       node.on('session:finalized', scheduleDaemonStateWrite)
 
+      const idleWatch = startIdleWatch({
+        idleMinutes: () => alerts.idleMinutes(),
+        node,
+        record: (event) => alerts.record(event),
+      })
+
       // Refresh state file every 1s so the desktop dashboard reflects live counters.
       const stateInterval = setInterval(async () => {
         await writeDaemonState().catch(() => {})
@@ -1023,14 +1072,15 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       // Periodic seller-wallet gas checks: a seller whose wallet cannot fund
       // reserve/settle/close transactions rejects every buyer that connects,
       // so pause advertising (and say so) until the wallet is funded again.
-      let gasMonitor: GasHealthMonitor | null = null
       if (gasCheckEnabled && node.identity) {
         const gasWalletAddress = node.identity.wallet.address
         try {
-          const gasStakingClient = createStakingClient(config, { rpcUrl: baseRpcUrlOverride })
+          // Balance reads go through the process's shared provider (coalescing, back-off), tagged for the RPC counters.
+          const gasCrypto = requireCryptoConfig(config, { rpcUrl: baseRpcUrlOverride })
+          const gasProvider = sharedChainProvider({ rpcUrl: gasCrypto.rpcUrl, evmChainId: gasCrypto.evmChainId, ...(gasCrypto.fallbackRpcUrls ? { fallbackRpcUrls: gasCrypto.fallbackRpcUrls } : {}) })
           gasMonitor = new GasHealthMonitor({
             address: gasWalletAddress,
-            getBalance: (address) => gasStakingClient.provider.getBalance(address),
+            getBalance: (address) => withRpcSource('gas', () => gasProvider.getBalance(address)),
             intervalMs: gasCheckIntervalMs,
             minBalanceWei: minGasBalanceWei,
             onChange: (event) => {
@@ -1041,8 +1091,10 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
                 console.log(chalk.yellow(`  On-chain settlement would fail and buyers would be rejected: ${balanceSummary}.`))
                 console.log(chalk.cyan(`  Send ETH to ${event.address} — advertising resumes automatically once funded.`))
                 void node.pauseAdvertising('out-of-gas').catch(() => {})
+                void alerts.record({ kind: 'gas_low', severity: 'critical', title: 'Out of gas: advertising paused', detail: `${balanceSummary}. Send ETH to ${event.address} to resume.` })
               } else {
                 gasNotice = null
+                void alerts.record({ kind: 'gas_ok', severity: 'info', title: `Gas restored (${formatEther(event.balanceWei)} ETH): advertising resumed` })
                 console.log(chalk.green(`Gas balance restored (${formatEther(event.balanceWei)} ETH) — advertising resumed.`))
                 node.resumeAdvertising()
               }
@@ -1064,6 +1116,8 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
 
       setupShutdownHandler(async () => {
         updateWatch.stop()
+        idleWatch.stop()
+        await alerts.record({ kind: 'stopped', severity: 'info', title: 'Seller stopped' }).catch(() => {})
         healthChecker?.stop()
         gasMonitor?.stop()
         clearInterval(stateInterval)

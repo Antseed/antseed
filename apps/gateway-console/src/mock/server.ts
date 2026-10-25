@@ -21,6 +21,9 @@ import { tighterLimits } from '../lib/key-layers'
 import { samePeerId } from '../lib/peer-id'
 import { combinePolicies, expandLists } from '../lib/policy-match'
 import { fakeAddress, mockNetworkModels, mockNetworkRouters, mockRouteSelection, seed } from './data'
+// The card renderer is the seller service's own (no copy in the console).
+import { sellerCardSvg } from '../../../cli/src/seller-monitor/card'
+import { mockSellerEvents, mockSellerLogDetail, mockSellerLogs, mockSellerMarket, mockSellerPromote, mockSellerReputation, mockSellerSettings, mockSellerStatus, mockSellerUsage } from './seller'
 import { mockChatModels, mockChatStream, mockChatThread, mockChatThreads, mockDeleteChatThread } from './chat'
 import { mockOperatorState, OPERATOR_SCENARIOS, scenarioOperator, type OperatorScenario } from './operator'
 
@@ -643,6 +646,21 @@ function observability(body: any) {
 const routes: Array<[string, string, Handler]> = [
   ['GET', '/auth/config', () => db.authConfig],
   ['GET', '/auth/me', () => me()],
+  ['GET', '/seller/status', () => { requireOrgAdmin(); return mockSellerStatus() }],
+  ['GET', '/seller/events', () => { requireOrgAdmin(); return mockSellerEvents() }],
+  ['GET', '/seller/usage', ({ query }) => { requireOrgAdmin(); return mockSellerUsage(Number(query.get('days') ?? 14)) }],
+  ['GET', '/seller/settings', () => { requireOrgAdmin(); return mockSellerSettings() }],
+  ['GET', '/seller/market', () => { requireOrgAdmin(); return mockSellerMarket() }],
+  ['GET', '/seller/reputation', () => { requireOrgAdmin(); return mockSellerReputation() }],
+  ['GET', '/seller/promote', () => { requireOrgAdmin(); return mockSellerPromote() }],
+  ['GET', '/seller/logs', ({ query }) => { requireOrgAdmin(); return mockSellerLogs(query) }],
+  ['GET', '/seller/logs/:id', ({ params }) => {
+    requireOrgAdmin()
+    const entry = mockSellerLogDetail(params['id']!)
+    if (!entry) throw new MockError(404, 'not_found', 'No request with this id.')
+    return entry
+  }],
+  ['GET', '/seller/promote/card', () => { requireOrgAdmin(); return new RawBody(sellerCardSvg(mockSellerPromote()), 'image/svg+xml') }],
   ['POST', '/auth/logout', () => { setSession('out') }],
   ['POST', '/auth/setup', ({ body }) => { if (body.token === 'bad') throw new MockError(400, 'invalid_token', 'Invalid token'); return { enrollment: 'enr_1', label: 'Dana Owner', orgRole: 'owner' } }],
   ['POST', '/auth/recover', ({ body }) => { if (body.token === 'bad') throw new MockError(400, 'invalid_token', 'This recovery link is invalid, used or expired.'); return { enrollment: 'enr_3', label: 'Dana Owner', orgRole: 'owner' } }],
@@ -1064,8 +1082,12 @@ function match(method: string, path: string): { handler: Handler; params: Record
   return null
 }
 
+/** A handler result sent as is with its own content type (e.g. the seller card SVG). */
+class RawBody { constructor(readonly body: string, readonly contentType: string) {} }
+
 function json(status: number, body: unknown): Response {
   if (status === 204) return new Response(null, { status })
+  if (body instanceof RawBody) return new Response(body.body, { status, headers: { 'content-type': body.contentType } })
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 }
 

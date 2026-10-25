@@ -48,6 +48,16 @@ export const qk = {
   routePreview: (query: object) => ['routing', 'preview', query] as const,
   presets: (workspaceId: string | null) => ['presets', workspaceId] as const,
   adminTokens: ['admin-tokens'] as const,
+  sellerStatus: ['seller', 'status'] as const,
+  sellerEvents: ['seller', 'events'] as const,
+  sellerUsage: (days: number) => ['seller', 'usage', days] as const,
+  sellerSettings: ['seller', 'settings'] as const,
+  sellerMarket: ['seller', 'market'] as const,
+  sellerReputation: ['seller', 'reputation'] as const,
+  sellerPromote: ['seller', 'promote'] as const,
+  sellerCard: ['seller', 'card'] as const,
+  sellerLogs: (query: object) => ['seller', 'logs', query] as const,
+  sellerLog: (id: string) => ['seller', 'log', id] as const,
 }
 
 /** Every resource group a routing-policy change can affect, including the chat's own route preview. */
@@ -196,4 +206,44 @@ export function modelsFromPeers(peers: Array<{ services: Array<{ service: string
   const models = new Set<string>()
   for (const peer of peers ?? []) for (const service of peer.services) models.add(service.service)
   return [...models].sort()
+}
+
+/** The seller on this host. `live` polls every 10 s for the Seller page; the nav only needs it once. */
+export function useSellerStatus(enabled = true, live = false) {
+  return useQuery({ queryKey: qk.sellerStatus, queryFn: api.seller.status, enabled, refetchInterval: enabled && live ? 10_000 : false, staleTime: live ? 5_000 : 60_000 })
+}
+
+export function useSellerEvents(enabled = true) {
+  return useQuery({ queryKey: qk.sellerEvents, queryFn: () => api.seller.events(100), enabled, refetchInterval: 30_000 })
+}
+
+export function useSellerUsage(days: number, enabled = true) {
+  return useQuery({ queryKey: qk.sellerUsage(days), queryFn: () => api.seller.usage(days), enabled, refetchInterval: 60_000 })
+}
+
+export function useSellerSettings(enabled = true) {
+  return useQuery({ queryKey: qk.sellerSettings, queryFn: api.seller.settings, enabled })
+}
+
+/** Polls faster while the server is still loading the network snapshot in the background. */
+const whileRefreshing = (data: { network: { refreshing: boolean } } | undefined) => (data?.network.refreshing ? 3_000 : 60_000)
+
+export function useSellerMarket(enabled = true) {
+  return useQuery({ queryKey: qk.sellerMarket, queryFn: () => api.seller.market(), enabled, refetchInterval: (query) => whileRefreshing(query.state.data) })
+}
+
+export function useSellerReputation(enabled = true) {
+  return useQuery({
+    queryKey: qk.sellerReputation, queryFn: () => api.seller.reputation(), enabled,
+    // The on-chain standing also loads in the background: poll until it is in (or failed).
+    refetchInterval: (query) => (query.state.data && !query.state.data.standing && !query.state.data.standingError ? 3_000 : whileRefreshing(query.state.data)),
+  })
+}
+
+export function useSellerPromote(enabled = true) {
+  return useQuery({ queryKey: qk.sellerPromote, queryFn: api.seller.promote, enabled })
+}
+
+export function useSellerCard(enabled = true) {
+  return useQuery({ queryKey: qk.sellerCard, queryFn: api.seller.card, enabled })
 }

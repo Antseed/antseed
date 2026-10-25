@@ -10,6 +10,10 @@ export const DEFAULT_GAS_CHECK_INTERVAL_MS = 60_000;
  * which rejects every buyer while the peer keeps looking discoverable.
  */
 export const DEFAULT_MIN_GAS_BALANCE_WEI = 50_000_000_000_000n;
+/** How often a well-funded wallet is checked. */
+export const DEFAULT_RELAXED_GAS_CHECK_INTERVAL_MS = 10 * 60_000;
+/** A balance this many times the minimum counts as well funded. */
+export const RELAXED_BALANCE_FACTOR = 20n;
 
 export interface GasHealthEvent {
   status: 'depleted' | 'restored';
@@ -35,6 +39,12 @@ export interface GasHealthMonitorConfig {
   intervalMs?: number;
   minBalanceWei?: bigint;
   /**
+   * While the last balance is at least `RELAXED_BALANCE_FACTOR` × the minimum,
+   * check only this often (default 10 minutes): a wallet that far above the
+   * line cannot run dry within one relaxed interval of settlements.
+   */
+  relaxedIntervalMs?: number;
+  /**
    * Invoked when the wallet crosses the threshold in either direction.
    * Callers should pause/resume advertising here (e.g.
    * `node.pauseAdvertising(...)` / `node.resumeAdvertising()`).
@@ -58,6 +68,7 @@ export class GasHealthMonitor {
   private readonly _address: string;
   private readonly _getBalance: (address: string) => Promise<bigint>;
   private readonly _intervalMs: number;
+  private readonly _relaxedIntervalMs: number;
   private readonly _minBalanceWei: bigint;
   private readonly _onChange: GasHealthMonitorConfig['onChange'];
   private _timer: ReturnType<typeof setInterval> | null = null;
@@ -70,6 +81,7 @@ export class GasHealthMonitor {
     this._address = config.address;
     this._getBalance = config.getBalance;
     this._intervalMs = config.intervalMs ?? DEFAULT_GAS_CHECK_INTERVAL_MS;
+    this._relaxedIntervalMs = Math.max(this._intervalMs, config.relaxedIntervalMs ?? DEFAULT_RELAXED_GAS_CHECK_INTERVAL_MS);
     this._minBalanceWei = config.minBalanceWei ?? DEFAULT_MIN_GAS_BALANCE_WEI;
     this._onChange = config.onChange;
   }
@@ -79,6 +91,7 @@ export class GasHealthMonitor {
     if (this._timer) return;
     void this.checkNow();
     this._timer = setInterval(() => {
+      if (this._relaxed() && this._lastCheckedAt !== null && Date.now() - this._lastCheckedAt < this._relaxedIntervalMs) return;
       void this.checkNow();
     }, this._intervalMs);
     // Never keep the process alive just for gas checks.
@@ -90,6 +103,10 @@ export class GasHealthMonitor {
       clearInterval(this._timer);
       this._timer = null;
     }
+  }
+
+  private _relaxed(): boolean {
+    return this._lastBalanceWei !== null && this._lastBalanceWei >= this._minBalanceWei * RELAXED_BALANCE_FACTOR;
   }
 
   /** Whether the last successful reading was below the threshold. */

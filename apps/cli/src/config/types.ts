@@ -143,6 +143,24 @@ export interface SellerGasCheckCLIConfig {
   minBalanceEth?: number;
 }
 
+/** `seller.alerts` in config.json: where the seller sends its own alerts. */
+export interface SellerAlertsCLIConfig {
+  /** A Telegram bot (create one with @BotFather) posting to a chat the bot was added to. */
+  telegram?: {
+    /** Env var holding the bot token, so the token stays out of config.json. Default: ANTSEED_ALERTS_TELEGRAM_TOKEN. */
+    botTokenEnv?: string;
+    chatId: string;
+  };
+  /** POSTs JSON `{ text, content, seller, event }` (Slack and Discord incoming webhooks read `text` / `content`). */
+  webhook?: { url: string };
+  /** Alert when no request arrives for this many minutes. Off when unset. */
+  idleMinutes?: number;
+  /** Minimum minutes between repeats of the same alert. Default: 30. Recoveries are always sent. */
+  cooldownMinutes?: number;
+  /** Lowest severity that is sent. Default: warning. */
+  minSeverity?: 'info' | 'warning' | 'critical';
+}
+
 export interface SellerFreeTierCLIConfig {
   /** Maximum zero-priced requests accepted from one buyer address per window. */
   maxRequestsPerAddress?: number;
@@ -201,6 +219,11 @@ export interface SellerCLIConfig {
   gasCheck?: SellerGasCheckCLIConfig;
   /** Optional persistent per-address request limit for zero-priced services. */
   freeTier?: SellerFreeTierCLIConfig;
+  /**
+   * Alerts the seller sends itself (Telegram, webhook) when a model is withdrawn,
+   * gas runs low, it restarts after a crash or goes idle. Off until a channel is set.
+   */
+  alerts?: SellerAlertsCLIConfig;
   /**
    * ISO country codes whose IPs are refused on connect (best effort: VPNs get
    * through). Default: CU, IR, KP, SY, RU. Set `[]` to opt out.

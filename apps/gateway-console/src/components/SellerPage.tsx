@@ -1,0 +1,52 @@
+import type { ReactNode } from 'react'
+import { Button } from '@antseed/ui'
+import type { SellerNetworkMeta } from '../api/types'
+import { formatRelative } from '../lib/format'
+import { useSellerStatus } from '../lib/queries'
+import type { AvailableSeller } from '../lib/seller'
+import { Icon } from './icons'
+import { EmptyState, ErrorAlert, LoadingRows, PageHeader } from './ui'
+
+/** A Seller page frame: loads the seller's status and shows the page only when a seller is there. */
+export function SellerPage({ title, description, actions, children }: {
+  title: string
+  description?: (seller: AvailableSeller) => ReactNode
+  actions?: ReactNode
+  children: (seller: AvailableSeller) => ReactNode
+}) {
+  const status = useSellerStatus(true, title === 'Seller')
+  if (status.isLoading) return <div className="gc-page"><PageHeader title={title} /><LoadingRows rows={6} /></div>
+  if (status.error) return <div className="gc-page"><PageHeader title={title} /><ErrorAlert error={status.error} onRetry={() => void status.refetch()} /></div>
+  if (!status.data?.available) {
+    return (
+      <div className="gc-page">
+        <PageHeader title={title} />
+        <EmptyState icon={<Icon.seller size={18} />} title="No seller on this host"
+          body="Start one with antseed seller start. Set ANTSEED_SELLER_DATA_DIR when it uses a different data directory than the gateway." />
+      </div>
+    )
+  }
+  const seller = status.data
+  return (
+    <div className="gc-page">
+      <PageHeader title={title} description={description?.(seller)} actions={actions} />
+      {children(seller)}
+    </div>
+  )
+}
+
+/** Where the market and trust numbers come from and how old they are, with a refresh. */
+export function NetworkLine({ network, onRefresh }: { network: SellerNetworkMeta; onRefresh: () => void }) {
+  const when = network.refreshedAt ? `refreshed ${formatRelative(network.refreshedAt)}` : 'not loaded yet'
+  return (
+    <p className="gc-seller-network gc-fineprint" role="status">
+      {network.refreshing && <span className="gc-attention" aria-hidden="true" />}
+      <span>
+        {network.refreshing && !network.refreshedAt ? 'Looking at the network. This can take a minute the first time.'
+          : `${network.peers} seller${network.peers === 1 ? '' : 's'} on the network${network.source ? `, from ${network.source}` : ''}, ${when}${network.refreshing ? ', refreshing…' : '.'}`}
+        {network.error && ` The last refresh failed: ${network.error}`}
+      </span>
+      <Button size="sm" variant="link" disabled={network.refreshing} onClick={onRefresh}>Refresh</Button>
+    </p>
+  )
+}
