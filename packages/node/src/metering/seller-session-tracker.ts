@@ -205,7 +205,7 @@ export class SellerSessionTracker {
       statusCode,
       wasStreaming: isSSE,
       ...(input.service ? { service: input.service } : {}),
-      ...(providerUsage.cachedInputTokens ? { cachedInputTokens: providerUsage.cachedInputTokens } : {}),
+      ...(providerUsage.cachedInputTokens !== undefined ? { cachedInputTokens: providerUsage.cachedInputTokens } : {}),
       ...(request.requestId ? { requestId: request.requestId } : {}),
     };
     const error = input.error ?? (statusCode >= 400 ? summarizeErrorBody(responseBody) : null);

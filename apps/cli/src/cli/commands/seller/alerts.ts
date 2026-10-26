@@ -56,6 +56,8 @@ export function registerSellerAlertsCommand(sellerCmd: Command): void {
       const patch: SellerAlertsPatch = {};
       // stdin can be read once: one secret per command.
       if (options.telegramTokenStdin && options.webhookUrlStdin) throw new Error('--telegram-token-stdin and --webhook-url-stdin both read stdin; set them in two commands.');
+      if (options.telegramTokenStdin && options.clearTelegramToken) throw new Error('--telegram-token-stdin and --clear-telegram-token contradict each other; pick one.');
+      if (options.webhookUrlStdin && options.clearWebhook) throw new Error('--webhook-url-stdin and --clear-webhook contradict each other; pick one.');
       if (options.telegramTokenStdin) patch.telegramBotToken = await readSecretFromStdin('--telegram-token-stdin', 'Pipe the token in; to remove the saved one, use --clear-telegram-token.');
       if (options.clearTelegramToken) patch.telegramBotToken = null;
       if (options.webhookUrlStdin) patch.webhookUrl = await readSecretFromStdin('--webhook-url-stdin', 'Pipe the URL in; to remove the webhook, use --clear-webhook.');

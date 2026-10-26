@@ -112,6 +112,21 @@ test('alerts set refuses two stdin secrets at once and changes nothing', async (
   assert.equal(existsSync(join(env.dir, 'secrets', 'seller-alerts.json')), false);
 });
 
+test('alerts set refuses a stdin secret together with its clear flag', async () => {
+  const env = fixture();
+  const errors: string[] = [];
+  const original = console.error;
+  console.error = (...parts: unknown[]) => { errors.push(parts.join(' ')); };
+  try {
+    await run(env, ['alerts', 'set', '--webhook-url-stdin', '--clear-webhook']);
+  } finally {
+    console.error = original;
+  }
+  assert.equal(process.exitCode, 1);
+  process.exitCode = 0;
+  assert.match(errors.join('\n'), /contradict each other; pick one/);
+});
+
 test('free-tier flags: staked tiers, a model\'s own program, and the summary line', async () => {
   assert.deepEqual(parseStakeTiers('10000:5,200000:unlimited'), [{ minPower: 520_000, multiplier: 5 }, { minPower: 10_400_000, multiplier: 'unlimited' }]);
   assert.equal(parseStakeTiers('default'), null);

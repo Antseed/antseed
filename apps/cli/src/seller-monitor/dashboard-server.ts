@@ -60,7 +60,8 @@ export async function startSellerDashboard(options: SellerDashboardOptions): Pro
   const host = options.host ?? '127.0.0.1'
   const log = options.log ?? (() => {})
   const token = randomBytes(24).toString('hex')
-  const sessions = new Set<string>()
+  // Session id -> expiry: a copied cookie stops working when the browser's would.
+  const sessions = new Map<string, number>()
   // Cookies are scoped by host and path, not port: each dashboard (one per data dir) gets its own name, so two open side by side keep their sessions.
   const sessionCookie = `${SESSION_COOKIE}_${randomBytes(6).toString('hex')}`
   const me: MeResponse = { kind: 'seller', me: { dataDir: options.dataDir, version: options.version } }
@@ -70,13 +71,17 @@ export async function startSellerDashboard(options: SellerDashboardOptions): Pro
       const header = req.headers.authorization ?? ''
       if (header.startsWith('Bearer ') && sameSecret(header.slice(7), token)) return SELLER_PRINCIPAL
       const cookie = readCookie(req, sessionCookie)
-      return cookie && sessions.has(cookie) ? SELLER_PRINCIPAL : null
+      const expiresAt = cookie ? sessions.get(cookie) : undefined
+      if (expiresAt === undefined) return null
+      if (expiresAt > Date.now()) return SELLER_PRINCIPAL
+      sessions.delete(cookie!)
+      return null
     },
     registerRoutes(router: ConsoleRouter) {
       router.add('GET', '/auth/seller', async ({ query, raw, res }) => {
         if (!sameSecret(query.get('token') ?? '', token)) return respond(401, { error: { code: 'unauthorized', message: 'This dashboard link is not valid. Use the URL `antseed seller dashboard` printed.' } })
         const session = randomBytes(24).toString('hex')
-        sessions.add(session)
+        sessions.set(session, Date.now() + SESSION_MAX_AGE_SECONDS * 1000)
         appendSetCookie(res, serializeCookie(raw, sessionCookie, session, { maxAgeSeconds: SESSION_MAX_AGE_SECONDS, path: '/console', sameSite: 'Strict' }))
         return respond(302, undefined, { headers: { location: '/console/seller' } })
       }, { public: true })

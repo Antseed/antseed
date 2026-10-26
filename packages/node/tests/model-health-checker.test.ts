@@ -628,4 +628,14 @@ describe('upstream credit classification in probes and requests', () => {
     await checker.runSweep();
     expect(statuses).toEqual(['out_of_credit', 'funded']);
   });
+  it('never reads a 422 probe reply as the account running out', async () => {
+    const provider = makeProvider({
+      services: ['model-a'],
+      onRequest: async (req) => jsonResponse(req.requestId, 422, { error: { message: 'max_tokens: insufficient funds limit must be a number' } }),
+    });
+    const statuses: string[] = [];
+    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1, onUpstreamAccount: (event) => { statuses.push(event.status); } });
+    await checker.runSweep();
+    expect(statuses).toEqual([]);
+  });
 });

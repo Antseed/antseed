@@ -9,7 +9,7 @@ const ADDRESS = '0x1111111111111111111111111111111111111111';
 
 function makeMonitor(
   balances: Array<bigint | Error>,
-  overrides: { minBalanceWei?: bigint; intervalMs?: number; relaxedIntervalMs?: number } = {},
+  overrides: { minBalanceWei?: bigint; intervalMs?: number; relaxedIntervalMs?: number; relaxedBalanceFactor?: bigint } = {},
 ): { monitor: GasHealthMonitor; events: GasHealthEvent[]; calls: string[] } {
   const events: GasHealthEvent[] = [];
   const calls: string[] = [];
@@ -127,6 +127,19 @@ describe('GasHealthMonitor', () => {
       // 2× the minimum is not well funded: back to every second.
       await vi.advanceTimersByTimeAsync(3_000);
       expect(calls).toHaveLength(6);
+      monitor.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('takes a higher well-funded factor from its config', async () => {
+    vi.useFakeTimers();
+    try {
+      const { monitor, calls } = makeMonitor([DEFAULT_MIN_GAS_BALANCE_WEI * 50n], { intervalMs: 1_000, relaxedIntervalMs: 10_000, relaxedBalanceFactor: 100n });
+      monitor.start();
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(calls).toHaveLength(4);
       monitor.stop();
     } finally {
       vi.useRealTimers();

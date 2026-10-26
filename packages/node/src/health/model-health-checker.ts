@@ -396,8 +396,9 @@ export class ModelHealthChecker {
       outcome = 'unhealthy';
     }
 
-    // A billing error is a failure whatever its status (Anthropic answers one with a 400).
-    if (outcome !== 'healthy' && isUpstreamOutOfCredit(state.lastStatusCode, errorText)) {
+    // A billing error is a failure whatever its status (Anthropic answers one with a 400);
+    // a 404 or 422 is about the probe itself, so its text never marks the account.
+    if (outcome !== 'healthy' && state.lastStatusCode !== 404 && state.lastStatusCode !== 422 && isUpstreamOutOfCredit(state.lastStatusCode, errorText)) {
       outcome = 'unhealthy';
       this._setAccount(provider, 'out', state.lastDetail ?? 'out of credit', null);
     }

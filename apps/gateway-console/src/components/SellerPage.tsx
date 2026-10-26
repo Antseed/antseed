@@ -10,13 +10,15 @@ import { Icon } from './icons'
 import { EmptyState, ErrorAlert, LoadingRows, PageHeader } from './ui'
 
 /** A Seller page frame: loads the seller's status and shows the page only when a seller is there. */
-export function SellerPage({ title, description, actions, children }: {
+export function SellerPage({ title, live = false, description, actions, children }: {
   title: string
+  /** Poll the seller status every few seconds (the overview); other pages refresh it slowly. */
+  live?: boolean
   description?: (seller: AvailableSeller) => ReactNode
   actions?: ReactNode
   children: (seller: AvailableSeller) => ReactNode
 }) {
-  const status = useSellerStatus(true, title === 'Seller')
+  const status = useSellerStatus(true, live)
   if (status.isLoading) return <div className="gc-page"><PageHeader title={title} /><LoadingRows rows={6} /></div>
   if (status.error && !status.data) return <div className="gc-page"><PageHeader title={title} /><ErrorAlert error={status.error} onRetry={() => void status.refetch()} /></div>
   if (!status.data?.available) {

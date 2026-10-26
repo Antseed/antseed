@@ -18,7 +18,7 @@ const CHART_METRICS: Array<{ value: ChartMetric; label: string }> = [
 
 /** The seller on this host: live status, model health, gas, earnings and recent events. */
 export default function Seller() {
-  return <SellerPage title="Seller" description={headerLine}>{(seller) => <Overview seller={seller} />}</SellerPage>
+  return <SellerPage title="Seller" live description={headerLine}>{(seller) => <Overview seller={seller} />}</SellerPage>
 }
 
 function Overview({ seller }: { seller: AvailableSeller }) {
