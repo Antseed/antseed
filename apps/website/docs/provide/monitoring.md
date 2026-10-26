@@ -64,7 +64,7 @@ Market and Reputation read the network as a buyer sees it. In the gateway consol
 
 ## In the gateway console
 
-When the [gateway](/docs/gateway/overview) runs on the same host as a seller, organization owners and admins see a **Seller** page in the console with the same view, alerts and settings included; changes made there are recorded in the gateway's audit log. The console looks for the seller in the gateway's data directory, or in `ANTSEED_SELLER_DATA_DIR` when the seller uses a different one. The seller's config file is the gateway's own when they share a data directory, else `config.json` in the seller's data directory, or `ANTSEED_SELLER_CONFIG`:
+When the [gateway](/docs/gateway) runs on the same host as a seller, organization owners and admins see a **Seller** page in the console with the same view, alerts and settings included; changes made there are recorded in the gateway's audit log. The console looks for the seller in the gateway's data directory, or in `ANTSEED_SELLER_DATA_DIR` when the seller uses a different one. The seller's config file is the gateway's own when they share a data directory, else `config.json` in the seller's data directory, or `ANTSEED_SELLER_CONFIG`:
 
 ```bash
 ANTSEED_SELLER_DATA_DIR=/var/lib/antseed-seller antseed gateway start
