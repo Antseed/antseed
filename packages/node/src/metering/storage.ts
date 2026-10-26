@@ -92,6 +92,30 @@ export function evaluateFreeTierLimits(
  * SQLite storage for metering data.
  * All data is stored locally on the user's machine.
  */
+const DAY_MS = 86_400_000;
+
+export interface EventDayTotals {
+  /** UTC day number (`timestamp / 86_400_000`, floored). */
+  day: number;
+  requests: number;
+  totalTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+export interface ReceiptDayTotals {
+  day: number;
+  costCents: number;
+}
+
+export interface RowidChunkSummary<T> {
+  /** Highest rowid read; the cursor for the next call. */
+  lastRowid: number;
+  /** Rows read in this chunk. */
+  rows: number;
+  days: T[];
+}
+
 export class MeteringStorage {
   private readonly db: Database.Database;
   private lastFreeTierPruneAt: number | null = null;
@@ -101,8 +125,14 @@ export class MeteringStorage {
    * Creates tables if they don't exist.
    *
    * @param dbPath - Path to the SQLite database file (or ':memory:' for tests)
+   * @param options.readonly - Open an existing database for reads only, without
+   *   migrations (e.g. a metrics exporter beside a running seller).
    */
-  constructor(dbPath: string) {
+  constructor(dbPath: string, options: { readonly?: boolean } = {}) {
+    if (options.readonly) {
+      this.db = new Database(dbPath, { readonly: true, fileMustExist: true });
+      return;
+    }
     this.db = new Database(dbPath);
     this.db.pragma('journal_mode = WAL');
     runMigrations(this.db, meteringMigrations);
@@ -389,6 +419,76 @@ export class MeteringStorage {
       inputTokens: row.input_tokens,
       outputTokens: row.output_tokens,
     };
+  }
+
+  /**
+   * Totals of the metering events after `afterRowid`, reading at most `limit`
+   * rows in rowid order, grouped by UTC day. Lets a reader keep running totals
+   * without re-scanning the whole table: pass the returned `lastRowid` next time.
+   */
+  summarizeEventsAfter(afterRowid: number, limit: number): RowidChunkSummary<EventDayTotals> {
+    const rows = this.db.prepare(`
+      SELECT
+        timestamp / ${DAY_MS} AS day,
+        MAX(rid) AS last_rowid,
+        COUNT(*) AS requests,
+        COALESCE(SUM(total_tokens), 0) AS total_tokens,
+        COALESCE(SUM(input_tokens), 0) AS input_tokens,
+        COALESCE(SUM(output_tokens), 0) AS output_tokens
+      FROM (
+        SELECT rowid AS rid, timestamp, total_tokens, input_tokens, output_tokens
+        FROM metering_events WHERE rowid > ? ORDER BY rowid LIMIT ?
+      )
+      GROUP BY day
+    `).all(afterRowid, limit) as Array<{
+      day: number; last_rowid: number; requests: number; total_tokens: number; input_tokens: number; output_tokens: number;
+    }>;
+    return {
+      lastRowid: rows.reduce((max, row) => Math.max(max, row.last_rowid), afterRowid),
+      rows: rows.reduce((count, row) => count + row.requests, 0),
+      days: rows.map((row) => ({
+        day: row.day,
+        requests: row.requests,
+        totalTokens: row.total_tokens,
+        inputTokens: row.input_tokens,
+        outputTokens: row.output_tokens,
+      })),
+    };
+  }
+
+  /** Like `summarizeEventsAfter`, for usage receipt cost. */
+  summarizeReceiptsAfter(afterRowid: number, limit: number): RowidChunkSummary<ReceiptDayTotals> {
+    const rows = this.db.prepare(`
+      SELECT
+        timestamp / ${DAY_MS} AS day,
+        MAX(rid) AS last_rowid,
+        COUNT(*) AS receipts,
+        COALESCE(SUM(cost_cents), 0) AS cost_cents
+      FROM (
+        SELECT rowid AS rid, timestamp, cost_cents
+        FROM usage_receipts WHERE rowid > ? ORDER BY rowid LIMIT ?
+      )
+      GROUP BY day
+    `).all(afterRowid, limit) as Array<{ day: number; last_rowid: number; receipts: number; cost_cents: number }>;
+    return {
+      lastRowid: rows.reduce((max, row) => Math.max(max, row.last_rowid), afterRowid),
+      rows: rows.reduce((count, row) => count + row.receipts, 0),
+      days: rows.map((row) => ({ day: row.day, costCents: row.cost_cents })),
+    };
+  }
+
+  /** `event_id` / `receipt_id` stored at the given rowids (null where there is no such row). */
+  getIdsAtRowids(eventRowid: number, receiptRowid: number): { eventId: string | null; receiptId: string | null } {
+    const event = this.db.prepare('SELECT event_id AS id FROM metering_events WHERE rowid = ?').get(eventRowid) as { id: string } | undefined;
+    const receipt = this.db.prepare('SELECT receipt_id AS id FROM usage_receipts WHERE rowid = ?').get(receiptRowid) as { id: string } | undefined;
+    return { eventId: event?.id ?? null, receiptId: receipt?.id ?? null };
+  }
+
+  /** Highest rowid in `metering_events` and `usage_receipts` (0 when empty). */
+  getMaxRowids(): { events: number; receipts: number } {
+    const events = this.db.prepare('SELECT COALESCE(MAX(rowid), 0) AS m FROM metering_events').get() as { m: number };
+    const receipts = this.db.prepare('SELECT COALESCE(MAX(rowid), 0) AS m FROM usage_receipts').get() as { m: number };
+    return { events: events.m, receipts: receipts.m };
   }
 
   /**
