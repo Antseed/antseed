@@ -1,5 +1,6 @@
 import type { Command } from 'commander';
 import chalk from 'chalk';
+import { sellerCommand } from './monitor.js';
 import pkg from '../../../../package.json' with { type: 'json' };
 import { getGlobalOptions } from '../types.js';
 import { resolveConfigPath } from '../../../config/loader.js';
@@ -18,7 +19,7 @@ export function registerSellerDashboardCommand(sellerCmd: Command): void {
     .action(async (options: { port: string; host: string; open: boolean }) => {
       const { dataDir, config } = getGlobalOptions(sellerCmd);
       if (!hasSeller(dataDir)) {
-        console.log(chalk.yellow(`No seller has run with data dir ${dataDir} yet; the dashboard will fill in once \`antseed seller start\` runs there.`));
+        console.log(chalk.yellow(`No seller has run with data dir ${dataDir} yet; the dashboard will fill in once \`${sellerCommand(sellerCmd, 'start')}\` runs there.`));
       }
       const port = Number(options.port) || DEFAULT_SELLER_DASHBOARD_PORT;
       try {

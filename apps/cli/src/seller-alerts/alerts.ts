@@ -115,7 +115,11 @@ export class SellerAlerts {
     const recovery = RECOVERY_OF[event.kind] !== undefined;
     const key = alertKey(RECOVERY_OF[event.kind] ?? event.kind, event);
     if (recovery) this._release(key);
-    await this._inIncident(key, () => this._deliver(event, key, recovery));
+    await this._inIncident(key, () => {
+      // Again in turn: a failure queued ahead of this recovery may have held an alert since.
+      if (recovery) this._release(key);
+      return this._deliver(event, key, recovery);
+    });
   }
 
   /** Drops alerts held back by the cooldown, on shutdown. */

@@ -70,9 +70,13 @@ test('events, usage and logs read the same service the dashboard does', async ()
   assert.ok(page.next);
   const older = (await run(env, ['logs', '--limit', '1', '--cursor', page.next, '--json'])).json();
   assert.equal(older.entries[0].costUsd, 0.02);
-  assert.match((await run(env, ['logs', '--limit', '1'])).out, /Older: antseed seller logs --cursor/);
+  // Printed commands keep the seller this run read (its --data-dir and --config) and the page size.
+  const printed = (await run(env, ['logs', '--limit', '1'])).out;
+  const olderCommand = /Older: (antseed .*)$/m.exec(printed)![1]!;
+  assert.equal(olderCommand, `antseed --data-dir ${env.dir} --config ${env.config} seller logs --limit 1 --cursor ${page.next}`);
+  assert.ok(printed.includes(`One request in full: antseed --data-dir ${env.dir} --config ${env.config} seller logs --id <Id>`));
   // The next page keeps the filters.
-  assert.match((await run(env, ['logs', '--limit', '1', '--model', 'glm-5.3'])).out, /Older: antseed seller logs --model glm-5\.3 --cursor /);
+  assert.match((await run(env, ['logs', '--limit', '1', '--model', 'glm-5.3'])).out, /seller logs --limit 1 --model glm-5\.3 --cursor /);
 });
 
 test('settings set writes through the validated writer; alerts set keeps the token out of argv and config.json', async () => {

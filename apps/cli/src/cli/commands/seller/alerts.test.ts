@@ -164,6 +164,33 @@ test('a recovery recorded while its alert is still sending follows it, and the n
   alerts.close();
 });
 
+test('a recovery queued behind a slow send cancels the alert a failure queued ahead of it held', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'seller-alerts-'));
+  const titles: string[] = [];
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let first = true;
+  const alerts = new SellerAlerts({
+    dataDir, config: { telegram: { chatId: '42' }, cooldownMinutes: 0.001 }, sellerName: 'S', env: { ANTSEED_ALERTS_TELEGRAM_TOKEN: 't' },
+    fetch: (async (_url: string, init: RequestInit) => {
+      titles.push(String(JSON.parse(String(init.body)).text));
+      if (first) { first = false; await held; }
+      return new Response('{}');
+    }) as typeof fetch,
+  });
+  // low, ok, low, ok: all but the first queue behind the stalled first send.
+  const queued = [alerts.record(down)];
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  queued.push(alerts.record(up), alerts.record(down), alerts.record(up));
+  // Let all three reach the queue (each journals first) before the stalled send finishes.
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  release();
+  await Promise.all(queued);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.deepEqual(titles.map((text) => text.split('\n')[0]!.split(': ')[1]), ['glm-5.3 withdrawn', 'glm-5.3 back'], 'no stale outage alert after the cooldown');
+  alerts.close();
+});
+
 test('without channels nothing is sent; failures never leak the token', async () => {
   const quiet = harness({});
   await quiet.alerts.record(down);

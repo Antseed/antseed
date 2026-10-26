@@ -13,6 +13,16 @@ import { getGlobalOptions } from '../types.js';
  * the seller dashboard's views and edits from the command line, through the
  * same SellerMonitor service the dashboard and the console call.
  */
+/**
+ * `antseed [--data-dir …] [--config …] seller <sub>` as this run was invoked, for
+ * commands it prints to run next: a flag-chosen seller stays the one they read.
+ */
+export function sellerCommand(cmd: Command, sub: string): string {
+  const opts = cmd.optsWithGlobals();
+  const { dataDir, config } = getGlobalOptions(cmd);
+  return ['antseed', ...(opts['dataDir'] ? [`--data-dir ${shellArg(dataDir)}`] : []), ...(opts['config'] ? [`--config ${shellArg(config)}`] : []), `seller ${sub}`].join(' ');
+}
+
 export function sellerMonitorFor(cmd: Command): SellerMonitor {
   const { dataDir, config } = getGlobalOptions(cmd);
   return new SellerMonitor({ dataDir: () => dataDir, configPath: () => resolveConfigPath(config), version: pkg.version });
@@ -220,8 +230,9 @@ export function registerSellerMonitorCommands(sellerCmd: Command): void {
       from: options.since ? parseSince(options.since) : null,
       errorsOnly: options.errors,
     }), (page) => {
-      // The next page keeps this page's filters; --since is resolved to the time it meant.
-      const older = page.next ? ['antseed seller logs', ...(options.model ? [`--model ${shellArg(options.model)}`] : []), ...(options.buyer ? [`--buyer ${shellArg(options.buyer)}`] : []),
+      // The next page keeps this page's seller, size and filters; --since is resolved to the time it meant.
+      const logs = sellerCommand(sellerCmd, 'logs');
+      const older = page.next ? [logs, ...(options.limit !== '50' ? [`--limit ${shellArg(options.limit)}`] : []), ...(options.model ? [`--model ${shellArg(options.model)}`] : []), ...(options.buyer ? [`--buyer ${shellArg(options.buyer)}`] : []),
         ...(options.since ? [`--since ${new Date(parseSince(options.since)).toISOString()}`] : []), ...(options.errors ? ['--errors'] : []), `--cursor ${page.next}`].join(' ') : null;
       if (page.entries.length === 0) {
         console.log(chalk.dim(older ? 'No matching requests among the latest scanned.' : 'No requests.'));
@@ -235,7 +246,7 @@ export function registerSellerMonitorCommands(sellerCmd: Command): void {
       }
       console.log(table.toString());
       if (older) console.log(chalk.dim(`Older: ${older}`));
-      console.log(chalk.dim('One request in full: antseed seller logs --id <Id>'));
+      console.log(chalk.dim(`One request in full: ${logs} --id <Id>`));
     }));
 
   sellerCmd

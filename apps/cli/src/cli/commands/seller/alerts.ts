@@ -1,7 +1,7 @@
 import type { Command } from 'commander';
 import chalk from 'chalk';
 import type { SellerAlertsPatch } from '../../../gateway/console-api/types.js';
-import { jsonFlag, runMonitorCommand, sellerMonitorFor } from './monitor.js';
+import { jsonFlag, runMonitorCommand, sellerCommand, sellerMonitorFor } from './monitor.js';
 
 async function readStdin(): Promise<string> {
   const chunks: Buffer[] = [];
@@ -93,6 +93,6 @@ export function registerSellerAlertsCommand(sellerCmd: Command): void {
     .action((options: { tokenStdin?: boolean }, command: Command) => runMonitorCommand(jsonFlag(command), async () => sellerMonitorFor(sellerCmd).telegramChats(options.tokenStdin ? await readSecretFromStdin('--token-stdin', 'Pipe the token in, or leave the flag out to use the saved one.') : null), (chats) => {
       if (chats.length === 0) return console.log(chalk.dim('No chats yet. Message the bot or add it to a group and post there, then try again.'));
       for (const chat of chats) console.log(`${chat.id.padEnd(16)} ${chat.type.padEnd(11)} ${chat.title}`);
-      console.log(chalk.dim('Use one with: antseed seller alerts set --telegram-chat <id>'));
+      console.log(chalk.dim(`Use one with: ${sellerCommand(sellerCmd, 'alerts set')} --telegram-chat <id>`));
     }));
 }
