@@ -6,7 +6,7 @@ import test from 'node:test';
 import { Command } from 'commander';
 import { writeSellerFixture } from '../../../seller-monitor/fixture.js';
 import { registerSellerAlertsCommand } from './alerts.js';
-import { parsePrice, parseSince, registerSellerMonitorCommands } from './monitor.js';
+import { parsePrice, parseSince, registerSellerMonitorCommands, resolvePriceTarget } from './monitor.js';
 
 const PEER = '5e11e5' + '0'.repeat(34);
 
@@ -47,6 +47,14 @@ test('flag parsing: --since and --price', () => {
   assert.throws(() => parseSince('yesterday'));
   assert.deepEqual(parsePrice('glm-5.3=0.7/2.2/0.08'), { service: 'glm-5.3', input: 0.7, output: 2.2, cached: 0.08 });
   assert.throws(() => parsePrice('glm-5.3=cheap'));
+});
+
+test('--price names the provider when two offer the same model', () => {
+  const services = [{ provider: 'openai', service: 'glm-5.3' }, { provider: 'openforge', service: 'glm-5.3' }, { provider: 'openai', service: 'kimi-k3' }];
+  assert.equal(resolvePriceTarget(services, 'kimi-k3'), services[2]);
+  assert.equal(resolvePriceTarget(services, 'openforge/glm-5.3'), services[1]);
+  assert.throws(() => resolvePriceTarget(services, 'glm-5.3'), /more than one provider; name one: openai\/glm-5\.3, openforge\/glm-5\.3/);
+  assert.throws(() => resolvePriceTarget(services, 'qwen'), /not one of this seller's services/);
 });
 
 test('events, usage and logs read the same service the dashboard does', async () => {

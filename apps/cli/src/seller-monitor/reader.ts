@@ -176,12 +176,11 @@ export class SellerUsageReader {
       const store = new ChannelStore(join(dataDir, 'payments'))
       try {
         // Regular and one-off channels: a one-off channel pays for a single request, and is paid all the same.
-        const all = [...store.listAllChannels(1_000_000, CHANNEL_KIND.PAID), ...store.listAllChannels(1_000_000, CHANNEL_KIND.ONE_OFF)]
-        for (const channel of all.filter((entry) => entry.role === 'seller')) {
-          channels.total += 1
-          if (channel.status in channels) channels[channel.status as keyof typeof channels] += 1
-          delivered += num(channel.tokensDelivered)
-          settled += num(channel.settledAmount)
+        for (const row of store.getRoleTotalsByStatus('seller', [CHANNEL_KIND.PAID, CHANNEL_KIND.ONE_OFF])) {
+          channels.total += row.count
+          if (row.status in channels) channels[row.status as keyof typeof channels] += row.count
+          delivered += Number(row.tokensDelivered)
+          settled += Number(row.settledAmount)
         }
       } finally {
         store.close()

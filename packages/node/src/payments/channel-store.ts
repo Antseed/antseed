@@ -386,6 +386,28 @@ export class ChannelStore {
     return rows.map(rowToChannel);
   }
 
+  /**
+   * Channel counts and amounts per status for every channel of a role and the
+   * given kinds, summed in SQLite (no history limit, nothing loaded).
+   */
+  getRoleTotalsByStatus(role: ChannelRole, channelKinds: readonly ChannelKind[] = [CHANNEL_KIND.PAID]): Array<{
+    status: string;
+    count: number;
+    tokensDelivered: bigint;
+    settledAmount: bigint;
+  }> {
+    if (channelKinds.length === 0) return [];
+    const rows = this._db.prepare(`
+      SELECT status, COUNT(*) AS count,
+        COALESCE(SUM(CAST(tokens_delivered AS INTEGER)), 0) AS delivered,
+        COALESCE(SUM(CAST(settled_amount AS INTEGER)), 0) AS settled
+      FROM payment_channels
+      WHERE role = ? AND channel_kind IN (${channelKinds.map(() => '?').join(', ')})
+      GROUP BY status
+    `).all(role, ...channelKinds) as Array<{ status: string; count: number; delivered: number; settled: number }>;
+    return rows.map((row) => ({ status: row.status, count: row.count, tokensDelivered: BigInt(row.delivered), settledAmount: BigInt(row.settled) }));
+  }
+
   /** Aggregate totals across all channels for a given peer and role. */
   getTotalsByPeer(peerId: string, role: ChannelRole, channelKind: ChannelKind = CHANNEL_KIND.PAID): {
     totalSessions: number;

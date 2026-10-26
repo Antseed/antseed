@@ -57,3 +57,18 @@ export function startIdleWatch(options: IdleWatchOptions): { stop(): void; check
     check,
   };
 }
+
+/** How long shutdown waits for the "stopped" alert, once the node has stopped. */
+export const STOPPED_ALERT_WAIT_MS = 3_000;
+
+/**
+ * Waits for a best-effort delivery (the "stopped" alert) at most `ms`, so an
+ * unreachable Telegram or webhook never holds up exit. Errors are swallowed.
+ */
+export function waitAtMost(delivery: Promise<unknown>, ms: number = STOPPED_ALERT_WAIT_MS): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  return Promise.race([
+    delivery.then(() => undefined, () => undefined),
+    new Promise<void>((resolve) => { timer = setTimeout(resolve, ms); timer.unref?.(); }),
+  ]).finally(() => clearTimeout(timer));
+}

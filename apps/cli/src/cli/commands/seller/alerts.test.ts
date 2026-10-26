@@ -244,3 +244,11 @@ test('a hand-edited alerts block with wrong types never throws: a numeric chat i
   assert.equal(alerts.idleMinutes(), undefined);
   assert.deepEqual(alerts.channels(), []);
 });
+
+test('shutdown waits for a stalled stopped alert only briefly', async () => {
+  const { waitAtMost } = await import('../../../seller-alerts/lifecycle.js');
+  const started = Date.now();
+  await waitAtMost(new Promise(() => {}), 50);
+  assert.ok(Date.now() - started < 1_000);
+  await waitAtMost(Promise.reject(new Error('offline')), 50);
+});

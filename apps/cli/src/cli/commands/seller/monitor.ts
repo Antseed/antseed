@@ -77,8 +77,21 @@ export function parseSince(value: string, now = Date.now()): number {
 /** "glm-5.3=0.7/2.2" or "glm-5.3=0.7/2.2/0.08" → a pricing entry (provider resolved from the config). */
 export function parsePrice(value: string): { service: string; input: number; output: number; cached: number | null } {
   const match = /^([^=]+)=([\d.]+)\/([\d.]+)(?:\/([\d.]+))?$/.exec(value.trim());
-  if (!match) throw new Error(`--price: use <model>=<input>/<output>[/<cached>] in USD per million tokens, not "${value}"`);
+  if (!match) throw new Error(`--price: use [<provider>/]<model>=<input>/<output>[/<cached>] in USD per million tokens, not "${value}"`);
   return { service: match[1]!.trim(), input: Number(match[2]), output: Number(match[3]), cached: match[4] === undefined ? null : Number(match[4]) };
+}
+
+/**
+ * The offering a `--price` name means: `<provider>/<model>` picks one exactly;
+ * a bare model must be offered by only one provider.
+ */
+export function resolvePriceTarget<T extends { provider: string; service: string }>(services: readonly T[], name: string): T {
+  const exact = services.find((entry) => `${entry.provider}/${entry.service}` === name);
+  if (exact) return exact;
+  const matches = services.filter((entry) => entry.service === name);
+  if (matches.length === 1) return matches[0]!;
+  if (matches.length === 0) throw new Error(`--price: ${name} is not one of this seller's services`);
+  throw new Error(`--price: ${name} is offered by more than one provider; name one: ${matches.map((entry) => `${entry.provider}/${entry.service}`).join(', ')}`);
 }
 
 /** `--json` on a subcommand whose parent also takes `--json` (commander gives it to the parent). */
@@ -272,7 +285,7 @@ export function registerSellerMonitorCommands(sellerCmd: Command): void {
     .option('--free-per-ip <n|none>')
     .option('--free-window-hours <hours|none>')
     .option('--countries <codes|default>', 'comma-separated ISO codes, "" for none, or default')
-    .option('--price <model=in/out[/cached]>', 'USD per million tokens; repeatable', (value: string, all: string[] = []) => [...all, value])
+    .option('--price <[provider/]model=in/out[/cached]>', 'USD per million tokens; repeatable. Name the provider when two offer the model', (value: string, all: string[] = []) => [...all, value])
     .option('--json', 'output as JSON', false)
     .action((options: Record<string, string | string[] | boolean | undefined>, command: Command) => runMonitorCommand(jsonFlag(command), async () => {
       const monitor = sellerMonitorFor(sellerCmd);
@@ -303,8 +316,7 @@ export function registerSellerMonitorCommands(sellerCmd: Command): void {
       if (prices.length > 0) {
         const { settings: view } = await monitor.settings();
         patch.pricing = prices.map(parsePrice).map((price) => {
-          const service = view.services.find((entry) => entry.service === price.service);
-          if (!service) throw new Error(`--price: ${price.service} is not one of this seller's services`);
+          const service = resolvePriceTarget(view.services, price.service);
           return { provider: service.provider, service: service.service, inputUsdPerMillion: price.input, outputUsdPerMillion: price.output, cachedInputUsdPerMillion: price.cached };
         });
       }

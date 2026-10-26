@@ -125,7 +125,7 @@ Everything the dashboard shows or changes is also an `antseed seller` command, b
 | Reputation | `antseed seller reputation [--refresh]` |
 | Promote, seller card | `antseed seller promote [--card card.svg]` |
 | Identity verification | `antseed seller verify [--add-domain example.com] [--add-github user[/repo]] [--remove <claim>] [--check]` |
-| Settings | `antseed seller settings` and `antseed seller settings set --price glm-5.3=0.7/2.2 --max-buyers 100 …` |
+| Settings | `antseed seller settings` and `antseed seller settings set --price glm-5.3=0.7/2.2 --max-buyers 100 …` (write `--price <provider>/<model>=…` when two providers offer the model) |
 | Alerts | `antseed seller alerts`, `alerts set --telegram-chat <id> --idle 60 …`, `alerts test`, `alerts find-chat` |
 
 Secrets never go on the command line: pipe them in, for example `printf '%s' "$TOKEN" | antseed seller alerts set --telegram-token-stdin`.

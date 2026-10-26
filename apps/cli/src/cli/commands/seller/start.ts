@@ -51,7 +51,7 @@ import { initializeProvider } from './provider-init.js'
 import { sharedChainProvider } from '../../../proxy/chain-rpc.js'
 import { rpcUsage, withRpcSource } from '../../../proxy/rpc-sources.js'
 import { SellerAlerts } from '../../../seller-alerts/alerts.js'
-import { startIdleWatch, uncleanExitEvent } from '../../../seller-alerts/lifecycle.js'
+import { startIdleWatch, uncleanExitEvent, waitAtMost } from '../../../seller-alerts/lifecycle.js'
 
 function getStateFile(dataDir: string): string {
   return join(dataDir, 'daemon.state.json')
@@ -1118,7 +1118,6 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       setupShutdownHandler(async () => {
         updateWatch.stop()
         idleWatch.stop()
-        await alerts.record({ kind: 'stopped', severity: 'info', title: 'Seller stopped' }).catch(() => {})
         healthChecker?.stop()
         gasMonitor?.stop()
         clearInterval(stateInterval)
@@ -1129,6 +1128,8 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         await node.stop()
         await unlink(getStateFile(globalOpts.dataDir)).catch(() => {})
         nodeSpinner.succeed('Seeding daemon stopped. Channels finalized.')
+        // Only once the node is down, and never for long: alert delivery is remote and best effort.
+        await waitAtMost(alerts.record({ kind: 'stopped', severity: 'info', title: 'Seller stopped' }))
       })
     })
 }
