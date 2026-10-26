@@ -43,6 +43,8 @@ export function registerSellerAlertsCommand(sellerCmd: Command): void {
     .option('--json', 'output as JSON', false)
     .action((options: Record<string, string | boolean | undefined>, command: Command) => runMonitorCommand(jsonFlag(command), async () => {
       const patch: SellerAlertsPatch = {};
+      // stdin can be read once: one secret per command.
+      if (options.telegramTokenStdin && options.webhookUrlStdin) throw new Error('--telegram-token-stdin and --webhook-url-stdin both read stdin; set them in two commands.');
       if (options.telegramTokenStdin) patch.telegramBotToken = await readStdin();
       if (options.clearTelegramToken) patch.telegramBotToken = null;
       if (options.webhookUrlStdin) patch.webhookUrl = await readStdin();

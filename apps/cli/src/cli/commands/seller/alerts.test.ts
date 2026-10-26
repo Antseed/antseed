@@ -277,3 +277,25 @@ test('a config edit that is not valid JSON keeps the last good alert settings', 
   now += 3_000;
   assert.equal(alerts.idleMinutes(), 5, 'a fixed file applies again');
 });
+
+test('a changed chat starts with no history: the repeat goes to it, and the recovery only where the alert arrived', async () => {
+  const { writeFileSync } = await import('node:fs');
+  const dataDir = mkdtempSync(join(tmpdir(), 'seller-alerts-'));
+  const configPath = join(dataDir, 'config.json');
+  const chats: unknown[] = [];
+  let now = 0;
+  writeFileSync(configPath, JSON.stringify({ seller: { alerts: { telegram: { chatId: '1' }, cooldownMinutes: 30 } } }));
+  const alerts = new SellerAlerts({
+    dataDir, configPath, sellerName: 'S', env: { ANTSEED_ALERTS_TELEGRAM_TOKEN: 't' }, now: () => now,
+    fetch: (async (_url: string, init: RequestInit) => { chats.push(JSON.parse(String(init.body)).chat_id); return new Response('{}'); }) as typeof fetch,
+  });
+  await alerts.record(down);
+  writeFileSync(configPath, JSON.stringify({ seller: { alerts: { telegram: { chatId: '2' }, cooldownMinutes: 30 } } }));
+  now += 3_000;
+  await alerts.record(up);
+  assert.deepEqual(chats, ['1'], 'chat 2 never got the alert, so no recovery there');
+  await alerts.record(down);
+  assert.deepEqual(chats, ['1', '2'], 'chat 1\'s cooldown does not hold back chat 2');
+  await alerts.record(up);
+  assert.deepEqual(chats, ['1', '2', '2']);
+});

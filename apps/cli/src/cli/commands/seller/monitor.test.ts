@@ -83,3 +83,20 @@ test('settings set writes through the validated writer; alerts set keeps the tok
   assert.equal(JSON.parse(readFileSync(env.config, 'utf-8')).seller.alerts, undefined, 'alert settings live in the data dir');
   assert.match((await run(env, ['alerts'])).out, /chat -1001/);
 });
+
+test('alerts set refuses two stdin secrets at once and changes nothing', async () => {
+  const { existsSync } = await import('node:fs');
+  const env = fixture();
+  const errors: string[] = [];
+  const original = console.error;
+  console.error = (...parts: unknown[]) => { errors.push(parts.join(' ')); };
+  try {
+    await run(env, ['alerts', 'set', '--telegram-token-stdin', '--webhook-url-stdin']);
+  } finally {
+    console.error = original;
+  }
+  assert.equal(process.exitCode, 1);
+  process.exitCode = 0;
+  assert.match(errors.join('\n'), /both read stdin; set them in two commands/);
+  assert.equal(existsSync(join(env.dir, 'secrets', 'seller-alerts.json')), false);
+});

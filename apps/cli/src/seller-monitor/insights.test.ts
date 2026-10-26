@@ -98,10 +98,11 @@ test('a stopped seller (journal, no daemon state) is still known by its stored i
   writeSellerFixture(dir, { events: [{ at: 1, kind: 'stopped', severity: 'info', title: 'Seller stopped' }] })
   const configPath = join(dir, 'config.json')
   writeFileSync(configPath, JSON.stringify({ seller: { providers: {} } }))
+  const standingFor: string[] = []
   const server = await startSellerDashboard({
     dataDir: dir, configPath, version: '9.9.9', port: 0, env: {},
     network: async () => ({ rows: [], source: 'test network' }),
-    standing: async () => { throw new Error('not needed') },
+    standing: async (id) => { standingFor.push(id); throw new Error('offline') },
     explorerUrl: async () => 'https://explorer.example',
   })
   const token = new URL(server.url).searchParams.get('token')!
@@ -111,6 +112,9 @@ test('a stopped seller (journal, no daemon state) is still known by its stored i
     const expected = identityFromPrivateKeyHex(key).peerId
     assert.equal(promote.peerId, expected)
     assert.equal(promote.profileUrl, `https://explorer.example/account/0x${expected}`)
+    await fetch(`${new URL(server.url).origin}/console/api/seller/reputation`, { headers: { authorization: `Bearer ${token}` } })
+    await tick()
+    assert.deepEqual(standingFor, [expected], 'on-chain standing is looked up for it too')
     assert.equal(readFileSync(join(dir, 'identity.key'), 'utf8'), key, 'the identity is only read')
   } finally {
     await server.close()

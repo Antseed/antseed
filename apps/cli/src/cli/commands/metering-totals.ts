@@ -37,7 +37,7 @@ const utcDayStart = (ms: number): number => ms - (ms % DAY_MS);
  * (multi-GB metering.db), so each pass reads only the rows added since the
  * last one, an hour of data per query, yielding between queries so /healthz
  * keeps answering. Rows pruned later stay counted (the totals are counters).
- * Sessions are counted by insertion (rowid), since a session row lands with
+ * Sessions are counted by insertion (a never-reused sequence), since a session row lands with
  * the start time of a request that may have finished minutes later.
  */
 export class MeteringTotals {

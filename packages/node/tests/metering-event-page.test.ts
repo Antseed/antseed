@@ -84,6 +84,23 @@ describe('metering request log page', () => {
     expect(storage.getEventDetail('e')!.event_id).toBe('e1');
   });
 
+  it('the session cursor counts each new session once, also after pruning and updates', () => {
+    const storage = new MeteringStorage(join(mkdtempSync(join(tmpdir(), 'metering-page-')), 'metering.db'));
+    const session = (id: string, startedAt: number) => ({ sessionId: id, sellerPeerId: 'seller', buyerPeerId: 'buyer-a', provider: 'openai', startedAt, endedAt: null,
+      totalRequests: 1, totalTokens: 10, totalCostCents: 1, avgLatencyMs: 100, peerSwitches: 0, disputedReceipts: 0 });
+    storage.upsertSession(session('s1', 1_000));
+    storage.upsertSession(session('s2', 1_001));
+    const first = storage.getSessionsInsertedAfter(0);
+    expect(first.count).toBe(2);
+    storage.upsertSession({ ...session('s2', 1_001), totalRequests: 2 });
+    expect(storage.getSessionsInsertedAfter(first.lastRowid).count).toBe(0);
+    storage.pruneOlderThan(5_000);
+    storage.upsertSession(session('s3', 6_000));
+    const next = storage.getSessionsInsertedAfter(first.lastRowid);
+    expect(next.count).toBe(1);
+    expect(storage.getSessionsInsertedAfter(next.lastRowid).count).toBe(0);
+  });
+
   it('summarizes an error body to its message', () => {
     const encode = (text: string) => new TextEncoder().encode(text);
     expect(summarizeErrorBody(encode('{"error":{"message":"You have reached your 5-hour limit","code":429}}'))).toBe('You have reached your 5-hour limit');

@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { FileIdentityStore, identityFromPrivateKeyHex } from '@antseed/node'
+import { FileIdentityStore } from '@antseed/node'
 import { ConsoleError } from '../gateway/console-api/router.js'
 import type {
   SellerAlertSettings, SellerEventView, SellerLogDetail, SellerLogPage, SellerLogQuery, SellerMarket, SellerNetworkMeta, SellerPromote, SellerReputation,
@@ -170,14 +170,15 @@ export class SellerMonitor {
   }
 
   /**
-   * A stopped seller's peer id, from the identity it keeps in its data dir.
-   * Read only: a missing, encrypted or unreadable key is null, never a new identity.
+   * A stopped seller's peer id, from the address of the identity it keeps in
+   * its data dir (an encrypted key's address is readable without unlocking it).
+   * Read only: a missing or unreadable key is null, never a new identity.
    */
   private _storedPeerId(dataDir: string): Promise<string | null> {
     let entry = this._storedPeerIds.get(dataDir)
     if (!entry) {
-      entry = new FileIdentityStore(dataDir).load()
-        .then((hex) => (hex && hex.length === 64 ? identityFromPrivateKeyHex(hex).peerId : null), () => null)
+      entry = new FileIdentityStore(dataDir).address()
+        .then((address) => (address ? peerKey(address) : null), () => null)
       // Only a found id is kept; a seller that has not made one yet is looked up again.
       void entry.then((peerId) => { if (peerId === null) this._storedPeerIds.delete(dataDir) })
       this._storedPeerIds.set(dataDir, entry)

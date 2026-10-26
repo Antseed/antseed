@@ -107,32 +107,47 @@ export class SellerAlerts {
   private async _deliver(event: SellerEvent, key: string, recovery: boolean): Promise<void> {
     const channels = this._channelsFor(event, key, recovery);
     if (channels.length === 0) return;
-    const { sent } = await this.send(event, channels);
-    for (const channel of sent) {
-      if (recovery) this._lastSent.delete(`${channel}|${key}`);
-      else this._lastSent.set(`${channel}|${key}`, this._now());
+    // History is kept per destination, as of when the send started, so a changed chat or webhook starts fresh.
+    const { delivered } = await this._send(event, channels);
+    for (const destination of delivered) {
+      if (recovery) this._lastSent.delete(`${destination}|${key}`);
+      else this._lastSent.set(`${destination}|${key}`, this._now());
     }
   }
 
+  /** Where each channel sends right now: the channel type plus its chat or URL (kept in memory only). */
+  private _destinations(): Partial<Record<AlertChannel, string>> {
+    const { telegram, webhookUrl } = this.settings;
+    return { ...(telegram ? { telegram: `telegram:${telegram.chatId}` } : {}), ...(webhookUrl ? { webhook: `webhook:${webhookUrl}` } : {}) };
+  }
+
   private _channelsFor(event: SellerEvent, key: string, recovery: boolean): AlertChannel[] {
-    const channels = this.channels() as AlertChannel[];
+    const destinations = this._destinations();
+    const channels = (Object.keys(destinations) as AlertChannel[]);
+    const historyKey = (channel: AlertChannel) => `${destinations[channel]}|${key}`;
     // Only announce a recovery where its alert actually went out.
-    if (recovery) return channels.filter((channel) => this._lastSent.has(`${channel}|${key}`));
+    if (recovery) return channels.filter((channel) => this._lastSent.has(historyKey(channel)));
     if (event.kind === 'test') return channels;
     const config = this.settings.config;
     if (SEVERITY_RANK[event.severity] < SEVERITY_RANK[config.minSeverity ?? 'warning']) return [];
     const cooldownMs = (config.cooldownMinutes ?? DEFAULT_ALERT_COOLDOWN_MINUTES) * 60_000;
     return channels.filter((channel) => {
-      const last = this._lastSent.get(`${channel}|${key}`);
+      const last = this._lastSent.get(historyKey(channel));
       return last === undefined || this._now() - last >= cooldownMs;
     });
   }
 
   /** Send to every configured channel (or only those in `only`); failures are kept in state() rather than thrown. */
   async send(event: SellerEvent, only?: AlertChannel | AlertChannel[]): Promise<{ sent: string[]; errors: string[] }> {
+    const { sent, errors } = await this._send(event, only);
+    return { sent, errors };
+  }
+
+  private async _send(event: SellerEvent, only?: AlertChannel | AlertChannel[]): Promise<{ sent: string[]; errors: string[]; delivered: string[] }> {
     const wanted = (channel: AlertChannel) => only === undefined || (Array.isArray(only) ? only.includes(channel) : only === channel)
     const text = formatAlert(this._opts.sellerName, event);
     const { telegram, webhookUrl } = this.settings;
+    const destinations = this._destinations();
     const secrets = [telegram?.token, webhookUrl].filter((value): value is string => Boolean(value));
     // Never echo a secret: fetch errors can carry the request URL.
     const redact = (message: string) => secrets.reduce((out, secret) => out.replaceAll(secret, secret === webhookUrl ? '<webhook>' : '<token>'), message);
@@ -166,7 +181,7 @@ export class SellerAlerts {
     if (sent.length > 0) this._lastSentAt = this._now();
     this._lastError = errors.length > 0 ? errors.join('; ') : null;
     if (this._lastError) this._opts.log?.(`seller alerts: ${this._lastError}`);
-    return { sent, errors };
+    return { sent, errors, delivered: sent.map((channel) => destinations[channel as AlertChannel]!) };
   }
 }
 

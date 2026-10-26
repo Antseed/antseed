@@ -316,13 +316,15 @@ export class MeteringStorage {
   }
 
   /**
-   * Sessions written after `afterRowid`, in insertion order. A session row is
-   * first written when its first request finishes, with that request's start
-   * time, so counting by start time can miss rows that land late.
+   * Sessions written after the insertion cursor `afterRowid`, in insertion
+   * order. A session row is first written when its first request finishes,
+   * with that request's start time, so counting by start time can miss rows
+   * that land late. The cursor is a never-reused sequence, so pruning old
+   * sessions never hides new ones.
    */
   getSessionsInsertedAfter(afterRowid: number): { count: number; lastRowid: number } {
     const row = this.db.prepare(
-      'SELECT COUNT(*) AS count, MAX(rowid) AS last_rowid FROM sessions WHERE rowid > ?'
+      'SELECT COUNT(*) AS count, MAX(seq) AS last_rowid FROM session_insertions WHERE seq > ?'
     ).get(afterRowid) as { count: number; last_rowid: number | null };
     return { count: row.count, lastRowid: row.last_rowid ?? afterRowid };
   }
@@ -575,6 +577,9 @@ export class MeteringStorage {
     const deleteSessions = this.db.prepare(
       'DELETE FROM sessions WHERE started_at < ?'
     );
+    const deleteSessionInsertions = this.db.prepare(
+      'DELETE FROM session_insertions WHERE started_at < ?'
+    );
     const deleteFreeTierUsage = this.db.prepare(
       'DELETE FROM free_tier_usage WHERE timestamp < ?'
     );
@@ -583,6 +588,7 @@ export class MeteringStorage {
     const receiptsResult = deleteReceipts.run(timestampMs);
     const verificationsResult = deleteVerifications.run(timestampMs);
     const sessionsResult = deleteSessions.run(timestampMs);
+    deleteSessionInsertions.run(timestampMs);
     const freeTierUsageResult = deleteFreeTierUsage.run(timestampMs);
 
     return {
