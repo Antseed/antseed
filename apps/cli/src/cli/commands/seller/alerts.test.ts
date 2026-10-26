@@ -494,3 +494,30 @@ test('an alert held by the cooldown goes out with the latest news of its inciden
   assert.deepEqual(calls.map((call) => String(call.body.text).split(': ').slice(1).join(': ')), ['1 model withdrawn', 'all back', '2 models withdrawn']);
   alerts.close();
 });
+
+test('a recovery that fails while a new outage waits behind it is not resent', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'seller-alerts-'));
+  const texts: string[] = [];
+  let release!: () => void;
+  let stall = false;
+  const alerts = new SellerAlerts({
+    dataDir, config: { webhook: { url: 'https://hooks.example/x' }, cooldownMinutes: 30 }, sellerName: 'S', env: {}, retryMs: 5,
+    fetch: (async (_url: string, init: RequestInit) => {
+      texts.push(String(JSON.parse(String(init.body)).text).split(': ')[1]!.split('\n')[0]!);
+      if (!stall) return new Response('{}', { status: 200 });
+      await new Promise<void>((resolve) => { release = resolve; });
+      return new Response('{}', { status: 500 });
+    }) as typeof fetch,
+  });
+  await alerts.record(down);
+  stall = true;
+  const recovering = alerts.record(up);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const outage = alerts.record(down);
+  stall = false;
+  release();
+  await Promise.all([recovering, outage]);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.deepEqual(texts, ['glm-5.3 withdrawn', 'glm-5.3 back'], 'no stale "back" resend during the new outage');
+  alerts.close();
+});

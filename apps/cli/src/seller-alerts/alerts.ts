@@ -138,8 +138,9 @@ export class SellerAlerts {
     // A new outage makes a recovery still being resent stale; a recovery stops the alert's resends.
     this._release(recovery ? key : recoveryRetryKey(key));
     await this._inIncident(key, () => {
-      // Again in turn: a failure queued ahead of this recovery may have held an alert since.
-      if (recovery) this._release(key);
+      // Again in turn: a failure queued ahead of this recovery may have held an alert since,
+      // and a recovery sending ahead of this outage may have scheduled a resend since.
+      this._release(recovery ? key : recoveryRetryKey(key));
       if (recovery && options.quiet) {
         this._closeIncident(key);
         return Promise.resolve();

@@ -32,14 +32,16 @@ export function SellerPage({ title, description, actions, children }: {
   return (
     <div className="gc-page">
       <PageHeader title={title} description={description?.(seller)} actions={actions} />
+      {/* A monitoring page must not show a stale "Running" as current. */}
+      {status.error && <RefreshFailed error={status.error} what="the seller status" />}
       {children(seller)}
     </div>
   )
 }
 
 /** A background refresh failed while earlier data is still on screen: say so, and keep the page (and any edits on it). */
-export function RefreshFailed({ error }: { error: unknown }) {
-  return <p className="gc-seller-notice" role="status"><span className="gc-attention" aria-hidden="true" />Could not refresh: {errorMessage(error)}. Showing the last loaded data.</p>
+export function RefreshFailed({ error, what }: { error: unknown; what?: string }) {
+  return <p className="gc-seller-notice" role="status"><span className="gc-attention" aria-hidden="true" />Could not refresh{what ? ` ${what}` : ''}: {errorMessage(error)}. Showing the last loaded data.</p>
 }
 
 /** Where the market and trust numbers come from and how old they are, with a refresh. */

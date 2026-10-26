@@ -56,7 +56,7 @@ test('the seller dashboard needs its link, then serves the seller routes', async
     assert.equal(((await noSession.json()) as { error: { code: string } }).error.code, 'seller_link_required')
     assert.equal((await get('/console/api/seller/status')).status, 401)
     assert.equal((await get('/console/api/auth/seller?token=wrong')).status, 401)
-    assert.match(cookie, /^antseed_seller_dashboard=/)
+    assert.match(cookie, /^antseed_seller_dashboard_[0-9a-f]{12}=/)
 
     const me = (await call('GET', '/auth/me')).json!
     assert.deepEqual([me.kind, me.me.version], ['seller', '9.9.9'])
@@ -163,5 +163,18 @@ test('settings edits are validated, keep unknown fields and leave a backup', asy
     assert.equal(JSON.parse(readFileSync(configPath, 'utf-8')).seller.maxConcurrentBuyers, 20, 'a refused edit writes nothing')
   } finally {
     await server.close()
+  }
+})
+
+test('two dashboards on one host keep their own sessions in a shared cookie jar', async () => {
+  const first = await harness()
+  const second = await harness()
+  try {
+    // The browser sends every cookie for the host to either port.
+    const jar = `${first.cookie}; ${second.cookie}`
+    for (const dashboard of [first, second]) assert.equal((await dashboard.call('GET', '/auth/me', undefined, { cookie: jar })).status, 200)
+  } finally {
+    await first.server.close()
+    await second.server.close()
   }
 })

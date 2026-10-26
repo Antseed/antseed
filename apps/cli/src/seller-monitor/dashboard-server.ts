@@ -61,13 +61,15 @@ export async function startSellerDashboard(options: SellerDashboardOptions): Pro
   const log = options.log ?? (() => {})
   const token = randomBytes(24).toString('hex')
   const sessions = new Set<string>()
+  // Cookies are scoped by host and path, not port: each dashboard (one per data dir) gets its own name, so two open side by side keep their sessions.
+  const sessionCookie = `${SESSION_COOKIE}_${randomBytes(6).toString('hex')}`
   const me: MeResponse = { kind: 'seller', me: { dataDir: options.dataDir, version: options.version } }
 
   const auth: ConsoleAuth = {
     async authenticate(req) {
       const header = req.headers.authorization ?? ''
       if (header.startsWith('Bearer ') && sameSecret(header.slice(7), token)) return SELLER_PRINCIPAL
-      const cookie = readCookie(req, SESSION_COOKIE)
+      const cookie = readCookie(req, sessionCookie)
       return cookie && sessions.has(cookie) ? SELLER_PRINCIPAL : null
     },
     registerRoutes(router: ConsoleRouter) {
@@ -75,7 +77,7 @@ export async function startSellerDashboard(options: SellerDashboardOptions): Pro
         if (!sameSecret(query.get('token') ?? '', token)) return respond(401, { error: { code: 'unauthorized', message: 'This dashboard link is not valid. Use the URL `antseed seller dashboard` printed.' } })
         const session = randomBytes(24).toString('hex')
         sessions.add(session)
-        appendSetCookie(res, serializeCookie(raw, SESSION_COOKIE, session, { maxAgeSeconds: SESSION_MAX_AGE_SECONDS, path: '/console', sameSite: 'Strict' }))
+        appendSetCookie(res, serializeCookie(raw, sessionCookie, session, { maxAgeSeconds: SESSION_MAX_AGE_SECONDS, path: '/console', sameSite: 'Strict' }))
         return respond(302, undefined, { headers: { location: '/console/seller' } })
       }, { public: true })
       // Public so a browser without a session learns why (the console shows "open the dashboard link").
@@ -84,7 +86,7 @@ export async function startSellerDashboard(options: SellerDashboardOptions): Pro
         return me
       }, { public: true })
       router.add('POST', '/auth/logout', async ({ raw }) => {
-        const cookie = readCookie(raw, SESSION_COOKIE)
+        const cookie = readCookie(raw, sessionCookie)
         if (cookie) sessions.delete(cookie)
         return respond(204)
       }, { allow: ['token'] })
