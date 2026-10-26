@@ -3,8 +3,27 @@ import { join } from 'node:path'
 import { MeteringStorage, type MeteringEventPageRow } from '@antseed/node/metering'
 import { CHANNEL_KIND, ChannelStore, type StoredChannel } from '@antseed/node/payments'
 import type { SellerLogDetail, SellerLogEntry, SellerLogPage, SellerLogQuery } from '../gateway/console-api/types.js'
+import { ConsoleError } from '../gateway/console-api/router.js'
 
 export const DEFAULT_LOG_PAGE = 50
+
+/**
+ * Reads the seller's live metering.db read-only (never migrating it from here).
+ * A database an older seller wrote lacks the log columns until that seller restarts on this version.
+ */
+function readMetering<T>(path: string, read: (metering: MeteringStorage) => T): T {
+  const metering = new MeteringStorage(path, { readonly: true })
+  try {
+    return read(metering)
+  } catch (error) {
+    if (/no such column/i.test((error as Error).message)) {
+      throw new ConsoleError(409, 'seller_outdated', 'The seller\'s metering database is from an older version; restart the seller once on this version to read its request log.')
+    }
+    throw error
+  } finally {
+    metering.close()
+  }
+}
 
 function decodeCursor(cursor: string | null | undefined): { timestamp: number; rowid: number } | undefined {
   if (!cursor) return undefined
@@ -21,10 +40,9 @@ export function readSellerLogs(dataDir: string, query: SellerLogQuery = {}): Sel
   const path = join(dataDir, 'metering.db')
   if (!existsSync(path)) return { entries: [], next: null }
   const limit = Math.max(1, Math.min(query.limit ?? DEFAULT_LOG_PAGE, 200))
-  const metering = new MeteringStorage(path)
-  try {
+  return readMetering(path, (metering) => {
     const before = decodeCursor(query.cursor)
-    const rows = metering.listEventsPage({
+    const { rows, scannedTo } = metering.listEventsPage({
       limit: limit + 1,
       ...(before ? { before } : {}),
       ...(query.from ? { fromMs: query.from } : {}),
@@ -34,13 +52,13 @@ export function readSellerLogs(dataDir: string, query: SellerLogQuery = {}): Sel
     })
     const page = rows.slice(0, limit)
     const last = page.at(-1)
+    // A filtered page can come back short (even empty) with more to look through: `next` then continues the walk.
+    const next = rows.length > limit && last ? last : scannedTo
     return {
       entries: page.map(toEntry),
-      next: rows.length > limit && last ? `${last.timestamp}.${last.rowid}` : null,
+      next: next ? `${next.timestamp}.${next.rowid}` : null,
     }
-  } finally {
-    metering.close()
-  }
+  })
 }
 
 function toEntry(row: MeteringEventPageRow): SellerLogEntry {
@@ -73,13 +91,7 @@ const usd = (micro: string | null | undefined): number => {
 export function readSellerLogDetail(dataDir: string, id: string): SellerLogDetail | null {
   const path = join(dataDir, 'metering.db')
   if (!existsSync(path)) return null
-  const metering = new MeteringStorage(path)
-  let row: ReturnType<MeteringStorage['getEventDetail']>
-  try {
-    row = metering.getEventDetail(id)
-  } finally {
-    metering.close()
-  }
+  const row = readMetering(path, (metering) => metering.getEventDetail(id))
   if (!row) return null
   return {
     ...toEntry(row),
@@ -105,21 +117,23 @@ export function readSellerLogDetail(dataDir: string, id: string): SellerLogDetai
       costUsd: row.session ? row.session.total_cost_cents / 100 : null,
       avgLatencyMs: row.session?.avg_latency_ms ?? null,
     },
-    channel: channelFor(dataDir, row.buyer_peer_id, row.timestamp, row.request_id),
+    channel: channelFor(dataDir, row.buyer_peer_id, row.timestamp, row.request_id, Boolean(row.receipt_id) && (row.cost_cents ?? 0) > 0),
   }
 }
 
 /**
  * The channel that paid for the request: the one-off channel recorded for its
  * request id, else the regular channel with this buyer that was open when it
- * ran (newest first).
+ * ran (newest first); none for a request that charged nothing.
  */
-function channelFor(dataDir: string, buyerPeerId: string, at: number, requestId: string | null): SellerLogDetail['channel'] {
+function channelFor(dataDir: string, buyerPeerId: string, at: number, requestId: string | null, charged: boolean): SellerLogDetail['channel'] {
   if (!existsSync(join(dataDir, 'payments', 'sessions.db'))) return null
   const store = new ChannelStore(join(dataDir, 'payments'))
   try {
     const oneOff = requestId ? store.getOneOffChannelByRequest(buyerPeerId, 'seller', requestId) : null
     if (oneOff) return channelView(oneOff)
+    // A free request (no receipt, or nothing charged) was not paid from whatever channel happened to be open.
+    if (!charged) return null
     // Peer ids are the buyer's EVM address without 0x; channels store it with.
     const channels = store.getAllChannelsByBuyer('seller', `0x${buyerPeerId.replace(/^0x/, '').toLowerCase()}`, CHANNEL_KIND.PAID)
     // An active channel may carry the time of a partial settle; it still covers later requests.

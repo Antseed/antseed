@@ -9,7 +9,7 @@ import { getGlobalOptions } from './types.js';
 import { createDepositsClient, requireCryptoConfig } from '../payment-utils.js';
 import { FileIdentityStore, identityFromPrivateKeyHex } from '@antseed/node';
 import { MeteringStorage } from '@antseed/node/metering';
-import { parseGas, parseModelHealth } from '../../seller-monitor/reader.js';
+import { parseGas, parseModelHealth, SELLER_STALE_MS } from '../../seller-monitor/reader.js';
 import { sharedChainProvider } from '../../proxy/chain-rpc.js';
 import { rpcUsage, withRpcSource } from '../../proxy/rpc-sources.js';
 import { ChannelStore, type StoredChannel } from '@antseed/node/payments';
@@ -243,8 +243,21 @@ async function addBuyerMetrics(samples: MetricSample[], baseLabels: Record<strin
   }
 }
 
-/** Model health and gas from the seller daemon's state file (absent on older sellers), parsed like the dashboard does. */
-export function addSellerHealthMetrics(samples: MetricSample[], sellerLabels: Record<string, string>, daemon: Record<string, unknown> | null): void {
+/**
+ * Whether the state file is from a seller that is running: a crashed or killed
+ * seller leaves its last state behind, which must not read as live health.
+ */
+export function isLiveDaemon(daemon: Record<string, unknown> | null, now: number = Date.now()): boolean {
+  const updatedAt = daemon?.updatedAt;
+  return typeof updatedAt === 'number' && now - updatedAt < SELLER_STALE_MS;
+}
+
+/**
+ * Model health and gas from the seller daemon's state file (absent on older
+ * sellers), parsed like the dashboard does; none while the seller is not running.
+ */
+export function addSellerHealthMetrics(samples: MetricSample[], sellerLabels: Record<string, string>, daemon: Record<string, unknown> | null, now: number = Date.now()): void {
+  if (!isLiveDaemon(daemon, now)) return;
   for (const service of parseModelHealth(daemon?.modelHealth)) {
     // `provider` is the configured provider name, so upstreams sharing a plugin get their own series.
     const serviceLabels = { provider: service.providerId, plugin: service.provider, service: service.service };
@@ -266,12 +279,13 @@ export function addSellerHealthMetrics(samples: MetricSample[], sellerLabels: Re
 }
 
 /** Chain RPC calls per source: this exporter's own, and the seller daemon's from its state file. */
-export function addRpcMetrics(samples: MetricSample[], baseLabels: Record<string, string>, daemon: Record<string, unknown> | null): void {
+export function addRpcMetrics(samples: MetricSample[], baseLabels: Record<string, string>, daemon: Record<string, unknown> | null, now: number = Date.now()): void {
   const help = 'Chain RPC calls made, by source (as asked, before coalescing and Multicall batching).';
   for (const [source, usage] of Object.entries(rpcUsage())) {
     addSample(samples, baseLabels, { name: 'antseed_rpc_calls_total', help, type: 'counter', labels: { source, process: 'exporter' }, value: usage.total });
   }
-  const daemonRpc = daemon?.rpc && typeof daemon.rpc === 'object' ? daemon.rpc as Record<string, { total?: unknown }> : {};
+  // A stopped seller's counters would sit frozen; its series go away instead.
+  const daemonRpc = isLiveDaemon(daemon, now) && daemon?.rpc && typeof daemon.rpc === 'object' ? daemon.rpc as Record<string, { total?: unknown }> : {};
   for (const [source, usage] of Object.entries(daemonRpc)) {
     addSample(samples, baseLabels, { name: 'antseed_rpc_calls_total', help, type: 'counter', labels: { source, process: 'seller' }, value: num(usage?.total) });
   }

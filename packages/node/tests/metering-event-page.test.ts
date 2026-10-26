@@ -23,18 +23,34 @@ describe('metering request log page', () => {
     const seen: string[] = [];
     let before: { timestamp: number; rowid: number } | undefined;
     for (;;) {
-      const page = storage.listEventsPage({ limit: 3, ...(before ? { before } : {}) });
+      const page = storage.listEventsPage({ limit: 3, ...(before ? { before } : {}) }).rows;
       if (page.length === 0) break;
       seen.push(...page.map((row) => row.event_id));
       const last = page.at(-1)!;
       before = { timestamp: last.timestamp, rowid: last.rowid };
     }
     expect(seen).toEqual(['e6', 'e5', 'e4', 'e3', 'e2', 'e1', 'e0']);
-    expect(storage.listEventsPage({ limit: 10 }).find((row) => row.event_id === 'e4')!.cost_cents).toBe(3);
-    expect(storage.listEventsPage({ limit: 10, service: 'glm-5.3' }).map((row) => row.event_id)).toEqual(['e5', 'e3', 'e1']);
-    expect(storage.listEventsPage({ limit: 10, buyerPeerId: 'buyer-b' }).map((row) => row.event_id)).toEqual(['e3']);
-    expect(storage.listEventsPage({ limit: 10, errorsOnly: true }).map((row) => [row.event_id, row.status_code])).toEqual([['e5', 402]]);
-    expect(storage.listEventsPage({ limit: 10, fromMs: 1_003 }).map((row) => row.event_id)).toEqual(['e6']);
+    expect(storage.listEventsPage({ limit: 10 }).rows.find((row) => row.event_id === 'e4')!.cost_cents).toBe(3);
+    expect(storage.listEventsPage({ limit: 10, service: 'glm-5.3' }).rows.map((row) => row.event_id)).toEqual(['e5', 'e3', 'e1']);
+    expect(storage.listEventsPage({ limit: 10, buyerPeerId: 'buyer-b' }).rows.map((row) => row.event_id)).toEqual(['e3']);
+    expect(storage.listEventsPage({ limit: 10, errorsOnly: true }).rows.map((row) => [row.event_id, row.status_code])).toEqual([['e5', 402]]);
+    expect(storage.listEventsPage({ limit: 10, fromMs: 1_003 }).rows.map((row) => row.event_id)).toEqual(['e6']);
+
+    // A filtered page walks at most scanLimit rows, then says where to continue.
+    const first = storage.listEventsPage({ limit: 10, buyerPeerId: 'buyer-b', scanLimit: 2 });
+    expect(first.rows).toEqual([]);
+    expect(first.scannedTo).not.toBeNull();
+    const found: string[] = [];
+    let cursor: { timestamp: number; rowid: number } | null = null;
+    for (let page = 0; page < 10; page++) {
+      const next = storage.listEventsPage({ limit: 10, service: 'glm-5.3', scanLimit: 2, ...(cursor ? { before: cursor } : {}) });
+      found.push(...next.rows.map((row) => row.event_id));
+      if (!next.scannedTo) break;
+      cursor = next.scannedTo;
+    }
+    expect(found).toEqual(['e5', 'e3', 'e1']);
+    // A window that ends at the oldest row has nothing left to continue.
+    expect(storage.listEventsPage({ limit: 10, buyerPeerId: 'buyer-b', scanLimit: 7 }).scannedTo).toBeNull();
   });
 
   it('the event getters return service, error and cached input tokens, and leave them out on older rows', () => {
@@ -52,7 +68,7 @@ describe('metering request log page', () => {
     storage.insertEvent(event(1, 1_000));
     storage.insertEvent({ ...event(2, 1_001), error: 'upstream stream reset' });
     storage.insertEvent(event(3, 1_002, { status: 500 }));
-    expect(storage.listEventsPage({ limit: 10, errorsOnly: true }).map((row) => row.event_id)).toEqual(['e3', 'e2']);
+    expect(storage.listEventsPage({ limit: 10, errorsOnly: true }).rows.map((row) => row.event_id)).toEqual(['e3', 'e2']);
   });
 
   it('walks the timestamp index without a sort or OFFSET (cheap at any depth)', () => {
@@ -74,14 +90,16 @@ describe('metering request log page', () => {
     storage.insertReceipt({ receiptId: 'r2', sessionId: 's1', eventId: 'e2', timestamp: 1_001, provider: 'openai', sellerPeerId: 'seller', buyerPeerId: 'buyer-a',
       tokens: { inputTokens: 10, outputTokens: 5, totalTokens: 15, method: 'provider-usage', confidence: 'high' }, unitPriceCentsPerThousandTokens: 2, costCents: 7, signature: 'sig' });
 
-    expect(storage.listEventsPage({ limit: 10 })[0]).toMatchObject({ event_id: 'e2', error: 'quota reached', cached_input_tokens: 4 });
+    expect(storage.listEventsPage({ limit: 10 }).rows[0]).toMatchObject({ event_id: 'e2', error: 'quota reached', cached_input_tokens: 4 });
     expect(storage.getEventDetail('e2')).toMatchObject({
       event_id: 'e2', error: 'quota reached', cost_cents: 7, receipt_id: 'r2', unit_price_cents_per_thousand: 2,
       token_confidence: 'high', verification: null, session_position: 2,
     });
     expect(storage.getEventDetail('e1')).toMatchObject({ error: null, cached_input_tokens: null, receipt_id: null, session_position: 1 });
     expect(storage.getEventDetail('missing')).toBeNull();
-    expect(storage.getEventDetail('e')!.event_id).toBe('e1');
+    // A prefix matching more than one request names none.
+    expect(storage.getEventDetail('e')).toBeNull();
+    expect(storage.getEventDetail('')).toBeNull();
   });
 
   it('summarizes an error body to its message', () => {

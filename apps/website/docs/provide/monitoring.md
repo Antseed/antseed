@@ -42,7 +42,7 @@ Then open the printed URL on your own machine.
 
 ## Logs
 
-**Logs** lists every request the seller served or refused, newest first: time, buyer, model, status, input and output tokens, latency and cost (from the signed usage receipt). Filter by model, buyer, time range or failed requests only; older pages load on demand without slowing down on a large metering database. Tokens marked * were estimated from the body size because the upstream reported no usage. The model is recorded from this release on; older requests show the provider instead. **Events** on the same page is the seller's event journal.
+**Logs** lists every request the seller passed to an upstream, failures included, newest first: time, buyer, model, status, input and output tokens, latency and cost (from the signed usage receipt). Filter by model (its exact id), buyer, time range or failed requests only; older pages load on demand without slowing down on a large metering database. A filtered page looks through at most 5,000 requests at a time; when it finds fewer matches, **Look further back** (or `--cursor` in the CLI) continues. Requests the seller refuses itself (payment required, free-tier limit, a refused country) are not in the log. Tokens marked * were estimated from the body size because the upstream reported no usage. The model is recorded from this release on; older requests show the provider instead. **Events** on the same page is the seller's event journal.
 
 ## Market
 
@@ -60,7 +60,7 @@ It also sets up identity verification. Add a domain or a GitHub account, save (i
 
 ## Where the numbers come from
 
-Market and Reputation read the network as a buyer sees it. In the gateway console that is the gateway's own buyer. `antseed seller dashboard` uses a buyer running on the same data directory when there is one, and otherwise starts a short-lived buyer node that discovers the network and stops. The snapshot is reused for 15 minutes and refreshed in the background; **Refresh** starts a new one. The first one can take a minute. On-chain standing is read over the chain RPC in your config and cached for 10 minutes.
+Market and Reputation read the network as a buyer sees it. In the gateway console that is the gateway's own buyer. `antseed seller dashboard` uses a buyer running on the same data directory when there is one, and otherwise starts a short-lived buyer node, with its own temporary identity, that discovers the network and stops. The snapshot is reused for 15 minutes and refreshed in the background; **Refresh** starts a new one. The first one can take a minute. On-chain standing is read over the chain RPC in your config and reused until the staking epoch ends (at most 30 minutes).
 
 ## In the gateway console
 
@@ -78,11 +78,11 @@ The seller can send its events to Telegram, to a webhook, or both. Set them up i
 
 - **Telegram**: create a bot with @BotFather and paste its token. Send the bot a message, or add it to a group and post there, then click **Find chat** to pick the chat from a list (or type the chat id). **Send test** checks delivery.
 - **Webhook**: the seller POSTs each event as JSON with `text` and `content` fields, which Slack and Discord incoming webhooks read.
-- **What is sent**: the lowest severity to send (default: warnings), an alert when the seller has served nothing for some minutes, and how often the same alert may repeat (default: every 30 minutes). A recovery is always sent after an alert that went out.
+- **What is sent**: the lowest severity to send (default: warnings), an alert when the seller has served nothing for some minutes, and the cooldown (default: 30 minutes). The cooldown is the shortest gap between two sends of the same alert, also across a recovery: a model that keeps failing and recovering alerts at most once per cooldown, and a new failure inside the cooldown is sent when it ends if it has not recovered by then. 0 sends every alert. Crash alerts keep their cooldown across restarts. A recovery is always sent after an alert that went out.
 
 Alert changes apply to the running seller within a few seconds, without a restart.
 
-The bot token and the webhook URL (which often carries a token of its own) are secrets. They are saved on the seller's host in `<data dir>/secrets/seller-alerts.json` (readable only by the seller's user), never in `config.json`, and never shown again: the page shows only whether a token is saved and the webhook's host. A token in the environment variable `seller.alerts.telegram.botTokenEnv` names (default `ANTSEED_ALERTS_TELEGRAM_TOKEN`) takes precedence over the saved one.
+The bot token and the webhook URL (which often carries a token of its own) are secrets. They are saved on the seller's host in `<data dir>/secrets/seller-alerts.json` (readable only by the seller's user), never in `config.json`, and never shown again: the page shows only whether a token is saved and the webhook's host. A token in the environment variable `seller.alerts.telegram.botTokenEnv` names (default `ANTSEED_ALERTS_TELEGRAM_TOKEN`) takes precedence over the saved one. A token set only in the seller's environment shows as set while the seller runs; send test alerts from where the seller runs, or save the token on the page.
 
 The other alert settings you save on the page go to `<data dir>/seller-alerts.json`, which overrides `seller.alerts` in `config.json`. Both files are in the data directory, so alerts can be set up even when `config.json` is read-only (for example mounted from a Kubernetes ConfigMap). You can also set them by hand in `config.json`:
 
@@ -99,13 +99,13 @@ The other alert settings you save on the page go to `<data dir>/seller-alerts.js
 }
 ```
 
-A value saved on the page wins over the same value in `config.json`.
+A value saved on the page wins over the same value in `config.json`. `telegram.chatId` can be left out of `config.json` (for example with only `botTokenEnv` there) and saved on the page or with `antseed seller alerts set --telegram-chat` instead.
 
 From the command line, `antseed seller alerts test` sends a test to every configured channel.
 
 ## Settings
 
-The **Settings** panel edits the `config.json` fields sellers change most: display name, maximum concurrent buyers, refused countries, health and gas checks, the seller-wide free tier (limits, stakers only, and the [staked tiers](/docs/staked-free-tier): the network default, your own, or none), and for each service its input, output and cached input price and its own free tier. Each pricing row shows the free tier buyers of that model get now. A model's own free tier is a free allowance on a paid model, or replaces the seller-wide free tier on a free one (see [free-tier limits](/docs/provide/config#free-tier-limits)). It does not add or remove services or touch upstream keys.
+The **Settings** panel edits the `config.json` fields sellers change most: display name, maximum concurrent buyers, refused countries, health and gas checks, the seller-wide free tier (limits, stakers only, and the [staked tiers](/docs/staked-free-tier): the network default, your own, or none), and for each service its input, output and cached input price and its own free tier. Each pricing row shows the free tier buyers of that model get now. A model's own free tier is a free allowance on a paid model, or replaces the seller-wide free tier on a free one (see [free-tier limits](/docs/provide/config#free-tier-limits)). It belongs to the model id, so an edit applies to every provider that offers that model, and it uses the network's staked tiers (set your own for a model in `config.json`). On a paid model the free allowance covers text requests, not video generation. Clearing both seller-wide limits turns the seller-wide free tier off. A save writes only the fields you changed, so an edit made elsewhere in the meantime is kept. The health check interval is at least 60 seconds. Prices shown are the ones in the file: `ANTSEED_SELLER_INPUT_USD_PER_MILLION` and `ANTSEED_SELLER_OUTPUT_USD_PER_MILLION` in the seller's environment override them at start. It does not add or remove services or touch upstream keys.
 
 Every save is checked the same way the seller checks its config at start, writes only the fields you changed (everything else stays as written), and keeps the previous file as `config.json.bak`. These settings apply when you restart the seller.
 
@@ -125,7 +125,7 @@ Everything the dashboard shows or changes is also an `antseed seller` command, b
 | Reputation | `antseed seller reputation [--refresh]` |
 | Promote, seller card | `antseed seller promote [--card card.svg]` |
 | Identity verification | `antseed seller verify [--add-domain example.com] [--add-github user[/repo]] [--remove <claim>] [--check]` |
-| Settings | `antseed seller settings` and `antseed seller settings set --price glm-5.3=0.7/2.2 --max-buyers 100 …` (write `--price <provider>/<model>=…` when two providers offer the model). Free tier: `--model-free-tier glm-5.3=100/none/24` (per address / per IP / hours, add `/stakers` for stakers only, `=off` to remove), `--free-stakers-only on`, `--free-stake-tiers 10000:5,50000:20,200000:unlimited` (ANTS locked for a year : multiplier, or `default` / `none`) |
+| Settings | `antseed seller settings` and `antseed seller settings set --price glm-5.3=0.7/2.2 --max-buyers 100 …` (write `--price <provider>/<model>=…` when two providers offer the model; without a third number the cached price stays, `/none` removes it). Free tier: `--model-free-tier glm-5.3=100/none/24` (per address / per IP / hours, add `/stakers` for stakers only, `=off` to remove), `--free-stakers-only on`, `--free-stake-tiers 10000:5,50000:20,200000:unlimited` (ANTS locked for a year : multiplier, or `default` / `none`) |
 | Alerts | `antseed seller alerts`, `alerts set --telegram-chat <id> --idle 60 …`, `alerts test`, `alerts find-chat` |
 
 Secrets never go on the command line: pipe them in, for example `printf '%s' "$TOKEN" | antseed seller alerts set --telegram-token-stdin`.
@@ -134,7 +134,7 @@ Secrets never go on the command line: pipe them in, for example `printf '%s' "$T
 
 The dashboard and the commands read the chain sparingly. Nothing is read while nobody looks: Market, Reputation and Promote load the network and on-chain standing when a page or command asks, reuse the network snapshot for 15 minutes and standing until the staking epoch ends (at most 30 minutes), and run one load at a time. Reads go through one shared provider per process that merges duplicate calls, batches concurrent calls into Multicall3, and backs off when an endpoint fails or rate-limits. Failed loads retry with growing back-off, and **Refresh** does nothing within 30 seconds of the last load. A running seller checks its gas balance every minute only when it is low, and every 10 minutes while it holds at least 20 times the minimum.
 
-`antseed seller status` shows the seller's chain calls per minute by source, and `antseed metrics serve` exports `antseed_rpc_calls_total{source,process}`. Set `ANTSEED_DEBUG=1` for a one-line summary every minute.
+`antseed seller status` shows the chain calls per minute by source that go through the shared provider (the gas check, the dashboard and the commands; the seller's payment and channel calls use their own connection and are not counted), and `antseed metrics serve` exports `antseed_rpc_calls_total{source,process}`. Set `ANTSEED_DEBUG=1` for a one-line summary every minute.
 
 ## Prometheus
 

@@ -96,12 +96,15 @@ export function SellerAlertsEditor({ alerts, state }: { alerts: SellerAlertSetti
   const invalid = Object.values(errors).some(Boolean)
 
   const save = useMutation({
-    mutationFn: () => api.seller.updateAlerts(patch),
-    onSuccess: (data) => {
+    mutationFn: (submitted: { patch: SellerAlertsPatch; draft: Draft }) => api.seller.updateAlerts(submitted.patch),
+    onSuccess: (data, submitted) => {
       queryClient.setQueryData(qk.sellerSettings, { settings: data.settings, alerts: data.alerts })
+      // "Sending to" on the status comes from the seller.
+      void queryClient.invalidateQueries({ queryKey: qk.sellerStatus })
       const next = draftOf(data.alerts)
       setBase(next)
-      setDraft(next)
+      // Edits typed while the save was in flight stay; the rest takes the saved values.
+      setDraft((current) => rebaseDraft(current, submitted.draft, next))
       setEditToken(!data.alerts.telegram.tokenSet)
       setEditWebhook(!data.alerts.webhook.set)
       toast('Saved. The seller applies alert settings within a few seconds.')
@@ -197,7 +200,7 @@ export function SellerAlertsEditor({ alerts, state }: { alerts: SellerAlertSetti
         <div className="gc-actions">
           <span className="gc-fineprint gc-actions__note">{changed ? 'Applies within a few seconds, without a restart.' : 'No changes.'}</span>
           <Button variant="ghost" disabled={!changed || save.isPending} onClick={() => { setDraft(base); setEditToken(!alerts.telegram.tokenSet); setEditWebhook(!alerts.webhook.set) }}>Reset</Button>
-          <Button disabled={!changed || invalid || save.isPending} onClick={() => save.mutate()}>{save.isPending ? 'Saving…' : 'Save'}</Button>
+          <Button disabled={!changed || invalid || save.isPending} onClick={() => save.mutate({ patch, draft })}>{save.isPending ? 'Saving…' : 'Save'}</Button>
         </div>
       )}
     </div>

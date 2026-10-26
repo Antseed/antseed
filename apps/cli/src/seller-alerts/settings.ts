@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { withFileLock } from '@antseed/node';
 import { normalizeSellerAlerts } from '../config/seller-alerts.js';
 import type { SellerAlertsCLIConfig as SellerAlertsConfig } from '../config/types.js';
 
@@ -45,11 +46,18 @@ export function readAlertOverrides(dataDir: string): AlertOverrides {
   }
 }
 
-/** Merges `patch` into the overrides file (undefined keeps a key), written atomically with mode 0600. */
-export function writeAlertOverrides(dataDir: string, patch: AlertOverrides): void {
-  const next: Record<string, unknown> = { ...readAlertOverrides(dataDir) };
-  for (const [key, value] of Object.entries(patch)) if (value !== undefined) next[key] = value;
-  writeJsonAtomic(alertOverridesPath(dataDir), next);
+/**
+ * Merges `patch` into the overrides file (undefined keeps a key), written
+ * atomically with mode 0600 under the cross-process file lock, so a dashboard
+ * and a CLI saving at once both keep their fields.
+ */
+export async function writeAlertOverrides(dataDir: string, patch: AlertOverrides): Promise<void> {
+  mkdirSync(dataDir, { recursive: true });
+  await withFileLock(alertOverridesPath(dataDir), async () => {
+    const next: Record<string, unknown> = { ...readAlertOverrides(dataDir) };
+    for (const [key, value] of Object.entries(patch)) if (value !== undefined) next[key] = value;
+    writeJsonAtomic(alertOverridesPath(dataDir), next);
+  });
 }
 
 /** config.json's `seller.alerts` with the dashboard's overrides applied. */
@@ -91,19 +99,22 @@ export function readAlertSecrets(dataDir: string): AlertSecrets {
 
 /**
  * Sets (string) or clears (null) alert secrets; undefined keeps a value. The
- * directory is 0700 and the file 0600, replaced atomically.
+ * directory is 0700 and the file 0600, replaced atomically under the
+ * cross-process file lock.
  */
-export function writeAlertSecrets(dataDir: string, patch: { telegramBotToken?: string | null; webhookUrl?: string | null }): void {
-  const next: AlertSecrets = { ...readAlertSecrets(dataDir) };
-  for (const key of ['telegramBotToken', 'webhookUrl'] as const) {
-    const value = patch[key];
-    if (value === null) delete next[key];
-    else if (value !== undefined) next[key] = value;
-  }
+export async function writeAlertSecrets(dataDir: string, patch: { telegramBotToken?: string | null; webhookUrl?: string | null }): Promise<void> {
   const dir = join(dataDir, 'secrets');
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   chmodSync(dir, 0o700);
-  writeJsonAtomic(alertSecretsPath(dataDir), next);
+  await withFileLock(alertSecretsPath(dataDir), async () => {
+    const next: AlertSecrets = { ...readAlertSecrets(dataDir) };
+    for (const key of ['telegramBotToken', 'webhookUrl'] as const) {
+      const value = patch[key];
+      if (value === null) delete next[key];
+      else if (value !== undefined) next[key] = value;
+    }
+    writeJsonAtomic(alertSecretsPath(dataDir), next);
+  });
 }
 
 export interface ResolvedAlerts {

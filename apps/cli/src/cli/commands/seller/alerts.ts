@@ -9,6 +9,16 @@ async function readStdin(): Promise<string> {
   return Buffer.concat(chunks).toString('utf-8').trim();
 }
 
+/**
+ * A secret from stdin, refused when empty: an unset shell variable piped in
+ * (or Ctrl-D) must never clear a saved value. Clearing has its own flag.
+ */
+export async function readSecretFromStdin(flag: string, hint: string, read: () => Promise<string> = readStdin): Promise<string> {
+  const value = await read();
+  if (!value) throw new Error(`${flag}: nothing was read from stdin. ${hint}`);
+  return value;
+}
+
 const SEVERITIES = ['info', 'warning', 'critical'];
 
 /**
@@ -45,9 +55,9 @@ export function registerSellerAlertsCommand(sellerCmd: Command): void {
       const patch: SellerAlertsPatch = {};
       // stdin can be read once: one secret per command.
       if (options.telegramTokenStdin && options.webhookUrlStdin) throw new Error('--telegram-token-stdin and --webhook-url-stdin both read stdin; set them in two commands.');
-      if (options.telegramTokenStdin) patch.telegramBotToken = await readStdin();
+      if (options.telegramTokenStdin) patch.telegramBotToken = await readSecretFromStdin('--telegram-token-stdin', 'Pipe the token in; to remove the saved one, use --clear-telegram-token.');
       if (options.clearTelegramToken) patch.telegramBotToken = null;
-      if (options.webhookUrlStdin) patch.webhookUrl = await readStdin();
+      if (options.webhookUrlStdin) patch.webhookUrl = await readSecretFromStdin('--webhook-url-stdin', 'Pipe the URL in; to remove the webhook, use --clear-webhook.');
       if (options.clearWebhook) patch.webhookUrl = null;
       if (typeof options.telegramChat === 'string') patch.telegramChatId = options.telegramChat === 'none' ? null : options.telegramChat;
       if (typeof options.idle === 'string') patch.idleMinutes = options.idle === 'off' ? null : Number(options.idle);
@@ -80,7 +90,7 @@ export function registerSellerAlertsCommand(sellerCmd: Command): void {
     .description('List chats that recently messaged your bot (send it a message, or add it to a group, first)')
     .option('--token-stdin', 'use a bot token from stdin instead of the saved one')
     .option('--json', 'output as JSON', false)
-    .action((options: { tokenStdin?: boolean }, command: Command) => runMonitorCommand(jsonFlag(command), async () => sellerMonitorFor(sellerCmd).telegramChats(options.tokenStdin ? await readStdin() : null), (chats) => {
+    .action((options: { tokenStdin?: boolean }, command: Command) => runMonitorCommand(jsonFlag(command), async () => sellerMonitorFor(sellerCmd).telegramChats(options.tokenStdin ? await readSecretFromStdin('--token-stdin', 'Pipe the token in, or leave the flag out to use the saved one.') : null), (chats) => {
       if (chats.length === 0) return console.log(chalk.dim('No chats yet. Message the bot or add it to a group and post there, then try again.'));
       for (const chat of chats) console.log(`${chat.id.padEnd(16)} ${chat.type.padEnd(11)} ${chat.title}`);
       console.log(chalk.dim('Use one with: antseed seller alerts set --telegram-chat <id>'));

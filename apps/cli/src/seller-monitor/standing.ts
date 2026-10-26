@@ -1,4 +1,5 @@
 import type { AntsContext } from '@antseed/ants'
+import { pendingEpochRewards } from '@antseed/node/payments'
 import type { SellerStanding } from '../gateway/console-api/types.js'
 import { sharedChainProvider } from '../proxy/chain-rpc.js'
 import { withRpcSource } from '../proxy/rpc-sources.js'
@@ -56,7 +57,7 @@ export async function readSellerStanding(options: { peerId: string; configPath: 
     const view = await ants.seller(ctx)
     const [pool, rewards, stack] = await Promise.all([
       view.agentId ? ants.singlePool(ctx, view.agentId).catch(() => null) : Promise.resolve(null),
-      ants.rewards(ctx).catch(() => null),
+      pendingSellerUsage(ctx).catch(() => null),
       ctx.stack().catch(() => null),
     ])
     const antsText = (value: string | null | undefined) => (value === null || value === undefined ? null : ants.formatAnts(value).replace(/,/g, ''))
@@ -81,10 +82,21 @@ export async function readSellerStanding(options: { peerId: string; configPath: 
           ghostRate: pool.profile?.ghostRate ?? null,
           lastEpochEmission: antsText(pool.lastEpochEmission),
         } : null,
-        pendingRewards: rewards ? antsText(rewards.sellerUsage.total) : null,
+        pendingRewards: rewards === null ? null : antsText(rewards.toString()),
       },
     }
   })
+}
+
+/**
+ * The seller's unclaimed usage rewards over the claimable epochs: only the
+ * seller bucket, not the wallet's full rewards view (positions, buyer, legacy).
+ */
+async function pendingSellerUsage(ctx: AntsContext): Promise<bigint> {
+  const [stack, epochs] = await Promise.all([ctx.stack(), ctx.claimableEpochs()])
+  const usageAccounting = ctx.usageAccounting()
+  if (stack.phase !== 'active' || !usageAccounting || epochs.recognized.length === 0) return 0n
+  return pendingEpochRewards(epochs.recognized, async (batch) => (await usageAccounting.pendingEmissions(ctx.address, batch)).seller)
 }
 
 /**

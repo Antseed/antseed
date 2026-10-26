@@ -150,3 +150,19 @@ test('a malformed stored identity reads as no peer id, without an unhandled reje
     await server.close()
   }
 })
+
+test('"Check now" during a running check checks the newly saved claims in a fresh run after it', async () => {
+  const looked: string[] = []
+  let release!: () => void
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  const checks = new VerificationChecks({
+    resolveTxt: async (host) => { looked.push(host); if (looked.length === 1) await gate; return [[`antseed-peer=${PEER}`]] },
+    fetch: (async () => new Response('nope', { status: 404 })) as typeof fetch,
+  })
+  const first = checks.check(PEER, { domains: [{ domain: 'old.example', methods: ['dns-txt'] }], github: [] })
+  const second = checks.check(PEER, { domains: [{ domain: 'new.example', methods: ['dns-txt'] }], github: [] })
+  release()
+  await Promise.all([first, second])
+  assert.deepEqual(looked, ['_antseed.old.example', '_antseed.new.example'])
+  assert.equal(checks.status('domain:new.example')?.verified, true)
+})

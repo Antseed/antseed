@@ -10,8 +10,9 @@ type SettingsQuery = ReturnType<typeof useSellerSettings>
 
 function Loaded({ query, children }: { query: SettingsQuery; children: (data: NonNullable<SettingsQuery['data']>) => ReactNode }) {
   if (query.isLoading) return <LoadingRows rows={3} />
-  if (query.error) return <ErrorAlert error={query.error} onRetry={() => void query.refetch()} />
-  return query.data ? <>{children(query.data)}</> : null
+  // A failed background refetch keeps the editors (and their unsaved drafts) on screen.
+  if (query.data) return <>{children(query.data)}</>
+  return query.error ? <ErrorAlert error={query.error} onRetry={() => void query.refetch()} /> : null
 }
 
 /** Where alerts go, and the seller's config.json. */

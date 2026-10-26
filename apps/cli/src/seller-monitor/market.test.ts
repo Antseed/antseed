@@ -53,3 +53,8 @@ test('reputation: trust parts with their maximum, rank among sellers, next steps
   assert.deepEqual(trustSteps({ ...trust, washFlagged: true }).map((step) => step.part), ['wash'])
   assert.equal(trustSteps(null)[0]!.part, 'history')
 })
+
+test('market: with no network loaded, nothing is ranked or called only yours', () => {
+  const market = marketView([], ME, mine, meta)
+  assert.ok(market.services.every((service) => !service.unique && service.rank === null))
+})

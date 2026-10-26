@@ -23,7 +23,7 @@ import { combinePolicies, expandLists } from '../lib/policy-match'
 import { fakeAddress, mockNetworkModels, mockNetworkRouters, mockRouteSelection, seed } from './data'
 // The card renderer is the seller service's own (no copy in the console).
 import { sellerCardSvg } from '../../../cli/src/seller-monitor/card'
-import { mockSellerEvents, mockSellerLogDetail, mockSellerLogs, mockSellerMarket, mockSellerPromote, mockSellerReputation, mockSellerSettings, mockSellerStatus, mockSellerUsage } from './seller'
+import { mockCheckVerifications, mockSaveVerifications, mockSellerEvents, mockSellerLogDetail, mockSellerLogs, mockSellerMarket, mockSellerPromote, mockSellerReputation, mockSellerSettingsState, mockSellerStatus, mockSellerUsage, mockTelegramChats, mockTestAlert, mockUpdateSellerAlerts, mockUpdateSellerSettings } from './seller'
 import { mockChatModels, mockChatStream, mockChatThread, mockChatThreads, mockDeleteChatThread } from './chat'
 import { mockOperatorState, OPERATOR_SCENARIOS, scenarioOperator, type OperatorScenario } from './operator'
 
@@ -663,7 +663,16 @@ const routes: Array<[string, string, Handler]> = [
   ['GET', '/seller/status', () => { requireOrgAdmin(); return mockSellerStatus() }],
   ['GET', '/seller/events', () => { requireOrgAdmin(); return mockSellerEvents() }],
   ['GET', '/seller/usage', ({ query }) => { requireOrgAdmin(); return mockSellerUsage(Number(query.get('days') ?? 14)) }],
-  ['GET', '/seller/settings', () => { requireOrgAdmin(); return mockSellerSettings() }],
+  ['GET', '/seller/settings', () => { requireOrgAdmin(); return mockSellerSettingsState() }],
+  ['PATCH', '/seller/settings', ({ body }) => {
+    requireOrgAdmin()
+    try { return mockUpdateSellerSettings(body ?? {}) } catch (err) { throw new MockError(400, 'invalid_request', (err as Error).message) }
+  }],
+  ['PATCH', '/seller/alerts', ({ body }) => { requireOrgAdmin(); return mockUpdateSellerAlerts(body ?? {}) }],
+  ['POST', '/seller/alerts/test', ({ body }) => { requireOrgAdmin(); return mockTestAlert(body?.channel === 'webhook' ? 'webhook' : 'telegram') }],
+  ['POST', '/seller/alerts/telegram/chats', () => { requireOrgAdmin(); return mockTelegramChats() }],
+  ['POST', '/seller/promote/check', () => { requireOrgAdmin(); return mockCheckVerifications() }],
+  ['PUT', '/seller/promote/verifications', ({ body }) => { requireOrgAdmin(); return mockSaveVerifications(body ?? { domains: [], github: [] }) }],
   ['GET', '/seller/market', () => { requireOrgAdmin(); return mockSellerMarket() }],
   ['GET', '/seller/reputation', () => { requireOrgAdmin(); return mockSellerReputation() }],
   ['GET', '/seller/promote', () => { requireOrgAdmin(); return mockSellerPromote() }],

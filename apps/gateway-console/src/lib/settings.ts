@@ -16,14 +16,14 @@ export function buyerSettingsErrors(values: { input: string; output: string; cac
 }
 
 /** Error for one numeric settings field, or undefined when it is fine. Blank is an error only when required. */
-export function numberFieldError(raw: string, opts: { required?: boolean; min?: number; max?: number; integer?: boolean } = {}): string | undefined {
+export function numberFieldError(raw: string, opts: { required?: boolean; min?: number; max?: number; integer?: boolean; minText?: string } = {}): string | undefined {
   const text = raw.trim()
   if (text === '') return opts.required ? 'Required.' : undefined
   const value = Number(text)
   const min = opts.min ?? 0
   if (!Number.isFinite(value)) return 'Use a number.'
   if (opts.integer && !Number.isInteger(value)) return 'Use a whole number.'
-  if (value < min) return `Use ${min} or more.`
+  if (value < min) return `Use ${opts.minText ?? min} or more.`
   if (opts.max !== undefined && value > opts.max) return `At most ${opts.max}.`
   return undefined
 }

@@ -1,5 +1,5 @@
 /** Dev mock of a seller on the gateway host (`VITE_MOCK=1`): a running seller with one withdrawn model. */
-import type { SellerAlertSettings, SellerEventView, SellerMarket, SellerMarketOffer, SellerPromote, SellerReputation, SellerSettings, SellerStatus, SellerUsage } from '../api/types'
+import type { SellerAlertSettings, SellerAlertsPatch, SellerEventView, SellerFreeTierProgramPatch, SellerFreeTierProgramSettings, SellerMarket, SellerMarketOffer, SellerPromote, SellerReputation, SellerSettings, SellerSettingsPatch, SellerStatus, SellerUsage, SellerVerificationsInput, TelegramChat } from '../api/types'
 
 const DAY = 86_400_000
 const FAKE_PEER = '0xfa1e000000000000000000000000000000000007'
@@ -116,6 +116,10 @@ export function mockSellerReputation(now = Date.now()): SellerReputation {
 }
 
 export function mockSellerPromote(now = Date.now()): SellerPromote {
+  return promoteStore ??= initialPromote(now)
+}
+
+function initialPromote(now: number): SellerPromote {
   const peer = FAKE_PEER.slice(2)
   return {
     peerId: peer, displayName: 'Fake Seller', profileUrl: `https://explorer.example/account/${FAKE_PEER}`, trustScore: 47.7, writable: true, readOnlyReason: null,
@@ -165,4 +169,122 @@ function mockSellerLogRows(now: number) {
       cachedInputTokens: failed || index % 3 ? null : 640,
     }
   })
+}
+
+// ── Writes: the mock keeps its seller settings and claims in memory until reload ──
+
+let settingsStore: ReturnType<typeof mockSellerSettings> | null = null
+let promoteStore: SellerPromote | null = null
+
+/** The settings as the mock seller has them now (edits included). */
+export function mockSellerSettingsState() {
+  return settingsStore ??= mockSellerSettings()
+}
+
+/** A free-tier program's edit, field by field, like the seller's settings writer. */
+function patchProgram(current: SellerFreeTierProgramSettings, input: SellerFreeTierProgramPatch): SellerFreeTierProgramSettings {
+  const next = { ...current }
+  if (input.maxRequestsPerAddress !== undefined) next.maxRequestsPerAddress = input.maxRequestsPerAddress
+  if (input.maxRequestsPerIp !== undefined) next.maxRequestsPerIp = input.maxRequestsPerIp
+  if (input.windowMs !== undefined) next.windowMs = input.windowMs
+  if (input.stakersOnly !== undefined) next.stakersOnly = input.stakersOnly
+  if (input.stakeTiers !== undefined) next.stakeTiers = input.stakeTiers
+  return next
+}
+
+const EMPTY_PROGRAM: SellerFreeTierProgramSettings = { maxRequestsPerAddress: null, maxRequestsPerIp: null, windowMs: null, stakersOnly: false, stakeTiers: null }
+
+export function mockUpdateSellerSettings(patch: SellerSettingsPatch) {
+  const state = mockSellerSettingsState()
+  const settings = structuredClone(state.settings)
+  const changed = Object.keys(patch)
+  if (patch.displayName !== undefined) settings.displayName = patch.displayName
+  if (patch.maxConcurrentBuyers !== undefined) settings.maxConcurrentBuyers = patch.maxConcurrentBuyers
+  if (patch.healthCheck) settings.healthCheck = { ...settings.healthCheck, ...patch.healthCheck }
+  if (patch.gasCheck) settings.gasCheck = { ...settings.gasCheck, ...patch.gasCheck }
+  if (patch.freeTier) {
+    const program = patchProgram(settings.freeTier, patch.freeTier)
+    // Clearing both limits removes the seller-wide program.
+    settings.freeTier = program.maxRequestsPerAddress === null && program.maxRequestsPerIp === null ? EMPTY_PROGRAM : program
+  }
+  if (patch.restrictedCountries !== undefined) {
+    settings.restrictedCountries = patch.restrictedCountries ?? []
+    settings.restrictedCountriesDefault = patch.restrictedCountries === null
+  }
+  for (const entry of patch.pricing ?? []) {
+    const service = settings.services.find((row) => row.provider === entry.provider && row.service === entry.service)
+    if (!service) throw new Error(`pricing: no service ${entry.service} under provider ${entry.provider} in the config file`)
+    if (entry.inputUsdPerMillion !== undefined) service.inputUsdPerMillion = entry.inputUsdPerMillion
+    if (entry.outputUsdPerMillion !== undefined) service.outputUsdPerMillion = entry.outputUsdPerMillion
+    if (entry.cachedInputUsdPerMillion !== undefined) service.cachedInputUsdPerMillion = entry.cachedInputUsdPerMillion
+    if (entry.inputUsdPerMillion !== undefined || entry.outputUsdPerMillion !== undefined) service.inherited = false
+    if (entry.freeTier === null) service.ownFreeTier = null
+    else if (entry.freeTier) service.ownFreeTier = patchProgram(service.ownFreeTier ?? EMPTY_PROGRAM, entry.freeTier)
+    const own = service.ownFreeTier
+    service.freeTier = own ? { base: { maxRequestsPerAddress: own.maxRequestsPerAddress, maxRequestsPerIp: own.maxRequestsPerIp, windowMs: own.windowMs ?? 86_400_000 }, stakeTiers: own.stakeTiers ?? DEFAULT_TIERS } : service.paid ? null : service.freeTier
+  }
+  settingsStore = { ...state, settings }
+  return { ...settingsStore, changed }
+}
+
+export function mockUpdateSellerAlerts(patch: SellerAlertsPatch) {
+  const state = mockSellerSettingsState()
+  const alerts: SellerAlertSettings = structuredClone(state.alerts)
+  if (patch.telegramChatId !== undefined) alerts.telegram.chatId = patch.telegramChatId
+  if (patch.telegramBotToken !== undefined) {
+    alerts.telegram.tokenSet = patch.telegramBotToken !== null
+    alerts.telegram.tokenSource = patch.telegramBotToken === null ? null : 'file'
+  }
+  alerts.telegram.active = alerts.telegram.tokenSet && Boolean(alerts.telegram.chatId)
+  if (patch.webhookUrl !== undefined) {
+    alerts.webhook = patch.webhookUrl === null
+      ? { set: false, host: null, source: null }
+      : { set: true, host: new URL(patch.webhookUrl).host, source: 'file' }
+  }
+  if (patch.idleMinutes !== undefined) alerts.idleMinutes = patch.idleMinutes
+  if (patch.cooldownMinutes !== undefined) alerts.cooldownMinutes = patch.cooldownMinutes
+  if (patch.minSeverity !== undefined) alerts.minSeverity = patch.minSeverity
+  settingsStore = { ...state, alerts }
+  return { ...settingsStore, changed: Object.keys(patch) }
+}
+
+export function mockTestAlert(channel: 'telegram' | 'webhook'): { sent: string[]; errors: string[] } {
+  const { alerts } = mockSellerSettingsState()
+  const ready = channel === 'telegram' ? alerts.telegram.active : alerts.webhook.set
+  return ready ? { sent: [channel], errors: [] } : { sent: [], errors: [`${channel}: Save the ${channel === 'telegram' ? 'bot token and chat id' : 'webhook URL'} first`] }
+}
+
+export function mockTelegramChats(): { chats: TelegramChat[] } {
+  return { chats: [{ id: '-1001234567890', title: 'Seller alerts', type: 'supergroup' }, { id: '42424242', title: 'Dana Owner', type: 'private' }] }
+}
+
+export function mockCheckVerifications(now = Date.now()): SellerPromote {
+  const promote = mockSellerPromote(now)
+  promoteStore = {
+    ...promote,
+    domains: promote.domains.map((claim) => ({ ...claim, status: { verified: false, checkedAt: now, error: 'dns-txt: no matching proof; https-well-known: HTTP 404' } })),
+    github: promote.github.map((claim) => ({ ...claim, status: { verified: false, checkedAt: now, error: 'github: HTTP 404' } })),
+  }
+  return promoteStore
+}
+
+export function mockSaveVerifications(input: SellerVerificationsInput, now = Date.now()): SellerPromote {
+  const promote = mockSellerPromote(now)
+  const peer = promote.peerId ?? ''
+  promoteStore = {
+    ...promote,
+    domains: input.domains.map(({ domain }) => promote.domains.find((claim) => claim.domain === domain) ?? {
+      domain, txtName: `_antseed.${domain}`, txtValue: `antseed-peer=${peer}`, wellKnownUrl: `https://${domain}/.well-known/antseed.json`,
+      wellKnownBody: JSON.stringify({ type: 'antseed-domain-verification', peerId: peer, domain }, null, 2), status: null,
+    }),
+    github: input.github.map(({ username, repository }) => {
+      const repo = repository ?? username
+      const existing = promote.github.find((claim) => claim.username.toLowerCase() === username.toLowerCase() && claim.repository === repo)
+      return existing ?? {
+        username, repository: repo, proofUrl: `https://raw.githubusercontent.com/${username}/${repo}/HEAD/antseed.json`,
+        proofBody: JSON.stringify({ type: 'antseed-github-verification', peerId: peer, username }, null, 2), status: null,
+      }
+    }),
+  }
+  return promoteStore
 }

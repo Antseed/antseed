@@ -72,6 +72,7 @@ export class GasHealthMonitor {
   private readonly _minBalanceWei: bigint;
   private readonly _onChange: GasHealthMonitorConfig['onChange'];
   private _timer: ReturnType<typeof setInterval> | null = null;
+  private _stopped = false;
   private _checkInFlight: Promise<void> | null = null;
   private _depleted = false;
   private _lastBalanceWei: bigint | null = null;
@@ -89,6 +90,7 @@ export class GasHealthMonitor {
   /** Start periodic checks. The first check runs immediately (async). */
   start(): void {
     if (this._timer) return;
+    this._stopped = false;
     void this.checkNow();
     this._timer = setInterval(() => {
       if (this._relaxed() && this._lastCheckedAt !== null && Date.now() - this._lastCheckedAt < this._relaxedIntervalMs) return;
@@ -99,6 +101,8 @@ export class GasHealthMonitor {
   }
 
   stop(): void {
+    // A reading still in flight is dropped, so nothing reports a change after shutdown.
+    this._stopped = true;
     if (this._timer) {
       clearInterval(this._timer);
       this._timer = null;
@@ -142,6 +146,7 @@ export class GasHealthMonitor {
       debugWarn(`[GasHealth] Balance check failed for ${this._address}: ${err instanceof Error ? err.message : err}`);
       return;
     }
+    if (this._stopped) return;
     this._lastBalanceWei = balanceWei;
     this._lastCheckedAt = Date.now();
 

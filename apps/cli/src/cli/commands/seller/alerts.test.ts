@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { readSellerEvents } from '@antseed/node';
 import { SellerAlerts, formatAlert } from '../../../seller-alerts/alerts.js';
+import { readSecretFromStdin } from './alerts.js';
 
 function harness(config: ConstructorParameters<typeof SellerAlerts>[0]['config'], { status = 200 } = {}) {
   const dataDir = mkdtempSync(join(tmpdir(), 'seller-alerts-'));
@@ -52,8 +53,51 @@ test('repeats wait out the cooldown; a recovery is sent only after its alert', a
   assert.equal(calls.length, 1, 'repeat inside the cooldown is dropped');
   await alerts.record(up);
   assert.equal(calls.length, 2);
+  advance(20 * 60_000);
   await alerts.record(down);
-  assert.equal(calls.length, 3, 'after a recovery the next failure alerts again');
+  assert.equal(calls.length, 3, 'once the cooldown is over, the next failure alerts again');
+});
+
+test('a flapping model alerts once per cooldown: a new failure inside it waits, and its recovery cancels both', async () => {
+  const { alerts, calls, advance } = harness({ telegram: { chatId: '42' }, cooldownMinutes: 30 });
+  await alerts.record(down);
+  await alerts.record(up);
+  advance(60_000);
+  await alerts.record(down);
+  await alerts.record(up);
+  assert.equal(calls.length, 2, 'the second flap sends nothing');
+  advance(60_000);
+  await alerts.record(down);
+  assert.equal(calls.length, 2, 'held until the cooldown ends');
+  alerts.close();
+});
+
+test('an alert held by the cooldown goes out when it ends if nothing recovered', async () => {
+  const { alerts, calls, advance } = harness({ telegram: { chatId: '42' }, cooldownMinutes: 0.001 });
+  await alerts.record(down);
+  await alerts.record(up);
+  await alerts.record(down);
+  assert.equal(calls.length, 2);
+  advance(60_000);
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  assert.equal(calls.length, 3, 'still down after the cooldown: alerted');
+  await alerts.record(up);
+  assert.equal(calls.length, 4, 'and its recovery follows');
+});
+
+test('crash alerts keep their cooldown across restarts', async () => {
+  const first = harness({ telegram: { chatId: '42' }, cooldownMinutes: 30 });
+  const crashed = { kind: 'crashed', severity: 'warning', title: 'Seller restarted after an unexpected exit' } as const;
+  await first.alerts.record(crashed);
+  assert.equal(first.calls.length, 1);
+  const calls: string[] = [];
+  const restarted = new SellerAlerts({
+    dataDir: first.dataDir, config: { telegram: { chatId: '42' }, cooldownMinutes: 30 }, sellerName: 'S', env: { ANTSEED_ALERTS_TELEGRAM_TOKEN: 't' },
+    now: () => 1_000_000 + 5 * 60_000,
+    fetch: (async (url: string) => { calls.push(String(url)); return new Response('{}'); }) as typeof fetch,
+  });
+  await restarted.record(crashed);
+  assert.equal(calls.length, 0, 'a crash loop does not alert on every restart');
 });
 
 test('a failed alert is retried on its next repeat and gets no recovery until one arrives', async () => {
@@ -116,7 +160,8 @@ test('a recovery recorded while its alert is still sending follows it, and the n
   await Promise.all([idle, active]);
   assert.deepEqual(titles.map((text) => text.split(': ')[1]), ['idle', 'active']);
   await alerts.record({ kind: 'idle', severity: 'warning', title: 'idle again' });
-  assert.equal(titles.length, 3, 'the recovery closed the incident, so its cooldown is gone');
+  assert.equal(titles.length, 2, 'the next incident inside the cooldown waits for it');
+  alerts.close();
 });
 
 test('without channels nothing is sent; failures never leak the token', async () => {
@@ -173,7 +218,7 @@ test('the token comes from the secrets file when the env has none, and edits app
     fetch: (async (url: string) => { urls.push(String(url)); return new Response('{}'); }) as typeof fetch,
   });
   assert.deepEqual(alerts.channels(), [], 'no token yet');
-  writeAlertSecrets(dataDir, { telegramBotToken: 'file-token', webhookUrl: 'https://hooks.example/abc' });
+  await writeAlertSecrets(dataDir, { telegramBotToken: 'file-token', webhookUrl: 'https://hooks.example/abc' });
   now += 3_000;
   assert.deepEqual(alerts.channels(), ['telegram', 'webhook']);
   await alerts.send({ at: now, kind: 'test', severity: 'info', title: 't' }, 'telegram');
@@ -223,7 +268,7 @@ test('dashboard overrides in the data dir win over config.json and apply live', 
   let now = 0;
   const alerts = new SellerAlerts({ dataDir, configPath, sellerName: 'S', env: { ANTSEED_ALERTS_TELEGRAM_TOKEN: 't' }, now: () => now });
   assert.equal(alerts.settings.telegram?.chatId, '1');
-  writeAlertOverrides(dataDir, { telegramChatId: '2', idleMinutes: null, webhookFromConfig: false });
+  await writeAlertOverrides(dataDir, { telegramChatId: '2', idleMinutes: null, webhookFromConfig: false });
   now += 3_000;
   assert.equal(alerts.settings.telegram?.chatId, '2');
   assert.equal(alerts.idleMinutes(), undefined, 'null turns the config value off');
@@ -298,4 +343,36 @@ test('a changed chat starts with no history: the repeat goes to it, and the reco
   assert.deepEqual(chats, ['1', '2'], 'chat 1\'s cooldown does not hold back chat 2');
   await alerts.record(up);
   assert.deepEqual(chats, ['1', '2', '2']);
+});
+
+test('empty stdin never clears a saved secret', async () => {
+  await assert.rejects(readSecretFromStdin('--webhook-url-stdin', 'use --clear-webhook.', async () => ''), /--webhook-url-stdin: nothing was read from stdin\. use --clear-webhook\./);
+  assert.equal(await readSecretFromStdin('--webhook-url-stdin', '', async () => 'https://hooks.example/x'), 'https://hooks.example/x');
+});
+
+test('a botTokenEnv in config.json without a chat id is valid, and the chat id saved from the dashboard completes it', async () => {
+  const { sellerAlertsErrors, normalizeSellerAlerts } = await import('../../../config/seller-alerts.js');
+  const { applyAlertOverrides, resolveAlerts } = await import('../../../seller-alerts/settings.js');
+  const block = { telegram: { botTokenEnv: 'TG_TOKEN' }, cooldownMinutes: 0 };
+  assert.deepEqual(sellerAlertsErrors(block), []);
+  const config = applyAlertOverrides(normalizeSellerAlerts(block), { telegramChatId: '42' });
+  const resolved = resolveAlerts(config, {}, { TG_TOKEN: 'from-env' });
+  assert.deepEqual(resolved.telegram, { token: 'from-env', chatId: '42', tokenSource: 'env' });
+  assert.equal(resolved.config.cooldownMinutes, 0);
+  assert.deepEqual(sellerAlertsErrors({ cooldownMinutes: -1, idleMinutes: 0 }), ['seller.alerts.idleMinutes must be a positive number', 'seller.alerts.cooldownMinutes must be a number of 0 or more']);
+});
+
+test('a bot token only in the running seller\'s environment shows as set, and a test from here says why it cannot send', async () => {
+  const { writeFileSync } = await import('node:fs');
+  const { readSellerAlertSettings } = await import('../../../seller-monitor/settings.js');
+  const dataDir = mkdtempSync(join(tmpdir(), 'seller-alerts-'));
+  const configPath = join(dataDir, 'config.json');
+  writeFileSync(configPath, JSON.stringify({ seller: { alerts: { telegram: { chatId: '42' } } } }));
+  const off = await readSellerAlertSettings(configPath, dataDir, {});
+  assert.deepEqual([off.telegram.tokenSet, off.telegram.active], [false, false]);
+  writeFileSync(join(dataDir, 'daemon.state.json'), JSON.stringify({ updatedAt: Date.now(), alerts: { channels: ['telegram'], lastSentAt: null, lastError: null } }));
+  const live = await readSellerAlertSettings(configPath, dataDir, {});
+  assert.deepEqual([live.telegram.tokenSet, live.telegram.tokenSource, live.telegram.active], [true, 'env', true]);
+  writeFileSync(join(dataDir, 'daemon.state.json'), JSON.stringify({ updatedAt: Date.now() - 60_000, alerts: { channels: ['telegram'] } }));
+  assert.equal((await readSellerAlertSettings(configPath, dataDir, {})).telegram.tokenSet, false, 'a stopped seller reports nothing');
 });

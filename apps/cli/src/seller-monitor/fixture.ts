@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { MeteringStorage } from '@antseed/node/metering'
@@ -16,6 +17,9 @@ export interface FixtureRequest {
 }
 
 /** Writes a seller data dir: daemon state, an event journal and a metering DB. */
+/** A UUID-shaped event id, as a seller records them: distinct within the first characters the CLI prints. */
+const eventIdOf = (seed: string) => createHash('sha256').update(seed).digest('hex').replace(/^(.{8})(.{4})(.{4})(.{4})(.{12}).*$/, '$1-$2-$3-$4-$5')
+
 export function writeSellerFixture(dataDir: string, input: { state?: Record<string, unknown>; events?: unknown[]; requests?: FixtureRequest[] }): void {
   mkdirSync(dataDir, { recursive: true })
   if (input.state) writeFileSync(join(dataDir, 'daemon.state.json'), JSON.stringify(input.state))
@@ -28,8 +32,8 @@ export function writeSellerFixture(dataDir: string, input: { state?: Record<stri
       const id = `${request.sessionId}-${request.at}-${index}`
       const tokens = { inputTokens: Math.round(request.tokens * 0.7), outputTokens: request.tokens - Math.round(request.tokens * 0.7), totalTokens: request.tokens, method: 'provider-usage' as const, confidence: 'high' as const }
       const common = { sessionId: request.sessionId, timestamp: request.at, provider: 'openai', sellerPeerId: 'seller', buyerPeerId: request.buyer ?? `fa1e${String(1 + (index % 4)).padStart(36, '0')}`, tokens }
-      metering.insertEvent({ ...common, eventId: `event-${id}`, latencyMs: 400 + (index * 97) % 2_600, statusCode: request.statusCode ?? 200, wasStreaming: true, ...(request.service ? { service: request.service } : {}), ...(request.requestId ? { requestId: request.requestId } : {}) })
-      if ((request.statusCode ?? 200) < 400 && request.costCents > 0) metering.insertReceipt({ ...common, receiptId: `receipt-${id}`, eventId: `event-${id}`, unitPriceCentsPerThousandTokens: 0, costCents: request.costCents, signature: '' })
+      metering.insertEvent({ ...common, eventId: eventIdOf(id), latencyMs: 400 + (index * 97) % 2_600, statusCode: request.statusCode ?? 200, wasStreaming: true, ...(request.service ? { service: request.service } : {}), ...(request.requestId ? { requestId: request.requestId } : {}) })
+      if ((request.statusCode ?? 200) < 400 && request.costCents > 0) metering.insertReceipt({ ...common, receiptId: `receipt-${id}`, eventId: eventIdOf(id), unitPriceCentsPerThousandTokens: 0, costCents: request.costCents, signature: '' })
       if (!sessions.has(request.sessionId)) {
         sessions.add(request.sessionId)
         metering.upsertSession({ sessionId: request.sessionId, sellerPeerId: 'seller', buyerPeerId: 'buyer', provider: 'openai', startedAt: request.at, endedAt: null, totalRequests: 1, totalTokens: request.tokens, totalCostCents: request.costCents, avgLatencyMs: 400, peerSwitches: 0, disputedReceipts: 0 })

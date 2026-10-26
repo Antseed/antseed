@@ -31,6 +31,8 @@ const githubKey = (claim: { username: string; repository?: string }) => `github:
 export class VerificationChecks {
   private readonly _results = new Map<string, SellerVerificationStatus>()
   private _running: Promise<void> | null = null
+  /** A check asked for while one runs: it runs next, with the latest claims asked for. */
+  private _queued: { promise: Promise<void>; peerId: string; claims: Verifications } | null = null
 
   constructor(private readonly _options: { fetch?: typeof fetch; resolveTxt?: (hostname: string) => Promise<string[][]> } = {}) {}
 
@@ -47,7 +49,17 @@ export class VerificationChecks {
   }
 
   check(peerId: string, claims: Verifications): Promise<void> {
-    this._running ??= (async () => {
+    // Claims saved while a check runs are checked by a fresh run after it, not folded into the old one.
+    if (this._running) {
+      if (this._queued) return Object.assign(this._queued, { peerId, claims }).promise
+      const queued: { promise: Promise<void>; peerId: string; claims: Verifications } = { peerId, claims, promise: this._running.then((): Promise<void> => {
+        this._queued = null
+        return this.check(queued.peerId, queued.claims)
+      }) }
+      this._queued = queued
+      return queued.promise
+    }
+    this._running = (async () => {
       const options = { timeoutMs: 8_000, ...(this._options.fetch ? { fetch: this._options.fetch } : {}), ...(this._options.resolveTxt ? { resolveTxt: this._options.resolveTxt } : {}) }
       await Promise.all([
         ...claims.domains.map(async (claim) => {
@@ -77,12 +89,14 @@ export async function readSellerPromote(options: {
   trustScore: number | null
   explorerUrl: string | null
   checks: VerificationChecks
+  /** Start checks that are due (the dashboard); a one-shot CLI read leaves them alone. */
+  startChecks?: boolean
 }): Promise<SellerPromote> {
   const raw = await readRaw(options.configPath)
   const claims = verificationsOf(raw)
   const access = await configWritable(options.configPath)
   const peer = options.peerId ? peerKey(options.peerId) : null
-  if (peer) options.checks.ensure(peer, claims)
+  if (peer && options.startChecks !== false) options.checks.ensure(peer, claims)
   const identity = (raw.identity ?? {}) as { displayName?: string }
   return {
     peerId: peer,

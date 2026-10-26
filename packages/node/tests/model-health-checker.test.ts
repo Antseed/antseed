@@ -142,6 +142,18 @@ describe('ModelHealthChecker', () => {
     expect(onChange).toHaveBeenCalledTimes(2);
   });
 
+  it('reports services withdrawn at initialization once, when it starts', async () => {
+    const provider = makeProvider({ healthCheckAvailable: false, onRequest: statusSequence({ 'model-a': [500], 'model-b': [500] }) });
+    const events: ModelHealthEvent[] = [];
+    const checker = new ModelHealthChecker({ targets: [{ provider }], onChange: (event) => { events.push(event); } });
+    expect(events).toEqual([]);
+    checker.start();
+    checker.stop();
+    checker.start();
+    checker.stop();
+    expect(events.map((event) => [event.service, event.status])).toEqual([['model-a', 'removed'], ['model-b', 'removed']]);
+  });
+
   it('unadvertises a service after the failure threshold and emits an event', async () => {
     const provider = makeProvider({
       onRequest: statusSequence({ 'model-a': [500, 500, 500], 'model-b': [200, 200, 200] }),

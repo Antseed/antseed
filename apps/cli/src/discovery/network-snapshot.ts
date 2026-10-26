@@ -1,6 +1,8 @@
-import { readFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { AntseedNode, type PeerInfo } from '@antseed/node'
+import { randomBytes } from 'node:crypto'
+import { AntseedNode, identityFromPrivateKeyHex, type PeerInfo } from '@antseed/node'
 import { parseBootstrapList, toBootstrapConfig } from '@antseed/node/discovery'
 import { buildPaymentsConfig } from '../cli/commands/network/chain-config-helper.js'
 import { resolveEffectiveBuyerConfig } from '../config/effective.js'
@@ -49,7 +51,7 @@ export async function loadBuyerSnapshot(dataDir: string): Promise<NetworkSnapsho
 }
 
 /**
- * One discovery pass with a short-lived buyer node, then stop. On-chain
+ * One discovery pass with a short-lived buyer node (its own temporary identity), then stop. On-chain
  * enrichment reads go through the process's shared ChainRpcProvider (batched
  * into Multicall3: two round trips for every seller, plus one call per
  * delegated seller contract), tagged with `rpcSource`.
@@ -60,8 +62,12 @@ export async function discoverNetwork(config: AntseedConfig, options: { serviceF
   const readProvider = payments?.rpcUrl && payments.chainId
     ? sharedChainProvider({ rpcUrl: payments.rpcUrl, evmChainId: payments.chainId, ...(payments.fallbackRpcUrls ? { fallbackRpcUrls: payments.fallbackRpcUrls } : {}) })
     : undefined
+  // A throwaway identity and data dir: never the operator's key or a running seller's peer id and databases.
+  const dataDir = await mkdtemp(join(tmpdir(), 'antseed-discovery-'))
   const node = new AntseedNode({
     role: 'buyer',
+    dataDir,
+    identity: identityFromPrivateKeyHex(randomBytes(32).toString('hex')),
     ...(bootstrapNodes ? { bootstrapNodes } : {}),
     dhtOperationTimeoutMs: 30_000,
     metadataFetchTimeoutMs: resolveEffectiveBuyerConfig({ config }).metadataFetchTimeoutMs,
@@ -77,6 +83,7 @@ export async function discoverNetwork(config: AntseedConfig, options: { serviceF
       return { peers, onChainStatsRefreshedAt: latest > 0 ? latest : null, sourceLabel: 'live DHT discovery' }
     } finally {
       await node.stop().catch(() => {})
+      await rm(dataDir, { recursive: true, force: true }).catch(() => {})
     }
   })
 }

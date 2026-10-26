@@ -30,8 +30,13 @@ export async function runMonitorCommand<T>(json: boolean, work: () => Promise<T>
   }
 }
 
-const usd = (value: number | null) => (value === null ? '—' : value === 0 ? 'Free' : `$${value.toLocaleString('en-US', { maximumFractionDigits: 4 })}`);
-const pair = (input: number | null, output: number | null) => `${usd(input)} / ${usd(output)}`;
+/** A value safe to paste back into a shell. */
+const shellArg = (value: string) => (/^[\w@./:-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`);
+/** An amount of money ($0 is $0). */
+const usd = (value: number | null) => (value === null ? '—' : `$${value.toLocaleString('en-US', { maximumFractionDigits: 4 })}`);
+/** A price, where 0 means the model is free. */
+const price = (value: number | null) => (value === 0 ? 'Free' : usd(value));
+const pair = (input: number | null, output: number | null) => `${price(input)} / ${price(output)}`;
 const when = (ms: number | null) => (ms ? new Date(ms).toISOString().replace('T', ' ').slice(0, 19) : '—');
 const short = (id: string) => (id.length > 12 ? `${id.slice(0, 6)}…${id.slice(-4)}` : id);
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
@@ -74,24 +79,28 @@ export function parseSince(value: string, now = Date.now()): number {
   return parsed;
 }
 
-/** "glm-5.3=0.7/2.2" or "glm-5.3=0.7/2.2/0.08" → a pricing entry (provider resolved from the config). */
-export function parsePrice(value: string): { service: string; input: number; output: number; cached: number | null } {
-  const match = /^([^=]+)=([\d.]+)\/([\d.]+)(?:\/([\d.]+))?$/.exec(value.trim());
-  if (!match) throw new Error(`--price: use [<provider>/]<model>=<input>/<output>[/<cached>] in USD per million tokens, not "${value}"`);
-  return { service: match[1]!.trim(), input: Number(match[2]), output: Number(match[3]), cached: match[4] === undefined ? null : Number(match[4]) };
+/**
+ * "glm-5.3=0.7/2.2", "glm-5.3=0.7/2.2/0.08" or "glm-5.3=0.7/2.2/none" → a pricing entry (provider resolved
+ * from the config). Without a third number the cached-input price stays as it is; "none" removes it.
+ */
+export function parsePrice(value: string): { service: string; input: number; output: number; cached?: number | null } {
+  const match = /^([^=]+)=([\d.]+)\/([\d.]+)(?:\/([\d.]+|none))?$/.exec(value.trim());
+  if (!match) throw new Error(`--price: use [<provider>/]<model>=<input>/<output>[/<cached>|/none] in USD per million tokens, not "${value}"`);
+  const cached = match[4] === undefined ? {} : { cached: match[4] === 'none' ? null : Number(match[4]) };
+  return { service: match[1]!.trim(), input: Number(match[2]), output: Number(match[3]), ...cached };
 }
 
 /**
  * The offering a `--price` name means: `<provider>/<model>` picks one exactly;
  * a bare model must be offered by only one provider.
  */
-export function resolvePriceTarget<T extends { provider: string; service: string }>(services: readonly T[], name: string): T {
+export function resolvePriceTarget<T extends { provider: string; service: string }>(services: readonly T[], name: string, flag = '--price'): T {
   const exact = services.find((entry) => `${entry.provider}/${entry.service}` === name);
   if (exact) return exact;
   const matches = services.filter((entry) => entry.service === name);
   if (matches.length === 1) return matches[0]!;
-  if (matches.length === 0) throw new Error(`--price: ${name} is not one of this seller's services`);
-  throw new Error(`--price: ${name} is offered by more than one provider; name one: ${matches.map((entry) => `${entry.provider}/${entry.service}`).join(', ')}`);
+  if (matches.length === 0) throw new Error(`${flag}: ${name} is not one of this seller's services`);
+  throw new Error(`${flag}: ${name} is offered by more than one provider; name one: ${matches.map((entry) => `${entry.provider}/${entry.service}`).join(', ')}`);
 }
 
 /** `--json` on a subcommand whose parent also takes `--json` (commander gives it to the parent). */
@@ -200,7 +209,7 @@ export function registerSellerMonitorCommands(sellerCmd: Command): void {
     .action((options: { limit: string; cursor?: string; model?: string; buyer?: string; since?: string; errors: boolean; id?: string; json: boolean }) => options.id
       ? runMonitorCommand(options.json, async () => {
         const entry = sellerMonitorFor(sellerCmd).logDetail(options.id!.trim());
-        if (!entry) throw new Error(`No request with id ${options.id}`);
+        if (!entry) throw new Error(`No request with id ${options.id} (or several start with it: give more of the id)`);
         return entry;
       }, printLogDetail)
       : runMonitorCommand(options.json, async () => sellerMonitorFor(sellerCmd).logs({
@@ -211,14 +220,21 @@ export function registerSellerMonitorCommands(sellerCmd: Command): void {
       from: options.since ? parseSince(options.since) : null,
       errorsOnly: options.errors,
     }), (page) => {
-      if (page.entries.length === 0) return console.log(chalk.dim('No requests.'));
+      // The next page keeps this page's filters; --since is resolved to the time it meant.
+      const older = page.next ? ['antseed seller logs', ...(options.model ? [`--model ${shellArg(options.model)}`] : []), ...(options.buyer ? [`--buyer ${shellArg(options.buyer)}`] : []),
+        ...(options.since ? [`--since ${new Date(parseSince(options.since)).toISOString()}`] : []), ...(options.errors ? ['--errors'] : []), `--cursor ${page.next}`].join(' ') : null;
+      if (page.entries.length === 0) {
+        console.log(chalk.dim(older ? 'No matching requests among the latest scanned.' : 'No requests.'));
+        if (older) console.log(chalk.dim(`Look further back: ${older}`));
+        return;
+      }
       const table = new Table({ head: ['Id', 'Time', 'Buyer', 'Model', 'In', 'Out', 'Cost', 'Latency', 'Status'].map((h) => chalk.bold(h)) });
       for (const entry of page.entries) {
         const status = entry.statusCode >= 400 || entry.error ? chalk.yellow(`${entry.statusCode}${entry.error ? ` ${clip(entry.error, 40)}` : ''}`) : String(entry.statusCode);
         table.push([chalk.dim(entry.id.slice(0, 8)), when(entry.at), short(entry.buyer), entry.service ?? chalk.dim(entry.provider), entry.inputTokens, entry.outputTokens, usd(entry.costUsd), `${entry.latencyMs} ms`, status]);
       }
       console.log(table.toString());
-      if (page.next) console.log(chalk.dim(`Older: antseed seller logs --cursor ${page.next}`));
+      if (older) console.log(chalk.dim(`Older: ${older}`));
       console.log(chalk.dim('One request in full: antseed seller logs --id <Id>'));
     }));
 
@@ -232,7 +248,7 @@ export function registerSellerMonitorCommands(sellerCmd: Command): void {
       console.log(chalk.dim(`${market.network.peers} sellers, from ${market.network.source ?? 'nowhere'}${market.network.error ? ` (${market.network.error})` : ''}`));
       const table = new Table({ head: ['Model', 'Your price', 'Others', 'Cheapest', 'Median', 'Rank', 'vs median'].map((h) => chalk.bold(h)) });
       for (const service of market.services) {
-        table.push([service.service, pair(service.mine.inputUsdPerMillion, service.mine.outputUsdPerMillion), service.unique ? 'only you' : service.competitors,
+        table.push([service.service, pair(service.mine.inputUsdPerMillion, service.mine.outputUsdPerMillion), market.network.peers === 0 ? '—' : service.unique ? 'only you' : service.competitors,
           service.cheapest ? pair(service.cheapest.inputUsdPerMillion, service.cheapest.outputUsdPerMillion) : '—',
           service.median ? pair(service.median.inputUsdPerMillion, service.median.outputUsdPerMillion) : '—',
           service.rank === null ? '—' : `${service.rank} of ${service.of}`, service.deltaPct === null ? '—' : `${service.deltaPct > 0 ? '+' : ''}${service.deltaPct}%`]);
@@ -241,7 +257,7 @@ export function registerSellerMonitorCommands(sellerCmd: Command): void {
       const focus = options.model ? market.services.find((service) => service.service === options.model) : null;
       if (focus) {
         const offers = new Table({ head: ['Seller', 'Input / output', 'Cached', 'Trust', 'TEE', 'Load'].map((h) => chalk.bold(h)) });
-        for (const offer of focus.offers) offers.push([`${offer.mine ? '→ ' : ''}${offer.name ?? short(offer.peerId)}`, pair(offer.inputUsdPerMillion, offer.outputUsdPerMillion), usd(offer.cachedInputUsdPerMillion), offer.trustScore === null ? '—' : Math.round(offer.trustScore), offer.tee ? 'TEE' : '', offer.load === null ? '—' : `${Math.round(offer.load * 100)}%`]);
+        for (const offer of focus.offers) offers.push([`${offer.mine ? '→ ' : ''}${offer.name ?? short(offer.peerId)}`, pair(offer.inputUsdPerMillion, offer.outputUsdPerMillion), price(offer.cachedInputUsdPerMillion), offer.trustScore === null ? '—' : Math.round(offer.trustScore), offer.tee ? 'TEE' : '', offer.load === null ? '—' : `${Math.round(offer.load * 100)}%`]);
         console.log(offers.toString());
       }
       if (market.notOffered.length > 0) console.log(chalk.dim(`Others also sell: ${market.notOffered.map((entry) => `${entry.service} (${entry.sellers})`).join(', ')}`));
@@ -273,8 +289,9 @@ export function registerSellerMonitorCommands(sellerCmd: Command): void {
     .option('--json', 'output as JSON', false)
     .action((options: { card?: string; json: boolean }) => runMonitorCommand(options.json, async () => {
       const monitor = sellerMonitorFor(sellerCmd);
-      if (options.card) await writeFile(options.card, await monitor.card());
-      return monitor.promote();
+      // One discovery for the trust score, shared by the card and the profile.
+      if (options.card) await writeFile(options.card, await monitor.card({ wait: true, startChecks: false }));
+      return monitor.promote({ wait: true, startChecks: false });
     }, (promote) => {
       if (promote.profileUrl) console.log(`${chalk.bold('Profile')}  ${promote.profileUrl}`);
       if (promote.peerId) console.log(`${chalk.bold('Pinned model ids')}\n${promote.services.map((service) => `  ${promote.peerId}@${service.service}`).join('\n')}`);
@@ -292,7 +309,7 @@ export function registerSellerMonitorCommands(sellerCmd: Command): void {
     .action((options: { addDomain?: string; addGithub?: string; remove?: string; check: boolean; json: boolean }) => runMonitorCommand(options.json, async () => {
       const monitor = sellerMonitorFor(sellerCmd);
       if (options.addDomain || options.addGithub || options.remove) {
-        const current = await monitor.promote();
+        const current = await monitor.promote({ network: false, startChecks: false });
         const removed = options.remove?.toLowerCase();
         const domains = current.domains.map(({ domain }) => domain).filter((domain) => domain !== removed);
         if (options.addDomain) domains.push(options.addDomain);
@@ -301,9 +318,9 @@ export function registerSellerMonitorCommands(sellerCmd: Command): void {
           const [username, repository] = options.addGithub.replace(/^@/, '').split('/');
           github.push({ username: username!, repository: repository || username! });
         }
-        await monitor.saveVerifications({ domains: domains.map((domain) => ({ domain })), github });
+        await monitor.saveVerifications({ domains: domains.map((domain) => ({ domain })), github }, { network: false, startChecks: false });
       }
-      return options.check ? monitor.checkVerifications() : monitor.promote();
+      return options.check ? monitor.checkVerifications({ network: false }) : monitor.promote({ network: false, startChecks: false });
     }, (promote) => {
       if (promote.domains.length === 0 && promote.github.length === 0) return console.log(chalk.dim('No claims. Add one with --add-domain or --add-github.'));
       const status = (value: { verified: boolean; error: string | null } | null) => (!value ? chalk.dim('not checked') : value.verified ? chalk.green('verified') : chalk.yellow(`not verified: ${value.error ?? ''}`));
@@ -326,7 +343,7 @@ export function registerSellerMonitorCommands(sellerCmd: Command): void {
       const table = new Table({ head: ['Model', 'Provider', 'Input', 'Output', 'Cached', 'Free tier'].map((h) => chalk.bold(h)) });
       for (const service of view.services) {
         const free = freeTierSummary(service.freeTier, service.paid);
-        table.push([service.service, service.provider, usd(service.inputUsdPerMillion), usd(service.outputUsdPerMillion), usd(service.cachedInputUsdPerMillion), service.ownFreeTier ? free : chalk.dim(free)]);
+        table.push([service.service, service.provider, price(service.inputUsdPerMillion), price(service.outputUsdPerMillion), price(service.cachedInputUsdPerMillion), service.ownFreeTier ? free : chalk.dim(free)]);
       }
       console.log(table.toString());
     }));
@@ -348,7 +365,7 @@ export function registerSellerMonitorCommands(sellerCmd: Command): void {
     .option('--free-stake-tiers <ants:x,…|default|none>', 'staked tiers, as ANTS locked for a year : multiplier, e.g. 10000:5,50000:20,200000:unlimited')
     .option('--model-free-tier <[provider/]model=address/ip[/hours][/stakers]|model=off>', "a model's own free tier (a free allowance on a paid model); repeatable", (value: string, all: string[] = []) => [...all, value])
     .option('--countries <codes|default>', 'comma-separated ISO codes, "" for none, or default')
-    .option('--price <[provider/]model=in/out[/cached]>', 'USD per million tokens; repeatable. Name the provider when two offer the model', (value: string, all: string[] = []) => [...all, value])
+    .option('--price <[provider/]model=in/out[/cached]>', 'USD per million tokens (cached kept unless given; /none removes it); repeatable. Name the provider when two offer the model', (value: string, all: string[] = []) => [...all, value])
     .option('--json', 'output as JSON', false)
     .action((options: Record<string, string | string[] | boolean | undefined>, command: Command) => runMonitorCommand(jsonFlag(command), async () => {
       const monitor = sellerMonitorFor(sellerCmd);
@@ -383,14 +400,19 @@ export function registerSellerMonitorCommands(sellerCmd: Command): void {
         const { settings: view } = await monitor.settings();
         // One entry per model: a price and a free tier for the same model go together.
         const entries = new Map<string, NonNullable<SellerSettingsPatch['pricing']>[number]>();
-        const entryFor = (name: string) => {
-          const service = resolvePriceTarget(view.services, name);
+        const entryFor = (name: string, flag: string) => {
+          const service = resolvePriceTarget(view.services, name, flag);
           const key = `${service.provider}/${service.service}`;
           if (!entries.has(key)) entries.set(key, { provider: service.provider, service: service.service });
           return entries.get(key)!;
         };
-        for (const price of prices.map(parsePrice)) Object.assign(entryFor(price.service), { inputUsdPerMillion: price.input, outputUsdPerMillion: price.output, cachedInputUsdPerMillion: price.cached });
-        for (const { service, freeTier } of modelFree.map(parseModelFreeTier)) entryFor(service).freeTier = freeTier;
+        for (const entry of prices.map(parsePrice)) {
+          Object.assign(entryFor(entry.service, '--price'), {
+            inputUsdPerMillion: entry.input, outputUsdPerMillion: entry.output,
+            ...(entry.cached !== undefined ? { cachedInputUsdPerMillion: entry.cached } : {}),
+          });
+        }
+        for (const { service, freeTier } of modelFree.map(parseModelFreeTier)) entryFor(service, '--model-free-tier').freeTier = freeTier;
         patch.pricing = [...entries.values()];
       }
       if (Object.keys(patch).length === 0) throw new Error('Nothing to change: pass at least one option (see --help).');

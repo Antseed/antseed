@@ -142,7 +142,7 @@ antseed_seller_receipt_revenue_usd_total
 antseed_seller_receipt_revenue_today_usd
 ```
 
-Seller health metrics come from the running seller's state and are absent when it is stopped:
+Seller health metrics come from the running seller's state and are absent while it is not running, including after a crash or kill:
 
 ```text
 antseed_seller_model_advertised

@@ -185,13 +185,17 @@ export interface SellerAlertsCLIConfig {
   telegram?: {
     /** Env var holding the bot token, so the token stays out of config.json. Default: ANTSEED_ALERTS_TELEGRAM_TOKEN. */
     botTokenEnv?: string;
-    chatId: string;
+    /** Can be left out here and saved from the dashboard or `antseed seller alerts set` instead. */
+    chatId?: string;
   };
   /** POSTs JSON `{ text, content, seller, event }` (Slack and Discord incoming webhooks read `text` / `content`). */
   webhook?: { url: string };
   /** Alert when no request arrives for this many minutes. Off when unset. */
   idleMinutes?: number;
-  /** Minimum minutes between repeats of the same alert. Default: 30. Recoveries are always sent. */
+  /**
+   * Minimum minutes between two sends of the same alert, also across a recovery
+   * (a flapping model alerts once per cooldown). 0 sends every one. Default: 30.
+   */
   cooldownMinutes?: number;
   /** Lowest severity that is sent. Default: warning. */
   minSeverity?: 'info' | 'warning' | 'critical';

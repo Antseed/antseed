@@ -133,7 +133,7 @@ export class SellerUsageReader {
     const todayStart = now - (now % DAY_MS)
     const series: SellerUsageDay[] = []
     const meteringPath = join(dataDir, 'metering.db')
-    const metering = existsSync(meteringPath) ? new MeteringStorage(meteringPath) : null
+    const metering = existsSync(meteringPath) ? new MeteringStorage(meteringPath, { readonly: true }) : null
     try {
       for (let index = days - 1; index >= 0; index -= 1) {
         const day = todayStart - index * DAY_MS

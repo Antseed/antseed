@@ -20,7 +20,6 @@ import {
   DEFAULT_MIN_GAS_BALANCE_WEI,
   SellerFreeTierLimiter,
   formatEther,
-  parseEther,
   type Provider,
   type Prover,
   type ConfigField,
@@ -51,6 +50,7 @@ import { initializeProvider } from './provider-init.js'
 import { sharedChainProvider } from '../../../proxy/chain-rpc.js'
 import { rpcUsage, withRpcSource } from '../../../proxy/rpc-sources.js'
 import { SellerAlerts } from '../../../seller-alerts/alerts.js'
+import { ethToWei } from './gas.js'
 import { startIdleWatch, uncleanExitEvent, waitAtMost } from '../../../seller-alerts/lifecycle.js'
 
 function getStateFile(dataDir: string): string {
@@ -669,7 +669,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       const gasCheckEnabled = paymentsEnabled && Boolean(config.payments.crypto) && gasCheckCfg?.enabled !== false
       const gasCheckIntervalMs = gasCheckCfg?.intervalMs ?? DEFAULT_GAS_CHECK_INTERVAL_MS
       const minGasBalanceWei = gasCheckCfg?.minBalanceEth !== undefined
-        ? parseEther(String(gasCheckCfg.minBalanceEth))
+        ? ethToWei(gasCheckCfg.minBalanceEth)
         : DEFAULT_MIN_GAS_BALANCE_WEI
 
       console.log(chalk.bold('Effective seller settings:'))
@@ -1083,7 +1083,11 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         }
       }
 
+      // Set on shutdown: the state file is removed then, and no late write may bring it back (a "crash" on the next start).
+      let stateStopped = false
+      let stateWriteCurrent: Promise<void> | null = null
       async function writeDaemonState(): Promise<void> {
+        if (stateStopped) return
         if (stateWriteInFlight) {
           stateWritePending = true
           return
@@ -1091,10 +1095,11 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
 
         stateWriteInFlight = true
         try {
-          await writeFile(getStateFile(globalOpts.dataDir), JSON.stringify(buildDaemonState(), null, 2))
+          stateWriteCurrent = writeFile(getStateFile(globalOpts.dataDir), JSON.stringify(buildDaemonState(), null, 2))
+          await stateWriteCurrent
         } finally {
           stateWriteInFlight = false
-          if (stateWritePending) {
+          if (stateWritePending && !stateStopped) {
             stateWritePending = false
             await writeDaemonState()
           }
@@ -1175,12 +1180,21 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         node.off('connection', scheduleDaemonStateWrite)
         node.off('session:updated', scheduleDaemonStateWrite)
         node.off('session:finalized', scheduleDaemonStateWrite)
+        alerts.close()
         nodeSpinner.start('Shutting down seeding daemon...')
-        await node.stop()
-        await unlink(getStateFile(globalOpts.dataDir)).catch(() => {})
-        nodeSpinner.succeed('Seeding daemon stopped. Channels finalized.')
-        // Only once the node is down, and never for long: alert delivery is remote and best effort.
-        await waitAtMost(alerts.record({ kind: 'stopped', severity: 'info', title: 'Seller stopped' }))
+        try {
+          await node.stop()
+          nodeSpinner.succeed('Seeding daemon stopped. Channels finalized.')
+        } catch (err) {
+          nodeSpinner.fail(`Seeding daemon stopped with an error: ${err instanceof Error ? err.message : String(err)}`)
+        } finally {
+          // A clean stop, even one whose node shutdown failed: no state file, so the next start reports no crash.
+          stateStopped = true
+          await stateWriteCurrent?.catch(() => {})
+          await unlink(getStateFile(globalOpts.dataDir)).catch(() => {})
+          // Only once the node is down, and never for long: alert delivery is remote and best effort.
+          await waitAtMost(alerts.record({ kind: 'stopped', severity: 'info', title: 'Seller stopped' }))
+        }
       })
     })
 }

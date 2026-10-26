@@ -74,12 +74,37 @@ describe('seller editors', async () => {
     const base = draftOf(settings)
     expect(patchOf(base, base)).toEqual({})
     const draft = { ...base, maxConcurrentBuyers: '20', healthIntervalSec: '60', prices: { 'openai/glm-5.3': { input: '0.8', output: '3', cached: '' } } }
+    // Field by field: the threshold, the other prices and the gas check are left alone.
     expect(patchOf(base, draft)).toEqual({
       maxConcurrentBuyers: 20,
-      healthCheck: { enabled: true, intervalMs: 60_000, failureThreshold: 3 },
-      pricing: [{ provider: 'openai', service: 'glm-5.3', inputUsdPerMillion: 0.8, outputUsdPerMillion: 3, cachedInputUsdPerMillion: null }],
+      healthCheck: { intervalMs: 60_000 },
+      pricing: [{ provider: 'openai', service: 'glm-5.3', inputUsdPerMillion: 0.8 }],
     })
+    expect(patchOf(base, { ...base, healthEnabled: false, gasMinEth: '0.0001' })).toEqual({ healthCheck: { enabled: false }, gasCheck: { minBalanceEth: 0.0001 } })
+    // The same value typed differently is no change.
+    expect(patchOf(base, { ...base, maxConcurrentBuyers: '50.0' })).toEqual({})
     expect(draftErrors({ ...base, maxConcurrentBuyers: '0', countries: 'RUS' })).toMatchObject({ maxConcurrentBuyers: expect.any(String), countries: expect.any(String) })
+  })
+
+  it('checks only the fields being changed, with the config file\'s bounds', () => {
+    // Saved elsewhere with values this form would not have taken.
+    const odd = draftOf({ ...settings, healthCheck: { enabled: true, intervalMs: 30_000, failureThreshold: 500 }, gasCheck: { enabled: true, minBalanceEth: 20 } })
+    expect(draftErrors({ ...odd, displayName: 'Renamed' }, odd)).toEqual({})
+    expect(draftErrors({ ...odd, healthIntervalSec: '30' }, odd)).toEqual({})
+    expect(draftErrors({ ...odd, healthIntervalSec: '45' }, odd).healthIntervalSec).toBe('Use 60 or more.')
+    expect(draftErrors({ ...odd, healthThreshold: '1000', gasMinEth: '25' }, odd)).toEqual({})
+    const base = draftOf(settings)
+    expect(draftErrors({ ...base, freePerAddress: '10', freeWindowHours: '0.0001' }, base).freeWindowHours).toBe('Use 1 second (0.0003 hours) or more.')
+  })
+
+  it('keeps an edit typed while a save was in flight', () => {
+    const base = draftOf(settings)
+    const submitted = { ...base, displayName: 'Saved name' }
+    const typedMeanwhile = { ...submitted, maxConcurrentBuyers: '70' }
+    const next = draftOf({ ...settings, displayName: 'Saved name' })
+    const merged = reconcileDraft(typedMeanwhile, submitted, next)
+    expect(merged).toEqual({ ...next, maxConcurrentBuyers: '70' })
+    expect(patchOf(next, merged)).toEqual({ maxConcurrentBuyers: 70 })
   })
 
   it('keeps edits and adds rows when the saved settings gain a service', () => {
@@ -103,7 +128,7 @@ describe('seller editors', async () => {
     expect(merged.prices['openai/kimi-k3']!.input).toBe('4')
     expect(patchOf(next, merged)).toEqual({
       displayName: 'Mine',
-      pricing: [{ provider: 'openai', service: 'glm-5.3', inputUsdPerMillion: 0.5, outputUsdPerMillion: 3, cachedInputUsdPerMillion: null }],
+      pricing: [{ provider: 'openai', service: 'glm-5.3', inputUsdPerMillion: 0.5 }],
     })
   })
 
@@ -113,7 +138,14 @@ describe('seller editors', async () => {
     const next = draftOf({ ...settings, services: [{ ...settings.services[0]!, outputUsdPerMillion: 4 }] })
     const merged = reconcileDraft(edited, base, next)
     expect(merged.prices['openai/glm-5.3']).toEqual({ input: '0.5', output: '4', cached: '' })
-    expect(patchOf(next, merged).pricing).toEqual([{ provider: 'openai', service: 'glm-5.3', inputUsdPerMillion: 0.5, outputUsdPerMillion: 4, cachedInputUsdPerMillion: null }])
+    expect(patchOf(next, merged).pricing).toEqual([{ provider: 'openai', service: 'glm-5.3', inputUsdPerMillion: 0.5 }])
+  })
+
+  it('sends a whole price for a row priced by its provider default', () => {
+    const inherited = { ...settings, services: [{ ...settings.services[0]!, inherited: true }] }
+    const base = draftOf(inherited)
+    const edited = { ...base, prices: { 'openai/glm-5.3': { ...base.prices['openai/glm-5.3']!, input: '0.5' } } }
+    expect(patchOf(base, edited).pricing).toEqual([{ provider: 'openai', service: 'glm-5.3', inputUsdPerMillion: 0.5, outputUsdPerMillion: 3, cachedInputUsdPerMillion: null }])
   })
 
   it('alert drafts rebase the same way', async () => {
@@ -128,7 +160,7 @@ describe('seller editors', async () => {
     const { freeTierLine } = await import('../components/SellerSettingsEditor')
     const base = draftOf(settings)
     expect(base.freeTiersMode).toBe('default')
-    expect(base.freeTiers).toEqual([{ ants: '10000', multiplier: '5' }])
+    expect(base.freeTiers).toEqual([{ ants: '10000', multiplier: '5', minPower: 520_000 }])
     const own = { ...base, free: { 'openai/glm-5.3': { enabled: true, perAddress: '100', perIp: '', hours: '', stakersOnly: false } } }
     expect(patchOf(base, own)).toEqual({ pricing: [{ provider: 'openai', service: 'glm-5.3', freeTier: { maxRequestsPerAddress: 100, maxRequestsPerIp: null, windowMs: null, stakersOnly: false } }] })
     const empty = { ...base, free: { 'openai/glm-5.3': { enabled: true, perAddress: '', perIp: '', hours: '', stakersOnly: false } } }
@@ -136,14 +168,38 @@ describe('seller editors', async () => {
     const wide = { ...base, freePerAddress: '200', freeStakersOnly: true, freeTiersMode: 'custom' as const, freeTiers: [{ ants: '1000', multiplier: '2' }, { ants: '5000', multiplier: 'unlimited' }] }
     expect(draftErrors(wide, base)).toEqual({})
     expect(patchOf(base, wide).freeTier).toEqual({
-      maxRequestsPerAddress: 200, maxRequestsPerIp: null, windowMs: null, stakersOnly: true,
+      maxRequestsPerAddress: 200, stakersOnly: true,
       stakeTiers: [{ minPower: 52_000, multiplier: 2 }, { minPower: 260_000, multiplier: 'unlimited' }],
     })
-    expect(patchOf(base, { ...base, freeTiersMode: 'off' }).freeTier?.stakeTiers).toEqual([])
+    // Tiers, stakers only or a window need a limit to apply to; stakers only needs a tier.
+    expect(draftErrors({ ...base, freeTiersMode: 'off' }, base).freePerAddress).toBeTruthy()
+    expect(draftErrors({ ...base, freePerIp: '5', freeStakersOnly: true, freeTiersMode: 'off' }, base).freeTiers).toBe('Stakers only needs at least one staked tier.')
+    expect(patchOf(base, { ...base, freePerIp: '5', freeTiersMode: 'off' }).freeTier).toEqual({ maxRequestsPerIp: 5, stakeTiers: [] })
+    // Toggled on then off, or tiers edited then back to the network's: nothing to save.
+    expect(patchOf(base, { ...own, free: base.free })).toEqual({})
+    expect(patchOf(base, { ...base, free: { 'openai/glm-5.3': { ...own.free['openai/glm-5.3']!, enabled: false } } })).toEqual({})
+    expect(patchOf(base, { ...base, freeTiersMode: 'default', freeTiers: [{ ants: '7', multiplier: '9' }] })).toEqual({})
+    // An own program already saved sends only what changed.
+    const withOwn = draftOf({ ...settings, services: [{ ...settings.services[0]!, ownFreeTier: { maxRequestsPerAddress: 100, maxRequestsPerIp: 50, windowMs: 3_600_000, stakersOnly: false, stakeTiers: null } }] })
+    const stakers = { ...withOwn, free: { 'openai/glm-5.3': { ...withOwn.free['openai/glm-5.3']!, stakersOnly: true } } }
+    expect(patchOf(withOwn, stakers)).toEqual({ pricing: [{ provider: 'openai', service: 'glm-5.3', freeTier: { stakersOnly: true } }] })
+    expect(patchOf(withOwn, { ...withOwn, free: { 'openai/glm-5.3': { ...withOwn.free['openai/glm-5.3']!, enabled: false } } }).pricing).toEqual([{ provider: 'openai', service: 'glm-5.3', freeTier: null }])
     const program = { base: { maxRequestsPerAddress: 100, maxRequestsPerIp: null, windowMs: 86_400_000 }, stakeTiers: [{ minPower: 520_000, multiplier: 5 as const }] }
     expect(freeTierLine(program, true)).toBe('100 free requests a day, then paid · staked: 10,000 ANTS 5×')
     expect(freeTierLine(null, false)).toBe('Free, no limit')
     expect(freeTierLine(null, true)).toBe('No free allowance')
+  })
+
+  it('keeps a saved tier\'s staking power exactly unless its ANTS are edited', () => {
+    const custom = draftOf({ ...settings, freeTier: { maxRequestsPerAddress: 10, maxRequestsPerIp: null, windowMs: null, stakersOnly: false, stakeTiers: [{ minPower: 100_000, multiplier: 5 }, { minPower: 20, multiplier: 'unlimited' }] } })
+    expect(custom.freeTiers.map((tier) => tier.ants)).toEqual(['1923', '0'])
+    // Another free-tier field changes: the tiers are not sent (nor checked), so nothing is rounded.
+    const limit = { ...custom, freePerAddress: '20' }
+    expect(draftErrors(limit, custom)).toEqual({})
+    expect(patchOf(custom, limit)).toEqual({ freeTier: { maxRequestsPerAddress: 20 } })
+    // Editing one tier keeps the other's saved power.
+    const edited = { ...custom, freeTiers: [{ ...custom.freeTiers[0]! }, { ...custom.freeTiers[1]!, ants: '5000' }] }
+    expect(patchOf(custom, edited).freeTier?.stakeTiers).toEqual([{ minPower: 100_000, multiplier: 5 }, { minPower: 260_000, multiplier: 'unlimited' }])
   })
 
   it('requires prices only on the rows being changed', () => {

@@ -157,15 +157,24 @@ function VerificationPanel({ data }: { data: Promote }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data])
   const changed = JSON.stringify([domains, github]) !== JSON.stringify([base.domains, base.github])
-  const update = (next: Promote) => {
-    queryClient.setQueryData(qk.sellerPromote, next)
-    setBase({ domains: domainsOf(next), github: githubOf(next) })
-    setDomains(domainsOf(next))
-    setGithub(githubOf(next))
-  }
+  type Claims = { domains: string[]; github: GithubClaim[] }
   const save = useMutation({
-    mutationFn: () => api.seller.saveVerifications({ domains: domains.map((domain) => ({ domain })), github: github.map(({ username, repository }) => (repository && repository.toLowerCase() !== username.toLowerCase() ? { username, repository } : { username })) }),
-    onSuccess: (next) => { update(next); setSaved(true); toast('Saved. Restart the seller to announce the claims.') },
+    mutationFn: (submitted: Claims) => api.seller.saveVerifications({
+      domains: submitted.domains.map((domain) => ({ domain })),
+      github: submitted.github.map(({ username, repository }) => (repository && repository.toLowerCase() !== username.toLowerCase() ? { username, repository } : { username })),
+    }),
+    onSuccess: (next, submitted) => {
+      queryClient.setQueryData(qk.sellerPromote, next)
+      void queryClient.invalidateQueries({ queryKey: qk.sellerCard })
+      void queryClient.invalidateQueries({ queryKey: qk.sellerReputation })
+      const stored = { domains: domainsOf(next), github: githubOf(next) }
+      setBase(stored)
+      // Claims edited while the save was in flight stay; the rest takes the saved list.
+      setDomains((current) => reconcileClaims(current, submitted.domains, stored.domains, (domain) => domain))
+      setGithub((current) => reconcileClaims(current, submitted.github, stored.github, githubKey))
+      setSaved(true)
+      toast('Saved. Restart the seller to announce the claims.')
+    },
   })
   // A check refreshes only the statuses shown next to saved claims; unsaved edits stay.
   const check = useMutation({ mutationFn: api.seller.checkVerifications, onSuccess: (next) => queryClient.setQueryData(qk.sellerPromote, next) })
@@ -185,7 +194,7 @@ function VerificationPanel({ data }: { data: Promote }) {
             <div key={`d:${domain}`} className="gc-seller-claim">
               <div className="gc-seller-claim__head"><span><strong>{domain}</strong> <span className="gc-fineprint">domain</span></span>
                 <span className="gc-inline">{claim ? <StatusBadge status={claim.status} /> : <Badge tone="neutral">Unsaved</Badge>}
-                  {!readOnly && <Button size="sm" variant="link" onClick={() => setDomains(domains.filter((entry) => entry !== domain))}>Remove</Button>}</span>
+                  {!readOnly && <Button size="sm" variant="link" aria-label={`Remove ${domain}`} onClick={() => setDomains(domains.filter((entry) => entry !== domain))}>Remove</Button>}</span>
               </div>
               {claim?.status && !claim.status.verified && claim.status.error && <p className="gc-fineprint">Last check {formatRelative(claim.status.checkedAt)}: {claim.status.error}</p>}
               {claim && (
@@ -203,7 +212,7 @@ function VerificationPanel({ data }: { data: Promote }) {
             <div key={`g:${entry.username}`} className="gc-seller-claim">
               <div className="gc-seller-claim__head"><span><strong>github.com/{entry.username}</strong> <span className="gc-fineprint">GitHub</span></span>
                 <span className="gc-inline">{claim ? <StatusBadge status={claim.status} /> : <Badge tone="neutral">Unsaved</Badge>}
-                  {!readOnly && <Button size="sm" variant="link" onClick={() => setGithub(github.filter((item) => item.username !== entry.username))}>Remove</Button>}</span>
+                  {!readOnly && <Button size="sm" variant="link" aria-label={`Remove github.com/${entry.username}`} onClick={() => setGithub(github.filter((item) => item.username !== entry.username))}>Remove</Button>}</span>
               </div>
               {claim?.status && !claim.status.verified && claim.status.error && <p className="gc-fineprint">Last check {formatRelative(claim.status.checkedAt)}: {claim.status.error}</p>}
               {claim && <CodeBlock label={`Commit antseed.json to github.com/${claim.username}/${claim.repository} (public), so it is served at ${claim.proofUrl}`} code={claim.proofBody} />}
@@ -232,7 +241,7 @@ function VerificationPanel({ data }: { data: Promote }) {
         {!readOnly && (
           <div className="gc-actions">
             <span className="gc-fineprint gc-actions__note">{changed ? 'Applies when the seller restarts.' : 'No changes.'}</span>
-            <Button disabled={!changed || save.isPending} onClick={() => save.mutate()}>{save.isPending ? 'Saving…' : 'Save'}</Button>
+            <Button disabled={!changed || save.isPending} onClick={() => save.mutate({ domains, github })}>{save.isPending ? 'Saving…' : 'Save'}</Button>
           </div>
         )}
       </div>

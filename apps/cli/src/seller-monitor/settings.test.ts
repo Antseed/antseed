@@ -91,3 +91,31 @@ test('free tier: each model shows what buyers get, and its own program and the s
   assert.deepEqual([glm().ownFreeTier, view.freeTier.stakeTiers], [null, null])
   assert.equal(JSON.parse(readFileSync(configPath, 'utf8')).seller.providers.openai.services['glm-5.3'].freeTier, undefined)
 })
+
+test('a model id has one free-tier program across providers, and clearing both seller-wide limits removes that program', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'seller-settings-'))
+  const configPath = join(dir, 'config.json')
+  const service = (freeTier?: object) => ({ pricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, ...(freeTier ? { freeTier } : {}) })
+  writeFileSync(configPath, JSON.stringify({ seller: {
+    freeTier: { maxRequestsPerAddress: 10, stakeTiers: [] },
+    providers: {
+      a: { plugin: 'openai', baseUrl: 'https://a.example', services: { glm: service() } },
+      b: { plugin: 'openai', baseUrl: 'https://b.example', services: { glm: service({ maxRequestsPerAddress: 5 }), kimi: service() } },
+    },
+  } }))
+  // Both providers show the one program the seller applies to the model id.
+  const view = await readSellerSettings(configPath)
+  assert.deepEqual(view.services.map((entry) => [entry.provider, entry.service, entry.ownFreeTier?.maxRequestsPerAddress ?? null]), [['a', 'glm', 5], ['b', 'glm', 5], ['b', 'kimi', null]])
+  // A field edit through either provider edits that one program, and every provider gets it, so the config stays valid.
+  await updateSellerSettings(configPath, { pricing: [{ provider: 'a', service: 'glm', freeTier: { maxRequestsPerIp: 3 } }] })
+  const saved = JSON.parse(readFileSync(configPath, 'utf-8')).seller
+  assert.deepEqual([saved.providers.a.services.glm.freeTier, saved.providers.b.services.glm.freeTier], [{ maxRequestsPerAddress: 5, maxRequestsPerIp: 3 }, { maxRequestsPerAddress: 5, maxRequestsPerIp: 3 }])
+  // Without a limit there is no seller-wide program: the tiers go with it.
+  await updateSellerSettings(configPath, { freeTier: { maxRequestsPerAddress: null } })
+  assert.equal(JSON.parse(readFileSync(configPath, 'utf-8')).seller.freeTier, undefined)
+  // Stakers only (or tiers) without a seller-wide limit is refused, not silently dropped.
+  await assert.rejects(updateSellerSettings(configPath, { freeTier: { stakersOnly: true } }), /requires maxRequestsPerAddress/)
+  // The limits the config itself accepts are accepted here.
+  await updateSellerSettings(configPath, { healthCheck: { failureThreshold: 500 }, gasCheck: { minBalanceEth: 25 }, maxConcurrentBuyers: 250_000 })
+  await assert.rejects(updateSellerSettings(configPath, { healthCheck: { intervalMs: 30_000 } }), /intervalMs/)
+})

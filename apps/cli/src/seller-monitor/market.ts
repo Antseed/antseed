@@ -97,10 +97,11 @@ export function marketView(rows: readonly PeerRow[], myPeerId: string | null, mi
       service: service.service,
       mine: { inputUsdPerMillion: service.inputUsdPerMillion, outputUsdPerMillion: service.outputUsdPerMillion, cachedInputUsdPerMillion: service.cachedInputUsdPerMillion, blendedUsdPerMillion: myBlended },
       competitors: others.length,
-      unique: others.length === 0,
+      // Only you among sellers actually seen: with no network loaded nothing is known about others.
+      unique: others.length === 0 && rows.length > 0,
       cheapest: others.length > 0 ? { inputUsdPerMillion: inputs.length ? Math.min(...inputs) : null, outputUsdPerMillion: outputs.length ? Math.min(...outputs) : null } : null,
       median: others.length > 0 ? { inputUsdPerMillion: median(inputs), outputUsdPerMillion: median(outputs) } : null,
-      rank: myBlended === null ? null : all.indexOf(myOffer) + 1,
+      rank: myBlended === null || rows.length === 0 ? null : all.indexOf(myOffer) + 1,
       of: all.length,
       deltaPct: myBlended !== null && medianBlended !== null && medianBlended > 0 ? Math.round(((myBlended - medianBlended) / medianBlended) * 1000) / 10 : null,
       offers: shown,

@@ -152,7 +152,10 @@ export function registerSellerStatusCommand(sellerCmd: Command): void {
         } else if (onChainError) {
           table.push(['On-chain warning', chalk.yellow(onChainError)]);
         }
-        if (health.available) {
+        if (health.available && !health.running) {
+          // A seller that crashed or was killed leaves its last state behind: not live health.
+          table.push(['Health', chalk.dim('not running; models, gas and alerts show once it is')]);
+        } else if (health.available) {
           const withdrawn = health.models.filter((model) => !model.advertised);
           table.push(
             ['Models', health.models.length === 0 ? chalk.dim('no health data yet') : withdrawn.length === 0 ? `${health.models.length} advertised` : chalk.yellow(`${withdrawn.length} withdrawn: ${withdrawn.map((model) => `${model.service} (${model.lastStatusCode ?? model.lastDetail ?? 'failing'})`).join(', ')}`)],
@@ -160,7 +163,7 @@ export function registerSellerStatusCommand(sellerCmd: Command): void {
             ['Alerts', health.alerts?.channels.length ? health.alerts.channels.join(', ') : chalk.dim('off (antseed seller alerts set)')],
           );
         }
-        const rpcLine = Object.entries(rpc.daemon ?? {}).map(([source, usage]) => `${source} ${usage.perMinute}/min`).join(', ');
+        const rpcLine = Object.entries(health.available && health.running ? rpc.daemon ?? {} : {}).map(([source, usage]) => `${source} ${usage.perMinute}/min`).join(', ');
         if (rpcLine) table.push(['Chain RPC (seller)', rpcLine]);
 
         console.log(table.toString());

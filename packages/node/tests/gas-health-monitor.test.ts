@@ -50,6 +50,15 @@ describe('GasHealthMonitor', () => {
     }]);
   });
 
+  it('drops a reading still in flight when it is stopped', async () => {
+    const { monitor, events } = makeMonitor([0n], { intervalMs: 60_000 });
+    monitor.start();
+    monitor.stop();
+    await monitor.checkNow();
+    expect(events).toEqual([]);
+    expect(monitor.depleted).toBe(false);
+  });
+
   it('emits restored when the wallet is funded again', async () => {
     const { monitor, events } = makeMonitor([0n, DEFAULT_MIN_GAS_BALANCE_WEI * 2n]);
     await monitor.checkNow();

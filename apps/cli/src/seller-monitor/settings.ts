@@ -9,6 +9,7 @@ import type { AntseedConfig, SellerFreeTierCLIConfig } from '../config/types.js'
 import { ConsoleError } from '../gateway/console-api/router.js'
 import type { FreeTierProgramView, SellerAlertSettings, SellerAlertsPatch, SellerFreeTierProgramSettings, SellerSettings, SellerSettingsPatch } from '../gateway/console-api/types.js'
 import { configWritable, patchValidatedConfig } from '../config/patch.js'
+import { readSellerStatus } from './reader.js'
 
 export { configWritable }
 import { applyAlertOverrides, DEFAULT_TELEGRAM_TOKEN_ENV, readAlertOverrides, readAlertSecrets, readAlertsConfig, resolveAlerts, webhookHost, writeAlertOverrides, writeAlertSecrets, type AlertOverrides } from '../seller-alerts/settings.js'
@@ -65,6 +66,13 @@ const programView = (program: SellerFreeTierCLIConfig): FreeTierProgramView => (
 function settingsView(raw: JsonObject, config: AntseedConfig, configPath: string, access: { writable: boolean; reason: string | null }): SellerSettings {
   const seller = config.seller
   const rawSeller = (raw.seller ?? {}) as JsonObject
+  // A model's own program is keyed by its id: the seller applies it to every provider offering that id.
+  const ownPrograms = new Map<string, SellerFreeTierCLIConfig>()
+  for (const entry of Object.values(seller.providers ?? {})) {
+    for (const [service, serviceConfig] of Object.entries(entry.services ?? {})) {
+      if (serviceConfig.freeTier && !ownPrograms.has(service)) ownPrograms.set(service, serviceConfig.freeTier)
+    }
+  }
   return {
     configPath,
     writable: access.writable,
@@ -88,7 +96,8 @@ function settingsView(raw: JsonObject, config: AntseedConfig, configPath: string
       const pricing = serviceConfig.pricing ?? entry.defaults
       const paid = isPricedSellerService(entry, serviceConfig)
       // Its own program, else on a free model the seller-wide one; a paid model has a free allowance only when it sets one.
-      const program = serviceConfig.freeTier ?? (paid ? undefined : seller.freeTier)
+      const own = ownPrograms.get(service)
+      const program = own ?? (paid ? undefined : seller.freeTier)
       return {
         provider,
         service,
@@ -98,7 +107,7 @@ function settingsView(raw: JsonObject, config: AntseedConfig, configPath: string
         inherited: !serviceConfig.pricing,
         paid,
         freeTier: program ? programView(program) : null,
-        ownFreeTier: serviceConfig.freeTier ? programSettings(serviceConfig.freeTier) : null,
+        ownFreeTier: own ? programSettings(own) : null,
       }
     })),
   }
@@ -155,7 +164,7 @@ export function applySellerSettingsPatch(raw: JsonObject, body: unknown): string
     fields.push('displayName')
   }
   if (patch.maxConcurrentBuyers !== undefined) {
-    seller().maxConcurrentBuyers = int(patch.maxConcurrentBuyers, 'maxConcurrentBuyers', 1, 100_000)
+    seller().maxConcurrentBuyers = int(patch.maxConcurrentBuyers, 'maxConcurrentBuyers', 1)
     fields.push('maxConcurrentBuyers')
   }
   if (patch.healthCheck !== undefined) {
@@ -165,8 +174,8 @@ export function applySellerSettingsPatch(raw: JsonObject, body: unknown): string
       if (typeof input.enabled !== 'boolean') bad('healthCheck.enabled must be true or false')
       out.enabled = input.enabled
     }
-    if (input.intervalMs !== undefined) out.intervalMs = int(input.intervalMs, 'healthCheck.intervalMs', 10_000)
-    if (input.failureThreshold !== undefined) out.failureThreshold = int(input.failureThreshold, 'healthCheck.failureThreshold', 1, 100)
+    if (input.intervalMs !== undefined) out.intervalMs = int(input.intervalMs, 'healthCheck.intervalMs', 60_000)
+    if (input.failureThreshold !== undefined) out.failureThreshold = int(input.failureThreshold, 'healthCheck.failureThreshold', 1)
     fields.push('healthCheck')
   }
   if (patch.gasCheck !== undefined) {
@@ -177,15 +186,19 @@ export function applySellerSettingsPatch(raw: JsonObject, body: unknown): string
       out.enabled = input.enabled
     }
     if (input.minBalanceEth !== undefined) {
-      if (typeof input.minBalanceEth !== 'number' || !Number.isFinite(input.minBalanceEth) || input.minBalanceEth < 0 || input.minBalanceEth > 10) bad('gasCheck.minBalanceEth must be an ETH amount from 0 to 10')
+      if (typeof input.minBalanceEth !== 'number' || !Number.isFinite(input.minBalanceEth) || input.minBalanceEth < 0) bad('gasCheck.minBalanceEth must be an ETH amount of 0 or more')
       out.minBalanceEth = input.minBalanceEth
     }
     fields.push('gasCheck')
   }
   if (patch.freeTier !== undefined) {
+    const input = obj(patch.freeTier, 'freeTier')
     const out = child(seller(), 'freeTier')
-    applyFreeTierPatch(out, obj(patch.freeTier, 'freeTier'), 'freeTier')
-    if (Object.keys(out).length === 0) delete seller().freeTier
+    applyFreeTierPatch(out, input, 'freeTier')
+    // Without a limit there is no seller-wide program: clearing both removes it, staked tiers and all.
+    // A patch that sets other fields without any limit is left for the config check to refuse.
+    const clearedLimit = input.maxRequestsPerAddress === null || input.maxRequestsPerIp === null
+    if (Object.keys(out).length === 0 || (clearedLimit && out.maxRequestsPerAddress === undefined && out.maxRequestsPerIp === undefined)) delete seller().freeTier
     fields.push('freeTier')
   }
   if (patch.restrictedCountries !== undefined) {
@@ -218,12 +231,21 @@ export function applySellerSettingsPatch(raw: JsonObject, body: unknown): string
         service.pricing = next
       }
       if (item.freeTier !== undefined) {
-        if (item.freeTier === null) delete service.freeTier
+        // One program per model id: every provider offering this id gets the same edit, so they stay identical.
+        const sameId = Object.values(providers).flatMap((entry) => Object.entries(entry.services ?? {}))
+          .filter(([id, other]) => id === String(item.service) && (other === service || other.freeTier !== undefined))
+          .map(([, other]) => other)
+        if (item.freeTier === null) for (const target of sameId) delete target.freeTier
         else {
+          // The program the seller applies now (any provider's), edited once and copied to each.
           // A new program starts empty: the base limits must be given (the config check says which).
-          const out = child(service, 'freeTier')
-          applyFreeTierPatch(out, obj(item.freeTier, `${String(item.service)} freeTier`), `${String(item.service)} freeTier`)
-          if (Object.keys(out).length === 0) delete service.freeTier
+          const current = sameId.map((target) => target.freeTier).find((program) => program && typeof program === 'object') as JsonObject | undefined
+          const program: JsonObject = structuredClone(current ?? {})
+          applyFreeTierPatch(program, obj(item.freeTier, `${String(item.service)} freeTier`), `${String(item.service)} freeTier`)
+          for (const target of sameId) {
+            if (Object.keys(program).length === 0) delete target.freeTier
+            else target.freeTier = structuredClone(program)
+          }
         }
         if (!fields.includes('freeTier')) fields.push('freeTier')
       }
@@ -238,7 +260,7 @@ function applyFreeTierPatch(out: JsonObject, input: JsonObject, field: string): 
   for (const key of Object.keys(input)) {
     if (!['maxRequestsPerAddress', 'maxRequestsPerIp', 'windowMs', 'stakersOnly', 'stakeTiers'].includes(key)) bad(`${field}: unknown field ${key}`)
   }
-  for (const [key, min] of [['maxRequestsPerAddress', 1], ['maxRequestsPerIp', 1], ['windowMs', 60_000]] as const) {
+  for (const [key, min] of [['maxRequestsPerAddress', 1], ['maxRequestsPerIp', 1], ['windowMs', 1_000]] as const) {
     if (input[key] === undefined) continue
     if (input[key] === null) delete out[key]
     else out[key] = int(input[key], `${field}.${key}`, min)
@@ -291,7 +313,9 @@ export async function readSellerAlertSettings(configPath: string, dataDir: strin
   const secrets = readAlertSecrets(dataDir)
   const resolved = resolveAlerts(config, secrets, env)
   const tokenEnv = config.telegram?.botTokenEnv || DEFAULT_TELEGRAM_TOKEN_ENV
-  const fromEnv = Boolean(env[tokenEnv]?.trim())
+  // This process (dashboard, gateway) may not share the seller's environment:
+  // a token set only there shows through the running seller's own report.
+  const fromEnv = Boolean(env[tokenEnv]?.trim()) || (!secrets.telegramBotToken && await runningSellerSendsTelegram(dataDir))
   const access = await dataDirWritable(dataDir)
   return {
     writable: access.writable,
@@ -301,7 +325,7 @@ export async function readSellerAlertSettings(configPath: string, dataDir: strin
       botTokenEnv: tokenEnv,
       tokenSet: fromEnv || Boolean(secrets.telegramBotToken),
       tokenSource: fromEnv ? 'env' : secrets.telegramBotToken ? 'file' : null,
-      active: resolved.telegram !== null,
+      active: resolved.telegram !== null || (fromEnv && Boolean(config.telegram?.chatId)),
     },
     webhook: {
       set: resolved.webhookUrl !== null,
@@ -312,6 +336,12 @@ export async function readSellerAlertSettings(configPath: string, dataDir: strin
     cooldownMinutes: config.cooldownMinutes ?? null,
     minSeverity: config.minSeverity ?? null,
   }
+}
+
+/** Whether the running seller reports Telegram among the channels it sends to (its state file is fresh). */
+export async function runningSellerSendsTelegram(dataDir: string): Promise<boolean> {
+  const status = await readSellerStatus(dataDir, '')
+  return status.available && status.running && Boolean(status.alerts?.channels.includes('telegram'))
 }
 
 const TELEGRAM_TOKEN = /^\d{3,}:[A-Za-z0-9_-]{20,}$/
@@ -373,7 +403,7 @@ export async function updateSellerAlerts(dataDir: string, body: unknown): Promis
     overrides.minSeverity = patch.minSeverity
     changed.minSeverity = String(patch.minSeverity)
   }
-  if (Object.keys(overrides).length > 0) writeAlertOverrides(dataDir, overrides)
-  if (Object.keys(secrets).length > 0) writeAlertSecrets(dataDir, secrets)
+  if (Object.keys(overrides).length > 0) await writeAlertOverrides(dataDir, overrides)
+  if (Object.keys(secrets).length > 0) await writeAlertSecrets(dataDir, secrets)
   return changed
 }

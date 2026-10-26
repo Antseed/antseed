@@ -9,7 +9,8 @@ import { SellerEventList } from '../components/SellerEvents'
 import { SellerPage } from '../components/SellerPage'
 import { CopyButton, DetailList, EmptyState, ErrorAlert, LoadingRows, Mono, Panel, Segmented, SelectField } from '../components/ui'
 import { formatDateTime, formatLatency, formatNumber, formatPricePerMillion, formatUsd, shortId } from '../lib/format'
-import { qk, useSellerEvents } from '../lib/queries'
+import { qk, useSellerEvents, useSellerSettings } from '../lib/queries'
+import { useDebounced } from '../lib/useDebounced'
 import '../styles/seller.scss'
 
 const PAGE_SIZE = 50
@@ -25,7 +26,7 @@ type View = 'requests' | 'events'
 export default function SellerLogs() {
   const [view, setView] = useState<View>(() => (new URLSearchParams(window.location.search).get('view') === 'events' ? 'events' : 'requests'))
   return (
-    <SellerPage title="Logs" description={() => 'Every request this seller served or refused, newest first, and its events.'}
+    <SellerPage title="Logs" description={() => 'Every request this seller passed to a provider, failures included, newest first, and its events.'}
       actions={<Segmented label="Show" value={view} onChange={setView} options={[{ value: 'requests', label: 'Requests' }, { value: 'events', label: 'Events' }]} />}>
       {() => (view === 'requests' ? <Requests /> : <Events />)}
     </SellerPage>
@@ -43,11 +44,16 @@ function Requests() {
   const [range, setRange] = useState('all')
   const [status, setStatus] = useState<'all' | 'errors'>('all')
   const [selected, setSelected] = useState<SellerLogEntry | null>(null)
+  // Typed filters query metering.db once typing pauses, not on every keystroke.
+  const modelFilter = useDebounced(model.trim())
+  const buyerFilter = useDebounced(buyer.trim())
+  // The model filter matches a model id exactly; suggest the seller's own.
+  const models = [...new Set(useSellerSettings().data?.settings.services.map((entry) => entry.service) ?? [])]
   // Fixed per filter change, so the cursor keys stay stable while paging.
   const filter = useMemo<SellerLogQuery>(() => {
     const ms = RANGES.find((entry) => entry.value === range)?.ms ?? null
-    return { service: model.trim() || null, buyer: buyer.trim() || null, from: ms === null ? null : Date.now() - ms, errorsOnly: status === 'errors', limit: PAGE_SIZE }
-  }, [model, buyer, range, status])
+    return { service: modelFilter || null, buyer: buyerFilter || null, from: ms === null ? null : Date.now() - ms, errorsOnly: status === 'errors', limit: PAGE_SIZE }
+  }, [modelFilter, buyerFilter, range, status])
   const query = useInfiniteQuery({
     queryKey: qk.sellerLogs(filter),
     queryFn: ({ pageParam }) => api.seller.logs({ ...filter, cursor: pageParam }),
@@ -60,7 +66,8 @@ function Requests() {
   return (
     <>
       <div className="gc-toolbar">
-        <TextField size="sm" aria-label="Filter by model" placeholder="Model" value={model} onChange={(event) => setModel(event.target.value)} />
+        <TextField size="sm" aria-label="Filter by model id (exact)" placeholder="Model id" list="gc-seller-log-models" value={model} onChange={(event) => setModel(event.target.value)} />
+        <datalist id="gc-seller-log-models">{models.map((id) => <option key={id} value={id} />)}</datalist>
         <TextField size="sm" aria-label="Filter by buyer" placeholder="Buyer peer id" value={buyer} onChange={(event) => setBuyer(event.target.value)} className="gc-toolbar__grow" />
         <SelectField size="sm" aria-label="Time range" value={range} onChange={setRange} options={RANGES.map(({ value, label }) => ({ value, label }))} />
         <SelectField size="sm" aria-label="Filter by status" value={status} onChange={(value) => setStatus(value as 'all' | 'errors')}
@@ -70,7 +77,10 @@ function Requests() {
         {query.isLoading ? <LoadingRows rows={8} /> : query.error ? <ErrorAlert error={query.error} onRetry={() => void query.refetch()} /> : (
           <>
             <DataTable<SellerLogEntry> label="Seller request log" rows={rows} rowKey={(row) => row.id} onRowClick={setSelected}
-              empty={<EmptyState icon={<Icon.logs size={18} />} title={filtered ? 'No requests match' : 'No requests yet'} body={filtered ? 'Widen the filters.' : 'Requests appear here as buyers use this seller.'} />}
+              empty={query.hasNextPage
+                // A filtered page reads a bounded stretch of the log; older requests may still match.
+                ? <EmptyState icon={<Icon.logs size={18} />} title="No matching requests in the latest scanned range" body="Older requests may still match. Look further back, or widen the filters." />
+                : <EmptyState icon={<Icon.logs size={18} />} title={filtered ? 'No requests match' : 'No requests yet'} body={filtered ? 'Widen the filters.' : 'Requests appear here as buyers use this seller.'} />}
               columns={[
                 { key: 'time', header: 'Time', render: (row) => <span className="gc-nowrap">{formatDateTime(row.at)}</span> },
                 { key: 'buyer', header: 'Buyer', secondary: true, render: (row) => <Mono title={row.buyer}>{shortId(row.buyer)}</Mono> },
@@ -83,7 +93,7 @@ function Requests() {
             {query.hasNextPage && (
               <div className="gc-load-more">
                 <Button variant="outline" size="sm" disabled={query.isFetchingNextPage} onClick={() => void query.fetchNextPage()}>
-                  {query.isFetchingNextPage ? 'Loading…' : 'Load older requests'}
+                  {query.isFetchingNextPage ? 'Loading…' : rows.length === 0 ? 'Look further back' : 'Load older requests'}
                 </Button>
               </div>
             )}

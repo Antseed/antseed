@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import { readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { appendSellerEvent, type SellerEvent, type SellerEventKind, type SellerEventSeverity } from '@antseed/node';
 import type { SellerAlertsCLIConfig as SellerAlertsConfig } from '../config/types.js';
 import { AlertSettingsSource, DEFAULT_TELEGRAM_TOKEN_ENV, telegramApiBase } from './settings.js';
@@ -17,6 +20,16 @@ const SEVERITY_RANK: Record<SellerEventSeverity, number> = { info: 0, warning: 1
 /** Recoveries close an alert that was sent, so they go out whatever their severity. */
 const RECOVERY_OF: Partial<Record<SellerEventKind, SellerEventKind>> = { model_up: 'model_down', gas_ok: 'gas_low', active: 'idle' };
 const ICON: Record<SellerEventSeverity, string> = { info: '✅', warning: '⚠️', critical: '🚨' };
+/**
+ * Alerts whose send times outlive the process, so a crash-looping seller
+ * (say, restarted by Kubernetes) still waits out the cooldown between them.
+ */
+const PERSISTED_KINDS = new Set<SellerEventKind>(['crashed']);
+/** Send times of PERSISTED_KINDS alerts, by destination and incident, in the data dir. */
+export const ALERT_HISTORY_FILE = 'seller-alerts-sent.json';
+
+/** One alert's delivery to one destination: when it went out, and whether its recovery has closed it since. */
+interface Delivery { at: number; open: boolean }
 
 export interface SellerAlertsOptions {
   dataDir: string;
@@ -41,8 +54,10 @@ export class SellerAlerts {
   private readonly _settings: AlertSettingsSource;
   private readonly _fetch: typeof fetch;
   private readonly _now: () => number;
-  /** When each alert last reached each channel, keyed `channel|kind:provider/service`. */
-  private readonly _lastSent = new Map<string, number>();
+  /** When each alert last reached each destination, keyed `destination|kind:provider/service`. */
+  private readonly _lastSent = new Map<string, Delivery>();
+  /** Alerts held back by the cooldown after their incident had closed, sent when it ends unless a recovery comes first. */
+  private readonly _held = new Map<string, NodeJS.Timeout>();
   /**
    * Deliveries in flight per incident (`kind:provider/service` of the alert):
    * an alert, its repeats and its recovery go out one after another, so a
@@ -62,6 +77,7 @@ export class SellerAlerts {
       ...(options.env ? { env: options.env } : {}),
       now: this._now,
     });
+    for (const [key, at] of Object.entries(readHistory(options.dataDir))) this._lastSent.set(key, { at, open: false });
   }
 
   /** The current settings: config.json and the secrets file as of the last check. */
@@ -85,16 +101,36 @@ export class SellerAlerts {
 
   /**
    * Journal the event, then send it to each channel unless it is below
-   * minSeverity or repeats within the cooldown there. Delivery state is kept
-   * per channel and only for sends that went through, so a failed alert is
-   * retried on its next repeat and only an alert that arrived gets its recovery.
+   * minSeverity or the same alert went there within the cooldown. The cooldown
+   * spans recoveries, so a flapping model alerts once per cooldown: an alert
+   * whose incident closed less than a cooldown ago is held, and sent when the
+   * cooldown ends unless its recovery arrives first (then neither is sent).
+   * Delivery state is kept per destination and only for sends that went
+   * through, so a failed alert is retried on its next repeat and only an alert
+   * that arrived gets its recovery.
    */
   async record(input: Omit<SellerEvent, 'at'> & { at?: number }): Promise<void> {
     const event: SellerEvent = { ...input, at: input.at ?? this._now() };
     await appendSellerEvent(this._opts.dataDir, event).catch((err) => this._opts.log?.(`seller events: ${(err as Error).message}`));
     const recovery = RECOVERY_OF[event.kind] !== undefined;
     const key = alertKey(RECOVERY_OF[event.kind] ?? event.kind, event);
-    const run = (this._incidents.get(key) ?? Promise.resolve()).then(() => this._deliver(event, key, recovery));
+    if (recovery) this._release(key);
+    await this._inIncident(key, () => this._deliver(event, key, recovery));
+  }
+
+  /** Drops alerts held back by the cooldown, on shutdown. */
+  close(): void {
+    for (const key of [...this._held.keys()]) this._release(key);
+  }
+
+  private _release(key: string): void {
+    const timer = this._held.get(key);
+    if (timer) clearTimeout(timer);
+    this._held.delete(key);
+  }
+
+  private async _inIncident(key: string, deliver: () => Promise<void>): Promise<void> {
+    const run = (this._incidents.get(key) ?? Promise.resolve()).then(deliver);
     const settled = run.catch(() => {});
     this._incidents.set(key, settled);
     try {
@@ -105,36 +141,80 @@ export class SellerAlerts {
   }
 
   private async _deliver(event: SellerEvent, key: string, recovery: boolean): Promise<void> {
-    const channels = this._channelsFor(event, key, recovery);
+    const { channels, holdMs } = this._channelsFor(event, key, recovery);
+    if (holdMs !== null && !this._held.has(key)) {
+      const timer = setTimeout(() => {
+        this._held.delete(key);
+        void this._inIncident(key, () => this._deliver(event, key, false)).catch(() => {});
+      }, holdMs);
+      timer.unref?.();
+      this._held.set(key, timer);
+    }
     if (channels.length === 0) return;
     // History is kept per destination, as of when the send started, so a changed chat or webhook starts fresh.
     const { delivered } = await this._send(event, channels);
     for (const destination of delivered) {
-      if (recovery) this._lastSent.delete(`${destination}|${key}`);
-      else this._lastSent.set(`${destination}|${key}`, this._now());
+      const historyKey = `${destination}|${key}`;
+      const last = this._lastSent.get(historyKey);
+      if (recovery) {
+        if (last) last.open = false;
+      } else {
+        this._lastSent.set(historyKey, { at: this._now(), open: true });
+      }
+    }
+    if (!recovery && delivered.length > 0 && PERSISTED_KINDS.has(event.kind)) this._saveHistory();
+  }
+
+  private _saveHistory(): void {
+    const kept: Record<string, number> = {};
+    for (const [historyKey, delivery] of this._lastSent) {
+      const kind = historyKey.slice(historyKey.indexOf('|') + 1).split(':')[0] as SellerEventKind;
+      if (PERSISTED_KINDS.has(kind)) kept[historyKey] = delivery.at;
+    }
+    try {
+      const path = join(this._opts.dataDir, ALERT_HISTORY_FILE);
+      const temp = `${path}.${process.pid}.tmp`;
+      writeFileSync(temp, `${JSON.stringify(kept)}\n`, { mode: 0o600 });
+      renameSync(temp, path);
+    } catch (err) {
+      this._opts.log?.(`seller alerts: cannot save alert history: ${(err as Error).message}`);
     }
   }
 
-  /** Where each channel sends right now: the channel type plus its chat or URL (kept in memory only). */
+  /**
+   * Where each channel sends right now: the channel type plus its chat, or a hash of
+   * the webhook URL (a secret, and crash-alert history is written to the data dir).
+   */
   private _destinations(): Partial<Record<AlertChannel, string>> {
     const { telegram, webhookUrl } = this.settings;
-    return { ...(telegram ? { telegram: `telegram:${telegram.chatId}` } : {}), ...(webhookUrl ? { webhook: `webhook:${webhookUrl}` } : {}) };
+    const webhook = webhookUrl ? createHash('sha256').update(webhookUrl).digest('hex').slice(0, 16) : null;
+    return { ...(telegram ? { telegram: `telegram:${telegram.chatId}` } : {}), ...(webhook ? { webhook: `webhook:${webhook}` } : {}) };
   }
 
-  private _channelsFor(event: SellerEvent, key: string, recovery: boolean): AlertChannel[] {
+  /**
+   * Where the event goes now, and, for an alert held back on a channel whose
+   * incident had closed (a flap), how long until the cooldown lets it out.
+   */
+  private _channelsFor(event: SellerEvent, key: string, recovery: boolean): { channels: AlertChannel[]; holdMs: number | null } {
     const destinations = this._destinations();
     const channels = (Object.keys(destinations) as AlertChannel[]);
     const historyKey = (channel: AlertChannel) => `${destinations[channel]}|${key}`;
-    // Only announce a recovery where its alert actually went out.
-    if (recovery) return channels.filter((channel) => this._lastSent.has(historyKey(channel)));
-    if (event.kind === 'test') return channels;
+    // Only announce a recovery where its alert actually went out and is still open.
+    if (recovery) return { channels: channels.filter((channel) => this._lastSent.get(historyKey(channel))?.open === true), holdMs: null };
+    if (event.kind === 'test') return { channels, holdMs: null };
     const config = this.settings.config;
-    if (SEVERITY_RANK[event.severity] < SEVERITY_RANK[config.minSeverity ?? 'warning']) return [];
+    if (SEVERITY_RANK[event.severity] < SEVERITY_RANK[config.minSeverity ?? 'warning']) return { channels: [], holdMs: null };
     const cooldownMs = (config.cooldownMinutes ?? DEFAULT_ALERT_COOLDOWN_MINUTES) * 60_000;
-    return channels.filter((channel) => {
+    let holdMs: number | null = null;
+    const ready = channels.filter((channel) => {
       const last = this._lastSent.get(historyKey(channel));
-      return last === undefined || this._now() - last >= cooldownMs;
+      const wait = last === undefined ? 0 : cooldownMs - (this._now() - last.at);
+      if (wait <= 0) return true;
+      // A repeat while the incident is open is simply dropped; a new incident inside the cooldown waits it out.
+      if (!last!.open && !PERSISTED_KINDS.has(event.kind)) holdMs = Math.min(holdMs ?? wait, wait);
+      return false;
     });
+    return { channels: ready, holdMs };
   }
 
   /** Send to every configured channel (or only those in `only`); failures are kept in state() rather than thrown. */
@@ -186,6 +266,15 @@ export class SellerAlerts {
 }
 
 type AlertChannel = 'telegram' | 'webhook'
+
+function readHistory(dataDir: string): Record<string, number> {
+  try {
+    const parsed = JSON.parse(readFileSync(join(dataDir, ALERT_HISTORY_FILE), 'utf-8')) as Record<string, unknown>;
+    return Object.fromEntries(Object.entries(parsed).filter((entry): entry is [string, number] => typeof entry[1] === 'number'));
+  } catch {
+    return {};
+  }
+}
 
 /** One incident: upstreams sharing a plugin name are told apart by their configured name. */
 const alertKey = (kind: SellerEventKind, event: SellerEvent) => `${kind}:${event.providerId ?? event.provider ?? ''}/${event.service ?? ''}`

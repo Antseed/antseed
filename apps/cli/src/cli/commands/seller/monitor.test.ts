@@ -16,7 +16,7 @@ function fixture() {
   writeSellerFixture(dir, {
     state: { updatedAt: now, peerId: PEER, modelHealth: [{ provider: 'openai', service: 'glm-5.3', advertised: false, consecutiveFailures: 3, lastProbeAt: now, lastStatusCode: 402, lastDetail: 'HTTP 402' }] },
     events: [{ at: now - 1_000, kind: 'model_down', severity: 'warning', title: 'glm-5.3 withdrawn' }],
-    requests: [{ at: now - 60_000, sessionId: 's1', tokens: 100, costCents: 2 }, { at: now - 30_000, sessionId: 's1', tokens: 50, costCents: 1 }],
+    requests: [{ at: now - 60_000, sessionId: 's1', service: 'glm-5.3', tokens: 100, costCents: 2 }, { at: now - 30_000, sessionId: 's1', service: 'glm-5.3', tokens: 50, costCents: 1 }],
   });
   const config = join(dir, 'config.json');
   writeFileSync(config, JSON.stringify({ identity: { displayName: 'Demo Seller' }, seller: { providers: { openai: { plugin: 'openai', baseUrl: 'https://upstream.example', services: { 'glm-5.3': { pricing: { inputUsdPerMillion: 0.7, outputUsdPerMillion: 2.2 } } } } } } }, null, 2));
@@ -46,6 +46,9 @@ test('flag parsing: --since and --price', () => {
   assert.equal(parseSince('2026-10-25T00:00:00Z'), Date.parse('2026-10-25T00:00:00Z'));
   assert.throws(() => parseSince('yesterday'));
   assert.deepEqual(parsePrice('glm-5.3=0.7/2.2/0.08'), { service: 'glm-5.3', input: 0.7, output: 2.2, cached: 0.08 });
+  // Without a cached price the saved one stays; "none" removes it.
+  assert.deepEqual(parsePrice('glm-5.3=0.7/2.2'), { service: 'glm-5.3', input: 0.7, output: 2.2 });
+  assert.deepEqual(parsePrice('glm-5.3=0.7/2.2/none'), { service: 'glm-5.3', input: 0.7, output: 2.2, cached: null });
   assert.throws(() => parsePrice('glm-5.3=cheap'));
 });
 
@@ -68,6 +71,8 @@ test('events, usage and logs read the same service the dashboard does', async ()
   const older = (await run(env, ['logs', '--limit', '1', '--cursor', page.next, '--json'])).json();
   assert.equal(older.entries[0].costUsd, 0.02);
   assert.match((await run(env, ['logs', '--limit', '1'])).out, /Older: antseed seller logs --cursor/);
+  // The next page keeps the filters.
+  assert.match((await run(env, ['logs', '--limit', '1', '--model', 'glm-5.3'])).out, /Older: antseed seller logs --model glm-5\.3 --cursor /);
 });
 
 test('settings set writes through the validated writer; alerts set keeps the token out of argv and config.json', async () => {
@@ -76,7 +81,9 @@ test('settings set writes through the validated writer; alerts set keeps the tok
   assert.deepEqual(saved.changed, ['maxConcurrentBuyers', 'pricing']);
   const config = JSON.parse(readFileSync(env.config, 'utf-8'));
   assert.deepEqual(config.seller.providers.openai.services['glm-5.3'].pricing, { inputUsdPerMillion: 0.6, outputUsdPerMillion: 2, cachedInputUsdPerMillion: 0.05 });
-  assert.equal(JSON.parse(readFileSync(`${env.config}.bak`, 'utf-8')).seller.maxConcurrentBuyers, undefined);
+  await run(env, ['settings', 'set', '--price', 'glm-5.3=0.5/2']);
+  assert.deepEqual(JSON.parse(readFileSync(env.config, 'utf-8')).seller.providers.openai.services['glm-5.3'].pricing, { inputUsdPerMillion: 0.5, outputUsdPerMillion: 2, cachedInputUsdPerMillion: 0.05 });
+  assert.equal(JSON.parse(readFileSync(`${env.config}.bak`, 'utf-8')).seller.providers.openai.services['glm-5.3'].pricing.inputUsdPerMillion, 0.6);
   const alerts = (await run(env, ['alerts', 'set', '--telegram-chat', '-1001', '--idle', '30', '--json'])).json();
   assert.equal(alerts.alerts.telegram.chatId, '-1001');
   assert.equal(alerts.alerts.idleMinutes, 30);

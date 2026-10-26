@@ -349,6 +349,11 @@ export interface NodeConfig {
   verification?: NodeVerificationConfig;
   /** Pluggable identity storage backend. When set, takes precedence over dataDir for identity loading. */
   identityStore?: IdentityStore;
+  /**
+   * An identity to use as is, ahead of the environment's and the stored one
+   * (e.g. a throwaway key for a short-lived discovery node).
+   */
+  identity?: Identity;
   /** Optional explicit config.json path for runtime config reloads. */
   configPath?: string;
   /**
@@ -473,6 +478,8 @@ export class AntseedNode extends EventEmitter {
   private _buyerIdentities = new Map<string, BuyerIdentityContext>();
   /** Seller-side deposit-sweep relayer (initialized when configured + enabled). */
   private _depositRelayer: DepositRelayer | null = null;
+  /** Settles or closes a buyer's channel when its metering session goes idle; removed on stop. */
+  private _settleOnIdle: ((info: { buyerPeerId: string; reason: string }) => void) | null = null;
   /** Seller-side request handler (provider matching, execution, load tracking). */
   private _sellerHandler: SellerRequestHandler | null = null;
   /** Buyer-side payment manager (initialized when buyer has payment config). */
@@ -683,7 +690,7 @@ export class AntseedNode extends EventEmitter {
     const dataDir = this._config.dataDir ?? join(homedir(), ".antseed");
 
     // Load or create identity
-    this._identity = await loadOrCreateIdentity(this._config.identityStore ?? dataDir);
+    this._identity = this._config.identity ?? await loadOrCreateIdentity(this._config.identityStore ?? dataDir);
     debugLog(`[Node] Identity loaded: ${this._identity.peerId.slice(0, 12)}...`);
 
     // Determine bootstrap nodes — merge official + any user-configured nodes unless
@@ -867,6 +874,12 @@ export class AntseedNode extends EventEmitter {
     this._buyerHandler = null;
     this._backgroundPeerDiscoveryPromise = null;
     this._sellerPaymentManager = null;
+    if (this._settleOnIdle) {
+      this.off("session:finalized", this._settleOnIdle);
+      this._settleOnIdle = null;
+    }
+    this._depositRelayer = null;
+    this._advertisingPausedReason = null;
     this._sessionTracker = null;
     this._started = false;
     this.emit("stopped");
@@ -1910,7 +1923,7 @@ export class AntseedNode extends EventEmitter {
     // Wire idle session events to on-chain settlement
     if (this._sellerPaymentManager) {
       const spm = this._sellerPaymentManager;
-      this.on("session:finalized", (info: { buyerPeerId: string; reason: string }) => {
+      this._settleOnIdle = (info: { buyerPeerId: string; reason: string }) => {
         if (info.reason === "idle-settle") {
           debugLog(`[Node] Idle settle for buyer ${info.buyerPeerId.slice(0, 12)}... — settling channel (keeping open)`);
           void spm.settleSession(info.buyerPeerId, { settleOnly: true });
@@ -1918,7 +1931,8 @@ export class AntseedNode extends EventEmitter {
           debugLog(`[Node] Idle timeout for buyer ${info.buyerPeerId.slice(0, 12)}... — closing channel`);
           void spm.settleSession(info.buyerPeerId, { cleanupOnFailure: true });
         }
-      });
+      };
+      this.on("session:finalized", this._settleOnIdle);
     }
 
     // Start DHT

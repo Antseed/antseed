@@ -18,7 +18,7 @@ export function SellerPage({ title, description, actions, children }: {
 }) {
   const status = useSellerStatus(true, title === 'Seller')
   if (status.isLoading) return <div className="gc-page"><PageHeader title={title} /><LoadingRows rows={6} /></div>
-  if (status.error) return <div className="gc-page"><PageHeader title={title} /><ErrorAlert error={status.error} onRetry={() => void status.refetch()} /></div>
+  if (status.error && !status.data) return <div className="gc-page"><PageHeader title={title} /><ErrorAlert error={status.error} onRetry={() => void status.refetch()} /></div>
   if (!status.data?.available) {
     return (
       <div className="gc-page">

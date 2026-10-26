@@ -16,7 +16,7 @@ import { marketView, peerKey, trustOfRow, trustRank, trustSteps } from './market
 import { NETWORK_SNAPSHOT_TTL_MS, sellerOnlyNetworkLoader, type NetworkLoad, type PeerRow } from './network.js'
 import { readSellerPromote, readSellerVerifications, updateSellerVerifications, VerificationChecks } from './promote.js'
 import { hasSeller, readSellerEventViews, readSellerStatus, SellerUsageReader } from './reader.js'
-import { readSellerAlertSettings, readSellerSettings, updateSellerAlerts, updateSellerSettings } from './settings.js'
+import { readSellerAlertSettings, readSellerSettings, runningSellerSendsTelegram, updateSellerAlerts, updateSellerSettings } from './settings.js'
 import { readSellerStanding, standingTtlMs, type StandingRead } from './standing.js'
 
 export interface SellerMonitorOptions {
@@ -129,6 +129,11 @@ export class SellerMonitor {
     const { dataDir, configPath } = this.seller()
     const alerts = new SellerAlerts({ dataDir, configPath, env: this._env, sellerName: await sellerName(configPath), ...(this._options.fetch ? { fetch: this._options.fetch } : {}) })
     const channels = alerts.channels()
+    const telegramWanted = channel === 'telegram' || (!channel && channels.length === 0)
+    if (telegramWanted && !channels.includes('telegram') && await runningSellerSendsTelegram(dataDir)) {
+      // The running seller has the token from its own environment; this process cannot send as it.
+      throw new ConsoleError(409, 'token_in_seller_env', 'The bot token is set only in the running seller\'s environment, so a test cannot be sent from here. Run "antseed seller alerts test" where the seller runs, or save the token here.')
+    }
     if (channels.length === 0 || (channel && !channels.includes(channel))) {
       throw new ConsoleError(409, 'channel_not_configured', channel === 'webhook' ? 'Save a webhook URL first' : channel === 'telegram' ? 'Save the bot token and chat id first' : 'No alert channel is set up yet')
     }
@@ -225,30 +230,34 @@ export class SellerMonitor {
     }
   }
 
-  async promote(): Promise<SellerPromote> {
+  /**
+   * `wait`: load the network for the trust score when there is no snapshot yet (CLI);
+   * `network: false` skips it. `startChecks: false` reads check results without starting any.
+   */
+  async promote(options: { wait?: boolean; network?: boolean; startChecks?: boolean } = {}): Promise<SellerPromote> {
     const { peerId, services, configPath } = await this._me()
-    const { rows } = await this._snapshot({})
+    const { rows } = options.network === false ? { rows: [] as PeerRow[] } : await this._snapshot({ wait: options.wait ?? false })
     const myRow = peerId ? rows.find((row) => peerKey(String(row['peerId'] ?? '')) === peerKey(peerId)) : undefined
     this._explorer ??= (this._options.explorerUrl ?? defaultExplorerUrl)(configPath).catch(() => null)
-    return readSellerPromote({ configPath, peerId, services: services ?? [], trustScore: trustOfRow(myRow)?.score ?? null, explorerUrl: await this._explorer, checks: this._checks })
+    return readSellerPromote({ configPath, peerId, services: services ?? [], trustScore: trustOfRow(myRow)?.score ?? null, explorerUrl: await this._explorer, checks: this._checks, startChecks: options.startChecks ?? true })
   }
 
   /** Runs the verification checks now (the same ones buyers run). */
-  async checkVerifications(): Promise<SellerPromote> {
+  async checkVerifications(options: { network?: boolean } = {}): Promise<SellerPromote> {
     const { peerId, configPath } = await this._me()
     // The configured claims, not the view: a domain limited to some methods must pass one of those.
     if (peerId) await this._checks.check(peerKey(peerId), await readSellerVerifications(configPath))
-    return this.promote()
+    return this.promote(options)
   }
 
   /** The shareable seller card as SVG. */
-  async card(): Promise<string> {
-    return sellerCardSvg(await this.promote())
+  async card(options: { wait?: boolean; startChecks?: boolean } = {}): Promise<string> {
+    return sellerCardSvg(await this.promote(options))
   }
 
-  async saveVerifications(input: unknown): Promise<SellerPromote> {
+  async saveVerifications(input: unknown, options: { network?: boolean; startChecks?: boolean } = {}): Promise<SellerPromote> {
     await updateSellerVerifications(this.seller().configPath, input)
-    return this.promote()
+    return this.promote(options)
   }
 }
 

@@ -107,6 +107,8 @@ export class ModelHealthChecker {
   private _timer: ReturnType<typeof setInterval> | null = null;
   private _sweepInFlight: Promise<void> | null = null;
   private _stopped = false;
+  /** Services withdrawn before `onChange` could be told; reported on the first start. */
+  private _withdrawnAtInit: ServiceHealthState[] = [];
 
   constructor(config: ModelHealthCheckerConfig) {
     this._targets = config.targets;
@@ -124,6 +126,7 @@ export class ModelHealthChecker {
         state.removed = true;
         state.removedAtIndex = index;
         state.lastDetail = 'Awaiting successful probe after initialization failure';
+        this._withdrawnAtInit.push(state);
       }
       provider.services.splice(0);
     }
@@ -133,6 +136,17 @@ export class ModelHealthChecker {
   start(): void {
     if (this._timer) return;
     this._stopped = false;
+    for (const state of this._withdrawnAtInit.splice(0)) {
+      if (!state.removed) continue;
+      this._emitChange({
+        provider: state.providerName,
+        providerId: state.providerId,
+        service: state.service,
+        status: 'removed',
+        consecutiveFailures: state.consecutiveFailures,
+        detail: state.lastDetail ?? 'initialization failed',
+      });
+    }
     void this.runSweep();
     this._timer = setInterval(() => {
       void this.runSweep();
