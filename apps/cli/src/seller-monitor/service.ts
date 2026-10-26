@@ -13,7 +13,7 @@ import { sellerCardSvg } from './card.js'
 import { readSellerLogDetail, readSellerLogs } from './logs.js'
 import { marketView, peerKey, trustOfRow, trustRank, trustSteps } from './market.js'
 import { NETWORK_SNAPSHOT_TTL_MS, sellerOnlyNetworkLoader, type NetworkLoad, type PeerRow } from './network.js'
-import { readSellerPromote, updateSellerVerifications, VerificationChecks } from './promote.js'
+import { readSellerPromote, readSellerVerifications, updateSellerVerifications, VerificationChecks } from './promote.js'
 import { hasSeller, readSellerEventViews, readSellerStatus, SellerUsageReader } from './reader.js'
 import { readSellerAlertSettings, readSellerSettings, updateSellerAlerts, updateSellerSettings } from './settings.js'
 import { readSellerStanding, standingTtlMs, type StandingRead } from './standing.js'
@@ -213,8 +213,9 @@ export class SellerMonitor {
 
   /** Runs the verification checks now (the same ones buyers run). */
   async checkVerifications(): Promise<SellerPromote> {
-    const view = await this.promote()
-    if (view.peerId) await this._checks.check(view.peerId, { domains: view.domains.map(({ domain }) => ({ domain })), github: view.github.map(({ username, repository }) => ({ username, repository })) })
+    const { peerId, configPath } = await this._me()
+    // The configured claims, not the view: a domain limited to some methods must pass one of those.
+    if (peerId) await this._checks.check(peerKey(peerId), await readSellerVerifications(configPath))
     return this.promote()
   }
 

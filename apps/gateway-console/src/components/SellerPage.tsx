@@ -1,5 +1,7 @@
 import type { ReactNode } from 'react'
+import { useMutation } from '@tanstack/react-query'
 import { Button } from '@antseed/ui'
+import { errorMessage } from '../api/client'
 import type { SellerNetworkMeta } from '../api/types'
 import { formatRelative } from '../lib/format'
 import { useSellerStatus } from '../lib/queries'
@@ -36,7 +38,9 @@ export function SellerPage({ title, description, actions, children }: {
 }
 
 /** Where the market and trust numbers come from and how old they are, with a refresh. */
-export function NetworkLine({ network, onRefresh }: { network: SellerNetworkMeta; onRefresh: () => void }) {
+export function NetworkLine({ network, onRefresh }: { network: SellerNetworkMeta; onRefresh: () => Promise<unknown> }) {
+  // A refresh that fails (dashboard unreachable, endpoint error) says so here rather than leaving the old data looking current.
+  const refresh = useMutation({ mutationFn: onRefresh })
   const when = network.refreshedAt ? `refreshed ${formatRelative(network.refreshedAt)}` : 'not loaded yet'
   return (
     <p className="gc-seller-network gc-fineprint" role="status">
@@ -45,8 +49,9 @@ export function NetworkLine({ network, onRefresh }: { network: SellerNetworkMeta
         {network.refreshing && !network.refreshedAt ? 'Looking at the network. This can take a minute the first time.'
           : `${network.peers} seller${network.peers === 1 ? '' : 's'} on the network${network.source ? `, from ${network.source}` : ''}, ${when}${network.refreshing ? ', refreshing…' : '.'}`}
         {network.error && ` The last refresh failed: ${network.error}`}
+        {refresh.error ? ` Could not refresh: ${errorMessage(refresh.error)}` : null}
       </span>
-      <Button size="sm" variant="link" disabled={network.refreshing} onClick={onRefresh}>Refresh</Button>
+      <Button size="sm" variant="link" disabled={network.refreshing || refresh.isPending} onClick={() => refresh.mutate()}>Refresh</Button>
     </p>
   )
 }

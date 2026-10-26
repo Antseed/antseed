@@ -69,6 +69,11 @@ test('market, reputation and promote: background snapshot, standing, verificatio
     const checked = (await call('POST', '/seller/promote/check')).json
     assert.equal(checked.domains[0].status.verified, true)
     assert.equal(checked.github[0].status.verified, false)
+    // A claim limited to the well-known file must not pass on its DNS record.
+    const config = JSON.parse(readFileSync(configPath, 'utf-8'))
+    config.seller.verifications.domains = [{ domain: 'forge.example', methods: ['https-well-known'] }]
+    writeFileSync(configPath, JSON.stringify(config))
+    assert.equal((await call('POST', '/seller/promote/check')).json.domains[0].status.verified, false)
     assert.equal((await call('PUT', '/seller/promote/verifications', { domains: [{ domain: 'not a domain' }], github: [] })).status, 400)
   } finally {
     await server.close()

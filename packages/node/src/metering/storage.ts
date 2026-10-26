@@ -618,6 +618,10 @@ interface EventRow {
   latency_ms: number;
   status_code: number;
   was_streaming: number;
+  /** Null on rows written before migrations 6 and 7. */
+  service: string | null;
+  error: string | null;
+  cached_input_tokens: number | null;
 }
 
 interface ReceiptRow {
@@ -699,6 +703,9 @@ function rowToEvent(row: EventRow): MeteringEvent {
     latencyMs: row.latency_ms,
     statusCode: row.status_code,
     wasStreaming: row.was_streaming === 1,
+    ...(row.service !== null ? { service: row.service } : {}),
+    ...(row.error !== null ? { error: row.error } : {}),
+    ...(row.cached_input_tokens !== null ? { cachedInputTokens: row.cached_input_tokens } : {}),
   };
 }
 

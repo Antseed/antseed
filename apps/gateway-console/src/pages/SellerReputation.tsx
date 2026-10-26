@@ -26,7 +26,7 @@ export default function SellerReputation() {
         const data = reputation.data!
         return (
           <>
-            <NetworkLine network={data.network} onRefresh={() => void refresh()} />
+            <NetworkLine network={data.network} onRefresh={refresh} />
             <TrustTiles data={data} />
             <div className="gc-grid gc-grid--2">
               <Panel title="How to raise it" description="Biggest gain first.">

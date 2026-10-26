@@ -37,6 +37,16 @@ describe('metering request log page', () => {
     expect(storage.listEventsPage({ limit: 10, fromMs: 1_003 }).map((row) => row.event_id)).toEqual(['e6']);
   });
 
+  it('the event getters return service, error and cached input tokens, and leave them out on older rows', () => {
+    const storage = new MeteringStorage(join(mkdtempSync(join(tmpdir(), 'metering-page-')), 'metering.db'));
+    storage.insertEvent({ ...event(1, 1_000, { service: 'glm-5.3', status: 429 }), error: 'rate limited', cachedInputTokens: 0 });
+    storage.insertEvent(event(2, 1_001));
+    for (const events of [storage.getEventsBySession('s1'), storage.getEventsByTimeRange(0, 2_000)]) {
+      expect([events[0]!.service, events[0]!.error, events[0]!.cachedInputTokens]).toEqual(['glm-5.3', 'rate limited', 0]);
+      expect(['service', 'error', 'cachedInputTokens'].some((field) => field in events[1]!)).toBe(false);
+    }
+  });
+
   it('counts a stream that failed after its 200 as an error', () => {
     const storage = new MeteringStorage(join(mkdtempSync(join(tmpdir(), 'metering-page-')), 'metering.db'));
     storage.insertEvent(event(1, 1_000));

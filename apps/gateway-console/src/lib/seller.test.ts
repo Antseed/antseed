@@ -60,7 +60,7 @@ describe('seller page helpers', () => {
 })
 
 describe('seller editors', async () => {
-  const { draftOf, draftErrors, patchOf } = await import('../components/SellerSettingsEditor')
+  const { draftOf, draftErrors, patchOf, reconcileDraft } = await import('../components/SellerSettingsEditor')
   const { alertsPatchOf } = await import('../components/SellerAlertsEditor')
   const settings = {
     configPath: '/c', writable: true, readOnlyReason: null, displayName: 'S', maxConcurrentBuyers: 50,
@@ -79,6 +79,16 @@ describe('seller editors', async () => {
       pricing: [{ provider: 'openai', service: 'glm-5.3', inputUsdPerMillion: 0.8, outputUsdPerMillion: 3, cachedInputUsdPerMillion: null }],
     })
     expect(draftErrors({ ...base, maxConcurrentBuyers: '0', countries: 'RUS' })).toMatchObject({ maxConcurrentBuyers: expect.any(String), countries: expect.any(String) })
+  })
+
+  it('keeps edits and adds rows when the saved settings gain a service', () => {
+    const base = draftOf(settings)
+    const next = draftOf({ ...settings, services: [...settings.services, { provider: 'openai', service: 'kimi-k3', inputUsdPerMillion: 2, outputUsdPerMillion: 5, cachedInputUsdPerMillion: null, inherited: false }] })
+    expect(reconcileDraft(base, base, next)).toEqual(next)
+    const edited = { ...base, displayName: 'Mine', prices: { 'openai/glm-5.3': { input: '0.5', output: '3', cached: '' } } }
+    const merged = reconcileDraft(edited, base, next)
+    expect(merged.displayName).toBe('Mine')
+    expect(merged.prices).toEqual({ 'openai/glm-5.3': { input: '0.5', output: '3', cached: '' }, 'openai/kimi-k3': { input: '2', output: '5', cached: '' } })
   })
 
   it('requires prices only on the rows being changed', () => {

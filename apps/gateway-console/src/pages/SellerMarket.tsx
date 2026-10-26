@@ -47,7 +47,7 @@ export default function SellerMarket() {
         const average = deltas.length ? deltas.reduce((sum, value) => sum + value, 0) / deltas.length : null
         return (
           <>
-            <NetworkLine network={data.network} onRefresh={() => void refresh()} />
+            <NetworkLine network={data.network} onRefresh={refresh} />
             {!data.found && data.network.refreshedAt !== null && (
               <p className="gc-seller-notice"><span className="gc-attention" aria-hidden="true" />This seller was not in the last network snapshot, so its own trust, load and TEE columns are empty. Prices come from its config.</p>
             )}

@@ -95,6 +95,30 @@ test('upstreams sharing a plugin name keep separate incidents', async () => {
   assert.equal(calls.length, 3, 'a recovery on one leaves the other in its cooldown');
 });
 
+test('a recovery recorded while its alert is still sending follows it, and the next incident alerts', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'seller-alerts-'));
+  const titles: string[] = [];
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let first = true;
+  const alerts = new SellerAlerts({
+    dataDir, config: { telegram: { chatId: '42' }, cooldownMinutes: 30 }, sellerName: 'S', env: { ANTSEED_ALERTS_TELEGRAM_TOKEN: 't' },
+    fetch: (async (_url: string, init: RequestInit) => {
+      titles.push(String(JSON.parse(String(init.body)).text));
+      if (first) { first = false; await held; }
+      return new Response('{}');
+    }) as typeof fetch,
+  });
+  const idle = alerts.record({ kind: 'idle', severity: 'warning', title: 'idle' });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const active = alerts.record({ kind: 'active', severity: 'info', title: 'active' });
+  release();
+  await Promise.all([idle, active]);
+  assert.deepEqual(titles.map((text) => text.split(': ')[1]), ['idle', 'active']);
+  await alerts.record({ kind: 'idle', severity: 'warning', title: 'idle again' });
+  assert.equal(titles.length, 3, 'the recovery closed the incident, so its cooldown is gone');
+});
+
 test('without channels nothing is sent; failures never leak the token', async () => {
   const quiet = harness({});
   await quiet.alerts.record(down);

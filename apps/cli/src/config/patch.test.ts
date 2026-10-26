@@ -24,7 +24,9 @@ test('the backup is the file each accepted edit replaced; a rejected edit leaves
   await assert.rejects(patchValidatedConfig(path, () => { throw new Error('refused') }))
   assert.equal(read(path).identity?.displayName, 'B')
   assert.equal(read(`${path}.bak`).identity?.displayName, 'A', 'a rejected edit keeps the backup')
+  // Either may win the lock first; the backup is always the version the last write replaced.
   await Promise.all([patchValidatedConfig(path, setName('C')), patchValidatedConfig(path, setName('D'))])
-  assert.equal(read(path).identity?.displayName, 'D')
-  assert.equal(read(`${path}.bak`).identity?.displayName, 'C', 'concurrent edits back up the version just before')
+  const last = read(path).identity?.displayName
+  assert.ok(last === 'C' || last === 'D')
+  assert.equal(read(`${path}.bak`).identity?.displayName, last === 'D' ? 'C' : 'D', 'concurrent edits back up the version just before')
 })

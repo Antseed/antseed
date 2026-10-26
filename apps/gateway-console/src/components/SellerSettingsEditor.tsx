@@ -74,6 +74,16 @@ function countryList(text: string): string[] {
 const num = (text: string) => Number(text.trim())
 const numOrNull = (text: string) => (text.trim() === '' ? null : Number(text.trim()))
 
+/**
+ * The draft after the saved settings changed underneath it: an untouched draft
+ * takes the new values; an edited one keeps its edits, gains rows for services
+ * added since and drops rows for services removed.
+ */
+export function reconcileDraft(draft: Draft, base: Draft, next: Draft): Draft {
+  if (JSON.stringify(draft) === JSON.stringify(base)) return next
+  return { ...draft, prices: Object.fromEntries(Object.entries(next.prices).map(([key, price]) => [key, draft.prices[key] ?? price])) }
+}
+
 /** Only what changed from `base`, in the API's shape. */
 export function patchOf(base: Draft, draft: Draft): SellerSettingsPatch {
   const patch: SellerSettingsPatch = {}
@@ -107,7 +117,7 @@ export function SellerSettingsEditor({ settings }: { settings: SellerSettings })
   const [savedPendingRestart, setSavedPendingRestart] = useState(false)
   useEffect(() => {
     const next = draftOf(settings)
-    if (JSON.stringify(draft) === JSON.stringify(base)) setDraft(next)
+    setDraft(reconcileDraft(draft, base, next))
     setBase(next)
     // Only a change of the saved settings should trigger this.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -121,12 +131,14 @@ export function SellerSettingsEditor({ settings }: { settings: SellerSettings })
     row?.scrollIntoView({ block: 'center' })
     row?.querySelector('input')?.focus()
   }, [focusPrice])
+  // Until the effect above catches up, a service new in `settings` shows its saved price.
+  const savedPrices = draftOf(settings).prices
   const errors = draftErrors(draft, base)
   const patch = patchOf(base, draft)
   const changed = Object.keys(patch).length > 0
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) => setDraft((current) => ({ ...current, [key]: value }))
   const setPrice = (key: string, part: 'input' | 'output' | 'cached', value: string) =>
-    setDraft((current) => ({ ...current, prices: { ...current.prices, [key]: { ...current.prices[key]!, [part]: value } } }))
+    setDraft((current) => ({ ...current, prices: { ...current.prices, [key]: { ...(current.prices[key] ?? savedPrices[key]!), [part]: value } } }))
 
   const save = useMutation({
     mutationFn: () => api.seller.updateSettings(patch),
@@ -177,7 +189,7 @@ export function SellerSettingsEditor({ settings }: { settings: SellerSettings })
             <p className="gc-fineprint">USD per million tokens. A service without its own price uses its provider's defaults until you save one.</p>
             {settings.services.map((entry) => {
               const key = priceKey(entry.provider, entry.service)
-              const price = draft.prices[key]!
+              const price = draft.prices[key] ?? savedPrices[key]!
               return (
                 <div key={key} id={`gc-price-${entry.service}`} className="gc-seller-price">
                   <div className="gc-seller-price__name"><span className="gc-ellipsis" title={key}>{entry.service}</span><span className="gc-fineprint">{entry.provider}{entry.inherited ? ' · provider default' : ''}</span></div>

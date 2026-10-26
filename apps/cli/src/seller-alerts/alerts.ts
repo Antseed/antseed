@@ -43,8 +43,12 @@ export class SellerAlerts {
   private readonly _now: () => number;
   /** When each alert last reached each channel, keyed `channel|kind:provider/service`. */
   private readonly _lastSent = new Map<string, number>();
-  /** Alerts being sent right now, same keys, so a burst of repeats sends once. */
-  private readonly _sending = new Set<string>();
+  /**
+   * Deliveries in flight per incident (`kind:provider/service` of the alert):
+   * an alert, its repeats and its recovery go out one after another, so a
+   * recovery that arrives mid-send waits to see whether its alert got through.
+   */
+  private readonly _incidents = new Map<string, Promise<void>>();
   private _lastSentAt: number | null = null;
   private _lastError: string | null = null;
 
@@ -88,33 +92,39 @@ export class SellerAlerts {
   async record(input: Omit<SellerEvent, 'at'> & { at?: number }): Promise<void> {
     const event: SellerEvent = { ...input, at: input.at ?? this._now() };
     await appendSellerEvent(this._opts.dataDir, event).catch((err) => this._opts.log?.(`seller events: ${(err as Error).message}`));
-    const recovers = RECOVERY_OF[event.kind];
-    const key = alertKey(recovers ?? event.kind, event);
-    const channels = this._channelsFor(event, key, recovers !== undefined);
-    if (channels.length === 0) return;
-    for (const channel of channels) this._sending.add(`${channel}|${key}`);
+    const recovery = RECOVERY_OF[event.kind] !== undefined;
+    const key = alertKey(RECOVERY_OF[event.kind] ?? event.kind, event);
+    const run = (this._incidents.get(key) ?? Promise.resolve()).then(() => this._deliver(event, key, recovery));
+    const settled = run.catch(() => {});
+    this._incidents.set(key, settled);
     try {
-      const { sent } = await this.send(event, channels);
-      for (const channel of sent) {
-        if (recovers) this._lastSent.delete(`${channel}|${key}`);
-        else this._lastSent.set(`${channel}|${key}`, this._now());
-      }
+      await run;
     } finally {
-      for (const channel of channels) this._sending.delete(`${channel}|${key}`);
+      if (this._incidents.get(key) === settled) this._incidents.delete(key);
+    }
+  }
+
+  private async _deliver(event: SellerEvent, key: string, recovery: boolean): Promise<void> {
+    const channels = this._channelsFor(event, key, recovery);
+    if (channels.length === 0) return;
+    const { sent } = await this.send(event, channels);
+    for (const channel of sent) {
+      if (recovery) this._lastSent.delete(`${channel}|${key}`);
+      else this._lastSent.set(`${channel}|${key}`, this._now());
     }
   }
 
   private _channelsFor(event: SellerEvent, key: string, recovery: boolean): AlertChannel[] {
     const channels = this.channels() as AlertChannel[];
     // Only announce a recovery where its alert actually went out.
-    if (recovery) return channels.filter((channel) => this._lastSent.has(`${channel}|${key}`) && !this._sending.has(`${channel}|${key}`));
+    if (recovery) return channels.filter((channel) => this._lastSent.has(`${channel}|${key}`));
     if (event.kind === 'test') return channels;
     const config = this.settings.config;
     if (SEVERITY_RANK[event.severity] < SEVERITY_RANK[config.minSeverity ?? 'warning']) return [];
     const cooldownMs = (config.cooldownMinutes ?? DEFAULT_ALERT_COOLDOWN_MINUTES) * 60_000;
     return channels.filter((channel) => {
       const last = this._lastSent.get(`${channel}|${key}`);
-      return !this._sending.has(`${channel}|${key}`) && (last === undefined || this._now() - last >= cooldownMs);
+      return last === undefined || this._now() - last >= cooldownMs;
     });
   }
 

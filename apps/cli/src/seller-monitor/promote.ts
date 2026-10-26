@@ -65,6 +65,11 @@ export class VerificationChecks {
   }
 }
 
+/** The claims as configured (domain methods included), which is what buyers check. */
+export async function readSellerVerifications(configPath: string): Promise<Verifications> {
+  return verificationsOf(await readRaw(configPath))
+}
+
 export async function readSellerPromote(options: {
   configPath: string
   peerId: string | null
