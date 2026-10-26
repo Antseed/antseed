@@ -388,6 +388,8 @@ export function SellerSettingsEditor({ settings }: { settings: SellerSettings })
               description="Serve free models only to buyers whose stake reaches a tier; the limits above are what the multipliers apply to." />
             <Segmented label="Staked tiers" value={draft.freeTiersMode} onChange={(mode) => set('freeTiersMode', mode)}
               options={[{ value: 'default', label: 'Network default' }, { value: 'custom', label: 'Custom' }, { value: 'off', label: 'None' }]} />
+            {/* Any tier mode can be wrong (none with stakers only), so the reason shows under the selector. */}
+            {errors.freeTiers && <p className="gc-warn">{errors.freeTiers}</p>}
             {draft.freeTiersMode === 'default' && (
               <p className="gc-fineprint">{settings.defaultStakeTiers.map((tier) => `${tierAnts(tier)} for a year: ${tierMultiplier(tier)}`).join(' · ')}. Models with their own free tier use these too, unless their config sets others.</p>
             )}
@@ -400,7 +402,6 @@ export function SellerSettingsEditor({ settings }: { settings: SellerSettings })
                     {!readOnly && <Button size="sm" variant="link" className="gc-seller-inline-button" aria-label={`Remove tier ${index + 1}`} onClick={() => set('freeTiers', draft.freeTiers.filter((_, at) => at !== index))}>Remove</Button>}
                   </div>
                 ))}
-                {errors.freeTiers && <p className="gc-warn">{errors.freeTiers}</p>}
                 {!readOnly && draft.freeTiers.length < MAX_TIERS && (
                   <div><Button size="sm" variant="outline" onClick={() => set('freeTiers', [...draft.freeTiers, { ants: '', multiplier: '' }])}>Add tier</Button></div>
                 )}
