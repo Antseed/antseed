@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Button, CopyButton, TextField, useToast } from '@antseed/ui'
 import { api } from '../api'
@@ -113,23 +113,49 @@ function StatusBadge({ status }: { status: SellerVerificationStatus | null }) {
   return status.verified ? <Badge tone="success">Verified</Badge> : <Badge tone="warning">Not verified yet</Badge>
 }
 
+type GithubClaim = { username: string; repository: string }
+const domainsOf = (data: Promote) => data.domains.map((entry) => entry.domain)
+const githubOf = (data: Promote): GithubClaim[] => data.github.map((entry) => ({ username: entry.username, repository: entry.repository }))
+
+/**
+ * A claims list after the saved list changed underneath the editor: the new
+ * saved claims, minus the ones removed here, plus the ones added here.
+ */
+export function reconcileClaims<T>(draft: T[], base: T[], next: T[], keyOf: (item: T) => string): T[] {
+  const keys = (items: T[]) => new Set(items.map(keyOf))
+  const [inDraft, inBase] = [keys(draft), keys(base)]
+  const removed = new Set([...inBase].filter((key) => !inDraft.has(key)))
+  const kept = next.filter((item) => !removed.has(keyOf(item)))
+  const keptKeys = keys(kept)
+  return [...kept, ...draft.filter((item) => !inBase.has(keyOf(item)) && !keptKeys.has(keyOf(item)))]
+}
+
+const githubKey = (claim: GithubClaim) => claim.username.toLowerCase()
+
 function VerificationPanel({ data }: { data: Promote }) {
   const queryClient = useQueryClient()
   const toast = useToast()
-  const [domains, setDomains] = useState(() => data.domains.map((entry) => entry.domain))
-  const [github, setGithub] = useState(() => data.github.map((entry) => ({ username: entry.username, repository: entry.repository })))
+  const [domains, setDomains] = useState(() => domainsOf(data))
+  const [github, setGithub] = useState(() => githubOf(data))
   const [newDomain, setNewDomain] = useState('')
   const [newGithub, setNewGithub] = useState('')
   const [saved, setSaved] = useState(false)
-  const base = useRef(JSON.stringify([data.domains.map((entry) => entry.domain), data.github.map((entry) => ({ username: entry.username, repository: entry.repository }))]))
+  const [base, setBase] = useState(() => ({ domains: domainsOf(data), github: githubOf(data) }))
+  // Saved claims can change elsewhere (CLI, another tab); keep only this editor's own additions and removals.
   useEffect(() => {
-    base.current = JSON.stringify([data.domains.map((entry) => entry.domain), data.github.map((entry) => ({ username: entry.username, repository: entry.repository }))])
+    const next = { domains: domainsOf(data), github: githubOf(data) }
+    setDomains((draft) => reconcileClaims(draft, base.domains, next.domains, (domain) => domain))
+    setGithub((draft) => reconcileClaims(draft, base.github, next.github, githubKey))
+    setBase(next)
+    // Only a change of the saved claims should trigger this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data])
-  const changed = JSON.stringify([domains, github]) !== base.current
+  const changed = JSON.stringify([domains, github]) !== JSON.stringify([base.domains, base.github])
   const update = (next: Promote) => {
     queryClient.setQueryData(qk.sellerPromote, next)
-    setDomains(next.domains.map((entry) => entry.domain))
-    setGithub(next.github.map((entry) => ({ username: entry.username, repository: entry.repository })))
+    setBase({ domains: domainsOf(next), github: githubOf(next) })
+    setDomains(domainsOf(next))
+    setGithub(githubOf(next))
   }
   const save = useMutation({
     mutationFn: () => api.seller.saveVerifications({ domains: domains.map((domain) => ({ domain })), github: github.map(({ username, repository }) => (repository && repository.toLowerCase() !== username.toLowerCase() ? { username, repository } : { username })) }),

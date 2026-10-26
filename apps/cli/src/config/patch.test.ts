@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -29,4 +29,16 @@ test('the backup is the file each accepted edit replaced; a rejected edit leaves
   const last = read(path).identity?.displayName
   assert.ok(last === 'C' || last === 'D')
   assert.equal(read(`${path}.bak`).identity?.displayName, last === 'D' ? 'C' : 'D', 'concurrent edits back up the version just before')
+})
+
+test('a replaced backup takes the config file\'s current mode', async () => {
+  const path = join(tempDir(), 'config.json')
+  writeFileSync(path, JSON.stringify({ identity: { displayName: 'A' } }), { mode: 0o644 })
+  chmodSync(path, 0o644)
+  await patchValidatedConfig(path, setName('B'))
+  assert.equal(statSync(`${path}.bak`).mode & 0o777, 0o644)
+  chmodSync(path, 0o600)
+  await patchValidatedConfig(path, setName('C'))
+  assert.equal(statSync(`${path}.bak`).mode & 0o777, 0o600)
+  assert.equal(statSync(path).mode & 0o777, 0o600)
 })

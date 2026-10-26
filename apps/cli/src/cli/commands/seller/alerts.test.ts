@@ -252,3 +252,28 @@ test('shutdown waits for a stalled stopped alert only briefly', async () => {
   assert.ok(Date.now() - started < 1_000);
   await waitAtMost(Promise.reject(new Error('offline')), 50);
 });
+
+test('a config edit that is not valid JSON keeps the last good alert settings', async () => {
+  const { writeFileSync } = await import('node:fs');
+  const dataDir = mkdtempSync(join(tmpdir(), 'seller-alerts-'));
+  const configPath = join(dataDir, 'config.json');
+  writeFileSync(configPath, JSON.stringify({ seller: { alerts: { telegram: { chatId: '42' }, webhook: { url: 'https://hooks.example/x' }, idleMinutes: 30 } } }));
+  let now = 0;
+  const alerts = new SellerAlerts({ dataDir, configPath, sellerName: 'S', env: { ANTSEED_ALERTS_TELEGRAM_TOKEN: 't' }, now: () => now });
+  assert.deepEqual(alerts.channels(), ['telegram', 'webhook']);
+  const errors: unknown[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => { errors.push(args.join(' ')); };
+  try {
+    writeFileSync(configPath, '{ "seller": { "alerts": ');
+    now += 3_000;
+    assert.deepEqual(alerts.channels(), ['telegram', 'webhook']);
+    assert.equal(alerts.idleMinutes(), 30);
+  } finally {
+    console.error = original;
+  }
+  assert.match(String(errors[0]), /Keeping the previous alert settings: .*not valid JSON/);
+  writeFileSync(configPath, JSON.stringify({ seller: { alerts: { idleMinutes: 5 } } }));
+  now += 3_000;
+  assert.equal(alerts.idleMinutes(), 5, 'a fixed file applies again');
+});

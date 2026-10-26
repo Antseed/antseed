@@ -76,10 +76,15 @@ async function patchConfigTarget(path: string, mutate: (config: JsonObject) => v
   const mode = raw === null ? 0o600 : (await stat(path)).mode & 0o777
   if (raw === null) await mkdir(dirname(path), { recursive: true })
   // The backup is the exact file this edit replaces, written only once the edit is accepted.
-  if (backup && raw !== null) await writeFile(`${path}.bak`, raw, { mode })
+  // Both are replaced through a fresh file, so each always gets the config's current mode.
+  if (backup && raw !== null) await replaceFile(`${path}.bak`, raw, mode)
+  await replaceFile(path, `${JSON.stringify(config, null, 2)}\n`, mode)
+}
+
+async function replaceFile(path: string, contents: string, mode: number): Promise<void> {
   const temp = `${path}.${randomBytes(6).toString('hex')}.tmp`
   try {
-    await writeFile(temp, `${JSON.stringify(config, null, 2)}\n`, { mode })
+    await writeFile(temp, contents, { mode })
     await chmod(temp, mode)
     await rename(temp, path)
   } catch (error) {

@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
+import { identityFromPrivateKeyHex } from '@antseed/node'
 import { startSellerDashboard } from './dashboard-server.js'
 import { fakeNetworkRows, writeSellerFixture } from './fixture.js'
 import { updateSellerVerifications, VerificationChecks } from './promote.js'
@@ -88,4 +89,30 @@ test('saving claims keeps the proof methods of the domains already there', async
     domains: [{ domain: 'seller.example', methods: ['https-well-known'] }, { domain: 'new.example' }],
     github: [{ username: 'seller-dev' }],
   })
+})
+
+test('a stopped seller (journal, no daemon state) is still known by its stored identity', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'seller-insights-'))
+  const key = '11'.repeat(32)
+  writeFileSync(join(dir, 'identity.key'), key, { mode: 0o600 })
+  writeSellerFixture(dir, { events: [{ at: 1, kind: 'stopped', severity: 'info', title: 'Seller stopped' }] })
+  const configPath = join(dir, 'config.json')
+  writeFileSync(configPath, JSON.stringify({ seller: { providers: {} } }))
+  const server = await startSellerDashboard({
+    dataDir: dir, configPath, version: '9.9.9', port: 0, env: {},
+    network: async () => ({ rows: [], source: 'test network' }),
+    standing: async () => { throw new Error('not needed') },
+    explorerUrl: async () => 'https://explorer.example',
+  })
+  const token = new URL(server.url).searchParams.get('token')!
+  try {
+    const response = await fetch(`${new URL(server.url).origin}/console/api/seller/promote`, { headers: { authorization: `Bearer ${token}` } })
+    const promote = await response.json() as { peerId: string | null; profileUrl: string | null }
+    const expected = identityFromPrivateKeyHex(key).peerId
+    assert.equal(promote.peerId, expected)
+    assert.equal(promote.profileUrl, `https://explorer.example/account/0x${expected}`)
+    assert.equal(readFileSync(join(dir, 'identity.key'), 'utf8'), key, 'the identity is only read')
+  } finally {
+    await server.close()
+  }
 })

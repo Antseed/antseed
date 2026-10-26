@@ -125,11 +125,33 @@ export function resolveAlerts(config: SellerAlertsConfig | undefined, secrets: A
   };
 }
 
-/** `seller.alerts` as written in the config file (alerts have no defaults), with malformed fields left out. */
+/**
+ * `seller.alerts` as written in the config file (alerts have no defaults), with
+ * malformed fields left out. Throws when the file cannot be read or parsed, so
+ * a live reload keeps its last good settings instead of dropping them.
+ */
+export function readAlertsConfigStrict(configPath: string): SellerAlertsConfig | undefined {
+  let text: string;
+  try {
+    text = readFileSync(configPath, 'utf-8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw new Error(`cannot read ${configPath}: ${(error as Error).message}`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error(`${configPath} is not valid JSON`);
+  }
+  const seller = parsed && typeof parsed === 'object' ? (parsed as { seller?: unknown }).seller : undefined;
+  return normalizeSellerAlerts(seller && typeof seller === 'object' ? (seller as { alerts?: unknown }).alerts : undefined);
+}
+
+/** `readAlertsConfigStrict`, but an unreadable file reads as no alerts (one-off reads for display). */
 export function readAlertsConfig(configPath: string): SellerAlertsConfig | undefined {
   try {
-    const parsed = JSON.parse(readFileSync(configPath, 'utf-8')) as { seller?: { alerts?: unknown } };
-    return normalizeSellerAlerts(parsed.seller?.alerts);
+    return readAlertsConfigStrict(configPath);
   } catch {
     return undefined;
   }
@@ -166,7 +188,7 @@ export class AlertSettingsSource {
     if (!this._resolved || stamp !== this._stamp) {
       this._stamp = stamp;
       try {
-        const config = applyAlertOverrides(configPath ? readAlertsConfig(configPath) : this._options.config, readAlertOverrides(dataDir));
+        const config = applyAlertOverrides(configPath ? readAlertsConfigStrict(configPath) : this._options.config, readAlertOverrides(dataDir));
         this._resolved = resolveAlerts(config, readAlertSecrets(dataDir), this._options.env ?? process.env);
       } catch (error) {
         // An edit that cannot be applied keeps the last good settings; the timers that ask must never throw.

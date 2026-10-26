@@ -146,3 +146,17 @@ describe('market helpers', async () => {
     expect(deltaText(32)).toBe('32% above')
   })
 })
+
+describe('promote claims', async () => {
+  const { reconcileClaims } = await import('../pages/SellerPromote')
+  const id = (value: string) => value
+
+  it('takes claims saved elsewhere and keeps this editor\'s own additions and removals', () => {
+    const base = ['a.example', 'b.example']
+    const draft = ['a.example', 'mine.example'] // removed b, added mine
+    const next = ['a.example', 'b.example', 'cli.example'] // the CLI added cli
+    expect(reconcileClaims(draft, base, next, id)).toEqual(['a.example', 'cli.example', 'mine.example'])
+    expect(reconcileClaims(base, base, next, id)).toEqual(next)
+    expect(reconcileClaims(['a.example', 'x.example'], base, ['a.example', 'x.example'], id)).toEqual(['a.example', 'x.example'])
+  })
+})

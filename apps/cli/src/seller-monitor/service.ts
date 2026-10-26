@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { FileIdentityStore, identityFromPrivateKeyHex } from '@antseed/node'
 import { ConsoleError } from '../gateway/console-api/router.js'
 import type {
   SellerAlertSettings, SellerEventView, SellerLogDetail, SellerLogPage, SellerLogQuery, SellerMarket, SellerNetworkMeta, SellerPromote, SellerReputation,
@@ -52,6 +53,7 @@ export class SellerMonitor {
   private readonly _standings = new Map<string, BackgroundValue<StandingRead>>()
   private readonly _checks: VerificationChecks
   private _explorer: Promise<string | null> | null = null
+  private _storedPeerIds = new Map<string, Promise<string | null>>()
 
   constructor(private readonly _options: SellerMonitorOptions) {
     this._env = _options.env ?? process.env
@@ -158,12 +160,29 @@ export class SellerMonitor {
     }
   }
 
-  /** The seller's peer id (from its running state) and configured services, when readable. */
+  /** The seller's peer id (from its running state, else its stored identity) and configured services, when readable. */
   private async _me(): Promise<{ peerId: string | null; services: SellerServicePricing[] | null; dataDir: string; configPath: string }> {
     const { dataDir, configPath } = this.seller()
     const status = await readSellerStatus(dataDir, this._options.version)
     const services = await readSellerSettings(configPath).then((settings) => settings.services, () => null)
-    return { peerId: status.available ? status.peerId : null, services, dataDir, configPath }
+    const peerId = status.available ? status.peerId ?? await this._storedPeerId(dataDir) : null
+    return { peerId, services, dataDir, configPath }
+  }
+
+  /**
+   * A stopped seller's peer id, from the identity it keeps in its data dir.
+   * Read only: a missing, encrypted or unreadable key is null, never a new identity.
+   */
+  private _storedPeerId(dataDir: string): Promise<string | null> {
+    let entry = this._storedPeerIds.get(dataDir)
+    if (!entry) {
+      entry = new FileIdentityStore(dataDir).load()
+        .then((hex) => (hex && hex.length === 64 ? identityFromPrivateKeyHex(hex).peerId : null), () => null)
+      // Only a found id is kept; a seller that has not made one yet is looked up again.
+      void entry.then((peerId) => { if (peerId === null) this._storedPeerIds.delete(dataDir) })
+      this._storedPeerIds.set(dataDir, entry)
+    }
+    return entry
   }
 
   async market(options: { refresh?: boolean; wait?: boolean } = {}): Promise<SellerMarket> {
