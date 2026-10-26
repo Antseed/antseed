@@ -695,10 +695,20 @@ export class AntseedNode extends EventEmitter {
     );
     debugLog(`[Node] Starting as ${this._config.role} with ${bootstrapNodes.length} bootstrap node(s)`);
 
-    if (this._config.role === "seller") {
-      await this._startSeller(bootstrapNodes);
-    } else {
-      await this._startBuyer(bootstrapNodes);
+    try {
+      if (this._config.role === "seller") {
+        await this._startSeller(bootstrapNodes);
+      } else {
+        await this._startBuyer(bootstrapNodes);
+      }
+    } catch (error) {
+      // A start that fails partway (say the DHT after the payment store and
+      // RPC monitor) releases what it opened, so a retry starts clean.
+      this._started = true;
+      await this.stop().catch((err: unknown) => {
+        debugWarn(`[Node] Cleanup after a failed start failed: ${err instanceof Error ? err.message : err}`);
+      });
+      throw error;
     }
 
     this._started = true;

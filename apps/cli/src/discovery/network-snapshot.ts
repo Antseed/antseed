@@ -68,8 +68,9 @@ export async function discoverNetwork(config: AntseedConfig, options: { serviceF
     ...(payments ? { payments: { ...payments, ...(readProvider ? { readProvider } : {}) } } : {}),
   })
   return withRpcSource(options.rpcSource ?? 'discovery', async () => {
-    await node.start()
     try {
+      // Inside the try: a start that fails partway is still stopped (the node releases what it opened).
+      await node.start()
       const peers = await node.discoverPeers(options.serviceFilter)
       // Only stamp a refresh time when enrichment could have run, from the per-peer read times.
       const latest = peers.map((peer) => peer.onChainStatsFetchedAt ?? 0).reduce((max, value) => (value > max ? value : max), 0)

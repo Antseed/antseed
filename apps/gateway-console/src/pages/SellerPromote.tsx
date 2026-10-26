@@ -119,14 +119,20 @@ const githubOf = (data: Promote): GithubClaim[] => data.github.map((entry) => ({
 
 /**
  * A claims list after the saved list changed underneath the editor: the new
- * saved claims, minus the ones removed here, plus the ones added here.
+ * saved claims, minus the ones removed here, plus the ones added here, with a
+ * claim edited here (say a GitHub account's repository) kept as edited.
  */
 export function reconcileClaims<T>(draft: T[], base: T[], next: T[], keyOf: (item: T) => string): T[] {
-  const keys = (items: T[]) => new Set(items.map(keyOf))
-  const [inDraft, inBase] = [keys(draft), keys(base)]
-  const removed = new Set([...inBase].filter((key) => !inDraft.has(key)))
-  const kept = next.filter((item) => !removed.has(keyOf(item)))
-  const keptKeys = keys(kept)
+  const byKey = (items: T[]) => new Map(items.map((item) => [keyOf(item), item]))
+  const [inDraft, inBase] = [byKey(draft), byKey(base)]
+  const same = (a: T, b: T) => JSON.stringify(a) === JSON.stringify(b)
+  const removed = new Set([...inBase.keys()].filter((key) => !inDraft.has(key)))
+  const kept = next.filter((item) => !removed.has(keyOf(item))).map((item) => {
+    const mine = inDraft.get(keyOf(item))
+    const was = inBase.get(keyOf(item))
+    return mine && was && !same(mine, was) ? mine : item
+  })
+  const keptKeys = new Set(kept.map(keyOf))
   return [...kept, ...draft.filter((item) => !inBase.has(keyOf(item)) && !keptKeys.has(keyOf(item)))]
 }
 

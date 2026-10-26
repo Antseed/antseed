@@ -107,6 +107,15 @@ describe('seller editors', async () => {
     })
   })
 
+  it('a price edit keeps the other price fields of that row saved elsewhere', () => {
+    const base = draftOf(settings)
+    const edited = { ...base, prices: { 'openai/glm-5.3': { ...base.prices['openai/glm-5.3']!, input: '0.5' } } }
+    const next = draftOf({ ...settings, services: [{ ...settings.services[0]!, outputUsdPerMillion: 4 }] })
+    const merged = reconcileDraft(edited, base, next)
+    expect(merged.prices['openai/glm-5.3']).toEqual({ input: '0.5', output: '4', cached: '' })
+    expect(patchOf(next, merged).pricing).toEqual([{ provider: 'openai', service: 'glm-5.3', inputUsdPerMillion: 0.5, outputUsdPerMillion: 4, cachedInputUsdPerMillion: null }])
+  })
+
   it('alert drafts rebase the same way', async () => {
     const { rebaseDraft } = await import('./settings')
     const base = { chatId: '1', token: '', clearToken: false, webhookUrl: '', clearWebhook: false, idleMinutes: '30', cooldownMinutes: '30', minSeverity: 'warning' as const }
@@ -181,5 +190,13 @@ describe('promote claims', async () => {
     expect(reconcileClaims(draft, base, next, id)).toEqual(['a.example', 'cli.example', 'mine.example'])
     expect(reconcileClaims(base, base, next, id)).toEqual(next)
     expect(reconcileClaims(['a.example', 'x.example'], base, ['a.example', 'x.example'], id)).toEqual(['a.example', 'x.example'])
+  })
+
+  it('keeps a repository edited here when a status check refreshes the saved claim', () => {
+    const key = (claim: { username: string; repository: string }) => claim.username.toLowerCase()
+    const base = [{ username: 'dev', repository: 'dev' }, { username: 'other', repository: 'other' }]
+    const draft = [{ username: 'dev', repository: 'proofs' }, { username: 'other', repository: 'other' }]
+    const next = [{ username: 'dev', repository: 'dev' }, { username: 'other', repository: 'other-new' }]
+    expect(reconcileClaims(draft, base, next, key)).toEqual([{ username: 'dev', repository: 'proofs' }, { username: 'other', repository: 'other-new' }])
   })
 })

@@ -125,7 +125,12 @@ const numOrNull = (text: string) => (text.trim() === '' ? null : Number(text.tri
  * services added or removed since included) takes the new saved values.
  */
 export function reconcileDraft(draft: Draft, base: Draft, next: Draft): Draft {
-  return { ...rebaseDraft(draft, base, next), prices: rebaseDraft(draft.prices, base.prices, next.prices), free: rebaseDraft(draft.free, base.free, next.free) }
+  return { ...rebaseDraft(draft, base, next), prices: rebaseRows(draft.prices, base.prices, next.prices), free: rebaseRows(draft.free, base.free, next.free) }
+}
+
+/** Rows keyed by provider/service, each rebased field by field (an input edit here keeps an output change saved elsewhere). */
+function rebaseRows<T extends object>(draft: Record<string, T>, base: Record<string, T>, next: Record<string, T>): Record<string, T> {
+  return Object.fromEntries(Object.entries(next).map(([key, row]) => [key, draft[key] && base[key] ? rebaseDraft(draft[key], base[key], row) : row]))
 }
 
 const windowOf = (hours: string) => {
