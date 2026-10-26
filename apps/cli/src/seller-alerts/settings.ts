@@ -225,12 +225,14 @@ export interface TelegramChat {
 /**
  * Chats that recently messaged the bot or added it, from getUpdates, newest
  * first. Telegram keeps updates for 24 hours and only while no webhook is set.
+ * Reads the latest 100 (a negative offset), so a backlog never hides a new chat;
+ * Telegram then drops the older pending updates, which an alerts bot never reads.
  */
 export async function findTelegramChats(token: string, options: { fetch?: typeof fetch; env?: NodeJS.ProcessEnv } = {}): Promise<TelegramChat[]> {
   const doFetch = options.fetch ?? fetch;
   let response: Response;
   try {
-    response = await doFetch(`${telegramApiBase(options.env)}/bot${token}/getUpdates?limit=100`, { signal: AbortSignal.timeout(10_000) });
+    response = await doFetch(`${telegramApiBase(options.env)}/bot${token}/getUpdates?offset=-100&limit=100`, { signal: AbortSignal.timeout(10_000) });
   } catch (error) {
     throw new Error(`Could not reach Telegram: ${(error as Error).message.replaceAll(token, '<token>')}`);
   }

@@ -122,6 +122,8 @@ test('alert secrets go to the secrets file, never to config.json or a response',
     const chats = await call('POST', '/seller/alerts/telegram/chats', {})
     assert.deepEqual(chats.json!.chats, [{ id: '42', title: 'Dana', type: 'private' }, { id: '-1001', title: 'Ops', type: 'supergroup' }])
     assert.ok(!chats.text.includes(TOKEN))
+    // The latest updates, not the oldest page: a backlog never hides a new chat.
+    assert.match(outbound.at(-1)!.url, /\/getUpdates\?offset=-100&limit=100$/)
 
     assert.equal((await call('PATCH', '/seller/alerts', { telegramBotToken: 'not-a-token' })).status, 400)
     assert.equal((await call('PATCH', '/seller/alerts', { webhookUrl: 'http://example.com/x' })).status, 400)
