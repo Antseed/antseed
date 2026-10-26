@@ -86,6 +86,34 @@ function validateCategoryList(
   }
 }
 
+function validateFallbackUpstreams(
+  path: string,
+  providerCfg: SellerProviderConfig,
+  errors: string[],
+): void {
+  for (const [index, fallback] of (providerCfg.fallbackUpstreams ?? []).entries()) {
+    const fallbackPath = `${path}[${index}]`;
+    if (!/^https?:\/\//i.test(fallback.baseUrl) || !URL.canParse(fallback.baseUrl)) {
+      errors.push(`${fallbackPath}.baseUrl must be an http(s) URL`);
+    }
+    if (fallback.apiKeyEnv !== undefined && fallback.apiKeyEnv.length === 0) {
+      errors.push(`${fallbackPath}.apiKeyEnv must be a non-empty string when provided`);
+    }
+    if (fallback.services === undefined) continue;
+    if (Object.keys(fallback.services).length === 0) {
+      errors.push(`${fallbackPath}.services must list at least one service when provided`);
+    }
+    for (const [serviceId, serviceCfg] of Object.entries(fallback.services)) {
+      if (!(serviceId in providerCfg.services)) {
+        errors.push(`${fallbackPath}.services.${serviceId} is not a service of this provider`);
+      }
+      if (serviceCfg.upstreamModel !== undefined && serviceCfg.upstreamModel.length === 0) {
+        errors.push(`${fallbackPath}.services.${serviceId}.upstreamModel must be a non-empty string when provided`);
+      }
+    }
+  }
+}
+
 function validateSellerProviders(
   path: string,
   providers: Record<string, SellerProviderConfig>,
@@ -107,6 +135,7 @@ function validateSellerProviders(
         errors.push(`${providerPath}.baseUrl must be a valid URL`);
       }
     }
+    validateFallbackUpstreams(`${providerPath}.fallbackUpstreams`, providerCfg, errors);
     for (const [serviceId, serviceCfg] of Object.entries(providerCfg.services)) {
       const servicePath = `${providerPath}.services.${serviceId}`;
       if (serviceCfg.upstreamModel !== undefined && serviceCfg.upstreamModel.trim().length === 0) {

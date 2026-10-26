@@ -356,8 +356,45 @@ export function buildSellerPluginRuntimeEnv(
       runtimeEnv[`${envPrefix}_API_KEY`] = apiKey
     }
   }
+  if (providerCfg.fallbackUpstreams && providerCfg.fallbackUpstreams.length > 0) {
+    runtimeEnv['ANTSEED_FALLBACK_UPSTREAMS_JSON'] = JSON.stringify(
+      providerCfg.fallbackUpstreams.map((fallback, index) => {
+        let apiKey: string | undefined
+        if (fallback.apiKeyEnv) {
+          apiKey = process.env[fallback.apiKeyEnv]
+          if (!apiKey) {
+            throw new Error(`fallbackUpstreams[${index}] of provider "${providerName}" reads its API key from ${fallback.apiKeyEnv}, which is not set`)
+          }
+        }
+        const serviceAliasMap = Object.fromEntries(
+          Object.entries(fallback.services ?? {})
+            .filter(([, service]) => service.upstreamModel)
+            .map(([serviceId, service]) => [serviceId, service.upstreamModel]),
+        )
+        return {
+          baseUrl: fallback.baseUrl,
+          ...(apiKey ? { apiKey } : {}),
+          ...(fallback.services ? { services: Object.keys(fallback.services) } : {}),
+          ...(Object.keys(serviceAliasMap).length > 0 ? { serviceAliasMap } : {}),
+          ...(fallback.pathRewrite ? { pathRewrite: fallback.pathRewrite } : {}),
+        }
+      }),
+    )
+  }
 
   return runtimeEnv
+}
+
+export function getUnsupportedFallbackUpstreamsWarning(
+  providerName: string,
+  providerConfig: SellerProviderConfig,
+  configFields: ConfigField[],
+): string | undefined {
+  if (!providerConfig.fallbackUpstreams?.length) return undefined
+  if (configFields.some((field) => field.key === 'ANTSEED_FALLBACK_UPSTREAMS_JSON')) {
+    return undefined
+  }
+  return `Provider "${providerName}" (${providerConfig.plugin}) ignores fallbackUpstreams because its plugin does not support them.`
 }
 
 export function getUnsupportedUnitBillingWarning(
@@ -481,9 +518,12 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         try {
           const plugin = await loadProviderPlugin(packageName)
           const configFields = plugin.configSchema ?? plugin.configKeys ?? []
-          const unitBillingWarning = getUnsupportedUnitBillingWarning(providerName, providerCfg, configFields)
-          if (unitBillingWarning) {
-            spinner.warn(chalk.yellow(unitBillingWarning))
+          for (const warning of [
+            getUnsupportedUnitBillingWarning(providerName, providerCfg, configFields),
+            getUnsupportedFallbackUpstreamsWarning(providerName, providerCfg, configFields),
+          ]) {
+            if (!warning) continue
+            spinner.warn(chalk.yellow(warning))
             spinner.start(`Loading provider plugin "${packageName}" for "${providerName}"...`)
           }
           const runtimeEnv = buildSellerPluginRuntimeEnv(effectiveSellerConfig, providerName)

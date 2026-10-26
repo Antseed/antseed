@@ -1,5 +1,5 @@
-export { HttpRelay, type RelayConfig, type RelayCallbacks } from './http-relay.js';
-export { DEFAULT_HTTP_TIMEOUT_MS } from './http-relay.js';
+export { HttpRelay, type RelayConfig, type RelayCallbacks, type RelayFallbackUpstream } from './http-relay.js';
+export { DEFAULT_HTTP_TIMEOUT_MS, DEFAULT_UPSTREAM_COOLDOWN_MS, FAILOVER_STATUS_CODES } from './http-relay.js';
 export { swapAuthHeader, validateRequestService, KNOWN_AUTH_HEADERS } from './auth-swap.js';
 export { StaticTokenProvider, OAuthTokenProvider, createTokenProvider, type AuthType } from './token-providers.js';
 export { OAuthRefreshError } from './token-providers.js';
@@ -11,6 +11,8 @@ export {
   parseServiceCapabilitiesJson,
   parseServiceUnitBillingModelsJson,
   parseServicePricingJson,
+  parseFallbackUpstreamsJson,
+  type FallbackUpstreamConfig,
   parseCsv,
   parseJsonObject,
   buildServiceApiProtocols,
