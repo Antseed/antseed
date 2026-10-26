@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { MeteringStorage, type MeteringEventPageRow } from '@antseed/node/metering'
-import { ChannelStore } from '@antseed/node/payments'
+import { CHANNEL_KIND, ChannelStore, type StoredChannel } from '@antseed/node/payments'
 import type { SellerLogDetail, SellerLogEntry, SellerLogPage, SellerLogQuery } from '../gateway/console-api/types.js'
 
 export const DEFAULT_LOG_PAGE = 50
@@ -105,31 +105,41 @@ export function readSellerLogDetail(dataDir: string, id: string): SellerLogDetai
       costUsd: row.session ? row.session.total_cost_cents / 100 : null,
       avgLatencyMs: row.session?.avg_latency_ms ?? null,
     },
-    channel: channelAt(dataDir, row.buyer_peer_id, row.timestamp),
+    channel: channelFor(dataDir, row.buyer_peer_id, row.timestamp, row.request_id),
   }
 }
 
-/** The seller-side channel with this buyer that was open when the request ran (newest first). */
-function channelAt(dataDir: string, buyerPeerId: string, at: number): SellerLogDetail['channel'] {
+/**
+ * The channel that paid for the request: the one-off channel recorded for its
+ * request id, else the regular channel with this buyer that was open when it
+ * ran (newest first).
+ */
+function channelFor(dataDir: string, buyerPeerId: string, at: number, requestId: string | null): SellerLogDetail['channel'] {
   if (!existsSync(join(dataDir, 'payments', 'sessions.db'))) return null
   const store = new ChannelStore(join(dataDir, 'payments'))
   try {
+    const oneOff = requestId ? store.getOneOffChannelByRequest(buyerPeerId, 'seller', requestId) : null
+    if (oneOff) return channelView(oneOff)
     // Peer ids are the buyer's EVM address without 0x; channels store it with.
-    const channels = store.getAllChannelsByBuyer('seller', `0x${buyerPeerId.replace(/^0x/, '').toLowerCase()}`)
+    const channels = store.getAllChannelsByBuyer('seller', `0x${buyerPeerId.replace(/^0x/, '').toLowerCase()}`, CHANNEL_KIND.PAID)
     // An active channel may carry the time of a partial settle; it still covers later requests.
     const channel = channels.find((entry) => entry.reservedAt <= at && (entry.status === 'active' || entry.settledAt === null || entry.settledAt >= at))
-    if (!channel) return null
-    return {
-      id: channel.sessionId,
-      status: channel.status,
-      openedAt: channel.reservedAt,
-      settledAt: channel.settledAt,
-      authorizedUsd: usd(channel.authMax),
-      deliveredUsd: usd(channel.tokensDelivered),
-      settledUsd: channel.settledAmount === null ? null : usd(channel.settledAmount),
-      requests: channel.requestCount,
-    }
+    return channel ? channelView(channel) : null
   } finally {
     store.close()
+  }
+}
+
+function channelView(channel: StoredChannel): NonNullable<SellerLogDetail['channel']> {
+  return {
+    id: channel.sessionId,
+    oneOff: channel.channelKind === CHANNEL_KIND.ONE_OFF,
+    status: channel.status,
+    openedAt: channel.reservedAt,
+    settledAt: channel.settledAt,
+    authorizedUsd: usd(channel.authMax),
+    deliveredUsd: usd(channel.tokensDelivered),
+    settledUsd: channel.settledAmount === null ? null : usd(channel.settledAmount),
+    requests: channel.requestCount,
   }
 }

@@ -20,6 +20,9 @@ describe('seller events journal', () => {
     await appendSellerEvent(dir, event(1));
     appendFileSync(join(dir, 'seller-events.jsonl'), '{"at":2,"kind":"mod');
     expect((await readSellerEvents(dir)).map((e) => e.at)).toEqual([1]);
+    // The next event after the crash is still readable.
+    await appendSellerEvent(dir, event(3));
+    expect((await readSellerEvents(dir)).map((e) => e.at)).toEqual([3, 1]);
   });
 
   it('rotates past the size cap and still reads across both files', async () => {

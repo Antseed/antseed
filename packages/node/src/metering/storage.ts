@@ -98,13 +98,13 @@ export class MeteringStorage {
         seller_peer_id, buyer_peer_id,
         input_tokens, output_tokens, total_tokens,
         token_method, token_confidence,
-        latency_ms, status_code, was_streaming, service, error, cached_input_tokens
+        latency_ms, status_code, was_streaming, service, error, cached_input_tokens, request_id
       ) VALUES (
         @eventId, @sessionId, @timestamp, @provider,
         @sellerPeerId, @buyerPeerId,
         @inputTokens, @outputTokens, @totalTokens,
         @tokenMethod, @tokenConfidence,
-        @latencyMs, @statusCode, @wasStreaming, @service, @error, @cachedInputTokens
+        @latencyMs, @statusCode, @wasStreaming, @service, @error, @cachedInputTokens, @requestId
       )
     `);
 
@@ -126,6 +126,7 @@ export class MeteringStorage {
       service: event.service ?? null,
       error: event.error ?? null,
       cachedInputTokens: event.cachedInputTokens ?? null,
+      requestId: event.requestId ?? null,
     });
   }
 
@@ -397,7 +398,7 @@ export class MeteringStorage {
     const event = this.db.prepare(`
       SELECT e.rowid AS rowid, e.event_id, e.session_id, e.timestamp, e.provider, e.service, e.buyer_peer_id,
         e.input_tokens, e.output_tokens, e.total_tokens, e.token_method, e.latency_ms, e.status_code, e.was_streaming,
-        e.error, e.cached_input_tokens, e.token_confidence,
+        e.error, e.cached_input_tokens, e.token_confidence, e.request_id,
         r.cost_cents AS cost_cents, r.receipt_id, r.unit_price_cents_per_thousand_tokens AS unit_price_cents_per_thousand
       FROM metering_events e
       LEFT JOIN usage_receipts r ON r.session_id = e.session_id AND r.event_id = e.event_id
@@ -622,6 +623,7 @@ interface EventRow {
   service: string | null;
   error: string | null;
   cached_input_tokens: number | null;
+  request_id: string | null;
 }
 
 interface ReceiptRow {
@@ -706,6 +708,7 @@ function rowToEvent(row: EventRow): MeteringEvent {
     ...(row.service !== null ? { service: row.service } : {}),
     ...(row.error !== null ? { error: row.error } : {}),
     ...(row.cached_input_tokens !== null ? { cachedInputTokens: row.cached_input_tokens } : {}),
+    ...(row.request_id !== null ? { requestId: row.request_id } : {}),
   };
 }
 
@@ -805,6 +808,8 @@ export interface MeteringEventPageRow {
 
 export interface MeteringEventDetailRow extends MeteringEventPageRow {
   token_confidence: string;
+  /** NULL on rows written before migration 8. */
+  request_id: string | null;
   receipt_id: string | null;
   unit_price_cents_per_thousand: number | null;
   verification: { signature_valid: number; buyer_total_tokens: number; percentage_difference: number; disputed: number } | null;

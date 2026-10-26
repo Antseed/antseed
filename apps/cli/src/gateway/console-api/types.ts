@@ -1394,6 +1394,8 @@ export interface SellerLogDetail extends SellerLogEntry {
   /** The buyer's payment channel open at the time; null for free requests or when none matches. */
   channel: {
     id: string
+    /** A one-off channel pays for this request alone; a regular one covers a buyer's run of requests. */
+    oneOff: boolean
     status: string
     openedAt: number
     settledAt: number | null

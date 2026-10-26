@@ -10,6 +10,7 @@ export interface FixtureRequest {
   costCents: number
   service?: string
   statusCode?: number
+  requestId?: string
   /** Defaults to one of four obvious fake buyers (fa1e…). */
   buyer?: string
 }
@@ -27,7 +28,7 @@ export function writeSellerFixture(dataDir: string, input: { state?: Record<stri
       const id = `${request.sessionId}-${request.at}-${index}`
       const tokens = { inputTokens: Math.round(request.tokens * 0.7), outputTokens: request.tokens - Math.round(request.tokens * 0.7), totalTokens: request.tokens, method: 'provider-usage' as const, confidence: 'high' as const }
       const common = { sessionId: request.sessionId, timestamp: request.at, provider: 'openai', sellerPeerId: 'seller', buyerPeerId: request.buyer ?? `fa1e${String(1 + (index % 4)).padStart(36, '0')}`, tokens }
-      metering.insertEvent({ ...common, eventId: `event-${id}`, latencyMs: 400 + (index * 97) % 2_600, statusCode: request.statusCode ?? 200, wasStreaming: true, ...(request.service ? { service: request.service } : {}) })
+      metering.insertEvent({ ...common, eventId: `event-${id}`, latencyMs: 400 + (index * 97) % 2_600, statusCode: request.statusCode ?? 200, wasStreaming: true, ...(request.service ? { service: request.service } : {}), ...(request.requestId ? { requestId: request.requestId } : {}) })
       if ((request.statusCode ?? 200) < 400 && request.costCents > 0) metering.insertReceipt({ ...common, receiptId: `receipt-${id}`, eventId: `event-${id}`, unitPriceCentsPerThousandTokens: 0, costCents: request.costCents, signature: '' })
       if (!sessions.has(request.sessionId)) {
         sessions.add(request.sessionId)

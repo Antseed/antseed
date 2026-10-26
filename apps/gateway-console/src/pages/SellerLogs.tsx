@@ -165,6 +165,7 @@ function PaymentDetail({ detail }: { detail: SellerLogDetail }) {
       <Section title="Payment channel">
         {channel ? (
           <DetailList items={[
+            ['Kind', channel.oneOff ? 'One-off (this request only)' : 'Regular'],
             ['Status', channel.status],
             ['Opened', formatDateTime(channel.openedAt)],
             ['Delivered', `${formatUsd(channel.deliveredUsd)} of ${formatUsd(channel.authorizedUsd)} authorized`],

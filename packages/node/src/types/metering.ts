@@ -55,6 +55,8 @@ export interface MeteringEvent {
   error?: string;
   /** Input tokens served from the upstream's prompt cache, when it reported them. */
   cachedInputTokens?: number;
+  /** The protocol request id; a one-off payment channel records the same id. */
+  requestId?: string;
 }
 
 /**

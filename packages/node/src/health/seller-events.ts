@@ -1,4 +1,4 @@
-import { appendFile, readFile, rename, stat } from 'node:fs/promises';
+import { appendFile, open, readFile, rename, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
 /** Seller event journal: `<dataDir>/seller-events.jsonl`, newest last. */
@@ -46,7 +46,10 @@ export function appendSellerEvent(dataDir: string, event: SellerEvent): Promise<
   const write = async () => {
     const size = await stat(path).then((s) => s.size, () => 0);
     if (size > SELLER_EVENTS_MAX_BYTES) await rename(path, rotatedPath(dataDir)).catch(() => {});
-    await appendFile(path, `${JSON.stringify(event)}\n`);
+    // A crash mid-write leaves a line without its newline: close it off, so
+    // this event starts its own line instead of joining the torn one.
+    const torn = size > 0 && size <= SELLER_EVENTS_MAX_BYTES && !(await endsWithNewline(path));
+    await appendFile(path, `${torn ? '\n' : ''}${JSON.stringify(event)}\n`);
   };
   const run = (appendQueues.get(path) ?? Promise.resolve()).then(write);
   // A failed append does not hold up the next one.
@@ -54,6 +57,20 @@ export function appendSellerEvent(dataDir: string, event: SellerEvent): Promise<
   appendQueues.set(path, settled);
   void settled.then(() => { if (appendQueues.get(path) === settled) appendQueues.delete(path); });
   return run;
+}
+
+async function endsWithNewline(path: string): Promise<boolean> {
+  const file = await open(path, 'r').catch(() => null);
+  if (!file) return true;
+  try {
+    const { size } = await file.stat();
+    if (size === 0) return true;
+    const last = Buffer.alloc(1);
+    await file.read(last, 0, 1, size - 1);
+    return last[0] === 0x0a;
+  } finally {
+    await file.close();
+  }
 }
 
 function parseLines(text: string): SellerEvent[] {

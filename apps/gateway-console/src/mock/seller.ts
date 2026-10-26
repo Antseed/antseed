@@ -139,7 +139,7 @@ export function mockSellerLogDetail(id: string, now = Date.now()) {
     tokenConfidence: row.exactTokens ? 'high' : 'low',
     receipt: paid ? { id: `rcpt-${row.id}`, usdPerMillionTokens: 4.2, buyerCheck: { signatureValid: true, buyerTokens: row.inputTokens + row.outputTokens + 3, differencePercent: 0.2, disputed: false } } : null,
     session: { id: row.sessionId, position: 4, startedAt: row.at - 300_000, endedAt: null, requests: 12, tokens: 48_210, costUsd: 0.42, avgLatencyMs: 1_240 },
-    channel: paid ? { id: `0x${'c4a1'.repeat(16)}`, status: 'active', openedAt: row.at - 900_000, settledAt: null, authorizedUsd: 5, deliveredUsd: 1.37, settledUsd: null, requests: 58 } : null,
+    channel: paid ? { id: `0x${'c4a1'.repeat(16)}`, oneOff: false, status: 'active', openedAt: row.at - 900_000, settledAt: null, authorizedUsd: 5, deliveredUsd: 1.37, settledUsd: null, requests: 58 } : null,
   }
 }
 

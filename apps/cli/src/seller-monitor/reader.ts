@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { readSellerEvents, SELLER_EVENTS_FILE } from '@antseed/node'
 import { MeteringStorage } from '@antseed/node/metering'
-import { ChannelStore } from '@antseed/node/payments'
+import { CHANNEL_KIND, ChannelStore } from '@antseed/node/payments'
 import type { SellerAlertsState, SellerEventView, SellerGas, SellerModelHealth, SellerStatus, SellerUsage, SellerUsageDay } from '../gateway/console-api/types.js'
 
 const DAY_MS = 86_400_000
@@ -175,7 +175,9 @@ export class SellerUsageReader {
     if (existsSync(dbPath)) {
       const store = new ChannelStore(join(dataDir, 'payments'))
       try {
-        for (const channel of store.listAllChannels(1_000_000).filter((entry) => entry.role === 'seller')) {
+        // Regular and one-off channels: a one-off channel pays for a single request, and is paid all the same.
+        const all = [...store.listAllChannels(1_000_000, CHANNEL_KIND.PAID), ...store.listAllChannels(1_000_000, CHANNEL_KIND.ONE_OFF)]
+        for (const channel of all.filter((entry) => entry.role === 'seller')) {
           channels.total += 1
           if (channel.status in channels) channels[channel.status as keyof typeof channels] += 1
           delivered += num(channel.tokensDelivered)
