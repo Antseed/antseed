@@ -72,7 +72,7 @@ export class SellerAlerts {
    * Resends scheduled for alerts a channel failed to take, per incident: the
    * latest event, to the channels still missing it, cancelled by the recovery.
    */
-  private readonly _retries = new Map<string, { timer: NodeJS.Timeout; event: SellerEvent; channels: Set<AlertChannel>; attempt: number }>();
+  private readonly _retries = new Map<string, { timer: NodeJS.Timeout; event: SellerEvent; incident: string; recovery: boolean; channels: Set<AlertChannel>; attempt: number }>();
   /**
    * Deliveries in flight per incident (`kind:provider/service` of the alert):
    * an alert, its repeats and its recovery go out one after another, so a
@@ -135,7 +135,8 @@ export class SellerAlerts {
     if (options.notify === false) return;
     const recovery = RECOVERY_OF[event.kind] !== undefined;
     const key = alertKey(RECOVERY_OF[event.kind] ?? event.kind, event);
-    if (recovery) this._release(key);
+    // A new outage makes a recovery still being resent stale; a recovery stops the alert's resends.
+    this._release(recovery ? key : recoveryRetryKey(key));
     await this._inIncident(key, () => {
       // Again in turn: a failure queued ahead of this recovery may have held an alert since.
       if (recovery) this._release(key);
@@ -195,7 +196,10 @@ export class SellerAlerts {
     if (channels.length === 0) return;
     // History is kept per destination, as of when the send started, so a changed chat or webhook starts fresh.
     const { sent, delivered } = await this._send(event, channels);
-    if (!recovery) this._scheduleRetry(event, key, channels.filter((channel) => !sent.includes(channel)), sent as AlertChannel[], retry?.attempt ?? 0);
+    const failed = channels.filter((channel) => !sent.includes(channel));
+    this._scheduleRetry(event, key, recovery, failed, sent as AlertChannel[], retry?.attempt ?? 0);
+    // The incident is over whether or not its recovery got through, so the next outage is a new one (held by the cooldown, not dropped as a repeat).
+    if (recovery) this._closeIncident(key);
     for (const destination of delivered) {
       const historyKey = `${destination}|${key}`;
       const last = this._lastSent.get(historyKey);
@@ -213,22 +217,23 @@ export class SellerAlerts {
    * that failed: resend it with backoff to the channels that missed it. A
    * newer event for the same incident replaces the pending one.
    */
-  private _scheduleRetry(event: SellerEvent, key: string, failed: AlertChannel[], sent: AlertChannel[], attempt: number): void {
-    const pending = this._retries.get(key);
+  private _scheduleRetry(event: SellerEvent, incident: string, recovery: boolean, failed: AlertChannel[], sent: AlertChannel[], attempt: number): void {
+    const retryKey = recovery ? recoveryRetryKey(incident) : incident;
+    const pending = this._retries.get(retryKey);
     if (pending) {
       for (const channel of sent) pending.channels.delete(channel);
       for (const channel of failed) pending.channels.add(channel);
       pending.event = event;
-      if (pending.channels.size === 0) this._release(key);
+      if (pending.channels.size === 0) this._release(retryKey);
       return;
     }
     if (failed.length === 0 || attempt >= MAX_RETRIES) return;
-    const entry = { event, channels: new Set(failed), attempt, timer: setTimeout(() => {
-      this._retries.delete(key);
-      void this._inIncident(key, () => this._deliver(entry.event, key, false, false, { channels: [...entry.channels], attempt: entry.attempt + 1 })).catch(() => {});
+    const entry = { event, incident, recovery, channels: new Set(failed), attempt, timer: setTimeout(() => {
+      this._retries.delete(retryKey);
+      void this._inIncident(incident, () => this._deliver(entry.event, incident, recovery, false, { channels: [...entry.channels], attempt: entry.attempt + 1 })).catch(() => {});
     }, Math.min((this._opts.retryMs ?? 30_000) * 2 ** attempt, MAX_RETRY_MS)) };
     entry.timer.unref?.();
-    this._retries.set(key, entry);
+    this._retries.set(retryKey, entry);
   }
 
   private _saveHistory(): void {
@@ -345,6 +350,9 @@ function readHistory(dataDir: string): Record<string, number> {
     return {};
   }
 }
+
+/** Where a recovery being resent waits, apart from its incident's alert resends. */
+const recoveryRetryKey = (key: string) => `recovery|${key}`
 
 /** One incident: upstreams sharing a plugin name are told apart by their configured name. */
 const alertKey = (kind: SellerEventKind, event: SellerEvent) => `${kind}:${event.providerId ?? event.provider ?? ''}/${event.service ?? ''}`

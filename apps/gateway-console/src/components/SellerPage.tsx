@@ -37,6 +37,11 @@ export function SellerPage({ title, description, actions, children }: {
   )
 }
 
+/** A background refresh failed while earlier data is still on screen: say so, and keep the page (and any edits on it). */
+export function RefreshFailed({ error }: { error: unknown }) {
+  return <p className="gc-seller-notice" role="status"><span className="gc-attention" aria-hidden="true" />Could not refresh: {errorMessage(error)}. Showing the last loaded data.</p>
+}
+
 /** Where the market and trust numbers come from and how old they are, with a refresh. */
 export function NetworkLine({ network, onRefresh }: { network: SellerNetworkMeta; onRefresh: () => Promise<unknown> }) {
   // A refresh that fails (dashboard unreachable, endpoint error) says so here rather than leaving the old data looking current.

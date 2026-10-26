@@ -74,7 +74,7 @@ function Requests() {
           options={[{ value: 'all', label: 'All statuses' }, { value: 'errors', label: 'Failed only' }]} />
       </div>
       <Panel flush>
-        {query.isLoading ? <LoadingRows rows={8} /> : query.error ? <ErrorAlert error={query.error} onRetry={() => void query.refetch()} /> : (
+        {query.isLoading ? <LoadingRows rows={8} /> : query.error && !query.data ? <ErrorAlert error={query.error} onRetry={() => void query.refetch()} /> : (
           <>
             <DataTable<SellerLogEntry> label="Seller request log" rows={rows} rowKey={(row) => row.id} onRowClick={setSelected}
               empty={query.hasNextPage

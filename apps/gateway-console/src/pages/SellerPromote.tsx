@@ -3,7 +3,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Button, CopyButton, TextField, useToast } from '@antseed/ui'
 import { api } from '../api'
 import type { SellerPromote as Promote, SellerVerificationStatus } from '../api/types'
-import { SellerPage } from '../components/SellerPage'
+import { RefreshFailed, SellerPage } from '../components/SellerPage'
 import { Badge, CodeBlock, EmptyState, ErrorAlert, LoadingRows, Mono, Panel } from '../components/ui'
 import { formatRelative } from '../lib/format'
 import { qk, useSellerCard, useSellerPromote } from '../lib/queries'
@@ -17,10 +17,11 @@ export default function SellerPromote() {
     <SellerPage title="Promote" description={() => 'Share your seller, and verify a domain or GitHub account so buyers can trust it.'}>
       {() => {
         if (promote.isLoading) return <LoadingRows rows={6} />
-        if (promote.error) return <ErrorAlert error={promote.error} onRetry={() => void promote.refetch()} />
+        if (promote.error && !promote.data) return <ErrorAlert error={promote.error} onRetry={() => void promote.refetch()} />
         const data = promote.data!
         return (
           <>
+            {promote.error && <RefreshFailed error={promote.error} />}
             {!data.peerId && <p className="gc-seller-notice"><span className="gc-attention" aria-hidden="true" />The seller has not reported its peer id yet. Start it once to fill in links and snippets.</p>}
             <div className="gc-grid gc-grid--2">
               <ProfilePanel data={data} />
@@ -79,7 +80,7 @@ function CardPanel({ data }: { data: Promote }) {
   }
   return (
     <Panel title="Seller card" description="Your name, trust score and prices, ready to post.">
-      {card.isLoading ? <LoadingRows rows={4} /> : card.error ? <ErrorAlert error={card.error} onRetry={() => void card.refetch()} /> : (
+      {card.isLoading ? <LoadingRows rows={4} /> : card.error && !card.data ? <ErrorAlert error={card.error} onRetry={() => void card.refetch()} /> : (
         <div className="gc-seller-card">
           <img src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg ?? '')}`} alt={`Seller card for ${data.displayName || 'this seller'}`} width={600} height={340} />
           <div className="gc-actions gc-actions--start">

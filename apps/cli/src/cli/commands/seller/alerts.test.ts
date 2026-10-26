@@ -102,7 +102,7 @@ test('crash alerts keep their cooldown across restarts', async () => {
 });
 
 test('a failed alert is retried on its next repeat and gets no recovery until one arrives', async () => {
-  const { alerts, calls, failWhen } = harness({ telegram: { chatId: '42' }, cooldownMinutes: 30 });
+  const { alerts, calls, failWhen } = harness({ telegram: { chatId: '42' }, cooldownMinutes: 30 }, { retryMs: 5 });
   failWhen(() => true);
   await alerts.record(down);
   await alerts.record(up);
@@ -113,10 +113,25 @@ test('a failed alert is retried on its next repeat and gets no recovery until on
   failWhen(() => true);
   await alerts.record(up);
   failWhen(() => false);
-  await alerts.record(up);
-  assert.equal(calls.length, 4, 'a failed recovery stays pending');
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(calls.length, 4, 'a failed recovery is resent');
   await alerts.record(up);
   assert.equal(calls.length, 4);
+  alerts.close();
+});
+
+test('an incident closes even when its recovery fails to send, so the next outage inside the cooldown is held, not dropped', async () => {
+  const { alerts, calls, failWhen, advance } = harness({ webhook: { url: 'https://hooks.example/x' }, cooldownMinutes: 0.002 }, { retryMs: 60_000 });
+  await alerts.record(down);
+  failWhen(() => true);
+  await alerts.record(up);
+  failWhen(() => false);
+  await alerts.record(down);
+  assert.equal(calls.length, 2, 'the new outage waits out the cooldown');
+  advance(200);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.deepEqual(calls.map((call) => String(call.body.text).split('\n')[0]!.split(': ')[1]), ['glm-5.3 withdrawn', 'glm-5.3 back', 'glm-5.3 withdrawn'], 'the new outage goes out; the stale recovery resend does not');
+  alerts.close();
 });
 
 test('delivery is tracked per channel', async () => {

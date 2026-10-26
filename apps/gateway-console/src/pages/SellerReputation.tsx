@@ -1,7 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { api } from '../api'
 import type { SellerReputation as Reputation, SellerStanding } from '../api/types'
-import { NetworkLine, SellerPage } from '../components/SellerPage'
+import { NetworkLine, RefreshFailed, SellerPage } from '../components/SellerPage'
 import { TrustTip } from '../components/TrustInfo'
 import { DetailList, EmptyState, ErrorAlert, LoadingRows, Panel, StatTile } from '../components/ui'
 import { formatNumber, formatRelative, formatUsd } from '../lib/format'
@@ -22,10 +22,11 @@ export default function SellerReputation() {
     <SellerPage title="Reputation" description={() => 'The trust score buyers compute for you (0-100), what it is made of, and your on-chain standing.'}>
       {() => {
         if (reputation.isLoading) return <LoadingRows rows={6} />
-        if (reputation.error) return <ErrorAlert error={reputation.error} onRetry={() => void reputation.refetch()} />
+        if (reputation.error && !reputation.data) return <ErrorAlert error={reputation.error} onRetry={() => void reputation.refetch()} />
         const data = reputation.data!
         return (
           <>
+            {reputation.error && <RefreshFailed error={reputation.error} />}
             <NetworkLine network={data.network} onRefresh={refresh} />
             <TrustTiles data={data} />
             <div className="gc-grid gc-grid--2">

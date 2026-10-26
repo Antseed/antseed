@@ -3,7 +3,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { Button, DataTable } from '@antseed/ui'
 import { api } from '../api'
 import type { SellerMarketOffer, SellerMarketService, SellerUnitPrice } from '../api/types'
-import { NetworkLine, SellerPage } from '../components/SellerPage'
+import { NetworkLine, RefreshFailed, SellerPage } from '../components/SellerPage'
 import { TeeBadge } from '../components/TeeBadge'
 import { Badge, EmptyState, ErrorAlert, LoadingRows, Panel, StatTile } from '../components/ui'
 import { formatNumber, formatPricePerMillion, shortId } from '../lib/format'
@@ -51,7 +51,7 @@ export default function SellerMarket() {
     <SellerPage title="Market" description={() => 'Your prices against every other seller of the same model. Prices are USD per million tokens, input / output; image and video models are compared per unit.'}>
       {() => {
         if (market.isLoading) return <LoadingRows rows={6} />
-        if (market.error) return <ErrorAlert error={market.error} onRetry={() => void market.refetch()} />
+        if (market.error && !market.data) return <ErrorAlert error={market.error} onRetry={() => void market.refetch()} />
         const data = market.data!
         const services = data.services
         const open = services.find((service) => offeringKey(service) === selected) ?? null
@@ -61,6 +61,7 @@ export default function SellerMarket() {
         const average = deltas.length ? deltas.reduce((sum, value) => sum + value, 0) / deltas.length : null
         return (
           <>
+            {market.error && <RefreshFailed error={market.error} />}
             <NetworkLine network={data.network} onRefresh={refresh} />
             {!data.found && data.network.refreshedAt !== null && (
               <p className="gc-seller-notice"><span className="gc-attention" aria-hidden="true" />This seller was not in the last network snapshot, so its own trust, load and TEE columns are empty. Prices come from its config.</p>
