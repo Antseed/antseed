@@ -457,6 +457,13 @@ export class MeteringStorage {
     };
   }
 
+  /** `event_id` / `receipt_id` stored at the given rowids (null where there is no such row). */
+  getIdsAtRowids(eventRowid: number, receiptRowid: number): { eventId: string | null; receiptId: string | null } {
+    const event = this.db.prepare('SELECT event_id AS id FROM metering_events WHERE rowid = ?').get(eventRowid) as { id: string } | undefined;
+    const receipt = this.db.prepare('SELECT receipt_id AS id FROM usage_receipts WHERE rowid = ?').get(receiptRowid) as { id: string } | undefined;
+    return { eventId: event?.id ?? null, receiptId: receipt?.id ?? null };
+  }
+
   /** Highest rowid in `metering_events` and `usage_receipts` (0 when empty). */
   getMaxRowids(): { events: number; receipts: number } {
     const events = this.db.prepare('SELECT COALESCE(MAX(rowid), 0) AS m FROM metering_events').get() as { m: number };

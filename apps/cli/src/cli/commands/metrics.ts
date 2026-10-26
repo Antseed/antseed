@@ -1,7 +1,7 @@
 import type { Command } from 'commander';
 import chalk from 'chalk';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { loadConfig } from '../../config/loader.js';
@@ -331,7 +331,12 @@ const METERING_DAYS_KEPT = 2;
 interface EventTotals { requests: number; totalTokens: number; inputTokens: number; outputTokens: number }
 
 interface MeteringTotals {
+  /** Device and inode of the ledger file the totals were read from. */
+  fileIdentity: string;
   eventsCursor: number;
+  /** Ids of the rows at the cursors, to notice a ledger rebuilt in place. */
+  eventsCheckpoint: string | null;
+  receiptsCheckpoint: string | null;
   receiptsCursor: number;
   events: EventTotals;
   receiptCents: number;
@@ -342,9 +347,12 @@ interface MeteringTotals {
 
 const meteringTotalsByPath = new Map<string, MeteringTotals>();
 
-function emptyMeteringTotals(): MeteringTotals {
+function emptyMeteringTotals(fileIdentity: string): MeteringTotals {
   return {
+    fileIdentity,
     eventsCursor: 0,
+    eventsCheckpoint: null,
+    receiptsCheckpoint: null,
     receiptsCursor: 0,
     events: { requests: 0, totalTokens: 0, inputTokens: 0, outputTokens: 0 },
     receiptCents: 0,
@@ -362,13 +370,14 @@ function pruneDays<T>(days: Map<number, T>, today: number): void {
 
 /** Read the next chunk of new events and receipts into the running totals for `path`. */
 export function advanceMeteringTotals(path: string, metering: MeteringStorage, rowsPerScrape = METERING_ROWS_PER_SCRAPE): MeteringTotals {
+  const { dev, ino } = statSync(path);
+  const fileIdentity = `${dev}:${ino}`;
   let totals = meteringTotalsByPath.get(path);
-  const max = metering.getMaxRowids();
-  // The ledger was replaced or rebuilt: start over.
-  if (!totals || max.events < totals.eventsCursor || max.receipts < totals.receiptsCursor) {
-    totals = emptyMeteringTotals();
+  if (!totals || ledgerChanged(totals, fileIdentity, metering)) {
+    totals = emptyMeteringTotals(fileIdentity);
     meteringTotalsByPath.set(path, totals);
   }
+  const max = metering.getMaxRowids();
 
   const events = metering.summarizeEventsAfter(totals.eventsCursor, rowsPerScrape);
   totals.eventsCursor = events.lastRowid;
@@ -395,8 +404,26 @@ export function advanceMeteringTotals(path: string, metering: MeteringStorage, r
   const today = Math.floor(Date.now() / DAY_MS);
   pruneDays(totals.eventDays, today);
   pruneDays(totals.receiptDays, today);
+  const checkpoint = metering.getIdsAtRowids(totals.eventsCursor, totals.receiptsCursor);
+  totals.eventsCheckpoint = checkpoint.eventId;
+  totals.receiptsCheckpoint = checkpoint.receiptId;
   totals.caughtUp = totals.eventsCursor >= max.events && totals.receiptsCursor >= max.receipts;
   return totals;
+}
+
+/**
+ * The totals no longer describe the ledger at this path: the file was
+ * replaced (new inode), shrank below a cursor, or the row at a cursor now
+ * holds a different id (rebuilt in place). A row at a cursor that is gone
+ * (pruned) is not a change.
+ */
+function ledgerChanged(totals: MeteringTotals, fileIdentity: string, metering: MeteringStorage): boolean {
+  if (totals.fileIdentity !== fileIdentity) return true;
+  const max = metering.getMaxRowids();
+  if (max.events < totals.eventsCursor || max.receipts < totals.receiptsCursor) return true;
+  const current = metering.getIdsAtRowids(totals.eventsCursor, totals.receiptsCursor);
+  return (current.eventId !== null && current.eventId !== totals.eventsCheckpoint)
+    || (current.receiptId !== null && current.receiptId !== totals.receiptsCheckpoint);
 }
 
 async function collectMetrics(options: MetricsOptions, dataDir: string, configPath: string): Promise<string> {
