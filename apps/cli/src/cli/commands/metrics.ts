@@ -288,31 +288,115 @@ async function addSellerMetrics(samples: MetricSample[], baseLabels: Record<stri
   try {
     const meteringPath = join(dataDir, 'metering.db');
     if (!existsSync(meteringPath)) return;
-    const metering = new MeteringStorage(meteringPath);
+    const metering = new MeteringStorage(meteringPath, { readonly: true });
     try {
-      const allEvents = metering.getEventTokenSummary(0, Date.now() + DAY_MS);
-      const todayEvents = metering.getEventTokenSummary(dayStart, Date.now() + DAY_MS);
+      const totals = advanceMeteringTotals(meteringPath, metering);
+      const today = Math.floor(Date.now() / DAY_MS);
+      const todayEvents = totals.eventDays.get(today);
       const allSessions = metering.getSessionSummary(0, Date.now() + DAY_MS);
       const todaySessions = metering.getSessionSummary(dayStart, Date.now() + DAY_MS);
-      const receiptCents = metering.getTotalCost(0, Date.now() + DAY_MS);
-      const receiptTodayCents = metering.getTotalCost(dayStart, Date.now() + DAY_MS);
 
-      addSample(samples, sellerLabels, { name: 'antseed_seller_metering_requests_total', help: 'Seller metering event request count.', type: 'counter', value: allEvents.totalRequests });
-      addSample(samples, sellerLabels, { name: 'antseed_seller_metering_requests_today', help: 'Seller metering event request count since UTC day start.', type: 'gauge', value: todayEvents.totalRequests });
-      addSample(samples, sellerLabels, { name: 'antseed_seller_metering_tokens_total', help: 'Seller metering event token count.', type: 'counter', value: allEvents.totalTokens });
-      addSample(samples, sellerLabels, { name: 'antseed_seller_metering_tokens_today', help: 'Seller metering event token count since UTC day start.', type: 'gauge', value: todayEvents.totalTokens });
-      addSample(samples, sellerLabels, { name: 'antseed_seller_metering_input_tokens_total', help: 'Seller metering input token count.', type: 'counter', value: allEvents.inputTokens });
-      addSample(samples, sellerLabels, { name: 'antseed_seller_metering_output_tokens_total', help: 'Seller metering output token count.', type: 'counter', value: allEvents.outputTokens });
+      addSample(samples, sellerLabels, { name: 'antseed_seller_metering_backfill_complete', help: 'Whether the exporter has read the whole metering ledger; metering totals are only reported once it has.', type: 'gauge', value: totals.caughtUp ? 1 : 0 });
       addSample(samples, sellerLabels, { name: 'antseed_seller_sessions_total', help: 'Seller metering session count.', type: 'counter', value: allSessions.channelCount });
       addSample(samples, sellerLabels, { name: 'antseed_seller_sessions_today', help: 'Seller metering session count since UTC day start.', type: 'gauge', value: todaySessions.channelCount });
-      addSample(samples, sellerLabels, { name: 'antseed_seller_receipt_revenue_usd_total', help: 'Seller usage receipt revenue in USD from local metering ledger.', type: 'counter', value: receiptCents / 100 });
-      addSample(samples, sellerLabels, { name: 'antseed_seller_receipt_revenue_today_usd', help: 'Seller usage receipt revenue in USD since UTC day start.', type: 'gauge', value: receiptTodayCents / 100 });
+      if (totals.caughtUp) {
+        addSample(samples, sellerLabels, { name: 'antseed_seller_metering_requests_total', help: 'Seller metering event request count.', type: 'counter', value: totals.events.requests });
+        addSample(samples, sellerLabels, { name: 'antseed_seller_metering_requests_today', help: 'Seller metering event request count since UTC day start.', type: 'gauge', value: todayEvents?.requests ?? 0 });
+        addSample(samples, sellerLabels, { name: 'antseed_seller_metering_tokens_total', help: 'Seller metering event token count.', type: 'counter', value: totals.events.totalTokens });
+        addSample(samples, sellerLabels, { name: 'antseed_seller_metering_tokens_today', help: 'Seller metering event token count since UTC day start.', type: 'gauge', value: todayEvents?.totalTokens ?? 0 });
+        addSample(samples, sellerLabels, { name: 'antseed_seller_metering_input_tokens_total', help: 'Seller metering input token count.', type: 'counter', value: totals.events.inputTokens });
+        addSample(samples, sellerLabels, { name: 'antseed_seller_metering_output_tokens_total', help: 'Seller metering output token count.', type: 'counter', value: totals.events.outputTokens });
+        addSample(samples, sellerLabels, { name: 'antseed_seller_receipt_revenue_usd_total', help: 'Seller usage receipt revenue in USD from local metering ledger.', type: 'counter', value: totals.receiptCents / 100 });
+        addSample(samples, sellerLabels, { name: 'antseed_seller_receipt_revenue_today_usd', help: 'Seller usage receipt revenue in USD since UTC day start.', type: 'gauge', value: (totals.receiptDays.get(today) ?? 0) / 100 });
+      }
     } finally {
       metering.close();
     }
   } catch (error) {
     addSample(samples, sellerLabels, { name: 'antseed_seller_metering_scrape_error', help: 'Whether seller metering DB collection failed.', type: 'gauge', labels: { error: error instanceof Error ? error.message : String(error) }, value: 1 });
   }
+}
+
+/**
+ * Rows read from each metering table per scrape. The ledger grows without
+ * bound and lives on the seller's disk: one all-time SUM over millions of
+ * rows took minutes, stalled the seller's own SQLite writes until its
+ * liveness probe killed it, and blocked this exporter's /healthz. Totals are
+ * instead kept here and advanced by rowid, a bounded chunk per scrape.
+ */
+const METERING_ROWS_PER_SCRAPE = 100_000;
+/** UTC days of per-day totals kept for the *_today gauges. */
+const METERING_DAYS_KEPT = 2;
+
+interface EventTotals { requests: number; totalTokens: number; inputTokens: number; outputTokens: number }
+
+interface MeteringTotals {
+  eventsCursor: number;
+  receiptsCursor: number;
+  events: EventTotals;
+  receiptCents: number;
+  eventDays: Map<number, EventTotals>;
+  receiptDays: Map<number, number>;
+  caughtUp: boolean;
+}
+
+const meteringTotalsByPath = new Map<string, MeteringTotals>();
+
+function emptyMeteringTotals(): MeteringTotals {
+  return {
+    eventsCursor: 0,
+    receiptsCursor: 0,
+    events: { requests: 0, totalTokens: 0, inputTokens: 0, outputTokens: 0 },
+    receiptCents: 0,
+    eventDays: new Map(),
+    receiptDays: new Map(),
+    caughtUp: false,
+  };
+}
+
+function pruneDays<T>(days: Map<number, T>, today: number): void {
+  for (const day of days.keys()) {
+    if (day <= today - METERING_DAYS_KEPT) days.delete(day);
+  }
+}
+
+/** Read the next chunk of new events and receipts into the running totals for `path`. */
+export function advanceMeteringTotals(path: string, metering: MeteringStorage, rowsPerScrape = METERING_ROWS_PER_SCRAPE): MeteringTotals {
+  let totals = meteringTotalsByPath.get(path);
+  const max = metering.getMaxRowids();
+  // The ledger was replaced or rebuilt: start over.
+  if (!totals || max.events < totals.eventsCursor || max.receipts < totals.receiptsCursor) {
+    totals = emptyMeteringTotals();
+    meteringTotalsByPath.set(path, totals);
+  }
+
+  const events = metering.summarizeEventsAfter(totals.eventsCursor, rowsPerScrape);
+  totals.eventsCursor = events.lastRowid;
+  for (const day of events.days) {
+    totals.events.requests += day.requests;
+    totals.events.totalTokens += day.totalTokens;
+    totals.events.inputTokens += day.inputTokens;
+    totals.events.outputTokens += day.outputTokens;
+    const kept = totals.eventDays.get(day.day) ?? { requests: 0, totalTokens: 0, inputTokens: 0, outputTokens: 0 };
+    kept.requests += day.requests;
+    kept.totalTokens += day.totalTokens;
+    kept.inputTokens += day.inputTokens;
+    kept.outputTokens += day.outputTokens;
+    totals.eventDays.set(day.day, kept);
+  }
+
+  const receipts = metering.summarizeReceiptsAfter(totals.receiptsCursor, rowsPerScrape);
+  totals.receiptsCursor = receipts.lastRowid;
+  for (const day of receipts.days) {
+    totals.receiptCents += day.costCents;
+    totals.receiptDays.set(day.day, (totals.receiptDays.get(day.day) ?? 0) + day.costCents);
+  }
+
+  const today = Math.floor(Date.now() / DAY_MS);
+  pruneDays(totals.eventDays, today);
+  pruneDays(totals.receiptDays, today);
+  totals.caughtUp = totals.eventsCursor >= max.events && totals.receiptsCursor >= max.receipts;
+  return totals;
 }
 
 async function collectMetrics(options: MetricsOptions, dataDir: string, configPath: string): Promise<string> {
