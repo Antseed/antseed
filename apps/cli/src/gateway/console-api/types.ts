@@ -1267,6 +1267,8 @@ export interface SellerAlertSettings {
   webhook: { set: boolean; host: string | null; source: 'file' | 'config' | null }
   idleMinutes: number | null
   cooldownMinutes: number | null
+  /** USD under which an upstream that reports its balance is a warning; null is the default ($5), 0 off. */
+  lowBalanceUsd: number | null
   minSeverity: 'info' | 'warning' | 'critical' | null
 }
 
@@ -1277,6 +1279,7 @@ export interface SellerAlertsPatch {
   webhookUrl?: string | null
   idleMinutes?: number | null
   cooldownMinutes?: number | null
+  lowBalanceUsd?: number | null
   minSeverity?: 'info' | 'warning' | 'critical' | null
 }
 

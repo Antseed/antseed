@@ -69,7 +69,7 @@ export function mockSellerSettings(): { settings: SellerSettings; alerts: Seller
     alerts: {
       writable: true, readOnlyReason: null,
       telegram: { chatId: null, botTokenEnv: 'ANTSEED_ALERTS_TELEGRAM_TOKEN', tokenSet: false, tokenSource: null, active: false },
-      webhook: { set: false, host: null, source: null }, idleMinutes: null, cooldownMinutes: null, minSeverity: null,
+      webhook: { set: false, host: null, source: null }, idleMinutes: null, cooldownMinutes: null, lowBalanceUsd: null, minSeverity: null,
     },
   }
 }
@@ -243,6 +243,7 @@ export function mockUpdateSellerAlerts(patch: SellerAlertsPatch) {
   }
   if (patch.idleMinutes !== undefined) alerts.idleMinutes = patch.idleMinutes
   if (patch.cooldownMinutes !== undefined) alerts.cooldownMinutes = patch.cooldownMinutes
+  if (patch.lowBalanceUsd !== undefined) alerts.lowBalanceUsd = patch.lowBalanceUsd
   if (patch.minSeverity !== undefined) alerts.minSeverity = patch.minSeverity
   settingsStore = { ...state, alerts }
   return { ...settingsStore, changed: Object.keys(patch) }

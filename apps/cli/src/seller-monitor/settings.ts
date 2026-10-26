@@ -334,6 +334,7 @@ export async function readSellerAlertSettings(configPath: string, dataDir: strin
     },
     idleMinutes: config.idleMinutes ?? null,
     cooldownMinutes: config.cooldownMinutes ?? null,
+    lowBalanceUsd: config.lowBalanceUsd ?? null,
     minSeverity: config.minSeverity ?? null,
   }
 }
@@ -367,7 +368,7 @@ function webhookUrl(value: string): string {
  */
 export async function updateSellerAlerts(dataDir: string, body: unknown): Promise<Record<string, string>> {
   const patch = obj(body ?? {}, 'The request body') as SellerAlertsPatch & JsonObject
-  const known = new Set(['telegramChatId', 'telegramBotToken', 'webhookUrl', 'idleMinutes', 'cooldownMinutes', 'minSeverity'])
+  const known = new Set(['telegramChatId', 'telegramBotToken', 'webhookUrl', 'idleMinutes', 'cooldownMinutes', 'lowBalanceUsd', 'minSeverity'])
   for (const key of Object.keys(patch)) if (!known.has(key)) bad(`Unknown alert setting: ${key}`)
   const access = await dataDirWritable(dataDir)
   if (!access.writable) throw new ConsoleError(409, 'data_dir_read_only', access.reason!)
@@ -397,6 +398,11 @@ export async function updateSellerAlerts(dataDir: string, body: unknown): Promis
     if (patch[key] === undefined) continue
     overrides[key] = patch[key] === null ? null : int(patch[key], key, min, max)
     changed[key] = String(patch[key])
+  }
+  if (patch.lowBalanceUsd !== undefined) {
+    if (patch.lowBalanceUsd !== null && (typeof patch.lowBalanceUsd !== 'number' || !Number.isFinite(patch.lowBalanceUsd) || patch.lowBalanceUsd < 0 || patch.lowBalanceUsd > 1_000_000)) bad('lowBalanceUsd must be a USD amount of 0 or more')
+    overrides.lowBalanceUsd = patch.lowBalanceUsd
+    changed.lowBalanceUsd = String(patch.lowBalanceUsd)
   }
   if (patch.minSeverity !== undefined) {
     if (patch.minSeverity !== null && patch.minSeverity !== 'info' && patch.minSeverity !== 'warning' && patch.minSeverity !== 'critical') bad('minSeverity must be info, warning or critical')

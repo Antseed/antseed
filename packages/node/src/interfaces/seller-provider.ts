@@ -112,7 +112,8 @@ export type ServiceHealthStatus =
  */
 export type UpstreamAccountStatus =
   | { status: 'available'; balanceUsd?: number }
-  | { status: 'unavailable'; reason: string }
+  /** `outOfCredit`: the account's balance is the cause (the seller alerts it as a billing problem). */
+  | { status: 'unavailable'; reason: string; outOfCredit?: boolean }
   | { status: 'unknown'; reason?: string };
 
 export interface ProviderStreamCallbacks {

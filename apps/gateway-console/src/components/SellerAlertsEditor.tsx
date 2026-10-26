@@ -24,6 +24,7 @@ interface Draft {
   clearWebhook: boolean
   idleMinutes: string
   cooldownMinutes: string
+  lowBalanceUsd: string
   minSeverity: Severity
 }
 
@@ -36,6 +37,7 @@ function draftOf(alerts: SellerAlertSettings): Draft {
     clearWebhook: false,
     idleMinutes: alerts.idleMinutes === null ? '' : String(alerts.idleMinutes),
     cooldownMinutes: alerts.cooldownMinutes === null ? '' : String(alerts.cooldownMinutes),
+    lowBalanceUsd: alerts.lowBalanceUsd === null ? '' : String(alerts.lowBalanceUsd),
     minSeverity: alerts.minSeverity ?? 'warning',
   }
 }
@@ -49,6 +51,7 @@ export function alertsPatchOf(base: Draft, draft: Draft): SellerAlertsPatch {
   else if (draft.webhookUrl.trim()) patch.webhookUrl = draft.webhookUrl.trim()
   if (draft.idleMinutes !== base.idleMinutes) patch.idleMinutes = draft.idleMinutes.trim() === '' ? null : Number(draft.idleMinutes)
   if (draft.cooldownMinutes !== base.cooldownMinutes) patch.cooldownMinutes = draft.cooldownMinutes.trim() === '' ? null : Number(draft.cooldownMinutes)
+  if (draft.lowBalanceUsd !== base.lowBalanceUsd) patch.lowBalanceUsd = draft.lowBalanceUsd.trim() === '' ? null : Number(draft.lowBalanceUsd)
   if (draft.minSeverity !== base.minSeverity) patch.minSeverity = draft.minSeverity
   return patch
 }
@@ -92,6 +95,7 @@ export function SellerAlertsEditor({ alerts, state }: { alerts: SellerAlertSetti
     webhookUrl: draft.webhookUrl.trim() && !/^https:\/\/|^http:\/\/(localhost|127\.0\.0\.1)[:/]/.test(draft.webhookUrl.trim()) ? 'Use an https URL.' : undefined,
     idleMinutes: numberFieldError(draft.idleMinutes, { min: 1, max: 10_080, integer: true }),
     cooldownMinutes: numberFieldError(draft.cooldownMinutes, { min: 0, max: 10_080, integer: true }),
+    lowBalanceUsd: numberFieldError(draft.lowBalanceUsd, { min: 0 }),
   }
   const invalid = Object.values(errors).some(Boolean)
 
@@ -184,12 +188,14 @@ export function SellerAlertsEditor({ alerts, state }: { alerts: SellerAlertSetti
         <div className="gc-policy__advanced">
           <Disclosure title="What is sent" summary={`${SEVERITIES.find((entry) => entry.value === draft.minSeverity)!.label}${draft.idleMinutes ? ` · quiet after ${draft.idleMinutes} min` : ''}`}>
             <Segmented label="Lowest severity sent" value={draft.minSeverity} onChange={(value) => set('minSeverity', value)} options={SEVERITIES} />
-            <p className="gc-fineprint">Warnings: a model withdrawn, the seller quiet, an unexpected restart. Critical: out of gas. Recoveries always follow an alert that went out.</p>
+            <p className="gc-fineprint">Warnings: a model withdrawn, an upstream's balance running low, the seller quiet, an unexpected restart. Critical: out of gas, an upstream out of credit. Recoveries always follow an alert that went out.</p>
             <div className="gc-policy__caps">
               <TextField size="sm" className="gc-num gc-num--wide" label="Quiet alert after (min)" inputMode="numeric" placeholder="Off" disabled={readOnly}
                 value={draft.idleMinutes} error={errors.idleMinutes} onChange={(event) => set('idleMinutes', event.target.value)} />
               <TextField size="sm" className="gc-num gc-num--wide" label="Repeat at most every (min)" inputMode="numeric" placeholder="30" disabled={readOnly}
                 value={draft.cooldownMinutes} error={errors.cooldownMinutes} onChange={(event) => set('cooldownMinutes', event.target.value)} />
+              <TextField size="sm" className="gc-num gc-num--wide" label="Low upstream balance ($)" inputMode="decimal" placeholder="5" hint="0 turns it off" disabled={readOnly}
+                value={draft.lowBalanceUsd} error={errors.lowBalanceUsd} onChange={(event) => set('lowBalanceUsd', event.target.value)} />
             </div>
           </Disclosure>
         </div>

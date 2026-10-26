@@ -197,6 +197,11 @@ export interface SellerAlertsCLIConfig {
    * (a flapping model alerts once per cooldown). 0 sends every one. Default: 30.
    */
   cooldownMinutes?: number;
+  /**
+   * Warn when an upstream whose account check reports its balance (Venice video, fal, …) holds
+   * less than this many USD. 0 turns it off. Default: 5.
+   */
+  lowBalanceUsd?: number;
   /** Lowest severity that is sent. Default: warning. */
   minSeverity?: 'info' | 'warning' | 'critical';
 }

@@ -150,7 +150,7 @@ describe('seller editors', async () => {
 
   it('alert drafts rebase the same way', async () => {
     const { rebaseDraft } = await import('./settings')
-    const base = { chatId: '1', token: '', clearToken: false, webhookUrl: '', clearWebhook: false, idleMinutes: '30', cooldownMinutes: '30', minSeverity: 'warning' as const }
+    const base = { chatId: '1', token: '', clearToken: false, webhookUrl: '', clearWebhook: false, idleMinutes: '30', cooldownMinutes: '30', lowBalanceUsd: '', minSeverity: 'warning' as const }
     const next = { ...base, idleMinutes: '60' }
     const merged = rebaseDraft({ ...base, chatId: '2' }, base, next)
     expect(alertsPatchOf(next, merged)).toEqual({ telegramChatId: '2' })
@@ -211,8 +211,9 @@ describe('seller editors', async () => {
   })
 
   it('never sends a secret it was not given, and clears on request', () => {
-    const base = { chatId: '42', token: '', clearToken: false, webhookUrl: '', clearWebhook: false, idleMinutes: '', cooldownMinutes: '', minSeverity: 'warning' as const }
+    const base = { chatId: '42', token: '', clearToken: false, webhookUrl: '', clearWebhook: false, idleMinutes: '', cooldownMinutes: '', lowBalanceUsd: '', minSeverity: 'warning' as const }
     expect(alertsPatchOf(base, base)).toEqual({})
+    expect(alertsPatchOf(base, { ...base, lowBalanceUsd: '20' })).toEqual({ lowBalanceUsd: 20 })
     expect(alertsPatchOf(base, { ...base, token: ' 1:abc ', idleMinutes: '30' })).toEqual({ telegramBotToken: '1:abc', idleMinutes: 30 })
     expect(alertsPatchOf(base, { ...base, clearToken: true, clearWebhook: true, chatId: '' })).toEqual({ telegramChatId: null, telegramBotToken: null, webhookUrl: null })
   })

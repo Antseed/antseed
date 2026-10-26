@@ -9,6 +9,8 @@ export type { SellerAlertsConfig };
 export { DEFAULT_TELEGRAM_TOKEN_ENV };
 
 export const DEFAULT_ALERT_COOLDOWN_MINUTES = 30;
+/** USD under which an upstream that reports its balance is a warning (`seller.alerts.lowBalanceUsd`). */
+export const DEFAULT_LOW_BALANCE_USD = 5;
 
 export interface SellerAlertsState {
   channels: string[];
@@ -18,7 +20,9 @@ export interface SellerAlertsState {
 
 const SEVERITY_RANK: Record<SellerEventSeverity, number> = { info: 0, warning: 1, critical: 2 };
 /** Recoveries close an alert that was sent, so they go out whatever their severity. */
-const RECOVERY_OF: Partial<Record<SellerEventKind, SellerEventKind>> = { model_up: 'model_down', gas_ok: 'gas_low', active: 'idle' };
+const RECOVERY_OF: Partial<Record<SellerEventKind, SellerEventKind>> = {
+  model_up: 'model_down', gas_ok: 'gas_low', active: 'idle', upstream_credit_ok: 'upstream_credit', upstream_balance_ok: 'upstream_balance_low',
+};
 const ICON: Record<SellerEventSeverity, string> = { info: '✅', warning: '⚠️', critical: '🚨' };
 /**
  * Alerts whose send times outlive the process, so a crash-looping seller
@@ -109,16 +113,18 @@ export class SellerAlerts {
    * through, so a failed alert is retried on its next repeat and only an alert
    * that arrived gets its recovery.
    */
-  async record(input: Omit<SellerEvent, 'at'> & { at?: number }): Promise<void> {
+  async record(input: Omit<SellerEvent, 'at'> & { at?: number }, options: { journal?: boolean; notify?: boolean; update?: boolean } = {}): Promise<void> {
     const event: SellerEvent = { ...input, at: input.at ?? this._now() };
-    await appendSellerEvent(this._opts.dataDir, event).catch((err) => this._opts.log?.(`seller events: ${(err as Error).message}`));
+    // `journal: false` for a summary of events already journaled one by one; `notify: false` for one a summary will announce.
+    if (options.journal !== false) await appendSellerEvent(this._opts.dataDir, event).catch((err) => this._opts.log?.(`seller events: ${(err as Error).message}`));
+    if (options.notify === false) return;
     const recovery = RECOVERY_OF[event.kind] !== undefined;
     const key = alertKey(RECOVERY_OF[event.kind] ?? event.kind, event);
     if (recovery) this._release(key);
     await this._inIncident(key, () => {
       // Again in turn: a failure queued ahead of this recovery may have held an alert since.
       if (recovery) this._release(key);
-      return this._deliver(event, key, recovery);
+      return this._deliver(event, key, recovery, options.update === true);
     });
   }
 
@@ -144,8 +150,9 @@ export class SellerAlerts {
     }
   }
 
-  private async _deliver(event: SellerEvent, key: string, recovery: boolean): Promise<void> {
-    const { channels, holdMs } = this._channelsFor(event, key, recovery);
+  /** `update`: news about an incident still open (it grew), sent where its alert went regardless of the cooldown. */
+  private async _deliver(event: SellerEvent, key: string, recovery: boolean, update = false): Promise<void> {
+    const { channels, holdMs } = this._channelsFor(event, key, recovery, update);
     if (holdMs !== null && !this._held.has(key)) {
       const timer = setTimeout(() => {
         this._held.delete(key);
@@ -199,10 +206,14 @@ export class SellerAlerts {
    * Where the event goes now, and, for an alert held back on a channel whose
    * incident had closed (a flap), how long until the cooldown lets it out.
    */
-  private _channelsFor(event: SellerEvent, key: string, recovery: boolean): { channels: AlertChannel[]; holdMs: number | null } {
+  private _channelsFor(event: SellerEvent, key: string, recovery: boolean, update = false): { channels: AlertChannel[]; holdMs: number | null } {
     const destinations = this._destinations();
     const channels = (Object.keys(destinations) as AlertChannel[]);
     const historyKey = (channel: AlertChannel) => `${destinations[channel]}|${key}`;
+    if (update) {
+      const open = channels.filter((channel) => this._lastSent.get(historyKey(channel))?.open === true);
+      if (open.length > 0) return { channels: open, holdMs: null };
+    }
     // Only announce a recovery where its alert actually went out and is still open.
     if (recovery) return { channels: channels.filter((channel) => this._lastSent.get(historyKey(channel))?.open === true), holdMs: null };
     if (event.kind === 'test') return { channels, holdMs: null };

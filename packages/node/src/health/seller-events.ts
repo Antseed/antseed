@@ -16,6 +16,10 @@ export type SellerEventKind =
   | 'gas_ok'
   | 'idle'
   | 'active'
+  | 'upstream_credit'
+  | 'upstream_credit_ok'
+  | 'upstream_balance_low'
+  | 'upstream_balance_ok'
   | 'test';
 
 export type SellerEventSeverity = 'info' | 'warning' | 'critical';

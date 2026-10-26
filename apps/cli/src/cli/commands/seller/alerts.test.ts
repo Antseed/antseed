@@ -403,3 +403,22 @@ test('a bot token only in the running seller\'s environment shows as set, and a 
   writeFileSync(join(dataDir, 'daemon.state.json'), JSON.stringify({ updatedAt: Date.now() - 60_000, alerts: { channels: ['telegram'] } }));
   assert.equal((await readSellerAlertSettings(configPath, dataDir, {})).telegram.tokenSet, false, 'a stopped seller reports nothing');
 });
+
+test('an upstream out of credit is critical and its top-up is sent as its recovery; a summary can skip the journal', async () => {
+  const { alerts, calls, dataDir } = harness({ telegram: { chatId: '42' } });
+  await alerts.record({ kind: 'upstream_credit', severity: 'critical', title: 'deepinfra is out of credit', providerId: 'deepinfra' });
+  await alerts.record({ kind: 'upstream_credit_ok', severity: 'info', title: 'deepinfra has credit again', providerId: 'deepinfra' }, { journal: false });
+  assert.equal(calls.length, 2);
+  assert.deepEqual((await readSellerEvents(dataDir)).map((event) => event.kind), ['upstream_credit']);
+  await alerts.record({ kind: 'model_down', severity: 'warning', title: 'glm withdrawn', providerId: 'deepinfra', service: 'glm' }, { notify: false });
+  assert.equal(calls.length, 2, 'journaled only');
+});
+
+test('an update to an open alert goes out inside the cooldown; a plain repeat does not', async () => {
+  const { alerts, calls } = harness({ telegram: { chatId: '42' }, cooldownMinutes: 30 });
+  const grouped = { kind: 'model_down', severity: 'warning', title: '1 model withdrawn', providerId: 'deepinfra' } as const;
+  await alerts.record(grouped, { journal: false });
+  await alerts.record({ ...grouped, title: 'still 1' }, { journal: false });
+  await alerts.record({ ...grouped, title: '2 models withdrawn' }, { journal: false, update: true });
+  assert.deepEqual(calls.map((call) => String(call.body.text).split(': ').slice(1).join(': ')), ['1 model withdrawn', '2 models withdrawn']);
+});

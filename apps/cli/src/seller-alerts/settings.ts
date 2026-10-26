@@ -30,6 +30,7 @@ export interface AlertOverrides {
   telegramChatId?: string | null;
   idleMinutes?: number | null;
   cooldownMinutes?: number | null;
+  lowBalanceUsd?: number | null;
   minSeverity?: 'info' | 'warning' | 'critical' | null;
   /** false ignores a webhook URL written in config.json (cleared from the dashboard). */
   webhookFromConfig?: false;
@@ -64,7 +65,7 @@ export async function writeAlertOverrides(dataDir: string, patch: AlertOverrides
 export function applyAlertOverrides(config: SellerAlertsConfig | undefined, overrides: AlertOverrides): SellerAlertsConfig {
   const merged: SellerAlertsConfig = { ...(config ?? {}) };
   if (overrides.telegramChatId !== undefined) merged.telegram = { ...merged.telegram, chatId: overrides.telegramChatId === null ? '' : String(overrides.telegramChatId) };
-  for (const key of ['idleMinutes', 'cooldownMinutes', 'minSeverity'] as const) {
+  for (const key of ['idleMinutes', 'cooldownMinutes', 'lowBalanceUsd', 'minSeverity'] as const) {
     if (overrides[key] === undefined) continue;
     if (overrides[key] === null) delete merged[key];
     else (merged as Record<string, unknown>)[key] = overrides[key];

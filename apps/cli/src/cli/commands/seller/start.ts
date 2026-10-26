@@ -49,7 +49,8 @@ import { startupReachabilityWarning } from './reachability.js'
 import { initializeProvider } from './provider-init.js'
 import { sharedChainProvider } from '../../../proxy/chain-rpc.js'
 import { rpcUsage, withRpcSource } from '../../../proxy/rpc-sources.js'
-import { SellerAlerts } from '../../../seller-alerts/alerts.js'
+import { DEFAULT_LOW_BALANCE_USD, SellerAlerts } from '../../../seller-alerts/alerts.js'
+import { UpstreamAlerts } from '../../../seller-alerts/upstream-alerts.js'
 import { ethToWei } from './gas.js'
 import { startIdleWatch, uncleanExitEvent, waitAtMost } from '../../../seller-alerts/lifecycle.js'
 
@@ -922,6 +923,13 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       if (crashed) void alerts.record(crashed)
       void alerts.record({ kind: 'started', severity: 'info', title: `Seller started (v${pkg.version})` })
       if (alerts.channels().length > 0) console.log(chalk.dim(`  alerts: ${alerts.channels().join(', ')}`))
+      else console.log(chalk.dim('  alerts: off (journal only). Send them to Telegram or a webhook with `antseed seller alerts set` or `antseed seller dashboard`; a running seller picks the change up.'))
+      // Model and upstream-credit alerts go out per upstream: one message for a round of withdrawals, and the cause when it is billing.
+      const upstreamHost = (providerId: string) => {
+        const baseUrl = effectiveSellerConfig.providers[providerId]?.baseUrl
+        try { return baseUrl ? new URL(baseUrl).host : null } catch { return null }
+      }
+      const upstreamAlerts = new UpstreamAlerts(alerts, { hostOf: upstreamHost })
 
       let healthChecker: ModelHealthChecker | null = null
       if (healthCheckEnabled && registeredProviders.length > 0) {
@@ -938,14 +946,23 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           onChange: (event) => {
             if (event.status === 'removed') {
               console.log(chalk.yellow(`Model ${event.provider}/${event.service} unadvertised — failing health checks (${event.detail})`))
-              void alerts.record({ kind: 'model_down', severity: 'warning', title: `${event.service} withdrawn after ${event.consecutiveFailures} failed health checks`, detail: event.detail, provider: event.provider, providerId: event.providerId, service: event.service })
             } else {
               console.log(chalk.green(`Model ${event.provider}/${event.service} re-advertised — health check recovered (${event.detail})`))
-              void alerts.record({ kind: 'model_up', severity: 'info', title: `${event.service} is healthy again and advertised`, detail: event.detail, provider: event.provider, providerId: event.providerId, service: event.service })
             }
+            upstreamAlerts.modelChanged(event)
             void node.refreshSellerMetadata().catch(() => {})
           },
+          onUpstreamAccount: (event) => {
+            console.log((event.status === 'funded' ? chalk.green : chalk.yellow)(`Upstream ${event.providerId}: ${event.status.replace('_', ' ')} (${event.detail})`))
+            upstreamAlerts.account(event)
+          },
+          onSweepComplete: () => upstreamAlerts.flush(),
+          // Read on every check, so a dashboard edit applies without a restart.
+          lowBalanceUsd: () => alerts.settings.config.lowBalanceUsd ?? DEFAULT_LOW_BALANCE_USD,
         })
+        const checker = healthChecker
+        // Live traffic sees an upstream run out of credit before the next probe does.
+        node.on('provider:response', ({ provider, statusCode, body }: { provider: Provider; statusCode: number; body: string }) => checker.reportUpstreamResponse(provider, statusCode, body))
         healthChecker.start()
       }
 
@@ -1180,6 +1197,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         node.off('connection', scheduleDaemonStateWrite)
         node.off('session:updated', scheduleDaemonStateWrite)
         node.off('session:finalized', scheduleDaemonStateWrite)
+        upstreamAlerts.close()
         alerts.close()
         nodeSpinner.start('Shutting down seeding daemon...')
         try {

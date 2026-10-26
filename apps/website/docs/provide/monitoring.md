@@ -80,7 +80,13 @@ The seller can send its events to Telegram, to a webhook, or both. Set them up i
 - **Webhook**: the seller POSTs each event as JSON with `text` and `content` fields, which Slack and Discord incoming webhooks read.
 - **What is sent**: the lowest severity to send (default: warnings), an alert when the seller has served nothing for some minutes, and the cooldown (default: 30 minutes). The cooldown is the shortest gap between two sends of the same alert, also across a recovery: a model that keeps failing and recovering alerts at most once per cooldown, and a new failure inside the cooldown is sent when it ends if it has not recovered by then. 0 sends every alert. Crash alerts keep their cooldown across restarts. A recovery is always sent after an alert that went out.
 
-Alert changes apply to the running seller within a few seconds, without a restart.
+Alerts are per upstream (a provider in your config), not per model:
+
+- **Out of credit** (critical): the first time an upstream answers a health check, an account check or a buyer's request with HTTP 402 or a billing error ("positive balance", "insufficient balance" or "credits", `insufficient_quota`, "credit balance is too low"; a rate limit is not one), or a provider account check reports the balance at or under its minimum, one alert names it and its host and says to top it up, with the upstream's error. Its models are still withdrawn after the failed health checks, without a message for each. Another alert says when it has credit again.
+- **Low balance** (warning): for upstreams that report their balance (account checks), an alert when it drops under `lowBalanceUsd` (default $5, 0 turns it off; **Low upstream balance** on the page, `antseed seller alerts set --low-balance`), and another when it is back above.
+- **Models withdrawn**: models withdrawn in one health-check round are one alert listing them, more withdrawn in a later round update it, and the recovery is one alert when all of them are back. The dashboard's events still list each model.
+
+`antseed seller start` sends alerts whenever a channel is set up; with none it journals the events and says so in its startup log. Alert changes apply to the running seller within a few seconds, without a restart.
 
 The bot token and the webhook URL (which often carries a token of its own) are secrets. They are saved on the seller's host in `<data dir>/secrets/seller-alerts.json` (readable only by the seller's user), never in `config.json`, and never shown again: the page shows only whether a token is saved and the webhook's host. A token in the environment variable `seller.alerts.telegram.botTokenEnv` names (default `ANTSEED_ALERTS_TELEGRAM_TOKEN`) takes precedence over the saved one. A token set only in the seller's environment shows as set while the seller runs; send test alerts from where the seller runs, or save the token on the page.
 
@@ -93,6 +99,7 @@ The other alert settings you save on the page go to `<data dir>/seller-alerts.js
       "telegram": { "chatId": "<chat id>" },
       "idleMinutes": 60,
       "cooldownMinutes": 30,
+      "lowBalanceUsd": 5,
       "minSeverity": "warning"
     }
   }

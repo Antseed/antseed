@@ -5,7 +5,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> => !!value &
 const isMinutes = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value > 0;
 /** A cooldown of 0 sends every alert. */
 const isCooldown = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0;
-const MINUTES = { idleMinutes: [isMinutes, 'a positive number'], cooldownMinutes: [isCooldown, 'a number of 0 or more'] } as const;
+const MINUTES = { idleMinutes: [isMinutes, 'a positive number'], cooldownMinutes: [isCooldown, 'a number of 0 or more'], lowBalanceUsd: [isCooldown, 'a USD amount of 0 or more'] } as const;
 /** A Telegram chat id: written as a string, or as the number Telegram shows. */
 const chatIdOf = (value: unknown): string | null =>
   typeof value === 'string' ? value : typeof value === 'number' && Number.isSafeInteger(value) ? String(value) : null;
@@ -25,7 +25,7 @@ export function sellerAlertsErrors(value: unknown, path = 'seller.alerts'): stri
     }
   }
   if (webhook !== undefined && (!isRecord(webhook) || typeof webhook.url !== 'string')) errors.push(`${path}.webhook.url must be a string`);
-  for (const key of ['idleMinutes', 'cooldownMinutes'] as const) {
+  for (const key of ['idleMinutes', 'cooldownMinutes', 'lowBalanceUsd'] as const) {
     const [valid, what] = MINUTES[key];
     if (value[key] !== undefined && !valid(value[key])) errors.push(`${path}.${key} must be ${what}`);
   }
@@ -48,7 +48,7 @@ export function normalizeSellerAlerts(value: unknown): SellerAlertsCLIConfig | u
     if (chatId !== null || botTokenEnv !== undefined) out.telegram = { ...(chatId !== null ? { chatId } : {}), ...(botTokenEnv !== undefined ? { botTokenEnv } : {}) };
   }
   if (isRecord(webhook) && typeof webhook.url === 'string') out.webhook = { url: webhook.url };
-  for (const key of ['idleMinutes', 'cooldownMinutes'] as const) if (MINUTES[key][0](value[key])) out[key] = value[key];
+  for (const key of ['idleMinutes', 'cooldownMinutes', 'lowBalanceUsd'] as const) if (MINUTES[key][0](value[key])) out[key] = value[key];
   if (SEVERITIES.has(value.minSeverity as string)) out.minSeverity = value.minSeverity as SellerAlertsCLIConfig['minSeverity'];
   return out;
 }

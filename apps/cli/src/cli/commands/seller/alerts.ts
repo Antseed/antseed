@@ -35,7 +35,7 @@ export function registerSellerAlertsCommand(sellerCmd: Command): void {
       const telegram = alerts.telegram;
       console.log(`${chalk.bold('Telegram')}  ${telegram.active ? chalk.green('on') : chalk.dim('off')} · chat ${telegram.chatId ?? '—'} · token ${telegram.tokenSource === 'env' ? `from ${telegram.botTokenEnv}` : telegram.tokenSet ? 'saved' : 'not set'}`);
       console.log(`${chalk.bold('Webhook')}   ${alerts.webhook.set ? `posts to ${alerts.webhook.host}` : chalk.dim('off')}`);
-      console.log(`Lowest severity ${alerts.minSeverity ?? 'warning'} · quiet alert ${alerts.idleMinutes ? `after ${alerts.idleMinutes} min` : 'off'} · repeat at most every ${alerts.cooldownMinutes ?? 30} min`);
+      console.log(`Lowest severity ${alerts.minSeverity ?? 'warning'} · quiet alert ${alerts.idleMinutes ? `after ${alerts.idleMinutes} min` : 'off'} · repeat at most every ${alerts.cooldownMinutes ?? 30} min · low upstream balance ${alerts.lowBalanceUsd === 0 ? 'off' : `under $${alerts.lowBalanceUsd ?? 5}`}`);
       if (!alerts.writable) console.log(chalk.yellow(alerts.readOnlyReason ?? 'Read-only'));
     }));
 
@@ -49,6 +49,7 @@ export function registerSellerAlertsCommand(sellerCmd: Command): void {
     .option('--clear-webhook', 'remove the webhook')
     .option('--idle <minutes|off>', 'alert when nothing was served this long')
     .option('--cooldown <minutes|default>', 'shortest gap between repeats of one alert')
+    .option('--low-balance <usd|off|default>', 'warn when an upstream that reports its balance holds less (default $5)')
     .option('--min-severity <info|warning|critical>')
     .option('--json', 'output as JSON', false)
     .action((options: Record<string, string | boolean | undefined>, command: Command) => runMonitorCommand(jsonFlag(command), async () => {
@@ -62,6 +63,7 @@ export function registerSellerAlertsCommand(sellerCmd: Command): void {
       if (typeof options.telegramChat === 'string') patch.telegramChatId = options.telegramChat === 'none' ? null : options.telegramChat;
       if (typeof options.idle === 'string') patch.idleMinutes = options.idle === 'off' ? null : Number(options.idle);
       if (typeof options.cooldown === 'string') patch.cooldownMinutes = options.cooldown === 'default' ? null : Number(options.cooldown);
+      if (typeof options.lowBalance === 'string') patch.lowBalanceUsd = options.lowBalance === 'default' ? null : options.lowBalance === 'off' ? 0 : Number(options.lowBalance);
       if (typeof options.minSeverity === 'string') {
         if (!SEVERITIES.includes(options.minSeverity)) throw new Error('--min-severity: use info, warning or critical');
         patch.minSeverity = options.minSeverity as SellerAlertsPatch['minSeverity'];

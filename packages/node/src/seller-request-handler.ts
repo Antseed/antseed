@@ -776,6 +776,8 @@ export class SellerRequestHandler {
           responseBody = response.body ?? new Uint8Array(0);
           responseForAuth = response;
           if (downloadHash) responseForAuth = { ...response, streamedBody: downloadHash.finish() };
+          // The upstream's answer for its account health (an out-of-credit error is seen here first).
+          this._deps.emit('provider:response', { provider, statusCode, body: statusCode >= 400 ? new TextDecoder().decode(responseBody.slice(0, 2_000)) : '' });
           if (statusCode >= 400) {
             const errBody = new TextDecoder().decode(responseBody).slice(0, 200);
             debugWarn(`[SellerHandler] Provider error response: status=${statusCode} provider="${provider.name}" model="${requestedModel}" buyer=${buyerPeerId.slice(0, 12)}... (${Date.now() - startTime}ms) body=${errBody}`);

@@ -523,3 +523,84 @@ describe('ModelHealthChecker with providers that share a name', () => {
     expect(checker.getSnapshot().every((entry) => entry.advertised && entry.consecutiveFailures === 0)).toBe(true);
   });
 });
+
+describe('upstream credit', () => {
+  it('reports an out-of-credit upstream on its first 402, once, and funded when a probe answers again', async () => {
+    const provider = makeProvider({ onRequest: statusSequence({ 'model-a': [402, 402], 'model-b': [402, 402] }) });
+    const events: Array<{ status: string; providerId: string; services: string[] }> = [];
+    const checker = new ModelHealthChecker({ targets: [{ provider, id: 'deepinfra' }], failureThreshold: 3, onUpstreamAccount: (event) => { events.push(event); } });
+    await checker.runSweep();
+    expect(events).toEqual([expect.objectContaining({ status: 'out_of_credit', providerId: 'deepinfra', services: ['model-a', 'model-b'] })]);
+    expect(provider.services).toEqual(['model-a', 'model-b']);
+    await checker.runSweep();
+    expect(events).toHaveLength(1);
+    await checker.runSweep();
+    expect(events.map((event) => event.status)).toEqual(['out_of_credit', 'funded']);
+  });
+
+  it('reads billing errors from live requests and account checks, and warns under the low-balance line', async () => {
+    let account: UpstreamAccountStatus = { status: 'available', balanceUsd: 40 };
+    const provider = makeProvider({ services: ['image-a'], checkUpstreamAccount: async () => account, serviceApiProtocols: { 'image-a': ['venice-video'] } } as Partial<Provider>);
+    const events: Array<{ status: string; balanceUsd: number | null }> = [];
+    let line = 10;
+    const checker = new ModelHealthChecker({ targets: [{ provider }], lowBalanceUsd: () => line, onUpstreamAccount: (event) => { events.push(event); } });
+    await checker.runSweep();
+    expect(events).toEqual([]);
+    account = { status: 'available', balanceUsd: 4 };
+    await checker.runSweep();
+    expect(events.at(-1)).toMatchObject({ status: 'low_balance', balanceUsd: 4 });
+    account = { status: 'unavailable', reason: 'Insufficient balance: top up your account' };
+    await checker.runSweep();
+    expect(events.at(-1)!.status).toBe('out_of_credit');
+    line = 1;
+    account = { status: 'available', balanceUsd: 4 };
+    await checker.runSweep();
+    expect(events.at(-1)!.status).toBe('funded');
+    // A live 402 is reported without waiting for a probe; a later success clears it.
+    checker.reportUpstreamResponse(provider, 402, '{"error":{"message":"You need positive balance to do inference"}}');
+    checker.reportUpstreamResponse(provider, 200, '');
+    expect(events.map((event) => event.status)).toEqual(['low_balance', 'out_of_credit', 'funded', 'out_of_credit', 'funded']);
+  });
+});
+
+describe('isUpstreamOutOfCredit', () => {
+  it('reads 402s and billing messages, not other failures', async () => {
+    const { isUpstreamOutOfCredit } = await import('../src/health/upstream-credit.js');
+    expect(isUpstreamOutOfCredit(402, '')).toBe(true);
+    expect(isUpstreamOutOfCredit(400, 'You need positive balance to do inference. Please add balance manually or setup top-up')).toBe(true);
+    expect(isUpstreamOutOfCredit(429, 'insufficient_quota: You exceeded your current quota')).toBe(true);
+    expect(isUpstreamOutOfCredit(500, 'upstream connect error')).toBe(false);
+    expect(isUpstreamOutOfCredit(429, 'Rate limit reached for requests')).toBe(false);
+    expect(isUpstreamOutOfCredit(404, 'model not found')).toBe(false);
+  });
+});
+
+describe('upstream credit classification in probes and requests', () => {
+  it('reads an Anthropic credit 400 in a probe as out of credit, and tells each round it ended', async () => {
+    const provider = makeProvider({
+      services: ['model-a'],
+      onRequest: async (req) => jsonResponse(req.requestId, 400, { type: 'error', error: { type: 'invalid_request_error', message: 'Your credit balance is too low to access the Anthropic API.' } }),
+    });
+    const statuses: string[] = [];
+    let rounds = 0;
+    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1, onUpstreamAccount: (event) => { statuses.push(event.status); }, onSweepComplete: () => { rounds += 1; } });
+    await checker.runSweep();
+    expect(statuses).toEqual(['out_of_credit']);
+    expect(provider.services).toEqual([]);
+    expect(rounds).toBe(1);
+  });
+
+  it('ignores rate limits and a buyer\'s echoed input, and takes a provider\'s own out-of-credit mark', async () => {
+    const { isUpstreamOutOfCredit, isLiveResponseOutOfCredit } = await import('../src/health/upstream-credit.js');
+    expect(isUpstreamOutOfCredit(429, '{"error":{"code":429,"message":"You exceeded your current quota, please check your plan and billing details.","status":"RESOURCE_EXHAUSTED"}}')).toBe(false);
+    expect(isUpstreamOutOfCredit(429, '{"error":{"message":"You exceeded your current quota","type":"insufficient_quota","code":"insufficient_quota"}}')).toBe(true);
+    expect(isLiveResponseOutOfCredit(400, "Invalid input: 'insufficient balance'")).toBe(false);
+    expect(isLiveResponseOutOfCredit(403, 'Insufficient credits. Add more using https://openrouter.ai/settings/credits')).toBe(true);
+    expect(isUpstreamOutOfCredit(500, 'desktop upload failed')).toBe(false);
+    const provider = makeProvider({ services: ['image-a'], checkUpstreamAccount: async () => ({ status: 'unavailable', reason: 'fal balance $3.00 is at or below the $5 minimum', outOfCredit: true }), serviceApiProtocols: { 'image-a': ['venice-video'] } } as Partial<Provider>);
+    const statuses: string[] = [];
+    const checker = new ModelHealthChecker({ targets: [{ provider }], onUpstreamAccount: (event) => { statuses.push(event.status); } });
+    await checker.runSweep();
+    expect(statuses).toEqual(['out_of_credit']);
+  });
+});
