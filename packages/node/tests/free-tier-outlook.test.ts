@@ -93,4 +93,16 @@ describe('free-tier outlook', () => {
     expect(freeTierPowerAt(view, [strong, ...many], now)).toBe(80_000 + 63 * 8_000);
     expect(freeTierPowerAt(view, [strong, ...many], expiresAt)).toBe(64 * 6_000);
   });
+
+  it('describes the trend of the counted positions only', () => {
+    // 64 strong max-locked positions hold; a weaker unlocked 65th is never counted, so nothing shrinks.
+    const locked = Array.from({ length: MAX_FREE_TIER_COUNTED_POSITIONS }, (_, index) => position({ id: index + 1, ants: 1_000, maxLocked: true, endEpoch: 114 }));
+    const weak = position({ id: 99, ants: 10, endEpoch: 30 });
+    expect(freeTierStakeTrend(view, { positions: [...locked, weak] }, now)).toEqual({ power: 64 * 104_000, steady: true, shrinking: false, endsAt: null });
+    // With a counted slot free, the same weak position is counted and shrinks.
+    expect(freeTierStakeTrend(view, { positions: [...locked.slice(1), weak] }, now)).toMatchObject({ steady: false, shrinking: true, endsAt: null });
+    // A max-locked code expiring exactly on a week boundary stops counting there; that is not shrinking.
+    const onBoundary = position({ ants: 1_000, maxLocked: true, endEpoch: 114, expiresAt: at(30) });
+    expect(freeTierStakeTrend(view, { positions: [onBoundary] }, now)).toEqual({ power: 104_000, steady: false, shrinking: false, endsAt: at(30) });
+  });
 });
