@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { MAX_SERVICES_PER_PROVIDER } from '@antseed/node';
-import { isImageModelId, parseServiceCapabilitiesJson, parseServiceUnitBillingModelsJson } from './config-utils.js';
+import { isImageModelId, parseFallbackUpstreamsJson, parseServiceCapabilitiesJson, parseServiceUnitBillingModelsJson } from './config-utils.js';
 
 describe('isImageModelId', () => {
   it.each([
@@ -180,5 +180,44 @@ describe('parseServiceCapabilitiesJson', () => {
     expect(() => parseServiceCapabilitiesJson(JSON.stringify({
       'gpt-5.5': { reasoning: 'yes' },
     }))).toThrow(/must be a boolean/);
+  });
+});
+
+describe('parseFallbackUpstreamsJson', () => {
+  it('parses upstreams and lowercases service aliases but not paths', () => {
+    expect(parseFallbackUpstreamsJson(JSON.stringify([
+      {
+        baseUrl: 'https://openrouter.ai/api',
+        apiKey: ' or-key ',
+        services: ['Kimi-K3.1-Pro'],
+        serviceAliasMap: { 'Kimi-K3.1-Pro': 'moonshotai/kimi-k3.1-pro' },
+        pathRewrite: { '/v1/Chat': '/v2/Chat' },
+      },
+      { baseUrl: 'https://mirror.example.com' },
+    ]))).toEqual([
+      {
+        baseUrl: 'https://openrouter.ai/api',
+        apiKey: 'or-key',
+        services: ['Kimi-K3.1-Pro'],
+        serviceAliasMap: { 'kimi-k3.1-pro': 'moonshotai/kimi-k3.1-pro' },
+        pathRewrite: { '/v1/Chat': '/v2/Chat' },
+      },
+      { baseUrl: 'https://mirror.example.com' },
+    ]);
+  });
+
+  it('returns undefined for missing or empty input', () => {
+    expect(parseFallbackUpstreamsJson(undefined)).toBeUndefined();
+    expect(parseFallbackUpstreamsJson('[]')).toBeUndefined();
+  });
+
+  it.each([
+    ['{}', 'must be an array'],
+    ['[{"baseUrl":"ftp://x"}]', '[0].baseUrl must be an http(s) URL'],
+    ['[{"baseUrl":"https://x.example","apiKey":""}]', '[0].apiKey must be a non-empty string'],
+    ['[{"baseUrl":"https://x.example","services":[]}]', '[0].services must be a non-empty array'],
+    ['[{"baseUrl":"https://x.example","serviceAliasMap":{"a":1}}]', '[0].serviceAliasMap must be an object of non-empty strings'],
+  ])('rejects %s', (raw, message) => {
+    expect(() => parseFallbackUpstreamsJson(raw)).toThrow(message);
   });
 });

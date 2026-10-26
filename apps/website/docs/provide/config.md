@@ -55,8 +55,56 @@ Everything a seller announces lives under `seller.providers`. Each key is a labe
 | `baseUrl` | Upstream API base URL, without the `/v1` suffix. Passed to the `openai`, `local-llm`, `typesafe`, `venice-video` and `fal-video` plugins as their `*_BASE_URL` setting, so you don't need to export it separately. |
 | `apiKeyEnv` | Name of the environment variable that holds this provider's API key, so two providers on one seller can use different keys. Applies to the same plugins as `baseUrl`. |
 | `pathRewrite` | Exact request paths to rewrite before forwarding upstream, for example `{ "/v1/chat/completions": "/v4/chat/completions" }`. `openai` plugin only. |
+| `fallbackUpstreams` | Backup upstreams for the same models, tried in order when the main upstream fails. `openai` plugin only. See [Backup upstreams](#backup-upstreams). |
 | `defaults` | Fallback token pricing for services that don't set their own `pricing`. |
 | `services` | The services this provider announces. |
+
+### Backup upstreams
+
+A provider can list backup upstreams that serve the same models. When the main upstream fails before anything reaches the buyer, the seller sends the request to the next upstream instead of returning the error:
+
+- the request could not be sent, or timed out,
+- or the upstream answered `401`, `402`, `403`, `404`, `408`, `429`, `500`, `502`, `503`, `504` or `529` (bad key, out of credit, model gone, rate limit or quota, server error).
+
+Other errors, such as `400` for a malformed request, go back to the buyer unchanged. A stream that has already started is never switched.
+
+```json
+{
+  "seller": {
+    "providers": {
+      "kimi": {
+        "plugin": "openai",
+        "baseUrl": "https://api.example-inference.com",
+        "apiKeyEnv": "INFERENCE_API_KEY",
+        "fallbackUpstreams": [
+          {
+            "baseUrl": "https://api.example-backup.com",
+            "apiKeyEnv": "BACKUP_API_KEY",
+            "services": {
+              "kimi-k3.1-pro": { "upstreamModel": "<model-id-at-the-backup>" }
+            }
+          }
+        ],
+        "services": {
+          "kimi-k3.1-pro": {},
+          "kimi-k3": {}
+        }
+      }
+    }
+  }
+}
+```
+
+| Field | Description |
+|---|---|
+| `baseUrl` | The backup's API base URL. Required. |
+| `apiKeyEnv` | Environment variable that holds the backup's API key. Omit to reuse the provider's key. The seller refuses to start if the variable is not set. |
+| `services` | The services this backup serves, with `upstreamModel` when the model has another name there. Omit to use the backup for every service of the provider, under the provider's own `upstreamModel` names. |
+| `pathRewrite` | Path rewrites for this backup. Defaults to the provider's `pathRewrite`. |
+
+The buyer gets the model they asked for and pays the service's normal price, whichever upstream answered. Backups share the provider's other settings (extra headers, body fields, concurrency), so only list upstreams that accept the same API.
+
+After an upstream fails for a service, the seller tries it last for that service for 30 seconds, or for as long as its `Retry-After` header asks (up to 5 minutes), so requests don't keep waiting on an upstream that is out of quota. [Model health checks](#model-health-checks) go through the same backups, so a service stays advertised while any of its upstreams works. The seller log shows each switch as `[http-relay] <service>: primary upstream <host> failed (HTTP 429); trying fallback <host>`.
 
 ### Service fields
 
