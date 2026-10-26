@@ -3,16 +3,22 @@ import {
   FallbackProvider,
   FetchRequest,
   JsonRpcProvider,
+  makeError,
   Network,
   type AbstractProvider,
   type AbstractSigner,
+  type CallExceptionError,
   type InterfaceAbi,
+  type TransactionReceipt,
   type TransactionRequest,
   type TransactionResponse,
 } from 'ethers';
 
 const FALLBACK_STALL_TIMEOUT_MS = 750;
 const JSON_RPC_REQUEST_TIMEOUT_MS = 10_000;
+const RECEIPT_POLL_MS = 2_000;
+/** Polls between checks that the tx's nonce was not taken by another tx. */
+const NONCE_CHECK_EVERY_POLLS = 5;
 
 function createJsonRpcProvider(url: string, network?: Network, opts?: object): JsonRpcProvider {
   const request = new FetchRequest(url);
@@ -34,6 +40,15 @@ function buildProvider(rpcUrl: string, fallbackRpcUrls?: string[], evmChainId?: 
     weight: 1,
   }));
   return new FallbackProvider(configs, network, { quorum: 1 });
+}
+
+function revertError(receipt: TransactionReceipt): CallExceptionError {
+  return makeError('transaction execution reverted', 'CALL_EXCEPTION', {
+    action: 'sendTransaction',
+    data: null, reason: null, invocation: null, revert: null,
+    transaction: { to: receipt.to, from: receipt.from, data: '' },
+    receipt,
+  });
 }
 
 export const ERC20_ABI = [
@@ -97,8 +112,7 @@ export abstract class BaseEvmClient {
     const contract = new Contract(this._contractAddress, abi, connected);
     const populated = await contract.getFunction(method).populateTransaction(...args);
     const tx = await this._sendBuffered(connected, signerAddress, populated);
-    const receipt = await tx.wait();
-    if (!receipt) throw new Error('Transaction was dropped or replaced');
+    const receipt = await this._waitForReceipt(tx);
     return receipt.hash;
   }
 
@@ -118,9 +132,44 @@ export abstract class BaseEvmClient {
     const usdc = new Contract(usdcAddress, ERC20_ABI, connected);
     const approvePopulated = await usdc.getFunction('approve').populateTransaction(this._contractAddress, amount);
     const approveTx = await this._sendBuffered(connected, signerAddress, approvePopulated);
-    const approveReceipt = await approveTx.wait();
-    if (!approveReceipt) throw new Error('Approve transaction was dropped or replaced');
+    await this._waitForReceipt(approveTx);
     return this._execWrite(signer, abi, method, ...args);
+  }
+
+  /**
+   * Wait until `tx` is mined, in place of `tx.wait()`. ethers' wait polls
+   * receipts from a block listener whose promise nobody handles, so a single
+   * RPC timeout there is an unhandled rejection that exits the process. Here
+   * read errors are retried; a revert throws CALL_EXCEPTION like `wait()`,
+   * and a tx whose nonce was used by another tx throws as dropped/replaced.
+   */
+  protected async _waitForReceipt(tx: Pick<TransactionResponse, 'hash' | 'from' | 'nonce'>): Promise<TransactionReceipt> {
+    for (let poll = 1; ; poll += 1) {
+      try {
+        const receipt = await this._provider.getTransactionReceipt(tx.hash);
+        if (receipt) {
+          if (receipt.status === 0) throw revertError(receipt);
+          return receipt;
+        }
+        if (poll % NONCE_CHECK_EVERY_POLLS === 0 && await this._nonceUsedElsewhere(tx)) {
+          throw new Error('Transaction was dropped or replaced');
+        }
+      } catch (err) {
+        if (err instanceof Error && ((err as Partial<CallExceptionError>).code === 'CALL_EXCEPTION' || err.message === 'Transaction was dropped or replaced')) {
+          throw err;
+        }
+        // Transient RPC failure (timeout, 5xx, rate limit): poll again.
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, RECEIPT_POLL_MS));
+    }
+  }
+
+  /** The tx's nonce is mined but the tx itself has no receipt (checked after the nonce read, to not race its mining). */
+  private async _nonceUsedElsewhere(tx: Pick<TransactionResponse, 'hash' | 'from' | 'nonce'>): Promise<boolean> {
+    if (!tx.from || typeof tx.nonce !== 'number') return false;
+    const mined = await this._provider.getTransactionCount(tx.from, 'latest');
+    if (mined <= tx.nonce) return false;
+    return (await this._provider.getTransactionReceipt(tx.hash)) === null;
   }
 
   /** Apply the gas buffer and broadcast on the signer's next nonce. */

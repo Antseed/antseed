@@ -1,10 +1,15 @@
 import { describe, it, expect, vi } from 'vitest';
-import type { AbstractSigner, InterfaceAbi, TransactionRequest, TransactionResponse } from 'ethers';
+import { makeError, type AbstractSigner, type InterfaceAbi, type TransactionReceipt, type TransactionRequest, type TransactionResponse } from 'ethers';
 import { BaseEvmClient } from '../src/payments/evm/base-evm-client.js';
 
 class TestEvmClient extends BaseEvmClient {
   constructor() {
     super('http://127.0.0.1:1', '0x' + 'aa'.repeat(20));
+    vi.spyOn(this.provider, 'getTransactionReceipt')
+      .mockImplementation(async (hash) => ({ hash, status: 1 }) as unknown as TransactionReceipt);
+  }
+  async waitFor(tx: Pick<TransactionResponse, 'hash' | 'from' | 'nonce'>): Promise<TransactionReceipt> {
+    return this._waitForReceipt(tx);
   }
   async exec(signer: AbstractSigner, abi: InterfaceAbi, method: string, ...args: unknown[]): Promise<string> {
     return this._execWrite(signer, abi, method, ...args);
@@ -133,5 +138,52 @@ describe('BaseEvmClient._execWrite', () => {
     await expect(failing).rejects.toThrow(/execution reverted/);
     await Promise.all([channel, next]);
     expect(sent.map(tx => tx.nonce)).toEqual([10, 11]);
+  });
+});
+
+describe('BaseEvmClient._waitForReceipt', () => {
+  const tx = { hash: '0xabc', from: '0x' + 'ff'.repeat(20), nonce: 3 };
+  const receipt = (status: number) => ({ hash: tx.hash, status }) as unknown as TransactionReceipt;
+
+  it('keeps polling through RPC timeouts instead of failing the wait', async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new TestEvmClient();
+      vi.mocked(client.provider.getTransactionReceipt)
+        .mockRejectedValueOnce(makeError('request timeout', 'TIMEOUT'))
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(receipt(1));
+
+      const waiting = client.waitFor(tx);
+      await vi.advanceTimersByTimeAsync(4_000);
+
+      await expect(waiting).resolves.toMatchObject({ hash: tx.hash, status: 1 });
+      expect(client.provider.getTransactionReceipt).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('throws CALL_EXCEPTION when the tx reverted', async () => {
+    const client = new TestEvmClient();
+    vi.mocked(client.provider.getTransactionReceipt).mockResolvedValue(receipt(0));
+
+    await expect(client.waitFor(tx)).rejects.toMatchObject({ code: 'CALL_EXCEPTION' });
+  });
+
+  it('throws when another tx used the nonce', async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new TestEvmClient();
+      vi.mocked(client.provider.getTransactionReceipt).mockResolvedValue(null);
+      vi.spyOn(client.provider, 'getTransactionCount').mockResolvedValue(tx.nonce + 1);
+
+      const waiting = client.waitFor(tx);
+      const settled = expect(waiting).rejects.toThrow(/dropped or replaced/);
+      await vi.advanceTimersByTimeAsync(10_000);
+      await settled;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
