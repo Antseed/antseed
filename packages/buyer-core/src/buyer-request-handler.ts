@@ -505,7 +505,14 @@ export class BuyerRequestHandler {
       let paymentResponse = response;
       let retriedResponse: SerializedHttpResponse;
       for (let retry = 1; ; retry++) {
-        const result = await negotiator.handle402(paymentResponse, peer, conn, req, mux.activeRequestCount() + 1);
+        const result = await negotiator.handle402(
+          paymentResponse,
+          peer,
+          conn,
+          req,
+          mux.activeRequestCount() + 1,
+          billingRoute?.tokenPricing,
+        );
         if (result.action === 'return') {
           return adaptPeerResponse(result.response);
         }
