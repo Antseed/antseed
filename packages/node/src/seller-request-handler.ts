@@ -1370,6 +1370,11 @@ export class SellerRequestHandler {
     request: SerializedHttpRequest,
     pricing: ProviderTokenPricing,
   ): { cost: bigint; inputTokens: number; maxOutputTokens: number } | null {
+    // A free model costs nothing whatever the size: skip parsing and token
+    // estimation, which on multi-MB bodies were a large share of the seller's CPU.
+    if (isZeroTokenPricing(pricing)) {
+      return { cost: 0n, inputTokens: 0, maxOutputTokens: 0 };
+    }
     if (!this._isJsonRequest(request)) {
       return null;
     }
