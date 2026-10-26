@@ -1372,8 +1372,7 @@ export interface SellerMarket {
   /** This seller was found in the snapshot. */
   found: boolean
   services: SellerMarketService[]
-  /** Models other sellers offer that this one does not, most widely offered first. */
-  /** `cheapestOutputUsdPerMillion` over token-priced offers; `cheapestUnitPrice` over unit-billed ones (the cheapest in their most common unit). */
+  /** Models other sellers offer that this one does not, most widely offered first. `cheapestOutputUsdPerMillion` over token-priced offers; `cheapestUnitPrice` over unit-billed ones (the cheapest in their most common unit). */
   notOffered: Array<{ service: string; sellers: number; cheapestOutputUsdPerMillion: number | null; cheapestUnitPrice: SellerUnitPrice | null }>
 }
 

@@ -3,7 +3,7 @@ import { constants } from 'node:fs'
 import { access, chmod, mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { withFileLock } from '@antseed/node'
-import { ConsoleError } from '../gateway/console-api/router.js'
+import { ConsoleError } from '../console-error.js'
 import { configFromObject, resolveConfigPath } from './loader.js'
 
 /**

@@ -140,8 +140,7 @@ async function readDaemonState(dataDir: string): Promise<Record<string, unknown>
   }
 }
 
-async function addCommonMetrics(samples: MetricSample[], baseLabels: Record<string, string>, dataDir: string): Promise<void> {
-  const daemon = await readDaemonState(dataDir);
+async function addCommonMetrics(samples: MetricSample[], baseLabels: Record<string, string>, daemon: Record<string, unknown> | null): Promise<void> {
   addSample(samples, baseLabels, {
     name: 'antseed_metrics_scrape_timestamp_seconds',
     help: 'Unix timestamp of the metrics scrape.',
@@ -314,9 +313,8 @@ function chainBalances(configPath: string, wallet: string) {
   return value;
 }
 
-async function addSellerMetrics(samples: MetricSample[], baseLabels: Record<string, string>, dataDir: string): Promise<void> {
+async function addSellerMetrics(samples: MetricSample[], baseLabels: Record<string, string>, dataDir: string, daemon: Record<string, unknown> | null): Promise<void> {
   const wallet = await loadExistingWalletAddress(dataDir);
-  const daemon = await readDaemonState(dataDir);
   const sellerLabels = { ...baseLabels, role: 'seller', wallet, peer_id: String(daemon?.peerId ?? '') };
   const allChannels = listChannels(dataDir, 1_000_000).filter((channel) => channel.role === 'seller');
   const dayStart = utcDayStartMs();
@@ -503,19 +501,21 @@ async function collectMetrics(options: MetricsOptions, dataDir: string, configPa
   const baseLabels = { instance };
   const samples: MetricSample[] = [];
 
-  await addCommonMetrics(samples, baseLabels, dataDir);
+  // One snapshot per scrape: the seller rewrites the file every second.
+  const daemon = await readDaemonState(dataDir);
+  await addCommonMetrics(samples, baseLabels, daemon);
   if (role === 'buyer' || role === 'both' || role === 'auto') {
     await addBuyerMetrics(samples, baseLabels, dataDir, Boolean(options.includeChain), configPath).catch((error) => {
       addSample(samples, { ...baseLabels, role: 'buyer' }, { name: 'antseed_buyer_scrape_error', help: 'Whether buyer metrics collection failed.', type: 'gauge', labels: { error: error instanceof Error ? error.message : String(error) }, value: 1 });
     });
   }
   if (role === 'seller' || role === 'both' || role === 'auto') {
-    await addSellerMetrics(samples, baseLabels, dataDir).catch((error) => {
+    await addSellerMetrics(samples, baseLabels, dataDir, daemon).catch((error) => {
       addSample(samples, { ...baseLabels, role: 'seller' }, { name: 'antseed_seller_scrape_error', help: 'Whether seller metrics collection failed.', type: 'gauge', labels: { error: error instanceof Error ? error.message : String(error) }, value: 1 });
     });
   }
 
-  addRpcMetrics(samples, baseLabels, await readDaemonState(dataDir));
+  addRpcMetrics(samples, baseLabels, daemon);
   return renderPrometheus(samples);
 }
 

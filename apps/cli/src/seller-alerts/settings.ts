@@ -67,8 +67,10 @@ export function applyAlertOverrides(config: SellerAlertsConfig | undefined, over
   if (overrides.telegramChatId !== undefined) merged.telegram = { ...merged.telegram, chatId: overrides.telegramChatId === null ? '' : String(overrides.telegramChatId) };
   for (const key of ['idleMinutes', 'cooldownMinutes', 'lowBalanceUsd', 'minSeverity'] as const) {
     if (overrides[key] === undefined) continue;
-    if (overrides[key] === null) delete merged[key];
-    else (merged as Record<string, unknown>)[key] = overrides[key];
+    if (overrides[key] === null) { delete merged[key]; continue; }
+    // The file is hand-editable: a malformed value is ignored, as in config.json.
+    const value = normalizeSellerAlerts({ [key]: overrides[key] })?.[key];
+    if (value !== undefined) (merged as Record<string, unknown>)[key] = value;
   }
   if (overrides.webhookFromConfig === false) delete merged.webhook;
   return merged;

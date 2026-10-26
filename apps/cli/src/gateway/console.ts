@@ -5,6 +5,7 @@ import { activeMember, requestActor, requireOrgAdmin } from './console-api/acces
 import type { ConsoleDeps } from './console-api/deps.js'
 import { coreConsoleRegistrars } from './console-api/handlers/index.js'
 import { registerNetworkRoutes } from './console-api/handlers/network.js'
+import { rows } from './console-api/handlers/network-mapping.js'
 import { registerStakingRoutes } from './console-api/handlers/staking.js'
 import { registerWalletRoutes } from './console-api/handlers/wallet.js'
 import { ConsoleError, respond, type ConsoleRouter } from './console-api/router.js'
@@ -59,11 +60,6 @@ function registerCredentialRoutes(auth: Pick<ConsoleAuthService, 'deleteCredenti
       return respond(204)
     })
   }
-}
-
-/** Objects of a JSON array (the buyer's peer rows). */
-function rows(value: unknown): Array<Record<string, unknown>> {
-  return Array.isArray(value) ? value.filter((row): row is Record<string, unknown> => !!row && typeof row === 'object' && !Array.isArray(row)) : []
 }
 
 export interface GatewayConsoleOptions {

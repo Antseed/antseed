@@ -521,3 +521,9 @@ test('a recovery that fails while a new outage waits behind it is not resent', a
   assert.deepEqual(texts, ['glm-5.3 withdrawn', 'glm-5.3 back'], 'no stale "back" resend during the new outage');
   alerts.close();
 });
+
+test('malformed fields in the hand-editable overrides file are ignored', async () => {
+  const { applyAlertOverrides } = await import('../../../seller-alerts/settings.js');
+  const merged = applyAlertOverrides({ minSeverity: 'warning', lowBalanceUsd: 5 }, { minSeverity: 'warn' as never, lowBalanceUsd: 'ten' as never, idleMinutes: 15 });
+  assert.deepEqual([merged.minSeverity, merged.lowBalanceUsd, merged.idleMinutes], ['warning', 5, 15]);
+});

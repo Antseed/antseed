@@ -114,7 +114,7 @@ const yieldToLoop = () => new Promise<void>((resolve) => setImmediate(resolve))
  */
 export class SellerUsageReader {
   private readonly _days = new Map<string, { entry: SellerUsageDay; readAt: number }>()
-  private _channels: { at: number; value: Pick<SellerUsage, 'channels' | 'deliveredUsdc' | 'settledUsdc'> } | null = null
+  private readonly _channels = new Map<string, { at: number; value: Pick<SellerUsage, 'channels' | 'deliveredUsdc' | 'settledUsdc'> }>()
   private readonly _inFlight = new Map<string, Promise<SellerUsage>>()
 
   constructor(private readonly _todayTtlMs = 60_000) {}
@@ -167,7 +167,8 @@ export class SellerUsageReader {
   }
 
   private _channelTotals(dataDir: string, now: number): Pick<SellerUsage, 'channels' | 'deliveredUsdc' | 'settledUsdc'> {
-    if (this._channels && now - this._channels.at < this._todayTtlMs) return this._channels.value
+    const cached = this._channels.get(dataDir)
+    if (cached && now - cached.at < this._todayTtlMs) return cached.value
     const channels = { active: 0, settled: 0, timeout: 0, ghost: 0, total: 0 }
     let delivered = 0
     let settled = 0
@@ -187,7 +188,7 @@ export class SellerUsageReader {
       }
     }
     const value = { channels, deliveredUsdc: delivered / MICRO_USDC, settledUsdc: settled / MICRO_USDC }
-    this._channels = { at: now, value }
+    this._channels.set(dataDir, { at: now, value })
     return value
   }
 }
