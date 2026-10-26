@@ -7,6 +7,9 @@
  */
 import type { FreeTierStakeTier } from './free-tier-program.js';
 
+/** Most positions a seller counts toward one buyer's tier; the strongest are counted first. */
+export const MAX_FREE_TIER_COUNTED_POSITIONS = 64;
+
 /** Epochs of power a max-locked position keeps (the seller pool's `MAX_STAKE_EPOCHS`). */
 export const FREE_TIER_MAX_LOCK_EPOCHS = 104;
 
@@ -58,9 +61,10 @@ export function freeTierEpochStart(view: Pick<FreeTierStakeView, 'genesis' | 'ep
 }
 
 /**
- * Power of `positions` at unix second `at`, in ANTS-epochs, as the seller pool
- * counts it: each position from activation, `ants × epochs left` (max lock:
- * `ants × FREE_TIER_MAX_LOCK_EPOCHS`), until it closes or its code expires.
+ * Power of `positions` at unix second `at`, in ANTS-epochs, as sellers count
+ * it: each position from activation, `ants × epochs left` (max lock:
+ * `ants × FREE_TIER_MAX_LOCK_EPOCHS`), until it closes or its code expires,
+ * summed over the strongest `MAX_FREE_TIER_COUNTED_POSITIONS`.
  * Locks change at epoch boundaries; a code stops counting the second it expires.
  */
 export function freeTierPowerAt(
@@ -69,14 +73,19 @@ export function freeTierPowerAt(
   at: number,
 ): number {
   const epoch = Math.floor((at - view.genesis) / view.epochDuration);
-  let power = 0;
+  const counted: Array<{ id: number; power: number }> = [];
   for (const position of positions) {
     if (position.expiresAt !== null && position.expiresAt <= at) continue;
     if (epoch < position.startEpoch || (position.closedAtEpoch !== null && epoch >= position.closedAtEpoch)) continue;
     // A max-lock change made this epoch applies from the next one.
     const locked = epoch <= view.currentEpoch ? position.maxLocked : position.maxLockedNext;
-    power += position.ants * (locked ? FREE_TIER_MAX_LOCK_EPOCHS : Math.max(0, position.endEpoch - epoch));
+    const power = position.ants * (locked ? FREE_TIER_MAX_LOCK_EPOCHS : Math.max(0, position.endEpoch - epoch));
+    if (power > 0) counted.push({ id: position.id, power });
   }
+  // Sellers count only the strongest positions (ties by lower id), so the projection does too.
+  counted.sort((a, b) => (a.power === b.power ? a.id - b.id : b.power - a.power));
+  let power = 0;
+  for (const position of counted.slice(0, MAX_FREE_TIER_COUNTED_POSITIONS)) power += position.power;
   return power;
 }
 
@@ -101,6 +110,28 @@ export interface FreeTierOutlook {
 }
 
 /**
+ * The future instants counted power can change, in order: each epoch start
+ * until the last lock ends, and each code expiry. `epochStart` marks the
+ * weekly lock run-down, as opposed to a code expiring.
+ */
+function changePoints(
+  view: Pick<FreeTierStakeView, 'currentEpoch' | 'genesis' | 'epochDuration'>,
+  positions: readonly FreeTierStakePositionView[],
+  now: number,
+): Array<{ at: number; epochStart: boolean }> {
+  const lastEpoch = Math.min(
+    Math.max(view.currentEpoch, ...positions.map((position) => position.endEpoch)) + 1,
+    view.currentEpoch + 10 * FREE_TIER_MAX_LOCK_EPOCHS,
+  );
+  const points = new Map<number, boolean>();
+  for (let epoch = view.currentEpoch + 1; epoch <= lastEpoch; epoch++) points.set(freeTierEpochStart(view, epoch), true);
+  for (const position of positions) {
+    if (position.expiresAt !== null && position.expiresAt > now && !points.has(position.expiresAt)) points.set(position.expiresAt, false);
+  }
+  return [...points].filter(([at]) => at > now).sort(([a], [b]) => a - b).map(([at, epochStart]) => ({ at, epochStart }));
+}
+
+/**
  * The tier `pool`'s stake earns at `now` (unix seconds) under `tiers`, and
  * when it first earns less: power shrinks every epoch as locks run down, and
  * a staker's code stops counting when it expires.
@@ -115,16 +146,8 @@ export function freeTierOutlook(
   const power = freeTierPowerAt(view, positions, now);
   const tier = freeTierTierAt(tiers, power);
   if (!tier) return { power, tier, dropsAt: null, tierAfterDrop: null };
-  // Power only changes at epoch starts and code expiries.
-  const lastEpoch = Math.min(
-    Math.max(view.currentEpoch, ...positions.map((position) => position.endEpoch)) + 1,
-    view.currentEpoch + 10 * FREE_TIER_MAX_LOCK_EPOCHS,
-  );
-  const changes = new Set<number>();
-  for (let epoch = view.currentEpoch + 1; epoch <= lastEpoch; epoch++) changes.add(freeTierEpochStart(view, epoch));
-  for (const position of positions) if (position.expiresAt !== null && position.expiresAt > now) changes.add(position.expiresAt);
   const rank = (candidate: FreeTierStakeTier | null) => candidate ? tiers.indexOf(candidate) : -1;
-  for (const at of [...changes].filter((change) => change > now).sort((a, b) => a - b)) {
+  for (const { at } of changePoints(view, positions, now)) {
     // Stake still activating can raise power; only a lower tier is a drop.
     const next = freeTierTierAt(tiers, freeTierPowerAt(view, positions, at));
     if (rank(next) < rank(tier)) return { power, tier, dropsAt: at, tierAfterDrop: next };
@@ -136,28 +159,46 @@ export function freeTierOutlook(
 export interface FreeTierStakeTrend {
   /** Power now, in ANTS-epochs. */
   power: number;
-  /** Every counted position is max-locked from the next epoch on, with no code expiring: power holds. */
+  /** Counted power never drops from here (max lock, no code expiring): it holds. */
   steady: boolean;
-  /** Some counted position is not max-locked from the next epoch, so power drops every week. */
+  /** Counted power drops at some epoch boundary as a lock runs down (not only when a code expires). */
   shrinking: boolean;
-  /** Unix seconds the last of it stops counting, or null when some of it never does. */
+  /** Unix seconds counted power reaches zero, or null when it never does. */
   endsAt: number | null;
 }
 
+/**
+ * How `pool`'s counted power changes from `now`, following the same rules as
+ * `freeTierPowerAt` (only the strongest positions count), so positions that
+ * are never counted do not make a steady stake look like it shrinks.
+ */
 export function freeTierStakeTrend(
   view: Pick<FreeTierStakeView, 'currentEpoch' | 'genesis' | 'epochDuration'>,
   pool: { readonly positions: readonly FreeTierStakePositionView[] },
   now = Math.floor(Date.now() / 1000),
 ): FreeTierStakeTrend {
   const power = freeTierPowerAt(view, pool.positions, now);
-  const counted = pool.positions.filter((position) => position.closedAtEpoch === null && (position.expiresAt === null || position.expiresAt > now));
-  const ends = counted.map((position) => {
-    const lockEnd = position.maxLockedNext ? null : freeTierEpochStart(view, position.endEpoch);
-    if (lockEnd === null) return position.expiresAt;
-    return position.expiresAt === null ? lockEnd : Math.min(lockEnd, position.expiresAt);
-  });
-  const steady = counted.length > 0 && counted.every((position) => position.maxLockedNext && position.expiresAt === null);
-  const shrinking = counted.some((position) => !position.maxLockedNext);
-  const endsAt = ends.length === 0 || ends.some((end) => end === null) ? null : Math.max(...(ends as number[]));
+  let previousAt = now;
+  let steady = power > 0;
+  let shrinking = false;
+  let endsAt: number | null = null;
+  // Stake still activating has no power yet, but it ends when its lock does.
+  let counting = power > 0;
+  for (const { at, epochStart } of changePoints(view, pool.positions, now)) {
+    const next = freeTierPowerAt(view, pool.positions, at);
+    if (next < power) steady = false;
+    if (epochStart && !shrinking) {
+      // Lock run-down only: compare the positions still counting at `at` before and after the boundary,
+      // so a code expiring on the same boundary is not mistaken for shrinking.
+      const remaining = pool.positions.filter((position) => position.expiresAt === null || position.expiresAt > at);
+      if (freeTierPowerAt(view, remaining, at) < freeTierPowerAt(view, remaining, previousAt)) shrinking = true;
+    }
+    previousAt = at;
+    if (next > 0) counting = true;
+    else if (counting) {
+      endsAt = at;
+      break;
+    }
+  }
   return { power, steady, shrinking, endsAt };
 }

@@ -87,14 +87,25 @@ test('codes for another buyer, expired or malformed are refused, and members can
   }
 })
 
-test('members read the stake each pool counts, from the buyer and every staker with a live code', async () => {
+async function signedFor(staker: Pick<Wallet, 'address' | 'signTypedData'>, buyer: string, expiresAt: number, chainId: number) {
+  const unsigned = { staker: staker.address, buyer, expiresAt }
+  const signature = await staker.signTypedData(makeFreeTierDelegationDomain(chainId), FREE_TIER_DELEGATION_TYPES, freeTierDelegationMessage(unsigned))
+  return { ...unsigned, signature }
+}
+
+test('members read the stake each pool counts, from the buyer and every staker with a code sellers accept', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'gateway-free-tier-stake-'))
   const configPath = join(dir, 'config.json')
-  const live = `0x${'aa'.repeat(20)}`
-  const expired = `0x${'bb'.repeat(20)}`
+  const liveWallet = Wallet.createRandom()
+  const live = liveWallet.address.toLowerCase()
+  // Left out: an expired code, and one signed for another network (say, saved before switching chains).
+  // Another workspace's eight codes come first in the shared file; they must not crowd out this workspace's.
+  const others = await Promise.all(Array.from({ length: 8 }, () => signedFor(Wallet.createRandom(), OTHER_BUYER, LATER, CHAIN.evmChainId)))
   await writeFile(configPath, JSON.stringify({ buyer: { freeTierDelegations: [
-    { staker: live, buyer: TEAM_BUYER, expiresAt: LATER, signature: '0x' },
-    { staker: expired, buyer: TEAM_BUYER, expiresAt: NOW / 1000 - 1, signature: '0x' },
+    ...others,
+    await signedFor(liveWallet, TEAM_BUYER, LATER, CHAIN.evmChainId),
+    await signedFor(Wallet.createRandom(), TEAM_BUYER, NOW / 1000 - 1, CHAIN.evmChainId),
+    await signedFor(Wallet.createRandom(), TEAM_BUYER, LATER, 84532),
   ] } }))
   const store = {
     getWorkspace: (id: string) => (id === 'ws_team' ? { id, name: 'Team', buyerIdentity: 'team-a' } : null),
@@ -113,7 +124,7 @@ test('members read the stake each pool counts, from the buyer and every staker w
   try {
     assert.deepEqual(await call(router, 'GET', '/workspaces/ws_team/free-tier/stake', member), { buyer: TEAM_BUYER, ...view })
     await call(router, 'GET', '/workspaces/ws_team/free-tier/stake', member)
-    // The expired staker is left out, and the second read is served from the cache.
+    // Only the live code for this chain counts, and the second read is served from the cache.
     assert.deepEqual(reads, [['https://rpc-one.example', TEAM_BUYER, [{ staker: live, expiresAt: LATER }]]])
     // New RPC settings while the gateway runs: the next read uses them, not the cached result.
     chain = { ...CHAIN, rpcUrl: 'https://rpc-two.example' }
