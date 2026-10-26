@@ -10,6 +10,7 @@ import { pointsUrl } from '../../../core/constants';
 import { formatCredits } from '../../../core/format';
 import type { DesktopPointsSummary } from '../../../types/bridge';
 import { VprBadge, VprCard, VprPage } from '../vpr/VprKit';
+import { VprFreeTierCard } from './VprFreeTierCard';
 import styles from './VprRewardsView.module.scss';
 
 const PAYMENT_SUMMARY_POLL_MS = 60_000;
@@ -227,6 +228,8 @@ export function VprRewardsView({ onSelectView }: Props) {
         </VprCard>
 
         <span className={styles.errorNote}>Copy a link to use your wallet in another browser.</span>
+
+        <VprFreeTierCard />
 
         <VprCard className={styles.aboutCard}>
           <span className={styles.aboutTitle}>About $ANTS</span>

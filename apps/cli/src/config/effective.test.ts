@@ -6,6 +6,8 @@ import {
   resolveEffectiveBuyerConfig,
   resolveEffectiveRoleConfig,
   resolveEffectiveSellerConfig,
+  pricedSellerServices,
+  resolveSellerFreeTier,
 } from './effective.js';
 
 test('effective seller config precedence is flags > env > config > defaults', () => {
@@ -146,4 +148,48 @@ test('buyerSettingOverrides names the settings env and flags take over', () => {
     }).sort(),
     ['maxPricing.inputUsdPerMillion', 'network.maxStreamDurationMs', 'network.metadataFetchTimeoutMs', 'payments.rpcUrl', 'proxyPort', 'verifier'],
   );
+});
+
+test('resolveSellerFreeTier merges the seller-wide program with the selected providers’ service programs', () => {
+  const config = createDefaultConfig();
+  delete config.seller.freeTier;
+  const own = { maxRequestsPerAddress: 5, stakersOnly: true };
+  config.seller.providers = {
+    a: { plugin: 'openai', services: { 'free-model': { freeTier: own }, plain: {} } },
+    b: { plugin: 'openai', services: { 'other-model': { freeTier: { maxRequestsPerIp: 1 } } } },
+  };
+  assert.deepEqual(resolveSellerFreeTier(config.seller, ['a']), { services: { 'free-model': own } });
+  assert.equal(resolveSellerFreeTier(config.seller, []), undefined);
+  config.seller.freeTier = { maxRequestsPerAddress: 100 };
+  assert.deepEqual(resolveSellerFreeTier(config.seller, ['a', 'b']), {
+    maxRequestsPerAddress: 100,
+    services: { 'free-model': own, 'other-model': { maxRequestsPerIp: 1 } },
+  });
+  assert.deepEqual(resolveSellerFreeTier(config.seller, []), { maxRequestsPerAddress: 100 });
+});
+
+test('pricedSellerServices lists services that charge, by their own pricing or the provider default', () => {
+  const config = createDefaultConfig();
+  const free = { inputUsdPerMillion: 0, outputUsdPerMillion: 0 };
+  config.seller.providers = {
+    a: {
+      plugin: 'openai',
+      defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 },
+      services: {
+        k3: {},
+        'free-model': { pricing: free },
+      },
+    },
+    b: {
+      plugin: 'openai',
+      defaults: free,
+      services: {
+        'flash-5.3': { pricing: { inputUsdPerMillion: 0.1, outputUsdPerMillion: 0 } },
+        other: {},
+        'paid-image': { pricing: free, unitBillingModels: { 'openai-images': { version: 1, components: [{ unit: 'output_images', priceUsd: 0.02 }] } } },
+      },
+    },
+  };
+  assert.deepEqual(pricedSellerServices(config.seller, ['a', 'b']).sort(), ['flash-5.3', 'k3', 'paid-image']);
+  assert.deepEqual(pricedSellerServices(config.seller, ['b']), ['flash-5.3', 'paid-image']);
 });

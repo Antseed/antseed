@@ -636,6 +636,9 @@ export function registerPiChatHandlers({
                 ? rec.onChainSybilFlags.filter((f: unknown): f is string => typeof f === 'string')
                 : [],
               sellerContract: typeof rec.sellerContract === 'string' ? rec.sellerContract : undefined,
+              capabilities: Array.isArray(rec.capabilities)
+                ? rec.capabilities.filter((c: unknown): c is string => typeof c === 'string')
+                : [],
               verificationLinks: collectPeerVerificationLinks({ verificationResults: rec.verificationResults }),
               peerIconUrl: null,
             };

@@ -20,6 +20,7 @@ import {
   type PeerInfo,
 } from '@antseed/node'
 import { canonicalModelKey, preferredModelDisplayName } from '@antseed/node/model-identity'
+import { freeTierProgramForService, isPricedService, type FreeTierProgram } from '@antseed/node/free-tier-program'
 import type { RoutingProtocol } from '@antseed/node'
 import type { RouterOptionSpec } from '@antseed/router-core'
 
@@ -47,6 +48,11 @@ export type NetworkModelPeerOffer = {
   cachedInputUsdPerMillion?: number
   minImageUsdPerImage?: number
   maxImageUsdPerImage?: number
+  /**
+   * The seller's free-tier program for this offer: on a free offer its limit,
+   * on a priced one the free allowance before the listed price applies.
+   */
+  freeTier?: FreeTierProgram
 }
 
 export type NetworkModelCapabilityCoverage = {
@@ -291,6 +297,11 @@ export function buildNetworkModels(
     if (offer.type === 'text') entry.type = 'text'
     else if (offer.type === 'image' && entry.type === 'decision') entry.type = 'image'
     const peer = peerById.get(offer.peerId)
+    const priced = isPricedService({
+      ...offer,
+      unitBillingModels: offer.unitBillingModels ?? peer?.providerServiceUnitBillingModels?.[offer.provider]?.services?.[offer.serviceId],
+    })
+    const freeTier = freeTierProgramForService(peer?.capabilities, offer.serviceId, priced, { video: offer.type === 'video' })
     entry.peers.push({
       advertisedVerifierIds: offer.advertisedVerifierIds,
       peerId: offer.peerId,
@@ -311,6 +322,7 @@ export function buildNetworkModels(
       ...(offer.cachedInputUsdPerMillion !== undefined ? { cachedInputUsdPerMillion: offer.cachedInputUsdPerMillion } : {}),
       ...(offer.minImageUsdPerImage !== undefined ? { minImageUsdPerImage: offer.minImageUsdPerImage } : {}),
       ...(offer.maxImageUsdPerImage !== undefined ? { maxImageUsdPerImage: offer.maxImageUsdPerImage } : {}),
+      ...(freeTier ? { freeTier } : {}),
     })
   }
 

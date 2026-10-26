@@ -36,7 +36,9 @@ export function outputPrice(peer: Peer, model = ''): number | null {
 }
 
 export function isFreePeer(peer: Peer, model = ''): boolean {
-  return servicesFor(peer, model).some((service) => service.inputUsdPerMillion === 0 && (service.outputUsdPerMillion ?? 0) === 0)
+  return servicesFor(peer, model).some((service) => service.paid !== undefined
+    ? !service.paid
+    : service.inputUsdPerMillion === 0 && (service.outputUsdPerMillion ?? 0) === 0)
 }
 
 /** Charges for at least one service (for the chosen model, if any). Only paid usage earns Antseed Points. */

@@ -1,3 +1,4 @@
+import type { FreeTierStakeView } from '@antseed/node/free-tier-program';
 export type RuntimeMode = 'connect' | 'system-proxy' | 'tunnel';
 
 export type RuntimeProcessState = {
@@ -248,6 +249,20 @@ export type ChatAiStreamStopReason = {
   message: string;
   statusCode?: number;
   errorCode?: string;
+  /** Set when a seller's free tier ran out: its limit and staked tiers (only stake in that seller's pool counts). */
+  freeTier?: {
+    peerId: string | null;
+    /** `stake_required`: the model is free on that seller only for its stakers. */
+    limitedBy: 'address' | 'ip' | 'stake' | 'stake_required';
+    limit: number | null;
+    windowMs: number | null;
+    retryAfterSeconds: number | null;
+    stakeTiers: Array<{ minPower: number; multiplier: number | 'unlimited' }>;
+    stakePower: number;
+    /** Requests per window the tier multipliers apply to; null from sellers that don't send it. */
+    baseLimit: number | null;
+    stakersOnly: boolean;
+  };
 };
 
 export type RawChatAttachment = {
@@ -463,8 +478,14 @@ export type DesktopBridge = {
     error?: string;
   }>;
 
-  stakingOpen?: (options?: { page?: 'stake' | 'rewards' }) => Promise<{ ok: boolean; error?: string }>;
-  stakingCopyLink?: (options?: { page?: 'stake' | 'rewards' }) => Promise<{ ok: boolean; error?: string }>;
+  /** `pool` opens that seller's pool (agent id) on the stake page. */
+  stakingOpen?: (options?: { page?: 'stake' | 'rewards'; pool?: number }) => Promise<{ ok: boolean; error?: string }>;
+  stakingCopyLink?: (options?: { page?: 'stake' | 'rewards'; pool?: number }) => Promise<{ ok: boolean; error?: string }>;
+  freeTierList?: () => Promise<{ ok: boolean; data?: FreeTierSharing; error?: string }>;
+  freeTierAdd?: (code: string) => Promise<{ ok: boolean; data?: FreeTierSharing; error?: string }>;
+  freeTierRemove?: (staker: string) => Promise<{ ok: boolean; data?: FreeTierSharing; error?: string }>;
+  /** This buyer's counted seller-pool stake (its own plus shared), by pool. */
+  freeTierStake?: () => Promise<{ ok: boolean; data?: FreeTierStakeView & { buyer: string }; error?: string }>;
   paymentsOpenPayPage?: (opts: { kind?: 'deposit' | 'withdraw' | 'authorize' | 'claim' | 'close-channel'; amountUsdc?: string; channelId?: string }) => Promise<{ ok: boolean; url?: string; error?: string }>;
   paymentsCardProviders?: () => Promise<{ ok: boolean; data?: Array<{ id: string; label: string }>; error?: string }>;
   paymentsOpenCardProvider?: (opts?: { providerId?: string; amountUsdc?: string }) => Promise<{ ok: boolean; url?: string; error?: string }>;
@@ -682,3 +703,9 @@ export type VprFloatAction =
   | { type: 'pin-chat-model'; conversationId: string; provider: string; serviceId: string }
   | { type: 'open-chat-app'; conversationId: string }
   | { type: 'set-compact'; compact: boolean };
+
+/** Stakers sharing their seller-pool stake with this buyer (staked free tier). */
+export interface FreeTierSharing {
+  buyer: string;
+  stakers: Array<{ staker: string; expiresAt: number; expired: boolean }>;
+}

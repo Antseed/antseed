@@ -33,6 +33,7 @@ import {
 } from './normalize.js';
 import type { DesktopVerificationLink } from '../connected-apps/domain-site-metadata.js';
 import type { TrustBreakdown } from '@antseed/node';
+import { freeTierProgramForService, type FreeTierProgram } from '@antseed/node/free-tier-program';
 
 export type BuyerMaxPricingDefaults = {
   inputUsdPerMillion: number;
@@ -76,6 +77,8 @@ export type DiscoverRowEntry = {
   lifetimeLastSessionAt: number | null;
   onChainChannelCount: number | null;
   agentId: number;
+  /** The seller's free-tier program; staked tiers count only stake in this seller's pool (`agentId`). */
+  freeTier: FreeTierProgram | null;
   /** ANTS actively staked in the seller's pool this epoch (whole ANTS). */
   poolStakeAnts: number;
   /** Antseed Points per $1 spent with this seller (pool power ÷ 10,000 ANTS × 104 epochs); null when Antscan is unreachable. */
@@ -354,6 +357,8 @@ export type BuyerStateDiscoveredPeer = {
   onChainSybilRisk: number | null;
   onChainSybilFlags: string[];
   sellerContract?: string;
+  /** The seller's peer-metadata capabilities, which carry its free-tier programs. */
+  capabilities: string[];
   verificationLinks: DiscoverVerificationLink[];
   peerIconUrl: string | null;
 };
@@ -426,6 +431,15 @@ function normalizeIdentityPart(raw: Record<string, unknown> | null): TrustBreakd
 export function invalidateOnChainEnrichmentCache(): void {
   // On-chain enrichment now comes from the buyer daemon's buyer.state.json.
   // The desktop process intentionally performs no staking/channel RPC here.
+}
+
+
+/** Whether a catalog entry has any non-zero price; a free allowance then applies before it. */
+function isPricedEntry(entry: ChatServiceCatalogEntry): boolean {
+  return [
+    entry.inputUsdPerMillion, entry.outputUsdPerMillion, entry.cachedInputUsdPerMillion,
+    entry.maxImageUsdPerImage, entry.maxVideoUsdPerSecond, entry.maxVideoUsdPerVideo,
+  ].some((price) => typeof price === 'number' && price > 0);
 }
 
 export async function buildDiscoverRows(
@@ -503,6 +517,8 @@ export async function buildDiscoverRows(
       lifetimeLastSessionAt: stats?.lastSessionAt ?? null,
       onChainChannelCount: peerBlob?.onChainChannelCount ?? null,
       agentId,
+      // On a free service its own or the seller-wide program; on a priced one only its own free allowance (never on paid video).
+      freeTier: freeTierProgramForService(peerBlob?.capabilities, entry.id, isPricedEntry(entry), { video: isNativeVideoProtocol(entry.protocol) }),
       poolStakeAnts,
       // A seller with no pool on Antscan earns nothing: 0×, unlike an unknown (null) boost.
       boost: sellerBoosts ? sellerBoosts.get(sellerEvmAddress.toLowerCase())?.boost ?? 0 : null,

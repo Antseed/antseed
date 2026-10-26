@@ -33,6 +33,9 @@ export const qk = {
   /** Authorized-wallet status of every workspace the viewer can open (markers). */
   operators: ['wallet-operators'] as const,
   rewards: (workspaceId: string) => ['rewards', workspaceId] as const,
+  freeTier: (workspaceId: string) => ['free-tier', workspaceId] as const,
+  /** Under `freeTier`, so adding or removing a code re-reads it. */
+  freeTierStake: (workspaceId: string) => ['free-tier', workspaceId, 'stake'] as const,
   chain: ['chain'] as const,
   chatModels: (workspaceId: string) => ['chat-models', workspaceId] as const,
   chatContext: (workspaceId: string) => ['chat-context', workspaceId] as const,

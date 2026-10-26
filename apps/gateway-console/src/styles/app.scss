@@ -851,6 +851,15 @@ li + li > .gc-choice { border-top: 1px solid var(--as-border); }
   left: auto; right: -0.5rem; width: 19rem; white-space: normal; text-align: left; text-transform: none; letter-spacing: normal;
 }
 .gc-tip:hover .gc-tip__bubble, .gc-tip:focus-within .gc-tip__bubble, .gc-tip--open .gc-tip__bubble { visibility: visible; opacity: 1; }
+.gc-tip--end .gc-tip__bubble { left: auto; right: -0.5rem; max-width: min(16rem, 80vw); }
+.gc-tip--center .gc-tip__bubble { left: 50%; transform: translateX(-50%); width: min(16rem, 80vw); }
+
+/* A seller's staked free-tier ladder inside a tooltip. */
+.gc-free-tiers { display: grid; gap: 0.125rem; margin: 0.375rem 0; }
+.gc-free-tiers__row { display: flex; justify-content: space-between; gap: 1rem; font-variant-numeric: tabular-nums; color: var(--as-text-primary); }
+.gc-free-tiers__head { color: var(--as-text-secondary); }
+.gc-free-tiers__link { display: block; margin-top: 0.375rem; }
+.gc-free-tiers__standing { display: block; margin-top: 0.375rem; color: var(--as-text-primary); }
 
 /* Text that opens something, styled like a link (a seller list's name). */
 .gc-link-button { padding: 0; border: 0; background: none; font: inherit; color: var(--as-text-primary); text-decoration: underline; text-decoration-color: var(--as-border-strong); text-underline-offset: 3px; cursor: pointer;

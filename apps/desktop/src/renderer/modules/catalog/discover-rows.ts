@@ -2,6 +2,7 @@ import type { ChatServiceOptionEntry, DiscoverRow, ServiceCapabilitiesView, Trus
 import type { DiscoverVerificationLink } from '../../core/state';
 import { isTextCapableRow } from './model-capabilities';
 import { normalizeAdvertisedVerifierIds } from '@antseed/node/verifier-capabilities';
+import { normalizeFreeTierProgram } from '@antseed/node/free-tier-program';
 
 const CHAT_SERVICE_SELECTION_SEPARATOR = '\u0001';
 
@@ -211,6 +212,7 @@ export function normalizeDiscoverRow(raw: unknown): DiscoverRow | null {
     lifetimeLastSessionAt: typeof r.lifetimeLastSessionAt === 'number' ? r.lifetimeLastSessionAt : null,
     onChainChannelCount: typeof r.onChainChannelCount === 'number' ? r.onChainChannelCount : null,
     agentId: Number(r.agentId) || 0,
+    freeTier: normalizeFreeTierProgram(r.freeTier),
     poolStakeAnts: nonNegative(r.poolStakeAnts) ?? 0,
     boost: nonNegative(r.boost),
     onChainActiveChannelCount: Number(r.onChainActiveChannelCount) || 0,

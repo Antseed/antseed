@@ -25,6 +25,7 @@ import { buyerJson, defaultBuyerClient, optionalBuyerJson, withIdentity, type Bu
 import { antseedPayBaseUrl, buildCardLink, CARD_PROVIDERS, type CardProvider } from './wallet-card-link.js'
 import { applyChannelChainState, chainInfo, channelChainHints, mapBalances, mapChannels, mapDepositWatch, mapRewards, record, type ChannelChainState } from './wallet-mapping.js'
 import { createRewardsReader, gatewayChainProvider, readChannelStates as readChannelStatesOnChain, REWARDS_TTL_MS } from './wallet-chain.js'
+import { registerFreeTierRoutes } from './free-tier.js'
 import { registerOperatorRoutes } from './wallet-operator.js'
 
 /** Channel states are re-read from the chain at most this often for the same set of channels. */
@@ -374,6 +375,8 @@ export function registerWalletRoutes(router: ConsoleRouter, deps: ConsoleDeps, o
       void optionalBuyerJson(buyer, withIdentity('/_antseed/balances?fresh=1', buyerIdentity))
     },
   })
+
+  registerFreeTierRoutes(router, deps, { access, walletAddress, resolveChain })
 
   router.add('GET', '/workspaces/:id/channels', async (request): Promise<Channel[]> => {
     const ws = workspace(request)
