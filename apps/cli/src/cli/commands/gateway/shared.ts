@@ -1,5 +1,7 @@
 import type { Command } from 'commander'
 import chalk from 'chalk'
+import { existsSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 import { BUDGET_PERIODS, type BudgetLimits, type BudgetPeriod } from '../../../gateway/limits.js'
 import { formatUsdc, optionalUsdcToDecimalString, parseUsdToUsdc } from '../../../gateway/money.js'
 import { GatewayStore, type ApiKeyRecord, type MemberRecord, type WorkspaceRecord } from '../../../gateway/store.js'
@@ -117,6 +119,20 @@ export const gatewayCliRuntime: {
 
 export function addBuyerPortOption(cmd: Command): Command {
   return cmd.option('--buyer-port <number>', 'port of the running buyer (default: the running gateway\'s buyer, else buyer.proxyPort from config)', parsePositiveInteger)
+}
+
+/**
+ * `--config` and `--data-dir` default independently (`~/.antseed/config.json` and
+ * `~/.antseed`), so on a host that runs several roles the buyer limits printed by
+ * `settings show` and `routing preview` can come from another role's file without
+ * saying so. Returns a note when `--data-dir` holds a config that is not the one
+ * being read, so the numbers are not mistaken for this gateway's.
+ */
+export function configSourceNote(configPath: string, dataDir: string): string | null {
+  const sibling = join(dataDir, 'config.json')
+  if (resolve(sibling) === resolve(configPath)) return null
+  if (!existsSync(sibling)) return null
+  return `${sibling} exists but is not read; pass --config ${sibling} to use it`
 }
 
 /** Opens the store, runs `fn` and closes it; service errors become plain CLI errors with flag hints. */

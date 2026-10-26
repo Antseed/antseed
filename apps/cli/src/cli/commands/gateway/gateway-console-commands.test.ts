@@ -43,6 +43,22 @@ async function runJson<T = Record<string, unknown>>(...args: string[]): Promise<
   return JSON.parse(await run(...args, '--json')) as T
 }
 
+/** `run`, but with the global paths given: several roles on one host is the case these tests cover. */
+async function runWithPaths(paths: { dataDir: string; config: string }, ...args: string[]): Promise<string> {
+  const program = new Command()
+  program.exitOverride().option('--data-dir <path>').option('--config <path>')
+  registerGatewayCommands(program)
+  const lines: string[] = []
+  const original = console.log
+  console.log = (...parts: unknown[]) => { lines.push(parts.map(String).join(' ')) }
+  try {
+    await program.parseAsync(['node', 'antseed', '--data-dir', paths.dataDir, '--config', paths.config, 'gateway', ...args])
+  } finally {
+    console.log = original
+  }
+  return lines.join('\n')
+}
+
 function withStore<T>(fn: (store: GatewayStore) => T): T {
   const store = new GatewayStore(dataDir)
   try {
@@ -254,6 +270,10 @@ describe('gateway routing', () => {
 
     const table = await run('routing', 'preview', '--model', 'open-model-a', '--all')
     assert.match(table, /below min trust/)
+    // The buyer limits come from a file; the preview says which one, so a host running
+    // several roles cannot mistake another role's caps for this gateway's.
+    assert.match(table, /every key narrows it; from /)
+    assert.ok(table.includes(configPath), 'preview names the config file it read')
     assert.match(await run('routing', 'preview', '--model', 'closed-model'), /not allowed/)
 
     const key = await runJson<{ id: string }>('key', 'create', '--label', 'k')
@@ -409,6 +429,28 @@ describe('gateway settings and peers', () => {
     const config = JSON.parse(readFileSync(configPath, 'utf8')) as { buyer: Record<string, unknown> }
     assert.equal(config.buyer['proxyPort'], buyer.port)
     await assert.rejects(run('settings', 'set-buyer', '--min-reputation', '150'), /--min-reputation/)
+  })
+
+  test('show names the config file it read and flags a config under --data-dir that it did not read', async () => {
+    const shown = await run('settings', 'show')
+    assert.ok(shown.includes(configPath), 'names the config it read')
+    assert.doesNotMatch(shown, /exists but is not read/)
+
+    // A second role on the same host keeps its own config under its own --data-dir.
+    // `--config` and `--data-dir` default independently, so the limits printed here
+    // come from --config; say so instead of leaving the other file's values implied.
+    const otherDir = mkdtempSync(join(tmpdir(), 'antseed-gateway-other-role-'))
+    try {
+      const otherConfig = join(otherDir, 'config.json')
+      writeFileSync(otherConfig, `${JSON.stringify({ buyer: { proxyPort: buyer.port } }, null, 2)}\n`)
+      const output = await runWithPaths({ dataDir: otherDir, config: configPath }, 'settings', 'show')
+      assert.ok(output.includes(configPath), 'names the config it read')
+      assert.ok(output.includes(otherConfig), 'names the config it did not read')
+      assert.match(output, /exists but is not read/)
+      assert.match(output, /pass --config /)
+    } finally {
+      rmSync(otherDir, { recursive: true, force: true })
+    }
   })
 
   test('peers lists the buyer\'s sellers, filtered by model', async () => {
