@@ -8,9 +8,9 @@ function recorder() {
   const sent: Array<{ kind: SellerEvent['kind']; severity: string; title: string; providerId?: string; service?: string }> = [];
   return {
     journaled, sent,
-    record: async (event: Omit<SellerEvent, 'at'>, options: { journal?: boolean; notify?: boolean } = {}) => {
+    record: async (event: Omit<SellerEvent, 'at'>, options: { journal?: boolean; notify?: boolean; quiet?: boolean } = {}) => {
       if (options.journal !== false) journaled.push(event.kind);
-      if (options.notify !== false) sent.push({ kind: event.kind, severity: event.severity, title: event.title, ...(event.providerId ? { providerId: event.providerId } : {}), ...(event.service ? { service: event.service } : {}) });
+      if (options.notify !== false && !options.quiet) sent.push({ kind: event.kind, severity: event.severity, title: event.title, ...(event.providerId ? { providerId: event.providerId } : {}), ...(event.service ? { service: event.service } : {}) });
     },
   };
 }
@@ -69,4 +69,15 @@ test('more models withdrawn in a later round update the open alert', async () =>
   upstream.flush();
   assert.deepEqual(log.sent.map((event) => event.title), ['glm on deepinfra withdrawn after failed health checks', '2 models on deepinfra withdrawn after failed health checks: glm, kimi']);
   assert.deepEqual(updates, [false, true]);
+});
+
+test('a low balance that runs out escalates without a recovery message', async () => {
+  const log = recorder();
+  const upstream = new UpstreamAlerts(log);
+  upstream.account(account('low_balance'));
+  upstream.account(account('out_of_credit'));
+  assert.deepEqual(log.sent.map((event) => event.kind), ['upstream_balance_low', 'upstream_credit']);
+  upstream.account(account('funded'));
+  assert.deepEqual(log.sent.map((event) => event.kind), ['upstream_balance_low', 'upstream_credit', 'upstream_credit_ok']);
+  upstream.close();
 });

@@ -1414,6 +1414,8 @@ export interface SellerPromote {
   profileUrl: string | null
   services: Array<{ provider: string; service: string; inputUsdPerMillion: number | null; outputUsdPerMillion: number | null }>
   trustScore: number | null
+  /** The trust score's first network load or a verification check is still running: read again shortly. */
+  pending: boolean
   writable: boolean
   readOnlyReason: string | null
   domains: Array<{ domain: string; txtName: string; txtValue: string; wellKnownUrl: string; wellKnownBody: string; status: SellerVerificationStatus | null }>

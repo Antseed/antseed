@@ -50,7 +50,13 @@ export interface SellerAlertsOptions {
   fetch?: typeof fetch;
   now?: () => number;
   log?: (line: string) => void;
+  /** First wait before resending an alert a channel failed to take (doubled per attempt, capped at 10 minutes). */
+  retryMs?: number;
 }
+
+/** Resends of a failed alert, while its incident stays open, before giving up. */
+const MAX_RETRIES = 8;
+const MAX_RETRY_MS = 10 * 60_000;
 
 /** Records seller events to the journal and sends the ones that matter to the configured channels. */
 export class SellerAlerts {
@@ -62,6 +68,8 @@ export class SellerAlerts {
   private readonly _lastSent = new Map<string, Delivery>();
   /** Alerts held back by the cooldown after their incident had closed, sent when it ends unless a recovery comes first. */
   private readonly _held = new Map<string, NodeJS.Timeout>();
+  /** Resends scheduled for alerts a channel failed to take, cancelled by their recovery. */
+  private readonly _retries = new Map<string, NodeJS.Timeout>();
   /**
    * Deliveries in flight per incident (`kind:provider/service` of the alert):
    * an alert, its repeats and its recovery go out one after another, so a
@@ -110,10 +118,14 @@ export class SellerAlerts {
    * whose incident closed less than a cooldown ago is held, and sent when the
    * cooldown ends unless its recovery arrives first (then neither is sent).
    * Delivery state is kept per destination and only for sends that went
-   * through, so a failed alert is retried on its next repeat and only an alert
-   * that arrived gets its recovery.
+   * through, so a failed alert is resent with backoff (to the channels that
+   * missed it) until it arrives or its recovery comes, and only an alert that
+   * arrived gets its recovery.
+   *
+   * `quiet` closes an incident without announcing it, for one superseded by a
+   * worse one (a low balance that ran out).
    */
-  async record(input: Omit<SellerEvent, 'at'> & { at?: number }, options: { journal?: boolean; notify?: boolean; update?: boolean } = {}): Promise<void> {
+  async record(input: Omit<SellerEvent, 'at'> & { at?: number }, options: { journal?: boolean; notify?: boolean; update?: boolean; quiet?: boolean } = {}): Promise<void> {
     const event: SellerEvent = { ...input, at: input.at ?? this._now() };
     // `journal: false` for a summary of events already journaled one by one; `notify: false` for one a summary will announce.
     if (options.journal !== false) await appendSellerEvent(this._opts.dataDir, event).catch((err) => this._opts.log?.(`seller events: ${(err as Error).message}`));
@@ -124,19 +136,31 @@ export class SellerAlerts {
     await this._inIncident(key, () => {
       // Again in turn: a failure queued ahead of this recovery may have held an alert since.
       if (recovery) this._release(key);
+      if (recovery && options.quiet) {
+        this._closeIncident(key);
+        return Promise.resolve();
+      }
       return this._deliver(event, key, recovery, options.update === true);
     });
   }
 
-  /** Drops alerts held back by the cooldown, on shutdown. */
+  /** Drops alerts held back by the cooldown and pending resends, on shutdown. */
   close(): void {
-    for (const key of [...this._held.keys()]) this._release(key);
+    for (const key of new Set([...this._held.keys(), ...this._retries.keys()])) this._release(key);
   }
 
   private _release(key: string): void {
-    const timer = this._held.get(key);
-    if (timer) clearTimeout(timer);
-    this._held.delete(key);
+    for (const timers of [this._held, this._retries]) {
+      const timer = timers.get(key);
+      if (timer) clearTimeout(timer);
+      timers.delete(key);
+    }
+  }
+
+  private _closeIncident(key: string): void {
+    for (const [historyKey, delivery] of this._lastSent) {
+      if (historyKey.slice(historyKey.indexOf('|') + 1) === key) delivery.open = false;
+    }
   }
 
   private async _inIncident(key: string, deliver: () => Promise<void>): Promise<void> {
@@ -151,7 +175,7 @@ export class SellerAlerts {
   }
 
   /** `update`: news about an incident still open (it grew), sent where its alert went regardless of the cooldown. */
-  private async _deliver(event: SellerEvent, key: string, recovery: boolean, update = false): Promise<void> {
+  private async _deliver(event: SellerEvent, key: string, recovery: boolean, update = false, attempt = 0): Promise<void> {
     const { channels, holdMs } = this._channelsFor(event, key, recovery, update);
     if (holdMs !== null && !this._held.has(key)) {
       const timer = setTimeout(() => {
@@ -163,7 +187,17 @@ export class SellerAlerts {
     }
     if (channels.length === 0) return;
     // History is kept per destination, as of when the send started, so a changed chat or webhook starts fresh.
-    const { delivered } = await this._send(event, channels);
+    const { sent, delivered } = await this._send(event, channels);
+    // Health events come on changes only, so nothing else would resend an alert that failed; the channels that took it are in cooldown by then.
+    if (!recovery && sent.length < channels.length && attempt < MAX_RETRIES && !this._retries.has(key)) {
+      const wait = Math.min((this._opts.retryMs ?? 30_000) * 2 ** attempt, MAX_RETRY_MS);
+      const timer = setTimeout(() => {
+        this._retries.delete(key);
+        void this._inIncident(key, () => this._deliver(event, key, false, update, attempt + 1)).catch(() => {});
+      }, wait);
+      timer.unref?.();
+      this._retries.set(key, timer);
+    }
     for (const destination of delivered) {
       const historyKey = `${destination}|${key}`;
       const last = this._lastSent.get(historyKey);

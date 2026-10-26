@@ -244,9 +244,11 @@ export function useSellerReputation(enabled = true) {
 }
 
 export function useSellerPromote(enabled = true) {
-  return useQuery({ queryKey: qk.sellerPromote, queryFn: api.seller.promote, enabled })
+  // The trust score and verification checks load in the background: poll until they are in.
+  return useQuery({ queryKey: qk.sellerPromote, queryFn: api.seller.promote, enabled, refetchInterval: (query) => (query.state.data?.pending ? 3_000 : false) })
 }
 
-export function useSellerCard(enabled = true) {
-  return useQuery({ queryKey: qk.sellerCard, queryFn: api.seller.card, enabled })
+/** Keyed by the trust score it shows, so a score that comes in later redraws it. */
+export function useSellerCard(trustScore: number | null, enabled = true) {
+  return useQuery({ queryKey: [...qk.sellerCard, trustScore], queryFn: api.seller.card, enabled, placeholderData: (previous) => previous })
 }

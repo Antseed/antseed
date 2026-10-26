@@ -7,7 +7,7 @@ import { readSellerEvents } from '@antseed/node';
 import { SellerAlerts, formatAlert } from '../../../seller-alerts/alerts.js';
 import { readSecretFromStdin } from './alerts.js';
 
-function harness(config: ConstructorParameters<typeof SellerAlerts>[0]['config'], { status = 200 } = {}) {
+function harness(config: ConstructorParameters<typeof SellerAlerts>[0]['config'], { status = 200, retryMs }: { status?: number; retryMs?: number } = {}) {
   const dataDir = mkdtempSync(join(tmpdir(), 'seller-alerts-'));
   const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
   let now = 1_000_000;
@@ -18,6 +18,7 @@ function harness(config: ConstructorParameters<typeof SellerAlerts>[0]['config']
     sellerName: 'OpenForge',
     env: { ANTSEED_ALERTS_TELEGRAM_TOKEN: 'secret-token' },
     now: () => now,
+    ...(retryMs !== undefined ? { retryMs } : {}),
     fetch: (async (url: string, init: RequestInit) => {
       calls.push({ url: String(url), body: JSON.parse(String(init.body)) });
       return new Response('{}', { status: statusFor(String(url)) });
@@ -421,4 +422,31 @@ test('an update to an open alert goes out inside the cooldown; a plain repeat do
   await alerts.record({ ...grouped, title: 'still 1' }, { journal: false });
   await alerts.record({ ...grouped, title: '2 models withdrawn' }, { journal: false, update: true });
   assert.deepEqual(calls.map((call) => String(call.body.text).split(': ').slice(1).join(': ')), ['1 model withdrawn', '2 models withdrawn']);
+});
+
+test('a failed alert is resent on its own while its incident is open, only to the channel that missed it, and its recovery stops the resends', async () => {
+  const { alerts, calls, failWhen } = harness({ telegram: { chatId: '42' }, webhook: { url: 'https://hooks.example/x' }, cooldownMinutes: 30 }, { retryMs: 5 });
+  failWhen((url) => url.includes('hooks.example'));
+  await alerts.record({ kind: 'upstream_credit', severity: 'critical', title: 'deepinfra is out of credit', providerId: 'deepinfra' });
+  failWhen(() => false);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.deepEqual(calls.map((call) => call.url.includes('hooks.example') ? 'webhook' : 'telegram'), ['telegram', 'webhook', 'webhook'], 'resent to the webhook alone, once it took it');
+  await alerts.record({ kind: 'upstream_credit_ok', severity: 'info', title: 'deepinfra has credit again', providerId: 'deepinfra' });
+  assert.equal(calls.length, 5, 'both channels got the alert, both get the recovery');
+
+  failWhen(() => true);
+  await alerts.record(down);
+  await alerts.record(up);
+  const afterRecovery = calls.length;
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(calls.length, afterRecovery, 'a recovered incident is not resent');
+  alerts.close();
+});
+
+test('a quiet recovery closes an incident without a message', async () => {
+  const { alerts, calls } = harness({ telegram: { chatId: '42' } });
+  await alerts.record({ kind: 'upstream_balance_low', severity: 'warning', title: 'deepinfra is low', providerId: 'deepinfra' });
+  await alerts.record({ kind: 'upstream_balance_ok', severity: 'info', title: 'deepinfra ran out', providerId: 'deepinfra' }, { journal: false, quiet: true });
+  await alerts.record({ kind: 'upstream_balance_ok', severity: 'info', title: 'deepinfra is back', providerId: 'deepinfra' });
+  assert.equal(calls.length, 1, 'closed quietly, so no recovery goes out later either');
 });

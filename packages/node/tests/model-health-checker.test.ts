@@ -556,8 +556,10 @@ describe('upstream credit', () => {
     account = { status: 'available', balanceUsd: 4 };
     await checker.runSweep();
     expect(events.at(-1)!.status).toBe('funded');
-    // A live 402 is reported without waiting for a probe; a later success clears it.
+    // A live 402 is reported without waiting for a probe; polling a video already paid for proves nothing; a billable success clears it.
     checker.reportUpstreamResponse(provider, 402, '{"error":{"message":"You need positive balance to do inference"}}');
+    checker.reportUpstreamResponse(provider, 200, '', false);
+    expect(events.at(-1)!.status).toBe('out_of_credit');
     checker.reportUpstreamResponse(provider, 200, '');
     expect(events.map((event) => event.status)).toEqual(['low_balance', 'out_of_credit', 'funded', 'out_of_credit', 'funded']);
   });

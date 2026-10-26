@@ -61,7 +61,7 @@ function download(blob: Blob, filename: string) {
 
 function CardPanel({ data }: { data: Promote }) {
   // Rendered by the seller service (the same SVG `antseed seller promote --card` writes).
-  const card = useSellerCard()
+  const card = useSellerCard(data.trustScore)
   const svg = card.data ?? null
   const slug = (data.displayName || 'antseed-seller').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'antseed-seller'
   const png = () => {

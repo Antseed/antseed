@@ -36,6 +36,11 @@ export class VerificationChecks {
 
   constructor(private readonly _options: { fetch?: typeof fetch; resolveTxt?: (hostname: string) => Promise<string[][]> } = {}) {}
 
+  /** A check is running (or queued behind one): its results are not in yet. */
+  get running(): boolean {
+    return this._running !== null
+  }
+
   status(key: string): SellerVerificationStatus | null {
     return this._results.get(key) ?? null
   }
@@ -91,6 +96,8 @@ export async function readSellerPromote(options: {
   checks: VerificationChecks
   /** Start checks that are due (the dashboard); a one-shot CLI read leaves them alone. */
   startChecks?: boolean
+  /** The network snapshot the trust score comes from is still loading. */
+  networkLoading?: boolean
 }): Promise<SellerPromote> {
   const raw = await readRaw(options.configPath)
   const claims = verificationsOf(raw)
@@ -104,6 +111,7 @@ export async function readSellerPromote(options: {
     profileUrl: peer && options.explorerUrl ? `${options.explorerUrl.replace(/\/+$/, '')}/account/0x${peer}` : null,
     services: options.services.map(({ provider, service, inputUsdPerMillion, outputUsdPerMillion }) => ({ provider, service, inputUsdPerMillion, outputUsdPerMillion })),
     trustScore: options.trustScore,
+    pending: options.checks.running || options.networkLoading === true,
     writable: access.writable,
     readOnlyReason: access.reason,
     domains: claims.domains.map((claim) => {

@@ -236,10 +236,10 @@ export class SellerMonitor {
    */
   async promote(options: { wait?: boolean; network?: boolean; startChecks?: boolean } = {}): Promise<SellerPromote> {
     const { peerId, services, configPath } = await this._me()
-    const { rows } = options.network === false ? { rows: [] as PeerRow[] } : await this._snapshot({ wait: options.wait ?? false })
+    const { rows, meta } = options.network === false ? { rows: [] as PeerRow[], meta: null } : await this._snapshot({ wait: options.wait ?? false })
     const myRow = peerId ? rows.find((row) => peerKey(String(row['peerId'] ?? '')) === peerKey(peerId)) : undefined
     this._explorer ??= (this._options.explorerUrl ?? defaultExplorerUrl)(configPath).catch(() => null)
-    return readSellerPromote({ configPath, peerId, services: services ?? [], trustScore: trustOfRow(myRow)?.score ?? null, explorerUrl: await this._explorer, checks: this._checks, startChecks: options.startChecks ?? true })
+    return readSellerPromote({ configPath, peerId, services: services ?? [], trustScore: trustOfRow(myRow)?.score ?? null, explorerUrl: await this._explorer, checks: this._checks, startChecks: options.startChecks ?? true, networkLoading: meta?.refreshing === true && meta.refreshedAt === null })
   }
 
   /** Runs the verification checks now (the same ones buyers run). */

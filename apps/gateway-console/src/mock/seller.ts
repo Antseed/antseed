@@ -122,7 +122,7 @@ export function mockSellerPromote(now = Date.now()): SellerPromote {
 function initialPromote(now: number): SellerPromote {
   const peer = FAKE_PEER.slice(2)
   return {
-    peerId: peer, displayName: 'Fake Seller', profileUrl: `https://explorer.example/account/${FAKE_PEER}`, trustScore: 47.7, writable: true, readOnlyReason: null,
+    peerId: peer, displayName: 'Fake Seller', profileUrl: `https://explorer.example/account/${FAKE_PEER}`, trustScore: 47.7, pending: false, writable: true, readOnlyReason: null,
     services: [
       { provider: 'openai', service: 'glm-5.3', inputUsdPerMillion: 0.8, outputUsdPerMillion: 2.4 },
       { provider: 'openai', service: 'kimi-k3', inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5 },

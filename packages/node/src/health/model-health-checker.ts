@@ -417,15 +417,16 @@ export class ModelHealthChecker {
 
   /**
    * A live request's upstream answer (the seller's own traffic): an out-of-credit
-   * error is reported at once instead of waiting for the probes, and a success
-   * after one means the account pays again.
+   * error is reported at once instead of waiting for the probes, and a billable
+   * success after one means the account pays again (polling or downloading a
+   * video already paid for is not billable and proves nothing).
    */
-  reportUpstreamResponse(provider: Provider, statusCode: number, body: string): void {
+  reportUpstreamResponse(provider: Provider, statusCode: number, body: string, billable = true): void {
     const target = this._targets.find((entry) => entry.provider === provider || entry.probeProvider === provider);
     if (!target || this._stopped) return;
     if (statusCode >= 400 && isLiveResponseOutOfCredit(statusCode, body)) {
       this._setAccount(target.provider, 'out', `HTTP ${statusCode}: ${summarizeBody(new TextEncoder().encode(body))}`, null);
-    } else if (statusCode < 400 && this._accounts.get(target.provider) === 'out') {
+    } else if (statusCode < 400 && billable && this._accounts.get(target.provider) === 'out') {
       this._setAccount(target.provider, 'ok', `HTTP ${statusCode} on a request`, null);
     }
   }

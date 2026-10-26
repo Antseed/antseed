@@ -166,3 +166,39 @@ test('"Check now" during a running check checks the newly saved claims in a fres
   assert.deepEqual(looked, ['_antseed.old.example', '_antseed.new.example'])
   assert.equal(checks.status('domain:new.example')?.verified, true)
 })
+
+test('a cold promote read says it is pending until the trust score and verification checks are in', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'seller-promote-'))
+  writeSellerFixture(dir, { state: { updatedAt: Date.now(), peerId: PEER, modelHealth: [] } })
+  const configPath = join(dir, 'config.json')
+  writeFileSync(configPath, JSON.stringify({ identity: { displayName: 'Demo Seller' }, seller: { verifications: { domains: [{ domain: 'forge.example' }], github: [] } } }, null, 2))
+  let loadNetwork!: () => void
+  let answerDns!: () => void
+  const checks = new VerificationChecks({
+    resolveTxt: (host) => new Promise((resolve) => { answerDns = () => resolve(host === '_antseed.forge.example' ? [[`antseed-peer=${PEER}`]] : []) }),
+    fetch: (async () => new Response('nope', { status: 404 })) as typeof fetch,
+  })
+  const server = await startSellerDashboard({
+    dataDir: dir, configPath, version: '9.9.9', port: 0, env: {},
+    network: () => new Promise((resolve) => { loadNetwork = () => resolve({ rows: fakeNetworkRows(PEER, { 'glm-5.3': [0.7, 2.2] }), source: 'test network' }) }),
+    explorerUrl: async () => null,
+    verificationChecks: checks,
+  })
+  const token = new URL(server.url).searchParams.get('token')!
+  const read = async () => (await (await fetch(`${new URL(server.url).origin}/console/api/seller/promote`, { headers: { authorization: `Bearer ${token}` } })).json()) as Record<string, any>
+  try {
+    const cold = await read()
+    assert.deepEqual([cold.pending, cold.trustScore, cold.domains[0].status], [true, null, null])
+    loadNetwork()
+    await tick()
+    const scored = await read()
+    assert.equal(typeof scored.trustScore, 'number')
+    assert.equal(scored.pending, true, 'the check is still running')
+    answerDns()
+    await tick()
+    const done = await read()
+    assert.deepEqual([done.pending, done.domains[0].status.verified], [false, true])
+  } finally {
+    await server.close()
+  }
+})

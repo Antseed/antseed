@@ -67,7 +67,9 @@ export class UpstreamAlerts {
     const previous = upstream.credit;
     // Leaving a state closes its alert, whichever state comes next.
     if (previous === 'out' && event.status !== 'out_of_credit') void this._alerts.record({ kind: 'upstream_credit_ok', severity: 'info', title: `${name} has credit again`, ...common });
-    if (previous === 'low' && event.status !== 'low_balance') void this._alerts.record({ kind: 'upstream_balance_ok', severity: 'info', title: `${name} balance is back above the warning line`, ...common });
+    // Running out supersedes the low-balance warning: it closes without a recovery message.
+    if (previous === 'low' && event.status === 'out_of_credit') void this._alerts.record({ kind: 'upstream_balance_ok', severity: 'info', title: `${name} ran out of credit`, ...common }, { journal: false, quiet: true });
+    else if (previous === 'low' && event.status !== 'low_balance') void this._alerts.record({ kind: 'upstream_balance_ok', severity: 'info', title: `${name} balance is back above the warning line`, ...common });
     if (event.status === 'out_of_credit') {
       upstream.credit = 'out';
       const withdrawn = upstream.down.size;

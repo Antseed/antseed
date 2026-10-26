@@ -9,6 +9,7 @@ import {
   createSellerPoolsClient,
   formatUsdc,
   loadCryptoContext,
+  resolveCliContractStack,
 } from '../../payment-utils.js';
 import { resolveConfigPath } from '../../../config/loader.js';
 import { readSellerRegistration } from '../../../seller-monitor/standing.js';
@@ -55,7 +56,10 @@ export function registerSellerStatusCommand(sellerCmd: Command): void {
         let onChainError: string | null = null;
         if (walletAddress) {
           try {
-            const registration = await readSellerRegistration({ address: walletAddress, configPath: resolveConfigPath(globalOpts.config) });
+            const [registration, stack] = await Promise.all([
+              readSellerRegistration({ address: walletAddress, configPath: resolveConfigPath(globalOpts.config) }),
+              resolveCliContractStack(config),
+            ]);
             // Pool positions are optional: legacy chains have no pool contracts, and the registration still shows.
             const positionCount = await (async () => {
               try {
@@ -65,6 +69,7 @@ export function registerSellerStatusCommand(sellerCmd: Command): void {
               }
             })();
             onChain = {
+              mode: stack.mode,
               agentId: registration.agentId,
               registryBound: registration.registryBound,
               eligible: registration.eligible,
@@ -143,6 +148,7 @@ export function registerSellerStatusCommand(sellerCmd: Command): void {
 
         if (onChain) {
           table.push(
+            ['On-chain mode', String(onChain.mode)],
             ['Agent ID', `${onChain.agentId}${onChain.registryBound ? '' : chalk.dim(' (not bound)')}`],
             ['Legacy USDC stake', `${formatUsdc(BigInt(String(onChain.legacyStake)))} USDC`],
             ['Pool active stake', `${formatAntsForStatus(BigInt(String(onChain.activePoolStake)))} ANTS`],

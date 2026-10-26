@@ -962,7 +962,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         })
         const checker = healthChecker
         // Live traffic sees an upstream run out of credit before the next probe does.
-        node.on('provider:response', ({ provider, statusCode, body }: { provider: Provider; statusCode: number; body: string }) => checker.reportUpstreamResponse(provider, statusCode, body))
+        node.on('provider:response', ({ provider, statusCode, body, billable }: { provider: Provider; statusCode: number; body: string; billable: boolean }) => checker.reportUpstreamResponse(provider, statusCode, body, billable))
         healthChecker.start()
       }
 
