@@ -221,7 +221,10 @@ export function applySellerSettingsPatch(raw: JsonObject, body: unknown): string
     const providers = (seller().providers ?? {}) as Record<string, { services?: Record<string, JsonObject> }>
     for (const entry of patch.pricing) {
       const item = obj(entry, 'pricing entry')
-      const service = providers[String(item.provider)]?.services?.[String(item.service)]
+      // Own keys only: a service named like an Object.prototype member (`__proto__`) is not a service.
+      const provider = typeof item.provider === 'string' && Object.hasOwn(providers, item.provider) ? providers[item.provider] : undefined
+      const services = provider?.services
+      const service = typeof item.service === 'string' && services && Object.hasOwn(services, item.service) ? services[item.service] : undefined
       if (!service) bad(`pricing: no service ${String(item.service)} under provider ${String(item.provider)} in the config file`)
       const priceKeys = ['inputUsdPerMillion', 'outputUsdPerMillion', 'cachedInputUsdPerMillion'] as const
       if (priceKeys.some((key) => item[key] !== undefined)) {

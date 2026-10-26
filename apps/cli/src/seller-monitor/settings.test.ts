@@ -119,3 +119,14 @@ test('a model id has one free-tier program across providers, and clearing both s
   await updateSellerSettings(configPath, { healthCheck: { failureThreshold: 500 }, gasCheck: { minBalanceEth: 25 }, maxConcurrentBuyers: 250_000 })
   await assert.rejects(updateSellerSettings(configPath, { healthCheck: { intervalMs: 30_000 } }), /intervalMs/)
 })
+
+test('a pricing patch naming an Object.prototype member is refused and touches nothing', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'seller-settings-'))
+  const configPath = join(dir, 'config.json')
+  writeFileSync(configPath, JSON.stringify({ seller: { providers: { openai: { plugin: 'openai', services: { 'glm-5.3': {} } } } } }))
+  for (const entry of [{ provider: 'openai', service: '__proto__' }, { provider: '__proto__', service: 'glm-5.3' }, { provider: 'openai', service: 'constructor' }]) {
+    await assert.rejects(updateSellerSettings(configPath, { pricing: [{ ...entry, inputUsdPerMillion: 9, outputUsdPerMillion: 9 }] }), { code: 'invalid_request' })
+  }
+  assert.equal(({} as Record<string, unknown>).pricing, undefined)
+  assert.equal(JSON.parse(readFileSync(configPath, 'utf-8')).seller.providers.openai.services['glm-5.3'].pricing, undefined)
+})

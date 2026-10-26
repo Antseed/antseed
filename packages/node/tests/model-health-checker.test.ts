@@ -592,6 +592,17 @@ describe('upstream credit classification in probes and requests', () => {
     expect(rounds).toBe(1);
   });
 
+  it('finds a billing code that follows a long error message in a probe', async () => {
+    const provider = makeProvider({
+      services: ['model-a'],
+      onRequest: async (req) => jsonResponse(req.requestId, 429, { error: { message: `You exceeded your current quota. ${'Please review your plan and billing details. '.repeat(10)}`, type: 'insufficient_quota', code: 'insufficient_quota' } }),
+    });
+    const statuses: string[] = [];
+    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1, onUpstreamAccount: (event) => { statuses.push(event.status); } });
+    await checker.runSweep();
+    expect(statuses).toEqual(['out_of_credit']);
+  });
+
   it('ignores rate limits and a buyer\'s echoed input, and takes a provider\'s own out-of-credit mark', async () => {
     const { isUpstreamOutOfCredit, isLiveResponseOutOfCredit } = await import('../src/health/upstream-credit.js');
     expect(isUpstreamOutOfCredit(429, '{"error":{"code":429,"message":"You exceeded your current quota, please check your plan and billing details.","status":"RESOURCE_EXHAUSTED"}}')).toBe(false);

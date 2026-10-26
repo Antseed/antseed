@@ -364,6 +364,7 @@ export class ModelHealthChecker {
     state.lastProbeAt = Date.now();
 
     let outcome: ProbeOutcome;
+    let errorText: string | null = null;
     try {
       const protocol = resolveProbeProtocol(provider, service);
       if (!supportsHealthProbe(protocol)) {
@@ -380,17 +381,20 @@ export class ModelHealthChecker {
       );
       state.lastStatusCode = response.statusCode;
       outcome = classifyProbeStatus(response.statusCode);
+      // Classified on the body itself, not the 200-byte summary: a billing code can follow a long message.
+      if (outcome !== 'healthy') errorText = decodeBody(response.body, 16_384);
       state.lastDetail = outcome === 'healthy'
         ? `HTTP ${response.statusCode}`
         : `HTTP ${response.statusCode}: ${summarizeBody(response.body)}`;
     } catch (err) {
       state.lastStatusCode = null;
       state.lastDetail = err instanceof Error ? err.message : String(err);
+      errorText = state.lastDetail;
       outcome = 'unhealthy';
     }
 
     // A billing error is a failure whatever its status (Anthropic answers one with a 400).
-    if (outcome !== 'healthy' && isUpstreamOutOfCredit(state.lastStatusCode, state.lastDetail)) {
+    if (outcome !== 'healthy' && isUpstreamOutOfCredit(state.lastStatusCode, errorText)) {
       outcome = 'unhealthy';
       this._setAccount(provider, 'out', state.lastDetail ?? 'out of credit', null);
     }
@@ -621,6 +625,14 @@ export function classifyProbeStatus(statusCode: number): ProbeOutcome {
   }
   if (statusCode >= 500) return 'unhealthy';
   return 'inconclusive';
+}
+
+function decodeBody(body: Uint8Array, maxBytes: number): string {
+  try {
+    return new TextDecoder().decode(body.slice(0, maxBytes));
+  } catch {
+    return '';
+  }
 }
 
 function summarizeBody(body: Uint8Array): string {

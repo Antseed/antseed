@@ -480,3 +480,17 @@ test('a resent update goes only to the channel that missed it, and carries the n
   assert.equal(sent.at(-1), 'webhook 3 models withdrawn', 'the resend carries the latest count');
   alerts.close();
 });
+
+test('an alert held by the cooldown goes out with the latest news of its incident', async () => {
+  const { alerts, calls, advance } = harness({ telegram: { chatId: '42' }, cooldownMinutes: 0.002 });
+  const grouped = { kind: 'model_down', severity: 'warning', title: '1 model withdrawn', providerId: 'deepinfra' } as const;
+  await alerts.record(grouped, { journal: false });
+  await alerts.record({ kind: 'model_up', severity: 'info', title: 'all back', providerId: 'deepinfra' }, { journal: false });
+  await alerts.record(grouped, { journal: false });
+  await alerts.record({ ...grouped, title: '2 models withdrawn' }, { journal: false, update: true });
+  assert.equal(calls.length, 2, 'the recurrence is held');
+  advance(200);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.deepEqual(calls.map((call) => String(call.body.text).split(': ').slice(1).join(': ')), ['1 model withdrawn', 'all back', '2 models withdrawn']);
+  alerts.close();
+});

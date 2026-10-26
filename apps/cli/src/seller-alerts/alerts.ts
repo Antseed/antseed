@@ -67,7 +67,7 @@ export class SellerAlerts {
   /** When each alert last reached each destination, keyed `destination|kind:provider/service`. */
   private readonly _lastSent = new Map<string, Delivery>();
   /** Alerts held back by the cooldown after their incident had closed, sent when it ends unless a recovery comes first. */
-  private readonly _held = new Map<string, NodeJS.Timeout>();
+  private readonly _held = new Map<string, { timer: NodeJS.Timeout; event: SellerEvent }>();
   /**
    * Resends scheduled for alerts a channel failed to take, per incident: the
    * latest event, to the channels still missing it, cancelled by the recovery.
@@ -155,7 +155,7 @@ export class SellerAlerts {
 
   private _release(key: string): void {
     const held = this._held.get(key);
-    if (held) clearTimeout(held);
+    if (held) clearTimeout(held.timer);
     this._held.delete(key);
     const retry = this._retries.get(key);
     if (retry) clearTimeout(retry.timer);
@@ -185,13 +185,16 @@ export class SellerAlerts {
     const { channels, holdMs } = retry
       ? { channels: retry.channels.filter((channel) => this._destinations()[channel] !== undefined), holdMs: null }
       : this._channelsFor(event, key, recovery, update);
-    if (holdMs !== null && !this._held.has(key)) {
-      const timer = setTimeout(() => {
+    // A held alert goes out with the incident's latest news (say, more models withdrawn while it waited).
+    const held = this._held.get(key);
+    if (holdMs !== null && held) held.event = event;
+    else if (holdMs !== null) {
+      const entry = { event, timer: setTimeout(() => {
         this._held.delete(key);
-        void this._inIncident(key, () => this._deliver(event, key, false)).catch(() => {});
-      }, holdMs);
-      timer.unref?.();
-      this._held.set(key, timer);
+        void this._inIncident(key, () => this._deliver(entry.event, key, false)).catch(() => {});
+      }, holdMs) };
+      entry.timer.unref?.();
+      this._held.set(key, entry);
     }
     if (channels.length === 0) return;
     // History is kept per destination, as of when the send started, so a changed chat or webhook starts fresh.
