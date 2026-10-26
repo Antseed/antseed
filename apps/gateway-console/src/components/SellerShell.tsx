@@ -2,10 +2,9 @@ import { useState, type ReactNode } from 'react'
 import { Drawer, IconButton } from '@antseed/ui'
 import { isSellerPage, NAV_ITEMS, type PageId } from '../lib/nav'
 import { href, linkHandler } from '../lib/router'
-import { Brand, ThemeToggle } from './Shell'
+import { Brand, SELLER_DOCS_URL, ThemeToggle } from './Shell'
 import { Icon } from './icons'
 
-const DOCS_URL = 'https://antseed.com/docs'
 
 /**
  * The console frame for `antseed seller dashboard`: the same top bar, rail and
@@ -23,7 +22,7 @@ export function SellerShell({ version, page, children }: { version: string; page
             <IconButton label="Open menu" className="gc-topbar__menu gc-topbar__icon" onClick={() => setMenuOpen(true)}><Icon.menu size={16} /></IconButton>
             <Brand to="seller" />
             <div className="gc-topbar__spacer" />
-            <a className="gc-topbar__link" href={DOCS_URL} target="_blank" rel="noreferrer">Docs</a>
+            <a className="gc-topbar__link" href={SELLER_DOCS_URL} target="_blank" rel="noreferrer">Docs</a>
             <ThemeToggle />
           </div>
         </header>

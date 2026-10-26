@@ -11,7 +11,9 @@ export const DEFAULT_GAS_CHECK_INTERVAL_MS = 60_000;
  */
 export const DEFAULT_MIN_GAS_BALANCE_WEI = 50_000_000_000_000n;
 /** How often a well-funded wallet is checked. */
-export const DEFAULT_RELAXED_GAS_CHECK_INTERVAL_MS = 10 * 60_000;
+export const DEFAULT_RELAXED_GAS_CHECK_INTERVAL_MS = 5 * 60_000;
+/** The relaxed interval never exceeds this many regular intervals, so a drained wallet is noticed within a few checks. */
+export const MAX_RELAXED_INTERVAL_MULTIPLE = 5;
 /** A balance this many times the minimum counts as well funded (the default of `relaxedBalanceFactor`). */
 export const RELAXED_BALANCE_FACTOR = 20n;
 
@@ -40,9 +42,9 @@ export interface GasHealthMonitorConfig {
   minBalanceWei?: bigint;
   /**
    * While the last balance is at least `RELAXED_BALANCE_FACTOR` × the minimum,
-   * check only this often (default 10 minutes): a wallet that far above the
-   * line cannot run dry within one relaxed interval of settlements. A seller
-   * settling heavily lowers it, or raises `relaxedBalanceFactor`.
+   * check only this often (default 5 minutes, at most 5 regular intervals).
+   * A wallet drained in between is noticed that much later, so a seller
+   * settling heavily lowers it or raises `relaxedBalanceFactor`.
    */
   relaxedIntervalMs?: number;
   /** How many times the minimum counts as well funded (default `RELAXED_BALANCE_FACTOR`). */
@@ -86,7 +88,7 @@ export class GasHealthMonitor {
     this._address = config.address;
     this._getBalance = config.getBalance;
     this._intervalMs = config.intervalMs ?? DEFAULT_GAS_CHECK_INTERVAL_MS;
-    this._relaxedIntervalMs = Math.max(this._intervalMs, config.relaxedIntervalMs ?? DEFAULT_RELAXED_GAS_CHECK_INTERVAL_MS);
+    this._relaxedIntervalMs = Math.min(this._intervalMs * MAX_RELAXED_INTERVAL_MULTIPLE, Math.max(this._intervalMs, config.relaxedIntervalMs ?? DEFAULT_RELAXED_GAS_CHECK_INTERVAL_MS));
     this._minBalanceWei = config.minBalanceWei ?? DEFAULT_MIN_GAS_BALANCE_WEI;
     this._relaxedBalanceFactor = config.relaxedBalanceFactor ?? RELAXED_BALANCE_FACTOR;
     this._onChange = config.onChange;

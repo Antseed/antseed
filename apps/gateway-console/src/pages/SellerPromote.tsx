@@ -64,6 +64,7 @@ function download(blob: Blob, filename: string) {
 function CardPanel({ data }: { data: Promote }) {
   // Rendered by the seller service (the same SVG `antseed seller promote --card` writes).
   const card = useSellerCard(data.trustScore)
+  const toast = useToast()
   const svg = card.data ?? null
   const slug = (data.displayName || 'antseed-seller').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'antseed-seller'
   const png = () => {
@@ -74,8 +75,9 @@ function CardPanel({ data }: { data: Promote }) {
       canvas.width = 1200
       canvas.height = 680
       canvas.getContext('2d')!.drawImage(image, 0, 0, 1200, 680)
-      canvas.toBlob((blob) => { if (blob) download(blob, `${slug}.png`) }, 'image/png')
+      canvas.toBlob((blob) => { if (blob) download(blob, `${slug}.png`); else toast('Could not convert the card to PNG. Download the SVG instead.') }, 'image/png')
     }
+    image.onerror = () => toast('Could not convert the card to PNG. Download the SVG instead.')
     image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
   }
   return (

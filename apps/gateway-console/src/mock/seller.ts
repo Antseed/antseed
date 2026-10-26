@@ -154,7 +154,10 @@ function initialPromote(now: number): SellerPromote {
 
 export function mockSellerLogs(query: URLSearchParams, now = Date.now()) {
   const all = mockSellerLogRows(now)
-    .filter((row) => (!query.get('service') || row.service === query.get('service')) && (!query.get('errors') || row.statusCode >= 400))
+    .filter((row) => (!query.get('service') || row.service === query.get('service'))
+      && (!query.get('buyer') || row.buyer === query.get('buyer'))
+      && (!query.get('from') || row.at >= Number(query.get('from')))
+      && (!query.get('errors') || row.statusCode >= 400))
   const start = Number(query.get('cursor') ?? 0)
   const limit = Number(query.get('limit') ?? 50)
   return { entries: all.slice(start, start + limit), next: start + limit < all.length ? String(start + limit) : null }

@@ -339,8 +339,9 @@ export class ChainRpcProvider extends JsonRpcProvider {
 
   /** Multicall3 is probed once per process (its code is then cached like any other). */
   private multicallDeployed(): Promise<boolean> {
-    if (!this.multicall) recordRpcCall('multicall-probe')
-    this.multicall ??= this.one({ jsonrpc: '2.0', id: nextInternalId++, method: 'eth_getCode', params: [this.multicallAddress, 'latest'] } as JsonRpcPayload)
+    if (this.multicall) return this.multicall
+    recordRpcCall('multicall-probe')
+    this.multicall = this.one({ jsonrpc: '2.0', id: nextInternalId++, method: 'eth_getCode', params: [this.multicallAddress, 'latest'] } as JsonRpcPayload)
       .then((result) => 'result' in result && typeof result.result === 'string' && result.result !== '0x')
       .catch((error: unknown) => {
         this.multicall = null

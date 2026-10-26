@@ -64,26 +64,30 @@ export async function discoverNetwork(config: AntseedConfig, options: { serviceF
     : undefined
   // A throwaway identity and data dir: never the operator's key or a running seller's peer id and databases.
   const dataDir = await mkdtemp(join(tmpdir(), 'antseed-discovery-'))
-  const node = new AntseedNode({
-    role: 'buyer',
-    dataDir,
-    identity: identityFromPrivateKeyHex(randomBytes(32).toString('hex')),
-    ...(bootstrapNodes ? { bootstrapNodes } : {}),
-    dhtOperationTimeoutMs: 30_000,
-    metadataFetchTimeoutMs: resolveEffectiveBuyerConfig({ config }).metadataFetchTimeoutMs,
-    ...(payments ? { payments: { ...payments, ...(readProvider ? { readProvider } : {}) } } : {}),
-  })
-  return withRpcSource(options.rpcSource ?? 'discovery', async () => {
-    try {
-      // Inside the try: a start that fails partway is still stopped (the node releases what it opened).
-      await node.start()
-      const peers = await node.discoverPeers(options.serviceFilter)
-      // Only stamp a refresh time when enrichment could have run, from the per-peer read times.
-      const latest = peers.map((peer) => peer.onChainStatsFetchedAt ?? 0).reduce((max, value) => (value > max ? value : max), 0)
-      return { peers, onChainStatsRefreshedAt: latest > 0 ? latest : null, sourceLabel: 'live DHT discovery' }
-    } finally {
-      await node.stop().catch(() => {})
-      await rm(dataDir, { recursive: true, force: true }).catch(() => {})
-    }
-  })
+  try {
+    const node = new AntseedNode({
+      role: 'buyer',
+      dataDir,
+      identity: identityFromPrivateKeyHex(randomBytes(32).toString('hex')),
+      ...(bootstrapNodes ? { bootstrapNodes } : {}),
+      dhtOperationTimeoutMs: 30_000,
+      metadataFetchTimeoutMs: resolveEffectiveBuyerConfig({ config }).metadataFetchTimeoutMs,
+      ...(payments ? { payments: { ...payments, ...(readProvider ? { readProvider } : {}) } } : {}),
+    })
+    return await withRpcSource(options.rpcSource ?? 'discovery', async () => {
+      try {
+        // Inside the try: a start that fails partway is still stopped (the node releases what it opened).
+        await node.start()
+        const peers = await node.discoverPeers(options.serviceFilter)
+        // Only stamp a refresh time when enrichment could have run, from the per-peer read times.
+        const latest = peers.map((peer) => peer.onChainStatsFetchedAt ?? 0).reduce((max, value) => (value > max ? value : max), 0)
+        return { peers, onChainStatsRefreshedAt: latest > 0 ? latest : null, sourceLabel: 'live DHT discovery' }
+      } finally {
+        await node.stop().catch(() => {})
+      }
+    })
+  } finally {
+    // Also when the node could not be built (a bad buyer setting): no temp dir is left behind.
+    await rm(dataDir, { recursive: true, force: true }).catch(() => {})
+  }
 }

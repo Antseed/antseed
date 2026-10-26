@@ -15,7 +15,9 @@ import { UpdateNotice } from './UpdatePanel'
 import { GatewayEndpoint } from './GatewayEndpoint'
 import { Icon } from './icons'
 
-const DOCS_URL = 'https://antseed.com/docs/gateway'
+export const DOCS_URL = 'https://antseed.com/docs/gateway'
+/** The seller dashboard links to the seller's monitoring guide. */
+export const SELLER_DOCS_URL = 'https://antseed.com/docs/provide/monitoring'
 
 /** `/console/migrate`: reached from the reachability banner, not the nav. */
 const MigratePage = lazy(() => import('../pages/Migrate'))
