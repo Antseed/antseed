@@ -6,7 +6,8 @@
  * Registered by `registerWalletRoutes`.
  */
 import { readFile } from 'node:fs/promises'
-import type { AntsChainConfig } from '@antseed/ants'
+import { AntsContext, freeTierStake, type AntsChainConfig } from '@antseed/ants'
+import { ZeroAddress } from 'ethers'
 import {
   DEFAULT_BUYER_IDENTITY,
   acceptFreeTierDelegationCode,
@@ -16,7 +17,7 @@ import {
 import { updateFreeTierDelegations } from '../../../config/free-tier-delegations.js'
 import { audit, type requireWorkspaceAccess } from '../access.js'
 import type { ConsoleDeps } from '../deps.js'
-import type { FreeTierSharing } from '../free-tier-types.js'
+import type { FreeTierSharing, FreeTierStake } from '../free-tier-types.js'
 import { ConsoleError, type ConsoleRequest, type ConsoleRouter } from '../router.js'
 import { asObject, requiredString } from '../serialize.js'
 
@@ -24,7 +25,12 @@ export interface FreeTierRouteSeams {
   access: typeof requireWorkspaceAccess
   walletAddress: (name: string) => Promise<string | null>
   resolveChain: () => Promise<AntsChainConfig>
+  /** Reads the counted stake; defaults to the chain through `resolveChain`. */
+  readStake?: (buyer: string, stakers: Array<{ staker: string; expiresAt: number }>) => Promise<Omit<FreeTierStake, 'buyer'>>
 }
+
+/** Stake changes at most once a week; the panel can lag it by a minute. */
+const STAKE_TTL_MS = 60_000
 
 const sameAddress = (a: string, b: string) => a.toLowerCase() === b.toLowerCase()
 
@@ -65,6 +71,38 @@ export function registerFreeTierRoutes(router: ConsoleRouter, deps: ConsoleDeps,
   router.add('GET', '/workspaces/:id/free-tier', async (request): Promise<FreeTierSharing> => {
     const ws = await workspace(request, 'member')
     return sharing(ws.buyer)
+  })
+
+  // One chain context per process, its endpoints ranked once.
+  let context: Promise<AntsContext> | null = null
+  const chainContext = () => {
+    context ??= (async () => {
+      const ctx = new AntsContext({ chain: await seams.resolveChain(), address: ZeroAddress })
+      await ctx.selectRpc()
+      return ctx
+    })()
+    context.catch(() => { context = null })
+    return context
+  }
+  const readStake = seams.readStake ?? (async (buyer, stakers) => freeTierStake(await chainContext(), buyer, stakers))
+  const stakeCache = new Map<string, { at: number; value: Promise<FreeTierStake> }>()
+
+  router.add('GET', '/workspaces/:id/free-tier/stake', async (request): Promise<FreeTierStake> => {
+    const ws = await workspace(request, 'member')
+    const { stakers } = await sharing(ws.buyer)
+    const active = stakers.filter((entry) => !entry.expired).map(({ staker, expiresAt }) => ({ staker, expiresAt }))
+    const key = JSON.stringify([ws.buyer.toLowerCase(), active])
+    const cached = stakeCache.get(key)
+    if (cached && deps.now() - cached.at < STAKE_TTL_MS) return cached.value
+    const value = readStake(ws.buyer, active).then((view) => ({ buyer: ws.buyer, ...view }))
+    if (stakeCache.size >= 256) stakeCache.clear()
+    stakeCache.set(key, { at: deps.now(), value })
+    value.catch(() => { if (stakeCache.get(key)?.value === value) stakeCache.delete(key) })
+    try {
+      return await value
+    } catch (error) {
+      throw new ConsoleError(503, 'chain_unavailable', `Could not read stake from the chain: ${error instanceof Error ? error.message : String(error)}`)
+    }
   })
 
   router.add('POST', '/workspaces/:id/free-tier', async (request): Promise<FreeTierSharing> => {

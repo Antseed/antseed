@@ -18,7 +18,7 @@ import type { RootUpdateProgress } from '../../update/root-updater.js'
 export type { RoutingPolicy, ModelRoute, RoutingSort } from '../../routing-policy/policy.js'
 export type { RouteSelection, ServedSelection } from '../../proxy/route-selection.js'
 export type { OperatorRelation, OperatorState, OperatorAuthorization, WorkspaceOperatorSummary } from './operator-types.js'
-export type { FreeTierProgramView, FreeTierSharing, FreeTierStaker } from './free-tier-types.js'
+export type { FreeTierProgramView, FreeTierSharing, FreeTierStake, FreeTierStakePosition, FreeTierStaker } from './free-tier-types.js'
 import type { FreeTierProgramView } from './free-tier-types.js'
 
 export const CONSOLE_BASE_PATH = '/console'

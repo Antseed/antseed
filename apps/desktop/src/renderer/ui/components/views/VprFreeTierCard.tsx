@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { shortAddress } from '../../../core/format';
 import type { FreeTierSharing } from '../../../types/bridge';
+import { freeTierTrendLine } from '../../../modules/catalog/free-tier';
+import { refreshFreeTierStake, useFreeTierStake } from '../../hooks/useFreeTierStake';
+import { useUiSelector } from '../../hooks/useUiSelector';
 import { VprCard } from '../vpr/VprKit';
 import styles from './VprRewardsView.module.scss';
 
@@ -8,6 +11,7 @@ import styles from './VprRewardsView.module.scss';
  * Staked free tier: a staker creates a code for this buyer in the staking
  * dashboard (My positions → Share free tier) and the buyer pastes it here.
  * Sellers with a staked free tier then count that stake toward this buyer.
+ * Below the stakers, the stake each seller counts and how it shrinks.
  */
 export function VprFreeTierCard() {
   const bridge = typeof window === 'undefined' ? undefined : window.antseedDesktop;
@@ -16,6 +20,12 @@ export function VprFreeTierCard() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const stake = useFreeTierStake();
+  const rows = useUiSelector((state) => state.discoverRows);
+  const sellerName = (agentId: number) => {
+    const row = rows.find((entry) => entry.agentId === agentId);
+    return row?.peerDisplayName || row?.peerLabel || `Seller #${agentId}`;
+  };
 
   const apply = useCallback(async (call: Promise<{ ok: boolean; data?: FreeTierSharing; error?: string }> | undefined) => {
     if (!call) return false;
@@ -37,7 +47,9 @@ export function VprFreeTierCard() {
   const mutate = async (call: () => Parameters<typeof apply>[0]) => {
     setBusy(true);
     try {
-      return await apply(call());
+      const applied = await apply(call());
+      if (applied) refreshFreeTierStake();
+      return applied;
     } finally {
       setBusy(false);
     }
@@ -69,6 +81,16 @@ export function VprFreeTierCard() {
               <span className={styles.stakerAddress} title={entry.staker}>{shortAddress(entry.staker)}</span>
               <span className={styles.aboutText}>{entry.expired ? 'Expired' : `Until ${new Date(entry.expiresAt * 1000).toLocaleDateString()}`}</span>
               <button type="button" className={styles.inlineLink} disabled={busy} onClick={() => void mutate(() => bridge?.freeTierRemove?.(entry.staker))}>Remove</button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {stake && stake.pools.length > 0 ? (
+        <ul className={styles.stakerList} aria-label="Counted stake by seller">
+          {stake.pools.map((pool) => (
+            <li key={pool.agentId} className={styles.stakerRow}>
+              <span className={styles.stakerName}>{sellerName(pool.agentId)}</span>
+              <span className={styles.aboutText}>{freeTierTrendLine(stake, pool)}</span>
             </li>
           ))}
         </ul>

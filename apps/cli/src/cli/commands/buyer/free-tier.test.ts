@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { delegationsForBuyer, withoutDelegation } from './free-tier.js'
+import { delegationsForBuyer, formatPoolStake, withoutDelegation } from './free-tier.js'
 
 const BUYER = `0x${'11'.repeat(20)}`
 const OTHER_BUYER = `0x${'22'.repeat(20)}`
@@ -23,4 +23,17 @@ test('removes one staker from one buyer only', () => {
   const next = withoutDelegation(delegations, BUYER, STAKER.toUpperCase().replace('0X', '0x'))
   assert.equal(next.length, 2)
   assert.ok(next.some((entry) => entry.buyer === OTHER_BUYER && entry.staker === STAKER))
+})
+
+test('describes each pool’s counted stake and how it shrinks', () => {
+  const view = { currentEpoch: 10, genesis: Date.UTC(2027, 0, 1) / 1000 - 10 * 604_800, epochDuration: 604_800, pools: [] }
+  // An hour into epoch 10.
+  const now = Date.UTC(2027, 0, 1, 1) / 1000
+  const position = { id: 1, staker: STAKER, startEpoch: 0, closedAtEpoch: null, expiresAt: null }
+  const shrinking = { agentId: 7, positions: [{ ...position, ants: 5200, endEpoch: 62, maxLocked: false }] }
+  assert.equal(formatPoolStake(view, shrinking, now), 'pool #7  counts as 5,200 ANTS for a year, shrinking weekly until 2027-12-31')
+  const locked = { agentId: 3, positions: [{ ...position, ants: 520, endEpoch: 114, maxLocked: true }] }
+  assert.equal(formatPoolStake(view, locked, now), 'pool #3  counts as 1,040 ANTS for a year; max lock keeps it')
+  const shared = { agentId: 3, positions: [{ ...position, ants: 520, endEpoch: 114, maxLocked: true, expiresAt: Date.UTC(2027, 5, 1) / 1000 }] }
+  assert.equal(formatPoolStake(view, shared, now), 'pool #3  counts as 1,040 ANTS for a year; max lock keeps it until the code expires on 2027-06-01')
 })

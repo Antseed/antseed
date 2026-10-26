@@ -1,5 +1,8 @@
+import { useQuery } from '@tanstack/react-query'
+import { api } from '../api'
 import type { FreeTierProgramView } from '../api/types'
-import { freeTierHeadline, stakeInPoolPath, tierAnts, tierLimit } from '../lib/free-tier'
+import { freeTierHeadline, stakeInPoolPath, stakeStandingLine, tierAnts, tierLimit } from '../lib/free-tier'
+import { qk } from '../lib/queries'
 import { href, linkHandler } from '../lib/router'
 import { useConsole } from '../app/context'
 import { isWorkspaceAdmin } from '../lib/nav'
@@ -10,6 +13,7 @@ import { InfoTip } from './TrustInfo'
  * the free allowance before the listed price applies. When the seller has
  * staked tiers, what locking ANTS in this seller's pool earns; a stakers-only
  * program serves no one below the first tier. Stake in other pools never counts.
+ * Shows where the workspace's own counted stake stands and when it drops.
  */
 export function FreeTierInfo({ program, agentId, priced = false, align = 'end' }: {
   program: FreeTierProgramView | null
@@ -19,11 +23,15 @@ export function FreeTierInfo({ program, agentId, priced = false, align = 'end' }
   /** Where the tiers bubble opens; `center` for rows mid-way across a narrow panel. */
   align?: 'start' | 'end' | 'center'
 }) {
-  const canStake = isWorkspaceAdmin(useConsole().viewer)
+  const { viewer, workspace } = useConsole()
+  const canStake = isWorkspaceAdmin(viewer)
+  const tiered = !!program && program.stakeTiers.length > 0 && agentId !== null
+  const stake = useQuery({ queryKey: qk.freeTierStake(workspace.id), queryFn: () => api.wallet.freeTierStake(workspace.id), staleTime: 5 * 60_000, enabled: tiered, retry: false })
   if (!program) return null
   const headline = freeTierHeadline(program, priced)
   if (program.stakeTiers.length === 0) return <span>{headline}</span>
   const stakersOnly = program.base.stakersOnly === true
+  const standing = stakeStandingLine(program, stake.data, agentId, priced)
   return (
     <span className="gc-inline">
       <span>{stakersOnly ? headline : `${headline} · stake for more`}</span>
@@ -39,7 +47,15 @@ export function FreeTierInfo({ program, agentId, priced = false, align = 'end' }
             <span key={tier.minPower} className="gc-free-tiers__row"><span>{tierAnts(tier)}</span><span>{tierLimit(program, tier)}</span></span>
           ))}
         </span>
-        Twice the ANTS for half a year counts the same.
+        Twice the ANTS for half a year counts the same. Power drops each week as the lock runs down; max lock keeps it.
+        {standing && (
+          <span className="gc-free-tiers__standing">
+            {standing.text}
+            {standing.dropsSoon && agentId !== null && (standing.ownStake && canStake
+              ? <> <a href={href(stakeInPoolPath(agentId))} onClick={linkHandler(stakeInPoolPath(agentId))}>Keep this tier: turn on max lock</a></>
+              : ' To keep this tier, the staker can turn on max lock.')}
+          </span>
+        )}
         {agentId !== null && (canStake
           ? <span className="gc-free-tiers__link"><a href={href(stakeInPoolPath(agentId))} onClick={linkHandler(stakeInPoolPath(agentId))}>Stake in this seller's pool</a></span>
           : <span className="gc-free-tiers__link">A workspace admin stakes for this workspace.</span>)}

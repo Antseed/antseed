@@ -262,7 +262,7 @@ Fund the buyer and manage payment channels. Guides: [Gateway funding](/docs/gate
 | `antseed buyer set-authorized-wallet` | Authorize an external wallet in the browser, or the buyer wallet itself | `--self`, `--no-open`, `--identity <name>` |
 | `antseed buyer free-tier add <code>` | Add a free-tier code a staker created for this buyer in the ANTS dashboard | `--identity <name>` |
 | `antseed buyer free-tier share` | Sign in the browser to share a wallet's ANTS stake with this buyer for staked free tiers | `--no-open`, `--identity <name>` |
-| `antseed buyer free-tier list` | List the stakers sharing with this buyer | `--identity <name>` |
+| `antseed buyer free-tier list` | List the stakers sharing with this buyer and the stake each seller pool counts, with when it runs down | `--identity <name>`, `--no-stake` |
 | `antseed buyer free-tier remove <staker>` | Stop sending a staker's delegation | `--identity <name>` |
 | `antseed buyer channels [list]` | List payment channels from the local store | `--status active\|settled\|timeout\|ghost`, `--limit` (20) |
 | `antseed buyer channels close <channelId>` | Ask the seller to close a channel now | `--no-auth` |

@@ -11,7 +11,7 @@ import { Panel } from './Panel';
 import { Button } from './ui';
 
 const DAY = 86_400;
-const VALIDITY_DAYS = [30, 90, 180];
+const VALIDITY_DAYS = [30, 90, 365];
 
 /** Matches FREE_TIER_DELEGATION_TYPES in @antseed/node. */
 const DELEGATION_TYPES = {
@@ -64,6 +64,7 @@ function FreeTierShareForm({ sign }: { sign: Sign }) {
   const [shared, setShared] = useState<SharedCode | null>(null);
   const notReady = readiness?.reason ?? (config.readOnly ? 'Connect your staking wallet to sign.' : undefined);
   const validBuyer = isAddress(buyer.trim());
+  const until = new Date(Date.now() + days * DAY * 1000).toLocaleDateString();
 
   const create = async () => {
     setBusy(true);
@@ -86,6 +87,9 @@ function FreeTierShareForm({ sign }: { sign: Sign }) {
         <div className="hint">
           Sellers with a staked free tier raise a buyer's free limit by the staking power in their own pool, and some offer models free only to their stakers. Create a code for a buyer address and send it to them: on each seller, your positions in that seller's pool then count for that buyer.
           Signing costs no gas and moves no ANTS.
+        </div>
+        <div className="hint">
+          Positions you transfer stop counting for the buyer. Every buyer you share with draws from the same allowance. Power drops each week as a lock runs down; max lock keeps it.
         </div>
         {shared ? (
           <div className="stack">
@@ -120,6 +124,9 @@ function FreeTierShareForm({ sign }: { sign: Sign }) {
               {busy ? 'Waiting for signature…' : 'Sign and create code'}
             </Button>
           </div>
+        )}
+        {shared ? null : (
+          <div className="hint">Shares all your stake in each seller's pool, now and later, until {until}.</div>
         )}
         {error ? <div className="error-text">{error}</div> : null}
       </div>

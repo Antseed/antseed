@@ -1,6 +1,9 @@
 import { realpath } from 'node:fs/promises';
 import { ipcMain } from 'electron';
 import { acceptFreeTierDelegationCode, withFileLock, withFreeTierDelegation, type FreeTierDelegation } from '@antseed/node';
+import type { FreeTierStakeView } from '@antseed/node/free-tier-program';
+import { freeTierStake } from '@antseed/ants/service';
+import { sharedChainContext } from '../payments/shared-chain.js';
 import { ensureSecureIdentity, getSecureIdentity } from '../identity.js';
 import { ACTIVE_CONFIG_PATH } from '../runtime/active-config.js';
 import { mergeConfig, readConfig } from '../runtime/config-io.js';
@@ -50,7 +53,7 @@ async function serialized<T>(mutation: () => Promise<T>): Promise<T> {
  * (`buyer.freeTierDelegations`); the running buyer reloads them within a minute.
  */
 export function registerFreeTierIpc(): void {
-  const handle = (channel: string, run: (arg: unknown) => Promise<FreeTierSharing>) => {
+  const handle = <T>(channel: string, run: (arg: unknown) => Promise<T>) => {
     ipcMain.handle(channel, async (event, arg: unknown) => {
       if (event.sender !== getMainWindow()?.webContents) return { ok: false, error: 'Free tier can only be managed from the VPR main window.' };
       try {
@@ -62,6 +65,14 @@ export function registerFreeTierIpc(): void {
   };
 
   handle('freeTier:list', async () => sharingFor(await buyerAddress(), savedDelegations(await readConfig(ACTIVE_CONFIG_PATH))));
+
+  // The stake those codes and this buyer's own positions bring, by seller pool, read live from the chain.
+  handle('freeTier:stake', async (): Promise<FreeTierStakeView & { buyer: string }> => {
+    const config = await readConfig(ACTIVE_CONFIG_PATH);
+    const sharing = sharingFor(await buyerAddress(), savedDelegations(config));
+    const context = await sharedChainContext(resolveStakingChain(config));
+    return { buyer: sharing.buyer, ...await freeTierStake(context, sharing.buyer, sharing.stakers.filter((entry) => !entry.expired)) };
+  });
 
   handle('freeTier:add', async (code) => {
     if (typeof code !== 'string') throw new Error('Paste a free-tier code.');

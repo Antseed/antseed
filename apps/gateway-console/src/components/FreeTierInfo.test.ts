@@ -1,8 +1,11 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { describe, expect, it } from 'vitest'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { describe, expect, it, vi } from 'vitest'
+import type { FreeTierStake } from '../api/types'
 import { ConsoleContext, type ConsoleContextValue } from '../app/context'
 import type { Viewer } from '../lib/nav'
+import { qk } from '../lib/queries'
 import { FreeTierInfo } from './FreeTierInfo'
 
 const program = {
@@ -10,9 +13,12 @@ const program = {
   stakeTiers: [{ minPower: 520_000, multiplier: 5 as const }],
 }
 
-function render(viewer: Viewer, props: Partial<Parameters<typeof FreeTierInfo>[0]> = {}): string {
-  const value = { viewer } as ConsoleContextValue
-  return renderToStaticMarkup(createElement(ConsoleContext.Provider, { value }, createElement(FreeTierInfo, { program, agentId: 42, ...props })))
+function render(viewer: Viewer, props: Partial<Parameters<typeof FreeTierInfo>[0]> = {}, stake?: FreeTierStake): string {
+  const value = { viewer, workspace: { id: 'ws_team' } } as ConsoleContextValue
+  const client = new QueryClient()
+  if (stake) client.setQueryData(qk.freeTierStake('ws_team'), stake)
+  const info = createElement(FreeTierInfo, { program, agentId: 42, ...props })
+  return renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(ConsoleContext.Provider, { value }, info)))
 }
 
 describe('FreeTierInfo', () => {
@@ -36,5 +42,21 @@ describe('FreeTierInfo', () => {
     expect(priced).toContain('200 a day')
     expect(priced).toContain('paid at the listed price')
     expect(render(admin, { program: { ...program, stakeTiers: [] }, priced: true })).toContain('1,000 free requests a day, then paid')
+  })
+
+  it("shows the workspace's standing on this seller and suggests max lock before it drops", () => {
+    const admin = { orgRole: 'member', workspaceRole: 'admin' } as const
+    const buyer = `0x${'b1'.repeat(20)}`
+    const stake: FreeTierStake = {
+      buyer, currentEpoch: 10, genesis: Date.UTC(2027, 0, 1, 12) / 1000 - 10 * 604_800, epochDuration: 604_800,
+      pools: [{ agentId: 42, positions: [{ id: 1, staker: buyer, ants: 26_000, startEpoch: 0, endEpoch: 30, closedAtEpoch: null, maxLocked: false, expiresAt: null }] }],
+    }
+    vi.useFakeTimers()
+    vi.setSystemTime((stake.genesis + 10 * 604_800 + 3600) * 1000)
+    const html = render(admin, {}, stake)
+    expect(html).toContain('You get 5,000 a day until Jan 8, 2027, then 1,000 a day.')
+    expect(html).toContain('Keep this tier: turn on max lock')
+    expect(render(admin, { agentId: 7 }, stake)).not.toContain('You get')
+    vi.useRealTimers()
   })
 })

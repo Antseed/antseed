@@ -11,7 +11,7 @@
  * member of Default and an admin of Research.
  */
 import type {
-  AdminToken, ApiKey, AuditEntry, BuyerLimits, DepositConfirmation, GatewayExposure, GatewayExposureMode, GatewayUpdate, Me, MeResponse, Member, RequestDetail, RequestLogEntry, RoutePreview, RoutingPolicy,
+  AdminToken, ApiKey, AuditEntry, BuyerLimits, DepositConfirmation, FreeTierStake, GatewayExposure, GatewayExposureMode, GatewayUpdate, Me, MeResponse, Member, RequestDetail, RequestLogEntry, RoutePreview, RoutingPolicy,
   UsageGroupBy, Workspace, WorkspaceRole,
   RouteSelection,
 } from '../api/types'
@@ -874,6 +874,20 @@ const routes: Array<[string, string, Handler]> = [
   ['GET', '/workspaces/:id/free-tier', ({ params }) => {
     const { workspace } = requireWorkspace(params['id']!, 'member')
     return { buyer: workspace.walletAddress, stakers: freeTierStakers.get(workspace.id) ?? [] }
+  }],
+  ['GET', '/workspaces/:id/free-tier/stake', ({ params }) => {
+    const { workspace } = requireWorkspace(params['id']!, 'member')
+    // Weekly epochs from an obvious fake genesis. The buyer's own Delta stake has
+    // 10 weeks left (20× now, 5× next week); a shared staker max-locks enough for Beta's stakers-only model.
+    const genesis = 1_700_000_000
+    const epochDuration = 604_800
+    const currentEpoch = Math.floor((Date.now() / 1000 - genesis) / epochDuration)
+    const buyer = String(workspace.walletAddress)
+    const position = { startEpoch: currentEpoch - 20, closedAtEpoch: null, maxLocked: false, expiresAt: null }
+    const pools: FreeTierStake['pools'] = [{ agentId: 86_903, positions: [{ ...position, id: 41, staker: buyer.toLowerCase(), ants: 270_000, endEpoch: currentEpoch + 10 }] }]
+    const shared = (freeTierStakers.get(workspace.id) ?? []).filter((entry) => !entry.expired)[0]
+    if (shared) pools.unshift({ agentId: 86_901, positions: [{ ...position, id: 42, staker: shared.staker.toLowerCase(), ants: 450_000, endEpoch: currentEpoch + 104, maxLocked: true, expiresAt: shared.expiresAt }] })
+    return { buyer, currentEpoch, genesis, epochDuration, pools }
   }],
   ['POST', '/workspaces/:id/free-tier', ({ params, body }) => {
     const { workspace } = requireWorkspace(params['id']!, 'admin')

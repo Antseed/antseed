@@ -86,3 +86,35 @@ test('codes for another buyer, expired or malformed are refused, and members can
     await cleanup()
   }
 })
+
+test('members read the stake each pool counts, from the buyer and every staker with a live code', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'gateway-free-tier-stake-'))
+  const configPath = join(dir, 'config.json')
+  const live = `0x${'aa'.repeat(20)}`
+  const expired = `0x${'bb'.repeat(20)}`
+  await writeFile(configPath, JSON.stringify({ buyer: { freeTierDelegations: [
+    { staker: live, buyer: TEAM_BUYER, expiresAt: LATER, signature: '0x' },
+    { staker: expired, buyer: TEAM_BUYER, expiresAt: NOW / 1000 - 1, signature: '0x' },
+  ] } }))
+  const store = {
+    getWorkspace: (id: string) => (id === 'ws_team' ? { id, name: 'Team', buyerIdentity: 'team-a' } : null),
+    getMember: () => null, getKey: () => null, getAdminToken: () => null, recordAudit: () => {},
+  }
+  const reads: unknown[] = []
+  const view = { currentEpoch: 10, genesis: 1000, epochDuration: 604_800, pools: [] }
+  const router = new ConsoleRouter()
+  registerFreeTierRoutes(router, { ...fakeDeps(store, () => NOW), configPath }, {
+    access: fakeRequireWorkspaceAccess,
+    walletAddress: async () => TEAM_BUYER,
+    resolveChain: async () => CHAIN,
+    readStake: async (buyer, stakers) => { reads.push([buyer, stakers]); return view },
+  })
+  try {
+    assert.deepEqual(await call(router, 'GET', '/workspaces/ws_team/free-tier/stake', member), { buyer: TEAM_BUYER, ...view })
+    await call(router, 'GET', '/workspaces/ws_team/free-tier/stake', member)
+    // The expired staker is left out, and the second read is served from the cache.
+    assert.deepEqual(reads, [[TEAM_BUYER, [{ staker: live, expiresAt: LATER }]]])
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

@@ -1,7 +1,7 @@
 import type {
   AdminToken, ApiKey, ApiKeyInput, AuditEntry, AuthConfig, BuyerLimits, BuyerSettingsInput, Channel, ChainInfo, DepositConfirmation, DepositWatch, Enrollment,
   GatewayStatus, GatewayUpdate, Invite, InviteInput, Member, MemberInput, MeResponse, ObservabilitySettings, OperatorAuthorization, OperatorState, WorkspaceOperatorSummary, ChatContext, ChatModel, ChatThread, ChatThreadDetail, FavoriteModels, NetworkModel, NetworkRouter, Peer, PeerList, Preset,
-  FreeTierSharing, RequestDetail, RequestLogEntry, Rewards, RoutePreview, RoutingPolicy, Settings, SpendLimits, UsageGroupBy, UsageReport, Wallet, Workspace,
+  FreeTierSharing, FreeTierStake, RequestDetail, RequestLogEntry, Rewards, RoutePreview, RoutingPolicy, Settings, SpendLimits, UsageGroupBy, UsageReport, Wallet, Workspace,
   WorkspaceInput, WorkspaceRole,
 } from './types'
 
@@ -237,6 +237,7 @@ export function createApiClient(fetchImpl: FetchLike = (input, init) => fetch(in
       rewards: (workspaceId: string) => get<Rewards>(`/workspaces/${id(workspaceId)}/rewards`),
       /** Stakers sharing their stake with the workspace buyer for staked free-tier allowances. */
       freeTier: (workspaceId: string) => get<FreeTierSharing>(`/workspaces/${id(workspaceId)}/free-tier`),
+      freeTierStake: (workspaceId: string) => get<FreeTierStake>(`/workspaces/${id(workspaceId)}/free-tier/stake`),
       addFreeTierCode: (workspaceId: string, code: string) => post<FreeTierSharing>(`/workspaces/${id(workspaceId)}/free-tier`, { code }),
       removeFreeTierStaker: (workspaceId: string, staker: string) =>
         request<FreeTierSharing>('DELETE', `/workspaces/${id(workspaceId)}/free-tier/${id(staker)}`),

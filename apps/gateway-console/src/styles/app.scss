@@ -822,6 +822,7 @@ li + li > .gc-choice { border-top: 1px solid var(--as-border); }
 .gc-free-tiers__row { display: flex; justify-content: space-between; gap: 1rem; font-variant-numeric: tabular-nums; color: var(--as-text-primary); }
 .gc-free-tiers__head { color: var(--as-text-secondary); }
 .gc-free-tiers__link { display: block; margin-top: 0.375rem; }
+.gc-free-tiers__standing { display: block; margin-top: 0.375rem; color: var(--as-text-primary); }
 
 /* Text that opens something, styled like a link (a seller list's name). */
 .gc-link-button { padding: 0; border: 0; background: none; font: inherit; color: var(--as-text-primary); text-decoration: underline; text-decoration-color: var(--as-border-strong); text-underline-offset: 3px; cursor: pointer;

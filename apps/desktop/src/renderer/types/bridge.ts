@@ -1,3 +1,4 @@
+import type { FreeTierStakeView } from '@antseed/node/free-tier-program';
 export type RuntimeMode = 'connect' | 'system-proxy' | 'tunnel';
 
 export type RuntimeProcessState = {
@@ -464,6 +465,8 @@ export type DesktopBridge = {
   freeTierList?: () => Promise<{ ok: boolean; data?: FreeTierSharing; error?: string }>;
   freeTierAdd?: (code: string) => Promise<{ ok: boolean; data?: FreeTierSharing; error?: string }>;
   freeTierRemove?: (staker: string) => Promise<{ ok: boolean; data?: FreeTierSharing; error?: string }>;
+  /** This buyer's counted seller-pool stake (its own plus shared), by pool. */
+  freeTierStake?: () => Promise<{ ok: boolean; data?: FreeTierStakeView & { buyer: string }; error?: string }>;
   paymentsOpenPayPage?: (opts: { kind?: 'deposit' | 'withdraw' | 'authorize' | 'claim' | 'close-channel'; amountUsdc?: string; channelId?: string }) => Promise<{ ok: boolean; url?: string; error?: string }>;
   paymentsCardProviders?: () => Promise<{ ok: boolean; data?: Array<{ id: string; label: string }>; error?: string }>;
   paymentsOpenCardProvider?: (opts?: { providerId?: string; amountUsdc?: string }) => Promise<{ ok: boolean; url?: string; error?: string }>;

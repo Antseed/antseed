@@ -584,6 +584,7 @@ const api = {
   freeTierList: () => ipcRenderer.invoke('freeTier:list'),
   freeTierAdd: (code: string) => ipcRenderer.invoke('freeTier:add', code),
   freeTierRemove: (staker: string) => ipcRenderer.invoke('freeTier:remove', staker),
+  freeTierStake: () => ipcRenderer.invoke('freeTier:stake'),
   paymentsOpenPayPage: (opts: { kind?: string; amountUsdc?: string; channelId?: string }) => ipcRenderer.invoke('payments:open-pay-page', opts),
   paymentsCardProviders: () => ipcRenderer.invoke('payments:card-providers'),
   paymentsOpenCardProvider: (opts?: { providerId?: string; amountUsdc?: string }) => ipcRenderer.invoke('payments:open-card-provider', opts),

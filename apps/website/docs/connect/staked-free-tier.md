@@ -75,7 +75,7 @@ The new allowance starts once the position activates in the next epoch. Sellers 
 
 Stake held by your buyer identity's own address counts automatically. Stake in any other wallet, yours or someone else's, counts once that wallet signs a code for your buyer address.
 
-**The staker** opens the ANTS dashboard (`antseed ants`, desktop **Rewards → Manage staking**, or the gateway's **Staking** page), goes to **My positions → Share free tier**, enters the buyer address and signs. The signature costs no gas and moves no funds. It names that one buyer address and lasts 30, 90 or 180 days. The dashboard shows a code starting with `antseed-free-tier-` to send to the buyer.
+**The staker** opens the ANTS dashboard (`antseed ants`, desktop **Rewards → Manage staking**, or the gateway's **Staking** page), goes to **My positions → Share free tier**, enters the buyer address and signs. The signature costs no gas and moves no funds. It names that one buyer address and lasts 30, 90 or 365 days. The dashboard shows a code starting with `antseed-free-tier-` to send to the buyer.
 
 **The buyer** adds the code:
 
@@ -94,7 +94,19 @@ antseed buyer free-tier list               # stakers sharing with this buyer
 antseed buyer free-tier remove 0x<staker>  # stop sending one
 ```
 
+A code shares the staker's wallet, not one position: every position that wallet holds in a seller's pool counts, including stake it adds later, until the code expires. A position the staker transfers stops counting for your buyer and counts for its new owner instead, carrying the allowance already used on it.
+
 A code names one buyer, so nobody else can use it. Removing it stops your buyer sending it, and sellers stop counting it from the buyer's next free request. A staker can't revoke a code once signed: the buyer could keep sending it until it expires. To stop a code counting before then, move or withdraw the stake. Sellers notice when their cached stake lookups refresh, normally within ten minutes.
+
+## See when your tier drops
+
+Power shrinks every week, so a tier you reach today can drop as the lock runs down, or when a staker's code expires. Every app shows where you stand:
+
+- **Desktop:** **Rewards → Staked free tier** lists the stake each seller counts for you and until when ("Counts as 12,000 ANTS for a year, shrinking weekly until Mar 3, 2027"). On a model's page, the **Stake for more** tooltip says what you get there and when it changes, for example "You get unlimited until Dec 14, 2026, then 1,000 a day."
+- **Gateway:** **Staking → Staked free tier** has the same list per seller pool, and the ⓘ next to a model's program shows the workspace's standing.
+- **CLI:** `antseed buyer free-tier list` prints the counted stake per seller pool after the stakers (`--no-stake` skips the chain read).
+
+When a tier drops within four weeks, the tooltip suggests max lock: a max-locked position keeps 104 epochs of power until max lock is turned off, so its tier holds. If the stake is yours, the link opens that seller's pool; if a staker shared it, ask them to turn it on.
 
 ## One allowance per staker
 
