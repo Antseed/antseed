@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { startSellerDashboard } from './dashboard-server.js'
 import { fakeNetworkRows, writeSellerFixture } from './fixture.js'
-import { VerificationChecks } from './promote.js'
+import { updateSellerVerifications, VerificationChecks } from './promote.js'
 
 const PEER = '5e11e5e11e5e11e5e11e5e11e5e11e5e11e5e11e'
 const tick = () => new Promise((resolve) => setTimeout(resolve, 30))
@@ -78,4 +78,14 @@ test('market, reputation and promote: background snapshot, standing, verificatio
   } finally {
     await server.close()
   }
+})
+
+test('saving claims keeps the proof methods of the domains already there', async () => {
+  const configPath = join(mkdtempSync(join(tmpdir(), 'seller-promote-')), 'config.json')
+  writeFileSync(configPath, JSON.stringify({ seller: { verifications: { domains: [{ domain: 'seller.example', methods: ['https-well-known'] }] } } }))
+  await updateSellerVerifications(configPath, { domains: [{ domain: 'seller.example' }, { domain: 'new.example' }], github: [{ username: 'seller-dev' }] })
+  assert.deepEqual(JSON.parse(readFileSync(configPath, 'utf8')).seller.verifications, {
+    domains: [{ domain: 'seller.example', methods: ['https-well-known'] }, { domain: 'new.example' }],
+    github: [{ username: 'seller-dev' }],
+  })
 })

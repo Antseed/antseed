@@ -91,6 +91,29 @@ describe('seller editors', async () => {
     expect(merged.prices).toEqual({ 'openai/glm-5.3': { input: '0.5', output: '3', cached: '' }, 'openai/kimi-k3': { input: '2', output: '5', cached: '' } })
   })
 
+  it('a dirty draft takes values saved elsewhere for the fields it did not touch, so saving never reverts them', () => {
+    const two = { ...settings, services: [...settings.services, { provider: 'openai', service: 'kimi-k3', inputUsdPerMillion: 2, outputUsdPerMillion: 5, cachedInputUsdPerMillion: null, inherited: false }] }
+    const base = draftOf(two)
+    const edited = { ...base, displayName: 'Mine', prices: { ...base.prices, 'openai/glm-5.3': { input: '0.5', output: '3', cached: '' } } }
+    // Meanwhile kimi-k3's price and the concurrency limit change from the CLI.
+    const next = draftOf({ ...two, maxConcurrentBuyers: 80, services: [two.services[0]!, { ...two.services[1]!, inputUsdPerMillion: 4 }] })
+    const merged = reconcileDraft(edited, base, next)
+    expect(merged.maxConcurrentBuyers).toBe('80')
+    expect(merged.prices['openai/kimi-k3']!.input).toBe('4')
+    expect(patchOf(next, merged)).toEqual({
+      displayName: 'Mine',
+      pricing: [{ provider: 'openai', service: 'glm-5.3', inputUsdPerMillion: 0.5, outputUsdPerMillion: 3, cachedInputUsdPerMillion: null }],
+    })
+  })
+
+  it('alert drafts rebase the same way', async () => {
+    const { rebaseDraft } = await import('./settings')
+    const base = { chatId: '1', token: '', clearToken: false, webhookUrl: '', clearWebhook: false, idleMinutes: '30', cooldownMinutes: '30', minSeverity: 'warning' as const }
+    const next = { ...base, idleMinutes: '60' }
+    const merged = rebaseDraft({ ...base, chatId: '2' }, base, next)
+    expect(alertsPatchOf(next, merged)).toEqual({ telegramChatId: '2' })
+  })
+
   it('requires prices only on the rows being changed', () => {
     const unpriced = { ...settings, services: [...settings.services, { provider: 'openai', service: 'kimi-k3', inputUsdPerMillion: null, outputUsdPerMillion: null, cachedInputUsdPerMillion: null, inherited: false }] }
     const base = draftOf(unpriced)
@@ -108,7 +131,13 @@ describe('seller editors', async () => {
 })
 
 describe('market helpers', async () => {
-  const { deltaText } = await import('../pages/SellerMarket')
+  const { deltaText, offeringKey } = await import('../pages/SellerMarket')
+
+  it('tells apart the same model from two providers', () => {
+    const rows = [{ provider: 'openai', service: 'glm-5.3' }, { provider: 'openforge', service: 'glm-5.3' }]
+    expect(new Set(rows.map(offeringKey)).size).toBe(2)
+    expect(rows.find((row) => offeringKey(row) === 'openforge/glm-5.3')).toBe(rows[1])
+  })
 
   it('words the price delta', () => {
     expect(deltaText(null)).toBe('—')

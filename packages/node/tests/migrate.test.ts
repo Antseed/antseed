@@ -116,6 +116,6 @@ describe('runMigrations', () => {
     runMigrations(db, meteringMigrations);
     const columns = (db.prepare('PRAGMA table_info(metering_events)').all() as { name: string }[]).map((column) => column.name);
     expect(columns.filter((name) => ['service', 'error', 'cached_input_tokens'].includes(name))).toEqual(['service', 'error', 'cached_input_tokens']);
-    expect((db.prepare('SELECT version FROM schema_version ORDER BY version').all() as { version: number }[]).map((row) => row.version)).toEqual([1, 2, 3, 6, 7, 8]);
+    expect((db.prepare('SELECT version FROM schema_version ORDER BY version').all() as { version: number }[]).map((row) => row.version)).toEqual([1, 2, 3, 6, 7, 8, 9]);
   });
 });

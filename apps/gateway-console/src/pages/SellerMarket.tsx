@@ -20,9 +20,12 @@ export function deltaText(deltaPct: number | null): string {
   return `${Math.abs(deltaPct).toFixed(deltaPct > -10 && deltaPct < 10 ? 1 : 0)}% ${deltaPct > 0 ? 'above' : 'below'}`
 }
 
-/** Opens Seller settings with this service's price row in view. */
-function editPrice(service: string) {
-  navigate(`seller-settings?price=${encodeURIComponent(service)}`)
+/** One of this seller's offerings: the same model can come from two providers. */
+export const offeringKey = (row: { provider: string; service: string }) => `${row.provider}/${row.service}`
+
+/** Opens Seller settings with this offering's price row in view. */
+function editPrice(row: { provider: string; service: string }) {
+  navigate(`seller-settings?price=${encodeURIComponent(offeringKey(row))}`)
 }
 
 /** This seller's prices against every other seller of the same model. */
@@ -40,7 +43,7 @@ export default function SellerMarket() {
         if (market.error) return <ErrorAlert error={market.error} onRetry={() => void market.refetch()} />
         const data = market.data!
         const services = data.services
-        const open = services.find((service) => service.service === selected) ?? null
+        const open = services.find((service) => offeringKey(service) === selected) ?? null
         const cheapest = services.filter((service) => service.rank === 1 && !service.unique).length
         const unique = services.filter((service) => service.unique).length
         const deltas = services.map((service) => service.deltaPct).filter((value): value is number => value !== null)
@@ -58,8 +61,8 @@ export default function SellerMarket() {
               <StatTile label="Sellers seen" value={formatNumber(data.network.peers)} sub={data.network.source ?? 'loading'} />
             </div>
             <Panel title="Your models" description="Blended price is (3 × input + output) / 4, a typical chat mix. Rank 1 is the cheapest. Select a model to see every seller of it." flush>
-              <DataTable<SellerMarketService> label="Your models against the market" rows={services} rowKey={(row) => `${row.provider}/${row.service}`}
-                onRowClick={(row) => setSelected(row.service === selected ? null : row.service)} selectedKey={open ? `${open.provider}/${open.service}` : null}
+              <DataTable<SellerMarketService> label="Your models against the market" rows={services} rowKey={offeringKey}
+                onRowClick={(row) => setSelected(offeringKey(row) === selected ? null : offeringKey(row))} selectedKey={open ? offeringKey(open) : null}
                 initialSort={{ key: 'competitors', direction: 'desc' }}
                 empty={<EmptyState title="No models" body="The seller's config lists no services." />}
                 columns={[
@@ -93,7 +96,7 @@ export default function SellerMarket() {
 function OffersPanel({ service }: { service: SellerMarketService }) {
   return (
     <Panel title={`Everyone selling ${service.service}`} description={service.unique ? 'No other seller offers this model.' : `${service.of} sellers, cheapest blended price first. Your row is marked.`}
-      actions={<Button size="sm" variant="outline" onClick={() => editPrice(service.service)}>Edit your price</Button>} flush>
+      actions={<Button size="sm" variant="outline" onClick={() => editPrice(service)}>Edit your price</Button>} flush>
       <DataTable<SellerMarketOffer> label={`Sellers of ${service.service}`} rows={service.offers} rowKey={(row) => `${row.peerId}:${row.mine}`}
         columns={[
           { key: 'name', header: 'Seller', render: (row) => <span className="gc-inline">{row.mine && <Badge tone="neutral">You</Badge>}<span className="gc-ellipsis" title={row.peerId}>{row.name ?? shortId(row.peerId)}</span></span> },

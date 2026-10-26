@@ -4,7 +4,7 @@ import { Button, Disclosure, Segmented, TextField, useToast } from '@antseed/ui'
 import { api } from '../api'
 import type { SellerAlertSettings, SellerAlertsPatch, SellerAlertsState, TelegramChat } from '../api/types'
 import { formatRelative } from '../lib/format'
-import { numberFieldError } from '../lib/settings'
+import { numberFieldError, rebaseDraft } from '../lib/settings'
 import { qk } from '../lib/queries'
 import { ErrorAlert, Mono } from './ui'
 
@@ -78,7 +78,7 @@ export function SellerAlertsEditor({ alerts, state }: { alerts: SellerAlertSetti
   const [chats, setChats] = useState<TelegramChat[] | null>(null)
   useEffect(() => {
     const next = draftOf(alerts)
-    if (JSON.stringify(alertsPatchOf(base, draft)) === '{}') setDraft(next)
+    setDraft(rebaseDraft(draft, base, next))
     setBase(next)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [alerts])

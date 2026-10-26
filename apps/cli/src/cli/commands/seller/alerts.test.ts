@@ -229,3 +229,18 @@ test('dashboard overrides in the data dir win over config.json and apply live', 
   assert.equal(alerts.idleMinutes(), undefined, 'null turns the config value off');
   assert.deepEqual(alerts.channels(), ['telegram']);
 });
+
+test('a hand-edited alerts block with wrong types never throws: a numeric chat id works, the rest is left out', async () => {
+  const { writeFileSync } = await import('node:fs');
+  const dataDir = mkdtempSync(join(tmpdir(), 'seller-alerts-'));
+  const configPath = join(dataDir, 'config.json');
+  writeFileSync(configPath, JSON.stringify({ seller: { alerts: { telegram: { chatId: 42 }, idleMinutes: 30 } } }));
+  let now = 0;
+  const alerts = new SellerAlerts({ dataDir, configPath, sellerName: 'S', env: { ANTSEED_ALERTS_TELEGRAM_TOKEN: 't' }, now: () => now });
+  assert.equal(alerts.settings.telegram?.chatId, '42');
+  assert.deepEqual(alerts.channels(), ['telegram']);
+  writeFileSync(configPath, JSON.stringify({ seller: { alerts: { telegram: { chatId: { id: 1 } }, idleMinutes: 'soon', minSeverity: 7 } } }));
+  now += 3_000;
+  assert.equal(alerts.idleMinutes(), undefined);
+  assert.deepEqual(alerts.channels(), []);
+});

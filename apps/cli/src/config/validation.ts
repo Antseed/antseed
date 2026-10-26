@@ -10,6 +10,7 @@ import type {
 import { validateServiceMetadata } from './service-metadata.js';
 import { parseHostPort } from './public-address.js';
 import { appendVerifierConfigErrors } from '../verifier/config-schema.js';
+import { sellerAlertsErrors } from './seller-alerts.js';
 
 const SERVICE_CATEGORY_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 const MAX_PUBLIC_ADDRESS_LENGTH = 255;
@@ -457,6 +458,8 @@ export function validateConfig(config: AntseedConfig): string[] {
       errors.push('seller.freeTier.windowMs must be a safe integer >= 1000');
     }
   }
+
+  errors.push(...sellerAlertsErrors(config.seller.alerts));
 
   const restrictedCountries = config.seller.restrictedCountries;
   if (

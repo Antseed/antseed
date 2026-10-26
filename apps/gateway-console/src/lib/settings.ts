@@ -49,3 +49,17 @@ export function urlsError(urls: string[]): string | undefined {
 export function isOverridden(overrides: readonly string[], path: string): boolean {
   return overrides.some((entry) => entry === path || path.startsWith(`${entry}.`) || entry.startsWith(`${path}.`))
 }
+
+/**
+ * A dirty form draft rebased onto newly saved values: a field keeps the
+ * draft's value only where the person changed it from `base`; every other
+ * field takes `next`, so a later save never reverts what changed elsewhere.
+ * Keys come from `next` (a field gone from the saved values goes too).
+ */
+export function rebaseDraft<T extends object>(draft: T, base: T, next: T): T {
+  const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
+  return Object.fromEntries(Object.keys(next).map((key) => {
+    const k = key as keyof T
+    return [key, k in draft && !same(draft[k], base[k]) ? draft[k] : next[k]]
+  })) as T
+}

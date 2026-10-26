@@ -63,7 +63,7 @@ describe('metering request log page', () => {
       WHERE e.timestamp >= @from AND e.timestamp <= @ts AND NOT (e.timestamp = @ts AND e.rowid >= @rowid) AND e.service = @service
       ORDER BY e.timestamp DESC, e.rowid DESC LIMIT 50`).all({ from: 0, ts: 1, rowid: 1, service: 'x' }).map((row) => row.detail).join(' | ');
     expect(plan).toMatch(/idx_events_timestamp/);
-    expect(plan).toMatch(/idx_receipts_session/);
+    expect(plan).toMatch(/idx_receipts_session_event \(session_id=\? AND event_id=\?\)/);
     expect(plan).not.toMatch(/TEMP B-TREE/);
   });
 

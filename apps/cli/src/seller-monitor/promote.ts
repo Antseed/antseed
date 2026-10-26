@@ -132,7 +132,13 @@ export async function updateSellerVerifications(configPath: string, body: unknow
   })
   await patchSellerConfig(configPath, (raw) => {
     const seller = (raw.seller && typeof raw.seller === 'object' ? raw.seller : (raw.seller = {})) as Record<string, unknown>
-    if (domains.length === 0 && github.length === 0) delete seller.verifications
-    else seller.verifications = { ...(domains.length ? { domains } : {}), ...(github.length ? { github } : {}) }
+    // A domain kept from before keeps its proof methods (the dashboard does not edit them).
+    const previous = new Map(verificationsOf(raw).domains.map((claim) => [claim.domain.trim().toLowerCase(), claim.methods]))
+    const saved = domains.map(({ domain }) => {
+      const methods = previous.get(domain)
+      return methods !== undefined ? { domain, methods } : { domain }
+    })
+    if (saved.length === 0 && github.length === 0) delete seller.verifications
+    else seller.verifications = { ...(saved.length ? { domains: saved } : {}), ...(github.length ? { github } : {}) }
   })
 }

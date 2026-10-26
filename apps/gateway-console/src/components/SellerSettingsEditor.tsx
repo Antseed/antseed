@@ -3,7 +3,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Button, Disclosure, Switch, TextField, useToast } from '@antseed/ui'
 import { api } from '../api'
 import type { SellerSettings, SellerSettingsPatch } from '../api/types'
-import { numberFieldError } from '../lib/settings'
+import { numberFieldError, rebaseDraft } from '../lib/settings'
 import { qk } from '../lib/queries'
 import { ErrorAlert } from './ui'
 
@@ -75,13 +75,12 @@ const num = (text: string) => Number(text.trim())
 const numOrNull = (text: string) => (text.trim() === '' ? null : Number(text.trim()))
 
 /**
- * The draft after the saved settings changed underneath it: an untouched draft
- * takes the new values; an edited one keeps its edits, gains rows for services
- * added since and drops rows for services removed.
+ * The draft after the saved settings changed underneath it: fields and price
+ * rows the operator edited keep their edits, everything else (rows for
+ * services added or removed since included) takes the new saved values.
  */
 export function reconcileDraft(draft: Draft, base: Draft, next: Draft): Draft {
-  if (JSON.stringify(draft) === JSON.stringify(base)) return next
-  return { ...draft, prices: Object.fromEntries(Object.entries(next.prices).map(([key, price]) => [key, draft.prices[key] ?? price])) }
+  return { ...rebaseDraft(draft, base, next), prices: rebaseDraft(draft.prices, base.prices, next.prices) }
 }
 
 /** Only what changed from `base`, in the API's shape. */
@@ -123,7 +122,7 @@ export function SellerSettingsEditor({ settings }: { settings: SellerSettings })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings])
   const readOnly = !settings.writable
-  // Market's "Edit your price" opens Seller settings at `?price=<service>`.
+  // Market's "Edit your price" opens Seller settings at `?price=<provider>/<service>`.
   const [focusPrice] = useState(() => new URLSearchParams(window.location.search).get('price'))
   useEffect(() => {
     if (!focusPrice) return
@@ -191,7 +190,7 @@ export function SellerSettingsEditor({ settings }: { settings: SellerSettings })
               const key = priceKey(entry.provider, entry.service)
               const price = draft.prices[key] ?? savedPrices[key]!
               return (
-                <div key={key} id={`gc-price-${entry.service}`} className="gc-seller-price">
+                <div key={key} id={`gc-price-${key}`} className="gc-seller-price">
                   <div className="gc-seller-price__name"><span className="gc-ellipsis" title={key}>{entry.service}</span><span className="gc-fineprint">{entry.provider}{entry.inherited ? ' · provider default' : ''}</span></div>
                   <TextField size="sm" className="gc-num" label="Input" inputMode="decimal" disabled={readOnly} value={price.input} error={errors[`${key}:input`]} onChange={(event) => setPrice(key, 'input', event.target.value)} />
                   <TextField size="sm" className="gc-num" label="Output" inputMode="decimal" disabled={readOnly} value={price.output} error={errors[`${key}:output`]} onChange={(event) => setPrice(key, 'output', event.target.value)} />

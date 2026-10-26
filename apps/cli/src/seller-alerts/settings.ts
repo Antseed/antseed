@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { normalizeSellerAlerts } from '../config/seller-alerts.js';
 import type { SellerAlertsCLIConfig as SellerAlertsConfig } from '../config/types.js';
 
 export const DEFAULT_TELEGRAM_TOKEN_ENV = 'ANTSEED_ALERTS_TELEGRAM_TOKEN';
@@ -54,7 +55,7 @@ export function writeAlertOverrides(dataDir: string, patch: AlertOverrides): voi
 /** config.json's `seller.alerts` with the dashboard's overrides applied. */
 export function applyAlertOverrides(config: SellerAlertsConfig | undefined, overrides: AlertOverrides): SellerAlertsConfig {
   const merged: SellerAlertsConfig = { ...(config ?? {}) };
-  if (overrides.telegramChatId !== undefined) merged.telegram = { ...merged.telegram, chatId: overrides.telegramChatId ?? '' };
+  if (overrides.telegramChatId !== undefined) merged.telegram = { ...merged.telegram, chatId: overrides.telegramChatId === null ? '' : String(overrides.telegramChatId) };
   for (const key of ['idleMinutes', 'cooldownMinutes', 'minSeverity'] as const) {
     if (overrides[key] === undefined) continue;
     if (overrides[key] === null) delete merged[key];
@@ -116,7 +117,7 @@ export function resolveAlerts(config: SellerAlertsConfig | undefined, secrets: A
   const alerts = config ?? {};
   const fromEnv = env[alerts.telegram?.botTokenEnv || DEFAULT_TELEGRAM_TOKEN_ENV]?.trim();
   const token = fromEnv || secrets.telegramBotToken;
-  const chatId = alerts.telegram?.chatId?.trim();
+  const chatId = String(alerts.telegram?.chatId ?? '').trim();
   return {
     config: alerts,
     telegram: token && chatId ? { token, chatId, tokenSource: fromEnv ? 'env' : 'file' } : null,
@@ -124,11 +125,11 @@ export function resolveAlerts(config: SellerAlertsConfig | undefined, secrets: A
   };
 }
 
-/** `seller.alerts` as written in the config file, without the loader's defaults (alerts have none). */
+/** `seller.alerts` as written in the config file (alerts have no defaults), with malformed fields left out. */
 export function readAlertsConfig(configPath: string): SellerAlertsConfig | undefined {
   try {
-    const parsed = JSON.parse(readFileSync(configPath, 'utf-8')) as { seller?: { alerts?: SellerAlertsConfig } };
-    return parsed.seller?.alerts;
+    const parsed = JSON.parse(readFileSync(configPath, 'utf-8')) as { seller?: { alerts?: unknown } };
+    return normalizeSellerAlerts(parsed.seller?.alerts);
   } catch {
     return undefined;
   }
@@ -164,8 +165,14 @@ export class AlertSettingsSource {
     const stamp = `${configPath ? fileStamp(configPath) : 'static'}|${fileStamp(alertSecretsPath(dataDir))}|${fileStamp(alertOverridesPath(dataDir))}`;
     if (!this._resolved || stamp !== this._stamp) {
       this._stamp = stamp;
-      const config = applyAlertOverrides(configPath ? readAlertsConfig(configPath) : this._options.config, readAlertOverrides(dataDir));
-      this._resolved = resolveAlerts(config, readAlertSecrets(dataDir), this._options.env ?? process.env);
+      try {
+        const config = applyAlertOverrides(configPath ? readAlertsConfig(configPath) : this._options.config, readAlertOverrides(dataDir));
+        this._resolved = resolveAlerts(config, readAlertSecrets(dataDir), this._options.env ?? process.env);
+      } catch (error) {
+        // An edit that cannot be applied keeps the last good settings; the timers that ask must never throw.
+        if (!this._resolved) this._resolved = resolveAlerts(undefined, {}, {});
+        console.error(`[alerts] Keeping the previous alert settings: ${(error as Error).message}`);
+      }
     }
     return this._resolved;
   }
