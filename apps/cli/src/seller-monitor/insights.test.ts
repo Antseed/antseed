@@ -120,3 +120,33 @@ test('a stopped seller (journal, no daemon state) is still known by its stored i
     await server.close()
   }
 })
+
+test('a malformed stored identity reads as no peer id, without an unhandled rejection', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'seller-insights-'))
+  writeFileSync(join(dir, 'identity.key'), 'zz'.repeat(32), { mode: 0o600 })
+  writeSellerFixture(dir, { events: [{ at: 1, kind: 'stopped', severity: 'info', title: 'Seller stopped' }] })
+  const configPath = join(dir, 'config.json')
+  writeFileSync(configPath, JSON.stringify({ seller: { providers: {} } }))
+  const unhandled: unknown[] = []
+  const onUnhandled = (reason: unknown) => { unhandled.push(reason) }
+  process.on('unhandledRejection', onUnhandled)
+  const server = await startSellerDashboard({
+    dataDir: dir, configPath, version: '9.9.9', port: 0, env: {},
+    network: async () => ({ rows: [], source: 'test network' }),
+    standing: async () => { throw new Error('not called') },
+    explorerUrl: async () => 'https://explorer.example',
+  })
+  const token = new URL(server.url).searchParams.get('token')!
+  try {
+    for (const path of ['promote', 'reputation', 'market']) {
+      const response = await fetch(`${new URL(server.url).origin}/console/api/seller/${path}`, { headers: { authorization: `Bearer ${token}` } })
+      assert.equal(response.status, 200)
+      if (path === 'promote') assert.equal((await response.json() as { peerId: string | null }).peerId, null)
+    }
+    await tick()
+    assert.deepEqual(unhandled, [])
+  } finally {
+    process.off('unhandledRejection', onUnhandled)
+    await server.close()
+  }
+})

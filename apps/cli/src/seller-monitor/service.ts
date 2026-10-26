@@ -177,8 +177,10 @@ export class SellerMonitor {
   private _storedPeerId(dataDir: string): Promise<string | null> {
     let entry = this._storedPeerIds.get(dataDir)
     if (!entry) {
+      // Any failure, reading or decoding, means unknown: the cached promise always resolves.
       entry = new FileIdentityStore(dataDir).address()
-        .then((address) => (address ? peerKey(address) : null), () => null)
+        .then((address) => (address ? peerKey(address) : null))
+        .catch(() => null)
       // Only a found id is kept; a seller that has not made one yet is looked up again.
       void entry.then((peerId) => { if (peerId === null) this._storedPeerIds.delete(dataDir) })
       this._storedPeerIds.set(dataDir, entry)
