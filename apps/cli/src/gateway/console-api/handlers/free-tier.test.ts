@@ -99,7 +99,10 @@ test('members read the stake each pool counts, from the buyer and every staker w
   const liveWallet = Wallet.createRandom()
   const live = liveWallet.address.toLowerCase()
   // Left out: an expired code, and one signed for another network (say, saved before switching chains).
+  // Another workspace's eight codes come first in the shared file; they must not crowd out this workspace's.
+  const others = await Promise.all(Array.from({ length: 8 }, () => signedFor(Wallet.createRandom(), OTHER_BUYER, LATER, CHAIN.evmChainId)))
   await writeFile(configPath, JSON.stringify({ buyer: { freeTierDelegations: [
+    ...others,
     await signedFor(liveWallet, TEAM_BUYER, LATER, CHAIN.evmChainId),
     await signedFor(Wallet.createRandom(), TEAM_BUYER, NOW / 1000 - 1, CHAIN.evmChainId),
     await signedFor(Wallet.createRandom(), TEAM_BUYER, LATER, 84532),

@@ -107,7 +107,9 @@ export function registerFreeTierRoutes(router: ConsoleRouter, deps: ConsoleDeps,
       throw unavailable(error)
     }
     // Only codes sellers on this network accept: signed for its chain, for this buyer, not expired.
-    const active = verifyFreeTierDelegations(await readDelegations(), ws.buyer, chain.evmChainId, deps.now())
+    // Filter to this buyer first: the verifier reads at most 8 entries, and other workspaces' codes share the file.
+    const mine = (await readDelegations()).filter((delegation) => sameAddress(delegation.buyer, ws.buyer))
+    const active = verifyFreeTierDelegations(mine, ws.buyer, chain.evmChainId, deps.now())
     const key = JSON.stringify([chain, ws.buyer.toLowerCase(), active])
     const cached = stakeCache.get(key)
     if (cached && deps.now() - cached.at < STAKE_TTL_MS) return cached.value

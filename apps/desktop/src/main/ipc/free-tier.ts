@@ -72,7 +72,9 @@ export function registerFreeTierIpc(): void {
     const buyer = await buyerAddress();
     const chain = resolveStakingChain(config);
     // Only codes sellers on this network accept: signed for its chain, for this buyer, not expired.
-    const stakers = verifyFreeTierDelegations(savedDelegations(config), buyer, chain.evmChainId);
+    // Filter to this buyer first: the verifier reads at most 8 entries, and other identities' codes share the file.
+    const mine = savedDelegations(config).filter((delegation) => delegation.buyer.toLowerCase() === buyer.toLowerCase());
+    const stakers = verifyFreeTierDelegations(mine, buyer, chain.evmChainId);
     return { buyer, ...await freeTierStake(await sharedChainContext(chain), buyer, stakers) };
   });
 
