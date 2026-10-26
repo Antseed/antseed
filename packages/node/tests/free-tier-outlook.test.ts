@@ -104,5 +104,8 @@ describe('free-tier outlook', () => {
     // A max-locked code expiring exactly on a week boundary stops counting there; that is not shrinking.
     const onBoundary = position({ ants: 1_000, maxLocked: true, endEpoch: 114, expiresAt: at(30) });
     expect(freeTierStakeTrend(view, { positions: [onBoundary] }, now)).toEqual({ power: 104_000, steady: false, shrinking: false, endsAt: at(30) });
+    // Stake still activating has no power yet, and still ends when its lock does.
+    const pending = position({ ants: 1_000, startEpoch: 11, endEpoch: 20 });
+    expect(freeTierStakeTrend(view, { positions: [pending] }, now)).toMatchObject({ power: 0, shrinking: true, endsAt: at(20) });
   });
 });

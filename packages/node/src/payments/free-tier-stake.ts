@@ -182,6 +182,8 @@ export function freeTierStakeTrend(
   let steady = power > 0;
   let shrinking = false;
   let endsAt: number | null = null;
+  // Stake still activating has no power yet, but it ends when its lock does.
+  let counting = power > 0;
   for (const { at, epochStart } of changePoints(view, pool.positions, now)) {
     const next = freeTierPowerAt(view, pool.positions, at);
     if (next < power) steady = false;
@@ -192,7 +194,8 @@ export function freeTierStakeTrend(
       if (freeTierPowerAt(view, remaining, at) < freeTierPowerAt(view, remaining, previousAt)) shrinking = true;
     }
     previousAt = at;
-    if (next === 0 && power > 0) {
+    if (next > 0) counting = true;
+    else if (counting) {
       endsAt = at;
       break;
     }
