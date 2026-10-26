@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -49,4 +49,45 @@ test('the seller config path: explicit env, the shared gateway file, or the sell
   assert.equal(resolveSellerConfigPath('/gw', gateway, {}), '/gw/config.json')
   assert.equal(resolveSellerConfigPath('/seller', gateway, {}), '/seller/config.json')
   assert.equal(resolveSellerConfigPath('/seller', gateway, { ANTSEED_SELLER_CONFIG: '/etc/antseed/config.json' }), '/etc/antseed/config.json')
+})
+
+test('free tier: each model shows what buyers get, and its own program and the seller-wide tiers are edited in place', async () => {
+  const configPath = join(mkdtempSync(join(tmpdir(), 'seller-settings-')), 'config.json')
+  writeFileSync(configPath, JSON.stringify({
+    seller: {
+      freeTier: { maxRequestsPerAddress: 200 },
+      providers: { openai: { plugin: 'openai', baseUrl: 'https://upstream.example', services: {
+        'glm-5.3': { pricing: { inputUsdPerMillion: 0.7, outputUsdPerMillion: 2.2 } },
+        'qwen-free': { pricing: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } },
+      } } },
+    },
+  }))
+  let view = await readSellerSettings(configPath)
+  const glm = () => view.services.find((entry) => entry.service === 'glm-5.3')!
+  const qwen = () => view.services.find((entry) => entry.service === 'qwen-free')!
+  assert.deepEqual([glm().paid, glm().freeTier, glm().ownFreeTier], [true, null, null], 'a paid model has no allowance of its own')
+  assert.equal(qwen().paid, false)
+  assert.deepEqual(qwen().freeTier?.base, { maxRequestsPerAddress: 200, maxRequestsPerIp: null, windowMs: 86_400_000 }, 'a free model gets the seller-wide program')
+  assert.deepEqual(qwen().freeTier?.stakeTiers, view.defaultStakeTiers)
+  assert.deepEqual(view.freeTier, { maxRequestsPerAddress: 200, maxRequestsPerIp: null, windowMs: null, stakersOnly: false, stakeTiers: null })
+
+  const saved = await updateSellerSettings(configPath, {
+    freeTier: { stakeTiers: [{ minPower: 52_000, multiplier: 2 }, { minPower: 260_000, multiplier: 'unlimited' }] },
+    pricing: [{ provider: 'openai', service: 'glm-5.3', freeTier: { maxRequestsPerAddress: 50, stakersOnly: true } }],
+  })
+  assert.deepEqual(saved.fields, ['freeTier', 'pricing'])
+  view = saved.settings
+  assert.deepEqual(glm().ownFreeTier, { maxRequestsPerAddress: 50, maxRequestsPerIp: null, windowMs: null, stakersOnly: true, stakeTiers: null })
+  assert.equal(glm().freeTier?.base.stakersOnly, true)
+  assert.deepEqual(glm().inputUsdPerMillion, 0.7, 'a free-tier edit leaves the price alone')
+  const raw = JSON.parse(readFileSync(configPath, 'utf8'))
+  assert.deepEqual(raw.seller.providers.openai.services['glm-5.3'], { pricing: { inputUsdPerMillion: 0.7, outputUsdPerMillion: 2.2 }, freeTier: { maxRequestsPerAddress: 50, stakersOnly: true } })
+  assert.deepEqual(raw.seller.freeTier.stakeTiers, [{ minPower: 52_000, multiplier: 2 }, { minPower: 260_000, multiplier: 'unlimited' }])
+
+  // The node's own checks apply: tiers must rise, and a program needs a limit.
+  await assert.rejects(updateSellerSettings(configPath, { freeTier: { stakeTiers: [{ minPower: 100, multiplier: 5 }, { minPower: 50, multiplier: 10 }] } }), { code: 'invalid_request' })
+  await assert.rejects(updateSellerSettings(configPath, { pricing: [{ provider: 'openai', service: 'qwen-free', freeTier: { windowMs: 3_600_000 } }] }), { code: 'invalid_request' })
+  view = (await updateSellerSettings(configPath, { freeTier: { stakeTiers: null }, pricing: [{ provider: 'openai', service: 'glm-5.3', freeTier: null }] })).settings
+  assert.deepEqual([glm().ownFreeTier, view.freeTier.stakeTiers], [null, null])
+  assert.equal(JSON.parse(readFileSync(configPath, 'utf8')).seller.providers.openai.services['glm-5.3'].freeTier, undefined)
 })

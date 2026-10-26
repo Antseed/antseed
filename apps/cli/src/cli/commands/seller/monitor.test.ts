@@ -6,7 +6,7 @@ import test from 'node:test';
 import { Command } from 'commander';
 import { writeSellerFixture } from '../../../seller-monitor/fixture.js';
 import { registerSellerAlertsCommand } from './alerts.js';
-import { parsePrice, parseSince, registerSellerMonitorCommands, resolvePriceTarget } from './monitor.js';
+import { freeTierSummary, parseModelFreeTier, parsePrice, parseSince, parseStakeTiers, registerSellerMonitorCommands, resolvePriceTarget } from './monitor.js';
 
 const PEER = '5e11e5' + '0'.repeat(34);
 
@@ -99,4 +99,24 @@ test('alerts set refuses two stdin secrets at once and changes nothing', async (
   process.exitCode = 0;
   assert.match(errors.join('\n'), /both read stdin; set them in two commands/);
   assert.equal(existsSync(join(env.dir, 'secrets', 'seller-alerts.json')), false);
+});
+
+test('free-tier flags: staked tiers, a model\'s own program, and the summary line', async () => {
+  assert.deepEqual(parseStakeTiers('10000:5,200000:unlimited'), [{ minPower: 520_000, multiplier: 5 }, { minPower: 10_400_000, multiplier: 'unlimited' }]);
+  assert.equal(parseStakeTiers('default'), null);
+  assert.deepEqual(parseStakeTiers('none'), []);
+  assert.throws(() => parseStakeTiers('lots'));
+  assert.deepEqual(parseModelFreeTier('openai/glm-5.3=100/none/6/stakers'), { service: 'openai/glm-5.3', freeTier: { maxRequestsPerAddress: 100, maxRequestsPerIp: null, windowMs: 21_600_000, stakersOnly: true } });
+  assert.deepEqual(parseModelFreeTier('glm-5.3=off'), { service: 'glm-5.3', freeTier: null });
+  assert.throws(() => parseModelFreeTier('glm-5.3=100'));
+  assert.equal(freeTierSummary({ base: { maxRequestsPerAddress: 100, maxRequestsPerIp: null, windowMs: 86_400_000 }, stakeTiers: [{ minPower: 520_000, multiplier: 5 }] }, true),
+    '100/day per address, then paid · staked: 10000 ANTS 5×');
+
+  const env = fixture();
+  const saved = (await run(env, ['settings', 'set', '--price', 'glm-5.3=0.6/2', '--model-free-tier', 'glm-5.3=50/none', '--free-per-address', '100', '--free-stake-tiers', '1000:2', '--json'])).json();
+  assert.deepEqual(saved.changed, ['freeTier', 'pricing']);
+  const service = JSON.parse(readFileSync(env.config, 'utf-8')).seller.providers.openai.services['glm-5.3'];
+  assert.deepEqual(service.freeTier, { maxRequestsPerAddress: 50 });
+  assert.equal(service.pricing.inputUsdPerMillion, 0.6);
+  assert.match((await run(env, ['settings'])).out, /50\/day per address, then paid · staked: 10000 ANTS 5×/);
 });

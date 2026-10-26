@@ -105,7 +105,7 @@ From the command line, `antseed seller alerts test` sends a test to every config
 
 ## Settings
 
-The **Settings** panel edits the `config.json` fields sellers change most: display name, maximum concurrent buyers, refused countries, health and gas checks, free tier limits, and each service's input, output and cached input price. It does not add or remove services or touch upstream keys.
+The **Settings** panel edits the `config.json` fields sellers change most: display name, maximum concurrent buyers, refused countries, health and gas checks, the seller-wide free tier (limits, stakers only, and the [staked tiers](/docs/staked-free-tier): the network default, your own, or none), and for each service its input, output and cached input price and its own free tier. Each pricing row shows the free tier buyers of that model get now. A model's own free tier is a free allowance on a paid model, or replaces the seller-wide free tier on a free one (see [free-tier limits](/docs/provide/config#free-tier-limits)). It does not add or remove services or touch upstream keys.
 
 Every save is checked the same way the seller checks its config at start, writes only the fields you changed (everything else stays as written), and keeps the previous file as `config.json.bak`. These settings apply when you restart the seller.
 
@@ -125,7 +125,7 @@ Everything the dashboard shows or changes is also an `antseed seller` command, b
 | Reputation | `antseed seller reputation [--refresh]` |
 | Promote, seller card | `antseed seller promote [--card card.svg]` |
 | Identity verification | `antseed seller verify [--add-domain example.com] [--add-github user[/repo]] [--remove <claim>] [--check]` |
-| Settings | `antseed seller settings` and `antseed seller settings set --price glm-5.3=0.7/2.2 --max-buyers 100 …` (write `--price <provider>/<model>=…` when two providers offer the model) |
+| Settings | `antseed seller settings` and `antseed seller settings set --price glm-5.3=0.7/2.2 --max-buyers 100 …` (write `--price <provider>/<model>=…` when two providers offer the model). Free tier: `--model-free-tier glm-5.3=100/none/24` (per address / per IP / hours, add `/stakers` for stakers only, `=off` to remove), `--free-stakers-only on`, `--free-stake-tiers 10000:5,50000:20,200000:unlimited` (ANTS locked for a year : multiplier, or `default` / `none`) |
 | Alerts | `antseed seller alerts`, `alerts set --telegram-chat <id> --idle 60 …`, `alerts test`, `alerts find-chat` |
 
 Secrets never go on the command line: pipe them in, for example `printf '%s' "$TOKEN" | antseed seller alerts set --telegram-token-stdin`.

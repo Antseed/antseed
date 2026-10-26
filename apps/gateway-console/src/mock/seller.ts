@@ -46,15 +46,24 @@ export function mockSellerUsage(days: number, now = Date.now()): SellerUsage {
   }
 }
 
+const DEFAULT_TIERS: Array<{ minPower: number; multiplier: number | 'unlimited' }> = [
+  { minPower: 520_000, multiplier: 5 }, { minPower: 2_600_000, multiplier: 20 }, { minPower: 10_400_000, multiplier: 'unlimited' },
+]
+
 export function mockSellerSettings(): { settings: SellerSettings; alerts: SellerAlertSettings } {
   return {
     settings: {
       configPath: '/var/lib/antseed/config.json', writable: true, readOnlyReason: null, displayName: 'Fake Seller', maxConcurrentBuyers: 50,
       healthCheck: { enabled: true, intervalMs: 300_000, failureThreshold: 3 }, gasCheck: { enabled: true, minBalanceEth: 0.00005 },
-      freeTier: { maxRequestsPerAddress: null, maxRequestsPerIp: null, windowMs: null }, restrictedCountries: ['CU', 'IR', 'KP', 'SY', 'RU'], restrictedCountriesDefault: true,
+      freeTier: { maxRequestsPerAddress: 200, maxRequestsPerIp: 400, windowMs: null, stakersOnly: false, stakeTiers: null }, restrictedCountries: ['CU', 'IR', 'KP', 'SY', 'RU'], restrictedCountriesDefault: true,
+      defaultStakeTiers: DEFAULT_TIERS,
       services: [
-        { provider: 'openai', service: 'glm-5.3', inputUsdPerMillion: 0.8, outputUsdPerMillion: 2.4, cachedInputUsdPerMillion: 0.1, inherited: false },
-        { provider: 'openai', service: 'kimi-k3', inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5, cachedInputUsdPerMillion: null, inherited: true },
+        { provider: 'openai', service: 'glm-5.3', inputUsdPerMillion: 0.8, outputUsdPerMillion: 2.4, cachedInputUsdPerMillion: 0.1, inherited: false, paid: true,
+          freeTier: { base: { maxRequestsPerAddress: 100, maxRequestsPerIp: null, windowMs: 86_400_000 }, stakeTiers: DEFAULT_TIERS },
+          ownFreeTier: { maxRequestsPerAddress: 100, maxRequestsPerIp: null, windowMs: null, stakersOnly: false, stakeTiers: null } },
+        { provider: 'openai', service: 'kimi-k3', inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5, cachedInputUsdPerMillion: null, inherited: true, paid: true, freeTier: null, ownFreeTier: null },
+        { provider: 'openai', service: 'qwen-3.6-27b', inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: null, inherited: false, paid: false,
+          freeTier: { base: { maxRequestsPerAddress: 200, maxRequestsPerIp: 400, windowMs: 86_400_000 }, stakeTiers: DEFAULT_TIERS }, ownFreeTier: null },
       ],
     },
     alerts: {

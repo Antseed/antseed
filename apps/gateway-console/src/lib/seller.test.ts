@@ -65,8 +65,9 @@ describe('seller editors', async () => {
   const settings = {
     configPath: '/c', writable: true, readOnlyReason: null, displayName: 'S', maxConcurrentBuyers: 50,
     healthCheck: { enabled: true, intervalMs: 300_000, failureThreshold: 3 }, gasCheck: { enabled: true, minBalanceEth: 0.00005 },
-    freeTier: { maxRequestsPerAddress: null, maxRequestsPerIp: null, windowMs: null }, restrictedCountries: ['RU'], restrictedCountriesDefault: true,
-    services: [{ provider: 'openai', service: 'glm-5.3', inputUsdPerMillion: 1, outputUsdPerMillion: 3, cachedInputUsdPerMillion: null, inherited: false }],
+    freeTier: { maxRequestsPerAddress: null, maxRequestsPerIp: null, windowMs: null, stakersOnly: false, stakeTiers: null }, restrictedCountries: ['RU'], restrictedCountriesDefault: true,
+    defaultStakeTiers: [{ minPower: 520_000, multiplier: 5 as number | 'unlimited' }],
+    services: [{ provider: 'openai', service: 'glm-5.3', inputUsdPerMillion: 1, outputUsdPerMillion: 3, cachedInputUsdPerMillion: null, inherited: false, paid: true, freeTier: null, ownFreeTier: null }],
   }
 
   it('sends only what changed', () => {
@@ -83,7 +84,7 @@ describe('seller editors', async () => {
 
   it('keeps edits and adds rows when the saved settings gain a service', () => {
     const base = draftOf(settings)
-    const next = draftOf({ ...settings, services: [...settings.services, { provider: 'openai', service: 'kimi-k3', inputUsdPerMillion: 2, outputUsdPerMillion: 5, cachedInputUsdPerMillion: null, inherited: false }] })
+    const next = draftOf({ ...settings, services: [...settings.services, { provider: 'openai', service: 'kimi-k3', inputUsdPerMillion: 2, outputUsdPerMillion: 5, cachedInputUsdPerMillion: null, inherited: false, paid: true, freeTier: null, ownFreeTier: null }] })
     expect(reconcileDraft(base, base, next)).toEqual(next)
     const edited = { ...base, displayName: 'Mine', prices: { 'openai/glm-5.3': { input: '0.5', output: '3', cached: '' } } }
     const merged = reconcileDraft(edited, base, next)
@@ -92,7 +93,7 @@ describe('seller editors', async () => {
   })
 
   it('a dirty draft takes values saved elsewhere for the fields it did not touch, so saving never reverts them', () => {
-    const two = { ...settings, services: [...settings.services, { provider: 'openai', service: 'kimi-k3', inputUsdPerMillion: 2, outputUsdPerMillion: 5, cachedInputUsdPerMillion: null, inherited: false }] }
+    const two = { ...settings, services: [...settings.services, { provider: 'openai', service: 'kimi-k3', inputUsdPerMillion: 2, outputUsdPerMillion: 5, cachedInputUsdPerMillion: null, inherited: false, paid: true, freeTier: null, ownFreeTier: null }] }
     const base = draftOf(two)
     const edited = { ...base, displayName: 'Mine', prices: { ...base.prices, 'openai/glm-5.3': { input: '0.5', output: '3', cached: '' } } }
     // Meanwhile kimi-k3's price and the concurrency limit change from the CLI.
@@ -114,8 +115,30 @@ describe('seller editors', async () => {
     expect(alertsPatchOf(next, merged)).toEqual({ telegramChatId: '2' })
   })
 
+  it('free tier: a model\'s own program and the seller-wide stakers-only and staked tiers', async () => {
+    const { freeTierLine } = await import('../components/SellerSettingsEditor')
+    const base = draftOf(settings)
+    expect(base.freeTiersMode).toBe('default')
+    expect(base.freeTiers).toEqual([{ ants: '10000', multiplier: '5' }])
+    const own = { ...base, free: { 'openai/glm-5.3': { enabled: true, perAddress: '100', perIp: '', hours: '', stakersOnly: false } } }
+    expect(patchOf(base, own)).toEqual({ pricing: [{ provider: 'openai', service: 'glm-5.3', freeTier: { maxRequestsPerAddress: 100, maxRequestsPerIp: null, windowMs: null, stakersOnly: false } }] })
+    const empty = { ...base, free: { 'openai/glm-5.3': { enabled: true, perAddress: '', perIp: '', hours: '', stakersOnly: false } } }
+    expect(draftErrors(empty, base)['openai/glm-5.3:freeAddress']).toBeTruthy()
+    const wide = { ...base, freePerAddress: '200', freeStakersOnly: true, freeTiersMode: 'custom' as const, freeTiers: [{ ants: '1000', multiplier: '2' }, { ants: '5000', multiplier: 'unlimited' }] }
+    expect(draftErrors(wide, base)).toEqual({})
+    expect(patchOf(base, wide).freeTier).toEqual({
+      maxRequestsPerAddress: 200, maxRequestsPerIp: null, windowMs: null, stakersOnly: true,
+      stakeTiers: [{ minPower: 52_000, multiplier: 2 }, { minPower: 260_000, multiplier: 'unlimited' }],
+    })
+    expect(patchOf(base, { ...base, freeTiersMode: 'off' }).freeTier?.stakeTiers).toEqual([])
+    const program = { base: { maxRequestsPerAddress: 100, maxRequestsPerIp: null, windowMs: 86_400_000 }, stakeTiers: [{ minPower: 520_000, multiplier: 5 as const }] }
+    expect(freeTierLine(program, true)).toBe('100 free requests a day, then paid · staked: 10,000 ANTS 5×')
+    expect(freeTierLine(null, false)).toBe('Free, no limit')
+    expect(freeTierLine(null, true)).toBe('No free allowance')
+  })
+
   it('requires prices only on the rows being changed', () => {
-    const unpriced = { ...settings, services: [...settings.services, { provider: 'openai', service: 'kimi-k3', inputUsdPerMillion: null, outputUsdPerMillion: null, cachedInputUsdPerMillion: null, inherited: false }] }
+    const unpriced = { ...settings, services: [...settings.services, { provider: 'openai', service: 'kimi-k3', inputUsdPerMillion: null, outputUsdPerMillion: null, cachedInputUsdPerMillion: null, inherited: false, paid: true, freeTier: null, ownFreeTier: null }] }
     const base = draftOf(unpriced)
     expect(draftErrors({ ...base, displayName: 'Renamed' }, base)).toEqual({})
     const partial = { ...base, prices: { ...base.prices, 'openai/kimi-k3': { input: '1', output: '', cached: '' } } }

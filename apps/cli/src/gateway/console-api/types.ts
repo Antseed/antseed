@@ -1188,6 +1188,36 @@ export interface SellerServicePricing {
   cachedInputUsdPerMillion: number | null
   /** Priced by the provider's defaults (no price of its own). */
   inherited: boolean
+  /** Charges anything (a token price or a priced unit-billing model); free models fall under the seller-wide program. */
+  paid: boolean
+  /**
+   * The free tier buyers of this model get, as advertised: its own program,
+   * else (on a free model) the seller-wide one. On a paid model it is a free
+   * allowance before the price applies. Null: no limit (free model) or none (paid).
+   */
+  freeTier: FreeTierProgramView | null
+  /** This model's own program as written in the config file; null when it has none. */
+  ownFreeTier: SellerFreeTierProgramSettings | null
+}
+
+/** A free-tier program as written in config.json (`seller.freeTier` or a service's `freeTier`). */
+export interface SellerFreeTierProgramSettings {
+  maxRequestsPerAddress: number | null
+  maxRequestsPerIp: number | null
+  windowMs: number | null
+  stakersOnly: boolean
+  /** null: the network default tiers. [] turns staked tiers off. */
+  stakeTiers: Array<{ minPower: number; multiplier: number | 'unlimited' }> | null
+}
+
+/** Edits one free-tier program; null removes a field (a service's `freeTier: null` removes its program). */
+export interface SellerFreeTierProgramPatch {
+  maxRequestsPerAddress?: number | null
+  maxRequestsPerIp?: number | null
+  windowMs?: number | null
+  stakersOnly?: boolean
+  /** null goes back to the network default; [] turns staked tiers off. */
+  stakeTiers?: Array<{ minPower: number; multiplier: number | 'unlimited' }> | null
 }
 
 export interface SellerSettings {
@@ -1198,7 +1228,10 @@ export interface SellerSettings {
   maxConcurrentBuyers: number
   healthCheck: { enabled: boolean; intervalMs: number; failureThreshold: number }
   gasCheck: { enabled: boolean; minBalanceEth: number }
-  freeTier: { maxRequestsPerAddress: number | null; maxRequestsPerIp: number | null; windowMs: number | null }
+  /** The seller-wide program for free models. */
+  freeTier: SellerFreeTierProgramSettings
+  /** The network's default staked tiers, used where a program sets none. */
+  defaultStakeTiers: Array<{ minPower: number; multiplier: number | 'unlimited' }>
   restrictedCountries: string[]
   /** Not set in the file: the built-in list applies. */
   restrictedCountriesDefault: boolean
@@ -1210,11 +1243,12 @@ export interface SellerSettingsPatch {
   maxConcurrentBuyers?: number
   healthCheck?: { enabled?: boolean; intervalMs?: number; failureThreshold?: number }
   gasCheck?: { enabled?: boolean; minBalanceEth?: number }
-  /** null removes a limit. */
-  freeTier?: { maxRequestsPerAddress?: number | null; maxRequestsPerIp?: number | null; windowMs?: number | null }
+  /** The seller-wide program; null removes a limit. */
+  freeTier?: SellerFreeTierProgramPatch
   /** null goes back to the built-in list. */
   restrictedCountries?: string[] | null
-  pricing?: Array<{ provider: string; service: string; inputUsdPerMillion?: number; outputUsdPerMillion?: number; cachedInputUsdPerMillion?: number | null }>
+  /** Prices and each model's own free tier (`freeTier: null` removes it, so a free model falls back to the seller-wide one). */
+  pricing?: Array<{ provider: string; service: string; inputUsdPerMillion?: number; outputUsdPerMillion?: number; cachedInputUsdPerMillion?: number | null; freeTier?: SellerFreeTierProgramPatch | null }>
 }
 
 export interface SellerAlertSettings {

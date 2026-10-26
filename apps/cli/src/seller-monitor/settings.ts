@@ -1,12 +1,13 @@
 import { constants } from 'node:fs'
 import { access, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { DEFAULT_HEALTH_CHECK_FAILURE_THRESHOLD, DEFAULT_HEALTH_CHECK_INTERVAL_MS, DEFAULT_MIN_GAS_BALANCE_WEI, formatEther } from '@antseed/node'
+import { DEFAULT_FREE_TIER_STAKE_TIERS, DEFAULT_FREE_TIER_WINDOW_MS, DEFAULT_HEALTH_CHECK_FAILURE_THRESHOLD, DEFAULT_HEALTH_CHECK_INTERVAL_MS, DEFAULT_MIN_GAS_BALANCE_WEI, formatEther } from '@antseed/node'
 import { DEFAULT_RESTRICTED_COUNTRIES } from '../config/defaults.js'
 import { configFromObject, resolveConfigPath } from '../config/loader.js'
-import type { AntseedConfig } from '../config/types.js'
+import { isPricedSellerService } from '../config/effective.js'
+import type { AntseedConfig, SellerFreeTierCLIConfig } from '../config/types.js'
 import { ConsoleError } from '../gateway/console-api/router.js'
-import type { SellerAlertSettings, SellerAlertsPatch, SellerSettings, SellerSettingsPatch } from '../gateway/console-api/types.js'
+import type { FreeTierProgramView, SellerAlertSettings, SellerAlertsPatch, SellerFreeTierProgramSettings, SellerSettings, SellerSettingsPatch } from '../gateway/console-api/types.js'
 import { configWritable, patchValidatedConfig } from '../config/patch.js'
 
 export { configWritable }
@@ -42,6 +43,25 @@ function loadMerged(raw: JsonObject): AntseedConfig {
   }
 }
 
+const programSettings = (program: SellerFreeTierCLIConfig | undefined): SellerFreeTierProgramSettings => ({
+  maxRequestsPerAddress: program?.maxRequestsPerAddress ?? null,
+  maxRequestsPerIp: program?.maxRequestsPerIp ?? null,
+  windowMs: program?.windowMs ?? null,
+  stakersOnly: program?.stakersOnly === true,
+  stakeTiers: program?.stakeTiers ? program.stakeTiers.map((tier) => ({ ...tier })) : null,
+})
+
+/** A program as buyers see it advertised (window and tiers resolved to their defaults), the same as the seller's limiter. */
+const programView = (program: SellerFreeTierCLIConfig): FreeTierProgramView => ({
+  base: {
+    maxRequestsPerAddress: program.maxRequestsPerAddress ?? null,
+    maxRequestsPerIp: program.maxRequestsPerIp ?? null,
+    windowMs: program.windowMs ?? DEFAULT_FREE_TIER_WINDOW_MS,
+    ...(program.stakersOnly ? { stakersOnly: true } : {}),
+  },
+  stakeTiers: (program.stakeTiers ?? DEFAULT_FREE_TIER_STAKE_TIERS).map((tier) => ({ ...tier })),
+})
+
 function settingsView(raw: JsonObject, config: AntseedConfig, configPath: string, access: { writable: boolean; reason: string | null }): SellerSettings {
   const seller = config.seller
   const rawSeller = (raw.seller ?? {}) as JsonObject
@@ -60,15 +80,15 @@ function settingsView(raw: JsonObject, config: AntseedConfig, configPath: string
       enabled: seller.gasCheck?.enabled !== false,
       minBalanceEth: seller.gasCheck?.minBalanceEth ?? Number(formatEther(DEFAULT_MIN_GAS_BALANCE_WEI)),
     },
-    freeTier: {
-      maxRequestsPerAddress: seller.freeTier?.maxRequestsPerAddress ?? null,
-      maxRequestsPerIp: seller.freeTier?.maxRequestsPerIp ?? null,
-      windowMs: seller.freeTier?.windowMs ?? null,
-    },
+    freeTier: programSettings(seller.freeTier),
+    defaultStakeTiers: DEFAULT_FREE_TIER_STAKE_TIERS.map((tier) => ({ ...tier })),
     restrictedCountries: seller.restrictedCountries ?? DEFAULT_RESTRICTED_COUNTRIES,
     restrictedCountriesDefault: rawSeller.restrictedCountries === undefined,
     services: Object.entries(seller.providers ?? {}).flatMap(([provider, entry]) => Object.entries(entry.services ?? {}).map(([service, serviceConfig]) => {
       const pricing = serviceConfig.pricing ?? entry.defaults
+      const paid = isPricedSellerService(entry, serviceConfig)
+      // Its own program, else on a free model the seller-wide one; a paid model has a free allowance only when it sets one.
+      const program = serviceConfig.freeTier ?? (paid ? undefined : seller.freeTier)
       return {
         provider,
         service,
@@ -76,6 +96,9 @@ function settingsView(raw: JsonObject, config: AntseedConfig, configPath: string
         outputUsdPerMillion: pricing?.outputUsdPerMillion ?? null,
         cachedInputUsdPerMillion: pricing?.cachedInputUsdPerMillion ?? null,
         inherited: !serviceConfig.pricing,
+        paid,
+        freeTier: program ? programView(program) : null,
+        ownFreeTier: serviceConfig.freeTier ? programSettings(serviceConfig.freeTier) : null,
       }
     })),
   }
@@ -160,13 +183,8 @@ export function applySellerSettingsPatch(raw: JsonObject, body: unknown): string
     fields.push('gasCheck')
   }
   if (patch.freeTier !== undefined) {
-    const input = obj(patch.freeTier, 'freeTier')
     const out = child(seller(), 'freeTier')
-    for (const [key, min] of [['maxRequestsPerAddress', 1], ['maxRequestsPerIp', 1], ['windowMs', 60_000]] as const) {
-      if (input[key] === undefined) continue
-      if (input[key] === null) delete out[key]
-      else out[key] = int(input[key], `freeTier.${key}`, min)
-    }
+    applyFreeTierPatch(out, obj(patch.freeTier, 'freeTier'), 'freeTier')
     if (Object.keys(out).length === 0) delete seller().freeTier
     fields.push('freeTier')
   }
@@ -187,19 +205,61 @@ export function applySellerSettingsPatch(raw: JsonObject, body: unknown): string
       const item = obj(entry, 'pricing entry')
       const service = providers[String(item.provider)]?.services?.[String(item.service)]
       if (!service) bad(`pricing: no service ${String(item.service)} under provider ${String(item.provider)} in the config file`)
-      const current = (service.pricing && typeof service.pricing === 'object' ? service.pricing : {}) as JsonObject
-      const next: JsonObject = { ...current }
-      for (const key of ['inputUsdPerMillion', 'outputUsdPerMillion', 'cachedInputUsdPerMillion'] as const) {
-        if (item[key] === undefined) continue
-        if (item[key] === null && key === 'cachedInputUsdPerMillion') delete next[key]
-        else next[key] = price(item[key], `${String(item.service)} ${key}`)
+      const priceKeys = ['inputUsdPerMillion', 'outputUsdPerMillion', 'cachedInputUsdPerMillion'] as const
+      if (priceKeys.some((key) => item[key] !== undefined)) {
+        const current = (service.pricing && typeof service.pricing === 'object' ? service.pricing : {}) as JsonObject
+        const next: JsonObject = { ...current }
+        for (const key of priceKeys) {
+          if (item[key] === undefined) continue
+          if (item[key] === null && key === 'cachedInputUsdPerMillion') delete next[key]
+          else next[key] = price(item[key], `${String(item.service)} ${key}`)
+        }
+        if (next.inputUsdPerMillion === undefined || next.outputUsdPerMillion === undefined) bad(`pricing: ${String(item.service)} needs both input and output prices`)
+        service.pricing = next
       }
-      if (next.inputUsdPerMillion === undefined || next.outputUsdPerMillion === undefined) bad(`pricing: ${String(item.service)} needs both input and output prices`)
-      service.pricing = next
+      if (item.freeTier !== undefined) {
+        if (item.freeTier === null) delete service.freeTier
+        else {
+          // A new program starts empty: the base limits must be given (the config check says which).
+          const out = child(service, 'freeTier')
+          applyFreeTierPatch(out, obj(item.freeTier, `${String(item.service)} freeTier`), `${String(item.service)} freeTier`)
+          if (Object.keys(out).length === 0) delete service.freeTier
+        }
+        if (!fields.includes('freeTier')) fields.push('freeTier')
+      }
     }
     fields.push('pricing')
   }
   return fields
+}
+
+/** One free-tier program's edit, in place; deeper checks (limits needed, tier order, size) are the config validation's. */
+function applyFreeTierPatch(out: JsonObject, input: JsonObject, field: string): void {
+  for (const key of Object.keys(input)) {
+    if (!['maxRequestsPerAddress', 'maxRequestsPerIp', 'windowMs', 'stakersOnly', 'stakeTiers'].includes(key)) bad(`${field}: unknown field ${key}`)
+  }
+  for (const [key, min] of [['maxRequestsPerAddress', 1], ['maxRequestsPerIp', 1], ['windowMs', 60_000]] as const) {
+    if (input[key] === undefined) continue
+    if (input[key] === null) delete out[key]
+    else out[key] = int(input[key], `${field}.${key}`, min)
+  }
+  if (input.stakersOnly !== undefined) {
+    if (typeof input.stakersOnly !== 'boolean') bad(`${field}.stakersOnly must be true or false`)
+    if (input.stakersOnly) out.stakersOnly = true
+    else delete out.stakersOnly
+  }
+  if (input.stakeTiers !== undefined) {
+    if (input.stakeTiers === null) delete out.stakeTiers
+    else {
+      if (!Array.isArray(input.stakeTiers)) bad(`${field}.stakeTiers must be a list`)
+      out.stakeTiers = input.stakeTiers.map((entry, index) => {
+        const tier = obj(entry, `${field}.stakeTiers[${index}]`)
+        const minPower = int(tier.minPower, `${field}.stakeTiers[${index}].minPower`, 1)
+        const multiplier = tier.multiplier === 'unlimited' ? 'unlimited' : int(tier.multiplier, `${field}.stakeTiers[${index}].multiplier`, 1)
+        return { minPower, multiplier }
+      })
+    }
+  }
 }
 
 /** Saves a settings patch to the seller's config file (see `patchSellerConfig`); applies when the seller restarts. */

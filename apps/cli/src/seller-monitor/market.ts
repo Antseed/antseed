@@ -47,7 +47,10 @@ const modelKey = (service: string) => service.trim().toLowerCase()
  * network last saw, which lags a restart); without them the seller's announced
  * services are used.
  */
-export function marketView(rows: readonly PeerRow[], myPeerId: string | null, mine: readonly SellerServicePricing[] | null, network: SellerNetworkMeta): SellerMarket {
+/** The fields of this seller's own services the market compares. */
+export type MarketServicePrices = Pick<SellerServicePricing, 'provider' | 'service' | 'inputUsdPerMillion' | 'outputUsdPerMillion' | 'cachedInputUsdPerMillion'>
+
+export function marketView(rows: readonly PeerRow[], myPeerId: string | null, mine: readonly MarketServicePrices[] | null, network: SellerNetworkMeta): SellerMarket {
   const me = myPeerId ? peerKey(myPeerId) : null
   const myRow = me ? rows.find((row) => peerKey(String(row['peerId'] ?? '')) === me) : undefined
   const offersByModel = new Map<string, SellerMarketOffer[]>()
@@ -71,7 +74,7 @@ export function marketView(rows: readonly PeerRow[], myPeerId: string | null, mi
     }
   }
 
-  const myServices: readonly SellerServicePricing[] = mine ?? (myRow ? peerServices(myRow).map((service) => ({ ...service, inherited: false })) : [])
+  const myServices: readonly MarketServicePrices[] = mine ?? (myRow ? peerServices(myRow) : [])
   const myModels = new Set(myServices.map((service) => modelKey(service.service)))
   const myTee = myRow ? parseVerifierCapabilities(myRow['capabilities']).supported.includes(TEE_VERIFIER_ID) : false
   const services: SellerMarketService[] = myServices.map((service) => {

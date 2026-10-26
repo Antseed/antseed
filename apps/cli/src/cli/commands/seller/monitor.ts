@@ -4,7 +4,7 @@ import chalk from 'chalk';
 import Table from 'cli-table3';
 import pkg from '../../../../package.json' with { type: 'json' };
 import { resolveConfigPath } from '../../../config/loader.js';
-import type { SellerLogDetail, SellerSettingsPatch } from '../../../gateway/console-api/types.js';
+import type { FreeTierProgramView, SellerFreeTierProgramPatch, SellerLogDetail, SellerSettingsPatch } from '../../../gateway/console-api/types.js';
 import { SellerMonitor } from '../../../seller-monitor/service.js';
 import { getGlobalOptions } from '../types.js';
 
@@ -105,6 +105,60 @@ const onOff = (value: string, flag: string): boolean => {
   throw new Error(`${flag}: use on or off`);
 };
 const limitOrNone = (value: string): number | null => (value === 'none' ? null : Number(value));
+
+/** Tiers are staking power, ANTS × weeks of lock remaining; flags and output use ANTS locked for a year. */
+const WEEKS_PER_YEAR = 52;
+
+/**
+ * `--free-stake-tiers 10000:5,50000:20,200000:unlimited` (ANTS locked for a
+ * year : multiplier), `default` for the network's tiers, or `none`.
+ */
+export function parseStakeTiers(value: string): SellerFreeTierProgramPatch['stakeTiers'] {
+  if (value === 'default') return null;
+  if (value === 'none') return [];
+  return value.split(',').map((part) => {
+    const match = /^\s*(\d+(?:\.\d+)?):(\d+|unlimited)\s*$/.exec(part);
+    if (!match) throw new Error(`--free-stake-tiers: use <ANTS for a year>:<multiplier|unlimited>,… or default or none, not "${part}"`);
+    return { minPower: Math.round(Number(match[1]) * WEEKS_PER_YEAR), multiplier: match[2] === 'unlimited' ? 'unlimited' as const : Number(match[2]) };
+  });
+}
+
+/**
+ * `--model-free-tier [provider/]model=<per-address>/<per-ip>[/<hours>][/stakers]`
+ * (`none` for no limit there) sets a model's own program; `=off` removes it.
+ */
+export function parseModelFreeTier(value: string): { service: string; freeTier: SellerFreeTierProgramPatch | null } {
+  const at = value.lastIndexOf('=');
+  const service = value.slice(0, at).trim();
+  const spec = value.slice(at + 1).trim();
+  const usage = `--model-free-tier: use [provider/]model=<per-address|none>/<per-ip|none>[/<hours>][/stakers] or model=off, not "${value}"`;
+  if (at <= 0) throw new Error(usage);
+  if (spec === 'off') return { service, freeTier: null };
+  const parts = spec.split('/');
+  const stakersOnly = parts.at(-1) === 'stakers';
+  if (stakersOnly) parts.pop();
+  if (parts.length < 2 || parts.length > 3 || parts.some((part) => part !== 'none' && !/^\d+(\.\d+)?$/.test(part))) throw new Error(usage);
+  const hours = parts[2] === undefined ? undefined : limitOrNone(parts[2]);
+  return {
+    service,
+    freeTier: {
+      maxRequestsPerAddress: limitOrNone(parts[0]!), maxRequestsPerIp: limitOrNone(parts[1]!),
+      ...(hours !== undefined ? { windowMs: hours === null ? null : Math.round(hours * 3_600_000) } : {}),
+      stakersOnly,
+    },
+  };
+}
+
+/** One line for a program as buyers see it: "100/day per address, then paid · stakers: 10000 ANTS 5×, …". */
+export function freeTierSummary(program: FreeTierProgramView | null, paid: boolean): string {
+  if (!program) return paid ? '—' : 'free, no limit';
+  const { maxRequestsPerAddress, maxRequestsPerIp, windowMs, stakersOnly } = program.base;
+  const window = windowMs === 86_400_000 ? 'day' : `${+(windowMs / 3_600_000).toFixed(2)}h`;
+  const limits = [maxRequestsPerAddress !== null ? `${maxRequestsPerAddress}/${window} per address` : null, maxRequestsPerIp !== null ? `${maxRequestsPerIp}/${window} per IP` : null].filter(Boolean).join(', ');
+  const head = stakersOnly ? `stakers only (${limits} base)` : limits;
+  const tiers = program.stakeTiers.map((tier) => `${Math.ceil(tier.minPower / WEEKS_PER_YEAR)} ANTS ${tier.multiplier === 'unlimited' ? 'unlimited' : `${tier.multiplier}×`}`).join(', ');
+  return `${head}${paid ? ', then paid' : ''}${tiers ? ` · staked: ${tiers}` : ''}`;
+}
 
 export function registerSellerMonitorCommands(sellerCmd: Command): void {
   sellerCmd
@@ -266,8 +320,14 @@ export function registerSellerMonitorCommands(sellerCmd: Command): void {
       console.log(`${chalk.bold(view.displayName || '(no display name)')}  ${chalk.dim(view.configPath)}${view.writable ? '' : chalk.yellow(`  read-only: ${view.readOnlyReason}`)}`);
       console.log(`Max concurrent buyers ${view.maxConcurrentBuyers} · health checks ${view.healthCheck.enabled ? `every ${view.healthCheck.intervalMs / 1000}s, withdraw after ${view.healthCheck.failureThreshold}` : 'off'} · gas checks ${view.gasCheck.enabled ? `min ${view.gasCheck.minBalanceEth} ETH` : 'off'}`);
       console.log(`Refused countries ${view.restrictedCountries.join(', ') || 'none'}${view.restrictedCountriesDefault ? chalk.dim(' (built-in)') : ''}`);
-      const table = new Table({ head: ['Model', 'Provider', 'Input', 'Output', 'Cached'].map((h) => chalk.bold(h)) });
-      for (const service of view.services) table.push([service.service, service.provider, usd(service.inputUsdPerMillion), usd(service.outputUsdPerMillion), usd(service.cachedInputUsdPerMillion)]);
+      const wide = view.freeTier;
+      const wideTiers = wide.stakeTiers === null ? 'network default tiers' : wide.stakeTiers.length === 0 ? 'no staked tiers' : `tiers ${wide.stakeTiers.map((tier) => `${Math.ceil(tier.minPower / WEEKS_PER_YEAR)}:${tier.multiplier}`).join(',')}`;
+      console.log(`Free tier (free models) ${wide.maxRequestsPerAddress === null && wide.maxRequestsPerIp === null ? 'no limits' : `${wide.maxRequestsPerAddress ?? '—'} per address, ${wide.maxRequestsPerIp ?? '—'} per IP per ${(wide.windowMs ?? 86_400_000) / 3_600_000}h`}${wide.stakersOnly ? ', stakers only' : ''} · ${wideTiers}`);
+      const table = new Table({ head: ['Model', 'Provider', 'Input', 'Output', 'Cached', 'Free tier'].map((h) => chalk.bold(h)) });
+      for (const service of view.services) {
+        const free = freeTierSummary(service.freeTier, service.paid);
+        table.push([service.service, service.provider, usd(service.inputUsdPerMillion), usd(service.outputUsdPerMillion), usd(service.cachedInputUsdPerMillion), service.ownFreeTier ? free : chalk.dim(free)]);
+      }
       console.log(table.toString());
     }));
 
@@ -284,6 +344,9 @@ export function registerSellerMonitorCommands(sellerCmd: Command): void {
     .option('--free-per-address <n|none>')
     .option('--free-per-ip <n|none>')
     .option('--free-window-hours <hours|none>')
+    .option('--free-stakers-only <on|off>', 'serve free models only to buyers whose stake reaches a tier')
+    .option('--free-stake-tiers <ants:x,…|default|none>', 'staked tiers, as ANTS locked for a year : multiplier, e.g. 10000:5,50000:20,200000:unlimited')
+    .option('--model-free-tier <[provider/]model=address/ip[/hours][/stakers]|model=off>', "a model's own free tier (a free allowance on a paid model); repeatable", (value: string, all: string[] = []) => [...all, value])
     .option('--countries <codes|default>', 'comma-separated ISO codes, "" for none, or default')
     .option('--price <[provider/]model=in/out[/cached]>', 'USD per million tokens; repeatable. Name the provider when two offer the model', (value: string, all: string[] = []) => [...all, value])
     .option('--json', 'output as JSON', false)
@@ -303,22 +366,32 @@ export function registerSellerMonitorCommands(sellerCmd: Command): void {
       if (text('gas') !== undefined || text('gasMin') !== undefined) {
         patch.gasCheck = { ...(text('gas') !== undefined ? { enabled: onOff(text('gas')!, '--gas') } : {}), ...(text('gasMin') !== undefined ? { minBalanceEth: Number(text('gasMin')) } : {}) };
       }
-      if (text('freePerAddress') !== undefined || text('freePerIp') !== undefined || text('freeWindowHours') !== undefined) {
+      if (['freePerAddress', 'freePerIp', 'freeWindowHours', 'freeStakersOnly', 'freeStakeTiers'].some((key) => text(key) !== undefined)) {
         const hours = text('freeWindowHours') === undefined ? undefined : limitOrNone(text('freeWindowHours')!);
         patch.freeTier = {
           ...(text('freePerAddress') !== undefined ? { maxRequestsPerAddress: limitOrNone(text('freePerAddress')!) } : {}),
           ...(text('freePerIp') !== undefined ? { maxRequestsPerIp: limitOrNone(text('freePerIp')!) } : {}),
           ...(hours !== undefined ? { windowMs: hours === null ? null : Math.round(hours * 3_600_000) } : {}),
+          ...(text('freeStakersOnly') !== undefined ? { stakersOnly: onOff(text('freeStakersOnly')!, '--free-stakers-only') } : {}),
+          ...(text('freeStakeTiers') !== undefined ? { stakeTiers: parseStakeTiers(text('freeStakeTiers')!) } : {}),
         };
       }
       if (text('countries') !== undefined) patch.restrictedCountries = text('countries') === 'default' ? null : text('countries')!.split(',').map((code) => code.trim()).filter(Boolean);
       const prices = Array.isArray(options.price) ? options.price : [];
-      if (prices.length > 0) {
+      const modelFree = Array.isArray(options.modelFreeTier) ? options.modelFreeTier : [];
+      if (prices.length > 0 || modelFree.length > 0) {
         const { settings: view } = await monitor.settings();
-        patch.pricing = prices.map(parsePrice).map((price) => {
-          const service = resolvePriceTarget(view.services, price.service);
-          return { provider: service.provider, service: service.service, inputUsdPerMillion: price.input, outputUsdPerMillion: price.output, cachedInputUsdPerMillion: price.cached };
-        });
+        // One entry per model: a price and a free tier for the same model go together.
+        const entries = new Map<string, NonNullable<SellerSettingsPatch['pricing']>[number]>();
+        const entryFor = (name: string) => {
+          const service = resolvePriceTarget(view.services, name);
+          const key = `${service.provider}/${service.service}`;
+          if (!entries.has(key)) entries.set(key, { provider: service.provider, service: service.service });
+          return entries.get(key)!;
+        };
+        for (const price of prices.map(parsePrice)) Object.assign(entryFor(price.service), { inputUsdPerMillion: price.input, outputUsdPerMillion: price.output, cachedInputUsdPerMillion: price.cached });
+        for (const { service, freeTier } of modelFree.map(parseModelFreeTier)) entryFor(service).freeTier = freeTier;
+        patch.pricing = [...entries.values()];
       }
       if (Object.keys(patch).length === 0) throw new Error('Nothing to change: pass at least one option (see --help).');
       return monitor.updateSettings(patch);

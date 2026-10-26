@@ -134,17 +134,24 @@ export function resolveSellerFreeTier(
   };
 }
 
-/** Services of `providerNames` that charge: tokens (their own pricing or the provider default) or any priced unit-billing model. */
+type SellerProvider = SellerCLIConfig['providers'][string];
+
+/** Whether a service charges: tokens (its own pricing or the provider default) or any priced unit-billing model. */
+export function isPricedSellerService(provider: SellerProvider | undefined, service: NonNullable<SellerProvider['services']>[string]): boolean {
+  const pricing = service.pricing ?? provider?.defaults;
+  const tokenPriced = Boolean(pricing && (pricing.inputUsdPerMillion > 0 || pricing.outputUsdPerMillion > 0 || (pricing.cachedInputUsdPerMillion ?? 0) > 0));
+  const unitPriced = Object.values(service.unitBillingModels ?? {})
+    .some((model) => (model?.components ?? []).some((component) => !(component.priceUsd <= 0)));
+  return tokenPriced || unitPriced;
+}
+
+/** Services of `providerNames` that charge (see `isPricedSellerService`). */
 export function pricedSellerServices(seller: SellerCLIConfig, providerNames: readonly string[]): string[] {
   const priced = new Set<string>();
   for (const name of providerNames) {
     const provider = seller.providers[name];
     for (const [serviceId, service] of Object.entries(provider?.services ?? {})) {
-      const pricing = service.pricing ?? provider?.defaults;
-      const tokenPriced = Boolean(pricing && (pricing.inputUsdPerMillion > 0 || pricing.outputUsdPerMillion > 0 || (pricing.cachedInputUsdPerMillion ?? 0) > 0));
-      const unitPriced = Object.values(service.unitBillingModels ?? {})
-        .some((model) => (model?.components ?? []).some((component) => !(component.priceUsd <= 0)));
-      if (tokenPriced || unitPriced) priced.add(serviceId);
+      if (isPricedSellerService(provider, service)) priced.add(serviceId);
     }
   }
   return [...priced];
