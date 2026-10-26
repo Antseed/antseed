@@ -616,4 +616,16 @@ describe('upstream credit classification in probes and requests', () => {
     await checker.runSweep();
     expect(statuses).toEqual(['out_of_credit']);
   });
+  it('reads a $0 balance as out of credit, and an account check without a balance never clears it', async () => {
+    const answers: UpstreamAccountStatus[] = [{ status: 'available', balanceUsd: 0 }, { status: 'available' }, { status: 'available', balanceUsd: 12 }];
+    const provider = makeProvider({ services: ['image-a'], checkUpstreamAccount: async () => answers.shift()!, serviceApiProtocols: { 'image-a': ['venice-video'] } } as Partial<Provider>);
+    const statuses: string[] = [];
+    const checker = new ModelHealthChecker({ targets: [{ provider }], onUpstreamAccount: (event) => { statuses.push(event.status); } });
+    await checker.runSweep();
+    expect(statuses).toEqual(['out_of_credit']);
+    await checker.runSweep();
+    expect(statuses).toEqual(['out_of_credit']);
+    await checker.runSweep();
+    expect(statuses).toEqual(['out_of_credit', 'funded']);
+  });
 });

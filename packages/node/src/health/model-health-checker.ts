@@ -297,8 +297,11 @@ export class ModelHealthChecker {
       this._setAccount(provider, 'out', account.reason, null);
     } else if (account?.status === 'available') {
       const low = this._lowLine();
-      if (balance !== undefined && low !== undefined && balance < low) this._setAccount(provider, 'low', `Balance $${balance.toFixed(2)}, under $${low.toFixed(2)}`, balance);
-      else this._setAccount(provider, 'ok', balance === undefined ? 'Account check passed' : `Balance $${balance.toFixed(2)}`, balance ?? null);
+      // Without a balance, an answering account endpoint is no proof of credit: only a billable success clears "out".
+      const unproven = balance === undefined && this._accounts.get(provider) === 'out';
+      if (balance !== undefined && balance <= 0) this._setAccount(provider, 'out', `Balance $${balance.toFixed(2)}`, balance);
+      else if (balance !== undefined && low !== undefined && balance < low) this._setAccount(provider, 'low', `Balance $${balance.toFixed(2)}, under $${low.toFixed(2)}`, balance);
+      else if (!unproven) this._setAccount(provider, 'ok', balance === undefined ? 'Account check passed' : `Balance $${balance.toFixed(2)}`, balance ?? null);
     }
     const combine = (service: string): UpstreamAccountStatus => {
       const model: ServiceHealthStatus | undefined = models === undefined

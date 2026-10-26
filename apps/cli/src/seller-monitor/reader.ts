@@ -30,7 +30,8 @@ const num = (value: unknown): number => {
 const numOrNull = (value: unknown): number | null => (typeof value === 'number' && Number.isFinite(value) ? value : null)
 const strOrNull = (value: unknown): string | null => (typeof value === 'string' && value ? value : null)
 
-async function readDaemonState(dataDir: string): Promise<Record<string, unknown> | null> {
+/** daemon.state.json as the running seller last wrote it; null when absent or mid-write. */
+export async function readDaemonState(dataDir: string): Promise<Record<string, unknown> | null> {
   try {
     return JSON.parse(await readFile(join(dataDir, DAEMON_STATE_FILE), 'utf-8')) as Record<string, unknown>
   } catch {
@@ -76,10 +77,13 @@ function alerts(raw: unknown): SellerAlertsState | null {
   }
 }
 
-/** The seller's live state from daemon.state.json; `running` is false once the file goes stale or away. */
-export async function readSellerStatus(dataDir: string | null, version: string, now = Date.now()): Promise<SellerStatus> {
+/**
+ * The seller's live state from daemon.state.json; `running` is false once the file goes stale or away.
+ * `snapshot` is a state already read, so callers needing more from the file see one moment.
+ */
+export async function readSellerStatus(dataDir: string | null, version: string, now = Date.now(), snapshot?: Record<string, unknown> | null): Promise<SellerStatus> {
   if (!dataDir || !hasSeller(dataDir)) return { available: false }
-  const state = await readDaemonState(dataDir)
+  const state = snapshot === undefined ? await readDaemonState(dataDir) : snapshot
   const updatedAt = numOrNull(state?.updatedAt)
   return {
     available: true,

@@ -1,7 +1,6 @@
 import { readFile } from 'node:fs/promises'
-import { join } from 'node:path'
 import { FileIdentityStore } from '@antseed/node'
-import { ConsoleError } from '../gateway/console-api/router.js'
+import { ConsoleError } from '../console-error.js'
 import type {
   SellerAlertSettings, SellerEventView, SellerLogDetail, SellerLogPage, SellerLogQuery, SellerMarket, SellerNetworkMeta, SellerPromote, SellerReputation,
   SellerRpcDiagnostics, SellerServicePricing, SellerSettings, SellerStatus, SellerUsage, TelegramChat,
@@ -15,7 +14,7 @@ import { readSellerLogDetail, readSellerLogs } from './logs.js'
 import { marketView, peerKey, trustOfRow, trustRank, trustSteps } from './market.js'
 import { NETWORK_SNAPSHOT_TTL_MS, sellerOnlyNetworkLoader, type NetworkLoad, type PeerRow } from './network.js'
 import { readSellerPromote, readSellerVerifications, updateSellerVerifications, VerificationChecks } from './promote.js'
-import { hasSeller, readSellerEventViews, readSellerStatus, SellerUsageReader } from './reader.js'
+import { hasSeller, readDaemonState, readSellerEventViews, readSellerStatus, SellerUsageReader } from './reader.js'
 import { readSellerAlertSettings, readSellerSettings, runningSellerSendsTelegram, updateSellerAlerts, updateSellerSettings } from './settings.js'
 import { readSellerStanding, standingTtlMs, type StandingRead } from './standing.js'
 
@@ -78,16 +77,12 @@ export class SellerMonitor {
     return readSellerStatus(this._options.dataDir(), this._options.version)
   }
 
-  async rpcDiagnostics(): Promise<SellerRpcDiagnostics> {
+  /** The status and RPC diagnostics from one read of daemon.state.json (the seller rewrites it every second). */
+  async statusWithRpc(): Promise<{ status: SellerStatus; rpc: SellerRpcDiagnostics }> {
     const dataDir = this._options.dataDir()
-    let daemon: SellerRpcDiagnostics['daemon'] = null
-    if (dataDir && hasSeller(dataDir)) {
-      try {
-        const state = JSON.parse(await readFile(join(dataDir, 'daemon.state.json'), 'utf-8')) as { rpc?: SellerRpcDiagnostics['daemon'] }
-        daemon = state.rpc ?? null
-      } catch { /* not running */ }
-    }
-    return { process: rpcUsage(), daemon }
+    const state = dataDir && hasSeller(dataDir) ? await readDaemonState(dataDir) : null
+    const status = await readSellerStatus(dataDir, this._options.version, Date.now(), state)
+    return { status, rpc: { process: rpcUsage(), daemon: (state?.rpc as SellerRpcDiagnostics['daemon'] | undefined) ?? null } }
   }
 
   events(limit = 100): Promise<SellerEventView[]> {

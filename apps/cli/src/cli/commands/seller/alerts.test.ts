@@ -102,7 +102,8 @@ test('crash alerts keep their cooldown across restarts', async () => {
 });
 
 test('a failed alert is retried on its next repeat and gets no recovery until one arrives', async () => {
-  const { alerts, calls, failWhen } = harness({ telegram: { chatId: '42' }, cooldownMinutes: 30 }, { retryMs: 5 });
+  // Long enough that no resend lands between the records below on a busy machine.
+  const { alerts, calls, failWhen } = harness({ telegram: { chatId: '42' }, cooldownMinutes: 30 }, { retryMs: 250 });
   failWhen(() => true);
   await alerts.record(down);
   await alerts.record(up);
@@ -113,7 +114,7 @@ test('a failed alert is retried on its next repeat and gets no recovery until on
   failWhen(() => true);
   await alerts.record(up);
   failWhen(() => false);
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  await new Promise((resolve) => setTimeout(resolve, 600));
   assert.equal(calls.length, 4, 'a failed recovery is resent');
   await alerts.record(up);
   assert.equal(calls.length, 4);

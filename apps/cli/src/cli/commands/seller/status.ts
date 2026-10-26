@@ -84,8 +84,7 @@ export function registerSellerStatusCommand(sellerCmd: Command): void {
         }
         // Model health, gas and alerts from the running seller, as the dashboard shows them.
         const monitor = sellerMonitorFor(sellerCmd);
-        const health = await monitor.status();
-        const rpc = await monitor.rpcDiagnostics();
+        const { status: health, rpc } = await monitor.statusWithRpc();
         // The daemon state never tracked today's totals; the metering ledger does.
         const todayStart = Math.floor(Date.now() / 86_400_000) * 86_400_000;
         const today = (await monitor.usage(1).catch(() => null))?.days.find((day) => day.day === todayStart);

@@ -35,8 +35,8 @@ export function sellerRouteRegistrar(options: SellerRouteOptions): ConsoleRegist
 
     router.add('GET', '/seller/status', async ({ principal }) => {
       admin(principal)
-      const status = await monitor.status()
-      return status.available ? { ...status, rpc: await monitor.rpcDiagnostics() } : status
+      const { status, rpc } = await monitor.statusWithRpc()
+      return status.available ? { ...status, rpc } : status
     })
     router.add('GET', '/seller/events', async ({ principal, query }) => { admin(principal); return { events: await monitor.events(boundedInt(query.get('limit'), 100, 500)) } })
     router.add('GET', '/seller/usage', async ({ principal, query }) => { admin(principal); return monitor.usage(boundedInt(query.get('days'), 14, 30)) })

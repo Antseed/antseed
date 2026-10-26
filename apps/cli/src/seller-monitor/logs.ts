@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { MeteringStorage, type MeteringEventPageRow } from '@antseed/node/metering'
 import { CHANNEL_KIND, ChannelStore, type StoredChannel } from '@antseed/node/payments'
 import type { SellerLogDetail, SellerLogEntry, SellerLogPage, SellerLogQuery } from '../gateway/console-api/types.js'
-import { ConsoleError } from '../gateway/console-api/router.js'
+import { ConsoleError } from '../console-error.js'
 
 export const DEFAULT_LOG_PAGE = 50
 

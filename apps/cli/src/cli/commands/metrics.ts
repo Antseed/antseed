@@ -2,14 +2,13 @@ import type { Command } from 'commander';
 import chalk from 'chalk';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { existsSync, statSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { loadConfig } from '../../config/loader.js';
 import { getGlobalOptions } from './types.js';
 import { createDepositsClient, requireCryptoConfig } from '../payment-utils.js';
 import { FileIdentityStore, identityFromPrivateKeyHex } from '@antseed/node';
 import { MeteringStorage } from '@antseed/node/metering';
-import { parseGas, parseModelHealth, SELLER_STALE_MS } from '../../seller-monitor/reader.js';
+import { parseGas, parseModelHealth, readDaemonState, SELLER_STALE_MS } from '../../seller-monitor/reader.js';
 import { sharedChainProvider } from '../../proxy/chain-rpc.js';
 import { rpcUsage, withRpcSource } from '../../proxy/rpc-sources.js';
 import { ChannelStore, type StoredChannel } from '@antseed/node/payments';
@@ -132,13 +131,6 @@ function listChannels(dataDir: string, limit: number): StoredChannel[] {
   }
 }
 
-async function readDaemonState(dataDir: string): Promise<Record<string, unknown> | null> {
-  try {
-    return JSON.parse(await readFile(join(dataDir, 'daemon.state.json'), 'utf-8')) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-}
 
 async function addCommonMetrics(samples: MetricSample[], baseLabels: Record<string, string>, daemon: Record<string, unknown> | null): Promise<void> {
   addSample(samples, baseLabels, {
