@@ -450,3 +450,18 @@ test('a quiet recovery closes an incident without a message', async () => {
   await alerts.record({ kind: 'upstream_balance_ok', severity: 'info', title: 'deepinfra is back', providerId: 'deepinfra' });
   assert.equal(calls.length, 1, 'closed quietly, so no recovery goes out later either');
 });
+
+test('a resent update goes only to the channel that missed it, and carries the newest news', async () => {
+  const { alerts, calls, failWhen } = harness({ telegram: { chatId: '42' }, webhook: { url: 'https://hooks.example/x' }, cooldownMinutes: 30 }, { retryMs: 20 });
+  const grouped = { kind: 'model_down', severity: 'warning', title: '1 model withdrawn', providerId: 'deepinfra' } as const;
+  await alerts.record(grouped, { journal: false });
+  failWhen((url) => url.includes('hooks.example'));
+  await alerts.record({ ...grouped, title: '2 models withdrawn' }, { journal: false, update: true });
+  await alerts.record({ ...grouped, title: '3 models withdrawn' }, { journal: false, update: true });
+  failWhen(() => false);
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  const sent = calls.map((call) => `${call.url.includes('hooks.example') ? 'webhook' : 'telegram'} ${String(call.body.text).split(': ').slice(1).join(': ')}`);
+  assert.deepEqual(sent.filter((line) => line.startsWith('telegram')), ['telegram 1 model withdrawn', 'telegram 2 models withdrawn', 'telegram 3 models withdrawn'], 'telegram is not sent the resend');
+  assert.equal(sent.at(-1), 'webhook 3 models withdrawn', 'the resend carries the latest count');
+  alerts.close();
+});

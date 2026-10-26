@@ -68,8 +68,11 @@ export class SellerAlerts {
   private readonly _lastSent = new Map<string, Delivery>();
   /** Alerts held back by the cooldown after their incident had closed, sent when it ends unless a recovery comes first. */
   private readonly _held = new Map<string, NodeJS.Timeout>();
-  /** Resends scheduled for alerts a channel failed to take, cancelled by their recovery. */
-  private readonly _retries = new Map<string, NodeJS.Timeout>();
+  /**
+   * Resends scheduled for alerts a channel failed to take, per incident: the
+   * latest event, to the channels still missing it, cancelled by the recovery.
+   */
+  private readonly _retries = new Map<string, { timer: NodeJS.Timeout; event: SellerEvent; channels: Set<AlertChannel>; attempt: number }>();
   /**
    * Deliveries in flight per incident (`kind:provider/service` of the alert):
    * an alert, its repeats and its recovery go out one after another, so a
@@ -150,11 +153,12 @@ export class SellerAlerts {
   }
 
   private _release(key: string): void {
-    for (const timers of [this._held, this._retries]) {
-      const timer = timers.get(key);
-      if (timer) clearTimeout(timer);
-      timers.delete(key);
-    }
+    const held = this._held.get(key);
+    if (held) clearTimeout(held);
+    this._held.delete(key);
+    const retry = this._retries.get(key);
+    if (retry) clearTimeout(retry.timer);
+    this._retries.delete(key);
   }
 
   private _closeIncident(key: string): void {
@@ -175,8 +179,11 @@ export class SellerAlerts {
   }
 
   /** `update`: news about an incident still open (it grew), sent where its alert went regardless of the cooldown. */
-  private async _deliver(event: SellerEvent, key: string, recovery: boolean, update = false, attempt = 0): Promise<void> {
-    const { channels, holdMs } = this._channelsFor(event, key, recovery, update);
+  private async _deliver(event: SellerEvent, key: string, recovery: boolean, update = false, retry?: { channels: AlertChannel[]; attempt: number }): Promise<void> {
+    // A resend goes only to the channels that missed it, still configured.
+    const { channels, holdMs } = retry
+      ? { channels: retry.channels.filter((channel) => this._destinations()[channel] !== undefined), holdMs: null }
+      : this._channelsFor(event, key, recovery, update);
     if (holdMs !== null && !this._held.has(key)) {
       const timer = setTimeout(() => {
         this._held.delete(key);
@@ -188,16 +195,7 @@ export class SellerAlerts {
     if (channels.length === 0) return;
     // History is kept per destination, as of when the send started, so a changed chat or webhook starts fresh.
     const { sent, delivered } = await this._send(event, channels);
-    // Health events come on changes only, so nothing else would resend an alert that failed; the channels that took it are in cooldown by then.
-    if (!recovery && sent.length < channels.length && attempt < MAX_RETRIES && !this._retries.has(key)) {
-      const wait = Math.min((this._opts.retryMs ?? 30_000) * 2 ** attempt, MAX_RETRY_MS);
-      const timer = setTimeout(() => {
-        this._retries.delete(key);
-        void this._inIncident(key, () => this._deliver(event, key, false, update, attempt + 1)).catch(() => {});
-      }, wait);
-      timer.unref?.();
-      this._retries.set(key, timer);
-    }
+    if (!recovery) this._scheduleRetry(event, key, channels.filter((channel) => !sent.includes(channel)), sent as AlertChannel[], retry?.attempt ?? 0);
     for (const destination of delivered) {
       const historyKey = `${destination}|${key}`;
       const last = this._lastSent.get(historyKey);
@@ -208,6 +206,29 @@ export class SellerAlerts {
       }
     }
     if (!recovery && delivered.length > 0 && PERSISTED_KINDS.has(event.kind)) this._saveHistory();
+  }
+
+  /**
+   * Health events come on changes only, so nothing else would resend an alert
+   * that failed: resend it with backoff to the channels that missed it. A
+   * newer event for the same incident replaces the pending one.
+   */
+  private _scheduleRetry(event: SellerEvent, key: string, failed: AlertChannel[], sent: AlertChannel[], attempt: number): void {
+    const pending = this._retries.get(key);
+    if (pending) {
+      for (const channel of sent) pending.channels.delete(channel);
+      for (const channel of failed) pending.channels.add(channel);
+      pending.event = event;
+      if (pending.channels.size === 0) this._release(key);
+      return;
+    }
+    if (failed.length === 0 || attempt >= MAX_RETRIES) return;
+    const entry = { event, channels: new Set(failed), attempt, timer: setTimeout(() => {
+      this._retries.delete(key);
+      void this._inIncident(key, () => this._deliver(entry.event, key, false, false, { channels: [...entry.channels], attempt: entry.attempt + 1 })).catch(() => {});
+    }, Math.min((this._opts.retryMs ?? 30_000) * 2 ** attempt, MAX_RETRY_MS)) };
+    entry.timer.unref?.();
+    this._retries.set(key, entry);
   }
 
   private _saveHistory(): void {
