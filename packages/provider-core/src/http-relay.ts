@@ -289,6 +289,18 @@ export class HttpRelay {
           await attempt.response.body?.cancel().catch(() => undefined);
           continue;
         }
+        if (!isStreamingAttempt(attempt)) {
+          // Buffer a complete response before delivering it, so a connection that
+          // drops mid-body can still fail over: nothing has reached the buyer yet.
+          try {
+            attempt.body = new Uint8Array(await attempt.response.arrayBuffer());
+          } catch (err) {
+            if (isLast) throw err;
+            this._coolDown(index, service, null);
+            this._logFailover(service, upstream, candidates[position + 1]!.upstream, err instanceof Error ? err.message : String(err));
+            continue;
+          }
+        }
         if (attempt.response.status < 400) {
           this._cooldownUntil.delete(`${index}:${service}`);
         }
@@ -527,10 +539,8 @@ export class HttpRelay {
   }
 
   private async _deliver(request: SerializedHttpRequest, attempt: UpstreamAttempt): Promise<void> {
-    const { response: fetchResponse, headers: currentHeaders, url } = attempt;
-    const contentType = fetchResponse.headers.get('content-type') ?? '';
-    const acceptedSSE = (currentHeaders['accept'] ?? '').includes('text/event-stream');
-    const isSSE = contentType.includes('text/event-stream') || (acceptedSSE && !contentType && fetchResponse.status >= 200 && fetchResponse.status < 300);
+    const { response: fetchResponse, url } = attempt;
+    const isSSE = isStreamingAttempt(attempt);
 
     // Build response headers, stripping hop-by-hop and encoding headers.
     // Node.js fetch auto-decompresses gzip/br responses, so we must strip
@@ -586,7 +596,7 @@ export class HttpRelay {
       });
     } else {
       // Complete response
-      const body = new Uint8Array(await fetchResponse.arrayBuffer());
+      const body = attempt.body ?? new Uint8Array(await fetchResponse.arrayBuffer());
       this._callbacks.onResponse({
         requestId: request.requestId,
         statusCode: fetchResponse.status,
@@ -601,6 +611,15 @@ interface UpstreamAttempt {
   response: Response;
   headers: Record<string, string>;
   url: string;
+  /** The complete response body, once buffered for a non-streaming response. */
+  body?: Uint8Array;
+}
+
+function isStreamingAttempt({ response, headers }: UpstreamAttempt): boolean {
+  if (!response.body) return false;
+  const contentType = response.headers.get('content-type') ?? '';
+  const acceptedSSE = (headers['accept'] ?? '').includes('text/event-stream');
+  return contentType.includes('text/event-stream') || (acceptedSSE && !contentType && response.status >= 200 && response.status < 300);
 }
 
 /** Lowercase service named by a JSON or multipart request body, or '' when there is none. */

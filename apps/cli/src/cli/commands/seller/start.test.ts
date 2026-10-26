@@ -477,6 +477,27 @@ test('buildSellerPluginRuntimeEnv resolves fallback upstream keys and model name
   }
 });
 
+test('buildSellerPluginRuntimeEnv keeps a fallback model name equal to the service id', () => {
+  const config = createDefaultConfig();
+  config.seller.providers = {
+    kimi: {
+      plugin: 'openai',
+      services: { 'kimi-k3.1-pro': { upstreamModel: 'moonshotai/kimi-k3.1-pro' } },
+      fallbackUpstreams: [
+        { baseUrl: 'https://api.moonshot.example', services: { 'kimi-k3.1-pro': { upstreamModel: 'kimi-k3.1-pro' } } },
+      ],
+    },
+  };
+  const env = buildSellerPluginRuntimeEnv(config.seller, 'kimi');
+  assert.deepEqual(JSON.parse(env['ANTSEED_FALLBACK_UPSTREAMS_JSON']!), [
+    {
+      baseUrl: 'https://api.moonshot.example',
+      services: ['kimi-k3.1-pro'],
+      serviceAliasMap: { 'kimi-k3.1-pro': 'kimi-k3.1-pro' },
+    },
+  ]);
+});
+
 test('getUnsupportedFallbackUpstreamsWarning flags plugins without fallback support', () => {
   const providerConfig = {
     plugin: 'anthropic',

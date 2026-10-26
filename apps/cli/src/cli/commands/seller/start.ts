@@ -350,7 +350,7 @@ export function buildSellerPluginRuntimeEnv(
         }
         const serviceAliasMap = Object.fromEntries(
           Object.entries(fallback.services ?? {})
-            .filter(([serviceId, service]) => service.upstreamModel && service.upstreamModel !== serviceId)
+            .filter(([, service]) => service.upstreamModel)
             .map(([serviceId, service]) => [serviceId, service.upstreamModel]),
         )
         return {

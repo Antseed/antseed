@@ -735,6 +735,61 @@ describe('HttpRelay', () => {
       ]);
     });
 
+    it('lets a fallback send the advertised service id when the primary renames it', async () => {
+      fetchMock.mockResolvedValueOnce(fail(429)).mockResolvedValueOnce(ok());
+      const relay = new HttpRelay(kimiConfig({
+        serviceRewriteMap: { 'kimi-k3.1-pro': 'moonshotai/kimi-k3.1-pro' },
+        fallbackUpstreams: [{ baseUrl: 'https://backup.example.com', serviceRewriteMap: { 'kimi-k3.1-pro': 'kimi-k3.1-pro' } }],
+      }), { onResponse: () => undefined });
+
+      await relay.handleRequest(kimiRequest());
+
+      expect(calls().map((call) => call.model)).toEqual(['moonshotai/kimi-k3.1-pro', 'kimi-k3.1-pro']);
+    });
+
+    it('fails over when a complete response body breaks before delivery', async () => {
+      const broken = new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"id":'));
+          controller.error(new Error('ECONNRESET'));
+        },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+      fetchMock.mockResolvedValueOnce(broken).mockResolvedValueOnce(ok());
+      const responses: SerializedHttpResponse[] = [];
+      const relay = new HttpRelay(kimiConfig(), { onResponse: (res) => responses.push(res) });
+
+      await relay.handleRequest(kimiRequest());
+
+      expect(responses).toHaveLength(1);
+      expect(responses[0]!.statusCode).toBe(200);
+      expect(JSON.parse(new TextDecoder().decode(responses[0]!.body))).toEqual({ ok: true });
+      expect(calls().map((call) => new URL(call.url).host)).toEqual(['primary.example.com', 'backup.example.com']);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('primary upstream primary.example.com failed (ECONNRESET)'));
+    });
+
+    it('never switches upstreams once a stream has started', async () => {
+      const broken = new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('data: {"partial":true}\n\n'));
+          controller.error(new Error('ECONNRESET'));
+        },
+      }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+      fetchMock.mockResolvedValueOnce(broken).mockResolvedValueOnce(ok());
+      const responses: SerializedHttpResponse[] = [];
+      const chunks: SerializedHttpResponseChunk[] = [];
+      const relay = new HttpRelay(kimiConfig(), {
+        onResponse: (res) => responses.push(res),
+        onResponseChunk: (chunk) => chunks.push(chunk),
+      });
+
+      await relay.handleRequest(kimiRequest());
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(responses.map((res) => res.statusCode)).toEqual([200]);
+      expect(chunks.map((chunk) => new TextDecoder().decode(chunk.data)).join('')).toContain('event: error');
+      expect(chunks.at(-1)!.done).toBe(true);
+    });
+
     it('only uses a fallback for the services it lists', async () => {
       fetchMock.mockResolvedValue(fail(429));
       const responses: SerializedHttpResponse[] = [];
