@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto'
 import { constants } from 'node:fs'
 import { access, chmod, mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
+import { withFileLock } from '@antseed/node'
 import { ConsoleError } from '../gateway/console-api/router.js'
 import { configFromObject, resolveConfigPath } from './loader.js'
 
@@ -12,21 +13,6 @@ import { configFromObject, resolveConfigPath } from './loader.js'
  * everything else (defaults left implicit included) stays as written.
  */
 type JsonObject = Record<string, unknown>
-
-/** Config edits in flight, per file: each waits for the previous one so concurrent PATCHes never lose an update. */
-const configLocks = new Map<string, Promise<void>>()
-
-async function withConfigLock<T>(path: string, task: () => Promise<T>): Promise<T> {
-  const previous = configLocks.get(path) ?? Promise.resolve()
-  const run = previous.then(task, task)
-  const settled = run.then(() => undefined, () => undefined)
-  configLocks.set(path, settled)
-  try {
-    return await run
-  } finally {
-    if (configLocks.get(path) === settled) configLocks.delete(path)
-  }
-}
 
 /** The file a (possibly symlinked) config path points at, so the edit replaces the target rather than the link. */
 async function configTarget(path: string): Promise<string> {
@@ -44,12 +30,15 @@ async function configTarget(path: string): Promise<string> {
  * included, stays as the operator wrote it), and replaces the file
  * atomically with the same mode. A file that does not parse is never
  * overwritten; a missing one is created with just the changed fields.
- * Edits are serialized in-process, and a symlinked config is written
- * through to its target.
+ * Edits are serialized across processes (CLI, gateway, seller dashboard,
+ * payments page) by a lock file next to the config, and a symlinked config
+ * is written through to its target.
  */
 export async function patchConfigFile(configPath: string, mutate: (config: JsonObject) => void, options: { backup?: boolean } = {}): Promise<void> {
   const target = await configTarget(resolveConfigPath(configPath))
-  await withConfigLock(target, () => patchConfigTarget(target, mutate, options.backup === true))
+  // The lock file lives next to the config, so a new config directory is made first.
+  await mkdir(dirname(target), { recursive: true })
+  await withFileLock(target, () => patchConfigTarget(target, mutate, options.backup === true))
 }
 
 async function patchConfigTarget(path: string, mutate: (config: JsonObject) => void, backup: boolean): Promise<void> {
@@ -74,7 +63,6 @@ async function patchConfigTarget(path: string, mutate: (config: JsonObject) => v
   }
   mutate(config)
   const mode = raw === null ? 0o600 : (await stat(path)).mode & 0o777
-  if (raw === null) await mkdir(dirname(path), { recursive: true })
   // The backup is the exact file this edit replaces, written only once the edit is accepted.
   // Both are replaced through a fresh file, so each always gets the config's current mode.
   if (backup && raw !== null) await replaceFile(`${path}.bak`, raw, mode)

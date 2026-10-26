@@ -433,9 +433,18 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         maxStreamDurationMs: effectiveBuyerConfig.maxStreamDurationMs,
         payments: paymentsConfig,
         verification: effectiveBuyerConfig.verification,
+        ...(config.buyer.freeTierDelegations ? { freeTierDelegations: config.buyer.freeTierDelegations } : {}),
       })
 
       node.setRouter(router)
+      // `antseed buyer free-tier share` writes new delegations to the config
+      // file; pick them up without a restart.
+      const freeTierDelegationsReload = setInterval(() => {
+        void loadConfig(globalOpts.config)
+          .then((latest) => node.setFreeTierDelegations(latest.buyer.freeTierDelegations ?? []))
+          .catch(() => {})
+      }, 60_000)
+      freeTierDelegationsReload.unref()
 
       try {
         await node.start()

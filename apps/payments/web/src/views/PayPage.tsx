@@ -4,6 +4,7 @@ import { useAuthorizedWallet } from '../context/AuthorizedWalletContext';
 import { PayCheckoutDeposit } from '../components/PayCheckoutDeposit';
 import { PayCheckoutWithdraw } from '../components/PayCheckoutWithdraw';
 import { PayChannelClose } from '../components/PayChannelClose';
+import { PayShareFreeTier } from '../components/PayShareFreeTier';
 import { openRewardsDashboard } from '../api';
 import { Button } from '@antseed/ui';
 import { notifyPaymentCompleted } from '../api';
@@ -11,7 +12,7 @@ import { truncateAddress } from '../utils/format';
 import { getExplorerTxUrl } from '../utils/txLink';
 import './PayPage.scss';
 
-export type PayPageAction = 'deposit' | 'withdraw' | 'authorize' | 'claim' | 'close-channel';
+export type PayPageAction = 'deposit' | 'withdraw' | 'authorize' | 'claim' | 'close-channel' | 'share-free-tier';
 
 /**
  * 'app' — user's real browser launched chromeless (`--app=`): extension
@@ -56,6 +57,11 @@ const COPY: Record<PayPageAction, { eyebrow: string; title: string; subtitle: st
     eyebrow: 'Payment channel',
     title: 'Close channel',
     subtitle: 'Settle this channel and return its unused reserve to your balance.',
+  },
+  'share-free-tier': {
+    eyebrow: 'Staked free tier',
+    title: 'Share your stake',
+    subtitle: 'Let this account use your ANTS stake for larger free allowances on the sellers you stake on.',
   },
 };
 
@@ -187,6 +193,12 @@ export function PayPage({ action, amount: amountParam, channelId, popup, config,
                   <dd>{buyerEvmAddress ? <code>{truncateAddress(buyerEvmAddress)}</code> : '—'}</dd>
                 </div>
               )}
+              {action === 'share-free-tier' && (
+                <div className="pay-checkout-fact">
+                  <dt>Buyer account</dt>
+                  <dd>{buyerEvmAddress ? <code>{truncateAddress(buyerEvmAddress)}</code> : '—'}</dd>
+                </div>
+              )}
               {action === 'claim' && (
                 <div className="pay-checkout-fact">
                   <dt>Account</dt>
@@ -230,12 +242,14 @@ export function PayPage({ action, amount: amountParam, channelId, popup, config,
                     : action === 'withdraw' ? 'Withdrawal sent'
                       : action === 'claim' ? 'Rewards claimed'
                         : action === 'close-channel' ? 'Channel updated'
+                          : action === 'share-free-tier' ? 'Free tier shared'
                           : 'Wallet authorized'}
                 </h2>
                 <p>
-                  {popup
-                    ? 'Your credits are updating in the app. This window closes automatically.'
-                    : 'Your credits are updating in the app. You can close this window.'}
+                  {action === 'share-free-tier'
+                    ? 'Your buyer starts sending it to sellers within a minute.'
+                    : 'Your credits are updating in the app.'}
+                  {popup ? ' This window closes automatically.' : ' You can close this window.'}
                 </p>
                 {explorerUrl && (
                   <a className="pay-checkout-txlink" href={explorerUrl} target="_blank" rel="noopener noreferrer">
@@ -282,6 +296,12 @@ export function PayPage({ action, amount: amountParam, channelId, popup, config,
                     <PayChannelClose config={config} channelId={channelId} onDone={handleDeposited} />
                   </>
                 )}
+                {action === 'share-free-tier' && (
+                  <>
+                    <p className="pay-checkout-subtitle">{copy.subtitle}</p>
+                    <PayShareFreeTier config={config} onShared={() => setDone(true)} />
+                  </>
+                )}
                 {action === 'authorize' && (
                   <>
                     <p className="pay-checkout-subtitle">{copy.subtitle}</p>
@@ -298,9 +318,19 @@ export function PayPage({ action, amount: amountParam, channelId, popup, config,
         </div>
 
         <ul className="pay-checkout-trust">
-          <li>Non-custodial — funds go to AntSeed's on-chain escrow contract, never to a company account.</li>
-          <li>Withdraw unused credits back to your wallet at any time.</li>
-          <li>Runs on Base — low fees, settles in seconds.</li>
+          {action === 'share-free-tier' ? (
+            <>
+              <li>A signature only — no gas, and no funds or positions move.</li>
+              <li>It names this buyer account, so no one else can use it.</li>
+              <li>Expires after 90 days. Sign again to renew.</li>
+            </>
+          ) : (
+            <>
+              <li>Non-custodial — funds go to AntSeed's on-chain escrow contract, never to a company account.</li>
+              <li>Withdraw unused credits back to your wallet at any time.</li>
+              <li>Runs on Base — low fees, settles in seconds.</li>
+            </>
+          )}
         </ul>
 
         {popup === 'app' && !done && (

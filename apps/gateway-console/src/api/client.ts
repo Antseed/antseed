@@ -1,7 +1,7 @@
 import type {
   AdminToken, ApiKey, ApiKeyInput, AuditEntry, AuthConfig, BuyerLimits, BuyerSettingsInput, Channel, ChainInfo, DepositConfirmation, DepositWatch, Enrollment,
   GatewayStatus, GatewayUpdate, Invite, InviteInput, Member, MemberInput, MeResponse, ObservabilitySettings, OperatorAuthorization, OperatorState, WorkspaceOperatorSummary, ChatContext, ChatModel, ChatThread, ChatThreadDetail, FavoriteModels, NetworkModel, NetworkRouter, Peer, PeerList, Preset,
-  RequestDetail, RequestLogEntry, Rewards, RoutePreview, RoutingPolicy, SellerAlertSettings, SellerAlertsPatch, SellerEventView, SellerLogDetail, SellerLogPage, SellerLogQuery, SellerMarket, SellerPromote, SellerReputation, SellerSettings, SellerVerificationsInput, SellerSettingsPatch, SellerStatus, SellerUsage, Settings, TelegramChat, SpendLimits, UsageGroupBy, UsageReport, Wallet, Workspace,
+  FreeTierSharing, FreeTierStake, RequestDetail, RequestLogEntry, Rewards, RoutePreview, RoutingPolicy, SellerAlertSettings, SellerAlertsPatch, SellerEventView, SellerLogDetail, SellerLogPage, SellerLogQuery, SellerMarket, SellerPromote, SellerReputation, SellerSettings, SellerVerificationsInput, SellerSettingsPatch, SellerStatus, SellerUsage, Settings, TelegramChat, SpendLimits, UsageGroupBy, UsageReport, Wallet, Workspace,
   WorkspaceInput, WorkspaceRole,
 } from './types'
 
@@ -235,6 +235,12 @@ export function createApiClient(fetchImpl: FetchLike = (input, init) => fetch(in
         get<Channel[]>(`/workspaces/${id(workspaceId)}/channels`, { all: all ? 1 : undefined, fresh: fresh ? 1 : undefined }),
       closeChannel: (workspaceId: string, peerId: string, channelId: string) => post<{ ok: true }>(`/workspaces/${id(workspaceId)}/channels/close`, { peerId, channelId }),
       rewards: (workspaceId: string) => get<Rewards>(`/workspaces/${id(workspaceId)}/rewards`),
+      /** Stakers sharing their stake with the workspace buyer for staked free-tier allowances. */
+      freeTier: (workspaceId: string) => get<FreeTierSharing>(`/workspaces/${id(workspaceId)}/free-tier`),
+      freeTierStake: (workspaceId: string) => get<FreeTierStake>(`/workspaces/${id(workspaceId)}/free-tier/stake`),
+      addFreeTierCode: (workspaceId: string, code: string) => post<FreeTierSharing>(`/workspaces/${id(workspaceId)}/free-tier`, { code }),
+      removeFreeTierStaker: (workspaceId: string, staker: string) =>
+        request<FreeTierSharing>('DELETE', `/workspaces/${id(workspaceId)}/free-tier/${id(staker)}`),
       chain: () => get<ChainInfo>('/chain'),
     },
     chat: {

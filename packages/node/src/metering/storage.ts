@@ -9,7 +9,11 @@ import type {
 import { runMigrations } from '../storage/migrate.js';
 import { meteringMigrations } from '../storage/migrations/metering/index.js';
 
-export type FreeTierLimitKind = 'address' | 'ip';
+/**
+ * `stake` is the shared allowance of a staked owner (the buyer or its operator);
+ * `stake_required` refuses a buyer without qualifying stake on a stakers-only program.
+ */
+export type FreeTierLimitKind = 'address' | 'ip' | 'stake' | 'stake_required';
 
 export interface FreeTierConsumption {
   allowed: boolean;
@@ -26,6 +30,22 @@ export interface FreeTierUsageInput {
   maxRequestsPerIp: number | null;
   windowMs: number;
   nowMs?: number;
+  /**
+   * Program the request is counted under: '' for the seller-wide program, or
+   * the service id of a service with its own. Counters never cross scopes.
+   */
+  scope?: string;
+  /**
+   * How long usage must be kept for any program; older rows are pruned.
+   * Default: `windowMs`. Set it to the longest window when programs differ.
+   */
+  retentionMs?: number;
+  /**
+   * Staked allowance. When set, the request is counted on each of these
+   * seller-pool positions instead of the per-address and per-IP limits, and
+   * is admitted while every position has room. A null limit is unlimited.
+   */
+  stake?: { positionIds: number[]; limit: number | null } | null;
 }
 
 export interface FreeTierLimitCheck {
@@ -72,6 +92,30 @@ export function evaluateFreeTierLimits(
  * SQLite storage for metering data.
  * All data is stored locally on the user's machine.
  */
+const DAY_MS = 86_400_000;
+
+export interface EventDayTotals {
+  /** UTC day number (`timestamp / 86_400_000`, floored). */
+  day: number;
+  requests: number;
+  totalTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+export interface ReceiptDayTotals {
+  day: number;
+  costCents: number;
+}
+
+export interface RowidChunkSummary<T> {
+  /** Highest rowid read; the cursor for the next call. */
+  lastRowid: number;
+  /** Rows read in this chunk. */
+  rows: number;
+  days: T[];
+}
+
 export class MeteringStorage {
   private readonly db: Database.Database;
   private lastFreeTierPruneAt: number | null = null;
@@ -81,8 +125,14 @@ export class MeteringStorage {
    * Creates tables if they don't exist.
    *
    * @param dbPath - Path to the SQLite database file (or ':memory:' for tests)
+   * @param options.readonly - Open an existing database for reads only, without
+   *   migrations (e.g. a metrics exporter beside a running seller).
    */
-  constructor(dbPath: string) {
+  constructor(dbPath: string, options: { readonly?: boolean } = {}) {
+    if (options.readonly) {
+      this.db = new Database(dbPath, { readonly: true, fileMustExist: true });
+      return;
+    }
     this.db = new Database(dbPath);
     this.db.pragma('journal_mode = WAL');
     runMigrations(this.db, meteringMigrations);
@@ -315,20 +365,6 @@ export class MeteringStorage {
     return rows.map(rowToSession);
   }
 
-  /**
-   * Sessions written after the insertion cursor `afterRowid`, in insertion
-   * order. A session row is first written when its first request finishes,
-   * with that request's start time, so counting by start time can miss rows
-   * that land late. The cursor is a never-reused sequence, so pruning old
-   * sessions never hides new ones.
-   */
-  getSessionsInsertedAfter(afterRowid: number): { count: number; lastRowid: number } {
-    const row = this.db.prepare(
-      'SELECT COUNT(*) AS count, MAX(seq) AS last_rowid FROM session_insertions WHERE seq > ?'
-    ).get(afterRowid) as { count: number; last_rowid: number | null };
-    return { count: row.count, lastRowid: row.last_rowid ?? afterRowid };
-  }
-
   /** Get session count and total cost for a time range. */
   getSessionSummary(startMs: number, endMs: number): {
     channelCount: number;
@@ -454,6 +490,76 @@ export class MeteringStorage {
   }
 
   /**
+   * Totals of the metering events after `afterRowid`, reading at most `limit`
+   * rows in rowid order, grouped by UTC day. Lets a reader keep running totals
+   * without re-scanning the whole table: pass the returned `lastRowid` next time.
+   */
+  summarizeEventsAfter(afterRowid: number, limit: number): RowidChunkSummary<EventDayTotals> {
+    const rows = this.db.prepare(`
+      SELECT
+        timestamp / ${DAY_MS} AS day,
+        MAX(rid) AS last_rowid,
+        COUNT(*) AS requests,
+        COALESCE(SUM(total_tokens), 0) AS total_tokens,
+        COALESCE(SUM(input_tokens), 0) AS input_tokens,
+        COALESCE(SUM(output_tokens), 0) AS output_tokens
+      FROM (
+        SELECT rowid AS rid, timestamp, total_tokens, input_tokens, output_tokens
+        FROM metering_events WHERE rowid > ? ORDER BY rowid LIMIT ?
+      )
+      GROUP BY day
+    `).all(afterRowid, limit) as Array<{
+      day: number; last_rowid: number; requests: number; total_tokens: number; input_tokens: number; output_tokens: number;
+    }>;
+    return {
+      lastRowid: rows.reduce((max, row) => Math.max(max, row.last_rowid), afterRowid),
+      rows: rows.reduce((count, row) => count + row.requests, 0),
+      days: rows.map((row) => ({
+        day: row.day,
+        requests: row.requests,
+        totalTokens: row.total_tokens,
+        inputTokens: row.input_tokens,
+        outputTokens: row.output_tokens,
+      })),
+    };
+  }
+
+  /** Like `summarizeEventsAfter`, for usage receipt cost. */
+  summarizeReceiptsAfter(afterRowid: number, limit: number): RowidChunkSummary<ReceiptDayTotals> {
+    const rows = this.db.prepare(`
+      SELECT
+        timestamp / ${DAY_MS} AS day,
+        MAX(rid) AS last_rowid,
+        COUNT(*) AS receipts,
+        COALESCE(SUM(cost_cents), 0) AS cost_cents
+      FROM (
+        SELECT rowid AS rid, timestamp, cost_cents
+        FROM usage_receipts WHERE rowid > ? ORDER BY rowid LIMIT ?
+      )
+      GROUP BY day
+    `).all(afterRowid, limit) as Array<{ day: number; last_rowid: number; receipts: number; cost_cents: number }>;
+    return {
+      lastRowid: rows.reduce((max, row) => Math.max(max, row.last_rowid), afterRowid),
+      rows: rows.reduce((count, row) => count + row.receipts, 0),
+      days: rows.map((row) => ({ day: row.day, costCents: row.cost_cents })),
+    };
+  }
+
+  /** `event_id` / `receipt_id` stored at the given rowids (null where there is no such row). */
+  getIdsAtRowids(eventRowid: number, receiptRowid: number): { eventId: string | null; receiptId: string | null } {
+    const event = this.db.prepare('SELECT event_id AS id FROM metering_events WHERE rowid = ?').get(eventRowid) as { id: string } | undefined;
+    const receipt = this.db.prepare('SELECT receipt_id AS id FROM usage_receipts WHERE rowid = ?').get(receiptRowid) as { id: string } | undefined;
+    return { eventId: event?.id ?? null, receiptId: receipt?.id ?? null };
+  }
+
+  /** Highest rowid in `metering_events` and `usage_receipts` (0 when empty). */
+  getMaxRowids(): { events: number; receipts: number } {
+    const events = this.db.prepare('SELECT COALESCE(MAX(rowid), 0) AS m FROM metering_events').get() as { m: number };
+    const receipts = this.db.prepare('SELECT COALESCE(MAX(rowid), 0) AS m FROM usage_receipts').get() as { m: number };
+    return { events: events.m, receipts: receipts.m };
+  }
+
+  /**
    * Atomically consume one seller free-tier request in a sliding window.
    * Each configured limit (buyer address, remote IP) is checked; the request
    * is recorded only when every applicable limit still has headroom.
@@ -472,6 +578,8 @@ export class MeteringStorage {
     const windowStart = nowMs - input.windowMs;
     const buyerAddress = input.buyerAddress.toLowerCase();
     const remoteIp = input.remoteIp ?? '';
+    const stake = input.stake ?? null;
+    const scope = input.scope ?? '';
     const pruneIntervalMs = Math.min(input.windowMs, 60 * 60_000);
     if (
       service !== null && (
@@ -480,31 +588,55 @@ export class MeteringStorage {
         || nowMs - this.lastFreeTierPruneAt >= pruneIntervalMs
       )
     ) {
-      this.db.prepare('DELETE FROM free_tier_usage WHERE timestamp < ?').run(windowStart);
+      const retainFrom = nowMs - Math.max(input.windowMs, input.retentionMs ?? 0);
+      this.db.prepare('DELETE FROM free_tier_usage WHERE timestamp < ?').run(retainFrom);
+      this.db.prepare('DELETE FROM free_tier_position_usage WHERE timestamp < ?').run(retainFrom);
       this.lastFreeTierPruneAt = nowMs;
     }
-    const countUsage = (column: 'buyer_address' | 'remote_ip', key: string): { count: number; oldestTimestamp: number | null } => {
+    // Base limits count only unstaked requests, so staked traffic never uses
+    // up the allowance of unstaked buyers sharing an address or network.
+    const countBaseUsage = (column: 'buyer_address' | 'remote_ip', key: string): { count: number; oldestTimestamp: number | null } => {
       const row = this.db.prepare(`
         SELECT COUNT(*) AS request_count, MIN(timestamp) AS oldest_timestamp
         FROM free_tier_usage
-        WHERE ${column} = ? AND timestamp >= ?
-      `).get(key, windowStart) as { request_count: number; oldest_timestamp: number | null };
+        WHERE scope = ? AND ${column} = ? AND staked = 0 AND timestamp >= ?
+      `).get(scope, key, windowStart) as { request_count: number; oldest_timestamp: number | null };
+      return { count: row.request_count, oldestTimestamp: row.oldest_timestamp };
+    };
+    const countPositionUsage = (positionId: number): { count: number; oldestTimestamp: number | null } => {
+      const row = this.db.prepare(`
+        SELECT COUNT(*) AS request_count, MIN(timestamp) AS oldest_timestamp
+        FROM free_tier_position_usage
+        WHERE scope = ? AND position_id = ? AND timestamp >= ?
+      `).get(scope, positionId, windowStart) as { request_count: number; oldest_timestamp: number | null };
       return { count: row.request_count, oldestTimestamp: row.oldest_timestamp };
     };
     const consume = this.db.transaction((): FreeTierConsumption => {
       const checks: FreeTierLimitCheck[] = [];
-      if (input.maxRequestsPerAddress !== null) {
-        checks.push({ kind: 'address', limit: input.maxRequestsPerAddress, ...countUsage('buyer_address', buyerAddress) });
-      }
-      if (input.maxRequestsPerIp !== null && remoteIp !== '') {
-        checks.push({ kind: 'ip', limit: input.maxRequestsPerIp, ...countUsage('remote_ip', remoteIp) });
+      if (stake) {
+        if (stake.limit !== null) {
+          for (const positionId of stake.positionIds) {
+            checks.push({ kind: 'stake', limit: stake.limit, ...countPositionUsage(positionId) });
+          }
+        }
+      } else {
+        if (input.maxRequestsPerAddress !== null) {
+          checks.push({ kind: 'address', limit: input.maxRequestsPerAddress, ...countBaseUsage('buyer_address', buyerAddress) });
+        }
+        if (input.maxRequestsPerIp !== null && remoteIp !== '') {
+          checks.push({ kind: 'ip', limit: input.maxRequestsPerIp, ...countBaseUsage('remote_ip', remoteIp) });
+        }
       }
       const decision = evaluateFreeTierLimits(checks, input.windowMs, nowMs);
       if (decision.allowed && service !== null) {
         this.db.prepare(`
-          INSERT INTO free_tier_usage (buyer_address, remote_ip, service, timestamp)
-          VALUES (?, ?, ?, ?)
-        `).run(buyerAddress, remoteIp, service, nowMs);
+          INSERT INTO free_tier_usage (buyer_address, remote_ip, service, timestamp, staked, scope)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).run(buyerAddress, remoteIp, service, nowMs, stake ? 1 : 0, scope);
+        if (stake && stake.limit !== null) {
+          const recordPosition = this.db.prepare('INSERT INTO free_tier_position_usage (position_id, timestamp, scope) VALUES (?, ?, ?)');
+          for (const positionId of stake.positionIds) recordPosition.run(positionId, nowMs, scope);
+        }
       }
       return decision;
     });
@@ -577,9 +709,6 @@ export class MeteringStorage {
     const deleteSessions = this.db.prepare(
       'DELETE FROM sessions WHERE started_at < ?'
     );
-    const deleteSessionInsertions = this.db.prepare(
-      'DELETE FROM session_insertions WHERE started_at < ?'
-    );
     const deleteFreeTierUsage = this.db.prepare(
       'DELETE FROM free_tier_usage WHERE timestamp < ?'
     );
@@ -588,8 +717,8 @@ export class MeteringStorage {
     const receiptsResult = deleteReceipts.run(timestampMs);
     const verificationsResult = deleteVerifications.run(timestampMs);
     const sessionsResult = deleteSessions.run(timestampMs);
-    deleteSessionInsertions.run(timestampMs);
     const freeTierUsageResult = deleteFreeTierUsage.run(timestampMs);
+    this.db.prepare('DELETE FROM free_tier_position_usage WHERE timestamp < ?').run(timestampMs);
 
     return {
       eventsDeleted: eventsResult.changes,

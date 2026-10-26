@@ -1130,6 +1130,92 @@ test('loadConfig rejects invalid seller freeTier limits', async () => {
   }
 });
 
+test('loadConfig preserves seller freeTier stake tiers, including the [] opt-out', async () => {
+  for (const stakeTiers of [[{ minPower: 520_000, multiplier: 5 }, { minPower: 10_400_000, multiplier: 'unlimited' }], []]) {
+    await withTempConfig(
+      JSON.stringify({ seller: { freeTier: { maxRequestsPerAddress: 100, stakeTiers } } }),
+      async (configPath) => {
+        const config = await loadConfig(configPath);
+        assert.deepEqual(config.seller.freeTier?.stakeTiers, stakeTiers);
+      }
+    );
+  }
+});
+
+test('loadConfig rejects invalid seller freeTier stake tiers', async () => {
+  for (const stakeTiers of [
+    'unlimited',
+    [{ minPower: 0, multiplier: 5 }],
+    [{ minPower: 100, multiplier: 0 }],
+    [{ minPower: 200, multiplier: 5 }, { minPower: 100, multiplier: 20 }],
+    [{ minPower: 100, multiplier: 'unlimited' }, { minPower: 200, multiplier: 5 }],
+  ]) {
+    await withTempConfig(
+      JSON.stringify({ seller: { freeTier: { maxRequestsPerAddress: 100, stakeTiers } } }),
+      async (configPath) => {
+        await assert.rejects(async () => loadConfig(configPath), /seller\.freeTier\.stakeTiers/);
+      }
+    );
+  }
+});
+
+test('loadConfig preserves a service freeTier program and rejects invalid ones', async () => {
+  const provider = (freeTier: unknown, plugin = 'openai') => ({ plugin, services: { 'free-model': { pricing: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 }, freeTier } } });
+  const program = { maxRequestsPerAddress: 10, windowMs: 3_600_000, stakeTiers: [{ minPower: 520_000, multiplier: 5 }], stakersOnly: true };
+  await withTempConfig(
+    JSON.stringify({ seller: { providers: { openai: provider(program) } } }),
+    async (configPath) => {
+      const config = await loadConfig(configPath);
+      assert.deepEqual(config.seller.providers['openai']?.services['free-model']?.freeTier, program);
+    }
+  );
+  for (const [freeTier, error] of [
+    [{ stakersOnly: true }, /services\.free-model\.freeTier requires/],
+    [{ maxRequestsPerAddress: 1, stakersOnly: 'yes' }, /freeTier\.stakersOnly must be a boolean/],
+    [{ maxRequestsPerAddress: 1, stakeTiers: [], stakersOnly: true }, /freeTier\.stakersOnly requires at least one stake tier/],
+    ['unlimited', /services\.free-model\.freeTier requires/],
+    [{ maxRequestsPerAddress: Number.MAX_SAFE_INTEGER, maxRequestsPerIp: Number.MAX_SAFE_INTEGER }, /services\.free-model\.freeTier is too large to advertise/],
+  ] as const) {
+    await withTempConfig(
+      JSON.stringify({ seller: { providers: { openai: provider(freeTier) } } }),
+      async (configPath) => {
+        await assert.rejects(async () => loadConfig(configPath), error);
+      }
+    );
+  }
+  // One service id across providers needs one program.
+  await withTempConfig(
+    JSON.stringify({ seller: { providers: { a: provider({ maxRequestsPerAddress: 1 }), b: provider({ maxRequestsPerAddress: 2 }) } } }),
+    async (configPath) => {
+      await assert.rejects(async () => loadConfig(configPath), /differs from another provider's freeTier for service "free-model"/);
+    }
+  );
+});
+
+test('loadConfig preserves buyer freeTierDelegations and rejects malformed ones', async () => {
+  const delegation = { staker: `0x${'aa'.repeat(20)}`, buyer: `0x${'11'.repeat(20)}`, expiresAt: 1_900_000_000, signature: `0x${'00'.repeat(65)}` }
+  await withTempConfig(
+    JSON.stringify({ buyer: { freeTierDelegations: [delegation] } }),
+    async (configPath) => {
+      const config = await loadConfig(configPath);
+      assert.deepEqual(config.buyer.freeTierDelegations, [delegation]);
+    }
+  );
+  for (const freeTierDelegations of [
+    'nope',
+    [{ ...delegation, staker: 'nope' }],
+    [{ ...delegation, signature: '0x12' }],
+    Array.from({ length: 9 }, (_, i) => ({ ...delegation, staker: `0x${i.toString(16).padStart(2, '0').repeat(20)}` })),
+  ]) {
+    await withTempConfig(
+      JSON.stringify({ buyer: { freeTierDelegations } }),
+      async (configPath) => {
+        await assert.rejects(async () => loadConfig(configPath), /buyer\.freeTierDelegations/);
+      }
+    );
+  }
+});
+
 test('loadConfig preserves seller restrictedCountries, including the [] opt-out', async () => {
   for (const restrictedCountries of [['IR', 'RU'], []]) {
     await withTempConfig(

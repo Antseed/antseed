@@ -117,6 +117,10 @@ function normalizeSellerService(value: unknown): SellerServiceConfig | null {
   if (value['unitBillingModels'] !== undefined) {
     out.unitBillingModels = value['unitBillingModels'] as SellerServiceConfig['unitBillingModels'];
   }
+  if (value['freeTier'] !== undefined) {
+    // A non-object becomes an empty program, which validation rejects for its missing limits.
+    out.freeTier = normalizeFreeTierProgram(isRecord(value['freeTier']) ? value['freeTier'] : {});
+  }
   return out;
 }
 
@@ -386,7 +390,23 @@ function cloneSellerFreeTier(
     ...(value.maxRequestsPerAddress !== undefined ? { maxRequestsPerAddress: value.maxRequestsPerAddress } : {}),
     ...(value.maxRequestsPerIp !== undefined ? { maxRequestsPerIp: value.maxRequestsPerIp } : {}),
     ...(value.windowMs !== undefined ? { windowMs: value.windowMs } : {}),
+    ...(value.stakeTiers !== undefined ? { stakeTiers: value.stakeTiers.map((tier) => ({ ...tier })) } : {}),
+    ...(value.stakersOnly !== undefined ? { stakersOnly: value.stakersOnly } : {}),
   };
+}
+
+function normalizeSellerFreeTierStakeTiers(
+  value: unknown,
+): NonNullable<NonNullable<AntseedConfig['seller']['freeTier']>['stakeTiers']> {
+  // Malformed entries become NaN so validation reports them instead of dropping them.
+  if (!Array.isArray(value)) return [{ minPower: Number.NaN, multiplier: Number.NaN }];
+  return value.map((tier) => {
+    if (!isRecord(tier)) return { minPower: Number.NaN, multiplier: Number.NaN };
+    return {
+      minPower: toFiniteOrNaN(tier['minPower']),
+      multiplier: tier['multiplier'] === 'unlimited' ? 'unlimited' : toFiniteOrNaN(tier['multiplier']),
+    };
+  });
 }
 
 function normalizeSellerFreeTier(
@@ -397,16 +417,21 @@ function normalizeSellerFreeTier(
     const cloned = cloneSellerFreeTier(fallback);
     return cloned ? { freeTier: cloned } : {};
   }
+  return { freeTier: normalizeFreeTierProgram(value) };
+}
+
+function normalizeFreeTierProgram(value: Record<string, unknown>): NonNullable<AntseedConfig['seller']['freeTier']> {
   return {
-    freeTier: {
-      ...(value['maxRequestsPerAddress'] !== undefined
-        ? { maxRequestsPerAddress: toFiniteOrNaN(value['maxRequestsPerAddress']) }
-        : {}),
-      ...(value['maxRequestsPerIp'] !== undefined
-        ? { maxRequestsPerIp: toFiniteOrNaN(value['maxRequestsPerIp']) }
-        : {}),
-      ...(value['windowMs'] !== undefined ? { windowMs: toFiniteOrNaN(value['windowMs']) } : {}),
-    },
+    ...(value['maxRequestsPerAddress'] !== undefined
+      ? { maxRequestsPerAddress: toFiniteOrNaN(value['maxRequestsPerAddress']) }
+      : {}),
+    ...(value['maxRequestsPerIp'] !== undefined
+      ? { maxRequestsPerIp: toFiniteOrNaN(value['maxRequestsPerIp']) }
+      : {}),
+    ...(value['windowMs'] !== undefined ? { windowMs: toFiniteOrNaN(value['windowMs']) } : {}),
+    ...(value['stakeTiers'] !== undefined ? { stakeTiers: normalizeSellerFreeTierStakeTiers(value['stakeTiers']) } : {}),
+    // Kept as given so validation reports a non-boolean instead of reading it as false.
+    ...(value['stakersOnly'] !== undefined ? { stakersOnly: value['stakersOnly'] as boolean } : {}),
   };
 }
 
@@ -600,6 +625,9 @@ function mergeBuyerConfig(
     ...(value['verifier'] !== undefined
       ? { verifier: value['verifier'] as NonNullable<AntseedConfig['buyer']['verifier']> }
       : defaults.verifier ? { verifier: structuredClone(defaults.verifier) } : {}),
+    ...(value['freeTierDelegations'] !== undefined
+      ? { freeTierDelegations: value['freeTierDelegations'] as NonNullable<AntseedConfig['buyer']['freeTierDelegations']> }
+      : {}),
   };
 }
 

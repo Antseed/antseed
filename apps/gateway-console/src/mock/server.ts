@@ -11,7 +11,7 @@
  * member of Default and an admin of Research.
  */
 import type {
-  AdminToken, ApiKey, AuditEntry, BuyerLimits, DepositConfirmation, GatewayExposure, GatewayExposureMode, GatewayUpdate, Me, MeResponse, Member, RequestDetail, RequestLogEntry, RoutePreview, RoutingPolicy,
+  AdminToken, ApiKey, AuditEntry, BuyerLimits, DepositConfirmation, FreeTierStake, GatewayExposure, GatewayExposureMode, GatewayUpdate, Me, MeResponse, Member, RequestDetail, RequestLogEntry, RoutePreview, RoutingPolicy,
   UsageGroupBy, Workspace, WorkspaceRole,
   RouteSelection,
 } from '../api/types'
@@ -35,6 +35,20 @@ class MockError extends Error {
 
 const db = seed()
 /** The mock viewer's starred models: two to start, so the Favorites table shows. */
+/** Stakers sharing with each workspace buyer (staked free tier). */
+const freeTierStakers = new Map<string, Array<{ staker: string; expiresAt: number; expired: boolean }>>()
+
+/** Read staker, buyer and expiry out of a pasted free-tier code (the mock does not check the signature). */
+function decodeMockFreeTierCode(code: string): { staker: string; buyer: string; expiresAt: number } {
+  const prefix = 'antseed-free-tier-'
+  if (!code.startsWith(prefix)) throw new MockError(400, 'invalid_code', `Not a free-tier code: it should start with ${prefix}`)
+  const body = code.slice(prefix.length).replace(/-/g, '+').replace(/_/g, '/')
+  const bytes = Uint8Array.from(atob(body + '='.repeat((4 - (body.length % 4)) % 4)), (c) => c.charCodeAt(0))
+  if (bytes.length !== 113) throw new MockError(400, 'invalid_code', 'Free-tier code is incomplete')
+  const hex = (from: number, to: number) => Array.from(bytes.slice(from, to), (b) => b.toString(16).padStart(2, '0')).join('')
+  return { staker: `0x${hex(0, 20)}`, buyer: `0x${hex(20, 40)}`, expiresAt: Number(BigInt(`0x${hex(40, 48)}`)) }
+}
+
 const favorites = new Set<string>(['qwen3-coder-480b', `${db.peers[0]!.peerId}@fake-router`])
 const SESSION_KEY = 'antseed-console-mock-session'
 const roleMembers: Record<string, string> = { owner: 'mem_owner', admin: 'mem_ali', member: 'mem_sam', wsadmin: 'mem_wade' }
@@ -875,6 +889,39 @@ const routes: Array<[string, string, Handler]> = [
     return { ok: true }
   }],
   ['GET', '/workspaces/:id/rewards', ({ params }) => { const { workspace, member } = requireWorkspace(params['id']!, 'admin'); return { address: workspace.walletAddress, pendingAnts: '44.75', claimedAnts: '0', epochs: [{ epoch: 12, pendingAnts: '0', claimed: true }, { epoch: 13, pendingAnts: '21.25', claimed: false }, { epoch: 14, pendingAnts: '20', claimed: false }], legacy: { pendingAnts: '3.5', contract: fakeAddress(105), epochs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] }, operator: currentOperator(workspace, member) } }],
+  ['GET', '/workspaces/:id/free-tier', ({ params }) => {
+    const { workspace } = requireWorkspace(params['id']!, 'member')
+    return { buyer: workspace.walletAddress, stakers: freeTierStakers.get(workspace.id) ?? [] }
+  }],
+  ['GET', '/workspaces/:id/free-tier/stake', ({ params }) => {
+    const { workspace } = requireWorkspace(params['id']!, 'member')
+    // Weekly epochs from an obvious fake genesis. The buyer's own Delta stake has
+    // 10 weeks left (20× now, 5× next week); a shared staker max-locks enough for Beta's stakers-only model.
+    const genesis = 1_700_000_000
+    const epochDuration = 604_800
+    const currentEpoch = Math.floor((Date.now() / 1000 - genesis) / epochDuration)
+    const buyer = String(workspace.walletAddress)
+    const position = { startEpoch: currentEpoch - 20, closedAtEpoch: null, maxLocked: false, maxLockedNext: false, expiresAt: null }
+    const pools: FreeTierStake['pools'] = [{ agentId: 86_903, positions: [{ ...position, id: 41, staker: buyer.toLowerCase(), ants: 270_000, endEpoch: currentEpoch + 10 }] }]
+    const shared = (freeTierStakers.get(workspace.id) ?? []).filter((entry) => !entry.expired)[0]
+    if (shared) pools.unshift({ agentId: 86_901, positions: [{ ...position, id: 42, staker: shared.staker.toLowerCase(), ants: 450_000, endEpoch: currentEpoch + 104, maxLocked: true, maxLockedNext: true, expiresAt: shared.expiresAt }] })
+    return { buyer, currentEpoch, genesis, epochDuration, pools }
+  }],
+  ['POST', '/workspaces/:id/free-tier', ({ params, body }) => {
+    const { workspace } = requireWorkspace(params['id']!, 'admin')
+    const decoded = decodeMockFreeTierCode(String((body as { code?: unknown })?.code ?? '').trim())
+    if (decoded.buyer.toLowerCase() !== String(workspace.walletAddress).toLowerCase()) {
+      throw new MockError(400, 'invalid_code', `This code is for buyer ${decoded.buyer}, not ${workspace.walletAddress}. Ask the staker for a code for your buyer address.`)
+    }
+    const kept = (freeTierStakers.get(workspace.id) ?? []).filter((entry) => entry.staker !== decoded.staker)
+    freeTierStakers.set(workspace.id, [...kept, { staker: decoded.staker, expiresAt: decoded.expiresAt, expired: decoded.expiresAt * 1000 <= Date.now() }])
+    return { buyer: workspace.walletAddress, stakers: freeTierStakers.get(workspace.id) }
+  }],
+  ['DELETE', '/workspaces/:id/free-tier/:staker', ({ params }) => {
+    const { workspace } = requireWorkspace(params['id']!, 'admin')
+    freeTierStakers.set(workspace.id, (freeTierStakers.get(workspace.id) ?? []).filter((entry) => entry.staker.toLowerCase() !== params['staker']!.toLowerCase()))
+    return { buyer: workspace.walletAddress, stakers: freeTierStakers.get(workspace.id) }
+  }],
   ['GET', '/chain', () => db.chain],
 
   ['GET', '/peers', () => db.peers],

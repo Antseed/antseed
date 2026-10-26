@@ -45,6 +45,14 @@
       "import": "./dist/discovery/verifier-capabilities.js",
       "types": "./dist/discovery/verifier-capabilities.d.ts"
     },
+    "./free-tier-program": {
+      "import": "./dist/payments/free-tier-program.js",
+      "types": "./dist/payments/free-tier-program.d.ts"
+    },
+    "./free-tier-stake": {
+      "import": "./dist/payments/free-tier-stake.js",
+      "types": "./dist/payments/free-tier-stake.d.ts"
+    },
     "./tee-status": {
       "import": "./dist/verification/tee-status.js",
       "types": "./dist/verification/tee-status.d.ts"

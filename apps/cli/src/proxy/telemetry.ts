@@ -3,6 +3,14 @@ import { ROUTE_SELECTION_HEADER } from './route-selection.js'
 import { extractUsage, toNonNegativeInt } from '@antseed/api-adapter'
 import { pickProviderForPeer } from './routing.js'
 import { extractRequestedService } from './request-utils.js'
+import { FREE_TIER_SERVED_COVERED, FREE_TIER_SERVED_HEADER } from '@antseed/node/free-tier-program'
+
+/** Whether the seller marked a response as covered by its free allowance (nothing charged). */
+export function coveredByFreeAllowance(headers: Record<string, string | string[] | undefined>): boolean {
+  return Object.entries(headers).some(([name, value]) =>
+    name.toLowerCase() === FREE_TIER_SERVED_HEADER
+    && (Array.isArray(value) ? value : [value]).some((entry) => entry?.trim().toLowerCase() === FREE_TIER_SERVED_COVERED))
+}
 
 const decoder = new TextDecoder()
 
@@ -292,7 +300,10 @@ export function computeResponseTelemetry(
   }
 
   let estimatedCostUsd: number | null = null
-  if (
+  if (coveredByFreeAllowance(responseHeaders)) {
+    // The seller's free allowance covered it: nothing is charged at the listed price.
+    estimatedCostUsd = 0
+  } else if (
     pricing.inputUsdPerMillion !== null &&
     pricing.outputUsdPerMillion !== null &&
     Number.isFinite(pricing.inputUsdPerMillion) &&

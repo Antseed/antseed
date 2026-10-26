@@ -55,6 +55,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'connect/api',
         'connect/routing',
+        'connect/staked-free-tier',
         'connect/agents',
         'connect/tunnels',
         'connect/buyer-config',

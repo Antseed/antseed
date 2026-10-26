@@ -8,6 +8,7 @@ import { homedir } from 'node:os';
 import { readFile } from 'node:fs/promises';
 import { resolveChainConfig } from '@antseed/node';
 import { registerRoutes } from './routes.js';
+import { registerFreeTierDelegationRoutes } from './free-tier-delegations.js';
 import { loadCryptoContext, type CryptoContext, type PaymentCryptoConfig } from './crypto-context.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -82,10 +83,10 @@ export async function createServer(options: PaymentsServerOptions) {
   // Resolve chain config: protocol defaults + user overrides from config.json
   let userOverrides: Record<string, unknown> = {};
   let proxyPort = 8377;
+  const cfgPath = options.configPath ?? (options.dataDir
+    ? path.join(options.dataDir, 'config.json')
+    : path.join(homedir(), '.antseed', 'config.json'));
   try {
-    const cfgPath = options.configPath ?? (options.dataDir
-      ? path.join(options.dataDir, 'config.json')
-      : path.join(homedir(), '.antseed', 'config.json'));
     const raw = await readFile(cfgPath, 'utf-8');
     const config = JSON.parse(raw) as Record<string, unknown>;
     const payments = (config.payments ?? {}) as Record<string, unknown>;
@@ -127,6 +128,11 @@ export async function createServer(options: PaymentsServerOptions) {
   };
 
   registerRoutes(fastify, { cryptoCtx, cryptoConfig, chainConfig, proxyPort });
+  registerFreeTierDelegationRoutes(fastify, {
+    configPath: cfgPath,
+    chainId: chainConfig.evmChainId,
+    buyerAddress: cryptoCtx?.evmAddress ?? null,
+  });
 
   fastify.post('/api/pay/open-rewards', async (_request, reply) => {
     if (!options.onOpenRewards) return reply.status(409).send({ ok: false, error: 'Open the ANTS dashboard with antseed ants, using this account’s data directory, then select Rewards.' });

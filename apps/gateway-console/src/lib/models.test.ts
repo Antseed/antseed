@@ -4,7 +4,7 @@ import { findModel, priceSummary } from './models'
 
 const model = (id: string, extra: Partial<NetworkModel> = {}): NetworkModel => ({
   id, name: id, aliases: [], type: 'text', tags: [], contextLength: null, capabilities: [], sellers: 1,
-  inputUsdPerMillion: { min: 1, max: 1 }, outputUsdPerMillion: { min: 2, max: 2 }, free: false, teeSellers: 0, fullTeeSellers: 0, verifiedSellers: 0, offers: [], ...extra,
+  inputUsdPerMillion: { min: 1, max: 1 }, outputUsdPerMillion: { min: 2, max: 2 }, free: false, freeForStakers: false, freeAllowance: false, teeSellers: 0, fullTeeSellers: 0, verifiedSellers: 0, offers: [], ...extra,
 })
 
 const models = [
