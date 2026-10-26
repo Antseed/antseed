@@ -746,6 +746,37 @@ describe('BuyerPaymentManager', () => {
     expect(sent.cumulativeAmount).toBe('50000');
   });
 
+  it('handleNeedAuth refuses to sign for a request the seller served from a free allowance', async () => {
+    const sellerPeerId = fakePeerId('seller-needauth-covered');
+    const otherSellerPeerId = fakePeerId('seller-needauth-fallback');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    const otherChannelId = await manager.authorizeSpending(otherSellerPeerId, mux, 10_000n, TEST_PRICING);
+    mux.sentSpendingAuths.length = 0;
+    // The same charge signs once nothing marks it covered (see the last step),
+    // so only the covered-request guard refuses it here.
+    const needAuth = (id: string) => ({
+      channelId: id,
+      requiredCumulativeAmount: '50000',
+      currentAcceptedCumulative: '10000',
+      deposit: '1000000',
+      requestId: 'covered-request',
+    });
+    manager.markRequestCovered(sellerPeerId, 'covered-request');
+
+    await manager.handleNeedAuth(sellerPeerId, needAuth(channelId), mux);
+    expect(mux.sentSpendingAuths).toHaveLength(0);
+    expect(manager.isRequestCovered(sellerPeerId, 'covered-request')).toBe(true);
+
+    // A fallback seller serving the same request ID is paid normally.
+    await manager.handleNeedAuth(otherSellerPeerId, needAuth(otherChannelId), mux);
+    expect(mux.sentSpendingAuths).toHaveLength(1);
+
+    // A paid retry to the same seller releases the covered attempt first.
+    manager.releaseRequestCoverage(sellerPeerId, 'covered-request');
+    await manager.handleNeedAuth(sellerPeerId, needAuth(channelId), mux);
+    expect(mux.sentSpendingAuths).toHaveLength(2);
+  });
+
   it('handleNeedAuth propagates durable persistence failures without transmitting', async () => {
     const sellerPeerId = fakePeerId('seller-needauth-persist-fail');
     const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);

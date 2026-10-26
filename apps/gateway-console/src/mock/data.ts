@@ -100,7 +100,7 @@ export function seed() {
     services: index === 2 ? manyServices : models.filter((_, m) => (m + index) % 3 !== 0).map((service, m) => {
       const free = index === 3
       const base = 0.2 + ((index * 7 + m * 3) % 10) / 4
-      return { provider: 'openai', service, inputUsdPerMillion: free ? 0 : Number(base.toFixed(2)), outputUsdPerMillion: free ? 0 : Number((base * 3).toFixed(2)), cachedInputUsdPerMillion: free ? 0 : Number((base / 4).toFixed(3)), categories: ['chat'] }
+      return { provider: 'openai', service, inputUsdPerMillion: free ? 0 : Number(base.toFixed(2)), outputUsdPerMillion: free ? 0 : Number((base * 3).toFixed(2)), cachedInputUsdPerMillion: free ? 0 : Number((base / 4).toFixed(3)), categories: ['chat'], paid: !free }
     }),
     trustScore: [92, 78, 88, 41, 65, null, 55, 83][index]!,
     reputationScore: [90, 74, 85, 50, 60, null, 52, 80][index]!,
@@ -113,6 +113,12 @@ export function seed() {
     // Gamma is attested end to end, Beta at the seller node only, Epsilon not checked yet.
     teeScope: index === 2 ? 'end-to-end' as const : index === 1 ? 'seller-node' as const : null,
     stakeAnts: index < 5 ? `${(index + 1) * 2500}.0` : null,
+    agentId: 86_900 + index,
+    // Delta's free models come with the default staked tiers.
+    freeTier: index === 3 ? {
+      base: { maxRequestsPerAddress: 1000, maxRequestsPerIp: null, windowMs: 86_400_000 },
+      stakeTiers: [{ minPower: 520_000, multiplier: 5 }, { minPower: 2_600_000, multiplier: 20 }, { minPower: 10_400_000, multiplier: 'unlimited' as const }],
+    } : null,
     usageShareBps: [1200, 800, 450, 300, 200, null, 90, 600][index]!,
     washFlagged: index === 6,
     lastSeen: now - index * 60_000,
@@ -123,6 +129,14 @@ export function seed() {
     requests24h: [912, 340, 120, 55, 20, 0, 0, 210][index]!,
   }))
   // A routing service: sells rankings, not models, so it lists none.
+  // Beta's first model is priced, and free only for its stakers: 45M power (≈ 865k ANTS locked for a year) gets 200 a day.
+  const beta = peers[1]!
+  beta.services = beta.services.map((service, m) => m === 0 ? {
+    ...service,
+    freeTier: { base: { maxRequestsPerAddress: 200, maxRequestsPerIp: null, windowMs: 86_400_000, stakersOnly: true }, stakeTiers: [{ minPower: 45_000_000, multiplier: 1 }] },
+  } : service)
+  const delta = peers[3]!
+  delta.services = delta.services.map((service) => ({ ...service, freeTier: delta.freeTier }))
   const fakeRouter: Peer = { ...peers[7]!, peerId: fakePeerId(9), displayName: 'Fake Router Iota', services: [], verified: false, verificationLinks: [], tee: false, teeScope: null, washFlagged: false, requests24h: 48 }
   peers.push(fakeRouter)
   const peerLists: PeerList[] = [
@@ -252,6 +266,7 @@ export function mockNetworkModels(peers: readonly Peer[]): NetworkModel[] {
         protocols: service.apiProtocols ?? ['openai-chat-completions'], inputUsdPerMillion: service.inputUsdPerMillion,
         outputUsdPerMillion: service.outputUsdPerMillion, cachedInputUsdPerMillion: service.cachedInputUsdPerMillion, usdPerImage: null,
         contextLength: service.service.includes('llama') ? 128_000 : service.service.includes('qwen') ? 262_144 : null, free,
+        agentId: peer.agentId, freeTier: service.freeTier ?? (free ? peer.freeTier : null),
         reputationScore: peer.reputationScore, trustScore: peer.trustScore, verified: peer.verified, verificationLinks: peer.verificationLinks, tee: peer.tee, teeScope: peer.teeScope, latencyMsP50: peer.latencyMsP50, firstTokenMsP50: peer.firstTokenMsP50, tokensPerSecondP50: peer.tokensPerSecondP50,
       })
       offers.set(service.service, list)
@@ -259,7 +274,7 @@ export function mockNetworkModels(peers: readonly Peer[]): NetworkModel[] {
   }
   const media = (id: string, type: 'image' | 'video', price: number): [string, NetworkModelOffer[], 'image' | 'video'] => [id, peers.slice(0, 2).map((peer, index) => ({
     peerId: peer.peerId, displayName: peer.displayName, serviceId: id, provider: 'fal', protocols: [], inputUsdPerMillion: null, outputUsdPerMillion: null,
-    cachedInputUsdPerMillion: null, usdPerImage: { min: price * (index + 1), max: price * (index + 1) }, contextLength: null, free: false,
+    cachedInputUsdPerMillion: null, usdPerImage: { min: price * (index + 1), max: price * (index + 1) }, contextLength: null, free: false, agentId: peer.agentId, freeTier: null,
     reputationScore: peer.reputationScore, trustScore: peer.trustScore, verified: peer.verified, verificationLinks: peer.verificationLinks, tee: peer.tee, teeScope: peer.teeScope, latencyMsP50: peer.latencyMsP50, firstTokenMsP50: peer.firstTokenMsP50, tokensPerSecondP50: peer.tokensPerSecondP50,
   })), type]
   const entries: Array<[string, NetworkModelOffer[], NetworkModel['type']]> = [
@@ -276,7 +291,9 @@ export function mockNetworkModels(peers: readonly Peer[]): NetworkModel[] {
       sellers: ranked.length,
       inputUsdPerMillion: range(ranked.map((offer) => offer.inputUsdPerMillion)),
       outputUsdPerMillion: range(ranked.map((offer) => offer.outputUsdPerMillion)),
-      free: ranked.some((offer) => offer.free),
+      free: ranked.some((offer) => offer.free && !offer.freeTier?.base.stakersOnly),
+      freeForStakers: ranked.some((offer) => offer.freeTier?.base.stakersOnly === true),
+      freeAllowance: ranked.some((offer) => !offer.free && offer.freeTier !== null && !offer.freeTier.base.stakersOnly),
       teeSellers: ranked.filter((offer) => offer.tee).length,
       fullTeeSellers: ranked.filter((offer) => offer.teeScope === 'end-to-end').length,
       verifiedSellers: ranked.filter((offer) => offer.verified).length,

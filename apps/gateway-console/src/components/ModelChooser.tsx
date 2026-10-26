@@ -62,6 +62,7 @@ export function ModelChooser({ models, loading, value, onChange, favorites = [],
                       </span>
                     </span>
                     {model.free && <Badge tone="success">Free</Badge>}
+                    {!model.free && model.freeForStakers && <Badge tone="success">Free for stakers</Badge>}
                   </button>
                 </li>
               ))}

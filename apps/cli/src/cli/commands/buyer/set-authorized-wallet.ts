@@ -35,6 +35,8 @@ interface BrowserAuthorizationInput {
     onPaymentCompleted: () => void;
   }) => Promise<AuthorizationServer>;
   log?: (message: string) => void;
+  /** Pay-page action to open. Default: `authorize`. */
+  action?: string;
 }
 
 interface SetAuthorizedWalletOptions {
@@ -60,8 +62,8 @@ export async function loadAuthorizingIdentity(dataDir: string, name: string | un
   return { wallet: identity.wallet, address: identity.wallet.address, identityHex: identity.wallet.privateKey.replace(/^0x/, '') };
 }
 
-export function buildAuthorizedWalletUrl(port: number, token: string): string {
-  const params = new URLSearchParams({ token, page: 'pay', action: 'authorize' });
+export function buildAuthorizedWalletUrl(port: number, token: string, action = 'authorize'): string {
+  const params = new URLSearchParams({ token, page: 'pay', action });
   return `http://127.0.0.1:${port}?${params.toString()}`;
 }
 
@@ -84,8 +86,8 @@ export async function runBrowserWalletAuthorization(input: BrowserAuthorizationI
     if (!bound || typeof bound === 'string') throw new Error('Wallet authorization server is not listening.');
     if (!server.bearerToken) throw new Error('Wallet authorization server did not provide a session token.');
 
-    const url = buildAuthorizedWalletUrl(bound.port, server.bearerToken);
-    log(`Open this secure local page to connect the authorized wallet:\n${url}`);
+    const url = buildAuthorizedWalletUrl(bound.port, server.bearerToken, input.action);
+    log(`Open this secure local page to connect ${input.action && input.action !== 'authorize' ? 'your wallet' : 'the authorized wallet'}:\n${url}`);
     if (input.openBrowser) {
       try {
         await input.openBrowser(url);

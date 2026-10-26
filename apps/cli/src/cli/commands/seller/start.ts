@@ -41,7 +41,7 @@ import { parseBootstrapList, toBootstrapConfig } from '@antseed/node/discovery'
 import { setupShutdownHandler } from '../../shutdown.js'
 import { loadProviderPlugin, loadProverPlugin, buildPluginConfig, getPackageVersions } from '../../../plugins/loader.js'
 import { ensurePluginsUpToDate } from '../../../plugins/drift.js'
-import { resolveEffectiveSellerConfig, type SellerRuntimeOverrides } from '../../../config/effective.js'
+import { pricedSellerServices, resolveEffectiveSellerConfig, resolveSellerFreeTier, type SellerRuntimeOverrides } from '../../../config/effective.js'
 import { ensureDerivedIdentityDisplayName } from '../../../config/identity-display-name.js'
 import { AntAgentProvider, loadAntAgent, type AntAgentDefinition } from '@antseed/ant-agent'
 import { resolvePluginPackage } from '../../../plugins/registry.js'
@@ -480,6 +480,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         console.error(chalk.dim(`Configured providers: ${configuredProviderNames.join(', ') || '(none)'}`))
         process.exit(1)
       }
+      const sellerFreeTier = resolveSellerFreeTier(effectiveSellerConfig, selectedProviderNames)
 
       // Refresh any installed plugin whose pinned `@antseed/*` core deps are
       // older than the versions the CLI itself bundles. Must run BEFORE the
@@ -544,6 +545,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
 
       let paymentConfig: PaymentConfig | null = null
       let depositRelayAddress: string | undefined
+      let sellerPoolsAddress: string | undefined
       if (preferredMethod === 'crypto') {
         const cc = resolveChainConfig({
           chainId: config.payments.crypto?.chainId,
@@ -557,8 +559,10 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           identityRegistryAddress: config.payments.crypto?.identityRegistryAddress,
           emissionsContractAddress: config.payments.crypto?.emissionsContractAddress,
           depositRelayAddress: config.payments.crypto?.depositRelayAddress,
+          sellerPoolsAddress: config.payments.crypto?.sellerPoolsAddress,
         })
         depositRelayAddress = cc.depositRelayAddress
+        sellerPoolsAddress = cc.sellerPoolsAddress || undefined
         const defaultLockAmountUSDCBaseUnits = toUSDCBaseUnits(
           config.payments.crypto?.defaultLockAmountUSDC ?? defaultDepositAmountUSDC,
           defaultDepositAmountUSDCBaseUnits,
@@ -681,8 +685,14 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       }
       console.log(chalk.dim(`  reserve floor: ${effectiveSellerConfig.reserveFloor}`))
       console.log(chalk.dim(`  max concurrent buyers: ${effectiveSellerConfig.maxConcurrentBuyers}`))
-      if (effectiveSellerConfig.freeTier) {
-        console.log(chalk.dim(`  free tier: ${new SellerFreeTierLimiter(effectiveSellerConfig.freeTier).describe()}`))
+      if (sellerFreeTier) {
+        const freeTierPreview = new SellerFreeTierLimiter(sellerFreeTier)
+        freeTierPreview.setPaidServices(pricedSellerServices(effectiveSellerConfig, selectedProviderNames))
+        console.log(chalk.dim('  free tier:'))
+        for (const line of freeTierPreview.describePrograms()) console.log(chalk.dim(`    ${line}`))
+        if (!sellerFreeTier.maxRequestsPerAddress && !sellerFreeTier.maxRequestsPerIp) {
+          console.log(chalk.dim('    other free models: unlimited'))
+        }
       } else {
         console.log(chalk.dim('  free tier: unlimited for fully zero-priced services'))
       }
@@ -776,7 +786,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         ...(dhtPort ? { dhtPort } : {}),
         ...(signalingPort ? { signalingPort } : {}),
         ...(maxUploadBodyBytes !== undefined ? { maxUploadBodyBytes } : {}),
-        ...(effectiveSellerConfig.freeTier ? { freeTier: effectiveSellerConfig.freeTier } : {}),
+        ...(sellerFreeTier ? { freeTier: sellerFreeTier } : {}),
         ...(effectiveSellerConfig.freeUsage ? { freeUsage: effectiveSellerConfig.freeUsage } : {}),
         ...(acceptInboundAddress ? { acceptInboundAddress } : {}),
         payments: {
@@ -802,6 +812,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
             identityRegistryAddress: resolveChainConfig({ chainId: paymentConfig.crypto.chainId }).identityRegistryAddress,
             stakingAddress: resolveChainConfig({ chainId: paymentConfig.crypto.chainId }).stakingContractAddress,
             chainId: resolveChainConfig({ chainId: paymentConfig.crypto.chainId }).evmChainId,
+            ...(sellerPoolsAddress ? { sellerPoolsAddress } : {}),
             ...(depositRelayAddress ? { depositRelayAddress } : {}),
           } : {}),
         },

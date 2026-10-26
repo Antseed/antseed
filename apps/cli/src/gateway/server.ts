@@ -5,7 +5,7 @@ import { nativeVideoAcceptance, nativeVideoRoute, type NativeVideoRoute } from '
 import { DEFAULT_BUYER_IDENTITY, VIDEO_JOB_RETIRED_HEADER, VIDEO_PRICE_HEADER } from '@antseed/node'
 import { SPEND_ATTRIBUTION_HEADER } from '../proxy/spend-attribution.js'
 import { decodeServedSelection, ROUTE_SELECTION_HEADER, type ServedSelection } from '../proxy/route-selection.js'
-import { ROUTER_PEER_ID_HEADER, ROUTER_RANK_HEADER, ROUTER_SERVICE_HEADER } from '../proxy/telemetry.js'
+import { coveredByFreeAllowance, ROUTER_PEER_ID_HEADER, ROUTER_RANK_HEADER, ROUTER_SERVICE_HEADER } from '../proxy/telemetry.js'
 import { BUYER_IDENTITY_HEADER, MAX_VIDEO_COST_HEADER } from '../proxy/request-utils.js'
 import { GATEWAY_CONTROL_HEADER, ROUTING_POLICY_HEADER, encodePolicyHeader, meaningfulPolicy, policyAllowsModel, type RoutingPolicy } from '../routing-policy/policy.js'
 import { effectiveKeyLimits, newRequestTag, videoJobKey, type AdmitOptions, type GatewayAccounting, type KeyContext } from './accounting.js'
@@ -698,7 +698,8 @@ export class GatewayServer {
           respondedAt = Date.now()
           const contentType = firstHeader(upstreamRes.headers['content-type']).toLowerCase()
           // A video is priced per second, not per token: zero token prices do not make it free.
-          servedFree = !request.video && freeSellerPricing(upstreamRes.headers)
+          // A priced model's response the seller's free allowance covered is free too.
+          servedFree = !request.video && (freeSellerPricing(upstreamRes.headers) || coveredByFreeAllowance(upstreamRes.headers))
           if (request.video?.action === 'create' && status >= 200 && status < 300) {
             videoCreateChunks = collectPrefix(upstreamRes, MAX_ERROR_BODY_BYTES)
             videoPriceHeader = firstHeader(upstreamRes.headers[VIDEO_PRICE_HEADER])

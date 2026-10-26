@@ -1,4 +1,4 @@
-import type { BuyerCLIConfig, AntseedConfig, SellerCLIConfig } from './types.js';
+import type { BuyerCLIConfig, AntseedConfig, SellerCLIConfig, SellerFreeTierCLIConfig } from './types.js';
 import { MIN_BUYER_MAX_STREAM_DURATION_MS, MIN_BUYER_METADATA_FETCH_TIMEOUT_MS } from './validation.js';
 
 export interface SellerRuntimeOverrides {
@@ -111,6 +111,43 @@ export function resolveEffectiveSellerConfig(input: ResolveEffectiveConfigInput)
   }
 
   return seller;
+}
+
+/**
+ * The node's free-tier config for the given providers: the seller-wide
+ * program plus every service that sets its own. Undefined when there is none.
+ */
+export function resolveSellerFreeTier(
+  seller: SellerCLIConfig,
+  providerNames: readonly string[],
+): (SellerFreeTierCLIConfig & { services?: Record<string, SellerFreeTierCLIConfig> }) | undefined {
+  const services: Record<string, SellerFreeTierCLIConfig> = {};
+  for (const name of providerNames) {
+    for (const [serviceId, service] of Object.entries(seller.providers[name]?.services ?? {})) {
+      if (service.freeTier) services[serviceId] = service.freeTier;
+    }
+  }
+  if (!seller.freeTier && Object.keys(services).length === 0) return undefined;
+  return {
+    ...(seller.freeTier ?? {}),
+    ...(Object.keys(services).length > 0 ? { services } : {}),
+  };
+}
+
+/** Services of `providerNames` that charge: tokens (their own pricing or the provider default) or any priced unit-billing model. */
+export function pricedSellerServices(seller: SellerCLIConfig, providerNames: readonly string[]): string[] {
+  const priced = new Set<string>();
+  for (const name of providerNames) {
+    const provider = seller.providers[name];
+    for (const [serviceId, service] of Object.entries(provider?.services ?? {})) {
+      const pricing = service.pricing ?? provider?.defaults;
+      const tokenPriced = Boolean(pricing && (pricing.inputUsdPerMillion > 0 || pricing.outputUsdPerMillion > 0 || (pricing.cachedInputUsdPerMillion ?? 0) > 0));
+      const unitPriced = Object.values(service.unitBillingModels ?? {})
+        .some((model) => (model?.components ?? []).some((component) => !(component.priceUsd <= 0)));
+      if (tokenPriced || unitPriced) priced.add(serviceId);
+    }
+  }
+  return [...priced];
 }
 
 export function resolveEffectiveBuyerConfig(input: ResolveEffectiveConfigInput): BuyerCLIConfig {

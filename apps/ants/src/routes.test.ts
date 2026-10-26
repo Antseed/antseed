@@ -148,3 +148,42 @@ describe('dashboard API', () => {
     expect(response.json()).toEqual({ ok: false, error: 'RPC temporarily unavailable' });
   });
 });
+
+describe('free-tier codes', () => {
+  function withSigner(wallet: import('ethers').Wallet | import('ethers').HDNodeWallet | null, browserSigning = false) {
+    const app = Fastify();
+    apps.push(app);
+    const ctx = { signer: wallet ?? undefined, address: wallet?.address ?? '0x0000000000000000000000000000000000000abc', chain: { chainId: 'base-local', evmChainId: 31337 }, invalidate: vi.fn() } as unknown as AntsContext;
+    registerRoutes(app, { ctx, jobs: new JobRunner(), views: new ViewCache(), readOnly: !wallet, dataDir: null, originBuyer: ctx.address, ...(browserSigning ? { browserSigning: {} as never } : {}) });
+    return app;
+  }
+  const buyer = `0x${'11'.repeat(20)}`;
+  const later = () => Math.floor(Date.now() / 1000) + 86_400;
+
+  it('signs with the dashboard key and returns a code the buyer can accept', async () => {
+    const { Wallet } = await import('ethers');
+    const { acceptFreeTierDelegationCode } = await import('@antseed/node');
+    const staker = Wallet.createRandom();
+    const expiresAt = later();
+    const response = await withSigner(staker).inject({ method: 'POST', url: '/api/free-tier/code', payload: { buyer, expiresAt } });
+    const { code } = response.json().data;
+    expect(acceptFreeTierDelegationCode(code, buyer, 31337)).toMatchObject({ staker: staker.address, expiresAt });
+  });
+
+  it('accepts a browser wallet signature only from the connected staker', async () => {
+    const { Wallet } = await import('ethers');
+    const { FREE_TIER_DELEGATION_TYPES, freeTierDelegationMessage, makeFreeTierDelegationDomain } = await import('@antseed/node');
+    const staker = Wallet.createRandom();
+    const other = Wallet.createRandom();
+    const expiresAt = later();
+    const sign = (wallet: typeof staker) => wallet.signTypedData(makeFreeTierDelegationDomain(31337), FREE_TIER_DELEGATION_TYPES, freeTierDelegationMessage({ staker: staker.address, buyer, expiresAt }));
+    const app = withSigner(staker, true);
+    expect((await app.inject({ method: 'POST', url: '/api/free-tier/code', payload: { buyer, expiresAt, signature: await sign(staker) } })).json().ok).toBe(true);
+    const forged = await app.inject({ method: 'POST', url: '/api/free-tier/code', payload: { buyer, expiresAt, signature: await sign(other) } });
+    expect(forged.json().error).toMatch(/not from staker/);
+    const unsigned = await app.inject({ method: 'POST', url: '/api/free-tier/code', payload: { buyer, expiresAt } });
+    expect(unsigned.json().error).toMatch(/Connect the staking wallet/);
+    const badBuyer = await app.inject({ method: 'POST', url: '/api/free-tier/code', payload: { buyer: 'nope', expiresAt } });
+    expect(badBuyer.json().error).toMatch(/buyer address/);
+  });
+});

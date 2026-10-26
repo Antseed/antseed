@@ -72,6 +72,7 @@ import { registerAppIpc } from './ipc/app.js';
 import { registerDesktopIpc } from './ipc/desktop.js';
 import { registerFloatIpc } from './ipc/float.js';
 import { registerStakingIpc } from './ipc/staking.js';
+import { registerFreeTierIpc } from './ipc/free-tier.js';
 import { stakingSessions } from './staking/portal.js';
 import { registerPaymentsIpc } from './ipc/payments.js';
 import { registerRuntimeIpc } from './ipc/runtime.js';
@@ -298,6 +299,7 @@ function getCombinedProcessState(): RuntimeProcessState[] {
 // passed in rather than reached for.
 registerPaymentsIpc();
 registerStakingIpc();
+registerFreeTierIpc();
 registerDesktopIpc();
 registerAppIpc();
 registerFloatIpc();

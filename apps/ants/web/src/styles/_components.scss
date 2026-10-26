@@ -475,6 +475,8 @@ button.btn:not([class*="btn--"]) { @extend .btn--primary; }
 .form-row > .action, .form-row > .btn { margin-top: 23px; }
 .form-row > .link-button { margin-top: 32px; }
 .form-row .field__label { white-space: nowrap; }
+.free-tier-code { display: flex; align-items: flex-start; gap: 6px; padding: 10px 12px; border: 1px solid var(--pc-line); border-radius: 10px; }
+.free-tier-code code { font: 12px/17px var(--font-mono); word-break: break-all; flex: 1; }
 
 .field { display: flex; flex-direction: column; gap: 6px; flex: 0 0 auto; }
 .field__label { color: var(--pc-sub); font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; line-height: 17px; }
