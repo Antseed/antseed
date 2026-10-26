@@ -25,8 +25,8 @@ export interface FreeTierRouteSeams {
   access: typeof requireWorkspaceAccess
   walletAddress: (name: string) => Promise<string | null>
   resolveChain: () => Promise<AntsChainConfig>
-  /** Reads the counted stake; defaults to the chain through `resolveChain`. */
-  readStake?: (buyer: string, stakers: Array<{ staker: string; expiresAt: number }>) => Promise<Omit<FreeTierStake, 'buyer'>>
+  /** Reads the counted stake on `chain`; defaults to a live chain read. */
+  readStake?: (chain: AntsChainConfig, buyer: string, stakers: Array<{ staker: string; expiresAt: number }>) => Promise<Omit<FreeTierStake, 'buyer'>>
 }
 
 /** Stake changes at most once a week; the panel can lag it by a minute. */
@@ -73,35 +73,51 @@ export function registerFreeTierRoutes(router: ConsoleRouter, deps: ConsoleDeps,
     return sharing(ws.buyer)
   })
 
-  // One chain context per process, its endpoints ranked once.
-  let context: Promise<AntsContext> | null = null
-  const chainContext = () => {
-    context ??= (async () => {
-      const ctx = new AntsContext({ chain: await seams.resolveChain(), address: ZeroAddress })
-      await ctx.selectRpc()
-      return ctx
-    })()
-    context.catch(() => { context = null })
-    return context
+  // One chain context for the current chain settings, its endpoints ranked once.
+  // Settings can change while the gateway runs (RPC URLs in Settings), so each
+  // read resolves them and a changed fingerprint gets a fresh context.
+  let context: { key: string; ctx: Promise<AntsContext> } | null = null
+  const chainContext = (chain: AntsChainConfig, key: string) => {
+    if (context?.key !== key) {
+      const entry = {
+        key,
+        ctx: (async () => {
+          const ctx = new AntsContext({ chain, address: ZeroAddress })
+          await ctx.selectRpc()
+          return ctx
+        })(),
+      }
+      entry.ctx.catch(() => { if (context === entry) context = null })
+      context = entry
+    }
+    return context.ctx
   }
-  const readStake = seams.readStake ?? (async (buyer, stakers) => freeTierStake(await chainContext(), buyer, stakers))
+  const readStake = seams.readStake ?? (async (chain, buyer, stakers) => freeTierStake(await chainContext(chain, JSON.stringify(chain)), buyer, stakers))
   const stakeCache = new Map<string, { at: number; value: Promise<FreeTierStake> }>()
 
   router.add('GET', '/workspaces/:id/free-tier/stake', async (request): Promise<FreeTierStake> => {
     const ws = await workspace(request, 'member')
     const { stakers } = await sharing(ws.buyer)
     const active = stakers.filter((entry) => !entry.expired).map(({ staker, expiresAt }) => ({ staker, expiresAt }))
-    const key = JSON.stringify([ws.buyer.toLowerCase(), active])
+    const unavailable = (error: unknown) =>
+      new ConsoleError(503, 'chain_unavailable', `Could not read stake from the chain: ${error instanceof Error ? error.message : String(error)}`)
+    let chain: AntsChainConfig
+    try {
+      chain = await seams.resolveChain()
+    } catch (error) {
+      throw unavailable(error)
+    }
+    const key = JSON.stringify([chain, ws.buyer.toLowerCase(), active])
     const cached = stakeCache.get(key)
     if (cached && deps.now() - cached.at < STAKE_TTL_MS) return cached.value
-    const value = readStake(ws.buyer, active).then((view) => ({ buyer: ws.buyer, ...view }))
+    const value = readStake(chain, ws.buyer, active).then((view) => ({ buyer: ws.buyer, ...view }))
     if (stakeCache.size >= 256) stakeCache.clear()
     stakeCache.set(key, { at: deps.now(), value })
     value.catch(() => { if (stakeCache.get(key)?.value === value) stakeCache.delete(key) })
     try {
       return await value
     } catch (error) {
-      throw new ConsoleError(503, 'chain_unavailable', `Could not read stake from the chain: ${error instanceof Error ? error.message : String(error)}`)
+      throw unavailable(error)
     }
   })
 

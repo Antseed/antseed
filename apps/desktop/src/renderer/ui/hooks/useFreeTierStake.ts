@@ -9,6 +9,8 @@ const FOCUS_REFRESH_MS = 30_000;
 let current: BuyerFreeTierStake | null = null;
 let loadedAt = 0;
 let inFlight: Promise<void> | null = null;
+/** A refresh asked for while a read was in flight: that read may predate the change, so read again after it. */
+let readAgain = false;
 let timer: ReturnType<typeof setInterval> | null = null;
 const listeners = new Set<() => void>();
 
@@ -25,6 +27,10 @@ function load(): Promise<void> {
       loadedAt = Date.now();
       inFlight = null;
       listeners.forEach((listener) => listener());
+      if (readAgain) {
+        readAgain = false;
+        void load();
+      }
     });
   return inFlight;
 }
@@ -36,7 +42,8 @@ function onFocus(): void {
 /** Re-read the counted stake, after a code is added or removed. */
 export function refreshFreeTierStake(): void {
   loadedAt = 0;
-  void load();
+  if (inFlight) readAgain = true;
+  else void load();
 }
 
 /**

@@ -55,4 +55,24 @@ describe('counted stake store', () => {
     expect(getFreeTierStake()?.pools[0]?.agentId).toBe(7);
     unsubscribe();
   });
+
+  it('reads again when a code changes while a read is still pending', async () => {
+    let codes = 0;
+    const pending: Array<() => void> = [];
+    fakeWindow(() => {
+      const seen = codes;
+      return new Promise((resolve) => pending.push(() => resolve({ ok: true, data: stake(seen) })));
+    });
+    const { getFreeTierStake, refreshFreeTierStake, subscribeFreeTierStake } = await import('./useFreeTierStake');
+    const unsubscribe = subscribeFreeTierStake(() => {});
+    // A code is added while the first read (from before it) is pending.
+    codes = 1;
+    refreshFreeTierStake();
+    expect(pending).toHaveLength(1);
+    pending.shift()!();
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+    pending.shift()!();
+    await vi.waitFor(() => expect(getFreeTierStake()?.pools[0]?.agentId).toBe(1));
+    unsubscribe();
+  });
 });

@@ -102,18 +102,23 @@ test('members read the stake each pool counts, from the buyer and every staker w
   }
   const reads: unknown[] = []
   const view = { currentEpoch: 10, genesis: 1000, epochDuration: 604_800, pools: [] }
+  let chain = { ...CHAIN, rpcUrl: 'https://rpc-one.example' }
   const router = new ConsoleRouter()
   registerFreeTierRoutes(router, { ...fakeDeps(store, () => NOW), configPath }, {
     access: fakeRequireWorkspaceAccess,
     walletAddress: async () => TEAM_BUYER,
-    resolveChain: async () => CHAIN,
-    readStake: async (buyer, stakers) => { reads.push([buyer, stakers]); return view },
+    resolveChain: async () => chain,
+    readStake: async (on, buyer, stakers) => { reads.push([on.rpcUrl, buyer, stakers]); return view },
   })
   try {
     assert.deepEqual(await call(router, 'GET', '/workspaces/ws_team/free-tier/stake', member), { buyer: TEAM_BUYER, ...view })
     await call(router, 'GET', '/workspaces/ws_team/free-tier/stake', member)
     // The expired staker is left out, and the second read is served from the cache.
-    assert.deepEqual(reads, [[TEAM_BUYER, [{ staker: live, expiresAt: LATER }]]])
+    assert.deepEqual(reads, [['https://rpc-one.example', TEAM_BUYER, [{ staker: live, expiresAt: LATER }]]])
+    // New RPC settings while the gateway runs: the next read uses them, not the cached result.
+    chain = { ...CHAIN, rpcUrl: 'https://rpc-two.example' }
+    await call(router, 'GET', '/workspaces/ws_team/free-tier/stake', member)
+    assert.deepEqual(reads.map((entry) => (entry as unknown[])[0]), ['https://rpc-one.example', 'https://rpc-two.example'])
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
