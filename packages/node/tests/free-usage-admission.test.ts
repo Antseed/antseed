@@ -1,9 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { Wallet } from 'ethers';
 import { MeteringStorage } from '../src/metering/storage.js';
 import { identityFromPrivateKeyHex } from '../src/p2p/identity.js';
 import { PaymentMux } from '../src/p2p/payment-mux.js';
 import { SellerFreeTierLimiter } from '../src/payments/seller-free-tier-limiter.js';
 import { SellerFreeUsageManager } from '../src/payments/seller-free-usage-manager.js';
+import type { FreeTierStakeResolver } from '../src/payments/free-tier-stake-resolver.js';
+import {
+  encodeFreeTierDelegationsHeader,
+  FREE_TIER_DELEGATION_TYPES,
+  freeTierDelegationMessage,
+  makeFreeTierDelegationDomain,
+} from '../src/payments/free-tier-delegation.js';
 import {
   computeFreeUsageChannelId,
   FREE_USAGE_OPEN_TYPES,
@@ -141,6 +149,34 @@ it('checks quota when a queued open executes, not when it arrives', async () => 
 it('preserves unlimited opening when no limiter is configured', async () => {
   const { manager, open, send, mux } = harness(null);
   manager.handleOpen(buyer.peerId, await signedOpen(), mux);
+  await drainOpenQueue();
+  expect(open).toHaveBeenCalledOnce();
+  expect(send).toHaveBeenCalledOnce();
+});
+
+it('counts the stake a buyer delegates in its open, before any request carries it', async () => {
+  // The only free model is stakers-only, so the buyer is admitted only with stake.
+  const limit = new SellerFreeTierLimiter({
+    services: { k3: { maxRequestsPerAddress: 10, stakersOnly: true, stakeTiers: [{ minPower: 100, multiplier: 1 }] } },
+  });
+  limit.setFreeServices(['k3']);
+  const staker = Wallet.createRandom();
+  const resolve = vi.fn(async (_buyer: string, stakers: string[]) => (stakers.includes(staker.address.toLowerCase())
+    ? { stakers, power: 100n * 10n ** 18n, positionIds: [1] }
+    : null));
+  limit.setStakeResolver({ resolve } as unknown as FreeTierStakeResolver, config.chainId);
+  const delegation = { staker: staker.address, buyer: buyer.wallet.address, expiresAt: Math.floor(Date.now() / 1000) + 3600 };
+  const signature = await staker.signTypedData(makeFreeTierDelegationDomain(config.chainId), FREE_TIER_DELEGATION_TYPES, freeTierDelegationMessage(delegation));
+
+  const { manager, open, send, mux } = harness(limit);
+  manager.handleOpen(buyer.peerId, await signedOpen(), mux, remoteIp);
+  await drainOpenQueue();
+  expect(open).not.toHaveBeenCalled();
+
+  manager.handleOpen(buyer.peerId, {
+    ...(await signedOpen('55')),
+    freeTierDelegations: encodeFreeTierDelegationsHeader([{ ...delegation, signature }]),
+  }, mux, remoteIp);
   await drainOpenQueue();
   expect(open).toHaveBeenCalledOnce();
   expect(send).toHaveBeenCalledOnce();

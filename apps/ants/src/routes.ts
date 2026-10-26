@@ -1,5 +1,12 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
-import { ZeroAddress } from 'ethers';
+import { ZeroAddress, isAddress } from 'ethers';
+import {
+  FREE_TIER_DELEGATION_TYPES,
+  encodeFreeTierDelegationCode,
+  freeTierDelegationMessage,
+  isFreeTierDelegationSigned,
+  makeFreeTierDelegationDomain,
+} from '@antseed/node';
 import { IndexerSyncingError } from './read-state.js';
 import { networkSnapshot, networkLegacy } from './service/network.js';
 import type { AntsContext } from './service/context.js';
@@ -66,6 +73,26 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext): voi
     if (!context.onAuthorize) throw new Error('Open the VPR wallet authorization setup to authorize a wallet.');
     if (ctx.buyerAddress.toLowerCase() !== context.originBuyer.toLowerCase()) throw new Error('The connected wallet is its own buyer account; the local authorization flow only applies to the originating buyer.');
     await context.onAuthorize(); return {};
+  }));
+
+  // A staker shares its staking power with a buyer: sign (or check the browser
+  // wallet's signature) and hand back a code the buyer pastes into its node.
+  app.post<{ Body: { buyer?: string; expiresAt?: number; signature?: string } }>('/api/free-tier/code', (request, reply) => respond(reply, async () => {
+    const { buyer, expiresAt, signature } = request.body ?? {};
+    if (!buyer || !isAddress(buyer)) throw new Error('Enter the buyer address to share with.');
+    if (!Number.isSafeInteger(expiresAt) || (expiresAt as number) * 1000 <= Date.now()) throw new Error('Choose an expiry in the future.');
+    const unsigned = { staker: ctx.address, buyer, expiresAt: expiresAt as number };
+    const chainId = ctx.chain.evmChainId;
+    let signed: string;
+    if (signature) {
+      signed = signature;
+    } else {
+      if (context.browserSigning || !ctx.signer) throw new Error('Connect the staking wallet to sign.');
+      signed = await ctx.signer.signTypedData(makeFreeTierDelegationDomain(chainId), FREE_TIER_DELEGATION_TYPES, freeTierDelegationMessage(unsigned));
+    }
+    const delegation = { ...unsigned, signature: signed };
+    if (!isFreeTierDelegationSigned(delegation, chainId)) throw new Error(`The signature is not from staker ${ctx.address}.`);
+    return { code: encodeFreeTierDelegationCode(delegation), staker: ctx.address, buyer, expiresAt };
   }));
 
   app.get('/api/overview', (_request, reply) => respond(reply, () => cached('overview', () => overview(ctx))));

@@ -10,6 +10,7 @@ import { loadOrCreateIdentity } from "./p2p/identity.js";
 import type { PeerId } from "./types/peer.js";
 import type { PeerInfo, PeerVerificationResults, TokenPricingUsdPerMillion } from "./types/peer.js";
 import { peerIdToAddress } from "./types/peer.js";
+import { isFreeUnitBillingModel } from "./billing/unit.js";
 import type { ServiceUnitBillingModelsV1 } from "./types/billing.js";
 import type {
   SerializedHttpRequest,
@@ -36,6 +37,7 @@ import {
 } from "./p2p/connection-manager.js";
 import {
   PeerAnnouncer,
+  builtinPeerCapabilities,
   type AnnouncerConfig,
   type SellerContractConfig,
 } from "./discovery/announcer.js";
@@ -98,11 +100,15 @@ import {
 } from "./payments/index.js";
 import { debugLog, debugWarn } from "./utils/debug.js";
 import { parsePublicAddress } from "./discovery/public-address.js";
+import { MAX_PEER_CAPABILITIES } from "./discovery/metadata-validator.js";
 import { sanitizePeerDisplayName } from "./discovery/display-name.js";
 import { BuyerPaymentManager, type BuyerPaymentConfig } from "./payments/buyer-payment-manager.js";
 import { BuyerPaymentNegotiator } from "./payments/buyer-payment-negotiator.js";
 import { RpcHealthMonitor, type RpcHealthStatus } from "./payments/rpc-health.js";
 import { SellerAddressResolver } from "./discovery/seller-address-resolver.js";
+import { SellerPoolsClient } from "./payments/evm/seller-pools-client.js";
+import { FreeTierStakeResolver } from "./payments/free-tier-stake-resolver.js";
+import { encodeFreeTierDelegationsHeader, type FreeTierDelegation } from "./payments/free-tier-delegation.js";
 import { Contract as EthersContract } from "ethers";
 import { SellerPaymentManager, type SellerPaymentConfig } from "./payments/seller-payment-manager.js";
 import { IdentityClient } from "./payments/evm/identity-client.js";
@@ -323,6 +329,12 @@ export interface NodeConfig {
   payments?: NodePaymentsConfig;
   /** Optional per-address request limit for zero-priced seller services. */
   freeTier?: SellerFreeTierConfig;
+  /**
+   * Buyer side: stakers' signed consent to count their stake toward this
+   * node's buyer identities on sellers' staked free tiers. Each identity sends
+   * only the delegations naming its own address.
+   */
+  freeTierDelegations?: FreeTierDelegation[];
   /** Seller free-usage on-chain record batching. */
   freeUsage?: { recordBatchSize?: number; recordFlushIntervalMs?: number };
   /** Seller-side deposit-sweep relayer settings (opt-out, ON by default). */
@@ -1640,6 +1652,7 @@ export class AntseedNode extends EventEmitter {
       },
       maxUploadBodyBytes: this._config.maxUploadBodyBytes,
       requireSecureTransport: this._config.requireSecureTransport,
+      freeTierDelegationsHeader: () => this._freeTierDelegationsHeader(identity.wallet.address),
       shared: {
         channelStore: this._channelStore,
         depositsClient: this._depositsClient,
@@ -1871,8 +1884,12 @@ export class AntseedNode extends EventEmitter {
     this._sellerFreeTierLimiter = this._config.freeTier
       ? new SellerFreeTierLimiter(this._config.freeTier, this._metering)
       : null;
+    const offered = this._offeredServicesByPrice();
+    this._sellerFreeTierLimiter?.setPaidServices(offered.paid);
+    this._sellerFreeTierLimiter?.setFreeServices(offered.free);
     await this._initializePayments(dataDir);
     this._warnIfFreeUsageMeteringUnavailable();
+    this._initializeFreeTierStakeResolver(identity);
 
     // Wire idle session events to on-chain settlement
     if (this._sellerPaymentManager) {
@@ -1928,10 +1945,12 @@ export class AntseedNode extends EventEmitter {
 
     // Set up announcer for providers
     if (this._providers.length > 0) {
-      const extraCapabilities = [
+      const baseCapabilities = [
         ...(this._connectionManager.supportsWebRtc ? [CONNECTION_CAPABILITY_WEBRTC_V1] : []),
         ...(this._config.capabilities ?? []),
       ];
+      const usedCapabilities = builtinPeerCapabilities(this._depositRelayer !== null).length + baseCapabilities.length;
+      const extraCapabilities = [...baseCapabilities, ...this._freeTierCapabilities(usedCapabilities)];
       const announcerConfig: AnnouncerConfig = {
         identity,
         dht: this._dht,
@@ -2116,6 +2135,7 @@ export class AntseedNode extends EventEmitter {
         getMux: (peerId, conn) => this._getOrCreateMux(peerId, conn as PeerConnection),
         getVerificationMux: (peerId, conn) => this._getOrCreateVerificationMux(peerId, conn as PeerConnection),
         registerPaymentMux: (peerId, pmux) => this._paymentMuxes.set(peerId, pmux),
+        freeTierDelegationsHeader: () => this._freeTierDelegationsHeader(identity.wallet.address),
       },
     );
 
@@ -2792,6 +2812,89 @@ export class AntseedNode extends EventEmitter {
       onChainChannelCount: result.metadata.onChainChannelCount,
       onChainGhostCount: result.metadata.onChainGhostCount,
     };
+  }
+
+  /** Replace the buyer's free-tier delegations; later requests send the new set. */
+  setFreeTierDelegations(delegations: FreeTierDelegation[]): void {
+    this._config.freeTierDelegations = [...delegations];
+  }
+
+  /** Header value carrying the unexpired delegations to `buyerAddress`, or null when there are none. */
+  private _freeTierDelegationsHeader(buyerAddress: string): string | null {
+    const nowSeconds = Date.now() / 1000;
+    const delegations = (this._config.freeTierDelegations ?? []).filter((delegation) =>
+      delegation.buyer.toLowerCase() === buyerAddress.toLowerCase() && delegation.expiresAt > nowSeconds);
+    return delegations.length > 0 ? encodeFreeTierDelegationsHeader(delegations) : null;
+  }
+
+  /**
+   * Back staked free-tier tiers with on-chain reads: the positions of the
+   * buyer and of every staker that signed a delegation to it in this seller's
+   * pool. Without the seller pools contract every buyer keeps the base limits
+   * and no tiers are advertised.
+   */
+  /**
+   * Free-tier programs to advertise within what is left of the peer
+   * capability limit. Programs that do not fit are still enforced; buyers
+   * learn them from the seller's refusals instead.
+   */
+  /**
+   * Offered services by whether some provider charges for them (tokens or any
+   * priced unit-billing model), as the request handler decides it. A paid
+   * service's allowance never admits a free-usage channel; the free ones decide admission.
+   */
+  private _offeredServicesByPrice(): { paid: string[]; free: string[] } {
+    const paid = new Set<string>();
+    const offered = new Set<string>();
+    for (const provider of this._providers) {
+      for (const service of provider.services) {
+        offered.add(service);
+        const pricing = provider.pricing.services?.[service] ?? provider.pricing.defaults;
+        const tokenPriced = pricing.inputUsdPerMillion > 0 || pricing.outputUsdPerMillion > 0 || (pricing.cachedInputUsdPerMillion ?? 0) > 0;
+        const unitPriced = Object.values(provider.serviceUnitBillingModels?.[service] ?? {})
+          .some((model) => model !== undefined && !isFreeUnitBillingModel(model));
+        if (tokenPriced || unitPriced) paid.add(service);
+      }
+    }
+    return { paid: [...paid], free: [...offered].filter((service) => !paid.has(service)) };
+  }
+
+  private _freeTierCapabilities(usedCapabilities: number): string[] {
+    const limiter = this._sellerFreeTierLimiter;
+    if (!limiter) return [];
+    const capabilities = limiter.capabilities(MAX_PEER_CAPABILITIES - usedCapabilities);
+    if (capabilities.length < limiter.capabilities().length) {
+      debugWarn(
+        `[Node] Not every free-tier program fits in peer metadata (${MAX_PEER_CAPABILITIES} capabilities max); ` +
+        `the rest are enforced but not advertised`,
+      );
+    }
+    return capabilities;
+  }
+
+  private _initializeFreeTierStakeResolver(identity: Identity): void {
+    const limiter = this._sellerFreeTierLimiter;
+    const payments = this._config.payments;
+    if (!limiter || !limiter.hasStakeTiers) return;
+    if (!payments?.rpcUrl || !payments.sellerPoolsAddress) {
+      debugLog("[Node] Staked free-tier tiers disabled: seller pools contract not configured");
+      return;
+    }
+    const sellerPools = new SellerPoolsClient({
+      rpcUrl: payments.rpcUrl,
+      ...(payments.fallbackRpcUrls ? { fallbackRpcUrls: payments.fallbackRpcUrls } : {}),
+      contractAddress: payments.sellerPoolsAddress,
+      // Only stake writes use the token; the free tier only reads.
+      antsTokenAddress: "0x0000000000000000000000000000000000000000",
+      ...(payments.chainId ? { evmChainId: payments.chainId } : {}),
+    });
+    const sellerAddress = this._config.sellerContract?.sellerContract ?? identity.wallet.address;
+    limiter.setStakeResolver(new FreeTierStakeResolver({
+      sellerAgentId: () => sellerPools.agentIdForSeller(sellerAddress),
+      currentEpoch: () => sellerPools.currentEpoch(),
+      stakerPositions: (staker, agentId, epoch) => sellerPools.stakerPositionsInPool(staker, agentId, epoch),
+    }), payments.chainId ?? 8453);
+    debugLog(`[Node] Staked free-tier tiers enabled (pools=${payments.sellerPoolsAddress.slice(0, 10)}...)`);
   }
 
   private _warnIfFreeUsageMeteringUnavailable(): void {

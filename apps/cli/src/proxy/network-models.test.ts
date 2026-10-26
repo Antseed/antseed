@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { normalizedModelReputationScore, type PeerInfo } from '@antseed/node'
 import { buildNetworkModels, parseModelTypeFilter } from './network-models.js'
+import { encodeFreeTierCapabilities } from '@antseed/node/free-tier-program'
 import { findAdvertisedServiceOffer } from './routing.js'
 
 const NOW_MS = 1_700_000_000_000
@@ -20,6 +21,47 @@ test('network model offers preserve advertised verifiers without inferring suppo
   assert.deepEqual(model.peers.find((peer) => peer.peerId === legacyPeer.peerId)?.advertisedVerifierIds, [])
   teePeer.capabilities = []
   assert.deepEqual(buildNetworkModels(peers, NOW_MS)[0]?.peers[0]?.advertisedVerifierIds, [])
+})
+
+test('network model offers carry the free-tier program they are served under', () => {
+  const sellerWide = { base: { maxRequestsPerAddress: 1000, maxRequestsPerIp: null, windowMs: 86_400_000 }, stakeTiers: [] }
+  const allowance = { base: { maxRequestsPerAddress: 200, maxRequestsPerIp: null, windowMs: 86_400_000, stakersOnly: true }, stakeTiers: [{ minPower: 45_000_000, multiplier: 1 }] }
+  const capabilities = [...encodeFreeTierCapabilities(sellerWide), ...encodeFreeTierCapabilities(allowance, 'kimi-k3')]
+  const providerPricing = {
+    openai: {
+      defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
+      services: { 'kimi-k3': { inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5 }, 'paid-model': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, 'free-model': { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } },
+    },
+  }
+  const models = buildNetworkModels([makePeer({ peerId: 'c'.repeat(40), providers: ['openai'], providerPricing, capabilities })], NOW_MS)
+  const offer = (id: string) => models.find((model) => model.id === id)?.peers[0]
+  assert.deepEqual(offer('kimi-k3')?.freeTier, allowance)
+  // The seller-wide program covers free models only.
+  assert.deepEqual(offer('free-model')?.freeTier, sellerWide)
+  assert.equal(offer('paid-model')?.freeTier, undefined)
+})
+
+test('paid image and video offers never inherit the seller-wide program, and paid video has no allowance', () => {
+  const sellerWide = { base: { maxRequestsPerAddress: 1000, maxRequestsPerIp: null, windowMs: 86_400_000 }, stakeTiers: [] }
+  const allowance = { base: { maxRequestsPerAddress: 5, maxRequestsPerIp: null, windowMs: 86_400_000 }, stakeTiers: [] }
+  const capabilities = [...encodeFreeTierCapabilities(sellerWide), ...encodeFreeTierCapabilities(allowance, 'paid-video')]
+  const images = { version: 1 as const, components: [{ unit: 'output_images' as const, priceUsd: 0.01 }] }
+  const video = { version: 1 as const, components: [{ unit: 'video_generations' as const, priceUsd: 0.4 }] }
+  const peer = makePeer({
+    peerId: 'd'.repeat(40),
+    providers: ['fal'],
+    providerPricing: { fal: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } },
+    providerServiceApiProtocols: { fal: { services: { 'paid-image': ['openai-images'], 'paid-video': ['fal-video'] } } },
+    providerServiceUnitBillingModels: { fal: { services: { 'paid-image': { 'openai-images': images }, 'paid-video': { 'fal-video': video } } } },
+    capabilities,
+  })
+  const models = buildNetworkModels([peer], NOW_MS)
+  const offer = (id: string) => models.find((model) => model.id === id)?.peers[0]
+  assert.ok(offer('paid-image'))
+  assert.equal(offer('paid-image')?.freeTier, undefined)
+  // Video is paid through one-off channels, so even its own allowance is never honoured.
+  assert.ok(offer('paid-video'))
+  assert.equal(offer('paid-video')?.freeTier, undefined)
 })
 
 function makePeer(overrides: Omit<Partial<PeerInfo>, 'peerId'> & { peerId: string }): PeerInfo {

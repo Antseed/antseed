@@ -3,10 +3,10 @@ import type { ChatModel, ChatModelPeer, RoutePreview } from '../api/types'
 import { autoPick, pickModels, pickPeers, verdictsFrom } from './chat-pick'
 
 const peer = (peerId: string, input: number, output: number, reputation: number, extra: Partial<ChatModelPeer> = {}): ChatModelPeer => ({
-  peerId, name: peerId, toolUse: true, reasoning: false, vision: false, tee: false, inputUsdPerMillion: input, outputUsdPerMillion: output, cachedInputUsdPerMillion: null, reputation, ...extra,
+  peerId, name: peerId, toolUse: true, reasoning: false, vision: false, tee: false, inputUsdPerMillion: input, outputUsdPerMillion: output, cachedInputUsdPerMillion: null, reputation, freeTier: null, ...extra,
 })
 const model = (id: string, offers: number, input: number | null, extra: Partial<ChatModel> = {}): ChatModel => ({
-  id, name: id.toUpperCase(), toolUse: true, reasoning: false, vision: false, free: false, tee: false, offers, inputUsdPerMillion: input, outputUsdPerMillion: input, peers: [], ...extra,
+  id, name: id.toUpperCase(), toolUse: true, reasoning: false, vision: false, free: false, freeForStakers: false, tee: false, offers, inputUsdPerMillion: input, outputUsdPerMillion: input, peers: [], ...extra,
 })
 
 describe('chat pickers', () => {

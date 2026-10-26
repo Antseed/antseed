@@ -36,7 +36,9 @@ export function outputPrice(peer: Peer, model = ''): number | null {
 }
 
 export function isFreePeer(peer: Peer, model = ''): boolean {
-  return servicesFor(peer, model).some((service) => service.inputUsdPerMillion === 0 && (service.outputUsdPerMillion ?? 0) === 0)
+  return servicesFor(peer, model).some((service) => service.paid !== undefined
+    ? !service.paid
+    : service.inputUsdPerMillion === 0 && (service.outputUsdPerMillion ?? 0) === 0)
 }
 
 export function filterPeers(peers: readonly Peer[], filter: PeerFilter): Peer[] {

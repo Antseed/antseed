@@ -60,6 +60,8 @@ function EntryBadges({ entry }: { entry: CatalogEntry }) {
   return (
     <div className="gc-badges">
       {model.free && <Badge tone="success">Free</Badge>}
+      {!model.free && model.freeForStakers && <Badge tone="success">Free for stakers</Badge>}
+      {!model.free && !model.freeForStakers && model.freeAllowance && <Badge tone="success">Free allowance</Badge>}
       <TeeBadge tee={model.teeSellers > 0} scope={modelTeeScope(model)} />
       {model.tags.slice(0, 3).map((tag) => <Badge key={tag}>{tag}</Badge>)}
     </div>
