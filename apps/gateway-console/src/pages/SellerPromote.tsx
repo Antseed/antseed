@@ -7,6 +7,7 @@ import { SellerPage } from '../components/SellerPage'
 import { Badge, CodeBlock, EmptyState, ErrorAlert, LoadingRows, Mono, Panel } from '../components/ui'
 import { formatRelative } from '../lib/format'
 import { qk, useSellerCard, useSellerPromote } from '../lib/queries'
+import { localBuyerExample } from '../lib/snippets'
 import '../styles/seller.scss'
 
 /** Help buyers find and trust this seller: profile link, a shareable card, usage snippets and identity verification. */
@@ -93,15 +94,17 @@ function CardPanel({ data }: { data: Promote }) {
 
 function SnippetsPanel({ data }: { data: Promote }) {
   const peer = data.peerId ?? '<peerId>'
-  const first = data.services[0]?.service ?? '<model>'
   const ids = data.services.map((service) => `${peer}@${service.service}`).join('\n')
-  const curl = `curl http://localhost:8377/v1/chat/completions \\\n  -H 'content-type: application/json' \\\n  -d '{\n    "model": "${peer}@${first}",\n    "messages": [{"role": "user", "content": "Hello"}]\n  }'`
+  // On the API the model is called on: chat for a text model, images for an image model.
+  const example = localBuyerExample(peer, data.services)
   return (
     <Panel title="Send buyers straight to you" description="A model id with your peer id in front always routes to you, in the gateway console, any OpenAI-compatible client or the local buyer.">
       {data.services.length === 0 ? <EmptyState title="No models" body="The seller's config lists no services." /> : (
         <div className="gc-grid gc-grid--2">
           <CodeBlock label="Pinned model ids" code={ids} />
-          <CodeBlock label="Through a local buyer (antseed buyer start)" code={curl} />
+          {example?.code
+            ? <CodeBlock label="Through a local buyer (antseed buyer start)" code={example.code} />
+            : <p className="gc-muted">{example?.service} is called on its own API (not chat or images), so there is no one-line example. Buyers pin it with the model id.</p>}
         </div>
       )}
     </Panel>

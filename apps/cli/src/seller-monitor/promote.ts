@@ -11,6 +11,7 @@ import {
 import type { SellerPromote, SellerServicePricing, SellerVerificationStatus } from '../gateway/console-api/types.js'
 import { peerKey } from './market.js'
 import { bad, configWritable, patchSellerConfig, readRaw } from './settings.js'
+import { serviceKind } from './unit-price.js'
 
 type Verifications = { domains: Array<{ domain: string; methods?: Array<'dns-txt' | 'https-well-known'> }>; github: Array<{ username: string; repository?: string }> }
 
@@ -98,6 +99,8 @@ export async function readSellerPromote(options: {
   startChecks?: boolean
   /** The network snapshot the trust score comes from is still loading. */
   networkLoading?: boolean
+  /** The APIs the seller announces for a service, from its own network row. */
+  announcedProtocols?: (provider: string, service: string) => string[]
 }): Promise<SellerPromote> {
   const raw = await readRaw(options.configPath)
   const claims = verificationsOf(raw)
@@ -109,7 +112,11 @@ export async function readSellerPromote(options: {
     peerId: peer,
     displayName: identity.displayName ?? '',
     profileUrl: peer && options.explorerUrl ? `${options.explorerUrl.replace(/\/+$/, '')}/account/0x${peer}` : null,
-    services: options.services.map(({ provider, service, inputUsdPerMillion, outputUsdPerMillion }) => ({ provider, service, inputUsdPerMillion, outputUsdPerMillion })),
+    services: options.services.map(({ provider, service, inputUsdPerMillion, outputUsdPerMillion, unitPrice, apiProtocols, kind }) => {
+      // The APIs the running seller announces (its plugin's) complete the ones the config bills on.
+      const protocols = [...new Set([...apiProtocols, ...(options.announcedProtocols?.(provider, service) ?? [])])]
+      return { provider, service, inputUsdPerMillion, outputUsdPerMillion, unitPrice, apiProtocols: protocols, kind: kind === 'text' ? serviceKind(protocols) : kind }
+    }),
     trustScore: options.trustScore,
     pending: options.checks.running || options.networkLoading === true,
     writable: access.writable,

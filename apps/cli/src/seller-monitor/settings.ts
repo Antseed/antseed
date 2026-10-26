@@ -10,6 +10,7 @@ import { ConsoleError } from '../gateway/console-api/router.js'
 import type { FreeTierProgramView, SellerAlertSettings, SellerAlertsPatch, SellerFreeTierProgramSettings, SellerSettings, SellerSettingsPatch } from '../gateway/console-api/types.js'
 import { configWritable, patchValidatedConfig } from '../config/patch.js'
 import { readSellerStatus } from './reader.js'
+import { serviceKind, unitPriceOf } from './unit-price.js'
 
 export { configWritable }
 import { applyAlertOverrides, DEFAULT_TELEGRAM_TOKEN_ENV, readAlertOverrides, readAlertSecrets, readAlertsConfig, resolveAlerts, webhookHost, writeAlertOverrides, writeAlertSecrets, type AlertOverrides } from '../seller-alerts/settings.js'
@@ -98,6 +99,7 @@ function settingsView(raw: JsonObject, config: AntseedConfig, configPath: string
       // Its own program, else on a free model the seller-wide one; a paid model has a free allowance only when it sets one.
       const own = ownPrograms.get(service)
       const program = own ?? (paid ? undefined : seller.freeTier)
+      const apiProtocols = Object.keys(serviceConfig.unitBillingModels ?? {})
       return {
         provider,
         service,
@@ -106,6 +108,9 @@ function settingsView(raw: JsonObject, config: AntseedConfig, configPath: string
         cachedInputUsdPerMillion: pricing?.cachedInputUsdPerMillion ?? null,
         inherited: !serviceConfig.pricing,
         paid,
+        unitPrice: unitPriceOf(serviceConfig.unitBillingModels),
+        kind: serviceKind(apiProtocols, serviceConfig.capabilities ?? {}),
+        apiProtocols,
         freeTier: program ? programView(program) : null,
         ownFreeTier: own ? programSettings(own) : null,
       }

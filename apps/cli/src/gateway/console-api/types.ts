@@ -1190,6 +1190,12 @@ export interface SellerServicePricing {
   inherited: boolean
   /** Charges anything (a token price or a priced unit-billing model); free models fall under the seller-wide program. */
   paid: boolean
+  /** Its per-unit price (per image, per video) when it bills by unit; its token prices are then usually zero. */
+  unitPrice: SellerUnitPrice | null
+  /** What it makes, from its billing models and capabilities: buyers call each kind on a different API. */
+  kind: SellerServiceKind
+  /** Wire APIs it is billed or announced on, when the config says (e.g. "openai-images"); empty otherwise. */
+  apiProtocols: string[]
   /**
    * The free tier buyers of this model get, as advertised: its own program,
    * else (on a free model) the seller-wide one. On a paid model it is a free
@@ -1199,6 +1205,18 @@ export interface SellerServicePricing {
   /** This model's own program as written in the config file; null when it has none. */
   ownFreeTier: SellerFreeTierProgramSettings | null
 }
+
+/** A unit-billed service's price: the cheapest and dearest of its priced components for one unit. */
+export interface SellerUnitPrice {
+  /** "output_images", "video_generations", "video_seconds" or "completed_requests". */
+  unit: string
+  /** What one unit is, for "$0.02 / image": "image", "video", "video second", "request". */
+  name: string
+  minUsd: number
+  maxUsd: number
+}
+
+export type SellerServiceKind = 'text' | 'image' | 'video' | 'other'
 
 /** A free-tier program as written in config.json (`seller.freeTier` or a service's `freeTier`). */
 export interface SellerFreeTierProgramSettings {
@@ -1314,8 +1332,10 @@ export interface SellerMarketOffer {
   inputUsdPerMillion: number | null
   outputUsdPerMillion: number | null
   cachedInputUsdPerMillion: number | null
-  /** (3 × input + output) / 4: a typical chat mix, for ranking. */
+  /** (3 × input + output) / 4: a typical chat mix, for ranking; null on a unit-billed offer. */
   blendedUsdPerMillion: number | null
+  /** Per-unit price of a unit-billed offer (image, video); null when it bills by token. */
+  unitPrice: SellerUnitPrice | null
   trustScore: number | null
   tee: boolean
   /** In-flight requests over capacity, 0-1; null when the seller does not say. */
@@ -1325,17 +1345,24 @@ export interface SellerMarketOffer {
 export interface SellerMarketService {
   provider: string
   service: string
-  mine: { inputUsdPerMillion: number | null; outputUsdPerMillion: number | null; cachedInputUsdPerMillion: number | null; blendedUsdPerMillion: number | null }
+  mine: { inputUsdPerMillion: number | null; outputUsdPerMillion: number | null; cachedInputUsdPerMillion: number | null; blendedUsdPerMillion: number | null; unitPrice: SellerUnitPrice | null }
+  /**
+   * What the comparison is in: null for token prices (blended), else the unit
+   * this seller bills by (say "output_images"): only offers priced in the same
+   * unit are compared, by their cheapest per-unit price.
+   */
+  unit: string | null
   /** Other sellers offering the same model. */
   competitors: number
   /** No one else offers it. */
   unique: boolean
-  cheapest: { inputUsdPerMillion: number | null; outputUsdPerMillion: number | null } | null
-  median: { inputUsdPerMillion: number | null; outputUsdPerMillion: number | null } | null
-  /** 1 = cheapest by blended price, among every seller of the model (this one included). */
+  /** Among comparable offers: token prices, or `unitUsd` in `unit`. */
+  cheapest: { inputUsdPerMillion: number | null; outputUsdPerMillion: number | null; unitUsd: number | null } | null
+  median: { inputUsdPerMillion: number | null; outputUsdPerMillion: number | null; unitUsd: number | null } | null
+  /** 1 = cheapest (blended, or per unit), among every comparable seller of the model (this one included). */
   rank: number | null
   of: number
-  /** This seller's blended price vs the other sellers' median, in percent (+ is pricier). */
+  /** This seller's price vs the comparable sellers' median, in percent (+ is pricier). */
   deltaPct: number | null
   offers: SellerMarketOffer[]
 }
@@ -1346,7 +1373,8 @@ export interface SellerMarket {
   found: boolean
   services: SellerMarketService[]
   /** Models other sellers offer that this one does not, most widely offered first. */
-  notOffered: Array<{ service: string; sellers: number; cheapestOutputUsdPerMillion: number | null }>
+  /** `cheapestOutputUsdPerMillion` over token-priced offers; `cheapestUnitPrice` over unit-billed ones (the cheapest in their most common unit). */
+  notOffered: Array<{ service: string; sellers: number; cheapestOutputUsdPerMillion: number | null; cheapestUnitPrice: SellerUnitPrice | null }>
 }
 
 export interface SellerTrustPart {
@@ -1412,7 +1440,7 @@ export interface SellerPromote {
   displayName: string
   /** The seller's page on the explorer; null without a peer id or explorer. */
   profileUrl: string | null
-  services: Array<{ provider: string; service: string; inputUsdPerMillion: number | null; outputUsdPerMillion: number | null }>
+  services: Array<{ provider: string; service: string; inputUsdPerMillion: number | null; outputUsdPerMillion: number | null; unitPrice: SellerUnitPrice | null; kind: SellerServiceKind; apiProtocols: string[] }>
   trustScore: number | null
   /** The trust score's first network load or a verification check is still running: read again shortly. */
   pending: boolean

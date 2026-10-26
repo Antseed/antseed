@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Button, Disclosure, Segmented, TextField, useToast } from '@antseed/ui'
 import { api } from '../api'
@@ -56,6 +56,18 @@ export function alertsPatchOf(base: Draft, draft: Draft): SellerAlertsPatch {
   return patch
 }
 
+/**
+ * Which secret inputs stay open after a save: one with nothing saved, or one
+ * still holding a value typed while the save was in flight (it would be sent
+ * by the next save, so it must stay in view).
+ */
+export function secretEditorsAfterSave(draft: Pick<Draft, 'token' | 'webhookUrl'>, alerts: SellerAlertSettings): { token: boolean; webhook: boolean } {
+  return {
+    token: !alerts.telegram.tokenSet || draft.token.trim() !== '',
+    webhook: !alerts.webhook.set || draft.webhookUrl.trim() !== '',
+  }
+}
+
 function SecretState({ label, onReplace, onClear, cleared, readOnly }: { label: string; onReplace: () => void; onClear?: () => void; cleared: boolean; readOnly: boolean }) {
   return (
     <div className="gc-seller-secret">
@@ -79,6 +91,8 @@ export function SellerAlertsEditor({ alerts, state }: { alerts: SellerAlertSetti
   const [editToken, setEditToken] = useState(!alerts.telegram.tokenSet)
   const [editWebhook, setEditWebhook] = useState(!alerts.webhook.set)
   const [chats, setChats] = useState<TelegramChat[] | null>(null)
+  const draftRef = useRef(draft)
+  draftRef.current = draft
   useEffect(() => {
     const next = draftOf(alerts)
     setDraft(rebaseDraft(draft, base, next))
@@ -108,9 +122,12 @@ export function SellerAlertsEditor({ alerts, state }: { alerts: SellerAlertSetti
       const next = draftOf(data.alerts)
       setBase(next)
       // Edits typed while the save was in flight stay; the rest takes the saved values.
-      setDraft((current) => rebaseDraft(current, submitted.draft, next))
-      setEditToken(!data.alerts.telegram.tokenSet)
-      setEditWebhook(!data.alerts.webhook.set)
+      const rebased = rebaseDraft(draftRef.current, submitted.draft, next)
+      draftRef.current = rebased
+      setDraft(rebased)
+      const editors = secretEditorsAfterSave(rebased, data.alerts)
+      setEditToken(editors.token)
+      setEditWebhook(editors.webhook)
       toast('Saved. The seller applies alert settings within a few seconds.')
     },
   })

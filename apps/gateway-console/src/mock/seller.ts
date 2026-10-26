@@ -50,6 +50,9 @@ const DEFAULT_TIERS: Array<{ minPower: number; multiplier: number | 'unlimited' 
   { minPower: 520_000, multiplier: 5 }, { minPower: 2_600_000, multiplier: 20 }, { minPower: 10_400_000, multiplier: 'unlimited' },
 ]
 
+/** The fake seller's image model: priced per image, its token prices zero. */
+const IMAGE_PRICE = { unit: 'output_images', name: 'image', minUsd: 0.03, maxUsd: 0.03 }
+
 export function mockSellerSettings(): { settings: SellerSettings; alerts: SellerAlertSettings } {
   return {
     settings: {
@@ -58,12 +61,14 @@ export function mockSellerSettings(): { settings: SellerSettings; alerts: Seller
       freeTier: { maxRequestsPerAddress: 200, maxRequestsPerIp: 400, windowMs: null, stakersOnly: false, stakeTiers: null }, restrictedCountries: ['CU', 'IR', 'KP', 'SY', 'RU'], restrictedCountriesDefault: true,
       defaultStakeTiers: DEFAULT_TIERS,
       services: [
-        { provider: 'openai', service: 'glm-5.3', inputUsdPerMillion: 0.8, outputUsdPerMillion: 2.4, cachedInputUsdPerMillion: 0.1, inherited: false, paid: true,
+        { provider: 'openai', service: 'glm-5.3', inputUsdPerMillion: 0.8, outputUsdPerMillion: 2.4, cachedInputUsdPerMillion: 0.1, inherited: false, paid: true, unitPrice: null, kind: 'text', apiProtocols: [],
           freeTier: { base: { maxRequestsPerAddress: 100, maxRequestsPerIp: null, windowMs: 86_400_000 }, stakeTiers: DEFAULT_TIERS },
           ownFreeTier: { maxRequestsPerAddress: 100, maxRequestsPerIp: null, windowMs: null, stakersOnly: false, stakeTiers: null } },
-        { provider: 'openai', service: 'kimi-k3', inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5, cachedInputUsdPerMillion: null, inherited: true, paid: true, freeTier: null, ownFreeTier: null },
-        { provider: 'openai', service: 'qwen-3.6-27b', inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: null, inherited: false, paid: false,
+        { provider: 'openai', service: 'kimi-k3', inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5, cachedInputUsdPerMillion: null, inherited: true, paid: true, unitPrice: null, kind: 'text', apiProtocols: [], freeTier: null, ownFreeTier: null },
+        { provider: 'openai', service: 'qwen-3.6-27b', inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: null, inherited: false, paid: false, unitPrice: null, kind: 'text', apiProtocols: [],
           freeTier: { base: { maxRequestsPerAddress: 200, maxRequestsPerIp: 400, windowMs: 86_400_000 }, stakeTiers: DEFAULT_TIERS }, ownFreeTier: null },
+        { provider: 'openai', service: 'qwen-image', inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: null, inherited: false, paid: true,
+          unitPrice: IMAGE_PRICE, kind: 'image', apiProtocols: ['openai-images'], freeTier: null, ownFreeTier: null },
       ],
     },
     alerts: {
@@ -74,10 +79,14 @@ export function mockSellerSettings(): { settings: SellerSettings; alerts: Seller
   }
 }
 
+const unitOffer = (n: number, name: string, perImage: number, trust: number): SellerMarketOffer => ({
+  ...offer(n, name, 0, 0, trust), blendedUsdPerMillion: null, unitPrice: { ...IMAGE_PRICE, minUsd: perImage, maxUsd: perImage },
+})
+
 const network = (now: number) => ({ source: 'gateway buyer', refreshedAt: now - 4 * 60_000, refreshing: false, error: null, peers: 8 })
 const offer = (n: number, name: string, input: number, output: number, trust: number, extra: Partial<SellerMarketOffer> = {}): SellerMarketOffer => ({
   peerId: `fa1e${String(n).padStart(36, '0')}`, name, mine: false, inputUsdPerMillion: input, outputUsdPerMillion: output, cachedInputUsdPerMillion: null,
-  blendedUsdPerMillion: (3 * input + output) / 4, trustScore: trust, tee: false, load: 0.3, ...extra,
+  blendedUsdPerMillion: (3 * input + output) / 4, unitPrice: null, trustScore: trust, tee: false, load: 0.3, ...extra,
 })
 
 export function mockSellerMarket(now = Date.now()): SellerMarket {
@@ -86,13 +95,21 @@ export function mockSellerMarket(now = Date.now()): SellerMarket {
   return {
     network: network(now), found: true,
     services: [
-      { provider: 'openai', service: 'glm-5.3', mine: { inputUsdPerMillion: 0.8, outputUsdPerMillion: 2.4, cachedInputUsdPerMillion: 0.1, blendedUsdPerMillion: 1.2 }, competitors: 5, unique: false,
-        cheapest: { inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.2 }, median: { inputUsdPerMillion: 0.75, outputUsdPerMillion: 2.5 }, rank: 3, of: 6, deltaPct: 1.1, offers: glm },
-      { provider: 'openai', service: 'kimi-k3', mine: { inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5, cachedInputUsdPerMillion: null, blendedUsdPerMillion: 1.075 }, competitors: 2, unique: false,
-        cheapest: { inputUsdPerMillion: 0.55, outputUsdPerMillion: 2.4 }, median: { inputUsdPerMillion: 0.585, outputUsdPerMillion: 2.5 }, rank: 2, of: 3, deltaPct: 1.8,
+      { provider: 'openai', service: 'glm-5.3', mine: { inputUsdPerMillion: 0.8, outputUsdPerMillion: 2.4, cachedInputUsdPerMillion: 0.1, blendedUsdPerMillion: 1.2, unitPrice: null }, unit: null, competitors: 5, unique: false,
+        cheapest: { inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.2, unitUsd: null }, median: { inputUsdPerMillion: 0.75, outputUsdPerMillion: 2.5, unitUsd: null }, rank: 3, of: 6, deltaPct: 1.1, offers: glm },
+      { provider: 'openai', service: 'kimi-k3', mine: { inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5, cachedInputUsdPerMillion: null, blendedUsdPerMillion: 1.075, unitPrice: null }, unit: null, competitors: 2, unique: false,
+        cheapest: { inputUsdPerMillion: 0.55, outputUsdPerMillion: 2.4, unitUsd: null }, median: { inputUsdPerMillion: 0.585, outputUsdPerMillion: 2.5, unitUsd: null }, rank: 2, of: 3, deltaPct: 1.8,
         offers: [offer(2, 'Fake Seller Beta', 0.55, 2.4, 69), { ...mine, inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5, blendedUsdPerMillion: 1.075 }, offer(5, 'Fake Seller Epsilon', 0.62, 2.6, 12)] },
+      // An image model bills per image: it is compared per image, never by its zero token prices.
+      { provider: 'openai', service: 'qwen-image', mine: { inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: null, blendedUsdPerMillion: null, unitPrice: IMAGE_PRICE }, unit: 'output_images', competitors: 2, unique: false,
+        cheapest: { inputUsdPerMillion: null, outputUsdPerMillion: null, unitUsd: 0.025 }, median: { inputUsdPerMillion: null, outputUsdPerMillion: null, unitUsd: 0.0325 }, rank: 2, of: 3, deltaPct: -7.7,
+        offers: [unitOffer(4, 'Fake Seller Delta', 0.025, 58), { ...mine, inputUsdPerMillion: 0, outputUsdPerMillion: 0, blendedUsdPerMillion: null, unitPrice: IMAGE_PRICE }, unitOffer(6, 'Fake Seller Zeta', 0.04, 31)] },
     ],
-    notOffered: [{ service: 'deepseek-v4.1', sellers: 3, cheapestOutputUsdPerMillion: 1.05 }, { service: 'qwen3-coder-480b-turbo', sellers: 3, cheapestOutputUsdPerMillion: 2.9 }, { service: 'gemma-4-e4b', sellers: 2, cheapestOutputUsdPerMillion: 0 }],
+    notOffered: [
+      { service: 'deepseek-v4.1', sellers: 3, cheapestOutputUsdPerMillion: 1.05, cheapestUnitPrice: null },
+      { service: 'qwen3-coder-480b-turbo', sellers: 3, cheapestOutputUsdPerMillion: 2.9, cheapestUnitPrice: null },
+      { service: 'gemma-4-e4b', sellers: 2, cheapestOutputUsdPerMillion: 0, cheapestUnitPrice: null },
+    ],
   }
 }
 
@@ -124,9 +141,10 @@ function initialPromote(now: number): SellerPromote {
   return {
     peerId: peer, displayName: 'Fake Seller', profileUrl: `https://explorer.example/account/${FAKE_PEER}`, trustScore: 47.7, pending: false, writable: true, readOnlyReason: null,
     services: [
-      { provider: 'openai', service: 'glm-5.3', inputUsdPerMillion: 0.8, outputUsdPerMillion: 2.4 },
-      { provider: 'openai', service: 'kimi-k3', inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5 },
-      { provider: 'openai', service: 'gemma-4-e4b', inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
+      { provider: 'openai', service: 'glm-5.3', inputUsdPerMillion: 0.8, outputUsdPerMillion: 2.4, unitPrice: null, kind: 'text', apiProtocols: ['openai-chat-completions'] },
+      { provider: 'openai', service: 'kimi-k3', inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5, unitPrice: null, kind: 'text', apiProtocols: ['openai-chat-completions'] },
+      { provider: 'openai', service: 'gemma-4-e4b', inputUsdPerMillion: 0, outputUsdPerMillion: 0, unitPrice: null, kind: 'text', apiProtocols: ['openai-chat-completions'] },
+      { provider: 'openai', service: 'qwen-image', inputUsdPerMillion: 0, outputUsdPerMillion: 0, unitPrice: IMAGE_PRICE, kind: 'image', apiProtocols: ['openai-images'] },
     ],
     domains: [{ domain: 'seller.example', txtName: '_antseed.seller.example', txtValue: `antseed-peer=${peer}`, wellKnownUrl: 'https://seller.example/.well-known/antseed.json',
       wellKnownBody: JSON.stringify({ type: 'antseed-domain-verification', peerId: peer, domain: 'seller.example' }, null, 2), status: { verified: false, checkedAt: now - 60_000, error: 'dns-txt: no matching proof; https-well-known: HTTP 404' } }],

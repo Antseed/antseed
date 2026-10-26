@@ -6,6 +6,7 @@ import pkg from '../../../../package.json' with { type: 'json' };
 import { resolveConfigPath } from '../../../config/loader.js';
 import type { FreeTierProgramView, SellerFreeTierProgramPatch, SellerLogDetail, SellerSettingsPatch } from '../../../gateway/console-api/types.js';
 import { SellerMonitor } from '../../../seller-monitor/service.js';
+import { unitPriceText } from '../../../seller-monitor/card.js';
 import { getGlobalOptions } from '../types.js';
 
 /**
@@ -47,6 +48,12 @@ const usd = (value: number | null) => (value === null ? '—' : `$${value.toLoca
 /** A price, where 0 means the model is free. */
 const price = (value: number | null) => (value === 0 ? 'Free' : usd(value));
 const pair = (input: number | null, output: number | null) => `${price(input)} / ${price(output)}`;
+/** A unit-billed (image, video) price per unit, else input / output per million tokens. */
+const offerPrice = (offer: { inputUsdPerMillion: number | null; outputUsdPerMillion: number | null; unitPrice: { name: string; minUsd: number; maxUsd: number } | null }) =>
+  offer.unitPrice ? unitPriceText(offer.unitPrice) : pair(offer.inputUsdPerMillion, offer.outputUsdPerMillion);
+/** A market summary (cheapest, median): per unit when the model is compared per unit. */
+const summaryPrice = (unitPrice: { name: string } | null, summary: { inputUsdPerMillion: number | null; outputUsdPerMillion: number | null; unitUsd: number | null } | null) =>
+  summary === null ? '—' : unitPrice !== null && summary.unitUsd !== null ? unitPriceText({ name: unitPrice.name, minUsd: summary.unitUsd, maxUsd: summary.unitUsd }) : pair(summary.inputUsdPerMillion, summary.outputUsdPerMillion);
 const when = (ms: number | null) => (ms ? new Date(ms).toISOString().replace('T', ' ').slice(0, 19) : '—');
 const short = (id: string) => (id.length > 12 ? `${id.slice(0, 6)}…${id.slice(-4)}` : id);
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
@@ -259,16 +266,16 @@ export function registerSellerMonitorCommands(sellerCmd: Command): void {
       console.log(chalk.dim(`${market.network.peers} sellers, from ${market.network.source ?? 'nowhere'}${market.network.error ? ` (${market.network.error})` : ''}`));
       const table = new Table({ head: ['Model', 'Your price', 'Others', 'Cheapest', 'Median', 'Rank', 'vs median'].map((h) => chalk.bold(h)) });
       for (const service of market.services) {
-        table.push([service.service, pair(service.mine.inputUsdPerMillion, service.mine.outputUsdPerMillion), market.network.peers === 0 ? '—' : service.unique ? 'only you' : service.competitors,
-          service.cheapest ? pair(service.cheapest.inputUsdPerMillion, service.cheapest.outputUsdPerMillion) : '—',
-          service.median ? pair(service.median.inputUsdPerMillion, service.median.outputUsdPerMillion) : '—',
+        table.push([service.service, offerPrice(service.mine), market.network.peers === 0 ? '—' : service.unique ? 'only you' : service.competitors,
+          summaryPrice(service.mine.unitPrice, service.cheapest),
+          summaryPrice(service.mine.unitPrice, service.median),
           service.rank === null ? '—' : `${service.rank} of ${service.of}`, service.deltaPct === null ? '—' : `${service.deltaPct > 0 ? '+' : ''}${service.deltaPct}%`]);
       }
       console.log(table.toString());
       const focus = options.model ? market.services.find((service) => service.service === options.model) : null;
       if (focus) {
         const offers = new Table({ head: ['Seller', 'Input / output', 'Cached', 'Trust', 'TEE', 'Load'].map((h) => chalk.bold(h)) });
-        for (const offer of focus.offers) offers.push([`${offer.mine ? '→ ' : ''}${offer.name ?? short(offer.peerId)}`, pair(offer.inputUsdPerMillion, offer.outputUsdPerMillion), price(offer.cachedInputUsdPerMillion), offer.trustScore === null ? '—' : Math.round(offer.trustScore), offer.tee ? 'TEE' : '', offer.load === null ? '—' : `${Math.round(offer.load * 100)}%`]);
+        for (const offer of focus.offers) offers.push([`${offer.mine ? '→ ' : ''}${offer.name ?? short(offer.peerId)}`, offerPrice(offer), price(offer.cachedInputUsdPerMillion), offer.trustScore === null ? '—' : Math.round(offer.trustScore), offer.tee ? 'TEE' : '', offer.load === null ? '—' : `${Math.round(offer.load * 100)}%`]);
         console.log(offers.toString());
       }
       if (market.notOffered.length > 0) console.log(chalk.dim(`Others also sell: ${market.notOffered.map((entry) => `${entry.service} (${entry.sellers})`).join(', ')}`));
@@ -354,7 +361,9 @@ export function registerSellerMonitorCommands(sellerCmd: Command): void {
       const table = new Table({ head: ['Model', 'Provider', 'Input', 'Output', 'Cached', 'Free tier'].map((h) => chalk.bold(h)) });
       for (const service of view.services) {
         const free = freeTierSummary(service.freeTier, service.paid);
-        table.push([service.service, service.provider, price(service.inputUsdPerMillion), price(service.outputUsdPerMillion), price(service.cachedInputUsdPerMillion), service.ownFreeTier ? free : chalk.dim(free)]);
+        // An image or video model bills per unit; its zero token prices would read as free.
+        const tokens = service.unitPrice ? [unitPriceText(service.unitPrice), '—', '—'] : [price(service.inputUsdPerMillion), price(service.outputUsdPerMillion), price(service.cachedInputUsdPerMillion)];
+        table.push([service.service, service.provider, ...tokens, service.ownFreeTier ? free : chalk.dim(free)]);
       }
       console.log(table.toString());
     }));

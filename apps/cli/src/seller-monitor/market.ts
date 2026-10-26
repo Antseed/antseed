@@ -2,8 +2,9 @@ import { TRUST_FREE_MODELS_BONUS, TRUST_WEIGHTS } from '@antseed/node'
 import { parseVerifierCapabilities } from '@antseed/node/verifier-capabilities'
 import { TEE_VERIFIER_ID } from '@antseed/node/tee-status'
 import { peerServices } from '../gateway/console-api/handlers/network-mapping.js'
-import type { SellerMarket, SellerMarketOffer, SellerMarketService, SellerNetworkMeta, SellerReputation, SellerServicePricing, SellerTrust } from '../gateway/console-api/types.js'
+import type { SellerMarket, SellerMarketOffer, SellerMarketService, SellerNetworkMeta, SellerReputation, SellerServicePricing, SellerTrust, SellerUnitPrice } from '../gateway/console-api/types.js'
 import type { PeerRow } from './network.js'
+import { unitPriceOfRow } from './unit-price.js'
 
 const MAX_OFFERS = 25
 const MAX_NOT_OFFERED = 10
@@ -40,16 +41,33 @@ function loadOf(row: PeerRow): number | null {
 /** Model ids compare case-insensitively; providers do not matter to a buyer choosing a model. */
 const modelKey = (service: string) => service.trim().toLowerCase()
 
+/** The fields of this seller's own services the market compares. */
+export type MarketServicePrices = Pick<SellerServicePricing, 'provider' | 'service' | 'inputUsdPerMillion' | 'outputUsdPerMillion' | 'cachedInputUsdPerMillion'> & { unitPrice?: SellerUnitPrice | null }
+
+/**
+ * What an offer is compared on: its blended token price when `unit` is null,
+ * else its cheapest price in that unit. A unit-billed offer's token prices
+ * (usually zero) never compare with a token-priced one, nor two different units.
+ */
+function priceKey(offer: Pick<SellerMarketOffer, 'blendedUsdPerMillion' | 'unitPrice'>, unit: string | null): number | null {
+  if (unit === null) return offer.unitPrice ? null : offer.blendedUsdPerMillion
+  return offer.unitPrice?.unit === unit ? offer.unitPrice.minUsd : null
+}
+
+/** The unit most of these offers bill in, for a model this seller does not sell. */
+function commonUnit(offers: readonly SellerMarketOffer[]): string | null {
+  const counts = new Map<string, number>()
+  for (const offer of offers) if (offer.unitPrice) counts.set(offer.unitPrice.unit, (counts.get(offer.unitPrice.unit) ?? 0) + 1)
+  return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
+}
+
 /**
  * This seller's services against every other seller offering the same model:
- * counts, cheapest and median prices, rank by blended price and the offers
- * themselves. `mine` are the seller's configured prices (they win over what the
- * network last saw, which lags a restart); without them the seller's announced
- * services are used.
+ * counts, cheapest and median prices, rank by blended price (or per-unit price
+ * for an image or video model) and the offers themselves. `mine` are the
+ * seller's configured prices (they win over what the network last saw, which
+ * lags a restart); without them the seller's announced services are used.
  */
-/** The fields of this seller's own services the market compares. */
-export type MarketServicePrices = Pick<SellerServicePricing, 'provider' | 'service' | 'inputUsdPerMillion' | 'outputUsdPerMillion' | 'cachedInputUsdPerMillion'>
-
 export function marketView(rows: readonly PeerRow[], myPeerId: string | null, mine: readonly MarketServicePrices[] | null, network: SellerNetworkMeta): SellerMarket {
   const me = myPeerId ? peerKey(myPeerId) : null
   const myRow = me ? rows.find((row) => peerKey(String(row['peerId'] ?? '')) === me) : undefined
@@ -65,52 +83,65 @@ export function marketView(rows: readonly PeerRow[], myPeerId: string | null, mi
       const list = offersByModel.get(key) ?? []
       // One offer per seller and model (a seller can list a model under two providers).
       if (list.some((offer) => offer.peerId === peerId)) continue
+      const unitPrice = unitPriceOfRow(row, service.provider, service.service)
       list.push({
         peerId, name: typeof row['displayName'] === 'string' ? row['displayName'] : null, mine: false,
         inputUsdPerMillion: service.inputUsdPerMillion, outputUsdPerMillion: service.outputUsdPerMillion, cachedInputUsdPerMillion: service.cachedInputUsdPerMillion,
-        blendedUsdPerMillion: blended(service.inputUsdPerMillion, service.outputUsdPerMillion), trustScore: trustOf(row), tee, load: loadOf(row),
+        blendedUsdPerMillion: unitPrice ? null : blended(service.inputUsdPerMillion, service.outputUsdPerMillion), unitPrice, trustScore: trustOf(row), tee, load: loadOf(row),
       })
       offersByModel.set(key, list)
     }
   }
 
-  const myServices: readonly MarketServicePrices[] = mine ?? (myRow ? peerServices(myRow) : [])
+  const myServices: readonly MarketServicePrices[] = mine ?? (myRow ? peerServices(myRow).map((service) => ({ ...service, unitPrice: unitPriceOfRow(myRow, service.provider, service.service) })) : [])
   const myModels = new Set(myServices.map((service) => modelKey(service.service)))
   const myTee = myRow ? parseVerifierCapabilities(myRow['capabilities']).supported.includes(TEE_VERIFIER_ID) : false
   const services: SellerMarketService[] = myServices.map((service) => {
     const others = offersByModel.get(modelKey(service.service)) ?? []
-    const myBlended = blended(service.inputUsdPerMillion, service.outputUsdPerMillion)
+    const unitPrice = service.unitPrice ?? null
+    const unit = unitPrice?.unit ?? null
+    const myBlended = unitPrice ? null : blended(service.inputUsdPerMillion, service.outputUsdPerMillion)
     const myOffer: SellerMarketOffer = {
       peerId: myPeerId ?? '', name: myRow && typeof myRow['displayName'] === 'string' ? myRow['displayName'] : null, mine: true,
       inputUsdPerMillion: service.inputUsdPerMillion, outputUsdPerMillion: service.outputUsdPerMillion, cachedInputUsdPerMillion: service.cachedInputUsdPerMillion,
-      blendedUsdPerMillion: myBlended, trustScore: myRow ? trustOf(myRow) : null, tee: myTee, load: myRow ? loadOf(myRow) : null,
+      blendedUsdPerMillion: myBlended, unitPrice, trustScore: myRow ? trustOf(myRow) : null, tee: myTee, load: myRow ? loadOf(myRow) : null,
     }
-    const all = [...others, myOffer].sort((a, b) => (a.blendedUsdPerMillion ?? Infinity) - (b.blendedUsdPerMillion ?? Infinity) || Number(b.mine) - Number(a.mine))
-    const otherBlended = present(others.map((offer) => offer.blendedUsdPerMillion))
-    const medianBlended = median(otherBlended)
-    const inputs = present(others.map((offer) => offer.inputUsdPerMillion))
-    const outputs = present(others.map((offer) => offer.outputUsdPerMillion))
+    const key = (offer: SellerMarketOffer) => priceKey(offer, unit)
+    const all = [...others, myOffer].sort((a, b) => (key(a) ?? Infinity) - (key(b) ?? Infinity) || Number(b.mine) - Number(a.mine))
+    // Only offers priced the same way compare: token prices with token prices, a unit with the same unit.
+    const comparable = others.filter((offer) => key(offer) !== null)
+    const myKey = key(myOffer)
+    const medianKey = median(comparable.map((offer) => key(offer)!))
+    const inputs = unit === null ? present(comparable.map((offer) => offer.inputUsdPerMillion)) : []
+    const outputs = unit === null ? present(comparable.map((offer) => offer.outputUsdPerMillion)) : []
+    const units = unit === null ? [] : comparable.map((offer) => key(offer)!)
     const shown = all.slice(0, MAX_OFFERS)
     if (!shown.includes(myOffer)) shown.push(myOffer)
     return {
       provider: service.provider,
       service: service.service,
-      mine: { inputUsdPerMillion: service.inputUsdPerMillion, outputUsdPerMillion: service.outputUsdPerMillion, cachedInputUsdPerMillion: service.cachedInputUsdPerMillion, blendedUsdPerMillion: myBlended },
+      mine: { inputUsdPerMillion: service.inputUsdPerMillion, outputUsdPerMillion: service.outputUsdPerMillion, cachedInputUsdPerMillion: service.cachedInputUsdPerMillion, blendedUsdPerMillion: myBlended, unitPrice },
+      unit,
       competitors: others.length,
       // Only you among sellers actually seen: with no network loaded nothing is known about others.
       unique: others.length === 0 && rows.length > 0,
-      cheapest: others.length > 0 ? { inputUsdPerMillion: inputs.length ? Math.min(...inputs) : null, outputUsdPerMillion: outputs.length ? Math.min(...outputs) : null } : null,
-      median: others.length > 0 ? { inputUsdPerMillion: median(inputs), outputUsdPerMillion: median(outputs) } : null,
-      rank: myBlended === null || rows.length === 0 ? null : all.indexOf(myOffer) + 1,
-      of: all.length,
-      deltaPct: myBlended !== null && medianBlended !== null && medianBlended > 0 ? Math.round(((myBlended - medianBlended) / medianBlended) * 1000) / 10 : null,
+      cheapest: comparable.length > 0 ? { inputUsdPerMillion: inputs.length ? Math.min(...inputs) : null, outputUsdPerMillion: outputs.length ? Math.min(...outputs) : null, unitUsd: units.length ? Math.min(...units) : null } : null,
+      median: comparable.length > 0 ? { inputUsdPerMillion: median(inputs), outputUsdPerMillion: median(outputs), unitUsd: median(units) } : null,
+      rank: myKey === null || rows.length === 0 ? null : all.indexOf(myOffer) + 1,
+      of: comparable.length + 1,
+      deltaPct: myKey !== null && medianKey !== null && medianKey > 0 ? Math.round(((myKey - medianKey) / medianKey) * 1000) / 10 : null,
       offers: shown,
     }
   })
 
   const notOffered = [...offersByModel.entries()]
     .filter(([key]) => !myModels.has(key))
-    .map(([key, offers]) => ({ service: modelNames.get(key) ?? key, sellers: offers.length, cheapestOutputUsdPerMillion: present(offers.map((offer) => offer.outputUsdPerMillion)).reduce<number | null>((min, value) => (min === null || value < min ? value : min), null) }))
+    .map(([key, offers]) => {
+      const unit = commonUnit(offers)
+      const cheapestUnit = unit === null ? null : offers.filter((offer) => offer.unitPrice?.unit === unit).reduce<SellerUnitPrice | null>((min, offer) => (min === null || offer.unitPrice!.minUsd < min.minUsd ? offer.unitPrice : min), null)
+      const outputs = present(offers.filter((offer) => !offer.unitPrice).map((offer) => offer.outputUsdPerMillion))
+      return { service: modelNames.get(key) ?? key, sellers: offers.length, cheapestOutputUsdPerMillion: outputs.length ? Math.min(...outputs) : null, cheapestUnitPrice: cheapestUnit }
+    })
     .sort((a, b) => b.sellers - a.sellers || a.service.localeCompare(b.service))
     .slice(0, MAX_NOT_OFFERED)
 

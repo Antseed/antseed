@@ -239,7 +239,8 @@ export class SellerMonitor {
     const { rows, meta } = options.network === false ? { rows: [] as PeerRow[], meta: null } : await this._snapshot({ wait: options.wait ?? false })
     const myRow = peerId ? rows.find((row) => peerKey(String(row['peerId'] ?? '')) === peerKey(peerId)) : undefined
     this._explorer ??= (this._options.explorerUrl ?? defaultExplorerUrl)(configPath).catch(() => null)
-    return readSellerPromote({ configPath, peerId, services: services ?? [], trustScore: trustOfRow(myRow)?.score ?? null, explorerUrl: await this._explorer, checks: this._checks, startChecks: options.startChecks ?? true, networkLoading: meta?.refreshing === true && meta.refreshedAt === null })
+    return readSellerPromote({ configPath, peerId, services: services ?? [], trustScore: trustOfRow(myRow)?.score ?? null, explorerUrl: await this._explorer, checks: this._checks, startChecks: options.startChecks ?? true, networkLoading: meta?.refreshing === true && meta.refreshedAt === null,
+      announcedProtocols: (provider, service) => announcedProtocols(myRow, provider, service) })
   }
 
   /** Runs the verification checks now (the same ones buyers run). */
@@ -274,4 +275,11 @@ async function defaultExplorerUrl(configPath: string): Promise<string | null> {
   const { resolveAntsChain } = await import('@antseed/ants')
   const chain = await resolveAntsChain(configPath) as { explorerApiUrl?: string }
   return chain.explorerApiUrl ?? null
+}
+
+/** The APIs a seller's network row announces for one of its services. */
+function announcedProtocols(row: PeerRow | undefined, provider: string, service: string): string[] {
+  const byProvider = row?.['providerServiceApiProtocols'] as Record<string, { services?: Record<string, unknown> }> | undefined
+  const apis = byProvider?.[provider]?.services?.[service]
+  return Array.isArray(apis) ? apis.filter((api): api is string => typeof api === 'string') : []
 }

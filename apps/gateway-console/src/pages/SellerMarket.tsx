@@ -2,17 +2,28 @@ import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Button, DataTable } from '@antseed/ui'
 import { api } from '../api'
-import type { SellerMarketOffer, SellerMarketService } from '../api/types'
+import type { SellerMarketOffer, SellerMarketService, SellerUnitPrice } from '../api/types'
 import { NetworkLine, SellerPage } from '../components/SellerPage'
 import { TeeBadge } from '../components/TeeBadge'
 import { Badge, EmptyState, ErrorAlert, LoadingRows, Panel, StatTile } from '../components/ui'
 import { formatNumber, formatPricePerMillion, shortId } from '../lib/format'
 import { qk, useSellerMarket } from '../lib/queries'
+import { formatUnitPrice } from '../lib/seller'
 import { navigate } from '../lib/router'
 import '../styles/seller.scss'
 
 const price = (value: number | null) => (value === null ? '—' : formatPricePerMillion(value))
 const pair = (input: number | null, output: number | null) => `${price(input)} / ${price(output)}`
+/** An image or video model's price per unit (its zero token prices would read as free), else input / output. */
+const offerPrice = (offer: { inputUsdPerMillion: number | null; outputUsdPerMillion: number | null; unitPrice: SellerUnitPrice | null }) =>
+  (offer.unitPrice ? formatUnitPrice(offer.unitPrice) : pair(offer.inputUsdPerMillion, offer.outputUsdPerMillion))
+/** Cheapest or median among comparable sellers: per unit when the model is compared per unit. */
+function summaryPrice(row: SellerMarketService, summary: SellerMarketService['cheapest']): string {
+  if (!summary) return '—'
+  const unit = row.mine.unitPrice
+  return unit && summary.unitUsd !== null ? formatUnitPrice({ name: unit.name, minUsd: summary.unitUsd, maxUsd: summary.unitUsd }) : pair(summary.inputUsdPerMillion, summary.outputUsdPerMillion)
+}
+const sortPrice = (offer: { blendedUsdPerMillion: number | null; unitPrice: SellerUnitPrice | null }) => offer.blendedUsdPerMillion ?? offer.unitPrice?.minUsd ?? null
 
 export function deltaText(deltaPct: number | null): string {
   if (deltaPct === null) return '—'
@@ -37,7 +48,7 @@ export default function SellerMarket() {
     queryClient.setQueryData(qk.sellerMarket, await api.seller.market(true))
   }
   return (
-    <SellerPage title="Market" description={() => 'Your prices against every other seller of the same model. Prices are USD per million tokens, input / output.'}>
+    <SellerPage title="Market" description={() => 'Your prices against every other seller of the same model. Prices are USD per million tokens, input / output; image and video models are compared per unit.'}>
       {() => {
         if (market.isLoading) return <LoadingRows rows={6} />
         if (market.error) return <ErrorAlert error={market.error} onRetry={() => void market.refetch()} />
@@ -67,10 +78,10 @@ export default function SellerMarket() {
                 empty={<EmptyState title="No models" body="The seller's config lists no services." />}
                 columns={[
                   { key: 'service', header: 'Model', render: (row) => <span className="gc-ellipsis" title={row.service}>{row.service}</span>, sortValue: (row) => row.service },
-                  { key: 'mine', header: 'Your price', render: (row) => pair(row.mine.inputUsdPerMillion, row.mine.outputUsdPerMillion), sortValue: (row) => row.mine.blendedUsdPerMillion },
+                  { key: 'mine', header: 'Your price', render: (row) => offerPrice(row.mine), sortValue: (row) => sortPrice(row.mine) },
                   { key: 'competitors', header: 'Others', align: 'right', render: (row) => (row.unique ? <Badge tone="neutral">Only you</Badge> : formatNumber(row.competitors)), sortValue: (row) => row.competitors },
-                  { key: 'cheapest', header: 'Cheapest', secondary: true, render: (row) => (row.cheapest ? pair(row.cheapest.inputUsdPerMillion, row.cheapest.outputUsdPerMillion) : '—') },
-                  { key: 'median', header: 'Median', optional: true, render: (row) => (row.median ? pair(row.median.inputUsdPerMillion, row.median.outputUsdPerMillion) : '—') },
+                  { key: 'cheapest', header: 'Cheapest', secondary: true, render: (row) => summaryPrice(row, row.cheapest) },
+                  { key: 'median', header: 'Median', optional: true, render: (row) => summaryPrice(row, row.median) },
                   { key: 'rank', header: 'Rank', align: 'right', render: (row) => (row.rank === null ? '—' : `${row.rank} of ${row.of}`), sortValue: (row) => row.rank },
                   { key: 'delta', header: 'vs median', align: 'right', render: (row) => deltaText(row.deltaPct), sortValue: (row) => row.deltaPct },
                 ]} />
@@ -82,7 +93,7 @@ export default function SellerMarket() {
                   columns={[
                     { key: 'service', header: 'Model', render: (row) => row.service },
                     { key: 'sellers', header: 'Sellers', align: 'right', render: (row) => formatNumber(row.sellers) },
-                    { key: 'cheapest', header: 'Cheapest output', align: 'right', render: (row) => price(row.cheapestOutputUsdPerMillion) },
+                    { key: 'cheapest', header: 'Cheapest', align: 'right', render: (row) => [row.cheapestOutputUsdPerMillion === null ? null : `${price(row.cheapestOutputUsdPerMillion)} out`, row.cheapestUnitPrice && formatUnitPrice(row.cheapestUnitPrice)].filter(Boolean).join(' · ') || '—' },
                   ]} />
               </Panel>
             )}
@@ -95,12 +106,12 @@ export default function SellerMarket() {
 
 function OffersPanel({ service }: { service: SellerMarketService }) {
   return (
-    <Panel title={`Everyone selling ${service.service}`} description={service.unique ? 'No other seller offers this model.' : `${service.of} sellers, cheapest blended price first. Your row is marked.`}
+    <Panel title={`Everyone selling ${service.service}`} description={service.unique ? 'No other seller offers this model.' : `${service.of} comparable sellers, cheapest ${service.unit === null ? 'blended price' : `per ${service.mine.unitPrice?.name ?? 'unit'}`} first. Your row is marked.`}
       actions={<Button size="sm" variant="outline" onClick={() => editPrice(service)}>Edit your price</Button>} flush>
       <DataTable<SellerMarketOffer> label={`Sellers of ${service.service}`} rows={service.offers} rowKey={(row) => `${row.peerId}:${row.mine}`}
         columns={[
           { key: 'name', header: 'Seller', render: (row) => <span className="gc-inline">{row.mine && <Badge tone="neutral">You</Badge>}<span className="gc-ellipsis" title={row.peerId}>{row.name ?? shortId(row.peerId)}</span></span> },
-          { key: 'price', header: 'Input / output', render: (row) => pair(row.inputUsdPerMillion, row.outputUsdPerMillion), sortValue: (row) => row.blendedUsdPerMillion },
+          { key: 'price', header: 'Price', render: (row) => offerPrice(row), sortValue: (row) => sortPrice(row) },
           { key: 'cached', header: 'Cached', secondary: true, render: (row) => price(row.cachedInputUsdPerMillion) },
           { key: 'trust', header: 'Trust', align: 'right', render: (row) => (row.trustScore === null ? '—' : Math.round(row.trustScore)), sortValue: (row) => row.trustScore },
           { key: 'tee', header: 'TEE', secondary: true, render: (row) => (row.tee ? <TeeBadge tee scope={null} /> : null) },

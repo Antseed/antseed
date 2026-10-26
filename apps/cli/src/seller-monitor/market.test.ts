@@ -17,8 +17,9 @@ test('market: competitors, cheapest, median, rank and delta per service; unique 
   assert.equal(market.found, true)
   const glm = market.services.find((service) => service.service === 'glm-5.3')!
   assert.equal(glm.competitors, 5)
-  assert.deepEqual(glm.cheapest, { inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.2 })
-  assert.deepEqual(glm.median, { inputUsdPerMillion: 0.75, outputUsdPerMillion: 2.5 })
+  assert.deepEqual(glm.cheapest, { inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.2, unitUsd: null })
+  assert.deepEqual(glm.median, { inputUsdPerMillion: 0.75, outputUsdPerMillion: 2.5, unitUsd: null })
+  assert.equal(glm.unit, null)
   // Configured prices win over what the network last saw (0.9 / 3).
   assert.equal(glm.mine.blendedUsdPerMillion, blended(0.7, 2.2))
   assert.equal(glm.rank, 2)
@@ -57,4 +58,36 @@ test('reputation: trust parts with their maximum, rank among sellers, next steps
 test('market: with no network loaded, nothing is ranked or called only yours', () => {
   const market = marketView([], ME, mine, meta)
   assert.ok(market.services.every((service) => !service.unique && service.rank === null))
+})
+
+/** A seller row selling one image model at zero token prices and `perImage` USD per image. */
+function imageSeller(peerId: string, name: string, perImage: number | null) {
+  return {
+    peerId, displayName: name, providers: ['openai'],
+    providerPricing: { openai: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } },
+    providerServiceCategories: { openai: { services: { 'qwen-image': ['image'] } } },
+    providerServiceApiProtocols: { openai: { services: { 'qwen-image': ['openai-images'] } } },
+    ...(perImage === null ? {} : { providerServiceUnitBillingModels: { openai: { services: { 'qwen-image': { 'openai-images': { version: 1, components: [{ unit: 'output_images', priceUsd: perImage }] } } } } } }),
+  }
+}
+
+test('market: unit-billed models rank by their per-unit price, never by their zero token prices', () => {
+  const rows = [imageSeller(ME, 'Me', 0.04), imageSeller('0x' + 'a'.repeat(40), 'Cheaper', 0.02), imageSeller('0x' + 'b'.repeat(40), 'Dearer', 0.06), imageSeller('0x' + 'c'.repeat(40), 'Token priced', null)]
+  const image = { provider: 'openai', service: 'qwen-image', inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: null, unitPrice: { unit: 'output_images', name: 'image', minUsd: 0.04, maxUsd: 0.04 } }
+  for (const market of [marketView(rows, ME, [image], meta), marketView(rows, ME, null, meta)]) {
+    const service = market.services[0]!
+    assert.equal(service.unit, 'output_images')
+    assert.equal(service.mine.blendedUsdPerMillion, null)
+    assert.deepEqual([service.rank, service.of, service.competitors], [2, 3, 3], 'the token-priced offer is not compared')
+    assert.deepEqual(service.cheapest, { inputUsdPerMillion: null, outputUsdPerMillion: null, unitUsd: 0.02 })
+    assert.equal(service.median!.unitUsd, 0.04)
+    assert.equal(service.deltaPct, 0)
+    assert.deepEqual(service.offers.slice(0, 2).map((offer) => [offer.name, offer.unitPrice?.minUsd]), [['Cheaper', 0.02], ['Me', 0.04]])
+  }
+  // A token-priced seller of the same model is not ranked against the zero token prices of unit-billed ones.
+  const tokens = marketView(rows, ME, [{ ...image, inputUsdPerMillion: 1, outputUsdPerMillion: 2, unitPrice: null }], meta).services[0]!
+  assert.deepEqual([tokens.unit, tokens.rank, tokens.of, tokens.cheapest], [null, 2, 2, { inputUsdPerMillion: 0, outputUsdPerMillion: 0, unitUsd: null }])
+  // A model this seller does not sell shows its cheapest per-unit price, not "free".
+  const other = marketView(rows.slice(1), ME, [], meta).notOffered[0]!
+  assert.deepEqual([other.service, other.cheapestOutputUsdPerMillion, other.cheapestUnitPrice], ['qwen-image', 0, { unit: 'output_images', name: 'image', minUsd: 0.02, maxUsd: 0.02 }])
 })

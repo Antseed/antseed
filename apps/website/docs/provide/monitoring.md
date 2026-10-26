@@ -46,7 +46,7 @@ Then open the printed URL on your own machine.
 
 ## Market
 
-**Market** compares each model you sell with every other seller of the same model: how many others offer it, the cheapest and median prices, your rank by blended price (three parts input to one part output, a typical chat mix) and how far you are from the median. Select a model to see every seller of it with price, trust score, TEE and load, your own row marked. **Edit your price** opens that model in **Settings**. Models only you offer are marked, and a list shows the models other sellers offer that you don't, most widely offered first.
+**Market** compares each model you sell with every other seller of the same model: how many others offer it, the cheapest and median prices, your rank by blended price (three parts input to one part output, a typical chat mix) and how far you are from the median. An image or video model billed per unit is compared per unit instead (say per image), only with sellers that price it in the same unit. Select a model to see every seller of it with price, trust score, TEE and load, your own row marked. **Edit your price** opens that model in **Settings**. Models only you offer are marked, and a list shows the models other sellers offer that you don't, most widely offered first.
 
 ## Reputation
 

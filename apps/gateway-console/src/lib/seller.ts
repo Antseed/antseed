@@ -1,4 +1,5 @@
-import type { SellerStatus, SellerUsageDay } from '../api/types'
+import type { SellerStatus, SellerUnitPrice, SellerUsageDay } from '../api/types'
+import { formatPriceRange } from './format'
 
 export type AvailableSeller = Extract<SellerStatus, { available: true }>
 
@@ -41,6 +42,11 @@ export function sellerNotices(status: AvailableSeller, now = Date.now()): string
 }
 
 /** Up to 4 decimals, more for tiny balances (0.00005), trailing zeros dropped. */
+/** "$0.02 / image", or "$0.02–$0.04 / image" when size or quality changes the price. */
+export function formatUnitPrice(price: Pick<SellerUnitPrice, 'name' | 'minUsd' | 'maxUsd'>): string {
+  return `${formatPriceRange({ min: price.minUsd, max: price.maxUsd })} / ${price.name}`
+}
+
 export function formatEth(value: number | null | undefined): string {
   if (value === null || value === undefined) return '—'
   if (value === 0) return '0'
