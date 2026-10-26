@@ -11,6 +11,7 @@ import type {
   DomainVerificationConfig,
   DomainVerificationMethod,
   GithubVerificationConfig,
+  SellerFallbackUpstreamConfig,
   SellerProviderConfig,
   SellerServiceConfig,
   TokenPricingUsdPerMillion,
@@ -119,6 +120,44 @@ function normalizeSellerService(value: unknown): SellerServiceConfig | null {
   return out;
 }
 
+function normalizeStringMap(value: unknown): Record<string, string> | undefined {
+  if (!isRecord(value)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (typeof v === 'string') out[k] = v;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+// Shape-only: a missing or malformed baseUrl is kept as '' so validateConfig
+// rejects it instead of the fallback silently disappearing.
+function normalizeFallbackUpstreams(value: unknown): SellerFallbackUpstreamConfig[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out = value.filter(isRecord).map((raw): SellerFallbackUpstreamConfig => {
+    const fallback: SellerFallbackUpstreamConfig = {
+      baseUrl: typeof raw['baseUrl'] === 'string' ? raw['baseUrl'].trim() : '',
+    };
+    if (typeof raw['apiKeyEnv'] === 'string') {
+      fallback.apiKeyEnv = raw['apiKeyEnv'].trim();
+    }
+    const pathRewrite = normalizeStringMap(raw['pathRewrite']);
+    if (pathRewrite) {
+      fallback.pathRewrite = pathRewrite;
+    }
+    if (isRecord(raw['services'])) {
+      fallback.services = {};
+      for (const [serviceId, rawService] of Object.entries(raw['services'])) {
+        const upstreamModel = isRecord(rawService) && typeof rawService['upstreamModel'] === 'string'
+          ? rawService['upstreamModel'].trim()
+          : undefined;
+        fallback.services[serviceId] = upstreamModel !== undefined ? { upstreamModel } : {};
+      }
+    }
+    return fallback;
+  });
+  return out.length > 0 ? out : undefined;
+}
+
 function normalizeSellerProvider(value: unknown): SellerProviderConfig | null {
   if (!isRecord(value)) return null;
   if (typeof value['plugin'] !== 'string' || value['plugin'].trim().length === 0) return null;
@@ -129,12 +168,13 @@ function normalizeSellerProvider(value: unknown): SellerProviderConfig | null {
   if (typeof value['apiKeyEnv'] === 'string' && value['apiKeyEnv'].trim().length > 0) {
     out.apiKeyEnv = value['apiKeyEnv'].trim();
   }
-  if (isRecord(value['pathRewrite'])) {
-    const pr: Record<string, string> = {};
-    for (const [k, v] of Object.entries(value['pathRewrite'])) {
-      if (typeof v === 'string') pr[k] = v;
-    }
-    if (Object.keys(pr).length > 0) out.pathRewrite = pr;
+  const pathRewrite = normalizeStringMap(value['pathRewrite']);
+  if (pathRewrite) {
+    out.pathRewrite = pathRewrite;
+  }
+  const fallbackUpstreams = normalizeFallbackUpstreams(value['fallbackUpstreams']);
+  if (fallbackUpstreams) {
+    out.fallbackUpstreams = fallbackUpstreams;
   }
   const defaults = normalizeTokenPricing(value['defaults']);
   if (defaults) {
@@ -163,6 +203,7 @@ function mergeSellerProviders(
       ...(cfg.baseUrl ? { baseUrl: cfg.baseUrl } : {}),
       ...(cfg.apiKeyEnv ? { apiKeyEnv: cfg.apiKeyEnv } : {}),
       ...(cfg.pathRewrite ? { pathRewrite: { ...cfg.pathRewrite } } : {}),
+      ...(cfg.fallbackUpstreams ? { fallbackUpstreams: structuredClone(cfg.fallbackUpstreams) } : {}),
       ...(cfg.defaults ? { defaults: clonePricing(cfg.defaults) } : {}),
       services: { ...cfg.services },
     };
