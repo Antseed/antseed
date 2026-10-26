@@ -12,6 +12,7 @@ import {
   Badge, CodeBlock, CopyButton, Figure, Mono, PageLink, SelectField, TabPanel, Tabs,
 } from '../components/ui'
 import { formatAnts } from '../lib/ants'
+import { isFreeService } from '../lib/free-tier'
 import { formatDateTime, formatLatency, formatNumber, formatRelative, formatSpeed, shortId } from '../lib/format'
 import { priceSummary } from '../lib/models'
 import { isWorkspaceAdmin } from '../lib/nav'
@@ -72,10 +73,6 @@ function ProviderStats({ peer, showReputation }: { peer: Peer; showReputation: b
       <Figure label="Failure streak" value={coolingDown ? `${peer.health.failureStreak}, cooling down until ${formatDateTime(peer.health.coolingDownUntil)}` : String(peer.health.failureStreak)} />
     </div>
   )
-}
-
-function isFreeService(service: Service): boolean {
-  return [service.inputUsdPerMillion, service.outputUsdPerMillion, service.cachedInputUsdPerMillion].every((price) => (price ?? 0) === 0)
 }
 
 function ProviderModels({ peer, selected, onSelect }: { peer: Peer; selected: Service | null; onSelect: (service: Service) => void }) {

@@ -677,6 +677,8 @@ export interface Peer {
     categories: string[]
     /** Wire APIs the seller serves this model on, e.g. "openai-chat-completions", "anthropic-messages". */
     apiProtocols?: string[]
+    /** The service has a listed price, per token or per unit (image, video). Older gateways omit it. */
+    paid?: boolean
     /** The free-tier program this service is served under: its own, else the seller-wide one. */
     freeTier?: FreeTierProgramView | null
   }>

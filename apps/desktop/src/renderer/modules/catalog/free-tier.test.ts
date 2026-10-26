@@ -18,7 +18,7 @@ function stake(positions: Partial<BuyerFreeTierStake['pools'][number]['positions
     currentEpoch: 10,
     genesis,
     epochDuration: WEEK,
-    pools: [{ agentId: 7, positions: positions.map((overrides, index) => ({ id: index + 1, staker, ants: 0, startEpoch: 0, endEpoch: 0, closedAtEpoch: null, maxLocked: false, expiresAt: null, ...overrides })) }],
+    pools: [{ agentId: 7, positions: positions.map((overrides, index) => ({ id: index + 1, staker, ants: 0, startEpoch: 0, endEpoch: 0, closedAtEpoch: null, maxLocked: false, expiresAt: null, ...overrides, maxLockedNext: overrides.maxLockedNext ?? overrides.maxLocked ?? false })) }],
   };
 }
 

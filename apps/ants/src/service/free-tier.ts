@@ -1,4 +1,4 @@
-import type { FreeTierPoolStakeView, FreeTierStakeView } from '@antseed/node/free-tier-program';
+import type { FreeTierPoolStakeView, FreeTierStakeView } from '@antseed/node/free-tier-stake';
 import type { AntsContext } from './context.js';
 
 const ANTS_WEI = 10n ** 18n;
@@ -49,7 +49,8 @@ export async function freeTierStake(
         startEpoch: position.stakeStartEpoch,
         endEpoch: position.stakeEndEpoch,
         closedAtEpoch: position.closedAtEpoch === 0 ? null : position.closedAtEpoch,
-        maxLocked: statuses[index]!.maxLockedNext,
+        maxLocked: statuses[index]!.maxLocked,
+        maxLockedNext: statuses[index]!.maxLockedNext,
         expiresAt,
       });
       byPool.set(position.agentId, pool);

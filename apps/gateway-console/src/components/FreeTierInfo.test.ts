@@ -49,7 +49,7 @@ describe('FreeTierInfo', () => {
     const buyer = `0x${'b1'.repeat(20)}`
     const stake: FreeTierStake = {
       buyer, currentEpoch: 10, genesis: Date.UTC(2027, 0, 1, 12) / 1000 - 10 * 604_800, epochDuration: 604_800,
-      pools: [{ agentId: 42, positions: [{ id: 1, staker: buyer, ants: 26_000, startEpoch: 0, endEpoch: 30, closedAtEpoch: null, maxLocked: false, expiresAt: null }] }],
+      pools: [{ agentId: 42, positions: [{ id: 1, staker: buyer, ants: 26_000, startEpoch: 0, endEpoch: 30, closedAtEpoch: null, maxLocked: false, maxLockedNext: false, expiresAt: null }] }],
     }
     vi.useFakeTimers()
     vi.setSystemTime((stake.genesis + 10 * 604_800 + 3600) * 1000)

@@ -30,10 +30,10 @@ test('describes each pool’s counted stake and how it shrinks', () => {
   // An hour into epoch 10.
   const now = Date.UTC(2027, 0, 1, 1) / 1000
   const position = { id: 1, staker: STAKER, startEpoch: 0, closedAtEpoch: null, expiresAt: null }
-  const shrinking = { agentId: 7, positions: [{ ...position, ants: 5200, endEpoch: 62, maxLocked: false }] }
+  const shrinking = { agentId: 7, positions: [{ ...position, ants: 5200, endEpoch: 62, maxLocked: false, maxLockedNext: false }] }
   assert.equal(formatPoolStake(view, shrinking, now), 'pool #7  counts as 5,200 ANTS for a year, shrinking weekly until 2027-12-31')
-  const locked = { agentId: 3, positions: [{ ...position, ants: 520, endEpoch: 114, maxLocked: true }] }
+  const locked = { agentId: 3, positions: [{ ...position, ants: 520, endEpoch: 114, maxLocked: true, maxLockedNext: true }] }
   assert.equal(formatPoolStake(view, locked, now), 'pool #3  counts as 1,040 ANTS for a year; max lock keeps it')
-  const shared = { agentId: 3, positions: [{ ...position, ants: 520, endEpoch: 114, maxLocked: true, expiresAt: Date.UTC(2027, 5, 1) / 1000 }] }
+  const shared = { agentId: 3, positions: [{ ...position, ants: 520, endEpoch: 114, maxLocked: true, maxLockedNext: true, expiresAt: Date.UTC(2027, 5, 1) / 1000 }] }
   assert.equal(formatPoolStake(view, shared, now), 'pool #3  counts as 1,040 ANTS for a year; max lock keeps it until the code expires on 2027-06-01')
 })

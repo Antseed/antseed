@@ -11,12 +11,12 @@ function position(id: number, owner: string, overrides: Partial<SellerPoolPositi
   return { id, owner, agentId: 7, amount: 1000n * ANTS, weightAmount: 1000n * ANTS, stakeStartEpoch: 5, stakeEndEpoch: 40, closedAtEpoch: 0, withdrawn: false, ...overrides };
 }
 
-function makeCtx(byOwner: Record<string, SellerPoolPosition[]>, maxLocked: number[] = []): AntsContext {
+function makeCtx(byOwner: Record<string, SellerPoolPosition[]>, maxLockedNext: number[] = [], maxLocked: number[] = []): AntsContext {
   const all = Object.values(byOwner).flat();
   const pools = {
     allStakerPositionIds: vi.fn(async (owner: string) => (byOwner[owner.toLowerCase()] ?? []).map((row) => row.id)),
     positionsBatch: vi.fn(async (ids: number[]) => ids.map((id) => all.find((row) => row.id === id)!)),
-    positionStatusesBatch: vi.fn(async (rows: SellerPoolPosition[]) => rows.map((row) => ({ withdrawableEpoch: 0, maxLocked: false, maxLockedNext: maxLocked.includes(row.id), slashBps: null }))),
+    positionStatusesBatch: vi.fn(async (rows: SellerPoolPosition[]) => rows.map((row) => ({ withdrawableEpoch: 0, maxLocked: maxLocked.includes(row.id), maxLockedNext: maxLockedNext.includes(row.id), slashBps: null }))),
   };
   return {
     stack: async () => ({ currentEpoch: 10, genesis: 1_000, epochDuration: 604_800 }),
@@ -25,7 +25,7 @@ function makeCtx(byOwner: Record<string, SellerPoolPosition[]>, maxLocked: numbe
 }
 
 describe('freeTierStake', () => {
-  it('groups the buyer and shared stakers by pool with each code expiry', async () => {
+  it('groups the buyer and shared stakers by pool with each code expiry and max-lock state now and next epoch', async () => {
     const ctx = makeCtx({
       [buyer.toLowerCase()]: [position(1, buyer)],
       [staker.toLowerCase()]: [
@@ -34,14 +34,15 @@ describe('freeTierStake', () => {
         position(4, staker, { withdrawn: true }),
         position(5, staker, { closedAtEpoch: 9 }),
       ],
-    }, [3]);
+    }, [3], [2]);
     const view = await freeTierStake(ctx, buyer, [{ staker, expiresAt: 2_000_000 }]);
     expect(view).toMatchObject({ currentEpoch: 10, genesis: 1_000, epochDuration: 604_800 });
     expect(view.pools).toEqual([
-      { agentId: 3, positions: [{ id: 2, staker: staker.toLowerCase(), ants: 250, startEpoch: 5, endEpoch: 40, closedAtEpoch: null, maxLocked: false, expiresAt: 2_000_000 }] },
+      { agentId: 3, positions: [{ id: 2, staker: staker.toLowerCase(), ants: 250, startEpoch: 5, endEpoch: 40, closedAtEpoch: null, maxLocked: true, maxLockedNext: false, expiresAt: 2_000_000 }] },
       { agentId: 7, positions: [
-        { id: 1, staker: buyer.toLowerCase(), ants: 1000, startEpoch: 5, endEpoch: 40, closedAtEpoch: null, maxLocked: false, expiresAt: null },
-        { id: 3, staker: staker.toLowerCase(), ants: 1000, startEpoch: 5, endEpoch: 40, closedAtEpoch: null, maxLocked: true, expiresAt: 2_000_000 },
+        { id: 1, staker: buyer.toLowerCase(), ants: 1000, startEpoch: 5, endEpoch: 40, closedAtEpoch: null, maxLocked: false, maxLockedNext: false, expiresAt: null },
+        // Max lock turned on this epoch: it counts from the next one.
+        { id: 3, staker: staker.toLowerCase(), ants: 1000, startEpoch: 5, endEpoch: 40, closedAtEpoch: null, maxLocked: false, maxLockedNext: true, expiresAt: 2_000_000 },
       ] },
     ]);
   });

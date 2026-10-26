@@ -8,6 +8,8 @@
  * POST   /workspaces/:id/free-tier  { code }  → FreeTierSharing  (workspace admin)
  * DELETE /workspaces/:id/free-tier/:staker    → FreeTierSharing  (workspace admin)
  */
+import type { FreeTierStakePositionView, FreeTierStakeView } from '@antseed/node/free-tier-stake'
+
 /**
  * A seller's free-tier program from its peer metadata: the base limits every
  * buyer gets, and the staked tiers that raise them. Only stake in that
@@ -38,35 +40,10 @@ export interface FreeTierSharing {
   stakers: FreeTierStaker[]
 }
 
-/**
- * One seller-pool position counted toward the workspace's free tier: the
- * buyer's own or a sharing staker's. Mirrors `FreeTierStakePositionView` in
- * `@antseed/node/free-tier-program`.
- */
-export interface FreeTierStakePosition {
-  id: number
-  staker: string
-  /** Weighted ANTS; power is this × weeks of lock remaining. */
-  ants: number
-  /** First epoch the position has power. */
-  startEpoch: number
-  /** Epoch the lock ends. */
-  endEpoch: number
-  /** Epoch a moved, split or merged position stops counting, or null. */
-  closedAtEpoch: number | null
-  /** Max lock is on: power holds at `ants × 104`. */
-  maxLocked: boolean
-  /** Unix seconds the staker's code expires; null for the buyer's own stake. */
-  expiresAt: number | null
-}
+/** One seller-pool position counted toward the workspace's free tier: the buyer's own or a sharing staker's. */
+export type FreeTierStakePosition = FreeTierStakePositionView
 
 /** The stake each seller pool counts for the workspace buyer, read live from the chain. */
-export interface FreeTierStake {
+export interface FreeTierStake extends FreeTierStakeView {
   buyer: string
-  currentEpoch: number
-  /** Unix seconds epoch 0 starts. */
-  genesis: number
-  /** Seconds per epoch. */
-  epochDuration: number
-  pools: Array<{ agentId: number; positions: FreeTierStakePosition[] }>
 }

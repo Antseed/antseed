@@ -77,6 +77,7 @@ export function peerServices(row: Row): Peer['services'] {
         cachedInputUsdPerMillion: num(price['cachedInputUsdPerMillion']),
         categories: Array.isArray(tags) ? tags.filter((tag): tag is string => typeof tag === 'string') : [],
         ...(Array.isArray(apis) ? { apiProtocols: apis.filter((api): api is string => typeof api === 'string') } : {}),
+        paid,
         // A priced service only has a free allowance of its own; the seller-wide program covers free services.
         freeTier: freeTierProgramForService(capabilities, service, paid, { video }),
       })

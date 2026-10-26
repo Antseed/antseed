@@ -5,7 +5,7 @@ import {
   freeTierPowerAt,
   freeTierStakeTrend,
   type FreeTierStakePositionView,
-} from '../src/payments/free-tier-program.js';
+} from '../src/payments/free-tier-stake.js';
 
 const WEEK = 7 * 24 * 3600;
 const view = { currentEpoch: 10, genesis: 1_000_000, epochDuration: WEEK };
@@ -18,7 +18,8 @@ const tiers = [
 ];
 
 function position(overrides: Partial<FreeTierStakePositionView>): FreeTierStakePositionView {
-  return { id: 1, staker: '0x' + '1'.repeat(40), ants: 0, startEpoch: 0, endEpoch: 0, closedAtEpoch: null, maxLocked: false, expiresAt: null, ...overrides };
+  const maxLocked = overrides.maxLocked ?? false;
+  return { id: 1, staker: '0x' + '1'.repeat(40), ants: 0, startEpoch: 0, endEpoch: 0, closedAtEpoch: null, maxLocked, maxLockedNext: maxLocked, expiresAt: null, ...overrides };
 }
 
 describe('free-tier outlook', () => {
@@ -62,5 +63,20 @@ describe('free-tier outlook', () => {
     const small = { positions: [position({ ants: 10, endEpoch: 20 })] };
     expect(freeTierOutlook(view, small, tiers, now)).toMatchObject({ power: 100, tier: null, dropsAt: null });
     expect(freeTierStakeTrend(view, small, now)).toMatchObject({ shrinking: true, endsAt: at(20) });
+  });
+
+  it('applies a max-lock change made this epoch only from the next one', () => {
+    // Enabled this epoch: 100k ANTS with one week left counts 100k now, 10.4M from next week.
+    const enabling = { positions: [position({ ants: 100_000, endEpoch: 11, maxLocked: false, maxLockedNext: true })] };
+    expect(freeTierPowerAt(view, enabling.positions, at(11) - 1)).toBe(100_000);
+    expect(freeTierPowerAt(view, enabling.positions, at(11))).toBe(10_400_000);
+    expect(freeTierOutlook(view, enabling, tiers, now)).toMatchObject({ tier: null, dropsAt: null });
+    expect(freeTierStakeTrend(view, enabling, now)).toMatchObject({ steady: true, shrinking: false });
+    // Disabled this epoch: max power now, then 100k × weeks left from next week (the pool resets the end to next + 104), below 10M in week 16.
+    const disabling = { positions: [position({ ants: 100_000, endEpoch: 11 + 104, maxLocked: true, maxLockedNext: false })] };
+    expect(freeTierPowerAt(view, disabling.positions, at(11) - 1)).toBe(10_400_000);
+    expect(freeTierPowerAt(view, disabling.positions, at(11))).toBe(10_400_000);
+    expect(freeTierOutlook(view, disabling, tiers, now)).toMatchObject({ tier: tiers[1], dropsAt: at(16), tierAfterDrop: tiers[0] });
+    expect(freeTierStakeTrend(view, disabling, now)).toMatchObject({ steady: false, shrinking: true, endsAt: at(115) });
   });
 });

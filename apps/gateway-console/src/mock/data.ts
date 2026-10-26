@@ -100,7 +100,7 @@ export function seed() {
     services: index === 2 ? manyServices : models.filter((_, m) => (m + index) % 3 !== 0).map((service, m) => {
       const free = index === 3
       const base = 0.2 + ((index * 7 + m * 3) % 10) / 4
-      return { provider: 'openai', service, inputUsdPerMillion: free ? 0 : Number(base.toFixed(2)), outputUsdPerMillion: free ? 0 : Number((base * 3).toFixed(2)), cachedInputUsdPerMillion: free ? 0 : Number((base / 4).toFixed(3)), categories: ['chat'] }
+      return { provider: 'openai', service, inputUsdPerMillion: free ? 0 : Number(base.toFixed(2)), outputUsdPerMillion: free ? 0 : Number((base * 3).toFixed(2)), cachedInputUsdPerMillion: free ? 0 : Number((base / 4).toFixed(3)), categories: ['chat'], paid: !free }
     }),
     trustScore: [92, 78, 88, 41, 65, null, 55, 83][index]!,
     reputationScore: [90, 74, 85, 50, 60, null, 52, 80][index]!,

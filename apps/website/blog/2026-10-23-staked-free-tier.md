@@ -43,7 +43,7 @@ Free access is one reason. The stake is also a normal seller-pool position: it e
 
 ## One allowance per staker
 
-Stake in your buyer's own address counts automatically. Stake in another wallet, such as the one that funds your deposits, counts once that wallet signs a code for your buyer in the ANTS dashboard: one signature, no gas, valid for up to 180 days. The buyer pastes the code into the CLI, the desktop app or the gateway. Several wallets can share with the same buyer and their stake adds up. Usage is counted on the staked positions, so every buyer sharing the same stake shares one allowance, and moving a position to another wallet doesn't reset it. Staked buyers also skip the per-IP limit, which matters for teams behind one office network or gateway.
+Stake in your buyer's own address counts automatically. Stake in another wallet, such as the one that funds your deposits, counts once that wallet signs a code for your buyer in the ANTS dashboard: one signature, no gas, valid for 30, 90 or 365 days as the staker chooses. The buyer pastes the code into the CLI, the desktop app or the gateway. Several wallets can share with the same buyer and their stake adds up. Usage is counted on the staked positions, so every buyer sharing the same stake shares one allowance, and moving a position to another wallet doesn't reset it. Staked buyers also skip the per-IP limit, which matters for teams behind one office network or gateway.
 
 ## Get started
 

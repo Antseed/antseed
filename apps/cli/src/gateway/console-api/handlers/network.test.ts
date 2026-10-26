@@ -204,9 +204,9 @@ test('peer services price each service from its own entry or the provider defaul
   }
   // The seller-wide program covers the free service only; priced ones have no program of their own.
   assert.deepEqual(peerServices(row as Record<string, unknown>), [
-    { provider: 'openai', service: 'open-model-a', inputUsdPerMillion: 0.5, outputUsdPerMillion: 1.5, cachedInputUsdPerMillion: 0.1, categories: ['chat', 'coding'], freeTier: null },
-    { provider: 'openai', service: 'open-model-free', inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: null, categories: [], freeTier },
-    { provider: 'openai', service: 'open-model-b', inputUsdPerMillion: 1, outputUsdPerMillion: 2, cachedInputUsdPerMillion: null, categories: ['chat'], freeTier: null },
+    { provider: 'openai', service: 'open-model-a', inputUsdPerMillion: 0.5, outputUsdPerMillion: 1.5, cachedInputUsdPerMillion: 0.1, categories: ['chat', 'coding'], paid: true, freeTier: null },
+    { provider: 'openai', service: 'open-model-free', inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: null, categories: [], paid: false, freeTier },
+    { provider: 'openai', service: 'open-model-b', inputUsdPerMillion: 1, outputUsdPerMillion: 2, cachedInputUsdPerMillion: null, categories: ['chat'], paid: true, freeTier: null },
   ])
 })
 
@@ -255,6 +255,9 @@ test('peer services give a paid unit-billed service no seller-wide program', () 
   const services = peerServices(row as Record<string, unknown>)
   assert.equal(services.find((entry) => entry.service === 'paid-image')?.freeTier, null)
   assert.equal(services.find((entry) => entry.service === 'free-image')?.freeTier?.base.maxRequestsPerAddress, 1000)
+  // Zero token prices with a positive image price are paid, so the console shows the paid fallback.
+  assert.equal(services.find((entry) => entry.service === 'paid-image')?.paid, true)
+  assert.equal(services.find((entry) => entry.service === 'free-image')?.paid, false)
 })
 
 test('TEE snapshot: only current passing attestations count', () => {

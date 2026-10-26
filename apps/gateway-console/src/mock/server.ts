@@ -883,10 +883,10 @@ const routes: Array<[string, string, Handler]> = [
     const epochDuration = 604_800
     const currentEpoch = Math.floor((Date.now() / 1000 - genesis) / epochDuration)
     const buyer = String(workspace.walletAddress)
-    const position = { startEpoch: currentEpoch - 20, closedAtEpoch: null, maxLocked: false, expiresAt: null }
+    const position = { startEpoch: currentEpoch - 20, closedAtEpoch: null, maxLocked: false, maxLockedNext: false, expiresAt: null }
     const pools: FreeTierStake['pools'] = [{ agentId: 86_903, positions: [{ ...position, id: 41, staker: buyer.toLowerCase(), ants: 270_000, endEpoch: currentEpoch + 10 }] }]
     const shared = (freeTierStakers.get(workspace.id) ?? []).filter((entry) => !entry.expired)[0]
-    if (shared) pools.unshift({ agentId: 86_901, positions: [{ ...position, id: 42, staker: shared.staker.toLowerCase(), ants: 450_000, endEpoch: currentEpoch + 104, maxLocked: true, expiresAt: shared.expiresAt }] })
+    if (shared) pools.unshift({ agentId: 86_901, positions: [{ ...position, id: 42, staker: shared.staker.toLowerCase(), ants: 450_000, endEpoch: currentEpoch + 104, maxLocked: true, maxLockedNext: true, expiresAt: shared.expiresAt }] })
     return { buyer, currentEpoch, genesis, epochDuration, pools }
   }],
   ['POST', '/workspaces/:id/free-tier', ({ params, body }) => {

@@ -7,6 +7,7 @@
  */
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { freeTierPowerAt } from '@antseed/node/free-tier-stake'
 import { Button, DataTable, Modal, TextAreaField } from '@antseed/ui'
 import { api, errorMessage } from '../api'
 import type { FreeTierStake, FreeTierStaker } from '../api/types'
@@ -14,7 +15,7 @@ import { Icon } from '../components/icons'
 import { Badge, CopyButton, EmptyState, Mono, Panel, QueryView } from '../components/ui'
 import { formatDate, shortId } from '../lib/format'
 import { useConsoleMutation } from '../lib/mutations'
-import { powerAsYearAnts, powerAt, stakeTrendLabel } from '../lib/free-tier'
+import { powerAsYearAnts, stakeTrendLabel } from '../lib/free-tier'
 import { qk, usePeers } from '../lib/queries'
 
 function AddCodeModal({ isOpen, workspaceId, onClose }: { isOpen: boolean; workspaceId: string; onClose: () => void }) {
@@ -62,7 +63,7 @@ function CountedStake({ workspaceId }: { workspaceId: string }) {
       <DataTable<PoolRow> label="Counted stake by seller" rows={view.pools} rowKey={(row) => String(row.agentId)}
         columns={[
           { key: 'seller', header: 'Seller pool', render: (row) => seller(row.agentId) },
-          { key: 'power', header: 'Counts as', render: (row) => powerAsYearAnts(powerAt(view, row.positions, Date.now() / 1000)) },
+          { key: 'power', header: 'Counts as', render: (row) => powerAsYearAnts(freeTierPowerAt(view, row.positions, Date.now() / 1000)) },
           { key: 'trend', header: 'Over time', render: (row) => stakeTrendLabel(view, row.positions) },
         ]} />
     </>

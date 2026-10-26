@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { FreeTierProgramView, FreeTierStake, FreeTierStakePosition } from '../api/types'
-import { powerAt, stakeStandingLine, stakeTrendLabel } from './free-tier'
+import { isFreeService, stakeStandingLine, stakeTrendLabel } from './free-tier'
 
 const WEEK = 604_800
 // Epoch 10 starts Jan 1, 2027 (UTC noon, so the date reads the same in every timezone).
@@ -15,7 +15,7 @@ const program: FreeTierProgramView = {
 function view(positions: Partial<FreeTierStakePosition>[]): FreeTierStake {
   return {
     buyer, currentEpoch: 10, genesis, epochDuration: WEEK,
-    pools: [{ agentId: 7, positions: positions.map((overrides, index) => ({ id: index + 1, staker, ants: 0, startEpoch: 0, endEpoch: 0, closedAtEpoch: null, maxLocked: false, expiresAt: null, ...overrides })) }],
+    pools: [{ agentId: 7, positions: positions.map((overrides, index) => ({ id: index + 1, staker, ants: 0, startEpoch: 0, endEpoch: 0, closedAtEpoch: null, maxLocked: false, expiresAt: null, ...overrides, maxLockedNext: overrides.maxLockedNext ?? overrides.maxLocked ?? false })) }],
   }
 }
 
@@ -24,14 +24,10 @@ beforeAll(() => { vi.useFakeTimers(); vi.setSystemTime((genesis + 10 * WEEK + 36
 afterAll(() => { vi.useRealTimers() })
 
 describe('workspace staked standing', () => {
-  it('matches the seller pool: ANTS × weeks left, max lock at 104 weeks, nothing after a code expires', () => {
-    const stake = view([
-      { ants: 1000, endEpoch: 20 },
-      { ants: 10, maxLocked: true, endEpoch: 114 },
-      { ants: 1, endEpoch: 20, expiresAt: genesis + 11 * WEEK },
-    ])
-    expect(powerAt(stake, stake.pools[0]!.positions, genesis + 10 * WEEK)).toBe(10_000 + 1_040 + 10)
-    expect(powerAt(stake, stake.pools[0]!.positions, genesis + 11 * WEEK)).toBe(9_000 + 1_040)
+  it('waits for the next epoch before counting max lock turned on this week', () => {
+    // 100k ANTS with one week left is below every tier now; max lock lifts it to unlimited from next week.
+    expect(stakeStandingLine(program, view([{ ants: 100_000, endEpoch: 11, maxLocked: false, maxLockedNext: true }]), 7, false)?.text)
+      .toBe('Your stake here counts as 1,923 ANTS for a year, below the first tier.')
   })
 
   it('says when the tier drops, and who can max-lock to keep it', () => {
@@ -49,5 +45,17 @@ describe('workspace staked standing', () => {
     expect(stakeTrendLabel(mixed, mixed.pools[0]!.positions)).toBe('Shrinking weekly; the max-locked part holds')
     const shared = view([{ ants: 1, maxLocked: true, endEpoch: 114, expiresAt: genesis + 30 * WEEK }])
     expect(stakeTrendLabel(shared, shared.pools[0]!.positions)).toBe('Max lock keeps it until the code expires on May 21, 2027')
+  })
+})
+
+describe('isFreeService', () => {
+  const service = { provider: 'fal', service: 'qwen-image', inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: 0, categories: [] }
+  it("follows the gateway's classification, so a per-image price with zero token prices is paid", () => {
+    expect(isFreeService({ ...service, paid: true })).toBe(false)
+    expect(isFreeService({ ...service, paid: false })).toBe(true)
+  })
+  it('falls back to token prices from older gateways', () => {
+    expect(isFreeService(service)).toBe(true)
+    expect(isFreeService({ ...service, outputUsdPerMillion: 2 })).toBe(false)
   })
 })
