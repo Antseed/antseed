@@ -11,6 +11,7 @@ import { ZeroAddress } from 'ethers'
 import {
   DEFAULT_BUYER_IDENTITY,
   acceptFreeTierDelegationCode,
+  verifyFreeTierDelegations,
   withFreeTierDelegation,
   type FreeTierDelegation,
 } from '@antseed/node'
@@ -97,8 +98,6 @@ export function registerFreeTierRoutes(router: ConsoleRouter, deps: ConsoleDeps,
 
   router.add('GET', '/workspaces/:id/free-tier/stake', async (request): Promise<FreeTierStake> => {
     const ws = await workspace(request, 'member')
-    const { stakers } = await sharing(ws.buyer)
-    const active = stakers.filter((entry) => !entry.expired).map(({ staker, expiresAt }) => ({ staker, expiresAt }))
     const unavailable = (error: unknown) =>
       new ConsoleError(503, 'chain_unavailable', `Could not read stake from the chain: ${error instanceof Error ? error.message : String(error)}`)
     let chain: AntsChainConfig
@@ -107,6 +106,8 @@ export function registerFreeTierRoutes(router: ConsoleRouter, deps: ConsoleDeps,
     } catch (error) {
       throw unavailable(error)
     }
+    // Only codes sellers on this network accept: signed for its chain, for this buyer, not expired.
+    const active = verifyFreeTierDelegations(await readDelegations(), ws.buyer, chain.evmChainId, deps.now())
     const key = JSON.stringify([chain, ws.buyer.toLowerCase(), active])
     const cached = stakeCache.get(key)
     if (cached && deps.now() - cached.at < STAKE_TTL_MS) return cached.value

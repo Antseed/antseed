@@ -7,6 +7,9 @@
  */
 import type { FreeTierStakeTier } from './free-tier-program.js';
 
+/** Most positions a seller counts toward one buyer's tier; the strongest are counted first. */
+export const MAX_FREE_TIER_COUNTED_POSITIONS = 64;
+
 /** Epochs of power a max-locked position keeps (the seller pool's `MAX_STAKE_EPOCHS`). */
 export const FREE_TIER_MAX_LOCK_EPOCHS = 104;
 
@@ -58,9 +61,10 @@ export function freeTierEpochStart(view: Pick<FreeTierStakeView, 'genesis' | 'ep
 }
 
 /**
- * Power of `positions` at unix second `at`, in ANTS-epochs, as the seller pool
- * counts it: each position from activation, `ants × epochs left` (max lock:
- * `ants × FREE_TIER_MAX_LOCK_EPOCHS`), until it closes or its code expires.
+ * Power of `positions` at unix second `at`, in ANTS-epochs, as sellers count
+ * it: each position from activation, `ants × epochs left` (max lock:
+ * `ants × FREE_TIER_MAX_LOCK_EPOCHS`), until it closes or its code expires,
+ * summed over the strongest `MAX_FREE_TIER_COUNTED_POSITIONS`.
  * Locks change at epoch boundaries; a code stops counting the second it expires.
  */
 export function freeTierPowerAt(
@@ -69,14 +73,19 @@ export function freeTierPowerAt(
   at: number,
 ): number {
   const epoch = Math.floor((at - view.genesis) / view.epochDuration);
-  let power = 0;
+  const counted: Array<{ id: number; power: number }> = [];
   for (const position of positions) {
     if (position.expiresAt !== null && position.expiresAt <= at) continue;
     if (epoch < position.startEpoch || (position.closedAtEpoch !== null && epoch >= position.closedAtEpoch)) continue;
     // A max-lock change made this epoch applies from the next one.
     const locked = epoch <= view.currentEpoch ? position.maxLocked : position.maxLockedNext;
-    power += position.ants * (locked ? FREE_TIER_MAX_LOCK_EPOCHS : Math.max(0, position.endEpoch - epoch));
+    const power = position.ants * (locked ? FREE_TIER_MAX_LOCK_EPOCHS : Math.max(0, position.endEpoch - epoch));
+    if (power > 0) counted.push({ id: position.id, power });
   }
+  // Sellers count only the strongest positions (ties by lower id), so the projection does too.
+  counted.sort((a, b) => (a.power === b.power ? a.id - b.id : b.power - a.power));
+  let power = 0;
+  for (const position of counted.slice(0, MAX_FREE_TIER_COUNTED_POSITIONS)) power += position.power;
   return power;
 }
 

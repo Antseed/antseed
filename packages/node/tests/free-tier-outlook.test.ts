@@ -4,6 +4,7 @@ import {
   freeTierOutlook,
   freeTierPowerAt,
   freeTierStakeTrend,
+  MAX_FREE_TIER_COUNTED_POSITIONS,
   type FreeTierStakePositionView,
 } from '../src/payments/free-tier-stake.js';
 
@@ -78,5 +79,18 @@ describe('free-tier outlook', () => {
     expect(freeTierPowerAt(view, disabling.positions, at(11))).toBe(10_400_000);
     expect(freeTierOutlook(view, disabling, tiers, now)).toMatchObject({ tier: tiers[1], dropsAt: at(16), tierAfterDrop: tiers[0] });
     expect(freeTierStakeTrend(view, disabling, now)).toMatchObject({ steady: false, shrinking: true, endsAt: at(115) });
+  });
+
+  it('counts only the strongest positions a seller counts, re-picked as they change', () => {
+    // 65 positions of 1,000 ANTS with 8 weeks left: 520,000 power in all, but sellers count 64 (512,000).
+    const many = Array.from({ length: MAX_FREE_TIER_COUNTED_POSITIONS + 1 }, (_, index) => position({ id: index + 1, ants: 1_000, endEpoch: 18 }));
+    expect(freeTierPowerAt(view, many, now)).toBe(512_000);
+    const defaultTiers = [{ minPower: 520_000, multiplier: 5 }];
+    expect(freeTierOutlook(view, { positions: many }, defaultTiers, now).tier).toBeNull();
+    // A stronger position whose code expires is counted until then, after which the 65th is counted again.
+    const expiresAt = at(12);
+    const strong = position({ id: 100, ants: 10_000, endEpoch: 18, expiresAt });
+    expect(freeTierPowerAt(view, [strong, ...many], now)).toBe(80_000 + 63 * 8_000);
+    expect(freeTierPowerAt(view, [strong, ...many], expiresAt)).toBe(64 * 6_000);
   });
 });
