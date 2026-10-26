@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -67,6 +68,23 @@ test('the seller dashboard needs its link, then serves the seller routes', async
     assert.equal((await get('/')).headers.get('location'), '/console/seller')
     // Writes need the console's CSRF header, as everywhere in the console.
     assert.equal((await call('PATCH', '/seller/settings', { maxConcurrentBuyers: 10 }, { cookie })).status, 403)
+  } finally {
+    await server.close()
+  }
+})
+
+test('a malformed request target gets a 400 and the dashboard keeps serving', async () => {
+  const { server, link, call } = await harness()
+  try {
+    const raw = await new Promise<string>((resolve, reject) => {
+      const socket = connect(Number(link.port), link.hostname, () => socket.write('GET //[/ HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n'))
+      let data = ''
+      socket.on('data', (chunk) => { data += chunk })
+      socket.on('end', () => resolve(data))
+      socket.on('error', reject)
+    })
+    assert.match(raw, /^HTTP\/1\.1 400/)
+    assert.equal((await call('GET', '/seller/status')).status, 200)
   } finally {
     await server.close()
   }

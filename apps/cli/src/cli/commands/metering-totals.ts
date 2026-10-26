@@ -16,7 +16,7 @@ export interface MeteringCounts {
   receiptCents: number;
 }
 
-type MeteringReader = Pick<MeteringStorage, 'getEventTokenSummary' | 'getSessionSummary' | 'getTotalCost'>;
+type MeteringReader = Pick<MeteringStorage, 'getEventTokenSummary' | 'getSessionSummary' | 'getSessionsInsertedAfter' | 'getTotalCost'>;
 
 const zero = (): MeteringCounts => ({ requests: 0, tokens: 0, inputTokens: 0, outputTokens: 0, sessions: 0, receiptCents: 0 });
 
@@ -26,7 +26,6 @@ function addRange(into: MeteringCounts, metering: MeteringReader, startMs: numbe
   into.tokens += events.totalTokens;
   into.inputTokens += events.inputTokens;
   into.outputTokens += events.outputTokens;
-  into.sessions += metering.getSessionSummary(startMs, endMs).channelCount;
   into.receiptCents += metering.getTotalCost(startMs, endMs);
 }
 
@@ -38,12 +37,15 @@ const utcDayStart = (ms: number): number => ms - (ms % DAY_MS);
  * (multi-GB metering.db), so each pass reads only the rows added since the
  * last one, an hour of data per query, yielding between queries so /healthz
  * keeps answering. Rows pruned later stay counted (the totals are counters).
+ * Sessions are counted by insertion (rowid), since a session row lands with
+ * the start time of a request that may have finished minutes later.
  */
 export class MeteringTotals {
   private _total = zero();
   private _today = zero();
   private _todayStart = 0;
   private _coveredTo: number | null = null;
+  private _sessionCursor = 0;
   private _running: Promise<void> | null = null;
 
   /** Totals through the last completed pass, or null before the first one finishes. */
@@ -85,6 +87,10 @@ export class MeteringTotals {
         start = end;
         await new Promise((resolve) => setImmediate(resolve));
       }
+      const sessions = metering.getSessionsInsertedAfter(this._sessionCursor);
+      total.sessions += sessions.count;
+      today.sessions = metering.getSessionSummary(todayStart, now).channelCount;
+      this._sessionCursor = sessions.lastRowid;
       this._total = total;
       this._today = today;
       this._todayStart = todayStart;

@@ -5,8 +5,8 @@ import { METERING_SETTLE_MS, MeteringTotals } from '../metering-totals.js';
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 
-/** A fake metering DB: one event (1 request, 10 tokens, 2 cents, 1 session) per timestamp. */
-function fakeMetering(timestamps: number[]) {
+/** A fake metering DB: one event (1 request, 10 tokens, 2 cents, 1 session) per timestamp, sessions in insertion order. */
+function fakeMetering(timestamps: number[], sessions: number[] = timestamps) {
   const queries: Array<[number, number]> = [];
   const inRange = (start: number, end: number) => timestamps.filter((ts) => ts >= start && ts < end).length;
   return {
@@ -17,7 +17,8 @@ function fakeMetering(timestamps: number[]) {
         const n = inRange(start, end);
         return { totalRequests: n, totalTokens: 10 * n, inputTokens: 6 * n, outputTokens: 4 * n };
       },
-      getSessionSummary: (start: number, end: number) => ({ channelCount: inRange(start, end), totalRequests: 0, totalTokens: 0, totalCostCents: 0 }),
+      getSessionSummary: (start: number, end: number) => ({ channelCount: sessions.filter((ts) => ts >= start && ts < end).length, totalRequests: 0, totalTokens: 0, totalCostCents: 0 }),
+      getSessionsInsertedAfter: (after: number) => ({ count: Math.max(0, sessions.length - after), lastRowid: Math.max(after, sessions.length) }),
       getTotalCost: (start: number, end: number) => 2 * inRange(start, end),
       close: () => {},
     }),
@@ -62,4 +63,20 @@ test('overlapping refreshes share one pass', async () => {
   assert.equal(totals.refresh(db.open, 10 * DAY), first);
   await first;
   assert.notEqual(totals.snapshot(), null);
+});
+
+test('a session written after the watermark passed its start time is still counted', async () => {
+  const day = 400 * DAY;
+  const events: number[] = [];
+  const sessions: number[] = [];
+  const db = fakeMetering(events, sessions);
+  const totals = new MeteringTotals();
+  await totals.refresh(db.open, day + 2 * HOUR);
+  assert.equal(totals.snapshot()!.total.sessions, 0);
+  // Its first request started at 1:30 and took long; the row lands after the 2:00 pass.
+  sessions.push(day + HOUR + 30 * 60_000);
+  await totals.refresh(db.open, day + 3 * HOUR);
+  const snap = totals.snapshot()!;
+  assert.equal(snap.total.sessions, 1);
+  assert.equal(snap.today.sessions, 1);
 });

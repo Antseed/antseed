@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import { constants } from 'node:fs'
-import { access, chmod, copyFile, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { access, chmod, mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { ConsoleError } from '../gateway/console-api/router.js'
 import { configFromObject, resolveConfigPath } from './loader.js'
@@ -47,12 +47,12 @@ async function configTarget(path: string): Promise<string> {
  * Edits are serialized in-process, and a symlinked config is written
  * through to its target.
  */
-export async function patchConfigFile(configPath: string, mutate: (config: JsonObject) => void): Promise<void> {
+export async function patchConfigFile(configPath: string, mutate: (config: JsonObject) => void, options: { backup?: boolean } = {}): Promise<void> {
   const target = await configTarget(resolveConfigPath(configPath))
-  await withConfigLock(target, () => patchConfigTarget(target, mutate))
+  await withConfigLock(target, () => patchConfigTarget(target, mutate, options.backup === true))
 }
 
-async function patchConfigTarget(path: string, mutate: (config: JsonObject) => void): Promise<void> {
+async function patchConfigTarget(path: string, mutate: (config: JsonObject) => void, backup: boolean): Promise<void> {
   let raw: string | null = null
   try {
     raw = await readFile(path, 'utf8')
@@ -74,6 +74,9 @@ async function patchConfigTarget(path: string, mutate: (config: JsonObject) => v
   }
   mutate(config)
   const mode = raw === null ? 0o600 : (await stat(path)).mode & 0o777
+  if (raw === null) await mkdir(dirname(path), { recursive: true })
+  // The backup is the exact file this edit replaces, written only once the edit is accepted.
+  if (backup && raw !== null) await writeFile(`${path}.bak`, raw, { mode })
   const temp = `${path}.${randomBytes(6).toString('hex')}.tmp`
   try {
     await writeFile(temp, `${JSON.stringify(config, null, 2)}\n`, { mode })
@@ -86,12 +89,24 @@ async function patchConfigTarget(path: string, mutate: (config: JsonObject) => v
 }
 
 
+/** The directory itself, or the closest ancestor that exists (a missing config directory is created on save). */
+async function nearestDirectory(dir: string): Promise<string> {
+  for (let current = dir; ; current = dirname(current)) {
+    try {
+      await stat(current)
+      return current
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || dirname(current) === current) throw error
+    }
+  }
+}
+
 /** Saving needs the file and its directory writable (atomic replace); a ConfigMap mount is neither. */
 export async function configWritable(configPath: string): Promise<{ writable: boolean; reason: string | null }> {
   const path = await configTarget(resolveConfigPath(configPath))
   const readOnly = { writable: false, reason: `${configPath} is read-only here (for example mounted from a Kubernetes ConfigMap). Change it where it is managed, then restart.` }
   try {
-    await access(dirname(path), constants.W_OK)
+    await access(await nearestDirectory(dirname(path)), constants.W_OK)
   } catch {
     return readOnly
   }
@@ -112,8 +127,6 @@ export async function configWritable(configPath: string): Promise<{ writable: bo
 export async function patchValidatedConfig(configPath: string, mutate: (raw: JsonObject) => void): Promise<void> {
   const access = await configWritable(configPath)
   if (!access.writable) throw new ConsoleError(409, 'config_read_only', access.reason!)
-  const path = await configTarget(resolveConfigPath(configPath))
-  await copyFile(path, `${path}.bak`).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error })
   await patchConfigFile(configPath, (raw) => {
     try {
       configFromObject(structuredClone(raw))
@@ -126,5 +139,5 @@ export async function patchValidatedConfig(configPath: string, mutate: (raw: Jso
     } catch (error) {
       throw new ConsoleError(400, 'invalid_request', (error as Error).message.replace(/^Invalid config:\s*(- )?/i, '').replace(/\n- /g, '; '))
     }
-  })
+  }, { backup: true })
 }

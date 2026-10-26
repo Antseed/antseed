@@ -27,6 +27,18 @@ test('seller health metrics expose withdrawn models, their upstream status and g
   assert.equal(sample(samples, 'antseed_seller_gas_depleted')?.value, 0);
 });
 
+test('upstreams sharing a plugin get their own series', () => {
+  const samples: MetricSample[] = [];
+  addSellerHealthMetrics(samples, { instance: 'seller' }, {
+    modelHealth: [
+      { provider: 'openai', providerId: 'kimi', service: 'kimi-k3', advertised: false, consecutiveFailures: 3, lastProbeAt: null, lastStatusCode: 429, lastDetail: null },
+      { provider: 'openai', providerId: 'openrouter', service: 'kimi-k3', advertised: true, consecutiveFailures: 0, lastProbeAt: null, lastStatusCode: null, lastDetail: null },
+    ],
+  });
+  const advertised = samples.filter((entry) => entry.name === 'antseed_seller_model_advertised');
+  assert.deepEqual(advertised.map((entry) => [entry.labels?.provider, entry.labels?.plugin, entry.value]), [['kimi', 'openai', 0], ['openrouter', 'openai', 1]]);
+});
+
 test('seller health metrics are empty for daemons that predate the fields', () => {
   const samples: MetricSample[] = [];
   addSellerHealthMetrics(samples, { instance: 'seller' }, { state: 'seeding' });

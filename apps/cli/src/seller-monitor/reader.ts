@@ -43,6 +43,7 @@ export function parseModelHealth(raw: unknown): SellerModelHealth[] {
   if (!Array.isArray(raw)) return []
   return raw.map((entry: Record<string, unknown>) => ({
     provider: String(entry.provider ?? ''),
+    providerId: String(entry.providerId ?? entry.provider ?? ''),
     service: String(entry.service ?? ''),
     advertised: entry.advertised !== false,
     consecutiveFailures: num(entry.consecutiveFailures),
@@ -139,8 +140,10 @@ export class SellerUsageReader {
         const key = `${dataDir}:${day}`
         const cached = this._days.get(key)
         const today = day === todayStart
-        // A finished day never changes; today is re-read after the TTL.
-        if (cached && (!today || now - cached.readAt < this._todayTtlMs)) {
+        // A day read after it ended never changes; anything read earlier (today,
+        // or yesterday last read before midnight) is re-read after the TTL.
+        const final = cached && cached.readAt >= day + DAY_MS
+        if (cached && (final || (today && now - cached.readAt < this._todayTtlMs))) {
           series.push(cached.entry)
           continue
         }

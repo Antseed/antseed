@@ -314,6 +314,18 @@ export class MeteringStorage {
     return rows.map(rowToSession);
   }
 
+  /**
+   * Sessions written after `afterRowid`, in insertion order. A session row is
+   * first written when its first request finishes, with that request's start
+   * time, so counting by start time can miss rows that land late.
+   */
+  getSessionsInsertedAfter(afterRowid: number): { count: number; lastRowid: number } {
+    const row = this.db.prepare(
+      'SELECT COUNT(*) AS count, MAX(rowid) AS last_rowid FROM sessions WHERE rowid > ?'
+    ).get(afterRowid) as { count: number; last_rowid: number | null };
+    return { count: row.count, lastRowid: row.last_rowid ?? afterRowid };
+  }
+
   /** Get session count and total cost for a time range. */
   getSessionSummary(startMs: number, endMs: number): {
     channelCount: number;
@@ -354,7 +366,8 @@ export class MeteringStorage {
     const where = ['e.timestamp >= @from', 'e.timestamp <= @beforeTs', 'NOT (e.timestamp = @beforeTs AND e.rowid >= @beforeRowid)'];
     if (query.buyerPeerId) where.push('e.buyer_peer_id = @buyer');
     if (query.service) where.push('e.service = @service');
-    if (query.errorsOnly) where.push('e.status_code >= 400');
+    // A stream that fails after its 200 went out keeps the 200 but records the error.
+    if (query.errorsOnly) where.push("(e.status_code >= 400 OR (e.error IS NOT NULL AND e.error <> ''))");
     const stmt = this.db.prepare(`
       SELECT e.rowid AS rowid, e.event_id, e.session_id, e.timestamp, e.provider, e.service, e.buyer_peer_id,
         e.input_tokens, e.output_tokens, e.total_tokens, e.token_method, e.latency_ms, e.status_code, e.was_streaming,

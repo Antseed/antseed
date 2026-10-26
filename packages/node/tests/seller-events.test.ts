@@ -30,4 +30,11 @@ describe('seller events journal', () => {
     expect(readFileSync(join(dir, 'seller-events.jsonl'), 'utf-8').trim().split('\n')).toHaveLength(1);
     expect((await readSellerEvents(dir)).map((e) => e.at)).toEqual([2, 1]);
   });
+
+  it('rotates once when writers overlap, keeping the old history and both new events', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'seller-events-'));
+    writeFileSync(join(dir, 'seller-events.jsonl'), `${JSON.stringify(event(1, 'x'.repeat(SELLER_EVENTS_MAX_BYTES)))}\n`);
+    await Promise.all([appendSellerEvent(dir, event(2)), appendSellerEvent(dir, event(3))]);
+    expect((await readSellerEvents(dir)).map((e) => e.at)).toEqual([3, 2, 1]);
+  });
 });

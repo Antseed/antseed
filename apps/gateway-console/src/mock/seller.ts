@@ -6,7 +6,7 @@ const FAKE_PEER = '0xfa1e000000000000000000000000000000000007'
 
 export function mockSellerStatus(now = Date.now()): SellerStatus {
   const model = (service: string, advertised: boolean, failures: number, code: number | null, detail: string, ago: number) => (
-    { provider: 'openai', service, advertised, consecutiveFailures: failures, lastProbeAt: now - ago, lastStatusCode: code, lastDetail: detail }
+    { provider: 'openai', providerId: 'openai', service, advertised, consecutiveFailures: failures, lastProbeAt: now - ago, lastStatusCode: code, lastDetail: detail }
   )
   return {
     available: true, running: true, dataDir: '/var/lib/antseed', peerId: FAKE_PEER, provider: 'openai',

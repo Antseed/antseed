@@ -202,6 +202,16 @@ export class ChainRpcProvider extends JsonRpcProvider {
     return Math.min(...this.endpoints.map((endpoint) => endpoint.openUntil))
   }
 
+  /**
+   * Counts the call for its source here, where the caller's async context is
+   * still current: ethers drains its request queue from one shared timer, so
+   * by `_send` concurrent callers all look like whoever scheduled it.
+   */
+  override send(method: string, params: Array<unknown> | Record<string, unknown>): Promise<any> {
+    recordRpcCall()
+    return super.send(method, params)
+  }
+
   override async _send(payload: JsonRpcPayload | JsonRpcPayload[]): Promise<JsonRpcResult[]> {
     if (Array.isArray(payload)) return Promise.all(payload.map((entry) => this.one(entry)))
     return [await this.one(payload)]
@@ -209,7 +219,6 @@ export class ChainRpcProvider extends JsonRpcProvider {
 
   private async one(payload: JsonRpcPayload): Promise<JsonRpcResult> {
     this.counters.calls[payload.method] = (this.counters.calls[payload.method] ?? 0) + 1
-    recordRpcCall()
     const key = JSON.stringify([payload.method, payload.params])
     const constant = this.constants.get(key)
     if (constant && constant.until > this.now()) {
@@ -330,6 +339,7 @@ export class ChainRpcProvider extends JsonRpcProvider {
 
   /** Multicall3 is probed once per process (its code is then cached like any other). */
   private multicallDeployed(): Promise<boolean> {
+    if (!this.multicall) recordRpcCall('multicall-probe')
     this.multicall ??= this.one({ jsonrpc: '2.0', id: nextInternalId++, method: 'eth_getCode', params: [this.multicallAddress, 'latest'] } as JsonRpcPayload)
       .then((result) => 'result' in result && typeof result.result === 'string' && result.result !== '0x')
       .catch((error: unknown) => {

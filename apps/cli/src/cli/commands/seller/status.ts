@@ -56,8 +56,14 @@ export function registerSellerStatusCommand(sellerCmd: Command): void {
         if (walletAddress) {
           try {
             const registration = await readSellerRegistration({ address: walletAddress, configPath: resolveConfigPath(globalOpts.config) });
-            const pools = createSellerPoolsClient(config);
-            const positionCount = await pools.stakerPositionCount(walletAddress).catch(() => null);
+            // Pool positions are optional: legacy chains have no pool contracts, and the registration still shows.
+            const positionCount = await (async () => {
+              try {
+                return await createSellerPoolsClient(config).stakerPositionCount(walletAddress);
+              } catch {
+                return null;
+              }
+            })();
             onChain = {
               agentId: registration.agentId,
               registryBound: registration.registryBound,

@@ -24,10 +24,18 @@ export interface ModelHealthTarget {
    * doesn't run a full agent loop. Defaults to `provider`.
    */
   probeProvider?: Provider;
+  /**
+   * The seller config's name for this provider instance. Several instances
+   * can share a plugin and so a `provider.name` (four upstreams on the openai
+   * plugin); this tells them apart in snapshots and events. Defaults to `provider.name`.
+   */
+  id?: string;
 }
 
 export interface ModelHealthEvent {
   provider: string;
+  /** The target's `id` (the configured provider name). */
+  providerId: string;
   service: string;
   status: 'removed' | 'restored';
   consecutiveFailures: number;
@@ -37,6 +45,8 @@ export interface ModelHealthEvent {
 
 export interface ServiceHealthSnapshot {
   provider: string;
+  /** The target's `id` (the configured provider name). */
+  providerId: string;
   service: string;
   advertised: boolean;
   consecutiveFailures: number;
@@ -63,6 +73,7 @@ interface ServiceHealthState {
   /** The provider instance this state belongs to (several can share a name, e.g. four upstreams on the openai plugin). */
   provider: Provider;
   providerName: string;
+  providerId: string;
   service: string;
   consecutiveFailures: number;
   removed: boolean;
@@ -150,6 +161,7 @@ export class ModelHealthChecker {
   getSnapshot(): ServiceHealthSnapshot[] {
     return Array.from(this._states.values()).map((state) => ({
       provider: state.providerName,
+      providerId: state.providerId,
       service: state.service,
       advertised: !state.removed,
       consecutiveFailures: state.consecutiveFailures,
@@ -269,6 +281,7 @@ export class ModelHealthChecker {
       state = {
         provider,
         providerName: provider.name,
+        providerId: this._targets.find((target) => target.provider === provider)?.id ?? provider.name,
         service,
         consecutiveFailures: 0,
         removed: false,
@@ -363,6 +376,7 @@ export class ModelHealthChecker {
     }
     this._emitChange({
       provider: provider.name,
+      providerId: state.providerId,
       service: state.service,
       status: 'removed',
       consecutiveFailures: state.consecutiveFailures,
@@ -379,6 +393,7 @@ export class ModelHealthChecker {
     provider.healthCheckAvailable = true;
     this._emitChange({
       provider: provider.name,
+      providerId: state.providerId,
       service: state.service,
       status: 'restored',
       consecutiveFailures: 0,

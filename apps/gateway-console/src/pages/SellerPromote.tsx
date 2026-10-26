@@ -135,7 +135,8 @@ function VerificationPanel({ data }: { data: Promote }) {
     mutationFn: () => api.seller.saveVerifications({ domains: domains.map((domain) => ({ domain })), github: github.map(({ username, repository }) => (repository && repository.toLowerCase() !== username.toLowerCase() ? { username, repository } : { username })) }),
     onSuccess: (next) => { update(next); setSaved(true); toast('Saved. Restart the seller to announce the claims.') },
   })
-  const check = useMutation({ mutationFn: api.seller.checkVerifications, onSuccess: update })
+  // A check refreshes only the statuses shown next to saved claims; unsaved edits stay.
+  const check = useMutation({ mutationFn: api.seller.checkVerifications, onSuccess: (next) => queryClient.setQueryData(qk.sellerPromote, next) })
   const readOnly = !data.writable
   const claimFor = (domain: string) => data.domains.find((entry) => entry.domain === domain)
   const githubFor = (username: string) => data.github.find((entry) => entry.username.toLowerCase() === username.toLowerCase())

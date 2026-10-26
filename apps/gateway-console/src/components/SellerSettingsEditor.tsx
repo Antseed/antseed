@@ -45,7 +45,8 @@ export function draftOf(settings: SellerSettings): Draft {
   }
 }
 
-export function draftErrors(draft: Draft): Record<string, string> {
+/** Prices are required only on rows being changed: an unpriced row left alone does not block saving. */
+export function draftErrors(draft: Draft, base?: Draft): Record<string, string> {
   const errors: Record<string, string | undefined> = {
     displayName: draft.displayName.trim().length > 64 ? 'At most 64 characters.' : undefined,
     maxConcurrentBuyers: numberFieldError(draft.maxConcurrentBuyers, { required: true, min: 1, integer: true }),
@@ -58,6 +59,7 @@ export function draftErrors(draft: Draft): Record<string, string> {
     countries: countryList(draft.countries).some((code) => !/^[A-Z]{2}$/.test(code)) ? 'Two-letter country codes, comma-separated.' : undefined,
   }
   for (const [key, price] of Object.entries(draft.prices)) {
+    if (base && JSON.stringify(price) === JSON.stringify(base.prices[key])) continue
     errors[`${key}:input`] = numberFieldError(price.input, { required: true })
     errors[`${key}:output`] = numberFieldError(price.output, { required: true })
     errors[`${key}:cached`] = numberFieldError(price.cached)
@@ -119,7 +121,7 @@ export function SellerSettingsEditor({ settings }: { settings: SellerSettings })
     row?.scrollIntoView({ block: 'center' })
     row?.querySelector('input')?.focus()
   }, [focusPrice])
-  const errors = draftErrors(draft)
+  const errors = draftErrors(draft, base)
   const patch = patchOf(base, draft)
   const changed = Object.keys(patch).length > 0
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) => setDraft((current) => ({ ...current, [key]: value }))

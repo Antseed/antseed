@@ -37,6 +37,14 @@ describe('metering request log page', () => {
     expect(storage.listEventsPage({ limit: 10, fromMs: 1_003 }).map((row) => row.event_id)).toEqual(['e6']);
   });
 
+  it('counts a stream that failed after its 200 as an error', () => {
+    const storage = new MeteringStorage(join(mkdtempSync(join(tmpdir(), 'metering-page-')), 'metering.db'));
+    storage.insertEvent(event(1, 1_000));
+    storage.insertEvent({ ...event(2, 1_001), error: 'upstream stream reset' });
+    storage.insertEvent(event(3, 1_002, { status: 500 }));
+    expect(storage.listEventsPage({ limit: 10, errorsOnly: true }).map((row) => row.event_id)).toEqual(['e3', 'e2']);
+  });
+
   it('walks the timestamp index without a sort or OFFSET (cheap at any depth)', () => {
     const storage = new MeteringStorage(join(mkdtempSync(join(tmpdir(), 'metering-page-')), 'metering.db'));
     const db = (storage as unknown as { db: { prepare(sql: string): { all(params: object): Array<{ detail: string }> } } }).db;

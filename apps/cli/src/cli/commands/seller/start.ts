@@ -880,16 +880,17 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
             // Probe the unwrapped provider so an ant-agent wrapper doesn't
             // run a full agent loop for every probe.
             ...(providers[index] && providers[index] !== provider ? { probeProvider: providers[index]! } : {}),
+            ...(selectedProviderNames[index] ? { id: selectedProviderNames[index] } : {}),
           })),
           ...(healthCheckCfg?.intervalMs !== undefined ? { intervalMs: healthCheckCfg.intervalMs } : {}),
           ...(healthCheckCfg?.failureThreshold !== undefined ? { failureThreshold: healthCheckCfg.failureThreshold } : {}),
           onChange: (event) => {
             if (event.status === 'removed') {
               console.log(chalk.yellow(`Model ${event.provider}/${event.service} unadvertised — failing health checks (${event.detail})`))
-              void alerts.record({ kind: 'model_down', severity: 'warning', title: `${event.service} withdrawn after ${event.consecutiveFailures} failed health checks`, detail: event.detail, provider: event.provider, service: event.service })
+              void alerts.record({ kind: 'model_down', severity: 'warning', title: `${event.service} withdrawn after ${event.consecutiveFailures} failed health checks`, detail: event.detail, provider: event.provider, providerId: event.providerId, service: event.service })
             } else {
               console.log(chalk.green(`Model ${event.provider}/${event.service} re-advertised — health check recovered (${event.detail})`))
-              void alerts.record({ kind: 'model_up', severity: 'info', title: `${event.service} is healthy again and advertised`, detail: event.detail, provider: event.provider, service: event.service })
+              void alerts.record({ kind: 'model_up', severity: 'info', title: `${event.service} is healthy again and advertised`, detail: event.detail, provider: event.provider, providerId: event.providerId, service: event.service })
             }
             void node.refreshSellerMetadata().catch(() => {})
           },

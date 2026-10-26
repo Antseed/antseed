@@ -118,7 +118,14 @@ export async function startSellerDashboard(options: SellerDashboardOptions): Pro
   })], options.distDir ? { distDir: options.distDir } : {})
 
   const server = http.createServer((req, res) => {
-    const path = new URL(req.url ?? '/', 'http://seller.local').pathname
+    let path: string
+    try {
+      path = new URL(req.url ?? '/', 'http://seller.local').pathname
+    } catch {
+      res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' })
+      res.end('Bad request')
+      return
+    }
     if (path === '/' || path === '/console' || path === '/console/') {
       res.writeHead(302, { location: '/console/seller' })
       res.end()

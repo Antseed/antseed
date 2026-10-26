@@ -76,3 +76,16 @@ test('usage is per UTC day, caches finished days and re-reads today after the TT
   assert.equal(later.days[2]!.requests, 2, 'today is re-read after the TTL')
   assert.equal(later.days[0]!.requests, 2, 'a finished day is never re-read')
 })
+
+test('a day last read before midnight is read once more, then kept', async () => {
+  const dir = tempDir()
+  const today = 20_000 * DAY
+  writeSellerFixture(dir, { state: { updatedAt: today }, requests: [{ at: today + 1_000, sessionId: 's1', tokens: 10, costCents: 1 }] })
+  const reader = new SellerUsageReader(60_000)
+  assert.equal((await reader.usage(dir, 1, today + 5_000)).days[0]!.requests, 1)
+  writeSellerFixture(dir, { requests: [{ at: today + 3_600_000, sessionId: 's2', tokens: 10, costCents: 1 }] })
+  const next = await reader.usage(dir, 2, today + DAY + 5_000)
+  assert.equal(next.days[0]!.requests, 2, 'the completed day gets its final totals')
+  writeSellerFixture(dir, { requests: [{ at: today + 7_200_000, sessionId: 's3', tokens: 10, costCents: 1 }] })
+  assert.equal((await reader.usage(dir, 2, today + DAY + 120_000)).days[0]!.requests, 2, 'read after it ended, it is final')
+})

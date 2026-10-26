@@ -142,7 +142,7 @@ The dashboard and the commands read the chain sparingly. Nothing is read while n
 
 | Metric | Description |
 |---|---|
-| `antseed_seller_model_advertised` | 1 while a service passes health checks, 0 once it is withdrawn. Labels `provider`, `service`. |
+| `antseed_seller_model_advertised` | 1 while a service passes health checks, 0 once it is withdrawn. Labels `provider` (the provider's name in your config), `plugin` and `service`. |
 | `antseed_seller_model_consecutive_failures` | Failed health checks in a row. |
 | `antseed_seller_model_last_status_code` | HTTP status of the last failed upstream check (402: upstream out of credit). |
 | `antseed_seller_model_last_probe_timestamp_seconds` | When the service was last checked. |

@@ -97,7 +97,7 @@ function ModelsPanel({ seller }: { seller: AvailableSeller }) {
   type Row = AvailableSeller['models'][number]
   return (
     <Panel title="Models" description="Health checks probe every service; a service that keeps failing is withdrawn until it recovers." flush>
-      <DataTable<Row> label="Model health" rows={seller.models} rowKey={(row) => `${row.provider}/${row.service}`}
+      <DataTable<Row> label="Model health" rows={seller.models} rowKey={(row) => `${row.providerId}/${row.service}`}
         empty={<EmptyState title="No health data yet" body="Model health appears once the seller has run its first checks." />}
         columns={[
           { key: 'service', header: 'Service', render: (row) => <span className="gc-ellipsis" title={row.service}>{row.service}</span>, sortValue: (row) => row.service },

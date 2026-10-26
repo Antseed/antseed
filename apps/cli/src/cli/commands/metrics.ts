@@ -246,7 +246,8 @@ async function addBuyerMetrics(samples: MetricSample[], baseLabels: Record<strin
 /** Model health and gas from the seller daemon's state file (absent on older sellers), parsed like the dashboard does. */
 export function addSellerHealthMetrics(samples: MetricSample[], sellerLabels: Record<string, string>, daemon: Record<string, unknown> | null): void {
   for (const service of parseModelHealth(daemon?.modelHealth)) {
-    const serviceLabels = { provider: service.provider, service: service.service };
+    // `provider` is the configured provider name, so upstreams sharing a plugin get their own series.
+    const serviceLabels = { provider: service.providerId, plugin: service.provider, service: service.service };
     addSample(samples, sellerLabels, { name: 'antseed_seller_model_advertised', help: 'Whether the service passes health checks and is advertised (0 = withdrawn after failing probes).', type: 'gauge', labels: serviceLabels, value: service.advertised ? 1 : 0 });
     addSample(samples, sellerLabels, { name: 'antseed_seller_model_consecutive_failures', help: 'Consecutive failed health probes for the service.', type: 'gauge', labels: serviceLabels, value: service.consecutiveFailures });
     if (service.lastStatusCode !== null) {

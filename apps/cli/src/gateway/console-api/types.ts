@@ -1044,6 +1044,8 @@ export interface ObservabilitySettings {
 
 export interface SellerModelHealth {
   provider: string
+  /** The seller config's provider name; tells apart upstreams that share a plugin. Older sellers: same as `provider`. */
+  providerId: string
   service: string
   /** False when the seller withdrew the service after failing health probes. */
   advertised: boolean

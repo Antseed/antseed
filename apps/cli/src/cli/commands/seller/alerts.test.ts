@@ -10,6 +10,7 @@ function harness(config: ConstructorParameters<typeof SellerAlerts>[0]['config']
   const dataDir = mkdtempSync(join(tmpdir(), 'seller-alerts-'));
   const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
   let now = 1_000_000;
+  let statusFor = (_url: string) => status;
   const alerts = new SellerAlerts({
     dataDir,
     config,
@@ -18,10 +19,10 @@ function harness(config: ConstructorParameters<typeof SellerAlerts>[0]['config']
     now: () => now,
     fetch: (async (url: string, init: RequestInit) => {
       calls.push({ url: String(url), body: JSON.parse(String(init.body)) });
-      return new Response('{}', { status });
+      return new Response('{}', { status: statusFor(String(url)) });
     }) as typeof fetch,
   });
-  return { alerts, calls, dataDir, advance: (ms: number) => { now += ms; } };
+  return { alerts, calls, dataDir, advance: (ms: number) => { now += ms; }, failWhen: (fail: (url: string) => boolean) => { statusFor = (url) => (fail(url) ? 500 : 200); } };
 }
 
 const down = { kind: 'model_down', severity: 'warning', title: 'glm-5.3 withdrawn', detail: 'HTTP 402: out of credit', provider: 'openai', service: 'glm-5.3' } as const;
@@ -53,6 +54,45 @@ test('repeats wait out the cooldown; a recovery is sent only after its alert', a
   assert.equal(calls.length, 2);
   await alerts.record(down);
   assert.equal(calls.length, 3, 'after a recovery the next failure alerts again');
+});
+
+test('a failed alert is retried on its next repeat and gets no recovery until one arrives', async () => {
+  const { alerts, calls, failWhen } = harness({ telegram: { chatId: '42' }, cooldownMinutes: 30 });
+  failWhen(() => true);
+  await alerts.record(down);
+  await alerts.record(up);
+  assert.equal(calls.length, 1, 'no recovery for an alert that never arrived');
+  failWhen(() => false);
+  await alerts.record(down);
+  assert.equal(calls.length, 2, 'the repeat is not held back by a cooldown');
+  failWhen(() => true);
+  await alerts.record(up);
+  failWhen(() => false);
+  await alerts.record(up);
+  assert.equal(calls.length, 4, 'a failed recovery stays pending');
+  await alerts.record(up);
+  assert.equal(calls.length, 4);
+});
+
+test('delivery is tracked per channel', async () => {
+  const { alerts, calls, failWhen } = harness({ telegram: { chatId: '42' }, webhook: { url: 'https://hooks.example/x' }, cooldownMinutes: 30 });
+  failWhen((url) => url.includes('hooks.example'));
+  await alerts.record(down);
+  failWhen(() => false);
+  await alerts.record(down);
+  assert.deepEqual(calls.map((call) => call.url.includes('hooks.example') ? 'webhook' : 'telegram'), ['telegram', 'webhook', 'webhook']);
+  await alerts.record(up);
+  assert.equal(calls.length, 5, 'both channels got the alert, both get the recovery');
+});
+
+test('upstreams sharing a plugin name keep separate incidents', async () => {
+  const { alerts, calls } = harness({ telegram: { chatId: '42' }, cooldownMinutes: 30 });
+  await alerts.record({ ...down, providerId: 'kimi' });
+  await alerts.record({ ...down, providerId: 'openrouter' });
+  assert.equal(calls.length, 2, "one upstream's alert does not silence the other's");
+  await alerts.record({ ...up, providerId: 'kimi' });
+  await alerts.record({ ...down, providerId: 'openrouter' });
+  assert.equal(calls.length, 3, 'a recovery on one leaves the other in its cooldown');
 });
 
 test('without channels nothing is sent; failures never leak the token', async () => {

@@ -29,18 +29,31 @@ export interface SellerEvent {
   title: string;
   detail?: string;
   provider?: string;
+  /** The configured provider name, when several instances share a plugin name. */
+  providerId?: string;
   service?: string;
 }
 
 const eventsPath = (dataDir: string) => join(dataDir, SELLER_EVENTS_FILE);
 const rotatedPath = (dataDir: string) => join(dataDir, 'seller-events.1.jsonl');
 
+/** Appends in flight, per journal: the size check, rotation and append run one at a time so two writers never rotate twice. */
+const appendQueues = new Map<string, Promise<void>>();
+
 /** Append one event, rotating the journal once it passes SELLER_EVENTS_MAX_BYTES. */
-export async function appendSellerEvent(dataDir: string, event: SellerEvent): Promise<void> {
+export function appendSellerEvent(dataDir: string, event: SellerEvent): Promise<void> {
   const path = eventsPath(dataDir);
-  const size = await stat(path).then((s) => s.size, () => 0);
-  if (size > SELLER_EVENTS_MAX_BYTES) await rename(path, rotatedPath(dataDir)).catch(() => {});
-  await appendFile(path, `${JSON.stringify(event)}\n`);
+  const write = async () => {
+    const size = await stat(path).then((s) => s.size, () => 0);
+    if (size > SELLER_EVENTS_MAX_BYTES) await rename(path, rotatedPath(dataDir)).catch(() => {});
+    await appendFile(path, `${JSON.stringify(event)}\n`);
+  };
+  const run = (appendQueues.get(path) ?? Promise.resolve()).then(write);
+  // A failed append does not hold up the next one.
+  const settled = run.catch(() => {});
+  appendQueues.set(path, settled);
+  void settled.then(() => { if (appendQueues.get(path) === settled) appendQueues.delete(path); });
+  return run;
 }
 
 function parseLines(text: string): SellerEvent[] {

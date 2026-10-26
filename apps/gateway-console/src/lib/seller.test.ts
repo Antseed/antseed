@@ -29,8 +29,8 @@ describe('seller page helpers', () => {
       gas: { address: '0xabc', depleted: true, balanceEth: 0.00001, minBalanceEth: 0.00005, lastCheckedAt: now },
       notices: ['Out of gas: wallet 0xabc holds …'],
       models: [
-        { provider: 'openai', service: 'glm-5.3', advertised: false, consecutiveFailures: 4, lastProbeAt: now, lastStatusCode: 402, lastDetail: 'HTTP 402' },
-        { provider: 'openai', service: 'kimi-k3', advertised: true, consecutiveFailures: 0, lastProbeAt: now, lastStatusCode: null, lastDetail: null },
+        { provider: 'openai', providerId: 'openai', service: 'glm-5.3', advertised: false, consecutiveFailures: 4, lastProbeAt: now, lastStatusCode: 402, lastDetail: 'HTTP 402' },
+        { provider: 'openai', providerId: 'openai', service: 'kimi-k3', advertised: true, consecutiveFailures: 0, lastProbeAt: now, lastStatusCode: null, lastDetail: null },
       ],
     }), now)
     expect(lines).toHaveLength(3)
@@ -43,8 +43,8 @@ describe('seller page helpers', () => {
     expect(formatEth(0.0297126)).toBe('0.0297')
     expect(formatEth(0.00005)).toBe('0.00005')
     expect(formatEth(null)).toBe('—')
-    expect(lastResult({ provider: 'p', service: 's', advertised: false, consecutiveFailures: 1, lastProbeAt: 1, lastStatusCode: 402, lastDetail: 'out of credit' })).toBe('HTTP 402 · out of credit')
-    expect(lastResult({ provider: 'p', service: 's', advertised: false, consecutiveFailures: 1, lastProbeAt: 1, lastStatusCode: 402, lastDetail: 'HTTP 402: no balance' })).toBe('HTTP 402: no balance')
+    expect(lastResult({ provider: 'p', providerId: 'p', service: 's', advertised: false, consecutiveFailures: 1, lastProbeAt: 1, lastStatusCode: 402, lastDetail: 'out of credit' })).toBe('HTTP 402 · out of credit')
+    expect(lastResult({ provider: 'p', providerId: 'p', service: 's', advertised: false, consecutiveFailures: 1, lastProbeAt: 1, lastStatusCode: 402, lastDetail: 'HTTP 402: no balance' })).toBe('HTTP 402: no balance')
   })
 
   it('labels chart days in UTC', () => {
@@ -79,6 +79,14 @@ describe('seller editors', async () => {
       pricing: [{ provider: 'openai', service: 'glm-5.3', inputUsdPerMillion: 0.8, outputUsdPerMillion: 3, cachedInputUsdPerMillion: null }],
     })
     expect(draftErrors({ ...base, maxConcurrentBuyers: '0', countries: 'RUS' })).toMatchObject({ maxConcurrentBuyers: expect.any(String), countries: expect.any(String) })
+  })
+
+  it('requires prices only on the rows being changed', () => {
+    const unpriced = { ...settings, services: [...settings.services, { provider: 'openai', service: 'kimi-k3', inputUsdPerMillion: null, outputUsdPerMillion: null, cachedInputUsdPerMillion: null, inherited: false }] }
+    const base = draftOf(unpriced)
+    expect(draftErrors({ ...base, displayName: 'Renamed' }, base)).toEqual({})
+    const partial = { ...base, prices: { ...base.prices, 'openai/kimi-k3': { input: '1', output: '', cached: '' } } }
+    expect(draftErrors(partial, base)).toEqual({ 'openai/kimi-k3:output': expect.any(String) })
   })
 
   it('never sends a secret it was not given, and clears on request', () => {
