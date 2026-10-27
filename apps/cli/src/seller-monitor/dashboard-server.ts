@@ -80,7 +80,8 @@ export async function startSellerDashboard(options: SellerDashboardOptions): Pro
     return sameSecret(mac, signSession(expiresAt, nonce))
   }
   // Cookies are scoped by host and path, not port: each dashboard (one per data dir) gets its own name, so two open side by side keep their sessions.
-  const sessionCookie = `${SESSION_COOKIE}_${createHash('sha256').update(options.dataDir).digest('hex').slice(0, 12)}`
+  // Named by data dir and link token: a restart keeps both (and the cookie), while another dashboard on the same data dir has its own.
+  const sessionCookie = `${SESSION_COOKIE}_${createHash('sha256').update(`${options.dataDir}\n${token}`).digest('hex').slice(0, 12)}`
   const me: MeResponse = { kind: 'seller', me: { dataDir: options.dataDir, version: options.version } }
 
   const auth: ConsoleAuth = {

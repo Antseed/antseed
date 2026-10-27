@@ -213,4 +213,7 @@ test('a model stays on among the providers the seller starts, and models turned 
   writeFileSync(join(dir, 'daemon.state.json'), JSON.stringify({ updatedAt: Date.now(), providerPricing: { a: {} } }))
   await assert.rejects(updateSellerSettings(configPath, dir, { pricing: [{ provider: 'a', service: 'one', enabled: false }] }), /providers this seller starts \(a\)/)
   await updateSellerSettings(configPath, dir, { pricing: [{ provider: 'b', service: 'two', enabled: false }] })
+  // Its selection counts, not only the providers that came up: one with every model off is still selected.
+  writeFileSync(join(dir, 'daemon.state.json'), JSON.stringify({ updatedAt: Date.now(), selectedProviders: ['a', 'b'], providerPricing: { a: {} } }))
+  await updateSellerSettings(configPath, dir, { pricing: [{ provider: 'b', service: 'two', enabled: true }, { provider: 'a', service: 'one', enabled: false }] })
 })

@@ -463,10 +463,12 @@ function applyFreeTierPatch(out: JsonObject, input: JsonObject, field: string): 
 /** Saves a settings patch (see `patchSellerConfig`); applies when the seller restarts. */
 export async function updateSellerSettings(configPath: string, dataDir: string, body: unknown): Promise<{ settings: SellerSettings; fields: string[] }> {
   let fields: string[] = []
-  // The providers the seller last started with (its state file), so a model stays on among them.
+  // The providers the seller starts with (its selection, from its state file), so a model stays on among them.
   const state = await readDaemonState(dataDir)
+  const selected = state?.['selectedProviders']
   const pricing = state?.['providerPricing']
-  const started = pricing && typeof pricing === 'object' ? Object.keys(pricing) : null
+  const started = Array.isArray(selected) ? selected.filter((name): name is string => typeof name === 'string')
+    : pricing && typeof pricing === 'object' ? Object.keys(pricing) : null
   await patchSellerConfig(configPath, dataDir, (raw) => { fields = applySellerSettingsPatch(raw, body, started) })
   return { settings: await readSellerSettings(configPath, dataDir), fields }
 }

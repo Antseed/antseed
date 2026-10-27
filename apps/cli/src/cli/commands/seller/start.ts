@@ -1088,6 +1088,8 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           provider: primaryProviderName,
           defaultInputUsdPerMillion: primaryProvider.pricing.defaults.inputUsdPerMillion,
           defaultOutputUsdPerMillion: primaryProvider.pricing.defaults.outputUsdPerMillion,
+          // The providers this seller starts with (`--provider`, or all configured), models turned off or not.
+          selectedProviders: providerSelection.selected,
           providerPricing: Object.fromEntries(registeredProviders.map((provider, index) => {
             const providerName = selectedProviderNames[index]!
             return [providerName, {

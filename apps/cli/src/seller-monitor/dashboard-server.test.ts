@@ -237,6 +237,16 @@ test('a restart is offered only with a supervisor, runs after the reply, and the
   } finally {
     await third.close()
   }
+  // Two dashboards on one data dir with different links name their cookies apart, so neither overwrites the other's.
+  const one = await startSellerDashboard({ dataDir: dir, configPath, version: '9.9.9', port: 0, env: {} })
+  const two = await startSellerDashboard({ dataDir: dir, configPath, version: '9.9.9', port: 0, env: {} })
+  try {
+    const cookieName = async (server: { url: string }) => (await fetch(`${new URL(server.url).origin}/console/api/auth/seller`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-antseed-console': '1' }, body: JSON.stringify({ token: linkToken(server.url) }) })).headers.get('set-cookie')!.split('=')[0]
+    assert.notEqual(await cookieName(one), await cookieName(two))
+  } finally {
+    await one.close()
+    await two.close()
+  }
   // A dashboard with a new link does not take the old session.
   const fresh = await startSellerDashboard({ dataDir: dir, configPath, version: '9.9.9', port: 0, env: {} })
   try {
