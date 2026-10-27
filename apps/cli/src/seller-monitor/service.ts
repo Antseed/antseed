@@ -90,7 +90,7 @@ export class SellerMonitor {
   }
 
   usage(days = 14): Promise<SellerUsage> {
-    return this._usage.usage(this.seller().dataDir, Math.min(Math.max(1, days), 30))
+    return this._usage.usage(this.seller().dataDir, days)
   }
 
   logs(query: SellerLogQuery = {}): SellerLogPage {

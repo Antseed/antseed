@@ -77,3 +77,8 @@ export function fakeNetworkRows(myPeerId: string, myServices: Record<string, [nu
     seller(7, 'Fake Seller Eta', { 'glm-5.3': [0.7, 2.3], 'llama-4-maverick': [0.18, 0.55] }, [35, 9, 5, 0, false]),
   ]
 }
+
+/** The per-run token in a `antseed seller dashboard` link's fragment. */
+export function linkToken(url: string): string {
+  return new URL(url).hash.replace(/^#seller-token=/, '')
+}

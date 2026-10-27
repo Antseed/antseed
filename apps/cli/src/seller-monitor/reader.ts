@@ -7,6 +7,8 @@ import { CHANNEL_KIND, ChannelStore } from '@antseed/node/payments'
 import type { SellerAlertsState, SellerEventView, SellerGas, SellerModelHealth, SellerStatus, SellerUsage, SellerUsageDay } from '../gateway/console-api/types.js'
 
 const DAY_MS = 86_400_000
+/** The longest usage series asked for; older cached days are dropped. */
+export const MAX_USAGE_DAYS = 30
 /** The daemon rewrites its state every second; older than this means it is not running. */
 export const SELLER_STALE_MS = 15_000
 const DAEMON_STATE_FILE = 'daemon.state.json'
@@ -124,6 +126,7 @@ export class SellerUsageReader {
   constructor(private readonly _todayTtlMs = 60_000) {}
 
   usage(dataDir: string, days: number, now = Date.now()): Promise<SellerUsage> {
+    days = Math.min(Math.max(1, days), MAX_USAGE_DAYS)
     const key = `${dataDir}:${days}`
     let pending = this._inFlight.get(key)
     if (!pending) {
@@ -167,6 +170,9 @@ export class SellerUsageReader {
     } finally {
       metering?.close()
     }
+    // Days that have fallen out of every series a caller can ask for are never read again.
+    const oldest = todayStart - (MAX_USAGE_DAYS - 1) * DAY_MS
+    for (const [key, cached] of this._days) if (cached.entry.day < oldest) this._days.delete(key)
     return { days: series, ...this._channelTotals(dataDir, now) }
   }
 

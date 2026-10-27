@@ -37,7 +37,7 @@ export interface SellerDashboardOptions {
 }
 
 export interface SellerDashboardServer {
-  /** Opens the dashboard: exchanges the session token for a cookie, then shows the Seller page. */
+  /** Opens the dashboard: the console swaps the token in its fragment for a session cookie. */
   url: string
   close(): Promise<void>
 }
@@ -50,8 +50,8 @@ function sameSecret(a: string, b: string): boolean {
 
 /**
  * `antseed seller dashboard`: the gateway console's web app in seller-only
- * mode. The URL the CLI prints carries a one-time-per-run token; opening it
- * sets an HttpOnly session cookie, and every API call needs that cookie (or
+ * mode. The URL the CLI prints carries a per-run token in its fragment; the
+ * console posts it once for an HttpOnly session cookie, and every API call needs that cookie (or
  * `Authorization: Bearer <token>`). Only the `/seller/*` routes are mounted:
  * status and history, plus the seller's own settings and alerts. Browser
  * writes carry the console's CSRF header like every console write.
@@ -78,14 +78,16 @@ export async function startSellerDashboard(options: SellerDashboardOptions): Pro
       return null
     },
     registerRoutes(router: ConsoleRouter) {
-      router.add('GET', '/auth/seller', async ({ query, raw, res }) => {
-        if (!sameSecret(query.get('token') ?? '', token)) return respond(401, { error: { code: 'unauthorized', message: 'This dashboard link is not valid. Use the URL `antseed seller dashboard` printed.' } })
+      // The console posts the token from the link's fragment, so it never sits in a query string, a request log or browser history.
+      router.add('POST', '/auth/seller', async ({ body, raw, res }) => {
+        const offered = body && typeof body === 'object' && typeof (body as { token?: unknown }).token === 'string' ? (body as { token: string }).token : ''
+        if (!sameSecret(offered, token)) return respond(401, { error: { code: 'unauthorized', message: 'This dashboard link is not valid. Use the URL `antseed seller dashboard` printed.' } })
         const session = randomBytes(24).toString('hex')
         const now = Date.now()
         for (const [id, expiresAt] of sessions) if (expiresAt <= now) sessions.delete(id)
         sessions.set(session, now + SESSION_MAX_AGE_SECONDS * 1000)
         appendSetCookie(res, serializeCookie(raw, sessionCookie, session, { maxAgeSeconds: SESSION_MAX_AGE_SECONDS, path: '/console', sameSite: 'Strict' }))
-        return respond(302, undefined, { headers: { location: '/console/seller' } })
+        return respond(204)
       }, { public: true })
       // Public so a browser without a session learns why (the console shows "open the dashboard link").
       router.add('GET', '/auth/me', async ({ principal }) => {
@@ -157,7 +159,7 @@ export async function startSellerDashboard(options: SellerDashboardOptions): Pro
   const { port } = server.address() as AddressInfo
   const shownHost = host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host
   return {
-    url: `http://${shownHost.includes(':') ? `[${shownHost}]` : shownHost}:${port}/console/api/auth/seller?token=${token}`,
+    url: `http://${shownHost.includes(':') ? `[${shownHost}]` : shownHost}:${port}/console/seller#seller-token=${token}`,
     close: () => new Promise((resolve) => server.close(() => resolve())),
   }
 }

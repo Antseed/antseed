@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { startSellerDashboard } from './dashboard-server.js'
-import { writeSellerFixture } from './fixture.js'
+import { linkToken, writeSellerFixture } from './fixture.js'
 
 const TOKEN = '123456789:AAFakeTokenForTestsOnly_abcdefghij'
 const HOOK = 'https://hooks.example.test/services/T000/B000/secret-path'
@@ -36,7 +36,9 @@ async function harness() {
   }) as typeof fetch
   const server = await startSellerDashboard({ dataDir: dir, configPath, version: '9.9.9', port: 0, env: {}, fetch: stub })
   const link = new URL(server.url)
-  const opened = await fetch(server.url, { redirect: 'manual' })
+  assert.equal(link.search, '', 'the token stays out of the query string')
+  const opened = await fetch(`${link.origin}/console/api/auth/seller`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-antseed-console': '1' }, body: JSON.stringify({ token: linkToken(server.url) }) })
+  assert.equal(opened.status, 204)
   const cookie = opened.headers.get('set-cookie')!.split(';')[0]!
   const call = async (method: string, path: string, body?: unknown, headers: Record<string, string> = { cookie, 'x-antseed-console': '1' }) => {
     const response = await fetch(`${link.origin}/console/api${path}`, { method, headers: { ...headers, ...(body ? { 'content-type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined, redirect: 'manual' })
@@ -49,13 +51,15 @@ async function harness() {
 test('the seller dashboard needs its link, then serves the seller routes', async () => {
   const { server, link, cookie, call } = await harness()
   try {
-    const token = link.searchParams.get('token')!
+    const token = linkToken(server.url)
     const get = (path: string, headers: Record<string, string> = {}) => fetch(`${link.origin}${path}`, { headers, redirect: 'manual' })
     const noSession = await get('/console/api/auth/me')
     assert.equal(noSession.status, 401)
     assert.equal(((await noSession.json()) as { error: { code: string } }).error.code, 'seller_link_required')
     assert.equal((await get('/console/api/seller/status')).status, 401)
-    assert.equal((await get('/console/api/auth/seller?token=wrong')).status, 401)
+    const exchange = (offered: string) => fetch(`${link.origin}/console/api/auth/seller`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-antseed-console': '1' }, body: JSON.stringify({ token: offered }) })
+    assert.equal((await exchange('wrong')).status, 401)
+    assert.equal((await get(`/console/api/auth/seller?token=${token}`)).status, 404, 'a token in the query string opens nothing')
     assert.match(cookie, /^antseed_seller_dashboard_[0-9a-f]{12}=/)
 
     const me = (await call('GET', '/auth/me')).json!

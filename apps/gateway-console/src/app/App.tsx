@@ -1,7 +1,7 @@
 import { Component, lazy, Suspense, useEffect, useMemo, useState, type ComponentType, type ReactNode } from 'react'
-import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Alert, Button, ToastProvider } from '@antseed/ui'
-import { isApiError } from '../api'
+import { api, isApiError } from '../api'
 import type { Me } from '../api/types'
 import { Shell } from '../components/Shell'
 import { SellerShell } from '../components/SellerShell'
@@ -142,8 +142,22 @@ function SellerConsole({ version }: { version: string }) {
   )
 }
 
+/**
+ * The `antseed seller dashboard` link carries its token in the fragment, which
+ * no request or server log sees. It is read once at load and dropped from the
+ * address bar and history before the console posts it for a session cookie.
+ */
+const sellerLinkToken = ((): string | null => {
+  if (typeof window === 'undefined') return null
+  const match = /^#seller-token=([0-9a-f]+)$/.exec(window.location.hash)
+  if (!match) return null
+  window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search)
+  return match[1]!
+})()
+
 function SessionGate({ page }: { page: string }) {
-  const me = useMe()
+  const sellerSession = useQuery({ queryKey: ['seller-session'], queryFn: () => api.auth.sellerSession(sellerLinkToken!).then(() => true), enabled: sellerLinkToken !== null, retry: false, staleTime: Infinity, gcTime: Infinity })
+  const me = useMe(sellerLinkToken === null || !sellerSession.isPending)
   // The seller dashboard has no sign-in page: its session comes from the link the CLI printed.
   const sellerLink = isApiError(me.error, 'seller_link_required')
   const unauthorized = isApiError(me.error) && me.error.status === 401 && !sellerLink
@@ -151,7 +165,7 @@ function SessionGate({ page }: { page: string }) {
     if (unauthorized) navigate('login', { replace: true })
   }, [unauthorized])
 
-  if (me.isLoading || unauthorized) return <div className="gc-centered"><LoadingRows rows={3} /></div>
+  if ((sellerLinkToken !== null && sellerSession.isPending) || me.isLoading || unauthorized) return <div className="gc-centered"><LoadingRows rows={3} /></div>
   if (sellerLink) {
     return <div className="gc-centered"><Alert tone="warning" title="Open the dashboard link">This seller dashboard opens from the link that antseed seller dashboard printed. Run it again for a fresh link.</Alert></div>
   }

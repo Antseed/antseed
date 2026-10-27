@@ -135,6 +135,8 @@ export function createApiClient(fetchImpl: FetchLike = (input, init) => fetch(in
     auth: {
       config: () => get<AuthConfig>('/auth/config'),
       me: () => get<MeResponse>('/auth/me'),
+      /** `antseed seller dashboard`: swaps the link's token for a session cookie. */
+      sellerSession: (token: string) => post<void>('/auth/seller', { token }),
       setup: (token: string) => post<Enrollment>('/auth/setup', { token }),
       invite: (token: string) => post<Enrollment>('/auth/invite', { token }),
       passkeyRegisterOptions: (enrollment?: string) => post<unknown>('/auth/passkey/register/options', { enrollment }),

@@ -174,8 +174,8 @@ export function useAdminTokens() {
   return useQuery({ queryKey: qk.adminTokens, queryFn: api.adminTokens.list })
 }
 
-export function useMe() {
-  return useQuery({ queryKey: qk.me, queryFn: api.auth.me })
+export function useMe(enabled = true) {
+  return useQuery({ queryKey: qk.me, queryFn: api.auth.me, enabled })
 }
 
 export function useAuthConfig(enabled = true) {

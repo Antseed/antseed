@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { identityFromPrivateKeyHex } from '@antseed/node'
 import { startSellerDashboard } from './dashboard-server.js'
-import { fakeNetworkRows, writeSellerFixture } from './fixture.js'
+import { fakeNetworkRows, linkToken, writeSellerFixture } from './fixture.js'
 import { updateSellerVerifications, VerificationChecks } from './promote.js'
 
 const PEER = '5e11e5e11e5e11e5e11e5e11e5e11e5e11e5e11e'
@@ -31,7 +31,7 @@ test('market, reputation and promote: background snapshot, standing, verificatio
     explorerUrl: async () => 'https://explorer.example',
     verificationChecks: checks,
   })
-  const token = new URL(server.url).searchParams.get('token')!
+  const token = linkToken(server.url)
   const base = new URL(server.url).origin
   const call = async (method: string, path: string, body?: unknown) => {
     const response = await fetch(`${base}/console/api${path}`, { method, headers: { authorization: `Bearer ${token}`, ...(body ? { 'content-type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined })
@@ -105,7 +105,7 @@ test('a stopped seller (journal, no daemon state) is still known by its stored i
     standing: async (id) => { standingFor.push(id); throw new Error('offline') },
     explorerUrl: async () => 'https://explorer.example',
   })
-  const token = new URL(server.url).searchParams.get('token')!
+  const token = linkToken(server.url)
   try {
     const response = await fetch(`${new URL(server.url).origin}/console/api/seller/promote`, { headers: { authorization: `Bearer ${token}` } })
     const promote = await response.json() as { peerId: string | null; profileUrl: string | null }
@@ -136,7 +136,7 @@ test('a malformed stored identity reads as no peer id, without an unhandled reje
     standing: async () => { throw new Error('not called') },
     explorerUrl: async () => 'https://explorer.example',
   })
-  const token = new URL(server.url).searchParams.get('token')!
+  const token = linkToken(server.url)
   try {
     for (const path of ['promote', 'reputation', 'market']) {
       const response = await fetch(`${new URL(server.url).origin}/console/api/seller/${path}`, { headers: { authorization: `Bearer ${token}` } })
@@ -184,7 +184,7 @@ test('a cold promote read says it is pending until the trust score and verificat
     explorerUrl: async () => null,
     verificationChecks: checks,
   })
-  const token = new URL(server.url).searchParams.get('token')!
+  const token = linkToken(server.url)
   const read = async () => (await (await fetch(`${new URL(server.url).origin}/console/api/seller/promote`, { headers: { authorization: `Bearer ${token}` } })).json()) as Record<string, any>
   try {
     const cold = await read()

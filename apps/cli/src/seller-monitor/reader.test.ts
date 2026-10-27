@@ -89,3 +89,15 @@ test('a day last read before midnight is read once more, then kept', async () =>
   writeSellerFixture(dir, { requests: [{ at: today + 7_200_000, sessionId: 's3', tokens: 10, costCents: 1 }] })
   assert.equal((await reader.usage(dir, 2, today + DAY + 120_000)).days[0]!.requests, 2, 'read after it ended, it is final')
 })
+
+test('cached days older than the longest series are dropped', async () => {
+  const dir = tempDir()
+  const today = 20_000 * DAY
+  writeSellerFixture(dir, { state: { updatedAt: today } })
+  const reader = new SellerUsageReader(60_000)
+  await reader.usage(dir, 30, today + 5_000)
+  await reader.usage(dir, 30, today + 40 * DAY + 5_000)
+  const cached = (reader as unknown as { _days: Map<string, { entry: { day: number } }> })._days
+  assert.equal(cached.size, 30)
+  assert.ok([...cached.values()].every(({ entry }) => entry.day > today), 'only days still inside a 30-day series stay')
+})
