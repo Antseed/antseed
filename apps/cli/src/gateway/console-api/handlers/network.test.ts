@@ -57,6 +57,7 @@ const PEERS_BODY = {
       capabilities: [],
       providerPricing: { anthropic: { defaults: { inputUsdPerMillion: 3, outputUsdPerMillion: 15 } } },
       onChainWashFlagged: true,
+      onChainDiffServices: ['claude-opus-5.5'],
       verificationResults: {
         verified: true,
         checkedAtMs: 1,
@@ -322,6 +323,7 @@ test('GET peers merges buyer peers, health and gateway stats', async () => {
   ])
   assert.equal(b.tee, false)
   assert.equal(b.washFlagged, true)
+  assert.deepEqual(b.diffServices, ['claude-opus-5.5'])
   assert.equal(b.trustScore, null)
   assert.equal(b.reputationScore, null)
   assert.deepEqual(b.health, { failureStreak: 3, coolingDownUntil: NOW + 30_000 })

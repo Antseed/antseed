@@ -2726,6 +2726,42 @@ test('model-only request applies a cached-input pricing reputation penalty', asy
   assert.equal(selectedPeerId, priced.peerId)
 })
 
+test('model-only routing cuts a live DIFF service to 10% and excludes it under the trust minimum', async () => {
+  const pricing = { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'diff-model': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } } } }
+  const protocols: PeerInfo['providerServiceApiProtocols'] = { openai: { services: { 'diff-model': ['openai-chat-completions'] } } }
+  const flagged = makePeer('a', ['openai'])
+  flagged.onChainReputationScore = 95
+  flagged.onChainDiffServices = ['diff-model']
+  flagged.providerPricing = pricing
+  flagged.providerServiceApiProtocols = protocols
+  const clean = makePeer('b', ['openai'])
+  clean.onChainReputationScore = 70
+  clean.providerPricing = pricing
+  clean.providerServiceApiProtocols = protocols
+  const proxy = makeBuyerProxyWithPeers([flagged, clean], [flagged, clean], permissiveRouter(), undefined, priceAndTrustPreferences)
+  let selectedPeerId = ''
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    selectedPeerId = peer.peerId
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({ body: { model: 'diff-model', messages: [] } }))
+  assert.equal(res.statusCode, 200)
+  assert.equal(selectedPeerId, clean.peerId)
+
+  const preview = await (proxy as any)._routePreview('diff-model', null)
+  const excluded = preview.find((candidate: { peerId: string }) => candidate.peerId === flagged.peerId)
+  assert.equal(excluded?.eligible, false)
+  assert.ok(
+    excluded?.reasons.includes('trust 10 (cut to 10% from 95: live DIFF verification verdict) below buyer minimum 60'),
+    JSON.stringify(excluded?.reasons),
+  )
+  // A pin still reaches the DIFF seller: the penalty only affects automatic routing.
+  selectedPeerId = ''
+  await invokeProxy(proxy, makeProxyRequest({ headers: { 'x-antseed-pin-peer': flagged.peerId }, body: { model: 'diff-model', messages: [] } }))
+  assert.equal(selectedPeerId, flagged.peerId)
+})
+
 test('model-only cached-input pricing penalty does not bury a substantially stronger peer', async () => {
   const priced = makePeer('a', ['openai'])
   priced.onChainReputationScore = 20
@@ -4393,6 +4429,20 @@ test('x-antseed-pin-peer header takes precedence over model peer prefix', async 
 const validPeerId = 'a'.repeat(40)
 const MAX_AGE_MS = 2 * 60 * 60_000
 const NOW = 1_700_000_000_000
+
+test('parsePersistedPeers carries live DIFF services through buyer state', () => {
+  const [peer] = parsePersistedPeers({
+    discoveredPeers: [{
+      peerId: validPeerId,
+      providers: ['openai'],
+      lastSeen: NOW,
+      onChainDiffServices: [' GPT-6.1-Sol ', 42, '', 'gpt-6.1-sol'],
+      onChainVerificationFetchedAt: NOW - 1_000,
+    }],
+  }, NOW)
+  assert.deepEqual(peer?.onChainDiffServices, ['gpt-6.1-sol'])
+  assert.equal(peer?.onChainVerificationFetchedAt, NOW - 1_000)
+})
 
 test('parsePersistedPeers returns [] for null/undefined/junk input', () => {
   assert.deepEqual(parsePersistedPeers(null, NOW), [])

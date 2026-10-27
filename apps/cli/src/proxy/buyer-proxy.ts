@@ -23,6 +23,8 @@ import {
   modelRouteReputationScore,
   modelRouteTotalPrice,
   normalizedModelReputationScore,
+  hasLiveDiffVerdict,
+  DIFF_VERIFICATION_REPUTATION_MULTIPLIER,
   peerSupportsCooperativeClose,
   isRoutingSelection,
   DEFAULT_BUYER_IDENTITY,
@@ -509,14 +511,26 @@ function addBuyerConfigReasons(reasons: string[], buyerReasons: readonly string[
 }
 
 /**
- * Why a route candidate's effective trust is below its seller's score: the
- * only penalty (`effectiveModelReputationScore`) halves a paid seller that
- * lists no cached-input price for a model other sellers price cache reads on.
+ * Why a route candidate's effective trust is below its seller's score
+ * (`effectiveModelReputationScore`): a live DIFF verification verdict for the
+ * service keeps 10%, and a paid seller that lists no cached-input price for a
+ * model other sellers price cache reads on keeps half. Both can apply.
  */
-function trustPenalty(candidate: { reputation: number; effectiveReputationScore: number | null }): string | null {
+function trustPenalty(candidate: {
+  reputation: number
+  effectiveReputationScore: number | null
+  hasDiffVerdict?: boolean
+  cachedInputPenalty?: boolean
+}): string | null {
   const effective = candidate.effectiveReputationScore
   if (candidate.reputation < 0 || effective === null || effective >= candidate.reputation) return null
-  return `halved from ${Math.round(candidate.reputation)}: no cached-input price listed`
+  const from = Math.round(candidate.reputation)
+  const diff = 'live DIFF verification verdict'
+  const cached = 'no cached-input price listed'
+  if (candidate.hasDiffVerdict && candidate.cachedInputPenalty) return `cut from ${from}: ${diff}, ${cached}`
+  if (candidate.hasDiffVerdict) return `cut to ${Math.round(DIFF_VERIFICATION_REPUTATION_MULTIPLIER * 100)}% from ${from}: ${diff}`
+  if (candidate.cachedInputPenalty) return `halved from ${from}: ${cached}`
+  return `reduced from ${from}`
 }
 
 function isControlPlaneServicesPath(path: string): boolean {
@@ -1011,6 +1025,15 @@ export function parsePersistedPeers(
     }
     if (typeof entry.onChainStatsFetchedAt === 'number' && Number.isFinite(entry.onChainStatsFetchedAt)) {
       peer.onChainStatsFetchedAt = entry.onChainStatsFetchedAt
+    }
+    if (Array.isArray(entry.onChainDiffServices)) {
+      peer.onChainDiffServices = [...new Set(entry.onChainDiffServices
+        .filter((service): service is string => typeof service === 'string')
+        .map((service) => service.trim().toLowerCase())
+        .filter((service) => service.length > 0))]
+    }
+    if (typeof entry.onChainVerificationFetchedAt === 'number' && Number.isFinite(entry.onChainVerificationFetchedAt)) {
+      peer.onChainVerificationFetchedAt = entry.onChainVerificationFetchedAt
     }
     // Carry sellerContract through the persistence layer so the buyer's
     // SellerAddressResolver can return the facade address for facade-fronted
@@ -1667,6 +1690,7 @@ export class BuyerProxy {
         request: requestForPolicy,
         reputation: normalizedModelReputationScore(peer) ?? -1,
         hasCachedInputPricing: offer.cachedInputUsdPerMillion !== undefined,
+        hasDiffVerdict: hasLiveDiffVerdict(peer, plan.serviceId),
         inputUsdPerMillion: offer.inputUsdPerMillion ?? null,
         outputUsdPerMillion: offer.outputUsdPerMillion ?? null,
         minImageUsdPerImage: offer.minImageUsdPerImage ?? null,
@@ -1676,13 +1700,16 @@ export class BuyerProxy {
     const preferCachedPricing = routeCandidates.some((candidate) => candidate.hasCachedInputPricing)
     const ranked = routeCandidates.map((candidate) => {
       const health = this._peerHealth.get(candidate.peer.peerId)
+      const isFree = modelRouteTotalPrice(candidate) === 0
       return {
         ...candidate,
+        cachedInputPenalty: preferCachedPricing && !candidate.hasCachedInputPricing && !isFree,
         effectiveReputationScore: effectiveModelReputationScore(
           candidate.reputation >= 0 ? candidate.reputation : null,
           candidate.hasCachedInputPricing,
           preferCachedPricing,
-          modelRouteTotalPrice(candidate) === 0,
+          isFree,
+          candidate.hasDiffVerdict,
         ),
         peerCooldownUntil: health?.cooldownUntil ?? null,
         peerFailureStreak: health?.failureStreak ?? 0,
@@ -2574,6 +2601,10 @@ export class BuyerProxy {
         onChainSybilRisk: p.onChainSybilRisk ?? null,
         onChainSybilFlags: p.onChainSybilFlags ?? null,
         onChainStatsFetchedAt: p.onChainStatsFetchedAt ?? null,
+        // Services with a live DIFF verdict on AntseedVerification; their
+        // effective reputation keeps 10%.
+        onChainDiffServices: p.onChainDiffServices ?? null,
+        onChainVerificationFetchedAt: p.onChainVerificationFetchedAt ?? null,
         // Persisted so cold-started buyers can still resolve the facade address
         // for channelId derivation. See parsePersistedPeers for the round-trip.
         sellerContract: p.metadata?.sellerContract ?? null,
@@ -2972,6 +3003,7 @@ export class BuyerProxy {
         onChainUsageLastEpochUsdcMicros: p.onChainUsageLastEpochUsdcMicros ?? null,
         onChainWashFlagged: p.onChainWashFlagged ?? null,
         onChainWashShareBps: p.onChainWashShareBps ?? null,
+        onChainDiffServices: p.onChainDiffServices ?? null,
         maxConcurrency: p.maxConcurrency ?? null,
         currentLoad: p.currentLoad ?? null,
         onChainChannelCount: p.onChainChannelCount ?? null,

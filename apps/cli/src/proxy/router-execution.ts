@@ -1,5 +1,5 @@
 import { QueryClient } from '@tanstack/query-core'
-import { buildNetworkServiceOffers, effectiveModelReputationScore, isModelRouteEligible, normalizedModelReputationScore, type AntseedNode, type RouterModelEntry, type ModelRoutingPreferences, type PeerInfo, type RouteCandidate, type RouteRecommendation, type SerializedHttpRequest } from '@antseed/node'
+import { buildNetworkServiceOffers, effectiveModelReputationScore, hasLiveDiffVerdict, isModelRouteEligible, normalizedModelReputationScore, type AntseedNode, type RouterModelEntry, type ModelRoutingPreferences, type PeerInfo, type RouteCandidate, type RouteRecommendation, type SerializedHttpRequest } from '@antseed/node'
 import { detectRequestServiceApiProtocol } from './service-api-adapter.js'
 import { findMissingRequiredParameters, getExplicitProviderOverride, resolvePeerRoutePlan } from './routing.js'
 import { overrideRoutedModelInBody } from './request-utils.js'
@@ -56,8 +56,8 @@ type ExecutionCandidate = RouteCandidate & { peer: PeerInfo }
 /**
  * Build the text-model destinations this buyer's policies allow. The router chooses among them.
  * `preferences` apply as for automatic routing: the peer allow and block lists and `minTrustScore`
- * exclude, judged on the same effective reputation (`effectiveModelReputationScore`) automatic
- * routing uses; `maxInputUsdPerMillion` is a soft ranking limit there and never excludes here.
+ * exclude, judged on the same effective reputation (`effectiveModelReputationScore`, including the
+ * live-DIFF verification penalty) automatic routing uses; `maxInputUsdPerMillion` is a soft ranking limit there and never excludes here.
  */
 export function eligibleRouterCandidates(
   request: SerializedHttpRequest,
@@ -98,6 +98,7 @@ export function eligibleRouterCandidates(
       offer.cachedInputUsdPerMillion !== undefined,
       preferCachedPricing,
       offer.inputUsdPerMillion === 0 && offer.outputUsdPerMillion === 0,
+      hasLiveDiffVerdict(peer, offer.serviceId),
     )
     if (preferences && !isModelRouteEligible({ ...candidate, effectiveReputationScore }, preferences)) continue
     const key = JSON.stringify([candidate.peerId, candidate.provider, candidate.serviceId])
