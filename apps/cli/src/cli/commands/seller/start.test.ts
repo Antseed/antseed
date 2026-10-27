@@ -30,6 +30,7 @@ import {
   isPublicRpcUrl,
   mergeSellerRuntimeEnv,
   parseOptionalPositiveIntegerEnv,
+  restartSupervisor,
   selectSellerProviderNames,
 } from './start.js';
 
@@ -514,3 +515,13 @@ test('getUnsupportedFallbackUpstreamsWarning flags plugins without fallback supp
   );
   assert.equal(getUnsupportedFallbackUpstreamsWarning('kimi', { plugin: 'openai', services: {} }, []), undefined);
 });
+
+test('a restart from the dashboard is offered only when a supervisor will start the seller again', () => {
+  assert.equal(restartSupervisor({ ANTSEED_SUPERVISED: '1' }, 4321), 'its supervisor')
+  assert.equal(restartSupervisor({ KUBERNETES_SERVICE_HOST: '10.0.0.1' }, 1), 'Kubernetes')
+  // A shell inside the pod (kubectl exec) is not the container's main process, so nothing would restart it.
+  assert.equal(restartSupervisor({ KUBERNETES_SERVICE_HOST: '10.0.0.1' }, 4321), null)
+  // A terminal that inherited systemd's INVOCATION_ID is not supervised.
+  assert.equal(restartSupervisor({ INVOCATION_ID: 'abc' }, 4321), null)
+  assert.equal(restartSupervisor({ ANTSEED_SUPERVISED: '0', KUBERNETES_SERVICE_HOST: '10.0.0.1' }, 1), null)
+})

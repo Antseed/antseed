@@ -19,14 +19,14 @@ function Loaded({ query, children }: { query: SettingsQuery; children: (data: No
 export default function SellerSettings() {
   const settings = useSellerSettings()
   return (
-    <SellerPage title="Seller settings" description={() => 'Alerts apply within seconds; config.json changes when the seller restarts.'}>
+    <SellerPage title="Seller settings" description={() => 'Alerts apply within seconds; other settings when the seller restarts.'}>
       {(seller) => (
         <>
           <Panel title="Alerts" description="A message when a model is withdrawn, gas runs out, the seller restarts unexpectedly or goes quiet.">
             <Loaded query={settings}>{(data) => <SellerAlertsEditor alerts={data.alerts} state={seller.alerts} />}</Loaded>
           </Panel>
-          <Panel title="Settings" description="The seller's config.json. Changes apply when the seller restarts.">
-            <Loaded query={settings}>{(data) => <SellerSettingsEditor settings={data.settings} />}</Loaded>
+          <Panel title="Settings" description="Prices, free tiers, limits and checks from the seller's config. Changes apply when the seller restarts.">
+            <Loaded query={settings}>{(data) => <SellerSettingsEditor settings={data.settings} restart={data.restart} />}</Loaded>
           </Panel>
         </>
       )}

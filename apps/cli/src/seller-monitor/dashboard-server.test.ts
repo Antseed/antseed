@@ -21,7 +21,7 @@ function sellerConfig() {
   }
 }
 
-async function harness() {
+async function harness(extra: Partial<Parameters<typeof startSellerDashboard>[0]> = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'seller-dashboard-'))
   writeSellerFixture(dir, { state: { updatedAt: Date.now(), peerId: '0xabc', modelHealth: [] } })
   const configPath = join(dir, 'config.json')
@@ -34,7 +34,7 @@ async function harness() {
     }
     return Response.json({ ok: true })
   }) as typeof fetch
-  const server = await startSellerDashboard({ dataDir: dir, configPath, version: '9.9.9', port: 0, env: {}, fetch: stub })
+  const server = await startSellerDashboard({ dataDir: dir, configPath, version: '9.9.9', port: 0, env: {}, fetch: stub, ...extra })
   const link = new URL(server.url)
   assert.equal(link.search, '', 'the token stays out of the query string')
   const opened = await fetch(`${link.origin}/console/api/auth/seller`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-antseed-console': '1' }, body: JSON.stringify({ token: linkToken(server.url) }) })
@@ -145,7 +145,7 @@ test('settings edits are validated, keep unknown fields and leave a backup', asy
     const before = readFileSync(configPath, 'utf-8')
     const view = (await call('GET', '/seller/settings')).json!.settings
     assert.equal(view.writable, true)
-    assert.deepEqual(view.services, [{ provider: 'openai', service: 'glm-5.3', inputUsdPerMillion: 1, outputUsdPerMillion: 3, cachedInputUsdPerMillion: null, inherited: false, paid: true, unitPrice: null, kind: 'text', apiProtocols: [], freeTier: null, ownFreeTier: null }])
+    assert.deepEqual(view.services, [{ provider: 'openai', service: 'glm-5.3', inputUsdPerMillion: 1, outputUsdPerMillion: 3, cachedInputUsdPerMillion: null, inherited: false, paid: true, unitPrice: null, kind: 'text', apiProtocols: [], freeTier: null, ownFreeTier: null, enabled: true, upstreamModel: null, categories: [], unitComponents: [] }])
 
     const saved = await call('PATCH', '/seller/settings', {
       displayName: 'Renamed', maxConcurrentBuyers: 20, gasCheck: { minBalanceEth: 0.001 }, restrictedCountries: ['ru', 'KP'],
@@ -194,4 +194,76 @@ test('closing the dashboard does not wait for a stalled request', async () => {
   await server.close()
   assert.ok(Date.now() - started < 1_000, 'closed without waiting for the stalled request')
   socket.destroy()
+})
+
+test('a restart is offered only with a supervisor, runs after the reply, and the session survives a dashboard served again under the same link', async () => {
+  let restarts = 0
+  const { server, dir, configPath, call, cookie } = await harness({ restart: { unavailableReason: null, run: () => { restarts += 1 } } })
+  const token = linkToken(server.url)
+  try {
+    assert.deepEqual((await call('GET', '/seller/settings')).json!.restart, { available: true, reason: null })
+    const response = await call('POST', '/seller/restart')
+    assert.equal(response.status, 202)
+    assert.equal(restarts, 0, 'not before the reply')
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    assert.equal(restarts, 1)
+  } finally {
+    await server.close()
+  }
+  // The seller came back and serves the dashboard under the link it kept: the browser's session still works.
+  const again = await startSellerDashboard({ dataDir: dir, configPath, version: '9.9.9', port: 0, env: {}, token })
+  try {
+    assert.equal(linkToken(again.url), token)
+    const me = await fetch(`${new URL(again.url).origin}/console/api/auth/me`, { headers: { cookie } })
+    assert.equal(me.status, 200)
+  } finally {
+    await again.close()
+  }
+  // Signed out before a restart: still signed out after it.
+  const second = await startSellerDashboard({ dataDir: dir, configPath, version: '9.9.9', port: 0, env: {}, token })
+  const origin = new URL(second.url).origin
+  try {
+    const opened = await fetch(`${origin}/console/api/auth/seller`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-antseed-console': '1' }, body: JSON.stringify({ token }) })
+    const other = opened.headers.get('set-cookie')!.split(';')[0]!
+    assert.equal((await fetch(`${origin}/console/api/auth/logout`, { method: 'POST', headers: { cookie: other, 'x-antseed-console': '1' } })).status, 204)
+    assert.equal((await fetch(`${origin}/console/api/auth/me`, { headers: { cookie: other } })).status, 401)
+  } finally {
+    await second.close()
+  }
+  const third = await startSellerDashboard({ dataDir: dir, configPath, version: '9.9.9', port: 0, env: {}, token })
+  try {
+    const me = (cookieHeader: string) => fetch(`${new URL(third.url).origin}/console/api/auth/me`, { headers: { cookie: cookieHeader } })
+    assert.equal((await me(cookie)).status, 200, 'the session that stayed signed in still works')
+  } finally {
+    await third.close()
+  }
+  // Two dashboards on one data dir with different links name their cookies apart, so neither overwrites the other's.
+  const one = await startSellerDashboard({ dataDir: dir, configPath, version: '9.9.9', port: 0, env: {} })
+  const two = await startSellerDashboard({ dataDir: dir, configPath, version: '9.9.9', port: 0, env: {} })
+  try {
+    const cookieName = async (server: { url: string }) => (await fetch(`${new URL(server.url).origin}/console/api/auth/seller`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-antseed-console': '1' }, body: JSON.stringify({ token: linkToken(server.url) }) })).headers.get('set-cookie')!.split('=')[0]
+    assert.notEqual(await cookieName(one), await cookieName(two))
+  } finally {
+    await one.close()
+    await two.close()
+  }
+  // A dashboard with a new link does not take the old session.
+  const fresh = await startSellerDashboard({ dataDir: dir, configPath, version: '9.9.9', port: 0, env: {} })
+  try {
+    assert.equal((await fetch(`${new URL(fresh.url).origin}/console/api/auth/me`, { headers: { cookie } })).status, 401)
+  } finally {
+    await fresh.close()
+  }
+})
+
+test('without a supervisor the dashboard says how to apply saved settings and refuses a restart', async () => {
+  const { server, call } = await harness({ restart: { unavailableReason: 'Restart it where it runs.' } })
+  try {
+    assert.deepEqual((await call('GET', '/seller/settings')).json!.restart, { available: false, reason: 'Restart it where it runs.' })
+    const response = await call('POST', '/seller/restart')
+    assert.equal(response.status, 409)
+    assert.equal(response.json!.error.code, 'restart_unavailable')
+  } finally {
+    await server.close()
+  }
 })

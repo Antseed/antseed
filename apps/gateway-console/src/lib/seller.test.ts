@@ -63,11 +63,12 @@ describe('seller editors', async () => {
   const { draftOf, draftErrors, patchOf, reconcileDraft } = await import('../components/SellerSettingsEditor')
   const { alertsPatchOf } = await import('../components/SellerAlertsEditor')
   const settings = {
-    configPath: '/c', writable: true, readOnlyReason: null, displayName: 'S', maxConcurrentBuyers: 50,
+    configPath: '/c', writable: true, readOnlyReason: null, savesTo: 'config' as const, overridesPath: null, overridden: [], displayName: 'S', maxConcurrentBuyers: 50,
     healthCheck: { enabled: true, intervalMs: 300_000, failureThreshold: 3 }, gasCheck: { enabled: true, minBalanceEth: 0.00005 },
     freeTier: { maxRequestsPerAddress: null, maxRequestsPerIp: null, windowMs: null, stakersOnly: false, stakeTiers: null }, restrictedCountries: ['RU'], restrictedCountriesDefault: true,
     defaultStakeTiers: [{ minPower: 520_000, multiplier: 5 as number | 'unlimited' }],
-    services: [{ provider: 'openai', service: 'glm-5.3', inputUsdPerMillion: 1, outputUsdPerMillion: 3, cachedInputUsdPerMillion: null, inherited: false, paid: true, unitPrice: null, kind: 'text' as const, apiProtocols: [], freeTier: null, ownFreeTier: null }],
+    services: [{ provider: 'openai', service: 'glm-5.3', inputUsdPerMillion: 1, outputUsdPerMillion: 3, cachedInputUsdPerMillion: null, inherited: false, paid: true, unitPrice: null, kind: 'text' as const, apiProtocols: [], freeTier: null, ownFreeTier: null, enabled: true, upstreamModel: null, categories: [], unitComponents: [] }],
+    providers: [{ name: 'openai', plugin: 'openai', unitBilled: false, singleService: false, services: 1 }],
   }
 
   it('sends only what changed', () => {
@@ -109,7 +110,7 @@ describe('seller editors', async () => {
 
   it('keeps edits and adds rows when the saved settings gain a service', () => {
     const base = draftOf(settings)
-    const next = draftOf({ ...settings, services: [...settings.services, { provider: 'openai', service: 'kimi-k3', inputUsdPerMillion: 2, outputUsdPerMillion: 5, cachedInputUsdPerMillion: null, inherited: false, paid: true, unitPrice: null, kind: 'text' as const, apiProtocols: [], freeTier: null, ownFreeTier: null }] })
+    const next = draftOf({ ...settings, services: [...settings.services, { provider: 'openai', service: 'kimi-k3', inputUsdPerMillion: 2, outputUsdPerMillion: 5, cachedInputUsdPerMillion: null, inherited: false, paid: true, unitPrice: null, kind: 'text' as const, apiProtocols: [], freeTier: null, ownFreeTier: null, enabled: true, upstreamModel: null, categories: [], unitComponents: [] }] })
     expect(reconcileDraft(base, base, next)).toEqual(next)
     const edited = { ...base, displayName: 'Mine', prices: { 'openai/glm-5.3': { input: '0.5', output: '3', cached: '' } } }
     const merged = reconcileDraft(edited, base, next)
@@ -118,7 +119,7 @@ describe('seller editors', async () => {
   })
 
   it('a dirty draft takes values saved elsewhere for the fields it did not touch, so saving never reverts them', () => {
-    const two = { ...settings, services: [...settings.services, { provider: 'openai', service: 'kimi-k3', inputUsdPerMillion: 2, outputUsdPerMillion: 5, cachedInputUsdPerMillion: null, inherited: false, paid: true, unitPrice: null, kind: 'text' as const, apiProtocols: [], freeTier: null, ownFreeTier: null }] }
+    const two = { ...settings, services: [...settings.services, { provider: 'openai', service: 'kimi-k3', inputUsdPerMillion: 2, outputUsdPerMillion: 5, cachedInputUsdPerMillion: null, inherited: false, paid: true, unitPrice: null, kind: 'text' as const, apiProtocols: [], freeTier: null, ownFreeTier: null, enabled: true, upstreamModel: null, categories: [], unitComponents: [] }] }
     const base = draftOf(two)
     const edited = { ...base, displayName: 'Mine', prices: { ...base.prices, 'openai/glm-5.3': { input: '0.5', output: '3', cached: '' } } }
     // Meanwhile kimi-k3's price and the concurrency limit change from the CLI.
@@ -203,7 +204,7 @@ describe('seller editors', async () => {
   })
 
   it('requires prices only on the rows being changed', () => {
-    const unpriced = { ...settings, services: [...settings.services, { provider: 'openai', service: 'kimi-k3', inputUsdPerMillion: null, outputUsdPerMillion: null, cachedInputUsdPerMillion: null, inherited: false, paid: true, unitPrice: null, kind: 'text' as const, apiProtocols: [], freeTier: null, ownFreeTier: null }] }
+    const unpriced = { ...settings, services: [...settings.services, { provider: 'openai', service: 'kimi-k3', inputUsdPerMillion: null, outputUsdPerMillion: null, cachedInputUsdPerMillion: null, inherited: false, paid: true, unitPrice: null, kind: 'text' as const, apiProtocols: [], freeTier: null, ownFreeTier: null, enabled: true, upstreamModel: null, categories: [], unitComponents: [] }] }
     const base = draftOf(unpriced)
     expect(draftErrors({ ...base, displayName: 'Renamed' }, base)).toEqual({})
     const partial = { ...base, prices: { ...base.prices, 'openai/kimi-k3': { input: '1', output: '', cached: '' } } }
@@ -216,6 +217,24 @@ describe('seller editors', async () => {
     expect(alertsPatchOf(base, { ...base, lowBalanceUsd: '20' })).toEqual({ lowBalanceUsd: 20 })
     expect(alertsPatchOf(base, { ...base, token: ' 1:abc ', idleMinutes: '30' })).toEqual({ telegramBotToken: '1:abc', idleMinutes: 30 })
     expect(alertsPatchOf(base, { ...base, clearToken: true, clearWebhook: true, chatId: '' })).toEqual({ telegramChatId: null, telegramBotToken: null, webhookUrl: null })
+  })
+  it('names the unit on every price field of a model billed in more than one unit', async () => {
+    const { unitComponentLabel } = await import('../components/SellerSettingsEditor')
+    const perSecond = { protocol: 'fal-video', unit: 'video_seconds', match: { resolution: '4k' }, priceUsd: 0.3 }
+    const perVideo = { protocol: 'fal-video', unit: 'video_generations', match: { resolution: '4k' }, priceUsd: 1 }
+    expect([unitComponentLabel(perSecond, true), unitComponentLabel(perVideo, true)]).toEqual(['4k, per video second', '4k, per video'])
+    expect(unitComponentLabel(perSecond)).toBe('4k')
+    expect(unitComponentLabel({ ...perVideo, match: null })).toBe('Per video')
+  })
+  it('sends a changed per-unit price by its match, whatever characters the match holds', async () => {
+    const { draftOf, patchOf, unitKey } = await import('../components/SellerSettingsEditor')
+    const component = { protocol: 'fal-video', unit: 'video_seconds', match: { resolution: '4k|hdr' }, priceUsd: 0.3 }
+    const video = { ...settings, services: [{ ...settings.services[0]!, provider: 'fal', service: 'wan', unitComponents: [component] }] }
+    const base = draftOf(video)
+    const key = unitKey('fal/wan', component)
+    expect(patchOf(base, { ...base, unitPrices: { ...base.unitPrices, [key]: '0.25' } }).pricing).toEqual([
+      { provider: 'fal', service: 'wan', unitPrices: [{ protocol: 'fal-video', unit: 'video_seconds', match: { resolution: '4k|hdr' }, priceUsd: 0.25 }] },
+    ])
   })
 })
 

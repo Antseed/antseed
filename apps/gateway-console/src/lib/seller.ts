@@ -41,6 +41,13 @@ export function sellerNotices(status: AvailableSeller, now = Date.now()): string
   return lines
 }
 
+const UNIT_NAMES: Record<string, string> = { output_images: 'image', video_generations: 'video', video_seconds: 'video second', completed_requests: 'request' }
+
+/** "image", "video second": what one billing unit is (the seller's own names, as in its unit prices). */
+export function unitName(unit: string): string {
+  return UNIT_NAMES[unit] ?? unit.replace(/_/g, ' ')
+}
+
 /** "$0.02 / image", or "$0.02–$0.04 / image" when size or quality changes the price. */
 export function formatUnitPrice(price: Pick<SellerUnitPrice, 'name' | 'minUsd' | 'maxUsd'>): string {
   if (price.maxUsd === 0) return 'Free'

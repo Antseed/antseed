@@ -67,6 +67,18 @@ export function sellerRouteRegistrar(options: SellerRouteOptions): ConsoleRegist
       if (result.changed.length > 0) audit(request, 'seller.settings.update', { fields: result.changed })
       return result
     })
+    router.add('DELETE', '/seller/settings/overrides', async (request) => {
+      admin(request.principal)
+      const result = await monitor.resetOverrides()
+      audit(request, 'seller.settings.reset', {})
+      return result
+    })
+    router.add('POST', '/seller/restart', async (request) => {
+      admin(request.principal)
+      monitor.restart()
+      audit(request, 'seller.restart', {})
+      return respond(202, { restarting: true })
+    })
     router.add('PATCH', '/seller/alerts', async (request) => {
       admin(request.principal)
       const result = await monitor.updateAlerts(request.body)

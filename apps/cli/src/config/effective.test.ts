@@ -3,6 +3,7 @@ import test from 'node:test';
 import { createDefaultConfig } from './defaults.js';
 import {
   buyerSettingOverrides,
+  dropDisabledServices,
   resolveEffectiveBuyerConfig,
   resolveEffectiveRoleConfig,
   resolveEffectiveSellerConfig,
@@ -193,3 +194,22 @@ test('pricedSellerServices lists services that charge, by their own pricing or t
   assert.deepEqual(pricedSellerServices(config.seller, ['a', 'b']).sort(), ['flash-5.3', 'k3', 'paid-image']);
   assert.deepEqual(pricedSellerServices(config.seller, ['b']), ['flash-5.3', 'paid-image']);
 });
+
+test('models turned off are not offered, and a provider with every model off is not started', () => {
+  const seller = { providers: {
+    a: { plugin: 'openai', services: { one: {}, two: { enabled: false } } },
+    b: { plugin: 'openai', services: { three: { enabled: false } } },
+  } } as unknown as Parameters<typeof dropDisabledServices>[0]
+  assert.deepEqual(dropDisabledServices(seller, ['a', 'b']), { off: ['a/two', 'b/three'], emptyProviders: ['b'] })
+  assert.deepEqual(Object.keys(seller.providers['a']!.services), ['one'])
+})
+
+test('a free-tier program written only on a model turned off still applies where the same model stays on', () => {
+  const program = { maxRequestsPerAddress: 5 }
+  const seller = { providers: {
+    a: { plugin: 'openai', services: { glm: { enabled: false, freeTier: program } } },
+    b: { plugin: 'openai', services: { glm: {} } },
+  } } as unknown as Parameters<typeof dropDisabledServices>[0]
+  dropDisabledServices(seller, ['a', 'b'])
+  assert.deepEqual(seller.providers['b']!.services['glm']!.freeTier, program)
+})

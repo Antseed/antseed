@@ -46,3 +46,27 @@ function readLink(dataDir: string): DashboardLink | null {
     return null
   }
 }
+
+/** The token of the link a previous run left (a restart keeps the link), to serve the dashboard under it again. */
+export function previousDashboardToken(dataDir: string): string | null {
+  const link = readLink(dataDir)
+  if (!link) return null
+  try {
+    const token = new URL(link.url).hash.replace(/^#seller-token=/, '')
+    return /^[0-9a-f]{48}$/.test(token) ? token : null
+  } catch {
+    return null
+  }
+}
+
+/** The port the link a previous run left was served on, to serve there again after a restart. */
+export function previousDashboardPort(dataDir: string): number | null {
+  const link = readLink(dataDir)
+  if (!link) return null
+  try {
+    const port = Number(new URL(link.url).port)
+    return Number.isInteger(port) && port > 0 && port < 65536 ? port : null
+  } catch {
+    return null
+  }
+}

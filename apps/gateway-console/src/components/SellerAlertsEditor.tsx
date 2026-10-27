@@ -116,7 +116,7 @@ export function SellerAlertsEditor({ alerts, state }: { alerts: SellerAlertSetti
   const save = useMutation({
     mutationFn: (submitted: { patch: SellerAlertsPatch; draft: Draft }) => api.seller.updateAlerts(submitted.patch),
     onSuccess: (data, submitted) => {
-      queryClient.setQueryData(qk.sellerSettings, { settings: data.settings, alerts: data.alerts })
+      queryClient.setQueryData(qk.sellerSettings, { settings: data.settings, alerts: data.alerts, restart: data.restart })
       // "Sending to" on the status comes from the seller.
       void queryClient.invalidateQueries({ queryKey: qk.sellerStatus })
       const next = draftOf(data.alerts)

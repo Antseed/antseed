@@ -1,8 +1,11 @@
 /** Dev mock of a seller on the gateway host (`VITE_MOCK=1`): a running seller with one withdrawn model. */
-import type { SellerAlertSettings, SellerAlertsPatch, SellerEventView, SellerFreeTierProgramPatch, SellerFreeTierProgramSettings, SellerMarket, SellerMarketOffer, SellerPromote, SellerReputation, SellerSettings, SellerSettingsPatch, SellerStatus, SellerUsage, SellerVerificationsInput, TelegramChat } from '../api/types'
+import type { SellerAlertSettings, SellerAlertsPatch, SellerEventView, SellerFreeTierProgramPatch, SellerFreeTierProgramSettings, SellerMarket, SellerMarketOffer, SellerPromote, SellerReputation, SellerRestartView, SellerSettings, SellerSettingsPatch, SellerStatus, SellerUsage, SellerVerificationsInput, TelegramChat } from '../api/types'
 
 const DAY = 86_400_000
 const FAKE_PEER = '0xfa1e000000000000000000000000000000000007'
+/** Set by a mock restart: the run started then. */
+let restartedAt: number | null = null
+const MOCK_STARTED_AT = Date.now() - 13 * 3_600_000
 
 export function mockSellerStatus(now = Date.now()): SellerStatus {
   const model = (service: string, advertised: boolean, failures: number, code: number | null, detail: string, ago: number) => (
@@ -10,7 +13,7 @@ export function mockSellerStatus(now = Date.now()): SellerStatus {
   )
   return {
     available: true, running: true, dataDir: '/var/lib/antseed', peerId: FAKE_PEER, provider: 'openai',
-    startedAt: now - 13 * 3_600_000, updatedAt: now - 1_000, activeChannels: 9, capacityUsedPercent: 18, notices: [],
+    startedAt: restartedAt ?? MOCK_STARTED_AT, updatedAt: now - 1_000, activeChannels: 9, capacityUsedPercent: 18, notices: [],
     models: [
       model('llama-4-maverick', false, 4, 402, 'HTTP 402: You need positive balance to do inference', 150_000),
       model('deepseek-v4.1', true, 0, null, 'Probe passed', 120_000),
@@ -53,29 +56,41 @@ const DEFAULT_TIERS: Array<{ minPower: number; multiplier: number | 'unlimited' 
 /** The fake seller's image model: priced per image, its token prices zero. */
 const IMAGE_PRICE = { unit: 'output_images', name: 'image', minUsd: 0.03, maxUsd: 0.03 }
 
-export function mockSellerSettings(): { settings: SellerSettings; alerts: SellerAlertSettings } {
+/** A text model's settings fields: offered, its upstream id, chat categories. */
+const text = (upstreamModel: string) => ({ enabled: true, upstreamModel, categories: ['chat'], unitComponents: [] })
+
+export function mockSellerSettings(): { settings: SellerSettings; alerts: SellerAlertSettings; restart: SellerRestartView } {
   return {
     settings: {
-      configPath: '/var/lib/antseed/config.json', writable: true, readOnlyReason: null, displayName: 'Fake Seller', maxConcurrentBuyers: 50,
+      // Like a seller on Kubernetes: config.json is a read-only ConfigMap, so saves are overrides in the data dir.
+      configPath: '/etc/antseed/config.json', writable: true, readOnlyReason: null, savesTo: 'overrides', overridesPath: '/var/lib/antseed/config.overrides.json', overridden: [],
+      displayName: 'Fake Seller', maxConcurrentBuyers: 50,
       healthCheck: { enabled: true, intervalMs: 300_000, failureThreshold: 3 }, gasCheck: { enabled: true, minBalanceEth: 0.00005 },
       freeTier: { maxRequestsPerAddress: 200, maxRequestsPerIp: 400, windowMs: null, stakersOnly: false, stakeTiers: null }, restrictedCountries: ['CU', 'IR', 'KP', 'SY', 'RU'], restrictedCountriesDefault: true,
       defaultStakeTiers: DEFAULT_TIERS,
       services: [
         { provider: 'openai', service: 'glm-5.3', inputUsdPerMillion: 0.8, outputUsdPerMillion: 2.4, cachedInputUsdPerMillion: 0.1, inherited: false, paid: true, unitPrice: null, kind: 'text', apiProtocols: [],
           freeTier: { base: { maxRequestsPerAddress: 100, maxRequestsPerIp: null, windowMs: 86_400_000 }, stakeTiers: DEFAULT_TIERS },
-          ownFreeTier: { maxRequestsPerAddress: 100, maxRequestsPerIp: null, windowMs: null, stakersOnly: false, stakeTiers: null } },
-        { provider: 'openai', service: 'kimi-k3', inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5, cachedInputUsdPerMillion: null, inherited: true, paid: true, unitPrice: null, kind: 'text', apiProtocols: [], freeTier: null, ownFreeTier: null },
+          ownFreeTier: { maxRequestsPerAddress: 100, maxRequestsPerIp: null, windowMs: null, stakersOnly: false, stakeTiers: null }, ...text('zai-org/GLM-5.3') },
+        { provider: 'openai', service: 'kimi-k3', inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5, cachedInputUsdPerMillion: null, inherited: true, paid: true, unitPrice: null, kind: 'text', apiProtocols: [], freeTier: null, ownFreeTier: null, ...text('moonshotai/Kimi-K3') },
         { provider: 'openai', service: 'qwen-3.6-27b', inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: null, inherited: false, paid: false, unitPrice: null, kind: 'text', apiProtocols: [],
-          freeTier: { base: { maxRequestsPerAddress: 200, maxRequestsPerIp: 400, windowMs: 86_400_000 }, stakeTiers: DEFAULT_TIERS }, ownFreeTier: null },
-        { provider: 'openai', service: 'qwen-image', inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: null, inherited: false, paid: true,
-          unitPrice: IMAGE_PRICE, kind: 'image', apiProtocols: ['openai-images'], freeTier: null, ownFreeTier: null },
+          freeTier: { base: { maxRequestsPerAddress: 200, maxRequestsPerIp: 400, windowMs: 86_400_000 }, stakeTiers: DEFAULT_TIERS }, ownFreeTier: null, ...text('Qwen/Qwen3.6-27B') },
+        { provider: 'fal', service: 'qwen-image', inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: null, inherited: false, paid: true,
+          unitPrice: IMAGE_PRICE, kind: 'image', apiProtocols: ['openai-images'], freeTier: null, ownFreeTier: null,
+          enabled: true, upstreamModel: 'fal-ai/qwen-image', categories: ['image'], unitComponents: [{ protocol: 'openai-images', unit: 'output_images', match: null, priceUsd: 0.03 }] },
+        { provider: 'fal', service: 'wan-2.6', inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: null, inherited: false, paid: true,
+          unitPrice: { unit: 'video_seconds', name: 'video second', minUsd: 0.05, maxUsd: 0.1 }, kind: 'video', apiProtocols: ['fal-video'], freeTier: null, ownFreeTier: null,
+          enabled: true, upstreamModel: 'fal-ai/wan/v2.6/text-to-video', categories: ['video'],
+          unitComponents: [{ protocol: 'fal-video', unit: 'video_seconds', match: { resolution: '720p' }, priceUsd: 0.05 }, { protocol: 'fal-video', unit: 'video_seconds', match: { resolution: '1080p' }, priceUsd: 0.1 }] },
       ],
+      providers: [{ name: 'openai', plugin: 'openai', unitBilled: false, singleService: false, services: 3 }, { name: 'fal', plugin: 'fal-video', unitBilled: true, singleService: false, services: 2 }],
     },
     alerts: {
       writable: true, readOnlyReason: null,
       telegram: { chatId: null, botTokenEnv: 'ANTSEED_ALERTS_TELEGRAM_TOKEN', tokenSet: false, tokenSource: null, active: false },
       webhook: { set: false, host: null, source: null }, idleMinutes: null, cooldownMinutes: null, lowBalanceUsd: null, minSeverity: null,
     },
+    restart: { available: true, reason: null },
   }
 }
 
@@ -241,11 +256,43 @@ export function mockUpdateSellerSettings(patch: SellerSettingsPatch) {
     if (entry.inputUsdPerMillion !== undefined || entry.outputUsdPerMillion !== undefined) service.inherited = false
     if (entry.freeTier === null) service.ownFreeTier = null
     else if (entry.freeTier) service.ownFreeTier = patchProgram(service.ownFreeTier ?? EMPTY_PROGRAM, entry.freeTier)
+    if (entry.enabled !== undefined) service.enabled = entry.enabled
+    for (const change of entry.unitPrices ?? []) {
+      const component = service.unitComponents.find((candidate) => candidate.protocol === change.protocol && candidate.unit === change.unit && JSON.stringify(candidate.match) === JSON.stringify(change.match))
+      if (!component) throw new Error(`${entry.service}: no ${change.unit} price under ${change.protocol} in the config file`)
+      component.priceUsd = change.priceUsd
+      if (service.unitPrice) service.unitPrice = { ...service.unitPrice, minUsd: Math.min(...service.unitComponents.map((c) => c.priceUsd)), maxUsd: Math.max(...service.unitComponents.map((c) => c.priceUsd)) }
+    }
     const own = service.ownFreeTier
     service.freeTier = own ? { base: { maxRequestsPerAddress: own.maxRequestsPerAddress, maxRequestsPerIp: own.maxRequestsPerIp, windowMs: own.windowMs ?? 86_400_000 }, stakeTiers: own.stakeTiers ?? DEFAULT_TIERS } : service.paid ? null : service.freeTier
   }
+  for (const removed of patch.removeServices ?? []) settings.services = settings.services.filter((row) => !(row.provider === removed.provider && row.service === removed.service))
+  for (const added of patch.addServices ?? []) {
+    if (settings.services.some((row) => row.provider === added.provider && row.service === added.service)) throw new Error(`addServices: ${added.service} is already offered under ${added.provider}`)
+    settings.services.push({
+      provider: added.provider, service: added.service, inputUsdPerMillion: added.inputUsdPerMillion, outputUsdPerMillion: added.outputUsdPerMillion,
+      cachedInputUsdPerMillion: added.cachedInputUsdPerMillion ?? null, inherited: false, paid: added.inputUsdPerMillion > 0 || added.outputUsdPerMillion > 0,
+      unitPrice: null, kind: 'text', apiProtocols: [], freeTier: null, ownFreeTier: null,
+      enabled: true, upstreamModel: added.upstreamModel ?? null, categories: added.categories ?? [], unitComponents: [],
+    })
+  }
+  for (const provider of settings.providers) provider.services = settings.services.filter((row) => row.provider === provider.name).length
+  const paths: Record<string, string> = { displayName: 'identity.displayName', maxConcurrentBuyers: 'seller.maxConcurrentBuyers', healthCheck: 'seller.healthCheck', gasCheck: 'seller.gasCheck', freeTier: 'seller.freeTier', restrictedCountries: 'seller.restrictedCountries', pricing: 'seller.providers', addServices: 'seller.providers', removeServices: 'seller.providers' }
+  settings.overridden = [...new Set([...settings.overridden, ...changed.map((key) => paths[key] ?? key)])]
   settingsStore = { ...state, settings }
   return { ...settingsStore, changed }
+}
+
+/** Drops the saved overrides: back to the mock's config.json. */
+export function mockResetSellerOverrides() {
+  settingsStore = mockSellerSettings()
+  return settingsStore
+}
+
+/** The mock seller "restarts": it reports a new start time after a few seconds. */
+export function mockRestartSeller() {
+  setTimeout(() => { restartedAt = Date.now() }, 4_000)
+  return { restarting: true }
 }
 
 export function mockUpdateSellerAlerts(patch: SellerAlertsPatch) {

@@ -259,3 +259,30 @@ export function resolveEffectiveRoleConfig(input: ResolveEffectiveConfigInput): 
     buyer: resolveEffectiveBuyerConfig(input),
   };
 }
+
+/**
+ * Drops the models turned off (`enabled: false`) from the given providers, in
+ * place. Returns which were dropped, and the providers left with none (not started).
+ */
+export function dropDisabledServices(seller: SellerCLIConfig, providerNames: readonly string[]): { off: string[]; emptyProviders: string[] } {
+  const off: string[] = []
+  const emptyProviders: string[] = []
+  for (const name of providerNames) {
+    const provider = seller.providers[name]
+    if (!provider) continue
+    for (const [serviceId, service] of Object.entries(provider.services ?? {})) {
+      if (service.enabled !== false) continue
+      // A model id has one free-tier program across providers: one written only here still applies where the model stays on.
+      if (service.freeTier) {
+        for (const other of providerNames) {
+          const kept = seller.providers[other]?.services?.[serviceId]
+          if (kept && kept !== service && kept.enabled !== false && !kept.freeTier) kept.freeTier = structuredClone(service.freeTier)
+        }
+      }
+      delete provider.services[serviceId]
+      off.push(`${name}/${serviceId}`)
+    }
+    if (Object.keys(provider.services ?? {}).length === 0 && off.some((entry) => entry.startsWith(`${name}/`))) emptyProviders.push(name)
+  }
+  return { off, emptyProviders }
+}
