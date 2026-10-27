@@ -52,6 +52,12 @@ export function supportsImageEdits(row: DiscoverRow): boolean {
   return row.capabilities?.inputs?.some((input) => input.trim().toLowerCase() === 'image') ?? false;
 }
 
+/** A video model that takes a source video: it edits videos rather than making new ones. */
+export function supportsVideoEdits(row: Pick<DiscoverRow, 'protocol' | 'capabilities'>): boolean {
+  return isNativeVideoProtocol(row.protocol)
+    && (row.capabilities?.video?.inputs?.some((input) => input.trim().toLowerCase() === 'video') ?? false);
+}
+
 export function supportsServiceParameter(row: DiscoverRow, parameter: string): boolean {
   const normalized = parameter.trim().toLowerCase();
   return normalized.length > 0 && (
@@ -82,6 +88,7 @@ export function peerCapabilitySummary(row: DiscoverRow): string[] {
   if (serviceModelKind(row.protocol, capabilities) === 'image' && supportsImageEdits(row)) {
     summary.push('Image editing');
   }
+  if (supportsVideoEdits(row)) summary.push('Video editing');
   if (capabilities?.contextWindow) summary.push(`${formatTokenCount(capabilities.contextWindow)} context`);
   if (capabilities?.maxOutputTokens) summary.push(`${formatTokenCount(capabilities.maxOutputTokens)} max output`);
   if (capabilities?.reasoning) summary.push('Reasoning');

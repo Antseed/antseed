@@ -57,6 +57,8 @@ const CHAT_MIN_WIDTH = 320;
 const DEFAULT_PREVIEW_FRACTION = 0.5;
 const MAX_ATTACHMENTS = 5;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+/** Source videos for video edits; the agent reads them by path, so they never enter the prompt. */
+const MAX_VIDEO_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 const MAX_TOTAL_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 const NEAR_BOTTOM_PX = 40;
 const PERMISSION_MODES: Array<{
@@ -909,8 +911,9 @@ export function ChatView({ onSelectView }: ChatViewProps) {
         nextError = `Only ${MAX_ATTACHMENTS} attachments are allowed per message.`;
         break;
       }
-      if (file.size > MAX_ATTACHMENT_BYTES) {
-        nextError = `${file.name || 'Attachment'} exceeds the 25 MiB per-file limit.`;
+      const video = isVideoAttachmentLike(file.name, file.type);
+      if (file.size > (video ? MAX_VIDEO_ATTACHMENT_BYTES : MAX_ATTACHMENT_BYTES)) {
+        nextError = `${file.name || 'Attachment'} exceeds the ${video ? 50 : 25} MiB per-file limit.`;
         continue;
       }
       if (totalBytes + file.size > MAX_TOTAL_ATTACHMENT_BYTES) {
@@ -1499,7 +1502,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
                 ref={fileInputRef}
                 id={fileInputId}
                 type="file"
-                accept="image/jpeg,image/png,image/gif,image/webp,.pdf,.docx,.pptx,.xlsx,.odt,.odp,.ods,.rtf,.zip,.txt,.md,.json,.csv,.js,.ts,.tsx,.jsx,.html,.css,.py,.rs,.go,.java,.rb,.sh,.yaml,.yml,.xml,.svg"
+                accept="image/jpeg,image/png,image/gif,image/webp,video/mp4,video/quicktime,.mp4,.mov,.m4v,.pdf,.docx,.pptx,.xlsx,.odt,.odp,.ods,.rtf,.zip,.txt,.md,.json,.csv,.js,.ts,.tsx,.jsx,.html,.css,.py,.rs,.go,.java,.rb,.sh,.yaml,.yml,.xml,.svg"
                 multiple
                 style={{ display: 'none' }}
                 onChange={handleFileAttach}
@@ -1690,6 +1693,10 @@ function formatAttachmentSize(bytes: number): string {
 function isImageAttachmentLike(name: string, mimeType: string): boolean {
   if (mimeType.startsWith('image/')) return true;
   return /\.(png|jpe?g|gif|webp|bmp|svg|heic|heif|ico|tiff?)$/i.test(name);
+}
+
+function isVideoAttachmentLike(name: string, mimeType: string): boolean {
+  return mimeType === 'video/mp4' || mimeType === 'video/quicktime' || /\.(mp4|mov|m4v)$/i.test(name);
 }
 
 function getAttachmentExtension(name: string): string {

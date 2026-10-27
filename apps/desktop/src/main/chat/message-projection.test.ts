@@ -10,3 +10,10 @@ test('uploaded image id tags are hidden from projected user text', () => {
     'Use this as the start frame',
   );
 });
+
+test('uploaded video id tags are hidden from projected user text', () => {
+  assert.equal(
+    convertPersistedAttachmentPromptToBlocks('Put me in this dance\n\n<uploaded-video id="att-3" name="dance.mp4" mime="video/mp4" size="1024">'),
+    'Put me in this dance',
+  );
+});

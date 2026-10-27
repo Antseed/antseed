@@ -25,7 +25,7 @@ export interface PreparedChatAttachment {
   name: string;
   mimeType: string;
   size: number;
-  kind: 'image' | 'text' | 'archive' | 'error';
+  kind: 'image' | 'video' | 'text' | 'archive' | 'error';
   status: 'ready' | 'error';
   text?: string;
   image?: ImageContent;
@@ -53,6 +53,8 @@ export interface PrepareChatAttachmentsOptions {
 export interface AttachmentPreparationLimits {
   maxAttachments: number;
   maxFileBytes: number;
+  /** Per-file limit for MP4/MOV videos, which stay on disk and never enter the prompt. */
+  maxVideoFileBytes?: number;
   maxTotalRawBytes: number;
   maxExtractedCharsPerFile: number;
   maxExtractedCharsPerMessage: number;
@@ -64,6 +66,7 @@ export interface AttachmentPreparationLimits {
 export const DEFAULT_ATTACHMENT_LIMITS: AttachmentPreparationLimits = {
   maxAttachments: 5,
   maxFileBytes: 25 * 1024 * 1024,
+  maxVideoFileBytes: 50 * 1024 * 1024,
   maxTotalRawBytes: 50 * 1024 * 1024,
   maxExtractedCharsPerFile: 120_000,
   maxExtractedCharsPerMessage: 250_000,
@@ -73,6 +76,8 @@ export const DEFAULT_ATTACHMENT_LIMITS: AttachmentPreparationLimits = {
 };
 
 const IMAGE_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
+const VIDEO_MIME_TYPES = new Set(['video/mp4', 'video/quicktime']);
+const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.m4v']);
 const OFFICE_EXTENSIONS = new Set(['.pdf', '.docx', '.pptx', '.xlsx', '.odt', '.odp', '.ods', '.rtf']);
 const ARCHIVE_EXTENSIONS = new Set(['.zip']);
 const REJECTED_EXTENSIONS = new Set([
@@ -160,6 +165,16 @@ function isImageAttachment(name: string, mimeType: string): boolean {
   const mime = normalizeMime(mimeType);
   return IMAGE_MIME_TYPES.has(mime)
     || (mime.length === 0 && ['.jpg', '.jpeg', '.png', '.gif', '.webp'].includes(ext));
+}
+
+function isVideoAttachment(name: string, mimeType: string): boolean {
+  const mime = normalizeMime(mimeType);
+  return VIDEO_MIME_TYPES.has(mime) || ((mime.length === 0 || mime === 'application/octet-stream') && VIDEO_EXTENSIONS.has(extensionFor(name)));
+}
+
+/** MP4 and QuickTime files start with an `ftyp` box. */
+function hasVideoSignature(buffer: Buffer): boolean {
+  return buffer.length >= 12 && buffer.toString('ascii', 4, 8) === 'ftyp';
 }
 
 function isOfficeAttachment(name: string): boolean {
@@ -378,6 +393,30 @@ async function prepareOneAttachment(
     };
   }
 
+  if (isVideoAttachment(name, mimeType)) {
+    if (!hasVideoSignature(buffer)) {
+      return { attachment: makeError(raw, 'File is not an MP4 or MOV video.'), consumedChars: 0 };
+    }
+    if (!attachmentId) {
+      return { attachment: makeError(raw, 'Video attachments need to be saved to disk first.'), consumedChars: 0 };
+    }
+    // The model gets only a tag: the agent reads the file by path
+    // (`get_chat_video_path`), for example as the source of a video edit.
+    return {
+      attachment: {
+        id: raw.id,
+        attachmentId,
+        name,
+        mimeType,
+        size: raw.size,
+        kind: 'video',
+        status: 'ready',
+        text: `<uploaded-video id="${safeAttribute(attachmentId)}" name="${safeAttribute(name)}" mime="${safeAttribute(mimeType)}" size="${raw.size}">`,
+      },
+      consumedChars: 0,
+    };
+  }
+
   if (isRejectedExecutable(name)) {
     return { attachment: makeError(raw, `Unsupported executable or script file type: ${extensionFor(name)}`), consumedChars: 0 };
   }
@@ -451,8 +490,9 @@ export async function prepareChatAttachments(
       continue;
     }
 
-    if (buffer.byteLength > limits.maxFileBytes) {
-      prepared.push(makeError(rawMeta, `File exceeds the ${limits.maxFileBytes} byte per-file limit.`));
+    const maxFileBytes = isVideoAttachment(name, raw.mimeType) ? limits.maxVideoFileBytes ?? limits.maxFileBytes : limits.maxFileBytes;
+    if (buffer.byteLength > maxFileBytes) {
+      prepared.push(makeError(rawMeta, `File exceeds the ${maxFileBytes} byte per-file limit.`));
       continue;
     }
     if (totalRawBytes + buffer.byteLength > limits.maxTotalRawBytes) {

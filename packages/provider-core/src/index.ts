@@ -22,3 +22,16 @@ export {
   type StripRelayRequestHeadersOptions,
 } from './http-headers.js';
 export { streamVideoResponse, videoDownloadSignal, videoDownloadError } from './video-download.js';
+export {
+  checkVideoSourceForm,
+  createVideoSourcePrecheck,
+  isPublicIpAddress,
+  shapeProblem,
+  measureVideoSource,
+  VideoSourceError,
+  type MeasureVideoSourceOptions,
+  type VideoSourceFacts,
+  type VideoSourcePrecheckOptions,
+  type VideoSourceRule,
+} from './video-source.js';
+export { imageDimensions, imageInputProblem, type ImageInputRule } from './image-input.js';

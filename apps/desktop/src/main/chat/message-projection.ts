@@ -123,7 +123,7 @@ export function convertPersistedAttachmentPromptToBlocks(text: string): string |
     }
   }
 
-  const withoutUploadTags = text.replace(/^<uploaded-image\b[^>]*>$/gim, '');
+  const withoutUploadTags = text.replace(/^<uploaded-(image|video)\b[^>]*>$/gim, '');
   if (withoutUploadTags !== text) text = withoutUploadTags.trim();
 
   const filePattern = /<file\b([^>]*)>\n?([\s\S]*?)\n?<\/file>/gi;

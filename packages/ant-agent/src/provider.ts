@@ -34,6 +34,9 @@ export class AntAgentProvider implements Provider {
   get serviceApiProtocols() { return this._inner.serviceApiProtocols; }
   getCapacity() { return this._inner.getCapacity(); }
   async init() { return this._inner.init?.(); }
+  get precheckRequest(): Provider['precheckRequest'] {
+    return this._inner.precheckRequest?.bind(this._inner);
+  }
 
   async handleRequest(req: SerializedHttpRequest): Promise<SerializedHttpResponse> {
     return runAgentLoop(this._inner, req, this._resolve, this._options);

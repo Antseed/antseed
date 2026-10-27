@@ -1,6 +1,7 @@
+import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Provider, ProviderStreamCallbacks, SerializedHttpRequest } from '@antseed/node';
-import plugin, { FAL_BALANCE_CHECK_OFF, falAppId, falInputParameters, withFrameInputs } from './index.js';
+import plugin, { FAL_BALANCE_CHECK_OFF, falAppId, falEditRule, falErrorReason, falSubmitTimeoutMs, falInputParameters, falInputSchema, withEditInputs, withFrameInputs } from './index.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -119,7 +120,8 @@ it('keeps configured parameters and starts without them when the fal schema is u
   const configured = plugin.createProvider({ ...v3Config, ANTSEED_SERVICE_CAPABILITIES_JSON: JSON.stringify({ [V3]: { supportedParameters: ['prompt', 'start_image_url'] } }) }) as Provider;
   await configured.init!();
   expect(configured.serviceCapabilities?.[V3]?.supportedParameters).toEqual(['prompt', 'start_image_url']);
-  expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('openapi'))).toHaveLength(1);
+  // The schema is still read for its source-video limits; configured field names win.
+  expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('openapi'))).toHaveLength(2);
 });
 
 it('passes fal validation errors back without accepting a job', async () => {
@@ -172,7 +174,7 @@ it('reports a job as FAILED when fal refuses its result', async () => {
   const response = await stream(plugin.createProvider(config) as Provider);
   expect(parse(response.body)).toEqual({
     status: 'FAILED',
-    error: '[{"loc":["body","start_image_url"],"msg":"Field required","type":"missing"}]',
+    error: 'start_image_url: Field required',
   });
 });
 
@@ -181,7 +183,20 @@ it('reports a job as FAILED without a reason when fal gives none', async () => {
     .mockResolvedValueOnce(Response.json({ status: 'COMPLETED' }))
     .mockResolvedValueOnce(new Response('', { status: 422 })));
   const response = await stream(plugin.createProvider(config) as Provider);
-  expect(parse(response.body)).toEqual({ status: 'FAILED' });
+  expect(parse(response.body)).toEqual({ status: 'FAILED', error: 'fal answered HTTP 422 with no reason' });
+});
+
+it('scales the fal submit timeout with the request size', () => {
+  expect(falSubmitTimeoutMs(1000)).toBe(61_000);
+  expect(falSubmitTimeoutMs(12_000_000)).toBe(60_000 + 46_000);
+  expect(falSubmitTimeoutMs(1_000_000_000)).toBe(600_000);
+});
+
+it('reads readable reasons from fal error bodies', () => {
+  expect(falErrorReason({ detail: 'User is locked' })).toBe('User is locked');
+  expect(falErrorReason({ detail: [{ loc: ['body', 'video_url'], msg: 'too small' }, { msg: 'bad' }] })).toBe('video_url: too small; bad');
+  expect(falErrorReason({ error: 'NSFW' })).toBe('NSFW');
+  expect(falErrorReason({})).toBeUndefined();
 });
 
 it('streams the finished video from the fal media URL without the seller key', async () => {
@@ -339,5 +354,170 @@ describe('checkServiceHealth and checkUpstreamAccount', () => {
     await (plugin.createProvider(twoModels) as Provider).init!();
     expect(info).toHaveBeenCalledWith(expect.stringContaining('fal balance check is on: $7.25'));
     info.mockRestore();
+  });
+});
+
+describe('video-to-video endpoints', () => {
+  /** Real fal input schemas (trimmed to the endpoint's input), saved 2026-10-23. */
+  const fixture = (endpointId: string) => JSON.parse(readFileSync(new URL(`./fixtures/${endpointId.replaceAll('/', '_')}.json`, import.meta.url), 'utf8'));
+  const RECAST = 'minimax/h3-max/recast';
+  const KLING_EDIT = 'kling/v4/video-to-video/edit';
+  const MOTION = 'fal-ai/kling-video/v3/standard/motion-control';
+  const WAN_EDIT = 'fal-ai/wan/v2.7/edit-video';
+  const editConfig = (service: string, capabilities?: object) => ({
+    FAL_VIDEO_API_KEY: 'seller-secret',
+    ANTSEED_ALLOWED_SERVICES: service,
+    ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: JSON.stringify({ [service]: { 'fal-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.3 }] } } }),
+    ...(capabilities ? { ANTSEED_SERVICE_CAPABILITIES_JSON: JSON.stringify({ [service]: capabilities }) } : {}),
+  });
+  const mp4 = (durationMs: number, size?: { width: number; height: number }) => {
+    const box = (type: string, body: Buffer) => {
+      const head = Buffer.alloc(8);
+      head.writeUInt32BE(8 + body.length);
+      head.write(type, 4, 'latin1');
+      return Buffer.concat([head, body]);
+    };
+    const mvhd = Buffer.alloc(20);
+    mvhd.writeUInt32BE(1000, 12);
+    mvhd.writeUInt32BE(durationMs, 16);
+    // A video track header body (version 0): duration at byte 20, matrix at 40, width and height (16.16) at 76 and 80.
+    const tkhd = Buffer.alloc(84);
+    tkhd.writeUInt32BE(durationMs, 20);
+    tkhd.writeInt32BE(0x10000, 40);
+    tkhd.writeInt32BE(0x10000, 56);
+    tkhd.writeUInt32BE((size?.width ?? 0) * 65536, 76);
+    tkhd.writeUInt32BE((size?.height ?? 0) * 65536, 80);
+    const trak = size ? box('trak', box('tkhd', tkhd)) : Buffer.alloc(0);
+    return Buffer.concat([box('ftyp', Buffer.from('isom\0\0\0\0isom', 'latin1')), box('moov', Buffer.concat([box('mvhd', mvhd), trak])), box('mdat', Buffer.alloc(100))]);
+  };
+  const source = (durationMs: number, size?: { width: number; height: number }) => `data:video/mp4;base64,${mp4(durationMs, size).toString('base64')}`;
+  const ready = async (service: string, capabilities?: object) => {
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => String(url).startsWith('https://fal.ai/api/openapi')
+      ? Response.json(fixture(service))
+      : String(url).includes('/v1/account/billing') ? Response.json({ credits: { current_balance: 5 } }) : Response.json({ request_id: 'req-1' }));
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = plugin.createProvider(editConfig(service, capabilities)) as Provider;
+    await provider.init!();
+    return { provider, fetchMock };
+  };
+  const create = (service: string, body: object, requestId = 'r') => ({ ...request('/fal/v1/video/queue', { model: service, ...body }), requestId });
+  const precheck = (provider: Provider, req: SerializedHttpRequest) => provider.precheckRequest!(req, { buyerPeerId: 'buyer' });
+
+  it('reads required fields and source limits from the fal schemas', () => {
+    expect(falInputSchema(fixture(RECAST), RECAST)).toMatchObject({ required: ['video_url', 'reference_image_urls'] });
+    expect(falEditRule(RECAST, falInputSchema(fixture(RECAST), RECAST))).toEqual({
+      required: ['video_url', 'reference_image_urls'], minSeconds: 5, maxSeconds: 30, outputFollowsSource: true, durationAtMostSource: false,
+    });
+    expect(falEditRule(KLING_EDIT, falInputSchema(fixture(KLING_EDIT), KLING_EDIT))).toEqual({
+      required: ['prompt', 'video_url'], minSeconds: 3, maxSeconds: 30.05, maxBytes: 314_572_800, outputFollowsSource: false, durationAtMostSource: true,
+      minWidth: 700, minHeight: 700, maxWidth: 4553, maxHeight: 4553, minAspectRatio: 0.4, maxAspectRatio: 2.5, minFps: 23.9, maxFps: 60.05,
+    });
+    expect(falEditRule(MOTION, falInputSchema(fixture(MOTION), MOTION))).toMatchObject({
+      required: ['image_url', 'video_url', 'character_orientation'], minSeconds: 3, maxSeconds: 30.05, maxBytes: 104_857_600, outputFollowsSource: true,
+      minWidth: 340, minHeight: 340,
+      imageLimits: { image_url: { minWidth: 340, minHeight: 340, maxWidth: 3850, maxHeight: 3850, minAspectRatio: 0.4, maxAspectRatio: 2.5, maxBytes: 10_485_760 } },
+    });
+    expect(falEditRule(WAN_EDIT, falInputSchema(fixture(WAN_EDIT), WAN_EDIT))).toMatchObject({ minSeconds: 2, maxSeconds: 10, outputFollowsSource: false, durationAtMostSource: true });
+    expect(falEditRule(V3, falInputSchema(schema(V3, { prompt: {}, image_url: {} }), V3))).toBeNull();
+  });
+
+  it('announces the source video and character inputs, and the durations a source-length output can have', async () => {
+    const { provider } = await ready(RECAST);
+    expect(provider.serviceCapabilities?.[RECAST]).toEqual({
+      outputs: ['video'],
+      supportedParameters: ['enable_safety_checker', 'enhance_realism', 'prompt', 'reference_image_urls', 'resolution', 'seed', 'video_url'],
+      video: {
+        inputs: ['video', 'reference_image'],
+        requiredInputs: ['video', 'reference_image'],
+        durationsSeconds: Array.from({ length: 26 }, (_, i) => i + 5),
+        resolutions: ['768P', '1080P'],
+      },
+    });
+    const motion = (await ready(MOTION)).provider.serviceCapabilities?.[MOTION]?.video;
+    expect(motion).toEqual({ inputs: ['video', 'reference_image'], requiredInputs: ['video', 'reference_image'], durationsSeconds: Array.from({ length: 28 }, (_, i) => i + 3) });
+    // Kling v4 takes its own `duration`, so its durations are not derived from the source.
+    expect((await ready(KLING_EDIT)).provider.serviceCapabilities?.[KLING_EDIT]?.video).toEqual({ inputs: ['video', 'reference_image'], requiredInputs: ['video'], resolutions: ['720p', '1080p'] });
+  });
+
+  it('keeps video options the seller configured', async () => {
+    const { provider } = await ready(RECAST, { video: { inputs: ['video'], durationsSeconds: [5, 10], resolutions: ['768P'] } });
+    expect(provider.serviceCapabilities?.[RECAST]?.video).toEqual({ inputs: ['video', 'reference_image'], requiredInputs: ['video', 'reference_image'], durationsSeconds: [5, 10], resolutions: ['768P'] });
+    expect(withEditInputs({ outputs: ['video'] }, null, null)).toEqual({ outputs: ['video'] });
+  });
+
+  it('accepts a duration matching the source and drops it before calling fal, which takes none', async () => {
+    const { provider, fetchMock } = await ready(RECAST);
+    const body = { video_url: source(12_700), reference_image_urls: ['data:image/png;base64,AAAA'], resolution: '768P', duration: 12 };
+    await expect(precheck(provider, create(RECAST, body))).resolves.toBeNull();
+    const response = await provider.handleRequest(create(RECAST, body));
+    expect(response.statusCode).toBe(200);
+    const [url, init] = fetchMock.mock.calls.at(-1)!;
+    expect(url).toBe(`https://queue.fal.run/${RECAST}`);
+    const sent = parse(init.body);
+    expect(sent).not.toHaveProperty('duration');
+    expect(sent).toEqual({ video_url: body.video_url, reference_image_urls: body.reference_image_urls, resolution: '768P' });
+  });
+
+  it('refuses before payment a wrong duration, a source outside the model range, a missing field or a non-MP4 source', async () => {
+    const { provider, fetchMock } = await ready(RECAST);
+    const calls = fetchMock.mock.calls.length;
+    const refs = { reference_image_urls: ['data:image/png;base64,AAAA'] };
+    const refused = async (body: object, status: number, code: string) => {
+      const response = await precheck(provider, create(RECAST, body, JSON.stringify(body).slice(-40)));
+      expect(response?.statusCode, JSON.stringify(body).slice(0, 80)).toBe(status);
+      expect(parse(response!.body).error.code).toBe(code);
+    };
+    await refused({ ...refs, video_url: source(12_700), duration: 13 }, 400, 'invalid_video_duration');
+    await refused({ ...refs, video_url: source(4_000), duration: 4 }, 400, 'invalid_video_source');
+    await refused({ ...refs, video_url: source(31_000), duration: 31 }, 400, 'invalid_video_source');
+    await refused({ video_url: source(12_700), duration: 12 }, 400, 'missing_required_field');
+    await refused({ ...refs, video_url: 'data:video/mp4;base64,AAAA', duration: 12 }, 400, 'invalid_video_source');
+    await refused({ ...refs, video_url: 'http://169.254.169.254/latest', duration: 12 }, 400, 'invalid_video_source');
+    expect(fetchMock.mock.calls.length).toBe(calls);
+  });
+
+  it('keeps duration for an endpoint that takes one, refusing only one longer than the source', async () => {
+    const { provider, fetchMock } = await ready(WAN_EDIT);
+    const body = { prompt: 'make it snow', video_url: source(8_200), duration: 5 };
+    await expect(precheck(provider, create(WAN_EDIT, body))).resolves.toBeNull();
+    const longer = await precheck(provider, create(WAN_EDIT, { ...body, duration: 9 }, 'r2'));
+    expect(parse(longer!.body).error.code).toBe('invalid_video_duration');
+    await provider.handleRequest(create(WAN_EDIT, body));
+    expect(parse(fetchMock.mock.calls.at(-1)![1].body)).toMatchObject({ duration: 5 });
+  });
+
+  it('refuses before payment a source below the endpoint\'s size limits', async () => {
+    const { provider, fetchMock } = await ready(KLING_EDIT);
+    const calls = fetchMock.mock.calls.length;
+    const small = await precheck(provider, create(KLING_EDIT, { prompt: 'watercolor', video_url: source(5_100, { width: 864, height: 496 }), duration: 5 }));
+    expect(parse(small!.body).error).toMatchObject({ code: 'invalid_video_source', message: expect.stringContaining('864x496') });
+    await expect(precheck(provider, create(KLING_EDIT, { prompt: 'watercolor', video_url: source(5_100, { width: 1218, height: 700 }), duration: 5 }, 'r2'))).resolves.toBeNull();
+    expect(fetchMock.mock.calls.length).toBe(calls);
+  });
+
+  it('refuses before payment an inline character image outside fal\'s image limits', async () => {
+    const { provider, fetchMock } = await ready(MOTION);
+    const calls = fetchMock.mock.calls.length;
+    const png = (width: number, height: number) => {
+      const b = Buffer.alloc(33);
+      b.writeUInt32BE(0x89504e47, 0); b.writeUInt32BE(0x0d0a1a0a, 4); b.writeUInt32BE(13, 8); b.write('IHDR', 12, 'latin1');
+      b.writeUInt32BE(width, 16); b.writeUInt32BE(height, 20);
+      return `data:image/png;base64,${b.toString('base64')}`;
+    };
+    const body = { video_url: source(5_000, { width: 720, height: 1280 }), character_orientation: 'video', prompt: 'dance' };
+    await expect(precheck(provider, create(MOTION, { ...body, image_url: png(720, 1280) }, 'ok'))).resolves.toBeNull();
+    const small = await precheck(provider, create(MOTION, { ...body, image_url: png(300, 300) }, 'small'));
+    expect(small?.statusCode).toBe(400);
+    expect(parse(small!.body).error).toMatchObject({ code: 'invalid_image_input', message: expect.stringContaining('image_url is 300x300') });
+    const wide = await precheck(provider, create(MOTION, { ...body, image_url: png(2000, 400) }, 'wide'));
+    expect(parse(wide!.body).error.message).toContain('aspect ratio 5.00');
+    // An image URL is fal's to check.
+    await expect(precheck(provider, create(MOTION, { ...body, image_url: 'https://example.com/a.png' }, 'url'))).resolves.toBeNull();
+    expect(fetchMock.mock.calls.length).toBe(calls);
+  });
+
+  it('leaves other endpoints alone', async () => {
+    const provider = plugin.createProvider(config) as Provider;
+    await expect(precheck(provider, request('/fal/v1/video/queue', { model: MODEL, prompt: 'cat', duration: 5 }))).resolves.toBeNull();
   });
 });

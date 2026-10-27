@@ -1,6 +1,6 @@
 ---
 name: antseed-videos
-description: Directs video creation through the user's local Antseed buyer proxy in three approved stages — idea and model, prompts plus first and last frames, then settings and price — with prompts tuned to the chosen model and frames made with a strong image model. Uses plain curl and jq. Use when the user asks Antseed to create, generate, animate, or make a video, or supplies start or end images for one.
+description: Directs video creation and video editing through the user's local Antseed buyer proxy in approved stages — idea and model, prompts plus first and last frames (or the source video and new character), then settings and price — with prompts tuned to the chosen model and frames made with a strong image model. Uses plain curl and jq (plus ffprobe for edits). Use when the user asks Antseed to create, generate, animate, or make a video, supplies start or end images for one, or uploads a video to change (swap a character, restyle, edit).
 ---
 
 # Antseed Videos
@@ -11,7 +11,7 @@ Act as the user's video director. Do not rush to generate: shape the idea, pick 
 
 - Antseed Desktop or `antseed buyer start` is running. Buyer URL: `$ANTSEED_PROXY_URL` when set, otherwise `http://127.0.0.1:8377`.
 - The buyer has deposited USDC. Deposits can be funded by card where available, an exchange withdrawal, or another wallet. The buyer refuses any single video above $5.00.
-- `curl` and `jq`. Frames are made with the `antseed-images` skill.
+- `curl` and `jq`. Frames are made with the `antseed-images` skill. Video edits also need `ffprobe` (part of `ffmpeg`).
 
 The exact commands are in [references/requests.md](references/requests.md). Model choices and prompt styles are in [references/prompting.md](references/prompting.md).
 
@@ -62,12 +62,24 @@ After "go", queue the video once, save the job file, wait, and save the MP4 ([re
 
 For a video longer than the model's longest clip, plan it as several clips in Stage 3 (price each one), then make them one at a time, each starting from the previous clip's last frame, and join them ([references/requests.md](references/requests.md#multi-clip-videos)).
 
+## Edit a video
+
+When the user brings a video and wants it changed (put them or another character in it, restyle it, change one thing), use a video-to-video model instead of the three stages above. The source video keeps its motion, timing, and camera; the model changes only what is asked. The steps in [references/requests.md](references/requests.md#edit-a-video) do the work.
+
+1. **Source.** Get the video's path (in Antseed Desktop, `get_chat_video_path` with the id from the `<uploaded-video>` tag). Read its length, size, and frame rate with `ffprobe`, never by opening the file. MOV files are remuxed to MP4 without re-encoding; WebM, VP9, and AV1 sources are re-encoded to H.264. Stop if `ffmpeg` or `ffprobe` fails.
+2. **Model.** Fetch the catalog of video edit models (`frames=edit`). Recommend one for the job and say why ([references/prompting.md](references/prompting.md#editing-a-video)): Recast or motion control to swap a person or character, Kling edit or Wan edit for a text instruction. Show the model's source limits (length, size, frame rate) and check the source fits; offer to trim it (`ffmpeg -t`) when it is too long, or to scale it up when it is too small (Kling v4 edit needs at least 700x700). Recast and motion control need a real person in the source: a source without one (an animal, a cartoon, an empty scene) comes back unchanged or fails, and is still charged.
+3. **Character and prompt.** For a character swap, get or make one clear image per person to replace, in the order they appear left to right. Show the images and the prompt for approval, as with frames.
+4. **Price and go.** The length paid for is the source length in whole seconds, rounded down; the seller refuses any other `duration`, before payment. Show the price per seller. When it is above $5.00, offer a lower resolution, a trimmed source, or a cheaper model. When it is above $1.00, also say that a job that fails after it starts still costs the opening fee (the opening fee, $0.65 on Base; see Rules). Ask: "<model>, <seconds> s from your video, <resolution>: $<price>. Go?"
+5. **Generate.** After "go", create once and wait exactly as for a new video. Recast can take 15 minutes or more. Show the result (in Antseed Desktop, `show_media`) and report the path, model, length, and price.
+
+A refused edit (`invalid_video_duration`, `invalid_video_source`, `invalid_image_input`, `video_source_too_large`, `video_source_unavailable`, `request_too_large`, `missing_required_field`, `unsupported_parameter`, `required_capability_unavailable`) is free: nothing started and no channel was opened. Fix what the message names and ask before sending again.
+
 ## Rules
 
-- **One create per approved video.** Right after the create, write the job file. If a job file exists, resume it; never create again without asking. Videos are charged when the finished MP4 is delivered, so a failed or rejected create costs nothing, but a repeated create wastes the seller's upstream cost, holds deposited USDC for a while, and is charged too if it is also downloaded.
+- **One create per approved video.** Right after the create, write the job file. If a job file exists, resume it; never create again without asking. Videos are charged when the finished MP4 is delivered. A create the seller refuses before payment (any `4xx` on create) costs nothing. A video priced at $1.00 or less costs nothing unless delivered. A video priced above $1.00 opens its payment channel with an opening fee the seller keeps even if the job fails (a share of the $1.00 opening reserve set by the contract: $0.65 on Base; credited toward the price when the video is delivered), so a job that fails after it started costs that fee. A repeated create wastes the seller's upstream cost, holds deposited USDC for a while, and is charged too if it is also downloaded.
 - Status checks and downloads use the saved job id and never create jobs.
 - Use the field names the seller lists in `fields`: when the seller lists a name for a frame, reference, audio, or ratio input, send that name and not a synonym (for example `start_image_url` instead of `image_url` on fal's Kling V3). A field the seller does not list is not necessarily unsupported; the list is derived from the upstream and can be incomplete, so a field the user needs may still be sent under its common name. The buyer does not block an unlisted field; it forwards it, and if the seller rejects the create with `400`, nothing started and nothing was charged: remove that field. Send `aspect_ratio` only when the chosen seller lists that ratio; otherwise the frame sets the shape. Never send `audio: true`: models with audio make sound by default, and some fail the job when `audio` is set. Send `audio: false` only when the user wants a silent video.
 - Always send the create to the chosen seller, as `<peerId>@<model>` (the cheapest compatible seller from the price step).
-- After a failed create or job, read `error.peer_message` and fix the field it names. Do not switch models or sellers on your own; ask first. Before an approved retry, rename `<name>.job.json` to `<name>.failed.job.json`.
+- After a failed create or job, read `error.peer_message` (or `error.message` when `peer_message` is empty) and fix the field it names. Do not switch models or sellers on your own; ask first. Before an approved retry, rename `<name>.job.json` to `<name>.failed.job.json`.
 - Never print base64 media, signed URLs, authorization headers, private keys, or full API responses. Keep the buyer proxy on loopback.
 - Pass frames and reference images by path. Do not open them with a file-reading tool unless the user asks you to look at one: every image read stays in the chat and is resent on each turn, and a few of them can make later requests too large to send or compact.

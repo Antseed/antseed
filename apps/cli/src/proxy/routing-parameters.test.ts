@@ -3,8 +3,10 @@ import test from 'node:test'
 import type { PeerInfo } from '@antseed/node'
 import {
   findMissingRequiredParameters,
+  findMissingVideoInputs,
   findUnannouncedRequestParameters,
   parseRequiredParametersHeader,
+  requiredVideoInputs,
 } from './routing.js'
 
 const encode = (value: unknown): Uint8Array => new TextEncoder().encode(JSON.stringify(value))
@@ -171,4 +173,33 @@ test('skips unparseable bodies and requests without a resolved service or protoc
   const request = makeRequest({ model: 'gpt-image-1', prompt: 'an ant', seed: 42 })
   assert.deepEqual(findUnannouncedRequestParameters(imagePeer, 'openai', null, 'openai-images', request), [])
   assert.deepEqual(findUnannouncedRequestParameters(imagePeer, 'openai', 'gpt-image-1', null, request), [])
+})
+
+test('names the video inputs a request carries', () => {
+  assert.deepEqual(requiredVideoInputs(makeRequest({ prompt: 'x' })), [])
+  assert.deepEqual(requiredVideoInputs(makeRequest({ video_url: 'https://a/b.mp4' })), ['video'])
+  assert.deepEqual(requiredVideoInputs(makeRequest({ video_url: '' })), [])
+  assert.deepEqual(requiredVideoInputs(makeRequest({ reference_video_urls: ['https://a/b.mp4'] })), ['reference_video'])
+  assert.deepEqual(requiredVideoInputs(makeRequest({ reference_video_urls: [] })), [])
+})
+
+test('a seller takes a video input when it announces it or lists its field', () => {
+  const peer = makePeer({
+    providers: ['venice-video'],
+    providerServiceCapabilities: {
+      'venice-video': {
+        services: {
+          'minimax-h3-max-recast': { video: { inputs: ['text', 'video'] } },
+          'kling-edit': { supportedParameters: ['prompt', 'video_url'] },
+          'text-only': { video: { inputs: ['text'] }, supportedParameters: ['prompt'] },
+        },
+      },
+    },
+  } as unknown as Partial<PeerInfo>)
+  assert.deepEqual(findMissingVideoInputs(peer, 'Venice-Video', 'minimax-h3-max-recast', ['video']), [])
+  assert.deepEqual(findMissingVideoInputs(peer, 'venice-video', 'kling-edit', ['video']), [])
+  assert.deepEqual(findMissingVideoInputs(peer, 'venice-video', 'text-only', ['video']), ['video'])
+  assert.deepEqual(findMissingVideoInputs(peer, 'venice-video', 'unknown', ['video']), ['video'])
+  assert.deepEqual(findMissingVideoInputs(peer, 'venice-video', null, ['video']), ['video'])
+  assert.deepEqual(findMissingVideoInputs(peer, 'venice-video', 'text-only', []), [])
 })

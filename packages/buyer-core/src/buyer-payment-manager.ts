@@ -2111,7 +2111,28 @@ export class BuyerPaymentManager {
     if (!state) return;
     this._oneOffChannels.delete(channelId);
     for (const waiter of state.ackWaiters.splice(0)) waiter(false);
-    this._channelStore.updateChannelStatus(channelId, status);
+    // What the seller can close it at: everything the buyer signed (the serious fee, or the price once delivered).
+    this._channelStore.updateChannelStatus(channelId, status, state.cumulative.toString());
+  }
+
+  /**
+   * Record that a tracked video job ended without a video (the seller
+   * answered FAILED, or refused the job with a final 400/422). The seller
+   * closes the job's one-off channel at what the buyer signed so far (the
+   * serious fee, if any); the buyer forgets the job and the channel so it is
+   * no longer counted as active. True when a tracked job was ended.
+   */
+  recordVideoFailed(sellerPeerId: string, protocol: string, jobId: string): boolean {
+    const key = videoJobKey(sellerPeerId, protocol, jobId);
+    const job = this._videoJobs.get(key);
+    if (!job) return false;
+    this._videoJobs.delete(key);
+    if (job.oneOffChannelId) {
+      this._persistVideoJob(job.oneOffChannelId, null);
+      this.retireOneOffChannel(job.oneOffChannelId, CHANNEL_STATUS.SETTLED);
+    }
+    debugLog(`[BuyerPayment] Video job ${jobId} failed; its one-off channel is retired`);
+    return true;
   }
 
   private async _confirmOneOffChannel(channelId: string, state: OneOffChannelState): Promise<void> {

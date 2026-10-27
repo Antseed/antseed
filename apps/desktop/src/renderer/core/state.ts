@@ -164,6 +164,8 @@ export type VprModelCatalogEntry = {
   maxVideoUsdPerSecond: number | null;
   minVideoUsdPerVideo: number | null;
   maxVideoUsdPerVideo: number | null;
+  /** Video models: some seller takes a source video (`video.inputs` has `video`), so the model edits videos. */
+  videoEditing?: boolean;
   expectedSavingsPct: number | null;
   /**
    * True when some seller auto-routing may actually pick (trust/allow/block

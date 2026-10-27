@@ -8,6 +8,7 @@ import type { Provider, SerializedHttpRequest, SerializedHttpResponse } from '@a
 import { usePaymentNetwork } from './helpers/payment-network.js';
 import veniceVideoPlugin from '../../plugins/provider-venice-video/src/index.js';
 import falVideoPlugin from '../../plugins/provider-fal-video/src/index.js';
+import { readFileSync } from 'node:fs';
 
 const liveVeniceKey = process.env.VENICE_INFERENCE_KEY?.trim();
 
@@ -191,6 +192,151 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
       });
     } finally { vi.unstubAllGlobals(); }
   }, 60_000);
+
+  it('runs a fal Recast edit from an inline source: wrong duration refused free, then paid once for the source length', async () => {
+    await setupRpc();
+    const originalFetch = globalThis.fetch;
+    const model = 'minimax/h3-max/recast';
+    const schema = JSON.parse(readFileSync(new URL('../../plugins/provider-fal-video/src/fixtures/minimax_h3-max_recast.json', import.meta.url), 'utf8'));
+    const sourceVideo = `data:video/mp4;base64,${mp4Video(12_700, 64 * 1024).toString('base64')}`;
+    const output = mp4Video(12_700, 256 * 1024);
+    const queued: any[] = [];
+    vi.stubGlobal('fetch', async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith('https://fal.ai/api/openapi/')) return Response.json(schema);
+      if (url.startsWith('https://api.fal.ai/')) return new Response(null, { status: 403 });
+      if (url === 'https://v3.fal.media/files/out.mp4') return new Response(output, { headers: { 'content-type': 'video/mp4', 'content-length': String(output.length) } });
+      if (!url.startsWith('https://queue.fal.run/')) {
+        const headers = new Headers(init?.headers);
+        headers.set('connection', 'close');
+        return originalFetch(input, { ...init, headers });
+      }
+      const path = new URL(url).pathname;
+      if (path === `/${model}`) {
+        queued.push(JSON.parse(Buffer.from(init!.body as Uint8Array).toString()));
+        return Response.json({ request_id: 'fal-edit-1' });
+      }
+      if (path.endsWith('/status')) return Response.json({ status: 'COMPLETED' });
+      return Response.json({ video: { url: 'https://v3.fal.media/files/out.mp4' } });
+    });
+    try {
+      const provider = falVideoPlugin.createProvider({
+        FAL_VIDEO_API_KEY: 'seller-secret',
+        ANTSEED_ALLOWED_SERVICES: model,
+        ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: JSON.stringify({ [model]: { 'fal-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.01 }] } } }),
+      }) as Provider;
+      await provider.init!();
+      expect(provider.serviceCapabilities?.[model]?.video).toMatchObject({ inputs: ['video', 'reference_image'], requiredInputs: ['video', 'reference_image'] });
+      const { port, discoveredSeller } = await setupProxyNetwork(provider);
+      const base = `http://127.0.0.1:${port}`;
+      const post = (path: string, body: object) => fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      const edit = { model, video_url: sourceVideo, reference_image_urls: ['https://example.com/me.png'], resolution: '768P' };
+
+      // A duration that is not the source length is refused before any payment.
+      const wrong = await post('/fal/v1/video/queue', { ...edit, duration: 10 });
+      expect(wrong.status).toBe(400);
+      const wrongBody = await wrong.json();
+      expect(wrongBody.error.code).toBe('invalid_video_duration');
+      expect(wrongBody.error.message).toContain('"duration": 12');
+      const missing = await post('/fal/v1/video/queue', { model, video_url: sourceVideo, duration: 12 });
+      expect(missing.status).toBe(400);
+      expect((await missing.json()).error.code).toBe('missing_required_field');
+      expect(queued).toHaveLength(0);
+      expect((network.buyerNode as any)._channelStore.listAllChannels(100, 'one_off')).toHaveLength(0);
+
+      const created = await post('/fal/v1/video/queue', { ...edit, duration: 12 });
+      expect(created.status).toBe(200);
+      expect(await created.json()).toMatchObject({ model, request_id: 'fal-edit-1' });
+      // fal takes no duration for Recast: the output is as long as the source.
+      expect(queued).toEqual([{ video_url: sourceVideo, reference_image_urls: ['https://example.com/me.png'], resolution: '768P' }]);
+      const download = await post('/fal/v1/video/retrieve', { model, request_id: 'fal-edit-1' });
+      expect(download.status).toBe(200);
+      expect(Buffer.from(await download.arrayBuffer())).toEqual(output);
+      await vi.waitFor(() => {
+        const videoChannels = (network.buyerNode as any)._channelStore.listAllChannels(100, 'one_off');
+        expect(videoChannels).toHaveLength(1);
+        expect(videoChannels[0]).toMatchObject({ peerId: discoveredSeller.peerId, authMax: '120000', status: 'settled' });
+      });
+    } finally { vi.unstubAllGlobals(); }
+  }, 60_000);
+
+  it.each(['tcp-encrypted', 'webrtc'] as const)('runs a Venice Recast edit over %s with a large inline source, and refuses oversized bodies free', async (transport) => {
+    await setupRpc();
+    const originalFetch = globalThis.fetch;
+    const origin = 'https://api.venice.ai';
+    const model = 'minimax-h3-max-recast';
+    const source = mp4Video(10_400, 6 * 1024 * 1024);
+    const output = mp4Video(10_400, 128 * 1024);
+    const queued: string[] = [];
+    let probes = 0;
+    vi.stubGlobal('fetch', async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const url = String(input);
+      if (!url.startsWith(`${origin}/`)) {
+        const headers = new Headers(init?.headers);
+        headers.set('connection', 'close');
+        return originalFetch(input, { ...init, headers });
+      }
+      const path = new URL(url).pathname;
+      if (path === '/api/v1/models') {
+        return Response.json({ data: [{ id: model, model_spec: { constraints: { model_type: 'video', aspect_ratios: [], resolutions: ['768P', '1080P'], durations: ['Auto'], audio_configurable: false, video_input: true } } }] });
+      }
+      const body = Buffer.from(init!.body as Uint8Array).toString();
+      if (path === '/api/v1/video/queue' && JSON.parse(body).duration === '999s') {
+        probes += 1;
+        return Response.json({ error: 'Invalid request parameters', details: { _errors: [], duration: { _errors: ['too long'] }, reference_image_urls: { _errors: ['At least one reference is required for this model'] } } }, { status: 400 });
+      }
+      if (path === '/api/v1/video/queue') {
+        queued.push(body);
+        return Response.json({ model, queue_id: 'queue-edit-1' });
+      }
+      return new Response(output, { headers: { 'content-type': 'video/mp4', 'content-length': String(output.length) } });
+    });
+    try {
+      const provider = veniceVideoPlugin.createProvider({
+        VENICE_VIDEO_API_KEY: 'seller-secret',
+        ANTSEED_ALLOWED_SERVICES: model,
+        ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: JSON.stringify({ [model]: { 'venice-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.01 }] } } }),
+      }) as Provider;
+      await provider.init!();
+      expect(probes).toBe(1);
+      expect(provider.serviceCapabilities?.[model]?.video).toMatchObject({ inputs: ['video', 'reference_image'], requiredInputs: ['video', 'reference_image'] });
+      const { port, discoveredSeller } = await setupProxyNetwork(provider);
+      const manager = (network.buyerNode as any)._connectionManager;
+      if (transport === 'webrtc') {
+        const createConnection = manager.createConnection.bind(manager);
+        manager.createConnection = (config: any) => createConnection({ ...config, remoteCapabilities: config.remoteCapabilities.filter((capability: string) => capability !== 'transport.tcp-enc.v1') });
+      }
+      const base = `http://127.0.0.1:${port}`;
+      const post = (path: string, body: string) => fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body });
+      const edit = { model, video_url: `data:video/mp4;base64,${source.toString('base64')}`, reference_image_urls: ['https://example.com/me.png'], resolution: '768P' };
+
+      const oversized = await post('/api/v1/video/queue', JSON.stringify({ ...edit, duration: '10s', padding: 'x'.repeat(33_000_000) }));
+      expect(oversized.status).toBe(413);
+      expect((await oversized.json()).error.code).toBe('request_too_large');
+      const wrong = await post('/api/v1/video/queue', JSON.stringify({ ...edit, duration: '5s' }));
+      expect(wrong.status).toBe(400);
+      expect((await wrong.json()).error.message).toContain('"duration": 10');
+      expect(queued).toHaveLength(0);
+      expect((network.buyerNode as any)._channelStore.listAllChannels(100, 'one_off')).toHaveLength(0);
+
+      const createBody = JSON.stringify({ ...edit, duration: '10s' });
+      expect(Buffer.byteLength(createBody)).toBeGreaterThan(ANTSEED_UPLOAD_THRESHOLD_BYTES);
+      const created = await post('/api/v1/video/queue', createBody);
+      expect(created.status).toBe(200);
+      expect((await created.json()).queue_id).toBe('queue-edit-1');
+      // Venice wants the source length as the duration, so it is passed through as sent.
+      expect(queued).toEqual([createBody]);
+      const download = await post('/api/v1/video/retrieve', JSON.stringify({ model, queue_id: 'queue-edit-1' }));
+      expect(download.status).toBe(200);
+      expect(Buffer.from(await download.arrayBuffer())).toEqual(output);
+      expect(manager.getConnection(discoveredSeller.peerId).transportDescription).toBe(transport);
+      await vi.waitFor(() => {
+        const videoChannels = (network.buyerNode as any)._channelStore.listAllChannels(100, 'one_off');
+        expect(videoChannels).toHaveLength(1);
+        expect(videoChannels[0]).toMatchObject({ peerId: discoveredSeller.peerId, authMax: '100000', status: 'settled' });
+      });
+    } finally { vi.unstubAllGlobals(); }
+  }, 120_000);
 
   it.skipIf(!liveVeniceKey)('runs a real Venice video request through the buyer proxy', async () => {
     await setupRpc();

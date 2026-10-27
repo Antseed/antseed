@@ -73,6 +73,18 @@ export interface Provider {
     callbacks: ProviderStreamCallbacks,
   ): Promise<SerializedHttpResponse>;
 
+  /**
+   * Optional free check of a request before any payment is asked for. The
+   * seller node calls it after matching the service and pricing the request,
+   * before the free tier, the payment-channel 402 and `handleRequest`. A
+   * non-null response is sent to the buyer as-is, so a request the provider
+   * would refuse (for example a source video of the wrong length) costs the
+   * buyer nothing. Return null to go on. The buyer sends the same request
+   * (same requestId and body) again after opening a payment channel, so
+   * expensive checks should keep their answer per request.
+   */
+  precheckRequest?(req: SerializedHttpRequest, context: ProviderPrecheckContext): Promise<SerializedHttpResponse | null>;
+
   /** Optional startup hook — validate credentials, warm caches, etc. */
   init?(): Promise<void>;
 
@@ -95,6 +107,12 @@ export interface Provider {
    * service of this provider.
    */
   checkUpstreamAccount?(): Promise<UpstreamAccountStatus>;
+}
+
+/** Context of `Provider.precheckRequest`. */
+export interface ProviderPrecheckContext {
+  /** Buyer the request comes from (lowercase peer ID). */
+  buyerPeerId: string;
 }
 
 /**

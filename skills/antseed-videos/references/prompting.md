@@ -32,6 +32,27 @@ When a start frame (and end frame) is used, the image fixes the subject, scene, 
 
 Reference images keep a subject or style consistent; they do not set the opening shot, and the video's shape comes from `aspect_ratio`, not the images. The video prompt describes the whole scene, as in text-to-video, and says how each image is used ("the ant from @Image1 surfs a wave", "in the style of @Image2"). Use `@ImageN` names only for models that document them (Kling O3, Seedance 2.0 and 2.5 R2V, Gemini Omni Flash); otherwise describe the subject in words. Good references are clean, well-lit, one subject each, with a plain background, and at least 300 px on the short side for Venice.
 
+## Editing a video
+
+A video edit keeps the source's motion, timing, and camera, and changes what the request names. Pick by the job, then by the source limits; the seller checks the limits before payment, so a source outside them is refused for free. Use only models the `frames=edit` catalog lists.
+
+| Job | Model (Venice id / fal id) | Source | What to send |
+|---|---|---|---|
+| Swap a person or character for one in an image (keeps lip sync, gestures, background) | MiniMax H3 Max Recast (`minimax-h3-max-recast` / `minimax/h3-max/recast`) | 5–30 s | `video_url`, `reference_image_urls` (one image per person, left to right), optional `prompt`, `resolution` `768P` or `1080P` |
+| Move a character from an image the way the person in the video moves | Kling V3 motion control (`kling-v3-standard-motion-control`, `kling-v3-pro-motion-control` / `fal-ai/kling-video/v3/standard/motion-control`) | 3–30 s | `video_url`, `image_url` (the character); Venice requires `prompt`; fal requires `character_orientation` (`video` to follow the video's poses, `image` to keep the image's) |
+| Change something by text (background, clothes, weather, style) | Kling v4 edit (fal `kling/v4/video-to-video/edit`), Wan 2.7 edit (`wan-2-7-video-to-video` / `fal-ai/wan/v2.7/edit-video`) | Kling 3–30 s; Wan 2–10 s | `video_url`, `prompt`; Kling names the source `@Video1` in the prompt |
+| Guide a new video with motion or style from clips | Seedance 2.5 reference (`seedance-2-5-reference-to-video-basic`) | as listed | `reference_video_urls`, not `video_url` |
+
+Notes:
+
+- **People only.** Recast and motion control replace or animate a real person in the source. A source without one (an animal, a cartoon, a product shot) comes back unchanged or fails, and a failure after the job started still costs the opening fee on a video above $1.00.
+- **Recast** needs no prompt; a short one helps when several people are in the video ("the man on the left becomes @Image1"). Venice refuses `seed` and `enhance_realism`; send only the listed `fields`. A clear, front-facing, well-lit image of each new person works best.
+- **Motion control** copies body movement, not the scene: the output's background and look come from the character image. On Venice it takes no `character_orientation` or `resolution`.
+- **Kling v4 edit** (fal) needs a source of at least 700x700, aspect ratio 0.4 to 2.5, 24 to 60 fps. On fal, Kling v4 edit and Wan 2.7 edit cut the output to `duration` when it is shorter than the source; on Venice, Wan needs `duration` equal to the source length, takes no reference images and no `audio`, and adds an audio track to the output.
+- **Motion control on fal** needs a source and a character image of at least 340x340.
+- For an edit prompt, say only what changes and what must stay ("Keep the dance and camera exactly; change the dancer's outfit to a red raincoat"). Do not describe the motion again.
+- Faces of real people: some upstreams refuse recognizable public figures. Use the user's own image or a stylized character.
+
 ## Frame prompts (for antseed-images)
 
 Ask for the video's aspect ratio when making frames. The frame's shape sets the video's shape whenever `aspect_ratio` is not sent ([requests.md](requests.md#aspect-ratio)). Image models often ignore the requested ratio, so crop every saved frame with `fit_frame` before the video step; this is the normal path, not a fallback. Keep the subject near the center of the frame prompt so the crop does not cut it off. A frame with the wrong shape is not reliably handled: some video models keep its shape and others reframe it.

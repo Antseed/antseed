@@ -1521,6 +1521,83 @@ test('native video resolves antseed and peer-pinned models like images', async (
   }
 })
 
+test('video edits route automatically only to sellers whose model takes the source video', async () => {
+  const peer = (seed: string, reputation: number, capabilities: Record<string, unknown>) => {
+    const p = makePeer(seed, ['fal'])
+    p.reputationScore = reputation
+    p.providerServiceApiProtocols = { fal: { services: { 'edit-model': ['fal-video'] } } }
+    p.providerServiceCapabilities = { fal: { services: { 'edit-model': { outputs: ['video'], ...capabilities } as any } } }
+    return p
+  }
+  const textOnly = peer('a', 95, { video: { inputs: ['first_frame'] }, supportedParameters: ['image_url', 'prompt'] })
+  const announcesInput = peer('b', 70, { video: { inputs: ['video', 'reference_image'] } })
+  const listsField = peer('c', 50, { supportedParameters: ['prompt', 'video_url'] })
+  const selected: string[] = []
+  const send = async (selectedPeer: PeerInfo, request: { requestId: string }) => {
+    selected.push(selectedPeer.peerId)
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ request_id: `job-${selected.length}` })) }
+  }
+  const create = (proxy: BuyerProxy, body: Record<string, unknown>) =>
+    invokeProxy(proxy, makeProxyRequest({ path: '/fal/v1/video/queue', body: { model: 'edit-model', prompt: 'swap the dancer', duration: 12, ...body } }))
+  const route = async (peers: PeerInfo[], body: Record<string, unknown>) => {
+    const proxy = makeBuyerProxyWithPeers(peers, peers, permissiveRouter())
+    ;(proxy as any)._persistResourceRoutes = async () => {}
+    ;(proxy as any)._node.sendRequest = send
+    return create(proxy, body)
+  }
+
+  selected.length = 0
+  assert.equal((await route([textOnly, announcesInput], { video_url: 'https://example.com/a.mp4' })).statusCode, 200)
+  assert.deepEqual(selected, [announcesInput.peerId])
+  selected.length = 0
+  assert.equal((await route([textOnly, listsField], { video_url: 'data:video/mp4;base64,AAAA' })).statusCode, 200)
+  assert.deepEqual(selected, [listsField.peerId])
+
+  // Without a source video the highest-reputation seller still wins.
+  selected.length = 0
+  assert.equal((await route([textOnly, announcesInput], {})).statusCode, 200)
+  assert.deepEqual(selected, [textOnly.peerId])
+
+  selected.length = 0
+  const refused = await route([textOnly], { video_url: 'https://example.com/a.mp4' })
+  assert.equal(refused.statusCode, 422)
+  assert.equal(JSON.parse(refused.body).error.code, 'required_capability_unavailable')
+  assert.match(JSON.parse(refused.body).error.message, /video input\(s\) this request sends: video/)
+  assert.deepEqual(selected, [])
+
+  // A pinned seller that announces its inputs without the source video is
+  // refused before payment; it would charge and then fail or ignore it.
+  selected.length = 0
+  const pinnedRefused = await route([textOnly], { model: `${textOnly.peerId}@edit-model`, video_url: 'https://example.com/a.mp4' })
+  assert.equal(pinnedRefused.statusCode, 422)
+  assert.equal(JSON.parse(pinnedRefused.body).error.code, 'required_capability_unavailable')
+  assert.match(JSON.parse(pinnedRefused.body).error.message, /Pinned seller's model "edit-model" does not take/)
+  assert.deepEqual(selected, [])
+
+  // A pinned seller that announces nothing stays the caller's choice; it answers for itself.
+  const silent = peer('d', 40, {})
+  selected.length = 0
+  assert.equal((await route([silent], { model: `${silent.peerId}@edit-model`, video_url: 'https://example.com/a.mp4' })).statusCode, 200)
+  assert.deepEqual(selected, [silent.peerId])
+  selected.length = 0
+  assert.equal((await route([announcesInput], { model: `${announcesInput.peerId}@edit-model`, video_url: 'https://example.com/a.mp4' })).statusCode, 200)
+  assert.deepEqual(selected, [announcesInput.peerId])
+})
+
+test('BuyerProxy passes a seller\'s own JSON 413 explanation through', () => {
+  const proxy = new BuyerProxy({ adaptiveRouting: { spreadTolerance: 0, explorationRate: 0 },
+    port: 0,
+    dataDir: '/tmp/antseed-test',
+    node: { router: null } as any,
+  })
+  for (const code of ['request_too_large', 'video_source_too_large']) {
+    const body = Buffer.from(JSON.stringify({ error: { code, message: 'This request is 40.1 MB; Venice accepts up to 32 MB.' } }))
+    const upstream = { requestId: 'req-413', statusCode: 413, headers: { 'content-type': 'application/json' }, body }
+    const passed = (proxy as any)._withFriendlyUploadLimitError(upstream, 40 * 1024 * 1024, 'minimax-h3-max-recast')
+    assert.equal(passed, upstream)
+  }
+})
+
 test('native video retrieves use the buyer identity that created the job', async () => {
   const peer = makePeer('a', ['venice'])
   peer.providerServiceApiProtocols = { venice: { services: { 'video-model': ['venice-video'] } } }
@@ -5589,6 +5666,19 @@ test('adaptPeerFaultErrorResponse leaves actionable request errors unchanged', (
 
   assert.equal(Buffer.from(response.body).toString('utf8'), body.toString('utf8'))
   assert.equal(response.headers[ANTSEED_FAULT_ATTRIBUTION_HEADER], 'peer')
+})
+
+test('adaptPeerFaultErrorResponse leaves a seller\'s video edit precheck refusals unchanged', () => {
+  for (const code of ['invalid_video_duration', 'invalid_video_source', 'video_source_too_large', 'missing_required_field', 'video_source_unavailable', 'video_check_busy', 'upstream_upload_timeout']) {
+    const body = Buffer.from(JSON.stringify({ error: { code, message: 'send "duration": 12' } }))
+    const response = adaptPeerFaultErrorResponse({
+      requestId: `req-${code}`,
+      statusCode: 400,
+      headers: { 'content-type': 'application/json' },
+      body,
+    }, 'fal-video')
+    assert.equal(Buffer.from(response.body).toString('utf8'), body.toString('utf8'))
+  }
 })
 
 test('adaptPeerFaultErrorResponse upgrades a generic wrapper for a pinned route', () => {

@@ -299,6 +299,9 @@ export class SellerRequestHandler {
       const videoRoute = nativeVideoRoute(request);
       if (videoRoute && this._handleVideoPrecheck(mux, request, videoRoute, buyerPeerId, unitBillingModel)) return;
       const isVideoRetrieve = videoRoute?.action === 'retrieve';
+      // The provider's own checks run before any payment, so a request it
+      // would refuse costs the buyer nothing (no free-tier use, no channel).
+      if (!isVideoRetrieve && provider.precheckRequest && await this._handleProviderPrecheck(mux, provider, request, buyerPeerId)) return;
       const isFreeService = isVideoRetrieve || isZeroTokenPricing(requestPricing)
         && (!unitBillingModel || isFreeUnitBillingModel(unitBillingModel));
       // A video retrieve is paid by its job's create, never by the free tier:
@@ -896,6 +899,32 @@ export class SellerRequestHandler {
     }
   }
 
+  /** Returns true when the provider's precheck answered the request. */
+  private async _handleProviderPrecheck(
+    mux: ProxyMux,
+    provider: Provider,
+    request: SerializedHttpRequest,
+    buyerPeerId: string,
+  ): Promise<boolean> {
+    let response: SerializedHttpResponse | null;
+    try {
+      response = await provider.precheckRequest!(request, { buyerPeerId: buyerPeerId.toLowerCase() });
+    } catch (err) {
+      debugWarn(`[SellerHandler] Provider precheck failed for ${request.requestId}: ${err instanceof Error ? err.message : err}`);
+      this._sendJsonError(mux, request.requestId, 503, 'precheck_unavailable', 'Seller could not check this request; try again');
+      return true;
+    }
+    if (!response) return false;
+    if (response.statusCode < 400 || response.statusCode === 402) {
+      // A precheck only refuses; a success or payment answer would skip billing.
+      debugWarn(`[SellerHandler] Ignoring provider precheck answer ${response.statusCode} for ${request.requestId}`);
+      return false;
+    }
+    debugLog(`[SellerHandler] Provider precheck refused ${request.requestId} with ${response.statusCode}`);
+    mux.sendProxyResponse({ ...response, requestId: request.requestId });
+    return true;
+  }
+
   /**
    * Charge a video once, when the buyer first receives the finished file. The
    * price is charged to the job's one-off channel; the buyer's SpendingAuth
@@ -1001,7 +1030,10 @@ export class SellerRequestHandler {
   private _closeFailedVideoJob(route: NativeVideoRoute, response: SerializedHttpResponse, buyerPeerId: string): void {
     if (!route.resourceId || response.streamedBody) return;
     const body = tryParseJsonObject(response.body);
-    const status = typeof body?.status === 'string' ? body.status.toUpperCase() : '';
+    let status = typeof body?.status === 'string' ? body.status.toUpperCase() : '';
+    // An upstream that refuses a rejected job with a JSON 400/422 (instead of a
+    // FAILED status) has also ended it. 429 and 5xx stay retryable.
+    if (body && (response.statusCode === 400 || response.statusCode === 422)) status = 'FAILED';
     if (status !== 'FAILED' && status !== 'ERROR' && status !== 'CANCELLED') return;
     try {
       const charge = this._deps.resourceOwnershipStore?.getPendingCharge(route.protocol, route.resourceId, buyerPeerId.toLowerCase());
