@@ -40,6 +40,8 @@ The data directory holds the wallet key (`identity.key`), buyer identities, gate
 | `--require-verifier` | Refuse to route unless a verifier verifies the seller. Default: verify but route anyway |
 | `--no-verifier` | Turn seller verification off |
 
+There is no `--host` flag: the buyer proxy always listens on `127.0.0.1`. To reach it from other machines, use a gateway; see [Reach it from other machines](/docs/api#reach-it-from-other-machines).
+
 Precedence for settings that have a flag, a variable and a config key: flag, then environment variable, then `config.json`, then the built-in default.
 
 Flags for every other command are listed on [CLI commands](/docs/commands) and in `antseed <command> --help`.

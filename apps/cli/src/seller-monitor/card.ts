@@ -10,9 +10,10 @@ export function cardPrice(value: number | null): string {
   return `$${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: value < 1 ? 3 : 2 })}`
 }
 
-/** "$0.02 / image", or "$0.02–$0.04 / image" when the price depends on size or quality. */
+/** "$0.02 / image", or "$0.02–$0.04 / image" when the price depends on size or quality; "Free" when every unit is. */
 export function unitPriceText(price: Pick<SellerUnitPrice, 'name' | 'minUsd' | 'maxUsd'>): string {
-  const range = price.minUsd === price.maxUsd ? cardPrice(price.minUsd) : `${cardPrice(price.minUsd)}–${cardPrice(price.maxUsd)}`
+  if (price.maxUsd === 0) return 'Free'
+  const range = price.minUsd === price.maxUsd ? cardPrice(price.minUsd) : `${price.minUsd === 0 ? '$0' : cardPrice(price.minUsd)}–${cardPrice(price.maxUsd)}`
   return `${range} / ${price.name}`
 }
 

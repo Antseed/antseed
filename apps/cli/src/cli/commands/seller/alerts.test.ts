@@ -556,3 +556,15 @@ test('a failed recovery is resent only to the chat that had the outage, not to o
   assert.deepEqual(sends.map((send) => send.chat), ['1', '1'], 'chat 2 never had the outage, so its recovery is not sent there');
   alerts.close();
 });
+
+test('a quiet recovery recorded right after its warning closes it in order, even while the warning is still being journaled', async () => {
+  const { alerts, calls } = harness({ telegram: { chatId: '42' }, cooldownMinutes: 30 });
+  const low = { kind: 'upstream_balance_low', severity: 'warning', title: 'deepinfra is running low on credit', providerId: 'deepinfra' } as const;
+  const superseded = { kind: 'upstream_balance_ok', severity: 'info', title: 'deepinfra ran out of credit', providerId: 'deepinfra' } as const;
+  // Not awaited in between, as UpstreamAlerts records them: the warning is journaled, the quiet close is not.
+  await Promise.all([alerts.record(low), alerts.record(superseded, { journal: false, quiet: true })]);
+  assert.equal(calls.length, 1, 'the warning went out');
+  await alerts.record({ kind: 'upstream_balance_ok', severity: 'info', title: 'deepinfra balance is back', providerId: 'deepinfra' });
+  assert.equal(calls.length, 1, 'the quiet close ran after the warning, so its incident is already closed: no second recovery');
+  alerts.close();
+});

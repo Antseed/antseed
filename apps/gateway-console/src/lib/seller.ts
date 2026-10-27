@@ -50,6 +50,7 @@ export function unitName(unit: string): string {
 
 /** "$0.02 / image", or "$0.02–$0.04 / image" when size or quality changes the price. */
 export function formatUnitPrice(price: Pick<SellerUnitPrice, 'name' | 'minUsd' | 'maxUsd'>): string {
+  if (price.maxUsd === 0) return 'Free'
   return `${formatPriceRange({ min: price.minUsd, max: price.maxUsd })} / ${price.name}`
 }
 

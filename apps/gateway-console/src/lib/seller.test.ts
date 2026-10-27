@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatEth, formatUtcDay, lastResult, sellerNotices, usageTotals, type AvailableSeller } from './seller'
+import { formatEth, formatUnitPrice, formatUtcDay, lastResult, sellerNotices, usageTotals, type AvailableSeller } from './seller'
 import { visibleNav } from './nav'
 
 const DAY = 86_400_000
@@ -277,3 +277,9 @@ describe('promote claims', async () => {
   })
 })
 
+describe('formatUnitPrice', () => {
+  it('shows a free unit offer as free, and a free minimum as $0', () => {
+    expect(formatUnitPrice({ name: 'image', minUsd: 0, maxUsd: 0 })).toBe('Free')
+    expect(formatUnitPrice({ name: 'image', minUsd: 0, maxUsd: 0.08 })).toMatch(/^\$0–.* \/ image$/)
+  })
+})
