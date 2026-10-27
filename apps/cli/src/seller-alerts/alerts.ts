@@ -131,19 +131,24 @@ export class SellerAlerts {
   async record(input: Omit<SellerEvent, 'at'> & { at?: number }, options: { journal?: boolean; notify?: boolean; update?: boolean; quiet?: boolean } = {}): Promise<void> {
     const event: SellerEvent = { ...input, at: input.at ?? this._now() };
     // `journal: false` for a summary of events already journaled one by one; `notify: false` for one a summary will announce.
-    if (options.journal !== false) await appendSellerEvent(this._opts.dataDir, event).catch((err) => this._opts.log?.(`seller events: ${(err as Error).message}`));
-    if (options.notify === false) return;
+    const journaled = options.journal !== false
+      ? appendSellerEvent(this._opts.dataDir, event).catch((err) => this._opts.log?.(`seller events: ${(err as Error).message}`))
+      : Promise.resolve();
+    if (options.notify === false) return journaled.then(() => {});
     const recovery = RECOVERY_OF[event.kind] !== undefined;
     const key = alertKey(RECOVERY_OF[event.kind] ?? event.kind, event);
     // A new outage makes a recovery still being resent stale; a recovery stops the alert's resends.
     this._release(recovery ? key : recoveryRetryKey(key));
-    await this._inIncident(key, () => {
+    // The event takes its place in its incident now, in the order it was recorded; the
+    // journal write it waits for inside must not let a later (say, quiet) recovery overtake it.
+    await this._inIncident(key, async () => {
+      await journaled;
       // Again in turn: a failure queued ahead of this recovery may have held an alert since,
       // and a recovery sending ahead of this outage may have scheduled a resend since.
       this._release(recovery ? key : recoveryRetryKey(key));
       if (recovery && options.quiet) {
         this._closeIncident(key);
-        return Promise.resolve();
+        return;
       }
       return this._deliver(event, key, recovery, options.update === true);
     });

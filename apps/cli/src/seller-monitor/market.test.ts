@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { fakeNetworkRows } from './fixture.js'
 import { blended, marketView, trustOfRow, trustRank, trustSteps } from './market.js'
+import { unitPriceOf } from './unit-price.js'
+import { unitPriceText } from './card.js'
 
 const ME = '0x5e11e5e11e5e11e5e11e5e11e5e11e5e11e5e11e'
 const meta = { source: 'test', refreshedAt: 1, refreshing: false, error: null, peers: 0 }
@@ -90,4 +92,17 @@ test('market: unit-billed models rank by their per-unit price, never by their ze
   // A model this seller does not sell shows its cheapest per-unit price, not "free".
   const other = marketView(rows.slice(1), ME, [], meta).notOffered[0]!
   assert.deepEqual([other.service, other.cheapestOutputUsdPerMillion, other.cheapestUnitPrice], ['qwen-image', 0, { unit: 'output_images', name: 'image', minUsd: 0.02, maxUsd: 0.02 }])
+})
+
+test('market: a free image offer is still priced per unit, and a mixed-price service shows its free minimum', () => {
+  const rows = [imageSeller(ME, 'Me', 0.04), imageSeller('0x' + 'a'.repeat(40), 'Free images', 0)]
+  const market = marketView(rows, ME, null, meta)
+  const service = market.services[0]!
+  assert.equal(service.unit, 'output_images')
+  assert.deepEqual([service.rank, service.of], [2, 2], 'the free offer is compared, and cheaper')
+  assert.equal(service.cheapest!.unitUsd, 0)
+  assert.deepEqual(unitPriceOf({ 'openai-images': { components: [{ unit: 'output_images', priceUsd: 0 }, { unit: 'output_images', priceUsd: 0.08 }] } }), { unit: 'output_images', name: 'image', minUsd: 0, maxUsd: 0.08 })
+  assert.equal(unitPriceOf({ 'openai-images': { components: [{ unit: 'output_images', priceUsd: -1 }] } }), null, 'a negative price is not a price')
+  assert.equal(unitPriceText({ name: 'image', minUsd: 0, maxUsd: 0 }), 'Free')
+  assert.equal(unitPriceText({ name: 'image', minUsd: 0, maxUsd: 0.08 }), '$0–$0.08 / image')
 })

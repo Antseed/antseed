@@ -9,7 +9,8 @@ const record = (value: unknown): Record<string, unknown> => (value && typeof val
 /**
  * The per-unit price of a service's unit-billing models (`{ [protocol]: { components } }`),
  * as written in config.json or announced in peer metadata: the cheapest and
- * dearest priced component of its main unit. Null when nothing is priced per unit.
+ * dearest component of its main unit. A free component ($0) counts: a free
+ * image or video offer is still priced per unit. Null when nothing is priced per unit.
  */
 export function unitPriceOf(models: unknown): SellerUnitPrice | null {
   const prices = new Map<string, number[]>()
@@ -18,7 +19,7 @@ export function unitPriceOf(models: unknown): SellerUnitPrice | null {
     if (!Array.isArray(components)) continue
     for (const component of components) {
       const { unit, priceUsd } = record(component)
-      if (typeof unit !== 'string' || typeof priceUsd !== 'number' || !Number.isFinite(priceUsd) || priceUsd <= 0) continue
+      if (typeof unit !== 'string' || typeof priceUsd !== 'number' || !Number.isFinite(priceUsd) || priceUsd < 0) continue
       prices.set(unit, [...(prices.get(unit) ?? []), priceUsd])
     }
   }
