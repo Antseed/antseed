@@ -16,11 +16,15 @@ For time series and your own monitoring stack, scrape [Metrics](/docs/provide/me
 
 ## Seller dashboard
 
+`antseed seller start` serves the dashboard on `127.0.0.1:3120` (another free port if that one is taken; set one with `--dashboard-port`). In a terminal it prints the link. The link carries a session token, so a seller running as a service only logs the address. To get the link, or to open the dashboard for a seller that is not running:
+
 ```bash
 antseed --data-dir ~/.antseed seller dashboard
 ```
 
-It opens a page with:
+It opens the running seller's dashboard, or serves one itself until you press Ctrl+C. On a remote server, tunnel the port with `ssh -L 3120:127.0.0.1:3120 <server>` and open the link locally. Start the seller with `--no-dashboard` to turn it off.
+
+The dashboard has:
 
 - **Status**: running or stopped, uptime, peer id and provider.
 - **Today**: requests, revenue, active channels and the gas balance.

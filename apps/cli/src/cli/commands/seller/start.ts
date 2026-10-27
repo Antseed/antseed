@@ -53,6 +53,9 @@ import { DEFAULT_LOW_BALANCE_USD, SellerAlerts } from '../../../seller-alerts/al
 import { UpstreamAlerts } from '../../../seller-alerts/upstream-alerts.js'
 import { ethToWei } from './gas.js'
 import { startIdleWatch, uncleanExitEvent, waitAtMost } from '../../../seller-alerts/lifecycle.js'
+import { startSellerDashboard, type SellerDashboardServer } from '../../../seller-monitor/dashboard-server.js'
+import { removeDashboardLink, writeDashboardLink } from '../../../seller-monitor/dashboard-link.js'
+import { DEFAULT_SELLER_DASHBOARD_PORT } from './dashboard.js'
 
 function getStateFile(dataDir: string): string {
   return join(dataDir, 'daemon.state.json')
@@ -450,6 +453,8 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
     .option('--min-settle-delta <usdc>', 'minimum unsettled delta (USDC decimal, e.g. 0.002) before idle settle submits a tx')
     .option('--base-rpc-url <url>', `runtime-only Base JSON-RPC URL override (also ${ANTSEED_BASE_RPC_URL_ENV})`)
     .option('--skip-prereq-check', 'skip pre-flight checks (services configured, on-chain registration + stake). Use only for local testing.')
+    .option('--no-dashboard', 'do not serve the local seller dashboard (on by default, 127.0.0.1 only)')
+    .option('--dashboard-port <port>', `seller dashboard port (default: ${DEFAULT_SELLER_DASHBOARD_PORT}; another free port if taken)`, parseInt)
     .option('--verifiers <ids>', `comma-separated verifier SDK ids this seller supports (first is default; also ${ANTSEED_VERIFIER_SDKS_ENV})`)
     .action(async (options) => {
       const globalOpts = getGlobalOptions(sellerCmd)
@@ -1181,6 +1186,26 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         }
       }
 
+      // The local dashboard, unless turned off. Its link carries a session token, so it is printed only to a
+      // terminal; a service's logs say how to get it (`antseed seller dashboard` reads it from the data dir).
+      let dashboard: SellerDashboardServer | null = null
+      if (options.dashboard !== false) {
+        const dashboardOptions = { dataDir: globalOpts.dataDir, configPath: resolveConfigPath(globalOpts.config), version: pkg.version, host: '127.0.0.1', log: (line: string) => console.log(chalk.dim(line)) }
+        const port = Number(options.dashboardPort) || DEFAULT_SELLER_DASHBOARD_PORT
+        try {
+          dashboard = await startSellerDashboard({ ...dashboardOptions, port }).catch((err: NodeJS.ErrnoException) => {
+            if (err.code !== 'EADDRINUSE' || options.dashboardPort) throw err
+            return startSellerDashboard({ ...dashboardOptions, port: 0 })
+          })
+          await writeDashboardLink(globalOpts.dataDir, dashboard.url)
+          const origin = new URL(dashboard.url).origin
+          if (process.stdout.isTTY) console.log(`  dashboard: ${chalk.cyan(dashboard.url)}`)
+          else console.log(`  dashboard: ${origin} (\`antseed seller dashboard\` on this host prints its link; --no-dashboard turns it off)`)
+        } catch (err) {
+          console.log(chalk.yellow(`  dashboard unavailable: ${(err as Error).message}`))
+        }
+      }
+
       const updateWatch = watchForUpdates({
         dataDir: globalOpts.dataDir,
         current: pkg.version,
@@ -1199,6 +1224,10 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         node.off('session:finalized', scheduleDaemonStateWrite)
         upstreamAlerts.close()
         alerts.close()
+        if (dashboard) {
+          await removeDashboardLink(globalOpts.dataDir)
+          await dashboard.close().catch(() => {})
+        }
         nodeSpinner.start('Shutting down seeding daemon...')
         try {
           await node.stop()

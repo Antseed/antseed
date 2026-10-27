@@ -6,18 +6,31 @@ import { getGlobalOptions } from '../types.js';
 import { resolveConfigPath } from '../../../config/loader.js';
 import { hasSeller } from '../../../seller-monitor/reader.js';
 import { startSellerDashboard } from '../../../seller-monitor/dashboard-server.js';
+import { runningDashboardLink } from '../../../seller-monitor/dashboard-link.js';
 
 export const DEFAULT_SELLER_DASHBOARD_PORT = 3120;
 
 export function registerSellerDashboardCommand(sellerCmd: Command): void {
   sellerCmd
     .command('dashboard')
-    .description('Open a local dashboard for this seller: status, model health, gas, earnings, events, settings and alerts')
+    .description('Open the local dashboard for this seller: status, model health, gas, earnings, events, settings and alerts. A running `seller start` already serves one; this opens it, or serves one itself')
     .option('-p, --port <port>', 'dashboard port', String(DEFAULT_SELLER_DASHBOARD_PORT))
     .option('--host <host>', 'listen address (keep 127.0.0.1 and use an SSH tunnel for a remote server)', '127.0.0.1')
     .option('--no-open', 'do not open the browser automatically')
     .action(async (options: { port: string; host: string; open: boolean }) => {
       const { dataDir, config } = getGlobalOptions(sellerCmd);
+      const running = runningDashboardLink(dataDir);
+      if (running) {
+        const port = new URL(running).port;
+        console.log('');
+        console.log(chalk.bold('Antseed seller dashboard (served by the running seller)'));
+        console.log(`  URL:      ${chalk.cyan(running)}`);
+        console.log(chalk.dim('  The URL carries a session token; anyone with it can see this seller\'s earnings and change its settings.'));
+        console.log(chalk.dim(`  On a remote server: ssh -L ${port}:127.0.0.1:${port} <server>, then open the URL above locally.`));
+        console.log('');
+        if (options.open) await openInBrowser(running);
+        return;
+      }
       if (!hasSeller(dataDir)) {
         console.log(chalk.yellow(`No seller has run with data dir ${dataDir} yet; the dashboard will fill in once \`${sellerCommand(sellerCmd, 'start')}\` runs there.`));
       }
@@ -33,14 +46,7 @@ export function registerSellerDashboardCommand(sellerCmd: Command): void {
         console.log(chalk.dim(`  On a remote server: ssh -L ${port}:127.0.0.1:${port} <server>, then open the URL above locally.`));
         console.log(chalk.dim('  Press Ctrl+C to stop.'));
         console.log('');
-        if (options.open) {
-          try {
-            const { default: open } = await import('open');
-            await open(server.url);
-          } catch {
-            console.log(chalk.yellow('Could not open a browser automatically; open the URL above manually.'));
-          }
-        }
+        if (options.open) await openInBrowser(server.url);
         const shutdown = async () => {
           await server.close();
           process.exit(0);
@@ -52,4 +58,13 @@ export function registerSellerDashboardCommand(sellerCmd: Command): void {
         process.exit(1);
       }
     });
+}
+
+async function openInBrowser(url: string): Promise<void> {
+  try {
+    const { default: open } = await import('open');
+    await open(url);
+  } catch {
+    console.log(chalk.yellow('Could not open a browser automatically; open the URL above manually.'));
+  }
 }
