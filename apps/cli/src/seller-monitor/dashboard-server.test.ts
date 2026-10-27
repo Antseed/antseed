@@ -182,3 +182,16 @@ test('two dashboards on one host keep their own sessions in a shared cookie jar'
     await second.server.close()
   }
 })
+
+test('closing the dashboard does not wait for a stalled request', async () => {
+  const { server, link } = await harness()
+  const socket = connect(Number(link.port), link.hostname)
+  await new Promise<void>((resolve) => socket.once('connect', () => resolve()))
+  // Half a request: the server waits for the rest.
+  socket.write('GET /console/api/auth/me HTTP/1.1\r\nHost: x\r\n')
+  socket.on('error', () => {})
+  const started = Date.now()
+  await server.close()
+  assert.ok(Date.now() - started < 1_000, 'closed without waiting for the stalled request')
+  socket.destroy()
+})

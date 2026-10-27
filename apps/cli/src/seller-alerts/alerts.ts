@@ -72,7 +72,7 @@ export class SellerAlerts {
    * Resends scheduled for alerts a channel failed to take, per incident: the
    * latest event, to the channels still missing it, cancelled by the recovery.
    */
-  private readonly _retries = new Map<string, { timer: NodeJS.Timeout; event: SellerEvent; incident: string; recovery: boolean; channels: Set<AlertChannel>; attempt: number }>();
+  private readonly _retries = new Map<string, { timer: NodeJS.Timeout; event: SellerEvent; incident: string; recovery: boolean; channels: Map<AlertChannel, string>; attempt: number }>();
   /**
    * Deliveries in flight per incident (`kind:provider/service` of the alert):
    * an alert, its repeats and its recovery go out one after another, so a
@@ -181,10 +181,12 @@ export class SellerAlerts {
   }
 
   /** `update`: news about an incident still open (it grew), sent where its alert went regardless of the cooldown. */
-  private async _deliver(event: SellerEvent, key: string, recovery: boolean, update = false, retry?: { channels: AlertChannel[]; attempt: number }): Promise<void> {
-    // A resend goes only to the channels that missed it, still configured.
+  private async _deliver(event: SellerEvent, key: string, recovery: boolean, update = false, retry?: { channels: Map<AlertChannel, string>; attempt: number }): Promise<void> {
+    const destinations = this._destinations();
+    // A resend goes only to the channels that missed it, still configured. A recovery
+    // goes only to the destination that missed it: a chat or webhook set up since never had the outage.
     const { channels, holdMs } = retry
-      ? { channels: retry.channels.filter((channel) => this._destinations()[channel] !== undefined), holdMs: null }
+      ? { channels: [...retry.channels].filter(([channel, destination]) => recovery ? destinations[channel] === destination : destinations[channel] !== undefined).map(([channel]) => channel), holdMs: null }
       : this._channelsFor(event, key, recovery, update);
     // A held alert goes out with the incident's latest news (say, more models withdrawn while it waited).
     const held = this._held.get(key);
@@ -201,7 +203,7 @@ export class SellerAlerts {
     // History is kept per destination, as of when the send started, so a changed chat or webhook starts fresh.
     const { sent, delivered } = await this._send(event, channels);
     const failed = channels.filter((channel) => !sent.includes(channel));
-    this._scheduleRetry(event, key, recovery, failed, sent as AlertChannel[], retry?.attempt ?? 0);
+    this._scheduleRetry(event, key, recovery, new Map(failed.map((channel) => [channel, destinations[channel]!])), sent as AlertChannel[], retry?.attempt ?? 0);
     // The incident is over whether or not its recovery got through, so the next outage is a new one (held by the cooldown, not dropped as a repeat).
     if (recovery) this._closeIncident(key);
     for (const destination of delivered) {
@@ -221,20 +223,20 @@ export class SellerAlerts {
    * that failed: resend it with backoff to the channels that missed it. A
    * newer event for the same incident replaces the pending one.
    */
-  private _scheduleRetry(event: SellerEvent, incident: string, recovery: boolean, failed: AlertChannel[], sent: AlertChannel[], attempt: number): void {
+  private _scheduleRetry(event: SellerEvent, incident: string, recovery: boolean, failed: Map<AlertChannel, string>, sent: AlertChannel[], attempt: number): void {
     const retryKey = recovery ? recoveryRetryKey(incident) : incident;
     const pending = this._retries.get(retryKey);
     if (pending) {
       for (const channel of sent) pending.channels.delete(channel);
-      for (const channel of failed) pending.channels.add(channel);
+      for (const [channel, destination] of failed) pending.channels.set(channel, destination);
       pending.event = event;
       if (pending.channels.size === 0) this._release(retryKey);
       return;
     }
-    if (failed.length === 0 || attempt >= MAX_RETRIES) return;
-    const entry = { event, incident, recovery, channels: new Set(failed), attempt, timer: setTimeout(() => {
+    if (failed.size === 0 || attempt >= MAX_RETRIES) return;
+    const entry = { event, incident, recovery, channels: new Map(failed), attempt, timer: setTimeout(() => {
       this._retries.delete(retryKey);
-      void this._inIncident(incident, () => this._deliver(entry.event, incident, recovery, false, { channels: [...entry.channels], attempt: entry.attempt + 1 })).catch(() => {});
+      void this._inIncident(incident, () => this._deliver(entry.event, incident, recovery, false, { channels: new Map(entry.channels), attempt: entry.attempt + 1 })).catch(() => {});
     }, Math.min((this._opts.retryMs ?? 30_000) * 2 ** attempt, MAX_RETRY_MS)) };
     entry.timer.unref?.();
     this._retries.set(retryKey, entry);

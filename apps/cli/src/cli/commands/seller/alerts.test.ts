@@ -528,3 +528,31 @@ test('malformed fields in the hand-editable overrides file are ignored', async (
   const merged = applyAlertOverrides({ minSeverity: 'warning', lowBalanceUsd: 5 }, { minSeverity: 'warn' as never, lowBalanceUsd: 'ten' as never, idleMinutes: 15 });
   assert.deepEqual([merged.minSeverity, merged.lowBalanceUsd, merged.idleMinutes], ['warning', 5, 15]);
 });
+
+test('a failed recovery is resent only to the chat that had the outage, not to one set up since', async () => {
+  const { writeFileSync } = await import('node:fs');
+  const dataDir = mkdtempSync(join(tmpdir(), 'seller-alerts-'));
+  const configPath = join(dataDir, 'config.json');
+  const sends: Array<{ chat: unknown; title: string }> = [];
+  let failing = false;
+  let now = 0;
+  writeFileSync(configPath, JSON.stringify({ seller: { alerts: { telegram: { chatId: '1' }, cooldownMinutes: 30 } } }));
+  const alerts = new SellerAlerts({
+    dataDir, configPath, sellerName: 'S', env: { ANTSEED_ALERTS_TELEGRAM_TOKEN: 't' }, retryMs: 5, now: () => now,
+    fetch: (async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      sends.push({ chat: body.chat_id, title: String(body.text) });
+      return new Response('{}', { status: failing ? 500 : 200 });
+    }) as typeof fetch,
+  });
+  await alerts.record(down);
+  failing = true;
+  await alerts.record(up);
+  failing = false;
+  writeFileSync(configPath, JSON.stringify({ seller: { alerts: { telegram: { chatId: '2' }, cooldownMinutes: 30 } } }));
+  now += 3_000;
+  assert.equal(alerts.settings.telegram?.chatId, '2');
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.deepEqual(sends.map((send) => send.chat), ['1', '1'], 'chat 2 never had the outage, so its recovery is not sent there');
+  alerts.close();
+});

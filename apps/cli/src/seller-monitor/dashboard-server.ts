@@ -160,6 +160,11 @@ export async function startSellerDashboard(options: SellerDashboardOptions): Pro
   const shownHost = host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host
   return {
     url: `http://${shownHost.includes(':') ? `[${shownHost}]` : shownHost}:${port}/console/seller#seller-token=${token}`,
-    close: () => new Promise((resolve) => server.close(() => resolve())),
+    close: () => {
+      // Stop listening and drop open connections, so a stalled request never holds up the caller (a stopping seller).
+      const closed = new Promise<void>((resolve) => server.close(() => resolve()))
+      server.closeAllConnections()
+      return closed
+    },
   }
 }

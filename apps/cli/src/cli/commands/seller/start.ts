@@ -1225,8 +1225,8 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         upstreamAlerts.close()
         alerts.close()
         if (dashboard) {
-          await removeDashboardLink(globalOpts.dataDir)
-          await dashboard.close().catch(() => {})
+          // Never long: channels are finalized next, and a dashboard request must not hold that up.
+          await waitAtMost(removeDashboardLink(globalOpts.dataDir).then(() => dashboard!.close()), 2_000)
         }
         nodeSpinner.start('Shutting down seeding daemon...')
         try {
