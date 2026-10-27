@@ -106,6 +106,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- `@antseed/provider-openai-responses`: prompt caching works on the Codex backend. The backend reuses a conversation's prompt cache only when the request carries a `session_id` header, so a buyer's `prompt_cache_key` alone got no cache hits; the provider now sends the key as `session_id` as well (a client's own `session_id` header is kept). Long agent conversations get most of their input billed at the cached price again.
 - Sellers: a model withdrawn after failing health checks now keeps its real upstream error. With several upstreams on the same provider plugin (for example four OpenAI-compatible upstreams), the health checker also probed a withdrawn model through the other upstreams, which refused it, so its last error read "not in the allowed list" instead of the upstream's reason.
 - `antseed seller status`: **Earnings today** and **Tokens today** come from the metering ledger; they always showed $0.00 and 0.
 - Sellers: a `seller.gasCheck.minBalanceEth` below 0.000001 ETH (written as `1e-7` in JavaScript) no longer stops `antseed seller start` with "invalid FixedNumber string value".
