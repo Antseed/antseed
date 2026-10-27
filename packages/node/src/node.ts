@@ -109,7 +109,7 @@ import { SellerAddressResolver } from "./discovery/seller-address-resolver.js";
 import { SellerPoolsClient } from "./payments/evm/seller-pools-client.js";
 import { FreeTierStakeResolver } from "./payments/free-tier-stake-resolver.js";
 import { encodeFreeTierDelegationsHeader, type FreeTierDelegation } from "./payments/free-tier-delegation.js";
-import { Contract as EthersContract } from "ethers";
+import { Contract as EthersContract, type AbstractProvider } from "ethers";
 import { SellerPaymentManager, type SellerPaymentConfig } from "./payments/seller-payment-manager.js";
 import { IdentityClient } from "./payments/evm/identity-client.js";
 import { SellerRequestHandler, assertSingleRoutingService } from "./seller-request-handler.js";
@@ -227,6 +227,12 @@ export interface NodePaymentsConfig {
   rpcUrl?: string;
   /** Additional RPC endpoints for transparent failover via ethers FallbackProvider (quorum=1). */
   fallbackRpcUrls?: string[];
+  /**
+   * A provider the host shares for read-only chain calls (discovery's on-chain
+   * peer enrichment): e.g. one that batches into Multicall3 and backs off on
+   * 429s. Transactions always use the payment clients' own providers.
+   */
+  readProvider?: AbstractProvider;
   /** Deployed AntseedDeposits contract address */
   depositsAddress?: string;
   /** Deployed AntseedChannels contract address */
@@ -343,6 +349,11 @@ export interface NodeConfig {
   verification?: NodeVerificationConfig;
   /** Pluggable identity storage backend. When set, takes precedence over dataDir for identity loading. */
   identityStore?: IdentityStore;
+  /**
+   * An identity to use as is, ahead of the environment's and the stored one
+   * (e.g. a throwaway key for a short-lived discovery node).
+   */
+  identity?: Identity;
   /** Optional explicit config.json path for runtime config reloads. */
   configPath?: string;
   /**
@@ -467,6 +478,8 @@ export class AntseedNode extends EventEmitter {
   private _buyerIdentities = new Map<string, BuyerIdentityContext>();
   /** Seller-side deposit-sweep relayer (initialized when configured + enabled). */
   private _depositRelayer: DepositRelayer | null = null;
+  /** Settles or closes a buyer's channel when its metering session goes idle; removed on stop. */
+  private _settleOnIdle: ((info: { buyerPeerId: string; reason: string }) => void) | null = null;
   /** Seller-side request handler (provider matching, execution, load tracking). */
   private _sellerHandler: SellerRequestHandler | null = null;
   /** Buyer-side payment manager (initialized when buyer has payment config). */
@@ -677,7 +690,7 @@ export class AntseedNode extends EventEmitter {
     const dataDir = this._config.dataDir ?? join(homedir(), ".antseed");
 
     // Load or create identity
-    this._identity = await loadOrCreateIdentity(this._config.identityStore ?? dataDir);
+    this._identity = this._config.identity ?? await loadOrCreateIdentity(this._config.identityStore ?? dataDir);
     debugLog(`[Node] Identity loaded: ${this._identity.peerId.slice(0, 12)}...`);
 
     // Determine bootstrap nodes — merge official + any user-configured nodes unless
@@ -689,10 +702,20 @@ export class AntseedNode extends EventEmitter {
     );
     debugLog(`[Node] Starting as ${this._config.role} with ${bootstrapNodes.length} bootstrap node(s)`);
 
-    if (this._config.role === "seller") {
-      await this._startSeller(bootstrapNodes);
-    } else {
-      await this._startBuyer(bootstrapNodes);
+    try {
+      if (this._config.role === "seller") {
+        await this._startSeller(bootstrapNodes);
+      } else {
+        await this._startBuyer(bootstrapNodes);
+      }
+    } catch (error) {
+      // A start that fails partway (say the DHT after the payment store and
+      // RPC monitor) releases what it opened, so a retry starts clean.
+      this._started = true;
+      await this.stop().catch((err: unknown) => {
+        debugWarn(`[Node] Cleanup after a failed start failed: ${err instanceof Error ? err.message : err}`);
+      });
+      throw error;
     }
 
     this._started = true;
@@ -851,6 +874,12 @@ export class AntseedNode extends EventEmitter {
     this._buyerHandler = null;
     this._backgroundPeerDiscoveryPromise = null;
     this._sellerPaymentManager = null;
+    if (this._settleOnIdle) {
+      this.off("session:finalized", this._settleOnIdle);
+      this._settleOnIdle = null;
+    }
+    this._depositRelayer = null;
+    this._advertisingPausedReason = null;
     this._sessionTracker = null;
     this._started = false;
     this.emit("stopped");
@@ -1894,7 +1923,7 @@ export class AntseedNode extends EventEmitter {
     // Wire idle session events to on-chain settlement
     if (this._sellerPaymentManager) {
       const spm = this._sellerPaymentManager;
-      this.on("session:finalized", (info: { buyerPeerId: string; reason: string }) => {
+      this._settleOnIdle = (info: { buyerPeerId: string; reason: string }) => {
         if (info.reason === "idle-settle") {
           debugLog(`[Node] Idle settle for buyer ${info.buyerPeerId.slice(0, 12)}... — settling channel (keeping open)`);
           void spm.settleSession(info.buyerPeerId, { settleOnly: true });
@@ -1902,7 +1931,8 @@ export class AntseedNode extends EventEmitter {
           debugLog(`[Node] Idle timeout for buyer ${info.buyerPeerId.slice(0, 12)}... — closing channel`);
           void spm.settleSession(info.buyerPeerId, { cleanupOnFailure: true });
         }
-      });
+      };
+      this.on("session:finalized", this._settleOnIdle);
     }
 
     // Start DHT
@@ -2321,7 +2351,7 @@ export class AntseedNode extends EventEmitter {
             sellerContracts.delete(sellerContract);
             sellerContracts.set(sellerContract, contract);
           } else {
-            contract = new EthersContract(sellerContract, isOperatorAbi, channelsClientRef!.provider);
+            contract = new EthersContract(sellerContract, isOperatorAbi, payments.readProvider ?? channelsClientRef!.provider);
             if (sellerContracts.size >= SELLER_CONTRACTS_MAX) {
               const oldest = sellerContracts.keys().next().value;
               if (oldest !== undefined) sellerContracts.delete(oldest);
@@ -2381,7 +2411,7 @@ export class AntseedNode extends EventEmitter {
       debugLog(`[Node] StakingClient initialized (contract=${payments.stakingAddress.slice(0, 10)}...)`);
     }
     if (this._channelsClient && payments.stakingAddress && payments.channelsAddress) {
-      this._trustSignalsClient = new TrustSignalsClient(this._channelsClient.provider, {
+      this._trustSignalsClient = new TrustSignalsClient(payments.readProvider ?? this._channelsClient.provider, {
         sellerRegistry: payments.stakingAddress,
         channels: payments.channelsAddress,
         ...(payments.sellerPoolsAddress ? { sellerPools: payments.sellerPoolsAddress } : {}),

@@ -140,8 +140,11 @@ export function registerBuyerFreeTierCommands(buyerCmd: Command): void {
           const { requireCryptoConfig } = await import('../../payment-utils.js');
           const { AntsContext, freeTierStake } = await import('@antseed/ants');
           const { ZeroAddress } = await import('ethers');
-          const ctx = new AntsContext({ chain: requireCryptoConfig(config), address: ZeroAddress });
-          const active = entries.filter((entry) => !entry.expired).map(({ staker, expiresAt }) => ({ staker, expiresAt }));
+          const { verifyFreeTierDelegations } = await import('@antseed/node');
+          const chain = requireCryptoConfig(config);
+          const ctx = new AntsContext({ chain, address: ZeroAddress });
+          // Only codes sellers on this network accept: signed for its chain, for this buyer, not expired.
+          const active = verifyFreeTierDelegations(entries, buyer.address, chain.evmChainId);
           const view = await freeTierStake(ctx, buyer.address, active);
           if (view.pools.length === 0) {
             console.log(chalk.dim('No stake counts yet: neither this buyer nor its stakers have stake in a seller pool.'));

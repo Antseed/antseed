@@ -1,6 +1,6 @@
 import { realpath } from 'node:fs/promises';
 import { ipcMain } from 'electron';
-import { acceptFreeTierDelegationCode, withFileLock, withFreeTierDelegation, type FreeTierDelegation } from '@antseed/node';
+import { acceptFreeTierDelegationCode, verifyFreeTierDelegations, withFileLock, withFreeTierDelegation, type FreeTierDelegation } from '@antseed/node';
 import type { FreeTierStakeView } from '@antseed/node/free-tier-program';
 import { freeTierStake } from '@antseed/ants/service';
 import { sharedChainContext } from '../payments/shared-chain.js';
@@ -69,9 +69,13 @@ export function registerFreeTierIpc(): void {
   // The stake those codes and this buyer's own positions bring, by seller pool, read live from the chain.
   handle('freeTier:stake', async (): Promise<FreeTierStakeView & { buyer: string }> => {
     const config = await readConfig(ACTIVE_CONFIG_PATH);
-    const sharing = sharingFor(await buyerAddress(), savedDelegations(config));
-    const context = await sharedChainContext(resolveStakingChain(config));
-    return { buyer: sharing.buyer, ...await freeTierStake(context, sharing.buyer, sharing.stakers.filter((entry) => !entry.expired)) };
+    const buyer = await buyerAddress();
+    const chain = resolveStakingChain(config);
+    // Only codes sellers on this network accept: signed for its chain, for this buyer, not expired.
+    // Filter to this buyer first: the verifier reads at most 8 entries, and other identities' codes share the file.
+    const mine = savedDelegations(config).filter((delegation) => delegation.buyer.toLowerCase() === buyer.toLowerCase());
+    const stakers = verifyFreeTierDelegations(mine, buyer, chain.evmChainId);
+    return { buyer, ...await freeTierStake(await sharedChainContext(chain), buyer, stakers) };
   });
 
   handle('freeTier:add', async (code) => {

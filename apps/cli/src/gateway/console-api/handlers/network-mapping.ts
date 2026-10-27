@@ -11,7 +11,8 @@ import { parseRouteSelection } from '../../../proxy/route-selection.js'
 
 type Row = Record<string, unknown>
 
-function rows(value: unknown): Row[] {
+/** Objects of a JSON array (the buyer's peer rows). */
+export function rows(value: unknown): Row[] {
   return Array.isArray(value) ? value.filter((row): row is Row => !!row && typeof row === 'object' && !Array.isArray(row)) : []
 }
 

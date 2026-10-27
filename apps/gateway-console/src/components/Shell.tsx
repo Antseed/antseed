@@ -5,10 +5,10 @@ import { api } from '../api'
 import { useConsole } from '../app/context'
 import { useTheme, type ThemeChoice } from '../app/theme'
 import { pointsUrl } from '../config'
-import { isWorkspaceAdmin, ROLE_LABELS, visibleNav, type PageId } from '../lib/nav'
+import { isOrgAdmin, isWorkspaceAdmin, ROLE_LABELS, visibleNav, type PageId } from '../lib/nav'
 import { href, linkHandler, navigate, useLocation } from '../lib/router'
 import { useWalletAttention } from '../lib/attention'
-import { useStatus, useWallet } from '../lib/queries'
+import { useSellerStatus, useStatus, useWallet } from '../lib/queries'
 import { startTour, tourSeen } from '../lib/tour'
 import { AccountModal } from './AccountModal'
 import { ExposureBanner } from './ExposureBanner'
@@ -16,7 +16,9 @@ import { UpdateNotice } from './UpdatePanel'
 import { GatewayEndpoint } from './GatewayEndpoint'
 import { Icon } from './icons'
 
-const DOCS_URL = 'https://antseed.com/docs/gateway'
+export const DOCS_URL = 'https://antseed.com/docs/gateway'
+/** The seller dashboard links to the seller's monitoring guide. */
+export const SELLER_DOCS_URL = 'https://antseed.com/docs/provide/monitoring'
 
 /** `/console/migrate`: reached from the reachability banner, not the nav. */
 const MigratePage = lazy(() => import('../pages/Migrate'))
@@ -79,7 +81,8 @@ function navAttention(id: PageId, attention: ReturnType<typeof useWalletAttentio
 function Nav({ current, onNavigate }: { current: PageId | null; onNavigate?: () => void }) {
   const { viewer } = useConsole()
   const attention = useWalletAttention()
-  const items = visibleNav(viewer)
+  const seller = useSellerStatus(isOrgAdmin(viewer))
+  const items = visibleNav(viewer, { hasSeller: seller.data?.available === true })
   const groups = [...new Set(items.map((item) => item.group))]
   return (
     <nav className="gc-nav" aria-label="Console">

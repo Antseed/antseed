@@ -1,0 +1,57 @@
+/* Seller page. Calm notices (amber dot + one line) and a plain event list; monochrome. */
+
+.gc-seller-notices { display: flex; flex-direction: column; gap: 0.375rem; margin-top: -0.75rem; }
+.gc-seller-notice {
+  display: flex; align-items: baseline; gap: 0.5rem; margin: 0;
+  color: var(--as-text-secondary); font-size: 0.8125rem; line-height: 1.45;
+  .gc-attention { transform: translateY(-1px); }
+}
+
+.gc-seller-events { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.gc-seller-event {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: baseline; gap: 0.625rem;
+  padding: 0.5rem 0; border-top: 1px solid var(--as-border);
+  &:first-child { border-top: 0; padding-top: 0; }
+  .gc-attention { transform: translateY(-1px); }
+}
+.gc-seller-event__dot { width: 0.4375rem; height: 0.4375rem; border-radius: 999px; background: var(--as-text-muted); opacity: 0.5; transform: translateY(-1px); }
+.gc-seller-event__title { font-size: 0.8125rem; color: var(--as-text-primary); }
+.gc-seller-event__detail { font-size: 0.75rem; overflow-wrap: anywhere; }
+.gc-seller-event__time { font-size: 0.75rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+/* Settings and alerts editors. */
+.gc-seller-price {
+  display: grid; grid-template-columns: minmax(8rem, 1.4fr) repeat(3, minmax(6rem, 1fr)); gap: 0.75rem; align-items: end;
+  padding: 0.5rem 0; border-top: 1px solid var(--as-border);
+  &:first-of-type { border-top: 0; }
+  > .as-field { min-width: 0; }
+  /* Price inputs fill their grid column instead of the fixed number-field width, so a phone row fits. */
+  > .gc-num { width: auto; }
+}
+.gc-seller-price__unit { grid-column: 2 / -1; display: flex; flex-direction: column; gap: 0.125rem; padding-bottom: 0.375rem; font-size: 0.8125rem; }
+.gc-seller-price__free { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 0.5rem; }
+.gc-seller-price__name { display: flex; flex-direction: column; gap: 0.125rem; min-width: 0; padding-bottom: 0.375rem; font-size: 0.8125rem; }
+@media (max-width: 720px) { .gc-seller-price { grid-template-columns: repeat(3, minmax(0, 1fr)); .gc-seller-price__name { grid-column: 1 / -1; } } }
+
+.gc-seller-secret { display: flex; align-items: baseline; gap: 0.75rem; flex-wrap: wrap; }
+.gc-seller-inline-button { align-self: flex-end; }
+
+.gc-seller-chats { display: flex; flex-direction: column; border: 1px solid var(--as-border); border-radius: 0.5rem; overflow: hidden; }
+.gc-seller-chat {
+  display: flex; justify-content: space-between; gap: 0.75rem; padding: 0.5rem 0.75rem; border: 0; border-top: 1px solid var(--as-border);
+  background: none; color: var(--as-text-primary); font: inherit; font-size: 0.8125rem; text-align: left; cursor: pointer;
+  &:first-child { border-top: 0; }
+  &:hover { background: var(--as-bg-hover); }
+}
+.gc-seller-chat--on { font-weight: 600; }
+.gc-seller-test { align-items: center; }
+
+/* Market, reputation and promote. */
+.gc-seller-network { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-top: -0.75rem; }
+.gc-seller-steps { margin: 0; padding-left: 1.1rem; display: flex; flex-direction: column; gap: 0.5rem; font-size: 0.8125rem; color: var(--as-text-secondary); li::marker { color: var(--as-text-muted); } }
+.gc-seller-delta--up { color: var(--as-text-primary); }
+.gc-seller-card { display: flex; flex-direction: column; gap: 0.75rem; align-items: flex-start; img { max-width: 100%; height: auto; border-radius: 0.75rem; border: 1px solid var(--as-border); } }
+.gc-seller-claim { display: flex; flex-direction: column; gap: 0.5rem; padding: 0.75rem 0; border-top: 1px solid var(--as-border); &:first-child { border-top: 0; padding-top: 0; } }
+.gc-seller-claim__head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; font-size: 0.875rem; }
+.gc-seller-row--mine td { font-weight: 600; }
+.gc-seller-wrap { overflow-wrap: anywhere; min-width: 0; }

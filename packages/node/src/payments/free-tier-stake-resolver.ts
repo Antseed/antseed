@@ -1,4 +1,5 @@
 import { debugWarn } from '../utils/debug.js';
+import { MAX_FREE_TIER_COUNTED_POSITIONS } from './free-tier-stake.js';
 
 /** A seller-pool position and its staking power at the current epoch. */
 export interface FreeTierStakePosition {
@@ -51,7 +52,7 @@ interface CacheEntry<T> {
 }
 
 /** Most positions one request is counted on; the strongest positions come first. */
-export const MAX_FREE_TIER_COUNTED_POSITIONS = 64;
+export { MAX_FREE_TIER_COUNTED_POSITIONS };
 
 /**
  * Resolves a buyer's staked standing on this seller.

@@ -224,6 +224,20 @@ describe('ChannelStore', () => {
     expect(store.listAllChannels(100, CHANNEL_KIND.FREE)).toHaveLength(1);
   });
 
+  it('sums seller totals per status over the whole history, kinds asked for only, without the buyer role', () => {
+    const seller = (n: number, extra: Partial<StoredChannel>) => makeChannel({ sessionId: '0x' + n.toString(16).padStart(64, '0'), role: CHANNEL_ROLE.SELLER, ...extra });
+    for (let n = 1; n <= 150; n++) store.upsertChannel(seller(n, { status: CHANNEL_STATUS.SETTLED, tokensDelivered: '10', settledAmount: '8' }));
+    store.upsertChannel(seller(200, { channelKind: CHANNEL_KIND.ONE_OFF, oneOffRequestId: 'video', tokensDelivered: '5' }));
+    store.upsertChannel(seller(201, { channelKind: CHANNEL_KIND.FREE, tokensDelivered: '99' }));
+    store.upsertChannel(makeChannel({ sessionId: '0x' + 'ff'.repeat(32), tokensDelivered: '1000', settledAmount: '1000', status: CHANNEL_STATUS.SETTLED }));
+
+    const totals = store.getRoleTotalsByStatus(CHANNEL_ROLE.SELLER, [CHANNEL_KIND.PAID, CHANNEL_KIND.ONE_OFF]);
+    expect(totals.sort((a, b) => a.status.localeCompare(b.status))).toEqual([
+      { status: CHANNEL_STATUS.ACTIVE, count: 1, tokensDelivered: 5n, settledAmount: 0n },
+      { status: CHANNEL_STATUS.SETTLED, count: 150, tokensDelivered: 1500n, settledAmount: 1200n },
+    ]);
+  });
+
   it('keeps one-off channels out of the session lookup and finds them by request', () => {
     const paid = makeChannel({ sessionId: '0x' + '30'.repeat(32), channelKind: CHANNEL_KIND.PAID, createdAt: Date.now() - 1000 });
     const videoA = makeChannel({ sessionId: '0x' + '40'.repeat(32), channelKind: CHANNEL_KIND.ONE_OFF, oneOffRequestId: 'video-a', createdAt: Date.now() });

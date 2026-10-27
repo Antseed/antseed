@@ -1,13 +1,13 @@
 import type { Command } from 'commander'
 import chalk from 'chalk'
 import ora from 'ora'
-import { writeFile, unlink } from 'node:fs/promises'
+import { readFile, writeFile, unlink } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { join, resolve, isAbsolute, dirname } from 'node:path'
 import { getGlobalOptions } from '../types.js'
 import pkg from '../../../../package.json' with { type: 'json' }
 import { watchForUpdates } from '../../../update/watch.js'
-import { loadConfig } from '../../../config/loader.js'
+import { loadConfig, resolveConfigPath } from '../../../config/loader.js'
 import { DEFAULT_RESTRICTED_COUNTRIES } from '../../../config/defaults.js'
 import {
   AntseedNode,
@@ -20,7 +20,6 @@ import {
   DEFAULT_MIN_GAS_BALANCE_WEI,
   SellerFreeTierLimiter,
   formatEther,
-  parseEther,
   type Provider,
   type Prover,
   type ConfigField,
@@ -33,6 +32,7 @@ import {
   ANTSEED_BASE_RPC_URL_ENV,
   createIdentityClient,
   createStakingClient,
+  requireCryptoConfig,
   resolveBaseRpcUrlOverride,
 } from '../../payment-utils.js'
 import type { AntseedConfig, SellerCLIConfig, SellerProviderConfig } from '../../../config/types.js'
@@ -47,9 +47,31 @@ import { AntAgentProvider, loadAntAgent, type AntAgentDefinition } from '@antsee
 import { resolvePluginPackage } from '../../../plugins/registry.js'
 import { startupReachabilityWarning } from './reachability.js'
 import { initializeProvider } from './provider-init.js'
+import { sharedChainProvider } from '../../../proxy/chain-rpc.js'
+import { rpcUsage, withRpcSource } from '../../../proxy/rpc-sources.js'
+import { DEFAULT_LOW_BALANCE_USD, SellerAlerts } from '../../../seller-alerts/alerts.js'
+import { UpstreamAlerts } from '../../../seller-alerts/upstream-alerts.js'
+import { ethToWei } from './gas.js'
+import { startIdleWatch, uncleanExitEvent, waitAtMost } from '../../../seller-alerts/lifecycle.js'
+import { startSellerDashboard, type SellerDashboardServer } from '../../../seller-monitor/dashboard-server.js'
+import { removeDashboardLink, writeDashboardLink } from '../../../seller-monitor/dashboard-link.js'
+import { DEFAULT_SELLER_DASHBOARD_PORT } from './dashboard.js'
 
 function getStateFile(dataDir: string): string {
   return join(dataDir, 'daemon.state.json')
+}
+
+/** The gas monitor's last reading for daemon.state.json, in ETH (bigint is not JSON). */
+export function gasHealthState(monitor: Pick<GasHealthMonitor, 'getSnapshot'> | null) {
+  if (!monitor) return null
+  const snapshot = monitor.getSnapshot()
+  return {
+    address: snapshot.address,
+    depleted: snapshot.depleted,
+    balanceEth: snapshot.lastBalanceWei === null ? null : Number(formatEther(snapshot.lastBalanceWei)),
+    minBalanceEth: Number(formatEther(snapshot.minBalanceWei)),
+    lastCheckedAt: snapshot.lastCheckedAt,
+  }
 }
 
 export function selectSellerProviderNames(
@@ -431,6 +453,8 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
     .option('--min-settle-delta <usdc>', 'minimum unsettled delta (USDC decimal, e.g. 0.002) before idle settle submits a tx')
     .option('--base-rpc-url <url>', `runtime-only Base JSON-RPC URL override (also ${ANTSEED_BASE_RPC_URL_ENV})`)
     .option('--skip-prereq-check', 'skip pre-flight checks (services configured, on-chain registration + stake). Use only for local testing.')
+    .option('--no-dashboard', 'do not serve the local seller dashboard (on by default, 127.0.0.1 only)')
+    .option('--dashboard-port <port>', `seller dashboard port (default: ${DEFAULT_SELLER_DASHBOARD_PORT}; another free port if taken)`, parseInt)
     .option('--verifiers <ids>', `comma-separated verifier SDK ids this seller supports (first is default; also ${ANTSEED_VERIFIER_SDKS_ENV})`)
     .action(async (options) => {
       const globalOpts = getGlobalOptions(sellerCmd)
@@ -651,7 +675,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       const gasCheckEnabled = paymentsEnabled && Boolean(config.payments.crypto) && gasCheckCfg?.enabled !== false
       const gasCheckIntervalMs = gasCheckCfg?.intervalMs ?? DEFAULT_GAS_CHECK_INTERVAL_MS
       const minGasBalanceWei = gasCheckCfg?.minBalanceEth !== undefined
-        ? parseEther(String(gasCheckCfg.minBalanceEth))
+        ? ethToWei(gasCheckCfg.minBalanceEth)
         : DEFAULT_MIN_GAS_BALANCE_WEI
 
       console.log(chalk.bold('Effective seller settings:'))
@@ -889,6 +913,29 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       // would generate and charge for media. Providers check them with free
       // account and model-list calls instead (checkUpstreamAccount,
       // checkServiceHealth).
+      // Seller events: journaled to <dataDir>/seller-events.jsonl for the dashboard,
+      // and sent to the channels in seller.alerts (if any).
+      const alerts = new SellerAlerts({
+        dataDir: globalOpts.dataDir,
+        // Re-read on change: alert edits (dashboard, console, by hand) apply without a restart.
+        configPath: resolveConfigPath(globalOpts.config),
+        sellerName: config.identity.displayName || `seller ${(node.peerId ?? '').slice(0, 8)}`,
+        ...(node.peerId ? { peerId: node.peerId } : {}),
+        log: (line) => console.log(chalk.yellow(line)),
+      })
+      const previousState = await readFile(getStateFile(globalOpts.dataDir), 'utf-8').catch(() => null)
+      const crashed = uncleanExitEvent(previousState, Date.now())
+      if (crashed) void alerts.record(crashed)
+      void alerts.record({ kind: 'started', severity: 'info', title: `Seller started (v${pkg.version})` })
+      if (alerts.channels().length > 0) console.log(chalk.dim(`  alerts: ${alerts.channels().join(', ')}`))
+      else console.log(chalk.dim('  alerts: off (journal only). Send them to Telegram or a webhook with `antseed seller alerts set` or `antseed seller dashboard`; a running seller picks the change up.'))
+      // Model and upstream-credit alerts go out per upstream: one message for a round of withdrawals, and the cause when it is billing.
+      const upstreamHost = (providerId: string) => {
+        const baseUrl = effectiveSellerConfig.providers[providerId]?.baseUrl
+        try { return baseUrl ? new URL(baseUrl).host : null } catch { return null }
+      }
+      const upstreamAlerts = new UpstreamAlerts(alerts, { hostOf: upstreamHost })
+
       let healthChecker: ModelHealthChecker | null = null
       if (healthCheckEnabled && registeredProviders.length > 0) {
         healthChecker = new ModelHealthChecker({
@@ -897,6 +944,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
             // Probe the unwrapped provider so an ant-agent wrapper doesn't
             // run a full agent loop for every probe.
             ...(providers[index] && providers[index] !== provider ? { probeProvider: providers[index]! } : {}),
+            ...(selectedProviderNames[index] ? { id: selectedProviderNames[index] } : {}),
           })),
           ...(healthCheckCfg?.intervalMs !== undefined ? { intervalMs: healthCheckCfg.intervalMs } : {}),
           ...(healthCheckCfg?.failureThreshold !== undefined ? { failureThreshold: healthCheckCfg.failureThreshold } : {}),
@@ -906,15 +954,27 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
             } else {
               console.log(chalk.green(`Model ${event.provider}/${event.service} re-advertised — health check recovered (${event.detail})`))
             }
+            upstreamAlerts.modelChanged(event)
             void node.refreshSellerMetadata().catch(() => {})
           },
+          onUpstreamAccount: (event) => {
+            console.log((event.status === 'funded' ? chalk.green : chalk.yellow)(`Upstream ${event.providerId}: ${event.status.replace('_', ' ')} (${event.detail})`))
+            upstreamAlerts.account(event)
+          },
+          onSweepComplete: () => upstreamAlerts.flush(),
+          // Read on every check, so a dashboard edit applies without a restart.
+          lowBalanceUsd: () => alerts.settings.config.lowBalanceUsd ?? DEFAULT_LOW_BALANCE_USD,
         })
+        const checker = healthChecker
+        // Live traffic sees an upstream run out of credit before the next probe does.
+        node.on('provider:response', ({ provider, statusCode, body, billable }: { provider: Provider; statusCode: number; body: string; billable: boolean }) => checker.reportUpstreamResponse(provider, statusCode, body, billable))
         healthChecker.start()
       }
 
       // Operator-facing notices surfaced via daemon.state.json (seller status
       // command and desktop). Currently only the out-of-gas notice.
       let gasNotice: string | null = null
+      let gasMonitor: GasHealthMonitor | null = null
 
       // Write daemon state so dashboard and connect can discover this seeder
       const startedAt = Date.now()
@@ -1034,12 +1094,22 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           tokensToday: 0,
           uptime: formatUptime(),
           notices: gasNotice ? [gasNotice] : [],
+          // Read by `antseed metrics serve --role seller` for model and gas alerts.
+          modelHealth: healthChecker?.getSnapshot() ?? [],
+          gas: gasHealthState(gasMonitor),
+          alerts: alerts.state(),
+          // Chain RPC calls this process made, per source (the dashboard and metrics exporter show them).
+          rpc: rpcUsage(),
           updatedAt: now,
           proxyPort: null,
         }
       }
 
+      // Set on shutdown: the state file is removed then, and no late write may bring it back (a "crash" on the next start).
+      let stateStopped = false
+      let stateWriteCurrent: Promise<void> | null = null
       async function writeDaemonState(): Promise<void> {
+        if (stateStopped) return
         if (stateWriteInFlight) {
           stateWritePending = true
           return
@@ -1047,10 +1117,11 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
 
         stateWriteInFlight = true
         try {
-          await writeFile(getStateFile(globalOpts.dataDir), JSON.stringify(buildDaemonState(), null, 2))
+          stateWriteCurrent = writeFile(getStateFile(globalOpts.dataDir), JSON.stringify(buildDaemonState(), null, 2))
+          await stateWriteCurrent
         } finally {
           stateWriteInFlight = false
-          if (stateWritePending) {
+          if (stateWritePending && !stateStopped) {
             stateWritePending = false
             await writeDaemonState()
           }
@@ -1066,6 +1137,12 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       node.on('session:updated', scheduleDaemonStateWrite)
       node.on('session:finalized', scheduleDaemonStateWrite)
 
+      const idleWatch = startIdleWatch({
+        idleMinutes: () => alerts.idleMinutes(),
+        node,
+        record: (event) => alerts.record(event),
+      })
+
       // Refresh state file every 1s so the desktop dashboard reflects live counters.
       const stateInterval = setInterval(async () => {
         await writeDaemonState().catch(() => {})
@@ -1074,14 +1151,15 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       // Periodic seller-wallet gas checks: a seller whose wallet cannot fund
       // reserve/settle/close transactions rejects every buyer that connects,
       // so pause advertising (and say so) until the wallet is funded again.
-      let gasMonitor: GasHealthMonitor | null = null
       if (gasCheckEnabled && node.identity) {
         const gasWalletAddress = node.identity.wallet.address
         try {
-          const gasStakingClient = createStakingClient(config, { rpcUrl: baseRpcUrlOverride })
+          // Balance reads go through the process's shared provider (coalescing, back-off), tagged for the RPC counters.
+          const gasCrypto = requireCryptoConfig(config, { rpcUrl: baseRpcUrlOverride })
+          const gasProvider = sharedChainProvider({ rpcUrl: gasCrypto.rpcUrl, evmChainId: gasCrypto.evmChainId, ...(gasCrypto.fallbackRpcUrls ? { fallbackRpcUrls: gasCrypto.fallbackRpcUrls } : {}) })
           gasMonitor = new GasHealthMonitor({
             address: gasWalletAddress,
-            getBalance: (address) => gasStakingClient.provider.getBalance(address),
+            getBalance: (address) => withRpcSource('gas', () => gasProvider.getBalance(address)),
             intervalMs: gasCheckIntervalMs,
             minBalanceWei: minGasBalanceWei,
             onChange: (event) => {
@@ -1092,8 +1170,10 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
                 console.log(chalk.yellow(`  On-chain settlement would fail and buyers would be rejected: ${balanceSummary}.`))
                 console.log(chalk.cyan(`  Send ETH to ${event.address} — advertising resumes automatically once funded.`))
                 void node.pauseAdvertising('out-of-gas').catch(() => {})
+                void alerts.record({ kind: 'gas_low', severity: 'critical', title: 'Out of gas: advertising paused', detail: `${balanceSummary}. Send ETH to ${event.address} to resume.` })
               } else {
                 gasNotice = null
+                void alerts.record({ kind: 'gas_ok', severity: 'info', title: `Gas restored (${formatEther(event.balanceWei)} ETH): advertising resumed` })
                 console.log(chalk.green(`Gas balance restored (${formatEther(event.balanceWei)} ETH) — advertising resumed.`))
                 node.resumeAdvertising()
               }
@@ -1106,6 +1186,26 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         }
       }
 
+      // The local dashboard, unless turned off. Its link carries a session token, so it is printed only to a
+      // terminal; a service's logs say how to get it (`antseed seller dashboard` reads it from the data dir).
+      let dashboard: SellerDashboardServer | null = null
+      if (options.dashboard !== false) {
+        const dashboardOptions = { dataDir: globalOpts.dataDir, configPath: resolveConfigPath(globalOpts.config), version: pkg.version, host: '127.0.0.1', log: (line: string) => console.log(chalk.dim(line)) }
+        const port = Number(options.dashboardPort) || DEFAULT_SELLER_DASHBOARD_PORT
+        try {
+          dashboard = await startSellerDashboard({ ...dashboardOptions, port }).catch((err: NodeJS.ErrnoException) => {
+            if (err.code !== 'EADDRINUSE' || options.dashboardPort) throw err
+            return startSellerDashboard({ ...dashboardOptions, port: 0 })
+          })
+          await writeDashboardLink(globalOpts.dataDir, dashboard.url)
+          const origin = new URL(dashboard.url).origin
+          if (process.stdout.isTTY) console.log(`  dashboard: ${chalk.cyan(dashboard.url)}`)
+          else console.log(`  dashboard: ${origin} (\`antseed seller dashboard\` on this host prints its link; --no-dashboard turns it off)`)
+        } catch (err) {
+          console.log(chalk.yellow(`  dashboard unavailable: ${(err as Error).message}`))
+        }
+      }
+
       const updateWatch = watchForUpdates({
         dataDir: globalOpts.dataDir,
         current: pkg.version,
@@ -1115,16 +1215,33 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
 
       setupShutdownHandler(async () => {
         updateWatch.stop()
+        idleWatch.stop()
         healthChecker?.stop()
         gasMonitor?.stop()
         clearInterval(stateInterval)
         node.off('connection', scheduleDaemonStateWrite)
         node.off('session:updated', scheduleDaemonStateWrite)
         node.off('session:finalized', scheduleDaemonStateWrite)
+        upstreamAlerts.close()
+        alerts.close()
+        if (dashboard) {
+          // Never long: channels are finalized next, and a dashboard request must not hold that up.
+          await waitAtMost(removeDashboardLink(globalOpts.dataDir).then(() => dashboard!.close()), 2_000)
+        }
         nodeSpinner.start('Shutting down seeding daemon...')
-        await node.stop()
-        await unlink(getStateFile(globalOpts.dataDir)).catch(() => {})
-        nodeSpinner.succeed('Seeding daemon stopped. Channels finalized.')
+        try {
+          await node.stop()
+          nodeSpinner.succeed('Seeding daemon stopped. Channels finalized.')
+        } catch (err) {
+          nodeSpinner.fail(`Seeding daemon stopped with an error: ${err instanceof Error ? err.message : String(err)}`)
+        } finally {
+          // A clean stop, even one whose node shutdown failed: no state file, so the next start reports no crash.
+          stateStopped = true
+          await stateWriteCurrent?.catch(() => {})
+          await unlink(getStateFile(globalOpts.dataDir)).catch(() => {})
+          // Only once the node is down, and never for long: alert delivery is remote and best effort.
+          await waitAtMost(alerts.record({ kind: 'stopped', severity: 'info', title: 'Seller stopped' }))
+        }
       })
     })
 }

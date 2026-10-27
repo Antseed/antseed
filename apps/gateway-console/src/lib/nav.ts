@@ -3,6 +3,7 @@ import type { MeResponse, OrgRole, WorkspaceRole } from '../api/types'
 export type PageId =
   | 'overview' | 'chat' | 'activity' | 'logs' | 'keys' | 'members' | 'workspaces' | 'wallet'
   | 'rewards' | 'staking' | 'providers' | 'models' | 'routing' | 'presets' | 'audit' | 'settings'
+  | 'seller' | 'seller-logs' | 'seller-market' | 'seller-reputation' | 'seller-promote' | 'seller-settings'
 
 export interface Viewer {
   orgRole: OrgRole
@@ -37,6 +38,13 @@ export const NAV_ITEMS: Array<{ id: PageId; label: string; group: string; access
   { id: 'workspaces', label: 'Workspaces', group: 'Organization', access: 'workspaceAdmin' },
   { id: 'audit', label: 'Audit log', group: 'Organization', access: 'orgAdmin' },
   { id: 'settings', label: 'Settings', group: 'Organization', access: 'orgAdmin' },
+  // Shown only when a seller runs on the gateway host (see `hasSeller` in visibleNav).
+  { id: 'seller', label: 'Seller', group: 'Selling', access: 'orgAdmin' },
+  { id: 'seller-logs', label: 'Seller logs', group: 'Selling', access: 'orgAdmin' },
+  { id: 'seller-market', label: 'Market', group: 'Selling', access: 'orgAdmin' },
+  { id: 'seller-reputation', label: 'Reputation', group: 'Selling', access: 'orgAdmin' },
+  { id: 'seller-promote', label: 'Promote', group: 'Selling', access: 'orgAdmin' },
+  { id: 'seller-settings', label: 'Seller settings', group: 'Selling', access: 'orgAdmin' },
 ]
 
 export function canOpen(page: PageId, viewer: Viewer): boolean {
@@ -47,8 +55,15 @@ export function canOpen(page: PageId, viewer: Viewer): boolean {
   return true
 }
 
-export function visibleNav(viewer: Viewer) {
-  return NAV_ITEMS.filter((item) => canOpen(item.id, viewer))
+export const SELLER_PAGES = ['seller', 'seller-logs', 'seller-market', 'seller-reputation', 'seller-promote', 'seller-settings'] as const
+
+export function isSellerPage(id: string): boolean {
+  return (SELLER_PAGES as readonly string[]).includes(id)
+}
+
+/** The nav for a viewer; the Seller page only when the gateway host runs a seller. */
+export function visibleNav(viewer: Viewer, options: { hasSeller?: boolean } = {}) {
+  return NAV_ITEMS.filter((item) => canOpen(item.id, viewer) && (!isSellerPage(item.id) || options.hasSeller === true))
 }
 
 /** The viewer for a member session in a given workspace; null for key sessions. */

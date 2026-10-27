@@ -354,7 +354,7 @@ const plugin: AntseedProviderPlugin = {
         const account = await readVeniceAccount(baseUrl, apiKey);
         if (account.status !== 'ok') return account;
         if (account.balanceUsd <= minBalanceUsd) {
-          return { status: 'unavailable', reason: `Venice balance $${account.balanceUsd.toFixed(2)} is at or below the $${minBalanceUsd} minimum` };
+          return { status: 'unavailable', reason: `Venice balance $${account.balanceUsd.toFixed(2)} is at or below the $${minBalanceUsd} minimum`, outOfCredit: true };
         }
         return { status: 'available', balanceUsd: account.balanceUsd };
       },

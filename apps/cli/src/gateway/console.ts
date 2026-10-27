@@ -5,6 +5,7 @@ import { activeMember, requestActor, requireOrgAdmin } from './console-api/acces
 import type { ConsoleDeps } from './console-api/deps.js'
 import { coreConsoleRegistrars } from './console-api/handlers/index.js'
 import { registerNetworkRoutes } from './console-api/handlers/network.js'
+import { rows } from './console-api/handlers/network-mapping.js'
 import { registerStakingRoutes } from './console-api/handlers/staking.js'
 import { registerWalletRoutes } from './console-api/handlers/wallet.js'
 import { ConsoleError, respond, type ConsoleRouter } from './console-api/router.js'
@@ -16,6 +17,10 @@ import { removeCredential, requireMemberRecord } from './services/members.js'
 import { antscanPeerBoosts } from './services/peer-boosts.js'
 import type { GatewayConsoleContext, GatewayConsoleHandle } from './runtime.js'
 import type { ApiKeyRecord, MemberRecord } from './store.js'
+import { resolveSellerDataDir } from '../seller-monitor/reader.js'
+import { sellerRouteRegistrar } from '../seller-monitor/routes.js'
+import { resolveSellerConfigPath } from '../seller-monitor/settings.js'
+import { buyerJson, defaultBuyerClient } from './console-api/handlers/network-buyer.js'
 import { CONSOLE_LOCATION_SETTING, type ConsoleLocation } from './console-location.js'
 
 export { CONSOLE_LOCATION_SETTING, consoleBaseUrl, normalizePublicUrl, readConsoleLocation, type ConsoleLocation } from './console-location.js'
@@ -111,6 +116,14 @@ export function gatewayConsole(options: GatewayConsoleOptions): (context: Gatewa
       registerCredentialRoutes(auth),
       recoveryRouteRegistrar((memberId) => auth.createEnrollment(memberId)),
       chatRouteRegistrar({ gatewayPort: () => gatewayPort, braveApiKey: (options.env ?? process.env)['ANTSEED_BRAVE_API_KEY']?.trim() || null }),
+      // A seller on this host (ANTSEED_SELLER_DATA_DIR, or the gateway's own data dir) gets a Seller page.
+      sellerRouteRegistrar({
+        // The gateway's own buyer already knows the network and scores every seller.
+        network: (routeDeps) => async () => ({ rows: rows((await buyerJson(defaultBuyerClient(routeDeps), '/_antseed/peers'))['peers']), source: 'gateway buyer' }),
+        dataDir: () => resolveSellerDataDir(options.dataDir, options.env ?? process.env),
+        configPath: (sellerDataDir) => resolveSellerConfigPath(sellerDataDir, options, options.env ?? process.env),
+        ...(options.env ? { env: options.env } : {}),
+      }),
     ], options.distDir ? { distDir: options.distDir } : {})
 
     return {

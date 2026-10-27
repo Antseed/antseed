@@ -9,7 +9,7 @@ import {
   DEFAULT_BUYER_PEER_REFRESH_INTERVAL_MS,
   DEFAULT_BUYER_REQUEST_TIMEOUT_MS,
 } from './defaults.js';
-import { configFromObject, loadConfig } from './loader.js';
+import { configFromObject, loadConfig, saveConfig } from './loader.js';
 import { createDefaultConfig } from './defaults.js';
 import { deriveDisplayNameFromPeerId, shouldDeriveDisplayName } from './identity-display-name.js';
 
@@ -1258,4 +1258,17 @@ test('buyer.verifier is read and validated like the rest of the config', () => {
   assert.equal(configFromObject({}).buyer.verifier, undefined);
   assert.throws(() => configFromObject({ buyer: { verifier: { enabled: false, require: true } } }), /buyer\.verifier\.enabled cannot be false/);
   assert.throws(() => configFromObject({ buyer: { verifier: { prefer: 'x' } } }), /buyer\.verifier\.prefer/);
+});
+
+test('seller.alerts survives a load and save, and a malformed one is refused', async () => {
+  const alerts = { telegram: { chatId: '-100123', botTokenEnv: 'MY_TOKEN' }, webhook: { url: 'https://hooks.example/x' }, idleMinutes: 30, cooldownMinutes: 10, minSeverity: 'critical' };
+  await withTempConfig(JSON.stringify({ seller: { alerts } }), async (configPath) => {
+    const config = await loadConfig(configPath);
+    config.seller.maxConcurrentBuyers = 7;
+    await saveConfig(configPath, config);
+    assert.deepEqual((await loadConfig(configPath)).seller.alerts, alerts);
+  });
+  assert.equal(configFromObject({ seller: { alerts: { telegram: { chatId: 42 } } } }).seller.alerts?.telegram?.chatId, 42, 'a numeric chat id is accepted');
+  assert.throws(() => configFromObject({ seller: { alerts: { telegram: { chatId: true }, idleMinutes: '5', minSeverity: 'loud' } } }),
+    /seller\.alerts\.telegram\.chatId[\s\S]*seller\.alerts\.idleMinutes[\s\S]*seller\.alerts\.minSeverity/);
 });

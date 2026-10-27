@@ -4,6 +4,7 @@ import {
   freeTierOutlook,
   freeTierPowerAt,
   freeTierStakeTrend,
+  MAX_FREE_TIER_COUNTED_POSITIONS,
   type FreeTierStakePositionView,
 } from '../src/payments/free-tier-stake.js';
 
@@ -78,5 +79,33 @@ describe('free-tier outlook', () => {
     expect(freeTierPowerAt(view, disabling.positions, at(11))).toBe(10_400_000);
     expect(freeTierOutlook(view, disabling, tiers, now)).toMatchObject({ tier: tiers[1], dropsAt: at(16), tierAfterDrop: tiers[0] });
     expect(freeTierStakeTrend(view, disabling, now)).toMatchObject({ steady: false, shrinking: true, endsAt: at(115) });
+  });
+
+  it('counts only the strongest positions a seller counts, re-picked as they change', () => {
+    // 65 positions of 1,000 ANTS with 8 weeks left: 520,000 power in all, but sellers count 64 (512,000).
+    const many = Array.from({ length: MAX_FREE_TIER_COUNTED_POSITIONS + 1 }, (_, index) => position({ id: index + 1, ants: 1_000, endEpoch: 18 }));
+    expect(freeTierPowerAt(view, many, now)).toBe(512_000);
+    const defaultTiers = [{ minPower: 520_000, multiplier: 5 }];
+    expect(freeTierOutlook(view, { positions: many }, defaultTiers, now).tier).toBeNull();
+    // A stronger position whose code expires is counted until then, after which the 65th is counted again.
+    const expiresAt = at(12);
+    const strong = position({ id: 100, ants: 10_000, endEpoch: 18, expiresAt });
+    expect(freeTierPowerAt(view, [strong, ...many], now)).toBe(80_000 + 63 * 8_000);
+    expect(freeTierPowerAt(view, [strong, ...many], expiresAt)).toBe(64 * 6_000);
+  });
+
+  it('describes the trend of the counted positions only', () => {
+    // 64 strong max-locked positions hold; a weaker unlocked 65th is never counted, so nothing shrinks.
+    const locked = Array.from({ length: MAX_FREE_TIER_COUNTED_POSITIONS }, (_, index) => position({ id: index + 1, ants: 1_000, maxLocked: true, endEpoch: 114 }));
+    const weak = position({ id: 99, ants: 10, endEpoch: 30 });
+    expect(freeTierStakeTrend(view, { positions: [...locked, weak] }, now)).toEqual({ power: 64 * 104_000, steady: true, shrinking: false, endsAt: null });
+    // With a counted slot free, the same weak position is counted and shrinks.
+    expect(freeTierStakeTrend(view, { positions: [...locked.slice(1), weak] }, now)).toMatchObject({ steady: false, shrinking: true, endsAt: null });
+    // A max-locked code expiring exactly on a week boundary stops counting there; that is not shrinking.
+    const onBoundary = position({ ants: 1_000, maxLocked: true, endEpoch: 114, expiresAt: at(30) });
+    expect(freeTierStakeTrend(view, { positions: [onBoundary] }, now)).toEqual({ power: 104_000, steady: false, shrinking: false, endsAt: at(30) });
+    // Stake still activating has no power yet, and still ends when its lock does.
+    const pending = position({ ants: 1_000, startEpoch: 11, endEpoch: 20 });
+    expect(freeTierStakeTrend(view, { positions: [pending] }, now)).toMatchObject({ power: 0, shrinking: true, endsAt: at(20) });
   });
 });

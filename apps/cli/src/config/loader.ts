@@ -22,7 +22,7 @@ import { assertValidConfig } from './validation.js';
 /**
  * Resolve a config path, expanding ~ to the user's home directory.
  */
-function resolveConfigPath(configPath: string): string {
+export function resolveConfigPath(configPath: string): string {
   if (configPath.startsWith('~')) {
     return resolve(homedir(), configPath.slice(2));
   }
@@ -492,6 +492,8 @@ function mergeSellerConfig(
       ? { restrictedCountries: value['restrictedCountries'] as string[] }
       : {}),
     ...(normalizeSellerFreeUsage(value['freeUsage'], defaults.freeUsage)),
+    // Kept as written (even malformed) so validateConfig reports it and a save round-trips it.
+    ...(value['alerts'] !== undefined ? { alerts: structuredClone(value['alerts']) as AntseedConfig['seller']['alerts'] } : {}),
   };
 }
 
