@@ -1,4 +1,5 @@
 import type { Peer } from '../api/types'
+import { isFreeService } from './free-tier'
 
 export interface PeerFilter {
   search: string
@@ -35,8 +36,9 @@ export function outputPrice(peer: Peer, model = ''): number | null {
   return priceRange(peer, 'outputUsdPerMillion', model)?.min ?? null
 }
 
+/** Some service (or `model`) is free to everyone: no listed price, and not limited to the seller's stakers. */
 export function isFreePeer(peer: Peer, model = ''): boolean {
-  return servicesFor(peer, model).some((service) => service.inputUsdPerMillion === 0 && (service.outputUsdPerMillion ?? 0) === 0)
+  return servicesFor(peer, model).some((service) => isFreeService(service) && service.freeTier?.base.stakersOnly !== true)
 }
 
 export function filterPeers(peers: readonly Peer[], filter: PeerFilter): Peer[] {

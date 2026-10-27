@@ -35,6 +35,10 @@ UPDATE_STATUS_DIR=/var/lib/antseed-update
 UPDATE_STATUS="$UPDATE_STATUS_DIR/status.json"
 NODE_MAJOR=24
 BUYER_PORT=8377
+# How long systemd gives a service to stop: the gateway and the buyer let
+# requests in flight finish (up to a minute) within it. The updater reports
+# it to the console as the longest the gateway's drain can take.
+SERVICE_STOP_TIMEOUT=90
 
 # Every option can also be set in the environment, for cloud-init and other automation.
 DOMAIN="${ANTSEED_GATEWAY_DOMAIN:-}"
@@ -621,7 +625,7 @@ Environment=ANTSEED_UPDATER_STATUS=$UPDATE_STATUS
 Restart=always
 RestartSec=5
 # Stopping lets requests in flight finish (up to a minute) before exiting.
-TimeoutStopSec=90
+TimeoutStopSec=$SERVICE_STOP_TIMEOUT
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
@@ -705,6 +709,7 @@ STATUS_DIR="$UPDATE_STATUS_DIR"
 STATUS="$UPDATE_STATUS"
 BUYER_URL="http://127.0.0.1:$BUYER_PORT/_antseed/buyer-identities"
 GATEWAY_URL="http://$probe_host:$PORT/v1/models"
+STOP_TIMEOUT_MS=$((SERVICE_STOP_TIMEOUT * 1000))
 EOF
     declare -f cli_version release_ready install_release activate_release prune_releases
     cat <<'EOF'
@@ -715,9 +720,23 @@ mkdir -p "$STATUS_DIR" && chmod 0755 "$STATUS_DIR"
 now() { date +%s%3N; }
 str() { if [ -n "$1" ]; then printf '"%s"' "$1"; else printf null; fi; }
 # status <state> <from> <to> [finishedAt] [error]
+# A running update also says which step it is on (phase), since when, and
+# the longest that step can take when that is known (phaseMaxMs), so the
+# console can show progress. The step fields come last: older readers, and
+# the READY lookup below, only read the fields before them.
 status() {
-  printf '{"state":"%s","action":"%s","from":%s,"to":%s,"startedAt":%s,"finishedAt":%s,"error":%s}\n' \
-    "$1" "$ACTION" "$(str "$2")" "$(str "$3")" "$STARTED" "${4:-null}" "$(str "${5:-}")" >"$STATUS.tmp" && mv -f "$STATUS.tmp" "$STATUS"
+  local phase=null phase_at=null phase_max=null
+  if [ "$1" = running ] && [ -n "$PHASE" ]; then
+    phase="\"$PHASE\"" phase_at="$PHASE_AT" phase_max="${PHASE_MAX:-null}"
+  fi
+  printf '{"state":"%s","action":"%s","from":%s,"to":%s,"startedAt":%s,"finishedAt":%s,"error":%s,"phase":%s,"phaseStartedAt":%s,"phaseMaxMs":%s}\n' \
+    "$1" "$ACTION" "$(str "$2")" "$(str "$3")" "$STARTED" "${4:-null}" "$(str "${5:-}")" \
+    "$phase" "$phase_at" "$phase_max" >"$STATUS.tmp" && mv -f "$STATUS.tmp" "$STATUS"
+}
+# phase <name> [maxMs]: moves the running update on to its next step.
+phase() {
+  PHASE="$1" PHASE_AT="$(now)" PHASE_MAX="${2:-}"
+  status running "$FROM" "$TO"
 }
 # done_status <state> ...: the run's last status; the exit trap leaves it alone.
 done_status() { DONE=1; status "$@"; }
@@ -738,7 +757,21 @@ restart() {
   systemctl is-enabled --quiet "$1" || return 0
   systemctl restart "$1" && answers "$2" "$3"
 }
+# restart_gateway: the same restart in steps the console can show. The
+# console is served by the gateway, so the drain (the stop) is where it goes
+# quiet: the gateway stops taking requests and lets those in flight finish,
+# for up to its stop timeout.
+restart_gateway() {
+  systemctl is-enabled --quiet antseed-gateway.service || return 0
+  phase draining-gateway "$STOP_TIMEOUT_MS"
+  systemctl stop antseed-gateway.service
+  phase starting-gateway
+  systemctl start antseed-gateway.service || return 1
+  phase checking 120000
+  answers "$GATEWAY_URL" 401
+}
 rollback() {
+  phase rolling-back
   activate_release "$PREVIOUS"
   systemctl restart antseed-buyer.service
   systemctl restart antseed-gateway.service
@@ -759,7 +792,7 @@ interrupted() {
 
 STARTED="$(now)"
 FROM="$(cli_version "$CLI_HOME")"
-TO="" PREVIOUS="" ACTIVATED="" DONE=0
+TO="" PREVIOUS="" ACTIVATED="" DONE=0 PHASE="" PHASE_AT="" PHASE_MAX=""
 # The request is the antseed user's file: only a little of a regular file is
 # read, never through a link, and only to pick the step. Its writers rename it
 # into place whole; anything over 1 KiB, or anything but a JSON object with no
@@ -781,7 +814,7 @@ esac
 READY="$(sed -nE 's/^\{"state":"ready","action":"download","from":[^,]*,"to":"([^"]+)".*/\1/p' "$STATUS" 2>/dev/null | head -1)"
 trap interrupted EXIT
 trap 'exit 1' TERM INT
-status running "$FROM" ""
+phase downloading
 rm -rf -- "$REQUEST"
 # Restart & update installs what was downloaded, even if npm moved on since.
 if [ "$ACTION" = install ] && [ -n "$READY" ] && [ "$READY" != "$FROM" ] && release_ready "$READY"; then
@@ -804,8 +837,9 @@ PREVIOUS="$(readlink -f "$CLI_HOME" 2>/dev/null || true)"
 [ -n "$PREVIOUS" ] && [ -d "$PREVIOUS" ] || fail "no release is active to go back to; re-run the installer"
 ACTIVATED=1
 activate_release "$PREFIX/releases/$TO"
+phase restarting-buyer
 restart antseed-buyer.service "$BUYER_URL" 200 || rollback "the buyer did not start on $TO"
-restart antseed-gateway.service "$GATEWAY_URL" 401 || rollback "the gateway did not start on $TO"
+restart_gateway || rollback "the gateway did not start on $TO"
 prune_releases "$PREVIOUS"
 done_status succeeded "$FROM" "$TO" "$(now)"
 EOF

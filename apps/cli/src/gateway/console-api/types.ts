@@ -18,6 +18,8 @@ import type { RootUpdateProgress } from '../../update/root-updater.js'
 export type { RoutingPolicy, ModelRoute, RoutingSort } from '../../routing-policy/policy.js'
 export type { RouteSelection, ServedSelection } from '../../proxy/route-selection.js'
 export type { OperatorRelation, OperatorState, OperatorAuthorization, WorkspaceOperatorSummary } from './operator-types.js'
+export type { FreeTierProgramView, FreeTierSharing, FreeTierStake, FreeTierStakePosition, FreeTierStaker } from './free-tier-types.js'
+import type { FreeTierProgramView } from './free-tier-types.js'
 
 export const CONSOLE_BASE_PATH = '/console'
 export const CONSOLE_API_PATH = '/console/api'
@@ -565,6 +567,8 @@ export interface ChatModelPeer {
   /** Null when the peer advertises no cached-input price (cached tokens then cost the input price). */
   cachedInputUsdPerMillion: number | null
   reputation: number | null
+  /** The free-tier program this offer is served under; on a priced offer, its free allowance. */
+  freeTier: FreeTierProgramView | null
 }
 
 export interface ChatMessageMetadata {
@@ -590,6 +594,30 @@ export interface ChatContext {
   workspaceName: string
 }
 
+/**
+ * A chat turn a seller refused because its free tier is used up. The chat
+ * stream's error text is this object as JSON; `freeTier.peerId` names the
+ * seller whose pool raises the limit.
+ */
+export interface ChatFreeTierError {
+  code: 'free_tier_exhausted'
+  message: string
+  freeTier: {
+    peerId: string | null
+    limitedBy: 'address' | 'ip' | 'stake' | 'stake_required'
+    limit: number | null
+    windowMs: number | null
+    retryAfterSeconds: number | null
+    stakeTiers: Array<{ minPower: number; multiplier: number | 'unlimited' }>
+    /** The buyer's counted power in that seller's pool, in ANTS-epochs. */
+    stakePower: number
+    /** Requests per window the tier multipliers apply to; null from sellers that don't send it. */
+    baseLimit: number | null
+    /** The model is served only to buyers whose stake reaches a tier. */
+    stakersOnly: boolean
+  }
+}
+
 export interface ChatModel {
   id: string
   name: string
@@ -598,8 +626,10 @@ export interface ChatModel {
   reasoning: boolean
   /** At least one offer takes images as input. */
   vision: boolean
-  /** At least one offer is free (no input or output price). */
+  /** At least one offer is free to everyone (no input or output price, not stakers-only). */
   free: boolean
+  /** At least one offer is free only to buyers staked on its seller. */
+  freeForStakers: boolean
   /** At least one offer advertises the TEE verifier. */
   tee: boolean
   offers: number
@@ -647,6 +677,10 @@ export interface Peer {
     categories: string[]
     /** Wire APIs the seller serves this model on, e.g. "openai-chat-completions", "anthropic-messages". */
     apiProtocols?: string[]
+    /** The service has a listed price, per token or per unit (image, video). Older gateways omit it. */
+    paid?: boolean
+    /** The free-tier program this service is served under: its own, else the seller-wide one. */
+    freeTier?: FreeTierProgramView | null
   }>
   trustScore: number | null
   reputationScore: number | null
@@ -661,6 +695,10 @@ export interface Peer {
    */
   teeScope: PeerTeeScope | null
   stakeAnts: string | null
+  /** The seller's pool in the seller pools (its ERC-8004 agent id); null when it has none. */
+  agentId: number | null
+  /** The seller-wide free-tier program; null when it has none. Services may have their own (`services[].freeTier`). */
+  freeTier: FreeTierProgramView | null
   usageShareBps: number | null
   washFlagged: boolean
   lastSeen: number | null
@@ -736,6 +774,13 @@ export interface NetworkModelOffer {
   usdPerImage: { min: number; max: number } | null
   contextLength: number | null
   free: boolean
+  /**
+   * The seller's pool (agent id) and the free-tier program this offer is
+   * served under; see `Peer`. On a priced offer it is a free allowance: the
+   * requests it covers are free, the rest are paid.
+   */
+  agentId: number | null
+  freeTier: FreeTierProgramView | null
   /** The reputation routing ranks this offer by (0-100); null when unscored. */
   reputationScore: number | null
   trustScore: number | null
@@ -770,8 +815,12 @@ export interface NetworkModel {
   /** Cheapest to dearest across offers, USD per million tokens; null when no offer advertises one. */
   inputUsdPerMillion: { min: number; max: number } | null
   outputUsdPerMillion: { min: number; max: number } | null
-  /** At least one offer is free. */
+  /** At least one offer is free to everyone. */
   free: boolean
+  /** At least one offer is free only to buyers staked on its seller (others pay, or are not served). */
+  freeForStakers: boolean
+  /** At least one priced offer has a free allowance before its price applies. */
+  freeAllowance: boolean
   teeSellers: number
   /** Sellers whose TEE attestation reaches end to end, through their model provider. */
   fullTeeSellers: number

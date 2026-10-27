@@ -33,6 +33,7 @@ import {
 import { buildVprSystemPrompt } from './system-prompt.js';
 import {
   classifyChatStreamFailure,
+  cancelFreeTierRetry,
   formatChatStreamStopForLog,
   type ChatStreamStopReason,
 } from './stream-stop.js';
@@ -758,12 +759,16 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       }
 
       if (event.type === 'auto_retry_start') {
-        automaticRetryAttempted = true;
         const reason = classifyChatStreamFailure({
           error: event.errorMessage,
           message: event.errorMessage,
           stopReason: 'error',
         });
+        if (cancelFreeTierRetry(reason, session)) {
+          appendSystemLog(`AI stream stopped: the seller's free limit is used up [${formatChatStreamStopForLog(reason)}]`);
+          return;
+        }
+        automaticRetryAttempted = true;
         appendSystemLog(
           `AI stream interrupted. Retrying in ${(event.delayMs / 1000).toFixed(1)}s `
           + `(${String(event.attempt)}/${String(event.maxAttempts)}) `

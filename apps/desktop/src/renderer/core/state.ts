@@ -1,4 +1,5 @@
 import type { DesktopRouterSelection, RoutingServiceEntry } from '../../shared/routing-selection';
+import type { FreeTierProgram } from '@antseed/node/free-tier-program';
 import type {
   DaemonStateSnapshot,
   DesktopBuyerSpendHistory,
@@ -9,7 +10,7 @@ import type {
   RuntimeProcessState,
 } from '../types/bridge';
 import type { ChatMessage } from '../ui/components/chat/chat-shared';
-import type { ChatPermissionMode, ToolApprovalRequest } from '../types/bridge';
+import type { ChatAiStreamStopReason, ChatPermissionMode, ToolApprovalRequest } from '../types/bridge';
 import {
   DEFAULT_MODEL_ROUTING_PREFERENCES,
   type ModelRoutingPreferences,
@@ -271,6 +272,8 @@ export type DiscoverRow = {
 
   // On-chain staking (AntseedStakingPools)
   agentId: number;
+  /** The seller's free-tier program; its staked tiers count only stake in this seller's pool (`agentId`). */
+  freeTier?: FreeTierProgram | null;
   /** ANTS actively staked in the seller's pool this epoch (whole ANTS). */
   poolStakeAnts: number;
 
@@ -450,6 +453,8 @@ export type RendererUiState = {
    * failure and must not be rendered as one.
    */
   chatRoutingNotice: string | null;
+  /** A seller's free limit ran out on the last turn: its limit and staked tiers. */
+  chatFreeTierLimit: ChatAiStreamStopReason['freeTier'] | null;
   chatRoutedPeer: string;
   chatRoutedPeerId: string;
   chatSessionStarted: string;
@@ -629,6 +634,7 @@ export function createInitialUiState(): RendererUiState {
     chatSendingConversationIds: [],
     chatError: null,
     chatRoutingNotice: null,
+    chatFreeTierLimit: null,
     chatRoutedPeer: '',
     chatRoutedPeerId: '',
     chatSessionStarted: '',

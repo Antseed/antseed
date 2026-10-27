@@ -55,8 +55,7 @@ export class ANTSTokenClient extends BaseEvmClient {
     const signerAddress = await connected.getAddress();
     const contract = new Contract(this._contractAddress, ANTS_TOKEN_ABI, connected);
     const tx = await this._sendWithNonce(signerAddress, (nonce) => contract.getFunction('setRegistry')(registryAddress, { nonce }));
-    const receipt = await tx.wait();
-    if (!receipt) throw new Error('Transaction was dropped or replaced');
+    const receipt = await this._waitForReceipt(tx);
     return receipt.hash;
   }
 
@@ -65,8 +64,7 @@ export class ANTSTokenClient extends BaseEvmClient {
     const signerAddress = await connected.getAddress();
     const contract = new Contract(this._contractAddress, ANTS_TOKEN_ABI, connected);
     const tx = await this._sendWithNonce(signerAddress, (nonce) => contract.getFunction('enableTransfers')({ nonce }));
-    const receipt = await tx.wait();
-    if (!receipt) throw new Error('Transaction was dropped or replaced');
+    const receipt = await this._waitForReceipt(tx);
     return receipt.hash;
   }
 
@@ -75,8 +73,7 @@ export class ANTSTokenClient extends BaseEvmClient {
     const signerAddress = await connected.getAddress();
     const contract = new Contract(this._contractAddress, ANTS_TOKEN_ABI, connected);
     const tx = await this._sendWithNonce(signerAddress, (nonce) => contract.getFunction('transferOwnership')(newOwner, { nonce }));
-    const receipt = await tx.wait();
-    if (!receipt) throw new Error('Transaction was dropped or replaced');
+    const receipt = await this._waitForReceipt(tx);
     return receipt.hash;
   }
   async receivedInTransaction(transactionHash: string, recipient: string): Promise<bigint> {

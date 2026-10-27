@@ -105,6 +105,21 @@ export interface BuyerRequestHandlerDeps {
   getMux: (peerId: PeerId, conn: BuyerConnection) => ProxyMux;
   getVerificationMux: (peerId: PeerId, conn: BuyerConnection) => VerificationMux;
   registerPaymentMux: (peerId: PeerId, mux: PaymentMux) => void;
+  /**
+   * Value for the `x-antseed-free-tier-delegations` header: stakers' signed
+   * consent to count their stake for this buyer on sellers' staked free tiers.
+   */
+  freeTierDelegationsHeader?: () => string | null;
+}
+
+export const FREE_TIER_DELEGATIONS_HEADER = 'x-antseed-free-tier-delegations';
+/** Set to `covered` by a seller whose free allowance covered a request to a priced service. */
+export const FREE_TIER_SERVED_HEADER = 'x-antseed-free-tier';
+
+/** Whether the seller served this response from a priced service's free allowance. */
+export function isCoveredByFreeAllowance(response: SerializedHttpResponse): boolean {
+  return Object.entries(response.headers).some(([name, value]) =>
+    name.toLowerCase() === FREE_TIER_SERVED_HEADER && value.trim().toLowerCase() === 'covered');
 }
 
 /**
@@ -143,6 +158,8 @@ export class BuyerRequestHandler {
     const negotiator = options?.controlPlane ? null : this._deps.negotiator;
     if (negotiator) {
       this._deps.registerPaymentMux(peer.peerId, negotiator.getOrCreatePaymentMux(peer.peerId, conn));
+      // A retry reuses the request ID: an earlier covered attempt must not refuse this one's charge.
+      negotiator.bpm?.releaseRequestCoverage(peer.peerId, req.requestId);
     }
 
     // Extract and strip x-antseed-spending-auth header if present (external auth compatibility)
@@ -157,13 +174,25 @@ export class BuyerRequestHandler {
       await negotiator.applyExternalSpendingAuth(peer, conn, externalSpendingAuth);
     }
 
+    // Only this node's own delegations reach the seller, never a client's copy.
+    const headersWithoutDelegations = Object.fromEntries(
+      Object.entries(req.headers).filter(([name]) => name.toLowerCase() !== FREE_TIER_DELEGATIONS_HEADER),
+    );
+    const delegationsHeader = this._deps.freeTierDelegationsHeader?.() ?? null;
+    req = {
+      ...req,
+      headers: delegationsHeader
+        ? { ...headersWithoutDelegations, [FREE_TIER_DELEGATIONS_HEADER]: delegationsHeader }
+        : headersWithoutDelegations,
+    };
+
     // Track which service the buyer requested so auth validation uses buyer's own pricing.
     const requestedService = options?.controlPlane ? undefined : extractRequestedService(peer, req);
     const requestProtocol = options?.controlPlane ? null : detectRequestServiceApiProtocol(req);
     // Set when a video create is priced; reported on its accepted response so the caller can reserve it until delivery.
     let videoPriceUsdc: bigint | undefined;
     const adaptPeerResponse = (response: SerializedHttpResponse): SerializedHttpResponse => {
-      const adapted = adaptPeerFaultErrorResponse(response, requestProtocol, { pinned: options?.pinned });
+      const adapted = adaptPeerFaultErrorResponse(response, requestProtocol, { pinned: options?.pinned, peerId: peer.peerId });
       if (videoPriceUsdc === undefined || adapted.statusCode < 200 || adapted.statusCode >= 300) return adapted;
       const headers = Object.fromEntries(Object.entries(adapted.headers).filter(([name]) => name.toLowerCase() !== VIDEO_PRICE_HEADER));
       return { ...adapted, headers: { ...headers, [VIDEO_PRICE_HEADER]: videoPriceUsdc.toString() } };
@@ -182,7 +211,7 @@ export class BuyerRequestHandler {
       if (isFreeService) {
         negotiator.trackFreeUsageRequestService(req.requestId, requestedService);
         try {
-          await negotiator.prepareFreeUsageOpen(peer, conn);
+          await negotiator.prepareFreeUsageOpen(peer, conn, delegationsHeader);
         } catch (err) {
           debugWarn(`[BuyerRequest] Failed to prepare free usage channel for ${peer.peerId.slice(0, 12)}...: ${err instanceof Error ? err.message : err}`);
         }
@@ -205,7 +234,7 @@ export class BuyerRequestHandler {
     } else if (requestedService && isFreeService && this._deps.freeUsageManager) {
       this._deps.freeUsageManager.trackRequestService(req.requestId, requestedService);
       try {
-        this._prepareDirectFreeUsageOpen(peer, conn);
+        this._prepareDirectFreeUsageOpen(peer, conn, delegationsHeader);
       } catch (err) {
         debugWarn(`[BuyerRequest] Failed to prepare free usage channel for ${peer.peerId.slice(0, 12)}...: ${err instanceof Error ? err.message : err}`);
       }
@@ -340,6 +369,9 @@ export class BuyerRequestHandler {
         req,
         (response: SerializedHttpResponse, metadata) => {
           if (settled) return;
+          // Mark a covered response as soon as its headers arrive: the seller's
+          // NeedAuth travels on another mux and must not beat this.
+          if (isCoveredByFreeAllowance(response)) negotiator?.bpm.markRequestCovered(peer.peerId, req.requestId);
           if (isDownload && streamStarted && !metadata.streamingStart) {
             fail(new Error('Video download interrupted'));
             return;
@@ -488,7 +520,7 @@ export class BuyerRequestHandler {
         paymentResponse = retriedResponse;
       }
       if (!isFreeService) {
-        negotiator.estimateCostFromResponse(peer, retriedResponse, requestedService, req.requestId);
+        this._estimatePaidCost(negotiator, peer, retriedResponse, requestedService, req.requestId);
       }
       const retriedDelivered = this._recordVideoDelivery(peer, retriedResponse, trackedVideoRetrieve, videoDuration, videoRoute, videoJobId, req.requestId);
       this._recordResponseAuth(
@@ -503,7 +535,7 @@ export class BuyerRequestHandler {
     }
 
     if (negotiator && !isFreeService) {
-      negotiator.estimateCostFromResponse(peer, response, requestedService, req.requestId);
+      this._estimatePaidCost(negotiator, peer, response, requestedService, req.requestId);
     }
     const videoDelivered = this._recordVideoDelivery(peer, response, trackedVideoRetrieve, videoDuration, videoRoute, videoJobId, req.requestId);
     this._recordResponseAuth(
@@ -548,7 +580,27 @@ export class BuyerRequestHandler {
     return recorded === 'unsaved' ? 'unrecorded' : null;
   }
 
-  private _prepareDirectFreeUsageOpen(peer: BuyerPeerView, conn: BuyerConnection): void {
+  /**
+   * Expect a charge for a paid response, unless the seller served it from the
+   * service's free allowance: then nothing is owed, and no later NeedAuth can
+   * claim it.
+   */
+  private _estimatePaidCost(
+    negotiator: BuyerPaymentNegotiator,
+    peer: BuyerPeerView,
+    response: SerializedHttpResponse,
+    service: string | undefined,
+    requestId: string,
+  ): void {
+    if (isCoveredByFreeAllowance(response)) {
+      debugLog(`[BuyerRequest] ${peer.peerId.slice(0, 12)}... served ${service ?? 'request'} from its free allowance`);
+      negotiator.bpm.markRequestCovered(peer.peerId, requestId);
+      return;
+    }
+    negotiator.estimateCostFromResponse(peer, response, service, requestId);
+  }
+
+  private _prepareDirectFreeUsageOpen(peer: BuyerPeerView, conn: BuyerConnection, freeTierDelegations: string | null): void {
     const freeUsage = this._deps.freeUsageManager;
     if (!freeUsage) return;
 
@@ -563,7 +615,7 @@ export class BuyerRequestHandler {
       });
     });
     this._deps.registerPaymentMux(peer.peerId, pmux);
-    void freeUsage.prepareOpen(peer, pmux)
+    void freeUsage.prepareOpen(peer, pmux, freeTierDelegations)
       .then(() => freeUsage.waitForOpenAck(peer.peerId))
       .catch((err) => {
         debugWarn(`[BuyerRequest] Free usage open ack unavailable for ${peer.peerId.slice(0, 12)}...: ${err instanceof Error ? err.message : err}`);

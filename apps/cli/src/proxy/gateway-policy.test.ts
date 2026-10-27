@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test, { type TestContext } from 'node:test'
 import type { PeerInfo, SerializedHttpRequest } from '@antseed/node'
+import { encodeFreeTierCapabilities } from '@antseed/node/free-tier-program'
 import { BuyerProxy, type BuyerBalanceReader, type BuyerProxyConfig } from './buyer-proxy.js'
 import { BUYER_IDENTITY_HEADER } from './request-utils.js'
 import { SPEND_ATTRIBUTION_HEADER } from './spend-attribution.js'
@@ -706,6 +707,36 @@ test('gateway-policy automatic routing falls back to a free seller when a paid o
   const refused = await chat(h2, { ...gatewayPolicy, 'x-antseed-chat-session-id': 'thread-2' })
   assert.equal(refused.status, 402)
   assert.equal((h2.proxy as any)._conversations.get('antseed-chat:thread-2')?.pinnedModel ?? null, null)
+})
+
+test('gateway-policy automatic routing without deposits also tries a paid seller whose model has a free allowance', async (t) => {
+  const paid = makePeer('a', { input: 1, output: 1, trust: 95 })
+  const plain = makePeer('b', { input: 2, output: 2, trust: 90 })
+  const allowance = makePeer('e', {
+    input: 3,
+    output: 3,
+    trust: 70,
+    capabilities: encodeFreeTierCapabilities(
+      { base: { maxRequestsPerAddress: 5, maxRequestsPerIp: null, windowMs: 86_400_000, stakersOnly: true }, stakeTiers: [{ minPower: 1_000_000, multiplier: 1 }] },
+      'gpt-5',
+    ),
+  })
+  const h = await startHarness(t, [paid, plain, allowance])
+  ;(h.proxy as any)._node.sendRequest = async (peer: PeerInfo, request: SerializedHttpRequest) => {
+    h.dispatched.push({ peerId: peer.peerId, headers: request.headers })
+    if (peer.peerId === allowance.peerId) {
+      return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json', 'x-antseed-free-tier': 'covered' }, body: Buffer.from('{}') }
+    }
+    return {
+      requestId: request.requestId, statusCode: 402,
+      headers: { 'content-type': 'application/json', 'x-antseed-fault-attribution': 'buyer' },
+      body: Buffer.from('{"error":"payment_required","code":"insufficient_deposits"}'),
+    }
+  }
+  const res = await chat(h, withPolicy({ sort: 'trust' }))
+  assert.equal(res.status, 200)
+  // The paid seller refused; the other one without an allowance is skipped.
+  assert.deepEqual(h.dispatched.map((entry) => entry.peerId), [paid.peerId, allowance.peerId])
 })
 
 test('without a gateway policy a 402 reaches the client from the first seller, as before', async (t) => {

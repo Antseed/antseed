@@ -296,7 +296,7 @@ async function pricedBuyer(pricing: Record<string, string>) {
   return { port: (server.address() as { port: number }).port, stop: () => new Promise<void>((resolve) => server.close(() => resolve())) }
 }
 
-test('a request a free seller served costs $0 and is not pending; a priced or unpriced one stays pending', async (context) => {
+test('a request a free seller or free allowance served costs $0 and is not pending; a priced or unpriced one stays pending', async (context) => {
   const { dir, cleanup } = tempDir('antseed-gateway-')
   const store = new GatewayStore(dir)
   context.after(() => { store.close(); cleanup() })
@@ -307,6 +307,8 @@ test('a request a free seller served costs $0 and is not pending; a priced or un
     ['paid output', { 'x-antseed-input-usd-per-million': '0', 'x-antseed-output-usd-per-million': '2' }, false],
     ['paid cache reads', { 'x-antseed-input-usd-per-million': '0', 'x-antseed-output-usd-per-million': '0', 'x-antseed-cached-input-usd-per-million': '0.1' }, false],
     ['no prices', {}, false],
+    // A priced model the seller's free allowance covered: no spend will ever arrive for it.
+    ['covered by a free allowance', { 'x-antseed-input-usd-per-million': '0.6', 'x-antseed-output-usd-per-million': '2.5', 'X-Antseed-Free-Tier': 'covered' }, true],
   ]
   const seen = new Set<string>()
   for (const [name, pricing, free] of cases) {

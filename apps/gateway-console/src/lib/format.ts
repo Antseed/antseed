@@ -93,6 +93,15 @@ export function formatDuration(ms: number | null | undefined): string {
   return `${Math.floor(hours / 24)} d ${hours % 24} h`
 }
 
+/** A stopwatch reading, mm:ss (h:mm:ss past an hour); negative readings (clock skew) show 00:00. */
+export function formatElapsed(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000))
+  const seconds = String(total % 60).padStart(2, '0')
+  const minutes = Math.floor(total / 60)
+  if (minutes < 60) return `${String(minutes).padStart(2, '0')}:${seconds}`
+  return `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, '0')}:${seconds}`
+}
+
 export function formatDateTime(epochMs: number | null | undefined): string {
   if (!epochMs) return '—'
   return new Date(epochMs).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })

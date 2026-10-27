@@ -431,6 +431,12 @@ nav.navbar {
   color: #FFFFFF !important;
 }
 
+/* Infima drops the right padding of the last navbar item; the gateway pill
+   is that item, so restore it or the label runs into the pill's edge. */
+.navbar__items--right > .header-gateway-link:last-child {
+  padding-right: 16px;
+}
+
 .navbar__items--right .header-gateway-link:hover,
 .navbar__items--right .header-gateway-link:focus-visible {
   background: var(--as-void-cta);
@@ -1988,5 +1994,21 @@ html[data-theme='light'] .blog-wrapper .pagination-nav__link:hover {
   .navbar__items .navbar__item.dropdown > .navbar__link { padding-inline: 8px; }
   .navbar__items--right .header-download-link,
   .navbar__items--right .header-gateway-link { padding-inline: 14px; }
+  .navbar__items--right > .header-gateway-link:last-child { padding-right: 14px; }
   .navbar__items .navbar__link { white-space: nowrap; }
+}
+
+/* Docs search trigger (src/theme/SearchBar). The navbar is already full at
+   laptop widths, so it only appears on docs pages; ⌘K / Ctrl+K and "/" still
+   open the search everywhere. */
+html:not(.plugin-docs) .docs-search-trigger {
+  display: none;
+}
+
+/* Docs pages carry the extra search icon, so the laptop-width navbar
+   tightens a little further there to keep the logo clear of "Network". */
+@media (min-width: 997px) and (max-width: 1180px) {
+  html.plugin-docs .navbar__items .navbar__item.navbar__link,
+  html.plugin-docs .navbar__items .navbar__item.dropdown > .navbar__link { padding-inline: 5px; }
+  html.plugin-docs .navbar__brand { margin-right: 16px; }
 }

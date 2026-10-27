@@ -635,4 +635,234 @@ describe('HttpRelay', () => {
     await relay.handleRequest(makeRequest());
     expect(relay.getActiveCount()).toBe(0); // decremented after completion
   });
+
+  describe('fallback upstreams', () => {
+    const kimiConfig = (overrides?: Partial<RelayConfig>) => makeConfig({
+      baseUrl: 'https://primary.example.com',
+      authHeaderName: 'authorization',
+      authHeaderValue: 'Bearer primary-key',
+      allowedServices: ['kimi-k3.1-pro', 'glm-5'],
+      fallbackUpstreams: [{ baseUrl: 'https://backup.example.com', authHeaderValue: 'Bearer backup-key' }],
+      ...overrides,
+    });
+    const kimiRequest = (overrides?: Partial<SerializedHttpRequest>) => makeRequest({
+      path: '/v1/chat/completions',
+      body: new TextEncoder().encode(JSON.stringify({ model: 'kimi-k3.1-pro', messages: [] })),
+      ...overrides,
+    });
+    const ok = () => new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+    const fail = (status: number, headers?: Record<string, string>) => new Response(JSON.stringify({ error: { code: 'exceeded_current_quota_error' } }), {
+      status,
+      headers: { 'content-type': 'application/json', ...headers },
+    });
+    const calls = () => fetchMock.mock.calls.map(([url, opts]) => ({
+      url: url as string,
+      auth: ((opts as RequestInit).headers as Record<string, string>)['authorization'],
+      model: JSON.parse(Buffer.from((opts as RequestInit).body as Buffer).toString()).model as string,
+    }));
+    let warn: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+      warn.mockRestore();
+      vi.useRealTimers();
+    });
+
+    it('serves from the next upstream when the primary is out of quota', async () => {
+      fetchMock.mockResolvedValueOnce(fail(429)).mockResolvedValueOnce(ok());
+      const responses: SerializedHttpResponse[] = [];
+      const relay = new HttpRelay(kimiConfig(), { onResponse: (res) => responses.push(res) });
+
+      await relay.handleRequest(kimiRequest());
+
+      expect(responses).toHaveLength(1);
+      expect(responses[0]!.statusCode).toBe(200);
+      expect(calls()).toEqual([
+        { url: 'https://primary.example.com/v1/chat/completions', auth: 'Bearer primary-key', model: 'kimi-k3.1-pro' },
+        { url: 'https://backup.example.com/v1/chat/completions', auth: 'Bearer backup-key', model: 'kimi-k3.1-pro' },
+      ]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('kimi-k3.1-pro: primary upstream primary.example.com failed (HTTP 429); trying fallback backup.example.com'));
+      expect(relay.getActiveCount()).toBe(0);
+    });
+
+    it('fails over on network errors', async () => {
+      fetchMock.mockRejectedValueOnce(new Error('ECONNRESET')).mockResolvedValueOnce(ok());
+      const responses: SerializedHttpResponse[] = [];
+      const relay = new HttpRelay(kimiConfig(), { onResponse: (res) => responses.push(res) });
+
+      await relay.handleRequest(kimiRequest());
+
+      expect(responses.map((res) => res.statusCode)).toEqual([200]);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('returns buyer request errors without failing over', async () => {
+      fetchMock.mockResolvedValueOnce(fail(400));
+      const responses: SerializedHttpResponse[] = [];
+      const relay = new HttpRelay(kimiConfig(), { onResponse: (res) => responses.push(res) });
+
+      await relay.handleRequest(kimiRequest());
+
+      expect(responses.map((res) => res.statusCode)).toEqual([400]);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns the last upstream response when every upstream fails', async () => {
+      fetchMock.mockResolvedValueOnce(fail(429)).mockResolvedValueOnce(fail(503));
+      const responses: SerializedHttpResponse[] = [];
+      const relay = new HttpRelay(kimiConfig(), { onResponse: (res) => responses.push(res) });
+
+      await relay.handleRequest(kimiRequest());
+
+      expect(responses.map((res) => res.statusCode)).toEqual([503]);
+    });
+
+    it('uses the fallback model name and the primary key when the fallback has none', async () => {
+      fetchMock.mockResolvedValueOnce(fail(404)).mockResolvedValueOnce(ok());
+      const relay = new HttpRelay(kimiConfig({
+        serviceRewriteMap: { 'kimi-k3.1-pro': 'kimi-k3.1-pro-2026' },
+        fallbackUpstreams: [{ baseUrl: 'https://openrouter.example.com/api', serviceRewriteMap: { 'kimi-k3.1-pro': 'moonshotai/kimi-k3.1-pro' } }],
+      }), { onResponse: () => undefined });
+
+      await relay.handleRequest(kimiRequest());
+
+      expect(calls()).toEqual([
+        { url: 'https://primary.example.com/v1/chat/completions', auth: 'Bearer primary-key', model: 'kimi-k3.1-pro-2026' },
+        { url: 'https://openrouter.example.com/api/v1/chat/completions', auth: 'Bearer primary-key', model: 'moonshotai/kimi-k3.1-pro' },
+      ]);
+    });
+
+    it('lets a fallback send the advertised service id when the primary renames it', async () => {
+      fetchMock.mockResolvedValueOnce(fail(429)).mockResolvedValueOnce(ok());
+      const relay = new HttpRelay(kimiConfig({
+        serviceRewriteMap: { 'kimi-k3.1-pro': 'moonshotai/kimi-k3.1-pro' },
+        fallbackUpstreams: [{ baseUrl: 'https://backup.example.com', serviceRewriteMap: { 'kimi-k3.1-pro': 'kimi-k3.1-pro' } }],
+      }), { onResponse: () => undefined });
+
+      await relay.handleRequest(kimiRequest());
+
+      expect(calls().map((call) => call.model)).toEqual(['moonshotai/kimi-k3.1-pro', 'kimi-k3.1-pro']);
+    });
+
+    it('fails over when a complete response body breaks before delivery', async () => {
+      const broken = new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"id":'));
+          controller.error(new Error('ECONNRESET'));
+        },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+      fetchMock.mockResolvedValueOnce(broken).mockResolvedValueOnce(ok());
+      const responses: SerializedHttpResponse[] = [];
+      const relay = new HttpRelay(kimiConfig(), { onResponse: (res) => responses.push(res) });
+
+      await relay.handleRequest(kimiRequest());
+
+      expect(responses).toHaveLength(1);
+      expect(responses[0]!.statusCode).toBe(200);
+      expect(JSON.parse(new TextDecoder().decode(responses[0]!.body))).toEqual({ ok: true });
+      expect(calls().map((call) => new URL(call.url).host)).toEqual(['primary.example.com', 'backup.example.com']);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('primary upstream primary.example.com failed (ECONNRESET)'));
+    });
+
+    it('never switches upstreams once a stream has started', async () => {
+      const broken = new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('data: {"partial":true}\n\n'));
+          controller.error(new Error('ECONNRESET'));
+        },
+      }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+      fetchMock.mockResolvedValueOnce(broken).mockResolvedValueOnce(ok());
+      const responses: SerializedHttpResponse[] = [];
+      const chunks: SerializedHttpResponseChunk[] = [];
+      const relay = new HttpRelay(kimiConfig(), {
+        onResponse: (res) => responses.push(res),
+        onResponseChunk: (chunk) => chunks.push(chunk),
+      });
+
+      await relay.handleRequest(kimiRequest());
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(responses.map((res) => res.statusCode)).toEqual([200]);
+      expect(chunks.map((chunk) => new TextDecoder().decode(chunk.data)).join('')).toContain('event: error');
+      expect(chunks.at(-1)!.done).toBe(true);
+    });
+
+    it('only uses a fallback for the services it lists', async () => {
+      fetchMock.mockResolvedValue(fail(429));
+      const responses: SerializedHttpResponse[] = [];
+      const relay = new HttpRelay(kimiConfig({
+        fallbackUpstreams: [{ baseUrl: 'https://backup.example.com', services: ['kimi-k3.1-pro'] }],
+      }), { onResponse: (res) => responses.push(res) });
+
+      await relay.handleRequest(kimiRequest({
+        body: new TextEncoder().encode(JSON.stringify({ model: 'glm-5', messages: [] })),
+      }));
+
+      expect(responses.map((res) => res.statusCode)).toEqual([429]);
+      expect(calls().map((call) => call.url)).toEqual(['https://primary.example.com/v1/chat/completions']);
+    });
+
+    it('tries a failed upstream last until its cooldown ends, per service', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      fetchMock.mockImplementation(async (url: string) => (url.startsWith('https://primary') ? fail(429, { 'retry-after': '60' }) : ok()));
+      const relay = new HttpRelay(kimiConfig(), { onResponse: () => undefined });
+
+      await relay.handleRequest(kimiRequest());
+      await relay.handleRequest(kimiRequest());
+      await relay.handleRequest(kimiRequest({
+        body: new TextEncoder().encode(JSON.stringify({ model: 'glm-5', messages: [] })),
+      }));
+      vi.advanceTimersByTime(61_000);
+      await relay.handleRequest(kimiRequest());
+
+      expect(calls().map((call) => `${new URL(call.url).host} ${call.model}`)).toEqual([
+        'primary.example.com kimi-k3.1-pro',
+        'backup.example.com kimi-k3.1-pro',
+        // Cooling down: the backup is tried first.
+        'backup.example.com kimi-k3.1-pro',
+        // Another service still starts at the primary.
+        'primary.example.com glm-5',
+        'backup.example.com glm-5',
+        // Cooldown over: the primary is tried first again.
+        'primary.example.com kimi-k3.1-pro',
+        'backup.example.com kimi-k3.1-pro',
+      ]);
+    });
+
+    it('fails over before streaming starts and streams from the fallback', async () => {
+      fetchMock.mockResolvedValueOnce(fail(502)).mockResolvedValueOnce(new Response('data: {"ok":true}\n\n', {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      }));
+      const responses: SerializedHttpResponse[] = [];
+      const chunks: SerializedHttpResponseChunk[] = [];
+      const relay = new HttpRelay(kimiConfig(), {
+        onResponse: (res) => responses.push(res),
+        onResponseChunk: (chunk) => chunks.push(chunk),
+      });
+
+      await relay.handleRequest(kimiRequest());
+
+      expect(responses.map((res) => res.statusCode)).toEqual([200]);
+      expect(responses[0]!.headers['x-antseed-streaming']).toBe('1');
+      expect(new TextDecoder().decode(chunks[0]!.data)).toBe('data: {"ok":true}\n\n');
+      expect(chunks.at(-1)!.done).toBe(true);
+    });
+
+    it('fails over when the primary token provider cannot produce a token', async () => {
+      fetchMock.mockResolvedValueOnce(ok());
+      const relay = new HttpRelay(kimiConfig({
+        tokenProvider: { getToken: async () => { throw new Error('refresh failed'); } } as unknown as RelayConfig['tokenProvider'],
+      }), { onResponse: () => undefined });
+
+      await relay.handleRequest(kimiRequest());
+
+      expect(calls()).toEqual([
+        { url: 'https://backup.example.com/v1/chat/completions', auth: 'Bearer backup-key', model: 'kimi-k3.1-pro' },
+      ]);
+    });
+  });
 });
