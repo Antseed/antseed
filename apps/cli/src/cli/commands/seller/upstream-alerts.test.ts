@@ -71,6 +71,24 @@ test('more models withdrawn in a later round update the open alert', async () =>
   assert.deepEqual(updates, [false, true]);
 });
 
+test('a model withdrawn after a partial recovery updates the open alert', async () => {
+  const log = recorder();
+  const upstream = new UpstreamAlerts(log);
+  for (const service of ['glm', 'kimi', 'qwen']) upstream.modelChanged(removed(service));
+  upstream.flush();
+  for (const service of ['glm', 'kimi']) upstream.modelChanged(restored(service));
+  upstream.flush();
+  upstream.modelChanged(removed('deepseek'));
+  upstream.flush();
+  upstream.modelChanged(removed('glm'));
+  upstream.flush();
+  assert.deepEqual(log.sent.map((event) => event.title), [
+    '3 models on deepinfra withdrawn after failed health checks: glm, kimi, qwen',
+    '2 models on deepinfra withdrawn after failed health checks: qwen, deepseek',
+    '3 models on deepinfra withdrawn after failed health checks: qwen, deepseek, glm',
+  ]);
+});
+
 test('a low balance that runs out escalates without a recovery message', async () => {
   const log = recorder();
   const upstream = new UpstreamAlerts(log);

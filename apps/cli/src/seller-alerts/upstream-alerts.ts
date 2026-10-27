@@ -9,8 +9,8 @@ interface Upstream {
   down: Map<string, string>;
   /** Whether a withdrawal alert is open for this upstream. */
   announced: boolean;
-  /** How many were withdrawn when it was last announced. */
-  announcedCount: number;
+  /** The withdrawn services the open alert names, less any restored since. */
+  announcedServices: Set<string>;
   credit: 'out' | 'low' | null;
   /** Something changed since the last flush. */
   dirty: boolean;
@@ -95,7 +95,7 @@ export class UpstreamAlerts {
   private _upstream(providerId: string, provider: string): Upstream {
     let upstream = this._upstreams.get(providerId);
     if (!upstream) {
-      upstream = { provider, down: new Map(), announced: false, announcedCount: 0, credit: null, dirty: false };
+      upstream = { provider, down: new Map(), announced: false, announcedServices: new Set(), credit: null, dirty: false };
       this._upstreams.set(providerId, upstream);
     }
     return upstream;
@@ -112,11 +112,13 @@ export class UpstreamAlerts {
     if (withdrawn.length === 0) {
       if (upstream.announced) void this._alerts.record({ kind: 'model_up', severity: 'info', title: `${this._name(providerId)}: every withdrawn model is healthy again and advertised`, ...common }, { journal: false });
       upstream.announced = false;
-      upstream.announcedCount = 0;
+      upstream.announcedServices.clear();
       return;
     }
+    // A restored model drops out, so it is announced again if it is withdrawn again.
+    for (const service of upstream.announcedServices) if (!upstream.down.has(service)) upstream.announcedServices.delete(service);
     // Out of credit already said why; more withdrawals add nothing to act on.
-    if (upstream.credit === 'out' || withdrawn.length <= upstream.announcedCount) return;
+    if (upstream.credit === 'out' || withdrawn.every((service) => upstream.announcedServices.has(service))) return;
     const shown = withdrawn.slice(0, 10).join(', ') + (withdrawn.length > 10 ? ` and ${withdrawn.length - 10} more` : '');
     void this._alerts.record({
       kind: 'model_down', severity: 'warning',
@@ -127,6 +129,6 @@ export class UpstreamAlerts {
       ...common,
     }, { journal: false, update: upstream.announced });
     upstream.announced = true;
-    upstream.announcedCount = withdrawn.length;
+    upstream.announcedServices = new Set(withdrawn);
   }
 }
