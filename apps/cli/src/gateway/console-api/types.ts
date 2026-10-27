@@ -1266,7 +1266,48 @@ export interface SellerSettings {
   restrictedCountries: string[]
   /** Not set in the file: the built-in list applies. */
   restrictedCountriesDefault: boolean
-  services: SellerServicePricing[]
+  services: SellerSettingsService[]
+  /** The configured providers, for adding a model under one. */
+  providers: SellerSettingsProvider[]
+}
+
+/** A service as the settings edit it: its price and free tier, whether it is offered, and its per-unit prices. */
+export interface SellerSettingsService extends SellerServicePricing {
+  /** Offered to buyers; a model turned off stays in the config but is not started. */
+  enabled: boolean
+  /** The model id sent upstream, when it differs from the service id. */
+  upstreamModel: string | null
+  categories: string[]
+  /** Each priced component of its unit billing (per image, per video second…), editable one by one. */
+  unitComponents: SellerUnitComponent[]
+}
+
+export interface SellerUnitComponent {
+  protocol: string
+  unit: string
+  /** What the component applies to (`{ resolution: '4k' }`); null for every request. */
+  match: Record<string, unknown> | null
+  priceUsd: number
+}
+
+export interface SellerSettingsProvider {
+  name: string
+  plugin: string
+  /** Its services bill per unit (image, video): new models there are added in the config file, with their capabilities. */
+  unitBilled: boolean
+  /** Services under it, offered or not. */
+  services: number
+}
+
+/** A token-billed model added under an existing provider. */
+export interface SellerNewService {
+  provider: string
+  service: string
+  upstreamModel?: string
+  categories?: string[]
+  inputUsdPerMillion: number
+  outputUsdPerMillion: number
+  cachedInputUsdPerMillion?: number
 }
 
 export interface SellerSettingsPatch {
@@ -1279,7 +1320,22 @@ export interface SellerSettingsPatch {
   /** null goes back to the built-in list. */
   restrictedCountries?: string[] | null
   /** Prices and each model's own free tier (`freeTier: null` removes it, so a free model falls back to the seller-wide one). */
-  pricing?: Array<{ provider: string; service: string; inputUsdPerMillion?: number; outputUsdPerMillion?: number; cachedInputUsdPerMillion?: number | null; freeTier?: SellerFreeTierProgramPatch | null }>
+  pricing?: Array<{
+    provider: string
+    service: string
+    inputUsdPerMillion?: number
+    outputUsdPerMillion?: number
+    cachedInputUsdPerMillion?: number | null
+    freeTier?: SellerFreeTierProgramPatch | null
+    /** false turns the model off (kept in the config, not offered); true offers it again. */
+    enabled?: boolean
+    /** New prices for unit-billing components, each found by its protocol, unit and match. */
+    unitPrices?: Array<{ protocol: string; unit: string; match: Record<string, unknown> | null; priceUsd: number }>
+  }>
+  /** Token-billed models to add under existing providers. */
+  addServices?: SellerNewService[]
+  /** Models to remove from the config (their own free tier and prices with them). */
+  removeServices?: Array<{ provider: string; service: string }>
 }
 
 export interface SellerAlertSettings {

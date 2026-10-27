@@ -42,7 +42,7 @@ import { parseBootstrapList, toBootstrapConfig } from '@antseed/node/discovery'
 import { isRestarting, setupShutdownHandler, shutdownForRestart } from '../../shutdown.js'
 import { loadProviderPlugin, loadProverPlugin, buildPluginConfig, getPackageVersions } from '../../../plugins/loader.js'
 import { ensurePluginsUpToDate } from '../../../plugins/drift.js'
-import { pricedSellerServices, resolveEffectiveSellerConfig, resolveSellerFreeTier, type SellerRuntimeOverrides } from '../../../config/effective.js'
+import { dropDisabledServices, pricedSellerServices, resolveEffectiveSellerConfig, resolveSellerFreeTier, type SellerRuntimeOverrides } from '../../../config/effective.js'
 import { ensureDerivedIdentityDisplayName } from '../../../config/identity-display-name.js'
 import { AntAgentProvider, loadAntAgent, type AntAgentDefinition } from '@antseed/ant-agent'
 import { resolvePluginPackage } from '../../../plugins/registry.js'
@@ -500,7 +500,10 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         effectiveSellerConfig,
         options.provider as string | undefined,
       )
-      const selectedProviderNames = providerSelection.selected
+      // Models turned off from the dashboard (`enabled: false`) are not offered; a provider left with none is not started.
+      const disabled = dropDisabledServices(effectiveSellerConfig, providerSelection.selected)
+      const selectedProviderNames = providerSelection.selected.filter((name) => !disabled.emptyProviders.includes(name))
+      if (disabled.off.length > 0) console.log(chalk.dim(`  models turned off: ${disabled.off.join(', ')}${disabled.emptyProviders.length > 0 ? ` (not starting ${disabled.emptyProviders.join(', ')}: every model is off)` : ''}`))
 
       if (selectedProviderNames.length === 0) {
         console.error(chalk.red('Error: No seller providers are configured.'))

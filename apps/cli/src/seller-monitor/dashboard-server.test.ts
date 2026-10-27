@@ -145,7 +145,7 @@ test('settings edits are validated, keep unknown fields and leave a backup', asy
     const before = readFileSync(configPath, 'utf-8')
     const view = (await call('GET', '/seller/settings')).json!.settings
     assert.equal(view.writable, true)
-    assert.deepEqual(view.services, [{ provider: 'openai', service: 'glm-5.3', inputUsdPerMillion: 1, outputUsdPerMillion: 3, cachedInputUsdPerMillion: null, inherited: false, paid: true, unitPrice: null, kind: 'text', apiProtocols: [], freeTier: null, ownFreeTier: null }])
+    assert.deepEqual(view.services, [{ provider: 'openai', service: 'glm-5.3', inputUsdPerMillion: 1, outputUsdPerMillion: 3, cachedInputUsdPerMillion: null, inherited: false, paid: true, unitPrice: null, kind: 'text', apiProtocols: [], freeTier: null, ownFreeTier: null, enabled: true, upstreamModel: null, categories: [], unitComponents: [] }])
 
     const saved = await call('PATCH', '/seller/settings', {
       displayName: 'Renamed', maxConcurrentBuyers: 20, gasCheck: { minBalanceEth: 0.001 }, restrictedCountries: ['ru', 'KP'],

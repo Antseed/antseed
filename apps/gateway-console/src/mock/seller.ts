@@ -56,6 +56,9 @@ const DEFAULT_TIERS: Array<{ minPower: number; multiplier: number | 'unlimited' 
 /** The fake seller's image model: priced per image, its token prices zero. */
 const IMAGE_PRICE = { unit: 'output_images', name: 'image', minUsd: 0.03, maxUsd: 0.03 }
 
+/** A text model's settings fields: offered, its upstream id, chat categories. */
+const text = (upstreamModel: string) => ({ enabled: true, upstreamModel, categories: ['chat'], unitComponents: [] })
+
 export function mockSellerSettings(): { settings: SellerSettings; alerts: SellerAlertSettings; restart: SellerRestartView } {
   return {
     settings: {
@@ -68,13 +71,19 @@ export function mockSellerSettings(): { settings: SellerSettings; alerts: Seller
       services: [
         { provider: 'openai', service: 'glm-5.3', inputUsdPerMillion: 0.8, outputUsdPerMillion: 2.4, cachedInputUsdPerMillion: 0.1, inherited: false, paid: true, unitPrice: null, kind: 'text', apiProtocols: [],
           freeTier: { base: { maxRequestsPerAddress: 100, maxRequestsPerIp: null, windowMs: 86_400_000 }, stakeTiers: DEFAULT_TIERS },
-          ownFreeTier: { maxRequestsPerAddress: 100, maxRequestsPerIp: null, windowMs: null, stakersOnly: false, stakeTiers: null } },
-        { provider: 'openai', service: 'kimi-k3', inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5, cachedInputUsdPerMillion: null, inherited: true, paid: true, unitPrice: null, kind: 'text', apiProtocols: [], freeTier: null, ownFreeTier: null },
+          ownFreeTier: { maxRequestsPerAddress: 100, maxRequestsPerIp: null, windowMs: null, stakersOnly: false, stakeTiers: null }, ...text('zai-org/GLM-5.3') },
+        { provider: 'openai', service: 'kimi-k3', inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5, cachedInputUsdPerMillion: null, inherited: true, paid: true, unitPrice: null, kind: 'text', apiProtocols: [], freeTier: null, ownFreeTier: null, ...text('moonshotai/Kimi-K3') },
         { provider: 'openai', service: 'qwen-3.6-27b', inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: null, inherited: false, paid: false, unitPrice: null, kind: 'text', apiProtocols: [],
-          freeTier: { base: { maxRequestsPerAddress: 200, maxRequestsPerIp: 400, windowMs: 86_400_000 }, stakeTiers: DEFAULT_TIERS }, ownFreeTier: null },
-        { provider: 'openai', service: 'qwen-image', inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: null, inherited: false, paid: true,
-          unitPrice: IMAGE_PRICE, kind: 'image', apiProtocols: ['openai-images'], freeTier: null, ownFreeTier: null },
+          freeTier: { base: { maxRequestsPerAddress: 200, maxRequestsPerIp: 400, windowMs: 86_400_000 }, stakeTiers: DEFAULT_TIERS }, ownFreeTier: null, ...text('Qwen/Qwen3.6-27B') },
+        { provider: 'fal', service: 'qwen-image', inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: null, inherited: false, paid: true,
+          unitPrice: IMAGE_PRICE, kind: 'image', apiProtocols: ['openai-images'], freeTier: null, ownFreeTier: null,
+          enabled: true, upstreamModel: 'fal-ai/qwen-image', categories: ['image'], unitComponents: [{ protocol: 'openai-images', unit: 'output_images', match: null, priceUsd: 0.03 }] },
+        { provider: 'fal', service: 'wan-2.6', inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: null, inherited: false, paid: true,
+          unitPrice: { unit: 'video_seconds', name: 'video second', minUsd: 0.05, maxUsd: 0.1 }, kind: 'video', apiProtocols: ['fal-video'], freeTier: null, ownFreeTier: null,
+          enabled: true, upstreamModel: 'fal-ai/wan/v2.6/text-to-video', categories: ['video'],
+          unitComponents: [{ protocol: 'fal-video', unit: 'video_seconds', match: { resolution: '720p' }, priceUsd: 0.05 }, { protocol: 'fal-video', unit: 'video_seconds', match: { resolution: '1080p' }, priceUsd: 0.1 }] },
       ],
+      providers: [{ name: 'openai', plugin: 'openai', unitBilled: false, services: 3 }, { name: 'fal', plugin: 'fal-video', unitBilled: true, services: 2 }],
     },
     alerts: {
       writable: true, readOnlyReason: null,
@@ -247,10 +256,28 @@ export function mockUpdateSellerSettings(patch: SellerSettingsPatch) {
     if (entry.inputUsdPerMillion !== undefined || entry.outputUsdPerMillion !== undefined) service.inherited = false
     if (entry.freeTier === null) service.ownFreeTier = null
     else if (entry.freeTier) service.ownFreeTier = patchProgram(service.ownFreeTier ?? EMPTY_PROGRAM, entry.freeTier)
+    if (entry.enabled !== undefined) service.enabled = entry.enabled
+    for (const change of entry.unitPrices ?? []) {
+      const component = service.unitComponents.find((candidate) => candidate.protocol === change.protocol && candidate.unit === change.unit && JSON.stringify(candidate.match) === JSON.stringify(change.match))
+      if (!component) throw new Error(`${entry.service}: no ${change.unit} price under ${change.protocol} in the config file`)
+      component.priceUsd = change.priceUsd
+      if (service.unitPrice) service.unitPrice = { ...service.unitPrice, minUsd: Math.min(...service.unitComponents.map((c) => c.priceUsd)), maxUsd: Math.max(...service.unitComponents.map((c) => c.priceUsd)) }
+    }
     const own = service.ownFreeTier
     service.freeTier = own ? { base: { maxRequestsPerAddress: own.maxRequestsPerAddress, maxRequestsPerIp: own.maxRequestsPerIp, windowMs: own.windowMs ?? 86_400_000 }, stakeTiers: own.stakeTiers ?? DEFAULT_TIERS } : service.paid ? null : service.freeTier
   }
-  const paths: Record<string, string> = { displayName: 'identity.displayName', maxConcurrentBuyers: 'seller.maxConcurrentBuyers', healthCheck: 'seller.healthCheck', gasCheck: 'seller.gasCheck', freeTier: 'seller.freeTier', restrictedCountries: 'seller.restrictedCountries', pricing: 'seller.providers' }
+  for (const removed of patch.removeServices ?? []) settings.services = settings.services.filter((row) => !(row.provider === removed.provider && row.service === removed.service))
+  for (const added of patch.addServices ?? []) {
+    if (settings.services.some((row) => row.provider === added.provider && row.service === added.service)) throw new Error(`addServices: ${added.service} is already offered under ${added.provider}`)
+    settings.services.push({
+      provider: added.provider, service: added.service, inputUsdPerMillion: added.inputUsdPerMillion, outputUsdPerMillion: added.outputUsdPerMillion,
+      cachedInputUsdPerMillion: added.cachedInputUsdPerMillion ?? null, inherited: false, paid: added.inputUsdPerMillion > 0 || added.outputUsdPerMillion > 0,
+      unitPrice: null, kind: 'text', apiProtocols: [], freeTier: null, ownFreeTier: null,
+      enabled: true, upstreamModel: added.upstreamModel ?? null, categories: added.categories ?? [], unitComponents: [],
+    })
+  }
+  for (const provider of settings.providers) provider.services = settings.services.filter((row) => row.provider === provider.name).length
+  const paths: Record<string, string> = { displayName: 'identity.displayName', maxConcurrentBuyers: 'seller.maxConcurrentBuyers', healthCheck: 'seller.healthCheck', gasCheck: 'seller.gasCheck', freeTier: 'seller.freeTier', restrictedCountries: 'seller.restrictedCountries', pricing: 'seller.providers', addServices: 'seller.providers', removeServices: 'seller.providers' }
   settings.overridden = [...new Set([...settings.overridden, ...changed.map((key) => paths[key] ?? key)])]
   settingsStore = { ...state, settings }
   return { ...settingsStore, changed }

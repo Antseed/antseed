@@ -64,6 +64,8 @@ export interface SellerServiceConfig {
    * covers are served free, the rest are paid at the listed price.
    */
   freeTier?: SellerFreeTierCLIConfig;
+  /** `false`: kept in the config but not offered (the seller starts without it). Default: offered. */
+  enabled?: boolean;
 }
 
 /**

@@ -1,14 +1,16 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Button, Disclosure, Segmented, Switch, TextField, useToast } from '@antseed/ui'
+import { Button, ConfirmDialog, Disclosure, Segmented, Switch, TextField, useToast } from '@antseed/ui'
 import { api } from '../api'
-import type { FreeTierProgramView, SellerFreeTierProgramPatch, SellerFreeTierProgramSettings, SellerRestartView, SellerSettings, SellerSettingsPatch } from '../api/types'
+import type { FreeTierProgramView, SellerFreeTierProgramPatch, SellerFreeTierProgramSettings, SellerRestartView, SellerSettings, SellerSettingsPatch, SellerSettingsService, SellerUnitComponent } from '../api/types'
+import type { SellerSettingsResponse } from '../api/client'
 import { freeTierHeadline, tierAnts, tierMultiplier } from '../lib/free-tier'
 import { numberFieldError, rebaseDraft } from '../lib/settings'
 import { qk } from '../lib/queries'
-import { formatUnitPrice } from '../lib/seller'
+import { formatUnitPrice, unitName } from '../lib/seller'
 import { ErrorAlert } from './ui'
 import { SellerOverrides, SellerRestart } from './SellerRestart'
+import { SellerAddModel } from './SellerAddModel'
 
 /** Everything the form edits, as typed (numbers stay strings until saved). */
 interface Draft {
@@ -32,6 +34,10 @@ interface Draft {
   ownPrice: Record<string, boolean>
   /** Each model's own free-tier program, by provider/service. */
   free: Record<string, OwnFreeDraft>
+  /** Whether each model is offered, by provider/service. */
+  offered: Record<string, boolean>
+  /** Per-unit prices (per image, per video second), by `unitKey`. */
+  unitPrices: Record<string, string>
 }
 
 type TiersMode = 'default' | 'custom' | 'off'
@@ -49,6 +55,14 @@ const WEEKS_PER_YEAR = 52
 const MAX_TIERS = 4
 
 const priceKey = (provider: string, service: string) => `${provider}/${service}`
+/** One unit-billing component of a model: its protocol, unit and what it matches. */
+export const unitKey = (key: string, component: Pick<SellerUnitComponent, 'protocol' | 'unit' | 'match'>) =>
+  `${key}|${component.protocol}|${component.unit}|${JSON.stringify(component.match)}`
+/** "4k · audio", or the unit alone: which requests a component prices. */
+export function unitComponentLabel(component: SellerUnitComponent): string {
+  const match = Object.entries(component.match ?? {}).map(([field, value]) => (value === true ? field : value === false ? `no ${field}` : String(value)))
+  return match.length > 0 ? match.join(' · ') : `Per ${unitName(component.unit)}`
+}
 const optional = (value: number | null) => (value === null ? '' : String(value))
 const hoursOf = (windowMs: number | null) => (windowMs === null ? '' : String(windowMs / 3_600_000))
 const antsOf = (minPower: number) => String(Math.round(minPower / WEEKS_PER_YEAR))
@@ -85,6 +99,9 @@ export function draftOf(settings: SellerSettings): Draft {
     ownPrice: Object.fromEntries(settings.services.map((entry) => [priceKey(entry.provider, entry.service),
       !entry.inherited && entry.inputUsdPerMillion !== null && entry.outputUsdPerMillion !== null])),
     free: Object.fromEntries(settings.services.map((entry) => [priceKey(entry.provider, entry.service), ownFreeDraft(entry.ownFreeTier)])),
+    offered: Object.fromEntries(settings.services.map((entry) => [priceKey(entry.provider, entry.service), entry.enabled])),
+    unitPrices: Object.fromEntries(settings.services.flatMap((entry) => entry.unitComponents.map((component) =>
+      [unitKey(priceKey(entry.provider, entry.service), component), String(component.priceUsd)]))),
   }
 }
 
@@ -189,6 +206,10 @@ export function draftErrors(draft: Draft, base?: Draft): Record<string, string> 
   if (draft.freeStakersOnly && draft.freeTiersMode === 'off' && touched('freeStakersOnly', 'freeTiersMode')) {
     errors.freeTiers = 'Stakers only needs at least one staked tier.'
   }
+  for (const [key, value] of Object.entries(draft.unitPrices)) {
+    if (base && base.unitPrices[key] === value) continue
+    errors[`unit:${key}`] = numberFieldError(value, { required: true })
+  }
   for (const [key, own] of Object.entries(draft.free)) {
     if (!own.enabled || (base && same(own, base.free[key]))) continue
     errors[`${key}:freeAddress`] = numberFieldError(own.perAddress, { min: 1, integer: true })
@@ -209,7 +230,13 @@ function countryList(text: string): string[] {
  * services added or removed since included) takes the new saved values.
  */
 export function reconcileDraft(draft: Draft, base: Draft, next: Draft): Draft {
-  return { ...rebaseDraft(draft, base, next), prices: rebaseRows(draft.prices, base.prices, next.prices), free: rebaseRows(draft.free, base.free, next.free) }
+  return {
+    ...rebaseDraft(draft, base, next),
+    prices: rebaseRows(draft.prices, base.prices, next.prices),
+    free: rebaseRows(draft.free, base.free, next.free),
+    offered: rebaseDraft(draft.offered, base.offered, next.offered),
+    unitPrices: rebaseDraft(draft.unitPrices, base.unitPrices, next.unitPrices),
+  }
 }
 
 /** Rows keyed by provider/service, each rebased field by field (an input edit here keeps an output change saved elsewhere). */
@@ -255,9 +282,16 @@ export function patchOf(base: Draft, draft: Draft): SellerSettingsPatch {
     const own = draft.free[key]
     // A model's own program keeps any staked tiers written in the file; turning it on uses the network's.
     const freeTier = own === undefined ? undefined : ownFreePatch(base.free[key], own)
-    if (Object.keys(prices).length === 0 && freeTier === undefined) continue
+    const enabled = key in base.offered && draft.offered[key] !== base.offered[key] ? draft.offered[key] : undefined
+    const unitPrices = Object.entries(draft.unitPrices)
+      .filter(([unit, value]) => unit.startsWith(`${key}|`) && base.unitPrices[unit] !== undefined && numChanged(value, base.unitPrices[unit]!))
+      .map(([unit, value]) => {
+        const [, protocol, unitName, match] = unit.slice(key.length).split('|')
+        return { protocol: protocol!, unit: unitName!, match: JSON.parse(match!) as Record<string, unknown> | null, priceUsd: num(value) }
+      })
+    if (Object.keys(prices).length === 0 && freeTier === undefined && enabled === undefined && unitPrices.length === 0) continue
     const [provider, ...rest] = key.split('/')
-    pricing.push({ provider: provider!, service: rest.join('/'), ...prices, ...(freeTier !== undefined ? { freeTier } : {}) })
+    pricing.push({ provider: provider!, service: rest.join('/'), ...prices, ...(freeTier !== undefined ? { freeTier } : {}), ...(enabled !== undefined ? { enabled } : {}), ...(unitPrices.length > 0 ? { unitPrices } : {}) })
   }
   if (pricing.length > 0) patch.pricing = pricing
   return patch
@@ -299,6 +333,25 @@ export function SellerSettingsEditor({ settings, restart }: { settings: SellerSe
     setDraft((current) => ({ ...current, free: { ...current.free, [key]: { ...(current.free[key] ?? savedFree[key]!), [part]: value } } }))
   const setTier = (index: number, part: keyof TierDraft, value: string) =>
     setDraft((current) => ({ ...current, freeTiers: current.freeTiers.map((tier, at) => (at === index ? { ...tier, [part]: value } : tier)) }))
+
+  const setOffered = (key: string, value: boolean) => setDraft((current) => ({ ...current, offered: { ...current.offered, [key]: value } }))
+  const setUnitPrice = (key: string, value: string) => setDraft((current) => ({ ...current, unitPrices: { ...current.unitPrices, [key]: value } }))
+  const offeredCount = settings.services.filter((entry) => draft.offered[priceKey(entry.provider, entry.service)] ?? entry.enabled).length
+  const [removing, setRemoving] = useState<SellerSettingsService | null>(null)
+  // Adding or removing a model saves at once; the form's other edits stay as typed (the draft is rebased on the new settings).
+  const structuralSaved = (data: SellerSettingsResponse, message: string) => {
+    queryClient.setQueryData(qk.sellerSettings, { settings: data.settings, alerts: data.alerts, restart: data.restart })
+    for (const key of [qk.sellerStatus, qk.sellerPromote, qk.sellerCard, qk.sellerMarket]) void queryClient.invalidateQueries({ queryKey: key })
+    setSavedPendingRestart(true)
+    toast(message)
+  }
+  const remove = useMutation({
+    mutationFn: (entry: SellerSettingsService) => api.seller.updateSettings({ removeServices: [{ provider: entry.provider, service: entry.service }] }),
+    onSuccess: (data, entry) => {
+      setRemoving(null)
+      structuralSaved(data, `Removed ${entry.service}. Restart the seller to apply.`)
+    },
+  })
 
   const save = useMutation({
     mutationFn: (submitted: { patch: SellerSettingsPatch; draft: Draft }) => api.seller.updateSettings(submitted.patch),
@@ -349,18 +402,33 @@ export function SellerSettingsEditor({ settings, restart }: { settings: SellerSe
           </section>
         </div>
         <div className="gc-policy__advanced">
-          <Disclosure title="Pricing" defaultOpen={Boolean(focusPrice)} summary={`${settings.services.length} service${settings.services.length === 1 ? '' : 's'}`}>
-            <p className="gc-fineprint">USD per million tokens. A service without its own price uses its provider's defaults until you save one. A model's own free tier is a free allowance on a paid model, and replaces the seller-wide free tier on a free one.</p>
+          <Disclosure title="Models and pricing" defaultOpen={Boolean(focusPrice)} summary={`${offeredCount} of ${settings.services.length} offered`}>
+            <p className="gc-fineprint">USD per million tokens, or per image or video for models billed by unit. A service without its own price uses its provider's defaults until you save one. A model turned off stays here but is not offered. A model's own free tier is a free allowance on a paid model, and replaces the seller-wide free tier on a free one.</p>
             {settings.services.map((entry) => {
               const key = priceKey(entry.provider, entry.service)
               const price = draft.prices[key] ?? savedPrices[key]!
               const own = draft.free[key] ?? savedFree[key]!
+              const offered = draft.offered[key] ?? entry.enabled
               return (
-                <div key={key} id={`gc-price-${key}`} className="gc-seller-price">
-                  <div className="gc-seller-price__name"><span className="gc-ellipsis" title={key}>{entry.service}</span><span className="gc-fineprint">{entry.provider}{entry.inherited ? ' · provider default' : ''}</span></div>
-                  {entry.unitPrice
-                    // Billed per image or video: the rate lives in the service's unitBillingModels, which this form does not edit.
-                    ? <div className="gc-seller-price__unit"><span>{formatUnitPrice(entry.unitPrice)}</span><span className="gc-fineprint">Billed per {entry.unitPrice.name}. Change it in this service's <code>unitBillingModels</code> in config.json.</span></div>
+                <div key={key} id={`gc-price-${key}`} className={offered ? 'gc-seller-price' : 'gc-seller-price gc-seller-price--off'}>
+                  <div className="gc-seller-price__name">
+                    <span className="gc-ellipsis" title={key}>{entry.service}</span>
+                    <span className="gc-fineprint">{entry.provider}{entry.upstreamModel ? ` · ${entry.upstreamModel}` : ''}{entry.inherited ? ' · provider default' : ''}</span>
+                    <div className="gc-seller-price__controls">
+                      <Switch checked={offered} disabled={readOnly} onChange={(next) => setOffered(key, next)} label="Offered" ariaLabel={`Offer ${key}`} />
+                      {!readOnly && <Button size="sm" variant="link" className="gc-seller-inline-button" aria-label={`Remove ${key}`} onClick={() => setRemoving(entry)}>Remove</Button>}
+                    </div>
+                  </div>
+                  {entry.unitComponents.length > 0
+                    // Billed per image or video: each priced component of its unit billing, edited one by one.
+                    ? <div className="gc-seller-price__unit">
+                      {entry.unitComponents.map((component) => {
+                        const unit = unitKey(key, component)
+                        return <TextField key={unit} size="sm" className="gc-num" label={unitComponentLabel(component)} aria-label={`${key} ${unitComponentLabel(component)} price`} inputMode="decimal"
+                          disabled={readOnly} value={draft.unitPrices[unit] ?? String(component.priceUsd)} error={errors[`unit:${unit}`]} onChange={(event) => setUnitPrice(unit, event.target.value)} />
+                      })}
+                      <span className="gc-fineprint">USD per {unitName(entry.unitComponents[0]!.unit)}{entry.unitPrice ? `; now ${formatUnitPrice(entry.unitPrice)}` : ''}.</span>
+                    </div>
                     : <>
                     <TextField size="sm" className="gc-num" label="Input" aria-label={`${key} input price`} inputMode="decimal" disabled={readOnly} value={price.input} error={errors[`${key}:input`]} onChange={(event) => setPrice(key, 'input', event.target.value)} />
                     <TextField size="sm" className="gc-num" label="Output" aria-label={`${key} output price`} inputMode="decimal" disabled={readOnly} value={price.output} error={errors[`${key}:output`]} onChange={(event) => setPrice(key, 'output', event.target.value)} />
@@ -384,6 +452,7 @@ export function SellerSettingsEditor({ settings, restart }: { settings: SellerSe
                 </div>
               )
             })}
+            {!readOnly && <SellerAddModel settings={settings} onSaved={structuralSaved} />}
           </Disclosure>
           <Disclosure title="Free tier" summary={draft.freePerAddress || draft.freePerIp ? (draft.freeStakersOnly ? 'Stakers only' : 'Limited') : 'No limits'}>
             <p className="gc-fineprint">For free models without their own free tier: requests one buyer address or IP may make per window. Clear both limits to turn the seller-wide free tier off. Buyers staked on you get more, by staked tier.</p>
@@ -428,6 +497,9 @@ export function SellerSettingsEditor({ settings, restart }: { settings: SellerSe
           <Button disabled={!changed || Object.keys(errors).length > 0 || save.isPending} onClick={() => save.mutate({ patch, draft })}>{save.isPending ? 'Saving…' : 'Save'}</Button>
         </div>
       )}
+      <ConfirmDialog isOpen={removing !== null} busy={remove.isPending} error={remove.error} onClose={() => { setRemoving(null); remove.reset() }}
+        onConfirm={() => removing && remove.mutate(removing)} title={`Remove ${removing?.service ?? 'this model'}?`} confirmLabel="Remove" busyLabel="Removing…"
+        body="It is taken out of the seller's config, with its prices and its own free tier, and stops being offered when the seller restarts. To stop offering it but keep its settings, turn it off instead." />
     </div>
   )
 }

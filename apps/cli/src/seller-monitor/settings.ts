@@ -7,7 +7,7 @@ import { configFromObject, resolveConfigPath } from '../config/loader.js'
 import { isPricedSellerService } from '../config/effective.js'
 import type { AntseedConfig, SellerFreeTierCLIConfig } from '../config/types.js'
 import { ConsoleError } from '../console-error.js'
-import type { FreeTierProgramView, SellerAlertSettings, SellerAlertsPatch, SellerFreeTierProgramSettings, SellerSettings, SellerSettingsPatch } from '../gateway/console-api/types.js'
+import type { FreeTierProgramView, SellerUnitComponent, SellerAlertSettings, SellerAlertsPatch, SellerFreeTierProgramSettings, SellerSettings, SellerSettingsPatch } from '../gateway/console-api/types.js'
 import { configWritable, patchValidatedConfig } from '../config/patch.js'
 import { applyMergePatch, configOverridesPath, overriddenSettings, patchConfigOverrides, readConfigOverridesSync, removeConfigOverrides } from '../config/overrides.js'
 import { readSellerStatus } from './reader.js'
@@ -177,9 +177,36 @@ function settingsView(raw: JsonObject, config: AntseedConfig, configPath: string
         apiProtocols,
         freeTier: program ? programView(program) : null,
         ownFreeTier: own ? programSettings(own) : null,
+        enabled: serviceConfig.enabled !== false,
+        upstreamModel: serviceConfig.upstreamModel ?? null,
+        categories: serviceConfig.categories ?? [],
+        unitComponents: unitComponentsOf(serviceConfig.unitBillingModels),
       }
     })),
+    providers: Object.entries(seller.providers ?? {}).map(([name, entry]) => ({
+      name,
+      plugin: entry.plugin,
+      unitBilled: Object.values(entry.services ?? {}).some((service) => unitComponentsOf(service.unitBillingModels).length > 0),
+      services: Object.keys(entry.services ?? {}).length,
+    })),
   }
+}
+
+/** A service's unit-billing components, one per protocol, unit and match, as written. */
+function unitComponentsOf(models: unknown): SellerUnitComponent[] {
+  const out: SellerUnitComponent[] = []
+  if (!models || typeof models !== 'object') return out
+  for (const [protocol, model] of Object.entries(models as JsonObject)) {
+    const components = model && typeof model === 'object' ? (model as JsonObject).components : undefined
+    if (!Array.isArray(components)) continue
+    for (const component of components) {
+      if (!component || typeof component !== 'object') continue
+      const { unit, priceUsd, match } = component as JsonObject
+      if (typeof unit !== 'string' || typeof priceUsd !== 'number') continue
+      out.push({ protocol, unit, match: match && typeof match === 'object' && !Array.isArray(match) ? match as Record<string, unknown> : null, priceUsd })
+    }
+  }
+  return out
 }
 
 export async function readSellerSettings(configPath: string, dataDir: string): Promise<SellerSettings> {
@@ -219,7 +246,7 @@ function child(parent: JsonObject, key: string): JsonObject {
 /** Applies the patch to the raw config in place; only the fields it names change. Returns the changed field names. */
 export function applySellerSettingsPatch(raw: JsonObject, body: unknown): string[] {
   const patch = obj(body ?? {}, 'The request body') as SellerSettingsPatch & JsonObject
-  const known = new Set(['displayName', 'maxConcurrentBuyers', 'healthCheck', 'gasCheck', 'freeTier', 'restrictedCountries', 'pricing'])
+  const known = new Set(['displayName', 'maxConcurrentBuyers', 'healthCheck', 'gasCheck', 'freeTier', 'restrictedCountries', 'pricing', 'addServices', 'removeServices'])
   for (const key of Object.keys(patch)) if (!known.has(key)) bad(`Unknown setting: ${key}`)
   const fields: string[] = []
   const seller = () => child(raw, 'seller')
@@ -302,6 +329,27 @@ export function applySellerSettingsPatch(raw: JsonObject, body: unknown): string
         if (next.inputUsdPerMillion === undefined || next.outputUsdPerMillion === undefined) bad(`pricing: ${String(item.service)} needs both input and output prices`)
         service.pricing = next
       }
+      if (item.enabled !== undefined) {
+        if (typeof item.enabled !== 'boolean') bad(`${String(item.service)} enabled must be true or false`)
+        if (item.enabled) delete service.enabled
+        else service.enabled = false
+        if (!fields.includes('services')) fields.push('services')
+      }
+      if (item.unitPrices !== undefined) {
+        if (!Array.isArray(item.unitPrices)) bad(`${String(item.service)} unitPrices must be a list`)
+        const models = (service.unitBillingModels && typeof service.unitBillingModels === 'object' ? service.unitBillingModels : {}) as JsonObject
+        for (const entry of item.unitPrices) {
+          const change = obj(entry, `${String(item.service)} unit price`)
+          const model = typeof change.protocol === 'string' && Object.hasOwn(models, change.protocol) ? models[change.protocol] as JsonObject : undefined
+          const components = Array.isArray(model?.components) ? model.components as JsonObject[] : []
+          const wanted = JSON.stringify(change.match ?? null)
+          // Found by what it bills, not its position, so an edit made elsewhere in the meantime never lands on another component.
+          const component = components.find((candidate) => candidate.unit === change.unit && JSON.stringify(candidate.match ?? null) === wanted)
+          if (!component) bad(`${String(item.service)}: no ${String(change.unit)} price${change.match ? ` for ${wanted}` : ''} under ${String(change.protocol)} in the config file`)
+          component.priceUsd = price(change.priceUsd, `${String(item.service)} ${String(change.unit)} price`)
+        }
+        if (!fields.includes('pricing')) fields.push('pricing')
+      }
       if (item.freeTier !== undefined) {
         // One program per model id: every provider offering this id gets the same edit, so they stay identical.
         const sameId = Object.values(providers).flatMap((entry) => Object.entries(entry.services ?? {}))
@@ -322,7 +370,50 @@ export function applySellerSettingsPatch(raw: JsonObject, body: unknown): string
         if (!fields.includes('freeTier')) fields.push('freeTier')
       }
     }
-    fields.push('pricing')
+    if (!fields.includes('pricing')) fields.push('pricing')
+  }
+  if (patch.removeServices !== undefined) {
+    if (!Array.isArray(patch.removeServices)) bad('removeServices must be a list')
+    const providers = (seller().providers ?? {}) as Record<string, { services?: Record<string, JsonObject> }>
+    for (const entry of patch.removeServices) {
+      const item = obj(entry, 'removeServices entry')
+      const services = typeof item.provider === 'string' && Object.hasOwn(providers, item.provider) ? providers[item.provider]!.services : undefined
+      if (!services || typeof item.service !== 'string' || !Object.hasOwn(services, item.service)) bad(`removeServices: no service ${String(item.service)} under provider ${String(item.provider)} in the config file`)
+      delete services[item.service]
+    }
+    fields.push('services')
+  }
+  if (patch.addServices !== undefined) {
+    if (!Array.isArray(patch.addServices)) bad('addServices must be a list')
+    const providers = (seller().providers ?? {}) as Record<string, { services?: Record<string, JsonObject> }>
+    for (const entry of patch.addServices) {
+      const item = obj(entry, 'addServices entry')
+      const provider = typeof item.provider === 'string' && Object.hasOwn(providers, item.provider) ? providers[item.provider]! : undefined
+      if (!provider) bad(`addServices: no provider ${String(item.provider)} in the config file`)
+      const id = typeof item.service === 'string' ? item.service.trim() : ''
+      if (!/^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$/.test(id) || ['__proto__', 'constructor', 'prototype'].includes(id)) bad(`addServices: "${id}" is not a model id (letters, digits and . _ : / @ + -, up to 128)`)
+      const services = (provider.services ??= {})
+      if (Object.hasOwn(services, id)) bad(`addServices: ${id} is already offered under ${String(item.provider)}`)
+      if (Object.values(services).some((service) => service.unitBillingModels !== undefined)) bad(`addServices: ${String(item.provider)} bills per image or video; add its models in the config file, with their capabilities and unit prices`)
+      const added: JsonObject = {}
+      if (item.upstreamModel !== undefined && item.upstreamModel !== null && item.upstreamModel !== '') {
+        if (typeof item.upstreamModel !== 'string' || item.upstreamModel.trim().length > 200) bad(`addServices: ${id} upstreamModel must be text`)
+        if (item.upstreamModel.trim() !== id) added.upstreamModel = item.upstreamModel.trim()
+      }
+      if (item.categories !== undefined) {
+        if (!Array.isArray(item.categories) || item.categories.some((category) => typeof category !== 'string')) bad(`addServices: ${id} categories must be a list of words`)
+        const categories = [...new Set((item.categories as string[]).map((category) => category.trim().toLowerCase()).filter(Boolean))]
+        if (categories.length > 0) added.categories = categories
+      }
+      const pricing: JsonObject = {
+        inputUsdPerMillion: price(item.inputUsdPerMillion, `${id} inputUsdPerMillion`),
+        outputUsdPerMillion: price(item.outputUsdPerMillion, `${id} outputUsdPerMillion`),
+      }
+      if (item.cachedInputUsdPerMillion !== undefined && item.cachedInputUsdPerMillion !== null) pricing.cachedInputUsdPerMillion = price(item.cachedInputUsdPerMillion, `${id} cachedInputUsdPerMillion`)
+      added.pricing = pricing
+      services[id] = added
+    }
+    fields.push('services')
   }
   return fields
 }

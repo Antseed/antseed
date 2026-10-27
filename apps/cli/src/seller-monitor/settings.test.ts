@@ -166,3 +166,34 @@ test('a writable config is edited in place, unless overrides were saved: then ed
   assert.equal(view.maxConcurrentBuyers, 4)
   assert.equal(JSON.parse(readFileSync(configPath, 'utf8')).seller.maxConcurrentBuyers, 7, 'the file is left alone')
 })
+
+test('models: turned off and on, unit prices edited by what they bill, token models added and removed', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'seller-settings-'))
+  const configPath = join(dir, 'config.json')
+  writeFileSync(configPath, JSON.stringify({ seller: { providers: {
+    openai: { plugin: 'openai', services: { 'glm-5.3': { pricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } } } },
+    fal: { plugin: 'fal-video', services: { wan: { unitBillingModels: { 'fal-video': { version: 1, components: [
+      { unit: 'video_seconds', priceUsd: 0.05, match: { resolution: '720p' } }, { unit: 'video_seconds', priceUsd: 0.1, match: { resolution: '1080p' } },
+    ] } } } } },
+  } } }))
+  let view = (await updateSellerSettings(configPath, dir, { pricing: [
+    { provider: 'openai', service: 'glm-5.3', enabled: false },
+    { provider: 'fal', service: 'wan', unitPrices: [{ protocol: 'fal-video', unit: 'video_seconds', match: { resolution: '1080p' }, priceUsd: 0.08 }] },
+  ] })).settings
+  const glm = view.services.find((entry) => entry.service === 'glm-5.3')!
+  const wan = view.services.find((entry) => entry.service === 'wan')!
+  assert.equal(glm.enabled, false)
+  assert.deepEqual(wan.unitComponents.map((component) => component.priceUsd), [0.05, 0.08])
+  assert.deepEqual(view.providers.map((provider) => [provider.name, provider.unitBilled]), [['openai', false], ['fal', true]])
+  await assert.rejects(updateSellerSettings(configPath, dir, { pricing: [{ provider: 'fal', service: 'wan', unitPrices: [{ protocol: 'fal-video', unit: 'video_seconds', match: { resolution: '4k' }, priceUsd: 1 }] }] }), /no video_seconds price/)
+  view = (await updateSellerSettings(configPath, dir, { pricing: [{ provider: 'openai', service: 'glm-5.3', enabled: true }],
+    addServices: [{ provider: 'openai', service: 'deepseek-v4.2', upstreamModel: 'deepseek-ai/DeepSeek-V4.2', categories: ['Chat', 'coding'], inputUsdPerMillion: 0.3, outputUsdPerMillion: 1.1 }] })).settings
+  const file = JSON.parse(readFileSync(configPath, 'utf8')).seller.providers
+  assert.equal(file.openai.services['glm-5.3'].enabled, undefined, 'on again: the flag is gone')
+  assert.deepEqual(file.openai.services['deepseek-v4.2'], { upstreamModel: 'deepseek-ai/DeepSeek-V4.2', categories: ['chat', 'coding'], pricing: { inputUsdPerMillion: 0.3, outputUsdPerMillion: 1.1 } })
+  await assert.rejects(updateSellerSettings(configPath, dir, { addServices: [{ provider: 'openai', service: 'deepseek-v4.2', inputUsdPerMillion: 1, outputUsdPerMillion: 1 }] }), /already offered/)
+  await assert.rejects(updateSellerSettings(configPath, dir, { addServices: [{ provider: 'fal', service: 'veo', inputUsdPerMillion: 1, outputUsdPerMillion: 1 }] }), /bills per image or video/)
+  await assert.rejects(updateSellerSettings(configPath, dir, { addServices: [{ provider: 'openai', service: '__proto__', inputUsdPerMillion: 1, outputUsdPerMillion: 1 }] }), /not a model id/)
+  view = (await updateSellerSettings(configPath, dir, { removeServices: [{ provider: 'openai', service: 'deepseek-v4.2' }] })).settings
+  assert.deepEqual(view.services.map((entry) => entry.service), ['glm-5.3', 'wan'])
+})
