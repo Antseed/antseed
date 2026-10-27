@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AntscanIndexer } from './indexer.js';
 import { parseRewardPage, fetchRewardPositions } from './position-feed.js';
 import { indexedWalletRewards, liveWalletPositions } from './indexed-wallet.js';
@@ -9,6 +9,16 @@ const other = '0x0000000000000000000000000000000000000002';
 const blockHash = `0x${'ab'.repeat(32)}`;
 const position = (id = 7) => ({ id: String(id), owner, agentId: '1', amount: '100', weightAmount: '200', stakeStartEpoch: '1', stakeEndEpoch: '30', closedAtEpoch: '0', withdrawn: false, maxLocked: false, restaked: false, returnedAmount: '0', slashedAmount: '0', createdAt: 1, closedAt: null, closedBy: null, replacementIds: [], sourceId: null });
 const rewards = { status: 'available', pending: '15', claimedThroughEpoch: '1', calculatedThroughEpoch: '21', requiresPoolIndexing: true };
+// One clock for the fixtures and the code under test: pages built a second apart
+// must not differ in their snapshot time, or a test sees the wrong error.
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date('2026-10-27T12:00:00Z'));
+});
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 function rewardPage(ids = [7], nextCursor: string | null = null) {
   return { owner, currentEpoch: '22', requiresLiveValidation: true,
     positions: ids.map(id => ({ ...position(id), state: 'active', power: '200', nextPower: '190', withdrawableEpoch: '1', maxLockedNext: false, changePending: false, rewards })),
