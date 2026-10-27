@@ -7,7 +7,8 @@ import { join, resolve, isAbsolute, dirname } from 'node:path'
 import { getGlobalOptions } from '../types.js'
 import pkg from '../../../../package.json' with { type: 'json' }
 import { watchForUpdates } from '../../../update/watch.js'
-import { loadConfig, resolveConfigPath } from '../../../config/loader.js'
+import { resolveConfigPath } from '../../../config/loader.js'
+import { configOverridesPath, loadSellerConfig } from '../../../config/overrides.js'
 import { DEFAULT_RESTRICTED_COUNTRIES } from '../../../config/defaults.js'
 import {
   AntseedNode,
@@ -38,7 +39,7 @@ import {
 import type { AntseedConfig, SellerCLIConfig, SellerProviderConfig } from '../../../config/types.js'
 import { ANTSEED_VERIFIER_SDKS_ENV, buildVerifierCapabilities, normalizeVerifierIds } from '../../../plugins/verifier.js'
 import { parseBootstrapList, toBootstrapConfig } from '@antseed/node/discovery'
-import { setupShutdownHandler } from '../../shutdown.js'
+import { isRestarting, setupShutdownHandler, shutdownForRestart } from '../../shutdown.js'
 import { loadProviderPlugin, loadProverPlugin, buildPluginConfig, getPackageVersions } from '../../../plugins/loader.js'
 import { ensurePluginsUpToDate } from '../../../plugins/drift.js'
 import { pricedSellerServices, resolveEffectiveSellerConfig, resolveSellerFreeTier, type SellerRuntimeOverrides } from '../../../config/effective.js'
@@ -54,7 +55,7 @@ import { UpstreamAlerts } from '../../../seller-alerts/upstream-alerts.js'
 import { ethToWei } from './gas.js'
 import { startIdleWatch, uncleanExitEvent, waitAtMost } from '../../../seller-alerts/lifecycle.js'
 import { startSellerDashboard, type SellerDashboardServer } from '../../../seller-monitor/dashboard-server.js'
-import { removeDashboardLink, writeDashboardLink } from '../../../seller-monitor/dashboard-link.js'
+import { previousDashboardToken, removeDashboardLink, writeDashboardLink } from '../../../seller-monitor/dashboard-link.js'
 import { DEFAULT_SELLER_DASHBOARD_PORT } from './dashboard.js'
 
 function getStateFile(dataDir: string): string {
@@ -458,7 +459,16 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
     .option('--verifiers <ids>', `comma-separated verifier SDK ids this seller supports (first is default; also ${ANTSEED_VERIFIER_SDKS_ENV})`)
     .action(async (options) => {
       const globalOpts = getGlobalOptions(sellerCmd)
-      const config = await loadConfig(globalOpts.config)
+      // Settings saved from the dashboard when the config file is read-only apply over it.
+      let config: AntseedConfig
+      let overriddenSettings: string[] = []
+      try {
+        ({ config, overridden: overriddenSettings } = await loadSellerConfig(globalOpts.config, globalOpts.dataDir))
+      } catch (err) {
+        console.error(chalk.red(`Could not load the seller config: ${(err as Error).message}`))
+        console.error(chalk.dim(`  Settings saved from the dashboard are in ${configOverridesPath(globalOpts.dataDir)}; fix or delete that file to start from the config file alone.`))
+        process.exit(1)
+      }
       await ensureDerivedIdentityDisplayName({
         config,
         configPath: globalOpts.config,
@@ -679,6 +689,9 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         : DEFAULT_MIN_GAS_BALANCE_WEI
 
       console.log(chalk.bold('Effective seller settings:'))
+      if (overriddenSettings.length > 0) {
+        console.log(chalk.dim(`  saved from the dashboard (over ${resolveConfigPath(globalOpts.config)}): ${overriddenSettings.join(', ')}`))
+      }
       console.log(chalk.dim(`  providers: ${selectedProviderNames.join(', ')}`))
       for (let index = 0; index < providers.length; index += 1) {
         const provider = providers[index]!
@@ -1190,7 +1203,18 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       // terminal; a service's logs say how to get it (`antseed seller dashboard` reads it from the data dir).
       let dashboard: SellerDashboardServer | null = null
       if (options.dashboard !== false) {
-        const dashboardOptions = { dataDir: globalOpts.dataDir, configPath: resolveConfigPath(globalOpts.config), version: pkg.version, host: '127.0.0.1', log: (line: string) => console.log(chalk.dim(line)) }
+        // A restart from the dashboard is a clean stop: only offered where a supervisor starts the seller again.
+        const supervisor = process.env.KUBERNETES_SERVICE_HOST ? 'Kubernetes' : process.env.INVOCATION_ID ? 'systemd' : process.env.ANTSEED_SUPERVISED === '1' ? 'its supervisor' : null
+        const restart = {
+          unavailableReason: supervisor ? null : 'This seller runs without a supervisor that would start it again. Restart `antseed seller start` where it runs to apply saved changes.',
+          run: () => {
+            console.log(chalk.yellow(`Restarting from the dashboard to apply saved settings (${supervisor} starts the seller again).`))
+            shutdownForRestart()
+          },
+        }
+        // A restart keeps the link (and the sessions signed with it), so an open dashboard reconnects.
+        const previousToken = previousDashboardToken(globalOpts.dataDir)
+        const dashboardOptions = { dataDir: globalOpts.dataDir, configPath: resolveConfigPath(globalOpts.config), version: pkg.version, host: '127.0.0.1', restart, ...(previousToken ? { token: previousToken } : {}), log: (line: string) => console.log(chalk.dim(line)) }
         const port = Number(options.dashboardPort) || DEFAULT_SELLER_DASHBOARD_PORT
         try {
           dashboard = await startSellerDashboard({ ...dashboardOptions, port }).catch((err: NodeJS.ErrnoException) => {
@@ -1226,7 +1250,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         alerts.close()
         if (dashboard) {
           // Never long: channels are finalized next, and a dashboard request must not hold that up.
-          await waitAtMost(removeDashboardLink(globalOpts.dataDir).then(() => dashboard!.close()), 2_000)
+          await waitAtMost((isRestarting() ? Promise.resolve() : removeDashboardLink(globalOpts.dataDir)).then(() => dashboard!.close()), 2_000)
         }
         nodeSpinner.start('Shutting down seeding daemon...')
         try {

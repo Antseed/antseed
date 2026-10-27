@@ -63,7 +63,7 @@ describe('seller editors', async () => {
   const { draftOf, draftErrors, patchOf, reconcileDraft } = await import('../components/SellerSettingsEditor')
   const { alertsPatchOf } = await import('../components/SellerAlertsEditor')
   const settings = {
-    configPath: '/c', writable: true, readOnlyReason: null, displayName: 'S', maxConcurrentBuyers: 50,
+    configPath: '/c', writable: true, readOnlyReason: null, savesTo: 'config' as const, overridesPath: null, overridden: [], displayName: 'S', maxConcurrentBuyers: 50,
     healthCheck: { enabled: true, intervalMs: 300_000, failureThreshold: 3 }, gasCheck: { enabled: true, minBalanceEth: 0.00005 },
     freeTier: { maxRequestsPerAddress: null, maxRequestsPerIp: null, windowMs: null, stakersOnly: false, stakeTiers: null }, restrictedCountries: ['RU'], restrictedCountriesDefault: true,
     defaultStakeTiers: [{ minPower: 520_000, multiplier: 5 as number | 'unlimited' }],

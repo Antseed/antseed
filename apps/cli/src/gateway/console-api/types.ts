@@ -1238,10 +1238,23 @@ export interface SellerFreeTierProgramPatch {
   stakeTiers?: Array<{ minPower: number; multiplier: number | 'unlimited' }> | null
 }
 
+/** Whether the dashboard can restart the seller to apply saved settings. */
+export interface SellerRestartView {
+  available: boolean
+  /** Why not, when it cannot. */
+  reason: string | null
+}
+
 export interface SellerSettings {
   configPath: string
   writable: boolean
   readOnlyReason: string | null
+  /** Where a save goes: the config file, or the data dir's overrides when the file is read-only (or overrides exist). */
+  savesTo: 'config' | 'overrides' | null
+  /** The overrides file, when saves go there or one exists. */
+  overridesPath: string | null
+  /** Settings saved as overrides, as dotted config paths (`seller.maxConcurrentBuyers`). */
+  overridden: string[]
   displayName: string
   maxConcurrentBuyers: number
   healthCheck: { enabled: boolean; intervalMs: number; failureThreshold: number }

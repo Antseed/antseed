@@ -3,7 +3,7 @@ import { FileIdentityStore } from '@antseed/node'
 import { ConsoleError } from '../console-error.js'
 import type {
   SellerAlertSettings, SellerEventView, SellerLogDetail, SellerLogPage, SellerLogQuery, SellerMarket, SellerNetworkMeta, SellerPromote, SellerReputation,
-  SellerRpcDiagnostics, SellerServicePricing, SellerSettings, SellerStatus, SellerUsage, TelegramChat,
+  SellerRestartView, SellerRpcDiagnostics, SellerServicePricing, SellerSettings, SellerStatus, SellerUsage, TelegramChat,
 } from '../gateway/console-api/types.js'
 import { rpcUsage } from '../proxy/rpc-sources.js'
 import { SellerAlerts } from '../seller-alerts/alerts.js'
@@ -15,7 +15,7 @@ import { marketView, peerKey, trustOfRow, trustRank, trustSteps } from './market
 import { NETWORK_SNAPSHOT_TTL_MS, sellerOnlyNetworkLoader, type NetworkLoad, type PeerRow } from './network.js'
 import { readSellerPromote, readSellerVerifications, updateSellerVerifications, VerificationChecks } from './promote.js'
 import { hasSeller, readDaemonState, readSellerEventViews, readSellerStatus, SellerUsageReader } from './reader.js'
-import { readSellerAlertSettings, readSellerSettings, runningSellerSendsTelegram, updateSellerAlerts, updateSellerSettings } from './settings.js'
+import { readSellerAlertSettings, readSellerSettings, resetSellerConfigOverrides, runningSellerSendsTelegram, updateSellerAlerts, updateSellerSettings } from './settings.js'
 import { readSellerStanding, standingTtlMs, type StandingRead } from './standing.js'
 
 export interface SellerMonitorOptions {
@@ -34,9 +34,17 @@ export interface SellerMonitorOptions {
   /** The explorer's base URL for the profile link; from the chain config by default. */
   explorerUrl?: (configPath: string) => Promise<string | null>
   verificationChecks?: VerificationChecks
+  /** Restarting the seller from the dashboard: only the one `seller start` serves, and only under a supervisor that starts it again. */
+  restart?: SellerRestartOption
 }
 
-export type SellerSettingsView = { settings: SellerSettings; alerts: SellerAlertSettings }
+export interface SellerRestartOption {
+  /** Why a restart from here is not offered (it would stop the seller), or null when it is. */
+  unavailableReason: string | null
+  run?: () => void
+}
+
+export type SellerSettingsView = { settings: SellerSettings; alerts: SellerAlertSettings; restart: SellerRestartView }
 
 /**
  * Everything the seller dashboard, the console's Seller pages and the
@@ -106,11 +114,31 @@ export class SellerMonitor {
 
   async settings(): Promise<SellerSettingsView> {
     const { dataDir, configPath } = this.seller()
-    return { settings: await readSellerSettings(configPath), alerts: await readSellerAlertSettings(configPath, dataDir, this._env) }
+    return { settings: await readSellerSettings(configPath, dataDir), alerts: await readSellerAlertSettings(configPath, dataDir, this._env), restart: this.restartView() }
+  }
+
+  restartView(): SellerRestartView {
+    const option = this._options.restart
+    if (option?.run && option.unavailableReason === null) return { available: true, reason: null }
+    return { available: false, reason: option?.unavailableReason ?? 'Restart the seller where it runs to apply saved changes.' }
+  }
+
+  /** Stops the seller cleanly; its supervisor starts it again with the saved settings. */
+  restart(): void {
+    const option = this._options.restart
+    if (!option?.run || option.unavailableReason !== null) throw new ConsoleError(409, 'restart_unavailable', this.restartView().reason!)
+    // After the response goes out.
+    setTimeout(option.run, 250).unref?.()
+  }
+
+  async resetOverrides(): Promise<SellerSettingsView> {
+    await resetSellerConfigOverrides(this.seller().dataDir)
+    return this.settings()
   }
 
   async updateSettings(patch: unknown): Promise<SellerSettingsView & { changed: string[] }> {
-    const { fields } = await updateSellerSettings(this.seller().configPath, patch)
+    const { configPath, dataDir } = this.seller()
+    const { fields } = await updateSellerSettings(configPath, dataDir, patch)
     return { ...await this.settings(), changed: fields }
   }
 
@@ -164,7 +192,7 @@ export class SellerMonitor {
   private async _me(): Promise<{ peerId: string | null; services: SellerServicePricing[] | null; dataDir: string; configPath: string }> {
     const { dataDir, configPath } = this.seller()
     const status = await readSellerStatus(dataDir, this._options.version)
-    const services = await readSellerSettings(configPath).then((settings) => settings.services, () => null)
+    const services = await readSellerSettings(configPath, dataDir).then((settings) => settings.services, () => null)
     const peerId = status.available ? status.peerId ?? await this._storedPeerId(dataDir) : null
     return { peerId, services, dataDir, configPath }
   }
@@ -230,19 +258,19 @@ export class SellerMonitor {
    * `network: false` skips it. `startChecks: false` reads check results without starting any.
    */
   async promote(options: { wait?: boolean; network?: boolean; startChecks?: boolean } = {}): Promise<SellerPromote> {
-    const { peerId, services, configPath } = await this._me()
+    const { peerId, services, configPath, dataDir } = await this._me()
     const { rows, meta } = options.network === false ? { rows: [] as PeerRow[], meta: null } : await this._snapshot({ wait: options.wait ?? false })
     const myRow = peerId ? rows.find((row) => peerKey(String(row['peerId'] ?? '')) === peerKey(peerId)) : undefined
     this._explorer ??= (this._options.explorerUrl ?? defaultExplorerUrl)(configPath).catch(() => null)
-    return readSellerPromote({ configPath, peerId, services: services ?? [], trustScore: trustOfRow(myRow)?.score ?? null, explorerUrl: await this._explorer, checks: this._checks, startChecks: options.startChecks ?? true, networkLoading: meta?.refreshing === true && meta.refreshedAt === null,
+    return readSellerPromote({ configPath, dataDir, peerId, services: services ?? [], trustScore: trustOfRow(myRow)?.score ?? null, explorerUrl: await this._explorer, checks: this._checks, startChecks: options.startChecks ?? true, networkLoading: meta?.refreshing === true && meta.refreshedAt === null,
       announcedProtocols: (provider, service) => announcedProtocols(myRow, provider, service) })
   }
 
   /** Runs the verification checks now (the same ones buyers run). */
   async checkVerifications(options: { network?: boolean } = {}): Promise<SellerPromote> {
-    const { peerId, configPath } = await this._me()
+    const { peerId, configPath, dataDir } = await this._me()
     // The configured claims, not the view: a domain limited to some methods must pass one of those.
-    if (peerId) await this._checks.check(peerKey(peerId), await readSellerVerifications(configPath))
+    if (peerId) await this._checks.check(peerKey(peerId), await readSellerVerifications(configPath, dataDir))
     return this.promote(options)
   }
 
@@ -252,7 +280,7 @@ export class SellerMonitor {
   }
 
   async saveVerifications(input: unknown, options: { network?: boolean; startChecks?: boolean } = {}): Promise<SellerPromote> {
-    await updateSellerVerifications(this.seller().configPath, input)
+    await updateSellerVerifications(this.seller().configPath, this.seller().dataDir, input)
     return this.promote(options)
   }
 }

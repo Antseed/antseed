@@ -250,7 +250,8 @@ Offer AI services on the network. Guides: [Become a provider](/docs/provide), [P
 | `antseed seller promote` | Promotion info and a shareable seller card | `--card <file>` (SVG), `--json` |
 | `antseed seller verify` | Domain and GitHub identity claims | `--add-domain`, `--add-github <user[/repo]>`, `--remove <claim>`, `--check`, `--json` |
 | `antseed seller settings` | Show the seller's settings | `--json` |
-| `antseed seller settings set` | Change settings (validated, applied to config.json) | `--display-name`, `--max-buyers`, `--health <on\|off>`, `--health-interval`, `--health-failures`, `--gas <on\|off>`, `--gas-min <eth>`, `--free-per-address`, `--free-per-ip`, `--free-window-hours`, `--free-stakers-only`, `--free-stake-tiers`, `--model-free-tier`, `--countries`, `--price <[provider/]model=in/out[/cached]>`, `--json` |
+| `antseed seller settings set` | Change settings (validated; written to config.json, or saved over it in the data dir when it is read-only) | `--display-name`, `--max-buyers`, `--health <on\|off>`, `--health-interval`, `--health-failures`, `--gas <on\|off>`, `--gas-min <eth>`, `--free-per-address`, `--free-per-ip`, `--free-window-hours`, `--free-stakers-only`, `--free-stake-tiers`, `--model-free-tier`, `--countries`, `--price <[provider/]model=in/out[/cached]>`, `--json` |
+| `antseed seller settings reset` | Remove the settings saved over a read-only config.json; it applies alone from the next restart | `--json` |
 | `antseed seller alerts` | Where alerts go and their last delivery | `--json` |
 | `antseed seller alerts set` | Configure Telegram and webhook alerts (secrets from stdin only) | `--telegram-token-stdin`, `--telegram-chat <id>`, `--clear-telegram-token`, `--webhook-url-stdin`, `--clear-webhook`, `--idle <minutes\|off>`, `--cooldown`, `--low-balance <usd\|off\|default>`, `--min-severity`, `--json` |
 | `antseed seller alerts test` | Send a test alert | `--channel <telegram\|webhook>`, `--json` |

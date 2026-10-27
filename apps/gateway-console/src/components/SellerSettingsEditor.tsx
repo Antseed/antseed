@@ -2,12 +2,13 @@ import { useEffect, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Button, Disclosure, Segmented, Switch, TextField, useToast } from '@antseed/ui'
 import { api } from '../api'
-import type { FreeTierProgramView, SellerFreeTierProgramPatch, SellerFreeTierProgramSettings, SellerSettings, SellerSettingsPatch } from '../api/types'
+import type { FreeTierProgramView, SellerFreeTierProgramPatch, SellerFreeTierProgramSettings, SellerRestartView, SellerSettings, SellerSettingsPatch } from '../api/types'
 import { freeTierHeadline, tierAnts, tierMultiplier } from '../lib/free-tier'
 import { numberFieldError, rebaseDraft } from '../lib/settings'
 import { qk } from '../lib/queries'
 import { formatUnitPrice } from '../lib/seller'
 import { ErrorAlert } from './ui'
+import { SellerOverrides, SellerRestart } from './SellerRestart'
 
 /** Everything the form edits, as typed (numbers stay strings until saved). */
 interface Draft {
@@ -263,7 +264,7 @@ export function patchOf(base: Draft, draft: Draft): SellerSettingsPatch {
 }
 
 /** The seller's config.json fields an operator commonly changes. They apply when the seller restarts. */
-export function SellerSettingsEditor({ settings }: { settings: SellerSettings }) {
+export function SellerSettingsEditor({ settings, restart }: { settings: SellerSettings; restart: SellerRestartView }) {
   const queryClient = useQueryClient()
   const toast = useToast()
   const [base, setBase] = useState(() => draftOf(settings))
@@ -302,7 +303,7 @@ export function SellerSettingsEditor({ settings }: { settings: SellerSettings })
   const save = useMutation({
     mutationFn: (submitted: { patch: SellerSettingsPatch; draft: Draft }) => api.seller.updateSettings(submitted.patch),
     onSuccess: (data, submitted) => {
-      queryClient.setQueryData(qk.sellerSettings, { settings: data.settings, alerts: data.alerts })
+      queryClient.setQueryData(qk.sellerSettings, { settings: data.settings, alerts: data.alerts, restart: data.restart })
       // The name and prices show on other seller pages too.
       for (const key of [qk.sellerStatus, qk.sellerPromote, qk.sellerCard, qk.sellerMarket]) void queryClient.invalidateQueries({ queryKey: key })
       const next = draftOf(data.settings)
@@ -322,6 +323,7 @@ export function SellerSettingsEditor({ settings }: { settings: SellerSettings })
   return (
     <div className="gc-stack">
       {readOnly && <p className="gc-seller-notice"><span className="gc-attention" aria-hidden="true" />{settings.readOnlyReason}</p>}
+      <SellerOverrides settings={settings} />
       <div className="gc-policy">
         <div className="gc-policy__cols">
           <section className="gc-policy__section">
@@ -417,9 +419,7 @@ export function SellerSettingsEditor({ settings }: { settings: SellerSettings })
           </Disclosure>
         </div>
       </div>
-      {savedPendingRestart && !changed && (
-        <p className="gc-seller-notice" role="status"><span className="gc-attention" aria-hidden="true" />Saved. Restart the seller to apply; the previous config is kept as config.json.bak.</p>
-      )}
+      {!changed && <SellerRestart restart={restart} pending={savedPendingRestart} onRestarted={() => setSavedPendingRestart(false)} />}
       {save.error ? <ErrorAlert error={save.error} title="Could not save" /> : null}
       {!readOnly && (
         <div className="gc-actions">

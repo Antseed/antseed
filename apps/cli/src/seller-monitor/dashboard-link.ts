@@ -46,3 +46,15 @@ function readLink(dataDir: string): DashboardLink | null {
     return null
   }
 }
+
+/** The token of the link a previous run left (a restart keeps the link), to serve the dashboard under it again. */
+export function previousDashboardToken(dataDir: string): string | null {
+  const link = readLink(dataDir)
+  if (!link) return null
+  try {
+    const token = new URL(link.url).hash.replace(/^#seller-token=/, '')
+    return /^[0-9a-f]{48}$/.test(token) ? token : null
+  } catch {
+    return null
+  }
+}

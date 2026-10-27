@@ -1,7 +1,7 @@
 import type {
   AdminToken, ApiKey, ApiKeyInput, AuditEntry, AuthConfig, BuyerLimits, BuyerSettingsInput, Channel, ChainInfo, DepositConfirmation, DepositWatch, Enrollment,
   GatewayStatus, GatewayUpdate, Invite, InviteInput, Member, MemberInput, MeResponse, ObservabilitySettings, OperatorAuthorization, OperatorState, WorkspaceOperatorSummary, ChatContext, ChatModel, ChatThread, ChatThreadDetail, FavoriteModels, NetworkModel, NetworkRouter, Peer, PeerList, Preset,
-  FreeTierSharing, FreeTierStake, RequestDetail, RequestLogEntry, Rewards, RoutePreview, RoutingPolicy, SellerAlertSettings, SellerAlertsPatch, SellerEventView, SellerLogDetail, SellerLogPage, SellerLogQuery, SellerMarket, SellerPromote, SellerReputation, SellerSettings, SellerVerificationsInput, SellerSettingsPatch, SellerStatus, SellerUsage, Settings, TelegramChat, SpendLimits, UsageGroupBy, UsageReport, Wallet, Workspace,
+  FreeTierSharing, FreeTierStake, RequestDetail, RequestLogEntry, Rewards, RoutePreview, RoutingPolicy, SellerAlertSettings, SellerAlertsPatch, SellerEventView, SellerLogDetail, SellerLogPage, SellerLogQuery, SellerMarket, SellerPromote, SellerReputation, SellerRestartView, SellerSettings, SellerVerificationsInput, SellerSettingsPatch, SellerStatus, SellerUsage, Settings, TelegramChat, SpendLimits, UsageGroupBy, UsageReport, Wallet, Workspace,
   WorkspaceInput, WorkspaceRole,
 } from './types'
 
@@ -288,6 +288,10 @@ export function createApiClient(fetchImpl: FetchLike = (input, init) => fetch(in
       usage: (days = 14) => get<SellerUsage>('/seller/usage', { days }),
       settings: () => get<SellerSettingsResponse>('/seller/settings'),
       updateSettings: (input: SellerSettingsPatch) => patch<SellerSettingsResponse & { changed: string[] }>('/seller/settings', input),
+      /** Drops the settings saved from the dashboard over a read-only config.json. */
+      resetOverrides: () => request<SellerSettingsResponse>('DELETE', '/seller/settings/overrides'),
+      /** Stops the seller cleanly; its supervisor starts it again with the saved settings. */
+      restart: () => post<{ restarting: true }>('/seller/restart'),
       updateAlerts: (input: SellerAlertsPatch) => patch<SellerSettingsResponse & { changed: string[] }>('/seller/alerts', input),
       testAlert: (channel: 'telegram' | 'webhook') => post<{ sent: string[]; errors: string[] }>('/seller/alerts/test', { channel }),
       telegramChats: (botToken?: string) => post<{ chats: TelegramChat[] }>('/seller/alerts/telegram/chats', botToken ? { botToken } : {}),
@@ -373,6 +377,6 @@ export function hasOwnerLayer(key: ApiKey | null | undefined): key is KeyWithLay
   return !!key && 'ownerRoutingPolicy' in key
 }
 
-export interface SellerSettingsResponse { settings: SellerSettings; alerts: SellerAlertSettings }
+export interface SellerSettingsResponse { settings: SellerSettings; alerts: SellerAlertSettings; restart: SellerRestartView }
 
 export type ApiClient = ReturnType<typeof createApiClient>

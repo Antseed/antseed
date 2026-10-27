@@ -23,7 +23,7 @@ import { combinePolicies, expandLists } from '../lib/policy-match'
 import { fakeAddress, mockNetworkModels, mockNetworkRouters, mockRouteSelection, seed } from './data'
 // The card renderer is the seller service's own (no copy in the console).
 import { sellerCardSvg } from '../../../cli/src/seller-monitor/card'
-import { mockCheckVerifications, mockSaveVerifications, mockSellerEvents, mockSellerLogDetail, mockSellerLogs, mockSellerMarket, mockSellerPromote, mockSellerReputation, mockSellerSettingsState, mockSellerStatus, mockSellerUsage, mockTelegramChats, mockTestAlert, mockUpdateSellerAlerts, mockUpdateSellerSettings } from './seller'
+import { mockCheckVerifications, mockResetSellerOverrides, mockRestartSeller, mockSaveVerifications, mockSellerEvents, mockSellerLogDetail, mockSellerLogs, mockSellerMarket, mockSellerPromote, mockSellerReputation, mockSellerSettingsState, mockSellerStatus, mockSellerUsage, mockTelegramChats, mockTestAlert, mockUpdateSellerAlerts, mockUpdateSellerSettings } from './seller'
 import { mockChatModels, mockChatStream, mockChatThread, mockChatThreads, mockDeleteChatThread } from './chat'
 import { mockOperatorState, OPERATOR_SCENARIOS, scenarioOperator, type OperatorScenario } from './operator'
 
@@ -671,6 +671,8 @@ const routes: Array<[string, string, Handler]> = [
     requireOrgAdmin()
     try { return mockUpdateSellerSettings(body ?? {}) } catch (err) { throw new MockError(400, 'invalid_request', (err as Error).message) }
   }],
+  ['DELETE', '/seller/settings/overrides', () => { requireOrgAdmin(); return mockResetSellerOverrides() }],
+  ['POST', '/seller/restart', () => { requireOrgAdmin(); return mockRestartSeller() }],
   ['PATCH', '/seller/alerts', ({ body }) => { requireOrgAdmin(); return mockUpdateSellerAlerts(body ?? {}) }],
   ['POST', '/seller/alerts/test', ({ body }) => { requireOrgAdmin(); return mockTestAlert(body?.channel === 'webhook' ? 'webhook' : 'telegram') }],
   ['POST', '/seller/alerts/telegram/chats', () => { requireOrgAdmin(); return mockTelegramChats() }],

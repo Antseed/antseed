@@ -1,8 +1,11 @@
 /** Dev mock of a seller on the gateway host (`VITE_MOCK=1`): a running seller with one withdrawn model. */
-import type { SellerAlertSettings, SellerAlertsPatch, SellerEventView, SellerFreeTierProgramPatch, SellerFreeTierProgramSettings, SellerMarket, SellerMarketOffer, SellerPromote, SellerReputation, SellerSettings, SellerSettingsPatch, SellerStatus, SellerUsage, SellerVerificationsInput, TelegramChat } from '../api/types'
+import type { SellerAlertSettings, SellerAlertsPatch, SellerEventView, SellerFreeTierProgramPatch, SellerFreeTierProgramSettings, SellerMarket, SellerMarketOffer, SellerPromote, SellerReputation, SellerRestartView, SellerSettings, SellerSettingsPatch, SellerStatus, SellerUsage, SellerVerificationsInput, TelegramChat } from '../api/types'
 
 const DAY = 86_400_000
 const FAKE_PEER = '0xfa1e000000000000000000000000000000000007'
+/** Set by a mock restart: the run started then. */
+let restartedAt: number | null = null
+const MOCK_STARTED_AT = Date.now() - 13 * 3_600_000
 
 export function mockSellerStatus(now = Date.now()): SellerStatus {
   const model = (service: string, advertised: boolean, failures: number, code: number | null, detail: string, ago: number) => (
@@ -10,7 +13,7 @@ export function mockSellerStatus(now = Date.now()): SellerStatus {
   )
   return {
     available: true, running: true, dataDir: '/var/lib/antseed', peerId: FAKE_PEER, provider: 'openai',
-    startedAt: now - 13 * 3_600_000, updatedAt: now - 1_000, activeChannels: 9, capacityUsedPercent: 18, notices: [],
+    startedAt: restartedAt ?? MOCK_STARTED_AT, updatedAt: now - 1_000, activeChannels: 9, capacityUsedPercent: 18, notices: [],
     models: [
       model('llama-4-maverick', false, 4, 402, 'HTTP 402: You need positive balance to do inference', 150_000),
       model('deepseek-v4.1', true, 0, null, 'Probe passed', 120_000),
@@ -53,10 +56,12 @@ const DEFAULT_TIERS: Array<{ minPower: number; multiplier: number | 'unlimited' 
 /** The fake seller's image model: priced per image, its token prices zero. */
 const IMAGE_PRICE = { unit: 'output_images', name: 'image', minUsd: 0.03, maxUsd: 0.03 }
 
-export function mockSellerSettings(): { settings: SellerSettings; alerts: SellerAlertSettings } {
+export function mockSellerSettings(): { settings: SellerSettings; alerts: SellerAlertSettings; restart: SellerRestartView } {
   return {
     settings: {
-      configPath: '/var/lib/antseed/config.json', writable: true, readOnlyReason: null, displayName: 'Fake Seller', maxConcurrentBuyers: 50,
+      // Like a seller on Kubernetes: config.json is a read-only ConfigMap, so saves are overrides in the data dir.
+      configPath: '/etc/antseed/config.json', writable: true, readOnlyReason: null, savesTo: 'overrides', overridesPath: '/var/lib/antseed/config.overrides.json', overridden: [],
+      displayName: 'Fake Seller', maxConcurrentBuyers: 50,
       healthCheck: { enabled: true, intervalMs: 300_000, failureThreshold: 3 }, gasCheck: { enabled: true, minBalanceEth: 0.00005 },
       freeTier: { maxRequestsPerAddress: 200, maxRequestsPerIp: 400, windowMs: null, stakersOnly: false, stakeTiers: null }, restrictedCountries: ['CU', 'IR', 'KP', 'SY', 'RU'], restrictedCountriesDefault: true,
       defaultStakeTiers: DEFAULT_TIERS,
@@ -76,6 +81,7 @@ export function mockSellerSettings(): { settings: SellerSettings; alerts: Seller
       telegram: { chatId: null, botTokenEnv: 'ANTSEED_ALERTS_TELEGRAM_TOKEN', tokenSet: false, tokenSource: null, active: false },
       webhook: { set: false, host: null, source: null }, idleMinutes: null, cooldownMinutes: null, lowBalanceUsd: null, minSeverity: null,
     },
+    restart: { available: true, reason: null },
   }
 }
 
@@ -244,8 +250,22 @@ export function mockUpdateSellerSettings(patch: SellerSettingsPatch) {
     const own = service.ownFreeTier
     service.freeTier = own ? { base: { maxRequestsPerAddress: own.maxRequestsPerAddress, maxRequestsPerIp: own.maxRequestsPerIp, windowMs: own.windowMs ?? 86_400_000 }, stakeTiers: own.stakeTiers ?? DEFAULT_TIERS } : service.paid ? null : service.freeTier
   }
+  const paths: Record<string, string> = { displayName: 'identity.displayName', maxConcurrentBuyers: 'seller.maxConcurrentBuyers', healthCheck: 'seller.healthCheck', gasCheck: 'seller.gasCheck', freeTier: 'seller.freeTier', restrictedCountries: 'seller.restrictedCountries', pricing: 'seller.providers' }
+  settings.overridden = [...new Set([...settings.overridden, ...changed.map((key) => paths[key] ?? key)])]
   settingsStore = { ...state, settings }
   return { ...settingsStore, changed }
+}
+
+/** Drops the saved overrides: back to the mock's config.json. */
+export function mockResetSellerOverrides() {
+  settingsStore = mockSellerSettings()
+  return settingsStore
+}
+
+/** The mock seller "restarts": it reports a new start time after a few seconds. */
+export function mockRestartSeller() {
+  setTimeout(() => { restartedAt = Date.now() }, 4_000)
+  return { restarting: true }
 }
 
 export function mockUpdateSellerAlerts(patch: SellerAlertsPatch) {

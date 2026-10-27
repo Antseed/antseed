@@ -10,7 +10,7 @@ import {
 } from '@antseed/node'
 import type { SellerPromote, SellerServicePricing, SellerVerificationStatus } from '../gateway/console-api/types.js'
 import { peerKey } from './market.js'
-import { bad, configWritable, patchSellerConfig, readRaw } from './settings.js'
+import { bad, patchSellerConfig, readRaw, sellerConfigAccess } from './settings.js'
 import { serviceKind } from './unit-price.js'
 
 type Verifications = { domains: Array<{ domain: string; methods?: Array<'dns-txt' | 'https-well-known'> }>; github: Array<{ username: string; repository?: string }> }
@@ -84,12 +84,13 @@ export class VerificationChecks {
 }
 
 /** The claims as configured (domain methods included), which is what buyers check. */
-export async function readSellerVerifications(configPath: string): Promise<Verifications> {
-  return verificationsOf(await readRaw(configPath))
+export async function readSellerVerifications(configPath: string, dataDir: string): Promise<Verifications> {
+  return verificationsOf(await readRaw(configPath, dataDir))
 }
 
 export async function readSellerPromote(options: {
   configPath: string
+  dataDir: string
   peerId: string | null
   services: SellerServicePricing[]
   trustScore: number | null
@@ -102,9 +103,9 @@ export async function readSellerPromote(options: {
   /** The APIs the seller announces for a service, from its own network row. */
   announcedProtocols?: (provider: string, service: string) => string[]
 }): Promise<SellerPromote> {
-  const raw = await readRaw(options.configPath)
+  const raw = await readRaw(options.configPath, options.dataDir)
   const claims = verificationsOf(raw)
-  const access = await configWritable(options.configPath)
+  const access = await sellerConfigAccess(options.configPath, options.dataDir)
   const peer = options.peerId ? peerKey(options.peerId) : null
   if (peer && options.startChecks !== false) options.checks.ensure(peer, claims)
   const identity = (raw.identity ?? {}) as { displayName?: string }
@@ -143,7 +144,7 @@ export async function readSellerPromote(options: {
 }
 
 /** Replaces `seller.verifications` (validated like every config edit); applies when the seller restarts. */
-export async function updateSellerVerifications(configPath: string, body: unknown): Promise<void> {
+export async function updateSellerVerifications(configPath: string, dataDir: string, body: unknown): Promise<void> {
   const input = (body ?? {}) as { domains?: unknown; github?: unknown }
   if (!Array.isArray(input.domains) || !Array.isArray(input.github)) bad('Send { domains: [...], github: [...] }')
   const domains = input.domains.map((entry) => {
@@ -159,7 +160,7 @@ export async function updateSellerVerifications(configPath: string, body: unknow
     if (repository && !/^[a-z0-9._-]{1,100}$/i.test(repository)) bad(`"${repository}" is not a GitHub repository name`)
     return repository && repository.toLowerCase() !== username.toLowerCase() ? { username, repository } : { username }
   })
-  await patchSellerConfig(configPath, (raw) => {
+  await patchSellerConfig(configPath, dataDir, (raw) => {
     const seller = (raw.seller && typeof raw.seller === 'object' ? raw.seller : (raw.seller = {})) as Record<string, unknown>
     // A domain kept from before keeps its proof methods (the dashboard does not edit them).
     const previous = new Map(verificationsOf(raw).domains.map((claim) => [claim.domain.trim().toLowerCase(), claim.methods]))

@@ -353,6 +353,8 @@ export function registerSellerMonitorCommands(sellerCmd: Command): void {
     .option('--json', 'output as JSON', false)
     .action((options: { json: boolean }) => runMonitorCommand(options.json, () => sellerMonitorFor(sellerCmd).settings(), ({ settings: view }) => {
       console.log(`${chalk.bold(view.displayName || '(no display name)')}  ${chalk.dim(view.configPath)}${view.writable ? '' : chalk.yellow(`  read-only: ${view.readOnlyReason}`)}`);
+      if (view.overridden.length > 0) console.log(chalk.yellow(`Saved over the config file (${view.overridesPath}): ${view.overridden.join(', ')}. \`seller settings reset\` drops them.`));
+      else if (view.savesTo === 'overrides') console.log(chalk.dim(`The config file is read-only here: changes are saved in ${view.overridesPath} and apply over it.`));
       console.log(`Max concurrent buyers ${view.maxConcurrentBuyers} · health checks ${view.healthCheck.enabled ? `every ${view.healthCheck.intervalMs / 1000}s, withdraw after ${view.healthCheck.failureThreshold}` : 'off'} · gas checks ${view.gasCheck.enabled ? `min ${view.gasCheck.minBalanceEth} ETH` : 'off'}`);
       console.log(`Refused countries ${view.restrictedCountries.join(', ') || 'none'}${view.restrictedCountriesDefault ? chalk.dim(' (built-in)') : ''}`);
       const wide = view.freeTier;
@@ -370,7 +372,7 @@ export function registerSellerMonitorCommands(sellerCmd: Command): void {
 
   settings
     .command('set')
-    .description('Change seller settings (validated, previous config kept as config.json.bak; restart the seller to apply)')
+    .description('Change seller settings (validated; saved in the config file, or over it in the data dir when it is read-only; restart the seller to apply)')
     .option('--display-name <name>')
     .option('--max-buyers <n>')
     .option('--health <on|off>')
@@ -437,5 +439,14 @@ export function registerSellerMonitorCommands(sellerCmd: Command): void {
       }
       if (Object.keys(patch).length === 0) throw new Error('Nothing to change: pass at least one option (see --help).');
       return monitor.updateSettings(patch);
-    }, (result) => console.log(chalk.green(`Saved ${result.changed.join(', ')}. Restart the seller to apply; the previous config is kept as config.json.bak.`))));
+    }, (result) => console.log(chalk.green(result.settings.savesTo === 'overrides'
+      ? `Saved ${result.changed.join(', ')} in ${result.settings.overridesPath} (over the read-only config file). Restart the seller to apply.`
+      : `Saved ${result.changed.join(', ')}. Restart the seller to apply; the previous config is kept as config.json.bak.`))));
+
+  settings
+    .command('reset')
+    .description('Drop the settings saved over a read-only config file (the dashboard\'s overrides); the config file applies alone from the next restart')
+    .option('--json', 'output as JSON', false)
+    .action((options: { json: boolean }) => runMonitorCommand(options.json, () => sellerMonitorFor(sellerCmd).resetOverrides(),
+      () => console.log(chalk.green('Removed the saved settings. The config file applies alone from the seller\'s next restart.'))));
 }

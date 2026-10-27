@@ -1,4 +1,4 @@
-import { randomBytes, timingSafeEqual } from 'node:crypto'
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import * as http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { appendSetCookie, readCookie, serializeCookie } from '../gateway/auth/http.js'
@@ -10,6 +10,7 @@ import type { GatewayStore } from '../gateway/store.js'
 import { sellerRouteRegistrar, type SellerRouteOptions } from './routes.js'
 import type { NetworkLoad } from './network.js'
 import type { VerificationChecks } from './promote.js'
+import type { SellerRestartOption } from './service.js'
 
 const SESSION_COOKIE = 'antseed_seller_dashboard'
 const SESSION_MAX_AGE_SECONDS = 7 * 24 * 3600
@@ -28,6 +29,10 @@ export interface SellerDashboardOptions {
   standing?: SellerRouteOptions['standing']
   explorerUrl?: SellerRouteOptions['explorerUrl']
   verificationChecks?: VerificationChecks
+  /** The link token to keep (48 hex characters), so sessions and the link survive a restart; a fresh one otherwise. */
+  token?: string
+  /** Restart from the dashboard (the one `seller start` serves). */
+  restart?: SellerRestartOption
   version: string
   host?: string
   port?: number
@@ -59,33 +64,35 @@ function sameSecret(a: string, b: string): boolean {
 export async function startSellerDashboard(options: SellerDashboardOptions): Promise<SellerDashboardServer> {
   const host = options.host ?? '127.0.0.1'
   const log = options.log ?? (() => {})
-  const token = randomBytes(24).toString('hex')
-  // Session id -> expiry: a copied cookie stops working when the browser's would.
-  const sessions = new Map<string, number>()
+  const token = options.token && /^[0-9a-f]{48}$/.test(options.token) ? options.token : randomBytes(24).toString('hex')
+  // A session is `<expiry>.<nonce>.<mac>`, signed with the link token: it outlives a restart that keeps the token
+  // (a restart from the dashboard), and a copied cookie stops working when the browser's would.
+  const signSession = (expiresAt: number, nonce: string) => createHmac('sha256', token).update(`seller-session:${expiresAt}:${nonce}`).digest('hex')
+  const signedOut = new Set<string>()
+  const validSession = (cookie: string | undefined): boolean => {
+    const [expiry, nonce, mac] = (cookie ?? '').split('.')
+    const expiresAt = Number(expiry)
+    if (!nonce || !mac || !Number.isSafeInteger(expiresAt) || expiresAt <= Date.now() || signedOut.has(nonce)) return false
+    return sameSecret(mac, signSession(expiresAt, nonce))
+  }
   // Cookies are scoped by host and path, not port: each dashboard (one per data dir) gets its own name, so two open side by side keep their sessions.
-  const sessionCookie = `${SESSION_COOKIE}_${randomBytes(6).toString('hex')}`
+  const sessionCookie = `${SESSION_COOKIE}_${createHash('sha256').update(options.dataDir).digest('hex').slice(0, 12)}`
   const me: MeResponse = { kind: 'seller', me: { dataDir: options.dataDir, version: options.version } }
 
   const auth: ConsoleAuth = {
     async authenticate(req) {
       const header = req.headers.authorization ?? ''
       if (header.startsWith('Bearer ') && sameSecret(header.slice(7), token)) return SELLER_PRINCIPAL
-      const cookie = readCookie(req, sessionCookie)
-      const expiresAt = cookie ? sessions.get(cookie) : undefined
-      if (expiresAt === undefined) return null
-      if (expiresAt > Date.now()) return SELLER_PRINCIPAL
-      sessions.delete(cookie!)
-      return null
+      return validSession(readCookie(req, sessionCookie) ?? undefined) ? SELLER_PRINCIPAL : null
     },
     registerRoutes(router: ConsoleRouter) {
       // The console posts the token from the link's fragment, so it never sits in a query string, a request log or browser history.
       router.add('POST', '/auth/seller', async ({ body, raw, res }) => {
         const offered = body && typeof body === 'object' && typeof (body as { token?: unknown }).token === 'string' ? (body as { token: string }).token : ''
         if (!sameSecret(offered, token)) return respond(401, { error: { code: 'unauthorized', message: 'This dashboard link is not valid. Use the URL `antseed seller dashboard` printed.' } })
-        const session = randomBytes(24).toString('hex')
-        const now = Date.now()
-        for (const [id, expiresAt] of sessions) if (expiresAt <= now) sessions.delete(id)
-        sessions.set(session, now + SESSION_MAX_AGE_SECONDS * 1000)
+        const expiresAt = Date.now() + SESSION_MAX_AGE_SECONDS * 1000
+        const nonce = randomBytes(12).toString('hex')
+        const session = `${expiresAt}.${nonce}.${signSession(expiresAt, nonce)}`
         appendSetCookie(res, serializeCookie(raw, sessionCookie, session, { maxAgeSeconds: SESSION_MAX_AGE_SECONDS, path: '/console', sameSite: 'Strict' }))
         return respond(204)
       }, { public: true })
@@ -94,9 +101,11 @@ export async function startSellerDashboard(options: SellerDashboardOptions): Pro
         if (!principal) throw new ConsoleError(401, 'seller_link_required', 'Open the link `antseed seller dashboard` printed')
         return me
       }, { public: true })
-      router.add('POST', '/auth/logout', async ({ raw }) => {
-        const cookie = readCookie(raw, sessionCookie)
-        if (cookie) sessions.delete(cookie)
+      router.add('POST', '/auth/logout', async ({ raw, res }) => {
+        appendSetCookie(res, serializeCookie(raw, sessionCookie, '', { maxAgeSeconds: 0, path: '/console', sameSite: 'Strict' }))
+        // Until this dashboard stops; a signed-out cookie is also cleared in the browser.
+        const nonce = readCookie(raw, sessionCookie)?.split('.')[1]
+        if (nonce) signedOut.add(nonce)
         return respond(204)
       }, { allow: ['token'] })
     },
@@ -122,6 +131,7 @@ export async function startSellerDashboard(options: SellerDashboardOptions): Pro
     ...(options.standing ? { standing: options.standing } : {}),
     ...(options.explorerUrl ? { explorerUrl: options.explorerUrl } : {}),
     ...(options.verificationChecks ? { verificationChecks: options.verificationChecks } : {}),
+    ...(options.restart ? { restart: options.restart } : {}),
     dataDir: () => options.dataDir,
     configPath: () => options.configPath,
     ...(options.env ? { env: options.env } : {}),

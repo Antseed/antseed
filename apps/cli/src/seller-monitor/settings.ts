@@ -9,6 +9,7 @@ import type { AntseedConfig, SellerFreeTierCLIConfig } from '../config/types.js'
 import { ConsoleError } from '../console-error.js'
 import type { FreeTierProgramView, SellerAlertSettings, SellerAlertsPatch, SellerFreeTierProgramSettings, SellerSettings, SellerSettingsPatch } from '../gateway/console-api/types.js'
 import { configWritable, patchValidatedConfig } from '../config/patch.js'
+import { applyMergePatch, configOverridesPath, overriddenSettings, patchConfigOverrides, readConfigOverridesSync, removeConfigOverrides } from '../config/overrides.js'
 import { readSellerStatus } from './reader.js'
 import { serviceKind, unitPriceOf } from './unit-price.js'
 
@@ -27,7 +28,14 @@ export function resolveSellerConfigPath(sellerDataDir: string, fallback: { dataD
   return sellerDataDir === fallback.dataDir ? resolveConfigPath(fallback.configPath) : join(sellerDataDir, 'config.json')
 }
 
-export async function readRaw(configPath: string): Promise<JsonObject> {
+/** The config file's raw JSON; with a data dir, the dashboard's saved overrides applied over it. */
+export async function readRaw(configPath: string, dataDir?: string): Promise<JsonObject> {
+  const base = await readBaseRaw(configPath)
+  if (dataDir === undefined) return base
+  return applyMergePatch(base, readOverrides(dataDir) ?? {}) as JsonObject
+}
+
+async function readBaseRaw(configPath: string): Promise<JsonObject> {
   try {
     const parsed = JSON.parse(await readFile(configPath, 'utf-8')) as unknown
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as JsonObject : {}
@@ -35,6 +43,59 @@ export async function readRaw(configPath: string): Promise<JsonObject> {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {}
     throw new ConsoleError(409, 'config_unreadable', `The config file ${configPath} is not valid JSON; fix it before changing settings here`)
   }
+}
+
+function readOverrides(dataDir: string): JsonObject | null {
+  try {
+    return readConfigOverridesSync(dataDir)
+  } catch (error) {
+    throw new ConsoleError(409, 'config_unreadable', `${configOverridesPath(dataDir)} is not valid JSON (${(error as Error).message}); fix or delete it`)
+  }
+}
+
+/**
+ * Where the dashboard saves seller settings: the config file when it can be
+ * written, else the data dir's overrides file (also once one exists, so a
+ * saved override is never shadowed by an edit to the file under it).
+ */
+export async function sellerConfigAccess(configPath: string, dataDir: string): Promise<SellerConfigAccess> {
+  const overrides = readOverrides(dataDir)
+  const file = await configWritable(configPath)
+  const overridden = overriddenSettings(overrides)
+  if (file.writable && !overrides) return { writable: true, reason: null, savesTo: 'config', overridesPath: null, overridden }
+  const dir = await dataDirWritable(dataDir)
+  if (dir.writable) return { writable: true, reason: null, savesTo: 'overrides', overridesPath: configOverridesPath(dataDir), overridden }
+  return { writable: false, reason: `${file.reason ?? ''} ${dir.reason ?? ''}`.trim(), savesTo: null, overridesPath: overrides ? configOverridesPath(dataDir) : null, overridden }
+}
+
+export interface SellerConfigAccess {
+  writable: boolean
+  reason: string | null
+  savesTo: 'config' | 'overrides' | null
+  overridesPath: string | null
+  overridden: string[]
+}
+
+/** A validated seller config edit, saved where `sellerConfigAccess` says. */
+export async function patchSellerConfig(configPath: string, dataDir: string, mutate: (raw: JsonObject) => void): Promise<void> {
+  const access = await sellerConfigAccess(configPath, dataDir)
+  if (!access.writable) throw new ConsoleError(409, 'config_read_only', access.reason!)
+  if (access.savesTo === 'config') return patchValidatedConfig(configPath, mutate)
+  const base = await readBaseRaw(configPath)
+  await patchConfigOverrides(dataDir, base, (raw) => {
+    loadMerged(raw)
+    mutate(raw)
+    try {
+      configFromObject(structuredClone(raw))
+    } catch (error) {
+      throw new ConsoleError(400, 'invalid_request', (error as Error).message.replace(/^Invalid config:\s*(- )?/i, '').replace(/\n- /g, '; '))
+    }
+  })
+}
+
+/** Drops every setting saved from the dashboard: the config file alone applies again (at the next restart). */
+export async function resetSellerConfigOverrides(dataDir: string): Promise<void> {
+  await removeConfigOverrides(dataDir)
 }
 
 function loadMerged(raw: JsonObject): AntseedConfig {
@@ -64,7 +125,7 @@ const programView = (program: SellerFreeTierCLIConfig): FreeTierProgramView => (
   stakeTiers: (program.stakeTiers ?? DEFAULT_FREE_TIER_STAKE_TIERS).map((tier) => ({ ...tier })),
 })
 
-function settingsView(raw: JsonObject, config: AntseedConfig, configPath: string, access: { writable: boolean; reason: string | null }): SellerSettings {
+function settingsView(raw: JsonObject, config: AntseedConfig, configPath: string, access: SellerConfigAccess): SellerSettings {
   const seller = config.seller
   const rawSeller = (raw.seller ?? {}) as JsonObject
   // A model's own program is keyed by its id: the seller applies it to every provider offering that id.
@@ -78,6 +139,9 @@ function settingsView(raw: JsonObject, config: AntseedConfig, configPath: string
     configPath,
     writable: access.writable,
     readOnlyReason: access.reason,
+    savesTo: access.savesTo,
+    overridesPath: access.overridesPath,
+    overridden: access.overridden,
     displayName: config.identity.displayName ?? '',
     maxConcurrentBuyers: seller.maxConcurrentBuyers,
     healthCheck: {
@@ -118,9 +182,9 @@ function settingsView(raw: JsonObject, config: AntseedConfig, configPath: string
   }
 }
 
-export async function readSellerSettings(configPath: string): Promise<SellerSettings> {
-  const raw = await readRaw(configPath)
-  return settingsView(raw, loadMerged(raw), configPath, await configWritable(configPath))
+export async function readSellerSettings(configPath: string, dataDir: string): Promise<SellerSettings> {
+  const raw = await readRaw(configPath, dataDir)
+  return settingsView(raw, loadMerged(raw), configPath, await sellerConfigAccess(configPath, dataDir))
 }
 
 // ── Patch validation ─────────────────────────────────────────────────────
@@ -292,15 +356,12 @@ function applyFreeTierPatch(out: JsonObject, input: JsonObject, field: string): 
   }
 }
 
-/** Saves a settings patch to the seller's config file (see `patchSellerConfig`); applies when the seller restarts. */
-export async function updateSellerSettings(configPath: string, body: unknown): Promise<{ settings: SellerSettings; fields: string[] }> {
+/** Saves a settings patch (see `patchSellerConfig`); applies when the seller restarts. */
+export async function updateSellerSettings(configPath: string, dataDir: string, body: unknown): Promise<{ settings: SellerSettings; fields: string[] }> {
   let fields: string[] = []
-  await patchSellerConfig(configPath, (raw) => { fields = applySellerSettingsPatch(raw, body) })
-  return { settings: await readSellerSettings(configPath), fields }
+  await patchSellerConfig(configPath, dataDir, (raw) => { fields = applySellerSettingsPatch(raw, body) })
+  return { settings: await readSellerSettings(configPath, dataDir), fields }
 }
-
-/** The seller's config edits go through the shared validated writer (atomic, `.bak`, read-only aware). */
-export const patchSellerConfig = patchValidatedConfig
 
 // ── Alerts ───────────────────────────────────────────────────────────────
 
@@ -310,7 +371,7 @@ async function dataDirWritable(dataDir: string): Promise<{ writable: boolean; re
     await access(dataDir, constants.W_OK)
     return { writable: true, reason: null }
   } catch {
-    return { writable: false, reason: `The seller's data directory ${dataDir} is not writable here, so alert settings cannot be saved.` }
+    return { writable: false, reason: `The seller's data directory ${dataDir} is not writable here, so settings cannot be saved there.` }
   }
 }
 
