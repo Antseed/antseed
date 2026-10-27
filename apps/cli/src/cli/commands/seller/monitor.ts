@@ -488,7 +488,7 @@ export function registerSellerMonitorCommands(sellerCmd: Command): void {
       const { settings: view } = await monitor.settings();
       const slash = name.indexOf('/');
       const named = slash > 0 && view.providers.some((provider) => provider.name === name.slice(0, slash)) ? name.slice(0, slash) : null;
-      const tokenProviders = view.providers.filter((provider) => !provider.unitBilled);
+      const tokenProviders = view.providers.filter((provider) => !provider.unitBilled && !provider.singleService);
       const provider = named ?? (tokenProviders.length === 1 ? tokenProviders[0]!.name : null);
       if (!provider) throw new Error(`Name the provider: <provider>/<model>, one of ${tokenProviders.map((entry) => entry.name).join(', ') || '(none bill by tokens)'}`);
       return monitor.updateSettings({ addServices: [{

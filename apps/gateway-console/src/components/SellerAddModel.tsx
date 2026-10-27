@@ -30,7 +30,7 @@ export function newModelErrors(draft: NewModelDraft, settings: SellerSettings): 
  * unit prices, which are written in the config file.
  */
 export function SellerAddModel({ settings, onSaved }: { settings: SellerSettings; onSaved: (data: SellerSettingsResponse, message: string) => void }) {
-  const providers = settings.providers.filter((provider) => !provider.unitBilled)
+  const providers = settings.providers.filter((provider) => !provider.unitBilled && !provider.singleService)
   const empty = (provider = providers[0]?.name ?? ''): NewModelDraft => ({ provider, service: '', upstreamModel: '', input: '', output: '', cached: '', categories: '' })
   const [open, setOpen] = useState(false)
   const [draft, setDraft] = useState(empty)

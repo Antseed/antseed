@@ -1295,6 +1295,8 @@ export interface SellerSettingsProvider {
   plugin: string
   /** Its services bill per unit (image, video): new models there are added in the config file, with their capabilities. */
   unitBilled: boolean
+  /** A routing plugin that offers exactly one service: no model can be added under it. */
+  singleService: boolean
   /** Services under it, offered or not. */
   services: number
 }

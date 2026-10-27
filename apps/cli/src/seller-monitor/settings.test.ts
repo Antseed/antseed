@@ -226,3 +226,11 @@ test('removing a model takes it out of the backup upstreams that list it', async
   await updateSellerSettings(configPath, dir, { removeServices: [{ provider: 'a', service: 'one' }] })
   assert.deepEqual(JSON.parse(readFileSync(configPath, 'utf8')).seller.providers.a.fallbackUpstreams, [{ baseUrl: 'https://backup-2.example', services: { two: {} } }])
 })
+
+test('no model is added under a routing provider that offers exactly one service', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'seller-settings-'))
+  const configPath = join(dir, 'config.json')
+  writeFileSync(configPath, JSON.stringify({ seller: { providers: { router: { plugin: 'irp-router', services: { 'auto-route': {} } } } } }))
+  assert.equal((await readSellerSettings(configPath, dir)).providers[0]!.singleService, true)
+  await assert.rejects(updateSellerSettings(configPath, dir, { addServices: [{ provider: 'router', service: 'glm', inputUsdPerMillion: 1, outputUsdPerMillion: 1 }] }), /exactly one service/)
+})

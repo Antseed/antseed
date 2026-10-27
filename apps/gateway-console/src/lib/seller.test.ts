@@ -68,7 +68,7 @@ describe('seller editors', async () => {
     freeTier: { maxRequestsPerAddress: null, maxRequestsPerIp: null, windowMs: null, stakersOnly: false, stakeTiers: null }, restrictedCountries: ['RU'], restrictedCountriesDefault: true,
     defaultStakeTiers: [{ minPower: 520_000, multiplier: 5 as number | 'unlimited' }],
     services: [{ provider: 'openai', service: 'glm-5.3', inputUsdPerMillion: 1, outputUsdPerMillion: 3, cachedInputUsdPerMillion: null, inherited: false, paid: true, unitPrice: null, kind: 'text' as const, apiProtocols: [], freeTier: null, ownFreeTier: null, enabled: true, upstreamModel: null, categories: [], unitComponents: [] }],
-    providers: [{ name: 'openai', plugin: 'openai', unitBilled: false, services: 1 }],
+    providers: [{ name: 'openai', plugin: 'openai', unitBilled: false, singleService: false, services: 1 }],
   }
 
   it('sends only what changed', () => {

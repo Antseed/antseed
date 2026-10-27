@@ -83,7 +83,7 @@ export function mockSellerSettings(): { settings: SellerSettings; alerts: Seller
           enabled: true, upstreamModel: 'fal-ai/wan/v2.6/text-to-video', categories: ['video'],
           unitComponents: [{ protocol: 'fal-video', unit: 'video_seconds', match: { resolution: '720p' }, priceUsd: 0.05 }, { protocol: 'fal-video', unit: 'video_seconds', match: { resolution: '1080p' }, priceUsd: 0.1 }] },
       ],
-      providers: [{ name: 'openai', plugin: 'openai', unitBilled: false, services: 3 }, { name: 'fal', plugin: 'fal-video', unitBilled: true, services: 2 }],
+      providers: [{ name: 'openai', plugin: 'openai', unitBilled: false, singleService: false, services: 3 }, { name: 'fal', plugin: 'fal-video', unitBilled: true, singleService: false, services: 2 }],
     },
     alerts: {
       writable: true, readOnlyReason: null,

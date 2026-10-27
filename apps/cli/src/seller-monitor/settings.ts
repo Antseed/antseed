@@ -187,10 +187,15 @@ function settingsView(raw: JsonObject, config: AntseedConfig, configPath: string
       name,
       plugin: entry.plugin,
       unitBilled: Object.values(entry.services ?? {}).some((service) => unitComponentsOf(service.unitBillingModels).length > 0),
+      singleService: singleServicePlugin(entry.plugin),
       services: Object.keys(entry.services ?? {}).length,
     })),
   }
 }
+
+/** Routing plugins that offer exactly one service: no model can be added under them. */
+const SINGLE_SERVICE_PLUGINS = new Set(['irp-router', '@antseed/provider-irp-router', 'free-model-router', '@antseed/provider-free-model-router'])
+const singleServicePlugin = (plugin: unknown) => typeof plugin === 'string' && SINGLE_SERVICE_PLUGINS.has(plugin)
 
 /** A service's unit-billing components, one per protocol, unit and match, as written. */
 function unitComponentsOf(models: unknown): SellerUnitComponent[] {
@@ -410,6 +415,7 @@ export function applySellerSettingsPatch(raw: JsonObject, body: unknown, started
       const services = (provider.services ??= {})
       if (Object.hasOwn(services, id)) bad(`addServices: ${id} is already offered under ${String(item.provider)}`)
       if (Object.values(services).some((service) => service.unitBillingModels !== undefined)) bad(`addServices: ${String(item.provider)} bills per image or video; add its models in the config file, with their capabilities and unit prices`)
+      if (singleServicePlugin((provider as { plugin?: unknown }).plugin)) bad(`addServices: ${String(item.provider)} is a routing provider that offers exactly one service`)
       const added: JsonObject = {}
       if (item.upstreamModel !== undefined && item.upstreamModel !== null && item.upstreamModel !== '') {
         if (typeof item.upstreamModel !== 'string' || item.upstreamModel.trim().length > 200) bad(`addServices: ${id} upstreamModel must be text`)
