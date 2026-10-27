@@ -206,7 +206,7 @@ export class AlertSettingsSource {
         this._resolved = resolveAlerts(config, readAlertSecrets(dataDir), this._options.env ?? process.env);
       } catch (error) {
         // An edit that cannot be applied keeps the last good settings; the timers that ask must never throw.
-        if (!this._resolved) this._resolved = resolveAlerts(undefined, {}, {});
+        if (!this._resolved) this._resolved = resolveAlerts(undefined, {}, this._options.env ?? process.env);
         console.error(`[alerts] Keeping the previous alert settings: ${(error as Error).message}`);
       }
     }

@@ -453,6 +453,8 @@ export class MeteringStorage {
    * the primary key; null when it is unknown or matches more than one request.
    */
   getEventDetail(eventId: string): MeteringEventDetailRow | null {
+    // An empty prefix would match every id.
+    if (!eventId) return null;
     const matches = this.db.prepare(`
       SELECT e.rowid AS rowid, e.event_id, e.session_id, e.timestamp, e.provider, e.service, e.buyer_peer_id,
         e.input_tokens, e.output_tokens, e.total_tokens, e.token_method, e.latency_ms, e.status_code, e.was_streaming,

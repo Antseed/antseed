@@ -32,16 +32,20 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
+/** Peers a buyer daemon last saw longer ago than this are not trusted as the network. */
+export const BUYER_SNAPSHOT_MAX_AGE_MS = 15 * 60_000
+
 /**
  * A live buyer daemon's persisted peer list (already enriched and scored, so
  * no chain reads at all). Null unless it is connected, its PID is alive and
- * the list is non-empty.
+ * it saw peers within `BUYER_SNAPSHOT_MAX_AGE_MS`: a recycled PID or an idle
+ * daemon's old file never serves an old network.
  */
 export async function loadBuyerSnapshot(dataDir: string): Promise<NetworkSnapshot | null> {
   try {
     const parsed = JSON.parse(await readFile(join(dataDir, 'buyer.state.json'), 'utf-8')) as { state?: unknown; pid?: unknown; onChainStatsRefreshedAt?: unknown }
     if (parsed.state !== 'connected' || typeof parsed.pid !== 'number' || !isProcessAlive(parsed.pid)) return null
-    const peers = parsePersistedPeers(parsed)
+    const peers = parsePersistedPeers(parsed, Date.now(), BUYER_SNAPSHOT_MAX_AGE_MS)
     if (peers.length === 0) return null
     const refreshedAt = typeof parsed.onChainStatsRefreshedAt === 'number' && Number.isFinite(parsed.onChainStatsRefreshedAt) ? parsed.onChainStatsRefreshedAt : null
     return { peers, onChainStatsRefreshedAt: refreshedAt, sourceLabel: `buyer daemon (pid ${parsed.pid})` }

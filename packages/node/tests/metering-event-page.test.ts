@@ -102,6 +102,13 @@ describe('metering request log page', () => {
     expect(storage.getEventDetail('')).toBeNull();
   });
 
+  it('never reads an empty id as a prefix, even with one stored request', () => {
+    const storage = new MeteringStorage(join(mkdtempSync(join(tmpdir(), 'metering-page-')), 'metering.db'));
+    storage.insertEvent(event(0, 1_000));
+    expect(storage.getEventDetail('')).toBeNull();
+    expect(storage.getEventDetail('e0')).toMatchObject({ event_id: 'e0' });
+  });
+
   it('summarizes an error body to its message', () => {
     const encode = (text: string) => new TextEncoder().encode(text);
     expect(summarizeErrorBody(encode('{"error":{"message":"You have reached your 5-hour limit","code":429}}'))).toBe('You have reached your 5-hour limit');

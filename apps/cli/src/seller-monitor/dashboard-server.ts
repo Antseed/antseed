@@ -81,7 +81,9 @@ export async function startSellerDashboard(options: SellerDashboardOptions): Pro
       router.add('GET', '/auth/seller', async ({ query, raw, res }) => {
         if (!sameSecret(query.get('token') ?? '', token)) return respond(401, { error: { code: 'unauthorized', message: 'This dashboard link is not valid. Use the URL `antseed seller dashboard` printed.' } })
         const session = randomBytes(24).toString('hex')
-        sessions.set(session, Date.now() + SESSION_MAX_AGE_SECONDS * 1000)
+        const now = Date.now()
+        for (const [id, expiresAt] of sessions) if (expiresAt <= now) sessions.delete(id)
+        sessions.set(session, now + SESSION_MAX_AGE_SECONDS * 1000)
         appendSetCookie(res, serializeCookie(raw, sessionCookie, session, { maxAgeSeconds: SESSION_MAX_AGE_SECONDS, path: '/console', sameSite: 'Strict' }))
         return respond(302, undefined, { headers: { location: '/console/seller' } })
       }, { public: true })
