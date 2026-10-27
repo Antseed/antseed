@@ -217,3 +217,12 @@ test('a model stays on among the providers the seller starts, and models turned 
   writeFileSync(join(dir, 'daemon.state.json'), JSON.stringify({ updatedAt: Date.now(), selectedProviders: ['a', 'b'], providerPricing: { a: {} } }))
   await updateSellerSettings(configPath, dir, { pricing: [{ provider: 'b', service: 'two', enabled: true }, { provider: 'a', service: 'one', enabled: false }] })
 })
+
+test('removing a model takes it out of the backup upstreams that list it', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'seller-settings-'))
+  const configPath = join(dir, 'config.json')
+  writeFileSync(configPath, JSON.stringify({ seller: { providers: { a: { plugin: 'openai', services: { one: {}, two: {} },
+    fallbackUpstreams: [{ baseUrl: 'https://backup-1.example', services: { one: {} } }, { baseUrl: 'https://backup-2.example', services: { one: {}, two: {} } }] } } } }))
+  await updateSellerSettings(configPath, dir, { removeServices: [{ provider: 'a', service: 'one' }] })
+  assert.deepEqual(JSON.parse(readFileSync(configPath, 'utf8')).seller.providers.a.fallbackUpstreams, [{ baseUrl: 'https://backup-2.example', services: { two: {} } }])
+})

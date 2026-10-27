@@ -1,7 +1,7 @@
 import type { Command } from 'commander'
 import chalk from 'chalk'
 import ora from 'ora'
-import { readFile, writeFile, unlink } from 'node:fs/promises'
+import { readFile, rename, writeFile, unlink } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { join, resolve, isAbsolute, dirname } from 'node:path'
 import { getGlobalOptions } from '../types.js'
@@ -1142,7 +1142,10 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
 
         stateWriteInFlight = true
         try {
-          stateWriteCurrent = writeFile(getStateFile(globalOpts.dataDir), JSON.stringify(buildDaemonState(), null, 2))
+          // Replaced whole (temp file, then rename): a reader never sees a half-written state.
+          const stateFile = getStateFile(globalOpts.dataDir)
+          const temp = `${stateFile}.${process.pid}.tmp`
+          stateWriteCurrent = writeFile(temp, JSON.stringify(buildDaemonState(), null, 2)).then(() => rename(temp, stateFile))
           await stateWriteCurrent
         } finally {
           stateWriteInFlight = false

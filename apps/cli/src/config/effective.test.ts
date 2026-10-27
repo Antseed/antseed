@@ -203,3 +203,13 @@ test('models turned off are not offered, and a provider with every model off is 
   assert.deepEqual(dropDisabledServices(seller, ['a', 'b']), { off: ['a/two', 'b/three'], emptyProviders: ['b'] })
   assert.deepEqual(Object.keys(seller.providers['a']!.services), ['one'])
 })
+
+test('a free-tier program written only on a model turned off still applies where the same model stays on', () => {
+  const program = { maxRequestsPerAddress: 5 }
+  const seller = { providers: {
+    a: { plugin: 'openai', services: { glm: { enabled: false, freeTier: program } } },
+    b: { plugin: 'openai', services: { glm: {} } },
+  } } as unknown as Parameters<typeof dropDisabledServices>[0]
+  dropDisabledServices(seller, ['a', 'b'])
+  assert.deepEqual(seller.providers['b']!.services['glm']!.freeTier, program)
+})

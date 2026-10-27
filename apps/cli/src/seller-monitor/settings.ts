@@ -385,6 +385,16 @@ export function applySellerSettingsPatch(raw: JsonObject, body: unknown, started
       // A provider with no models stops the whole seller from starting: its last one is turned off instead.
       if (Object.keys(services).length === 1) bad(`removeServices: ${item.service} is the last model of ${String(item.provider)}; turn it off instead (the provider is then not started)`)
       delete services[item.service]
+      // Backup upstreams that list it serve it no more; one that served only it goes too (an empty list is invalid).
+      const provider = providers[item.provider as string] as { fallbackUpstreams?: Array<{ services?: Record<string, unknown> }> }
+      if (Array.isArray(provider.fallbackUpstreams)) {
+        provider.fallbackUpstreams = provider.fallbackUpstreams.filter((fallback) => {
+          if (!fallback?.services || typeof fallback.services !== 'object' || !Object.hasOwn(fallback.services, item.service as string)) return true
+          delete fallback.services[item.service as string]
+          return Object.keys(fallback.services).length > 0
+        })
+        if (provider.fallbackUpstreams.length === 0) delete provider.fallbackUpstreams
+      }
     }
     fields.push('services')
   }

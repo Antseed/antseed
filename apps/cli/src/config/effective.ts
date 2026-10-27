@@ -272,6 +272,13 @@ export function dropDisabledServices(seller: SellerCLIConfig, providerNames: rea
     if (!provider) continue
     for (const [serviceId, service] of Object.entries(provider.services ?? {})) {
       if (service.enabled !== false) continue
+      // A model id has one free-tier program across providers: one written only here still applies where the model stays on.
+      if (service.freeTier) {
+        for (const other of providerNames) {
+          const kept = seller.providers[other]?.services?.[serviceId]
+          if (kept && kept !== service && kept.enabled !== false && !kept.freeTier) kept.freeTier = structuredClone(service.freeTier)
+        }
+      }
       delete provider.services[serviceId]
       off.push(`${name}/${serviceId}`)
     }
