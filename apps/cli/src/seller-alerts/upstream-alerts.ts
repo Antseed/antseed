@@ -85,6 +85,9 @@ export class UpstreamAlerts {
     } else {
       upstream.credit = null;
     }
+    // Withdrawals were held back while it was out of credit. Models still down after the
+    // round that brought credit back are a separate outage: the next flush announces them.
+    if (previous === 'out' && upstream.credit !== 'out' && upstream.down.size > 0) upstream.dirty = true;
   }
 
   /** Nothing more is sent after shutdown starts (a sweep may still finish). */
