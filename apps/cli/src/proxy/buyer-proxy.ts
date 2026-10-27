@@ -120,6 +120,7 @@ import {
   isCompletionRequestPath,
   isTitleGenerationRequest,
   parseRequestBodyObject,
+  withUpstreamSessionHeader,
   type ConversationIdentity,
 } from './conversation-identity.js'
 import { ConversationStore, type ConversationRouterSelection, type StoredConversation } from './conversation-store.js'
@@ -3874,6 +3875,11 @@ export class BuyerProxy {
       ? extractConversationIdentity(serializedReq.headers, conversationBody)
       : null
     const routingConversationKey = conversationIdentity ? `${conversationIdentity.tool}:${conversationIdentity.sessionKey}` : null
+    // The seller's upstream may route prompt caching by `session_id`; pass the
+    // conversation's key under that name whatever the client called it.
+    if (conversationIdentity) {
+      Object.assign(serializedReq.headers, withUpstreamSessionHeader(serializedReq.headers, conversationIdentity))
+    }
     // Internal marker from the system proxy: source profile used only for
     // local conversation attribution. Stripped here so it never reaches a seller.
     delete serializedReq.headers[SYSTEM_PROXY_SOURCE_HEADER]
