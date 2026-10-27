@@ -181,7 +181,18 @@ function agentWithKnowledge(): AntAgentDefinition {
 // ─── Tests ──────────────────────────────────────────────────────
 
 describe('AntAgentProvider — provider metadata', () => {
-  it('forwards discovery metadata from the inner provider', () => {
+  it('forwards serviceCapabilities from the inner provider', () => {
+    const inner = mockProvider({ responses: [] });
+    const capabilities = {
+      'claude-sonnet-4-5-20250929': { reasoning: true, toolUse: true },
+    } as unknown as Provider['serviceCapabilities'];
+    inner.serviceCapabilities = capabilities;
+    const agent = new AntAgentProvider(inner, personaOnlyAgent());
+
+    expect(agent.serviceCapabilities).toBe(capabilities);
+  });
+
+  it('forwards every discovery metadata field from the inner provider', () => {
     const inner = mockProvider({ responses: [] });
     inner.serviceCategories = { 'claude-sonnet-4-5-20250929': ['coding'] };
     inner.serviceApiProtocols = { 'claude-sonnet-4-5-20250929': ['anthropic-messages'] };
