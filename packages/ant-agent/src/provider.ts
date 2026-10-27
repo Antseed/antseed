@@ -32,6 +32,7 @@ export class AntAgentProvider implements Provider {
   get serviceCategories() { return this._inner.serviceCategories; }
   set serviceCategories(v: Record<string, string[]> | undefined) { this._inner.serviceCategories = v; }
   get serviceApiProtocols() { return this._inner.serviceApiProtocols; }
+  get serviceUnitBillingModels() { return this._inner.serviceUnitBillingModels; }
   get serviceCapabilities() { return this._inner.serviceCapabilities; }
   getCapacity() { return this._inner.getCapacity(); }
   async init() { return this._inner.init?.(); }

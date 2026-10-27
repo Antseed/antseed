@@ -191,6 +191,28 @@ describe('AntAgentProvider — provider metadata', () => {
 
     expect(agent.serviceCapabilities).toBe(capabilities);
   });
+
+  it('forwards every discovery metadata field from the inner provider', () => {
+    const inner = mockProvider({ responses: [] });
+    inner.serviceCategories = { 'claude-sonnet-4-5-20250929': ['coding'] };
+    inner.serviceApiProtocols = { 'claude-sonnet-4-5-20250929': ['anthropic-messages'] };
+    inner.serviceCapabilities = {
+      'claude-sonnet-4-5-20250929': { contextWindow: 200_000, toolUse: true, inputs: ['text', 'image'] },
+    };
+    inner.serviceUnitBillingModels = {
+      'claude-sonnet-4-5-20250929': {
+        'anthropic-messages': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.01 }] },
+      },
+    };
+    const agent = new AntAgentProvider(inner, personaOnlyAgent());
+
+    expect(agent.name).toBe('mock');
+    expect(agent.services).toBe(inner.services);
+    expect(agent.serviceCategories).toBe(inner.serviceCategories);
+    expect(agent.serviceApiProtocols).toBe(inner.serviceApiProtocols);
+    expect(agent.serviceCapabilities).toBe(inner.serviceCapabilities);
+    expect(agent.serviceUnitBillingModels).toBe(inner.serviceUnitBillingModels);
+  });
 });
 
 describe('AntAgentProvider — persona only (no knowledge)', () => {
