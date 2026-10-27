@@ -12,7 +12,7 @@ export function mockSellerStatus(now = Date.now()): SellerStatus {
     available: true, running: true, dataDir: '/var/lib/antseed', peerId: FAKE_PEER, provider: 'openai',
     startedAt: now - 13 * 3_600_000, updatedAt: now - 1_000, activeChannels: 9, capacityUsedPercent: 18, notices: [],
     models: [
-      model('gemini-2.5-flash', false, 4, 402, 'HTTP 402: You need positive balance to do inference', 150_000),
+      model('llama-4-maverick', false, 4, 402, 'HTTP 402: You need positive balance to do inference', 150_000),
       model('deepseek-v4.1', true, 0, null, 'Probe passed', 120_000),
       model('glm-5.3', true, 0, null, 'Probe passed', 125_000),
       model('kimi-k3', true, 1, 429, 'HTTP 429: rate limited', 130_000),
@@ -26,7 +26,7 @@ export function mockSellerStatus(now = Date.now()): SellerStatus {
 export function mockSellerEvents(now = Date.now()): { events: SellerEventView[] } {
   return {
     events: [
-      { at: now - 26 * 60_000, kind: 'model_down', severity: 'warning', title: 'gemini-2.5-flash withdrawn after 3 failed health checks', detail: 'HTTP 402: You need positive balance to do inference' },
+      { at: now - 26 * 60_000, kind: 'model_down', severity: 'warning', title: 'llama-4-maverick withdrawn after 3 failed health checks', detail: 'HTTP 402: You need positive balance to do inference' },
       { at: now - 3 * 3_600_000, kind: 'model_up', severity: 'info', title: 'glm-5.3 restored: health check passed' },
       { at: now - 13 * 3_600_000, kind: 'started', severity: 'info', title: 'Seller started' },
     ],
