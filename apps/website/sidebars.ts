@@ -86,6 +86,7 @@ const sidebars: SidebarsConfig = {
         'provide/tee',
         'provide/payments',
         'provide/staking',
+        'provide/monitoring',
         'provide/metrics',
       ],
     },

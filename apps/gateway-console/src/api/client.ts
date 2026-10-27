@@ -1,7 +1,7 @@
 import type {
   AdminToken, ApiKey, ApiKeyInput, AuditEntry, AuthConfig, BuyerLimits, BuyerSettingsInput, Channel, ChainInfo, DepositConfirmation, DepositWatch, Enrollment,
   GatewayStatus, GatewayUpdate, Invite, InviteInput, Member, MemberInput, MeResponse, ObservabilitySettings, OperatorAuthorization, OperatorState, WorkspaceOperatorSummary, ChatContext, ChatModel, ChatThread, ChatThreadDetail, FavoriteModels, NetworkModel, NetworkRouter, Peer, PeerList, Preset,
-  FreeTierSharing, FreeTierStake, RequestDetail, RequestLogEntry, Rewards, RoutePreview, RoutingPolicy, Settings, SpendLimits, UsageGroupBy, UsageReport, Wallet, Workspace,
+  FreeTierSharing, FreeTierStake, RequestDetail, RequestLogEntry, Rewards, RoutePreview, RoutingPolicy, SellerAlertSettings, SellerAlertsPatch, SellerEventView, SellerLogDetail, SellerLogPage, SellerLogQuery, SellerMarket, SellerPromote, SellerReputation, SellerSettings, SellerVerificationsInput, SellerSettingsPatch, SellerStatus, SellerUsage, Settings, TelegramChat, SpendLimits, UsageGroupBy, UsageReport, Wallet, Workspace,
   WorkspaceInput, WorkspaceRole,
 } from './types'
 
@@ -135,6 +135,8 @@ export function createApiClient(fetchImpl: FetchLike = (input, init) => fetch(in
     auth: {
       config: () => get<AuthConfig>('/auth/config'),
       me: () => get<MeResponse>('/auth/me'),
+      /** `antseed seller dashboard`: swaps the link's token for a session cookie. */
+      sellerSession: (token: string) => post<void>('/auth/seller', { token }),
       setup: (token: string) => post<Enrollment>('/auth/setup', { token }),
       invite: (token: string) => post<Enrollment>('/auth/invite', { token }),
       passkeyRegisterOptions: (enrollment?: string) => post<unknown>('/auth/passkey/register/options', { enrollment }),
@@ -279,6 +281,29 @@ export function createApiClient(fetchImpl: FetchLike = (input, init) => fetch(in
       update: (presetId: string, input: Partial<PresetInput>, options?: SaveOptions) => patch<Preset>(`/presets/${id(presetId)}`, withConfirm(input, options)),
       remove: (presetId: string) => del(`/presets/${id(presetId)}`),
     },
+    /** A seller on the gateway host (org admins), or the seller `antseed seller dashboard` serves. */
+    seller: {
+      status: () => get<SellerStatus>('/seller/status'),
+      events: (limit = 100) => get<{ events: SellerEventView[] }>('/seller/events', { limit }),
+      usage: (days = 14) => get<SellerUsage>('/seller/usage', { days }),
+      settings: () => get<SellerSettingsResponse>('/seller/settings'),
+      updateSettings: (input: SellerSettingsPatch) => patch<SellerSettingsResponse & { changed: string[] }>('/seller/settings', input),
+      updateAlerts: (input: SellerAlertsPatch) => patch<SellerSettingsResponse & { changed: string[] }>('/seller/alerts', input),
+      testAlert: (channel: 'telegram' | 'webhook') => post<{ sent: string[]; errors: string[] }>('/seller/alerts/test', { channel }),
+      telegramChats: (botToken?: string) => post<{ chats: TelegramChat[] }>('/seller/alerts/telegram/chats', botToken ? { botToken } : {}),
+      market: (refresh = false) => get<SellerMarket>('/seller/market', { refresh: refresh ? 1 : undefined }),
+      reputation: (refresh = false) => get<SellerReputation>('/seller/reputation', { refresh: refresh ? 1 : undefined }),
+      promote: () => get<SellerPromote>('/seller/promote'),
+      /** The shareable seller card, SVG text (rendered by the same service the CLI uses). */
+      card: () => get<string>('/seller/promote/card'),
+      logs: (query: SellerLogQuery) => get<SellerLogPage>('/seller/logs', {
+        cursor: query.cursor ?? undefined, limit: query.limit, service: query.service ?? undefined, buyer: query.buyer ?? undefined,
+        from: query.from ?? undefined, errors: query.errorsOnly ? 1 : undefined,
+      }),
+      logDetail: (id: string) => get<SellerLogDetail>(`/seller/logs/${encodeURIComponent(id)}`),
+      checkVerifications: () => post<SellerPromote>('/seller/promote/check'),
+      saveVerifications: (input: SellerVerificationsInput) => put<SellerPromote>('/seller/promote/verifications', input),
+    },
     settings: {
       status: () => get<GatewayStatus>('/status'),
       get: () => get<Settings>('/settings'),
@@ -347,5 +372,7 @@ export type ApiKeyPatch = Partial<ApiKeyInput> & KeyOwnerLayer
 export function hasOwnerLayer(key: ApiKey | null | undefined): key is KeyWithLayers {
   return !!key && 'ownerRoutingPolicy' in key
 }
+
+export interface SellerSettingsResponse { settings: SellerSettings; alerts: SellerAlertSettings }
 
 export type ApiClient = ReturnType<typeof createApiClient>

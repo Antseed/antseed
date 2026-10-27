@@ -179,6 +179,33 @@ export interface SellerGasCheckCLIConfig {
   minBalanceEth?: number;
 }
 
+/** `seller.alerts` in config.json: where the seller sends its own alerts. */
+export interface SellerAlertsCLIConfig {
+  /** A Telegram bot (create one with @BotFather) posting to a chat the bot was added to. */
+  telegram?: {
+    /** Env var holding the bot token, so the token stays out of config.json. Default: ANTSEED_ALERTS_TELEGRAM_TOKEN. */
+    botTokenEnv?: string;
+    /** Can be left out here and saved from the dashboard or `antseed seller alerts set` instead. */
+    chatId?: string;
+  };
+  /** POSTs JSON `{ text, content, seller, event }` (Slack and Discord incoming webhooks read `text` / `content`). */
+  webhook?: { url: string };
+  /** Alert when no request arrives for this many minutes. Off when unset. */
+  idleMinutes?: number;
+  /**
+   * Minimum minutes between two sends of the same alert, also across a recovery
+   * (a flapping model alerts once per cooldown). 0 sends every one. Default: 30.
+   */
+  cooldownMinutes?: number;
+  /**
+   * Warn when an upstream whose account check reports its balance (Venice video, fal, …) holds
+   * less than this many USD. 0 turns it off. Default: 5.
+   */
+  lowBalanceUsd?: number;
+  /** Lowest severity that is sent. Default: warning. */
+  minSeverity?: 'info' | 'warning' | 'critical';
+}
+
 /** One free-tier program: base limits and the staked tiers above them. */
 export interface SellerFreeTierCLIConfig {
   /** Maximum zero-priced requests accepted from one buyer address per window. */
@@ -259,6 +286,11 @@ export interface SellerCLIConfig {
    * own `providers.<p>.services.<s>.freeTier` uses that instead.
    */
   freeTier?: SellerFreeTierCLIConfig;
+  /**
+   * Alerts the seller sends itself (Telegram, webhook) when a model is withdrawn,
+   * gas runs low, it restarts after a crash or goes idle. Off until a channel is set.
+   */
+  alerts?: SellerAlertsCLIConfig;
   /**
    * ISO country codes whose IPs are refused on connect (best effort: VPNs get
    * through). Default: CU, IR, KP, SY, RU. Set `[]` to opt out.

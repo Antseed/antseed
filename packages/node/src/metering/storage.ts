@@ -116,6 +116,9 @@ export interface RowidChunkSummary<T> {
   days: T[];
 }
 
+/** Rows a filtered request-log page walks before handing back a continuation. */
+const DEFAULT_EVENT_SCAN_LIMIT = 5_000;
+
 export class MeteringStorage {
   private readonly db: Database.Database;
   private lastFreeTierPruneAt: number | null = null;
@@ -148,13 +151,13 @@ export class MeteringStorage {
         seller_peer_id, buyer_peer_id,
         input_tokens, output_tokens, total_tokens,
         token_method, token_confidence,
-        latency_ms, status_code, was_streaming
+        latency_ms, status_code, was_streaming, service, error, cached_input_tokens, request_id
       ) VALUES (
         @eventId, @sessionId, @timestamp, @provider,
         @sellerPeerId, @buyerPeerId,
         @inputTokens, @outputTokens, @totalTokens,
         @tokenMethod, @tokenConfidence,
-        @latencyMs, @statusCode, @wasStreaming
+        @latencyMs, @statusCode, @wasStreaming, @service, @error, @cachedInputTokens, @requestId
       )
     `);
 
@@ -173,6 +176,10 @@ export class MeteringStorage {
       latencyMs: event.latencyMs,
       statusCode: event.statusCode,
       wasStreaming: event.wasStreaming ? 1 : 0,
+      service: event.service ?? null,
+      error: event.error ?? null,
+      cachedInputTokens: event.cachedInputTokens ?? null,
+      requestId: event.requestId ?? null,
     });
   }
 
@@ -389,6 +396,91 @@ export class MeteringStorage {
       totalTokens: row.total_tokens,
       totalCostCents: row.total_cost_cents,
     };
+  }
+
+  /**
+   * One page of the request log, newest first. Keyset pagination on the
+   * timestamp index (`before` is the previous page's last `{ timestamp, rowid }`),
+   * so a page costs the same at any depth of a multi-GB table.
+   * A filtered page walks at most `scanLimit` rows: when they hold fewer
+   * matches than asked, `scannedTo` is where the walk stopped, to continue from.
+   */
+  listEventsPage(query: MeteringEventPageQuery): MeteringEventPage {
+    const filters: string[] = [];
+    if (query.buyerPeerId) filters.push('e.buyer_peer_id = @buyer');
+    if (query.service) filters.push('e.service = @service');
+    // A stream that fails after its 200 went out keeps the 200 but records the error.
+    if (query.errorsOnly) filters.push("(e.status_code >= 400 OR (e.error IS NOT NULL AND e.error <> ''))");
+    const bounds = 'timestamp >= @from AND timestamp <= @beforeTs AND NOT (timestamp = @beforeTs AND rowid >= @beforeRowid)';
+    const params = {
+      from: query.fromMs ?? 0,
+      beforeTs: query.before?.timestamp ?? Number.MAX_SAFE_INTEGER,
+      beforeRowid: query.before?.rowid ?? Number.MAX_SAFE_INTEGER,
+      buyer: query.buyerPeerId ?? null,
+      service: query.service ?? null,
+      limit: Math.max(1, Math.min(query.limit, 500)),
+      scan: Math.max(1, query.scanLimit ?? DEFAULT_EVENT_SCAN_LIMIT),
+    };
+    // Unfiltered, every row walked is a row returned; filtered, the walk is the window `scan` rows long.
+    const window = filters.length === 0 ? 'metering_events' : `(
+        SELECT rowid AS rid FROM metering_events INDEXED BY idx_events_timestamp
+        WHERE ${bounds} ORDER BY timestamp DESC, rowid DESC LIMIT @scan
+      ) w JOIN metering_events`;
+    const rows = this.db.prepare(`
+      SELECT e.rowid AS rowid, e.event_id, e.session_id, e.timestamp, e.provider, e.service, e.buyer_peer_id,
+        e.input_tokens, e.output_tokens, e.total_tokens, e.token_method, e.latency_ms, e.status_code, e.was_streaming,
+        e.error, e.cached_input_tokens, r.cost_cents AS cost_cents
+      FROM ${window} e ${filters.length === 0 ? 'INDEXED BY idx_events_timestamp' : 'ON e.rowid = w.rid'}
+      LEFT JOIN usage_receipts r ON r.session_id = e.session_id AND r.event_id = e.event_id
+      WHERE ${filters.length === 0 ? bounds.replace(/(^|\(| AND )(timestamp|rowid)/g, '$1e.$2') : filters.join(' AND ')}
+      ORDER BY e.timestamp DESC, e.rowid DESC
+      LIMIT @limit
+    `).all(params) as MeteringEventPageRow[];
+    if (filters.length === 0 || rows.length >= params.limit) return { rows, scannedTo: null };
+    const beyond = this.db.prepare(`
+      SELECT timestamp, rowid FROM metering_events INDEXED BY idx_events_timestamp
+      WHERE ${bounds} ORDER BY timestamp DESC, rowid DESC LIMIT 2 OFFSET @scan - 1
+    `).all(params) as Array<{ timestamp: number; rowid: number }>;
+    // Only when rows remain past the window: a walk that reached the end has nothing to continue.
+    const edge = beyond.length === 2 ? beyond[0]! : null;
+    return { rows, scannedTo: edge ? { timestamp: edge.timestamp, rowid: edge.rowid } : null };
+  }
+
+  /**
+   * One request of the seller's log with everything kept about it: the event,
+   * its signed usage receipt and the buyer's check of it, and its metering session.
+   * A short id (the first characters, as the CLI prints them) matches by prefix on
+   * the primary key; null when it is unknown or matches more than one request.
+   */
+  getEventDetail(eventId: string): MeteringEventDetailRow | null {
+    // An empty prefix would match every id.
+    if (!eventId) return null;
+    const matches = this.db.prepare(`
+      SELECT e.rowid AS rowid, e.event_id, e.session_id, e.timestamp, e.provider, e.service, e.buyer_peer_id,
+        e.input_tokens, e.output_tokens, e.total_tokens, e.token_method, e.latency_ms, e.status_code, e.was_streaming,
+        e.error, e.cached_input_tokens, e.token_confidence, e.request_id,
+        r.cost_cents AS cost_cents, r.receipt_id, r.unit_price_cents_per_thousand_tokens AS unit_price_cents_per_thousand
+      FROM metering_events e
+      LEFT JOIN usage_receipts r ON r.session_id = e.session_id AND r.event_id = e.event_id
+      WHERE e.event_id >= @id AND e.event_id < @end
+      ORDER BY e.event_id
+      LIMIT 2
+    `).all({ id: eventId, end: eventId.length >= 36 ? `${eventId}\0` : `${eventId}\uffff` }) as MeteringEventDetailRow[];
+    // A prefix that matches more than one request names none of them.
+    const event = matches.length === 1 || matches[0]?.event_id === eventId ? matches[0] : undefined;
+    if (!event) return null;
+    const verification = event.receipt_id
+      ? this.db.prepare('SELECT signature_valid, buyer_total_tokens, percentage_difference, disputed FROM receipt_verifications WHERE receipt_id = ?')
+        .get(event.receipt_id) as MeteringEventDetailRow['verification'] | undefined
+      : undefined;
+    const session = this.db.prepare(
+      'SELECT started_at, ended_at, total_requests, total_tokens, total_cost_cents, avg_latency_ms FROM sessions WHERE session_id = ?',
+    ).get(event.session_id) as MeteringEventDetailRow['session'] | undefined;
+    // The request's place in its session; sessions are short, so this reads few rows.
+    const position = this.db.prepare(
+      'SELECT COUNT(*) AS n FROM metering_events WHERE session_id = ? AND (timestamp < ? OR (timestamp = ? AND rowid <= ?))',
+    ).get(event.session_id, event.timestamp, event.timestamp, event.rowid) as { n: number };
+    return { ...event, verification: verification ?? null, session: session ?? null, session_position: position.n };
   }
 
   /** Get total tokens from metering events in a time range (real-time, per-request). */
@@ -686,6 +778,11 @@ interface EventRow {
   latency_ms: number;
   status_code: number;
   was_streaming: number;
+  /** Null on rows written before migrations 6 and 7. */
+  service: string | null;
+  error: string | null;
+  cached_input_tokens: number | null;
+  request_id: string | null;
 }
 
 interface ReceiptRow {
@@ -767,6 +864,10 @@ function rowToEvent(row: EventRow): MeteringEvent {
     latencyMs: row.latency_ms,
     statusCode: row.status_code,
     wasStreaming: row.was_streaming === 1,
+    ...(row.service !== null ? { service: row.service } : {}),
+    ...(row.error !== null ? { error: row.error } : {}),
+    ...(row.cached_input_tokens !== null ? { cachedInputTokens: row.cached_input_tokens } : {}),
+    ...(row.request_id !== null ? { requestId: row.request_id } : {}),
   };
 }
 
@@ -832,4 +933,55 @@ function rowToSession(row: SessionRow): SessionMetrics {
     peerSwitches: row.peer_switches,
     disputedReceipts: row.disputed_receipts,
   };
+}
+
+export interface MeteringEventPageQuery {
+  limit: number;
+  /** Newest bound (exclusive), from the previous page. */
+  before?: { timestamp: number; rowid: number };
+  fromMs?: number;
+  buyerPeerId?: string;
+  service?: string;
+  errorsOnly?: boolean;
+  /** Rows a filtered page walks at most (default 5,000). */
+  scanLimit?: number;
+}
+
+export interface MeteringEventPage {
+  rows: MeteringEventPageRow[];
+  /** Set when a filtered walk hit `scanLimit` first: pass it as `before` to keep looking. */
+  scannedTo: { timestamp: number; rowid: number } | null;
+}
+
+export interface MeteringEventPageRow {
+  rowid: number;
+  event_id: string;
+  session_id: string;
+  timestamp: number;
+  provider: string;
+  service: string | null;
+  buyer_peer_id: string;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  token_method: string;
+  latency_ms: number;
+  status_code: number;
+  was_streaming: number;
+  error: string | null;
+  cached_input_tokens: number | null;
+  cost_cents: number | null;
+}
+
+export interface MeteringEventDetailRow extends MeteringEventPageRow {
+  token_confidence: string;
+  /** NULL on rows written before migration 8. */
+  request_id: string | null;
+  receipt_id: string | null;
+  unit_price_cents_per_thousand: number | null;
+  verification: { signature_valid: number; buyer_total_tokens: number; percentage_difference: number; disputed: number } | null;
+  /** The metering session (a buyer's run of requests); null until it is first saved. */
+  session: { started_at: number; ended_at: number | null; total_requests: number; total_tokens: number; total_cost_cents: number; avg_latency_ms: number } | null;
+  /** 1-based index of this request within its session. */
+  session_position: number;
 }

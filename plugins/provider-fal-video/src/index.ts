@@ -324,7 +324,7 @@ const plugin: AntseedProviderPlugin = {
         if (account.status === 'rejected') return { status: 'unavailable', reason: account.reason };
         if (account.status === 'unknown') return account;
         if (account.balanceUsd <= minBalanceUsd) {
-          return { status: 'unavailable', reason: `fal balance $${account.balanceUsd.toFixed(2)} is at or below the $${minBalanceUsd} minimum` };
+          return { status: 'unavailable', reason: `fal balance $${account.balanceUsd.toFixed(2)} is at or below the $${minBalanceUsd} minimum`, outOfCredit: true };
         }
         return { status: 'available', balanceUsd: account.balanceUsd };
       },

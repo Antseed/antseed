@@ -2,19 +2,21 @@ import type { Command } from 'commander';
 import chalk from 'chalk';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { existsSync, statSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { loadConfig } from '../../config/loader.js';
 import { getGlobalOptions } from './types.js';
-import { createDepositsClient } from '../payment-utils.js';
+import { createDepositsClient, requireCryptoConfig } from '../payment-utils.js';
 import { FileIdentityStore, identityFromPrivateKeyHex } from '@antseed/node';
 import { MeteringStorage } from '@antseed/node/metering';
+import { parseGas, parseModelHealth, readDaemonState, SELLER_STALE_MS } from '../../seller-monitor/reader.js';
+import { sharedChainProvider } from '../../proxy/chain-rpc.js';
+import { rpcUsage, withRpcSource } from '../../proxy/rpc-sources.js';
 import { ChannelStore, type StoredChannel } from '@antseed/node/payments';
 
-const MICRO_USDC = 1_000_000;
 const DAY_MS = 86_400_000;
+const MICRO_USDC = 1_000_000;
 
-interface MetricSample {
+export interface MetricSample {
   name: string;
   help: string;
   type: 'gauge' | 'counter';
@@ -129,16 +131,8 @@ function listChannels(dataDir: string, limit: number): StoredChannel[] {
   }
 }
 
-async function readDaemonState(dataDir: string): Promise<Record<string, unknown> | null> {
-  try {
-    return JSON.parse(await readFile(join(dataDir, 'daemon.state.json'), 'utf-8')) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-}
 
-async function addCommonMetrics(samples: MetricSample[], baseLabels: Record<string, string>, dataDir: string): Promise<void> {
-  const daemon = await readDaemonState(dataDir);
+async function addCommonMetrics(samples: MetricSample[], baseLabels: Record<string, string>, daemon: Record<string, unknown> | null): Promise<void> {
   addSample(samples, baseLabels, {
     name: 'antseed_metrics_scrape_timestamp_seconds',
     help: 'Unix timestamp of the metrics scrape.',
@@ -230,12 +224,7 @@ async function addBuyerMetrics(samples: MetricSample[], baseLabels: Record<strin
 
   if (includeChain && wallet) {
     try {
-      const config = await loadConfig(configPath);
-      const deposits = createDepositsClient(config);
-      const [account, walletUsdc] = await Promise.all([
-        deposits.getBuyerBalance(wallet),
-        deposits.getUSDCBalance(wallet),
-      ]);
+      const { account, walletUsdc } = await chainBalances(configPath, wallet);
       addSample(samples, buyerLabels, { name: 'antseed_buyer_deposits_available_usdc', help: 'Buyer deposits available in the deposits contract.', type: 'gauge', value: microsToUsdc(account.available) });
       addSample(samples, buyerLabels, { name: 'antseed_buyer_deposits_reserved_usdc', help: 'Buyer deposits reserved in the deposits contract.', type: 'gauge', value: microsToUsdc(account.reserved) });
       addSample(samples, buyerLabels, { name: 'antseed_wallet_usdc', help: 'Wallet USDC balance.', type: 'gauge', value: microsToUsdc(walletUsdc) });
@@ -245,9 +234,79 @@ async function addBuyerMetrics(samples: MetricSample[], baseLabels: Record<strin
   }
 }
 
-async function addSellerMetrics(samples: MetricSample[], baseLabels: Record<string, string>, dataDir: string): Promise<void> {
+/**
+ * Whether the state file is from a seller that is running: a crashed or killed
+ * seller leaves its last state behind, which must not read as live health.
+ */
+export function isLiveDaemon(daemon: Record<string, unknown> | null, now: number = Date.now()): boolean {
+  const updatedAt = daemon?.updatedAt;
+  return typeof updatedAt === 'number' && now - updatedAt < SELLER_STALE_MS;
+}
+
+/**
+ * Model health and gas from the seller daemon's state file (absent on older
+ * sellers), parsed like the dashboard does; none while the seller is not running.
+ */
+export function addSellerHealthMetrics(samples: MetricSample[], sellerLabels: Record<string, string>, daemon: Record<string, unknown> | null, now: number = Date.now()): void {
+  if (!isLiveDaemon(daemon, now)) return;
+  for (const service of parseModelHealth(daemon?.modelHealth)) {
+    // `provider` is the configured provider name, so upstreams sharing a plugin get their own series.
+    const serviceLabels = { provider: service.providerId, plugin: service.provider, service: service.service };
+    addSample(samples, sellerLabels, { name: 'antseed_seller_model_advertised', help: 'Whether the service passes health checks and is advertised (0 = withdrawn after failing probes).', type: 'gauge', labels: serviceLabels, value: service.advertised ? 1 : 0 });
+    addSample(samples, sellerLabels, { name: 'antseed_seller_model_consecutive_failures', help: 'Consecutive failed health probes for the service.', type: 'gauge', labels: serviceLabels, value: service.consecutiveFailures });
+    if (service.lastStatusCode !== null) {
+      addSample(samples, sellerLabels, { name: 'antseed_seller_model_last_status_code', help: 'HTTP status of the last failed upstream probe (e.g. 402 = upstream out of credit).', type: 'gauge', labels: serviceLabels, value: service.lastStatusCode });
+    }
+    if (service.lastProbeAt !== null) {
+      addSample(samples, sellerLabels, { name: 'antseed_seller_model_last_probe_timestamp_seconds', help: 'Unix timestamp of the last health probe for the service.', type: 'gauge', labels: serviceLabels, value: Math.floor(service.lastProbeAt / 1000) });
+    }
+  }
+  const gas = parseGas(daemon?.gas);
+  if (gas && gas.balanceEth !== null) {
+    addSample(samples, sellerLabels, { name: 'antseed_seller_gas_balance_eth', help: 'Seller wallet ETH balance from the last gas check.', type: 'gauge', value: gas.balanceEth });
+    addSample(samples, sellerLabels, { name: 'antseed_seller_gas_min_balance_eth', help: 'ETH balance below which the seller pauses advertising.', type: 'gauge', value: gas.minBalanceEth });
+    addSample(samples, sellerLabels, { name: 'antseed_seller_gas_depleted', help: 'Whether advertising is paused because the wallet is out of gas.', type: 'gauge', value: gas.depleted ? 1 : 0 });
+  }
+}
+
+/** Chain RPC calls per source: this exporter's own, and the seller daemon's from its state file. */
+export function addRpcMetrics(samples: MetricSample[], baseLabels: Record<string, string>, daemon: Record<string, unknown> | null, now: number = Date.now()): void {
+  const help = 'Chain RPC calls made, by source (as asked, before coalescing and Multicall batching).';
+  for (const [source, usage] of Object.entries(rpcUsage())) {
+    addSample(samples, baseLabels, { name: 'antseed_rpc_calls_total', help, type: 'counter', labels: { source, process: 'exporter' }, value: usage.total });
+  }
+  // A stopped seller's counters would sit frozen; its series go away instead.
+  const daemonRpc = isLiveDaemon(daemon, now) && daemon?.rpc && typeof daemon.rpc === 'object' ? daemon.rpc as Record<string, { total?: unknown }> : {};
+  for (const [source, usage] of Object.entries(daemonRpc)) {
+    addSample(samples, baseLabels, { name: 'antseed_rpc_calls_total', help, type: 'counter', labels: { source, process: 'seller' }, value: num(usage?.total) });
+  }
+}
+
+const CHAIN_BALANCES_TTL_MS = 60_000;
+let chainBalancesCache: { key: string; at: number; value: Promise<{ account: { available: bigint; reserved: bigint }; walletUsdc: bigint }> } | null = null;
+
+/**
+ * Deposits and wallet USDC for `--include-chain`: one client on the process's
+ * shared provider (both reads batch into one Multicall3 call), and at most one
+ * read a minute however often Prometheus scrapes.
+ */
+function chainBalances(configPath: string, wallet: string) {
+  const key = `${configPath}|${wallet}`;
+  if (chainBalancesCache && chainBalancesCache.key === key && Date.now() - chainBalancesCache.at < CHAIN_BALANCES_TTL_MS) return chainBalancesCache.value;
+  const value = withRpcSource('metrics', async () => {
+    const config = await loadConfig(configPath);
+    const crypto = requireCryptoConfig(config);
+    const deposits = createDepositsClient(config).withProvider(sharedChainProvider({ rpcUrl: crypto.rpcUrl, evmChainId: crypto.evmChainId, ...(crypto.fallbackRpcUrls ? { fallbackRpcUrls: crypto.fallbackRpcUrls } : {}) }));
+    const [account, walletUsdc] = await Promise.all([deposits.getBuyerBalance(wallet), deposits.getUSDCBalance(wallet)]);
+    return { account, walletUsdc };
+  });
+  chainBalancesCache = { key, at: Date.now(), value };
+  value.catch(() => { if (chainBalancesCache?.value === value) chainBalancesCache = null; });
+  return value;
+}
+
+async function addSellerMetrics(samples: MetricSample[], baseLabels: Record<string, string>, dataDir: string, daemon: Record<string, unknown> | null): Promise<void> {
   const wallet = await loadExistingWalletAddress(dataDir);
-  const daemon = await readDaemonState(dataDir);
   const sellerLabels = { ...baseLabels, role: 'seller', wallet, peer_id: String(daemon?.peerId ?? '') };
   const allChannels = listChannels(dataDir, 1_000_000).filter((channel) => channel.role === 'seller');
   const dayStart = utcDayStartMs();
@@ -284,6 +343,8 @@ async function addSellerMetrics(samples: MetricSample[], baseLabels: Record<stri
   addSample(samples, sellerLabels, { name: 'antseed_seller_payment_authorized_usdc_total', help: 'Seller all-time authorized payment amount from local payment channel ledger.', type: 'counter', value: microsToUsdc(authorizedMicros) });
   addSample(samples, sellerLabels, { name: 'antseed_seller_channel_requests_total', help: 'Seller request count from local payment channel ledger.', type: 'counter', value: requests });
   addSample(samples, sellerLabels, { name: 'antseed_seller_channel_tokens_total', help: 'Seller delivered token/payment counter from local payment channel ledger.', type: 'counter', value: tokens });
+
+  addSellerHealthMetrics(samples, sellerLabels, daemon);
 
   try {
     const meteringPath = join(dataDir, 'metering.db');
@@ -432,18 +493,21 @@ async function collectMetrics(options: MetricsOptions, dataDir: string, configPa
   const baseLabels = { instance };
   const samples: MetricSample[] = [];
 
-  await addCommonMetrics(samples, baseLabels, dataDir);
+  // One snapshot per scrape: the seller rewrites the file every second.
+  const daemon = await readDaemonState(dataDir);
+  await addCommonMetrics(samples, baseLabels, daemon);
   if (role === 'buyer' || role === 'both' || role === 'auto') {
     await addBuyerMetrics(samples, baseLabels, dataDir, Boolean(options.includeChain), configPath).catch((error) => {
       addSample(samples, { ...baseLabels, role: 'buyer' }, { name: 'antseed_buyer_scrape_error', help: 'Whether buyer metrics collection failed.', type: 'gauge', labels: { error: error instanceof Error ? error.message : String(error) }, value: 1 });
     });
   }
   if (role === 'seller' || role === 'both' || role === 'auto') {
-    await addSellerMetrics(samples, baseLabels, dataDir).catch((error) => {
+    await addSellerMetrics(samples, baseLabels, dataDir, daemon).catch((error) => {
       addSample(samples, { ...baseLabels, role: 'seller' }, { name: 'antseed_seller_scrape_error', help: 'Whether seller metrics collection failed.', type: 'gauge', labels: { error: error instanceof Error ? error.message : String(error) }, value: 1 });
     });
   }
 
+  addRpcMetrics(samples, baseLabels, daemon);
   return renderPrometheus(samples);
 }
 

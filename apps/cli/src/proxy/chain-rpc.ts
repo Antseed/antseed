@@ -18,6 +18,7 @@
  * - Requests are paced per endpoint so a burst never exceeds a few per second.
  */
 import { FetchRequest, Interface, JsonRpcProvider, Network, type JsonRpcPayload, type JsonRpcResult } from 'ethers'
+import { recordRpcCall } from './rpc-sources.js'
 
 export interface RpcTransportResponse {
   status: number
@@ -80,7 +81,7 @@ const MULTICALL = new Interface([
  * The reads folded into Multicall3 batches (as declared in the USDC,
  * AntseedDeposits and DepositRelay ABIs the buyer and gateway use, and the
  * registry, emissions and usage-rewards reads behind the console's buyer
- * rewards). Inside
+ * rewards, and the seller standing reads). Inside
  * `aggregate3` a call runs with `msg.sender` = Multicall3, so only views whose
  * answer does not depend on the caller belong here; any other `eth_call` is
  * sent on its own.
@@ -110,6 +111,23 @@ const BATCHABLE_SELECTORS = (() => {
     'function buyerEpochClaimed(address buyer, uint256 epoch) view returns (bool)',
     'function pendingBuyerReward(address buyer, uint256 epoch) view returns (uint256)',
     'function pendingEmissions(address account, uint256[] epochs) view returns (uint256 seller, uint256 buyer)',
+    // Seller standing (seller dashboard, `antseed seller status|reputation`): registration, pool and seller rewards, all naming the seller or agent.
+    'function getAgentId(address owner) view returns (uint256)',
+    'function agentSeller(uint256 agentId) view returns (address)',
+    'function getStake(address seller) view returns (uint256)',
+    'function isStakedAboveMin(address seller) view returns (bool)',
+    'function legacyStakeEligibilityEnabled() view returns (bool)',
+    'function minSellerPoolStake() view returns (uint256)',
+    'function poolActiveStakeAtEpoch(uint256 agentId, uint256 epoch) view returns (uint256)',
+    'function stakeActivationDelay() view returns (uint256)',
+    'function agentInitialized(uint256 agentId) view returns (bool)',
+    'function remainingInits() view returns (uint256)',
+    'function initAmount() view returns (uint256)',
+    'function initEndEpoch() view returns (uint256)',
+    'function agentEpochClaimed(uint256 agentId, uint256 epoch) view returns (bool)',
+    'function pendingAgentReward(uint256 agentId, uint256 epoch) view returns (uint256)',
+    'function lockedRewards(address seller) view returns (uint256)',
+    'function sellerClaimPolicy() view returns (address)',
   ])
   const selectors = new Set<string>()
   reads.forEachFunction((fragment) => selectors.add(fragment.selector))
@@ -182,6 +200,16 @@ export class ChainRpcProvider extends JsonRpcProvider {
     const now = this.now()
     if (this.endpoints.some((endpoint) => endpoint.openUntil <= now)) return 0
     return Math.min(...this.endpoints.map((endpoint) => endpoint.openUntil))
+  }
+
+  /**
+   * Counts the call for its source here, where the caller's async context is
+   * still current: ethers drains its request queue from one shared timer, so
+   * by `_send` concurrent callers all look like whoever scheduled it.
+   */
+  override send(method: string, params: Array<unknown> | Record<string, unknown>): Promise<any> {
+    recordRpcCall()
+    return super.send(method, params)
   }
 
   override async _send(payload: JsonRpcPayload | JsonRpcPayload[]): Promise<JsonRpcResult[]> {
@@ -311,7 +339,9 @@ export class ChainRpcProvider extends JsonRpcProvider {
 
   /** Multicall3 is probed once per process (its code is then cached like any other). */
   private multicallDeployed(): Promise<boolean> {
-    this.multicall ??= this.one({ jsonrpc: '2.0', id: nextInternalId++, method: 'eth_getCode', params: [this.multicallAddress, 'latest'] } as JsonRpcPayload)
+    if (this.multicall) return this.multicall
+    recordRpcCall('multicall-probe')
+    this.multicall = this.one({ jsonrpc: '2.0', id: nextInternalId++, method: 'eth_getCode', params: [this.multicallAddress, 'latest'] } as JsonRpcPayload)
       .then((result) => 'result' in result && typeof result.result === 'string' && result.result !== '0x')
       .catch((error: unknown) => {
         this.multicall = null

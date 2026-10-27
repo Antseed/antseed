@@ -12,6 +12,7 @@ import { MAX_FREE_TIER_DELEGATIONS, SellerFreeTierLimiter, validateFreeTierStake
 import { validateServiceMetadata } from './service-metadata.js';
 import { parseHostPort } from './public-address.js';
 import { appendVerifierConfigErrors } from '../verifier/config-schema.js';
+import { sellerAlertsErrors } from './seller-alerts.js';
 
 const SERVICE_CATEGORY_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 const MAX_PUBLIC_ADDRESS_LENGTH = 255;
@@ -489,6 +490,8 @@ export function validateConfig(config: AntseedConfig): string[] {
       serviceFreeTiers.set(serviceId, program);
     }
   }
+
+  errors.push(...sellerAlertsErrors(config.seller.alerts));
 
   const restrictedCountries = config.seller.restrictedCountries;
   if (

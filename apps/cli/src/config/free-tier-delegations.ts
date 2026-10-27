@@ -1,5 +1,5 @@
 import type { FreeTierDelegation } from '@antseed/node';
-import { patchConfigFile } from '../gateway/services/settings.js';
+import { patchConfigFile } from './patch.js';
 
 /**
  * Rewrite only `buyer.freeTierDelegations` in the raw config file, under the

@@ -2,7 +2,8 @@ import type { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
 import { getGlobalOptions } from '../types.js';
-import { loadConfig, saveConfig } from '../../../config/loader.js';
+import { configFromObject, loadConfig, saveConfig } from '../../../config/loader.js';
+import { patchValidatedConfig } from '../../../config/patch.js';
 import type { AntseedConfig, SellerProviderConfig } from '../../../config/types.js';
 import { assertValidConfig } from '../../../config/validation.js';
 import {
@@ -48,9 +49,8 @@ export function registerConfigCommand(program: Command): void {
             return;
           }
         }
-        setConfigValue(config as unknown as Record<string, unknown>, key, value);
-        assertValidConfig(config);
-        await saveConfig(globalOpts.config, config);
+        // Only this key changes in the file (validated, atomic, previous file kept as config.json.bak).
+        await patchValidatedConfig(globalOpts.config, (raw) => setValidatedConfigValue(raw, key, value));
         console.log(chalk.green(`Set ${key} = ${value}`));
       } catch (err) {
         console.error(chalk.red(`Error: ${(err as Error).message}`));
@@ -392,12 +392,22 @@ async function setRoleScopedValue(
         return;
       }
     }
-    setConfigValue(config as unknown as Record<string, unknown>, fullKey, value);
-    assertValidConfig(config);
-    await saveConfig(globalOpts.config, config);
+    await patchValidatedConfig(globalOpts.config, (raw) => setValidatedConfigValue(raw, fullKey, value));
     console.log(chalk.green(`Set ${fullKey} = ${value}`));
   } catch (err) {
     console.error(chalk.red(`Error: ${(err as Error).message}`));
     process.exitCode = 1;
   }
+}
+
+/**
+ * Sets one key in the raw file, after checking the edit against the effective
+ * config: the loader swaps a malformed value (`maxConcurrentBuyers typo`) for
+ * its default, so validating only the loaded file would let it through.
+ */
+export function setValidatedConfigValue(raw: Record<string, unknown>, key: string, value: string): void {
+  const effective = configFromObject(structuredClone(raw));
+  setConfigValue(effective as unknown as Record<string, unknown>, key, value);
+  assertValidConfig(effective);
+  setConfigValue(raw, key, value);
 }

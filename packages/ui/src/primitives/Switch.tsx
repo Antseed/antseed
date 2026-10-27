@@ -7,9 +7,11 @@ export interface SwitchProps {
   description?: ReactNode;
   disabled?: boolean;
   className?: string;
+  /** Accessible name when the visible label repeats (e.g. one switch per row). */
+  ariaLabel?: string;
 }
 
-export function Switch({ checked, onChange, label, description, disabled, className }: SwitchProps) {
+export function Switch({ checked, onChange, label, description, disabled, className, ariaLabel }: SwitchProps) {
   const id = useId();
   const descriptionId = useId();
   return (
@@ -19,6 +21,7 @@ export function Switch({ checked, onChange, label, description, disabled, classN
         type="button"
         role="switch"
         aria-checked={checked}
+        aria-label={ariaLabel}
         aria-describedby={description ? descriptionId : undefined}
         disabled={disabled}
         className={checked ? 'as-switch__track as-switch__track--on' : 'as-switch__track'}
