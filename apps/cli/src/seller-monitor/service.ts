@@ -192,7 +192,8 @@ export class SellerMonitor {
   private async _me(): Promise<{ peerId: string | null; services: SellerServicePricing[] | null; dataDir: string; configPath: string }> {
     const { dataDir, configPath } = this.seller()
     const status = await readSellerStatus(dataDir, this._options.version)
-    const services = await readSellerSettings(configPath, dataDir).then((settings) => settings.services, () => null)
+    // Models turned off are not offerings: market, promotion and the seller card leave them out.
+    const services = await readSellerSettings(configPath, dataDir).then((settings) => settings.services.filter((service) => service.enabled), () => null)
     const peerId = status.available ? status.peerId ?? await this._storedPeerId(dataDir) : null
     return { peerId, services, dataDir, configPath }
   }

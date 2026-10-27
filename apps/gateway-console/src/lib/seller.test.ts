@@ -218,6 +218,14 @@ describe('seller editors', async () => {
     expect(alertsPatchOf(base, { ...base, token: ' 1:abc ', idleMinutes: '30' })).toEqual({ telegramBotToken: '1:abc', idleMinutes: 30 })
     expect(alertsPatchOf(base, { ...base, clearToken: true, clearWebhook: true, chatId: '' })).toEqual({ telegramChatId: null, telegramBotToken: null, webhookUrl: null })
   })
+  it('names the unit on every price field of a model billed in more than one unit', async () => {
+    const { unitComponentLabel } = await import('../components/SellerSettingsEditor')
+    const perSecond = { protocol: 'fal-video', unit: 'video_seconds', match: { resolution: '4k' }, priceUsd: 0.3 }
+    const perVideo = { protocol: 'fal-video', unit: 'video_generations', match: { resolution: '4k' }, priceUsd: 1 }
+    expect([unitComponentLabel(perSecond, true), unitComponentLabel(perVideo, true)]).toEqual(['4k, per video second', '4k, per video'])
+    expect(unitComponentLabel(perSecond)).toBe('4k')
+    expect(unitComponentLabel({ ...perVideo, match: null })).toBe('Per video')
+  })
   it('sends a changed per-unit price by its match, whatever characters the match holds', async () => {
     const { draftOf, patchOf, unitKey } = await import('../components/SellerSettingsEditor')
     const component = { protocol: 'fal-video', unit: 'video_seconds', match: { resolution: '4k|hdr' }, priceUsd: 0.3 }

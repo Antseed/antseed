@@ -10,7 +10,7 @@ import { ConsoleError } from '../console-error.js'
 import type { FreeTierProgramView, SellerUnitComponent, SellerAlertSettings, SellerAlertsPatch, SellerFreeTierProgramSettings, SellerSettings, SellerSettingsPatch } from '../gateway/console-api/types.js'
 import { configWritable, patchValidatedConfig } from '../config/patch.js'
 import { applyMergePatch, configOverridesPath, overriddenSettings, patchConfigOverrides, readConfigOverridesSync, removeConfigOverrides } from '../config/overrides.js'
-import { readSellerStatus } from './reader.js'
+import { readDaemonState, readSellerStatus } from './reader.js'
 import { serviceKind, unitPriceOf } from './unit-price.js'
 
 export { configWritable }
@@ -243,8 +243,11 @@ function child(parent: JsonObject, key: string): JsonObject {
   return created
 }
 
-/** Applies the patch to the raw config in place; only the fields it names change. Returns the changed field names. */
-export function applySellerSettingsPatch(raw: JsonObject, body: unknown): string[] {
+/**
+ * Applies the patch to the raw config in place; only the fields it names change. Returns the changed field names.
+ * `startedProviders`: the providers the seller runs with (`--provider`), when known; a model must stay on among them.
+ */
+export function applySellerSettingsPatch(raw: JsonObject, body: unknown, startedProviders: readonly string[] | null = null): string[] {
   const patch = obj(body ?? {}, 'The request body') as SellerSettingsPatch & JsonObject
   const known = new Set(['displayName', 'maxConcurrentBuyers', 'healthCheck', 'gasCheck', 'freeTier', 'restrictedCountries', 'pricing', 'addServices', 'removeServices'])
   for (const key of Object.keys(patch)) if (!known.has(key)) bad(`Unknown setting: ${key}`)
@@ -420,8 +423,10 @@ export function applySellerSettingsPatch(raw: JsonObject, body: unknown): string
   if (fields.includes('services')) {
     // The seller does not start without a model to offer, and with it goes this dashboard: one stays on.
     const providers = (seller().providers ?? {}) as Record<string, { services?: Record<string, JsonObject> }>
-    const offered = Object.values(providers).some((provider) => Object.values(provider.services ?? {}).some((service) => service.enabled !== false))
-    if (!offered) bad('At least one model must stay offered: the seller does not start without one (and this dashboard with it)')
+    const started = startedProviders?.filter((name) => Object.hasOwn(providers, name)) ?? []
+    const counted = started.length > 0 ? started.map((name) => providers[name]!) : Object.values(providers)
+    const offered = counted.some((provider) => Object.values(provider.services ?? {}).some((service) => service.enabled !== false))
+    if (!offered) bad(`At least one model must stay offered${started.length > 0 ? ` by the providers this seller starts (${started.join(', ')})` : ''}: the seller does not start without one (and this dashboard with it)`)
   }
   return fields
 }
@@ -458,7 +463,11 @@ function applyFreeTierPatch(out: JsonObject, input: JsonObject, field: string): 
 /** Saves a settings patch (see `patchSellerConfig`); applies when the seller restarts. */
 export async function updateSellerSettings(configPath: string, dataDir: string, body: unknown): Promise<{ settings: SellerSettings; fields: string[] }> {
   let fields: string[] = []
-  await patchSellerConfig(configPath, dataDir, (raw) => { fields = applySellerSettingsPatch(raw, body) })
+  // The providers the seller last started with (its state file), so a model stays on among them.
+  const state = await readDaemonState(dataDir)
+  const pricing = state?.['providerPricing']
+  const started = pricing && typeof pricing === 'object' ? Object.keys(pricing) : null
+  await patchSellerConfig(configPath, dataDir, (raw) => { fields = applySellerSettingsPatch(raw, body, started) })
   return { settings: await readSellerSettings(configPath, dataDir), fields }
 }
 

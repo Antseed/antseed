@@ -59,10 +59,15 @@ const priceKey = (provider: string, service: string) => `${provider}/${service}`
 export const unitKey = (key: string, component: Pick<SellerUnitComponent, 'protocol' | 'unit' | 'match'>) =>
   JSON.stringify([key, component.protocol, component.unit, component.match])
 const parseUnitKey = (unit: string) => JSON.parse(unit) as [string, string, string, Record<string, unknown> | null]
-/** "4k · audio", or the unit alone: which requests a component prices. */
-export function unitComponentLabel(component: SellerUnitComponent): string {
+/**
+ * Which requests a component prices: "4k · audio", or "Per video" alone. When
+ * the model bills in more than one unit, every label names its unit
+ * ("4k · audio, per video second"), so two fields never read the same.
+ */
+export function unitComponentLabel(component: SellerUnitComponent, mixedUnits = false): string {
   const match = Object.entries(component.match ?? {}).map(([field, value]) => (value === true ? field : value === false ? `no ${field}` : String(value)))
-  return match.length > 0 ? match.join(' · ') : `Per ${unitName(component.unit)}`
+  if (match.length === 0) return `Per ${unitName(component.unit)}`
+  return mixedUnits ? `${match.join(' · ')}, per ${unitName(component.unit)}` : match.join(' · ')
 }
 const optional = (value: number | null) => (value === null ? '' : String(value))
 const hoursOf = (windowMs: number | null) => (windowMs === null ? '' : String(windowMs / 3_600_000))
@@ -429,10 +434,11 @@ export function SellerSettingsEditor({ settings, restart }: { settings: SellerSe
                     ? <div className="gc-seller-price__unit">
                       {entry.unitComponents.map((component) => {
                         const unit = unitKey(key, component)
-                        return <TextField key={unit} size="sm" className="gc-num" label={unitComponentLabel(component)} aria-label={`${key} ${unitComponentLabel(component)} price`} inputMode="decimal"
+                        const label = unitComponentLabel(component, new Set(entry.unitComponents.map((other) => other.unit)).size > 1)
+                        return <TextField key={unit} size="sm" className="gc-num" label={label} aria-label={`${key} ${label} price`} inputMode="decimal"
                           disabled={readOnly} value={draft.unitPrices[unit] ?? String(component.priceUsd)} error={errors[`unit:${unit}`]} onChange={(event) => setUnitPrice(unit, event.target.value)} />
                       })}
-                      <span className="gc-fineprint">USD per {unitName(entry.unitComponents[0]!.unit)}{entry.unitPrice ? `; now ${formatUnitPrice(entry.unitPrice)}` : ''}.</span>
+                      <span className="gc-fineprint">USD per {[...new Set(entry.unitComponents.map((component) => unitName(component.unit)))].join(' or ')}{entry.unitPrice ? `; now ${formatUnitPrice(entry.unitPrice)}` : ''}.</span>
                     </div>
                     : <>
                     <TextField size="sm" className="gc-num" label="Input" aria-label={`${key} input price`} inputMode="decimal" disabled={readOnly} value={price.input} error={errors[`${key}:input`]} onChange={(event) => setPrice(key, 'input', event.target.value)} />

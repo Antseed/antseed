@@ -201,3 +201,16 @@ test('models: turned off and on, unit prices edited by what they bill, token mod
   await assert.rejects(updateSellerSettings(configPath, dir, { removeServices: [{ provider: 'fal', service: 'wan' }] }), /last model of fal; turn it off/)
   assert.deepEqual(view.services.map((entry) => entry.service), ['glm-5.3', 'wan'])
 })
+
+test('a model stays on among the providers the seller starts, and models turned off are not offerings', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'seller-settings-'))
+  const configPath = join(dir, 'config.json')
+  writeFileSync(configPath, JSON.stringify({ seller: { providers: {
+    a: { plugin: 'openai', services: { one: { pricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } } } },
+    b: { plugin: 'openai', services: { two: { pricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } } } },
+  } } }))
+  // The seller runs with --provider a only (its state file lists what it started).
+  writeFileSync(join(dir, 'daemon.state.json'), JSON.stringify({ updatedAt: Date.now(), providerPricing: { a: {} } }))
+  await assert.rejects(updateSellerSettings(configPath, dir, { pricing: [{ provider: 'a', service: 'one', enabled: false }] }), /providers this seller starts \(a\)/)
+  await updateSellerSettings(configPath, dir, { pricing: [{ provider: 'b', service: 'two', enabled: false }] })
+})
