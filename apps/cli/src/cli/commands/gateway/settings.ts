@@ -6,10 +6,25 @@ import { readConsoleLocation } from '../../../gateway/console.js'
 import { observabilitySettings } from '../../../gateway/observability.js'
 import { listNetworkPeers } from '../../../gateway/services/network.js'
 import type { BuyerSettings, BuyerSettingsInput, Peer } from '../../../gateway/console-api/types.js'
-import { readSettings, setObservabilitySettings, updateBuyerSettings, type SettingsContext } from '../../../gateway/services/settings.js'
+import { readSettings, setObservabilitySettings, setUnderscoreHeaders, updateBuyerSettings, type SettingsContext } from '../../../gateway/services/settings.js'
+import { hyphenTwin } from '../../../gateway/caddy-headers.js'
+import type { UnderscoreHeadersSettings } from '../../../gateway/console-api/types.js'
 import { sameRoutingModel } from '../../../routing-policy/policy.js'
 import { collect } from './policy-options.js'
 import { addBuyerPortOption, configSourceNote, parseCountOrNone, parseOnOff, printJson, withGateway, type CliGateway } from './shared.js'
+
+function printUnderscoreHeaders({ names, status }: UnderscoreHeadersSettings): void {
+  if (names === null) {
+    console.log('  Not set: Caddy drops request headers with an underscore in the name (e.g. session_id).')
+    return
+  }
+  console.log(`  Kept: ${names.length ? names.join(', ') : 'none'}`)
+  if (names.length) console.log(chalk.dim(`  Caddy drops their hyphenated forms instead: ${names.map(hyphenTwin).join(', ')}`))
+  const state = status.state === 'applied'
+    ? chalk.green(`applied (Caddy server ${status.server})`)
+    : status.state === 'off' ? 'nothing applied' : chalk.yellow(`${status.state}${status.reason ? `: ${status.reason}` : ''}`)
+  console.log(`  In Caddy: ${state}`)
+}
 
 async function settingsContext(gateway: CliGateway): Promise<SettingsContext> {
   const publicUrl = readConsoleLocation(gateway.store)?.publicUrl ?? null
@@ -38,7 +53,7 @@ function endpointOption(raw: string): string | null {
 }
 
 export function registerGatewaySettingsCommands(gateway: Command): void {
-  const settings = gateway.command('settings').description('Gateway settings: every buyer setting and observability (OTLP export, content logging, retention)')
+  const settings = gateway.command('settings').description('Gateway settings: every buyer setting, observability (OTLP export, content logging, retention) and the headers with underscores Caddy keeps')
 
   addBuyerPortOption(settings.command('show').description('Show the current settings'))
     .option('--reveal', 'show OTLP header values (they can be credentials)', false)
@@ -83,6 +98,8 @@ export function registerGatewaySettingsCommands(gateway: Command): void {
       for (const [name, value] of Object.entries(observability.otlpHeaders)) console.log(`    ${name}: ${value}`)
       console.log(`  Content logging: ${observability.logContent ? 'on' : 'off'}`)
       console.log(`  Request log retention: ${observability.retentionDays === null ? 'forever' : `${observability.retentionDays} day(s)`}`)
+      console.log(chalk.bold('Headers with underscores') + chalk.dim(' (kept by the Caddy in front of the gateway)'))
+      printUnderscoreHeaders(current.underscoreHeaders)
       console.log(chalk.bold('Console'))
       console.log(`  Public URL: ${current.publicUrl ?? '-'}`)
       console.log(`  Owner claimed: ${auth.setupRequired ? 'no (`antseed gateway console-link`)' : 'yes'}`)
@@ -131,6 +148,23 @@ export function registerGatewaySettingsCommands(gateway: Command): void {
       }
       console.log(`Observability: export ${saved.otlpEndpoint ?? 'off'}${Object.keys(saved.otlpHeaders).length ? ` (headers: ${Object.keys(saved.otlpHeaders).join(', ')})` : ''}, content logging ${saved.logContent ? 'on' : 'off'}, retention ${saved.retentionDays === null ? 'forever' : `${saved.retentionDays} day(s)`}.`)
       console.log(chalk.dim('A running gateway picks this up on its next request.'))
+    }))
+
+  settings.command('set-underscore-headers')
+    .description('Request headers with an underscore in the name for the Caddy in front of the gateway to keep (Caddy drops them otherwise). Replaces the list')
+    .argument('[names...]', 'header names, e.g. session_id; a trailing * keeps every name with that prefix (x_trace_*)')
+    .option('--clear', 'keep none: remove the gateway\'s list from Caddy', false)
+    .option('--json', 'print machine-readable JSON', false)
+    .action((names: string[], options: { clear: boolean; json: boolean }, cmd: Command) => withGateway(cmd, ({ ctx, actor }) => {
+      if (options.clear && names.length) throw new Error('Use either header names or --clear.')
+      if (!options.clear && !names.length) throw new Error('Nothing to change: give header names, or --clear.')
+      const saved = setUnderscoreHeaders(ctx, actor, { names: options.clear ? [] : names.flatMap((name) => name.split(',')) })
+      if (options.json) {
+        printJson(saved)
+        return
+      }
+      printUnderscoreHeaders(saved)
+      console.log(chalk.dim('A running gateway writes this into Caddy within a minute (`antseed gateway settings show` reports whether it took).'))
     }))
 
   addBuyerPortOption(

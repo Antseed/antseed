@@ -47,6 +47,8 @@ export interface ConsoleDeps {
   listenHost?: string
   /** Host facts for exposure checks; inspected at startup when absent (tests inject them). */
   hostFacts?: HostFacts
+  /** Applies the underscore-header setting to Caddy now; without it the gateway's minute check does. */
+  syncUnderscoreHeaders?: () => Promise<void>
   /** Antseed update checks for `/update`; created from `dataDir` and `version` when absent (tests inject them). */
   updates?: GatewayUpdates
 }

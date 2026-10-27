@@ -1001,6 +1001,23 @@ const routes: Array<[string, string, Handler]> = [
     return { ...db.settings, restartRequired: true }
   }],
   ['PUT', '/settings/observability', ({ body }) => { requireOrgAdmin(); db.settings.observability = observability(body); return maskedSettings() }],
+  ['PUT', '/settings/underscore-headers', ({ body }) => {
+    requireOrgAdmin()
+    const names = (Array.isArray(body?.names) ? body.names : []).map((name: string) => String(name).trim().toLowerCase()).filter(Boolean)
+    const bad = names.find((name: string) => !name.replace(/\*$/, '').includes('_'))
+    if (bad) throw new MockError(400, 'invalid_request', `"${bad}" has no underscore; Caddy already passes it through`)
+    // Like a gateway behind the installer's Caddy: applied at once. `?caddy=unavailable`
+    // plays a gateway whose Caddy admin API cannot be reached.
+    const unreachable = new URLSearchParams(window.location.search).get('caddy') === 'unavailable'
+    db.settings.underscoreHeaders = {
+      names,
+      status: !names.length ? { state: 'off', reason: null, server: null, since: Date.now() }
+        : unreachable ? { state: 'unavailable', reason: "Caddy's admin API is not reachable at http://127.0.0.1:2019", server: null, since: Date.now() }
+          : { state: 'applied', reason: null, server: 'srv0', since: Date.now() },
+    }
+    audit('settings.underscore_headers.update')
+    return maskedSettings()
+  }],
 ]
 
 /**

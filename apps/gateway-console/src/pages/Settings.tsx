@@ -13,6 +13,7 @@ import { formatDate, formatRelative } from '../lib/format'
 import { clearMaskedValues, endpointOriginChanged, headersToText, maskedHeaderNames, textToHeaders } from '../lib/headers'
 import { useConsoleMutation } from '../lib/mutations'
 import { isOverridden } from '../lib/settings'
+import { hyphenTwins, parseHeaderNames } from '../lib/underscore-headers'
 import { BuyerSettingsEditor } from '../components/BuyerSettingsEditor'
 import { UpdatePanel } from '../components/UpdatePanel'
 import { qk, useAdminTokens, useStatus } from '../lib/queries'
@@ -35,6 +36,55 @@ function General() {
           ]} />
         )}
       </QueryView>
+    </Panel>
+  )
+}
+
+/** What Caddy does with the list right now, in one line. */
+function UnderscoreHeadersState({ settings }: { settings: SettingsData['underscoreHeaders'] }) {
+  const { names, status } = settings
+  if (status.state === 'applied') return <p className="text-sm"><Badge tone="success">Kept by Caddy</Badge></p>
+  if (status.state === 'unavailable' || status.state === 'error') {
+    return (
+      <p className="flex items-start gap-2 text-sm" role="status">
+        <span aria-hidden className="mt-1.5 size-2 shrink-0 rounded-full bg-amber-500" />
+        <span>Not applied: {status.reason ?? 'Caddy could not be reached'}.</span>
+      </p>
+    )
+  }
+  if (names && names.length > 0) return <p className="gc-muted text-sm">Waiting for the gateway to apply this.</p>
+  return null
+}
+
+function UnderscoreHeaders({ settings }: { settings: SettingsData }) {
+  const queryClient = useQueryClient()
+  const toast = useToast()
+  const current = settings.underscoreHeaders
+  const [text, setText] = useState((current.names ?? []).join('\n'))
+  const names = parseHeaderNames(text)
+  const save = useMutation({
+    mutationFn: () => api.settings.setUnderscoreHeaders(names),
+    onSuccess: (data) => {
+      const { restartRequired: _restart, ...saved } = data
+      queryClient.setQueryData(qk.settings, saved)
+      setText((saved.underscoreHeaders.names ?? []).join('\n'))
+      const { names, status } = saved.underscoreHeaders
+      toast(!names?.length || status.state === 'applied' ? 'Headers saved' : 'Saved, but Caddy has not applied it')
+    },
+  })
+  return (
+    <Panel title="Headers with underscores" description={<>
+      The Caddy in front of this gateway drops request headers with an underscore in the name, such as <Mono>session_id</Mono>. List the ones your clients need; the gateway keeps them in Caddy's config.
+    </>}>
+      <form className="gc-stack" onSubmit={(event) => { event.preventDefault(); save.mutate() }}>
+        <TextAreaField label="Keep these headers" rows={3} mono placeholder={'session_id\nx_trace_*'} value={text} onChange={(event) => setText(event.target.value)}
+          hint={names.length
+            ? `Caddy then drops ${hyphenTwins(names).join(', ')} instead. A trailing * keeps every name with that prefix.`
+            : 'One per line. A trailing * keeps every name with that prefix.'} />
+        <UnderscoreHeadersState settings={current} />
+        {save.error ? <ErrorAlert error={save.error} title="Could not save" /> : null}
+        <div className="gc-actions"><Button type="submit" disabled={save.isPending}>{save.isPending ? 'Saving…' : 'Save'}</Button></div>
+      </form>
     </Panel>
   )
 }
@@ -206,14 +256,17 @@ export default function Settings() {
         { id: 'tokens', label: 'Management tokens' }, { id: 'auth', label: 'Sign-in' },
       ]} />
       <TabPanel tabsId="gc-settings" tab={tab} className="gc-stack">
-        {tab === 'general' && <><General /><UpdatePanel /></>}
+        {tab === 'general' && <>
+          <General />
+          <UpdatePanel />
+          <QueryView query={settings}>{(data) => <UnderscoreHeaders settings={data} />}</QueryView>
+        </>}
         {tab === 'tokens' && <Tokens />}
         {(tab === 'buyer' || tab === 'observability' || tab === 'auth') && (
           <QueryView query={settings}>
             {(data) => <SettingsSection tab={tab} settings={data} />}
           </QueryView>
         )}
-        {settings.error && tab === 'general' ? <ErrorAlert error={settings.error} /> : null}
       </TabPanel>
     </div>
   )

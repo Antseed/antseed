@@ -94,6 +94,7 @@ export function gatewayConsole(options: GatewayConsoleOptions): (context: Gatewa
       log: options.log,
       spendFeedState: context.spendFeedState,
       x402Enabled: context.x402Enabled,
+      syncUnderscoreHeaders: context.syncUnderscoreHeaders,
       trustCloudflareHeaders: options.trustCloudflareHeaders === true,
       ...(options.updates ? { updates: options.updates } : {}),
     }

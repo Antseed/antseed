@@ -917,6 +917,7 @@ export interface Preset {
 // GET   /settings                  → Settings
 // PATCH /settings/buyer            BuyerSettingsInput → Settings  (restarts the buyer)
 // PUT   /settings/observability    ObservabilitySettings → Settings
+// PUT   /settings/underscore-headers { names: string[] } → Settings  (applied to Caddy before answering)
 export interface GatewayStatus {
   version: string
   publicUrl: string | null
@@ -994,6 +995,7 @@ export interface Settings {
   publicUrl: string | null
   buyer: BuyerSettings
   observability: ObservabilitySettings
+  underscoreHeaders: UnderscoreHeadersSettings
   auth: AuthConfig
   /**
    * Set by `PATCH /settings/buyer` when a change needs a buyer restart and
@@ -1069,6 +1071,28 @@ export interface BuyerSettingsInput {
   payments?: Partial<BuyerSettings['payments']>
   network?: Partial<BuyerSettings['network']>
   evidence?: Partial<BuyerSettings['evidence']>
+}
+
+/**
+ * Request headers with an underscore in the name that the Caddy in front of
+ * the gateway keeps. Caddy drops every such header unless it is listed, and
+ * keeping `x_name` makes it drop `x-name`.
+ */
+export interface UnderscoreHeadersSettings {
+  /** Lower-case names; a trailing `*` keeps every name with that prefix. null: never set, Caddy's own list is left alone. */
+  names: string[] | null
+  status: UnderscoreHeadersStatus
+}
+
+export interface UnderscoreHeadersStatus {
+  /** `off`: nothing to manage; `applied`: Caddy keeps the names; `unavailable`: no Caddy to manage; `error`: Caddy refused. */
+  state: 'off' | 'applied' | 'unavailable' | 'error'
+  /** Why the names are not applied, in a sentence. */
+  reason: string | null
+  /** The Caddy server (its name in Caddy's JSON config) that forwards to the gateway. */
+  server: string | null
+  /** When the state last changed (ms since the epoch); null before the gateway first checked. */
+  since: number | null
 }
 
 export interface ObservabilitySettings {

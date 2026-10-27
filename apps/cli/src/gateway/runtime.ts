@@ -6,6 +6,7 @@ import { loadConfig } from '../config/loader.js'
 import { GatewayAccounting } from './accounting.js'
 import { loadOrCreateControlSecret, recordGatewayBuyerPort } from './buyer-control.js'
 import { BuyerPolicyProbe } from './buyer-policy-probe.js'
+import { CaddyUnderscoreHeaders, UNDERSCORE_HEADERS_STATUS_SETTING, underscoreHeaderNames } from './caddy-headers.js'
 import { parseBaseUnits, parseUsdToUsdc } from './money.js'
 import { GatewayServer, type GatewayServerOptions, type GatewayTopupOptions } from './server.js'
 import { SpendFeedPoller } from './spend-feed.js'
@@ -69,6 +70,8 @@ export interface GatewayConsoleContext {
   x402Enabled: boolean
   /** The address the gateway listens on (`--host`, else loopback), for judging who can reach it. */
   listenHost: string
+  /** Applies the underscore-header setting to Caddy now instead of on the next minute's check. */
+  syncUnderscoreHeaders: () => Promise<void>
 }
 
 export interface GatewayRuntime {
@@ -175,6 +178,8 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
     }
     : null
   const listenHost = options.listenHost ?? '127.0.0.1'
+  // Created once the port is known; Caddy's site for the gateway forwards to it.
+  let underscoreHeaders: CaddyUnderscoreHeaders | null = null
   const consoleHandler = options.createConsole?.({
     store,
     buyerPort,
@@ -182,6 +187,7 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
     spendFeedState: () => spendFeed.state,
     x402Enabled: Boolean(topup),
     listenHost,
+    syncUnderscoreHeaders: async () => { await underscoreHeaders?.sync() },
   }) ?? null
   const server = new GatewayServer({
     console: consoleHandler,
@@ -212,6 +218,13 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
   const clearBuyerPortRecord = recordGatewayBuyerPort(options.dataDir, buyerPort)
   spendFeed.start()
   await policyProbe.start()
+  underscoreHeaders = new CaddyUnderscoreHeaders({
+    port,
+    names: () => underscoreHeaderNames(store),
+    onChange: (status) => store.setSetting(UNDERSCORE_HEADERS_STATUS_SETTING, status),
+    ...(options.onLog ? { log: options.onLog } : {}),
+  })
+  underscoreHeaders.start()
   consoleHandler?.listening?.(port)
 
   return {
@@ -219,6 +232,7 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
     store,
     console: consoleHandler,
     stop: async () => {
+      underscoreHeaders?.stop()
       policyProbe.stop()
       clearBuyerPortRecord()
       await server.stop()

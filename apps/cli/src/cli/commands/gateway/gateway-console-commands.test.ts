@@ -402,6 +402,18 @@ describe('gateway usage, logs, export and audit', () => {
 })
 
 describe('gateway settings and peers', () => {
+  test('set-underscore-headers replaces the list, --clear empties it, and show reports it', async () => {
+    const initial = await runJson<{ underscoreHeaders: { names: string[] | null } }>('settings', 'show')
+    assert.equal(initial.underscoreHeaders.names, null)
+    const saved = await runJson<{ names: string[] }>('settings', 'set-underscore-headers', 'session_id,conversation_id', 'X_Trace_*')
+    assert.deepEqual(saved.names, ['session_id', 'conversation_id', 'x_trace_*'])
+    await assert.rejects(run('settings', 'set-underscore-headers', 'session-id'), /no underscore/)
+    await assert.rejects(run('settings', 'set-underscore-headers'), /Nothing to change/)
+    const cleared = await runJson<{ names: string[] }>('settings', 'set-underscore-headers', '--clear')
+    assert.deepEqual(cleared.names, [])
+    assert.deepEqual(auditActions('settings.underscore_headers'), ['settings.underscore_headers.update', 'settings.underscore_headers.update'])
+  })
+
   test('show, set-observability and set-buyer (restarting the buyer)', async () => {
     const shown = await runJson<{ buyer: { proxyPort: number }; observability: { otlpEndpoint: string | null } }>('settings', 'show')
     assert.equal(shown.buyer.proxyPort, buyer.port)

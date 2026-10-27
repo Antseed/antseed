@@ -1,4 +1,4 @@
-import { readSettings as readSettingsService, setObservabilitySettings, updateBuyerSettings } from '../../services/settings.js'
+import { readSettings as readSettingsService, setObservabilitySettings, setUnderscoreHeaders, updateBuyerSettings } from '../../services/settings.js'
 import { requestActor, requireOrgAdmin } from '../access.js'
 import type { ConsoleDeps } from '../deps.js'
 import type { ConsoleRouter, Principal } from '../router.js'
@@ -40,6 +40,15 @@ export function registerSettingsRoutes(router: ConsoleRouter, deps: ConsoleDeps)
     const { principal, body } = request
     requireOrgAdmin(principal, store)
     setObservabilitySettings(deps, requestActor(deps, request), body, { mayChangeDestination: principal?.kind === 'member' })
+    return readSettings(deps, principal)
+  })
+
+  // Applied to Caddy before answering, so the reply says whether it took.
+  router.add('PUT', '/settings/underscore-headers', async (request) => {
+    const { principal, body } = request
+    requireOrgAdmin(principal, store)
+    setUnderscoreHeaders(deps, requestActor(deps, request), body)
+    await deps.syncUnderscoreHeaders?.()
     return readSettings(deps, principal)
   })
 }

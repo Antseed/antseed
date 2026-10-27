@@ -4,9 +4,15 @@ import { redact } from '../../proxy/chain-rpc.js'
 import { optionalBuyerJson, type BuyerClient } from '../console-api/handlers/network-buyer.js'
 import { ConsoleError } from '../console-api/router.js'
 import { asObject, badRequest } from '../console-api/serialize.js'
-import type { AuthConfig, BuyerSettings, BuyerSettingsInput, ObservabilitySettings, Settings } from '../console-api/types.js'
+import type { AuthConfig, BuyerSettings, BuyerSettingsInput, ObservabilitySettings, Settings, UnderscoreHeadersSettings } from '../console-api/types.js'
 import { errorMessage } from '../errors.js'
 import { OBSERVABILITY_SETTING, observabilitySettings } from '../observability.js'
+import {
+  normalizeUnderscoreHeaderNames,
+  UNDERSCORE_HEADERS_SETTING,
+  underscoreHeaderNames,
+  underscoreHeadersStatus,
+} from '../caddy-headers.js'
 import { recordAudit, type Actor, type ServiceContext } from './context.js'
 import { patchConfigFile } from '../../config/patch.js'
 
@@ -140,6 +146,7 @@ export async function readSettings(
     observability: options.revealSecrets
       ? observability
       : { ...observability, otlpHeaders: Object.fromEntries(Object.keys(observability.otlpHeaders).map((name) => [name, REDACTED])) },
+    underscoreHeaders: readUnderscoreHeaders(deps),
     auth: await authConfig(deps),
   }
 }
@@ -496,4 +503,32 @@ export function setObservabilitySettings(
   })
   ctx.log(`console: observability settings changed (export ${settings.otlpEndpoint ? 'on' : 'off'}, content logging ${settings.logContent ? 'on' : 'off'})`)
   return settings
+}
+
+export function readUnderscoreHeaders(ctx: ServiceContext): UnderscoreHeadersSettings {
+  return { names: underscoreHeaderNames(ctx.store), status: underscoreHeadersStatus(ctx.store) }
+}
+
+/**
+ * Saves the request headers with an underscore in the name that the Caddy in
+ * front of the gateway should keep (`{ names: [...] }`; an empty list removes
+ * the gateway's list from Caddy). The running gateway writes them into Caddy.
+ */
+export function setUnderscoreHeaders(ctx: ServiceContext, actor: Actor, body: unknown): UnderscoreHeadersSettings {
+  const input = asObject(body)
+  const raw = input['names']
+  if (!Array.isArray(raw) || raw.some((name) => typeof name !== 'string')) throw badRequest('names must be a list of header names')
+  let names: string[]
+  try {
+    names = normalizeUnderscoreHeaderNames(raw as string[])
+  } catch (error) {
+    throw badRequest(errorMessage(error))
+  }
+  const previous = underscoreHeaderNames(ctx.store)
+  ctx.store.setSetting(UNDERSCORE_HEADERS_SETTING, names)
+  recordAudit(ctx, actor, 'settings.underscore_headers.update', { kind: 'settings', id: 'underscore_headers', label: 'Underscore headers' }, {
+    previous, names,
+  })
+  ctx.log(`console: underscore headers ${names.length ? `set to ${names.join(', ')}` : 'cleared'}`)
+  return readUnderscoreHeaders(ctx)
 }

@@ -104,6 +104,30 @@ test('OTLP header values are shown to org-admin sessions only, and a masked valu
   }
 })
 
+test('PUT /settings/underscore-headers saves the names, applies them before answering and is audited', async () => {
+  let synced = 0
+  const h = await harness({ syncUnderscoreHeaders: async () => { synced += 1 } })
+  try {
+    const before = (await h.as('owner', 'GET', '/settings')).body as Settings
+    assert.equal(before.underscoreHeaders.names, null, 'never set')
+    assert.equal(before.underscoreHeaders.status.state, 'off')
+
+    const put = await h.as('owner', 'PUT', '/settings/underscore-headers', { names: ['Session_ID', 'x_trace_*', 'session_id'] })
+    assert.equal(put.status, 200, JSON.stringify(put.body))
+    assert.deepEqual((put.body as Settings).underscoreHeaders.names, ['session_id', 'x_trace_*'])
+    assert.equal(synced, 1)
+
+    assert.equal((await h.as('owner', 'PUT', '/settings/underscore-headers', { names: ['session-id'] })).status, 400)
+    assert.equal((await h.as('owner', 'PUT', '/settings/underscore-headers', { names: 'session_id' })).status, 400)
+
+    const cleared = await h.as('owner', 'PUT', '/settings/underscore-headers', { names: [] })
+    assert.deepEqual((cleared.body as Settings).underscoreHeaders.names, [])
+    assert.deepEqual(h.store.listAudit({ action: 'settings.underscore_headers.update' }).entries.length, 2)
+  } finally {
+    await h.close()
+  }
+})
+
 test('masked OTLP header values are not carried to a new endpoint origin', async () => {
   const h = await harness()
   try {

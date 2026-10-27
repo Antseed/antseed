@@ -87,6 +87,18 @@ curl -fsSL --proto '=https' --tlsv1.2 https://antseed.com/install-gateway.sh \
 
 The installer stores it in `/etc/antseed/wallet.env` (root, mode 0600), which both services load. Losing it makes the wallets unrecoverable. How to encrypt existing keys, change the passphrase, or keep it off the server's disk is on [Protecting wallet keys](/docs/gateway/wallet-keys).
 
+### Headers with underscores
+
+Caddy (2.11.4 and later) drops request headers with an underscore in the name, such as `session_id`, before they reach the gateway. If your clients need one, list it under **Settings → General → Headers with underscores** in the console, or run:
+
+```bash
+sudo antseed gateway settings set-underscore-headers session_id x_trace_*
+```
+
+A trailing `*` keeps every name with that prefix. The gateway writes the list into Caddy's running config through Caddy's admin API (`http://127.0.0.1:2019`, or `ANTSEED_GATEWAY_CADDY_ADMIN_URL`), and checks it every minute so the list survives Caddy restarts and reloads. Keeping a name makes Caddy drop its hyphenated form instead (`session_id` kept means `session-id` dropped), so list only the names your clients send. `--clear` removes the list from Caddy again. The console and `antseed gateway settings show` say whether Caddy keeps the list, or why not (for example when the gateway is not behind Caddy, or Caddy's admin API is turned off).
+
+Sellers still get a conversation's id as `session_id` when a client sends it only under another name (`session-id`, `x-session-id`, `prompt_cache_key`): the buyer adds that header itself.
+
 ## After installing
 
 The installer finishes with something like:

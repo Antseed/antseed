@@ -220,6 +220,7 @@ export function seed() {
       overrides: ['network.metadataFetchTimeoutMs'],
     },
     observability: { otlpEndpoint: null, otlpHeaders: {}, logContent: false, retentionDays: 30 },
+    underscoreHeaders: { names: null, status: { state: 'off', reason: null, server: null, since: null } },
     auth: { setupRequired: false, passkey: true, wallet: true, oidc: { label: 'Example SSO' }, cloudflareAccess: false, apiKeyLogin: true },
   }
   const chain: ChainInfo = {
