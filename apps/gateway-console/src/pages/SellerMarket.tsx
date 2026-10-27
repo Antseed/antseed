@@ -108,7 +108,7 @@ export default function SellerMarket() {
 function OffersPanel({ service }: { service: SellerMarketService }) {
   return (
     <Panel title={`Everyone selling ${service.service}`} description={service.unique ? 'No other seller offers this model.' : `${service.of} comparable sellers, cheapest ${service.unit === null ? 'blended price' : `per ${service.mine.unitPrice?.name ?? 'unit'}`} first. Your row is marked.`}
-      actions={<Button size="sm" variant="outline" onClick={() => editPrice(service)}>Edit your price</Button>} flush>
+      actions={<Button size="sm" variant="outline" onClick={() => editPrice(service)}>{service.unit === null ? 'Edit your price' : 'See your price'}</Button>} flush>
       <DataTable<SellerMarketOffer> label={`Sellers of ${service.service}`} rows={service.offers} rowKey={(row) => `${row.peerId}:${row.mine}`}
         columns={[
           { key: 'name', header: 'Seller', render: (row) => <span className="gc-inline">{row.mine && <Badge tone="neutral">You</Badge>}<span className="gc-ellipsis" title={row.peerId}>{row.name ?? shortId(row.peerId)}</span></span> },

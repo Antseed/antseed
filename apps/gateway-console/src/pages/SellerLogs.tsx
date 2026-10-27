@@ -76,6 +76,10 @@ function Requests() {
       <Panel flush>
         {query.isLoading ? <LoadingRows rows={8} /> : query.error && !query.data ? <ErrorAlert error={query.error} onRetry={() => void query.refetch()} /> : (
           <>
+            {/* Loaded rows stay visible; a failed older page or refresh still says so, with a retry of that same load. */}
+            {query.error && (query.isFetchNextPageError
+              ? <ErrorAlert title="Could not load older requests" error={query.error} onRetry={() => void query.fetchNextPage()} />
+              : <ErrorAlert title="Could not refresh the requests" error={query.error} onRetry={() => void query.refetch()} />)}
             <DataTable<SellerLogEntry> label="Seller request log" rows={rows} rowKey={(row) => row.id} onRowClick={setSelected}
               empty={query.hasNextPage
                 // A filtered page reads a bounded stretch of the log; older requests may still match.

@@ -6,6 +6,7 @@ import type { FreeTierProgramView, SellerFreeTierProgramPatch, SellerFreeTierPro
 import { freeTierHeadline, tierAnts, tierMultiplier } from '../lib/free-tier'
 import { numberFieldError, rebaseDraft } from '../lib/settings'
 import { qk } from '../lib/queries'
+import { formatUnitPrice } from '../lib/seller'
 import { ErrorAlert } from './ui'
 
 /** Everything the form edits, as typed (numbers stay strings until saved). */
@@ -355,9 +356,14 @@ export function SellerSettingsEditor({ settings }: { settings: SellerSettings })
               return (
                 <div key={key} id={`gc-price-${key}`} className="gc-seller-price">
                   <div className="gc-seller-price__name"><span className="gc-ellipsis" title={key}>{entry.service}</span><span className="gc-fineprint">{entry.provider}{entry.inherited ? ' · provider default' : ''}</span></div>
-                  <TextField size="sm" className="gc-num" label="Input" aria-label={`${key} input price`} inputMode="decimal" disabled={readOnly} value={price.input} error={errors[`${key}:input`]} onChange={(event) => setPrice(key, 'input', event.target.value)} />
-                  <TextField size="sm" className="gc-num" label="Output" aria-label={`${key} output price`} inputMode="decimal" disabled={readOnly} value={price.output} error={errors[`${key}:output`]} onChange={(event) => setPrice(key, 'output', event.target.value)} />
-                  <TextField size="sm" className="gc-num" label="Cached input" aria-label={`${key} cached input price`} inputMode="decimal" placeholder="Same as input" disabled={readOnly} value={price.cached} error={errors[`${key}:cached`]} onChange={(event) => setPrice(key, 'cached', event.target.value)} />
+                  {entry.unitPrice
+                    // Billed per image or video: the rate lives in the service's unitBillingModels, which this form does not edit.
+                    ? <div className="gc-seller-price__unit"><span>{formatUnitPrice(entry.unitPrice)}</span><span className="gc-fineprint">Billed per {entry.unitPrice.name}. Change it in this service's <code>unitBillingModels</code> in config.json.</span></div>
+                    : <>
+                    <TextField size="sm" className="gc-num" label="Input" aria-label={`${key} input price`} inputMode="decimal" disabled={readOnly} value={price.input} error={errors[`${key}:input`]} onChange={(event) => setPrice(key, 'input', event.target.value)} />
+                    <TextField size="sm" className="gc-num" label="Output" aria-label={`${key} output price`} inputMode="decimal" disabled={readOnly} value={price.output} error={errors[`${key}:output`]} onChange={(event) => setPrice(key, 'output', event.target.value)} />
+                    <TextField size="sm" className="gc-num" label="Cached input" aria-label={`${key} cached input price`} inputMode="decimal" placeholder="Same as input" disabled={readOnly} value={price.cached} error={errors[`${key}:cached`]} onChange={(event) => setPrice(key, 'cached', event.target.value)} />
+                    </>}
                   <div className="gc-seller-price__free">
                     <Switch checked={own.enabled} disabled={readOnly} onChange={(next) => setFree(key, 'enabled', next)} label="Own free tier" ariaLabel={`${key} own free tier`}
                       description={freeTierLine(entry.freeTier, entry.paid)} />
