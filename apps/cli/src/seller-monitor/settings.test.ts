@@ -195,6 +195,8 @@ test('models: turned off and on, unit prices edited by what they bill, token mod
   await assert.rejects(updateSellerSettings(configPath, dir, { addServices: [{ provider: 'fal', service: 'veo', inputUsdPerMillion: 1, outputUsdPerMillion: 1 }] }), /bills per image or video/)
   await assert.rejects(updateSellerSettings(configPath, dir, { addServices: [{ provider: 'openai', service: '__proto__', inputUsdPerMillion: 1, outputUsdPerMillion: 1 }] }), /not a model id/)
   view = (await updateSellerSettings(configPath, dir, { removeServices: [{ provider: 'openai', service: 'deepseek-v4.2' }] })).settings
+  // Every model off would leave nothing to start, and the dashboard with it.
+  await assert.rejects(updateSellerSettings(configPath, dir, { pricing: [{ provider: 'openai', service: 'glm-5.3', enabled: false }, { provider: 'fal', service: 'wan', enabled: false }] }), /At least one model must stay offered/)
   // The last model of a provider is turned off, not removed: a provider with no models would stop the seller from starting.
   await assert.rejects(updateSellerSettings(configPath, dir, { removeServices: [{ provider: 'fal', service: 'wan' }] }), /last model of fal; turn it off/)
   assert.deepEqual(view.services.map((entry) => entry.service), ['glm-5.3', 'wan'])

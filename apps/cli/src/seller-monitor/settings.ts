@@ -417,6 +417,12 @@ export function applySellerSettingsPatch(raw: JsonObject, body: unknown): string
     }
     fields.push('services')
   }
+  if (fields.includes('services')) {
+    // The seller does not start without a model to offer, and with it goes this dashboard: one stays on.
+    const providers = (seller().providers ?? {}) as Record<string, { services?: Record<string, JsonObject> }>
+    const offered = Object.values(providers).some((provider) => Object.values(provider.services ?? {}).some((service) => service.enabled !== false))
+    if (!offered) bad('At least one model must stay offered: the seller does not start without one (and this dashboard with it)')
+  }
   return fields
 }
 

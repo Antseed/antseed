@@ -1,5 +1,7 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
+import { readFileSync, renameSync, writeFileSync } from 'node:fs'
 import * as http from 'node:http'
+import { join } from 'node:path'
 import type { AddressInfo } from 'node:net'
 import { appendSetCookie, readCookie, serializeCookie } from '../gateway/auth/http.js'
 import type { ConsoleDeps } from '../gateway/console-api/deps.js'
@@ -68,7 +70,9 @@ export async function startSellerDashboard(options: SellerDashboardOptions): Pro
   // A session is `<expiry>.<nonce>.<mac>`, signed with the link token: it outlives a restart that keeps the token
   // (a restart from the dashboard), and a copied cookie stops working when the browser's would.
   const signSession = (expiresAt: number, nonce: string) => createHmac('sha256', token).update(`seller-session:${expiresAt}:${nonce}`).digest('hex')
-  const signedOut = new Set<string>()
+  // Sessions signed out, by nonce, with when they would have expired: kept in the data dir, since sessions outlive a restart.
+  const signedOutPath = join(options.dataDir, 'seller-dashboard-signed-out.json')
+  const signedOut = readSignedOut(signedOutPath)
   const validSession = (cookie: string | undefined): boolean => {
     const [expiry, nonce, mac] = (cookie ?? '').split('.')
     const expiresAt = Number(expiry)
@@ -105,7 +109,12 @@ export async function startSellerDashboard(options: SellerDashboardOptions): Pro
         appendSetCookie(res, serializeCookie(raw, sessionCookie, '', { maxAgeSeconds: 0, path: '/console', sameSite: 'Strict' }))
         // Until this dashboard stops; a signed-out cookie is also cleared in the browser.
         const nonce = readCookie(raw, sessionCookie)?.split('.')[1]
-        if (nonce) signedOut.add(nonce)
+        const expiresAt = Number(readCookie(raw, sessionCookie)?.split('.')[0])
+        if (nonce && Number.isSafeInteger(expiresAt)) {
+          signedOut.set(nonce, expiresAt)
+          for (const [id, until] of signedOut) if (until <= Date.now()) signedOut.delete(id)
+          writeSignedOut(signedOutPath, signedOut)
+        }
         return respond(204)
       }, { allow: ['token'] })
     },
@@ -176,5 +185,24 @@ export async function startSellerDashboard(options: SellerDashboardOptions): Pro
       server.closeAllConnections()
       return closed
     },
+  }
+}
+
+function readSignedOut(path: string): Map<string, number> {
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
+    return new Map(Object.entries(parsed).filter((entry): entry is [string, number] => typeof entry[1] === 'number' && entry[1] > Date.now()))
+  } catch {
+    return new Map()
+  }
+}
+
+function writeSignedOut(path: string, signedOut: Map<string, number>): void {
+  try {
+    const temp = `${path}.${process.pid}.tmp`
+    writeFileSync(temp, JSON.stringify(Object.fromEntries(signedOut)), { mode: 0o600 })
+    renameSync(temp, path)
+  } catch {
+    // A data dir that cannot be written keeps the sign-out until this dashboard stops.
   }
 }

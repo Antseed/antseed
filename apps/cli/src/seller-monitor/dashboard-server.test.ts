@@ -219,6 +219,24 @@ test('a restart is offered only with a supervisor, runs after the reply, and the
   } finally {
     await again.close()
   }
+  // Signed out before a restart: still signed out after it.
+  const second = await startSellerDashboard({ dataDir: dir, configPath, version: '9.9.9', port: 0, env: {}, token })
+  const origin = new URL(second.url).origin
+  try {
+    const opened = await fetch(`${origin}/console/api/auth/seller`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-antseed-console': '1' }, body: JSON.stringify({ token }) })
+    const other = opened.headers.get('set-cookie')!.split(';')[0]!
+    assert.equal((await fetch(`${origin}/console/api/auth/logout`, { method: 'POST', headers: { cookie: other, 'x-antseed-console': '1' } })).status, 204)
+    assert.equal((await fetch(`${origin}/console/api/auth/me`, { headers: { cookie: other } })).status, 401)
+  } finally {
+    await second.close()
+  }
+  const third = await startSellerDashboard({ dataDir: dir, configPath, version: '9.9.9', port: 0, env: {}, token })
+  try {
+    const me = (cookieHeader: string) => fetch(`${new URL(third.url).origin}/console/api/auth/me`, { headers: { cookie: cookieHeader } })
+    assert.equal((await me(cookie)).status, 200, 'the session that stayed signed in still works')
+  } finally {
+    await third.close()
+  }
   // A dashboard with a new link does not take the old session.
   const fresh = await startSellerDashboard({ dataDir: dir, configPath, version: '9.9.9', port: 0, env: {} })
   try {

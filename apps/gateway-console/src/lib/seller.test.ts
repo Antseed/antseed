@@ -218,6 +218,16 @@ describe('seller editors', async () => {
     expect(alertsPatchOf(base, { ...base, token: ' 1:abc ', idleMinutes: '30' })).toEqual({ telegramBotToken: '1:abc', idleMinutes: 30 })
     expect(alertsPatchOf(base, { ...base, clearToken: true, clearWebhook: true, chatId: '' })).toEqual({ telegramChatId: null, telegramBotToken: null, webhookUrl: null })
   })
+  it('sends a changed per-unit price by its match, whatever characters the match holds', async () => {
+    const { draftOf, patchOf, unitKey } = await import('../components/SellerSettingsEditor')
+    const component = { protocol: 'fal-video', unit: 'video_seconds', match: { resolution: '4k|hdr' }, priceUsd: 0.3 }
+    const video = { ...settings, services: [{ ...settings.services[0]!, provider: 'fal', service: 'wan', unitComponents: [component] }] }
+    const base = draftOf(video)
+    const key = unitKey('fal/wan', component)
+    expect(patchOf(base, { ...base, unitPrices: { ...base.unitPrices, [key]: '0.25' } }).pricing).toEqual([
+      { provider: 'fal', service: 'wan', unitPrices: [{ protocol: 'fal-video', unit: 'video_seconds', match: { resolution: '4k|hdr' }, priceUsd: 0.25 }] },
+    ])
+  })
 })
 
 describe('market helpers', async () => {
@@ -258,3 +268,4 @@ describe('promote claims', async () => {
     expect(reconcileClaims(draft, base, next, key)).toEqual([{ username: 'dev', repository: 'proofs' }, { username: 'other', repository: 'other-new' }])
   })
 })
+

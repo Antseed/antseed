@@ -55,9 +55,10 @@ const WEEKS_PER_YEAR = 52
 const MAX_TIERS = 4
 
 const priceKey = (provider: string, service: string) => `${provider}/${service}`
-/** One unit-billing component of a model: its protocol, unit and what it matches. */
+/** One unit-billing component of a model: its provider/service, protocol, unit and match, as JSON (any value may hold a delimiter). */
 export const unitKey = (key: string, component: Pick<SellerUnitComponent, 'protocol' | 'unit' | 'match'>) =>
-  `${key}|${component.protocol}|${component.unit}|${JSON.stringify(component.match)}`
+  JSON.stringify([key, component.protocol, component.unit, component.match])
+const parseUnitKey = (unit: string) => JSON.parse(unit) as [string, string, string, Record<string, unknown> | null]
 /** "4k · audio", or the unit alone: which requests a component prices. */
 export function unitComponentLabel(component: SellerUnitComponent): string {
   const match = Object.entries(component.match ?? {}).map(([field, value]) => (value === true ? field : value === false ? `no ${field}` : String(value)))
@@ -284,10 +285,10 @@ export function patchOf(base: Draft, draft: Draft): SellerSettingsPatch {
     const freeTier = own === undefined ? undefined : ownFreePatch(base.free[key], own)
     const enabled = key in base.offered && draft.offered[key] !== base.offered[key] ? draft.offered[key] : undefined
     const unitPrices = Object.entries(draft.unitPrices)
-      .filter(([unit, value]) => unit.startsWith(`${key}|`) && base.unitPrices[unit] !== undefined && numChanged(value, base.unitPrices[unit]!))
+      .filter(([unit, value]) => parseUnitKey(unit)[0] === key && base.unitPrices[unit] !== undefined && numChanged(value, base.unitPrices[unit]!))
       .map(([unit, value]) => {
-        const [, protocol, unitName, match] = unit.slice(key.length).split('|')
-        return { protocol: protocol!, unit: unitName!, match: JSON.parse(match!) as Record<string, unknown> | null, priceUsd: num(value) }
+        const [, protocol, unitName, match] = parseUnitKey(unit)
+        return { protocol, unit: unitName, match, priceUsd: num(value) }
       })
     if (Object.keys(prices).length === 0 && freeTier === undefined && enabled === undefined && unitPrices.length === 0) continue
     const [provider, ...rest] = key.split('/')
@@ -415,7 +416,8 @@ export function SellerSettingsEditor({ settings, restart }: { settings: SellerSe
                     <span className="gc-ellipsis" title={key}>{entry.service}</span>
                     <span className="gc-fineprint">{entry.provider}{entry.upstreamModel ? ` · ${entry.upstreamModel}` : ''}{entry.inherited ? ' · provider default' : ''}</span>
                     <div className="gc-seller-price__controls">
-                      <Switch checked={offered} disabled={readOnly} onChange={(next) => setOffered(key, next)} label="Offered" ariaLabel={`Offer ${key}`} />
+                      {/* The seller needs one model to start (and to serve this dashboard), so the last one offered stays on. */}
+                      <Switch checked={offered} disabled={readOnly || (offered && offeredCount === 1)} onChange={(next) => setOffered(key, next)} label="Offered" ariaLabel={`Offer ${key}`} />
                       {/* A provider's last model is turned off, not removed: a provider with no models stops the seller from starting. */}
                       {!readOnly && (settings.providers.find((provider) => provider.name === entry.provider)?.services ?? 0) > 1 && (
                         <Button size="sm" variant="link" className="gc-seller-inline-button" aria-label={`Remove ${key}`} onClick={() => setRemoving(entry)}>Remove</Button>
