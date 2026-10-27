@@ -4,6 +4,7 @@ import { isSellerPage, NAV_ITEMS, type PageId } from '../lib/nav'
 import { href, linkHandler } from '../lib/router'
 import { Brand, SELLER_DOCS_URL, ThemeToggle } from './Shell'
 import { Icon } from './icons'
+import { SellerUpdateNotice } from './UpdatePanel'
 
 
 /**
@@ -28,7 +29,7 @@ export function SellerShell({ version, page, children }: { version: string; page
         </header>
         <div className="gc-body">
           <aside className="gc-rail"><SellerNav page={page} /><p className="gc-version">Antseed v{version}</p></aside>
-          <main id="gc-main" className="gc-main" tabIndex={-1}>{children}</main>
+          <main id="gc-main" className="gc-main" tabIndex={-1}><SellerUpdateNotice />{children}</main>
         </div>
       </div>
       <Drawer isOpen={menuOpen} onClose={() => setMenuOpen(false)} side="left" title={<Brand to={null} />} className="gc-mobile-nav">

@@ -267,3 +267,28 @@ test('without a supervisor the dashboard says how to apply saved settings and re
     await server.close()
   }
 })
+
+test('the dashboard shows available updates and how to apply them, but never installs one', async () => {
+  const update = {
+    product: 'cli', current: '9.9.9', latest: '10.0.0', available: true, checkedAt: 1, checkError: null, checksDisabled: false,
+    apply: 'command', install: 'npm', command: 'npm install -g @antseed/cli@latest', note: 'Installed globally with npm. Restart the seller after updating.',
+    progress: null, downloaded: null,
+  } as const
+  let stopped = false
+  const { server, call } = await harness({
+    updates: { info: () => update, check: async () => update, apply: () => { throw new Error('never') }, watch: () => {}, stop: () => { stopped = true } },
+  })
+  try {
+    const shown = await call('GET', '/update')
+    assert.equal(shown.status, 200)
+    assert.equal(shown.json!.latest, '10.0.0')
+    assert.equal(shown.json!.command, 'npm install -g @antseed/cli@latest')
+    assert.equal((await call('POST', '/update/check')).json!.available, true)
+    const install = await call('POST', '/update', { action: 'install' })
+    assert.equal(install.status, 409)
+    assert.equal(install.json!.error.code, 'update_unsupported')
+  } finally {
+    await server.close()
+  }
+  assert.equal(stopped, true)
+})

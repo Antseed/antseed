@@ -970,9 +970,10 @@ const routes: Array<[string, string, Handler]> = [
   ['DELETE', '/presets/:id', ({ params }) => { editablePreset(params['id']); db.presets = db.presets.filter((x) => x.id !== params['id']) }],
 
   ['GET', '/status', () => ({ version: '0.1.205', publicUrl: mockExposure === 'public' ? db.settings.publicUrl : null, buyer: { reachable: true, peers: db.peers.length, dhtNodes: 42, uptimeMs: 26 * 3600_000 }, spendFeed: 'local', x402: true, exposure: exposureFor(mockExposure) })],
-  ['GET', '/update', () => { requireOrgAdmin(); return mockUpdate() }],
-  ['POST', '/update/check', () => { requireOrgAdmin(); mockUpdateState.checkedAt = Date.now(); return mockUpdate() }],
+  ['GET', '/update', () => { if (session() === 'seller') return sellerMockUpdate(); requireOrgAdmin(); return mockUpdate() }],
+  ['POST', '/update/check', () => { mockUpdateState.checkedAt = Date.now(); if (session() === 'seller') return sellerMockUpdate(); requireOrgAdmin(); return mockUpdate() }],
   ['POST', '/update', ({ body }) => {
+    if (session() === 'seller') throw new MockError(409, 'update_unsupported', 'The seller dashboard does not install updates; update where the seller runs, then restart it')
     requireOrgAdmin()
     const update = mockUpdate()
     if (update.apply !== 'console') throw new MockError(409, 'update_unsupported', `On its host, run: ${update.command}`)
@@ -1006,7 +1007,7 @@ const routes: Array<[string, string, Handler]> = [
 ]
 
 /**
- * `?update=available|command|current|desktop` on the first load picks what
+ * `?update=available|command|current|desktop|container` on the first load picks what
  * `/update` reports (default available; desktop is a gateway in the desktop
  * app). An applied update waits 1.5 s for the update service, then walks
  * the installer updater's steps (a few seconds each); the whole mock API is
@@ -1017,7 +1018,7 @@ const routes: Array<[string, string, Handler]> = [
 type MockRun = NonNullable<GatewayUpdate['progress']>
 type MockPhase = NonNullable<MockRun['phase']>
 const mockUpdateState = {
-  mode: 'available' as 'available' | 'command' | 'current' | 'desktop',
+  mode: 'available' as 'available' | 'command' | 'current' | 'desktop' | 'container',
   current: '0.1.180',
   checkedAt: Date.now() - 20 * 60_000,
   requestedAt: null as number | null,
@@ -1071,6 +1072,20 @@ function frozenUpdate(base: GatewayUpdate): GatewayUpdate {
   const maxMs = MOCK_STEPS.find((step) => step.phase === phase)?.maxMs
   return { ...base, progress: { ...run, phase, phaseStartedAt: frozen.at - 42_000, ...(maxMs ? { phaseMaxMs: maxMs } : {}) } }
 }
+/** The seller dashboard's view (sellerUpdates): how to update, never installed from the page. `?update=container` for a seller in a container. */
+function sellerMockUpdate(): GatewayUpdate {
+  const current = '0.1.205'
+  const latest = mockUpdateState.mode === 'current' ? current : '0.1.208'
+  const container = mockUpdateState.mode === 'container'
+  return {
+    product: 'cli', current, latest, available: latest !== current, checkedAt: mockUpdateState.checkedAt, checkError: null, checksDisabled: false,
+    apply: container ? 'none' : 'command', install: 'npm',
+    command: container ? null : 'npm install -g @antseed/cli@latest',
+    note: container ? `Runs in a container: deploy an image with @antseed/cli ${latest} to update this seller.` : 'Installed globally with npm. Restart the seller after updating.',
+    progress: null, downloaded: null,
+  }
+}
+
 function mockUpdate(): GatewayUpdate {
   const mode = mockUpdateState.mode
   if (mode === 'desktop' && mockUpdateState.current === '0.1.180') mockUpdateState.current = '0.2.62'
@@ -1163,7 +1178,7 @@ export function installMockApi(): void {
   const exposureParam = new URLSearchParams(window.location.search).get('exposure')
   if (exposureParam === 'local' || exposureParam === 'lan' || exposureParam === 'public') mockExposure = exposureParam
   const updateParam = new URLSearchParams(window.location.search).get('update')
-  if (updateParam === 'available' || updateParam === 'command' || updateParam === 'current' || updateParam === 'desktop') mockUpdateState.mode = updateParam
+  if (updateParam === 'available' || updateParam === 'command' || updateParam === 'current' || updateParam === 'desktop' || updateParam === 'container') mockUpdateState.mode = updateParam
   // `?update=ready`: the new version is downloaded and waits for Restart & update.
   if (updateParam === 'ready') mockUpdateState.downloaded = true
   // `?update=step:<phase>|restarting|succeeded|failed`: one state of a Restart & update, frozen.
@@ -1215,5 +1230,5 @@ export function installMockApi(): void {
       return json(500, { error: { code: 'mock_error', message: String(error) } })
     }
   }
-  console.info('[antseed console] Mock API active. Switch identity with ?as=owner|admin|wsadmin|member|key|out|seller, reachability with ?exposure=local|lan|public, updates with ?update=available|command|current|desktop|ready|step:<phase>|restarting|succeeded|failed')
+  console.info('[antseed console] Mock API active. Switch identity with ?as=owner|admin|wsadmin|member|key|out|seller, reachability with ?exposure=local|lan|public, updates with ?update=available|command|current|desktop|container|ready|step:<phase>|restarting|succeeded|failed')
 }
