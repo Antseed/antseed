@@ -76,7 +76,7 @@ export const DEFAULT_ATTACHMENT_LIMITS: AttachmentPreparationLimits = {
 };
 
 const IMAGE_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
-const VIDEO_MIME_TYPES = new Set(['video/mp4', 'video/quicktime']);
+const VIDEO_MIME_TYPES = new Set(['video/mp4', 'video/quicktime', 'video/x-m4v']);
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.m4v']);
 const OFFICE_EXTENSIONS = new Set(['.pdf', '.docx', '.pptx', '.xlsx', '.odt', '.odp', '.ods', '.rtf']);
 const ARCHIVE_EXTENSIONS = new Set(['.zip']);

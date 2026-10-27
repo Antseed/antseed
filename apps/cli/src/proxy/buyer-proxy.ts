@@ -4374,17 +4374,22 @@ export class BuyerProxy {
         affinityKey: routingConversationKey ?? promptCacheKey(serializedReq),
       })
       const requireVerified = effectivePolicy?.requireVerified === true
-      if (candidates.length === 0 && routeVideoInputs.length > 0
-        && modelPeers.some((peer) => {
-          const plan = modelPlans.get(peer.peerId)
-          return plan?.serviceId && findMissingVideoInputs(peer, plan.provider, plan.serviceId, routeVideoInputs).length > 0
+      // Only when no seller of the model takes the video: if one does but
+      // policy or price ruled it out, the generic error below applies.
+      const videoPlannedPeers = routeVideoInputs.length > 0
+        ? modelPeers.filter((peer) => modelPlans.get(peer.peerId)?.serviceId)
+        : []
+      if (candidates.length === 0 && videoPlannedPeers.length > 0
+        && videoPlannedPeers.every((peer) => {
+          const plan = modelPlans.get(peer.peerId)!
+          return findMissingVideoInputs(peer, plan.provider, plan.serviceId!, routeVideoInputs).length > 0
         })) {
         log(`Request rejected: no seller of ${requestedService} takes video input(s) ${routeVideoInputs.join(', ')}`)
         return dispatchFailure(422, { 'content-type': 'application/json' }, JSON.stringify({
           error: {
             type: 'required_capability_unavailable',
             code: 'required_capability_unavailable',
-            message: `No policy-allowed seller for model "${requestedService}" takes the video input(s) this request sends: ${routeVideoInputs.join(', ')}. Pick a video-to-video model, or pin a seller with <peerId>@<model>.`,
+            message: `No seller of model "${requestedService}" takes the video input(s) this request sends: ${routeVideoInputs.join(', ')}. Pick a video-to-video model, or pin a seller with <peerId>@<model>.`,
             param: 'video_url',
           },
         }))

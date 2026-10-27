@@ -1,4 +1,4 @@
-export { createMp4Inspector, mp4MoovDurationMs, mp4MoovFacts, MP4_MAX_MOOV_BYTES, type Mp4Facts } from './mp4.js';
+export { createMp4Inspector, mp4MoovFacts, MP4_MAX_MOOV_BYTES, type Mp4Facts } from './mp4.js';
 export { detectNativeVideoProtocol, nativeVideoRoute, nativeVideoAcceptance, nativeVideoDelivered, nativeVideoFacts, VIDEO_MIN_DURATION_RATIO, requestService, type NativeVideoRoute, type NativeVideoFacts } from './native-video.js';
 
 export {

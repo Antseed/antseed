@@ -1539,8 +1539,8 @@ test('video edits route automatically only to sellers whose model takes the sour
   }
   const create = (proxy: BuyerProxy, body: Record<string, unknown>) =>
     invokeProxy(proxy, makeProxyRequest({ path: '/fal/v1/video/queue', body: { model: 'edit-model', prompt: 'swap the dancer', duration: 12, ...body } }))
-  const route = async (peers: PeerInfo[], body: Record<string, unknown>) => {
-    const proxy = makeBuyerProxyWithPeers(peers, peers, permissiveRouter())
+  const route = async (peers: PeerInfo[], body: Record<string, unknown>, router: unknown = permissiveRouter()) => {
+    const proxy = makeBuyerProxyWithPeers(peers, peers, router as any)
     ;(proxy as any)._persistResourceRoutes = async () => {}
     ;(proxy as any)._node.sendRequest = send
     return create(proxy, body)
@@ -1563,6 +1563,17 @@ test('video edits route automatically only to sellers whose model takes the sour
   assert.equal(refused.statusCode, 422)
   assert.equal(JSON.parse(refused.body).error.code, 'required_capability_unavailable')
   assert.match(JSON.parse(refused.body).error.message, /video input\(s\) this request sends: video/)
+  assert.deepEqual(selected, [])
+
+  // A seller that takes the video but is ruled out by policy is not reported
+  // as "no seller takes video input": the generic no-candidates error applies.
+  selected.length = 0
+  const policyExcluded = await route([textOnly, announcesInput], { video_url: 'https://example.com/a.mp4' }, {
+    allowsPeerForPolicy: (_req: unknown, candidate: PeerInfo) => candidate.peerId !== announcesInput.peerId,
+    onResult: () => {},
+  })
+  assert.notEqual(policyExcluded.statusCode, 200)
+  assert.doesNotMatch(policyExcluded.body, /video input\(s\) this request sends/)
   assert.deepEqual(selected, [])
 
   // A pinned seller that announces its inputs without the source video is

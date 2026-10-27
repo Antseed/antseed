@@ -268,19 +268,21 @@ test("per-file size gate validates decoded buffer, not renderer-reported size", 
 });
 
 
-test('MP4 and MOV uploads become video tags with no bytes in the prompt', async () => {
+test('MP4, MOV and M4V uploads become video tags with no bytes in the prompt', async () => {
   const mp4 = Buffer.from([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d, 0, 0, 0, 0]);
   const prepared = await prepareChatAttachments(
     [
       rawAttachment('dance.mp4', 'video/mp4', mp4),
       rawAttachment('clip.mov', '', mp4),
       rawAttachment('fake.mp4', 'video/mp4', 'not a video'),
+      rawAttachment('phone.m4v', 'video/x-m4v', mp4),
     ],
     { storage: (raw) => `vid-${raw.name.split('.')[0]}` },
   );
   assert.equal(prepared[0]?.kind, 'video');
   assert.equal(prepared[1]?.kind, 'video');
   assert.equal(prepared[2]?.status, 'error');
+  assert.equal(prepared[3]?.kind, 'video');
   const prompt = buildAttachmentPromptText(prepared);
   assert.match(prompt, /<uploaded-video id="vid-dance" name="dance\.mp4" mime="video\/mp4" size="16">/);
   assert.match(prompt, /<uploaded-video id="vid-clip" name="clip\.mov"/);

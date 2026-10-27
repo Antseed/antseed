@@ -111,14 +111,6 @@ function boxType(bytes: Uint8Array, offset: number): string {
 }
 
 /**
- * Movie duration in milliseconds from the body of a `moov` box (the bytes
- * after its header), or undefined when it has no readable `mvhd`.
- */
-export function mp4MoovDurationMs(moov: Uint8Array): number | undefined {
-  return readMvhdDuration(moov);
-}
-
-/**
  * What the `moov` box body says about the file: the `mvhd` duration, the
  * longest track timeline, and the first video track's size and frame rate.
  * Undefined when it has no readable `mvhd`.
