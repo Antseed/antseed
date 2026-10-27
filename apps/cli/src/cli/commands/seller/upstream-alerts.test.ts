@@ -99,3 +99,35 @@ test('a low balance that runs out escalates without a recovery message', async (
   assert.deepEqual(log.sent.map((event) => event.kind), ['upstream_balance_low', 'upstream_credit', 'upstream_credit_ok']);
   upstream.close();
 });
+
+test('models still withdrawn after credit comes back are announced on the next round', async () => {
+  const log = recorder();
+  const upstream = new UpstreamAlerts(log);
+  upstream.account(account('out_of_credit'));
+  for (const service of ['glm', 'kimi', 'qwen']) upstream.modelChanged(removed(service));
+  upstream.flush();
+  assert.deepEqual(log.sent.map((event) => event.kind), ['upstream_credit'], 'held back while out of credit');
+  upstream.account(account('funded'));
+  // The round that follows changes nothing: the models were down before and still fail.
+  upstream.flush();
+  assert.deepEqual(log.sent.map((event) => event.kind), ['upstream_credit', 'upstream_credit_ok', 'model_down']);
+  assert.equal(log.sent.at(-1)!.title, '3 models on deepinfra withdrawn after failed health checks: glm, kimi, qwen');
+  upstream.flush();
+  assert.equal(log.sent.length, 3, 'announced once');
+  // Then two recover: the open alert stays until the last one does.
+  for (const service of ['glm', 'kimi']) upstream.modelChanged(restored(service));
+  upstream.flush();
+  assert.equal(log.sent.length, 3);
+});
+
+test('credit coming back with every model healthy again sends only the credit recovery', async () => {
+  const log = recorder();
+  const upstream = new UpstreamAlerts(log);
+  upstream.account(account('out_of_credit'));
+  upstream.modelChanged(removed('glm'));
+  upstream.flush();
+  upstream.account(account('funded'));
+  upstream.modelChanged(restored('glm'));
+  upstream.flush();
+  assert.deepEqual(log.sent.map((event) => event.kind), ['upstream_credit', 'upstream_credit_ok']);
+});

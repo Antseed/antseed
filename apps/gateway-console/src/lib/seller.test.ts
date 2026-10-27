@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatEth, formatUtcDay, lastResult, sellerNotices, usageTotals, type AvailableSeller } from './seller'
+import { formatEth, formatUnitPrice, formatUtcDay, lastResult, sellerNotices, usageTotals, type AvailableSeller } from './seller'
 import { visibleNav } from './nav'
 
 const DAY = 86_400_000
@@ -255,5 +255,12 @@ describe('promote claims', async () => {
     const draft = [{ username: 'dev', repository: 'proofs' }, { username: 'other', repository: 'other' }]
     const next = [{ username: 'dev', repository: 'dev' }, { username: 'other', repository: 'other-new' }]
     expect(reconcileClaims(draft, base, next, key)).toEqual([{ username: 'dev', repository: 'proofs' }, { username: 'other', repository: 'other-new' }])
+  })
+})
+
+describe('formatUnitPrice', () => {
+  it('shows a free unit offer as free, and a free minimum as $0', () => {
+    expect(formatUnitPrice({ name: 'image', minUsd: 0, maxUsd: 0 })).toBe('Free')
+    expect(formatUnitPrice({ name: 'image', minUsd: 0, maxUsd: 0.08 })).toMatch(/^\$0–.* \/ image$/)
   })
 })
