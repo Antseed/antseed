@@ -78,6 +78,7 @@ type CardItem = {
   volumeUsdc: number;         // settled on-chain USDC volume
   poolStakeAnts: number;      // ANTS staked in the seller pool this epoch
   washFlagged: boolean | null; // AntseedWashTradingRegistry verdict; null when unavailable
+  verificationDiff: boolean;  // live DIFF verdict on AntseedVerification; reputation keeps 10%
   sybilRisk: number | null;
   sybilFlags: string[];
   lifetimeRequests: number;   // network-wide (mainnet) or local buyer total (fallback)
@@ -168,6 +169,7 @@ function buildCards(options: ChatServiceOptionEntry[]): CardItem[] {
       volumeUsdc: 0,
       poolStakeAnts: 0,
       washFlagged: null,
+      verificationDiff: false,
       sybilRisk: null,
       sybilFlags: [],
       lifetimeRequests: 0,
@@ -231,6 +233,7 @@ function buildCardsFromRows(rows: DiscoverRow[]): CardItem[] {
       volumeUsdc: Number(row.onChainTotalVolumeUsdc) / 1_000_000,
       poolStakeAnts: row.poolStakeAnts,
       washFlagged: row.washFlagged,
+      verificationDiff: row.verificationDiff === true,
       sybilRisk: row.onChainSybilRisk,
       sybilFlags: row.onChainSybilFlags,
       lifetimeRequests: pickRequests(row),
@@ -872,6 +875,9 @@ function Card({
                   {item.washFlagged === true && (
                     <span>⛔ Flagged as a proven wash trader by the on-chain registry.</span>
                   )}
+                  {item.verificationDiff && (
+                    <span>⚠ Model verification: DIFF. An on-chain audit suspects this service is not the model it claims, so its reputation is cut to 10%.</span>
+                  )}
                   {sybilHasSignals(item) && (
                     <span>
                       ⚠ Sybil risk signals: {item.sybilFlags.map(formatSybilFlag).join(', ')}.
@@ -881,7 +887,7 @@ function Card({
                 </>
               )}
             >
-              <span className={`${styles.cardScoreBadge}${lowReputation || item.washFlagged === true ? ` ${styles.cardScoreBadgeWarn}` : ''}`} tabIndex={0}>
+              <span className={`${styles.cardScoreBadge}${lowReputation || item.washFlagged === true || item.verificationDiff ? ` ${styles.cardScoreBadgeWarn}` : ''}`} tabIndex={0}>
                 {formatReputationScore(item.reputationScore)}
                 <span className={styles.cardScoreStar} aria-hidden="true">★</span>
                 {lowReputation && <span className={styles.cardScoreLowText}>Low</span>}

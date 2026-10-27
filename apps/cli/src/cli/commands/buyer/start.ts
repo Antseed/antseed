@@ -329,6 +329,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         channelsContractAddress: cryptoOverrides?.channelsContractAddress,
         freeUsageContractAddress: cryptoOverrides?.freeUsageContractAddress,
         usdcContractAddress: cryptoOverrides?.usdcContractAddress,
+        verificationContractAddress: cryptoOverrides?.verificationContractAddress,
       })
       const settlementEnabled = settlementEnv ?? true
 
@@ -367,6 +368,9 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
           ...(chainConfig.sellerPoolsAddress ? { sellerPoolsAddress: chainConfig.sellerPoolsAddress } : {}),
           ...(chainConfig.usageAccountingAddress ? { usageAccountingAddress: chainConfig.usageAccountingAddress } : {}),
           ...(chainConfig.washTradingRegistryAddress ? { washTradingRegistryAddress: chainConfig.washTradingRegistryAddress } : {}),
+          // Live DIFF verdicts from AntseedVerification cut a service's
+          // effective reputation to 10%.
+          ...(chainConfig.verificationContractAddress ? { verificationContractAddress: chainConfig.verificationContractAddress } : {}),
           chainId: chainConfig.evmChainId,
           defaultDepositAmountUSDC: cryptoOverrides?.defaultLockAmountUSDC
             ? String(Math.round(parseFloat(cryptoOverrides.defaultLockAmountUSDC) * 1_000_000))

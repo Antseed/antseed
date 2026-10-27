@@ -475,11 +475,15 @@ export {
 } from './reputation/identity-history.js';
 export { TrustSignalsClient, type TrustSignals, type TrustSignalsAddresses } from './payments/evm/trust-signals-client.js';
 export {
+  DIFF_VERIFICATION_REPUTATION_MULTIPLIER,
   MISSING_CACHED_INPUT_PRICE_REPUTATION_MULTIPLIER,
   compareEffectiveModelReputation,
   effectiveModelReputationScore,
+  hasLiveDiffVerdict,
   normalizedModelReputationScore,
+  verificationServiceKey,
   type ModelReputationSource,
+  type VerificationDiffSource,
 } from './reputation/model-reputation.js';
 export {
   buildSybilContext,

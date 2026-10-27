@@ -290,6 +290,8 @@ export type DiscoverRow = {
   trust?: TrustBreakdown | null;
   /** `AntseedWashTradingRegistry` verdict; `null` when the registry was unavailable. */
   washFlagged: boolean | null;
+  /** This service has a live DIFF verdict on `AntseedVerification`; its effective reputation keeps 10%. */
+  verificationDiff?: boolean;
   onChainSybilRisk: number | null;
   onChainSybilFlags: string[];
 
