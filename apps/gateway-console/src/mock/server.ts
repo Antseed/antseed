@@ -1003,6 +1003,13 @@ const routes: Array<[string, string, Handler]> = [
     return { ...db.settings, restartRequired: true }
   }],
   ['PUT', '/settings/observability', ({ body }) => { requireOrgAdmin(); db.settings.observability = observability(body); return maskedSettings() }],
+  ['PUT', '/settings/telemetry', ({ body }) => {
+    requireOrgAdmin()
+    if (typeof body?.enabled !== 'boolean') throw new MockError(400, 'invalid_request', 'enabled must be true or false')
+    db.settings.telemetry = { available: true, enabled: body.enabled, userDisabled: !body.enabled }
+    audit('settings.telemetry.update')
+    return maskedSettings()
+  }],
 ]
 
 /**

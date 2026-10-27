@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { RuntimeMode, RuntimeProcessState, StartOptions } from './runtime/process-manager.js';
 import type {
+  DepositStepSignal,
   FirstModelShownSignal,
   TelemetryStatus,
   TelemetryStatusUpdateResult,
@@ -542,6 +543,9 @@ const api = {
   },
   telemetryRecordFirstModelShown(payload: FirstModelShownSignal): Promise<{ ok: boolean }> {
     return ipcRenderer.invoke('telemetry:first-model-shown', payload) as Promise<{ ok: boolean }>;
+  },
+  telemetryRecordDepositStep(payload: DepositStepSignal): Promise<{ ok: boolean }> {
+    return ipcRenderer.invoke('telemetry:deposit-step', payload) as Promise<{ ok: boolean }>;
   },
   onAppSetupStep(handler: (data: { step: string; label: string }) => void): () => void {
     const listener = (_: unknown, data: { step: string; label: string }) => handler(data);

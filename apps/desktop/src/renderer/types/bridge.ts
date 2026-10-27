@@ -424,6 +424,7 @@ export type DesktopBridge = {
   setTelemetryEnabled?: (enabled: boolean) => Promise<import('../../shared/telemetry.js').TelemetryStatusUpdateResult>;
   telemetryRecordUserAction?: (payload: import('../../shared/telemetry.js').UserActionSignal) => Promise<{ ok: boolean }>;
   telemetryRecordFirstModelShown?: (payload: import('../../shared/telemetry.js').FirstModelShownSignal) => Promise<{ ok: boolean }>;
+  telemetryRecordDepositStep?: (payload: import('../../shared/telemetry.js').DepositStepSignal) => Promise<{ ok: boolean }>;
   onAppSetupStep?: (handler: (data: { step: string; label: string }) => void) => () => void;
   onAppSetupComplete?: (handler: () => void) => () => void;
   onUpdateStatus?: (handler: (data: UpdateStatus) => void) => () => void;

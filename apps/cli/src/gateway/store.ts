@@ -577,6 +577,7 @@ export class GatewayStore {
   private readonly _statements = new Map<string, Database.Statement>()
   private readonly _settings = new Map<string, { raw: string | null; at: number }>()
   private readonly _touched = new Map<string, number>()
+  private _auditObserver: ((record: AuditRecord) => void) | null = null
 
   constructor(dataDir: string, private readonly _now: () => number = () => Date.now()) {
     const dir = gatewayDir(dataDir)
@@ -1839,6 +1840,24 @@ export class GatewayStore {
    * `clientIp(request)`. `details` must never contain secrets.
    */
   recordAudit(input: AuditInput): AuditRecord {
+    const record = this._insertAudit(input)
+    try {
+      this._auditObserver?.(record)
+    } catch {
+      // An observer never affects the action it observes.
+    }
+    return record
+  }
+
+  /**
+   * Called after every audit entry this store writes. The running gateway
+   * uses it for its setup-funnel telemetry (`telemetry/gateway.ts`).
+   */
+  setAuditObserver(observer: ((record: AuditRecord) => void) | null): void {
+    this._auditObserver = observer
+  }
+
+  private _insertAudit(input: AuditInput): AuditRecord {
     const id = newId('aud')
     const at = this._now()
     this._stmt(`

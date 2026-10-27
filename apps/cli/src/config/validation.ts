@@ -530,6 +530,14 @@ export function validateConfig(config: AntseedConfig): string[] {
     }
   }
 
+  if (config.telemetry !== undefined) {
+    if (typeof config.telemetry !== 'object' || config.telemetry === null || Array.isArray(config.telemetry)) {
+      errors.push('telemetry must be an object');
+    } else if (config.telemetry.enabled !== undefined && typeof config.telemetry.enabled !== 'boolean') {
+      errors.push('telemetry.enabled must be a boolean');
+    }
+  }
+
   return errors;
 }
 
