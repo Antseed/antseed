@@ -180,6 +180,19 @@ function agentWithKnowledge(): AntAgentDefinition {
 
 // ─── Tests ──────────────────────────────────────────────────────
 
+describe('AntAgentProvider — provider metadata', () => {
+  it('forwards serviceCapabilities from the inner provider', () => {
+    const inner = mockProvider({ responses: [] });
+    const capabilities = {
+      'claude-sonnet-4-5-20250929': { reasoning: true, toolUse: true },
+    } as unknown as Provider['serviceCapabilities'];
+    inner.serviceCapabilities = capabilities;
+    const agent = new AntAgentProvider(inner, personaOnlyAgent());
+
+    expect(agent.serviceCapabilities).toBe(capabilities);
+  });
+});
+
 describe('AntAgentProvider — persona only (no knowledge)', () => {
   it('injects persona + guardrails into system prompt', async () => {
     const inner = mockProvider({ responses: [makeAnthropicTextResponse('hello')] });
