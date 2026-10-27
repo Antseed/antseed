@@ -51,7 +51,8 @@ function decodeMockFreeTierCode(code: string): { staker: string; buyer: string; 
 
 const favorites = new Set<string>(['qwen3-coder-480b', `${db.peers[0]!.peerId}@fake-router`])
 const SESSION_KEY = 'antseed-console-mock-session'
-const roleMembers: Record<string, string> = { owner: 'mem_owner', admin: 'mem_ali', member: 'mem_sam', wsadmin: 'mem_wade' }
+// `seller`: the `antseed seller dashboard` frame; its routes run as the owner.
+const roleMembers: Record<string, string> = { owner: 'mem_owner', admin: 'mem_ali', member: 'mem_sam', wsadmin: 'mem_wade', seller: 'mem_owner' }
 /** Sign-ins newer than this count as fresh for operator authorization. */
 const FRESH_MS = 5 * 60_000
 let lastSignInAt = 0
@@ -242,6 +243,8 @@ function withCounts(workspace: Workspace): Workspace {
 }
 
 function me(): MeResponse {
+  // `?as=seller`: the standalone seller dashboard, as `antseed seller dashboard` serves it.
+  if (session() === 'seller') return { kind: 'seller', me: { dataDir: '/var/lib/antseed', version: '0.1.205' } }
   const key = keySession()
   if (key) return { kind: 'key', me: { key } }
   const member = currentMember()
@@ -964,7 +967,7 @@ const routes: Array<[string, string, Handler]> = [
   ['PATCH', '/presets/:id', ({ params, body }) => Object.assign(editablePreset(params['id']), withoutSaveFlags(body))],
   ['DELETE', '/presets/:id', ({ params }) => { editablePreset(params['id']); db.presets = db.presets.filter((x) => x.id !== params['id']) }],
 
-  ['GET', '/status', () => ({ version: '0.1.0-mock', publicUrl: mockExposure === 'public' ? db.settings.publicUrl : null, buyer: { reachable: true, peers: db.peers.length, dhtNodes: 42, uptimeMs: 26 * 3600_000 }, spendFeed: 'local', x402: true, exposure: exposureFor(mockExposure) })],
+  ['GET', '/status', () => ({ version: '0.1.205', publicUrl: mockExposure === 'public' ? db.settings.publicUrl : null, buyer: { reachable: true, peers: db.peers.length, dhtNodes: 42, uptimeMs: 26 * 3600_000 }, spendFeed: 'local', x402: true, exposure: exposureFor(mockExposure) })],
   ['GET', '/update', () => { requireOrgAdmin(); return mockUpdate() }],
   ['POST', '/update/check', () => { requireOrgAdmin(); mockUpdateState.checkedAt = Date.now(); return mockUpdate() }],
   ['POST', '/update', ({ body }) => {
@@ -1210,5 +1213,5 @@ export function installMockApi(): void {
       return json(500, { error: { code: 'mock_error', message: String(error) } })
     }
   }
-  console.info('[antseed console] Mock API active. Switch identity with ?as=owner|admin|wsadmin|member|key|out, reachability with ?exposure=local|lan|public, updates with ?update=available|command|current|desktop|ready|step:<phase>|restarting|succeeded|failed')
+  console.info('[antseed console] Mock API active. Switch identity with ?as=owner|admin|wsadmin|member|key|out|seller, reachability with ?exposure=local|lan|public, updates with ?update=available|command|current|desktop|ready|step:<phase>|restarting|succeeded|failed')
 }

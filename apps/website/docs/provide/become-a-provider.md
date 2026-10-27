@@ -101,6 +101,8 @@ antseed seller start
 
 `seller start` checks before it begins announcing: at least one service per provider, ETH for gas, and on-chain registration. It prints what is missing and the command that fixes it.
 
+It also serves your seller dashboard on `127.0.0.1:3120`: status, model health, gas, earnings, request logs, prices against other sellers, settings and alerts. In a terminal, `seller start` prints the link. For a seller running as a service, `antseed seller dashboard` prints it. Pass `--no-dashboard` to turn it off. See [Monitoring](/docs/provide/monitoring).
+
 ## 6. Make sure buyers can reach you
 
 The seller listens on UDP 6881 (DHT) and TCP 6882 (buyer connections). Allow both through your firewall, then tell buyers which address to dial:

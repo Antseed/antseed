@@ -230,17 +230,31 @@ The wrappers forward unknown flags to the tool. `--model` falls back to `ANTSEED
 
 ## Seller
 
-Offer AI services on the network. Guides: [Become a provider](/docs/provide), [Provider configuration](/docs/provide/config).
+Offer AI services on the network. Guides: [Become a provider](/docs/provide), [Provider configuration](/docs/provide/config), [Monitoring](/docs/provide/monitoring).
 
 <CommandTable>
 
 | Command | Purpose | Key flags |
 |---|---|---|
 | `antseed seller setup` | Interactive setup: configure a provider and add services | |
-| `antseed seller start` | Start providing services | `--provider <names>`, `--input-usd-per-million`, `--output-usd-per-million`, `--reserve`, `--dht-port` (6881), `--signaling-port` (6882), `--min-settle-delta <usdc>`, `--base-rpc-url`, `--verifiers <ids>`, `--skip-prereq-check` |
+| `antseed seller start` | Start providing services | `--provider <names>`, `--input-usd-per-million`, `--output-usd-per-million`, `--reserve`, `--dht-port` (6881), `--signaling-port` (6882), `--min-settle-delta <usdc>`, `--base-rpc-url`, `--verifiers <ids>`, `--no-dashboard`, `--dashboard-port` (3120), `--skip-prereq-check` |
 | `antseed seller status` | Show node status and readiness | `--json` |
 | `antseed seller register` | Register your peer identity on-chain (ERC-8004) | `--agent-id <id>`, `--metadata <uri>` |
 | `antseed seller doctor` | Diagnose the announced seller endpoint | `--timeout-ms` (3000), `--json` |
+| `antseed seller dashboard` | Open the local seller dashboard: the running seller's, or one served by this command | `--port` (3120), `--host` (127.0.0.1), `--no-open` |
+| `antseed seller events` | Recent seller events: starts and stops, models withdrawn or restored, gas, alerts | `--limit` (25), `--json` |
+| `antseed seller usage` | Requests, tokens and revenue per UTC day | `--days` (14, up to 30), `--json` |
+| `antseed seller logs` | Served requests, newest first, or everything kept about one request | `--limit` (50), `--cursor`, `--model`, `--buyer`, `--since <30m\|6h\|2d\|date>`, `--errors`, `--id <id>`, `--json` |
+| `antseed seller market` | Your prices against other sellers of the same models | `--model <id>`, `--refresh`, `--json` |
+| `antseed seller reputation` | Trust score, its parts, and on-chain standing | `--refresh`, `--json` |
+| `antseed seller promote` | Promotion info and a shareable seller card | `--card <file>` (SVG), `--json` |
+| `antseed seller verify` | Domain and GitHub identity claims | `--add-domain`, `--add-github <user[/repo]>`, `--remove <claim>`, `--check`, `--json` |
+| `antseed seller settings` | Show the seller's settings | `--json` |
+| `antseed seller settings set` | Change settings (validated, applied to config.json) | `--display-name`, `--max-buyers`, `--health <on\|off>`, `--health-interval`, `--health-failures`, `--gas <on\|off>`, `--gas-min <eth>`, `--free-per-address`, `--free-per-ip`, `--free-window-hours`, `--free-stakers-only`, `--free-stake-tiers`, `--model-free-tier`, `--countries`, `--price <[provider/]model=in/out[/cached]>`, `--json` |
+| `antseed seller alerts` | Where alerts go and their last delivery | `--json` |
+| `antseed seller alerts set` | Configure Telegram and webhook alerts (secrets from stdin only) | `--telegram-token-stdin`, `--telegram-chat <id>`, `--clear-telegram-token`, `--webhook-url-stdin`, `--clear-webhook`, `--idle <minutes\|off>`, `--cooldown`, `--low-balance <usd\|off\|default>`, `--min-severity`, `--json` |
+| `antseed seller alerts test` | Send a test alert | `--channel <telegram\|webhook>`, `--json` |
+| `antseed seller alerts find-chat` | Find the Telegram chat id after messaging your bot | `--token-stdin`, `--json` |
 | `antseed profile show` | Show your peer profile | |
 | `antseed profile set` | Create or update your peer profile | `--name`, `--description`, `--tags`, `--capabilities`, `--region`, `--languages`, `--website` |
 

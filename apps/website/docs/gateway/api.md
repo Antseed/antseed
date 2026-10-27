@@ -10,6 +10,8 @@ Your gateway serves an OpenAI- and Anthropic-compatible API at `/v1`. Every requ
 
 ## Create an API key
 
+![The Keys page: each key with its owner, limits, routing, 30-day spend and status](/img/docs/gateway/keys.webp)
+
 1. In the console, open **Keys** and click **Create key**.
 2. Enter a **Name**. Optionally set budgets, an **Expires** date, and (for keys with their own wallet) **Allow top-ups**.
 3. Click **Create key** and copy the secret (`antseed_…`). It is shown once; the gateway stores only a hash of it.
