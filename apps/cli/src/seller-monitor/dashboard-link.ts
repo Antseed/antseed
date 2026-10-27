@@ -58,3 +58,15 @@ export function previousDashboardToken(dataDir: string): string | null {
     return null
   }
 }
+
+/** The port the link a previous run left was served on, to serve there again after a restart. */
+export function previousDashboardPort(dataDir: string): number | null {
+  const link = readLink(dataDir)
+  if (!link) return null
+  try {
+    const port = Number(new URL(link.url).port)
+    return Number.isInteger(port) && port > 0 && port < 65536 ? port : null
+  } catch {
+    return null
+  }
+}

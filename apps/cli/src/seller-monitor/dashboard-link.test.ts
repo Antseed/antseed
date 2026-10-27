@@ -3,7 +3,7 @@ import { mkdtempSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { dashboardLinkPath, removeDashboardLink, runningDashboardLink, writeDashboardLink } from './dashboard-link.js'
+import { dashboardLinkPath, previousDashboardPort, previousDashboardToken, removeDashboardLink, runningDashboardLink, writeDashboardLink } from './dashboard-link.js'
 
 test('a running seller\'s dashboard link is found, owner-only, and removed only by its writer', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'seller-dashboard-link-'))
@@ -19,4 +19,12 @@ test('a running seller\'s dashboard link is found, owner-only, and removed only 
   // A seller that died without cleaning up: its pid is gone.
   await writeDashboardLink(dir, url, 2 ** 22 + 12345)
   assert.equal(runningDashboardLink(dir), null)
+})
+
+test('a restart serves the dashboard again on the same port and link', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'seller-dashboard-link-'))
+  assert.deepEqual([previousDashboardPort(dir), previousDashboardToken(dir)], [null, null])
+  const token = 'ab'.repeat(24)
+  await writeDashboardLink(dir, `http://127.0.0.1:41234/console/seller#seller-token=${token}`, 2 ** 22 + 12345)
+  assert.deepEqual([previousDashboardPort(dir), previousDashboardToken(dir)], [41234, token])
 })

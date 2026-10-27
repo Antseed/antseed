@@ -55,8 +55,9 @@ import { UpstreamAlerts } from '../../../seller-alerts/upstream-alerts.js'
 import { ethToWei } from './gas.js'
 import { startIdleWatch, uncleanExitEvent, waitAtMost } from '../../../seller-alerts/lifecycle.js'
 import { startSellerDashboard, type SellerDashboardServer } from '../../../seller-monitor/dashboard-server.js'
-import { previousDashboardToken, removeDashboardLink, writeDashboardLink } from '../../../seller-monitor/dashboard-link.js'
+import { previousDashboardPort, previousDashboardToken, removeDashboardLink, writeDashboardLink } from '../../../seller-monitor/dashboard-link.js'
 import { DEFAULT_SELLER_DASHBOARD_PORT } from './dashboard.js'
+import { patchSellerConfig } from '../../../seller-monitor/settings.js'
 
 function getStateFile(dataDir: string): string {
   return join(dataDir, 'daemon.state.json')
@@ -473,6 +474,12 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         config,
         configPath: globalOpts.config,
         dataDir: globalOpts.dataDir,
+        // Only the name, where dashboard saves go (the config file, or its overrides when it is read-only):
+        // the config loaded here has the overrides applied, so writing it whole would bake them into the file.
+        save: (displayName) => patchSellerConfig(resolveConfigPath(globalOpts.config), globalOpts.dataDir, (raw) => {
+          const identity = (raw.identity && typeof raw.identity === 'object' ? raw.identity : (raw.identity = {})) as Record<string, unknown>
+          identity.displayName = displayName
+        }).catch(() => {}),
       })
       let baseRpcUrlOverride: string | undefined
       try {
@@ -1207,9 +1214,9 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       let dashboard: SellerDashboardServer | null = null
       if (options.dashboard !== false) {
         // A restart from the dashboard is a clean stop: only offered where a supervisor starts the seller again.
-        const supervisor = process.env.KUBERNETES_SERVICE_HOST ? 'Kubernetes' : process.env.INVOCATION_ID ? 'systemd' : process.env.ANTSEED_SUPERVISED === '1' ? 'its supervisor' : null
+        const supervisor = restartSupervisor()
         const restart = {
-          unavailableReason: supervisor ? null : 'This seller runs without a supervisor that would start it again. Restart `antseed seller start` where it runs to apply saved changes.',
+          unavailableReason: supervisor ? null : 'Restart `antseed seller start` where it runs to apply saved changes. (Under a supervisor that starts it again when it exits, set ANTSEED_SUPERVISED=1 to restart it from here.)',
           run: () => {
             console.log(chalk.yellow(`Restarting from the dashboard to apply saved settings (${supervisor} starts the seller again).`))
             shutdownForRestart()
@@ -1218,12 +1225,20 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         // A restart keeps the link (and the sessions signed with it), so an open dashboard reconnects.
         const previousToken = previousDashboardToken(globalOpts.dataDir)
         const dashboardOptions = { dataDir: globalOpts.dataDir, configPath: resolveConfigPath(globalOpts.config), version: pkg.version, host: '127.0.0.1', restart, ...(previousToken ? { token: previousToken } : {}), log: (line: string) => console.log(chalk.dim(line)) }
-        const port = Number(options.dashboardPort) || DEFAULT_SELLER_DASHBOARD_PORT
+        // The flag's port; else the one the last run served on (an open page reconnects there after a restart),
+        // then the default, then any free one.
+        const previousPort = previousDashboardPort(globalOpts.dataDir)
+        const ports = options.dashboardPort ? [Number(options.dashboardPort)] : [...new Set([previousPort, DEFAULT_SELLER_DASHBOARD_PORT, 0].filter((port): port is number => port !== null))]
         try {
-          dashboard = await startSellerDashboard({ ...dashboardOptions, port }).catch((err: NodeJS.ErrnoException) => {
-            if (err.code !== 'EADDRINUSE' || options.dashboardPort) throw err
-            return startSellerDashboard({ ...dashboardOptions, port: 0 })
-          })
+          for (const [index, port] of ports.entries()) {
+            try {
+              dashboard = await startSellerDashboard({ ...dashboardOptions, port })
+              break
+            } catch (err) {
+              if ((err as NodeJS.ErrnoException).code !== 'EADDRINUSE' || index === ports.length - 1) throw err
+            }
+          }
+          if (!dashboard) throw new Error('no port to serve on')
           await writeDashboardLink(globalOpts.dataDir, dashboard.url)
           const origin = new URL(dashboard.url).origin
           if (process.stdout.isTTY) console.log(`  dashboard: ${chalk.cyan(dashboard.url)}`)
@@ -1271,4 +1286,17 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         }
       })
     })
+}
+
+/**
+ * Who starts the seller again after a restart from the dashboard, or null when
+ * nothing would (the restart would stop it for good). Never inferred from
+ * variables a shell inherits: `ANTSEED_SUPERVISED=1` says so explicitly (`0`
+ * turns it off), and otherwise only a Kubernetes container's main process
+ * counts, which the kubelet restarts.
+ */
+export function restartSupervisor(env: NodeJS.ProcessEnv = process.env, pid = process.pid): string | null {
+  if (env.ANTSEED_SUPERVISED === '0') return null
+  if (env.ANTSEED_SUPERVISED === '1') return 'its supervisor'
+  return env.KUBERNETES_SERVICE_HOST && pid === 1 ? 'Kubernetes' : null
 }

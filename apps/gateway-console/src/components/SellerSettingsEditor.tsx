@@ -416,7 +416,10 @@ export function SellerSettingsEditor({ settings, restart }: { settings: SellerSe
                     <span className="gc-fineprint">{entry.provider}{entry.upstreamModel ? ` · ${entry.upstreamModel}` : ''}{entry.inherited ? ' · provider default' : ''}</span>
                     <div className="gc-seller-price__controls">
                       <Switch checked={offered} disabled={readOnly} onChange={(next) => setOffered(key, next)} label="Offered" ariaLabel={`Offer ${key}`} />
-                      {!readOnly && <Button size="sm" variant="link" className="gc-seller-inline-button" aria-label={`Remove ${key}`} onClick={() => setRemoving(entry)}>Remove</Button>}
+                      {/* A provider's last model is turned off, not removed: a provider with no models stops the seller from starting. */}
+                      {!readOnly && (settings.providers.find((provider) => provider.name === entry.provider)?.services ?? 0) > 1 && (
+                        <Button size="sm" variant="link" className="gc-seller-inline-button" aria-label={`Remove ${key}`} onClick={() => setRemoving(entry)}>Remove</Button>
+                      )}
                     </div>
                   </div>
                   {entry.unitComponents.length > 0
@@ -488,7 +491,8 @@ export function SellerSettingsEditor({ settings, restart }: { settings: SellerSe
           </Disclosure>
         </div>
       </div>
-      {!changed && <SellerRestart restart={restart} pending={savedPendingRestart} onRestarted={() => setSavedPendingRestart(false)} />}
+      {/* Always mounted: a restart under way keeps being tracked while fields are edited. */}
+      <SellerRestart restart={restart} pending={savedPendingRestart} idleHidden={changed} onRestarted={() => setSavedPendingRestart(false)} />
       {save.error ? <ErrorAlert error={save.error} title="Could not save" /> : null}
       {!readOnly && (
         <div className="gc-actions">

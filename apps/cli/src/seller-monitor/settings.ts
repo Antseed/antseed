@@ -379,6 +379,8 @@ export function applySellerSettingsPatch(raw: JsonObject, body: unknown): string
       const item = obj(entry, 'removeServices entry')
       const services = typeof item.provider === 'string' && Object.hasOwn(providers, item.provider) ? providers[item.provider]!.services : undefined
       if (!services || typeof item.service !== 'string' || !Object.hasOwn(services, item.service)) bad(`removeServices: no service ${String(item.service)} under provider ${String(item.provider)} in the config file`)
+      // A provider with no models stops the whole seller from starting: its last one is turned off instead.
+      if (Object.keys(services).length === 1) bad(`removeServices: ${item.service} is the last model of ${String(item.provider)}; turn it off instead (the provider is then not started)`)
       delete services[item.service]
     }
     fields.push('services')

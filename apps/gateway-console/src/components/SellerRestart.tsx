@@ -14,7 +14,13 @@ const POLL_MS = 2_000
  * where a supervisor (Kubernetes, systemd) starts the seller again; the page
  * then waits for the new run and reloads its data.
  */
-export function SellerRestart({ restart, pending, onRestarted }: { restart: SellerRestartView; pending: boolean; onRestarted?: () => void }) {
+export function SellerRestart({ restart, pending, idleHidden = false, onRestarted }: {
+  restart: SellerRestartView
+  pending: boolean
+  /** Hide the offer (unsaved edits on screen), but keep tracking a restart under way. */
+  idleHidden?: boolean
+  onRestarted?: () => void
+}) {
   const queryClient = useQueryClient()
   const toast = useToast()
   const [confirming, setConfirming] = useState(false)
@@ -63,6 +69,7 @@ export function SellerRestart({ restart, pending, onRestarted }: { restart: Sell
       </p>
     )
   }
+  if (idleHidden) return null
   if (!restart.available) {
     return pending ? <p className="gc-seller-notice" role="status"><span className="gc-attention" aria-hidden="true" />Saved. {restart.reason}</p> : null
   }
