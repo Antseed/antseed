@@ -27,7 +27,7 @@ Settings resolve in this order: command-line flags, then environment variables, 
 
 | Key | Default | Meaning |
 |---|---|---|
-| `buyer.proxyPort` | `8377` | Local proxy port |
+| `buyer.proxyPort` | `8377` | Local proxy port. The proxy always listens on `127.0.0.1`; there is no host setting (see [Reach it from other machines](/docs/api#reach-it-from-other-machines)) |
 | `buyer.routingPreferences` | see below | Automatic routing preferences |
 | `buyer.maxPricing` | `100` / `100` USD per million tokens | Hard price caps, see below |
 | `buyer.minPeerReputation` | `0` | Hard minimum reputation (0–100), applied to pinned requests too |
