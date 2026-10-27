@@ -920,23 +920,8 @@ install_caddy() {
   fi
 
   step "Configuring Caddy for https://$DOMAIN"
-  local caddyfile=/etc/caddy/Caddyfile import_line='import /etc/caddy/antseed.caddy' owned='' global_options=''
-  # The stock package Caddyfile serves a placeholder page on :80, which would
-  # shadow the HTTPS redirect, so it is replaced; a Caddyfile that is only our
-  # import is ours too. Any other Caddyfile is kept and imports ours at its end.
-  if [[ ! -s "$caddyfile" ]] || grep -q '/usr/share/caddy' "$caddyfile" \
-    || [[ "$(grep -Ev '^[[:space:]]*(#.*)?$' "$caddyfile")" == "$import_line" ]]; then
-    owned=1
-  fi
-  # Caddy drops request headers with an underscore in the name unless they are
-  # listed. Agent clients send their session id in one (session_id,
-  # conversation_id), and some upstreams route prompt caching by it. Global
-  # options must open the Caddyfile, so they are only set in one we own.
-  if [[ -n "$owned" ]]; then
-    global_options=$'{\n\tservers {\n\t\texpected_underscore_headers session_id conversation_id\n\t}\n}\n'
-  fi
   cat >/etc/caddy/antseed.caddy <<EOF
-${global_options}# Managed by install-gateway.sh: Antseed API-key gateway.
+# Managed by install-gateway.sh: Antseed API-key gateway.
 # Every path is proxied, including the console at /console, which sets its
 # own CSP and frame headers.
 $DOMAIN {
@@ -958,14 +943,14 @@ $DOMAIN {
 	}
 }
 EOF
-  if [[ -n "$owned" ]]; then
-    if [[ -s "$caddyfile" ]] && grep -q '/usr/share/caddy' "$caddyfile"; then
-      cp "$caddyfile" "$caddyfile.antseed-backup"
-    fi
-    echo "$import_line" >"$caddyfile"
-  else
-    grep -qx "$import_line" "$caddyfile" || printf '\n%s\n' "$import_line" >>"$caddyfile"
-    note "Add 'expected_underscore_headers session_id conversation_id' to the servers global option in $caddyfile so clients' session headers reach the gateway"
+  local caddyfile=/etc/caddy/Caddyfile
+  # The stock package Caddyfile serves a placeholder page on :80, which would
+  # shadow the HTTPS redirect. Replace it; otherwise import alongside.
+  if [[ ! -s "$caddyfile" ]] || grep -q '/usr/share/caddy' "$caddyfile"; then
+    [[ -s "$caddyfile" ]] && cp "$caddyfile" "$caddyfile.antseed-backup"
+    echo 'import /etc/caddy/antseed.caddy' >"$caddyfile"
+  elif ! grep -qx 'import /etc/caddy/antseed.caddy' "$caddyfile"; then
+    printf '\nimport /etc/caddy/antseed.caddy\n' >>"$caddyfile"
   fi
   local validation
   if ! validation="$(caddy validate --config "$caddyfile" --adapter caddyfile 2>&1)"; then
