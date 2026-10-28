@@ -13,7 +13,7 @@ import { errorMessage } from '../../errors.js'
 import { listNetworkPeers } from '../../services/network.js'
 import {
   buildStatement, checkVatNumber, fetchEurRate, fetchSettlements, normalizeVatNumber, periodBounds, periodsSince, rateDate,
-  statementFunding, statementReference, STATEMENT_GRACE_MS, type SettlementRead,
+  SETTLEMENTS_WAIT_MS, statementFunding, statementReference, STATEMENT_GRACE_MS, type SettlementRead,
 } from '../../services/statements.js'
 import type { BillingProfileRecord, WorkspaceRecord } from '../../store.js'
 import { usdcToDecimalString } from '../../money.js'
@@ -169,14 +169,20 @@ export function registerStatementRoutes(router: ConsoleRouter, deps: ConsoleDeps
       synced,
     ])
     const rate = rateRead?.value ?? null
-    const settlements = settlementsRead?.value.settlements ?? null
-    // The explorer answers from its index: until it has indexed this chain past the month's end, later settlements are missing.
-    const indexedThrough = settlementsRead?.value.indexed.find((entry) => entry.chainId === chain.evmChainId)?.at ?? null
+    // The explorer answers from its index: its rows are this chain's only when it indexes this chain alone (the
+    // settlements carry no chain), and settlements after its checkpoint are not listed yet.
+    const indexed = settlementsRead?.value.indexed ?? []
+    const onlyChain = indexed.length === 1 && indexed[0]!.chainId === chain.evmChainId ? indexed[0]! : null
+    const settlementsComplete = explorerUrl === null
+      || (settlementsRead !== null && !settlementsRead.stale && onlyChain !== null && onlyChain.at >= bounds.to)
     const buyer = deps.store.getBillingProfile(ws.id)
     // Final once the month is over (plus a day for late spend reports and settlements), the buyer is named, and
-    // every outside read answered now (a list cached before a failed refresh is not enough) and covers the month.
+    // every outside read answered now (a value cached before a failed refresh is not enough) and covers the month,
+    // except the explorer's after a week: then it is issued without settlements.
     const final = now >= bounds.to + STATEMENT_GRACE_MS && buyer !== null && rate !== null && !rateRead!.stale
-      && (explorerUrl === null || (settlementsRead !== null && !settlementsRead.stale && indexedThrough !== null && indexedThrough >= bounds.to))
+      && (settlementsComplete || now >= bounds.to + SETTLEMENTS_WAIT_MS)
+    // A list that may be incomplete or another chain's is never shown as the payments, in a draft or a final statement.
+    const settlements = settlementsComplete ? settlementsRead?.value.settlements ?? null : null
     const statement = buildStatement({
       period,
       workspace: { id: ws.id, name: ws.name, wallet },

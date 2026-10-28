@@ -31,6 +31,8 @@ let now = MID_OCT
 let explorerDown = false
 /** How far the explorer has indexed (block time, epoch ms). */
 let indexedAt = Date.UTC(2027, 0, 1)
+/** The explorer also indexes another chain (its rows could be that chain's). */
+let alsoIndexed = false
 let rate = 1.115
 let ecbDown = false
 /** Deposits the buyer recorded for the wallet. */
@@ -95,7 +97,7 @@ function setup(): ConsoleRouter {
             { seller: `0x${SELLER_A}`, txHash: `0x${'f1'.repeat(32)}`, time: OCT + 10_000, amountUsdc: 4_000_000 },
             { seller: `0x${SELLER_B}`, txHash: `0x${'f2'.repeat(32)}`, time: OCT + 20_000, amountUsdc: 3_000_000 },
           ].filter((settlement) => settlement.time <= indexedAt),
-          indexed: [{ chainId: CHAIN.evmChainId, at: indexedAt }, { chainId: 1, at: Date.UTC(2030, 0, 1) }],
+          indexed: [{ chainId: CHAIN.evmChainId, at: indexedAt }, ...(alsoIndexed ? [{ chainId: 1, at: Date.UTC(2030, 0, 1) }] : [])],
         }
       },
       peers: async () => new Map([[SELLER_A, { name: 'Northwind', verificationLinks: [{ kind: 'domain' as const, label: 'northwind.example', href: 'https://northwind.example' }] }]]),
@@ -173,10 +175,17 @@ test('a month is not final while the explorer has not indexed past its end', asy
   const path = `/workspaces/${workspaceId}/statements/2026-10`
   indexedAt = OCT + 15_000 // behind: the second settlement is not indexed yet
   const lagging = await call(setup(), 'GET', path, admin()) as PurchaseStatement
-  assert.equal(lagging.status, 'open', 'another chain indexed further does not count')
-  assert.equal(lagging.suppliers.find((supplier) => supplier.peerId === `0x${SELLER_B}`)!.settlements!.length, 0)
+  assert.equal(lagging.status, 'open')
+  assert.equal(lagging.suppliers[0]!.settlements, null, 'a list that may be incomplete is not shown as the payments')
   assert.equal(store.getStatement(workspaceId, '2026-10'), null)
   indexedAt = Date.UTC(2027, 0, 1)
+
+  alsoIndexed = true
+  const twoChains = await call(setup(), 'GET', path, admin()) as PurchaseStatement
+  assert.equal(twoChains.status, 'open', 'an explorer indexing two chains may list the other chain\'s settlements')
+  assert.equal(twoChains.settlementsSource, null)
+  alsoIndexed = false
+  assert.equal(store.getStatement(workspaceId, '2026-10'), null)
 })
 
 test('a month is not final on a settlement list cached before the explorer went down', async () => {
@@ -279,6 +288,21 @@ test('a wallet shared with another workspace: its settlements are shown as the w
   const november = await call(router, 'GET', `/workspaces/${workspaceId}/statements/2026-11`, admin()) as PurchaseStatement
   assert.deepEqual(november.sharedWallet, ['Research'])
   assert.ok(!november.suppliers.some((supplier) => supplier.peerId === `0x${SELLER_C}`))
+})
+
+test('a week after the month, a statement the explorer still cannot list settlements for is issued without them', async () => {
+  const path = `/workspaces/${workspaceId}/statements/2026-08`
+  now = Date.UTC(2026, 8, 1) + 6 * 24 * 60 * 60 * 1000
+  explorerDown = true
+  assert.equal((await call(setup(), 'GET', path, admin()) as PurchaseStatement).status, 'open', 'within the week it waits for the explorer')
+  now = Date.UTC(2026, 8, 1) + 7 * 24 * 60 * 60 * 1000
+  const issued = await call(setup(), 'GET', path, admin()) as PurchaseStatement
+  explorerDown = false
+  assert.equal(issued.status, 'final')
+  assert.equal(issued.settlementsSource, null, 'marked as not read from the explorer')
+  assert.ok(issued.suppliers.every((supplier) => supplier.settlements === null))
+  const later = await call(setup(), 'GET', path, admin()) as PurchaseStatement
+  assert.equal(later.settlementsSource, null, 'kept as issued once the explorer answers again')
 })
 
 test('periods: malformed is a 400, a month not started yet a 404', async () => {

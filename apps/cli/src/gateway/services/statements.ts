@@ -19,6 +19,11 @@ const PERIOD_RE = /^(\d{4})-(0[1-9]|1[0-2])$/
 const DAY_MS = 24 * 60 * 60 * 1000
 /** A month's statement becomes final this long after the month ends: late spend reports and settlements are in by then. */
 export const STATEMENT_GRACE_MS = DAY_MS
+/**
+ * When the chain explorer still cannot list a month's settlements this long after it ends, the statement is
+ * issued without them (marked as not read) rather than staying a draft: the purchases are the gateway's own record.
+ */
+export const SETTLEMENTS_WAIT_MS = 7 * DAY_MS
 const OUTSIDE_TIMEOUT_MS = 10_000
 /** Settlements read per explorer page, and at most this many pages (50,000 settlements) per statement. */
 const SETTLEMENT_PAGE = 1000
