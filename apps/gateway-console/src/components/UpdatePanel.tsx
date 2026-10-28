@@ -334,3 +334,26 @@ export function UpdatePanel() {
     </Panel>
   )
 }
+
+/**
+ * The seller dashboard's notice: a newer Antseed and how this seller gets it.
+ * The page never installs it (the seller runs elsewhere: a service, a
+ * container), so it shows the command or the note, until dismissed.
+ */
+export function SellerUpdateNotice() {
+  const update = useUpdate()
+  const [dismissed, setDismissed] = useState(readDismissedUpdate)
+  const data = update.data
+  if (!data?.available || !data.latest || data.latest === dismissed) return null
+  const latest = data.latest
+  return (
+    <p className="gc-update-notice" role="status">
+      <span className="gc-attention" aria-hidden="true" />
+      <span>Antseed {latest} is available. This seller runs {data.current}.</span>
+      {data.command
+        ? <span>Run <code>{data.command}</code> where it runs, then restart it.</span>
+        : <span>{data.note}</span>}
+      <button type="button" className="gc-update-notice__link" onClick={() => { rememberDismissedUpdate(latest); setDismissed(latest) }}>Dismiss</button>
+    </p>
+  )
+}
