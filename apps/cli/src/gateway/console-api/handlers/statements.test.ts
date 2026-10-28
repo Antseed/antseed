@@ -251,6 +251,31 @@ test('a routed purchase is listed under the model the seller served, even when s
   assert.deepEqual(lines.sort(), [[ROUTER, 'alpha-route', true, 10_000], [SELLER_A, 'gpt-5', false, 3_000_000]].sort())
 })
 
+test('a wallet shared with another workspace: its settlements are shown as the wallet\'s, and a seller only the other one bought from is left out', async () => {
+  const other = store.createWorkspace({ name: 'Research', buyerIdentity: 'default' })
+  const SELLER_C = '5e'.repeat(20)
+  const at = Date.UTC(2026, 8, 10)
+  store.recordLedgerEntry({
+    kind: 'spend', keyId: 'key-2', buyerIdentity: 'default', amountUsdc: 1_000_000, externalRef: `spend:test:${ledgerSeq++}`, requestTag: 'other-1',
+    sellerPeerId: SELLER_C, inputTokens: 1, cachedInputTokens: 0, outputTokens: 1, createdAt: at, workspaceId: other.id, memberId: ownerId, model: 'glm-5', routingFee: false,
+  })
+  spend(SELLER_A, 'qwen3-coder', 500_000, 'mine-1', at, { input: 1, cached: 0, output: 1 })
+  const settled = (txHash: string, seller: string) => ({ seller: `0x${seller}`, txHash, time: at + 1000, amountUsdc: 1_500_000 })
+  const router = new ConsoleRouter()
+  registerWalletRoutes(router, fakeDeps(store, () => now), {
+    buyer: buyer.client, requireWorkspaceAccess: fakeRequireWorkspaceAccess, walletAddress: async () => WALLET, resolveChain: async () => CHAIN,
+    statements: {
+      fetchEurRate: async (date) => ({ usdPerEur: rate, date }),
+      fetchSettlements: async () => ({ settlements: [settled(`0x${'c1'.repeat(32)}`, SELLER_A), settled(`0x${'c2'.repeat(32)}`, SELLER_C)], indexed: [{ chainId: CHAIN.evmChainId, at: indexedAt }] }),
+      peers: async () => new Map(),
+    },
+  })
+  const statement = await call(router, 'GET', `/workspaces/${workspaceId}/statements/2026-09`, admin()) as PurchaseStatement
+  assert.deepEqual(statement.sharedWallet, ['Research'])
+  assert.deepEqual(statement.suppliers.map((supplier) => supplier.peerId), [`0x${SELLER_A}`], 'the seller only Research bought from is not on this statement')
+  assert.equal(statement.suppliers[0]!.settlements!.length, 1)
+})
+
 test('periods: malformed is a 400, a month not started yet a 404', async () => {
   const router = setup()
   await rejectsWith(call(router, 'GET', `/workspaces/${workspaceId}/statements/2026-13`, admin()), 400, 'invalid_period')

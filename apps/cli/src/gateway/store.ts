@@ -2031,6 +2031,13 @@ export class GatewayStore {
     }))
   }
 
+  /** Other workspaces that paid from `buyerIdentity`'s wallet in [from, to) (it can be shared). */
+  workspacesSpendingFrom(buyerIdentity: string, from: number, to: number): string[] {
+    return this._stmt(`SELECT DISTINCT workspace_id FROM ledger_entries
+      WHERE kind = 'spend' AND buyer_identity = ? AND created_at >= ? AND created_at < ? AND amount_usdc < 0 AND workspace_id IS NOT NULL`)
+      .pluck().all(buyerIdentity, from, to) as string[]
+  }
+
   /** When the workspace first paid for anything; null when it never has. */
   firstSpendAt(workspaceId: string): number | null {
     return this._stmt("SELECT MIN(created_at) FROM ledger_entries WHERE kind = 'spend' AND workspace_id = ? AND amount_usdc < 0").pluck().get(workspaceId) as number | null

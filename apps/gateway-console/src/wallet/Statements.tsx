@@ -64,7 +64,7 @@ function statementCsv(statement: PurchaseStatement): string {
         line.requests, line.inputTokens, line.cachedInputTokens, line.outputTokens, line.amount, eurValue(line.amount), '', ''])
     }
     for (const settlement of supplier.settlements ?? []) {
-      rows.push([statement.reference, statement.period, 'settlement', supplierName(supplier), supplier.peerId, '', '', '', '', '', settlement.amount, eurValue(settlement.amount), settlement.txHash, new Date(settlement.time).toISOString()])
+      rows.push([statement.reference, statement.period, statement.sharedWallet.length ? 'wallet_settlement' : 'settlement', supplierName(supplier), supplier.peerId, '', '', '', '', '', settlement.amount, eurValue(settlement.amount), settlement.txHash, new Date(settlement.time).toISOString()])
     }
   }
   for (const deposit of statement.funding.deposits) {
@@ -232,7 +232,11 @@ function Supplier({ supplier, index, statement, network, txLink }: { supplier: S
             ? <span className="gc-muted">No settlement on {network} this month: what was bought is settled with the provider's next settlement.</span>
             : (
               <>
-                <span className="gc-muted">Paid on {network}, {settlements.length} settlement{settlements.length === 1 ? '' : 's'} this month:</span>
+                <span className="gc-muted">
+                  {statement.sharedWallet.length
+                    ? `Paid on ${network} from the wallet shared with ${statement.sharedWallet.join(', ')}, ${settlements.length} settlement${settlements.length === 1 ? '' : 's'} this month, also paying for their purchases:`
+                    : `Paid on ${network}, ${settlements.length} settlement${settlements.length === 1 ? '' : 's'} this month:`}
+                </span>
                 {shown.map((settlement) => <span key={settlement.txHash}>{utcDate(settlement.time)} · {usdc(settlement.amount)} USDC · {txLink(settlement.txHash, shortId(settlement.txHash, 10, 8))}</span>)}
                 {settlements.length > shown.length && (
                   <button type="button" className="gc-link-button gc-no-print" onClick={() => setAll(true)}>Show all {settlements.length}</button>

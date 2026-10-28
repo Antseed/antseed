@@ -72,7 +72,7 @@ A statement has:
 
 - The buyer's billing details, the workspace and its wallet, and the gateway that issued it.
 - For each provider: its address on the network, its name and the domain or GitHub account it proved, when known, and one line per model with requests, input, cached input and output tokens, and the amount in USDC and EUR. A routing service's fees are listed under that router.
-- The settlement transactions on Base that paid each provider from the workspace's credits during the month, read from the chain explorer (Antscan). Settlements can land after the requests they pay for, so a month's settlements need not add up to its purchases.
+- The settlement transactions on Base that paid each provider from the workspace's credits during the month, read from the chain explorer (Antscan). Settlements can land after the requests they pay for, so a month's settlements need not add up to its purchases. A settlement pays a seller from the wallet, so when several workspaces share one wallet, the statement says so: those settlements also pay for the other workspaces' purchases.
 - A VAT section: providers charge no VAT, and the statement gives the EUR amount the buyer would self-assess under reverse charge. Confirm the treatment with your tax advisor.
 - The money that came in during the month (each deposit, with a link to its deposit confirmation) and the relay fees of moving it into the credits.
 

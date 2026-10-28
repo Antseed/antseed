@@ -203,6 +203,7 @@ function mockStatement(workspaceId: string, period: string): PurchaseStatement {
       asOf: Date.now(),
     },
     settlementsSource: 'https://antscan.co',
+    sharedWallet: [],
   }
 }
 

@@ -525,11 +525,15 @@ export interface PurchaseStatement {
   suppliers: StatementSupplier[]
   total: Usdc
   requests: number
-  /** Money in during the month: deposits and transfers into the workspace wallet, and the relay fees of moving them into the credits. */
-  /** The month's money in as recorded at `asOf`: read again on every view, also of a final statement (a transfer is recorded once swept, which can be after the month). */
+  /** The month's money in (deposits and transfers into the workspace wallet, and the relay fees of moving them into the credits) as recorded at `asOf`: read again on every view, also of a final statement (a transfer is recorded once swept, which can be after the month). */
   funding: { deposits: Array<{ txHash: string; reference: string; kind: DepositConfirmation['kind']; time: number; amount: Usdc }>; total: Usdc; relayFees: Usdc; asOf: number }
   /** Where the payment records came from: the chain explorer, or null when they could not be read (each supplier's `settlements` is then null). */
   settlementsSource: string | null
+  /**
+   * Other workspaces that paid from the same wallet this month (their names), empty when none. Settlements are
+   * the wallet's: with a shared wallet a seller's settlements also pay the other workspaces' purchases.
+   */
+  sharedWallet: string[]
 }
 
 export interface StatementSupplier {
