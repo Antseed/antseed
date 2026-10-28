@@ -1086,10 +1086,7 @@ export class SellerRequestHandler {
   private _closeFailedVideoJob(route: NativeVideoRoute, response: SerializedHttpResponse, buyerPeerId: string): void {
     if (!route.resourceId || response.streamedBody) return;
     const body = tryParseJsonObject(response.body);
-    let status = typeof body?.status === 'string' ? body.status.toUpperCase() : '';
-    // An upstream that refuses a rejected job with a JSON 400/422 (instead of a
-    // FAILED status) has also ended it. 429 and 5xx stay retryable.
-    if (body && (response.statusCode === 400 || response.statusCode === 422)) status = 'FAILED';
+    const status = typeof body?.status === 'string' ? body.status.toUpperCase() : '';
     if (status !== 'FAILED' && status !== 'ERROR' && status !== 'CANCELLED') return;
     try {
       const charge = this._deps.resourceOwnershipStore?.getPendingCharge(route.protocol, route.resourceId, buyerPeerId.toLowerCase());

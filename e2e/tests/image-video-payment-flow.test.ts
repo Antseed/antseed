@@ -12,18 +12,21 @@ import { readFileSync } from 'node:fs';
 
 const liveVeniceKey = process.env.VENICE_INFERENCE_KEY?.trim();
 
-/** Minimal MP4 (ftyp, mvhd duration, mdat padding) that passes the delivery check. */
+/** Minimal MP4 (ftyp, a movie and one video track of `durationMs`, mdat padding) that passes the delivery and source checks. */
 function mp4Video(durationMs: number, mediaBytes: number): Buffer {
-  const box = (type: string, body: Buffer) => {
+  const box = (type: string, ...children: Buffer[]) => {
+    const body = Buffer.concat(children);
     const head = Buffer.alloc(8);
     head.writeUInt32BE(8 + body.length);
     head.write(type, 4, 'latin1');
     return Buffer.concat([head, body]);
   };
-  const mvhd = Buffer.alloc(20);
-  mvhd.writeUInt32BE(1000, 12);
-  mvhd.writeUInt32BE(durationMs, 16);
-  return Buffer.concat([box('ftyp', Buffer.from('isom\0\0\0\0isom', 'latin1')), box('moov', box('mvhd', mvhd)), box('mdat', Buffer.alloc(mediaBytes, 9))]);
+  const u32 = (...values: number[]) => Buffer.concat(values.map(value => { const b = Buffer.alloc(4); b.writeUInt32BE(value); return b; }));
+  // mvhd and mdhd: version/flags, times, timescale 1000, duration.
+  const header = u32(0, 0, 0, 1000, durationMs);
+  const trak = box('trak', box('mdia', box('mdhd', header), box('hdlr', u32(0, 0), Buffer.from('vide'), u32(0, 0, 0), Buffer.alloc(1)),
+    box('minf', box('stbl', box('stts', u32(0, 1, 1, durationMs)), box('stsz', u32(0, 0, 1))))));
+  return Buffer.concat([box('ftyp', Buffer.from('isom\0\0\0\0isom', 'latin1')), box('moov', box('mvhd', header), trak), box('mdat', Buffer.alloc(mediaBytes, 9))]);
 }
 
 function largeVideoInputImage(): string {
@@ -206,6 +209,8 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
       if (url.startsWith('https://fal.ai/api/openapi/')) return Response.json(schema);
       if (url.startsWith('https://api.fal.ai/')) return new Response(null, { status: 403 });
       if (url === 'https://v3.fal.media/files/out.mp4') return new Response(output, { headers: { 'content-type': 'video/mp4', 'content-length': String(output.length) } });
+      if (url.startsWith('https://rest.fal.ai/storage/')) return Response.json({ upload_url: 'https://upload.fal.media/put', file_url: 'https://v3.fal.media/files/source.mp4' });
+      if (url === 'https://upload.fal.media/put') return new Response(null, { status: 200 });
       if (!url.startsWith('https://queue.fal.run/')) {
         const headers = new Headers(init?.headers);
         headers.set('connection', 'close');
@@ -235,8 +240,8 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
       const created = await post('/fal/v1/video/queue', { ...edit, duration: 12 });
       expect(created.status).toBe(200);
       expect(await created.json()).toMatchObject({ model, request_id: 'fal-edit-1' });
-      // fal takes no duration for Recast: the output is as long as the source.
-      expect(queued).toEqual([{ video_url: sourceVideo, reference_image_urls: ['https://example.com/me.png'], resolution: '768P' }]);
+      // fal takes no duration for Recast, and gets the uploaded source's URL.
+      expect(queued).toEqual([{ video_url: 'https://v3.fal.media/files/source.mp4', reference_image_urls: ['https://example.com/me.png'], resolution: '768P' }]);
       const download = await post('/fal/v1/video/retrieve', { model, request_id: 'fal-edit-1' });
       expect(download.status).toBe(200);
       expect(Buffer.from(await download.arrayBuffer())).toEqual(output);

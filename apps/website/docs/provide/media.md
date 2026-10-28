@@ -175,7 +175,7 @@ antseed config seller add-service video minimax-h3-max-recast \
 
 Upstream prices change; check fal's model page or Venice's video quote before you set yours. Buyers refuse any single video above $5.00, so at these rates a Recast edit fits up to about 15 s at 768P.
 
-The source travels inside the request: inline up to the 64 MiB request limit (about 47 MB of video; 32.5 MB of request on Venice), or as a public `https` URL the upstream fetches. A large inline source is uploaded to you twice, once before the payment channel opens and once after.
+The source travels inside the request: inline up to the 64 MiB request limit (about 47 MB of video; 32.5 MB of request on Venice), or as a public `https` URL the upstream fetches. For an edit whose output is as long as its source, which the upstream bills for the whole source, the seller measures the source, which must be inline, and answers `422 invalid_video_duration` before calling the upstream unless `duration` is its length in whole seconds, rounded down. A large inline source is uploaded to you twice, once before the payment channel opens and once after.
 
 ### Video pricing
 

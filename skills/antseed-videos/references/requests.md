@@ -321,16 +321,19 @@ Read the length without opening the file. MOV and other MP4-family files that ar
 ```bash
 source_video="dance.mov"   # in Antseed Desktop: the path from get_chat_video_path
 src="$(mktemp -d)/source.mp4"
-codec="$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 "$source_video")" \
+codec="$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=nw=1:nk=1 "$source_video")" \
   || { echo "ffprobe could not read $source_video" >&2; false; }
 case "$codec" in
   h264|hevc|mpeg4) ffmpeg -loglevel error -y -i "$source_video" -map 0:v:0 -map '0:a:0?' -c copy -movflags +faststart "$src" ;;
   # WebM, VP9, AV1 and others: the sellers read only MP4 with H.264/H.265, so re-encode (tell the user).
   *) ffmpeg -loglevel error -y -i "$source_video" -map 0:v:0 -map '0:a:0?' -c:v libx264 -crf 18 -preset medium -c:a aac -movflags +faststart "$src" ;;
 esac || { echo "ffmpeg could not convert $source_video" >&2; false; }
-seconds="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$src")" && [ -n "$seconds" ] \
+# The video stream's length: an audio track can run longer, but the output follows the video.
+seconds="$(ffprobe -v error -select_streams v:0 -show_entries stream=duration -of default=nw=1:nk=1 "$src")"
+[[ "$seconds" =~ ^[0-9.]+$ ]] || seconds="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$src")"
+[[ "$seconds" =~ ^[0-9.]+$ ]] \
   || { echo "could not read the source length" >&2; false; }
-IFS=, read -r width height fps < <(ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate -of csv=p=0 "$src")
+IFS=, read -r width height fps < <(ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate -of csv=p=0 "$src" | head -1 | cut -d, -f1-3)
 duration="$(awk -v s="$seconds" 'BEGIN { d = int(s); if (d < 1) d = 1; print d }')"
 echo "source: $(wc -c < "$src" | tr -d ' ') bytes, ${seconds}s, ${width}x${height} at ${fps} fps -> duration $duration"
 ```
@@ -339,7 +342,7 @@ echo "source: $(wc -c < "$src" | tr -d ' ') bytes, ${seconds}s, ${width}x${heigh
 
 ### Source limits
 
-The sellers do not check the source. A source outside the model's limits is refused by the upstream after the job started, and on a video priced above $1.00 that costs the opening fee (see the Rules in SKILL.md). So check it before pricing, against the limits the provider publishes for that model. Never quote limits from memory: read them each time, and say where they came from.
+The sellers do not check the source's limits (only, for a model whose output is as long as its source, that `duration` is its length). A source outside the model's limits is refused by the upstream after the job started, and on a video priced above $1.00 that costs the opening fee (see the Rules in SKILL.md). So check it before pricing, against the limits the provider publishes for that model. Never quote limits from memory: read them each time, and say where they came from.
 
 **fal models** (`fal-video` sellers). fal publishes each model's input schema, without a key. `check_fal_source` reads it and checks the source against fal's machine-readable limits on `video_url` (`x-fal`: length, file size, width, height, aspect ratio, frame rate). It also prints the required fields, the `duration` and `resolution` values, and the limits on image fields. Any `FAIL` line stops before pricing: apply its fix, measure again (`check_fal_source` again), and tell the user what changed. When a model has no `x-fal` limits, the script prints `NOTE` with the `video_url` description and exits 3. The description can state a limit in words (for example "5 to 30 seconds long"): check the source against it by hand, and treat a source outside it like a `FAIL`. Length limits apply to the source's real length, not the rounded-down `duration`: a 10.08 s source fails a 10 s maximum, so trim it first.
 
@@ -351,12 +354,13 @@ check_fal_source() {
   schema="$(mktemp)"
   curl -sS --fail -G https://fal.ai/api/openapi/queue/openapi.json --data-urlencode "endpoint_id=$id" -o "$schema" \
     || { echo "could not read fal's schema for $id" >&2; return 2; }
-  IFS=, read -r w h fps < <(ffprobe -v error -select_streams v:0 -show_entries stream=width,height,avg_frame_rate -of csv=p=0 "$file")
+  IFS=, read -r w h fps < <(ffprobe -v error -select_streams v:0 -show_entries stream=width,height,avg_frame_rate -of csv=p=0 "$file" | head -1 | cut -d, -f1-3)
   # A phone video turned 90 degrees is shown with width and height swapped.
   case "$(ffprobe -v error -select_streams v:0 -show_entries stream_side_data=rotation -of default=nw=1:nk=1 "$file" | head -1)" in
     90|-90|270|-270) local t="$w"; w="$h"; h="$t" ;;
   esac
-  s="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$file")"
+  s="$(ffprobe -v error -select_streams v:0 -show_entries stream=duration -of default=nw=1:nk=1 "$file")"
+  [[ "$s" =~ ^[0-9.]+$ ]] || s="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$file")"
   bytes="$(wc -c < "$file" | tr -d ' ')"
   [ -n "$w" ] && [ -n "$h" ] && [[ "$s" =~ ^[0-9.]+$ ]] || { echo "ffprobe could not measure $file" >&2; return 2; }
   out="$(jq -r --arg id "$id" --argjson w "$w" --argjson h "$h" --arg fps "$fps" --argjson s "$s" --argjson bytes "$bytes" --arg dur "$dur" '
@@ -373,7 +377,7 @@ check_fal_source() {
     | if $in.properties.video_url == null then "FAIL schema: \($id) has no video_url field, so it does not edit a video on fal"
       else ($in.properties.video_url["x-fal"] // {} | limits) as $x
       | (($fps | split("/") | map(tonumber? // 0)) as $p | if ($p | length) == 2 and $p[1] > 0 then $p[0] / $p[1] else $p[0] // 0 end) as $f
-      | ($s | floor) as $whole
+      | ([($s | floor), 1] | max) as $whole
       | $in.properties.duration as $d
       | ([$d, ($d.anyOf // [])[]] | map(select(. != null))) as $dd
       | ([$dd[].minimum | numbers] | min) as $dmin | ([$dd[].maximum | numbers] | max) as $dmax
@@ -388,7 +392,7 @@ check_fal_source() {
          | if $n < 1 then "FAIL duration \($n): send the length paid for, in whole seconds (\($whole))"
            elif $n > $whole then "FAIL duration \($n) is longer than the source (\($whole) s): send at most \($whole)"
            elif $d == null and $n != $whole then "FAIL duration \($n): this model has no duration field, so send the source length, \($whole)"
-           elif ($denum | length) > 0 and ($denum | index($n)) == null then "FAIL duration \($n) is not one of \($denum | map(tostring) | join(", "))"
+           elif ($denum | length) > 0 and ($denum | map(tostring) | index([$n | tostring])) == null then "FAIL duration \($n) is not one of \($denum | map(tostring) | join(", "))"
            elif ($dmin != null and $n < $dmin) or ($dmax != null and $n > $dmax) then "FAIL duration \($n) is outside \($dmin) to \($dmax)"
            else "ok   duration \($n)" end end),
         (if ($x | length) == 0 then
@@ -416,8 +420,8 @@ check_fal_source "$fal_id" "$src" "$duration"
 To fix a `FAIL`, run the matching command, then `check_fal_source` again:
 
 ```bash
-# Too long: keep the first N seconds (no re-encode).
-ffmpeg -loglevel error -y -i "$src" -t 30 -c copy -movflags +faststart "${src%.mp4}-cut.mp4" && src="${src%.mp4}-cut.mp4"
+# Too long: keep the first N seconds (re-encodes; a copy cuts at a keyframe and can stay over the limit).
+ffmpeg -loglevel error -y -i "$src" -t 30 -c:v libx264 -crf 18 -c:a aac -movflags +faststart "${src%.mp4}-cut.mp4" && src="${src%.mp4}-cut.mp4"
 # Too small: scale so the short side is S px (here 720), keeping the shape (re-encodes).
 ffmpeg -loglevel error -y -i "$src" -vf "scale='if(lt(iw,ih),720,-2)':'if(lt(iw,ih),-2,720)'" -c:v libx264 -crf 18 -c:a copy -movflags +faststart "${src%.mp4}-720.mp4" && src="${src%.mp4}-720.mp4"
 # Frame rate outside the range: re-encode at a rate inside it (here 24 fps).
@@ -442,7 +446,7 @@ Pick the endpoint whose name matches the model and variant (standard or pro, edi
 
    ```bash
    venice_model_limits() {
-     curl -sS --fail https://api.venice.ai/api/v1/models?type=video | jq -r --arg id "$1" '
+     curl -sS --fail 'https://api.venice.ai/api/v1/models?type=video' | jq -r --arg id "$1" '
        [.data[] | select(.id == $id)] | if length == 0 then "\($id) is not in Venice'"'"'s model list" else .[0].model_spec.constraints
        | "video input: \(.video_input // false)",
          "durations: \(.durations // [] | join(", "))\(if .durations == ["Auto"] then " (send the source length as \"<n>s\")" else "" end)",
@@ -462,13 +466,20 @@ Pick the endpoint whose name matches the model and variant (standard or pro, edi
 
 Send the source inline as a data URL when it fits, otherwise as a public `https` URL the user gives you (a file they already host). The buyer never uploads files anywhere else.
 
+An edit whose output is as long as its source (a fal model with no `duration` field, a Venice model whose `durations` is `["Auto"]`) must be inline: the seller measures the source to check the paid `duration`, and refuses a URL with `422 invalid_video_duration`. When such a source is too large, re-encode a smaller copy (below) instead of using a URL.
+
 - **`venice-video`**: the whole request must be at most 32.5 MB, character images included, so the raw video at most about 24 MB less the images (base64 adds a third).
 - **`fal-video`**: up to the Antseed request limit of 64 MiB, so the raw video at most about 47 MB, and within the model's own file limit.
 
-Too large for inline and no URL: re-encode a smaller copy, and tell the user it is re-encoded.
+Only when it is too large for inline and there is no URL, re-encode a smaller copy, and tell the user it is re-encoded:
 
 ```bash
 ffmpeg -loglevel error -y -i "$src" -c:v libx264 -crf 23 -preset medium -c:a aac -b:a 128k -movflags +faststart "${src%.mp4}-small.mp4" && src="${src%.mp4}-small.mp4"
+```
+
+Build the inline source:
+
+```bash
 video_url="$(mktemp)"; { printf 'data:video/mp4;base64,'; base64 < "$src" | tr -d '\n'; } > "$video_url"
 echo "video part about $(( $(wc -c < "$video_url") / 1000000 )) MB (check the whole body after building it below)"
 ```
@@ -487,6 +498,7 @@ Check for a job file first, exactly as in [Create once](#create-once). The field
 
 ```bash
 output="${output:-edited-video.mp4}"; job_file="${output%.*}.job.json"
+route_model="$peer_id@$model"
 [ -e extra.json ] || echo '{}' > extra.json
 [ -e prompt.txt ] || : > prompt.txt
 ref_field="$(jq -r --arg peer "$peer_id" '(.peers[] | select(.peerId == $peer) | .capabilities.supportedParameters // []) as $p
@@ -584,6 +596,7 @@ On a failed create or wait, `error.peer_message` carries the seller's reason, in
 - `422 required_capability_unavailable` from a pinned seller: that model does not take a source video. Pick one from the `frames=edit` catalog.
 - `504 upstream_upload_timeout`: the seller could not hand the request to fal in time. The video is not charged (a price above $1.00 keeps the opening fee); send a smaller file or a URL.
 - Job `FAILED` after it started (for example Venice "No person detected" from motion control or Recast, or fal's message that the source is too short or too small): the source has no real person, is outside the model's limits ([Source limits](#source-limits)), or the upstream rejected it. The job's payment channel is closed at once; a video priced above $1.00 costs the opening fee ($0.65 on Base), a cheaper one nothing.
-- `413 request_too_large`: the request body is larger than the seller's upstream accepts (Venice: 32.5 MB). Re-encode a smaller copy or send a public `https` URL.
+- `413 request_too_large`: the request body is larger than the seller's upstream accepts (Venice: 32.5 MB). Re-encode a smaller copy, or send a public `https` URL (not for an edit whose output is as long as its source, see [Inline or URL](#inline-or-url)).
+- `422 invalid_video_duration` on create: the model edits the whole source, so the seller measured it. Send the source inline, with `duration` its length in whole seconds, rounded down (the number in the message). No job started; on a video above $1.00 the opening fee is kept, so measure the source as in [Source](#source) before creating.
 - `422 required_capability_unavailable` naming `video_url`: no seller of that model takes a source video. Pick a model from the `frames=edit` catalog.
 - Connection refused: start Antseed Desktop or `antseed buyer start`.

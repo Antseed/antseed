@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AntseedProviderPlugin, Provider, SerializedHttpRequest, ServiceCapabilities, ServiceHealthStatus, UpstreamAccountStatus, VideoInputKind } from '@antseed/node';
 import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, validateServiceCapabilityFields } from '@antseed/node';
-import { nativeVideoRoute, parseJsonObject, requestService } from '@antseed/api-adapter';
+import { nativeVideoRoute, parseJsonObject, requestService, videoSourceLengthProblem } from '@antseed/api-adapter';
 import {
   BaseProvider,
   parseCsv,
@@ -81,6 +81,12 @@ const veniceConstraints = (model: unknown) =>
 /** Whether Venice lists a model as video-to-video (`video_input`). */
 export function isVeniceEditModel(model: unknown): boolean {
   return veniceConstraints(model)?.video_input === true;
+}
+
+/** A video-to-video model whose output is as long as its source (`durations: ["Auto"]`): Venice bills the whole source. */
+function veniceOutputFollowsSource(model: unknown): boolean {
+  const durations = veniceConstraints(model)?.durations;
+  return isVeniceEditModel(model) && Array.isArray(durations) && durations.length === 1 && durations[0] === 'Auto';
 }
 
 /**
@@ -338,6 +344,9 @@ const plugin: AntseedProviderPlugin = {
       return { videoRoute, service: service && services.includes(service) ? service : undefined };
     };
 
+    // Edit models Venice bills for the whole source; null until Venice's model list was read.
+    let sourceLengthModels: Set<string> | null = null;
+
     // Announces the queue fields each model takes, so buyers send only those.
     const init = async () => {
       try {
@@ -349,6 +358,7 @@ const plugin: AntseedProviderPlugin = {
         const body = Buffer.from(await response.arrayBuffer());
         const data = response.ok && body.length <= MAX_MODELS_BYTES ? parseJsonObject(body)?.data : null;
         if (!Array.isArray(data)) return;
+        sourceLengthModels = new Set(services.filter(service => veniceOutputFollowsSource(data.find(entry => entry?.id === service))));
         let checks = 0;
         for (const service of services) {
           const model = data.find(entry => entry?.id === service);
@@ -406,6 +416,13 @@ const plugin: AntseedProviderPlugin = {
     const handleRequest: Provider['handleRequest'] = async (request) => {
       const { videoRoute, service } = route(request);
       if (videoRoute?.action !== 'create' || !service) return error(request, 400, 'unsupported_video_request', 'Unsupported video endpoint or service');
+      // Venice bills such an edit for the whole source, so `duration` must be its measured length.
+      // Without Venice's model list, a source video is assumed to set the output length.
+      const input = parseJsonObject(request.body);
+      if (input?.video_url !== undefined && (sourceLengthModels?.has(service) ?? true)) {
+        const refused = videoSourceLengthProblem(input.video_url, input.duration);
+        if (refused) return error(request, 422, 'invalid_video_duration', refused);
+      }
       const response = await relay.handleRequest({ ...request, path: new URL(request.path, 'http://local').pathname });
       if (response.statusCode === 413) {
         // Venice answers an oversized body with an HTML page.

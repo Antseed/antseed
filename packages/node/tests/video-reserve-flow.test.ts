@@ -704,19 +704,15 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     expect(h.buyer.getOneOffChannelForRequest(h.peer.peerId, 'video-1')).toBeNull();
   });
 
-  it('closes at the serious fee when the provider refuses the job with a JSON 400 on retrieve', async () => {
+  it('keeps the job open when retrieve answers a JSON 400, so a bad retrieve cannot close a live job', async () => {
     const h = setup({ retrieveStatus: 'REFUSED_400' });
     await h.send(h.videoRequest('video-1'));
     await h.settle();
     const { channelId } = onlyOneOff(h);
-
     expect((await h.send(h.retrieveRequest('retrieve-1', 'job-1'))).statusCode).toBe(400);
     await h.settle();
-
-    expect(h.close).toHaveBeenCalledOnce();
-    expect(h.close.mock.calls[0]![2]).toBe(SERIOUS_FEE);
-    expect(h.chain.get(channelId)).toMatchObject({ settled: SERIOUS_FEE, status: 2 });
-    expect(h.buyerChannel(channelId)?.status).toBe('settled');
+    expect(h.close).not.toHaveBeenCalled();
+    expect(h.buyerChannel(channelId)?.status).toBe('active');
   });
 
   it('keeps the job open when retrieve is only rate limited', async () => {

@@ -1,6 +1,6 @@
 import type { AntseedProviderPlugin, Provider, ProviderStreamCallbacks, SerializedHttpRequest, ServiceCapabilities, ServiceHealthStatus, UpstreamAccountStatus, VideoInputKind } from '@antseed/node';
 import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, validateServiceCapabilityFields } from '@antseed/node';
-import { nativeVideoRoute, parseJsonObject, requestService } from '@antseed/api-adapter';
+import { nativeVideoRoute, parseJsonObject, requestService, videoSourceLengthProblem } from '@antseed/api-adapter';
 import {
   parseCsv,
   parseServiceCapabilitiesJson,
@@ -13,6 +13,7 @@ import {
 export const FAL_DEFAULT_BASE_URL = 'https://queue.fal.run';
 export const FAL_PLATFORM_URL = 'https://api.fal.ai';
 export const FAL_SCHEMA_URL = 'https://fal.ai/api/openapi/queue/openapi.json';
+export const FAL_STORAGE_URL = 'https://rest.fal.ai/storage/upload/initiate?storage_type=fal-cdn-v3';
 
 const PROTOCOL = 'fal-video';
 const MAX_JSON_BYTES = 1024 * 1024;
@@ -188,6 +189,42 @@ export function falErrorReason(body: Record<string, unknown> | null): string | u
     if (typeof value === 'string' && value.trim()) return value.slice(0, 500);
   }
   return detail === undefined || detail === null ? undefined : JSON.stringify(detail).slice(0, 500);
+}
+
+/**
+ * Upload an inline `data:video/...;base64` source to fal's file storage (as
+ * fal's own clients do) and return its URL, kept for a day. Some fal
+ * endpoints (Kling motion control) accept only a URL for `video_url`.
+ * Anything else is returned unchanged.
+ */
+async function uploadInlineVideo(source: unknown, authorization: string, signal: AbortSignal): Promise<unknown> {
+  if (typeof source !== 'string') return source;
+  const match = /^data:(video\/[a-z0-9.+-]+)(?:;[a-z0-9.+-]+=[^;,]*)*;base64,/i.exec(source.slice(0, 256));
+  if (!match) return source;
+  const contentType = match[1]!.toLowerCase();
+  const initiate = await fetch(FAL_STORAGE_URL, {
+    method: 'POST',
+    headers: { authorization, 'content-type': 'application/json', 'x-fal-object-lifecycle': JSON.stringify({ expiration_duration_seconds: 86_400 }) },
+    body: JSON.stringify({ content_type: contentType, file_name: contentType === 'video/quicktime' ? 'source.mov' : 'source.mp4' }),
+    redirect: 'error',
+    signal,
+  });
+  const target = await readJson(initiate);
+  const uploadUrl = target?.upload_url;
+  const fileUrl = target?.file_url;
+  if (!initiate.ok || typeof uploadUrl !== 'string' || typeof fileUrl !== 'string' || !uploadUrl.startsWith('https://') || !fileUrl.startsWith('https://')) {
+    throw new Error(`fal storage did not accept the upload (HTTP ${initiate.status})`);
+  }
+  const upload = await fetch(uploadUrl, {
+    method: 'PUT',
+    headers: { 'content-type': contentType },
+    body: Buffer.from(source.slice(match[0].length), 'base64'),
+    redirect: 'error',
+    signal,
+  });
+  await upload.body?.cancel();
+  if (!upload.ok) throw new Error(`fal storage upload failed (HTTP ${upload.status})`);
+  return fileUrl;
 }
 
 /** fal's queue status and result URLs use only `owner/alias`, not the endpoint's sub-path. */
@@ -389,14 +426,24 @@ const plugin: AntseedProviderPlugin = {
         // fal reads the model from the URL; the body is the model input only.
         const { model: _model, service: _service, ...input } = body;
         // The buyer's `duration` prices an edit whose output is as long as its source; fal takes none.
-        if (editRules.get(service)?.outputFollowsSource) delete input.duration;
+        // fal bills such an edit for the whole source, so `duration` must be its measured length.
+        // Without the endpoint's schema, a source video is assumed to set the output length.
+        const rule = editRules.get(service);
+        if (rule?.outputFollowsSource ?? input.video_url !== undefined) {
+          const refused = videoSourceLengthProblem(input.video_url, input.duration);
+          if (refused) return error(request, 422, 'invalid_video_duration', refused);
+          if (rule) delete input.duration;
+        }
+        // The upload of a large inline source counts toward the timeout: allow 60 s plus 1 s per 256 KB.
+        const signal = AbortSignal.timeout(falSubmitTimeoutMs(request.body.length));
+        // An inline source goes to fal's storage first: some endpoints take video_url only as a URL.
+        if (input.video_url !== undefined) input.video_url = await uploadInlineVideo(input.video_url, authorization, signal);
         const upstream = await fetch(`${baseUrl}/${service}`, {
           method: 'POST',
           headers: { authorization, 'content-type': 'application/json' },
           body: JSON.stringify(input),
           redirect: 'error',
-          // The upload of a large inline source counts toward the timeout: allow 60 s plus 1 s per 256 KB.
-          signal: AbortSignal.timeout(falSubmitTimeoutMs(request.body.length)),
+          signal,
         });
         const accepted = await readJson(upstream);
         if (upstream.status >= 400 && upstream.status < 500) {

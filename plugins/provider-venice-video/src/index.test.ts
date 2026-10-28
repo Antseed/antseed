@@ -13,6 +13,27 @@ const config = {
   ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: JSON.stringify({ 'wan-2.5': { 'venice-video': { version: 1, components: [{ unit: 'video_generations', priceUsd: 0.1 }] } } }),
 };
 const json = (body: object) => Buffer.from(JSON.stringify(body));
+
+/** Inline MP4 source whose video track plays `ms` milliseconds. */
+const sourceMp4 = (ms: number) => {
+  const box = (type: string, ...children: Buffer[]) => {
+    const head = Buffer.alloc(8);
+    head.write(type, 4, 'latin1');
+    const out = Buffer.concat([head, ...children]);
+    out.writeUInt32BE(out.length);
+    return out;
+  };
+  const u32 = (...values: number[]) => Buffer.concat(values.map(value => { const b = Buffer.alloc(4); b.writeUInt32BE(value); return b; }));
+  // mvhd and mdhd: version/flags, times, timescale 1000, duration. One sample of `ms`.
+  const header = u32(0, 0, 0, 1000, ms);
+  const mp4 = Buffer.concat([
+    box('ftyp', Buffer.from('isom\0\0\0\0isom', 'latin1')),
+    box('moov', box('mvhd', header), box('trak', box('mdia', box('mdhd', header), box('hdlr', u32(0, 0), Buffer.from('vide'), u32(0, 0, 0), Buffer.alloc(1)),
+      box('minf', box('stbl', box('stts', u32(0, 1, 1, ms)), box('stsz', u32(0, 0, 1))))))),
+    box('mdat', Buffer.alloc(64)),
+  ]);
+  return `data:video/mp4;base64,${mp4.toString('base64')}`;
+};
 const request = (path: string, body: object, headers: Record<string, string> = {}): SerializedHttpRequest => ({
   requestId: 'r', method: 'POST', path, headers: { 'content-type': 'application/json', ...headers }, body: json(body),
 });
@@ -353,10 +374,26 @@ describe('video-to-video models', () => {
 
   it('forwards a create as sent', async () => {
     const { provider, fetchMock } = await ready(RECAST);
-    const body = { video_url: 'https://example.com/source.mp4', reference_image_urls: ['data:image/png;base64,AAAA'], resolution: '768P', duration: '10s' };
+    const body = { video_url: sourceMp4(10_400), reference_image_urls: ['data:image/png;base64,AAAA'], resolution: '768P', duration: '10s' };
     const response = await provider.handleRequest(create('minimax-h3-max-recast', body));
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(fetchMock.mock.calls.at(-1)![1].body)).toEqual({ model: 'minimax-h3-max-recast', ...body });
+  });
+
+  it('refuses an edit Venice bills for the whole source unless duration is the measured source length', async () => {
+    const { provider, fetchMock } = await ready(WAN);
+    const calls = fetchMock.mock.calls.length;
+    const refused = async (body: object) => {
+      const response = await provider.handleRequest(create(WAN.id, { prompt: 'snow', ...body }));
+      expect(response.statusCode).toBe(422);
+      return parse(response.body).error;
+    };
+    expect(await refused({ video_url: sourceMp4(12_400), duration: '3s' })).toMatchObject({ code: 'invalid_video_duration', message: expect.stringContaining(': 12') });
+    expect((await refused({ video_url: 'https://example.com/source.mp4', duration: '12s' })).message).toContain('inline');
+    expect(fetchMock.mock.calls.length).toBe(calls);
+    // Grok sets its own duration (5s/10s/15s), so its source length is not checked.
+    const grok = await ready(GROK);
+    expect((await grok.provider.handleRequest(create(GROK.id, { prompt: 'snow', video_url: 'https://example.com/source.mp4', duration: '5s' }))).statusCode).toBe(200);
   });
 
   it('turns Venice\'s HTML 413 into JSON', async () => {

@@ -2132,7 +2132,7 @@ export class BuyerPaymentManager {
 
   /**
    * Record that a tracked video job ended without a video (the seller
-   * answered FAILED, or refused the job with a final 400/422). The seller
+   * answered FAILED). The seller
    * closes the job's one-off channel at what the buyer signed so far (the
    * serious fee, if any); the buyer forgets the job and the channel so it is
    * no longer counted as active. True when a tracked job was ended.

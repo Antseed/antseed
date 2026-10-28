@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Provider, ProviderStreamCallbacks, SerializedHttpRequest } from '@antseed/node';
-import plugin, { FAL_BALANCE_CHECK_OFF, falAppId, falEditRule, falErrorReason, falSubmitTimeoutMs, falInputParameters, falInputSchema, withEditInputs, withFrameInputs } from './index.js';
+import plugin, { FAL_BALANCE_CHECK_OFF, FAL_STORAGE_URL, falAppId, falEditRule, falErrorReason, falSubmitTimeoutMs, falInputParameters, falInputSchema, withEditInputs, withFrameInputs } from './index.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -20,6 +20,27 @@ const retrieve = (body: object = { model: MODEL, request_id: 'req-1' }) =>
 const stream = (provider: Provider, req = retrieve(), callbacks: Partial<ProviderStreamCallbacks> = {}) =>
   provider.handleRequestStream!(req, { signal: new AbortController().signal, onResponseStart() {}, onResponseChunk() {}, ...callbacks });
 const parse = (body: Uint8Array) => JSON.parse(Buffer.from(body).toString());
+
+/** Inline MP4 source whose video track plays `ms` milliseconds. */
+const sourceMp4 = (ms: number) => {
+  const box = (type: string, ...children: Buffer[]) => {
+    const head = Buffer.alloc(8);
+    head.write(type, 4, 'latin1');
+    const out = Buffer.concat([head, ...children]);
+    out.writeUInt32BE(out.length);
+    return out;
+  };
+  const u32 = (...values: number[]) => Buffer.concat(values.map(value => { const b = Buffer.alloc(4); b.writeUInt32BE(value); return b; }));
+  // mvhd and mdhd: version/flags, times, timescale 1000, duration. One sample of `ms`.
+  const header = u32(0, 0, 0, 1000, ms);
+  const mp4 = Buffer.concat([
+    box('ftyp', Buffer.from('isom\0\0\0\0isom', 'latin1')),
+    box('moov', box('mvhd', header), box('trak', box('mdia', box('mdhd', header), box('hdlr', u32(0, 0), Buffer.from('vide'), u32(0, 0, 0), Buffer.alloc(1)),
+      box('minf', box('stbl', box('stts', u32(0, 1, 1, ms)), box('stsz', u32(0, 0, 1))))))),
+    box('mdat', Buffer.alloc(64)),
+  ]);
+  return `data:video/mp4;base64,${mp4.toString('base64')}`;
+};
 
 const V3 = 'fal-ai/kling-video/v3/pro/image-to-video';
 const v3Config = {
@@ -371,9 +392,15 @@ describe('video-to-video endpoints', () => {
     ...(capabilities ? { ANTSEED_SERVICE_CAPABILITIES_JSON: JSON.stringify({ [service]: capabilities }) } : {}),
   });
   const ready = async (service: string, capabilities?: object) => {
-    const fetchMock = vi.fn().mockImplementation(async (url: string) => String(url).startsWith('https://fal.ai/api/openapi')
-      ? Response.json(fixture(service))
-      : String(url).includes('/v1/account/billing') ? Response.json({ credits: { current_balance: 5 } }) : Response.json({ request_id: 'req-1' }));
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      if (String(url).startsWith('https://fal.ai/api/openapi')) return Response.json(fixture(service));
+      if (String(url).includes('/v1/account/billing')) return Response.json({ credits: { current_balance: 5 } });
+      if (String(url).startsWith('https://rest.fal.ai/storage/upload/initiate')) {
+        return Response.json({ upload_url: 'https://v3b.fal.media/upload/source', file_url: 'https://v3b.fal.media/files/source.mp4' });
+      }
+      if (String(url) === 'https://v3b.fal.media/upload/source') return new Response(null, { status: 200 });
+      return Response.json({ request_id: 'req-1' });
+    });
     vi.stubGlobal('fetch', fetchMock);
     const provider = plugin.createProvider(editConfig(service, capabilities)) as Provider;
     await provider.init!();
@@ -417,14 +444,45 @@ describe('video-to-video endpoints', () => {
     expect(withEditInputs({ outputs: ['video'] }, null, null)).toEqual({ outputs: ['video'] });
   });
 
-  it('drops duration before calling fal for an endpoint that takes none', async () => {
+  it('uploads the inline source to fal storage and drops duration for an endpoint that takes none', async () => {
     const { provider, fetchMock } = await ready(RECAST);
-    const body = { video_url: 'https://example.com/source.mp4', reference_image_urls: ['data:image/png;base64,AAAA'], resolution: '768P', duration: 12 };
+    const body = { video_url: sourceMp4(12_700), reference_image_urls: ['data:image/png;base64,AAAA'], resolution: '768P', duration: 12 };
     const response = await provider.handleRequest(create(RECAST, body));
     expect(response.statusCode).toBe(200);
+    const [initiateUrl, initiate] = fetchMock.mock.calls.at(-3)!;
+    expect(initiateUrl).toBe(FAL_STORAGE_URL);
+    expect(initiate).toMatchObject({ method: 'POST', headers: { authorization: 'Key seller-secret' } });
+    expect(parse(initiate.body)).toEqual({ content_type: 'video/mp4', file_name: 'source.mp4' });
+    const [uploadUrl, upload] = fetchMock.mock.calls.at(-2)!;
+    expect(uploadUrl).toBe('https://v3b.fal.media/upload/source');
+    expect(upload.headers).toEqual({ 'content-type': 'video/mp4' });
+    expect(Buffer.from(upload.body).toString('base64')).toBe(body.video_url.split(',')[1]);
     const [url, init] = fetchMock.mock.calls.at(-1)!;
     expect(url).toBe(`https://queue.fal.run/${RECAST}`);
-    expect(parse(init.body)).toEqual({ video_url: body.video_url, reference_image_urls: body.reference_image_urls, resolution: '768P' });
+    expect(parse(init.body)).toEqual({ video_url: 'https://v3b.fal.media/files/source.mp4', reference_image_urls: body.reference_image_urls, resolution: '768P' });
+  });
+
+  it('does not submit when fal storage refuses the source', async () => {
+    const { provider, fetchMock } = await ready(RECAST);
+    fetchMock.mockImplementation(async (url: string) => String(url).startsWith('https://rest.fal.ai')
+      ? Response.json({ detail: 'User is locked' }, { status: 403 })
+      : Response.json({ request_id: 'req-1' }));
+    const response = await provider.handleRequest(create(RECAST, { video_url: sourceMp4(5_000), reference_image_urls: ['x'], duration: 5 }));
+    expect(response.statusCode).toBe(502);
+    expect(fetchMock.mock.calls.some(([url]) => String(url).startsWith('https://queue.fal.run'))).toBe(false);
+  });
+
+  it('refuses an edit fal bills for the whole source unless duration is the measured source length', async () => {
+    const { provider, fetchMock } = await ready(RECAST);
+    const calls = fetchMock.mock.calls.length;
+    const refused = async (body: object) => {
+      const response = await provider.handleRequest(create(RECAST, { reference_image_urls: ['data:image/png;base64,AAAA'], ...body }));
+      expect(response.statusCode).toBe(422);
+      return parse(response.body).error;
+    };
+    expect(await refused({ video_url: sourceMp4(12_700), duration: 3 })).toMatchObject({ code: 'invalid_video_duration', message: expect.stringContaining(': 12') });
+    expect((await refused({ video_url: 'https://example.com/source.mp4', duration: 12 })).message).toContain('inline');
+    expect(fetchMock.mock.calls.length).toBe(calls);
   });
 
   it('keeps duration for an endpoint that takes one', async () => {

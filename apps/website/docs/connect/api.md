@@ -77,7 +77,7 @@ Retrieve requests always go to the seller that accepted the job. You pay once, w
 
 #### Edit a video
 
-Video edit models (`inputs` has `video` in `GET /v1/models?type=videos`) take your video as `video_url` and change part of it. Send the video inline as a data URL, or as a public `https` URL. Set `duration` to the video's length in whole seconds, rounded down (`ffprobe -v error -show_entries format=duration -of csv=p=0 dance.mp4`); that is what you pay for. Never send more than the source length.
+Video edit models (`inputs` has `video` in `GET /v1/models?type=videos`) take your video as `video_url` and change part of it. Send the video inline as a data URL, or as a public `https` URL. A model whose output is as long as the source (Recast, motion control) needs it inline: the seller measures it and answers `422 invalid_video_duration` for a URL or a `duration` that is not its length. Set `duration` to the video's length in whole seconds, rounded down (`ffprobe -v error -show_entries format=duration -of csv=p=0 dance.mp4`); that is what you pay for. Never send more than the source length.
 
 ```bash
 jq -n --rawfile video <(printf 'data:video/mp4;base64,'; base64 < dance.mp4 | tr -d '\n') \

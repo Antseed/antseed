@@ -998,8 +998,8 @@ const FAILED_VIDEO_STATUSES = new Set(['FAILED', 'ERROR', 'CANCELLED', 'CANCELED
 
 /**
  * A retrieve answer that ends the job without a video: a JSON status the
- * job failed, or a JSON 400/422 refusal (the seller closes the job's channel
- * on both). 404, 429 and 5xx are not: the job may still be there.
+ * job failed (the seller closes the job's channel on it). Error answers are
+ * not: a malformed retrieve, 404, 429 or 5xx leaves the job as it is.
  */
 export function videoJobEndedWithoutVideo(response: SerializedHttpResponse): boolean {
   if (response.streamedBody) return false;
@@ -1012,7 +1012,6 @@ export function videoJobEndedWithoutVideo(response: SerializedHttpResponse): boo
     return false;
   }
   if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
-  if (response.statusCode === 400 || response.statusCode === 422) return true;
   const status = (body as { status?: unknown }).status;
   return response.statusCode === 200 && typeof status === 'string' && FAILED_VIDEO_STATUSES.has(status.toUpperCase());
 }
