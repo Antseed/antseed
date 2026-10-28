@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { checkVatNumber, fetchEurRate, fetchSettlements, normalizeVatNumber, periodBounds, periodsSince, rateDate, statementReference } from './statements.js'
+import { buildStatement, checkVatNumber, fetchEurRate, fetchSettlements, normalizeVatNumber, periodBounds, periodsSince, rateDate, statementReference } from './statements.js'
 
 const response = (body: unknown, status = 200) => new Response(typeof body === 'string' ? body : JSON.stringify(body), { status })
 
@@ -60,4 +60,27 @@ test('settlements are read page by page and merged per seller and transaction', 
     { seller: '0xs2', txHash: '0xbb', time: 20_000, amountUsdc: 7 },
   ])
   await assert.rejects(fetchSettlements('https://explorer.test', '0xb', 0, 1, async () => response({ errors: [{ message: 'bad query' }] })), /bad query/)
+})
+
+test('a seller paid this month for an earlier month\'s purchases is listed with its settlement and no purchases', () => {
+  const seller = '4d'.repeat(20)
+  const statement = buildStatement({
+    period: '2026-11',
+    workspace: { id: 'ws_1', name: 'Default', wallet: null },
+    buyer: null,
+    lines: [],
+    deposits: [],
+    peers: new Map(),
+    settlements: [{ seller: `0x${seller}`, txHash: `0x${'a1'.repeat(32)}`, time: Date.UTC(2026, 10, 2), amountUsdc: 1_250_000 }],
+    settlementsSource: 'https://explorer.test',
+    eurRate: null,
+    status: 'open',
+    now: Date.UTC(2026, 10, 3),
+  })
+  assert.equal(statement.total, '0.000000')
+  assert.equal(statement.suppliers.length, 1)
+  assert.equal(statement.suppliers[0]!.peerId, `0x${seller}`)
+  assert.deepEqual(statement.suppliers[0]!.lines, [])
+  assert.equal(statement.suppliers[0]!.total, '0.000000')
+  assert.deepEqual(statement.suppliers[0]!.settlements, [{ txHash: `0x${'a1'.repeat(32)}`, time: Date.UTC(2026, 10, 2), amount: '1.250000' }])
 })

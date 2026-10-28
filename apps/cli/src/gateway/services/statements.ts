@@ -179,6 +179,11 @@ export function buildStatement(input: StatementInput): PurchaseStatement {
     const key = peerKey(line.sellerPeerId ?? '')
     bySeller.set(key, [...(bySeller.get(key) ?? []), line])
   }
+  // A seller paid this month for what was bought before is listed too, with no purchases, so its settlement is on the record.
+  for (const settlement of input.settlements ?? []) {
+    const key = peerKey(settlement.seller)
+    if (!bySeller.has(key)) bySeller.set(key, [])
+  }
   const suppliers: StatementSupplier[] = [...bySeller].map(([key, lines]) => {
     const peer = input.peers.get(key)
     const settlements = input.settlements

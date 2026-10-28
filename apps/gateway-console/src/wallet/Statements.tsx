@@ -121,7 +121,7 @@ function BillingModal({ isOpen, workspaceId, profile, onClose }: { isOpen: boole
         <TextField label="Country" hint="Two-letter code, e.g. NL" maxLength={2} {...field('country')} />
         <TextField label="VAT number (optional)" hint="An EU number is checked with the EU's VIES service." placeholder="NL000000000B01" maxLength={30} spellCheck={false} {...field('vatNumber')} />
         <TextField label="Company registration number (optional)" placeholder="e.g. KvK number" maxLength={50} {...field('registrationNumber')} />
-        {save.error ? <p className="gc-warn">{errorMessage(save.error)}</p> : null}
+        {save.error || remove.error ? <p className="gc-warn">{errorMessage(save.error ?? remove.error)}</p> : null}
         <div className="gc-actions">
           {profile && <Button variant="ghost" onClick={() => remove.mutate()} disabled={busy}>Remove</Button>}
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
@@ -195,6 +195,9 @@ function Supplier({ supplier, index, statement, network, txLink }: { supplier: S
             : <span className="gc-muted">No verified identity</span>}
         </div>
       </div>
+      {supplier.lines.length === 0 ? (
+        <p className="gc-muted">No purchases this month: the settlements below pay for purchases of an earlier month.</p>
+      ) : (
       <div className="gc-statement__table">
         <table>
           <thead>
@@ -220,6 +223,7 @@ function Supplier({ supplier, index, statement, network, txLink }: { supplier: S
           </tbody>
         </table>
       </div>
+      )}
       <div className="gc-statement__proof">
         {supplier.settlements === null
           ? <span className="gc-muted">Payment records could not be read from the chain explorer.</span>
@@ -318,7 +322,7 @@ export function StatementPage({ period }: { period: string }) {
                 <div><span>Purchases</span><strong>{usdc(doc.total)} USDC</strong></div>
                 <div><span>In EUR</span><strong>{eur(doc.total, doc.eurRate)}</strong></div>
                 <div><span>Requests</span><strong>{formatNumber(doc.requests)}</strong></div>
-                <div><span>Providers</span><strong>{doc.suppliers.length}</strong></div>
+                <div><span>Providers</span><strong>{doc.suppliers.filter((supplier) => supplier.lines.length).length}</strong></div>
               </div>
 
               <h2 className="gc-statement__heading">Purchases by provider</h2>
