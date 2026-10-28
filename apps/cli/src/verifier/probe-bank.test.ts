@@ -164,6 +164,53 @@ test('probe bank power inspection recognizes a reusable powered reference', asyn
   }
 })
 
+function noisyReference(count: number, wrongOutOfFive: number): KbfReferenceV1 {
+  const value = reference(count)
+  value.selfTest.outcomes = value.probes.map((probe, index) => {
+    const answers = [0, 1, 2].map((run) => ((index * 3 + run) % 5 < wrongOutOfFive
+      ? Number(probe.consensus) + 1
+      : Number(probe.consensus)))
+    return { probeId: probe.id, answers, matches: answers.map((answer) => (answer === probe.consensus ? 1 : 0)) }
+  })
+  const hamming = value.selfTest.outcomes.reduce(
+    (sum, outcome) => sum + outcome.matches.filter((match) => match === 0).length, 0)
+  value.selfTest = { ...value.selfTest, hamming, total: count * 3, coverage: 1, errorRate: hamming / (count * 3) }
+  const power = computeBinomialPower({
+    selfHamming: hamming, selfTotal: count * 3, probeCount: count,
+    minimumMismatchDelta: 0.1, alpha: 0.05, cpConfidence: 0.99,
+  })
+  value.statisticalPower = power.power
+  value.statisticalPowerEvidence = {
+    ...value.statisticalPowerEvidence,
+    selfHamming: hamming, selfTotal: count * 3, probeCount: count, p0UpperBound: power.p0,
+    alternativeMismatchRate: power.p1, criticalMismatchCount: power.criticalMismatchCount, power: power.power,
+  }
+  value.referenceId = computeReferenceId(value)
+  return value
+}
+
+test('a reference that disagrees with itself up to half the time is still usable for audits', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-noisy-'))
+  try {
+    // 40% self-test disagreement: above the old 0.35 cutoff, below the 0.5 one.
+    await appendReference(directory, noisyReference(500, 2))
+    const noisy = await inspectModelProbeBankPower({ banksDir: directory, model: 'model-a' })
+    assert.ok(noisy.selectedProbeCount !== null)
+    assert.ok((noisy.statisticalPower ?? 0) >= 0.9)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+  const broken = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-broken-'))
+  try {
+    // 60% self-test disagreement: treated as a broken reference.
+    await appendReference(broken, noisyReference(500, 3))
+    const status = await inspectModelProbeBankPower({ banksDir: broken, model: 'model-a' })
+    assert.equal(status.selectedProbeCount, null)
+  } finally {
+    await rm(broken, { recursive: true, force: true })
+  }
+})
+
 test('excluded domains are ignored by bank power and audit reservations', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-domains-'))
   const identityShuffle = <T>(values: readonly T[]) => [...values]
@@ -463,9 +510,10 @@ test('bank-selected references pool every self-test run and size power for the a
       service: 'model-a', runId: 'run-a', epoch: '9', shuffle: <T>(values: readonly T[]) => [...values],
     })
     const count = reserved.reference.probes.length
-    assert.equal(reserved.reference.selfTest.total, count * 3)
-    assert.equal(reserved.reference.selfTest.hamming, 1)
-    assert.equal(reserved.reference.statisticalPowerEvidence.selfTotal, count * 3)
+    // The bank stored the missing run as 0 (older rule); it is re-scored as unscored on load.
+    assert.equal(reserved.reference.selfTest.total, count * 3 - 1)
+    assert.equal(reserved.reference.selfTest.hamming, 0)
+    assert.equal(reserved.reference.statisticalPowerEvidence.selfTotal, count * 3 - 1)
     assert.equal(reserved.reference.statisticalPowerEvidence.probeCount, count)
   } finally {
     await rm(directory, { recursive: true, force: true })

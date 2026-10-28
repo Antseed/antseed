@@ -1,6 +1,7 @@
 import { randomInt } from 'node:crypto'
 import {
   KBF_AUDIT_VERIFY_OPTIONS,
+  KBF_LOW_COVERAGE_RETRIES,
   KBF_OPTIONAL_SAMPLING_FIELDS,
   KBF_PROBES_PER_REQUEST,
   KBF_PROMPT_VARIANT_IDS,
@@ -9,6 +10,9 @@ import {
   computeMatchVector,
   getKbfPromptVariant,
   isKbfSamplingFieldRejection,
+  isKbfThinkingSuppressionRejection,
+  kbfTargetThinkingSuppression,
+  isLowCoverageKbfBatch,
   parseKbfAnswers,
   subsetReferenceSelfTest,
   verifyKbf,
@@ -42,6 +46,8 @@ export interface AuditBatchRecord {
   promptVariantId: string
   /** Sampling fields left out after the endpoint refused them; absent when the canonical request was sent. */
   omittedSamplingFields?: string[]
+  /** True when the endpoint refused the reference's thinking suppression and the batch was sent without it. */
+  omittedThinkingSuppression?: true
   attempts: number
   status: 'succeeded' | 'failed'
   failureReason: string | null
@@ -190,32 +196,54 @@ async function runBatch(
     model,
     system: getKbfPromptVariant(promptVariantId).systemPrompt,
     user: buildKbfPrompt(probes, 0, promptVariantId),
+    // No top_p: the KBF reference code sends only model, messages, temperature
+    // and max_tokens, and several upstreams reject top_p.
     temperature: profile.auditTemperature,
-    topP: profile.generationSettings.topP,
     maxTokens: profile.maxTokensPerRequest,
   }
+  // As in the KBF reference code, the target gets the same thinking suppression as the reference.
+  const thinking = kbfTargetThinkingSuppression(options.reference)
+  if (thinking) {
+    if (Object.keys(thinking.overrides).length > 0) request.extraBody = { ...thinking.overrides }
+    if (thinking.assistantPrefill) request.assistantPrefill = thinking.assistantPrefill
+  }
+  let omittedThinking = false
   let lastFailure = 'not attempted'
   let omittedSampling = false
+  let calls = 0
+  let lowCoverageRetries = 0
+  let best: { record: AuditBatchRecord; scored: number } | null = null
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const result = await options.endpoint.call(request, options.signal)
+    calls++
+    if (!result.ok && thinking && !omittedThinking && isKbfThinkingSuppressionRejection(result.status, result.message)) {
+      omittedThinking = true
+      delete request.extraBody
+      delete request.assistantPrefill
+      attempt--
+      continue
+    }
     if (!result.ok && !omittedSampling && isKbfSamplingFieldRejection(result.status, result.message)) {
       omittedSampling = true
       delete request.temperature
-      delete request.topP
       attempt--
       continue
     }
     if (result.ok) {
-      return {
+      const answers = parseKbfAnswers(result.text, probes.length)
+      const matches = computeMatchVector(answers, probes)
+      const scored = matches.filter((match) => match !== null).length
+      const record: AuditBatchRecord = {
         batchIndex,
         probeIds: probes.map((probe) => probe.id),
         promptVariantId,
         ...(omittedSampling ? { omittedSamplingFields: [...KBF_OPTIONAL_SAMPLING_FIELDS] } : {}),
-        attempts: attempt,
+        ...(omittedThinking ? { omittedThinkingSuppression: true as const } : {}),
+        attempts: calls,
         status: 'succeeded',
         failureReason: null,
         completion: result.text,
-        answers: parseKbfAnswers(result.text, probes.length),
+        answers,
         usage: result.usage ?? null,
         raw: {
           requestBase64: Buffer.from(result.raw.request).toString('base64'),
@@ -223,11 +251,22 @@ async function runBatch(
           status: result.raw.status,
         },
       }
+      if (!best || scored > best.scored) best = { record, scored }
+      // As in the KBF reference code: more than half the answers missing or unreadable
+      // means the batch is asked again (up to twice), keeping the best attempt.
+      if (isLowCoverageKbfBatch(matches) && lowCoverageRetries < KBF_LOW_COVERAGE_RETRIES) {
+        lowCoverageRetries++
+        attempt--
+        continue
+      }
+      return { ...best.record, attempts: calls }
     }
     lastFailure = result.message
+    if (best) return { ...best.record, attempts: calls }
     if (!result.retryable || attempt === maxAttempts) break
     await delay(result.retryAfterMs ?? 1000 * 2 ** (attempt - 1), options.signal)
   }
+  if (best) return { ...best.record, attempts: calls }
   return {
     batchIndex,
     probeIds: probes.map((probe) => probe.id),

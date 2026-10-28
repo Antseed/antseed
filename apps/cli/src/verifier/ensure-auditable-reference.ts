@@ -2,7 +2,7 @@ import { join } from 'node:path'
 import type { VerifierCLIConfig } from '../config/types.js'
 import { acquirePidFileLock } from './atomic-files.js'
 import { findVerifierModel } from './model-config.js'
-import { buildModelReference } from './model-reference.js'
+import { buildModelReference, type ReferenceRequestLimiter } from './model-reference.js'
 import { loadConfiguredVerifierModelCatalog } from './openrouter-catalog.js'
 import {
   appendModelReferenceToBank,
@@ -36,6 +36,8 @@ export async function ensureAuditableReference(input: {
   config: VerifierCLIConfig | undefined
   maxRequests: number
   buyerProxyPort?: number
+  /** Shared across models enrolled at the same time, so they respect one concurrency limit. */
+  requestLimiter?: ReferenceRequestLimiter
   log?: (message: string) => void
 }, operations: typeof dependencies = dependencies): Promise<void> {
   if (!Number.isSafeInteger(input.maxRequests) || input.maxRequests <= 0) {
@@ -72,6 +74,7 @@ export async function ensureAuditableReference(input: {
       config,
       catalog,
       buyerProxyPort: input.buyerProxyPort,
+      requestLimiter: input.requestLimiter,
       initialReference,
       log: input.log,
     })

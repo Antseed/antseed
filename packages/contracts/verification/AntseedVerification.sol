@@ -87,6 +87,7 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
         bytes32 indexed modelHash,
         address indexed auditor,
         uint256 indexed epoch,
+        bytes32 auditType,
         bytes32 evidenceHash,
         string evidenceUri,
         uint256 resultCount
@@ -215,13 +216,14 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
 
     function submitModelAudit(
         uint256 expectedEpoch,
+        bytes32 auditType,
         bytes32 modelHash,
         bytes32 evidenceHash,
         string calldata evidenceUri,
         ServiceResult[] calldata results
     ) external override {
         if (!approvedAuditors[msg.sender]) revert NotApprovedAuditor();
-        if (modelHash == bytes32(0) || evidenceHash == bytes32(0)) revert InvalidValue();
+        if (auditType == bytes32(0) || modelHash == bytes32(0) || evidenceHash == bytes32(0)) revert InvalidValue();
         _validateEvidenceUri(evidenceUri);
         uint256 count = results.length;
         if (count == 0 || count > MAX_RESULTS_PER_AUDIT) revert InvalidResults();
@@ -254,7 +256,7 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
             _applyResult(result.agentId, result.serviceHash, modelHash, result.verdict, epoch);
         }
 
-        emit ModelAudited(modelHash, msg.sender, expectedEpoch, evidenceHash, evidenceUri, count);
+        emit ModelAudited(modelHash, msg.sender, expectedEpoch, auditType, evidenceHash, evidenceUri, count);
         if (staked && epoch >= rewardsStartEpoch) _creditAudit(epoch, modelHash);
     }
 

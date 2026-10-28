@@ -36,6 +36,8 @@ export interface ProxyAuditEvidenceExchange {
   promptVariantId?: string
   /** Sampling fields left out after the seller refused them; absent when the canonical body was sent. */
   omittedSamplingFields?: string[]
+  /** True when the seller refused the reference's thinking suppression and the batch was sent without it. */
+  omittedThinkingSuppression?: true
   request: {
     method: 'POST'
     url: string

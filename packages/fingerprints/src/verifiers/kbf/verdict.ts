@@ -11,9 +11,9 @@ export interface KbfVerdictInput {
   selfHamming: number;
   /** Reference model's own probe count. */
   selfTotal: number;
-  /** Target seller's match vector (1 match, 0 discrepancy, null transport-unavailable). */
+  /** Target seller's match vector (1 match, 0 discrepancy, null unscored). */
   targetMatchVector: MatchVector;
-  /** Below this attempted-fraction, the verdict is UNDETERMINED. Default 0.5. */
+  /** Below this scored fraction, the verdict is UNDETERMINED. Default 0.5. */
   minCoverage?: number;
   /** Clopper-Pearson confidence for the self-error upper bound. Default 0.99. */
   cpConfidence?: number;
@@ -40,7 +40,7 @@ export interface KbfVerdictResult {
 /**
  * Compute the KBF verdict:
  * - invalid reference self-test or empty match vector → UNKNOWN;
- * - target transport coverage below `minCoverage` → UNDETERMINED;
+ * - fewer than `minCoverage` of the target's probes scored → UNDETERMINED;
  * - otherwise p0 = CP upper bound on the reference self-error rate and a
  *   one-sided binomial test of the target's mismatch count against p0:
  *   pValue < alpha → DIFF, else SAME.

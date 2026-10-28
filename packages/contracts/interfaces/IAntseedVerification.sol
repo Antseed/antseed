@@ -63,11 +63,14 @@ interface IAntseedVerification {
     function setAuditor(address auditor, bool approved) external;
 
     /// @notice Records one auditor's results for every seller audited as `modelHash`.
+    /// @param auditType Audit method and version, e.g. keccak256("kbf-model-identity/v1").
+    ///        Recorded in `ModelAudited` only; it does not change how results are stored or counted.
     /// @dev Reverts unless the caller is an approved auditor, `expectedEpoch` is the current
     ///      epoch of the pinned emissions gate, `evidenceHash` is non-zero, and `results` is non-empty, bounded, and
-    ///      strictly ordered by (agentId, serviceHash).
+    ///      strictly ordered by (agentId, serviceHash), and `auditType` is non-zero.
     function submitModelAudit(
         uint256 expectedEpoch,
+        bytes32 auditType,
         bytes32 modelHash,
         bytes32 evidenceHash,
         string calldata evidenceUri,

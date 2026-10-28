@@ -31,7 +31,29 @@ export const AUDITED_MODELS: Readonly<Record<string, AuditedModel>> = Object.fre
   'gpt-6.1-sol': { upstreamModel: 'openai/gpt-6.1-sol', serviceAliases: ['openai-gpt-61-sol', 'gpt-61-sol'] },
   'grok-4.5': { upstreamModel: 'x-ai/grok-4.5' },
   'grok-4.7': { upstreamModel: 'x-ai/grok-4.7', serviceAliases: ['grok-4-7'] },
-  'kimi-k3': { upstreamModel: 'moonshotai/kimi-k3' },
+  'deepseek-v4-pro': { upstreamModel: 'deepseek/deepseek-v4-pro', serviceAliases: ['deepseek/deepseek-v4-pro'] },
+  'deepseek-v4-pro-0813': {
+    upstreamModel: 'deepseek/deepseek-v4-pro-0813',
+    serviceAliases: ['deepseek/deepseek-v4-pro-0813'],
+  },
+  'kimi-k3': {
+    upstreamModel: 'moonshotai/kimi-k3',
+    serviceAliases: ['moonshotai/kimi-k3', 'moonshot/kimi-k3', 'kimi-k3:fast', 'kimi-k3-fast', 'kimi-k3-fast-api'],
+  },
+  'kimi-k3.1-pro': {
+    upstreamModel: 'moonshotai/kimi-k3.1-pro',
+    serviceAliases: [
+      'kimi-k3-1-pro',
+      'moonshotai/kimi-k3.1-pro',
+      'kimi-k3.1-pro-highspeed',
+      'kimi-k3-1-pro-highspeed',
+    ],
+  },
+  'minimax-m3': { upstreamModel: 'minimax/minimax-m3', serviceAliases: ['minimax/minimax-m3'] },
+  'minimax-m3.1-flash': {
+    upstreamModel: 'minimax/minimax-m3.1-flash',
+    serviceAliases: ['minimax-m3-1-flash', 'minimax/minimax-m3.1-flash'],
+  },
 })
 
 let override: Readonly<Record<string, AuditedModel>> | null = null

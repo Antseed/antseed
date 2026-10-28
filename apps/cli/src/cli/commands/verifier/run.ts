@@ -3,6 +3,7 @@ import type { Command } from 'commander'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { canonicalHashBytes32, queryProfileHash, type KbfReferenceV1 } from '@antseed/fingerprints'
+import { resolveEffectiveBuyerConfig } from '../../../config/effective.js'
 import { loadConfig } from '../../../config/loader.js'
 import type { VerifierCLIConfig } from '../../../config/types.js'
 import {
@@ -48,7 +49,7 @@ import {
   type ModelVerificationSkip,
   type VerificationTargetPolicy,
 } from '../../../verifier/model-run.js'
-import { describeAuditPriceCap, resolveAuditPriceCaps } from '../../../verifier/audit-price.js'
+import { buyerCapShortfall, describeAuditPriceCap, resolveAuditPriceCaps } from '../../../verifier/audit-price.js'
 import { loadVerifierModelCatalog } from '../../../verifier/openrouter-catalog.js'
 import {
   loadModelAuditReservation,
@@ -65,6 +66,7 @@ import {
 import { openResponseAuthReader } from '../../../verifier/response-auth-reader.js'
 import { getGlobalOptions } from '../types.js'
 import { enrollFreshProbes, ensureAuditableReference } from '../../../verifier/ensure-auditable-reference.js'
+import { createReferenceRequestLimiter } from '../../../verifier/model-reference.js'
 import { runDiffRechecks, type DiffRecheckStats } from '../../../verifier/diff-recheck.js'
 import { VerifierRunProgress } from './run-progress.js'
 import { failureOutcomeReason } from '../../../verifier/outcome-reason.js'
@@ -290,6 +292,20 @@ export function registerVerifierRunCommand(verifier: Command): void {
         }
         runModels = runModels.filter((model) => priceCaps.caps.has(model))
         if (runModels.length === 0) throw new Error('no audited model has a reference price; see the warnings above')
+        // Audit requests go through the buyer, which refuses sellers above its own cap. A model
+        // whose audit cap is above it is not audited until the auditor raises the buyer cap.
+        const buyerMaxPrice = resolveEffectiveBuyerConfig({ config }).maxPricing.defaults
+        const buyerCapBlocked = new Map<string, string>()
+        for (const model of runModels) {
+          const shortfall = buyerCapShortfall(buyerMaxPrice, priceCaps.caps.get(model)!)
+          if (shortfall) buyerCapBlocked.set(model, shortfall)
+        }
+        for (const [model, reason] of buyerCapBlocked) {
+          console.warn(chalk.yellow(`SKIPPED ${model}: ${reason}`))
+          process.exitCode = 1
+        }
+        runModels = runModels.filter((model) => !buyerCapBlocked.has(model))
+        if (runModels.length === 0) throw new Error('every audited model is above the buyer price cap; see the warnings above')
         const targetPolicyFor = (model: string): VerificationTargetPolicy => ({
           minReputation: config.buyer.minPeerReputation,
           priceCap: priceCaps.caps.get(model)!,
@@ -314,14 +330,14 @@ export function registerVerifierRunCommand(verifier: Command): void {
         }
         if (enrollmentBudget !== null) {
           if (resumeOnly) throw new Error('an audit resume is pending; complete it before enrolling new probes')
-          const readyModels: string[] = []
-          for (const model of runModels) {
+          // Every model enrolls at once; one shared limiter caps the reference requests in flight.
+          const requestLimiter = createReferenceRequestLimiter(config.verifier)
+          const enrolled = await Promise.all(runModels.map(async (model) => {
             if (!selectedPeers.some((peer) => classifyVerificationTargetServices(
               peer, verifierModelServices(config.verifier, model), targetPolicyFor(model),
             ).eligible)) {
               console.log(chalk.dim(`[enrollment:${model}] no eligible sellers; no enrollment calls needed`))
-              readyModels.push(model)
-              continue
+              return true
             }
             try {
               await ensureAuditableReference({
@@ -330,14 +346,17 @@ export function registerVerifierRunCommand(verifier: Command): void {
                 config: config.verifier,
                 maxRequests: enrollmentBudget,
                 buyerProxyPort: config.buyer.proxyPort,
+                requestLimiter,
                 log: (message) => console.log(chalk.dim(`[enrollment:${model}] ${message}`)),
               })
-              readyModels.push(model)
+              return true
             } catch (error) {
               console.warn(chalk.yellow(`SKIPPED ${model}: enrollment failed: ${asError(error).message}`))
               process.exitCode = 1
+              return false
             }
-          }
+          }))
+          const readyModels = runModels.filter((_, index) => enrolled[index])
           runModels = readyModels
           if (runModels.length === 0) throw new Error('no models ready after reference enrollment')
           epochWindow = await resolveEpoch()

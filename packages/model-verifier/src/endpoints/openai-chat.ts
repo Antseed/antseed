@@ -31,10 +31,11 @@ export class OpenAIChatEndpoint implements ModelEndpoint {
         messages: [
           { role: 'system', content: request.system },
           { role: 'user', content: request.user },
+          ...(request.assistantPrefill ? [{ role: 'assistant', content: request.assistantPrefill }] : []),
         ],
         temperature: request.temperature,
-        top_p: request.topP,
         max_tokens: request.maxTokens,
+        ...request.extraBody,
         ...this.options.extraBody,
       },
       timeoutMs: this.options.timeoutMs ?? 120_000,

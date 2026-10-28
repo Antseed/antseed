@@ -1,6 +1,6 @@
 import { writeFile } from 'node:fs/promises'
 import type { Command } from 'commander'
-import { modelHash, type ModelAuditedEvent } from '@antseed/node/payments'
+import { KBF_AUDIT_TYPE, modelHash, type ModelAuditedEvent } from '@antseed/node/payments'
 import {
   AnthropicMessagesEndpoint,
   OpenAIChatEndpoint,
@@ -28,11 +28,11 @@ interface CheckOptions {
   json?: boolean
 }
 
-/** Newest `ModelAudited` event that published evidence to IPFS. */
+/** Newest KBF `ModelAudited` event that published evidence to IPFS. */
 export function latestPublishedAudit(events: readonly ModelAuditedEvent[]): ModelAuditedEvent | null {
   let latest: ModelAuditedEvent | null = null
   for (const event of events) {
-    if (!event.evidenceUri.startsWith('ipfs://')) continue
+    if (event.auditType.toLowerCase() !== KBF_AUDIT_TYPE.toLowerCase() || !event.evidenceUri.startsWith('ipfs://')) continue
     if (
       !latest
       || event.blockNumber > latest.blockNumber

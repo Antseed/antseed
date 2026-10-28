@@ -1,6 +1,7 @@
-import { Interface, Wallet } from 'ethers';
+import { Interface, Wallet, keccak256, toUtf8Bytes } from 'ethers';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  KBF_AUDIT_TYPE,
   VERIFICATION_ABI,
   VerifierClient,
   VERIFIER_VERDICT,
@@ -31,6 +32,10 @@ describe('VerifierClient audit ABI', () => {
     ]);
   });
 
+  it('identifies KBF audits by method and version', () => {
+    expect(KBF_AUDIT_TYPE).toBe(keccak256(toUtf8Bytes('kbf-model-identity/v1')));
+  });
+
   it('mirrors the contract verdict enum', () => {
     expect(VERIFIER_VERDICT).toEqual({ NONE: 0, SAME: 1, DIFF: 2, UNDETERMINED: 3 });
   });
@@ -52,6 +57,7 @@ describe('VerifierClient audit ABI', () => {
       VERIFICATION_ABI,
       'submitModelAudit',
       7n,
+      KBF_AUDIT_TYPE,
       modelHash('model-a'),
       '0x' + '99'.repeat(32),
       'ipfs://bafytest',
@@ -74,6 +80,7 @@ describe('VerifierClient audit ABI', () => {
       'modelHash',
       'auditor',
       'epoch',
+      'auditType',
       'evidenceHash',
       'evidenceUri',
       'resultCount',

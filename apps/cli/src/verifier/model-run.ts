@@ -3,13 +3,18 @@ import { readFile, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
   KBF_AUDIT_VERIFY_OPTIONS,
+  KBF_LOW_COVERAGE_RETRIES,
   KBF_PROBES_PER_REQUEST,
   KBF_PROMPT_VARIANT_IDS,
   KBF_OPTIONAL_SAMPLING_FIELDS,
   buildKbfChatRequestBody,
+  isKbfThinkingSuppressionRejection,
+  kbfTargetThinkingSuppression,
+  type KbfThinkingSuppression,
   canonicalHashBytes32,
   isKbfSamplingFieldRejection,
   computeMatchVector,
+  isLowCoverageKbfBatch,
   parseKbfAnswers,
   queryProfileHash,
   verifyKbf,
@@ -114,9 +119,13 @@ export interface ProxyVerificationContext {
   writeCheckpoint?: (path: string, checkpoint: ModelAuditCheckpointV1) => Promise<void>
 }
 
-/** Shared by one seller audit: once the seller refuses the sampling fields, later batches leave them out. */
+/**
+ * Shared by one seller audit: once the seller refuses the sampling fields or the
+ * thinking suppression, later batches leave them out.
+ */
 interface AuditSamplingState {
   omit: boolean
+  omitThinking?: boolean
 }
 
 export interface ModelVerificationResumeInput {
@@ -399,7 +408,12 @@ export async function verifyModelTarget(input: {
   for (const exchange of input.resume?.exchanges ?? []) {
     const expectedProbeIds = batches[exchange.batchIndex]?.probes.map((probe) => probe.id)
     if (isReusableExchange(exchange) && expectedProbeIds && sameStrings(exchange.probeIds, expectedProbeIds)) {
-      exchangeByBatch.set(exchange.batchIndex, exchange)
+      // Re-score with the current rule so a checkpoint written before unscoreable
+      // answers were left out does not count them as wrong.
+      exchangeByBatch.set(exchange.batchIndex, {
+        ...exchange,
+        matches: computeMatchVector(exchange.answers, batches[exchange.batchIndex]!.probes),
+      })
     }
   }
   const reusedBatchIndexes = [...exchangeByBatch.keys()].sort((left, right) => left - right)
@@ -408,6 +422,7 @@ export async function verifyModelTarget(input: {
     : [{ probes: batch.probes, batchIndex }])
   const sampling: AuditSamplingState = {
     omit: input.resume?.exchanges.some((exchange) => exchange.omittedSamplingFields?.length) ?? false,
+    omitThinking: input.resume?.exchanges.some((exchange) => exchange.omittedThinkingSuppression === true) ?? false,
   }
   let checkpointTail = Promise.resolve()
   let checkpointFailure: Error | null = null
@@ -697,12 +712,15 @@ async function executeProxyProbeBatch(
 ): Promise<ProxyAuditEvidenceExchangeV1> {
   const promptVariantId = pickKbfPromptVariantId()
   let samplingOmitted = sampling.omit
+  let thinkingOmitted = sampling.omitThinking === true
+  const thinking = kbfTargetThinkingSuppression(reference)
   let { url, headers, body, request } = buildProxyBatchRequest(
-    context, target, service, reference, probes, promptVariantId, samplingOmitted,
+    context, target, service, reference, probes, promptVariantId, samplingOmitted, thinkingOmitted,
   )
-  const samplingEvidence = () => samplingOmitted
-    ? { omittedSamplingFields: [...KBF_OPTIONAL_SAMPLING_FIELDS] }
-    : {}
+  const samplingEvidence = () => ({
+    ...(samplingOmitted ? { omittedSamplingFields: [...KBF_OPTIONAL_SAMPLING_FIELDS] } : {}),
+    ...(thinking && thinkingOmitted ? { omittedThinkingSuppression: true as const } : {}),
+  })
   const startedAt = Date.now()
   let attemptCount = 0
   let lastFailure = 'proxy request failed'
@@ -712,7 +730,18 @@ async function executeProxyProbeBatch(
   let lastRequestId: string | null = null
   const attemptCosts = [] as NonNullable<ProxyAuditEvidenceExchangeV1['attemptCosts']>
   let responseAuthRetryCount = 0
-  let blankLengthRetryCount = 0
+  let lowCoverageRetryCount = 0
+  let best: ProxyAuditEvidenceExchangeV1 | null = null
+  const finalizeBest = (exchange: ProxyAuditEvidenceExchangeV1): ProxyAuditEvidenceExchangeV1 => {
+    const completedAt = Date.now()
+    return {
+      ...exchange,
+      attemptCount,
+      requestIds: [...requestIds],
+      attemptCosts: [...attemptCosts],
+      timing: { startedAt, completedAt, responseLatencyMs: Math.max(0, completedAt - startedAt) },
+    }
+  }
   const fetchFn = context.fetchFn ?? fetch
   const sleepFn = context.sleepFn ?? sleep
   const randomFn = context.randomFn ?? Math.random
@@ -749,11 +778,20 @@ async function executeProxyProbeBatch(
       }
       if (!response.ok) {
         lastFailure = `buyer proxy HTTP ${response.status}: ${responseText(responseBody).slice(0, 500)}`
+        if (thinking && !thinkingOmitted
+          && isKbfThinkingSuppressionRejection(response.status, responseText(responseBody))) {
+          sampling.omitThinking = true
+          thinkingOmitted = true
+          ;({ url, headers, body, request } = buildProxyBatchRequest(
+            context, target, service, reference, probes, promptVariantId, samplingOmitted, true,
+          ))
+          continue
+        }
         if (!samplingOmitted && isKbfSamplingFieldRejection(response.status, responseText(responseBody))) {
           sampling.omit = true
           samplingOmitted = true
           ;({ url, headers, body, request } = buildProxyBatchRequest(
-            context, target, service, reference, probes, promptVariantId, true,
+            context, target, service, reference, probes, promptVariantId, true, thinkingOmitted,
           ))
           continue
         }
@@ -763,7 +801,7 @@ async function executeProxyProbeBatch(
           upstreamStatus: response.status,
           ...(classified.outcomeReason.requestId ? {} : { requestId: safeRequestId(responseBody) ?? requestId }),
         }
-        if (batchIndex === 0 && classified.skipCode) {
+        if (batchIndex === 0 && classified.skipCode && !best) {
           const completedAt = Date.now()
           throw new VerificationSkipSignal(classified.skipCode, lastOutcomeReason.summary, lastOutcomeReason, {
             batchIndex,
@@ -833,18 +871,10 @@ async function executeProxyProbeBatch(
         await sleepWithSignal(PROBE_RETRY_BASE_DELAY_MS, context.signal, sleepFn)
         continue
       }
-      if (responseAuth.status === 'verified'
-        && blankLengthRetryCount < 1
-        && attemptCount < PROBE_REQUEST_ATTEMPTS
-        && isBlankLengthResponse(responseBody, completion, answers)) {
-        blankLengthRetryCount += 1
-        await sleepWithSignal(PROBE_RETRY_BASE_DELAY_MS, context.signal, sleepFn)
-        continue
-      }
-      return {
+      const candidate: ProxyAuditEvidenceExchangeV1 = {
         batchIndex,
         attemptCount,
-        requestIds,
+        requestIds: [...requestIds],
         probeIds: probes.map((probe) => probe.id),
         promptVariantId,
         ...samplingEvidence(),
@@ -856,7 +886,7 @@ async function executeProxyProbeBatch(
         status: 'succeeded',
         failureReason: null,
         cost: attemptCost,
-        attemptCosts,
+        attemptCosts: [...attemptCosts],
         outcomeReason: responseAuth.status === 'verified'
           ? malformedOutput ? malformedOutputReason(requestId) : null
           : responseAuthReason(responseAuth.status, responseAuth.failureReason, requestId),
@@ -871,6 +901,19 @@ async function executeProxyProbeBatch(
           failureReason: responseAuth.failureReason,
         },
       }
+      if (!best || isBetterBatchAttempt(candidate, best)) best = candidate
+      // As in the KBF reference code: a batch with more than half its answers
+      // missing or unreadable is asked again (up to twice) and the attempt with
+      // the most scoreable answers is kept. Every request ID and cost is recorded.
+      if (responseAuth.status === 'verified'
+        && lowCoverageRetryCount < KBF_LOW_COVERAGE_RETRIES
+        && attemptCount < PROBE_REQUEST_ATTEMPTS
+        && isLowCoverageKbfBatch(best.matches)) {
+        lowCoverageRetryCount += 1
+        await sleepWithSignal(PROBE_RETRY_BASE_DELAY_MS, context.signal, sleepFn)
+        continue
+      }
+      return finalizeBest(best)
     } catch (error) {
       if (error instanceof VerificationSkipSignal) throw error
       lastFailure = context.signal.aborted
@@ -894,6 +937,7 @@ async function executeProxyProbeBatch(
       context.signal.removeEventListener('abort', abortRequest)
     }
   }
+  if (best) return finalizeBest(best)
   if (context.signal.aborted) {
     lastFailure = `seller audit deadline exceeded after ${context.auditTimeoutMs}ms`
     lastOutcomeReason = deadlineReason(context.auditTimeoutMs)
@@ -1083,19 +1127,25 @@ export function buildKbfProbeRequestBody(
   probes: readonly KbfProbe[],
   promptVariantId: string,
   omitSampling = false,
+  thinking: KbfThinkingSuppression | null = null,
 ): Uint8Array {
-  // Audits send the canonical KBF body. Reference-endpoint settings (legacy
-  // queryProfile.requestOverrides / requestOmissions / reasoningStrategy) only
-  // describe how the reference endpoint was queried and never reach sellers.
+  // Audits send the canonical KBF body plus the reference's thinking suppression,
+  // as the KBF reference code does for every endpoint. Other reference-endpoint
+  // settings (omitted fields, provider pins) never reach sellers.
+  const chat = buildKbfChatRequestBody(service, probes, {
+    maxTokens: queryProfile.maxTokensPerRequest,
+    variantId: promptVariantId,
+  })
   const requestBody: Record<string, unknown> = {
-    ...buildKbfChatRequestBody(service, probes, {
-      maxTokens: queryProfile.maxTokensPerRequest,
-      variantId: promptVariantId,
-    }),
+    ...chat,
+    ...(thinking?.assistantPrefill
+      ? { messages: [...chat.messages, { role: 'assistant', content: thinking.assistantPrefill }] }
+      : {}),
+    ...thinking?.overrides,
+    // No top_p: the KBF reference code sends only model, messages, temperature and
+    // max_tokens, and several upstreams reject top_p (Kimi K3, Opus 5, Opus 4.6).
     temperature: queryProfile.auditTemperature,
-    top_p: queryProfile.generationSettings.topP,
     stream: false,
-    n: 1,
   }
   if (omitSampling) for (const field of KBF_OPTIONAL_SAMPLING_FIELDS) delete requestBody[field]
   return new TextEncoder().encode(JSON.stringify(requestBody))
@@ -1109,6 +1159,7 @@ function buildProxyBatchRequest(
   probes: KbfProbe[],
   promptVariantId: string,
   omitSampling: boolean,
+  omitThinking = false,
 ): {
   url: string
   headers: Record<string, string>
@@ -1121,7 +1172,10 @@ function buildProxyBatchRequest(
     'x-antseed-pin-peer': target.peerId,
     'x-antseed-capture-response-auth-preimages': '1',
   }
-  const body = buildKbfProbeRequestBody(service, reference.queryProfile, probes, promptVariantId, omitSampling)
+  const body = buildKbfProbeRequestBody(
+    service, reference.queryProfile, probes, promptVariantId, omitSampling,
+    omitThinking ? null : kbfTargetThinkingSuppression(reference),
+  )
   const bodyBase64 = Buffer.from(body).toString('base64')
   return {
     url,
@@ -1335,35 +1389,12 @@ export function extractCompletionText(body: Uint8Array): string | null {
   }
 }
 
-function isBlankLengthResponse(
-  responseBody: Uint8Array,
-  completion: string | null,
-  answers: Array<number | null>,
-): boolean {
-  if ((completion ?? '').trim() !== '' || answers.some((answer) => answer !== null)) return false
-  const text = responseText(responseBody)
-  try {
-    return hasLengthFinishReason(JSON.parse(text) as Record<string, unknown>)
-  } catch {
-    for (const line of text.split(/\r?\n/)) {
-      if (!line.startsWith('data:')) continue
-      const data = line.slice('data:'.length).trim()
-      if (!data || data === '[DONE]') continue
-      try {
-        if (hasLengthFinishReason(JSON.parse(data) as Record<string, unknown>)) return true
-      } catch {
-        continue
-      }
-    }
-    return false
-  }
-}
-
-function hasLengthFinishReason(value: Record<string, unknown>): boolean {
-  const choices = Array.isArray(value.choices) ? value.choices : []
-  return choices.some((choice) => choice !== null
-    && typeof choice === 'object'
-    && (choice as Record<string, unknown>).finish_reason === 'length')
+/** Verified responses beat unverified ones; then the attempt with more scoreable answers wins. */
+function isBetterBatchAttempt(candidate: ProxyAuditEvidenceExchangeV1, current: ProxyAuditEvidenceExchangeV1): boolean {
+  const verified = (exchange: ProxyAuditEvidenceExchangeV1) => exchange.responseAuth.status === 'verified'
+  if (verified(candidate) !== verified(current)) return verified(candidate)
+  const scored = (exchange: ProxyAuditEvidenceExchangeV1) => exchange.matches.filter((match) => match !== null).length
+  return scored(candidate) > scored(current)
 }
 
 function extractCompletionFromJson(parsed: Record<string, unknown>): string | null {

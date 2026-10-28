@@ -3,6 +3,7 @@ import test from 'node:test'
 import type { VerifierCLIConfig } from '../config/types.js'
 import {
   auditPriceRejection,
+  buyerCapShortfall,
   describeAuditPriceCap,
   resolveAuditPriceCap,
   resolveAuditPriceCaps,
@@ -90,4 +91,22 @@ test('the run resolves every model, loads the catalog at most once, and reports 
   })
   assert.equal(failed.caps.size, 0)
   assert.match(failed.unpriced.get('grok-4.7') ?? '', /loading the reference catalog failed: OpenRouter model catalog 503/)
+})
+
+test('a buyer cap below the audit cap blocks the model and says how far to raise it', () => {
+  const fable = resolveAuditPriceCap({ referenceEndpoint: endpoint }, 'claude-fable-5.1', catalog)
+  const grok = resolveAuditPriceCap({ referenceEndpoint: endpoint }, 'grok-4.7', catalog)
+  const buyer = { inputUsdPerMillion: 5, outputUsdPerMillion: 30 }
+  assert.equal(buyerCapShortfall(buyer, grok), null)
+  assert.equal(
+    buyerCapShortfall(buyer, fable),
+    'the buyer price cap (buyer.maxPricing.defaults) $5/$30 per 1M is below the claude-fable-5.1 audit cap $10/$50,'
+      + ' so the buyer would refuse sellers priced in between. Raise it to at least $10/$50 and restart the buyer',
+  )
+  // Equal is enough; only the short side needs raising.
+  assert.equal(buyerCapShortfall({ inputUsdPerMillion: 10, outputUsdPerMillion: 50 }, fable), null)
+  assert.match(buyerCapShortfall({ inputUsdPerMillion: 12, outputUsdPerMillion: 40 }, fable) ?? '', /at least \$12\/\$50/)
+  // The ratio raises the cap the buyer has to allow.
+  const scaled = resolveAuditPriceCap({ referenceEndpoint: endpoint, auditPriceRatio: 1.1 }, 'grok-4.7', catalog)
+  assert.match(buyerCapShortfall({ inputUsdPerMillion: 2, outputUsdPerMillion: 6 }, scaled) ?? '', /at least \$2\.2\/\$6\.6/)
 })

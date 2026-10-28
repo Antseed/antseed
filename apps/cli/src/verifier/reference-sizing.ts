@@ -7,6 +7,8 @@ export const DEFAULT_REFERENCE_MINIMUM_STATISTICAL_POWER = 0.9
 export const REFERENCE_MINIMUM_MISMATCH_DELTA = 0.1
 export const REFERENCE_POWER_ALPHA = 0.05
 export const REFERENCE_POWER_CONFIDENCE = 0.99
+/** Highest self-test disagreement accepted for a reference; above this the reference is treated as broken. */
+export const REFERENCE_MAXIMUM_SELF_TEST_ERROR_RATE = 0.5
 
 export interface ReferenceSizingPolicy {
   minimumProbeCount: number

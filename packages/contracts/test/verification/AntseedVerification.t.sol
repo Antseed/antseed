@@ -35,6 +35,7 @@ contract VerificationPointsAccounting {
 
 contract AntseedVerificationTest is Test {
     uint256 private constant EPOCH = 5;
+    bytes32 private constant KBF_AUDIT_TYPE = keccak256("kbf-model-identity/v1");
     bytes32 private constant MODEL_A = keccak256("model-a");
     bytes32 private constant MODEL_B = keccak256("model-b");
     bytes32 private constant SERVICE_A = bytes32(uint256(1));
@@ -170,7 +171,7 @@ contract AntseedVerificationTest is Test {
     function test_agentStatusAtEpochZero() public {
         gate.setCurrentEpoch(0);
         vm.prank(auditorA);
-        verification.submitModelAudit(0, MODEL_A, _evidence(), "", _single(agentId, SERVICE_A, SAME));
+        verification.submitModelAudit(0, KBF_AUDIT_TYPE, MODEL_A, _evidence(), "", _single(agentId, SERVICE_A, SAME));
         assertEq(verification.agentStatus(agentId).verifiedCount, 1);
     }
 
@@ -182,7 +183,7 @@ contract AntseedVerificationTest is Test {
                 results[i] = _result(agentId, bytes32(batch * 256 + i + 1), SAME);
             }
             vm.prank(auditorA);
-            verification.submitModelAudit(EPOCH, MODEL_A, _evidence(), "", results);
+            verification.submitModelAudit(EPOCH, KBF_AUDIT_TYPE, MODEL_A, _evidence(), "", results);
         }
         assertEq(verification.agentStatus(agentId).verifiedCount, 768, "no per-agent service cap");
         vm.cool(address(verification));
@@ -322,9 +323,9 @@ contract AntseedVerificationTest is Test {
         vm.expectEmit(true, true, true, true, address(verification));
         emit AntseedVerification.ServiceAudited(other, SERVICE_A, auditorA, MODEL_A, DIFF);
         vm.expectEmit(true, true, true, true, address(verification));
-        emit AntseedVerification.ModelAudited(MODEL_A, auditorA, EPOCH, keccak256("evidence"), "ipfs://cid", 2);
+        emit AntseedVerification.ModelAudited(MODEL_A, auditorA, EPOCH, KBF_AUDIT_TYPE, keccak256("evidence"), "ipfs://cid", 2);
         vm.prank(auditorA);
-        verification.submitModelAudit(EPOCH, MODEL_A, keccak256("evidence"), "ipfs://cid", results);
+        verification.submitModelAudit(EPOCH, KBF_AUDIT_TYPE, MODEL_A, keccak256("evidence"), "ipfs://cid", results);
 
         assertTrue(verification.isVerified(agentId));
         assertEq(verification.agentStatus(other).diffCount, 1);
@@ -349,7 +350,7 @@ contract AntseedVerificationTest is Test {
         vm.expectEmit(true, false, false, true, address(verification));
         emit AntseedVerification.AgentStatusChanged(other, 1, 1);
         vm.prank(auditorB);
-        verification.submitModelAudit(EPOCH, MODEL_A, _evidence(), "", results);
+        verification.submitModelAudit(EPOCH, KBF_AUDIT_TYPE, MODEL_A, _evidence(), "", results);
     }
 
     function test_ownerClearsManyServicesInOneCall() public {
@@ -409,7 +410,7 @@ contract AntseedVerificationTest is Test {
         vm.expectEmit(address(verification));
         emit AntseedVerification.UnknownAgentSkipped(999, MODEL_A);
         vm.prank(auditorA);
-        verification.submitModelAudit(EPOCH, MODEL_A, _evidence(), "", results);
+        verification.submitModelAudit(EPOCH, KBF_AUDIT_TYPE, MODEL_A, _evidence(), "", results);
         assertTrue(verification.isVerified(agentId), "known agents in the batch still count");
         assertEq(uint8(verification.serviceStatus(999, SERVICE_A).verdict), uint8(IAntseedVerification.Verdict.NONE));
         assertEq(verification.agentStatus(999).diffCount, 0);
@@ -437,14 +438,14 @@ contract AntseedVerificationTest is Test {
         results[1] = _result(agentId, SERVICE_A, SAME);
         vm.prank(auditorA);
         vm.expectRevert(AntseedVerification.UnknownAgent.selector);
-        verification.submitModelAudit(EPOCH, MODEL_A, evidence, "", results);
+        verification.submitModelAudit(EPOCH, KBF_AUDIT_TYPE, MODEL_A, evidence, "", results);
 
         assertFalse(verification.isVerified(0));
         assertFalse(verification.isVerified(agentId));
         assertEq(verification.epochCredits(EPOCH), 0);
 
         vm.prank(auditorA);
-        verification.submitModelAudit(EPOCH, MODEL_A, evidence, "", _single(agentId, SERVICE_A, SAME));
+        verification.submitModelAudit(EPOCH, KBF_AUDIT_TYPE, MODEL_A, evidence, "", _single(agentId, SERVICE_A, SAME));
         assertTrue(verification.isVerified(agentId));
         assertEq(verification.epochCredits(EPOCH), 1);
     }
@@ -452,13 +453,13 @@ contract AntseedVerificationTest is Test {
     function test_rejectsStaleEpoch() public {
         vm.prank(auditorA);
         vm.expectRevert(AntseedVerification.EpochChanged.selector);
-        verification.submitModelAudit(EPOCH - 1, MODEL_A, keccak256("evidence"), "", _single(agentId, SERVICE_A, SAME));
+        verification.submitModelAudit(EPOCH - 1, KBF_AUDIT_TYPE, MODEL_A, keccak256("evidence"), "", _single(agentId, SERVICE_A, SAME));
     }
 
     function test_sameEvidenceCanBeSubmittedAgain() public {
         vm.startPrank(auditorA);
-        verification.submitModelAudit(EPOCH, MODEL_A, keccak256("evidence"), "", _single(agentId, SERVICE_A, SAME));
-        verification.submitModelAudit(EPOCH, MODEL_A, keccak256("evidence"), "", _single(agentId, SERVICE_A, SAME));
+        verification.submitModelAudit(EPOCH, KBF_AUDIT_TYPE, MODEL_A, keccak256("evidence"), "", _single(agentId, SERVICE_A, SAME));
+        verification.submitModelAudit(EPOCH, KBF_AUDIT_TYPE, MODEL_A, keccak256("evidence"), "", _single(agentId, SERVICE_A, SAME));
         vm.stopPrank();
         assertEq(verification.auditorEpochCredits(EPOCH, auditorA), 1, "per-model cap still holds");
     }
@@ -485,18 +486,20 @@ contract AntseedVerificationTest is Test {
         _expectInvalidResults(results);
     }
 
-    function test_validatesModelAndEvidence() public {
+    function test_validatesAuditTypeModelAndEvidence() public {
         IAntseedVerification.ServiceResult[] memory results = _single(agentId, SERVICE_A, SAME);
         vm.startPrank(auditorA);
         vm.expectRevert(AntseedVerification.InvalidValue.selector);
-        verification.submitModelAudit(EPOCH, bytes32(0), keccak256("evidence"), "", results);
+        verification.submitModelAudit(EPOCH, bytes32(0), MODEL_A, keccak256("evidence"), "", results);
         vm.expectRevert(AntseedVerification.InvalidValue.selector);
-        verification.submitModelAudit(EPOCH, MODEL_A, bytes32(0), "", results);
+        verification.submitModelAudit(EPOCH, KBF_AUDIT_TYPE, bytes32(0), keccak256("evidence"), "", results);
+        vm.expectRevert(AntseedVerification.InvalidValue.selector);
+        verification.submitModelAudit(EPOCH, KBF_AUDIT_TYPE, MODEL_A, bytes32(0), "", results);
         vm.expectRevert(AntseedVerification.InvalidEvidenceUri.selector);
-        verification.submitModelAudit(EPOCH, MODEL_A, keccak256("evidence"), "https://example.com/e", results);
+        verification.submitModelAudit(EPOCH, KBF_AUDIT_TYPE, MODEL_A, keccak256("evidence"), "https://example.com/e", results);
         vm.expectRevert(AntseedVerification.InvalidEvidenceUri.selector);
-        verification.submitModelAudit(EPOCH, MODEL_A, keccak256("evidence"), "ipfs://", results);
-        verification.submitModelAudit(EPOCH, MODEL_A, keccak256("evidence"), "", results);
+        verification.submitModelAudit(EPOCH, KBF_AUDIT_TYPE, MODEL_A, keccak256("evidence"), "ipfs://", results);
+        verification.submitModelAudit(EPOCH, KBF_AUDIT_TYPE, MODEL_A, keccak256("evidence"), "", results);
         vm.stopPrank();
     }
 
@@ -570,7 +573,7 @@ contract AntseedVerificationTest is Test {
 
         vm.prank(auditorA);
         vm.expectRevert(AntseedVerification.EpochChanged.selector);
-        verification.submitModelAudit(EPOCH + 1, MODEL_A, _evidence(), "", _single(agentId, SERVICE_A, SAME));
+        verification.submitModelAudit(EPOCH + 1, KBF_AUDIT_TYPE, MODEL_A, _evidence(), "", _single(agentId, SERVICE_A, SAME));
 
         gate.setCurrentEpoch(EPOCH + 1);
         assertEq(verification.pendingAuditorReward(auditorA, EPOCH), 900 ether);
@@ -606,7 +609,7 @@ contract AntseedVerificationTest is Test {
         gate.setCurrentEpoch(EPOCH + 1);
         pools.setPower(agentId, EPOCH + 1, 50);
         vm.prank(auditorA);
-        verification.submitModelAudit(EPOCH + 1, MODEL_A, _evidence(), "", _single(agentId, SERVICE_A, SAME));
+        verification.submitModelAudit(EPOCH + 1, KBF_AUDIT_TYPE, MODEL_A, _evidence(), "", _single(agentId, SERVICE_A, SAME));
         assertEq(verification.auditorEpochCredits(EPOCH + 1, auditorA), 1);
     }
 
@@ -631,7 +634,7 @@ contract AntseedVerificationTest is Test {
         assertEq(fresh.maxAuditorShareBps(), 2_000);
         fresh.setAuditor(auditorA, true);
         vm.prank(auditorA);
-        fresh.submitModelAudit(EPOCH, MODEL_A, _evidence(), "", _single(agentId, SERVICE_A, SAME));
+        fresh.submitModelAudit(EPOCH, KBF_AUDIT_TYPE, MODEL_A, _evidence(), "", _single(agentId, SERVICE_A, SAME));
         assertTrue(fresh.isVerified(agentId), "status works without rewards");
         assertEq(fresh.epochCredits(EPOCH), 0, "no credit before rewards start");
     }
@@ -834,7 +837,6 @@ contract AntseedVerificationTest is Test {
             address(verification), address(new VerificationPointsAccounting(address(pools))), 1_000, address(this)
         );
         policy.setPenaltyBps(1_000);
-        policy.setPointsStartEpoch(0);
     }
 
     function _sellerPoints(AntseedVerificationPointsPolicy policy) private view returns (uint256 points) {
@@ -863,7 +865,7 @@ contract AntseedVerificationTest is Test {
             expectedAuditRevert = bytes4(0);
         }
         vm.prank(auditor);
-        verification.submitModelAudit(epoch, model, evidence, "ipfs://cid", _single(id, service, verdict));
+        verification.submitModelAudit(epoch, KBF_AUDIT_TYPE, model, evidence, "ipfs://cid", _single(id, service, verdict));
     }
 
     function _clear(uint256 agent, bytes32 service) private {
@@ -884,6 +886,6 @@ contract AntseedVerificationTest is Test {
     function _expectInvalidResults(IAntseedVerification.ServiceResult[] memory results) private {
         vm.prank(auditorA);
         vm.expectRevert(AntseedVerification.InvalidResults.selector);
-        verification.submitModelAudit(EPOCH, MODEL_A, _evidence(), "", results);
+        verification.submitModelAudit(EPOCH, KBF_AUDIT_TYPE, MODEL_A, _evidence(), "", results);
     }
 }

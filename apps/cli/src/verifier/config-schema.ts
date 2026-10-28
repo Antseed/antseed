@@ -200,6 +200,11 @@ export const VerifierConfigSchema = strictObject({
   referenceRetryBaseDelayMs: positiveIntegerSchema.optional(),
   referenceMaxNoProgressRounds: positiveIntegerSchema.optional(),
   referenceSelfTestRuns: positiveIntegerSchema.optional(),
+  /**
+   * When no thinking-suppression strategy works for a reference model, keep building in
+   * "bare" mode with a 50x token budget instead of stopping (KBF reference code: --allow-thinking).
+   */
+  referenceAllowThinking: z.boolean().optional(),
   referenceMaxConcurrentRequests: positiveIntegerSchema.optional(),
   referenceMaxConcurrentRequestsPerModel: positiveIntegerSchema.optional(),
   referenceMinimumProbeCount: probeCountSchema.optional(),

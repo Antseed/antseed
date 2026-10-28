@@ -63,6 +63,22 @@ export function auditPriceRejection(offer: TokenPricingUsdPerMillion, cap: Audit
   return null
 }
 
+/**
+ * Why the buyer's own price cap would refuse sellers the audit allows, or null when it doesn't.
+ * Audit requests go through the local buyer, which refuses any seller above `buyer.maxPricing`.
+ * If that cap is below a model's audit cap, sellers priced in between would fail mid-audit
+ * instead of being audited, so the model is not audited until the buyer cap is raised.
+ */
+export function buyerCapShortfall(buyerMax: TokenPricingUsdPerMillion, cap: AuditPriceCap): string | null {
+  const maxInput = cap.reference.inputUsdPerMillion * cap.ratio
+  const maxOutput = cap.reference.outputUsdPerMillion * cap.ratio
+  if (buyerMax.inputUsdPerMillion >= maxInput && buyerMax.outputUsdPerMillion >= maxOutput) return null
+  const required = `${formatUsd(Math.max(buyerMax.inputUsdPerMillion, maxInput))}/${formatUsd(Math.max(buyerMax.outputUsdPerMillion, maxOutput))}`
+  return `the buyer price cap (buyer.maxPricing.defaults) ${formatUsd(buyerMax.inputUsdPerMillion)}/${formatUsd(buyerMax.outputUsdPerMillion)} per 1M`
+    + ` is below the ${cap.model} audit cap ${formatUsd(maxInput)}/${formatUsd(maxOutput)}, so the buyer would refuse sellers priced in between.`
+    + ` Raise it to at least ${required} and restart the buyer`
+}
+
 /** `claude-fable-5.1 ≤ $10/$50 (OpenRouter)` for the run log. */
 export function describeAuditPriceCap(cap: AuditPriceCap): string {
   const source = cap.source === 'catalog' ? 'reference catalog' : cap.source === 'configured' ? 'verifier.models pricing' : 'reference route'

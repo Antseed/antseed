@@ -114,3 +114,28 @@ describe('isKbfSamplingFieldRejection', () => {
     expect(isKbfSamplingFieldRejection(500, '`temperature` is deprecated for this model.')).toBe(false);
   });
 });
+
+describe('isKbfThinkingSuppressionRejection', () => {
+  it('recognises refused reasoning, thinking and prefill fields', async () => {
+    const { isKbfThinkingSuppressionRejection } = await import('../src/verifiers/kbf/prompts.js');
+    expect(isKbfThinkingSuppressionRejection(400, 'Reasoning is mandatory for this endpoint and cannot be disabled.')).toBe(true);
+    expect(isKbfThinkingSuppressionRejection(400, 'unsupported chat feature for claude messages: reasoning')).toBe(true);
+    expect(isKbfThinkingSuppressionRejection(400, 'This model does not support assistant message prefill.')).toBe(true);
+    expect(isKbfThinkingSuppressionRejection(422, 'enable_thinking: Extra inputs are not permitted')).toBe(true);
+    expect(isKbfThinkingSuppressionRejection(400, '`temperature` is deprecated for this model.')).toBe(false);
+    expect(isKbfThinkingSuppressionRejection(500, 'reasoning is not supported')).toBe(false);
+  });
+});
+
+describe('kbfTargetThinkingSuppression', () => {
+  it('keeps only the suppression fields and prefill of the reference request', async () => {
+    const { kbfTargetThinkingSuppression } = await import('../src/verifiers/kbf/reference.js');
+    const base = { queryProfile: {} as never };
+    expect(kbfTargetThinkingSuppression({ ...base, generator: { name: 'x', version: '1', verifierKind: 'kbf', params: {
+      referenceEndpointRequest: { reasoningStrategy: 'disable-thinking', requestOverrides: { thinking: { type: 'disabled' }, provider: {} }, requestOmissions: ['top_p'] },
+    } } })).toEqual({ strategy: 'disable-thinking', overrides: { thinking: { type: 'disabled' } } });
+    expect(kbfTargetThinkingSuppression({ ...base, generator: { name: 'x', version: '1', verifierKind: 'kbf', params: {
+      referenceEndpointRequest: { reasoningStrategy: 'bare', requestOverrides: {}, requestOmissions: [] },
+    } } })).toBeNull();
+  });
+});

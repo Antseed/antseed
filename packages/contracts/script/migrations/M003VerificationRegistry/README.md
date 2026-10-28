@@ -9,14 +9,14 @@ protocol registry pointers. M002 is not a prerequisite.
 
 After M003:
 
-- **Points policy starts off.** Every settlement runs through the new policy, but no
-  seller's points change until the policy owner calls `setPointsStartEpoch(epoch)`
-  (default `type(uint256).max` = off; setting it back to that turns it off again), so
-  sellers have time to adjust. The epoch comes from the verification contract's pinned
-  emissions gate. Tune it with `setBonusBps` (e.g. 100 = +1% per verified model, capped
-  at +50% in total) and `setPenaltyBps` (uncapped, per DIFF model; starts at 0). A DIFF
-  only affects its own model.
-  Removing the policy from the registry also turns it off without a redeploy.
+- **Points change only through the rates.** Every settlement runs through the new
+  policy. It scales seller points by `bonusBps` (from `VERIFICATION_BONUS_BPS`, default
+  0; e.g. 100 = +1% per verified model, capped at +50% in total) and `penaltyBps`
+  (uncapped, per DIFF model; starts at 0). With both at 0 no seller's points change.
+  A rate set with `setBonusBps` or `setPenaltyBps` applies from the next settlement on;
+  there is no separate start epoch, so announce rate changes to sellers before sending
+  them. Setting both back to 0, or removing the policy from the registry, turns it off
+  without a redeploy. A DIFF only affects its own model.
 - **Auditor rewards stay off.** Audits record status but earn no credits until the
   verification owner calls `setRewardsStartEpoch(epoch)`. To launch rewards:
   1. The emissions-gate owner hands the verification bucket to the contract:

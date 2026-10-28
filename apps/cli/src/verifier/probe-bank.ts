@@ -9,6 +9,8 @@ import {
   computeContrastDetection,
   computeReferenceId,
   referenceCompatibilityProfileHash,
+  rescoreKbfReference,
+  rescoreKbfSelfTestOutcome,
   validateKbfReferenceV1,
   type KbfProbe,
   type KbfReferenceV1,
@@ -22,7 +24,11 @@ import type {
   ReferenceUpstreamProvenanceV1,
 } from './model-reference.js'
 import { excludedVerifierDomains } from './model-config.js'
-import { isReferenceProbeCountAllowed, resolveReferenceSizingPolicy } from './reference-sizing.js'
+import {
+  isReferenceProbeCountAllowed,
+  REFERENCE_MAXIMUM_SELF_TEST_ERROR_RATE,
+  resolveReferenceSizingPolicy,
+} from './reference-sizing.js'
 import { safeServiceSlug } from './slug.js'
 import { normalized } from './utils.js'
 
@@ -170,7 +176,7 @@ export async function appendModelReferenceToBank(input: {
       trustImported: true,
       minimumStatisticalPower: Number.EPSILON,
     })
-    const existing = await readJsonIfExists<ProbeBankV1>(path)
+    const existing = await readBankFile(path)
     const incoming = bankFromReference(
       input.model,
       validatedReference,
@@ -266,7 +272,7 @@ export async function loadBankReferenceExchanges(
   model: string,
 ): Promise<Array<BankReferenceExchangesV1 & { absolutePath: string }>> {
   const path = bankPath(banksDir, model)
-  const bank = await readJsonIfExists<ProbeBankV1>(path)
+  const bank = await readBankFile(path)
   return (bank?.referenceExchanges ?? []).map((entry) => ({ ...entry, absolutePath: join(dirname(path), entry.path) }))
 }
 
@@ -492,7 +498,7 @@ export async function loadModelAuditReservation(input: {
       epoch: assignment.epoch,
       config: input.config,
     })
-    if (reference.referenceId !== assignment.referenceId
+    if (!matchesReservedReferenceId(assignment.referenceId, sellerEpochReference.reference, reference)
       || !sameValues(reference.probes.map((probe) => probe.id), assignment.probeIds)) {
       throw new Error(`audit reservation ${input.auditId} does not match its seller epoch probe reference`)
     }
@@ -510,7 +516,7 @@ export async function loadModelAuditReservation(input: {
       epoch: assignment.epoch,
       config: input.config,
     })
-    if (reference.referenceId !== assignment.referenceId
+    if (!matchesReservedReferenceId(assignment.referenceId, epochReference.reference, reference)
       || !sameValues(reference.probes.map((probe) => probe.id), assignment.probeIds)) {
       throw new Error(`audit reservation ${input.auditId} does not match its epoch probe reference`)
     }
@@ -533,6 +539,15 @@ export async function loadModelAuditReservation(input: {
     throw new Error(`audit reservation ${input.auditId} is incompatible with the current probe bank`)
   }
   return { reference, assignment: structuredClone(assignment) }
+}
+
+/**
+ * A reservation names the reference ID it was drawn with. A reference stored before
+ * unscoreable answers were left out gets a new ID once re-scored; it is still the same
+ * reservation (same probes), so either ID matches.
+ */
+function matchesReservedReferenceId(reservedId: string, stored: KbfReferenceV1, rescored: KbfReferenceV1): boolean {
+  return reservedId === rescored.referenceId || reservedId === stored?.referenceId
 }
 
 export async function voidModelAuditReference(input: {
@@ -723,7 +738,10 @@ function validateBankProbeReference(input: {
 }): KbfReferenceV1 {
   const { bank, label } = input
   const sizing = resolveReferenceSizingPolicy(input.config)
-  const reference = validateKbfReferenceV1(input.reference, {
+  // References drawn before unscoreable answers were left out are re-scored like the bank.
+  const reference = validateKbfReferenceV1(rescoreKbfReference(validateKbfReferenceV1(input.reference, {
+    minimumStatisticalPower: Number.EPSILON,
+  })), {
     minimumStatisticalPower: sizing.minimumStatisticalPower,
   })
   if (!isReferenceProbeCountAllowed(reference.probes.length, sizing)) {
@@ -761,7 +779,7 @@ export async function inspectModelProbeBankPower(input: {
   now?: () => number
 }): Promise<ProbeBankPowerStatus> {
   const path = bankPath(input.banksDir, input.model)
-  const bank = await readJsonIfExists<ProbeBankV1>(path)
+  const bank = await readBankFile(path)
   if (!bank) {
     return { totalProbeCount: 0, eligibleProbeCount: 0, selectedProbeCount: null, statisticalPower: null }
   }
@@ -825,8 +843,10 @@ export async function findEpochProbeReference(banksDir: string, referenceId: str
       if (!entry.isFile() || !entry.name.endsWith('.json')) continue
       const value = await readJsonIfExists<EpochProbeReferenceV1 | SellerEpochProbeReferenceV1>(path)
       if ((value?.kind === 'antseed-kbf-seller-epoch-probe-reference' || value?.kind === 'antseed-kbf-epoch-probe-reference')
-        && value.reference?.referenceId === referenceId) {
-        return structuredClone(value.reference)
+        && value.reference) {
+        if (value.reference.referenceId === referenceId) return structuredClone(value.reference)
+        const rescored = rescoredOrNull(value.reference)
+        if (rescored?.referenceId === referenceId) return rescored
       }
     }
     return null
@@ -843,6 +863,14 @@ export async function findEpochProbeReference(banksDir: string, referenceId: str
     if (found) return found
   }
   return null
+}
+
+function rescoredOrNull(reference: KbfReferenceV1): KbfReferenceV1 | null {
+  try {
+    return rescoreKbfReference(structuredClone(reference))
+  } catch {
+    return null
+  }
 }
 
 function bankFromReference(
@@ -945,7 +973,7 @@ export async function loadBankProbeIndex(
   banksDir: string,
   model: string,
 ): Promise<{ contrastModels: string[]; probeIds: string[] } | undefined> {
-  const bank = await readJsonIfExists<ProbeBankV1>(bankPath(banksDir, model))
+  const bank = await readBankFile(bankPath(banksDir, model))
   if (!bank) return undefined
   if (bank.kind !== 'antseed-kbf-probe-bank' || normalized(bank.model) !== normalized(model)) {
     throw new Error(`invalid probe bank for ${model}`)
@@ -955,7 +983,7 @@ export async function loadBankProbeIndex(
 }
 
 export async function loadBankEnrollmentReference(banksDir: string, model: string): Promise<KbfReferenceV1 | undefined> {
-  const bank = await readJsonIfExists<ProbeBankV1>(bankPath(banksDir, model))
+  const bank = await readBankFile(bankPath(banksDir, model))
   if (!bank) return undefined
   if (bank.kind !== 'antseed-kbf-probe-bank' || normalized(bank.model) !== normalized(model)) {
     throw new Error(`invalid probe bank for ${model}`)
@@ -1035,7 +1063,7 @@ function selectPoweredReference(
       alpha: bank.statisticalAssumptions.alpha,
       cpConfidence: bank.statisticalAssumptions.clopperPearsonConfidence,
     })
-    if (selfTest.coverage < 0.8 || selfTest.errorRate > 0.35
+    if (selfTest.coverage < 0.8 || selfTest.errorRate > REFERENCE_MAXIMUM_SELF_TEST_ERROR_RATE
       || power.power < sizing.minimumStatisticalPower) continue
     const selectedIds = new Set(selected.map((entry) => entry.probe.id))
     const contrasts = bank.contrastModels.map((model) => ({
@@ -1085,8 +1113,22 @@ function cryptoShuffle<T>(values: readonly T[]): T[] {
   return shuffled
 }
 
-async function readRequiredBank(path: string, model: string): Promise<ProbeBankV1> {
+/**
+ * Reads a bank and re-scores its self-test runs with the current rule (unscoreable answers
+ * are null, not 0), so banks enrolled before that rule need no rebuild. Deterministic, so
+ * every reader derives the same references from the same file.
+ */
+async function readBankFile(path: string): Promise<ProbeBankV1 | null> {
   const bank = await readJsonIfExists<ProbeBankV1>(path)
+  if (!bank || !Array.isArray(bank.probes)) return bank
+  for (const entry of bank.probes) {
+    if (entry?.probe && entry.selfTest) entry.selfTest = rescoreKbfSelfTestOutcome(entry.selfTest, entry.probe)
+  }
+  return bank
+}
+
+async function readRequiredBank(path: string, model: string): Promise<ProbeBankV1> {
+  const bank = await readBankFile(path)
   if (!bank) throw new Error(`no probe bank exists for ${model}; run antseed verifier reference build ${model}`)
   if (!Array.isArray(bank.referenceCosts)) {
     throw new Error(`probe bank for ${model} has no reference cost metadata; rebuild it`)

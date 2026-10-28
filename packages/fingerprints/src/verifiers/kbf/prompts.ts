@@ -146,7 +146,7 @@ export function buildKbfPrompt(
 }
 
 export interface KbfChatMessage {
-  role: 'system' | 'user';
+  role: 'system' | 'user' | 'assistant';
   content: string;
 }
 
@@ -180,10 +180,11 @@ export function buildKbfChatRequestBody(
 
 /**
  * Sampling fields an audit drops when an endpoint refuses them. Some newer
- * models fix their own sampling and reject `temperature`/`top_p` outright, so
- * leaving them out asks for the same deterministic answer the reference holds.
+ * models fix their own sampling and reject `temperature` outright, so leaving
+ * it out asks for the same deterministic answer the reference holds. Audits
+ * never send `top_p` (the KBF reference code does not either).
  */
-export const KBF_OPTIONAL_SAMPLING_FIELDS = ['temperature', 'top_p'] as const;
+export const KBF_OPTIONAL_SAMPLING_FIELDS = ['temperature'] as const;
 
 /**
  * True when an HTTP 400/422 error says the endpoint does not accept `temperature`
@@ -197,4 +198,20 @@ export function isKbfSamplingFieldRejection(status: number | undefined, errorTex
   if (!/\b(temperature|top[_\s-]?p)\b/.test(text)) return false;
   if (/only\s+[\d.]+\s+(is\s+)?allowed|must be (one of:?\s*)?[\d.]+|invalid temperature/.test(text)) return false;
   return /deprecat|unsupported|not supported|does not support|doesn't support|unknown|unrecognized|not permitted|not allowed|rejected|remove it|extra (inputs|fields)|cannot be (used|set|specified)|not available/.test(text);
+}
+
+/**
+ * True when an HTTP 400/422 error refuses a thinking-suppression field (`reasoning`,
+ * `reasoning_effort`, `thinking`, `enable_thinking`) or an assistant prefill, so the
+ * request can be sent again without it. Audits send the reference's suppression to
+ * the target, as the KBF reference code does for every endpoint.
+ */
+export function isKbfThinkingSuppressionRejection(status: number | undefined, errorText: string): boolean {
+  if (status !== 400 && status !== 422) return false;
+  const text = errorText.toLowerCase();
+  if (/unsupported chat feature for claude messages:\s*reasoning/.test(text)) return true;
+  if (/reasoning is mandatory|cannot be disabled/.test(text)) return true;
+  if (/(assistant message prefill|prefill)/.test(text)) return true;
+  if (!/\b(reasoning(_effort)?|thinking|enable_thinking|effort)\b/.test(text)) return false;
+  return /deprecat|unsupported|not supported|does not support|doesn't support|unknown|unrecognized|not permitted|not allowed|rejected|invalid|extra (inputs|fields)|cannot be (used|set|specified|disabled)|not available|mandatory/.test(text);
 }

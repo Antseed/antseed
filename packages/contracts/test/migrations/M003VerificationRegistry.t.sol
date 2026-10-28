@@ -24,6 +24,7 @@ contract M003UsageAccounting {
 }
 
 contract M003VerificationRegistryTest is Test {
+    bytes32 private constant KBF_AUDIT_TYPE = keccak256("kbf-model-identity/v1");
     M003DeployVerificationRegistry private script;
     AntseedRegistry private registry;
     MockERC8004Registry private identity;
@@ -132,7 +133,7 @@ contract M003VerificationRegistryTest is Test {
             agentId: agentId, serviceHash: keccak256("service"), verdict: IAntseedVerification.Verdict.SAME
         });
         vm.prank(auditor);
-        verification.submitModelAudit(0, keccak256("model"), keccak256("evidence"), "ipfs://evidence", results);
+        verification.submitModelAudit(0, KBF_AUDIT_TYPE, keccak256("model"), keccak256("evidence"), "ipfs://evidence", results);
         assertTrue(verification.isVerified(agentId));
     }
 
@@ -251,14 +252,13 @@ contract M003VerificationRegistryTest is Test {
             agentId: agentId, serviceHash: keccak256("service"), verdict: IAntseedVerification.Verdict.SAME
         });
         vm.prank(auditor);
-        verification.submitModelAudit(0, keccak256("model"), keccak256("evidence"), "", results);
+        verification.submitModelAudit(0, KBF_AUDIT_TYPE, keccak256("model"), keccak256("evidence"), "", results);
         (uint256 sellerPoints,) = pointsPolicyRegistry.points(bytes32(0), address(0xB0), seller, 1_000_000);
-        assertEq(sellerPoints, 1_000_000, "points policy is off until the owner sets a start epoch");
+        assertEq(sellerPoints, 1_010_000, "the deployed bonus applies at once");
 
-        uint256 epoch = gate.currentEpoch();
         vm.prank(owner);
-        policy.setPointsStartEpoch(epoch);
+        policy.setBonusBps(0);
         (sellerPoints,) = pointsPolicyRegistry.points(bytes32(0), address(0xB0), seller, 1_000_000);
-        assertEq(sellerPoints, 1_010_000);
+        assertEq(sellerPoints, 1_000_000, "zero rates leave points unchanged");
     }
 }
