@@ -1,16 +1,13 @@
 import type { AntseedProviderPlugin, Provider, ProviderStreamCallbacks, SerializedHttpRequest, ServiceCapabilities, ServiceHealthStatus, UpstreamAccountStatus, VideoInputKind } from '@antseed/node';
 import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, validateServiceCapabilityFields } from '@antseed/node';
-import { nativeVideoFacts, nativeVideoRoute, parseJsonObject, requestService } from '@antseed/api-adapter';
+import { nativeVideoRoute, parseJsonObject, requestService } from '@antseed/api-adapter';
 import {
-  createVideoSourcePrecheck,
-  imageInputProblem,
   parseCsv,
   parseServiceCapabilitiesJson,
   parseServiceUnitBillingModelsJson,
   streamVideoResponse,
   videoDownloadError as error,
   videoDownloadSignal,
-  type ImageInputRule,
 } from '@antseed/provider-core';
 
 export const FAL_DEFAULT_BASE_URL = 'https://queue.fal.run';
@@ -49,45 +46,13 @@ export interface FalInputSchema {
   fields: string[];
   /** Fields the endpoint requires. */
   required: string[];
-  /** fal's limits on the source video (`video_url`), from its `x-fal` metadata. */
-  videoLimits?: FalVideoLimits;
-  /** Description of the `duration` field, when it has one. */
-  durationDescription?: string;
-  /** fal's `x-fal` limits on each input image field (for example motion control's `image_url`). */
-  imageLimits?: Record<string, ImageInputRule>;
+  /** Source length range fal states in `video_url`'s `x-fal` metadata, in seconds. */
+  sourceSeconds?: { min?: number; max?: number };
   /** The `resolution` field's allowed values, when the schema lists them. */
   resolutions?: string[];
 }
 
-/** fal's `x-fal` limits on a source video. */
-export interface FalVideoLimits {
-  minSeconds?: number;
-  maxSeconds?: number;
-  maxBytes?: number;
-  minWidth?: number;
-  minHeight?: number;
-  maxWidth?: number;
-  maxHeight?: number;
-  minAspectRatio?: number;
-  maxAspectRatio?: number;
-  minFps?: number;
-  maxFps?: number;
-}
-
-const X_FAL_VIDEO_LIMITS: Record<keyof FalVideoLimits, string> = {
-  minSeconds: 'min_duration', maxSeconds: 'max_duration', maxBytes: 'max_file_size',
-  minWidth: 'min_width', minHeight: 'min_height', maxWidth: 'max_width', maxHeight: 'max_height',
-  minAspectRatio: 'min_aspect_ratio', maxAspectRatio: 'max_aspect_ratio', minFps: 'min_fps', maxFps: 'max_fps',
-};
-
-/** Input image fields whose `x-fal` limits are checked before payment, for inline (data URL) images. */
-const IMAGE_LIMIT_FIELDS = ['image_url', 'start_image_url', 'end_image_url', 'tail_image_url', 'reference_image_url'] as const;
-const X_FAL_IMAGE_LIMITS: Record<keyof ImageInputRule, string> = {
-  maxBytes: 'max_file_size', minWidth: 'min_width', minHeight: 'min_height', maxWidth: 'max_width', maxHeight: 'max_height',
-  minAspectRatio: 'min_aspect_ratio', maxAspectRatio: 'max_aspect_ratio',
-};
-
-/** Reads an endpoint's input fields, required fields and source video limits from its fal OpenAPI schema. */
+/** Reads an endpoint's input fields, required fields, source length range and resolutions from its fal OpenAPI schema. */
 export function falInputSchema(schema: Record<string, unknown> | null, endpointId: string): FalInputSchema | null {
   const paths = schema?.paths as Record<string, any> | undefined;
   const ref = paths?.[`/${endpointId}`]?.post?.requestBody?.content?.['application/json']?.schema?.$ref;
@@ -101,19 +66,8 @@ export function falInputSchema(schema: Record<string, unknown> | null, endpointI
   const required = Array.isArray(input.required) ? input.required.filter((field: unknown): field is string => typeof field === 'string' && fields.includes(field)) : [];
   const limits = properties.video_url?.['x-fal'];
   const number = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
-  const videoLimits = limits && typeof limits === 'object'
-    ? Object.fromEntries(Object.entries(X_FAL_VIDEO_LIMITS).map(([key, name]) => [key, number(limits[name])])
-      .filter(([, value]) => value !== undefined)) as FalVideoLimits
-    : undefined;
-  const durationDescription = typeof properties.duration?.description === 'string' ? properties.duration.description : undefined;
-  const imageLimits: Record<string, ImageInputRule> = {};
-  for (const field of IMAGE_LIMIT_FIELDS) {
-    const xfal = properties[field]?.['x-fal'];
-    if (!xfal || typeof xfal !== 'object') continue;
-    const rule = Object.fromEntries(Object.entries(X_FAL_IMAGE_LIMITS).map(([key, name]) => [key, number(xfal[name])])
-      .filter(([, value]) => value !== undefined)) as ImageInputRule;
-    if (Object.keys(rule).length > 0) imageLimits[field] = rule;
-  }
+  const min = number(limits?.min_duration);
+  const max = number(limits?.max_duration);
   const resolutionEnum = properties.resolution?.enum;
   const resolutions = Array.isArray(resolutionEnum) && resolutionEnum.length > 0 && resolutionEnum.length <= 16
     && resolutionEnum.every((value: unknown) => typeof value === 'string' && value.length > 0 && value.length <= 32)
@@ -121,9 +75,7 @@ export function falInputSchema(schema: Record<string, unknown> | null, endpointI
     : undefined;
   return {
     parameters, fields, required,
-    ...(videoLimits && Object.keys(videoLimits).length > 0 ? { videoLimits } : {}),
-    ...(durationDescription ? { durationDescription } : {}),
-    ...(Object.keys(imageLimits).length > 0 ? { imageLimits } : {}),
+    ...(min !== undefined || max !== undefined ? { sourceSeconds: { ...(min !== undefined ? { min } : {}), ...(max !== undefined ? { max } : {}) } } : {}),
     ...(resolutions ? { resolutions } : {}),
   };
 }
@@ -132,14 +84,6 @@ export function falInputSchema(schema: Record<string, unknown> | null, endpointI
 export function falInputParameters(schema: Record<string, unknown> | null, endpointId: string): string[] | null {
   return falInputSchema(schema, endpointId)?.parameters ?? null;
 }
-
-/**
- * Source video lengths fal states only in a field description, in seconds.
- * Schemas with `x-fal` limits on `video_url` need no entry.
- */
-const KNOWN_SOURCE_SECONDS: Record<string, { minSeconds: number; maxSeconds: number }> = {
-  'minimax/h3-max/recast': { minSeconds: 5, maxSeconds: 30 },
-};
 
 /** Fields of a video-to-video endpoint that carry each media input. */
 const EDIT_INPUT_FIELDS: Record<VideoInputKind, readonly string[]> = {
@@ -153,34 +97,19 @@ const EDIT_INPUT_FIELDS: Record<VideoInputKind, readonly string[]> = {
 };
 
 /** How the seller handles a video-to-video endpoint (one with a `video_url` field). */
-export interface FalEditRule extends FalVideoLimits {
-  /** Fields the endpoint requires. */
-  required: string[];
-  /** Limits on inline input images, by field. */
-  imageLimits?: Record<string, ImageInputRule>;
+export interface FalEditRule {
   /**
    * The endpoint has no `duration` field, so its output is as long as the
-   * source: the buyer's `duration` (what it pays for) must match the source,
-   * and is removed before the request goes to fal.
+   * source: the buyer's `duration` (what it pays for) is removed before the
+   * request goes to fal.
    */
   outputFollowsSource: boolean;
-  /**
-   * The endpoint cuts the source to `duration` (its schema says the duration
-   * defaults to, or is cut from, the source), so `duration` may not exceed it.
-   */
-  durationAtMostSource: boolean;
 }
 
 /** The seller's handling of a video-to-video endpoint, or null for other endpoints. */
-export function falEditRule(endpointId: string, input: FalInputSchema | null): FalEditRule | null {
+export function falEditRule(input: FalInputSchema | null): FalEditRule | null {
   if (!input?.fields.includes('video_url')) return null;
-  const limits = { ...KNOWN_SOURCE_SECONDS[endpointId], ...input.videoLimits };
-  const outputFollowsSource = !input.fields.includes('duration');
-  return {
-    required: input.required, ...limits, outputFollowsSource,
-    ...(input.imageLimits ? { imageLimits: input.imageLimits } : {}),
-    durationAtMostSource: !outputFollowsSource && /source|input video|truncat/i.test(input.durationDescription ?? ''),
-  };
+  return { outputFollowsSource: !input.fields.includes('duration') };
 }
 
 /**
@@ -195,8 +124,11 @@ export function withEditInputs(capabilities: ServiceCapabilities, input: FalInpu
   const configured = capabilities.video ?? {};
   const inputs = configured.inputs ? [...configured.inputs, ...kinds.filter(kind => !configured.inputs!.includes(kind))] : kinds;
   const requiredInputs = configured.requiredInputs ?? (required.length > 0 ? required : undefined);
-  const durations = rule.outputFollowsSource && rule.minSeconds !== undefined && rule.maxSeconds !== undefined
-    ? Array.from({ length: Math.max(0, Math.floor(rule.maxSeconds) - Math.ceil(rule.minSeconds) + 1) }, (_, i) => Math.ceil(rule.minSeconds!) + i)
+  // When the output is as long as the source, the durations a buyer may pay for are the source lengths fal takes.
+  const min = input.sourceSeconds?.min;
+  const max = input.sourceSeconds?.max;
+  const durations = rule.outputFollowsSource && min !== undefined && max !== undefined
+    ? Array.from({ length: Math.max(0, Math.floor(max) - Math.ceil(min) + 1) }, (_, i) => Math.ceil(min) + i)
     : [];
   return {
     ...capabilities,
@@ -405,9 +337,8 @@ const plugin: AntseedProviderPlugin = {
     // Off once fal says the seller key can't read billing; the key's permissions don't change while running.
     let balanceCheck = true;
 
-    // Video-to-video endpoints: checked before payment, and `duration` removed when fal takes none.
+    // Video-to-video endpoints: `duration` is removed when fal takes none.
     const editRules = new Map<string, FalEditRule>();
-    const precheckSource = createVideoSourcePrecheck();
 
     // Announces each endpoint's own input field names, so buyers can call fal's API unchanged.
     const init = async () => {
@@ -417,7 +348,7 @@ const plugin: AntseedProviderPlugin = {
           const input = response.ok ? falInputSchema(await readJson(response), service) : null;
           const capabilities = serviceCapabilities[service]!;
           if (input?.parameters && !capabilities.supportedParameters) capabilities.supportedParameters = input.parameters;
-          const rule = falEditRule(service, input);
+          const rule = falEditRule(input);
           if (rule) {
             editRules.set(service, rule);
             serviceCapabilities[service] = withEditInputs(capabilities, input, rule);
@@ -508,39 +439,6 @@ const plugin: AntseedProviderPlugin = {
       getCapacity: () => ({ current: active, max: maxConcurrency }),
       init,
       handleRequest,
-      async precheckRequest(request, { buyerPeerId }) {
-        const { videoRoute, service } = route(request);
-        const rule = service ? editRules.get(service) : undefined;
-        if (videoRoute?.action !== 'create' || !rule) return null;
-        const body = parseJsonObject(request.body);
-        if (!body) return null;
-        const missing = rule.required.filter(field => body[field] === undefined || body[field] === null);
-        if (missing.length > 0) {
-          return error(request, 400, 'missing_required_field', `This model requires ${missing.join(', ')}`);
-        }
-        for (const [field, limits] of Object.entries(rule.imageLimits ?? {})) {
-          const problem = imageInputProblem(body[field], limits, field);
-          if (problem) return error(request, 400, 'invalid_image_input', problem);
-        }
-        const source = body.video_url;
-        if (source === undefined) return null;
-        if (typeof source !== 'string') return error(request, 400, 'invalid_video_source', 'video_url must be a string');
-        let declared: number | undefined;
-        try {
-          declared = nativeVideoFacts(request)?.duration;
-        } catch {
-          return null;
-        }
-        return precheckSource(request, buyerPeerId, source, declared, {
-          ...(rule.minSeconds !== undefined ? { minSeconds: rule.minSeconds } : {}),
-          ...(rule.maxSeconds !== undefined ? { maxSeconds: rule.maxSeconds } : {}),
-          ...(rule.maxBytes !== undefined ? { maxBytes: rule.maxBytes } : {}),
-          ...Object.fromEntries((['minWidth', 'minHeight', 'maxWidth', 'maxHeight', 'minAspectRatio', 'maxAspectRatio', 'minFps', 'maxFps'] as const)
-            .filter(key => rule[key] !== undefined).map(key => [key, rule[key]])),
-          durationMatchesSource: rule.outputFollowsSource && declared !== undefined,
-          durationAtMostSource: rule.durationAtMostSource,
-        });
-      },
       async checkServiceHealth(checked) {
         const statuses = await readFalModelStatuses(FAL_PLATFORM_URL, authorization, checked);
         return Object.fromEntries(checked.map((service): [string, ServiceHealthStatus] => {

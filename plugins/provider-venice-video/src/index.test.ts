@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Provider, ProviderStreamCallbacks, SerializedHttpRequest } from '@antseed/node';
-import plugin, { VENICE_MAX_BODY_BYTES, veniceAcceptsEndFrame, veniceEditCapabilities, veniceEditRule, veniceInputParameters, veniceReferenceImages, terminalRetrieveFailure } from './index.js';
+import plugin, { VENICE_MAX_BODY_BYTES, veniceAcceptsEndFrame, isVeniceEditModel, veniceEditCapabilities, veniceInputParameters, veniceReferenceImages, terminalRetrieveFailure } from './index.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -313,31 +313,13 @@ describe('video-to-video models', () => {
     await provider.init!();
     return { provider, fetchMock };
   };
-  const mp4 = (durationMs: number) => {
-    const box = (type: string, body: Buffer) => {
-      const head = Buffer.alloc(8);
-      head.writeUInt32BE(8 + body.length);
-      head.write(type, 4, 'latin1');
-      return Buffer.concat([head, body]);
-    };
-    const mvhd = Buffer.alloc(20);
-    mvhd.writeUInt32BE(1000, 12);
-    mvhd.writeUInt32BE(durationMs, 16);
-    return Buffer.concat([box('ftyp', Buffer.from('isom\0\0\0\0isom', 'latin1')), box('moov', box('mvhd', mvhd)), box('mdat', Buffer.alloc(100))]);
-  };
-  const source = (durationMs: number) => `data:video/mp4;base64,${mp4(durationMs).toString('base64')}`;
   const create = (model: string, body: object, requestId = 'r') => ({ ...request('/api/v1/video/queue', { model, ...body }), requestId });
   const parse = (body: Uint8Array) => JSON.parse(Buffer.from(body).toString());
-  const refusal = (response: { statusCode: number; body: Uint8Array } | null | undefined) => {
-    const parsed = response ? parse(response.body).error : undefined;
-    return [response?.statusCode, parsed?.code, parsed?.message];
-  };
-
-  it('reads the source-length rule from Venice constraints', () => {
-    expect(veniceEditRule(RECAST)).toEqual({ minSeconds: 5, maxSeconds: 30, required: ['reference_image_urls'], outputFollowsSource: true });
-    expect(veniceEditRule(MOTION)).toEqual({ minSeconds: 3, maxSeconds: 30, required: ['prompt'], outputFollowsSource: true });
-    expect(veniceEditRule(GROK)).toEqual({ required: ['prompt'], outputFollowsSource: false });
-    expect(veniceEditRule(veniceModel('wan-2.5', { model_type: 'image-to-video', durations: ['5s'] }))).toBeNull();
+  it('detects video-to-video models from Venice constraints', () => {
+    expect(isVeniceEditModel(RECAST)).toBe(true);
+    expect(isVeniceEditModel(GROK)).toBe(true);
+    expect(isVeniceEditModel(TEXT)).toBe(false);
+    expect(isVeniceEditModel(undefined)).toBe(false);
   });
 
   it('asks Venice for free whether a model takes reference images', async () => {
@@ -351,75 +333,38 @@ describe('video-to-video models', () => {
     expect(await veniceReferenceImages('https://api.venice.ai', 'k', 'm')).toBeNull();
   });
 
-  it('announces the source video, the character image and its field, and source-length durations', async () => {
+  it('announces the source video, the image and the reference images Venice says a model takes', async () => {
     const recast = (await ready(RECAST)).provider.serviceCapabilities?.['minimax-h3-max-recast'];
     expect(recast).toEqual({
       outputs: ['video'],
-      supportedParameters: ['duration', 'prompt', 'reference_image_urls', 'resolution', 'video_url'],
-      video: { inputs: ['video', 'reference_image'], requiredInputs: ['video', 'reference_image'], durationsSeconds: Array.from({ length: 26 }, (_, i) => i + 5), resolutions: ['768P', '1080P'] },
+      supportedParameters: ['duration', 'image_url', 'prompt', 'reference_image_urls', 'resolution', 'video_url'],
+      video: { inputs: ['video', 'reference_image'], requiredInputs: ['video', 'reference_image'], resolutions: ['768P', '1080P'] },
     });
-    // Motion control takes the character as `image_url`, though Venice rejects reference images.
+    // Every video-to-video model takes `image_url` (motion control's character); no model name decides it.
     const motion = (await ready(MOTION)).provider.serviceCapabilities?.['kling-v3-standard-motion-control'];
     expect(motion?.supportedParameters).toEqual(['duration', 'image_url', 'prompt', 'video_url']);
-    expect(motion?.video).toMatchObject({ inputs: ['video', 'reference_image'], requiredInputs: ['video'] });
+    expect(motion?.video).toEqual({ inputs: ['video', 'reference_image'], requiredInputs: ['video'] });
     const wan = (await ready(WAN)).provider.serviceCapabilities?.['wan-2-7-video-to-video'];
-    expect(wan?.supportedParameters).toEqual(['duration', 'prompt', 'resolution', 'video_url']);
-    expect(wan?.video).toEqual({ inputs: ['video'], requiredInputs: ['video'], durationsSeconds: [2, 3, 4, 5, 6, 7, 8, 9, 10], resolutions: ['1080p', '720p'] });
-    expect(veniceEditCapabilities({ video: { inputs: ['video'], requiredInputs: ['video'], durationsSeconds: [5], resolutions: ['768P'] } }, RECAST, 'required', veniceEditRule(RECAST)!).video)
+    expect(wan?.supportedParameters).toEqual(['duration', 'image_url', 'prompt', 'resolution', 'video_url']);
+    expect(wan?.video).toEqual({ inputs: ['video', 'reference_image'], requiredInputs: ['video'], resolutions: ['1080p', '720p'] });
+    expect(veniceEditCapabilities({ video: { inputs: ['video'], requiredInputs: ['video'], durationsSeconds: [5], resolutions: ['768P'] } }, RECAST, 'required').video)
       .toEqual({ inputs: ['video', 'reference_image'], requiredInputs: ['video'], durationsSeconds: [5], resolutions: ['768P'] });
   });
 
-  it('forwards the source length as duration and refuses a wrong one before payment', async () => {
+  it('forwards a create as sent', async () => {
     const { provider, fetchMock } = await ready(RECAST);
-    const body = { video_url: source(10_240), reference_image_urls: ['data:image/png;base64,AAAA'], resolution: '768P', duration: '10s' };
-    await expect(provider.precheckRequest!(create('minimax-h3-max-recast', body), { buyerPeerId: 'buyer' })).resolves.toBeNull();
-    // No duration is fine for Venice (it reads the source); it can only be priced per video.
-    await expect(provider.precheckRequest!(create('minimax-h3-max-recast', { ...body, duration: undefined }, 'r-none'), { buyerPeerId: 'buyer' })).resolves.toBeNull();
-    for (const duration of ['11s', '9s', 'Auto']) {
-      const refused = await provider.precheckRequest!(create('minimax-h3-max-recast', { ...body, duration }, `r-${duration}`), { buyerPeerId: 'buyer' });
-      expect(refused?.statusCode, String(duration)).toBe(400);
-      expect(parse(refused!.body).error).toMatchObject({ code: 'invalid_video_duration', message: expect.stringContaining('"duration": 10') });
-    }
-    const missing = await provider.precheckRequest!(create('minimax-h3-max-recast', { duration: '10s' }, 'r-missing'), { buyerPeerId: 'buyer' });
-    expect(parse(missing!.body).error.code).toBe('missing_required_field');
+    const body = { video_url: 'https://example.com/source.mp4', reference_image_urls: ['data:image/png;base64,AAAA'], resolution: '768P', duration: '10s' };
     const response = await provider.handleRequest(create('minimax-h3-max-recast', body));
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(fetchMock.mock.calls.at(-1)![1].body)).toEqual({ model: 'minimax-h3-max-recast', ...body });
   });
 
-  it('refuses an oversized body before payment and turns Venice\'s HTML 413 into JSON', async () => {
-    const { provider } = await ready(RECAST);
-    const oversized = { ...create('minimax-h3-max-recast', {}), body: Buffer.alloc(VENICE_MAX_BODY_BYTES + 1) };
-    const refused = await provider.precheckRequest!(oversized, { buyerPeerId: 'buyer' });
-    expect(refused?.statusCode).toBe(413);
-    expect(parse(refused!.body).error.code).toBe('request_too_large');
+  it('turns Venice\'s HTML 413 into JSON', async () => {
+    const provider = plugin.createProvider(editConfig(RECAST.id)) as Provider;
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('<html><title>413 Request Entity Too Large</title></html>', { status: 413, headers: { 'content-type': 'text/html' } })));
     const response = await provider.handleRequest(create('minimax-h3-max-recast', { duration: '10s' }));
     expect(response.statusCode).toBe(413);
-    expect(parse(response.body).error.code).toBe('request_too_large');
-  });
-
-  it('refuses a create missing a field Venice requires, before payment', async () => {
-    const recast = (await ready(RECAST)).provider;
-    const noRefs = await recast.precheckRequest!(create('minimax-h3-max-recast', { video_url: source(10_240), duration: '10s' }, 'r1'), { buyerPeerId: 'buyer' });
-    expect(refusal(noRefs)).toEqual([400, 'missing_required_field', expect.stringContaining('reference_image_urls')]);
-    const emptyRefs = await recast.precheckRequest!(create('minimax-h3-max-recast', { video_url: source(10_240), reference_image_urls: [] }, 'r2'), { buyerPeerId: 'buyer' });
-    expect(refusal(emptyRefs)[1]).toBe('missing_required_field');
-
-    const motion = (await ready(MOTION)).provider;
-    const base = { video_url: source(5_000), image_url: 'data:image/png;base64,AAAA', prompt: 'dance' };
-    await expect(motion.precheckRequest!(create('kling-v3-standard-motion-control', base, 'm0'), { buyerPeerId: 'buyer' })).resolves.toBeNull();
-    const noPrompt = await motion.precheckRequest!(create('kling-v3-standard-motion-control', { ...base, prompt: ' ' }, 'm1'), { buyerPeerId: 'buyer' });
-    expect(refusal(noPrompt)).toEqual([400, 'missing_required_field', expect.stringContaining('prompt')]);
-    const noImage = await motion.precheckRequest!(create('kling-v3-standard-motion-control', { ...base, image_url: undefined }, 'm2'), { buyerPeerId: 'buyer' });
-    expect(refusal(noImage)).toEqual([400, 'missing_required_field', expect.stringContaining('image_url')]);
-  });
-
-  it('refuses video_url on a model without video input, before payment', async () => {
-    const { provider } = await ready(TEXT, { supportedParameters: ['prompt', 'duration'] });
-    await expect(provider.precheckRequest!(create(TEXT.id, { prompt: 'cat' }, 't0'), { buyerPeerId: 'buyer' })).resolves.toBeNull();
-    const refused = await provider.precheckRequest!(create(TEXT.id, { prompt: 'cat', video_url: source(5_000) }, 't1'), { buyerPeerId: 'buyer' });
-    expect(refusal(refused)).toEqual([400, 'unsupported_parameter', expect.stringContaining('video_url')]);
+    expect(parse(response.body).error).toMatchObject({ code: 'request_too_large', message: expect.stringContaining(`${VENICE_MAX_BODY_BYTES / 1_000_000} MB`) });
   });
 
   it('turns Venice\'s JSON refusal of a rejected job into FAILED', () => {
@@ -429,12 +374,5 @@ describe('video-to-video models', () => {
     expect(terminalRetrieveFailure(429, Buffer.from(JSON.stringify({ message: 'slow down' })))).toBeNull();
     expect(terminalRetrieveFailure(500, Buffer.from(JSON.stringify({ message: 'oops' })))).toBeNull();
     expect(terminalRetrieveFailure(400, Buffer.from('<html>'))).toBeNull();
-  });
-
-  it('leaves text- and image-to-video models alone', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({ data: [] })));
-    const provider = plugin.createProvider(config) as Provider;
-    await provider.init!();
-    await expect(provider.precheckRequest!(create('wan-2.5', { prompt: 'cat', duration: '5s' }), { buyerPeerId: 'buyer' })).resolves.toBeNull();
   });
 });

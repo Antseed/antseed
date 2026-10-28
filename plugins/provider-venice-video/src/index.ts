@@ -2,10 +2,9 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AntseedProviderPlugin, Provider, SerializedHttpRequest, ServiceCapabilities, ServiceHealthStatus, UpstreamAccountStatus, VideoInputKind } from '@antseed/node';
 import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, validateServiceCapabilityFields } from '@antseed/node';
-import { nativeVideoFacts, nativeVideoRoute, parseJsonObject, requestService } from '@antseed/api-adapter';
+import { nativeVideoRoute, parseJsonObject, requestService } from '@antseed/api-adapter';
 import {
   BaseProvider,
-  createVideoSourcePrecheck,
   parseCsv,
   parseServiceCapabilitiesJson,
   parseServiceUnitBillingModelsJson,
@@ -73,75 +72,26 @@ const FRAME_FIELDS = { first_frame: 'image_url', last_frame: 'end_image_url', re
  */
 export const VENICE_MAX_BODY_BYTES = 32_500_000;
 
-/**
- * Source video lengths of Venice's video-to-video models, in seconds. These
- * are the model makers' own limits (the same models on fal state them);
- * Venice's model list does not.
- */
-const KNOWN_SOURCE_SECONDS: Array<[RegExp, { minSeconds: number; maxSeconds: number }]> = [
-  [/^minimax-h3-max-recast$/, { minSeconds: 5, maxSeconds: 30 }],
-  [/^kling-v3-(standard|pro)-motion-control$/, { minSeconds: 3, maxSeconds: 30 }],
-  [/^wan-2-7-video-to-video$/, { minSeconds: 2, maxSeconds: 10 }],
-];
-
-/**
- * Character image of Venice's motion-control models: they take it as
- * `image_url`, not as reference images. Venice's validation does not reject
- * an unused `image_url`, so this can't be asked of Venice.
- */
-const CHARACTER_IMAGE_MODELS = /^kling-v3-(standard|pro)-motion-control$/;
-
 /** Whether a Venice model takes reference images (`reference_image_urls`). */
 export type VeniceReferenceImages = 'required' | 'optional' | 'none';
-
-/** How the seller handles a Venice video-to-video model (`video_input`). */
-export interface VeniceEditRule {
-  minSeconds?: number;
-  maxSeconds?: number;
-  /**
-   * Fields Venice requires besides `video_url`, checked before payment
-   * because Venice's own refusal comes after the payment channel opened.
-   * Measured on 2026-10-23: Recast requires `reference_image_urls`; motion
-   * control, Wan, Gemini Omni and HappyHorse require `prompt`.
-   */
-  required: string[];
-  /**
-   * The model lists only `Auto` durations: the output is as long as the
-   * source, and Venice wants the source length as `duration`. That value is
-   * also what the buyer pays for, so it must match the source.
-   */
-  outputFollowsSource: boolean;
-}
 
 const veniceConstraints = (model: unknown) =>
   (model as { model_spec?: { constraints?: Record<string, unknown> } } | null)?.model_spec?.constraints;
 
-/** The seller's handling of a Venice video-to-video model, or null for other models. */
-export function veniceEditRule(model: unknown): VeniceEditRule | null {
-  const constraints = veniceConstraints(model);
-  if (!constraints || constraints.video_input !== true) return null;
-  const id = (model as { id?: unknown }).id;
-  const limits = typeof id === 'string' ? KNOWN_SOURCE_SECONDS.find(([pattern]) => pattern.test(id))?.[1] : undefined;
-  const durations = constraints.durations;
-  const outputFollowsSource = Array.isArray(durations) && durations.length > 0 && durations.every(value => typeof value === 'string' && value.toLowerCase() === 'auto');
-  const required = typeof id === 'string' ? KNOWN_REQUIRED_FIELDS.find(([pattern]) => pattern.test(id))?.[1] ?? ['prompt'] : ['prompt'];
-  return { ...limits, required: [...required], outputFollowsSource };
+/** Whether Venice lists a model as video-to-video (`video_input`). */
+export function isVeniceEditModel(model: unknown): boolean {
+  return veniceConstraints(model)?.video_input === true;
 }
-
-/** Fields Venice's video-to-video models require besides `video_url` (see VeniceEditRule.required). */
-const KNOWN_REQUIRED_FIELDS: Array<[RegExp, readonly string[]]> = [
-  [/^minimax-h3-max-recast$/, ['reference_image_urls']],
-];
 
 /**
  * Video options of a Venice video-to-video model: it takes and requires the
- * source video, and the character or reference images it takes. Options the
- * seller configured are kept.
+ * source video, and takes an image (`image_url`, the character for motion
+ * control; Venice accepts it for every video-to-video model), plus the
+ * reference images Venice says it requires. Options the seller configured
+ * are kept.
  */
-export function veniceEditCapabilities(capabilities: ServiceCapabilities, model: unknown, references: VeniceReferenceImages | null, rule: VeniceEditRule): ServiceCapabilities {
-  const id = (model as { id?: unknown } | null)?.id;
-  const characterImage = typeof id === 'string' && CHARACTER_IMAGE_MODELS.test(id);
-  const kinds: VideoInputKind[] = ['video', ...(references === 'required' || references === 'optional' || characterImage ? ['reference_image' as const] : [])];
+export function veniceEditCapabilities(capabilities: ServiceCapabilities, model: unknown, references: VeniceReferenceImages | null): ServiceCapabilities {
+  const kinds: VideoInputKind[] = ['video', 'reference_image'];
   const required: VideoInputKind[] = ['video', ...(references === 'required' ? ['reference_image' as const] : [])];
   const configured = capabilities.video ?? {};
   // Case-sensitive, as Venice lists them (`768P` for Recast, `720p` for Wan).
@@ -150,16 +100,12 @@ export function veniceEditCapabilities(capabilities: ServiceCapabilities, model:
     && listed.every(value => typeof value === 'string' && value.length > 0 && value.length <= 32)
     ? [...listed as string[]]
     : undefined;
-  const durations = rule.outputFollowsSource && rule.minSeconds !== undefined && rule.maxSeconds !== undefined
-    ? Array.from({ length: rule.maxSeconds - rule.minSeconds + 1 }, (_, i) => rule.minSeconds! + i)
-    : [];
   return {
     ...capabilities,
     video: {
       ...configured,
       inputs: configured.inputs ? [...configured.inputs, ...kinds.filter(kind => !configured.inputs!.includes(kind))] : kinds,
       requiredInputs: configured.requiredInputs ?? required,
-      ...(!configured.durationsSeconds && durations.length > 0 ? { durationsSeconds: durations } : {}),
       ...(!configured.resolutions && resolutions ? { resolutions } : {}),
     },
   };
@@ -201,16 +147,17 @@ export async function veniceReferenceImages(baseUrl: string, apiKey: string, mod
  * fields follow the seller's announced `video.inputs`; without them an
  * image-to-video model takes `image_url`, plus `end_image_url` when
  * `endFrame` is true (Venice's model list does not say, see veniceAcceptsEndFrame).
+ * A video-to-video model takes `video_url` and `image_url`, plus
+ * `reference_image_urls` when `referenceImages` is true.
  */
-export function veniceInputParameters(model: unknown, inputs?: readonly string[], endFrame = false): string[] | null {
+export function veniceInputParameters(model: unknown, inputs?: readonly string[], endFrame = false, referenceImages = inputs?.includes('reference_image') === true): string[] | null {
   const constraints = veniceConstraints(model);
   if (!constraints || typeof constraints !== 'object') return null;
-  const id = (model as { id?: unknown }).id;
   const edit = constraints.video_input === true;
-  // In a video-to-video model an image is the new character, not the opening frame.
-  const characterImage = edit && typeof id === 'string' && CHARACTER_IMAGE_MODELS.test(id);
+  // A video-to-video model takes `image_url` (the character, not the opening
+  // frame), plus `reference_image_urls` when it takes reference images.
   const frames = edit
-    ? (inputs?.includes('reference_image') ? [characterImage ? 'image_url' : FRAME_FIELDS.reference_image] : [])
+    ? ['image_url', ...(referenceImages ? [FRAME_FIELDS.reference_image] : [])]
     : inputs
       ? Object.entries(FRAME_FIELDS).filter(([input]) => inputs.includes(input)).map(([, field]) => field)
       : constraints.model_type === 'image-to-video'
@@ -391,12 +338,6 @@ const plugin: AntseedProviderPlugin = {
       return { videoRoute, service: service && services.includes(service) ? service : undefined };
     };
 
-    // Video-to-video models: checked before payment.
-    const editRules = new Map<string, VeniceEditRule>();
-    // Models Venice lists without video input: a source video there is ignored or refused after payment.
-    const noVideoInput = new Set<string>();
-    const precheckSource = createVideoSourcePrecheck();
-
     // Announces the queue fields each model takes, so buyers send only those.
     const init = async () => {
       try {
@@ -411,28 +352,29 @@ const plugin: AntseedProviderPlugin = {
         let checks = 0;
         for (const service of services) {
           const model = data.find(entry => entry?.id === service);
-          const rule = veniceEditRule(model);
-          if (model && !rule) noVideoInput.add(service);
-          if (rule) {
-            editRules.set(service, rule);
-            const configured = serviceCapabilities[service]!.video;
+          const edit = isVeniceEditModel(model);
+          // Inputs the seller announced; otherwise Venice is asked below.
+          const configuredInputs = serviceCapabilities[service]!.video?.inputs;
+          let referenceImages = configuredInputs?.includes('reference_image') === true;
+          if (edit) {
             // Reference images the seller did not announce: ask Venice whether this model takes them.
             let references: VeniceReferenceImages | null = null;
-            if (!configured?.inputs) {
+            if (!configuredInputs) {
               if (checks++ > 0) await new Promise(resolve => setTimeout(resolve, END_FRAME_CHECK_INTERVAL_MS));
               references = await veniceReferenceImages(baseUrl, apiKey, service);
+              referenceImages = references === 'required' || references === 'optional';
             }
-            serviceCapabilities[service] = veniceEditCapabilities(serviceCapabilities[service]!, model, references, rule);
+            serviceCapabilities[service] = veniceEditCapabilities(serviceCapabilities[service]!, model, references);
           }
           const capabilities = serviceCapabilities[service]!;
           if (capabilities.supportedParameters) continue;
           // Frames the seller did not announce: ask Venice whether this image-to-video model takes a last frame.
           let endFrame = false;
-          if (!rule && !capabilities.video?.inputs && model?.model_spec?.constraints?.model_type === 'image-to-video') {
+          if (!edit && !capabilities.video?.inputs && model?.model_spec?.constraints?.model_type === 'image-to-video') {
             if (checks++ > 0) await new Promise(resolve => setTimeout(resolve, END_FRAME_CHECK_INTERVAL_MS));
             endFrame = await veniceAcceptsEndFrame(baseUrl, apiKey, service) === true;
           }
-          const parameters = veniceInputParameters(model, capabilities.video?.inputs, endFrame);
+          const parameters = veniceInputParameters(model, capabilities.video?.inputs, endFrame, referenceImages);
           if (parameters) capabilities.supportedParameters = parameters;
         }
       } catch {
@@ -501,55 +443,6 @@ const plugin: AntseedProviderPlugin = {
       getCapacity: () => relay.getCapacity(),
       init,
       handleRequest,
-      async precheckRequest(request, { buyerPeerId }) {
-        if (nativeVideoRoute(request)?.action !== 'create') return null;
-        if (request.body.length > VENICE_MAX_BODY_BYTES) {
-          return error(request, 413, 'request_too_large',
-            `This request is ${(request.body.length / 1_000_000).toFixed(1)} MB; Venice accepts up to ${VENICE_MAX_BODY_BYTES / 1_000_000} MB. Send a smaller file or a public https URL`);
-        }
-        const { service } = route(request);
-        const rule = service ? editRules.get(service) : undefined;
-        if (!rule) {
-          if (service && noVideoInput.has(service) && request.body.length > 0) {
-            const body = parseJsonObject(request.body);
-            if (body && body.video_url !== undefined && body.video_url !== null) {
-              return error(request, 400, 'unsupported_parameter', `${service} does not take video_url; pick a video-to-video model`);
-            }
-          }
-          return null;
-        }
-        const body = parseJsonObject(request.body);
-        if (!body) return null;
-        const source = body.video_url;
-        if (source === undefined || source === null) return error(request, 400, 'missing_required_field', 'This model requires video_url');
-        const required = [...rule.required];
-        // A model the seller announced as needing reference images needs them, whatever Venice's list says.
-        if (serviceCapabilities[service!]?.video?.requiredInputs?.includes('reference_image') && !CHARACTER_IMAGE_MODELS.test(service!) && !required.includes('reference_image_urls')) {
-          required.push('reference_image_urls');
-        }
-        const missing = required.filter(field => {
-          const value = body[field];
-          return value === undefined || value === null || (typeof value === 'string' && value.trim() === '') || (Array.isArray(value) && value.length === 0);
-        });
-        if (missing.length > 0) return error(request, 400, 'missing_required_field', `This model requires ${missing.join(', ')}`);
-        // Motion control reads the character from image_url; without it the job fails after payment.
-        if (CHARACTER_IMAGE_MODELS.test(service!) && (typeof body.image_url !== 'string' || body.image_url === '')) {
-          return error(request, 400, 'missing_required_field', 'This model requires image_url (the character image)');
-        }
-        if (typeof source !== 'string') return error(request, 400, 'invalid_video_source', 'video_url must be a string');
-        let declared: number | undefined;
-        try {
-          declared = nativeVideoFacts(request)?.duration;
-        } catch {
-          return null;
-        }
-        return precheckSource(request, buyerPeerId, source, declared, {
-          ...(rule.minSeconds !== undefined ? { minSeconds: rule.minSeconds } : {}),
-          ...(rule.maxSeconds !== undefined ? { maxSeconds: rule.maxSeconds } : {}),
-          // Venice refuses "Auto" for these models and needs the source length.
-          durationMatchesSource: rule.outputFollowsSource && body.duration !== undefined,
-        });
-      },
       async checkServiceHealth(checked) {
         const models = await readVeniceVideoModels(baseUrl);
         return Object.fromEntries(checked.map((service): [string, ServiceHealthStatus] => {

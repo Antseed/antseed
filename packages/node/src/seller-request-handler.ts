@@ -335,9 +335,6 @@ export class SellerRequestHandler {
       const videoRoute = nativeVideoRoute(request);
       if (videoRoute && this._handleVideoPrecheck(mux, request, videoRoute, buyerPeerId, unitBillingModel)) return;
       const isVideoRetrieve = videoRoute?.action === 'retrieve';
-      // The provider's own checks run before any payment, so a request it
-      // would refuse costs the buyer nothing (no free-tier use, no channel).
-      if (!isVideoRetrieve && provider.precheckRequest && await this._handleProviderPrecheck(mux, provider, request, buyerPeerId)) return;
       const isFreeService = isVideoRetrieve || isZeroTokenPricing(requestPricing)
         && (!unitBillingModel || isFreeUnitBillingModel(unitBillingModel));
       // A video retrieve is paid by its job's create, never by the free tier:
@@ -982,32 +979,6 @@ export class SellerRequestHandler {
       this._sendJsonError(mux, request.requestId, 503, 'resource_ownership_unavailable', 'Seller cannot verify video job ownership');
       return true;
     }
-  }
-
-  /** Returns true when the provider's precheck answered the request. */
-  private async _handleProviderPrecheck(
-    mux: ProxyMux,
-    provider: Provider,
-    request: SerializedHttpRequest,
-    buyerPeerId: string,
-  ): Promise<boolean> {
-    let response: SerializedHttpResponse | null;
-    try {
-      response = await provider.precheckRequest!(request, { buyerPeerId: buyerPeerId.toLowerCase() });
-    } catch (err) {
-      debugWarn(`[SellerHandler] Provider precheck failed for ${request.requestId}: ${err instanceof Error ? err.message : err}`);
-      this._sendJsonError(mux, request.requestId, 503, 'precheck_unavailable', 'Seller could not check this request; try again');
-      return true;
-    }
-    if (!response) return false;
-    if (response.statusCode < 400 || response.statusCode === 402) {
-      // A precheck only refuses; a success or payment answer would skip billing.
-      debugWarn(`[SellerHandler] Ignoring provider precheck answer ${response.statusCode} for ${request.requestId}`);
-      return false;
-    }
-    debugLog(`[SellerHandler] Provider precheck refused ${request.requestId} with ${response.statusCode}`);
-    mux.sendProxyResponse({ ...response, requestId: request.requestId });
-    return true;
   }
 
   /**

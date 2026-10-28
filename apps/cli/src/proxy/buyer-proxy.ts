@@ -4876,11 +4876,6 @@ export class BuyerProxy {
       }
     }
 
-    // A seller that already explains the limit in JSON (the video sellers
-    // name the upstream's limit and the request size) is passed through.
-    const sellerCode = this._sellerErrorCode(bodyText)
-    if (sellerCode === 'request_too_large' || sellerCode === 'video_source_too_large') return null
-
     // Upstream providers and the proxies in front of them answer oversized
     // bodies with their own 413 (JSON or an HTML page). Clients resend the
     // whole history each turn, so images and attachments add up.
@@ -4889,17 +4884,6 @@ export class BuyerProxy {
       message: `Request body${service} is ${requestSize}, more than the seller's upstream provider accepts. `
         + 'Images and large attachments in the conversation history are the usual cause, because they are resent on every turn. '
         + 'Start a new conversation or remove large attachments.',
-    }
-  }
-
-  private _sellerErrorCode(bodyText: string): string | null {
-    if (!bodyText.startsWith('{')) return null
-    try {
-      const parsed = JSON.parse(bodyText) as { error?: { code?: unknown; type?: unknown } }
-      const code = parsed.error?.code ?? parsed.error?.type
-      return typeof code === 'string' ? code : null
-    } catch {
-      return null
     }
   }
 

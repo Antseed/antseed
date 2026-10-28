@@ -193,7 +193,7 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
     } finally { vi.unstubAllGlobals(); }
   }, 60_000);
 
-  it('runs a fal Recast edit from an inline source: wrong duration refused free, then paid once for the source length', async () => {
+  it('runs a fal Recast edit from an inline source, paid once for the source length', async () => {
     await setupRpc();
     const originalFetch = globalThis.fetch;
     const model = 'minimax/h3-max/recast';
@@ -232,18 +232,6 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
       const post = (path: string, body: object) => fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
       const edit = { model, video_url: sourceVideo, reference_image_urls: ['https://example.com/me.png'], resolution: '768P' };
 
-      // A duration that is not the source length is refused before any payment.
-      const wrong = await post('/fal/v1/video/queue', { ...edit, duration: 10 });
-      expect(wrong.status).toBe(400);
-      const wrongBody = await wrong.json();
-      expect(wrongBody.error.code).toBe('invalid_video_duration');
-      expect(wrongBody.error.message).toContain('"duration": 12');
-      const missing = await post('/fal/v1/video/queue', { model, video_url: sourceVideo, duration: 12 });
-      expect(missing.status).toBe(400);
-      expect((await missing.json()).error.code).toBe('missing_required_field');
-      expect(queued).toHaveLength(0);
-      expect((network.buyerNode as any)._channelStore.listAllChannels(100, 'one_off')).toHaveLength(0);
-
       const created = await post('/fal/v1/video/queue', { ...edit, duration: 12 });
       expect(created.status).toBe(200);
       expect(await created.json()).toMatchObject({ model, request_id: 'fal-edit-1' });
@@ -260,7 +248,7 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
     } finally { vi.unstubAllGlobals(); }
   }, 60_000);
 
-  it.each(['tcp-encrypted', 'webrtc'] as const)('runs a Venice Recast edit over %s with a large inline source, and refuses oversized bodies free', async (transport) => {
+  it.each(['tcp-encrypted', 'webrtc'] as const)('runs a Venice Recast edit over %s with a large inline source', async (transport) => {
     await setupRpc();
     const originalFetch = globalThis.fetch;
     const origin = 'https://api.venice.ai';
@@ -309,15 +297,6 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
       const base = `http://127.0.0.1:${port}`;
       const post = (path: string, body: string) => fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body });
       const edit = { model, video_url: `data:video/mp4;base64,${source.toString('base64')}`, reference_image_urls: ['https://example.com/me.png'], resolution: '768P' };
-
-      const oversized = await post('/api/v1/video/queue', JSON.stringify({ ...edit, duration: '10s', padding: 'x'.repeat(33_000_000) }));
-      expect(oversized.status).toBe(413);
-      expect((await oversized.json()).error.code).toBe('request_too_large');
-      const wrong = await post('/api/v1/video/queue', JSON.stringify({ ...edit, duration: '5s' }));
-      expect(wrong.status).toBe(400);
-      expect((await wrong.json()).error.message).toContain('"duration": 10');
-      expect(queued).toHaveLength(0);
-      expect((network.buyerNode as any)._channelStore.listAllChannels(100, 'one_off')).toHaveLength(0);
 
       const createBody = JSON.stringify({ ...edit, duration: '10s' });
       expect(Buffer.byteLength(createBody)).toBeGreaterThan(ANTSEED_UPLOAD_THRESHOLD_BYTES);

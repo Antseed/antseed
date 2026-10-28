@@ -122,7 +122,7 @@ interface Harness {
   settle(): Promise<void>;
   /** A fresh buyer payment manager on the same identity and channel store, as after a restart. */
   restartBuyer(): BuyerPaymentManager;
-  buyerChannel(channelId: string): { status: string; settledAmount: string | null } | null;
+  buyerChannel(channelId: string): { status: string } | null;
 }
 
 describe('one-off video channel flow over the real buyer and seller stacks', () => {
@@ -146,7 +146,6 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     processingPolls?: number;
     retrieveStatus?: 'FAILED' | 'REFUSED_400' | 'BUSY_429';
     createResponse?: 'rejected';
-    precheck?: Provider['precheckRequest'];
     availableBalance?: bigint;
     reserveEstimateOverdraftUsdc?: bigint;
     freeTier?: { consume: ReturnType<typeof vi.fn>; reportUsageRequest: ReturnType<typeof vi.fn> };
@@ -254,7 +253,6 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
       serviceUnitBillingModels: { 'video-model': { 'venice-video': videoUnitModel } },
       maxConcurrency: 4,
       getCapacity: () => ({ current: 0, max: 4 }),
-      ...(options.precheck ? { precheckRequest: options.precheck } : {}),
       // The finished video streams as a real 5 s MP4, so it passes the delivery check.
       async handleRequestStream(request, callbacks) {
         if (!request.path.endsWith('/video/retrieve')) return provider.handleRequest(request);
@@ -406,7 +404,7 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
         }
       },
       restartBuyer: () => new BuyerPaymentManager(buyerIdentity, buyerConfig, buyerStore),
-      buyerChannel: (channelId) => buyerStore.getChannel(channelId) as { status: string; settledAmount: string | null } | null,
+      buyerChannel: (channelId) => buyerStore.getChannel(channelId) as { status: string } | null,
     };
   }
 
@@ -701,8 +699,8 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     expect(h.close).toHaveBeenCalledOnce();
     expect(h.close.mock.calls[0]![2]).toBe(SERIOUS_FEE);
     expect(h.chain.get(channelId)).toMatchObject({ settled: SERIOUS_FEE, status: 2 });
-    // The buyer no longer counts the channel as active, and records what it paid.
-    expect(h.buyerChannel(channelId)).toMatchObject({ status: 'settled', settledAmount: SERIOUS_FEE.toString() });
+    // The buyer no longer counts the channel as active.
+    expect(h.buyerChannel(channelId)?.status).toBe('settled');
     expect(h.buyer.getOneOffChannelForRequest(h.peer.peerId, 'video-1')).toBeNull();
   });
 
@@ -718,7 +716,7 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     expect(h.close).toHaveBeenCalledOnce();
     expect(h.close.mock.calls[0]![2]).toBe(SERIOUS_FEE);
     expect(h.chain.get(channelId)).toMatchObject({ settled: SERIOUS_FEE, status: 2 });
-    expect(h.buyerChannel(channelId)).toMatchObject({ status: 'settled', settledAmount: SERIOUS_FEE.toString() });
+    expect(h.buyerChannel(channelId)?.status).toBe('settled');
   });
 
   it('keeps the job open when retrieve is only rate limited', async () => {
@@ -744,51 +742,6 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     expect(h.close.mock.calls[0]![2]).toBe(SERIOUS_FEE);
     expect(h.chain.get(channelId)).toMatchObject({ status: 2 });
     expect(h.buyer.getOneOffChannelForRequest(h.peer.peerId, 'video-1')).toBeNull();
-  });
-
-  it('refuses a create the provider precheck rejects before any payment channel, then runs the corrected one', async () => {
-    const prechecked: string[] = [];
-    const h = setup({
-      precheck: vi.fn(async (request: SerializedHttpRequest, context: { buyerPeerId: string }) => {
-        prechecked.push(`${request.requestId}:${context.buyerPeerId}`);
-        const body = JSON.parse(Buffer.from(request.body).toString());
-        return body.duration === '5s' ? null : {
-          requestId: 'ignored', statusCode: 400, headers: { 'content-type': 'application/json' },
-          body: Buffer.from(JSON.stringify({ error: { code: 'invalid_video_duration', message: 'send "duration": 5' } })),
-        };
-      }),
-    });
-
-    const refused = await h.send(h.videoRequest('video-bad', '9s'));
-    await h.settle();
-    expect(refused.statusCode).toBe(400);
-    expect(refused.requestId).toBe('video-bad');
-    expect(JSON.parse(Buffer.from(refused.body).toString()).error.code).toBe('invalid_video_duration');
-    // Free: no 402, no channel, no create at the provider.
-    expect(h.reserve).not.toHaveBeenCalled();
-    expect(h.chain.size).toBe(0);
-    expect(h.providerCreates).toHaveLength(0);
-
-    const accepted = await h.send(h.videoRequest('video-ok', '5s'));
-    await h.settle();
-    expect(accepted.statusCode).toBe(200);
-    expect(h.providerCreates).toHaveLength(1);
-    onlyOneOff(h);
-    // Checked on the first send and again on the resend after the one-off channel opened.
-    expect(prechecked).toEqual([
-      `video-bad:${h.buyerIdentity.peerId.toLowerCase()}`,
-      `video-ok:${h.buyerIdentity.peerId.toLowerCase()}`,
-      `video-ok:${h.buyerIdentity.peerId.toLowerCase()}`,
-    ]);
-  });
-
-  it('answers 503 without payment when the provider precheck throws', async () => {
-    const h = setup({ precheck: vi.fn(async () => { throw new Error('boom'); }) });
-    const response = await h.send(h.videoRequest('video-1'));
-    expect(response.statusCode).toBe(503);
-    expect(JSON.parse(Buffer.from(response.body).toString()).error.code).toBe('precheck_unavailable');
-    expect(h.reserve).not.toHaveBeenCalled();
-    expect(h.providerCreates).toHaveLength(0);
   });
 
   it('retries a failed close of a rejected video on the next timeout check', async () => {

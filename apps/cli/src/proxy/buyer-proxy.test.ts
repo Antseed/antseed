@@ -1595,20 +1595,6 @@ test('video edits route automatically only to sellers whose model takes the sour
   assert.deepEqual(selected, [announcesInput.peerId])
 })
 
-test('BuyerProxy passes a seller\'s own JSON 413 explanation through', () => {
-  const proxy = new BuyerProxy({ adaptiveRouting: { spreadTolerance: 0, explorationRate: 0 },
-    port: 0,
-    dataDir: '/tmp/antseed-test',
-    node: { router: null } as any,
-  })
-  for (const code of ['request_too_large', 'video_source_too_large']) {
-    const body = Buffer.from(JSON.stringify({ error: { code, message: 'This request is 40.1 MB; Venice accepts up to 32 MB.' } }))
-    const upstream = { requestId: 'req-413', statusCode: 413, headers: { 'content-type': 'application/json' }, body }
-    const passed = (proxy as any)._withFriendlyUploadLimitError(upstream, 40 * 1024 * 1024, 'minimax-h3-max-recast')
-    assert.equal(passed, upstream)
-  }
-})
-
 test('native video retrieves use the buyer identity that created the job', async () => {
   const peer = makePeer('a', ['venice'])
   peer.providerServiceApiProtocols = { venice: { services: { 'video-model': ['venice-video'] } } }
@@ -5730,9 +5716,9 @@ test('adaptPeerFaultErrorResponse leaves actionable request errors unchanged', (
   assert.equal(response.headers[ANTSEED_FAULT_ATTRIBUTION_HEADER], 'peer')
 })
 
-test('adaptPeerFaultErrorResponse leaves a seller\'s video edit precheck refusals unchanged', () => {
-  for (const code of ['invalid_video_duration', 'invalid_video_source', 'video_source_too_large', 'missing_required_field', 'video_source_unavailable', 'video_check_busy', 'upstream_upload_timeout']) {
-    const body = Buffer.from(JSON.stringify({ error: { code, message: 'send "duration": 12' } }))
+test('adaptPeerFaultErrorResponse leaves a video seller\'s upload timeout unchanged', () => {
+  for (const code of ['upstream_upload_timeout']) {
+    const body = Buffer.from(JSON.stringify({ error: { code, message: 'Sending the request to fal timed out' } }))
     const response = adaptPeerFaultErrorResponse({
       requestId: `req-${code}`,
       statusCode: 400,

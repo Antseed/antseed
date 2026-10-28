@@ -257,7 +257,7 @@ else
 fi
 ```
 
-A missing job id after an HTTP answer means the create failed, nothing started, and nothing was charged. Show the error to the user and fix the field `peer_message` names. Do not create again without asking. With no answer at all (HTTP `000`, for example a dropped connection), the job may have started at the seller: tell the user, and do not create again unless they agree to risk paying for a second video. If it was rejected for size, use the `shrink_frame` fallback in [Frames as data URLs](#frames-as-data-urls). The `-H 'Expect:'` stops curl from sending `Expect: 100-continue` on bodies over 1 MiB, which makes sellers fail with "fetch failed".
+A missing job id after an HTTP answer means the create failed and nothing started. Nothing was charged, except the opening fee on a video above $1.00 when the upstream (not the buyer) refused it. Show the error to the user and fix the field `peer_message` names. Do not create again without asking. With no answer at all (HTTP `000`, for example a dropped connection), the job may have started at the seller: tell the user, and do not create again unless they agree to risk paying for a second video. If it was rejected for size, use the `shrink_frame` fallback in [Frames as data URLs](#frames-as-data-urls). The `-H 'Expect:'` stops curl from sending `Expect: 100-continue` on bodies over 1 MiB, which makes sellers fail with "fetch failed".
 
 ## Wait and save
 
@@ -316,7 +316,7 @@ A video edit model takes a source video (`video` in `inputs`) and changes part o
 
 ### Source
 
-Read the length without opening the file. MOV and other MP4-family files that are not fast-start are remuxed (no re-encode, no quality change), so the seller can read the length quickly.
+Read the length without opening the file. MOV and other MP4-family files that are not fast-start are remuxed (no re-encode, no quality change), so the upstream can read them quickly.
 
 ```bash
 source_video="dance.mov"   # in Antseed Desktop: the path from get_chat_video_path
@@ -335,17 +335,128 @@ duration="$(awk -v s="$seconds" 'BEGIN { d = int(s); if (d < 1) d = 1; print d }
 echo "source: $(wc -c < "$src" | tr -d ' ') bytes, ${seconds}s, ${width}x${height} at ${fps} fps -> duration $duration"
 ```
 
-`duration` is the source length in whole seconds, rounded down. It is what the buyer pays for, and the seller refuses any other value before payment, with `invalid_video_duration` and the value to send. On fal, Kling v4 edit and Wan 2.7 edit cut the output to their own `duration`, so a shorter value is allowed there, never a longer one. On Venice every edit model, Wan included, needs exactly the source length. fal's Recast takes no `duration`: the seller checks it and removes it before sending.
+`duration` is what the buyer pays for. Send the source length in whole seconds, rounded down (`$duration` above), unless the model takes a shorter `duration` and the user wants a shorter clip. Never send more than the source length: some upstreams render and charge the full `duration` even when the source is shorter.
 
-Check the source against the model's limits before pricing it ([prompting.md](prompting.md#editing-a-video)): length, size (`width`x`height`), aspect ratio, and frame rate (`fps` above is a fraction such as `24/1`). The seller refuses a source outside them for free, with the limit in the message. Too long: trim it, then measure again. Too small (Kling v4 edit needs at least 700x700): scale it up. Wrong frame rate (Kling v4 edit takes 24 to 60): re-encode it.
+### Source limits
+
+The sellers do not check the source. A source outside the model's limits is refused by the upstream after the job started, and on a video priced above $1.00 that costs the opening fee (see the Rules in SKILL.md). So check it before pricing, against the limits the provider publishes for that model. Never quote limits from memory: read them each time, and say where they came from.
+
+**fal models** (`fal-video` sellers). fal publishes each model's input schema, without a key. `check_fal_source` reads it and checks the source against fal's machine-readable limits on `video_url` (`x-fal`: length, file size, width, height, aspect ratio, frame rate). It also prints the required fields, the `duration` and `resolution` values, and the limits on image fields. Any `FAIL` line stops before pricing: apply its fix, measure again (`check_fal_source` again), and tell the user what changed. When a model has no `x-fal` limits, the script prints `NOTE` with the `video_url` description and exits 3. The description can state a limit in words (for example "5 to 30 seconds long"): check the source against it by hand, and treat a source outside it like a `FAIL`. Length limits apply to the source's real length, not the rounded-down `duration`: a 10.08 s source fails a 10 s maximum, so trim it first.
 
 ```bash
-ffmpeg -loglevel error -y -i "$src" -t 30 -c copy -movflags +faststart "${src%.mp4}-cut.mp4" && src="${src%.mp4}-cut.mp4"
-# Scale so the short side is at least 720, keeping the shape (re-encodes):
-ffmpeg -loglevel error -y -i "$src" -vf "scale='if(lt(iw,ih),720,-2)':'if(lt(iw,ih),-2,720)'" -r 24 -c:v libx264 -crf 18 -c:a copy -movflags +faststart "${src%.mp4}-720.mp4" && src="${src%.mp4}-720.mp4"
+# check_fal_source <fal endpoint id> <source.mp4> [duration]: exit 0 when every check passes, 1 on any FAIL,
+# 2 when the schema or the source can't be read, 3 when fal gives the source limits only in words (check by hand).
+check_fal_source() {
+  local id="$1" file="$2" dur="${3:-}" schema w h fps s bytes out
+  schema="$(mktemp)"
+  curl -sS --fail -G https://fal.ai/api/openapi/queue/openapi.json --data-urlencode "endpoint_id=$id" -o "$schema" \
+    || { echo "could not read fal's schema for $id" >&2; return 2; }
+  IFS=, read -r w h fps < <(ffprobe -v error -select_streams v:0 -show_entries stream=width,height,avg_frame_rate -of csv=p=0 "$file")
+  # A phone video turned 90 degrees is shown with width and height swapped.
+  case "$(ffprobe -v error -select_streams v:0 -show_entries stream_side_data=rotation -of default=nw=1:nk=1 "$file" | head -1)" in
+    90|-90|270|-270) local t="$w"; w="$h"; h="$t" ;;
+  esac
+  s="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$file")"
+  bytes="$(wc -c < "$file" | tr -d ' ')"
+  [ -n "$w" ] && [ -n "$h" ] && [[ "$s" =~ ^[0-9.]+$ ]] || { echo "ffprobe could not measure $file" >&2; return 2; }
+  out="$(jq -r --arg id "$id" --argjson w "$w" --argjson h "$h" --arg fps "$fps" --argjson s "$s" --argjson bytes "$bytes" --arg dur "$dur" '
+    def num: if type == "number" and . > 0 then . else null end;
+    def r2: . * 100 | round / 100;
+    def check($name; $v; $show; $lo; $hi; $fixlo; $fixhi):
+      if ($lo | num) == null and ($hi | num) == null then empty
+      elif ($lo | num) != null and $v < $lo then "FAIL \($name) \($show) is below \($lo): \($fixlo)"
+      elif ($hi | num) != null and $v > $hi then "FAIL \($name) \($show) is above \($hi): \($fixhi)"
+      else "ok   \($name) \($show) (\($lo // "-") to \($hi // "-"))" end;
+    def limits: with_entries(select(.key | test("^(min|max)_")));
+    (.paths["/" + $id].post.requestBody.content["application/json"].schema["$ref"] // "" | split("/") | last) as $ref
+    | (.components.schemas[$ref] // {}) as $in
+    | if $in.properties.video_url == null then "FAIL schema: \($id) has no video_url field, so it does not edit a video on fal"
+      else ($in.properties.video_url["x-fal"] // {} | limits) as $x
+      | (($fps | split("/") | map(tonumber? // 0)) as $p | if ($p | length) == 2 and $p[1] > 0 then $p[0] / $p[1] else $p[0] // 0 end) as $f
+      | ($s | floor) as $whole
+      | $in.properties.duration as $d
+      | ([$d, ($d.anyOf // [])[]] | map(select(. != null))) as $dd
+      | ([$dd[].minimum | numbers] | min) as $dmin | ([$dd[].maximum | numbers] | max) as $dmax
+      | ([$dd[].enum // [] | .[]]) as $denum
+      | "source: \($s | r2) s, \($w)x\($h), \($f | r2) fps, \($bytes) bytes",
+        "required fields: \($in.required // [] | join(", "))",
+        (if $in.properties.resolution.enum then "resolution: \($in.properties.resolution.enum | join(", "))" else empty end),
+        (if $d == null then "duration: fal takes none; the output is as long as the source. Send \"duration\": \($whole) (what is paid for; the seller removes it before fal)"
+         else "duration: \(if ($denum | length) > 0 then ($denum | map(tostring) | join(", ")) else "\($dmin // "?") to \($dmax // "?")" end). \($d.description // "")" end),
+        (if $dur == "" then empty
+         else ($dur | tonumber) as $n
+         | if $n < 1 then "FAIL duration \($n): send the length paid for, in whole seconds (\($whole))"
+           elif $n > $whole then "FAIL duration \($n) is longer than the source (\($whole) s): send at most \($whole)"
+           elif $d == null and $n != $whole then "FAIL duration \($n): this model has no duration field, so send the source length, \($whole)"
+           elif ($denum | length) > 0 and ($denum | index($n)) == null then "FAIL duration \($n) is not one of \($denum | map(tostring) | join(", "))"
+           elif ($dmin != null and $n < $dmin) or ($dmax != null and $n > $dmax) then "FAIL duration \($n) is outside \($dmin) to \($dmax)"
+           else "ok   duration \($n)" end end),
+        (if ($x | length) == 0 then
+           "NOTE fal publishes no machine-readable source limits for \($id). Check the source by hand against:",
+           "  video_url: \($in.properties.video_url.description // "(no description)")"
+         else
+           check("length"; $s; "\($s | r2) s"; $x.min_duration; $x.max_duration; "use a longer clip"; "trim it: ffmpeg -t \(($x.max_duration // 0) | floor)"),
+           check("file size"; $bytes; "\($bytes) bytes"; null; $x.max_file_size; ""; "re-encode a smaller copy"),
+           check("width"; $w; "\($w) px"; $x.min_width; $x.max_width; "scale it up"; "scale it down"),
+           check("height"; $h; "\($h) px"; $x.min_height; $x.max_height; "scale it up"; "scale it down"),
+           check("aspect ratio"; $w / $h; "\($w / $h | r2)"; $x.min_aspect_ratio; $x.max_aspect_ratio; "crop it wider"; "crop it narrower"),
+           check("frame rate"; $f; "\($f | r2) fps"; $x.min_fps; $x.max_fps; "re-encode at -r \(($x.min_fps // 0) | ceil)"; "re-encode at -r \(($x.max_fps // 0) | floor)")
+         end),
+        ($in.properties | to_entries[] | select(.key != "video_url" and ((.value["x-fal"] // {}) | limits | length) > 0)
+         | "limits on \(.key): \(.value["x-fal"] | limits | to_entries | map("\(.key)=\(.value)") | join(", "))")
+      end' "$schema")" || { echo "could not read fal's schema for $id" >&2; return 2; }
+  printf '%s\n' "$out"
+  if grep -q '^FAIL' <<< "$out"; then return 1; elif grep -q '^NOTE' <<< "$out"; then return 3; fi
+}
+
+fal_id="$model"   # the fal endpoint id; for a Venice model, its fal twin (see "Find a model on fal" below)
+check_fal_source "$fal_id" "$src" "$duration"
 ```
 
-A source too long for the $5.00 limit is refused by the price step (and by the buyer), not by the seller: trim it or pick a cheaper model or resolution.
+To fix a `FAIL`, run the matching command, then `check_fal_source` again:
+
+```bash
+# Too long: keep the first N seconds (no re-encode).
+ffmpeg -loglevel error -y -i "$src" -t 30 -c copy -movflags +faststart "${src%.mp4}-cut.mp4" && src="${src%.mp4}-cut.mp4"
+# Too small: scale so the short side is S px (here 720), keeping the shape (re-encodes).
+ffmpeg -loglevel error -y -i "$src" -vf "scale='if(lt(iw,ih),720,-2)':'if(lt(iw,ih),-2,720)'" -c:v libx264 -crf 18 -c:a copy -movflags +faststart "${src%.mp4}-720.mp4" && src="${src%.mp4}-720.mp4"
+# Frame rate outside the range: re-encode at a rate inside it (here 24 fps).
+ffmpeg -loglevel error -y -i "$src" -r 24 -c:v libx264 -crf 18 -c:a copy -movflags +faststart "${src%.mp4}-24.mp4" && src="${src%.mp4}-24.mp4"
+```
+
+After trimming, set `seconds` and `duration` again with the `seconds=` and `duration=` lines of [Source](#source).
+
+**Find a model on fal.** fal's model search is public. Use it for a model on a Venice seller, to find the same model on fal (its "fal twin"). Search with the model's name in words:
+
+```bash
+q="minimax h3 max recast"   # for example from the Venice id minimax-h3-max-recast
+curl -sS -G https://api.fal.ai/v1/models --data-urlencode "q=$q" --data-urlencode category=video-to-video \
+  | jq -r '.models[] | [.endpoint_id, .metadata.display_name] | @tsv'
+```
+
+Pick the endpoint whose name matches the model and variant (standard or pro, edit or extend). If the search finds nothing, try fewer words. If two endpoints fit equally well, ask the user.
+
+**Venice models** (`venice-video` sellers). Venice's model list is public and gives each model's `durations` (`["Auto"]` means the output is as long as the source: send the source length as `"<n>s"`), `resolutions`, `aspect_ratios`, `prompt_character_limit` and the limits on reference images. It does not give source limits or required fields. Always run step 1, then steps 2 to 4 in order until one gives the source limits:
+
+1. Read the model list:
+
+   ```bash
+   venice_model_limits() {
+     curl -sS --fail https://api.venice.ai/api/v1/models?type=video | jq -r --arg id "$1" '
+       [.data[] | select(.id == $id)] | if length == 0 then "\($id) is not in Venice'"'"'s model list" else .[0].model_spec.constraints
+       | "video input: \(.video_input // false)",
+         "durations: \(.durations // [] | join(", "))\(if .durations == ["Auto"] then " (send the source length as \"<n>s\")" else "" end)",
+         "resolutions: \(.resolutions // [] | join(", "))",
+         (to_entries[] | select(.key | test("^(prompt_character_limit|reference_image_)")) | "\(.key): \(.value)")
+       end'
+   }
+   venice_model_limits "$model"
+   ```
+
+   Check reference images against `reference_image_*`. To measure an image: `ffprobe -v error -show_entries stream=width,height -of csv=p=0 <image>`.
+2. Find the model's fal twin ([Find a model on fal](#source-limits)) and run `check_fal_source <twin id> "$src"` with no duration (Venice's own `durations` decide `duration`). The model maker sets the source limits and the required fields, so they are the same on both providers. Tell the user they come from fal's listing of the same model. Ignore fal-only fields (`character_orientation`, `enable_safety_checker`). Send only the fields the Venice seller lists in `fields`: Venice refuses any other key.
+3. Read Venice's docs: `https://docs.venice.ai/llms.txt` (an index), `https://docs.venice.ai/models/video.md`, `https://docs.venice.ai/api-reference/endpoint/video/queue.md`, and the model family's guide listed in the index. Fetch them with `curl -sS` and search them for the model id.
+4. Nothing found: tell the user that the source limits for this model are not published, and what a refusal would cost (nothing at $1.00 or less, the opening fee above that). Do not guess limits.
 
 ### Inline or URL
 
@@ -368,11 +479,11 @@ For a URL instead: `video_url="$(mktemp)"; printf '%s' "https://example.com/danc
 
 For a character swap, put one clear image per person to replace in `ref_images`, in the order the people appear from left to right, and build `refs_json` as in [Frames as data URLs](#frames-as-data-urls). Then run [Price](#price) with `refs=yes` and the `duration` above. A model that requires a character (`requiredInputs` has `reference_image`) is left out when none is sent.
 
-fal's motion control takes a character image of at least 340x340, aspect ratio 0.4 to 2.5, up to 10 MB; the seller refuses an inline image outside that with `invalid_image_input`, for free.
+Check each image against the limits [Source limits](#source-limits) printed (`limits on image_url: …` for fal, `reference_image_*` for Venice). Measure an image with `ffprobe -v error -show_entries stream=width,height -of csv=p=0 <image>`. An image outside them fails the job after it started.
 
 ### Create the edit
 
-Check for a job file first, exactly as in [Create once](#create-once). The field names come from the seller's `fields`: the character goes in `reference_image_urls` when listed (Recast), then `image_urls`, otherwise in `image_url` as one image (motion control). Put other fields the model needs in `extra.json` (for example `{"character_orientation": "video"}` for fal's motion control). `duration` is a number (seconds) on fal and the string `"<n>s"` on Venice. `prompt` is optional for Recast, required for motion control on Venice and for Kling and Wan edits; the seller refuses a missing one before payment. `resolution` must be one the seller lists, in the same case (`768P`/`1080P` for Recast, `720p`/`1080p` for Kling and Wan); the price `match` uses the same values.
+Check for a job file first, exactly as in [Create once](#create-once). The field names come from the seller's `fields`: the character goes in `reference_image_urls` when listed (Recast), then `image_urls`, otherwise in `image_url` as one image (motion control). Send every field [Source limits](#source-limits) listed as required; put the ones this block does not build in `extra.json` (for example `{"character_orientation": "video"}` for fal's motion control). A missing required field is refused by Venice at create and by fal after the job started. Either way it costs the opening fee on a video above $1.00. `duration` is a number (seconds) on fal and the string `"<n>s"` on Venice. `resolution` must be one the seller lists, in the same case (for example `768P`, not `768p`); the price `match` uses the same values.
 
 ```bash
 output="${output:-edited-video.mp4}"; job_file="${output%.*}.job.json"
@@ -455,12 +566,12 @@ For a video longer than one clip, make the clips one after another, each from th
 
 On a failed create or wait, `error.peer_message` carries the seller's reason, including the field it rejected. Fix that field; another seller or model usually rejects it too.
 
-- `400` on create whose `peer_message` names fields, for example "Unrecognized key(s) in object: 'bogus_field'; aspect_ratio: This model does not support aspect_ratio": the seller rejected the body, no job started, and nothing was charged. Remove or fix each named field and ask before creating again. The buyer only logs a warning for a field the seller does not list and still forwards it, so this `400` is where an unlisted field shows up. `error.code` can be empty, with the seller's reason in `error.type`.
+- `400` on create whose `peer_message` names fields, for example "Unrecognized key(s) in object: 'bogus_field'; aspect_ratio: This model does not support aspect_ratio": the seller rejected the body and no job started (on a video above $1.00 the opening fee is kept). Remove or fix each named field and ask before creating again. The buyer only logs a warning for a field the seller does not list and still forwards it, so this `400` is where an unlisted field shows up. `error.code` can be empty, with the seller's reason in `error.type`.
 - `402`: the buyer needs more deposited USDC or payment-channel capacity.
 - `402 one_off_channel_required`: buyers before `@antseed/cli@0.1.171` hit this; update the buyer. Each failed attempt leaves a funded channel that `antseed buyer channels request-close <channelId>` releases.
 - Price above $5.00, or "above the configured limit": choose a shorter duration or lower resolution.
 - "Explicit video duration is required" or "No billing component matched": send an advertised `duration`, and an advertised `resolution` (exact case, for example `768P`) when the model lists any. Neither the buyer nor the seller checks `duration` against `durationsSeconds`; the upstream does, and its answer can name another field (one unlisted duration came back as "Invalid or missing prompt"), so only send a listed duration.
-- `400` or `422` on wait, for example "does not support audio configuration" or "does not support end_image_url": the job failed at the seller and is not charged. Fix the field and ask before creating again. If the message names no field (for example "Request ID is invalid."), offer the next seller from the price list.
+- `400` or `422` on wait, for example "does not support audio configuration" or "does not support end_image_url": the job failed at the seller and the video is not charged (a price above $1.00 keeps the opening fee). Fix the field and ask before creating again. If the message names no field (for example "Request ID is invalid."), offer the next seller from the price list.
 - `502 upstream_error` on create ("pinned peer could not complete the request"): that seller failed and no job started. Offer the next seller from the price list.
 - `502` plain text "Pinned peer … is not reachable" or "Pinned peer … does not support this request": usually the pinned seller does not sell that model, or is offline. Run [Price](#price) again and pin a seller from that list.
 - `model_not_found`: fetch the catalog again and retry once after a few seconds; routing can briefly exclude a seller after a failed request.
@@ -470,16 +581,9 @@ On a failed create or wait, `error.peer_message` carries the seller's reason, in
 - `status: unknown`: the seller is up but could not read the job's state from its video service; the loop keeps polling and stops after 5 minutes of it, keeping the job.
 - `502 status: seller_unreachable`: the seller holding the job could not be reached; the loop retries it, then keeps the job so it can resume later.
 - `502 video_download_failed` without a `status`: the seller started sending the video and the stream broke; the loop retries it.
-- `400 invalid_video_duration` on an edit: `duration` is not the source length. The message gives the value to send (`"duration": 12`). Nothing was charged.
-- `400 invalid_video_source`: the seller could not read the source (not an MP4/MOV, a data URL not labelled `video/mp4`, a broken file, a URL that is not public `https`, or a length, size, aspect ratio, or frame rate outside the model's limits; the message says which). Remux, trim, scale, or re-encode it ([Edit a video](#edit-a-video)).
-- `400 invalid_image_input`: an inline character image is outside the model's image limits (size, aspect ratio, bytes). Use a larger or less extreme image.
-- `400 unsupported_parameter` naming `video_url`, or `422 required_capability_unavailable` from a pinned seller: that model does not take a source video. Pick one from the `frames=edit` catalog.
-- `400 video_source_unavailable`: the seller could not fetch the source URL (not found, not public, or too slow). Check the URL opens in a browser without signing in, or send the file inline.
-- `504 upstream_upload_timeout`: the seller could not hand the request to fal in time. Nothing was charged; send a smaller file or a URL.
-- Job `FAILED` after it started (for example Venice "No person detected" from motion control or Recast): the source has no real person, or the upstream rejected it. The job's payment channel is closed at once; a video priced above $1.00 costs the opening fee ($0.65 on Base), a cheaper one nothing.
-- `413 video_source_too_large`: the source file is larger than the model accepts. Re-encode a smaller copy.
+- `422 required_capability_unavailable` from a pinned seller: that model does not take a source video. Pick one from the `frames=edit` catalog.
+- `504 upstream_upload_timeout`: the seller could not hand the request to fal in time. The video is not charged (a price above $1.00 keeps the opening fee); send a smaller file or a URL.
+- Job `FAILED` after it started (for example Venice "No person detected" from motion control or Recast, or fal's message that the source is too short or too small): the source has no real person, is outside the model's limits ([Source limits](#source-limits)), or the upstream rejected it. The job's payment channel is closed at once; a video priced above $1.00 costs the opening fee ($0.65 on Base), a cheaper one nothing.
 - `413 request_too_large`: the request body is larger than the seller's upstream accepts (Venice: 32.5 MB). Re-encode a smaller copy or send a public `https` URL.
-- `400 missing_required_field`: the model needs a field that was not sent (for example `reference_image_urls` on Recast, or `character_orientation` on fal's motion control). Add it.
 - `422 required_capability_unavailable` naming `video_url`: no seller of that model takes a source video. Pick a model from the `frames=edit` catalog.
-- `429 video_check_busy`: the seller is checking too many source URLs at once. Wait a minute and send the same create again; nothing started.
 - Connection refused: start Antseed Desktop or `antseed buyer start`.

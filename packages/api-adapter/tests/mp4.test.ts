@@ -66,63 +66,6 @@ describe('createMp4Inspector', () => {
   });
 });
 
-function fullBox(type: string, version: number, body: Uint8Array): Uint8Array {
-  return box(type, concat(new Uint8Array([version, 0, 0, 0]), body));
-}
-
-/** A video track: tkhd (size, duration in movie units of 1000/s), mdhd (timescale 600), hdlr vide, stts. */
-function videoTrak(options: { durationMs: number; width: number; height: number; fps: number; rotate?: boolean }): Uint8Array {
-  const tkhd = new Uint8Array(80);
-  const t = new DataView(tkhd.buffer);
-  t.setUint32(16, options.durationMs);
-  const matrix = 36;
-  if (options.rotate) { t.setInt32(matrix + 4, 0x10000); t.setInt32(matrix + 12, -0x10000); }
-  else { t.setInt32(matrix, 0x10000); t.setInt32(matrix + 16, 0x10000); }
-  t.setUint32(matrix + 32, 0x40000000);
-  t.setUint32(72, options.width * 65536);
-  t.setUint32(76, options.height * 65536);
-  const timescale = 600;
-  const mdhd = new Uint8Array(20);
-  const m = new DataView(mdhd.buffer);
-  m.setUint32(8, timescale);
-  m.setUint32(12, Math.round(options.durationMs * timescale / 1000));
-  const hdlr = new Uint8Array(21);
-  hdlr.set(new TextEncoder().encode('vide'), 4);
-  const frames = Math.round(options.durationMs * options.fps / 1000);
-  const stts = new Uint8Array(12);
-  const s = new DataView(stts.buffer);
-  s.setUint32(0, 1);
-  s.setUint32(4, frames);
-  s.setUint32(8, Math.round(timescale / options.fps));
-  return box('trak', concat(
-    fullBox('tkhd', 0, tkhd.subarray(0, 80)),
-    box('mdia', concat(fullBox('mdhd', 0, mdhd), fullBox('hdlr', 0, hdlr), box('minf', box('stbl', fullBox('stts', 0, stts))))),
-  ));
-}
-
-describe('mp4 track facts', () => {
-  const ftyp = box('ftyp', new TextEncoder().encode('isom\0\0\0\0isom'));
-  const file = (mvhdMs: number, trak: Uint8Array) => concat(ftyp, box('moov', concat(mvhd(mvhdMs), trak)), box('mdat', new Uint8Array(100)));
-
-  it('reads the track length, size and frame rate', () => {
-    const facts = inspect(file(6_000, videoTrak({ durationMs: 6_000, width: 864, height: 496, fps: 25 })), 7);
-    expect(facts?.durationMs).toBe(6_000);
-    expect(facts?.trackDurationMs).toBe(6_000);
-    expect(facts?.video).toEqual({ width: 864, height: 496, fps: 25 });
-  });
-
-  it('shows the real length of a file whose mvhd was edited to look shorter', () => {
-    const facts = inspect(file(6_500, videoTrak({ durationMs: 37_250, width: 864, height: 496, fps: 24 })));
-    expect(facts?.durationMs).toBe(6_500);
-    expect(facts?.trackDurationMs).toBeGreaterThanOrEqual(37_000);
-  });
-
-  it('swaps the display size of a rotated track', () => {
-    expect(inspect(file(5_000, videoTrak({ durationMs: 5_000, width: 1280, height: 720, fps: 30, rotate: true })))?.video)
-      .toEqual({ width: 720, height: 1280, fps: 30 });
-  });
-});
-
 describe('nativeVideoDelivered for streamed downloads', () => {
   it('requires a real MP4 of most of the requested length', () => {
     expect(delivered(mp4(10_000), 10)).toBe(true);

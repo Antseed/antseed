@@ -23,7 +23,6 @@
     "vitest": "^2.0.0"
   },
   "dependencies": {
-    "@antseed/api-adapter": "workspace:*",
     "bottleneck": "^2.19.5"
   }
 }

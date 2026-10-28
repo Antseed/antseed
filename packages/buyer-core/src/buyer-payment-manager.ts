@@ -2127,8 +2127,7 @@ export class BuyerPaymentManager {
     if (!state) return;
     this._oneOffChannels.delete(channelId);
     for (const waiter of state.ackWaiters.splice(0)) waiter(false);
-    // What the seller can close it at: everything the buyer signed (the serious fee, or the price once delivered).
-    this._channelStore.updateChannelStatus(channelId, status, state.cumulative.toString());
+    this._channelStore.updateChannelStatus(channelId, status);
   }
 
   /**

@@ -7,20 +7,13 @@ import type { ServiceApiProtocol } from '@antseed/protocol/service-api';
 const USER_ACTIONABLE_PEER_ERROR_IDS = new Set([
   'content_policy_violation',
   'context_length_exceeded',
-  'invalid_image_input',
   'invalid_request',
   'invalid_request_error',
-  'invalid_video_duration',
-  'invalid_video_source',
   'max_tokens_exceeded',
-  'missing_required_field',
   'request_too_large',
   'unsupported_parameter',
   'upstream_upload_timeout',
   'validation_error',
-  'video_check_busy',
-  'video_source_too_large',
-  'video_source_unavailable',
 ]);
 
 function responseHeader(response: SerializedHttpResponse, name: string): string | undefined {
