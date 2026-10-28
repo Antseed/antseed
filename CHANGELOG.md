@@ -110,6 +110,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Gateway console: the Overview's low-balance warning and runway now count USDC waiting in the workspace wallet (a pending deposit, or USDC held back at the credit limit that tops the credits up as they are spent), so a workspace with funds in its wallet is no longer told its balance is about to run out. The warning names both amounts.
 - `@antseed/ant-agent`: `AntAgentProvider` now forwards `serviceCapabilities` from the inner provider, so agent-wrapped services announce their configured capabilities (previously only pricing and categories were announced).
 - `@antseed/ant-agent`: `AntAgentProvider` also forwards the wrapped provider's `serviceUnitBillingModels`, so sellers running an agent announce their per-unit (image, video, per-request) billing models instead of none.
 - Seller monitoring: free ($0) image and video offers count in per-unit price comparisons (Market, seller card, price editor), and a service with a free option shows its real minimum. Models still withdrawn when an upstream gets credit again are alerted on the next health-check round instead of never. A quiet close of a superseded alert (a low balance that ran out) can no longer run before the warning it closes.

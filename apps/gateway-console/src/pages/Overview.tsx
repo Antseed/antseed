@@ -38,6 +38,11 @@ function BudgetTile({ label, spent, limit }: { label: string; spent: number | nu
   )
 }
 
+function fundsText(funds: Runway): string {
+  if (funds.inWallet > 0) return `${formatUsd(funds.available)} available and ${formatUsd(funds.inWallet)} waiting in the wallet`
+  return `${formatUsd(funds.available)} available`
+}
+
 function runwayText(funds: Runway | null): string {
   if (!funds) return '…'
   if (funds.days === null) return 'No recent spend'
@@ -112,7 +117,7 @@ export default function Overview() {
     return report ? usdcToNumber(report.totals.spent) : null
   }
   const warnings = budgetWarnings(limits, PERIODS.map(({ period }, index) => [period, spentIn(index)]))
-  const funds = wallet.data && lastWeek.data ? runway(usdcToNumber(wallet.data.available), usdcToNumber(lastWeek.data.totals.spent), 7) : null
+  const funds = wallet.data && lastWeek.data ? runway(usdcToNumber(wallet.data.available), usdcToNumber(lastWeek.data.totals.spent), 7, usdcToNumber(wallet.data.walletUsdc)) : null
 
   // A workspace that has served nothing yet gets the getting-started layout instead of empty charts.
   // (no request this month, and none ever on any of its keys).
@@ -137,8 +142,8 @@ export default function Overview() {
         <Alert tone={funds.days !== null && funds.days < 1 ? 'danger' : 'warning'} title="Balance is running low"
           action={<PageLink to="wallet">Add funds</PageLink>}>
           {funds.days === null
-            ? `Only ${formatUsd(funds.available)} is available.`
-            : `${formatUsd(funds.available)} available lasts about ${formatRunway(funds.days)} at last week's pace (${formatUsd(funds.dailySpend)} a day).`}
+            ? `Only ${fundsText(funds)} ${funds.inWallet > 0 ? 'are' : 'is'} left.`
+            : `${fundsText(funds)} ${funds.inWallet > 0 ? 'last' : 'lasts'} about ${formatRunway(funds.days)} at last week's pace (${formatUsd(funds.dailySpend)} a day).`}
         </Alert>
       )}
       {attention.currentMissingOperator && (
