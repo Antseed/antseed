@@ -313,8 +313,9 @@ export function registerWalletRoutes(router: ConsoleRouter, deps: ConsoleDeps, o
   /**
    * Verifies on-chain the deposits the buyer recorded and the transfers that
    * funded sweeps, up to `batch` of each. True when nothing is left to check:
-   * the buyer's history was read and every deposit in it is stored or known
-   * not to be one.
+   * the buyer read this wallet's history (a buyer without a deposit watcher
+   * for it names no address and lists none) and every deposit in it is
+   * stored or known not to be one.
    */
   const syncDeposits = async (ws: WorkspaceWallet, batch: number): Promise<boolean> => {
     const history = await optionalBuyerJson(buyer, withIdentity('/_antseed/deposits/history', ws.buyerIdentity))
@@ -326,7 +327,9 @@ export function registerWalletRoutes(router: ConsoleRouter, deps: ConsoleDeps, o
     for (const txHash of unrecordedFunding(ws).filter((hash) => due(ws, hash)).slice(0, batch)) {
       if (await check(ws, txHash, 'transfer') === null) notTransfers.add(`${ws.record.id}:${txHash}`)
     }
-    return history !== null && unchecked().length === 0 && unknownFunding(ws).length === 0 && unrecordedFunding(ws).length === 0
+    const historyAddress = typeof history?.['address'] === 'string' ? history['address'].toLowerCase() : null
+    const read = historyAddress !== null && Array.isArray(history?.['deposits']) && historyAddress === (await addressOf(ws))?.toLowerCase()
+    return read && unchecked().length === 0 && unknownFunding(ws).length === 0 && unrecordedFunding(ws).length === 0
   }
 
   router.add('GET', '/workspaces/:id/deposits', async (request): Promise<DepositConfirmation[]> => {

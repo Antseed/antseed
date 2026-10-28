@@ -30,8 +30,9 @@ let ownerId: string
 let now = MID_OCT
 let explorerDown = false
 let rate = 1.115
-/** Deposits the buyer recorded, and whether it answers; `rpcDown` fails their on-chain check. */
+/** Deposits the buyer recorded and the wallet it read them for (null: no deposit watcher), whether it answers; `rpcDown` fails their on-chain check. */
 let history: string[] = []
+let historyAddress: string | null = WALLET
 let buyerDown = false
 let rpcDown = false
 const LATE_DEPOSIT = `0x${'e4'.repeat(32)}`
@@ -44,7 +45,7 @@ before(async () => {
   ownerId = store.createOwner({ label: 'Dana', email: 'dana@example.com' }).id
   workspaceId = store.defaultWorkspace().id
   buyer = await startFakeBuyer({
-    'GET /_antseed/deposits/history': () => (buyerDown ? { status: 503, body: { ok: false } } : { body: { deposits: history.map((txHash) => ({ txHash })) } }),
+    'GET /_antseed/deposits/history': () => (buyerDown ? { status: 503, body: { ok: false } } : { body: { ok: true, address: historyAddress, deposits: historyAddress ? history.map((txHash) => ({ txHash })) : [] } }),
   })
   spend(SELLER_A, 'qwen3-coder', 1_500_000, 'r1', OCT + 1000, { input: 1000, cached: 400, output: 200 })
   spend(SELLER_A, 'qwen3-coder', 500_000, 'r1', OCT + 2000, { input: 0, cached: 0, output: 0 }) // a second charge of the same request
@@ -171,6 +172,11 @@ test('a month is not final while deposits the buyer recorded are not stored yet'
   buyerDown = true
   assert.equal((await call(setup(), 'GET', path, admin()) as PurchaseStatement).status, 'open', 'the buyer\'s deposit history was not read')
   buyerDown = false
+  historyAddress = null
+  assert.equal((await call(setup(), 'GET', path, admin()) as PurchaseStatement).status, 'open', 'the buyer has no deposit watcher for the wallet, so it read no history')
+  historyAddress = `0x${'99'.repeat(20)}`
+  assert.equal((await call(setup(), 'GET', path, admin()) as PurchaseStatement).status, 'open', 'the history is another wallet\'s')
+  historyAddress = WALLET
 
   history = [LATE_DEPOSIT]
   rpcDown = true

@@ -109,6 +109,8 @@ function BillingModal({ isOpen, workspaceId, profile, onClose }: { isOpen: boole
     toast: 'Billing details removed',
     onSuccess: onClose,
   })
+  // One change at a time: a save still waiting on the VAT check must not land after a removal.
+  const busy = save.isPending || remove.isPending
   const ready = draft.companyName.trim() && draft.address.trim() && /^[a-zA-Z]{2}$/.test(draft.country.trim())
   return (
     <Modal isOpen={isOpen} onClose={onClose} size="sm" title="Billing details"
@@ -121,9 +123,9 @@ function BillingModal({ isOpen, workspaceId, profile, onClose }: { isOpen: boole
         <TextField label="Company registration number (optional)" placeholder="e.g. KvK number" maxLength={50} {...field('registrationNumber')} />
         {save.error ? <p className="gc-warn">{errorMessage(save.error)}</p> : null}
         <div className="gc-actions">
-          {profile && <Button variant="ghost" onClick={() => remove.mutate()} disabled={remove.isPending}>Remove</Button>}
+          {profile && <Button variant="ghost" onClick={() => remove.mutate()} disabled={busy}>Remove</Button>}
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button onClick={() => save.mutate()} disabled={save.isPending || !ready}>{save.isPending ? 'Saving…' : 'Save'}</Button>
+          <Button onClick={() => save.mutate()} disabled={busy || !ready}>{save.isPending ? 'Saving…' : 'Save'}</Button>
         </div>
       </div>
     </Modal>
