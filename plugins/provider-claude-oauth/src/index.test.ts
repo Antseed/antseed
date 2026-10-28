@@ -91,7 +91,7 @@ describe('createProvider', () => {
     expect(extraHeaders).toBeDefined();
     expect(extraHeaders?.['anthropic-version']).toBe('2023-06-01');
     expect(extraHeaders?.['anthropic-beta']).toBe('claude-code-20250219,oauth-2025-04-20');
-    expect(extraHeaders?.['user-agent']).toBe('claude-cli/2.1.75');
+    expect(extraHeaders?.['user-agent']).toBe('claude-cli/2.1.312');
     expect(extraHeaders?.['x-app']).toBe('cli');
   });
 
