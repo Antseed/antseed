@@ -197,9 +197,13 @@ export class SellerAlerts {
     const held = this._held.get(key);
     if (holdMs !== null && held) held.event = event;
     else if (holdMs !== null) {
+      // It stays held until its turn in the incident, so a recovery recorded meanwhile still cancels it.
       const entry = { event, timer: setTimeout(() => {
-        this._held.delete(key);
-        void this._inIncident(key, () => this._deliver(entry.event, key, false)).catch(() => {});
+        void this._inIncident(key, async () => {
+          if (this._held.get(key) !== entry) return;
+          this._held.delete(key);
+          return this._deliver(entry.event, key, false);
+        }).catch(() => {});
       }, holdMs) };
       entry.timer.unref?.();
       this._held.set(key, entry);
@@ -239,9 +243,14 @@ export class SellerAlerts {
       return;
     }
     if (failed.size === 0 || attempt >= MAX_RETRIES) return;
+    // It stays pending until its turn in the incident, so an event recorded meanwhile (a new
+    // outage, say, while its journal write is still running) still cancels or replaces it.
     const entry = { event, incident, recovery, channels: new Map(failed), attempt, timer: setTimeout(() => {
-      this._retries.delete(retryKey);
-      void this._inIncident(incident, () => this._deliver(entry.event, incident, recovery, false, { channels: new Map(entry.channels), attempt: entry.attempt + 1 })).catch(() => {});
+      void this._inIncident(incident, async () => {
+        if (this._retries.get(retryKey) !== entry) return;
+        this._retries.delete(retryKey);
+        return this._deliver(entry.event, incident, recovery, false, { channels: new Map(entry.channels), attempt: entry.attempt + 1 });
+      }).catch(() => {});
     }, Math.min((this._opts.retryMs ?? 30_000) * 2 ** attempt, MAX_RETRY_MS)) };
     entry.timer.unref?.();
     this._retries.set(retryKey, entry);
