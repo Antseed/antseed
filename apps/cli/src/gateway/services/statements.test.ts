@@ -77,7 +77,7 @@ test('a seller paid this month for an earlier month\'s purchases is listed with 
     peers: new Map(),
     settlements: [{ seller: `0x${seller}`, txHash: `0x${'a1'.repeat(32)}`, time: Date.UTC(2026, 10, 2), amountUsdc: 1_250_000 }],
     settlementsSource: 'https://explorer.test',
-    sharedWallet: [],
+    sharedWallet: 0,
     eurRate: null,
     status: 'open',
     now: Date.UTC(2026, 10, 3),

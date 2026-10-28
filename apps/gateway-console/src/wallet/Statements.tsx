@@ -64,7 +64,7 @@ function statementCsv(statement: PurchaseStatement): string {
         line.requests, line.inputTokens, line.cachedInputTokens, line.outputTokens, line.amount, eurValue(line.amount), '', ''])
     }
     for (const settlement of supplier.settlements ?? []) {
-      rows.push([statement.reference, statement.period, statement.sharedWallet.length ? 'wallet_settlement' : 'settlement', supplierName(supplier), supplier.peerId, '', '', '', '', '', settlement.amount, eurValue(settlement.amount), settlement.txHash, new Date(settlement.time).toISOString()])
+      rows.push([statement.reference, statement.period, statement.sharedWallet ? 'wallet_settlement' : 'settlement', supplierName(supplier), supplier.peerId, '', '', '', '', '', settlement.amount, eurValue(settlement.amount), settlement.txHash, new Date(settlement.time).toISOString()])
     }
   }
   for (const deposit of statement.funding.deposits) {
@@ -233,8 +233,8 @@ function Supplier({ supplier, index, statement, network, txLink }: { supplier: S
             : (
               <>
                 <span className="gc-muted">
-                  {statement.sharedWallet.length
-                    ? `Paid on ${network} from the wallet shared with ${statement.sharedWallet.join(', ')}, ${settlements.length} settlement${settlements.length === 1 ? '' : 's'} this month, also paying for their purchases:`
+                  {statement.sharedWallet
+                    ? `Paid on ${network} from a wallet shared with ${statement.sharedWallet} other workspace${statement.sharedWallet === 1 ? '' : 's'}, ${settlements.length} settlement${settlements.length === 1 ? '' : 's'} this month, also paying for their purchases:`
                     : `Paid on ${network}, ${settlements.length} settlement${settlements.length === 1 ? '' : 's'} this month:`}
                 </span>
                 {shown.map((settlement) => <span key={settlement.txHash}>{utcDate(settlement.time)} · {usdc(settlement.amount)} USDC · {txLink(settlement.txHash, shortId(settlement.txHash, 10, 8))}</span>)}

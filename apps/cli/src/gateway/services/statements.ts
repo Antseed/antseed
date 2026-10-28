@@ -189,8 +189,8 @@ export interface StatementInput {
   peers: ReadonlyMap<string, { name: string | null; verificationLinks: StatementSupplier['verificationLinks'] }>
   settlements: Settlement[] | null
   settlementsSource: string | null
-  /** Names of other workspaces that paid from the same wallet by the month's end. */
-  sharedWallet: string[]
+  /** How many other workspaces paid from the same wallet by the month's end. */
+  sharedWallet: number
   eurRate: PurchaseStatement['eurRate']
   status: PurchaseStatement['status']
   now: number
@@ -206,7 +206,7 @@ export function buildStatement(input: StatementInput): PurchaseStatement {
   }
   // A seller paid this month for what was bought before is listed too, with no purchases, so its settlement is on the record.
   // Not with a shared wallet: that seller may have sold only to another workspace.
-  for (const settlement of input.sharedWallet.length ? [] : input.settlements ?? []) {
+  for (const settlement of input.sharedWallet ? [] : input.settlements ?? []) {
     const key = peerKey(settlement.seller)
     if (!bySeller.has(key)) bySeller.set(key, [])
   }
