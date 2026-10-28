@@ -26,10 +26,14 @@ export function budgetWarnings(limits: SpendLimits | null | undefined, spent: Ar
   return out
 }
 
-/** Days the balance lasts at the recent average daily spend; low when under a week (or nearly empty with no spend). */
-export function runway(available: number, spentInWindow: number, windowDays: number): { available: number; dailySpend: number; days: number | null; low: boolean } {
+/**
+ * Days the balance lasts at the recent average daily spend; low when under a week (or nearly empty with no spend).
+ * USDC waiting in the workspace wallet counts: it moves into the credits automatically as they are spent.
+ */
+export function runway(available: number, spentInWindow: number, windowDays: number, inWallet = 0): { available: number; inWallet: number; total: number; dailySpend: number; days: number | null; low: boolean } {
+  const total = available + Math.max(0, inWallet)
   const dailySpend = windowDays > 0 ? spentInWindow / windowDays : 0
-  const days = dailySpend > 0 ? available / dailySpend : null
-  const low = days === null ? available < 1 : days < 7
-  return { available, dailySpend, days, low }
+  const days = dailySpend > 0 ? total / dailySpend : null
+  const low = days === null ? total < 1 : days < 7
+  return { available, inWallet: total - available, total, dailySpend, days, low }
 }
