@@ -32,6 +32,7 @@ let explorerDown = false
 /** How far the explorer has indexed (block time, epoch ms). */
 let indexedAt = Date.UTC(2027, 0, 1)
 let rate = 1.115
+let ecbDown = false
 /** Deposits the buyer recorded for the wallet. */
 let history: string[] = []
 const LATE_DEPOSIT = `0x${'e4'.repeat(32)}`
@@ -82,7 +83,7 @@ function setup(): ConsoleRouter {
       return txHash === LATE_DEPOSIT ? { txHash, wallet, kind: 'transfer', creditedUsdc: 20_000_000, feeUsdc: 0, blockNumber: 4, blockTime: OCT + 50_000, sources: [] } : null
     },
     statements: {
-      fetchEurRate: async (date) => ({ usdPerEur: rate, date }),
+      fetchEurRate: async (date) => { if (ecbDown) throw new Error('ECB unreachable'); return { usdPerEur: rate, date } },
       checkVatNumber: async (vatNumber) => { vatChecks.push(vatNumber); return vatNumber.startsWith('NL') ? true : null },
       fetchSettlements: async (url, buyerAddress, from, to): Promise<SettlementRead> => {
         if (explorerDown) throw new Error('explorer unreachable')
@@ -189,6 +190,18 @@ test('a month is not final on a settlement list cached before the explorer went 
   assert.equal(stale.status, 'open')
   assert.equal(store.getStatement(workspaceId, '2026-10'), null)
   explorerDown = false
+
+  // The same with the exchange rate: one cached before a failed refresh is shown in the draft, never issued.
+  const ratesRouter = setup()
+  now = NOV + 24 * 60 * 60 * 1000 - 7 * 60 * 60 * 1000
+  assert.equal((await call(ratesRouter, 'GET', path, admin()) as PurchaseStatement).status, 'open')
+  now += 8 * 60 * 60 * 1000 // past the grace period and the rate's six-hour cache
+  ecbDown = true
+  const staleRate = await call(ratesRouter, 'GET', path, admin()) as PurchaseStatement
+  assert.equal(staleRate.status, 'open')
+  assert.equal(staleRate.eurRate?.usdPerEur, 1.115, 'the draft still shows the cached rate')
+  assert.equal(store.getStatement(workspaceId, '2026-10'), null)
+  ecbDown = false
 })
 
 test('a month a day after its end is final: kept as issued, unchanged by later spend or rates; its money in is read again', async () => {

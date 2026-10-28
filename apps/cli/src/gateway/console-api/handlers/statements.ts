@@ -158,9 +158,8 @@ export function registerStatementRoutes(router: ConsoleRouter, deps: ConsoleDeps
     const chain = await seams.resolveChain()
     const explorerUrl = chain.explorerApiUrl?.trim() || null
     const wallet = await seams.walletAddress(ws.buyerIdentity || DEFAULT_BUYER_IDENTITY).catch(() => null)
-    const [rate, settlementsRead, peerMap] = await Promise.all([
+    const [rateRead, settlementsRead, peerMap] = await Promise.all([
       cache.read(`eur:${rateDate(period, now)}`, { ttlMs: RATE_TTL_MS }, () => eurRate(rateDate(period, now)))
-        .then((read) => read.value)
         .catch((err: unknown) => { deps.log(`console: ECB rate not read: ${errorMessage(err)}`); return null }),
       explorerUrl && wallet
         ? cache.read(`settlements:${wallet.toLowerCase()}:${period}`, { ttlMs: SETTLEMENTS_TTL_MS }, () => settlementsOf(explorerUrl, wallet, bounds.from, bounds.to))
@@ -169,13 +168,14 @@ export function registerStatementRoutes(router: ConsoleRouter, deps: ConsoleDeps
       cache.read('peers', { ttlMs: PEERS_TTL_MS }, peers).then((read) => read.value).catch(() => new Map()),
       synced,
     ])
+    const rate = rateRead?.value ?? null
     const settlements = settlementsRead?.value.settlements ?? null
     // The explorer answers from its index: until it has indexed this chain past the month's end, later settlements are missing.
     const indexedThrough = settlementsRead?.value.indexed.find((entry) => entry.chainId === chain.evmChainId)?.at ?? null
     const buyer = deps.store.getBillingProfile(ws.id)
     // Final once the month is over (plus a day for late spend reports and settlements), the buyer is named, and
     // every outside read answered now (a list cached before a failed refresh is not enough) and covers the month.
-    const final = now >= bounds.to + STATEMENT_GRACE_MS && buyer !== null && rate !== null
+    const final = now >= bounds.to + STATEMENT_GRACE_MS && buyer !== null && rate !== null && !rateRead!.stale
       && (explorerUrl === null || (settlementsRead !== null && !settlementsRead.stale && indexedThrough !== null && indexedThrough >= bounds.to))
     const statement = buildStatement({
       period,
