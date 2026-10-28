@@ -502,20 +502,25 @@ test('a recovery that fails while a new outage waits behind it is not resent', a
     const dataDir = mkdtempSync(join(tmpdir(), 'seller-alerts-'));
     const texts: string[] = [];
     let release!: () => void;
+    let sending!: () => void;
+    // Resolves once the recovery's send is in flight: its journal write can take a while on a busy machine.
+    const inFlight = new Promise<void>((resolve) => { sending = resolve; });
     let stall = false;
     const alerts = new SellerAlerts({
       dataDir, config: { webhook: { url: 'https://hooks.example/x' }, cooldownMinutes: 30 }, sellerName: 'S', env: {}, retryMs: 1,
       fetch: (async (_url: string, init: RequestInit) => {
         texts.push(String(JSON.parse(String(init.body)).text).split(': ')[1]!.split('\n')[0]!);
         if (!stall) return new Response('{}', { status: 200 });
-        await new Promise<void>((resolve) => { release = resolve; });
+        const stalled = new Promise<void>((resolve) => { release = resolve; });
+        sending();
+        await stalled;
         return new Response('{}', { status: 500 });
       }) as typeof fetch,
     });
     await alerts.record(down);
     stall = true;
     const recovering = alerts.record(up);
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await inFlight;
     const outage = alerts.record(down);
     stall = false;
     release();
