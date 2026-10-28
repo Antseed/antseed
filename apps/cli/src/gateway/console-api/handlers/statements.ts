@@ -186,7 +186,8 @@ export function registerStatementRoutes(router: ConsoleRouter, deps: ConsoleDeps
       peers: peerMap,
       settlements,
       settlementsSource: settlements ? explorerUrl : null,
-      sharedWallet: deps.store.workspacesSpendingFrom(ws.buyerIdentity || DEFAULT_BUYER_IDENTITY, bounds.from, bounds.to)
+      // Any spend by another workspace up to the month's end: a settlement can pay for purchases of earlier months.
+      sharedWallet: deps.store.workspacesSpendingFrom(ws.buyerIdentity || DEFAULT_BUYER_IDENTITY, 0, bounds.to)
         .filter((id) => id !== ws.id)
         .map((id) => deps.store.getWorkspace(id)?.name ?? 'a deleted workspace'),
       eurRate: rate,

@@ -184,7 +184,7 @@ export interface StatementInput {
   peers: ReadonlyMap<string, { name: string | null; verificationLinks: StatementSupplier['verificationLinks'] }>
   settlements: Settlement[] | null
   settlementsSource: string | null
-  /** Names of other workspaces that paid from the same wallet this month. */
+  /** Names of other workspaces that paid from the same wallet by the month's end. */
   sharedWallet: string[]
   eurRate: PurchaseStatement['eurRate']
   status: PurchaseStatement['status']

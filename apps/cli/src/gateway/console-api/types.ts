@@ -530,7 +530,7 @@ export interface PurchaseStatement {
   /** Where the payment records came from: the chain explorer, or null when they could not be read (each supplier's `settlements` is then null). */
   settlementsSource: string | null
   /**
-   * Other workspaces that paid from the same wallet this month (their names), empty when none. Settlements are
+   * Other workspaces that paid from the same wallet by the month's end (their names), empty when none. Settlements are
    * the wallet's: with a shared wallet a seller's settlements also pay the other workspaces' purchases.
    */
   sharedWallet: string[]

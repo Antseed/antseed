@@ -274,6 +274,11 @@ test('a wallet shared with another workspace: its settlements are shown as the w
   assert.deepEqual(statement.sharedWallet, ['Research'])
   assert.deepEqual(statement.suppliers.map((supplier) => supplier.peerId), [`0x${SELLER_A}`], 'the seller only Research bought from is not on this statement')
   assert.equal(statement.suppliers[0]!.settlements!.length, 1)
+
+  // November: Research bought nothing, but the wallet's November settlements can still pay for its September purchases.
+  const november = await call(router, 'GET', `/workspaces/${workspaceId}/statements/2026-11`, admin()) as PurchaseStatement
+  assert.deepEqual(november.sharedWallet, ['Research'])
+  assert.ok(!november.suppliers.some((supplier) => supplier.peerId === `0x${SELLER_C}`))
 })
 
 test('periods: malformed is a 400, a month not started yet a 404', async () => {
