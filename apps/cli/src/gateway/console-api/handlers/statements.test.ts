@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, before, test } from 'node:test'
 import type { AntsChainConfig } from '@antseed/ants'
-import type { Settlement } from '../../services/statements.js'
+import type { SettlementRead } from '../../services/statements.js'
 import { GatewayStore } from '../../store.js'
 import { ConsoleRouter } from '../router.js'
 import type { BillingProfile, PurchaseStatement, StatementSummary } from '../types.js'
@@ -29,6 +29,8 @@ let workspaceId: string
 let ownerId: string
 let now = MID_OCT
 let explorerDown = false
+/** How far the explorer has indexed (block time, epoch ms). */
+let indexedAt = Date.UTC(2027, 0, 1)
 let rate = 1.115
 /** Deposits the buyer recorded for the wallet. */
 let history: string[] = []
@@ -82,15 +84,18 @@ function setup(): ConsoleRouter {
     statements: {
       fetchEurRate: async (date) => ({ usdPerEur: rate, date }),
       checkVatNumber: async (vatNumber) => { vatChecks.push(vatNumber); return vatNumber.startsWith('NL') ? true : null },
-      fetchSettlements: async (url, buyerAddress, from, to): Promise<Settlement[]> => {
+      fetchSettlements: async (url, buyerAddress, from, to): Promise<SettlementRead> => {
         if (explorerDown) throw new Error('explorer unreachable')
         assert.equal(url, 'https://explorer.test')
         assert.equal(buyerAddress, WALLET)
         assert.deepEqual([from, to], [OCT, NOV])
-        return [
-          { seller: `0x${SELLER_A}`, txHash: `0x${'f1'.repeat(32)}`, time: OCT + 10_000, amountUsdc: 4_000_000 },
-          { seller: `0x${SELLER_B}`, txHash: `0x${'f2'.repeat(32)}`, time: OCT + 20_000, amountUsdc: 3_000_000 },
-        ]
+        return {
+          settlements: [
+            { seller: `0x${SELLER_A}`, txHash: `0x${'f1'.repeat(32)}`, time: OCT + 10_000, amountUsdc: 4_000_000 },
+            { seller: `0x${SELLER_B}`, txHash: `0x${'f2'.repeat(32)}`, time: OCT + 20_000, amountUsdc: 3_000_000 },
+          ].filter((settlement) => settlement.time <= indexedAt),
+          indexed: [{ chainId: CHAIN.evmChainId, at: indexedAt }, { chainId: 1, at: Date.UTC(2030, 0, 1) }],
+        }
       },
       peers: async () => new Map([[SELLER_A, { name: 'Northwind', verificationLinks: [{ kind: 'domain' as const, label: 'northwind.example', href: 'https://northwind.example' }] }]]),
     },
@@ -162,6 +167,17 @@ test('a month is not final without billing details, or while the explorer cannot
   explorerDown = false
 })
 
+test('a month is not final while the explorer has not indexed past its end', async () => {
+  now = NOV + 2 * 24 * 60 * 60 * 1000
+  const path = `/workspaces/${workspaceId}/statements/2026-10`
+  indexedAt = OCT + 15_000 // behind: the second settlement is not indexed yet
+  const lagging = await call(setup(), 'GET', path, admin()) as PurchaseStatement
+  assert.equal(lagging.status, 'open', 'another chain indexed further does not count')
+  assert.equal(lagging.suppliers.find((supplier) => supplier.peerId === `0x${SELLER_B}`)!.settlements!.length, 0)
+  assert.equal(store.getStatement(workspaceId, '2026-10'), null)
+  indexedAt = Date.UTC(2027, 0, 1)
+})
+
 test('a month is not final on a settlement list cached before the explorer went down', async () => {
   const router = setup()
   const path = `/workspaces/${workspaceId}/statements/2026-10`
@@ -186,6 +202,7 @@ test('a month a day after its end is final: kept as issued, unchanged by later s
   assert.equal(issued.eurRate?.date, '2026-10-31')
   assert.match(issued.reference, /^PS-2026-10-[A-Z0-9]{1,6}$/)
   assert.equal(issued.funding.total, '100.000000')
+  assert.equal(issued.suppliers.find((supplier) => supplier.peerId === `0x${SELLER_B}`)!.settlements!.length, 1, 'issued once the explorer caught up')
 
   spend(SELLER_A, 'qwen3-coder', 1_000_000, 'late', OCT + 5000, { input: 1, cached: 0, output: 1 })
   rate = 1.2

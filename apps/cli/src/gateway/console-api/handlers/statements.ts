@@ -13,7 +13,7 @@ import { errorMessage } from '../../errors.js'
 import { listNetworkPeers } from '../../services/network.js'
 import {
   buildStatement, checkVatNumber, fetchEurRate, fetchSettlements, normalizeVatNumber, periodBounds, periodsSince, rateDate,
-  statementFunding, statementReference, STATEMENT_GRACE_MS, type Settlement,
+  statementFunding, statementReference, STATEMENT_GRACE_MS, type SettlementRead,
 } from '../../services/statements.js'
 import type { BillingProfileRecord, WorkspaceRecord } from '../../store.js'
 import { usdcToDecimalString } from '../../money.js'
@@ -34,7 +34,7 @@ export interface StatementRouteSeams {
   /** Seams for tests; production reads the ECB, VIES, the chain explorer and the buyer's peers. */
   fetchEurRate?: typeof fetchEurRate
   checkVatNumber?: typeof checkVatNumber
-  fetchSettlements?: (explorerUrl: string, buyer: string, from: number, to: number) => Promise<Settlement[]>
+  fetchSettlements?: (explorerUrl: string, buyer: string, from: number, to: number) => Promise<SettlementRead>
   peers?: () => Promise<Map<string, { name: string | null; verificationLinks: StatementSupplier['verificationLinks'] }>>
 }
 
@@ -169,12 +169,14 @@ export function registerStatementRoutes(router: ConsoleRouter, deps: ConsoleDeps
       cache.read('peers', { ttlMs: PEERS_TTL_MS }, peers).then((read) => read.value).catch(() => new Map()),
       synced,
     ])
-    const settlements = settlementsRead?.value ?? null
+    const settlements = settlementsRead?.value.settlements ?? null
+    // The explorer answers from its index: until it has indexed this chain past the month's end, later settlements are missing.
+    const indexedThrough = settlementsRead?.value.indexed.find((entry) => entry.chainId === chain.evmChainId)?.at ?? null
     const buyer = deps.store.getBillingProfile(ws.id)
     // Final once the month is over (plus a day for late spend reports and settlements), the buyer is named, and
-    // every outside read answered now: a list cached before a failed refresh is not enough.
+    // every outside read answered now (a list cached before a failed refresh is not enough) and covers the month.
     const final = now >= bounds.to + STATEMENT_GRACE_MS && buyer !== null && rate !== null
-      && (explorerUrl === null || (settlementsRead !== null && !settlementsRead.stale))
+      && (explorerUrl === null || (settlementsRead !== null && !settlementsRead.stale && indexedThrough !== null && indexedThrough >= bounds.to))
     const statement = buildStatement({
       period,
       workspace: { id: ws.id, name: ws.name, wallet },

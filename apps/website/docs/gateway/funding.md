@@ -78,7 +78,7 @@ A statement has:
 
 EUR amounts use the ECB reference rate of the month's last day (or the last one before it), with 1 USDC valued at 1 USD.
 
-The current month is a draft that can still change. A day after a month ends, its statement becomes final the next time it is opened, as long as the workspace has billing details and the exchange rate and settlements could be read. A final statement keeps the details, rate and purchases it was issued with and never changes, even when billing details change later. Only its money in is read again each time: a transfer is recorded once it moves into the credits, which for one made late in the month can happen after the month ends. **Print or save as PDF** saves it, and **Download CSV** exports every line, settlement and deposit for bookkeeping software.
+The current month is a draft that can still change. A day after a month ends, its statement becomes final the next time it is opened, as long as the workspace has billing details and the exchange rate and settlements could be read (with the explorer indexed past the month's end). A final statement keeps the details, rate and purchases it was issued with and never changes, even when billing details change later. Only its money in is read again each time: a transfer is recorded once it moves into the credits, which for one made late in the month can happen after the month ends. **Print or save as PDF** saves it, and **Download CSV** exports every line, settlement and deposit for bookkeeping software.
 
 A purchase statement is a record of what the workspace bought, prepared by its own gateway. It is not an invoice: providers are independent operators paid directly from the workspace's credits, and they do not issue one.
 

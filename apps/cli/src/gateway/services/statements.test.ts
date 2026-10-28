@@ -52,13 +52,17 @@ test('settlements are read page by page and merged per seller and transaction', 
     assert.equal(String(input), 'https://explorer.test/graphql')
     const { variables } = JSON.parse(String(init?.body)) as { variables: Record<string, unknown> }
     asked.push(variables)
-    return response({ data: { settlementServices: pages[asked.length - 1] } })
+    const meta = asked.length === 1 ? { _meta: { status: { base: { id: 8453, block: { number: 5, timestamp: 3 } } } } } : {}
+    return response({ data: { ...meta, settlementServices: pages[asked.length - 1] } })
   })
   assert.deepEqual(asked.map((variables) => [variables['buyer'], variables['from'], variables['to'], variables['after']]), [['0xbuyer', 1, 3, null], ['0xbuyer', 1, 3, 'c1']])
-  assert.deepEqual(settlements, [
-    { seller: '0xs1', txHash: '0xaa', time: 10_000, amountUsdc: 150 },
-    { seller: '0xs2', txHash: '0xbb', time: 20_000, amountUsdc: 7 },
-  ])
+  assert.deepEqual(settlements, {
+    settlements: [
+      { seller: '0xs1', txHash: '0xaa', time: 10_000, amountUsdc: 150 },
+      { seller: '0xs2', txHash: '0xbb', time: 20_000, amountUsdc: 7 },
+    ],
+    indexed: [{ chainId: 8453, at: 3_000 }],
+  })
   await assert.rejects(fetchSettlements('https://explorer.test', '0xb', 0, 1, async () => response({ errors: [{ message: 'bad query' }] })), /bad query/)
 })
 

@@ -114,15 +114,25 @@ export interface Settlement {
   amountUsdc: number
 }
 
+export interface SettlementRead {
+  settlements: Settlement[]
+  /** How far the explorer has indexed each chain (block time, epoch ms): settlements after that are not listed yet. */
+  indexed: Array<{ chainId: number; at: number }>
+}
+
 /**
  * Settlements that paid sellers from `buyer`'s credits in [from, to), from
- * the explorer's GraphQL index (Antscan), one row per seller and transaction.
+ * the explorer's GraphQL index (Antscan), one row per seller and transaction,
+ * with how far the explorer had indexed when it answered.
  */
-export async function fetchSettlements(explorerUrl: string, buyer: string, from: number, to: number, fetchImpl: Fetch = fetch): Promise<Settlement[]> {
+export async function fetchSettlements(explorerUrl: string, buyer: string, from: number, to: number, fetchImpl: Fetch = fetch): Promise<SettlementRead> {
   const merged = new Map<string, Settlement>()
+  let indexed: SettlementRead['indexed'] = []
   let after: string | null = null
   for (let page = 0; page < SETTLEMENT_PAGES; page += 1) {
+    // The checkpoint is read with the first page, so nothing indexed after it is taken for complete.
     const query = `query ($buyer: String!, $from: Int!, $to: Int!, $after: String) {
+      ${after === null ? '_meta { status }' : ''}
       settlementServices(where: { buyer: $buyer, timestamp_gte: $from, timestamp_lt: $to, deltaAmountUsdc_gt: "0" },
         orderBy: "timestamp", orderDirection: "asc", limit: ${SETTLEMENT_PAGE}, after: $after) {
         items { txHash seller deltaAmountUsdc timestamp }
@@ -134,9 +144,17 @@ export async function fetchSettlements(explorerUrl: string, buyer: string, from:
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query, variables }),
     })
     if (!response.ok) throw new Error(`explorer: HTTP ${response.status}`)
-    const body = await response.json() as { data?: { settlementServices?: { items?: Array<Record<string, unknown>>; pageInfo?: { hasNextPage?: boolean; endCursor?: string | null } } }; errors?: Array<{ message?: string }> }
+    const body = await response.json() as {
+      data?: { _meta?: { status?: Record<string, { id?: unknown; block?: { timestamp?: unknown } }> }; settlementServices?: { items?: Array<Record<string, unknown>>; pageInfo?: { hasNextPage?: boolean; endCursor?: string | null } } }
+      errors?: Array<{ message?: string }>
+    }
     const result = body.data?.settlementServices
     if (!result) throw new Error(`explorer: ${body.errors?.[0]?.message ?? 'no settlements in the answer'}`)
+    if (after === null) {
+      indexed = Object.values(body.data?._meta?.status ?? {})
+        .map((chain) => ({ chainId: Number(chain?.id), at: Number(chain?.block?.timestamp) * 1000 }))
+        .filter((chain) => Number.isSafeInteger(chain.chainId) && Number.isFinite(chain.at))
+    }
     for (const item of result.items ?? []) {
       const seller = String(item['seller'] ?? '').toLowerCase()
       const txHash = String(item['txHash'] ?? '').toLowerCase()
@@ -148,7 +166,7 @@ export async function fetchSettlements(explorerUrl: string, buyer: string, from:
       if (known) known.amountUsdc += amount
       else merged.set(key, { seller, txHash, time: Number(item['timestamp'] ?? 0) * 1000, amountUsdc: amount })
     }
-    if (!result.pageInfo?.hasNextPage || !result.pageInfo.endCursor) return [...merged.values()]
+    if (!result.pageInfo?.hasNextPage || !result.pageInfo.endCursor) return { settlements: [...merged.values()], indexed }
     after = result.pageInfo.endCursor
   }
   throw new Error('explorer: too many settlements to list')
