@@ -471,6 +471,87 @@ export interface DepositConfirmation {
   approval: { by: string; at: number; note: string | null } | null
 }
 
+// Workspace admins: the company a workspace buys for, printed on its purchase statements.
+// GET    /workspaces/:id/billing-profile → BillingProfile | null
+// PUT    /workspaces/:id/billing-profile BillingProfileInput → BillingProfile (an EU VAT number is checked with VIES)
+// DELETE /workspaces/:id/billing-profile → { ok: true }
+export interface BillingProfileInput {
+  companyName: string
+  /** Street, postal code and city, one per line. */
+  address: string
+  /** ISO 3166-1 alpha-2, e.g. "NL". */
+  country: string
+  vatNumber: string | null
+  /** A company register number (e.g. KvK). */
+  registrationNumber: string | null
+}
+
+export interface BillingProfile extends BillingProfileInput {
+  /** The EU VIES check of `vatNumber`; null when not checked (no number, not an EU number, or VIES unreachable). */
+  vatCheck: { valid: boolean; at: number } | null
+  updatedAt: number
+}
+
+// Workspace admins: monthly purchase statements, a record of what the workspace bought from which sellers.
+// GET /workspaces/:id/statements          → StatementSummary[] (newest first: every month since its first paid request)
+// GET /workspaces/:id/statements/:period  → PurchaseStatement (period "YYYY-MM", UTC)
+export interface StatementSummary {
+  period: string
+  status: PurchaseStatement['status']
+  reference: string
+  purchases: Usdc
+  issuedAt: number | null
+}
+
+export interface PurchaseStatement {
+  /** "YYYY-MM", a calendar month in UTC. */
+  period: string
+  /** Epoch ms; `to` is exclusive. */
+  from: number
+  to: number
+  /**
+   * final: kept as issued on `issuedAt`, never changes.
+   * open: a draft computed now; the month is not over (or ended less than a day ago), or the workspace has no billing details.
+   */
+  status: 'open' | 'final'
+  reference: string
+  issuedAt: number | null
+  generatedAt: number
+  workspace: { id: string; name: string; wallet: string | null }
+  /** The buyer's details as they were when issued; null when not set yet (a draft). */
+  buyer: BillingProfile | null
+  /** ECB reference rate on or before the month's last day; null when it could not be read. */
+  eurRate: { usdPerEur: number; date: string } | null
+  suppliers: StatementSupplier[]
+  total: Usdc
+  requests: number
+  /** Money in during the month: deposits and transfers into the workspace wallet, and the relay fees of moving them into the credits. */
+  funding: { deposits: Array<{ txHash: string; reference: string; kind: DepositConfirmation['kind']; time: number; amount: Usdc }>; total: Usdc; relayFees: Usdc }
+  /** Where the payment records came from: the chain explorer, or null when they could not be read (each supplier's `settlements` is then null). */
+  settlementsSource: string | null
+}
+
+export interface StatementSupplier {
+  peerId: string
+  /** The seller's name on the network when known. */
+  name: string | null
+  /** Ownership claims (domain, GitHub) the seller proved. */
+  verificationLinks: PeerVerificationLink[]
+  lines: Array<{
+    /** The model, or the routing service for a routing fee. */
+    service: string | null
+    kind: 'inference' | 'routing'
+    requests: number
+    inputTokens: number
+    cachedInputTokens: number
+    outputTokens: number
+    amount: Usdc
+  }>
+  total: Usdc
+  /** Settlement transactions on Base that paid this seller from the workspace's credits during the month; null when not read. */
+  settlements: Array<{ txHash: string; time: number; amount: Usdc }> | null
+}
+
 export interface DepositWatch {
   mode: 'active' | 'background' | 'off'
   status: string

@@ -62,6 +62,26 @@ The gateway checks every deposit against its transaction on Base, so the confirm
 
 A transfer is listed once its USDC starts moving into the credits, usually within a minute. A move into the credits that was approved before transfers were listed stays listed with its approval, as **Moved into the credits**, for the amount it moved. The transfer that funded it is listed too and is approved on its own. For one that is missing, **Add a past deposit** takes the transaction that sent the USDC to the wallet, or your own deposit from a connected wallet.
 
+## Purchase statements
+
+**Purchase statements** on **Wallet & Funding** gives workspace admins and organization admins one statement per month: what the workspace bought, from which providers, and the payments on Base that paid them. It is meant for the books of a company that pays with Antseed.
+
+**Billing details** names the company the workspace buys for: company name, address, country, and optionally a VAT number and a company registration number. An EU VAT number is checked with the EU's VIES service when you save it, and the statement shows the result. Each workspace has its own billing details.
+
+A statement has:
+
+- The buyer's billing details, the workspace and its wallet, and the gateway that issued it.
+- For each provider: its address on the network, its name and the domain or GitHub account it proved, when known, and one line per model with requests, input, cached input and output tokens, and the amount in USDC and EUR. A routing service's fees are listed under that router.
+- The settlement transactions on Base that paid each provider from the workspace's credits during the month, read from the chain explorer (Antscan). Settlements can land after the requests they pay for, so a month's settlements need not add up to its purchases.
+- A VAT section: providers charge no VAT, and the statement gives the EUR amount the buyer would self-assess under reverse charge. Confirm the treatment with your tax advisor.
+- The money that came in during the month (each deposit, with a link to its deposit confirmation) and the relay fees of moving it into the credits.
+
+EUR amounts use the ECB reference rate of the month's last day (or the last one before it), with 1 USDC valued at 1 USD.
+
+The current month is a draft that can still change. A day after a month ends, its statement becomes final the next time it is opened, as long as the workspace has billing details and the exchange rate and settlements could be read. A final statement keeps the details, rate and figures it was issued with and never changes, even when billing details change later. **Print or save as PDF** saves it, and **Download CSV** exports every line, settlement and deposit for bookkeeping software.
+
+A purchase statement is a record of what the workspace bought, prepared by its own gateway. It is not an invoice: providers are independent operators paid directly from the workspace's credits, and they do not issue one.
+
 ## Balance and channels
 
 The **Balance** panel shows:

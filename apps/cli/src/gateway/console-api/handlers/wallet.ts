@@ -27,6 +27,7 @@ import { applyChannelChainState, chainInfo, channelChainHints, mapBalances, mapC
 import { createRewardsReader, gatewayChainProvider, readChannelStates as readChannelStatesOnChain, REWARDS_TTL_MS } from './wallet-chain.js'
 import { registerFreeTierRoutes } from './free-tier.js'
 import { registerOperatorRoutes } from './wallet-operator.js'
+import { registerStatementRoutes, type StatementRouteSeams } from './statements.js'
 
 /** Channel states are re-read from the chain at most this often for the same set of channels. */
 const CHANNELS_TTL_MS = 30_000
@@ -74,6 +75,8 @@ export interface WalletRouteOverrides {
   sessionSignIn?: (sessionId: string) => { authenticatedAt: number; credentialId: string | null } | null
   /** A member's wallet credentials (lower-case addresses, when added) and credential count; defaults to auth's credentials table. */
   memberWallets?: (memberId: string) => { wallets: Array<{ id: string; address: string; createdAt: number }>; total: number }
+  /** Purchase statements' outside reads (ECB, VIES, the chain explorer, the buyer's peers). */
+  statements?: Pick<StatementRouteSeams, 'fetchEurRate' | 'checkVatNumber' | 'fetchSettlements' | 'peers'>
 }
 
 interface WorkspaceWallet {
@@ -377,6 +380,7 @@ export function registerWalletRoutes(router: ConsoleRouter, deps: ConsoleDeps, o
   })
 
   registerFreeTierRoutes(router, deps, { access, walletAddress, resolveChain })
+  registerStatementRoutes(router, deps, { access, walletAddress, resolveChain, buyer, ...overrides.statements })
 
   router.add('GET', '/workspaces/:id/channels', async (request): Promise<Channel[]> => {
     const ws = workspace(request)

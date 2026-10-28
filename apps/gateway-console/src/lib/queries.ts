@@ -29,6 +29,9 @@ export const qk = {
   audit: (filter: object) => ['audit', filter] as const,
   wallet: (workspaceId: string) => ['wallet', workspaceId] as const,
   deposits: (workspaceId: string) => ['deposits', workspaceId] as const,
+  billingProfile: (workspaceId: string) => ['billing-profile', workspaceId] as const,
+  statements: (workspaceId: string) => ['statements', workspaceId] as const,
+  statement: (workspaceId: string, period: string) => ['statements', workspaceId, period] as const,
   channels: (workspaceId: string, all: boolean) => ['channels', workspaceId, all] as const,
   /** Authorized-wallet status of every workspace the viewer can open (markers). */
   operators: ['wallet-operators'] as const,

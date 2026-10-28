@@ -403,4 +403,26 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE deposits_v2 RENAME TO deposits;
   CREATE INDEX deposits_workspace ON deposits(workspace_id, block_time);
   `,
+  // Purchase statements: the company a workspace buys for (printed on its statements), and each month's
+  // statement once final, kept as issued so later changes (seller names, the exchange rate) never alter it.
+  `
+  CREATE TABLE billing_profiles (
+    workspace_id TEXT PRIMARY KEY,
+    company_name TEXT NOT NULL,
+    address TEXT NOT NULL,
+    country TEXT NOT NULL,
+    vat_number TEXT,
+    registration_number TEXT,
+    vat_valid INTEGER,
+    vat_checked_at INTEGER,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE purchase_statements (
+    workspace_id TEXT NOT NULL,
+    period TEXT NOT NULL,
+    issued_at INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    PRIMARY KEY (workspace_id, period)
+  );
+  `,
 ]
