@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AntscanIndexer, IndexerError } from './indexer.js';
 import { displayData } from './display-snapshot.js';
 import type { AntsContext, ResolvedStack } from './context.js';
@@ -23,6 +23,16 @@ function fixture(body: unknown = responseBody()) {
 }
 
 describe('Antscan display snapshots', () => {
+  // The code reads the clock after the test builds its timestamps: a second ticking over in between
+  // would move the freshness bounds (say, a checkpoint 31s ahead becoming only 30s ahead).
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-28T12:00:00Z'));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('fetches and shares one snapshot across display consumers, retaining checkpoint and row blocks', async () => {
     const { indexer, fetchImpl, ctx, stack } = fixture();
     const [first, second] = await Promise.all([displayData(ctx, stack), displayData(ctx, stack)]);
