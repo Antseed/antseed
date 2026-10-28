@@ -2,8 +2,8 @@
  * Purchase statements for a workspace: its billing details and a statement
  * per month of what it bought from which sellers (see services/statements).
  * A month's statement is a draft until a day after the month ends; the first
- * read after that, with billing details set, keeps it as issued, so it never
- * changes. Registered by `registerWalletRoutes`.
+ * read after that, with billing details set and the deposits stored, keeps
+ * it as issued, so it never changes. Registered by `registerWalletRoutes`.
  */
 import type { AntsChainConfig } from '@antseed/ants'
 import { DEFAULT_BUYER_IDENTITY } from '@antseed/node'
@@ -14,7 +14,7 @@ import {
   buildStatement, checkVatNumber, fetchEurRate, fetchSettlements, normalizeVatNumber, periodBounds, periodsSince, rateDate,
   statementReference, STATEMENT_GRACE_MS, type Settlement,
 } from '../../services/statements.js'
-import type { BillingProfileRecord } from '../../store.js'
+import type { BillingProfileRecord, WorkspaceRecord } from '../../store.js'
 import { usdcToDecimalString } from '../../money.js'
 import { audit, type requireWorkspaceAccess } from '../access.js'
 import type { ConsoleDeps } from '../deps.js'
@@ -28,6 +28,8 @@ export interface StatementRouteSeams {
   walletAddress: (name: string) => Promise<string | null>
   resolveChain: () => Promise<AntsChainConfig>
   buyer: BuyerClient
+  /** Stores the workspace's deposits not stored yet; true when none is left to check. */
+  syncDeposits: (ws: WorkspaceRecord) => Promise<boolean>
   /** Seams for tests; production reads the ECB, VIES, the chain explorer and the buyer's peers. */
   fetchEurRate?: typeof fetchEurRate
   checkVatNumber?: typeof checkVatNumber
@@ -151,20 +153,23 @@ export function registerStatementRoutes(router: ConsoleRouter, deps: ConsoleDeps
     const chain = await seams.resolveChain()
     const explorerUrl = chain.explorerApiUrl?.trim() || null
     const wallet = await seams.walletAddress(ws.buyerIdentity || DEFAULT_BUYER_IDENTITY).catch(() => null)
-    const [rate, settlements, peerMap] = await Promise.all([
+    const [rate, settlementsRead, peerMap, depositsSynced] = await Promise.all([
       cache.read(`eur:${rateDate(period, now)}`, { ttlMs: RATE_TTL_MS }, () => eurRate(rateDate(period, now)))
         .then((read) => read.value)
         .catch((err: unknown) => { deps.log(`console: ECB rate not read: ${errorMessage(err)}`); return null }),
       explorerUrl && wallet
         ? cache.read(`settlements:${wallet.toLowerCase()}:${period}`, { ttlMs: SETTLEMENTS_TTL_MS }, () => settlementsOf(explorerUrl, wallet, bounds.from, bounds.to))
-          .then((read) => read.value)
           .catch((err: unknown) => { deps.log(`console: settlements not read from ${explorerUrl}: ${errorMessage(err)}`); return null })
         : Promise.resolve(null),
       cache.read('peers', { ttlMs: PEERS_TTL_MS }, peers).then((read) => read.value).catch(() => new Map()),
+      seams.syncDeposits(ws).catch((err: unknown) => { deps.log(`console: deposits not synced: ${errorMessage(err)}`); return false }),
     ])
+    const settlements = settlementsRead?.value ?? null
     const buyer = deps.store.getBillingProfile(ws.id)
-    // Final once the month is over (plus a day for late spend reports and settlements), the buyer is named, and every outside read answered.
-    const final = now >= bounds.to + STATEMENT_GRACE_MS && buyer !== null && rate !== null && (explorerUrl === null || settlements !== null)
+    // Final once the month is over (plus a day for late spend reports and settlements), the buyer is named, the
+    // deposits are all stored, and every outside read answered now: a list cached before a failed refresh is not enough.
+    const final = now >= bounds.to + STATEMENT_GRACE_MS && buyer !== null && rate !== null && depositsSynced
+      && (explorerUrl === null || (settlementsRead !== null && !settlementsRead.stale))
     const statement = buildStatement({
       period,
       workspace: { id: ws.id, name: ws.name, wallet },

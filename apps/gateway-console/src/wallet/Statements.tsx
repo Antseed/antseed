@@ -14,6 +14,7 @@ import type { BillingProfile, BillingProfileInput, PurchaseStatement, StatementS
 import { useConsole } from '../app/context'
 import { Icon } from '../components/icons'
 import { Mono, QueryView } from '../components/ui'
+import { csvCell } from '../lib/csv'
 import { formatNumber, formatUsd, shortId } from '../lib/format'
 import { useConsoleMutation } from '../lib/mutations'
 import { qk, useChain, useStatus } from '../lib/queries'
@@ -54,7 +55,6 @@ function serviceLabel(line: StatementSupplier['lines'][number]): string {
 
 /** Every line and settlement as CSV, for importing into bookkeeping software. */
 function statementCsv(statement: PurchaseStatement): string {
-  const cell = (value: string | number) => (/[",\n]/.test(String(value)) ? `"${String(value).replace(/"/g, '""')}"` : String(value))
   const eurValue = (amount: string) => (statement.eurRate ? (Number(amount) / statement.eurRate.usdPerEur).toFixed(2) : '')
   const rows: Array<Array<string | number>> = [['reference', 'period', 'type', 'seller', 'seller_address', 'service', 'requests', 'input_tokens', 'cached_input_tokens', 'output_tokens', 'amount_usdc', 'amount_eur', 'tx_hash', 'date_utc']]
   for (const supplier of statement.suppliers) {
@@ -69,7 +69,7 @@ function statementCsv(statement: PurchaseStatement): string {
   for (const deposit of statement.funding.deposits) {
     rows.push([statement.reference, statement.period, 'deposit', '', '', '', '', '', '', '', deposit.amount, eurValue(deposit.amount), deposit.txHash, new Date(deposit.time).toISOString()])
   }
-  return `${rows.map((row) => row.map(cell).join(',')).join('\n')}\n`
+  return `${rows.map((row) => row.map(csvCell).join(',')).join('\n')}\n`
 }
 
 function downloadCsv(statement: PurchaseStatement): void {

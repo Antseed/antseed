@@ -310,17 +310,29 @@ export function registerWalletRoutes(router: ConsoleRouter, deps: ConsoleDeps, o
     return found
   }
 
+  /**
+   * Verifies on-chain the deposits the buyer recorded and the transfers that
+   * funded sweeps, up to `batch` of each. True when nothing is left to check:
+   * the buyer's history was read and every deposit in it is stored or known
+   * not to be one.
+   */
+  const syncDeposits = async (ws: WorkspaceWallet, batch: number): Promise<boolean> => {
+    const history = await optionalBuyerJson(buyer, withIdentity('/_antseed/deposits/history', ws.buyerIdentity))
+    const recorded = Array.isArray(history?.['deposits']) ? history['deposits'] as Array<Record<string, unknown>> : []
+    const unchecked = () => recorded.map((entry) => String(entry['txHash'] ?? ''))
+      .filter((hash) => TX_HASH_RE.test(hash) && !deps.store.getDeposit(ws.record.id, hash) && !lookedUp.has(`${ws.record.id}:${hash.toLowerCase()}`))
+    for (const txHash of unchecked().filter((hash) => due(ws, hash)).slice(0, batch)) await check(ws, txHash, 'deposit')
+    for (const sweep of unknownFunding(ws).filter((deposit) => due(ws, deposit.txHash)).slice(0, batch)) await refreshSources(ws, sweep)
+    for (const txHash of unrecordedFunding(ws).filter((hash) => due(ws, hash)).slice(0, batch)) {
+      if (await check(ws, txHash, 'transfer') === null) notTransfers.add(`${ws.record.id}:${txHash}`)
+    }
+    return history !== null && unchecked().length === 0 && unknownFunding(ws).length === 0 && unrecordedFunding(ws).length === 0
+  }
+
   router.add('GET', '/workspaces/:id/deposits', async (request): Promise<DepositConfirmation[]> => {
     const ws = workspace(request, 'admin')
     // New deposits the buyer recorded are verified on-chain before they are listed (a few per request).
-    const history = await optionalBuyerJson(buyer, withIdentity('/_antseed/deposits/history', ws.buyerIdentity))
-    const recorded = Array.isArray(history?.['deposits']) ? history['deposits'] as Array<Record<string, unknown>> : []
-    const fresh = recorded.map((entry) => String(entry['txHash'] ?? '')).filter((hash) => TX_HASH_RE.test(hash) && !deps.store.getDeposit(ws.record.id, hash))
-    for (const txHash of fresh.filter((hash) => due(ws, hash)).slice(0, 10)) await check(ws, txHash, 'deposit')
-    for (const sweep of unknownFunding(ws).filter((deposit) => due(ws, deposit.txHash)).slice(0, 10)) await refreshSources(ws, sweep)
-    for (const txHash of unrecordedFunding(ws).filter((hash) => due(ws, hash)).slice(0, 10)) {
-      if (await check(ws, txHash, 'transfer') === null) notTransfers.add(`${ws.record.id}:${txHash}`)
-    }
+    await syncDeposits(ws, 10)
     return deps.store.listDeposits(ws.record.id).filter(listed).map((deposit) => confirmation(deposit, ws))
   })
 
@@ -380,7 +392,11 @@ export function registerWalletRoutes(router: ConsoleRouter, deps: ConsoleDeps, o
   })
 
   registerFreeTierRoutes(router, deps, { access, walletAddress, resolveChain })
-  registerStatementRoutes(router, deps, { access, walletAddress, resolveChain, buyer, ...overrides.statements })
+  registerStatementRoutes(router, deps, {
+    access, walletAddress, resolveChain, buyer,
+    syncDeposits: (ws) => syncDeposits({ buyerIdentity: ws.buyerIdentity || DEFAULT_BUYER_IDENTITY, record: ws }, 50),
+    ...overrides.statements,
+  })
 
   router.add('GET', '/workspaces/:id/channels', async (request): Promise<Channel[]> => {
     const ws = workspace(request)

@@ -29,6 +29,11 @@ let ownerId: string
 let now = MID_OCT
 let explorerDown = false
 let rate = 1.115
+/** Deposits the buyer recorded, and whether it answers; `rpcDown` fails their on-chain check. */
+let history: string[] = []
+let buyerDown = false
+let rpcDown = false
+const LATE_DEPOSIT = `0x${'e4'.repeat(32)}`
 const vatChecks: string[] = []
 let ledgerSeq = 0
 
@@ -37,7 +42,9 @@ before(async () => {
   store = new GatewayStore(dir, () => now)
   ownerId = store.createOwner({ label: 'Dana', email: 'dana@example.com' }).id
   workspaceId = store.defaultWorkspace().id
-  buyer = await startFakeBuyer({})
+  buyer = await startFakeBuyer({
+    'GET /_antseed/deposits/history': () => (buyerDown ? { status: 503, body: { ok: false } } : { body: { deposits: history.map((txHash) => ({ txHash })) } }),
+  })
   spend(SELLER_A, 'qwen3-coder', 1_500_000, 'r1', OCT + 1000, { input: 1000, cached: 400, output: 200 })
   spend(SELLER_A, 'qwen3-coder', 500_000, 'r1', OCT + 2000, { input: 0, cached: 0, output: 0 }) // a second charge of the same request
   spend(SELLER_A, 'qwen3-coder', 2_000_000, 'r2', OCT + 3000, { input: 2000, cached: 0, output: 300 })
@@ -70,6 +77,10 @@ function setup(): ConsoleRouter {
     requireWorkspaceAccess: fakeRequireWorkspaceAccess,
     walletAddress: async () => WALLET,
     resolveChain: async () => CHAIN,
+    verifyDeposit: async (_chain, txHash, wallet) => {
+      if (rpcDown) throw new Error('rpc unreachable')
+      return txHash === LATE_DEPOSIT ? { txHash, wallet, kind: 'transfer', creditedUsdc: 20_000_000, feeUsdc: 0, blockNumber: 4, blockTime: OCT + 50_000, sources: [] } : null
+    },
     statements: {
       fetchEurRate: async (date) => ({ usdPerEur: rate, date }),
       checkVatNumber: async (vatNumber) => { vatChecks.push(vatNumber); return vatNumber.startsWith('NL') ? true : null },
@@ -153,6 +164,35 @@ test('a month is not final without billing details, or while the explorer cannot
   explorerDown = false
 })
 
+test('a month is not final while deposits the buyer recorded are not stored yet', async () => {
+  now = NOV + 2 * 24 * 60 * 60 * 1000
+  const path = `/workspaces/${workspaceId}/statements/2026-10`
+  buyerDown = true
+  assert.equal((await call(setup(), 'GET', path, admin()) as PurchaseStatement).status, 'open', 'the buyer\'s deposit history was not read')
+  buyerDown = false
+
+  history = [LATE_DEPOSIT]
+  rpcDown = true
+  const unverified = await call(setup(), 'GET', path, admin()) as PurchaseStatement
+  assert.equal(unverified.status, 'open', 'a recorded deposit could not be checked on-chain')
+  assert.ok(!unverified.funding.deposits.some((deposit) => deposit.txHash === LATE_DEPOSIT))
+  rpcDown = false
+  assert.equal(store.getStatement(workspaceId, '2026-10'), null)
+})
+
+test('a month is not final on a settlement list cached before the explorer went down', async () => {
+  const router = setup()
+  const path = `/workspaces/${workspaceId}/statements/2026-10`
+  now = NOV + 24 * 60 * 60 * 1000 - 10 * 60 * 1000 // ten minutes before the grace period ends: a draft, settlements cached
+  assert.equal((await call(router, 'GET', path, admin()) as PurchaseStatement).status, 'open')
+  now += 20 * 60 * 1000
+  explorerDown = true
+  const stale = await call(router, 'GET', path, admin()) as PurchaseStatement
+  assert.equal(stale.status, 'open')
+  assert.equal(store.getStatement(workspaceId, '2026-10'), null)
+  explorerDown = false
+})
+
 test('a month a day after its end is final: kept as issued, unchanged by later spend or rates', async () => {
   now = NOV + 2 * 24 * 60 * 60 * 1000
   const router = setup()
@@ -162,6 +202,7 @@ test('a month a day after its end is final: kept as issued, unchanged by later s
   assert.equal(issued.buyer?.companyName, 'Voorbeeld B.V.')
   assert.equal(issued.eurRate?.date, '2026-10-31')
   assert.match(issued.reference, /^PS-2026-10-[A-Z0-9]{1,6}$/)
+  assert.ok(issued.funding.deposits.some((deposit) => deposit.txHash === LATE_DEPOSIT), 'the deposit the buyer recorded was stored before issuing')
 
   spend(SELLER_A, 'qwen3-coder', 1_000_000, 'late', OCT + 5000, { input: 1, cached: 0, output: 1 })
   rate = 1.2
