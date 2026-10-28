@@ -210,10 +210,6 @@ export function buildStatement(input: StatementInput): PurchaseStatement {
     }
   }).sort((a, b) => Number(b.total) - Number(a.total))
 
-  // Money that came in: transfers to the wallet and direct deposits. Sweeps move it into the credits (their fee is the relay fee).
-  const inPeriod = input.deposits.filter((deposit) => deposit.blockTime >= bounds.from && deposit.blockTime < bounds.to)
-  const incoming = inPeriod.filter((deposit) => deposit.kind !== 'relay').sort((a, b) => a.blockTime - b.blockTime)
-  const relayFees = inPeriod.filter((deposit) => deposit.kind === 'relay').reduce((sum, deposit) => sum + deposit.feeUsdc, 0)
   const total = input.lines.reduce((sum, line) => sum + line.spentUsdc, 0)
   return {
     period: input.period,
@@ -237,18 +233,33 @@ export function buildStatement(input: StatementInput): PurchaseStatement {
     suppliers,
     total: usdcToDecimalString(total),
     requests: input.lines.filter((line) => !line.routingFee).reduce((sum, line) => sum + line.requests, 0),
-    funding: {
-      deposits: incoming.map((deposit) => ({
-        txHash: deposit.txHash,
-        reference: `DEP-${deposit.txHash.slice(2, 10).toUpperCase()}`,
-        kind: deposit.kind,
-        time: deposit.blockTime,
-        amount: usdcToDecimalString(deposit.creditedUsdc + deposit.feeUsdc),
-      })),
-      total: usdcToDecimalString(incoming.reduce((sum, deposit) => sum + deposit.creditedUsdc + deposit.feeUsdc, 0)),
-      relayFees: usdcToDecimalString(relayFees),
-    },
+    funding: statementFunding(input.period, input.deposits, input.now),
     settlementsSource: input.settlementsSource,
+  }
+}
+
+/**
+ * The money that came in during the month, as the gateway has recorded it
+ * now: transfers to the wallet and direct deposits (sweeps move it into the
+ * credits; their fee is the relay fee). Not kept with a final statement but
+ * read again each time, since a transfer can be recorded only once it is
+ * swept, after the month.
+ */
+export function statementFunding(period: string, deposits: DepositRecord[], now: number): PurchaseStatement['funding'] {
+  const bounds = periodBounds(period)!
+  const inPeriod = deposits.filter((deposit) => deposit.blockTime >= bounds.from && deposit.blockTime < bounds.to)
+  const incoming = inPeriod.filter((deposit) => deposit.kind !== 'relay').sort((a, b) => a.blockTime - b.blockTime)
+  return {
+    deposits: incoming.map((deposit) => ({
+      txHash: deposit.txHash,
+      reference: `DEP-${deposit.txHash.slice(2, 10).toUpperCase()}`,
+      kind: deposit.kind,
+      time: deposit.blockTime,
+      amount: usdcToDecimalString(deposit.creditedUsdc + deposit.feeUsdc),
+    })),
+    total: usdcToDecimalString(incoming.reduce((sum, deposit) => sum + deposit.creditedUsdc + deposit.feeUsdc, 0)),
+    relayFees: usdcToDecimalString(inPeriod.filter((deposit) => deposit.kind === 'relay').reduce((sum, deposit) => sum + deposit.feeUsdc, 0)),
+    asOf: now,
   }
 }
 

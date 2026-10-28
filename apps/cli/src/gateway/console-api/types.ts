@@ -526,7 +526,8 @@ export interface PurchaseStatement {
   total: Usdc
   requests: number
   /** Money in during the month: deposits and transfers into the workspace wallet, and the relay fees of moving them into the credits. */
-  funding: { deposits: Array<{ txHash: string; reference: string; kind: DepositConfirmation['kind']; time: number; amount: Usdc }>; total: Usdc; relayFees: Usdc }
+  /** The month's money in as recorded at `asOf`: read again on every view, also of a final statement (a transfer is recorded once swept, which can be after the month). */
+  funding: { deposits: Array<{ txHash: string; reference: string; kind: DepositConfirmation['kind']; time: number; amount: Usdc }>; total: Usdc; relayFees: Usdc; asOf: number }
   /** Where the payment records came from: the chain explorer, or null when they could not be read (each supplier's `settlements` is then null). */
   settlementsSource: string | null
 }

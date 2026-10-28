@@ -21,6 +21,7 @@ import { qk, useChain, useStatus } from '../lib/queries'
 import { href, linkHandler, navigate } from '../lib/router'
 
 const statementPath = (period: string) => `wallet/statements/${period}`
+const depositPath = (txHash: string) => `wallet/deposits/${txHash}`
 /** Settlement transactions listed per seller on the page; the CSV has every one. */
 const LISTED_SETTLEMENTS = 8
 
@@ -352,7 +353,7 @@ export function StatementPage({ period }: { period: string }) {
                       <ul className="gc-doc__sources">
                         {doc.funding.deposits.map((deposit) => (
                           <li key={deposit.txHash}>
-                            {utcDate(deposit.time)} · {usdc(deposit.amount)} USDC · {deposit.reference}<br />{txLink(deposit.txHash, shortId(deposit.txHash, 10, 8))}
+                            {utcDate(deposit.time)} · {usdc(deposit.amount)} USDC · <a className="gc-link" href={href(depositPath(deposit.txHash))} onClick={linkHandler(depositPath(deposit.txHash))}>{deposit.reference}</a><br />{txLink(deposit.txHash, shortId(deposit.txHash, 10, 8))}
                           </li>
                         ))}
                       </ul>
@@ -361,7 +362,7 @@ export function StatementPage({ period }: { period: string }) {
                     <dt>Deposited</dt><dd>{usdc(doc.funding.total)} USDC</dd>
                     <dt>Relay fees</dt><dd>{usdc(doc.funding.relayFees)} USDC</dd>
                   </dl>
-                  <p className="gc-muted">Each deposit has its own deposit confirmation.</p>
+                  <p className="gc-muted">Each deposit has its own deposit confirmation. As recorded on {utcDate(doc.funding.asOf)}: a transfer is recorded once it moves into the credits, so one made late in the month can be added later.</p>
                 </section>
               </div>
 

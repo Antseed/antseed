@@ -200,6 +200,7 @@ function mockStatement(workspaceId: string, period: string): PurchaseStatement {
       deposits: deposits.map((deposit) => ({ txHash: deposit.txHash, reference: deposit.reference, kind: deposit.kind, time: deposit.time, amount: deposit.sent })),
       total: deposits.reduce((sum, deposit) => sum + Number(deposit.sent), 0).toFixed(6),
       relayFees: (deposits.length * 0.02).toFixed(6),
+      asOf: Date.now(),
     },
     settlementsSource: 'https://antscan.co',
   }

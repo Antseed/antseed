@@ -30,11 +30,8 @@ let ownerId: string
 let now = MID_OCT
 let explorerDown = false
 let rate = 1.115
-/** Deposits the buyer recorded and the wallet it read them for (null: no deposit watcher), whether it answers; `rpcDown` fails their on-chain check. */
+/** Deposits the buyer recorded for the wallet. */
 let history: string[] = []
-let historyAddress: string | null = WALLET
-let buyerDown = false
-let rpcDown = false
 const LATE_DEPOSIT = `0x${'e4'.repeat(32)}`
 const vatChecks: string[] = []
 let ledgerSeq = 0
@@ -45,7 +42,7 @@ before(async () => {
   ownerId = store.createOwner({ label: 'Dana', email: 'dana@example.com' }).id
   workspaceId = store.defaultWorkspace().id
   buyer = await startFakeBuyer({
-    'GET /_antseed/deposits/history': () => (buyerDown ? { status: 503, body: { ok: false } } : { body: { ok: true, address: historyAddress, deposits: historyAddress ? history.map((txHash) => ({ txHash })) : [] } }),
+    'GET /_antseed/deposits/history': () => ({ body: { ok: true, address: WALLET, deposits: history.map((txHash) => ({ txHash })) } }),
   })
   spend(SELLER_A, 'qwen3-coder', 1_500_000, 'r1', OCT + 1000, { input: 1000, cached: 400, output: 200 })
   spend(SELLER_A, 'qwen3-coder', 500_000, 'r1', OCT + 2000, { input: 0, cached: 0, output: 0 }) // a second charge of the same request
@@ -80,7 +77,6 @@ function setup(): ConsoleRouter {
     walletAddress: async () => WALLET,
     resolveChain: async () => CHAIN,
     verifyDeposit: async (_chain, txHash, wallet) => {
-      if (rpcDown) throw new Error('rpc unreachable')
       return txHash === LATE_DEPOSIT ? { txHash, wallet, kind: 'transfer', creditedUsdc: 20_000_000, feeUsdc: 0, blockNumber: 4, blockTime: OCT + 50_000, sources: [] } : null
     },
     statements: {
@@ -166,27 +162,6 @@ test('a month is not final without billing details, or while the explorer cannot
   explorerDown = false
 })
 
-test('a month is not final while deposits the buyer recorded are not stored yet', async () => {
-  now = NOV + 2 * 24 * 60 * 60 * 1000
-  const path = `/workspaces/${workspaceId}/statements/2026-10`
-  buyerDown = true
-  assert.equal((await call(setup(), 'GET', path, admin()) as PurchaseStatement).status, 'open', 'the buyer\'s deposit history was not read')
-  buyerDown = false
-  historyAddress = null
-  assert.equal((await call(setup(), 'GET', path, admin()) as PurchaseStatement).status, 'open', 'the buyer has no deposit watcher for the wallet, so it read no history')
-  historyAddress = `0x${'99'.repeat(20)}`
-  assert.equal((await call(setup(), 'GET', path, admin()) as PurchaseStatement).status, 'open', 'the history is another wallet\'s')
-  historyAddress = WALLET
-
-  history = [LATE_DEPOSIT]
-  rpcDown = true
-  const unverified = await call(setup(), 'GET', path, admin()) as PurchaseStatement
-  assert.equal(unverified.status, 'open', 'a recorded deposit could not be checked on-chain')
-  assert.ok(!unverified.funding.deposits.some((deposit) => deposit.txHash === LATE_DEPOSIT))
-  rpcDown = false
-  assert.equal(store.getStatement(workspaceId, '2026-10'), null)
-})
-
 test('a month is not final on a settlement list cached before the explorer went down', async () => {
   const router = setup()
   const path = `/workspaces/${workspaceId}/statements/2026-10`
@@ -200,22 +175,31 @@ test('a month is not final on a settlement list cached before the explorer went 
   explorerDown = false
 })
 
-test('a month a day after its end is final: kept as issued, unchanged by later spend or rates', async () => {
+test('a month a day after its end is final: kept as issued, unchanged by later spend or rates; its money in is read again', async () => {
   now = NOV + 2 * 24 * 60 * 60 * 1000
   const router = setup()
-  const issued = await call(router, 'GET', `/workspaces/${workspaceId}/statements/2026-10`, admin()) as PurchaseStatement
+  const path = `/workspaces/${workspaceId}/statements/2026-10`
+  const issued = await call(router, 'GET', path, admin()) as PurchaseStatement
   assert.equal(issued.status, 'final')
   assert.equal(issued.issuedAt, now)
   assert.equal(issued.buyer?.companyName, 'Voorbeeld B.V.')
   assert.equal(issued.eurRate?.date, '2026-10-31')
   assert.match(issued.reference, /^PS-2026-10-[A-Z0-9]{1,6}$/)
-  assert.ok(issued.funding.deposits.some((deposit) => deposit.txHash === LATE_DEPOSIT), 'the deposit the buyer recorded was stored before issuing')
+  assert.equal(issued.funding.total, '100.000000')
 
   spend(SELLER_A, 'qwen3-coder', 1_000_000, 'late', OCT + 5000, { input: 1, cached: 0, output: 1 })
   rate = 1.2
+  // An October transfer the buyer records only now (its sweep waited for credit headroom), checked on-chain when the statement is next read.
+  history = [LATE_DEPOSIT]
   now += 60_000
-  const again = await call(setup(), 'GET', `/workspaces/${workspaceId}/statements/2026-10`, admin()) as PurchaseStatement
-  assert.deepEqual(again, issued)
+  const again = await call(setup(), 'GET', path, admin()) as PurchaseStatement
+  const { funding, ...rest } = again
+  const { funding: issuedFunding, ...issuedRest } = issued
+  assert.deepEqual(rest, issuedRest, 'purchases, buyer and rate are as issued')
+  assert.ok(funding.deposits.some((deposit) => deposit.txHash === LATE_DEPOSIT), 'the transfer recorded after issue is listed')
+  assert.equal(funding.total, '120.000000')
+  assert.equal(funding.asOf, now)
+  assert.equal(issuedFunding.asOf, now - 60_000)
   assert.equal(store.listAudit({ action: 'statement.issue' }).entries.length, 1)
 
   const list = await call(router, 'GET', `/workspaces/${workspaceId}/statements`, admin()) as StatementSummary[]
