@@ -82,6 +82,16 @@ export interface ModelAuditedEvent {
   transactionHash: string;
 }
 
+export interface AuditorSetEvent {
+  auditor: string;
+  approved: boolean;
+  blockNumber: number;
+  logIndex: number;
+  /** Block timestamp in seconds. */
+  timestamp: number;
+  transactionHash: string;
+}
+
 export interface AuditorCredits {
   auditor: bigint;
   total: bigint;
@@ -104,6 +114,7 @@ export const VERIFICATION_ABI = [
   'function registry() external view returns (address)',
   'function sellerPools() external view returns (address)',
   'function approvedAuditors(address auditor) external view returns (bool)',
+  'event AuditorSet(address indexed auditor,bool approved)',
   'event ModelAudited(bytes32 indexed modelHash,address indexed auditor,uint256 indexed epoch,bytes32 auditType,bytes32 evidenceHash,string evidenceUri,uint256 resultCount)',
   'event ServiceAudited(uint256 indexed agentId,bytes32 indexed serviceHash,address indexed auditor,bytes32 modelHash,uint8 verdict)',
   'event ServiceStatusChanged(uint256 indexed agentId,bytes32 indexed serviceHash,bytes32 modelHash,uint8 previous,uint8 current)',
@@ -345,6 +356,41 @@ export class VerifierClient extends BaseEvmClient {
         transactionHash: log.transactionHash,
       }];
     });
+  }
+
+  /**
+   * Every `AuditorSet` change in block order, with its block timestamp. The contract cannot list
+   * its auditors, so replaying these events is how to rebuild the approved set at a point in time.
+   */
+  async queryAuditorSetEvents(fromBlock?: number, toBlock: number | 'latest' = 'latest'): Promise<AuditorSetEvent[]> {
+    const contract = this._contract();
+    const filterFactory = contract.filters.AuditorSet;
+    if (!filterFactory) throw new Error('AuditorSet event is missing from verification ABI');
+    const logs = await this._queryEvents(contract, filterFactory(), fromBlock, toBlock);
+    const timestamps = new Map<number, number>();
+    const events: AuditorSetEvent[] = [];
+    for (const log of logs) {
+      if (!(log instanceof EventLog)) continue;
+      if (!timestamps.has(log.blockNumber)) {
+        const block = await this._provider.getBlock(log.blockNumber);
+        if (!block) throw new Error(`block ${log.blockNumber} of an AuditorSet event is unavailable`);
+        timestamps.set(log.blockNumber, block.timestamp);
+      }
+      events.push({
+        auditor: getAddress(String(log.args.auditor ?? log.args[0])),
+        approved: Boolean(log.args.approved ?? log.args[1]),
+        blockNumber: log.blockNumber,
+        logIndex: log.index,
+        timestamp: timestamps.get(log.blockNumber)!,
+        transactionHash: log.transactionHash,
+      });
+    }
+    return events.sort((left, right) => left.blockNumber - right.blockNumber || left.logIndex - right.logIndex);
+  }
+
+  /** Latest block number, for incremental event scans. */
+  async latestBlockNumber(): Promise<number> {
+    return this._provider.getBlockNumber();
   }
 
   /**

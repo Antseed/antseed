@@ -27,7 +27,15 @@ Running `verifier run` again in the same epoch retries only the `UNDETERMINED` s
 
 ## Which models you audit
 
-The audited models are built into the CLI, the same for every auditor. `verifier run` audits every model assigned to you; you can't turn models off. `verifier run <model>` audits one model.
+The audited models are built into the CLI, the same for every auditor. Every model is audited every epoch: the models are split across the approved auditors, round robin, and `verifier run` audits your share.
+
+- Each model has exactly one auditor per epoch, and auditors get the same number of models, give or take one.
+- The split moves every epoch, so with two or more auditors you never audit the same model two epochs in a row, and over as many epochs as there are auditors you audit every model once.
+- Auditors and models are sorted (by address and by name), so everyone works out the same split. The approved auditors are the ones approved when the epoch started; anyone approved later joins from the next epoch.
+
+`antseed verifier assignment` shows every auditor's models (`--epochs 4` for the next few). `verifier run <model>` or `--all` still audits any model.
+
+The assignment is not enforced on-chain: the contract records any approved auditor's audit of any model.
 
 ## Which sellers are audited
 
@@ -40,9 +48,30 @@ Every seller your buyer has found that offers the model. A seller is skipped whe
 | `price_above_reference` | It charges more than the model's upstream price |
 | `policy_rejected` | Its pricing couldn't be read |
 
+### Your buyer's price cap
+
+Audit requests go through your running buyer, which refuses sellers above its own `buyer.maxPricing`. Before sending anything, `verifier run` checks that the running buyer's caps are at or above every audited model's reference price. They don't have to match it. If one is lower, the run stops:
+
+```
+the running buyer would refuse sellers priced at or below the reference:
+  - claude-fable-5.1: the buyer price cap is below its reference price (input $5 < $10, output $30 < $50, cached input $5 < $10 per 1M)
+Set buyer.maxPricing.defaults to at least input $10, output $50 (and cachedInputUsdPerMillion, if set, to at least the input value) and restart the buyer.
+```
+
+### Checks before the run
+
+Before sending anything, `verifier run` stops with a list of problems and how to fix each when:
+
+- the chain can't be reached, so the run could not be submitted;
+- your buyer deposit can't cover a payment channel for every seller you don't have one with yet (each reserves `payments.maxReserveAmountUsdc`, $1 by default);
+- a model's probe bank can't be loaded (rebuild it with `verifier reference build <model>`);
+- a seller has too few questions it hasn't seen for an audit and a DIFF recheck (add `--enroll-if-needed --max-enrollment-requests <n>`).
+
+To run anyway, add `--ignore-pre-run-checks`: the problems are printed as warnings. Audits that fail because of them can come back `UNDETERMINED`.
+
 ### Price limit
 
-The auditor doesn't pay a seller more than the model costs upstream. The upstream price comes from the model's reference upstream or its `verifier.models.<model>.pricing`, otherwise from the OpenRouter catalog. A seller priced above it is skipped:
+The auditor doesn't pay a seller more than the most any OpenRouter provider charges for the model. Input and output each take the highest price across OpenRouter's providers for the model. If the model's reference upstream or `verifier.models.<model>.pricing` is higher, that is used instead. If OpenRouter lists no providers for the model, the reference upstream, `verifier.models.<model>.pricing` or the OpenRouter catalog price is used. A seller priced above it is skipped:
 
 ```
 priced $17/$85 per 1M, above the claude-fable-5.1 reference $10/$50 · not audited

@@ -634,13 +634,15 @@ test('target eligibility skips sellers priced above the model reference price', 
   assert.equal(classifyVerificationTarget(pricedAt(16.99, 84.99), 'gpt-5.6-sol', targetPolicy).eligible, false)
 })
 
-test('target eligibility compares cached input against the reference input price', () => {
-  assert.deepEqual(classifyVerificationTarget(pricedAt(5, 30, 5.5), 'gpt-5.6-sol', targetPolicy), {
+test('target eligibility refuses cached input priced above input, as the buyer router does', () => {
+  // The buyer would refuse this offer, so auditing it could only end UNDETERMINED.
+  assert.deepEqual(classifyVerificationTarget(pricedAt(4, 30, 4.5), 'gpt-5.6-sol', targetPolicy), {
     eligible: false,
-    code: 'price_above_reference',
+    code: 'policy_rejected',
     service: 'GPT-5.6-SOL',
-    reason: 'cached input priced $5.5 per 1M, above the gpt-5.6-sol reference $5/$30 input price · not audited',
+    reason: 'could not read a valid advertised price for GPT-5.6-SOL',
   })
+  assert.equal(classifyVerificationTarget(pricedAt(5, 30, 5), 'gpt-5.6-sol', targetPolicy).eligible, true)
 })
 
 test('auditPriceRatio allows sellers up to that multiple of the reference price', () => {
@@ -730,6 +732,22 @@ test('buyer proxy snapshot requires a connected live daemon and parses peers', a
     assert.equal(snapshot.baseUrl, 'http://127.0.0.1:8377')
     assert.equal(snapshot.pid, process.pid)
     assert.equal(snapshot.peers.length, 1)
+    assert.equal(snapshot.settings, null)
+    await writeFile(join(directory, 'buyer.state.json'), JSON.stringify({
+      state: 'connected',
+      pid: process.pid,
+      port: 8377,
+      discoveredPeers: [peer()],
+      settings: {
+        minPeerReputation: 5,
+        maxPricing: { inputUsdPerMillion: 10, outputUsdPerMillion: 50 },
+      },
+    }))
+    assert.deepEqual((await loadBuyerProxySnapshot(directory)).settings, {
+      minPeerReputation: 5,
+      maxPricing: { inputUsdPerMillion: 10, outputUsdPerMillion: 50 },
+      maxReserveAmountUsdc: null,
+    })
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
@@ -914,6 +932,14 @@ test('stale model advertisement skips after one model-not-found response', async
   assert.equal(run.result.code, 'stale_model_advertisement')
   assert.match(run.result.reason, /advertised GPT-5\.6-SOL/)
   assert.equal(run.evidence.exchange.attemptCount, 1)
+})
+
+test('an upstream "Unknown model" answer is a stale advertisement, not an audit failure', async () => {
+  const run = await runSkippedTarget(Response.json({
+    error: { type: 'invalid_request_error', message: 'Unknown model: claude-sonnet-5.5' },
+  }, { status: 400 }))
+  assert.equal(run.requestCount, 1)
+  assert.equal(run.result.code, 'stale_model_advertisement')
 })
 
 test('deleted upstream credentials skip after the first batch with a structured reason', async () => {

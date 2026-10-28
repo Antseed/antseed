@@ -76,6 +76,79 @@ test('collector promotes reserve probes that distinguish the failing contrast fi
   assert.deepEqual(collected.distinguishingProbeIdsByModel.get('hard'), [probes[1]!.id])
 })
 
+test('fresh probes for an existing bank reuse its recorded request settings instead of re-discovering them', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-fresh-settings-'))
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    return response(successfulContent(body.model, body.messages.at(-1)?.content ?? ''))
+  }
+  try {
+    const built = await buildModelReference({ model: MODEL, referencesDir: directory, config: config(), fetchFn })
+    await built.finalize()
+    // A bank enrolled before discovery switched to OpenRouter's unified reasoning object.
+    const legacy = structuredClone(built.reference)
+    const recorded = legacy.generator.params.referenceEndpointRequest as Record<string, unknown>
+    legacy.generator.params.referenceEndpointRequest = { ...recorded, requestOverrides: { reasoning_effort: 'none' } }
+    // ...and with a longer request timeout than the current config.
+    legacy.queryProfile.requestTimeoutMs = 360_000
+    legacy.referenceId = computeReferenceId(legacy)
+    const banksDir = join(directory, 'banks')
+    await appendModelReferenceToBank({ banksDir, model: MODEL, reference: legacy, cost: built.cost })
+    const settingsReference = await loadBankEnrollmentReference(banksDir, MODEL)
+    assert.ok(settingsReference)
+    const excludedProbeIds = new Set(settingsReference.probes.map((probe) => probe.id))
+    // New candidates, as a real generator would produce on a second build.
+    const bodies: Array<Record<string, unknown>> = []
+    const freshFetch: typeof fetch = async (url, init) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown> & { model: string; messages: Array<{ content: string }> }
+      const prompt = body.messages.map((message) => String(message.content)).join('\n')
+      if (prompt.includes(DISCOVERY_MARKER)) throw new Error('must not re-discover thinking suppression for an existing bank')
+      bodies.push(body)
+      const last = body.messages.at(-1)?.content ?? ''
+      if (last.startsWith('Generate ')) {
+        return response(generatedCandidates(last).replace(/(stable fact |test value )(\d+)/g, (_m, label, value) => `${label}${Number(value) + 50_000}`)
+          .replace(/"consensus":(\d+)/g, (_m, value) => `"consensus":${Number(value) + 50_000}`))
+      }
+      return fetchFn(url, init)
+    }
+
+    // Without the bank's settings the build re-discovers them and the bank refuses the result.
+    const rediscovered = await buildModelReference({
+      model: MODEL, referencesDir: join(directory, 'rediscovered'), config: config(), excludedProbeIds,
+      fetchFn: async (url, init) => {
+        const prompt = String(init?.body ?? '')
+        if (prompt.includes('Generate ')) return freshFetch(url, init)
+        return fetchFn(url, init)
+      },
+    })
+    await assert.rejects(
+      appendModelReferenceToBank({ banksDir, model: MODEL, reference: rediscovered.reference, cost: rediscovered.cost }),
+      /incompatible/,
+    )
+
+    const fresh = await buildModelReferenceWithoutDiscoveryStub({
+      model: MODEL, referencesDir: join(directory, 'fresh'), config: config(), excludedProbeIds,
+      settingsReference, fetchFn: freshFetch,
+    })
+    const targetBodies = bodies.filter((body) => body.model === 'upstream-test'
+      && !String((body.messages as Array<{ content: string }>).at(-1)?.content).startsWith('Generate '))
+    assert.ok(targetBodies.length > 0)
+    for (const body of targetBodies) {
+      assert.equal(body.reasoning_effort, 'none')
+      assert.equal(body.reasoning, undefined)
+    }
+    assert.equal(fresh.reference.probes.some((probe) => excludedProbeIds.has(probe.id)), false)
+    assert.equal(fresh.reference.queryProfile.requestTimeoutMs, 360_000)
+    await appendModelReferenceToBank({ banksDir, model: MODEL, reference: fresh.reference, cost: fresh.cost })
+    await assert.rejects(buildModelReference({
+      model: MODEL, referencesDir: directory, config: config(), initialReference: settingsReference, settingsReference,
+      fetchFn: async () => { throw new Error('must not query') },
+    }), /already carries the bank settings/)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('bank top-up reuses enrolled measurements, grows against the failed contrast, and resumes without repeating calls', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-top-up-'))
   const policy = config()
@@ -732,6 +805,35 @@ test('reference build skips one empty candidate domain and retains powered quali
     assert.equal(logs.some((message) => message.includes('skipping empty candidate batch for medical')), true)
     assert.equal(logs.some((message) => message.includes('finishReason')), true)
     assert.equal(logs.some((message) => message.includes('reference request retry')), false)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('reference build skips a candidate batch that keeps failing upstream and still completes', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-failing-candidates-'))
+  let medicalAttempts = 0
+  const logs: string[] = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (prompt.includes('domain medical')) {
+      medicalAttempts += 1
+      return Response.json({ error: { message: 'upstream timed out' } }, { status: 504 })
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    const built = await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: { ...config(), referenceRetryBaseDelayMs: 1 },
+      fetchFn,
+      log: (message) => logs.push(message),
+    })
+    assert.equal(built.reference.probes.length, 100)
+    assert.ok(medicalAttempts > 1)
+    assert.equal(logs.some((message) => message.includes('skipping failed candidate batch for medical after retries')), true)
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
@@ -1775,6 +1877,22 @@ test('reference build pins the target upstream provider and records it', async (
       pinned: { order: ['Provider-A'], allowFallbacks: false },
       served: ['Provider-A'],
     })
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a pinned endpoint tag matches the provider name OpenRouter reports', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-provider-tag-'))
+  const value = config()
+  value.models![MODEL]!.referenceProvider = { order: ['provider-a/prime'] }
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    return providerResponse(successfulContent(body.model, body.messages.at(-1)?.content ?? ''), body.model === 'upstream-test' ? 'Provider A' : 'Other')
+  }
+  try {
+    const built = await buildModelReference({ model: MODEL, referencesDir: directory, config: value, fetchFn })
+    assert.deepEqual((built.reference.generator.params.referenceProvider as { served?: string[] }).served, ['Provider A'])
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

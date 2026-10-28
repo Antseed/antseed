@@ -17,7 +17,7 @@ export interface AuditPriceCap {
   /** The genuine model's price, USD per 1M tokens. */
   reference: VerifierModelPricingConfig
   /** Where `reference` came from. */
-  source: 'reference-route' | 'configured' | 'catalog'
+  source: 'reference-route' | 'configured' | 'catalog' | 'highest-provider'
   /** `verifier.auditPriceRatio` (1 = the reference price itself). */
   ratio: number
 }
@@ -64,24 +64,36 @@ export function auditPriceRejection(offer: TokenPricingUsdPerMillion, cap: Audit
 }
 
 /**
- * Why the buyer's own price cap would refuse sellers the audit allows, or null when it doesn't.
- * Audit requests go through the local buyer, which refuses any seller above `buyer.maxPricing`.
- * If that cap is below a model's audit cap, sellers priced in between would fail mid-audit
- * instead of being audited, so the model is not audited until the buyer cap is raised.
+ * Why the running buyer's price cap would refuse sellers the audit allows, or null when it doesn't.
+ * Audit requests go through the local buyer, which refuses any seller above its `buyer.maxPricing`.
+ * The buyer's caps only need to be at or above the model's audit cap; they don't have to match.
+ * Cached input is audited up to the input cap, and the buyer caps it at its cached-input cap
+ * (its input cap when none is set).
  */
 export function buyerCapShortfall(buyerMax: TokenPricingUsdPerMillion, cap: AuditPriceCap): string | null {
   const maxInput = cap.reference.inputUsdPerMillion * cap.ratio
   const maxOutput = cap.reference.outputUsdPerMillion * cap.ratio
-  if (buyerMax.inputUsdPerMillion >= maxInput && buyerMax.outputUsdPerMillion >= maxOutput) return null
-  const required = `${formatUsd(Math.max(buyerMax.inputUsdPerMillion, maxInput))}/${formatUsd(Math.max(buyerMax.outputUsdPerMillion, maxOutput))}`
-  return `the buyer price cap (buyer.maxPricing.defaults) ${formatUsd(buyerMax.inputUsdPerMillion)}/${formatUsd(buyerMax.outputUsdPerMillion)} per 1M`
-    + ` is below the ${cap.model} audit cap ${formatUsd(maxInput)}/${formatUsd(maxOutput)}, so the buyer would refuse sellers priced in between.`
-    + ` Raise it to at least ${required} and restart the buyer`
+  const buyerCached = buyerMax.cachedInputUsdPerMillion ?? buyerMax.inputUsdPerMillion
+  const short: string[] = []
+  if (buyerMax.inputUsdPerMillion < maxInput) short.push(`input ${formatUsd(buyerMax.inputUsdPerMillion)} < ${formatUsd(maxInput)}`)
+  if (buyerMax.outputUsdPerMillion < maxOutput) short.push(`output ${formatUsd(buyerMax.outputUsdPerMillion)} < ${formatUsd(maxOutput)}`)
+  if (buyerCached < maxInput) short.push(`cached input ${formatUsd(buyerCached)} < ${formatUsd(maxInput)}`)
+  if (short.length === 0) return null
+  return `${cap.model}: the buyer price cap is below its reference price (${short.join(', ')} per 1M)`
+}
+
+/** The lowest buyer cap that covers every given audit cap, formatted for the run error. */
+export function requiredBuyerCap(caps: readonly AuditPriceCap[]): { input: string; output: string } {
+  const input = Math.max(0, ...caps.map((cap) => cap.reference.inputUsdPerMillion * cap.ratio))
+  const output = Math.max(0, ...caps.map((cap) => cap.reference.outputUsdPerMillion * cap.ratio))
+  return { input: formatUsd(input), output: formatUsd(output) }
 }
 
 /** `claude-fable-5.1 ≤ $10/$50 (OpenRouter)` for the run log. */
 export function describeAuditPriceCap(cap: AuditPriceCap): string {
-  const source = cap.source === 'catalog' ? 'reference catalog' : cap.source === 'configured' ? 'verifier.models pricing' : 'reference route'
+  const source = cap.source === 'catalog' ? 'reference catalog'
+    : cap.source === 'configured' ? 'verifier.models pricing'
+      : cap.source === 'highest-provider' ? 'highest OpenRouter provider' : 'reference route'
   return `${cap.model} ≤ ${formatUsd(cap.reference.inputUsdPerMillion * cap.ratio)}/${formatUsd(cap.reference.outputUsdPerMillion * cap.ratio)} per 1M (${source})`
 }
 
@@ -92,25 +104,43 @@ function formatUsd(value: number): string {
 }
 
 /**
- * Reference price caps for the models of a run. The catalog is fetched once, and only when a model
- * has no reference-route or configured price. A model with no price at all is reported in
- * `unpriced` (its sellers can't be audited) instead of failing the other models.
+ * Reference price caps for the models of a run. Each model's cap is the highest price any reference
+ * provider charges for it (`loadHighestPrice`, OpenRouter's per-model endpoints), input and output
+ * each at their maximum, unless the reference route or configured price is higher. Without a
+ * highest price (not listed, or the lookup failed), the reference route, configured price, then the
+ * catalog listing are used. The catalog is fetched at most once, and only when needed. A model with
+ * no price at all is reported in `unpriced` (its sellers can't be audited) instead of failing the
+ * other models.
  */
 export async function resolveAuditPriceCaps(
   config: VerifierCLIConfig | undefined,
   models: readonly string[],
   loadCatalog: () => Promise<VerifierModelCatalog>,
+  loadHighestPrice?: (upstreamModel: string) => Promise<VerifierModelPricingConfig | null>,
 ): Promise<{ caps: Map<string, AuditPriceCap>; unpriced: Map<string, string> }> {
   const caps = new Map<string, AuditPriceCap>()
   const unpriced = new Map<string, string>()
   let catalog: VerifierModelCatalog | null = null
   let catalogError: Error | null = null
   for (const model of models) {
+    const entry = findVerifierModel(config, model)
+    let highest: VerifierModelPricingConfig | null = null
+    if (entry && loadHighestPrice) {
+      try {
+        highest = await loadHighestPrice(entry[1].upstreamModel)
+      } catch {
+        // Fall back to the other sources below.
+      }
+    }
+    let base: AuditPriceCap | null = null
     try {
-      caps.set(model, resolveAuditPriceCap(config, model, null))
-      continue
+      base = resolveAuditPriceCap(config, model, null)
     } catch {
-      // Needs the catalog.
+      // Needs the catalog, unless the highest provider price covers it.
+    }
+    if (base || highest) {
+      caps.set(model, withHighestPrice(config, model, base, highest))
+      continue
     }
     if (!catalog && !catalogError) {
       try {
@@ -130,4 +160,22 @@ export async function resolveAuditPriceCaps(
     }
   }
   return { caps, unpriced }
+}
+
+/** The base cap raised to the highest provider price, or the highest price alone. */
+function withHighestPrice(
+  config: VerifierCLIConfig | undefined,
+  model: string,
+  base: AuditPriceCap | null,
+  highest: VerifierModelPricingConfig | null,
+): AuditPriceCap {
+  if (!highest) return base!
+  if (!base) {
+    const [service] = findVerifierModel(config, model)!
+    return { model: service, reference: highest, source: 'highest-provider', ratio: config?.auditPriceRatio ?? DEFAULT_AUDIT_PRICE_RATIO }
+  }
+  const input = Math.max(base.reference.inputUsdPerMillion, highest.inputUsdPerMillion)
+  const output = Math.max(base.reference.outputUsdPerMillion, highest.outputUsdPerMillion)
+  if (input === base.reference.inputUsdPerMillion && output === base.reference.outputUsdPerMillion) return base
+  return { ...base, reference: { inputUsdPerMillion: input, outputUsdPerMillion: output }, source: 'highest-provider' }
 }

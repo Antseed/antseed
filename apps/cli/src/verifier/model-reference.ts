@@ -77,6 +77,9 @@ const DEFAULT_MAX_REQUESTS_PER_BUILD = 2_000
 const DEFAULT_BATCH_RETRY_COUNT = 3
 const DEFAULT_RETRY_BASE_DELAY_MS = 500
 const DEFAULT_MAX_NO_PROGRESS_ROUNDS = 3
+// Candidate batches ask for a long list (up to 6000 tokens) and nothing is scored from them, so
+// they get more time than the measured requests, whose timeout is part of the bank settings.
+const CANDIDATE_GENERATION_TIMEOUT_MS = 300_000
 const DEFAULT_MAX_CONCURRENT_REQUESTS = 4
 const DEFAULT_MAX_CONCURRENT_REQUESTS_PER_MODEL = 3
 const NEW_ACCOUNT_MINIMUM_REQUEST_INTERVAL_MS = 6_500
@@ -353,6 +356,13 @@ export async function buildModelReference(input: {
   seedProbes?: { probes: readonly KbfProbe[]; source: Record<string, unknown> }
   /** Probe ids already banked; generation never returns them, so every selected probe is new. */
   excludedProbeIds?: ReadonlySet<string>
+  /**
+   * The bank's enrollment, used only for its recorded request settings (thinking suppression,
+   * prefill, token limit) when building fresh probes for an existing bank. Its probes are not
+   * reused. Without it a fresh build re-discovers the settings, and a bank enrolled with other
+   * settings rejects the result as incompatible.
+   */
+  settingsReference?: KbfReferenceV1
 }): Promise<{
   reference: KbfReferenceV1
   path: string
@@ -387,13 +397,21 @@ export async function buildModelReference(input: {
       })] as const
     }),
   )
-  const timeoutMs = input.config?.probeRequestTimeoutMs ?? 120_000
   const sizing = resolveReferenceSizingPolicy(input.config)
   const selfTestRuns = input.config?.referenceSelfTestRuns ?? KBF_DEFAULT_SELF_TEST_RUNS
   assertPositiveInteger(selfTestRuns, 'referenceSelfTestRuns')
   const initial = input.initialReference && validateKbfReferenceV1(input.initialReference, {
     minimumStatisticalPower: Number.EPSILON,
   })
+  if (initial && input.settingsReference) throw new Error('initialReference already carries the bank settings')
+  // Where this build's request settings come from: the enrollment it extends, or the bank it adds
+  // fresh probes to. Either way new probes are measured exactly like the banked ones.
+  const settings = initial ?? (input.settingsReference && validateKbfReferenceV1(input.settingsReference, {
+    minimumStatisticalPower: Number.EPSILON,
+  }))
+  // The request timeout is part of the measurement (it decides which slow answers count), so a
+  // bank keeps the one it was enrolled with.
+  const timeoutMs = settings?.queryProfile.requestTimeoutMs ?? input.config?.probeRequestTimeoutMs ?? 120_000
   const limiter = input.requestLimiter ?? createReferenceRequestLimiter(input.config)
   const pricingForModel = (model: string): VerifierModelPricingConfig => {
     const pricing = pricingByModel.get(normalized(model))
@@ -403,12 +421,12 @@ export async function buildModelReference(input: {
   // Thinking suppression, as in the KBF reference code: discovered per route on a
   // fixed test batch. A bank enrolled before discovery keeps the settings it recorded,
   // so new probes are measured exactly like the banked ones.
-  const recordedEndpointRequest = initial ? recordedReferenceEndpointRequest(initial) : null
-  const initialDiscovery = initial?.generator.params.thinkingDiscovery as ReferenceThinkingDiscoveryRecordV1 | undefined
-  const discover = !initial
-  if (initial && recordedEndpointRequest) {
+  const recordedEndpointRequest = settings ? recordedReferenceEndpointRequest(settings) : null
+  const initialDiscovery = settings?.generator.params.thinkingDiscovery as ReferenceThinkingDiscoveryRecordV1 | undefined
+  const discover = !settings
+  if (settings && recordedEndpointRequest) {
     const target = routesByModel.get(normalized(modelConfig.upstreamModel))!
-    routesByModel.set(normalized(modelConfig.upstreamModel), withRecordedEndpointRequest(target, recordedEndpointRequest, initial))
+    routesByModel.set(normalized(modelConfig.upstreamModel), withRecordedEndpointRequest(target, recordedEndpointRequest, settings))
   }
   for (const entry of Object.values(initialDiscovery?.contrasts ?? {})) {
     const key = normalized(entry.model)
@@ -495,11 +513,12 @@ export async function buildModelReference(input: {
     requestOmissions: targetRoute.requestOmissions,
     ...(targetRoute.assistantPrefill ? { assistantPrefill: KBF_THINKING_PREFILL } : {}),
   }
-  if (initial) {
+  if (settings) {
     const expected = {
-      ...initial,
+      ...settings,
       referenceModel: input.model,
-      serviceAliases: [input.model, ...(modelConfig.serviceAliases ?? [])],
+      // Aliases don't change how answers are measured, so a changed alias list never blocks a bank.
+      serviceAliases: settings.serviceAliases,
       queryProfile,
       minimumMismatchDelta: REFERENCE_MINIMUM_MISMATCH_DELTA,
       generator: {
@@ -508,13 +527,13 @@ export async function buildModelReference(input: {
       },
       provenance: { sourceId: referenceSourceId(endpoint, targetRoute), trust: endpoint.trust },
     }
-    if (probeBankCompatibilityHash(input.model, initial) !== probeBankCompatibilityHash(input.model, expected)
-      || initial.generator.params.selfTestRuns !== selfTestRuns
-      || initial.statisticalPowerEvidence.alpha !== REFERENCE_POWER_ALPHA
-      || initial.statisticalPowerEvidence.clopperPearsonConfidence !== REFERENCE_POWER_CONFIDENCE
-      || canonicalHashBytes32(initial.contrasts.map((entry) => normalized(entry.model)).sort())
+    if (probeBankCompatibilityHash(input.model, settings) !== probeBankCompatibilityHash(input.model, expected)
+      || settings.generator.params.selfTestRuns !== selfTestRuns
+      || settings.statisticalPowerEvidence.alpha !== REFERENCE_POWER_ALPHA
+      || settings.statisticalPowerEvidence.clopperPearsonConfidence !== REFERENCE_POWER_CONFIDENCE
+      || canonicalHashBytes32(settings.contrasts.map((entry) => normalized(entry.model)).sort())
         !== canonicalHashBytes32(modelConfig.contrastModels.map(normalized).sort())
-      || canonicalHashBytes32((initial.generator.params.referenceProvider as { pinned?: unknown } | undefined)?.pinned ?? null)
+      || canonicalHashBytes32((settings.generator.params.referenceProvider as { pinned?: unknown } | undefined)?.pinned ?? null)
         !== canonicalHashBytes32(targetRoute.providerRouting
           ? { order: targetRoute.providerRouting.order, allowFallbacks: false } : null)) {
       throw new Error('existing bank enrollment is incompatible with this build; do not mix measurements')
@@ -1163,8 +1182,15 @@ async function generateCandidates(
       try {
         content = await query(model, body)
       } catch (error) {
-        if (!(error instanceof EmptyReferenceResponseError)) throw error
-        log?.(`skipping empty candidate batch for ${definition.key}: ${error.message}`)
+        // A candidate batch only proposes questions; nothing is measured from it. A batch that
+        // stays empty, or keeps timing out or failing upstream after its retries, is skipped and
+        // the next generation round makes up the shortfall (bounded by the no-progress limit).
+        if (error instanceof EmptyReferenceResponseError) {
+          log?.(`skipping empty candidate batch for ${definition.key}: ${error.message}`)
+          continue
+        }
+        if (!isRetryableReferenceError(error)) throw error
+        log?.(`skipping failed candidate batch for ${definition.key} after retries: ${asError(error).message}`)
         continue
       }
       for (const fact of parseCanonicalFacts(content, definition.range)) {
@@ -1321,7 +1347,9 @@ function createReferenceQuery(input: {
         const response = await input.limiter.run(model, () => postChatCompletion(
           route,
           requestBody,
-          input.timeoutMs,
+          referenceRequestPurpose(__antseedReferenceCacheDomain) === 'candidate-generation'
+            ? Math.max(input.timeoutMs, CANDIDATE_GENERATION_TIMEOUT_MS)
+            : input.timeoutMs,
           input.fetchFn,
         ))
         const pricing = input.pricingForModel(model)
@@ -2067,10 +2095,21 @@ function toAnthropicMessagesBody(body: Record<string, unknown>): Record<string, 
   }
 }
 
+/**
+ * OpenRouter pins a provider by endpoint tag (`alibaba/prime`, `amazon-bedrock`) and enforces the
+ * pin itself (`allow_fallbacks: false`), but reports only the provider name (`Alibaba`, `Amazon
+ * Bedrock`). So the served name matches a pin when it equals the tag or the tag's provider part.
+ */
+function providerKey(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, '')
+}
+
 function assertPinnedProvider(route: ReferenceRequestRoute, provider: string | null): void {
   if (!route.providerRouting || provider === null) return
-  const pinned = route.providerRouting.order.map(normalized)
-  if (!pinned.includes(normalized(provider))) {
+  const served = providerKey(provider)
+  const matches = route.providerRouting.order.some((pin) => providerKey(pin) === served
+    || providerKey(pin.split('/')[0] ?? '') === served)
+  if (!matches) {
     throw new Error(
       `reference endpoint served ${route.model} from provider ${provider}, `
       + `outside the pinned providers ${route.providerRouting.order.join(', ')}`,

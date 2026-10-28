@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { VerifierCLIConfig } from '../config/types.js'
-import { loadConfiguredVerifierModelCatalog } from './openrouter-catalog.js'
+import { loadConfiguredVerifierModelCatalog, loadHighestEndpointPrice } from './openrouter-catalog.js'
 
 const config: VerifierCLIConfig = {
   contrastSelection: { catalogSource: 'openrouter' },
@@ -56,4 +56,22 @@ test('catalog loading is disabled when a manual contrast bank is configured', as
       } },
     },
   }), null)
+})
+
+test('the highest endpoint price takes input and output each at their maximum', async () => {
+  let requestUrl = ''
+  const price = await loadHighestEndpointPrice(config, 'z-ai/glm-5.3', async (url) => {
+    requestUrl = String(url)
+    return Response.json({ data: { endpoints: [
+      { pricing: { prompt: '0.0000014', completion: '0.0000044' } },
+      { pricing: { prompt: '0.0000028', completion: '0.0000088' } },
+      { pricing: { prompt: '0.0000021', completion: '0.0000099' } },
+      { pricing: {} },
+    ] } })
+  })
+  assert.equal(requestUrl, 'https://openrouter.test/api/v1/models/z-ai/glm-5.3/endpoints')
+  assert.ok(price)
+  assert.ok(Math.abs(price.inputUsdPerMillion - 2.8) < 1e-9)
+  assert.ok(Math.abs(price.outputUsdPerMillion - 9.9) < 1e-9)
+  assert.equal(await loadHighestEndpointPrice(config, 'x/missing', async () => new Response('', { status: 404 })), null)
 })

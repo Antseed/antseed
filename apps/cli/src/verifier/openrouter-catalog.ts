@@ -65,6 +65,42 @@ export async function loadVerifierModelCatalog(
   return catalog
 }
 
+/**
+ * The highest price any OpenRouter provider charges for `upstreamModel` (`/models/<id>/endpoints`),
+ * input and output each at their maximum, or null when the model lists no priced endpoint.
+ */
+export async function loadHighestEndpointPrice(
+  config: VerifierCLIConfig | undefined,
+  upstreamModel: string,
+  fetchFn: typeof fetch = fetch,
+): Promise<VerifierModelPricingConfig | null> {
+  const endpoint = config?.referenceEndpoint
+  if (!endpoint) throw new Error('verifier.referenceEndpoint is required')
+  const apiKey = (endpoint.apiKeyEnv ? process.env[endpoint.apiKeyEnv] : undefined) ?? endpoint.apiKey
+  const response = await fetchFn(`${endpoint.baseUrl.replace(/\/+$/, '')}/models/${upstreamModel}/endpoints`, {
+    headers: apiKey ? { authorization: `Bearer ${apiKey}` } : undefined,
+  })
+  if (response.status === 404) return null
+  if (!response.ok) {
+    throw new Error(`OpenRouter endpoints for ${upstreamModel} ${response.status}: ${(await response.text()).slice(0, 200)}`)
+  }
+  const parsed = await response.json() as { data?: { endpoints?: unknown } }
+  const endpoints = Array.isArray(parsed.data?.endpoints) ? parsed.data.endpoints : []
+  let highest: VerifierModelPricingConfig | null = null
+  for (const raw of endpoints) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue
+    const pricing = parsePricing((raw as Record<string, unknown>).pricing)
+    if (!pricing) continue
+    highest = highest
+      ? {
+          inputUsdPerMillion: Math.max(highest.inputUsdPerMillion, pricing.inputUsdPerMillion),
+          outputUsdPerMillion: Math.max(highest.outputUsdPerMillion, pricing.outputUsdPerMillion),
+        }
+      : pricing
+  }
+  return highest
+}
+
 function parsePricing(value: unknown): VerifierModelPricingConfig | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const pricing = value as Record<string, unknown>

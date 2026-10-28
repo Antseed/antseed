@@ -93,20 +93,66 @@ test('the run resolves every model, loads the catalog at most once, and reports 
   assert.match(failed.unpriced.get('grok-4.7') ?? '', /loading the reference catalog failed: OpenRouter model catalog 503/)
 })
 
-test('a buyer cap below the audit cap blocks the model and says how far to raise it', () => {
+test('the buyer cap must be at or above the reference price, input, output and cached input', () => {
   const fable = resolveAuditPriceCap({ referenceEndpoint: endpoint }, 'claude-fable-5.1', catalog)
   const grok = resolveAuditPriceCap({ referenceEndpoint: endpoint }, 'grok-4.7', catalog)
   const buyer = { inputUsdPerMillion: 5, outputUsdPerMillion: 30 }
   assert.equal(buyerCapShortfall(buyer, grok), null)
   assert.equal(
     buyerCapShortfall(buyer, fable),
-    'the buyer price cap (buyer.maxPricing.defaults) $5/$30 per 1M is below the claude-fable-5.1 audit cap $10/$50,'
-      + ' so the buyer would refuse sellers priced in between. Raise it to at least $10/$50 and restart the buyer',
+    'claude-fable-5.1: the buyer price cap is below its reference price (input $5 < $10, output $30 < $50, cached input $5 < $10 per 1M)',
   )
-  // Equal is enough; only the short side needs raising.
+  // Equal or higher is enough; the caps don't have to match.
   assert.equal(buyerCapShortfall({ inputUsdPerMillion: 10, outputUsdPerMillion: 50 }, fable), null)
-  assert.match(buyerCapShortfall({ inputUsdPerMillion: 12, outputUsdPerMillion: 40 }, fable) ?? '', /at least \$12\/\$50/)
+  assert.equal(buyerCapShortfall({ inputUsdPerMillion: 100, outputUsdPerMillion: 500 }, fable), null)
+  assert.equal(
+    buyerCapShortfall({ inputUsdPerMillion: 12, outputUsdPerMillion: 40 }, fable),
+    'claude-fable-5.1: the buyer price cap is below its reference price (output $40 < $50 per 1M)',
+  )
+  // A cached-input cap below the reference input price refuses sellers the audit allows.
+  assert.match(
+    buyerCapShortfall({ inputUsdPerMillion: 10, outputUsdPerMillion: 50, cachedInputUsdPerMillion: 1 }, fable) ?? '',
+    /\(cached input \$1 < \$10 per 1M\)/,
+  )
   // The ratio raises the cap the buyer has to allow.
   const scaled = resolveAuditPriceCap({ referenceEndpoint: endpoint, auditPriceRatio: 1.1 }, 'grok-4.7', catalog)
-  assert.match(buyerCapShortfall({ inputUsdPerMillion: 2, outputUsdPerMillion: 6 }, scaled) ?? '', /at least \$2\.2\/\$6\.6/)
+  assert.match(buyerCapShortfall({ inputUsdPerMillion: 2, outputUsdPerMillion: 6 }, scaled) ?? '', /input \$2 < \$2\.2, output \$6 < \$6\.6/)
+})
+
+test('the cap is the highest provider price, unless the reference route or configured price is higher', async () => {
+  const highest = async (upstreamModel: string) => upstreamModel === 'anthropic/claude-fable-5.1'
+    ? { inputUsdPerMillion: 12, outputUsdPerMillion: 48 }
+    : null
+  let loads = 0
+  const { caps, unpriced } = await resolveAuditPriceCaps(
+    {
+      referenceEndpoint: endpoint,
+      models: { 'grok-4.7': { pricing: { inputUsdPerMillion: 3, outputUsdPerMillion: 9 } } },
+    },
+    ['claude-fable-5.1', 'grok-4.7'],
+    async () => { loads += 1; return catalog },
+    highest,
+  )
+  assert.equal(loads, 0)
+  assert.deepEqual(unpriced.size, 0)
+  // Input and output each take the highest price.
+  assert.deepEqual(caps.get('claude-fable-5.1')?.reference, { inputUsdPerMillion: 12, outputUsdPerMillion: 48 })
+  assert.equal(caps.get('claude-fable-5.1')?.source, 'highest-provider')
+  assert.equal(describeAuditPriceCap(caps.get('claude-fable-5.1')!), 'claude-fable-5.1 ≤ $12/$48 per 1M (highest OpenRouter provider)')
+  // No provider list: the configured price is kept.
+  assert.equal(caps.get('grok-4.7')?.source, 'configured')
+
+  const raised = await resolveAuditPriceCaps(
+    { referenceEndpoint: endpoint, models: { 'claude-fable-5.1': { pricing: { inputUsdPerMillion: 9, outputUsdPerMillion: 60 } } } },
+    ['claude-fable-5.1'],
+    async () => catalog,
+    highest,
+  )
+  assert.deepEqual(raised.caps.get('claude-fable-5.1')?.reference, { inputUsdPerMillion: 12, outputUsdPerMillion: 60 })
+
+  // A failed lookup falls back to the catalog.
+  const fallback = await resolveAuditPriceCaps({ referenceEndpoint: endpoint }, ['claude-fable-5.1'], async () => catalog, async () => {
+    throw new Error('down')
+  })
+  assert.equal(fallback.caps.get('claude-fable-5.1')?.source, 'catalog')
 })

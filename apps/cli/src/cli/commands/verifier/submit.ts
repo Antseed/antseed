@@ -26,6 +26,7 @@ import { prepareAuditPublication, publishVerificationToPinata } from '../../../v
 import { asError, normalized } from '../../../verifier/utils.js'
 import { createVerifierClient } from '../../payment-utils.js'
 import { resolveAuditorAddress, resolveAuditorSigner } from './auditor-identity.js'
+import { writeEpochOverview } from '../../../verifier/epoch-overview.js'
 import { getGlobalOptions } from '../types.js'
 
 interface SubmitOptions {
@@ -156,6 +157,8 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       }
 
       printPreview(pending)
+      const overviewPath = await writeEpochOverview(evidenceDir, manifest.epoch)
+      if (overviewPath) console.log(chalk.cyan(`Epoch overview (all runs this epoch): ${overviewPath}`))
       for (const exclusion of excluded) {
         console.warn(chalk.yellow(
           `${exclusion.model} ${exclusion.service} (${exclusion.agentId ?? exclusion.peerId}): excluded: ${exclusion.reason}`,

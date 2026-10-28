@@ -351,7 +351,8 @@ Audit sellers' model claims, submit results on-chain and claim auditor rewards. 
 |---|---|---|
 | `antseed verifier models` | List the built-in audited models and where each takes its genuine answers from | `--json` |
 | `antseed verifier reference build [model]` | Build or grow the probe bank of one audited model | `--all` (every audited model without a powered bank) |
-| `antseed verifier run [model]` | Audit the sellers your buyer has discovered, for the models assigned to your auditor (or one `<model>`) | `--all`, `--auditor <address>`, `--peer <peerId>`, `--enroll-if-needed`, `--max-enrollment-requests <n>`, `--allow-probe-reuse`, `--resume-run <runId>` |
+| `antseed verifier run [model]` | Audit the sellers your buyer has discovered, for the models assigned to your auditor this epoch (or one `<model>`) | `--all`, `--auditor <address>`, `--peer <peerId>`, `--enroll-if-needed`, `--max-enrollment-requests <n>`, `--allow-probe-reuse`, `--resume-run <runId>`, `--ignore-pre-run-checks` |
+| `antseed verifier assignment` | Show which models each approved auditor audits; every model is audited every epoch, split round robin | `--epoch <n>`, `--epochs <count>`, `--json` |
 | `antseed verifier status` | Progress of the latest run | `--json` |
 | `antseed verifier submit` | Publish evidence and submit one audit per model (approved auditors) | `--run-id <id>`, `--dry-run`, `--publish-ipfs`, `--publish-only`, `--auditor <address>`, `--keystore <path>`, `--yes`, `--rpc-url` |
 | `antseed verifier rewards` | Credits and pending ANTS per epoch; claim finished epochs | `--epochs <list>`, `--claim`, `--yes`, `--auditor <address>`, `--rpc-url` |

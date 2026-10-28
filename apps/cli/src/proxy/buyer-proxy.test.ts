@@ -6389,3 +6389,24 @@ test('requests from other sites never reach the paid or control routes', async (
   assert.equal(local.statusCode, 200)
   assert.equal(stateWrites, 1)
 })
+
+test('the state file records the limits the buyer enforces, for verifier run', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'antseed-buyer-settings-'))
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  const proxy = new BuyerProxy({
+    port: 0,
+    dataDir: dir,
+    configPath: '/home/a/.antseed/config.validation.json',
+    minPeerReputation: 20,
+    maxPricing: { inputUsdPerMillion: 10, outputUsdPerMillion: 50 },
+    maxReserveAmountUsdc: '500000',
+    node: { router: null } as any,
+  })
+  await (proxy as any)._writeStateFile('connected')
+  const persisted = JSON.parse(await readFile(join(dir, 'buyer.state.json'), 'utf-8')) as Record<string, unknown>
+  assert.deepEqual(persisted['settings'], {
+    minPeerReputation: 20,
+    maxPricing: { inputUsdPerMillion: 10, outputUsdPerMillion: 50 },
+    maxReserveAmountUsdc: '500000',
+  })
+})

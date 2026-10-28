@@ -198,7 +198,11 @@ export async function appendModelReferenceToBank(input: {
     }
     const bank = existing
     if (!Array.isArray(bank.referenceCosts)) bank.referenceCosts = []
-    if (existing && existing.compatibilityHash !== incoming.compatibilityHash) {
+    // Service names (aliases) only say what sellers call the model, not how answers are measured,
+    // so a reference built after the alias list changed still joins the bank under its aliases.
+    if (existing && existing.compatibilityHash !== probeBankCompatibilityHash(input.model, {
+      ...validatedReference, serviceAliases: existing.referenceTemplate.serviceAliases,
+    })) {
       throw new Error(`probe bank for ${input.model} is incompatible with the new reference`)
     }
     const byId = new Map(bank.probes.map((entry) => [entry.probe.id, entry]))
@@ -401,7 +405,12 @@ export async function reserveDiffRecheckReference(input: {
       && entry.distinguishingContrastModels.some((model) => activeContrasts.has(normalized(model))))
     const available = candidates.filter((entry) => !used.has(entry.probe.id))
     const now = input.now?.() ?? Date.now()
-    const reference = selectPoweredReference(bank, (input.shuffle ?? cryptoShuffle)(available), input.config, now)
+    // A recheck confirms a DIFF the first check already found with every contrast detected. A
+    // contrast that became unavailable after the bank was first built (it answered none or too few
+    // of these probes to ever be told apart) cannot be tested on fresh probes and does not block it.
+    const reference = selectPoweredReference(
+      bank, (input.shuffle ?? cryptoShuffle)(available), input.config, now, { onlyDetectableContrasts: true },
+    )
     if (!reference) {
       throw new Error(
         `${BANK_EXHAUSTED}: ${available.length} probes never assigned to seller ${input.sellerPeerId} `
@@ -1045,11 +1054,16 @@ function selectPoweredReference(
   available: readonly BankProbeV1[],
   config: VerifierCLIConfig | undefined,
   now: number,
+  options: { onlyDetectableContrasts?: boolean } = {},
 ): KbfReferenceV1 | null {
   const sizing = resolveReferenceSizingPolicy(config)
   const excludedDomains = excludedVerifierDomains(config, bank.model)
   const eligible = available.filter((entry) => !excludedDomains.has(entry.probe.domain))
-  const testableContrasts = new Set(bank.probes.flatMap((entry) => entry.distinguishingContrastModels))
+  let testableContrasts = new Set(bank.probes.flatMap((entry) => entry.distinguishingContrastModels))
+  if (options.onlyDetectableContrasts) {
+    const detectable = detectableContrasts(bank, eligible)
+    testableContrasts = new Set([...testableContrasts].filter((model) => detectable.has(model)))
+  }
   for (let count = sizing.minimumProbeCount;
     count <= sizing.maximumProbeCount && count <= eligible.length;
     count += sizing.probeStep) {
@@ -1090,6 +1104,28 @@ function selectPoweredReference(
     return validateKbfReferenceV1(reference, { minimumStatisticalPower: sizing.minimumStatisticalPower })
   }
   return null
+}
+
+/** Contrast models detected when every eligible probe is used, the most any subset can detect. */
+function detectableContrasts(bank: ProbeBankV1, eligible: readonly BankProbeV1[]): Set<string> {
+  const selfTest = aggregateKbfSelfTestOutcomes(eligible.map((entry) => entry.selfTest))
+  if (eligible.length === 0 || selfTest.total === 0) return new Set()
+  const ids = new Set(eligible.map((entry) => entry.probe.id))
+  const detection = computeContrastDetection({
+    probeIds: [...ids],
+    contrasts: bank.contrastModels.map((model) => ({
+      model,
+      distinguishingProbeIds: eligible
+        .filter((entry) => entry.distinguishingContrastModels.includes(model))
+        .map((entry) => entry.probe.id),
+    })),
+    answeredProbeIds: answeredContrastProbeIds(bank.contrastModels, eligible),
+    selfHamming: selfTest.hamming,
+    selfTotal: selfTest.total,
+    alpha: bank.statisticalAssumptions.alpha,
+    cpConfidence: bank.statisticalAssumptions.clopperPearsonConfidence,
+  })
+  return new Set(detection.filter((entry) => entry.detected).map((entry) => entry.model))
 }
 
 function answeredContrastProbeIds(
@@ -1145,4 +1181,48 @@ function assertCurrentBankEnrollment(bank: ProbeBankV1, model: string): void {
       + `archive it and rebuild with enrollment ${CURRENT_ANTSEED_REFERENCE_BUILDER_VERSION}`,
     )
   }
+}
+
+/**
+ * Before a run: how many probes each seller has never been assigned, against the probes one audit
+ * uses. A first audit needs one set and a DIFF recheck a second, unseen set; a seller already
+ * assigned this epoch only needs the recheck set. Throws when the bank can't be loaded.
+ */
+export async function inspectSellerProbeCapacity(input: {
+  banksDir: string
+  model: string
+  epoch: string
+  sellerPeerIds: readonly string[]
+  /** Whether a DIFF is rechecked on a second, unseen set (`verifier.diffConfirmationRuns` > 0). */
+  recheck: boolean
+  config?: VerifierCLIConfig
+}): Promise<{
+  selectedProbeCount: number | null
+  sellers: Array<{ sellerPeerId: string; unseenProbeCount: number; neededProbeCount: number; assignedThisEpoch: boolean }>
+}> {
+  const power = await inspectModelProbeBankPower({ banksDir: input.banksDir, model: input.model, config: input.config })
+  if (power.totalProbeCount === 0) {
+    throw new Error(`no probe bank exists for ${input.model}; run antseed verifier reference build ${input.model}`)
+  }
+  const bank = await readRequiredBank(bankPath(input.banksDir, input.model), input.model)
+  const activeContrasts = new Set(bank.contrastModels.map(normalized))
+  const excludedDomains = excludedVerifierDomains(input.config, input.model)
+  const eligibleIds = bank.probes
+    .filter((entry) => !excludedDomains.has(entry.probe.domain)
+      && entry.distinguishingContrastModels.some((model) => activeContrasts.has(normalized(model))))
+    .map((entry) => entry.probe.id)
+  const selected = power.selectedProbeCount
+  const sellers = await Promise.all(input.sellerPeerIds.map(async (sellerPeerId) => {
+    const ledger = await readJsonIfExists<SellerProbeLedgerV1>(sellerLedgerPath(input.banksDir, input.model, sellerPeerId))
+    const used = new Set(ledger?.assignments.flatMap((assignment) => assignment.probeIds) ?? [])
+    const assignedThisEpoch = ledger?.assignments.some((assignment) => assignment.epoch === input.epoch
+      && assignment.purpose !== 'diff-recheck' && !assignment.voidedAt) ?? false
+    return {
+      sellerPeerId,
+      unseenProbeCount: eligibleIds.filter((id) => !used.has(id)).length,
+      neededProbeCount: selected === null ? 0 : selected * ((assignedThisEpoch ? 0 : 1) + (input.recheck ? 1 : 0)),
+      assignedThisEpoch,
+    }
+  }))
+  return { selectedProbeCount: selected, sellers }
 }

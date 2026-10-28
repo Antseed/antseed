@@ -95,6 +95,8 @@ test('fresh enrollment builds a new reference that excludes every banked probe',
   operations.build = async (options) => {
     calls.push('build')
     assert.equal(options.initialReference, undefined)
+    // The bank's enrollment supplies the request settings, not probes to reuse.
+    assert.equal(options.settingsReference?.referenceModel, 'model-a')
     assert.deepEqual([...(options.excludedProbeIds ?? [])], ['banked-1', 'banked-2'])
     assert.deepEqual(options.config?.models?.['model-a']?.contrastModels, ['contrast-x'])
     assert.equal(options.config?.referenceMaxRequestsPerBuild, 10)
@@ -103,6 +105,6 @@ test('fresh enrollment builds a new reference that excludes every banked probe',
       finalize: async () => { calls.push('finalize') } }
   }
   const enrolled = await enrollFreshProbes(input, operations)
-  assert.deepEqual(calls, ['index', 'catalog', 'build', 'append', 'finalize'])
+  assert.deepEqual(calls, ['index', 'seed', 'catalog', 'build', 'append', 'finalize'])
   assert.equal(enrolled.addedProbeCount, 10)
 }))

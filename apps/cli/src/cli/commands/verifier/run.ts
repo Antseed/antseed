@@ -26,8 +26,15 @@ import {
   type VerifierStatusV1,
 } from '../../../verifier/audit-artifacts.js'
 import { resolveAuditEpochWindow, type AuditEpochWindow, type OnchainEpochReader } from '../../../verifier/audit-epoch.js'
-import { assignAuditModels, type AuditAssignment } from '../../../verifier/audit-assignment.js'
-import { createEmissionsGateClient, createVerifierClient } from '../../payment-utils.js'
+import { auditModelListHash, roundRobinAssignmentFor, type AuditAssignment } from '../../../verifier/audit-assignment.js'
+import { approvedAuditorsAt, loadAuditorSetEvents } from '../../../verifier/auditor-set.js'
+import {
+  createDepositsClient,
+  createEmissionsGateClient,
+  createVerifierClient,
+  loadCryptoContext,
+  openChannelStore,
+} from '../../payment-utils.js'
 import type { AntseedConfig } from '../../../config/types.js'
 import {
   ConcurrencyLimiter,
@@ -49,9 +56,16 @@ import {
   type ModelVerificationSkip,
   type VerificationTargetPolicy,
 } from '../../../verifier/model-run.js'
-import { buyerCapShortfall, describeAuditPriceCap, resolveAuditPriceCaps } from '../../../verifier/audit-price.js'
-import { loadVerifierModelCatalog } from '../../../verifier/openrouter-catalog.js'
 import {
+  DEFAULT_MAX_RESERVE_AMOUNT_USDC,
+  depositShortfall,
+  preRunError,
+  probeBankProblems,
+} from '../../../verifier/pre-run-checks.js'
+import { buyerCapShortfall, describeAuditPriceCap, requiredBuyerCap, resolveAuditPriceCaps } from '../../../verifier/audit-price.js'
+import { loadHighestEndpointPrice, loadVerifierModelCatalog } from '../../../verifier/openrouter-catalog.js'
+import {
+  inspectSellerProbeCapacity,
   loadModelAuditReservation,
   reserveDiffRecheckReference,
   reserveModelAuditReference,
@@ -64,10 +78,12 @@ import {
   type ProxyAuditEvidenceV1,
 } from '../../../verifier/proxy-evidence.js'
 import { openResponseAuthReader } from '../../../verifier/response-auth-reader.js'
+import { writeEpochOverview } from '../../../verifier/epoch-overview.js'
 import { getGlobalOptions } from '../types.js'
 import { enrollFreshProbes, ensureAuditableReference } from '../../../verifier/ensure-auditable-reference.js'
 import { createReferenceRequestLimiter } from '../../../verifier/model-reference.js'
 import { runDiffRechecks, type DiffRecheckStats } from '../../../verifier/diff-recheck.js'
+import { loadPendingDiffRechecks, pendingRecheckKey } from '../../../verifier/pending-rechecks.js'
 import { VerifierRunProgress } from './run-progress.js'
 import { failureOutcomeReason } from '../../../verifier/outcome-reason.js'
 import {
@@ -83,6 +99,7 @@ interface RunOptions {
   resumeRun?: string
   enrollIfNeeded?: boolean
   maxEnrollmentRequests?: string
+  ignorePreRunChecks?: boolean
 }
 
 export function enrollmentRequestBudget(options: RunOptions): number | null {
@@ -124,24 +141,48 @@ export function auditEpochReader(config: AntseedConfig): OnchainEpochReader {
   }
 }
 
+/**
+ * The auditor's share of the audited models this epoch, round robin over the approved auditors (see
+ * `assignAuditModelsRoundRobin`). Needs the on-chain epoch: the UTC-day fallback has no epoch
+ * number to rotate on, and its evidence could not be submitted anyway.
+ */
 export function resolveAssignedAuditModels(
   config: AntseedConfig,
   auditor: string,
   epoch: AuditEpochWindow,
+  approvedAuditors: readonly string[],
 ): AuditAssignment {
-  const assignment = assignAuditModels({
-    auditor,
-    epoch: epoch.epoch,
-    availableModels: configuredVerifierModels(config.verifier),
-  })
-  if (assignment.models.length === 0) throw new Error('no audited models are built into this CLI')
-  return assignment
+  if (epoch.source !== 'onchain') {
+    throw new Error('the on-chain epoch is unavailable, so there is no model assignment; run `verifier run <model>` or `--all` instead')
+  }
+  const availableModels = configuredVerifierModels(config.verifier)
+  if (availableModels.length === 0) throw new Error('no audited models are built into this CLI')
+  if (!approvedAuditors.some((address) => address.toLowerCase() === auditor.toLowerCase())) {
+    throw new Error(
+      `${auditor} was not an approved auditor when epoch ${epoch.epoch} started, so it has no assigned models. `
+      + 'Ask to be approved (see How audits run), or run `verifier run <model>` or `--all` to audit without submitting.',
+    )
+  }
+  return roundRobinAssignmentFor(auditor, { auditors: approvedAuditors, epoch: epoch.epoch, availableModels })
 }
 
-export function printAuditAssignment(assignment: AuditAssignment, epoch: AuditEpochWindow, auditorSource?: string): void {
-  const from = auditorSource ? ` (from ${auditorSource})` : ''
-  console.log(`Audit assignment for ${assignment.auditor}${from}, epoch ${assignment.epoch} (${epoch.source}), strategy ${assignment.strategy}:`)
-  for (const model of assignment.models) console.log(`  ${model}`)
+/** Auditors approved when the epoch started, from the verification contract's `AuditorSet` events. */
+export async function loadApprovedAuditors(config: AntseedConfig, dataDir: string, epoch: AuditEpochWindow): Promise<string[]> {
+  const events = await loadAuditorSetEvents(createVerifierClient(config), dataDir, (message) => console.log(chalk.dim(message)))
+  return approvedAuditorsAt(events, epoch.startedAt)
+}
+
+export function printAuditAssignment(
+  assignment: AuditAssignment,
+  context: { auditorSource?: string; approvedAuditors: readonly string[]; availableModels: readonly string[] },
+): void {
+  const from = context.auditorSource ? ` (from ${context.auditorSource})` : ''
+  console.log(`Assigned models for ${assignment.auditor}${from}, epoch ${assignment.epoch}: ${assignment.models.join(', ') || 'none'}`)
+  console.log(chalk.dim(
+    `  round robin: every model is audited every epoch, split across ${context.approvedAuditors.length} approved auditor(s); `
+    + `${context.availableModels.length} model(s), model list ${auditModelListHash(context.availableModels).slice(0, 10)}. `
+    + 'See every auditor\'s model with `antseed verifier assignment`.',
+  ))
 }
 
 export function validateAssignedModeOptions(modelValue: string | undefined, options: RunOptions): void {
@@ -200,7 +241,7 @@ export function filterResumeCandidatesByPeer(
 export function registerVerifierRunCommand(verifier: Command): void {
   verifier
     .command('run [model]')
-    .description('Verify live peers for the models assigned to this auditor (the default), one audited model, or every audited model')
+    .description('Verify live peers for the models assigned to this auditor this epoch (the default), one audited model, or every audited model')
     .option('--all', 'verify every audited model instead of the assigned ones')
     .option('--auditor <address>', 'auditor address to assign models for (default: verifier.auditor, verifier.keystore, or the data-dir identity)')
     .option('--allow-probe-reuse', 'allow a seller\'s new epoch reference to reuse probes it was assigned in earlier epochs')
@@ -208,6 +249,7 @@ export function registerVerifierRunCommand(verifier: Command): void {
     .option('--resume-run <runId>', 'repair only undetermined sellers from a compatible run')
     .option('--enroll-if-needed', 'enroll additional reference probes before auditing an insufficient bank')
     .option('--max-enrollment-requests <count>', 'maximum physical reference requests per model, including retries')
+    .option('--ignore-pre-run-checks', 'print the pre-run check problems as warnings and run anyway')
     .action(async (modelValue: string | undefined, options: RunOptions, command: Command) => {
       validateAssignedModeOptions(modelValue, options)
       const enrollmentBudget = enrollmentRequestBudget(options)
@@ -224,8 +266,17 @@ export function registerVerifierRunCommand(verifier: Command): void {
         const auditor = await resolveAuditorAddress({
           config: config.verifier, dataDir: globalOptions.dataDir, flag: options.auditor,
         })
-        const assignment = resolveAssignedAuditModels(config, auditor.address, epochWindow)
-        printAuditAssignment(assignment, epochWindow, describeAuditorSource(auditor.source))
+        const approvedAuditors = await loadApprovedAuditors(config, globalOptions.dataDir, epochWindow)
+        const assignment = resolveAssignedAuditModels(config, auditor.address, epochWindow, approvedAuditors)
+        printAuditAssignment(assignment, {
+          auditorSource: describeAuditorSource(auditor.source),
+          approvedAuditors,
+          availableModels: configuredVerifierModels(config.verifier),
+        })
+        if (assignment.models.length === 0) {
+          console.log('No model is assigned to this auditor this epoch (more approved auditors than models); nothing to audit.')
+          return
+        }
         assignedModels = assignment.models
       }
       const selectedPeerId = options.peer ? normalizeVerifierPeerId(options.peer) : null
@@ -269,8 +320,18 @@ export function registerVerifierRunCommand(verifier: Command): void {
         const resumeSourceRunId = requestedResumeManifest?.runId
           ?? (resumeCandidates.size > 0 ? previousStatus?.runId ?? null : null)
         const resumeOnly = resumeSourceRunId !== null
+        // First DIFFs from earlier runs this epoch whose recheck could not run: rechecked here
+        // without repeating the first check.
+        const pendingRechecks = (config.verifier?.diffConfirmationRuns ?? 1) > 0
+          ? await loadPendingDiffRechecks(evidenceDir, epoch, models)
+          : new Map()
+        if (selectedPeerId) {
+          for (const [key, entry] of pendingRechecks) {
+            if (entry.result.peerId.trim().replace(/^0x/i, '').toLowerCase() !== selectedPeerId) pendingRechecks.delete(key)
+          }
+        }
         let runModels = resumeOnly
-          ? models.filter((model) => [...resumeCandidates.values()]
+          ? models.filter((model) => [...resumeCandidates.values(), ...pendingRechecks.values()]
             .some((candidate) => candidate.model.toLowerCase() === model.toLowerCase()))
           : models
         if (resumeOnly && runModels.length === 0) {
@@ -278,13 +339,22 @@ export function registerVerifierRunCommand(verifier: Command): void {
           throw new Error(`resume run ${resumeSourceRunId} has no undetermined audits for the selected models${peerSuffix}`)
         }
         let proxy = await loadBuyerProxySnapshot(globalOptions.dataDir)
+        // The limits the running buyer enforces; a buyer from an older build doesn't record them,
+        // so this config's buyer settings stand in.
+        const configBuyer = resolveEffectiveBuyerConfig({ config })
+        const buyerLimits = {
+          minPeerReputation: proxy.settings?.minPeerReputation ?? configBuyer.minPeerReputation,
+          maxPricing: proxy.settings?.maxPricing ?? configBuyer.maxPricing.defaults,
+          reported: proxy.settings?.maxPricing != null,
+        }
         let selectedPeers = selectedPeerId
           ? [selectVerifierPeer(proxy.peers, selectedPeerId)]
           : proxy.peers
-        // Each audited model is audited only at or below its genuine price (OpenRouter by
-        // default). Sellers above it are skipped here, so they never get a request.
+        // Each audited model is audited only at or below its genuine price: the highest price any
+        // OpenRouter provider charges for it. Sellers above it are skipped here, so they never get a request.
         const priceCaps = await resolveAuditPriceCaps(
           config.verifier, runModels, () => loadVerifierModelCatalog(config.verifier),
+          (upstreamModel) => loadHighestEndpointPrice(config.verifier, upstreamModel),
         )
         for (const [model, reason] of priceCaps.unpriced) {
           console.warn(chalk.yellow(`SKIPPED ${model}: ${reason}`))
@@ -292,22 +362,24 @@ export function registerVerifierRunCommand(verifier: Command): void {
         }
         runModels = runModels.filter((model) => priceCaps.caps.has(model))
         if (runModels.length === 0) throw new Error('no audited model has a reference price; see the warnings above')
-        // Audit requests go through the buyer, which refuses sellers above its own cap. A model
-        // whose audit cap is above it is not audited until the auditor raises the buyer cap.
-        const buyerMaxPrice = resolveEffectiveBuyerConfig({ config }).maxPricing.defaults
-        const buyerCapBlocked = new Map<string, string>()
-        for (const model of runModels) {
-          const shortfall = buyerCapShortfall(buyerMaxPrice, priceCaps.caps.get(model)!)
-          if (shortfall) buyerCapBlocked.set(model, shortfall)
+        // Audit requests go through the running buyer, which refuses sellers above its own cap.
+        // Its caps must be at or above every audited model's reference price, or sellers the audit
+        // allows would be refused and end UNDETERMINED on our side: stop before any request.
+        const buyerCapShortfalls = runModels.flatMap((model) => {
+          const shortfall = buyerCapShortfall(buyerLimits.maxPricing, priceCaps.caps.get(model)!)
+          return shortfall ? [shortfall] : []
+        })
+        if (buyerCapShortfalls.length > 0) {
+          const needed = requiredBuyerCap(runModels.map((model) => priceCaps.caps.get(model)!))
+          throw new Error(
+            `the ${buyerLimits.reported ? 'running' : 'configured'} buyer would refuse sellers priced at or below the reference:\n`
+            + buyerCapShortfalls.map((line) => `  - ${line}`).join('\n')
+            + `\nSet buyer.maxPricing.defaults to at least input ${needed.input}, output ${needed.output}`
+            + ' (and cachedInputUsdPerMillion, if set, to at least the input value) and restart the buyer.',
+          )
         }
-        for (const [model, reason] of buyerCapBlocked) {
-          console.warn(chalk.yellow(`SKIPPED ${model}: ${reason}`))
-          process.exitCode = 1
-        }
-        runModels = runModels.filter((model) => !buyerCapBlocked.has(model))
-        if (runModels.length === 0) throw new Error('every audited model is above the buyer price cap; see the warnings above')
         const targetPolicyFor = (model: string): VerificationTargetPolicy => ({
-          minReputation: config.buyer.minPeerReputation,
+          minReputation: buyerLimits.minPeerReputation,
           priceCap: priceCaps.caps.get(model)!,
         })
         if (selectedPeerId && !resumeOnly) {
@@ -382,7 +454,8 @@ export function registerVerifierRunCommand(verifier: Command): void {
           const configuredServices = verifierModelServices(config.verifier, model)
           const targets = selectedPeers.flatMap((peer) => {
             const resumeCandidate = resumeCandidates.get(resumeKey(model, peer.peerId))
-            if (resumeOnly && !resumeCandidate) return []
+            const pendingRecheck = pendingRechecks.get(pendingRecheckKey(model, peer.peerId))
+            if (resumeOnly && !resumeCandidate && !pendingRecheck) return []
             const services = resumeCandidate
               ? [resumeCandidate.service.toLowerCase(), ...configuredServices]
               : configuredServices
@@ -390,7 +463,14 @@ export function registerVerifierRunCommand(verifier: Command): void {
             if (eligibility.eligible) {
               const resumable = resumeCandidate
                 && resumeCandidate.service.toLowerCase() === eligibility.service.toLowerCase()
-              return [{ peer, service: eligibility.service, resumeCandidate: resumable ? resumeCandidate : undefined }]
+              const carried = pendingRecheck
+                && pendingRecheck.result.service.toLowerCase() === eligibility.service.toLowerCase()
+              return [{
+                peer,
+                service: eligibility.service,
+                resumeCandidate: resumable ? resumeCandidate : undefined,
+                pendingRecheck: carried ? pendingRecheck : undefined,
+              }]
             }
             if (eligibility.code !== 'model_not_advertised') {
               const policySkip = eligibility.code !== 'missing_response_auth'
@@ -427,6 +507,22 @@ export function registerVerifierRunCommand(verifier: Command): void {
         if (selectedPeerId && preparedModels.every((entry) => entry.targets.length + entry.skipped.length === 0)) {
           throw new Error(`peer ${selectedPeerId} does not currently advertise any selected verifier model`)
         }
+        // Problems on the auditor's side stop the run here, before any request is paid for.
+        const preRunProblems = await collectPreRunProblems({
+          config,
+          dataDir: globalOptions.dataDir,
+          banksDir,
+          epoch,
+          epochSource: epochWindow.source,
+          enrollIfNeeded: enrollmentBudget !== null,
+          reserveUsdc: proxy.settings?.maxReserveAmountUsdc ?? null,
+          models: preparedModels.map(({ model, targets }) => ({ model, sellerPeerIds: targets.map((target) => target.peer.peerId) })),
+        })
+        if (preRunProblems.length > 0) {
+          if (!options.ignorePreRunChecks) throw preRunError(preRunProblems)
+          console.log(chalk.yellow(`Ignoring ${preRunProblems.length} pre-run problem(s) (--ignore-pre-run-checks):`))
+          for (const problem of preRunProblems) console.log(chalk.yellow(`  - ${problem}`))
+        }
         status = {
           version: 1,
           kind: 'antseed-verifier-status',
@@ -462,15 +558,18 @@ export function registerVerifierRunCommand(verifier: Command): void {
         console.log(chalk.dim(`Buyer proxy: ${proxy.baseUrl} (pid ${proxy.pid})`))
         if (selectedPeerId) console.log(chalk.dim(`Peer selector: ${selectedPeerId}`))
         console.log(chalk.dim('Evidence: verified ResponseAuth required for every successful batch'))
-        console.log(chalk.dim(`Eligibility: reputation >= ${config.buyer.minPeerReputation}; price at or below the reference:`))
+        console.log(chalk.dim(`Eligibility: reputation >= ${buyerLimits.minPeerReputation}; price at or below the reference:`))
         for (const model of runModels) console.log(chalk.dim(`  ${describeAuditPriceCap(priceCaps.caps.get(model)!)}`))
         if (resumeSourceRunId) {
           console.log(chalk.dim(`Resume source: ${resumeSourceRunId} (${resumeCandidates.size} unresolved audit(s))`))
         }
+        if (pendingRechecks.size > 0) {
+          console.log(chalk.cyan(`DIFFs waiting for a recheck from earlier runs this epoch: ${pendingRechecks.size}; rechecking them now`))
+        }
 
-        const maxConcurrentModels = config.verifier?.auditMaxConcurrentModels ?? 3
+        const maxConcurrentModels = config.verifier?.auditMaxConcurrentModels ?? 6
         const maxConcurrentPeersPerModel = config.verifier?.auditMaxConcurrentPeersPerModel ?? 4
-        const maxConcurrentBatches = config.verifier?.auditMaxConcurrentBatches ?? 12
+        const maxConcurrentBatches = config.verifier?.auditMaxConcurrentBatches ?? 24
         const maxConcurrentBatchesPerPeer = config.verifier?.auditMaxConcurrentBatchesPerPeer ?? 2
         const batchLimiter = new ConcurrencyLimiter(maxConcurrentBatches)
         const sellerLimiter = new KeyedSerialLimiter()
@@ -490,7 +589,7 @@ export function registerVerifierRunCommand(verifier: Command): void {
         }
         const diffConfirmationRuns = config.verifier?.diffConfirmationRuns ?? 1
         const recheckTotals: DiffRecheckStats = {
-          rechecked: 0, confirmed: 0, notConfirmed: 0, skipped: 0, cost: emptyAuditCostSummary(),
+          rechecked: 0, confirmed: 0, notConfirmed: 0, pending: 0, cost: emptyAuditCostSummary(),
         }
         const appendEvent = async (event: Record<string, unknown>): Promise<void> => {
           await eventQueue.run(async () => { await appendVerifierEvent(evidenceDir, epoch, event) })
@@ -531,6 +630,17 @@ export function registerVerifierRunCommand(verifier: Command): void {
           // can span several references drawn from the same bank.
           const referenceSources = new Map<string, KbfReferenceV1>()
           const outcomes = await mapConcurrently(targets, maxConcurrentPeersPerModel, async (target) => {
+            if (target.pendingRecheck) {
+              // The first check already said DIFF in an earlier run; only its recheck is left.
+              await updateStatus((value) => { value.queuedAudits -= 1 })
+              runProgress!.recordVerdict(model, 'DIFF', target.pendingRecheck.result.outcomeReason)
+              if (!runProgress!.interactive) {
+                console.log(chalk.dim(
+                  `DIFF ${target.peer.peerId.slice(0, 12)}… from run ${target.pendingRecheck.runId.slice(0, 10)}: recheck only`,
+                ))
+              }
+              return { result: target.pendingRecheck.result, failure: null, skipped: null }
+            }
             return sellerLimiter.run(target.peer.peerId, async () => {
               const startedAt = new Date().toISOString()
               await updateStatus((value) => {
@@ -758,7 +868,7 @@ export function registerVerifierRunCommand(verifier: Command): void {
             recheckTotals.rechecked += rechecked.stats.rechecked
             recheckTotals.confirmed += rechecked.stats.confirmed
             recheckTotals.notConfirmed += rechecked.stats.notConfirmed
-            recheckTotals.skipped += rechecked.stats.skipped
+            recheckTotals.pending += rechecked.stats.pending
             recheckTotals.cost = addAuditCostSummaries(recheckTotals.cost, rechecked.stats.cost)
             for (const result of results) {
               if (!result.recheck) continue
@@ -897,6 +1007,7 @@ export function registerVerifierRunCommand(verifier: Command): void {
           failureCount: status.failures,
         })
         const reportPaths = await writeModelAuditReports(evidenceDir, epoch, epochSummary)
+        const overviewPath = await writeEpochOverview(evidenceDir, epoch)
         status.state = status.failures > 0 ? 'failed' : 'completed'
         status.completedAt = completedAt
         status.currentModel = null
@@ -912,13 +1023,21 @@ export function registerVerifierRunCommand(verifier: Command): void {
         console.log(chalk.dim(`Summary: ${epochSummaryPath}`))
         console.log(chalk.dim(`Run manifest: ${manifestPath}`))
         for (const report of reportPaths) console.log(chalk.dim(`Report (${report.model}): ${report.path}`))
-        const recheckCount = recheckTotals.confirmed + recheckTotals.notConfirmed + recheckTotals.skipped
+        if (overviewPath) console.log(chalk.cyan(`Epoch overview (all runs this epoch): ${overviewPath}`))
+        const recheckCount = recheckTotals.confirmed + recheckTotals.notConfirmed + recheckTotals.pending
         if (diffConfirmationRuns > 0 && recheckCount > 0) {
           console.log(chalk.cyan(
             `DIFF rechecks: ${recheckCount} (${recheckTotals.confirmed} confirmed, `
-            + `${recheckTotals.notConfirmed} not confirmed, ${recheckTotals.skipped} skipped), `
+            + `${recheckTotals.notConfirmed} not confirmed, ${recheckTotals.pending} waiting for a recheck), `
             + `$${recheckTotals.cost.estimatedCostUsd.toFixed(6)}`,
           ))
+          if (recheckTotals.pending > 0) {
+            console.log(chalk.yellow(
+              `${recheckTotals.pending} DIFF(s) are kept but not submitted until rechecked. Fix the reason in the `
+              + '[recheck:…] lines above (for example reference credits, or add --enroll-if-needed for fresh questions), '
+              + 'then run `antseed verifier run` again this epoch: it rechecks them without repeating the first check.',
+            ))
+          }
         } else if (diffConfirmationRuns === 0) {
           console.log(chalk.yellow('DIFF rechecks: off (verifier.diffConfirmationRuns = 0)'))
         }
@@ -938,6 +1057,74 @@ export function registerVerifierRunCommand(verifier: Command): void {
         await runLock.release()
       }
     })
+}
+
+/**
+ * What would make this run fail on the auditor's side: no on-chain epoch (the chain can't be
+ * reached), a deposit too small for the new payment channels, or a probe bank that can't be loaded
+ * or has too few unseen questions for the sellers. Empty when the run can start.
+ */
+async function collectPreRunProblems(input: {
+  config: AntseedConfig
+  dataDir: string
+  banksDir: string
+  epoch: string
+  epochSource: AuditEpochWindow['source']
+  enrollIfNeeded: boolean
+  reserveUsdc: bigint | null
+  models: ReadonlyArray<{ model: string; sellerPeerIds: readonly string[] }>
+}): Promise<string[]> {
+  const problems: string[] = []
+  if (input.epochSource !== 'onchain') {
+    problems.push('the chain can\'t be reached (on-chain epoch unavailable), so this run\'s evidence could not be submitted. '
+      + 'Check payments.crypto.rpcUrl or ANTSEED_BASE_RPC_URL')
+  }
+
+  const sellers = [...new Set(input.models.flatMap((entry) => entry.sellerPeerIds.map((id) => id.toLowerCase())))]
+  if (sellers.length > 0 && input.config.payments?.crypto) {
+    try {
+      const { address } = await loadCryptoContext(input.dataDir)
+      const store = openChannelStore(input.dataDir)
+      let open: Set<string>
+      try {
+        open = new Set(store.getActiveChannelsByBuyer('buyer', address).map((channel) => channel.peerId.toLowerCase()))
+      } finally {
+        store.close()
+      }
+      const balance = await createDepositsClient(input.config).getBuyerBalance(address)
+      const configured = input.config.payments?.maxReserveAmountUsdc
+      const reserveUsdc = input.reserveUsdc
+        ?? (configured && /^\d+$/.test(configured) ? BigInt(configured) : DEFAULT_MAX_RESERVE_AMOUNT_USDC)
+      const shortfall = depositShortfall({
+        availableUsdc: balance.available,
+        reserveUsdc,
+        newChannelCount: sellers.filter((seller) => !open.has(seller)).length,
+      })
+      if (shortfall) problems.push(`deposit: ${shortfall}`)
+    } catch (error) {
+      problems.push(`deposit: could not read the buyer deposit (${asError(error).message}); check the chain connection`)
+    }
+  }
+
+  const recheck = (input.config.verifier?.diffConfirmationRuns ?? 1) > 0
+  for (const { model, sellerPeerIds } of input.models) {
+    if (sellerPeerIds.length === 0) continue
+    try {
+      const capacity = await inspectSellerProbeCapacity({
+        banksDir: input.banksDir, model, epoch: input.epoch, sellerPeerIds, recheck, config: input.config.verifier,
+      })
+      if (capacity.selectedProbeCount === null && !input.enrollIfNeeded) {
+        problems.push(`${model}: the probe bank has too few usable questions for one audit; `
+          + 'add --enroll-if-needed --max-enrollment-requests <n>, or rebuild it')
+        continue
+      }
+      problems.push(...probeBankProblems({ model, sellers: capacity.sellers, enrollIfNeeded: input.enrollIfNeeded }))
+    } catch (error) {
+      problems.push(`${model}: the probe bank can't be used (${asError(error).message}); `
+        + `rebuild it with antseed verifier reference build ${model}`)
+    }
+  }
+  return problems
 }
 
 function epochTimestamp(value: number): string {

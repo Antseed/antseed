@@ -80,6 +80,8 @@ antseed-verifier buyer start
 
 If another Antseed app already uses port 8377, set `buyer.proxyPort` to a free port in the config first.
 
+The buyer's `buyer.maxPricing.defaults` must be at or above the reference price of every audited model, or `verifier run` stops and tells you what to set it to.
+
 ## 3. Build references
 
 ```bash

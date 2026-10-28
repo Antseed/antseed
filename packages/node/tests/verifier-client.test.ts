@@ -1,4 +1,4 @@
-import { Interface, Wallet, keccak256, toUtf8Bytes } from 'ethers';
+import { EventLog, Interface, Wallet, keccak256, toUtf8Bytes } from 'ethers';
 import { describe, expect, it, vi } from 'vitest';
 import {
   KBF_AUDIT_TYPE,
@@ -165,5 +165,33 @@ describe('verifier event block ranges', () => {
     expect(queryFilter).not.toHaveBeenCalled();
     await client.queryModelAudits({}, 0);
     expect(queryFilter.mock.calls.map(([, from, to]) => [from, to])).toEqual([[0, 'latest']]);
+  });
+
+  it('reads AuditorSet events in order with their block timestamps', async () => {
+    const client = new VerifierClient({ rpcUrl: 'http://127.0.0.1:1', contractAddress: VERIFICATION_ADDRESS, deploymentBlock: 10 });
+    const iface = new Interface(VERIFICATION_ABI);
+    const fragment = iface.getEvent('AuditorSet')!;
+    const log = (auditor: string, approved: boolean, blockNumber: number, index: number) => {
+      const encoded = iface.encodeEventLog(fragment, [auditor, approved]);
+      return new EventLog({
+        ...encoded, address: VERIFICATION_ADDRESS, blockNumber, index, transactionHash: '0x' + 'ab'.repeat(32),
+        blockHash: '0x' + 'cd'.repeat(32), transactionIndex: 0, removed: false,
+      } as never, iface, fragment);
+    };
+    const a = '0x' + '11'.repeat(20);
+    const b = '0x' + '22'.repeat(20);
+    const queryFilter = vi.fn(async () => [log(b, true, 30, 1), log(a, true, 20, 0), log(a, false, 30, 0)]);
+    const getBlock = vi.fn(async (blockNumber: number) => ({ timestamp: blockNumber * 2 }));
+    const internals = client as unknown as { _contract(): unknown; _provider: unknown };
+    internals._contract = () => ({ filters: { AuditorSet: () => 'auditor-filter' }, queryFilter });
+    internals._provider = { getBlockNumber: async () => 40, getBlock };
+
+    const events = await client.queryAuditorSetEvents();
+    expect(events.map((event) => [event.auditor.toLowerCase(), event.approved, event.blockNumber, event.logIndex, event.timestamp])).toEqual([
+      [a, true, 20, 0, 40],
+      [a, false, 30, 0, 60],
+      [b, true, 30, 1, 60],
+    ]);
+    expect(getBlock).toHaveBeenCalledTimes(2);
   });
 });

@@ -114,6 +114,9 @@ export async function enrollFreshProbes(input: {
   const lock = await acquirePidFileLock(join(input.banksDir, safeServiceSlug(input.model), '.enrollment.lock'))
   try {
     const bank = await operations.loadIndex(input.banksDir, input.model)
+    // The bank's request settings (thinking suppression etc.), so the fresh probes are measured
+    // like the banked ones and the bank accepts them.
+    const settingsReference = bank ? await operations.loadSeed(input.banksDir, input.model) : undefined
     const config = structuredClone(input.config)
     const entry = findVerifierModel(config, input.model)
     if (!config?.referenceEndpoint || !entry) {
@@ -133,6 +136,7 @@ export async function enrollFreshProbes(input: {
       buyerProxyPort: input.buyerProxyPort,
       log: input.log,
       excludedProbeIds: new Set(bank?.probeIds ?? []),
+      ...(settingsReference ? { settingsReference } : {}),
     })
     const appended = await operations.append({
       banksDir: input.banksDir, model: input.model, reference: built.reference, cost: built.cost,

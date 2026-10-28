@@ -15,22 +15,47 @@ export interface AuditedModel {
 }
 
 export const AUDITED_MODELS: Readonly<Record<string, AuditedModel>> = Object.freeze({
-  'claude-fable-5.1': { upstreamModel: 'anthropic/claude-fable-5.1' },
-  'claude-opus-4-6': { upstreamModel: 'anthropic/claude-opus-4.6', serviceAliases: ['claude-opus-4.6'] },
-  'claude-opus-5': { upstreamModel: 'anthropic/claude-opus-5' },
-  'claude-opus-5.5': { upstreamModel: 'anthropic/claude-opus-5.5', serviceAliases: ['claude-opus-5-5'] },
-  'claude-sonnet-5': { upstreamModel: 'anthropic/claude-sonnet-5' },
+  'claude-fable-5.1': {
+    upstreamModel: 'anthropic/claude-fable-5.1',
+    serviceAliases: ['claude-fable-5-1', 'fable-5.1', 'fable-5-1', 'anthropic/claude-fable-5.1'],
+  },
+  'claude-opus-4-6': {
+    upstreamModel: 'anthropic/claude-opus-4.6',
+    serviceAliases: ['claude-opus-4.6', 'opus-4-6', 'anthropic/claude-opus-4.6'],
+  },
+  'claude-opus-5': {
+    upstreamModel: 'anthropic/claude-opus-5',
+    serviceAliases: ['opus-5', 'anthropic/claude-opus-5'],
+  },
+  'claude-opus-5.5': {
+    upstreamModel: 'anthropic/claude-opus-5.5',
+    serviceAliases: ['claude-opus-5-5', 'opus-5.5', 'opus-5-5', 'anthropic/claude-opus-5.5'],
+  },
+  'claude-sonnet-5': {
+    upstreamModel: 'anthropic/claude-sonnet-5',
+    serviceAliases: ['sonnet-5', 'anthropic/claude-sonnet-5'],
+  },
   'claude-sonnet-5.5': {
     upstreamModel: 'anthropic/claude-sonnet-5.5',
-    serviceAliases: ['claude-sonnet-5-5', 'sonnet-5.5'],
+    serviceAliases: ['claude-sonnet-5-5', 'sonnet-5.5', 'sonnet-5-5', 'anthropic/claude-sonnet-5.5'],
   },
   'gemini-3-flash-preview': { upstreamModel: 'google/gemini-3-flash-preview' },
-  'gemini-3.1-pro-preview': { upstreamModel: 'google/gemini-3.1-pro-preview' },
-  'gpt-5.6-sol': { upstreamModel: 'openai/gpt-5.6-sol' },
-  'gpt-6-astra': { upstreamModel: 'openai/gpt-6-astra' },
-  'gpt-6.1-sol': { upstreamModel: 'openai/gpt-6.1-sol', serviceAliases: ['openai-gpt-61-sol', 'gpt-61-sol'] },
-  'grok-4.5': { upstreamModel: 'x-ai/grok-4.5' },
-  'grok-4.7': { upstreamModel: 'x-ai/grok-4.7', serviceAliases: ['grok-4-7'] },
+  'gemini-3.1-pro-preview': {
+    upstreamModel: 'google/gemini-3.1-pro-preview',
+    serviceAliases: ['gemini-3-1-pro-preview', 'google/gemini-3.1-pro-preview'],
+  },
+  'gemini-4-argon': { upstreamModel: 'google/gemini-4-argon', serviceAliases: ['google/gemini-4-argon'] },
+  'gpt-5.6-sol': {
+    upstreamModel: 'openai/gpt-5.6-sol',
+    serviceAliases: ['openai/gpt-5.6-sol', 'openai-gpt-56-sol', 'gpt5.6-sol'],
+  },
+  'gpt-6-astra': { upstreamModel: 'openai/gpt-6-astra', serviceAliases: ['openai/gpt-6-astra', 'openai-gpt-6-astra'] },
+  'gpt-6.1-sol': {
+    upstreamModel: 'openai/gpt-6.1-sol',
+    serviceAliases: ['openai-gpt-61-sol', 'gpt-61-sol', 'openai/gpt-6.1-sol'],
+  },
+  'grok-4.5': { upstreamModel: 'x-ai/grok-4.5', serviceAliases: ['grok-4-5'] },
+  'grok-4.7': { upstreamModel: 'x-ai/grok-4.7', serviceAliases: ['grok-4-7', 'x-ai/grok-4.7'] },
   'deepseek-v4-pro': { upstreamModel: 'deepseek/deepseek-v4-pro', serviceAliases: ['deepseek/deepseek-v4-pro'] },
   'deepseek-v4-pro-0813': {
     upstreamModel: 'deepseek/deepseek-v4-pro-0813',
@@ -49,10 +74,9 @@ export const AUDITED_MODELS: Readonly<Record<string, AuditedModel>> = Object.fre
       'kimi-k3-1-pro-highspeed',
     ],
   },
-  'minimax-m3': { upstreamModel: 'minimax/minimax-m3', serviceAliases: ['minimax/minimax-m3'] },
-  'minimax-m3.1-flash': {
-    upstreamModel: 'minimax/minimax-m3.1-flash',
-    serviceAliases: ['minimax-m3-1-flash', 'minimax/minimax-m3.1-flash'],
+  'glm-5.3': {
+    upstreamModel: 'z-ai/glm-5.3',
+    serviceAliases: ['glm-5-3', 'z-ai/glm-5.3', 'zai/glm-5.3', 'z-ai-glm-5-3'],
   },
 })
 

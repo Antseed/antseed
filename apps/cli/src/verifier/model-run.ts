@@ -28,6 +28,8 @@ import {
   type StoredResponseAuth,
   type TokenPricingUsdPerMillion,
 } from '@antseed/node'
+import { parseRunningBuyerSettings, type RunningBuyerSettings } from './buyer-settings.js'
+import { auditedModels, findAuditedModelKey } from './audited-models.js'
 import { parsePersistedPeers } from '../proxy/buyer-proxy.js'
 import { auditPriceRejection, type AuditPriceCap } from './audit-price.js'
 import { createDomainHomogeneousKbfBatches } from './kbf-batching.js'
@@ -101,6 +103,8 @@ export interface BuyerProxySnapshot {
   statePath: string
   pid: number
   peers: PeerInfo[]
+  /** The limits the running buyer enforces; null when it did not record them (an older build). */
+  settings?: RunningBuyerSettings | null
 }
 
 export interface ProxyVerificationContext {
@@ -175,6 +179,12 @@ export interface ModelVerificationTargetResult {
   evidenceHash: string
   /** Second check on fresh probes after a first DIFF; `status` above is then the final verdict. */
   recheck?: ModelVerificationRecheckV1
+  /**
+   * Set on a first DIFF whose recheck could not run (no fresh questions, reference endpoint down or
+   * out of credits, seller unreachable for the recheck). Nothing is submitted for it; the next
+   * `verifier run` in the same epoch rechecks it without repeating the first check.
+   */
+  recheckPending?: { reason: string; since: string }
 }
 
 export interface ModelVerificationRecheckV1 {
@@ -230,6 +240,7 @@ export async function loadBuyerProxySnapshot(dataDir: string): Promise<BuyerProx
     pid?: unknown
     port?: unknown
     discoveredPeers?: unknown
+    settings?: unknown
   }
   try {
     parsed = JSON.parse(await readFile(statePath, 'utf8')) as typeof parsed
@@ -253,6 +264,7 @@ export async function loadBuyerProxySnapshot(dataDir: string): Promise<BuyerProx
     statePath,
     pid: Number(parsed.pid),
     peers,
+    settings: parseRunningBuyerSettings(parsed.settings),
   }
 }
 
@@ -372,6 +384,14 @@ function isValidOffer(offer: TokenPricingUsdPerMillion | undefined): offer is To
     && isFiniteNonNegative(offer.inputUsdPerMillion)
     && isFiniteNonNegative(offer.outputUsdPerMillion)
     && (offer.cachedInputUsdPerMillion === undefined || isFiniteNonNegative(offer.cachedInputUsdPerMillion))
+    // The buyer's router refuses an offer whose cached input costs more than input, so it is not audited either.
+    && (offer.cachedInputUsdPerMillion === undefined || offer.cachedInputUsdPerMillion <= offer.inputUsdPerMillion)
+}
+
+/** Every name the audited model currently goes by (empty for a model that is not audited). */
+function currentServiceNames(model: string): string[] {
+  const key = findAuditedModelKey(model)
+  return key ? [key, ...(auditedModels()[key]!.serviceAliases ?? [])] : []
 }
 
 function isFiniteNonNegative(value: number | undefined): value is number {
@@ -852,7 +872,8 @@ async function executeProxyProbeBatch(
           requestId,
           sellerPeerId: target.peerId,
           advertisedService: service,
-          serviceAliases: reference.serviceAliases,
+          // The bank's names plus the model's current ones: a seller may sign a name added later.
+          serviceAliases: [...reference.serviceAliases, ...currentServiceNames(reference.referenceModel)],
           signal: context.signal,
         })
         : {
@@ -1079,7 +1100,9 @@ function classifyProxyFailure(
   }
 
   if ((statusCode === 400 || statusCode === 404)
-    && (code === 'model_not_found' || message.includes('is not served by this peer'))) {
+    && (code === 'model_not_found' || message.includes('is not served by this peer')
+      // The seller's upstream no longer knows the model it advertises (e.g. "Unknown model: claude-sonnet-5.5").
+      || /\b(unknown|invalid|unsupported) model\b|\bmodel\b[^.]{0,40}\b(does not exist|not found)\b/i.test(message))) {
     return {
       retryable: false,
       skipCode: 'stale_model_advertisement',
