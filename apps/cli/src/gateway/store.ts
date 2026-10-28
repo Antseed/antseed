@@ -1204,9 +1204,13 @@ export class GatewayStore {
       routerPeerId, router?.service?.slice(0, 200) ?? null, router?.rank ?? null, outcome.servedModel?.slice(0, 200) ?? null,
       outcome.routeSelection ? JSON.stringify(outcome.routeSelection) : null, tag,
     )
-    // Spend can reach the ledger before the response names its router.
+    // Spend can reach the ledger before the response names its router and the model it served.
     if (routerPeerId) {
       this._stmt('UPDATE ledger_entries SET router_peer_id = ? WHERE request_tag = ? AND router_peer_id IS NULL').run(routerPeerId, tag)
+    }
+    if (outcome.servedModel) {
+      this._stmt('UPDATE ledger_entries SET served_model = ? WHERE request_tag = ? AND routing_fee = 0 AND served_model IS NULL')
+        .run(outcome.servedModel.slice(0, 200), tag)
     }
   }
 
@@ -1282,11 +1286,13 @@ export class GatewayStore {
     /** The video job of an accepted create, a status poll or a delivery, keyed like `videoJobKey`. */
     videoJob: string | null
     routerPeerId: string | null
+    /** The model the seller served, once the response named it. */
+    servedModel: string | null
   } | null {
-    const row = this._stmt(`SELECT key_id, buyer_identity, workspace_id, member_id, model, end_user, path, video_action, video_job_id, router_peer_id
+    const row = this._stmt(`SELECT key_id, buyer_identity, workspace_id, member_id, model, end_user, path, video_action, video_job_id, router_peer_id, served_model
       FROM gateway_requests WHERE tag = ?`).get(tag) as
       { key_id: string; buyer_identity: string; workspace_id: string | null; member_id: string | null; model: string | null; end_user: string | null
-        path: string; video_action: string | null; video_job_id: string | null; router_peer_id: string | null } | undefined
+        path: string; video_action: string | null; video_job_id: string | null; router_peer_id: string | null; served_model: string | null } | undefined
     return row
       ? {
         keyId: row.key_id, buyerIdentity: row.buyer_identity, workspaceId: row.workspace_id, memberId: row.member_id, model: row.model, endUser: row.end_user,
@@ -1294,6 +1300,7 @@ export class GatewayStore {
           ? requestVideoJob(row.path, row.video_job_id)
           : null,
         routerPeerId: row.router_peer_id,
+        servedModel: row.served_model,
       }
       : null
   }
@@ -1574,8 +1581,8 @@ export class GatewayStore {
     const result = this._stmt(`
       INSERT OR IGNORE INTO ledger_entries
         (kind, key_id, buyer_identity, amount_usdc, external_ref, request_tag, seller_peer_id,
-         input_tokens, cached_input_tokens, output_tokens, note, created_at, workspace_id, member_id, model, end_user, routing_fee, router_peer_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         input_tokens, cached_input_tokens, output_tokens, note, created_at, workspace_id, member_id, model, end_user, routing_fee, router_peer_id, served_model)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       entry.kind, entry.keyId, entry.buyerIdentity, signed, entry.externalRef,
       entry.requestTag ?? null, entry.sellerPeerId ?? null,
@@ -1585,6 +1592,7 @@ export class GatewayStore {
       entry.routingFee ? 1 : 0,
       // A ranking fee is paid to the router itself, before the response names it.
       request?.routerPeerId ?? (entry.routingFee ? entry.sellerPeerId?.toLowerCase() ?? null : null),
+      entry.routingFee ? null : request?.servedModel ?? null,
     )
     return result.changes > 0
   }
@@ -1999,20 +2007,21 @@ export class GatewayStore {
 
   /**
    * A workspace's paid spend in [from, to), per seller (the router, for a
-   * routing fee), model and kind. Requests are counted once however many
+   * routing fee), model and kind: the model the seller served, or for a
+   * routing fee the routing service asked for. Requests are counted once however many
    * charges they carried.
    */
   statementLines(workspaceId: string, from: number, to: number): StatementLineRow[] {
     return (this._stmt(`
-      SELECT seller_peer_id, model, routing_fee, COUNT(DISTINCT COALESCE(request_tag, external_ref)) AS requests,
+      SELECT seller_peer_id, CASE WHEN routing_fee = 1 THEN model ELSE COALESCE(served_model, model) END AS service, routing_fee, COUNT(DISTINCT COALESCE(request_tag, external_ref)) AS requests,
         SUM(input_tokens) AS input_tokens, SUM(cached_input_tokens) AS cached_input_tokens, SUM(output_tokens) AS output_tokens,
         -SUM(amount_usdc) AS spent
       FROM ledger_entries
       WHERE kind = 'spend' AND workspace_id = ? AND created_at >= ? AND created_at < ? AND amount_usdc < 0
-      GROUP BY seller_peer_id, model, routing_fee
+      GROUP BY seller_peer_id, service, routing_fee
     `).all(workspaceId, from, to) as Array<Record<string, unknown>>).map((row) => ({
       sellerPeerId: row['seller_peer_id'] as string | null,
-      model: row['model'] as string | null,
+      model: row['service'] as string | null,
       routingFee: row['routing_fee'] === 1,
       requests: row['requests'] as number,
       inputTokens: row['input_tokens'] as number,

@@ -19,6 +19,7 @@ const ROUTER = '3c'.repeat(20)
 const OCT = Date.UTC(2026, 9, 1)
 const NOV = Date.UTC(2026, 10, 1)
 const MID_OCT = Date.UTC(2026, 9, 15)
+const DEC = Date.UTC(2026, 11, 5)
 const CHAIN = { chainId: 'base-sepolia', evmChainId: 84532, rpcUrl: 'http://127.0.0.1:1', explorerApiUrl: 'https://explorer.test' } as AntsChainConfig
 
 let dir: string
@@ -213,6 +214,21 @@ test('a month a day after its end is final: kept as issued, unchanged by later s
 
   const list = await call(router, 'GET', `/workspaces/${workspaceId}/statements`, admin()) as StatementSummary[]
   assert.deepEqual(list.map((entry) => [entry.period, entry.status, entry.purchases]), [['2026-11', 'open', '9.000000'], ['2026-10', 'final', '7.010000']])
+})
+
+test('a routed purchase is listed under the model the seller served, even when spend arrives before the response names it', () => {
+  const { key } = store.createKey({ label: 'routed', workspaceId, ownerMemberId: ownerId, limits: { daily: null, weekly: null, monthly: null, total: null }, expiresAt: null })
+  store.startRequest({ tag: 'routed-1', keyId: key.id, buyerIdentity: 'default', method: 'POST', path: '/v1/chat/completions', model: 'alpha-route', startedAt: DEC })
+  const charge = (amountUsdc: number, routingFee: boolean, seller: string) => store.recordLedgerEntry({
+    kind: 'spend', keyId: key.id, buyerIdentity: 'default', amountUsdc, externalRef: `spend:test:${ledgerSeq++}`, requestTag: 'routed-1',
+    sellerPeerId: seller, inputTokens: 10, cachedInputTokens: 0, outputTokens: 5, createdAt: DEC + 1, routingFee,
+  })
+  charge(10_000, true, ROUTER)
+  charge(2_000_000, false, SELLER_A)
+  store.recordRequestOutcome('routed-1', { sellerPeerId: SELLER_A, servedModel: 'gpt-5', router: { peerId: `0x${ROUTER}`, service: 'alpha-route', rank: 1 } })
+  charge(1_000_000, false, SELLER_A) // a later charge of the same request, after the response named the model
+  const lines = store.statementLines(workspaceId, DEC, DEC + 1000).map((line) => [line.sellerPeerId, line.model, line.routingFee, line.spentUsdc])
+  assert.deepEqual(lines.sort(), [[ROUTER, 'alpha-route', true, 10_000], [SELLER_A, 'gpt-5', false, 3_000_000]].sort())
 })
 
 test('periods: malformed is a 400, a month not started yet a 404', async () => {

@@ -424,5 +424,10 @@ export const MIGRATIONS: readonly string[] = [
     content TEXT NOT NULL,
     PRIMARY KEY (workspace_id, period)
   );
+  -- The model a seller actually served, which a router picks: statements list purchases by it. Copied
+  -- from the request log while it still has it (spend can reach the ledger before the response names it).
+  ALTER TABLE ledger_entries ADD COLUMN served_model TEXT;
+  UPDATE ledger_entries SET served_model = (SELECT served_model FROM gateway_requests WHERE tag = ledger_entries.request_tag)
+    WHERE routing_fee = 0 AND request_tag IS NOT NULL;
   `,
 ]
