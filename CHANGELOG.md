@@ -111,6 +111,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Seller alerts: a failed recovery ("back") or a held alert whose resend came due while a newer event for the same incident was still being journaled is now cancelled by that event, instead of going out after it (a stale "back" during a new outage).
 - Gateway console: the Overview's low-balance warning and runway now count USDC waiting in the workspace wallet (a pending deposit, or USDC held back at the credit limit that tops the credits up as they are spent), so a workspace with funds in its wallet is no longer told its balance is about to run out. The warning names both amounts.
 - `@antseed/ant-agent`: `AntAgentProvider` now forwards `serviceCapabilities` from the inner provider, so agent-wrapped services announce their configured capabilities (previously only pricing and categories were announced).
 - `@antseed/ant-agent`: `AntAgentProvider` also forwards the wrapped provider's `serviceUnitBillingModels`, so sellers running an agent announce their per-unit (image, video, per-request) billing models instead of none.
