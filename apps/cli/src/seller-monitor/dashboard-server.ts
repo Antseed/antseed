@@ -10,6 +10,9 @@ import { createConsoleApi } from '../gateway/console-api/server.js'
 import type { MeResponse } from '../gateway/console-api/types.js'
 import type { GatewayStore } from '../gateway/store.js'
 import { sellerRouteRegistrar, type SellerRouteOptions } from './routes.js'
+import { createSellerUpdates } from './updates.js'
+import { registerUpdateRoutes } from '../gateway/console-api/handlers/update.js'
+import type { GatewayUpdates } from '../gateway/updates.js'
 import type { NetworkLoad } from './network.js'
 import type { VerificationChecks } from './promote.js'
 import type { SellerRestartOption } from './service.js'
@@ -31,6 +34,8 @@ export interface SellerDashboardOptions {
   standing?: SellerRouteOptions['standing']
   explorerUrl?: SellerRouteOptions['explorerUrl']
   verificationChecks?: VerificationChecks
+  /** Update checks (tests pass their own). */
+  updates?: GatewayUpdates
   /** The link token to keep (48 hex characters), so sessions and the link survive a restart; a fresh one otherwise. */
   token?: string
   /** Restart from the dashboard (the one `seller start` serves). */
@@ -135,8 +140,11 @@ export async function startSellerDashboard(options: SellerDashboardOptions): Pro
     version: options.version,
     now: () => Date.now(),
     log,
+    // The gateway's update check and routes, shown but never installed from here (see sellerUpdates).
+    // No log: `seller start` already announces new versions.
+    updates: options.updates ?? createSellerUpdates({ dataDir: options.dataDir, current: options.version }),
   }
-  const api = createConsoleApi(deps, auth, [sellerRouteRegistrar({
+  const api = createConsoleApi(deps, auth, [registerUpdateRoutes, sellerRouteRegistrar({
     ...(options.network ? { network: () => options.network } : {}),
     ...(options.standing ? { standing: options.standing } : {}),
     ...(options.explorerUrl ? { explorerUrl: options.explorerUrl } : {}),
@@ -184,6 +192,7 @@ export async function startSellerDashboard(options: SellerDashboardOptions): Pro
       // Stop listening and drop open connections, so a stalled request never holds up the caller (a stopping seller).
       const closed = new Promise<void>((resolve) => server.close(() => resolve()))
       server.closeAllConnections()
+      deps.updates?.stop()
       return closed
     },
   }

@@ -34,6 +34,8 @@ The dashboard has:
 - **Payments**: settled and delivered USDC and channel counts from the local channel ledger.
 - **Market**, **Reputation**, **Promote** and **Settings** pages: see below.
 
+When a newer Antseed is out, a line at the top says so and how this seller updates: the command for how it was installed (for example `npm install -g @antseed/cli@latest`), then restart the seller; in a container, deploy an image with the new `@antseed/cli`. The dashboard never installs it. **Dismiss** hides it until the next version.
+
 ![The seller dashboard: requests, revenue, active channels and gas today, requests per day, and model health with a withdrawn model](/img/docs/seller/status.webp)
 
 It listens on `127.0.0.1:3120` by default (`--port`, `--host`). The URL it prints carries a session token: anyone with the URL can see the seller's earnings and change its alerts and settings, so treat it like a password.

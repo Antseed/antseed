@@ -76,8 +76,14 @@ jobs:
           pnpm --filter=@antseed/cli run build
           pnpm --filter=@antseed/network-stats run build
 
+      # e2e runs after everything else, as in ci.yml: it builds packages/node and
+      # apps/cli (e2e/global-setup.ts), and a rebuild while the CLI tests import
+      # those dist/ files fails them with "does not provide an export named …".
       - name: Test
-        run: pnpm -r run test
+        run: pnpm -r --filter '!@antseed/e2e' run test
+
+      - name: Test (e2e)
+        run: pnpm --filter '@antseed/e2e' run test
 
       # --no-git-checks: the bake step dirties the working tree on purpose.
       # Private packages (e.g. @antseed/ui) are skipped automatically.

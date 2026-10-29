@@ -497,30 +497,38 @@ test('an alert held by the cooldown goes out with the latest news of its inciden
 });
 
 test('a recovery that fails while a new outage waits behind it is not resent', async () => {
-  const dataDir = mkdtempSync(join(tmpdir(), 'seller-alerts-'));
-  const texts: string[] = [];
-  let release!: () => void;
-  let stall = false;
-  const alerts = new SellerAlerts({
-    dataDir, config: { webhook: { url: 'https://hooks.example/x' }, cooldownMinutes: 30 }, sellerName: 'S', env: {}, retryMs: 5,
-    fetch: (async (_url: string, init: RequestInit) => {
-      texts.push(String(JSON.parse(String(init.body)).text).split(': ')[1]!.split('\n')[0]!);
-      if (!stall) return new Response('{}', { status: 200 });
-      await new Promise<void>((resolve) => { release = resolve; });
-      return new Response('{}', { status: 500 });
-    }) as typeof fetch,
-  });
-  await alerts.record(down);
-  stall = true;
-  const recovering = alerts.record(up);
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  const outage = alerts.record(down);
-  stall = false;
-  release();
-  await Promise.all([recovering, outage]);
-  await new Promise((resolve) => setTimeout(resolve, 40));
-  assert.deepEqual(texts, ['glm-5.3 withdrawn', 'glm-5.3 back'], 'no stale "back" resend during the new outage');
-  alerts.close();
+  // The resend comes due while the outage's journal write runs; a few rounds make that race likely.
+  for (let round = 0; round < 10; round++) {
+    const dataDir = mkdtempSync(join(tmpdir(), 'seller-alerts-'));
+    const texts: string[] = [];
+    let release!: () => void;
+    let sending!: () => void;
+    // Resolves once the recovery's send is in flight: its journal write can take a while on a busy machine.
+    const inFlight = new Promise<void>((resolve) => { sending = resolve; });
+    let stall = false;
+    const alerts = new SellerAlerts({
+      dataDir, config: { webhook: { url: 'https://hooks.example/x' }, cooldownMinutes: 30 }, sellerName: 'S', env: {}, retryMs: 1,
+      fetch: (async (_url: string, init: RequestInit) => {
+        texts.push(String(JSON.parse(String(init.body)).text).split(': ')[1]!.split('\n')[0]!);
+        if (!stall) return new Response('{}', { status: 200 });
+        const stalled = new Promise<void>((resolve) => { release = resolve; });
+        sending();
+        await stalled;
+        return new Response('{}', { status: 500 });
+      }) as typeof fetch,
+    });
+    await alerts.record(down);
+    stall = true;
+    const recovering = alerts.record(up);
+    await inFlight;
+    const outage = alerts.record(down);
+    stall = false;
+    release();
+    await Promise.all([recovering, outage]);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(texts, ['glm-5.3 withdrawn', 'glm-5.3 back'], `no stale "back" resend during the new outage (round ${round})`);
+    alerts.close();
+  }
 });
 
 test('malformed fields in the hand-editable overrides file are ignored', async () => {

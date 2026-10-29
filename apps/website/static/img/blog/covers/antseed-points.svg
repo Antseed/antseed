@@ -1,0 +1,39 @@
+<svg width="800" height="450" viewBox="0 0 800 450" fill="none" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<pattern id="dg" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="1.5" cy="1.5" r="1.3" fill="rgba(0,30,18,0.06)"/></pattern>
+<radialGradient id="glow" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="rgba(16,185,129,0.14)"/><stop offset="1" stop-color="rgba(16,185,129,0)"/></radialGradient>
+<g id="coin">
+<circle r="22" fill="#F2C46D"/>
+<circle r="15" stroke="#C99A3E" stroke-width="3"/>
+</g>
+</defs>
+<rect width="800" height="450" fill="#F4F5F4"/>
+<rect width="800" height="450" fill="url(#dg)"/>
+<ellipse cx="400" cy="225" rx="300" ry="185" fill="url(#glow)"/>
+
+<g transform="translate(400 225) scale(1.15) translate(-400 -225)">
+<!-- Weekly rewards: bars that step up towards the ant -->
+<rect x="196" y="262" width="26" height="46" rx="6" fill="rgba(16,185,129,0.22)"/>
+<rect x="234" y="240" width="26" height="68" rx="6" fill="rgba(16,185,129,0.32)"/>
+<rect x="540" y="218" width="26" height="90" rx="6" fill="rgba(16,185,129,0.45)"/>
+<rect x="578" y="190" width="26" height="118" rx="6" fill="#10B981"/>
+
+<!-- ANTS coins rising -->
+<use href="#coin" x="626" y="136"/>
+<use href="#coin" x="586" y="108" transform="scale(1)" opacity="0.85"/>
+<use href="#coin" x="182" y="214" opacity="0.7"/>
+
+<!-- The Points ant on its green disc -->
+<circle cx="400" cy="225" r="118" fill="#10B981"/>
+<circle cx="400" cy="225" r="118" stroke="rgba(0,30,18,0.08)" stroke-width="2"/>
+<g transform="translate(315.5,173) scale(13)" shape-rendering="crispEdges">
+<rect x="5" y="-2" width="3" height="1.4" fill="#F2C46D"/>
+<path d="M2 0h1v1h-1zM10 0h1v1h-1zM3 1h1v1h-1zM9 1h1v1h-1zM4 2h5v1h-5zM3 3h7v1h-7zM2 4h9v1h-9zM2 5h2v1h-2zM5 5h3v1h-3zM9 5h2v1h-2zM2 6h2v1h-2zM5 6h3v1h-3zM9 6h2v1h-2zM2 7h9v1h-9zM2 8h9v1h-9zM3 9h7v1h-7zM4 10h5v1h-5z" fill="#001E12"/>
+<path d="M4 5h1v1h-1zM8 5h1v1h-1zM4 6h1v1h-1zM8 6h1v1h-1z" fill="#10B981"/>
+</g>
+
+<!-- Sparkles -->
+<path d="M262 132 l5 13 13 5 -13 5 -5 13 -5 -13 -13 -5 13 -5z" fill="#001E12"/>
+<path d="M534 330 l3.5 9 9 3.5 -9 3.5 -3.5 9 -3.5 -9 -9 -3.5 9 -3.5z" fill="#001E12" opacity="0.7"/>
+</g>
+</svg>
