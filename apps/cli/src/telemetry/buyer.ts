@@ -3,17 +3,18 @@
  * lands, and one `buyer_request_finished` per proxied model request, the same whichever host runs the buyer (the
  * desktop, the gateway or `antseed buyer start` alone). This is where all
  * usage and reliability data comes from; hosts report only their own UI.
- * Only enums, buckets and counts leave the process, plus (approved, so cache
- * and failure rates can be measured per seller) the public peer id of the
- * seller that handled the request and the exact input and cached token counts
- * the seller reported.
+ * Each seller the request was sent to also gets one `buyer_seller_attempt`
+ * with that attempt's result, so failure rates can be measured per seller.
+ * Only enums, buckets and counts leave the process, plus the public peer ids
+ * of the sellers tried, the exact token counts the seller reported, exact
+ * timings and a listed-price cost estimate.
  *
  * The proxy tracks each request through a `RequestTrace`, found by its
  * `ServerResponse`, so the dispatch code needs no extra parameters.
  */
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import type { ServerResponse } from 'node:http'
-import { modelMetadataFor } from '@antseed/node/model-metadata'
+import { registeredModelIdFor } from '@antseed/node/model-metadata'
 import {
   PUBLIC_MODEL_ID_PATTERN,
   TELEMETRY_HOST_ENV,
@@ -64,13 +65,41 @@ export type FinishReason = 'stop' | 'length' | 'tool_call' | 'content_filter' | 
 
 /** Raw failure text read for classification; never sent. */
 const MAX_FAILURE_TEXT = 2_048
+/**
+ * At most this many `buyer_seller_attempt` events per request: past it, the
+ * first 9 and the final attempt, so the seller that answered is always sent.
+ */
+export const MAX_ATTEMPT_EVENTS = 10
+/** Attempt numbers are real positions, capped here (the catalog's range). */
+const MAX_ATTEMPT_NUMBER = 1_000
 
+/** Why one seller attempt did not answer: the request taxonomy, plus an answer with no text or tool call. */
+export type AttemptFailureReason = FailureReason | 'empty_answer'
+
+/** What `_dispatchToPeer` returned for one attempt (the proxy's own result type, structurally). */
+export type AttemptResultInput =
+  | { done: true; emptyAnswer?: boolean; interrupted?: 'seller' | 'buyer' | 'cancelled' }
+  | { done: false; statusCode: number; responseBody: Buffer; errorMessage: string | null; emptyAnswer?: boolean; timedOut?: boolean }
+
+type AttemptRecord = {
+  seller: string
+  tier: SellerTier
+  startedAtMs: number
+  endedAtMs: number | null
+  firstByteAtMs: number | null
+  streamed: boolean
+  result: { outcome: RequestOutcome; failureReason: AttemptFailureReason; httpStatus?: number; emptyAnswer: boolean } | null
+}
+
+/**
+ * The model's one reviewed registry id, so every spelling of a model counts
+ * as the same model (`anthropic/claude-opus-4-6` and `claude-opus-4.6` are
+ * both `claude-opus-4.6`) and nothing the client typed is sent as is.
+ */
 export function publicModelId(serviceId: string | null): string {
   if (!serviceId) return 'custom_or_unknown'
-  const normalized = serviceId.trim().toLowerCase()
-  return modelMetadataFor(serviceId) !== null && PUBLIC_MODEL_ID_PATTERN.test(normalized)
-    ? normalized
-    : 'custom_or_unknown'
+  const registered = registeredModelIdFor(serviceId)?.toLowerCase()
+  return registered && PUBLIC_MODEL_ID_PATTERN.test(registered) ? registered : 'custom_or_unknown'
 }
 
 export function telemetryProtocol(protocol: string | null, isVideo: boolean): string {
@@ -112,6 +141,10 @@ export class RequestTrace {
   clientTool = 'none'
   attempts = 0
   readonly sellers = new Set<string>()
+  /** Random, per request: joins its `buyer_seller_attempt` events to its `buyer_request_finished`. */
+  readonly requestId: string = randomUUID()
+  /** Every seller attempt, in order, with its own result. */
+  private readonly attemptLog: AttemptRecord[] = []
   sellerTier: SellerTier = 'unknown'
   firstByteAtMs: number | null = null
   streamed = false
@@ -160,6 +193,16 @@ export class RequestTrace {
     this.attempts += 1
     this.lastSeller = peerId.toLowerCase()
     this.sellers.add(this.lastSeller)
+    this._closeOpenAttempt(atMs, null)
+    this.attemptLog.push({
+      seller: this.lastSeller,
+      tier: this.sellerTier,
+      startedAtMs: atMs,
+      endedAtMs: null,
+      firstByteAtMs: null,
+      streamed: false,
+      result: null,
+    })
     // A later attempt answers for itself: an earlier seller's error reply is
     // not this answer's first byte, and its usage and finish are not this one's.
     this.firstByteAtMs = null
@@ -167,6 +210,57 @@ export class RequestTrace {
     this.usage = null
     this.finishReason = null
     this.estimatedCostMicroUsd = null
+  }
+
+  /**
+   * The result of the attempt now running, as the proxy's dispatch returned
+   * it. `statusCode` is what the client was sent (for an answer written
+   * directly). Ignored once the request has finished.
+   */
+  noteAttemptResult(result: AttemptResultInput, statusCode: number, atMs: number): void {
+    const current = this.attemptLog.at(-1)
+    if (this.finished || !current || current.result) return
+    const hadOutput = this.firstByteAtMs !== null
+    const context = { hadPartialOutput: hadOutput, peersDiscoveredAtSend: this.peersKnownAtSend, freeSellersKnown: this.freeSellersKnown }
+    let outcome: RequestOutcome = 'failed'
+    let failureReason: AttemptFailureReason = 'none'
+    let httpStatus: number | undefined
+    const emptyAnswer = result.emptyAnswer === true
+    if (result.done) {
+      if (result.interrupted === 'cancelled') {
+        outcome = 'cancelled'
+      } else if (result.interrupted === 'seller') {
+        failureReason = hadOutput ? 'seller_dropped_mid_answer' : 'seller_dropped_before_output'
+      } else if (result.interrupted === 'buyer') {
+        failureReason = 'local_error'
+      } else if (statusCode >= 400) {
+        const signal = { kind: 'http_error', statusCode }
+        failureReason = classifyFailureReason(signal, '', context)
+        httpStatus = statusCode
+      } else {
+        // An empty answer that was sent anyway is still the answer; `empty_answer` marks it.
+        outcome = 'success'
+      }
+    } else if (emptyAnswer) {
+      failureReason = 'empty_answer'
+    } else {
+      const text = (result.errorMessage ?? result.responseBody.subarray(0, MAX_FAILURE_TEXT).toString('utf8'))
+      const signal = { kind: result.timedOut ? 'timeout' : result.errorMessage !== null ? 'network_error' : 'http_error', statusCode: result.statusCode }
+      const failureText = `${result.statusCode} ${text}`.slice(0, MAX_FAILURE_TEXT)
+      failureReason = classifyFailureReason(signal, failureText, context)
+      httpStatus = failureHttpStatus(signal, failureText)
+    }
+    this._closeOpenAttempt(atMs, { outcome, failureReason, ...(httpStatus !== undefined ? { httpStatus } : {}), emptyAnswer })
+  }
+
+  /** Ends the running attempt; with no result given, it failed in a way the proxy did not report. */
+  private _closeOpenAttempt(atMs: number, result: AttemptRecord['result']): void {
+    const current = this.attemptLog.at(-1)
+    if (!current || current.result) return
+    current.endedAtMs = atMs
+    current.firstByteAtMs = this.firstByteAtMs
+    current.streamed = this.streamed
+    current.result = result ?? { outcome: 'failed', failureReason: 'unknown', emptyAnswer: false }
   }
 
   noteUsage(usage: { inputTokens: number; cachedInputTokens: number; outputTokens?: number; source: 'usage' | 'estimated' }): void {
@@ -194,6 +288,11 @@ export class RequestTrace {
     if (this.previousSeller === this.lastSeller) return { choice: 'kept_previous', reason: null }
     const reason = this.sellers.has(this.previousSeller) ? 'previous_failed' : this.previousSkipped ?? 'other'
     return { choice: 'switched', reason }
+  }
+
+  /** The attempts so far, in order (read-only copies). */
+  attemptRecords(): ReadonlyArray<Readonly<AttemptRecord>> {
+    return this.attemptLog.map((attempt) => ({ ...attempt }))
   }
 
   noteFirstByte(atMs: number): void {
@@ -243,12 +342,21 @@ export class RequestTrace {
         httpStatus = failureHttpStatus(signal, this.failureText)
       }
     }
+    // An attempt still open when the request ended (the client hung up, or
+    // the proxy wrote the answer before reporting it) took the request's result.
+    this._closeOpenAttempt(nowMs, {
+      outcome,
+      failureReason,
+      ...(httpStatus !== undefined ? { httpStatus } : {}),
+      emptyAnswer: false,
+    })
     const { choice, reason } = this._sellerChoice(outcome)
     const usage = outcome === 'success' ? this.usage : null
     const ttftMs = this.firstByteAtMs === null ? null : Math.max(0, this.firstByteAtMs - this.startedAtMs)
     const sellerTtftMs = this.firstByteAtMs === null ? null : Math.max(0, this.firstByteAtMs - this.attemptStartedAtMs)
     const durationMs = Math.max(0, nowMs - this.startedAtMs)
     return {
+      request_id: this.requestId,
       protocol: this.protocol,
       ...(this.videoAction ? { video_action: this.videoAction } : {}),
       public_model_id: publicModelId(this.model),
@@ -291,6 +399,43 @@ export class RequestTrace {
       ...(outcome === 'success' && this.finishReason ? { finish_reason: this.finishReason } : {}),
     }
   }
+}
+
+/**
+ * One `buyer_seller_attempt` per seller attempt of a finished request, in
+ * order: which seller, and how that attempt went, so failure rates, speed
+ * and fallbacks can be measured per seller, not only for the seller that
+ * answered. Empty until `finish` has run.
+ */
+export function attemptEventProperties(trace: RequestTrace): Array<Record<string, unknown>> {
+  const records = trace.attemptRecords().map((attempt, index) => ({ attempt, number: index + 1 }))
+  // Past the cap, the first attempts and the final one: the final attempt
+  // holds the request's result (often the seller that answered), so it is never dropped.
+  const sent = records.length <= MAX_ATTEMPT_EVENTS
+    ? records
+    : [...records.slice(0, MAX_ATTEMPT_EVENTS - 1), records[records.length - 1]!]
+  return sent.flatMap(({ attempt, number }) => {
+    if (!attempt.result || !SELLER_ID_PATTERN.test(attempt.seller)) return []
+    const endedAtMs = attempt.endedAtMs ?? attempt.startedAtMs
+    return [{
+      request_id: trace.requestId,
+      attempt_number: Math.min(number, MAX_ATTEMPT_NUMBER),
+      seller_id: attempt.seller,
+      seller_tier: attempt.tier,
+      protocol: trace.protocol,
+      public_model_id: publicModelId(trace.model),
+      route_mode: trace.routeMode,
+      client_tool: trace.clientTool,
+      routing_version: ROUTING_VERSION,
+      outcome: attempt.result.outcome,
+      failure_reason: attempt.result.failureReason,
+      ...(attempt.result.httpStatus !== undefined ? { http_status: attempt.result.httpStatus } : {}),
+      empty_answer: attempt.result.emptyAnswer,
+      streamed: attempt.streamed,
+      duration_ms: Math.round(Math.max(0, endedAtMs - attempt.startedAtMs)),
+      ...(attempt.firstByteAtMs !== null ? { seller_ttft_ms: Math.round(Math.max(0, attempt.firstByteAtMs - attempt.startedAtMs)) } : {}),
+    }]
+  })
 }
 
 function turnBucket(turn: number): string {
@@ -495,6 +640,9 @@ export class BuyerTelemetry {
           this._conversations.answered(trace.conversationKey, trace.lastSeller)
         }
         if (trace.requestFingerprint) this._retries.finished(trace.requestFingerprint, props['outcome'] === 'success', this._now())
+        if (this._enabled) {
+          for (const attempt of attemptEventProperties(trace)) this._client.capture('buyer_seller_attempt', attempt)
+        }
         this._record(props)
       } catch {
         // Dropped: this request goes unreported.

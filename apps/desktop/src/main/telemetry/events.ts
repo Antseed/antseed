@@ -16,7 +16,7 @@
  */
 
 import type { TelemetryActionSurface, TelemetryAppName, TelemetryUserAction } from '../../shared/telemetry.js';
-import { modelMetadataFor } from '@antseed/node/model-metadata';
+import { registeredModelIdFor } from '@antseed/node/model-metadata';
 
 /** 2: adds `product`, shared with the CLI, buyer and gateway (docs/telemetry.md). */
 export const TELEMETRY_SCHEMA_VERSION = 2;
@@ -558,13 +558,15 @@ export function httpStatusBucket(statusCode?: number): HttpStatusBucket {
 
 const PUBLIC_MODEL_ID_PATTERN = /^[a-z0-9][a-z0-9._:/-]{0,63}$/;
 
+/**
+ * The model's one reviewed registry id, so every spelling of a model counts
+ * as the same model and joins the buyer's events for it; nothing the seller
+ * or user typed is sent as is.
+ */
 export function publicModelId(serviceId: string, isCurrentlyAdvertised: boolean): string {
-  const normalized = serviceId.trim().toLowerCase();
-  return isCurrentlyAdvertised
-    && modelMetadataFor(serviceId) !== null
-    && PUBLIC_MODEL_ID_PATTERN.test(normalized)
-    ? normalized
-    : 'custom_or_unknown';
+  if (!isCurrentlyAdvertised) return 'custom_or_unknown';
+  const registered = registeredModelIdFor(serviceId)?.toLowerCase();
+  return registered && PUBLIC_MODEL_ID_PATTERN.test(registered) ? registered : 'custom_or_unknown';
 }
 
 type ModelOfferPricing = {

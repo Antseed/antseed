@@ -8,13 +8,14 @@ import test, { type TestContext } from 'node:test'
 import type { PeerInfo } from '@antseed/node'
 import type { PostHogEvent } from '@antseed/telemetry'
 import { BuyerProxy } from '../proxy/buyer-proxy.js'
-import { BuyerTelemetry, ConversationMemory, RequestTrace, RetryMemory, publicModelId, telemetryClientTool } from './buyer.js'
+import { BuyerTelemetry, ConversationMemory, MAX_ATTEMPT_EVENTS, RequestTrace, RetryMemory, attemptEventProperties, publicModelId, telemetryClientTool } from './buyer.js'
 import { finishReasonFromBody } from './finish-reason.js'
-import { CLIENT_TOOLS } from './catalog.js'
+import { CLIENT_TOOLS, CLI_EVENT_CATALOG } from './catalog.js'
+import { sanitizeEventProperties } from '@antseed/telemetry'
 import { DEFAULT_APP_PROFILES } from '@antseed/connected-apps/defaults'
 import { GatewayTelemetry, gatewayStepForAudit } from './gateway.js'
 import { GatewayStore } from '../gateway/store.js'
-import { readConfiguredTelemetry, resolveCliConsent, writeConfiguredTelemetry } from './settings.js'
+import { posthogConfig, readConfiguredTelemetry, resolveCliConsent, writeConfiguredTelemetry } from './settings.js'
 import { createProgram } from '../cli/program.js'
 
 const WALLET = '0x1111111111111111111111111111111111111111'
@@ -35,7 +36,12 @@ function capture(): { events: PostHogEvent[]; sender: (batch: PostHogEvent[]) =>
 test('consent: default on when configured; config opt-out, DO_NOT_TRACK and CI turn it off', async (t) => {
   const dir = await tempDir(t)
   const configPath = join(dir, 'config.json')
-  assert.equal(resolveCliConsent(configPath, {}).enabled, false, 'source builds bake no project')
+  // A release build bakes the project in, so without one in the env this depends on the build.
+  if (posthogConfig({}) === null) {
+    assert.equal(resolveCliConsent(configPath, {}).enabled, false, 'a source build bakes no project')
+  } else {
+    assert.equal(resolveCliConsent(configPath, {}).enabled, true, 'a release build is configured by its baked project')
+  }
   assert.equal(resolveCliConsent(configPath, CONFIGURED).enabled, true)
   assert.equal(resolveCliConsent(configPath, { ...CONFIGURED, DO_NOT_TRACK: '1' }).enabled, false)
   assert.equal(resolveCliConsent(configPath, { ...CONFIGURED, ANTSEED_TELEMETRY: '0' }).enabled, false)
@@ -88,13 +94,27 @@ test('request trace: failure taxonomy, fallbacks and buckets', () => {
   assert.equal(props['fell_back'], true)
   assert.equal(props['public_model_id'], 'gpt-5')
   assert.equal(props['seller_id'], '2'.repeat(40), 'the seller of the final attempt')
-  assert.equal(JSON.stringify(props).includes(SECRET_PEER), false, 'never an earlier seller, nor the error text')
+  assert.equal(JSON.stringify(props).includes(SECRET_PEER), false, 'the request event names only its final seller, and never the error text')
+  // Every seller tried is reported on its own attempt event, with its own result.
+  const attempts = attemptEventProperties(trace)
+  assert.equal(attempts.length, 2)
+  assert.deepEqual(attempts.map((attempt) => attempt['seller_id']), [SECRET_PEER, '2'.repeat(40)])
+  assert.deepEqual(attempts.map((attempt) => attempt['attempt_number']), [1, 2])
+  assert.equal(attempts[0]!['outcome'], 'failed')
+  assert.equal(attempts[0]!['failure_reason'], 'unknown', 'an attempt the proxy did not report a result for')
+  assert.equal(attempts[1]!['failure_reason'], 'seller_unreachable', 'the last attempt takes the request\'s result')
+  assert.equal(attempts[0]!['request_id'], props['request_id'])
+  assert.equal(JSON.stringify(attempts).includes('P2P request failed'), false, 'never the error text')
   assert.equal(props['seller_choice'], 'no_conversation')
   assert.equal(props['conversation_key_source'], 'none')
   assert.equal('turn_bucket' in props, false)
   assert.equal(trace.finish(502, false, 5_000), null, 'reported once')
 
   assert.equal(publicModelId('my-private-finetune-xyz'), 'custom_or_unknown')
+  // One name per model, whatever spelling or vendor path the client sent.
+  assert.equal(publicModelId('anthropic/claude-opus-4-6'), 'claude-opus-4.6')
+  assert.equal(publicModelId('acme-secret-corp/claude-opus-4-6'), 'claude-opus-4.6', 'a made-up vendor path is never sent')
+  assert.equal(publicModelId('Claude-Opus-4.6-latest'), 'claude-opus-4.6')
   assert.equal(telemetryClientTool('claude-code'), 'claude-code')
   assert.equal(telemetryClientTool('my-secret-tool'), 'custom')
   // Each Codex app names itself differently; all of them are Codex.
@@ -570,6 +590,66 @@ test('after a fallback, time to first byte is the answering seller\'s, not the f
   assert.ok((props['seller_ttft_ms'] as number) >= 200 && (props['seller_ttft_ms'] as number) <= (props['ttft_ms'] as number))
   assert.ok((props['failed_attempts_ms'] as number) >= 20, 'the failed seller\'s time is counted')
   assert.equal(props['routing_version'], 'v1')
+  // Both sellers are reported, each with its own result, so the failed one counts against it.
+  const attempts = events.filter((event) => event.event === 'buyer_seller_attempt').map((event) => event.properties)
+  assert.equal(attempts.length, 2)
+  assert.deepEqual(attempts.map((attempt) => attempt['request_id']), [props['request_id'], props['request_id']])
+  assert.equal(attempts[0]!['seller_id'], failing.peerId)
+  assert.equal(attempts[0]!['outcome'], 'failed')
+  assert.equal(attempts[0]!['failure_reason'], 'seller_5xx')
+  assert.equal(attempts[0]!['http_status'], 503)
+  assert.ok((attempts[0]!['duration_ms'] as number) >= 20)
+  assert.equal('seller_ttft_ms' in attempts[0]!, false, 'an error reply is not output')
+  assert.equal(attempts[1]!['seller_id'], answering.peerId)
+  assert.equal(attempts[1]!['outcome'], 'success')
+  assert.equal(attempts[1]!['failure_reason'], 'none')
+  assert.equal(attempts[1]!['attempt_number'], 2)
+  assert.ok((attempts[1]!['seller_ttft_ms'] as number) >= 200)
+  assert.equal(attempts[1]!['public_model_id'], 'gpt-5')
+})
+
+test('buyer_seller_attempt: one per attempt, capped, and only catalog values', () => {
+  const trace = new RequestTrace(0, true)
+  trace.model = 'gpt-5'
+  for (let index = 0; index < MAX_ATTEMPT_EVENTS + 3; index += 1) {
+    trace.noteAttempt(SECRET_PEER, index * 10)
+    trace.noteAttemptResult({ done: false, statusCode: 429, responseBody: Buffer.from('busy'), errorMessage: null }, 0, index * 10 + 5)
+  }
+  // The seller that finally answered, after more attempts than the cap.
+  trace.noteAttempt('2'.repeat(40), 500)
+  trace.noteAttemptResult({ done: true }, 200, 520)
+  trace.finish(200, false, 600)
+  const attempts = attemptEventProperties(trace)
+  assert.equal(attempts.length, MAX_ATTEMPT_EVENTS)
+  assert.equal(attempts[0]!['failure_reason'], 'rate_limited')
+  assert.equal(attempts[0]!['duration_ms'], 5)
+  const last = attempts.at(-1)!
+  assert.equal(last['seller_id'], '2'.repeat(40), 'the answering attempt is never dropped by the cap')
+  assert.equal(last['outcome'], 'success')
+  assert.equal(last['attempt_number'], MAX_ATTEMPT_EVENTS + 4, 'under its real position')
+  assert.deepEqual(attempts.slice(0, -1).map((attempt) => attempt['attempt_number']), [1, 2, 3, 4, 5, 6, 7, 8, 9])
+  for (const attempt of attempts) {
+    assert.deepEqual(sanitizeEventProperties(CLI_EVENT_CATALOG, 'buyer_seller_attempt', attempt), attempt, 'nothing dropped by the sanitizer')
+  }
+
+  const empty = new RequestTrace(0, true)
+  empty.noteAttempt(SECRET_PEER, 0)
+  empty.noteAttemptResult({ done: false, statusCode: 200, responseBody: Buffer.from('{}'), errorMessage: null, emptyAnswer: true }, 0, 10)
+  empty.noteAttempt('2'.repeat(40), 10)
+  empty.noteAttemptResult({ done: true }, 200, 30)
+  empty.finish(200, false, 30)
+  const [held, answered] = attemptEventProperties(empty)
+  assert.equal(held!['failure_reason'], 'empty_answer')
+  assert.equal(held!['empty_answer'], true)
+  assert.equal(answered!['outcome'], 'success')
+  assert.deepEqual(sanitizeEventProperties(CLI_EVENT_CATALOG, 'buyer_seller_attempt', held!), held)
+
+  const cancelled = new RequestTrace(0, true)
+  cancelled.noteAttempt(SECRET_PEER, 0)
+  cancelled.noteAttemptResult({ done: true, interrupted: 'cancelled' }, 499, 10)
+  cancelled.finish(499, true, 10)
+  assert.equal(attemptEventProperties(cancelled)[0]!['outcome'], 'cancelled')
+  assert.equal(attemptEventProperties(new RequestTrace(0, true)).length, 0, 'no attempt, no event')
 })
 
 test('the client stopping a streamed answer midway is cancelled, not success, and sends no token counts', async (t) => {

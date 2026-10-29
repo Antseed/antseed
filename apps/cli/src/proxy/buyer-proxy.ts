@@ -4585,6 +4585,7 @@ export class BuyerProxy {
               ? this._attemptTimeoutMs(selected === explored ? candidates[index + 1]! : selected, selected.request)
               : null,
           )
+          trace?.noteAttemptResult(result, res.statusCode, Date.now())
           if (result.done) {
             if (trace && result.interrupted) trace.interrupted = result.interrupted
             // A stream that broke after its headers proves nothing for the
@@ -4866,6 +4867,7 @@ export class BuyerProxy {
       false,
       routingConversationKey,
     )
+    trace?.noteAttemptResult(result, res.statusCode, Date.now())
     if (trace && result.done && result.interrupted) trace.interrupted = result.interrupted
     if (result.done && trackedConversationId && pinnedServiceId) {
       this._conversations.recordRoutedModel(

@@ -35,3 +35,13 @@ test('keeps valid values', () => {
     { outcome: 'failed', model: 'claude-sonnet-4.5', http_status: 502 },
   );
 });
+
+test('a key takes only its declared type', () => {
+  const out = sanitizeEventProperties(catalog, 'demo', {
+    outcome: true,
+    model: 42,
+    http_status: '503 secret upstream text',
+  });
+  assert.deepEqual(out, {}, 'enum and pattern keys take strings only; range keys numbers only');
+  assert.deepEqual(sanitizeEventProperties(catalog, 'demo', { http_status: false }), {});
+});

@@ -1,6 +1,8 @@
 /**
  * The privacy boundary. Every property of every event passes through here:
  * - keys not on the event's allowlist are dropped;
+ * - a key with allowed values or a pattern takes only strings, and a key
+ *   with a range only numbers: a value of another type is dropped;
  * - string values with a validator must be one of its values;
  * - strings without one are truncated to 64 characters (and may be pattern-checked);
  * - numbers are rounded and bounded; booleans pass; anything else is dropped.
@@ -41,6 +43,10 @@ export function sanitizeEventProperties(
   const out: SanitizedProperties = {};
   for (const [key, value] of Object.entries(properties ?? {})) {
     if (!schema.keys.has(key)) continue;
+    const stringOnly = schema.values?.[key] !== undefined || schema.patterns?.[key] !== undefined;
+    const numberOnly = schema.ranges?.[key] !== undefined;
+    if (stringOnly && typeof value !== 'string') continue;
+    if (numberOnly && typeof value !== 'number') continue;
     if (typeof value === 'boolean') {
       out[key] = value;
     } else if (typeof value === 'number') {

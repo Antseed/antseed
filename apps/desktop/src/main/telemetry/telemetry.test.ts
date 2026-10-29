@@ -1001,6 +1001,13 @@ test('sanitizer drops unknown properties and unsupported types', () => {
   assert.deepEqual(sanitized, { is_first_launch: true });
 });
 
+test('sanitizer drops a value of the wrong type for an enum or pattern key', () => {
+  const sanitized = sanitizeTelemetryProperties('chat_request_finished', {
+    ...({ outcome: true, failure_reason: 7, public_model_id: 123, request_id: false, http_status: '503' } as object),
+  } as never);
+  assert.deepEqual(sanitized, {});
+});
+
 test('sanitizer truncates long strings and bounds numbers', () => {
   const sanitized = sanitizeTelemetryProperties('deposit_completed', {
     method_category: 'x'.repeat(500),
@@ -1138,6 +1145,10 @@ test('bucket helpers classify correctly', () => {
   assert.equal(publicModelId('private model name', true), 'custom_or_unknown');
   assert.equal(publicModelId('seller-specific-campaign-abc123', true), 'custom_or_unknown');
   assert.equal(publicModelId('deepseek-v4-flash', false), 'custom_or_unknown');
+  // Every spelling is one model, and a made-up vendor path is never sent.
+  assert.equal(publicModelId('anthropic/claude-opus-4-6', true), 'claude-opus-4.6');
+  assert.equal(publicModelId('acme-secret-corp/claude-opus-4-6', true), 'claude-opus-4.6');
+  assert.equal(publicModelId('claude-opus-4.6', true), 'claude-opus-4.6');
   assert.deepEqual(modelPricingSnapshot([
     { inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
     { inputUsdPerMillion: 1, outputUsdPerMillion: 2 },

@@ -129,7 +129,7 @@ function Privacy({ settings }: { settings: SettingsData }) {
         <Switch checked={status.enabled} onChange={(next) => save.mutate(next)} disabled={!status.available || save.isPending}
           label="Product telemetry"
           description={status.available
-            ? 'Help improve AntSeed by sharing which setup steps this gateway has reached and request reliability information from its buyer (including token counts, timings, estimated cost and the seller that answered), linked to its public on-chain address. Prompts, messages, keys, members, names and balances are never collected.'
+            ? 'Help improve Antseed by sharing which setup steps this gateway has reached and request reliability information from its buyer (including token counts, timings, estimated cost and the seller that answered), linked to its public on-chain address. Prompts, messages, keys, members, names and balances are never collected.'
             : 'Telemetry is unavailable in this build or has been disabled by configuration.'} />
         <div><a href={TELEMETRY_DOC_URL} target="_blank" rel="noreferrer">Review every event and privacy control</a></div>
         {save.error ? <ErrorAlert error={save.error} title="Could not save" /> : null}

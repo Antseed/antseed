@@ -1,6 +1,6 @@
-# AntSeed Telemetry
+# Antseed Telemetry
 
-AntSeed collects privacy-conscious product telemetry from three places, all
+Antseed collects privacy-conscious product telemetry from three places, all
 sent to one PostHog project:
 
 | `product` | What it is | Default |
@@ -137,12 +137,14 @@ Every event, from every product, includes this envelope:
     balance has not been read yet.
   - Which sellers were tried, whether the request fell back and the seller's
     tier are not sent here. The buyer the desktop runs reports them exactly
-    on `buyer_request_finished` (same wallet and `host_session_id`), because
-    only the proxy sees every attempt.
+    on `buyer_request_finished` and one `buyer_seller_attempt` per seller
+    tried (same wallet and `host_session_id`), because only the proxy sees
+    every attempt.
   - `ttft_bucket` (`none`, `under_1s`, `1_3s`, `3_10s`, `over_10s`): time to the
     first streamed token of the final attempt.
   - The desktop sends no seller identifier. The seller that handled a request
-    is `seller_id` on the buyer's `buyer_request_finished`.
+    is `seller_id` on the buyer's `buyer_request_finished`, and every seller
+    tried is on the buyer's `buyer_seller_attempt`.
 - `startup_finished` — once per launch. `outcome` is `success` when the first
   model is shown, or `failed` when no model is shown within 3 minutes.
   `failure_stage` (`none`, `runtime`, `dht`, `peer_search`, `models`) is the
@@ -192,8 +194,8 @@ Every event, from every product, includes this envelope:
   - `video_action`, on video requests only: `create` (starting a job) or
     `retrieve` (a status poll or the download). A job is one `create` and
     then `retrieve` calls until it is done, so count jobs by `create`.
-  - `public_model_id`: as on the desktop, a reviewed public model id or
-    `custom_or_unknown`.
+  - `public_model_id`: as on the desktop, the model's id in the reviewed
+    model registry or `custom_or_unknown`.
   - `route_mode`: `auto`, `pinned` (a seller was named) or `router` (a
     routing service chose).
   - `client_tool`: the coding tool, from its own session headers or user
@@ -247,7 +249,10 @@ Every event, from every product, includes this envelope:
     characters) of the seller that answered, or of the last seller tried
     when none did. Sellers are public on the network, and paid buyer–seller
     pairs are public on-chain; it is sent so cache and failure rates can be
-    compared per seller. Only this one seller is sent, never the others tried.
+    compared per seller. Every other seller the request was sent to is on
+    its own `buyer_seller_attempt` event.
+  - `request_id`: a random id for this request, also on its
+    `buyer_seller_attempt` events.
   - `conversation_key_source`: how the proxy grouped the request into a
     conversation. `tool_session` (the tool's own session id), `prompt_cache_key`
     (the client's prompt cache key alone), `prompt_prefix` (a hash of the
@@ -289,6 +294,35 @@ Every event, from every product, includes this envelope:
     response (`stop`, `length` for the output cap, `tool_call`,
     `content_filter`, `refusal`, `other`, or `unknown` when the response does
     not say).
+
+- `buyer_seller_attempt` — one per seller a request was sent to, in order,
+  sent with the request's `buyer_request_finished`. A request that fell back
+  from seller A to seller B sends two: A's failure and B's answer, so every
+  seller's failures count, not only the last one's. At most 10 per request:
+  past that, the first 9 and the final attempt, so the seller that answered
+  is always sent.
+  Properties:
+  - `request_id`: the same random id as the request's `buyer_request_finished`.
+  - `attempt_number`: 1 for the first attempt, then 2, 3… (a rate-limit
+    retry on the same seller is its own attempt); the final attempt keeps
+    its real number when earlier ones were not sent.
+  - `seller_id`: the public peer id of the seller tried, and `seller_tier`
+    (`free`, `paid`, `unknown`).
+  - `protocol`, `public_model_id`, `route_mode`, `client_tool` and
+    `routing_version`, as on the request.
+  - `outcome`: `success` (this seller's answer was the one used), `failed` or
+    `cancelled` (the client hung up during this attempt).
+  - `failure_reason`: the request taxonomy, classified on device from this
+    attempt alone, plus `empty_answer` (the seller answered with no text or
+    tool call and another seller was asked). `none` on success.
+  - `http_status`: this attempt's status (100–599) when it failed with one.
+  - `empty_answer`: the answer had no text or tool call.
+  - `streamed`, `duration_ms` (this attempt, from sending it until it
+    ended) and `seller_ttft_ms` (this seller's time to first byte, omitted
+    when it sent no answer).
+
+  Per-seller failure rate: count `buyer_seller_attempt` by `seller_id` and
+  `outcome` (leave out `cancelled`). Raw errors are never sent.
 
 The buyer remembers each conversation's turn count and last seller in memory
 only (at most 5,000 conversations, the least recent dropped first), so the
@@ -353,8 +387,8 @@ wallet as `distinct_id` (the same one its buyer runs with).
   `buyer_request_finished`)
 - Files, attachment contents, file names, or paths
 - Environment variables, command lines, logs, or stack traces
-- Peer IDs, except `seller_id` on `buyer_request_finished`: the one seller
-  that handled the request
+- Peer IDs, except the public peer ids of the sellers a request was sent
+  to (`seller_id` on `buyer_request_finished` and `buyer_seller_attempt`)
 - Raw provider, model, relayer, RPC, or discovery errors
 - Location, IP-derived fields, session recordings, screenshots, or frontend
   autocapture
@@ -366,10 +400,13 @@ dropped, strings are truncated to 64 characters, numbers are bounded, and
 bucket values are validated.
 
 Failure events use fixed local taxonomies. Error messages are classified on
-device and discarded before the telemetry service is called. Exact model IDs
-are included only when the selected service is currently advertised, exists in
-the release-owned reviewed model registry, and matches a conservative slug
-format; other values become `custom_or_unknown`.
+device and discarded before the telemetry service is called. Model IDs
+are sent only as the model's own id in the release-owned reviewed model
+registry, whatever spelling was asked for (`anthropic/claude-opus-4-6`,
+`claude-opus-4-6` and `Claude-Opus-4.6-latest` are all `claude-opus-4.6`), so
+each model has one name and no text the client or seller typed is sent. The
+desktop also requires the service to be currently advertised. Anything else
+is `custom_or_unknown`.
 
 Network lifecycle events reuse the buyer runtime's structured status signals.
 The desktop does not upload, parse, or derive telemetry properties from its

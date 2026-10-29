@@ -7,6 +7,7 @@ import {
   FAILURE_REASONS,
   HTTP_STATUS_RANGE,
   PUBLIC_MODEL_ID_PATTERN,
+  RANDOM_REQUEST_ID_PATTERN,
   SELLERS_TRIED_BUCKETS,
   SMALL_COUNT_BUCKETS,
   USDC_AMOUNT_BUCKETS,
@@ -48,6 +49,10 @@ export const ROUTING_VERSIONS = set(ROUTING_VERSION)
 /** A video job is one `create`, then `retrieve` calls (status polls and the download) until it is done. */
 export const VIDEO_ACTIONS = set('create', 'retrieve')
 export const FINISH_REASONS = set('stop', 'length', 'tool_call', 'content_filter', 'refusal', 'other', 'unknown')
+/** A seller attempt's result: the request taxonomy, plus an answer with no text or tool call. */
+export const ATTEMPT_FAILURE_REASONS = set(...FAILURE_REASONS, 'empty_answer')
+/** 1-based position of an attempt in its request. Past 10 attempts the buyer sends the first 9 and the final one, under its real number. */
+export const ATTEMPT_NUMBER_RANGE: readonly [number, number] = [1, 1_000]
 /** A seller's public peer id (its EVM address, lowercase, no `0x`). */
 export const SELLER_ID_PATTERN = /^[0-9a-f]{40}$/
 /**
@@ -78,7 +83,7 @@ export const CLI_EVENT_CATALOG: EventCatalog = {
   },
   buyer_request_finished: {
     keys: set(
-      'protocol', 'public_model_id', 'route_mode', 'client_tool', 'outcome', 'failure_reason', 'http_status',
+      'request_id', 'protocol', 'public_model_id', 'route_mode', 'client_tool', 'outcome', 'failure_reason', 'http_status',
       'attempt_count', 'sellers_tried', 'fell_back', 'seller_tier', 'streamed',
       'seller_id', 'conversation_key_source', 'turn_bucket', 'seller_choice', 'switch_reason', 'candidates_bucket',
       'chosen_rank', 'input_tokens', 'cached_input_tokens', 'usage_reported',
@@ -104,7 +109,7 @@ export const CLI_EVENT_CATALOG: EventCatalog = {
       video_action: VIDEO_ACTIONS,
       routing_version: ROUTING_VERSIONS,
     },
-    patterns: { public_model_id: PUBLIC_MODEL_ID_PATTERN, seller_id: SELLER_ID_PATTERN },
+    patterns: { request_id: RANDOM_REQUEST_ID_PATTERN, public_model_id: PUBLIC_MODEL_ID_PATTERN, seller_id: SELLER_ID_PATTERN },
     ranges: {
       http_status: HTTP_STATUS_RANGE,
       input_tokens: TOKEN_COUNT_RANGE,
@@ -115,6 +120,31 @@ export const CLI_EVENT_CATALOG: EventCatalog = {
       failed_attempts_ms: DURATION_MS_RANGE,
       duration_ms: DURATION_MS_RANGE,
       estimated_cost_micro_usd: COST_MICRO_USD_RANGE,
+    },
+  },
+  // One per seller a request was sent to, in order, so every seller's
+  // failures count, not only the last one's. Joined to its request by `request_id`.
+  buyer_seller_attempt: {
+    keys: set(
+      'request_id', 'attempt_number', 'seller_id', 'seller_tier', 'protocol', 'public_model_id', 'route_mode',
+      'client_tool', 'routing_version', 'outcome', 'failure_reason', 'http_status', 'empty_answer', 'streamed',
+      'duration_ms', 'seller_ttft_ms',
+    ),
+    values: {
+      seller_tier: SELLER_TIERS,
+      protocol: REQUEST_PROTOCOLS,
+      route_mode: ROUTE_MODES,
+      client_tool: CLIENT_TOOLS,
+      routing_version: ROUTING_VERSIONS,
+      outcome: OUTCOMES,
+      failure_reason: ATTEMPT_FAILURE_REASONS,
+    },
+    patterns: { request_id: RANDOM_REQUEST_ID_PATTERN, public_model_id: PUBLIC_MODEL_ID_PATTERN, seller_id: SELLER_ID_PATTERN },
+    ranges: {
+      attempt_number: ATTEMPT_NUMBER_RANGE,
+      http_status: HTTP_STATUS_RANGE,
+      duration_ms: DURATION_MS_RANGE,
+      seller_ttft_ms: DURATION_MS_RANGE,
     },
   },
 }
