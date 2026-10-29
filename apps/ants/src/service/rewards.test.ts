@@ -3,6 +3,9 @@ import { describe, expect, it, vi } from 'vitest';
 import type { AntsContext } from './context.js';
 import { IndexerError } from './indexer.js';
 import { claim, compound, restake, rewards, stakeUsageRewards } from './rewards.js';
+import { stakeEligibility } from './stake-eligibility.js';
+
+vi.mock('./stake-eligibility.js', () => ({ stakeEligibility: vi.fn() }));
 
 const address = '0x0000000000000000000000000000000000000001';
 const foreign = '0x0000000000000000000000000000000000000002';
@@ -148,6 +151,33 @@ describe('closed-position rewards', () => {
   it('includes closed-position rewards in compound', async () => {
     const { ctx } = fixture();
     expect(await compound(ctx, { epochs: 4 })).toMatchObject({ restakedPositionIds: [7], transactions: ['restake-hash'] });
+  });
+});
+
+describe('compound target pool', () => {
+  function targetFixture(stakeable: boolean) {
+    const result = fixture();
+    vi.mocked(stakeEligibility).mockResolvedValue(new Map([[5, { owner: foreign, stakeable }]]));
+    const agentSeller = vi.fn(async () => ZeroAddress);
+    result.ctx.sellerRegistry = () => ({ agentSeller }) as never;
+    let created: number[] = [];
+    result.poolRewards.restakeStakerRewardsBatch.mockImplementation(async () => { created = [10]; return 'restake-hash'; });
+    const moveStakes = vi.fn(async () => 'move-hash');
+    Object.assign(result.pools, { allStakerPositionIds: async () => created, moveStakes });
+    return { ...result, agentSeller, moveStakes };
+  }
+
+  it('accepts a pool that is stakeable only through the legacy staking source', async () => {
+    const { ctx, moveStakes, agentSeller } = targetFixture(true);
+    expect(await compound(ctx, { epochs: 4, targetAgentId: 5 })).toMatchObject({ movedPositionIds: [10], targetAgentId: 5, transactions: ['restake-hash', 'move-hash'] });
+    expect(moveStakes).toHaveBeenCalledWith(expect.anything(), [10], 5);
+    expect(agentSeller).not.toHaveBeenCalled();
+  });
+
+  it('rejects a pool that is not stakeable before restaking', async () => {
+    const { ctx, poolRewards } = targetFixture(false);
+    await expect(compound(ctx, { epochs: 4, targetAgentId: 5 })).rejects.toThrow('not registered to its current owner');
+    expect(poolRewards.restakeStakerRewardsBatch).not.toHaveBeenCalled();
   });
 });
 

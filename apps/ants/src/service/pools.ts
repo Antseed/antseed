@@ -77,6 +77,14 @@ interface PoolContext {
   totalPowerWeight: bigint;
   stakerBudget: bigint;
   totalWeightedPoolPoints: bigint;
+  /**
+   * Whether pool reward weight is raw pool power (no pool-weight policy set). Only then does
+   * added stake grow a pool's share of the staker budget proportionally, so yields carry the
+   * budget for that projection; under a policy (e.g. a cap) or an unknown one they omit it.
+   */
+  linearPoolWeight: boolean;
+  /** Where this epoch's network totals came from; live yields only pair them with pool inputs from the same source. */
+  networkSource: PoolInputSource;
   /** Previous epoch's staker budget and weighted pool points, for estimating unsettled pool emissions. */
   lastStakerBudget: bigint;
   lastTotalWeightedPoolPoints: bigint;
@@ -86,6 +94,9 @@ interface PoolContext {
   /** Antscan has not caught up with your latest transaction; `own` is empty until it does. */
   walletSyncing: boolean;
 }
+
+/** The source of current-epoch pool or network figures. */
+type PoolInputSource = 'snapshot' | 'indexer' | 'chain';
 
 /** Ids, stake counting this epoch, stake still pending activation, and live power of your positions in one pool. */
 export interface OwnPool { positionIds: number[]; power: bigint; stake: bigint; pending: bigint; }
@@ -111,10 +122,12 @@ async function poolContext(ctx: AntsContext, indexed?: IndexedPools): Promise<Po
       walletSyncing = true;
     }
   }
-  const current = display.snapshot?.epochs.find(row => row.epoch === epoch) ?? (display.source.error ? null : indexed?.currentEpoch === epoch && indexed.network.current?.epoch === epoch && indexed.network.current.complete !== false ? indexed.network.current : null);
+  const snapshotCurrent = display.snapshot?.epochs.find(row => row.epoch === epoch);
+  const current = snapshotCurrent ?? (display.source.error ? null : indexed?.currentEpoch === epoch && indexed.network.current?.epoch === epoch && indexed.network.current.complete !== false ? indexed.network.current : null);
+  const networkSource: PoolInputSource = snapshotCurrent ? 'snapshot' : current ? 'indexer' : 'chain';
   const last = display.snapshot?.epochs.find(row => row.epoch === epoch - 1) ?? (display.source.error ? null : indexed?.currentEpoch === epoch && indexed.network.last?.epoch === epoch - 1 && indexed.network.last.complete !== false ? indexed.network.last : null);
   const epochs = Array.from({ length: VOLUME_EPOCHS }, (_, index) => epoch - index).filter((value) => value >= 0);
-  const [totalPowerWeight, stakerBudget, totalWeightedPoolPoints, lastStakerBudget, lastTotalWeightedPoolPoints, explorer, own] = await Promise.all([
+  const [totalPowerWeight, stakerBudget, totalWeightedPoolPoints, lastStakerBudget, lastTotalWeightedPoolPoints, explorer, own, poolWeightPolicy] = await Promise.all([
     current ? Promise.resolve(BigInt(current.totalPowerWeight)) : safe(() => pools.totalPowerWeightAtEpoch(epoch), 0n),
     current ? Promise.resolve(BigInt(current.stakerBudget)) : poolRewards ? safe(() => poolRewards.stakerEpochBudget(epoch), 0n) : Promise.resolve(0n),
     current ? Promise.resolve(BigInt(current.totalWeightedPoolPoints)) : accounting ? safe(() => accounting.totalWeightedPoolPointsByEpoch(epoch), 0n) : Promise.resolve(0n),
@@ -126,6 +139,7 @@ async function poolContext(ctx: AntsContext, indexed?: IndexedPools): Promise<Po
       const [open, closed] = await Promise.all([pools.allStakerPositionIds(ctx.address), closedPositionIds(ctx)]);
       return pools.positionsBatch([...new Set([...open, ...closed.ids])]);
     })(),
+    accounting ? safe(() => accounting.poolWeightPolicy(), null) : Promise.resolve(null),
   ]);
   // A moved/split source keeps its power until its effective epoch, so it still counts as open here.
   const openRows = own.filter((position) => position.owner.toLowerCase() === ctx.address.toLowerCase() && !position.withdrawn && (position.closedAtEpoch === 0 || position.closedAtEpoch > epoch));
@@ -133,7 +147,8 @@ async function poolContext(ctx: AntsContext, indexed?: IndexedPools): Promise<Po
     current ? Promise.resolve(BigInt(current.totalActiveStake)) : safe(() => pools.totalActiveStakeAtEpoch(epoch), 0n),
     live ? Promise.resolve(ownPoolsFromLive(live)) : ownPools(ctx, openRows, epoch),
   ]);
-  return { stack, display, totalActiveStake, epochs, totalPowerWeight, stakerBudget, totalWeightedPoolPoints, lastStakerBudget, lastTotalWeightedPoolPoints, explorer, own: ownSummary, walletSyncing };
+  const linearPoolWeight = poolWeightPolicy === ZeroAddress;
+  return { stack, display, totalActiveStake, epochs, totalPowerWeight, stakerBudget, totalWeightedPoolPoints, networkSource, linearPoolWeight, lastStakerBudget, lastTotalWeightedPoolPoints, explorer, own: ownSummary, walletSyncing };
 }
 
 function ownPoolsFromLive(live: LivePositions): Map<number, OwnPool> {
@@ -322,11 +337,16 @@ async function chainOnlyPools(
 }
 
 export async function singlePool(ctx: AntsContext, agentId: number): Promise<PoolView & { currentEpoch: number; walletSyncing: boolean }> {
-  const context = await poolContext(ctx);
   const indexer = ctx.indexer();
-  if (indexer) {
+  // Load the index first so network totals come from the same source as its pool inputs, as in the list.
+  const indexed = indexer ? await indexer.pools().catch(error => {
+    if (error instanceof IndexerError) return null;
+    throw error;
+  }) : null;
+  const context = await poolContext(ctx, indexed ?? undefined);
+  if (indexer && indexed) {
     try {
-      const [indexed, sellerEpochs] = await Promise.all([indexer.pools(), indexer.sellerEpochs(VOLUME_EPOCHS)]);
+      const sellerEpochs = await indexer.sellerEpochs(VOLUME_EPOCHS);
       const ownHere = new Map([...context.own.entries()].filter(([id]) => id === agentId));
       const explorer = { byAddress: context.explorer.byAddress, byAgent: new Map([...context.explorer.byAgent.entries()].filter(([id]) => id === agentId)) };
       const merged = mergePools({ indexed: { ...indexed, pools: indexed.pools.filter((pool) => pool.agentId === agentId) }, explorer, sellerEpochs, epochs: context.epochs, own: ownHere });
@@ -391,7 +411,8 @@ async function verifyStakeability(ctx: AntsContext, views: PoolView[]): Promise<
 /** Read historical principal and emission inputs together; failed reads remain unknown. */
 async function enrichYields(ctx: AntsContext, context: PoolContext, views: PoolView[], indexed?: IndexedPools): Promise<void> {
   if (ctx.indexer()?.displaySnapshot) {
-    await indexedYields(ctx, context, views);
+    const current = await indexedYields(ctx, context, views);
+    addLiveYields(context, views.filter(view => current.has(view.agentId)), 'snapshot');
     return;
   }
   const epoch = context.stack.currentEpoch - 1;
@@ -422,13 +443,43 @@ async function enrichYields(ctx: AntsContext, context: PoolContext, views: PoolV
     view.yield = poolYield(reward, typeof principal === 'bigint' ? principal : null, epoch, context.stack.epochDuration, context.stack.genesis, emission?.[0] === true);
     view.yield.reward = reward?.toString() ?? null;
     view.yield.power = read.power()?.[0]?.toString() ?? null;
+    view.yield.budget = context.linearPoolWeight && typeof b === 'bigint' ? b.toString() : null;
     view.yield.minLockEpochs = minLock()?.[0] == null ? null : Number(minLock()![0]);
     view.yield.maxLockEpochs = maxLock()?.[0] == null ? null : Number(maxLock()![0]);
     view.statsUpdatedAt = Date.now();
   });
+  // Indexed pool fields are only current when the index has reached this epoch.
+  if (!indexed) addLiveYields(context, views, 'chain');
+  else if (indexed.currentEpoch === context.stack.currentEpoch) addLiveYields(context, views, 'indexer');
 }
 
-async function indexedYields(ctx: AntsContext, context: PoolContext, views: PoolView[]): Promise<void> {
+/**
+ * The epoch in progress, priced like a completed one: the pool's running share of
+ * this epoch's staker budget over its current power. Early in an epoch the share
+ * rests on little usage, so it is always an estimate. `views` must hold this
+ * epoch's pool power and points from `source`; when the network totals came from
+ * another source (one lagging the other), no live yield is published.
+ */
+function addLiveYields(context: PoolContext, views: PoolView[], source: PoolInputSource): void {
+  if (context.networkSource !== source) return;
+  const epoch = context.stack.currentEpoch;
+  const duration = context.stack.epochDuration;
+  const startsAt = context.stack.genesis + epoch * duration;
+  for (const view of views) {
+    const power = BigInt(view.weight);
+    const points = BigInt(view.weightedUsagePoints);
+    if (power === 0n || context.totalWeightedPoolPoints === 0n) continue;
+    const reward = context.stakerBudget * points / context.totalWeightedPoolPoints;
+    view.liveYield = {
+      epoch, startsAt, endsAt: startsAt + duration, apr: null, apy: null, status: 'estimated',
+      reward: reward.toString(), power: power.toString(), budget: context.linearPoolWeight ? context.stakerBudget.toString() : null,
+      minLockEpochs: view.yield?.minLockEpochs ?? null, maxLockEpochs: view.yield?.maxLockEpochs ?? null,
+    };
+  }
+}
+
+/** Fills display and historical yield fields from the snapshot; returns the agents whose current-epoch pool row it had. */
+async function indexedYields(ctx: AntsContext, context: PoolContext, views: PoolView[]): Promise<Set<number>> {
   const snapshot = context.display.snapshot;
   const epoch = context.stack.currentEpoch - 1;
   const historical = new Map(snapshot?.pools.filter(row => row.epoch === epoch).map(row => [row.agentId, row]) ?? []);
@@ -462,7 +513,7 @@ async function indexedYields(ctx: AntsContext, context: PoolContext, views: Pool
       : null;
     view.yield = {
       ...poolYield(reward, row ? BigInt(row.activeStake) : null, epoch, context.stack.epochDuration, context.stack.genesis, row?.settled === true),
-      reward: reward?.toString() ?? null, power: row?.weight ?? null,
+      reward: reward?.toString() ?? null, power: row?.weight ?? null, budget: context.linearPoolWeight ? network?.stakerBudget ?? null : null,
       minLockEpochs: minLock()?.[0] == null ? null : Number(minLock()![0]), maxLockEpochs: maxLock()?.[0] == null ? null : Number(maxLock()![0]),
     };
     view.lastEpochEmission = reward?.toString() ?? null;
@@ -471,4 +522,5 @@ async function indexedYields(ctx: AntsContext, context: PoolContext, views: Pool
     if (row) view.lastEpochUsagePoints = row.usagePoints;
     if (snapshot && now) view.statsUpdatedAt = snapshot.indexedAt * 1000;
   }
+  return new Set(current.keys());
 }
