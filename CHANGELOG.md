@@ -116,6 +116,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Verifier: `antseed verifier run` now finds sellers that list a configured model under another spelling of it, matched the way buyers route (`canonicalModelKey`): a vendor path (`anthropic/claude-opus-5.5`), other version punctuation (`claude-opus-5-5`), `-latest` or a release date. Before, only the exact id (any case) was audited, so a seller could avoid audits by renaming its listing while buyers still reached it. Probes use the seller's own spelling, and the on-chain service hash is the seller's listing as before; the exact id is still preferred when a seller lists both. `antseed verifier run <model>` also accepts these spellings.
 - Seller alerts: a failed recovery ("back") or a held alert whose resend came due while a newer event for the same incident was still being journaled is now cancelled by that event, instead of going out after it (a stale "back" during a new outage).
 - `@antseed/provider-claude-oauth`: requests now identify as Claude Code 2.1.312 (was 2.1.75). Anthropic rejects newer models from Claude Code older than 2.1.280 with `400 claude_code_version_too_old`.
 - Gateway console: the Overview's low-balance warning and runway now count USDC waiting in the workspace wallet (a pending deposit, or USDC held back at the credit limit that tops the credits up as they are spent), so a workspace with funds in its wallet is no longer told its balance is about to run out. The warning names both amounts.
