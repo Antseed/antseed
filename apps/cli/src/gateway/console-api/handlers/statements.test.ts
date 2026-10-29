@@ -33,8 +33,6 @@ let explorerDown = false
 let indexedAt = Date.UTC(2027, 0, 1)
 /** The explorer also indexes another chain (its rows could be that chain's). */
 let alsoIndexed = false
-let rate = 1.115
-let ecbDown = false
 /** Deposits the buyer recorded for the wallet. */
 let history: string[] = []
 const LATE_DEPOSIT = `0x${'e4'.repeat(32)}`
@@ -84,7 +82,6 @@ function setup(): ConsoleRouter {
       return txHash === LATE_DEPOSIT ? { txHash, wallet, kind: 'transfer', creditedUsdc: 20_000_000, feeUsdc: 0, blockNumber: 4, blockTime: OCT + 50_000, sources: [] } : null
     },
     statements: {
-      fetchEurRate: async (date) => { if (ecbDown) throw new Error('ECB unreachable'); return { usdPerEur: rate, date } },
       fetchSettlements: async (url, buyerAddress, from, to): Promise<SettlementRead> => {
         if (explorerDown) throw new Error('explorer unreachable')
         assert.equal(url, 'https://explorer.test')
@@ -116,7 +113,6 @@ test('a month in progress is an open draft: purchases per seller and model, sett
   assert.equal(statement.buyer, null)
   assert.equal(statement.total, '7.010000')
   assert.equal(statement.requests, 3, 'r1 counts once although it was charged twice; the routing fee is not a request')
-  assert.deepEqual(statement.eurRate, { usdPerEur: 1.115, date: '2026-10-15' })
 
   const [first, second, third] = statement.suppliers
   assert.equal(first!.peerId, `0x${SELLER_A}`)
@@ -199,21 +195,9 @@ test('a month is not final on a settlement list cached before the explorer went 
   assert.equal(stale.status, 'open')
   assert.equal(store.getStatement(workspaceId, '2026-10'), null)
   explorerDown = false
-
-  // The same with the exchange rate: one cached before a failed refresh is shown in the draft, never issued.
-  const ratesRouter = setup()
-  now = NOV + 24 * 60 * 60 * 1000 - 7 * 60 * 60 * 1000
-  assert.equal((await call(ratesRouter, 'GET', path, admin()) as PurchaseStatement).status, 'open')
-  now += 8 * 60 * 60 * 1000 // past the grace period and the rate's six-hour cache
-  ecbDown = true
-  const staleRate = await call(ratesRouter, 'GET', path, admin()) as PurchaseStatement
-  assert.equal(staleRate.status, 'open')
-  assert.equal(staleRate.eurRate?.usdPerEur, 1.115, 'the draft still shows the cached rate')
-  assert.equal(store.getStatement(workspaceId, '2026-10'), null)
-  ecbDown = false
 })
 
-test('a month a day after its end is final: kept as issued, unchanged by later spend or rates; its money in is read again', async () => {
+test('a month a day after its end is final: kept as issued, unchanged by later spend; its money in is read again', async () => {
   now = NOV + 2 * 24 * 60 * 60 * 1000
   const router = setup()
   const path = `/workspaces/${workspaceId}/statements/2026-10`
@@ -221,20 +205,18 @@ test('a month a day after its end is final: kept as issued, unchanged by later s
   assert.equal(issued.status, 'final')
   assert.equal(issued.issuedAt, now)
   assert.equal(issued.buyer?.companyName, 'Voorbeeld B.V.')
-  assert.equal(issued.eurRate?.date, '2026-10-31')
   assert.match(issued.reference, /^PS-2026-10-[A-Z0-9]{1,6}$/)
   assert.equal(issued.funding.total, '100.000000')
   assert.equal(issued.suppliers.find((supplier) => supplier.peerId === `0x${SELLER_B}`)!.settlements!.length, 1, 'issued once the explorer caught up')
 
   spend(SELLER_A, 'qwen3-coder', 1_000_000, 'late', OCT + 5000, { input: 1, cached: 0, output: 1 })
-  rate = 1.2
   // An October transfer the buyer records only now (its sweep waited for credit headroom), checked on-chain when the statement is next read.
   history = [LATE_DEPOSIT]
   now += 60_000
   const again = await call(setup(), 'GET', path, admin()) as PurchaseStatement
   const { funding, ...rest } = again
   const { funding: issuedFunding, ...issuedRest } = issued
-  assert.deepEqual(rest, issuedRest, 'purchases, buyer and rate are as issued')
+  assert.deepEqual(rest, issuedRest, 'purchases and buyer are as issued')
   assert.ok(funding.deposits.some((deposit) => deposit.txHash === LATE_DEPOSIT), 'the transfer recorded after issue is listed')
   assert.equal(funding.total, '120.000000')
   assert.equal(funding.asOf, now)
@@ -274,7 +256,6 @@ test('a wallet shared with another workspace: its settlements are shown as the w
   registerWalletRoutes(router, fakeDeps(store, () => now), {
     buyer: buyer.client, requireWorkspaceAccess: fakeRequireWorkspaceAccess, walletAddress: async () => WALLET, resolveChain: async () => CHAIN,
     statements: {
-      fetchEurRate: async (date) => ({ usdPerEur: rate, date }),
       fetchSettlements: async () => ({ settlements: [settled(`0x${'c1'.repeat(32)}`, SELLER_A), settled(`0x${'c2'.repeat(32)}`, SELLER_C)], indexed: [{ chainId: CHAIN.evmChainId, at: indexedAt }] }),
       peers: async () => new Map(),
     },

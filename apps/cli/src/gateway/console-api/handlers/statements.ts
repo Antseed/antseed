@@ -12,7 +12,7 @@ import { ChainReadCache } from '../../../proxy/chain-read-cache.js'
 import { errorMessage } from '../../errors.js'
 import { listNetworkPeers } from '../../services/network.js'
 import {
-  buildStatement, fetchEurRate, fetchSettlements, periodBounds, periodsSince, rateDate,
+  buildStatement, fetchSettlements, periodBounds, periodsSince,
   SETTLEMENTS_WAIT_MS, statementFunding, statementReference, STATEMENT_GRACE_MS, type SettlementRead,
 } from '../../services/statements.js'
 import type { BillingProfileRecord, WorkspaceRecord } from '../../store.js'
@@ -31,13 +31,11 @@ export interface StatementRouteSeams {
   buyer: BuyerClient
   /** Stores the workspace's deposits not stored yet (a batch per read); true when none is left to check. */
   syncDeposits: (ws: WorkspaceRecord) => Promise<boolean>
-  /** Seams for tests; production reads the ECB, the chain explorer and the buyer's peers. */
-  fetchEurRate?: typeof fetchEurRate
+  /** Seams for tests; production reads the chain explorer and the buyer's peers. */
   fetchSettlements?: (explorerUrl: string, buyer: string, from: number, to: number) => Promise<SettlementRead>
   peers?: () => Promise<Map<string, { name: string | null; verificationLinks: StatementSupplier['verificationLinks'] }>>
 }
 
-const RATE_TTL_MS = 6 * 60 * 60 * 1000
 const SETTLEMENTS_TTL_MS = 5 * 60 * 1000
 const PEERS_TTL_MS = 5 * 60 * 1000
 
@@ -65,7 +63,6 @@ function text(body: Record<string, unknown>, field: string, max: number, require
 }
 
 export function registerStatementRoutes(router: ConsoleRouter, deps: ConsoleDeps, seams: StatementRouteSeams): void {
-  const eurRate = seams.fetchEurRate ?? ((date: string) => fetchEurRate(date))
   const settlementsOf = seams.fetchSettlements ?? ((url: string, buyer: string, from: number, to: number) => fetchSettlements(url, buyer, from, to))
   const peers = seams.peers ?? (async () => new Map((await listNetworkPeers(deps.store, seams.buyer, deps.now())).map((peer) => [
     peer.peerId.toLowerCase().replace(/^0x/, ''), { name: peer.displayName, verificationLinks: peer.verificationLinks },
@@ -141,9 +138,7 @@ export function registerStatementRoutes(router: ConsoleRouter, deps: ConsoleDeps
     const chain = await seams.resolveChain()
     const explorerUrl = chain.explorerApiUrl?.trim() || null
     const wallet = await seams.walletAddress(ws.buyerIdentity || DEFAULT_BUYER_IDENTITY).catch(() => null)
-    const [rateRead, settlementsRead, peerMap] = await Promise.all([
-      cache.read(`eur:${rateDate(period, now)}`, { ttlMs: RATE_TTL_MS }, () => eurRate(rateDate(period, now)))
-        .catch((err: unknown) => { deps.log(`console: ECB rate not read: ${errorMessage(err)}`); return null }),
+    const [settlementsRead, peerMap] = await Promise.all([
       explorerUrl && wallet
         ? cache.read(`settlements:${wallet.toLowerCase()}:${period}`, { ttlMs: SETTLEMENTS_TTL_MS }, () => settlementsOf(explorerUrl, wallet, bounds.from, bounds.to))
           .catch((err: unknown) => { deps.log(`console: settlements not read from ${explorerUrl}: ${errorMessage(err)}`); return null })
@@ -151,7 +146,6 @@ export function registerStatementRoutes(router: ConsoleRouter, deps: ConsoleDeps
       cache.read('peers', { ttlMs: PEERS_TTL_MS }, peers).then((read) => read.value).catch(() => new Map()),
       synced,
     ])
-    const rate = rateRead?.value ?? null
     // The explorer answers from its index: its rows are this chain's only when it indexes this chain alone (the
     // settlements carry no chain), and settlements after its checkpoint are not listed yet.
     const indexed = settlementsRead?.value.indexed ?? []
@@ -162,7 +156,7 @@ export function registerStatementRoutes(router: ConsoleRouter, deps: ConsoleDeps
     // Final once the month is over (plus a day for late spend reports and settlements), the buyer is named, and
     // every outside read answered now (a value cached before a failed refresh is not enough) and covers the month,
     // except the explorer's after a week: then it is issued without settlements.
-    const final = now >= bounds.to + STATEMENT_GRACE_MS && buyer !== null && rate !== null && !rateRead!.stale
+    const final = now >= bounds.to + STATEMENT_GRACE_MS && buyer !== null
       && (settlementsComplete || now >= bounds.to + SETTLEMENTS_WAIT_MS)
     // A list that may be incomplete or another chain's is never shown as the payments, in a draft or a final statement.
     const settlements = settlementsComplete ? settlementsRead?.value.settlements ?? null : null
@@ -178,7 +172,6 @@ export function registerStatementRoutes(router: ConsoleRouter, deps: ConsoleDeps
       // Any spend by another workspace up to the month's end: a settlement can pay for purchases of earlier months.
       sharedWallet: deps.store.workspacesSpendingFrom(ws.buyerIdentity || DEFAULT_BUYER_IDENTITY, 0, bounds.to)
         .filter((id) => id !== ws.id).length,
-      eurRate: rate,
       status: final ? 'final' : 'open',
       now,
     })

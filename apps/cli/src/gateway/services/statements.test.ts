@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { buildStatement, fetchEurRate, fetchSettlements, periodBounds, periodsSince, rateDate, statementReference } from './statements.js'
+import { buildStatement, fetchSettlements, periodBounds, periodsSince, statementReference } from './statements.js'
 
 const response = (body: unknown, status = 200) => new Response(typeof body === 'string' ? body : JSON.stringify(body), { status })
 
@@ -10,20 +10,7 @@ test('periods are UTC calendar months', () => {
   assert.equal(periodBounds('26-01'), null)
   assert.deepEqual(periodsSince(Date.UTC(2026, 9, 31, 23), Date.UTC(2027, 0, 2)), ['2027-01', '2026-12', '2026-11', '2026-10'])
   assert.deepEqual(periodsSince(Date.UTC(2020, 0, 1), Date.UTC(2027, 0, 2), 2), ['2027-01', '2026-12'])
-  assert.equal(rateDate('2026-10', Date.UTC(2026, 9, 15, 12)), '2026-10-15')
-  assert.equal(rateDate('2026-10', Date.UTC(2027, 0, 1)), '2026-10-31')
   assert.equal(statementReference('2026-10', 'ws_ab12cd34'), 'PS-2026-10-12CD34')
-})
-
-test('the ECB rate is read from its CSV answer', async () => {
-  let url = ''
-  const rate = await fetchEurRate('2026-10-31', async (input) => {
-    url = String(input)
-    return response('KEY,FREQ,TIME_PERIOD,OBS_VALUE\nEXR.D.USD.EUR.SP00.A,D,2026-10-30,1.1612\n')
-  })
-  assert.deepEqual(rate, { usdPerEur: 1.1612, date: '2026-10-30' })
-  assert.match(url, /endPeriod=2026-10-31&lastNObservations=1/)
-  await assert.rejects(fetchEurRate('2026-10-31', async () => response('KEY,TIME_PERIOD,OBS_VALUE\n')))
 })
 
 test('settlements are read page by page and merged per seller and transaction', async () => {
@@ -65,7 +52,6 @@ test('a seller paid this month for an earlier month\'s purchases is listed with 
     settlements: [{ seller: `0x${seller}`, txHash: `0x${'a1'.repeat(32)}`, time: Date.UTC(2026, 10, 2), amountUsdc: 1_250_000 }],
     settlementsSource: 'https://explorer.test',
     sharedWallet: 0,
-    eurRate: null,
     status: 'open',
     now: Date.UTC(2026, 10, 3),
   })

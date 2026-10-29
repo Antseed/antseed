@@ -521,8 +521,6 @@ export interface PurchaseStatement {
   workspace: { id: string; name: string; wallet: string | null }
   /** The buyer's details as they were when issued; null when not set yet (a draft). */
   buyer: BillingProfile | null
-  /** ECB reference rate on or before the month's last day; null when it could not be read. */
-  eurRate: { usdPerEur: number; date: string } | null
   suppliers: StatementSupplier[]
   total: Usdc
   requests: number
