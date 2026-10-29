@@ -780,6 +780,7 @@ li + li > .gc-choice { border-top: 1px solid var(--as-border); }
 .gc-statement__heading { margin: 1.5rem 0 0.75rem; font-size: 1rem; font-weight: 600; }
 .gc-statement__parties { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.5rem; padding: 1.25rem 0; }
 .gc-statement__address { white-space: pre-line; }
+.gc-statement__notes { white-space: pre-line; margin-top: 0.5rem; }
 .gc-statement__kv { display: grid; grid-template-columns: 9.5rem minmax(0, 1fr); gap: 0.25rem 0.75rem; margin: 0.5rem 0 0;
   dt { color: var(--as-text-secondary); font-size: 0.8125rem; }
   dd { margin: 0; overflow-wrap: anywhere; }

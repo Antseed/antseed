@@ -2,9 +2,8 @@
  * Purchase statements: a month of a workspace's paid requests, per seller and
  * model, with the settlement transactions that paid each seller and the money
  * that came in. Built from the gateway's own ledger; the outside reads are the
- * ECB reference rate (for EUR amounts), the EU's VIES check of the buyer's VAT
- * number, and the chain explorer's index of settlements (one query, paged), so
- * a statement costs no RPC calls.
+ * ECB reference rate (for EUR amounts) and the chain explorer's index of
+ * settlements (one query, paged), so a statement costs no RPC calls.
  *
  * It is a record of purchases, not an invoice: each seller is paid directly
  * from the workspace's credits and issues none.
@@ -82,33 +81,6 @@ export async function fetchEurRate(date: string, fetchImpl: Fetch = fetch): Prom
   const observed = values[columns.indexOf('TIME_PERIOD')] ?? ''
   if (!(usdPerEur > 0) || !/^\d{4}-\d{2}-\d{2}$/.test(observed)) throw new Error('ECB rate: no observation')
   return { usdPerEur, date: observed }
-}
-
-/** VAT number prefixes VIES checks: the EU member states (Greece is EL) and Northern Ireland (XI). */
-const VIES_PREFIXES = new Set(['AT', 'BE', 'BG', 'CY', 'CZ', 'DE', 'DK', 'EE', 'EL', 'ES', 'FI', 'FR', 'HR', 'HU', 'IE', 'IT', 'LT', 'LU', 'LV', 'MT', 'NL', 'PL', 'PT', 'RO', 'SE', 'SI', 'SK', 'XI'])
-
-/** "nl 8594.12.345 B01" → "NL859412345B01". */
-export function normalizeVatNumber(value: string): string {
-  return value.toUpperCase().replace(/[\s.\-]/g, '')
-}
-
-/**
- * Checks an EU VAT number with the EU's VIES service. Null when it is not an
- * EU number (nothing to check) or VIES could not answer.
- */
-export async function checkVatNumber(vatNumber: string, fetchImpl: Fetch = fetch): Promise<boolean | null> {
-  const match = /^([A-Z]{2})([0-9A-Z+*]{2,12})$/.exec(normalizeVatNumber(vatNumber))
-  if (!match || !VIES_PREFIXES.has(match[1]!)) return null
-  try {
-    const response = await fetchWithTimeout(fetchImpl, `https://ec.europa.eu/taxation_customs/vies/rest-api/ms/${match[1]}/vat/${match[2]}`)
-    if (!response.ok) return null
-    const body = await response.json() as { isValid?: unknown; userError?: unknown }
-    // MS_UNAVAILABLE, TIMEOUT and the like: the member state's register did not answer.
-    if (typeof body.userError === 'string' && !['VALID', 'INVALID'].includes(body.userError)) return null
-    return typeof body.isValid === 'boolean' ? body.isValid : null
-  } catch {
-    return null
-  }
 }
 
 export interface Settlement {
@@ -252,7 +224,7 @@ export function buildStatement(input: StatementInput): PurchaseStatement {
       country: input.buyer.country,
       vatNumber: input.buyer.vatNumber,
       registrationNumber: input.buyer.registrationNumber,
-      vatCheck: input.buyer.vatCheck,
+      notes: input.buyer.notes,
       updatedAt: input.buyer.updatedAt,
     } : null,
     eurRate: input.eurRate,

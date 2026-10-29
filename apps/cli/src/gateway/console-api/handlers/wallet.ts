@@ -75,8 +75,8 @@ export interface WalletRouteOverrides {
   sessionSignIn?: (sessionId: string) => { authenticatedAt: number; credentialId: string | null } | null
   /** A member's wallet credentials (lower-case addresses, when added) and credential count; defaults to auth's credentials table. */
   memberWallets?: (memberId: string) => { wallets: Array<{ id: string; address: string; createdAt: number }>; total: number }
-  /** Purchase statements' outside reads (ECB, VIES, the chain explorer, the buyer's peers). */
-  statements?: Pick<StatementRouteSeams, 'fetchEurRate' | 'checkVatNumber' | 'fetchSettlements' | 'peers'>
+  /** Purchase statements' outside reads (ECB, the chain explorer, the buyer's peers). */
+  statements?: Pick<StatementRouteSeams, 'fetchEurRate' | 'fetchSettlements' | 'peers'>
 }
 
 interface WorkspaceWallet {

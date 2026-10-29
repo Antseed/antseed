@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { buildStatement, checkVatNumber, fetchEurRate, fetchSettlements, normalizeVatNumber, periodBounds, periodsSince, rateDate, statementReference } from './statements.js'
+import { buildStatement, fetchEurRate, fetchSettlements, periodBounds, periodsSince, rateDate, statementReference } from './statements.js'
 
 const response = (body: unknown, status = 200) => new Response(typeof body === 'string' ? body : JSON.stringify(body), { status })
 
@@ -24,19 +24,6 @@ test('the ECB rate is read from its CSV answer', async () => {
   assert.deepEqual(rate, { usdPerEur: 1.1612, date: '2026-10-30' })
   assert.match(url, /endPeriod=2026-10-31&lastNObservations=1/)
   await assert.rejects(fetchEurRate('2026-10-31', async () => response('KEY,TIME_PERIOD,OBS_VALUE\n')))
-})
-
-test('VIES checks EU numbers only and says null when it cannot answer', async () => {
-  assert.equal(normalizeVatNumber('nl 0000.00000-b01'), 'NL000000000B01')
-  const urls: string[] = []
-  const vies = (body: unknown, status = 200) => async (input: string | URL | Request) => { urls.push(String(input)); return response(body, status) }
-  assert.equal(await checkVatNumber('NL000000000B01', vies({ isValid: true, userError: 'VALID' })), true)
-  assert.match(urls[0]!, /\/ms\/NL\/vat\/000000000B01$/)
-  assert.equal(await checkVatNumber('NL000000000B01', vies({ isValid: false, userError: 'INVALID' })), false)
-  assert.equal(await checkVatNumber('NL000000000B01', vies({ isValid: false, userError: 'MS_UNAVAILABLE' })), null)
-  assert.equal(await checkVatNumber('NL000000000B01', vies({}, 500)), null)
-  assert.equal(await checkVatNumber('GB123456789', vies({ isValid: true })), null, 'not an EU number: nothing to check')
-  assert.equal(urls.length, 4)
 })
 
 test('settlements are read page by page and merged per seller and transaction', async () => {

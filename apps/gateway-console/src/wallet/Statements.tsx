@@ -107,12 +107,12 @@ function useBillingProfile(workspaceId: string) {
   return useQuery({ queryKey: qk.billingProfile(workspaceId), queryFn: () => api.wallet.billingProfile(workspaceId) })
 }
 
-const EMPTY_PROFILE: BillingProfileInput = { companyName: '', address: '', country: '', vatNumber: '', registrationNumber: '' }
+const EMPTY_PROFILE: BillingProfileInput = { companyName: '', address: '', country: '', vatNumber: '', registrationNumber: '', notes: '' }
 
 function BillingModal({ isOpen, workspaceId, profile, onClose }: { isOpen: boolean; workspaceId: string; profile: BillingProfile | null; onClose: () => void }) {
   const [draft, setDraft] = useState<BillingProfileInput>(EMPTY_PROFILE)
   useEffect(() => {
-    if (isOpen) setDraft(profile ? { ...profile, vatNumber: profile.vatNumber ?? '', registrationNumber: profile.registrationNumber ?? '' } : EMPTY_PROFILE)
+    if (isOpen) setDraft(profile ? { ...EMPTY_PROFILE, ...profile, vatNumber: profile.vatNumber ?? '', registrationNumber: profile.registrationNumber ?? '', notes: profile.notes ?? '' } : EMPTY_PROFILE)
   }, [isOpen, profile])
   const field = (key: keyof BillingProfileInput) => ({
     value: draft[key] ?? '',
@@ -120,7 +120,7 @@ function BillingModal({ isOpen, workspaceId, profile, onClose }: { isOpen: boole
   })
   const invalidate = [qk.billingProfile(workspaceId), qk.statements(workspaceId)]
   const save = useConsoleMutation({
-    mutationFn: () => api.wallet.setBillingProfile(workspaceId, { ...draft, vatNumber: draft.vatNumber?.trim() || null, registrationNumber: draft.registrationNumber?.trim() || null }),
+    mutationFn: () => api.wallet.setBillingProfile(workspaceId, { ...draft, vatNumber: draft.vatNumber?.trim() || null, registrationNumber: draft.registrationNumber?.trim() || null, notes: draft.notes?.trim() || null }),
     invalidate,
     toast: 'Billing details saved',
     onSuccess: onClose,
@@ -131,18 +131,19 @@ function BillingModal({ isOpen, workspaceId, profile, onClose }: { isOpen: boole
     toast: 'Billing details removed',
     onSuccess: onClose,
   })
-  // One change at a time: a save still waiting on the VAT check must not land after a removal.
+  // One change at a time: a save still in flight must not land after a removal.
   const busy = save.isPending || remove.isPending
-  const ready = draft.companyName.trim() && draft.address.trim() && /^[a-zA-Z]{2}$/.test(draft.country.trim())
+  const ready = draft.companyName.trim() && draft.address.trim()
   return (
     <Modal isOpen={isOpen} onClose={onClose} size="sm" title="Billing details"
       subtitle="The company this workspace buys for, printed on its purchase statements. Statements already final keep the details they were issued with.">
       <div className="gc-stack">
         <TextField label="Company name" placeholder="Example B.V." maxLength={200} {...field('companyName')} />
         <TextAreaField label="Address" placeholder={'Street and number\nPostal code and city'} rows={3} maxLength={500} {...field('address')} />
-        <TextField label="Country" hint="Two-letter code, e.g. NL" maxLength={2} {...field('country')} />
-        <TextField label="VAT number (optional)" hint="An EU number is checked with the EU's VIES service." placeholder="NL000000000B01" maxLength={30} spellCheck={false} {...field('vatNumber')} />
-        <TextField label="Company registration number (optional)" placeholder="e.g. KvK number" maxLength={50} {...field('registrationNumber')} />
+        <TextField label="Country (optional)" maxLength={100} {...field('country')} />
+        <TextField label="Tax ID (optional)" hint="VAT, GST, EIN or any other number, printed as entered." maxLength={50} spellCheck={false} {...field('vatNumber')} />
+        <TextField label="Company registration number (optional)" maxLength={50} {...field('registrationNumber')} />
+        <TextAreaField label="Additional details (optional)" hint="Anything else for your books, such as a PO number, cost centre or contact." rows={3} maxLength={1000} {...field('notes')} />
         {save.error || remove.error ? <p className="gc-warn">{errorMessage(save.error ?? remove.error)}</p> : null}
         <div className="gc-actions">
           {profile && <Button variant="ghost" onClick={() => remove.mutate()} disabled={busy}>Remove</Button>}
@@ -151,17 +152,6 @@ function BillingModal({ isOpen, workspaceId, profile, onClose }: { isOpen: boole
         </div>
       </div>
     </Modal>
-  )
-}
-
-function VatLine({ profile }: { profile: BillingProfile }) {
-  if (!profile.vatNumber) return null
-  const check = profile.vatCheck
-  return (
-    <>
-      <Mono>{profile.vatNumber}</Mono>
-      {check && <span className="gc-muted"> · {check.valid ? 'valid in VIES' : 'not found in VIES'} on {utcDate(check.at)}</span>}
-    </>
   )
 }
 
@@ -200,9 +190,12 @@ export function StatementsPanel({ workspaceId }: { workspaceId: string }) {
   )
 }
 
+/** Why a statement shows no settlements (`settlements: null`). */
+const UNLISTED_SETTLEMENTS = 'Settlements not available: the chain explorer has not listed this month\'s payments yet. They appear here once it has; each one can also be looked up by the workspace wallet on the network.'
+
 /** "3 · 120.00 USDC": a provider's settlements this month, or why there are none to show. */
 function paidLabel(supplier: StatementSupplier): string {
-  if (supplier.settlements === null) return 'Not read'
+  if (supplier.settlements === null) return 'Not available'
   if (supplier.settlements.length === 0) return '—'
   const paid = supplier.settlements.reduce((sum, settlement) => sum + Number(settlement.amount), 0)
   return `${supplier.settlements.length} · ${usdc(paid.toFixed(6))} USDC`
@@ -237,6 +230,7 @@ function SupplierSummary({ statement, network }: { statement: PurchaseStatement;
         Settlements are payments on {network} from the workspace's credits
         {statement.sharedWallet ? `, from a wallet shared with ${statement.sharedWallet} other workspace${statement.sharedWallet === 1 ? '' : 's'}, so they also pay for their purchases` : ''}.
         {' '}With model details on, each provider's models and settlement transactions are listed; the CSV export lists every settlement.
+        {statement.suppliers.some((supplier) => supplier.settlements === null) && ` ${UNLISTED_SETTLEMENTS}`}
       </p>
     </>
   )
@@ -290,7 +284,7 @@ function Supplier({ supplier, index, statement, network, txLink }: { supplier: S
       )}
       <div className="gc-statement__proof">
         {supplier.settlements === null
-          ? <span className="gc-muted">Payment records could not be read from the chain explorer.</span>
+          ? <span className="gc-muted">{UNLISTED_SETTLEMENTS}</span>
           : settlements.length === 0
             ? <span className="gc-muted">No settlement on {network} this month: what was bought is settled with the provider's next settlement.</span>
             : (
@@ -370,11 +364,12 @@ export function StatementPage({ period }: { period: string }) {
                       <>
                         <strong>{doc.buyer.companyName}</strong>
                         <div className="gc-statement__address">{doc.buyer.address}</div>
-                        <div>{doc.buyer.country}</div>
+                        {doc.buyer.country && <div>{doc.buyer.country}</div>}
                         <dl className="gc-statement__kv">
-                          {doc.buyer.vatNumber && <><dt>VAT number</dt><dd><VatLine profile={doc.buyer} /></dd></>}
+                          {doc.buyer.vatNumber && <><dt>Tax ID</dt><dd><Mono>{doc.buyer.vatNumber}</Mono></dd></>}
                           {doc.buyer.registrationNumber && <><dt>Registration</dt><dd><Mono>{doc.buyer.registrationNumber}</Mono></dd></>}
                         </dl>
+                        {doc.buyer.notes && <div className="gc-statement__notes">{doc.buyer.notes}</div>}
                       </>
                     )
                     : <span className="gc-muted">No billing details yet.</span>}
@@ -414,12 +409,12 @@ export function StatementPage({ period }: { period: string }) {
 
               <div className="gc-statement__boxes">
                 <section>
-                  <h2 className="gc-statement__label">VAT</h2>
+                  <h2 className="gc-statement__label">Tax</h2>
                   <dl className="gc-statement__kv">
-                    <dt>VAT charged by providers</dt><dd>None</dd>
-                    <dt>Taxable base (EUR)</dt><dd><strong>{eur(doc.total, doc.eurRate)}</strong></dd>
+                    <dt>Tax charged by providers</dt><dd>None</dd>
+                    <dt>Purchases before tax</dt><dd><strong>{usdc(doc.total)} USDC · {eur(doc.total, doc.eurRate)}</strong></dd>
                   </dl>
-                  <p>The providers did not charge VAT, so any reverse-charge self-assessment is the buyer's responsibility. Confirm the treatment with your tax advisor.</p>
+                  <p>The providers charged no VAT or sales tax. Any tax the buyer owes on these purchases, such as an EU reverse charge, is the buyer's to account for. Confirm the treatment with your tax advisor.</p>
                 </section>
                 <section>
                   <h2 className="gc-statement__label">Money in this month</h2>
@@ -448,7 +443,7 @@ export function StatementPage({ period }: { period: string }) {
                 <p><Mono>{doc.reference} · generated {new Date(doc.generatedAt).toISOString().replace('T', ' ').slice(0, 16)} UTC</Mono></p>
               </footer>
             </article>
-            <div className="gc-inline gc-no-print">
+            <div className="gc-inline gc-inline--wrap gc-no-print">
               <Switch checked={details} onChange={showDetails} label="Model details" />
               <Button leadingIcon={<Icon.download size={14} />} onClick={() => window.print()}>Print or save as PDF</Button>
               <Button variant="outline" leadingIcon={<Icon.download size={14} />} onClick={() => downloadCsv(doc, details)}>Download CSV</Button>

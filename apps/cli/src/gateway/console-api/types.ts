@@ -473,22 +473,23 @@ export interface DepositConfirmation {
 
 // Workspace admins: the company a workspace buys for, printed on its purchase statements.
 // GET    /workspaces/:id/billing-profile → BillingProfile | null
-// PUT    /workspaces/:id/billing-profile BillingProfileInput → BillingProfile (an EU VAT number is checked with VIES)
+// PUT    /workspaces/:id/billing-profile BillingProfileInput → BillingProfile (stored as entered, nothing is checked)
 // DELETE /workspaces/:id/billing-profile → { ok: true }
 export interface BillingProfileInput {
   companyName: string
   /** Street, postal code and city, one per line. */
   address: string
-  /** ISO 3166-1 alpha-2, e.g. "NL". */
+  /** As entered; empty when not given. */
   country: string
+  /** The company's tax ID (VAT, GST, EIN…), as entered. */
   vatNumber: string | null
   /** A company register number (e.g. KvK). */
   registrationNumber: string | null
+  /** Anything else the buyer wants on its statements (a PO number, cost centre, contact), one item per line. */
+  notes: string | null
 }
 
 export interface BillingProfile extends BillingProfileInput {
-  /** The EU VIES check of `vatNumber`; null when not checked (no number, not an EU number, or VIES unreachable). */
-  vatCheck: { valid: boolean; at: number } | null
   updatedAt: number
 }
 

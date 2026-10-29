@@ -921,14 +921,11 @@ const routes: Array<[string, string, Handler]> = [
   ['PUT', '/workspaces/:id/billing-profile', ({ params, body }) => {
     requireWorkspace(params['id']!, 'admin')
     const companyName = String(body?.companyName ?? '').trim()
-    const country = String(body?.country ?? '').trim().toUpperCase()
     if (!companyName || !String(body?.address ?? '').trim()) throw new MockError(400, 'invalid_billing_profile', 'companyName and address are required.')
-    if (!/^[A-Z]{2}$/.test(country)) throw new MockError(400, 'invalid_billing_profile', 'country must be a two-letter country code, e.g. NL.')
-    const vatNumber = typeof body?.vatNumber === 'string' && body.vatNumber.trim() ? body.vatNumber.toUpperCase().replace(/[\s.-]/g, '') : null
+    const optional = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : null)
     const profile: BillingProfile = {
-      companyName, address: String(body?.address).trim(), country, vatNumber,
-      registrationNumber: typeof body?.registrationNumber === 'string' && body.registrationNumber.trim() ? body.registrationNumber.trim() : null,
-      vatCheck: vatNumber ? { valid: true, at: Date.now() } : null, updatedAt: Date.now(),
+      companyName, address: String(body?.address).trim(), country: optional(body?.country) ?? '', vatNumber: optional(body?.vatNumber),
+      registrationNumber: optional(body?.registrationNumber), notes: optional(body?.notes), updatedAt: Date.now(),
     }
     mockBillingProfiles.set(params['id']!, profile)
     return profile
