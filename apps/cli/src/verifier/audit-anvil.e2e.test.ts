@@ -136,7 +136,7 @@ test('an approved auditor submits one audit per model, earns credits, and a re-r
     assert.equal(refused.status, 1, refused.output)
     assert.match(refused.output, /not approved/)
 
-    const first = submit(approved, ['--yes', '--publish-ipfs'])
+    const first = submit(approved, ['--yes'])
     assert.equal(first.status, 0, first.output)
     assert.match(first.output, /Submitted: 2; recovered: 0; already submitted: 0; failed: 0/)
     const uploads = (await readFile(pinataLogPath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line) as {

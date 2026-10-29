@@ -701,7 +701,7 @@ Approved auditors submit the current epoch with one transaction per model:
 
 ```bash
 antseed verifier submit --dry-run
-antseed verifier submit --publish-ipfs --yes
+antseed verifier submit --yes
 ```
 
 Without `--run-id`, every run of the epoch is merged and the latest result per
@@ -714,15 +714,11 @@ what is left in up to `--max-rounds` rounds (default 3), with a larger
 enrollment budget each round, and stops early when nothing is left or a round
 makes no progress. `--fresh` ignores the earlier runs.
 
-`verifier run` and `verifier submit` first check that this CLI audits the same
-way as the latest published release: they compare the `antseedVerifier` field
-of the CLI's `package.json` (a hash of the audited models and an audit rules
-version) with the one in `apps/cli/package.json` at the latest GitHub release
-of the repo. A CLI newer than that release's CLI passes. An outdated CLI
-stops with an update hint. When the check can't be made, `run` warns and a real
-`submit` stops; `--skip-version-check` skips it. After changing
-`AUDITED_MODELS` or `AUDIT_RULES_VERSION`, update the field with
-`pnpm --filter @antseed/cli verifier-manifest`.
+`verifier run` and `verifier submit` first check that this CLI is up to date:
+they compare its version with the CLI version in `apps/cli/package.json` at the
+latest GitHub release of the repo. A CLI older than that stops with an update
+hint; the same or a newer version passes. When the check can't be made, `run`
+warns and a real `submit` stops; `--skip-version-check` skips it.
 
 Each model's submission covers every seller result for that model: `SAME`,
 `DIFF`, and `UNDETERMINED`. Only runs audited on the current on-chain epoch can
@@ -739,9 +735,11 @@ wins, and an UNDETERMINED clears an earlier verdict.
 seen before it can be submitted. The result is DIFF only when the recheck is DIFF
 too; a recheck SAME or UNDETERMINED turns it into UNDETERMINED. A DIFF whose
 recheck cannot run is not submitted, and the next `verifier run` in the same
-epoch rechecks it without repeating the first check. Fresh probes are
-generated once per model, only when a recheck needs them and the run uses
-`--enroll-if-needed`. Set `verifier.diffConfirmationRuns` to `0` to turn rechecks
+epoch rechecks it without repeating the first check. Unless the run uses
+`--no-enroll`, fresh probes are generated when a recheck needs them, and also before a model's
+audits when any seller about to be audited lacks an unseen audit set plus recheck
+set (sellers are never given probes from their earlier epochs), up to 3 builds per
+model. Set `verifier.diffConfirmationRuns` to `0` to turn rechecks
 off. The `submit` preview shows how many results were rechecked.
 
 `verifier run` and `verifier submit` also write
@@ -774,16 +772,17 @@ submitted on-chain.
 
 ## Model Audits With Reference Enrollment
 
-Audits normally use existing reference banks and do not make reference-building
-calls. Opt in to bounded enrollment when a selected model's bank is missing or
-fails the self-test, statistical-power, or contrast-detection checks:
+Audits use existing reference banks and make reference-building calls only
+when a selected model's bank is missing, fails the self-test, statistical-power
+or contrast-detection checks, or is worn out for the sellers about to be audited.
+This is on by default; `--no-enroll` turns it off, and the run then stops before
+sending anything when a bank isn't ready:
 
 ```bash
-antseed --config ./audit-config.json verifier run gpt-6.1-sol \
-  --enroll-if-needed --max-enrollment-requests 2000 --allow-probe-reuse
+antseed --config ./audit-config.json verifier run gpt-6.1-sol --max-enrollment-requests 1000
 ```
 
-The request budget is **per model**, includes retries and requests already used
+The request budget is **per model** (2000 unless `--max-enrollment-requests` sets it), includes retries and requests already used
 by a compatible enrollment checkpoint, and cannot exceed a lower configured
 `referenceMaxRequestsPerBuild`. It is a request limit, not a dollar spending cap.
 Probe growth also respects `referenceMaximumProbeCount` (default 500) and the
@@ -795,10 +794,12 @@ candidates are checked against the existing contrasts, with preference given to
 probes distinguishing failing contrasts. Existing contrast models are not replaced
 with easier ones. A ready bank causes no enrollment calls. The CLI checks the bank
 again after appending new probes and skips any model that is still not ready;
-incompatible enrollment settings fail before new model calls. Per-seller probe
-availability is still checked when reserving each audit.
+incompatible enrollment settings fail before new model calls. A ready bank can
+still be worn out for sellers audited in earlier epochs, so the run also checks
+every seller's unseen probes and builds fresh ones when any is short; a seller
+still short afterwards fails with `BANK_EXHAUSTED`, which is retried on every run.
 
-Enrollment cannot be combined with `--resume-run`.
+`--resume-run` repairs never enroll.
 Failed enrollment retains compatible cached requests for a bounded retry. No
 seller audit starts for a model whose enrollment failed. Use explicit local
 `verifier.banksDir`, `verifier.referencesDir`, and `verifier.evidenceDir` settings

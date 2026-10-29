@@ -372,11 +372,11 @@ Run KBF audits of sellers' model claims (one of the first of many [verification 
 |---|---|---|
 | `antseed verifier models` | List the built-in audited models and where each takes its genuine answers from | `--json` |
 | `antseed verifier reference build [model]` | Build or grow the probe bank of one audited model | `--all` (every audited model without a powered bank) |
-| `antseed verifier run [model]` | Audit the sellers your buyer has discovered, for the models assigned to your auditor this epoch (or one `<model>`) | `--all`, `--auditor <address>`, `--peer <peerId>`, `--enroll-if-needed`, `--max-enrollment-requests <n>`, `--allow-probe-reuse`, `--resume-run <runId>`, `--ignore-pre-run-checks`, `--fresh`, `--max-rounds <n>`, `--skip-version-check` |
+| `antseed verifier run [model]` | Audit the sellers your buyer has discovered, for the models assigned to your auditor this epoch (or one `<model>`) | `--all`, `--auditor <address>`, `--peer <peerId>`, `--no-enroll`, `--max-enrollment-requests <n>`, `--allow-probe-reuse`, `--resume-run <runId>`, `--ignore-pre-run-checks`, `--fresh`, `--max-rounds <n>`, `--skip-version-check` |
 | `antseed verifier assignment` | Show which models each approved auditor audits; every model is audited every epoch, split round robin | `--epoch <n>`, `--epochs <count>`, `--json` |
 | `antseed verifier status` | Progress of the latest run | `--json` |
 | `antseed verifier overview` | Write the seller × model overview page of an epoch from all its runs, with the reason for every inconclusive or skipped result | `--epoch <n>`, `--run <ids...>` |
-| `antseed verifier submit` | Publish evidence and submit one audit per model for the whole current epoch (approved auditors) | `--run-id <id>` (one run only), `--dry-run`, `--publish-ipfs`, `--publish-only`, `--auditor <address>`, `--keystore <path>`, `--yes`, `--rpc-url`, `--skip-version-check` |
+| `antseed verifier submit` | Publish evidence and submit one audit per model for the whole current epoch (approved auditors) | `--run-id <id>` (one run only), `--dry-run`, `--no-publish-ipfs`, `--publish-only`, `--auditor <address>`, `--keystore <path>`, `--yes`, `--rpc-url`, `--skip-version-check` |
 | `antseed verifier rewards` | Credits and pending ANTS per epoch; claim finished epochs | `--epochs <list>`, `--claim`, `--yes`, `--auditor <address>`, `--rpc-url` |
 | `antseed verifier check <model>` | Re-run the latest published audit against any endpoint. Exit code 0 `SAME`, 2 `DIFF`, 3 `UNDETERMINED` | `--base-url <url>`, `--target-model <id>`, `--protocol openai\|anthropic`, `--api-key-env` (`VERIFY_API_KEY`), `--audit <ipfs://cid>`, `--ipfs-gateway`, `--out <file>`, `--json` |
 

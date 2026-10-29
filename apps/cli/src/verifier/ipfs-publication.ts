@@ -139,7 +139,7 @@ export async function publishVerificationToPinata(
   jwt: string,
   dependencies: PinataUploadDependencies = {},
 ): Promise<PublishedVerificationEvidence> {
-  if (!jwt.trim()) throw new Error('PINATA_JWT is required with --publish-ipfs')
+  if (!jwt.trim()) throw new Error('PINATA_JWT is required to publish to IPFS')
   const fetchImpl = dependencies.fetchImpl ?? fetch
   const sleep = dependencies.sleep ?? ((delayMs) => new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs)))
   let lastError: Error | null = null

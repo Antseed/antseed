@@ -2,10 +2,6 @@
   "name": "@antseed/cli",
   "version": "0.1.214",
   "description": "Antseed Network CLI and Web Dashboard",
-  "antseedVerifier": {
-    "auditRulesVersion": 2,
-    "auditedModelsHash": "0x0ab8c110b852190b3042973f03203fa131c63b777fe81f22e2a2a8b4286ac53c"
-  },
   "type": "module",
   "files": [
     "dist"
@@ -25,8 +21,7 @@
     "start:seed": "node dist/cli/index.js seed",
     "start:connect": "node dist/cli/index.js connect",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build && node --test dist/config/*.test.js dist/cli/*.test.js dist/cli/commands/*.test.js dist/cli/commands/**/*.test.js dist/verifier/*.test.js dist/proxy/*.test.js dist/plugins/*.test.js dist/system-proxy/*.test.js dist/gateway/*.test.js dist/gateway/*/*.test.js dist/gateway/*/*/*.test.js dist/routing-policy/*.test.js dist/buyer-identities/*.test.js dist/seller-monitor/*.test.js dist/discovery/*.test.js dist/update/*.test.js",
-    "verifier-manifest": "npm run build && node scripts/write-verifier-manifest.mjs"
+    "test": "npm run build && node --test dist/config/*.test.js dist/cli/*.test.js dist/cli/commands/*.test.js dist/cli/commands/**/*.test.js dist/verifier/*.test.js dist/proxy/*.test.js dist/plugins/*.test.js dist/system-proxy/*.test.js dist/gateway/*.test.js dist/gateway/*/*.test.js dist/gateway/*/*/*.test.js dist/routing-policy/*.test.js dist/buyer-identities/*.test.js dist/seller-monitor/*.test.js dist/discovery/*.test.js dist/update/*.test.js"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^3",

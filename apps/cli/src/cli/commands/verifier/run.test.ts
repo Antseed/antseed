@@ -53,7 +53,7 @@ test('verifier submit and rewards expose the auditor controls', () => {
   const verifier = command().commands.find((entry) => entry.name() === 'verifier')!
   const options = (name: string) => verifier.commands.find((entry) => entry.name() === name)!
     .options.map((option) => option.long)
-  assert.deepEqual(options('submit'), ['--run-id', '--publish-ipfs', '--dry-run', '--publish-only', '--auditor', '--yes', '--rpc-url', '--keystore', '--skip-version-check'])
+  assert.deepEqual(options('submit'), ['--run-id', '--no-publish-ipfs', '--dry-run', '--publish-only', '--auditor', '--yes', '--rpc-url', '--keystore', '--skip-version-check'])
   assert.deepEqual(options('rewards'), ['--epochs', '--claim', '--yes', '--auditor', '--rpc-url'])
 })
 
@@ -70,19 +70,22 @@ test('verifier run accepts one model, all configured models, or an auditor assig
   const run = verifier.commands.find((entry) => entry.name() === 'run')!
   assert.deepEqual(
     run.options.map((option) => option.long),
-    ['--all', '--auditor', '--allow-probe-reuse', '--peer', '--resume-run', '--enroll-if-needed', '--max-enrollment-requests', '--ignore-pre-run-checks', '--fresh', '--skip-version-check', '--max-rounds'],
+    ['--all', '--auditor', '--allow-probe-reuse', '--peer', '--resume-run', '--no-enroll', '--max-enrollment-requests', '--ignore-pre-run-checks', '--fresh', '--skip-version-check', '--max-rounds'],
   )
   assert.deepEqual(run.registeredArguments.map((argument) => argument.name()), ['model'])
 })
 
-test('pre-audit enrollment is opt-in, explicitly bounded, and separate from repair runs', () => {
-  assert.equal(enrollmentRequestBudget({}), null)
-  assert.equal(enrollmentRequestBudget({ enrollIfNeeded: true, maxEnrollmentRequests: '250' }), 250)
-  for (const maxEnrollmentRequests of [undefined, '0', '-1', '2.5', 'Infinity', 'no']) {
-    assert.throws(() => enrollmentRequestBudget({ enrollIfNeeded: true, maxEnrollmentRequests }), /positive integer/)
+test('enrollment is on by default (2000 requests per model), off with --no-enroll and for repair runs', () => {
+  assert.equal(enrollmentRequestBudget({}), 2000)
+  assert.equal(enrollmentRequestBudget({ enroll: true }), 2000)
+  assert.equal(enrollmentRequestBudget({ maxEnrollmentRequests: '250' }), 250)
+  for (const maxEnrollmentRequests of ['0', '-1', '2.5', 'Infinity', 'no']) {
+    assert.throws(() => enrollmentRequestBudget({ maxEnrollmentRequests }), /positive integer/)
   }
-  assert.throws(() => enrollmentRequestBudget({ maxEnrollmentRequests: '10' }), /requires --enroll-if-needed/)
-  assert.throws(() => enrollmentRequestBudget({ enrollIfNeeded: true, resumeRun: 'run', maxEnrollmentRequests: '10' }), /cannot be combined/)
+  assert.equal(enrollmentRequestBudget({ enroll: false }), null)
+  assert.throws(() => enrollmentRequestBudget({ enroll: false, maxEnrollmentRequests: '10' }), /--no-enroll/)
+  assert.equal(enrollmentRequestBudget({ resumeRun: 'run' }), null)
+  assert.throws(() => enrollmentRequestBudget({ resumeRun: 'run', maxEnrollmentRequests: '10' }), /never builds fresh questions/)
 })
 
 test('verifier peer selector normalizes supported peer ids', () => {

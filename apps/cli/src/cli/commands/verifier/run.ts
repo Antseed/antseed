@@ -107,7 +107,8 @@ interface RunOptions {
   allowProbeReuse?: boolean
   peer?: string
   resumeRun?: string
-  enrollIfNeeded?: boolean
+  /** `--no-enroll` sets this to false. */
+  enroll?: boolean
   maxEnrollmentRequests?: string
   ignorePreRunChecks?: boolean
   fresh?: boolean
@@ -115,15 +116,30 @@ interface RunOptions {
   maxRounds?: string
 }
 
+/** Reference requests per model a run may spend on enrollment when `--max-enrollment-requests` isn't given. */
+export const DEFAULT_ENROLLMENT_REQUESTS = 2_000
+
+/**
+ * Reference requests per model the run may spend building fresh questions, or null when it may not
+ * build any. Enrollment is on by default: it only calls the reference API for a model whose bank is
+ * too small, or whose sellers have already seen too much of it. `--no-enroll` turns it off, and a
+ * `--resume-run` repair never enrolls.
+ */
 export function enrollmentRequestBudget(options: RunOptions): number | null {
-  if (!options.enrollIfNeeded) {
-    if (options.maxEnrollmentRequests !== undefined) throw new Error('--max-enrollment-requests requires --enroll-if-needed')
+  if (options.enroll === false) {
+    if (options.maxEnrollmentRequests !== undefined) throw new Error('--max-enrollment-requests cannot be combined with --no-enroll')
     return null
   }
-  if (options.resumeRun) throw new Error('--enroll-if-needed cannot be combined with --resume-run')
+  if (options.resumeRun) {
+    if (options.maxEnrollmentRequests !== undefined) {
+      throw new Error('--resume-run only repairs a run and never builds fresh questions; drop --max-enrollment-requests')
+    }
+    return null
+  }
+  if (options.maxEnrollmentRequests === undefined) return DEFAULT_ENROLLMENT_REQUESTS
   const budget = Number(options.maxEnrollmentRequests)
   if (!Number.isSafeInteger(budget) || budget <= 0) {
-    throw new Error('--enroll-if-needed requires --max-enrollment-requests <positive integer> per model')
+    throw new Error('--max-enrollment-requests must be a positive integer (requests per model)')
   }
   return budget
 }
@@ -260,11 +276,11 @@ export function registerVerifierRunCommand(verifier: Command): void {
     .option('--allow-probe-reuse', 'allow a seller\'s new epoch reference to reuse probes it was assigned in earlier epochs')
     .option('--peer <peerId>', 'verify only this discovered seller peer')
     .option('--resume-run <runId>', 'repair only undetermined sellers from a compatible run')
-    .option('--enroll-if-needed', 'enroll additional reference probes before auditing an insufficient bank')
-    .option('--max-enrollment-requests <count>', 'maximum physical reference requests per model, including retries')
+    .option('--no-enroll', 'never build fresh questions; a model whose bank is too small or worn out for its sellers stops the run')
+    .option('--max-enrollment-requests <count>', `maximum physical reference requests per model, including retries (default: ${DEFAULT_ENROLLMENT_REQUESTS}; never above verifier.referenceMaxRequestsPerBuild)`)
     .option('--ignore-pre-run-checks', 'print the pre-run check problems as warnings and run anyway')
     .option('--fresh', 'ignore this epoch\'s earlier runs and audit every eligible seller again')
-    .option('--skip-version-check', 'run even if this CLI audits differently from the latest release (its results may not match other auditors)')
+    .option('--skip-version-check', 'run even if this CLI is older than the latest release (its results may not match other auditors)')
     .option('--max-rounds <count>', 'rounds per run: after a round, retry what is left (failures, waiting rechecks) until nothing is left or a round makes no progress', '3')
     .action(async (modelValue: string | undefined, options: RunOptions, command: Command) => {
       validateAssignedModeOptions(modelValue, options)
@@ -1152,7 +1168,7 @@ async function runVerifierRound(
           if (recheckTotals.pending > 0) {
             console.log(chalk.yellow(
               `${recheckTotals.pending} DIFF(s) are kept but not submitted until rechecked. Fix the reason in the `
-              + '[recheck:…] lines above (for example reference credits, or add --enroll-if-needed for fresh questions), '
+              + '[recheck:…] lines above (for example reference credits, or run without --no-enroll for fresh questions), '
               + 'then run `antseed verifier run` again this epoch: it rechecks them without repeating the first check.',
             ))
           }
@@ -1246,7 +1262,7 @@ async function collectPreRunProblems(input: {
       })
       if (capacity.selectedProbeCount === null && !input.enrollIfNeeded) {
         problems.push(`${model}: the probe bank has too few usable questions for one audit; `
-          + 'add --enroll-if-needed --max-enrollment-requests <n>, or rebuild it')
+          + 'run without --no-enroll, or rebuild it')
         continue
       }
       problems.push(...probeBankProblems({ model, sellers: capacity.sellers, enrollIfNeeded: input.enrollIfNeeded }))

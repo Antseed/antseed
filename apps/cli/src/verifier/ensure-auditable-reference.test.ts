@@ -168,3 +168,23 @@ test('seller capacity stops after the round limit and returns the sellers still 
   assert.equal(enrolls, SELLER_CAPACITY_ENROLLMENT_ROUNDS)
   assert.deepEqual(short, ['aa'.repeat(20)])
 })
+
+test('a model with no bank yet gets its first bank built before the audit', async () => fixture(async (input, calls, operations) => {
+  operations.inspect = async () => {
+    calls.push('inspect')
+    // No bank on disk: nothing banked until the build appends its probes.
+    return calls.includes('append')
+      ? { totalProbeCount: 100, eligibleProbeCount: 100, selectedProbeCount: 100, statisticalPower: 0.95 }
+      : { totalProbeCount: 0, eligibleProbeCount: 0, selectedProbeCount: null, statisticalPower: null }
+  }
+  operations.loadSeed = async () => { calls.push('seed'); return undefined }
+  operations.build = async (options) => {
+    calls.push('build')
+    assert.equal(options.initialReference, undefined)
+    return { reference: referenceFixture('model-a', 100), path: 'reference.json',
+      cost: { totalUsdMicros: '1', requestCount: 1, models: [], purposes: [] },
+      finalize: async () => { calls.push('finalize') } }
+  }
+  await ensureAuditableReference(input, operations)
+  assert.deepEqual(calls, ['inspect', 'seed', 'catalog', 'build', 'append', 'inspect', 'finalize'])
+}))

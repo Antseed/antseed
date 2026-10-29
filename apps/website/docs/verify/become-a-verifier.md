@@ -10,7 +10,28 @@ A verifier (on-chain: an **auditor**) checks that sellers serve the model they a
 
 This guide sets up **KBF audits** (Knowledge Boundary Fingerprinting). KBF is one of the first verification methods Antseed is launching, and one of many: more ways to verify sellers and protect model integrity are coming. See [Model verification](/docs/model-verification#one-method-among-many).
 
-Four steps: set up, start the buyer, build references, run the audit.
+## Quick start
+
+Once you're set up (steps 1 and 2 below), these are the only commands you run each epoch:
+
+```bash
+# Terminal 1: the buyer, left running
+antseed-verifier buyer start
+
+# Terminal 2: audit your models, then put the results on-chain
+antseed-verifier verifier run
+antseed-verifier verifier submit --dry-run
+antseed-verifier verifier submit --yes
+
+# Terminal 3 (optional): follow the audit while it runs
+antseed-verifier verifier status
+```
+
+- `verifier run` builds any missing question banks, audits every seller of your models, rechecks every `DIFF` and retries failures on its own. Running it again in the same epoch continues where it left off.
+- Until you're approved, use `verifier run --all` to try an audit; you can't submit it yet.
+- `submit` publishes the audit evidence on IPFS, so set `PINATA_JWT` first (`--no-publish-ipfs` submits without it).
+
+The rest of this page explains each step. How an audit works is in [How audits run](/docs/verify/audits).
 
 :::tip You don't need approval to run an audit
 Approval is only needed to submit results on-chain (see [Getting approved](/docs/verify/audits#getting-approved)).
@@ -82,31 +103,19 @@ antseed-verifier buyer start
 
 If another Antseed app already uses port 8377, set `buyer.proxyPort` to a free port in the config first.
 
-The buyer's `buyer.maxPricing.defaults` must be at or above the reference price of every audited model, or `verifier run` stops and tells you what to set it to.
+If its price cap is too low for an audited model, `verifier run` stops and says what to set (see [Your buyer's price cap](/docs/verify/audits#your-buyers-price-cap)).
 
-## 3. Build references
-
-```bash
-antseed-verifier verifier reference build --all
-```
-
-This builds the question bank for every audited model from the reference API. Run it again later to finish or grow the banks.
-
-## 4. Run the audit
+## 3. Run the audit
 
 ```bash
 antseed-verifier verifier run
 ```
 
-This audits every seller your buyer has found, for **your share of the audited models** this epoch. The models are split across the approved auditors, round robin (see [Which models you audit](/docs/verify/audits#which-models-you-audit)). The run prints your models first. Until you are approved you have no share: use `verifier run <model>` or `--all` to try an audit without submitting it.
+Follow it from a second terminal with `antseed-verifier verifier status`. The first run takes longest: it builds each model's question bank from the reference API before it asks any seller (see [Reference banks](/docs/verify/audits#reference-banks)). When it finishes, it prints the epoch overview, `<data-dir>/verifier/evidence/epochs/<epoch>/overview.html`, with every seller's verdict (see [The epoch overview](/docs/verify/audits#the-epoch-overview)).
 
-Follow the run from a second terminal with `antseed-verifier verifier status`. When it finishes it prints:
-
-- the run ID;
-- an HTML report per model;
-- the epoch overview, `<data-dir>/verifier/evidence/epochs/<epoch>/overview.html`: every seller × model from all of this epoch's runs, with green `SAME`, red `DIFF`, yellow `UNDETERMINED` and grey "tried, not submitted" dots. Hover a yellow or grey dot to see why, in the same words [AntScan](https://antscan.co) uses. `antseed-verifier verifier overview` rebuilds it at any time.
+Until you are approved, the run has no models to audit: add `--all` (or name one model) to try an audit without submitting it.
 
 ## Next
 
-- [How audits run](/docs/verify/audits): verdicts, which sellers are skipped, submitting on-chain and rewards.
+- [How audits run](/docs/verify/audits): question banks, which models and sellers you audit, verdicts, submitting on-chain and rewards.
 - [Getting approved](/docs/verify/audits#getting-approved): needed before you can submit.

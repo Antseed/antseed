@@ -81,14 +81,14 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
     .command('submit')
     .description('Submit one audit per model for the current epoch, merging every run of the epoch (approved auditors only)')
     .option('--run-id <run-id>', 'submit only this completed run instead of the whole epoch')
-    .option('--publish-ipfs', 'publish each model audit\'s public evidence to Pinata and record its ipfs:// URI')
+    .option('--no-publish-ipfs', 'do not publish the audit evidence to IPFS (by default each model audit\'s public evidence is pinned to Pinata and its ipfs:// URI recorded; needs PINATA_JWT)')
     .option('--dry-run', 'preview the audits without publishing or broadcasting')
-    .option('--publish-only', 'with --publish-ipfs: write and publish each model audit\'s evidence and record it in the ledger, without sending transactions')
+    .option('--publish-only', 'write and publish each model audit\'s evidence and record it in the ledger, without sending transactions')
     .option('--auditor <address>', 'with --publish-only: auditor address the evidence is written for, so no signer is needed')
     .option('--yes', 'submit without an interactive confirmation prompt')
     .option('--rpc-url <url>', 'Base JSON-RPC URL override')
     .option('--keystore <path>', 'sign with this encrypted JSON keystore (e.g. a Foundry keystore) instead of verifier.keystore or the data-dir identity; the password is asked on the terminal')
-    .option('--skip-version-check', 'submit even if this CLI audits differently from the latest release, or the check cannot be made')
+    .option('--skip-version-check', 'submit even if this CLI is older than the latest release, or the check cannot be made')
     .action(async (options: SubmitOptions, command: Command) => {
       const globalOptions = getGlobalOptions(command)
       const config = await loadConfig(globalOptions.config)
@@ -106,7 +106,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       const manifest = options.runId
         ? await readVerifierRunManifest(evidenceDir, options.runId)
         : await epochSubmissionManifest(evidenceDir, (await verifierClient.currentEpochWindow()).epoch)
-      if (options.publishOnly && !options.publishIpfs) throw new Error('--publish-only requires --publish-ipfs')
+      if (options.publishOnly && options.publishIpfs === false) throw new Error('--publish-only cannot be combined with --no-publish-ipfs')
       if (options.auditor && !options.publishOnly) throw new Error('--auditor is only valid with --publish-only')
       const { wallet, address } = options.auditor
         ? { wallet: null, address: getAddress(options.auditor) }
@@ -115,8 +115,13 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
           : await resolveAuditorSigner({
             config: config.verifier, dataDir: globalOptions.dataDir, keystoreFlag: options.keystore,
           })
-      const pinataJwt = options.publishIpfs ? process.env['PINATA_JWT']?.trim() : undefined
-      if (options.publishIpfs && !pinataJwt) throw new Error('PINATA_JWT is required with --publish-ipfs')
+      const publishIpfs = options.publishIpfs !== false
+      const pinataJwt = publishIpfs ? process.env['PINATA_JWT']?.trim() : undefined
+      if (publishIpfs && !pinataJwt) {
+        const message = 'PINATA_JWT is required to publish the audit evidence to IPFS; set it, or pass --no-publish-ipfs to submit without publishing'
+        if (!options.dryRun) throw new Error(message)
+        console.warn(chalk.yellow(message))
+      }
 
       const [window, network, approved, limits] = await Promise.all([
         verifierClient.currentEpochWindow(),
@@ -192,7 +197,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
         console.log(chalk.dim('Nothing to submit.'))
         return
       }
-      if (options.publishIpfs) {
+      if (publishIpfs) {
         console.warn(chalk.yellow('IPFS publication is public: complete audit evidence and signed exchanges will be pinned.'))
       }
       if (options.publishOnly) {
@@ -227,7 +232,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
         let publication = reusablePublication(previous, audit.evidenceHash)
         try {
           await writeModelAuditEvidence(audit)
-          if (options.publishIpfs && !publication) publication = await publish(evidenceDir, manifest.runId, audit, pinataJwt!)
+          if (publishIpfs && !publication) publication = await publish(evidenceDir, manifest.runId, audit, pinataJwt!)
           const evidenceUri = publication?.uri ?? previous?.evidenceUri ?? ''
           const entry = ledgerEntry(audit, evidenceUri, publication)
           ledger.models[audit.key] = entry

@@ -26,7 +26,7 @@ test('a seller short of unseen questions stops the run unless enrollment is on',
   const problems = probeBankProblems({ model: 'kimi-k3', sellers, enrollIfNeeded: false })
   assert.equal(problems.length, 1)
   assert.match(problems[0]!, /kimi-k3: 2 seller\(s\).*lowest: 120 of 200 needed, seller cccccccccccc/)
-  assert.match(problems[0]!, /--enroll-if-needed/)
+  assert.match(problems[0]!, /--no-enroll/)
   assert.deepEqual(probeBankProblems({ model: 'kimi-k3', sellers, enrollIfNeeded: true }), [])
   assert.deepEqual(probeBankProblems({ model: 'kimi-k3', sellers: sellers.slice(0, 1), enrollIfNeeded: false }), [])
 })

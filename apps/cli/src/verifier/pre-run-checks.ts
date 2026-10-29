@@ -42,7 +42,7 @@ export function probeBankProblems(input: {
   return [
     `${input.model}: ${short.length} seller(s) have too few unseen questions for an audit and a DIFF recheck `
     + `(lowest: ${worst.unseenProbeCount} of ${worst.neededProbeCount} needed, seller ${worst.sellerPeerId.slice(0, 12)}…). `
-    + 'Add --enroll-if-needed --max-enrollment-requests <n> to add fresh questions',
+    + 'Run without --no-enroll to add fresh questions',
   ]
 }
 

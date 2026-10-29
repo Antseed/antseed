@@ -88,7 +88,7 @@ export async function runDiffRechecks(input: {
       }
     } else {
       for (const first of exhausted) {
-        skipReasons.set(first, 'no fresh questions left and enrollment is off (use --enroll-if-needed)')
+        skipReasons.set(first, 'no fresh questions left and enrollment is off (--no-enroll)')
       }
     }
   }
