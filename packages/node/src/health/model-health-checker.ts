@@ -2,6 +2,7 @@ import type { Provider, ServiceHealthStatus, UpstreamAccountStatus } from '../in
 import type { SerializedHttpRequest } from '../types/http.js';
 import { isNativeVideoProtocol, isRoutingProtocol, type ServiceApiProtocol } from '../types/service-api.js';
 import { debugLog, debugWarn } from '../utils/debug.js';
+import { isLiveResponseOutOfCredit, isUpstreamOutOfCredit } from './upstream-credit.js';
 
 /** Default sweep interval. Each sweep sends one 1-token probe per advertised service. */
 export const DEFAULT_HEALTH_CHECK_INTERVAL_MS = 5 * 60_000;
@@ -24,10 +25,18 @@ export interface ModelHealthTarget {
    * doesn't run a full agent loop. Defaults to `provider`.
    */
   probeProvider?: Provider;
+  /**
+   * The seller config's name for this provider instance. Several instances
+   * can share a plugin and so a `provider.name` (four upstreams on the openai
+   * plugin); this tells them apart in snapshots and events. Defaults to `provider.name`.
+   */
+  id?: string;
 }
 
 export interface ModelHealthEvent {
   provider: string;
+  /** The target's `id` (the configured provider name). */
+  providerId: string;
   service: string;
   status: 'removed' | 'restored';
   consecutiveFailures: number;
@@ -35,8 +44,28 @@ export interface ModelHealthEvent {
   detail: string;
 }
 
+/**
+ * An upstream account's credit changed: out of credit (an HTTP 402 or a
+ * billing error from a probe, an account check or a live request), below the
+ * low-balance line (from the account check), or funded again.
+ */
+export interface UpstreamAccountEvent {
+  provider: string;
+  /** The target's `id` (the configured provider name). */
+  providerId: string;
+  status: 'out_of_credit' | 'low_balance' | 'funded';
+  /** The upstream's error, or the balance read. */
+  detail: string;
+  /** USD balance, when the provider can read it. */
+  balanceUsd: number | null;
+  /** The upstream's services (advertised or withdrawn). */
+  services: string[];
+}
+
 export interface ServiceHealthSnapshot {
   provider: string;
+  /** The target's `id` (the configured provider name). */
+  providerId: string;
   service: string;
   advertised: boolean;
   consecutiveFailures: number;
@@ -55,12 +84,23 @@ export interface ModelHealthCheckerConfig {
    * re-sign seller metadata here (e.g. `node.refreshSellerMetadata()`).
    */
   onChange?: (event: ModelHealthEvent) => void | Promise<void>;
+  /** Invoked when an upstream account runs out of credit, drops below `lowBalanceUsd`, or is funded again. */
+  onUpstreamAccount?: (event: UpstreamAccountEvent) => void | Promise<void>;
+  /** Invoked after each sweep, so changes from one round can be reported together. */
+  onSweepComplete?: () => void;
+  /** USD balance under which a provider that reads its balance reports `low_balance`; a function is read on every check. */
+  lowBalanceUsd?: number | (() => number | undefined);
 }
+
+type AccountState = 'out' | 'low' | 'ok';
 
 type ProbeOutcome = 'healthy' | 'unhealthy' | 'inconclusive';
 
 interface ServiceHealthState {
+  /** The provider instance this state belongs to (several can share a name, e.g. four upstreams on the openai plugin). */
+  provider: Provider;
   providerName: string;
+  providerId: string;
   service: string;
   consecutiveFailures: number;
   removed: boolean;
@@ -89,9 +129,18 @@ export class ModelHealthChecker {
   private readonly _probeTimeoutMs: number;
   private readonly _onChange: ModelHealthCheckerConfig['onChange'];
   private readonly _states = new Map<string, ServiceHealthState>();
+  /** Stable per-instance ids: providers are told apart by instance, not by name. */
+  private readonly _providerIds = new Map<Provider, number>();
   private _timer: ReturnType<typeof setInterval> | null = null;
   private _sweepInFlight: Promise<void> | null = null;
   private _stopped = false;
+  private readonly _onUpstreamAccount: ModelHealthCheckerConfig['onUpstreamAccount'];
+  private readonly _lowBalanceUsd: ModelHealthCheckerConfig['lowBalanceUsd'];
+  private readonly _onSweepComplete: ModelHealthCheckerConfig['onSweepComplete'];
+  /** Each upstream's credit as last seen; unset until something said. */
+  private readonly _accounts = new Map<Provider, AccountState>();
+  /** Services withdrawn before `onChange` could be told; reported on the first start. */
+  private _withdrawnAtInit: ServiceHealthState[] = [];
 
   constructor(config: ModelHealthCheckerConfig) {
     this._targets = config.targets;
@@ -99,16 +148,20 @@ export class ModelHealthChecker {
     this._failureThreshold = Math.max(1, config.failureThreshold ?? DEFAULT_HEALTH_CHECK_FAILURE_THRESHOLD);
     this._probeTimeoutMs = config.probeTimeoutMs ?? DEFAULT_HEALTH_CHECK_PROBE_TIMEOUT_MS;
     this._onChange = config.onChange;
+    this._onUpstreamAccount = config.onUpstreamAccount;
+    this._lowBalanceUsd = config.lowBalanceUsd;
+    this._onSweepComplete = config.onSweepComplete;
     // Providers retained after an OAuth initialization failure must pass a real
     // probe before any service is advertised. Keep their services in recovery
     // state rather than dropping the provider permanently.
     for (const { provider } of this._targets) {
       if (provider.healthCheckAvailable !== false) continue;
       for (const [index, service] of provider.services.entries()) {
-        const state = this._stateFor(provider.name, service);
+        const state = this._stateFor(provider, service);
         state.removed = true;
         state.removedAtIndex = index;
         state.lastDetail = 'Awaiting successful probe after initialization failure';
+        this._withdrawnAtInit.push(state);
       }
       provider.services.splice(0);
     }
@@ -118,6 +171,17 @@ export class ModelHealthChecker {
   start(): void {
     if (this._timer) return;
     this._stopped = false;
+    for (const state of this._withdrawnAtInit.splice(0)) {
+      if (!state.removed) continue;
+      this._emitChange({
+        provider: state.providerName,
+        providerId: state.providerId,
+        service: state.service,
+        status: 'removed',
+        consecutiveFailures: state.consecutiveFailures,
+        detail: state.lastDetail ?? 'initialization failed',
+      });
+    }
     void this.runSweep();
     this._timer = setInterval(() => {
       void this.runSweep();
@@ -139,6 +203,12 @@ export class ModelHealthChecker {
     if (this._sweepInFlight) return this._sweepInFlight;
     this._sweepInFlight = this._runSweep().finally(() => {
       this._sweepInFlight = null;
+      if (this._stopped || !this._onSweepComplete) return;
+      try {
+        this._onSweepComplete();
+      } catch (err) {
+        debugWarn(`[ModelHealth] onSweepComplete failed: ${err instanceof Error ? err.message : err}`);
+      }
     });
     return this._sweepInFlight;
   }
@@ -146,6 +216,7 @@ export class ModelHealthChecker {
   getSnapshot(): ServiceHealthSnapshot[] {
     return Array.from(this._states.values()).map((state) => ({
       provider: state.providerName,
+      providerId: state.providerId,
       service: state.service,
       advertised: !state.removed,
       consecutiveFailures: state.consecutiveFailures,
@@ -176,7 +247,7 @@ export class ModelHealthChecker {
       // the live array on state transitions.
       const services = new Set<string>(provider.services);
       for (const state of this._states.values()) {
-        if (state.providerName === provider.name && state.removed) {
+        if (state.provider === provider && state.removed) {
           services.add(state.service);
         }
       }
@@ -222,6 +293,16 @@ export class ModelHealthChecker {
         : undefined,
     ]);
     const balance = account?.status === 'available' ? account.balanceUsd : undefined;
+    if (account?.status === 'unavailable' && (account.outOfCredit === true || isUpstreamOutOfCredit(null, account.reason))) {
+      this._setAccount(provider, 'out', account.reason, null);
+    } else if (account?.status === 'available') {
+      const low = this._lowLine();
+      // Without a balance, an answering account endpoint is no proof of credit: only a billable success clears "out".
+      const unproven = balance === undefined && this._accounts.get(provider) === 'out';
+      if (balance !== undefined && balance <= 0) this._setAccount(provider, 'out', `Balance $${balance.toFixed(2)}`, balance);
+      else if (balance !== undefined && low !== undefined && balance < low) this._setAccount(provider, 'low', `Balance $${balance.toFixed(2)}, under $${low.toFixed(2)}`, balance);
+      else if (!unproven) this._setAccount(provider, 'ok', balance === undefined ? 'Account check passed' : `Balance $${balance.toFixed(2)}`, balance ?? null);
+    }
     const combine = (service: string): UpstreamAccountStatus => {
       const model: ServiceHealthStatus | undefined = models === undefined
         ? undefined
@@ -234,7 +315,7 @@ export class ModelHealthChecker {
     for (const service of services) {
       if (this._stopped) return;
       const result = combine(service);
-      const state = this._stateFor(provider.name, service);
+      const state = this._stateFor(provider, service);
       if (result.status === 'unknown') {
         debugLog(`[ModelHealth] ${provider.name}/${service}: inconclusive (${result.reason ?? 'no result'})`);
         continue;
@@ -253,12 +334,19 @@ export class ModelHealthChecker {
     }
   }
 
-  private _stateFor(providerName: string, service: string): ServiceHealthState {
-    const key = `${providerName}\0${service}`;
+  private _stateFor(provider: Provider, service: string): ServiceHealthState {
+    let id = this._providerIds.get(provider);
+    if (id === undefined) {
+      id = this._providerIds.size;
+      this._providerIds.set(provider, id);
+    }
+    const key = `${id}\0${service}`;
     let state = this._states.get(key);
     if (!state) {
       state = {
-        providerName,
+        provider,
+        providerName: provider.name,
+        providerId: this._targets.find((target) => target.provider === provider)?.id ?? provider.name,
         service,
         consecutiveFailures: 0,
         removed: false,
@@ -275,10 +363,11 @@ export class ModelHealthChecker {
   private async _probeService(target: ModelHealthTarget, service: string): Promise<void> {
     const provider = target.provider;
     const probeProvider = target.probeProvider ?? provider;
-    const state = this._stateFor(provider.name, service);
+    const state = this._stateFor(provider, service);
     state.lastProbeAt = Date.now();
 
     let outcome: ProbeOutcome;
+    let errorText: string | null = null;
     try {
       const protocol = resolveProbeProtocol(provider, service);
       if (!supportsHealthProbe(protocol)) {
@@ -295,15 +384,24 @@ export class ModelHealthChecker {
       );
       state.lastStatusCode = response.statusCode;
       outcome = classifyProbeStatus(response.statusCode);
+      // Classified on the body itself, not the 200-byte summary: a billing code can follow a long message.
+      if (outcome !== 'healthy') errorText = decodeBody(response.body, 16_384);
       state.lastDetail = outcome === 'healthy'
         ? `HTTP ${response.statusCode}`
         : `HTTP ${response.statusCode}: ${summarizeBody(response.body)}`;
     } catch (err) {
       state.lastStatusCode = null;
       state.lastDetail = err instanceof Error ? err.message : String(err);
+      errorText = state.lastDetail;
       outcome = 'unhealthy';
     }
 
+    // A billing error is a failure whatever its status (Anthropic answers one with a 400);
+    // a 404 or 422 is about the probe itself, so its text never marks the account.
+    if (outcome !== 'healthy' && state.lastStatusCode !== 404 && state.lastStatusCode !== 422 && isUpstreamOutOfCredit(state.lastStatusCode, errorText)) {
+      outcome = 'unhealthy';
+      this._setAccount(provider, 'out', state.lastDetail ?? 'out of credit', null);
+    }
     if (outcome === 'inconclusive') {
       // The endpoint answered but the probe result proves nothing either way
       // (for example, 400 for an unsupported probe parameter). Leave failure
@@ -313,6 +411,8 @@ export class ModelHealthChecker {
     }
 
     if (outcome === 'healthy') {
+      // An answered completion means the account pays again (its balance is unknown here).
+      if (this._accounts.get(provider) === 'out') this._setAccount(provider, 'ok', state.lastDetail ?? 'probe succeeded', null);
       state.consecutiveFailures = 0;
       if (state.removed) {
         this._restoreService(provider, state);
@@ -321,6 +421,55 @@ export class ModelHealthChecker {
     }
 
     this._recordFailure(provider, state);
+  }
+
+  /**
+   * A live request's upstream answer (the seller's own traffic): an out-of-credit
+   * error is reported at once instead of waiting for the probes, and a billable
+   * success after one means the account pays again (polling or downloading a
+   * video already paid for is not billable and proves nothing).
+   */
+  reportUpstreamResponse(provider: Provider, statusCode: number, body: string, billable = true): void {
+    const target = this._targets.find((entry) => entry.provider === provider || entry.probeProvider === provider);
+    if (!target || this._stopped) return;
+    if (statusCode >= 400 && isLiveResponseOutOfCredit(statusCode, body)) {
+      this._setAccount(target.provider, 'out', `HTTP ${statusCode}: ${summarizeBody(new TextEncoder().encode(body))}`, null);
+    } else if (statusCode < 400 && billable && this._accounts.get(target.provider) === 'out') {
+      this._setAccount(target.provider, 'ok', `HTTP ${statusCode} on a request`, null);
+    }
+  }
+
+  private _lowLine(): number | undefined {
+    const value = typeof this._lowBalanceUsd === 'function' ? this._lowBalanceUsd() : this._lowBalanceUsd;
+    return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
+  }
+
+  /** Records an upstream's credit and reports a change; the first reading of a funded account is not a change. */
+  private _setAccount(provider: Provider, next: AccountState, detail: string, balanceUsd: number | null): void {
+    const previous = this._accounts.get(provider);
+    if (previous === next) return;
+    this._accounts.set(provider, next);
+    if (next === 'ok' && previous === undefined) return;
+    const target = this._targets.find((entry) => entry.provider === provider);
+    const services = [...new Set([...provider.services, ...[...this._states.values()].filter((state) => state.provider === provider).map((state) => state.service)])];
+    const event: UpstreamAccountEvent = {
+      provider: provider.name,
+      providerId: target?.id ?? provider.name,
+      status: next === 'out' ? 'out_of_credit' : next === 'low' ? 'low_balance' : 'funded',
+      detail,
+      balanceUsd,
+      services,
+    };
+    debugWarn(`[ModelHealth] ${event.providerId}: upstream ${event.status} (${detail})`);
+    if (!this._onUpstreamAccount) return;
+    try {
+      const result = this._onUpstreamAccount(event);
+      if (result && typeof (result as Promise<void>).catch === 'function') {
+        (result as Promise<void>).catch((err) => debugWarn(`[ModelHealth] onUpstreamAccount failed: ${err instanceof Error ? err.message : err}`));
+      }
+    } catch (err) {
+      debugWarn(`[ModelHealth] onUpstreamAccount failed: ${err instanceof Error ? err.message : err}`);
+    }
   }
 
   private _recordFailure(provider: Provider, state: ServiceHealthState): void {
@@ -353,6 +502,7 @@ export class ModelHealthChecker {
     }
     this._emitChange({
       provider: provider.name,
+      providerId: state.providerId,
       service: state.service,
       status: 'removed',
       consecutiveFailures: state.consecutiveFailures,
@@ -369,6 +519,7 @@ export class ModelHealthChecker {
     provider.healthCheckAvailable = true;
     this._emitChange({
       provider: provider.name,
+      providerId: state.providerId,
       service: state.service,
       status: 'restored',
       consecutiveFailures: 0,
@@ -478,6 +629,14 @@ export function classifyProbeStatus(statusCode: number): ProbeOutcome {
   }
   if (statusCode >= 500) return 'unhealthy';
   return 'inconclusive';
+}
+
+function decodeBody(body: Uint8Array, maxBytes: number): string {
+  try {
+    return new TextDecoder().decode(body.slice(0, maxBytes));
+  } catch {
+    return '';
+  }
 }
 
 function summarizeBody(body: Uint8Array): string {

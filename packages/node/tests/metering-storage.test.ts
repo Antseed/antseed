@@ -270,3 +270,42 @@ describe('MeteringStorage — Pruning', () => {
     expect(storage.getReceiptsByTimeRange(recent - 10, recent + 10)).toHaveLength(1);
   });
 });
+
+describe('MeteringStorage rowid summaries', () => {
+  beforeEach(() => {
+    storage = new MeteringStorage(':memory:');
+  });
+
+  afterEach(() => {
+    storage.close();
+  });
+
+  it('summarizes events after a rowid, in bounded chunks grouped by UTC day', () => {
+    const day = 20_000;
+    storage.insertEvent(makeEvent({ timestamp: day * 86_400_000 + 1, tokens: makeTokens(100) }));
+    storage.insertEvent(makeEvent({ timestamp: day * 86_400_000 + 2, tokens: makeTokens(200) }));
+    storage.insertEvent(makeEvent({ timestamp: (day + 1) * 86_400_000, tokens: makeTokens(400) }));
+
+    const first = storage.summarizeEventsAfter(0, 2);
+    expect(first.rows).toBe(2);
+    expect(first.days).toEqual([{ day, requests: 2, totalTokens: 300, inputTokens: 180, outputTokens: 120 }]);
+
+    const second = storage.summarizeEventsAfter(first.lastRowid, 2);
+    expect(second.rows).toBe(1);
+    expect(second.days).toEqual([{ day: day + 1, requests: 1, totalTokens: 400, inputTokens: 240, outputTokens: 160 }]);
+
+    const done = storage.summarizeEventsAfter(second.lastRowid, 2);
+    expect(done).toEqual({ lastRowid: second.lastRowid, rows: 0, days: [] });
+    expect(storage.getMaxRowids().events).toBe(second.lastRowid);
+  });
+
+  it('summarizes receipt cost after a rowid', () => {
+    storage.insertReceipt(makeReceipt({ timestamp: 86_400_000, costCents: 7 }));
+    storage.insertReceipt(makeReceipt({ timestamp: 86_400_000 + 5, costCents: 3 }));
+
+    const chunk = storage.summarizeReceiptsAfter(0, 10);
+    expect(chunk.rows).toBe(2);
+    expect(chunk.days).toEqual([{ day: 1, costCents: 10 }]);
+    expect(storage.getMaxRowids().receipts).toBe(chunk.lastRowid);
+  });
+});

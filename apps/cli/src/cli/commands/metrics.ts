@@ -1,20 +1,22 @@
 import type { Command } from 'commander';
 import chalk from 'chalk';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadConfig } from '../../config/loader.js';
 import { getGlobalOptions } from './types.js';
-import { createDepositsClient } from '../payment-utils.js';
+import { createDepositsClient, requireCryptoConfig } from '../payment-utils.js';
 import { FileIdentityStore, identityFromPrivateKeyHex } from '@antseed/node';
 import { MeteringStorage } from '@antseed/node/metering';
+import { parseGas, parseModelHealth, readDaemonState, SELLER_STALE_MS } from '../../seller-monitor/reader.js';
+import { sharedChainProvider } from '../../proxy/chain-rpc.js';
+import { rpcUsage, withRpcSource } from '../../proxy/rpc-sources.js';
 import { ChannelStore, type StoredChannel } from '@antseed/node/payments';
 
-const MICRO_USDC = 1_000_000;
 const DAY_MS = 86_400_000;
+const MICRO_USDC = 1_000_000;
 
-interface MetricSample {
+export interface MetricSample {
   name: string;
   help: string;
   type: 'gauge' | 'counter';
@@ -129,16 +131,8 @@ function listChannels(dataDir: string, limit: number): StoredChannel[] {
   }
 }
 
-async function readDaemonState(dataDir: string): Promise<Record<string, unknown> | null> {
-  try {
-    return JSON.parse(await readFile(join(dataDir, 'daemon.state.json'), 'utf-8')) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-}
 
-async function addCommonMetrics(samples: MetricSample[], baseLabels: Record<string, string>, dataDir: string): Promise<void> {
-  const daemon = await readDaemonState(dataDir);
+async function addCommonMetrics(samples: MetricSample[], baseLabels: Record<string, string>, daemon: Record<string, unknown> | null): Promise<void> {
   addSample(samples, baseLabels, {
     name: 'antseed_metrics_scrape_timestamp_seconds',
     help: 'Unix timestamp of the metrics scrape.',
@@ -230,12 +224,7 @@ async function addBuyerMetrics(samples: MetricSample[], baseLabels: Record<strin
 
   if (includeChain && wallet) {
     try {
-      const config = await loadConfig(configPath);
-      const deposits = createDepositsClient(config);
-      const [account, walletUsdc] = await Promise.all([
-        deposits.getBuyerBalance(wallet),
-        deposits.getUSDCBalance(wallet),
-      ]);
+      const { account, walletUsdc } = await chainBalances(configPath, wallet);
       addSample(samples, buyerLabels, { name: 'antseed_buyer_deposits_available_usdc', help: 'Buyer deposits available in the deposits contract.', type: 'gauge', value: microsToUsdc(account.available) });
       addSample(samples, buyerLabels, { name: 'antseed_buyer_deposits_reserved_usdc', help: 'Buyer deposits reserved in the deposits contract.', type: 'gauge', value: microsToUsdc(account.reserved) });
       addSample(samples, buyerLabels, { name: 'antseed_wallet_usdc', help: 'Wallet USDC balance.', type: 'gauge', value: microsToUsdc(walletUsdc) });
@@ -245,9 +234,79 @@ async function addBuyerMetrics(samples: MetricSample[], baseLabels: Record<strin
   }
 }
 
-async function addSellerMetrics(samples: MetricSample[], baseLabels: Record<string, string>, dataDir: string): Promise<void> {
+/**
+ * Whether the state file is from a seller that is running: a crashed or killed
+ * seller leaves its last state behind, which must not read as live health.
+ */
+export function isLiveDaemon(daemon: Record<string, unknown> | null, now: number = Date.now()): boolean {
+  const updatedAt = daemon?.updatedAt;
+  return typeof updatedAt === 'number' && now - updatedAt < SELLER_STALE_MS;
+}
+
+/**
+ * Model health and gas from the seller daemon's state file (absent on older
+ * sellers), parsed like the dashboard does; none while the seller is not running.
+ */
+export function addSellerHealthMetrics(samples: MetricSample[], sellerLabels: Record<string, string>, daemon: Record<string, unknown> | null, now: number = Date.now()): void {
+  if (!isLiveDaemon(daemon, now)) return;
+  for (const service of parseModelHealth(daemon?.modelHealth)) {
+    // `provider` is the configured provider name, so upstreams sharing a plugin get their own series.
+    const serviceLabels = { provider: service.providerId, plugin: service.provider, service: service.service };
+    addSample(samples, sellerLabels, { name: 'antseed_seller_model_advertised', help: 'Whether the service passes health checks and is advertised (0 = withdrawn after failing probes).', type: 'gauge', labels: serviceLabels, value: service.advertised ? 1 : 0 });
+    addSample(samples, sellerLabels, { name: 'antseed_seller_model_consecutive_failures', help: 'Consecutive failed health probes for the service.', type: 'gauge', labels: serviceLabels, value: service.consecutiveFailures });
+    if (service.lastStatusCode !== null) {
+      addSample(samples, sellerLabels, { name: 'antseed_seller_model_last_status_code', help: 'HTTP status of the last failed upstream probe (e.g. 402 = upstream out of credit).', type: 'gauge', labels: serviceLabels, value: service.lastStatusCode });
+    }
+    if (service.lastProbeAt !== null) {
+      addSample(samples, sellerLabels, { name: 'antseed_seller_model_last_probe_timestamp_seconds', help: 'Unix timestamp of the last health probe for the service.', type: 'gauge', labels: serviceLabels, value: Math.floor(service.lastProbeAt / 1000) });
+    }
+  }
+  const gas = parseGas(daemon?.gas);
+  if (gas && gas.balanceEth !== null) {
+    addSample(samples, sellerLabels, { name: 'antseed_seller_gas_balance_eth', help: 'Seller wallet ETH balance from the last gas check.', type: 'gauge', value: gas.balanceEth });
+    addSample(samples, sellerLabels, { name: 'antseed_seller_gas_min_balance_eth', help: 'ETH balance below which the seller pauses advertising.', type: 'gauge', value: gas.minBalanceEth });
+    addSample(samples, sellerLabels, { name: 'antseed_seller_gas_depleted', help: 'Whether advertising is paused because the wallet is out of gas.', type: 'gauge', value: gas.depleted ? 1 : 0 });
+  }
+}
+
+/** Chain RPC calls per source: this exporter's own, and the seller daemon's from its state file. */
+export function addRpcMetrics(samples: MetricSample[], baseLabels: Record<string, string>, daemon: Record<string, unknown> | null, now: number = Date.now()): void {
+  const help = 'Chain RPC calls made, by source (as asked, before coalescing and Multicall batching).';
+  for (const [source, usage] of Object.entries(rpcUsage())) {
+    addSample(samples, baseLabels, { name: 'antseed_rpc_calls_total', help, type: 'counter', labels: { source, process: 'exporter' }, value: usage.total });
+  }
+  // A stopped seller's counters would sit frozen; its series go away instead.
+  const daemonRpc = isLiveDaemon(daemon, now) && daemon?.rpc && typeof daemon.rpc === 'object' ? daemon.rpc as Record<string, { total?: unknown }> : {};
+  for (const [source, usage] of Object.entries(daemonRpc)) {
+    addSample(samples, baseLabels, { name: 'antseed_rpc_calls_total', help, type: 'counter', labels: { source, process: 'seller' }, value: num(usage?.total) });
+  }
+}
+
+const CHAIN_BALANCES_TTL_MS = 60_000;
+let chainBalancesCache: { key: string; at: number; value: Promise<{ account: { available: bigint; reserved: bigint }; walletUsdc: bigint }> } | null = null;
+
+/**
+ * Deposits and wallet USDC for `--include-chain`: one client on the process's
+ * shared provider (both reads batch into one Multicall3 call), and at most one
+ * read a minute however often Prometheus scrapes.
+ */
+function chainBalances(configPath: string, wallet: string) {
+  const key = `${configPath}|${wallet}`;
+  if (chainBalancesCache && chainBalancesCache.key === key && Date.now() - chainBalancesCache.at < CHAIN_BALANCES_TTL_MS) return chainBalancesCache.value;
+  const value = withRpcSource('metrics', async () => {
+    const config = await loadConfig(configPath);
+    const crypto = requireCryptoConfig(config);
+    const deposits = createDepositsClient(config).withProvider(sharedChainProvider({ rpcUrl: crypto.rpcUrl, evmChainId: crypto.evmChainId, ...(crypto.fallbackRpcUrls ? { fallbackRpcUrls: crypto.fallbackRpcUrls } : {}) }));
+    const [account, walletUsdc] = await Promise.all([deposits.getBuyerBalance(wallet), deposits.getUSDCBalance(wallet)]);
+    return { account, walletUsdc };
+  });
+  chainBalancesCache = { key, at: Date.now(), value };
+  value.catch(() => { if (chainBalancesCache?.value === value) chainBalancesCache = null; });
+  return value;
+}
+
+async function addSellerMetrics(samples: MetricSample[], baseLabels: Record<string, string>, dataDir: string, daemon: Record<string, unknown> | null): Promise<void> {
   const wallet = await loadExistingWalletAddress(dataDir);
-  const daemon = await readDaemonState(dataDir);
   const sellerLabels = { ...baseLabels, role: 'seller', wallet, peer_id: String(daemon?.peerId ?? '') };
   const allChannels = listChannels(dataDir, 1_000_000).filter((channel) => channel.role === 'seller');
   const dayStart = utcDayStartMs();
@@ -285,28 +344,32 @@ async function addSellerMetrics(samples: MetricSample[], baseLabels: Record<stri
   addSample(samples, sellerLabels, { name: 'antseed_seller_channel_requests_total', help: 'Seller request count from local payment channel ledger.', type: 'counter', value: requests });
   addSample(samples, sellerLabels, { name: 'antseed_seller_channel_tokens_total', help: 'Seller delivered token/payment counter from local payment channel ledger.', type: 'counter', value: tokens });
 
+  addSellerHealthMetrics(samples, sellerLabels, daemon);
+
   try {
     const meteringPath = join(dataDir, 'metering.db');
     if (!existsSync(meteringPath)) return;
-    const metering = new MeteringStorage(meteringPath);
+    const metering = new MeteringStorage(meteringPath, { readonly: true });
     try {
-      const allEvents = metering.getEventTokenSummary(0, Date.now() + DAY_MS);
-      const todayEvents = metering.getEventTokenSummary(dayStart, Date.now() + DAY_MS);
+      const totals = advanceMeteringTotals(meteringPath, metering);
+      const today = Math.floor(Date.now() / DAY_MS);
+      const todayEvents = totals.eventDays.get(today);
       const allSessions = metering.getSessionSummary(0, Date.now() + DAY_MS);
       const todaySessions = metering.getSessionSummary(dayStart, Date.now() + DAY_MS);
-      const receiptCents = metering.getTotalCost(0, Date.now() + DAY_MS);
-      const receiptTodayCents = metering.getTotalCost(dayStart, Date.now() + DAY_MS);
 
-      addSample(samples, sellerLabels, { name: 'antseed_seller_metering_requests_total', help: 'Seller metering event request count.', type: 'counter', value: allEvents.totalRequests });
-      addSample(samples, sellerLabels, { name: 'antseed_seller_metering_requests_today', help: 'Seller metering event request count since UTC day start.', type: 'gauge', value: todayEvents.totalRequests });
-      addSample(samples, sellerLabels, { name: 'antseed_seller_metering_tokens_total', help: 'Seller metering event token count.', type: 'counter', value: allEvents.totalTokens });
-      addSample(samples, sellerLabels, { name: 'antseed_seller_metering_tokens_today', help: 'Seller metering event token count since UTC day start.', type: 'gauge', value: todayEvents.totalTokens });
-      addSample(samples, sellerLabels, { name: 'antseed_seller_metering_input_tokens_total', help: 'Seller metering input token count.', type: 'counter', value: allEvents.inputTokens });
-      addSample(samples, sellerLabels, { name: 'antseed_seller_metering_output_tokens_total', help: 'Seller metering output token count.', type: 'counter', value: allEvents.outputTokens });
+      addSample(samples, sellerLabels, { name: 'antseed_seller_metering_backfill_complete', help: 'Whether the exporter has read the whole metering ledger; metering totals are only reported once it has.', type: 'gauge', value: totals.caughtUp ? 1 : 0 });
       addSample(samples, sellerLabels, { name: 'antseed_seller_sessions_total', help: 'Seller metering session count.', type: 'counter', value: allSessions.channelCount });
       addSample(samples, sellerLabels, { name: 'antseed_seller_sessions_today', help: 'Seller metering session count since UTC day start.', type: 'gauge', value: todaySessions.channelCount });
-      addSample(samples, sellerLabels, { name: 'antseed_seller_receipt_revenue_usd_total', help: 'Seller usage receipt revenue in USD from local metering ledger.', type: 'counter', value: receiptCents / 100 });
-      addSample(samples, sellerLabels, { name: 'antseed_seller_receipt_revenue_today_usd', help: 'Seller usage receipt revenue in USD since UTC day start.', type: 'gauge', value: receiptTodayCents / 100 });
+      if (totals.caughtUp) {
+        addSample(samples, sellerLabels, { name: 'antseed_seller_metering_requests_total', help: 'Seller metering event request count.', type: 'counter', value: totals.events.requests });
+        addSample(samples, sellerLabels, { name: 'antseed_seller_metering_requests_today', help: 'Seller metering event request count since UTC day start.', type: 'gauge', value: todayEvents?.requests ?? 0 });
+        addSample(samples, sellerLabels, { name: 'antseed_seller_metering_tokens_total', help: 'Seller metering event token count.', type: 'counter', value: totals.events.totalTokens });
+        addSample(samples, sellerLabels, { name: 'antseed_seller_metering_tokens_today', help: 'Seller metering event token count since UTC day start.', type: 'gauge', value: todayEvents?.totalTokens ?? 0 });
+        addSample(samples, sellerLabels, { name: 'antseed_seller_metering_input_tokens_total', help: 'Seller metering input token count.', type: 'counter', value: totals.events.inputTokens });
+        addSample(samples, sellerLabels, { name: 'antseed_seller_metering_output_tokens_total', help: 'Seller metering output token count.', type: 'counter', value: totals.events.outputTokens });
+        addSample(samples, sellerLabels, { name: 'antseed_seller_receipt_revenue_usd_total', help: 'Seller usage receipt revenue in USD from local metering ledger.', type: 'counter', value: totals.receiptCents / 100 });
+        addSample(samples, sellerLabels, { name: 'antseed_seller_receipt_revenue_today_usd', help: 'Seller usage receipt revenue in USD since UTC day start.', type: 'gauge', value: (totals.receiptDays.get(today) ?? 0) / 100 });
+      }
     } finally {
       metering.close();
     }
@@ -315,24 +378,136 @@ async function addSellerMetrics(samples: MetricSample[], baseLabels: Record<stri
   }
 }
 
+/**
+ * Rows read from each metering table per scrape. The ledger grows without
+ * bound and lives on the seller's disk: one all-time SUM over millions of
+ * rows took minutes, stalled the seller's own SQLite writes until its
+ * liveness probe killed it, and blocked this exporter's /healthz. Totals are
+ * instead kept here and advanced by rowid, a bounded chunk per scrape.
+ */
+const METERING_ROWS_PER_SCRAPE = 100_000;
+/** UTC days of per-day totals kept for the *_today gauges. */
+const METERING_DAYS_KEPT = 2;
+
+interface EventTotals { requests: number; totalTokens: number; inputTokens: number; outputTokens: number }
+
+interface MeteringTotals {
+  /** Device and inode of the ledger file the totals were read from. */
+  fileIdentity: string;
+  eventsCursor: number;
+  /** Ids of the rows at the cursors, to notice a ledger rebuilt in place. */
+  eventsCheckpoint: string | null;
+  receiptsCheckpoint: string | null;
+  receiptsCursor: number;
+  events: EventTotals;
+  receiptCents: number;
+  eventDays: Map<number, EventTotals>;
+  receiptDays: Map<number, number>;
+  caughtUp: boolean;
+}
+
+const meteringTotalsByPath = new Map<string, MeteringTotals>();
+
+function emptyMeteringTotals(fileIdentity: string): MeteringTotals {
+  return {
+    fileIdentity,
+    eventsCursor: 0,
+    eventsCheckpoint: null,
+    receiptsCheckpoint: null,
+    receiptsCursor: 0,
+    events: { requests: 0, totalTokens: 0, inputTokens: 0, outputTokens: 0 },
+    receiptCents: 0,
+    eventDays: new Map(),
+    receiptDays: new Map(),
+    caughtUp: false,
+  };
+}
+
+function pruneDays<T>(days: Map<number, T>, today: number): void {
+  for (const day of days.keys()) {
+    if (day <= today - METERING_DAYS_KEPT) days.delete(day);
+  }
+}
+
+/** Read the next chunk of new events and receipts into the running totals for `path`. */
+export function advanceMeteringTotals(path: string, metering: MeteringStorage, rowsPerScrape = METERING_ROWS_PER_SCRAPE): MeteringTotals {
+  const { dev, ino } = statSync(path);
+  const fileIdentity = `${dev}:${ino}`;
+  let totals = meteringTotalsByPath.get(path);
+  if (!totals || ledgerChanged(totals, fileIdentity, metering)) {
+    totals = emptyMeteringTotals(fileIdentity);
+    meteringTotalsByPath.set(path, totals);
+  }
+  const max = metering.getMaxRowids();
+
+  const events = metering.summarizeEventsAfter(totals.eventsCursor, rowsPerScrape);
+  totals.eventsCursor = events.lastRowid;
+  for (const day of events.days) {
+    totals.events.requests += day.requests;
+    totals.events.totalTokens += day.totalTokens;
+    totals.events.inputTokens += day.inputTokens;
+    totals.events.outputTokens += day.outputTokens;
+    const kept = totals.eventDays.get(day.day) ?? { requests: 0, totalTokens: 0, inputTokens: 0, outputTokens: 0 };
+    kept.requests += day.requests;
+    kept.totalTokens += day.totalTokens;
+    kept.inputTokens += day.inputTokens;
+    kept.outputTokens += day.outputTokens;
+    totals.eventDays.set(day.day, kept);
+  }
+
+  const receipts = metering.summarizeReceiptsAfter(totals.receiptsCursor, rowsPerScrape);
+  totals.receiptsCursor = receipts.lastRowid;
+  for (const day of receipts.days) {
+    totals.receiptCents += day.costCents;
+    totals.receiptDays.set(day.day, (totals.receiptDays.get(day.day) ?? 0) + day.costCents);
+  }
+
+  const today = Math.floor(Date.now() / DAY_MS);
+  pruneDays(totals.eventDays, today);
+  pruneDays(totals.receiptDays, today);
+  const checkpoint = metering.getIdsAtRowids(totals.eventsCursor, totals.receiptsCursor);
+  totals.eventsCheckpoint = checkpoint.eventId;
+  totals.receiptsCheckpoint = checkpoint.receiptId;
+  totals.caughtUp = totals.eventsCursor >= max.events && totals.receiptsCursor >= max.receipts;
+  return totals;
+}
+
+/**
+ * The totals no longer describe the ledger at this path: the file was
+ * replaced (new inode), shrank below a cursor, or the row at a cursor now
+ * holds a different id (rebuilt in place). A row at a cursor that is gone
+ * (pruned) is not a change.
+ */
+function ledgerChanged(totals: MeteringTotals, fileIdentity: string, metering: MeteringStorage): boolean {
+  if (totals.fileIdentity !== fileIdentity) return true;
+  const max = metering.getMaxRowids();
+  if (max.events < totals.eventsCursor || max.receipts < totals.receiptsCursor) return true;
+  const current = metering.getIdsAtRowids(totals.eventsCursor, totals.receiptsCursor);
+  return (current.eventId !== null && current.eventId !== totals.eventsCheckpoint)
+    || (current.receiptId !== null && current.receiptId !== totals.receiptsCheckpoint);
+}
+
 async function collectMetrics(options: MetricsOptions, dataDir: string, configPath: string): Promise<string> {
   const role = (options.role ?? 'auto').toLowerCase();
   const instance = options.instance || process.env.ANTSEED_METRICS_INSTANCE || process.env.HOSTNAME || 'antseed';
   const baseLabels = { instance };
   const samples: MetricSample[] = [];
 
-  await addCommonMetrics(samples, baseLabels, dataDir);
+  // One snapshot per scrape: the seller rewrites the file every second.
+  const daemon = await readDaemonState(dataDir);
+  await addCommonMetrics(samples, baseLabels, daemon);
   if (role === 'buyer' || role === 'both' || role === 'auto') {
     await addBuyerMetrics(samples, baseLabels, dataDir, Boolean(options.includeChain), configPath).catch((error) => {
       addSample(samples, { ...baseLabels, role: 'buyer' }, { name: 'antseed_buyer_scrape_error', help: 'Whether buyer metrics collection failed.', type: 'gauge', labels: { error: error instanceof Error ? error.message : String(error) }, value: 1 });
     });
   }
   if (role === 'seller' || role === 'both' || role === 'auto') {
-    await addSellerMetrics(samples, baseLabels, dataDir).catch((error) => {
+    await addSellerMetrics(samples, baseLabels, dataDir, daemon).catch((error) => {
       addSample(samples, { ...baseLabels, role: 'seller' }, { name: 'antseed_seller_scrape_error', help: 'Whether seller metrics collection failed.', type: 'gauge', labels: { error: error instanceof Error ? error.message : String(error) }, value: 1 });
     });
   }
 
+  addRpcMetrics(samples, baseLabels, daemon);
   return renderPrometheus(samples);
 }
 

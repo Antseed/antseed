@@ -40,6 +40,18 @@ curl http://localhost:8377/v1/chat/completions \
   }'
 ```
 
+## Reach it from other machines
+
+The buyer proxy only listens on `127.0.0.1`. `antseed buyer start` has no `--host` flag, and `config.json` has no buyer host setting: a `host` key there is ignored. This is deliberate. The proxy has no API keys and spends from your deposit, so anything that can reach it can spend your funds.
+
+To call it from another machine, forward the port over SSH or put the gateway in front of the buyer. The gateway adds API keys and spend limits, and it can listen beyond loopback:
+
+- **Just you, over SSH**: keep the buyer on loopback and forward its port: `ssh -N -L 8377:127.0.0.1:8377 user@buyer-host`, then use `http://localhost:8377` on your own machine. No gateway is needed.
+- **Your private network**: `antseed gateway start --host 0.0.0.0 --public-url http://<this-machine>:8379`, then call `http://<this-machine>:8379/v1` with a gateway API key. This is plain HTTP, so API keys cross the network unencrypted; use it only on a network you trust. See [Gateway troubleshooting](/docs/gateway/troubleshooting).
+- **The internet**: publish the gateway over HTTPS with a [tunnel](/docs/tunnels) or [install it on a server](/docs/gateway/server).
+
+Do not publish port 8377 itself, for example with a router port forward, `socat` or a reverse proxy: anyone who reaches it can spend your deposit. The proxy also refuses requests whose `Host` header is not a loopback name or an IP address.
+
 ## Endpoints
 
 | Endpoint | Format |

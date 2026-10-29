@@ -403,4 +403,36 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE deposits_v2 RENAME TO deposits;
   CREATE INDEX deposits_workspace ON deposits(workspace_id, block_time);
   `,
+  // Purchase statements: the company a workspace buys for (printed on its statements), and each month's
+  // statement once final, kept as issued so later changes (seller names, the exchange rate) never alter it.
+  `
+  CREATE TABLE billing_profiles (
+    workspace_id TEXT PRIMARY KEY,
+    company_name TEXT NOT NULL,
+    address TEXT NOT NULL,
+    country TEXT NOT NULL,
+    vat_number TEXT,
+    registration_number TEXT,
+    vat_valid INTEGER,
+    vat_checked_at INTEGER,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE purchase_statements (
+    workspace_id TEXT NOT NULL,
+    period TEXT NOT NULL,
+    issued_at INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    PRIMARY KEY (workspace_id, period)
+  );
+  -- The model a seller actually served, which a router picks: statements list purchases by it. Copied
+  -- from the request log while it still has it (spend can reach the ledger before the response names it).
+  ALTER TABLE ledger_entries ADD COLUMN served_model TEXT;
+  UPDATE ledger_entries SET served_model = (SELECT served_model FROM gateway_requests WHERE tag = ledger_entries.request_tag)
+    WHERE routing_fee = 0 AND request_tag IS NOT NULL;
+  `,
+  // Billing details take any company: free-form additional details, and tax IDs are no longer checked
+  // (vat_valid and vat_checked_at stay unused).
+  `
+  ALTER TABLE billing_profiles ADD COLUMN notes TEXT;
+  `,
 ]

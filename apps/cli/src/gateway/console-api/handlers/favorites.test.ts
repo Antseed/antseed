@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { test } from 'node:test'
+import { GatewayStore } from '../../store.js'
 import { FakeConsoleAuth, addActiveMember, call, memberPrincipal, startConsole, tempDataDir, testDeps } from '../test-support.js'
 import { coreConsoleRegistrars } from './index.js'
 
@@ -40,5 +44,20 @@ test('each member and key session keeps its own starred models and routers', asy
     assert.equal((await h.as('token', 'GET', '/favorites')).status, 403, 'admin tokens have no favorites')
   } finally {
     await h.close()
+  }
+})
+
+test('stars made within the same millisecond stay in the order they were made', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'antseed-favorites-'))
+  const store = new GatewayStore(dir, () => 1_700_000_000_000)
+  try {
+    const owner = { kind: 'member', id: 'm1' } as const
+    store.setFavoriteModel(owner, 'vendor/open-model-a', true)
+    store.setFavoriteModel(owner, ROUTER, true)
+    store.setFavoriteModel(owner, 'open-model-0', true)
+    assert.deepEqual(store.listFavoriteModels(owner), ['vendor/open-model-a', ROUTER, 'open-model-0'])
+  } finally {
+    store.close()
+    rmSync(dir, { recursive: true, force: true })
   }
 })

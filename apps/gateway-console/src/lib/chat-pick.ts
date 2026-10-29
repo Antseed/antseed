@@ -30,10 +30,20 @@ export const PEER_SORTS: Array<{ id: PeerSort; label: string }> = [
   { id: 'trust', label: 'Trust' },
 ]
 
-type Priced = { inputUsdPerMillion: number | null; outputUsdPerMillion: number | null }
+type Priced = {
+  inputUsdPerMillion: number | null
+  outputUsdPerMillion: number | null
+  freeTier?: { base: { stakersOnly?: boolean } } | null
+}
 
+/** Free to everyone: no price, and not reserved for the seller's stakers. */
 export function isFreeOffer(offer: Priced): boolean {
-  return offer.inputUsdPerMillion === 0 && offer.outputUsdPerMillion === 0
+  return offer.inputUsdPerMillion === 0 && offer.outputUsdPerMillion === 0 && !offer.freeTier?.base.stakersOnly
+}
+
+/** Free only to buyers staked on its seller; others pay its price, or are not served. */
+export function isStakerFreeOffer(offer: Priced): boolean {
+  return offer.freeTier?.base.stakersOnly === true
 }
 
 /** Input + output per million, for ordering; unknown prices last. */

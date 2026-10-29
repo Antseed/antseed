@@ -1,7 +1,7 @@
 import type {
-  AdminToken, ApiKey, ApiKeyInput, AuditEntry, AuthConfig, BuyerLimits, BuyerSettingsInput, Channel, ChainInfo, DepositConfirmation, DepositWatch, Enrollment,
+  AdminToken, ApiKey, ApiKeyInput, AuditEntry, AuthConfig, BillingProfile, BillingProfileInput, BuyerLimits, BuyerSettingsInput, Channel, ChainInfo, DepositConfirmation, DepositWatch, Enrollment,
   GatewayStatus, GatewayUpdate, Invite, InviteInput, Member, MemberInput, MeResponse, ObservabilitySettings, OperatorAuthorization, OperatorState, WorkspaceOperatorSummary, ChatContext, ChatModel, ChatThread, ChatThreadDetail, FavoriteModels, NetworkModel, NetworkRouter, Peer, PeerList, Preset,
-  RequestDetail, RequestLogEntry, Rewards, RoutePreview, RoutingPolicy, Settings, SpendLimits, UsageGroupBy, UsageReport, Wallet, Workspace,
+  FreeTierSharing, FreeTierStake, PurchaseStatement, RequestDetail, RequestLogEntry, Rewards, RoutePreview, RoutingPolicy, SellerAlertSettings, SellerAlertsPatch, SellerEventView, SellerLogDetail, SellerLogPage, SellerLogQuery, SellerMarket, SellerPromote, SellerReputation, SellerRestartView, SellerSettings, SellerVerificationsInput, SellerSettingsPatch, SellerStatus, SellerUsage, Settings, TelegramChat, SpendLimits, StatementSummary, UsageGroupBy, UsageReport, Wallet, Workspace,
   WorkspaceInput, WorkspaceRole,
 } from './types'
 
@@ -135,6 +135,8 @@ export function createApiClient(fetchImpl: FetchLike = (input, init) => fetch(in
     auth: {
       config: () => get<AuthConfig>('/auth/config'),
       me: () => get<MeResponse>('/auth/me'),
+      /** `antseed seller dashboard`: swaps the link's token for a session cookie. */
+      sellerSession: (token: string) => post<void>('/auth/seller', { token }),
       setup: (token: string) => post<Enrollment>('/auth/setup', { token }),
       invite: (token: string) => post<Enrollment>('/auth/invite', { token }),
       passkeyRegisterOptions: (enrollment?: string) => post<unknown>('/auth/passkey/register/options', { enrollment }),
@@ -219,6 +221,13 @@ export function createApiClient(fetchImpl: FetchLike = (input, init) => fetch(in
         put<DepositConfirmation>(`/workspaces/${id(workspaceId)}/deposits/${id(txHash)}/approval`, { note }),
       unapproveDeposit: (workspaceId: string, txHash: string) =>
         request<DepositConfirmation>('DELETE', `/workspaces/${id(workspaceId)}/deposits/${id(txHash)}/approval`),
+      /** The company the workspace buys for, printed on its purchase statements; null when not set. */
+      billingProfile: (workspaceId: string) => get<BillingProfile | null>(`/workspaces/${id(workspaceId)}/billing-profile`),
+      setBillingProfile: (workspaceId: string, profile: BillingProfileInput) => put<BillingProfile>(`/workspaces/${id(workspaceId)}/billing-profile`, profile),
+      deleteBillingProfile: (workspaceId: string) => request<{ ok: true }>('DELETE', `/workspaces/${id(workspaceId)}/billing-profile`),
+      /** Monthly purchase statements, newest first. */
+      statements: (workspaceId: string) => get<StatementSummary[]>(`/workspaces/${id(workspaceId)}/statements`),
+      statement: (workspaceId: string, period: string) => get<PurchaseStatement>(`/workspaces/${id(workspaceId)}/statements/${id(period)}`),
       /** The authorized wallet (AntseedDeposits operator); `fresh` re-reads the chain (the gateway throttles it). */
       operator: (workspaceId: string, fresh = false) =>
         get<OperatorState>(`/workspaces/${id(workspaceId)}/wallet/operator`, { fresh: fresh ? 1 : undefined }),
@@ -235,6 +244,12 @@ export function createApiClient(fetchImpl: FetchLike = (input, init) => fetch(in
         get<Channel[]>(`/workspaces/${id(workspaceId)}/channels`, { all: all ? 1 : undefined, fresh: fresh ? 1 : undefined }),
       closeChannel: (workspaceId: string, peerId: string, channelId: string) => post<{ ok: true }>(`/workspaces/${id(workspaceId)}/channels/close`, { peerId, channelId }),
       rewards: (workspaceId: string) => get<Rewards>(`/workspaces/${id(workspaceId)}/rewards`),
+      /** Stakers sharing their stake with the workspace buyer for staked free-tier allowances. */
+      freeTier: (workspaceId: string) => get<FreeTierSharing>(`/workspaces/${id(workspaceId)}/free-tier`),
+      freeTierStake: (workspaceId: string) => get<FreeTierStake>(`/workspaces/${id(workspaceId)}/free-tier/stake`),
+      addFreeTierCode: (workspaceId: string, code: string) => post<FreeTierSharing>(`/workspaces/${id(workspaceId)}/free-tier`, { code }),
+      removeFreeTierStaker: (workspaceId: string, staker: string) =>
+        request<FreeTierSharing>('DELETE', `/workspaces/${id(workspaceId)}/free-tier/${id(staker)}`),
       chain: () => get<ChainInfo>('/chain'),
     },
     chat: {
@@ -272,6 +287,33 @@ export function createApiClient(fetchImpl: FetchLike = (input, init) => fetch(in
       create: (input: PresetInput, options?: SaveOptions) => post<Preset>('/presets', withConfirm(input, options)),
       update: (presetId: string, input: Partial<PresetInput>, options?: SaveOptions) => patch<Preset>(`/presets/${id(presetId)}`, withConfirm(input, options)),
       remove: (presetId: string) => del(`/presets/${id(presetId)}`),
+    },
+    /** A seller on the gateway host (org admins), or the seller `antseed seller dashboard` serves. */
+    seller: {
+      status: () => get<SellerStatus>('/seller/status'),
+      events: (limit = 100) => get<{ events: SellerEventView[] }>('/seller/events', { limit }),
+      usage: (days = 14) => get<SellerUsage>('/seller/usage', { days }),
+      settings: () => get<SellerSettingsResponse>('/seller/settings'),
+      updateSettings: (input: SellerSettingsPatch) => patch<SellerSettingsResponse & { changed: string[] }>('/seller/settings', input),
+      /** Drops the settings saved from the dashboard over a read-only config.json. */
+      resetOverrides: () => request<SellerSettingsResponse>('DELETE', '/seller/settings/overrides'),
+      /** Stops the seller cleanly; its supervisor starts it again with the saved settings. */
+      restart: () => post<{ restarting: true }>('/seller/restart'),
+      updateAlerts: (input: SellerAlertsPatch) => patch<SellerSettingsResponse & { changed: string[] }>('/seller/alerts', input),
+      testAlert: (channel: 'telegram' | 'webhook') => post<{ sent: string[]; errors: string[] }>('/seller/alerts/test', { channel }),
+      telegramChats: (botToken?: string) => post<{ chats: TelegramChat[] }>('/seller/alerts/telegram/chats', botToken ? { botToken } : {}),
+      market: (refresh = false) => get<SellerMarket>('/seller/market', { refresh: refresh ? 1 : undefined }),
+      reputation: (refresh = false) => get<SellerReputation>('/seller/reputation', { refresh: refresh ? 1 : undefined }),
+      promote: () => get<SellerPromote>('/seller/promote'),
+      /** The shareable seller card, SVG text (rendered by the same service the CLI uses). */
+      card: () => get<string>('/seller/promote/card'),
+      logs: (query: SellerLogQuery) => get<SellerLogPage>('/seller/logs', {
+        cursor: query.cursor ?? undefined, limit: query.limit, service: query.service ?? undefined, buyer: query.buyer ?? undefined,
+        from: query.from ?? undefined, errors: query.errorsOnly ? 1 : undefined,
+      }),
+      logDetail: (id: string) => get<SellerLogDetail>(`/seller/logs/${encodeURIComponent(id)}`),
+      checkVerifications: () => post<SellerPromote>('/seller/promote/check'),
+      saveVerifications: (input: SellerVerificationsInput) => put<SellerPromote>('/seller/promote/verifications', input),
     },
     settings: {
       status: () => get<GatewayStatus>('/status'),
@@ -341,5 +383,7 @@ export type ApiKeyPatch = Partial<ApiKeyInput> & KeyOwnerLayer
 export function hasOwnerLayer(key: ApiKey | null | undefined): key is KeyWithLayers {
   return !!key && 'ownerRoutingPolicy' in key
 }
+
+export interface SellerSettingsResponse { settings: SellerSettings; alerts: SellerAlertSettings; restart: SellerRestartView }
 
 export type ApiClient = ReturnType<typeof createApiClient>

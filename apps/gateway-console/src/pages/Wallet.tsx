@@ -17,29 +17,19 @@ import { isOrgAdmin, isWorkspaceAdmin } from '../lib/nav'
 import { useLocation } from '../lib/router'
 import { qk, useChain, useWallet } from '../lib/queries'
 import { useOperator } from '../lib/operator'
+import { useNow } from '../lib/use-now'
 import {
   channelAction, channelStatusLabel, channelStatusTone, cooperativeCloseError, isDepositPending, isEntireBalanceLocked, isOpenChannel, pendingSpend, unspent, walletUsdcMessage, withdrawableAt, withdrawableSummary,
 } from '../lib/channels'
 import { AddFunds } from '../wallet/AddFunds'
 import { DepositConfirmationPage, DepositsPanel } from '../wallet/Deposits'
+import { StatementPage, StatementsPanel } from '../wallet/Statements'
 import { OperatorPanel, type OperatorAction } from '../wallet/OperatorPanel'
 
 const WalletFunding = lazy(() => import('../wallet/WalletFunding'))
 const ChannelClose = lazy(() => import('../wallet/ChannelClose'))
 
 type CloseDialog = { channel: Channel; mode: 'cooperative' | 'request' | 'withdraw' }
-
-/** Re-renders every `ms` while `active`, for countdowns. */
-function useNow(active: boolean, ms = 15_000): number {
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    if (!active) return
-    setNow(Date.now())
-    const timer = setInterval(() => setNow(Date.now()), ms)
-    return () => clearInterval(timer)
-  }, [active, ms])
-  return now
-}
 
 /**
  * Close a channel the way the desktop does: ask the seller first (instant,
@@ -283,9 +273,10 @@ function WithdrawModal({ wallet, workspaceId, isOpen, onClose, onAuthorize }: { 
 }
 
 export default function Wallet() {
-  // `wallet/deposits/<tx>`: one deposit's printable confirmation.
+  // `wallet/deposits/<tx>`: one deposit's printable confirmation; `wallet/statements/<YYYY-MM>`: a month's purchase statement.
   const location = useLocation()
   if (location.rest[0] === 'deposits' && location.rest[1]) return <DepositConfirmationPage txHash={location.rest[1]} />
+  if (location.rest[0] === 'statements' && location.rest[1]) return <StatementPage period={location.rest[1]} />
   return <WalletOverview />
 }
 
@@ -308,6 +299,7 @@ function WalletOverview() {
             <BalancePanel wallet={data} workspaceId={workspace.id} onWithdraw={() => setDialog('withdraw')} />
             <OperatorPanel workspaceId={workspace.id} action={operatorAction} onActionChange={setOperatorAction} />
             {isWorkspaceAdmin(viewer) && <DepositsPanel workspaceId={workspace.id} />}
+            {isWorkspaceAdmin(viewer) && <StatementsPanel workspaceId={workspace.id} />}
             <Modal isOpen={dialog === 'fund'} onClose={() => setDialog(null)} size="md" title="Add funds" subtitle={`Credits that pay for ${workspace.name}'s requests.`}>
               <AddFunds wallet={data} chain={chain.data} workspaceId={workspace.id} />
             </Modal>

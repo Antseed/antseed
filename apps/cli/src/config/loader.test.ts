@@ -9,7 +9,7 @@ import {
   DEFAULT_BUYER_PEER_REFRESH_INTERVAL_MS,
   DEFAULT_BUYER_REQUEST_TIMEOUT_MS,
 } from './defaults.js';
-import { configFromObject, loadConfig } from './loader.js';
+import { configFromObject, loadConfig, saveConfig } from './loader.js';
 import { createDefaultConfig } from './defaults.js';
 import { deriveDisplayNameFromPeerId, shouldDeriveDisplayName } from './identity-display-name.js';
 
@@ -197,6 +197,70 @@ test('loadConfig rejects invalid per-service capabilities', async () => {
     }),
     async (configPath) => {
       await assert.rejects(() => loadConfig(configPath), /capabilities.*contextWindow must be a positive integer/);
+    },
+  );
+});
+
+test('loadConfig reads provider fallbackUpstreams', async () => {
+  await withTempConfig(
+    JSON.stringify({
+      seller: {
+        providers: {
+          kimi: {
+            plugin: 'openai',
+            baseUrl: 'https://api.moonshot.example',
+            services: { 'kimi-k3.1-pro': {}, 'kimi-k3': {} },
+            fallbackUpstreams: [
+              {
+                baseUrl: 'https://openrouter.example/api',
+                apiKeyEnv: 'OPENROUTER_API_KEY',
+                services: { 'kimi-k3.1-pro': { upstreamModel: 'moonshotai/kimi-k3.1-pro' } },
+              },
+              { baseUrl: 'https://mirror.moonshot.example' },
+            ],
+          },
+        },
+      },
+    }),
+    async (configPath) => {
+      const config = await loadConfig(configPath);
+      assert.deepEqual(config.seller.providers['kimi']?.fallbackUpstreams, [
+        {
+          baseUrl: 'https://openrouter.example/api',
+          apiKeyEnv: 'OPENROUTER_API_KEY',
+          services: { 'kimi-k3.1-pro': { upstreamModel: 'moonshotai/kimi-k3.1-pro' } },
+        },
+        { baseUrl: 'https://mirror.moonshot.example' },
+      ]);
+    },
+  );
+});
+
+test('loadConfig rejects invalid fallbackUpstreams', async () => {
+  await withTempConfig(
+    JSON.stringify({
+      seller: {
+        providers: {
+          kimi: {
+            plugin: 'openai',
+            services: { 'kimi-k3.1-pro': {} },
+            fallbackUpstreams: [
+              { services: { 'kimi-k3.1-pro': {} } },
+              { baseUrl: 'https://openrouter.example/api', services: { 'glm-5': {} } },
+            ],
+          },
+        },
+      },
+    }),
+    async (configPath) => {
+      await assert.rejects(
+        () => loadConfig(configPath),
+        (err: Error) => {
+          assert.match(err.message, /fallbackUpstreams\[0\]\.baseUrl must be an http\(s\) URL/);
+          assert.match(err.message, /fallbackUpstreams\[1\]\.services\.glm-5 is not a service of this provider/);
+          return true;
+        },
+      );
     },
   );
 });
@@ -1042,6 +1106,92 @@ test('loadConfig rejects invalid seller freeTier limits', async () => {
   }
 });
 
+test('loadConfig preserves seller freeTier stake tiers, including the [] opt-out', async () => {
+  for (const stakeTiers of [[{ minPower: 520_000, multiplier: 5 }, { minPower: 10_400_000, multiplier: 'unlimited' }], []]) {
+    await withTempConfig(
+      JSON.stringify({ seller: { freeTier: { maxRequestsPerAddress: 100, stakeTiers } } }),
+      async (configPath) => {
+        const config = await loadConfig(configPath);
+        assert.deepEqual(config.seller.freeTier?.stakeTiers, stakeTiers);
+      }
+    );
+  }
+});
+
+test('loadConfig rejects invalid seller freeTier stake tiers', async () => {
+  for (const stakeTiers of [
+    'unlimited',
+    [{ minPower: 0, multiplier: 5 }],
+    [{ minPower: 100, multiplier: 0 }],
+    [{ minPower: 200, multiplier: 5 }, { minPower: 100, multiplier: 20 }],
+    [{ minPower: 100, multiplier: 'unlimited' }, { minPower: 200, multiplier: 5 }],
+  ]) {
+    await withTempConfig(
+      JSON.stringify({ seller: { freeTier: { maxRequestsPerAddress: 100, stakeTiers } } }),
+      async (configPath) => {
+        await assert.rejects(async () => loadConfig(configPath), /seller\.freeTier\.stakeTiers/);
+      }
+    );
+  }
+});
+
+test('loadConfig preserves a service freeTier program and rejects invalid ones', async () => {
+  const provider = (freeTier: unknown, plugin = 'openai') => ({ plugin, services: { 'free-model': { pricing: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 }, freeTier } } });
+  const program = { maxRequestsPerAddress: 10, windowMs: 3_600_000, stakeTiers: [{ minPower: 520_000, multiplier: 5 }], stakersOnly: true };
+  await withTempConfig(
+    JSON.stringify({ seller: { providers: { openai: provider(program) } } }),
+    async (configPath) => {
+      const config = await loadConfig(configPath);
+      assert.deepEqual(config.seller.providers['openai']?.services['free-model']?.freeTier, program);
+    }
+  );
+  for (const [freeTier, error] of [
+    [{ stakersOnly: true }, /services\.free-model\.freeTier requires/],
+    [{ maxRequestsPerAddress: 1, stakersOnly: 'yes' }, /freeTier\.stakersOnly must be a boolean/],
+    [{ maxRequestsPerAddress: 1, stakeTiers: [], stakersOnly: true }, /freeTier\.stakersOnly requires at least one stake tier/],
+    ['unlimited', /services\.free-model\.freeTier requires/],
+    [{ maxRequestsPerAddress: Number.MAX_SAFE_INTEGER, maxRequestsPerIp: Number.MAX_SAFE_INTEGER }, /services\.free-model\.freeTier is too large to advertise/],
+  ] as const) {
+    await withTempConfig(
+      JSON.stringify({ seller: { providers: { openai: provider(freeTier) } } }),
+      async (configPath) => {
+        await assert.rejects(async () => loadConfig(configPath), error);
+      }
+    );
+  }
+  // One service id across providers needs one program.
+  await withTempConfig(
+    JSON.stringify({ seller: { providers: { a: provider({ maxRequestsPerAddress: 1 }), b: provider({ maxRequestsPerAddress: 2 }) } } }),
+    async (configPath) => {
+      await assert.rejects(async () => loadConfig(configPath), /differs from another provider's freeTier for service "free-model"/);
+    }
+  );
+});
+
+test('loadConfig preserves buyer freeTierDelegations and rejects malformed ones', async () => {
+  const delegation = { staker: `0x${'aa'.repeat(20)}`, buyer: `0x${'11'.repeat(20)}`, expiresAt: 1_900_000_000, signature: `0x${'00'.repeat(65)}` }
+  await withTempConfig(
+    JSON.stringify({ buyer: { freeTierDelegations: [delegation] } }),
+    async (configPath) => {
+      const config = await loadConfig(configPath);
+      assert.deepEqual(config.buyer.freeTierDelegations, [delegation]);
+    }
+  );
+  for (const freeTierDelegations of [
+    'nope',
+    [{ ...delegation, staker: 'nope' }],
+    [{ ...delegation, signature: '0x12' }],
+    Array.from({ length: 9 }, (_, i) => ({ ...delegation, staker: `0x${i.toString(16).padStart(2, '0').repeat(20)}` })),
+  ]) {
+    await withTempConfig(
+      JSON.stringify({ buyer: { freeTierDelegations } }),
+      async (configPath) => {
+        await assert.rejects(async () => loadConfig(configPath), /buyer\.freeTierDelegations/);
+      }
+    );
+  }
+});
+
 test('loadConfig preserves seller restrictedCountries, including the [] opt-out', async () => {
   for (const restrictedCountries of [['IR', 'RU'], []]) {
     await withTempConfig(
@@ -1084,4 +1234,17 @@ test('buyer.verifier is read and validated like the rest of the config', () => {
   assert.equal(configFromObject({}).buyer.verifier, undefined);
   assert.throws(() => configFromObject({ buyer: { verifier: { enabled: false, require: true } } }), /buyer\.verifier\.enabled cannot be false/);
   assert.throws(() => configFromObject({ buyer: { verifier: { prefer: 'x' } } }), /buyer\.verifier\.prefer/);
+});
+
+test('seller.alerts survives a load and save, and a malformed one is refused', async () => {
+  const alerts = { telegram: { chatId: '-100123', botTokenEnv: 'MY_TOKEN' }, webhook: { url: 'https://hooks.example/x' }, idleMinutes: 30, cooldownMinutes: 10, minSeverity: 'critical' };
+  await withTempConfig(JSON.stringify({ seller: { alerts } }), async (configPath) => {
+    const config = await loadConfig(configPath);
+    config.seller.maxConcurrentBuyers = 7;
+    await saveConfig(configPath, config);
+    assert.deepEqual((await loadConfig(configPath)).seller.alerts, alerts);
+  });
+  assert.equal(configFromObject({ seller: { alerts: { telegram: { chatId: 42 } } } }).seller.alerts?.telegram?.chatId, 42, 'a numeric chat id is accepted');
+  assert.throws(() => configFromObject({ seller: { alerts: { telegram: { chatId: true }, idleMinutes: '5', minSeverity: 'loud' } } }),
+    /seller\.alerts\.telegram\.chatId[\s\S]*seller\.alerts\.idleMinutes[\s\S]*seller\.alerts\.minSeverity/);
 });

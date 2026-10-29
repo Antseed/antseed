@@ -618,8 +618,11 @@ test('an operator change seen by sync drops cached rewards and asks the buyer to
   operator = OPERATOR
   now += 5_000
   await call(router, 'POST', '/workspaces/ws_team/wallet/operator/sync', member, {})
-  await new Promise((resolve) => setTimeout(resolve, 20))
-  assert.ok(buyer.requests.some((req) => req.url === '/_antseed/balances?fresh=1&identity=team-a'))
+  // The balance refresh is fire-and-forget: wait for it to reach the buyer instead of a fixed
+  // 20 ms, which a loaded CI runner overshot.
+  const refreshed = () => buyer.requests.some((req) => req.url === '/_antseed/balances?fresh=1&identity=team-a')
+  for (const deadline = Date.now() + 5_000; !refreshed() && Date.now() < deadline;) await new Promise((resolve) => setTimeout(resolve, 5))
+  assert.ok(refreshed())
   await call(router, 'GET', '/workspaces/ws_team/rewards', member)
   assert.equal(rewardReads, 2, 'rewards re-read with the new operator')
 })

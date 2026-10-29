@@ -46,7 +46,7 @@ import {
   type VerificationSkipCode,
 } from './proxy-evidence.js'
 import type { ResponseAuthReader } from './response-auth-reader.js'
-import { advertisedServices } from './service-discovery.js'
+import { advertisedServices, findAdvertisedService } from './service-discovery.js'
 import { mapWithAdaptiveConcurrency, type AuditTaskLimiter } from './audit-concurrency.js'
 import { writeJsonAtomic } from './atomic-files.js'
 import {
@@ -280,10 +280,11 @@ export function classifyVerificationTarget(
     service: string
     reason: string
   } {
-  const service = advertisedServices(peer).get(normalizedModel)
-  if (!service) {
+  const match = findAdvertisedService(peer, normalizedModel)
+  if (!match) {
     return { eligible: false, code: 'model_not_advertised', service: null, reason: 'model not advertised' }
   }
+  const service = match.advertised
   if (!peer.capabilities?.includes(CONNECTION_CAPABILITY_RESPONSE_AUTH_V1)) {
     return {
       eligible: false,
@@ -303,7 +304,7 @@ export function classifyVerificationTarget(
     }
   }
 
-  const offer = resolveAdvertisedOffer(peer, normalizedModel)
+  const offer = resolveAdvertisedOffer(peer, match.service)
   if (!offer) {
     return {
       eligible: false,
@@ -326,10 +327,14 @@ export function classifyVerificationTargetServices(
   services: readonly string[],
   policy: VerificationTargetPolicy,
 ): ReturnType<typeof classifyVerificationTarget> {
-  const candidates = services
+  const names = services
     .map((service) => service.trim().toLowerCase())
     .filter((service, index, all) => service.length > 0 && all.indexOf(service) === index)
-    .map((service) => classifyVerificationTarget(peer, service, policy))
+  // A listing under one of the model's exact names wins over another spelling of it, whatever the
+  // order of the names: only if the peer lists none of them is a canonical spelling matched.
+  const advertised = advertisedServices(peer)
+  const exact = names.filter((name) => advertised.has(name))
+  const candidates = (exact.length > 0 ? exact : names).map((service) => classifyVerificationTarget(peer, service, policy))
   return candidates.find((candidate) => candidate.eligible)
     ?? candidates.find((candidate) => !candidate.eligible && candidate.code !== 'model_not_advertised')
     ?? { eligible: false, code: 'model_not_advertised', service: null, reason: 'model not advertised' }

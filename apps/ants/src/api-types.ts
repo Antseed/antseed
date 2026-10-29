@@ -170,6 +170,8 @@ export interface SellerModelsView {
 export interface PoolYield {
   reward?: string | null;
   power?: string | null;
+  /** Staker budget for the epoch; lets a new stake's own points join the pool's share. */
+  budget?: string | null;
   minLockEpochs?: number | null;
   maxLockEpochs?: number | null;
   epoch: number;
@@ -199,6 +201,8 @@ export interface PoolView {
   totalPositions?: number;
   stakers?: number | null;
   yield?: PoolYield;
+  /** The epoch in progress: its reward is the pool's running share of this epoch's staker budget. */
+  liveYield?: PoolYield;
   statsUpdatedAt?: number;
   volumeStatus?: 'available' | 'unavailable' | 'stale';
   agentId: number;

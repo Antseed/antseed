@@ -101,6 +101,11 @@ test('the audited model list is built in; config only adds settings', () => {
     assert.equal(opus.upstreamModel, 'anthropic/claude-opus-4.6')
     assert.deepEqual(opus.excludedDomains, ['medical'])
     assert.equal(findVerifierModel(undefined, 'not-audited'), undefined)
+    // Other spellings of a built-in model resolve to it, matched the way buyers route.
+    assert.equal(findVerifierModel(undefined, 'anthropic/claude-opus-5-5-latest')?.[0], 'claude-opus-5.5')
+    assert.equal(findVerifierModel(undefined, 'openai/GPT-6.1-Sol')?.[0], 'gpt-6.1-sol')
+    assert.equal(findVerifierModel(undefined, 'deepseek-v4-pro-0813')?.[0], 'deepseek-v4-pro-0813')
+    assert.equal(findVerifierModel(undefined, 'gpt-6.1')?.[0], undefined)
   } finally {
     setAuditedModelsForTesting(TEST_MODELS)
   }
@@ -109,6 +114,7 @@ test('the audited model list is built in; config only adds settings', () => {
 test('command model resolution requires exactly one mode and an audited model', () => {
   assert.deepEqual(resolveVerifierCommandModels(config(), undefined, true), ['disabled', 'model-large', 'target'])
   assert.deepEqual(resolveVerifierCommandModels(config(), 'MODEL-LARGE', false), ['model-large'])
+  assert.deepEqual(resolveVerifierCommandModels(config(), 'vendor/Model_Large', false), ['model-large'])
   assert.throws(() => resolveVerifierCommandModels(config(), undefined, false), /exactly one/)
   assert.throws(() => resolveVerifierCommandModels(config(), 'model-large', true), /exactly one/)
   assert.throws(() => resolveVerifierCommandModels(config(), 'missing', false), /not an audited model/)

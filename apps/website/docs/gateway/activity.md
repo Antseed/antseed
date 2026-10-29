@@ -14,6 +14,8 @@ What you see depends on your role: members see their own keys' usage, workspace 
 
 **Activity** totals spend, requests (and how many failed), input tokens (and how many were cached) and output tokens for a time range: **24 hours**, **7 days**, **30 days** or **90 days**.
 
+![Activity: spend, requests and tokens over time, broken down by model](/img/docs/gateway/activity.webp)
+
 - The chart shows **Spend**, **Requests** or **Tokens** per hour, day or week depending on the range, by model, in UTC.
 - **Breakdown** groups the totals by **Model**, **Key**, **Seller**, **End user**, **Member** (admins), **Workspace** (organization admins) or **Day**.
 - Filter by key, or by member for admins.
@@ -23,6 +25,8 @@ The **Overview** page shows this week's spend against the workspace budgets, the
 ## Logs
 
 **Logs** lists every request through the workspace's keys, newest first, with its model, key, provider, status, time to first token, output speed, tokens and cost. Search by model, key, end user or error, and filter by key, model, status (**Succeeded** or **Failed**) and a UTC date range.
+
+![Logs: every request with its key, model, seller, status, latency, tokens and cost](/img/docs/gateway/logs.webp)
 
 Click a request to open its details:
 

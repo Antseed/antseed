@@ -55,6 +55,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'connect/api',
         'connect/routing',
+        'connect/staked-free-tier',
         'connect/agents',
         'connect/tunnels',
         'connect/buyer-config',
@@ -85,6 +86,7 @@ const sidebars: SidebarsConfig = {
         'provide/tee',
         'provide/payments',
         'provide/staking',
+        'provide/monitoring',
         'provide/metrics',
       ],
     },

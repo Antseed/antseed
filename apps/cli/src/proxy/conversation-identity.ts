@@ -265,6 +265,23 @@ export function extractConversationIdentity(
   }
 }
 
+/** Header some upstreams route a conversation to its prompt cache by (the Codex backend among them). */
+export const UPSTREAM_SESSION_HEADER = 'session_id'
+
+/**
+ * The request's headers with the conversation's key as `session_id`, unless
+ * the client sent one. Clients name their session id differently (see the top
+ * of this file), and a reverse proxy in front of a gateway may drop header
+ * names with underscores (Caddy does by default), so the buyer sets it itself.
+ */
+export function withUpstreamSessionHeader(
+  headers: Record<string, string>,
+  identity: ConversationIdentity,
+): Record<string, string> {
+  if (getHeader(headers, UPSTREAM_SESSION_HEADER).trim()) return headers
+  return { ...headers, [UPSTREAM_SESSION_HEADER]: identity.sessionKey }
+}
+
 function looksLikeMachineContext(text: string): boolean {
   const start = text.trimStart().toLowerCase()
   return NON_PROMPT_PREFIXES.some((prefix) => start.startsWith(prefix))

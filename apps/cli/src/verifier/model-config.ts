@@ -59,8 +59,13 @@ export function findVerifierModel(
   requestedModel: string,
 ): [string, VerifierReferenceModelConfig] | undefined {
   const wanted = normalized(requestedModel)
-  return auditedVerifierModels(config).find(([service, model]) => [service, ...(model.serviceAliases ?? [])]
+  const models = auditedVerifierModels(config)
+  const exact = models.find(([service, model]) => [service, ...(model.serviceAliases ?? [])]
     .some((name) => normalized(name) === wanted))
+  if (exact) return exact
+  // Another spelling of the model (vendor path, version punctuation, -latest), as buyers route.
+  const key = findAuditedModelKey(requestedModel)
+  return key ? models.find(([service]) => service === key) : undefined
 }
 
 export function excludedVerifierDomains(

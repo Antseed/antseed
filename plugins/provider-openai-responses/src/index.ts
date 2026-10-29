@@ -35,6 +35,7 @@ const RESPONSE_PATH_PREFIX = '/v1/responses';
 const RELAY_PATH = '/responses';
 const AUTH_CLAIM_PATH = 'https://api.openai.com/auth';
 const CLIENT_STREAM_REQUESTED_HEADER = 'x-antseed-client-stream-requested';
+const SESSION_ID_HEADER = 'session_id';
 
 function expandHome(path: string): string {
   if (path === '~') return homedir();
@@ -336,10 +337,19 @@ function prepareRequestBody(
       }
     }
 
+    // The backend routes a conversation to its prompt cache by the `session_id`
+    // header; `prompt_cache_key` in the body alone gets no cache hits. Codex
+    // sends both with the same id, so derive the header from the body key.
+    let headers = withoutHeader(request.headers, CLIENT_STREAM_REQUESTED_HEADER);
+    const promptCacheKey = typeof parsed.prompt_cache_key === 'string' ? parsed.prompt_cache_key.trim() : '';
+    if (promptCacheKey && !getHeader(headers, SESSION_ID_HEADER)) {
+      headers = { ...headers, [SESSION_ID_HEADER]: promptCacheKey };
+    }
+
     return {
       request: {
         ...request,
-        headers: withoutHeader(request.headers, CLIENT_STREAM_REQUESTED_HEADER),
+        headers,
         body: new TextEncoder().encode(JSON.stringify(parsed)),
       },
       forcedStream,

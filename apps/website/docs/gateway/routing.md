@@ -36,6 +36,8 @@ A seller list is a named group of providers that a policy allows or blocks in on
 
 ## Policy levels
 
+![The Routing page: the rules that apply, from buyer config to gateway, organization and workspace policies](/img/docs/gateway/routing.webp)
+
 Policies apply in this order:
 
 1. **Buyer settings**: the buyer's own config, under **Settings → Buyer** (organization admins). Its price caps, minimum trust and reputation, verification and allowed or blocked providers are the top of every policy.

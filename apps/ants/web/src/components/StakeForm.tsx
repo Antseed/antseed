@@ -9,7 +9,7 @@ import { Field, Input, Select } from './Field';
 import { LockSlider } from './LockSlider';
 import { useApp, useEpochInfo } from '../app-context';
 import { stakeSources, stakeSourceRequest, type StakeSource } from '../stake-sources';
-import { formatYieldPercent, stakeApy } from '../pool-yield';
+import { formatYieldPercent, stakeEstimate, type StakeEstimate } from '../pool-yield';
 
 interface Props {
   config: PoolConfigView | null;
@@ -80,11 +80,11 @@ export function StakeForm({ config, pools, balance, rewards = null, rewardsError
   }, [agentId, pools]);
 
   const pool = pools.find((p) => p.agentId === selectedAgentId) ?? null;
-  let estimatedApy: number | null = null;
+  let estimate: StakeEstimate = { apr: null, epochReward: null };
   if (config && source?.available && !sourceMissing && isPositiveDecimal(amount)) {
     const principal = parseUnits(amount, 18);
     const bonusBps = source.kind === 'staker' ? Math.floor(config.restakedRewardWeightBonusBps * epochs / config.maxStakeEpochs) : 0;
-    if (principal !== null) estimatedApy = stakeApy(pool?.yield, epochs, principal.toString(), bonusBps);
+    if (principal !== null) estimate = stakeEstimate(pool?.yield, epochs, principal.toString(), bonusBps);
   }
 
   const fillMax = () => {
@@ -239,8 +239,8 @@ export function StakeForm({ config, pools, balance, rewards = null, rewardsError
               })}
             </div>
             <div className="stake-apy" aria-live="polite">
-              <span className="small">Estimated APY <strong className="mono">{formatYieldPercent(estimatedApy)}</strong><InfoHelp label="About estimated APY">Uses your initial power, restaking bonus and added pool power. Assumes past rewards repeat with per-epoch compounding—not automatic. Excludes declining power and activation delays. Returns aren’t guaranteed.</InfoHelp></span>
-              {estimatedApy === null ? <span className="field__hint">{isWallet && !isPositiveDecimal(amount) ? 'Enter an amount to estimate APY.' : 'APY unavailable: missing reward history or staking data.'}</span> : null}
+              <span className="small">Estimated APR <strong className="mono">{formatYieldPercent(estimate.apr)}</strong>{estimate.epochReward !== null ? <> · ≈ <strong className="mono">{formatAnts(estimate.epochReward, 0)}</strong> ANTS / epoch</> : null}<InfoHelp label="About estimated APR">Uses your initial power, restaking bonus, and the points your stake adds to this pool. Assumes the last complete epoch repeats, without compounding. Rates compress as more stake joins the network. Excludes declining power and activation delays. Returns aren’t guaranteed.</InfoHelp></span>
+              {estimate.apr === null ? <span className="field__hint">{isWallet && !isPositiveDecimal(amount) ? 'Enter an amount to estimate APR.' : 'APR unavailable: missing reward history or staking data.'}</span> : null}
             </div>
           </div>
         </div>

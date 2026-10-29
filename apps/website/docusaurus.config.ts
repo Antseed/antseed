@@ -1,6 +1,7 @@
 import type {Config, Plugin, PluginConfig, PluginModule} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 import integrationsPagesPlugin from './plugins/integrations-pages';
+import docsSearchPlugin from './plugins/docs-search';
 import prismTheme from './src/lib/prismTheme';
 import {integrations as integrationEntries} from './src/integrations/integrations';
 import desktopPkg from '../desktop/package.json';
@@ -146,6 +147,8 @@ const config: Config = {
     ],
     statsProxyPlugin,
     integrationsPagesPlugin,
+    // Docs search index for src/theme/SearchBar (the ⌘K modal).
+    docsSearchPlugin,
   ],
 
   // General Sans — the design's display/body face (Geist stays for app-chrome/mono).
@@ -223,9 +226,10 @@ const config: Config = {
 
   themeConfig: {
     announcementBar: {
-      id: 'foundation-funding-2-4m',
+      // A new id, so people who closed the previous bar still see this one.
+      id: 'antseed-points-launch',
       content:
-        '<a class="funding-announcement" href="/blog/antseed-foundation-raises-2-4m/"><strong>We raised $2.4M, led by Spark Capital.</strong><span>Read the announcement <span aria-hidden="true">→</span></span></a>',
+        '<a class="funding-announcement" href="https://antseedpoints.com" target="_blank" rel="noopener noreferrer"><strong>Antseed Points are live: get rewarded for using AI.</strong><span>Visit antseedpoints.com <span aria-hidden="true">↗</span></span></a>',
       backgroundColor: '#001E12',
       textColor: '#FFFFFF',
       isCloseable: true,
@@ -297,6 +301,7 @@ const config: Config = {
           rel: 'noopener noreferrer',
           className: 'header-pricing-link',
         },
+        {type: 'search', position: 'right'},
         {
           type: 'docSidebar',
           sidebarId: 'docs',

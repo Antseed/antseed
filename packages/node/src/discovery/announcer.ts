@@ -108,6 +108,17 @@ export interface AnnouncerConfig {
  */
 const ANNOUNCE_RETRY_BACKOFFS_MS = [60_000, 120_000, 300_000, 600_000];
 
+/** Capabilities every announcement carries before the configured extras. */
+export function builtinPeerCapabilities(relaysSweeps: boolean): string[] {
+  return [
+    CONNECTION_CAPABILITY_RESPONSE_AUTH_V1,
+    CONNECTION_CAPABILITY_COOPERATIVE_CLOSE_V1,
+    CONNECTION_CAPABILITY_SIGNED_SDP_V1,
+    CONNECTION_CAPABILITY_TCP_ENC_V1,
+    ...(relaysSweeps ? [CONNECTION_CAPABILITY_RELAYS_SWEEPS_V1] : []),
+  ];
+}
+
 export class PeerAnnouncer {
   private readonly config: AnnouncerConfig;
   private intervalHandle: ReturnType<typeof setInterval> | null = null;
@@ -296,15 +307,7 @@ export class PeerAnnouncer {
         return providerAnnouncement;
       });
 
-    const capabilities: string[] = [
-      CONNECTION_CAPABILITY_RESPONSE_AUTH_V1,
-      CONNECTION_CAPABILITY_COOPERATIVE_CLOSE_V1,
-      CONNECTION_CAPABILITY_SIGNED_SDP_V1,
-      CONNECTION_CAPABILITY_TCP_ENC_V1,
-    ];
-    if (this.config.relaysSweeps) {
-      capabilities.push(CONNECTION_CAPABILITY_RELAYS_SWEEPS_V1);
-    }
+    const capabilities = builtinPeerCapabilities(this.config.relaysSweeps === true);
     if (this.config.capabilities && this.config.capabilities.length > 0) {
       capabilities.push(...this.config.capabilities);
     }

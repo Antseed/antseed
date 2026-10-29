@@ -1,4 +1,4 @@
-import { poolApyRange, poolApyEstimates, formatYieldPercent as percent, EXTREME_YIELD_LABEL, EXTREME_YIELD_NOTE, YIELD_DISPLAY_LIMIT } from '../pool-yield';
+import { poolAprRange, poolAprEstimates, poolHeadlineApr, formatYieldPercent as percent, EXTREME_YIELD_NOTE, YIELD_DISPLAY_LIMIT } from '../pool-yield';
 import { usePageData } from '../data';
 import { poolDetailOptions } from '../pool-data';
 import { api } from '../api';
@@ -6,7 +6,7 @@ import { Button, Card } from './ui';
 import { Modal } from '@antseed/ui';
 import { useMemo, useState, type ReactNode } from 'react';
 import { PoolActivity, SellerModels } from './PoolActivity';
-import type { EpochVolume, PoolConfigView, PoolEpochPoint, PoolView, PoolsView, RewardsView } from '../../../src/api-types';
+import type { EpochVolume, PoolConfigView, PoolEpochPoint, PoolView, PoolYield, PoolsView, RewardsView } from '../../../src/api-types';
 import { cmpBig, formatAnts, formatBps, formatInt, formatUsdcCompact, formatUtc, toBigInt } from '../format';
 import { AddressLink } from './AddressLink';
 import { EpochBarChart } from './Charts';
@@ -47,14 +47,33 @@ export function sortPools(pools: PoolView[]): PoolView[] {
   });
 }
 
-export type PoolSortMetric = 'apy' | 'volume' | 'stake';
+export type PoolSortMetric = 'apr' | 'volume' | 'stake';
 type SortDirection = 'ascending' | 'descending';
+
+function epochVolume(pool: PoolView, epoch: number): bigint | null {
+  if (pool.volumeStatus !== 'available') return null;
+  const row = pool.volumes.find((volume) => volume.epoch === epoch);
+  return row ? toBigInt(row.usdc) : null;
+}
 
 /** Settled volume in the last completed epoch, or null when the explorer has no usable figure. */
 function lastEpochVolume(pool: PoolView, currentEpoch: number): bigint | null {
-  if (pool.volumeStatus !== 'available') return null;
-  const row = pool.volumes.find((volume) => volume.epoch === currentEpoch - 1);
-  return row ? toBigInt(row.usdc) : null;
+  return epochVolume(pool, currentEpoch - 1);
+}
+
+/** Last completed epoch's volume against the one before, in percent; null without a prior epoch to compare. */
+export function volumeChange(pool: PoolView, currentEpoch: number): number | null {
+  const last = lastEpochVolume(pool, currentEpoch);
+  const prior = epochVolume(pool, currentEpoch - 2);
+  if (last === null || prior === null || prior === 0n) return null;
+  return Number((last - prior) * 10_000n / prior) / 100;
+}
+
+function VolumeChange({ change }: { change: number | null }) {
+  if (change === null) return null;
+  const sign = change > 0 ? '▲' : change < 0 ? '▼' : '';
+  const size = Math.abs(change);
+  return <span className={change > 0 ? 'accent' : 'dim'}>{sign} {size > 999 ? '>999' : size.toLocaleString(undefined, { maximumFractionDigits: 0 })}% w/w</span>;
 }
 
 function bigOrZero(value: string | null | undefined): bigint {
@@ -68,7 +87,7 @@ function displayName(pool: PoolView): string {
 /** Sort the displayed metric, keeping unavailable values last in either direction. */
 export function sortPoolsByMetric(pools: PoolView[], metric: PoolSortMetric, direction: SortDirection, currentEpoch: number): PoolView[] {
   const value = (pool: PoolView): number | bigint | null => {
-    if (metric === 'apy') return poolApyRange(pool.yield).oneWeek.apy;
+    if (metric === 'apr') return poolHeadlineApr(pool);
     if (metric === 'stake') return toBigInt(pool.activeStake);
     return lastEpochVolume(pool, currentEpoch);
   };
@@ -132,7 +151,7 @@ interface TableProps {
 export function PoolsTable({ pools, currentEpoch, loading, walletSyncing = false, onOpen, onStake }: TableProps) {
   const [filter, setFilter] = useState('');
   const [showAll, setShowAll] = useState(false);
-  const [sortBy, setSortBy] = useState<PoolSortMetric>('apy');
+  const [sortBy, setSortBy] = useState<PoolSortMetric>('apr');
   const [sortDirection, setSortDirection] = useState<SortDirection>('descending');
   const [onlyMine, setOnlyMine] = useState(false);
   const sortHeader = (metric: PoolSortMetric, label: string) => (
@@ -180,10 +199,11 @@ export function PoolsTable({ pools, currentEpoch, loading, walletSyncing = false
       ),
     },
     {
-      key: 'apy', label: sortHeader('apy', 'APY'),
-      sortDirection: sortBy === 'apy' ? sortDirection : 'none',
+      key: 'apr', label: sortHeader('apr', 'APR · max lock'),
+      sortDirection: sortBy === 'apr' ? sortDirection : 'none',
+      title: 'Estimated APR for a new 10,000 ANTS stake at max lock, from the last complete epoch, with the epoch in progress below.',
       align: 'right', mono: true,
-      render: (pool: PoolView) => <PoolApy pool={pool} />,
+      render: (pool: PoolView) => <PoolApr pool={pool} />,
     },
     {
       key: 'stake', label: sortHeader('stake', 'TVL'), sortDirection: sortBy === 'stake' ? sortDirection : 'none', title: 'Total active stake in this pool (ANTS).', align: 'right', mono: true,
@@ -191,7 +211,12 @@ export function PoolsTable({ pools, currentEpoch, loading, walletSyncing = false
     },
     {
       key: 'volume', label: sortHeader('volume', 'Last epoch'), sortDirection: sortBy === 'volume' ? sortDirection : 'none', title: 'Settled USDC volume in the last completed epoch.', align: 'right', mono: true,
-      render: p => { const volume = lastEpochVolume(p, currentEpoch); return volume === null ? '—' : formatUsdcCompact(volume); },
+      render: p => {
+        const volume = lastEpochVolume(p, currentEpoch);
+        if (volume === null) return '—';
+        const change = volumeChange(p, currentEpoch);
+        return change === null ? formatUsdcCompact(volume) : <span className="cell-stack">{formatUsdcCompact(volume)}<span className="cell-sub"><VolumeChange change={change} /></span></span>;
+      },
     },
     { key: 'yours', label: 'Your stake', align: 'right', mono: true, render: p => walletSyncing ? <span className="dim">Updating…</span> : <YourStakeCell pool={p} /> },
     {
@@ -286,13 +311,14 @@ export function PoolDrawer({ pool: initialPool, view, onClose, stake }: { pool: 
           {pool.displaySource?.error ? <p className="hint">Antscan: {pool.displaySource.error}{pool.yield?.status === 'unavailable' ? ' Historical yield is unavailable.' : ''}</p> : null}
           <div className="pool-metrics">
             <div><span className="tile-label">Total value locked</span><strong>{formatAnts(pool.activeStake)} <small>ANTS</small></strong>{poolPending > 0n ? <span className="small pending-amount">+{formatAnts(poolPending)} ANTS pending activation</span> : null}</div>
-            <div><span className="tile-label">Last epoch volume</span><strong>{latest && history.volumeStatus === 'available' ? formatUsdcCompact(latest.usdc) : '—'} <small>USDC</small></strong></div>
+            <div><span className="tile-label">Last epoch volume</span><strong>{latest && history.volumeStatus === 'available' ? formatUsdcCompact(latest.usdc) : '—'} <small>USDC</small></strong><span className="small"><VolumeChange change={volumeChange(history, historyEpoch)} /></span></div>
             <div><span className="tile-label">Power share</span><strong>{formatBps(pool.powerShareBps)}</strong><span className="small muted">of all pools' staking power</span></div>
             <div><span className="tile-label">Last epoch rewards</span><strong>{pool.lastEpochEmission != null ? formatAnts(pool.lastEpochEmission) : '—'} <small>ANTS</small></strong><span className="small muted">{pool.lastEpochEmission != null ? (pool.lastEpochEmissionSettled ? 'settled to stakers' : 'estimated, not settled') : 'no usage yet'}</span></div>
           </div>
-          <section className="pool-apy-section" aria-label="Estimated APY by lock">
-            <div className="pool-section-heading"><h3>Estimated APY by lock</h3><span className="small muted">10,000 ANTS reference stake · longer locks earn more power</span></div>
-            <PoolApyEstimates pool={pool} />
+          <section className="pool-apy-section" aria-label="Estimated APR by lock">
+            <div className="pool-section-heading"><h3>Estimated APR by lock</h3><span className="small muted">New 10,000 ANTS stake · longer locks earn more power</span></div>
+            <PoolAprEstimates pool={pool} />
+            <StakerRewardsHelp maxLockEpochs={(pool.yield ?? pool.liveYield)?.maxLockEpochs ?? null} />
           </section>
           <section className="pool-section">
             <div className="pool-section-heading"><h3>Settled volume · completed epochs</h3><span className="small muted">Includes legacy seller activity.</span></div>
@@ -393,33 +419,66 @@ export function PoolHistoryCharts({ history, currentEpoch }: { history: PoolEpoc
   );
 }
 
-export function PoolApyEstimates({ pool }: { pool: PoolView }) {
+const formatWeekly = (reward: bigint | null): string => reward === null ? '—' : `${formatAnts(reward, reward < 10n ** 19n ? 2 : 0)} ANTS`;
+
+export function PoolAprEstimates({ pool }: { pool: PoolView }) {
+  const live = poolAprEstimates(pool.liveYield);
   return <dl className="pool-apy-estimates">
-    {poolApyEstimates(pool.yield).map(period => <div key={period.label} title={period.status === 'unsupported'
-      ? `${period.label} is not supported by this pool's whole-epoch lock limits.`
-      : period.apy === null ? 'APY is unavailable because reward or epoch data is missing.'
-        : `10,000 ANTS reference stake. ${period.epochs} epoch(s), ${period.actualDays} days. Annualized initial earning rate with hypothetical compounding; not the return over this lock. APY above 10,000% is shown as ${EXTREME_YIELD_LABEL}. Source epoch ${pool.yield!.epoch}.${pool.yield?.status === 'estimated' ? ' Rewards are not yet settled.' : ''}`}>
-      <dt>{period.label}</dt><dd>{period.status === 'unsupported' ? <span className="pool-apy-unavailable">Unsupported</span> : <>{percent(period.apy)}{period.apy !== null && period.apy <= YIELD_DISPLAY_LIMIT && pool.yield?.status === 'estimated' ? <span className="dim small"> est.</span> : null}</>}</dd>
-    </div>)}
+    {poolAprEstimates(pool.yield).map((period, index) => {
+      const now = live[index];
+      return <div key={period.label} title={period.status === 'unsupported'
+        ? `${period.label} is not supported by this pool's whole-epoch lock limits.`
+        : period.apr === null ? 'APR is unavailable because reward or epoch data is missing.'
+          : `New 10,000 ANTS stake. ${period.epochs} epoch(s), ${period.actualDays} days of power. Last complete epoch (${pool.yield!.epoch}) repeated for a year, not compounded; not the return over this lock.${pool.yield?.status === 'estimated' ? ' Rewards are not yet settled.' : ''}`}>
+        <dt>{period.label}</dt>
+        <dd>{period.status === 'unsupported' ? <span className="pool-apy-unavailable">Unsupported</span> : <>
+          {percent(period.apr)}{period.apr !== null && period.apr <= YIELD_DISPLAY_LIMIT && pool.yield?.status === 'estimated' ? <span className="dim small"> est.</span> : null}
+          {period.epochReward !== null ? <span className="small muted pool-apy-weekly">{formatWeekly(period.epochReward)} / epoch</span> : null}
+          {now?.apr != null ? <span className="small muted pool-apy-weekly">this epoch {percent(now.apr)}</span> : null}
+        </>}</dd>
+      </div>;
+    })}
   </dl>;
 }
 
-function yieldDescription(pool: PoolView): string {
-  const info = pool.yield;
-  if (!info || info.status === 'unavailable') return 'Last-epoch yield is unavailable.';
-  const range = poolApyRange(info);
-  const duration = info.endsAt - info.startsAt;
-  const lockLabel = (epochs: number | null) => epochs === null ? 'unavailable' : `${epochs} epoch(s), ${epochs * duration / 86400} days`;
-  return `10,000 ANTS reference stake, including added pool power. 1 week: ${lockLabel(range.oneWeek.epochs)}; 2 years: ${lockLabel(range.twoYears.epochs)}. Source epoch ${info.epoch}: ${formatUtc(info.startsAt)} – ${formatUtc(info.endsAt)}. Assumes rewards and initial rates repeat each epoch; compounding is not automatic. Excludes declining power and activation delays. Returns aren’t guaranteed. — means unavailable.${info.status === 'estimated' ? ' Rewards not yet settled.' : ''}`;
+/** How a staker's reward is decided, in the terms a staker chooses by: seller volume, lock length and timing. */
+export function StakerRewardsHelp({ maxLockEpochs }: { maxLockEpochs: number | null }) {
+  return <p className="small muted pool-rewards-help">
+    Each pool's staker rewards are its share of recognized volume × power; inside the pool they split by power, so the pool's size cancels out.
+    Per unit of power you earn in proportion to this seller's volume, and lock length multiplies your power{maxLockEpochs ? ` (max lock = ${formatInt(maxLockEpochs)}×)` : ''}.
+    Rates are high while total network power is small and compress as more stake arrives, so early stake with a seller whose volume is growing earns the most.
+    Estimates repeat one epoch for a year without compounding and aren't guaranteed.
+  </p>;
 }
 
-export function PoolApy({ pool }: { pool: PoolView }): ReactNode {
-  const { oneWeek, twoYears } = poolApyRange(pool.yield);
-  const available = oneWeek.apy !== null || twoYears.apy !== null;
-  const extreme = (oneWeek.apy ?? 0) > YIELD_DISPLAY_LIMIT || (twoYears.apy ?? 0) > YIELD_DISPLAY_LIMIT;
-  const low = percent(oneWeek.apy), high = percent(twoYears.apy);
-  return <span className={`yield-percent${available ? ' yield-percent--hot' : ''}`} title={`${yieldDescription(pool)}${extreme ? ` ${EXTREME_YIELD_NOTE}` : ''}`}>
-    {extreme ? EXTREME_YIELD_LABEL : available ? `${low} – ${high}` : '—'}
-    {available && !extreme && pool.yield?.status === 'estimated' ? <span className="dim small"> est.</span> : null}
+/** The yield the headline APR comes from: the last complete epoch when it prices, else the epoch in progress. */
+function headlineYield(pool: PoolView): PoolYield | undefined {
+  if (poolAprRange(pool.yield).maxLock.apr !== null) return pool.yield;
+  if (poolAprRange(pool.liveYield).maxLock.apr !== null) return pool.liveYield;
+  return [pool.yield, pool.liveYield].find((info) => info && info.status !== 'unavailable');
+}
+
+function yieldDescription(pool: PoolView): string {
+  const info = headlineYield(pool);
+  if (!info) return 'Yield is unavailable.';
+  const range = poolAprRange(info);
+  const duration = info.endsAt - info.startsAt;
+  const source = info === pool.yield ? `last complete epoch ${info.epoch}` : `epoch ${info.epoch} in progress`;
+  return `New 10,000 ANTS stake at max lock (${range.maxLock.epochs ?? '—'} epochs of power), including the stake's own added points. 1-week lock: ${percent(range.oneWeek.apr)}. Source: ${source}, ${formatUtc(info.startsAt)} – ${formatUtc(info.startsAt + duration)}. The epoch repeated for a year, not compounded. Rates compress as stake joins the network. Returns aren’t guaranteed. — means unavailable.${info.status === 'estimated' ? ' Rewards not yet settled.' : ''}`;
+}
+
+export function PoolApr({ pool }: { pool: PoolView }): ReactNode {
+  const last = poolAprRange(pool.yield).maxLock;
+  const live = poolAprRange(pool.liveYield).maxLock;
+  const headline = last.apr ?? live.apr;
+  const extreme = (headline ?? 0) > YIELD_DISPLAY_LIMIT;
+  const trend = last.apr !== null && live.apr !== null ? (live.apr > last.apr ? '▲ ' : live.apr < last.apr ? '▼ ' : '') : '';
+  return <span className="cell-stack" title={`${yieldDescription(pool)}${extreme ? ` ${EXTREME_YIELD_NOTE}` : ''}`}>
+    <span className={`yield-percent${headline !== null ? ' yield-percent--hot' : ''}`}>
+      {percent(headline)}
+      {headline !== null && !extreme && (last.apr === null || pool.yield?.status === 'estimated') ? <span className="dim small"> est.</span> : null}
+    </span>
+    {last.apr !== null && live.apr !== null ? <span className="cell-sub">{trend}{percent(live.apr)} this epoch</span>
+      : last.apr === null && live.apr !== null ? <span className="cell-sub">this epoch so far</span> : null}
   </span>;
 }

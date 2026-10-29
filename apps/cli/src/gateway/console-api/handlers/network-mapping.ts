@@ -1,6 +1,8 @@
 /** Pure mapping from the buyer's peer, health and verification views to the console's `Peer`. */
+import { isNativeVideoProtocol } from '@antseed/node'
 import { collectPeerVerificationLinks } from '@antseed/node/discovery'
 import { parseVerifierCapabilities } from '@antseed/node/verifier-capabilities'
+import { freeTierProgramForService, isPricedService, normalizeFreeTierProgram, parseFreeTierProgram } from '@antseed/node/free-tier-program'
 import { modelTagsFor } from '@antseed/node/model-metadata'
 import { TEE_VERIFIER_ID, teeScope, type TeeClaim, type TeeScope } from '@antseed/node/tee-status'
 import type { NetworkModel, NetworkModelCapability, NetworkModelOffer, NetworkModelType, NetworkRouter, NetworkRouterOption, Peer, RoutePreview } from '../types.js'
@@ -8,7 +10,8 @@ import { parseRouteSelection } from '../../../proxy/route-selection.js'
 
 type Row = Record<string, unknown>
 
-function rows(value: unknown): Row[] {
+/** Objects of a JSON array (the buyer's peer rows). */
+export function rows(value: unknown): Row[] {
   return Array.isArray(value) ? value.filter((row): row is Row => !!row && typeof row === 'object' && !Array.isArray(row)) : []
 }
 
@@ -41,6 +44,8 @@ export function peerServices(row: Row): Peer['services'] {
   const pricing = asRecord(row['providerPricing'])
   const categories = asRecord(row['providerServiceCategories'])
   const protocols = asRecord(row['providerServiceApiProtocols'])
+  const unitModels = asRecord(row['providerServiceUnitBillingModels'])
+  const capabilities = strings(row['capabilities'])
   const providers = new Set<string>([
     ...(Array.isArray(row['providers']) ? row['providers'].filter((p): p is string => typeof p === 'string') : []),
     ...Object.keys(pricing),
@@ -57,6 +62,14 @@ export function peerServices(row: Row): Peer['services'] {
       const price = { ...defaults, ...asRecord(priced[service]) }
       const tags = tagged[service]
       const apis = spoken[service]
+      const billing = asRecord(asRecord(unitModels[provider])['services'])[service]
+      const paid = isPricedService({
+        inputUsdPerMillion: num(price['inputUsdPerMillion']),
+        outputUsdPerMillion: num(price['outputUsdPerMillion']),
+        cachedInputUsdPerMillion: num(price['cachedInputUsdPerMillion']),
+        unitBillingModels: billing && typeof billing === 'object' ? billing as Record<string, { components?: Array<{ priceUsd: number }> }> : null,
+      })
+      const video = Array.isArray(apis) && apis.some(isNativeVideoProtocol)
       services.push({
         provider,
         service,
@@ -65,6 +78,9 @@ export function peerServices(row: Row): Peer['services'] {
         cachedInputUsdPerMillion: num(price['cachedInputUsdPerMillion']),
         categories: Array.isArray(tags) ? tags.filter((tag): tag is string => typeof tag === 'string') : [],
         ...(Array.isArray(apis) ? { apiProtocols: apis.filter((api): api is string => typeof api === 'string') } : {}),
+        paid,
+        // A priced service only has a free allowance of its own; the seller-wide program covers free services.
+        freeTier: freeTierProgramForService(capabilities, service, paid, { video }),
       })
     }
   }
@@ -122,6 +138,7 @@ export function mapPeers(input: {
     // when the buyer shares its verification snapshot.
     const verified = asRecord(row['verificationResults'])['verified'] === true || (teeVerified?.has(key) ?? false)
     const stake = num(row['onChainPoolStakeAnts'])
+    const agentId = num(row['onChainAgentId'])
     const coolingDown = healthRow?.['coolingDown'] === true
     return [{
       peerId,
@@ -136,6 +153,8 @@ export function mapPeers(input: {
       tee,
       teeScope: tee ? teeVerified?.get(key) ?? null : null,
       stakeAnts: stake === null ? null : String(stake),
+      agentId: agentId !== null && agentId > 0 ? agentId : null,
+      freeTier: parseFreeTierProgram(strings(row['capabilities'])),
       usageShareBps: num(row['onChainUsageShareBps']),
       washFlagged: row['onChainWashFlagged'] === true || trust['washFlagged'] === true,
       lastSeen: num(row['lastSeen']),
@@ -260,6 +279,11 @@ export function mapNetworkModels(body: unknown, peers: readonly Peer[]): Network
         contextLength: num(capabilities['contextWindow']),
         // Free when every advertised price is zero, and at least one is advertised.
         free: (tokenPriced || minImage !== null) && (input ?? 0) === 0 && (output ?? 0) === 0 && (maxImage ?? 0) === 0,
+        agentId: peer?.agentId ?? null,
+        // The program this model is served under: its own, else the seller-wide
+        // one, which only covers free models. A priced model's own program is a free allowance.
+        // The buyer's catalog classifies the offer (prices, unit billing, video) the way the seller does.
+        freeTier: normalizeFreeTierProgram(offer['freeTier']),
         reputationScore: num(offer['effectiveReputationScore']) ?? num(offer['reputationScore']),
         trustScore: peer?.trustScore ?? num(offer['onChainReputationScore']),
         verified: peer?.verified ?? false,
@@ -289,7 +313,10 @@ export function mapNetworkModels(body: unknown, peers: readonly Peer[]): Network
       sellers: new Set(offers.map((offer) => peerKey(offer.peerId))).size,
       inputUsdPerMillion: range(offers.map((offer) => offer.inputUsdPerMillion)),
       outputUsdPerMillion: range(offers.map((offer) => offer.outputUsdPerMillion)),
-      free: offers.some((offer) => offer.free),
+      // Free to everyone: a stakers-only offer is free only to its seller's stakers.
+      free: offers.some((offer) => offer.free && !offer.freeTier?.base.stakersOnly),
+      freeForStakers: offers.some((offer) => offer.freeTier?.base.stakersOnly === true),
+      freeAllowance: offers.some((offer) => !offer.free && offer.freeTier !== null && !offer.freeTier.base.stakersOnly),
       teeSellers: offers.filter((offer) => offer.tee).length,
       fullTeeSellers: offers.filter((offer) => offer.teeScope === 'end-to-end').length,
       verifiedSellers: offers.filter((offer) => offer.verified).length,

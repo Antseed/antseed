@@ -55,6 +55,10 @@ const PERCENT_DENOMINATOR = 100n;
 /** Default max price of one video generation ($5.00). */
 export const DEFAULT_MAX_VIDEO_REQUEST_USDC = 5_000_000n;
 const REQUEST_BILLING_TTL_MS = 5 * 60_000;
+/** How long and how many allowance-covered requests are remembered, so a late NeedAuth for one is still refused. */
+const COVERED_REQUEST_TTL_MS = 60 * 60_000;
+const MAX_COVERED_REQUESTS = 10_000;
+const coveredRequestKey = (sellerPeerId: string, requestId: string): string => `${sellerPeerId.toLowerCase()}\n${requestId}`;
 /** Accepted video jobs awaiting delivery are remembered this long (matches job routes). */
 const VIDEO_JOB_TTL_MS = 30 * 24 * 60 * 60_000;
 const MAX_VIDEO_JOBS = 1_000;
@@ -237,6 +241,11 @@ export class BuyerPaymentManager {
    * the fact.
    */
   private readonly _requestBillingEntries = new Map<string, StoredBuyerRequestBillingEntry>();
+  /**
+   * Requests a seller served from a priced service's free allowance, with when
+   * they were marked. Nothing is owed for them, so a NeedAuth naming one is refused.
+   */
+  private readonly _coveredRequests = new Map<string, number>();
   private readonly _observedUsageWaiters = new Map<string, Array<(usage: UnitBillingUsage | undefined) => void>>();
 
   /** sellerPeerId -> full pricing map (defaults + per-service overrides from peer metadata / 402) */
@@ -1640,6 +1649,13 @@ export class BuyerPaymentManager {
       return;
     }
 
+    if (this.isRequestCovered(sellerPeerId, payload.requestId)) {
+      debugWarn(
+        `[BuyerPayment] Refusing NeedAuth from ${sellerPeerId.slice(0, 12)}... for request ${payload.requestId} it served from a free allowance`,
+      );
+      return;
+    }
+
     const requestBilling = payload.requestId ? this.getRequestBilling(payload.requestId) : undefined;
     const buyerService = requestBilling?.context.service
       ?? this._requestService.get(payload.requestId);
@@ -2460,6 +2476,36 @@ export class BuyerPaymentManager {
   clearRequestBilling(requestId: string): void {
     this._requestBillingEntries.delete(requestId);
     this._requestService.take(requestId);
+  }
+
+  /**
+   * `sellerPeerId` marked `requestId` as covered by a free allowance: forget its
+   * billing and refuse any later NeedAuth from that seller claiming a charge for it.
+   */
+  markRequestCovered(sellerPeerId: string, requestId: string): void {
+    this.clearRequestBilling(requestId);
+    const key = coveredRequestKey(sellerPeerId, requestId);
+    const now = Date.now();
+    for (const [id, markedAt] of this._coveredRequests) {
+      if (this._coveredRequests.size < MAX_COVERED_REQUESTS && now - markedAt < COVERED_REQUEST_TTL_MS) break;
+      this._coveredRequests.delete(id);
+    }
+    this._coveredRequests.delete(key);
+    this._coveredRequests.set(key, now);
+  }
+
+  /**
+   * A new attempt of `requestId` is going to `sellerPeerId`: a retry keeps the
+   * request ID, and if this attempt is paid its NeedAuth is legitimate even when
+   * an earlier attempt was covered.
+   */
+  releaseRequestCoverage(sellerPeerId: string, requestId: string): void {
+    this._coveredRequests.delete(coveredRequestKey(sellerPeerId, requestId));
+  }
+
+  /** Whether `sellerPeerId` served the current attempt of `requestId` from a free allowance. */
+  isRequestCovered(sellerPeerId: string, requestId: string | undefined): boolean {
+    return requestId !== undefined && this._coveredRequests.has(coveredRequestKey(sellerPeerId, requestId));
   }
 
   trackRequestBillingContext(requestId: string, context: UnitBillingContext): void {

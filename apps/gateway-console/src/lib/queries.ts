@@ -29,10 +29,16 @@ export const qk = {
   audit: (filter: object) => ['audit', filter] as const,
   wallet: (workspaceId: string) => ['wallet', workspaceId] as const,
   deposits: (workspaceId: string) => ['deposits', workspaceId] as const,
+  billingProfile: (workspaceId: string) => ['billing-profile', workspaceId] as const,
+  statements: (workspaceId: string) => ['statements', workspaceId] as const,
+  statement: (workspaceId: string, period: string) => ['statements', workspaceId, period] as const,
   channels: (workspaceId: string, all: boolean) => ['channels', workspaceId, all] as const,
   /** Authorized-wallet status of every workspace the viewer can open (markers). */
   operators: ['wallet-operators'] as const,
   rewards: (workspaceId: string) => ['rewards', workspaceId] as const,
+  freeTier: (workspaceId: string) => ['free-tier', workspaceId] as const,
+  /** Under `freeTier`, so adding or removing a code re-reads it. */
+  freeTierStake: (workspaceId: string) => ['free-tier', workspaceId, 'stake'] as const,
   chain: ['chain'] as const,
   chatModels: (workspaceId: string) => ['chat-models', workspaceId] as const,
   chatContext: (workspaceId: string) => ['chat-context', workspaceId] as const,
@@ -48,6 +54,16 @@ export const qk = {
   routePreview: (query: object) => ['routing', 'preview', query] as const,
   presets: (workspaceId: string | null) => ['presets', workspaceId] as const,
   adminTokens: ['admin-tokens'] as const,
+  sellerStatus: ['seller', 'status'] as const,
+  sellerEvents: ['seller', 'events'] as const,
+  sellerUsage: (days: number) => ['seller', 'usage', days] as const,
+  sellerSettings: ['seller', 'settings'] as const,
+  sellerMarket: ['seller', 'market'] as const,
+  sellerReputation: ['seller', 'reputation'] as const,
+  sellerPromote: ['seller', 'promote'] as const,
+  sellerCard: ['seller', 'card'] as const,
+  sellerLogs: (query: object) => ['seller', 'logs', query] as const,
+  sellerLog: (id: string) => ['seller', 'log', id] as const,
 }
 
 /** Every resource group a routing-policy change can affect, including the chat's own route preview. */
@@ -161,8 +177,8 @@ export function useAdminTokens() {
   return useQuery({ queryKey: qk.adminTokens, queryFn: api.adminTokens.list })
 }
 
-export function useMe() {
-  return useQuery({ queryKey: qk.me, queryFn: api.auth.me })
+export function useMe(enabled = true) {
+  return useQuery({ queryKey: qk.me, queryFn: api.auth.me, enabled })
 }
 
 export function useAuthConfig(enabled = true) {
@@ -196,4 +212,46 @@ export function modelsFromPeers(peers: Array<{ services: Array<{ service: string
   const models = new Set<string>()
   for (const peer of peers ?? []) for (const service of peer.services) models.add(service.service)
   return [...models].sort()
+}
+
+/** The seller on this host. `live` polls every 10 s for the Seller page; the nav only needs it once. */
+export function useSellerStatus(enabled = true, live = false) {
+  return useQuery({ queryKey: qk.sellerStatus, queryFn: api.seller.status, enabled, refetchInterval: enabled && live ? 10_000 : false, staleTime: live ? 5_000 : 60_000 })
+}
+
+export function useSellerEvents(enabled = true) {
+  return useQuery({ queryKey: qk.sellerEvents, queryFn: () => api.seller.events(100), enabled, refetchInterval: 30_000 })
+}
+
+export function useSellerUsage(days: number, enabled = true) {
+  return useQuery({ queryKey: qk.sellerUsage(days), queryFn: () => api.seller.usage(days), enabled, refetchInterval: 60_000 })
+}
+
+export function useSellerSettings(enabled = true) {
+  return useQuery({ queryKey: qk.sellerSettings, queryFn: api.seller.settings, enabled })
+}
+
+/** Polls faster while the server is still loading the network snapshot in the background. */
+const whileRefreshing = (data: { network: { refreshing: boolean } } | undefined) => (data?.network.refreshing ? 3_000 : 60_000)
+
+export function useSellerMarket(enabled = true) {
+  return useQuery({ queryKey: qk.sellerMarket, queryFn: () => api.seller.market(), enabled, refetchInterval: (query) => whileRefreshing(query.state.data) })
+}
+
+export function useSellerReputation(enabled = true) {
+  return useQuery({
+    queryKey: qk.sellerReputation, queryFn: () => api.seller.reputation(), enabled,
+    // The on-chain standing also loads in the background: poll until it is in (or failed).
+    refetchInterval: (query) => (query.state.data && !query.state.data.standing && !query.state.data.standingError ? 3_000 : whileRefreshing(query.state.data)),
+  })
+}
+
+export function useSellerPromote(enabled = true) {
+  // The trust score and verification checks load in the background: poll until they are in, then slowly (a failed load retries on a read).
+  return useQuery({ queryKey: qk.sellerPromote, queryFn: api.seller.promote, enabled, refetchInterval: (query) => (query.state.data?.pending ? 3_000 : 60_000) })
+}
+
+/** Keyed by the trust score it shows, so a score that comes in later redraws it. */
+export function useSellerCard(trustScore: number | null, enabled = true) {
+  return useQuery({ queryKey: [...qk.sellerCard, trustScore], queryFn: api.seller.card, enabled, placeholderData: (previous) => previous })
 }

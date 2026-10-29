@@ -25,10 +25,12 @@ import {
   assertSellerPrerequisites,
   buildSellerRuntimeOverridesFromFlags,
   buildSellerPluginRuntimeEnv,
+  getUnsupportedFallbackUpstreamsWarning,
   getUnsupportedUnitBillingWarning,
   isPublicRpcUrl,
   mergeSellerRuntimeEnv,
   parseOptionalPositiveIntegerEnv,
+  restartSupervisor,
   selectSellerProviderNames,
 } from './start.js';
 
@@ -433,3 +435,93 @@ test('selectSellerProviderNames parses comma-separated provider filters and repo
   assert.deepEqual(selection.selected, ['together', 'missing']);
   assert.deepEqual(selection.unknown, ['missing']);
 });
+
+test('buildSellerPluginRuntimeEnv resolves fallback upstream keys and model names', () => {
+  const config = createDefaultConfig();
+  config.seller.providers = {
+    kimi: {
+      plugin: 'openai',
+      baseUrl: 'https://api.moonshot.example',
+      services: { 'kimi-k3.1-pro': { upstreamModel: 'kimi-k3.1-pro' } },
+      fallbackUpstreams: [
+        {
+          baseUrl: 'https://openrouter.example/api',
+          apiKeyEnv: 'TEST_FALLBACK_KEY',
+          services: { 'kimi-k3.1-pro': { upstreamModel: 'moonshotai/kimi-k3.1-pro' } },
+        },
+        { baseUrl: 'https://mirror.moonshot.example', pathRewrite: { '/v1/chat/completions': '/v2/chat/completions' } },
+      ],
+    },
+  };
+  const previous = process.env['TEST_FALLBACK_KEY'];
+  process.env['TEST_FALLBACK_KEY'] = 'fallback-key';
+  try {
+    const env = buildSellerPluginRuntimeEnv(config.seller, 'kimi');
+    assert.deepEqual(JSON.parse(env['ANTSEED_FALLBACK_UPSTREAMS_JSON']!), [
+      {
+        baseUrl: 'https://openrouter.example/api',
+        apiKey: 'fallback-key',
+        services: ['kimi-k3.1-pro'],
+        serviceAliasMap: { 'kimi-k3.1-pro': 'moonshotai/kimi-k3.1-pro' },
+      },
+      { baseUrl: 'https://mirror.moonshot.example', pathRewrite: { '/v1/chat/completions': '/v2/chat/completions' } },
+    ]);
+
+    delete process.env['TEST_FALLBACK_KEY'];
+    assert.throws(
+      () => buildSellerPluginRuntimeEnv(config.seller, 'kimi'),
+      /fallbackUpstreams\[0\] of provider "kimi" reads its API key from TEST_FALLBACK_KEY, which is not set/,
+    );
+  } finally {
+    if (previous === undefined) delete process.env['TEST_FALLBACK_KEY'];
+    else process.env['TEST_FALLBACK_KEY'] = previous;
+  }
+});
+
+test('buildSellerPluginRuntimeEnv keeps a fallback model name equal to the service id', () => {
+  const config = createDefaultConfig();
+  config.seller.providers = {
+    kimi: {
+      plugin: 'openai',
+      services: { 'kimi-k3.1-pro': { upstreamModel: 'moonshotai/kimi-k3.1-pro' } },
+      fallbackUpstreams: [
+        { baseUrl: 'https://api.moonshot.example', services: { 'kimi-k3.1-pro': { upstreamModel: 'kimi-k3.1-pro' } } },
+      ],
+    },
+  };
+  const env = buildSellerPluginRuntimeEnv(config.seller, 'kimi');
+  assert.deepEqual(JSON.parse(env['ANTSEED_FALLBACK_UPSTREAMS_JSON']!), [
+    {
+      baseUrl: 'https://api.moonshot.example',
+      services: ['kimi-k3.1-pro'],
+      serviceAliasMap: { 'kimi-k3.1-pro': 'kimi-k3.1-pro' },
+    },
+  ]);
+});
+
+test('getUnsupportedFallbackUpstreamsWarning flags plugins without fallback support', () => {
+  const providerConfig = {
+    plugin: 'anthropic',
+    services: {},
+    fallbackUpstreams: [{ baseUrl: 'https://backup.example' }],
+  };
+  assert.match(
+    getUnsupportedFallbackUpstreamsWarning('claude', providerConfig, [])!,
+    /Provider "claude" \(anthropic\) ignores fallbackUpstreams/,
+  );
+  assert.equal(
+    getUnsupportedFallbackUpstreamsWarning('kimi', providerConfig, [{ key: 'ANTSEED_FALLBACK_UPSTREAMS_JSON', label: '', type: 'string', required: false }]),
+    undefined,
+  );
+  assert.equal(getUnsupportedFallbackUpstreamsWarning('kimi', { plugin: 'openai', services: {} }, []), undefined);
+});
+
+test('a restart from the dashboard is offered only when a supervisor will start the seller again', () => {
+  assert.equal(restartSupervisor({ ANTSEED_SUPERVISED: '1' }, 4321), 'its supervisor')
+  assert.equal(restartSupervisor({ KUBERNETES_SERVICE_HOST: '10.0.0.1' }, 1), 'Kubernetes')
+  // A shell inside the pod (kubectl exec) is not the container's main process, so nothing would restart it.
+  assert.equal(restartSupervisor({ KUBERNETES_SERVICE_HOST: '10.0.0.1' }, 4321), null)
+  // A terminal that inherited systemd's INVOCATION_ID is not supervised.
+  assert.equal(restartSupervisor({ INVOCATION_ID: 'abc' }, 4321), null)
+  assert.equal(restartSupervisor({ ANTSEED_SUPERVISED: '0', KUBERNETES_SERVICE_HOST: '10.0.0.1' }, 1), null)
+})

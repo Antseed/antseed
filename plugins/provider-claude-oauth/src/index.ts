@@ -11,7 +11,7 @@ import { BaseProvider, OAuthTokenProvider, StaticTokenProvider, parseServiceAlia
 import { CredentialStore } from './credential-store.js';
 
 const DEFAULT_ANTHROPIC_VERSION = '2023-06-01';
-const CLAUDE_CODE_VERSION = '2.1.75';
+const CLAUDE_CODE_VERSION = '2.1.312';
 const CLAUDE_CODE_OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 const CLAUDE_CODE_OAUTH_TOKEN_ENDPOINT = 'https://platform.claude.com/v1/oauth/token';
 const CLAUDE_CODE_IDENTITY_PROMPT = "You are Claude Code, Anthropic's official CLI for Claude.";

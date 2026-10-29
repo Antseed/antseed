@@ -11,7 +11,7 @@
  * member of Default and an admin of Research.
  */
 import type {
-  AdminToken, ApiKey, AuditEntry, BuyerLimits, DepositConfirmation, GatewayExposure, GatewayExposureMode, GatewayUpdate, Me, MeResponse, Member, RequestDetail, RequestLogEntry, RoutePreview, RoutingPolicy,
+  AdminToken, ApiKey, AuditEntry, BillingProfile, BuyerLimits, DepositConfirmation, PurchaseStatement, StatementSummary, FreeTierStake, GatewayExposure, GatewayExposureMode, GatewayUpdate, Me, MeResponse, Member, RequestDetail, RequestLogEntry, RoutePreview, RoutingPolicy,
   UsageGroupBy, Workspace, WorkspaceRole,
   RouteSelection,
 } from '../api/types'
@@ -21,6 +21,9 @@ import { tighterLimits } from '../lib/key-layers'
 import { samePeerId } from '../lib/peer-id'
 import { combinePolicies, expandLists } from '../lib/policy-match'
 import { fakeAddress, mockNetworkModels, mockNetworkRouters, mockRouteSelection, seed } from './data'
+// The card renderer is the seller service's own (no copy in the console).
+import { sellerCardSvg } from '../../../cli/src/seller-monitor/card'
+import { mockCheckVerifications, mockResetSellerOverrides, mockRestartSeller, mockSaveVerifications, mockSellerEvents, mockSellerLogDetail, mockSellerLogs, mockSellerMarket, mockSellerPromote, mockSellerReputation, mockSellerSettingsState, mockSellerStatus, mockSellerUsage, mockTelegramChats, mockTestAlert, mockUpdateSellerAlerts, mockUpdateSellerSettings } from './seller'
 import { mockChatModels, mockChatStream, mockChatThread, mockChatThreads, mockDeleteChatThread } from './chat'
 import { mockOperatorState, OPERATOR_SCENARIOS, scenarioOperator, type OperatorScenario } from './operator'
 
@@ -32,9 +35,24 @@ class MockError extends Error {
 
 const db = seed()
 /** The mock viewer's starred models: two to start, so the Favorites table shows. */
+/** Stakers sharing with each workspace buyer (staked free tier). */
+const freeTierStakers = new Map<string, Array<{ staker: string; expiresAt: number; expired: boolean }>>()
+
+/** Read staker, buyer and expiry out of a pasted free-tier code (the mock does not check the signature). */
+function decodeMockFreeTierCode(code: string): { staker: string; buyer: string; expiresAt: number } {
+  const prefix = 'antseed-free-tier-'
+  if (!code.startsWith(prefix)) throw new MockError(400, 'invalid_code', `Not a free-tier code: it should start with ${prefix}`)
+  const body = code.slice(prefix.length).replace(/-/g, '+').replace(/_/g, '/')
+  const bytes = Uint8Array.from(atob(body + '='.repeat((4 - (body.length % 4)) % 4)), (c) => c.charCodeAt(0))
+  if (bytes.length !== 113) throw new MockError(400, 'invalid_code', 'Free-tier code is incomplete')
+  const hex = (from: number, to: number) => Array.from(bytes.slice(from, to), (b) => b.toString(16).padStart(2, '0')).join('')
+  return { staker: `0x${hex(0, 20)}`, buyer: `0x${hex(20, 40)}`, expiresAt: Number(BigInt(`0x${hex(40, 48)}`)) }
+}
+
 const favorites = new Set<string>(['qwen3-coder-480b', `${db.peers[0]!.peerId}@fake-router`])
 const SESSION_KEY = 'antseed-console-mock-session'
-const roleMembers: Record<string, string> = { owner: 'mem_owner', admin: 'mem_ali', member: 'mem_sam', wsadmin: 'mem_wade' }
+// `seller`: the `antseed seller dashboard` frame; its routes run as the owner.
+const roleMembers: Record<string, string> = { owner: 'mem_owner', admin: 'mem_ali', member: 'mem_sam', wsadmin: 'mem_wade', seller: 'mem_owner' }
 /** Sign-ins newer than this count as fresh for operator authorization. */
 const FRESH_MS = 5 * 60_000
 let lastSignInAt = 0
@@ -135,6 +153,61 @@ function mockDeposits(workspaceId: string): DepositConfirmation[] {
   return list
 }
 
+const mockBillingProfiles = new Map<string, BillingProfile>()
+/** The last three months of a workspace: earlier ones final, the current one a draft. */
+function mockStatementPeriods(): string[] {
+  const now = new Date()
+  return [0, 1, 2].map((back) => {
+    const date = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - back, 1))
+    return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`
+  })
+}
+function mockStatement(workspaceId: string, period: string): PurchaseStatement {
+  const [year, month] = period.split('-').map(Number)
+  const from = Date.UTC(year!, month! - 1, 1)
+  const to = Date.UTC(year!, month!, 1)
+  const ws = db.workspaces.find((entry) => entry.id === workspaceId)
+  const final = Date.now() >= to + DAY_MS && mockBillingProfiles.has(workspaceId)
+  const scale = 1 + (month! % 3) * 0.35
+  const hash = (seed: string) => `0x${seed.repeat(64).slice(0, 64)}`
+  const lines = [
+    { peer: db.peers[0]!, model: 'qwen3-coder-480b', requests: 4812, input: 61_240_000, cached: 38_900_000, output: 5_410_000, usd: 118.37 },
+    { peer: db.peers[0]!, model: 'kimi-k2', requests: 1306, input: 14_820_000, cached: 6_100_000, output: 1_920_000, usd: 21.84 },
+    { peer: db.peers[0]!, model: 'fal-ai/kling-video/v3/standard/image-to-video', requests: 142, input: 0, cached: 0, output: 0, usd: 105.9 },
+    { peer: db.peers[0]!, model: 'bytedance/seedance-2.0/fast/text-to-video', requests: 282, input: 0, cached: 0, output: 0, usd: 219.1 },
+    { peer: db.peers[1]!, model: 'deepseek-v3.2', requests: 2950, input: 32_400_000, cached: 19_750_000, output: 3_880_000, usd: 34.12 },
+    { peer: db.peers[2]!, model: 'qwen-image', requests: 212, input: 0, cached: 0, output: 0, usd: 6.36 },
+  ]
+  const suppliers = [db.peers[0]!, db.peers[1]!, db.peers[2]!].map((peer, index) => {
+    const own = lines.filter((line) => line.peer === peer)
+    const total = own.reduce((sum, line) => sum + line.usd * scale, 0)
+    return {
+      peerId: peer.peerId, name: peer.displayName, verificationLinks: peer.verificationLinks,
+      lines: own.map((line) => ({ service: line.model, kind: 'inference' as const, requests: Math.round(line.requests * scale), inputTokens: Math.round(line.input * scale),
+        cachedInputTokens: Math.round(line.cached * scale), outputTokens: Math.round(line.output * scale), amount: (line.usd * scale).toFixed(6) })),
+      total: total.toFixed(6),
+      settlements: [9, 21].slice(0, index === 2 ? 1 : 2).map((day, _part, list) => ({ txHash: hash(`${index}${day}`), time: from + day * DAY_MS, amount: (total / list.length).toFixed(6) })),
+    }
+  })
+  const total = suppliers.reduce((sum, supplier) => sum + Number(supplier.total), 0)
+  const deposits = mockDeposits(workspaceId).filter((deposit) => deposit.time >= from && deposit.time < to)
+  return {
+    period, from, to, status: final ? 'final' : 'open', reference: `PS-${period}-${workspaceId.slice(-6).toUpperCase()}`,
+    issuedAt: final ? to + DAY_MS : null, generatedAt: Date.now(),
+    workspace: { id: workspaceId, name: ws?.name ?? 'Default', wallet: ws?.walletAddress ?? null },
+    buyer: mockBillingProfiles.get(workspaceId) ?? null,
+    suppliers, total: total.toFixed(6), requests: suppliers.reduce((sum, supplier) => sum + supplier.lines.reduce((n, line) => n + line.requests, 0), 0),
+    funding: {
+      deposits: deposits.map((deposit) => ({ txHash: deposit.txHash, reference: deposit.reference, kind: deposit.kind, time: deposit.time, amount: deposit.sent })),
+      total: deposits.reduce((sum, deposit) => sum + Number(deposit.sent), 0).toFixed(6),
+      relayFees: (deposits.length * 0.02).toFixed(6),
+      asOf: Date.now(),
+    },
+    settlementsSource: 'https://antscan.co',
+    sharedWallet: 0,
+  }
+}
+
 function currentMember(): Member {
   const state = session()
   if (state === 'out') throw unauthorized()
@@ -225,6 +298,8 @@ function withCounts(workspace: Workspace): Workspace {
 }
 
 function me(): MeResponse {
+  // `?as=seller`: the standalone seller dashboard, as `antseed seller dashboard` serves it.
+  if (session() === 'seller') return { kind: 'seller', me: { dataDir: '/var/lib/antseed', version: '0.1.205' } }
   const key = keySession()
   if (key) return { kind: 'key', me: { key } }
   const member = currentMember()
@@ -643,6 +718,32 @@ function observability(body: any) {
 const routes: Array<[string, string, Handler]> = [
   ['GET', '/auth/config', () => db.authConfig],
   ['GET', '/auth/me', () => me()],
+  ['GET', '/seller/status', () => { requireOrgAdmin(); return mockSellerStatus() }],
+  ['GET', '/seller/events', () => { requireOrgAdmin(); return mockSellerEvents() }],
+  ['GET', '/seller/usage', ({ query }) => { requireOrgAdmin(); return mockSellerUsage(Number(query.get('days') ?? 14)) }],
+  ['GET', '/seller/settings', () => { requireOrgAdmin(); return mockSellerSettingsState() }],
+  ['PATCH', '/seller/settings', ({ body }) => {
+    requireOrgAdmin()
+    try { return mockUpdateSellerSettings(body ?? {}) } catch (err) { throw new MockError(400, 'invalid_request', (err as Error).message) }
+  }],
+  ['DELETE', '/seller/settings/overrides', () => { requireOrgAdmin(); return mockResetSellerOverrides() }],
+  ['POST', '/seller/restart', () => { requireOrgAdmin(); return mockRestartSeller() }],
+  ['PATCH', '/seller/alerts', ({ body }) => { requireOrgAdmin(); return mockUpdateSellerAlerts(body ?? {}) }],
+  ['POST', '/seller/alerts/test', ({ body }) => { requireOrgAdmin(); return mockTestAlert(body?.channel === 'webhook' ? 'webhook' : 'telegram') }],
+  ['POST', '/seller/alerts/telegram/chats', () => { requireOrgAdmin(); return mockTelegramChats() }],
+  ['POST', '/seller/promote/check', () => { requireOrgAdmin(); return mockCheckVerifications() }],
+  ['PUT', '/seller/promote/verifications', ({ body }) => { requireOrgAdmin(); return mockSaveVerifications(body ?? { domains: [], github: [] }) }],
+  ['GET', '/seller/market', () => { requireOrgAdmin(); return mockSellerMarket() }],
+  ['GET', '/seller/reputation', () => { requireOrgAdmin(); return mockSellerReputation() }],
+  ['GET', '/seller/promote', () => { requireOrgAdmin(); return mockSellerPromote() }],
+  ['GET', '/seller/logs', ({ query }) => { requireOrgAdmin(); return mockSellerLogs(query) }],
+  ['GET', '/seller/logs/:id', ({ params }) => {
+    requireOrgAdmin()
+    const entry = mockSellerLogDetail(params['id']!)
+    if (!entry) throw new MockError(404, 'not_found', 'No request with this id.')
+    return entry
+  }],
+  ['GET', '/seller/promote/card', () => { requireOrgAdmin(); return new RawBody(sellerCardSvg(mockSellerPromote()), 'image/svg+xml') }],
   ['POST', '/auth/logout', () => { setSession('out') }],
   ['POST', '/auth/setup', ({ body }) => { if (body.token === 'bad') throw new MockError(400, 'invalid_token', 'Invalid token'); return { enrollment: 'enr_1', label: 'Dana Owner', orgRole: 'owner' } }],
   ['POST', '/auth/recover', ({ body }) => { if (body.token === 'bad') throw new MockError(400, 'invalid_token', 'This recovery link is invalid, used or expired.'); return { enrollment: 'enr_3', label: 'Dana Owner', orgRole: 'owner' } }],
@@ -812,6 +913,39 @@ const routes: Array<[string, string, Handler]> = [
     deposit.approval = null
     return deposit
   }],
+  ['GET', '/workspaces/:id/billing-profile', ({ params }) => {
+    requireWorkspace(params['id']!, 'admin')
+    return mockBillingProfiles.get(params['id']!) ?? null
+  }],
+  ['PUT', '/workspaces/:id/billing-profile', ({ params, body }) => {
+    requireWorkspace(params['id']!, 'admin')
+    const companyName = String(body?.companyName ?? '').trim()
+    if (!companyName || !String(body?.address ?? '').trim()) throw new MockError(400, 'invalid_billing_profile', 'companyName and address are required.')
+    const optional = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : null)
+    const profile: BillingProfile = {
+      companyName, address: String(body?.address).trim(), country: optional(body?.country) ?? '', vatNumber: optional(body?.vatNumber),
+      registrationNumber: optional(body?.registrationNumber), notes: optional(body?.notes), updatedAt: Date.now(),
+    }
+    mockBillingProfiles.set(params['id']!, profile)
+    return profile
+  }],
+  ['DELETE', '/workspaces/:id/billing-profile', ({ params }) => {
+    requireWorkspace(params['id']!, 'admin')
+    mockBillingProfiles.delete(params['id']!)
+    return { ok: true }
+  }],
+  ['GET', '/workspaces/:id/statements', ({ params }): StatementSummary[] => {
+    requireWorkspace(params['id']!, 'admin')
+    return mockStatementPeriods().map((period) => {
+      const statement = mockStatement(params['id']!, period)
+      return { period, status: statement.status, reference: statement.reference, purchases: statement.total, issuedAt: statement.issuedAt }
+    })
+  }],
+  ['GET', '/workspaces/:id/statements/:period', ({ params }) => {
+    requireWorkspace(params['id']!, 'admin')
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(params['period'] ?? '')) throw new MockError(400, 'invalid_period', 'period must be a month, e.g. 2026-10.')
+    return mockStatement(params['id']!, params['period']!)
+  }],
   ['GET', '/workspaces/:id/wallet', ({ params }) => {
     const { workspace: ws } = requireWorkspace(params['id']!, 'admin')
     // ?deposit=pending: $9.81 waits in the wallet for 8 seconds after load, then moves into the credits.
@@ -857,6 +991,39 @@ const routes: Array<[string, string, Handler]> = [
     return { ok: true }
   }],
   ['GET', '/workspaces/:id/rewards', ({ params }) => { const { workspace, member } = requireWorkspace(params['id']!, 'admin'); return { address: workspace.walletAddress, pendingAnts: '44.75', claimedAnts: '0', epochs: [{ epoch: 12, pendingAnts: '0', claimed: true }, { epoch: 13, pendingAnts: '21.25', claimed: false }, { epoch: 14, pendingAnts: '20', claimed: false }], legacy: { pendingAnts: '3.5', contract: fakeAddress(105), epochs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] }, operator: currentOperator(workspace, member) } }],
+  ['GET', '/workspaces/:id/free-tier', ({ params }) => {
+    const { workspace } = requireWorkspace(params['id']!, 'member')
+    return { buyer: workspace.walletAddress, stakers: freeTierStakers.get(workspace.id) ?? [] }
+  }],
+  ['GET', '/workspaces/:id/free-tier/stake', ({ params }) => {
+    const { workspace } = requireWorkspace(params['id']!, 'member')
+    // Weekly epochs from an obvious fake genesis. The buyer's own Delta stake has
+    // 10 weeks left (20× now, 5× next week); a shared staker max-locks enough for Beta's stakers-only model.
+    const genesis = 1_700_000_000
+    const epochDuration = 604_800
+    const currentEpoch = Math.floor((Date.now() / 1000 - genesis) / epochDuration)
+    const buyer = String(workspace.walletAddress)
+    const position = { startEpoch: currentEpoch - 20, closedAtEpoch: null, maxLocked: false, maxLockedNext: false, expiresAt: null }
+    const pools: FreeTierStake['pools'] = [{ agentId: 86_903, positions: [{ ...position, id: 41, staker: buyer.toLowerCase(), ants: 270_000, endEpoch: currentEpoch + 10 }] }]
+    const shared = (freeTierStakers.get(workspace.id) ?? []).filter((entry) => !entry.expired)[0]
+    if (shared) pools.unshift({ agentId: 86_901, positions: [{ ...position, id: 42, staker: shared.staker.toLowerCase(), ants: 450_000, endEpoch: currentEpoch + 104, maxLocked: true, maxLockedNext: true, expiresAt: shared.expiresAt }] })
+    return { buyer, currentEpoch, genesis, epochDuration, pools }
+  }],
+  ['POST', '/workspaces/:id/free-tier', ({ params, body }) => {
+    const { workspace } = requireWorkspace(params['id']!, 'admin')
+    const decoded = decodeMockFreeTierCode(String((body as { code?: unknown })?.code ?? '').trim())
+    if (decoded.buyer.toLowerCase() !== String(workspace.walletAddress).toLowerCase()) {
+      throw new MockError(400, 'invalid_code', `This code is for buyer ${decoded.buyer}, not ${workspace.walletAddress}. Ask the staker for a code for your buyer address.`)
+    }
+    const kept = (freeTierStakers.get(workspace.id) ?? []).filter((entry) => entry.staker !== decoded.staker)
+    freeTierStakers.set(workspace.id, [...kept, { staker: decoded.staker, expiresAt: decoded.expiresAt, expired: decoded.expiresAt * 1000 <= Date.now() }])
+    return { buyer: workspace.walletAddress, stakers: freeTierStakers.get(workspace.id) }
+  }],
+  ['DELETE', '/workspaces/:id/free-tier/:staker', ({ params }) => {
+    const { workspace } = requireWorkspace(params['id']!, 'admin')
+    freeTierStakers.set(workspace.id, (freeTierStakers.get(workspace.id) ?? []).filter((entry) => entry.staker.toLowerCase() !== params['staker']!.toLowerCase()))
+    return { buyer: workspace.walletAddress, stakers: freeTierStakers.get(workspace.id) }
+  }],
   ['GET', '/chain', () => db.chain],
 
   ['GET', '/peers', () => db.peers],
@@ -890,10 +1057,11 @@ const routes: Array<[string, string, Handler]> = [
   ['PATCH', '/presets/:id', ({ params, body }) => Object.assign(editablePreset(params['id']), withoutSaveFlags(body))],
   ['DELETE', '/presets/:id', ({ params }) => { editablePreset(params['id']); db.presets = db.presets.filter((x) => x.id !== params['id']) }],
 
-  ['GET', '/status', () => ({ version: '0.1.0-mock', publicUrl: mockExposure === 'public' ? db.settings.publicUrl : null, buyer: { reachable: true, peers: db.peers.length, dhtNodes: 42, uptimeMs: 26 * 3600_000 }, spendFeed: 'local', x402: true, exposure: exposureFor(mockExposure) })],
-  ['GET', '/update', () => { requireOrgAdmin(); return mockUpdate() }],
-  ['POST', '/update/check', () => { requireOrgAdmin(); mockUpdateState.checkedAt = Date.now(); return mockUpdate() }],
+  ['GET', '/status', () => ({ version: '0.1.205', publicUrl: mockExposure === 'public' ? db.settings.publicUrl : null, buyer: { reachable: true, peers: db.peers.length, dhtNodes: 42, uptimeMs: 26 * 3600_000 }, spendFeed: 'local', x402: true, exposure: exposureFor(mockExposure) })],
+  ['GET', '/update', () => { if (session() === 'seller') return sellerMockUpdate(); requireOrgAdmin(); return mockUpdate() }],
+  ['POST', '/update/check', () => { mockUpdateState.checkedAt = Date.now(); if (session() === 'seller') return sellerMockUpdate(); requireOrgAdmin(); return mockUpdate() }],
   ['POST', '/update', ({ body }) => {
+    if (session() === 'seller') throw new MockError(409, 'update_unsupported', 'The seller dashboard does not install updates; update where the seller runs, then restart it')
     requireOrgAdmin()
     const update = mockUpdate()
     if (update.apply !== 'console') throw new MockError(409, 'update_unsupported', `On its host, run: ${update.command}`)
@@ -927,19 +1095,85 @@ const routes: Array<[string, string, Handler]> = [
 ]
 
 /**
- * `?update=available|command|current|desktop` on the first load picks what
+ * `?update=available|command|current|desktop|container` on the first load picks what
  * `/update` reports (default available; desktop is a gateway in the desktop
- * app). An applied update waits 3 s for the update service, installs for
- * 5 s, then reports the new version.
+ * app). An applied update waits 1.5 s for the update service, then walks
+ * the installer updater's steps (a few seconds each); the whole mock API is
+ * unreachable from the drain until the new gateway starts, as on a server.
+ * `?update=step:<phase>|restarting|succeeded|failed` freezes one state of a
+ * Restart & update (for screenshots).
  */
+type MockRun = NonNullable<GatewayUpdate['progress']>
+type MockPhase = NonNullable<MockRun['phase']>
 const mockUpdateState = {
-  mode: 'available' as 'available' | 'command' | 'current' | 'desktop',
+  mode: 'available' as 'available' | 'command' | 'current' | 'desktop' | 'container',
   current: '0.1.180',
   checkedAt: Date.now() - 20 * 60_000,
   requestedAt: null as number | null,
   action: 'install' as 'download' | 'install',
   downloaded: false,
+  lastRun: null as MockRun | null,
+  frozen: null as { phase: MockPhase | 'restarting' | 'succeeded' | 'failed'; at: number } | null,
 }
+/** Restart & update's steps in the mock: how long each takes, and the longest the updater says it can. */
+const MOCK_STEPS: Array<{ phase: MockPhase; ms: number; maxMs?: number }> = [
+  { phase: 'downloading', ms: 4_000 },
+  { phase: 'restarting-buyer', ms: 4_000 },
+  { phase: 'draining-gateway', ms: 8_000, maxMs: 90_000 },
+  { phase: 'starting-gateway', ms: 6_000 },
+  { phase: 'checking', ms: 500 },
+]
+const MOCK_PICKUP_MS = 1_500
+
+/** The step a mock install is on `elapsed` ms after its request, with when it started; null once done. */
+function mockStep(elapsed: number): { phase: MockPhase; startedAt: number; maxMs?: number } | null {
+  let start = MOCK_PICKUP_MS
+  for (const step of MOCK_STEPS) {
+    if (elapsed < start + step.ms) return { phase: step.phase, startedAt: start, maxMs: step.maxMs }
+    start += step.ms
+  }
+  return null
+}
+
+/** The mock gateway is down from a second into its drain until the new one has started. */
+function mockGatewayDown(now = Date.now()): boolean {
+  // Frozen on `restarting`: the page loads, then the gateway goes away.
+  if (mockUpdateState.frozen) return mockUpdateState.frozen.phase === 'restarting' && now - mockUpdateState.frozen.at > 2_500
+  const at = mockUpdateState.requestedAt
+  if (at === null || mockUpdateState.action !== 'install' || mockUpdateState.mode === 'desktop') return false
+  const step = mockStep(now - at)
+  return (step?.phase === 'draining-gateway' && now - at - step.startedAt > 1_000) || step?.phase === 'starting-gateway'
+}
+
+function frozenUpdate(base: GatewayUpdate): GatewayUpdate {
+  const frozen = mockUpdateState.frozen!
+  const latest = base.latest!
+  const run: MockRun = { state: 'running', action: 'install', from: base.current, to: latest, startedAt: frozen.at - 94_000, finishedAt: null, error: null }
+  if (frozen.phase === 'succeeded') {
+    return { ...base, current: latest, available: false, progress: { ...run, from: '0.1.180', state: 'succeeded', startedAt: frozen.at - 3 * 60_000 - 151_000, finishedAt: frozen.at - 3 * 60_000 } }
+  }
+  if (frozen.phase === 'failed') {
+    return { ...base, progress: { ...run, to: null, state: 'failed', startedAt: frozen.at - 2 * 60_000 - 80_000, finishedAt: frozen.at - 2 * 60_000, error: `the gateway did not start on ${latest}; rolled back to ${base.current}` } }
+  }
+  // `restarting`: the last status the page read before the gateway went away.
+  const phase: MockPhase = frozen.phase === 'restarting' ? 'draining-gateway' : frozen.phase
+  const maxMs = MOCK_STEPS.find((step) => step.phase === phase)?.maxMs
+  return { ...base, progress: { ...run, phase, phaseStartedAt: frozen.at - 42_000, ...(maxMs ? { phaseMaxMs: maxMs } : {}) } }
+}
+/** The seller dashboard's view (sellerUpdates): how to update, never installed from the page. `?update=container` for a seller in a container. */
+function sellerMockUpdate(): GatewayUpdate {
+  const current = '0.1.205'
+  const latest = mockUpdateState.mode === 'current' ? current : '0.1.208'
+  const container = mockUpdateState.mode === 'container'
+  return {
+    product: 'cli', current, latest, available: latest !== current, checkedAt: mockUpdateState.checkedAt, checkError: null, checksDisabled: false,
+    apply: container ? 'none' : 'command', install: 'npm',
+    command: container ? null : 'npm install -g @antseed/cli@latest',
+    note: container ? `Runs in a container: deploy an image with @antseed/cli ${latest} to update this seller.` : 'Installed globally with npm. Restart the seller after updating.',
+    progress: null, downloaded: null,
+  }
+}
+
 function mockUpdate(): GatewayUpdate {
   const mode = mockUpdateState.mode
   if (mode === 'desktop' && mockUpdateState.current === '0.1.180') mockUpdateState.current = '0.2.62'
@@ -952,9 +1186,10 @@ function mockUpdate(): GatewayUpdate {
     note: mode === 'command' ? 'Installed globally with npm.'
       : mode === 'desktop' ? 'Bundled with the desktop app, which installs the update and restarts.'
       : 'Installed by the gateway installer; its root update service installs new versions and restarts the services.',
-    progress: null,
+    progress: mockUpdateState.lastRun,
     downloaded: null,
   }
+  if (mockUpdateState.frozen) return frozenUpdate(base)
   const at = mockUpdateState.requestedAt
   const action = mockUpdateState.action
   if (at === null) {
@@ -963,8 +1198,18 @@ function mockUpdate(): GatewayUpdate {
       : base
   }
   const elapsed = Date.now() - at
-  if (elapsed < 1_500) return { ...base, progress: { state: 'requested', action, from: null, to: null, startedAt: at, finishedAt: null, error: null } }
-  if (elapsed < 6_000) return { ...base, progress: { state: 'running', action, from: base.current, to: latest, startedAt: at + 1_500, finishedAt: null, error: null } }
+  const startedAt = at + MOCK_PICKUP_MS
+  if (elapsed < MOCK_PICKUP_MS) return { ...base, progress: { state: 'requested', action, from: null, to: null, startedAt: at, finishedAt: null, error: null } }
+  const running: MockRun = { state: 'running', action, from: base.current, to: latest, startedAt, finishedAt: null, error: null }
+  if (mode === 'desktop') {
+    // The desktop app's updater reports no steps.
+    if (elapsed < 6_000) return { ...base, progress: running }
+  } else if (action === 'download') {
+    if (elapsed < MOCK_PICKUP_MS + MOCK_STEPS[0]!.ms) return { ...base, progress: { ...running, phase: 'downloading', phaseStartedAt: startedAt } }
+  } else {
+    const step = mockStep(elapsed)
+    if (step) return { ...base, progress: { ...running, phase: step.phase, phaseStartedAt: at + step.startedAt, ...(step.maxMs ? { phaseMaxMs: step.maxMs } : {}) } }
+  }
   mockUpdateState.requestedAt = null
   if (action === 'download') {
     mockUpdateState.downloaded = true
@@ -972,7 +1217,8 @@ function mockUpdate(): GatewayUpdate {
   }
   mockUpdateState.current = latest
   mockUpdateState.downloaded = false
-  return { ...base, current: latest, available: false, progress: { state: 'succeeded', action, from: base.current, to: latest, startedAt: at + 1_500, finishedAt: at + 6_000, error: null } }
+  mockUpdateState.lastRun = { state: 'succeeded', action, from: base.current, to: latest, startedAt, finishedAt: Date.now(), error: null }
+  return { ...base, current: latest, available: false, progress: mockUpdateState.lastRun }
 }
 
 /** `?exposure=local|lan|public` on the first load picks what `/status` reports (default public). */
@@ -1000,8 +1246,12 @@ function match(method: string, path: string): { handler: Handler; params: Record
   return null
 }
 
+/** A handler result sent as is with its own content type (e.g. the seller card SVG). */
+class RawBody { constructor(readonly body: string, readonly contentType: string) {} }
+
 function json(status: number, body: unknown): Response {
   if (status === 204) return new Response(null, { status })
+  if (body instanceof RawBody) return new Response(body.body, { status, headers: { 'content-type': body.contentType } })
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 }
 
@@ -1016,9 +1266,14 @@ export function installMockApi(): void {
   const exposureParam = new URLSearchParams(window.location.search).get('exposure')
   if (exposureParam === 'local' || exposureParam === 'lan' || exposureParam === 'public') mockExposure = exposureParam
   const updateParam = new URLSearchParams(window.location.search).get('update')
-  if (updateParam === 'available' || updateParam === 'command' || updateParam === 'current' || updateParam === 'desktop') mockUpdateState.mode = updateParam
+  if (updateParam === 'available' || updateParam === 'command' || updateParam === 'current' || updateParam === 'desktop' || updateParam === 'container') mockUpdateState.mode = updateParam
   // `?update=ready`: the new version is downloaded and waits for Restart & update.
   if (updateParam === 'ready') mockUpdateState.downloaded = true
+  // `?update=step:<phase>|restarting|succeeded|failed`: one state of a Restart & update, frozen.
+  const frozen = updateParam?.replace(/^step:/, '')
+  if (frozen && (MOCK_STEPS.some((step) => step.phase === frozen) || frozen === 'rolling-back' || frozen === 'restarting' || frozen === 'succeeded' || frozen === 'failed')) {
+    mockUpdateState.frozen = { phase: frozen as NonNullable<typeof mockUpdateState.frozen>['phase'], at: Date.now() }
+  }
   // `?mock=empty`: a gateway nothing has run through yet (no keys, no traffic), for the getting-started Overview.
   if (new URLSearchParams(window.location.search).get('mock') === 'empty') {
     db.keys.length = 0
@@ -1041,6 +1296,8 @@ export function installMockApi(): void {
     const method = (init?.method ?? 'GET').toUpperCase()
     const path = url.pathname.slice('/console/api'.length)
     await new Promise((resolve) => setTimeout(resolve, 150 + Math.random() * 200))
+    // Mid-update the gateway (which serves the console API) is down, as on a server.
+    if (mockGatewayDown()) throw new TypeError('Failed to fetch')
     if (method !== 'GET' && new Headers(init?.headers).get('x-antseed-console') !== '1') return json(403, { error: { code: 'csrf', message: 'Missing CSRF header.' } })
     const staking = /^\/workspaces\/[^/]+\/ants\/(.+)$/.exec(path)
     if (staking) {
@@ -1061,5 +1318,5 @@ export function installMockApi(): void {
       return json(500, { error: { code: 'mock_error', message: String(error) } })
     }
   }
-  console.info('[antseed console] Mock API active. Switch identity with ?as=owner|admin|wsadmin|member|key|out, reachability with ?exposure=local|lan|public, updates with ?update=available|command|current|desktop')
+  console.info('[antseed console] Mock API active. Switch identity with ?as=owner|admin|wsadmin|member|key|out|seller, reachability with ?exposure=local|lan|public, updates with ?update=available|command|current|desktop|container|ready|step:<phase>|restarting|succeeded|failed')
 }

@@ -13,6 +13,7 @@ import {
   ANTSEED_FAULT_ATTRIBUTION_HEADER,
   ANTSEED_ATTEST_PATH,
   adaptPeerFaultErrorResponse,
+  isFreeTierExhaustedResponse,
   computeTrustScore,
   decodeSweepRequest,
   faultAttributionOf,
@@ -120,6 +121,7 @@ import {
   isCompletionRequestPath,
   isTitleGenerationRequest,
   parseRequestBodyObject,
+  withUpstreamSessionHeader,
   type ConversationIdentity,
 } from './conversation-identity.js'
 import { ConversationStore, type ConversationRouterSelection, type StoredConversation } from './conversation-store.js'
@@ -145,6 +147,7 @@ import { estimateAnthropicPromptTokens, isCountTokensPath } from './count-tokens
 import { runVerifier, selectVerifier, verifierSupportFingerprint, type VerifierPolicy, type SellerReach, type VerifyOutcome } from '../plugins/verifier.js'
 import { TEE_VERIFIER_ID } from '@antseed/node/tee-status'
 import { parseVerifierCapabilities } from '@antseed/node/verifier-capabilities'
+import { parseServiceFreeTierProgram } from '@antseed/node/free-tier-program'
 import { TeeVerification } from './tee-verification.js'
 import { TeeControl } from './tee-control.js'
 import { ChainReadCache } from './chain-read-cache.js'
@@ -2979,6 +2982,7 @@ export class BuyerProxy {
         reputationScore: p.reputationScore,
         onChainReputationScore: p.onChainReputationScore ?? null,
         trust: p.trust ?? null,
+        onChainAgentId: p.onChainAgentId ?? null,
         onChainPoolStakeAnts: p.onChainPoolStakeAnts ?? null,
         onChainPoolPowerShareBps: p.onChainPoolPowerShareBps ?? null,
         onChainUsageEpoch: p.onChainUsageEpoch ?? null,
@@ -3889,6 +3893,11 @@ export class BuyerProxy {
       ? extractConversationIdentity(serializedReq.headers, conversationBody)
       : null
     const routingConversationKey = conversationIdentity ? `${conversationIdentity.tool}:${conversationIdentity.sessionKey}` : null
+    // The seller's upstream may route prompt caching by `session_id`; pass the
+    // conversation's key under that name whatever the client called it.
+    if (conversationIdentity) {
+      Object.assign(serializedReq.headers, withUpstreamSessionHeader(serializedReq.headers, conversationIdentity))
+    }
     // Internal marker from the system proxy: source profile used only for
     // local conversation attribution. Stripped here so it never reaches a seller.
     delete serializedReq.headers[SYSTEM_PROXY_SOURCE_HEADER]
@@ -4439,9 +4448,13 @@ export class BuyerProxy {
       // answer) get one extra seller to compare against, not the whole list:
       // when every seller fails, the client gets that answer quickly.
       let comparisonUsed = false
-      const isFree = (candidate: (typeof candidates)[number]): boolean => modelRouteTotalPrice(candidate) === 0
+      // A priced model with its own free allowance may still serve a buyer
+      // without deposits: the seller answers 402 only when the allowance is out.
+      const servesUnfunded = (candidate: (typeof candidates)[number]): boolean =>
+        modelRouteTotalPrice(candidate) === 0
+        || parseServiceFreeTierProgram(candidate.peer.capabilities, candidate.serviceId) !== null
       for (const [index, selected] of candidates.entries()) {
-        if (unfunded && !isFree(selected)) continue
+        if (unfunded && !servesUnfunded(selected)) continue
         if (this._verifier) {
           const makeReach = (chosenId: string): SellerReach =>
             makeVerifierReach(this._node, selected.peer, chosenId, signal)
@@ -4531,10 +4544,10 @@ export class BuyerProxy {
             }
           }
           if (isBuyerFault(result)) {
-            const freeLeft = candidates.slice(index + 1).some(isFree)
+            const freeLeft = candidates.slice(index + 1).some(servesUnfunded)
             if (result.statusCode === 402 && freeLeft) {
               unfunded = true
-              log(`No deposits to pay peer ${selected.peer.peerId.slice(0, 12)}...; trying free sellers only.`)
+              log(`No deposits to pay peer ${selected.peer.peerId.slice(0, 12)}...; trying free sellers and free allowances only.`)
               break
             }
             return result
@@ -5034,7 +5047,13 @@ export class BuyerProxy {
     }
     const peerResponseProtocol = selectedRoutePlan.selection?.targetProtocol ?? requestProtocol
     const adaptPeerResponse = (response: SerializedHttpResponse): SerializedHttpResponse =>
-      adaptPeerFaultErrorResponse(response, peerResponseProtocol, { pinned })
+      adaptPeerFaultErrorResponse(response, peerResponseProtocol, { pinned, peerId: selectedPeer.peerId })
+    // A free-tier refusal is written by the buyer, straight in the client's protocol and as JSON
+    // even for a streamed request, so protocol conversion must not drop its `free_tier` details.
+    const adaptFreeTierRefusal = (response: SerializedHttpResponse): SerializedHttpResponse | null =>
+      isFreeTierExhaustedResponse(response)
+        ? adaptPeerFaultErrorResponse(response, requestProtocol, { pinned, peerId: selectedPeer.peerId })
+        : null
     const startTime = Date.now()
     const attemptAbort = new AbortController()
     const attemptSignal = attemptTimeoutMs ? AbortSignal.any([requestSignal, attemptAbort.signal]) : requestSignal
@@ -5099,9 +5118,11 @@ export class BuyerProxy {
         recordRouterUsage(this._modelRoutingClient, routingConversationKey, requestForPeer, response, selectedPeer, requestSignal)
 
         let responseForClient = adaptBuyerFaultErrorResponse(response, requestProtocol)
-        responseForClient = adaptPeerResponse(responseForClient)
+        const freeTierRefusal = adaptFreeTierRefusal(responseForClient)
+        responseForClient = freeTierRefusal ?? adaptPeerResponse(responseForClient)
         if (
           !streamed
+          && !freeTierRefusal
           && adaptResponse
           && responseForClient.headers[ANTSEED_FAULT_ATTRIBUTION_HEADER]?.toLowerCase() !== 'buyer'
         ) {
@@ -5236,9 +5257,11 @@ export class BuyerProxy {
           await this._persistResourceRoutes().catch(error => console.error('[proxy] Accepted video route was not persisted:', error))
         }
         let response = adaptBuyerFaultErrorResponse(upstreamResponse, requestProtocol)
-        response = adaptPeerResponse(response)
+        const freeTierRefusal = adaptFreeTierRefusal(response)
+        response = freeTierRefusal ?? adaptPeerResponse(response)
         if (
-          adaptResponse
+          !freeTierRefusal
+          && adaptResponse
           && response.headers[ANTSEED_FAULT_ATTRIBUTION_HEADER]?.toLowerCase() !== 'buyer'
         ) {
           response = adaptResponse(response)

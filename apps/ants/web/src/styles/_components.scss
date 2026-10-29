@@ -475,6 +475,8 @@ button.btn:not([class*="btn--"]) { @extend .btn--primary; }
 .form-row > .action, .form-row > .btn { margin-top: 23px; }
 .form-row > .link-button { margin-top: 32px; }
 .form-row .field__label { white-space: nowrap; }
+.free-tier-code { display: flex; align-items: flex-start; gap: 6px; padding: 10px 12px; border: 1px solid var(--pc-line); border-radius: 10px; }
+.free-tier-code code { font: 12px/17px var(--font-mono); word-break: break-all; flex: 1; }
 
 .field { display: flex; flex-direction: column; gap: 6px; flex: 0 0 auto; }
 .field__label { color: var(--pc-sub); font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; line-height: 17px; }
@@ -899,6 +901,8 @@ table.table { border-collapse: collapse; width: 100%; font-size: 13px; line-heig
 .pool-apy-estimates dt { font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--pc-sub); }
 .pool-apy-estimates dd { margin: 0; font-family: var(--font-mono); font-size: 20px; font-weight: 500; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; color: var(--pc-accent); }
 .pool-apy-unavailable { font-family: var(--font-sans); font-size: 12px; font-weight: 400; letter-spacing: 0; color: var(--pc-sub); }
+.pool-apy-weekly { display: block; margin-top: 4px; font-family: var(--font-sans); font-size: 12px; font-weight: 400; letter-spacing: 0; color: var(--pc-sub); }
+.pool-rewards-help { margin: 12px 0 0; line-height: 1.5; }
 .pool-lifetime { margin-bottom: 18px; }
 .pool-lifetime strong { font-family: var(--font-mono); font-size: 16px; font-weight: 500; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .pool-section { margin-top: 26px; padding-top: 22px; border-top: 1px solid var(--pc-line); }

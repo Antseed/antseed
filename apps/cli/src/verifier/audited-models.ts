@@ -1,3 +1,5 @@
+import { canonicalModelKey } from '@antseed/node/model-identity'
+
 /**
  * The models the Antseed network audits. Auditors never list models themselves: `verifier run
  * --auditor` assigns models from this list (see `audit-assignment.ts`), and a verifier's config only
@@ -92,9 +94,18 @@ export function setAuditedModelsForTesting(models: Readonly<Record<string, Audit
   override = models
 }
 
-/** The built-in key for a service name or alias, or undefined when the model is not audited. */
+/**
+ * The built-in key for a service name or alias, or undefined when the model is not audited. An
+ * exact name (any case) wins; otherwise the name is matched by canonical model key the way buyers
+ * route, so `anthropic/claude-opus-5.5` or `claude-opus-5-5-latest` finds `claude-opus-5.5`.
+ */
 export function findAuditedModelKey(service: string): string | undefined {
   const wanted = service.trim().toLowerCase()
-  return Object.entries(auditedModels()).find(([key, model]) => [key, ...(model.serviceAliases ?? [])]
-    .some((name) => name.trim().toLowerCase() === wanted))?.[0]
+  const entries = Object.entries(auditedModels())
+  const names = ([key, model]: [string, AuditedModel]) => [key, ...(model.serviceAliases ?? [])]
+  const exact = entries.find((entry) => names(entry).some((name) => name.trim().toLowerCase() === wanted))
+  if (exact) return exact[0]
+  const canonical = canonicalModelKey(wanted)
+  if (!canonical) return undefined
+  return entries.find((entry) => names(entry).some((name) => canonicalModelKey(name) === canonical))?.[0]
 }

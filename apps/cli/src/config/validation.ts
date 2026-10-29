@@ -4,12 +4,15 @@ import type {
   GithubVerificationConfig,
   HierarchicalPricingConfig,
   AntseedConfig,
+  SellerFreeTierCLIConfig,
   SellerProviderConfig,
   TokenPricingUsdPerMillion,
 } from './types.js';
+import { MAX_FREE_TIER_DELEGATIONS, SellerFreeTierLimiter, validateFreeTierStakeTiers } from '@antseed/node';
 import { validateServiceMetadata } from './service-metadata.js';
 import { parseHostPort } from './public-address.js';
 import { appendVerifierConfigErrors } from '../verifier/config-schema.js';
+import { sellerAlertsErrors } from './seller-alerts.js';
 
 const SERVICE_CATEGORY_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 const MAX_PUBLIC_ADDRESS_LENGTH = 255;
@@ -85,6 +88,34 @@ function validateCategoryList(
   }
 }
 
+function validateFallbackUpstreams(
+  path: string,
+  providerCfg: SellerProviderConfig,
+  errors: string[],
+): void {
+  for (const [index, fallback] of (providerCfg.fallbackUpstreams ?? []).entries()) {
+    const fallbackPath = `${path}[${index}]`;
+    if (!/^https?:\/\//i.test(fallback.baseUrl) || !URL.canParse(fallback.baseUrl)) {
+      errors.push(`${fallbackPath}.baseUrl must be an http(s) URL`);
+    }
+    if (fallback.apiKeyEnv !== undefined && fallback.apiKeyEnv.length === 0) {
+      errors.push(`${fallbackPath}.apiKeyEnv must be a non-empty string when provided`);
+    }
+    if (fallback.services === undefined) continue;
+    if (Object.keys(fallback.services).length === 0) {
+      errors.push(`${fallbackPath}.services must list at least one service when provided`);
+    }
+    for (const [serviceId, serviceCfg] of Object.entries(fallback.services)) {
+      if (!(serviceId in providerCfg.services)) {
+        errors.push(`${fallbackPath}.services.${serviceId} is not a service of this provider`);
+      }
+      if (serviceCfg.upstreamModel !== undefined && serviceCfg.upstreamModel.length === 0) {
+        errors.push(`${fallbackPath}.services.${serviceId}.upstreamModel must be a non-empty string when provided`);
+      }
+    }
+  }
+}
+
 function validateSellerProviders(
   path: string,
   providers: Record<string, SellerProviderConfig>,
@@ -106,6 +137,7 @@ function validateSellerProviders(
         errors.push(`${providerPath}.baseUrl must be a valid URL`);
       }
     }
+    validateFallbackUpstreams(`${providerPath}.fallbackUpstreams`, providerCfg, errors);
     for (const [serviceId, serviceCfg] of Object.entries(providerCfg.services)) {
       const servicePath = `${providerPath}.services.${serviceId}`;
       if (serviceCfg.upstreamModel !== undefined && serviceCfg.upstreamModel.trim().length === 0) {
@@ -360,6 +392,7 @@ export function validateConfig(config: AntseedConfig): string[] {
 
   validateBuyerVerification('buyer.verification', config.buyer.verification, errors);
   validateBuyerVerifier('buyer.verifier', config.buyer.verifier, errors);
+  validateFreeTierDelegations(config.buyer.freeTierDelegations, errors);
 
   if (!Number.isInteger(config.seller.maxConcurrentBuyers) || config.seller.maxConcurrentBuyers < 1) {
     errors.push('seller.maxConcurrentBuyers must be an integer >= 1');
@@ -440,23 +473,25 @@ export function validateConfig(config: AntseedConfig): string[] {
   }
 
   if (config.seller.freeTier !== undefined) {
-    const freeTier = config.seller.freeTier;
-    if (freeTier.maxRequestsPerAddress === undefined && freeTier.maxRequestsPerIp === undefined) {
-      errors.push('seller.freeTier requires maxRequestsPerAddress and/or maxRequestsPerIp');
-    }
-    for (const key of ['maxRequestsPerAddress', 'maxRequestsPerIp'] as const) {
-      const limit = freeTier[key];
-      if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) {
-        errors.push(`seller.freeTier.${key} must be a positive safe integer`);
+    validateFreeTierProgram('seller.freeTier', config.seller.freeTier, errors);
+  }
+  // Free-tier programs are keyed by announced service id, so one id needs one program.
+  const serviceFreeTiers = new Map<string, string>();
+  for (const [providerName, providerCfg] of Object.entries(config.seller.providers)) {
+    for (const [serviceId, serviceCfg] of Object.entries(providerCfg.services)) {
+      if (serviceCfg.freeTier === undefined) continue;
+      const path = `seller.providers.${providerName}.services.${serviceId}.freeTier`;
+      validateFreeTierProgram(path, serviceCfg.freeTier, errors, serviceId);
+      const program = JSON.stringify(serviceCfg.freeTier);
+      const previous = serviceFreeTiers.get(serviceId);
+      if (previous !== undefined && previous !== program) {
+        errors.push(`${path} differs from another provider's freeTier for service "${serviceId}"`);
       }
-    }
-    if (
-      freeTier.windowMs !== undefined &&
-      (!Number.isSafeInteger(freeTier.windowMs) || freeTier.windowMs < 1_000)
-    ) {
-      errors.push('seller.freeTier.windowMs must be a safe integer >= 1000');
+      serviceFreeTiers.set(serviceId, program);
     }
   }
+
+  errors.push(...sellerAlertsErrors(config.seller.alerts));
 
   const restrictedCountries = config.seller.restrictedCountries;
   if (
@@ -506,4 +541,69 @@ export function assertValidConfig(config: AntseedConfig): void {
   if (errors.length === 0) return;
 
   throw new Error(`Invalid config:\n- ${errors.join('\n- ')}`);
+}
+
+function validateFreeTierDelegations(value: unknown, errors: string[]): void {
+  if (value === undefined) return;
+  const path = 'buyer.freeTierDelegations';
+  if (!Array.isArray(value)) {
+    errors.push(`${path} must be an array`);
+    return;
+  }
+  const perBuyer = new Map<string, number>();
+  value.forEach((entry, index) => {
+    const at = `${path}[${index}]`;
+    if (typeof entry !== 'object' || entry === null) {
+      errors.push(`${at} must be an object`);
+      return;
+    }
+    const { staker, buyer, expiresAt, signature } = entry as Record<string, unknown>;
+    for (const [key, address] of [['staker', staker], ['buyer', buyer]] as const) {
+      if (typeof address !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(address)) errors.push(`${at}.${key} must be an address`);
+    }
+    if (!Number.isSafeInteger(expiresAt) || (expiresAt as number) < 1) errors.push(`${at}.expiresAt must be a Unix time in seconds`);
+    if (typeof signature !== 'string' || !/^0x[0-9a-fA-F]{130}$/.test(signature)) errors.push(`${at}.signature must be a 65-byte hex signature`);
+    if (typeof buyer === 'string') perBuyer.set(buyer.toLowerCase(), (perBuyer.get(buyer.toLowerCase()) ?? 0) + 1);
+  });
+  for (const [buyer, count] of perBuyer) {
+    if (count > MAX_FREE_TIER_DELEGATIONS) errors.push(`${path} has ${count} delegations for ${buyer}; at most ${MAX_FREE_TIER_DELEGATIONS} count`);
+  }
+}
+
+function validateFreeTierProgram(path: string, freeTier: SellerFreeTierCLIConfig, errors: string[], serviceId?: string): void {
+  const errorsBefore = errors.length;
+  if (freeTier.maxRequestsPerAddress === undefined && freeTier.maxRequestsPerIp === undefined) {
+    errors.push(`${path} requires maxRequestsPerAddress and/or maxRequestsPerIp`);
+  }
+  for (const key of ['maxRequestsPerAddress', 'maxRequestsPerIp'] as const) {
+    const limit = freeTier[key];
+    if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) {
+      errors.push(`${path}.${key} must be a positive safe integer`);
+    }
+  }
+  if (
+    freeTier.windowMs !== undefined &&
+    (!Number.isSafeInteger(freeTier.windowMs) || freeTier.windowMs < 1_000)
+  ) {
+    errors.push(`${path}.windowMs must be a safe integer >= 1000`);
+  }
+  if (freeTier.stakeTiers !== undefined) {
+    try {
+      validateFreeTierStakeTiers(freeTier.stakeTiers, `${path}.stakeTiers`);
+    } catch (err) {
+      errors.push(err instanceof Error ? err.message : String(err));
+    }
+  }
+  if (freeTier.stakersOnly !== undefined && typeof freeTier.stakersOnly !== 'boolean') {
+    errors.push(`${path}.stakersOnly must be a boolean`);
+  } else if (freeTier.stakersOnly && freeTier.stakeTiers?.length === 0) {
+    errors.push(`${path}.stakersOnly requires at least one stake tier`);
+  }
+  if (errors.length > errorsBefore) return;
+  // Otherwise valid limits can still be too long to advertise in peer metadata.
+  try {
+    new SellerFreeTierLimiter(serviceId === undefined ? freeTier : { services: { [serviceId]: freeTier } });
+  } catch {
+    errors.push(`${path} is too large to advertise in peer metadata: lower its limits or window`);
+  }
 }

@@ -26,7 +26,9 @@ export {
   type ModelHealthEvent,
   type ModelHealthTarget,
   type ServiceHealthSnapshot,
+  type UpstreamAccountEvent,
 } from './health/model-health-checker.js';
+export { isUpstreamOutOfCredit } from './health/upstream-credit.js';
 export {
   GasHealthMonitor,
   DEFAULT_GAS_CHECK_INTERVAL_MS,
@@ -35,6 +37,15 @@ export {
   type GasHealthEvent,
   type GasHealthSnapshot,
 } from './health/gas-health-monitor.js';
+export {
+  appendSellerEvent,
+  readSellerEvents,
+  SELLER_EVENTS_FILE,
+  SELLER_EVENTS_MAX_BYTES,
+  type SellerEvent,
+  type SellerEventKind,
+  type SellerEventSeverity,
+} from './health/seller-events.js';
 // Re-exported so CLI callers can format/parse gas balances without depending
 // on ethers directly.
 export { formatEther, parseEther } from 'ethers';
@@ -78,7 +89,8 @@ export {
   type FaultAttribution,
   type AntseedErrorCode,
 } from './errors.js';
-export { adaptPeerFaultErrorResponse, VIDEO_PRICE_HEADER, VIDEO_JOB_RETIRED_HEADER, VIDEO_DELIVERED_HEADER, VIDEO_DELIVERY_UNRECORDED } from '@antseed/buyer-core';
+export { adaptPeerFaultErrorResponse, describeFreeTierLimit, FREE_TIER_EXHAUSTED_ERROR_ID, isFreeTierExhaustedResponse, nextFreeTierStakeTier, readFreeTierLimit, VIDEO_PRICE_HEADER, VIDEO_JOB_RETIRED_HEADER, VIDEO_DELIVERED_HEADER, VIDEO_DELIVERY_UNRECORDED } from '@antseed/buyer-core';
+export type { FreeTierLimit, FreeTierLimitStakeTier } from '@antseed/buyer-core';
 
 // Submodule re-exports (commonly used)
 export {
@@ -237,6 +249,7 @@ export {
   getDebugFilters,
   shouldEmitDebugLine,
 } from './utils/debug.js';
+export { withFileLock, type FileLockOptions } from './utils/file-lock.js';
 export {
   signSpendingAuth,
   signReserveAuth,
@@ -289,7 +302,45 @@ export type { BuyerFreeUsageConfig } from './payments/buyer-free-usage-manager.j
 export { SellerFreeUsageManager } from './payments/seller-free-usage-manager.js';
 export type { SellerFreeUsageConfig } from './payments/seller-free-usage-manager.js';
 export { SellerFreeTierLimiter, DEFAULT_FREE_TIER_WINDOW_MS, normalizeRemoteIp } from './payments/seller-free-tier-limiter.js';
-export type { SellerFreeTierConfig, FreeTierDecision } from './payments/seller-free-tier-limiter.js';
+export type { SellerFreeTierConfig, SellerFreeTierProgramConfig, FreeTierDecision } from './payments/seller-free-tier-limiter.js';
+export {
+  DEFAULT_FREE_TIER_STAKE_TIERS,
+  FREE_TIER_EPOCHS_PER_YEAR,
+  MAX_FREE_TIER_STAKE_TIERS,
+  encodeFreeTierCapabilities,
+  freeTierServiceScope,
+  parseServiceFreeTierProgram,
+  freeTierProgramForService,
+  isPricedService,
+  FREE_TIER_SERVED_HEADER,
+  FREE_TIER_SERVED_COVERED,
+  freeTierStakeTierForPower,
+  normalizeFreeTierProgram,
+  parseFreeTierProgram,
+  powerToAntsEpochs,
+  validateFreeTierStakeTiers,
+} from './payments/free-tier-program.js';
+export type { FreeTierBaseLimits, FreeTierProgram, FreeTierStakeTier } from './payments/free-tier-program.js';
+export {
+  DEFAULT_FREE_TIER_DELEGATION_DAYS,
+  FREE_TIER_DELEGATIONS_HEADER,
+  FREE_TIER_DELEGATION_CODE_PREFIX,
+  FREE_TIER_DELEGATION_TYPES,
+  MAX_FREE_TIER_DELEGATIONS,
+  acceptFreeTierDelegationCode,
+  decodeFreeTierDelegationCode,
+  decodeFreeTierDelegationsHeader,
+  encodeFreeTierDelegationCode,
+  encodeFreeTierDelegationsHeader,
+  freeTierDelegationMessage,
+  isFreeTierDelegationSigned,
+  makeFreeTierDelegationDomain,
+  verifyFreeTierDelegations,
+  withFreeTierDelegation,
+} from './payments/free-tier-delegation.js';
+export type { FreeTierDelegation, VerifiedFreeTierDelegation } from './payments/free-tier-delegation.js';
+export { FreeTierStakeResolver, MAX_FREE_TIER_COUNTED_POSITIONS } from './payments/free-tier-stake-resolver.js';
+export type { FreeTierStakePosition, FreeTierStakeReader, FreeTierStakeResolverOptions, FreeTierStakeStanding } from './payments/free-tier-stake-resolver.js';
 export { SellerPaymentManager } from './payments/seller-payment-manager.js';
 export type { SellerPaymentConfig } from './payments/seller-payment-manager.js';
 export { ChannelStore } from './payments/channel-store.js';

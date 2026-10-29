@@ -51,7 +51,7 @@ describe('presets', () => {
 
 describe('peers', () => {
   const peer = (id: string, overrides: Partial<Peer>): Peer => ({
-    peerId: id, displayName: null, services: [], trustScore: null, reputationScore: null, verified: false, verificationLinks: [], tee: false, teeScope: null, stakeAnts: null,
+    peerId: id, displayName: null, services: [], trustScore: null, reputationScore: null, verified: false, verificationLinks: [], tee: false, teeScope: null, stakeAnts: null, agentId: null, freeTier: null,
     usageShareBps: null, washFlagged: false, lastSeen: null, health: { failureStreak: 0, coolingDownUntil: null }, latencyMsP50: null, firstTokenMsP50: null, tokensPerSecondP50: null, requests24h: 0, ...overrides,
   })
   const svc = (service: string, price: number) => ({ provider: 'p', service, inputUsdPerMillion: price, outputUsdPerMillion: price, cachedInputUsdPerMillion: null, categories: [] })
@@ -63,6 +63,15 @@ describe('peers', () => {
     expect(inputPrice(peers[0]!)).toBe(1)
     expect(inputPrice(peers[0]!, 'm1')).toBe(2)
     expect(isFreePeer(peers[1]!)).toBe(true)
+  })
+  it('does not call a seller Free when its free models serve only its stakers', () => {
+    const stakersOnly = { base: { maxRequestsPerAddress: 200, maxRequestsPerIp: null, windowMs: 86_400_000, stakersOnly: true }, stakeTiers: [{ minPower: 45_000_000, multiplier: 1 }] }
+    const staked = peer('0xfa1e05', { services: [{ ...svc('k3', 0), paid: false, freeTier: stakersOnly }, { ...svc('m2', 0), paid: true }] })
+    expect(isFreePeer(staked)).toBe(false)
+    expect(isFreePeer(staked, 'k3')).toBe(false)
+    expect(filterPeers([staked], { search: '', model: '', tee: false, linked: false, free: true })).toEqual([])
+    const open = peer('0xfa1e06', { services: [{ ...svc('k3', 0), paid: false, freeTier: { ...stakersOnly, base: { ...stakersOnly.base, stakersOnly: false } } }] })
+    expect(isFreePeer(open, 'k3')).toBe(true)
   })
   it('spans a seller\'s prices across its models', () => {
     const mixed = peer('0xfa1e03', { services: [svc('m1', 0), svc('m2', 3)] })

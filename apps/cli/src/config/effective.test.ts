@@ -3,9 +3,12 @@ import test from 'node:test';
 import { createDefaultConfig } from './defaults.js';
 import {
   buyerSettingOverrides,
+  dropDisabledServices,
   resolveEffectiveBuyerConfig,
   resolveEffectiveRoleConfig,
   resolveEffectiveSellerConfig,
+  pricedSellerServices,
+  resolveSellerFreeTier,
 } from './effective.js';
 
 test('effective seller config precedence is flags > env > config > defaults', () => {
@@ -147,3 +150,66 @@ test('buyerSettingOverrides names the settings env and flags take over', () => {
     ['maxPricing.inputUsdPerMillion', 'network.maxStreamDurationMs', 'network.metadataFetchTimeoutMs', 'payments.rpcUrl', 'proxyPort', 'verifier'],
   );
 });
+
+test('resolveSellerFreeTier merges the seller-wide program with the selected providers’ service programs', () => {
+  const config = createDefaultConfig();
+  delete config.seller.freeTier;
+  const own = { maxRequestsPerAddress: 5, stakersOnly: true };
+  config.seller.providers = {
+    a: { plugin: 'openai', services: { 'free-model': { freeTier: own }, plain: {} } },
+    b: { plugin: 'openai', services: { 'other-model': { freeTier: { maxRequestsPerIp: 1 } } } },
+  };
+  assert.deepEqual(resolveSellerFreeTier(config.seller, ['a']), { services: { 'free-model': own } });
+  assert.equal(resolveSellerFreeTier(config.seller, []), undefined);
+  config.seller.freeTier = { maxRequestsPerAddress: 100 };
+  assert.deepEqual(resolveSellerFreeTier(config.seller, ['a', 'b']), {
+    maxRequestsPerAddress: 100,
+    services: { 'free-model': own, 'other-model': { maxRequestsPerIp: 1 } },
+  });
+  assert.deepEqual(resolveSellerFreeTier(config.seller, []), { maxRequestsPerAddress: 100 });
+});
+
+test('pricedSellerServices lists services that charge, by their own pricing or the provider default', () => {
+  const config = createDefaultConfig();
+  const free = { inputUsdPerMillion: 0, outputUsdPerMillion: 0 };
+  config.seller.providers = {
+    a: {
+      plugin: 'openai',
+      defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 },
+      services: {
+        k3: {},
+        'free-model': { pricing: free },
+      },
+    },
+    b: {
+      plugin: 'openai',
+      defaults: free,
+      services: {
+        'flash-5.3': { pricing: { inputUsdPerMillion: 0.1, outputUsdPerMillion: 0 } },
+        other: {},
+        'paid-image': { pricing: free, unitBillingModels: { 'openai-images': { version: 1, components: [{ unit: 'output_images', priceUsd: 0.02 }] } } },
+      },
+    },
+  };
+  assert.deepEqual(pricedSellerServices(config.seller, ['a', 'b']).sort(), ['flash-5.3', 'k3', 'paid-image']);
+  assert.deepEqual(pricedSellerServices(config.seller, ['b']), ['flash-5.3', 'paid-image']);
+});
+
+test('models turned off are not offered, and a provider with every model off is not started', () => {
+  const seller = { providers: {
+    a: { plugin: 'openai', services: { one: {}, two: { enabled: false } } },
+    b: { plugin: 'openai', services: { three: { enabled: false } } },
+  } } as unknown as Parameters<typeof dropDisabledServices>[0]
+  assert.deepEqual(dropDisabledServices(seller, ['a', 'b']), { off: ['a/two', 'b/three'], emptyProviders: ['b'] })
+  assert.deepEqual(Object.keys(seller.providers['a']!.services), ['one'])
+})
+
+test('a free-tier program written only on a model turned off still applies where the same model stays on', () => {
+  const program = { maxRequestsPerAddress: 5 }
+  const seller = { providers: {
+    a: { plugin: 'openai', services: { glm: { enabled: false, freeTier: program } } },
+    b: { plugin: 'openai', services: { glm: {} } },
+  } } as unknown as Parameters<typeof dropDisabledServices>[0]
+  dropDisabledServices(seller, ['a', 'b'])
+  assert.deepEqual(seller.providers['b']!.services['glm']!.freeTier, program)
+})
