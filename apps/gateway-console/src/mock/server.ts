@@ -196,7 +196,6 @@ function mockStatement(workspaceId: string, period: string): PurchaseStatement {
     issuedAt: final ? to + DAY_MS : null, generatedAt: Date.now(),
     workspace: { id: workspaceId, name: ws?.name ?? 'Default', wallet: ws?.walletAddress ?? null },
     buyer: mockBillingProfiles.get(workspaceId) ?? null,
-    eurRate: { usdPerEur: 1.115, date: new Date(Math.min(to - DAY_MS, Date.now())).toISOString().slice(0, 10) },
     suppliers, total: total.toFixed(6), requests: suppliers.reduce((sum, supplier) => sum + supplier.lines.reduce((n, line) => n + line.requests, 0), 0),
     funding: {
       deposits: deposits.map((deposit) => ({ txHash: deposit.txHash, reference: deposit.reference, kind: deposit.kind, time: deposit.time, amount: deposit.sent })),

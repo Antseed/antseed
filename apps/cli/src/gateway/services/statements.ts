@@ -1,9 +1,9 @@
 /**
  * Purchase statements: a month of a workspace's paid requests, per seller and
  * model, with the settlement transactions that paid each seller and the money
- * that came in. Built from the gateway's own ledger; the outside reads are the
- * ECB reference rate (for EUR amounts) and the chain explorer's index of
- * settlements (one query, paged), so a statement costs no RPC calls.
+ * that came in. Built from the gateway's own ledger; the one outside read is the
+ * chain explorer's index of settlements (one query, paged), so a statement
+ * costs no RPC calls. Amounts are in USDC.
  *
  * It is a record of purchases, not an invoice: each seller is paid directly
  * from the workspace's credits and issues none.
@@ -64,23 +64,6 @@ export function statementReference(period: string, workspaceId: string): string 
 
 async function fetchWithTimeout(fetchImpl: Fetch, url: string, init: RequestInit = {}): Promise<Response> {
   return fetchImpl(url, { ...init, signal: AbortSignal.timeout(OUTSIDE_TIMEOUT_MS) })
-}
-
-/**
- * The ECB's USD per EUR reference rate on `date` ("YYYY-MM-DD"), or the last
- * one published before it (none on weekends and holidays).
- */
-export async function fetchEurRate(date: string, fetchImpl: Fetch = fetch): Promise<{ usdPerEur: number; date: string }> {
-  const url = `https://data-api.ecb.europa.eu/service/data/EXR/D.USD.EUR.SP00.A?endPeriod=${date}&lastNObservations=1&format=csvdata`
-  const response = await fetchWithTimeout(fetchImpl, url)
-  if (!response.ok) throw new Error(`ECB rate: HTTP ${response.status}`)
-  const [header, row] = (await response.text()).trim().split(/\r?\n/)
-  const columns = header?.split(',') ?? []
-  const values = row?.split(',') ?? []
-  const usdPerEur = Number(values[columns.indexOf('OBS_VALUE')])
-  const observed = values[columns.indexOf('TIME_PERIOD')] ?? ''
-  if (!(usdPerEur > 0) || !/^\d{4}-\d{2}-\d{2}$/.test(observed)) throw new Error('ECB rate: no observation')
-  return { usdPerEur, date: observed }
 }
 
 export interface Settlement {
@@ -163,7 +146,6 @@ export interface StatementInput {
   settlementsSource: string | null
   /** How many other workspaces paid from the same wallet by the month's end. */
   sharedWallet: number
-  eurRate: PurchaseStatement['eurRate']
   status: PurchaseStatement['status']
   now: number
 }
@@ -227,7 +209,6 @@ export function buildStatement(input: StatementInput): PurchaseStatement {
       notes: input.buyer.notes,
       updatedAt: input.buyer.updatedAt,
     } : null,
-    eurRate: input.eurRate,
     suppliers,
     total: usdcToDecimalString(total),
     requests: input.lines.filter((line) => !line.routingFee).reduce((sum, line) => sum + line.requests, 0),
@@ -262,8 +243,3 @@ export function statementFunding(period: string, deposits: DepositRecord[], now:
   }
 }
 
-/** The last day of a month ("YYYY-MM-DD"), or `now`'s day when the month is not over. */
-export function rateDate(period: string, now: number): string {
-  const bounds = periodBounds(period)!
-  return new Date(Math.min(bounds.to - 1, now)).toISOString().slice(0, 10)
-}

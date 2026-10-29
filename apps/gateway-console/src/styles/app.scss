@@ -785,7 +785,7 @@ li + li > .gc-choice { border-top: 1px solid var(--as-border); }
   dt { color: var(--as-text-secondary); font-size: 0.8125rem; }
   dd { margin: 0; overflow-wrap: anywhere; }
 }
-.gc-statement__summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid var(--as-border); border-radius: var(--as-radius-md);
+.gc-statement__summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--as-border); border-radius: var(--as-radius-md);
   > div { display: flex; flex-direction: column; gap: 0.125rem; padding: 0.625rem 0.875rem; border-left: 1px solid var(--as-border); }
   > div:first-child { border-left: 0; }
   span { color: var(--as-text-secondary); font-size: 0.75rem; }
@@ -809,7 +809,7 @@ li + li > .gc-choice { border-top: 1px solid var(--as-border); }
 .gc-statement__proof { display: flex; flex-wrap: wrap; gap: 0.125rem 1rem; margin-top: 0.375rem; font-size: 0.8125rem;
   > span:first-child { flex-basis: 100%; }
 }
-.gc-statement__total { display: grid; grid-template-columns: minmax(0, 1fr) auto 8rem; gap: 1rem; padding: 0.625rem 0.5rem; border-top: 2px solid var(--as-text-primary); font-weight: 700; text-align: right;
+.gc-statement__total { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 1rem; padding: 0.625rem 0.5rem; border-top: 2px solid var(--as-text-primary); font-weight: 700; text-align: right;
   > span:first-child { text-align: left; }
 }
 .gc-statement__boxes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin-top: 1.25rem;
@@ -820,9 +820,7 @@ li + li > .gc-choice { border-top: 1px solid var(--as-border); }
 .gc-print-only { display: none; }
 @media screen and (max-width: 640px) {
   .gc-statement__parties, .gc-statement__boxes { grid-template-columns: minmax(0, 1fr); }
-  .gc-statement__summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .gc-statement__kv { grid-template-columns: minmax(0, 1fr); }
-  .gc-statement__total { grid-template-columns: minmax(0, 1fr) auto; > span:last-child { grid-column: 2; } }
 }
 @media print {
   .gc-print-only { display: inline; }

@@ -41,11 +41,6 @@ function usdc(amount: string): string {
   return value !== 0 && Math.abs(value) < 0.01 ? value.toFixed(6).replace(/0+$/, '') : value.toFixed(2)
 }
 
-function eur(amount: string, rate: PurchaseStatement['eurRate']): string {
-  if (!rate) return '—'
-  return (Number(amount) / rate.usdPerEur).toLocaleString('en-IE', { style: 'currency', currency: 'EUR' })
-}
-
 function supplierName(supplier: StatementSupplier): string {
   if (supplier.name) return supplier.name
   return supplier.peerId ? `Seller ${shortId(supplier.peerId)}` : 'Unknown seller'
@@ -72,24 +67,23 @@ function supplierUsage(supplier: StatementSupplier) {
  * settlement and deposit either way.
  */
 function statementCsv(statement: PurchaseStatement, details: boolean): string {
-  const eurValue = (amount: string) => (statement.eurRate ? (Number(amount) / statement.eurRate.usdPerEur).toFixed(2) : '')
-  const rows: Array<Array<string | number>> = [['reference', 'period', 'type', 'seller', 'seller_address', 'service', 'requests', 'input_tokens', 'cached_input_tokens', 'output_tokens', 'amount_usdc', 'amount_eur', 'tx_hash', 'date_utc']]
+  const rows: Array<Array<string | number>> = [['reference', 'period', 'type', 'seller', 'seller_address', 'service', 'requests', 'input_tokens', 'cached_input_tokens', 'output_tokens', 'amount_usdc', 'tx_hash', 'date_utc']]
   for (const supplier of statement.suppliers) {
     if (!details && supplier.lines.length) {
       const usage = supplierUsage(supplier)
       rows.push([statement.reference, statement.period, 'purchase', supplierName(supplier), supplier.peerId, '',
-        usage.requests, usage.inputTokens, usage.cachedInputTokens, usage.outputTokens, supplier.total, eurValue(supplier.total), '', ''])
+        usage.requests, usage.inputTokens, usage.cachedInputTokens, usage.outputTokens, supplier.total, '', ''])
     }
     for (const line of details ? supplier.lines : []) {
       rows.push([statement.reference, statement.period, line.kind === 'routing' ? 'routing_fee' : 'purchase', supplierName(supplier), supplier.peerId, line.service ?? '',
-        line.requests, line.inputTokens, line.cachedInputTokens, line.outputTokens, line.amount, eurValue(line.amount), '', ''])
+        line.requests, line.inputTokens, line.cachedInputTokens, line.outputTokens, line.amount, '', ''])
     }
     for (const settlement of supplier.settlements ?? []) {
-      rows.push([statement.reference, statement.period, statement.sharedWallet ? 'wallet_settlement' : 'settlement', supplierName(supplier), supplier.peerId, '', '', '', '', '', settlement.amount, eurValue(settlement.amount), settlement.txHash, new Date(settlement.time).toISOString()])
+      rows.push([statement.reference, statement.period, statement.sharedWallet ? 'wallet_settlement' : 'settlement', supplierName(supplier), supplier.peerId, '', '', '', '', '', settlement.amount, settlement.txHash, new Date(settlement.time).toISOString()])
     }
   }
   for (const deposit of statement.funding.deposits) {
-    rows.push([statement.reference, statement.period, 'deposit', '', '', '', '', '', '', '', deposit.amount, eurValue(deposit.amount), deposit.txHash, new Date(deposit.time).toISOString()])
+    rows.push([statement.reference, statement.period, 'deposit', '', '', '', '', '', '', '', deposit.amount, deposit.txHash, new Date(deposit.time).toISOString()])
   }
   return `${rows.map((row) => row.map(csvCell).join(',')).join('\n')}\n`
 }
@@ -208,7 +202,7 @@ function SupplierSummary({ statement, network }: { statement: PurchaseStatement;
       <div className="gc-statement__table">
         <table>
           <thead>
-            <tr><th>Provider</th><th>Requests</th><th>Settlements this month</th><th>USDC</th><th>EUR</th></tr>
+            <tr><th>Provider</th><th>Requests</th><th>Settlements this month</th><th>USDC</th></tr>
           </thead>
           <tbody>
             {statement.suppliers.map((supplier, index) => (
@@ -220,7 +214,6 @@ function SupplierSummary({ statement, network }: { statement: PurchaseStatement;
                 <td>{supplier.lines.length ? formatNumber(supplierUsage(supplier).requests) : '—'}</td>
                 <td>{paidLabel(supplier)}</td>
                 <td>{usdc(supplier.total)}</td>
-                <td>{eur(supplier.total, statement.eurRate)}</td>
               </tr>
             ))}
           </tbody>
@@ -259,7 +252,7 @@ function Supplier({ supplier, index, statement, network, txLink }: { supplier: S
       <div className="gc-statement__table">
         <table>
           <thead>
-            <tr><th>Service</th><th>Requests</th><th>Input tokens</th><th>Cached input</th><th>Output tokens</th><th>USDC</th><th>EUR</th></tr>
+            <tr><th>Service</th><th>Requests</th><th>Input tokens</th><th>Cached input</th><th>Output tokens</th><th>USDC</th></tr>
           </thead>
           <tbody>
             {supplier.lines.map((line) => (
@@ -270,13 +263,11 @@ function Supplier({ supplier, index, statement, network, txLink }: { supplier: S
                 <td>{formatNumber(line.cachedInputTokens)}</td>
                 <td>{formatNumber(line.outputTokens)}</td>
                 <td>{usdc(line.amount)}</td>
-                <td>{eur(line.amount, statement.eurRate)}</td>
               </tr>
             ))}
             <tr className="gc-statement__subtotal">
               <td colSpan={5}>Subtotal {supplierName(supplier)}</td>
               <td>{usdc(supplier.total)}</td>
-              <td>{eur(supplier.total, statement.eurRate)}</td>
             </tr>
           </tbody>
         </table>
@@ -382,15 +373,13 @@ export function StatementPage({ period }: { period: string }) {
                     <dt>Issued by</dt><dd>The buyer's own Antseed gateway, <Mono>{gatewayAddress}</Mono></dd>
                     <dt>Workspace</dt><dd>{doc.workspace.name}</dd>
                     <dt>Workspace wallet</dt><dd>{doc.workspace.wallet ? <Mono>{doc.workspace.wallet}</Mono> : '—'}</dd>
-                    <dt>Network</dt><dd>{network} · USDC</dd>
-                    <dt>EUR rate</dt><dd>{doc.eurRate ? `ECB reference rate of ${doc.eurRate.date}: 1 EUR = ${doc.eurRate.usdPerEur.toFixed(4)} USD; 1 USDC valued at 1 USD` : 'Not available'}</dd>
+                    <dt>Currency</dt><dd>USDC on {network} (1 USDC = 1 USD)</dd>
                   </dl>
                 </div>
               </div>
 
               <div className="gc-statement__summary">
                 <div><span>Purchases</span><strong>{usdc(doc.total)} USDC</strong></div>
-                <div><span>In EUR</span><strong>{eur(doc.total, doc.eurRate)}</strong></div>
                 <div><span>Requests</span><strong>{formatNumber(doc.requests)}</strong></div>
                 <div><span>Providers</span><strong>{doc.suppliers.filter((supplier) => supplier.lines.length).length}</strong></div>
               </div>
@@ -404,7 +393,6 @@ export function StatementPage({ period }: { period: string }) {
               <div className="gc-statement__total">
                 <span>Total purchases, {monthName(doc.period)}</span>
                 <span>{usdc(doc.total)} USDC</span>
-                <span>{eur(doc.total, doc.eurRate)}</span>
               </div>
 
               <div className="gc-statement__boxes">
@@ -412,7 +400,7 @@ export function StatementPage({ period }: { period: string }) {
                   <h2 className="gc-statement__label">Tax</h2>
                   <dl className="gc-statement__kv">
                     <dt>Tax charged by providers</dt><dd>None</dd>
-                    <dt>Purchases before tax</dt><dd><strong>{usdc(doc.total)} USDC · {eur(doc.total, doc.eurRate)}</strong></dd>
+                    <dt>Purchases before tax</dt><dd><strong>{usdc(doc.total)} USDC</strong></dd>
                   </dl>
                   <p>The providers charged no VAT or sales tax. Any tax the buyer owes on these purchases, such as an EU reverse charge, is the buyer's to account for. Confirm the treatment with your tax advisor.</p>
                 </section>
