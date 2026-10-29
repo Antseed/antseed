@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { ZeroAddress } from 'ethers';
 import { multicallRead, type MulticallRequest } from '@antseed/node/payments';
 import type { AntsContext } from './context.js';
 import type { RewardPositions } from './position-feed.js';
@@ -54,7 +55,7 @@ function fixture() {
     moveStake: vi.fn(),
   };
   const rewards = { previewStakerRewards: vi.fn(async (ids: number[]) => ids.map(() => 15n)), stakerEpochBudget: vi.fn(async () => 100n) };
-  const accounting = { totalWeightedPoolPointsByEpoch: vi.fn(async () => 20n) };
+  const accounting = { totalWeightedPoolPointsByEpoch: vi.fn(async () => 20n), poolWeightPolicy: vi.fn(async () => ZeroAddress) };
   const ctx = {
     address: owner, chain: { evmChainId: 8453, sellerPoolsAddress: owner, sellerPoolsRewardsAddress: owner, usageAccountingAddress: owner, sellerRegistryAddress: owner, emissionsGateAddress: owner, usageRewardsAddress: owner },
     stack: async () => stack, indexer: () => indexer, requirePools: () => pools, poolRewards: () => rewards,

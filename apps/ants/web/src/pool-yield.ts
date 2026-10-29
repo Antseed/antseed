@@ -25,7 +25,9 @@ function annualizedApr(epochReward: bigint, principal: bigint, duration: number)
  * usage times its power, so added power also grows the pool's share of the staker
  * budget; pool size cancels and only the network-wide points dilute:
  *   budget × usage × p / (allPoints + usage × p) = reward × p × budget / (budget × poolPower + reward × p)
- * Without a known budget it falls back to the pool-only split reward × p / (poolPower + p).
+ * This holds only when pool reward weight is raw pool power; the service omits the budget
+ * under a pool-weight policy. Without a budget it falls back to the pool-only split
+ * reward × p / (poolPower + p), which keeps the pool's reward fixed (exact for a capped pool).
  */
 export function addedPowerReward(reward: bigint, poolPower: bigint, power: bigint, budget: bigint | null): bigint {
   if (budget !== null && budget > 0n && poolPower > 0n) return reward * power * budget / (budget * poolPower + reward * power);

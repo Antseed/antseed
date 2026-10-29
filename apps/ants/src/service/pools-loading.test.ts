@@ -21,6 +21,7 @@ function setup(indexedEpoch = 2, historical = true, currentEpoch = 2) {
   const explorer = { byAddress: new Map(), byAgent: new Map<number, string>() };
   vi.mocked(explorerSellers).mockResolvedValue(explorer);
   const ineligible = new Set<number>();
+  const accounting = { totalWeightedPoolPointsByEpoch: live, poolWeightPolicy: vi.fn(async () => ZeroAddress) };
   const ctx = {
     address: ZeroAddress,
     chain: { sellerPoolsAddress: address, sellerPoolsRewardsAddress: address, usageAccountingAddress: address },
@@ -28,7 +29,7 @@ function setup(indexedEpoch = 2, historical = true, currentEpoch = 2) {
     indexer: () => indexer,
     requirePools: () => ({ contractAddress: address, provider: { getBlockNumber: async () => 123 }, totalPowerWeightAtEpoch: live }),
     poolRewards: () => ({ stakerEpochBudget: live }),
-    usageAccounting: () => ({ totalWeightedPoolPointsByEpoch: live }),
+    usageAccounting: () => accounting,
   } as unknown as AntsContext;
   const methods: string[] = [];
   vi.mocked(multicallRead).mockImplementation(async (_provider, requests) => requests.map(r => {
@@ -45,7 +46,7 @@ function setup(indexedEpoch = 2, historical = true, currentEpoch = 2) {
     if (r.method === 'MAX_STAKE_EPOCHS') return [104n];
     return [100n];
   }));
-  return { ctx, indexer, indexed, live, methods, explorer, ineligible };
+  return { ctx, indexer, indexed, live, methods, explorer, ineligible, accounting };
 }
 
 describe('pool loading', () => {
@@ -110,6 +111,14 @@ describe('pool loading', () => {
     const list = await poolsView(ctx);
     expect(list.pools[0]?.liveYield).toBeDefined();
     expect((await singlePool(ctx, 1)).liveYield).toEqual(list.pools[0]!.liveYield);
+  });
+  it.each([['a pool-weight policy', async () => '0x00000000000000000000000000000000000000ca'], ['an unreadable policy', async () => { throw new Error('rpc'); }]])('omits the staker budget from yields under %s', async (_label, policy) => {
+    // Under a policy (e.g. a cap) added stake need not grow the pool's share, so estimates keep its reward fixed.
+    const { ctx, accounting } = setup();
+    accounting.poolWeightPolicy.mockImplementation(policy as () => Promise<string>);
+    const list = await poolsView(ctx);
+    expect(list.pools[0]?.yield).toMatchObject({ reward: '5', budget: null });
+    expect(list.pools[0]?.liveYield).toMatchObject({ reward: '5', budget: null });
   });
   it('publishes no live yield from a lagging index against current-epoch chain totals', async () => {
     // The index still reports epoch 1, so its pool points must not be divided by epoch 2's live network total.

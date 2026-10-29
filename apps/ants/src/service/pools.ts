@@ -77,6 +77,12 @@ interface PoolContext {
   totalPowerWeight: bigint;
   stakerBudget: bigint;
   totalWeightedPoolPoints: bigint;
+  /**
+   * Whether pool reward weight is raw pool power (no pool-weight policy set). Only then does
+   * added stake grow a pool's share of the staker budget proportionally, so yields carry the
+   * budget for that projection; under a policy (e.g. a cap) or an unknown one they omit it.
+   */
+  linearPoolWeight: boolean;
   /** Where this epoch's network totals came from; live yields only pair them with pool inputs from the same source. */
   networkSource: PoolInputSource;
   /** Previous epoch's staker budget and weighted pool points, for estimating unsettled pool emissions. */
@@ -121,7 +127,7 @@ async function poolContext(ctx: AntsContext, indexed?: IndexedPools): Promise<Po
   const networkSource: PoolInputSource = snapshotCurrent ? 'snapshot' : current ? 'indexer' : 'chain';
   const last = display.snapshot?.epochs.find(row => row.epoch === epoch - 1) ?? (display.source.error ? null : indexed?.currentEpoch === epoch && indexed.network.last?.epoch === epoch - 1 && indexed.network.last.complete !== false ? indexed.network.last : null);
   const epochs = Array.from({ length: VOLUME_EPOCHS }, (_, index) => epoch - index).filter((value) => value >= 0);
-  const [totalPowerWeight, stakerBudget, totalWeightedPoolPoints, lastStakerBudget, lastTotalWeightedPoolPoints, explorer, own] = await Promise.all([
+  const [totalPowerWeight, stakerBudget, totalWeightedPoolPoints, lastStakerBudget, lastTotalWeightedPoolPoints, explorer, own, poolWeightPolicy] = await Promise.all([
     current ? Promise.resolve(BigInt(current.totalPowerWeight)) : safe(() => pools.totalPowerWeightAtEpoch(epoch), 0n),
     current ? Promise.resolve(BigInt(current.stakerBudget)) : poolRewards ? safe(() => poolRewards.stakerEpochBudget(epoch), 0n) : Promise.resolve(0n),
     current ? Promise.resolve(BigInt(current.totalWeightedPoolPoints)) : accounting ? safe(() => accounting.totalWeightedPoolPointsByEpoch(epoch), 0n) : Promise.resolve(0n),
@@ -133,6 +139,7 @@ async function poolContext(ctx: AntsContext, indexed?: IndexedPools): Promise<Po
       const [open, closed] = await Promise.all([pools.allStakerPositionIds(ctx.address), closedPositionIds(ctx)]);
       return pools.positionsBatch([...new Set([...open, ...closed.ids])]);
     })(),
+    accounting ? safe(() => accounting.poolWeightPolicy(), null) : Promise.resolve(null),
   ]);
   // A moved/split source keeps its power until its effective epoch, so it still counts as open here.
   const openRows = own.filter((position) => position.owner.toLowerCase() === ctx.address.toLowerCase() && !position.withdrawn && (position.closedAtEpoch === 0 || position.closedAtEpoch > epoch));
@@ -140,7 +147,8 @@ async function poolContext(ctx: AntsContext, indexed?: IndexedPools): Promise<Po
     current ? Promise.resolve(BigInt(current.totalActiveStake)) : safe(() => pools.totalActiveStakeAtEpoch(epoch), 0n),
     live ? Promise.resolve(ownPoolsFromLive(live)) : ownPools(ctx, openRows, epoch),
   ]);
-  return { stack, display, totalActiveStake, epochs, totalPowerWeight, stakerBudget, totalWeightedPoolPoints, networkSource, lastStakerBudget, lastTotalWeightedPoolPoints, explorer, own: ownSummary, walletSyncing };
+  const linearPoolWeight = poolWeightPolicy === ZeroAddress;
+  return { stack, display, totalActiveStake, epochs, totalPowerWeight, stakerBudget, totalWeightedPoolPoints, networkSource, linearPoolWeight, lastStakerBudget, lastTotalWeightedPoolPoints, explorer, own: ownSummary, walletSyncing };
 }
 
 function ownPoolsFromLive(live: LivePositions): Map<number, OwnPool> {
@@ -435,7 +443,7 @@ async function enrichYields(ctx: AntsContext, context: PoolContext, views: PoolV
     view.yield = poolYield(reward, typeof principal === 'bigint' ? principal : null, epoch, context.stack.epochDuration, context.stack.genesis, emission?.[0] === true);
     view.yield.reward = reward?.toString() ?? null;
     view.yield.power = read.power()?.[0]?.toString() ?? null;
-    view.yield.budget = typeof b === 'bigint' ? b.toString() : null;
+    view.yield.budget = context.linearPoolWeight && typeof b === 'bigint' ? b.toString() : null;
     view.yield.minLockEpochs = minLock()?.[0] == null ? null : Number(minLock()![0]);
     view.yield.maxLockEpochs = maxLock()?.[0] == null ? null : Number(maxLock()![0]);
     view.statsUpdatedAt = Date.now();
@@ -464,7 +472,7 @@ function addLiveYields(context: PoolContext, views: PoolView[], source: PoolInpu
     const reward = context.stakerBudget * points / context.totalWeightedPoolPoints;
     view.liveYield = {
       epoch, startsAt, endsAt: startsAt + duration, apr: null, apy: null, status: 'estimated',
-      reward: reward.toString(), power: power.toString(), budget: context.stakerBudget.toString(),
+      reward: reward.toString(), power: power.toString(), budget: context.linearPoolWeight ? context.stakerBudget.toString() : null,
       minLockEpochs: view.yield?.minLockEpochs ?? null, maxLockEpochs: view.yield?.maxLockEpochs ?? null,
     };
   }
@@ -505,7 +513,7 @@ async function indexedYields(ctx: AntsContext, context: PoolContext, views: Pool
       : null;
     view.yield = {
       ...poolYield(reward, row ? BigInt(row.activeStake) : null, epoch, context.stack.epochDuration, context.stack.genesis, row?.settled === true),
-      reward: reward?.toString() ?? null, power: row?.weight ?? null, budget: network?.stakerBudget ?? null,
+      reward: reward?.toString() ?? null, power: row?.weight ?? null, budget: context.linearPoolWeight ? network?.stakerBudget ?? null : null,
       minLockEpochs: minLock()?.[0] == null ? null : Number(minLock()![0]), maxLockEpochs: maxLock()?.[0] == null ? null : Number(maxLock()![0]),
     };
     view.lastEpochEmission = reward?.toString() ?? null;
