@@ -1,14 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { KBF_AUDIT_TYPE, type ModelAuditedEvent } from '@antseed/node/payments'
+import type { ModelAuditedEvent } from '@antseed/node/payments'
 import { createCheckEndpoint, latestPublishedAudit } from './check.js'
 
-function event(blockNumber: number, logIndex: number, evidenceUri: string, auditType = KBF_AUDIT_TYPE): ModelAuditedEvent {
+function event(blockNumber: number, logIndex: number, evidenceUri: string): ModelAuditedEvent {
   return {
     modelHash: `0x${'1'.repeat(64)}`,
     auditor: '0x0000000000000000000000000000000000000001',
     epoch: 1n,
-    auditType,
     evidenceHash: `0x${'2'.repeat(64)}`,
     evidenceUri,
     resultCount: 1,
@@ -24,7 +23,6 @@ test('latestPublishedAudit picks the newest audit that published evidence to IPF
     event(12, 0, 'ipfs://newer'),
     event(12, 3, 'ipfs://newest'),
     event(20, 0, ''),
-    event(30, 0, 'ipfs://other-type', `0x${'4'.repeat(64)}`),
   ])
   assert.equal(latest?.evidenceUri, 'ipfs://newest')
   assert.equal(latestPublishedAudit([event(5, 0, '')]), null)

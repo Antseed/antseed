@@ -621,9 +621,8 @@ Provider-specific options are configured via each plugin's config schema (see `a
 
 `antseed verifier` runs **KBF audits** (Knowledge Boundary Fingerprinting). KBF is
 one of the first of many verification methods Antseed is launching; more are coming.
-KBF audits are recorded on-chain with `auditType`
-`keccak256("kbf-model-identity/v1")`, so new methods can record their results next
-to them.
+KBF audits are recorded in their own contract, `AntseedKbfVerification`; each new
+method gets its own contract.
 
 The audited models are a list built into the CLI (`src/verifier/audited-models.ts`):
 each model's service id, the aliases sellers use for it, and its OpenRouter id. A

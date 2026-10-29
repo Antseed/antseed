@@ -706,8 +706,9 @@ States: `ready` (M001 active, at least one install missing), `active`,
 `AntseedKbfVerification` records KBF model-verification audits from approved auditors and pays
 them from the verification emission bucket by audit credits, capped per model, per
 auditor and by each auditor's share of the epoch budget. Rewards stay off until the owner
-sets `rewardsStartEpoch`. It only accepts audits whose `auditType` is
-`keccak256("kbf-model-identity/v1")` (exposed as `AUDIT_TYPE` and `auditType()`).
+sets `rewardsStartEpoch`. Every audit it records is a KBF audit; the contract is
+labelled `keccak256("kbf-model-identity/v1")` (`AUDIT_TYPE` and `auditType()`),
+which `AntseedKbfVerificationPointsPolicy` checks when it is deployed.
 KBF is one of the first verification methods: each later method gets its own
 contract, points policy and emissions bucket, and the verification bucket share
 is split between them with `setMinter` from the next epoch.

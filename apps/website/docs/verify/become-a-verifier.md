@@ -57,7 +57,7 @@ Then open `$ANTSEED_VERIFIER_DIR/config.json` and add the chain and the referenc
 }
 ```
 
-- `verificationContractAddress` and `verificationDeployBlock` are the verification contract on Base and the block it was deployed in. Ask for the current address in the [Antseed Telegram community](https://t.me/antseed). This release submits KBF audits with an `auditType`, which the first contract (`0x27F93f9C…2f66`) doesn't accept, so submitting to it fails.
+- `verificationContractAddress` and `verificationDeployBlock` are the verification contract on Base and the block it was deployed in. Ask for the current address in the [Antseed Telegram community](https://t.me/antseed).
 - `referenceEndpoint` is where the genuine answers come from. The example uses OpenRouter, which serves every audited model with one key. To use other providers, see [Reference upstreams](/docs/verify/audits#reference-upstreams).
 - Leave `buyer.maxPricing` at the `config init` default.
 

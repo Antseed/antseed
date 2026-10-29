@@ -5,9 +5,9 @@ import {IAntseedEmissionsGate} from "./IAntseedEmissionsGate.sol";
 import {IAntseedRegistry} from "./IAntseedRegistry.sol";
 import {IAntseedSellerPools} from "./IAntseedSellerPools.sol";
 
-/// @notice One verification method's model audits, submitted by approved auditors, one model per
-///         submission. Each method (KBF today, others later) has its own contract with its own
-///         `auditType`, verdicts, auditors and rewards bucket.
+/// @notice KBF (model identity) audits, submitted by approved auditors, one model per submission.
+///         KBF is one of several verification methods; each method has its own contract and
+///         interface with its own verdicts, auditors and rewards bucket.
 /// @dev Status is kept per (agent, service). The latest result (SAME, DIFF, or UNDETERMINED) is
 ///      the service's verdict, with the emissions epoch it was given in; it is live while
 ///      `currentEpoch < epoch + validityEpochs` and drops out on its own afterwards. Only SAME and
@@ -17,7 +17,7 @@ import {IAntseedSellerPools} from "./IAntseedSellerPools.sol";
 ///      and are paid from the verification emission bucket in proportion to their credits, capped
 ///      at `maxAuditorShareBps` of the epoch's budget per auditor. These credit and share limits are
 ///      safety limits against a compromised or malicious auditor.
-interface IAntseedVerification {
+interface IAntseedKbfVerification {
     enum Verdict {
         NONE,
         SAME,
@@ -64,22 +64,20 @@ interface IAntseedVerification {
     function approvedAuditors(address auditor) external view returns (bool);
     function setAuditor(address auditor, bool approved) external;
 
-    /// @notice Records one auditor's results for every seller audited as `modelHash`.
-    /// @param auditType Audit method and version. Must equal `auditType()`, e.g.
-    ///        keccak256("kbf-model-identity/v1") for the KBF contract.
+    /// @notice Records one auditor's KBF results for every seller audited as `modelHash`.
     /// @dev Reverts unless the caller is an approved auditor, `expectedEpoch` is the current
     ///      epoch of the pinned emissions gate, `evidenceHash` is non-zero, and `results` is non-empty, bounded, and
-    ///      strictly ordered by (agentId, serviceHash), and `auditType` is this contract's method.
+    ///      strictly ordered by (agentId, serviceHash).
     function submitModelAudit(
         uint256 expectedEpoch,
-        bytes32 auditType,
         bytes32 modelHash,
         bytes32 evidenceHash,
         string calldata evidenceUri,
         ServiceResult[] calldata results
     ) external;
 
-    /// @notice The verification method this contract records, e.g. keccak256("kbf-model-identity/v1").
+    /// @notice Labels the verification method: keccak256("kbf-model-identity/v1") for KBF. Lets a
+    ///         points policy check it reads a KBF contract.
     function auditType() external view returns (bytes32);
 
     function serviceStatus(uint256 agentId, bytes32 serviceHash) external view returns (ServiceStatus memory);

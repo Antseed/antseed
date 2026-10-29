@@ -8,7 +8,7 @@ import { AntseedKbfVerificationPointsPolicy } from "../../policies/AntseedKbfVer
 import { MockERC8004Registry } from "../mocks/MockERC8004Registry.sol";
 import { MockVerificationEmissionsGate } from "../mocks/MockVerificationEmissionsGate.sol";
 import { MockVerificationSellerPools } from "../mocks/MockVerificationSellerPools.sol";
-import { IAntseedVerification } from "../../interfaces/IAntseedVerification.sol";
+import { IAntseedKbfVerification } from "../../interfaces/IAntseedKbfVerification.sol";
 import { M003DeployVerificationRegistry } from "../../script/migrations/M003VerificationRegistry/Deploy.s.sol";
 
 contract M003UsageAccounting {
@@ -24,7 +24,6 @@ contract M003UsageAccounting {
 }
 
 contract M003VerificationRegistryTest is Test {
-    bytes32 private constant KBF_AUDIT_TYPE = keccak256("kbf-model-identity/v1");
     M003DeployVerificationRegistry private script;
     AntseedRegistry private registry;
     MockERC8004Registry private identity;
@@ -128,12 +127,12 @@ contract M003VerificationRegistryTest is Test {
         AntseedKbfVerification verification = deploy(config());
         vm.prank(address(0xCAFE));
         uint256 agentId = identity.register();
-        IAntseedVerification.ServiceResult[] memory results = new IAntseedVerification.ServiceResult[](1);
-        results[0] = IAntseedVerification.ServiceResult({
-            agentId: agentId, serviceHash: keccak256("service"), verdict: IAntseedVerification.Verdict.SAME
+        IAntseedKbfVerification.ServiceResult[] memory results = new IAntseedKbfVerification.ServiceResult[](1);
+        results[0] = IAntseedKbfVerification.ServiceResult({
+            agentId: agentId, serviceHash: keccak256("service"), verdict: IAntseedKbfVerification.Verdict.SAME
         });
         vm.prank(auditor);
-        verification.submitModelAudit(0, KBF_AUDIT_TYPE, keccak256("model"), keccak256("evidence"), "ipfs://evidence", results);
+        verification.submitModelAudit(0, keccak256("model"), keccak256("evidence"), "ipfs://evidence", results);
         assertTrue(verification.isVerified(agentId));
     }
 
@@ -247,12 +246,12 @@ contract M003VerificationRegistryTest is Test {
         vm.prank(seller);
         uint256 agentId = identity.register();
         pools.setSeller(seller, agentId);
-        IAntseedVerification.ServiceResult[] memory results = new IAntseedVerification.ServiceResult[](1);
-        results[0] = IAntseedVerification.ServiceResult({
-            agentId: agentId, serviceHash: keccak256("service"), verdict: IAntseedVerification.Verdict.SAME
+        IAntseedKbfVerification.ServiceResult[] memory results = new IAntseedKbfVerification.ServiceResult[](1);
+        results[0] = IAntseedKbfVerification.ServiceResult({
+            agentId: agentId, serviceHash: keccak256("service"), verdict: IAntseedKbfVerification.Verdict.SAME
         });
         vm.prank(auditor);
-        verification.submitModelAudit(0, KBF_AUDIT_TYPE, keccak256("model"), keccak256("evidence"), "", results);
+        verification.submitModelAudit(0, keccak256("model"), keccak256("evidence"), "", results);
         (uint256 sellerPoints,) = pointsPolicyRegistry.points(bytes32(0), address(0xB0), seller, 1_000_000);
         assertEq(sellerPoints, 1_010_000, "the deployed bonus applies at once");
 

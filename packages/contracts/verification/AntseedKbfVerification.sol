@@ -7,7 +7,7 @@ import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {IAntseedEmissionsGate} from "../interfaces/IAntseedEmissionsGate.sol";
 import {IAntseedRegistry} from "../interfaces/IAntseedRegistry.sol";
 import {IAntseedSellerPools} from "../interfaces/IAntseedSellerPools.sol";
-import {IAntseedVerification} from "../interfaces/IAntseedVerification.sol";
+import {IAntseedKbfVerification} from "../interfaces/IAntseedKbfVerification.sol";
 import {IERC8004Registry} from "../interfaces/IERC8004Registry.sol";
 
 interface IEmissionsGateSource {
@@ -15,10 +15,10 @@ interface IEmissionsGateSource {
 }
 
 /// @notice Records KBF (Knowledge Boundary Fingerprinting) model audits from approved auditors, one
-///         model per submission. KBF is one of several verification methods: this contract accepts
-///         only `AUDIT_TYPE` (`keccak256("kbf-model-identity/v1")`), so its verdicts are KBF verdicts.
-///         Another method gets its own contract implementing `IAntseedVerification`, its own points
-///         policy, and its own emissions bucket, and never writes into KBF verdicts.
+///         model per submission. KBF is one of several verification methods: every audit recorded
+///         here is a KBF audit, and `AUDIT_TYPE` (`keccak256("kbf-model-identity/v1")`) labels the
+///         contract as KBF. Another method gets its own contract, its own points policy, and its own
+///         emissions bucket, and never writes into KBF verdicts.
 ///
 ///
 ///         Status: each (agent, service) keeps its latest result as its verdict, with the emissions
@@ -41,12 +41,12 @@ interface IEmissionsGateSource {
 ///         `min(budget * credits / totalCredits, budget * maxAuditorShareBps / BPS)` from the
 ///         verification emission bucket, using the share cap in force at claim time. Budget above
 ///         the cap is never minted.
-contract AntseedKbfVerification is IAntseedVerification, Ownable2Step {
+contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     uint256 public constant MAX_RESULTS_PER_AUDIT = 256;
     uint256 public constant MAX_EVIDENCE_URI_BYTES = 200;
     uint8 public constant MAX_VALIDITY_EPOCHS = 4;
     uint256 public constant BPS = 10_000;
-    /// @notice The only audit method this contract records: KBF model identity, version 1.
+    /// @notice Labels this contract's method: KBF model identity, version 1. Every audit here is KBF.
     bytes32 public constant AUDIT_TYPE = keccak256("kbf-model-identity/v1");
 
     struct EpochCounts {
@@ -94,7 +94,6 @@ contract AntseedKbfVerification is IAntseedVerification, Ownable2Step {
         bytes32 indexed modelHash,
         address indexed auditor,
         uint256 indexed epoch,
-        bytes32 auditType,
         bytes32 evidenceHash,
         string evidenceUri,
         uint256 resultCount
@@ -121,7 +120,6 @@ contract AntseedKbfVerification is IAntseedVerification, Ownable2Step {
     error EpochChanged();
     error EpochNotFinalized();
     error AlreadyClaimed();
-    error UnsupportedAuditType();
 
     /// @dev Pins the emissions gate behind `registry.emissions()`. After M001 the registry points at
     ///      usage accounting, which exposes the gate as `emissionsGate()`; otherwise the registry
@@ -224,14 +222,12 @@ contract AntseedKbfVerification is IAntseedVerification, Ownable2Step {
 
     function submitModelAudit(
         uint256 expectedEpoch,
-        bytes32 auditType,
         bytes32 modelHash,
         bytes32 evidenceHash,
         string calldata evidenceUri,
         ServiceResult[] calldata results
     ) external override {
         if (!approvedAuditors[msg.sender]) revert NotApprovedAuditor();
-        if (auditType != AUDIT_TYPE) revert UnsupportedAuditType();
         if (modelHash == bytes32(0) || evidenceHash == bytes32(0)) revert InvalidValue();
         _validateEvidenceUri(evidenceUri);
         uint256 count = results.length;
@@ -265,11 +261,11 @@ contract AntseedKbfVerification is IAntseedVerification, Ownable2Step {
             _applyResult(result.agentId, result.serviceHash, modelHash, result.verdict, epoch);
         }
 
-        emit ModelAudited(modelHash, msg.sender, expectedEpoch, auditType, evidenceHash, evidenceUri, count);
+        emit ModelAudited(modelHash, msg.sender, expectedEpoch, evidenceHash, evidenceUri, count);
         if (staked && epoch >= rewardsStartEpoch) _creditAudit(epoch, modelHash);
     }
 
-    /// @inheritdoc IAntseedVerification
+    /// @inheritdoc IAntseedKbfVerification
     function auditType() external pure override returns (bytes32) {
         return AUDIT_TYPE;
     }

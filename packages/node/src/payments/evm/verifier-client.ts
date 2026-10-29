@@ -24,7 +24,7 @@ export interface VerifierClientConfig {
   logQueryChunkBlocks?: number;
 }
 
-/** Mirrors IAntseedVerification.Verdict. */
+/** Mirrors IAntseedKbfVerification.Verdict. */
 export const VERIFIER_VERDICT = {
   NONE: 0,
   SAME: 1,
@@ -50,8 +50,6 @@ export interface ServiceResultInput {
 
 export interface SubmitModelAuditInput {
   expectedEpoch: bigint;
-  /** Audit method and version; defaults to `KBF_AUDIT_TYPE`. */
-  auditType?: string;
   modelHash: string;
   evidenceHash: string;
   evidenceUri: string;
@@ -73,7 +71,6 @@ export interface ModelAuditedEvent {
   modelHash: string;
   auditor: string;
   epoch: bigint;
-  auditType: string;
   evidenceHash: string;
   evidenceUri: string;
   resultCount: number;
@@ -98,7 +95,7 @@ export interface AuditorCredits {
 }
 
 export const VERIFICATION_ABI = [
-  'function submitModelAudit(uint256 expectedEpoch,bytes32 auditType,bytes32 modelHash,bytes32 evidenceHash,string evidenceUri,(uint256 agentId,bytes32 serviceHash,uint8 verdict)[] results) external',
+  'function submitModelAudit(uint256 expectedEpoch,bytes32 modelHash,bytes32 evidenceHash,string evidenceUri,(uint256 agentId,bytes32 serviceHash,uint8 verdict)[] results) external',
   'function serviceStatus(uint256 agentId,bytes32 serviceHash) external view returns ((bytes32 modelHash,uint8 verdict,uint64 updatedAt,uint64 epoch))',
   'function agentStatus(uint256 agentId) external view returns ((uint16 verifiedCount,uint16 diffCount))',
   'function isVerified(uint256 agentId) external view returns (bool)',
@@ -115,7 +112,7 @@ export const VERIFICATION_ABI = [
   'function sellerPools() external view returns (address)',
   'function approvedAuditors(address auditor) external view returns (bool)',
   'event AuditorSet(address indexed auditor,bool approved)',
-  'event ModelAudited(bytes32 indexed modelHash,address indexed auditor,uint256 indexed epoch,bytes32 auditType,bytes32 evidenceHash,string evidenceUri,uint256 resultCount)',
+  'event ModelAudited(bytes32 indexed modelHash,address indexed auditor,uint256 indexed epoch,bytes32 evidenceHash,string evidenceUri,uint256 resultCount)',
   'event ServiceAudited(uint256 indexed agentId,bytes32 indexed serviceHash,address indexed auditor,bytes32 modelHash,uint8 verdict)',
   'event ServiceStatusChanged(uint256 indexed agentId,bytes32 indexed serviceHash,bytes32 modelHash,uint8 previous,uint8 current)',
   'event AuditCredited(uint256 indexed epoch,address indexed auditor,bytes32 indexed modelHash)',
@@ -139,9 +136,6 @@ const IDENTITY_REGISTRY_ABI = [
 export function serviceHash(service: string): string {
   return keccak256(toUtf8Bytes(service.trim().toLowerCase()));
 }
-
-/** Audit method and version this verifier submits. */
-export const KBF_AUDIT_TYPE = keccak256(toUtf8Bytes('kbf-model-identity/v1'));
 
 /** Identifies the model a service was audited as. */
 export function modelHash(model: string): string {
@@ -190,7 +184,6 @@ export class VerifierClient extends BaseEvmClient {
       VERIFICATION_ABI,
       'submitModelAudit',
       input.expectedEpoch,
-      input.auditType ?? KBF_AUDIT_TYPE,
       input.modelHash,
       input.evidenceHash,
       input.evidenceUri,
@@ -347,10 +340,9 @@ export class VerifierClient extends BaseEvmClient {
         modelHash: String(log.args.modelHash ?? log.args[0]),
         auditor: getAddress(String(log.args.auditor ?? log.args[1])),
         epoch: BigInt(log.args.epoch ?? log.args[2]),
-        auditType: String(log.args.auditType ?? log.args[3]),
-        evidenceHash: String(log.args.evidenceHash ?? log.args[4]),
-        evidenceUri: String(log.args.evidenceUri ?? log.args[5]),
-        resultCount: Number(log.args.resultCount ?? log.args[6]),
+        evidenceHash: String(log.args.evidenceHash ?? log.args[3]),
+        evidenceUri: String(log.args.evidenceUri ?? log.args[4]),
+        resultCount: Number(log.args.resultCount ?? log.args[5]),
         blockNumber: log.blockNumber,
         logIndex: log.index,
         transactionHash: log.transactionHash,

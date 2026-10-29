@@ -5,21 +5,21 @@ import { Test } from "forge-std/Test.sol";
 import { AntseedPointsPolicyRegistry } from "../policies/AntseedPointsPolicyRegistry.sol";
 import { AntseedKbfVerificationPointsPolicy } from "../policies/AntseedKbfVerificationPointsPolicy.sol";
 import { AntseedWashTradingPointsPolicy } from "../policies/AntseedWashTradingPointsPolicy.sol";
-import { IAntseedVerification } from "../interfaces/IAntseedVerification.sol";
+import { IAntseedKbfVerification } from "../interfaces/IAntseedKbfVerification.sol";
 
 contract ScoreSourceForPoints {
-    mapping(uint256 => IAntseedVerification.AgentStatus) private _status;
+    mapping(uint256 => IAntseedKbfVerification.AgentStatus) private _status;
     bool public reverts;
 
     function set(uint256 agentId, uint16 verifiedCount, uint16 diffCount) external {
-        _status[agentId] = IAntseedVerification.AgentStatus(verifiedCount, diffCount);
+        _status[agentId] = IAntseedKbfVerification.AgentStatus(verifiedCount, diffCount);
     }
 
     function setReverts(bool value) external {
         reverts = value;
     }
 
-    function status(uint256 agentId) external view returns (IAntseedVerification.AgentStatus memory) {
+    function status(uint256 agentId) external view returns (IAntseedKbfVerification.AgentStatus memory) {
         return _status[agentId];
     }
 }
@@ -36,7 +36,7 @@ contract SwitchableScoreSource {
         return keccak256("kbf-model-identity/v1");
     }
 
-    function agentStatus(uint256 agentId) external view returns (IAntseedVerification.AgentStatus memory) {
+    function agentStatus(uint256 agentId) external view returns (IAntseedKbfVerification.AgentStatus memory) {
         if (source.reverts()) revert("score source down");
         return source.status(agentId);
     }

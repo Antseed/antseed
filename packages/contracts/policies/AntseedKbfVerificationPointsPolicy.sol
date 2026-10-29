@@ -7,7 +7,7 @@ import { Math } from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import { IAntseedPointsModifier } from "../interfaces/IAntseedPointsModifier.sol";
 import { IAntseedSellerPools } from "../interfaces/IAntseedSellerPools.sol";
-import { IAntseedVerification } from "../interfaces/IAntseedVerification.sol";
+import { IAntseedKbfVerification } from "../interfaces/IAntseedKbfVerification.sol";
 
 interface IAntseedSellerPoolsSource {
     function sellerPools() external view returns (IAntseedSellerPools);
@@ -28,7 +28,7 @@ contract AntseedKbfVerificationPointsPolicy is IAntseedPointsModifier, Ownable2S
     /// @notice The verification method this policy reads: KBF model identity, version 1.
     bytes32 public constant AUDIT_TYPE = keccak256("kbf-model-identity/v1");
 
-    IAntseedVerification public immutable verification;
+    IAntseedKbfVerification public immutable verification;
     IAntseedSellerPoolsSource public immutable usageAccounting;
     uint256 public bonusBps;
     uint256 public penaltyBps;
@@ -44,9 +44,9 @@ contract AntseedKbfVerificationPointsPolicy is IAntseedPointsModifier, Ownable2S
     {
         if (verification_.code.length == 0 || usageAccounting_.code.length == 0) revert InvalidAddress();
         // Only a KBF verification contract: another method's verdicts belong to that method's own policy.
-        if (IAntseedVerification(verification_).auditType() != AUDIT_TYPE) revert InvalidAddress();
+        if (IAntseedKbfVerification(verification_).auditType() != AUDIT_TYPE) revert InvalidAddress();
         if (bonusBps_ > MAX_BONUS_BPS) revert InvalidValue();
-        verification = IAntseedVerification(verification_);
+        verification = IAntseedKbfVerification(verification_);
         usageAccounting = IAntseedSellerPoolsSource(usageAccounting_);
         bonusBps = bonusBps_;
         emit BonusBpsSet(bonusBps_);
@@ -87,7 +87,7 @@ contract AntseedKbfVerificationPointsPolicy is IAntseedPointsModifier, Ownable2S
             if (address(pools).code.length == 0) return (0, 0);
             try pools.agentIdForSeller(seller) returns (uint256 agentId) {
                 if (agentId == 0) return (0, 0);
-                try verification.agentStatus(agentId) returns (IAntseedVerification.AgentStatus memory status) {
+                try verification.agentStatus(agentId) returns (IAntseedKbfVerification.AgentStatus memory status) {
                     return (status.verifiedCount, status.diffCount);
                 } catch {
                     return (0, 0);
