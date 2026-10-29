@@ -118,6 +118,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- ANTS: `antseed ants rewards compound --to <agentId>` (and `POST /api/rewards/compound` with `targetAgentId`) accepts a seller pool that is stakeable through the legacy staking registration, the same check `stake` and `move` use. It used to reject such a pool when the agent had no binding in the new seller registry, although the pool takes stakes.
 - Verifier: `antseed verifier run` now finds sellers that list a configured model under another spelling of it, matched the way buyers route (`canonicalModelKey`): a vendor path (`anthropic/claude-opus-5.5`), other version punctuation (`claude-opus-5-5`), `-latest` or a release date. Before, only the exact id (any case) was audited, so a seller could avoid audits by renaming its listing while buyers still reached it. Probes use the seller's own spelling, and the on-chain service hash is the seller's listing as before; the exact id is still preferred when a seller lists both. `antseed verifier run <model>` also accepts these spellings.
 - Seller alerts: a failed recovery ("back") or a held alert whose resend came due while a newer event for the same incident was still being journaled is now cancelled by that event, instead of going out after it (a stale "back" during a new outage).
 - `@antseed/provider-claude-oauth`: requests now identify as Claude Code 2.1.312 (was 2.1.75). Anthropic rejects newer models from Claude Code older than 2.1.280 with `400 claude_code_version_too_old`.
