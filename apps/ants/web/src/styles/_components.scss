@@ -991,6 +991,9 @@ table.table { border-collapse: collapse; width: 100%; font-size: 13px; line-heig
 /* Stake waiting for its activation epoch */
 .pending-amount { color: var(--pc-amber); }
 .pool-metrics .pending-amount { display: block; margin-top: 2px; font-family: var(--font-mono); }
+.closing-amount { color: var(--pc-sub); }
+.pool-metrics .stake-change { display: block; margin-top: 2px; font-family: var(--font-mono); color: var(--pc-faint); }
+.pool-metrics .stake-change .pending-amount { display: inline; margin-top: 0; }
 
 @media (max-width: 1000px) {
   .vault { grid-template-columns: 1fr; }

@@ -131,6 +131,41 @@ function StakeCell({ amount, pending, sub, className }: { amount: string; pendin
   );
 }
 
+interface NextEpochChange { stake: bigint; powerBps: number | null }
+
+/**
+ * What the pool's stake and power change by next epoch, from the on-chain
+ * next-epoch figures. Null when they are unknown or nothing worth showing
+ * changes: a power drop with unchanged stake is just normal-lock decay.
+ */
+export function nextEpochChange(pool: Pick<PoolView, 'activeStake' | 'weight' | 'nextActiveStake' | 'nextWeight'>): NextEpochChange | null {
+  if (pool.nextActiveStake == null || pool.nextWeight == null) return null;
+  const stake = BigInt(pool.nextActiveStake) - bigOrZero(pool.activeStake);
+  const weight = bigOrZero(pool.weight);
+  const power = BigInt(pool.nextWeight) - weight;
+  const powerBps = weight > 0n && power !== 0n && (stake !== 0n || power > 0n) ? Number((power * 10_000n) / weight) : null;
+  return stake === 0n && powerBps === null ? null : { stake, powerBps };
+}
+
+function NextEpochLine({ change, unit = '' }: { change: NextEpochChange; unit?: string }) {
+  const signed = (value: bigint) => (value > 0n ? `+${formatAnts(value)}` : `−${formatAnts(-value)}`);
+  const stakeClass = change.stake > 0n ? 'pending-amount' : 'closing-amount';
+  return (
+    <>
+      {change.stake !== 0n ? <span className={stakeClass}>{signed(change.stake)}{unit}</span> : null}
+      {change.stake !== 0n && change.powerBps !== null ? ' · ' : null}
+      {change.powerBps !== null ? <span className={change.powerBps > 0 ? 'pending-amount' : 'closing-amount'}>{change.powerBps > 0 ? '+' : '−'}{formatBps(Math.abs(change.powerBps))} power</span> : null}
+      {' next epoch'}
+    </>
+  );
+}
+
+function PoolStakeCell({ pool }: { pool: PoolView }) {
+  const change = nextEpochChange(pool);
+  if (!change) return <StakeCell amount={pool.activeStake} pending={bigOrZero(pool.pendingStake)} sub={`${formatBps(pool.powerShareBps)} power`} />;
+  return <span className="cell-stack">{formatAnts(pool.activeStake)}<span className="cell-sub"><NextEpochLine change={change} /></span></span>;
+}
+
 function YourStakeCell({ pool }: { pool: PoolView }) {
   const active = bigOrZero(pool.yourStake);
   const pending = bigOrZero(pool.yourPendingStake);
@@ -207,7 +242,7 @@ export function PoolsTable({ pools, currentEpoch, loading, walletSyncing = false
     },
     {
       key: 'stake', label: sortHeader('stake', 'TVL'), sortDirection: sortBy === 'stake' ? sortDirection : 'none', title: 'Total active stake in this pool (ANTS).', align: 'right', mono: true,
-      render: p => <StakeCell amount={p.activeStake} pending={bigOrZero(p.pendingStake)} sub={`${formatBps(p.powerShareBps)} power`} />,
+      render: p => <PoolStakeCell pool={p} />,
     },
     {
       key: 'volume', label: sortHeader('volume', 'Last epoch'), sortDirection: sortBy === 'volume' ? sortDirection : 'none', title: 'Settled USDC volume in the last completed epoch.', align: 'right', mono: true,
@@ -294,6 +329,7 @@ export function PoolDrawer({ pool: initialPool, view, onClose, stake }: { pool: 
   const yourStake = bigOrZero(pool.yourStake);
   const yourPending = bigOrZero(pool.yourPendingStake);
   const poolPending = bigOrZero(pool.pendingStake);
+  const poolChange = nextEpochChange(pool);
 
   return (
     <Modal isOpen onClose={onClose} size="lg" overlayClassName="ants-stake-overlay ants-pool-overlay" className="pool-overview" title={poolName(pool)} eyebrow="SELLER" subtitle={<>
@@ -310,7 +346,7 @@ export function PoolDrawer({ pool: initialPool, view, onClose, stake }: { pool: 
           </div>
           {pool.displaySource?.error ? <p className="hint">Antscan: {pool.displaySource.error}{pool.yield?.status === 'unavailable' ? ' Historical yield is unavailable.' : ''}</p> : null}
           <div className="pool-metrics">
-            <div><span className="tile-label">Total value locked</span><strong>{formatAnts(pool.activeStake)} <small>ANTS</small></strong>{poolPending > 0n ? <span className="small pending-amount">+{formatAnts(poolPending)} ANTS pending activation</span> : null}</div>
+            <div><span className="tile-label">Total value locked</span><strong>{formatAnts(pool.activeStake)} <small>ANTS</small></strong>{poolChange ? <span className="small stake-change"><NextEpochLine change={poolChange} unit=" ANTS" /></span> : poolPending > 0n ? <span className="small pending-amount">+{formatAnts(poolPending)} ANTS pending activation</span> : null}</div>
             <div><span className="tile-label">Last epoch volume</span><strong>{latest && history.volumeStatus === 'available' ? formatUsdcCompact(latest.usdc) : '—'} <small>USDC</small></strong><span className="small"><VolumeChange change={volumeChange(history, historyEpoch)} /></span></div>
             <div><span className="tile-label">Power share</span><strong>{formatBps(pool.powerShareBps)}</strong><span className="small muted">of all pools' staking power</span></div>
             <div><span className="tile-label">Last epoch rewards</span><strong>{pool.lastEpochEmission != null ? formatAnts(pool.lastEpochEmission) : '—'} <small>ANTS</small></strong><span className="small muted">{pool.lastEpochEmission != null ? (pool.lastEpochEmissionSettled ? 'settled to stakers' : 'estimated, not settled') : 'no usage yet'}</span></div>
