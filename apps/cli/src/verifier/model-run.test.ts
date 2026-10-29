@@ -895,17 +895,18 @@ test('proxy runtime re-asks a persistently blank batch twice, then keeps the res
   assert.equal(run.result.parsedProbeCount, 90)
 })
 
-test('a batch missing more than half its answers is re-asked and the best attempt is kept', async () => {
+test('a batch missing any answer is re-asked until it is complete', async () => {
   const run = await runTarget(100, 'sparse-then-better')
   const first = run.evidence.exchanges[0]!
-  assert.equal(first.attemptCount, 2)
-  assert.equal(first.requestIds.length, 2)
-  assert.equal(first.attemptCosts?.length, 2)
-  assert.equal(first.answers.filter((answer) => answer !== null).length, 8)
-  assert.equal(first.responseAuth.requestId, first.requestIds[1])
-  assert.equal(run.requestCount, 11)
+  // Attempts gave 3, 8 and 10 answers: the 8-answer try is still re-asked, and the full one is kept.
+  assert.equal(first.attemptCount, 3)
+  assert.equal(first.requestIds.length, 3)
+  assert.equal(first.attemptCosts?.length, 3)
+  assert.equal(first.answers.filter((answer) => answer !== null).length, 10)
+  assert.equal(first.responseAuth.requestId, first.requestIds[2])
+  assert.equal(run.requestCount, 12)
   assert.equal(run.result.status, 'SAME')
-  assert.equal(run.result.parsedProbeCount, 98)
+  assert.equal(run.result.parsedProbeCount, 100)
   assert.equal(run.evidence.result.stats.targetHamming, 0)
 })
 
@@ -996,12 +997,16 @@ test('proxy runtime reduces seller concurrency after HTTP 429', async () => {
   assert.equal(run.finalBatchStartedAfterSlow, true)
 })
 
-test('an out-of-range answer is unscored, not counted wrong', async () => {
+test('an out-of-range answer is unscored, not counted wrong, and its batch is re-asked', async () => {
   const run = await runTarget(100, 'out-of-range')
+  // Only the first try returns the out-of-range answer; the re-ask answers every probe.
   assert.equal(run.result.status, 'SAME')
-  assert.equal(run.result.parsedProbeCount, 99)
+  assert.equal(run.requestCount, 11)
+  assert.equal(run.result.parsedProbeCount, 100)
   assert.equal(run.evidence.result.stats.targetHamming, 0)
-  assert.equal(run.evidence.result.stats.targetTotal, 99)
+  assert.equal(run.evidence.result.stats.targetTotal, 100)
+  const reasked = run.evidence.exchanges.find((exchange) => exchange.attemptCount === 2)
+  assert.ok(reasked, 'the batch with the out-of-range answer is asked twice')
 })
 
 for (const answerMode of ['malformed', 'empty-responses', 'content-filter'] as const) {

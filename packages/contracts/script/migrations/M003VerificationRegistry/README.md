@@ -1,6 +1,6 @@
 # M003 — Verification registry and points policy
 
-Deploys `AntseedVerification` and `AntseedVerificationPointsPolicy`, registers the
+Deploys `AntseedKbfVerification` and `AntseedKbfVerificationPointsPolicy`, registers the
 policy in the existing `AntseedPointsPolicyRegistry` (after the wash-trading
 policy), and optionally approves an initial auditor list. Approved auditors submit
 one audit per model; each seller service gets `SAME`, `DIFF`, or `UNDETERMINED`.
@@ -64,7 +64,7 @@ pnpm contracts:deploy -- M003 --network base-mainnet --broadcast \
 ```
 
 Base Sepolia also supports `--dry-run` and `--broadcast`. Review and commit
-`pending/003-verification-registry.plan.json` and its `.VALIDATION.md` before
+`pending/003-kbf-verification.plan.json` and its `.VALIDATION.md` before
 broadcasting from a clean tree. These commands are instructions, not evidence of
 a completed deployment.
 
@@ -92,8 +92,8 @@ the original checkpoint/receipts rather than deleting them to start over. Change
 to the initial auditor list during recovery are rejected.
 
 Once deployment and approvals are confirmed, the runner appends
-`history/003-verification-registry.json`, folds `contracts.verification` and
-`contracts.verificationPointsPolicy` into `current.json`, and generates `verificationContractAddress` for the SDK/CLI.
+`history/003-kbf-verification.json`, folds `contracts.kbfVerification` and
+`contracts.kbfVerificationPointsPolicy` into `current.json`, and generates `verificationContractAddress` for the SDK/CLI.
 Undeployed networks keep that optional address absent. Existing explicit CLI
 overrides still take precedence. No existing history files are edited.
 

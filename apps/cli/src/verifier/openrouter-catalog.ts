@@ -65,9 +65,20 @@ export async function loadVerifierModelCatalog(
   return catalog
 }
 
+/** OpenRouter endpoint tag parts for paid speed tiers of the same model (`openai/ultrafast`, `baseten/us/fast`). */
+const SPEED_TIER_TAG_PARTS = new Set(['fast', 'ultrafast', 'flex'])
+
+/** True when an endpoint tag names a speed tier rather than a standard deployment. */
+export function isSpeedTierEndpoint(tag: unknown): boolean {
+  if (typeof tag !== 'string') return false
+  return tag.toLowerCase().split('/').slice(1).some((part) => SPEED_TIER_TAG_PARTS.has(part))
+}
+
 /**
  * The highest price any OpenRouter provider charges for `upstreamModel` (`/models/<id>/endpoints`),
  * input and output each at their maximum, or null when the model lists no priced endpoint.
+ * Speed tiers (`fast`, `ultrafast`, `flex` tags) are skipped: they are the same model at a
+ * different speed, and an `ultrafast` tier can cost 6x the standard price.
  */
 export async function loadHighestEndpointPrice(
   config: VerifierCLIConfig | undefined,
@@ -89,6 +100,7 @@ export async function loadHighestEndpointPrice(
   let highest: VerifierModelPricingConfig | null = null
   for (const raw of endpoints) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue
+    if (isSpeedTierEndpoint((raw as Record<string, unknown>).tag)) continue
     const pricing = parsePricing((raw as Record<string, unknown>).pricing)
     if (!pricing) continue
     highest = highest

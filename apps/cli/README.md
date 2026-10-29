@@ -619,6 +619,12 @@ Provider-specific options are configured via each plugin's config schema (see `a
 
 ## Assigned Model Audits
 
+`antseed verifier` runs **KBF audits** (Knowledge Boundary Fingerprinting). KBF is
+one of the first of many verification methods Antseed is launching; more are coming.
+KBF audits are recorded on-chain with `auditType`
+`keccak256("kbf-model-identity/v1")`, so new methods can record their results next
+to them.
+
 The audited models are a list built into the CLI (`src/verifier/audited-models.ts`):
 each model's service id, the aliases sellers use for it, and its OpenRouter id. A
 verifier's config never lists models. It sets the auditor and where the genuine
@@ -680,21 +686,44 @@ buyer proxy's caps, so set `buyer.maxPricing.defaults` at least as high as the
 most expensive reference price.
 
 Every `verifier run` labels its evidence with the current on-chain epoch from the
-emissions gate, the epoch `AntseedVerification` checks on submit. When no chain
+emissions gate, the epoch `AntseedKbfVerification` checks on submit. When no chain
 is reachable it falls back to the UTC-day epoch with a warning; that evidence
-cannot be submitted on-chain. The assignment uses the same epoch. Today every
-auditor is assigned every audited model; a later release rotates models across
-auditors per epoch off-chain. `--auditor` cannot be combined with `<model>`,
-`--all`, or `--resume-run`.
+cannot be submitted on-chain. The assignment uses the same epoch: every audited
+model is audited every epoch, split round robin across the auditors approved when
+the epoch started (read from the contract's `AuditorSet` events). Auditors are
+sorted by address and models by name, and in epoch `e` model `i` goes to auditor
+`(i + e) mod auditors`. `antseed verifier assignment [--epoch <n>] [--epochs <count>]`
+shows every auditor's models. The split is off-chain only. `--auditor` cannot be
+combined with `<model>`, `--all`, or `--resume-run`.
 
 ## Submitting Model Audits
 
-Approved auditors submit a completed run with one transaction per model:
+Approved auditors submit the current epoch with one transaction per model:
 
 ```bash
-antseed verifier submit --run-id <run-id> --dry-run
-antseed verifier submit --run-id <run-id> --publish-ipfs --yes
+antseed verifier submit --dry-run
+antseed verifier submit --publish-ipfs --yes
 ```
+
+Without `--run-id`, every run of the epoch is merged and the latest result per
+model and seller is submitted; `--run-id <run-id>` submits one run only. Running
+`verifier run` again in the same epoch continues it: it prints a plan from the
+earlier runs, skips finished sellers (SAME, rechecked DIFF), retries failures on
+the auditor's side every run and seller failures once per epoch, rechecks
+waiting DIFFs, and audits new or previously skipped sellers. One run retries
+what is left in up to `--max-rounds` rounds (default 3), with a larger
+enrollment budget each round, and stops early when nothing is left or a round
+makes no progress. `--fresh` ignores the earlier runs.
+
+`verifier run` and `verifier submit` first check that this CLI audits the same
+way as the latest published release: they compare the `antseedVerifier` field
+of the CLI's `package.json` (a hash of the audited models and an audit rules
+version) with the one in `apps/cli/package.json` at the latest GitHub release
+of the repo. A CLI newer than that release's CLI passes. An outdated CLI
+stops with an update hint. When the check can't be made, `run` warns and a real
+`submit` stops; `--skip-version-check` skips it. After changing
+`AUDITED_MODELS` or `AUDIT_RULES_VERSION`, update the field with
+`pnpm --filter @antseed/cli verifier-manifest`.
 
 Each model's submission covers every seller result for that model: `SAME`,
 `DIFF`, and `UNDETERMINED`. Only runs audited on the current on-chain epoch can
@@ -708,12 +737,19 @@ through the next epoch and then drops out on its own; the latest result always
 wins, and an UNDETERMINED clears an earlier verdict.
 
 `verifier run` rechecks every first DIFF on fresh probes the seller has never
-seen before it can be submitted. A recheck SAME turns the result into
-UNDETERMINED, a recheck DIFF or UNDETERMINED keeps the DIFF, and a seller whose
-recheck cannot run is reported as failed and not submitted. Fresh probes are
+seen before it can be submitted. The result is DIFF only when the recheck is DIFF
+too; a recheck SAME or UNDETERMINED turns it into UNDETERMINED. A DIFF whose
+recheck cannot run is not submitted, and the next `verifier run` in the same
+epoch rechecks it without repeating the first check. Fresh probes are
 generated once per model, only when a recheck needs them and the run uses
 `--enroll-if-needed`. Set `verifier.diffConfirmationRuns` to `0` to turn rechecks
 off. The `submit` preview shows how many results were rechecked.
+
+`verifier run` and `verifier submit` also write
+`<evidenceDir>/epochs/<epoch>/overview.html`: every seller × model from all of
+the epoch's runs, merged in submit order, with the reason for each inconclusive
+or skipped result in the same words as AntScan. `verifier overview [--epoch <n>]
+[--run <ids...>]` rebuilds it.
 
 `verifier rewards --epochs <list>` shows the credits earned per epoch and claims
 the auditor share once an epoch is final; the current epoch shows 0 until it ends.
@@ -763,7 +799,7 @@ again after appending new probes and skips any model that is still not ready;
 incompatible enrollment settings fail before new model calls. Per-seller probe
 availability is still checked when reserving each audit.
 
-Enrollment cannot be combined with `--resume-run` or an automatic audit repair.
+Enrollment cannot be combined with `--resume-run`.
 Failed enrollment retains compatible cached requests for a bounded retry. No
 seller audit starts for a model whose enrollment failed. Use explicit local
 `verifier.banksDir`, `verifier.referencesDir`, and `verifier.evidenceDir` settings

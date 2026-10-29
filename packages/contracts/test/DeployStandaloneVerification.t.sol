@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 import { Test } from "forge-std/Test.sol";
 
 import { AntseedRegistry } from "../core/AntseedRegistry.sol";
-import { AntseedVerification } from "../verification/AntseedVerification.sol";
+import { AntseedKbfVerification } from "../verification/AntseedKbfVerification.sol";
 import { DeployStandaloneVerification } from "../script/DeployStandaloneVerification.s.sol";
 import { MockERC8004Registry } from "./mocks/MockERC8004Registry.sol";
 import { MockVerificationEmissionsGate } from "./mocks/MockVerificationEmissionsGate.sol";
@@ -48,7 +48,7 @@ contract DeployStandaloneVerificationTest is Test {
         address originalIdentity = registry.identityRegistry();
         uint64 originalOwnerNonce = vm.getNonce(owner);
 
-        AntseedVerification verification = script.runWith(_config());
+        AntseedKbfVerification verification = script.runWith(_config());
 
         assertEq(verification.owner(), owner);
         assertEq(address(verification.registry()), address(registry));

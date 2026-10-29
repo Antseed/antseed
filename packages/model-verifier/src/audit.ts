@@ -12,7 +12,7 @@ import {
   isKbfSamplingFieldRejection,
   isKbfThinkingSuppressionRejection,
   kbfTargetThinkingSuppression,
-  isLowCoverageKbfBatch,
+  hasMissingKbfAnswers,
   parseKbfAnswers,
   subsetReferenceSelfTest,
   verifyKbf,
@@ -32,6 +32,8 @@ export interface AuditOptions {
   probeCount?: number
   minimumPower?: number
   minCoverage?: number
+  /** Fraction of answers a DIFF needs (default 0.8); below it a significant result is UNDETERMINED. */
+  minDiffCoverage?: number
   concurrency?: number
   maxAttempts?: number
   signal?: AbortSignal
@@ -102,7 +104,10 @@ export async function auditEndpoint(options: AuditOptions): Promise<AuditResult>
   // A batch that never returned is a transport failure (null), not a wrong answer.
   const matchVector = computeMatchVector(answers, probes)
     .map((entry, index): MatchEntry => (transportFailed[index] ? null : entry))
-  const evaluation = verifyKbf(subset, { answers, matchVector }, { minCoverage: options.minCoverage ?? KBF_AUDIT_VERIFY_OPTIONS.minCoverage })
+  const evaluation = verifyKbf(subset, { answers, matchVector }, {
+    minCoverage: options.minCoverage ?? KBF_AUDIT_VERIFY_OPTIONS.minCoverage,
+    minDiffCoverage: options.minDiffCoverage ?? KBF_AUDIT_VERIFY_OPTIONS.minDiffCoverage,
+  })
 
   return {
     target: { endpoint: options.endpoint.label, model },
@@ -252,9 +257,10 @@ async function runBatch(
         },
       }
       if (!best || scored > best.scored) best = { record, scored }
-      // As in the KBF reference code: more than half the answers missing or unreadable
-      // means the batch is asked again (up to twice), keeping the best attempt.
-      if (isLowCoverageKbfBatch(matches) && lowCoverageRetries < KBF_LOW_COVERAGE_RETRIES) {
+      // Any missing or unreadable answer means the batch is asked again (up to twice),
+      // keeping the attempt with the most answers. KBF re-asks only above half missing;
+      // audits ask for every answer because a DIFF needs 80% of them.
+      if (hasMissingKbfAnswers(matches) && lowCoverageRetries < KBF_LOW_COVERAGE_RETRIES) {
         lowCoverageRetries++
         attempt--
         continue

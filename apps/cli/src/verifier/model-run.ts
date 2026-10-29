@@ -14,7 +14,7 @@ import {
   canonicalHashBytes32,
   isKbfSamplingFieldRejection,
   computeMatchVector,
-  isLowCoverageKbfBatch,
+  hasMissingKbfAnswers,
   parseKbfAnswers,
   queryProfileHash,
   verifyKbf,
@@ -923,13 +923,14 @@ async function executeProxyProbeBatch(
         },
       }
       if (!best || isBetterBatchAttempt(candidate, best)) best = candidate
-      // As in the KBF reference code: a batch with more than half its answers
-      // missing or unreadable is asked again (up to twice) and the attempt with
-      // the most scoreable answers is kept. Every request ID and cost is recorded.
+      // A batch with any answer missing or unreadable is asked again (up to twice;
+      // the KBF reference code only re-asks when more than half are missing) and
+      // the attempt with the most scoreable answers is kept. Every request ID and
+      // cost is recorded.
       if (responseAuth.status === 'verified'
         && lowCoverageRetryCount < KBF_LOW_COVERAGE_RETRIES
         && attemptCount < PROBE_REQUEST_ATTEMPTS
-        && isLowCoverageKbfBatch(best.matches)) {
+        && hasMissingKbfAnswers(best.matches)) {
         lowCoverageRetryCount += 1
         await sleepWithSignal(PROBE_RETRY_BASE_DELAY_MS, context.signal, sleepFn)
         continue

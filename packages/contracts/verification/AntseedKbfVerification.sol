@@ -14,7 +14,12 @@ interface IEmissionsGateSource {
     function emissionsGate() external view returns (address);
 }
 
-/// @notice Records model-verification audits from approved auditors, one model per submission.
+/// @notice Records KBF (Knowledge Boundary Fingerprinting) model audits from approved auditors, one
+///         model per submission. KBF is one of several verification methods: this contract accepts
+///         only `AUDIT_TYPE` (`keccak256("kbf-model-identity/v1")`), so its verdicts are KBF verdicts.
+///         Another method gets its own contract implementing `IAntseedVerification`, its own points
+///         policy, and its own emissions bucket, and never writes into KBF verdicts.
+///
 ///
 ///         Status: each (agent, service) keeps its latest result as its verdict, with the emissions
 ///         epoch it was given in. A verdict counts while `currentEpoch < epoch + validityEpochs`
@@ -36,11 +41,13 @@ interface IEmissionsGateSource {
 ///         `min(budget * credits / totalCredits, budget * maxAuditorShareBps / BPS)` from the
 ///         verification emission bucket, using the share cap in force at claim time. Budget above
 ///         the cap is never minted.
-contract AntseedVerification is IAntseedVerification, Ownable2Step {
+contract AntseedKbfVerification is IAntseedVerification, Ownable2Step {
     uint256 public constant MAX_RESULTS_PER_AUDIT = 256;
     uint256 public constant MAX_EVIDENCE_URI_BYTES = 200;
     uint8 public constant MAX_VALIDITY_EPOCHS = 4;
     uint256 public constant BPS = 10_000;
+    /// @notice The only audit method this contract records: KBF model identity, version 1.
+    bytes32 public constant AUDIT_TYPE = keccak256("kbf-model-identity/v1");
 
     struct EpochCounts {
         uint32 same;
@@ -114,6 +121,7 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
     error EpochChanged();
     error EpochNotFinalized();
     error AlreadyClaimed();
+    error UnsupportedAuditType();
 
     /// @dev Pins the emissions gate behind `registry.emissions()`. After M001 the registry points at
     ///      usage accounting, which exposes the gate as `emissionsGate()`; otherwise the registry
@@ -223,7 +231,8 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
         ServiceResult[] calldata results
     ) external override {
         if (!approvedAuditors[msg.sender]) revert NotApprovedAuditor();
-        if (auditType == bytes32(0) || modelHash == bytes32(0) || evidenceHash == bytes32(0)) revert InvalidValue();
+        if (auditType != AUDIT_TYPE) revert UnsupportedAuditType();
+        if (modelHash == bytes32(0) || evidenceHash == bytes32(0)) revert InvalidValue();
         _validateEvidenceUri(evidenceUri);
         uint256 count = results.length;
         if (count == 0 || count > MAX_RESULTS_PER_AUDIT) revert InvalidResults();
@@ -258,6 +267,11 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
 
         emit ModelAudited(modelHash, msg.sender, expectedEpoch, auditType, evidenceHash, evidenceUri, count);
         if (staked && epoch >= rewardsStartEpoch) _creditAudit(epoch, modelHash);
+    }
+
+    /// @inheritdoc IAntseedVerification
+    function auditType() external pure override returns (bytes32) {
+        return AUDIT_TYPE;
     }
 
     function serviceStatus(uint256 agentId, bytes32 serviceHash)

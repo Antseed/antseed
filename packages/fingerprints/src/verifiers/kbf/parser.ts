@@ -37,10 +37,23 @@ function parseNumericToken(text: string): number | null {
  * `probeCount`. Index N (1-based in the response) maps to slot N-1.
  * The first parsed value wins if an index repeats.
  */
+/**
+ * A line that holds only `<number>…</number>`, as some models answer the
+ * `1) <number>` format: the tag literally, without the index.
+ */
+const TAGGED_NUMBER_LINE_RE = /^\s*<number>\s*([^<]*?)\s*<\/number>\s*$/i;
+
 export function parseKbfAnswers(responseText: string, probeCount: number): Array<number | null> {
   const answers: Array<number | null> = new Array(probeCount).fill(null);
   if (probeCount <= 0) {
     return answers;
+  }
+  const lines = responseText.split(/\r?\n/).filter((line) => line.trim() !== '');
+  // No index on any line, but exactly one `<number>…</number>` line per probe:
+  // the lines are the answers in order.
+  if (lines.length === probeCount
+    && lines.every((line) => TAGGED_NUMBER_LINE_RE.test(line) && !ANSWER_LINE_RE.test(line))) {
+    return lines.map((line) => parseNumericToken(TAGGED_NUMBER_LINE_RE.exec(line)![1] ?? ''));
   }
   for (const line of responseText.split(/\r?\n/)) {
     const lineMatch = ANSWER_LINE_RE.exec(line);

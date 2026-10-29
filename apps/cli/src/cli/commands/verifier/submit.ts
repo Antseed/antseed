@@ -1,6 +1,8 @@
 import { join } from 'node:path'
 import { createInterface } from 'node:readline/promises'
 import chalk from 'chalk'
+import pkg from '../../../../package.json' with { type: 'json' }
+import { requireCurrentVerifier } from '../../../verifier/release-check.js'
 import Table from 'cli-table3'
 import type { Command } from 'commander'
 import { getAddress } from 'ethers'
@@ -27,10 +29,11 @@ import { asError, normalized } from '../../../verifier/utils.js'
 import { createVerifierClient } from '../../payment-utils.js'
 import { resolveAuditorAddress, resolveAuditorSigner } from './auditor-identity.js'
 import { writeEpochOverview } from '../../../verifier/epoch-overview.js'
+import { loadEpochState, writeEpochSubmissionManifest } from '../../../verifier/epoch-plan.js'
 import { getGlobalOptions } from '../types.js'
 
 interface SubmitOptions {
-  runId: string
+  runId?: string
   publishIpfs?: boolean
   dryRun?: boolean
   publishOnly?: boolean
@@ -38,6 +41,7 @@ interface SubmitOptions {
   yes?: boolean
   rpcUrl?: string
   keystore?: string
+  skipVersionCheck?: boolean
 }
 
 interface PendingModelAudit {
@@ -75,8 +79,8 @@ export function validateRunEpoch(manifest: VerifierRunManifestV1, window: EpochW
 export function registerVerifierSubmitCommand(verifierCmd: Command): void {
   verifierCmd
     .command('submit')
-    .description('Submit one audit per model from a completed verifier run (approved auditors only)')
-    .requiredOption('--run-id <run-id>', 'completed verifier run ID')
+    .description('Submit one audit per model for the current epoch, merging every run of the epoch (approved auditors only)')
+    .option('--run-id <run-id>', 'submit only this completed run instead of the whole epoch')
     .option('--publish-ipfs', 'publish each model audit\'s public evidence to Pinata and record its ipfs:// URI')
     .option('--dry-run', 'preview the audits without publishing or broadcasting')
     .option('--publish-only', 'with --publish-ipfs: write and publish each model audit\'s evidence and record it in the ledger, without sending transactions')
@@ -84,13 +88,24 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
     .option('--yes', 'submit without an interactive confirmation prompt')
     .option('--rpc-url <url>', 'Base JSON-RPC URL override')
     .option('--keystore <path>', 'sign with this encrypted JSON keystore (e.g. a Foundry keystore) instead of verifier.keystore or the data-dir identity; the password is asked on the terminal')
+    .option('--skip-version-check', 'submit even if this CLI audits differently from the latest release, or the check cannot be made')
     .action(async (options: SubmitOptions, command: Command) => {
       const globalOptions = getGlobalOptions(command)
       const config = await loadConfig(globalOptions.config)
+      // Audits from a CLI that audits differently from the latest release are not submitted.
+      await requireCurrentVerifier({
+        command: 'submit',
+        currentVersion: pkg.version,
+        skip: options.skipVersionCheck === true,
+        strictWhenUnavailable: !options.dryRun,
+        warn: (text) => console.warn(chalk.yellow(text)),
+      })
       const evidenceDir = config.verifier?.evidenceDir ?? join(globalOptions.dataDir, 'verifier', 'evidence')
       const banksDir = config.verifier?.banksDir ?? join(globalOptions.dataDir, 'verifier', 'banks')
-      const manifest = await readVerifierRunManifest(evidenceDir, options.runId)
       const verifierClient = createVerifierClient(config, options.rpcUrl ? { rpcUrl: String(options.rpcUrl) } : {})
+      const manifest = options.runId
+        ? await readVerifierRunManifest(evidenceDir, options.runId)
+        : await epochSubmissionManifest(evidenceDir, (await verifierClient.currentEpochWindow()).epoch)
       if (options.publishOnly && !options.publishIpfs) throw new Error('--publish-only requires --publish-ipfs')
       if (options.auditor && !options.publishOnly) throw new Error('--auditor is only valid with --publish-only')
       const { wallet, address } = options.auditor
@@ -274,6 +289,20 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       console.log(chalk.dim(`Ledger: ${ledgerPath}`))
       if (failed > 0) process.exitCode = 1
     })
+}
+
+/**
+ * The whole current epoch as one submission: for each model and seller, the latest result of any
+ * run this epoch (see `writeEpochSubmissionManifest`).
+ */
+async function epochSubmissionManifest(evidenceDir: string, epoch: bigint): Promise<VerifierRunManifestV1> {
+  const state = await loadEpochState(evidenceDir, epoch.toString())
+  const manifest = await writeEpochSubmissionManifest(evidenceDir, state)
+  console.log(chalk.dim(
+    `Epoch ${epoch}: merging ${state.manifests.length} run(s) (${state.manifests.map((run) => run.runId.slice(0, 10)).join(', ')}); `
+    + 'the latest result per model and seller is submitted.',
+  ))
+  return manifest
 }
 
 /** Evidence hashes this auditor has already submitted on-chain, read from its `ModelAudited` events. */

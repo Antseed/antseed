@@ -19,6 +19,14 @@ describe('parseKbfAnswers', () => {
     expect(parseKbfAnswers(text, 4)).toEqual([3880, 46, 1234, 55]);
   });
 
+  it('reads index-less <number>…</number> lines in order when there is one per probe', () => {
+    expect(parseKbfAnswers('<number>2350</number>\n<number>100</number>\n<number>-73.5</number>', 3)).toEqual([2350, 100, -73.5]);
+    // Not one line per probe: positions are unknown, so nothing is guessed.
+    expect(parseKbfAnswers('<number>2350</number>\n<number>100</number>', 3)).toEqual([null, null, null]);
+    // Indexed lines still win.
+    expect(parseKbfAnswers('2) <number>5</number>\n1) <number>4</number>', 2)).toEqual([4, 5]);
+  });
+
   it('handles commas in numbers', () => {
     expect(parseKbfAnswers('(1) 384,400', 1)).toEqual([384400]);
     expect(parseKbfAnswers('(1) 1,234,567.89', 1)).toEqual([1234567.89]);

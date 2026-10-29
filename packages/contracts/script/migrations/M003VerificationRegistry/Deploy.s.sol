@@ -3,8 +3,8 @@ pragma solidity ^0.8.24;
 import { Script } from "forge-std/Script.sol";
 import { IAntseedRegistry } from "../../../interfaces/IAntseedRegistry.sol";
 import { AntseedPointsPolicyRegistry } from "../../../policies/AntseedPointsPolicyRegistry.sol";
-import { AntseedVerificationPointsPolicy } from "../../../policies/AntseedVerificationPointsPolicy.sol";
-import { AntseedVerification } from "../../../verification/AntseedVerification.sol";
+import { AntseedKbfVerificationPointsPolicy } from "../../../policies/AntseedKbfVerificationPointsPolicy.sol";
+import { AntseedKbfVerification } from "../../../verification/AntseedKbfVerification.sol";
 
 interface IM003UsageAccounting {
     function sellerPools() external view returns (address);
@@ -26,7 +26,7 @@ contract M003DeployVerificationRegistry is Script {
         address[] auditors;
     }
 
-    function run() external returns (AntseedVerification, AntseedVerificationPointsPolicy) {
+    function run() external returns (AntseedKbfVerification, AntseedKbfVerificationPointsPolicy) {
         return runWith(
             Config({
                 chainId: vm.envUint("EXPECTED_CHAIN_ID"),
@@ -45,24 +45,24 @@ contract M003DeployVerificationRegistry is Script {
 
     function runWith(Config memory config)
         public
-        returns (AntseedVerification verification, AntseedVerificationPointsPolicy policy)
+        returns (AntseedKbfVerification verification, AntseedKbfVerificationPointsPolicy policy)
     {
         _validate(config);
         address predictedVerification = vm.computeCreateAddress(config.owner, config.deploymentNonce);
         address predictedPolicy = vm.computeCreateAddress(config.owner, config.deploymentNonce + 1);
-        verification = AntseedVerification(predictedVerification);
-        policy = AntseedVerificationPointsPolicy(predictedPolicy);
+        verification = AntseedKbfVerification(predictedVerification);
+        policy = AntseedKbfVerificationPointsPolicy(predictedPolicy);
         AntseedPointsPolicyRegistry pointsPolicyRegistry = AntseedPointsPolicyRegistry(config.pointsPolicyRegistry);
 
         vm.startBroadcast(config.owner);
         if (predictedVerification.code.length == 0) {
             require(vm.getNonce(config.owner) == config.deploymentNonce, "M003: deployment nonce changed");
-            verification = new AntseedVerification(config.registry, config.sellerPools);
+            verification = new AntseedKbfVerification(config.registry, config.sellerPools);
             require(address(verification) == predictedVerification, "M003: unexpected deployment address");
         }
         if (predictedPolicy.code.length == 0) {
             require(vm.getNonce(config.owner) == config.deploymentNonce + 1, "M003: policy nonce changed");
-            policy = new AntseedVerificationPointsPolicy(
+            policy = new AntseedKbfVerificationPointsPolicy(
                 address(verification), config.usageAccounting, config.bonusBps, config.owner
             );
             require(address(policy) == predictedPolicy, "M003: unexpected policy address");

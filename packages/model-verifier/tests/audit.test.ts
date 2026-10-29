@@ -32,7 +32,7 @@ describe('auditEndpoint', () => {
     expect(result.evaluation.stats.targetTotal).toBe(50)
   })
 
-  it('leaves missing answers unscored and re-asks a batch missing more than half, keeping the best try', async () => {
+  it('leaves missing answers unscored and re-asks a batch missing any answer until it is complete', async () => {
     const endpoint = new FakeEndpoint()
     const answer = endpoint.call.bind(endpoint)
     let calls = 0
@@ -40,17 +40,17 @@ describe('auditEndpoint', () => {
       const result = await answer(request, signal)
       calls++
       if (!result.ok) return result
-      // First try: only 3 of 10 answers; second try: 8 of 10; third try never needed.
-      const keep = calls === 1 ? 3 : 8
+      // First try: 3 of 10 answers; second try: 8 of 10; third try: all 10.
+      const keep = calls === 1 ? 3 : calls === 2 ? 8 : 10
       const text = result.text.split('\n').slice(0, keep).join('\n')
       return { ...result, text }
     }
     const result = await auditEndpoint({ endpoint, reference: testReference(), probeCount: 10, concurrency: 1 })
-    expect(calls).toBe(2)
-    expect(result.batches[0]!.attempts).toBe(2)
-    expect(result.batches[0]!.answers.filter((value) => value !== null)).toHaveLength(8)
+    expect(calls).toBe(3)
+    expect(result.batches[0]!.attempts).toBe(3)
+    expect(result.batches[0]!.answers.filter((value) => value !== null)).toHaveLength(10)
     expect(result.evaluation.stats.targetHamming).toBe(0)
-    expect(result.evaluation.stats.targetTotal).toBe(8)
+    expect(result.evaluation.stats.targetTotal).toBe(10)
     expect(result.evaluation.verdict).toBe('SAME')
   })
 

@@ -377,7 +377,7 @@ test('renders recognized-usage deployment fields into chain config', () => {
 
 test('renders the verification deployment block so verifier log scans have a start', () => {
   const rendered = renderNetwork({ chainId: 8453, contracts: {
-    verification: { address: ADDRESS.registry, deploymentBlock: 123 },
+    kbfVerification: { address: ADDRESS.registry, deploymentBlock: 123 },
   } });
   assert.equal(rendered.verificationContractAddress, ADDRESS.registry);
   assert.equal(rendered.verificationDeployBlock, 123);
@@ -2104,11 +2104,11 @@ function m003Checkpoint() {
     policyAddress: ADDRESS.verificationPointsPolicy, bonusBps: 100, auditors: [ADDRESS.usageAccounting],
     sourceCommit: 'a'.repeat(40),
     contracts: {
-      verification: {
+      kbfVerification: {
         address: ADDRESS.sellerRegistry, owner: ADDRESS.ants, constructorArguments: [ADDRESS.registry, ADDRESS.sellerRewardsPool],
         deployedInRelease: true, transactionHash: `0x${'1'.repeat(64)}`,
       },
-      verificationPointsPolicy: {
+      kbfVerificationPointsPolicy: {
         address: ADDRESS.verificationPointsPolicy, owner: ADDRESS.ants,
         constructorArguments: [ADDRESS.sellerRegistry, ADDRESS.usageAccounting, '100', ADDRESS.ants],
         deployedInRelease: true, transactionHash: `0x${'3'.repeat(64)}`,
@@ -2130,19 +2130,19 @@ test('M003 activation preserves previous contracts/configuration and generates i
   for (const [key, value] of Object.entries(original.verificationConfiguration)) {
     assert.deepEqual(current.verificationConfiguration[key], value);
   }
-  assert.equal(current.contracts.verification.deployedInRelease, true);
+  assert.equal(current.contracts.kbfVerification.deployedInRelease, true);
   assert.equal(renderNetwork(current).verificationContractAddress, ADDRESS.sellerRegistry);
   assert.equal(renderNetwork(original).verificationContractAddress, undefined);
   const deployed = JSON.parse(await readFile('packages/contracts/deployments/base-mainnet/history/001-recognized-usage-deployed.json', 'utf8'));
   assert.deepEqual(renderNetwork(current, deployed).recognizedUsage, renderNetwork(original, deployed).recognizedUsage);
   assert.ok(m003.recordErrors({ ...record, contracts: {} }).length);
   const wrongConstructor = structuredClone(record);
-  wrongConstructor.contracts.verification.constructorArguments = [ADDRESS.registry, ADDRESS.ants];
+  wrongConstructor.contracts.kbfVerification.constructorArguments = [ADDRESS.registry, ADDRESS.ants];
   assert.ok(m003.recordErrors(wrongConstructor).some((error) => error.includes('constructor')));
   const wrongPolicy = structuredClone(record);
-  wrongPolicy.contracts.verificationPointsPolicy.constructorArguments[2] = '200';
+  wrongPolicy.contracts.kbfVerificationPointsPolicy.constructorArguments[2] = '200';
   assert.ok(m003.recordErrors(wrongPolicy).some((error) => error.includes('points policy constructor')));
-  assert.ok(m003.recordErrors({ ...record, contracts: { verification: record.contracts.verification } }).length);
+  assert.ok(m003.recordErrors({ ...record, contracts: { kbfVerification: record.contracts.kbfVerification } }).length);
 });
 
 async function m003Context(t, checkpoint = m003Checkpoint()) {
@@ -2232,10 +2232,10 @@ test('M003 binds the deploy signer and environment to the original checkpoint', 
 function mockM003Chain(t, options, context) {
   const checkpoint = m003Checkpoint();
   const artifacts = path.join(CONTRACTS_ROOT, 'out');
-  const contractDirectory = path.join(artifacts, 'AntseedVerification.sol');
-  const artifactFile = path.join(contractDirectory, 'AntseedVerification.json');
-  const policyDirectory = path.join(artifacts, 'AntseedVerificationPointsPolicy.sol');
-  const policyArtifactFile = path.join(policyDirectory, 'AntseedVerificationPointsPolicy.json');
+  const contractDirectory = path.join(artifacts, 'AntseedKbfVerification.sol');
+  const artifactFile = path.join(contractDirectory, 'AntseedKbfVerification.json');
+  const policyDirectory = path.join(artifacts, 'AntseedKbfVerificationPointsPolicy.sol');
+  const policyArtifactFile = path.join(policyDirectory, 'AntseedKbfVerificationPointsPolicy.json');
   const broadcastFile = path.join(context.receiptDirectory, 'broadcast/Deploy.s.sol/8453/run-latest.json');
   const realReadFile = fsPromises.readFile;
   const realReaddir = fsPromises.readdir;
@@ -2250,12 +2250,12 @@ function mockM003Chain(t, options, context) {
   t.mock.method(fsPromises, 'readdir', async (directory, ...args) => {
     if (directory === artifacts) {
       return [
-        { name: 'AntseedVerification.sol', isDirectory: () => true },
-        { name: 'AntseedVerificationPointsPolicy.sol', isDirectory: () => true },
+        { name: 'AntseedKbfVerification.sol', isDirectory: () => true },
+        { name: 'AntseedKbfVerificationPointsPolicy.sol', isDirectory: () => true },
       ];
     }
-    if (directory === contractDirectory) return ['AntseedVerification.json'];
-    if (directory === policyDirectory) return ['AntseedVerificationPointsPolicy.json'];
+    if (directory === contractDirectory) return ['AntseedKbfVerification.json'];
+    if (directory === policyDirectory) return ['AntseedKbfVerificationPointsPolicy.json'];
     return realReaddir(directory, ...args);
   });
   t.mock.method(fsPromises, 'stat', async (file, ...args) => {
@@ -2309,7 +2309,7 @@ test('M003 recovers partial receipts and retains CREATE provenance through an ap
   const policyHash = `0x${'3'.repeat(64)}`;
   const registerHash = `0x${'4'.repeat(64)}`;
   const options = { approved: false, policyCode: '0x', nonce: '8', broadcast: {
-    transactions: [{ hash: createHash, transactionType: 'CREATE', contractName: 'AntseedVerification',
+    transactions: [{ hash: createHash, transactionType: 'CREATE', contractName: 'AntseedKbfVerification',
       contractAddress: checkpoint.address, arguments: [checkpoint.registry, checkpoint.sellerPools] }],
     receipts: [{ transactionHash: createHash, status: '0x1', blockNumber: '0xa', from: checkpoint.owner, to: null }],
   } };
@@ -2319,16 +2319,16 @@ test('M003 recovers partial receipts and retains CREATE provenance through an ap
   options.receiptStatus = '0x1';
   const partial = await m003.observe(context);
   assert.equal(partial.state, 'ready');
-  assert.equal(partial.deployment.checkpoint.contracts.verification.transactionHash, createHash);
+  assert.equal(partial.deployment.checkpoint.contracts.kbfVerification.transactionHash, createHash);
   options.approved = true;
   options.policyCode = '0x01';
   options.registered = false;
   options.broadcast = {
     transactions: [
-      { hash: policyHash, transactionType: 'CREATE', contractName: 'AntseedVerificationPointsPolicy',
+      { hash: policyHash, transactionType: 'CREATE', contractName: 'AntseedKbfVerificationPointsPolicy',
         contractAddress: checkpoint.policyAddress,
         arguments: [checkpoint.address, checkpoint.usageAccounting, '100', checkpoint.owner] },
-      { hash: approvalHash, transactionType: 'CALL', contractName: 'AntseedVerification',
+      { hash: approvalHash, transactionType: 'CALL', contractName: 'AntseedKbfVerification',
         contractAddress: checkpoint.address, function: 'setAuditor(address,bool)' },
     ],
     receipts: [
@@ -2338,7 +2338,7 @@ test('M003 recovers partial receipts and retains CREATE provenance through an ap
   };
   const unregistered = await m003.observe(context);
   assert.equal(unregistered.state, 'ready', 'policy must be registered before M003 is active');
-  assert.equal(unregistered.deployment.checkpoint.contracts.verificationPointsPolicy.transactionHash, policyHash);
+  assert.equal(unregistered.deployment.checkpoint.contracts.kbfVerificationPointsPolicy.transactionHash, policyHash);
   options.registered = true;
   options.broadcast = {
     transactions: [{ hash: registerHash, transactionType: 'CALL', contractName: 'AntseedPointsPolicyRegistry',
@@ -2348,8 +2348,8 @@ test('M003 recovers partial receipts and retains CREATE provenance through an ap
   const active = await m003.observe(context);
   assert.equal(active.state, 'active');
   assert.equal(active.deployment.checkpoint.address, checkpoint.address);
-  assert.equal(active.deployment.checkpoint.contracts.verification.transactionHash, createHash);
-  assert.equal(active.deployment.checkpoint.contracts.verification.deploymentBlock, 10);
+  assert.equal(active.deployment.checkpoint.contracts.kbfVerification.transactionHash, createHash);
+  assert.equal(active.deployment.checkpoint.contracts.kbfVerification.deploymentBlock, 10);
   assert.deepEqual(
     active.deployment.checkpoint.transactions.map((transaction) => transaction.hash),
     [createHash, policyHash, approvalHash, registerHash],
@@ -2417,7 +2417,7 @@ test('M003 does not reinstate governance-revoked auditors after activation', asy
 test('M003 refuses to start again when the checkpoint is lost but broadcast receipts remain', async (t) => {
   const context = await m003Context(t);
   await rm(context.checkpointFile);
-  mockM003Chain(t, { broadcast: { transactions: [{ contractName: 'AntseedVerification' }] } }, context);
+  mockM003Chain(t, { broadcast: { transactions: [{ contractName: 'AntseedKbfVerification' }] } }, context);
   await assert.rejects(m003.observe(context), /restore its checkpoint or history/);
 });
 

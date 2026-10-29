@@ -39,7 +39,7 @@ export function verifierVerdict(name: VerifierVerdictName): VerifierVerdict {
   return VERIFIER_VERDICT[name];
 }
 
-/** AntseedVerification.MAX_RESULTS_PER_AUDIT. */
+/** AntseedKbfVerification.MAX_RESULTS_PER_AUDIT. */
 export const MAX_RESULTS_PER_MODEL_AUDIT = 256;
 
 export interface ServiceResultInput {

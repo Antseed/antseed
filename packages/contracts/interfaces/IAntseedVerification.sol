@@ -5,7 +5,9 @@ import {IAntseedEmissionsGate} from "./IAntseedEmissionsGate.sol";
 import {IAntseedRegistry} from "./IAntseedRegistry.sol";
 import {IAntseedSellerPools} from "./IAntseedSellerPools.sol";
 
-/// @notice Model-verification audits submitted by approved auditors, one model per submission.
+/// @notice One verification method's model audits, submitted by approved auditors, one model per
+///         submission. Each method (KBF today, others later) has its own contract with its own
+///         `auditType`, verdicts, auditors and rewards bucket.
 /// @dev Status is kept per (agent, service). The latest result (SAME, DIFF, or UNDETERMINED) is
 ///      the service's verdict, with the emissions epoch it was given in; it is live while
 ///      `currentEpoch < epoch + validityEpochs` and drops out on its own afterwards. Only SAME and
@@ -63,11 +65,11 @@ interface IAntseedVerification {
     function setAuditor(address auditor, bool approved) external;
 
     /// @notice Records one auditor's results for every seller audited as `modelHash`.
-    /// @param auditType Audit method and version, e.g. keccak256("kbf-model-identity/v1").
-    ///        Recorded in `ModelAudited` only; it does not change how results are stored or counted.
+    /// @param auditType Audit method and version. Must equal `auditType()`, e.g.
+    ///        keccak256("kbf-model-identity/v1") for the KBF contract.
     /// @dev Reverts unless the caller is an approved auditor, `expectedEpoch` is the current
     ///      epoch of the pinned emissions gate, `evidenceHash` is non-zero, and `results` is non-empty, bounded, and
-    ///      strictly ordered by (agentId, serviceHash), and `auditType` is non-zero.
+    ///      strictly ordered by (agentId, serviceHash), and `auditType` is this contract's method.
     function submitModelAudit(
         uint256 expectedEpoch,
         bytes32 auditType,
@@ -76,6 +78,9 @@ interface IAntseedVerification {
         string calldata evidenceUri,
         ServiceResult[] calldata results
     ) external;
+
+    /// @notice The verification method this contract records, e.g. keccak256("kbf-model-identity/v1").
+    function auditType() external view returns (bytes32);
 
     function serviceStatus(uint256 agentId, bytes32 serviceHash) external view returns (ServiceStatus memory);
     function agentStatus(uint256 agentId) external view returns (AgentStatus memory);

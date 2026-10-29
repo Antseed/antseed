@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { computeMatchVector, isLowCoverageKbfBatch, matchesTolerance } from '../src/verifiers/kbf/scoring.js';
+import { computeMatchVector, hasMissingKbfAnswers, isLowCoverageKbfBatch, matchesTolerance } from '../src/verifiers/kbf/scoring.js';
 import type { KbfProbe } from '../src/types.js';
 
 function makeProbe(overrides: Partial<KbfProbe> = {}): KbfProbe {
@@ -82,6 +82,14 @@ describe('computeMatchVector', () => {
 
   it('throws on length mismatch', () => {
     expect(() => computeMatchVector([1], probes)).toThrow(/length/);
+  });
+});
+
+describe('hasMissingKbfAnswers', () => {
+  it('flags any missing answer', () => {
+    expect(hasMissingKbfAnswers([1, 0, 1])).toBe(false);
+    expect(hasMissingKbfAnswers([1, null, 1])).toBe(true);
+    expect(hasMissingKbfAnswers([])).toBe(false);
   });
 });
 

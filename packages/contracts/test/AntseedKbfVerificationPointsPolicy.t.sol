@@ -3,7 +3,7 @@ pragma solidity ^0.8.24;
 
 import { Test } from "forge-std/Test.sol";
 import { AntseedPointsPolicyRegistry } from "../policies/AntseedPointsPolicyRegistry.sol";
-import { AntseedVerificationPointsPolicy } from "../policies/AntseedVerificationPointsPolicy.sol";
+import { AntseedKbfVerificationPointsPolicy } from "../policies/AntseedKbfVerificationPointsPolicy.sol";
 import { AntseedWashTradingPointsPolicy } from "../policies/AntseedWashTradingPointsPolicy.sol";
 import { IAntseedVerification } from "../interfaces/IAntseedVerification.sol";
 
@@ -32,9 +32,20 @@ contract SwitchableScoreSource {
         source = source_;
     }
 
+    function auditType() external pure returns (bytes32) {
+        return keccak256("kbf-model-identity/v1");
+    }
+
     function agentStatus(uint256 agentId) external view returns (IAntseedVerification.AgentStatus memory) {
         if (source.reverts()) revert("score source down");
         return source.status(agentId);
+    }
+}
+
+/// @dev A verification contract for some other method.
+contract OtherMethodVerificationForPoints {
+    function auditType() external pure returns (bytes32) {
+        return keccak256("other-method/v1");
     }
 }
 
@@ -62,11 +73,11 @@ contract WashStatusForVerificationPoints {
     }
 }
 
-contract AntseedVerificationPointsPolicyTest is Test {
+contract AntseedKbfVerificationPointsPolicyTest is Test {
     ScoreSourceForPoints scores;
     SellerPoolsForPoints pools;
     UsageAccountingForPoints accounting;
-    AntseedVerificationPointsPolicy policy;
+    AntseedKbfVerificationPointsPolicy policy;
     address seller = address(0x100);
     address buyer = address(0x200);
 
@@ -77,13 +88,20 @@ contract AntseedVerificationPointsPolicyTest is Test {
         accounting = new UsageAccountingForPoints();
         accounting.setSellerPools(address(pools));
         pools.set(seller, 7);
-        policy = new AntseedVerificationPointsPolicy(
+        policy = new AntseedKbfVerificationPointsPolicy(
             address(new SwitchableScoreSource(scores)), address(accounting), 100, address(this)
         );
     }
 
+    function test_onlyReadsAKbfVerificationContract() public {
+        assertEq(policy.AUDIT_TYPE(), keccak256("kbf-model-identity/v1"), "KBF audit type");
+        address other = address(new OtherMethodVerificationForPoints());
+        vm.expectRevert(AntseedKbfVerificationPointsPolicy.InvalidAddress.selector);
+        new AntseedKbfVerificationPointsPolicy(other, address(accounting), 0, address(this));
+    }
+
     function test_ratesApplyAsSoonAsTheOwnerSetsThem() public {
-        AntseedVerificationPointsPolicy fresh = new AntseedVerificationPointsPolicy(
+        AntseedKbfVerificationPointsPolicy fresh = new AntseedKbfVerificationPointsPolicy(
             address(new SwitchableScoreSource(scores)), address(accounting), 0, address(this)
         );
         assertEq(fresh.bonusBps(), 0, "bonus off by default");
@@ -93,7 +111,7 @@ contract AntseedVerificationPointsPolicyTest is Test {
         assertEq(sellerPoints, 10_000, "unchanged while both rates are 0");
 
         vm.expectEmit(address(fresh));
-        emit AntseedVerificationPointsPolicy.PenaltyBpsSet(5_000);
+        emit AntseedKbfVerificationPointsPolicy.PenaltyBpsSet(5_000);
         fresh.setPenaltyBps(5_000);
         (sellerPoints,) = fresh.points(bytes32(0), buyer, seller, 10_000, 10_000);
         assertEq(sellerPoints, 5_000, "penalty applies on the next settlement");
@@ -191,7 +209,7 @@ contract AntseedVerificationPointsPolicyTest is Test {
     }
 
     function test_bonusIsCappedAndOwnerOnly() public {
-        vm.expectRevert(AntseedVerificationPointsPolicy.InvalidValue.selector);
+        vm.expectRevert(AntseedKbfVerificationPointsPolicy.InvalidValue.selector);
         policy.setBonusBps(5_001);
         policy.setBonusBps(5_000);
         _verify(1);

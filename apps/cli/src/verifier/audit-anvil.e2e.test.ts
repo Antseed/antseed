@@ -71,7 +71,7 @@ test('an approved auditor submits one audit per model, earns credits, and a re-r
     // The constructor pins the gate behind `registry.emissions()`, so wire the registry first.
     const verificationAddress = deployContract(
       rpcUrl,
-      'verification/AntseedVerification.sol:AntseedVerification',
+      'verification/AntseedKbfVerification.sol:AntseedKbfVerification',
       [registryAddress, poolsAddress],
     )
     castSend(rpcUrl, gateAddress, 'setCurrentEpoch(uint256)', [String(AUDIT_EPOCH)])

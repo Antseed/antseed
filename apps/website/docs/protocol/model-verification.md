@@ -1,7 +1,7 @@
 ---
 slug: /model-verification
 title: Model verification
-description: How Antseed checks that sellers serve the model they advertise, how results reach the chain, and how anyone can repeat the check.
+description: How Antseed checks that sellers serve the model they advertise. The KBF audit is one of the first of many verification methods on the network, with results on-chain that anyone can repeat.
 hide_title: true
 ---
 
@@ -9,20 +9,27 @@ hide_title: true
 
 A seller says "this is Claude Opus 5.5". Model verification checks that claim. Without
 it, a seller could advertise an expensive model, serve a cheaper one, and charge the
-expensive price. Verification catches that, records the result on-chain, and lets
-anyone repeat the check.
+expensive price.
+
+## One method among many
+
+There are many ways to check a seller and protect model integrity, and no single check
+covers everything. **The KBF audit described here is one of the first verification
+methods Antseed is launching, and more are coming.** Each new method will check a
+different part of what a seller claims, and together they make it hard to cheat
+without being caught.
 
 ## The idea in one paragraph
 
 Every model has a "knowledge boundary": a set of obscure facts it remembers in a
 particular way, including the ones it gets slightly wrong. A different model, a
-smaller sibling, or a heavily quantized copy has a different boundary. Antseed asks a
+smaller sibling, or a heavily quantized copy has a different boundary. The KBF audit asks a
 seller a batch of short questions with exact numeric answers (for example "the
 melting point of tantalum carbide is ___°C") and compares the answers
 with what the genuine model answers. This is called **Knowledge Boundary
 Fingerprinting (KBF)**.
 
-## How one check works
+## How one KBF check works
 
 1. **A reference is built once per model.** The genuine model is queried through a
    trusted upstream: OpenRouter by default, or the model maker's own API (for example
@@ -40,7 +47,10 @@ Fingerprinting (KBF)**.
 |---|---|
 | **SAME** | No evidence of substitution: the seller misses about as often as the genuine model does. This is strong evidence, not proof, that it is the advertised model. |
 | **DIFF** | Significantly more misses than the genuine model makes. The seller very likely serves a different model. |
-| **UNDETERMINED** | Some questions got no usable answer (errors, refusals, timeouts), so no verdict either way. |
+| **UNDETERMINED** | Too few usable answers to decide either way: fewer than half the questions were answered (errors, timeouts, empty or unreadable answers), a seller looked different but answered fewer than 80% of the questions, or a DIFF wasn't confirmed by its recheck. |
+
+A missing or unreadable answer is left out of the score, not counted as wrong, so a
+flaky seller doesn't look like a substituted model.
 
 A reference only goes into use if it has enough statistical power to tell the genuine
 model apart from the look-alikes it was tested against.
@@ -49,17 +59,23 @@ model apart from the look-alikes it was tested against.
 
 **Auditors** are addresses approved by the verification contract's owner. An auditor
 buys from sellers like any other buyer, through the normal network and payments,
-with no special label on its requests. For each model, the auditor checks every
-seller that advertises it.
+with no special label on its requests.
+
+The audited models are built into the CLI. Each epoch they are split across the
+approved auditors, round robin, so every model is audited every epoch by one auditor,
+and the models move to a different auditor the next epoch. For its models, the auditor
+checks every seller that advertises them. See
+[Which models you audit](/docs/verify/audits#which-models-you-audit).
 
 Before an auditor reports a **DIFF**, it rechecks that seller on a second, fresh set of
 questions the seller has never seen:
 
-- the recheck says SAME → the result becomes UNDETERMINED, not DIFF
-- the recheck says DIFF or UNDETERMINED → the DIFF stands
-- the recheck cannot run → nothing is reported for that seller
+- the recheck says DIFF → the result is DIFF
+- the recheck says SAME or UNDETERMINED → the result is UNDETERMINED, not DIFF
+- the recheck cannot run → nothing is reported for that seller until a later run in the
+  same epoch rechecks it
 
-So one unlucky run does not mark an honest seller.
+So a seller is only marked DIFF when two independent checks agree.
 
 To run an auditor yourself, see [Become a verifier](/docs/verify). [How audits run](/docs/verify/audits)
 covers each step, including where the genuine model's answers come from.
@@ -76,14 +92,14 @@ its approval.
 ## What goes on-chain
 
 ```
-seller audit ──► DIFF? ──► recheck ──► evidence on IPFS ──► AntseedVerification
+seller audit ──► DIFF? ──► recheck ──► evidence on IPFS ──► AntseedKbfVerification
 ```
 
-`AntseedVerification` keeps one result per seller service (one model offer of one
+`AntseedKbfVerification` keeps one result per seller service (one model offer of one
 seller):
 
-- **The latest result wins.** A new SAME replaces an old DIFF and the other way round;
-  an UNDETERMINED clears the earlier verdict.
+- **The latest result wins**, whichever approved auditor submitted it. A new SAME replaces
+  an old DIFF and the other way round; an UNDETERMINED clears the earlier verdict.
 - **Results expire on their own.** A verdict counts for the epoch it was given in and
   the next one (about two weeks), so sellers must keep being checked. A seller that fixes
   its model recovers at the next audit.

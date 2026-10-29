@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { VerifierCLIConfig } from '../config/types.js'
-import { loadConfiguredVerifierModelCatalog, loadHighestEndpointPrice } from './openrouter-catalog.js'
+import { isSpeedTierEndpoint, loadConfiguredVerifierModelCatalog, loadHighestEndpointPrice } from './openrouter-catalog.js'
 
 const config: VerifierCLIConfig = {
   contrastSelection: { catalogSource: 'openrouter' },
@@ -58,7 +58,7 @@ test('catalog loading is disabled when a manual contrast bank is configured', as
   }), null)
 })
 
-test('the highest endpoint price takes input and output each at their maximum', async () => {
+test('the highest endpoint price takes input and output each at their maximum, skipping speed tiers', async () => {
   let requestUrl = ''
   const price = await loadHighestEndpointPrice(config, 'z-ai/glm-5.3', async (url) => {
     requestUrl = String(url)
@@ -66,6 +66,10 @@ test('the highest endpoint price takes input and output each at their maximum', 
       { pricing: { prompt: '0.0000014', completion: '0.0000044' } },
       { pricing: { prompt: '0.0000028', completion: '0.0000088' } },
       { pricing: { prompt: '0.0000021', completion: '0.0000099' } },
+      { tag: 'openai/ultrafast', pricing: { prompt: '0.00006', completion: '0.0003' } },
+      { tag: 'baseten/us/fast', pricing: { prompt: '0.00002', completion: '0.0001' } },
+      { tag: 'openai/flex', pricing: { prompt: '0.00005', completion: '0.00005' } },
+      { tag: 'alibaba/prime', pricing: { prompt: '0.0000028', completion: '0.0000088' } },
       { pricing: {} },
     ] } })
   })
@@ -73,5 +77,9 @@ test('the highest endpoint price takes input and output each at their maximum', 
   assert.ok(price)
   assert.ok(Math.abs(price.inputUsdPerMillion - 2.8) < 1e-9)
   assert.ok(Math.abs(price.outputUsdPerMillion - 9.9) < 1e-9)
+  assert.equal(isSpeedTierEndpoint('openai/ultrafast'), true)
+  assert.equal(isSpeedTierEndpoint('fireworks/fast'), true)
+  assert.equal(isSpeedTierEndpoint('alibaba/prime'), false)
+  assert.equal(isSpeedTierEndpoint('fast'), false)
   assert.equal(await loadHighestEndpointPrice(config, 'x/missing', async () => new Response('', { status: 404 })), null)
 })

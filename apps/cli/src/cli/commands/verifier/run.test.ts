@@ -53,7 +53,7 @@ test('verifier submit and rewards expose the auditor controls', () => {
   const verifier = command().commands.find((entry) => entry.name() === 'verifier')!
   const options = (name: string) => verifier.commands.find((entry) => entry.name() === name)!
     .options.map((option) => option.long)
-  assert.deepEqual(options('submit'), ['--run-id', '--publish-ipfs', '--dry-run', '--publish-only', '--auditor', '--yes', '--rpc-url', '--keystore'])
+  assert.deepEqual(options('submit'), ['--run-id', '--publish-ipfs', '--dry-run', '--publish-only', '--auditor', '--yes', '--rpc-url', '--keystore', '--skip-version-check'])
   assert.deepEqual(options('rewards'), ['--epochs', '--claim', '--yes', '--auditor', '--rpc-url'])
 })
 
@@ -70,7 +70,7 @@ test('verifier run accepts one model, all configured models, or an auditor assig
   const run = verifier.commands.find((entry) => entry.name() === 'run')!
   assert.deepEqual(
     run.options.map((option) => option.long),
-    ['--all', '--auditor', '--allow-probe-reuse', '--peer', '--resume-run', '--enroll-if-needed', '--max-enrollment-requests', '--ignore-pre-run-checks'],
+    ['--all', '--auditor', '--allow-probe-reuse', '--peer', '--resume-run', '--enroll-if-needed', '--max-enrollment-requests', '--ignore-pre-run-checks', '--fresh', '--skip-version-check', '--max-rounds'],
   )
   assert.deepEqual(run.registeredArguments.map((argument) => argument.name()), ['model'])
 })
@@ -396,4 +396,12 @@ test('submit only accepts runs audited in the current on-chain epoch', () => {
   assert.throws(() => validateRunEpoch({ ...manifest, epochSource: 'utc-day' }, window), /epoch fallback/)
   assert.throws(() => validateRunEpoch(manifest, { ...window, epoch: 8n }), /current on-chain epoch is 8/)
   assert.throws(() => validateRunEpoch({ ...manifest, completedAt: '1970-01-01T00:13:30.000Z' }, window), /outside/)
+})
+
+test('verifier run retries what is left for up to --max-rounds rounds; --resume-run is one round', async () => {
+  const { maxRunRounds } = await import('./run.js')
+  assert.equal(maxRunRounds({}), 3)
+  assert.equal(maxRunRounds({ maxRounds: '5' }), 5)
+  assert.equal(maxRunRounds({ maxRounds: '5', resumeRun: '0xabc' }), 1)
+  assert.throws(() => maxRunRounds({ maxRounds: '0' }), /positive integer/)
 })

@@ -13,16 +13,20 @@ interface IAntseedSellerPoolsSource {
     function sellerPools() external view returns (IAntseedSellerPools);
 }
 
-/// @notice Scales seller points by the agent's verified and DIFF services:
+/// @notice KBF verification points policy: scales seller points by the agent's KBF-verified and KBF
+///         DIFF services in `verification` (an `AntseedKbfVerification`). Another verification method
+///         gets its own policy next to this one in the points policy registry. Formula:
 ///         sellerPoints * max(0, 1 + min(verifiedCount * bonusBps, MAX_BONUS_BPS) / BPS
 ///         - diffCount * penaltyBps / BPS). The penalty is uncapped. Both rates start at 0, so
 ///         points are unchanged until the owner sets one, and a change applies from the next
 ///         settlement on. Buyer points pass through.
 /// @dev A reverting points modifier zeroes every settlement in the registry chain, so
 ///      every external read here falls back to returning points unchanged.
-contract AntseedVerificationPointsPolicy is IAntseedPointsModifier, Ownable2Step {
+contract AntseedKbfVerificationPointsPolicy is IAntseedPointsModifier, Ownable2Step {
     uint256 public constant BPS = 10_000;
     uint256 public constant MAX_BONUS_BPS = 5_000;
+    /// @notice The verification method this policy reads: KBF model identity, version 1.
+    bytes32 public constant AUDIT_TYPE = keccak256("kbf-model-identity/v1");
 
     IAntseedVerification public immutable verification;
     IAntseedSellerPoolsSource public immutable usageAccounting;
@@ -39,6 +43,8 @@ contract AntseedVerificationPointsPolicy is IAntseedPointsModifier, Ownable2Step
         Ownable(initialOwner)
     {
         if (verification_.code.length == 0 || usageAccounting_.code.length == 0) revert InvalidAddress();
+        // Only a KBF verification contract: another method's verdicts belong to that method's own policy.
+        if (IAntseedVerification(verification_).auditType() != AUDIT_TYPE) revert InvalidAddress();
         if (bonusBps_ > MAX_BONUS_BPS) revert InvalidValue();
         verification = IAntseedVerification(verification_);
         usageAccounting = IAntseedSellerPoolsSource(usageAccounting_);

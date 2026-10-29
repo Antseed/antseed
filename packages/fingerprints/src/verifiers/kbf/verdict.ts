@@ -15,6 +15,12 @@ export interface KbfVerdictInput {
   targetMatchVector: MatchVector;
   /** Below this scored fraction, the verdict is UNDETERMINED. Default 0.5. */
   minCoverage?: number;
+  /**
+   * A DIFF also needs at least this scored fraction; below it a would-be DIFF is
+   * UNDETERMINED, so a seller cannot make a DIFF likelier by leaving answers out.
+   * Default: `minCoverage` (no extra requirement).
+   */
+  minDiffCoverage?: number;
   /** Clopper-Pearson confidence for the self-error upper bound. Default 0.99. */
   cpConfidence?: number;
   /** One-sided binomial threshold for DIFF. Default 0.05. */
@@ -48,6 +54,7 @@ export interface KbfVerdictResult {
 export function computeKbfVerdict(input: KbfVerdictInput): KbfVerdictResult {
   const { selfHamming, selfTotal, targetMatchVector } = input;
   const minCoverage = input.minCoverage ?? 0.5;
+  const minDiffCoverage = Math.max(minCoverage, input.minDiffCoverage ?? minCoverage);
   const cpConfidence = input.cpConfidence ?? 0.99;
   const alpha = input.alpha ?? 0.05;
 
@@ -116,14 +123,19 @@ export function computeKbfVerdict(input: KbfVerdictInput): KbfVerdictResult {
 
   const p0 = clopperPearsonUpper(selfHamming, selfTotal, cpConfidence);
   const pValue = binomialOneSidedPValue(mismatches, parsed, p0);
-  const verdict: FingerprintVerdict = pValue < alpha ? 'DIFF' : 'SAME';
+  const significant = pValue < alpha;
+  const verdict: FingerprintVerdict = !significant
+    ? 'SAME'
+    : coverage < minDiffCoverage ? 'UNDETERMINED' : 'DIFF';
 
   return {
     verdict,
     verdictReason:
       verdict === 'DIFF'
         ? `binomial p-value ${pValue.toExponential(4)} below alpha ${alpha}`
-        : null,
+        : verdict === 'UNDETERMINED'
+          ? `binomial p-value ${pValue.toExponential(4)} below alpha ${alpha}, but coverage ${coverage.toFixed(4)} is below the ${minDiffCoverage} a DIFF needs`
+          : null,
     stats: {
       selfHamming,
       selfTotal,

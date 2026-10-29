@@ -58,5 +58,15 @@ export function isLowCoverageKbfBatch(matches: ReadonlyArray<MatchEntry>): boole
   return matches.length >= 3 && missing * 2 > matches.length;
 }
 
+/**
+ * True when any of a batch's answers is missing or unreadable. Seller audits
+ * re-ask such a batch (up to `KBF_LOW_COVERAGE_RETRIES` times, keeping the
+ * attempt with the most scoreable answers), since every missing answer weakens
+ * the verdict; references keep the KBF rule above.
+ */
+export function hasMissingKbfAnswers(matches: ReadonlyArray<MatchEntry>): boolean {
+  return matches.some((match) => match === null);
+}
+
 /** Re-asks of a low-coverage batch after the first try, as in the KBF reference code. */
 export const KBF_LOW_COVERAGE_RETRIES = 2;
