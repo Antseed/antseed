@@ -184,6 +184,13 @@ test('a key naming a routing service gets an answer from the seller it picked, a
   assert.deepEqual(byRouter.groups.map((group) => [group.group, group.requests, group.spentUsdc]), [[router.peerId, 1, RANKING_USDC + INFERENCE_USDC]])
   assert.equal(ctx.store.listRequests({ keyId: key.id, routerPeerId: router.peerId }).length, 1)
   assert.equal(ctx.store.listRequests({ keyId: key.id, routerPeerId: first.peerId }).length, 0)
+
+  // A purchase statement lists the inference under the model served, and the fee under the routing service.
+  const lines = ctx.store.statementLines(key.workspaceId!, 0, Number.MAX_SAFE_INTEGER)
+  assert.deepEqual(lines.map((line) => [line.sellerPeerId?.toLowerCase(), line.model, line.routingFee]).sort(), [
+    [first.peerId.toLowerCase(), 'gpt-5', false],
+    [router.peerId.toLowerCase(), 'alpha-route', true],
+  ].sort())
 })
 
 test('a routed request served by the router\'s second pick records that rank', async (t) => {

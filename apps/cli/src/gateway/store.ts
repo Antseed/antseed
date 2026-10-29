@@ -1204,9 +1204,13 @@ export class GatewayStore {
       routerPeerId, router?.service?.slice(0, 200) ?? null, router?.rank ?? null, outcome.servedModel?.slice(0, 200) ?? null,
       outcome.routeSelection ? JSON.stringify(outcome.routeSelection) : null, tag,
     )
-    // Spend can reach the ledger before the response names its router.
+    // Spend can reach the ledger before the response names its router and the model it served.
     if (routerPeerId) {
       this._stmt('UPDATE ledger_entries SET router_peer_id = ? WHERE request_tag = ? AND router_peer_id IS NULL').run(routerPeerId, tag)
+    }
+    if (outcome.servedModel) {
+      this._stmt('UPDATE ledger_entries SET served_model = ? WHERE request_tag = ? AND routing_fee = 0 AND served_model IS NULL')
+        .run(outcome.servedModel.slice(0, 200), tag)
     }
   }
 
@@ -1282,11 +1286,13 @@ export class GatewayStore {
     /** The video job of an accepted create, a status poll or a delivery, keyed like `videoJobKey`. */
     videoJob: string | null
     routerPeerId: string | null
+    /** The model the seller served, once the response named it. */
+    servedModel: string | null
   } | null {
-    const row = this._stmt(`SELECT key_id, buyer_identity, workspace_id, member_id, model, end_user, path, video_action, video_job_id, router_peer_id
+    const row = this._stmt(`SELECT key_id, buyer_identity, workspace_id, member_id, model, end_user, path, video_action, video_job_id, router_peer_id, served_model
       FROM gateway_requests WHERE tag = ?`).get(tag) as
       { key_id: string; buyer_identity: string; workspace_id: string | null; member_id: string | null; model: string | null; end_user: string | null
-        path: string; video_action: string | null; video_job_id: string | null; router_peer_id: string | null } | undefined
+        path: string; video_action: string | null; video_job_id: string | null; router_peer_id: string | null; served_model: string | null } | undefined
     return row
       ? {
         keyId: row.key_id, buyerIdentity: row.buyer_identity, workspaceId: row.workspace_id, memberId: row.member_id, model: row.model, endUser: row.end_user,
@@ -1294,6 +1300,7 @@ export class GatewayStore {
           ? requestVideoJob(row.path, row.video_job_id)
           : null,
         routerPeerId: row.router_peer_id,
+        servedModel: row.served_model,
       }
       : null
   }
@@ -1574,8 +1581,8 @@ export class GatewayStore {
     const result = this._stmt(`
       INSERT OR IGNORE INTO ledger_entries
         (kind, key_id, buyer_identity, amount_usdc, external_ref, request_tag, seller_peer_id,
-         input_tokens, cached_input_tokens, output_tokens, note, created_at, workspace_id, member_id, model, end_user, routing_fee, router_peer_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         input_tokens, cached_input_tokens, output_tokens, note, created_at, workspace_id, member_id, model, end_user, routing_fee, router_peer_id, served_model)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       entry.kind, entry.keyId, entry.buyerIdentity, signed, entry.externalRef,
       entry.requestTag ?? null, entry.sellerPeerId ?? null,
@@ -1585,6 +1592,7 @@ export class GatewayStore {
       entry.routingFee ? 1 : 0,
       // A ranking fee is paid to the router itself, before the response names it.
       request?.routerPeerId ?? (entry.routingFee ? entry.sellerPeerId?.toLowerCase() ?? null : null),
+      entry.routingFee ? null : request?.servedModel ?? null,
     )
     return result.changes > 0
   }
@@ -1974,6 +1982,85 @@ export class GatewayStore {
     return this.getDeposit(workspaceId, txHash)
   }
 
+  // ── Purchase statements ─────────────────────────────────────────────────
+
+  getBillingProfile(workspaceId: string): BillingProfileRecord | null {
+    const row = this._stmt('SELECT * FROM billing_profiles WHERE workspace_id = ?').get(workspaceId) as BillingProfileRow | undefined
+    return row ? billingProfileRecord(row) : null
+  }
+
+  setBillingProfile(workspaceId: string, profile: Omit<BillingProfileRecord, 'workspaceId' | 'updatedAt'>): BillingProfileRecord {
+    this._stmt(`
+      INSERT INTO billing_profiles (workspace_id, company_name, address, country, vat_number, registration_number, vat_valid, vat_checked_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (workspace_id) DO UPDATE SET company_name = excluded.company_name, address = excluded.address, country = excluded.country,
+        vat_number = excluded.vat_number, registration_number = excluded.registration_number, vat_valid = excluded.vat_valid,
+        vat_checked_at = excluded.vat_checked_at, updated_at = excluded.updated_at
+    `).run(workspaceId, profile.companyName, profile.address, profile.country, profile.vatNumber, profile.registrationNumber,
+      profile.vatCheck ? (profile.vatCheck.valid ? 1 : 0) : null, profile.vatCheck?.at ?? null, this._now())
+    return this.getBillingProfile(workspaceId)!
+  }
+
+  deleteBillingProfile(workspaceId: string): boolean {
+    return this._stmt('DELETE FROM billing_profiles WHERE workspace_id = ?').run(workspaceId).changes > 0
+  }
+
+  /**
+   * A workspace's paid spend in [from, to), per seller (the router, for a
+   * routing fee), model and kind: the model the seller served, or for a
+   * routing fee the routing service asked for. Requests are counted once however many
+   * charges they carried.
+   */
+  statementLines(workspaceId: string, from: number, to: number): StatementLineRow[] {
+    return (this._stmt(`
+      SELECT seller_peer_id, CASE WHEN routing_fee = 1 THEN model ELSE COALESCE(served_model, model) END AS service, routing_fee, COUNT(DISTINCT COALESCE(request_tag, external_ref)) AS requests,
+        SUM(input_tokens) AS input_tokens, SUM(cached_input_tokens) AS cached_input_tokens, SUM(output_tokens) AS output_tokens,
+        -SUM(amount_usdc) AS spent
+      FROM ledger_entries
+      WHERE kind = 'spend' AND workspace_id = ? AND created_at >= ? AND created_at < ? AND amount_usdc < 0
+      GROUP BY seller_peer_id, service, routing_fee
+    `).all(workspaceId, from, to) as Array<Record<string, unknown>>).map((row) => ({
+      sellerPeerId: row['seller_peer_id'] as string | null,
+      model: row['service'] as string | null,
+      routingFee: row['routing_fee'] === 1,
+      requests: row['requests'] as number,
+      inputTokens: row['input_tokens'] as number,
+      cachedInputTokens: row['cached_input_tokens'] as number,
+      outputTokens: row['output_tokens'] as number,
+      spentUsdc: row['spent'] as number,
+    }))
+  }
+
+  /** Other workspaces that paid from `buyerIdentity`'s wallet in [from, to) (it can be shared). */
+  workspacesSpendingFrom(buyerIdentity: string, from: number, to: number): string[] {
+    return this._stmt(`SELECT DISTINCT workspace_id FROM ledger_entries
+      WHERE kind = 'spend' AND buyer_identity = ? AND created_at >= ? AND created_at < ? AND amount_usdc < 0 AND workspace_id IS NOT NULL`)
+      .pluck().all(buyerIdentity, from, to) as string[]
+  }
+
+  /** When the workspace first paid for anything; null when it never has. */
+  firstSpendAt(workspaceId: string): number | null {
+    return this._stmt("SELECT MIN(created_at) FROM ledger_entries WHERE kind = 'spend' AND workspace_id = ? AND amount_usdc < 0").pluck().get(workspaceId) as number | null
+  }
+
+  /** Final statements of a workspace, by period ("YYYY-MM"), as issued. */
+  listStatements(workspaceId: string): Array<{ period: string; issuedAt: number; content: string }> {
+    return (this._stmt('SELECT period, issued_at, content FROM purchase_statements WHERE workspace_id = ? ORDER BY period DESC').all(workspaceId) as Array<{ period: string; issued_at: number; content: string }>)
+      .map((row) => ({ period: row.period, issuedAt: row.issued_at, content: row.content }))
+  }
+
+  getStatement(workspaceId: string, period: string): { issuedAt: number; content: string } | null {
+    const row = this._stmt('SELECT issued_at, content FROM purchase_statements WHERE workspace_id = ? AND period = ?').get(workspaceId, period) as { issued_at: number; content: string } | undefined
+    return row ? { issuedAt: row.issued_at, content: row.content } : null
+  }
+
+  /** Keeps a final statement as issued; one already kept for the period wins. */
+  saveStatement(workspaceId: string, period: string, issuedAt: number, content: string): { issuedAt: number; content: string } {
+    this._stmt('INSERT INTO purchase_statements (workspace_id, period, issued_at, content) VALUES (?, ?, ?, ?) ON CONFLICT (workspace_id, period) DO NOTHING')
+      .run(workspaceId, period, issuedAt, content)
+    return this.getStatement(workspaceId, period)!
+  }
+
   // ── Settings ────────────────────────────────────────────────────────────
 
   /**
@@ -2280,6 +2367,59 @@ function depositRecord(row: DepositRow): DepositRecord {
       : null,
     recordedAt: row.recorded_at,
   }
+}
+
+/** The company a workspace buys for, printed on its purchase statements. */
+export interface BillingProfileRecord {
+  workspaceId: string
+  companyName: string
+  /** Street, postal code and city, one per line. */
+  address: string
+  /** ISO 3166-1 alpha-2. */
+  country: string
+  vatNumber: string | null
+  /** A company register number (e.g. KvK). */
+  registrationNumber: string | null
+  /** The EU VIES check of `vatNumber`; null when not checked. */
+  vatCheck: { valid: boolean; at: number } | null
+  updatedAt: number
+}
+
+interface BillingProfileRow {
+  workspace_id: string
+  company_name: string
+  address: string
+  country: string
+  vat_number: string | null
+  registration_number: string | null
+  vat_valid: number | null
+  vat_checked_at: number | null
+  updated_at: number
+}
+
+function billingProfileRecord(row: BillingProfileRow): BillingProfileRecord {
+  return {
+    workspaceId: row.workspace_id,
+    companyName: row.company_name,
+    address: row.address,
+    country: row.country,
+    vatNumber: row.vat_number,
+    registrationNumber: row.registration_number,
+    vatCheck: row.vat_valid !== null && row.vat_checked_at !== null ? { valid: row.vat_valid === 1, at: row.vat_checked_at } : null,
+    updatedAt: row.updated_at,
+  }
+}
+
+/** One seller × model × kind of a workspace's paid spend in a period. */
+export interface StatementLineRow {
+  sellerPeerId: string | null
+  model: string | null
+  routingFee: boolean
+  requests: number
+  inputTokens: number
+  cachedInputTokens: number
+  outputTokens: number
+  spentUsdc: number
 }
 
 function storedRouteSelection(value: unknown): ServedSelection | null {

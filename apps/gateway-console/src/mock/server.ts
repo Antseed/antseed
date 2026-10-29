@@ -11,7 +11,7 @@
  * member of Default and an admin of Research.
  */
 import type {
-  AdminToken, ApiKey, AuditEntry, BuyerLimits, DepositConfirmation, FreeTierStake, GatewayExposure, GatewayExposureMode, GatewayUpdate, Me, MeResponse, Member, RequestDetail, RequestLogEntry, RoutePreview, RoutingPolicy,
+  AdminToken, ApiKey, AuditEntry, BillingProfile, BuyerLimits, DepositConfirmation, PurchaseStatement, StatementSummary, FreeTierStake, GatewayExposure, GatewayExposureMode, GatewayUpdate, Me, MeResponse, Member, RequestDetail, RequestLogEntry, RoutePreview, RoutingPolicy,
   UsageGroupBy, Workspace, WorkspaceRole,
   RouteSelection,
 } from '../api/types'
@@ -151,6 +151,60 @@ function mockDeposits(workspaceId: string): DepositConfirmation[] {
   ]
   mockDepositsByWorkspace.set(workspaceId, list)
   return list
+}
+
+const mockBillingProfiles = new Map<string, BillingProfile>()
+/** The last three months of a workspace: earlier ones final, the current one a draft. */
+function mockStatementPeriods(): string[] {
+  const now = new Date()
+  return [0, 1, 2].map((back) => {
+    const date = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - back, 1))
+    return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`
+  })
+}
+function mockStatement(workspaceId: string, period: string): PurchaseStatement {
+  const [year, month] = period.split('-').map(Number)
+  const from = Date.UTC(year!, month! - 1, 1)
+  const to = Date.UTC(year!, month!, 1)
+  const ws = db.workspaces.find((entry) => entry.id === workspaceId)
+  const final = Date.now() >= to + DAY_MS && mockBillingProfiles.has(workspaceId)
+  const scale = 1 + (month! % 3) * 0.35
+  const hash = (seed: string) => `0x${seed.repeat(64).slice(0, 64)}`
+  const lines = [
+    { peer: db.peers[0]!, model: 'qwen3-coder-480b', requests: 4812, input: 61_240_000, cached: 38_900_000, output: 5_410_000, usd: 118.37 },
+    { peer: db.peers[0]!, model: 'kimi-k2', requests: 1306, input: 14_820_000, cached: 6_100_000, output: 1_920_000, usd: 21.84 },
+    { peer: db.peers[1]!, model: 'deepseek-v3.2', requests: 2950, input: 32_400_000, cached: 19_750_000, output: 3_880_000, usd: 34.12 },
+    { peer: db.peers[2]!, model: 'qwen-image', requests: 212, input: 0, cached: 0, output: 0, usd: 6.36 },
+  ]
+  const suppliers = [db.peers[0]!, db.peers[1]!, db.peers[2]!].map((peer, index) => {
+    const own = lines.filter((line) => line.peer === peer)
+    const total = own.reduce((sum, line) => sum + line.usd * scale, 0)
+    return {
+      peerId: peer.peerId, name: peer.displayName, verificationLinks: peer.verificationLinks,
+      lines: own.map((line) => ({ service: line.model, kind: 'inference' as const, requests: Math.round(line.requests * scale), inputTokens: Math.round(line.input * scale),
+        cachedInputTokens: Math.round(line.cached * scale), outputTokens: Math.round(line.output * scale), amount: (line.usd * scale).toFixed(6) })),
+      total: total.toFixed(6),
+      settlements: [9, 21].slice(0, index === 2 ? 1 : 2).map((day, _part, list) => ({ txHash: hash(`${index}${day}`), time: from + day * DAY_MS, amount: (total / list.length).toFixed(6) })),
+    }
+  })
+  const total = suppliers.reduce((sum, supplier) => sum + Number(supplier.total), 0)
+  const deposits = mockDeposits(workspaceId).filter((deposit) => deposit.time >= from && deposit.time < to)
+  return {
+    period, from, to, status: final ? 'final' : 'open', reference: `PS-${period}-${workspaceId.slice(-6).toUpperCase()}`,
+    issuedAt: final ? to + DAY_MS : null, generatedAt: Date.now(),
+    workspace: { id: workspaceId, name: ws?.name ?? 'Default', wallet: ws?.walletAddress ?? null },
+    buyer: mockBillingProfiles.get(workspaceId) ?? null,
+    eurRate: { usdPerEur: 1.115, date: new Date(Math.min(to - DAY_MS, Date.now())).toISOString().slice(0, 10) },
+    suppliers, total: total.toFixed(6), requests: suppliers.reduce((sum, supplier) => sum + supplier.lines.reduce((n, line) => n + line.requests, 0), 0),
+    funding: {
+      deposits: deposits.map((deposit) => ({ txHash: deposit.txHash, reference: deposit.reference, kind: deposit.kind, time: deposit.time, amount: deposit.sent })),
+      total: deposits.reduce((sum, deposit) => sum + Number(deposit.sent), 0).toFixed(6),
+      relayFees: (deposits.length * 0.02).toFixed(6),
+      asOf: Date.now(),
+    },
+    settlementsSource: 'https://antscan.co',
+    sharedWallet: 0,
+  }
 }
 
 function currentMember(): Member {
@@ -857,6 +911,42 @@ const routes: Array<[string, string, Handler]> = [
     if (!deposit) throw new MockError(404, 'not_found', 'Deposit not found.')
     deposit.approval = null
     return deposit
+  }],
+  ['GET', '/workspaces/:id/billing-profile', ({ params }) => {
+    requireWorkspace(params['id']!, 'admin')
+    return mockBillingProfiles.get(params['id']!) ?? null
+  }],
+  ['PUT', '/workspaces/:id/billing-profile', ({ params, body }) => {
+    requireWorkspace(params['id']!, 'admin')
+    const companyName = String(body?.companyName ?? '').trim()
+    const country = String(body?.country ?? '').trim().toUpperCase()
+    if (!companyName || !String(body?.address ?? '').trim()) throw new MockError(400, 'invalid_billing_profile', 'companyName and address are required.')
+    if (!/^[A-Z]{2}$/.test(country)) throw new MockError(400, 'invalid_billing_profile', 'country must be a two-letter country code, e.g. NL.')
+    const vatNumber = typeof body?.vatNumber === 'string' && body.vatNumber.trim() ? body.vatNumber.toUpperCase().replace(/[\s.-]/g, '') : null
+    const profile: BillingProfile = {
+      companyName, address: String(body?.address).trim(), country, vatNumber,
+      registrationNumber: typeof body?.registrationNumber === 'string' && body.registrationNumber.trim() ? body.registrationNumber.trim() : null,
+      vatCheck: vatNumber ? { valid: true, at: Date.now() } : null, updatedAt: Date.now(),
+    }
+    mockBillingProfiles.set(params['id']!, profile)
+    return profile
+  }],
+  ['DELETE', '/workspaces/:id/billing-profile', ({ params }) => {
+    requireWorkspace(params['id']!, 'admin')
+    mockBillingProfiles.delete(params['id']!)
+    return { ok: true }
+  }],
+  ['GET', '/workspaces/:id/statements', ({ params }): StatementSummary[] => {
+    requireWorkspace(params['id']!, 'admin')
+    return mockStatementPeriods().map((period) => {
+      const statement = mockStatement(params['id']!, period)
+      return { period, status: statement.status, reference: statement.reference, purchases: statement.total, issuedAt: statement.issuedAt }
+    })
+  }],
+  ['GET', '/workspaces/:id/statements/:period', ({ params }) => {
+    requireWorkspace(params['id']!, 'admin')
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(params['period'] ?? '')) throw new MockError(400, 'invalid_period', 'period must be a month, e.g. 2026-10.')
+    return mockStatement(params['id']!, params['period']!)
   }],
   ['GET', '/workspaces/:id/wallet', ({ params }) => {
     const { workspace: ws } = requireWorkspace(params['id']!, 'admin')
