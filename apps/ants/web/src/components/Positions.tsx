@@ -17,7 +17,7 @@ import { Table, type Column } from './Table';
 import { Button } from './ui';
 import { WithdrawAction } from './WithdrawAction';
 import { InfoHelp } from './EarlyExitHelp';
-import { formatYieldPercent, positionApy } from '../pool-yield';
+import { formatYieldPercent, positionApr } from '../pool-yield';
 
 export type RowActionKind = 'move' | 'extend' | 'withdraw' | 'split' | 'max-lock';
 type BulkActionKind = 'merge' | 'withdraw';
@@ -77,14 +77,14 @@ export function PositionsCard({ pools, enabled = true }: { pools: PoolView[]; en
     { key: 'amount', label: 'Amount', align: 'right', mono: true, render: (p) => <span className="cell-stack">{formatAnts(p.amount, 4)}<span className="cell-sub" title={p.nextPower != null ? `Next epoch power: ${formatAnts(p.nextPower, 0)}` : undefined}>power {formatAnts(p.power ?? p.weightAmount, 0)}</span></span> },
     {
       key: 'apy',
-      label: <>Est. APY<InfoHelp label="About position APY">Illustrative annualized return using the pool’s historical epoch reward budget and current pool power. Active positions use their current power, already included in the pool total. Pending positions use their activation power added to the current pool total; other pending changes are not projected. Assumes the rate repeats and compounds every epoch. Compounding is not automatic, normal-lock power declines, and activation delays are excluded. Missing data and closed or expired positions show —. Future rewards are not guaranteed.</InfoHelp></>,
+      label: <>Est. APR<InfoHelp label="About position APR">Illustrative annual rate from the pool’s last complete epoch reward and current pool power, not compounded. Active positions use their current power, already included in the pool total. Pending positions use their activation power, including the points it adds to the pool; other pending changes are not projected. Normal-lock power declines and activation delays are excluded. Missing data and closed or expired positions show —. Future rewards are not guaranteed.</InfoHelp></>,
       align: 'right',
       mono: true,
       render: (position) => {
         const pool = poolById.get(position.agentId);
         const epoch = data?.currentEpoch ?? info?.current;
-        const apy = positionApy(position, pool, epoch, data?.config?.maxStakeEpochs);
-        return <span title={apy === null ? 'APY unavailable for this position.' : `Based on ${pool?.yield?.status === 'estimated' ? 'estimated ' : ''}pool rewards in epoch ${pool?.yield?.epoch}.${epoch !== undefined && position.stakeStartEpoch > epoch ? ' Estimate for when this position activates.' : ''}`}>{formatYieldPercent(apy)}</span>;
+        const apy = positionApr(position, pool, epoch, data?.config?.maxStakeEpochs);
+        return <span title={apy === null ? 'APR unavailable for this position.' : `Based on ${pool?.yield?.status === 'estimated' ? 'estimated ' : ''}pool rewards in epoch ${pool?.yield?.epoch}.${epoch !== undefined && position.stakeStartEpoch > epoch ? ' Estimate for when this position activates.' : ''}`}>{formatYieldPercent(apy)}</span>;
       },
     },
     {

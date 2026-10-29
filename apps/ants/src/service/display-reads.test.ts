@@ -253,7 +253,7 @@ describe('indexed display / live financial read boundary', () => {
     const { ctx, snapshot, requests, pools, rewards, stack, indexer } = fixture();
     snapshot.pools[1]!.settled = settled;
     const result = await poolsView(ctx);
-    expect(result.pools[0]?.yield).toEqual({ ...poolYield(settled ? 10n : 20n, 100n, 21, stack.epochDuration, stack.genesis, settled), reward: settled ? '10' : '20', power: '200', minLockEpochs: 1, maxLockEpochs: 104 });
+    expect(result.pools[0]?.yield).toEqual({ ...poolYield(settled ? 10n : 20n, 100n, 21, stack.epochDuration, stack.genesis, settled), reward: settled ? '10' : '20', power: '200', budget: '100', minLockEpochs: 1, maxLockEpochs: 104 });
     expect(requests.map(row => row.method)).toEqual(['minStakeEpochs', 'MAX_STAKE_EPOCHS']);
     expect(pools.allStakerPositionIds).not.toHaveBeenCalled();
     expect(pools.totalPowerWeightAtEpoch).not.toHaveBeenCalled();

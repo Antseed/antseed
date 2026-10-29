@@ -94,8 +94,16 @@ describe('pool loading', () => {
     expect(live).not.toHaveBeenCalled();
     expect(methods).not.toContain('poolWeightAtEpoch');
     expect(methods).not.toContain('poolEpochEmissions');
-    expect(result.pools[0]?.yield).toEqual({ ...poolYield(5n, 100n, 1, 604800, 0, true), reward: '5', power: '90', minLockEpochs: 1, maxLockEpochs: 104 });
+    expect(result.pools[0]?.yield).toEqual({ ...poolYield(5n, 100n, 1, 604800, 0, true), reward: '5', power: '90', budget: '100', minLockEpochs: 1, maxLockEpochs: 104 });
     expect(result.pools[0]?.activeStake).toBe('10');
+  });
+  it('prices the epoch in progress from its running share of the staker budget', async () => {
+    const { ctx } = setup();
+    const result = await poolsView(ctx);
+    expect(result.pools[0]?.liveYield).toEqual({
+      epoch: 2, startsAt: 1209600, endsAt: 1814400, apr: null, apy: null, status: 'estimated',
+      reward: '5', power: '100', budget: '5', minLockEpochs: 1, maxLockEpochs: 104,
+    });
   });
   it('does not read historical contracts for directory entries with no staking pool', async () => {
     const { ctx, indexed, methods } = setup();
@@ -111,14 +119,14 @@ describe('pool loading', () => {
     expect(live).toHaveBeenCalled();
     expect(methods).toContain('poolWeightAtEpoch');
     expect(methods).toContain('poolEpochEmissions');
-    expect(result.pools[0]?.yield).toEqual({ ...poolYield(7n, 100n, 1, 604800, 0, true), reward: '7', power: '100', minLockEpochs: 1, maxLockEpochs: 104 });
+    expect(result.pools[0]?.yield).toEqual({ ...poolYield(7n, 100n, 1, 604800, 0, true), reward: '7', power: '100', budget: '100', minLockEpochs: 1, maxLockEpochs: 104 });
     expect(result.pools[0]?.volumeStatus).toBe('stale');
   });
   it('does not interpret missing historical fields as a zero-yield epoch', async () => {
     const { ctx, methods } = setup(2, false);
     const result = await poolsView(ctx);
     expect(methods).toContain('poolEpochEmissions');
-    expect(result.pools[0]?.yield).toEqual({ ...poolYield(7n, 100n, 1, 604800, 0, true), reward: '7', power: '100', minLockEpochs: 1, maxLockEpochs: 104 });
+    expect(result.pools[0]?.yield).toEqual({ ...poolYield(7n, 100n, 1, 604800, 0, true), reward: '7', power: '100', budget: '100', minLockEpochs: 1, maxLockEpochs: 104 });
   });
 
   it('keeps legacy seller epochs and amounts unchanged when pool details load', async () => {

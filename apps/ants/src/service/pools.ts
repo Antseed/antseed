@@ -392,6 +392,7 @@ async function verifyStakeability(ctx: AntsContext, views: PoolView[]): Promise<
 async function enrichYields(ctx: AntsContext, context: PoolContext, views: PoolView[], indexed?: IndexedPools): Promise<void> {
   if (ctx.indexer()?.displaySnapshot) {
     await indexedYields(ctx, context, views);
+    addLiveYields(context, views);
     return;
   }
   const epoch = context.stack.currentEpoch - 1;
@@ -422,10 +423,34 @@ async function enrichYields(ctx: AntsContext, context: PoolContext, views: PoolV
     view.yield = poolYield(reward, typeof principal === 'bigint' ? principal : null, epoch, context.stack.epochDuration, context.stack.genesis, emission?.[0] === true);
     view.yield.reward = reward?.toString() ?? null;
     view.yield.power = read.power()?.[0]?.toString() ?? null;
+    view.yield.budget = typeof b === 'bigint' ? b.toString() : null;
     view.yield.minLockEpochs = minLock()?.[0] == null ? null : Number(minLock()![0]);
     view.yield.maxLockEpochs = maxLock()?.[0] == null ? null : Number(maxLock()![0]);
     view.statsUpdatedAt = Date.now();
   });
+  addLiveYields(context, views);
+}
+
+/**
+ * The epoch in progress, priced like a completed one: the pool's running share of
+ * this epoch's staker budget over its current power. Early in an epoch the share
+ * rests on little usage, so it is always an estimate.
+ */
+function addLiveYields(context: PoolContext, views: PoolView[]): void {
+  const epoch = context.stack.currentEpoch;
+  const duration = context.stack.epochDuration;
+  const startsAt = context.stack.genesis + epoch * duration;
+  for (const view of views) {
+    const power = BigInt(view.weight);
+    const points = BigInt(view.weightedUsagePoints);
+    if (power === 0n || context.totalWeightedPoolPoints === 0n) continue;
+    const reward = context.stakerBudget * points / context.totalWeightedPoolPoints;
+    view.liveYield = {
+      epoch, startsAt, endsAt: startsAt + duration, apr: null, apy: null, status: 'estimated',
+      reward: reward.toString(), power: power.toString(), budget: context.stakerBudget.toString(),
+      minLockEpochs: view.yield?.minLockEpochs ?? null, maxLockEpochs: view.yield?.maxLockEpochs ?? null,
+    };
+  }
 }
 
 async function indexedYields(ctx: AntsContext, context: PoolContext, views: PoolView[]): Promise<void> {
@@ -462,7 +487,7 @@ async function indexedYields(ctx: AntsContext, context: PoolContext, views: Pool
       : null;
     view.yield = {
       ...poolYield(reward, row ? BigInt(row.activeStake) : null, epoch, context.stack.epochDuration, context.stack.genesis, row?.settled === true),
-      reward: reward?.toString() ?? null, power: row?.weight ?? null,
+      reward: reward?.toString() ?? null, power: row?.weight ?? null, budget: network?.stakerBudget ?? null,
       minLockEpochs: minLock()?.[0] == null ? null : Number(minLock()![0]), maxLockEpochs: maxLock()?.[0] == null ? null : Number(maxLock()![0]),
     };
     view.lastEpochEmission = reward?.toString() ?? null;
