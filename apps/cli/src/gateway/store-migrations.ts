@@ -430,4 +430,9 @@ export const MIGRATIONS: readonly string[] = [
   UPDATE ledger_entries SET served_model = (SELECT served_model FROM gateway_requests WHERE tag = ledger_entries.request_tag)
     WHERE routing_fee = 0 AND request_tag IS NOT NULL;
   `,
+  // Billing details take any company: free-form additional details, and tax IDs are no longer checked
+  // (vat_valid and vat_checked_at stay unused).
+  `
+  ALTER TABLE billing_profiles ADD COLUMN notes TEXT;
+  `,
 ]

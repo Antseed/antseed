@@ -38,7 +38,6 @@ let ecbDown = false
 /** Deposits the buyer recorded for the wallet. */
 let history: string[] = []
 const LATE_DEPOSIT = `0x${'e4'.repeat(32)}`
-const vatChecks: string[] = []
 let ledgerSeq = 0
 
 before(async () => {
@@ -86,7 +85,6 @@ function setup(): ConsoleRouter {
     },
     statements: {
       fetchEurRate: async (date) => { if (ecbDown) throw new Error('ECB unreachable'); return { usdPerEur: rate, date } },
-      checkVatNumber: async (vatNumber) => { vatChecks.push(vatNumber); return vatNumber.startsWith('NL') ? true : null },
       fetchSettlements: async (url, buyerAddress, from, to): Promise<SettlementRead> => {
         if (explorerDown) throw new Error('explorer unreachable')
         assert.equal(url, 'https://explorer.test')
@@ -108,7 +106,7 @@ function setup(): ConsoleRouter {
 
 const admin = () => memberPrincipal(ownerId, { [workspaceId]: 'admin' }, 'owner')
 const plainMember = () => memberPrincipal(ownerId, { [workspaceId]: 'member' })
-const PROFILE = { companyName: 'Voorbeeld B.V.', address: 'Keizersgracht 1\n1015 CJ Amsterdam', country: 'nl', vatNumber: 'nl 0000.00000 B01', registrationNumber: '12345678' }
+const PROFILE = { companyName: 'Voorbeeld B.V.', address: 'Keizersgracht 1\n1015 CJ Amsterdam', country: 'Netherlands', vatNumber: 'nl 0000.00000 B01', registrationNumber: '12345678', notes: 'PO 4500012345' }
 
 test('a month in progress is an open draft: purchases per seller and model, settlements, money in', async () => {
   now = MID_OCT
@@ -139,19 +137,21 @@ test('a month in progress is an open draft: purchases per seller and model, sett
   assert.equal(store.getStatement(workspaceId, '2026-10'), null, 'a draft is not kept')
 })
 
-test('billing details: the VAT number is normalized and checked with VIES once; members cannot see them', async () => {
+test('billing details: any company, kept as entered; members cannot see them', async () => {
   const router = setup()
   await rejectsWith(call(router, 'GET', `/workspaces/${workspaceId}/billing-profile`, plainMember()), 403)
   assert.equal(await call(router, 'GET', `/workspaces/${workspaceId}/billing-profile`, admin()), null)
   await rejectsWith(call(router, 'PUT', `/workspaces/${workspaceId}/billing-profile`, admin(), { ...PROFILE, companyName: ' ' }), 400, 'invalid_billing_profile')
-  await rejectsWith(call(router, 'PUT', `/workspaces/${workspaceId}/billing-profile`, admin(), { ...PROFILE, country: 'Netherlands' }), 400, 'invalid_billing_profile')
+  await rejectsWith(call(router, 'PUT', `/workspaces/${workspaceId}/billing-profile`, admin(), { ...PROFILE, notes: 'x'.repeat(1001) }), 400, 'invalid_billing_profile')
 
+  const elsewhere = await call(router, 'PUT', `/workspaces/${workspaceId}/billing-profile`, admin(), { ...PROFILE, country: null, vatNumber: 'EIN 12-3456789', notes: null }) as BillingProfile
+  assert.equal(elsewhere.country, '')
+  assert.equal(elsewhere.vatNumber, 'EIN 12-3456789', 'a tax ID is not checked or reformatted')
+  assert.equal(elsewhere.notes, null)
   const saved = await call(router, 'PUT', `/workspaces/${workspaceId}/billing-profile`, admin(), PROFILE) as BillingProfile
-  assert.equal(saved.country, 'NL')
-  assert.equal(saved.vatNumber, 'NL000000000B01')
-  assert.deepEqual(saved.vatCheck, { valid: true, at: now })
-  await call(router, 'PUT', `/workspaces/${workspaceId}/billing-profile`, admin(), { ...PROFILE, companyName: 'Voorbeeld Software B.V.' })
-  assert.deepEqual(vatChecks, ['NL000000000B01'], 'an unchanged number is not checked again')
+  assert.equal(saved.country, 'Netherlands')
+  assert.equal(saved.vatNumber, 'nl 0000.00000 B01')
+  assert.equal(saved.notes, 'PO 4500012345')
   assert.equal(store.listAudit({ action: 'billing.update' }).entries.length, 2)
 })
 

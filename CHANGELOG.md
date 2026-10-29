@@ -49,6 +49,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Changed
 
+- Gateway console: purchase statements work for a company in any country. Billing details take any tax ID (VAT, GST, EIN…) and country as entered, with no format rules and no EU VIES check, plus a new optional **Additional details** field (a PO number, cost centre, contact) printed under the buyer. The VAT section is now a Tax section (no VAT or sales tax charged; purchases before tax in USDC and EUR). Settlements the explorer has not listed yet show as **Not available**, with what that means, instead of "Not read". On a phone, the statement's actions wrap instead of running off the screen. Console API: `BillingProfileInput.notes`; `BillingProfile.vatCheck` is removed. Gateway store migration 16 (`billing_profiles.notes`).
 - Gateway console: a purchase statement shows one line per provider (requests, settlements this month, USDC and EUR) by default; **Model details** lists each provider's models, tokens and settlement transactions, and also sets the CSV export's level of detail. Printing a statement fits the page (tables no longer run off its edge) and prints dark on white whatever the console's theme.
 
 - Docs: the local buyer proxy is documented as loopback-only. **Local buyer proxy**, **Buyer configuration** and the buyer start flags reference say it always listens on `127.0.0.1`, with no `--host` flag or host setting, and point to an SSH port forward or a gateway (`--host` on a private network, a tunnel or a server) for access from other machines.

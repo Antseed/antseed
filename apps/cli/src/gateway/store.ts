@@ -1991,13 +1991,13 @@ export class GatewayStore {
 
   setBillingProfile(workspaceId: string, profile: Omit<BillingProfileRecord, 'workspaceId' | 'updatedAt'>): BillingProfileRecord {
     this._stmt(`
-      INSERT INTO billing_profiles (workspace_id, company_name, address, country, vat_number, registration_number, vat_valid, vat_checked_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO billing_profiles (workspace_id, company_name, address, country, vat_number, registration_number, notes, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (workspace_id) DO UPDATE SET company_name = excluded.company_name, address = excluded.address, country = excluded.country,
-        vat_number = excluded.vat_number, registration_number = excluded.registration_number, vat_valid = excluded.vat_valid,
-        vat_checked_at = excluded.vat_checked_at, updated_at = excluded.updated_at
+        vat_number = excluded.vat_number, registration_number = excluded.registration_number, notes = excluded.notes,
+        vat_valid = NULL, vat_checked_at = NULL, updated_at = excluded.updated_at
     `).run(workspaceId, profile.companyName, profile.address, profile.country, profile.vatNumber, profile.registrationNumber,
-      profile.vatCheck ? (profile.vatCheck.valid ? 1 : 0) : null, profile.vatCheck?.at ?? null, this._now())
+      profile.notes, this._now())
     return this.getBillingProfile(workspaceId)!
   }
 
@@ -2375,13 +2375,14 @@ export interface BillingProfileRecord {
   companyName: string
   /** Street, postal code and city, one per line. */
   address: string
-  /** ISO 3166-1 alpha-2. */
+  /** As entered; empty when not given. */
   country: string
+  /** The company's tax ID (VAT, GST, EIN…), as entered. */
   vatNumber: string | null
   /** A company register number (e.g. KvK). */
   registrationNumber: string | null
-  /** The EU VIES check of `vatNumber`; null when not checked. */
-  vatCheck: { valid: boolean; at: number } | null
+  /** Anything else the buyer wants on its statements (a PO number, cost centre, contact). */
+  notes: string | null
   updatedAt: number
 }
 
@@ -2392,8 +2393,7 @@ interface BillingProfileRow {
   country: string
   vat_number: string | null
   registration_number: string | null
-  vat_valid: number | null
-  vat_checked_at: number | null
+  notes: string | null
   updated_at: number
 }
 
@@ -2405,7 +2405,7 @@ function billingProfileRecord(row: BillingProfileRow): BillingProfileRecord {
     country: row.country,
     vatNumber: row.vat_number,
     registrationNumber: row.registration_number,
-    vatCheck: row.vat_valid !== null && row.vat_checked_at !== null ? { valid: row.vat_valid === 1, at: row.vat_checked_at } : null,
+    notes: row.notes,
     updatedAt: row.updated_at,
   }
 }

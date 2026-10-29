@@ -12,7 +12,7 @@ import { ChainReadCache } from '../../../proxy/chain-read-cache.js'
 import { errorMessage } from '../../errors.js'
 import { listNetworkPeers } from '../../services/network.js'
 import {
-  buildStatement, checkVatNumber, fetchEurRate, fetchSettlements, normalizeVatNumber, periodBounds, periodsSince, rateDate,
+  buildStatement, fetchEurRate, fetchSettlements, periodBounds, periodsSince, rateDate,
   SETTLEMENTS_WAIT_MS, statementFunding, statementReference, STATEMENT_GRACE_MS, type SettlementRead,
 } from '../../services/statements.js'
 import type { BillingProfileRecord, WorkspaceRecord } from '../../store.js'
@@ -31,9 +31,8 @@ export interface StatementRouteSeams {
   buyer: BuyerClient
   /** Stores the workspace's deposits not stored yet (a batch per read); true when none is left to check. */
   syncDeposits: (ws: WorkspaceRecord) => Promise<boolean>
-  /** Seams for tests; production reads the ECB, VIES, the chain explorer and the buyer's peers. */
+  /** Seams for tests; production reads the ECB, the chain explorer and the buyer's peers. */
   fetchEurRate?: typeof fetchEurRate
-  checkVatNumber?: typeof checkVatNumber
   fetchSettlements?: (explorerUrl: string, buyer: string, from: number, to: number) => Promise<SettlementRead>
   peers?: () => Promise<Map<string, { name: string | null; verificationLinks: StatementSupplier['verificationLinks'] }>>
 }
@@ -49,7 +48,7 @@ function profileView(profile: BillingProfileRecord): BillingProfile {
     country: profile.country,
     vatNumber: profile.vatNumber,
     registrationNumber: profile.registrationNumber,
-    vatCheck: profile.vatCheck,
+    notes: profile.notes,
     updatedAt: profile.updatedAt,
   }
 }
@@ -67,7 +66,6 @@ function text(body: Record<string, unknown>, field: string, max: number, require
 
 export function registerStatementRoutes(router: ConsoleRouter, deps: ConsoleDeps, seams: StatementRouteSeams): void {
   const eurRate = seams.fetchEurRate ?? ((date: string) => fetchEurRate(date))
-  const checkVat = seams.checkVatNumber ?? ((vatNumber: string) => checkVatNumber(vatNumber))
   const settlementsOf = seams.fetchSettlements ?? ((url: string, buyer: string, from: number, to: number) => fetchSettlements(url, buyer, from, to))
   const peers = seams.peers ?? (async () => new Map((await listNetworkPeers(deps.store, seams.buyer, deps.now())).map((peer) => [
     peer.peerId.toLowerCase().replace(/^0x/, ''), { name: peer.displayName, verificationLinks: peer.verificationLinks },
@@ -90,31 +88,16 @@ export function registerStatementRoutes(router: ConsoleRouter, deps: ConsoleDeps
   router.add('PUT', '/workspaces/:id/billing-profile', async (request): Promise<BillingProfile> => {
     const ws = workspace(request)
     const body = record(request.body)
-    // Everything is validated before VIES is asked.
-    const companyName = text(body, 'companyName', 200, true)!
-    const address = text(body, 'address', 500, true)!
-    const registrationNumber = text(body, 'registrationNumber', 50, false)
-    const country = (text(body, 'country', 2, true) ?? '').toUpperCase()
-    if (!/^[A-Z]{2}$/.test(country)) throw new ConsoleError(400, 'invalid_billing_profile', 'country must be a two-letter country code, e.g. NL.')
-    const vatRaw = text(body, 'vatNumber', 30, false)
-    const vatNumber = vatRaw ? normalizeVatNumber(vatRaw) : null
-    const previous = deps.store.getBillingProfile(ws.id)
-    // An unchanged number keeps its check; a new one is checked with VIES (null: nothing to check, or VIES did not answer).
-    let vatCheck: BillingProfile['vatCheck'] = null
-    if (vatNumber && previous?.vatNumber === vatNumber && previous.vatCheck) vatCheck = previous.vatCheck
-    else if (vatNumber) {
-      const valid = await checkVat(vatNumber)
-      vatCheck = valid === null ? null : { valid, at: deps.now() }
-    }
+    // Any company, anywhere: only lengths are checked, and every field is kept as entered.
     const saved = deps.store.setBillingProfile(ws.id, {
-      companyName,
-      address,
-      country,
-      vatNumber,
-      registrationNumber,
-      vatCheck,
+      companyName: text(body, 'companyName', 200, true)!,
+      address: text(body, 'address', 500, true)!,
+      country: text(body, 'country', 100, false) ?? '',
+      vatNumber: text(body, 'vatNumber', 50, false),
+      registrationNumber: text(body, 'registrationNumber', 50, false),
+      notes: text(body, 'notes', 1000, false),
     })
-    audit(deps, request, 'billing.update', { kind: 'workspace', id: ws.id, label: ws.name }, { companyName: saved.companyName, ...(vatNumber ? { vatNumber } : {}) })
+    audit(deps, request, 'billing.update', { kind: 'workspace', id: ws.id, label: ws.name }, { companyName: saved.companyName, ...(saved.vatNumber ? { vatNumber: saved.vatNumber } : {}) })
     return profileView(saved)
   })
 
