@@ -173,6 +173,8 @@ function mockStatement(workspaceId: string, period: string): PurchaseStatement {
   const lines = [
     { peer: db.peers[0]!, model: 'qwen3-coder-480b', requests: 4812, input: 61_240_000, cached: 38_900_000, output: 5_410_000, usd: 118.37 },
     { peer: db.peers[0]!, model: 'kimi-k2', requests: 1306, input: 14_820_000, cached: 6_100_000, output: 1_920_000, usd: 21.84 },
+    { peer: db.peers[0]!, model: 'fal-ai/kling-video/v3/standard/image-to-video', requests: 142, input: 0, cached: 0, output: 0, usd: 105.9 },
+    { peer: db.peers[0]!, model: 'bytedance/seedance-2.0/fast/text-to-video', requests: 282, input: 0, cached: 0, output: 0, usd: 219.1 },
     { peer: db.peers[1]!, model: 'deepseek-v3.2', requests: 2950, input: 32_400_000, cached: 19_750_000, output: 3_880_000, usd: 34.12 },
     { peer: db.peers[2]!, model: 'qwen-image', requests: 212, input: 0, cached: 0, output: 0, usd: 6.36 },
   ]

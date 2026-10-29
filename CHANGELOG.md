@@ -49,6 +49,8 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Changed
 
+- Gateway console: a purchase statement shows one line per provider (requests, settlements this month, USDC and EUR) by default; **Model details** lists each provider's models, tokens and settlement transactions, and also sets the CSV export's level of detail. Printing a statement fits the page (tables no longer run off its edge) and prints dark on white whatever the console's theme.
+
 - Docs: the local buyer proxy is documented as loopback-only. **Local buyer proxy**, **Buyer configuration** and the buyer start flags reference say it always listens on `127.0.0.1`, with no `--host` flag or host setting, and point to an SSH port forward or a gateway (`--host` on a private network, a tunnel or a server) for access from other machines.
 - CLI gateway: `antseed gateway settings show` now prints the config file it read, and `antseed gateway routing preview` says which file the `Buyer config:` limits came from. `--config` and `--data-dir` default independently (`~/.antseed/config.json` and `~/.antseed`), so on a host that runs several roles — a seller on `~/.antseed`, a gateway on `--data-dir ~/.antseed-buyer` — the buyer limits shown could come from another role's file with nothing in the output saying so. When `--data-dir` holds a `config.json` that is not the file being read, both commands now say so and name the `--config` flag that would read it.
 

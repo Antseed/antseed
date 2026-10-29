@@ -8,7 +8,7 @@
  */
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Badge, Button, DataTable, EmptyState, Logo, Modal, Panel, TextAreaField, TextField } from '@antseed/ui'
+import { Badge, Button, DataTable, EmptyState, Logo, Modal, Panel, Switch, TextAreaField, TextField } from '@antseed/ui'
 import { api, errorMessage } from '../api'
 import type { BillingProfile, BillingProfileInput, PurchaseStatement, StatementSummary, StatementSupplier } from '../api/types'
 import { useConsole } from '../app/context'
@@ -24,6 +24,8 @@ const statementPath = (period: string) => `wallet/statements/${period}`
 const depositPath = (txHash: string) => `wallet/deposits/${txHash}`
 /** Settlement transactions listed per seller on the page; the CSV has every one. */
 const LISTED_SETTLEMENTS = 8
+/** This viewer's choice of model details on statements (a convenience, kept in the browser). */
+const DETAILS_KEY = 'gc.statement.details'
 
 /** "October 2026". */
 function monthName(period: string): string {
@@ -54,12 +56,31 @@ function serviceLabel(line: StatementSupplier['lines'][number]): string {
   return line.service ?? 'Unknown model'
 }
 
-/** Every line and settlement as CSV, for importing into bookkeeping software. */
-function statementCsv(statement: PurchaseStatement): string {
+/** Requests and tokens of a provider's purchases (a routing fee is not a request). */
+function supplierUsage(supplier: StatementSupplier) {
+  return supplier.lines.reduce((sum, line) => ({
+    requests: sum.requests + (line.kind === 'routing' ? 0 : line.requests),
+    inputTokens: sum.inputTokens + line.inputTokens,
+    cachedInputTokens: sum.cachedInputTokens + line.cachedInputTokens,
+    outputTokens: sum.outputTokens + line.outputTokens,
+  }), { requests: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 })
+}
+
+/**
+ * The statement as CSV, for importing into bookkeeping software: one purchase
+ * line per provider, or with `details` one per provider and model; every
+ * settlement and deposit either way.
+ */
+function statementCsv(statement: PurchaseStatement, details: boolean): string {
   const eurValue = (amount: string) => (statement.eurRate ? (Number(amount) / statement.eurRate.usdPerEur).toFixed(2) : '')
   const rows: Array<Array<string | number>> = [['reference', 'period', 'type', 'seller', 'seller_address', 'service', 'requests', 'input_tokens', 'cached_input_tokens', 'output_tokens', 'amount_usdc', 'amount_eur', 'tx_hash', 'date_utc']]
   for (const supplier of statement.suppliers) {
-    for (const line of supplier.lines) {
+    if (!details && supplier.lines.length) {
+      const usage = supplierUsage(supplier)
+      rows.push([statement.reference, statement.period, 'purchase', supplierName(supplier), supplier.peerId, '',
+        usage.requests, usage.inputTokens, usage.cachedInputTokens, usage.outputTokens, supplier.total, eurValue(supplier.total), '', ''])
+    }
+    for (const line of details ? supplier.lines : []) {
       rows.push([statement.reference, statement.period, line.kind === 'routing' ? 'routing_fee' : 'purchase', supplierName(supplier), supplier.peerId, line.service ?? '',
         line.requests, line.inputTokens, line.cachedInputTokens, line.outputTokens, line.amount, eurValue(line.amount), '', ''])
     }
@@ -73,8 +94,8 @@ function statementCsv(statement: PurchaseStatement): string {
   return `${rows.map((row) => row.map(csvCell).join(',')).join('\n')}\n`
 }
 
-function downloadCsv(statement: PurchaseStatement): void {
-  const url = URL.createObjectURL(new Blob([statementCsv(statement)], { type: 'text/csv' }))
+function downloadCsv(statement: PurchaseStatement, details: boolean): void {
+  const url = URL.createObjectURL(new Blob([statementCsv(statement, details)], { type: 'text/csv' }))
   const link = document.createElement('a')
   link.href = url
   link.download = `${statement.reference}.csv`
@@ -179,6 +200,48 @@ export function StatementsPanel({ workspaceId }: { workspaceId: string }) {
   )
 }
 
+/** "3 · 120.00 USDC": a provider's settlements this month, or why there are none to show. */
+function paidLabel(supplier: StatementSupplier): string {
+  if (supplier.settlements === null) return 'Not read'
+  if (supplier.settlements.length === 0) return '—'
+  const paid = supplier.settlements.reduce((sum, settlement) => sum + Number(settlement.amount), 0)
+  return `${supplier.settlements.length} · ${usdc(paid.toFixed(6))} USDC`
+}
+
+/** One line per provider: the statement without model details. */
+function SupplierSummary({ statement, network }: { statement: PurchaseStatement; network: string }) {
+  return (
+    <>
+      <div className="gc-statement__table">
+        <table>
+          <thead>
+            <tr><th>Provider</th><th>Requests</th><th>Settlements this month</th><th>USDC</th><th>EUR</th></tr>
+          </thead>
+          <tbody>
+            {statement.suppliers.map((supplier, index) => (
+              <tr key={supplier.peerId || index}>
+                <td className="gc-statement__provider">
+                  <strong>{index + 1}. {supplierName(supplier)}</strong>
+                  <span><Mono>{supplier.peerId ? shortId(supplier.peerId, 8, 6) : '—'}</Mono>{supplier.verificationLinks.map((link) => ` · ${link.label}`).join('')}</span>
+                </td>
+                <td>{supplier.lines.length ? formatNumber(supplierUsage(supplier).requests) : '—'}</td>
+                <td>{paidLabel(supplier)}</td>
+                <td>{usdc(supplier.total)}</td>
+                <td>{eur(supplier.total, statement.eurRate)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="gc-statement__note gc-muted">
+        Settlements are payments on {network} from the workspace's credits
+        {statement.sharedWallet ? `, from a wallet shared with ${statement.sharedWallet} other workspace${statement.sharedWallet === 1 ? '' : 's'}, so they also pay for their purchases` : ''}.
+        {' '}With model details on, each provider's models and settlement transactions are listed; the CSV export lists every settlement.
+      </p>
+    </>
+  )
+}
+
 function Supplier({ supplier, index, statement, network, txLink }: { supplier: StatementSupplier; index: number; statement: PurchaseStatement; network: string; txLink: (hash: string, label?: string) => React.ReactNode }) {
   const [all, setAll] = useState(false)
   const settlements = supplier.settlements ?? []
@@ -267,6 +330,13 @@ export function StatementPage({ period }: { period: string }) {
     : <Mono>{label ?? hash}</Mono>)
   const gatewayAddress = (status.data?.publicUrl ?? window.location.origin).replace(/^https?:\/\//, '')
   const network = chain.data?.name ?? 'Base'
+  const [details, setDetails] = useState(() => {
+    try { return localStorage.getItem(DETAILS_KEY) === '1' } catch { return false }
+  })
+  const showDetails = (on: boolean) => {
+    setDetails(on)
+    try { localStorage.setItem(DETAILS_KEY, on ? '1' : '0') } catch { /* storage unavailable */ }
+  }
   return (
     <div className="gc-page">
       <div className="gc-inline gc-no-print">
@@ -333,7 +403,9 @@ export function StatementPage({ period }: { period: string }) {
               <h2 className="gc-statement__heading">Purchases by provider</h2>
               {doc.suppliers.length === 0
                 ? <p className="gc-muted">No paid requests this month.</p>
-                : doc.suppliers.map((supplier, index) => <Supplier key={supplier.peerId || index} supplier={supplier} index={index} statement={doc} network={network} txLink={txLink} />)}
+                : details
+                  ? doc.suppliers.map((supplier, index) => <Supplier key={supplier.peerId || index} supplier={supplier} index={index} statement={doc} network={network} txLink={txLink} />)
+                  : <SupplierSummary statement={doc} network={network} />}
               <div className="gc-statement__total">
                 <span>Total purchases, {monthName(doc.period)}</span>
                 <span>{usdc(doc.total)} USDC</span>
@@ -377,8 +449,9 @@ export function StatementPage({ period }: { period: string }) {
               </footer>
             </article>
             <div className="gc-inline gc-no-print">
+              <Switch checked={details} onChange={showDetails} label="Model details" />
               <Button leadingIcon={<Icon.download size={14} />} onClick={() => window.print()}>Print or save as PDF</Button>
-              <Button variant="outline" leadingIcon={<Icon.download size={14} />} onClick={() => downloadCsv(doc)}>Download CSV</Button>
+              <Button variant="outline" leadingIcon={<Icon.download size={14} />} onClick={() => downloadCsv(doc, details)}>Download CSV</Button>
               {doc.status === 'open' && <Button variant="outline" onClick={() => setEditing(true)}>Billing details</Button>}
             </div>
           </>

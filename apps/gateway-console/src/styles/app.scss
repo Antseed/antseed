@@ -800,6 +800,11 @@ li + li > .gc-choice { border-top: 1px solid var(--as-border); }
   th:first-child, td:first-child { text-align: left; }
 }
 .gc-statement__subtotal td { font-weight: 600; }
+.gc-statement__provider { white-space: normal !important;
+  strong, span { display: block; }
+  span { color: var(--as-text-secondary); font-size: 0.75rem; }
+}
+.gc-statement__note { margin: 0.5rem 0 1rem; font-size: 0.8125rem; }
 .gc-statement__proof { display: flex; flex-wrap: wrap; gap: 0.125rem 1rem; margin-top: 0.375rem; font-size: 0.8125rem;
   > span:first-child { flex-basis: 100%; }
 }
@@ -812,7 +817,7 @@ li + li > .gc-choice { border-top: 1px solid var(--as-border); }
 }
 .gc-statement .gc-doc__foot p { margin: 0 0 0.5rem; }
 .gc-print-only { display: none; }
-@media (max-width: 640px) {
+@media screen and (max-width: 640px) {
   .gc-statement__parties, .gc-statement__boxes { grid-template-columns: minmax(0, 1fr); }
   .gc-statement__summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .gc-statement__kv { grid-template-columns: minmax(0, 1fr); }
@@ -820,8 +825,25 @@ li + li > .gc-choice { border-top: 1px solid var(--as-border); }
 }
 @media print {
   .gc-print-only { display: inline; }
-  .gc-statement { font-size: 9pt; }
-  .gc-statement__label, .gc-statement__kv dt, .gc-statement__summary span { color: #444; }
+  :root { color-scheme: light; }
+  html, body { background: #fff; }
+  /* Paper is white whatever the console's theme: dark-theme greys would print near invisible. */
+  .gc-statement {
+    --as-text-primary: #000; --as-text-secondary: #444; --as-text-muted: #555; --as-border: #ccc; --as-border-strong: #888;
+    font-size: 8.5pt;
+  }
+  .gc-statement .gc-muted { color: #555; }
+  .gc-statement__parties { gap: 1rem; padding: 0.75rem 0; }
+  .gc-statement__kv { grid-template-columns: 7.5rem minmax(0, 1fr); }
+  /* The whole table fits the page width: no scroll box to clip it, long model names wrap. */
+  .gc-statement__table { overflow: visible;
+    table { table-layout: auto; }
+    th, td { padding: 0.25rem 0.375rem; }
+    td:first-child { white-space: normal; overflow-wrap: anywhere; }
+    tr { break-inside: avoid; }
+  }
+  .gc-statement__supplier { break-inside: auto; }
+  .gc-statement__supplier-head { break-after: avoid; }
 }
 @media print {
   .gc-topbar, .gc-rail, .gc-skip, .gc-no-print, .gc-exposure, .gc-update-notice, .as-toasts { display: none !important; }
