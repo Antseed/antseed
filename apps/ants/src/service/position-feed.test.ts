@@ -115,6 +115,16 @@ describe('Antscan position feeds', () => {
     expect(data.summary).toMatchObject([{ positionIds: [7, 8, 9], activeStake: '100', pendingStake: '100' }]);
     expect(data.totals).toEqual({ activeStake: '100', pendingStake: '100', power: '400' });
   });
+  it('does not double-count a merge replacement as pending while its active sources hand over', async () => {
+    const page = rewardPage([7, 8, 9, 10]);
+    page.positions[0] = { ...page.positions[0]!, closedAtEpoch: '23', state: 'closed' };
+    page.positions[1] = { ...page.positions[1]!, closedAtEpoch: '23', state: 'closed' };
+    page.positions[2] = { ...page.positions[2]!, amount: '200', stakeStartEpoch: '23', state: 'pending', power: '0', withdrawableEpoch: '23', changePending: true };
+    // A fresh stake activating the same epoch is still pending.
+    page.positions[3] = { ...page.positions[3]!, stakeStartEpoch: '23', state: 'pending', power: '0' };
+    const data = await fetchRewardPositions(owner, false, async () => page);
+    expect(data.totals).toEqual({ activeStake: '200', pendingStake: '100', power: '400' });
+  });
 
   it('computes wallet totals across every page instead of trusting page-scoped totals', async () => {
     const first = { ...rewardPage([8], 'next'), pageTotals: { activeStake: '999', pendingStake: '999', power: '999' } };

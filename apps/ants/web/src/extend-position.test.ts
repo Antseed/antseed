@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PoolConfigView, PoolView, PositionView } from '../../src/api-types';
 import type { ActionButtonProps } from './components/Confirm';
 import { LockSlider } from './components/LockSlider';
-import { mergeEligibility, RowActionPanel } from './components/Positions';
+import { BulkActionPanel, mergeEligibility, RowActionPanel } from './components/Positions';
 import { epochStartAt, formatUtc } from './format';
 
 const mocks = vi.hoisted(() => ({ epoch: vi.fn(), action: vi.fn(), withdrawal: vi.fn() }));
@@ -211,5 +211,24 @@ describe('pending position action forms', () => {
     expect(mergeEligibility([pendingPosition, { ...other, closedAtEpoch: 29 }], 28)).toContain('closed');
     expect(mergeEligibility([pendingPosition, { ...other, stakeEndEpoch: 131 }], 28)).toContain('same unlock epoch');
     expect(mergeEligibility([pendingPosition, { ...other, agentId: 2 }], 28)).toContain('same seller');
+  });
+});
+
+describe('merge dialog', () => {
+  it('states the handover epoch so merging does not look like a lost epoch', () => {
+    const source = { id: 30, agentId: 86940, amount: '100000000000000000000', stakeStartEpoch: 18, stakeEndEpoch: 40, closedAtEpoch: 0, withdrawn: false, state: 'active', maxLocked: false, maxLockedNext: false } as PositionView;
+    const html = renderToStaticMarkup(createElement(BulkActionPanel, { kind: 'merge', positions: [source, { ...source, id: 31 }], pools: [], onClose: vi.fn(), onStarted: vi.fn() }));
+    expect(html).toContain('No rewards are lost');
+    expect(html).toContain('keep earning through epoch 28');
+    expect(html).toContain('earns from epoch 29');
+  });
+});
+
+describe('withdraw dialog', () => {
+  it('flags the current epoch as forfeited only for positions earning in it', () => {
+    render(40, 104, 'withdraw');
+    expect(mocks.withdrawal.mock.calls[0]![0]).toMatchObject({ forfeitsEpoch: 28 });
+    render(28, 104, 'withdraw');
+    expect(mocks.withdrawal.mock.calls[1]![0]).toMatchObject({ forfeitsEpoch: null });
   });
 });
