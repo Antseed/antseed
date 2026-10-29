@@ -360,6 +360,7 @@ export async function singlePool(ctx: AntsContext, agentId: number): Promise<Poo
           view.stakers = detail.stakers;
           if (detail.openPositions != null) view.openPositions = detail.openPositions;
           if (detail.pendingStake != null) view.pendingStake = detail.pendingStake;
+          if (detail.nextActiveStake != null && detail.nextWeight != null) { view.nextActiveStake = detail.nextActiveStake; view.nextWeight = detail.nextWeight; }
           if (detail.activeStake != null) view.activeStake = detail.activeStake;
           const indexedPool = indexed.pools.find((pool) => pool.agentId === agentId);
           view.history = poolHistory(detail.epochs, context.stack.currentEpoch, indexedPool && indexed.currentEpoch === context.stack.currentEpoch

@@ -13,7 +13,7 @@ import { nearestIndex, slotIndex } from './components/chart-hover';
 import { parseRoute } from './router';
 import { host, setHost } from './host';
 import { StakeForm } from './components/StakeForm';
-import { poolName, poolLabel, PoolsTable, PoolDrawer, sortPoolsByMetric, volumeChange } from './components/Pools';
+import { nextEpochChange, poolName, poolLabel, PoolsTable, PoolDrawer, sortPoolsByMetric, volumeChange } from './components/Pools';
 import { formatYieldPercent, poolAprRange, poolAprEstimates } from './pool-yield';
 import type { PoolView, PoolsView, RewardsView, SellerView } from '../../src/api-types';
 
@@ -663,6 +663,30 @@ describe('sidebar shell and pending stake', () => {
     const mixed = render(createElement(PoolsTable, { pools: [sellerPool({ yourStake: '100000000000000000000', yourPendingStake: '5000000000000000000', yourPoolShareBps: 1000 })], currentEpoch: 22, loading: false, onOpen: () => {}, onStake: () => {} }));
     expect(mixed).toContain('+5');
     expect(mixed).not.toContain('of pool');
+  });
+  it('shows next epoch\'s stake and power change from the on-chain next-epoch figures', () => {
+    const table = (pool: PoolView) => render(createElement(PoolsTable, { pools: [pool], currentEpoch: 29, loading: false, onOpen: () => {}, onStake: () => {} }));
+    const ants = (n: number) => `${n}000000000000000000`;
+    // a merge that re-locks 115k and adds 17k: pending shows the whole replacement, the change is the delta
+    const merged = sellerPool({ activeStake: ants(115000), pendingStake: ants(132000), weight: ants(10000), nextActiveStake: ants(132000), nextWeight: ants(11370) });
+    const html = table(merged);
+    expect(html).toContain('<span class="pending-amount">+17,000</span> · <span class="pending-amount">+13.70% power</span> next epoch');
+    expect(html).not.toContain('132,000');
+    // stake leaving
+    expect(table(sellerPool({ activeStake: ants(100), weight: ants(1000), nextActiveStake: ants(93), nextWeight: ants(930) }))).toContain('<span class="closing-amount">−7</span> · <span class="closing-amount">−7.00% power</span> next epoch');
+    // a re-lock with unchanged stake shows only the power gain
+    expect(table(sellerPool({ activeStake: ants(100), weight: ants(1000), nextActiveStake: ants(100), nextWeight: ants(1500) }))).toContain('<span class="pending-amount">+50.00% power</span> next epoch');
+    // normal-lock decay alone is not a change worth showing
+    const decaying = table(sellerPool({ activeStake: ants(100), weight: ants(1000), nextActiveStake: ants(100), nextWeight: ants(980) }));
+    expect(decaying).not.toContain('next epoch');
+    expect(decaying).toContain('power');
+    // without next-epoch figures it falls back to pending stake
+    expect(table(sellerPool({ pendingStake: ants(400) }))).toContain('+400 pending');
+    expect(nextEpochChange({ activeStake: '1', weight: '1' } as PoolView)).toBeNull();
+    const view = { currentEpoch: 29, networkVolumes: [], explorer: null } as unknown as PoolsView;
+    const sheet = render(createElement(PoolDrawer, { pool: merged, view, onClose: () => {} }));
+    expect(sheet).toContain('+17,000 ANTS</span> · <span class="pending-amount">+13.70% power</span> next epoch');
+    expect(sheet).not.toContain('pending activation');
   });
   it('keeps the seller list visible while your stake waits for Antscan', () => {
     const previousPools = state.data.pools;

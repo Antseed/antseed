@@ -62,6 +62,7 @@ export function mergePools(input: MergeInput): PoolView[] {
       stakeable: pool.registered,
       activeStake: pool.activeStake,
       pendingStake: pool.pendingStake,
+      ...(pool.nextActiveStake != null && pool.nextWeight != null ? { nextActiveStake: pool.nextActiveStake, nextWeight: pool.nextWeight } : {}),
       weight: pool.weight,
       powerShareBps: pool.powerShareBps || bps(weight, totalPower),
       securityShareBps: Number(pool.securityShareBps),

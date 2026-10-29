@@ -231,6 +231,9 @@ export interface PoolView {
   projectedRewardPer1kPower: string | null;
   /** Stake in open positions that activates at a later epoch (indexer-sourced; absent from chain-only rows). */
   pendingStake?: string;
+  /** Pool stake and power next epoch, read on-chain at the pool's last snapshot (indexer-sourced; absent when unknown). */
+  nextActiveStake?: string;
+  nextWeight?: string;
   yourStake: string;
   /** Your stake in this pool whose activation epoch is still ahead. */
   yourPendingStake: string;
