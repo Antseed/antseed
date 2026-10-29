@@ -93,6 +93,7 @@ export function registerPaymentsIpc(): void {
       }
       await startPaymentsPortal();
       if (kind === 'withdraw') void getTelemetryService()?.recordWithdrawStarted();
+      else getTelemetryService()?.clearPendingWithdraw();
       const token = getPaymentsPortalToken();
       const params = new URLSearchParams();
       if (token) params.set('token', token);

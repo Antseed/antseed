@@ -23,17 +23,15 @@ import {
   createTelemetryClient,
   failureHttpStatus,
   normalizeBuyerHost,
-  requestDurationBucket,
   sellersTriedBucket,
   smallCountBucket,
-  ttftBucket,
   usdcAmountBucket,
   type BuyerHost,
   type FailureReason,
   type PostHogSender,
   type TelemetryClient,
 } from '@antseed/telemetry'
-import { CLI_EVENT_CATALOG, CLIENT_TOOLS, CONNECTED_APP_TOOLS, REQUEST_PROTOCOLS, SELLER_ID_PATTERN } from './catalog.js'
+import { CLI_EVENT_CATALOG, CLIENT_TOOLS, CONNECTED_APP_TOOLS, REQUEST_PROTOCOLS, ROUTING_VERSION, SELLER_ID_PATTERN } from './catalog.js'
 import { posthogConfig, resolveCliConsent } from './settings.js'
 import { detectInstallMethod } from '../update/install-method.js'
 import pkg from '../../package.json' with { type: 'json' }
@@ -107,6 +105,8 @@ export function telemetryClientTool(tool: string | null | undefined): string {
 /** What one proxied request did, filled in as it is routed. */
 export class RequestTrace {
   protocol = 'unknown'
+  /** For a video request: starting the job, or a status poll or download of it. */
+  videoAction: 'create' | 'retrieve' | null = null
   model: string | null = null
   routeMode: RouteMode = 'auto'
   clientTool = 'none'
@@ -143,13 +143,27 @@ export class RequestTrace {
   estimatedCostMicroUsd: number | null = null
   private finished = false
 
-  constructor(readonly startedAtMs: number, readonly peersKnownAtSend: boolean) {}
+  /** When the final attempt was sent: the seller's own time to first byte is measured from here. */
+  private attemptStartedAtMs: number
+  /** Time lost before the final attempt: failed sellers and rate-limit waits. */
+  private failedAttemptsMs = 0
+  /** A seller answered 429 (rate limited) on some attempt of this request. */
+  rateLimited = false
 
-  noteAttempt(peerId: string): void {
+  constructor(readonly startedAtMs: number, readonly peersKnownAtSend: boolean) {
+    this.attemptStartedAtMs = startedAtMs
+  }
+
+  noteAttempt(peerId: string, atMs: number = this.startedAtMs): void {
+    if (this.attempts > 0) this.failedAttemptsMs += Math.max(0, atMs - this.attemptStartedAtMs)
+    this.attemptStartedAtMs = atMs
     this.attempts += 1
     this.lastSeller = peerId.toLowerCase()
     this.sellers.add(this.lastSeller)
-    // A later attempt answers for itself.
+    // A later attempt answers for itself: an earlier seller's error reply is
+    // not this answer's first byte, and its usage and finish are not this one's.
+    this.firstByteAtMs = null
+    this.streamed = false
     this.usage = null
     this.finishReason = null
     this.estimatedCostMicroUsd = null
@@ -187,9 +201,14 @@ export class RequestTrace {
     this.streamed = true
   }
 
-  /** A whole (non-streamed) answer arrived. */
-  noteAnswered(atMs: number): void {
-    if (this.firstByteAtMs === null) this.firstByteAtMs = atMs
+  /**
+   * A whole (non-streamed) reply arrived. Only an answer is a first byte: an
+   * error reply is not output, and the request may still fall back.
+   */
+  noteAnswered(atMs: number, statusCode: number, freeTierRefusal = false): void {
+    // A used-up free allowance is also a 429, but it is a limit, not a busy seller.
+    if (statusCode === 429 && !freeTierRefusal) this.rateLimited = true
+    if (statusCode < 400 && this.firstByteAtMs === null) this.firstByteAtMs = atMs
   }
 
   noteFailure(failure: { statusCode: number; responseBody: Buffer; errorMessage: string | null; timedOut?: boolean }): void {
@@ -202,7 +221,11 @@ export class RequestTrace {
   finish(statusCode: number, clientAborted: boolean, nowMs: number): Record<string, unknown> | null {
     if (this.finished) return null
     this.finished = true
-    const cancelled = this.interrupted === 'cancelled' || statusCode === 499 || (clientAborted && this.interrupted === null && statusCode < 400 && this.firstByteAtMs === null)
+    // The client hung up before the answer finished: cancelled, whether or
+    // not part of the answer had arrived. A stopped answer is the user's
+    // choice, not a failure, and counting it as success would understate
+    // tokens, speed and cost.
+    const cancelled = this.interrupted === 'cancelled' || statusCode === 499 || (clientAborted && this.interrupted === null && statusCode < 400)
     const failed = !cancelled && (statusCode >= 400 || this.interrupted !== null)
     const outcome: RequestOutcome = cancelled ? 'cancelled' : failed ? 'failed' : 'success'
     let failureReason: FailureReason = 'none'
@@ -223,9 +246,11 @@ export class RequestTrace {
     const { choice, reason } = this._sellerChoice(outcome)
     const usage = outcome === 'success' ? this.usage : null
     const ttftMs = this.firstByteAtMs === null ? null : Math.max(0, this.firstByteAtMs - this.startedAtMs)
+    const sellerTtftMs = this.firstByteAtMs === null ? null : Math.max(0, this.firstByteAtMs - this.attemptStartedAtMs)
     const durationMs = Math.max(0, nowMs - this.startedAtMs)
     return {
       protocol: this.protocol,
+      ...(this.videoAction ? { video_action: this.videoAction } : {}),
       public_model_id: publicModelId(this.model),
       route_mode: this.routeMode,
       client_tool: this.clientTool,
@@ -236,10 +261,13 @@ export class RequestTrace {
       sellers_tried: sellersTriedBucket(this.sellers.size),
       fell_back: this.sellers.size > 1,
       seller_tier: this.sellerTier,
-      ttft_bucket: ttftBucket(ttftMs),
-      duration_bucket: requestDurationBucket(durationMs),
       ...(ttftMs !== null ? { ttft_ms: Math.round(ttftMs) } : {}),
+      ...(sellerTtftMs !== null ? { seller_ttft_ms: Math.round(sellerTtftMs) } : {}),
       duration_ms: Math.round(durationMs),
+      // A request that failed outright lost its final attempt too.
+      failed_attempts_ms: Math.round(this.failedAttemptsMs + (outcome === 'failed' && this.attempts > 0 ? Math.max(0, nowMs - this.attemptStartedAtMs) : 0)),
+      rate_limited: this.rateLimited,
+      routing_version: ROUTING_VERSION,
       streamed: this.streamed,
       client_retry: this.clientRetry,
       ...(this.lastSeller && SELLER_ID_PATTERN.test(this.lastSeller) ? { seller_id: this.lastSeller } : {}),

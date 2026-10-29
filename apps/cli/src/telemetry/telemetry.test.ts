@@ -218,6 +218,10 @@ test('buyer_request_finished: one per request, enums only, nothing added to what
   assert.equal(props['candidates_bucket'], '1')
   assert.equal(props['chosen_rank'], '1')
   assert.equal(props['seller_choice'], 'no_conversation')
+  assert.equal(typeof props['ttft_ms'], 'number', 'timings are exact; percentiles are computed in PostHog')
+  assert.equal(typeof props['duration_ms'], 'number')
+  assert.equal('ttft_bucket' in props, false, 'no range copies of the exact timings')
+  assert.equal('duration_bucket' in props, false)
   const body = JSON.stringify(events)
   assert.equal(body.includes('my secret prompt'), false)
   assert.equal(forwarded.length, 1)
@@ -424,6 +428,46 @@ test('speed and cost: exact times, output tokens, finish reason and listed-price
   assert.equal('output_tokens' in retriedProps, false, 'a later attempt does not inherit an earlier one')
   assert.equal('finish_reason' in retriedProps, false)
 
+  // Seller A's error reply came first, then seller B answered: B's answer is the first byte.
+  const fellBack = new RequestTrace(0, true)
+  fellBack.noteAttempt(SECRET_PEER, 0)
+  fellBack.noteAnswered(300, 503)
+  fellBack.noteFailure({ statusCode: 503, responseBody: Buffer.from('overloaded'), errorMessage: null })
+  fellBack.noteAttempt('2'.repeat(40), 320)
+  fellBack.noteFirstByte(1_300)
+  const fellBackProps = fellBack.finish(200, false, 2_000)!
+  assert.equal(fellBackProps['ttft_ms'], 1_300, 'what the caller waited, not the failed seller\'s error reply')
+  assert.equal(fellBackProps['seller_ttft_ms'], 980, 'the answering seller\'s own time')
+  assert.equal(fellBackProps['failed_attempts_ms'], 320, 'time lost on seller A')
+  assert.equal(fellBackProps['rate_limited'], false)
+  assert.equal(fellBackProps['routing_version'], 'v1')
+
+  // A 429 (seller busy) is counted; a used-up free allowance (also 429) is not.
+  const busy = new RequestTrace(0, true)
+  busy.noteAttempt(SECRET_PEER, 0)
+  busy.noteAnswered(100, 429)
+  busy.noteAttempt(SECRET_PEER, 400)
+  busy.noteAnswered(900, 200)
+  const busyProps = busy.finish(200, false, 900)!
+  assert.equal(busyProps['rate_limited'], true)
+  assert.equal(busyProps['failed_attempts_ms'], 400, 'the 429 and the wait before retrying')
+  assert.equal(busyProps['seller_ttft_ms'], 500)
+  const freeLimit = new RequestTrace(0, true)
+  freeLimit.noteAttempt(SECRET_PEER, 0)
+  freeLimit.noteAnswered(100, 429, true)
+  assert.equal(freeLimit.finish(429, false, 100)!['rate_limited'], false, 'a free-tier limit is not a busy seller')
+
+  // A request that failed on every seller lost all of its time to failed attempts.
+  const allFailed = new RequestTrace(0, true)
+  allFailed.noteAttempt(SECRET_PEER, 0)
+  allFailed.noteAnswered(200, 503)
+  allFailed.noteAttempt('2'.repeat(40), 250)
+  allFailed.noteAnswered(600, 503)
+  const allFailedProps = allFailed.finish(503, false, 600)!
+  assert.equal(allFailedProps['failed_attempts_ms'], 600)
+  assert.equal('ttft_ms' in allFailedProps, false, 'an error reply is not output')
+  assert.equal('seller_ttft_ms' in allFailedProps, false)
+
   const unpriced = new RequestTrace(0, true)
   unpriced.noteAttempt(SECRET_PEER)
   unpriced.noteUsage({ inputTokens: 10, cachedInputTokens: 0, outputTokens: 5, source: 'usage' })
@@ -489,6 +533,173 @@ test('a proxied answer carries its speed, output tokens, finish reason and cost'
   assert.equal(typeof props['ttft_ms'], 'number')
   // 400 fresh input at $1/M (no cached rate: billed as input) + 600 cached at $1/M + 500 output at $2/M.
   assert.equal(props['estimated_cost_micro_usd'], 2_000)
+})
+
+test('after a fallback, time to first byte is the answering seller\'s, not the failed seller\'s error', async (t) => {
+  const dir = await tempDir(t)
+  const { events, sender } = capture()
+  const telemetry = new BuyerTelemetry({ configPath: join(dir, 'config.json'), getDistinctId: () => WALLET, env: CONFIGURED, sender })
+  const failing = { ...makePeer(), peerId: '1'.repeat(40) } as PeerInfo
+  const answering = { ...makePeer(), peerId: '2'.repeat(40) } as PeerInfo
+  const proxy = new BuyerProxy({
+    adaptiveRouting: { spreadTolerance: 0, explorationRate: 0 },
+    port: 0,
+    dataDir: dir,
+    telemetry,
+    node: {
+      router: { allowsPeerForPolicy: () => true, onResult: () => {} },
+      sendRequest: async (peer: PeerInfo, req: { requestId: string }) => {
+        const fails = peer.peerId === failing.peerId
+        await new Promise((resolve) => setTimeout(resolve, fails ? 20 : 200))
+        return fails
+          ? { requestId: req.requestId, statusCode: 503, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ error: { message: 'overloaded' } })) }
+          : { requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify(OK_BODY)) }
+      },
+    } as never,
+  })
+  ;(proxy as any)._getPeers = async () => [failing, answering]
+  ;(proxy as any)._cachedPeers = [failing, answering]
+  ;(proxy as any)._cacheLastUpdatedAtMs = Date.now()
+  const res = await send(proxy, request({ model: 'gpt-5', messages: [{ role: 'user', content: 'hi' }] }))
+  assert.equal(res.statusCode, 200)
+  await telemetry.close()
+  const props = events.find((event) => event.event === 'buyer_request_finished')!.properties
+  assert.equal(props['seller_id'], answering.peerId)
+  assert.equal(props['fell_back'], true)
+  assert.ok((props['ttft_ms'] as number) >= 200, `ttft_ms ${props['ttft_ms']} includes the answering seller's time`)
+  assert.ok((props['seller_ttft_ms'] as number) >= 200 && (props['seller_ttft_ms'] as number) <= (props['ttft_ms'] as number))
+  assert.ok((props['failed_attempts_ms'] as number) >= 20, 'the failed seller\'s time is counted')
+  assert.equal(props['routing_version'], 'v1')
+})
+
+test('the client stopping a streamed answer midway is cancelled, not success, and sends no token counts', async (t) => {
+  const { proxy, telemetry, events } = await proxyWithTelemetry(t, {}, 200)
+  const res = new FakeResponse()
+  const start = 'event: message_start\ndata: ' + JSON.stringify({ type: 'message_start', message: { usage: { input_tokens: 2_000, output_tokens: 1 } } }) + '\n\n'
+  ;(proxy as any)._node.sendRequestStream = async (_peer: PeerInfo, req: { requestId: string }, callbacks: {
+    onResponseStart: (response: object, metadata: { streaming: boolean }) => void
+  }, options: { signal: AbortSignal }) => {
+    callbacks.onResponseStart({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'text/event-stream' }, body: Buffer.from(start) }, { streaming: true })
+    // The user presses stop: the client hangs up while the answer streams.
+    queueMicrotask(() => res.emit('close'))
+    await new Promise((resolve) => options.signal.addEventListener('abort', resolve, { once: true }))
+    throw new Error('aborted')
+  }
+  const req = request({ model: 'gpt-5', stream: true, messages: [{ role: 'user', content: 'hi' }] })
+  ;(req as unknown as Record<string, unknown>)['url'] = '/v1/messages'
+  await (proxy as any)._handleRequest(req, res)
+  await new Promise((resolve) => setImmediate(resolve))
+  await telemetry.close()
+  const finished = events.filter((event) => event.event === 'buyer_request_finished')
+  assert.equal(finished.length, 1, 'reported once')
+  const props = finished[0]!.properties
+  assert.equal(props['outcome'], 'cancelled')
+  assert.equal(props['failure_reason'], 'none', 'a stop is not a failure')
+  assert.equal(typeof props['ttft_ms'], 'number', 'the first byte had arrived')
+  assert.equal('input_tokens' in props, false, 'a stopped answer sends no token counts')
+})
+
+test('a rate-limited seller retried in place: rate_limited, and the wait counts as lost time', async (t) => {
+  const dir = await tempDir(t)
+  const { events, sender } = capture()
+  const telemetry = new BuyerTelemetry({ configPath: join(dir, 'config.json'), getDistinctId: () => WALLET, env: CONFIGURED, sender })
+  const peer = makePeer()
+  let calls = 0
+  const proxy = new BuyerProxy({
+    adaptiveRouting: { spreadTolerance: 0, explorationRate: 0 },
+    port: 0,
+    dataDir: dir,
+    telemetry,
+    node: {
+      router: { allowsPeerForPolicy: () => true, onResult: () => {} },
+      sendRequest: async (_peer: PeerInfo, req: { requestId: string }) => {
+        calls += 1
+        return calls === 1
+          ? { requestId: req.requestId, statusCode: 429, headers: { 'content-type': 'application/json', 'retry-after': '0' }, body: Buffer.from(JSON.stringify({ error: { message: 'slow down' } })) }
+          : { requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify(OK_BODY)) }
+      },
+    } as never,
+  })
+  ;(proxy as any)._getPeers = async () => [peer]
+  ;(proxy as any)._cachedPeers = [peer]
+  ;(proxy as any)._cacheLastUpdatedAtMs = Date.now()
+  const res = await send(proxy, request({ model: 'gpt-5', messages: [{ role: 'user', content: 'hi' }] }))
+  assert.equal(res.statusCode, 200)
+  assert.equal(calls, 2)
+  await telemetry.close()
+  const props = events.find((event) => event.event === 'buyer_request_finished')!.properties
+  assert.equal(props['outcome'], 'success')
+  assert.equal(props['rate_limited'], true)
+  assert.equal(props['attempt_count'], '2')
+  assert.equal(props['fell_back'], false, 'the same seller')
+})
+
+test('image, decision-model and video requests each send buyer_request_finished', async (t) => {
+  const dir = await tempDir(t)
+  const { events, sender } = capture()
+  const telemetry = new BuyerTelemetry({ configPath: join(dir, 'config.json'), getDistinctId: () => WALLET, env: CONFIGURED, sender })
+  const peer = {
+    ...makePeer(),
+    providers: ['openai', 'typesafe', 'venice'],
+    providerPricing: {
+      openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'gpt-image-1': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } } },
+      typesafe: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'decide-1': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } } },
+      venice: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'video-model': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } } },
+    },
+    providerServiceApiProtocols: {
+      openai: { services: { 'gpt-image-1': ['openai-images'] } },
+      typesafe: { services: { 'decide-1': ['typesafe-systemone'] } },
+      venice: { services: { 'video-model': ['venice-video'] } },
+    },
+    // An image edit is only routed to a seller that takes an input image.
+    providerServiceCapabilities: { openai: { services: { 'gpt-image-1': { outputs: ['image'], supportedParameters: ['image'] } } } },
+  } as unknown as PeerInfo
+  const forwarded: string[] = []
+  const proxy = new BuyerProxy({
+    adaptiveRouting: { spreadTolerance: 0, explorationRate: 0 },
+    port: 0,
+    dataDir: dir,
+    telemetry,
+    node: {
+      router: { allowsPeerForPolicy: () => true, onResult: () => {} },
+      sendRequest: async (_peer: PeerInfo, req: { requestId: string; path: string; headers: Record<string, string> }) => {
+        forwarded.push(Object.keys(req.headers).join(','))
+        const body = req.path.includes('/video/') ? { queue_id: 'job-1' } : req.path.includes('systemone') ? { answers: [] } : { data: [{ b64_json: 'aGk=' }] }
+        return { requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify(body)) }
+      },
+      sendRequestStream: async (_peer: PeerInfo, req: { requestId: string }) => (
+        { requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ status: 'PROCESSING' })) }
+      ),
+    } as never,
+  })
+  ;(proxy as any)._getPeers = async () => [peer]
+  ;(proxy as any)._cachedPeers = [peer]
+  ;(proxy as any)._cacheLastUpdatedAtMs = Date.now()
+  ;(proxy as any)._persistResourceRoutes = async () => {}
+  const at = (path: string, body: object): Readable => {
+    const req = request(body, { 'user-agent': 'curl/8' }) as Readable & Record<string, unknown>
+    req['url'] = path
+    return req
+  }
+  const calls: Array<[string, object]> = [
+    ['/v1/images/generations', { model: 'gpt-image-1', prompt: 'a secret cat' }],
+    ['/v1/images/edits', { model: 'gpt-image-1', prompt: 'a secret hat', image: 'aGk=' }],
+    ['/v1/systemone', { model: 'decide-1', state: { secret: true }, questions: [] }],
+    ['/api/v1/video/queue', { model: 'video-model', prompt: 'a secret dog', duration: '5s' }],
+    ['/api/v1/video/retrieve', { model: 'video-model', queue_id: 'job-1' }],
+  ]
+  for (const [path, body] of calls) {
+    const res = await send(proxy, at(path, body))
+    assert.equal(res.statusCode, 200, `${path}: ${res.body}`)
+  }
+  await telemetry.close()
+  const finished = events.filter((event) => event.event === 'buyer_request_finished').map((event) => event.properties)
+  assert.deepEqual(finished.map((props) => props['protocol']), ['openai-images', 'openai-images', 'typesafe-systemone', 'video', 'video'])
+  assert.deepEqual(finished.map((props) => props['video_action'] ?? null), [null, null, null, 'create', 'retrieve'])
+  assert.deepEqual(finished.map((props) => props['outcome']), ['success', 'success', 'success', 'success', 'success'])
+  for (const props of finished.slice(0, 3)) assert.equal(props['seller_id'], SECRET_PEER)
+  assert.equal(JSON.stringify(events).includes('secret'), false, 'no prompt or state leaves the process')
+  assert.equal(forwarded.some((names) => names.includes('telemetry')), false, 'nothing added for the seller')
 })
 
 test('buyer_deposit_credited: one per deposit, as a bucket, the tx-hash backfill skipped', async () => {

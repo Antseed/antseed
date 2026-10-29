@@ -1364,6 +1364,19 @@ test('withdraw_completed only follows a withdraw started this launch', async (t)
   assert.equal(eventsNamed(captured, 'withdraw_completed').length, 1);
 });
 
+test('an abandoned withdraw is not completed by a later deposit', async (t) => {
+  const dir = await makeTempDir(t);
+  const captured: Captured = { payloads: [] };
+  const service = await createTelemetryService(baseOptions(dir, captured));
+  await service.recordAppStarted(0);
+  await service.recordWithdrawStarted(1_000);
+  // The user leaves the withdraw page and opens a deposit page instead.
+  service.clearPendingWithdraw();
+  await service.recordWithdrawCompleted(2_000);
+  assert.equal(eventsNamed(captured, 'withdraw_started').length, 1);
+  assert.equal(eventsNamed(captured, 'withdraw_completed').length, 0);
+});
+
 test('connected_app_first_request reports the first request or none at shutdown', async (t) => {
   const dir = await makeTempDir(t);
   const captured: Captured = { payloads: [] };

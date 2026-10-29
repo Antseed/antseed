@@ -39,7 +39,7 @@ export type BatchQueueOptions = {
   maxQueue?: number;
   maxBatch?: number;
   flushIntervalMs?: number;
-  /** Checked before each flush; when false the queue is dropped unsent. */
+  /** Checked before each batch is sent; when false the rest of the queue is dropped unsent. */
   isEnabled?: () => boolean;
 };
 
@@ -76,11 +76,12 @@ export class BatchQueue {
   /** Sends everything queued. Safe to call concurrently; never rejects. */
   async flush(): Promise<void> {
     if (this.inFlight) await this.inFlight;
-    if (this.options.isEnabled && !this.options.isEnabled()) {
-      this.queue.length = 0;
-      return;
-    }
     while (this.queue.length > 0) {
+      // Before every batch: an opt-out while an earlier batch was sending stops the rest.
+      if (this.options.isEnabled && !this.options.isEnabled()) {
+        this.queue.length = 0;
+        return;
+      }
       const batch = this.queue.splice(0, this.maxBatch);
       this.inFlight = this.options.send(batch).catch(() => undefined);
       await this.inFlight;

@@ -1,6 +1,7 @@
 /**
- * Coarse buckets: the only form durations, counts and amounts take in
- * telemetry. Exact values stay on the device.
+ * Coarse buckets for the counts, durations and amounts that are sent as a
+ * range, not an exact value (for example a deposit amount). Request timings
+ * and token counts are sent exactly; see docs/telemetry.md.
  */
 
 export type DurationBucket = 'under_30s' | '30s_2m' | '2m_5m' | 'over_5m';
@@ -8,8 +9,6 @@ export type CountBucket = '0' | '1' | '2_5' | '6_20' | '21_plus';
 export type SmallCountBucket = '0' | '1' | '2_3' | '4_plus';
 export type AttemptCountBucket = '1' | '2' | '3_plus';
 export type SellersTriedBucket = '0' | '1' | '2' | '3_plus';
-export type TtftBucket = 'none' | 'under_1s' | '1_3s' | '3_10s' | 'over_10s';
-export type RequestDurationBucket = 'under_1s' | '1_5s' | '5_30s' | '30s_2m' | 'over_2m';
 /** USDC amount buckets, from integer base units (6 decimals). */
 export type UsdcAmountBucket = 'zero' | 'under_0_01' | '0_01_0_1' | '0_1_1' | '1_10' | 'over_10';
 
@@ -18,8 +17,6 @@ export const COUNT_BUCKETS: ReadonlySet<string> = new Set(['0', '1', '2_5', '6_2
 export const SMALL_COUNT_BUCKETS: ReadonlySet<string> = new Set(['0', '1', '2_3', '4_plus']);
 export const ATTEMPT_COUNT_BUCKETS: ReadonlySet<string> = new Set(['1', '2', '3_plus']);
 export const SELLERS_TRIED_BUCKETS: ReadonlySet<string> = new Set(['0', '1', '2', '3_plus']);
-export const TTFT_BUCKETS: ReadonlySet<string> = new Set(['none', 'under_1s', '1_3s', '3_10s', 'over_10s']);
-export const REQUEST_DURATION_BUCKETS: ReadonlySet<string> = new Set(['under_1s', '1_5s', '5_30s', '30s_2m', 'over_2m']);
 export const USDC_AMOUNT_BUCKETS: ReadonlySet<string> = new Set(['zero', 'under_0_01', '0_01_0_1', '0_1_1', '1_10', 'over_10']);
 export function durationBucket(ms: number): DurationBucket {
   if (ms < 30_000) return 'under_30s';
@@ -54,22 +51,6 @@ export function sellersTriedBucket(count: number): SellersTriedBucket {
   if (count === 1) return '1';
   if (count === 2) return '2';
   return '3_plus';
-}
-
-export function ttftBucket(ms: number | null): TtftBucket {
-  if (ms === null || !Number.isFinite(ms) || ms < 0) return 'none';
-  if (ms < 1_000) return 'under_1s';
-  if (ms < 3_000) return '1_3s';
-  if (ms < 10_000) return '3_10s';
-  return 'over_10s';
-}
-
-export function requestDurationBucket(ms: number): RequestDurationBucket {
-  if (!Number.isFinite(ms) || ms < 1_000) return 'under_1s';
-  if (ms < 5_000) return '1_5s';
-  if (ms < 30_000) return '5_30s';
-  if (ms < 2 * 60_000) return '30s_2m';
-  return 'over_2m';
 }
 
 /** Buckets a USDC amount given as integer base units (6 decimals). Never a float. */

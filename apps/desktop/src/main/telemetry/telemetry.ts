@@ -166,6 +166,8 @@ export type TelemetryService = {
   ) => Promise<void>;
   recordWithdrawStarted: (nowMs?: number) => Promise<void>;
   recordWithdrawCompleted: (nowMs?: number) => Promise<void>;
+  /** A pay page for something other than a withdraw opened (deposit, channel close). */
+  clearPendingWithdraw: () => void;
   recordRuntimeStoppedOnWindowClose: (runtimeWasRunning: boolean, nowMs?: number) => Promise<void>;
   recordDepositFailed: (input: {
     failureCode: TelemetryEventProperties['deposit_failed']['failure_code'];
@@ -673,6 +675,13 @@ export async function createTelemetryService(
       if (!withdrawPending) return;
       withdrawPending = false;
       track('withdraw_completed', {}, nowMs);
+    },
+
+    clearPendingWithdraw() {
+      // The pay page only says "a payment completed", not which one. Once a
+      // different pay page opens, a later completion belongs to that one,
+      // so a withdraw opened earlier and abandoned is not counted.
+      withdrawPending = false;
     },
 
     async recordRuntimeStoppedOnWindowClose(runtimeWasRunning, nowMs = now()) {

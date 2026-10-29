@@ -7,10 +7,8 @@ import {
   FAILURE_REASONS,
   HTTP_STATUS_RANGE,
   PUBLIC_MODEL_ID_PATTERN,
-  REQUEST_DURATION_BUCKETS,
   SELLERS_TRIED_BUCKETS,
   SMALL_COUNT_BUCKETS,
-  TTFT_BUCKETS,
   USDC_AMOUNT_BUCKETS,
   type EventCatalog,
 } from '@antseed/telemetry'
@@ -40,6 +38,15 @@ export const TOKEN_COUNT_RANGE: readonly [number, number] = [0, 100_000_000]
 export const DURATION_MS_RANGE: readonly [number, number] = [0, 86_400_000]
 /** A request's cost at the seller's listed price, in millionths of a USD (up to $10,000). */
 export const COST_MICRO_USD_RANGE: readonly [number, number] = [0, 10_000_000_000]
+/**
+ * Which seller-selection algorithm routed the request, so a new one can be
+ * compared with the current one (A/B or before/after). A new algorithm adds
+ * its own value here and sets it on the requests it routes.
+ */
+export const ROUTING_VERSION = 'v1'
+export const ROUTING_VERSIONS = set(ROUTING_VERSION)
+/** A video job is one `create`, then `retrieve` calls (status polls and the download) until it is done. */
+export const VIDEO_ACTIONS = set('create', 'retrieve')
 export const FINISH_REASONS = set('stop', 'length', 'tool_call', 'content_filter', 'refusal', 'other', 'unknown')
 /** A seller's public peer id (its EVM address, lowercase, no `0x`). */
 export const SELLER_ID_PATTERN = /^[0-9a-f]{40}$/
@@ -72,11 +79,11 @@ export const CLI_EVENT_CATALOG: EventCatalog = {
   buyer_request_finished: {
     keys: set(
       'protocol', 'public_model_id', 'route_mode', 'client_tool', 'outcome', 'failure_reason', 'http_status',
-      'attempt_count', 'sellers_tried', 'fell_back', 'seller_tier', 'ttft_bucket', 'duration_bucket', 'streamed',
+      'attempt_count', 'sellers_tried', 'fell_back', 'seller_tier', 'streamed',
       'seller_id', 'conversation_key_source', 'turn_bucket', 'seller_choice', 'switch_reason', 'candidates_bucket',
       'chosen_rank', 'input_tokens', 'cached_input_tokens', 'usage_reported',
       'ttft_ms', 'duration_ms', 'output_tokens', 'finish_reason', 'estimated_cost_micro_usd',
-      'client_retry',
+      'client_retry', 'video_action', 'seller_ttft_ms', 'failed_attempts_ms', 'rate_limited', 'routing_version',
     ),
     values: {
       protocol: REQUEST_PROTOCOLS,
@@ -87,8 +94,6 @@ export const CLI_EVENT_CATALOG: EventCatalog = {
       attempt_count: ATTEMPT_COUNT_BUCKETS,
       sellers_tried: SELLERS_TRIED_BUCKETS,
       seller_tier: SELLER_TIERS,
-      ttft_bucket: TTFT_BUCKETS,
-      duration_bucket: REQUEST_DURATION_BUCKETS,
       conversation_key_source: CONVERSATION_KEY_SOURCES,
       turn_bucket: TURN_BUCKETS,
       seller_choice: SELLER_CHOICES,
@@ -96,6 +101,8 @@ export const CLI_EVENT_CATALOG: EventCatalog = {
       candidates_bucket: SMALL_COUNT_BUCKETS,
       chosen_rank: CHOSEN_RANKS,
       finish_reason: FINISH_REASONS,
+      video_action: VIDEO_ACTIONS,
+      routing_version: ROUTING_VERSIONS,
     },
     patterns: { public_model_id: PUBLIC_MODEL_ID_PATTERN, seller_id: SELLER_ID_PATTERN },
     ranges: {
@@ -104,6 +111,8 @@ export const CLI_EVENT_CATALOG: EventCatalog = {
       cached_input_tokens: TOKEN_COUNT_RANGE,
       output_tokens: TOKEN_COUNT_RANGE,
       ttft_ms: DURATION_MS_RANGE,
+      seller_ttft_ms: DURATION_MS_RANGE,
+      failed_attempts_ms: DURATION_MS_RANGE,
       duration_ms: DURATION_MS_RANGE,
       estimated_cost_micro_usd: COST_MICRO_USD_RANGE,
     },

@@ -88,3 +88,24 @@ test('queue: bounded, batched, close is bounded', async () => {
   await hanging.close(50);
   assert.ok(Date.now() - started < 1_000);
 });
+
+test('queue: an opt-out while a batch is sending stops the batches after it', async () => {
+  let enabled = true;
+  const batches: number[] = [];
+  const queue = new BatchQueue({
+    send: async (events) => {
+      batches.push(events.length);
+      // The user opts out while the first batch is on its way.
+      enabled = false;
+    },
+    maxBatch: 2,
+    flushIntervalMs: 60_000,
+    isEnabled: () => enabled,
+  });
+  for (let i = 0; i < 5; i += 1) {
+    queue.push({ event: 'e', distinct_id: 'x', timestamp: '', properties: {} });
+  }
+  await queue.flush();
+  assert.deepEqual(batches, [2], 'only the batch already sending went out');
+  assert.equal(queue.size, 0, 'the rest is dropped, not kept for later');
+});

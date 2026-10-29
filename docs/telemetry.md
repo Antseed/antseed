@@ -162,8 +162,8 @@ Every event, from every product, includes this envelope:
   same launch. `next_action` is `deposited`, `switched_free_model` or `left`
   (the app closed first).
 - `withdraw_started` and `withdraw_completed` — the withdraw page was opened,
-  and the payments portal reported a completed payment after that. No
-  properties.
+  and the payments portal reported a completed payment after that, with no
+  other pay page (deposit, channel close) opened in between. No properties.
 - `runtime_stopped_on_window_close` — Windows and Linux only: closing the last
   window quits the app and stops the buyer runtime. Properties:
   `runtime_was_running`.
@@ -184,10 +184,14 @@ Every event, from every product, includes this envelope:
   `amount_bucket` (`zero`, `under_0_01`, `0_01_0_1`, `0_1_1`, `1_10`,
   `over_10`, in USDC). For a gateway this is its "money added" step.
 - `buyer_request_finished` — one per model request the proxy handles, from
-  every buyer (desktop, gateway or standalone). Properties:
+  every buyer (desktop, gateway or standalone): chats, image generation and
+  edits, decision models (SystemOne) and video. Properties:
   - `protocol`: the API the client spoke (`anthropic-messages`,
     `openai-chat-completions`, `openai-completions`, `openai-responses`,
     `openai-images`, `typesafe-systemone`, `video`, `unknown`).
+  - `video_action`, on video requests only: `create` (starting a job) or
+    `retrieve` (a status poll or the download). A job is one `create` and
+    then `retrieve` calls until it is done, so count jobs by `create`.
   - `public_model_id`: as on the desktop, a reviewed public model id or
     `custom_or_unknown`.
   - `route_mode`: `auto`, `pinned` (a seller was named) or `router` (a
@@ -204,18 +208,35 @@ Every event, from every product, includes this envelope:
     with no telemetry change. Other recognized tools (`cursor`, `cline`,
     `aider`, `continue`, `openclaw`) keep their name, any other client is
     `custom`, and `none` when the request names no tool.
-  - `outcome`: `success`, `failed`, `cancelled`.
+  - `outcome`: `success` (the whole answer arrived), `failed`, or
+    `cancelled` (the client hung up before the answer finished, for example
+    the user pressed stop, whether or not part of it had arrived).
+    `cancelled` is not a failure: count success rate as success ÷ (success +
+    failed). A cancelled request sends no token counts, output speed or cost.
   - `failure_reason`: the same fixed taxonomy as the desktop's
     `chat_request_finished`, classified from what the network did.
   - `http_status`: the failed request's status, an integer in 100–599.
   - `attempt_count` (`1`, `2`, `3_plus`), `sellers_tried` (`0`, `1`, `2`,
     `3_plus`), `fell_back` (more than one seller was tried).
   - `seller_tier`: `free`, `paid` or `unknown`, from the seller's advertised price.
-  - `ttft_bucket`, `duration_bucket` (`under_1s`, `1_5s`, `5_30s`, `30s_2m`,
-    `over_2m`), `streamed`.
-  - `ttft_ms`: exact milliseconds from the request to the seller's first byte
-    (omitted when nothing arrived). `duration_ms`: exact milliseconds until
-    the request finished.
+  - `streamed`: the answer was streamed to the client.
+  - `ttft_ms`: exact milliseconds from the request to the first byte of the
+    answer that was used: what the caller waited (omitted when no answer
+    arrived; an error reply is not output). After a fallback this is the
+    answering seller's first byte, not an earlier seller's error reply, and
+    the time spent on the failed sellers is included.
+  - `seller_ttft_ms`: the answering seller's own time to first byte, from
+    the moment its attempt was sent. Equal to `ttft_ms` when the first
+    attempt answered.
+  - `failed_attempts_ms`: milliseconds lost to failed attempts: sellers that
+    failed, rate-limit retries and their waits. 0 when the first attempt
+    answered; for a request that failed on every seller, all of its time.
+  - `rate_limited`: a seller answered 429 (busy) on some attempt of this
+    request. A used-up free allowance is also a 429 but is not counted here.
+  - `routing_version`: which seller-selection algorithm routed the request
+    (`v1` today), so a new algorithm can be compared with the current one.
+  - `duration_ms`: exact milliseconds until the request finished (time to the
+    last token for a streamed answer).
   - `client_retry`: the client sent this same request again within two
     minutes of a copy that did not succeed. Coding tools retry a failed turn
     on their own (Codex up to five times, shown as "Reconnecting"), so one
@@ -275,6 +296,27 @@ counts start over when the buyer restarts.
 
 A gateway's buyer sends the same events, never with a key, member, workspace
 or end-user id, name or label.
+
+### Routing scorecard
+
+How the routing comparison (current vs. a new algorithm) is built from
+`buyer_request_finished`, split by `routing_version` and limited to
+`outcome = success` unless noted:
+
+| Measure | From |
+|---|---|
+| TTFT p50 / p95 (seller) | `seller_ttft_ms` |
+| Caller TTFT p50 / p95 | `ttft_ms` |
+| Throughput p50 (tokens/s) | `output_tokens / (duration_ms - ttft_ms) * 1000`, streamed answers |
+| Cost per 1,000 requests | `sum(estimated_cost_micro_usd) / count / 1e6 * 1000` |
+| Cost per 1M tokens | `sum(estimated_cost_micro_usd) / sum(input_tokens + output_tokens)` |
+| Whole request p50 / p95 (time to last token) | `duration_ms` |
+| Hit at least one 429 | share of requests (any outcome) with `rate_limited` |
+| Needed a retry | share of requests (any outcome) with `attempt_count` other than `1` |
+| Time spent in failed attempts, per request | mean of `failed_attempts_ms` (any outcome) |
+
+The cost measures need `usage_reported` and a listed price; requests without
+them are left out of both the sum and the count.
 
 ## Gateway setup funnel
 
@@ -370,7 +412,9 @@ identity and telemetry state for the first time, still emits the event.
 ## How to disable telemetry
 
 - Desktop: **Preferences → Privacy → Product telemetry**. This also turns off
-  the buyer the desktop runs, within a second.
+  the buyer the desktop runs, within a second, and any buyer it starts later.
+  If the buyer's config file cannot be written, the switch flips back and
+  the setting stays as it was.
 - Desktop environment kill switch: set `TELEMETRY_ENABLED=false` (or `0` / `no`).
 - Buyer (standalone or a gateway's) and gateway: `antseed telemetry disable` (`antseed
   telemetry status` shows the current state and why). It sets

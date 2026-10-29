@@ -25,6 +25,7 @@ import {
 } from '../telemetry/runtime.js';
 import { watchConnectedAppFirstRequest } from '../telemetry/connected-app-watch.js';
 import { syncBuyerTelemetryConsent } from '../telemetry/buyer-consent.js';
+import { setDesktopTelemetryUserOptedOut } from '../telemetry/host-env.js';
 import {
   getMainWindow,
 } from '../ui/window.js';
@@ -92,9 +93,17 @@ export function registerAppIpc(): void {
     if (!telemetry) {
       return { ok: false, error: 'Telemetry service not initialized' };
     }
+    const previouslyOptedOut = telemetry.isUserOptedOut();
     await telemetry.setUserOptedOut(!enabled);
     // The buyer re-reads `telemetry.enabled` from its config within a second.
-    await syncBuyerTelemetryConsent(Boolean(enabled));
+    // If that file cannot be written the buyer would keep its old choice, so
+    // put the desktop back too and report the failure instead of a switch
+    // that says one thing while the buyer does another.
+    if (!(await syncBuyerTelemetryConsent(Boolean(enabled)))) {
+      await telemetry.setUserOptedOut(previouslyOptedOut);
+      return { ok: false, error: 'Could not update the buyer config; telemetry setting unchanged' };
+    }
+    setDesktopTelemetryUserOptedOut(!enabled);
     return {
       ok: true,
       available: telemetry.available,

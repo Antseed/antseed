@@ -131,7 +131,7 @@ function initializeTelemetry(hadExistingIdentity: boolean): Promise<Awaited<Retu
     hadExistingIdentity,
   }).then(async (service) => {
     setTelemetryService(service);
-    setDesktopTelemetryHost({ sessionId: service.sessionId, available: service.available });
+    setDesktopTelemetryHost({ sessionId: service.sessionId, available: service.available, userOptedOut: service.isUserOptedOut() });
     await service.recordAppStarted();
     return service;
   }).catch(() => null);

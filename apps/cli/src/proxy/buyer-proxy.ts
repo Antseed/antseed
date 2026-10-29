@@ -348,6 +348,13 @@ type RequestPolicyResult =
   /** The control header was sent but does not match: fail closed, never route. */
   | { kind: 'auth_invalid' }
 
+/** Image generation, image edits and decision models (SystemOne): model requests outside a chat, reported like any other. */
+function isImageOrDecisionRequest(method: string, request: Pick<SerializedHttpRequest, 'path' | 'headers'>): boolean {
+  if (method !== 'POST') return false
+  const protocol = detectRequestServiceApiProtocol(request)
+  return protocol === 'openai-images' || protocol === 'typesafe-systemone'
+}
+
 function isLoopbackAddress(address: string | undefined): boolean {
   // A destroyed socket has no address: never treat it as local.
   if (address === undefined) return false
@@ -3924,7 +3931,7 @@ export class BuyerProxy {
       ? extractConversationIdentity(serializedReq.headers, conversationBody)
       : null
     const routingConversationKey = conversationIdentity ? `${conversationIdentity.tool}:${conversationIdentity.sessionKey}` : null
-    if (isConversationRequest || nativeVideo) {
+    if (isConversationRequest || nativeVideo || isImageOrDecisionRequest(method, serializedReq)) {
       const trace = this._telemetry?.beginRequest(res, this._cachedPeers.length > 0)
       if (trace) {
         trace.clientTool = telemetryClientTool(conversationIdentity?.tool ?? requestClientTool(serializedReq.headers))
@@ -4359,6 +4366,7 @@ export class BuyerProxy {
     const trace = traceFor(res)
     if (trace) {
       trace.protocol = telemetryProtocol(requestProtocol, nativeVideo !== null)
+      trace.videoAction = nativeVideo?.action ?? null
       trace.model = requestedService
       if (trace.routeMode !== 'router') trace.routeMode = explicitPeerId ? 'pinned' : 'auto'
     }
@@ -4996,7 +5004,7 @@ export class BuyerProxy {
     /** Give up on this seller if it has not started answering by then, so the next one can be tried. */
     attemptTimeoutMs: number | null = null,
   ): Promise<PeerDispatchResult> {
-    traceFor(res)?.noteAttempt(selectedPeer.peerId)
+    traceFor(res)?.noteAttempt(selectedPeer.peerId, Date.now())
     const gatewayAutoRoute = gatewayRouted && !pinned
     const selectedRoutePlan = routePlanByPeerId.get(selectedPeer.peerId)
       ?? resolvePeerRoutePlan(selectedPeer, requestProtocol, requestedService, explicitProvider, 'lenient')
@@ -5216,7 +5224,7 @@ export class BuyerProxy {
         }
 
         const finishedAt = Date.now()
-        if (!streamed) traceFor(res)?.noteAnswered(finishedAt)
+        if (!streamed) traceFor(res)?.noteAnswered(finishedAt, response.statusCode, freeTierRefusal !== null)
         const latencyMs = finishedAt - startTime
         log(`Response: ${responseForClient.statusCode} (${latencyMs}ms, ${responseForClient.body.length} bytes)`)
         if (responseForClient.statusCode >= 400) {
@@ -5371,7 +5379,7 @@ export class BuyerProxy {
         }
         const latencyMs = Date.now() - startTime
         this._markModelActivity()
-        traceFor(res)?.noteAnswered(Date.now())
+        traceFor(res)?.noteAnswered(Date.now(), response.statusCode, freeTierRefusal !== null)
 
         log(`Response: ${response.statusCode} (${latencyMs}ms, ${response.body.length} bytes)`)
         if (response.statusCode >= 400) {

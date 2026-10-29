@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { buildCliChildEnv, ProcessManager, resolveCommandArgs } from './process-manager.js';
-import { setDesktopTelemetryHost } from '../telemetry/host-env.js';
+import { setDesktopTelemetryHost, setDesktopTelemetryUserOptedOut } from '../telemetry/host-env.js';
 
 test('local desktop CLI runs may prepare trusted plugins', () => {
   const env = buildCliChildEnv({ ANTSEED_SKIP_PLUGIN_UPDATE_CHECK: '1' }, true);
@@ -26,6 +26,16 @@ test('CLI children are told the desktop hosts them, and are off when desktop tel
   setDesktopTelemetryHost({ sessionId: '0190a6e2-7b3c-7d4e-8f00-000000000001', available: true });
   env = buildCliChildEnv({}, false);
   assert.equal(env['ANTSEED_TELEMETRY'], undefined);
+});
+
+test('CLI children are off when the user opted out of desktop telemetry', () => {
+  setDesktopTelemetryHost({ sessionId: '0190a6e2-7b3c-7d4e-8f00-000000000001', available: true, userOptedOut: true });
+  assert.equal(buildCliChildEnv({}, false)['ANTSEED_TELEMETRY'], '0');
+  setDesktopTelemetryUserOptedOut(false);
+  assert.equal(buildCliChildEnv({}, false)['ANTSEED_TELEMETRY'], undefined);
+  setDesktopTelemetryUserOptedOut(true);
+  assert.equal(buildCliChildEnv({}, false)['ANTSEED_TELEMETRY'], '0');
+  setDesktopTelemetryHost({ sessionId: '0190a6e2-7b3c-7d4e-8f00-000000000001', available: true });
 });
 
 test('live QA does not bypass native-module preflight', async () => {
