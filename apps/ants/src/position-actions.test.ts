@@ -41,6 +41,13 @@ describe('position action eligibility', () => {
     expect(positionActionProblem({ ...position, stakeEndEpoch: 26 }, action, 26)).toContain('remaining lock');
   });
 
+  it('does not tell users to restake ANTS they withdraw from a matured position', () => {
+    // Withdrawn ANTS land in the wallet, and wallet ANTS cannot be staked while transfers are disabled.
+    const problem = positionActionProblem({ ...position, stakeEndEpoch: 26 }, 'extend', 26);
+    expect(problem).not.toContain('stake again to start a new lock');
+    expect(problem).toContain('cannot be staked again');
+  });
+
   it('waits for epoch data instead of assuming an action is valid', () => {
     expect(positionActionProblem(position, 'split', null)).toContain('epoch information');
   });

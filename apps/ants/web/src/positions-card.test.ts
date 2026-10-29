@@ -256,8 +256,11 @@ describe('positions table', () => {
     expect(renderPosition({ stakeEndEpoch: 38 })).toContain(note);
   });
 
-  it('explains that a matured position only earns again after withdraw and restake', () => {
-    expect(renderPosition({ state: 'matured' })).toContain('no longer earns rewards');
+  it('explains that a matured position no longer earns and does not promise a restake while transfers are disabled', () => {
+    const html = renderPosition({ state: 'matured' });
+    expect(html).toContain('no longer earns rewards');
+    expect(html).not.toContain('stake again to keep earning');
+    expect(html).toContain('cannot be staked again');
   });
 
   it.each([null, '   '])('falls back to the seller address when its name is %s', name => {
