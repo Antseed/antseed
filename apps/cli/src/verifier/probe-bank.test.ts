@@ -493,6 +493,11 @@ test('pre-run capacity counts each seller\'s unseen questions against an audit p
     })
     assert.equal(capacity.selectedProbeCount, 100)
     assert.deepEqual(capacity.sellers.map((entry) => [entry.unseenProbeCount, entry.neededProbeCount]), [[100, 200], [200, 200]])
+    // --allow-probe-reuse: the first audit may reuse seen questions, so only the recheck set must be unseen.
+    const reuse = await inspectSellerProbeCapacity({
+      banksDir: directory, model: 'model-a', epoch: '28', sellerPeerIds: [seller], recheck: true, config, allowProbeReuse: true,
+    })
+    assert.deepEqual(reuse.sellers.map((entry) => [entry.unseenProbeCount, entry.neededProbeCount]), [[100, 100]])
     // Already audited this epoch: only the recheck set is still needed.
     await reserveModelAuditReference({
       banksDir: directory, model: 'model-a', sellerPeerId: fresh, service: 'model-a',

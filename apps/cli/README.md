@@ -712,13 +712,15 @@ the auditor's side every run and seller failures once per epoch, rechecks
 waiting DIFFs, and audits new or previously skipped sellers. One run retries
 what is left in up to `--max-rounds` rounds (default 3), with a larger
 enrollment budget each round, and stops early when nothing is left or a round
-makes no progress. `--fresh` ignores the earlier runs.
+makes no progress. `--fresh` ignores the earlier runs, including DIFFs waiting
+for a recheck and an interrupted run's checkpoints, and audits every eligible
+seller again from the start.
 
 `verifier run` and `verifier submit` first check that this CLI is up to date:
-they compare its version with the CLI version in `apps/cli/package.json` at the
-latest GitHub release of the repo. A CLI older than that stops with an update
-hint; the same or a newer version passes. When the check can't be made, `run`
-warns and a real `submit` stops; `--skip-version-check` skips it.
+they compare its version with the latest `@antseed/cli` on npm (the version
+`antseed update` installs). A CLI older than that stops with an update hint;
+the same or a newer version passes. When the npm registry can't be reached,
+`run` warns and a real `submit` stops; `--skip-version-check` skips it.
 
 Each model's submission covers every seller result for that model: `SAME`,
 `DIFF`, and `UNDETERMINED`. Only runs audited on the current on-chain epoch can
@@ -782,9 +784,13 @@ sending anything when a bank isn't ready:
 antseed --config ./audit-config.json verifier run gpt-6.1-sol --max-enrollment-requests 1000
 ```
 
-The request budget is **per model** (2000 unless `--max-enrollment-requests` sets it), includes retries and requests already used
-by a compatible enrollment checkpoint, and cannot exceed a lower configured
-`referenceMaxRequestsPerBuild`. It is a request limit, not a dollar spending cap.
+The request budget is **per build** (2000 unless `--max-enrollment-requests`
+sets it), includes retries and requests already used by a compatible enrollment
+checkpoint, and cannot exceed a lower configured `referenceMaxRequestsPerBuild`.
+One model can need several builds in a run: one to make its bank usable, up to
+3 more when sellers have seen too much of it, and up to 3 more for DIFF
+rechecks. Each retry round (`--max-rounds`) can build again with the budget
+times the round number. It is a request limit, not a dollar spending cap.
 Probe growth also respects `referenceMaximumProbeCount` (default 500) and the
 configured no-progress limit. An assigned or `--all` run applies this process to
 each model with eligible sellers; it can therefore spend up to the per-model limit for each.

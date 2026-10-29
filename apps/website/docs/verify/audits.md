@@ -99,13 +99,13 @@ To run anyway, add `--ignore-pre-run-checks`: the problems are printed as warnin
 
 ### Up-to-date CLI
 
-All auditors must audit the same models in the same way, or the round-robin split and the results don't line up. So `verifier run` and `verifier submit` first compare your CLI version with the CLI version of the latest Antseed release on GitHub. If yours is older, the command stops before sending anything, even if the new release changed nothing about audits:
+All auditors must audit the same models in the same way, or the round-robin split and the results don't line up. So `verifier run` and `verifier submit` first compare your CLI version with the latest `@antseed/cli` on npm, the version `antseed update` installs. If yours is older, the command stops before sending anything, even if the new release changed nothing about audits:
 
 ```
-this CLI (0.1.211) is older than the latest release 0.1.214 (GitHub release v0.2.71). Update with `antseed update` …
+this CLI (0.1.211) is older than the latest @antseed/cli 0.1.214. Update with `antseed update` …
 ```
 
-If GitHub can't be reached, `verifier run` warns and continues, and `verifier submit` stops (`submit --dry-run` only warns). `--skip-version-check` skips the check on both.
+If the npm registry can't be reached, `verifier run` warns and continues, and `verifier submit` stops (`submit --dry-run` only warns). `--skip-version-check` skips the check on both.
 
 ### Price limit
 
@@ -127,7 +127,7 @@ A model's bank holds the questions and the genuine model's answers. Banks live i
 - **Worn out:** each seller only gets questions it hasn't been given in an earlier epoch, so a bank wears out as the same sellers are audited again. When any seller about to be audited lacks an unseen audit set plus a recheck set, it builds fresh questions and adds them to the bank, up to 3 builds per model.
 - **Ready:** no reference calls.
 
-Each build is billed by the reference API and stops once the bank is ready, or after 2,000 requests per model (`--max-enrollment-requests` changes it, `verifier.referenceMaxRequestsPerBuild` caps it). Building grows a bank and never replaces it. `--no-enroll` turns this off: the run then stops before sending anything when a bank isn't ready. `antseed verifier reference build [<model> | --all]` builds banks ahead of time, for example to spread the cost before the first run.
+Each build is billed by the reference API and stops once the bank is ready, or after 2,000 requests (`--max-enrollment-requests` changes it, `verifier.referenceMaxRequestsPerBuild` caps it). The limit is per build, not per model: one model can need a build to make its bank usable, up to 3 more when it's worn out and up to 3 more for DIFF rechecks, and each retry round can build again with a larger limit. Building grows a bank and never replaces it. `--no-enroll` turns this off: the run then stops before sending anything when a bank isn't ready. `antseed verifier reference build [<model> | --all]` builds banks ahead of time, for example to spread the cost before the first run.
 
 ## Reference upstreams
 
@@ -185,7 +185,7 @@ Run the same `antseed verifier run` command again; it continues the epoch. It fi
 
 One run does this in rounds: after the first round it retries what is left (failures, waiting rechecks) with a larger probe-bank budget, up to `--max-rounds` rounds (default 3). It stops early when nothing is left, a round makes no progress, or less than 45 minutes of the epoch remain.
 
-The run ends with a table of the whole epoch and the next command. `--fresh` ignores the earlier runs.
+The run ends with a table of the whole epoch and the next command. `--fresh` ignores the earlier runs, including DIFFs waiting for a recheck and an interrupted run, and audits every eligible seller again from the start.
 
 ## Running every epoch
 

@@ -1,44 +1,42 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import {
-  checkVerifierRelease,
-  latestReleaseUrl,
-  releasePackageUrl,
-  requireCurrentVerifier,
-} from './release-check.js'
+import { checkVerifierRelease, requireCurrentVerifier } from './release-check.js'
 
-/** GitHub: the latest release is `v0.2.70`, whose apps/cli/package.json is `body`. */
-function fakeFetch(body: unknown, status = 200): typeof fetch {
-  return (async (url: string | URL) => String(url).startsWith('https://api.github.com/')
-    ? new Response(JSON.stringify({ tag_name: 'v0.2.70' }))
-    : new Response(JSON.stringify(body), { status })) as typeof fetch
+/** npm: the dist-tags of @antseed/cli answer `body`. */
+function fakeNpm(body: unknown, status = 200, seen: string[] = []): typeof fetch {
+  return (async (url: string | URL) => {
+    seen.push(String(url))
+    return new Response(JSON.stringify(body), { status })
+  }) as typeof fetch
 }
 
-test('the CLI package.json is read at the latest GitHub release', () => {
-  assert.equal(latestReleaseUrl(), 'https://api.github.com/repos/Antseed/antseed/releases/latest')
-  assert.equal(releasePackageUrl('v0.2.70'), 'https://raw.githubusercontent.com/Antseed/antseed/v0.2.70/apps/cli/package.json')
+test('the latest version is read from npm\'s dist-tags of @antseed/cli', async () => {
+  const seen: string[] = []
+  await checkVerifierRelease({ localVersion: '0.1.216', registry: 'https://registry.npmjs.org', fetch: fakeNpm({ latest: '0.1.216' }, 200, seen) })
+  assert.deepEqual(seen, ['https://registry.npmjs.org/-/package/@antseed%2fcli/dist-tags'])
 })
 
-test('a CLI older than the latest release\'s CLI is outdated; the same or newer is current', async () => {
-  const fetch = fakeFetch({ version: '0.1.208' })
-  assert.deepEqual(await checkVerifierRelease({ localVersion: '0.1.207', fetch }), { status: 'outdated', latestVersion: '0.1.208 (GitHub release v0.2.70)' })
-  assert.deepEqual(await checkVerifierRelease({ localVersion: '0.1.208', fetch }), { status: 'current', latestVersion: '0.1.208 (GitHub release v0.2.70)' })
-  assert.equal((await checkVerifierRelease({ localVersion: '0.1.212', fetch })).status, 'current')
+test('a CLI older than the latest on npm is outdated; the same or newer is current', async () => {
+  const fetch = fakeNpm({ latest: '0.1.216' })
+  assert.deepEqual(await checkVerifierRelease({ localVersion: '0.1.215', fetch }), { status: 'outdated', latestVersion: '0.1.216' })
+  assert.deepEqual(await checkVerifierRelease({ localVersion: '0.1.216', fetch }), { status: 'current', latestVersion: '0.1.216' })
+  assert.equal((await checkVerifierRelease({ localVersion: '0.1.217', fetch })).status, 'current')
+  assert.equal((await checkVerifierRelease({ localVersion: '0.1.216-rc.1', fetch })).status, 'outdated')
 })
 
-test('an unreachable GitHub or an unreadable version makes the check unavailable', async () => {
-  assert.equal((await checkVerifierRelease({ localVersion: '0.1.208', fetch: fakeFetch({}, 503) })).status, 'unavailable')
-  assert.equal((await checkVerifierRelease({ localVersion: '0.1.208', fetch: (async () => { throw new Error('offline') }) as typeof fetch })).status, 'unavailable')
-  const invalid = await checkVerifierRelease({ localVersion: '0.1.208', fetch: fakeFetch({ name: '@antseed/cli' }) })
-  assert.deepEqual(invalid, { status: 'unavailable', reason: 'the CLI version of GitHub release v0.2.70 could not be compared' })
+test('an unreachable registry or an odd answer makes the check unavailable', async () => {
+  assert.equal((await checkVerifierRelease({ localVersion: '0.1.216', fetch: fakeNpm({}, 503) })).status, 'unavailable')
+  assert.equal((await checkVerifierRelease({ localVersion: '0.1.216', fetch: (async () => { throw new Error('offline') }) as typeof fetch })).status, 'unavailable')
+  assert.equal((await checkVerifierRelease({ localVersion: '0.1.216', fetch: fakeNpm({ latest: 'soon' }) })).status, 'unavailable')
+  assert.equal((await checkVerifierRelease({ localVersion: 'dev', fetch: fakeNpm({ latest: '0.1.216' }) })).status, 'unavailable')
 })
 
 test('an outdated CLI cannot run or submit', async () => {
-  const outdated = async () => ({ status: 'outdated' as const, latestVersion: '0.2.0 (GitHub release v0.2.70)' })
+  const outdated = async () => ({ status: 'outdated' as const, latestVersion: '0.2.0' })
   for (const command of ['run', 'submit'] as const) {
     await assert.rejects(
       requireCurrentVerifier({ command, currentVersion: '0.1.0', skip: false, strictWhenUnavailable: false, warn: () => undefined, check: outdated }),
-      /this CLI \(0\.1\.0\) is older than the latest release 0\.2\.0 \(GitHub release v0\.2\.70\)\. Update with `antseed update`/,
+      /this CLI \(0\.1\.0\) is older than the latest @antseed\/cli 0\.2\.0\. Update with `antseed update`/,
     )
   }
 })

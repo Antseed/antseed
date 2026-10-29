@@ -286,11 +286,25 @@ export function registerVerifierRunCommand(verifier: Command): void {
       validateAssignedModeOptions(modelValue, options)
       const maxRounds = maxRunRounds(options)
       let previousLeft: number | null = null
+      let replannedForNewEpoch = false
       for (let round = 1; round <= maxRounds; round += 1) {
         if (round > 1) console.log(chalk.cyan(`\nRound ${round} of ${maxRounds}: retrying what is left this epoch`))
         // Later rounds continue from the epoch (never --fresh) and get another enrollment budget,
         // so a bank or recheck build that ran out of requests can finish from its checkpoint.
         const outcome = await runVerifierRound(modelValue, round === 1 ? options : { ...options, fresh: false }, command, round)
+        if (outcome.epochChanged) {
+          // The round was planned for the previous epoch (assignment, finished sellers, rechecks),
+          // so nothing was audited; plan it again for the new epoch, once, without using up a round.
+          if (replannedForNewEpoch) {
+            console.log(chalk.yellow('The epoch changed again; run `antseed verifier run` again.'))
+            break
+          }
+          replannedForNewEpoch = true
+          previousLeft = null
+          console.log(chalk.cyan(`\nThe epoch changed to ${outcome.epochChanged} while fresh questions were built; planning the run again for the new epoch`))
+          round -= 1
+          continue
+        }
         if (outcome.left === 0) break
         if (round === maxRounds) {
           console.log(chalk.yellow(`${outcome.left} audit(s) or recheck(s) still left after ${maxRounds} round(s); run \`antseed verifier run\` again later this epoch to retry them.`))
@@ -320,13 +334,20 @@ export function maxRunRounds(options: RunOptions): number {
   return rounds
 }
 
+export interface VerifierRoundOutcome {
+  left: number
+  secondsLeftInEpoch: number
+  /** Set to the new epoch when it started during enrollment; the round audited nothing. */
+  epochChanged?: string
+}
+
 /** One pass over the epoch's remaining work. Returns how much is still left to retry or recheck. */
 async function runVerifierRound(
   modelValue: string | undefined,
   options: RunOptions,
   command: Command,
   round: number,
-): Promise<{ left: number; secondsLeftInEpoch: number }> {
+): Promise<VerifierRoundOutcome> {
       const baseBudget = enrollmentRequestBudget(options)
       const enrollmentBudget = baseBudget === null ? null : baseBudget * round
       const globalOptions = getGlobalOptions(command)
@@ -375,7 +396,7 @@ async function runVerifierRound(
       let status: VerifierStatusV1 | null = null
       let runProgress: VerifierRunProgress | null = null
       try {
-        let epoch = epochWindow.epoch
+        const epoch = epochWindow.epoch
         if (requestedResumeManifest && requestedResumeManifest.epoch !== epoch) {
           throw new Error(
             `resume run ${requestedResumeManifest.runId} belongs to epoch ${requestedResumeManifest.epoch}; current epoch is ${epoch}`,
@@ -389,8 +410,9 @@ async function runVerifierRound(
         const epochCellFor = (model: string, peerId: string): EpochCell | undefined =>
           epochState?.cells.get(epochCellKey(model, peerId))
         const isDone = (model: string, peerId: string): boolean => epochCellFor(model, peerId)?.action === 'done'
-        // A run that stopped before writing its manifest left checkpoints; their exchanges are reused.
-        const previousStatus = requestedResumeManifest ? null : await readVerifierStatus(evidenceDir)
+        // A run that stopped before writing its manifest left checkpoints; their exchanges are reused
+        // (not with --fresh, which audits every seller again).
+        const previousStatus = requestedResumeManifest || options.fresh ? null : await readVerifierStatus(evidenceDir)
         const interruptedRunId = previousStatus?.epoch === epoch
           && !(epochState?.manifests ?? []).some((manifest) => manifest.runId === previousStatus.runId)
           && !(await readVerifierRunManifest(evidenceDir, previousStatus.runId).then(() => true, () => false))
@@ -418,8 +440,8 @@ async function runVerifierRound(
         // Only an explicit --resume-run limits the run to repairs.
         const resumeOnly = resumeSourceRunId !== null
         // First DIFFs from earlier runs this epoch whose recheck could not run: rechecked here
-        // without repeating the first check.
-        const pendingRechecks = (config.verifier?.diffConfirmationRuns ?? 1) > 0
+        // without repeating the first check. --fresh audits those sellers from the start instead.
+        const pendingRechecks = (config.verifier?.diffConfirmationRuns ?? 1) > 0 && !options.fresh
           ? await loadPendingDiffRechecks(evidenceDir, epoch, models)
           : new Map()
         if (selectedPeerId) {
@@ -545,7 +567,11 @@ async function runVerifierRound(
           runModels = readyModels
           if (runModels.length === 0) throw new Error('no models ready after reference enrollment')
           epochWindow = await resolveEpoch()
-          epoch = epochWindow.epoch
+          if (epochWindow.epoch !== epoch) {
+            // Everything planned so far (assignment, finished sellers, waiting rechecks) belongs to
+            // the previous epoch; the caller plans the round again for the new one.
+            return { left: 0, secondsLeftInEpoch: epochWindow.endsAt - Date.now() / 1_000, epochChanged: epochWindow.epoch }
+          }
           proxy = await loadBuyerProxySnapshot(globalOptions.dataDir)
           selectedPeers = selectedPeerId ? [selectVerifierPeer(proxy.peers, selectedPeerId)] : proxy.peers
         }
@@ -649,6 +675,7 @@ async function runVerifierRound(
           epoch,
           epochSource: epochWindow.source,
           enrollIfNeeded: enrollmentBudget !== null,
+          allowProbeReuse: options.allowProbeReuse === true,
           reserveUsdc: proxy.settings?.maxReserveAmountUsdc ?? null,
           models: preparedModels.map(({ model, targets }) => ({ model, sellerPeerIds: targets.map((target) => target.peer.peerId) })),
         })
@@ -1218,6 +1245,7 @@ async function collectPreRunProblems(input: {
   epoch: string
   epochSource: AuditEpochWindow['source']
   enrollIfNeeded: boolean
+  allowProbeReuse: boolean
   reserveUsdc: bigint | null
   models: ReadonlyArray<{ model: string; sellerPeerIds: readonly string[] }>
 }): Promise<string[]> {
@@ -1259,6 +1287,7 @@ async function collectPreRunProblems(input: {
     try {
       const capacity = await inspectSellerProbeCapacity({
         banksDir: input.banksDir, model, epoch: input.epoch, sellerPeerIds, recheck, config: input.config.verifier,
+        allowProbeReuse: input.allowProbeReuse,
       })
       if (capacity.selectedProbeCount === null && !input.enrollIfNeeded) {
         problems.push(`${model}: the probe bank has too few usable questions for one audit; `

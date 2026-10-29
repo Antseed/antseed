@@ -1196,6 +1196,11 @@ export async function inspectSellerProbeCapacity(input: {
   /** Whether a DIFF is rechecked on a second, unseen set (`verifier.diffConfirmationRuns` > 0). */
   recheck: boolean
   config?: VerifierCLIConfig
+  /**
+   * `--allow-probe-reuse`: the first audit may reuse questions the seller saw in earlier epochs,
+   * as the reservation does. A DIFF recheck still needs unseen questions.
+   */
+  allowProbeReuse?: boolean
 }): Promise<{
   selectedProbeCount: number | null
   sellers: Array<{ sellerPeerId: string; unseenProbeCount: number; neededProbeCount: number; assignedThisEpoch: boolean }>
@@ -1220,7 +1225,9 @@ export async function inspectSellerProbeCapacity(input: {
     return {
       sellerPeerId,
       unseenProbeCount: eligibleIds.filter((id) => !used.has(id)).length,
-      neededProbeCount: selected === null ? 0 : selected * ((assignedThisEpoch ? 0 : 1) + (input.recheck ? 1 : 0)),
+      neededProbeCount: selected === null
+        ? 0
+        : selected * ((assignedThisEpoch || input.allowProbeReuse ? 0 : 1) + (input.recheck ? 1 : 0)),
       assignedThisEpoch,
     }
   }))
