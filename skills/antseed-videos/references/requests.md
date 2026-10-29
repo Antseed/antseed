@@ -494,7 +494,7 @@ Check each image against the limits [Source limits](#source-limits) printed (`li
 
 ### Create the edit
 
-Check for a job file first, exactly as in [Create once](#create-once). The field names come from the seller's `fields`: the character goes in `reference_image_urls` when listed (Recast), then `image_urls`, otherwise in `image_url` as one image (motion control). Send every field [Source limits](#source-limits) listed as required; put the ones this block does not build in `extra.json` (for example `{"character_orientation": "video"}` for fal's motion control). A missing required field is refused by Venice at create and by fal after the job started. Either way it costs the opening fee on a video above $1.00. `duration` is a number (seconds) on fal and the string `"<n>s"` on Venice. `resolution` must be one the seller lists, in the same case (for example `768P`, not `768p`); the price `match` uses the same values.
+Check for a job file first, exactly as in [Create once](#create-once). The field names come from the seller's `fields`: the character goes in `reference_image_urls` when listed (Recast), then `image_urls`, otherwise as one image in `reference_image_url` (Wan 2.7 edit) or `image_url` (motion control). Send every field [Source limits](#source-limits) listed as required; put the ones this block does not build in `extra.json` (for example `{"character_orientation": "video"}` for fal's motion control). A missing required field is refused by Venice at create and by fal after the job started. Either way it costs the opening fee on a video above $1.00. `duration` is a number (seconds) on fal and the string `"<n>s"` on Venice. `resolution` must be one the seller lists, in the same case (for example `768P`, not `768p`); the price `match` uses the same values.
 
 ```bash
 output="${output:-edited-video.mp4}"; job_file="${output%.*}.job.json"
@@ -503,6 +503,7 @@ route_model="$peer_id@$model"
 [ -e prompt.txt ] || : > prompt.txt
 ref_field="$(jq -r --arg peer "$peer_id" '(.peers[] | select(.peerId == $peer) | .capabilities.supportedParameters // []) as $p
   | if ($p | index("reference_image_urls")) then "reference_image_urls" elif ($p | index("image_urls")) then "image_urls"
+    elif ($p | index("reference_image_url")) then "reference_image_url"
     elif ($p | index("image_url")) then "image_url" else "reference_image_urls" end' "$model_file")"
 if [ -e "$job_file" ]; then
   echo "job exists: $job_file (resume it; do not create again)"
@@ -519,7 +520,7 @@ else
      duration: (if $protocol == "venice-video" then "\($duration)s" else $duration end)}
     + (if ($prompt | rtrimstr("\n")) != "" then {prompt: ($prompt | rtrimstr("\n"))} else {} end)
     + (if ($refs[0] // []) == [] then {}
-       elif $ref_field == "image_url" then {image_url: $refs[0][0]}
+       elif $ref_field == "image_url" or $ref_field == "reference_image_url" then {($ref_field): $refs[0][0]}
        else {($ref_field): $refs[0]} end)
     + (if $resolution != "" then {resolution: $resolution} else {} end)
     + ($extra[0] // {})' > "$body"

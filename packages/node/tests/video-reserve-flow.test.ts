@@ -699,8 +699,8 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     expect(h.close).toHaveBeenCalledOnce();
     expect(h.close.mock.calls[0]![2]).toBe(SERIOUS_FEE);
     expect(h.chain.get(channelId)).toMatchObject({ settled: SERIOUS_FEE, status: 2 });
-    // The buyer no longer counts the channel as active.
-    expect(h.buyerChannel(channelId)?.status).toBe('settled');
+    // The buyer forgets the channel, but keeps it stored as active so it can still request-close it.
+    expect(h.buyerChannel(channelId)?.status).toBe('active');
     expect(h.buyer.getOneOffChannelForRequest(h.peer.peerId, 'video-1')).toBeNull();
   });
 

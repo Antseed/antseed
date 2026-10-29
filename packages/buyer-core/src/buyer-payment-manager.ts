@@ -2134,8 +2134,10 @@ export class BuyerPaymentManager {
    * Record that a tracked video job ended without a video (the seller
    * answered FAILED). The seller
    * closes the job's one-off channel at what the buyer signed so far (the
-   * serious fee, if any); the buyer forgets the job and the channel so it is
-   * no longer counted as active. True when a tracked job was ended.
+   * serious fee, if any); the buyer forgets the job and the channel, but keeps
+   * it stored as active until the close is seen, so it can still be
+   * request-closed if the seller never closes it. True when a tracked job was
+   * ended.
    */
   recordVideoFailed(sellerPeerId: string, protocol: string, jobId: string): boolean {
     const key = videoJobKey(sellerPeerId, protocol, jobId);
@@ -2144,7 +2146,7 @@ export class BuyerPaymentManager {
     this._videoJobs.delete(key);
     if (job.oneOffChannelId) {
       this._persistVideoJob(job.oneOffChannelId, null);
-      this.retireOneOffChannel(job.oneOffChannelId, CHANNEL_STATUS.SETTLED);
+      this.retireOneOffChannel(job.oneOffChannelId, CHANNEL_STATUS.ACTIVE);
     }
     debugLog(`[BuyerPayment] Video job ${jobId} failed; its one-off channel is retired`);
     return true;
