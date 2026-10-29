@@ -480,6 +480,13 @@ describe('staking dashboard displays', () => {
     expect(freshTable).toContain(formatYieldPercent(poolAprRange(fresh.liveYield).maxLock.apr));
     expect(freshTable).toContain('this epoch so far');
     expect(freshTable).toContain('Source: epoch 25 in progress');
+    // The service sends an unavailable historical yield object for a new pool, not an absent one.
+    const unpriced = { ...fresh, yield: { ...yieldAt(24, 1n), status: 'unavailable', reward: null } } as unknown as PoolView;
+    const unpricedTable = render(createElement(PoolsTable, { pools: [unpriced], currentEpoch: 25, loading: false, onOpen: () => {}, onStake: () => {} }));
+    expect(unpricedTable).toContain(formatYieldPercent(poolAprRange(unpriced.liveYield).maxLock.apr));
+    expect(unpricedTable).toContain('Source: epoch 25 in progress');
+    expect(unpricedTable).toContain('Rewards not yet settled.');
+    expect(unpricedTable).not.toContain('Yield is unavailable.');
   });
 
   it('shows week-over-week volume change under the last epoch', () => {

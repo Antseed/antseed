@@ -6,7 +6,7 @@ import { Button, Card } from './ui';
 import { Modal } from '@antseed/ui';
 import { useMemo, useState, type ReactNode } from 'react';
 import { PoolActivity, SellerModels } from './PoolActivity';
-import type { EpochVolume, PoolConfigView, PoolEpochPoint, PoolView, PoolsView, RewardsView } from '../../../src/api-types';
+import type { EpochVolume, PoolConfigView, PoolEpochPoint, PoolView, PoolYield, PoolsView, RewardsView } from '../../../src/api-types';
 import { cmpBig, formatAnts, formatBps, formatInt, formatUsdcCompact, formatUtc, toBigInt } from '../format';
 import { AddressLink } from './AddressLink';
 import { EpochBarChart } from './Charts';
@@ -451,12 +451,19 @@ export function StakerRewardsHelp({ maxLockEpochs }: { maxLockEpochs: number | n
   </p>;
 }
 
+/** The yield the headline APR comes from: the last complete epoch when it prices, else the epoch in progress. */
+function headlineYield(pool: PoolView): PoolYield | undefined {
+  if (poolAprRange(pool.yield).maxLock.apr !== null) return pool.yield;
+  if (poolAprRange(pool.liveYield).maxLock.apr !== null) return pool.liveYield;
+  return [pool.yield, pool.liveYield].find((info) => info && info.status !== 'unavailable');
+}
+
 function yieldDescription(pool: PoolView): string {
-  const info = pool.yield ?? pool.liveYield;
-  if (!info || info.status === 'unavailable') return 'Yield is unavailable.';
+  const info = headlineYield(pool);
+  if (!info) return 'Yield is unavailable.';
   const range = poolAprRange(info);
   const duration = info.endsAt - info.startsAt;
-  const source = pool.yield && pool.yield.status !== 'unavailable' ? `last complete epoch ${info.epoch}` : `epoch ${info.epoch} in progress`;
+  const source = info === pool.yield ? `last complete epoch ${info.epoch}` : `epoch ${info.epoch} in progress`;
   return `New 10,000 ANTS stake at max lock (${range.maxLock.epochs ?? '—'} epochs of power), including the stake's own added points. 1-week lock: ${percent(range.oneWeek.apr)}. Source: ${source}, ${formatUtc(info.startsAt)} – ${formatUtc(info.startsAt + duration)}. The epoch repeated for a year, not compounded. Rates compress as stake joins the network. Returns aren’t guaranteed. — means unavailable.${info.status === 'estimated' ? ' Rewards not yet settled.' : ''}`;
 }
 
