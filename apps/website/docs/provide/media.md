@@ -152,7 +152,7 @@ Requests are passed to fal unchanged, except that `duration` is removed for vide
 
 Video-to-video models take a buyer's source video (`video_url`) and change part of it: a new character from an image (MiniMax H3 Max Recast, Kling V3 motion control), or a text instruction (Kling v4 edit, Wan 2.7 edit). Add them like any other video service; the plugin does the rest at startup:
 
-- It reads the model's inputs (fal's schema, or Venice's model list) and announces `video` in `capabilities.video.inputs`, so buyers route edits only to you when you take them. It also announces the required inputs and resolutions, and, for fal endpoints whose output is as long as the source, the whole-second durations from fal's source limits.
+- It reads the model's inputs (fal's schema, or Venice's model list) and announces `video` in `capabilities.video.inputs` and `video_url` in `supportedParameters`, so buyers route edits only to you when you take them. It also announces the required inputs and resolutions, and, for fal endpoints whose output is as long as the source, the whole-second durations from fal's source limits.
 - It does not check the source; the upstream does. Buyers using the `antseed-videos` skill check the source against the provider's published limits before they pay.
 - A job the upstream rejects (for example Recast on a video without a person) is reported as `FAILED`, and its payment channel is closed at once at what the buyer signed so far. For a video above $1.00 that is the opening fee. fal bills nothing for a failed job, and Venice refunds it.
 - On fal, it removes `duration` for endpoints that take none. On Venice, it turns Venice's HTML `413` for a body above 32.5 MB into a JSON `413 request_too_large`.

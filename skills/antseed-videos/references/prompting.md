@@ -47,7 +47,7 @@ The required fields above are a starting point; [Source limits](requests.md#sour
 
 Notes:
 
-- **People only.** Recast and motion control replace or animate a real person in the source. A source without one (an animal, a cartoon, a product shot) comes back unchanged or fails, and a failure after the job started still costs the opening fee on a video above $1.00.
+- **People only.** Recast and motion control replace or animate a real person in the source. A source without one (an animal, a cartoon, a product shot) comes back unchanged or fails.
 - **Recast** needs no prompt; a short one helps when several people are in the video ("the man on the left becomes @Image1"). Send only the seller's listed `fields` (Venice refuses `seed` and `enhance_realism`). A clear, front-facing, well-lit image of each new person works best.
 - **Motion control** copies body movement, not the scene: the output's background and look come from the character image.
 - **Kling v4 edit and Wan 2.7 edit on fal** cut the output to `duration` when it is shorter than the source. On Venice, Wan adds an audio track to the output.

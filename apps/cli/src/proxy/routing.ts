@@ -73,55 +73,6 @@ export function findMissingRequiredParameters(
   return requiredParameters.filter((parameter) => !supported.has(parameter.toLowerCase()))
 }
 
-/** Body fields of a native video create that carry each media input. */
-const VIDEO_INPUT_REQUEST_FIELDS: Record<string, readonly string[]> = {
-  video: ['video_url'],
-  reference_video: ['reference_video_urls', 'video_urls'],
-}
-
-/**
- * Media inputs a native video create carries that only some models take: a
- * source video to edit (`video_url`) or reference videos. Automatic routing
- * sends such a create only to sellers that take them.
- */
-export function requiredVideoInputs(request: SerializedHttpRequest): string[] {
-  const fields = extractRequestBodyFields(request.headers, request.body)
-  if (!fields) return []
-  const present = (value: unknown) => typeof value === 'string' ? value.length > 0 : Array.isArray(value) && value.length > 0
-  return Object.entries(VIDEO_INPUT_REQUEST_FIELDS)
-    .filter(([, names]) => names.some((name) => present(fields[name])))
-    .map(([input]) => input)
-}
-
-/**
- * Video inputs the peer's service does not take. A service takes an input
- * when it announces it in `video.inputs`, or lists its request field in
- * `supportedParameters`. Strict: a service that announces neither does not.
- * Announced: such a service is taken at its word only when it announces one.
- */
-export function findMissingVideoInputs(
-  peer: PeerInfo,
-  provider: string,
-  requestedService: string | null,
-  inputs: readonly string[],
-  mode: 'strict' | 'announced' = 'strict',
-): string[] {
-  if (inputs.length === 0) return []
-  const service = requestedService?.trim()
-  if (!service) return [...inputs]
-  const providerKey = Object.keys(peer.providerServiceCapabilities ?? {})
-    .find((key) => key.toLowerCase() === provider.toLowerCase())
-  const services = providerKey ? peer.providerServiceCapabilities?.[providerKey]?.services : undefined
-  const serviceKey = services ? Object.keys(services).find((key) => isRequestedServiceMatch(key, service)) : undefined
-  const capabilities = serviceKey ? services?.[serviceKey] : undefined
-  // `announced`: a pinned seller that announces neither stays the caller's choice.
-  if (mode === 'announced' && !capabilities?.video?.inputs && !capabilities?.supportedParameters) return []
-  const announced = new Set<string>(capabilities?.video?.inputs ?? [])
-  const fields = new Set((capabilities?.supportedParameters ?? []).map((field) => field.toLowerCase()))
-  return inputs.filter((input) => !announced.has(input)
-    && !(VIDEO_INPUT_REQUEST_FIELDS[input] ?? []).some((field) => fields.has(field)))
-}
-
 // `strict` drops peers that don't advertise the requested service; `lenient`
 // falls back to the provider's protocol set so a pinned peer still dispatches
 // and surfaces the seller's real upstream error.

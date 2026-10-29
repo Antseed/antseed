@@ -92,7 +92,6 @@ import {
 } from './network-models.js'
 import {
   findMissingRequiredParameters,
-  findMissingVideoInputs,
   findUnannouncedRequestParameters,
   findAdvertisedServiceOffer,
   findAdvertisedServiceProtocols,
@@ -100,7 +99,6 @@ import {
   getExplicitPeerIdOverride,
   parseRequiredParametersHeader,
   REQUIRED_PARAMETERS_HEADER,
-  requiredVideoInputs,
   resolvePeerRoutePlan,
   selectCandidatePeersForRouting,
   type CandidatePeerRouteSelection,
@@ -1621,8 +1619,6 @@ export class BuyerProxy {
     requestedService: string
     explicitProvider: string | null
     requiredParameters: readonly string[]
-    /** Video inputs (`video`, `reference_video`) every candidate's service must take. */
-    requiredVideoInputs?: readonly string[]
     requestPolicy: RoutingPolicy | null
     preferredPeerId: string | null
     /** Route preview: no random spreading or probing, so it shows the expected order. */
@@ -1655,15 +1651,6 @@ export class BuyerProxy {
           + `missing required parameter(s): ${missingRequired.join(', ')}`,
         )
         verdict.reasons.push(`missing required parameter(s): ${missingRequired.join(', ')}`)
-        continue
-      }
-      const missingVideoInputs = findMissingVideoInputs(peer, plan.provider, plan.serviceId, input.requiredVideoInputs ?? [])
-      if (missingVideoInputs.length > 0) {
-        log(
-          `Capability filter: peer ${peer.peerId.slice(0, 12)}... service="${plan.serviceId}" `
-          + `does not take video input(s): ${missingVideoInputs.join(', ')}`,
-        )
-        verdict.reasons.push(`does not take video input(s): ${missingVideoInputs.join(', ')}`)
         continue
       }
       const requestForPolicy = withRoutedModel(request, plan.serviceId)
@@ -4344,9 +4331,17 @@ export class BuyerProxy {
       const routeRequiredParameters = serializedReq.path.split('?')[0]?.toLowerCase() === '/v1/images/edits'
         && !requiredParameters.includes('image')
         ? [...requiredParameters, 'image']
-        : requiredParameters
-      // A video edit needs a seller whose model takes the source video.
-      const routeVideoInputs = nativeVideo?.action === 'create' ? requiredVideoInputs(serializedReq) : []
+        : [...requiredParameters]
+      // Likewise a video edit needs a seller whose model takes the source
+      // (or reference) videos the create sends.
+      if (nativeVideo?.action === 'create') {
+        const fields = extractRequestBodyFields(serializedReq.headers, serializedReq.body)
+        for (const field of ['video_url', 'reference_video_urls']) {
+          const value = fields?.[field]
+          if ((typeof value === 'string' || Array.isArray(value)) && value.length > 0
+            && !routeRequiredParameters.includes(field)) routeRequiredParameters.push(field)
+        }
+      }
       const selectModelPeers = (candidateSources: PeerInfo[]): CandidatePeerRouteSelection =>
         selectCandidatePeersForRouting(candidateSources, requestProtocol, requestedService, explicitProvider, 'strict')
       let discoveredPeers = peers
@@ -4366,7 +4361,6 @@ export class BuyerProxy {
         requestedService,
         explicitProvider,
         requiredParameters: routeRequiredParameters,
-        requiredVideoInputs: routeVideoInputs,
         requestPolicy,
         preferredPeerId: preferredConversationPeerId,
         // Conversations the client identifies (session id, prompt-cache key)
@@ -4374,26 +4368,6 @@ export class BuyerProxy {
         affinityKey: routingConversationKey ?? promptCacheKey(serializedReq),
       })
       const requireVerified = effectivePolicy?.requireVerified === true
-      // Only when no seller of the model takes the video: if one does but
-      // policy or price ruled it out, the generic error below applies.
-      const videoPlannedPeers = routeVideoInputs.length > 0
-        ? modelPeers.filter((peer) => modelPlans.get(peer.peerId)?.serviceId)
-        : []
-      if (candidates.length === 0 && videoPlannedPeers.length > 0
-        && videoPlannedPeers.every((peer) => {
-          const plan = modelPlans.get(peer.peerId)!
-          return findMissingVideoInputs(peer, plan.provider, plan.serviceId!, routeVideoInputs).length > 0
-        })) {
-        log(`Request rejected: no seller of ${requestedService} takes video input(s) ${routeVideoInputs.join(', ')}`)
-        return dispatchFailure(422, { 'content-type': 'application/json' }, JSON.stringify({
-          error: {
-            type: 'required_capability_unavailable',
-            code: 'required_capability_unavailable',
-            message: `No seller of model "${requestedService}" takes the video input(s) this request sends: ${routeVideoInputs.join(', ')}. Pick a video-to-video model, or pin a seller with <peerId>@<model>.`,
-            param: 'video_url',
-          },
-        }))
-      }
       if (candidates.length === 0) {
         const capabilityRequired = routeRequiredParameters.length > 0
         // The model exists on the network but only behind an API this
@@ -4723,23 +4697,6 @@ export class BuyerProxy {
           code: 'required_capability_unavailable',
           message: `Pinned seller does not advertise required parameter(s) for model "${pinnedServiceId ?? requestedService ?? 'unknown'}": ${missingRequired.join(', ')}.`,
           param: REQUIRED_PARAMETERS_HEADER,
-        },
-      }))
-    }
-    // A pinned video create that sends a source the seller's model does not
-    // take would be paid for and then fail (or ignore the source).
-    const pinnedVideoInputs = nativeVideo?.action === 'create' ? requiredVideoInputs(serializedReq) : []
-    const missingVideoInputs = selectedPlan && pinnedServiceId
-      ? findMissingVideoInputs(selectedPeer, selectedPlan.provider, pinnedServiceId, pinnedVideoInputs, 'announced')
-      : []
-    if (missingVideoInputs.length > 0) {
-      log(`Request rejected: pinned seller's ${pinnedServiceId} does not take video input(s) ${missingVideoInputs.join(', ')}`)
-      return dispatchFailure(422, { 'content-type': 'application/json' }, JSON.stringify({
-        error: {
-          type: 'required_capability_unavailable',
-          code: 'required_capability_unavailable',
-          message: `Pinned seller's model "${pinnedServiceId}" does not take the video input(s) this request sends: ${missingVideoInputs.join(', ')}. Pick a video-to-video model.`,
-          param: 'video_url',
         },
       }))
     }

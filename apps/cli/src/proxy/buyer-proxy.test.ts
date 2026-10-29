@@ -1521,78 +1521,42 @@ test('native video resolves antseed and peer-pinned models like images', async (
   }
 })
 
-test('video edits route automatically only to sellers whose model takes the source video', async () => {
-  const peer = (seed: string, reputation: number, capabilities: Record<string, unknown>) => {
+test('video edits route automatically only to sellers whose model lists the source video field', async () => {
+  const peer = (seed: string, reputation: number, supportedParameters: string[]) => {
     const p = makePeer(seed, ['fal'])
     p.reputationScore = reputation
     p.providerServiceApiProtocols = { fal: { services: { 'edit-model': ['fal-video'] } } }
-    p.providerServiceCapabilities = { fal: { services: { 'edit-model': { outputs: ['video'], ...capabilities } as any } } }
+    p.providerServiceCapabilities = { fal: { services: { 'edit-model': { outputs: ['video'], supportedParameters } as any } } }
     return p
   }
-  const textOnly = peer('a', 95, { video: { inputs: ['first_frame'] }, supportedParameters: ['image_url', 'prompt'] })
-  const announcesInput = peer('b', 70, { video: { inputs: ['video', 'reference_image'] } })
-  const listsField = peer('c', 50, { supportedParameters: ['prompt', 'video_url'] })
+  const textOnly = peer('a', 95, ['image_url', 'prompt'])
+  const edits = peer('b', 50, ['prompt', 'video_url'])
   const selected: string[] = []
-  const send = async (selectedPeer: PeerInfo, request: { requestId: string }) => {
-    selected.push(selectedPeer.peerId)
-    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ request_id: `job-${selected.length}` })) }
-  }
-  const create = (proxy: BuyerProxy, body: Record<string, unknown>) =>
-    invokeProxy(proxy, makeProxyRequest({ path: '/fal/v1/video/queue', body: { model: 'edit-model', prompt: 'swap the dancer', duration: 12, ...body } }))
-  const route = async (peers: PeerInfo[], body: Record<string, unknown>, router: unknown = permissiveRouter()) => {
-    const proxy = makeBuyerProxyWithPeers(peers, peers, router as any)
+  const route = async (peers: PeerInfo[], body: Record<string, unknown>) => {
+    const proxy = makeBuyerProxyWithPeers(peers, peers, permissiveRouter() as any)
     ;(proxy as any)._persistResourceRoutes = async () => {}
-    ;(proxy as any)._node.sendRequest = send
-    return create(proxy, body)
+    ;(proxy as any)._node.sendRequest = async (selectedPeer: PeerInfo, request: { requestId: string }) => {
+      selected.push(selectedPeer.peerId)
+      return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ request_id: `job-${selected.length}` })) }
+    }
+    return invokeProxy(proxy, makeProxyRequest({ path: '/fal/v1/video/queue', body: { model: 'edit-model', prompt: 'swap the dancer', duration: 12, ...body } }))
   }
 
   selected.length = 0
-  assert.equal((await route([textOnly, announcesInput], { video_url: 'https://example.com/a.mp4' })).statusCode, 200)
-  assert.deepEqual(selected, [announcesInput.peerId])
-  selected.length = 0
-  assert.equal((await route([textOnly, listsField], { video_url: 'data:video/mp4;base64,AAAA' })).statusCode, 200)
-  assert.deepEqual(selected, [listsField.peerId])
+  assert.equal((await route([textOnly, edits], { video_url: 'https://example.com/a.mp4' })).statusCode, 200)
+  assert.deepEqual(selected, [edits.peerId])
 
   // Without a source video the highest-reputation seller still wins.
   selected.length = 0
-  assert.equal((await route([textOnly, announcesInput], {})).statusCode, 200)
+  assert.equal((await route([textOnly, edits], {})).statusCode, 200)
   assert.deepEqual(selected, [textOnly.peerId])
 
   selected.length = 0
   const refused = await route([textOnly], { video_url: 'https://example.com/a.mp4' })
   assert.equal(refused.statusCode, 422)
   assert.equal(JSON.parse(refused.body).error.code, 'required_capability_unavailable')
-  assert.match(JSON.parse(refused.body).error.message, /video input\(s\) this request sends: video/)
+  assert.match(JSON.parse(refused.body).error.message, /required parameter\(s\): video_url/)
   assert.deepEqual(selected, [])
-
-  // A seller that takes the video but is ruled out by policy is not reported
-  // as "no seller takes video input": the generic no-candidates error applies.
-  selected.length = 0
-  const policyExcluded = await route([textOnly, announcesInput], { video_url: 'https://example.com/a.mp4' }, {
-    allowsPeerForPolicy: (_req: unknown, candidate: PeerInfo) => candidate.peerId !== announcesInput.peerId,
-    onResult: () => {},
-  })
-  assert.notEqual(policyExcluded.statusCode, 200)
-  assert.doesNotMatch(policyExcluded.body, /video input\(s\) this request sends/)
-  assert.deepEqual(selected, [])
-
-  // A pinned seller that announces its inputs without the source video is
-  // refused before payment; it would charge and then fail or ignore it.
-  selected.length = 0
-  const pinnedRefused = await route([textOnly], { model: `${textOnly.peerId}@edit-model`, video_url: 'https://example.com/a.mp4' })
-  assert.equal(pinnedRefused.statusCode, 422)
-  assert.equal(JSON.parse(pinnedRefused.body).error.code, 'required_capability_unavailable')
-  assert.match(JSON.parse(pinnedRefused.body).error.message, /Pinned seller's model "edit-model" does not take/)
-  assert.deepEqual(selected, [])
-
-  // A pinned seller that announces nothing stays the caller's choice; it answers for itself.
-  const silent = peer('d', 40, {})
-  selected.length = 0
-  assert.equal((await route([silent], { model: `${silent.peerId}@edit-model`, video_url: 'https://example.com/a.mp4' })).statusCode, 200)
-  assert.deepEqual(selected, [silent.peerId])
-  selected.length = 0
-  assert.equal((await route([announcesInput], { model: `${announcesInput.peerId}@edit-model`, video_url: 'https://example.com/a.mp4' })).statusCode, 200)
-  assert.deepEqual(selected, [announcesInput.peerId])
 })
 
 test('native video retrieves use the buyer identity that created the job', async () => {
