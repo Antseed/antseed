@@ -215,12 +215,47 @@ describe('pending position action forms', () => {
 });
 
 describe('merge dialog', () => {
+  const source = { id: 30, agentId: 86940, amount: '100000000000000000000', stakeStartEpoch: 18, stakeEndEpoch: 40, closedAtEpoch: 0, withdrawn: false, state: 'active', maxLocked: false, maxLockedNext: false } as PositionView;
+  const pendingSource = { ...source, id: 32, stakeStartEpoch: 30, state: 'pending' } as PositionView;
+  const renderMerge = (positions: PositionView[]) => renderToStaticMarkup(createElement(BulkActionPanel, { kind: 'merge', positions, pools: [], onClose: vi.fn(), onStarted: vi.fn() }));
+
   it('states the handover epoch so merging does not look like a lost epoch', () => {
-    const source = { id: 30, agentId: 86940, amount: '100000000000000000000', stakeStartEpoch: 18, stakeEndEpoch: 40, closedAtEpoch: 0, withdrawn: false, state: 'active', maxLocked: false, maxLockedNext: false } as PositionView;
-    const html = renderToStaticMarkup(createElement(BulkActionPanel, { kind: 'merge', positions: [source, { ...source, id: 31 }], pools: [], onClose: vi.fn(), onStarted: vi.fn() }));
+    const html = renderMerge([source, { ...source, id: 31 }]);
     expect(html).toContain('No rewards are lost');
-    expect(html).toContain('keep earning through epoch 28');
+    expect(html).toContain('The selected positions keep earning through epoch 28');
     expect(html).toContain('earns from epoch 29');
+  });
+
+  it('waits for the latest activation and only promises earnings for activated positions', () => {
+    const html = renderMerge([source, pendingSource]);
+    expect(html).toContain('The selected positions that have activated keep earning through epoch 29');
+    expect(html).toContain('earns from epoch 30');
+  });
+
+  it('does not promise earnings when no selected position has activated', () => {
+    const html = renderMerge([pendingSource, { ...pendingSource, id: 33 }]);
+    expect(html).not.toContain('No rewards are lost');
+    expect(html).toContain('None of the selected positions has activated yet');
+    expect(html).toContain('activates at epoch 30');
+  });
+});
+
+describe('split dialog', () => {
+  const renderSplit = (overrides: Partial<PositionView>) => renderToStaticMarkup(createElement(RowActionPanel, {
+    kind: 'split',
+    position: { id: 30, agentId: 86940, amount: '200000000000000000000', weightAmount: '200000000000000000000', stakeStartEpoch: 18, stakeEndEpoch: 40, closedAtEpoch: 0, withdrawn: false, state: 'active', epochsRemaining: 12, maxLocked: false, maxLockedNext: false, ...overrides } as PositionView,
+    config: { maxStakeEpochs: 104, moveWeightPenaltyBps: 0 } as PoolConfigView,
+    onClose: vi.fn(),
+  }));
+
+  it('says an earning position keeps earning until the new positions take over', () => {
+    expect(renderSplit({})).toContain('this position keeps earning until the new ones take over at epoch 29');
+  });
+
+  it('does not promise earnings for a position that has not activated', () => {
+    const html = renderSplit({ stakeStartEpoch: 30, state: 'pending' });
+    expect(html).toContain('This position has not activated yet; the new positions activate at epoch 30');
+    expect(html).not.toContain('No rewards are lost');
   });
 });
 

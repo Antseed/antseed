@@ -142,20 +142,41 @@ export function parseRewardPage(value: unknown, owner: string) {
   return { positions, source, currentEpoch, liveSource, ...(raw.liveError ? { liveError: String(raw.liveError) } : {}), ...pagination(raw.pagination, positions.length) };
 }
 
+/**
+ * Principal of each pending replacement that an active split/merge source in the
+ * same pool still counts as active stake this epoch, followed through chained
+ * restructures. Principal from never-activated sources stays pending, and a
+ * move's destination pool shows its stake as pending.
+ */
+function handoverCoverage(positions: LivePosition[], epoch: number): Map<number, bigint> {
+  const byId = new Map(positions.map(position => [position.id, position]));
+  const covered = new Map<number, bigint>();
+  // Replacements always get higher ids than their sources, so id order visits sources first.
+  for (const source of [...positions].sort((a, b) => a.id - b.id)) {
+    if (source.withdrawn || source.closedAtEpoch <= epoch) continue;
+    const amount = source.stakeStartEpoch <= epoch ? BigInt(source.amount) : covered.get(source.id) ?? 0n;
+    const replacements = (source.replacementIds ?? []).map(id => byId.get(id)).filter((row): row is LivePosition => row?.agentId === source.agentId);
+    const total = replacements.reduce((sum, row) => sum + BigInt(row.amount), 0n);
+    if (amount === 0n || total === 0n) continue;
+    for (const row of replacements) covered.set(row.id, (covered.get(row.id) ?? 0n) + amount * BigInt(row.amount) / total);
+  }
+  return covered;
+}
+
 function summarize(snapshot: RewardPositions): RewardPositions {
   const summary = new Map<number, LivePositions['summary'][number]>();
-  const epoch = snapshot.liveSource.currentEpoch;
-  // Active split/merge sources keep their principal counted until they hand over to the replacement.
-  const handovers = new Set(snapshot.positions
-    .filter(position => !position.withdrawn && position.stakeStartEpoch <= epoch && position.closedAtEpoch > epoch)
-    .map(position => `${position.agentId}:${position.closedAtEpoch}`));
+  const covered = handoverCoverage(snapshot.positions, snapshot.liveSource.currentEpoch);
   for (const position of snapshot.positions) {
     if (position.withdrawn || (position.closedAtEpoch !== 0 && position.closedAtEpoch <= snapshot.liveSource.currentEpoch)) continue;
     const pool = summary.get(position.agentId) ?? { agentId: position.agentId, positionIds: [], activeStake: '0', pendingStake: '0', power: '0' };
     pool.positionIds.push(position.id);
     // A split/merge/move source closing next epoch keeps its power until then, but its principal already lives in the replacement.
     if (position.stakeStartEpoch <= snapshot.liveSource.currentEpoch) pool.activeStake = (BigInt(pool.activeStake) + BigInt(position.amount)).toString();
-    else if (position.closedAtEpoch === 0 && !(position.changePending && handovers.has(`${position.agentId}:${position.stakeStartEpoch}`))) pool.pendingStake = (BigInt(pool.pendingStake) + BigInt(position.amount)).toString();
+    else if (position.closedAtEpoch === 0) {
+      const amount = BigInt(position.amount);
+      const counted = covered.get(position.id) ?? 0n;
+      pool.pendingStake = (BigInt(pool.pendingStake) + amount - (counted < amount ? counted : amount)).toString();
+    }
     pool.power = (BigInt(pool.power) + BigInt(position.power ?? '0')).toString();
     summary.set(position.agentId, pool);
   }

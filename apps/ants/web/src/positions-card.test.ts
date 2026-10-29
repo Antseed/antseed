@@ -40,6 +40,11 @@ function renderPosition(overrides: Partial<PositionView> = {}, pools: PoolView[]
   return renderToStaticMarkup(createElement(PositionsCard, { pools }));
 }
 
+function renderPositions(positions: PositionView[]) {
+  mocks.page.mockReturnValue({ data: { positions }, loading: false, error: null });
+  return renderToStaticMarkup(createElement(PositionsCard, { pools: [] }));
+}
+
 function pool(name: string | null): PoolView {
   return {
     agentId: 86939, seller: position().owner,
@@ -203,12 +208,29 @@ describe('positions table', () => {
     expect(html).not.toContain('change pending');
   });
 
-  it('labels a restructure replacement as taking over without a reward gap', () => {
+  it('labels a restructure replacement as taking over without a reward gap from an earning source', () => {
     mocks.epoch.mockReturnValue({ current: 27, genesis: 1775728461, epochDuration: 604800 });
-    const html = renderPosition({ state: 'pending', stakeStartEpoch: 28, withdrawableEpoch: 28, changePending: true });
+    const html = renderPositions([
+      position({ id: 29, state: 'closed', closedAtEpoch: 28, closedBy: 'split', replacementIds: [31] }),
+      position({ id: 31, state: 'pending', stakeStartEpoch: 28, withdrawableEpoch: 28, changePending: true }),
+    ]);
     expect(html).toContain('Takes over epoch 28');
-    expect(html).toContain('without a gap');
+    expect(html).toContain('keep earning until epoch 28. Rewards continue without a gap.');
     expect(html).not.toContain('Activates epoch');
+  });
+
+  it('does not promise continued earnings when the replaced position never activated', () => {
+    mocks.epoch.mockReturnValue({ current: 27, genesis: 1775728461, epochDuration: 604800 });
+    // Splitting a pending stake closes the source at its activation epoch: it never earns.
+    const html = renderPositions([
+      position({ id: 29, state: 'closed', stakeStartEpoch: 28, closedAtEpoch: 28, closedBy: 'split', replacementIds: [31] }),
+      position({ id: 31, state: 'pending', stakeStartEpoch: 28, withdrawableEpoch: 28, changePending: true }),
+    ]);
+    expect(html).not.toContain('Earning until');
+    expect(html).toContain('show 1 closed');
+    expect(html).toContain('Takes over epoch 28');
+    expect(html).toContain('starts earning at epoch 28');
+    expect(html).not.toContain('without a gap');
   });
 
   it('keeps merge sources listed and earning until the replacement takes over', () => {
