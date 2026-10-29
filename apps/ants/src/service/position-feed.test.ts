@@ -115,6 +115,54 @@ describe('Antscan position feeds', () => {
     expect(data.summary).toMatchObject([{ positionIds: [7, 8, 9], activeStake: '100', pendingStake: '100' }]);
     expect(data.totals).toEqual({ activeStake: '100', pendingStake: '100', power: '400' });
   });
+  describe('restructure handovers', () => {
+    type Row = ReturnType<typeof rewardPage>['positions'][number];
+    // Epoch 22: sources close at 23 and their replacements start at 23.
+    const closing = (row: Row, replacementIds: number[], extra: Partial<Row> = {}): Row => ({ ...row, closedAtEpoch: '23', state: 'closed', replacementIds, ...extra });
+    const replacement = (row: Row, amount: string): Row => ({ ...row, amount, stakeStartEpoch: '23', state: 'pending', power: '0', withdrawableEpoch: '23', changePending: true });
+    const pending = (row: Row, extra: Partial<Row> = {}): Row => ({ ...row, stakeStartEpoch: '23', state: 'pending', power: '0', ...extra });
+
+    it('does not double-count a merge replacement while its active sources hand over', async () => {
+      const page = rewardPage([7, 8, 9, 10]);
+      const [a, b, c, d] = page.positions;
+      // A fresh stake activating the same epoch is still pending.
+      page.positions = [closing(a!, [9]), closing(b!, [9]), replacement(c!, '200'), pending(d!)];
+      const data = await fetchRewardPositions(owner, false, async () => page);
+      expect(data.totals).toEqual({ activeStake: '200', pendingStake: '100', power: '400' });
+    });
+
+    it('keeps an unrelated pending split in the same pool and epoch as pending', async () => {
+      const page = rewardPage([7, 8, 9, 10, 11, 12]);
+      const [a, b, c, d, e, f] = page.positions;
+      page.positions = [
+        closing(a!, [9, 10]), closing(b!, [11, 12], { amount: '200', stakeStartEpoch: '23', power: '0' }),
+        replacement(c!, '50'), replacement(d!, '50'), replacement(e!, '100'), replacement(f!, '100'),
+      ];
+      const data = await fetchRewardPositions(owner, false, async () => page);
+      expect(data.totals).toMatchObject({ activeStake: '100', pendingStake: '200' });
+    });
+
+    it('follows chained restructures and keeps principal merged in from a pending source', async () => {
+      const page = rewardPage([7, 8, 9, 10, 11]);
+      const [a, b, c, d, e] = page.positions;
+      // Active 7 and pending 8 merge into 9, which is split again into 10 and 11 in the same epoch.
+      page.positions = [
+        closing(a!, [9]), closing(b!, [9], { amount: '200', stakeStartEpoch: '23', power: '0' }),
+        { ...replacement(c!, '300'), closedAtEpoch: '23', state: 'closed', replacementIds: [10, 11] },
+        replacement(d!, '150'), replacement(e!, '150'),
+      ];
+      const data = await fetchRewardPositions(owner, false, async () => page);
+      expect(data.totals).toMatchObject({ activeStake: '100', pendingStake: '200' });
+    });
+
+    it('shows a move as pending in its destination pool', async () => {
+      const page = rewardPage([7, 8]);
+      const [a, b] = page.positions;
+      page.positions = [closing(a!, [8]), { ...replacement(b!, '100'), agentId: '2' }];
+      const data = await fetchRewardPositions(owner, false, async () => page);
+      expect(data.summary).toMatchObject([{ agentId: 1, activeStake: '100', pendingStake: '0' }, { agentId: 2, activeStake: '0', pendingStake: '100' }]);
+    });
+  });
 
   it('computes wallet totals across every page instead of trusting page-scoped totals', async () => {
     const first = { ...rewardPage([8], 'next'), pageTotals: { activeStake: '999', pendingStake: '999', power: '999' } };
