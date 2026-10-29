@@ -40,6 +40,11 @@ function renderPosition(overrides: Partial<PositionView> = {}, pools: PoolView[]
   return renderToStaticMarkup(createElement(PositionsCard, { pools }));
 }
 
+function renderPositions(positions: PositionView[]) {
+  mocks.page.mockReturnValue({ data: { positions }, loading: false, error: null });
+  return renderToStaticMarkup(createElement(PositionsCard, { pools: [] }));
+}
+
 function pool(name: string | null): PoolView {
   return {
     agentId: 86939, seller: position().owner,
@@ -196,11 +201,63 @@ describe('positions table', () => {
 
   it('allows split while activation is pending and labels the activation epoch', () => {
     mocks.epoch.mockReturnValue({ current: 27, genesis: 1775728461, epochDuration: 604800 });
-    const html = renderPosition({ state: 'pending', stakeStartEpoch: 28, changePending: true });
+    const html = renderPosition({ state: 'pending', stakeStartEpoch: 28 });
     const items = mocks.menu.mock.calls[0]![0].items as Array<{ label: string; disabled?: boolean }>;
     expect(items.find((item) => item.label === 'Split')?.disabled).toBe(false);
     expect(html).toContain('Activates epoch 28');
     expect(html).not.toContain('change pending');
+  });
+
+  it('labels a restructure replacement as taking over without a reward gap from an earning source', () => {
+    mocks.epoch.mockReturnValue({ current: 27, genesis: 1775728461, epochDuration: 604800 });
+    const html = renderPositions([
+      position({ id: 29, state: 'closed', closedAtEpoch: 28, closedBy: 'split', replacementIds: [31] }),
+      position({ id: 31, state: 'pending', stakeStartEpoch: 28, withdrawableEpoch: 28, changePending: true }),
+    ]);
+    expect(html).toContain('Takes over epoch 28');
+    expect(html).toContain('keep earning until epoch 28. Rewards continue without a gap.');
+    expect(html).not.toContain('Activates epoch');
+  });
+
+  it('does not promise continued earnings when the replaced position never activated', () => {
+    mocks.epoch.mockReturnValue({ current: 27, genesis: 1775728461, epochDuration: 604800 });
+    // Splitting a pending stake closes the source at its activation epoch: it never earns.
+    const html = renderPositions([
+      position({ id: 29, state: 'closed', stakeStartEpoch: 28, closedAtEpoch: 28, closedBy: 'split', replacementIds: [31] }),
+      position({ id: 31, state: 'pending', stakeStartEpoch: 28, withdrawableEpoch: 28, changePending: true }),
+    ]);
+    expect(html).not.toContain('Earning until');
+    expect(html).toContain('show 1 closed');
+    expect(html).toContain('Takes over epoch 28');
+    expect(html).toContain('starts earning at epoch 28');
+    expect(html).not.toContain('without a gap');
+  });
+
+  it('keeps merge sources listed and earning until the replacement takes over', () => {
+    mocks.epoch.mockReturnValue({ current: 27, genesis: 1775728461, epochDuration: 604800 });
+    const html = renderPosition({ state: 'closed', closedAtEpoch: 28, closedBy: 'merge', replacementIds: [31], pendingReward: '2000000000000000000' });
+    expect(html).toContain('Earning until epoch 28');
+    expect(html).toContain('Keeps earning through epoch 27');
+    expect(html).toContain('#29 · merged into #31');
+    expect(html).not.toContain('show 1 closed');
+    expect(html).not.toContain('Select position 29');
+    expect(mocks.menu).not.toHaveBeenCalled();
+  });
+
+  it('hides restructure sources once they have handed over', () => {
+    mocks.epoch.mockReturnValue({ current: 28, genesis: 1775728461, epochDuration: 604800 });
+    const html = renderPosition({ state: 'closed', closedAtEpoch: 28, closedBy: 'merge', replacementIds: [31] });
+    expect(html).toContain('show 1 closed');
+    expect(html).not.toContain('Earning until');
+  });
+
+  it.each([[36, 'Last epoch to extend'], [37, 'Can no longer be extended']])('warns before the lock can no longer be extended (epoch %i)', (current, note) => {
+    mocks.epoch.mockReturnValue({ current, genesis: 1775728461, epochDuration: 604800 });
+    expect(renderPosition({ stakeEndEpoch: 38 })).toContain(note);
+  });
+
+  it('explains that a matured position only earns again after withdraw and restake', () => {
+    expect(renderPosition({ state: 'matured' })).toContain('no longer earns rewards');
   });
 
   it.each([null, '   '])('falls back to the seller address when its name is %s', name => {
@@ -244,7 +301,7 @@ describe('positions table', () => {
   it('explains status and lock expiry without implying automatic withdrawal', () => {
     const html = renderPosition({ state: 'matured' });
     expect(html).toContain('>Status<');
-    expect(html).toContain('The lock has expired.');
+    expect(html).toContain('The lock has expired,');
     expect(html).toContain('Funds are not withdrawn automatically.');
   });
 

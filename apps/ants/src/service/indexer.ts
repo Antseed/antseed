@@ -40,6 +40,9 @@ export interface IndexedPool {
   securityShareBps: string;
   activeStake: string;
   pendingStake: string;
+  /** Pool stake and power next epoch, read on-chain at the pool's last snapshot; null when the explorer has none (or predates the fields). */
+  nextActiveStake: string | null;
+  nextWeight: string | null;
   weight: string;
   powerShareBps: number;
   lastWeight: string;
@@ -86,6 +89,9 @@ export interface IndexedPoolDetail {
   stakers: number | null;
   /** Stake in open positions waiting for their activation epoch; null when the explorer predates the field. */
   pendingStake: string | null;
+  /** Pool stake and power next epoch, read on-chain at the pool's last snapshot; null when the explorer has none (or predates the fields). */
+  nextActiveStake: string | null;
+  nextWeight: string | null;
 }
 
 export interface IndexedPosition {
@@ -185,6 +191,8 @@ function toPool(row: Record<string, unknown>): IndexedPool & { firstStakeAt: num
     securityShareBps: str(row['securityShareBps']),
     activeStake: str(row['activeStake']),
     pendingStake: str(row['pendingStake']),
+    nextActiveStake: decimalOrNull(row['nextActiveStake']),
+    nextWeight: decimalOrNull(row['nextWeight']),
     weight: str(row['weight']),
     powerShareBps: num(row['powerShareBps']),
     lastWeight: str(row['lastWeight']),
@@ -330,7 +338,7 @@ export class AntscanIndexer implements Indexer {
   }
 
   async pool(agentId: number, epochs = 8): Promise<IndexedPoolDetail> {
-    const raw = await this.get<{ pool: Record<string, unknown> | null; epochs: Record<string, unknown>[]; openPositions: unknown; stakers: unknown; pendingStake?: unknown; activeStake?: unknown }>(`/api/staking/pools/${agentId}?epochs=${epochs}`);
+    const raw = await this.get<{ pool: Record<string, unknown> | null; epochs: Record<string, unknown>[]; openPositions: unknown; stakers: unknown; pendingStake?: unknown; nextActiveStake?: unknown; nextWeight?: unknown; activeStake?: unknown }>(`/api/staking/pools/${agentId}?epochs=${epochs}`);
     return {
       pool: raw.pool ? toPool(raw.pool) : null,
       epochs: (raw.epochs ?? []).filter(row => row['volumeUsdc'] != null).map((row) => ({
@@ -340,6 +348,8 @@ export class AntscanIndexer implements Indexer {
       openPositions: countOrNull(raw.openPositions),
       stakers: countOrNull(raw.stakers),
       pendingStake: decimalOrNull(raw.pendingStake),
+      nextActiveStake: decimalOrNull(raw.nextActiveStake),
+      nextWeight: decimalOrNull(raw.nextWeight),
       activeStake: decimalOrNull(raw.activeStake),
     };
   }
