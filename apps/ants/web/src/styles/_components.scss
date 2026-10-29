@@ -901,6 +901,8 @@ table.table { border-collapse: collapse; width: 100%; font-size: 13px; line-heig
 .pool-apy-estimates dt { font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--pc-sub); }
 .pool-apy-estimates dd { margin: 0; font-family: var(--font-mono); font-size: 20px; font-weight: 500; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; color: var(--pc-accent); }
 .pool-apy-unavailable { font-family: var(--font-sans); font-size: 12px; font-weight: 400; letter-spacing: 0; color: var(--pc-sub); }
+.pool-apy-weekly { display: block; margin-top: 4px; font-family: var(--font-sans); font-size: 12px; font-weight: 400; letter-spacing: 0; color: var(--pc-sub); }
+.pool-rewards-help { margin: 12px 0 0; line-height: 1.5; }
 .pool-lifetime { margin-bottom: 18px; }
 .pool-lifetime strong { font-family: var(--font-mono); font-size: 16px; font-weight: 500; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .pool-section { margin-top: 26px; padding-top: 22px; border-top: 1px solid var(--pc-line); }
