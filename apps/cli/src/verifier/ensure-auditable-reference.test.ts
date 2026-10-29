@@ -108,3 +108,63 @@ test('fresh enrollment builds a new reference that excludes every banked probe',
   assert.deepEqual(calls, ['index', 'seed', 'catalog', 'build', 'append', 'finalize'])
   assert.equal(enrolled.addedProbeCount, 10)
 }))
+
+test('sellers short of unseen questions get fresh questions until each has enough', async () => {
+  const { ensureSellerProbeCapacity } = await import('./ensure-auditable-reference.js')
+  let unseen = 40
+  const calls: string[] = []
+  const short = await ensureSellerProbeCapacity({
+    model: 'model-a', banksDir: '/banks', referencesDir: '/refs', config: undefined, maxRequests: 10,
+    epoch: '29', sellerPeerIds: ['aa'.repeat(20), 'bb'.repeat(20)], recheck: true,
+  }, {
+    capacity: async () => {
+      calls.push('capacity')
+      return {
+        selectedProbeCount: 100,
+        sellers: [
+          { sellerPeerId: 'aa'.repeat(20), unseenProbeCount: unseen, neededProbeCount: 200, assignedThisEpoch: false },
+          { sellerPeerId: 'bb'.repeat(20), unseenProbeCount: 500, neededProbeCount: 200, assignedThisEpoch: false },
+        ],
+      }
+    },
+    enrollFresh: async (input) => {
+      calls.push('enroll')
+      assert.equal(input.maxRequests, 10)
+      unseen += 100
+      return { addedProbeCount: 100, costUsdMicros: '1' }
+    },
+  })
+  assert.deepEqual(short, [])
+  assert.deepEqual(calls, ['capacity', 'enroll', 'capacity', 'enroll', 'capacity'])
+})
+
+test('seller capacity makes no calls when every seller has enough unseen questions', async () => {
+  const { ensureSellerProbeCapacity } = await import('./ensure-auditable-reference.js')
+  const calls: string[] = []
+  const short = await ensureSellerProbeCapacity({
+    model: 'model-a', banksDir: '/banks', referencesDir: '/refs', config: undefined, maxRequests: 10,
+    epoch: '29', sellerPeerIds: ['aa'.repeat(20)], recheck: true,
+  }, {
+    capacity: async () => {
+      calls.push('capacity')
+      return { selectedProbeCount: 100, sellers: [{ sellerPeerId: 'aa'.repeat(20), unseenProbeCount: 200, neededProbeCount: 200, assignedThisEpoch: false }] }
+    },
+    enrollFresh: async () => { calls.push('enroll'); return { addedProbeCount: 1, costUsdMicros: '1' } },
+  })
+  assert.deepEqual(short, [])
+  assert.deepEqual(calls, ['capacity'])
+})
+
+test('seller capacity stops after the round limit and returns the sellers still short', async () => {
+  const { ensureSellerProbeCapacity, SELLER_CAPACITY_ENROLLMENT_ROUNDS } = await import('./ensure-auditable-reference.js')
+  let enrolls = 0
+  const short = await ensureSellerProbeCapacity({
+    model: 'model-a', banksDir: '/banks', referencesDir: '/refs', config: undefined, maxRequests: 10,
+    epoch: '29', sellerPeerIds: ['aa'.repeat(20)], recheck: true,
+  }, {
+    capacity: async () => ({ selectedProbeCount: 100, sellers: [{ sellerPeerId: 'aa'.repeat(20), unseenProbeCount: 0, neededProbeCount: 200, assignedThisEpoch: false }] }),
+    enrollFresh: async () => { enrolls += 1; return { addedProbeCount: 10, costUsdMicros: '1' } },
+  })
+  assert.equal(enrolls, SELLER_CAPACITY_ENROLLMENT_ROUNDS)
+  assert.deepEqual(short, ['aa'.repeat(20)])
+})

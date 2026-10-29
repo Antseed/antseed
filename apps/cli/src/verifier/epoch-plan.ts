@@ -36,6 +36,8 @@ const AUDITOR_TEXT = [
   /\bdeposit\b/i,
   /insufficient (?:funds|balance)/i,
   /probe bank/i,
+  /BANK_EXHAUSTED/,
+  /unseen questions/i,
   /\benrol(?:l)?ment\b/i,
   /reference (?:endpoint|credits?)/i,
   /buyer proxy/i,

@@ -51,6 +51,7 @@ test('failure blame: our buyer, deposit, payment lock and bank are the auditor; 
   assert.equal(failureBlame(buyerRefused), 'auditor')
   assert.equal(failureBlame({ code: 'payment_lock_timeout' }), 'auditor')
   assert.equal(failureBlame({ code: 'audit_failed' }, 'no probe bank exists for glm-5.3'), 'auditor')
+  assert.equal(failureBlame(null, 'BANK_EXHAUSTED: 0 probes not yet assigned to seller aa remain for kimi-k3 epoch 29'), 'auditor')
   assert.equal(failureBlame(sellerDown), 'seller')
   assert.equal(failureBlame({ code: 'response_auth_invalid', summary: 'channel_id_mismatch' }), 'seller')
   assert.equal(failureBlame({ code: 'malformed_output' }), 'seller')

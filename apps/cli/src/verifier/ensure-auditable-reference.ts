@@ -7,6 +7,7 @@ import { loadConfiguredVerifierModelCatalog } from './openrouter-catalog.js'
 import {
   appendModelReferenceToBank,
   inspectModelProbeBankPower,
+  inspectSellerProbeCapacity,
   loadBankEnrollmentReference,
   loadBankProbeIndex,
 } from './probe-bank.js'
@@ -106,6 +107,7 @@ export async function enrollFreshProbes(input: {
   config: VerifierCLIConfig | undefined
   maxRequests: number
   buyerProxyPort?: number
+  requestLimiter?: ReferenceRequestLimiter
   log?: (message: string) => void
 }, operations: typeof dependencies = dependencies): Promise<{ addedProbeCount: number; costUsdMicros: string }> {
   if (!Number.isSafeInteger(input.maxRequests) || input.maxRequests <= 0) {
@@ -134,6 +136,7 @@ export async function enrollFreshProbes(input: {
       config,
       catalog,
       buyerProxyPort: input.buyerProxyPort,
+      ...(input.requestLimiter ? { requestLimiter: input.requestLimiter } : {}),
       log: input.log,
       excludedProbeIds: new Set(bank?.probeIds ?? []),
       ...(settingsReference ? { settingsReference } : {}),
@@ -152,4 +155,65 @@ export async function enrollFreshProbes(input: {
   } finally {
     await lock.release()
   }
+}
+
+/** Fresh-question builds per model and run, at most, when sellers have seen too much of the bank. */
+export const SELLER_CAPACITY_ENROLLMENT_ROUNDS = 3
+
+/**
+ * Makes sure every seller about to be audited has enough questions it has never been given: one
+ * audit set (unless it already has one this epoch) plus a DIFF recheck set. A bank can be ready
+ * as a whole while the sellers audited in earlier epochs have seen most of it; for them, fresh
+ * questions are built and added to the bank (up to `SELLER_CAPACITY_ENROLLMENT_ROUNDS` builds).
+ * Returns the sellers still short afterwards, which will fail with BANK_EXHAUSTED.
+ */
+export async function ensureSellerProbeCapacity(input: {
+  model: string
+  banksDir: string
+  referencesDir: string
+  config: VerifierCLIConfig | undefined
+  maxRequests: number
+  epoch: string
+  sellerPeerIds: readonly string[]
+  recheck: boolean
+  buyerProxyPort?: number
+  requestLimiter?: ReferenceRequestLimiter
+  log?: (message: string) => void
+}, operations: {
+  capacity: typeof inspectSellerProbeCapacity
+  enrollFresh: typeof enrollFreshProbes
+} = { capacity: inspectSellerProbeCapacity, enrollFresh: enrollFreshProbes }): Promise<string[]> {
+  if (input.sellerPeerIds.length === 0) return []
+  const shortSellers = async () => {
+    const capacity = await operations.capacity({
+      banksDir: input.banksDir, model: input.model, epoch: input.epoch,
+      sellerPeerIds: input.sellerPeerIds, recheck: input.recheck, config: input.config,
+    })
+    return capacity.sellers.filter((seller) => seller.unseenProbeCount < seller.neededProbeCount)
+  }
+  let short = await shortSellers()
+  for (let round = 1; round <= SELLER_CAPACITY_ENROLLMENT_ROUNDS && short.length > 0; round += 1) {
+    const worst = short.reduce((low, seller) => seller.unseenProbeCount < low.unseenProbeCount ? seller : low)
+    input.log?.(
+      `${short.length} seller(s) have too few unseen questions (lowest: ${worst.unseenProbeCount} of `
+      + `${worst.neededProbeCount} needed); building fresh questions (round ${round}/${SELLER_CAPACITY_ENROLLMENT_ROUNDS})`,
+    )
+    const enrolled = await operations.enrollFresh({
+      model: input.model, banksDir: input.banksDir, referencesDir: input.referencesDir, config: input.config,
+      maxRequests: input.maxRequests, buyerProxyPort: input.buyerProxyPort,
+      ...(input.requestLimiter ? { requestLimiter: input.requestLimiter } : {}),
+      ...(input.log ? { log: input.log } : {}),
+    })
+    if (enrolled.addedProbeCount === 0) {
+      input.log?.('fresh enrollment added no questions; stopping')
+      break
+    }
+    short = await shortSellers()
+  }
+  if (short.length > 0) {
+    input.log?.(`${short.length} seller(s) still short of unseen questions; they will fail with BANK_EXHAUSTED`)
+  } else {
+    input.log?.('every seller has enough unseen questions')
+  }
+  return short.map((seller) => seller.sellerPeerId)
 }

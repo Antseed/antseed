@@ -90,7 +90,7 @@ import {
   type EpochState,
 } from '../../../verifier/epoch-plan.js'
 import { getGlobalOptions } from '../types.js'
-import { enrollFreshProbes, ensureAuditableReference } from '../../../verifier/ensure-auditable-reference.js'
+import { enrollFreshProbes, ensureAuditableReference, ensureSellerProbeCapacity } from '../../../verifier/ensure-auditable-reference.js'
 import { createReferenceRequestLimiter } from '../../../verifier/model-reference.js'
 import { runDiffRechecks, type DiffRecheckStats } from '../../../verifier/diff-recheck.js'
 import { loadPendingDiffRechecks, pendingRecheckKey } from '../../../verifier/pending-rechecks.js'
@@ -486,21 +486,37 @@ async function runVerifierRound(
           // Every model enrolls at once; one shared limiter caps the reference requests in flight.
           const requestLimiter = createReferenceRequestLimiter(config.verifier)
           const enrolled = await Promise.all(runModels.map(async (model) => {
-            if (!selectedPeers.some((peer) => !isDone(model, peer.peerId) && classifyVerificationTargetServices(
-              peer, verifierModelServices(config.verifier, model), targetPolicyFor(model),
-            ).eligible)) {
+            const sellersToAudit = selectedPeers.filter((peer) => !isDone(model, peer.peerId)
+              && classifyVerificationTargetServices(
+                peer, verifierModelServices(config.verifier, model), targetPolicyFor(model),
+              ).eligible)
+            if (sellersToAudit.length === 0) {
               console.log(chalk.dim(`[enrollment:${model}] no eligible seller left to audit; no enrollment calls needed`))
               return true
             }
             try {
+              const referencesDir = config.verifier?.referencesDir ?? join(globalOptions.dataDir, 'verifier', 'references')
+              const log = (message: string) => console.log(chalk.dim(`[enrollment:${model}] ${message}`))
               await ensureAuditableReference({
-                model, banksDir,
-                referencesDir: config.verifier?.referencesDir ?? join(globalOptions.dataDir, 'verifier', 'references'),
+                model, banksDir, referencesDir,
                 config: config.verifier,
                 maxRequests: enrollmentBudget,
                 buyerProxyPort: config.buyer.proxyPort,
                 requestLimiter,
-                log: (message) => console.log(chalk.dim(`[enrollment:${model}] ${message}`)),
+                log,
+              })
+              // The bank can be ready while sellers audited in earlier epochs have seen most of it:
+              // build fresh questions until each seller has an unseen audit set and recheck set.
+              await ensureSellerProbeCapacity({
+                model, banksDir, referencesDir,
+                config: config.verifier,
+                maxRequests: enrollmentBudget,
+                epoch,
+                sellerPeerIds: sellersToAudit.map((peer) => peer.peerId),
+                recheck: (config.verifier?.diffConfirmationRuns ?? 1) > 0,
+                buyerProxyPort: config.buyer.proxyPort,
+                requestLimiter,
+                log,
               })
               return true
             } catch (error) {
