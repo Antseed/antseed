@@ -105,6 +105,19 @@ describe('pool loading', () => {
       reward: '5', power: '100', budget: '5', minLockEpochs: 1, maxLockEpochs: 104,
     });
   });
+  it('publishes no live yield from a lagging index against current-epoch chain totals', async () => {
+    // The index still reports epoch 1, so its pool points must not be divided by epoch 2's live network total.
+    const { ctx } = setup(1, true, 2);
+    const list = await poolsView(ctx);
+    expect(list.pools[0]?.liveYield).toBeUndefined();
+    expect((await singlePool(ctx, 1)).liveYield).toBeUndefined();
+  });
+  it('prices the epoch in progress from chain pool reads and chain network totals together', async () => {
+    const { ctx } = setup();
+    Object.assign(ctx, { indexer: () => null });
+    const detail = await singlePool(ctx, 1);
+    expect(detail.liveYield).toMatchObject({ epoch: 2, status: 'estimated', budget: '100' });
+  });
   it('does not read historical contracts for directory entries with no staking pool', async () => {
     const { ctx, indexed, methods } = setup();
     indexed.pools.push({ ...indexed.pools[0]!, agentId: 2, openPositions: 0, weight: '0', activeStake: '0', historicalYield: null });

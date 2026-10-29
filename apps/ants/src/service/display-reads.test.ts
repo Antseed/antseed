@@ -264,6 +264,25 @@ describe('indexed display / live financial read boundary', () => {
     expect(indexer.pool).toHaveBeenCalledWith(1, 16);
   });
 
+  it('prices the epoch in progress from the snapshot pool row and snapshot network totals', async () => {
+    const { ctx, stack } = fixture();
+    const result = await poolsView(ctx);
+    const startsAt = stack.genesis + 22 * stack.epochDuration;
+    expect(result.pools[0]?.liveYield).toEqual({
+      epoch: 22, startsAt, endsAt: startsAt + stack.epochDuration, apr: null, apy: null, status: 'estimated',
+      reward: '20', power: '200', budget: '100', minLockEpochs: 1, maxLockEpochs: 104,
+    });
+  });
+
+  it.each(['pool', 'network'])('publishes no live yield when the snapshot lacks the current %s row', async missing => {
+    const { ctx, snapshot } = fixture();
+    if (missing === 'pool') snapshot.pools = snapshot.pools.filter(row => row.epoch !== 22);
+    // Network totals then come from the indexer or chain, not the snapshot the pool row came from.
+    else snapshot.epochs = snapshot.epochs.filter(row => row.epoch !== 22);
+    const result = await poolsView(ctx);
+    expect(result.pools[0]?.liveYield).toBeUndefined();
+  });
+
   it('uses combined-feed pool summaries without another wallet enumeration', async () => {
     const { ctx, feed, requests, indexer } = fixture();
     feed.positions.push({ ...feed.positions[0]!, id: 8, stakeStartEpoch: 23, amount: '40', power: '0', state: 'pending' });
