@@ -329,11 +329,16 @@ async function chainOnlyPools(
 }
 
 export async function singlePool(ctx: AntsContext, agentId: number): Promise<PoolView & { currentEpoch: number; walletSyncing: boolean }> {
-  const context = await poolContext(ctx);
   const indexer = ctx.indexer();
-  if (indexer) {
+  // Load the index first so network totals come from the same source as its pool inputs, as in the list.
+  const indexed = indexer ? await indexer.pools().catch(error => {
+    if (error instanceof IndexerError) return null;
+    throw error;
+  }) : null;
+  const context = await poolContext(ctx, indexed ?? undefined);
+  if (indexer && indexed) {
     try {
-      const [indexed, sellerEpochs] = await Promise.all([indexer.pools(), indexer.sellerEpochs(VOLUME_EPOCHS)]);
+      const sellerEpochs = await indexer.sellerEpochs(VOLUME_EPOCHS);
       const ownHere = new Map([...context.own.entries()].filter(([id]) => id === agentId));
       const explorer = { byAddress: context.explorer.byAddress, byAgent: new Map([...context.explorer.byAgent.entries()].filter(([id]) => id === agentId)) };
       const merged = mergePools({ indexed: { ...indexed, pools: indexed.pools.filter((pool) => pool.agentId === agentId) }, explorer, sellerEpochs, epochs: context.epochs, own: ownHere });

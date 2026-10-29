@@ -105,6 +105,12 @@ describe('pool loading', () => {
       reward: '5', power: '100', budget: '5', minLockEpochs: 1, maxLockEpochs: 104,
     });
   });
+  it('publishes the same live yield in the list and the detail from a current index without display snapshots', async () => {
+    const { ctx } = setup();
+    const list = await poolsView(ctx);
+    expect(list.pools[0]?.liveYield).toBeDefined();
+    expect((await singlePool(ctx, 1)).liveYield).toEqual(list.pools[0]!.liveYield);
+  });
   it('publishes no live yield from a lagging index against current-epoch chain totals', async () => {
     // The index still reports epoch 1, so its pool points must not be divided by epoch 2's live network total.
     const { ctx } = setup(1, true, 2);
