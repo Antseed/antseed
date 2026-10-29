@@ -208,7 +208,7 @@ const STATE_TONE: Record<PositionView['state'], 'accent' | 'amber' | 'muted'> = 
 const STATE_DESCRIPTION: Record<PositionView['state'], string> = {
   pending: 'Waiting for the stake activation epoch.',
   active: 'The staking position is active and its lock has not expired.',
-  matured: 'The lock has expired, so this position no longer earns rewards and can no longer be extended, moved, split, or merged. Withdraw it (no early-exit burn) and stake again to keep earning; withdrawal is not automatic.',
+  matured: 'The lock has expired, so this position no longer earns rewards and can no longer be extended, moved, split, or merged. It can only be withdrawn (no early-exit burn; withdrawal is not automatic). While ANTS transfers are disabled, withdrawn ANTS stay in your wallet and cannot be staked again.',
   closed: 'This position has been closed, for example by a split, merge, or move.',
   withdrawn: 'Funds have been withdrawn from this position.',
 };
@@ -272,7 +272,7 @@ function LockEndingNote({ position, currentEpoch }: { position: PositionView; cu
   if (currentEpoch === undefined || position.state === 'matured') return null;
   const epochsLeft = position.stakeEndEpoch - currentEpoch;
   if (epochsLeft === 2) return <span className="cell-sub pending-amount" title="Extend the lock or enable max lock this epoch to keep earning. From next epoch the position can only be withdrawn once it unlocks.">Last epoch to extend</span>;
-  if (epochsLeft === 1) return <span className="cell-sub" title="Changes would take effect at the unlock epoch, so this position can no longer be extended, moved, split, or merged. Withdraw after it unlocks and stake again.">Can no longer be extended</span>;
+  if (epochsLeft === 1) return <span className="cell-sub" title="Changes would take effect at the unlock epoch, so this position can no longer be extended, moved, split, or merged. After it unlocks it can only be withdrawn; while ANTS transfers are disabled, withdrawn ANTS cannot be staked again.">Can no longer be extended</span>;
   return null;
 }
 
