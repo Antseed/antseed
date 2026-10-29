@@ -25,8 +25,6 @@ interface IAntseedSellerPoolsSource {
 contract AntseedKbfVerificationPointsPolicy is IAntseedPointsModifier, Ownable2Step {
     uint256 public constant BPS = 10_000;
     uint256 public constant MAX_BONUS_BPS = 5_000;
-    /// @notice The verification method this policy reads: KBF model identity, version 1.
-    bytes32 public constant AUDIT_TYPE = keccak256("kbf-model-identity/v1");
 
     IAntseedKbfVerification public immutable verification;
     IAntseedSellerPoolsSource public immutable usageAccounting;
@@ -43,8 +41,6 @@ contract AntseedKbfVerificationPointsPolicy is IAntseedPointsModifier, Ownable2S
         Ownable(initialOwner)
     {
         if (verification_.code.length == 0 || usageAccounting_.code.length == 0) revert InvalidAddress();
-        // Only a KBF verification contract: another method's verdicts belong to that method's own policy.
-        if (IAntseedKbfVerification(verification_).auditType() != AUDIT_TYPE) revert InvalidAddress();
         if (bonusBps_ > MAX_BONUS_BPS) revert InvalidValue();
         verification = IAntseedKbfVerification(verification_);
         usageAccounting = IAntseedSellerPoolsSource(usageAccounting_);

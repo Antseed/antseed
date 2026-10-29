@@ -76,10 +76,6 @@ interface IAntseedKbfVerification {
         ServiceResult[] calldata results
     ) external;
 
-    /// @notice Labels the verification method: keccak256("kbf-model-identity/v1") for KBF. Lets a
-    ///         points policy check it reads a KBF contract.
-    function auditType() external view returns (bytes32);
-
     function serviceStatus(uint256 agentId, bytes32 serviceHash) external view returns (ServiceStatus memory);
     function agentStatus(uint256 agentId) external view returns (AgentStatus memory);
 

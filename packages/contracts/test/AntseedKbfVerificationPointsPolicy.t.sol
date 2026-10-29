@@ -32,20 +32,9 @@ contract SwitchableScoreSource {
         source = source_;
     }
 
-    function auditType() external pure returns (bytes32) {
-        return keccak256("kbf-model-identity/v1");
-    }
-
     function agentStatus(uint256 agentId) external view returns (IAntseedKbfVerification.AgentStatus memory) {
         if (source.reverts()) revert("score source down");
         return source.status(agentId);
-    }
-}
-
-/// @dev A verification contract for some other method.
-contract OtherMethodVerificationForPoints {
-    function auditType() external pure returns (bytes32) {
-        return keccak256("other-method/v1");
     }
 }
 
@@ -91,13 +80,6 @@ contract AntseedKbfVerificationPointsPolicyTest is Test {
         policy = new AntseedKbfVerificationPointsPolicy(
             address(new SwitchableScoreSource(scores)), address(accounting), 100, address(this)
         );
-    }
-
-    function test_onlyReadsAKbfVerificationContract() public {
-        assertEq(policy.AUDIT_TYPE(), keccak256("kbf-model-identity/v1"), "KBF audit type");
-        address other = address(new OtherMethodVerificationForPoints());
-        vm.expectRevert(AntseedKbfVerificationPointsPolicy.InvalidAddress.selector);
-        new AntseedKbfVerificationPointsPolicy(other, address(accounting), 0, address(this));
     }
 
     function test_ratesApplyAsSoonAsTheOwnerSetsThem() public {

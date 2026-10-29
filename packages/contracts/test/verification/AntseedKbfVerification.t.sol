@@ -35,7 +35,6 @@ contract VerificationPointsAccounting {
 
 contract AntseedKbfVerificationTest is Test {
     uint256 private constant EPOCH = 5;
-    bytes32 private constant KBF_AUDIT_TYPE = keccak256("kbf-model-identity/v1");
     bytes32 private constant MODEL_A = keccak256("model-a");
     bytes32 private constant MODEL_B = keccak256("model-b");
     bytes32 private constant SERVICE_A = bytes32(uint256(1));
@@ -484,11 +483,6 @@ contract AntseedKbfVerificationTest is Test {
         results[0] = _result(other, SERVICE_A, SAME);
         results[1] = _result(agentId, SERVICE_A, SAME);
         _expectInvalidResults(results);
-    }
-
-    function test_isTheKbfMethod() public view {
-        assertEq(verification.auditType(), KBF_AUDIT_TYPE, "KBF audit type");
-        assertEq(verification.AUDIT_TYPE(), KBF_AUDIT_TYPE, "KBF audit type constant");
     }
 
     function test_validatesModelAndEvidence() public {

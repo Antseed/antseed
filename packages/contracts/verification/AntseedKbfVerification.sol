@@ -16,9 +16,8 @@ interface IEmissionsGateSource {
 
 /// @notice Records KBF (Knowledge Boundary Fingerprinting) model audits from approved auditors, one
 ///         model per submission. KBF is one of several verification methods: every audit recorded
-///         here is a KBF audit, and `AUDIT_TYPE` (`keccak256("kbf-model-identity/v1")`) labels the
-///         contract as KBF. Another method gets its own contract, its own points policy, and its own
-///         emissions bucket, and never writes into KBF verdicts.
+///         here is a KBF audit. Another method gets its own contract, its own points policy, and its
+///         own emissions bucket, and never writes into KBF verdicts.
 ///
 ///
 ///         Status: each (agent, service) keeps its latest result as its verdict, with the emissions
@@ -46,8 +45,6 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     uint256 public constant MAX_EVIDENCE_URI_BYTES = 200;
     uint8 public constant MAX_VALIDITY_EPOCHS = 4;
     uint256 public constant BPS = 10_000;
-    /// @notice Labels this contract's method: KBF model identity, version 1. Every audit here is KBF.
-    bytes32 public constant AUDIT_TYPE = keccak256("kbf-model-identity/v1");
 
     struct EpochCounts {
         uint32 same;
@@ -263,11 +260,6 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
 
         emit ModelAudited(modelHash, msg.sender, expectedEpoch, evidenceHash, evidenceUri, count);
         if (staked && epoch >= rewardsStartEpoch) _creditAudit(epoch, modelHash);
-    }
-
-    /// @inheritdoc IAntseedKbfVerification
-    function auditType() external pure override returns (bytes32) {
-        return AUDIT_TYPE;
     }
 
     function serviceStatus(uint256 agentId, bytes32 serviceHash)
