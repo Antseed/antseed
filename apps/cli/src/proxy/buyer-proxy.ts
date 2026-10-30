@@ -95,7 +95,8 @@ import {
   type NetworkRouterEntry,
 } from './network-models.js'
 import {
-  findMissingRequiredParameters,
+  findFailingServiceRoutes,
+  findMissingRouteParameters,
   findUnannouncedRequestParameters,
   findAdvertisedServiceOffer,
   findAdvertisedServiceProtocols,
@@ -1653,9 +1654,7 @@ export class BuyerProxy {
       if (!offer) continue
       const verdict: ModelRouteVerdict = { peer, serviceId: plan.serviceId, offer, eligible: false, rank: null, reasons: [] }
       verdicts.set(peer.peerId, verdict)
-      const missingRequired = plan.selection?.requiresTransform
-        ? [...requiredParameters]
-        : findMissingRequiredParameters(peer, plan.provider, plan.serviceId, requiredParameters)
+      const missingRequired = findMissingRouteParameters(peer, plan, plan.serviceId, requiredParameters)
       if (missingRequired.length > 0) {
         log(
           `Capability filter: peer ${peer.peerId.slice(0, 12)}... service="${plan.serviceId}" `
@@ -4408,6 +4407,36 @@ export class BuyerProxy {
       const requireVerified = effectivePolicy?.requireVerified === true
       if (candidates.length === 0) {
         const capabilityRequired = routeRequiredParameters.length > 0
+        // Served, but the health check of every seller that could take it
+        // announces the route failing (the model, or the protocol this request
+        // needs). Only when no healthy seller could take it either: if one
+        // could and policy ruled it out, the policy answer below is the true one.
+        const healthyRouteExists = modelPeers.some((peer) => {
+          const plan = modelPlans.get(peer.peerId)
+          return plan?.serviceId != null
+            && findMissingRouteParameters(peer, plan, requestedService, routeRequiredParameters).length === 0
+        })
+        const failingRoutes = healthyRouteExists
+          ? []
+          : findFailingServiceRoutes(discoveredPeers, requestProtocol, requestedService, explicitProvider, routeRequiredParameters)
+        if (failingRoutes.length > 0) {
+          const latest = failingRoutes.reduce((a, b) => ((b.health.checkedAt ?? 0) > (a.health.checkedAt ?? 0) ? b : a))
+          const sellers = new Set(failingRoutes.map((route) => route.peerId)).size
+          log(`Request rejected: every seller serving ${requestedService} reports it failing (${sellers} seller(s))`)
+          return dispatchFailure(SELF_HEALTH_ERROR_STATUS, { 'content-type': 'application/json' }, JSON.stringify({
+            error: {
+              type: SELLER_SELF_HEALTH_FAILING_CODE,
+              code: SELLER_SELF_HEALTH_FAILING_CODE,
+              message: [
+                `${sellers === 1 ? 'The only seller' : `All ${sellers} sellers`} serving "${requestedService}" ${sellers === 1 ? 'reports' : 'report'} it failing.`,
+                describeServiceHealth(latest.serviceId, latest.health),
+                'Try again later or pick another model.',
+              ].join('\n'),
+              param: 'model',
+              service_health: latest.health,
+            },
+          }))
+        }
         // The model exists on the network but only behind an API this
         // request does not speak (e.g. a decision model asked via chat).
         // Say so instead of claiming nobody serves it.
@@ -4424,38 +4453,6 @@ export class BuyerProxy {
               message: `Model "${requestedService}" is served via ${advertisedProtocols.join(', ')}, not ${requestProtocol ?? 'this API'}.${hint}`,
               param: 'model',
               supported_protocols: advertisedProtocols,
-            },
-          }))
-        }
-        // Served, but every seller's own health check announces it failing. Only
-        // when no healthy seller could take the request either: if one could
-        // and policy ruled it out, the policy answer below is the true one. A
-        // failing seller counts only if it speaks the request's API and
-        // advertises its required parameters, as a healthy one would have to.
-        const failingOffers = modelPeers.length > 0
-          ? []
-          : findFailingServiceOffers(discoveredPeers, requestedService, explicitProvider).filter((offer) => {
-            const peer = discoveredPeers.find((candidate) => candidate.peerId === offer.peerId)
-            const plan = peer && resolvePeerRoutePlan(peer, requestProtocol, requestedService, explicitProvider, 'lenient')
-            if (!peer || !plan?.serviceId) return false
-            return !capabilityRequired || (!plan.selection?.requiresTransform
-              && findMissingRequiredParameters(peer, plan.provider, plan.serviceId, routeRequiredParameters).length === 0)
-          })
-        if (failingOffers.length > 0) {
-          const latest = failingOffers.reduce((a, b) => ((b.health?.checkedAt ?? 0) > (a.health?.checkedAt ?? 0) ? b : a))
-          const sellers = new Set(failingOffers.map((offer) => offer.peerId)).size
-          log(`Request rejected: every seller serving ${requestedService} reports it failing (${sellers} seller(s))`)
-          return dispatchFailure(SELF_HEALTH_ERROR_STATUS, { 'content-type': 'application/json' }, JSON.stringify({
-            error: {
-              type: SELLER_SELF_HEALTH_FAILING_CODE,
-              code: SELLER_SELF_HEALTH_FAILING_CODE,
-              message: [
-                `${sellers === 1 ? 'The only seller' : `All ${sellers} sellers`} serving "${requestedService}" ${sellers === 1 ? 'reports' : 'report'} it failing.`,
-                describeServiceHealth(latest.serviceId, latest.health!),
-                'Try again later or pick another model.',
-              ].join('\n'),
-              param: 'model',
-              service_health: latest.health,
             },
           }))
         }
@@ -4752,13 +4749,8 @@ export class BuyerProxy {
     const selectedPlan = routingPlans.get(selectedPeer.peerId)
       ?? resolvePeerRoutePlan(selectedPeer, requestProtocol, requestedService, explicitProvider, 'lenient')
     const pinnedServiceId = selectedPlan?.serviceId ?? requestedService
-    const missingRequired = selectedPlan && !selectedPlan.selection?.requiresTransform
-      ? findMissingRequiredParameters(
-          selectedPeer,
-          selectedPlan.provider,
-          pinnedServiceId,
-          requiredParameters,
-        )
+    const missingRequired = selectedPlan
+      ? findMissingRouteParameters(selectedPeer, selectedPlan, pinnedServiceId, requiredParameters)
       : requiredParameters
     if (missingRequired.length > 0) {
       return dispatchFailure(422, { 'content-type': 'application/json' }, JSON.stringify({

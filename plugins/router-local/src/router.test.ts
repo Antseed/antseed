@@ -69,7 +69,7 @@ describe('LocalRouter', () => {
     const router = new LocalRouter({ maxPricing: { defaults: { inputUsdPerMillion: 1_000, outputUsdPerMillion: 1_000 } } });
     const peer = makePeer({
       providerPricing: { anthropic: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'video-x': { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } } },
-      providerServiceHealth: { anthropic: { services: { 'video-x': { status: 'healthy' } }, failingProtocols: { 'video-x': ['fal-video'] } } },
+      providerServiceHealth: { anthropic: { services: { 'video-x': { status: 'healthy' } }, failingProtocols: { 'video-x': { 'fal-video': { status: 'failing' } } } } },
     });
     const videoRequest = (path: string): SerializedHttpRequest => ({ ...makeRequest('video-x'), path });
     expect(router.selectPeer(videoRequest('/fal/v1/video/queue'), [peer])).toBeNull();

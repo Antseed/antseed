@@ -21,7 +21,7 @@ describe('buildNetworkServiceOffers', () => {
       peerId: 'seller',
       providers: ['venice', 'venice'],
       providerServiceApiProtocols: { venice: { services: { 'video-a': ['venice-video' as const, 'fal-video' as const] } } },
-      providerServiceHealth: { venice: { services: { 'video-a': { status: 'healthy' as const } }, failingProtocols: { 'video-a': ['fal-video' as const] } } },
+      providerServiceHealth: { venice: { services: { 'video-a': { status: 'healthy' as const } }, failingProtocols: { 'video-a': { 'fal-video': { status: 'failing' as const } } } } },
     };
     expect(buildNetworkServiceOffers([peer]).map((offer) => offer.protocols)).toEqual([['venice-video']]);
     expect(buildNetworkServiceOffers([peer], { includeFailing: true }).map((offer) => offer.protocols)).toEqual([['venice-video', 'fal-video']]);

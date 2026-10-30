@@ -21,10 +21,12 @@ export interface ProviderServiceUnitBillingModelMatrixEntry {
 
 export interface ProviderServiceCapabilityMatrixEntry {
   services: Record<string, ServiceCapabilities>;
+  /** Per service, a protocol's capabilities when another upstream than the service's own serves that protocol. */
+  protocols?: Record<string, Partial<Record<ServiceApiProtocol, ServiceCapabilities>>>;
 }
 
 export interface ProviderServiceHealthMatrixEntry {
   services: Record<string, ServiceHealth>;
-  /** Per service, API protocols only failing upstreams serve, while another route of the service works. */
-  failingProtocols?: Record<string, ServiceApiProtocol[]>;
+  /** Per service, the health of each API protocol only failing upstreams serve, while another route of the service works. */
+  failingProtocols?: Record<string, Partial<Record<ServiceApiProtocol, ServiceHealth>>>;
 }

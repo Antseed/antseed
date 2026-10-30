@@ -141,6 +141,7 @@ export {
   parseProviderServiceHealthMatrix,
   parseServiceHealth,
   providerServiceHealthFor,
+  providerServiceRouteHealth,
   type ServiceHealth,
   type ServiceHealthReason,
   type ServiceHealthSource,

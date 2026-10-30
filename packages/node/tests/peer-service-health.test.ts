@@ -88,9 +88,18 @@ describe('service health across upstreams sharing a provider name', () => {
       serviceUnitBillingModels: { 'gpt-6-sol': { [protocol]: { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.5 }] } } },
     });
     const peer = peerInfo([route('venice-video', healthy), route('fal-video', failing)]);
-    expect(peer.providerServiceHealth.openai).toEqual({ services: { 'gpt-6-sol': healthy }, failingProtocols: { 'gpt-6-sol': ['fal-video'] } });
+    expect(peer.providerServiceHealth.openai).toEqual({ services: { 'gpt-6-sol': healthy }, failingProtocols: { 'gpt-6-sol': { 'fal-video': failing } } });
     expect(peer.providerServiceApiProtocols.openai.services['gpt-6-sol']).toEqual(['venice-video', 'fal-video']);
     // When every route fails, the service itself is failing and no protocol is singled out.
     expect(peerInfo([route('venice-video', failing), route('fal-video', failing)]).providerServiceHealth.openai.failingProtocols).toBeUndefined();
+  });
+
+  it('keeps the capabilities of the upstream serving each protocol', () => {
+    const chat: ProviderAnnouncement = { ...upstream({ 'gpt-6-sol': healthy }), serviceApiProtocols: { 'gpt-6-sol': ['openai-chat-completions'] }, serviceUnitBillingModels: undefined, serviceCapabilities: { 'gpt-6-sol': { supportedParameters: ['seed'] } } };
+    const video: ProviderAnnouncement = { ...upstream({ 'gpt-6-sol': healthy }), serviceApiProtocols: { 'gpt-6-sol': ['fal-video'] }, serviceUnitBillingModels: undefined, serviceCapabilities: { 'gpt-6-sol': { supportedParameters: ['video_url'] } } };
+    expect(peerInfo([chat, video]).providerServiceCapabilities.openai).toEqual({
+      services: { 'gpt-6-sol': { supportedParameters: ['seed'] } },
+      protocols: { 'gpt-6-sol': { 'fal-video': { supportedParameters: ['video_url'] } } },
+    });
   });
 });

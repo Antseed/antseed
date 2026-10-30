@@ -172,3 +172,15 @@ test('skips unparseable bodies and requests without a resolved service or protoc
   assert.deepEqual(findUnannouncedRequestParameters(imagePeer, 'openai', null, 'openai-images', request), [])
   assert.deepEqual(findUnannouncedRequestParameters(imagePeer, 'openai', 'gpt-image-1', null, request), [])
 })
+
+test('findMissingRequiredParameters reads the capabilities of the upstream serving the requested protocol', () => {
+  const peer = makePeer({
+    providerServiceCapabilities: { openai: {
+      services: { 'vid': { supportedParameters: ['seed'] } },
+      protocols: { 'vid': { 'fal-video': { supportedParameters: ['video_url'] } } },
+    } },
+  })
+  assert.deepEqual(findMissingRequiredParameters(peer, 'openai', 'vid', ['video_url'], 'fal-video'), [])
+  assert.deepEqual(findMissingRequiredParameters(peer, 'openai', 'vid', ['video_url'], 'openai-chat-completions'), ['video_url'])
+  assert.deepEqual(findMissingRequiredParameters(peer, 'openai', 'vid', ['seed']), [])
+})

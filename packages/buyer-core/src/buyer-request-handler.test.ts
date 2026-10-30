@@ -319,7 +319,7 @@ describe('selectBillingRoute', () => {
     peer.providers = ['venice', 'backup'];
     peer.providerServiceApiProtocols = { ...peer.providerServiceApiProtocols, backup: { services: { 'video-model': ['venice-video'] } } };
     peer.providerServiceUnitBillingModels = { ...peer.providerServiceUnitBillingModels, backup: { services: { 'video-model': { 'venice-video': VIDEO_MODEL } } } };
-    peer.providerServiceHealth = { venice: { services: {}, failingProtocols: { 'video-model': ['venice-video'] } } };
+    peer.providerServiceHealth = { venice: { services: {}, failingProtocols: { 'video-model': { 'venice-video': { status: 'failing' } } } } };
     expect(selectBillingRoute(peer, makeRequest(), 'video-model')?.provider).toBe('backup');
   });
 });

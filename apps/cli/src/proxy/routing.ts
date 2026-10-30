@@ -1,9 +1,12 @@
 import {
   buildNetworkServiceOffers,
+  isServiceHealthFailing,
+  providerServiceRouteHealth,
   selectLowestPricedNetworkServiceOffer,
   type NetworkServiceOffer,
   type PeerInfo,
   type SerializedHttpRequest,
+  type ServiceHealth,
 } from '@antseed/node'
 import { canonicalModelKey } from '@antseed/node/model-identity'
 import {
@@ -49,12 +52,16 @@ export function parseRequiredParametersHeader(value: string | undefined): string
   return parameters
 }
 
-/** Required parameters are strict: missing capability metadata is unsupported. */
+/**
+ * Required parameters are strict: missing capability metadata is unsupported.
+ * With `protocol`, the capabilities of the upstream serving that protocol count.
+ */
 export function findMissingRequiredParameters(
   peer: PeerInfo,
   provider: string,
   requestedService: string | null,
   requiredParameters: readonly string[],
+  protocol?: ServiceApiProtocol,
 ): string[] {
   if (requiredParameters.length === 0) return []
   const service = requestedService?.trim()
@@ -62,11 +69,14 @@ export function findMissingRequiredParameters(
 
   const providerKey = Object.keys(peer.providerServiceCapabilities ?? {})
     .find((key) => key.toLowerCase() === provider.toLowerCase())
-  const services = providerKey ? peer.providerServiceCapabilities?.[providerKey]?.services : undefined
-  const serviceKey = services
-    ? Object.keys(services).find((key) => isRequestedServiceMatch(key, service))
+  const entry = providerKey ? peer.providerServiceCapabilities?.[providerKey] : undefined
+  const serviceKey = entry
+    ? [...Object.keys(entry.services), ...Object.keys(entry.protocols ?? {})].find((key) => isRequestedServiceMatch(key, service))
     : undefined
-  const announced = serviceKey ? services?.[serviceKey]?.supportedParameters : undefined
+  const capabilities = serviceKey
+    ? (protocol ? entry?.protocols?.[serviceKey]?.[protocol] : undefined) ?? entry?.services[serviceKey]
+    : undefined
+  const announced = capabilities?.supportedParameters
   if (!announced) return [...requiredParameters]
 
   const supported = new Set(announced.map((parameter) => parameter.trim().toLowerCase()))
@@ -191,6 +201,42 @@ export function findAdvertisedServiceProtocols(peers: PeerInfo[], requestedServi
     if (offer.protocol) protocols.add(offer.protocol)
   }
   return [...protocols].sort()
+}
+
+/** Required parameters a route cannot take: all of them through a protocol transform. */
+export function findMissingRouteParameters(
+  peer: PeerInfo,
+  plan: PeerProtocolRoutePlan,
+  requestedService: string | null,
+  requiredParameters: readonly string[],
+): string[] {
+  if (requiredParameters.length === 0) return []
+  if (plan.selection?.requiresTransform) return [...requiredParameters]
+  return findMissingRequiredParameters(peer, plan.provider, plan.serviceId ?? requestedService, requiredParameters, plan.selection?.targetProtocol)
+}
+
+/**
+ * Sellers that could take the request but whose own health check announces
+ * the route failing: the model, or its protocol when only failing upstreams
+ * serve it. For explaining why automatic routing found no peer.
+ */
+export function findFailingServiceRoutes(
+  peers: PeerInfo[],
+  requestProtocol: ServiceApiProtocol | null,
+  requestedService: string,
+  explicitProvider: string | null,
+  requiredParameters: readonly string[],
+): Array<{ peerId: string; serviceId: string; health: ServiceHealth }> {
+  const routes: Array<{ peerId: string; serviceId: string; health: ServiceHealth }> = []
+  for (const peer of peers) {
+    const plan = resolvePeerRoutePlan(peer, requestProtocol, requestedService, explicitProvider, 'lenient')
+    if (!plan?.serviceId) continue
+    const health = providerServiceRouteHealth(peer.providerServiceHealth, plan.provider, plan.serviceId, plan.selection?.targetProtocol)
+    if (!isServiceHealthFailing(health)) continue
+    if (findMissingRouteParameters(peer, plan, requestedService, requiredParameters).length > 0) continue
+    routes.push({ peerId: peer.peerId, serviceId: plan.serviceId, health })
+  }
+  return routes
 }
 
 /**

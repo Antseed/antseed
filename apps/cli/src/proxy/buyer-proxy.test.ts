@@ -3318,6 +3318,47 @@ test('a failing seller that advertises the required parameters gets the self hea
   assert.deepEqual(await send(seller([])), [422, 'required_capability_unavailable'])
 })
 
+test('a healthy seller without the required parameters does not hide a capable seller failing', async () => {
+  const seller = (seed: string, supportedParameters: string[], failing: boolean) => {
+    const peer = makePeer(seed, ['openai'])
+    peer.providerPricing = { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'gpt-6-sol': { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } } }
+    peer.providerServiceApiProtocols = { openai: { services: { 'gpt-6-sol': ['openai-chat-completions'] } } }
+    peer.providerServiceCapabilities = { openai: { services: { 'gpt-6-sol': { supportedParameters } } } }
+    if (failing) peer.providerServiceHealth = { openai: { services: { 'gpt-6-sol': { status: 'failing', reason: 'timeout' } } } }
+    return peer
+  }
+  const peers = [seller('b', ['seed'], true), seller('c', [], false)]
+  const proxy = makeBuyerProxyWithPeers(peers, peers, permissiveRouter())
+  ;(proxy as any)._node.sendRequest = async () => { throw new Error('must not reach a peer') }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    path: '/v1/chat/completions',
+    headers: { 'x-antseed-required-parameters': 'seed' },
+    body: { model: 'gpt-6-sol', messages: [{ role: 'user', content: 'hi' }] },
+  }))
+
+  assert.equal(res.statusCode, 503)
+  assert.equal(JSON.parse(res.body).error.code, 'seller_self_health_failing')
+})
+
+test('a video protocol only failing upstreams serve gets the self health error, not unsupported_protocol', async () => {
+  const peer = makePeer('b', ['video'])
+  peer.providerServiceApiProtocols = { video: { services: { vid: ['venice-video', 'fal-video'] } } }
+  peer.providerServiceHealth = { video: {
+    services: { vid: { status: 'healthy' } },
+    failingProtocols: { vid: { 'fal-video': { status: 'failing', reason: 'timeout', consecutiveFailures: 3 } } },
+  } }
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+  ;(proxy as any)._node.sendRequest = async () => { throw new Error('must not reach a peer') }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({ path: '/fal/v1/video/queue', body: { model: 'vid', prompt: 'cat', duration: 5 } }))
+
+  assert.equal(res.statusCode, 503)
+  const error = JSON.parse(res.body).error
+  assert.equal(error.code, 'seller_self_health_failing')
+  assert.equal(error.service_health.reason, 'timeout')
+})
+
 test('a healthy seller ruled out by policy keeps the policy answer, not a self health error', async () => {
   const failing = makePeer('b', ['openai'])
   failing.providerPricing = { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'gpt-6-sol': { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } } }
