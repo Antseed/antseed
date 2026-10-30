@@ -8,6 +8,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Added
 
+- Gateway console: the **Authorize a wallet** dialog now offers an **Add this wallet as a sign-in method** button when the connected wallet is not yet one of your sign-in methods, opening the add-wallet flow straight from the dialog. The 24-hour wait before a newly added wallet can be authorized is unchanged.
 - Docs: **Connect → Generate videos with an agent**, a page for the `antseed-videos` skill: installing it (Antseed Desktop, an agent, or `gh skill install`), the three approval stages, editing a video you bring, what you pay (including the opening fee when a video above $1.00 fails), interrupted jobs, multi-clip videos and troubleshooting. Linked from the sidebar and **Agents**.
 - Website: seller dashboard launch post with an illustrated cover, seven dashboard screenshots, setup links and the providers Telegram updates channel.
 - ANTS dashboard and gateway console **Staking**: a seller's TVL shows how its stake and power change next epoch, from the pool's on-chain next-epoch figures, e.g. `+17,718.56 · +13.69% power next epoch` for a pool whose seller merged and re-locked its stake, instead of `+132,629.46 pending` (which counted the merged stake as new). Stake leaving shows as a decrease; a power drop with unchanged stake (normal-lock decay) is not shown. Needs Antscan's `nextActiveStake` / `nextWeight`; with an older Antscan it shows pending stake as before.

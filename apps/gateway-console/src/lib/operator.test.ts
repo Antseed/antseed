@@ -4,7 +4,7 @@ import { seed } from '../mock/data'
 import { mockOperatorState, OPERATOR_SCENARIOS, scenarioOperator, UNKNOWN_OPERATOR } from '../mock/operator'
 import { DEPOSITS_OPERATOR_ABI } from '../wallet/operator-abi'
 import {
-  authorizeBlocker, checkAuthorization, eligibleWallets, OperatorPreflightError, operatorGate, operatorTxError, operatorView, relationFor, revertErrorName,
+  authorizeBlocker, authorizeNeedsSignInWallet, checkAuthorization, eligibleWallets, OperatorPreflightError, operatorGate, operatorTxError, operatorView, relationFor, revertErrorName,
   type OperatorState,
 } from './operator'
 
@@ -83,6 +83,17 @@ describe('authorization rules in the browser', () => {
     expect(authorizeBlocker(owner, null, NOW)).toMatch(/Connect the wallet/)
     expect(authorizeBlocker(state({}), MINE, NOW)).toMatch(/Only the organization owner/)
     expect(eligibleWallets(owner, NOW).map((wallet) => wallet.ready)).toEqual([true, false])
+  })
+
+  it('authorizeNeedsSignInWallet: only the "add this wallet" case', () => {
+    // A wallet that is already a sign-in method (even one still in its 24 h wait) does not need adding.
+    expect(authorizeNeedsSignInWallet(owner, MINE)).toBe(false)
+    expect(authorizeNeedsSignInWallet(owner, NEW_WALLET)).toBe(false)
+    // An unknown connected wallet is the one case where adding it is the fix.
+    expect(authorizeNeedsSignInWallet(owner, OTHER)).toBe(true)
+    // No connected wallet, or no authorize rights: not this case.
+    expect(authorizeNeedsSignInWallet(owner, null)).toBe(false)
+    expect(authorizeNeedsSignInWallet(state({}), OTHER)).toBe(false)
   })
 
   it('checkAuthorization: operator set meanwhile, nonce moved, wrong chain or contract', () => {
