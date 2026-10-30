@@ -160,7 +160,7 @@ export class GasHealthMonitor {
     if (this._stopped) return;
     this._lastBalanceWei = balanceWei;
     this._lastCheckedAt = Date.now();
-    this._notifyBalance(balanceWei);
+    void this._notifyBalance(balanceWei);
 
     const depleted = balanceWei < this._minBalanceWei;
     if (depleted === this._depleted) return;
@@ -173,15 +173,10 @@ export class GasHealthMonitor {
     });
   }
 
-  private _notifyBalance(balanceWei: bigint): void {
+  private async _notifyBalance(balanceWei: bigint): Promise<void> {
     if (!this._onBalance) return;
     try {
-      const result = this._onBalance(balanceWei);
-      if (result && typeof (result as Promise<void>).catch === 'function') {
-        (result as Promise<void>).catch((err) => {
-          debugWarn(`[GasHealth] onBalance failed: ${err instanceof Error ? err.message : err}`);
-        });
-      }
+      await this._onBalance(balanceWei);
     } catch (err) {
       debugWarn(`[GasHealth] onBalance failed: ${err instanceof Error ? err.message : err}`);
     }

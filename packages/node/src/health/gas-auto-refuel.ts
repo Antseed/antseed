@@ -170,6 +170,7 @@ export class GasAutoRefueler {
 
   private async _refuel(balanceWei: bigint): Promise<void> {
     let reservation: GasRefuelRecord | null = null;
+    let swapSent = false;
     try {
       const recent = this.recentHistory;
       const usedToday = recent.reduce((sum, record) => sum + BigInt(record.usdcUnits), 0n);
@@ -197,9 +198,17 @@ export class GasAutoRefueler {
       const minOut = (expected * (10_000n - this._slippageBps)) / 10_000n;
       debugLog(`[GasRefuel] ${this._address} at ${formatEther(balanceWei)} ETH: swapping ${formatUnits(amount, 6)} USDC for ~${formatEther(expected)} ETH`);
       // Reserve the spend on disk first: if the process exits before the swap is mined, a restart still counts it.
-      reservation = { at: this._now(), usdcUnits: amount.toString(), txHash: '', pending: true };
-      this._history = [...this.recentHistory, reservation];
-      await this._persist();
+      const pending: GasRefuelRecord = { at: this._now(), usdcUnits: amount.toString(), txHash: '', pending: true };
+      this._history = [...this.recentHistory, pending];
+      try {
+        await this._persist({ required: true });
+      } catch (err) {
+        // Without the reservation on disk a restart could not count this swap, so it is not sent.
+        this._history = this._history.filter((entry) => entry !== pending);
+        throw new Error(`could not save the refuel reservation, so no swap was sent: ${err instanceof Error ? err.message : err}`);
+      }
+      reservation = pending;
+      swapSent = true;
       const txHash = await this._swapper.swap(amount, minOut);
       const record: GasRefuelRecord = { at: this._now(), usdcUnits: amount.toString(), txHash };
       this._history = [...this.recentHistory.filter((entry) => entry !== reservation), record];
@@ -209,10 +218,11 @@ export class GasAutoRefueler {
       this._lastError = null;
       this._skipped = null;
       this._nextAttemptAt = this._now() + REFUEL_SUCCESS_COOLDOWN_MS;
-      this._emit({ status: 'refueled', address: this._address, record, expectedEthWei: expected, balanceWei });
+      void this._emit({ status: 'refueled', address: this._address, record, expectedEthWei: expected, balanceWei });
     } catch (err) {
-      // The swap reverted, was dropped or never sent: no USDC left the wallet.
-      if (reservation) {
+      // Release the reservation only when the swap certainly spent nothing. Otherwise (a timeout, a lost
+      // RPC response) it may still be mined, so the pending spend keeps counting until it ages out.
+      if (reservation && swapSent && swapCertainlyNotSpent(err)) {
         const dropped = reservation;
         this._history = this._history.filter((entry) => entry !== dropped);
         await this._persist();
@@ -223,14 +233,19 @@ export class GasAutoRefueler {
       this._nextAttemptAt = this._now() + backoff;
       this._lastError = error;
       debugWarn(`[GasRefuel] ${this._address} refuel failed: ${error}`);
-      this._emit({ status: 'failed', address: this._address, error, balanceWei, retryAt: this._nextAttemptAt });
+      void this._emit({ status: 'failed', address: this._address, error, balanceWei, retryAt: this._nextAttemptAt });
     }
   }
 
-  private async _persist(): Promise<void> {
+  /** Save the history; a failure is logged, or thrown when `required` (the reservation before a swap). */
+  private async _persist(options: { required?: boolean } = {}): Promise<void> {
     if (!this._saveHistory) return;
-    await this._saveHistory(this.recentHistory)
-      .catch((err) => debugWarn(`[GasRefuel] could not save refuel history: ${err instanceof Error ? err.message : err}`));
+    try {
+      await this._saveHistory(this.recentHistory);
+    } catch (err) {
+      if (options.required) throw err;
+      debugWarn(`[GasRefuel] could not save refuel history: ${err instanceof Error ? err.message : err}`);
+    }
   }
 
   /** Report a skip once per reason, not on every reading while it lasts. */
@@ -238,18 +253,30 @@ export class GasAutoRefueler {
     if (this._skipped === reason) return;
     this._skipped = reason;
     debugLog(`[GasRefuel] ${this._address} refuel skipped (${reason}): ${detail}`);
-    this._emit({ status: 'skipped', address: this._address, reason, balanceWei, detail });
+    void this._emit({ status: 'skipped', address: this._address, reason, balanceWei, detail });
   }
 
-  private _emit(event: GasRefuelEvent): void {
+  private async _emit(event: GasRefuelEvent): Promise<void> {
     if (this._stopped || !this._onEvent) return;
     try {
-      const result = this._onEvent(event);
-      if (result && typeof (result as Promise<void>).catch === 'function') {
-        (result as Promise<void>).catch((err) => debugWarn(`[GasRefuel] onEvent failed: ${err instanceof Error ? err.message : err}`));
-      }
+      await this._onEvent(event);
     } catch (err) {
       debugWarn(`[GasRefuel] onEvent failed: ${err instanceof Error ? err.message : err}`);
     }
   }
+}
+
+/** ethers codes for a transaction the node refused before broadcasting it. */
+const NOT_BROADCAST_CODES = new Set(['INSUFFICIENT_FUNDS', 'NONCE_EXPIRED', 'REPLACEMENT_UNDERPRICED']);
+
+/**
+ * Whether a swap error proves no USDC left the wallet: it reverted (in gas
+ * estimation or on-chain), the node refused to broadcast it, or another tx took
+ * its nonce. A timeout or lost RPC response proves nothing.
+ */
+export function swapCertainlyNotSpent(err: unknown): boolean {
+  const { code, message } = (err ?? {}) as { code?: unknown; message?: unknown };
+  return code === 'CALL_EXCEPTION'
+    || (typeof code === 'string' && NOT_BROADCAST_CODES.has(code))
+    || message === 'Transaction was dropped or replaced';
 }

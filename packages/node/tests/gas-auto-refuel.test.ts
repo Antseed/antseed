@@ -4,6 +4,7 @@ import {
   GasAutoRefueler,
   REFUEL_FAILURE_BACKOFF_MS,
   REFUEL_SUCCESS_COOLDOWN_MS,
+  swapCertainlyNotSpent,
   type GasRefuelEvent,
   type GasRefuelRecord,
   type GasRefuelSwapper,
@@ -115,7 +116,7 @@ describe('GasAutoRefueler', () => {
   });
 
   it('backs off exponentially after failures', async () => {
-    const { refueler, events, advance } = setup({ swapError: new Error('execution reverted: Too little received') });
+    const { refueler, events, advance } = setup({ swapError: Object.assign(new Error('execution reverted: Too little received'), { code: 'CALL_EXCEPTION' }) });
     await refueler.onBalance(LOW);
     expect(events).toEqual([expect.objectContaining({ status: 'failed', error: 'execution reverted: Too little received' })]);
     expect(refueler.getSnapshot().lastError).toBe('execution reverted: Too little received');
@@ -178,16 +179,52 @@ describe('GasAutoRefueler', () => {
     expect(swaps).toEqual([USDC(5)]);
   });
 
-  it('drops the pending spend when the swap fails', async () => {
+  const failingSwap = (error: unknown) => {
     const saved: GasRefuelRecord[][] = [];
+    let swaps = 0;
     const refueler = new GasAutoRefueler({
       address: ADDRESS,
-      swapper: { quote: async (a) => a, usdcBalance: async () => USDC(100), maxSwapCostWei: async () => 1n, swap: async () => { throw new Error('reverted'); } },
+      swapper: { quote: async (a) => a, usdcBalance: async () => USDC(100), maxSwapCostWei: async () => 1n, swap: async () => { swaps += 1; throw error; } },
       saveHistory: async (records) => { saved.push(records); },
     });
+    return { refueler, saved, swaps: () => swaps };
+  };
+
+  it('drops the pending spend when the swap certainly spent nothing (a revert)', async () => {
+    const { refueler, saved } = failingSwap(Object.assign(new Error('execution reverted: Too little received'), { code: 'CALL_EXCEPTION' }));
     await refueler.onBalance(LOW);
     expect(saved.map((records) => records.length)).toEqual([1, 0]);
     expect(refueler.getSnapshot().usdcLast24hUnits).toBe(0n);
+  });
+
+  it('keeps counting the pending spend when the swap may have been broadcast (the RPC response was lost)', async () => {
+    const { refueler, saved } = failingSwap(Object.assign(new Error('request timeout'), { code: 'TIMEOUT' }));
+    await refueler.onBalance(LOW);
+    expect(saved).toEqual([[expect.objectContaining({ pending: true, usdcUnits: '10000000' })]]);
+    expect(refueler.getSnapshot().usdcLast24hUnits).toBe(USDC(10));
+  });
+
+  it('sends no swap when the reservation cannot be saved', async () => {
+    let swaps = 0;
+    const events: GasRefuelEvent[] = [];
+    const refueler = new GasAutoRefueler({
+      address: ADDRESS,
+      swapper: { quote: async (a) => a, usdcBalance: async () => USDC(100), maxSwapCostWei: async () => 1n, swap: async () => { swaps += 1; return '0x'; } },
+      saveHistory: async () => { throw new Error('EACCES: permission denied'); },
+      onEvent: (event) => { events.push(event); },
+    });
+    await refueler.onBalance(LOW);
+    expect(swaps).toBe(0);
+    expect(refueler.getSnapshot().usdcLast24hUnits).toBe(0n);
+    expect(events).toEqual([expect.objectContaining({ status: 'failed', error: expect.stringContaining('could not save the refuel reservation') })]);
+  });
+
+  it('tells a certain non-spend from an uncertain one', () => {
+    expect(swapCertainlyNotSpent(Object.assign(new Error('x'), { code: 'CALL_EXCEPTION' }))).toBe(true);
+    expect(swapCertainlyNotSpent(Object.assign(new Error('x'), { code: 'INSUFFICIENT_FUNDS' }))).toBe(true);
+    expect(swapCertainlyNotSpent(new Error('Transaction was dropped or replaced'))).toBe(true);
+    expect(swapCertainlyNotSpent(Object.assign(new Error('x'), { code: 'TIMEOUT' }))).toBe(false);
+    expect(swapCertainlyNotSpent(new Error('fetch failed'))).toBe(false);
   });
 
   it('reports nothing and starts nothing after stop()', async () => {
