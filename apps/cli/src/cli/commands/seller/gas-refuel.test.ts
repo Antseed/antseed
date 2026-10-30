@@ -20,6 +20,10 @@ test('refuel history round-trips through the data dir and ignores a corrupt file
   const refuels = [{ at: 1, usdcUnits: '10000000', txHash: '0xabc' }]
   await saveGasRefuelHistory(dir, refuels)
   assert.deepEqual(await loadGasRefuelHistory(dir), refuels)
+  // A spend reserved by a process that exited mid-swap comes back as pending.
+  const withPending = [...refuels, { at: 2, usdcUnits: '5000000', txHash: '', pending: true }]
+  await saveGasRefuelHistory(dir, withPending)
+  assert.deepEqual(await loadGasRefuelHistory(dir), withPending)
   writeFileSync(join(dir, GAS_REFUEL_HISTORY_FILE), '{ not json')
   assert.deepEqual(await loadGasRefuelHistory(dir), [])
   writeFileSync(join(dir, GAS_REFUEL_HISTORY_FILE), JSON.stringify({ refuels: [{ at: 'x' }, ...refuels] }))

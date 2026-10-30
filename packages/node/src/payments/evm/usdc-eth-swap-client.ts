@@ -1,13 +1,15 @@
 import { Contract, getBigInt } from 'ethers';
 import type { AbstractSigner } from 'ethers';
 import { BaseEvmClient, ERC20_ABI } from './base-evm-client.js';
+import { getChainConfig } from '../chain-config.js';
 
+const baseMainnet = getChainConfig('base-mainnet');
+export const BASE_MAINNET_EVM_CHAIN_ID = baseMainnet.evmChainId;
+export const BASE_USDC = baseMainnet.usdcContractAddress;
 /** Uniswap v3 on Base mainnet: the deep USDC/WETH 0.05% pool. */
-export const BASE_MAINNET_EVM_CHAIN_ID = 8453;
 export const BASE_UNISWAP_SWAP_ROUTER_02 = '0x2626664c2603336E57B271c5C0b26F421741e481';
 export const BASE_UNISWAP_QUOTER_V2 = '0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a';
 export const BASE_WETH = '0x4200000000000000000000000000000000000006';
-export const BASE_USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 export const USDC_WETH_POOL_FEE = 500;
 /**
  * Gas for the approve + swap pair, rounded up. Used only to decide whether the

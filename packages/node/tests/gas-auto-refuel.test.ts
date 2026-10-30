@@ -150,8 +150,44 @@ describe('GasAutoRefueler', () => {
     const stopped = refueler.stop();
     finishSwap('0xlate');
     await Promise.all([running, stopped]);
-    expect(saved).toEqual([[expect.objectContaining({ txHash: '0xlate', usdcUnits: '10000000' })]]);
+    expect(saved.at(-1)).toEqual([{ at: expect.any(Number), txHash: '0xlate', usdcUnits: '10000000' }]);
     expect(events).toEqual([]);
+  });
+
+  it('saves the spend as pending before sending, so a restart mid-swap still counts it toward the daily cap', async () => {
+    const saved: GasRefuelRecord[][] = [];
+    const swapper: GasRefuelSwapper = {
+      quote: async (amountIn) => amountIn,
+      usdcBalance: async () => USDC(100),
+      maxSwapCostWei: async () => 1n,
+      swap: () => new Promise<string>(() => {}), // never mined before the process exits
+    };
+    const first = new GasAutoRefueler({ address: ADDRESS, swapper, maxUsdcPerDayUnits: USDC(15), saveHistory: async (records) => { saved.push(records); } });
+    void first.onBalance(LOW);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(saved).toEqual([[{ at: expect.any(Number), usdcUnits: '10000000', txHash: '', pending: true }]]);
+    expect(first.getSnapshot().lastRefuel).toBeNull();
+
+    // The restarted seller loads that history: only 5 USDC of the 15 cap is left.
+    const swaps: bigint[] = [];
+    const second = new GasAutoRefueler({
+      address: ADDRESS, maxUsdcPerDayUnits: USDC(15), history: saved.at(-1),
+      swapper: { ...swapper, swap: async (amountIn) => { swaps.push(amountIn); return '0xnext'; } },
+    });
+    await second.onBalance(LOW);
+    expect(swaps).toEqual([USDC(5)]);
+  });
+
+  it('drops the pending spend when the swap fails', async () => {
+    const saved: GasRefuelRecord[][] = [];
+    const refueler = new GasAutoRefueler({
+      address: ADDRESS,
+      swapper: { quote: async (a) => a, usdcBalance: async () => USDC(100), maxSwapCostWei: async () => 1n, swap: async () => { throw new Error('reverted'); } },
+      saveHistory: async (records) => { saved.push(records); },
+    });
+    await refueler.onBalance(LOW);
+    expect(saved.map((records) => records.length)).toEqual([1, 0]);
+    expect(refueler.getSnapshot().usdcLast24hUnits).toBe(0n);
   });
 
   it('reports nothing and starts nothing after stop()', async () => {

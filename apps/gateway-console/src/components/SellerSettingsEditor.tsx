@@ -423,7 +423,7 @@ export function SellerSettingsEditor({ settings, restart }: { settings: SellerSe
             <Switch checked={draft.gasEnabled} disabled={readOnly} onChange={(next) => set('gasEnabled', next)} label="Gas checks"
               description="Pause advertising while the wallet cannot pay for settlement." />
             <div className="gc-policy__caps">{field('gasMinEth', 'Minimum ETH', { wide: true })}</div>
-            <Switch checked={draft.refuelEnabled} disabled={readOnly || !draft.gasEnabled} onChange={(next) => set('refuelEnabled', next)} label={<RefuelLabel belowEth={draft.refuelBelowEth} swapUsdc={draft.refuelUsdc} maxPerDay={draft.refuelMaxPerDay} />}
+            <Switch checked={draft.refuelEnabled} disabled={readOnly || !draft.gasEnabled} onChange={(next) => set('refuelEnabled', next)} label={<RefuelLabel belowEth={draft.refuelBelowEth} swapUsdc={draft.refuelUsdc} maxPerDay={draft.refuelMaxPerDay} slippageBps={settings.gasRefuel.slippageBps} />}
               description="Swap some USDC earnings for ETH on Uniswap before the wallet runs out. Base mainnet; needs gas checks." />
             <div className="gc-policy__caps">
               {field('refuelBelowEth', 'Below ETH')}
@@ -544,14 +544,14 @@ export function SellerSettingsEditor({ settings, restart }: { settings: SellerSe
 const GAS_DOCS_URL = 'https://antseed.com/docs/provide/payments#gas'
 
 /** The auto-refuel switch label, with where and how the swap happens (in the amounts being edited). */
-function RefuelLabel({ belowEth, swapUsdc, maxPerDay }: { belowEth: string; swapUsdc: string; maxPerDay: string }) {
+function RefuelLabel({ belowEth, swapUsdc, maxPerDay, slippageBps }: { belowEth: string; swapUsdc: string; maxPerDay: string; slippageBps: number }) {
   return (
     <span className="gc-inline">
       Auto-refuel gas
       <InfoTip label="How auto-refuel swaps" align="center">
         <span className="gc-tip__title">How the swap works</span>
         When the wallet holds less than {belowEth.trim() || '…'} ETH, the seller swaps {swapUsdc.trim() || '…'} USDC from it for ETH on Uniswap v3 on Base
-        (USDC/WETH 0.05% pool, at most 1% slippage). The ETH lands in the same wallet, which pays the swap's gas, so no
+        (USDC/WETH 0.05% pool, at most {slippageBps / 100}% slippage). The ETH lands in the same wallet, which pays the swap's gas, so no
         other wallet is involved. At most {maxPerDay.trim() || '…'} USDC a day; a failed swap retries later and alerts.{' '}
         <a href={GAS_DOCS_URL} target="_blank" rel="noreferrer">Seller gas docs</a>
       </InfoTip>

@@ -1216,6 +1216,8 @@ export interface SellerGasRefuelSettings {
   triggerBalanceEth: number
   swapUsdc: number
   maxUsdcPerDay: number
+  /** Slippage tolerance in basis points; set in config.json only. */
+  slippageBps: number
 }
 
 export interface SellerAlertsState {
@@ -1425,7 +1427,7 @@ export interface SellerSettingsPatch {
   maxConcurrentBuyers?: number
   healthCheck?: { enabled?: boolean; intervalMs?: number; failureThreshold?: number }
   gasCheck?: { enabled?: boolean; minBalanceEth?: number }
-  gasRefuel?: Partial<SellerGasRefuelSettings>
+  gasRefuel?: Partial<Omit<SellerGasRefuelSettings, 'slippageBps'>>
   /** The seller-wide program; null removes a limit. */
   freeTier?: SellerFreeTierProgramPatch
   /** null goes back to the built-in list. */

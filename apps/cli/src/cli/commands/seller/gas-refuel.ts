@@ -41,6 +41,7 @@ function isRecord(value: unknown): value is GasRefuelRecord {
   if (typeof value !== 'object' || value === null) return false
   const record = value as Record<string, unknown>
   return typeof record['at'] === 'number' && typeof record['usdcUnits'] === 'string' && /^\d+$/.test(record['usdcUnits']) && typeof record['txHash'] === 'string'
+    && (record['pending'] === undefined || typeof record['pending'] === 'boolean')
 }
 
 /** Past refuels from the data dir; a missing or unreadable file is an empty history. */

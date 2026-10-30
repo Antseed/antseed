@@ -75,7 +75,7 @@ describe('seller editors', async () => {
   const settings = {
     configPath: '/c', writable: true, readOnlyReason: null, savesTo: 'config' as const, overridesPath: null, overridden: [], displayName: 'S', maxConcurrentBuyers: 50,
     healthCheck: { enabled: true, intervalMs: 300_000, failureThreshold: 3 }, gasCheck: { enabled: true, minBalanceEth: 0.00005 },
-    gasRefuel: { enabled: true, triggerBalanceEth: 0.0005, swapUsdc: 10, maxUsdcPerDay: 30 },
+    gasRefuel: { enabled: true, triggerBalanceEth: 0.0005, swapUsdc: 10, maxUsdcPerDay: 30, slippageBps: 100 },
     freeTier: { maxRequestsPerAddress: null, maxRequestsPerIp: null, windowMs: null, stakersOnly: false, stakeTiers: null }, restrictedCountries: ['RU'], restrictedCountriesDefault: true,
     defaultStakeTiers: [{ minPower: 520_000, multiplier: 5 as number | 'unlimited' }],
     services: [{ provider: 'openai', service: 'glm-5.3', inputUsdPerMillion: 1, outputUsdPerMillion: 3, cachedInputUsdPerMillion: null, inherited: false, paid: true, unitPrice: null, kind: 'text' as const, apiProtocols: [], freeTier: null, ownFreeTier: null, enabled: true, upstreamModel: null, categories: [], unitComponents: [] }],

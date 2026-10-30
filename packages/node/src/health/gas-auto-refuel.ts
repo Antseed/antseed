@@ -17,11 +17,18 @@ export const REFUEL_FAILURE_BACKOFF_MS = 5 * 60_000;
 export const REFUEL_MAX_BACKOFF_MS = 6 * 60 * 60_000;
 const DAY_MS = 24 * 60 * 60_000;
 
-/** A completed refuel, kept for the daily cap (and persisted by the caller across restarts). */
+/** A refuel, kept for the daily cap (and persisted by the caller across restarts). */
 export interface GasRefuelRecord {
   at: number;
   usdcUnits: string;
+  /** Empty while `pending`. */
   txHash: string;
+  /**
+   * Saved before the swap is sent and replaced once it is mined (or dropped if it
+   * fails). One left behind by a process that exited mid-swap still counts toward
+   * the daily cap, since the swap may have gone through.
+   */
+  pending?: boolean;
 }
 
 export type GasRefuelSkipReason = 'daily_cap' | 'insufficient_usdc' | 'insufficient_eth';
@@ -64,8 +71,9 @@ export interface GasAutoRefuelConfig {
   /** Earlier refuels (e.g. loaded from disk) so the daily cap survives restarts. */
   history?: GasRefuelRecord[];
   /**
-   * Persist the last 24 hours of refuels after each one. Called even for a swap
-   * that completes after `stop()`, so the daily cap still counts it after a restart.
+   * Persist the last 24 hours of refuels: before each swap is sent (with it as
+   * `pending`) and after it settles, even after `stop()`, so the daily cap still
+   * counts it after a restart.
    */
   saveHistory?: (records: GasRefuelRecord[]) => Promise<void>;
   onEvent?: (event: GasRefuelEvent) => void | Promise<void>;
@@ -134,7 +142,7 @@ export class GasAutoRefueler {
       maxUsdcPerDayUnits: this._maxUsdcPerDayUnits,
       usdcLast24hUnits: recent.reduce((sum, record) => sum + BigInt(record.usdcUnits), 0n),
       inFlight: this._inFlight !== null,
-      lastRefuel: this._history.at(-1) ?? null,
+      lastRefuel: this._history.filter((record) => !record.pending).at(-1) ?? null,
       lastError: this._lastError,
       skipped: this._skipped,
       nextAttemptAt: this._nextAttemptAt > this._now() ? this._nextAttemptAt : null,
@@ -161,6 +169,7 @@ export class GasAutoRefueler {
   }
 
   private async _refuel(balanceWei: bigint): Promise<void> {
+    let reservation: GasRefuelRecord | null = null;
     try {
       const recent = this.recentHistory;
       const usedToday = recent.reduce((sum, record) => sum + BigInt(record.usdcUnits), 0n);
@@ -187,19 +196,27 @@ export class GasAutoRefueler {
       const expected = await this._swapper.quote(amount);
       const minOut = (expected * (10_000n - this._slippageBps)) / 10_000n;
       debugLog(`[GasRefuel] ${this._address} at ${formatEther(balanceWei)} ETH: swapping ${formatUnits(amount, 6)} USDC for ~${formatEther(expected)} ETH`);
+      // Reserve the spend on disk first: if the process exits before the swap is mined, a restart still counts it.
+      reservation = { at: this._now(), usdcUnits: amount.toString(), txHash: '', pending: true };
+      this._history = [...this.recentHistory, reservation];
+      await this._persist();
       const txHash = await this._swapper.swap(amount, minOut);
       const record: GasRefuelRecord = { at: this._now(), usdcUnits: amount.toString(), txHash };
-      this._history = [...this.recentHistory, record];
-      if (this._saveHistory) {
-        await this._saveHistory(this.recentHistory)
-          .catch((err) => debugWarn(`[GasRefuel] could not save refuel history: ${err instanceof Error ? err.message : err}`));
-      }
+      this._history = [...this.recentHistory.filter((entry) => entry !== reservation), record];
+      reservation = null;
+      await this._persist();
       this._failures = 0;
       this._lastError = null;
       this._skipped = null;
       this._nextAttemptAt = this._now() + REFUEL_SUCCESS_COOLDOWN_MS;
       this._emit({ status: 'refueled', address: this._address, record, expectedEthWei: expected, balanceWei });
     } catch (err) {
+      // The swap reverted, was dropped or never sent: no USDC left the wallet.
+      if (reservation) {
+        const dropped = reservation;
+        this._history = this._history.filter((entry) => entry !== dropped);
+        await this._persist();
+      }
       const error = err instanceof Error ? err.message : String(err);
       this._failures += 1;
       const backoff = Math.min(REFUEL_MAX_BACKOFF_MS, REFUEL_FAILURE_BACKOFF_MS * 2 ** (this._failures - 1));
@@ -208,6 +225,12 @@ export class GasAutoRefueler {
       debugWarn(`[GasRefuel] ${this._address} refuel failed: ${error}`);
       this._emit({ status: 'failed', address: this._address, error, balanceWei, retryAt: this._nextAttemptAt });
     }
+  }
+
+  private async _persist(): Promise<void> {
+    if (!this._saveHistory) return;
+    await this._saveHistory(this.recentHistory)
+      .catch((err) => debugWarn(`[GasRefuel] could not save refuel history: ${err instanceof Error ? err.message : err}`));
   }
 
   /** Report a skip once per reason, not on every reading while it lasts. */

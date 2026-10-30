@@ -72,7 +72,7 @@ export function mockSellerSettings(): { settings: SellerSettings; alerts: Seller
       configPath: '/etc/antseed/config.json', writable: true, readOnlyReason: null, savesTo: 'overrides', overridesPath: '/var/lib/antseed/config.overrides.json', overridden: [],
       displayName: 'Fake Seller', maxConcurrentBuyers: 50,
       healthCheck: { enabled: true, intervalMs: 300_000, failureThreshold: 3 }, gasCheck: { enabled: true, minBalanceEth: 0.00005 },
-      gasRefuel: { enabled: true, triggerBalanceEth: 0.0005, swapUsdc: 10, maxUsdcPerDay: 30 },
+      gasRefuel: { enabled: true, triggerBalanceEth: 0.0005, swapUsdc: 10, maxUsdcPerDay: 30, slippageBps: 100 },
       freeTier: { maxRequestsPerAddress: 200, maxRequestsPerIp: 400, windowMs: null, stakersOnly: false, stakeTiers: null }, restrictedCountries: ['CU', 'IR', 'KP', 'SY', 'RU'], restrictedCountriesDefault: true,
       defaultStakeTiers: DEFAULT_TIERS,
       services: [

@@ -1,7 +1,7 @@
 import { constants } from 'node:fs'
 import { access, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { DEFAULT_FREE_TIER_STAKE_TIERS, DEFAULT_FREE_TIER_WINDOW_MS, DEFAULT_HEALTH_CHECK_FAILURE_THRESHOLD, DEFAULT_HEALTH_CHECK_INTERVAL_MS, DEFAULT_MIN_GAS_BALANCE_WEI, DEFAULT_REFUEL_MAX_USDC_PER_DAY_UNITS, DEFAULT_REFUEL_SWAP_USDC_UNITS, DEFAULT_REFUEL_TRIGGER_WEI, formatEther } from '@antseed/node'
+import { DEFAULT_FREE_TIER_STAKE_TIERS, DEFAULT_FREE_TIER_WINDOW_MS, DEFAULT_HEALTH_CHECK_FAILURE_THRESHOLD, DEFAULT_HEALTH_CHECK_INTERVAL_MS, DEFAULT_MIN_GAS_BALANCE_WEI, DEFAULT_REFUEL_MAX_USDC_PER_DAY_UNITS, DEFAULT_REFUEL_SLIPPAGE_BPS, DEFAULT_REFUEL_SWAP_USDC_UNITS, DEFAULT_REFUEL_TRIGGER_WEI, formatEther } from '@antseed/node'
 import { DEFAULT_RESTRICTED_COUNTRIES } from '../config/defaults.js'
 import { configFromObject, resolveConfigPath } from '../config/loader.js'
 import { isPricedSellerService } from '../config/effective.js'
@@ -158,6 +158,7 @@ function settingsView(raw: JsonObject, config: AntseedConfig, configPath: string
       triggerBalanceEth: seller.gasRefuel?.triggerBalanceEth ?? Number(formatEther(DEFAULT_REFUEL_TRIGGER_WEI)),
       swapUsdc: seller.gasRefuel?.swapUsdc ?? Number(DEFAULT_REFUEL_SWAP_USDC_UNITS) / 1e6,
       maxUsdcPerDay: seller.gasRefuel?.maxUsdcPerDay ?? Number(DEFAULT_REFUEL_MAX_USDC_PER_DAY_UNITS) / 1e6,
+      slippageBps: seller.gasRefuel?.slippageBps ?? DEFAULT_REFUEL_SLIPPAGE_BPS,
     },
     freeTier: programSettings(seller.freeTier),
     defaultStakeTiers: DEFAULT_FREE_TIER_STAKE_TIERS.map((tier) => ({ ...tier })),
