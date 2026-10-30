@@ -117,6 +117,9 @@ function normalizeSellerService(value: unknown): SellerServiceConfig | null {
   if (value['unitBillingModels'] !== undefined) {
     out.unitBillingModels = value['unitBillingModels'] as SellerServiceConfig['unitBillingModels'];
   }
+  if (value['enabled'] === false) {
+    out.enabled = false;
+  }
   if (value['freeTier'] !== undefined) {
     // A non-object becomes an empty program, which validation rejects for its missing limits.
     out.freeTier = normalizeFreeTierProgram(isRecord(value['freeTier']) ? value['freeTier'] : {});

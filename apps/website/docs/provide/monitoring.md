@@ -34,6 +34,10 @@ The dashboard has:
 - **Payments**: settled and delivered USDC and channel counts from the local channel ledger.
 - **Market**, **Reputation**, **Promote** and **Settings** pages: see below.
 
+When a newer Antseed is out, a line at the top says so and how this seller updates: the command for how it was installed (for example `npm install -g @antseed/cli@latest`), then restart the seller; in a container, deploy an image with the new `@antseed/cli`. The dashboard never installs it. **Dismiss** hides it until the next version.
+
+![The seller dashboard: requests, revenue, active channels and gas today, requests per day, and model health with a withdrawn model](/img/docs/seller/status.webp)
+
 It listens on `127.0.0.1:3120` by default (`--port`, `--host`). The URL it prints carries a session token: anyone with the URL can see the seller's earnings and change its alerts and settings, so treat it like a password.
 
 On a remote server, keep the default host and tunnel the port:
@@ -48,17 +52,25 @@ Then open the printed URL on your own machine.
 
 **Logs** lists every request the seller passed to an upstream, failures included, newest first: time, buyer, model, status, input and output tokens, latency and cost (from the signed usage receipt). Filter by model (its exact id), buyer, time range or failed requests only; older pages load on demand without slowing down on a large metering database. A filtered page looks through at most 5,000 requests at a time; when it finds fewer matches, **Look further back** (or `--cursor` in the CLI) continues. Requests the seller refuses itself (payment required, free-tier limit, a refused country) are not in the log. Tokens marked * were estimated from the body size because the upstream reported no usage. The model is recorded from this release on; older requests show the provider instead. **Events** on the same page is the seller's event journal.
 
+![Seller logs: every request with its buyer, model, status, tokens, latency and cost](/img/docs/seller/logs.webp)
+
 ## Market
 
 **Market** compares each model you sell with every other seller of the same model: how many others offer it, the cheapest and median prices, your rank by blended price (three parts input to one part output, a typical chat mix) and how far you are from the median. An image or video model billed per unit is compared per unit instead (say per image), only with sellers that price it in the same unit. Select a model to see every seller of it with price, trust score, TEE and load, your own row marked. **Edit your price** opens that model in **Settings**. Models only you offer are marked, and a list shows the models other sellers offer that you don't, most widely offered first.
+
+![Market: your prices against the cheapest and median seller of each model you sell](/img/docs/seller/market.webp)
 
 ## Reputation
 
 **Reputation** shows the trust score buyers compute for your seller (0-100) part by part: service history (up to 50), recognized usage (20), staking power (10), verified identity (20), the free model bonus (+5) and the wash-trading check. Each part has a plain next step for raising it, biggest gain first. Next to it is your on-chain standing: agent id and binding, eligibility, pool stake against the minimum, pool power and stakers, pending seller rewards, and settled volume, buyers, requests and ghost rate when the explorer answers.
 
+![Reputation: trust score and its parts, how to raise it, and on-chain standing](/img/docs/seller/reputation.webp)
+
 ## Promote
 
 **Promote** has your profile link on the explorer, a seller card with your name, trust score and prices (download it as SVG or PNG), and pinned model ids (`<peerId>@<model>`) that send buyers straight to you.
+
+![Promote: public profile, a downloadable seller card, and pinned-model examples](/img/docs/seller/promote.webp)
 
 It also sets up identity verification. Add a domain or a GitHub account, save (it is written to `seller.verifications` in `config.json`), publish the proof the page shows (a DNS TXT record or a `/.well-known/antseed.json` file for a domain, an `antseed.json` file in a public repository for GitHub), then restart the seller. **Check now** runs the same check buyers run.
 
@@ -79,6 +91,8 @@ The page is hidden when no seller has run in that directory.
 ## Alerts
 
 The seller can send its events to Telegram, to a webhook, or both. Set them up in the dashboard's **Alerts** panel (or the console's **Seller** page):
+
+![The Alerts panel: Telegram bot token and chat id, a webhook URL, and what is sent](/img/docs/seller/settings.webp)
 
 - **Telegram**: create a bot with @BotFather and paste its token. Send the bot a message, or add it to a group and post there, then click **Find chat** to pick the chat from a list (or type the chat id). **Send test** checks delivery.
 - **Webhook**: the seller POSTs each event as JSON with `text` and `content` fields, which Slack and Discord incoming webhooks read.
@@ -116,11 +130,13 @@ From the command line, `antseed seller alerts test` sends a test to every config
 
 ## Settings
 
-The **Settings** panel edits the `config.json` fields sellers change most: display name, maximum concurrent buyers, refused countries, health and gas checks, the seller-wide free tier (limits, stakers only, and the [staked tiers](/docs/staked-free-tier): the network default, your own, or none), and for each service its input, output and cached input price and its own free tier. Each pricing row shows the free tier buyers of that model get now. A model's own free tier is a free allowance on a paid model, or replaces the seller-wide free tier on a free one (see [free-tier limits](/docs/provide/config#free-tier-limits)). It belongs to the model id, so an edit applies to every provider that offers that model, and it uses the network's staked tiers (set your own for a model in `config.json`). On a paid model the free allowance covers text requests, not video generation. Clearing both seller-wide limits turns the seller-wide free tier off. A save writes only the fields you changed, so an edit made elsewhere in the meantime is kept. The health check interval is at least 60 seconds. Prices shown are the ones in the file. `ANTSEED_SELLER_INPUT_USD_PER_MILLION` and `ANTSEED_SELLER_OUTPUT_USD_PER_MILLION` in the seller's environment override the provider default prices at start, so they change only services without their own price; a service with its own `pricing` (for example one set here) keeps it. It does not add or remove services or touch upstream keys.
+The **Settings** panel edits the `config.json` fields sellers change most: display name, maximum concurrent buyers, refused countries, health and gas checks, the seller-wide free tier (limits, stakers only, and the [staked tiers](/docs/staked-free-tier): the network default, your own, or none), and for each service its input, output and cached input price and its own free tier. Each pricing row shows the free tier buyers of that model get now. A model's own free tier is a free allowance on a paid model, or replaces the seller-wide free tier on a free one (see [free-tier limits](/docs/provide/config#free-tier-limits)). It belongs to the model id, so an edit applies to every provider that offers that model, and it uses the network's staked tiers (set your own for a model in `config.json`). On a paid model the free allowance covers text requests, not video generation. Clearing both seller-wide limits turns the seller-wide free tier off. A save writes only the fields you changed, so an edit made elsewhere in the meantime is kept. The health check interval is at least 60 seconds. Prices shown are the ones in the file. `ANTSEED_SELLER_INPUT_USD_PER_MILLION` and `ANTSEED_SELLER_OUTPUT_USD_PER_MILLION` in the seller's environment override the provider default prices at start, so they change only services without their own price; a service with its own `pricing` (for example one set here) keeps it. Under **Models and pricing** you can also turn a model off (it stays in the config with `"enabled": false` and the seller starts without it) and on again, set the per-image or per-video prices of models billed by unit (each priced variant, such as a resolution, has its own field), add a model billed by tokens under one of your providers (model id, upstream model id, prices and categories), and remove a model. Image and video models are added in `config.json`, since they need capabilities and unit prices. The panel does not touch providers or upstream keys.
 
-Every save is checked the same way the seller checks its config at start, writes only the fields you changed (everything else stays as written), and keeps the previous file as `config.json.bak`. These settings apply when you restart the seller.
+Every save is checked the same way the seller checks its config at start, writes only the fields you changed (everything else stays as written), and keeps the previous file as `config.json.bak`. These settings apply when the seller restarts.
 
-When `config.json` cannot be written, for example because it is mounted read-only from a Kubernetes ConfigMap, the Settings panel is read-only with a note (alerts stay editable). Change the file where it is managed, then restart the seller.
+When `config.json` cannot be written, for example because it is mounted read-only from a Kubernetes ConfigMap or a Nix store path, saves go to `config.overrides.json` in the seller's data directory instead. It holds only the settings changed there and applies over `config.json` when the seller starts, so later changes to `config.json` still apply to every other field. The panel lists the settings saved this way; **Use config.json only** (or `antseed seller settings reset`) removes them. Once that file exists, saves keep going to it, so an override is never hidden behind an edit to the file under it. Only when neither `config.json` nor the data directory can be written is the panel read-only.
+
+**Restart seller** stops the seller cleanly and its supervisor starts it again with the saved settings, and the page reconnects when it is back. It is offered on the dashboard `antseed seller start` serves only when something will start the seller again: the main process of a Kubernetes container, or any seller started with `ANTSEED_SUPERVISED=1` (set it in a systemd unit with `Restart=on-failure` or `always`; `0` turns the button off). The process exits with code 75. Otherwise the panel says to restart the seller where it runs. The dashboard comes back on the same port and link, so the open page reconnects. A provider's last model can be turned off but not removed, since a provider with no models stops the seller from starting.
 
 ## From the command line
 

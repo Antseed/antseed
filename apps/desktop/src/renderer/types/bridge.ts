@@ -313,7 +313,7 @@ export type PreparedChatAttachment = {
   name: string;
   mimeType: string;
   size: number;
-  kind: 'image' | 'text' | 'archive' | 'error';
+  kind: 'image' | 'video' | 'text' | 'archive' | 'error';
   status: 'ready' | 'error';
   text?: string;
   image?: { type: 'image'; data: string; mimeType: string };

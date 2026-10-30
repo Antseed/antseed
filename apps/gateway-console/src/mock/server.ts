@@ -11,7 +11,7 @@
  * member of Default and an admin of Research.
  */
 import type {
-  AdminToken, ApiKey, AuditEntry, BuyerLimits, DepositConfirmation, FreeTierStake, GatewayExposure, GatewayExposureMode, GatewayUpdate, Me, MeResponse, Member, RequestDetail, RequestLogEntry, RoutePreview, RoutingPolicy,
+  AdminToken, ApiKey, AuditEntry, BillingProfile, BuyerLimits, DepositConfirmation, PurchaseStatement, StatementSummary, FreeTierStake, GatewayExposure, GatewayExposureMode, GatewayUpdate, Me, MeResponse, Member, RequestDetail, RequestLogEntry, RoutePreview, RoutingPolicy,
   UsageGroupBy, Workspace, WorkspaceRole,
   RouteSelection,
 } from '../api/types'
@@ -23,7 +23,7 @@ import { combinePolicies, expandLists } from '../lib/policy-match'
 import { fakeAddress, mockNetworkModels, mockNetworkRouters, mockRouteSelection, seed } from './data'
 // The card renderer is the seller service's own (no copy in the console).
 import { sellerCardSvg } from '../../../cli/src/seller-monitor/card'
-import { mockCheckVerifications, mockSaveVerifications, mockSellerEvents, mockSellerLogDetail, mockSellerLogs, mockSellerMarket, mockSellerPromote, mockSellerReputation, mockSellerSettingsState, mockSellerStatus, mockSellerUsage, mockTelegramChats, mockTestAlert, mockUpdateSellerAlerts, mockUpdateSellerSettings } from './seller'
+import { mockCheckVerifications, mockResetSellerOverrides, mockRestartSeller, mockSaveVerifications, mockSellerEvents, mockSellerLogDetail, mockSellerLogs, mockSellerMarket, mockSellerPromote, mockSellerReputation, mockSellerSettingsState, mockSellerStatus, mockSellerUsage, mockTelegramChats, mockTestAlert, mockUpdateSellerAlerts, mockUpdateSellerSettings } from './seller'
 import { mockChatModels, mockChatStream, mockChatThread, mockChatThreads, mockDeleteChatThread } from './chat'
 import { mockOperatorState, OPERATOR_SCENARIOS, scenarioOperator, type OperatorScenario } from './operator'
 
@@ -51,7 +51,8 @@ function decodeMockFreeTierCode(code: string): { staker: string; buyer: string; 
 
 const favorites = new Set<string>(['qwen3-coder-480b', `${db.peers[0]!.peerId}@fake-router`])
 const SESSION_KEY = 'antseed-console-mock-session'
-const roleMembers: Record<string, string> = { owner: 'mem_owner', admin: 'mem_ali', member: 'mem_sam', wsadmin: 'mem_wade' }
+// `seller`: the `antseed seller dashboard` frame; its routes run as the owner.
+const roleMembers: Record<string, string> = { owner: 'mem_owner', admin: 'mem_ali', member: 'mem_sam', wsadmin: 'mem_wade', seller: 'mem_owner' }
 /** Sign-ins newer than this count as fresh for operator authorization. */
 const FRESH_MS = 5 * 60_000
 let lastSignInAt = 0
@@ -152,6 +153,61 @@ function mockDeposits(workspaceId: string): DepositConfirmation[] {
   return list
 }
 
+const mockBillingProfiles = new Map<string, BillingProfile>()
+/** The last three months of a workspace: earlier ones final, the current one a draft. */
+function mockStatementPeriods(): string[] {
+  const now = new Date()
+  return [0, 1, 2].map((back) => {
+    const date = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - back, 1))
+    return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`
+  })
+}
+function mockStatement(workspaceId: string, period: string): PurchaseStatement {
+  const [year, month] = period.split('-').map(Number)
+  const from = Date.UTC(year!, month! - 1, 1)
+  const to = Date.UTC(year!, month!, 1)
+  const ws = db.workspaces.find((entry) => entry.id === workspaceId)
+  const final = Date.now() >= to + DAY_MS && mockBillingProfiles.has(workspaceId)
+  const scale = 1 + (month! % 3) * 0.35
+  const hash = (seed: string) => `0x${seed.repeat(64).slice(0, 64)}`
+  const lines = [
+    { peer: db.peers[0]!, model: 'qwen3-coder-480b', requests: 4812, input: 61_240_000, cached: 38_900_000, output: 5_410_000, usd: 118.37 },
+    { peer: db.peers[0]!, model: 'kimi-k2', requests: 1306, input: 14_820_000, cached: 6_100_000, output: 1_920_000, usd: 21.84 },
+    { peer: db.peers[0]!, model: 'fal-ai/kling-video/v3/standard/image-to-video', requests: 142, input: 0, cached: 0, output: 0, usd: 105.9 },
+    { peer: db.peers[0]!, model: 'bytedance/seedance-2.0/fast/text-to-video', requests: 282, input: 0, cached: 0, output: 0, usd: 219.1 },
+    { peer: db.peers[1]!, model: 'deepseek-v3.2', requests: 2950, input: 32_400_000, cached: 19_750_000, output: 3_880_000, usd: 34.12 },
+    { peer: db.peers[2]!, model: 'qwen-image', requests: 212, input: 0, cached: 0, output: 0, usd: 6.36 },
+  ]
+  const suppliers = [db.peers[0]!, db.peers[1]!, db.peers[2]!].map((peer, index) => {
+    const own = lines.filter((line) => line.peer === peer)
+    const total = own.reduce((sum, line) => sum + line.usd * scale, 0)
+    return {
+      peerId: peer.peerId, name: peer.displayName, verificationLinks: peer.verificationLinks,
+      lines: own.map((line) => ({ service: line.model, kind: 'inference' as const, requests: Math.round(line.requests * scale), inputTokens: Math.round(line.input * scale),
+        cachedInputTokens: Math.round(line.cached * scale), outputTokens: Math.round(line.output * scale), amount: (line.usd * scale).toFixed(6) })),
+      total: total.toFixed(6),
+      settlements: [9, 21].slice(0, index === 2 ? 1 : 2).map((day, _part, list) => ({ txHash: hash(`${index}${day}`), time: from + day * DAY_MS, amount: (total / list.length).toFixed(6) })),
+    }
+  })
+  const total = suppliers.reduce((sum, supplier) => sum + Number(supplier.total), 0)
+  const deposits = mockDeposits(workspaceId).filter((deposit) => deposit.time >= from && deposit.time < to)
+  return {
+    period, from, to, status: final ? 'final' : 'open', reference: `PS-${period}-${workspaceId.slice(-6).toUpperCase()}`,
+    issuedAt: final ? to + DAY_MS : null, generatedAt: Date.now(),
+    workspace: { id: workspaceId, name: ws?.name ?? 'Default', wallet: ws?.walletAddress ?? null },
+    buyer: mockBillingProfiles.get(workspaceId) ?? null,
+    suppliers, total: total.toFixed(6), requests: suppliers.reduce((sum, supplier) => sum + supplier.lines.reduce((n, line) => n + line.requests, 0), 0),
+    funding: {
+      deposits: deposits.map((deposit) => ({ txHash: deposit.txHash, reference: deposit.reference, kind: deposit.kind, time: deposit.time, amount: deposit.sent })),
+      total: deposits.reduce((sum, deposit) => sum + Number(deposit.sent), 0).toFixed(6),
+      relayFees: (deposits.length * 0.02).toFixed(6),
+      asOf: Date.now(),
+    },
+    settlementsSource: 'https://antscan.co',
+    sharedWallet: 0,
+  }
+}
+
 function currentMember(): Member {
   const state = session()
   if (state === 'out') throw unauthorized()
@@ -242,6 +298,8 @@ function withCounts(workspace: Workspace): Workspace {
 }
 
 function me(): MeResponse {
+  // `?as=seller`: the standalone seller dashboard, as `antseed seller dashboard` serves it.
+  if (session() === 'seller') return { kind: 'seller', me: { dataDir: '/var/lib/antseed', version: '0.1.205' } }
   const key = keySession()
   if (key) return { kind: 'key', me: { key } }
   const member = currentMember()
@@ -668,6 +726,8 @@ const routes: Array<[string, string, Handler]> = [
     requireOrgAdmin()
     try { return mockUpdateSellerSettings(body ?? {}) } catch (err) { throw new MockError(400, 'invalid_request', (err as Error).message) }
   }],
+  ['DELETE', '/seller/settings/overrides', () => { requireOrgAdmin(); return mockResetSellerOverrides() }],
+  ['POST', '/seller/restart', () => { requireOrgAdmin(); return mockRestartSeller() }],
   ['PATCH', '/seller/alerts', ({ body }) => { requireOrgAdmin(); return mockUpdateSellerAlerts(body ?? {}) }],
   ['POST', '/seller/alerts/test', ({ body }) => { requireOrgAdmin(); return mockTestAlert(body?.channel === 'webhook' ? 'webhook' : 'telegram') }],
   ['POST', '/seller/alerts/telegram/chats', () => { requireOrgAdmin(); return mockTelegramChats() }],
@@ -853,6 +913,39 @@ const routes: Array<[string, string, Handler]> = [
     deposit.approval = null
     return deposit
   }],
+  ['GET', '/workspaces/:id/billing-profile', ({ params }) => {
+    requireWorkspace(params['id']!, 'admin')
+    return mockBillingProfiles.get(params['id']!) ?? null
+  }],
+  ['PUT', '/workspaces/:id/billing-profile', ({ params, body }) => {
+    requireWorkspace(params['id']!, 'admin')
+    const companyName = String(body?.companyName ?? '').trim()
+    if (!companyName || !String(body?.address ?? '').trim()) throw new MockError(400, 'invalid_billing_profile', 'companyName and address are required.')
+    const optional = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : null)
+    const profile: BillingProfile = {
+      companyName, address: String(body?.address).trim(), country: optional(body?.country) ?? '', vatNumber: optional(body?.vatNumber),
+      registrationNumber: optional(body?.registrationNumber), notes: optional(body?.notes), updatedAt: Date.now(),
+    }
+    mockBillingProfiles.set(params['id']!, profile)
+    return profile
+  }],
+  ['DELETE', '/workspaces/:id/billing-profile', ({ params }) => {
+    requireWorkspace(params['id']!, 'admin')
+    mockBillingProfiles.delete(params['id']!)
+    return { ok: true }
+  }],
+  ['GET', '/workspaces/:id/statements', ({ params }): StatementSummary[] => {
+    requireWorkspace(params['id']!, 'admin')
+    return mockStatementPeriods().map((period) => {
+      const statement = mockStatement(params['id']!, period)
+      return { period, status: statement.status, reference: statement.reference, purchases: statement.total, issuedAt: statement.issuedAt }
+    })
+  }],
+  ['GET', '/workspaces/:id/statements/:period', ({ params }) => {
+    requireWorkspace(params['id']!, 'admin')
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(params['period'] ?? '')) throw new MockError(400, 'invalid_period', 'period must be a month, e.g. 2026-10.')
+    return mockStatement(params['id']!, params['period']!)
+  }],
   ['GET', '/workspaces/:id/wallet', ({ params }) => {
     const { workspace: ws } = requireWorkspace(params['id']!, 'admin')
     // ?deposit=pending: $9.81 waits in the wallet for 8 seconds after load, then moves into the credits.
@@ -964,10 +1057,11 @@ const routes: Array<[string, string, Handler]> = [
   ['PATCH', '/presets/:id', ({ params, body }) => Object.assign(editablePreset(params['id']), withoutSaveFlags(body))],
   ['DELETE', '/presets/:id', ({ params }) => { editablePreset(params['id']); db.presets = db.presets.filter((x) => x.id !== params['id']) }],
 
-  ['GET', '/status', () => ({ version: '0.1.0-mock', publicUrl: mockExposure === 'public' ? db.settings.publicUrl : null, buyer: { reachable: true, peers: db.peers.length, dhtNodes: 42, uptimeMs: 26 * 3600_000 }, spendFeed: 'local', x402: true, exposure: exposureFor(mockExposure) })],
-  ['GET', '/update', () => { requireOrgAdmin(); return mockUpdate() }],
-  ['POST', '/update/check', () => { requireOrgAdmin(); mockUpdateState.checkedAt = Date.now(); return mockUpdate() }],
+  ['GET', '/status', () => ({ version: '0.1.205', publicUrl: mockExposure === 'public' ? db.settings.publicUrl : null, buyer: { reachable: true, peers: db.peers.length, dhtNodes: 42, uptimeMs: 26 * 3600_000 }, spendFeed: 'local', x402: true, exposure: exposureFor(mockExposure) })],
+  ['GET', '/update', () => { if (session() === 'seller') return sellerMockUpdate(); requireOrgAdmin(); return mockUpdate() }],
+  ['POST', '/update/check', () => { mockUpdateState.checkedAt = Date.now(); if (session() === 'seller') return sellerMockUpdate(); requireOrgAdmin(); return mockUpdate() }],
   ['POST', '/update', ({ body }) => {
+    if (session() === 'seller') throw new MockError(409, 'update_unsupported', 'The seller dashboard does not install updates; update where the seller runs, then restart it')
     requireOrgAdmin()
     const update = mockUpdate()
     if (update.apply !== 'console') throw new MockError(409, 'update_unsupported', `On its host, run: ${update.command}`)
@@ -1001,7 +1095,7 @@ const routes: Array<[string, string, Handler]> = [
 ]
 
 /**
- * `?update=available|command|current|desktop` on the first load picks what
+ * `?update=available|command|current|desktop|container` on the first load picks what
  * `/update` reports (default available; desktop is a gateway in the desktop
  * app). An applied update waits 1.5 s for the update service, then walks
  * the installer updater's steps (a few seconds each); the whole mock API is
@@ -1012,7 +1106,7 @@ const routes: Array<[string, string, Handler]> = [
 type MockRun = NonNullable<GatewayUpdate['progress']>
 type MockPhase = NonNullable<MockRun['phase']>
 const mockUpdateState = {
-  mode: 'available' as 'available' | 'command' | 'current' | 'desktop',
+  mode: 'available' as 'available' | 'command' | 'current' | 'desktop' | 'container',
   current: '0.1.180',
   checkedAt: Date.now() - 20 * 60_000,
   requestedAt: null as number | null,
@@ -1066,6 +1160,20 @@ function frozenUpdate(base: GatewayUpdate): GatewayUpdate {
   const maxMs = MOCK_STEPS.find((step) => step.phase === phase)?.maxMs
   return { ...base, progress: { ...run, phase, phaseStartedAt: frozen.at - 42_000, ...(maxMs ? { phaseMaxMs: maxMs } : {}) } }
 }
+/** The seller dashboard's view (sellerUpdates): how to update, never installed from the page. `?update=container` for a seller in a container. */
+function sellerMockUpdate(): GatewayUpdate {
+  const current = '0.1.205'
+  const latest = mockUpdateState.mode === 'current' ? current : '0.1.208'
+  const container = mockUpdateState.mode === 'container'
+  return {
+    product: 'cli', current, latest, available: latest !== current, checkedAt: mockUpdateState.checkedAt, checkError: null, checksDisabled: false,
+    apply: container ? 'none' : 'command', install: 'npm',
+    command: container ? null : 'npm install -g @antseed/cli@latest',
+    note: container ? `Runs in a container: deploy an image with @antseed/cli ${latest} to update this seller.` : 'Installed globally with npm. Restart the seller after updating.',
+    progress: null, downloaded: null,
+  }
+}
+
 function mockUpdate(): GatewayUpdate {
   const mode = mockUpdateState.mode
   if (mode === 'desktop' && mockUpdateState.current === '0.1.180') mockUpdateState.current = '0.2.62'
@@ -1158,7 +1266,7 @@ export function installMockApi(): void {
   const exposureParam = new URLSearchParams(window.location.search).get('exposure')
   if (exposureParam === 'local' || exposureParam === 'lan' || exposureParam === 'public') mockExposure = exposureParam
   const updateParam = new URLSearchParams(window.location.search).get('update')
-  if (updateParam === 'available' || updateParam === 'command' || updateParam === 'current' || updateParam === 'desktop') mockUpdateState.mode = updateParam
+  if (updateParam === 'available' || updateParam === 'command' || updateParam === 'current' || updateParam === 'desktop' || updateParam === 'container') mockUpdateState.mode = updateParam
   // `?update=ready`: the new version is downloaded and waits for Restart & update.
   if (updateParam === 'ready') mockUpdateState.downloaded = true
   // `?update=step:<phase>|restarting|succeeded|failed`: one state of a Restart & update, frozen.
@@ -1210,5 +1318,5 @@ export function installMockApi(): void {
       return json(500, { error: { code: 'mock_error', message: String(error) } })
     }
   }
-  console.info('[antseed console] Mock API active. Switch identity with ?as=owner|admin|wsadmin|member|key|out, reachability with ?exposure=local|lan|public, updates with ?update=available|command|current|desktop|ready|step:<phase>|restarting|succeeded|failed')
+  console.info('[antseed console] Mock API active. Switch identity with ?as=owner|admin|wsadmin|member|key|out|seller, reachability with ?exposure=local|lan|public, updates with ?update=available|command|current|desktop|container|ready|step:<phase>|restarting|succeeded|failed')
 }

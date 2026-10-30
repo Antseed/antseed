@@ -7,6 +7,7 @@ import type {
 } from '../config/types.js'
 import type { VerifierModelCatalog } from './openrouter-catalog.js'
 import { normalized } from './utils.js'
+import { canonicalModelKey } from '@antseed/node/model-identity'
 
 export const DEFAULT_CONTRAST_INPUT_WEIGHT = 0.9
 export const DEFAULT_CONTRAST_MAX_PRICE_RATIO = 0.3
@@ -186,5 +187,9 @@ function findModelEntry(
   endpoint: VerifierReferenceEndpointConfig,
   requestedModel: string,
 ): [string, VerifierReferenceModelConfig] | undefined {
-  return Object.entries(endpoint.models).find(([service]) => normalized(service) === normalized(requestedModel))
+  const entries = Object.entries(endpoint.models)
+  const exact = entries.find(([service]) => normalized(service) === normalized(requestedModel))
+  if (exact) return exact
+  const key = canonicalModelKey(requestedModel)
+  return key.length > 0 ? entries.find(([service]) => canonicalModelKey(service) === key) : undefined
 }

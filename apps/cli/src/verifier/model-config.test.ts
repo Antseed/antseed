@@ -84,6 +84,7 @@ test('configured service aliases share one logical verifier model', () => {
 test('command model resolution requires exactly one mode and configured enabled models', () => {
   assert.deepEqual(resolveVerifierCommandModels(config(), undefined, true), ['model-large'])
   assert.deepEqual(resolveVerifierCommandModels(config(), 'MODEL-LARGE', false), ['model-large'])
+  assert.deepEqual(resolveVerifierCommandModels(config(), 'vendor/Model_Large', false), ['model-large'])
   assert.throws(() => resolveVerifierCommandModels(config(), undefined, false), /exactly one/)
   assert.throws(() => resolveVerifierCommandModels(config(), 'model-large', true), /exactly one/)
   assert.throws(() => resolveVerifierCommandModels(config(), 'disabled', false), /disabled/)

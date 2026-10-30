@@ -40,6 +40,18 @@ curl http://localhost:8377/v1/chat/completions \
   }'
 ```
 
+## Reach it from other machines
+
+The buyer proxy only listens on `127.0.0.1`. `antseed buyer start` has no `--host` flag, and `config.json` has no buyer host setting: a `host` key there is ignored. This is deliberate. The proxy has no API keys and spends from your deposit, so anything that can reach it can spend your funds.
+
+To call it from another machine, forward the port over SSH or put the gateway in front of the buyer. The gateway adds API keys and spend limits, and it can listen beyond loopback:
+
+- **Just you, over SSH**: keep the buyer on loopback and forward its port: `ssh -N -L 8377:127.0.0.1:8377 user@buyer-host`, then use `http://localhost:8377` on your own machine. No gateway is needed.
+- **Your private network**: `antseed gateway start --host 0.0.0.0 --public-url http://<this-machine>:8379`, then call `http://<this-machine>:8379/v1` with a gateway API key. This is plain HTTP, so API keys cross the network unencrypted; use it only on a network you trust. See [Gateway troubleshooting](/docs/gateway/troubleshooting).
+- **The internet**: publish the gateway over HTTPS with a [tunnel](/docs/tunnels) or [install it on a server](/docs/gateway/server).
+
+Do not publish port 8377 itself, for example with a router port forward, `socat` or a reverse proxy: anyone who reaches it can spend your deposit. The proxy also refuses requests whose `Host` header is not a loopback name or an IP address.
+
 ## Endpoints
 
 | Endpoint | Format |
@@ -74,6 +86,21 @@ curl http://localhost:8377/api/v1/video/retrieve \
 ```
 
 Retrieve requests always go to the seller that accepted the job. You pay once, when the finished MP4 is delivered, and the buyer refuses videos priced above $5.00.
+
+#### Edit a video
+
+Video edit models (`inputs` has `video` in `GET /v1/models?type=videos`) take your video as `video_url` and change part of it. Send the video inline as a data URL, or as a public `https` URL. A model whose output is as long as the source (Recast, motion control) needs it inline: the seller measures it and answers `422 invalid_video_duration` for a URL or a `duration` that is not its length. Set `duration` to the video's length in whole seconds, rounded down (`ffprobe -v error -show_entries format=duration -of csv=p=0 dance.mp4`); that is what you pay for. Never send more than the source length.
+
+```bash
+jq -n --rawfile video <(printf 'data:video/mp4;base64,'; base64 < dance.mp4 | tr -d '\n') \
+  '{model: "<peerId>@minimax-h3-max-recast", video_url: $video, duration: "12s",
+    reference_image_urls: ["https://example.com/me.png"], resolution: "768P"}' > edit.json
+curl http://localhost:8377/api/v1/video/queue -H 'content-type: application/json' -H 'Expect:' --data-binary @edit.json
+```
+
+On fal, `duration` is a number (`12`). A request is at most 64 MiB including base64 (about 47 MB of video); Venice sellers accept at most 32.5 MB, images included. Send `resolution` exactly as the seller lists it (`768P` for Recast, `720p` for Kling and Wan).
+
+Sellers do not check the source; the upstream does. Check it first against the model's published limits: fal's schema (`https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=<model>`, `x-fal` on `video_url`) or Venice's model list and docs. The `antseed-videos` skill does this for you. A source or field the upstream refuses, or a job that fails after it started (for example Recast or motion control on a video without a person), is closed at once. A video priced above $1.00 then costs the payment channel's opening fee ($0.65 on Base), a cheaper one nothing.
 
 ## Choose the model and seller
 

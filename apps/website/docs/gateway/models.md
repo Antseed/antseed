@@ -27,6 +27,8 @@ Routing policies apply to pinned requests too: a pinned provider that your polic
 
 **Models** lists every model offered on the network, with its type, number of providers, input and output price per million tokens, and context length. Filter by name or alias, by type, or turn on **Free** to see only models with free offers. A **TEE** badge means at least one provider runs the model in a trusted execution environment.
 
+![The Models page: favorites and every model on the network with providers, prices and context](/img/docs/gateway/models.webp)
+
 Click a model to open its panel:
 
 - The model id with a copy button, its type, context length, capabilities (tool use, reasoning, structured output, vision) and aliases.
@@ -40,6 +42,8 @@ The Models page shows the whole network, without any routing policy applied. A c
 ## Providers page
 
 **Providers** lists the providers the gateway's buyer knows, with prices, trust score, reputation (when available), the median time to first token and output speed (tokens per second) on this gateway's streamed requests, and how many requests this gateway sent them in the last 24 hours. Filter by name, peer id or model, or turn on **Domain or GitHub**, **TEE** or **Free**. Badges show **TEE**, **Free**, **Flagged** and **Cooling down** (a provider that failed recently and is skipped for a while).
+
+![The Providers page: each seller with its models, prices, trust, latency and speed](/img/docs/gateway/providers.webp)
 
 Click a provider to open its panel:
 

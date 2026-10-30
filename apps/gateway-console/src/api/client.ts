@@ -1,7 +1,7 @@
 import type {
-  AdminToken, ApiKey, ApiKeyInput, AuditEntry, AuthConfig, BuyerLimits, BuyerSettingsInput, Channel, ChainInfo, DepositConfirmation, DepositWatch, Enrollment,
+  AdminToken, ApiKey, ApiKeyInput, AuditEntry, AuthConfig, BillingProfile, BillingProfileInput, BuyerLimits, BuyerSettingsInput, Channel, ChainInfo, DepositConfirmation, DepositWatch, Enrollment,
   GatewayStatus, GatewayUpdate, Invite, InviteInput, Member, MemberInput, MeResponse, ObservabilitySettings, OperatorAuthorization, OperatorState, WorkspaceOperatorSummary, ChatContext, ChatModel, ChatThread, ChatThreadDetail, FavoriteModels, NetworkModel, NetworkRouter, Peer, PeerList, Preset,
-  FreeTierSharing, FreeTierStake, RequestDetail, RequestLogEntry, Rewards, RoutePreview, RoutingPolicy, SellerAlertSettings, SellerAlertsPatch, SellerEventView, SellerLogDetail, SellerLogPage, SellerLogQuery, SellerMarket, SellerPromote, SellerReputation, SellerSettings, SellerVerificationsInput, SellerSettingsPatch, SellerStatus, SellerUsage, Settings, TelegramChat, SpendLimits, UsageGroupBy, UsageReport, Wallet, Workspace,
+  FreeTierSharing, FreeTierStake, PurchaseStatement, RequestDetail, RequestLogEntry, Rewards, RoutePreview, RoutingPolicy, SellerAlertSettings, SellerAlertsPatch, SellerEventView, SellerLogDetail, SellerLogPage, SellerLogQuery, SellerMarket, SellerPromote, SellerReputation, SellerRestartView, SellerSettings, SellerVerificationsInput, SellerSettingsPatch, SellerStatus, SellerUsage, Settings, TelegramChat, SpendLimits, StatementSummary, UsageGroupBy, UsageReport, Wallet, Workspace,
   WorkspaceInput, WorkspaceRole,
 } from './types'
 
@@ -221,6 +221,13 @@ export function createApiClient(fetchImpl: FetchLike = (input, init) => fetch(in
         put<DepositConfirmation>(`/workspaces/${id(workspaceId)}/deposits/${id(txHash)}/approval`, { note }),
       unapproveDeposit: (workspaceId: string, txHash: string) =>
         request<DepositConfirmation>('DELETE', `/workspaces/${id(workspaceId)}/deposits/${id(txHash)}/approval`),
+      /** The company the workspace buys for, printed on its purchase statements; null when not set. */
+      billingProfile: (workspaceId: string) => get<BillingProfile | null>(`/workspaces/${id(workspaceId)}/billing-profile`),
+      setBillingProfile: (workspaceId: string, profile: BillingProfileInput) => put<BillingProfile>(`/workspaces/${id(workspaceId)}/billing-profile`, profile),
+      deleteBillingProfile: (workspaceId: string) => request<{ ok: true }>('DELETE', `/workspaces/${id(workspaceId)}/billing-profile`),
+      /** Monthly purchase statements, newest first. */
+      statements: (workspaceId: string) => get<StatementSummary[]>(`/workspaces/${id(workspaceId)}/statements`),
+      statement: (workspaceId: string, period: string) => get<PurchaseStatement>(`/workspaces/${id(workspaceId)}/statements/${id(period)}`),
       /** The authorized wallet (AntseedDeposits operator); `fresh` re-reads the chain (the gateway throttles it). */
       operator: (workspaceId: string, fresh = false) =>
         get<OperatorState>(`/workspaces/${id(workspaceId)}/wallet/operator`, { fresh: fresh ? 1 : undefined }),
@@ -288,6 +295,10 @@ export function createApiClient(fetchImpl: FetchLike = (input, init) => fetch(in
       usage: (days = 14) => get<SellerUsage>('/seller/usage', { days }),
       settings: () => get<SellerSettingsResponse>('/seller/settings'),
       updateSettings: (input: SellerSettingsPatch) => patch<SellerSettingsResponse & { changed: string[] }>('/seller/settings', input),
+      /** Drops the settings saved from the dashboard over a read-only config.json. */
+      resetOverrides: () => request<SellerSettingsResponse>('DELETE', '/seller/settings/overrides'),
+      /** Stops the seller cleanly; its supervisor starts it again with the saved settings. */
+      restart: () => post<{ restarting: true }>('/seller/restart'),
       updateAlerts: (input: SellerAlertsPatch) => patch<SellerSettingsResponse & { changed: string[] }>('/seller/alerts', input),
       testAlert: (channel: 'telegram' | 'webhook') => post<{ sent: string[]; errors: string[] }>('/seller/alerts/test', { channel }),
       telegramChats: (botToken?: string) => post<{ chats: TelegramChat[] }>('/seller/alerts/telegram/chats', botToken ? { botToken } : {}),
@@ -373,6 +384,6 @@ export function hasOwnerLayer(key: ApiKey | null | undefined): key is KeyWithLay
   return !!key && 'ownerRoutingPolicy' in key
 }
 
-export interface SellerSettingsResponse { settings: SellerSettings; alerts: SellerAlertSettings }
+export interface SellerSettingsResponse { settings: SellerSettings; alerts: SellerAlertSettings; restart: SellerRestartView }
 
 export type ApiClient = ReturnType<typeof createApiClient>

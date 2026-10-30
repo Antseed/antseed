@@ -17,7 +17,7 @@ import { Table, type Column } from './Table';
 import { Button } from './ui';
 import { WithdrawAction } from './WithdrawAction';
 import { InfoHelp } from './EarlyExitHelp';
-import { formatYieldPercent, positionApy } from '../pool-yield';
+import { formatYieldPercent, positionApr } from '../pool-yield';
 
 export type RowActionKind = 'move' | 'extend' | 'withdraw' | 'split' | 'max-lock';
 type BulkActionKind = 'merge' | 'withdraw';
@@ -33,8 +33,13 @@ export function PositionsCard({ pools, enabled = true }: { pools: PoolView[]; en
   const data = page.data;
   const unavailable = page.reconciling || !!page.error;
   const allPositions = useMemo(() => data?.positions ?? [], [data]);
-  const closedCount = useMemo(() => allPositions.filter((p) => !isOpen(p)).length, [allPositions]);
-  const positions = useMemo(() => (showClosed ? allPositions : allPositions.filter(isOpen)), [allPositions, showClosed]);
+  const currentEpoch = data?.currentEpoch ?? info?.current;
+  // Restructure sources still earn this epoch, so they stay listed until they hand over.
+  const listed = useMemo(() => allPositions.filter((p) => isOpen(p) || isHandingOver(p, currentEpoch)), [allPositions, currentEpoch]);
+  const closedCount = allPositions.length - listed.length;
+  // Replacements whose sources are still earning, so their rewards continue without a gap.
+  const earningHandovers = useMemo(() => new Set(allPositions.filter((p) => isHandingOver(p, currentEpoch)).flatMap((p) => p.replacementIds ?? [])), [allPositions, currentEpoch]);
+  const positions = showClosed ? allPositions : listed;
   const actionRow = rowAction ? (positions.find((p) => p.id === rowAction.id) ?? null) : null;
   const poolById = useMemo(() => new Map(pools.map((p) => [p.agentId, p])), [pools]);
   const openPositions = useMemo(() => positions.filter(isOpen), [positions]);
@@ -69,7 +74,7 @@ export function PositionsCard({ pools, enabled = true }: { pools: PoolView[]; en
         return (
           <span className="cell-stack" title={pool?.seller ?? undefined}>
             <span>{pool?.profile?.name?.trim() || (pool?.seller ? shortAddress(pool.seller) : 'Unknown seller')}</span>
-            <span className="cell-sub">#{p.id}{maxLockLabel(p)}</span>
+            <span className="cell-sub">#{p.id}{maxLockLabel(p)}{isHandingOver(p, currentEpoch) ? handoverLabel(p) : ''}</span>
           </span>
         );
       },
@@ -77,14 +82,14 @@ export function PositionsCard({ pools, enabled = true }: { pools: PoolView[]; en
     { key: 'amount', label: 'Amount', align: 'right', mono: true, render: (p) => <span className="cell-stack">{formatAnts(p.amount, 4)}<span className="cell-sub" title={p.nextPower != null ? `Next epoch power: ${formatAnts(p.nextPower, 0)}` : undefined}>power {formatAnts(p.power ?? p.weightAmount, 0)}</span></span> },
     {
       key: 'apy',
-      label: <>Est. APY<InfoHelp label="About position APY">Illustrative annualized return using the pool’s historical epoch reward budget and current pool power. Active positions use their current power, already included in the pool total. Pending positions use their activation power added to the current pool total; other pending changes are not projected. Assumes the rate repeats and compounds every epoch. Compounding is not automatic, normal-lock power declines, and activation delays are excluded. Missing data and closed or expired positions show —. Future rewards are not guaranteed.</InfoHelp></>,
+      label: <>Est. APR<InfoHelp label="About position APR">Illustrative annual rate from the pool’s last complete epoch reward and current pool power, not compounded. Active positions use their current power, already included in the pool total. Pending positions use their activation power, including the points it adds to the pool; other pending changes are not projected. Normal-lock power declines and activation delays are excluded. Missing data and closed or expired positions show —. Future rewards are not guaranteed.</InfoHelp></>,
       align: 'right',
       mono: true,
       render: (position) => {
         const pool = poolById.get(position.agentId);
         const epoch = data?.currentEpoch ?? info?.current;
-        const apy = positionApy(position, pool, epoch, data?.config?.maxStakeEpochs);
-        return <span title={apy === null ? 'APY unavailable for this position.' : `Based on ${pool?.yield?.status === 'estimated' ? 'estimated ' : ''}pool rewards in epoch ${pool?.yield?.epoch}.${epoch !== undefined && position.stakeStartEpoch > epoch ? ' Estimate for when this position activates.' : ''}`}>{formatYieldPercent(apy)}</span>;
+        const apy = positionApr(position, pool, epoch, data?.config?.maxStakeEpochs);
+        return <span title={apy === null ? 'APR unavailable for this position.' : `Based on ${pool?.yield?.status === 'estimated' ? 'estimated ' : ''}pool rewards in epoch ${pool?.yield?.epoch}.${epoch !== undefined && position.stakeStartEpoch > epoch ? ' Estimate for when this position activates.' : ''}`}>{formatYieldPercent(apy)}</span>;
       },
     },
     {
@@ -93,7 +98,7 @@ export function PositionsCard({ pools, enabled = true }: { pools: PoolView[]; en
       title: 'Epoch and date when the lock expires. Funds are not withdrawn automatically.',
       render: (p) => <PositionUnlock position={p} />,
     },
-    { key: 'state', label: 'Status', title: 'The current stage of this staking position.', render: (p) => <StateBadge position={p} /> },
+    { key: 'state', label: 'Status', title: 'The current stage of this staking position.', render: (p) => <StateBadge position={p} currentEpoch={currentEpoch} fromEarning={earningHandovers.has(p.id)} /> },
     { key: 'reward', label: 'Pending reward', align: 'right', mono: true, render: (p) => formatAnts(p.pendingReward, 4) },
     {
       key: 'actions',
@@ -203,14 +208,45 @@ const STATE_TONE: Record<PositionView['state'], 'accent' | 'amber' | 'muted'> = 
 const STATE_DESCRIPTION: Record<PositionView['state'], string> = {
   pending: 'Waiting for the stake activation epoch.',
   active: 'The staking position is active and its lock has not expired.',
-  matured: 'The lock has expired. Withdraw to receive your funds; withdrawal is not automatic.',
+  matured: 'The lock has expired, so this position no longer earns rewards and can no longer be extended, moved, split, or merged. Withdraw it (no early-exit burn) and stake again to keep earning; withdrawal is not automatic.',
   closed: 'This position has been closed, for example by a split, merge, or move.',
   withdrawn: 'Funds have been withdrawn from this position.',
 };
 
-function StateBadge({ position }: { position: PositionView }) {
+/** Whether the position contributes power in the current epoch, i.e. has activated. */
+function isEarning(p: PositionView, currentEpoch?: number): boolean {
+  return currentEpoch === undefined ? p.state !== 'pending' : p.stakeStartEpoch <= currentEpoch;
+}
+
+/**
+ * A split, merge, or move source: closed on-chain but still earning until its
+ * replacement takes over. A source that never activated closes at its activation
+ * epoch without earning, so it is simply closed.
+ */
+function isHandingOver(p: PositionView, currentEpoch?: number): boolean {
+  return !p.withdrawn && currentEpoch !== undefined && isEarning(p, currentEpoch) && p.closedAtEpoch > currentEpoch;
+}
+
+const CLOSED_BY_VERB: Record<string, string> = { split: 'split', merge: 'merged', move: 'moved' };
+
+function handoverLabel(p: PositionView): string {
+  const verb = (p.closedBy && CLOSED_BY_VERB[p.closedBy]) || 'replaced';
+  return p.replacementIds?.length ? ` · ${verb} into ${p.replacementIds.map((id) => `#${id}`).join(', ')}` : ` · ${verb}`;
+}
+
+function StateBadge({ position, currentEpoch, fromEarning = false }: { position: PositionView; currentEpoch?: number; fromEarning?: boolean }) {
   const { state } = position;
+  if (isHandingOver(position, currentEpoch)) {
+    const handover = position.closedAtEpoch;
+    return <Pill tone="accent" title={`Keeps earning through epoch ${handover - 1}. Its replacement earns from epoch ${handover}, so no epoch is skipped. Rewards earned here stay claimable on this position.`}>Earning until epoch {handover}</Pill>;
+  }
   const activating = isOpen(position) && (state === 'pending' || position.changePending);
+  if (activating && position.changePending) {
+    const title = fromEarning
+      ? `Replaces split, merged, or moved positions, which keep earning until epoch ${position.stakeStartEpoch}. Rewards continue without a gap.`
+      : `Replaces a split, merged, or moved position and starts earning at epoch ${position.stakeStartEpoch}.`;
+    return <Pill tone="amber" title={title}>Takes over epoch {position.stakeStartEpoch}</Pill>;
+  }
   return <Pill tone={activating ? 'amber' : STATE_TONE[state]} title={activating ? 'The transaction is confirmed. This position starts contributing staking power at its activation epoch.' : STATE_DESCRIPTION[state]}>{activating ? `Activates epoch ${position.stakeStartEpoch}` : state}</Pill>;
 }
 
@@ -228,7 +264,16 @@ function PositionUnlock({ position, dateOnly = false }: { position: PositionView
   if (!isOpen(position)) return <span className="muted">—</span>;
   const nextEpoch = info ? `epoch ${info.current + 1}` : 'next epoch';
   if (willBeMaxLocked(position)) return <span className="cell-stack"><span className="muted" title="Disable max lock to start the countdown.">Max lock</span>{!position.maxLocked && <span className="cell-sub">Max lock starts {nextEpoch}</span>}</span>;
-  return <span className="cell-stack"><EpochCell epoch={position.stakeEndEpoch} dateOnly={dateOnly} />{position.maxLocked && <span className="cell-sub">Countdown starts {nextEpoch}</span>}</span>;
+  return <span className="cell-stack"><EpochCell epoch={position.stakeEndEpoch} dateOnly={dateOnly} />{position.maxLocked ? <span className="cell-sub">Countdown starts {nextEpoch}</span> : <LockEndingNote position={position} currentEpoch={info?.current} />}</span>;
+}
+
+/** Lock changes apply from the next epoch, so the final epoch before unlock is already too late to extend. */
+function LockEndingNote({ position, currentEpoch }: { position: PositionView; currentEpoch?: number }) {
+  if (currentEpoch === undefined || position.state === 'matured') return null;
+  const epochsLeft = position.stakeEndEpoch - currentEpoch;
+  if (epochsLeft === 2) return <span className="cell-sub pending-amount" title="Extend the lock or enable max lock this epoch to keep earning. From next epoch the position can only be withdrawn once it unlocks.">Last epoch to extend</span>;
+  if (epochsLeft === 1) return <span className="cell-sub" title="Changes would take effect at the unlock epoch, so this position can no longer be extended, moved, split, or merged. Withdraw after it unlocks and stake again.">Can no longer be extended</span>;
+  return null;
 }
 
 function allocationSellerName(agentId: number, pools: PoolView[]): string {
@@ -266,7 +311,7 @@ function MoveForm({ position, config, pools, onStarted }: { position: PositionVi
   const effective = Math.max((info?.current ?? 0) + 1, position.stakeStartEpoch);
   return (
     <div className="form-row">
-      <p className="hint">Move your allocation directly to another seller. Principal stays staked and the lock end date is preserved. Accrued rewards remain claimable on the source position.</p>
+      <p className="hint">Move your allocation directly to another seller. Principal stays staked and the lock end date is preserved. {isEarning(position, info?.current) ? 'This position keeps earning until the move takes effect, and its rewards remain claimable on it.' : 'This position has not activated yet; the moved position activates at the effective epoch.'}</p>
       <p className="hint">Effective {info ? `${formatUtcDate(epochStartAt(effective, info.genesis, info.epochDuration))} UTC (epoch ${effective})` : `epoch ${effective}`}. One transaction; your wallet will ask you to approve it.</p>
       {problem && <p className="error-text">{problem}</p>}
       <Field label="To seller" hint={config.moveWeightPenaltyBps === 0 ? 'No move penalty is currently configured. Moving does not burn your ANTS.' : `Moving reduces future staking power by ${formatBps(config.moveWeightPenaltyBps)}. Your ANTS principal is not burned.`} width="lg">
@@ -307,7 +352,7 @@ function SplitForm({ position, onStarted }: { position: PositionView; onStarted:
   const body: SplitRequest = { positionId: position.id, amount: amount.trim() };
   return (
     <div className="stack">
-      <p className="hint">Splitting replaces this position with two positions with the same seller and lock terms. Power splits in proportion to the amount, so total power is unchanged. Disable max lock before splitting; you can enable it on the new positions before they activate.</p>
+      <p className="hint">Splitting replaces this position with two positions with the same seller and lock terms. Power splits in proportion to the amount, so total power is unchanged. {isEarning(position, info?.current) ? 'No rewards are lost: this position keeps earning until the new ones take over' : 'This position has not activated yet; the new positions activate'}{info ? ` at epoch ${positionActionEpoch('split', info.current, [position])}` : ' next epoch'}{isEarning(position, info?.current) ? ', and its rewards stay claimable on it' : ''}. Disable max lock before splitting; you can enable it on the new positions before they activate.</p>
       {problem && <p className="error-text">{problem}</p>}
       <div className="form-row">
         <Input label="Amount to split off (ANTS)" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.0" hint={<>
@@ -419,7 +464,7 @@ export function RowActionPanel({ kind, position, config, pools = [], onClose }: 
       {kind === 'withdraw' ? (
         <div className="stack">
           {position.changePending ? <div className="error-text">Withdrawals are blocked until activation epoch {position.withdrawableEpoch}. The position change is already confirmed.</div> : null}
-          <WithdrawAction positionId={position.id} autoOpen onStarted={onClose} onCancel={onClose} />
+          <WithdrawAction positionId={position.id} autoOpen onStarted={onClose} onCancel={onClose} forfeitsEpoch={earningEpoch([position], info?.current)} />
         </div>
       ) : null}
       {kind === 'move' ? <MoveForm position={position} config={config} pools={pools} onStarted={onClose} /> : null}
@@ -462,6 +507,8 @@ export function BulkActionPanel({ kind, positions, pools, onClose, onStarted }: 
   const mergeProblem = mergeEligibility(positions, info?.current);
   const mergeBody: MergeRequest = { positionIds: ids };
   const first = positions[0]!;
+  const handover = info ? positionActionEpoch('merge', info.current, positions) : null;
+  const earning = positions.filter((p) => isEarning(p, info?.current)).length;
   return (
     <ActionDialog title={kind === 'merge' ? `Merge ${positions.length} positions` : `Withdraw ${positions.length} positions`} onClose={onClose}>
       <div className="stack">
@@ -474,19 +521,31 @@ export function BulkActionPanel({ kind, positions, pools, onClose, onStarted }: 
         </dl>
         {kind === 'merge' ? (
           <>
-            <p className="hint">Merging combines these positions into one position of {formatAnts(sumAmounts(positions), 4)} ANTS in {allocationSellerName(first.agentId, pools)} with the shared unlock epoch {first.stakeEndEpoch}. Power is preserved. The source positions close; their accrued rewards stay claimable. The contract verifies matching underlying lock start and end terms before wallet approval; matching unlock dates alone are not sufficient.</p>
+            <p className="hint">Merging combines these positions into one position of {formatAnts(sumAmounts(positions), 4)} ANTS in {allocationSellerName(first.agentId, pools)} with the shared unlock epoch {first.stakeEndEpoch}. Power is preserved.</p>
+            {earning > 0 ? (
+              <p className="hint">No rewards are lost. {earning === positions.length ? 'The selected positions keep' : 'The selected positions that have activated keep'} earning {handover !== null ? `through epoch ${handover - 1}` : 'until the merge takes effect'}, and the merged position earns from {handover !== null ? `epoch ${handover}` : 'the next epoch'}. Until then the merged position shows as taking over, and rewards earned by the originals stay claimable on them.</p>
+            ) : (
+              <p className="hint">None of the selected positions has activated yet, so no rewards are at stake. The merged position activates at {handover !== null ? `epoch ${handover}` : 'the latest activation epoch'}.</p>
+            )}
+            <p className="hint">The contract verifies matching underlying lock start and end terms before wallet approval; matching unlock dates alone are not sufficient.</p>
             {mergeProblem ? <p className="error-text">{mergeProblem}</p> : null}
             <ActionButton label="Merge positions" variant="primary" path="/api/positions/merge" body={mergeBody} disabled={mergeProblem !== null} disabledReason={mergeProblem ?? undefined} onStarted={onStarted} />
           </>
         ) : (
           <>
             {positions.some((p) => p.changePending) ? <div className="error-text">A selected position has not activated. Withdrawals remain blocked until its activation epoch.</div> : null}
-            <WithdrawAction positionIds={ids} autoOpen onStarted={onStarted} onCancel={onClose} />
+            <WithdrawAction positionIds={ids} autoOpen onStarted={onStarted} onCancel={onClose} forfeitsEpoch={earningEpoch(positions, info?.current)} />
           </>
         )}
       </div>
     </ActionDialog>
   );
+}
+
+/** The contract ends a withdrawn position's power in the current epoch, so an earning position forfeits it. */
+function earningEpoch(positions: PositionView[], currentEpoch?: number): number | null {
+  if (currentEpoch === undefined) return null;
+  return positions.some((p) => p.stakeStartEpoch <= currentEpoch && p.stakeEndEpoch > currentEpoch) ? currentEpoch : null;
 }
 
 function PositionFact({ position, pools }: { position: PositionView; pools: PoolView[] }) {

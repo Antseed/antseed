@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AntscanIndexer } from './indexer.js';
 import { parseRewardPage, fetchRewardPositions } from './position-feed.js';
 import { indexedWalletRewards, liveWalletPositions } from './indexed-wallet.js';
@@ -9,6 +9,16 @@ const other = '0x0000000000000000000000000000000000000002';
 const blockHash = `0x${'ab'.repeat(32)}`;
 const position = (id = 7) => ({ id: String(id), owner, agentId: '1', amount: '100', weightAmount: '200', stakeStartEpoch: '1', stakeEndEpoch: '30', closedAtEpoch: '0', withdrawn: false, maxLocked: false, restaked: false, returnedAmount: '0', slashedAmount: '0', createdAt: 1, closedAt: null, closedBy: null, replacementIds: [], sourceId: null });
 const rewards = { status: 'available', pending: '15', claimedThroughEpoch: '1', calculatedThroughEpoch: '21', requiresPoolIndexing: true };
+// One clock for the fixtures and the code under test: pages built a second apart
+// must not differ in their snapshot time, or a test sees the wrong error.
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date('2026-10-27T12:00:00Z'));
+});
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 function rewardPage(ids = [7], nextCursor: string | null = null) {
   return { owner, currentEpoch: '22', requiresLiveValidation: true,
     positions: ids.map(id => ({ ...position(id), state: 'active', power: '200', nextPower: '190', withdrawableEpoch: '1', maxLockedNext: false, changePending: false, rewards })),
@@ -104,6 +114,54 @@ describe('Antscan position feeds', () => {
     const data = await fetchRewardPositions(owner, false, async () => page);
     expect(data.summary).toMatchObject([{ positionIds: [7, 8, 9], activeStake: '100', pendingStake: '100' }]);
     expect(data.totals).toEqual({ activeStake: '100', pendingStake: '100', power: '400' });
+  });
+  describe('restructure handovers', () => {
+    type Row = ReturnType<typeof rewardPage>['positions'][number];
+    // Epoch 22: sources close at 23 and their replacements start at 23.
+    const closing = (row: Row, replacementIds: number[], extra: Partial<Row> = {}): Row => ({ ...row, closedAtEpoch: '23', state: 'closed', replacementIds, ...extra });
+    const replacement = (row: Row, amount: string): Row => ({ ...row, amount, stakeStartEpoch: '23', state: 'pending', power: '0', withdrawableEpoch: '23', changePending: true });
+    const pending = (row: Row, extra: Partial<Row> = {}): Row => ({ ...row, stakeStartEpoch: '23', state: 'pending', power: '0', ...extra });
+
+    it('does not double-count a merge replacement while its active sources hand over', async () => {
+      const page = rewardPage([7, 8, 9, 10]);
+      const [a, b, c, d] = page.positions;
+      // A fresh stake activating the same epoch is still pending.
+      page.positions = [closing(a!, [9]), closing(b!, [9]), replacement(c!, '200'), pending(d!)];
+      const data = await fetchRewardPositions(owner, false, async () => page);
+      expect(data.totals).toEqual({ activeStake: '200', pendingStake: '100', power: '400' });
+    });
+
+    it('keeps an unrelated pending split in the same pool and epoch as pending', async () => {
+      const page = rewardPage([7, 8, 9, 10, 11, 12]);
+      const [a, b, c, d, e, f] = page.positions;
+      page.positions = [
+        closing(a!, [9, 10]), closing(b!, [11, 12], { amount: '200', stakeStartEpoch: '23', power: '0' }),
+        replacement(c!, '50'), replacement(d!, '50'), replacement(e!, '100'), replacement(f!, '100'),
+      ];
+      const data = await fetchRewardPositions(owner, false, async () => page);
+      expect(data.totals).toMatchObject({ activeStake: '100', pendingStake: '200' });
+    });
+
+    it('follows chained restructures and keeps principal merged in from a pending source', async () => {
+      const page = rewardPage([7, 8, 9, 10, 11]);
+      const [a, b, c, d, e] = page.positions;
+      // Active 7 and pending 8 merge into 9, which is split again into 10 and 11 in the same epoch.
+      page.positions = [
+        closing(a!, [9]), closing(b!, [9], { amount: '200', stakeStartEpoch: '23', power: '0' }),
+        { ...replacement(c!, '300'), closedAtEpoch: '23', state: 'closed', replacementIds: [10, 11] },
+        replacement(d!, '150'), replacement(e!, '150'),
+      ];
+      const data = await fetchRewardPositions(owner, false, async () => page);
+      expect(data.totals).toMatchObject({ activeStake: '100', pendingStake: '200' });
+    });
+
+    it('shows a move as pending in its destination pool', async () => {
+      const page = rewardPage([7, 8]);
+      const [a, b] = page.positions;
+      page.positions = [closing(a!, [8]), { ...replacement(b!, '100'), agentId: '2' }];
+      const data = await fetchRewardPositions(owner, false, async () => page);
+      expect(data.summary).toMatchObject([{ agentId: 1, activeStake: '100', pendingStake: '0' }, { agentId: 2, activeStake: '0', pendingStake: '100' }]);
+    });
   });
 
   it('computes wallet totals across every page instead of trusting page-scoped totals', async () => {

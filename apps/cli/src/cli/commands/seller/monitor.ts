@@ -4,7 +4,7 @@ import chalk from 'chalk';
 import Table from 'cli-table3';
 import pkg from '../../../../package.json' with { type: 'json' };
 import { resolveConfigPath } from '../../../config/loader.js';
-import type { FreeTierProgramView, SellerFreeTierProgramPatch, SellerLogDetail, SellerSettingsPatch } from '../../../gateway/console-api/types.js';
+import type { FreeTierProgramView, SellerFreeTierProgramPatch, SellerLogDetail, SellerSettingsPatch, SellerSettingsService, SellerUnitComponent } from '../../../gateway/console-api/types.js';
 import { SellerMonitor } from '../../../seller-monitor/service.js';
 import { unitPriceText } from '../../../seller-monitor/card.js';
 import { getGlobalOptions } from '../types.js';
@@ -105,6 +105,24 @@ export function parsePrice(value: string): { service: string; input: number; out
   if (!match) throw new Error(`--price: use [<provider>/]<model>=<input>/<output>[/<cached>|/none] in USD per million tokens, not "${value}"`);
   const cached = match[4] === undefined ? {} : { cached: match[4] === 'none' ? null : Number(match[4]) };
   return { service: match[1]!.trim(), input: Number(match[2]), output: Number(match[3]), ...cached };
+}
+
+/** `--unit-price <[provider/]model[match]=usd>`: `wan-2.6[1080p]=0.08`, `veo[4k,audio]=0.4`, or `qwen-image=0.03` for a single price. */
+export function parseUnitPrice(value: string): { service: string; match: string[] | null; priceUsd: number } {
+  const parsed = /^([^=[\]]+)(?:\[([^\]]*)\])?=([\d.]+)$/.exec(value.trim());
+  if (!parsed) throw new Error(`--unit-price: use [<provider>/]<model>[<match>]=<usd>, e.g. wan-2.6[1080p]=0.08, not "${value}"`);
+  return { service: parsed[1]!.trim(), match: parsed[2] === undefined ? null : parsed[2].split(',').map((part) => part.trim()).filter(Boolean), priceUsd: Number(parsed[3]) };
+}
+
+/** The unit-billing component a `--unit-price` names: by its match values (`1080p`, `4k,audio`), or the only one. */
+export function resolveUnitComponent(service: SellerSettingsService, match: string[] | null): SellerUnitComponent {
+  const label = (component: SellerUnitComponent) => Object.entries(component.match ?? {}).map(([field, value]) => (value === true ? field : value === false ? `no ${field}` : String(value)))
+  const found = match === null
+    ? (service.unitComponents.length === 1 ? service.unitComponents : [])
+    : service.unitComponents.filter((component) => label(component).join(',').toLowerCase() === match.join(',').toLowerCase());
+  if (found.length === 1) return found[0]!;
+  const choices = service.unitComponents.map((component) => `${service.service}[${label(component).join(',')}]`).join(', ');
+  throw new Error(`--unit-price: ${service.service}${match ? `[${match.join(',')}]` : ''} names ${found.length === 0 ? 'no' : 'more than one'} unit price${choices ? `; its prices are ${choices}` : ' (it is not billed per unit)'}`);
 }
 
 /**
@@ -353,6 +371,8 @@ export function registerSellerMonitorCommands(sellerCmd: Command): void {
     .option('--json', 'output as JSON', false)
     .action((options: { json: boolean }) => runMonitorCommand(options.json, () => sellerMonitorFor(sellerCmd).settings(), ({ settings: view }) => {
       console.log(`${chalk.bold(view.displayName || '(no display name)')}  ${chalk.dim(view.configPath)}${view.writable ? '' : chalk.yellow(`  read-only: ${view.readOnlyReason}`)}`);
+      if (view.overridden.length > 0) console.log(chalk.yellow(`Saved over the config file (${view.overridesPath}): ${view.overridden.join(', ')}. \`seller settings reset\` drops them.`));
+      else if (view.savesTo === 'overrides') console.log(chalk.dim(`The config file is read-only here: changes are saved in ${view.overridesPath} and apply over it.`));
       console.log(`Max concurrent buyers ${view.maxConcurrentBuyers} · health checks ${view.healthCheck.enabled ? `every ${view.healthCheck.intervalMs / 1000}s, withdraw after ${view.healthCheck.failureThreshold}` : 'off'} · gas checks ${view.gasCheck.enabled ? `min ${view.gasCheck.minBalanceEth} ETH` : 'off'}`);
       console.log(`Refused countries ${view.restrictedCountries.join(', ') || 'none'}${view.restrictedCountriesDefault ? chalk.dim(' (built-in)') : ''}`);
       const wide = view.freeTier;
@@ -363,14 +383,14 @@ export function registerSellerMonitorCommands(sellerCmd: Command): void {
         const free = freeTierSummary(service.freeTier, service.paid);
         // An image or video model bills per unit; its zero token prices would read as free.
         const tokens = service.unitPrice ? [unitPriceText(service.unitPrice), '—', '—'] : [price(service.inputUsdPerMillion), price(service.outputUsdPerMillion), price(service.cachedInputUsdPerMillion)];
-        table.push([service.service, service.provider, ...tokens, service.ownFreeTier ? free : chalk.dim(free)]);
+        table.push([service.enabled ? service.service : chalk.dim(`${service.service} (off)`), service.provider, ...tokens, service.ownFreeTier ? free : chalk.dim(free)]);
       }
       console.log(table.toString());
     }));
 
   settings
     .command('set')
-    .description('Change seller settings (validated, previous config kept as config.json.bak; restart the seller to apply)')
+    .description('Change seller settings (validated; saved in the config file, or over it in the data dir when it is read-only; restart the seller to apply)')
     .option('--display-name <name>')
     .option('--max-buyers <n>')
     .option('--health <on|off>')
@@ -386,6 +406,9 @@ export function registerSellerMonitorCommands(sellerCmd: Command): void {
     .option('--model-free-tier <[provider/]model=address/ip[/hours][/stakers]|model=off>', "a model's own free tier (a free allowance on a paid model); repeatable", (value: string, all: string[] = []) => [...all, value])
     .option('--countries <codes|default>', 'comma-separated ISO codes, "" for none, or default')
     .option('--price <[provider/]model=in/out[/cached]>', 'USD per million tokens (cached kept unless given; /none removes it); repeatable. Name the provider when two offer the model', (value: string, all: string[] = []) => [...all, value])
+    .option('--unit-price <[provider/]model[match]=usd>', 'a per-image or per-video price, e.g. wan-2.6[1080p]=0.08; repeatable', (value: string, all: string[] = []) => [...all, value])
+    .option('--model-off <[provider/]model>', 'stop offering a model, keeping its settings; repeatable', (value: string, all: string[] = []) => [...all, value])
+    .option('--model-on <[provider/]model>', 'offer a model turned off again; repeatable', (value: string, all: string[] = []) => [...all, value])
     .option('--json', 'output as JSON', false)
     .action((options: Record<string, string | string[] | boolean | undefined>, command: Command) => runMonitorCommand(jsonFlag(command), async () => {
       const monitor = sellerMonitorFor(sellerCmd);
@@ -416,7 +439,10 @@ export function registerSellerMonitorCommands(sellerCmd: Command): void {
       if (text('countries') !== undefined) patch.restrictedCountries = text('countries') === 'default' ? null : text('countries')!.split(',').map((code) => code.trim()).filter(Boolean);
       const prices = Array.isArray(options.price) ? options.price : [];
       const modelFree = Array.isArray(options.modelFreeTier) ? options.modelFreeTier : [];
-      if (prices.length > 0 || modelFree.length > 0) {
+      const unitPrices = Array.isArray(options.unitPrice) ? options.unitPrice : [];
+      const modelsOff = Array.isArray(options.modelOff) ? options.modelOff : [];
+      const modelsOn = Array.isArray(options.modelOn) ? options.modelOn : [];
+      if (prices.length > 0 || modelFree.length > 0 || unitPrices.length > 0 || modelsOff.length > 0 || modelsOn.length > 0) {
         const { settings: view } = await monitor.settings();
         // One entry per model: a price and a free tier for the same model go together.
         const entries = new Map<string, NonNullable<SellerSettingsPatch['pricing']>[number]>();
@@ -433,9 +459,62 @@ export function registerSellerMonitorCommands(sellerCmd: Command): void {
           });
         }
         for (const { service, freeTier } of modelFree.map(parseModelFreeTier)) entryFor(service, '--model-free-tier').freeTier = freeTier;
+        for (const name of modelsOff) entryFor(name, '--model-off').enabled = false;
+        for (const name of modelsOn) entryFor(name, '--model-on').enabled = true;
+        for (const { service, match, priceUsd } of unitPrices.map(parseUnitPrice)) {
+          const component = resolveUnitComponent(resolvePriceTarget(view.services, service, '--unit-price'), match);
+          const entry = entryFor(service, '--unit-price');
+          entry.unitPrices = [...(entry.unitPrices ?? []), { protocol: component.protocol, unit: component.unit, match: component.match, priceUsd }];
+        }
         patch.pricing = [...entries.values()];
       }
       if (Object.keys(patch).length === 0) throw new Error('Nothing to change: pass at least one option (see --help).');
       return monitor.updateSettings(patch);
-    }, (result) => console.log(chalk.green(`Saved ${result.changed.join(', ')}. Restart the seller to apply; the previous config is kept as config.json.bak.`))));
+    }, (result) => console.log(chalk.green(result.settings.savesTo === 'overrides'
+      ? `Saved ${result.changed.join(', ')} in ${result.settings.overridesPath} (over the read-only config file). Restart the seller to apply.`
+      : `Saved ${result.changed.join(', ')}. Restart the seller to apply; the previous config is kept as config.json.bak.`))));
+
+  settings
+    .command('add-model <model>')
+    .description('Add a model billed by tokens under a configured provider ([provider/]model; the provider is needed when there are several)')
+    .requiredOption('--input <usd>', 'USD per million input tokens')
+    .requiredOption('--output <usd>', 'USD per million output tokens')
+    .option('--cached <usd>', 'USD per million cached input tokens')
+    .option('--upstream <id>', "the model id the provider's API knows it by (default: the model id)")
+    .option('--categories <list>', 'comma-separated tags, e.g. chat,coding')
+    .option('--json', 'output as JSON', false)
+    .action((name: string, options: { input: string; output: string; cached?: string; upstream?: string; categories?: string }, command: Command) => runMonitorCommand(jsonFlag(command), async () => {
+      const monitor = sellerMonitorFor(sellerCmd);
+      const { settings: view } = await monitor.settings();
+      const slash = name.indexOf('/');
+      const named = slash > 0 && view.providers.some((provider) => provider.name === name.slice(0, slash)) ? name.slice(0, slash) : null;
+      const tokenProviders = view.providers.filter((provider) => !provider.unitBilled && !provider.singleService);
+      const provider = named ?? (tokenProviders.length === 1 ? tokenProviders[0]!.name : null);
+      if (!provider) throw new Error(`Name the provider: <provider>/<model>, one of ${tokenProviders.map((entry) => entry.name).join(', ') || '(none bill by tokens)'}`);
+      return monitor.updateSettings({ addServices: [{
+        provider, service: named ? name.slice(slash + 1) : name,
+        inputUsdPerMillion: Number(options.input), outputUsdPerMillion: Number(options.output),
+        ...(options.cached !== undefined ? { cachedInputUsdPerMillion: Number(options.cached) } : {}),
+        ...(options.upstream ? { upstreamModel: options.upstream } : {}),
+        ...(options.categories ? { categories: options.categories.split(',') } : {}),
+      }] });
+    }, () => console.log(chalk.green(`Added ${name}. Restart the seller to offer it.`))));
+
+  settings
+    .command('remove-model <model>')
+    .description("Remove a model from the config, with its prices and own free tier ([provider/]model). To keep its settings, use `settings set --model-off` instead")
+    .option('--json', 'output as JSON', false)
+    .action((name: string, _options: unknown, command: Command) => runMonitorCommand(jsonFlag(command), async () => {
+      const monitor = sellerMonitorFor(sellerCmd);
+      const { settings: view } = await monitor.settings();
+      const service = resolvePriceTarget(view.services, name, 'remove-model');
+      return monitor.updateSettings({ removeServices: [{ provider: service.provider, service: service.service }] });
+    }, () => console.log(chalk.green(`Removed ${name}. The seller stops offering it when it restarts.`))));
+
+  settings
+    .command('reset')
+    .description('Drop the settings saved over a read-only config file (the dashboard\'s overrides); the config file applies alone from the next restart')
+    .option('--json', 'output as JSON', false)
+    .action((options: { json: boolean }) => runMonitorCommand(options.json, () => sellerMonitorFor(sellerCmd).resetOverrides(),
+      () => console.log(chalk.green('Removed the saved settings. The config file applies alone from the seller\'s next restart.'))));
 }

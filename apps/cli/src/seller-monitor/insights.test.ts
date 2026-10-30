@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import test from 'node:test'
 import { identityFromPrivateKeyHex } from '@antseed/node'
 import { startSellerDashboard } from './dashboard-server.js'
@@ -84,7 +84,7 @@ test('market, reputation and promote: background snapshot, standing, verificatio
 test('saving claims keeps the proof methods of the domains already there', async () => {
   const configPath = join(mkdtempSync(join(tmpdir(), 'seller-promote-')), 'config.json')
   writeFileSync(configPath, JSON.stringify({ seller: { verifications: { domains: [{ domain: 'seller.example', methods: ['https-well-known'] }] } } }))
-  await updateSellerVerifications(configPath, { domains: [{ domain: 'seller.example' }, { domain: 'new.example' }], github: [{ username: 'seller-dev' }] })
+  await updateSellerVerifications(configPath, dirname(configPath), { domains: [{ domain: 'seller.example' }, { domain: 'new.example' }], github: [{ username: 'seller-dev' }] })
   assert.deepEqual(JSON.parse(readFileSync(configPath, 'utf8')).seller.verifications, {
     domains: [{ domain: 'seller.example', methods: ['https-well-known'] }, { domain: 'new.example' }],
     github: [{ username: 'seller-dev' }],

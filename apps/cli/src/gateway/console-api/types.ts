@@ -471,6 +471,91 @@ export interface DepositConfirmation {
   approval: { by: string; at: number; note: string | null } | null
 }
 
+// Workspace admins: the company a workspace buys for, printed on its purchase statements.
+// GET    /workspaces/:id/billing-profile → BillingProfile | null
+// PUT    /workspaces/:id/billing-profile BillingProfileInput → BillingProfile (stored as entered, nothing is checked)
+// DELETE /workspaces/:id/billing-profile → { ok: true }
+export interface BillingProfileInput {
+  companyName: string
+  /** Street, postal code and city, one per line. */
+  address: string
+  /** As entered; empty when not given. */
+  country: string
+  /** The company's tax ID (VAT, GST, EIN…), as entered. */
+  vatNumber: string | null
+  /** A company register number (e.g. KvK). */
+  registrationNumber: string | null
+  /** Anything else the buyer wants on its statements (a PO number, cost centre, contact), one item per line. */
+  notes: string | null
+}
+
+export interface BillingProfile extends BillingProfileInput {
+  updatedAt: number
+}
+
+// Workspace admins: monthly purchase statements, a record of what the workspace bought from which sellers.
+// GET /workspaces/:id/statements          → StatementSummary[] (newest first: every month since its first paid request)
+// GET /workspaces/:id/statements/:period  → PurchaseStatement (period "YYYY-MM", UTC)
+export interface StatementSummary {
+  period: string
+  status: PurchaseStatement['status']
+  reference: string
+  purchases: Usdc
+  issuedAt: number | null
+}
+
+export interface PurchaseStatement {
+  /** "YYYY-MM", a calendar month in UTC. */
+  period: string
+  /** Epoch ms; `to` is exclusive. */
+  from: number
+  to: number
+  /**
+   * final: kept as issued on `issuedAt`, never changes.
+   * open: a draft computed now; the month is not over (or ended less than a day ago), or the workspace has no billing details.
+   */
+  status: 'open' | 'final'
+  reference: string
+  issuedAt: number | null
+  generatedAt: number
+  workspace: { id: string; name: string; wallet: string | null }
+  /** The buyer's details as they were when issued; null when not set yet (a draft). */
+  buyer: BillingProfile | null
+  suppliers: StatementSupplier[]
+  total: Usdc
+  requests: number
+  /** The month's money in (deposits and transfers into the workspace wallet, and the relay fees of moving them into the credits) as recorded at `asOf`: read again on every view, also of a final statement (a transfer is recorded once swept, which can be after the month). */
+  funding: { deposits: Array<{ txHash: string; reference: string; kind: DepositConfirmation['kind']; time: number; amount: Usdc }>; total: Usdc; relayFees: Usdc; asOf: number }
+  /** Where the payment records came from: the chain explorer, or null when they could not be read (each supplier's `settlements` is then null). */
+  settlementsSource: string | null
+  /**
+   * How many other workspaces paid from the same wallet by the month's end (not named: a reader may not see them).
+   * Settlements are the wallet's: with a shared wallet a seller's settlements also pay the other workspaces' purchases.
+   */
+  sharedWallet: number
+}
+
+export interface StatementSupplier {
+  peerId: string
+  /** The seller's name on the network when known. */
+  name: string | null
+  /** Ownership claims (domain, GitHub) the seller proved. */
+  verificationLinks: PeerVerificationLink[]
+  lines: Array<{
+    /** The model, or the routing service for a routing fee. */
+    service: string | null
+    kind: 'inference' | 'routing'
+    requests: number
+    inputTokens: number
+    cachedInputTokens: number
+    outputTokens: number
+    amount: Usdc
+  }>
+  total: Usdc
+  /** Settlement transactions on Base that paid this seller from the workspace's credits during the month; null when not read. */
+  settlements: Array<{ txHash: string; time: number; amount: Usdc }> | null
+}
+
 export interface DepositWatch {
   mode: 'active' | 'background' | 'off'
   status: string
@@ -1265,10 +1350,23 @@ export interface SellerFreeTierProgramPatch {
   stakeTiers?: Array<{ minPower: number; multiplier: number | 'unlimited' }> | null
 }
 
+/** Whether the dashboard can restart the seller to apply saved settings. */
+export interface SellerRestartView {
+  available: boolean
+  /** Why not, when it cannot. */
+  reason: string | null
+}
+
 export interface SellerSettings {
   configPath: string
   writable: boolean
   readOnlyReason: string | null
+  /** Where a save goes: the config file, or the data dir's overrides when the file is read-only (or overrides exist). */
+  savesTo: 'config' | 'overrides' | null
+  /** The overrides file, when saves go there or one exists. */
+  overridesPath: string | null
+  /** Settings saved as overrides, as dotted config paths (`seller.maxConcurrentBuyers`). */
+  overridden: string[]
   displayName: string
   maxConcurrentBuyers: number
   healthCheck: { enabled: boolean; intervalMs: number; failureThreshold: number }
@@ -1280,7 +1378,50 @@ export interface SellerSettings {
   restrictedCountries: string[]
   /** Not set in the file: the built-in list applies. */
   restrictedCountriesDefault: boolean
-  services: SellerServicePricing[]
+  services: SellerSettingsService[]
+  /** The configured providers, for adding a model under one. */
+  providers: SellerSettingsProvider[]
+}
+
+/** A service as the settings edit it: its price and free tier, whether it is offered, and its per-unit prices. */
+export interface SellerSettingsService extends SellerServicePricing {
+  /** Offered to buyers; a model turned off stays in the config but is not started. */
+  enabled: boolean
+  /** The model id sent upstream, when it differs from the service id. */
+  upstreamModel: string | null
+  categories: string[]
+  /** Each priced component of its unit billing (per image, per video second…), editable one by one. */
+  unitComponents: SellerUnitComponent[]
+}
+
+export interface SellerUnitComponent {
+  protocol: string
+  unit: string
+  /** What the component applies to (`{ resolution: '4k' }`); null for every request. */
+  match: Record<string, unknown> | null
+  priceUsd: number
+}
+
+export interface SellerSettingsProvider {
+  name: string
+  plugin: string
+  /** Its services bill per unit (image, video): new models there are added in the config file, with their capabilities. */
+  unitBilled: boolean
+  /** A routing plugin that offers exactly one service: no model can be added under it. */
+  singleService: boolean
+  /** Services under it, offered or not. */
+  services: number
+}
+
+/** A token-billed model added under an existing provider. */
+export interface SellerNewService {
+  provider: string
+  service: string
+  upstreamModel?: string
+  categories?: string[]
+  inputUsdPerMillion: number
+  outputUsdPerMillion: number
+  cachedInputUsdPerMillion?: number
 }
 
 export interface SellerSettingsPatch {
@@ -1293,7 +1434,22 @@ export interface SellerSettingsPatch {
   /** null goes back to the built-in list. */
   restrictedCountries?: string[] | null
   /** Prices and each model's own free tier (`freeTier: null` removes it, so a free model falls back to the seller-wide one). */
-  pricing?: Array<{ provider: string; service: string; inputUsdPerMillion?: number; outputUsdPerMillion?: number; cachedInputUsdPerMillion?: number | null; freeTier?: SellerFreeTierProgramPatch | null }>
+  pricing?: Array<{
+    provider: string
+    service: string
+    inputUsdPerMillion?: number
+    outputUsdPerMillion?: number
+    cachedInputUsdPerMillion?: number | null
+    freeTier?: SellerFreeTierProgramPatch | null
+    /** false turns the model off (kept in the config, not offered); true offers it again. */
+    enabled?: boolean
+    /** New prices for unit-billing components, each found by its protocol, unit and match. */
+    unitPrices?: Array<{ protocol: string; unit: string; match: Record<string, unknown> | null; priceUsd: number }>
+  }>
+  /** Token-billed models to add under existing providers. */
+  addServices?: SellerNewService[]
+  /** Models to remove from the config (their own free tier and prices with them). */
+  removeServices?: Array<{ provider: string; service: string }>
 }
 
 export interface SellerAlertSettings {

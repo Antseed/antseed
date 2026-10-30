@@ -806,8 +806,79 @@ li + li > .gc-choice { border-top: 1px solid var(--as-border); }
   .gc-doc { padding: 1.25rem; }
   .gc-doc__row { grid-template-columns: minmax(0, 1fr); gap: 0.125rem; }
 }
+/* Purchase statement: the deposit confirmation's document, with tables. */
+.gc-statements__notice { margin: 0; padding: 0.75rem 1rem; border-bottom: 1px solid var(--as-border); font-size: 0.8125rem; }
+.gc-statement { max-width: 60rem; font-size: 0.875rem; }
+.gc-statement__label { margin: 0 0 0.375rem; color: var(--as-text-secondary); font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+.gc-statement__heading { margin: 1.5rem 0 0.75rem; font-size: 1rem; font-weight: 600; }
+.gc-statement__parties { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.5rem; padding: 1.25rem 0; }
+.gc-statement__address { white-space: pre-line; }
+.gc-statement__notes { white-space: pre-line; margin-top: 0.5rem; }
+.gc-statement__kv { display: grid; grid-template-columns: 9.5rem minmax(0, 1fr); gap: 0.25rem 0.75rem; margin: 0.5rem 0 0;
+  dt { color: var(--as-text-secondary); font-size: 0.8125rem; }
+  dd { margin: 0; overflow-wrap: anywhere; }
+}
+.gc-statement__summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--as-border); border-radius: var(--as-radius-md);
+  > div { display: flex; flex-direction: column; gap: 0.125rem; padding: 0.625rem 0.875rem; border-left: 1px solid var(--as-border); }
+  > div:first-child { border-left: 0; }
+  span { color: var(--as-text-secondary); font-size: 0.75rem; }
+  strong { font-size: 1.0625rem; font-weight: 600; }
+}
+.gc-statement__supplier { margin-bottom: 1.25rem; break-inside: avoid; }
+.gc-statement__supplier-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 0.5rem; margin-bottom: 0.375rem; }
+.gc-statement__claims { display: flex; flex-wrap: wrap; gap: 0.5rem; font-size: 0.8125rem; }
+.gc-statement__table { overflow-x: auto;
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th { padding: 0.375rem 0.5rem; border-bottom: 1px solid var(--as-border-strong, var(--as-border)); color: var(--as-text-secondary); font-size: 0.75rem; font-weight: 600; text-align: right; white-space: nowrap; }
+  td { padding: 0.375rem 0.5rem; border-bottom: 1px solid var(--as-border); text-align: right; white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+}
+.gc-statement__subtotal td { font-weight: 600; }
+.gc-statement__provider { white-space: normal !important;
+  strong, span { display: block; }
+  span { color: var(--as-text-secondary); font-size: 0.75rem; }
+}
+.gc-statement__note { margin: 0.5rem 0 1rem; font-size: 0.8125rem; }
+.gc-statement__proof { display: flex; flex-wrap: wrap; gap: 0.125rem 1rem; margin-top: 0.375rem; font-size: 0.8125rem;
+  > span:first-child { flex-basis: 100%; }
+}
+.gc-statement__total { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 1rem; padding: 0.625rem 0.5rem; border-top: 2px solid var(--as-text-primary); font-weight: 700; text-align: right;
+  > span:first-child { text-align: left; }
+}
+.gc-statement__boxes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin-top: 1.25rem;
+  > section { padding: 0.875rem 1rem; border: 1px solid var(--as-border); border-radius: var(--as-radius-md); break-inside: avoid; }
+  p { margin: 0.5rem 0 0; }
+}
+.gc-statement .gc-doc__foot p { margin: 0 0 0.5rem; }
+.gc-print-only { display: none; }
+@media screen and (max-width: 640px) {
+  .gc-statement__parties, .gc-statement__boxes { grid-template-columns: minmax(0, 1fr); }
+  .gc-statement__kv { grid-template-columns: minmax(0, 1fr); }
+}
 @media print {
-  .gc-topbar, .gc-rail, .gc-skip, .gc-no-print, .gc-exposure, .as-toasts { display: none !important; }
+  .gc-print-only { display: inline; }
+  :root { color-scheme: light; }
+  html, body { background: #fff; }
+  /* Paper is white whatever the console's theme: dark-theme greys would print near invisible. */
+  .gc-statement {
+    --as-text-primary: #000; --as-text-secondary: #444; --as-text-muted: #555; --as-border: #ccc; --as-border-strong: #888;
+    font-size: 8.5pt;
+  }
+  .gc-statement .gc-muted { color: #555; }
+  .gc-statement__parties { gap: 1rem; padding: 0.75rem 0; }
+  .gc-statement__kv { grid-template-columns: 7.5rem minmax(0, 1fr); }
+  /* The whole table fits the page width: no scroll box to clip it, long model names wrap. */
+  .gc-statement__table { overflow: visible;
+    table { table-layout: auto; }
+    th, td { padding: 0.25rem 0.375rem; }
+    td:first-child { white-space: normal; overflow-wrap: anywhere; }
+    tr { break-inside: avoid; }
+  }
+  .gc-statement__supplier { break-inside: auto; }
+  .gc-statement__supplier-head { break-after: avoid; }
+}
+@media print {
+  .gc-topbar, .gc-rail, .gc-skip, .gc-no-print, .gc-exposure, .gc-update-notice, .as-toasts { display: none !important; }
   .gc-body { display: block; padding: 0; }
   .gc-main { padding: 0; max-width: none; }
   .gc-doc { max-width: none; border: 0; padding: 0; background: #fff; color: #000; }

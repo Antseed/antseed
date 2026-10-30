@@ -1,13 +1,14 @@
 import type { Command } from 'commander'
 import chalk from 'chalk'
 import ora from 'ora'
-import { readFile, writeFile, unlink } from 'node:fs/promises'
+import { readFile, rename, writeFile, unlink } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { join, resolve, isAbsolute, dirname } from 'node:path'
 import { getGlobalOptions } from '../types.js'
 import pkg from '../../../../package.json' with { type: 'json' }
 import { watchForUpdates } from '../../../update/watch.js'
-import { loadConfig, resolveConfigPath } from '../../../config/loader.js'
+import { resolveConfigPath } from '../../../config/loader.js'
+import { configOverridesPath, loadSellerConfig } from '../../../config/overrides.js'
 import { DEFAULT_RESTRICTED_COUNTRIES } from '../../../config/defaults.js'
 import {
   AntseedNode,
@@ -38,10 +39,10 @@ import {
 import type { AntseedConfig, SellerCLIConfig, SellerProviderConfig } from '../../../config/types.js'
 import { ANTSEED_VERIFIER_SDKS_ENV, buildVerifierCapabilities, normalizeVerifierIds } from '../../../plugins/verifier.js'
 import { parseBootstrapList, toBootstrapConfig } from '@antseed/node/discovery'
-import { setupShutdownHandler } from '../../shutdown.js'
+import { isRestarting, setupShutdownHandler, shutdownForRestart } from '../../shutdown.js'
 import { loadProviderPlugin, loadProverPlugin, buildPluginConfig, getPackageVersions } from '../../../plugins/loader.js'
 import { ensurePluginsUpToDate } from '../../../plugins/drift.js'
-import { pricedSellerServices, resolveEffectiveSellerConfig, resolveSellerFreeTier, type SellerRuntimeOverrides } from '../../../config/effective.js'
+import { dropDisabledServices, pricedSellerServices, resolveEffectiveSellerConfig, resolveSellerFreeTier, type SellerRuntimeOverrides } from '../../../config/effective.js'
 import { ensureDerivedIdentityDisplayName } from '../../../config/identity-display-name.js'
 import { AntAgentProvider, loadAntAgent, type AntAgentDefinition } from '@antseed/ant-agent'
 import { resolvePluginPackage } from '../../../plugins/registry.js'
@@ -54,8 +55,9 @@ import { UpstreamAlerts } from '../../../seller-alerts/upstream-alerts.js'
 import { ethToWei } from './gas.js'
 import { startIdleWatch, uncleanExitEvent, waitAtMost } from '../../../seller-alerts/lifecycle.js'
 import { startSellerDashboard, type SellerDashboardServer } from '../../../seller-monitor/dashboard-server.js'
-import { removeDashboardLink, writeDashboardLink } from '../../../seller-monitor/dashboard-link.js'
+import { previousDashboardPort, previousDashboardToken, removeDashboardLink, writeDashboardLink } from '../../../seller-monitor/dashboard-link.js'
 import { DEFAULT_SELLER_DASHBOARD_PORT } from './dashboard.js'
+import { patchSellerConfig } from '../../../seller-monitor/settings.js'
 
 function getStateFile(dataDir: string): string {
   return join(dataDir, 'daemon.state.json')
@@ -458,11 +460,26 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
     .option('--verifiers <ids>', `comma-separated verifier SDK ids this seller supports (first is default; also ${ANTSEED_VERIFIER_SDKS_ENV})`)
     .action(async (options) => {
       const globalOpts = getGlobalOptions(sellerCmd)
-      const config = await loadConfig(globalOpts.config)
+      // Settings saved from the dashboard when the config file is read-only apply over it.
+      let config: AntseedConfig
+      let overriddenSettings: string[] = []
+      try {
+        ({ config, overridden: overriddenSettings } = await loadSellerConfig(globalOpts.config, globalOpts.dataDir))
+      } catch (err) {
+        console.error(chalk.red(`Could not load the seller config: ${(err as Error).message}`))
+        console.error(chalk.dim(`  Settings saved from the dashboard are in ${configOverridesPath(globalOpts.dataDir)}; fix or delete that file to start from the config file alone.`))
+        process.exit(1)
+      }
       await ensureDerivedIdentityDisplayName({
         config,
         configPath: globalOpts.config,
         dataDir: globalOpts.dataDir,
+        // Only the name, where dashboard saves go (the config file, or its overrides when it is read-only):
+        // the config loaded here has the overrides applied, so writing it whole would bake them into the file.
+        save: (displayName) => patchSellerConfig(resolveConfigPath(globalOpts.config), globalOpts.dataDir, (raw) => {
+          const identity = (raw.identity && typeof raw.identity === 'object' ? raw.identity : (raw.identity = {})) as Record<string, unknown>
+          identity.displayName = displayName
+        }).catch(() => {}),
       })
       let baseRpcUrlOverride: string | undefined
       try {
@@ -490,7 +507,10 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         effectiveSellerConfig,
         options.provider as string | undefined,
       )
-      const selectedProviderNames = providerSelection.selected
+      // Models turned off from the dashboard (`enabled: false`) are not offered; a provider left with none is not started.
+      const disabled = dropDisabledServices(effectiveSellerConfig, providerSelection.selected)
+      const selectedProviderNames = providerSelection.selected.filter((name) => !disabled.emptyProviders.includes(name))
+      if (disabled.off.length > 0) console.log(chalk.dim(`  models turned off: ${disabled.off.join(', ')}${disabled.emptyProviders.length > 0 ? ` (not starting ${disabled.emptyProviders.join(', ')}: every model is off)` : ''}`))
 
       if (selectedProviderNames.length === 0) {
         console.error(chalk.red('Error: No seller providers are configured.'))
@@ -679,6 +699,9 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         : DEFAULT_MIN_GAS_BALANCE_WEI
 
       console.log(chalk.bold('Effective seller settings:'))
+      if (overriddenSettings.length > 0) {
+        console.log(chalk.dim(`  saved from the dashboard (over ${resolveConfigPath(globalOpts.config)}): ${overriddenSettings.join(', ')}`))
+      }
       console.log(chalk.dim(`  providers: ${selectedProviderNames.join(', ')}`))
       for (let index = 0; index < providers.length; index += 1) {
         const provider = providers[index]!
@@ -1065,6 +1088,8 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           provider: primaryProviderName,
           defaultInputUsdPerMillion: primaryProvider.pricing.defaults.inputUsdPerMillion,
           defaultOutputUsdPerMillion: primaryProvider.pricing.defaults.outputUsdPerMillion,
+          // The providers this seller starts with (`--provider`, or all configured), models turned off or not.
+          selectedProviders: providerSelection.selected,
           providerPricing: Object.fromEntries(registeredProviders.map((provider, index) => {
             const providerName = selectedProviderNames[index]!
             return [providerName, {
@@ -1117,7 +1142,10 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
 
         stateWriteInFlight = true
         try {
-          stateWriteCurrent = writeFile(getStateFile(globalOpts.dataDir), JSON.stringify(buildDaemonState(), null, 2))
+          // Replaced whole (temp file, then rename): a reader never sees a half-written state.
+          const stateFile = getStateFile(globalOpts.dataDir)
+          const temp = `${stateFile}.${process.pid}.tmp`
+          stateWriteCurrent = writeFile(temp, JSON.stringify(buildDaemonState(), null, 2)).then(() => rename(temp, stateFile))
           await stateWriteCurrent
         } finally {
           stateWriteInFlight = false
@@ -1190,13 +1218,32 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       // terminal; a service's logs say how to get it (`antseed seller dashboard` reads it from the data dir).
       let dashboard: SellerDashboardServer | null = null
       if (options.dashboard !== false) {
-        const dashboardOptions = { dataDir: globalOpts.dataDir, configPath: resolveConfigPath(globalOpts.config), version: pkg.version, host: '127.0.0.1', log: (line: string) => console.log(chalk.dim(line)) }
-        const port = Number(options.dashboardPort) || DEFAULT_SELLER_DASHBOARD_PORT
+        // A restart from the dashboard is a clean stop: only offered where a supervisor starts the seller again.
+        const supervisor = restartSupervisor()
+        const restart = {
+          unavailableReason: supervisor ? null : 'Restart `antseed seller start` where it runs to apply saved changes. (Under a supervisor that starts it again when it exits, set ANTSEED_SUPERVISED=1 to restart it from here.)',
+          run: () => {
+            console.log(chalk.yellow(`Restarting from the dashboard to apply saved settings (${supervisor} starts the seller again).`))
+            shutdownForRestart()
+          },
+        }
+        // A restart keeps the link (and the sessions signed with it), so an open dashboard reconnects.
+        const previousToken = previousDashboardToken(globalOpts.dataDir)
+        const dashboardOptions = { dataDir: globalOpts.dataDir, configPath: resolveConfigPath(globalOpts.config), version: pkg.version, host: '127.0.0.1', restart, ...(previousToken ? { token: previousToken } : {}), log: (line: string) => console.log(chalk.dim(line)) }
+        // The flag's port; else the one the last run served on (an open page reconnects there after a restart),
+        // then the default, then any free one.
+        const previousPort = previousDashboardPort(globalOpts.dataDir)
+        const ports = options.dashboardPort ? [Number(options.dashboardPort)] : [...new Set([previousPort, DEFAULT_SELLER_DASHBOARD_PORT, 0].filter((port): port is number => port !== null))]
         try {
-          dashboard = await startSellerDashboard({ ...dashboardOptions, port }).catch((err: NodeJS.ErrnoException) => {
-            if (err.code !== 'EADDRINUSE' || options.dashboardPort) throw err
-            return startSellerDashboard({ ...dashboardOptions, port: 0 })
-          })
+          for (const [index, port] of ports.entries()) {
+            try {
+              dashboard = await startSellerDashboard({ ...dashboardOptions, port })
+              break
+            } catch (err) {
+              if ((err as NodeJS.ErrnoException).code !== 'EADDRINUSE' || index === ports.length - 1) throw err
+            }
+          }
+          if (!dashboard) throw new Error('no port to serve on')
           await writeDashboardLink(globalOpts.dataDir, dashboard.url)
           const origin = new URL(dashboard.url).origin
           if (process.stdout.isTTY) console.log(`  dashboard: ${chalk.cyan(dashboard.url)}`)
@@ -1226,7 +1273,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         alerts.close()
         if (dashboard) {
           // Never long: channels are finalized next, and a dashboard request must not hold that up.
-          await waitAtMost(removeDashboardLink(globalOpts.dataDir).then(() => dashboard!.close()), 2_000)
+          await waitAtMost((isRestarting() ? Promise.resolve() : removeDashboardLink(globalOpts.dataDir)).then(() => dashboard!.close()), 2_000)
         }
         nodeSpinner.start('Shutting down seeding daemon...')
         try {
@@ -1244,4 +1291,17 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         }
       })
     })
+}
+
+/**
+ * Who starts the seller again after a restart from the dashboard, or null when
+ * nothing would (the restart would stop it for good). Never inferred from
+ * variables a shell inherits: `ANTSEED_SUPERVISED=1` says so explicitly (`0`
+ * turns it off), and otherwise only a Kubernetes container's main process
+ * counts, which the kubelet restarts.
+ */
+export function restartSupervisor(env: NodeJS.ProcessEnv = process.env, pid = process.pid): string | null {
+  if (env.ANTSEED_SUPERVISED === '0') return null
+  if (env.ANTSEED_SUPERVISED === '1') return 'its supervisor'
+  return env.KUBERNETES_SERVICE_HOST && pid === 1 ? 'Kubernetes' : null
 }

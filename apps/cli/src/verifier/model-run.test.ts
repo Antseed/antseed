@@ -571,6 +571,38 @@ test('target eligibility requires ResponseAuth and preserves advertised model sp
   })
 })
 
+test('target eligibility matches advertised spellings of the same model like buyer routing', () => {
+  const advertising = (service: string, price = 1) => peer({
+    providerPricing: { test: {
+      defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 },
+      services: { [service]: { inputUsdPerMillion: price, outputUsdPerMillion: price } },
+    } },
+  })
+  for (const service of ['openai/GPT-5.6-Sol', 'gpt-5-6-sol', 'gpt-5.6-sol-latest']) {
+    assert.deepEqual(classifyVerificationTarget(advertising(service), 'gpt-5.6-sol', targetPolicy), {
+      eligible: true,
+      service,
+    })
+  }
+  // Pricing is read from the matched service, so a renamed listing cannot dodge the price check.
+  const overpriced = classifyVerificationTarget(advertising('openai/gpt-5.6-sol', 40), 'gpt-5.6-sol', targetPolicy)
+  assert.equal(overpriced.eligible ? null : overpriced.code, 'price_above_maximum')
+  assert.equal(classifyVerificationTarget(advertising('gpt-5.6'), 'gpt-5.6-sol', targetPolicy).eligible, false)
+})
+
+test('target eligibility prefers the exact advertised id over a canonical match', () => {
+  const both = peer({
+    providerPricing: { test: {
+      defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 },
+      services: {
+        'openai/gpt-5.6-sol': { inputUsdPerMillion: 1, outputUsdPerMillion: 1 },
+        'GPT-5.6-SOL': { inputUsdPerMillion: 1, outputUsdPerMillion: 1 },
+      },
+    } },
+  })
+  assert.deepEqual(classifyVerificationTarget(both, 'gpt-5.6-sol', targetPolicy), { eligible: true, service: 'GPT-5.6-SOL' })
+})
+
 test('target eligibility applies buyer reputation and pricing before audit', () => {
   assert.deepEqual(classifyVerificationTarget(peer({ reputationScore: 20 }), 'gpt-5.6-sol', {
     ...targetPolicy,

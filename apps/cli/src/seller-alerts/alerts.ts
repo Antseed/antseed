@@ -131,19 +131,24 @@ export class SellerAlerts {
   async record(input: Omit<SellerEvent, 'at'> & { at?: number }, options: { journal?: boolean; notify?: boolean; update?: boolean; quiet?: boolean } = {}): Promise<void> {
     const event: SellerEvent = { ...input, at: input.at ?? this._now() };
     // `journal: false` for a summary of events already journaled one by one; `notify: false` for one a summary will announce.
-    if (options.journal !== false) await appendSellerEvent(this._opts.dataDir, event).catch((err) => this._opts.log?.(`seller events: ${(err as Error).message}`));
-    if (options.notify === false) return;
+    const journaled = options.journal !== false
+      ? appendSellerEvent(this._opts.dataDir, event).catch((err) => this._opts.log?.(`seller events: ${(err as Error).message}`))
+      : Promise.resolve();
+    if (options.notify === false) return journaled.then(() => {});
     const recovery = RECOVERY_OF[event.kind] !== undefined;
     const key = alertKey(RECOVERY_OF[event.kind] ?? event.kind, event);
     // A new outage makes a recovery still being resent stale; a recovery stops the alert's resends.
     this._release(recovery ? key : recoveryRetryKey(key));
-    await this._inIncident(key, () => {
+    // The event takes its place in its incident now, in the order it was recorded; the
+    // journal write it waits for inside must not let a later (say, quiet) recovery overtake it.
+    await this._inIncident(key, async () => {
+      await journaled;
       // Again in turn: a failure queued ahead of this recovery may have held an alert since,
       // and a recovery sending ahead of this outage may have scheduled a resend since.
       this._release(recovery ? key : recoveryRetryKey(key));
       if (recovery && options.quiet) {
         this._closeIncident(key);
-        return Promise.resolve();
+        return;
       }
       return this._deliver(event, key, recovery, options.update === true);
     });
@@ -192,9 +197,13 @@ export class SellerAlerts {
     const held = this._held.get(key);
     if (holdMs !== null && held) held.event = event;
     else if (holdMs !== null) {
+      // It stays held until its turn in the incident, so a recovery recorded meanwhile still cancels it.
       const entry = { event, timer: setTimeout(() => {
-        this._held.delete(key);
-        void this._inIncident(key, () => this._deliver(entry.event, key, false)).catch(() => {});
+        void this._inIncident(key, async () => {
+          if (this._held.get(key) !== entry) return;
+          this._held.delete(key);
+          return this._deliver(entry.event, key, false);
+        }).catch(() => {});
       }, holdMs) };
       entry.timer.unref?.();
       this._held.set(key, entry);
@@ -234,9 +243,14 @@ export class SellerAlerts {
       return;
     }
     if (failed.size === 0 || attempt >= MAX_RETRIES) return;
+    // It stays pending until its turn in the incident, so an event recorded meanwhile (a new
+    // outage, say, while its journal write is still running) still cancels or replaces it.
     const entry = { event, incident, recovery, channels: new Map(failed), attempt, timer: setTimeout(() => {
-      this._retries.delete(retryKey);
-      void this._inIncident(incident, () => this._deliver(entry.event, incident, recovery, false, { channels: new Map(entry.channels), attempt: entry.attempt + 1 })).catch(() => {});
+      void this._inIncident(incident, async () => {
+        if (this._retries.get(retryKey) !== entry) return;
+        this._retries.delete(retryKey);
+        return this._deliver(entry.event, incident, recovery, false, { channels: new Map(entry.channels), attempt: entry.attempt + 1 });
+      }).catch(() => {});
     }, Math.min((this._opts.retryMs ?? 30_000) * 2 ** attempt, MAX_RETRY_MS)) };
     entry.timer.unref?.();
     this._retries.set(retryKey, entry);

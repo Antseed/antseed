@@ -28,7 +28,7 @@
   /* Price inputs fill their grid column instead of the fixed number-field width, so a phone row fits. */
   > .gc-num { width: auto; }
 }
-.gc-seller-price__unit { grid-column: 2 / -1; display: flex; flex-direction: column; gap: 0.125rem; padding-bottom: 0.375rem; font-size: 0.8125rem; }
+.gc-seller-price__unit { grid-column: 2 / -1; display: flex; flex-wrap: wrap; align-items: end; gap: 0.75rem; padding-bottom: 0.375rem; font-size: 0.8125rem; > .gc-num { width: 9rem; } > .gc-fineprint { flex-basis: 100%; } }
 .gc-seller-price__free { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 0.5rem; }
 .gc-seller-price__name { display: flex; flex-direction: column; gap: 0.125rem; min-width: 0; padding-bottom: 0.375rem; font-size: 0.8125rem; }
 @media (max-width: 720px) { .gc-seller-price { grid-template-columns: repeat(3, minmax(0, 1fr)); .gc-seller-price__name { grid-column: 1 / -1; } } }
@@ -55,3 +55,8 @@
 .gc-seller-claim__head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; font-size: 0.875rem; }
 .gc-seller-row--mine td { font-weight: 600; }
 .gc-seller-wrap { overflow-wrap: anywhere; min-width: 0; }
+.gc-seller-price--off .gc-seller-price__name > .gc-ellipsis { color: var(--as-text-muted); }
+.gc-seller-price__controls { display: flex; align-items: center; gap: 1rem; margin-top: 0.25rem; }
+.gc-seller-add { display: flex; flex-direction: column; gap: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--as-border); }
+.gc-seller-add h4 { margin: 0; font-size: 0.875rem; }
+.gc-seller-add__id { width: min(20rem, 100%); }

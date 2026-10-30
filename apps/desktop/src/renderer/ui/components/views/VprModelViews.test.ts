@@ -175,3 +175,11 @@ test('image seller summaries distinguish generation-only routes from edit suppor
   assert.equal(peerCapabilitySummary(generationOnly)[0], undefined);
   assert.equal(peerCapabilitySummary(editable)[0], 'Image editing');
 });
+
+test('video seller summaries mark models that take a source video', () => {
+  const textToVideo = discoverRow({ protocol: 'venice-video', capabilities: { video: { inputs: ['first_frame'] } } });
+  const edit = discoverRow({ protocol: 'fal-video', capabilities: { video: { inputs: ['video', 'reference_image'] } } });
+
+  assert.deepEqual(peerCapabilitySummary(textToVideo), []);
+  assert.deepEqual(peerCapabilitySummary(edit), ['Video editing']);
+});
