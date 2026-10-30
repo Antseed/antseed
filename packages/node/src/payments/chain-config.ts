@@ -66,7 +66,7 @@ export interface ChainConfig {
   networkStatsUrl?: string;
   /** Public REST API of the chain explorer (Antscan). Serves per-seller on-chain stats at /api/sellers. */
   explorerApiUrl?: string;
-  /** AntseedVerification contract address. */
+  /** AntseedKbfVerification contract address. */
   verificationContractAddress?: string;
   /** Block when the verification contract was deployed. Floor for verifier event scans. */
   verificationDeployBlock?: number;
@@ -102,11 +102,6 @@ const CHAIN_CONFIGS: Record<ChainId, ChainConfig> = {
     ],
     networkStatsUrl: 'https://network.antseed.com',
     explorerApiUrl: 'https://antscan.co',
-    // AntseedVerification (M003). Hardcoded until the M003 deployment record
-    // lands in packages/contracts/deployments/base-mainnet/current.json; the
-    // generator then emits it from `contracts.verification`.
-    verificationContractAddress: '0x27F93f9C110595e148f127732BAFe20722572f66',
-    verificationDeployBlock: 52861128,
   },
   'base-sepolia': {
     ...DEPLOYED_CONTRACT_ADDRESSES['base-sepolia'],

@@ -4,7 +4,7 @@ import { verificationServiceKey } from '../../reputation/model-reputation.js';
 
 /**
  * Reads which advertised services of a batch of sellers have a live DIFF
- * verdict on `AntseedVerification`, in at most two Multicall3 round trips:
+ * verdict on `AntseedKbfVerification`, in at most two Multicall3 round trips:
  *
  *   round 1: verification.validityEpochs, verification.emissionsGate (first
  *            read only; it is immutable), and per (agentId, service)
@@ -22,7 +22,7 @@ export interface VerificationServiceQuery {
   services: readonly string[];
 }
 
-/** Mirrors IAntseedVerification.Verdict.DIFF. */
+/** Mirrors IAntseedKbfVerification.Verdict.DIFF. */
 const VERDICT_DIFF = 2n;
 
 const VERIFICATION_IFACE = new Interface([

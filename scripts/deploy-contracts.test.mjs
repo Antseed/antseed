@@ -377,7 +377,7 @@ test('renders recognized-usage deployment fields into chain config', () => {
 
 test('renders the verification deployment block so verifier log scans have a start', () => {
   const rendered = renderNetwork({ chainId: 8453, contracts: {
-    verification: { address: ADDRESS.registry, deploymentBlock: 123 },
+    kbfVerification: { address: ADDRESS.registry, deploymentBlock: 123 },
   } });
   assert.equal(rendered.verificationContractAddress, ADDRESS.registry);
   assert.equal(rendered.verificationDeployBlock, 123);

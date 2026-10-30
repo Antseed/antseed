@@ -708,7 +708,7 @@ export interface Peer {
   freeTier: FreeTierProgramView | null
   usageShareBps: number | null
   washFlagged: boolean
-  /** Services with a live DIFF verdict on AntseedVerification (lowercase names); their routing reputation keeps 10%. */
+  /** Services with a live DIFF verdict on AntseedKbfVerification (lowercase names); their routing reputation keeps 10%. */
   diffServices?: string[]
   lastSeen: number | null
   health: { failureStreak: number; coolingDownUntil: number | null }

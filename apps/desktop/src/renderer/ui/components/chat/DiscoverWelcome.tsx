@@ -78,7 +78,7 @@ type CardItem = {
   volumeUsdc: number;         // settled on-chain USDC volume
   poolStakeAnts: number;      // ANTS staked in the seller pool this epoch
   washFlagged: boolean | null; // AntseedWashTradingRegistry verdict; null when unavailable
-  verificationDiff: boolean;  // live DIFF verdict on AntseedVerification; reputation keeps 10%
+  verificationDiff: boolean;  // live DIFF verdict on AntseedKbfVerification; reputation keeps 10%
   sybilRisk: number | null;
   sybilFlags: string[];
   lifetimeRequests: number;   // network-wide (mainnet) or local buyer total (fallback)

@@ -115,7 +115,7 @@ export interface PeerInfo {
   /** Proven wash share of the seller's volume, in basis points. */
   onChainWashShareBps?: number;
   /**
-   * Advertised services with a live DIFF verdict on `AntseedVerification`, as
+   * Advertised services with a live DIFF verdict on `AntseedKbfVerification`, as
    * trimmed lowercase service names. Each one keeps 10% of its effective
    * reputation (see `effectiveModelReputationScore`). Absent when unread.
    */

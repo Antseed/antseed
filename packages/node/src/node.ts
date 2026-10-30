@@ -276,7 +276,7 @@ export interface NodePaymentsConfig {
   usageAccountingAddress?: string;
   /** AntseedWashTradingRegistry contract address (buyer trust score: proven wash traders). */
   washTradingRegistryAddress?: string;
-  /** AntseedVerification contract address (buyer reputation: services with a live DIFF verdict keep 10%). */
+  /** AntseedKbfVerification contract address (buyer reputation: services with a live DIFF verdict keep 10%). */
   verificationContractAddress?: string;
   /** Chain ID for EIP-712 domain. Default: 8453 (Base) */
   chainId?: number;
@@ -495,7 +495,7 @@ export class AntseedNode extends EventEmitter {
   private _stakingClient: StakingClient | null = null;
   /** Batched reader for the on-chain inputs of the buyer trust score. */
   private _trustSignalsClient: TrustSignalsClient | null = null;
-  /** Batched reader for live DIFF verdicts on `AntseedVerification`. */
+  /** Batched reader for live DIFF verdicts on `AntseedKbfVerification`. */
   private _verificationSignalsClient: VerificationSignalsClient | null = null;
   /** Last good verification read per agent id, keyed by the services it covered. */
   private _verificationStatusCache = new Map<number, { servicesKey: string; diffServices: string[]; fetchedAt: number }>();
@@ -1232,7 +1232,7 @@ export class AntseedNode extends EventEmitter {
 
   /**
    * Mark each peer's services that have a live DIFF verdict on
-   * `AntseedVerification` (`onChainDiffServices`). Needs the agent id from the
+   * `AntseedKbfVerification` (`onChainDiffServices`). Needs the agent id from the
    * trust read. Reads are batched and cached per agent for
    * VERIFICATION_STATUS_TTL_MS; a failed read reuses the last good one for up
    * to VERIFICATION_STATUS_STALE_MAX_MS and otherwise leaves the peer

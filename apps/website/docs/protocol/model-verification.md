@@ -90,7 +90,7 @@ seller):
 
 ## How buyers use results
 
-Buyers read each seller service's current result from `AntseedVerification`. A
+Buyers read each seller service's current result from `AntseedKbfVerification`. A
 service with a live **DIFF** keeps 10% of its effective reputation, so automatic routing
 skips it under the default minimum trust score, and the desktop app explains the cut
 in the seller's reputation tooltip. SAME, UNDETERMINED, expired and missing results change
