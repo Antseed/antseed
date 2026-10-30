@@ -41,7 +41,7 @@ import {
   type SellerContractConfig,
 } from "./discovery/announcer.js";
 import type { PeerVerifications, ServiceHealth } from "./discovery/peer-metadata.js";
-import { mergeProviderAnnouncements } from "./discovery/peer-metadata.js";
+import { mergeProviderAnnouncements, serviceHealthOf } from "./discovery/peer-metadata.js";
 import { verifyPeerMetadataDomains } from "./discovery/domain-verification.js";
 import { verifyPeerMetadataGithub } from "./discovery/github-verification.js";
 import {
@@ -2910,11 +2910,12 @@ function peerOffersService(peer: PeerInfo, service: string): boolean {
  * A provider that failed to initialize is announced as failing from the
  * first announcement, before the model health checker has published anything.
  */
-function announcedServiceHealth(provider: Provider): Record<string, ServiceHealth> | undefined {
+/** @internal Exported for tests. */
+export function announcedServiceHealth(provider: Provider): Record<string, ServiceHealth> | undefined {
   if (provider.healthCheckAvailable !== false) return provider.serviceHealth;
-  const health: Record<string, ServiceHealth> = {};
+  const health = Object.create(null) as Record<string, ServiceHealth>;
   for (const service of provider.services) {
-    health[service] = provider.serviceHealth?.[service] ?? { status: 'failing', reason: 'init_failed' };
+    health[service] = serviceHealthOf(provider.serviceHealth, service) ?? { status: 'failing', reason: 'init_failed' };
   }
   return health;
 }

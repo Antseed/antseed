@@ -1,4 +1,5 @@
 import type { ServiceHealth, ServiceHealthReason, ServiceHealthSource, ServiceHealthState } from '../discovery/peer-metadata.js';
+import { serviceHealthOf } from '../discovery/peer-metadata.js';
 import type { Provider, ServiceHealthStatus, UpstreamAccountStatus } from '../interfaces/seller-provider.js';
 import type { SerializedHttpRequest } from '../types/http.js';
 import { isNativeVideoProtocol, isRoutingProtocol, type ServiceApiProtocol } from '../types/service-api.js';
@@ -493,7 +494,7 @@ export class ModelHealthChecker {
   /** The announced health of `service`, if it has been checked. */
   getServiceHealth(provider: Provider, service: string): ServiceHealth | undefined {
     const target = this._findTarget(provider);
-    return target?.provider.serviceHealth?.[service];
+    return serviceHealthOf(target?.provider.serviceHealth, service);
   }
 
   private _findTarget(provider: Provider): ModelHealthTarget | undefined {
@@ -628,8 +629,9 @@ export class ModelHealthChecker {
       if (state.reason !== null) health.reason = state.reason;
       if (state.httpStatus !== null && state.httpStatus >= 100 && state.httpStatus <= 599) health.httpStatus = state.httpStatus;
     }
-    state.provider.serviceHealth ??= {};
-    state.provider.serviceHealth[state.service] = health;
+    // An own entry even for a service named like an Object.prototype property ("__proto__").
+    state.provider.serviceHealth ??= Object.create(null) as Record<string, ServiceHealth>;
+    Object.defineProperty(state.provider.serviceHealth, state.service, { value: health, enumerable: true, writable: true, configurable: true });
   }
 
   private _emitChange(event: ModelHealthEvent): void {

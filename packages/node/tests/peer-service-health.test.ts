@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AntseedNode } from '../src/node.js';
+import { AntseedNode, announcedServiceHealth } from '../src/node.js';
 import { buildNetworkServiceOffers } from '../src/discovery/service-catalog.js';
 import { METADATA_VERSION, type PeerMetadata, type ProviderAnnouncement, type ServiceHealth } from '../src/discovery/peer-metadata.js';
 
@@ -81,5 +81,14 @@ describe('service health across upstreams sharing a provider name', () => {
     expect(Object.keys(peer.providerPricing.openai.services)).toEqual(['constructor', 'toString', 'model-x']);
     expect(Object.keys(peer.providerPricing)).toEqual(['openai', 'constructor']);
     expect(() => buildNetworkServiceOffers([{ ...peer, peerId: peer.peerId }])).not.toThrow();
+  });
+});
+
+describe('announced health of a provider that failed to initialize', () => {
+  it('announces every service failing, including prototype-named ones', () => {
+    const provider = { name: 'openai', services: ['__proto__', 'constructor', 'model-x'], healthCheckAvailable: false, serviceHealth: {} } as any;
+    const health = announcedServiceHealth(provider)!;
+    expect(Object.keys(health)).toEqual(['__proto__', 'constructor', 'model-x']);
+    expect(Object.values(health).every((entry) => entry.status === 'failing' && entry.reason === 'init_failed')).toBe(true);
   });
 });

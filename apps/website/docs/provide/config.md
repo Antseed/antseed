@@ -59,7 +59,7 @@ Everything a seller announces lives under `seller.providers`. Each key is a labe
 | `defaults` | Fallback token pricing for services that don't set their own `pricing`. |
 | `services` | The services this provider announces. |
 
-Providers of the same plugin announce under one provider name (two `openai` providers both announce as `openai`). A model that two of them list must have the same terms in both: price, API protocols, unit billing and capabilities. Buyers see one entry per provider name, so the seller refuses to start otherwise; list the model under one of them only, or give it the same terms.
+Providers of the same plugin announce under one provider name (two `openai` providers both announce as `openai`). A model that two of them list must have the same terms in both: price, API protocols, unit billing and capabilities. Buyers see one entry per provider name, so the seller refuses to start otherwise; list the model under one of them only, or give it the same terms. A video model can be listed by only one of them, because a video job stays with the upstream account that accepted it.
 
 ### Backup upstreams
 

@@ -121,4 +121,10 @@ describe('upstreams sharing a provider name', () => {
     expect(() => assertSameNameUpstreamsAgree([cheap, images])).toThrow(/from one of them only, or on the same terms/);
     expect(() => assertSameNameUpstreamsAgree([cheap, { ...images, name: 'fal-video' }])).not.toThrow();
   });
+
+  it('refuses two same-name upstreams for one video service, even on the same terms', () => {
+    const video = () => ({ ...makeProvider('venice', 200), serviceApiProtocols: { 'test-model': ['venice-video' as const] } });
+    expect(() => assertSameNameUpstreamsAgree([video(), video()])).toThrow(/video service "test-model"/);
+    expect(() => assertSameNameUpstreamsAgree([video(), { ...video(), name: 'fal' }])).not.toThrow();
+  });
 });

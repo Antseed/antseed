@@ -44,13 +44,14 @@ import {
 import { VerificationMux } from './verification/verification-mux.js';
 import { createResponseAuthPayload, createStreamingResponseHash } from './verification/response-auth.js';
 import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION } from '@antseed/protocol/http';
-import { isServiceHealthFailing, preferHealthyUpstream } from '@antseed/protocol/peer-metadata';
+import { isServiceHealthFailing, preferHealthyUpstream, serviceHealthOf } from '@antseed/protocol/peer-metadata';
 import { hasJsonContentType, tryParseJsonObject } from './utils/json-codec.js';
 import type { UnitBillingContext, UnitBillingModelV1, UnitBillingUsage, UnitBillingUsageReportV1 } from './types/billing.js';
 import { captureUnitBillingContext, computeFinalUnitBilling, estimateUnitRequestCost, isFreeUnitBillingModel, type BillingRequestFacts } from './billing/unit.js';
 import { nativeVideoAcceptance, nativeVideoDelivered, nativeVideoRoute, requestService, type NativeVideoRoute } from '@antseed/api-adapter';
 import type { PendingResourceCharge, ResourceOwnershipStore } from './resources/resource-ownership-store.js';
 import type { ServiceApiProtocol } from './types/service-api.js';
+import { isNativeVideoProtocol } from '@antseed/protocol/service-api';
 import {
   detectRequestServiceApiProtocol,
   extractRequestBodyFields,
@@ -87,12 +88,15 @@ export function assertSingleRoutingService(providers: readonly Provider[]): void
  * Upstreams sharing a provider name must announce a service they both list
  * with the same terms: price, API protocols, unit billing models and
  * capabilities. Buyers see one entry per provider name and bill by it, while
- * the seller serves through whichever of those upstreams is healthy.
+ * the seller serves through whichever of those upstreams is healthy. A native
+ * video service has one upstream per name: a job stays in the account that
+ * accepted it, so its creates and retrieves must reach the same upstream.
  */
 export function assertSameNameUpstreamsAgree(providers: readonly Provider[]): void {
   const terms = new Map<string, { provider: Provider; terms: string }>();
   for (const provider of providers) {
     for (const service of provider.services) {
+      const video = provider.serviceApiProtocols?.[service]?.some(isNativeVideoProtocol) ?? false;
       const announced = canonicalJson({
         pricing: provider.pricing.services?.[service] ?? provider.pricing.defaults,
         protocols: [...(provider.serviceApiProtocols?.[service] ?? [])].sort(),
@@ -103,6 +107,11 @@ export function assertSameNameUpstreamsAgree(providers: readonly Provider[]): vo
       const first = terms.get(key);
       if (!first) {
         terms.set(key, { provider, terms: announced });
+      } else if (video) {
+        throw new Error(
+          `Providers sharing the name "${provider.name}" both offer the video service "${service}". `
+          + 'A video job stays with the upstream that accepted it, so offer it from one of them only.',
+        );
       } else if (first.terms !== announced) {
         throw new Error(
           `Providers sharing the name "${provider.name}" offer "${service}" with different pricing, API protocols, billing or capabilities. `
@@ -818,7 +827,7 @@ export class SellerRequestHandler {
           // Polling or downloading a video already paid for says nothing about the account's credit.
           const upstreamBody = response.body ?? new Uint8Array(0);
           this._deps.emit('provider:response', { provider, service: requestedModel, statusCode, body: statusCode >= 400 ? new TextDecoder().decode(upstreamBody.slice(0, 2_000)) : '', billable: videoRoute?.action !== 'retrieve' });
-          const health = provider.serviceHealth?.[requestedModel];
+          const health = serviceHealthOf(provider.serviceHealth, requestedModel);
           if (!streamedResponseStarted && isServiceHealthFailing(health) && isUpstreamFailureStatus(statusCode)) {
             response = buildSelfHealthErrorResponse(request.requestId, requestedModel, health, response);
             statusCode = response.statusCode;
@@ -889,7 +898,7 @@ export class SellerRequestHandler {
               };
             }
           } else {
-            const health = provider.serviceHealth?.[requestedModel];
+            const health = serviceHealthOf(provider.serviceHealth, requestedModel);
             responseForAuth = isServiceHealthFailing(health)
               ? buildSelfHealthErrorResponse(request.requestId, requestedModel, health, { statusCode: 500, headers: {}, body: responseBody })
               : {

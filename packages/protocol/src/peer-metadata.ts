@@ -260,6 +260,11 @@ export function isServiceHealthFailing(health: ServiceHealth | null | undefined)
   return health?.status === "failing";
 }
 
+/** One service's entry in a provider's own health map, never an inherited Object.prototype property. */
+export function serviceHealthOf(serviceHealth: Record<string, ServiceHealth> | undefined, service: string): ServiceHealth | undefined {
+  return own(serviceHealth, service);
+}
+
 /** Looks up one service's health in a per-provider map such as PeerInfo.providerServiceHealth. */
 export function providerServiceHealthFor(
   providerServiceHealth: Record<string, { services?: Record<string, ServiceHealth> }> | undefined,

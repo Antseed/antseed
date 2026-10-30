@@ -731,6 +731,14 @@ describe('ModelHealthChecker buyer traffic', () => {
     expect(provider.serviceHealth?.['model-a']?.status).toBe('healthy');
   });
 
+  it('publishes the health of a service named __proto__ as an own entry', async () => {
+    const provider = makeProvider({ services: ['__proto__'], onRequest: async (req: SerializedHttpRequest) => jsonResponse(req.requestId, 500) });
+    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1 });
+    checker.reportUpstreamFailure(provider, '__proto__');
+    await vi.waitFor(() => expect(Object.keys(provider.serviceHealth ?? {})).toEqual(['__proto__']));
+    expect(Object.getOwnPropertyDescriptor(provider.serviceHealth, '__proto__')?.value.status).toBe('failing');
+  });
+
   it('does not probe early while the provider is at capacity', async () => {
     const onRequest = vi.fn(async (req: SerializedHttpRequest) => jsonResponse(req.requestId, 429));
     const provider = { ...makeProvider({ onRequest }), getCapacity: () => ({ current: 1, max: 1 }) };
