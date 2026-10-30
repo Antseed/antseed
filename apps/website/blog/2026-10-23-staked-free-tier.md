@@ -1,51 +1,92 @@
 ---
 slug: staked-free-tier
-title: "Stake ANTS, Lift the Free-Tier Limit"
+title: "Introducing the ANTS liquid inference program: stake ANTS for free AI"
 authors: [antseed]
 tags: [ANTS, staking, free models, providers]
-description: "Buyers who lock ANTS in a seller's pool get a larger free allowance, or none at all. Providers who offer free models now get stake behind them in return."
-keywords: [Antseed free tier, free AI models, ANTS staking, rate limits, seller pools]
+description: "Stake ANTS with an Antseed provider to get free AI, up to unlimited requests. How the liquid inference program works and why providers join."
+keywords: [ANTS liquid inference, stake ANTS, free AI, staked free tier, Antseed providers, lANTS]
+image: /img/blog/ants-liquid-inference-program/og.jpg
 date: 2026-10-23
+last_update:
+  date: 2026-10-30
 ---
 
-Free models on Antseed come with rate limits. A provider pays real money to serve every free request, so most cap each buyer, for example at 1,000 requests a day. Until now, nothing came back to the provider for that cost, and buyers who wanted more had no way to ask for it.
 
-Starting with this release, buyers can lock ANTS in a seller's pool to raise that seller's free limit or remove it.
+![Ants carry seeds into a leaf-roofed seed store while another ant works on a laptop at a tree stump.](/img/blog/ants-liquid-inference-program/cover.webp)
+
+Stake ANTS to get free AI from providers.
+
+What if holding a token could get you free AI? That's where we're heading: ANTS as a liquid token for inference.
+
+Today we're taking the first step. You can now stake ANTS with a provider on Antseed and get free AI from it in return.
 
 <!-- truncate -->
 
+![Stake ANTS, get free AI: lock ANTS with a provider, reach a staking tier, and get free AI from that provider.](/img/blog/ants-liquid-inference-program/stake-ants-get-free-ai.webp)
+
+## Why we're doing this
+
+Antseed is an open market for AI that nobody controls. Anyone can run a provider, and you choose who serves you.
+
+For that to work, a few things have to fit together. You need to know which providers you can trust. New providers need a fair way to earn that trust, because buyers can set a minimum trust score, and the providers that joined early already have service history, usage and stake behind them. And people who hold ANTS should be able to use it for AI.
+
+Staking for free AI connects all three. You back a provider you like. The provider gets stake behind it, which counts toward its trust score. And you get free AI in return. If you pay for AI on Antseed, you earn ANTS every week through Antseed Points, and you could already stake it for rewards and trade that position as an lANTS NFT. Now the same stake can also get you free AI.
+
+That's what we mean by a liquid token for inference. Your stake gets you AI, and because you can sell the position or move it to another provider, you're not tied to one provider.
+
 ## How it works
 
-Every seller with a free tier now announces a staked program next to its base limits. The default:
+Pick a provider that offers free AI to stakers and lock ANTS in its pool. Each provider decides what its stakers get. It can run several tiers and different deals on different models.
 
-| ANTS locked for one year | Free allowance |
-|---|---|
-| None | The seller's base limit |
-| 10,000 | 5× |
-| 50,000 | 20× |
-| 200,000 | Unlimited |
+Here's how it could look. Say you've been using Antseed and earning ANTS through Antseed Points, and you lock 10,000 ANTS for a year with a provider whose free models you already use. If that provider uses the default tiers and normally allows 100 free requests a day, your stake could raise that to 500. What you actually get depends on each provider's offer, and providers can change their offers. If you later want out, you can sell the position through your NFT or move it to another provider.
 
-Tiers are measured in **staking power**: ANTS × weeks of lock remaining. Locking 20,000 ANTS for six months reaches the same tier as 10,000 for a year. Power starts when the position activates in the next epoch and shrinks as the lock runs down, so the larger allowance goes to buyers who commit for longer.
+A provider can offer any of these:
 
-Only stake in that seller's own pool counts: stake with one provider raises your free limit there, not on every provider.
+| Offer | What you get when your stake qualifies |
+| --- | --- |
+| Free requests on a paid model | A set number of free requests on a model other buyers pay for. After that, you pay the normal price. |
+| A model reserved for stakers | Free use of a model the provider keeps for stakers. Other buyers pay for it or can't use it. |
+| Higher limits on free models | More free requests on models that are already free, rising with each tier. |
+| Unlimited free usage | No request cap on the provider's participating models while your stake qualifies. |
 
-Each seller can change its tiers, set its own multipliers or turn the program off. The program is signed into the seller's peer metadata. The desktop app and the gateway show it next to each free model ("1,000 free requests a day · stake for more"), and [Antscan](https://antscan.co/api/free-tier) lists every seller's limits, tiers and free models. When you run out, the app tells you which seller's limit ran out, when it resets and what the next tier takes, with a link straight to that seller's pool.
+What counts is your staking power: the ANTS you stake multiplied by the time left on your lock. Lock for longer and you need fewer tokens to reach the same tier. 10,000 ANTS locked for a year has the same staking power as 20,000 locked for six months.
 
-## Why providers offer free models now
+![Lock longer, stake less: 10,000 ANTS for 1 year and 20,000 ANTS for 6 months both give 520,000 staking power. Example only; each provider sets its own tiers.](/img/blog/ants-liquid-inference-program/lock-longer-stake-less.webp)
 
-Stake in a seller's pool raises that pool's weight, and pool weight multiplies the ANTS rewards the seller earns from its paid usage. A buyer who stakes for free access is backing the provider's paid business too.
+As your lock runs down, your staking power drops, so your tier can drop too. Stakes are counted in weekly epochs, so a new stake starts counting from the next epoch, and it only counts with the provider you picked.
 
-That gives providers a reason to serve free models: free users who stake bring pool weight with them, and they are already using the provider's service when they need a paid model. Offering free plus paid models now works as one product.
+To see every provider's current offers, give your agent the [Antscan free-tier feed](https://antscan.co/api/free-tier).
 
-## Why buyers stake
+## Your position stays liquid
 
-Free access is one reason. The stake is also a normal seller-pool position: it earns staker rewards, and it is your ANTS. Withdrawing before the lock ends burns part of the principal, as with any position.
+Your stake is an lANTS NFT, an onchain record of your position. You don't spend the tokens. They stay yours, locked in that provider's pool, and earn staking rewards while they're there. You can also sell the position, and the buyer takes over its remaining lock.
 
-## One allowance per staker
+If a provider stops being a good fit, you can move the position to another provider’s pool. It keeps the same amount and lock, and the move takes effect in the next epoch.
 
-Stake in your buyer's own address counts automatically. Stake in another wallet, such as the one that funds your deposits, counts once that wallet signs a code for your buyer in the ANTS dashboard: one signature, no gas, valid for 30, 90 or 365 days as the staker chooses. The buyer pastes the code into the CLI, the desktop app or the gateway. Several wallets can share with the same buyer and their stake adds up. Usage is counted on the staked positions, so every buyer sharing the same stake shares one allowance, and moving a position to another wallet doesn't reset it. Staked buyers also skip the per-IP limit, which matters for teams behind one office network or gateway.
+But be careful with the lock: withdrawing early burns part of your stake. The earlier you withdraw, the more is burned, from 50% at the start of the lock down to a minimum of 5%. Selling or moving the position doesn't burn anything. Only lock ANTS if you're comfortable with the lock terms.
+
+![What you can do with your stake: keep it, move it, sell it, or withdraw early, which burns 5% to 50% of your stake.](/img/blog/ants-liquid-inference-program/what-you-can-do-with-your-stake.webp)
+
+## Run a provider? Turn on staked free tiers
+
+Free requests cost you real money, and they don't earn usage points. In return, you get stake in your pool. It counts toward your trust score, which buyers use to pick providers, and it adds to your pool weight, which boosts the points your paid usage earns.
+
+Stake is one part of a bigger reputation system. Buyers score every provider from 0 to 100 with data they can check themselves: service history, recognized usage, staking power and verified identity, plus a bonus for offering a free model. Buyers can also set a minimum score. Offering free AI to stakers adds to the staking power part, and a model priced at $0 also earns the free model bonus.
+
+This matters more as the network grows. We want Antseed to run on millions of computers, with anyone serving models from their own machine. If you run a model locally with Ollama or llama.cpp, you can already join as a provider, and the Antseed Foundation gives extra consideration to local AI infrastructure when it chooses providers to stake behind. Staked free tiers give those new providers a way to start building trust.
+
+Staked tiers are on by default once you set up a free tier. Use the default tiers, set your own, or run different offers on different models. The setup is in the [staked tiers docs](/docs/provide/config/#staked-tiers).
+
+Want help setting it up? Just send us a DM on X.
+
+## What’s next
+
+This is the first step. Today, your stake counts with the one provider you stake with. Next, we want to make this multi-provider, so one stake can get you free AI from more than one provider. More on that soon.
 
 ## Get started
 
-- **Buyers:** pick a free model's seller in the desktop app or the gateway (or on [Antscan](https://antscan.co/api/free-tier)), stake into that seller's pool from the ANTS dashboard (`antseed ants`), and if the stake is in another wallet, add the code it signs with `antseed buyer free-tier add <code>`, in desktop Rewards or on the gateway's Staking page. See [Staked free tier](/docs/staked-free-tier).
-- **Providers:** staked tiers are on by default whenever you set `seller.freeTier`. See [Staked tiers](/docs/provide/config#staked-tiers) to change them.
+Not every provider offers this yet. The quickest way to find the ones that do is to ask your agent:
+
+> Check Antscan's free-tier feed (antscan.co/api/free-tier) for providers offering staking benefits, including free requests on normally paid models. Compare the models, free usage and required staking power, showing how different amounts and lock durations qualify. Then help me stake with the provider I choose. Show me the terms and ask for confirmation before submitting any transaction.
+
+You can also look for the stake prompt next to free models in the [AI VPN desktop app](https://github.com/AntSeed/antseed/releases/latest) or the [Gateway](/docs/quickstart/) on [the Antseed website](/).
