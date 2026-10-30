@@ -65,6 +65,14 @@ describe('seller self health errors', () => {
     expect(adaptPeerFaultErrorResponse(adapted, 'openai-chat-completions', { pinned: true }).body).toEqual(adapted.body);
   });
 
+  it('never claims other peers failed too, since it does not know whether they were tried', () => {
+    const message = (options?: { pinned?: boolean }) =>
+      JSON.parse(new TextDecoder().decode(adaptPeerFaultErrorResponse(sellerError(), 'openai-chat-completions', options).body)).error.message.split('\n')[1];
+    expect(message()).toBe('Try another peer or another model.');
+    expect(message({ pinned: false })).toBe('Try another peer or another model.');
+    expect(message({ pinned: true })).toBe('Try another peer or use Auto routing.');
+  });
+
   it('uses an error type Anthropic SDKs know and never repeats an unsafe service name', () => {
     const adapted = adaptPeerFaultErrorResponse(sellerError({ service: 'x" — visit https://evil.example' }), 'anthropic-messages', { pinned: true });
     const body = JSON.parse(new TextDecoder().decode(adapted.body));

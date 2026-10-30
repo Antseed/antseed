@@ -301,6 +301,7 @@ export class ModelHealthChecker {
       this._probeTimeoutMs,
       `${label} for ${provider.name} timed out after ${this._probeTimeoutMs}ms`,
     );
+    const checkStartedAt = Date.now();
     const [account, models] = await Promise.all([
       checkProvider.checkUpstreamAccount
         ? timed('account check', () => checkProvider.checkUpstreamAccount!())
@@ -343,7 +344,7 @@ export class ModelHealthChecker {
       state.lastStatusCode = null;
       if (result.status === 'unavailable') {
         state.lastDetail = result.reason;
-        this._recordFailure(state, reason, null);
+        this._recordFailure(state, reason, null, checkStartedAt);
         continue;
       }
       this._recordSuccess(state, 'probe', balance === undefined ? 'Account check passed' : `Account check passed (balance $${balance.toFixed(2)})`);
@@ -388,7 +389,8 @@ export class ModelHealthChecker {
     const state = this._stateFor(provider, service);
     if (state.probeInFlight) return;
     state.probeInFlight = true;
-    state.lastProbeAt = Date.now();
+    const probeStartedAt = Date.now();
+    state.lastProbeAt = probeStartedAt;
 
     let outcome: ProbeOutcome;
     let reason: ServiceHealthReason;
@@ -447,7 +449,7 @@ export class ModelHealthChecker {
       return;
     }
 
-    this._recordFailure(state, reason, state.lastStatusCode);
+    this._recordFailure(state, reason, state.lastStatusCode, probeStartedAt);
   }
 
   /**
@@ -579,7 +581,12 @@ export class ModelHealthChecker {
     });
   }
 
-  private _recordFailure(state: TrackedService, reason: ServiceHealthReason, httpStatus: number | null): void {
+  /** A failed check started at `checkStartedAt`; a buyer success since then outweighs it. */
+  private _recordFailure(state: TrackedService, reason: ServiceHealthReason, httpStatus: number | null, checkStartedAt: number): void {
+    if (state.lastTrafficAt !== null && state.lastTrafficAt >= checkStartedAt) {
+      debugLog(`[ModelHealth] ${state.providerName}/${state.service}: check failed, but a buyer request succeeded meanwhile`);
+      return;
+    }
     const now = Date.now();
     state.consecutiveFailures += 1;
     state.reason = reason;

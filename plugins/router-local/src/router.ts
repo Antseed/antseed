@@ -1,4 +1,13 @@
-import { isProviderServiceRouteFailing, normalizedModelReputationScore, type Router, type PeerInfo, type SerializedHttpRequest } from '@antseed/node';
+import {
+  detectRequestServiceApiProtocol,
+  isNativeVideoProtocol,
+  isProviderServiceRouteFailing,
+  normalizedModelReputationScore,
+  type Router,
+  type PeerInfo,
+  type SerializedHttpRequest,
+  type ServiceApiProtocol,
+} from '@antseed/node';
 import {
   scoreCandidates,
   PeerMetricsTracker,
@@ -59,6 +68,9 @@ export class LocalRouter implements Router {
   selectPeer(req: SerializedHttpRequest, peers: PeerInfo[]): PeerInfo | null {
     const now = this._now();
     const requestedService = this._extractRequestedService(req);
+    // A native video request reaches only upstreams serving its protocol, so that route's health counts.
+    const requestProtocol = detectRequestServiceApiProtocol(req);
+    const routeProtocol = requestProtocol && isNativeVideoProtocol(requestProtocol) ? requestProtocol : undefined;
 
     const candidates: {
       peer: PeerInfo;
@@ -78,7 +90,7 @@ export class LocalRouter implements Router {
       }
 
       // Provider availability filter (automatic selection skips failing services)
-      const provider = this._selectProviderForPeer(peer, requestedService, true);
+      const provider = this._selectProviderForPeer(peer, requestedService, { protocol: routeProtocol });
       if (!provider) {
         continue;
       }
@@ -187,11 +199,16 @@ export class LocalRouter implements Router {
 
   /**
    * The provider to price and send `requestedService` through. A healthy one
-   * is preferred; only automatic selection (`skipFailing`) drops a service the
-   * seller's own health check reports failing on every provider, so pricing
-   * and policy checks still allow a pinned request to reach it.
+   * is preferred; only automatic selection (`automatic`) drops a service the
+   * seller's own health check reports failing on every provider, or over the
+   * request's protocol, so pricing and policy checks still allow a pinned
+   * request to reach it.
    */
-  private _selectProviderForPeer(peer: PeerInfo, requestedService: string | null, skipFailing = false): string | null {
+  private _selectProviderForPeer(
+    peer: PeerInfo,
+    requestedService: string | null,
+    automatic?: { protocol?: ServiceApiProtocol },
+  ): string | null {
     const availableProviders = peer.providers
       .map((provider) => provider.trim())
       .filter((provider) => provider.length > 0);
@@ -202,13 +219,13 @@ export class LocalRouter implements Router {
         const pricing = peer.providerPricing[provider];
         if (!pricing?.services?.[requestedService]) continue;
         // The seller's own health check says this provider cannot serve it right now.
-        if (isProviderServiceRouteFailing(peer.providerServiceHealth, provider, requestedService)) {
+        if (isProviderServiceRouteFailing(peer.providerServiceHealth, provider, requestedService, automatic?.protocol)) {
           failingMatch ??= provider;
           continue;
         }
         return provider;
       }
-      if (failingMatch) return skipFailing ? null : failingMatch;
+      if (failingMatch) return automatic ? null : failingMatch;
     }
 
     return availableProviders[0] ?? null;

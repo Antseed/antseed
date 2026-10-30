@@ -708,6 +708,19 @@ describe('ModelHealthChecker buyer traffic', () => {
     expect(onRequest).toHaveBeenCalledTimes(1);
   });
 
+  it('ignores a probe failure when a buyer request succeeded while it was pending', async () => {
+    let answer!: (response: SerializedHttpResponse) => void;
+    const onRequest = vi.fn((req: SerializedHttpRequest) => new Promise<SerializedHttpResponse>((resolve) => { answer = resolve; void req; }));
+    const provider = makeProvider({ onRequest });
+    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1 });
+    checker.reportUpstreamFailure(provider, 'model-a');
+    await vi.waitFor(() => expect(onRequest).toHaveBeenCalledOnce());
+    checker.reportUpstreamResponse(provider, 200, '', true, 'model-a');
+    answer(jsonResponse('probe', 500));
+    await vi.waitFor(() => expect(checker.getSnapshot().find((entry) => entry.service === 'model-a')?.lastStatusCode).toBe(500));
+    expect(provider.serviceHealth?.['model-a']?.status).toBe('healthy');
+  });
+
   it('does not probe early while the provider is at capacity', async () => {
     const onRequest = vi.fn(async (req: SerializedHttpRequest) => jsonResponse(req.requestId, 429));
     const provider = { ...makeProvider({ onRequest }), getCapacity: () => ({ current: 1, max: 1 }) };

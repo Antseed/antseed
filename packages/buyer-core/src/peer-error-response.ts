@@ -296,7 +296,8 @@ export function adaptPeerFaultErrorResponse(
         code: SELLER_SELF_HEALTH_FAILING_CODE,
         message: [
           describeServiceHealth(service, health),
-          pinned ? 'Try another peer or use Auto routing.' : 'No other peer could serve the request either. Try again later or pick another model.',
+          // Whether other peers were tried is not known here, so this never claims they failed too.
+          pinned ? 'Try another peer or use Auto routing.' : 'Try another peer or another model.',
         ].join('\n'),
         service_health: health,
         ...(typeof upstreamStatus === 'number' && Number.isInteger(upstreamStatus) && upstreamStatus >= 100 && upstreamStatus <= 599
