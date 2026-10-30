@@ -140,6 +140,7 @@ export function mapPeers(input: {
     const stake = num(row['onChainPoolStakeAnts'])
     const agentId = num(row['onChainAgentId'])
     const coolingDown = healthRow?.['coolingDown'] === true
+    const diffServices = strings(row['onChainDiffServices'])
     return [{
       peerId,
       displayName: str(row['displayName']),
@@ -157,6 +158,7 @@ export function mapPeers(input: {
       freeTier: parseFreeTierProgram(strings(row['capabilities'])),
       usageShareBps: num(row['onChainUsageShareBps']),
       washFlagged: row['onChainWashFlagged'] === true || trust['washFlagged'] === true,
+      ...(diffServices.length > 0 ? { diffServices } : {}),
       lastSeen: num(row['lastSeen']),
       health: {
         failureStreak: num(healthRow?.['failureStreak']) ?? 0,

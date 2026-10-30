@@ -9,6 +9,7 @@ import {
   buildNetworkServiceOffers,
   compareEffectiveModelReputation,
   effectiveModelReputationScore,
+  hasLiveDiffVerdict,
   modelRouteTotalPrice,
   normalizedModelReputationScore,
   rankModelRoutes,
@@ -331,14 +332,13 @@ export function buildNetworkModels(
     entry.aliases = [...new Set(entry.aliases.filter(Boolean))].sort((a, b) => a.localeCompare(b))
     const modelHasCachedInputPricing = entry.peers.some((peer) => peer.cachedInputUsdPerMillion !== undefined)
     for (const peer of entry.peers) {
-      peer.effectiveReputationScore = modelHasCachedInputPricing
-        ? effectiveModelReputationScore(
-            normalizedReputationByPeerId.get(peer.peerId) ?? null,
-            peer.cachedInputUsdPerMillion !== undefined,
-            true,
-            modelRouteTotalPrice(peer) === 0,
-          )
-        : normalizedReputationByPeerId.get(peer.peerId) ?? null
+      peer.effectiveReputationScore = effectiveModelReputationScore(
+        normalizedReputationByPeerId.get(peer.peerId) ?? null,
+        peer.cachedInputUsdPerMillion !== undefined,
+        modelHasCachedInputPricing,
+        modelRouteTotalPrice(peer) === 0,
+        hasLiveDiffVerdict(peerById.get(peer.peerId), peer.serviceId),
+      )
     }
     if (options.routingPreferences) {
       const ranked = rankModelRoutes(entry.peers.map((offer) => {

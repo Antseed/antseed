@@ -60,6 +60,42 @@ test('persisted catalog uses the buyer trust score and falls back to the seller-
   assert.equal(unknown[0]?.effectiveReputationScore, null);
 });
 
+test('persisted catalog cuts a live DIFF service to 10% and the discover row flags it', async () => {
+  const pricing = { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: {
+    'diff-model': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 },
+    'clean-model': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 },
+  } } };
+  const peer = {
+    peerId: flashPeerId, providers: ['openai'], onChainReputationScore: 80,
+    onChainDiffServices: ['diff-model'], providerPricing: pricing,
+  };
+  const catalog = buildChatServiceCatalogFromPersistedPeers({ discoveredPeers: [peer] });
+  const diff = catalog.find((entry) => entry.id === 'diff-model');
+  const clean = catalog.find((entry) => entry.id === 'clean-model');
+  assert.ok(Math.abs((diff?.effectiveReputationScore ?? 0) - 8) < 1e-9);
+  assert.equal(clean?.effectiveReputationScore, 80);
+
+  const rows = await buildDiscoverRows(normalizeChatServiceCatalogEntries(catalog), new Map(), {
+    [flashPeerId]: {
+      trust: null, onChainAgentId: 7, onChainPoolStakeAnts: null, onChainChannelCount: null, onChainGhostCount: null,
+      onChainTotalVolumeUsdcMicros: null, onChainLastSettledAtSec: null, onChainReputationScore: 80, onChainWashFlagged: false,
+      onChainDiffServices: ['diff-model'], onChainSybilRisk: null, onChainSybilFlags: [], capabilities: [],
+      verificationLinks: [], peerIconUrl: null,
+    },
+  }, new Map());
+  assert.equal(rows.find((row) => row.serviceId === 'diff-model')?.verificationDiff, true);
+  assert.equal(rows.find((row) => row.serviceId === 'clean-model')?.verificationDiff, false);
+});
+
+test('persisted catalog applies the cached-input penalty like the live catalog', () => {
+  const catalog = buildChatServiceCatalogFromPersistedPeers({ discoveredPeers: [
+    { peerId: flashPeerId, providers: ['openai'], onChainReputationScore: 80, providerPricing: { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'cache-model': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } } } } },
+    { peerId: venicePeerId, providers: ['openai'], onChainReputationScore: 60, providerPricing: { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'cache-model': { inputUsdPerMillion: 1, outputUsdPerMillion: 2, cachedInputUsdPerMillion: 0.1 } } } } },
+  ] });
+  assert.equal(catalog.find((entry) => entry.peerId === flashPeerId)?.effectiveReputationScore, 40);
+  assert.equal(catalog.find((entry) => entry.peerId === venicePeerId)?.effectiveReputationScore, 60);
+});
+
 function modelsPayload(): unknown {
   return {
     object: 'list',

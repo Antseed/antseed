@@ -430,6 +430,57 @@ test('keeps reputation ordering when no offer reports cached-input pricing', () 
   )
 })
 
+test('a live DIFF verdict cuts the service reputation to 10% even without cached-input pricing', () => {
+  const pricing = (services: string[]) => ({
+    openai: {
+      defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 },
+      services: Object.fromEntries(services.map((service) => [service, { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }])),
+    },
+  })
+  const flagged = makePeer({
+    peerId: '7'.repeat(40),
+    onChainReputationScore: 90,
+    onChainDiffServices: ['diff-model'],
+    providerPricing: pricing(['diff-model', 'other-model']),
+  })
+  const clean = makePeer({
+    peerId: '8'.repeat(40),
+    onChainReputationScore: 40,
+    providerPricing: pricing(['diff-model']),
+  })
+
+  const models = buildNetworkModels([flagged, clean], NOW_MS)
+  const diffModel = models.find((model) => model.id === 'diff-model')
+  assert.deepEqual(diffModel?.peers.map((peer) => peer.peerId), [clean.peerId, flagged.peerId])
+  assert.ok(Math.abs((diffModel?.peers[1]?.effectiveReputationScore ?? 0) - 9) < 1e-9)
+  // The raw score is unchanged; only the effective one is cut.
+  assert.equal(diffModel?.peers[1]?.reputationScore, 90)
+  // Per service: the seller's other service keeps its full reputation.
+  assert.equal(models.find((model) => model.id === 'other-model')?.peers[0]?.effectiveReputationScore, 90)
+})
+
+test('a live DIFF verdict compounds with the missing cached-input penalty', () => {
+  const flagged = makePeer({
+    peerId: '9'.repeat(40),
+    onChainReputationScore: 100,
+    onChainDiffServices: ['cache-model'],
+    providerPricing: {
+      openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'cache-model': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } } },
+    },
+  })
+  const cached = makePeer({
+    peerId: 'a'.repeat(40),
+    onChainReputationScore: 50,
+    providerPricing: {
+      openai: { defaults: { inputUsdPerMillion: 2, outputUsdPerMillion: 4 }, services: { 'cache-model': { inputUsdPerMillion: 2, outputUsdPerMillion: 4, cachedInputUsdPerMillion: 0.2 } } },
+    },
+  })
+
+  const model = buildNetworkModels([flagged, cached], NOW_MS)[0]
+  const offer = model?.peers.find((peer) => peer.peerId === flagged.peerId)
+  assert.ok(Math.abs((offer?.effectiveReputationScore ?? 0) - 5) < 1e-9)
+})
+
 test('merges conservative family aliases while preserving advertised service ids', () => {
   const branded = makePeer({
     peerId: 'd'.repeat(40),

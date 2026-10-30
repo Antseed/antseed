@@ -793,6 +793,8 @@ export interface Peer {
   freeTier: FreeTierProgramView | null
   usageShareBps: number | null
   washFlagged: boolean
+  /** Services with a live DIFF verdict on AntseedVerification (lowercase names); their routing reputation keeps 10%. */
+  diffServices?: string[]
   lastSeen: number | null
   health: { failureStreak: number; coolingDownUntil: number | null }
   /** Medians over this gateway's recent requests: total time, time to first token, and output tokens per second. */

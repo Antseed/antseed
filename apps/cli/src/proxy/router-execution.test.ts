@@ -248,6 +248,22 @@ test('candidate construction applies buyer routing preferences like automatic ro
   assert.equal(eligibleRouterCandidates(request, [peer], [], { ...DEFAULT_MODEL_ROUTING_PREFERENCES, maxInputUsdPerMillion: 0.5 }, () => true).length, 1)
 })
 
+test('a live DIFF verdict drops a router candidate below the trust minimum, per service', () => {
+  const diffPeer = {
+    ...peer,
+    onChainDiffServices: ['model-a'],
+    providerPricing: { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: {
+      'model-a': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 },
+      'model-b': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 },
+    } } },
+    providerServiceApiProtocols: { openai: { services: { 'model-a': ['openai-chat-completions'], 'model-b': ['openai-chat-completions'] } } },
+  } as PeerInfo
+  const kept = eligibleRouterCandidates(request, [diffPeer], [], DEFAULT_MODEL_ROUTING_PREFERENCES, () => true)
+  assert.deepEqual(kept.map(candidate => candidate.serviceId), ['model-b'])
+  // Without preferences there is no trust minimum, so the DIFF service stays listed.
+  assert.equal(eligibleRouterCandidates(request, [diffPeer], [], null, () => true).length, 2)
+})
+
 test('routing purchases are registered before dispatch with their own request ID', async () => {
   const tracked: string[] = []
   const client: ModelRoutingClientApi = {
