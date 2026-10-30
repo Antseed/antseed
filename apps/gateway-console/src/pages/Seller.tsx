@@ -10,6 +10,8 @@ import { SellerEventList } from '../components/SellerEvents'
 import '../styles/seller.scss'
 
 const DAYS = 14
+/** Failing models sort first, then unchecked ones. */
+const STATUS_SORT_ORDER: Record<AvailableSeller['models'][number]['status'], number> = { failing: 0, unknown: 1, healthy: 2 }
 type ChartMetric = 'requests' | 'revenue'
 const CHART_METRICS: Array<{ value: ChartMetric; label: string }> = [
   { value: 'requests', label: 'Requests' },
@@ -103,7 +105,7 @@ function ModelsPanel({ seller }: { seller: AvailableSeller }) {
           { key: 'service', header: 'Service', render: (row) => <span className="gc-ellipsis" title={row.service}>{row.service}</span>, sortValue: (row) => row.service },
           { key: 'provider', header: 'Provider', secondary: true, render: (row) => row.provider, sortValue: (row) => row.provider },
           {
-            key: 'status', header: 'Status', sortValue: (row) => (row.status === 'failing' ? 0 : row.status === 'unknown' ? 1 : 2),
+            key: 'status', header: 'Status', sortValue: (row) => STATUS_SORT_ORDER[row.status],
             render: (row) => (row.status === 'failing'
               ? <Badge tone="warning">Failing</Badge>
               : <Badge tone="neutral">{row.status === 'healthy' ? 'Healthy' : 'Not checked'}</Badge>),

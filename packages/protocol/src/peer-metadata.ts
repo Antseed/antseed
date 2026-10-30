@@ -360,15 +360,60 @@ export function providerServiceHealthMatrix(
   for (const [provider, byService] of reports) {
     const services: Record<string, ServiceHealth> = {};
     for (const [service, list] of byService) {
-      const health = list.every((entry) => entry?.status === "failing")
-        ? list.reduce((latest, entry) => ((entry!.checkedAt ?? 0) > (latest!.checkedAt ?? 0) ? entry : latest))
-        : list.find((entry) => entry?.status === "healthy")
-          ?? (list.includes(undefined) ? undefined : list.find((entry) => entry?.status !== "failing"));
+      const health = mergeUpstreamHealth(list);
       if (health) services[service] = { ...health };
     }
     if (Object.keys(services).length > 0) matrix[provider] = { services };
   }
   return matrix;
+}
+
+function mergeUpstreamHealth(reports: Array<ServiceHealth | undefined>): ServiceHealth | undefined {
+  if (reports.every(isServiceHealthFailing)) {
+    // The newest failure explains it best.
+    return reports.reduce((latest, entry) => ((entry.checkedAt ?? 0) > (latest.checkedAt ?? 0) ? entry : latest));
+  }
+  const healthy = reports.find((entry) => entry?.status === "healthy");
+  if (healthy) return healthy;
+  // A working upstream that has not been checked yet: nothing to report.
+  if (reports.includes(undefined)) return undefined;
+  return reports.find((entry) => !isServiceHealthFailing(entry));
+}
+
+export interface ProviderServiceRoutes {
+  /** Whether this announcement's terms for the service are the ones that apply. */
+  owns(announcement: ProviderAnnouncement, service: string): boolean;
+  /** The entries of a per-service map of this announcement that apply. */
+  ownedEntries<T>(announcement: ProviderAnnouncement, entries: Record<string, T> | undefined): Record<string, T> | undefined;
+}
+
+/**
+ * Which announcement a service's pricing, billing and protocols are read from.
+ * Of the upstreams sharing a provider name and listing the service, the
+ * seller serves it through the first one not failing it, else the first one,
+ * so buyers take that one's terms. A service none of them lists keeps the
+ * last announcement's entry.
+ */
+export function providerServiceRoutes(providers: readonly ProviderAnnouncement[]): ProviderServiceRoutes {
+  const owners = new Map<string, ProviderAnnouncement>();
+  const key = (provider: string, service: string) => `${provider}\u0000${service}`;
+  for (const announcement of providers) {
+    for (const service of announcement.services) {
+      const current = owners.get(key(announcement.provider, service));
+      if (!current || (isServiceHealthFailing(current.serviceHealth?.[service]) && !isServiceHealthFailing(announcement.serviceHealth?.[service]))) {
+        owners.set(key(announcement.provider, service), announcement);
+      }
+    }
+  }
+  const owns = (announcement: ProviderAnnouncement, service: string): boolean => {
+    const owner = owners.get(key(announcement.provider, service));
+    return owner === undefined || owner === announcement;
+  };
+  return {
+    owns,
+    ownedEntries: (announcement, entries) =>
+      entries && Object.fromEntries(Object.entries(entries).filter(([service]) => owns(announcement, service))),
+  };
 }
 
 export type DomainVerificationMethod = "dns-txt" | "https-well-known";

@@ -42,7 +42,7 @@ import {
   type SellerContractConfig,
 } from "./discovery/announcer.js";
 import type { PeerVerifications, ServiceHealth } from "./discovery/peer-metadata.js";
-import { providerServiceHealthMatrix } from "./discovery/peer-metadata.js";
+import { providerServiceHealthMatrix, providerServiceRoutes } from "./discovery/peer-metadata.js";
 import { verifyPeerMetadataDomains } from "./discovery/domain-verification.js";
 import { verifyPeerMetadataGithub } from "./discovery/github-verification.js";
 import {
@@ -2731,11 +2731,14 @@ export class AntseedNode extends EventEmitter {
     const providerServiceUnitBillingModelEntries: NonNullable<PeerInfo["providerServiceUnitBillingModels"]> = {};
     const providerServiceCapabilityEntries: NonNullable<PeerInfo["providerServiceCapabilities"]> = {};
     const providerServiceHealthEntries: NonNullable<PeerInfo["providerServiceHealth"]> = providerServiceHealthMatrix(result.metadata.providers);
+    // Upstreams sharing a provider name: each service's terms come from the one the seller serves it through.
+    const routes = providerServiceRoutes(result.metadata.providers);
 
     for (const providerAnnouncement of result.metadata.providers) {
       const provName = providerAnnouncement.provider;
       const serviceEntries: Record<string, TokenPricingUsdPerMillion> = {};
       for (const service of providerAnnouncement.services) {
+        if (!routes.owns(providerAnnouncement, service)) continue;
         serviceEntries[service] =
           providerAnnouncement.servicePricing?.[service] ?? providerAnnouncement.defaultPricing;
       }
@@ -2760,10 +2763,11 @@ export class AntseedNode extends EventEmitter {
         };
       }
 
-      if (providerAnnouncement.serviceCategories && Object.keys(providerAnnouncement.serviceCategories).length > 0) {
+      const serviceCategories = routes.ownedEntries(providerAnnouncement, providerAnnouncement.serviceCategories);
+      if (serviceCategories && Object.keys(serviceCategories).length > 0) {
         const existingCats = providerServiceCategoryEntries[provName];
         const newEntries = Object.fromEntries(
-          Object.entries(providerAnnouncement.serviceCategories)
+          Object.entries(serviceCategories)
             .map(([service, categories]) => [service, [...categories]]),
         );
         if (existingCats) {
@@ -2773,10 +2777,11 @@ export class AntseedNode extends EventEmitter {
         }
       }
 
-      if (providerAnnouncement.serviceApiProtocols && Object.keys(providerAnnouncement.serviceApiProtocols).length > 0) {
+      const serviceApiProtocols = routes.ownedEntries(providerAnnouncement, providerAnnouncement.serviceApiProtocols);
+      if (serviceApiProtocols && Object.keys(serviceApiProtocols).length > 0) {
         const existingProtos = providerServiceApiProtocolEntries[provName];
         const newEntries = Object.fromEntries(
-          Object.entries(providerAnnouncement.serviceApiProtocols)
+          Object.entries(serviceApiProtocols)
             .map(([service, protocols]) => [service, [...protocols]]),
         );
         if (existingProtos) {
@@ -2786,9 +2791,10 @@ export class AntseedNode extends EventEmitter {
         }
       }
 
-      if (providerAnnouncement.serviceUnitBillingModels && Object.keys(providerAnnouncement.serviceUnitBillingModels).length > 0) {
+      const serviceUnitBillingModels = routes.ownedEntries(providerAnnouncement, providerAnnouncement.serviceUnitBillingModels);
+      if (serviceUnitBillingModels && Object.keys(serviceUnitBillingModels).length > 0) {
         const existingBillingModels = providerServiceUnitBillingModelEntries[provName];
-        const newEntries: ServiceUnitBillingModelsV1 = { ...providerAnnouncement.serviceUnitBillingModels };
+        const newEntries: ServiceUnitBillingModelsV1 = { ...serviceUnitBillingModels };
         if (existingBillingModels) {
           Object.assign(existingBillingModels.services, newEntries);
         } else {
@@ -2796,9 +2802,10 @@ export class AntseedNode extends EventEmitter {
         }
       }
 
-      if (providerAnnouncement.serviceCapabilities && Object.keys(providerAnnouncement.serviceCapabilities).length > 0) {
+      const serviceCapabilities = routes.ownedEntries(providerAnnouncement, providerAnnouncement.serviceCapabilities);
+      if (serviceCapabilities && Object.keys(serviceCapabilities).length > 0) {
         const existingCapabilities = providerServiceCapabilityEntries[provName];
-        const newEntries = { ...providerAnnouncement.serviceCapabilities };
+        const newEntries = { ...serviceCapabilities };
         if (existingCapabilities) {
           Object.assign(existingCapabilities.services, newEntries);
         } else {

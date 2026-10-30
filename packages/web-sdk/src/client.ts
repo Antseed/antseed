@@ -29,6 +29,7 @@ import {
 import {
   MessageType,
   providerServiceHealthMatrix,
+  providerServiceRoutes,
   toPeerId,
   type CloseChannelResultPayload,
   type PeerMetadata,
@@ -542,11 +543,13 @@ export function sellerSummaryFromMetadata(metadata: PeerMetadata): SellerSummary
   const providerServiceCapabilities: NonNullable<BuyerPeerView['providerServiceCapabilities']> = {};
   // Merged across upstreams sharing a provider name: failing only when all of them fail.
   const providerServiceHealth: NonNullable<BuyerPeerView['providerServiceHealth']> = providerServiceHealthMatrix(metadata.providers);
+  // Each service's terms come from the upstream the seller serves it through.
+  const routes = providerServiceRoutes(metadata.providers);
 
   for (const announcement of metadata.providers) {
     const provider = announcement.provider;
     const services = Object.fromEntries(
-      announcement.services.map((service) => [
+      announcement.services.filter((service) => routes.owns(announcement, service)).map((service) => [
         service,
         announcement.servicePricing?.[service] ?? announcement.defaultPricing,
       ]),
@@ -562,14 +565,14 @@ export function sellerSummaryFromMetadata(metadata: PeerMetadata): SellerSummary
       };
     }
 
-    mergeServiceMatrix(providerServiceCategories, provider, announcement.serviceCategories);
-    mergeServiceMatrix(providerServiceApiProtocols, provider, announcement.serviceApiProtocols);
+    mergeServiceMatrix(providerServiceCategories, provider, routes.ownedEntries(announcement, announcement.serviceCategories));
+    mergeServiceMatrix(providerServiceApiProtocols, provider, routes.ownedEntries(announcement, announcement.serviceApiProtocols));
     mergeServiceMatrix(
       providerServiceUnitBillingModels,
       provider,
-      announcement.serviceUnitBillingModels,
+      routes.ownedEntries(announcement, announcement.serviceUnitBillingModels),
     );
-    mergeServiceMatrix(providerServiceCapabilities, provider, announcement.serviceCapabilities);
+    mergeServiceMatrix(providerServiceCapabilities, provider, routes.ownedEntries(announcement, announcement.serviceCapabilities));
   }
 
   return {
