@@ -18,6 +18,28 @@ their own message. Auto-committing every tweak produces a noisy history of
 one-line commits that has to be squashed later. Do not chain `edit → build
 → commit → push` as a reflex — even if prior turns in the same session did.
 
+## Sandbox testing (run isolated checks, ask before spending)
+
+After changing payments, routing, discovery, the buyer proxy, provider plugins,
+`packages/node`, or desktop features, verify the change end to end in the
+worktree sandbox (`pnpm sandbox`, see `e2e/sandbox/README.md`). The
+`verify-antseed` skill (`.claude/skills/verify-antseed/SKILL.md`) says which
+scenario a changed path requires, the red-to-green protocol for bug fixes, and
+what evidence to keep, and it is the only map from a changed path to what must
+run; the `sandbox-test` skill (`.claude/skills/sandbox-test/SKILL.md`) is the
+how-to for running the sandbox (commands, chains, reports, desktop, share).
+
+Once a change has been discussed, implement and test it without asking first:
+builds, unit tests, new scenarios, isolated `--chain local` runs (or fork runs
+when `.env.local` has the RPC), and desktop QA. Only these need an explicit yes
+for each run: `--live` (real upstream spend), `--real-funds`, and any mainnet
+run (`--chain mainnet`, `pnpm sandbox mainnet`). For buyer, proxy or routing
+changes, propose the real-network check
+(`pnpm sandbox run mainnet-smoke --chain mainnet --real-funds`, case 3 in the
+sandbox README) as a separate step: it spends real USDC from the test wallet.
+Never touch `~/.antseed`, the keychain or port 8377, tear down only with
+`pnpm sandbox down`, and never weaken a check or turn a `KNOWN` result into a pass.
+
 ## Changelog policy for PRs
 
 When opening a PR, update `CHANGELOG.md` for any user-facing package, CLI,

@@ -10,6 +10,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import type { Identity } from '@antseed/node';
 import { bytesToHex, identityFromPrivateKeyHex } from '@antseed/node';
+import { CONNECT_DATA_DIR_ENV, isAttachOnly, readAttachOnlyIdentityHex } from './runtime/attach-only.js';
 
 const ENCRYPTED_IDENTITY_PATH = path.join(homedir(), '.antseed', 'identity.enc');
 const PLAINTEXT_IDENTITY_PATH = path.join(homedir(), '.antseed', 'identity.key');
@@ -96,6 +97,24 @@ export function secureIdentityEnv(): Record<string, string> {
 const MAX_IDENTITY_RETRIES = 3;
 let identityRetryCount = 0;
 
+// Isolated sandbox desktops (ANTSEED_DESKTOP_ATTACH_ONLY=1) reuse the sandbox
+// buyer's plaintext identity from its data dir. It is held in memory only and
+// never written to the OS keychain or ~/.antseed, so the sandbox wallet cannot
+// leak into (or overwrite) the developer's real desktop identity.
+async function loadAttachOnlyIdentity(): Promise<void> {
+  const dataDir = process.env[CONNECT_DATA_DIR_ENV]?.trim();
+  if (!dataDir) {
+    console.warn('[desktop] attach-only mode without ANTSEED_DESKTOP_CONNECT_DATA_DIR; wallet views stay empty');
+    return;
+  }
+  try {
+    secureIdentity = identityFromHex(await readAttachOnlyIdentityHex(dataDir));
+    console.log(`[desktop] attach-only mode: using sandbox buyer identity ${secureIdentity.peerId.slice(0, 12)}...`);
+  } catch (err) {
+    console.error(`[desktop] attach-only identity load failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 export async function ensureSecureIdentity(): Promise<void> {
   if (secureIdentity) return;
   if (secureIdentityPromise) {
@@ -103,6 +122,10 @@ export async function ensureSecureIdentity(): Promise<void> {
     return;
   }
   if (identityRetryCount >= MAX_IDENTITY_RETRIES) return;
+  if (isAttachOnly()) {
+    await loadAttachOnlyIdentity();
+    return;
+  }
 
   const attempt = (async () => {
     try {
