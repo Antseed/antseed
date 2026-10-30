@@ -220,7 +220,8 @@ Every event, from every product, includes this envelope:
   - `http_status`: the failed request's status, an integer in 100–599.
   - `attempt_count` (`1`, `2`, `3_plus`), `sellers_tried` (`0`, `1`, `2`,
     `3_plus`), `fell_back` (more than one seller was tried).
-  - `seller_tier`: `free`, `paid` or `unknown`, from the seller's advertised price.
+  - `seller_tier`: `free`, `paid` or `unknown`, from the seller's advertised price
+    (for a pinned seller too).
   - `streamed`: the answer was streamed to the client.
   - `ttft_ms`: exact milliseconds from the request to the first byte of the
     answer that was used: what the caller waited (omitted when no answer
@@ -373,7 +374,10 @@ buyer's `buyer_deposit_credited`, and the first request is the buyer's first
 `buyer_request_finished`, both under the same wallet.
 
 Steps come from the gateway's audit log, which every console and CLI action
-already writes, so no request handler calls telemetry. Only the step name is
+already writes, so no request handler calls telemetry. A step taken with a
+gateway CLI command (`antseed gateway key create`, `workspace create`,
+`member invite`, ...) is sent by that command, but only once a gateway has
+started on that data directory with telemetry on, under the same consent. Only the step name is
 sent: never the audit entry's actor, target, details or IP, so no key,
 member, workspace, email, name or label. Events use the gateway's default
 wallet as `distinct_id` (the same one its buyer runs with).

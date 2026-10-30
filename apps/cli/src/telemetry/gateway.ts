@@ -68,6 +68,7 @@ export class GatewayTelemetry {
   private readonly _now: () => number
   private _distinctId: string | null = null
   private _ready: Promise<void> | null = null
+  private readonly _pending = new Set<Promise<void>>()
 
   constructor(private readonly _options: GatewayTelemetryOptions) {
     this._env = _options.env ?? process.env
@@ -132,19 +133,46 @@ export class GatewayTelemetry {
       this._client.capture('gateway_step', { step })
       return
     }
-    // A fresh gateway whose buyer creates the wallet after this process read it: read again.
+    // A fresh gateway whose buyer creates the wallet after this process read it,
+    // or a CLI command that has not read it yet: read it now.
     const at = this._now()
-    void walletAddress(this._options.dataDir).then((address) => {
+    const pending: Promise<void> = walletAddress(this._options.dataDir).then((address) => {
       this._distinctId ??= address
       this._client.capture('gateway_step', { step }, at)
-    }).catch(() => {})
+    }).catch(() => {}).finally(() => { this._pending.delete(pending) })
+    this._pending.add(pending)
   }
 
   async stop(timeoutMs = 750): Promise<void> {
     try {
+      await Promise.all(this._pending)
       await this._client.close(timeoutMs)
     } catch {
       // Shutdown goes on.
     }
+  }
+}
+
+/**
+ * Setup steps taken with gateway CLI commands (`antseed gateway key create`,
+ * `workspace create`, `member invite`, ...): each command opens its own store,
+ * which the running gateway's observer never sees, so the command reports its
+ * own step. Only once a gateway has started on this data dir with telemetry on
+ * (its one-time notice was shown), so a command never sends before that.
+ * Returns the function that sends what is queued before the command exits, or
+ * null when nothing is observed.
+ */
+export function observeCliGatewayAudit(
+  store: { setAuditObserver(observer: ((record: AuditRecord) => void) | null): void },
+  options: Pick<GatewayTelemetryOptions, 'configPath' | 'dataDir' | 'env' | 'sender'>,
+): (() => Promise<void>) | null {
+  try {
+    if (readTelemetryState(options.dataDir).gatewayNoticeShownAt === undefined) return null
+    const telemetry = new GatewayTelemetry(options)
+    if (!telemetry.enabled) return null
+    store.setAuditObserver((record) => telemetry.observeAudit(record))
+    return () => telemetry.stop()
+  } catch {
+    return null
   }
 }

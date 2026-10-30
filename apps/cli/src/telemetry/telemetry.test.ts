@@ -13,7 +13,7 @@ import { finishReasonFromBody } from './finish-reason.js'
 import { CLIENT_TOOLS, CLI_EVENT_CATALOG } from './catalog.js'
 import { sanitizeEventProperties } from '@antseed/telemetry'
 import { DEFAULT_APP_PROFILES } from '@antseed/connected-apps/defaults'
-import { GatewayTelemetry, gatewayStepForAudit } from './gateway.js'
+import { GatewayTelemetry, gatewayStepForAudit, observeCliGatewayAudit } from './gateway.js'
 import { GatewayStore } from '../gateway/store.js'
 import { posthogConfig, readConfiguredTelemetry, resolveCliConsent, writeConfiguredTelemetry } from './settings.js'
 import { createProgram } from '../cli/program.js'
@@ -214,6 +214,21 @@ async function send(proxy: BuyerProxy, req: Readable): Promise<FakeResponse> {
   await new Promise((resolve) => setImmediate(resolve))
   return res
 }
+
+test('a request pinned to a seller reports that seller\'s advertised tier', async (t) => {
+  const { proxy, telemetry, events } = await proxyWithTelemetry(t, {}, 200)
+  const res = await send(proxy, request(
+    { model: 'gpt-5', messages: [{ role: 'user', content: 'hi' }] },
+    { 'x-antseed-pin-peer': SECRET_PEER },
+  ))
+  assert.equal(res.statusCode, 200)
+  await telemetry.close()
+  const props = events.find((event) => event.event === 'buyer_request_finished')!.properties
+  assert.equal(props['route_mode'], 'pinned')
+  assert.equal(props['seller_tier'], 'paid')
+  const attempt = events.find((event) => event.event === 'buyer_seller_attempt')!.properties
+  assert.equal(attempt['seller_tier'], 'paid')
+})
 
 test('buyer_request_finished: one per request, enums only, nothing added to what a seller receives', async (t) => {
   const { proxy, telemetry, events, forwarded } = await proxyWithTelemetry(t, {}, 200)
@@ -838,6 +853,42 @@ test('gateway_step: sent from the audit log with only the step, under the gatewa
   for (const secret of ['Secret', 'mem_secret', 'ws_secret', '203.0.113.9', 'passkey']) assert.equal(sent.includes(secret), false, secret)
   assert.equal(logs.filter((line) => line.includes('antseed telemetry disable')).length, 1)
   assert.equal(store.listAudit().entries.length, 3, 'the audit log itself is unchanged')
+})
+
+test('gateway_step: a step taken with a gateway CLI command is sent, but only once a gateway has run with telemetry on', async (t) => {
+  const dir = await tempDir(t)
+  await writeFile(join(dir, 'identity.key'), '11'.repeat(32))
+  const configPath = join(dir, 'config.json')
+  const { events, sender } = capture()
+  const cliStep = async (action: string): Promise<void> => {
+    const store = new GatewayStore(dir)
+    const flush = observeCliGatewayAudit(store, { configPath, dataDir: dir, env: CONFIGURED, sender })
+    store.recordAudit({ actor: { kind: 'cli', id: null }, action, target: { kind: 'key', id: 'key_secret', label: 'Secret' } })
+    store.close()
+    await flush?.()
+  }
+
+  // No gateway has started here yet: a command sends nothing.
+  await cliStep('key.create')
+  assert.deepEqual(events, [])
+
+  const gateway = new GatewayTelemetry({ configPath, dataDir: dir, env: CONFIGURED, sender })
+  await gateway.start()
+  await gateway.stop()
+  events.length = 0
+
+  await cliStep('key.create')
+  await cliStep('key.revoke')
+  const sent: PostHogEvent[] = [...events]
+  assert.deepEqual(sent.map((event) => [event.event, event.properties['step'], event.properties['product']]), [['gateway_step', 'key_created', 'gateway']])
+  assert.match(sent[0]!.distinct_id, /^0x[0-9a-f]{40}$/)
+  assert.equal(JSON.stringify(sent).includes('Secret'), false)
+
+  // After an opt-out a command sends nothing.
+  events.length = 0
+  await writeConfiguredTelemetry(configPath, false)
+  await cliStep('workspace.create')
+  assert.deepEqual(events, [])
 })
 
 test('gateway_step: consent is read live, and a failing observer never breaks the audit write', async (t) => {

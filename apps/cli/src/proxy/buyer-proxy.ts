@@ -4849,6 +4849,12 @@ export class BuyerProxy {
     if (trace) {
       trace.candidates = 1
       trace.rank = 1
+      // Free or paid from the price the pinned seller advertises for this service, as for an automatic pick.
+      const pinnedOffer = selectedPlan && pinnedServiceId
+        ? findAdvertisedServiceOffer(selectedPeer, selectedPlan.provider, pinnedServiceId)
+        : null
+      const pinnedPrice = pinnedOffer ? modelRouteTotalPrice(pinnedOffer) : null
+      trace.sellerTier = pinnedPrice === null ? 'unknown' : pinnedPrice === 0 ? 'free' : 'paid'
       if (trace.previousSeller && trace.previousSeller !== selectedPeer.peerId.toLowerCase()) {
         trace.previousSkipped = trace.routeMode === 'router' ? 'router_choice' : 'pinned_elsewhere'
       }
