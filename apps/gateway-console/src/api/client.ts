@@ -320,6 +320,7 @@ export function createApiClient(fetchImpl: FetchLike = (input, init) => fetch(in
       get: () => get<Settings>('/settings'),
       updateBuyer: (input: BuyerSettingsInput) => patch<SettingsResult>('/settings/buyer', input),
       setObservability: (input: ObservabilitySettings) => put<SettingsResult>('/settings/observability', input),
+      setTelemetry: (enabled: boolean) => put<SettingsResult>('/settings/telemetry', { enabled }),
     },
     update: {
       get: () => get<GatewayUpdate>('/update'),

@@ -6,6 +6,8 @@ import { createServer, type Server, type IncomingMessage, type ServerResponse } 
 import { randomUUID } from 'node:crypto'
 import { buildRoutingServices, findPinnedRoutingService } from './routing-services.js'
 import { readFileSync, watchFile, unwatchFile } from 'node:fs'
+import { telemetryClientTool, telemetryProtocol, traceFor, type BuyerTelemetry, type ConversationKeySource, type SwitchReason } from '../telemetry/buyer.js'
+import { finishReasonFromBody } from '../telemetry/finish-reason.js'
 import { readFile, writeFile, rename, mkdir, readdir, stat, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
@@ -116,6 +118,7 @@ import {
 import { DEFAULT_BUYER_PEER_REFRESH_INTERVAL_MS } from '../config/defaults.js'
 import {
   extractConversationIdentity,
+  requestClientTool,
   extractFirstUserSnippet,
   isCompletionRequestPath,
   isTitleGenerationRequest,
@@ -264,6 +267,8 @@ export interface BuyerProxyConfig {
    * the gateway so its settings page can say a config edit will not apply.
    */
   settingOverrides?: string[]
+  /** Anonymous request telemetry (docs/telemetry.md); absent sends nothing. */
+  telemetry?: BuyerTelemetry
 }
 
 /** The DepositsClient reads `GET /_antseed/balances` needs. */
@@ -343,6 +348,13 @@ type RequestPolicyResult =
   /** The control header was sent but does not match: fail closed, never route. */
   | { kind: 'auth_invalid' }
 
+/** Image generation, image edits and decision models (SystemOne): model requests outside a chat, reported like any other. */
+function isImageOrDecisionRequest(method: string, request: Pick<SerializedHttpRequest, 'path' | 'headers'>): boolean {
+  if (method !== 'POST') return false
+  const protocol = detectRequestServiceApiProtocol(request)
+  return protocol === 'openai-images' || protocol === 'typesafe-systemone'
+}
+
 function isLoopbackAddress(address: string | undefined): boolean {
   // A destroyed socket has no address: never treat it as local.
   if (address === undefined) return false
@@ -419,6 +431,23 @@ function classifyFailedAttempt(result: DispatchFailure): FailedAttempt {
 function promptCacheKey(request: SerializedHttpRequest): string | null {
   const value = extractRequestBodyFields(request.headers, request.body)?.['prompt_cache_key']
   return typeof value === 'string' && value.trim() ? `cache:${value.trim().slice(0, 256)}` : null
+}
+
+/**
+ * For telemetry: what the conversation's key came from. A tool's own session
+ * id (in a header or its metadata), the client's `prompt_cache_key` alone, or
+ * a hash of the conversation's opening, for a client that sends neither.
+ */
+function conversationKeySource(
+  identity: ConversationIdentity,
+  headers: Record<string, string>,
+  body: Record<string, unknown> | null,
+): ConversationKeySource {
+  if (identity.sessionKey.startsWith('synthetic-')) return 'prompt_prefix'
+  const sessionHeader = Object.entries(headers).some(([name, value]) => typeof value === 'string' && value.trim() === identity.sessionKey
+    && /^(?:x-.+-session-id|thread-id|session-id|x-session-id|x-session-affinity)$/i.test(name))
+  const cacheKey = body?.['prompt_cache_key']
+  return !sessionHeader && typeof cacheKey === 'string' && cacheKey.trim() === identity.sessionKey ? 'prompt_cache_key' : 'tool_session'
 }
 
 /**
@@ -656,6 +685,7 @@ function dispatchFailure(statusCode: number, responseHeaders: Record<string, str
 
 function writeDispatchFailure(res: ServerResponse, result: DispatchFailure): void {
   if (res.headersSent || res.writableEnded) return
+  traceFor(res)?.noteFailure(result)
   // A refusal can carry the seller's own headers: never let it name a router.
   res.writeHead(result.statusCode, withoutRouterHeaders(result.responseHeaders))
   res.end(result.responseBody)
@@ -1271,6 +1301,7 @@ export class BuyerProxy {
   private readonly _balanceCache = new ChainReadCache()
   private readonly _restartHandler: (() => void | Promise<void>) | null
   private readonly _settingOverrides: string[]
+  private readonly _telemetry: BuyerTelemetry | null
   private _restartRequested = false
   /** A restarted buyer is a new process, so its start is the last accepted restart. */
   private readonly _restartAllowedAt: number
@@ -1281,6 +1312,7 @@ export class BuyerProxy {
     this._restartHandler = config.onRestartRequested ?? null
     this._restartAllowedAt = Date.now() + (config.minRestartIntervalMs ?? MIN_RESTART_INTERVAL_MS)
     this._settingOverrides = [...(config.settingOverrides ?? [])]
+    this._telemetry = config.telemetry ?? null
     this._node = config.node
     this._modelRoutingClient = config.modelRoutingClient ?? new ModelRoutingClient()
     this._verifier = config.verifier
@@ -1856,6 +1888,28 @@ export class BuyerProxy {
   }
 
   /**
+   * For telemetry: why a conversation's previous seller is not first in this
+   * turn's order. Null when it is first (or there is none); if it then fails,
+   * the trace says so itself.
+   */
+  private _previousSellerSkipped(
+    previousSeller: string | null,
+    ordered: readonly { peerId: string }[],
+    verdicts: readonly ModelRouteVerdict[],
+  ): SwitchReason | null {
+    if (!previousSeller) return null
+    const verdict = verdicts.find((entry) => entry.peer.peerId.toLowerCase() === previousSeller)
+    if (!verdict) return 'previous_unavailable'
+    if (!verdict.eligible) return 'previous_excluded'
+    if (ordered[0]?.peerId.toLowerCase() === previousSeller) return null
+    if (verdict.selection?.coolingDown) return 'previous_cooling_down'
+    if (verdict.selection?.failing) return 'previous_unhealthy'
+    const first = verdicts.find((entry) => entry.peer.peerId.toLowerCase() === ordered[0]?.peerId.toLowerCase())
+    if (first?.selection?.routeChainPosition != null) return 'policy_route'
+    return 'other'
+  }
+
+  /**
    * Without routing preferences: best effective reputation first, and only
    * sellers not cooling down while any are ready.
    */
@@ -2353,6 +2407,8 @@ export class BuyerProxy {
 
   private async _reloadRoutingPreferences(): Promise<void> {
     if (!this._configPath) return
+    // `telemetry.enabled` is read on its own, so a bad routing field cannot keep an opt-out from applying.
+    this._telemetry?.reloadConsent()
     try {
       const config = await loadConfig(this._configPath)
       // Read straight from the file: no CLI flag or env var overrides routing
@@ -3875,6 +3931,14 @@ export class BuyerProxy {
       ? extractConversationIdentity(serializedReq.headers, conversationBody)
       : null
     const routingConversationKey = conversationIdentity ? `${conversationIdentity.tool}:${conversationIdentity.sessionKey}` : null
+    if (isConversationRequest || nativeVideo || isImageOrDecisionRequest(method, serializedReq)) {
+      const trace = this._telemetry?.beginRequest(res, this._cachedPeers.length > 0)
+      if (trace) {
+        trace.clientTool = telemetryClientTool(conversationIdentity?.tool ?? requestClientTool(serializedReq.headers))
+        // Before the seller-bound session header is added, so a client's retry matches its first copy.
+        this._telemetry?.noteRequestBody(trace, method, path, serializedReq.body, conversationBody)
+      }
+    }
     // The seller's upstream may route prompt caching by `session_id`; pass the
     // conversation's key under that name whatever the client called it.
     if (conversationIdentity) {
@@ -3901,6 +3965,17 @@ export class BuyerProxy {
       : storedAutoRoute?.service ?? storedConversation?.pinnedModel ?? null
     const preferredPeerHeader = normalizePeerId(serializedReq.headers['x-antseed-prefer-peer'] ?? '')
     const preferredConversationPeerId = preferredPeerHeader ?? storedAutoRoute?.peerId ?? null
+    const requestTrace = traceFor(res)
+    if (requestTrace) {
+      // The key that groups a conversation's requests (it never leaves the
+      // process), and the seller that answered its last turn before a restart.
+      const cacheKey = conversationIdentity ? null : promptCacheKey(serializedReq)
+      const telemetryKey = conversationIdentity && trackedConversationKey
+        ? { value: `${conversationIdentity.tool}:${trackedConversationKey}`, source: conversationKeySource(conversationIdentity, serializedReq.headers, conversationBody) }
+        : cacheKey ? { value: cacheKey, source: 'prompt_cache_key' as const } : null
+      const storedSeller = storedConversation?.lastModel ? parsePeerPinnedService(storedConversation.lastModel)?.peerId ?? null : null
+      this._telemetry?.noteConversation(requestTrace, telemetryKey, storedSeller ? normalizePeerId(storedSeller) : null)
+    }
     const effectiveRoutedModel = chatPinnedModel ?? this._defaultRoutedModel
     // Where a router pin can come from besides the request's own model: the
     // `antseed` alias resolves to the chat's explicit pin or, when the chat
@@ -3969,6 +4044,8 @@ export class BuyerProxy {
       spendAttributionTag,
     }
 
+    const trace = traceFor(res)
+    if (trace && activeSelection && useModelRouter) trace.routeMode = 'router'
     // Both paths return an inference answer; only the router path buys a recommendation first.
     if (activeSelection && useModelRouter) {
       if (invalidRouting) {
@@ -4286,6 +4363,13 @@ export class BuyerProxy {
     const explicitProvider = getExplicitProviderOverride(serializedReq)
     const explicitPeerId = getExplicitPeerIdOverride(serializedReq, effectivePinnedPeer ?? undefined, bodyPinnedPeer)
     log(`Routing hints: provider=${explicitProvider ?? 'auto'} pin-peer=${explicitPeerId ?? 'none'}`)
+    const trace = traceFor(res)
+    if (trace) {
+      trace.protocol = telemetryProtocol(requestProtocol, nativeVideo !== null)
+      trace.videoAction = nativeVideo?.action ?? null
+      trace.model = requestedService
+      if (trace.routeMode !== 'router') trace.routeMode = explicitPeerId ? 'pinned' : 'auto'
+    }
 
     if (!explicitPeerId && !requestedService) {
       log('Request rejected: no peer pinned and no model requested')
@@ -4359,7 +4443,7 @@ export class BuyerProxy {
       }
 
       const router = this._node.router
-      const { candidates, effectivePolicy, explored, selections, firstPick } = this._planModelRoutes({
+      const { candidates, effectivePolicy, explored, selections, firstPick, verdicts } = this._planModelRoutes({
         modelPeers,
         modelPlans,
         request: serializedReq,
@@ -4445,8 +4529,15 @@ export class BuyerProxy {
       const servesUnfunded = (candidate: (typeof candidates)[number]): boolean =>
         modelRouteTotalPrice(candidate) === 0
         || parseServiceFreeTierProgram(candidate.peer.capabilities, candidate.serviceId) !== null
+      if (trace) {
+        trace.freeSellersKnown = candidates.filter((candidate) => modelRouteTotalPrice(candidate) === 0).length
+        trace.previousSkipped = this._previousSellerSkipped(trace.previousSeller, candidates, verdicts)
+      }
       for (const [index, selected] of candidates.entries()) {
-        if (unfunded && !servesUnfunded(selected)) continue
+        if (unfunded && !servesUnfunded(selected)) {
+          if (trace && selected.peerId.toLowerCase() === trace.previousSeller) trace.previousSkipped = 'needs_funds'
+          continue
+        }
         if (this._verifier) {
           const makeReach = (chosenId: string): SellerReach =>
             makeVerifierReach(this._node, selected.peer, chosenId, signal)
@@ -4477,6 +4568,11 @@ export class BuyerProxy {
             + `effective=${selected.effectiveReputationScore ?? 'unknown'} peer=${index + 1}/${candidates.length} `
             + `attempt=${peerAttempt + 1}/${MODEL_RATE_LIMIT_MAX_ATTEMPTS_PER_PEER}`,
           )
+          if (trace) {
+            trace.sellerTier = modelRouteTotalPrice(selected) === 0 ? 'free' : 'paid'
+            trace.candidates = candidates.length
+            trace.rank = index + 1
+          }
           const result = await this._dispatchToPeer(
             res,
             selected.request,
@@ -4499,7 +4595,9 @@ export class BuyerProxy {
               ? this._attemptTimeoutMs(selected === explored ? candidates[index + 1]! : selected, selected.request)
               : null,
           )
+          trace?.noteAttemptResult(result, res.statusCode, Date.now())
           if (result.done) {
+            if (trace && result.interrupted) trace.interrupted = result.interrupted
             // A stream that broke after its headers proves nothing for the
             // sellers before it, and counts against this one like any other
             // transport failure.
@@ -4758,6 +4856,19 @@ export class BuyerProxy {
     }
 
     log(`Using pinned peer ${selectedPeer.peerId.slice(0, 12)}...`)
+    if (trace) {
+      trace.candidates = 1
+      trace.rank = 1
+      // Free or paid from the price the pinned seller advertises for this service, as for an automatic pick.
+      const pinnedOffer = selectedPlan && pinnedServiceId
+        ? findAdvertisedServiceOffer(selectedPeer, selectedPlan.provider, pinnedServiceId)
+        : null
+      const pinnedPrice = pinnedOffer ? modelRouteTotalPrice(pinnedOffer) : null
+      trace.sellerTier = pinnedPrice === null ? 'unknown' : pinnedPrice === 0 ? 'free' : 'paid'
+      if (trace.previousSeller && trace.previousSeller !== selectedPeer.peerId.toLowerCase()) {
+        trace.previousSkipped = trace.routeMode === 'router' ? 'router_choice' : 'pinned_elsewhere'
+      }
+    }
     const result = await this._dispatchToPeer(
       res,
       pinnedRequest,
@@ -4772,6 +4883,8 @@ export class BuyerProxy {
       false,
       routingConversationKey,
     )
+    trace?.noteAttemptResult(result, res.statusCode, Date.now())
+    if (trace && result.done && result.interrupted) trace.interrupted = result.interrupted
     if (result.done && trackedConversationId && pinnedServiceId) {
       this._conversations.recordRoutedModel(
         trackedConversationId,
@@ -4909,6 +5022,7 @@ export class BuyerProxy {
     /** Give up on this seller if it has not started answering by then, so the next one can be tried. */
     attemptTimeoutMs: number | null = null,
   ): Promise<PeerDispatchResult> {
+    traceFor(res)?.noteAttempt(selectedPeer.peerId, Date.now())
     const gatewayAutoRoute = gatewayRouted && !pinned
     const selectedRoutePlan = routePlanByPeerId.get(selectedPeer.peerId)
       ?? resolvePeerRoutePlan(selectedPeer, requestProtocol, requestedService, explicitProvider, 'lenient')
@@ -5067,6 +5181,7 @@ export class BuyerProxy {
             if (attemptTimer) clearTimeout(attemptTimer)
             streamed = true
             firstFrameAt = Date.now()
+            traceFor(res)?.noteFirstByte(firstFrameAt)
             streamStartBody = startResponse.body
             const adaptedStartResponse = streamResponseAdapter
               ? streamResponseAdapter.adaptStart(startResponse)
@@ -5127,6 +5242,7 @@ export class BuyerProxy {
         }
 
         const finishedAt = Date.now()
+        if (!streamed) traceFor(res)?.noteAnswered(finishedAt, response.statusCode, freeTierRefusal !== null)
         const latencyMs = finishedAt - startTime
         log(`Response: ${responseForClient.statusCode} (${latencyMs}ms, ${responseForClient.body.length} bytes)`)
         if (responseForClient.statusCode >= 400) {
@@ -5140,6 +5256,22 @@ export class BuyerProxy {
           responseForClient.body,
           selectedPeer,
         )
+        const usageTrace = responseForClient.statusCode < 400 ? traceFor(res) : undefined
+        if (usageTrace) {
+          // A stream's first frame (Anthropic's message_start) can carry the
+          // input and cache counts, so the trace reads the whole stream.
+          const fullBody = streamed && streamStartBody.length > 0
+            ? Buffer.concat([streamStartBody, responseForClient.body])
+            : responseForClient.body
+          const fullTelemetry = fullBody === responseForClient.body
+            ? telemetry
+            : computeResponseTelemetry(requestForPeer, responseForClient.headers, fullBody, selectedPeer)
+          usageTrace.noteUsage(fullTelemetry.usage)
+          usageTrace.noteAnswerDetails({
+            finishReason: finishReasonFromBody(responseForClient.headers['content-type'], fullBody),
+            estimatedCostUsd: fullTelemetry.estimatedCostUsd,
+          })
+        }
         let streamTiming: { firstTokenMs: number; streamMs: number; outputTokens: number; streamed: true } | null = null
         if (streamed && responseForClient.statusCode < 400) {
           streamTiming = { firstTokenMs: firstFrameAt - startTime, streamMs: finishedAt - firstFrameAt, outputTokens: telemetry.usage.outputTokens, streamed: true }
@@ -5265,6 +5397,7 @@ export class BuyerProxy {
         }
         const latencyMs = Date.now() - startTime
         this._markModelActivity()
+        traceFor(res)?.noteAnswered(Date.now(), response.statusCode, freeTierRefusal !== null)
 
         log(`Response: ${response.statusCode} (${latencyMs}ms, ${response.body.length} bytes)`)
         if (response.statusCode >= 400) {
@@ -5273,6 +5406,14 @@ export class BuyerProxy {
         }
 
         const telemetry = computeResponseTelemetry(requestForPeer, response.headers, response.body, selectedPeer)
+        const answerTrace = response.statusCode < 400 ? traceFor(res) : undefined
+        if (answerTrace) {
+          answerTrace.noteUsage(telemetry.usage)
+          answerTrace.noteAnswerDetails({
+            finishReason: finishReasonFromBody(response.headers['content-type'], response.body),
+            estimatedCostUsd: telemetry.estimatedCostUsd,
+          })
+        }
         const responseHeaders = attachAntseedTelemetryHeaders(
           response.headers,
           selectedPeer,

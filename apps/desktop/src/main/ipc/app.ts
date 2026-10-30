@@ -23,6 +23,9 @@ import {
 import {
   getTelemetryService,
 } from '../telemetry/runtime.js';
+import { watchConnectedAppFirstRequest } from '../telemetry/connected-app-watch.js';
+import { syncBuyerTelemetryConsent } from '../telemetry/buyer-consent.js';
+import { setDesktopTelemetryUserOptedOut } from '../telemetry/host-env.js';
 import {
   getMainWindow,
 } from '../ui/window.js';
@@ -42,7 +45,10 @@ import {
 import {
   TELEMETRY_ACTION_SURFACES,
   TELEMETRY_APP_NAMES,
+  TELEMETRY_DEPOSIT_METHODS,
+  TELEMETRY_RENDERER_DEPOSIT_STEPS,
   TELEMETRY_USER_ACTIONS,
+  type DepositStepSignal,
   type TelemetryStatusUpdateResult,
   type UserActionSignal,
 } from '../../shared/telemetry.js';
@@ -87,7 +93,17 @@ export function registerAppIpc(): void {
     if (!telemetry) {
       return { ok: false, error: 'Telemetry service not initialized' };
     }
+    const previouslyOptedOut = telemetry.isUserOptedOut();
     await telemetry.setUserOptedOut(!enabled);
+    // The buyer re-reads `telemetry.enabled` from its config within a second.
+    // If that file cannot be written the buyer would keep its old choice, so
+    // put the desktop back too and report the failure instead of a switch
+    // that says one thing while the buyer does another.
+    if (!(await syncBuyerTelemetryConsent(Boolean(enabled)))) {
+      await telemetry.setUserOptedOut(previouslyOptedOut);
+      return { ok: false, error: 'Could not update the buyer config; telemetry setting unchanged' };
+    }
+    setDesktopTelemetryUserOptedOut(!enabled);
     return {
       ok: true,
       available: telemetry.available,
@@ -110,6 +126,33 @@ export function registerAppIpc(): void {
       action: candidate.action as UserActionSignal['action'],
       surface: candidate.surface as UserActionSignal['surface'],
       ...(candidate.app !== undefined ? { app: candidate.app as UserActionSignal['app'] } : {}),
+    });
+    if (candidate.action === 'app_connect' && candidate.app !== undefined) {
+      const app = candidate.app as NonNullable<UserActionSignal['app']>;
+      void telemetry.recordConnectedAppConnected(app);
+      if (telemetry.enabled) watchConnectedAppFirstRequest(app);
+    }
+    return { ok: true };
+  });
+
+  // Deposit funnel steps from the Add credits view. Only fixed enums and a
+  // finite amount cross; main buckets the amount before anything is sent.
+  ipcMain.handle('telemetry:deposit-step', (_event, payload: unknown) => {
+    const candidate = payload as Partial<DepositStepSignal> | null;
+    if (!candidate
+      || !TELEMETRY_RENDERER_DEPOSIT_STEPS.includes(candidate.step as never)
+      || (candidate.method !== undefined && !TELEMETRY_DEPOSIT_METHODS.includes(candidate.method as never))) {
+      return { ok: false };
+    }
+    const telemetry = getTelemetryService();
+    if (!telemetry) return { ok: false };
+    const amount = typeof candidate.amountUsdc === 'number' && Number.isFinite(candidate.amountUsdc)
+      ? candidate.amountUsdc
+      : undefined;
+    void telemetry.recordDepositStep({
+      step: candidate.step as DepositStepSignal['step'],
+      ...(candidate.method !== undefined ? { method: candidate.method } : {}),
+      ...(amount !== undefined ? { amountUsdc: amount } : {}),
     });
     return { ok: true };
   });

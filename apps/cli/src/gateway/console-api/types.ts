@@ -1002,6 +1002,7 @@ export interface Preset {
 // GET   /settings                  → Settings
 // PATCH /settings/buyer            BuyerSettingsInput → Settings  (restarts the buyer)
 // PUT   /settings/observability    ObservabilitySettings → Settings
+// PUT   /settings/telemetry        { enabled: boolean } → Settings
 export interface GatewayStatus {
   version: string
   publicUrl: string | null
@@ -1079,6 +1080,8 @@ export interface Settings {
   publicUrl: string | null
   buyer: BuyerSettings
   observability: ObservabilitySettings
+  /** Anonymous product telemetry: this gateway's setup funnel and the buyer it runs (docs/telemetry.md). */
+  telemetry: TelemetrySettings
   auth: AuthConfig
   /**
    * Set by `PATCH /settings/buyer` when a change needs a buyer restart and
@@ -1164,6 +1167,19 @@ export interface ObservabilitySettings {
   logContent: boolean
   /** Days to keep the request log; null keeps it forever. */
   retentionDays: number | null
+}
+
+/**
+ * The same switch as the desktop's Preferences → Privacy and
+ * `antseed telemetry enable|disable`: `telemetry.enabled` in the config
+ * file. The gateway and its buyer re-read it, so a change applies at once.
+ */
+export interface TelemetrySettings {
+  /** False when this build has no PostHog project, or the environment turns it off (ANTSEED_TELEMETRY=0, DO_NOT_TRACK=1, CI). */
+  available: boolean
+  enabled: boolean
+  /** Turned off in the config file (here, in the CLI or in the desktop). */
+  userDisabled: boolean
 }
 
 // ── Seller monitoring ────────────────────────────────────────────────────

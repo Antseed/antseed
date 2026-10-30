@@ -10,6 +10,9 @@ name: Publish npm packages
 #   - ANTSEED_COMPARABLE_PRICES_URL repo variable: retail-prices models API
 #     baked into release builds as the savings baseline (see
 #     scripts/bake-comparable-prices-url.mjs).
+#   - POSTHOG_HOST and POSTHOG_PROJECT_API_KEY repo variables: the public
+#     PostHog project the CLI, buyer and gateway send telemetry to
+#     (scripts/bake-desktop-telemetry-config.mjs, docs/telemetry.md).
 
 on:
   workflow_dispatch:
@@ -55,6 +58,12 @@ jobs:
         env:
           ANTSEED_COMPARABLE_PRICES_URL: ${{ vars.ANTSEED_COMPARABLE_PRICES_URL }}
         run: node scripts/bake-comparable-prices-url.mjs --require
+
+      - name: Bake telemetry config
+        env:
+          POSTHOG_HOST: ${{ vars.POSTHOG_HOST }}
+          POSTHOG_PROJECT_API_KEY: ${{ vars.POSTHOG_PROJECT_API_KEY }}
+        run: node scripts/bake-desktop-telemetry-config.mjs --require
 
       # Build in dependency order; tier4 desktop and the standalone web apps
       # are not published to npm, so only the CLI is built from tier4.

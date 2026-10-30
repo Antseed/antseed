@@ -308,6 +308,19 @@ export async function refreshCreditsInfo(): Promise<CreditsInfo> {
 }
 
 
+/**
+ * Whether the last balance read found nothing the buyer owns (deposits net of
+ * pending spend, plus unswept wallet USDC). Undefined until a balance has
+ * been read for the current identity. Cache-only: never touches the chain.
+ */
+export function cachedBuyerBalanceIsZero(): boolean | undefined {
+  const cache = cachedCreditsComponents;
+  if (!cache || !cache.balanceKnown) return undefined;
+  const address = getSecureIdentity()?.wallet.address;
+  if (!address || address.toLowerCase() !== cache.evmAddress.toLowerCase()) return undefined;
+  return creditsBalanceTotals(cache.balance).totalOwned <= 0n;
+}
+
 /** Drop the cached balance — call when the signing identity changes. */
 export function invalidateCreditsCache(): void {
   cachedCreditsComponents = null;

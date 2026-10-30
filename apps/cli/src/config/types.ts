@@ -494,4 +494,10 @@ export interface AntseedConfig {
   network: NetworkCLIConfig;
   /** Installed plugins */
   plugins?: { name: string; package: string; installedAt: string }[];
+  /**
+   * Anonymous product telemetry (docs/telemetry.md). On unless `enabled` is
+   * false; `antseed telemetry disable` and the desktop and gateway privacy
+   * toggles write it, and a running buyer picks the change up live.
+   */
+  telemetry?: { enabled?: boolean };
 }

@@ -62,6 +62,7 @@ import { closeCheckoutWindows, openCheckoutPopup } from '../payments/checkout-wi
 import { antseedPayLinkAmount, resolveCardProviderUrl, signAntseedPayUrl } from '@antseed/payments/card-link';
 import { createPeerPayCheckout } from '../payments/peer-pay.js';
 import { getMainWindow } from '../ui/window.js';
+import { getTelemetryService } from '../telemetry/runtime.js';
 import {
   lookupPeer,
   refreshPeerCache,
@@ -91,6 +92,8 @@ export function registerPaymentsIpc(): void {
         return { ok: true };
       }
       await startPaymentsPortal();
+      if (kind === 'withdraw') void getTelemetryService()?.recordWithdrawStarted();
+      else getTelemetryService()?.clearPendingWithdraw();
       const token = getPaymentsPortalToken();
       const params = new URLSearchParams();
       if (token) params.set('token', token);
