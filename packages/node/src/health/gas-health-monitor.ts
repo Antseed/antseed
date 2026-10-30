@@ -55,6 +55,8 @@ export interface GasHealthMonitorConfig {
    * `node.pauseAdvertising(...)` / `node.resumeAdvertising()`).
    */
   onChange?: (event: GasHealthEvent) => void | Promise<void>;
+  /** Invoked with every successful reading (e.g. `GasAutoRefueler.onBalance`). */
+  onBalance?: (balanceWei: bigint) => void | Promise<void>;
 }
 
 /**
@@ -77,6 +79,7 @@ export class GasHealthMonitor {
   private readonly _relaxedBalanceFactor: bigint;
   private readonly _minBalanceWei: bigint;
   private readonly _onChange: GasHealthMonitorConfig['onChange'];
+  private readonly _onBalance: GasHealthMonitorConfig['onBalance'];
   private _timer: ReturnType<typeof setInterval> | null = null;
   private _stopped = false;
   private _checkInFlight: Promise<void> | null = null;
@@ -92,6 +95,7 @@ export class GasHealthMonitor {
     this._minBalanceWei = config.minBalanceWei ?? DEFAULT_MIN_GAS_BALANCE_WEI;
     this._relaxedBalanceFactor = config.relaxedBalanceFactor ?? RELAXED_BALANCE_FACTOR;
     this._onChange = config.onChange;
+    this._onBalance = config.onBalance;
   }
 
   /** Start periodic checks. The first check runs immediately (async). */
@@ -156,6 +160,7 @@ export class GasHealthMonitor {
     if (this._stopped) return;
     this._lastBalanceWei = balanceWei;
     this._lastCheckedAt = Date.now();
+    this._notifyBalance(balanceWei);
 
     const depleted = balanceWei < this._minBalanceWei;
     if (depleted === this._depleted) return;
@@ -166,6 +171,20 @@ export class GasHealthMonitor {
       balanceWei,
       minBalanceWei: this._minBalanceWei,
     });
+  }
+
+  private _notifyBalance(balanceWei: bigint): void {
+    if (!this._onBalance) return;
+    try {
+      const result = this._onBalance(balanceWei);
+      if (result && typeof (result as Promise<void>).catch === 'function') {
+        (result as Promise<void>).catch((err) => {
+          debugWarn(`[GasHealth] onBalance failed: ${err instanceof Error ? err.message : err}`);
+        });
+      }
+    } catch (err) {
+      debugWarn(`[GasHealth] onBalance failed: ${err instanceof Error ? err.message : err}`);
+    }
   }
 
   private _emitChange(event: GasHealthEvent): void {

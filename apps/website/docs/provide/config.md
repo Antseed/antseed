@@ -208,6 +208,7 @@ Any other npm package that exports a provider plugin works too. See [Provider pl
 | `seller.freeUsage` | 16 requests / 15 min | How often free usage is recorded on-chain. See below. |
 | `seller.healthCheck` | enabled, 5 min, 3 failures | Model health checks. See below. |
 | `seller.gasCheck` | enabled, 60 s, 0.00005 ETH | Pauses advertising while the seller wallet holds less ETH than `minBalanceEth`, checking every `intervalMs` (at least 10 s). Resumes once funded. |
+| `seller.gasRefuel` | enabled, 0.0005 ETH, 10 USDC, 30 USDC/day | Base mainnet only, and needs `seller.gasCheck` on. When a gas check finds the wallet below `triggerBalanceEth`, the seller swaps `swapUsdc` of the wallet's own USDC for ETH on Uniswap v3 (USDC/WETH 0.05% pool, `slippageBps` default 100), paying the swap's gas from the ETH still there. At most `maxUsdcPerDay` in any 24 hours; failures retry with back-off. Set `enabled: false` to opt out. |
 | `seller.verifiers` | none | Verifier SDKs to run provers for. See [TEE seller](/docs/provide/tee). |
 | `seller.verifications` | none | Domain and GitHub ownership claims. See [Verified identity](/docs/provide/verified-identity). |
 | `seller.agentDir` | none | Ant agent directory. See below. |

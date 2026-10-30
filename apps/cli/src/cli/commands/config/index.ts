@@ -326,6 +326,11 @@ export function setConfigValue(config: Record<string, unknown>, key: string, val
     }
   }
 
+  if (trimmed === 'true' || trimmed === 'false') {
+    current[lastKey] = trimmed === 'true';
+    return;
+  }
+
   // Auto-parse numeric scalars. Non-numeric strings use `trimmed` to match
   // loader normalization (e.g. normalizeSellerProvider strips whitespace), so
   // on-disk state matches what `loadConfig` would produce.
@@ -349,6 +354,14 @@ const DYNAMIC_KEYS = new Set([
   'seller.freeUsage.recordBatchSize',
   'seller.freeUsage.recordFlushIntervalMs',
   'seller.restrictedCountries',
+  'seller.gasCheck.enabled',
+  'seller.gasCheck.intervalMs',
+  'seller.gasCheck.minBalanceEth',
+  'seller.gasRefuel.enabled',
+  'seller.gasRefuel.triggerBalanceEth',
+  'seller.gasRefuel.swapUsdc',
+  'seller.gasRefuel.maxUsdcPerDay',
+  'seller.gasRefuel.slippageBps',
 ]);
 
 export function isDynamicKey(key: string): boolean {

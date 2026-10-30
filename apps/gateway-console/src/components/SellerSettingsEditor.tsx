@@ -21,6 +21,10 @@ interface Draft {
   healthThreshold: string
   gasEnabled: boolean
   gasMinEth: string
+  refuelEnabled: boolean
+  refuelBelowEth: string
+  refuelUsdc: string
+  refuelMaxPerDay: string
   freePerAddress: string
   freePerIp: string
   freeWindowHours: string
@@ -90,6 +94,10 @@ export function draftOf(settings: SellerSettings): Draft {
     healthThreshold: String(settings.healthCheck.failureThreshold),
     gasEnabled: settings.gasCheck.enabled,
     gasMinEth: String(settings.gasCheck.minBalanceEth),
+    refuelEnabled: settings.gasRefuel.enabled,
+    refuelBelowEth: String(settings.gasRefuel.triggerBalanceEth),
+    refuelUsdc: String(settings.gasRefuel.swapUsdc),
+    refuelMaxPerDay: String(settings.gasRefuel.maxUsdcPerDay),
     freePerAddress: optional(settings.freeTier.maxRequestsPerAddress),
     freePerIp: optional(settings.freeTier.maxRequestsPerIp),
     freeWindowHours: hoursOf(settings.freeTier.windowMs),
@@ -182,6 +190,9 @@ export function draftErrors(draft: Draft, base?: Draft): Record<string, string> 
     healthIntervalSec: check('healthIntervalSec', numberFieldError(draft.healthIntervalSec, { required: true, min: 60, integer: true })),
     healthThreshold: check('healthThreshold', numberFieldError(draft.healthThreshold, { required: true, min: 1, integer: true })),
     gasMinEth: check('gasMinEth', numberFieldError(draft.gasMinEth, { required: true })),
+    refuelBelowEth: check('refuelBelowEth', numberFieldError(draft.refuelBelowEth, { required: true, min: 0.000001 })),
+    refuelUsdc: check('refuelUsdc', numberFieldError(draft.refuelUsdc, { required: true, min: 1 })),
+    refuelMaxPerDay: check('refuelMaxPerDay', numberFieldError(draft.refuelMaxPerDay, { required: true, min: 1 })),
     freePerAddress: check('freePerAddress', numberFieldError(draft.freePerAddress, { min: 1, integer: true })),
     freePerIp: check('freePerIp', numberFieldError(draft.freePerIp, { min: 1, integer: true })),
     freeWindowHours: check('freeWindowHours', numberFieldError(draft.freeWindowHours, { min: 1 / 3600, minText: '1 second (0.0003 hours)' })),
@@ -275,6 +286,12 @@ export function patchOf(base: Draft, draft: Draft): SellerSettingsPatch {
   if (draft.gasEnabled !== base.gasEnabled) gasCheck.enabled = draft.gasEnabled
   if (numChanged(draft.gasMinEth, base.gasMinEth)) gasCheck.minBalanceEth = num(draft.gasMinEth)
   if (Object.keys(gasCheck).length > 0) patch.gasCheck = gasCheck
+  const gasRefuel: NonNullable<SellerSettingsPatch['gasRefuel']> = {}
+  if (draft.refuelEnabled !== base.refuelEnabled) gasRefuel.enabled = draft.refuelEnabled
+  if (numChanged(draft.refuelBelowEth, base.refuelBelowEth)) gasRefuel.triggerBalanceEth = num(draft.refuelBelowEth)
+  if (numChanged(draft.refuelUsdc, base.refuelUsdc)) gasRefuel.swapUsdc = num(draft.refuelUsdc)
+  if (numChanged(draft.refuelMaxPerDay, base.refuelMaxPerDay)) gasRefuel.maxUsdcPerDay = num(draft.refuelMaxPerDay)
+  if (Object.keys(gasRefuel).length > 0) patch.gasRefuel = gasRefuel
   const programOf = (from: Draft) => ({
     maxRequestsPerAddress: numOrNull(from.freePerAddress), maxRequestsPerIp: numOrNull(from.freePerIp), windowMs: windowOf(from.freeWindowHours),
     stakersOnly: from.freeStakersOnly, stakeTiers: tiersOf(from),
@@ -405,6 +422,13 @@ export function SellerSettingsEditor({ settings, restart }: { settings: SellerSe
             <Switch checked={draft.gasEnabled} disabled={readOnly} onChange={(next) => set('gasEnabled', next)} label="Gas checks"
               description="Pause advertising while the wallet cannot pay for settlement." />
             <div className="gc-policy__caps">{field('gasMinEth', 'Minimum ETH', { wide: true })}</div>
+            <Switch checked={draft.refuelEnabled} disabled={readOnly || !draft.gasEnabled} onChange={(next) => set('refuelEnabled', next)} label="Auto-refuel gas"
+              description="Swap some USDC earnings for ETH on Uniswap before the wallet runs out. Base mainnet; needs gas checks." />
+            <div className="gc-policy__caps">
+              {field('refuelBelowEth', 'Below ETH')}
+              {field('refuelUsdc', 'Swap USDC')}
+              {field('refuelMaxPerDay', 'Max USDC / day')}
+            </div>
           </section>
         </div>
         <div className="gc-policy__advanced">

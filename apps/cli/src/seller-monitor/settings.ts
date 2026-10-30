@@ -1,7 +1,7 @@
 import { constants } from 'node:fs'
 import { access, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { DEFAULT_FREE_TIER_STAKE_TIERS, DEFAULT_FREE_TIER_WINDOW_MS, DEFAULT_HEALTH_CHECK_FAILURE_THRESHOLD, DEFAULT_HEALTH_CHECK_INTERVAL_MS, DEFAULT_MIN_GAS_BALANCE_WEI, formatEther } from '@antseed/node'
+import { DEFAULT_FREE_TIER_STAKE_TIERS, DEFAULT_FREE_TIER_WINDOW_MS, DEFAULT_HEALTH_CHECK_FAILURE_THRESHOLD, DEFAULT_HEALTH_CHECK_INTERVAL_MS, DEFAULT_MIN_GAS_BALANCE_WEI, DEFAULT_REFUEL_MAX_USDC_PER_DAY_UNITS, DEFAULT_REFUEL_SWAP_USDC_UNITS, DEFAULT_REFUEL_TRIGGER_WEI, formatEther } from '@antseed/node'
 import { DEFAULT_RESTRICTED_COUNTRIES } from '../config/defaults.js'
 import { configFromObject, resolveConfigPath } from '../config/loader.js'
 import { isPricedSellerService } from '../config/effective.js'
@@ -153,6 +153,12 @@ function settingsView(raw: JsonObject, config: AntseedConfig, configPath: string
       enabled: seller.gasCheck?.enabled !== false,
       minBalanceEth: seller.gasCheck?.minBalanceEth ?? Number(formatEther(DEFAULT_MIN_GAS_BALANCE_WEI)),
     },
+    gasRefuel: {
+      enabled: seller.gasRefuel?.enabled !== false,
+      triggerBalanceEth: seller.gasRefuel?.triggerBalanceEth ?? Number(formatEther(DEFAULT_REFUEL_TRIGGER_WEI)),
+      swapUsdc: seller.gasRefuel?.swapUsdc ?? Number(DEFAULT_REFUEL_SWAP_USDC_UNITS) / 1e6,
+      maxUsdcPerDay: seller.gasRefuel?.maxUsdcPerDay ?? Number(DEFAULT_REFUEL_MAX_USDC_PER_DAY_UNITS) / 1e6,
+    },
     freeTier: programSettings(seller.freeTier),
     defaultStakeTiers: DEFAULT_FREE_TIER_STAKE_TIERS.map((tier) => ({ ...tier })),
     restrictedCountries: seller.restrictedCountries ?? DEFAULT_RESTRICTED_COUNTRIES,
@@ -254,7 +260,7 @@ function child(parent: JsonObject, key: string): JsonObject {
  */
 export function applySellerSettingsPatch(raw: JsonObject, body: unknown, startedProviders: readonly string[] | null = null): string[] {
   const patch = obj(body ?? {}, 'The request body') as SellerSettingsPatch & JsonObject
-  const known = new Set(['displayName', 'maxConcurrentBuyers', 'healthCheck', 'gasCheck', 'freeTier', 'restrictedCountries', 'pricing', 'addServices', 'removeServices'])
+  const known = new Set(['displayName', 'maxConcurrentBuyers', 'healthCheck', 'gasCheck', 'gasRefuel', 'freeTier', 'restrictedCountries', 'pricing', 'addServices', 'removeServices'])
   for (const key of Object.keys(patch)) if (!known.has(key)) bad(`Unknown setting: ${key}`)
   const fields: string[] = []
   const seller = () => child(raw, 'seller')
@@ -294,6 +300,24 @@ export function applySellerSettingsPatch(raw: JsonObject, body: unknown, started
       out.minBalanceEth = input.minBalanceEth
     }
     fields.push('gasCheck')
+  }
+  if (patch.gasRefuel !== undefined) {
+    const input = obj(patch.gasRefuel, 'gasRefuel')
+    const out = child(seller(), 'gasRefuel')
+    if (input.enabled !== undefined) {
+      if (typeof input.enabled !== 'boolean') bad('gasRefuel.enabled must be true or false')
+      out.enabled = input.enabled
+    }
+    const amount = (key: 'triggerBalanceEth' | 'swapUsdc' | 'maxUsdcPerDay', min: number, what: string) => {
+      const value = input[key]
+      if (value === undefined) return
+      if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value < min) bad(`gasRefuel.${key} must be ${what}`)
+      out[key] = value
+    }
+    amount('triggerBalanceEth', 0, 'an ETH amount above 0')
+    amount('swapUsdc', 1, 'at least 1 USDC')
+    amount('maxUsdcPerDay', 0, 'a USDC amount above 0')
+    fields.push('gasRefuel')
   }
   if (patch.freeTier !== undefined) {
     const input = obj(patch.freeTier, 'freeTier')

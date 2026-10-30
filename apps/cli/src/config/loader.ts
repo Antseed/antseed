@@ -385,6 +385,32 @@ function normalizeSellerGasCheck(
   };
 }
 
+const GAS_REFUEL_NUMBER_KEYS = ['triggerBalanceEth', 'swapUsdc', 'maxUsdcPerDay', 'slippageBps'] as const;
+
+function cloneSellerGasRefuel(
+  value: AntseedConfig['seller']['gasRefuel'],
+): AntseedConfig['seller']['gasRefuel'] {
+  return value ? { ...value } : undefined;
+}
+
+function normalizeSellerGasRefuel(
+  value: unknown,
+  fallback?: AntseedConfig['seller']['gasRefuel'],
+): { gasRefuel: NonNullable<AntseedConfig['seller']['gasRefuel']> } | Record<string, never> {
+  if (!isRecord(value)) {
+    const cloned = cloneSellerGasRefuel(fallback);
+    return cloned ? { gasRefuel: cloned } : {};
+  }
+  // Keep user-supplied values (even malformed) so validateConfig reports them.
+  const gasRefuel: NonNullable<AntseedConfig['seller']['gasRefuel']> = {
+    ...(value['enabled'] !== undefined ? { enabled: value['enabled'] as boolean } : {}),
+  };
+  for (const key of GAS_REFUEL_NUMBER_KEYS) {
+    if (value[key] !== undefined) gasRefuel[key] = toFiniteOrNaN(value[key]);
+  }
+  return { gasRefuel };
+}
+
 function cloneSellerFreeTier(
   value: AntseedConfig['seller']['freeTier'],
 ): AntseedConfig['seller']['freeTier'] {
@@ -465,6 +491,7 @@ function mergeSellerConfig(
       ...(normalizeVerifications(undefined, defaults.verifications)),
       ...(normalizeSellerHealthCheck(undefined, defaults.healthCheck)),
       ...(normalizeSellerGasCheck(undefined, defaults.gasCheck)),
+      ...(normalizeSellerGasRefuel(undefined, defaults.gasRefuel)),
       ...(normalizeSellerFreeTier(undefined, defaults.freeTier)),
       ...(normalizeSellerFreeUsage(undefined, defaults.freeUsage)),
     };
@@ -490,6 +517,7 @@ function mergeSellerConfig(
     ...(normalizeAgentDir(value['agentDir'], defaults.agentDir)),
     ...(normalizeSellerHealthCheck(value['healthCheck'], defaults.healthCheck)),
     ...(normalizeSellerGasCheck(value['gasCheck'], defaults.gasCheck)),
+    ...(normalizeSellerGasRefuel(value['gasRefuel'], defaults.gasRefuel)),
     ...(normalizeSellerFreeTier(value['freeTier'], defaults.freeTier)),
     ...(value['restrictedCountries'] !== undefined
       ? { restrictedCountries: value['restrictedCountries'] as string[] }

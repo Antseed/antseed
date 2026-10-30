@@ -29,6 +29,13 @@ export function sellerNotices(status: AvailableSeller, now = Date.now()): string
   if (status.gas?.depleted) {
     lines.push(`Out of gas: the seller wallet holds ${formatEth(status.gas.balanceEth)} ETH, below the ${formatEth(status.gas.minBalanceEth)} ETH minimum. Advertising is paused until it is funded.`)
   }
+  const refuel = status.gas?.refuel
+  if (refuel?.lastError) {
+    lines.push(`Gas auto-refuel failed: ${refuel.lastError}. It retries on its own; send ETH to ${status.gas!.address} if it keeps failing.`)
+  } else if (refuel?.skipped) {
+    const why = { daily_cap: `the ${refuel.maxUsdcPerDay} USDC daily cap is used up`, insufficient_usdc: 'the wallet holds too little USDC', insufficient_eth: 'the wallet cannot pay the swap\'s gas' }[refuel.skipped]
+    lines.push(`Gas auto-refuel is waiting: ${why}. Send ETH to ${status.gas!.address} to keep selling.`)
+  }
   const withdrawn = status.models.filter((model) => !model.advertised)
   if (withdrawn.length > 0) {
     const names = withdrawn.slice(0, 3).map((model) => model.service).join(', ')

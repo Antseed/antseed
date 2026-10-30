@@ -14,6 +14,9 @@ import {
   AntseedNode,
   ModelHealthChecker,
   GasHealthMonitor,
+  GasAutoRefueler,
+  UsdcEthSwapClient,
+  supportsUsdcEthSwap,
   CONNECTION_CAPABILITY_MODEL_HEALTH_V1,
   DEFAULT_HEALTH_CHECK_INTERVAL_MS,
   DEFAULT_HEALTH_CHECK_FAILURE_THRESHOLD,
@@ -53,6 +56,7 @@ import { rpcUsage, withRpcSource } from '../../../proxy/rpc-sources.js'
 import { DEFAULT_LOW_BALANCE_USD, SellerAlerts } from '../../../seller-alerts/alerts.js'
 import { UpstreamAlerts } from '../../../seller-alerts/upstream-alerts.js'
 import { ethToWei } from './gas.js'
+import { gasRefuelState, loadGasRefuelHistory, resolveGasRefuelSettings, saveGasRefuelHistory } from './gas-refuel.js'
 import { startIdleWatch, uncleanExitEvent, waitAtMost } from '../../../seller-alerts/lifecycle.js'
 import { startSellerDashboard, type SellerDashboardServer } from '../../../seller-monitor/dashboard-server.js'
 import { previousDashboardPort, previousDashboardToken, removeDashboardLink, writeDashboardLink } from '../../../seller-monitor/dashboard-link.js'
@@ -64,7 +68,10 @@ function getStateFile(dataDir: string): string {
 }
 
 /** The gas monitor's last reading for daemon.state.json, in ETH (bigint is not JSON). */
-export function gasHealthState(monitor: Pick<GasHealthMonitor, 'getSnapshot'> | null) {
+export function gasHealthState(
+  monitor: Pick<GasHealthMonitor, 'getSnapshot'> | null,
+  refueler: Pick<GasAutoRefueler, 'getSnapshot'> | null = null,
+) {
   if (!monitor) return null
   const snapshot = monitor.getSnapshot()
   return {
@@ -73,6 +80,7 @@ export function gasHealthState(monitor: Pick<GasHealthMonitor, 'getSnapshot'> | 
     balanceEth: snapshot.lastBalanceWei === null ? null : Number(formatEther(snapshot.lastBalanceWei)),
     minBalanceEth: Number(formatEther(snapshot.minBalanceWei)),
     lastCheckedAt: snapshot.lastCheckedAt,
+    refuel: gasRefuelState(refueler),
   }
 }
 
@@ -697,6 +705,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       const minGasBalanceWei = gasCheckCfg?.minBalanceEth !== undefined
         ? ethToWei(gasCheckCfg.minBalanceEth)
         : DEFAULT_MIN_GAS_BALANCE_WEI
+      const gasRefuelSettings = resolveGasRefuelSettings(effectiveSellerConfig.gasRefuel)
 
       console.log(chalk.bold('Effective seller settings:'))
       if (overriddenSettings.length > 0) {
@@ -752,6 +761,9 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       }
       if (gasCheckEnabled) {
         console.log(chalk.dim(`  gas checks: every ${Math.round(gasCheckIntervalMs / 1000)}s, pause advertising below ${formatEther(minGasBalanceWei)} ETH`))
+        console.log(chalk.dim(gasRefuelSettings.enabled
+          ? `  gas auto-refuel: below ${formatEther(gasRefuelSettings.triggerBalanceWei)} ETH swap ${Number(gasRefuelSettings.swapUsdcUnits) / 1e6} USDC for ETH (max ${Number(gasRefuelSettings.maxUsdcPerDayUnits) / 1e6} USDC/day)`
+          : '  gas auto-refuel: off'))
       }
       const restrictedCountries = new Set(effectiveSellerConfig.restrictedCountries ?? DEFAULT_RESTRICTED_COUNTRIES)
       let acceptInboundAddress: ((remoteAddress: string) => boolean) | undefined
@@ -998,6 +1010,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       // command and desktop). Currently only the out-of-gas notice.
       let gasNotice: string | null = null
       let gasMonitor: GasHealthMonitor | null = null
+      let gasRefueler: GasAutoRefueler | null = null
 
       // Write daemon state so dashboard and connect can discover this seeder
       const startedAt = Date.now()
@@ -1121,7 +1134,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           notices: gasNotice ? [gasNotice] : [],
           // Read by `antseed metrics serve --role seller` for model and gas alerts.
           modelHealth: healthChecker?.getSnapshot() ?? [],
-          gas: gasHealthState(gasMonitor),
+          gas: gasHealthState(gasMonitor, gasRefueler),
           alerts: alerts.state(),
           // Chain RPC calls this process made, per source (the dashboard and metrics exporter show them).
           rpc: rpcUsage(),
@@ -1185,11 +1198,52 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           // Balance reads go through the process's shared provider (coalescing, back-off), tagged for the RPC counters.
           const gasCrypto = requireCryptoConfig(config, { rpcUrl: baseRpcUrlOverride })
           const gasProvider = sharedChainProvider({ rpcUrl: gasCrypto.rpcUrl, evmChainId: gasCrypto.evmChainId, ...(gasCrypto.fallbackRpcUrls ? { fallbackRpcUrls: gasCrypto.fallbackRpcUrls } : {}) })
+          // Auto-refuel: swap some of the wallet's USDC earnings for ETH before it runs dry (Base mainnet only).
+          const usdcAddress = gasCrypto.usdcContractAddress
+          if (gasRefuelSettings.enabled && !supportsUsdcEthSwap(gasCrypto.evmChainId, usdcAddress)) {
+            console.log(chalk.dim('  gas auto-refuel: unavailable on this chain (Base mainnet only)'))
+          } else if (gasRefuelSettings.enabled) {
+            const swapClient = new UsdcEthSwapClient({ rpcUrl: gasCrypto.rpcUrl, evmChainId: gasCrypto.evmChainId, usdcAddress }).withProvider(gasProvider)
+            const wallet = node.identity.wallet
+            const dataDir = globalOpts.dataDir
+            gasRefueler = new GasAutoRefueler({
+              address: gasWalletAddress,
+              triggerBalanceWei: gasRefuelSettings.triggerBalanceWei,
+              swapUsdcUnits: gasRefuelSettings.swapUsdcUnits,
+              maxUsdcPerDayUnits: gasRefuelSettings.maxUsdcPerDayUnits,
+              slippageBps: gasRefuelSettings.slippageBps,
+              history: await loadGasRefuelHistory(dataDir),
+              swapper: {
+                quote: (amount) => withRpcSource('gas', () => swapClient.quote(amount)),
+                usdcBalance: (address) => withRpcSource('gas', () => swapClient.usdcBalance(address)),
+                maxSwapCostWei: () => withRpcSource('gas', () => swapClient.maxSwapCostWei()),
+                swap: (amount, minEthOut) => withRpcSource('gas', () => swapClient.swapUsdcForEth(wallet, amount, minEthOut)),
+              },
+              onEvent: async (event) => {
+                if (event.status === 'refueled') {
+                  const usdc = Number(event.record.usdcUnits) / 1e6
+                  console.log(chalk.green(`Gas auto-refuel: swapped ${usdc} USDC for ~${formatEther(event.expectedEthWei)} ETH (tx ${event.record.txHash}).`))
+                  void alerts.record({ kind: 'gas_refueled', severity: 'info', title: `Gas refueled: swapped ${usdc} USDC for ETH`, detail: `tx ${event.record.txHash}` })
+                  await saveGasRefuelHistory(dataDir, gasRefueler?.recentHistory ?? [event.record])
+                    .catch((err) => console.log(chalk.dim(`  gas auto-refuel: could not save history: ${(err as Error).message}`)))
+                  void gasMonitor?.checkNow()
+                } else if (event.status === 'failed') {
+                  console.log(chalk.yellow(`Gas auto-refuel failed: ${event.error}. Retrying at ${new Date(event.retryAt).toISOString()}.`))
+                  void alerts.record({ kind: 'gas_refuel_failed', severity: 'warning', title: 'Gas auto-refuel failed', detail: `${event.error}. Send ETH to ${event.address} if this persists.` })
+                } else {
+                  console.log(chalk.yellow(`Gas auto-refuel skipped (${event.reason}): ${event.detail}.`))
+                  void alerts.record({ kind: 'gas_refuel_failed', severity: 'warning', title: 'Gas auto-refuel skipped', detail: `${event.detail}. Send ETH to ${event.address} to keep selling.` })
+                }
+                scheduleDaemonStateWrite()
+              },
+            })
+          }
           gasMonitor = new GasHealthMonitor({
             address: gasWalletAddress,
             getBalance: (address) => withRpcSource('gas', () => gasProvider.getBalance(address)),
             intervalMs: gasCheckIntervalMs,
             minBalanceWei: minGasBalanceWei,
+            ...(gasRefueler ? { onBalance: (balanceWei: bigint) => gasRefueler?.onBalance(balanceWei) } : {}),
             onChange: (event) => {
               const balanceSummary = `wallet ${event.address} holds ${formatEther(event.balanceWei)} ETH (minimum ${formatEther(event.minBalanceWei)} ETH)`
               if (event.status === 'depleted') {
@@ -1265,6 +1319,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         idleWatch.stop()
         healthChecker?.stop()
         gasMonitor?.stop()
+        gasRefueler?.stop()
         clearInterval(stateInterval)
         node.off('connection', scheduleDaemonStateWrite)
         node.off('session:updated', scheduleDaemonStateWrite)

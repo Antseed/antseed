@@ -472,6 +472,25 @@ export function validateConfig(config: AntseedConfig): string[] {
     }
   }
 
+  if (config.seller.gasRefuel !== undefined) {
+    const gasRefuel = config.seller.gasRefuel;
+    if (gasRefuel.enabled !== undefined && typeof gasRefuel.enabled !== 'boolean') {
+      errors.push('seller.gasRefuel.enabled must be a boolean');
+    }
+    const positive = (value: number | undefined) => value === undefined || (typeof value === 'number' && Number.isFinite(value) && value > 0);
+    if (!positive(gasRefuel.triggerBalanceEth)) errors.push('seller.gasRefuel.triggerBalanceEth must be a number > 0');
+    if (!positive(gasRefuel.swapUsdc) || (gasRefuel.swapUsdc !== undefined && gasRefuel.swapUsdc < 1)) {
+      errors.push('seller.gasRefuel.swapUsdc must be a number >= 1');
+    }
+    if (!positive(gasRefuel.maxUsdcPerDay)) errors.push('seller.gasRefuel.maxUsdcPerDay must be a number > 0');
+    if (
+      gasRefuel.slippageBps !== undefined &&
+      (!Number.isInteger(gasRefuel.slippageBps) || gasRefuel.slippageBps < 1 || gasRefuel.slippageBps > 1_000)
+    ) {
+      errors.push('seller.gasRefuel.slippageBps must be an integer from 1 to 1000');
+    }
+  }
+
   if (config.seller.freeTier !== undefined) {
     validateFreeTierProgram('seller.freeTier', config.seller.freeTier, errors);
   }

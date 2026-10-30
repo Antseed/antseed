@@ -38,6 +38,19 @@ export {
   type GasHealthSnapshot,
 } from './health/gas-health-monitor.js';
 export {
+  GasAutoRefueler,
+  DEFAULT_REFUEL_TRIGGER_WEI,
+  DEFAULT_REFUEL_SWAP_USDC_UNITS,
+  DEFAULT_REFUEL_MAX_USDC_PER_DAY_UNITS,
+  DEFAULT_REFUEL_SLIPPAGE_BPS,
+  type GasAutoRefuelConfig,
+  type GasRefuelEvent,
+  type GasRefuelRecord,
+  type GasRefuelSkipReason,
+  type GasRefuelSnapshot,
+  type GasRefuelSwapper,
+} from './health/gas-auto-refuel.js';
+export {
   appendSellerEvent,
   readSellerEvents,
   SELLER_EVENTS_FILE,
@@ -214,6 +227,7 @@ export {
 } from './payments/evm/free-usage-client.js';
 export { IdentityClient, type IdentityClientConfig } from './payments/evm/identity-client.js';
 export { StakingClient, type StakingClientConfig } from './payments/evm/staking-client.js';
+export { UsdcEthSwapClient, supportsUsdcEthSwap, type UsdcEthSwapClientConfig } from './payments/evm/usdc-eth-swap-client.js';
 export { EmissionsClient, type EmissionsClientConfig, type EmissionsEpochParams } from './payments/evm/emissions-client.js';
 export { RegistryClient, type RegistryClientConfig } from './payments/evm/registry-client.js';
 export { UsageAccountingClient, type UsageAccountingClientConfig } from './payments/evm/usage-accounting-client.js';
