@@ -130,6 +130,30 @@ describe('GasAutoRefueler', () => {
     expect(events).toHaveLength(3);
   });
 
+  it('saves a refuel that completes after stop(), and stop() waits for it', async () => {
+    let finishSwap!: (hash: string) => void;
+    const saved: GasRefuelRecord[][] = [];
+    const events: GasRefuelEvent[] = [];
+    const refueler = new GasAutoRefueler({
+      address: ADDRESS,
+      swapper: {
+        quote: async (amountIn) => amountIn,
+        usdcBalance: async () => USDC(100),
+        maxSwapCostWei: async () => 1n,
+        swap: () => new Promise<string>((resolve) => { finishSwap = resolve; }),
+      },
+      saveHistory: async (records) => { saved.push(records); },
+      onEvent: (event) => { events.push(event); },
+    });
+    const running = refueler.onBalance(LOW);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const stopped = refueler.stop();
+    finishSwap('0xlate');
+    await Promise.all([running, stopped]);
+    expect(saved).toEqual([[expect.objectContaining({ txHash: '0xlate', usdcUnits: '10000000' })]]);
+    expect(events).toEqual([]);
+  });
+
   it('reports nothing and starts nothing after stop()', async () => {
     const { refueler, swaps, events } = setup();
     refueler.stop();

@@ -1108,11 +1108,15 @@ test('loadConfig rejects invalid seller gasRefuel values', async () => {
     [{ swapUsdc: 0.5 }, 'swapUsdc'],
     [{ maxUsdcPerDay: -1 }, 'maxUsdcPerDay'],
     [{ slippageBps: 5_000 }, 'slippageBps'],
+    [false, ''],
+    ['off', ''],
+    [null, ''],
+    [[], ''],
   ] as const) {
     await withTempConfig(
       JSON.stringify({ seller: { gasRefuel } }),
       async (configPath) => {
-        await assert.rejects(async () => loadConfig(configPath), new RegExp(`seller\\.gasRefuel\\.${field}`));
+        await assert.rejects(async () => loadConfig(configPath), new RegExp(field ? `seller\\.gasRefuel\\.${field}` : 'seller\\.gasRefuel must be an object'));
       }
     );
   }

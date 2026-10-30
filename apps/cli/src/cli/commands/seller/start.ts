@@ -63,6 +63,9 @@ import { previousDashboardPort, previousDashboardToken, removeDashboardLink, wri
 import { DEFAULT_SELLER_DASHBOARD_PORT } from './dashboard.js'
 import { patchSellerConfig } from '../../../seller-monitor/settings.js'
 
+/** How long shutdown waits, after channels are finalized, for a gas refuel swap already sent to be mined and recorded. */
+const GAS_REFUEL_SHUTDOWN_WAIT_MS = 20_000
+
 function getStateFile(dataDir: string): string {
   return join(dataDir, 'daemon.state.json')
 }
@@ -1213,19 +1216,18 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
               maxUsdcPerDayUnits: gasRefuelSettings.maxUsdcPerDayUnits,
               slippageBps: gasRefuelSettings.slippageBps,
               history: await loadGasRefuelHistory(dataDir),
+              saveHistory: (records) => saveGasRefuelHistory(dataDir, records),
               swapper: {
                 quote: (amount) => withRpcSource('gas', () => swapClient.quote(amount)),
                 usdcBalance: (address) => withRpcSource('gas', () => swapClient.usdcBalance(address)),
                 maxSwapCostWei: () => withRpcSource('gas', () => swapClient.maxSwapCostWei()),
                 swap: (amount, minEthOut) => withRpcSource('gas', () => swapClient.swapUsdcForEth(wallet, amount, minEthOut)),
               },
-              onEvent: async (event) => {
+              onEvent: (event) => {
                 if (event.status === 'refueled') {
                   const usdc = Number(event.record.usdcUnits) / 1e6
                   console.log(chalk.green(`Gas auto-refuel: swapped ${usdc} USDC for ~${formatEther(event.expectedEthWei)} ETH (tx ${event.record.txHash}).`))
                   void alerts.record({ kind: 'gas_refueled', severity: 'info', title: `Gas refueled: swapped ${usdc} USDC for ETH`, detail: `tx ${event.record.txHash}` })
-                  await saveGasRefuelHistory(dataDir, gasRefueler?.recentHistory ?? [event.record])
-                    .catch((err) => console.log(chalk.dim(`  gas auto-refuel: could not save history: ${(err as Error).message}`)))
                   void gasMonitor?.checkNow()
                 } else if (event.status === 'failed') {
                   console.log(chalk.yellow(`Gas auto-refuel failed: ${event.error}. Retrying at ${new Date(event.retryAt).toISOString()}.`))
@@ -1319,7 +1321,8 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         idleWatch.stop()
         healthChecker?.stop()
         gasMonitor?.stop()
-        gasRefueler?.stop()
+        // A refuel swap already sent keeps going while channels finalize; it is saved to the daily-cap history when mined.
+        const refuelStopped = gasRefueler?.stop() ?? Promise.resolve()
         clearInterval(stateInterval)
         node.off('connection', scheduleDaemonStateWrite)
         node.off('session:updated', scheduleDaemonStateWrite)
@@ -1341,6 +1344,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           stateStopped = true
           await stateWriteCurrent?.catch(() => {})
           await unlink(getStateFile(globalOpts.dataDir)).catch(() => {})
+          await waitAtMost(refuelStopped, GAS_REFUEL_SHUTDOWN_WAIT_MS)
           // Only once the node is down, and never for long: alert delivery is remote and best effort.
           await waitAtMost(alerts.record({ kind: 'stopped', severity: 'info', title: 'Seller stopped' }))
         }

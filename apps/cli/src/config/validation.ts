@@ -472,7 +472,9 @@ export function validateConfig(config: AntseedConfig): string[] {
     }
   }
 
-  if (config.seller.gasRefuel !== undefined) {
+  if (config.seller.gasRefuel !== undefined && (typeof config.seller.gasRefuel !== 'object' || config.seller.gasRefuel === null || Array.isArray(config.seller.gasRefuel))) {
+    errors.push('seller.gasRefuel must be an object, e.g. { "enabled": false }');
+  } else if (config.seller.gasRefuel !== undefined) {
     const gasRefuel = config.seller.gasRefuel;
     if (gasRefuel.enabled !== undefined && typeof gasRefuel.enabled !== 'boolean') {
       errors.push('seller.gasRefuel.enabled must be a boolean');

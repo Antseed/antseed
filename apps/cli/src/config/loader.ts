@@ -397,10 +397,12 @@ function normalizeSellerGasRefuel(
   value: unknown,
   fallback?: AntseedConfig['seller']['gasRefuel'],
 ): { gasRefuel: NonNullable<AntseedConfig['seller']['gasRefuel']> } | Record<string, never> {
-  if (!isRecord(value)) {
+  if (value === undefined) {
     const cloned = cloneSellerGasRefuel(fallback);
     return cloned ? { gasRefuel: cloned } : {};
   }
+  // Kept as written when it is not an object, so validateConfig refuses it instead of turning on the defaults.
+  if (!isRecord(value)) return { gasRefuel: value as NonNullable<AntseedConfig['seller']['gasRefuel']> };
   // Keep user-supplied values (even malformed) so validateConfig reports them.
   const gasRefuel: NonNullable<AntseedConfig['seller']['gasRefuel']> = {
     ...(value['enabled'] !== undefined ? { enabled: value['enabled'] as boolean } : {}),

@@ -63,6 +63,11 @@ export interface GasAutoRefuelConfig {
   slippageBps?: number;
   /** Earlier refuels (e.g. loaded from disk) so the daily cap survives restarts. */
   history?: GasRefuelRecord[];
+  /**
+   * Persist the last 24 hours of refuels after each one. Called even for a swap
+   * that completes after `stop()`, so the daily cap still counts it after a restart.
+   */
+  saveHistory?: (records: GasRefuelRecord[]) => Promise<void>;
   onEvent?: (event: GasRefuelEvent) => void | Promise<void>;
   now?: () => number;
 }
@@ -82,6 +87,7 @@ export class GasAutoRefueler {
   private readonly _maxUsdcPerDayUnits: bigint;
   private readonly _slippageBps: bigint;
   private readonly _onEvent: GasAutoRefuelConfig['onEvent'];
+  private readonly _saveHistory: GasAutoRefuelConfig['saveHistory'];
   private readonly _now: () => number;
   private _history: GasRefuelRecord[];
   private _inFlight: Promise<void> | null = null;
@@ -99,13 +105,18 @@ export class GasAutoRefueler {
     this._maxUsdcPerDayUnits = config.maxUsdcPerDayUnits ?? DEFAULT_REFUEL_MAX_USDC_PER_DAY_UNITS;
     this._slippageBps = BigInt(config.slippageBps ?? DEFAULT_REFUEL_SLIPPAGE_BPS);
     this._onEvent = config.onEvent;
+    this._saveHistory = config.saveHistory;
     this._now = config.now ?? Date.now;
     this._history = [...(config.history ?? [])];
   }
 
-  /** No more refuels after this; one already running finishes but reports nothing. */
-  stop(): void {
+  /**
+   * No more refuels after this. One already running finishes and its history is
+   * still saved, but it reports nothing; the returned promise settles when it is done.
+   */
+  stop(): Promise<void> {
     this._stopped = true;
+    return this._inFlight ?? Promise.resolve();
   }
 
   /** Every refuel in the last 24 hours (what the daily cap counts). */
@@ -179,6 +190,10 @@ export class GasAutoRefueler {
       const txHash = await this._swapper.swap(amount, minOut);
       const record: GasRefuelRecord = { at: this._now(), usdcUnits: amount.toString(), txHash };
       this._history = [...this.recentHistory, record];
+      if (this._saveHistory) {
+        await this._saveHistory(this.recentHistory)
+          .catch((err) => debugWarn(`[GasRefuel] could not save refuel history: ${err instanceof Error ? err.message : err}`));
+      }
       this._failures = 0;
       this._lastError = null;
       this._skipped = null;
