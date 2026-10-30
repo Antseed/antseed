@@ -1,9 +1,9 @@
 ---
 slug: staked-free-tier
-title: "Introducing the ANTS liquid inference program: stake ANTS for free AI"
+title: "#1: ANTS as a Liquid Token for AI Inference"
 authors: [antseed]
 tags: [ANTS, staking, free models, providers]
-description: "Stake ANTS with an Antseed provider to get free AI, up to unlimited requests. How the liquid inference program works and why providers join."
+description: "Stake ANTS to get free AI from participating providers on Antseed. Your staking position remains tradable as lANTS."
 keywords: [ANTS liquid inference, stake ANTS, free AI, staked free tier, Antseed providers, lANTS]
 image: /img/blog/ants-liquid-inference-program/og.jpg
 date: 2026-10-23
@@ -14,11 +14,11 @@ last_update:
 
 ![Ants carry seeds into a leaf-roofed seed store while another ant works on a laptop at a tree stump.](/img/blog/ants-liquid-inference-program/cover.webp)
 
-Stake ANTS to get free AI from providers.
+**Stake ANTS to get free AI from providers.**
 
-What if holding a token could get you free AI? That's where we're heading: ANTS as a liquid token for inference.
+We're taking the first step toward ANTS as a liquid inference token. You can now stake ANTS with participating providers on Antseed to unlock free usage of their models. Your staking position remains tradable as lANTS.
 
-Today we're taking the first step. You can now stake ANTS with a provider on Antseed and get free AI from it in return.
+ANTS is becoming your way to access AI.
 
 <!-- truncate -->
 
