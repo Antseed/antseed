@@ -30,7 +30,7 @@ export function mockSellerEvents(now = Date.now()): { events: SellerEventView[] 
   return {
     events: [
       { at: now - 26 * 60_000, kind: 'model_down', severity: 'warning', title: 'llama-4-maverick marked failing after 3 failed health checks', detail: 'HTTP 402: You need positive balance to do inference' },
-      { at: now - 3 * 3_600_000, kind: 'model_up', severity: 'info', title: 'glm-5.3 restored: health check passed' },
+      { at: now - 3 * 3_600_000, kind: 'model_up', severity: 'info', title: 'glm-5.3 recovered: health check passed' },
       { at: now - 13 * 3_600_000, kind: 'started', severity: 'info', title: 'Seller started' },
     ],
   }

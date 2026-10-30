@@ -773,6 +773,8 @@ export interface Peer {
     paid?: boolean
     /** The free-tier program this service is served under: its own, else the seller-wide one. */
     freeTier?: FreeTierProgramView | null
+    /** The seller's own health check marks the service failing, so routing skips it. */
+    failing?: boolean
   }>
   trustScore: number | null
   reputationScore: number | null

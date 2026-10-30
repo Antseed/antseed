@@ -56,10 +56,10 @@ describe('seller self health error', () => {
     provider.serviceHealth = { 'test-model': failing };
     const events: Array<[string, unknown]> = [];
     const response = await serve([provider], (event, payload) => { events.push([event, payload]); return true; });
-    expect(response.statusCode).toBe(502);
+    expect(response.statusCode).toBe(503);
     const error = JSON.parse(new TextDecoder().decode(response.body)).error;
     expect(error).toMatchObject({ code: 'seller_self_health_failing', service: 'test-model', service_health: failing, upstream_status: 502 });
-    expect(error.message).toMatch(/Upstream said: upstream overloaded$/);
+    expect(error.message).not.toContain('upstream overloaded');
     // The health checker still sees the upstream's own body.
     expect(events.find(([event]) => event === 'provider:response')?.[1]).toMatchObject({ service: 'test-model', statusCode: 502, body: expect.stringContaining('upstream overloaded') });
   });

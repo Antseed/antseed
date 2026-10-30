@@ -41,7 +41,7 @@ import {
   type AnnouncerConfig,
   type SellerContractConfig,
 } from "./discovery/announcer.js";
-import type { PeerVerifications } from "./discovery/peer-metadata.js";
+import type { PeerVerifications, ServiceHealth } from "./discovery/peer-metadata.js";
 import { verifyPeerMetadataDomains } from "./discovery/domain-verification.js";
 import { verifyPeerMetadataGithub } from "./discovery/github-verification.js";
 import {
@@ -552,7 +552,7 @@ export class AntseedNode extends EventEmitter {
   /**
    * Re-sign the advertised seller metadata snapshot without a DHT announce.
    * Call after mutating a provider's `services` at runtime (e.g. when the
-   * model health checker unadvertises or restores a service) so the next
+   * model health checker marks a service failing or recovered) so the next
    * `GET /metadata` fetch reflects the change immediately.
    */
   async refreshSellerMetadata(): Promise<void> {
@@ -1992,7 +1992,7 @@ export class AntseedNode extends EventEmitter {
           ...(p.serviceUnitBillingModels ? { serviceUnitBillingModels: { ...p.serviceUnitBillingModels } } : {}),
           ...(p.serviceCapabilities ? { serviceCapabilities: { ...p.serviceCapabilities } } : {}),
           // Read live: the model health checker updates it between refreshes.
-          serviceHealth: () => p.serviceHealth,
+          serviceHealth: () => announcedServiceHealth(p),
           maxConcurrency: p.maxConcurrency,
           isAvailable: () => this._advertisingPausedReason === null,
           pricing: {
@@ -2995,4 +2995,17 @@ function peerOffersService(peer: PeerInfo, service: string): boolean {
     }
   }
   return false;
+}
+
+/**
+ * A provider that failed to initialize is announced as failing from the
+ * first announcement, before the model health checker has published anything.
+ */
+function announcedServiceHealth(provider: Provider): Record<string, ServiceHealth> | undefined {
+  if (provider.healthCheckAvailable !== false) return provider.serviceHealth;
+  const health: Record<string, ServiceHealth> = {};
+  for (const service of provider.services) {
+    health[service] = provider.serviceHealth?.[service] ?? { status: 'failing', reason: 'init_failed' };
+  }
+  return health;
 }

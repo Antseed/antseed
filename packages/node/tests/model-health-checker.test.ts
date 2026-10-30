@@ -172,7 +172,9 @@ describe('ModelHealthChecker', () => {
     await checker.runSweep();
     await checker.runSweep();
     expect(statusOf(provider, 'model-a')).toBe('unknown');
-    expect(provider.serviceHealth?.['model-a']).toMatchObject({ consecutiveFailures: 2, reason: 'upstream_error', httpStatus: 500 });
+    // Below the threshold nothing about the failures is announced.
+    expect(provider.serviceHealth?.['model-a']).toBeUndefined();
+    expect(checker.getSnapshot().find((entry) => entry.service === 'model-a')).toMatchObject({ consecutiveFailures: 2, reason: 'upstream_error' });
 
     await checker.runSweep();
     expect(provider.services).toEqual(['model-a', 'model-b']);
@@ -216,7 +218,9 @@ describe('ModelHealthChecker', () => {
       await checker.runSweep();
     }
     expect(statusOf(provider, 'model-a')).toBe('healthy');
-    expect(provider.serviceHealth?.['model-a']?.consecutiveFailures).toBe(2);
+    // A healthy service keeps the evidence of its last success.
+    expect(provider.serviceHealth?.['model-a']).toEqual({ status: 'healthy', checkedAt: expect.any(Number), source: 'probe' });
+    expect(checker.getSnapshot().find((entry) => entry.service === 'model-a')?.consecutiveFailures).toBe(2);
   });
 
   it('does not count inconclusive probes (400, 422) as failures', async () => {
@@ -699,8 +703,17 @@ describe('ModelHealthChecker buyer traffic', () => {
     const checker = new ModelHealthChecker({ targets: [{ provider }] });
     checker.reportUpstreamResponse(provider, 503, '', true, 'model-a');
     checker.reportUpstreamFailure(provider, 'model-a');
-    await vi.waitFor(() => expect(provider.serviceHealth?.['model-a']?.consecutiveFailures).toBe(1));
+    await vi.waitFor(() => expect(checker.getSnapshot().find((entry) => entry.service === 'model-a')?.consecutiveFailures).toBe(1));
     checker.reportUpstreamFailure(provider, 'model-a');
     expect(onRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('never probes an image service early on a failed buyer request', async () => {
+    const onRequest = vi.fn(async (req: SerializedHttpRequest) => jsonResponse(req.requestId, 500));
+    const provider = makeProvider({ onRequest, serviceApiProtocols: { 'model-a': ['openai-images'] } });
+    const checker = new ModelHealthChecker({ targets: [{ provider }] });
+    checker.reportUpstreamFailure(provider, 'model-a');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(onRequest).not.toHaveBeenCalled();
   });
 });

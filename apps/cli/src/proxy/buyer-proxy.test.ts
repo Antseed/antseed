@@ -28,7 +28,7 @@ import {
 import { DEFAULT_BUYER_PEER_REFRESH_INTERVAL_MS } from '../config/defaults.js'
 import { TeeVerification } from './tee-verification.js'
 import { ConversationStore } from './conversation-store.js'
-import { resolvePeerRoutePlan } from './routing.js'
+import { findFailingServiceOffers, resolvePeerRoutePlan } from './routing.js'
 import {
   BuyerProxy,
   isModelNotFoundResponse,
@@ -2322,6 +2322,26 @@ test('automatic routing skips a model the seller announces as failing, and a pin
   assert.equal(pinned.routePlanByPeerId.get(failingPeer.peerId)?.serviceId, 'gpt-6-sol')
 })
 
+test('a pinned request prefers the provider whose health check passes, even when the failing one is cheaper', () => {
+  const peer = makePeer('a', ['openai', 'openrouter'])
+  peer.providerPricing = {
+    openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'gpt-6-sol': { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } },
+    openrouter: { defaults: { inputUsdPerMillion: 5, outputUsdPerMillion: 5 }, services: { 'gpt-6-sol': { inputUsdPerMillion: 5, outputUsdPerMillion: 5 } } },
+  }
+  peer.providerServiceApiProtocols = {
+    openai: { services: { 'gpt-6-sol': ['openai-chat-completions'] } },
+    openrouter: { services: { 'gpt-6-sol': ['openai-chat-completions'] } },
+  }
+  peer.providerServiceHealth = { openai: { services: { 'gpt-6-sol': { status: 'failing', reason: 'timeout' } } } }
+  assert.equal(resolvePeerRoutePlan(peer, 'openai-chat-completions', 'gpt-6-sol', null, 'lenient')?.provider, 'openrouter')
+  assert.equal(resolvePeerRoutePlan(peer, null, 'gpt-6-sol', null, 'lenient')?.provider, 'openrouter')
+  // With only failing providers left, the pin still reaches the seller.
+  peer.providerServiceHealth.openrouter = { services: { 'gpt-6-sol': { status: 'failing' } } }
+  assert.equal(resolvePeerRoutePlan(peer, 'openai-chat-completions', 'gpt-6-sol', null, 'lenient')?.provider, 'openai')
+  assert.deepEqual(findFailingServiceOffers([peer], 'gpt-6-sol').map((offer) => offer.provider).sort(), ['openai', 'openrouter'])
+  assert.deepEqual(findFailingServiceOffers([peer], 'other-model'), [])
+})
+
 test('selectCandidatePeersForRouting in lenient mode keeps a peer whose advertised services miss the requested model, as long as the provider protocol set matches', () => {
   // The buyer explicitly pinned this peer. It advertises one service
   // (kimi-k2.6 over openai-chat-completions) but the request asks for
@@ -3253,6 +3273,25 @@ test('POST /v1/systemone routes only to peers advertising typesafe-systemone', a
 
   assert.equal(res.statusCode, 200)
   assert.deepEqual(attempts, [decision.peerId])
+})
+
+test('a model whose every seller reports it failing gets a self health error, not model_not_found', async () => {
+  const failing = makePeer('b', ['openai'])
+  failing.providerPricing = { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'gpt-6-sol': { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } } }
+  failing.providerServiceApiProtocols = { openai: { services: { 'gpt-6-sol': ['openai-chat-completions'] } } }
+  failing.providerServiceHealth = { openai: { services: { 'gpt-6-sol': { status: 'failing', reason: 'timeout', consecutiveFailures: 3 } } } }
+  const proxy = makeBuyerProxyWithPeers([failing], [failing], permissiveRouter())
+  ;(proxy as any)._node.sendRequest = async () => { throw new Error('must not reach a peer') }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    path: '/v1/chat/completions',
+    body: { model: 'gpt-6-sol', messages: [{ role: 'user', content: 'hi' }] },
+  }))
+
+  assert.equal(res.statusCode, 503)
+  const body = JSON.parse(res.body)
+  assert.equal(body.error.code, 'seller_self_health_failing')
+  assert.match(body.error.message, /^The only seller serving "gpt-6-sol" reports it failing\.\nThe seller's self health check for "gpt-6-sol" has been failing \(the upstream timed out, 3 failed checks in a row\)\./)
 })
 
 test('chat requests to a decision-only model get unsupported_protocol, not model_not_found', async () => {

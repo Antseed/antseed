@@ -200,6 +200,16 @@ describe('PeerAnnouncer metadata versions', () => {
     expect(announcer.getMetadataForVersion(METADATA_VERSION)?.version).toBe(METADATA_VERSION);
   });
 
+  it('keeps serving v12 when the v13 document fails to sign', async () => {
+    const config = makeBaseConfig();
+    // An out-of-range timestamp makes only the v13 document invalid; v12 carries no health.
+    config.providers[0]!.serviceHealth = () => ({ 'gpt-4.1': { status: 'healthy', checkedAt: 9e15 } });
+    const announcer = new PeerAnnouncer(config);
+    await announcer.announce();
+    expect(announcer.getMetadataForVersion(undefined)?.version).toBe(12);
+    expect(announcer.getMetadataForVersion(METADATA_VERSION)?.version).toBe(12);
+  });
+
   it('announces service health in v13 and leaves failing services out of v12', async () => {
     const config = makeBaseConfig();
     const services = ['model-a', 'model-b'];

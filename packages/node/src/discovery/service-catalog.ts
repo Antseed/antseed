@@ -1,7 +1,7 @@
 import { CODING_ONLY_SUFFIX_RE, canonicalModelKey } from '../model-identity.js';
 import { parseVerifierCapabilities } from './verifier-capabilities.js';
 import { NATIVE_VIDEO_PROTOCOLS, isNativeVideoProtocol, isRoutingProtocol, type NativeVideoProtocol } from '@antseed/protocol/service-api';
-import type { ServiceHealth, VideoOptions } from '@antseed/protocol/peer-metadata';
+import { isServiceHealthFailing, providerServiceHealthFor, type ServiceHealth, type VideoOptions } from '@antseed/protocol/peer-metadata';
 
 export type CatalogServiceProtocol =
   | 'anthropic-messages'
@@ -192,8 +192,8 @@ export function buildNetworkServiceOffers(
   for (const peer of peers) {
     for (const [provider, serviceIds] of announcedServicesByProvider(peer)) {
       for (const serviceId of serviceIds) {
-        const health = peer.providerServiceHealth?.[provider]?.services?.[serviceId];
-        if (health?.status === 'failing' && !options.includeFailing) continue;
+        const health = providerServiceHealthFor(peer.providerServiceHealth, provider, serviceId);
+        if (isServiceHealthFailing(health) && !options.includeFailing) continue;
         const protocols = peer.providerServiceApiProtocols?.[provider]?.services?.[serviceId] ?? [];
         const billingModels = peer.providerServiceUnitBillingModels?.[provider]?.services?.[serviceId];
         if (protocols.some(isRoutingProtocol) || Object.values(billingModels ?? {}).some(model => (model?.components ?? []).some(component => component.unit === 'completed_requests'))) continue;

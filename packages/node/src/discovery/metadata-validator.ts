@@ -1,5 +1,5 @@
 import type { DomainVerificationMethod, PeerMetadata } from "./peer-metadata.js";
-import { METADATA_VERSION, MIN_SUPPORTED_METADATA_VERSION, SERVICE_CAPABILITIES_METADATA_VERSION, SERVICE_HEALTH_METADATA_VERSION, SERVICE_HEALTH_REASONS, SERVICE_HEALTH_SOURCES, SERVICE_HEALTH_STATUSES, SERVICE_UNIT_BILLING_METADATA_VERSION, WELL_KNOWN_SERVICE_API_PROTOCOLS, validateServiceCapabilityFields, type ServiceHealth } from "./peer-metadata.js";
+import { isServiceHealthTime, MAX_SERVICE_HEALTH_TIME_MS, METADATA_VERSION, MIN_SUPPORTED_METADATA_VERSION, SERVICE_CAPABILITIES_METADATA_VERSION, SERVICE_HEALTH_METADATA_VERSION, SERVICE_HEALTH_REASONS, SERVICE_HEALTH_SOURCES, SERVICE_HEALTH_STATUSES, SERVICE_UNIT_BILLING_METADATA_VERSION, WELL_KNOWN_SERVICE_API_PROTOCOLS, validateServiceCapabilityFields, type ServiceHealth } from "./peer-metadata.js";
 import { encodeMetadata } from "./metadata-codec.js";
 import { MAX_PUBLIC_ADDRESS_LENGTH, parsePublicAddress } from "./public-address.js";
 import { isUnitBilledProtocol, validateUnitBillingModelForProtocolV1, validateUnitBillingModelV1 } from "../billing/unit.js";
@@ -44,8 +44,8 @@ function validateServiceHealthFields(health: ServiceHealth): string[] {
   if (!SERVICE_HEALTH_STATUS_SET.has(health.status)) errors.push(`Unsupported service health status "${String(health.status)}"`);
   for (const key of ["checkedAt", "failingSince"] as const) {
     const value = health[key];
-    if (value !== undefined && (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)) {
-      errors.push(`${key} must be a non-negative integer (Unix ms)`);
+    if (value !== undefined && !isServiceHealthTime(value)) {
+      errors.push(`${key} must be a Unix ms timestamp between 0 and ${MAX_SERVICE_HEALTH_TIME_MS}`);
     }
   }
   if (health.source !== undefined && !SERVICE_HEALTH_SOURCE_SET.has(health.source)) {

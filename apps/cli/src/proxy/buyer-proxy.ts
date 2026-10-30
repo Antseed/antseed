@@ -13,6 +13,10 @@ import {
   ANTSEED_FAULT_ATTRIBUTION_HEADER,
   ANTSEED_ATTEST_PATH,
   adaptPeerFaultErrorResponse,
+  describeServiceHealth,
+  parseServiceHealth,
+  SELF_HEALTH_ERROR_STATUS,
+  SELLER_SELF_HEALTH_FAILING_CODE,
   isFreeTierExhaustedResponse,
   computeTrustScore,
   decodeSweepRequest,
@@ -95,6 +99,7 @@ import {
   findUnannouncedRequestParameters,
   findAdvertisedServiceOffer,
   findAdvertisedServiceProtocols,
+  findFailingServiceOffers,
   getExplicitProviderOverride,
   getExplicitPeerIdOverride,
   parseRequiredParametersHeader,
@@ -889,6 +894,23 @@ const PROTOCOL_TRANSFORMS: Record<string, ProtocolTransformStrategy> = {
   },
 }
 
+/** Cached health is untrusted JSON: keep only well-formed entries. */
+function parsePersistedServiceHealth(value: unknown): PeerInfo['providerServiceHealth'] | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const result: NonNullable<PeerInfo['providerServiceHealth']> = {}
+  for (const [provider, entry] of Object.entries(value as Record<string, unknown>)) {
+    const services = (entry as { services?: unknown } | null)?.services
+    if (!services || typeof services !== 'object' || Array.isArray(services)) continue
+    const parsed: Record<string, NonNullable<ReturnType<typeof parseServiceHealth>>> = {}
+    for (const [service, health] of Object.entries(services as Record<string, unknown>)) {
+      const parsedHealth = parseServiceHealth(health)
+      if (parsedHealth) parsed[service] = parsedHealth
+    }
+    if (Object.keys(parsed).length > 0) result[provider] = { services: parsed }
+  }
+  return Object.keys(result).length > 0 ? result : undefined
+}
+
 /**
  * Parses a buyer.state.json blob into PeerInfo[], dropping entries with
  * missing/invalid peerIds, non-array providers, or lastSeen timestamps older
@@ -949,8 +971,9 @@ export function parsePersistedPeers(
     if (entry.providerServiceCapabilities && typeof entry.providerServiceCapabilities === 'object') {
       peer.providerServiceCapabilities = entry.providerServiceCapabilities as PeerInfo['providerServiceCapabilities']
     }
-    if (entry.providerServiceHealth && typeof entry.providerServiceHealth === 'object') {
-      peer.providerServiceHealth = entry.providerServiceHealth as PeerInfo['providerServiceHealth']
+    const persistedHealth = parsePersistedServiceHealth(entry.providerServiceHealth)
+    if (persistedHealth) {
+      peer.providerServiceHealth = persistedHealth
     }
     if (typeof entry.defaultInputUsdPerMillion === 'number') {
       peer.defaultInputUsdPerMillion = entry.defaultInputUsdPerMillion
@@ -1907,7 +1930,27 @@ export class BuyerProxy {
     })
     const effective = plan.effectivePolicy
     const modelAllowed = policyAllowsModel(effective, model)
-    return plan.verdicts
+    // Routing never considers a service its seller announces as failing, so
+    // those sellers are listed here with the reason.
+    const planned = new Set<string>(plan.verdicts.map((verdict) => verdict.peer.peerId))
+    const failing: RoutePreviewCandidate[] = []
+    for (const offer of findFailingServiceOffers(peers, model)) {
+      if (planned.has(offer.peerId)) continue
+      planned.add(offer.peerId)
+      const peer = peers.find((candidate) => candidate.peerId === offer.peerId)
+      failing.push({
+        peerId: offer.peerId,
+        displayName: peer?.displayName ?? null,
+        rank: null,
+        eligible: false,
+        reasons: [`self health check failing${offer.health?.reason ? ` (${offer.health.reason})` : ''}`],
+        inputUsdPerMillion: offer.inputUsdPerMillion ?? null,
+        outputUsdPerMillion: offer.outputUsdPerMillion ?? null,
+        trustScore: peer ? normalizedModelReputationScore(peer) : null,
+        selection: null,
+      })
+    }
+    return [...plan.verdicts
       .map((verdict): RoutePreviewCandidate => ({
         peerId: verdict.peer.peerId,
         displayName: verdict.peer.displayName ?? null,
@@ -1918,7 +1961,7 @@ export class BuyerProxy {
         outputUsdPerMillion: verdict.offer.outputUsdPerMillion ?? null,
         trustScore: normalizedModelReputationScore(verdict.peer),
         selection: modelAllowed && verdict.eligible ? verdict.selection ?? null : null,
-      }))
+      })), ...failing]
       .sort((a, b) => (a.rank ?? Number.POSITIVE_INFINITY) - (b.rank ?? Number.POSITIVE_INFINITY)
         || a.peerId.localeCompare(b.peerId))
   }
@@ -4398,6 +4441,26 @@ export class BuyerProxy {
               message: `Model "${requestedService}" is served via ${advertisedProtocols.join(', ')}, not ${requestProtocol ?? 'this API'}.${hint}`,
               param: 'model',
               supported_protocols: advertisedProtocols,
+            },
+          }))
+        }
+        // Served, but every seller's own health check announces it failing.
+        const failingOffers = capabilityRequired ? [] : findFailingServiceOffers(discoveredPeers, requestedService)
+        if (failingOffers.length > 0) {
+          const latest = failingOffers.reduce((a, b) => ((b.health?.checkedAt ?? 0) > (a.health?.checkedAt ?? 0) ? b : a))
+          const sellers = new Set(failingOffers.map((offer) => offer.peerId)).size
+          log(`Request rejected: every seller serving ${requestedService} reports it failing (${sellers} seller(s))`)
+          return dispatchFailure(SELF_HEALTH_ERROR_STATUS, { 'content-type': 'application/json' }, JSON.stringify({
+            error: {
+              type: SELLER_SELF_HEALTH_FAILING_CODE,
+              code: SELLER_SELF_HEALTH_FAILING_CODE,
+              message: [
+                `${sellers === 1 ? 'The only seller' : `All ${sellers} sellers`} serving "${requestedService}" ${sellers === 1 ? 'reports' : 'report'} it failing.`,
+                describeServiceHealth(latest.serviceId, latest.health!),
+                'Try again later or pick another model.',
+              ].join('\n'),
+              param: 'model',
+              service_health: latest.health,
             },
           }))
         }

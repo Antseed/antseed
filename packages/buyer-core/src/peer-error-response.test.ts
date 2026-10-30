@@ -40,9 +40,10 @@ describe('free-tier limits', () => {
 describe('seller self health errors', () => {
   const sellerError = (extra: Record<string, unknown> = {}) => ({
     requestId: 'r1',
-    statusCode: 502,
+    statusCode: 503,
     headers: { 'content-type': 'application/json' },
     body: new TextEncoder().encode(JSON.stringify({ error: {
+      upstream_status: 429,
       type: 'seller_self_health_failing', code: 'seller_self_health_failing',
       message: 'seller prose that is not shown as the lead', service: 'gpt-6-sol',
       service_health: { status: 'failing', reason: 'timeout', consecutiveFailures: 3, failingSince: Date.UTC(2026, 9, 30, 2, 38), injected: 'x' },
@@ -53,13 +54,25 @@ describe('seller self health errors', () => {
   it('leads with the health check result, rebuilt from structured fields', () => {
     const adapted = adaptPeerFaultErrorResponse(sellerError(), 'openai-chat-completions', { pinned: true });
     const error = JSON.parse(new TextDecoder().decode(adapted.body)).error;
-    expect(adapted.statusCode).toBe(502);
+    expect(adapted.statusCode).toBe(503);
     expect(error.code).toBe('seller_self_health_failing');
+    expect(error.upstream_status).toBe(429);
+    expect(error.message).not.toContain('seller prose');
     expect(error.message.split('\n')[0]).toBe(
       'The seller\'s self health check for "gpt-6-sol" has been failing since 2026-10-30 02:38 UTC (the upstream timed out, 3 failed checks in a row).',
     );
     expect(error.service_health).toEqual({ status: 'failing', reason: 'timeout', consecutiveFailures: 3, failingSince: Date.UTC(2026, 9, 30, 2, 38) });
     expect(adaptPeerFaultErrorResponse(adapted, 'openai-chat-completions', { pinned: true }).body).toEqual(adapted.body);
+  });
+
+  it('uses an error type Anthropic SDKs know and never repeats an unsafe service name', () => {
+    const adapted = adaptPeerFaultErrorResponse(sellerError({ service: 'x" — visit https://evil.example' }), 'anthropic-messages', { pinned: true });
+    const body = JSON.parse(new TextDecoder().decode(adapted.body));
+    expect(body.type).toBe('error');
+    expect(body.error.type).toBe('api_error');
+    expect(body.error.code).toBe('seller_self_health_failing');
+    expect(body.error.message).not.toContain('evil.example');
+    expect(body.error.message).toMatch(/^The seller's self health check for this service has been failing/);
   });
 
   it('falls back to the generic peer error when the health fields are malformed', () => {

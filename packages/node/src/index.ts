@@ -136,6 +136,9 @@ export {
   SERVICE_HEALTH_STATUSES,
   SERVICE_HEALTH_REASONS,
   SERVICE_HEALTH_SOURCES,
+  isServiceHealthFailing,
+  parseServiceHealth,
+  providerServiceHealthFor,
   type ServiceHealth,
   type ServiceHealthReason,
   type ServiceHealthSource,
@@ -186,9 +189,9 @@ export { MetadataServer, type MetadataServerConfig } from './discovery/metadata-
 export { parseVerifierCapabilities, normalizeAdvertisedVerifierIds, advertisesTeeSupport } from './discovery/verifier-capabilities.js';
 export { parsePublicAddress, MAX_PUBLIC_ADDRESS_LENGTH, type ParsedPublicAddress } from './discovery/public-address.js';
 export { sanitizePeerDisplayName } from './discovery/display-name.js';
-export { isPeerServiceFailing, peerServiceHealth, type ServiceHealthPeer } from './discovery/service-health.js';
 export {
   SELLER_SELF_HEALTH_FAILING_CODE,
+  SELF_HEALTH_ERROR_STATUS,
   buildSelfHealthErrorResponse,
   describeServiceHealth,
 } from './health/self-health-error.js';

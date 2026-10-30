@@ -76,5 +76,4 @@ export {
   type NetworkServiceCatalogPeer,
   type NetworkServiceOffer,
 } from './service-catalog.js';
-export { isPeerServiceFailing, peerServiceHealth, type ServiceHealthPeer } from './service-health.js';
 export { getMetadataCodec, negotiateMetadataVersion, SERVED_METADATA_VERSIONS, type MetadataVersionCodec } from './metadata-codec.js';

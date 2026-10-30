@@ -196,10 +196,14 @@ export function validateServiceCapabilityFields(caps: ServiceCapabilities): stri
   return errors;
 }
 
-/** Wire order is fixed: append new values, never reorder. */
+/*
+ * Health enums go on the wire as ids, and buyers verify a signature by
+ * re-encoding what they received, so a buyer rejects a value it does not
+ * know. Never reorder these. A new value needs a new metadata version whose
+ * `fromLatest` maps it to an existing value for the older documents.
+ */
 export const SERVICE_HEALTH_STATUSES = ["unknown", "healthy", "failing"] as const;
 export type ServiceHealthState = (typeof SERVICE_HEALTH_STATUSES)[number];
-/** Wire order is fixed: append new values, never reorder. */
 export const SERVICE_HEALTH_REASONS = [
   "timeout",
   "rate_limited",
@@ -211,7 +215,6 @@ export const SERVICE_HEALTH_REASONS = [
   "init_failed",
 ] as const;
 export type ServiceHealthReason = (typeof SERVICE_HEALTH_REASONS)[number];
-/** Wire order is fixed: append new values, never reorder. */
 export const SERVICE_HEALTH_SOURCES = ["probe", "traffic"] as const;
 export type ServiceHealthSource = (typeof SERVICE_HEALTH_SOURCES)[number];
 
@@ -237,6 +240,27 @@ export interface ServiceHealth {
   httpStatus?: number;
 }
 
+/** Latest Unix ms a JS Date can hold; health timestamps above it are rejected. */
+export const MAX_SERVICE_HEALTH_TIME_MS = 8_640_000_000_000_000;
+
+export function isServiceHealthTime(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= MAX_SERVICE_HEALTH_TIME_MS;
+}
+
+/** True when a seller's self health check marks the service failing. */
+export function isServiceHealthFailing(health: ServiceHealth | null | undefined): health is ServiceHealth {
+  return health?.status === "failing";
+}
+
+/** Looks up one service's health in a per-provider map such as PeerInfo.providerServiceHealth. */
+export function providerServiceHealthFor(
+  providerServiceHealth: Record<string, { services?: Record<string, ServiceHealth> }> | undefined,
+  provider: string,
+  service: string,
+): ServiceHealth | undefined {
+  return providerServiceHealth?.[provider]?.services?.[service];
+}
+
 /** Error code a seller answers with when a service its own health check marks failing also fails a request. */
 export const SELLER_SELF_HEALTH_FAILING_CODE = "seller_self_health_failing";
 
@@ -260,7 +284,7 @@ export function parseServiceHealth(value: unknown): ServiceHealth | null {
   const raw = value as Record<string, unknown>;
   if (typeof raw.status !== "string" || !(SERVICE_HEALTH_STATUSES as readonly string[]).includes(raw.status)) return null;
   const health: ServiceHealth = { status: raw.status as ServiceHealthState };
-  const time = (field: unknown) => typeof field === "number" && Number.isSafeInteger(field) && field >= 0 ? field : undefined;
+  const time = (field: unknown) => isServiceHealthTime(field) ? field : undefined;
   const checkedAt = time(raw.checkedAt);
   if (checkedAt !== undefined) health.checkedAt = checkedAt;
   const failingSince = time(raw.failingSince);
@@ -274,7 +298,13 @@ export function parseServiceHealth(value: unknown): ServiceHealth | null {
   return health;
 }
 
-/** One sentence a person can act on, e.g. in a chat error. Built from fields only, never seller text. */
+const SERVICE_NAME_PATTERN = /^[A-Za-z0-9._:/@+-]{1,128}$/;
+
+/**
+ * One sentence a person can act on, e.g. in a chat error. Built from fields
+ * only, never seller prose; a service name that does not look like a model
+ * id is left out.
+ */
 export function describeServiceHealth(service: string, health: ServiceHealth): string {
   const parts: string[] = [];
   if (health.reason) parts.push(SERVICE_HEALTH_REASON_TEXT[health.reason] ?? health.reason);
@@ -282,12 +312,13 @@ export function describeServiceHealth(service: string, health: ServiceHealth): s
   if (health.consecutiveFailures !== undefined && health.consecutiveFailures > 0) {
     parts.push(`${health.consecutiveFailures} failed check${health.consecutiveFailures === 1 ? "" : "s"} in a row`);
   }
-  const since = health.failingSince !== undefined
+  const since = isServiceHealthTime(health.failingSince)
     ? ` since ${new Date(health.failingSince).toISOString().slice(0, 16).replace("T", " ")} UTC`
     : "";
   const detail = parts.length > 0 ? ` (${parts.join(", ")})` : "";
   const verb = health.status === "failing" ? "has been failing" : `reports "${health.status}"`;
-  return `The seller's self health check for "${service}" ${verb}${since}${detail}.`;
+  const subject = SERVICE_NAME_PATTERN.test(service) ? `"${service}"` : "this service";
+  return `The seller's self health check for ${subject} ${verb}${since}${detail}.`;
 }
 
 export interface ProviderAnnouncement {

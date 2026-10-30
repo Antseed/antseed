@@ -231,7 +231,12 @@ export class PeerAnnouncer {
    * `requestedVersion` (undefined when it did not say).
    */
   getMetadataForVersion(requestedVersion: number | undefined): PeerMetadata | null {
-    return this._signedByVersion.get(negotiateMetadataVersion(requestedVersion)) ?? null;
+    const version = negotiateMetadataVersion(requestedVersion);
+    const exact = this._signedByVersion.get(version);
+    if (exact) return exact;
+    // That version failed to sign: serve the newest older one the buyer still reads.
+    const older = [...this._signedByVersion.keys()].filter((signed) => signed < version);
+    return older.length > 0 ? this._signedByVersion.get(Math.max(...older)) ?? null : null;
   }
 
   /** Return the configured seller contract as lowercase 40-hex (no 0x). */
@@ -382,10 +387,19 @@ export class PeerAnnouncer {
       ...(sellerContract ? { sellerContract } : {}),
       signature: "",
     };
+    // Each version is signed on its own, so a document that fails (say the
+    // newest one grows past the size limit) leaves the others served.
     const signed = new Map<number, PeerMetadata>();
+    const failures: string[] = [];
     for (const version of SERVED_METADATA_VERSIONS) {
-      signed.set(version, this._signAndValidateMetadata(getMetadataCodec(version).fromLatest(latest)));
+      try {
+        signed.set(version, this._signAndValidateMetadata(getMetadataCodec(version).fromLatest(latest)));
+      } catch (err) {
+        failures.push(`v${version}: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
+    if (signed.size === 0) throw new Error(`Invalid metadata snapshot: ${failures.join("; ")}`);
+    if (failures.length > 0) debugWarn(`[Announcer] Metadata version not served: ${failures.join("; ")}`);
     return signed;
   }
 

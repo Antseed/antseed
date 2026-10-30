@@ -44,6 +44,7 @@ import {
 import { VerificationMux } from './verification/verification-mux.js';
 import { createResponseAuthPayload, createStreamingResponseHash } from './verification/response-auth.js';
 import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION } from '@antseed/protocol/http';
+import { isServiceHealthFailing } from '@antseed/protocol/peer-metadata';
 import { hasJsonContentType, tryParseJsonObject } from './utils/json-codec.js';
 import type { UnitBillingContext, UnitBillingModelV1, UnitBillingUsage, UnitBillingUsageReportV1 } from './types/billing.js';
 import { captureUnitBillingContext, computeFinalUnitBilling, estimateUnitRequestCost, isFreeUnitBillingModel, type BillingRequestFacts } from './billing/unit.js';
@@ -778,9 +779,10 @@ export class SellerRequestHandler {
           // Polling or downloading a video already paid for says nothing about the account's credit.
           const upstreamBody = response.body ?? new Uint8Array(0);
           this._deps.emit('provider:response', { provider, service: requestedModel, statusCode, body: statusCode >= 400 ? new TextDecoder().decode(upstreamBody.slice(0, 2_000)) : '', billable: videoRoute?.action !== 'retrieve' });
-          const failingHealth = provider.serviceHealth?.[requestedModel];
-          if (!streamedResponseStarted && failingHealth?.status === 'failing' && isUpstreamFailureStatus(statusCode)) {
-            response = buildSelfHealthErrorResponse(request.requestId, statusCode, requestedModel, failingHealth, upstreamBody);
+          const health = provider.serviceHealth?.[requestedModel];
+          if (!streamedResponseStarted && isServiceHealthFailing(health) && isUpstreamFailureStatus(statusCode)) {
+            response = buildSelfHealthErrorResponse(request.requestId, requestedModel, health, response);
+            statusCode = response.statusCode;
           }
           responseBody = response.body ?? new Uint8Array(0);
           responseForAuth = response;
@@ -848,16 +850,16 @@ export class SellerRequestHandler {
               };
             }
           } else {
-            statusCode = 500;
-            const failingHealth = provider.serviceHealth?.[requestedModel];
-            responseForAuth = failingHealth?.status === 'failing'
-              ? buildSelfHealthErrorResponse(request.requestId, 500, requestedModel, failingHealth, responseBody)
+            const health = provider.serviceHealth?.[requestedModel];
+            responseForAuth = isServiceHealthFailing(health)
+              ? buildSelfHealthErrorResponse(request.requestId, requestedModel, health, { statusCode: 500, headers: {}, body: responseBody })
               : {
                 requestId: request.requestId,
                 statusCode: 500,
                 headers: { "content-type": "text/plain" },
                 body: responseBody,
               };
+            statusCode = responseForAuth.statusCode;
             responseBody = responseForAuth.body;
             mux.sendProxyResponse(responseForAuth);
           }
@@ -1226,7 +1228,7 @@ export class SellerRequestHandler {
     }
     if (!provider && !(videoRoute && requestedProvider)) {
       // Prefer a provider whose self health check is not failing this service.
-      provider = providers.find((candidate) => matchesService(candidate) && candidate.serviceHealth?.[requestedService]?.status !== 'failing')
+      provider = providers.find((candidate) => matchesService(candidate) && !isServiceHealthFailing(candidate.serviceHealth?.[requestedService]))
         ?? providers.find((candidate) => matchesService(candidate));
     }
     return provider;

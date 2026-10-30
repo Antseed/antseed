@@ -181,16 +181,27 @@ export function findAdvertisedServiceOffer(
  * whether it fits the current request. Lets the proxy tell "nobody serves
  * this model" apart from "it is served, but not on this API".
  */
-export function findAdvertisedServiceProtocols(peers: PeerInfo[], requestedService: string): string[] {
+export function findAdvertisedServiceProtocols(peers: PeerInfo[], requestedService: string, includeFailing = false): string[] {
   const requestedKey = canonicalModelKey(requestedService)
   if (!requestedKey) return []
   const protocols = new Set<string>()
-  for (const offer of buildNetworkServiceOffers(peers)) {
+  for (const offer of buildNetworkServiceOffers(peers, { includeFailing })) {
     if (!isRequestedServiceMatch(offer.serviceId, requestedService)) continue
     for (const protocol of offer.protocols) protocols.add(protocol)
     if (offer.protocol) protocols.add(offer.protocol)
   }
   return [...protocols].sort()
+}
+
+/**
+ * Offers for the requested model that the sellers' own health checks announce
+ * as failing, for explaining why automatic routing found no peer for it.
+ */
+export function findFailingServiceOffers(peers: PeerInfo[], requestedService: string): NetworkServiceOffer[] {
+  if (!canonicalModelKey(requestedService)) return []
+  return buildNetworkServiceOffers(peers, { includeFailing: true }).filter((offer) => (
+    offer.health?.status === 'failing' && isRequestedServiceMatch(offer.serviceId, requestedService)
+  ))
 }
 
 function selectProviderByProtocol(
@@ -272,15 +283,18 @@ export function resolvePeerRoutePlan(
 
   const candidates = explicitProvider ? [explicitProvider] : providers
   // Automatic routing skips services the seller's own health check announces
-  // as failing; a pinned request (lenient) still reaches the seller, which
-  // explains the failure if the upstream is still down.
-  const includeFailing = serviceFilterMode === 'lenient'
+  // as failing. A pinned request (lenient) prefers a healthy provider and
+  // otherwise still reaches the seller, which explains the failure if the
+  // upstream is still down.
+  const healthPasses = serviceFilterMode === 'lenient' ? [false, true] : [false]
 
   if (!requestProtocol) {
     if (requestedService) {
-      for (const provider of candidates) {
-        const offer = findAdvertisedServiceOffer(peer, provider, requestedService, includeFailing)
-        if (offer) return { provider, selection: null, serviceId: offer.serviceId }
+      for (const includeFailing of healthPasses) {
+        for (const provider of candidates) {
+          const offer = findAdvertisedServiceOffer(peer, provider, requestedService, includeFailing)
+          if (offer) return { provider, selection: null, serviceId: offer.serviceId }
+        }
       }
       if (serviceFilterMode === 'strict' || !candidates[0]) return null
       return { provider: candidates[0], selection: null, serviceId: null }
@@ -290,8 +304,10 @@ export function resolvePeerRoutePlan(
   }
 
   if (requestedService?.trim()) {
-    const exactPlan = selectAdvertisedServiceByProtocol(peer, candidates, requestProtocol, requestedService, includeFailing)
-    if (exactPlan) return exactPlan
+    for (const includeFailing of healthPasses) {
+      const exactPlan = selectAdvertisedServiceByProtocol(peer, candidates, requestProtocol, requestedService, includeFailing)
+      if (exactPlan) return exactPlan
+    }
     if (isNativeVideoProtocol(requestProtocol)) return null
     // Failing offers count here too: a model the peer announces as failing
     // must not slip through the protocol-only fallback below.

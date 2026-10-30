@@ -56,10 +56,13 @@ describe('validateMetadata', () => {
       'Unsupported service health status "broken"',
       'Unsupported service health reason "nope"',
       'consecutiveFailures must be an integer 0..65535',
-      'checkedAt must be a non-negative integer (Unix ms)',
+      'checkedAt must be a Unix ms timestamp between 0 and 8640000000000000',
       'httpStatus must be an HTTP status code',
       'Service health must reference a service listed in providers[].services',
     ]));
+    metadata.providers[0]!.serviceHealth = { 'claude-3-opus': { status: 'failing', failingSince: 9e15 } };
+    expect(validateMetadata(metadata).map((error) => error.message))
+      .toContain('failingSince must be a Unix ms timestamp between 0 and 8640000000000000');
     expect(validateMetadata({ ...validMetadata(), version: 12, providers: [{ ...validMetadata().providers[0]!, serviceHealth: { 'claude-3-opus': { status: 'healthy' } } }] })
       .map((error) => error.message)).toContain('Service health requires metadata version 13');
   });

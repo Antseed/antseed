@@ -507,6 +507,8 @@ export class ModelHealthChecker {
   }
 
   private _probeSoon(target: ModelHealthTarget, service: string): void {
+    // Image and video services are never probed (a probe would cost a real generation).
+    if (!supportsHealthProbe(resolveProbeProtocol(target.provider, service))) return;
     const state = this._stateFor(target.provider, service);
     if (state.probeInFlight) return;
     if (state.lastProbeAt !== null && Date.now() - state.lastProbeAt < LIVE_FAILURE_PROBE_MIN_GAP_MS) return;
@@ -576,8 +578,6 @@ export class ModelHealthChecker {
     state.consecutiveFailures += 1;
     state.reason = reason;
     state.httpStatus = httpStatus;
-    state.checkedAt = now;
-    state.source = 'probe';
     state.failingSince ??= now;
     debugWarn(
       `[ModelHealth] ${state.providerName}/${state.service}: health check failed `
@@ -585,6 +585,11 @@ export class ModelHealthChecker {
     );
     const crossed = state.status !== 'failing' && state.consecutiveFailures >= this._failureThreshold;
     if (crossed) state.status = 'failing';
+    // Below the threshold the announced status and its evidence stand; only
+    // a failing status is backed by this check.
+    if (state.status !== 'failing') return;
+    state.checkedAt = now;
+    state.source = 'probe';
     this._publish(state);
     if (!crossed) return;
     this._emitChange({
@@ -603,10 +608,12 @@ export class ModelHealthChecker {
     const health: ServiceHealth = { status: state.status };
     if (state.checkedAt !== null) health.checkedAt = state.checkedAt;
     if (state.source !== null) health.source = state.source;
-    if (state.status === 'failing' && state.failingSince !== null) health.failingSince = state.failingSince;
-    if (state.consecutiveFailures > 0) health.consecutiveFailures = Math.min(0xffff, state.consecutiveFailures);
-    if (state.reason !== null) health.reason = state.reason;
-    if (state.httpStatus !== null && state.httpStatus >= 100 && state.httpStatus <= 599) health.httpStatus = state.httpStatus;
+    if (state.status === 'failing') {
+      if (state.failingSince !== null) health.failingSince = state.failingSince;
+      if (state.consecutiveFailures > 0) health.consecutiveFailures = Math.min(0xffff, state.consecutiveFailures);
+      if (state.reason !== null) health.reason = state.reason;
+      if (state.httpStatus !== null && state.httpStatus >= 100 && state.httpStatus <= 599) health.httpStatus = state.httpStatus;
+    }
     state.provider.serviceHealth ??= {};
     state.provider.serviceHealth[state.service] = health;
   }
@@ -719,7 +726,7 @@ export function buildHealthProbeRequest(service: string, protocol: ServiceApiPro
  *   collapses upstream network errors/timeouts to 502.)
  * - Everything else (400, 422, ...) — the endpoint is alive but the probe
  *   itself was rejected (for example, an unsupported parameter): inconclusive,
- *   so a working model is never unadvertised over a probe quirk.
+ *   so a working model is never marked failing over a probe quirk.
  */
 export function classifyProbeStatus(statusCode: number): ProbeOutcome {
   if (statusCode >= 200 && statusCode < 400) return 'healthy';

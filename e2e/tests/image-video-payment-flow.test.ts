@@ -3,6 +3,7 @@ import OpenAI from 'openai';
 import { randomBytes } from 'node:crypto';
 import { crc32, deflateSync } from 'node:zlib';
 import { ANTSEED_UPLOAD_THRESHOLD_BYTES } from '../../packages/protocol/src/http.js';
+import { METADATA_VERSION } from '../../packages/protocol/src/peer-metadata.js';
 import { MockOpenAIChatProvider, MockOpenAIImageProvider } from './helpers/mock-openai-provider.js';
 import type { Provider, SerializedHttpRequest, SerializedHttpResponse } from '@antseed/node';
 import { usePaymentNetwork } from './helpers/payment-network.js';
@@ -406,8 +407,8 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
     expect(provider.requestCount).toBe(1);
     expect(provider.lastRequest?.path).toBe('/v1/images/generations');
 
-    // Discovery should carry the signed v12 billing model all the way into buyer peer info.
-    expect(discoveredSeller.metadata?.version).toBe(12);
+    // Discovery should carry the signed billing model all the way into buyer peer info.
+    expect(discoveredSeller.metadata?.version).toBe(METADATA_VERSION);
     const billingComponent = discoveredSeller
       .providerServiceUnitBillingModels?.openai?.services['gpt-image-2']?.['openai-images']?.components[0];
     expect(billingComponent).toMatchObject({

@@ -285,20 +285,23 @@ export function adaptPeerFaultErrorResponse(
   }
   if (details.id === SELLER_SELF_HEALTH_FAILING_CODE && details.error?.antseed_fault !== 'peer') {
     const health = parseServiceHealth(details.error?.service_health);
-    const service = typeof details.error?.service === 'string' ? details.error.service.slice(0, 128) : null;
+    const service = typeof details.error?.service === 'string' ? details.error.service : null;
     if (health && service) {
-      // Rebuilt from the seller's structured health fields, not its prose.
+      // Rebuilt from the seller's structured health fields only: no seller
+      // prose, and describeServiceHealth drops a service name that is not a model id.
       const pinned = options?.pinned === true;
+      const upstreamStatus = details.error?.upstream_status;
       const error = {
-        type: SELLER_SELF_HEALTH_FAILING_CODE,
+        type: requestProtocol === 'anthropic-messages' ? 'api_error' : SELLER_SELF_HEALTH_FAILING_CODE,
         code: SELLER_SELF_HEALTH_FAILING_CODE,
         message: [
           describeServiceHealth(service, health),
-          pinned ? 'Try another peer or use Auto routing.' : 'Antseed will route to another peer when one serves this model.',
-          `Original Response: ${JSON.stringify({ message: details.message ?? 'No additional details were provided.', status: response.statusCode })}`,
+          pinned ? 'Try another peer or use Auto routing.' : 'No other peer could serve the request either. Try again later or pick another model.',
         ].join('\n'),
-        service,
         service_health: health,
+        ...(typeof upstreamStatus === 'number' && Number.isInteger(upstreamStatus) && upstreamStatus >= 100 && upstreamStatus <= 599
+          ? { upstream_status: upstreamStatus }
+          : {}),
         antseed_fault: 'peer',
         antseed_pinned: pinned,
         peer_status: response.statusCode,

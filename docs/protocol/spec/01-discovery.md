@@ -125,14 +125,22 @@ A seller keeps every configured service in `services` and reports its own health
 | Field | Type | Description |
 |---|---|---|
 | status | `"unknown" \| "healthy" \| "failing"` | `failing` after `failureThreshold` failed checks in a row; `healthy` after a passed check |
-| checkedAt | number | Optional Unix ms of the evidence behind `status` |
+| checkedAt | number | Optional Unix ms of the evidence behind `status`, at most 8.64e15 |
 | source | `"probe" \| "traffic"` | Optional. `traffic` when a successful billable buyer request gave the evidence |
-| failingSince | number | Optional Unix ms of the first failure in the current failing streak (failing only) |
-| consecutiveFailures | number | Optional failed checks in a row (0..65535) |
-| reason | string | Optional code of the last failure: `timeout`, `rate_limited`, `out_of_credit`, `auth`, `model_unavailable`, `upstream_error`, `unreachable`, `init_failed` |
-| httpStatus | number | Optional upstream HTTP status of the last failed check |
+| failingSince | number | Optional Unix ms of the first failure in the current failing streak, at most 8.64e15 (failing only) |
+| consecutiveFailures | number | Optional failed checks in a row, 0..65535 (failing only) |
+| reason | string | Optional code of the last failure (failing only): `timeout`, `rate_limited`, `out_of_credit`, `auth`, `model_unavailable`, `upstream_error`, `unreachable`, `init_failed` |
+| httpStatus | number | Optional upstream HTTP status of the last failed check (failing only) |
 
-Buyers MUST NOT route automatically to a service whose status is `failing`, and SHOULD leave it out of model catalogs. A request pinned to that seller is still sent; when it fails upstream, the seller answers with the upstream status and an error body whose `error.code` is `seller_self_health_failing`, carrying `service` and `service_health`. Buyers build the message shown to users from those structured fields, not from seller prose.
+Failed checks below the threshold change nothing announced: `status` and its evidence stay as they were.
+
+`status`, `source` and `reason` are sent as ids in the binary encoding, and buyers verify by re-encoding, so a buyer rejects a value it does not know. A new value therefore needs a new metadata version whose older documents map it to an existing value.
+
+Health is the seller's own claim. Buyers only use it to avoid a service, so they do not check it for consistency.
+
+Buyers MUST NOT route automatically to a service whose status is `failing`, and SHOULD leave it out of model catalogs. When a seller serves a service through several providers, buyers and sellers SHOULD prefer a provider that is not failing it.
+
+A request pinned to that seller is still sent. When it fails upstream, the seller answers `503` with an error body whose `error.code` is `seller_self_health_failing`. The body carries `service`, `service_health`, `upstream_status` and, when the upstream sent one, its error code as `upstream_type`. The upstream's retry and rate-limit headers are kept; its error message is not forwarded. Buyers build the message shown to users from the structured fields, not from seller prose.
 
 ### Binary Encoding Format
 
