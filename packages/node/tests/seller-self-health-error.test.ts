@@ -89,6 +89,24 @@ describe('seller self health error', () => {
 });
 
 describe('upstreams sharing a provider name', () => {
+  it('keeps video requests on the first matching upstream, where a job lives', () => {
+    const first = makeProvider('venice', 200);
+    first.services = ['video-model'];
+    first.serviceApiProtocols = { 'video-model': ['venice-video'] };
+    first.serviceHealth = { 'video-model': { status: 'failing', reason: 'out_of_credit' } };
+    const second = { ...makeProvider('venice', 200), services: ['video-model'], serviceApiProtocols: first.serviceApiProtocols };
+    const handler = new SellerRequestHandler({
+      identity: identityFromPrivateKeyHex('11'.repeat(32)),
+      providers: [first, second],
+      sellerPaymentManager: null, sessionTracker: null, channelsClient: null, announcer: null, emit: () => false,
+    });
+    const retrieve = {
+      requestId: 'r', method: 'POST', path: '/api/v1/video/retrieve', headers: { 'content-type': 'application/json', 'x-antseed-provider': 'venice', 'x-antseed-service': 'video-model' },
+      body: new TextEncoder().encode(JSON.stringify({ model: 'video-model', queue_id: 'job' })),
+    };
+    expect(handler.matchProvider(retrieve)).toBe(first);
+  });
+
   it('may share a name when they offer a service on the same terms', () => {
     expect(() => assertSameNameUpstreamsAgree([makeProvider('openai', 200), makeProvider('OpenAI', 200)])).not.toThrow();
   });

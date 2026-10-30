@@ -236,6 +236,21 @@ describe('PeerAnnouncer metadata versions', () => {
     expect(legacy.providers[0]!.serviceHealth).toBeUndefined();
     expect(await verifiesAsBuyer(legacy)).toBe(true);
   });
+
+  it('keeps the health of a service named __proto__', async () => {
+    const config = makeBaseConfig();
+    config.providers = [{
+      provider: 'openai',
+      services: ['__proto__', 'model-b'],
+      serviceHealth: () => JSON.parse('{"__proto__": {"status": "failing", "reason": "timeout"}}'),
+      maxConcurrency: 5,
+    }];
+    const announcer = new PeerAnnouncer(config);
+    await announcer.announce();
+
+    expect(Object.keys(announcer.getMetadataForVersion(13)!.providers[0]!.serviceHealth ?? {})).toEqual(['__proto__']);
+    expect(announcer.getMetadataForVersion(undefined)!.providers[0]!.services).toEqual(['model-b']);
+  });
 });
 
 describe('PeerAnnouncer metadata limits', () => {

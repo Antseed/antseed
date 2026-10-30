@@ -1261,8 +1261,12 @@ export class SellerRequestHandler {
 
     // Several upstreams can share a provider name (with the same terms, see
     // assertSameNameUpstreamsAgree); buyers merge their announcements with the
-    // same preference (mergeProviderAnnouncements).
-    const pick = (candidates: Provider[]): Provider | undefined => preferHealthyUpstream(candidates, requestedService);
+    // same preference (mergeProviderAnnouncements). A native video job lives
+    // in the account of the upstream that accepted it, so video requests keep
+    // to the first matching upstream: a retrieve reaches the job's upstream
+    // even after it starts failing.
+    const pick = (candidates: Provider[]): Provider | undefined =>
+      (videoRoute ? candidates[0] : preferHealthyUpstream(candidates, requestedService));
     const serving = providers.filter(matchesService);
     let provider: Provider | undefined;
     if (requestedProvider) {

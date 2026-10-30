@@ -25,6 +25,7 @@ import type { ServiceApiProtocol } from "../types/service-api.js";
 import { isKnownServiceApiProtocol } from "../types/service-api.js";
 import type { ServiceUnitBillingModelsV1 } from "../types/billing.js";
 import { encodeMetadataForSigning, getMetadataCodec, negotiateMetadataVersion, SERVED_METADATA_VERSIONS } from "./metadata-codec.js";
+import { serviceMap } from "./metadata/wire.js";
 import { getAddress } from "ethers";
 import { debugWarn } from "../utils/debug.js";
 import { bytesToHex } from "../utils/hex.js";
@@ -496,7 +497,7 @@ export class PeerAnnouncer {
     if (!serviceHealth) return undefined;
     const hasWildcardServices = supportedServices.length === 0;
     const supportedServiceSet = new Set(supportedServices);
-    const normalized: Record<string, ServiceHealth> = {};
+    const normalized: Record<string, ServiceHealth> = serviceMap();
     for (const [service, health] of Object.entries(serviceHealth)) {
       if (!hasWildcardServices && !supportedServiceSet.has(service)) continue;
       normalized[service] = { ...health };
@@ -514,7 +515,7 @@ export class PeerAnnouncer {
 
     const hasWildcardServices = supportedServices.length === 0;
     const supportedServiceSet = new Set(supportedServices);
-    const normalized: Record<string, string[]> = {};
+    const normalized: Record<string, string[]> = serviceMap();
     for (const [service, categories] of Object.entries(serviceCategories)) {
       if (!hasWildcardServices && !supportedServiceSet.has(service)) {
         continue;
@@ -545,7 +546,7 @@ export class PeerAnnouncer {
 
     const hasWildcardServices = supportedServices.length === 0;
     const supportedServiceSet = new Set(supportedServices);
-    const normalized: Record<string, ServiceApiProtocol[]> = {};
+    const normalized: Record<string, ServiceApiProtocol[]> = serviceMap();
     for (const [service, protocols] of Object.entries(serviceApiProtocols)) {
       if (!hasWildcardServices && !supportedServiceSet.has(service)) {
         continue;
@@ -576,7 +577,7 @@ export class PeerAnnouncer {
 
     const hasWildcardServices = supportedServices.length === 0;
     const supportedServiceSet = new Set(supportedServices);
-    const normalized: ServiceUnitBillingModelsV1 = {};
+    const normalized: ServiceUnitBillingModelsV1 = serviceMap();
     for (const [service, protocolModels] of Object.entries(serviceUnitBillingModels)) {
       if (!hasWildcardServices && !supportedServiceSet.has(service)) {
         continue;
@@ -602,7 +603,7 @@ export class PeerAnnouncer {
 
     const hasWildcardServices = supportedServices.length === 0;
     const supportedServiceSet = new Set(supportedServices);
-    const normalized: Record<string, ServiceCapabilities> = {};
+    const normalized: Record<string, ServiceCapabilities> = serviceMap();
     for (const [service, caps] of Object.entries(serviceCapabilities)) {
       if (!hasWildcardServices && !supportedServiceSet.has(service)) {
         continue;
