@@ -3394,6 +3394,28 @@ test('price policy checks the provider the route sends through, not the first he
   assert.deepEqual(providers, ['c'])
 })
 
+test('a failing direct protocol is not hidden by a healthy route that needs a transform', async () => {
+  const peer = makePeer('b', ['openai'])
+  peer.providerPricing = { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'gpt-6-sol': { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } } }
+  peer.providerServiceApiProtocols = { openai: { services: { 'gpt-6-sol': ['openai-chat-completions', 'openai-responses'] } } }
+  peer.providerServiceCapabilities = { openai: { services: { 'gpt-6-sol': { supportedParameters: ['seed'] } } } }
+  peer.providerServiceHealth = { openai: {
+    services: { 'gpt-6-sol': { status: 'healthy' } },
+    failingProtocols: { 'gpt-6-sol': { 'openai-chat-completions': { status: 'failing', reason: 'timeout' } } },
+  } }
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+  ;(proxy as any)._node.sendRequest = async () => { throw new Error('must not reach a peer') }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    path: '/v1/chat/completions',
+    headers: { 'x-antseed-required-parameters': 'seed' },
+    body: { model: 'gpt-6-sol', messages: [{ role: 'user', content: 'hi' }] },
+  }))
+
+  assert.equal(res.statusCode, 503, res.body)
+  assert.equal(JSON.parse(res.body).error.code, 'seller_self_health_failing')
+})
+
 test('a video protocol only failing upstreams serve gets the self health error, not unsupported_protocol', async () => {
   const peer = makePeer('b', ['video'])
   peer.providerServiceApiProtocols = { video: { services: { vid: ['venice-video', 'fal-video'] } } }

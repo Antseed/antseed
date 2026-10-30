@@ -44,7 +44,7 @@ import {
 import { VerificationMux } from './verification/verification-mux.js';
 import { createResponseAuthPayload, createStreamingResponseHash } from './verification/response-auth.js';
 import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION } from '@antseed/protocol/http';
-import { isServiceHealthFailing, preferHealthyUpstream } from '@antseed/protocol/peer-metadata';
+import { isServiceHealthFailing, preferHealthyUpstream, preferProtocolUpstream } from '@antseed/protocol/peer-metadata';
 import { hasJsonContentType, tryParseJsonObject } from './utils/json-codec.js';
 import type { UnitBillingContext, UnitBillingModelV1, UnitBillingUsage, UnitBillingUsageReportV1 } from './types/billing.js';
 import { captureUnitBillingContext, computeFinalUnitBilling, estimateUnitRequestCost, isFreeUnitBillingModel, type BillingRequestFacts } from './billing/unit.js';
@@ -1221,14 +1221,19 @@ export class SellerRequestHandler {
       provider.services.includes(requestedService) && (!videoRoute || Boolean(provider.serviceApiProtocols?.[requestedService]?.includes(videoRoute.protocol)));
 
     // Several upstreams can share a provider name; buyers merge their
-    // announcements with the same preference (mergeProviderAnnouncements).
+    // announcements with the same preference (mergeProviderAnnouncements): the
+    // request's API protocol goes to an upstream serving it when one does.
+    const requestProtocol = detectRequestServiceApiProtocol(request);
+    const pick = (candidates: Provider[]): Provider | undefined =>
+      (requestProtocol ? preferProtocolUpstream(candidates, requestedService, requestProtocol) : undefined)
+      ?? preferHealthyUpstream(candidates, requestedService);
     const serving = providers.filter(matchesService);
     let provider: Provider | undefined;
     if (requestedProvider) {
-      provider = preferHealthyUpstream(serving.filter((candidate) => candidate.name.toLowerCase() === requestedProvider), requestedService);
+      provider = pick(serving.filter((candidate) => candidate.name.toLowerCase() === requestedProvider));
     }
     if (!provider && !(videoRoute && requestedProvider)) {
-      provider = preferHealthyUpstream(serving, requestedService);
+      provider = pick(serving);
     }
     return provider;
   }

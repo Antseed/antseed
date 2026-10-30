@@ -232,17 +232,38 @@ export function findFailingServiceRoutes(
     // Each provider's route is its own: a healthy one without the required
     // parameters must not hide a capable one that is failing.
     const providers = explicitProvider ? [explicitProvider] : [...new Set(peer.providers.map((provider) => provider.trim().toLowerCase()))]
-    for (const provider of providers) {
-      const plan = resolvePeerRoutePlan(peer, requestProtocol, requestedService, provider, 'lenient')
-      if (!plan?.serviceId) continue
-      const health = providerServiceRouteHealth(peer.providerServiceHealth, plan.provider, plan.serviceId, plan.selection?.targetProtocol)
-      if (!isServiceHealthFailing(health)) continue
-      if (findMissingRouteParameters(peer, plan, requestedService, requiredParameters).length > 0) continue
-      routes.push({ peerId: peer.peerId, serviceId: plan.serviceId, health })
-      break
-    }
+    const failing = providers.flatMap((provider) => candidateRoutePlans(peer, requestProtocol, requestedService, provider))
+      .map((plan) => ({ plan, health: providerServiceRouteHealth(peer.providerServiceHealth, plan.provider, plan.serviceId!, plan.selection?.targetProtocol) }))
+      .find(({ plan, health }) => isServiceHealthFailing(health)
+        && findMissingRouteParameters(peer, plan, requestedService, requiredParameters).length === 0)
+    if (failing) routes.push({ peerId: peer.peerId, serviceId: failing.plan.serviceId!, health: failing.health! })
   }
   return routes
+}
+
+/**
+ * A provider's routes for the request: the one routing prefers, then each
+ * protocol only failing upstreams serve, which a healthy route over another
+ * protocol (or a transform to it) would otherwise hide.
+ */
+function candidateRoutePlans(
+  peer: PeerInfo,
+  requestProtocol: ServiceApiProtocol | null,
+  requestedService: string,
+  provider: string,
+): PeerProtocolRoutePlan[] {
+  const plans: PeerProtocolRoutePlan[] = []
+  const preferred = resolvePeerRoutePlan(peer, requestProtocol, requestedService, provider, 'lenient')
+  if (preferred?.serviceId) plans.push(preferred)
+  const offer = findAdvertisedServiceOffer(peer, provider, requestedService, true)
+  if (!offer) return plans
+  const failingProtocols = Object.keys(peer.providerServiceHealth?.[offer.provider]?.failingProtocols?.[offer.serviceId] ?? {}) as ServiceApiProtocol[]
+  for (const protocol of failingProtocols) {
+    const selection = requestProtocol ? selectTargetProtocolForRequest(requestProtocol, [protocol]) : null
+    if (requestProtocol && !selection) continue
+    plans.push({ provider: offer.provider, selection, serviceId: offer.serviceId })
+  }
+  return plans
 }
 
 /**

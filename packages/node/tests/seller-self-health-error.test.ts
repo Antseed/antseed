@@ -86,4 +86,22 @@ describe('seller self health error', () => {
     expect(response.statusCode).toBe(200);
     expect(down.handleRequest).not.toHaveBeenCalled();
   });
+
+  it('sends a request to the same-name upstream serving its API protocol', () => {
+    const chat = makeProvider('openai', 200);
+    chat.serviceApiProtocols = { 'test-model': ['openai-chat-completions'] };
+    const images = makeProvider('openai', 200);
+    images.serviceApiProtocols = { 'test-model': ['openai-images'] };
+    const handler = new SellerRequestHandler({
+      identity: identityFromPrivateKeyHex('11'.repeat(32)),
+      providers: [chat, images],
+      sellerPaymentManager: null, sessionTracker: null, channelsClient: null, announcer: null, emit: () => false,
+    });
+    const request = (path: string) => ({
+      requestId: 'r', method: 'POST', path, headers: { 'content-type': 'application/json', 'x-antseed-provider': 'openai' },
+      body: new TextEncoder().encode(JSON.stringify({ model: 'test-model' })),
+    });
+    expect(handler.matchProvider(request('/v1/images/generations'))).toBe(images);
+    expect(handler.matchProvider(request('/v1/chat/completions'))).toBe(chat);
+  });
 });
