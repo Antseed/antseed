@@ -229,12 +229,18 @@ export function findFailingServiceRoutes(
 ): Array<{ peerId: string; serviceId: string; health: ServiceHealth }> {
   const routes: Array<{ peerId: string; serviceId: string; health: ServiceHealth }> = []
   for (const peer of peers) {
-    const plan = resolvePeerRoutePlan(peer, requestProtocol, requestedService, explicitProvider, 'lenient')
-    if (!plan?.serviceId) continue
-    const health = providerServiceRouteHealth(peer.providerServiceHealth, plan.provider, plan.serviceId, plan.selection?.targetProtocol)
-    if (!isServiceHealthFailing(health)) continue
-    if (findMissingRouteParameters(peer, plan, requestedService, requiredParameters).length > 0) continue
-    routes.push({ peerId: peer.peerId, serviceId: plan.serviceId, health })
+    // Each provider's route is its own: a healthy one without the required
+    // parameters must not hide a capable one that is failing.
+    const providers = explicitProvider ? [explicitProvider] : [...new Set(peer.providers.map((provider) => provider.trim().toLowerCase()))]
+    for (const provider of providers) {
+      const plan = resolvePeerRoutePlan(peer, requestProtocol, requestedService, provider, 'lenient')
+      if (!plan?.serviceId) continue
+      const health = providerServiceRouteHealth(peer.providerServiceHealth, plan.provider, plan.serviceId, plan.selection?.targetProtocol)
+      if (!isServiceHealthFailing(health)) continue
+      if (findMissingRouteParameters(peer, plan, requestedService, requiredParameters).length > 0) continue
+      routes.push({ peerId: peer.peerId, serviceId: plan.serviceId, health })
+      break
+    }
   }
   return routes
 }

@@ -3341,6 +3341,35 @@ test('a healthy seller without the required parameters does not hide a capable s
   assert.equal(JSON.parse(res.body).error.code, 'seller_self_health_failing')
 })
 
+test('a capable failing provider gets the self health error next to an incapable one on the same seller', async () => {
+  const route = (price: number, supportedParameters: string[]) => ({
+    pricing: { defaults: { inputUsdPerMillion: price, outputUsdPerMillion: price }, services: { 'gpt-6-sol': { inputUsdPerMillion: price, outputUsdPerMillion: price } } },
+    protocols: { services: { 'gpt-6-sol': ['openai-chat-completions' as const] } },
+    capabilities: { services: { 'gpt-6-sol': { supportedParameters } } },
+  })
+  const failing = { services: { 'gpt-6-sol': { status: 'failing' as const, reason: 'timeout' as const } } }
+  const send = async (cheapFailing: boolean) => {
+    const peer = makePeer('b', ['cheap', 'capable'])
+    const cheap = route(1, [])
+    const capable = route(5, ['seed'])
+    peer.providerPricing = { cheap: cheap.pricing, capable: capable.pricing }
+    peer.providerServiceApiProtocols = { cheap: cheap.protocols, capable: capable.protocols }
+    peer.providerServiceCapabilities = { cheap: cheap.capabilities, capable: capable.capabilities }
+    peer.providerServiceHealth = cheapFailing ? { cheap: failing, capable: failing } : { capable: failing }
+    const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+    ;(proxy as any)._node.sendRequest = async () => { throw new Error('must not reach a peer') }
+    const res = await invokeProxy(proxy, makeProxyRequest({
+      path: '/v1/chat/completions',
+      headers: { 'x-antseed-required-parameters': 'seed' },
+      body: { model: 'gpt-6-sol', messages: [{ role: 'user', content: 'hi' }] },
+    }))
+    return [res.statusCode, JSON.parse(res.body).error.code]
+  }
+
+  assert.deepEqual(await send(false), [503, 'seller_self_health_failing'])
+  assert.deepEqual(await send(true), [503, 'seller_self_health_failing'])
+})
+
 test('a video protocol only failing upstreams serve gets the self health error, not unsupported_protocol', async () => {
   const peer = makePeer('b', ['video'])
   peer.providerServiceApiProtocols = { video: { services: { vid: ['venice-video', 'fal-video'] } } }
