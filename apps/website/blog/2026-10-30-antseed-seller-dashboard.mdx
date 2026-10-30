@@ -1,0 +1,141 @@
+---
+slug: antseed-seller-dashboard
+title: "The Antseed seller dashboard is live"
+authors: [antseed]
+tags: [providers, AI]
+description: "Track earnings, manage your models and pricing, compare offers and set up alerts with the Antseed seller dashboard, running on your own machine or server."
+keywords: [Antseed seller dashboard, local AI, model pricing, seller alerts, model monitoring]
+image: /img/blog/antseed-seller-dashboard/cover.png
+date: 2026-10-30
+---
+
+![An illustrated ant using the Antseed seller dashboard at a wooden desk.](/img/blog/antseed-seller-dashboard/cover.png)
+
+The Antseed seller dashboard is live. You can now track your earnings, manage the models you offer, set prices and get alerts when something needs attention.
+
+This is the first phase of the local AI platform we’re building to help millions of people run their own models and offer them to the world through Antseed. Today’s release gives you one place to manage your services, running on your own machine or server.
+
+<!-- truncate -->
+
+## Open your dashboard
+
+On the machine where your seller is configured, run:
+
+```bash
+antseed seller dashboard
+```
+
+The dashboard opens in your browser. If your seller runs on a remote server, follow the [connection instructions](https://antseed.com/docs/provide/monitoring/).
+
+Here’s what you can do. The screenshots below use sample data.
+
+## See your earnings and check that your models are working
+
+Open **Seller** to see how your service is doing:
+
+- Check today’s earnings and requests.
+- See how your activity has changed over the past 14 days.
+- Check which models are available and which have errors.
+- Review your payments and the ETH available to cover transaction fees.
+
+![Seller overview showing sample earnings, requests, payment balances and model health.](/img/blog/antseed-seller-dashboard/01-overview.jpg)
+
+## Understand what happened with each request
+
+Open **Logs** to see requests your seller sent to a model, including those that failed.
+
+You can:
+
+- Filter by model, buyer, time or failed requests.
+- Open a request to see how long it took and how much it cost.
+- Check how many tokens it used.
+- Read error details to help find what went wrong.
+
+![Request logs showing model names, response status, tokens, latency and cost, with filters above the list.](/img/blog/antseed-seller-dashboard/02-request-logs.jpg)
+
+## Compare your prices with other sellers
+
+Open **Market** to see what other sellers charge for the same models.
+
+You can:
+
+- Compare your price with the lowest and middle prices on the network.
+- See where your price ranks.
+- Browse other sellers’ offers.
+- Find models on the network that you don’t offer yet.
+
+Choose **Edit your price** to jump to that model’s pricing settings.
+
+![Market view comparing the seller’s model prices with other offers on the network.](/img/blog/antseed-seller-dashboard/03-market.jpg)
+
+## Choose your models, prices and limits
+
+Open **Settings** to manage what buyers can use.
+
+You can:
+
+- Change the price of each model.
+- Turn individual models on or off.
+- Add models priced by token under a provider you’ve already configured, such as your local model server.
+- Adjust prices for image and video models you’ve already configured.
+- Set free usage allowances, including allowances for buyers who stake ANTS.
+- Limit how many buyers your seller can serve at once.
+
+Some changes need a seller restart before they take effect. The dashboard shows when a restart is needed and provides a restart button when your setup supports it.
+
+![Model settings with availability switches, editable prices, free usage allowances and an Add model option.](/img/blog/antseed-seller-dashboard/04-models-and-pricing.jpg)
+
+## Get notified when something needs attention
+
+Connect Telegram or a webhook in **Settings → Alerts** to receive notifications when:
+
+- A model stops responding and is temporarily removed from your available models.
+- An external AI service you use is running low on credit or runs out.
+- Your seller’s wallet needs more ETH to cover transaction fees.
+- Your seller restarts after an unexpected shutdown.
+- No requests arrive for a period you choose.
+
+Choose whether to receive all notifications, warnings or only critical issues. Set how long your seller can go without requests before an alert is sent, and how often alerts repeat. For external services that report their credit balance, you can also choose when to receive a low-credit warning.
+
+You can receive notifications when problems are resolved, too.
+
+Send a test notification to check your setup. Once configured, alerts keep working while your seller is running, even with the dashboard closed.
+
+![Alerts settings with Telegram and webhook connections and test notification controls.](/img/blog/antseed-seller-dashboard/05-alerts.jpg)
+
+## See what affects your reputation
+
+Open **Reputation** to understand how your seller builds trust on the network.
+
+You can:
+
+- See what contributes to your trust score.
+- Find actions you can take to improve it.
+- Check your staking pool’s standing and pending rewards.
+
+![Reputation view showing the seller’s trust score, suggested improvements and staking pool information.](/img/blog/antseed-seller-dashboard/06-reputation.jpg)
+
+## Help buyers find and use your models
+
+Open **Promote** to share your seller and give buyers a direct way to use your models.
+
+You can:
+
+- Copy a link to your public seller profile.
+- Download a seller card to share.
+- Copy model IDs that direct requests specifically to your seller.
+- Prove ownership of a domain or GitHub account to add verification to your profile.
+
+![Promote view with a public profile link, downloadable seller card, direct model IDs and identity verification options.](/img/blog/antseed-seller-dashboard/07-promote.jpg)
+
+## Try it and tell us what you think
+
+Already offering models on Antseed? Open the dashboard and explore your earnings, prices and settings.
+
+If you want to start offering a local model, follow our [local model guide](https://antseed.com/blog/earn-from-your-local-ai-model/).
+
+For setup instructions and more detail, see the [dashboard and monitoring guide](https://antseed.com/docs/provide/monitoring/).
+
+This is our first phase. Try the dashboard and tell us what would make running your models easier.
+
+[Join the Antseed providers channel on Telegram](https://t.me/+IYOlB-bCGu5kZjJk) to stay up to date with new features, improvements and announcements.
