@@ -67,6 +67,7 @@ import {
   createCanonicalKbfProbe,
 } from './canonical-kbf-domains.js'
 import { writeJsonAtomic, writeTextAtomic } from './atomic-files.js'
+import { CandidateWritingPolicy, candidateWritingFallback, isRamblingCandidateAnswer } from './candidate-writing.js'
 import { createDomainHomogeneousKbfBatches } from './kbf-batching.js'
 import { asError, normalized, sleep } from './utils.js'
 
@@ -191,7 +192,14 @@ export function createReferenceRequestLimiter(
   )
 }
 
-type ReferenceQuery = ((model: string, body: Record<string, unknown>) => Promise<string>) & {
+interface ReferenceQueryOptions {
+  /** Sends this one request with another thinking setting (candidate writing fallback only). */
+  thinkingStrategy?: ThinkingDiscoveryStrategy
+  /** Called with the answer's output tokens, whether fresh or replayed from the checkpoint. */
+  onUsage?: (usage: { outputTokens: number }) => void
+}
+
+type ReferenceQuery = ((model: string, body: Record<string, unknown>, options?: ReferenceQueryOptions) => Promise<string>) & {
   invalidate?: (model: string, body: Record<string, unknown>) => Promise<void>
   costSummary?: () => ReferenceBuildCostV1
   consumedResponses?: () => ReferenceCachedResponseV1[]
@@ -591,6 +599,7 @@ export async function buildModelReference(input: {
       ?? resolveReferenceRequestRoute({ endpoint, model, apiKey, catalog: input.catalog ?? null }),
     log: input.log,
   })
+  const candidateWriting = new CandidateWritingPolicy(candidateWritingFallback(targetRoute), input.log)
   const excludedDomains = new Set<string>(modelConfig.excludedDomains ?? [])
   const retained = initial?.probes.filter((probe) => !excludedDomains.has(probe.domain)) ?? []
   const selfById = new Map(initial?.selfTest.outcomes.map((outcome) => [outcome.probeId, outcome]) ?? [])
@@ -659,6 +668,7 @@ export async function buildModelReference(input: {
         initial: collected,
         preferredContrastModels: undetectedContrasts,
         excludedProbeIds: input.excludedProbeIds,
+        candidateWriting,
       })
       const additions = collected.probes.slice(selfOutcomes.length, targetCount)
       if (additions.length > 0) {
@@ -782,6 +792,7 @@ export async function buildModelReference(input: {
         selfTestRuns,
         referenceEndpointRequest,
         ...(thinkingDiscovery ?? initialDiscovery ? { thinkingDiscovery: thinkingDiscovery ?? initialDiscovery } : {}),
+        ...(candidateWriting.summary() ? { candidateWriting: candidateWriting.summary() } : {}),
         ...(initial ? { enrollmentSeedReferenceId: initial.referenceId, reusedProbeCount: retained.length } : {}),
         ...(input.seedProbes ? {
           seededStableProbes: { ...input.seedProbes.source, offeredProbeCount: input.seedProbes.probes.length, acceptedProbeCount: seededProbeCount },
@@ -886,6 +897,8 @@ export async function collectReferenceProbes(input: {
   preferredContrastModels?: readonly string[]
   shuffle?: <T>(values: readonly T[]) => T[]
   excludedProbeIds?: ReadonlySet<string>
+  /** Question-writing fallback for answers that ran out of tokens; absent means none. */
+  candidateWriting?: CandidateWritingPolicy
 }): Promise<CollectedReferenceProbes> {
   assertPositiveInteger(input.targetCount, 'targetCount')
   const candidateCountPerRound = input.candidateCountPerRound ?? Math.max(CANDIDATE_COUNT, input.targetCount * 3)
@@ -926,6 +939,7 @@ export async function collectReferenceProbes(input: {
       input.query,
       input.excludedDomains,
       input.log,
+      input.candidateWriting,
     )
     const candidates = generated.filter((probe) => {
       if (state.generatedProbeIds.has(probe.id) || input.excludedProbeIds?.has(probe.id)) return false
@@ -1153,6 +1167,7 @@ async function generateCandidates(
   query: ReferenceQuery,
   excludedDomains: readonly string[] = [],
   log?: (message: string) => void,
+  writing?: CandidateWritingPolicy,
 ): Promise<KbfProbe[]> {
   const excluded = new Set(excludedDomains)
   const activeDomains = CANONICAL_KBF_DOMAINS.filter((definition) => !excluded.has(definition.key))
@@ -1180,7 +1195,7 @@ async function generateCandidates(
       }
       let content: string
       try {
-        content = await query(model, body)
+        content = await writeCandidateBatch(model, body, batchSize, definition, query, writing, log)
       } catch (error) {
         // A candidate batch only proposes questions; nothing is measured from it. A batch that
         // stays empty, or keeps timing out or failing upstream after its retries, is skipped and
@@ -1222,6 +1237,72 @@ async function generateCandidates(
     if (!added) break
   }
   return probes
+}
+
+/**
+ * One question-writing request. With a writing policy, an answer that ran out of tokens without a
+ * list is asked again with a little thinking allowed (see `candidate-writing.ts`). Without one,
+ * this is exactly the single request it always was.
+ */
+async function writeCandidateBatch(
+  model: string,
+  body: Record<string, unknown> & { max_tokens: number },
+  requestedCount: number,
+  definition: (typeof CANONICAL_KBF_DOMAINS)[number],
+  query: ReferenceQuery,
+  writing: CandidateWritingPolicy | undefined,
+  log?: (message: string) => void,
+): Promise<string> {
+  if (!writing) return query(model, body)
+  const askWithFallback = async (strategy: ThinkingDiscoveryStrategy): Promise<string | null> => {
+    try {
+      const content = await query(model, body, { thinkingStrategy: strategy })
+      writing.observeFallbackAnswer(parseCanonicalFacts(content, definition.range).length * 2 >= requestedCount)
+      return content
+    } catch (error) {
+      if (error instanceof ReferenceEndpointError && error.status >= 400 && error.status < 500 && error.status !== 429) {
+        writing.refuseFallback(`HTTP ${error.status}`)
+        return null
+      }
+      if (error instanceof EmptyReferenceResponseError) {
+        writing.observeFallbackAnswer(false)
+        return null
+      }
+      throw error
+    }
+  }
+  const batch = await writing.beginBatch()
+  try {
+    if (batch.strategy) {
+      const content = await askWithFallback(batch.strategy)
+      if (content !== null) return content
+    }
+    let outputTokens = 0
+    let content: string | null
+    let emptyError: EmptyReferenceResponseError | null = null
+    try {
+      content = await query(model, body, { onUsage: (usage) => { outputTokens = usage.outputTokens } })
+    } catch (error) {
+      // Thinking that filled every token can also come back as no text at all.
+      if (!(error instanceof EmptyReferenceResponseError) || normalized(error.finishReason ?? '') !== 'length') throw error
+      emptyError = error
+      content = null
+      outputTokens = error.outputTokens
+    }
+    const factCount = content === null ? 0 : parseCanonicalFacts(content, definition.range).length
+    const retry = writing.observeRecordedAnswer(isRamblingCandidateAnswer({
+      factCount, requestedCount, outputTokens, maxTokens: body.max_tokens,
+    }), batch.trial)
+    if (retry) {
+      log?.(`candidate batch for ${definition.key} ran out of tokens with ${factCount}/${requestedCount} facts; asking again with '${retry}'`)
+      const recovered = await askWithFallback(retry)
+      if (recovered !== null) return recovered
+    }
+    if (content === null) throw emptyError!
+    return content
+  } finally {
+    if (batch.trial) writing.endTrialBatch()
+  }
 }
 
 function canonicalCandidatePrompt(
@@ -1315,9 +1396,10 @@ function createReferenceQuery(input: {
     seen.push(provider)
     providersByModel.set(key, seen)
   }
-  const query = (async (model: string, body: Record<string, unknown>) => {
+  const query = (async (model: string, body: Record<string, unknown>, options?: ReferenceQueryOptions) => {
     const { __antseedReferenceCacheDomain, ...requestBody } = body
-    const route = input.routeForModel(model)
+    const baseRoute = input.routeForModel(model)
+    const route = options?.thinkingStrategy ? routeWithThinkingStrategy(baseRoute, options.thinkingStrategy) : baseRoute
     const cacheKey = canonicalHashBytes32({
       model,
       cacheDomain: __antseedReferenceCacheDomain ?? null,
@@ -1337,6 +1419,7 @@ function createReferenceQuery(input: {
           cached.outputTokens,
         )
       }
+      options?.onUsage?.({ outputTokens: cached.outputTokens })
       return cached.content
     }
     let attempt = 0
@@ -1379,6 +1462,7 @@ function createReferenceQuery(input: {
         consumed.set(cacheKey, cachedResponse)
         recordProvider(model, response.provider)
         input.limiter.recordSuccess(model)
+        options?.onUsage?.({ outputTokens: response.outputTokens })
         return response.content
       } catch (error) {
         if (isTerminalEmptyReferenceError(error)) {

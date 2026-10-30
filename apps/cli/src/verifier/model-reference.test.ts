@@ -587,6 +587,123 @@ test('the default reference endpoint records OpenRouter-style upstream provenanc
   }
 })
 
+test('question writing that runs out of tokens retries with a little thinking; asking keeps the recorded setting', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-candidate-writing-'))
+  const value = config()
+  value.referenceEndpoint!.baseUrl = 'https://openrouter.ai/api/v1'
+  const writingRequests: Array<Record<string, unknown>> = []
+  const otherRequests: Array<Record<string, unknown>> = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown> & { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (!prompt.startsWith('Generate ')) {
+      otherRequests.push(body)
+      return response(successfulContent(body.model, prompt))
+    }
+    writingRequests.push(body)
+    // Like Kimi K3.1 Pro: with thinking off it thinks out loud until max_tokens and gives no list.
+    if ((body.reasoning as { effort?: string } | undefined)?.effort !== 'minimal') {
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: 'I need generate exactly 20 facts. Should output only list. No bullets? Each line' }, finish_reason: 'length' }],
+        usage: { prompt_tokens: 100, completion_tokens: 6000, completion_tokens_details: { reasoning_tokens: 0 } },
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    return new Response(JSON.stringify({
+      choices: [{ message: { content: generatedCandidates(prompt) }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 100, completion_tokens: 1500, completion_tokens_details: { reasoning_tokens: 1000 } },
+    }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }
+  try {
+    const built = await buildModelReference({ model: MODEL, referencesDir: directory, config: value, fetchFn })
+    // Only question writing used the fallback; every other request kept thinking off.
+    assert.ok(writingRequests.some((body) => (body.reasoning as { effort?: string } | undefined)?.effort === 'minimal'))
+    for (const body of otherRequests) assert.deepEqual(body.reasoning, { effort: 'none' })
+    // The fallback replaces the thinking setting instead of adding a second one.
+    for (const body of writingRequests) assert.equal('reasoning_effort' in body, false)
+    // Only the three trial batches used the recorded setting; once they rambled, new batches
+    // went straight to the fallback.
+    const rambling = writingRequests.filter((body) => (body.reasoning as { effort?: string }).effort === 'none').length
+    assert.equal(rambling, 3)
+    const params = built.reference.generator.params as Record<string, unknown>
+    assert.deepEqual(params.referenceEndpointRequest, {
+      reasoningStrategy: 'reasoning-effort-none',
+      requestOverrides: { reasoning: { effort: 'none' } },
+      requestOmissions: [],
+    })
+    const writing = params.candidateWriting as Record<string, unknown>
+    assert.equal(writing.fallbackStrategy, 'reasoning-effort-minimal')
+    assert.equal(writing.ramblingAnswers, 3)
+    assert.equal(writing.retriedBatches, 3)
+    assert.ok((writing.directBatches as number) > 0)
+    await built.finalize()
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('question writing is unchanged for models that write clean lists', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-candidate-clean-'))
+  const value = config()
+  value.referenceEndpoint!.baseUrl = 'https://openrouter.ai/api/v1'
+  const writingBodies: string[] = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (prompt.startsWith('Generate ')) writingBodies.push(String(init?.body))
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    const built = await buildModelReference({ model: MODEL, referencesDir: directory, config: value, fetchFn })
+    assert.ok(writingBodies.length > 0)
+    for (const raw of writingBodies) {
+      const body = JSON.parse(raw) as Record<string, unknown>
+      assert.deepEqual(body.reasoning, { effort: 'none' })
+      assert.equal(body.temperature, 0.7)
+      assert.equal(body.max_tokens, 6000)
+    }
+    assert.equal('candidateWriting' in built.reference.generator.params, false)
+    await built.finalize()
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a refused question-writing fallback keeps the recorded setting and the build goes on', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-candidate-refused-'))
+  const value = config()
+  value.referenceEndpoint!.baseUrl = 'https://openrouter.ai/api/v1'
+  let refused = 0
+  let calls = 0
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown> & { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (prompt.startsWith('Generate ')) {
+      if ((body.reasoning as { effort?: string }).effort === 'minimal') {
+        refused += 1
+        return response('reasoning effort minimal is not supported', 400)
+      }
+      calls += 1
+      // The first answer rambles; later ones are clean lists.
+      if (calls === 1) {
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: 'Thinking out loud' }, finish_reason: 'length' }],
+          usage: { prompt_tokens: 100, completion_tokens: 6000 },
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    const built = await buildModelReference({ model: MODEL, referencesDir: directory, config: value, fetchFn })
+    assert.equal(refused, 1)
+    const writing = built.reference.generator.params.candidateWriting as Record<string, unknown>
+    assert.equal(writing.fallbackRefused, 'HTTP 400')
+    await built.finalize()
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('reference build routes only target requests through a pinned Antseed peer', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-route-'))
   const requests: Array<{ url: string; headers: Record<string, string>; body: Record<string, unknown> }> = []

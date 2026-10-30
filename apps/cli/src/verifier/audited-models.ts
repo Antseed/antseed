@@ -6,6 +6,9 @@ import { canonicalModelKey } from '@antseed/node/model-identity'
  * says where reference answers come from (`verifier.referenceEndpoint`, `verifier.upstreams`) plus
  * optional per-model settings in `verifier.models`.
  *
+ * Only the newest version of each model line is audited: older versions that a newer audited
+ * model replaces (Claude Sonnet 5, Opus 4.6 and Opus 5, GPT-5.6 Sol, Grok 4.5) are left out.
+ *
  * The key is the service name sellers advertise and the probe-bank directory name
  * (`<dataDir>/verifier/banks/<key>`), so renaming a key orphans its bank.
  */
@@ -21,21 +24,9 @@ export const AUDITED_MODELS: Readonly<Record<string, AuditedModel>> = Object.fre
     upstreamModel: 'anthropic/claude-fable-5.1',
     serviceAliases: ['claude-fable-5-1', 'fable-5.1', 'fable-5-1', 'anthropic/claude-fable-5.1'],
   },
-  'claude-opus-4-6': {
-    upstreamModel: 'anthropic/claude-opus-4.6',
-    serviceAliases: ['claude-opus-4.6', 'opus-4-6', 'anthropic/claude-opus-4.6'],
-  },
-  'claude-opus-5': {
-    upstreamModel: 'anthropic/claude-opus-5',
-    serviceAliases: ['opus-5', 'anthropic/claude-opus-5'],
-  },
   'claude-opus-5.5': {
     upstreamModel: 'anthropic/claude-opus-5.5',
     serviceAliases: ['claude-opus-5-5', 'opus-5.5', 'opus-5-5', 'anthropic/claude-opus-5.5'],
-  },
-  'claude-sonnet-5': {
-    upstreamModel: 'anthropic/claude-sonnet-5',
-    serviceAliases: ['sonnet-5', 'anthropic/claude-sonnet-5'],
   },
   'claude-sonnet-5.5': {
     upstreamModel: 'anthropic/claude-sonnet-5.5',
@@ -47,16 +38,11 @@ export const AUDITED_MODELS: Readonly<Record<string, AuditedModel>> = Object.fre
     serviceAliases: ['gemini-3-1-pro-preview', 'google/gemini-3.1-pro-preview'],
   },
   'gemini-4-argon': { upstreamModel: 'google/gemini-4-argon', serviceAliases: ['google/gemini-4-argon'] },
-  'gpt-5.6-sol': {
-    upstreamModel: 'openai/gpt-5.6-sol',
-    serviceAliases: ['openai/gpt-5.6-sol', 'openai-gpt-56-sol', 'gpt5.6-sol'],
-  },
   'gpt-6-astra': { upstreamModel: 'openai/gpt-6-astra', serviceAliases: ['openai/gpt-6-astra', 'openai-gpt-6-astra'] },
   'gpt-6.1-sol': {
     upstreamModel: 'openai/gpt-6.1-sol',
     serviceAliases: ['openai-gpt-61-sol', 'gpt-61-sol', 'openai/gpt-6.1-sol'],
   },
-  'grok-4.5': { upstreamModel: 'x-ai/grok-4.5', serviceAliases: ['grok-4-5'] },
   'grok-4.7': { upstreamModel: 'x-ai/grok-4.7', serviceAliases: ['grok-4-7', 'x-ai/grok-4.7'] },
   'deepseek-v4-pro': { upstreamModel: 'deepseek/deepseek-v4-pro', serviceAliases: ['deepseek/deepseek-v4-pro'] },
   'deepseek-v4-pro-0813': {

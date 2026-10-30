@@ -97,9 +97,13 @@ test('the audited model list is built in; config only adds settings', () => {
     const builtIn = Object.keys(AUDITED_MODELS).sort((left, right) => left.localeCompare(right))
     assert.deepEqual(configuredVerifierModels(undefined), builtIn)
     assert.deepEqual(configuredVerifierModels({ models: { 'kimi-k3': { excludedDomains: ['medical'] } } }), builtIn)
-    const [, opus] = findVerifierModel({ models: { 'claude-opus-4.6': { excludedDomains: ['medical'] } } }, 'claude-opus-4.6')!
-    assert.equal(opus.upstreamModel, 'anthropic/claude-opus-4.6')
+    const [, opus] = findVerifierModel({ models: { 'claude-opus-5.5': { excludedDomains: ['medical'] } } }, 'claude-opus-5.5')!
+    assert.equal(opus.upstreamModel, 'anthropic/claude-opus-5.5')
     assert.deepEqual(opus.excludedDomains, ['medical'])
+    // Older versions replaced by a newer audited model are not audited, and don't match the newer one.
+    for (const older of ['claude-sonnet-5', 'claude-opus-5', 'claude-opus-4-6', 'claude-opus-4.6', 'gpt-5.6-sol', 'grok-4.5']) {
+      assert.equal(findVerifierModel(undefined, older), undefined, older)
+    }
     assert.equal(findVerifierModel(undefined, 'not-audited'), undefined)
     // Other spellings of a built-in model resolve to it, matched the way buyers route.
     assert.equal(findVerifierModel(undefined, 'anthropic/claude-opus-5-5-latest')?.[0], 'claude-opus-5.5')
