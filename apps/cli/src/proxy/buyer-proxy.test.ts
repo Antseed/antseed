@@ -3370,12 +3370,13 @@ test('a healthy seller ruled out by policy keeps the policy answer, not a self h
   const proxy = makeBuyerProxyWithPeers([failing, pricey], [failing, pricey], { allowsPeerForPolicy: () => false, onResult: () => {} })
   ;(proxy as any)._node.sendRequest = async () => { throw new Error('must not reach a peer') }
 
-  const res = await invokeProxy(proxy, makeProxyRequest({
-    path: '/v1/chat/completions',
-    body: { model: 'gpt-6-sol', messages: [{ role: 'user', content: 'hi' }] },
-  }))
-
-  assert.notEqual(JSON.parse(res.body).error.code, 'seller_self_health_failing')
+  for (const path of ['/v1/chat/completions', '/v1/models/custom-operation']) {
+    const res = await invokeProxy(proxy, makeProxyRequest({
+      path,
+      body: { model: 'gpt-6-sol', messages: [{ role: 'user', content: 'hi' }] },
+    }))
+    assert.notEqual(JSON.parse(res.body).error.code, 'seller_self_health_failing', path)
+  }
 })
 
 test('chat requests to a decision-only model get unsupported_protocol, not model_not_found', async () => {

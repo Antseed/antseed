@@ -65,6 +65,14 @@ describe('LocalRouter', () => {
     expect(router.allowsPeerForPolicy(makeRequest('model-x'), failing)).toBe(true);
   });
 
+  it('skips a failing service priced only by its provider default', () => {
+    const router = new LocalRouter({ maxPricing: { defaults: { inputUsdPerMillion: 1_000, outputUsdPerMillion: 1_000 } } });
+    const failing = makePeer({ providerServiceHealth: { anthropic: { services: { 'model-x': { status: 'failing', reason: 'timeout' } } } } });
+    expect(router.selectPeer(makeRequest('model-x'), [failing])).toBeNull();
+    expect(router.allowsPeerForPolicy(makeRequest('model-x'), failing)).toBe(true);
+    expect(router.selectPeer(makeRequest('model-x'), [makePeer()])).not.toBeNull();
+  });
+
   it('skips a peer whose only route for the requested video protocol is failing', () => {
     const router = new LocalRouter({ maxPricing: { defaults: { inputUsdPerMillion: 1_000, outputUsdPerMillion: 1_000 } } });
     const peer = makePeer({

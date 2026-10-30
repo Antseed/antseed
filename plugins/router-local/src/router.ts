@@ -213,22 +213,17 @@ export class LocalRouter implements Router {
       .map((provider) => provider.trim())
       .filter((provider) => provider.length > 0);
 
-    if (requestedService && peer.providerPricing) {
-      let failingMatch: string | null = null;
-      for (const provider of availableProviders) {
-        const pricing = peer.providerPricing[provider];
-        if (!pricing?.services?.[requestedService]) continue;
-        // The seller's own health check says this provider cannot serve it right now.
-        if (isProviderServiceRouteFailing(peer.providerServiceHealth, provider, requestedService, automatic?.protocol)) {
-          failingMatch ??= provider;
-          continue;
-        }
-        return provider;
-      }
-      if (failingMatch) return automatic ? null : failingMatch;
-    }
-
-    return availableProviders[0] ?? null;
+    // The seller's own health check says this provider cannot serve it right now.
+    const isFailing = (provider: string): boolean => requestedService !== null
+      && isProviderServiceRouteFailing(peer.providerServiceHealth, provider, requestedService, automatic?.protocol);
+    // Providers pricing the service itself come first; any provider can still serve it at its default price.
+    const pricingService = requestedService
+      ? availableProviders.filter((provider) => peer.providerPricing?.[provider]?.services?.[requestedService])
+      : [];
+    const candidates = pricingService.length > 0 ? pricingService : availableProviders;
+    const healthy = candidates.find((provider) => !isFailing(provider));
+    if (healthy) return healthy;
+    return automatic ? null : candidates[0] ?? null;
   }
 
   private _resolvePeerOfferPrice(

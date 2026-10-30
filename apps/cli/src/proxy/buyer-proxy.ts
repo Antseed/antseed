@@ -4413,6 +4413,7 @@ export class BuyerProxy {
         // could and policy ruled it out, the policy answer below is the true one.
         const healthyRouteExists = modelPeers.some((peer) => {
           const plan = modelPlans.get(peer.peerId)
+            ?? resolvePeerRoutePlan(peer, requestProtocol, requestedService, explicitProvider, 'strict')
           return plan?.serviceId != null
             && findMissingRouteParameters(peer, plan, requestedService, routeRequiredParameters).length === 0
         })

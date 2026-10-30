@@ -554,10 +554,10 @@ export function mergeProviderAnnouncements(providers: readonly ProviderAnnouncem
       if (protocols.length > 0) setServiceEntry(matrices.providerServiceApiProtocols, name, service, protocols);
       for (const protocol of protocols) {
         const route = preferHealthyUpstream(serving.filter((upstream) => upstream.serviceApiProtocols?.[service]?.includes(protocol)), service);
-        const capabilities = route?.serviceCapabilities?.[service];
-        if (!route || route === owner || !capabilities) continue;
+        if (!route || route === owner) continue;
+        // Recorded even when empty, so this route never borrows the owner's capabilities.
         const entry = (matrices.providerServiceCapabilities[name] ??= { services: {} });
-        ((entry.protocols ??= {})[service] ??= {})[protocol] = capabilities;
+        ((entry.protocols ??= {})[service] ??= {})[protocol] = route.serviceCapabilities?.[service] ?? {};
       }
       const unitModels = unitBillingRoutes(serving, service);
       if (Object.keys(unitModels).length > 0) setServiceEntry(matrices.providerServiceUnitBillingModels, name, service, unitModels);

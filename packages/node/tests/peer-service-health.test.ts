@@ -102,4 +102,10 @@ describe('service health across upstreams sharing a provider name', () => {
       protocols: { 'gpt-6-sol': { 'fal-video': { supportedParameters: ['video_url'] } } },
     });
   });
+
+  it('gives an alternate protocol route without capabilities none of its own', () => {
+    const chat: ProviderAnnouncement = { ...upstream({ 'gpt-6-sol': healthy }), serviceApiProtocols: { 'gpt-6-sol': ['openai-chat-completions'] }, serviceUnitBillingModels: undefined, serviceCapabilities: { 'gpt-6-sol': { supportedParameters: ['seed'] } } };
+    const video: ProviderAnnouncement = { ...upstream({ 'gpt-6-sol': healthy }), serviceApiProtocols: { 'gpt-6-sol': ['fal-video'] }, serviceUnitBillingModels: undefined };
+    expect(peerInfo([chat, video]).providerServiceCapabilities.openai.protocols).toEqual({ 'gpt-6-sol': { 'fal-video': {} } });
+  });
 });
