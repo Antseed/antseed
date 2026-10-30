@@ -50,8 +50,6 @@ contract M003VerificationRegistryTest is Test {
     }
 
     function config() private view returns (M003DeployVerificationRegistry.Config memory result) {
-        address[] memory auditors = new address[](1);
-        auditors[0] = auditor;
         result = M003DeployVerificationRegistry.Config({
             chainId: block.chainid,
             registry: address(registry),
@@ -61,8 +59,7 @@ contract M003VerificationRegistryTest is Test {
             pointsPolicyRegistry: address(pointsPolicyRegistry),
             owner: owner,
             deploymentNonce: vm.getNonce(owner),
-            bonusBps: 100,
-            auditors: auditors
+            bonusBps: 100
         });
     }
 
@@ -77,7 +74,7 @@ contract M003VerificationRegistryTest is Test {
         assertEq(verification.pendingOwner(), address(0));
         assertEq(address(verification.registry()), address(registry));
         assertEq(address(verification.sellerPools()), address(pools));
-        assertTrue(verification.approvedAuditors(auditor));
+        assertFalse(verification.approvedAuditors(auditor), "M003 approves no auditors");
         assertEq(address(policy), vm.computeCreateAddress(owner, settings.deploymentNonce + 1));
         assertEq(address(policy.verification()), address(verification));
         assertEq(address(policy.usageAccounting()), address(accounting));
@@ -96,17 +93,7 @@ contract M003VerificationRegistryTest is Test {
         assertEq(registry.staking(), address(0x5111));
     }
 
-    function test_resumeApprovalsOnOriginalDeployment() public {
-        M003DeployVerificationRegistry.Config memory settings = config();
-        M003DeployVerificationRegistry.Config memory empty = config();
-        empty.auditors = new address[](0);
-        AntseedKbfVerification verification = deploy(empty);
-        assertFalse(verification.approvedAuditors(auditor));
-        assertEq(address(deploy(settings)), address(verification));
-        assertTrue(verification.approvedAuditors(auditor));
-    }
-
-    function test_runReadsEnvironmentWithEmptyAllowlist() public {
+    function test_runReadsEnvironmentAndApprovesNoAuditors() public {
         vm.setEnv("EXPECTED_CHAIN_ID", vm.toString(block.chainid));
         vm.setEnv("ANTSEED_REGISTRY", vm.toString(address(registry)));
         vm.setEnv("EXPECTED_IDENTITY_REGISTRY", vm.toString(address(identity)));
@@ -116,15 +103,17 @@ contract M003VerificationRegistryTest is Test {
         vm.setEnv("VERIFICATION_BONUS_BPS", "250");
         vm.setEnv("VERIFICATION_OWNER", vm.toString(owner));
         vm.setEnv("VERIFICATION_DEPLOYMENT_NONCE", vm.toString(vm.getNonce(owner)));
-        vm.setEnv("VERIFICATION_AUDITORS", "");
+        vm.setEnv("VERIFICATION_AUDITORS", vm.toString(auditor)); // ignored: M003 never approves auditors
         (AntseedKbfVerification verification, AntseedKbfVerificationPointsPolicy policy) = script.run();
         assertEq(verification.owner(), owner);
         assertEq(policy.bonusBps(), 250);
         assertFalse(verification.approvedAuditors(auditor));
     }
 
-    function test_approvedAuditorCanSubmitAudit() public {
+    function test_auditorApprovedByOwnerAfterDeployCanSubmitAudit() public {
         AntseedKbfVerification verification = deploy(config());
+        vm.prank(owner);
+        verification.setAuditor(auditor, true); // the manual step after M003
         vm.prank(address(0xCAFE));
         uint256 agentId = identity.register();
         IAntseedKbfVerification.ServiceResult[] memory results = new IAntseedKbfVerification.ServiceResult[](1);
@@ -148,14 +137,6 @@ contract M003VerificationRegistryTest is Test {
         settings.identityRegistry = address(new MockERC8004Registry());
         vm.expectRevert("M003: wrong identity registry");
         script.runWith(settings);
-    }
-
-    function test_rejectsZeroAuditorBeforeDeployment() public {
-        M003DeployVerificationRegistry.Config memory settings = config();
-        settings.auditors[0] = address(0);
-        vm.expectRevert("M003: zero auditor");
-        script.runWith(settings);
-        assertEq(vm.getNonce(owner), settings.deploymentNonce);
     }
 
     function test_rejectsChangedNonceRatherThanDeployingAnotherRegistry() public {
@@ -245,7 +226,9 @@ contract M003VerificationRegistryTest is Test {
     function test_policyChangesSellerPointsAfterSameAudit() public {
         (AntseedKbfVerification verification, AntseedKbfVerificationPointsPolicy policy) = script.runWith(config());
         vm.prank(owner);
-        pointsPolicyRegistry.registerPolicy(address(policy)); // the manual step after M003
+        pointsPolicyRegistry.registerPolicy(address(policy)); // the manual steps after M003
+        vm.prank(owner);
+        verification.setAuditor(auditor, true);
         address seller = address(0x5E11);
         vm.prank(seller);
         uint256 agentId = identity.register();

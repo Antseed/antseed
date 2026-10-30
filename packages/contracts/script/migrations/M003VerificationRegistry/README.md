@@ -1,10 +1,11 @@
 # M003 — Verification registry and points policy
 
-Deploys `AntseedKbfVerification` and `AntseedKbfVerificationPointsPolicy` and optionally
-approves an initial auditor list. It does **not** register the policy in the
-`AntseedPointsPolicyRegistry`: the registry owner does that later as a separate, manual
-`registerPolicy(policy)` transaction. Until then verdicts are recorded on-chain but change no
-seller points. Approved auditors submit
+Deploys `AntseedKbfVerification` and `AntseedKbfVerificationPointsPolicy`, and nothing else.
+It approves **no** auditors and does **not** register the policy in the
+`AntseedPointsPolicyRegistry`. Both are separate, manual owner steps after the deploy:
+the verification owner approves each auditor with `setAuditor(auditor, true)`, and the
+registry owner calls `registerPolicy(policy)`. Until then no audit can be submitted and
+verdicts change no seller points. Approved auditors submit
 one audit per model; each seller service gets `SAME`, `DIFF`, or `UNDETERMINED`.
 It does not change emissions, staking, or
 protocol registry pointers. M002 is not a prerequisite.
@@ -47,9 +48,8 @@ After M003:
   both new contracts and does not need to own the protocol or points policy registry. Supply
   the matching wallet with `--signer verificationOwner=<spec>` (keystore, Ledger, or unlocked
   signer). Both contracts use `Ownable2Step` if ownership should move later.
-- Optionally set `VERIFICATION_AUDITORS` to comma-separated, nonzero auditor
-  addresses in `packages/contracts/.env`. Omit it for an empty initial allowlist.
-  Duplicate addresses are rejected. Review the list in the decoded dry-run plan.
+- Leave `VERIFICATION_AUDITORS` unset. M003 refuses to run when it is set: auditors are
+  approved separately with `setAuditor` after the deploy.
 - Optionally set `VERIFICATION_BONUS_BPS` (0 to 5000, default 0).
   It is fixed in the checkpoint; change it later with `setBonusBps`.
 - Set the network RPC environment variable and `BASESCAN_API_KEY` as for M001/M002.
@@ -65,8 +65,11 @@ pnpm contracts:deploy -- M003 --network base-mainnet --broadcast \
   --signer verificationOwner=account:antseed-verification-deployer
 ```
 
-After the broadcast, the points policy registry owner registers the policy when points should
-start to count: `registerPolicy(<kbfVerificationPointsPolicy address>)`.
+After the broadcast, as separate manual steps:
+
+- the verification owner approves each auditor: `setAuditor(<auditor>, true)`;
+- the points policy registry owner registers the policy when points should start to count:
+  `registerPolicy(<kbfVerificationPointsPolicy address>)`.
 
 Base Sepolia also supports `--dry-run` and `--broadcast`. Review and commit
 `pending/003-kbf-verification.plan.json` and its `.VALIDATION.md` before
@@ -83,26 +86,23 @@ so they cannot overwrite production receipts or block the subsequent live run.
 
 The existing checkpoint facility saves the original deployment nonce, both predicted
 CREATE addresses (verification at the nonce, policy at the nonce + 1), owner, seller
-pools, usage accounting, points policy registry, per-model bonus, and auditor list
-before broadcast. Keep the checkpoint
+pools, usage accounting, points policy registry, and per-model bonus before broadcast. Keep the checkpoint
 and Foundry receipts until the history record is committed. Resume with the same
 command: an existing deployment is checked against the local artifact, registry,
-and owner; only the missing policy deployment and approvals are sent. Confirmed receipts are merged into
+and owner; only the missing policy deployment is sent. Confirmed receipts are merged into
 the checkpoint even if a later transaction or source verification fails.
 
 If the deployment is absent but its nonce has been consumed or is pending, the
 migration stops instead of deploying at another address. Resolve the original
 transaction first. Missing creation provenance also stops the migration: restore
-the original checkpoint/receipts rather than deleting them to start over. Changes
-to the initial auditor list during recovery are rejected.
+the original checkpoint/receipts rather than deleting them to start over.
 
-Once deployment and approvals are confirmed, the runner appends
+Once both deployments are confirmed, the runner appends
 `history/003-kbf-verification.json`, folds `contracts.kbfVerification` and
 `contracts.kbfVerificationPointsPolicy` into `current.json`, and generates `verificationContractAddress` for the SDK/CLI.
 Undeployed networks keep that optional address absent. Existing explicit CLI
 overrides still take precedence. No existing history files are edited.
 
-M003 records the deployment and the initial approvals, not the policy registration or
-later governance changes. Register or remove the policy with the points policy registry
-owner directly. Manage subsequent auditor additions/revocations separately; do not change
-and reapply the deployment's initial list as an administration mechanism.
+M003 records the deployment only, not auditor approvals, the policy registration or
+later governance changes. Approve or revoke auditors with `setAuditor` and register or
+remove the policy with the points policy registry owner directly.

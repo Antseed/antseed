@@ -22,7 +22,6 @@ contract M003DeployVerificationRegistry is Script {
         address owner;
         uint256 deploymentNonce;
         uint256 bonusBps;
-        address[] auditors;
     }
 
     function run() external returns (AntseedKbfVerification, AntseedKbfVerificationPointsPolicy) {
@@ -36,8 +35,7 @@ contract M003DeployVerificationRegistry is Script {
                 pointsPolicyRegistry: vm.envAddress("POINTS_POLICY_REGISTRY"),
                 owner: vm.envAddress("VERIFICATION_OWNER"),
                 deploymentNonce: vm.envUint("VERIFICATION_DEPLOYMENT_NONCE"),
-                bonusBps: vm.envUint("VERIFICATION_BONUS_BPS"),
-                auditors: vm.envOr("VERIFICATION_AUDITORS", ",", new address[](0))
+                bonusBps: vm.envUint("VERIFICATION_BONUS_BPS")
             })
         );
     }
@@ -77,13 +75,8 @@ contract M003DeployVerificationRegistry is Script {
         require(address(policy.usageAccounting()) == config.usageAccounting, "M003: wrong policy usage accounting");
         require(policy.owner() == config.owner, "M003: wrong policy owner");
         require(policy.pendingOwner() == address(0), "M003: pending policy ownership transfer");
-        for (uint256 index; index < config.auditors.length; index++) {
-            address auditor = config.auditors[index];
-            if (!verification.approvedAuditors(auditor)) verification.setAuditor(auditor, true);
-            require(verification.approvedAuditors(auditor), "M003: auditor not approved");
-        }
-        // Registering the policy in the points policy registry is a separate, manual step by the
-        // registry owner. M003 only deploys, so verdicts change no points until then.
+        // M003 only deploys. Approving auditors and registering the policy in the points policy
+        // registry are separate, manual owner steps, so verdicts change no points until then.
         vm.stopBroadcast();
     }
 
@@ -116,8 +109,5 @@ contract M003DeployVerificationRegistry is Script {
         );
         require(config.owner != address(0), "M003: missing owner");
         require(config.bonusBps <= 5_000, "M003: bonus above cap");
-        for (uint256 index; index < config.auditors.length; index++) {
-            require(config.auditors[index] != address(0), "M003: zero auditor");
-        }
     }
 }

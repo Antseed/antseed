@@ -29,13 +29,11 @@ function receiptFile(context, simulated = false) {
   return context.forkTest ? path.join(context.receiptDirectory, path.relative(CONTRACTS_ROOT, file)) : file;
 }
 
-export function parseAuditors(value = '') {
-  const auditors = value.trim() ? value.split(',').map((address) => address.trim().toLowerCase()) : [];
-  if (auditors.some((address) => !ADDRESS.test(address) || sameAddress(address, ZERO))) {
-    throw new Error('VERIFICATION_AUDITORS must be comma-separated nonzero addresses');
+/** M003 never approves auditors; the owner does that separately with setAuditor after the deploy. */
+export function rejectAuditorList(value = process.env.VERIFICATION_AUDITORS) {
+  if (value !== undefined && value.trim() !== '') {
+    throw new Error('M003 does not approve auditors; unset VERIFICATION_AUDITORS and approve them separately with setAuditor');
   }
-  if (new Set(auditors).size !== auditors.length) throw new Error('Duplicate VERIFICATION_AUDITORS');
-  return auditors.sort();
 }
 
 /**
@@ -90,10 +88,7 @@ export function recordErrors(record) {
   }
   try { parseBonusBps(String(config.bonusBps)); } catch (error) { errors.push(error.message); }
   if (!Number.isSafeInteger(config.deploymentNonce) || config.deploymentNonce < 0) errors.push('M003 invalid nonce');
-  try {
-    if (!Array.isArray(config.auditors)) throw new Error('M003 auditors must be an array');
-    parseAuditors(config.auditors.join(','));
-  } catch (error) { errors.push(error.message); }
+  if (config.auditors !== undefined) errors.push('M003 records no auditors');
   return errors;
 }
 
@@ -125,6 +120,7 @@ async function collectReceipts(context, checkpoint) {
 async function observe(context) {
   const { rpcUrl, expected, canonical } = context;
   if (chainId(rpcUrl) !== canonical.chainId) throw new Error('M003 wrong RPC chain');
+  rejectAuditorList();
   if (!hasCode(rpcUrl, expected.registry) || !hasCode(rpcUrl, expected.identityRegistry) || !hasCode(rpcUrl, expected.sellerPools)
     || !sameAddress(call(rpcUrl, expected.registry, 'identityRegistry()(address)'), expected.identityRegistry)) {
     throw new Error('M003 registry or identity registry mismatch');
@@ -155,7 +151,6 @@ async function observe(context) {
     checkpoint = {
       ...expected, owner, deploymentNonce, address, policyAddress,
       bonusBps: parseBonusBps(process.env.VERIFICATION_BONUS_BPS),
-      auditors: parseAuditors(process.env.VERIFICATION_AUDITORS),
       sourceCommit: sourceCommit(), contracts: {}, transactions: [],
     };
   } else {
@@ -168,10 +163,6 @@ async function observe(context) {
     if (process.env.VERIFICATION_BONUS_BPS !== undefined
       && parseBonusBps(process.env.VERIFICATION_BONUS_BPS) !== checkpoint.bonusBps) {
       throw new Error('M003 bonus differs from the original deployment; change it on the policy instead');
-    }
-    if (process.env.VERIFICATION_AUDITORS !== undefined
-      && JSON.stringify(parseAuditors(process.env.VERIFICATION_AUDITORS)) !== JSON.stringify(checkpoint.auditors)) {
-      throw new Error('M003 auditor list differs from the original deployment; restore the reviewed list');
     }
     checkpoint = await collectReceipts(context, checkpoint);
   }
@@ -193,12 +184,7 @@ async function observe(context) {
       throw new Error('M003 verification registry or ownership mismatch');
     }
     if (!checkpoint.contracts.kbfVerification) throw new Error('M003 restore confirmed deployment receipts before continuing');
-    const approved = checkpoint.auditors.every((auditor) => call(rpcUrl, verification, 'approvedAuditors(address)(bool)', [auditor]) === 'true');
-    if (!approved && await historyRecordExists(context, RELEASE)) {
-      throw new Error('M003 initial approvals changed after activation; manage auditors separately');
-    }
-    const policyReady = await observePolicy(context, checkpoint);
-    state = approved && policyReady ? 'active' : 'ready';
+    state = await observePolicy(context, checkpoint) ? 'active' : 'ready';
   } else if (checkpoint.contracts.kbfVerification || hasCode(rpcUrl, policy)
     || numberValue(cast(rpcUrl, ['nonce', checkpoint.owner, '--block', 'pending'])) !== checkpoint.deploymentNonce) {
     throw new Error('M003 deployment is missing or its nonce is in use; reconcile the original broadcast');
@@ -336,7 +322,6 @@ export const migration = {
       POINTS_POLICY_REGISTRY: checkpoint.pointsPolicyRegistry,
       VERIFICATION_BONUS_BPS: String(checkpoint.bonusBps),
       VERIFICATION_OWNER: signers.verificationOwner, VERIFICATION_DEPLOYMENT_NONCE: String(checkpoint.deploymentNonce),
-      VERIFICATION_AUDITORS: checkpoint.auditors.join(','),
       ...(context.forkTest ? { FOUNDRY_BROADCAST: path.join(context.receiptDirectory, 'broadcast') } : {}),
     };
   },

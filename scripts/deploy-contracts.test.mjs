@@ -46,7 +46,7 @@ import { recordErrors } from './validate-contract-deployments.mjs';
 import { assertSignerOwners, parseSignerSpecs, resolveSigners, signerEnvironment } from './deployments/runtime/signers.mjs';
 import { parseSandboxArgs } from './m001-sandbox.mjs';
 import { renderNetwork } from './generate-contract-chain-config.mjs';
-import { activationRecords, migration as m003, parseAuditors, parseBonusBps, RELEASE as M003_RELEASE, verificationOwner } from './deployments/m003.mjs';
+import { activationRecords, migration as m003, parseBonusBps, rejectAuditorList, RELEASE as M003_RELEASE, verificationOwner } from './deployments/m003.mjs';
 
 const ADDRESS = {
   registry: '0x0000000000000000000000000000000000000001',
@@ -2077,12 +2077,11 @@ test('M003 registers one deploy phase with no M002 requirement', () => {
   } }), /missing usageAccounting/);
 });
 
-test('M003 validates and normalizes initial auditor addresses', () => {
-  assert.deepEqual(parseAuditors(), []);
-  assert.deepEqual(parseAuditors(` ${ADDRESS.channels}, ${ADDRESS.registry} `), [ADDRESS.registry, ADDRESS.channels]);
-  assert.throws(() => parseAuditors('0x0000000000000000000000000000000000000000'), /nonzero/);
-  assert.throws(() => parseAuditors('not-an-address'), /nonzero/);
-  assert.throws(() => parseAuditors(`${ADDRESS.registry},${ADDRESS.registry}`), /Duplicate/);
+test('M003 refuses an auditor list: it never approves auditors', () => {
+  assert.doesNotThrow(() => rejectAuditorList(undefined));
+  assert.doesNotThrow(() => rejectAuditorList(''));
+  assert.doesNotThrow(() => rejectAuditorList('  '));
+  assert.throws(() => rejectAuditorList(ADDRESS.registry), /does not approve auditors/);
 });
 
 test('M003 defaults and validates the bonus', () => {
@@ -2101,7 +2100,7 @@ function m003Checkpoint() {
     registry: ADDRESS.registry, identityRegistry: ADDRESS.channels, owner: ADDRESS.ants,
     address: ADDRESS.sellerRegistry, deploymentNonce: 7, sellerPools: ADDRESS.sellerRewardsPool,
     usageAccounting: ADDRESS.usageAccounting, pointsPolicyRegistry: ADDRESS.pointsPolicyRegistry,
-    policyAddress: ADDRESS.verificationPointsPolicy, bonusBps: 100, auditors: [ADDRESS.usageAccounting],
+    policyAddress: ADDRESS.verificationPointsPolicy, bonusBps: 100,
     sourceCommit: 'a'.repeat(40),
     contracts: {
       kbfVerification: {
@@ -2143,6 +2142,9 @@ test('M003 activation preserves previous contracts/configuration and generates i
   wrongPolicy.contracts.kbfVerificationPointsPolicy.constructorArguments[2] = '200';
   assert.ok(m003.recordErrors(wrongPolicy).some((error) => error.includes('points policy constructor')));
   assert.ok(m003.recordErrors({ ...record, contracts: { kbfVerification: record.contracts.kbfVerification } }).length);
+  const withAuditors = structuredClone(record);
+  withAuditors.verificationConfiguration.verificationRegistry.auditors = [ADDRESS.ants];
+  assert.ok(m003.recordErrors(withAuditors).includes('M003 records no auditors'));
 });
 
 async function m003Context(t, checkpoint = m003Checkpoint()) {
@@ -2170,7 +2172,7 @@ async function m003Context(t, checkpoint = m003Checkpoint()) {
   return context;
 }
 
-test('M003 rejects a changed recovery allowlist or baseline before sending transactions', async (t) => {
+test('M003 rejects an auditor list, a changed bonus or baseline before sending transactions', async (t) => {
   const context = await m003Context(t);
   mockCast(t, (args) => {
     if (args[0] === 'chain-id') return '8453';
@@ -2183,7 +2185,7 @@ test('M003 rejects a changed recovery allowlist or baseline before sending trans
     assert.fail(`unexpected call ${args}`);
   });
   process.env.VERIFICATION_AUDITORS = ADDRESS.registry;
-  await assert.rejects(m003.observe(context), /auditor list differs/);
+  await assert.rejects(m003.observe(context), /does not approve auditors/);
   delete process.env.VERIFICATION_AUDITORS;
   process.env.VERIFICATION_BONUS_BPS = '200';
   await assert.rejects(m003.observe(context), /bonus differs/);
@@ -2215,10 +2217,9 @@ test('M003 binds the deploy signer and environment to the original checkpoint', 
   const context = { forkTest: true, receiptDirectory: '/tmp/m003-test-receipts', canonical: { chainId: 8453 } };
   const observation = { state: 'ready', deployment: { checkpoint } };
   const environment = m003.environment(context, observation, { verificationOwner: checkpoint.owner }, {
-    ANTSEED_REGISTRY: ADDRESS.ants, VERIFICATION_AUDITORS: ADDRESS.registry,
+    ANTSEED_REGISTRY: ADDRESS.ants,
   });
   assert.equal(environment.ANTSEED_REGISTRY, checkpoint.registry);
-  assert.equal(environment.VERIFICATION_AUDITORS, checkpoint.auditors.join(','));
   assert.equal(environment.VERIFICATION_DEPLOYMENT_NONCE, '7');
   assert.equal(environment.USAGE_ACCOUNTING, checkpoint.usageAccounting);
   assert.equal(environment.POINTS_POLICY_REGISTRY, checkpoint.pointsPolicyRegistry);
@@ -2290,7 +2291,6 @@ function mockM003Chain(t, options, context) {
         'pointsPolicy()(address)': checkpoint.pointsPolicyRegistry,
         'verification()(address)': options.policyVerification ?? checkpoint.address,
         'usageAccounting()(address)': checkpoint.usageAccounting,
-        'approvedAuditors(address)(bool)': String(options.approved ?? true),
         'isPolicyRegistered(address)(bool)': String(options.registered ?? true),
       };
       assert.ok(Object.hasOwn(values, args[2]), `unexpected getter ${args[2]}`);
@@ -2300,14 +2300,13 @@ function mockM003Chain(t, options, context) {
   });
 }
 
-test('M003 recovers partial receipts and retains CREATE provenance through an approval-only retry', async (t) => {
+test('M003 recovers partial receipts and retains CREATE provenance through a policy-only retry', async (t) => {
   const checkpoint = m003Checkpoint();
   checkpoint.contracts = {};
   const context = await m003Context(t, checkpoint);
   const createHash = `0x${'1'.repeat(64)}`;
-  const approvalHash = `0x${'2'.repeat(64)}`;
   const policyHash = `0x${'3'.repeat(64)}`;
-  const options = { approved: false, policyCode: '0x', nonce: '8', broadcast: {
+  const options = { policyCode: '0x', nonce: '8', broadcast: {
     transactions: [{ hash: createHash, transactionType: 'CREATE', contractName: 'AntseedKbfVerification',
       contractAddress: checkpoint.address, arguments: [checkpoint.registry, checkpoint.sellerPools] }],
     receipts: [{ transactionHash: createHash, status: '0x1', blockNumber: '0xa', from: checkpoint.owner, to: null }],
@@ -2319,19 +2318,15 @@ test('M003 recovers partial receipts and retains CREATE provenance through an ap
   const partial = await m003.observe(context);
   assert.equal(partial.state, 'ready');
   assert.equal(partial.deployment.checkpoint.contracts.kbfVerification.transactionHash, createHash);
-  options.approved = true;
   options.policyCode = '0x01';
   options.broadcast = {
     transactions: [
       { hash: policyHash, transactionType: 'CREATE', contractName: 'AntseedKbfVerificationPointsPolicy',
         contractAddress: checkpoint.policyAddress,
         arguments: [checkpoint.address, checkpoint.usageAccounting, '100', checkpoint.owner] },
-      { hash: approvalHash, transactionType: 'CALL', contractName: 'AntseedKbfVerification',
-        contractAddress: checkpoint.address, function: 'setAuditor(address,bool)' },
     ],
     receipts: [
       { transactionHash: policyHash, status: '0x1', blockNumber: '0xb', from: checkpoint.owner, to: null },
-      { transactionHash: approvalHash, status: '0x1', blockNumber: '0xb', from: checkpoint.owner, to: checkpoint.address },
     ],
   };
   const active = await m003.observe(context);
@@ -2342,12 +2337,12 @@ test('M003 recovers partial receipts and retains CREATE provenance through an ap
   assert.equal(active.deployment.checkpoint.contracts.kbfVerification.deploymentBlock, 10);
   assert.deepEqual(
     active.deployment.checkpoint.transactions.map((transaction) => transaction.hash),
-    [createHash, policyHash, approvalHash],
+    [createHash, policyHash],
   );
   assert.equal(await m003.finalize(context, active, 'broadcast'), true);
   const repeat = await m003.observe(context);
   assert.equal(repeat.state, 'active');
-  assert.equal(repeat.deployment.checkpoint.transactions.length, 3);
+  assert.equal(repeat.deployment.checkpoint.transactions.length, 2);
 });
 
 test('M003 rejects consumed nonces, wrong bytecode, ownership drift and wrong chains', async (t) => {
@@ -2396,15 +2391,6 @@ test('M003 takes the deploying wallet from VERIFICATION_OWNER', () => {
   for (const value of [undefined, '', 'nope', '0x0000000000000000000000000000000000000000']) {
     assert.throws(() => verificationOwner(value), /VERIFICATION_OWNER must be/);
   }
-});
-
-test('M003 does not reinstate governance-revoked auditors after activation', async (t) => {
-  const checkpoint = m003Checkpoint();
-  const context = await m003Context(t, checkpoint);
-  const { record } = activationRecords(context, checkpoint);
-  await writeJsonAtomic(path.join(context.outputRoot, context.network, 'history', `${M003_RELEASE}.json`), record);
-  mockM003Chain(t, { approved: false }, context);
-  await assert.rejects(m003.observe(context), /manage auditors separately/);
 });
 
 test('M003 refuses to start again when the checkpoint is lost but broadcast receipts remain', async (t) => {
