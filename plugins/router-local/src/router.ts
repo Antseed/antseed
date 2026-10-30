@@ -77,8 +77,8 @@ export class LocalRouter implements Router {
         continue;
       }
 
-      // Provider availability filter
-      const provider = this._selectProviderForPeer(peer, requestedService);
+      // Provider availability filter (automatic selection skips failing services)
+      const provider = this._selectProviderForPeer(peer, requestedService, true);
       if (!provider) {
         continue;
       }
@@ -185,7 +185,13 @@ export class LocalRouter implements Router {
     }
   }
 
-  private _selectProviderForPeer(peer: PeerInfo, requestedService: string | null): string | null {
+  /**
+   * The provider to price and send `requestedService` through. A healthy one
+   * is preferred; only automatic selection (`skipFailing`) drops a service the
+   * seller's own health check reports failing on every provider, so pricing
+   * and policy checks still allow a pinned request to reach it.
+   */
+  private _selectProviderForPeer(peer: PeerInfo, requestedService: string | null, skipFailing = false): string | null {
     const availableProviders = peer.providers
       .map((provider) => provider.trim())
       .filter((provider) => provider.length > 0);
@@ -202,7 +208,7 @@ export class LocalRouter implements Router {
         }
         return provider;
       }
-      if (failingMatch) return null;
+      if (failingMatch) return skipFailing ? null : failingMatch;
     }
 
     return availableProviders[0] ?? null;

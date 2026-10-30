@@ -336,6 +336,41 @@ export interface ProviderAnnouncement {
   currentLoad: number;
 }
 
+/**
+ * Per-provider service health from a peer's announcements, as buyers read it.
+ * Several upstreams can share a provider name, and the seller serves a
+ * service through any of them, so it counts as failing only when every one
+ * of them reports failing. Otherwise the best report stands, and none when a
+ * working upstream has not been checked yet.
+ */
+export function providerServiceHealthMatrix(
+  providers: readonly ProviderAnnouncement[],
+): Record<string, { services: Record<string, ServiceHealth> }> {
+  const reports = new Map<string, Map<string, Array<ServiceHealth | undefined>>>();
+  for (const announcement of providers) {
+    const byService = reports.get(announcement.provider) ?? new Map<string, Array<ServiceHealth | undefined>>();
+    reports.set(announcement.provider, byService);
+    for (const service of new Set([...announcement.services, ...Object.keys(announcement.serviceHealth ?? {})])) {
+      const list = byService.get(service) ?? [];
+      list.push(announcement.serviceHealth?.[service]);
+      byService.set(service, list);
+    }
+  }
+  const matrix: Record<string, { services: Record<string, ServiceHealth> }> = {};
+  for (const [provider, byService] of reports) {
+    const services: Record<string, ServiceHealth> = {};
+    for (const [service, list] of byService) {
+      const health = list.every((entry) => entry?.status === "failing")
+        ? list.reduce((latest, entry) => ((entry!.checkedAt ?? 0) > (latest!.checkedAt ?? 0) ? entry : latest))
+        : list.find((entry) => entry?.status === "healthy")
+          ?? (list.includes(undefined) ? undefined : list.find((entry) => entry?.status !== "failing"));
+      if (health) services[service] = { ...health };
+    }
+    if (Object.keys(services).length > 0) matrix[provider] = { services };
+  }
+  return matrix;
+}
+
 export type DomainVerificationMethod = "dns-txt" | "https-well-known";
 
 export interface DomainVerificationClaim {

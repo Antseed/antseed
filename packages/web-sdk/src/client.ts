@@ -28,6 +28,7 @@ import {
 } from '@antseed/buyer-core';
 import {
   MessageType,
+  providerServiceHealthMatrix,
   toPeerId,
   type CloseChannelResultPayload,
   type PeerMetadata,
@@ -539,7 +540,8 @@ export function sellerSummaryFromMetadata(metadata: PeerMetadata): SellerSummary
   const providerServiceApiProtocols: NonNullable<BuyerPeerView['providerServiceApiProtocols']> = {};
   const providerServiceUnitBillingModels: NonNullable<BuyerPeerView['providerServiceUnitBillingModels']> = {};
   const providerServiceCapabilities: NonNullable<BuyerPeerView['providerServiceCapabilities']> = {};
-  const providerServiceHealth: NonNullable<BuyerPeerView['providerServiceHealth']> = {};
+  // Merged across upstreams sharing a provider name: failing only when all of them fail.
+  const providerServiceHealth: NonNullable<BuyerPeerView['providerServiceHealth']> = providerServiceHealthMatrix(metadata.providers);
 
   for (const announcement of metadata.providers) {
     const provider = announcement.provider;
@@ -568,7 +570,6 @@ export function sellerSummaryFromMetadata(metadata: PeerMetadata): SellerSummary
       announcement.serviceUnitBillingModels,
     );
     mergeServiceMatrix(providerServiceCapabilities, provider, announcement.serviceCapabilities);
-    mergeServiceMatrix(providerServiceHealth, provider, announcement.serviceHealth);
   }
 
   return {

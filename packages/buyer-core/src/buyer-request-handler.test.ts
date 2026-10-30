@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { BuyerRequestHandler, stripPeerControlledResponseHeaders } from './buyer-request-handler.js';
+import { BuyerRequestHandler, selectBillingRoute, stripPeerControlledResponseHeaders } from './buyer-request-handler.js';
 import { ConnectionState, toPeerId } from '@antseed/protocol';
 import type { BuyerPeerView, ResponseAuthContext, StoredResponseAuth } from './interfaces.js';
 import { hashRequest } from './response-auth.js';
@@ -266,5 +266,36 @@ describe('stripPeerControlledResponseHeaders', () => {
       body: new Uint8Array(),
     };
     expect(stripPeerControlledResponseHeaders(response).headers).toEqual({ 'content-type': 'application/json' });
+  });
+});
+
+describe('selectBillingRoute', () => {
+  const chatRequest = (): SerializedHttpRequest => ({
+    requestId: 'chat', method: 'POST', path: '/v1/chat/completions',
+    headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify({ model: 'video-model', messages: [] })),
+  });
+
+  it('prefers a provider whose self health check passes', () => {
+    const peer: BuyerPeerView = {
+      peerId: toPeerId('5'.repeat(40)),
+      providers: ['a', 'b'],
+      providerPricing: {
+        a: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'video-model': {} } },
+        b: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'video-model': {} } },
+      },
+      providerServiceHealth: { a: { services: { 'video-model': { status: 'failing' } } } },
+    };
+    expect(selectBillingRoute(peer, chatRequest(), 'video-model')?.provider).toBe('b');
+  });
+
+  it('keeps a failing video provider over a healthy one that cannot serve the video protocol', () => {
+    const peer = makePeer();
+    peer.providers = ['venice', 'chat'];
+    peer.providerServiceApiProtocols = { ...peer.providerServiceApiProtocols, chat: { services: { 'video-model': ['openai-chat-completions'] } } };
+    peer.providerServiceHealth = { venice: { services: { 'video-model': { status: 'failing', reason: 'timeout' } } } };
+    const route = selectBillingRoute(peer, makeRequest(), 'video-model');
+    expect(route?.provider).toBe('venice');
+    expect(route?.unitModel).toEqual(VIDEO_MODEL);
   });
 });

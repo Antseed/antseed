@@ -708,12 +708,13 @@ function extractRequestedService(peer: BuyerPeerView, request: SerializedHttpReq
   return undefined;
 }
 
-function selectBillingRoute(
+/** The provider, protocol and pricing a request to `peer` is billed under. Exported for tests. */
+export function selectBillingRoute(
   peer: BuyerPeerView,
   request: SerializedHttpRequest,
   service: string,
 ): SelectedBillingRoute | null {
-  const provider = selectProviderForService(peer, service, extractRequestedProvider(request));
+  const provider = selectProviderForService(peer, service, extractRequestedProvider(request), request);
   if (!provider) return null;
   const serviceApiProtocol = selectProtocolForService(peer, provider, service, request);
   const unitModel = peer.providerServiceUnitBillingModels?.[provider]?.services[service]?.[serviceApiProtocol];
@@ -732,6 +733,7 @@ function selectProviderForService(
   peer: BuyerPeerView,
   service: string,
   requestedProvider: string | null,
+  request: SerializedHttpRequest,
 ): string | null {
   const providers = peer.providers ?? [];
   if (requestedProvider) {
@@ -744,11 +746,17 @@ function selectProviderForService(
     return null;
   }
 
-  // Mirrors the seller, which prefers a provider whose self health check is not failing the service.
-  const match = providers.find((provider) =>
+  // Mirrors the seller's matchProvider: a native video request needs a
+  // provider serving its protocol, and among those a provider whose self
+  // health check is not failing the service is preferred.
+  const videoRoute = nativeVideoRoute(request);
+  const eligible = providers.filter((provider) =>
     providerOffersService(peer, provider, service)
-    && !isServiceHealthFailing(providerServiceHealthFor(peer.providerServiceHealth, provider, service)),
-  ) ?? providers.find((provider) =>
+    && (!videoRoute || Boolean(peer.providerServiceApiProtocols?.[provider]?.services[service]?.includes(videoRoute.protocol))),
+  );
+  const match = eligible.find((provider) =>
+    !isServiceHealthFailing(providerServiceHealthFor(peer.providerServiceHealth, provider, service)),
+  ) ?? eligible[0] ?? providers.find((provider) =>
     providerOffersService(peer, provider, service),
   );
   return match ?? providers[0] ?? null;

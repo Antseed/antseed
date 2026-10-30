@@ -42,6 +42,7 @@ import {
   type SellerContractConfig,
 } from "./discovery/announcer.js";
 import type { PeerVerifications, ServiceHealth } from "./discovery/peer-metadata.js";
+import { providerServiceHealthMatrix } from "./discovery/peer-metadata.js";
 import { verifyPeerMetadataDomains } from "./discovery/domain-verification.js";
 import { verifyPeerMetadataGithub } from "./discovery/github-verification.js";
 import {
@@ -2729,7 +2730,7 @@ export class AntseedNode extends EventEmitter {
     const providerServiceApiProtocolEntries: NonNullable<PeerInfo["providerServiceApiProtocols"]> = {};
     const providerServiceUnitBillingModelEntries: NonNullable<PeerInfo["providerServiceUnitBillingModels"]> = {};
     const providerServiceCapabilityEntries: NonNullable<PeerInfo["providerServiceCapabilities"]> = {};
-    const providerServiceHealthEntries: NonNullable<PeerInfo["providerServiceHealth"]> = {};
+    const providerServiceHealthEntries: NonNullable<PeerInfo["providerServiceHealth"]> = providerServiceHealthMatrix(result.metadata.providers);
 
     for (const providerAnnouncement of result.metadata.providers) {
       const provName = providerAnnouncement.provider;
@@ -2802,18 +2803,6 @@ export class AntseedNode extends EventEmitter {
           Object.assign(existingCapabilities.services, newEntries);
         } else {
           providerServiceCapabilityEntries[provName] = { services: newEntries };
-        }
-      }
-
-      if (providerAnnouncement.serviceHealth && Object.keys(providerAnnouncement.serviceHealth).length > 0) {
-        const existingHealth = providerServiceHealthEntries[provName];
-        const newEntries = Object.fromEntries(
-          Object.entries(providerAnnouncement.serviceHealth).map(([service, health]) => [service, { ...health }]),
-        );
-        if (existingHealth) {
-          Object.assign(existingHealth.services, newEntries);
-        } else {
-          providerServiceHealthEntries[provName] = { services: newEntries };
         }
       }
     }

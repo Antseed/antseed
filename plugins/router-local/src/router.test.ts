@@ -61,6 +61,8 @@ describe('LocalRouter', () => {
     });
     expect(router.selectPeer(makeRequest('model-x'), [failing, healthy])?.peerId).toBe(healthy.peerId);
     expect(router.selectPeer(makeRequest('model-x'), [failing])).toBeNull();
+    // A pinned request is checked against policy only, so it can still reach the failing seller.
+    expect(router.allowsPeerForPolicy(makeRequest('model-x'), failing)).toBe(true);
   });
 
   it('selects cheapest peer regardless of provider name', () => {
