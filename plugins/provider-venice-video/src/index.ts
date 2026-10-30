@@ -83,12 +83,6 @@ export function isVeniceEditModel(model: unknown): boolean {
   return veniceConstraints(model)?.video_input === true;
 }
 
-/** A video-to-video model whose output is as long as its source (`durations: ["Auto"]`): Venice bills the whole source. */
-function veniceOutputFollowsSource(model: unknown): boolean {
-  const durations = veniceConstraints(model)?.durations;
-  return isVeniceEditModel(model) && Array.isArray(durations) && durations.length === 1 && durations[0] === 'Auto';
-}
-
 /**
  * Video options of a Venice video-to-video model: it takes and requires the
  * source video, and takes an image (`image_url`, the character for motion
@@ -344,8 +338,8 @@ const plugin: AntseedProviderPlugin = {
       return { videoRoute, service: service && services.includes(service) ? service : undefined };
     };
 
-    // Edit models Venice bills for the whole source; null until Venice's model list was read.
-    let sourceLengthModels: Set<string> | null = null;
+    // Edit models, whose `duration` must be the source length; null until Venice's model list was read.
+    let editModels: Set<string> | null = null;
 
     // Announces the queue fields each model takes, so buyers send only those.
     const init = async () => {
@@ -358,7 +352,7 @@ const plugin: AntseedProviderPlugin = {
         const body = Buffer.from(await response.arrayBuffer());
         const data = response.ok && body.length <= MAX_MODELS_BYTES ? parseJsonObject(body)?.data : null;
         if (!Array.isArray(data)) return;
-        sourceLengthModels = new Set(services.filter(service => veniceOutputFollowsSource(data.find(entry => entry?.id === service))));
+        editModels = new Set(services.filter(service => isVeniceEditModel(data.find(entry => entry?.id === service))));
         let checks = 0;
         for (const service of services) {
           const model = data.find(entry => entry?.id === service);
@@ -416,10 +410,11 @@ const plugin: AntseedProviderPlugin = {
     const handleRequest: Provider['handleRequest'] = async (request) => {
       const { videoRoute, service } = route(request);
       if (videoRoute?.action !== 'create' || !service) return error(request, 400, 'unsupported_video_request', 'Unsupported video endpoint or service');
-      // Venice bills such an edit for the whole source, so `duration` must be its measured length.
-      // Without Venice's model list, a source video is assumed to set the output length.
+      // The buyer pays for an edit's `duration`. Venice bills a whole-source edit (`Auto`) for the whole source,
+      // and a shorter output than `duration` is never charged, so `duration` must be the measured source length.
+      // Without Venice's model list, a source video marks an edit.
       const input = parseJsonObject(request.body);
-      if (input?.video_url !== undefined && (sourceLengthModels?.has(service) ?? true)) {
+      if (input?.video_url !== undefined && (editModels?.has(service) ?? true)) {
         const refused = videoSourceLengthProblem(input.video_url, input.duration);
         if (refused) return error(request, 422, 'invalid_video_duration', refused);
       }

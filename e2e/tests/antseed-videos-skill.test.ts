@@ -81,18 +81,19 @@ case "$*" in *width,height*) echo "$FAKE_W,$FAKE_H,$FAKE_FPS" ;; *rotation*) ech
     ]);
   });
 
-  it('fails a duration longer than the source', () => {
-    const { status, lines } = check('fal-ai/wan/v2.7/edit-video', { w: 1280, h: 720, fps: '30000/1001', s: 6.4 }, 7);
-    expect(status).toBe(1);
-    expect(fails(lines)).toEqual(['FAIL duration 7 is longer than the source (6 s): send at most 6']);
-    expect(check('fal-ai/wan/v2.7/edit-video', { w: 1280, h: 720, fps: '30000/1001', s: 6.4 }, 5).status).toBe(0);
+  it('fails a duration that is not the source length, also on a model that takes one', () => {
+    const wan = (duration: number) => check('fal-ai/wan/v2.7/edit-video', { w: 1280, h: 720, fps: '30000/1001', s: 6.4 }, duration);
+    expect(wan(7).status).toBe(1);
+    expect(fails(wan(7).lines)).toEqual(['FAIL duration 7 is not the source length: send 6 (trim the source for a shorter clip)']);
+    expect(fails(wan(5).lines)).toEqual(['FAIL duration 5 is not the source length: send 6 (trim the source for a shorter clip)']);
+    expect(wan(6).status).toBe(0);
   });
 
   it('asks for the source length on a model without a duration field, and prints the image limits', () => {
     const { status, lines } = check('fal-ai/kling-video/v3/standard/motion-control', { w: 720, h: 1280, fps: '24/1', s: 2.1 }, 3);
     expect(status).toBe(1);
     expect(fails(lines)).toEqual([
-      'FAIL duration 3 is longer than the source (2 s): send at most 2',
+      'FAIL duration 3 is not the source length: send 2 (trim the source for a shorter clip)',
       'FAIL length 2.1 s is below 3: use a longer clip',
     ]);
     expect(lines).toContain('required fields: image_url, video_url, character_orientation');

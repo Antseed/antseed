@@ -153,14 +153,15 @@ function positiveInteger(value: unknown): number | undefined | null {
 }
 
 /**
- * Why a video edit whose output is as long as its source can't go upstream,
- * or null. The upstream bills the whole source but the buyer pays for its
- * `duration`, so the source must be an inline video the seller can measure
- * and `duration` its length in whole seconds, rounded down (at least 1).
+ * Why a video edit can't go upstream, or null. The buyer pays for its
+ * `duration`, but the upstream bills at least the whole source, and an output
+ * cut short by the source is never charged (VIDEO_MIN_DURATION_RATIO). So the
+ * source must be an inline video the seller can measure and `duration` its
+ * length in whole seconds, rounded down (at least 1).
  */
 export function videoSourceLengthProblem(videoUrl: unknown, duration: unknown): string | null {
   const seconds = inlineVideoSeconds(videoUrl);
-  if (seconds === null) return 'This model edits the whole source video: send it inline as a regular (not fragmented) MP4 data:video/mp4;base64 URL, so the seller can measure its length';
+  if (seconds === null) return 'A video edit is paid by its source length: send the source inline as a regular (not fragmented) MP4 data:video/mp4;base64 URL, so the seller can measure its length';
   const expected = Math.max(seconds, 1);
   const declared = typeof duration === 'string' ? Number(duration.trim().replace(/s$/, '')) : duration;
   return declared === expected ? null : `duration must be the source length in whole seconds, rounded down: ${expected}`;
