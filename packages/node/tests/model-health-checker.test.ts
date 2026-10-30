@@ -708,6 +708,16 @@ describe('ModelHealthChecker buyer traffic', () => {
     expect(onRequest).toHaveBeenCalledTimes(1);
   });
 
+  it('does not probe early while the provider is at capacity', async () => {
+    const onRequest = vi.fn(async (req: SerializedHttpRequest) => jsonResponse(req.requestId, 429));
+    const provider = { ...makeProvider({ onRequest }), getCapacity: () => ({ current: 1, max: 1 }) };
+    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1 });
+    for (let attempt = 0; attempt < 3; attempt++) checker.reportUpstreamResponse(provider, 429, '', true, 'model-a');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(onRequest).not.toHaveBeenCalled();
+    expect(provider.serviceHealth?.['model-a']?.status).not.toBe('failing');
+  });
+
   it('never probes an image service early on a failed buyer request', async () => {
     const onRequest = vi.fn(async (req: SerializedHttpRequest) => jsonResponse(req.requestId, 500));
     const provider = makeProvider({ onRequest, serviceApiProtocols: { 'model-a': ['openai-images'] } });

@@ -60,4 +60,24 @@ describe('service health across upstreams sharing a provider name', () => {
     expect(terms([upstream(undefined, 1), upstream(undefined, 9)])).toEqual([1, 1]);
     expect(terms([upstream({ 'gpt-6-sol': failing }, 1), upstream({ 'gpt-6-sol': failing }, 9)])).toEqual([1, 1]);
   });
+
+  it('keeps each protocol route of upstreams sharing a provider name and service', () => {
+    const chat: ProviderAnnouncement = { ...upstream({ 'gpt-6-sol': healthy }, 1), serviceApiProtocols: { 'gpt-6-sol': ['openai-chat-completions'] }, serviceUnitBillingModels: undefined };
+    const video: ProviderAnnouncement = {
+      ...upstream({ 'gpt-6-sol': healthy }, 9),
+      serviceApiProtocols: { 'gpt-6-sol': ['fal-video'] },
+      serviceUnitBillingModels: { 'gpt-6-sol': { 'fal-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.5 }] } } },
+    };
+    const peer = peerInfo([chat, video]);
+    expect(peer.providerServiceApiProtocols.openai.services['gpt-6-sol']).toEqual(['openai-chat-completions', 'fal-video']);
+    expect(peer.providerServiceUnitBillingModels.openai.services['gpt-6-sol']['fal-video'].components[0].priceUsd).toBe(0.5);
+    expect(peer.providerPricing.openai.services['gpt-6-sol'].inputUsdPerMillion).toBe(1);
+  });
+
+  it('takes terms from the first healthy upstream of the name when others are interleaved', () => {
+    const other: ProviderAnnouncement = { ...upstream({ 'gpt-6-sol': healthy }, 5), provider: 'codex' };
+    const peer = peerInfo([upstream({ 'gpt-6-sol': failing }, 9), other, upstream({ 'gpt-6-sol': healthy }, 1)]);
+    expect(peer.providerPricing.openai.services['gpt-6-sol'].inputUsdPerMillion).toBe(1);
+    expect(peer.providerPricing.codex.services['gpt-6-sol'].inputUsdPerMillion).toBe(5);
+  });
 });

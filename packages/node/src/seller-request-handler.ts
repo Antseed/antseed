@@ -44,7 +44,7 @@ import {
 import { VerificationMux } from './verification/verification-mux.js';
 import { createResponseAuthPayload, createStreamingResponseHash } from './verification/response-auth.js';
 import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION } from '@antseed/protocol/http';
-import { isServiceHealthFailing } from '@antseed/protocol/peer-metadata';
+import { isServiceHealthFailing, preferHealthyUpstream } from '@antseed/protocol/peer-metadata';
 import { hasJsonContentType, tryParseJsonObject } from './utils/json-codec.js';
 import type { UnitBillingContext, UnitBillingModelV1, UnitBillingUsage, UnitBillingUsageReportV1 } from './types/billing.js';
 import { captureUnitBillingContext, computeFinalUnitBilling, estimateUnitRequestCost, isFreeUnitBillingModel, type BillingRequestFacts } from './billing/unit.js';
@@ -1220,17 +1220,15 @@ export class SellerRequestHandler {
     const matchesService = (provider: Provider): boolean =>
       provider.services.includes(requestedService) && (!videoRoute || Boolean(provider.serviceApiProtocols?.[requestedService]?.includes(videoRoute.protocol)));
 
-    // Several upstreams can share a provider name: prefer one whose self health
-    // check is not failing this service, else the first that serves it.
-    const pick = (candidates: Provider[]): Provider | undefined =>
-      candidates.find((candidate) => !isServiceHealthFailing(candidate.serviceHealth?.[requestedService])) ?? candidates[0];
+    // Several upstreams can share a provider name; buyers merge their
+    // announcements with the same preference (mergeProviderAnnouncements).
     const serving = providers.filter(matchesService);
     let provider: Provider | undefined;
     if (requestedProvider) {
-      provider = pick(serving.filter((candidate) => candidate.name.toLowerCase() === requestedProvider));
+      provider = preferHealthyUpstream(serving.filter((candidate) => candidate.name.toLowerCase() === requestedProvider), requestedService);
     }
     if (!provider && !(videoRoute && requestedProvider)) {
-      provider = pick(serving);
+      provider = preferHealthyUpstream(serving, requestedService);
     }
     return provider;
   }

@@ -28,8 +28,7 @@ import {
 } from '@antseed/buyer-core';
 import {
   MessageType,
-  providerServiceHealthMatrix,
-  providerServiceRoutes,
+  mergeProviderAnnouncements,
   toPeerId,
   type CloseChannelResultPayload,
   type PeerMetadata,
@@ -536,44 +535,14 @@ export class AntseedWebClient {
 export function sellerSummaryFromMetadata(metadata: PeerMetadata): SellerSummary {
   const providers = metadata.providers.map((provider) => provider.provider);
   const firstProvider = metadata.providers[0];
-  const providerPricing: NonNullable<BuyerPeerView['providerPricing']> = {};
-  const providerServiceCategories: NonNullable<BuyerPeerView['providerServiceCategories']> = {};
-  const providerServiceApiProtocols: NonNullable<BuyerPeerView['providerServiceApiProtocols']> = {};
-  const providerServiceUnitBillingModels: NonNullable<BuyerPeerView['providerServiceUnitBillingModels']> = {};
-  const providerServiceCapabilities: NonNullable<BuyerPeerView['providerServiceCapabilities']> = {};
-  // Merged across upstreams sharing a provider name: failing only when all of them fail.
-  const providerServiceHealth: NonNullable<BuyerPeerView['providerServiceHealth']> = providerServiceHealthMatrix(metadata.providers);
-  // Each service's terms come from the upstream the seller serves it through.
-  const routes = providerServiceRoutes(metadata.providers);
-
-  for (const announcement of metadata.providers) {
-    const provider = announcement.provider;
-    const services = Object.fromEntries(
-      announcement.services.filter((service) => routes.owns(announcement, service)).map((service) => [
-        service,
-        announcement.servicePricing?.[service] ?? announcement.defaultPricing,
-      ]),
-    );
-    const pricing = providerPricing[provider];
-    if (pricing) {
-      pricing.services ??= {};
-      Object.assign(pricing.services, services);
-    } else {
-      providerPricing[provider] = {
-        defaults: { ...announcement.defaultPricing },
-        ...(Object.keys(services).length > 0 ? { services } : {}),
-      };
-    }
-
-    mergeServiceMatrix(providerServiceCategories, provider, routes.ownedEntries(announcement, announcement.serviceCategories));
-    mergeServiceMatrix(providerServiceApiProtocols, provider, routes.ownedEntries(announcement, announcement.serviceApiProtocols));
-    mergeServiceMatrix(
-      providerServiceUnitBillingModels,
-      provider,
-      routes.ownedEntries(announcement, announcement.serviceUnitBillingModels),
-    );
-    mergeServiceMatrix(providerServiceCapabilities, provider, routes.ownedEntries(announcement, announcement.serviceCapabilities));
-  }
+  const {
+    providerPricing,
+    providerServiceCategories,
+    providerServiceApiProtocols,
+    providerServiceUnitBillingModels,
+    providerServiceCapabilities,
+    providerServiceHealth,
+  } = mergeProviderAnnouncements(metadata.providers);
 
   return {
     peerId: toPeerId(metadata.peerId.toLowerCase()),
@@ -595,17 +564,6 @@ export function sellerSummaryFromMetadata(metadata: PeerMetadata): SellerSummary
     defaultOutputUsdPerMillion: firstProvider?.defaultPricing.outputUsdPerMillion,
     defaultCachedInputUsdPerMillion: firstProvider?.defaultPricing.cachedInputUsdPerMillion,
   };
-}
-
-function mergeServiceMatrix<T>(
-  target: Record<string, { services: Record<string, T> }>,
-  provider: string,
-  services: Record<string, T> | undefined,
-): void {
-  if (!services || Object.keys(services).length === 0) return;
-  const existing = target[provider];
-  if (existing) Object.assign(existing.services, services);
-  else target[provider] = { services: { ...services } };
 }
 
 export class SellerSession {

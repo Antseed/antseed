@@ -8,10 +8,9 @@ import { TrustSignalsClient, type TrustSignals } from './payments/evm/trust-sign
 import type { Identity, IdentityStore } from "./p2p/identity.js";
 import { loadOrCreateIdentity } from "./p2p/identity.js";
 import type { PeerId } from "./types/peer.js";
-import type { PeerInfo, PeerVerificationResults, TokenPricingUsdPerMillion } from "./types/peer.js";
+import type { PeerInfo, PeerVerificationResults } from "./types/peer.js";
 import { peerIdToAddress } from "./types/peer.js";
 import { isFreeUnitBillingModel } from "./billing/unit.js";
-import type { ServiceUnitBillingModelsV1 } from "./types/billing.js";
 import type {
   SerializedHttpRequest,
   SerializedHttpResponse,
@@ -42,7 +41,7 @@ import {
   type SellerContractConfig,
 } from "./discovery/announcer.js";
 import type { PeerVerifications, ServiceHealth } from "./discovery/peer-metadata.js";
-import { providerServiceHealthMatrix, providerServiceRoutes } from "./discovery/peer-metadata.js";
+import { mergeProviderAnnouncements } from "./discovery/peer-metadata.js";
 import { verifyPeerMetadataDomains } from "./discovery/domain-verification.js";
 import { verifyPeerMetadataGithub } from "./discovery/github-verification.js";
 import {
@@ -2725,101 +2724,14 @@ export class AntseedNode extends EventEmitter {
     const displayName = sanitizePeerDisplayName(result.metadata.displayName);
     const providers = result.metadata.providers.map((p) => p.provider);
     const firstProvider = result.metadata.providers[0];
-    const providerPricingEntries: NonNullable<PeerInfo["providerPricing"]> = {};
-    const providerServiceCategoryEntries: NonNullable<PeerInfo["providerServiceCategories"]> = {};
-    const providerServiceApiProtocolEntries: NonNullable<PeerInfo["providerServiceApiProtocols"]> = {};
-    const providerServiceUnitBillingModelEntries: NonNullable<PeerInfo["providerServiceUnitBillingModels"]> = {};
-    const providerServiceCapabilityEntries: NonNullable<PeerInfo["providerServiceCapabilities"]> = {};
-    const providerServiceHealthEntries: NonNullable<PeerInfo["providerServiceHealth"]> = providerServiceHealthMatrix(result.metadata.providers);
-    // Upstreams sharing a provider name: each service's terms come from the one the seller serves it through.
-    const routes = providerServiceRoutes(result.metadata.providers);
-
-    for (const providerAnnouncement of result.metadata.providers) {
-      const provName = providerAnnouncement.provider;
-      const serviceEntries: Record<string, TokenPricingUsdPerMillion> = {};
-      for (const service of providerAnnouncement.services) {
-        if (!routes.owns(providerAnnouncement, service)) continue;
-        serviceEntries[service] =
-          providerAnnouncement.servicePricing?.[service] ?? providerAnnouncement.defaultPricing;
-      }
-
-      const existing = providerPricingEntries[provName];
-      if (existing) {
-        // Merge services from duplicate provider names
-        Object.assign(existing.services ?? {}, serviceEntries);
-        if (!existing.services && Object.keys(serviceEntries).length > 0) {
-          existing.services = serviceEntries;
-        }
-      } else {
-        providerPricingEntries[provName] = {
-          defaults: {
-            inputUsdPerMillion: providerAnnouncement.defaultPricing.inputUsdPerMillion,
-            outputUsdPerMillion: providerAnnouncement.defaultPricing.outputUsdPerMillion,
-            ...(providerAnnouncement.defaultPricing.cachedInputUsdPerMillion != null
-              ? { cachedInputUsdPerMillion: providerAnnouncement.defaultPricing.cachedInputUsdPerMillion }
-              : {}),
-          },
-          ...(Object.keys(serviceEntries).length > 0 ? { services: serviceEntries } : {}),
-        };
-      }
-
-      const serviceCategories = routes.ownedEntries(providerAnnouncement, providerAnnouncement.serviceCategories);
-      if (serviceCategories && Object.keys(serviceCategories).length > 0) {
-        const existingCats = providerServiceCategoryEntries[provName];
-        const newEntries = Object.fromEntries(
-          Object.entries(serviceCategories)
-            .map(([service, categories]) => [service, [...categories]]),
-        );
-        if (existingCats) {
-          Object.assign(existingCats.services, newEntries);
-        } else {
-          providerServiceCategoryEntries[provName] = { services: newEntries };
-        }
-      }
-
-      const serviceApiProtocols = routes.ownedEntries(providerAnnouncement, providerAnnouncement.serviceApiProtocols);
-      if (serviceApiProtocols && Object.keys(serviceApiProtocols).length > 0) {
-        const existingProtos = providerServiceApiProtocolEntries[provName];
-        const newEntries = Object.fromEntries(
-          Object.entries(serviceApiProtocols)
-            .map(([service, protocols]) => [service, [...protocols]]),
-        );
-        if (existingProtos) {
-          Object.assign(existingProtos.services, newEntries);
-        } else {
-          providerServiceApiProtocolEntries[provName] = { services: newEntries };
-        }
-      }
-
-      const serviceUnitBillingModels = routes.ownedEntries(providerAnnouncement, providerAnnouncement.serviceUnitBillingModels);
-      if (serviceUnitBillingModels && Object.keys(serviceUnitBillingModels).length > 0) {
-        const existingBillingModels = providerServiceUnitBillingModelEntries[provName];
-        const newEntries: ServiceUnitBillingModelsV1 = { ...serviceUnitBillingModels };
-        if (existingBillingModels) {
-          Object.assign(existingBillingModels.services, newEntries);
-        } else {
-          providerServiceUnitBillingModelEntries[provName] = { services: newEntries };
-        }
-      }
-
-      const serviceCapabilities = routes.ownedEntries(providerAnnouncement, providerAnnouncement.serviceCapabilities);
-      if (serviceCapabilities && Object.keys(serviceCapabilities).length > 0) {
-        const existingCapabilities = providerServiceCapabilityEntries[provName];
-        const newEntries = { ...serviceCapabilities };
-        if (existingCapabilities) {
-          Object.assign(existingCapabilities.services, newEntries);
-        } else {
-          providerServiceCapabilityEntries[provName] = { services: newEntries };
-        }
-      }
-    }
-
-    const hasProviderPricing = Object.keys(providerPricingEntries).length > 0;
-    const hasProviderServiceCategories = Object.keys(providerServiceCategoryEntries).length > 0;
-    const hasProviderServiceApiProtocols = Object.keys(providerServiceApiProtocolEntries).length > 0;
-    const hasProviderServiceUnitBillingModels = Object.keys(providerServiceUnitBillingModelEntries).length > 0;
-    const hasProviderServiceCapabilities = Object.keys(providerServiceCapabilityEntries).length > 0;
-    const hasProviderServiceHealth = Object.keys(providerServiceHealthEntries).length > 0;
+    const matrices = mergeProviderAnnouncements(result.metadata.providers);
+    const nonEmpty = <T extends object>(matrix: T): T | undefined => (Object.keys(matrix).length > 0 ? matrix : undefined);
+    const providerPricing = nonEmpty(matrices.providerPricing);
+    const providerServiceCategories = nonEmpty(matrices.providerServiceCategories);
+    const providerServiceApiProtocols = nonEmpty(matrices.providerServiceApiProtocols);
+    const providerServiceUnitBillingModels = nonEmpty(matrices.providerServiceUnitBillingModels);
+    const providerServiceCapabilities = nonEmpty(matrices.providerServiceCapabilities);
+    const providerServiceHealth = nonEmpty(matrices.providerServiceHealth);
 
     return {
       peerId: result.metadata.peerId,
@@ -2837,12 +2749,12 @@ export class AntseedNode extends EventEmitter {
         ? { capabilities: [...result.metadata.capabilities] }
         : {}),
       publicAddress: this._resolvePublicAddress(result),
-      ...(hasProviderPricing ? { providerPricing: providerPricingEntries } : {}),
-      ...(hasProviderServiceCategories ? { providerServiceCategories: providerServiceCategoryEntries } : {}),
-      ...(hasProviderServiceApiProtocols ? { providerServiceApiProtocols: providerServiceApiProtocolEntries } : {}),
-      ...(hasProviderServiceUnitBillingModels ? { providerServiceUnitBillingModels: providerServiceUnitBillingModelEntries } : {}),
-      ...(hasProviderServiceCapabilities ? { providerServiceCapabilities: providerServiceCapabilityEntries } : {}),
-      ...(hasProviderServiceHealth ? { providerServiceHealth: providerServiceHealthEntries } : {}),
+      ...(providerPricing ? { providerPricing } : {}),
+      ...(providerServiceCategories ? { providerServiceCategories } : {}),
+      ...(providerServiceApiProtocols ? { providerServiceApiProtocols } : {}),
+      ...(providerServiceUnitBillingModels ? { providerServiceUnitBillingModels } : {}),
+      ...(providerServiceCapabilities ? { providerServiceCapabilities } : {}),
+      ...(providerServiceHealth ? { providerServiceHealth } : {}),
       defaultInputUsdPerMillion: firstProvider?.defaultPricing.inputUsdPerMillion,
       defaultOutputUsdPerMillion: firstProvider?.defaultPricing.outputUsdPerMillion,
       defaultCachedInputUsdPerMillion: firstProvider?.defaultPricing.cachedInputUsdPerMillion,

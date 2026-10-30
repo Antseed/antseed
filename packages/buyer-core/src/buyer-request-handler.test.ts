@@ -210,9 +210,24 @@ describe('BuyerRequestHandler free-tier delegations', () => {
   });
 });
 
+describe('BuyerRequestHandler provider binding', () => {
+  it('names the provider it bills the request under', async () => {
+    const { handler, sendProxyRequest } = makeHandler([ACCEPTED]);
+    await handler.sendRequest(makePeer(), makeRequest());
+    expect(sendProxyRequest.mock.calls[0]![0].headers['x-antseed-provider']).toBe('venice');
+  });
+
+  it('keeps a provider the client named', async () => {
+    const { handler, sendProxyRequest } = makeHandler([ACCEPTED]);
+    await handler.sendRequest(makePeer(), makeRequest({ 'X-Antseed-Provider': 'venice' }));
+    const sent = sendProxyRequest.mock.calls[0]![0].headers;
+    expect(Object.entries(sent).filter(([name]) => name.toLowerCase() === 'x-antseed-provider')).toEqual([['X-Antseed-Provider', 'venice']]);
+  });
+});
+
 describe('BuyerRequestHandler response receipts', () => {
   it('attributes a receipt to the peer the request went to, not the peer the receipt names', async () => {
-    const request = makeRequest();
+    const request = makeRequest({ 'x-antseed-provider': 'venice' });
     const other = toPeerId('6'.repeat(40));
     const receipt = {
       version: 1 as const,

@@ -199,6 +199,11 @@ export class BuyerRequestHandler {
       return { ...adapted, headers: { ...headers, [VIDEO_PRICE_HEADER]: videoPriceUsdc.toString() } };
     };
     const billingRoute = requestedService ? selectBillingRoute(peer, req, requestedService) : null;
+    // Name the provider the request is billed under, so the seller serves it
+    // through the same upstream instead of choosing one by itself.
+    if (billingRoute && !extractRequestedProvider(req)) {
+      req = { ...req, headers: { ...req.headers, "x-antseed-provider": billingRoute.provider } };
+    }
     // Decide free vs paid from the resolved route (provider + protocol), mirroring
     // the seller's per-request gate so both sides classify the request the same way.
     const videoRoute = nativeVideoRoute(req);

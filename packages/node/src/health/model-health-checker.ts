@@ -260,16 +260,7 @@ export class ModelHealthChecker {
       if (this._stopped) return;
       const provider = target.provider;
 
-      // Don't compete with paying buyers for concurrency slots.
-      try {
-        const capacity = provider.getCapacity();
-        if (capacity.current >= capacity.max) {
-          debugLog(`[ModelHealth] Skipping ${provider.name}: at capacity (${capacity.current}/${capacity.max})`);
-          continue;
-        }
-      } catch {
-        // getCapacity should not throw; probe anyway if it does.
-      }
+      if (this._atCapacity(provider)) continue;
 
       const services = [...provider.services];
       const hasFreeCheck = (candidate?: Provider) => Boolean(candidate?.checkServiceHealth || candidate?.checkUpstreamAccount);
@@ -512,10 +503,25 @@ export class ModelHealthChecker {
     const state = this._stateFor(target.provider, service);
     if (state.probeInFlight) return;
     if (state.lastProbeAt !== null && Date.now() - state.lastProbeAt < LIVE_FAILURE_PROBE_MIN_GAP_MS) return;
+    // A full provider answers its own 429, which says nothing about the upstream.
+    if (this._atCapacity(target.provider)) return;
     debugLog(`[ModelHealth] ${target.provider.name}/${service}: buyer request failed upstream, probing now`);
     void this._probeService(target, service).catch((err) => {
       debugWarn(`[ModelHealth] early probe failed: ${err instanceof Error ? err.message : err}`);
     });
+  }
+
+  /** Probes never compete with paying buyers for concurrency slots. */
+  private _atCapacity(provider: Provider): boolean {
+    try {
+      const capacity = provider.getCapacity();
+      if (capacity.current < capacity.max) return false;
+      debugLog(`[ModelHealth] Skipping ${provider.name}: at capacity (${capacity.current}/${capacity.max})`);
+      return true;
+    } catch {
+      // getCapacity should not throw; probe anyway if it does.
+      return false;
+    }
   }
 
   private _lowLine(): number | undefined {
