@@ -216,11 +216,19 @@ export class LocalRouter implements Router {
     // The seller's own health check says this provider cannot serve it right now.
     const isFailing = (provider: string): boolean => requestedService !== null
       && isProviderServiceRouteFailing(peer.providerServiceHealth, provider, requestedService, automatic?.protocol);
-    // Providers pricing the service itself come first; any provider can still serve it at its default price.
-    const pricingService = requestedService
-      ? availableProviders.filter((provider) => peer.providerPricing?.[provider]?.services?.[requestedService])
-      : [];
-    const candidates = pricingService.length > 0 ? pricingService : availableProviders;
+    // Providers pricing the service itself come first, then those that list it
+    // at their default price. With neither, any provider may serve it.
+    const pricesService = (provider: string): boolean =>
+      requestedService !== null && Boolean(peer.providerPricing?.[provider]?.services?.[requestedService]);
+    const listsService = (provider: string): boolean => requestedService !== null && [
+      peer.providerServiceApiProtocols, peer.providerServiceCategories, peer.providerServiceCapabilities,
+      peer.providerServiceUnitBillingModels, peer.providerServiceHealth,
+    ].some((matrix) => Boolean(matrix?.[provider]?.services?.[requestedService]));
+    const ordered = [
+      ...availableProviders.filter(pricesService),
+      ...availableProviders.filter((provider) => !pricesService(provider) && listsService(provider)),
+    ];
+    const candidates = ordered.length > 0 ? ordered : availableProviders;
     const healthy = candidates.find((provider) => !isFailing(provider));
     if (healthy) return healthy;
     return automatic ? null : candidates[0] ?? null;

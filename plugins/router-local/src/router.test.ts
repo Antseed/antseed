@@ -73,6 +73,21 @@ describe('LocalRouter', () => {
     expect(router.selectPeer(makeRequest('model-x'), [makePeer()])).not.toBeNull();
   });
 
+  it('prefers a healthy provider listing the model at its default price over a failing one pricing it', () => {
+    const router = new LocalRouter({ maxPricing: { defaults: { inputUsdPerMillion: 1_000, outputUsdPerMillion: 1_000 } } });
+    const peer = makePeer({
+      providers: ['anthropic', 'backup'],
+      providerPricing: {
+        anthropic: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'model-x': { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } },
+        backup: { defaults: { inputUsdPerMillion: 2, outputUsdPerMillion: 2 } },
+      },
+      providerServiceApiProtocols: { backup: { services: { 'model-x': ['anthropic-messages'] } } },
+      providerServiceHealth: { anthropic: { services: { 'model-x': { status: 'failing', reason: 'timeout' } } } },
+    });
+    expect(router.selectPeer(makeRequest('model-x'), [peer])?.peerId).toBe(peer.peerId);
+    expect(router.allowsPeerForPolicy(makeRequest('model-x'), peer)).toBe(true);
+  });
+
   it('skips a peer whose only route for the requested video protocol is failing', () => {
     const router = new LocalRouter({ maxPricing: { defaults: { inputUsdPerMillion: 1_000, outputUsdPerMillion: 1_000 } } });
     const peer = makePeer({
