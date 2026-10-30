@@ -138,6 +138,8 @@ export {
   type NativeVideoProtocol,
   type ServiceCapabilities,
   type ServiceCapabilityModality,
+  type VideoInputKind,
+  type VideoOptions,
   type PeerMetadata,
   type PeerVerifications,
   type ProviderAnnouncement,

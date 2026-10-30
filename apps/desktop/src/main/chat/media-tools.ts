@@ -9,6 +9,7 @@ import { WORKSPACE_APPS_DIR } from '../paths.js';
 
 export const SHOW_MEDIA_TOOL_NAME = 'show_media';
 export const GET_CHAT_IMAGE_PATH_TOOL_NAME = 'get_chat_image_path';
+export const GET_CHAT_VIDEO_PATH_TOOL_NAME = 'get_chat_video_path';
 export const BUNDLED_CHAT_SKILL_NAMES = ['antseed-images', 'antseed-videos'] as const;
 
 const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
@@ -137,6 +138,37 @@ export function createChatImagePathTool(
       if (!filePath) return errorResult(`Image attachment not found: ${attachmentId}`);
       const media = detectChatMedia(await readHeader(filePath));
       if (!media || media.video) return errorResult('Attachment is not a PNG, JPEG, or WebP image.');
+      return {
+        content: [{ type: 'text', text: filePath }],
+        details: { attachmentId, path: filePath, mimeType: media.mimeType },
+      };
+    },
+  };
+}
+
+const ChatVideoPathParams = Type.Object({
+  attachmentId: Type.String({
+    description: 'Attachment id from an uploaded-video tag in this chat.',
+  }),
+});
+
+export function createChatVideoPathTool(
+  conversationId: string,
+  resolvePath: typeof resolveAttachmentPath = resolveAttachmentPath,
+): ToolDefinition {
+  return {
+    name: GET_CHAT_VIDEO_PATH_TOOL_NAME,
+    label: 'Chat Video Path',
+    description:
+      'Get the local file path for a video uploaded to this chat, for example to use it as the source ' +
+      'video of a video edit.',
+    parameters: ChatVideoPathParams,
+    async execute(_toolCallId, params) {
+      const { attachmentId } = params as Static<typeof ChatVideoPathParams>;
+      const filePath = await resolvePath(conversationId, attachmentId.trim());
+      if (!filePath) return errorResult(`Video attachment not found: ${attachmentId}`);
+      const media = detectChatMedia(await readHeader(filePath));
+      if (!media?.video || media.mimeType === 'video/webm') return errorResult('Attachment is not an MP4 or MOV video.');
       return {
         content: [{ type: 'text', text: filePath }],
         details: { attachmentId, path: filePath, mimeType: media.mimeType },

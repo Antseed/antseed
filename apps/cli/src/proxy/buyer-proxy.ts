@@ -4337,7 +4337,17 @@ export class BuyerProxy {
       const routeRequiredParameters = serializedReq.path.split('?')[0]?.toLowerCase() === '/v1/images/edits'
         && !requiredParameters.includes('image')
         ? [...requiredParameters, 'image']
-        : requiredParameters
+        : [...requiredParameters]
+      // Likewise a video edit needs a seller whose model takes the source
+      // (or reference) videos the create sends.
+      if (nativeVideo?.action === 'create') {
+        const fields = extractRequestBodyFields(serializedReq.headers, serializedReq.body)
+        for (const field of ['video_url', 'reference_video_urls']) {
+          const value = fields?.[field]
+          if ((typeof value === 'string' || Array.isArray(value)) && value.length > 0
+            && !routeRequiredParameters.includes(field)) routeRequiredParameters.push(field)
+        }
+      }
       const selectModelPeers = (candidateSources: PeerInfo[]): CandidatePeerRouteSelection =>
         selectCandidatePeersForRouting(candidateSources, requestProtocol, requestedService, explicitProvider, 'strict')
       let discoveredPeers = peers

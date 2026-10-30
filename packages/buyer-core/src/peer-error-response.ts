@@ -12,6 +12,7 @@ const USER_ACTIONABLE_PEER_ERROR_IDS = new Set([
   'max_tokens_exceeded',
   'request_too_large',
   'unsupported_parameter',
+  'upstream_upload_timeout',
   'validation_error',
 ]);
 
