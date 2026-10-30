@@ -304,6 +304,21 @@ describe('selectBillingRoute', () => {
     expect(selectBillingRoute(peer, chatRequest(), 'video-model')?.provider).toBe('b');
   });
 
+  it('keeps video requests on the first provider serving the protocol, so retrieves reach the job', () => {
+    const peer = makePeer();
+    peer.providers = ['venice', 'backup'];
+    peer.providerServiceApiProtocols = { ...peer.providerServiceApiProtocols, backup: { services: { 'video-model': ['venice-video'] } } };
+    peer.providerServiceUnitBillingModels = { ...peer.providerServiceUnitBillingModels, backup: { services: { 'video-model': { 'venice-video': VIDEO_MODEL } } } };
+    peer.providerServiceHealth = { venice: { services: { 'video-model': { status: 'failing', reason: 'out_of_credit' } } } };
+    const retrieve: SerializedHttpRequest = {
+      ...makeRequest({ 'x-antseed-service': 'video-model' }),
+      path: '/api/v1/video/retrieve',
+      body: Buffer.from(JSON.stringify({ model: 'video-model', queue_id: 'job' })),
+    };
+    expect(selectBillingRoute(peer, makeRequest(), 'video-model')?.provider).toBe('venice');
+    expect(selectBillingRoute(peer, retrieve, 'video-model')?.provider).toBe('venice');
+  });
+
   it('keeps a failing video provider over a healthy one that cannot serve the video protocol', () => {
     const peer = makePeer();
     peer.providers = ['venice', 'chat'];

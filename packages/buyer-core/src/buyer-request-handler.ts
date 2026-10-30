@@ -752,16 +752,18 @@ function selectProviderForService(
   }
 
   // Mirrors the seller's matchProvider: a native video request needs a
-  // provider serving its protocol, and among those a provider whose self
-  // health check is not failing the service is preferred.
+  // provider serving its protocol, and takes the first one, so a job's
+  // retrieves reach the provider that accepted it whatever its health is now.
+  // Other requests prefer a provider whose self health check is not failing.
   const videoRoute = nativeVideoRoute(request);
   const eligible = providers.filter((provider) =>
     providerOffersService(peer, provider, service)
     && (!videoRoute || Boolean(peer.providerServiceApiProtocols?.[provider]?.services[service]?.includes(videoRoute.protocol))),
   );
-  const match = eligible.find((provider) =>
+  const healthy = videoRoute ? undefined : eligible.find((provider) =>
     !isServiceHealthFailing(providerServiceHealthFor(peer.providerServiceHealth, provider, service)),
-  ) ?? eligible[0] ?? providers.find((provider) =>
+  );
+  const match = healthy ?? eligible[0] ?? providers.find((provider) =>
     providerOffersService(peer, provider, service),
   );
   return match ?? providers[0] ?? null;

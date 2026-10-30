@@ -1,6 +1,7 @@
 import type { ServiceHealth } from '../discovery/peer-metadata.js';
 import { describeServiceHealth, SELLER_SELF_HEALTH_FAILING_CODE } from '../discovery/peer-metadata.js';
 import type { SerializedHttpResponse } from '../types/http.js';
+import { tryParseJsonObject } from '../utils/json-codec.js';
 
 export { describeServiceHealth, SELLER_SELF_HEALTH_FAILING_CODE };
 
@@ -24,16 +25,11 @@ const ERROR_TYPE_PATTERN = /^[a-z0-9_.-]{1,64}$/i;
 /** The upstream's error type code (e.g. `insufficient_quota`), when it has one. Its message is never forwarded. */
 function upstreamErrorType(body: Uint8Array | undefined): string | undefined {
   if (!body || body.length === 0) return undefined;
-  try {
-    const parsed = JSON.parse(new TextDecoder().decode(body.slice(0, 2_000))) as { error?: unknown };
-    const error = parsed.error;
-    if (!error || typeof error !== 'object') return undefined;
-    const { code, type } = error as { code?: unknown; type?: unknown };
-    const value = typeof code === 'string' ? code : type;
-    return typeof value === 'string' && ERROR_TYPE_PATTERN.test(value) ? value : undefined;
-  } catch {
-    return undefined;
-  }
+  const error = tryParseJsonObject(body.slice(0, 2_000))?.['error'];
+  if (!error || typeof error !== 'object') return undefined;
+  const { code, type } = error as { code?: unknown; type?: unknown };
+  const value = typeof code === 'string' ? code : type;
+  return typeof value === 'string' && ERROR_TYPE_PATTERN.test(value) ? value : undefined;
 }
 
 /**
