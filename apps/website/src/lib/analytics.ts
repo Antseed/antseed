@@ -91,25 +91,88 @@ export function gaSessionId(): string | null {
   return null;
 }
 
+const UTM_KEYS = ['utm_source', 'utm_medium', 'utm_campaign'] as const;
+const UTM_STORAGE_KEY = 'antseed_landing_utm';
+const UTM_VALUE_RE = /^[A-Za-z0-9_.-]{1,64}$/;
+
+type LandingUtm = Partial<Record<(typeof UTM_KEYS)[number], string>>;
+
+function utmFromSearch(search: string): LandingUtm {
+  const out: LandingUtm = {};
+  const params = new URLSearchParams(search);
+  for (const key of UTM_KEYS) {
+    const value = params.get(key);
+    if (value && UTM_VALUE_RE.test(value)) out[key] = value;
+  }
+  return out;
+}
+
+/**
+ * Keep the campaign tags a visitor landed with (?utm_source=github&…) for
+ * the rest of the tab session, so a download clicked three pages later can
+ * still carry them. Called once per page load from the Root theme. Uses
+ * sessionStorage: per tab, cleared when the tab closes, never sent anywhere
+ * by itself. No-ops during SSR or when storage is unavailable.
+ */
+export function rememberLandingUtm(): void {
+  if (typeof window === 'undefined') return;
+  const found = utmFromSearch(window.location.search);
+  if (Object.keys(found).length === 0) return;
+  try {
+    window.sessionStorage.setItem(UTM_STORAGE_KEY, JSON.stringify(found));
+  } catch {
+    // Storage blocked: the current page's tags still apply via landingUtm().
+  }
+}
+
+/** Tags from the current URL, else the ones remembered at landing, else none. */
+export function landingUtm(): LandingUtm {
+  if (typeof window === 'undefined') return {};
+  const current = utmFromSearch(window.location.search);
+  if (Object.keys(current).length > 0) return current;
+  try {
+    const raw = window.sessionStorage.getItem(UTM_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const out: LandingUtm = {};
+    for (const key of UTM_KEYS) {
+      const value = parsed[key];
+      if (typeof value === 'string' && UTM_VALUE_RE.test(value)) out[key] = value;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 /**
  * Append the visitor's GA ids to a download-proxy URL (?cid=...&sid=...), so
  * the proxy's server-side download_started/completed events land inside this
- * visitor's GA session and inherit source/campaign attribution. Non-proxy
- * URLs and already-attributed URLs pass through unchanged; without GA
- * cookies (ad blockers) the plain URL still works — the download is then
- * counted without session attribution, exactly as before.
+ * visitor's GA session and inherit source/campaign attribution, and carry the
+ * landing page's utm_* tags so the proxy can record the source even when GA
+ * never ran (ad blockers). Non-proxy URLs and already-attributed URLs pass
+ * through unchanged; without GA cookies the tags alone still travel.
  */
 export function withGaAttribution(href: string): string {
   try {
     const url = new URL(href);
     if (url.hostname !== new URL(DOWNLOAD_BASE_URL).hostname) return href;
     if (url.searchParams.has('cid')) return href;
+    let changed = false;
     const cid = gaClientId();
-    if (!cid) return href;
-    url.searchParams.set('cid', cid);
-    const sid = gaSessionId();
-    if (sid) url.searchParams.set('sid', sid);
-    return url.toString();
+    if (cid) {
+      url.searchParams.set('cid', cid);
+      const sid = gaSessionId();
+      if (sid) url.searchParams.set('sid', sid);
+      changed = true;
+    }
+    for (const [key, value] of Object.entries(landingUtm())) {
+      if (value && !url.searchParams.has(key)) {
+        url.searchParams.set(key, value);
+        changed = true;
+      }
+    }
+    return changed ? url.toString() : href;
   } catch {
     return href;
   }
