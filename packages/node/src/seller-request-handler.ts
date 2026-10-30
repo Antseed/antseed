@@ -1220,16 +1220,17 @@ export class SellerRequestHandler {
     const matchesService = (provider: Provider): boolean =>
       provider.services.includes(requestedService) && (!videoRoute || Boolean(provider.serviceApiProtocols?.[requestedService]?.includes(videoRoute.protocol)));
 
+    // Several upstreams can share a provider name: prefer one whose self health
+    // check is not failing this service, else the first that serves it.
+    const pick = (candidates: Provider[]): Provider | undefined =>
+      candidates.find((candidate) => !isServiceHealthFailing(candidate.serviceHealth?.[requestedService])) ?? candidates[0];
+    const serving = providers.filter(matchesService);
     let provider: Provider | undefined;
     if (requestedProvider) {
-      provider = providers.find((candidate) =>
-        candidate.name.toLowerCase() === requestedProvider && matchesService(candidate),
-      );
+      provider = pick(serving.filter((candidate) => candidate.name.toLowerCase() === requestedProvider));
     }
     if (!provider && !(videoRoute && requestedProvider)) {
-      // Prefer a provider whose self health check is not failing this service.
-      provider = providers.find((candidate) => matchesService(candidate) && !isServiceHealthFailing(candidate.serviceHealth?.[requestedService]))
-        ?? providers.find((candidate) => matchesService(candidate));
+      provider = pick(serving);
     }
     return provider;
   }

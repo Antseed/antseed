@@ -23,7 +23,7 @@ function makeProvider(name: string, statusCode: number): Provider {
   };
 }
 
-async function serve(providers: Provider[], emit: (event: string, ...args: unknown[]) => boolean = () => false) {
+async function serve(providers: Provider[], emit: (event: string, ...args: unknown[]) => boolean = () => false, headers: Record<string, string> = {}) {
   const handler = new SellerRequestHandler({
     identity: identityFromPrivateKeyHex('11'.repeat(32)),
     providers,
@@ -40,7 +40,7 @@ async function serve(providers: Provider[], emit: (event: string, ...args: unkno
     messageId: 1,
     payload: encodeHttpRequest({
       requestId: 'req-1', method: 'POST', path: '/v1/chat/completions',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...headers },
       body: new TextEncoder().encode(JSON.stringify({ model: 'test-model' })),
     }),
   });
@@ -74,6 +74,15 @@ describe('seller self health error', () => {
     down.serviceHealth = { 'test-model': failing };
     const up = makeProvider('up', 200);
     const response = await serve([down, up]);
+    expect(response.statusCode).toBe(200);
+    expect(down.handleRequest).not.toHaveBeenCalled();
+  });
+
+  it('prefers a healthy upstream among those sharing the requested provider name', async () => {
+    const down = makeProvider('openai', 502);
+    down.serviceHealth = { 'test-model': failing };
+    const up = makeProvider('openai', 200);
+    const response = await serve([down, up], undefined, { 'x-antseed-provider': 'openai' });
     expect(response.statusCode).toBe(200);
     expect(down.handleRequest).not.toHaveBeenCalled();
   });

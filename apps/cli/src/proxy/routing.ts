@@ -197,10 +197,16 @@ export function findAdvertisedServiceProtocols(peers: PeerInfo[], requestedServi
  * Offers for the requested model that the sellers' own health checks announce
  * as failing, for explaining why automatic routing found no peer for it.
  */
-export function findFailingServiceOffers(peers: PeerInfo[], requestedService: string): NetworkServiceOffer[] {
+export function findFailingServiceOffers(
+  peers: PeerInfo[],
+  requestedService: string,
+  explicitProvider: string | null = null,
+): NetworkServiceOffer[] {
   if (!canonicalModelKey(requestedService)) return []
   return buildNetworkServiceOffers(peers, { includeFailing: true }).filter((offer) => (
-    offer.health?.status === 'failing' && isRequestedServiceMatch(offer.serviceId, requestedService)
+    offer.health?.status === 'failing'
+    && isRequestedServiceMatch(offer.serviceId, requestedService)
+    && (!explicitProvider || offer.provider.toLowerCase() === explicitProvider)
   ))
 }
 

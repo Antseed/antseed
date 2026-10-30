@@ -3294,6 +3294,25 @@ test('a model whose every seller reports it failing gets a self health error, no
   assert.match(body.error.message, /^The only seller serving "gpt-6-sol" reports it failing\.\nThe seller's self health check for "gpt-6-sol" has been failing \(the upstream timed out, 3 failed checks in a row\)\./)
 })
 
+test('a healthy seller ruled out by policy keeps the policy answer, not a self health error', async () => {
+  const failing = makePeer('b', ['openai'])
+  failing.providerPricing = { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'gpt-6-sol': { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } } }
+  failing.providerServiceApiProtocols = { openai: { services: { 'gpt-6-sol': ['openai-chat-completions'] } } }
+  failing.providerServiceHealth = { openai: { services: { 'gpt-6-sol': { status: 'failing', reason: 'timeout' } } } }
+  const pricey = makePeer('c', ['openai'])
+  pricey.providerPricing = { openai: { defaults: { inputUsdPerMillion: 99, outputUsdPerMillion: 99 }, services: { 'gpt-6-sol': { inputUsdPerMillion: 99, outputUsdPerMillion: 99 } } } }
+  pricey.providerServiceApiProtocols = { openai: { services: { 'gpt-6-sol': ['openai-chat-completions'] } } }
+  const proxy = makeBuyerProxyWithPeers([failing, pricey], [failing, pricey], { allowsPeerForPolicy: () => false, onResult: () => {} })
+  ;(proxy as any)._node.sendRequest = async () => { throw new Error('must not reach a peer') }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    path: '/v1/chat/completions',
+    body: { model: 'gpt-6-sol', messages: [{ role: 'user', content: 'hi' }] },
+  }))
+
+  assert.notEqual(JSON.parse(res.body).error.code, 'seller_self_health_failing')
+})
+
 test('chat requests to a decision-only model get unsupported_protocol, not model_not_found', async () => {
   const decision = makePeer('b', ['typesafe'])
   decision.providerServiceApiProtocols = {
