@@ -420,7 +420,7 @@ describe('video-to-video endpoints', () => {
     expect(falEditRule(falInputSchema(schema(V3, { prompt: {}, image_url: {} }), V3))).toBeNull();
   });
 
-  it('announces the source video and character inputs, and the durations a source-length output can have', async () => {
+  it('announces the source video and character inputs, and the source lengths fal takes as durations', async () => {
     const { provider } = await ready(RECAST);
     expect(provider.serviceCapabilities?.[RECAST]).toEqual({
       outputs: ['video'],
@@ -434,8 +434,8 @@ describe('video-to-video endpoints', () => {
     // Motion control's output is as long as its source; x-fal limits the source to 3–30.05 s.
     const motion = (await ready(MOTION)).provider.serviceCapabilities?.[MOTION]?.video;
     expect(motion).toEqual({ inputs: ['video', 'reference_image'], requiredInputs: ['video', 'reference_image'], durationsSeconds: Array.from({ length: 28 }, (_, i) => i + 3) });
-    // Kling v4 takes its own `duration`, so its durations are not derived from the source.
-    expect((await ready(KLING_EDIT)).provider.serviceCapabilities?.[KLING_EDIT]?.video).toEqual({ inputs: ['video', 'reference_image'], requiredInputs: ['video'], resolutions: ['720p', '1080p'] });
+    // Kling v4 takes a `duration`, but it is still the source length; x-fal limits the source to 3–30.05 s.
+    expect((await ready(KLING_EDIT)).provider.serviceCapabilities?.[KLING_EDIT]?.video).toEqual({ inputs: ['video', 'reference_image'], requiredInputs: ['video'], durationsSeconds: Array.from({ length: 28 }, (_, i) => i + 3), resolutions: ['720p', '1080p'] });
   });
 
   it('keeps video options the seller configured', async () => {
@@ -472,7 +472,7 @@ describe('video-to-video endpoints', () => {
     expect(fetchMock.mock.calls.some(([url]) => String(url).startsWith('https://queue.fal.run'))).toBe(false);
   });
 
-  it('refuses an edit fal bills for the whole source unless duration is the measured source length', async () => {
+  it('refuses an edit unless duration is the measured source length', async () => {
     const { provider, fetchMock } = await ready(RECAST);
     const calls = fetchMock.mock.calls.length;
     const refused = async (body: object) => {
@@ -485,9 +485,17 @@ describe('video-to-video endpoints', () => {
     expect(fetchMock.mock.calls.length).toBe(calls);
   });
 
-  it('keeps duration for an endpoint that takes one', async () => {
+  it('checks duration against the source for an endpoint that takes one, and keeps it', async () => {
     const { provider, fetchMock } = await ready(WAN_EDIT);
-    await provider.handleRequest(create(WAN_EDIT, { prompt: 'make it snow', video_url: 'https://example.com/source.mp4', duration: 5 }));
+    const calls = fetchMock.mock.calls.length;
+    // Wan cuts the output to the source: a 2 s source with duration 10 would be delivered short and never charged.
+    const longer = await provider.handleRequest(create(WAN_EDIT, { prompt: 'make it snow', video_url: sourceMp4(2_300), duration: 10 }));
+    expect(longer.statusCode).toBe(422);
+    expect(parse(longer.body).error).toMatchObject({ code: 'invalid_video_duration', message: expect.stringContaining(': 2') });
+    expect((await provider.handleRequest(create(WAN_EDIT, { prompt: 'make it snow', video_url: 'https://example.com/source.mp4', duration: 5 }))).statusCode).toBe(422);
+    expect(fetchMock.mock.calls.length).toBe(calls);
+    const response = await provider.handleRequest(create(WAN_EDIT, { prompt: 'make it snow', video_url: sourceMp4(5_200), duration: 5 }));
+    expect(response.statusCode).toBe(200);
     expect(parse(fetchMock.mock.calls.at(-1)![1].body)).toMatchObject({ duration: 5 });
   });
 });
