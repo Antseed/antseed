@@ -6,7 +6,7 @@ import type {
 } from '../../core/state';
 import { CODING_ONLY_SUFFIX_RE, canonicalModelKey, displayModelLabel, sameCanonicalModel } from './model-identity';
 import { entryMatchText, selectRecommendedVprCatalog } from './recommended';
-import { serviceModelKind, videoRowStartingPrice } from './model-capabilities';
+import { serviceModelKind, supportsVideoEdits, videoRowStartingPrice } from './model-capabilities';
 
 const VPR_MODEL_CATALOG_SEPARATOR = '\u0001';
 
@@ -112,6 +112,7 @@ function projectGroupToEntry(
     maxVideoUsdPerSecond: maxPrice(pricingRows.map((row) => row.maxVideoUsdPerSecond)),
     minVideoUsdPerVideo: minPrice(pricingRows.map((row) => row.minVideoUsdPerVideo)),
     maxVideoUsdPerVideo: maxPrice(pricingRows.map((row) => row.maxVideoUsdPerVideo)),
+    ...(kind === 'video' && group.rows.some(supportsVideoEdits) ? { videoEditing: true } : {}),
     // Filled by applyOpenRouterBaselines once a retail reference is available.
     expectedSavingsPct: null,
     // Free means the route itself charges nothing, cached tokens included —

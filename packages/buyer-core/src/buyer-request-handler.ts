@@ -567,6 +567,10 @@ export class BuyerRequestHandler {
     requestId: string,
   ): VideoDelivery {
     if (videoRoute?.action !== 'retrieve' || !videoJobId) return null;
+    if (tracked && videoJobEndedWithoutVideo(response)) {
+      this._deps.negotiator?.bpm?.recordVideoFailed(peer.peerId, videoRoute.protocol, videoJobId);
+      return null;
+    }
     if (!nativeVideoDelivered(response, duration)) return null;
     if (!tracked) {
       return this._deps.negotiator?.bpm?.videoDeliveryUnsaved(peer.peerId, videoRoute.protocol, videoJobId) === true ? 'unrecorded' : 'delivered';
@@ -988,4 +992,26 @@ function concatChunks(chunks: Uint8Array[]): Uint8Array {
     offset += chunk.length;
   }
   return output;
+}
+
+const FAILED_VIDEO_STATUSES = new Set(['FAILED', 'ERROR', 'CANCELLED', 'CANCELED']);
+
+/**
+ * A retrieve answer that ends the job without a video: a JSON status the
+ * job failed (the seller closes the job's channel on it). Error answers are
+ * not: a malformed retrieve, 404, 429 or 5xx leaves the job as it is.
+ */
+export function videoJobEndedWithoutVideo(response: SerializedHttpResponse): boolean {
+  if (response.streamedBody) return false;
+  const contentType = Object.entries(response.headers).find(([key]) => key.toLowerCase() === 'content-type')?.[1];
+  if (!contentType?.toLowerCase().startsWith('application/json')) return false;
+  let body: unknown;
+  try {
+    body = JSON.parse(new TextDecoder().decode(response.body));
+  } catch {
+    return false;
+  }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
+  const status = (body as { status?: unknown }).status;
+  return response.statusCode === 200 && typeof status === 'string' && FAILED_VIDEO_STATUSES.has(status.toUpperCase());
 }

@@ -1,5 +1,5 @@
 export { createMp4Inspector, type Mp4Facts } from './mp4.js';
-export { detectNativeVideoProtocol, nativeVideoRoute, nativeVideoAcceptance, nativeVideoDelivered, nativeVideoFacts, VIDEO_MIN_DURATION_RATIO, requestService, type NativeVideoRoute, type NativeVideoFacts } from './native-video.js';
+export { detectNativeVideoProtocol, nativeVideoRoute, nativeVideoAcceptance, nativeVideoDelivered, nativeVideoFacts, videoSourceLengthProblem, VIDEO_MIN_DURATION_RATIO, requestService, type NativeVideoRoute, type NativeVideoFacts } from './native-video.js';
 
 export {
   renderRequestBodyAsOpenAIChat,

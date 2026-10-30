@@ -87,6 +87,21 @@ curl http://localhost:8377/api/v1/video/retrieve \
 
 Retrieve requests always go to the seller that accepted the job. You pay once, when the finished MP4 is delivered, and the buyer refuses videos priced above $5.00.
 
+#### Edit a video
+
+Video edit models (`inputs` has `video` in `GET /v1/models?type=videos`) take your video as `video_url` and change part of it. Send the video inline as a data URL, or as a public `https` URL. A model whose output is as long as the source (Recast, motion control) needs it inline: the seller measures it and answers `422 invalid_video_duration` for a URL or a `duration` that is not its length. Set `duration` to the video's length in whole seconds, rounded down (`ffprobe -v error -show_entries format=duration -of csv=p=0 dance.mp4`); that is what you pay for. Never send more than the source length.
+
+```bash
+jq -n --rawfile video <(printf 'data:video/mp4;base64,'; base64 < dance.mp4 | tr -d '\n') \
+  '{model: "<peerId>@minimax-h3-max-recast", video_url: $video, duration: "12s",
+    reference_image_urls: ["https://example.com/me.png"], resolution: "768P"}' > edit.json
+curl http://localhost:8377/api/v1/video/queue -H 'content-type: application/json' -H 'Expect:' --data-binary @edit.json
+```
+
+On fal, `duration` is a number (`12`). A request is at most 64 MiB including base64 (about 47 MB of video); Venice sellers accept at most 32.5 MB, images included. Send `resolution` exactly as the seller lists it (`768P` for Recast, `720p` for Kling and Wan).
+
+Sellers do not check the source; the upstream does. Check it first against the model's published limits: fal's schema (`https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=<model>`, `x-fal` on `video_url`) or Venice's model list and docs. The `antseed-videos` skill does this for you. A source or field the upstream refuses, or a job that fails after it started (for example Recast or motion control on a video without a person), is closed at once. A video priced above $1.00 then costs the payment channel's opening fee ($0.65 on Base), a cheaper one nothing.
+
 ## Choose the model and seller
 
 The `model` field controls routing:
