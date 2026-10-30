@@ -1,7 +1,7 @@
 ---
 slug: /videos
 title: Generate videos with an agent
-description: Install the antseed-videos skill so a coding agent or Antseed Desktop can plan, price and generate videos through your local buyer, with an approval before every paid step.
+description: Install the antseed-videos skill so a coding agent or Antseed Desktop can plan, price, generate and edit videos through your local buyer, with an approval before every paid step.
 ---
 
 # Generate videos with an agent
@@ -14,7 +14,7 @@ It works with any video model sellers offer on the network, through both `venice
 
 - **A running buyer.** Antseed Desktop, or `antseed buyer start` from the CLI. The skill talks to the [local buyer proxy](/docs/api) at `http://127.0.0.1:8377`, or at `ANTSEED_PROXY_URL` when it is set.
 - **Deposited USDC.** Fund the buyer by card where available, from an exchange withdrawal or from another wallet. See [Payments](/docs/payments).
-- **`curl` and `jq`.** The skill makes every request with plain `curl` and builds JSON with `jq`. `ffmpeg` is used only to join [multi-clip videos](#longer-videos).
+- **`curl` and `jq`.** The skill makes every request with plain `curl` and builds JSON with `jq`. `ffmpeg` is used to join [multi-clip videos](#longer-videos), and `ffprobe` (part of `ffmpeg`) to read a source video for an [edit](#edit-a-video).
 
 ## Install
 
@@ -58,6 +58,10 @@ Animate these two images: start on first.png and end on last.png.
 Make a 20-second product video of this sneaker, keeping the shoe the same in every shot.
 ```
 
+```text
+Here's a clip of me dancing. Put this character in it instead of me.
+```
+
 ## How it works
 
 The agent works in three stages and ends each one with a question. It never starts the next stage, or spends money, until you answer.
@@ -78,10 +82,22 @@ If you say "you decide", the agent fills in its own recommendations, but it stil
 - **A character, product or style to keep consistent:** the agent recommends a reference-to-video model and uses your images as references. The video then won't start on any one image.
 - **No frames at all:** ask to skip them and the agent uses a text-to-video model, but says the look may drift.
 
+## Edit a video
+
+Bring a video and ask for a change: put a different person or character in it, restyle it, or change one thing. The agent uses a video edit (video-to-video) model instead of the three stages above. The source keeps its motion, timing and camera; the model changes only what you ask for.
+
+1. **Source.** The agent reads the video's length, size and frame rate with `ffprobe`. MOV files are repackaged as MP4 without re-encoding; WebM, VP9 and AV1 sources are re-encoded to H.264.
+2. **Model and limits.** The agent lists the edit models on the network and recommends one: MiniMax H3 Max Recast or Kling motion control to swap a person or character, Kling edit or Wan edit for a text instruction. It then checks your video against that model's published limits and shows you each check and where it comes from. If the video fails one, it offers a fix (trim, scale up, re-encode) and checks again.
+3. **Character and prompt.** For a swap, you give or approve one clear image per person to replace, left to right as they appear, plus the prompt.
+4. **Price and go.** An edit is priced on the source's length in whole seconds. To pay for less, trim the source first. The agent shows the price per seller and asks before it creates anything.
+
+Edits take longer than new videos; Recast can take 15 minutes or more. Recast and motion control need a real person in the source: a video of an animal, a cartoon or an empty scene comes back unchanged or fails. Sellers pass the video to the upstream without checking it, which is why the agent checks it first.
+
 ## What you pay
 
 - **Frames** are ordinary image requests, charged per image when they are made. The agent quotes the image model's price before making them.
-- **The video** is charged once, when the finished MP4 is first delivered. A create the seller rejects, a job that fails at the seller, and checking a job's status cost nothing. Downloading the same video again does not charge again.
+- **The video** is charged once, when the finished MP4 is first delivered. Checking a job's status costs nothing, and downloading the same video again does not charge again.
+- **A video that fails** costs nothing when it is priced at $1.00 or less. Above $1.00, a create the seller or upstream refuses, or a job that fails, costs the payment channel's opening fee ($0.65 on Base). A create the buyer refuses itself, such as one above the price limit, costs nothing.
 - **No single video above $5.00.** The buyer refuses it by default (`payments.maxVideoRequestUsdc`). Pick a shorter duration or lower resolution.
 
 The agent sends the create to the cheapest seller that supports your settings, as `<peerId>@<model>`. If that seller fails, it offers the next one from the price list and asks first; it does not switch sellers or models on its own.
@@ -102,7 +118,8 @@ For a video longer than the model's longest clip, the agent plans it as several 
 | `402` | The buyer needs more deposited USDC or payment-channel capacity. See [Payments](/docs/payments). |
 | `402 one_off_channel_required` | Update the buyer; versions before `@antseed/cli@0.1.171` hit this. |
 | Price above $5.00, or "above the configured limit" | Choose a shorter duration or a lower resolution. |
-| `400` on create | The seller rejected a field, named in the error. Nothing started and nothing was charged; the agent fixes the field and asks before trying again. |
+| `400` on create | The seller rejected a field, named in the error. Nothing started; the agent fixes the field and asks before trying again. Above $1.00, the opening fee is kept. |
+| `422 invalid_video_duration` | An edit's `duration` must be the source's length in whole seconds, rounded down. The agent corrects it and asks before trying again. |
 | `video_not_delivered` | The seller says the job finished but sent no video. Nothing was charged; the agent offers the next seller. |
 
 The skill's [request reference](https://github.com/AntSeed/antseed/blob/main/skills/antseed-videos/references/requests.md#errors) lists every error and what the agent does about it.
