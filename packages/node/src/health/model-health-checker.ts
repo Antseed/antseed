@@ -474,6 +474,7 @@ export class ModelHealthChecker {
       if (!billable) return;
       const state = this._stateFor(target.provider, service);
       state.lastTrafficAt = Date.now();
+      state.lastStatusCode = statusCode;
       this._recordSuccess(state, 'traffic', `HTTP ${statusCode} on a buyer request`);
       return;
     }

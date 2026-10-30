@@ -4429,13 +4429,17 @@ export class BuyerProxy {
         }
         // Served, but every seller's own health check announces it failing. Only
         // when no healthy seller could take the request either: if one could
-        // and policy ruled it out, the policy answer below is the true one.
-        const failingOffers = capabilityRequired || modelPeers.length > 0
+        // and policy ruled it out, the policy answer below is the true one. A
+        // failing seller counts only if it speaks the request's API and
+        // advertises its required parameters, as a healthy one would have to.
+        const failingOffers = modelPeers.length > 0
           ? []
           : findFailingServiceOffers(discoveredPeers, requestedService, explicitProvider).filter((offer) => {
             const peer = discoveredPeers.find((candidate) => candidate.peerId === offer.peerId)
-            return peer !== undefined
-              && resolvePeerRoutePlan(peer, requestProtocol, requestedService, explicitProvider, 'lenient')?.serviceId != null
+            const plan = peer && resolvePeerRoutePlan(peer, requestProtocol, requestedService, explicitProvider, 'lenient')
+            if (!peer || !plan?.serviceId) return false
+            return !capabilityRequired || (!plan.selection?.requiresTransform
+              && findMissingRequiredParameters(peer, plan.provider, plan.serviceId, routeRequiredParameters).length === 0)
           })
         if (failingOffers.length > 0) {
           const latest = failingOffers.reduce((a, b) => ((b.health?.checkedAt ?? 0) > (a.health?.checkedAt ?? 0) ? b : a))

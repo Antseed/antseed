@@ -3294,6 +3294,30 @@ test('a model whose every seller reports it failing gets a self health error, no
   assert.match(body.error.message, /^The only seller serving "gpt-6-sol" reports it failing\.\nThe seller's self health check for "gpt-6-sol" has been failing \(the upstream timed out, 3 failed checks in a row\)\./)
 })
 
+test('a failing seller that advertises the required parameters gets the self health error, else the capability error', async () => {
+  const seller = (supportedParameters: string[]) => {
+    const failing = makePeer('b', ['openai'])
+    failing.providerPricing = { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'gpt-6-sol': { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } } }
+    failing.providerServiceApiProtocols = { openai: { services: { 'gpt-6-sol': ['openai-chat-completions'] } } }
+    failing.providerServiceCapabilities = { openai: { services: { 'gpt-6-sol': { supportedParameters } } } }
+    failing.providerServiceHealth = { openai: { services: { 'gpt-6-sol': { status: 'failing', reason: 'timeout' } } } }
+    return failing
+  }
+  const send = async (peer: PeerInfo) => {
+    const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+    ;(proxy as any)._node.sendRequest = async () => { throw new Error('must not reach a peer') }
+    const res = await invokeProxy(proxy, makeProxyRequest({
+      path: '/v1/chat/completions',
+      headers: { 'x-antseed-required-parameters': 'seed' },
+      body: { model: 'gpt-6-sol', messages: [{ role: 'user', content: 'hi' }] },
+    }))
+    return [res.statusCode, JSON.parse(res.body).error.code]
+  }
+
+  assert.deepEqual(await send(seller(['seed'])), [503, 'seller_self_health_failing'])
+  assert.deepEqual(await send(seller([])), [422, 'required_capability_unavailable'])
+})
+
 test('a healthy seller ruled out by policy keeps the policy answer, not a self health error', async () => {
   const failing = makePeer('b', ['openai'])
   failing.providerPricing = { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'gpt-6-sol': { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } } }

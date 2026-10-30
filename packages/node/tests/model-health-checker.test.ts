@@ -708,6 +708,16 @@ describe('ModelHealthChecker buyer traffic', () => {
     expect(onRequest).toHaveBeenCalledTimes(1);
   });
 
+  it('reports the buyer request status after traffic restores a failed probe', async () => {
+    const provider = makeProvider({ onRequest: async (req: SerializedHttpRequest) => jsonResponse(req.requestId, 500) });
+    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1 });
+    checker.reportUpstreamFailure(provider, 'model-a');
+    await vi.waitFor(() => expect(provider.serviceHealth?.['model-a']?.status).toBe('failing'));
+    checker.reportUpstreamResponse(provider, 200, '', true, 'model-a');
+    const entry = checker.getSnapshot().find((candidate) => candidate.service === 'model-a');
+    expect(entry).toMatchObject({ status: 'healthy', lastStatusCode: 200, lastDetail: 'HTTP 200 on a buyer request' });
+  });
+
   it('ignores a probe failure when a buyer request succeeded while it was pending', async () => {
     let answer!: (response: SerializedHttpResponse) => void;
     const onRequest = vi.fn((req: SerializedHttpRequest) => new Promise<SerializedHttpResponse>((resolve) => { answer = resolve; void req; }));
