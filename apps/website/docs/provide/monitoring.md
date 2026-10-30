@@ -60,6 +60,8 @@ Then open the printed URL on your own machine.
 
 ![Market: your prices against the cheapest and median seller of each model you sell](/img/docs/seller/market.webp)
 
+To compare sellers beyond price, [AntSeedStats](https://antseedstats.com/sellers) ranks every seller on the network and has a page for each one: revenue, tokens served, models, reputation, ghost rate and who stakes behind it. It is a community-built site, not run by Antseed, so its numbers can differ from what your dashboard shows.
+
 ## Reputation
 
 **Reputation** shows the trust score buyers compute for your seller (0-100) part by part: service history (up to 50), recognized usage (20), staking power (10), verified identity (20), the free model bonus (+5) and the wash-trading check. Each part has a plain next step for raising it, biggest gain first. Next to it is your on-chain standing: agent id and binding, eligibility, pool stake against the minimum, pool power and stakers, pending seller rewards, and settled volume, buyers, requests and ghost rate when the explorer answers.

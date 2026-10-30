@@ -8,6 +8,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Added
 
+- Docs: **Provide → Monitoring** links to AntSeedStats, a community-built site that ranks every seller and has a page for each (revenue, tokens served, models, reputation, ghost rate, stakers), noted as not run by Antseed.
 - Gateway console: the **Authorize a wallet** dialog now offers an **Add this wallet as a sign-in method** button when the connected wallet is not yet one of your sign-in methods, opening the add-wallet flow straight from the dialog. The 24-hour wait before a newly added wallet can be authorized is unchanged.
 - Docs: **Connect → Generate videos with an agent**, a page for the `antseed-videos` skill: installing it (Antseed Desktop, an agent, or `gh skill install`), the three approval stages, editing a video you bring, what you pay (including the opening fee when a video above $1.00 fails), interrupted jobs, multi-clip videos and troubleshooting. Linked from the sidebar and **Agents**.
 - Website: seller dashboard launch post with an illustrated cover, seven dashboard screenshots, setup links and the providers Telegram updates channel.
