@@ -380,7 +380,7 @@ describe('video-to-video models', () => {
     expect(JSON.parse(fetchMock.mock.calls.at(-1)![1].body)).toEqual({ model: 'minimax-h3-max-recast', ...body });
   });
 
-  it('refuses an edit Venice bills for the whole source unless duration is the measured source length', async () => {
+  it('refuses an edit unless duration is the measured source length', async () => {
     const { provider, fetchMock } = await ready(WAN);
     const calls = fetchMock.mock.calls.length;
     const refused = async (body: object) => {
@@ -391,9 +391,12 @@ describe('video-to-video models', () => {
     expect(await refused({ video_url: sourceMp4(12_400), duration: '3s' })).toMatchObject({ code: 'invalid_video_duration', message: expect.stringContaining(': 12') });
     expect((await refused({ video_url: 'https://example.com/source.mp4', duration: '12s' })).message).toContain('inline');
     expect(fetchMock.mock.calls.length).toBe(calls);
-    // Grok sets its own duration (5s/10s/15s), so its source length is not checked.
+    // Grok takes its own duration (5s/10s/15s): one past the source would be delivered short and never charged.
     const grok = await ready(GROK);
-    expect((await grok.provider.handleRequest(create(GROK.id, { prompt: 'snow', video_url: 'https://example.com/source.mp4', duration: '5s' }))).statusCode).toBe(200);
+    const grokCreate = (body: object) => grok.provider.handleRequest(create(GROK.id, { prompt: 'snow', ...body }));
+    expect(parse((await grokCreate({ video_url: sourceMp4(5_400), duration: '10s' })).body).error).toMatchObject({ code: 'invalid_video_duration', message: expect.stringContaining(': 5') });
+    expect((await grokCreate({ video_url: 'https://example.com/source.mp4', duration: '5s' })).statusCode).toBe(422);
+    expect((await grokCreate({ video_url: sourceMp4(5_400), duration: '5s' })).statusCode).toBe(200);
   });
 
   it('turns Venice\'s HTML 413 into JSON', async () => {
