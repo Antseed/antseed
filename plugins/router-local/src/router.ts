@@ -235,7 +235,11 @@ export class LocalRouter implements Router {
       ...availableProviders.filter(pricesService),
       ...availableProviders.filter((provider) => !pricesService(provider) && listsService(provider)),
     ];
-    const candidates = ordered.length > 0 ? ordered : availableProviders;
+    const listed = ordered.length > 0 ? ordered : availableProviders;
+    // A native video request can only go through a provider serving its protocol.
+    const servesProtocol = (provider: string): boolean => automatic?.protocol !== undefined && requestedService !== null
+      && Boolean(peer.providerServiceApiProtocols?.[provider]?.services?.[requestedService]?.includes(automatic.protocol));
+    const candidates = listed.some(servesProtocol) ? listed.filter(servesProtocol) : listed;
     const healthy = candidates.find((provider) => !isFailing(provider));
     if (healthy) return healthy;
     return automatic ? null : candidates[0] ?? null;

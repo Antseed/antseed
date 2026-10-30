@@ -267,7 +267,7 @@ export function providerServiceHealthFor(
   provider: string,
   service: string,
 ): ServiceHealth | undefined {
-  return providerServiceHealth?.[provider]?.services?.[service];
+  return own(own(providerServiceHealth, provider)?.services, service);
 }
 
 /** Error code a seller answers with when a service its own health check marks failing also fails a request. */
@@ -357,19 +357,19 @@ export interface ProviderAnnouncement {
 export function providerServiceHealthMatrix(
   providers: readonly ProviderAnnouncement[],
 ): Record<string, ProviderServiceHealthMatrixEntry> {
-  const matrix: Record<string, ProviderServiceHealthMatrixEntry> = {};
+  const matrix: Record<string, ProviderServiceHealthMatrixEntry> = dict();
   for (const [provider, upstreams] of upstreamsByProvider(providers)) {
-    const services: Record<string, ServiceHealth> = {};
-    const failingProtocols: NonNullable<ProviderServiceHealthMatrixEntry["failingProtocols"]> = {};
+    const services: Record<string, ServiceHealth> = dict();
+    const failingProtocols: NonNullable<ProviderServiceHealthMatrixEntry["failingProtocols"]> = dict();
     for (const service of new Set(upstreams.flatMap((upstream) => [...upstream.services, ...Object.keys(upstream.serviceHealth ?? {})]))) {
-      const serving = upstreams.filter((upstream) => upstream.services.includes(service) || upstream.serviceHealth?.[service]);
-      const health = mergeUpstreamHealth(serving.map((upstream) => upstream.serviceHealth?.[service]));
+      const serving = upstreams.filter((upstream) => upstream.services.includes(service) || own(upstream.serviceHealth, service));
+      const health = mergeUpstreamHealth(serving.map((upstream) => own(upstream.serviceHealth, service)));
       if (health) services[service] = { ...health };
       if (isServiceHealthFailing(health)) continue;
       const byProtocol: Partial<Record<ServiceApiProtocol, ServiceHealth>> = {};
-      for (const protocol of new Set(serving.flatMap((upstream) => upstream.serviceApiProtocols?.[service] ?? []))) {
-        const route = serving.filter((upstream) => upstream.serviceApiProtocols?.[service]?.includes(protocol));
-        const routeHealth = mergeUpstreamHealth(route.map((upstream) => upstream.serviceHealth?.[service]));
+      for (const protocol of new Set(serving.flatMap((upstream) => own(upstream.serviceApiProtocols, service) ?? []))) {
+        const route = serving.filter((upstream) => own(upstream.serviceApiProtocols, service)?.includes(protocol));
+        const routeHealth = mergeUpstreamHealth(route.map((upstream) => own(upstream.serviceHealth, service)));
         if (isServiceHealthFailing(routeHealth)) byProtocol[protocol] = { ...routeHealth };
       }
       if (Object.keys(byProtocol).length > 0) failingProtocols[service] = byProtocol;
@@ -384,15 +384,15 @@ export function providerServiceHealthMatrix(
 /** Reads a health matrix from untrusted JSON (a cache file), keeping only well-formed entries. */
 export function parseProviderServiceHealthMatrix(value: unknown): Record<string, ProviderServiceHealthMatrixEntry> | undefined {
   if (!isPlainObject(value)) return undefined;
-  const matrix: Record<string, ProviderServiceHealthMatrixEntry> = {};
+  const matrix: Record<string, ProviderServiceHealthMatrixEntry> = dict();
   for (const [provider, entry] of Object.entries(value)) {
     if (!isPlainObject(entry)) continue;
-    const services: Record<string, ServiceHealth> = {};
+    const services: Record<string, ServiceHealth> = dict();
     for (const [service, health] of Object.entries(isPlainObject(entry.services) ? entry.services : {})) {
       const parsed = parseServiceHealth(health);
       if (parsed) services[service] = parsed;
     }
-    const failingProtocols: NonNullable<ProviderServiceHealthMatrixEntry["failingProtocols"]> = {};
+    const failingProtocols: NonNullable<ProviderServiceHealthMatrixEntry["failingProtocols"]> = dict();
     for (const [service, protocols] of Object.entries(isPlainObject(entry.failingProtocols) ? entry.failingProtocols : {})) {
       const byProtocol: Partial<Record<ServiceApiProtocol, ServiceHealth>> = {};
       for (const [protocol, health] of Object.entries(isPlainObject(protocols) ? protocols : {})) {
@@ -408,6 +408,19 @@ export function parseProviderServiceHealthMatrix(value: unknown): Record<string,
   return Object.keys(matrix).length > 0 ? matrix : undefined;
 }
 
+/**
+ * A service-keyed entry of a map, never one inherited from Object.prototype:
+ * a seller can list a service named "constructor".
+ */
+function own<T>(map: Readonly<Record<string, T>> | undefined, key: string): T | undefined {
+  return map !== undefined && Object.prototype.hasOwnProperty.call(map, key) ? map[key] : undefined;
+}
+
+/** A map keyed by provider or service names, with no inherited keys. */
+function dict<T>(): Record<string, T> {
+  return Object.create(null) as Record<string, T>;
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -419,8 +432,8 @@ export function providerServiceRouteHealth(
   service: string,
   protocol?: ServiceApiProtocol,
 ): ServiceHealth | undefined {
-  const entry = providerServiceHealth?.[provider];
-  return (protocol !== undefined ? entry?.failingProtocols?.[service]?.[protocol] : undefined) ?? entry?.services?.[service];
+  const entry = own(providerServiceHealth, provider);
+  return (protocol !== undefined ? own(entry?.failingProtocols, service)?.[protocol] : undefined) ?? own(entry?.services, service);
 }
 
 /** True when automatic routing should skip this provider's service, or the service over `protocol`. */
@@ -464,7 +477,7 @@ export function preferHealthyUpstream<T extends { serviceHealth?: Record<string,
   candidates: readonly T[],
   service: string,
 ): T | undefined {
-  return candidates.find((candidate) => !isServiceHealthFailing(candidate.serviceHealth?.[service])) ?? candidates[0];
+  return candidates.find((candidate) => !isServiceHealthFailing(own(candidate.serviceHealth, service))) ?? candidates[0];
 }
 
 /** A peer's announcements merged per provider name, as buyers route and bill by them. */
@@ -479,7 +492,7 @@ export interface ProviderServiceMatrices {
 
 function setServiceEntry<T>(matrix: Record<string, { services: Record<string, T> }>, provider: string, service: string, value: T | undefined): void {
   if (value === undefined) return;
-  (matrix[provider] ??= { services: {} }).services[service] = value;
+  (matrix[provider] ??= { services: dict() }).services[service] = value;
 }
 
 /** Every service the upstreams describe; a wildcard upstream (no services listed) can still describe some in its maps. */
@@ -496,10 +509,10 @@ function describedServices(upstreams: readonly ProviderAnnouncement[]): Set<stri
 /** Per protocol, the unit billing model of the upstream the seller serves that protocol through. */
 function unitBillingRoutes(serving: readonly ProviderAnnouncement[], service: string): Partial<Record<ServiceApiProtocol, UnitBillingModelV1>> {
   const models: Partial<Record<ServiceApiProtocol, UnitBillingModelV1>> = {};
-  const protocols = new Set(serving.flatMap((upstream) => Object.keys(upstream.serviceUnitBillingModels?.[service] ?? {}) as ServiceApiProtocol[]));
+  const protocols = new Set(serving.flatMap((upstream) => Object.keys(own(upstream.serviceUnitBillingModels, service) ?? {}) as ServiceApiProtocol[]));
   for (const protocol of protocols) {
     const route = preferHealthyUpstream(serving.filter((upstream) => servesProtocol(upstream, service, protocol)), service);
-    const model = route?.serviceUnitBillingModels?.[service]?.[protocol];
+    const model = own(route?.serviceUnitBillingModels, service)?.[protocol];
     if (model) models[protocol] = model;
   }
   return models;
@@ -507,8 +520,8 @@ function unitBillingRoutes(serving: readonly ProviderAnnouncement[], service: st
 
 /** An upstream that lists no API protocols for a service serves those it has a unit billing model for. */
 function servesProtocol(upstream: ProviderAnnouncement, service: string, protocol: ServiceApiProtocol): boolean {
-  const protocols = upstream.serviceApiProtocols?.[service];
-  return protocols ? protocols.includes(protocol) : Boolean(upstream.serviceUnitBillingModels?.[service]?.[protocol]);
+  const protocols = own(upstream.serviceApiProtocols, service);
+  return protocols ? protocols.includes(protocol) : Boolean(own(upstream.serviceUnitBillingModels, service)?.[protocol]);
 }
 
 /**
@@ -522,11 +535,11 @@ function servesProtocol(upstream: ProviderAnnouncement, service: string, protoco
  */
 export function mergeProviderAnnouncements(providers: readonly ProviderAnnouncement[]): ProviderServiceMatrices {
   const matrices: ProviderServiceMatrices = {
-    providerPricing: {},
-    providerServiceCategories: {},
-    providerServiceApiProtocols: {},
-    providerServiceUnitBillingModels: {},
-    providerServiceCapabilities: {},
+    providerPricing: dict(),
+    providerServiceCategories: dict(),
+    providerServiceApiProtocols: dict(),
+    providerServiceUnitBillingModels: dict(),
+    providerServiceCapabilities: dict(),
     providerServiceHealth: providerServiceHealthMatrix(providers),
   };
   for (const [name, upstreams] of upstreamsByProvider(providers)) {
@@ -545,19 +558,19 @@ export function mergeProviderAnnouncements(providers: readonly ProviderAnnouncem
       const serving = listing.length > 0 ? listing : upstreams;
       const owner = preferHealthyUpstream(serving, service)!;
       if (owner.services.includes(service)) {
-        (pricing.services ??= {})[service] = owner.servicePricing?.[service] ?? owner.defaultPricing;
+        (pricing.services ??= dict())[service] = own(owner.servicePricing, service) ?? owner.defaultPricing;
       }
-      setServiceEntry(matrices.providerServiceCategories, name, service, owner.serviceCategories?.[service]?.slice());
-      setServiceEntry(matrices.providerServiceCapabilities, name, service, owner.serviceCapabilities?.[service]);
+      setServiceEntry(matrices.providerServiceCategories, name, service, own(owner.serviceCategories, service)?.slice());
+      setServiceEntry(matrices.providerServiceCapabilities, name, service, own(owner.serviceCapabilities, service));
 
-      const protocols = [...new Set([owner, ...serving].flatMap((upstream) => upstream.serviceApiProtocols?.[service] ?? []))];
+      const protocols = [...new Set([owner, ...serving].flatMap((upstream) => own(upstream.serviceApiProtocols, service) ?? []))];
       if (protocols.length > 0) setServiceEntry(matrices.providerServiceApiProtocols, name, service, protocols);
       for (const protocol of protocols) {
-        const route = preferHealthyUpstream(serving.filter((upstream) => upstream.serviceApiProtocols?.[service]?.includes(protocol)), service);
+        const route = preferHealthyUpstream(serving.filter((upstream) => own(upstream.serviceApiProtocols, service)?.includes(protocol)), service);
         if (!route || route === owner) continue;
         // Recorded even when empty, so this route never borrows the owner's capabilities.
-        const entry = (matrices.providerServiceCapabilities[name] ??= { services: {} });
-        ((entry.protocols ??= {})[service] ??= {})[protocol] = route.serviceCapabilities?.[service] ?? {};
+        const entry = (matrices.providerServiceCapabilities[name] ??= { services: dict() });
+        ((entry.protocols ??= dict())[service] ??= {})[protocol] = own(route.serviceCapabilities, service) ?? {};
       }
       const unitModels = unitBillingRoutes(serving, service);
       if (Object.keys(unitModels).length > 0) setServiceEntry(matrices.providerServiceUnitBillingModels, name, service, unitModels);

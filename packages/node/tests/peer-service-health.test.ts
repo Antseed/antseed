@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { AntseedNode } from '../src/node.js';
+import { buildNetworkServiceOffers } from '../src/discovery/service-catalog.js';
 import { METADATA_VERSION, type PeerMetadata, type ProviderAnnouncement, type ServiceHealth } from '../src/discovery/peer-metadata.js';
 
 function upstream(serviceHealth?: Record<string, ServiceHealth>, price = 1): ProviderAnnouncement {
@@ -107,5 +108,19 @@ describe('service health across upstreams sharing a provider name', () => {
     const chat: ProviderAnnouncement = { ...upstream({ 'gpt-6-sol': healthy }), serviceApiProtocols: { 'gpt-6-sol': ['openai-chat-completions'] }, serviceUnitBillingModels: undefined, serviceCapabilities: { 'gpt-6-sol': { supportedParameters: ['seed'] } } };
     const video: ProviderAnnouncement = { ...upstream({ 'gpt-6-sol': healthy }), serviceApiProtocols: { 'gpt-6-sol': ['fal-video'] }, serviceUnitBillingModels: undefined };
     expect(peerInfo([chat, video]).providerServiceCapabilities.openai.protocols).toEqual({ 'gpt-6-sol': { 'fal-video': {} } });
+  });
+
+  it('handles a service named like an Object.prototype property', () => {
+    const odd: ProviderAnnouncement = {
+      ...upstream({ 'model-x': healthy }),
+      services: ['constructor', 'toString', 'model-x'],
+      serviceApiProtocols: { 'model-x': ['openai-chat-completions'] },
+      serviceUnitBillingModels: undefined,
+    };
+    const peer = peerInfo([odd, { ...odd, provider: 'constructor' }]);
+    expect(peer.providerServiceApiProtocols.openai.services['model-x']).toEqual(['openai-chat-completions']);
+    expect(Object.keys(peer.providerPricing.openai.services)).toEqual(['constructor', 'toString', 'model-x']);
+    expect(Object.keys(peer.providerPricing)).toEqual(['openai', 'constructor']);
+    expect(() => buildNetworkServiceOffers([{ ...peer, peerId: peer.peerId }])).not.toThrow();
   });
 });

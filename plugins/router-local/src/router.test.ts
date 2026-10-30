@@ -102,6 +102,20 @@ describe('LocalRouter', () => {
     expect(router.allowsPeerForPolicy(named('B'), peer)).toBe(false);
   });
 
+  it('does not let a healthy chat-only provider stand in for a failing video provider', () => {
+    const router = new LocalRouter({ maxPricing: { defaults: { inputUsdPerMillion: 1_000, outputUsdPerMillion: 1_000 } } });
+    const price = { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'video-x': { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } };
+    const peer = makePeer({
+      providers: ['fal', 'chat'],
+      providerPricing: { fal: price, chat: price },
+      providerServiceApiProtocols: { fal: { services: { 'video-x': ['fal-video'] } }, chat: { services: { 'video-x': ['openai-chat-completions'] } } },
+      providerServiceHealth: { fal: { services: { 'video-x': { status: 'failing', reason: 'timeout' } } } },
+    });
+    const videoRequest: SerializedHttpRequest = { ...makeRequest('video-x'), path: '/fal/v1/video/queue' };
+    expect(router.selectPeer(videoRequest, [peer])).toBeNull();
+    expect(router.selectPeer(makeRequest('video-x'), [peer])?.peerId).toBe(peer.peerId);
+  });
+
   it('skips a peer whose only route for the requested video protocol is failing', () => {
     const router = new LocalRouter({ maxPricing: { defaults: { inputUsdPerMillion: 1_000, outputUsdPerMillion: 1_000 } } });
     const peer = makePeer({
