@@ -2,26 +2,26 @@
   "$schema": "../schema.json",
   "network": "base-mainnet",
   "chainId": 8453,
-  "release": "002-legacy-seller-claims",
+  "release": "003-kbf-verification",
   "status": "active",
-  "sourceCommit": "277ade2c951845c50c9294f01872b7c7ee4ed89d",
+  "sourceCommit": "67dbdc11a03530036f3177ef3e7af125c8653ee8",
   "transactions": [
     {
-      "action": "deploy AntseedLegacySellerClaimPolicy",
-      "hash": "0xc873e1aebda1c25c86c442304aadfc1bc55414ada1ca4b324316abeebbd6f2d2",
-      "blockNumber": 53232574,
-      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "action": "deploy AntseedKbfVerification",
+      "hash": "0x6821e58f6917a32b49c1435d4fcc2f43d4b45c94dc009768ca6bd122f0cb3972",
+      "blockNumber": 53291075,
+      "from": "0xb0b04d4020e9cbd3203d553ae9c1cb9dbffb3040",
       "to": null
     },
     {
-      "action": "setSellerClaimPolicy(address)",
-      "hash": "0x923a101a8fbbb5fa27450b1e5288fc658d93a0457db14bc2d3ad85a75f7f31a2",
-      "blockNumber": 53232575,
-      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
-      "to": "0xa065c0de80dbd3d824f7b584e231b76b9fefb261"
+      "action": "deploy AntseedKbfVerificationPointsPolicy",
+      "hash": "0x5d4e61bc696133a67ec060330106f020fffc54ab7ee7223fb9267d54af0e11d8",
+      "blockNumber": 53291076,
+      "from": "0xb0b04d4020e9cbd3203d553ae9c1cb9dbffb3040",
+      "to": null
     }
   ],
-  "notes": "Completed through standalone commands. Adapter deployment, verification and pool wiring, and the staking switch occurred on September 9, 2026. Channels paused before epoch 22 on September 10; DIEM epoch 21 was funded before switching emissions; Channels unpaused at 2026-09-10T09:57:07.000Z. Source commit was not captured by the standalone scripts and is recorded as null; original M001 deployment provenance remains in 001-recognized-usage-deployed.json. All eight included transactions were verified successful on Base mainnet. Adapter source verification succeeded on Basescan; its runtime matches the local artifact.",
+  "notes": "M003 deploys the KBF verification contract and its points policy only. The policy is not registered in the points policy registry by M003; the registry owner registers it separately, so verdicts change no seller points until then.",
   "contracts": {
     "usdc": {
       "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
@@ -349,7 +349,7 @@
       "runtimeCodeHash": "0x852bd9737d98bfb67784ae683ca10bed0de97b8dcb19941cce00dba68abbae96",
       "version": "1",
       "external": false,
-      "deployedInRelease": true,
+      "deployedInRelease": false,
       "constructorArguments": [
         "0xF13bE52c4A3afC6AE29536f073588d01A0564088",
         "21",
@@ -357,6 +357,36 @@
         "0xc02a111CB94332Cc31C08E079cbe781880b2121C"
       ],
       "owner": null
+    },
+    "kbfVerification": {
+      "address": "0xded52d46f1047c037dd54d9470ebb1be291b3d1c",
+      "deploymentBlock": 53291075,
+      "transactionHash": "0x6821e58f6917a32b49c1435d4fcc2f43d4b45c94dc009768ca6bd122f0cb3972",
+      "runtimeCodeHash": "0xb4d2273572545733e4521b53ba133d92b3afcad0a2c77695cda2accab81300b9",
+      "version": "1",
+      "external": false,
+      "deployedInRelease": true,
+      "constructorArguments": [
+        "0xf33fC901BFa97326379A369401F4490E231B69B0",
+        "0x8Bf4d39AA13F3CB03F87D9500767fBc4D0940652"
+      ],
+      "owner": "0xb0b04d4020E9CBd3203D553Ae9c1cb9DbfFB3040"
+    },
+    "kbfVerificationPointsPolicy": {
+      "address": "0x97cfcca8966f41c9a49f9c11cd83f25455fd035a",
+      "deploymentBlock": 53291076,
+      "transactionHash": "0x5d4e61bc696133a67ec060330106f020fffc54ab7ee7223fb9267d54af0e11d8",
+      "runtimeCodeHash": "0x6bf0fe24b3dde705085c8614105efe2d0e0735ea968e1ebc99148bbb345d9ac9",
+      "version": "1",
+      "external": false,
+      "deployedInRelease": true,
+      "constructorArguments": [
+        "0xded52D46f1047C037dd54d9470eBb1bE291b3D1c",
+        "0xAdd2D85316153D7bfaF7921EE9Bf1Bb6c7A1cBc9",
+        "0",
+        "0xb0b04d4020E9CBd3203D553Ae9c1cb9DbfFB3040"
+      ],
+      "owner": "0xb0b04d4020E9CBd3203D553Ae9c1cb9DbfFB3040"
     }
   },
   "effectiveEpoch": 22,
@@ -370,7 +400,19 @@
     "poolCanTransfer": true,
     "lastLockedEpoch": 21,
     "releaseBps": 1000,
-    "washTradingRegistry": "0xc02a111CB94332Cc31C08E079cbe781880b2121C"
+    "washTradingRegistry": "0xc02a111CB94332Cc31C08E079cbe781880b2121C",
+    "verificationRegistry": {
+      "registry": "0xf33fC901BFa97326379A369401F4490E231B69B0",
+      "identityRegistry": "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432",
+      "sellerPools": "0x8bf4d39aa13f3cb03f87d9500767fbc4d0940652",
+      "usageAccounting": "0xadd2d85316153d7bfaf7921ee9bf1bb6c7a1cbc9",
+      "pointsPolicyRegistry": "0x212d2c1058b84507de248a147aafeb08fb19e3b6",
+      "owner": "0xb0b04d4020E9CBd3203D553Ae9c1cb9DbfFB3040",
+      "deploymentNonce": 10321,
+      "address": "0xded52D46f1047C037dd54d9470eBb1bE291b3D1c",
+      "policyAddress": "0x97CfCca8966F41c9a49F9C11Cd83f25455FD035a",
+      "bonusBps": 0
+    }
   },
   "registryBefore": {
     "emissions": "0xF13bE52c4A3afC6AE29536f073588d01A0564088",
