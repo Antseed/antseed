@@ -1,0 +1,156 @@
+{
+  "paths": {
+    "/fal-ai/wan/v2.7/edit-video": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WanV27EditVideoInput"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "WanV27EditVideoInput": {
+        "description": "Input for Wan 2.7 video editing.\n\nSupports instruction-based editing, reference image-based editing,\nand video style transfer.",
+        "properties": {
+          "prompt": {
+            "description": "Editing instruction or style transfer description.",
+            "type": "string",
+            "examples": [
+              "Transform the entire scene into a beautiful watercolor painting style. Soft brushstrokes, flowing paint washes, visible paper texture. Colors should bleed and blend naturally like wet watercolor on paper."
+            ],
+            "minLength": 1,
+            "title": "Prompt"
+          },
+          "reference_image_url": {
+            "description": "Reference image URL for reference-based editing.",
+            "anyOf": [
+              {
+                "type": "string",
+                "ui": {
+                  "field": "image"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Image Url"
+          },
+          "aspect_ratio": {
+            "description": "Aspect ratio of the generated video. If not provided, uses the aspect ratio of the input video.",
+            "anyOf": [
+              {
+                "enum": [
+                  "16:9",
+                  "9:16",
+                  "1:1",
+                  "4:3",
+                  "3:4"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aspect Ratio"
+          },
+          "audio_setting": {
+            "description": "Audio handling. 'auto': model decides whether to regenerate audio. 'origin': preserve original audio from input video.",
+            "enum": [
+              "auto",
+              "origin"
+            ],
+            "default": "auto",
+            "type": "string",
+            "title": "Audio Setting"
+          },
+          "resolution": {
+            "description": "Output video resolution tier.",
+            "enum": [
+              "720p",
+              "1080p"
+            ],
+            "default": "1080p",
+            "type": "string",
+            "title": "Resolution"
+          },
+          "video_url": {
+            "description": "URL of the input video to edit. Format: MP4, MOV. Duration: 2-10s. Max 100 MB.\n\nMax file size: 100.0MB, Min duration: 2s, Max duration: 10s, Timeout: 30.0s",
+            "examples": [
+              "https://v3b.fal.media/files/b/0a940a70/s4jC3lmmbU8Q6xM-SFtWB_m5JJudvy.mp4"
+            ],
+            "x-fal": {
+              "timeout": 30,
+              "min_duration": 2,
+              "max_file_size": 104857600,
+              "max_duration": 10
+            },
+            "type": "string",
+            "title": "Video Url"
+          },
+          "duration": {
+            "description": "Output video duration in seconds. Default 0 means match input video duration. When set (2-10), truncates from the start.",
+            "enum": [
+              0,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10
+            ],
+            "default": 0,
+            "type": "integer",
+            "title": "Duration"
+          },
+          "seed": {
+            "description": "Random seed for reproducibility (0-2147483647).",
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seed"
+          },
+          "enable_safety_checker": {
+            "description": "Enable content moderation for input and output. Disabling it requires account authorization; unauthorized requests are always checked.",
+            "default": true,
+            "type": "boolean",
+            "title": "Enable Safety Checker"
+          }
+        },
+        "required": [
+          "prompt",
+          "video_url"
+        ],
+        "x-fal-order-properties": [
+          "prompt",
+          "video_url",
+          "reference_image_url",
+          "resolution",
+          "aspect_ratio",
+          "duration",
+          "audio_setting",
+          "seed",
+          "enable_safety_checker"
+        ],
+        "type": "object",
+        "title": "Wan27VideoEditInput"
+      }
+    }
+  }
+}

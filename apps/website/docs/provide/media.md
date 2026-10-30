@@ -146,7 +146,36 @@ antseed config seller add-service fal <fal-endpoint-id> \
   --unit-billing-models '{"fal-video":{"version":1,"components":[{"unit":"video_seconds","priceUsd":0.1}]}}'
 ```
 
-Requests are passed to fal unchanged. At startup the seller announces each endpoint's input field names from fal's schema as `supportedParameters`, so buyers can use the model's own field names (for example `start_image_url` for Kling V3).
+Requests are passed to fal unchanged, except that `duration` is removed for video edit endpoints that take none. At startup the seller announces each endpoint's input field names from fal's schema as `supportedParameters`, so buyers can use the model's own field names (for example `start_image_url` for Kling V3).
+
+### Video edit models
+
+Video-to-video models take a buyer's source video (`video_url`) and change part of it: a new character from an image (MiniMax H3 Max Recast, Kling V3 motion control), or a text instruction (Kling v4 edit, Wan 2.7 edit). Add them like any other video service; the plugin does the rest at startup:
+
+- It reads the model's inputs (fal's schema, or Venice's model list) and announces `video` in `capabilities.video.inputs` and `video_url` in `supportedParameters`, so buyers route edits only to you when you take them. It also announces the required inputs and resolutions, and, on fal, the whole-second durations from fal's source limits.
+- It checks only the source's length: `duration` must be the inline source's length in whole seconds, rounded down, or the create is answered `422 invalid_video_duration` without calling the upstream. Otherwise the upstream checks the source. Buyers using the `antseed-videos` skill check the source against the provider's published limits before they pay.
+- A job the upstream rejects (for example Recast on a video without a person) is reported as `FAILED`, and its payment channel is closed at once at what the buyer signed so far. For a video above $1.00 that is the opening fee. fal bills nothing for a failed job, and Venice refunds it.
+- On fal, it removes `duration` for endpoints that take none. On Venice, it turns Venice's HTML `413` for a body above 32.5 MB into a JSON `413 request_too_large`.
+
+Price edits per second of output with `video_seconds`. Buyers send the source length as `duration`, so that is what they pay for. Fold the upstream's input costs into the rate: fal bills Kling v4 edit on input plus output seconds, and Venice bills Recast on the source length.
+
+```bash
+# fal: MiniMax H3 Max Recast at fal's list price ($0.30/s 768P, $0.45/s 1080P) plus a margin
+antseed config seller add-service fal minimax/h3-max/recast \
+  --unit-billing-models '{"fal-video":{"version":1,"components":[
+    {"unit":"video_seconds","priceUsd":0.33,"match":{"resolution":"768P"}},
+    {"unit":"video_seconds","priceUsd":0.5,"match":{"resolution":"1080P"}}]}}'
+
+# Venice: the same model; Venice quoted about $0.357/s of source at 768P and $0.536/s at 1080P
+antseed config seller add-service video minimax-h3-max-recast \
+  --unit-billing-models '{"venice-video":{"version":1,"components":[
+    {"unit":"video_seconds","priceUsd":0.4,"match":{"resolution":"768P"}},
+    {"unit":"video_seconds","priceUsd":0.6,"match":{"resolution":"1080P"}}]}}'
+```
+
+Upstream prices change; check fal's model page or Venice's video quote before you set yours. Buyers refuse any single video above $5.00, so at these rates a Recast edit fits up to about 15 s at 768P.
+
+The source travels inside the request: inline up to the 64 MiB request limit (about 47 MB of video; 32.5 MB of request on Venice), or as a public `https` URL the upstream fetches. For a video edit, which the upstream bills for at least the whole source, the seller measures the source, which must be inline, and answers `422 invalid_video_duration` before calling the upstream unless `duration` is its length in whole seconds, rounded down. A large inline source is uploaded to you twice, once before the payment channel opens and once after.
 
 ### Video pricing
 

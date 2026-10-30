@@ -122,6 +122,7 @@ interface Harness {
   settle(): Promise<void>;
   /** A fresh buyer payment manager on the same identity and channel store, as after a restart. */
   restartBuyer(): BuyerPaymentManager;
+  buyerChannel(channelId: string): { status: string } | null;
 }
 
 describe('one-off video channel flow over the real buyer and seller stacks', () => {
@@ -143,7 +144,7 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     topUpBehavior?: 'land' | 'revert' | 'slow';
     videoPricing?: 'flat' | 'per-second' | 'resolution-tiered' | 'cheap';
     processingPolls?: number;
-    retrieveStatus?: 'FAILED';
+    retrieveStatus?: 'FAILED' | 'REFUSED_400' | 'BUSY_429';
     createResponse?: 'rejected';
     availableBalance?: bigint;
     reserveEstimateOverdraftUsdc?: bigint;
@@ -255,6 +256,14 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
       // The finished video streams as a real 5 s MP4, so it passes the delivery check.
       async handleRequestStream(request, callbacks) {
         if (!request.path.endsWith('/video/retrieve')) return provider.handleRequest(request);
+        if (options.retrieveStatus === 'REFUSED_400' || options.retrieveStatus === 'BUSY_429') {
+          const refused = options.retrieveStatus === 'REFUSED_400';
+          return {
+            requestId: request.requestId, statusCode: refused ? 400 : 429,
+            headers: { 'content-type': 'application/json' },
+            body: Buffer.from(JSON.stringify({ message: refused ? 'No person detected' : 'slow down', status: refused ? 400 : 429 })),
+          };
+        }
         if (options.retrieveStatus) {
           return {
             requestId: request.requestId, statusCode: 200,
@@ -395,6 +404,7 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
         }
       },
       restartBuyer: () => new BuyerPaymentManager(buyerIdentity, buyerConfig, buyerStore),
+      buyerChannel: (channelId) => buyerStore.getChannel(channelId) as { status: string } | null,
     };
   }
 
@@ -689,6 +699,31 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     expect(h.close).toHaveBeenCalledOnce();
     expect(h.close.mock.calls[0]![2]).toBe(SERIOUS_FEE);
     expect(h.chain.get(channelId)).toMatchObject({ settled: SERIOUS_FEE, status: 2 });
+    // The buyer forgets the channel, but keeps it stored as active so it can still request-close it.
+    expect(h.buyerChannel(channelId)?.status).toBe('active');
+    expect(h.buyer.getOneOffChannelForRequest(h.peer.peerId, 'video-1')).toBeNull();
+  });
+
+  it('keeps the job open when retrieve answers a JSON 400, so a bad retrieve cannot close a live job', async () => {
+    const h = setup({ retrieveStatus: 'REFUSED_400' });
+    await h.send(h.videoRequest('video-1'));
+    await h.settle();
+    const { channelId } = onlyOneOff(h);
+    expect((await h.send(h.retrieveRequest('retrieve-1', 'job-1'))).statusCode).toBe(400);
+    await h.settle();
+    expect(h.close).not.toHaveBeenCalled();
+    expect(h.buyerChannel(channelId)?.status).toBe('active');
+  });
+
+  it('keeps the job open when retrieve is only rate limited', async () => {
+    const h = setup({ retrieveStatus: 'BUSY_429' });
+    await h.send(h.videoRequest('video-1'));
+    await h.settle();
+    const { channelId } = onlyOneOff(h);
+    expect((await h.send(h.retrieveRequest('retrieve-1', 'job-1'))).statusCode).toBe(429);
+    await h.settle();
+    expect(h.close).not.toHaveBeenCalled();
+    expect(h.buyerChannel(channelId)?.status).toBe('active');
   });
 
   it('closes at the serious fee when the provider rejects the create', async () => {
