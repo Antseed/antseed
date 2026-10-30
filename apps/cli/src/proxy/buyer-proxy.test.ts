@@ -3370,6 +3370,30 @@ test('a capable failing provider gets the self health error next to an incapable
   assert.deepEqual(await send(true), [503, 'seller_self_health_failing'])
 })
 
+test('price policy checks the provider the route sends through, not the first healthy one', async () => {
+  const peer = makePeer('b', ['a', 'b', 'c'])
+  const price = (usd: number) => ({ defaults: { inputUsdPerMillion: usd, outputUsdPerMillion: usd }, services: { 'gpt-6-sol': { inputUsdPerMillion: usd, outputUsdPerMillion: usd } } })
+  const chat = { services: { 'gpt-6-sol': ['openai-chat-completions' as const] } }
+  peer.providerPricing = { a: price(1), b: price(100), c: price(2) }
+  peer.providerServiceApiProtocols = { a: chat, b: chat, c: chat }
+  peer.providerServiceHealth = { a: { services: { 'gpt-6-sol': { status: 'failing', reason: 'timeout' } } } }
+  const router = await localPlugin.createRouter({ ANTSEED_MAX_PRICING_JSON: JSON.stringify({ defaults: { inputUsdPerMillion: 10, outputUsdPerMillion: 10 } }) })
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], router)
+  const providers: string[] = []
+  ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: SerializedHttpRequest) => {
+    providers.push(request.headers['x-antseed-provider'] ?? '')
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    path: '/v1/chat/completions',
+    body: { model: 'gpt-6-sol', messages: [{ role: 'user', content: 'hi' }] },
+  }))
+
+  assert.equal(res.statusCode, 200, res.body)
+  assert.deepEqual(providers, ['c'])
+})
+
 test('a video protocol only failing upstreams serve gets the self health error, not unsupported_protocol', async () => {
   const peer = makePeer('b', ['video'])
   peer.providerServiceApiProtocols = { video: { services: { vid: ['venice-video', 'fal-video'] } } }

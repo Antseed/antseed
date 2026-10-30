@@ -168,11 +168,18 @@ export class LocalRouter implements Router {
   /** Why `allowsPeerForPricing` rejects this peer, or null when it is allowed. */
   private _pricingRejection(req: SerializedHttpRequest, peer: PeerInfo): string | null {
     const requestedService = this._extractRequestedService(req);
-    const provider = this._selectProviderForPeer(peer, requestedService);
+    // A request naming its provider is priced through that provider.
+    const provider = this._namedProvider(req, peer) ?? this._selectProviderForPeer(peer, requestedService);
     if (!provider) return 'no provider for this model';
     const offer = this._resolvePeerOfferPrice(peer, provider, requestedService);
     if (!offer) return 'no valid price advertised';
     return this._maxPriceRejection(offer, this._resolveBuyerMaxPrice(provider, requestedService));
+  }
+
+  private _namedProvider(req: SerializedHttpRequest, peer: PeerInfo): string | null {
+    const named = Object.entries(req.headers).find(([name]) => name.toLowerCase() === 'x-antseed-provider')?.[1]?.trim().toLowerCase();
+    if (!named) return null;
+    return peer.providers.map((provider) => provider.trim()).find((provider) => provider.toLowerCase() === named) ?? null;
   }
 
   private _effectiveReputation(p: PeerInfo): number {

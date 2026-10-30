@@ -88,6 +88,20 @@ describe('LocalRouter', () => {
     expect(router.allowsPeerForPolicy(makeRequest('model-x'), peer)).toBe(true);
   });
 
+  it('prices policy through the provider a request names', () => {
+    const router = new LocalRouter({ maxPricing: { defaults: { inputUsdPerMillion: 10, outputUsdPerMillion: 10 } } });
+    const price = (usd: number) => ({ defaults: { inputUsdPerMillion: usd, outputUsdPerMillion: usd }, services: { 'model-x': { inputUsdPerMillion: usd, outputUsdPerMillion: usd } } });
+    const peer = makePeer({
+      providers: ['a', 'b', 'c'],
+      providerPricing: { a: price(1), b: price(100), c: price(2) },
+      providerServiceHealth: { a: { services: { 'model-x': { status: 'failing', reason: 'timeout' } } } },
+    });
+    const named = (provider: string): SerializedHttpRequest => ({ ...makeRequest('model-x'), headers: { 'content-type': 'application/json', 'x-antseed-provider': provider } });
+    expect(router.allowsPeerForPolicy(makeRequest('model-x'), peer)).toBe(false);
+    expect(router.allowsPeerForPolicy(named('c'), peer)).toBe(true);
+    expect(router.allowsPeerForPolicy(named('B'), peer)).toBe(false);
+  });
+
   it('skips a peer whose only route for the requested video protocol is failing', () => {
     const router = new LocalRouter({ maxPricing: { defaults: { inputUsdPerMillion: 1_000, outputUsdPerMillion: 1_000 } } });
     const peer = makePeer({

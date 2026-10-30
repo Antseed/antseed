@@ -493,6 +493,11 @@ function withRoutedModel(request: SerializedHttpRequest, serviceId: string): Ser
     : request
 }
 
+function withProviderHeader(request: SerializedHttpRequest, provider: string): SerializedHttpRequest {
+  const headers = Object.fromEntries(Object.entries(request.headers).filter(([name]) => name.toLowerCase() !== 'x-antseed-provider'))
+  return { ...request, headers: { ...headers, 'x-antseed-provider': provider } }
+}
+
 function peerAllowedByPolicy(
   policyRouter: BuyerPolicyRouter | null | undefined,
   request: SerializedHttpRequest,
@@ -1664,8 +1669,10 @@ export class BuyerProxy {
         continue
       }
       const requestForPolicy = withRoutedModel(request, plan.serviceId)
-      if (!peerAllowedByPolicy(policyRouter, requestForPolicy, peer)) {
-        verdict.reasons.push(buyerConfigReason(policyRouter?.explainPolicyRejection?.(requestForPolicy, peer) ?? 'outside buyer pricing/reputation limits'))
+      // Price policy against the provider this route sends through, not the router's own pick.
+      const policyRequest = withProviderHeader(requestForPolicy, plan.provider)
+      if (!peerAllowedByPolicy(policyRouter, policyRequest, peer)) {
+        verdict.reasons.push(buyerConfigReason(policyRouter?.explainPolicyRejection?.(policyRequest, peer) ?? 'outside buyer pricing/reputation limits'))
         continue
       }
       routeCandidates.push({
