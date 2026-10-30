@@ -1,19 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
-import { AbiCoder, Interface, keccak256, toUtf8Bytes, type AbstractProvider } from 'ethers';
+import { AbiCoder, Interface, type AbstractProvider } from 'ethers';
 import { VerificationSignalsClient } from '../src/payments/evm/verification-signals-client.js';
+import { VERIFICATION_ABI, serviceHash } from '../src/payments/evm/verifier-client.js';
 import { MULTICALL3_ADDRESS } from '../src/payments/evm/multicall.js';
 
 const VERIFICATION = '0x' + '11'.repeat(20);
 const GATE = '0x' + '22'.repeat(20);
 const MULTICALL_IFACE = new Interface(['function aggregate3(tuple(address target, bool allowFailure, bytes callData)[] calls) payable returns (tuple(bool success, bytes returnData)[] returnData)']);
-const IFACE = new Interface([
-  'function serviceStatus(uint256 agentId,bytes32 serviceHash) view returns ((bytes32 modelHash,uint8 verdict,uint64 updatedAt,uint64 epoch))',
-  'function validityEpochs() view returns (uint8)',
-  'function emissionsGate() view returns (address)',
-  'function currentEpoch() view returns (uint256)',
-]);
+// The deployed AntseedKbfVerification ABI, plus the emissions gate's epoch read.
+const IFACE = new Interface([...VERIFICATION_ABI, 'function currentEpoch() view returns (uint256)']);
 const coder = AbiCoder.defaultAbiCoder();
-const hash = (service: string) => keccak256(toUtf8Bytes(service));
+const hash = serviceHash;
 
 /** verdict + epoch per (agentId, service hash); missing entries are NONE. */
 type Statuses = Record<string, { verdict: number; epoch: number } | 'revert'>;
@@ -75,6 +72,17 @@ describe('VerificationSignalsClient', () => {
     expect(result.has(0)).toBe(false);
     // One batched round for statuses + one for the gate epoch.
     expect(call).toHaveBeenCalledTimes(2);
+  });
+
+  it('ignores a DIFF still waiting for its second auditor: serviceStatus keeps the recorded result', async () => {
+    // One auditor reported DIFF this epoch; the contract needs two, so the
+    // recorded status is still the earlier SAME (or NONE when never recorded).
+    const { provider } = fakeProvider({
+      [`1135214:${hash('gpt-6-astra')}`]: { verdict: 1, epoch: 28 },
+    });
+    const result = await new VerificationSignalsClient(provider, VERIFICATION)
+      .readDiffServices([{ agentId: 1135214, services: ['gpt-6-astra', 'never-recorded'] }]);
+    expect(result.get(1135214)).toEqual([]);
   });
 
   it('caches the immutable emissions gate across reads', async () => {

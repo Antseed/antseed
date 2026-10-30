@@ -105,12 +105,14 @@ seller):
 
 ## How buyers use results
 
-Buyers read each seller service's current result from `AntseedVerification`. A
+Buyers read each seller service's recorded result from `AntseedKbfVerification`. A
 service with a live **DIFF** keeps 10% of its effective reputation, so automatic routing
 skips it under the default minimum trust score, and the desktop app explains the cut
-in the seller's reputation tooltip. SAME, UNDETERMINED, expired and missing results change
-nothing. The penalty lifts on its own when the DIFF expires or a later audit replaces
-it. See [Routing](/docs/api/routing).
+in the seller's reputation tooltip. Only a recorded DIFF counts: a DIFF from one auditor
+that is still waiting for the second changes nothing, and the service keeps its earlier
+result until then. SAME, UNDETERMINED, expired and missing results change nothing. The
+penalty lifts on its own when the DIFF expires or two auditors replace it with a later
+result. See [Routing](/docs/api/routing).
 
 ## Check a model yourself
 

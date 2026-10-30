@@ -1,17 +1,24 @@
-import { Interface, getAddress, keccak256, toUtf8Bytes, type AbstractProvider } from 'ethers';
+import { Interface, getAddress, type AbstractProvider } from 'ethers';
 import { multicallRead, MULTICALL3_ADDRESS, type MulticallRequest } from './multicall.js';
+import { VERIFICATION_ABI, VERIFIER_VERDICT, serviceHash } from './verifier-client.js';
 import { verificationServiceKey } from '../../reputation/model-reputation.js';
 
 /**
  * Reads which advertised services of a batch of sellers have a live DIFF
- * verdict on `AntseedVerification`, in at most two Multicall3 round trips:
+ * verdict on `AntseedKbfVerification`, in at most two Multicall3 round trips:
  *
  *   round 1: verification.validityEpochs, verification.emissionsGate (first
  *            read only; it is immutable), and per (agentId, service)
  *            verification.serviceStatus
  *   round 2: emissionsGate.currentEpoch
  *
- * A verdict is live exactly as the contract counts it:
+ * `serviceStatus` holds only recorded results. A DIFF is recorded once
+ * `requiredReports[DIFF]` (2 on Base) distinct approved auditors report it in
+ * the same epoch and report round; a DIFF still waiting for its second auditor
+ * stays in the contract's report counts and leaves `serviceStatus` at the
+ * previous result, so it never cuts reputation here.
+ *
+ * A recorded verdict is live exactly as the contract counts it:
  * `currentEpoch < verdict.epoch + validityEpochs`. SAME, UNDETERMINED, NONE
  * and expired verdicts are not DIFF.
  */
@@ -22,19 +29,10 @@ export interface VerificationServiceQuery {
   services: readonly string[];
 }
 
-/** Mirrors IAntseedVerification.Verdict.DIFF. */
-const VERDICT_DIFF = 2n;
+const VERDICT_DIFF = BigInt(VERIFIER_VERDICT.DIFF);
 
-const VERIFICATION_IFACE = new Interface([
-  'function serviceStatus(uint256 agentId,bytes32 serviceHash) view returns ((bytes32 modelHash,uint8 verdict,uint64 updatedAt,uint64 epoch))',
-  'function validityEpochs() view returns (uint8)',
-  'function emissionsGate() view returns (address)',
-]);
+const VERIFICATION_IFACE = new Interface(VERIFICATION_ABI);
 const GATE_IFACE = new Interface(['function currentEpoch() view returns (uint256)']);
-
-function hashServiceKey(key: string): string {
-  return keccak256(toUtf8Bytes(key));
-}
 
 function first(result: unknown[] | null | undefined): unknown {
   return result && result.length > 0 ? result[0] : undefined;
@@ -92,7 +90,7 @@ export class VerificationSignalsClient {
     for (const [agentId, keys] of agents) {
       for (const key of keys) {
         statusCalls.push({ agentId, key, index: requests.length });
-        requests.push({ target, iface: VERIFICATION_IFACE, method: 'serviceStatus', args: [BigInt(agentId), hashServiceKey(key)] });
+        requests.push({ target, iface: VERIFICATION_IFACE, method: 'serviceStatus', args: [BigInt(agentId), serviceHash(key)] });
       }
     }
     const results = await this._read(requests);

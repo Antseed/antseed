@@ -368,7 +368,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
           ...(chainConfig.sellerPoolsAddress ? { sellerPoolsAddress: chainConfig.sellerPoolsAddress } : {}),
           ...(chainConfig.usageAccountingAddress ? { usageAccountingAddress: chainConfig.usageAccountingAddress } : {}),
           ...(chainConfig.washTradingRegistryAddress ? { washTradingRegistryAddress: chainConfig.washTradingRegistryAddress } : {}),
-          // Live DIFF verdicts from AntseedVerification cut a service's
+          // Live DIFF verdicts from AntseedKbfVerification cut a service's
           // effective reputation to 10%.
           ...(chainConfig.verificationContractAddress ? { verificationContractAddress: chainConfig.verificationContractAddress } : {}),
           chainId: chainConfig.evmChainId,
