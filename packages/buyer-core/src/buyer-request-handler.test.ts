@@ -314,12 +314,4 @@ describe('selectBillingRoute', () => {
     expect(route?.unitModel).toEqual(VIDEO_MODEL);
   });
 
-  it('skips a provider whose only route for the video protocol is failing', () => {
-    const peer = makePeer();
-    peer.providers = ['venice', 'backup'];
-    peer.providerServiceApiProtocols = { ...peer.providerServiceApiProtocols, backup: { services: { 'video-model': ['venice-video'] } } };
-    peer.providerServiceUnitBillingModels = { ...peer.providerServiceUnitBillingModels, backup: { services: { 'video-model': { 'venice-video': VIDEO_MODEL } } } };
-    peer.providerServiceHealth = { venice: { services: {}, failingProtocols: { 'video-model': { 'venice-video': { status: 'failing' } } } } };
-    expect(selectBillingRoute(peer, makeRequest(), 'video-model')?.provider).toBe('backup');
-  });
 });

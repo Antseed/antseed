@@ -9,6 +9,7 @@ import type {
 } from "../../../types/billing.js";
 import { UNIT_BILLING_MATCH_KEYS_V1, UNIT_BILLING_UNITS_V1 } from "../../../types/billing.js";
 import type { ProviderField } from "../field.js";
+import { serviceMap } from "../wire.js";
 
 const UNITS_BY_ID: UnitBillingUnitV1[] = [...UNIT_BILLING_UNITS_V1];
 const UNIT_IDS = new Map<UnitBillingUnitV1, number>(UNITS_BY_ID.map((unit, index) => [unit, index]));
@@ -57,7 +58,7 @@ export const serviceUnitBillingField: ProviderField = {
   },
   decode(reader, provider, ctx) {
     const count = reader.serviceEntryCount(ctx.wideServiceCounts);
-    const models: ServiceUnitBillingModelsV1 = {};
+    const models: ServiceUnitBillingModelsV1 = serviceMap();
     for (let i = 0; i < count; i += 1) {
       const service = reader.utf8();
       const protocol = WELL_KNOWN_SERVICE_API_PROTOCOLS[reader.u8()];

@@ -1,4 +1,5 @@
 import type { ProviderField } from "../field.js";
+import { serviceMap } from "../wire.js";
 
 /** [count:1|2] then [serviceLen:1][service:N][categoryCount:1][categoryLen:1][category:N]... */
 export const serviceCategoriesField: ProviderField = {
@@ -23,7 +24,7 @@ export const serviceCategoriesField: ProviderField = {
   decode(reader, provider, ctx) {
     const count = reader.serviceEntryCount(ctx.wideServiceCounts);
     if (count === 0) return;
-    const serviceCategories: Record<string, string[]> = {};
+    const serviceCategories: Record<string, string[]> = serviceMap();
     for (let i = 0; i < count; i += 1) {
       const service = reader.utf8();
       const categoryCount = reader.u8();

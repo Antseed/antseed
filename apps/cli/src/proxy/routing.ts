@@ -1,7 +1,7 @@
 import {
   buildNetworkServiceOffers,
   isServiceHealthFailing,
-  providerServiceRouteHealth,
+  providerServiceHealthFor,
   selectLowestPricedNetworkServiceOffer,
   type NetworkServiceOffer,
   type PeerInfo,
@@ -52,16 +52,12 @@ export function parseRequiredParametersHeader(value: string | undefined): string
   return parameters
 }
 
-/**
- * Required parameters are strict: missing capability metadata is unsupported.
- * With `protocol`, the capabilities of the upstream serving that protocol count.
- */
+/** Required parameters are strict: missing capability metadata is unsupported. */
 export function findMissingRequiredParameters(
   peer: PeerInfo,
   provider: string,
   requestedService: string | null,
   requiredParameters: readonly string[],
-  protocol?: ServiceApiProtocol,
 ): string[] {
   if (requiredParameters.length === 0) return []
   const service = requestedService?.trim()
@@ -69,14 +65,11 @@ export function findMissingRequiredParameters(
 
   const providerKey = Object.keys(peer.providerServiceCapabilities ?? {})
     .find((key) => key.toLowerCase() === provider.toLowerCase())
-  const entry = providerKey ? peer.providerServiceCapabilities?.[providerKey] : undefined
-  const serviceKey = entry
-    ? [...Object.keys(entry.services), ...Object.keys(entry.protocols ?? {})].find((key) => isRequestedServiceMatch(key, service))
+  const services = providerKey ? peer.providerServiceCapabilities?.[providerKey]?.services : undefined
+  const serviceKey = services
+    ? Object.keys(services).find((key) => isRequestedServiceMatch(key, service))
     : undefined
-  const capabilities = serviceKey
-    ? (protocol ? entry?.protocols?.[serviceKey]?.[protocol] : undefined) ?? entry?.services[serviceKey]
-    : undefined
-  const announced = capabilities?.supportedParameters
+  const announced = serviceKey ? services?.[serviceKey]?.supportedParameters : undefined
   if (!announced) return [...requiredParameters]
 
   const supported = new Set(announced.map((parameter) => parameter.trim().toLowerCase()))
@@ -212,13 +205,12 @@ export function findMissingRouteParameters(
 ): string[] {
   if (requiredParameters.length === 0) return []
   if (plan.selection?.requiresTransform) return [...requiredParameters]
-  return findMissingRequiredParameters(peer, plan.provider, plan.serviceId ?? requestedService, requiredParameters, plan.selection?.targetProtocol)
+  return findMissingRequiredParameters(peer, plan.provider, plan.serviceId ?? requestedService, requiredParameters)
 }
 
 /**
  * Sellers that could take the request but whose own health check announces
- * the route failing: the model, or its protocol when only failing upstreams
- * serve it. For explaining why automatic routing found no peer.
+ * the model failing. For explaining why automatic routing found no peer.
  */
 export function findFailingServiceRoutes(
   peers: PeerInfo[],
@@ -232,38 +224,17 @@ export function findFailingServiceRoutes(
     // Each provider's route is its own: a healthy one without the required
     // parameters must not hide a capable one that is failing.
     const providers = explicitProvider ? [explicitProvider] : [...new Set(peer.providers.map((provider) => provider.trim().toLowerCase()))]
-    const failing = providers.flatMap((provider) => candidateRoutePlans(peer, requestProtocol, requestedService, provider))
-      .map((plan) => ({ plan, health: providerServiceRouteHealth(peer.providerServiceHealth, plan.provider, plan.serviceId!, plan.selection?.targetProtocol) }))
-      .find(({ plan, health }) => isServiceHealthFailing(health)
-        && findMissingRouteParameters(peer, plan, requestedService, requiredParameters).length === 0)
-    if (failing) routes.push({ peerId: peer.peerId, serviceId: failing.plan.serviceId!, health: failing.health! })
+    for (const provider of providers) {
+      const plan = resolvePeerRoutePlan(peer, requestProtocol, requestedService, provider, 'lenient')
+      if (!plan?.serviceId) continue
+      const health = providerServiceHealthFor(peer.providerServiceHealth, plan.provider, plan.serviceId)
+      if (!isServiceHealthFailing(health)) continue
+      if (findMissingRouteParameters(peer, plan, requestedService, requiredParameters).length > 0) continue
+      routes.push({ peerId: peer.peerId, serviceId: plan.serviceId, health })
+      break
+    }
   }
   return routes
-}
-
-/**
- * A provider's routes for the request: the one routing prefers, then each
- * protocol only failing upstreams serve, which a healthy route over another
- * protocol (or a transform to it) would otherwise hide.
- */
-function candidateRoutePlans(
-  peer: PeerInfo,
-  requestProtocol: ServiceApiProtocol | null,
-  requestedService: string,
-  provider: string,
-): PeerProtocolRoutePlan[] {
-  const plans: PeerProtocolRoutePlan[] = []
-  const preferred = resolvePeerRoutePlan(peer, requestProtocol, requestedService, provider, 'lenient')
-  if (preferred?.serviceId) plans.push(preferred)
-  const offer = findAdvertisedServiceOffer(peer, provider, requestedService, true)
-  if (!offer) return plans
-  const failingProtocols = Object.keys(peer.providerServiceHealth?.[offer.provider]?.failingProtocols?.[offer.serviceId] ?? {}) as ServiceApiProtocol[]
-  for (const protocol of failingProtocols) {
-    const selection = requestProtocol ? selectTargetProtocolForRequest(requestProtocol, [protocol]) : null
-    if (requestProtocol && !selection) continue
-    plans.push({ provider: offer.provider, selection, serviceId: offer.serviceId })
-  }
-  return plans
 }
 
 /**

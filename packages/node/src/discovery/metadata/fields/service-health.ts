@@ -1,7 +1,7 @@
 import type { ServiceHealth } from "../../peer-metadata.js";
 import { SERVICE_HEALTH_REASONS, SERVICE_HEALTH_SOURCES, SERVICE_HEALTH_STATUSES } from "../../peer-metadata.js";
 import type { ProviderField } from "../field.js";
-import { compareCodeUnits } from "../wire.js";
+import { compareCodeUnits, serviceMap } from "../wire.js";
 
 const HAS_CHECKED_AT = 1 << 0;
 const HAS_SOURCE = 1 << 1;
@@ -53,7 +53,7 @@ export const serviceHealthField: ProviderField = {
   },
   decode(reader, provider, ctx) {
     const count = reader.serviceEntryCount(ctx.wideServiceCounts);
-    const serviceHealth: Record<string, ServiceHealth> = {};
+    const serviceHealth: Record<string, ServiceHealth> = serviceMap();
     for (let i = 0; i < count; i += 1) {
       const service = reader.utf8();
       const health: ServiceHealth = { status: enumValue(SERVICE_HEALTH_STATUSES, reader.u8(), "status") };

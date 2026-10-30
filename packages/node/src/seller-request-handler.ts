@@ -44,7 +44,7 @@ import {
 import { VerificationMux } from './verification/verification-mux.js';
 import { createResponseAuthPayload, createStreamingResponseHash } from './verification/response-auth.js';
 import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION } from '@antseed/protocol/http';
-import { isServiceHealthFailing, preferHealthyUpstream, preferProtocolUpstream } from '@antseed/protocol/peer-metadata';
+import { isServiceHealthFailing, preferHealthyUpstream } from '@antseed/protocol/peer-metadata';
 import { hasJsonContentType, tryParseJsonObject } from './utils/json-codec.js';
 import type { UnitBillingContext, UnitBillingModelV1, UnitBillingUsage, UnitBillingUsageReportV1 } from './types/billing.js';
 import { captureUnitBillingContext, computeFinalUnitBilling, estimateUnitRequestCost, isFreeUnitBillingModel, type BillingRequestFacts } from './billing/unit.js';
@@ -81,6 +81,45 @@ export function assertSingleRoutingService(providers: readonly Provider[]): void
       throw new Error(`A seller can offer at most one ${protocol} routing service; found ${found.map(entry => `${entry.provider.name}/${entry.service}`).join(', ')}`);
     }
   }
+}
+
+/**
+ * Upstreams sharing a provider name must announce a service they both list
+ * with the same terms: price, API protocols, unit billing models and
+ * capabilities. Buyers see one entry per provider name and bill by it, while
+ * the seller serves through whichever of those upstreams is healthy.
+ */
+export function assertSameNameUpstreamsAgree(providers: readonly Provider[]): void {
+  const terms = new Map<string, { provider: Provider; terms: string }>();
+  for (const provider of providers) {
+    for (const service of provider.services) {
+      const announced = canonicalJson({
+        pricing: provider.pricing.services?.[service] ?? provider.pricing.defaults,
+        protocols: [...(provider.serviceApiProtocols?.[service] ?? [])].sort(),
+        unitBilling: provider.serviceUnitBillingModels?.[service] ?? null,
+        capabilities: provider.serviceCapabilities?.[service] ?? null,
+      });
+      const key = `${provider.name.toLowerCase()}\u0000${service}`;
+      const first = terms.get(key);
+      if (!first) {
+        terms.set(key, { provider, terms: announced });
+      } else if (first.terms !== announced) {
+        throw new Error(
+          `Providers sharing the name "${provider.name}" offer "${service}" with different pricing, API protocols, billing or capabilities. `
+          + 'Buyers see one entry per provider name, so offer it from one of them only, or on the same terms.',
+        );
+      }
+    }
+  }
+}
+
+/** JSON with object keys sorted, so equal values compare equal. */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson((value as Record<string, unknown>)[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
 }
 
 const FREE_TOKEN_PRICING: ProviderTokenPricing = { inputUsdPerMillion: 0, outputUsdPerMillion: 0 };
@@ -1220,13 +1259,10 @@ export class SellerRequestHandler {
     const matchesService = (provider: Provider): boolean =>
       provider.services.includes(requestedService) && (!videoRoute || Boolean(provider.serviceApiProtocols?.[requestedService]?.includes(videoRoute.protocol)));
 
-    // Several upstreams can share a provider name; buyers merge their
-    // announcements with the same preference (mergeProviderAnnouncements): the
-    // request's API protocol goes to an upstream serving it when one does.
-    const requestProtocol = detectRequestServiceApiProtocol(request);
-    const pick = (candidates: Provider[]): Provider | undefined =>
-      (requestProtocol ? preferProtocolUpstream(candidates, requestedService, requestProtocol) : undefined)
-      ?? preferHealthyUpstream(candidates, requestedService);
+    // Several upstreams can share a provider name (with the same terms, see
+    // assertSameNameUpstreamsAgree); buyers merge their announcements with the
+    // same preference (mergeProviderAnnouncements).
+    const pick = (candidates: Provider[]): Provider | undefined => preferHealthyUpstream(candidates, requestedService);
     const serving = providers.filter(matchesService);
     let provider: Provider | undefined;
     if (requestedProvider) {

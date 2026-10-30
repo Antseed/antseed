@@ -1,5 +1,6 @@
 import type { TokenPricingUsdPerMillion } from "../../peer-metadata.js";
 import type { ProviderField } from "../field.js";
+import { serviceMap } from "../wire.js";
 
 /** [providerLen:1][provider:N] */
 export const providerNameField: ProviderField = {
@@ -68,7 +69,7 @@ export const servicePricingField: ProviderField = {
   decode(reader, provider, ctx) {
     const count = reader.serviceEntryCount(ctx.wideServiceCounts);
     if (count === 0) return;
-    const servicePricing: Record<string, TokenPricingUsdPerMillion> = {};
+    const servicePricing: Record<string, TokenPricingUsdPerMillion> = serviceMap();
     for (let i = 0; i < count; i += 1) {
       const service = reader.utf8();
       servicePricing[service] = readPricing(reader);

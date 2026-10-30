@@ -1,6 +1,7 @@
 import type { ServiceApiProtocol } from "../../../types/service-api.js";
 import { isKnownServiceApiProtocol } from "../../../types/service-api.js";
 import type { ProviderField } from "../field.js";
+import { serviceMap } from "../wire.js";
 
 /** [count:1|2] then [serviceLen:1][service:N][protocolCount:1][protocolLen:1][protocol:N]... */
 export const serviceApiProtocolsField: ProviderField = {
@@ -27,7 +28,7 @@ export const serviceApiProtocolsField: ProviderField = {
   decode(reader, provider, ctx) {
     const count = reader.serviceEntryCount(ctx.wideServiceCounts);
     if (count === 0) return;
-    const serviceApiProtocols: Record<string, ServiceApiProtocol[]> = {};
+    const serviceApiProtocols: Record<string, ServiceApiProtocol[]> = serviceMap();
     for (let i = 0; i < count; i += 1) {
       const service = reader.utf8();
       const protocolCount = reader.u8();

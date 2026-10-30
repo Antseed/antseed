@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { identityFromPrivateKeyHex } from '../src/p2p/identity.js';
 import { decodeFrame } from '../src/p2p/message-protocol.js';
 import { decodeHttpResponse, encodeHttpRequest } from '../src/proxy/request-codec.js';
-import { SellerRequestHandler } from '../src/seller-request-handler.js';
+import { SellerRequestHandler, assertSameNameUpstreamsAgree } from '../src/seller-request-handler.js';
 import { MessageType } from '../src/types/protocol.js';
 import type { Provider } from '../src/interfaces/seller-provider.js';
 import { VerificationMux } from '../src/verification/index.js';
@@ -86,22 +86,21 @@ describe('seller self health error', () => {
     expect(response.statusCode).toBe(200);
     expect(down.handleRequest).not.toHaveBeenCalled();
   });
+});
 
-  it('sends a request to the same-name upstream serving its API protocol', () => {
-    const chat = makeProvider('openai', 200);
-    chat.serviceApiProtocols = { 'test-model': ['openai-chat-completions'] };
+describe('upstreams sharing a provider name', () => {
+  it('may share a name when they offer a service on the same terms', () => {
+    expect(() => assertSameNameUpstreamsAgree([makeProvider('openai', 200), makeProvider('OpenAI', 200)])).not.toThrow();
+  });
+
+  it('refuses one name for a service offered on different terms', () => {
+    const cheap = makeProvider('openai', 200);
+    const pricey = makeProvider('openai', 200);
+    pricey.pricing = { defaults: { inputUsdPerMillion: 5, outputUsdPerMillion: 5 } };
+    expect(() => assertSameNameUpstreamsAgree([cheap, pricey])).toThrow(/sharing the name "openai" offer "test-model"/);
     const images = makeProvider('openai', 200);
     images.serviceApiProtocols = { 'test-model': ['openai-images'] };
-    const handler = new SellerRequestHandler({
-      identity: identityFromPrivateKeyHex('11'.repeat(32)),
-      providers: [chat, images],
-      sellerPaymentManager: null, sessionTracker: null, channelsClient: null, announcer: null, emit: () => false,
-    });
-    const request = (path: string) => ({
-      requestId: 'r', method: 'POST', path, headers: { 'content-type': 'application/json', 'x-antseed-provider': 'openai' },
-      body: new TextEncoder().encode(JSON.stringify({ model: 'test-model' })),
-    });
-    expect(handler.matchProvider(request('/v1/images/generations'))).toBe(images);
-    expect(handler.matchProvider(request('/v1/chat/completions'))).toBe(chat);
+    expect(() => assertSameNameUpstreamsAgree([cheap, images])).toThrow(/from one of them only, or on the same terms/);
+    expect(() => assertSameNameUpstreamsAgree([cheap, { ...images, name: 'fal-video' }])).not.toThrow();
   });
 });

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { encodeMetadataForSigning, getMetadataCodec } from '../src/discovery/metadata-codec.js';
+import { decodeMetadata, encodeMetadata, encodeMetadataForSigning, getMetadataCodec } from '../src/discovery/metadata-codec.js';
 import type { PeerMetadata } from '../src/discovery/peer-metadata.js';
 
 // Every field v10-v12 know. The hashes are of the bytes the codec signed
@@ -61,5 +61,17 @@ describe('metadata signing bytes', () => {
       ['anthropic', []],
     ]);
     expect(legacy.providers[0]!.serviceHealth).toBeUndefined();
+  });
+
+  it('round-trips service names that collide with Object.prototype', () => {
+    const latest = fixture(13);
+    const odd = JSON.parse('{"__proto__": {"status": "failing", "reason": "timeout"}, "constructor": {"status": "healthy"}}');
+    latest.providers[0]!.services = [...latest.providers[0]!.services, '__proto__', 'constructor'];
+    latest.providers[0]!.serviceHealth = odd;
+    latest.signature = 'ab'.repeat(65);
+    const bytes = encodeMetadataForSigning(latest);
+    const decoded = decodeMetadata(encodeMetadata(latest));
+    expect(Object.keys(decoded.providers[0]!.serviceHealth ?? {})).toEqual(['__proto__', 'constructor']);
+    expect(encodeMetadataForSigning(decoded)).toEqual(bytes);
   });
 });

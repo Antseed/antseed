@@ -24,7 +24,7 @@ import type { BuyerFreeUsageManager } from './buyer-free-usage-manager.js';
 import { verifyResponseAuth, createStreamingResponseHash } from './response-auth.js';
 import { encodeHttpRequest, encodeHttpResponse } from '@antseed/protocol/request-codec';
 import { isFreeUnitBillingModel } from '@antseed/protocol/billing';
-import { isProviderServiceRouteFailing } from '@antseed/protocol/peer-metadata';
+import { isServiceHealthFailing, providerServiceHealthFor } from '@antseed/protocol/peer-metadata';
 import { findRoutingService, routingProtocolForPath, routingWireProtocol } from '@antseed/protocol/routing';
 import { isUnitBilledProtocol } from './unit-billing.js';
 import type { ServiceApiProtocol } from '@antseed/protocol/service-api';
@@ -760,7 +760,7 @@ function selectProviderForService(
     && (!videoRoute || Boolean(peer.providerServiceApiProtocols?.[provider]?.services[service]?.includes(videoRoute.protocol))),
   );
   const match = eligible.find((provider) =>
-    !isProviderServiceRouteFailing(peer.providerServiceHealth, provider, service, videoRoute?.protocol),
+    !isServiceHealthFailing(providerServiceHealthFor(peer.providerServiceHealth, provider, service)),
   ) ?? eligible[0] ?? providers.find((provider) =>
     providerOffersService(peer, provider, service),
   );

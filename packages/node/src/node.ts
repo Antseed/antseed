@@ -112,7 +112,7 @@ import { encodeFreeTierDelegationsHeader, type FreeTierDelegation } from "./paym
 import { Contract as EthersContract, type AbstractProvider } from "ethers";
 import { SellerPaymentManager, type SellerPaymentConfig } from "./payments/seller-payment-manager.js";
 import { IdentityClient } from "./payments/evm/identity-client.js";
-import { SellerRequestHandler, assertSingleRoutingService } from "./seller-request-handler.js";
+import { SellerRequestHandler, assertSameNameUpstreamsAgree, assertSingleRoutingService } from "./seller-request-handler.js";
 import {
   BuyerRequestHandler,
   type RequestStreamCallbacks,
@@ -1877,6 +1877,7 @@ export class AntseedNode extends EventEmitter {
     const signalingPort = this._config.signalingPort ?? 6882;
     debugLog(`[Node] Starting seller — DHT port=${dhtPort}, signaling port=${signalingPort}`);
     assertSingleRoutingService(this._providers);
+    assertSameNameUpstreamsAgree(this._providers);
 
     const dataDir = this._config.dataDir ?? join(homedir(), ".antseed");
     try {

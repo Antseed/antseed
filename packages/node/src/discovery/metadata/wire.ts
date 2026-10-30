@@ -8,6 +8,14 @@ const textDecoder = new TextDecoder();
 
 export const SIGNATURE_LENGTH = 65;
 
+/**
+ * A map for decoded service-keyed entries. It has no prototype, so a service
+ * named "__proto__" or "constructor" decodes as an ordinary entry.
+ */
+export function serviceMap<T>(): Record<string, T> {
+  return Object.create(null) as Record<string, T>;
+}
+
 export class MetadataWriter {
   private readonly parts: Uint8Array[] = [];
 

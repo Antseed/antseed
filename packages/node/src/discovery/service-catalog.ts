@@ -195,11 +195,7 @@ export function buildNetworkServiceOffers(
       for (const serviceId of serviceIds) {
         const health = providerServiceHealthFor(peer.providerServiceHealth, provider, serviceId);
         if (isServiceHealthFailing(health) && !options.includeFailing) continue;
-        const announcedProtocols = peer.providerServiceApiProtocols?.[provider]?.services?.[serviceId] ?? [];
-        // A protocol only failing upstreams serve is routed only when failing offers are wanted.
-        const failingProtocols: readonly string[] = Object.keys(peer.providerServiceHealth?.[provider]?.failingProtocols?.[serviceId] ?? {});
-        const protocols = options.includeFailing ? announcedProtocols : announcedProtocols.filter((protocol) => !failingProtocols.includes(protocol));
-        if (announcedProtocols.length > 0 && protocols.length === 0) continue;
+        const protocols = peer.providerServiceApiProtocols?.[provider]?.services?.[serviceId] ?? [];
         const billingModels = peer.providerServiceUnitBillingModels?.[provider]?.services?.[serviceId];
         if (protocols.some(isRoutingProtocol) || Object.values(billingModels ?? {}).some(model => (model?.components ?? []).some(component => component.unit === 'completed_requests'))) continue;
         const capabilities = peer.providerServiceCapabilities?.[provider]?.services?.[serviceId];

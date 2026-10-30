@@ -116,18 +116,6 @@ describe('LocalRouter', () => {
     expect(router.selectPeer(makeRequest('video-x'), [peer])?.peerId).toBe(peer.peerId);
   });
 
-  it('skips a peer whose only route for the requested video protocol is failing', () => {
-    const router = new LocalRouter({ maxPricing: { defaults: { inputUsdPerMillion: 1_000, outputUsdPerMillion: 1_000 } } });
-    const peer = makePeer({
-      providerPricing: { anthropic: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'video-x': { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } } },
-      providerServiceHealth: { anthropic: { services: { 'video-x': { status: 'healthy' } }, failingProtocols: { 'video-x': { 'fal-video': { status: 'failing' } } } } },
-    });
-    const videoRequest = (path: string): SerializedHttpRequest => ({ ...makeRequest('video-x'), path });
-    expect(router.selectPeer(videoRequest('/fal/v1/video/queue'), [peer])).toBeNull();
-    expect(router.selectPeer(videoRequest('/api/v1/video/queue'), [peer])?.peerId).toBe(peer.peerId);
-    expect(router.allowsPeerForPolicy(videoRequest('/fal/v1/video/queue'), peer)).toBe(true);
-  });
-
   it('selects cheapest peer regardless of provider name', () => {
     const router = new LocalRouter({
       maxPricing: {

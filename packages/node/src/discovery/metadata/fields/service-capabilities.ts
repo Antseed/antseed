@@ -1,7 +1,7 @@
 import type { ServiceCapabilities, ServiceCapabilityModality, VideoInputKind, VideoOptions } from "../../peer-metadata.js";
 import { SERVICE_CAPABILITY_MODALITIES, VIDEO_INPUT_KINDS } from "../../peer-metadata.js";
 import type { ProviderField } from "../field.js";
-import { compareCodeUnits, type MetadataReader, type MetadataWriter } from "../wire.js";
+import { compareCodeUnits, type MetadataReader, type MetadataWriter, serviceMap } from "../wire.js";
 
 // Presence bits for the per-service capability entry. A set bit means the
 // field was announced (booleans distinguish "known false" from "unknown").
@@ -155,7 +155,7 @@ export const serviceCapabilitiesField: ProviderField = {
   },
   decode(reader, provider, ctx) {
     const count = reader.serviceEntryCount(ctx.wideServiceCounts);
-    const serviceCapabilities: Record<string, ServiceCapabilities> = {};
+    const serviceCapabilities: Record<string, ServiceCapabilities> = serviceMap();
     for (let i = 0; i < count; i += 1) {
       const service = reader.utf8();
       const presence = reader.u8();
