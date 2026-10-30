@@ -6,11 +6,25 @@ import {
   type ServiceApiProtocol,
 } from './service-api.js';
 
-export const METADATA_VERSION = 12;
+/** Newest metadata version this build signs and understands. */
+export const METADATA_VERSION = 13;
 /** Oldest announced metadata version buyers still accept from sellers. */
 export const MIN_SUPPORTED_METADATA_VERSION = 10;
+/**
+ * Version a seller serves when the buyer does not say which versions it
+ * understands. Buyers released before version negotiation send no header and
+ * reject anything newer than v12, so this stays at 12 until they are gone.
+ */
+export const LEGACY_METADATA_VERSION = 12;
+/**
+ * Request header a buyer sends on `GET /metadata` with the newest metadata
+ * version it understands. Sellers answer with the newest version they sign
+ * that is not newer than this.
+ */
+export const METADATA_VERSION_HEADER = "x-antseed-metadata-version";
 export const SERVICE_UNIT_BILLING_METADATA_VERSION = 11;
 export const SERVICE_CAPABILITIES_METADATA_VERSION = 12;
+export const SERVICE_HEALTH_METADATA_VERSION = 13;
 export const WELL_KNOWN_SERVICE_CATEGORIES = [
   "privacy",
   "legal",
@@ -182,6 +196,100 @@ export function validateServiceCapabilityFields(caps: ServiceCapabilities): stri
   return errors;
 }
 
+/** Wire order is fixed: append new values, never reorder. */
+export const SERVICE_HEALTH_STATUSES = ["unknown", "healthy", "failing"] as const;
+export type ServiceHealthState = (typeof SERVICE_HEALTH_STATUSES)[number];
+/** Wire order is fixed: append new values, never reorder. */
+export const SERVICE_HEALTH_REASONS = [
+  "timeout",
+  "rate_limited",
+  "out_of_credit",
+  "auth",
+  "model_unavailable",
+  "upstream_error",
+  "unreachable",
+  "init_failed",
+] as const;
+export type ServiceHealthReason = (typeof SERVICE_HEALTH_REASONS)[number];
+/** Wire order is fixed: append new values, never reorder. */
+export const SERVICE_HEALTH_SOURCES = ["probe", "traffic"] as const;
+export type ServiceHealthSource = (typeof SERVICE_HEALTH_SOURCES)[number];
+
+/**
+ * The seller's own health check result for one service. Sellers keep failing
+ * services announced and report them here instead, so buyers can hide them
+ * from catalogs and routing while still explaining why a pinned request
+ * failed. Reasons are fixed codes; upstream error text is never announced.
+ */
+export interface ServiceHealth {
+  status: ServiceHealthState;
+  /** Unix ms of the evidence behind `status`: the last probe or live response. */
+  checkedAt?: number;
+  /** Where that evidence came from. */
+  source?: ServiceHealthSource;
+  /** Unix ms of the first failure in the current failing streak. */
+  failingSince?: number;
+  /** Failed checks in a row. */
+  consecutiveFailures?: number;
+  /** Why the last check failed. */
+  reason?: ServiceHealthReason;
+  /** Upstream HTTP status of the last failed check, when there was one. */
+  httpStatus?: number;
+}
+
+/** Error code a seller answers with when a service its own health check marks failing also fails a request. */
+export const SELLER_SELF_HEALTH_FAILING_CODE = "seller_self_health_failing";
+
+const SERVICE_HEALTH_REASON_TEXT: Record<ServiceHealthReason, string> = {
+  timeout: "the upstream timed out",
+  rate_limited: "the upstream is rate or usage limited",
+  out_of_credit: "the upstream account is out of credit",
+  auth: "the upstream rejected the seller's credentials",
+  model_unavailable: "the upstream no longer offers this model",
+  upstream_error: "the upstream returned errors",
+  unreachable: "the upstream could not be reached",
+  init_failed: "the provider failed to initialize",
+};
+
+/**
+ * Reads a ServiceHealth from untrusted JSON (a seller error body), keeping
+ * only well-formed known fields. Returns null when the status is missing.
+ */
+export function parseServiceHealth(value: unknown): ServiceHealth | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.status !== "string" || !(SERVICE_HEALTH_STATUSES as readonly string[]).includes(raw.status)) return null;
+  const health: ServiceHealth = { status: raw.status as ServiceHealthState };
+  const time = (field: unknown) => typeof field === "number" && Number.isSafeInteger(field) && field >= 0 ? field : undefined;
+  const checkedAt = time(raw.checkedAt);
+  if (checkedAt !== undefined) health.checkedAt = checkedAt;
+  const failingSince = time(raw.failingSince);
+  if (failingSince !== undefined) health.failingSince = failingSince;
+  if (typeof raw.source === "string" && (SERVICE_HEALTH_SOURCES as readonly string[]).includes(raw.source)) health.source = raw.source as ServiceHealthSource;
+  if (typeof raw.reason === "string" && (SERVICE_HEALTH_REASONS as readonly string[]).includes(raw.reason)) health.reason = raw.reason as ServiceHealthReason;
+  if (typeof raw.consecutiveFailures === "number" && Number.isInteger(raw.consecutiveFailures) && raw.consecutiveFailures >= 0 && raw.consecutiveFailures <= 0xffff) {
+    health.consecutiveFailures = raw.consecutiveFailures;
+  }
+  if (typeof raw.httpStatus === "number" && Number.isInteger(raw.httpStatus) && raw.httpStatus >= 100 && raw.httpStatus <= 599) health.httpStatus = raw.httpStatus;
+  return health;
+}
+
+/** One sentence a person can act on, e.g. in a chat error. Built from fields only, never seller text. */
+export function describeServiceHealth(service: string, health: ServiceHealth): string {
+  const parts: string[] = [];
+  if (health.reason) parts.push(SERVICE_HEALTH_REASON_TEXT[health.reason] ?? health.reason);
+  if (health.httpStatus !== undefined) parts.push(`HTTP ${health.httpStatus}`);
+  if (health.consecutiveFailures !== undefined && health.consecutiveFailures > 0) {
+    parts.push(`${health.consecutiveFailures} failed check${health.consecutiveFailures === 1 ? "" : "s"} in a row`);
+  }
+  const since = health.failingSince !== undefined
+    ? ` since ${new Date(health.failingSince).toISOString().slice(0, 16).replace("T", " ")} UTC`
+    : "";
+  const detail = parts.length > 0 ? ` (${parts.join(", ")})` : "";
+  const verb = health.status === "failing" ? "has been failing" : `reports "${health.status}"`;
+  return `The seller's self health check for "${service}" ${verb}${since}${detail}.`;
+}
+
 export interface ProviderAnnouncement {
   provider: string;
   services: string[];
@@ -191,6 +299,8 @@ export interface ProviderAnnouncement {
   serviceApiProtocols?: Record<string, ServiceApiProtocol[]>;
   serviceUnitBillingModels?: ServiceUnitBillingModelsV1;
   serviceCapabilities?: Record<string, ServiceCapabilities>;
+  /** Seller self health check results per service (v13+). */
+  serviceHealth?: Record<string, ServiceHealth>;
   maxConcurrency: number;
   currentLoad: number;
 }

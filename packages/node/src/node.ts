@@ -1991,8 +1991,10 @@ export class AntseedNode extends EventEmitter {
           ...(p.serviceApiProtocols ? { serviceApiProtocols: { ...p.serviceApiProtocols } } : {}),
           ...(p.serviceUnitBillingModels ? { serviceUnitBillingModels: { ...p.serviceUnitBillingModels } } : {}),
           ...(p.serviceCapabilities ? { serviceCapabilities: { ...p.serviceCapabilities } } : {}),
+          // Read live: the model health checker updates it between refreshes.
+          serviceHealth: () => p.serviceHealth,
           maxConcurrency: p.maxConcurrency,
-          isAvailable: () => this._advertisingPausedReason === null && p.healthCheckAvailable !== false,
+          isAvailable: () => this._advertisingPausedReason === null,
           pricing: {
             defaults: {
               inputUsdPerMillion: p.pricing.defaults.inputUsdPerMillion,
@@ -2030,7 +2032,7 @@ export class AntseedNode extends EventEmitter {
 
       // Serve metadata on the signaling port (HTTP requests are auto-detected)
       this._connectionManager!.setMetadataProvider(
-        () => this._announcer?.getLatestMetadata() ?? null,
+        (requestedVersion) => this._announcer?.getMetadataForVersion(requestedVersion) ?? null,
       );
     }
 
@@ -2727,6 +2729,7 @@ export class AntseedNode extends EventEmitter {
     const providerServiceApiProtocolEntries: NonNullable<PeerInfo["providerServiceApiProtocols"]> = {};
     const providerServiceUnitBillingModelEntries: NonNullable<PeerInfo["providerServiceUnitBillingModels"]> = {};
     const providerServiceCapabilityEntries: NonNullable<PeerInfo["providerServiceCapabilities"]> = {};
+    const providerServiceHealthEntries: NonNullable<PeerInfo["providerServiceHealth"]> = {};
 
     for (const providerAnnouncement of result.metadata.providers) {
       const provName = providerAnnouncement.provider;
@@ -2801,6 +2804,18 @@ export class AntseedNode extends EventEmitter {
           providerServiceCapabilityEntries[provName] = { services: newEntries };
         }
       }
+
+      if (providerAnnouncement.serviceHealth && Object.keys(providerAnnouncement.serviceHealth).length > 0) {
+        const existingHealth = providerServiceHealthEntries[provName];
+        const newEntries = Object.fromEntries(
+          Object.entries(providerAnnouncement.serviceHealth).map(([service, health]) => [service, { ...health }]),
+        );
+        if (existingHealth) {
+          Object.assign(existingHealth.services, newEntries);
+        } else {
+          providerServiceHealthEntries[provName] = { services: newEntries };
+        }
+      }
     }
 
     const hasProviderPricing = Object.keys(providerPricingEntries).length > 0;
@@ -2808,6 +2823,7 @@ export class AntseedNode extends EventEmitter {
     const hasProviderServiceApiProtocols = Object.keys(providerServiceApiProtocolEntries).length > 0;
     const hasProviderServiceUnitBillingModels = Object.keys(providerServiceUnitBillingModelEntries).length > 0;
     const hasProviderServiceCapabilities = Object.keys(providerServiceCapabilityEntries).length > 0;
+    const hasProviderServiceHealth = Object.keys(providerServiceHealthEntries).length > 0;
 
     return {
       peerId: result.metadata.peerId,
@@ -2830,6 +2846,7 @@ export class AntseedNode extends EventEmitter {
       ...(hasProviderServiceApiProtocols ? { providerServiceApiProtocols: providerServiceApiProtocolEntries } : {}),
       ...(hasProviderServiceUnitBillingModels ? { providerServiceUnitBillingModels: providerServiceUnitBillingModelEntries } : {}),
       ...(hasProviderServiceCapabilities ? { providerServiceCapabilities: providerServiceCapabilityEntries } : {}),
+      ...(hasProviderServiceHealth ? { providerServiceHealth: providerServiceHealthEntries } : {}),
       defaultInputUsdPerMillion: firstProvider?.defaultPricing.inputUsdPerMillion,
       defaultOutputUsdPerMillion: firstProvider?.defaultPricing.outputUsdPerMillion,
       defaultCachedInputUsdPerMillion: firstProvider?.defaultPricing.cachedInputUsdPerMillion,

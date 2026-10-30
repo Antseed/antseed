@@ -1,7 +1,7 @@
 import { CODING_ONLY_SUFFIX_RE, canonicalModelKey } from '../model-identity.js';
 import { parseVerifierCapabilities } from './verifier-capabilities.js';
 import { NATIVE_VIDEO_PROTOCOLS, isNativeVideoProtocol, isRoutingProtocol, type NativeVideoProtocol } from '@antseed/protocol/service-api';
-import type { VideoOptions } from '@antseed/protocol/peer-metadata';
+import type { ServiceHealth, VideoOptions } from '@antseed/protocol/peer-metadata';
 
 export type CatalogServiceProtocol =
   | 'anthropic-messages'
@@ -56,6 +56,7 @@ export type NetworkServiceCatalogPeer = {
     }>;
   }>;
   providerServiceCategories?: Record<string, { services: Record<string, string[]> }>;
+  providerServiceHealth?: Record<string, { services: Record<string, ServiceHealth> }>;
   defaultInputUsdPerMillion?: number;
   defaultOutputUsdPerMillion?: number;
   defaultCachedInputUsdPerMillion?: number;
@@ -82,6 +83,16 @@ export type NetworkServiceOffer = {
   cachedInputUsdPerMillion?: number;
   minImageUsdPerImage?: number;
   maxImageUsdPerImage?: number;
+  /** The seller's self health check result for this service, when announced. */
+  health?: ServiceHealth;
+};
+
+export type BuildNetworkServiceOffersOptions = {
+  /**
+   * Keep services the seller's own health check announces as failing.
+   * Catalogs and routing leave them out; diagnostics may want them.
+   */
+  includeFailing?: boolean;
 };
 
 const VALID_PROTOCOLS = new Set<string>([
@@ -173,11 +184,16 @@ function resolveImagePriceRange(peer: NetworkServiceCatalogPeer, provider: strin
     : {};
 }
 
-export function buildNetworkServiceOffers(peers: NetworkServiceCatalogPeer[]): NetworkServiceOffer[] {
+export function buildNetworkServiceOffers(
+  peers: NetworkServiceCatalogPeer[],
+  options: BuildNetworkServiceOffersOptions = {},
+): NetworkServiceOffer[] {
   const offers: NetworkServiceOffer[] = [];
   for (const peer of peers) {
     for (const [provider, serviceIds] of announcedServicesByProvider(peer)) {
       for (const serviceId of serviceIds) {
+        const health = peer.providerServiceHealth?.[provider]?.services?.[serviceId];
+        if (health?.status === 'failing' && !options.includeFailing) continue;
         const protocols = peer.providerServiceApiProtocols?.[provider]?.services?.[serviceId] ?? [];
         const billingModels = peer.providerServiceUnitBillingModels?.[provider]?.services?.[serviceId];
         if (protocols.some(isRoutingProtocol) || Object.values(billingModels ?? {}).some(model => (model?.components ?? []).some(component => component.unit === 'completed_requests'))) continue;
@@ -209,6 +225,7 @@ export function buildNetworkServiceOffers(peers: NetworkServiceCatalogPeer[]): N
           ...(type !== 'video' && pricing.cachedInputUsdPerMillion !== undefined ? { cachedInputUsdPerMillion: pricing.cachedInputUsdPerMillion } : {}),
           ...(type === 'video' ? { unitBillingModels: peer.providerServiceUnitBillingModels?.[provider]?.services[serviceId] } : {}),
           ...resolveImagePriceRange(peer, provider, serviceId),
+          ...(health ? { health } : {}),
         });
       }
     }

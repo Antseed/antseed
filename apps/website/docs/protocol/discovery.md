@@ -67,7 +67,7 @@ Each seller runs an HTTP server exposing `GET /metadata` which returns JSON-seri
 ```json title="metadata structure"
 {
   "peerId": "<peerId>",
-  "version": 12,
+  "version": 13,
   "displayName": "Example Inference",
   "publicAddress": "peer.example.com:6882",
   "providers": [{
@@ -148,7 +148,18 @@ Capability fields are optional; absence means unknown. `inputs` and `outputs` de
 
 Capabilities are hints, not enforced contracts. The buyer proxy performs one advisory check: when a peer announces `supportedParameters` for the routed service and the request body carries parameters outside that list, the proxy logs a warning and forwards the request unchanged. The upstream provider remains the authority on which parameters it accepts.
 
-Buyers accept metadata versions 10 through 12 and reject versions newer than they understand. The current version is 12.
+Buyers accept metadata versions 10 through 13 and reject versions newer than they understand. The current version is 13, which adds `serviceHealth`: the seller's own health check result for each service.
+
+```json
+"serviceHealth": {
+  "gpt-6-sol": { "status": "failing", "reason": "timeout", "consecutiveFailures": 3, "failingSince": 1793327880000, "checkedAt": 1793328180000, "source": "probe" },
+  "gpt-6-terra": { "status": "healthy", "checkedAt": 1793328100000, "source": "traffic" }
+}
+```
+
+A seller keeps failing services announced with this status instead of withdrawing them. Buyers leave failing services out of model lists and automatic routing; a request pinned to that seller still goes through, and if it fails the error says the seller's self health check is failing and why.
+
+Buyers ask for the version they understand with the `x-antseed-metadata-version` request header. Sellers sign a v12 and a v13 document and answer with the newest one the buyer understands; a buyer that sends no header gets v12, without the services that are failing.
 
 `publicAddress` is optional. When present, buyers should prefer it over the raw host learned from the DHT announcement. This is intended for deployments where DHT traffic exits from one IP but buyers must connect to another address, such as a Kubernetes load balancer.
 

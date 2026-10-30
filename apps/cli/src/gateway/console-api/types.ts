@@ -1181,9 +1181,16 @@ export interface SellerModelHealth {
   /** The seller config's provider name; tells apart upstreams that share a plugin. Older sellers: same as `provider`. */
   providerId: string
   service: string
-  /** False when the seller withdrew the service after failing health probes. */
-  advertised: boolean
+  /** The seller's self health check result, as announced to buyers (who skip failing services). */
+  status: 'healthy' | 'failing' | 'unknown'
+  /** Why the last check failed (a fixed code such as `timeout` or `rate_limited`). */
+  reason: string | null
   consecutiveFailures: number
+  failingSince: number | null
+  /** When the evidence behind `status` was gathered, and whether a probe or a buyer request gave it. */
+  checkedAt: number | null
+  source: 'probe' | 'traffic' | null
+  lastTrafficAt: number | null
   lastProbeAt: number | null
   lastStatusCode: number | null
   lastDetail: string | null

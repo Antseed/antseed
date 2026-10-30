@@ -11,6 +11,9 @@ import type { SerializedHttpRequest, SerializedHttpResponse } from '../src/types
 
 type ProbeHandler = (req: SerializedHttpRequest) => Promise<SerializedHttpResponse>;
 
+const statusOf = (provider: Provider, service: string) => provider.serviceHealth?.[service]?.status ?? 'unknown';
+const failingServices = (provider: Provider) => provider.services.filter((service) => statusOf(provider, service) === 'failing');
+
 function jsonResponse(requestId: string, statusCode: number, body: unknown = {}): SerializedHttpResponse {
   return {
     requestId,
@@ -124,25 +127,26 @@ describe('ModelHealthChecker', () => {
     expect(JSON.parse(new TextDecoder().decode(onRequest.mock.calls[0]![0].body)).model).toBe('model-a');
     expect(provider.services).toEqual(['alpha-route', 'model-a']);
   });
-  it('quarantines initial auth failures and restores only models with successful probes', async () => {
+  it('announces initial auth failures as failing and recovers only models with successful probes', async () => {
     const provider = makeProvider({
       healthCheckAvailable: false,
       onRequest: statusSequence({ 'model-a': [200], 'model-b': [400, 200] }),
     });
     const onChange = vi.fn();
     const checker = new ModelHealthChecker({ targets: [{ provider }], onChange });
-    expect(provider.services).toEqual([]);
-    expect(checker.getSnapshot().every((s) => !s.advertised)).toBe(true);
+    expect(provider.services).toEqual(['model-a', 'model-b']);
+    expect(provider.serviceHealth?.['model-a']).toMatchObject({ status: 'failing', reason: 'init_failed' });
+    expect(checker.getSnapshot().every((s) => s.status === 'failing')).toBe(true);
     await checker.runSweep();
-    expect(provider.services).toEqual(['model-a']);
+    expect(failingServices(provider)).toEqual(['model-b']);
     expect(provider.healthCheckAvailable).toBe(true);
     expect(onChange).toHaveBeenCalledTimes(1);
     await checker.runSweep();
-    expect(provider.services).toEqual(['model-a', 'model-b']);
+    expect(failingServices(provider)).toEqual([]);
     expect(onChange).toHaveBeenCalledTimes(2);
   });
 
-  it('reports services withdrawn at initialization once, when it starts', async () => {
+  it('reports services failing at initialization once, when it starts', async () => {
     const provider = makeProvider({ healthCheckAvailable: false, onRequest: statusSequence({ 'model-a': [500], 'model-b': [500] }) });
     const events: ModelHealthEvent[] = [];
     const checker = new ModelHealthChecker({ targets: [{ provider }], onChange: (event) => { events.push(event); } });
@@ -151,10 +155,10 @@ describe('ModelHealthChecker', () => {
     checker.stop();
     checker.start();
     checker.stop();
-    expect(events.map((event) => [event.service, event.status])).toEqual([['model-a', 'removed'], ['model-b', 'removed']]);
+    expect(events.map((event) => [event.service, event.status])).toEqual([['model-a', 'failing'], ['model-b', 'failing']]);
   });
 
-  it('unadvertises a service after the failure threshold and emits an event', async () => {
+  it('announces a service as failing after the failure threshold and emits an event', async () => {
     const provider = makeProvider({
       onRequest: statusSequence({ 'model-a': [500, 500, 500], 'model-b': [200, 200, 200] }),
     });
@@ -167,16 +171,21 @@ describe('ModelHealthChecker', () => {
 
     await checker.runSweep();
     await checker.runSweep();
-    expect(provider.services).toContain('model-a');
+    expect(statusOf(provider, 'model-a')).toBe('unknown');
+    expect(provider.serviceHealth?.['model-a']).toMatchObject({ consecutiveFailures: 2, reason: 'upstream_error', httpStatus: 500 });
 
     await checker.runSweep();
-    expect(provider.services).toEqual(['model-b']);
+    expect(provider.services).toEqual(['model-a', 'model-b']);
+    expect(failingServices(provider)).toEqual(['model-a']);
+    expect(provider.serviceHealth?.['model-a']).toMatchObject({ status: 'failing', consecutiveFailures: 3, reason: 'upstream_error', source: 'probe' });
+    expect(provider.serviceHealth?.['model-a']?.failingSince).toEqual(expect.any(Number));
+    expect(provider.serviceHealth?.['model-b']).toMatchObject({ status: 'healthy', source: 'probe' });
     expect(events).toEqual([
-      expect.objectContaining({ provider: 'test-provider', service: 'model-a', status: 'removed', consecutiveFailures: 3 }),
+      expect.objectContaining({ provider: 'test-provider', service: 'model-a', status: 'failing', consecutiveFailures: 3, reason: 'upstream_error' }),
     ]);
   });
 
-  it('keeps probing a removed service and restores it at its original position on recovery', async () => {
+  it('keeps probing a failing service and recovers it', async () => {
     const provider = makeProvider({
       onRequest: statusSequence({ 'model-a': [502, 502, 200] }),
     });
@@ -189,11 +198,12 @@ describe('ModelHealthChecker', () => {
 
     await checker.runSweep();
     await checker.runSweep();
-    expect(provider.services).toEqual(['model-b']);
+    expect(failingServices(provider)).toEqual(['model-a']);
 
     await checker.runSweep();
-    expect(provider.services).toEqual(['model-a', 'model-b']);
-    expect(events.map((e) => e.status)).toEqual(['removed', 'restored']);
+    expect(statusOf(provider, 'model-a')).toBe('healthy');
+    expect(provider.serviceHealth?.['model-a']).toEqual({ status: 'healthy', checkedAt: expect.any(Number), source: 'probe' });
+    expect(events.map((e) => e.status)).toEqual(['failing', 'recovered']);
   });
 
   it('resets the failure streak on a healthy probe', async () => {
@@ -205,7 +215,8 @@ describe('ModelHealthChecker', () => {
     for (let i = 0; i < 5; i += 1) {
       await checker.runSweep();
     }
-    expect(provider.services).toContain('model-a');
+    expect(statusOf(provider, 'model-a')).toBe('healthy');
+    expect(provider.serviceHealth?.['model-a']?.consecutiveFailures).toBe(2);
   });
 
   it('does not count inconclusive probes (400, 422) as failures', async () => {
@@ -217,10 +228,11 @@ describe('ModelHealthChecker', () => {
     for (let i = 0; i < 5; i += 1) {
       await checker.runSweep();
     }
-    expect(provider.services).toEqual(['model-a', 'model-b']);
+    expect(failingServices(provider)).toEqual([]);
+    expect(provider.serviceHealth?.['model-a']).toBeUndefined();
   });
 
-  it('unadvertises after three 429 responses and restores after a 200', async () => {
+  it('marks a service failing after three 429 responses and recovers after a 200', async () => {
     const provider = makeProvider({
       onRequest: statusSequence({
         'model-a': [429, 429, 429, 200],
@@ -231,16 +243,17 @@ describe('ModelHealthChecker', () => {
 
     await checker.runSweep();
     await checker.runSweep();
-    expect(provider.services).toEqual(['model-a', 'model-b']);
+    expect(failingServices(provider)).toEqual([]);
 
     await checker.runSweep();
-    expect(provider.services).toEqual(['model-b']);
+    expect(failingServices(provider)).toEqual(['model-a']);
+    expect(provider.serviceHealth?.['model-a']).toMatchObject({ reason: 'rate_limited', httpStatus: 429 });
 
     await checker.runSweep();
-    expect(provider.services).toEqual(['model-a', 'model-b']);
+    expect(failingServices(provider)).toEqual([]);
   });
 
-  it('removes the final service, marks the provider unavailable, and restores both', async () => {
+  it('keeps the final service announced while it fails, and recovers it', async () => {
     const provider = makeProvider({
       services: ['only-model'],
       onRequest: statusSequence({ 'only-model': [402, 200] }),
@@ -253,16 +266,16 @@ describe('ModelHealthChecker', () => {
     });
 
     await checker.runSweep();
-    expect(provider.services).toEqual([]);
-    expect(provider.healthCheckAvailable).toBe(false);
+    expect(provider.services).toEqual(['only-model']);
+    expect(provider.serviceHealth?.['only-model']).toMatchObject({ status: 'failing', reason: 'out_of_credit', httpStatus: 402 });
+    expect(provider.healthCheckAvailable).toBeUndefined();
 
     await checker.runSweep();
-    expect(provider.services).toEqual(['only-model']);
-    expect(provider.healthCheckAvailable).toBe(true);
-    expect(events.map((event) => event.status)).toEqual(['removed', 'restored']);
+    expect(statusOf(provider, 'only-model')).toBe('healthy');
+    expect(events.map((event) => event.status)).toEqual(['failing', 'recovered']);
   });
 
-  it('removes every service when the whole upstream is unavailable', async () => {
+  it('marks every service failing when the whole upstream is unavailable', async () => {
     const provider = makeProvider({
       onRequest: async (req) => jsonResponse(req.requestId, 402),
     });
@@ -272,11 +285,11 @@ describe('ModelHealthChecker', () => {
     });
 
     await checker.runSweep();
-    expect(provider.services).toEqual([]);
-    expect(provider.healthCheckAvailable).toBe(false);
+    expect(provider.services).toEqual(['model-a', 'model-b']);
+    expect(failingServices(provider)).toEqual(['model-a', 'model-b']);
     expect(checker.getSnapshot()).toEqual([
-      expect.objectContaining({ service: 'model-a', advertised: false, lastStatusCode: 402 }),
-      expect.objectContaining({ service: 'model-b', advertised: false, lastStatusCode: 402 }),
+      expect.objectContaining({ service: 'model-a', status: 'failing', reason: 'out_of_credit', lastStatusCode: 402 }),
+      expect.objectContaining({ service: 'model-b', status: 'failing', reason: 'out_of_credit', lastStatusCode: 402 }),
     ]);
   });
 
@@ -292,7 +305,8 @@ describe('ModelHealthChecker', () => {
 
     await checker.runSweep();
     await checker.runSweep();
-    expect(provider.services).toEqual(['model-b']);
+    expect(failingServices(provider)).toEqual(['model-a']);
+    expect(provider.serviceHealth?.['model-a']?.reason).toBe('unreachable');
   });
 
   it('treats a hanging probe as unhealthy via the probe timeout', async () => {
@@ -310,7 +324,8 @@ describe('ModelHealthChecker', () => {
     });
 
     await checker.runSweep();
-    expect(provider.services).toEqual(['model-b']);
+    expect(failingServices(provider)).toEqual(['model-a']);
+    expect(provider.serviceHealth?.['model-a']?.reason).toBe('timeout');
   });
 
   it('skips providers that are at capacity without counting failures', async () => {
@@ -323,10 +338,10 @@ describe('ModelHealthChecker', () => {
 
     await checker.runSweep();
     expect(handleRequest).not.toHaveBeenCalled();
-    expect(provider.services).toEqual(['model-a', 'model-b']);
+    expect(provider.serviceHealth).toBeUndefined();
   });
 
-  it('probes through the probeProvider when supplied, but mutates the advertised provider services', async () => {
+  it('probes through the probeProvider when supplied, but publishes health on the advertised provider', async () => {
     const services = ['model-a', 'model-b'];
     const advertised = makeProvider({
       services,
@@ -342,7 +357,8 @@ describe('ModelHealthChecker', () => {
     });
 
     await checker.runSweep();
-    expect(advertised.services).toEqual(['model-b']);
+    expect(failingServices(advertised)).toEqual(['model-a']);
+    expect(probeProvider.serviceHealth).toBeUndefined();
   });
 
   it('picks the probe shape from the service API protocol', async () => {
@@ -376,11 +392,11 @@ describe('ModelHealthChecker', () => {
     await checker.runSweep();
 
     expect(handleRequest).not.toHaveBeenCalled();
-    expect(provider.services).toEqual(['gpt-image-1']);
+    expect(provider.serviceHealth).toBeUndefined();
     expect(checker.getSnapshot()).toEqual([
       expect.objectContaining({
         service: 'gpt-image-1',
-        advertised: true,
+        status: 'unknown',
         consecutiveFailures: 0,
         lastStatusCode: null,
         lastDetail: 'Skipped health probe for unsupported protocol openai-images',
@@ -398,8 +414,8 @@ describe('ModelHealthChecker', () => {
     const snapshot = checker.getSnapshot();
     const a = snapshot.find((s) => s.service === 'model-a');
     const b = snapshot.find((s) => s.service === 'model-b');
-    expect(a).toMatchObject({ advertised: true, consecutiveFailures: 1, lastStatusCode: 500 });
-    expect(b).toMatchObject({ advertised: true, consecutiveFailures: 0, lastStatusCode: 200 });
+    expect(a).toMatchObject({ status: 'unknown', consecutiveFailures: 1, reason: 'upstream_error', lastStatusCode: 500 });
+    expect(b).toMatchObject({ status: 'healthy', consecutiveFailures: 0, source: 'probe', lastStatusCode: 200 });
   });
 });
 
@@ -440,28 +456,30 @@ describe('ModelHealthChecker free media health checks', () => {
     expect(provider.services).toEqual(['wan-2.5', 'kling-2']);
   });
 
-  it('unadvertises every media model after repeated failed account checks and re-advertises once it passes', async () => {
+  it('marks every media model failing after repeated failed account checks and recovers once it passes', async () => {
     const { provider } = makeCheckedProvider([available], [noCredits, noCredits, noCredits, funded(20)]);
     const onChange = vi.fn();
     const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 3, onChange });
     await checker.runSweep();
     await checker.runSweep();
-    expect(provider.services).toEqual(['wan-2.5', 'kling-2']);
+    expect(failingServices(provider)).toEqual([]);
     await checker.runSweep();
-    expect(provider.services).toEqual([]);
-    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ service: 'wan-2.5', status: 'removed', detail: noCredits.reason }));
+    expect(failingServices(provider)).toEqual(['wan-2.5', 'kling-2']);
+    expect(provider.serviceHealth?.['wan-2.5']?.reason).toBe('out_of_credit');
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ service: 'wan-2.5', status: 'failing', detail: noCredits.reason }));
 
     await checker.runSweep();
-    expect([...provider.services].sort()).toEqual(['kling-2', 'wan-2.5']);
-    expect(provider.healthCheckAvailable).toBe(true);
-    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ service: 'kling-2', status: 'restored' }));
+    expect(failingServices(provider)).toEqual([]);
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ service: 'kling-2', status: 'recovered' }));
   });
 
-  it('hides only the model the provider no longer offers', async () => {
+  it('marks failing only the model the provider no longer offers', async () => {
     const { provider } = makeCheckedProvider([both({ status: 'unavailable', reason: 'Venice no longer offers this model' }, { status: 'available' })], [funded(5)]);
     const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1 });
     await checker.runSweep();
-    expect(provider.services).toEqual(['kling-2']);
+    expect(failingServices(provider)).toEqual(['wan-2.5']);
+    expect(provider.serviceHealth?.['wan-2.5']?.reason).toBe('model_unavailable');
+    expect(statusOf(provider, 'kling-2')).toBe('healthy');
   });
 
   it('treats unknown answers, missing answers, and failed checks as inconclusive', async () => {
@@ -472,7 +490,7 @@ describe('ModelHealthChecker free media health checks', () => {
     ]);
     const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1 });
     for (let i = 0; i < 3; i++) await checker.runSweep();
-    expect(provider.services).toEqual(['wan-2.5', 'kling-2']);
+    expect(failingServices(provider)).toEqual([]);
     expect(checker.getSnapshot().every((s) => s.consecutiveFailures === 0)).toBe(true);
   });
 
@@ -481,7 +499,7 @@ describe('ModelHealthChecker free media health checks', () => {
     const accountOnly = { ...provider, checkServiceHealth: undefined, services: provider.services };
     const checker = new ModelHealthChecker({ targets: [{ provider: accountOnly }], failureThreshold: 1 });
     await checker.runSweep();
-    expect(accountOnly.services).toEqual([]);
+    expect(failingServices(accountOnly)).toEqual(['wan-2.5', 'kling-2']);
   });
 
   it('uses the unwrapped probe provider for the free check', async () => {
@@ -490,12 +508,12 @@ describe('ModelHealthChecker free media health checks', () => {
     const checker = new ModelHealthChecker({ targets: [{ provider: wrapper, probeProvider: inner }], failureThreshold: 1 });
     await checker.runSweep();
     expect(checkUpstreamAccount).toHaveBeenCalledTimes(1);
-    expect(wrapper.services).toEqual([]);
+    expect(failingServices(wrapper)).toEqual(['wan-2.5', 'kling-2']);
   });
 });
 
 describe('ModelHealthChecker with providers that share a name', () => {
-  it('probes a withdrawn service only on its own provider and keeps its upstream error', async () => {
+  it('probes a failing service only on its own provider and keeps its upstream error', async () => {
     // Two upstreams on the same plugin: each one's relay refuses the other's models.
     const allowedOnly = (allowed: string[], statuses: Record<string, number[]>): ProbeHandler => async (req) => {
       const body = JSON.parse(new TextDecoder().decode(req.body)) as { model: string };
@@ -509,18 +527,18 @@ describe('ModelHealthChecker with providers that share a name', () => {
     const probedOnB = vi.spyOn(upstreamB, 'handleRequest');
     await checker.runSweep();
     await checker.runSweep();
-    expect(upstreamA.services).toEqual([]);
-    // The withdrawn model keeps its real upstream error, not the other relay's refusal.
+    expect(failingServices(upstreamA)).toEqual(['model-a']);
+    expect(upstreamB.serviceHealth?.['model-a']).toBeUndefined();
+    // The failing model keeps its real upstream error, not the other relay's refusal.
     expect(probedOnB.mock.calls.map(([req]) => JSON.parse(new TextDecoder().decode(req.body)).model)).not.toContain('model-a');
-    const withdrawn = checker.getSnapshot().find((entry) => entry.service === 'model-a')!;
-    expect(withdrawn).toMatchObject({ advertised: false, consecutiveFailures: 2, lastStatusCode: 429 });
+    const failing = checker.getSnapshot().find((entry) => entry.service === 'model-a')!;
+    expect(failing).toMatchObject({ status: 'failing', consecutiveFailures: 2, lastStatusCode: 429 });
 
-    // The upstream recovers: one healthy probe on its own provider restores it,
+    // The upstream recovers: one healthy probe on its own provider recovers it,
     // and the other provider never probes it.
     await checker.runSweep();
-    expect(upstreamA.services).toEqual(['model-a']);
-    expect(upstreamB.services).toEqual(['model-b']);
-    expect(checker.getSnapshot().every((entry) => entry.advertised && entry.consecutiveFailures === 0)).toBe(true);
+    expect(failingServices(upstreamA)).toEqual([]);
+    expect(checker.getSnapshot().every((entry) => entry.status === 'healthy' && entry.consecutiveFailures === 0)).toBe(true);
   });
 });
 
@@ -588,7 +606,8 @@ describe('upstream credit classification in probes and requests', () => {
     const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1, onUpstreamAccount: (event) => { statuses.push(event.status); }, onSweepComplete: () => { rounds += 1; } });
     await checker.runSweep();
     expect(statuses).toEqual(['out_of_credit']);
-    expect(provider.services).toEqual([]);
+    expect(failingServices(provider)).toEqual(['model-a']);
+    expect(provider.serviceHealth?.['model-a']?.reason).toBe('out_of_credit');
     expect(rounds).toBe(1);
   });
 
@@ -637,5 +656,51 @@ describe('upstream credit classification in probes and requests', () => {
     const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1, onUpstreamAccount: (event) => { statuses.push(event.status); } });
     await checker.runSweep();
     expect(statuses).toEqual([]);
+  });
+});
+
+describe('ModelHealthChecker buyer traffic', () => {
+  it('counts a billable buyer success as a check and skips the next probe', async () => {
+    const onRequest = vi.fn(async (req: SerializedHttpRequest) => jsonResponse(req.requestId, 200));
+    const provider = makeProvider({ onRequest });
+    const checker = new ModelHealthChecker({ targets: [{ provider }] });
+    checker.reportUpstreamResponse(provider, 200, '', true, 'model-a');
+    expect(provider.serviceHealth?.['model-a']).toEqual({ status: 'healthy', checkedAt: expect.any(Number), source: 'traffic' });
+    await checker.runSweep();
+    const probed = onRequest.mock.calls.map(([req]) => JSON.parse(new TextDecoder().decode(req.body)).model);
+    expect(probed).toEqual(['model-b']);
+    expect(checker.getSnapshot().find((entry) => entry.service === 'model-a')?.lastTrafficAt).toEqual(expect.any(Number));
+  });
+
+  it('recovers a failing service on a buyer success, which probes alone could not', async () => {
+    const provider = makeProvider({ onRequest: (req) => new Promise((resolve) => setTimeout(() => resolve(jsonResponse(req.requestId, 200)), 50)) });
+    const events: ModelHealthEvent[] = [];
+    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1, probeTimeoutMs: 10, onChange: (event) => { events.push(event); } });
+    await checker.runSweep();
+    expect(failingServices(provider)).toEqual(['model-a', 'model-b']);
+    checker.reportUpstreamResponse(provider, 200, '', true, 'model-a');
+    expect(failingServices(provider)).toEqual(['model-b']);
+    expect(events.map((event) => [event.service, event.status])).toEqual([['model-a', 'failing'], ['model-b', 'failing'], ['model-a', 'recovered']]);
+  });
+
+  it('ignores non-billable successes and buyer-caused errors', async () => {
+    const onRequest = vi.fn(async (req: SerializedHttpRequest) => jsonResponse(req.requestId, 200));
+    const provider = makeProvider({ onRequest });
+    const checker = new ModelHealthChecker({ targets: [{ provider }] });
+    checker.reportUpstreamResponse(provider, 200, '', false, 'model-a');
+    checker.reportUpstreamResponse(provider, 400, '{"error":"context too long"}', true, 'model-a');
+    expect(provider.serviceHealth).toBeUndefined();
+    expect(onRequest).not.toHaveBeenCalled();
+  });
+
+  it('probes early when a buyer request fails upstream, at most once per gap', async () => {
+    const onRequest = vi.fn(async (req: SerializedHttpRequest) => jsonResponse(req.requestId, 500));
+    const provider = makeProvider({ onRequest });
+    const checker = new ModelHealthChecker({ targets: [{ provider }] });
+    checker.reportUpstreamResponse(provider, 503, '', true, 'model-a');
+    checker.reportUpstreamFailure(provider, 'model-a');
+    await vi.waitFor(() => expect(provider.serviceHealth?.['model-a']?.consecutiveFailures).toBe(1));
+    checker.reportUpstreamFailure(provider, 'model-a');
+    expect(onRequest).toHaveBeenCalledTimes(1);
   });
 });

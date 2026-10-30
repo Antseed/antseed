@@ -17,6 +17,7 @@ import type {
   ProviderServiceUnitBillingModelMatrixEntry,
   ResponseAuthPayload,
   SerializedHttpRequest,
+  ServiceHealth,
   SerializedHttpResponse,
 } from '@antseed/protocol';
 
@@ -59,6 +60,8 @@ export interface BuyerPeerView {
   providerServiceApiProtocols?: Record<string, ProviderServiceApiProtocolMatrixEntry>;
   providerServiceUnitBillingModels?: Record<string, ProviderServiceUnitBillingModelMatrixEntry>;
   providerServiceCapabilities?: Record<string, ProviderServiceCapabilityMatrixEntry>;
+  /** Seller self health check results per provider/service (metadata v13+). */
+  providerServiceHealth?: Record<string, { services: Record<string, ServiceHealth> }>;
   defaultInputUsdPerMillion?: number;
   defaultOutputUsdPerMillion?: number;
   defaultCachedInputUsdPerMillion?: number;

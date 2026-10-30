@@ -161,10 +161,12 @@ export function findAdvertisedServiceOffer(
   peer: PeerInfo,
   provider: string,
   requestedService: string,
+  /** Also match services the seller's own health check announces as failing (pinned requests). */
+  includeFailing = false,
 ): NetworkServiceOffer | null {
   const requestedKey = canonicalModelKey(requestedService)
   if (!requestedKey) return null
-  const offers = buildNetworkServiceOffers([peer]).filter((offer) => (
+  const offers = buildNetworkServiceOffers([peer], { includeFailing }).filter((offer) => (
     offer.provider.toLowerCase() === provider.toLowerCase()
     && isRequestedServiceMatch(offer.serviceId, requestedService)
   ))
@@ -219,10 +221,11 @@ function selectAdvertisedServiceByProtocol(
   candidates: string[],
   requestProtocol: ServiceApiProtocol,
   requestedService: string,
+  includeFailing: boolean,
 ): PeerProtocolRoutePlan | null {
   const compatible: Array<{ offer: NetworkServiceOffer; plan: PeerProtocolRoutePlan }> = []
   for (const provider of candidates) {
-    const offer = findAdvertisedServiceOffer(peer, provider, requestedService)
+    const offer = findAdvertisedServiceOffer(peer, provider, requestedService, includeFailing)
     if (!offer) continue
     let supportedProtocols: ServiceApiProtocol[] = []
     if (offer.protocols.length > 0) {
@@ -268,11 +271,15 @@ export function resolvePeerRoutePlan(
   }
 
   const candidates = explicitProvider ? [explicitProvider] : providers
+  // Automatic routing skips services the seller's own health check announces
+  // as failing; a pinned request (lenient) still reaches the seller, which
+  // explains the failure if the upstream is still down.
+  const includeFailing = serviceFilterMode === 'lenient'
 
   if (!requestProtocol) {
     if (requestedService) {
       for (const provider of candidates) {
-        const offer = findAdvertisedServiceOffer(peer, provider, requestedService)
+        const offer = findAdvertisedServiceOffer(peer, provider, requestedService, includeFailing)
         if (offer) return { provider, selection: null, serviceId: offer.serviceId }
       }
       if (serviceFilterMode === 'strict' || !candidates[0]) return null
@@ -283,11 +290,13 @@ export function resolvePeerRoutePlan(
   }
 
   if (requestedService?.trim()) {
-    const exactPlan = selectAdvertisedServiceByProtocol(peer, candidates, requestProtocol, requestedService)
+    const exactPlan = selectAdvertisedServiceByProtocol(peer, candidates, requestProtocol, requestedService, includeFailing)
     if (exactPlan) return exactPlan
     if (isNativeVideoProtocol(requestProtocol)) return null
+    // Failing offers count here too: a model the peer announces as failing
+    // must not slip through the protocol-only fallback below.
     const hasAdvertisedCanonicalOffer = candidates.some(
-      (provider) => findAdvertisedServiceOffer(peer, provider, requestedService) !== null,
+      (provider) => findAdvertisedServiceOffer(peer, provider, requestedService, true) !== null,
     )
     if (hasAdvertisedCanonicalOffer) return null
   }

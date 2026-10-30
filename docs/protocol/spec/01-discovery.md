@@ -67,8 +67,10 @@ Custom bootstrap nodes can be supplied and are merged (deduplicated by `host:por
 **Source:** `node/src/discovery/peer-metadata.ts`
 
 ```
-METADATA_VERSION = 12
+METADATA_VERSION = 13
 MIN_SUPPORTED_METADATA_VERSION = 10
+LEGACY_METADATA_VERSION = 12   // served to buyers that do not ask for a version
+METADATA_VERSION_HEADER = "x-antseed-metadata-version"
 ```
 
 ### Data Structures
@@ -78,7 +80,7 @@ MIN_SUPPORTED_METADATA_VERSION = 10
 | Field       | Type                    | Description                             |
 |-------------|-------------------------|-----------------------------------------|
 | peerId      | PeerId (string)         | 40 hex chars (20-byte EVM address)      |
-| version     | number                  | Supported range is 10 through `METADATA_VERSION` (12) |
+| version     | number                  | Supported range is 10 through `METADATA_VERSION` (13) |
 | displayName | string                  | Optional human-readable node label      |
 | publicAddress | string                | Optional public `host:port` buyers should dial instead of the raw DHT source address |
 | providers   | ProviderAnnouncement[]  | List of provider offerings              |
@@ -105,6 +107,7 @@ MIN_SUPPORTED_METADATA_VERSION = 10
 | serviceApiProtocols| object   | Optional per-service map `{ [service]: string[] }` of supported service API protocols |
 | serviceUnitBillingModels | object | v11+. Optional map `{ [service]: { [protocol]: UnitBillingModelV1 } }` for non-token usage such as `output_images` |
 | serviceCapabilities | object | v12+. Optional map `{ [service]: ServiceCapabilities }` with context/output limits, input/output modalities, reasoning, tool-use, structured-output, and supported-parameter hints |
+| serviceHealth | object | v13+. Optional map `{ [service]: ServiceHealth }` with the seller's own health check result (see below) |
 | maxConcurrency   | number   | Maximum concurrent requests (>= 1)                           |
 | currentLoad      | number   | Current number of active requests                            |
 
@@ -115,9 +118,25 @@ For a service using the `openai-images` API protocol, modality capabilities are 
 
 A seller MUST advertise `image` input only when the exact announced service can accept an image-bearing edit request through its configured provider adapter and upstream route. Support elsewhere in the upstream vendor's API, or through a different upstream model, does not make the announced service edit-capable. Buyers MUST NOT route `/v1/images/edits` to a service that omits `image` from its inputs.
 
+#### ServiceHealth (v13+)
+
+A seller keeps every configured service in `services` and reports its own health check result here. Reasons are fixed codes; upstream error text is never announced.
+
+| Field | Type | Description |
+|---|---|---|
+| status | `"unknown" \| "healthy" \| "failing"` | `failing` after `failureThreshold` failed checks in a row; `healthy` after a passed check |
+| checkedAt | number | Optional Unix ms of the evidence behind `status` |
+| source | `"probe" \| "traffic"` | Optional. `traffic` when a successful billable buyer request gave the evidence |
+| failingSince | number | Optional Unix ms of the first failure in the current failing streak (failing only) |
+| consecutiveFailures | number | Optional failed checks in a row (0..65535) |
+| reason | string | Optional code of the last failure: `timeout`, `rate_limited`, `out_of_credit`, `auth`, `model_unavailable`, `upstream_error`, `unreachable`, `init_failed` |
+| httpStatus | number | Optional upstream HTTP status of the last failed check |
+
+Buyers MUST NOT route automatically to a service whose status is `failing`, and SHOULD leave it out of model catalogs. A request pinned to that seller is still sent; when it fails upstream, the seller answers with the upstream status and an error body whose `error.code` is `seller_self_health_failing`, carrying `service` and `service_health`. Buyers build the message shown to users from those structured fields, not from seller prose.
+
 ### Binary Encoding Format
 
-**Source:** `node/src/discovery/metadata-codec.ts`
+**Source:** `node/src/discovery/metadata/` — `wire.ts` (byte helpers), `fields/` (one module per block), `versions/vNN.ts` (each version's ordered list of blocks, built on the previous version's), `index.ts` (registry and negotiation). Adding a version means adding a field module and a version file; older versions keep their bytes.
 
 All multi-byte integers are big-endian. Strings are UTF-8 encoded.
 
@@ -177,6 +196,12 @@ Per provider (repeated providerCount times):
     Input/output bitsets index into ["text","image","audio","video","pdf"].
     Supported parameters encode as [count:1] then per parameter [len:1][utf8],
     in code-unit sorted order so re-encoding decoded metadata is byte-stable.
+  [serviceHealthEntryCount : 2 bytes uint16 ]        // v13+
+  Per health entry (code-unit sorted by service):
+    [service][statusId:1][presenceBits:1][checkedAt:8?][sourceId:1?][failingSince:8?]
+    [consecutiveFailures:2?][reasonId:1?][httpStatus:2?]
+    Presence bits: checkedAt(0), source(1), failingSince(2), consecutiveFailures(3), reason(4), httpStatus(5).
+    Ids are positions in the append-only SERVICE_HEALTH_STATUSES, SERVICE_HEALTH_SOURCES and SERVICE_HEALTH_REASONS lists.
   [maxConcurrency: 2 bytes  uint16  big-endian ]
   [currentLoad   : 2 bytes  uint16  big-endian ]
 
@@ -219,7 +244,9 @@ Metadata validation is intentionally bounded: buyers accept versions from `MIN_S
 | v11 | accepted | accepted | rejected |
 | v12 | accepted | accepted | accepted |
 
-The decoder cannot safely ignore unknown newer versions because provider extensions are embedded in the signed binary layout. Deploy buyer support first, then seller binaries. Metadata v12 widens service and service-map counts from `uint8` to `uint16`; removing optional fields from config does not make a v12 seller emit an older version.
+The decoder cannot safely ignore unknown newer versions because provider extensions are embedded in the signed binary layout. Metadata v12 widens service and service-map counts from `uint8` to `uint16`; removing optional fields from config does not make a v12 seller emit an older version.
+
+From v13, sellers negotiate the version. A seller signs one document per version it serves (currently 12 and 13) on every refresh. A buyer sends `x-antseed-metadata-version: <newest version it understands>` on `GET /metadata`; the seller answers with the newest version it signs that is not newer. A buyer that sends no header gets `LEGACY_METADATA_VERSION` (12), so buyers released before negotiation keep working. The v12 document has no health block, so it leaves out services announced as failing (and a provider whose services are all failing), which is how sellers withdrew them before v13.
 
 The body (everything except the trailing 65-byte signature) is the data that is signed. `encodeMetadataForSigning()` produces this body without the signature for signing and verification purposes.
 
@@ -249,7 +276,8 @@ The body (everything except the trailing 65-byte signature) is the data that is 
 
 Additional validation rules enforced by `validateMetadata()`:
 
-- `version` must be between `MIN_SUPPORTED_METADATA_VERSION` (10) and `METADATA_VERSION` (12).
+- `version` must be between `MIN_SUPPORTED_METADATA_VERSION` (10) and `METADATA_VERSION` (13).
+- `serviceHealth` requires v13; each entry must reference an announced service and use known status, source and reason codes.
 - `peerId` must be exactly 40 lowercase hex characters.
 - `region` must not be empty.
 - `displayName` is optional, but when present it must be non-empty and <= 64 chars.
@@ -352,7 +380,7 @@ The proof body is:
 The seller runs an HTTP server that exposes its current metadata:
 
 - **Listen address:** `0.0.0.0` on the configured port.
-- **Endpoint:** `GET /metadata`
+- **Endpoint:** `GET /metadata`, optionally with `x-antseed-metadata-version: <n>` (see Version Compatibility and Rollout)
 - **Success response:** `200` with `content-type: application/json` body containing JSON-serialized `PeerMetadata`.
 - **Not ready response:** `503` with `{"error": "metadata not available"}` when `getMetadata()` returns `null`.
 - **Unknown path:** `404` with `{"error": "not found"}`.
@@ -423,10 +451,10 @@ The `PeerLookup` class orchestrates the full discovery flow:
 The `PeerAnnouncer` class handles the seller-side announcement lifecycle:
 
 1. Build a `PeerMetadata` object from the configured providers, current pricing, current load, and region.
-2. Set `version` to `METADATA_VERSION` (10) and `timestamp` to `Date.now()`.
+2. Set `version` to `METADATA_VERSION` (13) and `timestamp` to `Date.now()`, including each provider's live `serviceHealth`.
 3. Include configured seller contract, verification claims, and peer capabilities when present.
-4. Encode the body (without signature) via `encodeMetadataForSigning()`.
-5. Sign the body with the seller's secp256k1 private key (via EIP-191 personal_sign).
+4. For every served version, build that version's document (`getMetadataCodec(v).fromLatest()`) and encode its body (without signature) via `encodeMetadataForSigning()`.
+5. Sign each body with the seller's secp256k1 private key (via EIP-191 personal_sign).
 6. Announce DHT topics in parallel at the configured signaling port (constant in service count):
    - subnet topic (`subnetTopic(subnetOf(peerId))`)
    - wildcard topic (`ANTSEED_WILDCARD_TOPIC`), kept during the subnet rollout so older buyers still find this peer

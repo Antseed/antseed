@@ -29,14 +29,14 @@ The dashboard has:
 - **Status**: running or stopped, uptime, peer id and provider.
 - **Today**: requests, revenue, active channels and the gas balance.
 - **Last 14 days**: requests or revenue per UTC day, from the seller's metering ledger.
-- **Models**: every service with its health-check status. A service that keeps failing is **Withdrawn** (no longer advertised) until a check passes again. The last result shows the upstream error, for example `HTTP 402` when the upstream account is out of credit.
-- **Recent events**: starts and stops, services withdrawn or restored, gas running out or refilled, quiet periods.
+- **Models**: every service with its health-check status, as buyers see it. A service that keeps failing is **Failing**: it stays advertised with that status, and buyers skip it until a check or a buyer request succeeds again. The last result shows the upstream error, for example `HTTP 402` when the upstream account is out of credit.
+- **Recent events**: starts and stops, services failing or recovered, gas running out or refilled, quiet periods.
 - **Payments**: settled and delivered USDC and channel counts from the local channel ledger.
 - **Market**, **Reputation**, **Promote** and **Settings** pages: see below.
 
 When a newer Antseed is out, a line at the top says so and how this seller updates: the command for how it was installed (for example `npm install -g @antseed/cli@latest`), then restart the seller; in a container, deploy an image with the new `@antseed/cli`. The dashboard never installs it. **Dismiss** hides it until the next version.
 
-![The seller dashboard: requests, revenue, active channels and gas today, requests per day, and model health with a withdrawn model](/img/docs/seller/status.webp)
+![The seller dashboard: requests, revenue, active channels and gas today, requests per day, and model health with a failing model](/img/docs/seller/status.webp)
 
 It listens on `127.0.0.1:3120` by default (`--port`, `--host`). The URL it prints carries a session token: anyone with the URL can see the seller's earnings and change its alerts and settings, so treat it like a password.
 
@@ -100,9 +100,9 @@ The seller can send its events to Telegram, to a webhook, or both. Set them up i
 
 Alerts are per upstream (a provider in your config), not per model:
 
-- **Out of credit** (critical): the first time an upstream answers a health check, an account check or a buyer's request with HTTP 402 or a billing error ("positive balance", "insufficient balance" or "credits", `insufficient_quota`, "credit balance is too low"; a rate limit is not one), or a provider account check reports the balance at or under its minimum, one alert names it and its host and says to top it up, with the upstream's error. Its models are still withdrawn after the failed health checks, without a message for each. Another alert says when it has credit again.
+- **Out of credit** (critical): the first time an upstream answers a health check, an account check or a buyer's request with HTTP 402 or a billing error ("positive balance", "insufficient balance" or "credits", `insufficient_quota`, "credit balance is too low"; a rate limit is not one), or a provider account check reports the balance at or under its minimum, one alert names it and its host and says to top it up, with the upstream's error. Its models are still marked failing after the failed health checks, without a message for each. Another alert says when it has credit again.
 - **Low balance** (warning): for upstreams that report their balance (account checks), an alert when it drops under `lowBalanceUsd` (default $5, 0 turns it off; **Low upstream balance** on the page, `antseed seller alerts set --low-balance`), and another when it is back above.
-- **Models withdrawn**: models withdrawn in one health-check round are one alert listing them, more withdrawn in a later round update it, and the recovery is one alert when all of them are back. The dashboard's events still list each model.
+- **Models failing**: models marked failing in one health-check round are one alert listing them, more failing in a later round update it, and the recovery is one alert when all of them are back. The dashboard's events still list each model.
 
 `antseed seller start` sends alerts whenever a channel is set up; with none it journals the events and says so in its startup log. Alert changes apply to the running seller within a few seconds, without a restart.
 
@@ -169,7 +169,7 @@ The dashboard and the commands read the chain sparingly. Nothing is read while n
 
 | Metric | Description |
 |---|---|
-| `antseed_seller_model_advertised` | 1 while a service passes health checks, 0 once it is withdrawn. Labels `provider` (the provider's name in your config), `plugin` and `service`. |
+| `antseed_seller_model_advertised` | 1 while buyers are told a service is usable, 0 once the seller's health check announces it as failing (buyers then skip it). Labels `provider` (the provider's name in your config), `plugin` and `service`. |
 | `antseed_seller_model_consecutive_failures` | Failed health checks in a row. |
 | `antseed_seller_model_last_status_code` | HTTP status of the last failed upstream check (402: upstream out of credit). |
 | `antseed_seller_model_last_probe_timestamp_seconds` | When the service was last checked. |

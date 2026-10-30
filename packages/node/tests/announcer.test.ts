@@ -7,7 +7,9 @@ import {
   MAX_SERVICES_PER_PROVIDER,
   validateMetadata,
 } from '../src/discovery/metadata-validator.js';
-import { bytesToHex } from '../src/p2p/identity.js';
+import { bytesToHex, hexToBytes, verifySignature } from '../src/p2p/identity.js';
+import { encodeMetadataForSigning } from '../src/discovery/metadata-codec.js';
+import { METADATA_VERSION, type PeerMetadata } from '../src/discovery/peer-metadata.js';
 import { toPeerId } from '../src/types/peer.js';
 import {
   CONNECTION_CAPABILITY_RELAYS_SWEEPS_V1,
@@ -16,6 +18,12 @@ import {
   CONNECTION_CAPABILITY_SIGNED_SDP_V1,
   CONNECTION_CAPABILITY_TCP_ENC_V1,
 } from '../src/types/protocol.js';
+
+/** Verifies the signature the way a buyer does: on the JSON it received, re-encoded. */
+async function verifiesAsBuyer(metadata: PeerMetadata): Promise<boolean> {
+  const received = JSON.parse(JSON.stringify(metadata)) as PeerMetadata;
+  return verifySignature(received.peerId, hexToBytes(received.signature), encodeMetadataForSigning(received));
+}
 
 function makeBaseConfig(): AnnouncerConfig {
   const privateKey = randomBytes(32);
@@ -161,7 +169,7 @@ describe('PeerAnnouncer metadata versions', () => {
     await announcer.announce();
 
     const metadata = announcer.getLatestMetadata();
-    expect(metadata?.version).toBe(12);
+    expect(metadata?.version).toBe(METADATA_VERSION);
     expect(metadata?.providers[0]?.serviceUnitBillingModels?.['gpt-image-1']?.['openai-images']).toEqual({
       version: 1,
       components: [{ unit: 'output_images', priceUsd: 0.04 }],
@@ -177,16 +185,46 @@ describe('PeerAnnouncer metadata versions', () => {
     await announcer.announce();
 
     const metadata = announcer.getLatestMetadata();
-    expect(metadata?.version).toBe(12);
+    expect(metadata?.version).toBe(METADATA_VERSION);
     expect(metadata?.providers[0]?.serviceUnitBillingModels).toBeUndefined();
   });
 
-  it('keeps v12 for sellers that announce video options', async () => {
+  it('signs a legacy v12 copy for buyers that do not ask for a version', async () => {
     const config = makeBaseConfig();
     config.providers[0]!.serviceCapabilities = { [config.providers[0]!.services[0]!]: { video: { durationsSeconds: [5] } } };
     const announcer = new PeerAnnouncer(config);
     await announcer.announce();
-    expect(announcer.getLatestMetadata()?.version).toBe(12);
+    const legacy = announcer.getMetadataForVersion(undefined)!;
+    expect(legacy.version).toBe(12);
+    expect(await verifiesAsBuyer(legacy)).toBe(true);
+    expect(announcer.getMetadataForVersion(METADATA_VERSION)?.version).toBe(METADATA_VERSION);
+  });
+
+  it('announces service health in v13 and leaves failing services out of v12', async () => {
+    const config = makeBaseConfig();
+    const services = ['model-a', 'model-b'];
+    config.providers = [{
+      provider: 'openai',
+      services,
+      serviceHealth: () => ({
+        'model-a': { status: 'failing', reason: 'timeout', consecutiveFailures: 3, failingSince: 1_700_000_000_000, checkedAt: 1_700_000_100_000, source: 'probe' },
+        'model-b': { status: 'healthy', checkedAt: 1_700_000_100_000, source: 'traffic' },
+        'not-listed': { status: 'failing' },
+      }),
+      maxConcurrency: 5,
+    }];
+    const announcer = new PeerAnnouncer(config);
+    await announcer.announce();
+
+    const current = announcer.getMetadataForVersion(13)!;
+    expect(current.providers[0]!.services).toEqual(services);
+    expect(Object.keys(current.providers[0]!.serviceHealth ?? {})).toEqual(['model-a', 'model-b']);
+    expect(await verifiesAsBuyer(current)).toBe(true);
+
+    const legacy = announcer.getMetadataForVersion(undefined)!;
+    expect(legacy.providers[0]!.services).toEqual(['model-b']);
+    expect(legacy.providers[0]!.serviceHealth).toBeUndefined();
+    expect(await verifiesAsBuyer(legacy)).toBe(true);
   });
 });
 

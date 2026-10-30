@@ -47,6 +47,22 @@ function withEstablishedHistory(peer: PeerInfo): PeerInfo {
 }
 
 describe('LocalRouter', () => {
+  it('skips a peer whose self health check announces the requested model as failing', () => {
+    const router = new LocalRouter({ maxPricing: { defaults: { inputUsdPerMillion: 1_000, outputUsdPerMillion: 1_000 } } });
+    const pricing = { anthropic: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'model-x': { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } } };
+    const failing = makePeer({
+      peerId: '1'.repeat(40) as PeerInfo['peerId'],
+      providerPricing: pricing,
+      providerServiceHealth: { anthropic: { services: { 'model-x': { status: 'failing', reason: 'timeout' } } } },
+    });
+    const healthy = makePeer({
+      peerId: '2'.repeat(40) as PeerInfo['peerId'],
+      providerPricing: { anthropic: { ...pricing.anthropic, defaults: { inputUsdPerMillion: 5, outputUsdPerMillion: 5 }, services: { 'model-x': { inputUsdPerMillion: 5, outputUsdPerMillion: 5 } } } },
+    });
+    expect(router.selectPeer(makeRequest('model-x'), [failing, healthy])?.peerId).toBe(healthy.peerId);
+    expect(router.selectPeer(makeRequest('model-x'), [failing])).toBeNull();
+  });
+
   it('selects cheapest peer regardless of provider name', () => {
     const router = new LocalRouter({
       maxPricing: {

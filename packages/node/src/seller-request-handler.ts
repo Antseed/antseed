@@ -56,6 +56,7 @@ import {
   selectTargetProtocolForRequest,
 } from '@antseed/api-adapter';
 import { parseResponseUsage } from './utils/response-usage.js';
+import { buildSelfHealthErrorResponse, isUpstreamFailureStatus } from './health/self-health-error.js';
 import { routingProtocolForPath, routingProtocolOf, routingRequestOf, routingWireProtocol, ROUTING_PROTOCOLS, type RoutingProtocol } from '@antseed/protocol/routing';
 
 type ProviderTokenPricing = import('./interfaces/seller-provider.js').ProviderTokenPricingUsdPerMillion;
@@ -773,12 +774,17 @@ export class SellerRequestHandler {
             response = this._acceptVideoCreate(videoRoute, request, response, buyerPeerId, requestedModel, requestBilling, unitBillingModel, oneOffChannelId);
           }
           statusCode = response.statusCode;
+          // The upstream's answer for its account and model health (an out-of-credit error is seen here first).
+          // Polling or downloading a video already paid for says nothing about the account's credit.
+          const upstreamBody = response.body ?? new Uint8Array(0);
+          this._deps.emit('provider:response', { provider, service: requestedModel, statusCode, body: statusCode >= 400 ? new TextDecoder().decode(upstreamBody.slice(0, 2_000)) : '', billable: videoRoute?.action !== 'retrieve' });
+          const failingHealth = provider.serviceHealth?.[requestedModel];
+          if (!streamedResponseStarted && failingHealth?.status === 'failing' && isUpstreamFailureStatus(statusCode)) {
+            response = buildSelfHealthErrorResponse(request.requestId, statusCode, requestedModel, failingHealth, upstreamBody);
+          }
           responseBody = response.body ?? new Uint8Array(0);
           responseForAuth = response;
           if (downloadHash) responseForAuth = { ...response, streamedBody: downloadHash.finish() };
-          // The upstream's answer for its account health (an out-of-credit error is seen here first).
-          // Polling or downloading a video already paid for says nothing about the account's credit.
-          this._deps.emit('provider:response', { provider, statusCode, body: statusCode >= 400 ? new TextDecoder().decode(responseBody.slice(0, 2_000)) : '', billable: videoRoute?.action !== 'retrieve' });
           if (statusCode >= 400) {
             const errBody = new TextDecoder().decode(responseBody).slice(0, 200);
             debugWarn(`[SellerHandler] Provider error response: status=${statusCode} provider="${provider.name}" model="${requestedModel}" buyer=${buyerPeerId.slice(0, 12)}... (${Date.now() - startTime}ms) body=${errBody}`);
@@ -812,6 +818,7 @@ export class SellerRequestHandler {
         } catch (err) {
           const message = err instanceof Error ? err.message : "Internal error";
           failureMessage = message;
+          this._deps.emit('provider:failure', { provider, service: requestedModel });
           debugWarn(`[SellerHandler] Provider exception: provider="${provider.name}" model="${requestedModel}" buyer=${buyerPeerId.slice(0, 12)}... (${Date.now() - startTime}ms) ${message}`);
           if (videoRoute?.action === 'create') this._closeOneOffBestEffort(oneOffChannelId, 'video create failed');
           responseBody = new TextEncoder().encode(message);
@@ -842,12 +849,16 @@ export class SellerRequestHandler {
             }
           } else {
             statusCode = 500;
-            responseForAuth = {
-              requestId: request.requestId,
-              statusCode: 500,
-              headers: { "content-type": "text/plain" },
-              body: responseBody,
-            };
+            const failingHealth = provider.serviceHealth?.[requestedModel];
+            responseForAuth = failingHealth?.status === 'failing'
+              ? buildSelfHealthErrorResponse(request.requestId, 500, requestedModel, failingHealth, responseBody)
+              : {
+                requestId: request.requestId,
+                statusCode: 500,
+                headers: { "content-type": "text/plain" },
+                body: responseBody,
+              };
+            responseBody = responseForAuth.body;
             mux.sendProxyResponse(responseForAuth);
           }
         }
@@ -1214,7 +1225,9 @@ export class SellerRequestHandler {
       );
     }
     if (!provider && !(videoRoute && requestedProvider)) {
-      provider = providers.find((candidate) => matchesService(candidate));
+      // Prefer a provider whose self health check is not failing this service.
+      provider = providers.find((candidate) => matchesService(candidate) && candidate.serviceHealth?.[requestedService]?.status !== 'failing')
+        ?? providers.find((candidate) => matchesService(candidate));
     }
     return provider;
   }

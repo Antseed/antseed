@@ -161,9 +161,9 @@ export function registerSellerStatusCommand(sellerCmd: Command): void {
           // A seller that crashed or was killed leaves its last state behind: not live health.
           table.push(['Health', chalk.dim('not running; models, gas and alerts show once it is')]);
         } else if (health.available) {
-          const withdrawn = health.models.filter((model) => !model.advertised);
+          const failing = health.models.filter((model) => model.status === 'failing');
           table.push(
-            ['Models', health.models.length === 0 ? chalk.dim('no health data yet') : withdrawn.length === 0 ? `${health.models.length} advertised` : chalk.yellow(`${withdrawn.length} withdrawn: ${withdrawn.map((model) => `${model.service} (${model.lastStatusCode ?? model.lastDetail ?? 'failing'})`).join(', ')}`)],
+            ['Models', health.models.length === 0 ? chalk.dim('no health data yet') : failing.length === 0 ? `${health.models.length} healthy or unchecked` : chalk.yellow(`${failing.length} failing: ${failing.map((model) => `${model.service} (${model.reason ?? model.lastStatusCode ?? model.lastDetail ?? 'failing'})`).join(', ')}`)],
             ['Gas', health.gas?.balanceEth == null ? chalk.dim('no gas checks') : `${health.gas.balanceEth} ETH${health.gas.depleted ? chalk.yellow(' (below minimum, advertising paused)') : ''}`],
             ['Alerts', health.alerts?.channels.length ? health.alerts.channels.join(', ') : chalk.dim('off (antseed seller alerts set)')],
           );

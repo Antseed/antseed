@@ -539,6 +539,7 @@ export function sellerSummaryFromMetadata(metadata: PeerMetadata): SellerSummary
   const providerServiceApiProtocols: NonNullable<BuyerPeerView['providerServiceApiProtocols']> = {};
   const providerServiceUnitBillingModels: NonNullable<BuyerPeerView['providerServiceUnitBillingModels']> = {};
   const providerServiceCapabilities: NonNullable<BuyerPeerView['providerServiceCapabilities']> = {};
+  const providerServiceHealth: NonNullable<BuyerPeerView['providerServiceHealth']> = {};
 
   for (const announcement of metadata.providers) {
     const provider = announcement.provider;
@@ -567,6 +568,7 @@ export function sellerSummaryFromMetadata(metadata: PeerMetadata): SellerSummary
       announcement.serviceUnitBillingModels,
     );
     mergeServiceMatrix(providerServiceCapabilities, provider, announcement.serviceCapabilities);
+    mergeServiceMatrix(providerServiceHealth, provider, announcement.serviceHealth);
   }
 
   return {
@@ -584,6 +586,7 @@ export function sellerSummaryFromMetadata(metadata: PeerMetadata): SellerSummary
       ? { providerServiceUnitBillingModels }
       : {}),
     ...(Object.keys(providerServiceCapabilities).length ? { providerServiceCapabilities } : {}),
+    ...(Object.keys(providerServiceHealth).length ? { providerServiceHealth } : {}),
     defaultInputUsdPerMillion: firstProvider?.defaultPricing.inputUsdPerMillion,
     defaultOutputUsdPerMillion: firstProvider?.defaultPricing.outputUsdPerMillion,
     defaultCachedInputUsdPerMillion: firstProvider?.defaultPricing.cachedInputUsdPerMillion,

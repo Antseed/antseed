@@ -191,10 +191,18 @@ export class LocalRouter implements Router {
       .filter((provider) => provider.length > 0);
 
     if (requestedService && peer.providerPricing) {
+      let failingMatch: string | null = null;
       for (const provider of availableProviders) {
         const pricing = peer.providerPricing[provider];
-        if (pricing?.services?.[requestedService]) return provider;
+        if (!pricing?.services?.[requestedService]) continue;
+        // The seller's own health check says this provider cannot serve it right now.
+        if (peer.providerServiceHealth?.[provider]?.services?.[requestedService]?.status === 'failing') {
+          failingMatch ??= provider;
+          continue;
+        }
+        return provider;
       }
+      if (failingMatch) return null;
     }
 
     return availableProviders[0] ?? null;

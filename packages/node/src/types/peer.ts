@@ -1,4 +1,4 @@
-import type { PeerMetadata } from "../discovery/peer-metadata.js";
+import type { PeerMetadata, ServiceHealth } from "../discovery/peer-metadata.js";
 import type { DomainVerificationResult } from "../discovery/domain-verification.js";
 import type { GithubVerificationResult } from "../discovery/github-verification.js";
 
@@ -70,6 +70,8 @@ export interface PeerInfo {
   providerServiceUnitBillingModels?: Record<string, ProviderServiceUnitBillingModelMatrixEntry>;
   /** Provider/service model capability hints announced by seller. */
   providerServiceCapabilities?: Record<string, ProviderServiceCapabilityMatrixEntry>;
+  /** Provider/service self health check results announced by seller (metadata v13+). */
+  providerServiceHealth?: Record<string, { services: Record<string, ServiceHealth> }>;
   /** Deterministic fallback default input price (USD per 1M tokens). */
   defaultInputUsdPerMillion?: number;
   /** Deterministic fallback default output price (USD per 1M tokens). */

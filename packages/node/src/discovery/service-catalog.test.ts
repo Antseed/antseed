@@ -1,7 +1,34 @@
 import { describe, expect, it } from 'vitest';
 import { buildNetworkServiceOffers } from './service-catalog.js';
+import { isPeerServiceFailing, peerServiceHealth } from './service-health.js';
 
 describe('buildNetworkServiceOffers', () => {
+  it('leaves out services the seller announces as failing unless asked, and attaches health', () => {
+    const peer = {
+      peerId: 'seller',
+      providers: ['openai'],
+      providerPricing: { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'model-a': {}, 'model-b': {} } } },
+      providerServiceHealth: { openai: { services: {
+        'model-a': { status: 'failing' as const, reason: 'timeout' as const },
+        'model-b': { status: 'healthy' as const, source: 'traffic' as const },
+      } } },
+    };
+    expect(buildNetworkServiceOffers([peer]).map((offer) => [offer.serviceId, offer.health?.status])).toEqual([['model-b', 'healthy']]);
+    expect(buildNetworkServiceOffers([peer], { includeFailing: true }).map((offer) => offer.serviceId)).toEqual(['model-a', 'model-b']);
+  });
+
+  it('reads a service as failing only when every provider announcing it is failing', () => {
+    const peer = {
+      providerPricing: { a: { services: { m: {} } }, b: { services: { m: {} } } },
+      providerServiceHealth: { a: { services: { m: { status: 'failing' as const } } } },
+    };
+    expect(isPeerServiceFailing(peer, 'm')).toBe(false);
+    expect(isPeerServiceFailing(peer, 'm', 'a')).toBe(true);
+    peer.providerServiceHealth = { ...peer.providerServiceHealth, b: { services: { m: { status: 'failing' as const } } } } as typeof peer.providerServiceHealth;
+    expect(isPeerServiceFailing(peer, 'm')).toBe(true);
+    expect(peerServiceHealth({}, 'm')).toBeUndefined();
+  });
+
   it('projects peer-level verifier advertisements to every service offer', () => {
     const offers = buildNetworkServiceOffers([{
       peerId: 'tee-seller', providers: ['openai'], services: ['model-a', 'model-b'],

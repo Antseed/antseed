@@ -28,6 +28,7 @@ import {
 import { DEFAULT_BUYER_PEER_REFRESH_INTERVAL_MS } from '../config/defaults.js'
 import { TeeVerification } from './tee-verification.js'
 import { ConversationStore } from './conversation-store.js'
+import { resolvePeerRoutePlan } from './routing.js'
 import {
   BuyerProxy,
   isModelNotFoundResponse,
@@ -2301,6 +2302,24 @@ test('selectCandidatePeersForRouting excludes peers when requested service is no
   assert.equal(result.candidatePeers[0]?.peerId, claudePeer.peerId)
   assert.equal(result.routePlanByPeerId.has(openAiPeer.peerId), false)
   assert.equal(result.routePlanByPeerId.get(claudePeer.peerId)?.provider, 'claude-oauth')
+})
+
+test('automatic routing skips a model the seller announces as failing, and a pin still reaches it', () => {
+  const failingPeer = makePeer('a', ['openai'])
+  failingPeer.providerPricing = { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'gpt-6-sol': { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } } }
+  failingPeer.providerServiceApiProtocols = { openai: { services: { 'gpt-6-sol': ['openai-chat-completions'] } } }
+  failingPeer.providerServiceHealth = { openai: { services: { 'gpt-6-sol': { status: 'failing', reason: 'timeout', consecutiveFailures: 3 } } } }
+  const healthyPeer = makePeer('b', ['openai'])
+  healthyPeer.providerPricing = { openai: { defaults: { inputUsdPerMillion: 2, outputUsdPerMillion: 2 }, services: { 'gpt-6-sol': { inputUsdPerMillion: 2, outputUsdPerMillion: 2 } } } }
+  healthyPeer.providerServiceApiProtocols = { openai: { services: { 'gpt-6-sol': ['openai-chat-completions'] } } }
+
+  const strict = selectCandidatePeersForRouting([failingPeer, healthyPeer], 'openai-chat-completions', 'gpt-6-sol', null, 'strict')
+  assert.deepEqual(strict.candidatePeers.map((peer) => peer.peerId), [healthyPeer.peerId])
+  // Model-only requests are ranked from a strict plan per peer, which a failing model never gets.
+  assert.equal(resolvePeerRoutePlan(failingPeer, null, 'gpt-6-sol', null, 'strict'), null)
+  assert.equal(resolvePeerRoutePlan(healthyPeer, null, 'gpt-6-sol', null, 'strict')?.serviceId, 'gpt-6-sol')
+  const pinned = selectCandidatePeersForRouting([failingPeer], 'openai-chat-completions', 'gpt-6-sol', null, 'lenient')
+  assert.equal(pinned.routePlanByPeerId.get(failingPeer.peerId)?.serviceId, 'gpt-6-sol')
 })
 
 test('selectCandidatePeersForRouting in lenient mode keeps a peer whose advertised services miss the requested model, as long as the provider protocol set matches', () => {

@@ -743,7 +743,11 @@ function selectProviderForService(
     return null;
   }
 
+  // Mirrors the seller, which prefers a provider whose self health check is not failing the service.
   const match = providers.find((provider) =>
+    providerOffersService(peer, provider, service)
+    && peer.providerServiceHealth?.[provider]?.services[service]?.status !== 'failing',
+  ) ?? providers.find((provider) =>
     providerOffersService(peer, provider, service),
   );
   return match ?? providers[0] ?? null;

@@ -3,6 +3,7 @@ import {
   type SerializedHttpResponse,
 } from '@antseed/protocol/http';
 import type { ServiceApiProtocol } from '@antseed/protocol/service-api';
+import { describeServiceHealth, parseServiceHealth, SELLER_SELF_HEALTH_FAILING_CODE } from '@antseed/protocol/peer-metadata';
 
 const USER_ACTIONABLE_PEER_ERROR_IDS = new Set([
   'content_policy_violation',
@@ -281,6 +282,34 @@ export function adaptPeerFaultErrorResponse(
       headers: { ...headers, 'content-type': 'application/json' },
       body: new TextEncoder().encode(JSON.stringify(body)),
     };
+  }
+  if (details.id === SELLER_SELF_HEALTH_FAILING_CODE && details.error?.antseed_fault !== 'peer') {
+    const health = parseServiceHealth(details.error?.service_health);
+    const service = typeof details.error?.service === 'string' ? details.error.service.slice(0, 128) : null;
+    if (health && service) {
+      // Rebuilt from the seller's structured health fields, not its prose.
+      const pinned = options?.pinned === true;
+      const error = {
+        type: SELLER_SELF_HEALTH_FAILING_CODE,
+        code: SELLER_SELF_HEALTH_FAILING_CODE,
+        message: [
+          describeServiceHealth(service, health),
+          pinned ? 'Try another peer or use Auto routing.' : 'Antseed will route to another peer when one serves this model.',
+          `Original Response: ${JSON.stringify({ message: details.message ?? 'No additional details were provided.', status: response.statusCode })}`,
+        ].join('\n'),
+        service,
+        service_health: health,
+        antseed_fault: 'peer',
+        antseed_pinned: pinned,
+        peer_status: response.statusCode,
+      };
+      const body = requestProtocol === 'anthropic-messages' ? { type: 'error', error } : { error };
+      return {
+        ...response,
+        headers: { ...headers, 'content-type': 'application/json' },
+        body: new TextEncoder().encode(JSON.stringify(body)),
+      };
+    }
   }
   if (isUserActionablePeerError(response, details.id)) {
     return { ...response, headers };
