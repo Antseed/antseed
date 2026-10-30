@@ -16,6 +16,17 @@ describe('buildNetworkServiceOffers', () => {
     expect(buildNetworkServiceOffers([peer], { includeFailing: true }).map((offer) => offer.serviceId)).toEqual(['model-a', 'model-b']);
   });
 
+  it('routes a protocol only failing upstreams serve only when failing offers are asked for', () => {
+    const peer = {
+      peerId: 'seller',
+      providers: ['venice', 'venice'],
+      providerServiceApiProtocols: { venice: { services: { 'video-a': ['venice-video' as const, 'fal-video' as const] } } },
+      providerServiceHealth: { venice: { services: { 'video-a': { status: 'healthy' as const } }, failingProtocols: { 'video-a': ['fal-video' as const] } } },
+    };
+    expect(buildNetworkServiceOffers([peer]).map((offer) => offer.protocols)).toEqual([['venice-video']]);
+    expect(buildNetworkServiceOffers([peer], { includeFailing: true }).map((offer) => offer.protocols)).toEqual([['venice-video', 'fal-video']]);
+  });
+
   it('projects peer-level verifier advertisements to every service offer', () => {
     const offers = buildNetworkServiceOffers([{
       peerId: 'tee-seller', providers: ['openai'], services: ['model-a', 'model-b'],

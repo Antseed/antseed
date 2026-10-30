@@ -1,4 +1,4 @@
-import { isServiceHealthFailing, normalizedModelReputationScore, providerServiceHealthFor, type Router, type PeerInfo, type SerializedHttpRequest } from '@antseed/node';
+import { isProviderServiceRouteFailing, normalizedModelReputationScore, type Router, type PeerInfo, type SerializedHttpRequest } from '@antseed/node';
 import {
   scoreCandidates,
   PeerMetricsTracker,
@@ -202,7 +202,7 @@ export class LocalRouter implements Router {
         const pricing = peer.providerPricing[provider];
         if (!pricing?.services?.[requestedService]) continue;
         // The seller's own health check says this provider cannot serve it right now.
-        if (isServiceHealthFailing(providerServiceHealthFor(peer.providerServiceHealth, provider, requestedService))) {
+        if (isProviderServiceRouteFailing(peer.providerServiceHealth, provider, requestedService)) {
           failingMatch ??= provider;
           continue;
         }

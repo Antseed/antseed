@@ -2,6 +2,7 @@ import { CODING_ONLY_SUFFIX_RE, canonicalModelKey } from '../model-identity.js';
 import { parseVerifierCapabilities } from './verifier-capabilities.js';
 import { NATIVE_VIDEO_PROTOCOLS, isNativeVideoProtocol, isRoutingProtocol, type NativeVideoProtocol } from '@antseed/protocol/service-api';
 import { isServiceHealthFailing, providerServiceHealthFor, type ServiceHealth, type VideoOptions } from '@antseed/protocol/peer-metadata';
+import type { ProviderServiceHealthMatrixEntry } from '@antseed/protocol/peer-pricing';
 
 export type CatalogServiceProtocol =
   | 'anthropic-messages'
@@ -56,7 +57,7 @@ export type NetworkServiceCatalogPeer = {
     }>;
   }>;
   providerServiceCategories?: Record<string, { services: Record<string, string[]> }>;
-  providerServiceHealth?: Record<string, { services: Record<string, ServiceHealth> }>;
+  providerServiceHealth?: Record<string, ProviderServiceHealthMatrixEntry>;
   defaultInputUsdPerMillion?: number;
   defaultOutputUsdPerMillion?: number;
   defaultCachedInputUsdPerMillion?: number;
@@ -194,7 +195,11 @@ export function buildNetworkServiceOffers(
       for (const serviceId of serviceIds) {
         const health = providerServiceHealthFor(peer.providerServiceHealth, provider, serviceId);
         if (isServiceHealthFailing(health) && !options.includeFailing) continue;
-        const protocols = peer.providerServiceApiProtocols?.[provider]?.services?.[serviceId] ?? [];
+        const announcedProtocols = peer.providerServiceApiProtocols?.[provider]?.services?.[serviceId] ?? [];
+        // A protocol only failing upstreams serve is routed only when failing offers are wanted.
+        const failingProtocols: readonly string[] = peer.providerServiceHealth?.[provider]?.failingProtocols?.[serviceId] ?? [];
+        const protocols = options.includeFailing ? announcedProtocols : announcedProtocols.filter((protocol) => !failingProtocols.includes(protocol));
+        if (announcedProtocols.length > 0 && protocols.length === 0) continue;
         const billingModels = peer.providerServiceUnitBillingModels?.[provider]?.services?.[serviceId];
         if (protocols.some(isRoutingProtocol) || Object.values(billingModels ?? {}).some(model => (model?.components ?? []).some(component => component.unit === 'completed_requests'))) continue;
         const capabilities = peer.providerServiceCapabilities?.[provider]?.services?.[serviceId];

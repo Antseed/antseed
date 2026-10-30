@@ -14,7 +14,7 @@ import {
   ANTSEED_ATTEST_PATH,
   adaptPeerFaultErrorResponse,
   describeServiceHealth,
-  parseServiceHealth,
+  parseProviderServiceHealthMatrix,
   SELF_HEALTH_ERROR_STATUS,
   SELLER_SELF_HEALTH_FAILING_CODE,
   isFreeTierExhaustedResponse,
@@ -894,23 +894,6 @@ const PROTOCOL_TRANSFORMS: Record<string, ProtocolTransformStrategy> = {
   },
 }
 
-/** Cached health is untrusted JSON: keep only well-formed entries. */
-function parsePersistedServiceHealth(value: unknown): PeerInfo['providerServiceHealth'] | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
-  const result: NonNullable<PeerInfo['providerServiceHealth']> = {}
-  for (const [provider, entry] of Object.entries(value as Record<string, unknown>)) {
-    const services = (entry as { services?: unknown } | null)?.services
-    if (!services || typeof services !== 'object' || Array.isArray(services)) continue
-    const parsed: Record<string, NonNullable<ReturnType<typeof parseServiceHealth>>> = {}
-    for (const [service, health] of Object.entries(services as Record<string, unknown>)) {
-      const parsedHealth = parseServiceHealth(health)
-      if (parsedHealth) parsed[service] = parsedHealth
-    }
-    if (Object.keys(parsed).length > 0) result[provider] = { services: parsed }
-  }
-  return Object.keys(result).length > 0 ? result : undefined
-}
-
 /**
  * Parses a buyer.state.json blob into PeerInfo[], dropping entries with
  * missing/invalid peerIds, non-array providers, or lastSeen timestamps older
@@ -971,7 +954,7 @@ export function parsePersistedPeers(
     if (entry.providerServiceCapabilities && typeof entry.providerServiceCapabilities === 'object') {
       peer.providerServiceCapabilities = entry.providerServiceCapabilities as PeerInfo['providerServiceCapabilities']
     }
-    const persistedHealth = parsePersistedServiceHealth(entry.providerServiceHealth)
+    const persistedHealth = parseProviderServiceHealthMatrix(entry.providerServiceHealth)
     if (persistedHealth) {
       peer.providerServiceHealth = persistedHealth
     }

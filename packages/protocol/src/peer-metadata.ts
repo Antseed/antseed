@@ -6,10 +6,12 @@ import type {
   ProviderServiceApiProtocolMatrixEntry,
   ProviderServiceCapabilityMatrixEntry,
   ProviderServiceCategoryMatrixEntry,
+  ProviderServiceHealthMatrixEntry,
   ProviderServiceUnitBillingModelMatrixEntry,
 } from './peer-pricing.js';
 import {
   WELL_KNOWN_SERVICE_API_PROTOCOLS,
+  isKnownServiceApiProtocol,
   type ServiceApiProtocol,
 } from './service-api.js';
 
@@ -348,31 +350,83 @@ export interface ProviderAnnouncement {
  * Several upstreams can share a provider name, and the seller serves a
  * service through any of them, so it counts as failing only when every one
  * of them reports failing. Otherwise the best report stands, and none when a
- * working upstream has not been checked yet.
+ * working upstream has not been checked yet. A protocol of a working service
+ * that only failing upstreams serve (one of two native video APIs, say) is
+ * listed in `failingProtocols`.
  */
 export function providerServiceHealthMatrix(
   providers: readonly ProviderAnnouncement[],
-): Record<string, { services: Record<string, ServiceHealth> }> {
-  const reports = new Map<string, Map<string, Array<ServiceHealth | undefined>>>();
-  for (const announcement of providers) {
-    const byService = reports.get(announcement.provider) ?? new Map<string, Array<ServiceHealth | undefined>>();
-    reports.set(announcement.provider, byService);
-    for (const service of new Set([...announcement.services, ...Object.keys(announcement.serviceHealth ?? {})])) {
-      const list = byService.get(service) ?? [];
-      list.push(announcement.serviceHealth?.[service]);
-      byService.set(service, list);
-    }
-  }
-  const matrix: Record<string, { services: Record<string, ServiceHealth> }> = {};
-  for (const [provider, byService] of reports) {
+): Record<string, ProviderServiceHealthMatrixEntry> {
+  const matrix: Record<string, ProviderServiceHealthMatrixEntry> = {};
+  for (const [provider, upstreams] of upstreamsByProvider(providers)) {
     const services: Record<string, ServiceHealth> = {};
-    for (const [service, list] of byService) {
-      const health = mergeUpstreamHealth(list);
+    const failingProtocols: Record<string, ServiceApiProtocol[]> = {};
+    for (const service of new Set(upstreams.flatMap((upstream) => [...upstream.services, ...Object.keys(upstream.serviceHealth ?? {})]))) {
+      const serving = upstreams.filter((upstream) => upstream.services.includes(service) || upstream.serviceHealth?.[service]);
+      const health = mergeUpstreamHealth(serving.map((upstream) => upstream.serviceHealth?.[service]));
       if (health) services[service] = { ...health };
+      if (isServiceHealthFailing(health)) continue;
+      const protocols = new Set(serving.flatMap((upstream) => upstream.serviceApiProtocols?.[service] ?? []));
+      const failing = [...protocols].filter((protocol) => serving
+        .filter((upstream) => upstream.serviceApiProtocols?.[service]?.includes(protocol))
+        .every((upstream) => isServiceHealthFailing(upstream.serviceHealth?.[service])));
+      if (failing.length > 0) failingProtocols[service] = failing;
     }
-    if (Object.keys(services).length > 0) matrix[provider] = { services };
+    if (Object.keys(services).length > 0 || Object.keys(failingProtocols).length > 0) {
+      matrix[provider] = { services, ...(Object.keys(failingProtocols).length > 0 ? { failingProtocols } : {}) };
+    }
   }
   return matrix;
+}
+
+/** Reads a health matrix from untrusted JSON (a cache file), keeping only well-formed entries. */
+export function parseProviderServiceHealthMatrix(value: unknown): Record<string, ProviderServiceHealthMatrixEntry> | undefined {
+  if (!isPlainObject(value)) return undefined;
+  const matrix: Record<string, ProviderServiceHealthMatrixEntry> = {};
+  for (const [provider, entry] of Object.entries(value)) {
+    if (!isPlainObject(entry)) continue;
+    const services: Record<string, ServiceHealth> = {};
+    for (const [service, health] of Object.entries(isPlainObject(entry.services) ? entry.services : {})) {
+      const parsed = parseServiceHealth(health);
+      if (parsed) services[service] = parsed;
+    }
+    const failingProtocols: Record<string, ServiceApiProtocol[]> = {};
+    for (const [service, protocols] of Object.entries(isPlainObject(entry.failingProtocols) ? entry.failingProtocols : {})) {
+      const known = Array.isArray(protocols) ? protocols.filter((protocol): protocol is ServiceApiProtocol => typeof protocol === "string" && isKnownServiceApiProtocol(protocol)) : [];
+      if (known.length > 0) failingProtocols[service] = known;
+    }
+    if (Object.keys(services).length > 0 || Object.keys(failingProtocols).length > 0) {
+      matrix[provider] = { services, ...(Object.keys(failingProtocols).length > 0 ? { failingProtocols } : {}) };
+    }
+  }
+  return Object.keys(matrix).length > 0 ? matrix : undefined;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/** True when automatic routing should skip this provider's service, or the service over `protocol`. */
+export function isProviderServiceRouteFailing(
+  providerServiceHealth: Record<string, ProviderServiceHealthMatrixEntry> | undefined,
+  provider: string,
+  service: string,
+  protocol?: ServiceApiProtocol,
+): boolean {
+  const entry = providerServiceHealth?.[provider];
+  if (isServiceHealthFailing(entry?.services?.[service])) return true;
+  return protocol !== undefined && Boolean(entry?.failingProtocols?.[service]?.includes(protocol));
+}
+
+/** A peer's announcements grouped by provider name, in announcement order. */
+function upstreamsByProvider(providers: readonly ProviderAnnouncement[]): Map<string, ProviderAnnouncement[]> {
+  const groups = new Map<string, ProviderAnnouncement[]>();
+  for (const announcement of providers) {
+    const upstreams = groups.get(announcement.provider) ?? [];
+    upstreams.push(announcement);
+    groups.set(announcement.provider, upstreams);
+  }
+  return groups;
 }
 
 function mergeUpstreamHealth(reports: Array<ServiceHealth | undefined>): ServiceHealth | undefined {
@@ -405,7 +459,7 @@ export interface ProviderServiceMatrices {
   providerServiceApiProtocols: Record<string, ProviderServiceApiProtocolMatrixEntry>;
   providerServiceUnitBillingModels: Record<string, ProviderServiceUnitBillingModelMatrixEntry>;
   providerServiceCapabilities: Record<string, ProviderServiceCapabilityMatrixEntry>;
-  providerServiceHealth: Record<string, { services: Record<string, ServiceHealth> }>;
+  providerServiceHealth: Record<string, ProviderServiceHealthMatrixEntry>;
 }
 
 function setServiceEntry<T>(matrix: Record<string, { services: Record<string, T> }>, provider: string, service: string, value: T | undefined): void {
@@ -460,14 +514,7 @@ export function mergeProviderAnnouncements(providers: readonly ProviderAnnouncem
     providerServiceCapabilities: {},
     providerServiceHealth: providerServiceHealthMatrix(providers),
   };
-  const upstreamsByName = new Map<string, ProviderAnnouncement[]>();
-  for (const announcement of providers) {
-    const upstreams = upstreamsByName.get(announcement.provider) ?? [];
-    upstreams.push(announcement);
-    upstreamsByName.set(announcement.provider, upstreams);
-  }
-
-  for (const [name, upstreams] of upstreamsByName) {
+  for (const [name, upstreams] of upstreamsByProvider(providers)) {
     const { defaultPricing } = upstreams[0]!;
     const pricing: ProviderPricingMatrixEntry = {
       defaults: {

@@ -80,4 +80,17 @@ describe('service health across upstreams sharing a provider name', () => {
     expect(peer.providerPricing.openai.services['gpt-6-sol'].inputUsdPerMillion).toBe(1);
     expect(peer.providerPricing.codex.services['gpt-6-sol'].inputUsdPerMillion).toBe(5);
   });
+
+  it('marks a protocol only failing upstreams serve, while the service stays routable', () => {
+    const route = (protocol: 'venice-video' | 'fal-video', health: ServiceHealth): ProviderAnnouncement => ({
+      ...upstream({ 'gpt-6-sol': health }),
+      serviceApiProtocols: { 'gpt-6-sol': [protocol] },
+      serviceUnitBillingModels: { 'gpt-6-sol': { [protocol]: { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.5 }] } } },
+    });
+    const peer = peerInfo([route('venice-video', healthy), route('fal-video', failing)]);
+    expect(peer.providerServiceHealth.openai).toEqual({ services: { 'gpt-6-sol': healthy }, failingProtocols: { 'gpt-6-sol': ['fal-video'] } });
+    expect(peer.providerServiceApiProtocols.openai.services['gpt-6-sol']).toEqual(['venice-video', 'fal-video']);
+    // When every route fails, the service itself is failing and no protocol is singled out.
+    expect(peerInfo([route('venice-video', failing), route('fal-video', failing)]).providerServiceHealth.openai.failingProtocols).toBeUndefined();
+  });
 });
