@@ -10,7 +10,7 @@ import { ConfirmDialog } from '../components/ui'
 import { contractAddress, sameAddress, ZERO_ADDRESS } from '../lib/chain'
 import { formatDateTime, shortId } from '../lib/format'
 import {
-  authorizeBlocker, checkAuthorization, eligibleWallets, operatorApi, OperatorPreflightError, operatorView,
+  authorizeBlocker, authorizeNeedsSignInWallet, checkAuthorization, eligibleWallets, operatorApi, OperatorPreflightError, operatorView,
   type OperatorAuthorization, type OperatorState,
 } from '../lib/operator'
 import { qk } from '../lib/queries'
@@ -31,6 +31,8 @@ export interface OperatorActionsProps {
   onChanged: (state: OperatorState) => void
   /** The shown state is stale (a revert said so): re-read it. */
   onStale: () => void
+  /** Open the "Add a wallet" flow for `address` (shown when the connected wallet is not yet a sign-in method). */
+  onAddSignInWallet?: (address: string) => void
 }
 
 /**
@@ -65,7 +67,7 @@ function useLiveOperator(chain: ChainInfo) {
  * (owner only, fresh sign-in, a sign-in wallet at least 24 h old) and the
  * connected wallet submits it. Checked against the chain just before.
  */
-function Authorize({ workspaceId, state, chain, onChanged, onStale }: OperatorActionsProps) {
+function Authorize({ workspaceId, state, chain, onChanged, onStale, onAddSignInWallet }: OperatorActionsProps) {
   const { address } = useAccount()
   const config = useConfig()
   const runner = useTxRunner(chain.chainId)
@@ -158,6 +160,9 @@ function Authorize({ workspaceId, state, chain, onChanged, onStale }: OperatorAc
         </ul>
       )}
       {blocker && <Alert tone="warning">{blocker}</Alert>}
+      {onAddSignInWallet && authorizeNeedsSignInWallet(state, address) && (
+        <Button size="sm" onClick={() => onAddSignInWallet(address)}>Add this wallet as a sign-in method</Button>
+      )}
       {reauth && (
         <Alert tone="info" title="Confirm it is you">
           <div className="gc-stack gc-stack--tight">
