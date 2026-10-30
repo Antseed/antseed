@@ -1,8 +1,10 @@
 # M003 — Verification registry and points policy
 
-Deploys `AntseedKbfVerification` and `AntseedKbfVerificationPointsPolicy`, registers the
-policy in the existing `AntseedPointsPolicyRegistry` (after the wash-trading
-policy), and optionally approves an initial auditor list. Approved auditors submit
+Deploys `AntseedKbfVerification` and `AntseedKbfVerificationPointsPolicy` and optionally
+approves an initial auditor list. It does **not** register the policy in the
+`AntseedPointsPolicyRegistry`: the registry owner does that later as a separate, manual
+`registerPolicy(policy)` transaction. Until then verdicts are recorded on-chain but change no
+seller points. Approved auditors submit
 one audit per model; each seller service gets `SAME`, `DIFF`, or `UNDETERMINED`.
 It does not change emissions, staking, or
 protocol registry pointers. M002 is not a prerequisite.
@@ -41,10 +43,10 @@ After M003:
   usage accounting, and points policy registry. The usage accounting contract must
   point at the seller pools, the points policy registry, and a deployed emissions gate,
   and `registry.emissions()` must be the usage accounting contract.
-- The live protocol registry owner signs deployment and becomes the owner of both
-  new contracts directly. It must also own the points policy registry, since it
-  registers the policy. Supply `--signer verificationOwner=<spec>` using the existing
-  keystore, Ledger, or unlocked signer support. No ownership handoff is needed.
+- Set `VERIFICATION_OWNER` to the address of the wallet that deploys. It becomes the owner of
+  both new contracts and does not need to own the protocol or points policy registry. Supply
+  the matching wallet with `--signer verificationOwner=<spec>` (keystore, Ledger, or unlocked
+  signer). Both contracts use `Ownable2Step` if ownership should move later.
 - Optionally set `VERIFICATION_AUDITORS` to comma-separated, nonzero auditor
   addresses in `packages/contracts/.env`. Omit it for an empty initial allowlist.
   Duplicate addresses are rejected. Review the list in the decoded dry-run plan.
@@ -60,8 +62,11 @@ cd packages/contracts && forge build && cd ../..
 pnpm contracts:deploy -- M003 --network base-mainnet --fork-test
 pnpm contracts:deploy -- M003 --network base-mainnet --dry-run
 pnpm contracts:deploy -- M003 --network base-mainnet --broadcast \
-  --signer verificationOwner=account:antseed-owner
+  --signer verificationOwner=account:antseed-verification-deployer
 ```
+
+After the broadcast, the points policy registry owner registers the policy when points should
+start to count: `registerPolicy(<kbfVerificationPointsPolicy address>)`.
 
 Base Sepolia also supports `--dry-run` and `--broadcast`. Review and commit
 `pending/003-kbf-verification.plan.json` and its `.VALIDATION.md` before
@@ -82,7 +87,7 @@ pools, usage accounting, points policy registry, per-model bonus, and auditor li
 before broadcast. Keep the checkpoint
 and Foundry receipts until the history record is committed. Resume with the same
 command: an existing deployment is checked against the local artifact, registry,
-and owner; only the missing policy deployment, approvals, and registration are sent. Confirmed receipts are merged into
+and owner; only the missing policy deployment and approvals are sent. Confirmed receipts are merged into
 the checkpoint even if a later transaction or source verification fails.
 
 If the deployment is absent but its nonce has been consumed or is pending, the
@@ -97,8 +102,7 @@ Once deployment and approvals are confirmed, the runner appends
 Undeployed networks keep that optional address absent. Existing explicit CLI
 overrides still take precedence. No existing history files are edited.
 
-M003 records the initial approvals and registration, not all future governance
-changes. Removing the policy from the registry after activation makes a re-run stop
-instead of re-registering it. Manage
-subsequent auditor additions/revocations separately; do not change and reapply
-the deployment's initial list as an administration mechanism.
+M003 records the deployment and the initial approvals, not the policy registration or
+later governance changes. Register or remove the policy with the points policy registry
+owner directly. Manage subsequent auditor additions/revocations separately; do not change
+and reapply the deployment's initial list as an administration mechanism.

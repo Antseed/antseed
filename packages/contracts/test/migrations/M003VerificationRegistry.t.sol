@@ -83,13 +83,13 @@ contract M003VerificationRegistryTest is Test {
         assertEq(address(policy.usageAccounting()), address(accounting));
         assertEq(policy.bonusBps(), 100);
         assertEq(policy.owner(), owner);
-        assertTrue(pointsPolicyRegistry.isPolicyRegistered(address(policy)));
-        assertEq(pointsPolicyRegistry.policyCount(), 1);
+        assertFalse(pointsPolicyRegistry.isPolicyRegistered(address(policy)), "M003 only deploys");
+        assertEq(pointsPolicyRegistry.policyCount(), 0);
         uint64 nonce = vm.getNonce(owner);
         (AntseedKbfVerification again, AntseedKbfVerificationPointsPolicy againPolicy) = script.runWith(settings);
         assertEq(address(again), address(verification));
         assertEq(address(againPolicy), address(policy));
-        assertEq(pointsPolicyRegistry.policyCount(), 1);
+        assertEq(pointsPolicyRegistry.policyCount(), 0);
         assertEq(vm.getNonce(owner), nonce);
         assertEq(registry.emissions(), address(accounting));
         assertEq(address(again.emissionsGate()), address(gate));
@@ -192,7 +192,7 @@ contract M003VerificationRegistryTest is Test {
         (AntseedKbfVerification verification, AntseedKbfVerificationPointsPolicy policy) = script.runWith(settings);
         assertEq(address(verification), address(first));
         assertEq(address(policy.verification()), address(first));
-        assertTrue(pointsPolicyRegistry.isPolicyRegistered(address(policy)));
+        assertFalse(pointsPolicyRegistry.isPolicyRegistered(address(policy)));
     }
 
     function test_rejectsPolicyNonceDrift() public {
@@ -231,17 +231,21 @@ contract M003VerificationRegistryTest is Test {
         script.runWith(settings);
     }
 
-    function test_rejectsOwnerWithoutPointsRegistryOwnership() public {
-        vm.prank(owner);
-        pointsPolicyRegistry.transferOwnership(address(0xCAFE));
-        vm.prank(address(0xCAFE));
-        pointsPolicyRegistry.acceptOwnership();
-        vm.expectRevert("M003: owner does not own points policy registry");
-        script.runWith(config());
+    function test_deploysWithAnOwnerThatDoesNotOwnThePointsRegistry() public {
+        M003DeployVerificationRegistry.Config memory settings = config();
+        settings.owner = address(0xCAFE);
+        settings.deploymentNonce = vm.getNonce(address(0xCAFE));
+        (AntseedKbfVerification verification, AntseedKbfVerificationPointsPolicy policy) = script.runWith(settings);
+        assertEq(verification.owner(), address(0xCAFE));
+        assertEq(policy.owner(), address(0xCAFE));
+        assertEq(pointsPolicyRegistry.owner(), owner);
+        assertFalse(pointsPolicyRegistry.isPolicyRegistered(address(policy)));
     }
 
     function test_policyChangesSellerPointsAfterSameAudit() public {
         (AntseedKbfVerification verification, AntseedKbfVerificationPointsPolicy policy) = script.runWith(config());
+        vm.prank(owner);
+        pointsPolicyRegistry.registerPolicy(address(policy)); // the manual step after M003
         address seller = address(0x5E11);
         vm.prank(seller);
         uint256 agentId = identity.register();

@@ -2,7 +2,6 @@ pragma solidity ^0.8.24;
 
 import { Script } from "forge-std/Script.sol";
 import { IAntseedRegistry } from "../../../interfaces/IAntseedRegistry.sol";
-import { AntseedPointsPolicyRegistry } from "../../../policies/AntseedPointsPolicyRegistry.sol";
 import { AntseedKbfVerificationPointsPolicy } from "../../../policies/AntseedKbfVerificationPointsPolicy.sol";
 import { AntseedKbfVerification } from "../../../verification/AntseedKbfVerification.sol";
 
@@ -52,7 +51,6 @@ contract M003DeployVerificationRegistry is Script {
         address predictedPolicy = vm.computeCreateAddress(config.owner, config.deploymentNonce + 1);
         verification = AntseedKbfVerification(predictedVerification);
         policy = AntseedKbfVerificationPointsPolicy(predictedPolicy);
-        AntseedPointsPolicyRegistry pointsPolicyRegistry = AntseedPointsPolicyRegistry(config.pointsPolicyRegistry);
 
         vm.startBroadcast(config.owner);
         if (predictedVerification.code.length == 0) {
@@ -84,10 +82,8 @@ contract M003DeployVerificationRegistry is Script {
             if (!verification.approvedAuditors(auditor)) verification.setAuditor(auditor, true);
             require(verification.approvedAuditors(auditor), "M003: auditor not approved");
         }
-        if (!pointsPolicyRegistry.isPolicyRegistered(address(policy))) {
-            pointsPolicyRegistry.registerPolicy(address(policy));
-        }
-        require(pointsPolicyRegistry.isPolicyRegistered(address(policy)), "M003: policy not registered");
+        // Registering the policy in the points policy registry is a separate, manual step by the
+        // registry owner. M003 only deploys, so verdicts change no points until then.
         vm.stopBroadcast();
     }
 
@@ -117,10 +113,6 @@ contract M003DeployVerificationRegistry is Script {
         require(
             IM003UsageAccounting(config.usageAccounting).pointsPolicy() == config.pointsPolicyRegistry,
             "M003: wrong points policy registry"
-        );
-        require(
-            AntseedPointsPolicyRegistry(config.pointsPolicyRegistry).owner() == config.owner,
-            "M003: owner does not own points policy registry"
         );
         require(config.owner != address(0), "M003: missing owner");
         require(config.bonusBps <= 5_000, "M003: bonus above cap");

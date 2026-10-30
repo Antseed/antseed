@@ -14,6 +14,9 @@ import { clearPlan } from './runtime/plan.mjs';
 import { CONTRACTS_ROOT } from './runtime/paths.mjs';
 
 export const RELEASE = '003-kbf-verification';
+export const POLICY_NOTE = 'M003 deploys the KBF verification contract and its points policy only. The policy is not '
+  + 'registered in the points policy registry by M003; the registry owner registers it separately, so verdicts change '
+  + 'no seller points until then.';
 const ZERO = '0x0000000000000000000000000000000000000000';
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const CONTRACT_NAMES = { AntseedKbfVerification: 'kbfVerification', AntseedKbfVerificationPointsPolicy: 'kbfVerificationPointsPolicy' };
@@ -33,6 +36,18 @@ export function parseAuditors(value = '') {
   }
   if (new Set(auditors).size !== auditors.length) throw new Error('Duplicate VERIFICATION_AUDITORS');
   return auditors.sort();
+}
+
+/**
+ * The wallet that deploys and owns both contracts. M003 only deploys, so it need not own the
+ * points policy registry; the registry owner registers the policy later as a separate step.
+ */
+export function verificationOwner(value = process.env.VERIFICATION_OWNER) {
+  const owner = value?.trim() ?? '';
+  if (!ADDRESS.test(owner) || sameAddress(owner, ZERO)) {
+    throw new Error('VERIFICATION_OWNER must be the nonzero address of the deploying wallet');
+  }
+  return owner;
 }
 
 export function parseBonusBps(value) {
@@ -92,7 +107,6 @@ async function collectReceipts(context, checkpoint) {
   if (policyCreation && !sameAddress(policyCreation.address, checkpoint.policyAddress)) return checkpoint;
   const transactions = parsed.transactions.filter((transaction) =>
     sameAddress(transaction.to, checkpoint.address) || sameAddress(transaction.to, checkpoint.policyAddress)
-    || (sameAddress(transaction.to, checkpoint.pointsPolicyRegistry) && sameAddress(transaction.from, checkpoint.owner))
     || transaction.hash === creation?.transactionHash || transaction.hash === policyCreation?.transactionHash);
   if (!transactions.length) return checkpoint;
   if (transactions.some((transaction) => !transactionSucceeded(context.rpcUrl, transaction.hash))) {
@@ -133,7 +147,7 @@ async function observe(context) {
         throw new Error('M003 prior broadcast exists; restore its checkpoint or history before continuing');
       }
     }
-    const owner = call(rpcUrl, expected.registry, 'owner()(address)');
+    const owner = verificationOwner();
     const deploymentNonce = numberValue(cast(rpcUrl, ['nonce', owner]));
     const address = cast(rpcUrl, ['compute-address', owner, '--nonce', String(deploymentNonce)]).match(/0x[0-9a-fA-F]{40}/)?.[0];
     const policyAddress = cast(rpcUrl, ['compute-address', owner, '--nonce', String(deploymentNonce + 1)]).match(/0x[0-9a-fA-F]{40}/)?.[0];
@@ -161,8 +175,8 @@ async function observe(context) {
     }
     checkpoint = await collectReceipts(context, checkpoint);
   }
-  if (!sameAddress(call(rpcUrl, expected.pointsPolicyRegistry, 'owner()(address)'), checkpoint.owner)) {
-    throw new Error('M003 verification owner must also own the points policy registry');
+  if (process.env.VERIFICATION_OWNER !== undefined && !sameAddress(verificationOwner(), checkpoint.owner)) {
+    throw new Error('M003 VERIFICATION_OWNER differs from the original deployment');
   }
   const verification = checkpoint.address;
   const policy = checkpoint.policyAddress;
@@ -213,11 +227,8 @@ async function observePolicy(context, checkpoint) {
     throw new Error('M003 points policy wiring or ownership mismatch');
   }
   if (!checkpoint.contracts.kbfVerificationPointsPolicy) throw new Error('M003 restore confirmed policy deployment receipts before continuing');
-  const registered = call(rpcUrl, checkpoint.pointsPolicyRegistry, 'isPolicyRegistered(address)(bool)', [policy]) === 'true';
-  if (!registered && await historyRecordExists(context, RELEASE)) {
-    throw new Error('M003 points policy was removed after activation; manage policies separately');
-  }
-  return registered;
+  // Registering the policy in the points policy registry is a manual step outside M003.
+  return true;
 }
 
 export function activationRecords(context, checkpoint) {
@@ -227,9 +238,10 @@ export function activationRecords(context, checkpoint) {
   };
   const record = buildReleaseRecord(context, {
     release: RELEASE, status: 'active', sourceCommit: commit, contracts, transactions, verificationConfiguration,
+    notes: POLICY_NOTE,
   });
   const current = applyContractAliases(structuredClone(context.canonical), contracts, {});
-  Object.assign(current, { release: RELEASE, status: 'active', sourceCommit: commit, transactions, verificationConfiguration });
+  Object.assign(current, { release: RELEASE, status: 'active', sourceCommit: commit, transactions, verificationConfiguration, notes: POLICY_NOTE });
   return { record, current };
 }
 
@@ -272,7 +284,7 @@ const deployPhase = {
       },
       'pointsPolicyRegistry.policies': {
         before: 'unchanged',
-        after: `+ ${observation.deployment.checkpoint.policyAddress}`,
+        after: 'unchanged (register the policy manually later)',
       },
     },
   }),
@@ -339,9 +351,20 @@ export const migration = {
   rehearsal: {
     prerequisites: ['M001'],
     async run({ runMigration: drive }) {
-      const overrides = { signers: { verificationOwner: 'unlocked:0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266' } };
-      const first = await drive(overrides);
-      const second = await drive(overrides);
+      // Anvil account 1: a deployer that owns neither the protocol registry nor the points registry.
+      const owner = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8';
+      const overrides = { signers: { verificationOwner: `unlocked:${owner}` } };
+      const previous = process.env.VERIFICATION_OWNER;
+      process.env.VERIFICATION_OWNER = owner;
+      let first;
+      let second;
+      try {
+        first = await drive(overrides);
+        second = await drive(overrides);
+      } finally {
+        if (previous === undefined) delete process.env.VERIFICATION_OWNER;
+        else process.env.VERIFICATION_OWNER = previous;
+      }
       if (first.state !== 'active' || second.state !== 'active'
         || !sameAddress(first.deployment.checkpoint.address, second.deployment.checkpoint.address)
         || !sameAddress(first.deployment.checkpoint.policyAddress, second.deployment.checkpoint.policyAddress)
