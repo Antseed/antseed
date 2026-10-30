@@ -250,4 +250,106 @@ describe('BuyerPaymentNegotiator', () => {
       expect(bpm.trackRequestBilling.mock.calls[0]![1]).toMatchObject({ estimatedCostUsdc: 800_000n });
     });
   });
+
+  describe('price cap vs settlement', () => {
+    const peer: BuyerPeerView = { peerId: toPeerId('6'.repeat(40)) };
+    const connection = { state: ConnectionState.Connected } as BuyerConnection;
+    const requestId = 'priced-request';
+
+    function paymentRequired(body: Record<string, unknown>) {
+      return {
+        requestId,
+        statusCode: 402,
+        headers: { 'content-type': 'application/json' },
+        body: new TextEncoder().encode(JSON.stringify(body)),
+      };
+    }
+
+    function makeNegotiator() {
+      const negotiator = Object.create(BuyerPaymentNegotiator.prototype) as BuyerPaymentNegotiator;
+      Object.assign(negotiator as object, {
+        _lockedPeers: new Set(),
+        _firstRequestSent: new Set(),
+        _lastResponseCost: new Map(),
+        _bufferedPaymentRequired: new Map(),
+        _bpm: { maxReserveAmountUsdc: 10_000_000n },
+        _emit: { emit: vi.fn() },
+      });
+      return negotiator;
+    }
+
+    it('refuses to pay when a $0 route is asked to settle at a non-zero amount', async () => {
+      const negotiator = makeNegotiator();
+      const result = await negotiator.handle402(
+        paymentRequired({
+          error: 'payment_required',
+          minBudgetPerRequest: '10000',
+          suggestedAmount: '1276400',
+        }),
+        peer,
+        connection,
+        { requestId } as never,
+        1,
+        { inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
+      );
+
+      expect(result.action).toBe('return');
+      if (result.action !== 'return') return;
+      expect(result.response.statusCode).toBe(409);
+      const body = JSON.parse(new TextDecoder().decode(result.response.body)) as {
+        reason?: string;
+        message?: string;
+      };
+      expect(body.reason).toBe('price_mismatch');
+      expect(body.message).toContain('priced at $0');
+      expect(body.message).toContain('1.2764');
+    });
+
+    it('leaves a route that was actually priced alone', async () => {
+      const negotiator = makeNegotiator();
+      let result: Awaited<ReturnType<BuyerPaymentNegotiator['handle402']>> | undefined;
+      try {
+        result = await negotiator.handle402(
+          paymentRequired({
+            error: 'payment_required',
+            minBudgetPerRequest: '10000',
+            suggestedAmount: '1276400',
+          }),
+          peer,
+          connection,
+          { requestId } as never,
+          1,
+          { inputUsdPerMillion: 0.5, outputUsdPerMillion: 1 },
+        );
+      } catch {
+        // Downstream collaborators are not mocked here; the only thing under
+        // test is that a priced route is not short-circuited as a mismatch.
+      }
+      if (result?.action === 'return') {
+        expect(new TextDecoder().decode(result.response.body)).not.toContain('price_mismatch');
+      }
+    });
+
+    it('leaves a route with no recorded pricing alone', async () => {
+      const negotiator = makeNegotiator();
+      let result: Awaited<ReturnType<BuyerPaymentNegotiator['handle402']>> | undefined;
+      try {
+        result = await negotiator.handle402(
+          paymentRequired({
+            error: 'payment_required',
+            minBudgetPerRequest: '10000',
+            suggestedAmount: '1276400',
+          }),
+          peer,
+          connection,
+          { requestId } as never,
+        );
+      } catch {
+        // Same as above: absent pricing must not be treated as free.
+      }
+      if (result?.action === 'return') {
+        expect(new TextDecoder().decode(result.response.body)).not.toContain('price_mismatch');
+      }
+    });
+  });
 });

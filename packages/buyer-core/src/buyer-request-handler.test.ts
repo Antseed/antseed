@@ -124,7 +124,7 @@ describe('BuyerRequestHandler payment negotiation', () => {
     expect((await handler.sendRequest(makePeer(), makeRequest())).statusCode).toBe(200);
     expect(handle402).toHaveBeenCalledTimes(2);
     // Counts the in-flight requests to the seller, including this one.
-    expect(handle402).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), expect.anything(), expect.anything(), 3);
+    expect(handle402).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), expect.anything(), expect.anything(), 3, undefined);
     expect(sendProxyRequest).toHaveBeenCalledTimes(3);
   });
 

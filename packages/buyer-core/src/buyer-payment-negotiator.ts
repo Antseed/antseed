@@ -141,6 +141,23 @@ function sameOneOffPlan(a: OneOffChannelPlan, b: OneOffChannelPlan): boolean {
 }
 
 /**
+ * True when every component of the routed price is exactly $0.
+ *
+ * A `$0` price cap is how a buyer says "this request must cost nothing". The
+ * seller, however, prices settlement from its own config — so an offer whose
+ * price metadata is missing, partial, or stale can pass the cap and still be
+ * charged. When that happens the seller's `paymentRequirements` is the first
+ * place the real price becomes visible, and it must be compared against what we
+ * routed on rather than clamped to a global reserve ceiling.
+ */
+function isFreeRoutePricing(pricing: ServicePricing | undefined): boolean {
+  if (!pricing) return false;
+  return pricing.inputUsdPerMillion === 0
+    && pricing.outputUsdPerMillion === 0
+    && (pricing.cachedInputUsdPerMillion == null || pricing.cachedInputUsdPerMillion === 0);
+}
+
+/**
  * Manages all buyer-side payment negotiation state and logic.
  *
  * Extracted from AntseedNode to separate buyer payment concerns
@@ -725,6 +742,7 @@ export class BuyerPaymentNegotiator {
     conn: BuyerConnection,
     req: SerializedHttpRequest,
     inFlightRequests = 1,
+    expectedPricing?: ServicePricing,
   ): Promise<Handle402Result> {
     const hadLockedSession = this._lockedPeers.has(peer.peerId);
     const directPaymentBody = parsePaymentRequiredBody(response.body);
@@ -864,6 +882,29 @@ export class BuyerPaymentNegotiator {
       }
       await this.openOneOffChannelForRequest(peer, conn, req.requestId, oneOffPlan);
       return { action: 'retry' };
+    }
+
+    // A route priced at $0 promises this request costs nothing. The seller
+    // prices settlement from its own config, so an offer with missing, partial,
+    // or stale price metadata can pass the cap and still be charged. The
+    // requirement payload is the first point where the real price becomes
+    // visible — compare it against what we routed on instead of silently
+    // clamping to the global reserve ceiling.
+    //
+    // Unit-billed (video) requests never reach here: they take the one-off
+    // channel path above, where `requestCost` is the price and the plan is
+    // validated separately.
+    if (isFreeRoutePricing(expectedPricing) && requestedReserveAmount != null && requestedReserveAmount > 0n) {
+      debugWarn(
+        `[BuyerNegotiator] Refusing ${peer.peerId.slice(0, 12)}...: route priced at $0 but seller ` +
+        `requires ${formatUsdc(requestedReserveAmount)} — advertised price does not match settlement`,
+      );
+      return returnNegotiationFailure(
+        'price_mismatch',
+        `This route was priced at $0 but the seller requires ${formatUsdc(requestedReserveAmount)}. `
+        + 'The offer\'s advertised price does not match its settlement price, so the request was not paid for.',
+        409,
+      );
     }
 
     // Reconcile any active stored session before opening a fresh reserve.
