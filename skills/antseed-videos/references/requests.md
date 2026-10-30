@@ -338,11 +338,11 @@ duration="$(awk -v s="$seconds" 'BEGIN { d = int(s); if (d < 1) d = 1; print d }
 echo "source: $(wc -c < "$src" | tr -d ' ') bytes, ${seconds}s, ${width}x${height} at ${fps} fps -> duration $duration"
 ```
 
-`duration` is what the buyer pays for. Send the source length in whole seconds, rounded down (`$duration` above), unless the model takes a shorter `duration` and the user wants a shorter clip. Never send more than the source length: some upstreams render and charge the full `duration` even when the source is shorter.
+`duration` is what the buyer pays for, and it must be the source length in whole seconds, rounded down (`$duration` above), on every edit model: the seller measures the source and refuses any other value. For a shorter clip, trim the source first (`ffmpeg -t <seconds>`) and measure again.
 
 ### Source limits
 
-The sellers do not check the source's limits (only, for a model whose output is as long as its source, that `duration` is its length). A source outside the model's limits is refused by the upstream after the job started, and on a video priced above $1.00 that costs the opening fee (see the Rules in SKILL.md). So check it before pricing, against the limits the provider publishes for that model. Never quote limits from memory: read them each time, and say where they came from.
+The sellers do not check the source's limits (only that it is inline and `duration` is its length). A source outside the model's limits is refused by the upstream after the job started, and on a video priced above $1.00 that costs the opening fee (see the Rules in SKILL.md). So check it before pricing, against the limits the provider publishes for that model. Never quote limits from memory: read them each time, and say where they came from.
 
 **fal models** (`fal-video` sellers). fal publishes each model's input schema, without a key. `check_fal_source` reads it and checks the source against fal's machine-readable limits on `video_url` (`x-fal`: length, file size, width, height, aspect ratio, frame rate). It also prints the required fields, the `duration` and `resolution` values, and the limits on image fields. Any `FAIL` line stops before pricing: apply its fix, measure again (`check_fal_source` again), and tell the user what changed. When a model has no `x-fal` limits, the script prints `NOTE` with the `video_url` description and exits 3. The description can state a limit in words (for example "5 to 30 seconds long"): check the source against it by hand, and treat a source outside it like a `FAIL`. Length limits apply to the source's real length, not the rounded-down `duration`: a 10.08 s source fails a 10 s maximum, so trim it first.
 
@@ -386,12 +386,10 @@ check_fal_source() {
         "required fields: \($in.required // [] | join(", "))",
         (if $in.properties.resolution.enum then "resolution: \($in.properties.resolution.enum | join(", "))" else empty end),
         (if $d == null then "duration: fal takes none; the output is as long as the source. Send \"duration\": \($whole) (what is paid for; the seller removes it before fal)"
-         else "duration: \(if ($denum | length) > 0 then ($denum | map(tostring) | join(", ")) else "\($dmin // "?") to \($dmax // "?")" end). \($d.description // "")" end),
+         else "duration: \(if ($denum | length) > 0 then ($denum | map(tostring) | join(", ")) else "\($dmin // "?") to \($dmax // "?")" end). Send the source length, \($whole) (what is paid for; the seller checks it)" end),
         (if $dur == "" then empty
          else ($dur | tonumber) as $n
-         | if $n < 1 then "FAIL duration \($n): send the length paid for, in whole seconds (\($whole))"
-           elif $n > $whole then "FAIL duration \($n) is longer than the source (\($whole) s): send at most \($whole)"
-           elif $d == null and $n != $whole then "FAIL duration \($n): this model has no duration field, so send the source length, \($whole)"
+         | if $n != $whole then "FAIL duration \($n) is not the source length: send \($whole) (trim the source for a shorter clip)"
            elif ($denum | length) > 0 and ($denum | map(tostring) | index([$n | tostring])) == null then "FAIL duration \($n) is not one of \($denum | map(tostring) | join(", "))"
            elif ($dmin != null and $n < $dmin) or ($dmax != null and $n > $dmax) then "FAIL duration \($n) is outside \($dmin) to \($dmax)"
            else "ok   duration \($n)" end end),
@@ -458,7 +456,7 @@ Pick the endpoint whose name matches the model and variant (standard or pro, edi
    ```
 
    Check reference images against `reference_image_*`. To measure an image: `ffprobe -v error -show_entries stream=width,height -of csv=p=0 <image>`.
-2. Find the model's fal twin ([Find a model on fal](#source-limits)) and run `check_fal_source <twin id> "$src"` with no duration (Venice's own `durations` decide `duration`). The model maker sets the source limits and the required fields, so they are the same on both providers. Tell the user they come from fal's listing of the same model. Ignore fal-only fields (`character_orientation`, `enable_safety_checker`). Send only the fields the Venice seller lists in `fields`: Venice refuses any other key.
+2. Find the model's fal twin ([Find a model on fal](#source-limits)) and run `check_fal_source <twin id> "$src"` with no duration (Venice's own `durations` decide which source lengths it takes: with fixed values such as `5s`, trim the source so its length rounded down is one of them). The model maker sets the source limits and the required fields, so they are the same on both providers. Tell the user they come from fal's listing of the same model. Ignore fal-only fields (`character_orientation`, `enable_safety_checker`). Send only the fields the Venice seller lists in `fields`: Venice refuses any other key.
 3. Read Venice's docs: `https://docs.venice.ai/llms.txt` (an index), `https://docs.venice.ai/models/video.md`, `https://docs.venice.ai/api-reference/endpoint/video/queue.md`, and the model family's guide listed in the index. Fetch them with `curl -sS` and search them for the model id.
 4. Nothing found: tell the user that the source limits for this model are not published. Do not guess limits.
 
@@ -466,7 +464,7 @@ Pick the endpoint whose name matches the model and variant (standard or pro, edi
 
 Send the source inline as a data URL when it fits, otherwise as a public `https` URL the user gives you (a file they already host). The buyer never uploads files anywhere else.
 
-An edit whose output is as long as its source (a fal model with no `duration` field, a Venice model whose `durations` is `["Auto"]`) must be inline: the seller measures the source to check the paid `duration`, and refuses a URL with `422 invalid_video_duration`. When such a source is too large, re-encode a smaller copy (below) instead of using a URL.
+A video edit's source must be inline: the seller measures it to check the paid `duration`, and refuses a URL with `422 invalid_video_duration`. When the source is too large, re-encode a smaller copy (below) instead of using a URL.
 
 - **`venice-video`**: the whole request must be at most 32.5 MB, character images included, so the raw video at most about 24 MB less the images (base64 adds a third).
 - **`fal-video`**: up to the Antseed request limit of 64 MiB, so the raw video at most about 47 MB, and within the model's own file limit.
@@ -596,7 +594,7 @@ On a failed create or wait, `error.peer_message` carries the seller's reason, in
 - `502 video_download_failed` without a `status`: the seller started sending the video and the stream broke; the loop retries it.
 - `504 upstream_upload_timeout`: the seller could not hand the request to fal in time. The video is not charged (a price above $1.00 keeps the opening fee); send a smaller file or a URL.
 - Job `FAILED` after it started (for example Venice "No person detected" from motion control or Recast, or fal's message that the source is too short or too small): the source has no real person, is outside the model's limits ([Source limits](#source-limits)), or the upstream rejected it. The job's payment channel is closed at once; a video priced above $1.00 costs the opening fee ($0.65 on Base), a cheaper one nothing.
-- `413 request_too_large`: the request body is larger than the seller's upstream accepts (Venice: 32.5 MB). Re-encode a smaller copy, or send a public `https` URL (not for an edit whose output is as long as its source, see [Inline or URL](#inline-or-url)).
-- `422 invalid_video_duration` on create: the model edits the whole source, so the seller measured it. Send the source inline, with `duration` its length in whole seconds, rounded down (the number in the message). No job started; on a video above $1.00 the opening fee is kept, so measure the source as in [Source](#source) before creating.
+- `413 request_too_large`: the request body is larger than the seller's upstream accepts (Venice: 32.5 MB). Re-encode a smaller copy, or send a public `https` URL (not for a video edit's source, see [Inline or URL](#inline-or-url)).
+- `422 invalid_video_duration` on create: an edit is paid by its source length, so the seller measured it. Send the source inline, with `duration` its length in whole seconds, rounded down (the number in the message). No job started; on a video above $1.00 the opening fee is kept, so measure the source as in [Source](#source) before creating.
 - `422 required_capability_unavailable` naming `video_url`: no seller of that model takes a source video. Pick a model from the `frames=edit` catalog.
 - Connection refused: start Antseed Desktop or `antseed buyer start`.

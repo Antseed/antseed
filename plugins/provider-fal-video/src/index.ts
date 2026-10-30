@@ -97,7 +97,13 @@ const EDIT_INPUT_FIELDS: Record<VideoInputKind, readonly string[]> = {
   audio: ['audio_url'],
 };
 
-/** How the seller handles a video-to-video endpoint (one with a `video_url` field). */
+/**
+ * How the seller handles a video-to-video endpoint (one with a `video_url`
+ * field). The buyer pays for `duration`, which must be the source's measured
+ * length: fal bills every edit for at least its source, and an endpoint that
+ * takes a `duration` cuts the output to the source, so a longer one would be
+ * delivered short and never charged.
+ */
 export interface FalEditRule {
   /**
    * The endpoint has no `duration` field, so its output is as long as the
@@ -115,8 +121,8 @@ export function falEditRule(input: FalInputSchema | null): FalEditRule | null {
 
 /**
  * Video options of a video-to-video endpoint: the media inputs its fields
- * take and require, and the durations it accepts when the output is as long
- * as the source. Options the seller configured are kept.
+ * take and require, and the durations it accepts (the source lengths fal
+ * takes). Options the seller configured are kept.
  */
 export function withEditInputs(capabilities: ServiceCapabilities, input: FalInputSchema | null, rule: FalEditRule | null): ServiceCapabilities {
   if (!input || !rule) return capabilities;
@@ -125,10 +131,10 @@ export function withEditInputs(capabilities: ServiceCapabilities, input: FalInpu
   const configured = capabilities.video ?? {};
   const inputs = configured.inputs ? [...configured.inputs, ...kinds.filter(kind => !configured.inputs!.includes(kind))] : kinds;
   const requiredInputs = configured.requiredInputs ?? (required.length > 0 ? required : undefined);
-  // When the output is as long as the source, the durations a buyer may pay for are the source lengths fal takes.
+  // `duration` is the source length, so the durations a buyer may pay for are the source lengths fal takes.
   const min = input.sourceSeconds?.min;
   const max = input.sourceSeconds?.max;
-  const durations = rule.outputFollowsSource && min !== undefined && max !== undefined
+  const durations = min !== undefined && max !== undefined
     ? Array.from({ length: Math.max(0, Math.floor(max) - Math.ceil(min) + 1) }, (_, i) => Math.ceil(min) + i)
     : [];
   return {
@@ -374,7 +380,7 @@ const plugin: AntseedProviderPlugin = {
     // Off once fal says the seller key can't read billing; the key's permissions don't change while running.
     let balanceCheck = true;
 
-    // Video-to-video endpoints: `duration` is removed when fal takes none.
+    // Video-to-video endpoints: `duration` must be the source length, and is removed when fal takes none.
     const editRules = new Map<string, FalEditRule>();
 
     // Announces each endpoint's own input field names, so buyers can call fal's API unchanged.
@@ -425,14 +431,13 @@ const plugin: AntseedProviderPlugin = {
       try {
         // fal reads the model from the URL; the body is the model input only.
         const { model: _model, service: _service, ...input } = body;
-        // The buyer's `duration` prices an edit whose output is as long as its source; fal takes none.
-        // fal bills such an edit for the whole source, so `duration` must be its measured length.
-        // Without the endpoint's schema, a source video is assumed to set the output length.
+        // The buyer pays for an edit's `duration`, so it must be the source's measured length (see FalEditRule).
+        // Without the endpoint's schema, a source video marks an edit. An endpoint that takes no `duration` gets none.
         const rule = editRules.get(service);
-        if (rule?.outputFollowsSource ?? input.video_url !== undefined) {
+        if (rule || input.video_url !== undefined) {
           const refused = videoSourceLengthProblem(input.video_url, input.duration);
           if (refused) return error(request, 422, 'invalid_video_duration', refused);
-          if (rule) delete input.duration;
+          if (rule?.outputFollowsSource) delete input.duration;
         }
         // The upload of a large inline source counts toward the timeout: allow 60 s plus 1 s per 256 KB.
         const signal = AbortSignal.timeout(falSubmitTimeoutMs(request.body.length));
