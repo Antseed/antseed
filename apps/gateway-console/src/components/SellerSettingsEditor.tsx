@@ -11,6 +11,7 @@ import { formatUnitPrice, unitName } from '../lib/seller'
 import { ErrorAlert } from './ui'
 import { SellerOverrides, SellerRestart } from './SellerRestart'
 import { SellerAddModel } from './SellerAddModel'
+import { InfoTip } from './TrustInfo'
 
 /** Everything the form edits, as typed (numbers stay strings until saved). */
 interface Draft {
@@ -422,7 +423,7 @@ export function SellerSettingsEditor({ settings, restart }: { settings: SellerSe
             <Switch checked={draft.gasEnabled} disabled={readOnly} onChange={(next) => set('gasEnabled', next)} label="Gas checks"
               description="Pause advertising while the wallet cannot pay for settlement." />
             <div className="gc-policy__caps">{field('gasMinEth', 'Minimum ETH', { wide: true })}</div>
-            <Switch checked={draft.refuelEnabled} disabled={readOnly || !draft.gasEnabled} onChange={(next) => set('refuelEnabled', next)} label="Auto-refuel gas"
+            <Switch checked={draft.refuelEnabled} disabled={readOnly || !draft.gasEnabled} onChange={(next) => set('refuelEnabled', next)} label={<RefuelLabel />}
               description="Swap some USDC earnings for ETH on Uniswap before the wallet runs out. Base mainnet; needs gas checks." />
             <div className="gc-policy__caps">
               {field('refuelBelowEth', 'Below ETH')}
@@ -539,3 +540,22 @@ export function SellerSettingsEditor({ settings, restart }: { settings: SellerSe
     </div>
   )
 }
+
+const GAS_DOCS_URL = 'https://antseed.com/docs/provide/payments#gas'
+
+/** The auto-refuel switch label, with where and how the swap happens. */
+function RefuelLabel() {
+  return (
+    <span className="gc-inline">
+      Auto-refuel gas
+      <InfoTip label="How auto-refuel swaps" align="center">
+        <span className="gc-tip__title">How the swap works</span>
+        When the wallet holds less than <b>Below ETH</b>, the seller swaps <b>Swap USDC</b> of its wallet's USDC for ETH on Uniswap v3 on Base
+        (USDC/WETH 0.05% pool, at most 1% slippage). The ETH lands in the same wallet, which pays the swap's gas, so no
+        other wallet is involved. At most <b>Max USDC / day</b>; a failed swap retries later and alerts.{' '}
+        <a href={GAS_DOCS_URL} target="_blank" rel="noreferrer">Seller gas docs</a>
+      </InfoTip>
+    </span>
+  )
+}
+
