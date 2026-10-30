@@ -22,29 +22,29 @@ describe('seller page helpers', () => {
     expect(sellerNotices(seller(), now)).toEqual([])
   })
 
-  it('lists stopped, out of gas and withdrawn models, without repeating the daemon gas notice', () => {
+  it('lists stopped, out of gas and failing models, without repeating the daemon gas notice', () => {
     const lines = sellerNotices(seller({
       running: false,
       updatedAt: now - 5 * 60_000,
       gas: { address: '0xabc', depleted: true, balanceEth: 0.00001, minBalanceEth: 0.00005, lastCheckedAt: now },
       notices: ['Out of gas: wallet 0xabc holds …'],
       models: [
-        { provider: 'openai', providerId: 'openai', service: 'glm-5.3', advertised: false, consecutiveFailures: 4, lastProbeAt: now, lastStatusCode: 402, lastDetail: 'HTTP 402' },
-        { provider: 'openai', providerId: 'openai', service: 'kimi-k3', advertised: true, consecutiveFailures: 0, lastProbeAt: now, lastStatusCode: null, lastDetail: null },
+        { provider: 'openai', providerId: 'openai', service: 'glm-5.3', status: 'failing', reason: null, failingSince: null, checkedAt: null, source: null, lastTrafficAt: null, consecutiveFailures: 4, lastProbeAt: now, lastStatusCode: 402, lastDetail: 'HTTP 402' },
+        { provider: 'openai', providerId: 'openai', service: 'kimi-k3', status: 'healthy', reason: null, failingSince: null, checkedAt: null, source: null, lastTrafficAt: null, consecutiveFailures: 0, lastProbeAt: now, lastStatusCode: null, lastDetail: null },
       ],
     }), now)
     expect(lines).toHaveLength(3)
     expect(lines[0]).toContain('5 min ago')
     expect(lines[1]).toMatch(/^Out of gas/)
-    expect(lines[2]).toBe('1 model is withdrawn after failing health checks: glm-5.3.')
+    expect(lines[2]).toBe('1 model is failing health checks, so buyers skip it: glm-5.3.')
   })
 
   it('formats ETH and probe results compactly', () => {
     expect(formatEth(0.0297126)).toBe('0.0297')
     expect(formatEth(0.00005)).toBe('0.00005')
     expect(formatEth(null)).toBe('—')
-    expect(lastResult({ provider: 'p', providerId: 'p', service: 's', advertised: false, consecutiveFailures: 1, lastProbeAt: 1, lastStatusCode: 402, lastDetail: 'out of credit' })).toBe('HTTP 402 · out of credit')
-    expect(lastResult({ provider: 'p', providerId: 'p', service: 's', advertised: false, consecutiveFailures: 1, lastProbeAt: 1, lastStatusCode: 402, lastDetail: 'HTTP 402: no balance' })).toBe('HTTP 402: no balance')
+    expect(lastResult({ provider: 'p', providerId: 'p', service: 's', status: 'failing', reason: null, failingSince: null, checkedAt: null, source: null, lastTrafficAt: null, consecutiveFailures: 1, lastProbeAt: 1, lastStatusCode: 402, lastDetail: 'out of credit' })).toBe('HTTP 402 · out of credit')
+    expect(lastResult({ provider: 'p', providerId: 'p', service: 's', status: 'failing', reason: null, failingSince: null, checkedAt: null, source: null, lastTrafficAt: null, consecutiveFailures: 1, lastProbeAt: 1, lastStatusCode: 402, lastDetail: 'HTTP 402: no balance' })).toBe('HTTP 402: no balance')
   })
 
   it('labels chart days in UTC', () => {

@@ -59,6 +59,8 @@ Everything a seller announces lives under `seller.providers`. Each key is a labe
 | `defaults` | Fallback token pricing for services that don't set their own `pricing`. |
 | `services` | The services this provider announces. |
 
+Providers of the same plugin announce under one provider name (two `openai` providers both announce as `openai`). A model that two of them list must have the same terms in both: price, API protocols, unit billing and capabilities. Buyers see one entry per provider name, so the seller refuses to start otherwise; list the model under one of them only, or give it the same terms. A video model can be listed by only one of them, because a video job stays with the upstream account that accepted it.
+
 ### Backup upstreams
 
 A provider can list backup upstreams that serve the same models. When the main upstream fails before anything reaches the buyer, the seller sends the request to the next upstream instead of returning the error:
@@ -356,7 +358,7 @@ Both must be positive integers; `recordFlushIntervalMs` must be at least 1000. T
 
 ### Model health checks
 
-The seller probes each text service at startup and every `intervalMs` afterwards. After `failureThreshold` consecutive failures it stops advertising the service, and advertises it again when a probe succeeds.
+The seller checks its own services and announces the result in its signed metadata. Buyer traffic counts as a check: a service that served a paid buyer request in the last `intervalMs` is not probed. Other text services are probed with a one-token request at startup and every `intervalMs`, and a buyer request that fails upstream triggers an early probe of that service. After `failureThreshold` failed checks in a row the service is announced as failing: it stays in the metadata, buyers leave it out of their model lists and automatic routing, and a buyer who pins it gets an error saying the seller's health check is failing and why. The first passed check, or a successful buyer request, marks it healthy again.
 
 Image and video services are never probed, because a probe would generate a paid result. Instead, the Venice and fal video plugins check the account and model list for free every `intervalMs` (see [Image and video services](/docs/provide/media)).
 

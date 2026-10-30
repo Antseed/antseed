@@ -35,7 +35,7 @@ export default function SellerLogs() {
 
 function Events() {
   const events = useSellerEvents()
-  return <Panel title="Events" description="Starts and stops, models withdrawn or restored, gas, quiet periods, alerts."><SellerEventList events={events} /></Panel>
+  return <Panel title="Events" description="Starts and stops, models failing or recovered, gas, quiet periods, alerts."><SellerEventList events={events} /></Panel>
 }
 
 function Requests() {

@@ -92,7 +92,8 @@ interface Provider {
   serviceUnitBillingModels?: Record<string, Partial<Record<ServiceApiProtocol, UnitBillingModelV1>>>
   serviceCapabilities?: Record<string, ServiceCapabilities>
   maxConcurrency: number
-  healthCheckAvailable?: boolean        // managed by the node's health checker
+  healthCheckAvailable?: boolean        // false after a failed init; the health checker resets it
+  serviceHealth?: Record<string, ServiceHealth> // written by the node's health checker
 
   handleRequest(req: SerializedHttpRequest): Promise<SerializedHttpResponse>
   handleRequestStream?(req: SerializedHttpRequest, callbacks: ProviderStreamCallbacks): Promise<SerializedHttpResponse>
@@ -144,7 +145,7 @@ To bill per image or per video instead of per token, declare `ANTSEED_SERVICE_UN
 
 ### Health checks
 
-The node probes text services at startup and periodically, and stops advertising services that keep failing. It sets `healthCheckAvailable` to `false` when every service is down, so leave that field alone. Image and video services are not probed.
+The node checks text services at startup and periodically (skipping services that just served buyers) and publishes each result on `serviceHealth`, which is signed into metadata. A service that keeps failing stays advertised with a failing status, so buyers skip it. Leave `serviceHealth` alone. Set `healthCheckAvailable` to `false` only when your provider failed to initialize and should be announced as failing until a check passes. Image and video services are not probed.
 
 ## Example: relay to an HTTP upstream
 

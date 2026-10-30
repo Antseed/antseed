@@ -1,4 +1,4 @@
-/** Dev mock of a seller on the gateway host (`VITE_MOCK=1`): a running seller with one withdrawn model. */
+/** Dev mock of a seller on the gateway host (`VITE_MOCK=1`): a running seller with one failing model. */
 import type { SellerAlertSettings, SellerAlertsPatch, SellerEventView, SellerFreeTierProgramPatch, SellerFreeTierProgramSettings, SellerMarket, SellerMarketOffer, SellerPromote, SellerReputation, SellerRestartView, SellerSettings, SellerSettingsPatch, SellerStatus, SellerUsage, SellerVerificationsInput, TelegramChat } from '../api/types'
 
 const DAY = 86_400_000
@@ -9,7 +9,7 @@ const MOCK_STARTED_AT = Date.now() - 13 * 3_600_000
 
 export function mockSellerStatus(now = Date.now()): SellerStatus {
   const model = (service: string, advertised: boolean, failures: number, code: number | null, detail: string, ago: number) => (
-    { provider: 'openai', providerId: 'openai', service, advertised, consecutiveFailures: failures, lastProbeAt: now - ago, lastStatusCode: code, lastDetail: detail }
+    { provider: 'openai', providerId: 'openai', service, status: advertised ? 'healthy' as const : 'failing' as const, reason: advertised ? null : 'upstream_error', consecutiveFailures: failures, failingSince: advertised ? null : now - ago * 3, checkedAt: now - ago, source: 'probe' as const, lastTrafficAt: null, lastProbeAt: now - ago, lastStatusCode: code, lastDetail: detail }
   )
   return {
     available: true, running: true, dataDir: '/var/lib/antseed', peerId: FAKE_PEER, provider: 'openai',
@@ -29,8 +29,8 @@ export function mockSellerStatus(now = Date.now()): SellerStatus {
 export function mockSellerEvents(now = Date.now()): { events: SellerEventView[] } {
   return {
     events: [
-      { at: now - 26 * 60_000, kind: 'model_down', severity: 'warning', title: 'llama-4-maverick withdrawn after 3 failed health checks', detail: 'HTTP 402: You need positive balance to do inference' },
-      { at: now - 3 * 3_600_000, kind: 'model_up', severity: 'info', title: 'glm-5.3 restored: health check passed' },
+      { at: now - 26 * 60_000, kind: 'model_down', severity: 'warning', title: 'llama-4-maverick marked failing after 3 failed health checks', detail: 'HTTP 402: You need positive balance to do inference' },
+      { at: now - 3 * 3_600_000, kind: 'model_up', severity: 'info', title: 'glm-5.3 recovered: health check passed' },
       { at: now - 13 * 3_600_000, kind: 'started', severity: 'info', title: 'Seller started' },
     ],
   }

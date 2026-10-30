@@ -28,6 +28,7 @@ import {
 import { DEFAULT_BUYER_PEER_REFRESH_INTERVAL_MS } from '../config/defaults.js'
 import { TeeVerification } from './tee-verification.js'
 import { ConversationStore } from './conversation-store.js'
+import { findFailingServiceOffers, resolvePeerRoutePlan } from './routing.js'
 import {
   BuyerProxy,
   isModelNotFoundResponse,
@@ -2303,6 +2304,44 @@ test('selectCandidatePeersForRouting excludes peers when requested service is no
   assert.equal(result.routePlanByPeerId.get(claudePeer.peerId)?.provider, 'claude-oauth')
 })
 
+test('automatic routing skips a model the seller announces as failing, and a pin still reaches it', () => {
+  const failingPeer = makePeer('a', ['openai'])
+  failingPeer.providerPricing = { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'gpt-6-sol': { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } } }
+  failingPeer.providerServiceApiProtocols = { openai: { services: { 'gpt-6-sol': ['openai-chat-completions'] } } }
+  failingPeer.providerServiceHealth = { openai: { services: { 'gpt-6-sol': { status: 'failing', reason: 'timeout', consecutiveFailures: 3 } } } }
+  const healthyPeer = makePeer('b', ['openai'])
+  healthyPeer.providerPricing = { openai: { defaults: { inputUsdPerMillion: 2, outputUsdPerMillion: 2 }, services: { 'gpt-6-sol': { inputUsdPerMillion: 2, outputUsdPerMillion: 2 } } } }
+  healthyPeer.providerServiceApiProtocols = { openai: { services: { 'gpt-6-sol': ['openai-chat-completions'] } } }
+
+  const strict = selectCandidatePeersForRouting([failingPeer, healthyPeer], 'openai-chat-completions', 'gpt-6-sol', null, 'strict')
+  assert.deepEqual(strict.candidatePeers.map((peer) => peer.peerId), [healthyPeer.peerId])
+  // Model-only requests are ranked from a strict plan per peer, which a failing model never gets.
+  assert.equal(resolvePeerRoutePlan(failingPeer, null, 'gpt-6-sol', null, 'strict'), null)
+  assert.equal(resolvePeerRoutePlan(healthyPeer, null, 'gpt-6-sol', null, 'strict')?.serviceId, 'gpt-6-sol')
+  const pinned = selectCandidatePeersForRouting([failingPeer], 'openai-chat-completions', 'gpt-6-sol', null, 'lenient')
+  assert.equal(pinned.routePlanByPeerId.get(failingPeer.peerId)?.serviceId, 'gpt-6-sol')
+})
+
+test('a pinned request prefers the provider whose health check passes, even when the failing one is cheaper', () => {
+  const peer = makePeer('a', ['openai', 'openrouter'])
+  peer.providerPricing = {
+    openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'gpt-6-sol': { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } },
+    openrouter: { defaults: { inputUsdPerMillion: 5, outputUsdPerMillion: 5 }, services: { 'gpt-6-sol': { inputUsdPerMillion: 5, outputUsdPerMillion: 5 } } },
+  }
+  peer.providerServiceApiProtocols = {
+    openai: { services: { 'gpt-6-sol': ['openai-chat-completions'] } },
+    openrouter: { services: { 'gpt-6-sol': ['openai-chat-completions'] } },
+  }
+  peer.providerServiceHealth = { openai: { services: { 'gpt-6-sol': { status: 'failing', reason: 'timeout' } } } }
+  assert.equal(resolvePeerRoutePlan(peer, 'openai-chat-completions', 'gpt-6-sol', null, 'lenient')?.provider, 'openrouter')
+  assert.equal(resolvePeerRoutePlan(peer, null, 'gpt-6-sol', null, 'lenient')?.provider, 'openrouter')
+  // With only failing providers left, the pin still reaches the seller.
+  peer.providerServiceHealth.openrouter = { services: { 'gpt-6-sol': { status: 'failing' } } }
+  assert.equal(resolvePeerRoutePlan(peer, 'openai-chat-completions', 'gpt-6-sol', null, 'lenient')?.provider, 'openai')
+  assert.deepEqual(findFailingServiceOffers([peer], 'gpt-6-sol').map((offer) => offer.provider).sort(), ['openai', 'openrouter'])
+  assert.deepEqual(findFailingServiceOffers([peer], 'other-model'), [])
+})
+
 test('selectCandidatePeersForRouting in lenient mode keeps a peer whose advertised services miss the requested model, as long as the provider protocol set matches', () => {
   // The buyer explicitly pinned this peer. It advertises one service
   // (kimi-k2.6 over openai-chat-completions) but the request asks for
@@ -3234,6 +3273,145 @@ test('POST /v1/systemone routes only to peers advertising typesafe-systemone', a
 
   assert.equal(res.statusCode, 200)
   assert.deepEqual(attempts, [decision.peerId])
+})
+
+test('a model whose every seller reports it failing gets a self health error, not model_not_found', async () => {
+  const failing = makePeer('b', ['openai'])
+  failing.providerPricing = { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'gpt-6-sol': { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } } }
+  failing.providerServiceApiProtocols = { openai: { services: { 'gpt-6-sol': ['openai-chat-completions'] } } }
+  failing.providerServiceHealth = { openai: { services: { 'gpt-6-sol': { status: 'failing', reason: 'timeout', consecutiveFailures: 3 } } } }
+  const proxy = makeBuyerProxyWithPeers([failing], [failing], permissiveRouter())
+  ;(proxy as any)._node.sendRequest = async () => { throw new Error('must not reach a peer') }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    path: '/v1/chat/completions',
+    body: { model: 'gpt-6-sol', messages: [{ role: 'user', content: 'hi' }] },
+  }))
+
+  assert.equal(res.statusCode, 503)
+  const body = JSON.parse(res.body)
+  assert.equal(body.error.code, 'seller_self_health_failing')
+  assert.match(body.error.message, /^The only seller serving "gpt-6-sol" reports it failing\.\nThe seller's self health check for "gpt-6-sol" has been failing \(the upstream timed out, 3 failed checks in a row\)\./)
+})
+
+test('a failing seller that advertises the required parameters gets the self health error, else the capability error', async () => {
+  const seller = (supportedParameters: string[]) => {
+    const failing = makePeer('b', ['openai'])
+    failing.providerPricing = { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'gpt-6-sol': { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } } }
+    failing.providerServiceApiProtocols = { openai: { services: { 'gpt-6-sol': ['openai-chat-completions'] } } }
+    failing.providerServiceCapabilities = { openai: { services: { 'gpt-6-sol': { supportedParameters } } } }
+    failing.providerServiceHealth = { openai: { services: { 'gpt-6-sol': { status: 'failing', reason: 'timeout' } } } }
+    return failing
+  }
+  const send = async (peer: PeerInfo) => {
+    const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+    ;(proxy as any)._node.sendRequest = async () => { throw new Error('must not reach a peer') }
+    const res = await invokeProxy(proxy, makeProxyRequest({
+      path: '/v1/chat/completions',
+      headers: { 'x-antseed-required-parameters': 'seed' },
+      body: { model: 'gpt-6-sol', messages: [{ role: 'user', content: 'hi' }] },
+    }))
+    return [res.statusCode, JSON.parse(res.body).error.code]
+  }
+
+  assert.deepEqual(await send(seller(['seed'])), [503, 'seller_self_health_failing'])
+  assert.deepEqual(await send(seller([])), [422, 'required_capability_unavailable'])
+})
+
+test('a healthy seller without the required parameters does not hide a capable seller failing', async () => {
+  const seller = (seed: string, supportedParameters: string[], failing: boolean) => {
+    const peer = makePeer(seed, ['openai'])
+    peer.providerPricing = { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'gpt-6-sol': { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } } }
+    peer.providerServiceApiProtocols = { openai: { services: { 'gpt-6-sol': ['openai-chat-completions'] } } }
+    peer.providerServiceCapabilities = { openai: { services: { 'gpt-6-sol': { supportedParameters } } } }
+    if (failing) peer.providerServiceHealth = { openai: { services: { 'gpt-6-sol': { status: 'failing', reason: 'timeout' } } } }
+    return peer
+  }
+  const peers = [seller('b', ['seed'], true), seller('c', [], false)]
+  const proxy = makeBuyerProxyWithPeers(peers, peers, permissiveRouter())
+  ;(proxy as any)._node.sendRequest = async () => { throw new Error('must not reach a peer') }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    path: '/v1/chat/completions',
+    headers: { 'x-antseed-required-parameters': 'seed' },
+    body: { model: 'gpt-6-sol', messages: [{ role: 'user', content: 'hi' }] },
+  }))
+
+  assert.equal(res.statusCode, 503)
+  assert.equal(JSON.parse(res.body).error.code, 'seller_self_health_failing')
+})
+
+test('a capable failing provider gets the self health error next to an incapable one on the same seller', async () => {
+  const route = (price: number, supportedParameters: string[]) => ({
+    pricing: { defaults: { inputUsdPerMillion: price, outputUsdPerMillion: price }, services: { 'gpt-6-sol': { inputUsdPerMillion: price, outputUsdPerMillion: price } } },
+    protocols: { services: { 'gpt-6-sol': ['openai-chat-completions' as const] } },
+    capabilities: { services: { 'gpt-6-sol': { supportedParameters } } },
+  })
+  const failing = { services: { 'gpt-6-sol': { status: 'failing' as const, reason: 'timeout' as const } } }
+  const send = async (cheapFailing: boolean) => {
+    const peer = makePeer('b', ['cheap', 'capable'])
+    const cheap = route(1, [])
+    const capable = route(5, ['seed'])
+    peer.providerPricing = { cheap: cheap.pricing, capable: capable.pricing }
+    peer.providerServiceApiProtocols = { cheap: cheap.protocols, capable: capable.protocols }
+    peer.providerServiceCapabilities = { cheap: cheap.capabilities, capable: capable.capabilities }
+    peer.providerServiceHealth = cheapFailing ? { cheap: failing, capable: failing } : { capable: failing }
+    const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+    ;(proxy as any)._node.sendRequest = async () => { throw new Error('must not reach a peer') }
+    const res = await invokeProxy(proxy, makeProxyRequest({
+      path: '/v1/chat/completions',
+      headers: { 'x-antseed-required-parameters': 'seed' },
+      body: { model: 'gpt-6-sol', messages: [{ role: 'user', content: 'hi' }] },
+    }))
+    return [res.statusCode, JSON.parse(res.body).error.code]
+  }
+
+  assert.deepEqual(await send(false), [503, 'seller_self_health_failing'])
+  assert.deepEqual(await send(true), [503, 'seller_self_health_failing'])
+})
+
+test('price policy checks the provider the route sends through, not the first healthy one', async () => {
+  const peer = makePeer('b', ['a', 'b', 'c'])
+  const price = (usd: number) => ({ defaults: { inputUsdPerMillion: usd, outputUsdPerMillion: usd }, services: { 'gpt-6-sol': { inputUsdPerMillion: usd, outputUsdPerMillion: usd } } })
+  const chat = { services: { 'gpt-6-sol': ['openai-chat-completions' as const] } }
+  peer.providerPricing = { a: price(1), b: price(100), c: price(2) }
+  peer.providerServiceApiProtocols = { a: chat, b: chat, c: chat }
+  peer.providerServiceHealth = { a: { services: { 'gpt-6-sol': { status: 'failing', reason: 'timeout' } } } }
+  const router = await localPlugin.createRouter({ ANTSEED_MAX_PRICING_JSON: JSON.stringify({ defaults: { inputUsdPerMillion: 10, outputUsdPerMillion: 10 } }) })
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], router)
+  const providers: string[] = []
+  ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: SerializedHttpRequest) => {
+    providers.push(request.headers['x-antseed-provider'] ?? '')
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    path: '/v1/chat/completions',
+    body: { model: 'gpt-6-sol', messages: [{ role: 'user', content: 'hi' }] },
+  }))
+
+  assert.equal(res.statusCode, 200, res.body)
+  assert.deepEqual(providers, ['c'])
+})
+
+test('a healthy seller ruled out by policy keeps the policy answer, not a self health error', async () => {
+  const failing = makePeer('b', ['openai'])
+  failing.providerPricing = { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'gpt-6-sol': { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } } }
+  failing.providerServiceApiProtocols = { openai: { services: { 'gpt-6-sol': ['openai-chat-completions'] } } }
+  failing.providerServiceHealth = { openai: { services: { 'gpt-6-sol': { status: 'failing', reason: 'timeout' } } } }
+  const pricey = makePeer('c', ['openai'])
+  pricey.providerPricing = { openai: { defaults: { inputUsdPerMillion: 99, outputUsdPerMillion: 99 }, services: { 'gpt-6-sol': { inputUsdPerMillion: 99, outputUsdPerMillion: 99 } } } }
+  pricey.providerServiceApiProtocols = { openai: { services: { 'gpt-6-sol': ['openai-chat-completions'] } } }
+  const proxy = makeBuyerProxyWithPeers([failing, pricey], [failing, pricey], { allowsPeerForPolicy: () => false, onResult: () => {} })
+  ;(proxy as any)._node.sendRequest = async () => { throw new Error('must not reach a peer') }
+
+  for (const path of ['/v1/chat/completions', '/v1/models/custom-operation']) {
+    const res = await invokeProxy(proxy, makeProxyRequest({
+      path,
+      body: { model: 'gpt-6-sol', messages: [{ role: 'user', content: 'hi' }] },
+    }))
+    assert.notEqual(JSON.parse(res.body).error.code, 'seller_self_health_failing', path)
+  }
 })
 
 test('chat requests to a decision-only model get unsupported_protocol, not model_not_found', async () => {

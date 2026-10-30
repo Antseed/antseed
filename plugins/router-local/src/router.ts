@@ -1,4 +1,14 @@
-import { normalizedModelReputationScore, type Router, type PeerInfo, type SerializedHttpRequest } from '@antseed/node';
+import {
+  detectRequestServiceApiProtocol,
+  isNativeVideoProtocol,
+  isServiceHealthFailing,
+  providerServiceHealthFor,
+  normalizedModelReputationScore,
+  type Router,
+  type PeerInfo,
+  type SerializedHttpRequest,
+  type ServiceApiProtocol,
+} from '@antseed/node';
 import {
   scoreCandidates,
   PeerMetricsTracker,
@@ -59,6 +69,9 @@ export class LocalRouter implements Router {
   selectPeer(req: SerializedHttpRequest, peers: PeerInfo[]): PeerInfo | null {
     const now = this._now();
     const requestedService = this._extractRequestedService(req);
+    // A native video request reaches only upstreams serving its protocol, so that route's health counts.
+    const requestProtocol = detectRequestServiceApiProtocol(req);
+    const routeProtocol = requestProtocol && isNativeVideoProtocol(requestProtocol) ? requestProtocol : undefined;
 
     const candidates: {
       peer: PeerInfo;
@@ -77,8 +90,8 @@ export class LocalRouter implements Router {
         continue;
       }
 
-      // Provider availability filter
-      const provider = this._selectProviderForPeer(peer, requestedService);
+      // Provider availability filter (automatic selection skips failing services)
+      const provider = this._selectProviderForPeer(peer, requestedService, { protocol: routeProtocol });
       if (!provider) {
         continue;
       }
@@ -156,11 +169,18 @@ export class LocalRouter implements Router {
   /** Why `allowsPeerForPricing` rejects this peer, or null when it is allowed. */
   private _pricingRejection(req: SerializedHttpRequest, peer: PeerInfo): string | null {
     const requestedService = this._extractRequestedService(req);
-    const provider = this._selectProviderForPeer(peer, requestedService);
+    // A request naming its provider is priced through that provider.
+    const provider = this._namedProvider(req, peer) ?? this._selectProviderForPeer(peer, requestedService);
     if (!provider) return 'no provider for this model';
     const offer = this._resolvePeerOfferPrice(peer, provider, requestedService);
     if (!offer) return 'no valid price advertised';
     return this._maxPriceRejection(offer, this._resolveBuyerMaxPrice(provider, requestedService));
+  }
+
+  private _namedProvider(req: SerializedHttpRequest, peer: PeerInfo): string | null {
+    const named = Object.entries(req.headers).find(([name]) => name.toLowerCase() === 'x-antseed-provider')?.[1]?.trim().toLowerCase();
+    if (!named) return null;
+    return peer.providers.map((provider) => provider.trim()).find((provider) => provider.toLowerCase() === named) ?? null;
   }
 
   private _effectiveReputation(p: PeerInfo): number {
@@ -185,19 +205,46 @@ export class LocalRouter implements Router {
     }
   }
 
-  private _selectProviderForPeer(peer: PeerInfo, requestedService: string | null): string | null {
+  /**
+   * The provider to price and send `requestedService` through. A healthy one
+   * is preferred; only automatic selection (`automatic`) drops a service the
+   * seller's own health check reports failing on every provider that can
+   * serve it (for a native video request, every provider serving its
+   * protocol), so pricing and policy checks still allow a pinned request to
+   * reach it.
+   */
+  private _selectProviderForPeer(
+    peer: PeerInfo,
+    requestedService: string | null,
+    automatic?: { protocol?: ServiceApiProtocol },
+  ): string | null {
     const availableProviders = peer.providers
       .map((provider) => provider.trim())
       .filter((provider) => provider.length > 0);
 
-    if (requestedService && peer.providerPricing) {
-      for (const provider of availableProviders) {
-        const pricing = peer.providerPricing[provider];
-        if (pricing?.services?.[requestedService]) return provider;
-      }
-    }
-
-    return availableProviders[0] ?? null;
+    // The seller's own health check says this provider cannot serve it right now.
+    const isFailing = (provider: string): boolean => requestedService !== null
+      && isServiceHealthFailing(providerServiceHealthFor(peer.providerServiceHealth, provider, requestedService));
+    // Providers pricing the service itself come first, then those that list it
+    // at their default price. With neither, any provider may serve it.
+    const pricesService = (provider: string): boolean =>
+      requestedService !== null && Boolean(peer.providerPricing?.[provider]?.services?.[requestedService]);
+    const listsService = (provider: string): boolean => requestedService !== null && [
+      peer.providerServiceApiProtocols, peer.providerServiceCategories, peer.providerServiceCapabilities,
+      peer.providerServiceUnitBillingModels, peer.providerServiceHealth,
+    ].some((matrix) => Boolean(matrix?.[provider]?.services?.[requestedService]));
+    const ordered = [
+      ...availableProviders.filter(pricesService),
+      ...availableProviders.filter((provider) => !pricesService(provider) && listsService(provider)),
+    ];
+    const listed = ordered.length > 0 ? ordered : availableProviders;
+    // A native video request can only go through a provider serving its protocol.
+    const servesProtocol = (provider: string): boolean => automatic?.protocol !== undefined && requestedService !== null
+      && Boolean(peer.providerServiceApiProtocols?.[provider]?.services?.[requestedService]?.includes(automatic.protocol));
+    const candidates = listed.some(servesProtocol) ? listed.filter(servesProtocol) : listed;
+    const healthy = candidates.find((provider) => !isFailing(provider));
+    if (healthy) return healthy;
+    return automatic ? null : candidates[0] ?? null;
   }
 
   private _resolvePeerOfferPrice(

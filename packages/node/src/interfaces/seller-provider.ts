@@ -1,7 +1,7 @@
 import type { SerializedHttpRequest, SerializedHttpResponse, SerializedHttpResponseChunk } from '../types/http.js';
 import type { ServiceApiProtocol } from '../types/service-api.js';
 import type { ServiceUnitBillingModelsV1 } from '../types/billing.js';
-import type { ServiceCapabilities } from '../discovery/peer-metadata.js';
+import type { ServiceCapabilities, ServiceHealth } from '../discovery/peer-metadata.js';
 
 export interface ProviderTokenPricingUsdPerMillion {
   inputUsdPerMillion: number;
@@ -30,12 +30,19 @@ export interface Provider {
   services: string[];
 
   /**
-   * Runtime health availability. The model health checker sets this to false
-   * when every configured service has been removed, allowing discovery to
-   * omit the provider instead of interpreting an empty service list as a
-   * wildcard. Undefined means available for providers without health checks.
+   * False when the provider failed to initialize (e.g. an OAuth refresh
+   * failure) and is retained only so a later health check can recover it.
+   * The model health checker announces its services as failing until a
+   * check passes, then sets this back to true.
    */
   healthCheckAvailable?: boolean;
+
+  /**
+   * The seller's self health check result per service, written by the model
+   * health checker and signed into metadata (v13+). Absent services have not
+   * been checked yet.
+   */
+  serviceHealth?: Record<string, ServiceHealth>;
 
   /** Seller pricing in USD per 1M tokens (defaults + optional per-service overrides). */
   pricing: ProviderPricing;
