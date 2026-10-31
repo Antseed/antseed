@@ -1,16 +1,15 @@
-import { join } from 'node:path'
 import chalk from 'chalk'
 import type { Command } from 'commander'
 import { loadConfig } from '../../../config/loader.js'
-import { buildEpochBank } from '../../../verifier/round/bank-builder.js'
 import { publisherTick } from '../../../verifier/round/publisher-daemon.js'
 import { roundStorageFromEnv } from '../../../verifier/round/storage.js'
-import { discoverRoundTargets, targetBindingsFromRegistry } from '../../../verifier/round/target-discovery.js'
+import { targetBindingsFromRegistry } from '../../../verifier/round/target-discovery.js'
 import { createKbfRoundClient, createSellerRegistryClient } from '../../payment-utils.js'
 import { setupShutdownHandler } from '../../shutdown.js'
 import { startGatewayBuyer } from '../gateway/shared.js'
 import { getGlobalOptions } from '../types.js'
 import { resolveAuditorSigner } from './auditor-identity.js'
+import { createPublisherContext, parsePollInterval } from './daemon-setup.js'
 
 interface PublishOptions {
   keystore?: string
@@ -31,6 +30,7 @@ export function registerVerifierPublishCommand(verifier: Command): void {
       const globalOptions = getGlobalOptions(command)
       const config = await loadConfig(globalOptions.config)
       const log = (message: string) => console.log(`${new Date().toISOString()} ${message}`)
+      const interval = parsePollInterval(options.interval)
       const client = createKbfRoundClient(config)
       const signer = await resolveAuditorSigner({ config: config.verifier, dataDir: globalOptions.dataDir, keystoreFlag: options.keystore })
       const publisher = await client.publisher()
@@ -39,26 +39,22 @@ export function registerVerifierPublishCommand(verifier: Command): void {
       }
       const buyerPort = Number(options.buyerPort ?? config.buyer.proxyPort)
       if (options.buyer !== false) await startGatewayBuyer(buyerPort, globalOptions, log)
-      const stateDir = join(globalOptions.dataDir, 'verifier', 'publisher')
-      const bindings = targetBindingsFromRegistry(createSellerRegistryClient(config))
-      const storage = roundStorageFromEnv()
-      const interval = Math.max(10, Number(options.interval ?? '60')) * 1_000
+      const context = createPublisherContext({
+        config,
+        dataDir: globalOptions.dataDir,
+        client,
+        signer: signer.wallet,
+        storage: roundStorageFromEnv(),
+        bindings: targetBindingsFromRegistry(createSellerRegistryClient(config)),
+        buyerPort,
+        log,
+      })
       log(chalk.bold(`publisher ${signer.address} on ${client.contractAddress}`))
       let stopped = false
       setupShutdownHandler(async () => { stopped = true })
       while (!stopped) {
         try {
-          await publisherTick({
-            client,
-            signer: signer.wallet,
-            storage,
-            stateDir,
-            buildBank: ({ epoch, models, excludedProbeIds }) => buildEpochBank({
-              config, epoch, models, excludedProbeIds, referencesDir: join(stateDir, 'references'), buyerPort, log,
-            }),
-            discoverTargets: (models) => discoverRoundTargets({ config, dataDir: globalOptions.dataDir, models, bindings, log }),
-            log,
-          })
+          await publisherTick(context)
         } catch (error) {
           log(chalk.yellow(`pass failed: ${error instanceof Error ? error.message : String(error)}`))
         }

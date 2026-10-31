@@ -11,7 +11,8 @@ import { derivePlan, envelopeFor } from './plan.js'
 import { contentHash, generateEncryptionKeyPair, sealEnvelope } from './sealing.js'
 import { DirectoryRoundStorage } from './storage.js'
 import type { EnvelopeContentV1, EpochBankV1, PlanFileV1, RoundPlanV1, RoundTargetV1, SliceManifestV1 } from './types.js'
-import { encodeRoundFile, verifierTick, type VerifierDaemonContext } from './verifier-daemon.js'
+import { encodeRoundFile } from './encoding.js'
+import { verifierTick, type VerifierDaemonContext } from './verifier-daemon.js'
 
 const EPOCH = 7n
 const EPOCH_SECONDS = 7 * 24 * 3600
@@ -70,7 +71,7 @@ interface SetupOptions {
   others?: number
   /** Edits this verifier's envelope before it is sealed, as a dishonest publisher would. */
   tamper?: (envelope: EnvelopeContentV1) => void
-  maxBatchesPerEpoch?: number
+  maxRequestsPerEpoch?: number
 }
 
 async function setup(options: SetupOptions = {}): Promise<Setup> {
@@ -140,7 +141,7 @@ async function setup(options: SetupOptions = {}): Promise<Setup> {
     bindings: { isBound: async () => true },
     stateDir: join(dir, 'state'),
     collector: { buyerUrl: 'http://buyer.test', responseAuth: reader, log: () => {}, fetchImpl },
-    ...(options.maxBatchesPerEpoch === undefined ? {} : { maxBatchesPerEpoch: options.maxBatchesPerEpoch }),
+    ...(options.maxRequestsPerEpoch === undefined ? {} : { maxRequestsPerEpoch: options.maxRequestsPerEpoch }),
     log: (line) => logs.push(line),
   }
   return {
@@ -313,12 +314,27 @@ test('an envelope with work the plan does not assign buys nothing', async (t) =>
 })
 
 test('purchases stop at the per-epoch budget whatever the envelope asks for', async (t) => {
-  const s = await setup({ maxBatchesPerEpoch: 3 })
+  const s = await setup({ maxRequestsPerEpoch: 3 })
   t.after(() => rm(s.dir, { recursive: true, force: true }))
   await verifierTick(s.context)
   assert.equal(s.requests.length, 3)
-  assert.ok(s.logs.some((line) => line.includes('reached the budget of 3 batches')))
+  assert.ok(s.logs.some((line) => line.includes('reached the budget of 3 requests')))
   assert.equal(s.chain.slices.length, 1, 'what was bought is still committed')
+})
+
+test('every request attempt counts against the budget, retries of unsigned 200s included', async (t) => {
+  const s = await setup({ maxRequestsPerEpoch: 1 })
+  t.after(() => rm(s.dir, { recursive: true, force: true }))
+  // The seller answers 200 but no signed record ever shows up: the collector would retry.
+  s.context.collector!.responseAuth = {
+    waitForVerified: async ({ requestId }: { requestId: string }) => ({ requestId, status: 'missing', failureReason: 'no record' }),
+    close: () => {},
+  } as unknown as ResponseAuthReader
+  await verifierTick(s.context)
+  assert.equal(s.requests.length, 1, 'one request allowed, one sent')
+  const state = JSON.parse(await readFile(join(s.context.stateDir, EPOCH.toString(), 'state.json'), 'utf8')) as { requestsSent?: number }
+  assert.equal(state.requestsSent, 1, 'counted before it was sent')
+  assert.ok(s.logs.some((line) => line.includes('reached the budget of 1 requests')))
 })
 
 test('backups need no publisher step: undelivered backed-up slices are bought after the deadline', async (t) => {

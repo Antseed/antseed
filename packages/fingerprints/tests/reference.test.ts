@@ -14,6 +14,7 @@ import {
   rescoreKbfReference,
   subsetReferenceSelfTest,
   validateKbfReferenceV1,
+  verifyKbf,
   type KbfReferenceV1,
 } from '../src/index.js';
 
@@ -469,6 +470,27 @@ describe('rescoreKbfReference', () => {
     expect(rescored.referenceId).toBe(computeReferenceId(rescored));
     expect(() => validateKbfReferenceV1(rescored)).not.toThrow();
     expect(legacy.selfTest.outcomes[0]!.matches).toEqual([0, 1, 0]);
+  });
+
+  it('verifyKbf scores a legacy reference baseline by the current rule without the caller rescoring it', () => {
+    // 30 of 300 self-test runs missing but stored as discrepancies: p0 ~0.15 if taken as is.
+    let legacy = reference();
+    legacy.minimumMismatchDelta = 0.15;
+    for (let index = 0; index < 30; index++) {
+      legacy = withOutcome(legacy, { probeId: `p-${index}`, answers: [null, index, index], matches: [0, 1, 1] });
+    }
+    expect(() => validateKbfReferenceV1(legacy)).not.toThrow();
+    expect(legacy.selfTest).toMatchObject({ hamming: 30, total: 300 });
+    // A fully answered target with 15 wrong answers.
+    const answers = legacy.probes.map((probe, index) => (index < 15 ? probe.consensus + 500 : probe.consensus));
+
+    const direct = verifyKbf(legacy, { answers });
+    const rescored = verifyKbf(rescoreKbfReference(legacy), { answers });
+
+    expect(direct.verdict).toBe('DIFF');
+    expect(direct.verdict).toBe(rescored.verdict);
+    expect(direct.stats).toMatchObject({ selfHamming: 0, selfTotal: 270 });
+    expect(direct.stats).toEqual(rescored.stats);
   });
 
   it('returns a current reference unchanged', () => {

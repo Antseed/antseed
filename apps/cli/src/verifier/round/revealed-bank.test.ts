@@ -9,7 +9,7 @@ import { loadRevealedBankReference } from './revealed-bank.js'
 import { contentHash, sealBank } from './sealing.js'
 import { DirectoryRoundStorage } from './storage.js'
 import type { EpochBankV1 } from './types.js'
-import { encodeRoundFile } from './verifier-daemon.js'
+import { encodeRoundFile } from './encoding.js'
 
 test('check reads the newest revealed bank that includes the model, verified against its on-chain hash', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'revealed-bank-'))

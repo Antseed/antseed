@@ -11,7 +11,7 @@ import { fallbackPublisherTick, takeoverTime } from './fallback-publisher.js'
 import { keyEscrowTick, keyRevealDelay } from './key-escrow.js'
 import { buildKeySharesFile, combineShares, openKeyShare, recoverBankKey, splitSecret } from './key-shares.js'
 import { publisherTick, type PublisherDaemonContext } from './publisher-daemon.js'
-import { generateEncryptionKeyPair, openEnvelope } from './sealing.js'
+import { generateEncryptionKeyPair, isUsableEncryptionKey, openEnvelope } from './sealing.js'
 import { DirectoryRoundStorage } from './storage.js'
 import type { EnvelopeContentV1, EpochBankV1, PlanFileV1, RoundTargetV1 } from './types.js'
 
@@ -21,6 +21,8 @@ const EPOCH = 7n
 const START = Number(EPOCH) * EPOCH_SECONDS
 const HOUR = 3600
 const DAY = 24 * HOUR
+/** u = 1, a low-order X25519 point: nonzero, yet no key agreement with it succeeds. */
+const LOW_ORDER_KEY = `0x01${'00'.repeat(31)}`
 
 const seller = new Wallet(Wallet.createRandom().privateKey)
 const target: RoundTargetV1 = {
@@ -66,6 +68,24 @@ async function setup(): Promise<Setup> {
     }),
   }
 }
+
+test('only keys that can receive envelopes count as usable', () => {
+  assert.equal(isUsableEncryptionKey(generateEncryptionKeyPair().publicKey), true)
+  for (const bad of [LOW_ORDER_KEY, `0x${'00'.repeat(32)}`, `0xecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f`, '0x1234', 'nothex']) {
+    assert.equal(isUsableEncryptionKey(bad), false, bad)
+  }
+  // Escrow skips an unusable key instead of failing on it.
+  const good = [0, 1].map(() => ({ address: Wallet.createRandom().address, encryptionKey: generateEncryptionKeyPair().publicKey }))
+  const file = buildKeySharesFile({
+    epoch: EPOCH, bankKey: `0x${'5a'.repeat(32)}`, threshold: 2,
+    recipients: [...good, { address: Wallet.createRandom().address, encryptionKey: LOW_ORDER_KEY }],
+  })
+  assert.equal(Object.keys(file.shares).length, 2)
+  assert.throws(() => buildKeySharesFile({
+    epoch: EPOCH, bankKey: `0x${'5a'.repeat(32)}`, threshold: 3,
+    recipients: [...good, { address: Wallet.createRandom().address, encryptionKey: LOW_ORDER_KEY }],
+  }), /only 2 verifiers have usable encryption keys; 3 needed/)
+})
 
 test('Shamir shares rebuild the secret from any threshold subset only', () => {
   const secret = Buffer.from('11'.repeat(16) + 'ee'.repeat(16), 'hex')
@@ -157,6 +177,37 @@ test('verifiers rebuild and reveal the bank key when the publisher disappears', 
   assert.notEqual(s.fake.info(EPOCH).bankKey, ZERO_HASH, 'two shares rebuild the key')
   await escrow(2)
   assert.equal(s.fake.shares.length, 2, 'nothing to do once the key is out')
+})
+
+test('a verifier with an unusable encryption key does not stall escrow or the plan', async (t) => {
+  const s = await setup()
+  t.after(() => rm(s.dir, { recursive: true, force: true }))
+  // A nonzero low-order X25519 point: the contract accepts it, but nothing can be sealed to it.
+  const broken = s.verifiers[2]!.wallet.address
+  s.fake.encryptionKeys.set(broken.toLowerCase(), LOW_ORDER_KEY)
+  const context = s.context(s.publisher, 'publisher')
+  s.fake.time = START + HOUR
+  await publisherTick(context)
+  s.fake.openAndSeed(EPOCH)
+  await publisherTick(context)
+  assert.ok(s.fake.calls.includes(`commitKeyShares:${EPOCH}`), 'escrowed with the two usable keys')
+  assert.ok(s.fake.calls.includes(`commitPlan:${EPOCH}`), 'the plan is not held back')
+  assert.ok(s.logs.some((line) => line.includes(`${broken} has an unusable encryption key`)))
+
+  const event = s.fake.plans.at(-1)!
+  const plan = JSON.parse((await s.storage.get(event.uri, event.hash)).toString('utf8')) as PlanFileV1
+  assert.equal(plan.envelopes[broken.toLowerCase()], undefined, 'its slices are left to backups')
+  assert.equal(plan.backupEnvelopes[broken.toLowerCase()], undefined)
+
+  // The two usable verifiers still meet the threshold of 2 and rebuild the key.
+  const escrow = (index: number) => keyEscrowTick({
+    client: s.fake.asClient(), signer: s.verifiers[index]!.wallet as never, address: s.verifiers[index]!.wallet.address,
+    encryptionPrivateKey: s.verifiers[index]!.keys.privateKey, storage: s.storage, log: (line) => s.logs.push(line),
+  })
+  s.fake.time = START + 4 * DAY + HOUR
+  await escrow(0)
+  await escrow(1)
+  assert.notEqual(s.fake.info(EPOCH).bankKey, ZERO_HASH)
 })
 
 test('a verifier takes over an epoch the publisher never planned and runs it', async (t) => {

@@ -38,6 +38,19 @@ export function encryptionPublicKey(privateKeyHex: string): string {
   return rawPublicKey(createPublicKey(privateKeyObject(privateKeyHex)))
 }
 
+/**
+ * Whether an on-chain encryption key can actually receive envelopes: 32 bytes and not a
+ * low-order point (those make the X25519 agreement fail, or come out all zero).
+ */
+export function isUsableEncryptionKey(publicKeyHex: string): boolean {
+  try {
+    const shared = diffieHellman({ privateKey: generateKeyPairSync('x25519').privateKey, publicKey: publicKeyObject(publicKeyHex) })
+    return shared.some((byte) => byte !== 0)
+  } catch {
+    return false
+  }
+}
+
 export function sealEnvelope(recipientPublicKeyHex: string, plaintext: Uint8Array): SealedEnvelopeV1 {
   const ephemeral = generateKeyPairSync('x25519')
   const recipient = publicKeyObject(recipientPublicKeyHex)

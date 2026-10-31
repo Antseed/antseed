@@ -10,12 +10,12 @@ import {
   type KbfRoundClient,
 } from '@antseed/node/payments'
 import { ensurePrivateDirectory, writeSecretJsonAtomic } from '../atomic-files.js'
+import { encodeRoundFile } from './encoding.js'
 import { buildKeySharesFile } from './key-shares.js'
 import { derivePlan, envelopeFor } from './plan.js'
-import { bankKeyHash, contentHash, sealBank, sealEnvelope } from './sealing.js'
+import { bankKeyHash, contentHash, isUsableEncryptionKey, sealBank, sealEnvelope } from './sealing.js'
 import type { RoundStorage } from './storage.js'
 import type { EpochBankV1, PlanFileV1, RoundTargetV1, SealedEnvelopeV1 } from './types.js'
-import { encodeRoundFile } from './verifier-daemon.js'
 
 /**
  * Antseed's reference publisher. It never decides a verdict: it builds and seals each epoch's
@@ -105,12 +105,8 @@ export async function advanceEpochAsPublisher(
 async function escrowBankKey(context: PublisherDaemonContext, info: KbfEpochInfo): Promise<void> {
   const state = await readState(context, info.epoch)
   if (!state || state.bankHash !== info.bankHash) throw new Error('no bank key on disk')
-  const members = await context.client.epochVerifiers(info.epoch)
-  const recipients: Array<{ address: string; encryptionKey: string }> = []
-  for (const member of members) {
-    const encryptionKey = await context.client.encryptionKey(member)
-    if (!isZeroHash(encryptionKey)) recipients.push({ address: member, encryptionKey })
-  }
+  const keys = await memberEncryptionKeys(context, await context.client.epochVerifiers(info.epoch))
+  const recipients = [...keys].map(([address, encryptionKey]) => ({ address, encryptionKey }))
   const file = buildKeySharesFile({
     epoch: info.epoch, bankKey: state.bankKey, threshold: await context.client.threshold(info.epoch), recipients,
   })
@@ -182,12 +178,16 @@ async function publishPlan(context: PublisherDaemonContext, info: KbfEpochInfo, 
   context.log(`epoch ${info.epoch}: committed plan for ${plan.targets.length} targets, ${plan.slices.length} slices (${hash})`)
 }
 
-/** Each member's envelope key; members without one get no envelopes, so their slices fall to backups. */
+/**
+ * Each member's usable envelope key. Members without one, or with a key that cannot receive
+ * envelopes, get no envelopes or key share: like an offline verifier, their slices fall to backups.
+ */
 async function memberEncryptionKeys(context: PublisherDaemonContext, members: readonly string[]): Promise<Map<string, string>> {
   const keys = new Map<string, string>()
   for (const member of members) {
     const key = await context.client.encryptionKey(member)
     if (isZeroHash(key)) context.log(`verifier ${member} has no encryption key; its slices go to backups`)
+    else if (!isUsableEncryptionKey(key)) context.log(`verifier ${member} has an unusable encryption key; it gets no envelopes or key share`)
     else keys.set(member.toLowerCase(), key)
   }
   return keys

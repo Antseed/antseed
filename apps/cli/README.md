@@ -677,7 +677,7 @@ restart continues where it stopped. `--no-collect` only scores and attests.
 Every envelope is checked against the public plan before anything is bought (only
 slices assigned to this verifier, at most the schedule's questions per seller,
 bounded questions and request settings), and `--max-epoch-requests` (default 1000)
-caps the paid requests per epoch, own and backup slices together.
+caps the seller requests sent per epoch, retries included, own and backup slices together.
 It signs with `--keystore <path>` (password from `ANTSEED_KEYSTORE_PASSWORD`),
 then `verifier.keystore`, then the data-dir identity, and refuses to start for an
 address that isn't an approved verifier. A newly approved verifier joins from the

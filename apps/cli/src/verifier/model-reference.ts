@@ -1479,21 +1479,11 @@ function createReferenceQuery(input: {
             : input.timeoutMs,
           input.fetchFn,
         ))
-        const pricing = input.pricingForModel(model)
         const cachedResponse: ReferenceCachedSuccessV1 = {
           outcome: 'success',
+          ...cachedCost(model, referenceRequestPurpose(__antseedReferenceCacheDomain), response.inputTokens, response.outputTokens),
           content: response.content,
-          model,
           ...(response.provider ? { provider: response.provider } : {}),
-          purpose: referenceRequestPurpose(__antseedReferenceCacheDomain),
-          inputTokens: response.inputTokens,
-          outputTokens: response.outputTokens,
-          inputUsdPerMillion: pricing.inputUsdPerMillion,
-          outputUsdPerMillion: pricing.outputUsdPerMillion,
-          costUsdMicros: String(Math.ceil(
-            response.inputTokens * pricing.inputUsdPerMillion
-            + response.outputTokens * pricing.outputUsdPerMillion,
-          )),
         }
         await input.checkpoint.appendExchange({
           cacheKey,
@@ -1510,22 +1500,12 @@ function createReferenceQuery(input: {
         return response.content
       } catch (error) {
         if (isTerminalEmptyReferenceError(error)) {
-          const pricing = input.pricingForModel(model)
           const cachedResponse: ReferenceCachedTerminalEmptyV1 = {
             outcome: 'terminal-empty',
-            model,
-            purpose: referenceRequestPurpose(__antseedReferenceCacheDomain),
+            ...cachedCost(model, referenceRequestPurpose(__antseedReferenceCacheDomain), error.inputTokens, error.outputTokens),
             finishReason: error.finishReason,
             nativeFinishReason: error.nativeFinishReason,
             detail: error.detail,
-            inputTokens: error.inputTokens,
-            outputTokens: error.outputTokens,
-            inputUsdPerMillion: pricing.inputUsdPerMillion,
-            outputUsdPerMillion: pricing.outputUsdPerMillion,
-            costUsdMicros: String(Math.ceil(
-              error.inputTokens * pricing.inputUsdPerMillion
-              + error.outputTokens * pricing.outputUsdPerMillion,
-            )),
           }
           if (error.exchange) {
             await input.checkpoint.appendExchange({

@@ -37,6 +37,24 @@ interface UsableReference {
   settings: EnvelopeSliceV1['request']
 }
 
+/** Valid manifests by phase and collector, in commit order, so slices look up only their own candidates. */
+type ManifestIndex = Map<string, CommittedManifest[]>
+
+function indexManifests(manifests: readonly CommittedManifest[]): ManifestIndex {
+  const index: ManifestIndex = new Map()
+  for (const manifest of manifests) {
+    const key = manifestKey(manifest.backup, manifest.collector)
+    const entries = index.get(key) ?? []
+    entries.push(manifest)
+    index.set(key, entries)
+  }
+  return index
+}
+
+function manifestKey(backup: boolean, collector: string): string {
+  return `${backup}:${collector.toLowerCase()}`
+}
+
 interface UsedSlice {
   collector: string
   uri: string
@@ -55,7 +73,7 @@ export function scoreRound(input: {
   manifests: readonly CommittedManifest[]
 }): RoundResultsV1 {
   const { plan, bank } = input
-  const manifests = validManifests(input.manifests, plan.epoch)
+  const manifests = indexManifests(validManifests(input.manifests, plan.epoch))
   const targets = new Map(plan.targets.map((target) => [targetKey(target), target]))
   const slicesByTarget = new Map<string, PlannedSliceV1[]>()
   for (const slice of plan.slices) {
@@ -154,7 +172,7 @@ export function createEnvelopeDeliveryChecker(
   manifests: readonly CommittedManifest[],
   epoch: string,
 ): (slice: EnvelopeSliceV1, owner: string) => boolean {
-  const primary = validManifests(manifests.filter((entry) => !entry.backup), epoch)
+  const primary = indexManifests(validManifests(manifests.filter((entry) => !entry.backup), epoch))
   return (slice, owner) => {
     const planned: PlannedSliceV1 = {
       targetKey: targetKey(slice.target),
@@ -178,13 +196,13 @@ export function createEnvelopeDeliveryChecker(
  */
 function pickSlice(
   slice: PlannedSliceV1,
-  manifests: readonly CommittedManifest[],
+  manifests: ManifestIndex,
   target: TargetResultV1['target'],
   reference: UsableReference,
 ): UsedSlice | null {
   const candidates = [
-    ...manifests.filter((entry) => !entry.backup && entry.collector.toLowerCase() === slice.owner),
-    ...manifests.filter((entry) => entry.backup && slice.backup !== slice.owner && entry.collector.toLowerCase() === slice.backup),
+    ...(manifests.get(manifestKey(false, slice.owner)) ?? []),
+    ...(slice.backup && slice.backup !== slice.owner ? manifests.get(manifestKey(true, slice.backup)) ?? [] : []),
   ]
   for (const candidate of candidates) {
     const delivered = candidate.manifest.slices.find((entry) => entry.targetKey === slice.targetKey && entry.sliceIndex === slice.sliceIndex)

@@ -25,8 +25,12 @@ export interface CollectSliceOptions {
   done?: ReadonlyMap<number, SliceExchangeV1 | null>
   /** Called after each batch is bought, before the next one starts, to checkpoint it. */
   onBatch?: (batchIndex: number, exchange: SliceExchangeV1 | null) => Promise<void>
-  /** Checked before each batch; true stops buying (the phase is about to end). */
-  shouldStop?: () => Promise<boolean>
+  /**
+   * Called before every outbound request, retries included: false stops buying (the phase is
+   * about to end or the request budget is spent). It must count the request durably before
+   * returning true, since a seller may charge for a request whose signed response never arrives.
+   */
+  beforeRequest?: () => Promise<boolean>
 }
 
 /**
@@ -47,23 +51,28 @@ export async function collectSlice(
       if (previous) exchanges.push(previous)
       continue
     }
-    if (options.shouldStop && await options.shouldStop()) break
-    const exchange = await collectBatch(slice, batch, context)
+    const exchange = await collectBatch(slice, batch, context, options.beforeRequest)
+    // Stopped before the batch got a signed answer: leave it unrecorded, so a later pass may retry it.
+    if (exchange === STOPPED) break
     await options.onBatch?.(batch.batchIndex, exchange)
     if (exchange) exchanges.push(exchange)
   }
   return { targetKey: targetKey(slice.target), sliceIndex: slice.sliceIndex, exchanges }
 }
 
+const STOPPED = Symbol('stopped')
+
 async function collectBatch(
   slice: EnvelopeSliceV1,
   batch: EnvelopeSliceV1['batches'][number],
   context: CollectorContext,
-): Promise<SliceExchangeV1 | null> {
+  beforeRequest: (() => Promise<boolean>) | undefined,
+): Promise<SliceExchangeV1 | null | typeof STOPPED> {
   const fetchImpl = context.fetchImpl ?? fetch
   let omitSampling = false
   let omitThinking = false
   for (let attempt = 1; attempt <= BATCH_ATTEMPTS; attempt++) {
+    if (beforeRequest && !await beforeRequest()) return STOPPED
     const requestId = randomUUID()
     const body = requestBody(slice, batch, { omitSampling, omitThinking })
     let status = 0

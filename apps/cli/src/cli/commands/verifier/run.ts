@@ -243,11 +243,14 @@ export function registerVerifierRunCommand(verifier: Command): void {
       let previousLeft: number | null = null
       let replannedForNewEpoch = false
       const allowances = new Map<string, ReferenceRequestAllowance>()
+      const rounds: RoundFailures[] = []
       for (let round = 1; round <= maxRounds; round += 1) {
         if (round > 1) console.log(chalk.cyan(`\nRound ${round} of ${maxRounds}: retrying what is left this epoch`))
         // Later rounds continue from the epoch (never --fresh). Builds resume from their checkpoints,
         // and every round draws on the same per-model request allowance, so retries never raise it.
-        const outcome = await runVerifierRound(modelValue, round === 1 ? options : { ...options, fresh: false }, command, allowances)
+        const failures: RoundFailures = { permanent: false, recoverable: 0 }
+        rounds.push(failures)
+        const outcome = await runVerifierRound(modelValue, round === 1 ? options : { ...options, fresh: false }, command, allowances, failures)
         if (outcome.epochChanged) {
           // The round was planned for the previous epoch (assignment, finished sellers, rechecks),
           // so nothing was audited; plan it again for the new epoch, once, without using up a round.
@@ -276,7 +279,23 @@ export function registerVerifierRunCommand(verifier: Command): void {
         }
         previousLeft = outcome.left
       }
+      // Decided once the rounds are over: a failure a later round recovered from is not a failure.
+      if (runExitCode(rounds) !== 0) process.exitCode = 1
     })
+}
+
+/** Failures one round leaves behind: `recoverable` ones a later round may still fix. */
+export interface RoundFailures {
+  /** A failure no retry can fix, e.g. an audited model without a reference price. */
+  permanent: boolean
+  /** Audits and enrollments that failed in this round. */
+  recoverable: number
+}
+
+/** The run's exit code: 1 after a permanent failure in any round, or failures left by the last round. */
+export function runExitCode(rounds: readonly RoundFailures[]): 0 | 1 {
+  const last = rounds[rounds.length - 1]
+  return rounds.some((round) => round.permanent) || (last !== undefined && last.recoverable > 0) ? 1 : 0
 }
 
 /** No new round starts with less than this left in the epoch, so there is time to submit. */
@@ -317,6 +336,7 @@ async function runVerifierRound(
   options: RunOptions,
   command: Command,
   allowances: Map<string, ReferenceRequestAllowance>,
+  failures: RoundFailures,
 ): Promise<VerifierRoundOutcome> {
       const baseBudget = enrollmentRequestBudget(options)
       const enrollmentBudget = baseBudget
@@ -430,7 +450,7 @@ async function runVerifierRound(
         )
         for (const [model, reason] of priceCaps.unpriced) {
           console.warn(chalk.yellow(`SKIPPED ${model}: ${reason}`))
-          process.exitCode = 1
+          failures.permanent = true
         }
         runModels = runModels.filter((model) => priceCaps.caps.has(model))
         if (runModels.length === 0) throw new Error('no audited model has a reference price; see the warnings above')
@@ -516,13 +536,13 @@ async function runVerifierRound(
               return true
             } catch (error) {
               console.warn(chalk.yellow(`SKIPPED ${model}: enrollment failed: ${asError(error).message}`))
-              process.exitCode = 1
               return false
             }
           }))
           // A failed enrollment stays in the remaining work: the next round continues the build from
           // its checkpoint with what is left of the model's request allowance.
           enrollmentFailures = enrolled.filter((ready) => !ready).length
+          failures.recoverable += enrollmentFailures
           runModels = runModels.filter((_, index) => enrolled[index])
           if (runModels.length === 0) {
             console.log(chalk.yellow(`No model is ready after reference enrollment; ${enrollmentFailures} enrollment(s) left to retry.`))
@@ -1179,7 +1199,7 @@ async function runVerifierRound(
         } else {
           console.log(chalk.green(`Epoch ${epoch}: every eligible seller is finished.`))
         }
-        if (status.failures > 0) process.exitCode = 1
+        failures.recoverable += status.failures
         return { left: remaining, secondsLeftInEpoch: epochWindow.endsAt - Date.now() / 1_000 }
       } catch (error) {
         if (status) {

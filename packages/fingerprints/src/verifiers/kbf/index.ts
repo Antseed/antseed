@@ -18,7 +18,7 @@ import {
 import { canonicalHash } from '../../canonical-json.js';
 import { computeMatchVector } from './scoring.js';
 import { computeKbfVerdict } from './verdict.js';
-import { subsetReferenceSelfTest, type KbfReferenceV1 } from './reference.js';
+import { rescoreKbfSelfTestOutcome, subsetReferenceSelfTest, type KbfReferenceV1 } from './reference.js';
 
 export * from './prompts.js';
 export * from './parser.js';
@@ -100,9 +100,17 @@ export function verifyKbf(
 
     let selectedSelfTest;
     try {
+      // Score the baseline by the same rule as the target: a legacy reference stores a missing
+      // self-test answer as a discrepancy, which would inflate p0 and hide a DIFF.
+      const kbf = reference as KbfReferenceV1;
+      const probesById = new Map(kbf.probes.map((probe) => [probe.id, probe]));
+      const outcomes = kbf.selfTest.outcomes.map((outcome) => {
+        const probe = probesById.get(outcome.probeId);
+        return probe ? rescoreKbfSelfTestOutcome(outcome, probe) : outcome;
+      });
       selectedSelfTest = subsetReferenceSelfTest(
-        reference as KbfReferenceV1,
-        reference.probes.map((probe) => probe.id),
+        { probes: kbf.probes, selfTest: { ...kbf.selfTest, outcomes } },
+        kbf.probes.map((probe) => probe.id),
       );
     } catch (error) {
       return unknown(`invalid reference self-test: ${error instanceof Error ? error.message : String(error)}`);

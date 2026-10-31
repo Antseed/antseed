@@ -84,6 +84,33 @@ test('epoch overview merges runs in submit order and applies the DIFF-twice rule
   }
 })
 
+test('a DIFF from a run with confirmation off is not reported as confirmed twice', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'antseed-overview-'))
+  try {
+    await writeRun(dir, 'run-1', '2026-10-01T00:00:00.000Z', {
+      results: [
+        result('p1', '1', 'DIFF', { recheck: { status: 'DIFF', parsedProbeCount: 50, correctProbeCount: 20, probeCount: 50 } }),
+        result('p2', '2', 'DIFF', { diffConfirmation: 'off' }),
+      ],
+    })
+    const overview = await buildEpochOverview(dir, '9')
+    const cell = (agentId: string) => overview.sellers.find((seller) => seller.agentId === agentId)!.cells.get('model-a')!
+    assert.equal(cell('1').state, 'diff')
+    assert.equal(cell('1').confirmed, true)
+    assert.equal(cell('2').state, 'diff')
+    assert.equal(cell('2').confirmed, false)
+
+    const html = await readFile((await writeEpochOverview(dir, '9'))!, 'utf8')
+    assert.equal(html.match(/DIFF on both checks/g)?.length, 1)
+    assert.match(html, /DIFF on one check \(confirmation was off\)/)
+    assert.equal(html.match(/<sup>2×<\/sup>/g)?.length, 1)
+    assert.match(html, /1 confirmed by a recheck · 2 sellers/)
+    assert.doesNotMatch(html, /DIFF twice|2× CONFIRMED/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('plain reasons match the AntScan wording', () => {
   assert.deepEqual(explainInconclusive({ code: 'malformed_output', answered: 48, asked: 140 }), {
     headline: "Inconclusive: answers couldn't be read",

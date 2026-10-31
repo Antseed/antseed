@@ -9,19 +9,19 @@ import { requireCurrentVerifier } from '../../../verifier/release-check.js'
 import { writeSecretJsonAtomic } from '../../../verifier/atomic-files.js'
 import { loadBuyerProxySnapshot } from '../../../verifier/model-run.js'
 import { openResponseAuthReader, type ResponseAuthReader } from '../../../verifier/response-auth-reader.js'
-import { buildEpochBank } from '../../../verifier/round/bank-builder.js'
 import type { CollectorContext } from '../../../verifier/round/collector.js'
 import { fallbackPublisherTick } from '../../../verifier/round/fallback-publisher.js'
 import { keyEscrowTick } from '../../../verifier/round/key-escrow.js'
-import { encryptionPublicKey, generateEncryptionKeyPair } from '../../../verifier/round/sealing.js'
+import { encryptionPublicKey, generateEncryptionKeyPair, isUsableEncryptionKey } from '../../../verifier/round/sealing.js'
 import { roundStorageFromEnv } from '../../../verifier/round/storage.js'
-import { discoverRoundTargets, targetBindingsFromRegistry } from '../../../verifier/round/target-discovery.js'
-import { DEFAULT_MAX_BATCHES_PER_EPOCH, verifierTick } from '../../../verifier/round/verifier-daemon.js'
+import { targetBindingsFromRegistry } from '../../../verifier/round/target-discovery.js'
+import { DEFAULT_MAX_REQUESTS_PER_EPOCH, verifierTick } from '../../../verifier/round/verifier-daemon.js'
 import { createKbfRoundClient, createSellerRegistryClient } from '../../payment-utils.js'
 import { setupShutdownHandler } from '../../shutdown.js'
 import { startGatewayBuyer } from '../gateway/shared.js'
 import { getGlobalOptions } from '../types.js'
 import { resolveAuditorSigner } from './auditor-identity.js'
+import { createPublisherContext, parsePollInterval } from './daemon-setup.js'
 
 interface StartOptions {
   keystore?: string
@@ -81,12 +81,18 @@ export function registerVerifierStartCommand(verifier: Command): void {
     .option('--buyer-port <port>', 'buyer proxy port (default: buyer.proxyPort from the config)')
     .option('--interval <seconds>', 'seconds between passes', '60')
     .option('--no-collect', 'only score and attest; never buy slices')
-    .option('--max-epoch-requests <n>', 'most paid seller requests (question batches) to buy per epoch, own and backup slices together', String(DEFAULT_MAX_BATCHES_PER_EPOCH))
+    .option('--max-epoch-requests <n>', 'most seller requests to send per epoch, retries included, own and backup slices together', String(DEFAULT_MAX_REQUESTS_PER_EPOCH))
     .option('--skip-version-check', 'start even if this CLI is older than the latest release (it may attest a different results root)')
     .action(async (options: StartOptions, command: Command) => {
       const globalOptions = getGlobalOptions(command)
       const config = await loadConfig(globalOptions.config)
       const log = (message: string) => console.log(`${new Date().toISOString()} ${message}`)
+      // Option errors first, before anything is published on-chain or a buyer is started.
+      const interval = parsePollInterval(options.interval)
+      const maxRequestsPerEpoch = Number(options.maxEpochRequests ?? DEFAULT_MAX_REQUESTS_PER_EPOCH)
+      if (!Number.isSafeInteger(maxRequestsPerEpoch) || maxRequestsPerEpoch < 0) {
+        throw new Error(`--max-epoch-requests must be a whole number, got ${options.maxEpochRequests}`)
+      }
       // An outdated verifier scores differently and attests a root the others don't.
       await requireCurrentVerifier({
         command: 'start',
@@ -101,6 +107,7 @@ export function registerVerifierStartCommand(verifier: Command): void {
         throw new Error(`${signer.address} is not an approved verifier on ${client.contractAddress}`)
       }
       const keys = await loadOrCreateEncryptionKey(globalOptions.dataDir)
+      if (!isUsableEncryptionKey(keys.publicKey)) throw new Error('the stored encryption key cannot receive envelopes; remove verifier/round/encryption-key.json to make a new one')
       const onChainKey = await client.encryptionKey(signer.address)
       if (isZeroHash(onChainKey) || onChainKey.toLowerCase() !== keys.publicKey.toLowerCase()) {
         log(`publishing encryption key ${keys.publicKey}`)
@@ -116,11 +123,9 @@ export function registerVerifierStartCommand(verifier: Command): void {
       const storage = roundStorageFromEnv()
       const targetBindings = targetBindingsFromRegistry(createSellerRegistryClient(config))
       const bindings = targetBindings.reader
-      const interval = Math.max(10, Number(options.interval ?? '60')) * 1_000
-      const maxBatchesPerEpoch = Number(options.maxEpochRequests ?? DEFAULT_MAX_BATCHES_PER_EPOCH)
-      if (!Number.isSafeInteger(maxBatchesPerEpoch) || maxBatchesPerEpoch < 0) {
-        throw new Error(`--max-epoch-requests must be a whole number, got ${options.maxEpochRequests}`)
-      }
+      const publisherContext = createPublisherContext({
+        config, dataDir: globalOptions.dataDir, client, signer: signer.wallet, storage, bindings: targetBindings, buyerPort, log,
+      })
       log(chalk.bold(`verifier ${signer.address} on ${client.contractAddress}${collect ? '' : ' (attest only)'}`))
       let stopped = false
       setupShutdownHandler(async () => { stopped = true })
@@ -140,7 +145,7 @@ export function registerVerifierStartCommand(verifier: Command): void {
             bindings,
             stateDir: join(globalOptions.dataDir, 'verifier', 'round', 'epochs'),
             collector,
-            maxBatchesPerEpoch,
+            maxRequestsPerEpoch,
             log,
           })
         } catch (error) {
@@ -155,19 +160,7 @@ export function registerVerifierStartCommand(verifier: Command): void {
         }
         if (collect) {
           try {
-            const publisherDir = join(globalOptions.dataDir, 'verifier', 'publisher')
-            await fallbackPublisherTick({
-              client,
-              signer: signer.wallet,
-              address: signer.address,
-              storage,
-              stateDir: publisherDir,
-              buildBank: ({ epoch, models, excludedProbeIds }) => buildEpochBank({
-                config, epoch, models, excludedProbeIds, referencesDir: join(publisherDir, 'references'), buyerPort, log,
-              }),
-              discoverTargets: (models) => discoverRoundTargets({ config, dataDir: globalOptions.dataDir, models, bindings: targetBindings, log }),
-              log,
-            })
+            await fallbackPublisherTick({ ...publisherContext, address: signer.address })
           } catch (error) {
             log(chalk.yellow(`fallback publisher pass failed: ${error instanceof Error ? error.message : String(error)}`))
           }

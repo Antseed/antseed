@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import { getAddress, keccak256 } from 'ethers'
-import { bankKeyHash, openEnvelope, sealEnvelope } from './sealing.js'
+import { bankKeyHash, isUsableEncryptionKey, openEnvelope, sealEnvelope } from './sealing.js'
 import type { SealedEnvelopeV1 } from './types.js'
 
 /**
@@ -96,7 +96,7 @@ export function combineShares(shares: readonly Uint8Array[]): Buffer {
 }
 
 /**
- * Splits the bank key for the epoch's verifiers. Verifiers without an encryption key get no
+ * Splits the bank key for the epoch's verifiers. Verifiers without a usable encryption key get no
  * share; with fewer than `threshold` recipients the key could never be rebuilt, so it throws.
  */
 export function buildKeySharesFile(input: {
@@ -107,9 +107,9 @@ export function buildKeySharesFile(input: {
 }): KeySharesFileV1 {
   const key = Buffer.from(input.bankKey.replace(/^0x/, ''), 'hex')
   if (key.length !== 32) throw new Error('bank key must be 32 bytes')
-  const recipients = [...input.recipients].sort((a, b) => a.address.toLowerCase().localeCompare(b.address.toLowerCase()))
+  const recipients = input.recipients.filter((recipient) => isUsableEncryptionKey(recipient.encryptionKey)).sort((a, b) => a.address.toLowerCase().localeCompare(b.address.toLowerCase()))
   if (recipients.length < input.threshold) {
-    throw new Error(`only ${recipients.length} verifiers have encryption keys; ${input.threshold} needed to escrow the bank key`)
+    throw new Error(`only ${recipients.length} verifiers have usable encryption keys; ${input.threshold} needed to escrow the bank key`)
   }
   const raw = splitSecret(key, input.threshold, recipients.length)
   const file: KeySharesFileV1 = {

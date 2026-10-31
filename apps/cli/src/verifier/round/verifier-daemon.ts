@@ -1,7 +1,6 @@
 import { mkdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { getAddress, type AbstractSigner } from 'ethers'
-import { canonicalJsonStringify } from '@antseed/fingerprints'
 import {
   isZeroHash,
   kbfEpochDeadlines,
@@ -11,6 +10,7 @@ import {
   type KbfServiceResult,
 } from '@antseed/node/payments'
 import { writeJsonAtomic } from '../atomic-files.js'
+import { encodeRoundFile } from './encoding.js'
 import { collectSlice, type CollectorContext } from './collector.js'
 import { checkEnvelope, isListedTarget } from './envelope-check.js'
 import { buildResultsTree, collectorLeaf, serviceLeaf } from './merkle.js'
@@ -51,8 +51,8 @@ const UNAVAILABLE_WAIT_SHARE = 0.5
  * yet before treating their slices as undelivered and buying them itself.
  */
 export const BACKUP_UNAVAILABLE_WAIT_SHARE = 0.25
-/** Default for `maxBatchesPerEpoch`. */
-export const DEFAULT_MAX_BATCHES_PER_EPOCH = 1_000
+/** Default for `maxRequestsPerEpoch`. */
+export const DEFAULT_MAX_REQUESTS_PER_EPOCH = 1_000
 
 export interface VerifierDaemonContext {
   client: KbfRoundClient
@@ -68,10 +68,10 @@ export interface VerifierDaemonContext {
   /** Buys slices; null when the verifier only attests. */
   collector: CollectorContext | null
   /**
-   * Most question batches (paid seller requests) bought per epoch, primary and backup together,
-   * whatever the envelopes ask for. Default `DEFAULT_MAX_BATCHES_PER_EPOCH`.
+   * Most seller requests sent per epoch, retries included, primary and backup together, whatever
+   * the envelopes ask for. Default `DEFAULT_MAX_REQUESTS_PER_EPOCH`.
    */
-  maxBatchesPerEpoch?: number
+  maxRequestsPerEpoch?: number
   log: (message: string) => void
 }
 
@@ -80,12 +80,8 @@ interface EpochStateV1 {
   backup?: { uri: string; root: string; slices: number }
   results?: { uri: string; root: string }
   attestedRoot?: string
-  /** Question batches bought this epoch, counted against `maxBatchesPerEpoch`. */
-  batchesBought?: number
-}
-
-export function encodeRoundFile(value: unknown): Buffer {
-  return Buffer.from(canonicalJsonStringify(value), 'utf8')
+  /** Seller requests sent this epoch, retries included, counted against `maxRequestsPerEpoch`. */
+  requestsSent?: number
 }
 
 /** Some committed slices could not be fetched yet; attesting now would be final and incomplete. */
@@ -224,14 +220,18 @@ async function collect(
     }
     const checkpointPath = join(epochDir(context, info.epoch), `collect-${phase}.json`)
     const checkpoint = await readJson<CollectCheckpointV1>(checkpointPath) ?? { batches: {} }
-    const budget = context.maxBatchesPerEpoch ?? DEFAULT_MAX_BATCHES_PER_EPOCH
-    context.log(`epoch ${info.epoch}: collecting ${assigned.length} ${label}slices (${state.batchesBought ?? 0} of ${budget} batches bought this epoch)`)
+    const budget = context.maxRequestsPerEpoch ?? DEFAULT_MAX_REQUESTS_PER_EPOCH
+    context.log(`epoch ${info.epoch}: collecting ${assigned.length} ${label}slices (${state.requestsSent ?? 0} of ${budget} requests sent this epoch)`)
     let stopped = false
     let overBudget = false
-    const shouldStop = async () => {
-      overBudget ||= (state.batchesBought ?? 0) >= budget
+    // Every request attempt is counted, and saved, before it is sent.
+    const beforeRequest = async (): Promise<boolean> => {
+      overBudget ||= (state.requestsSent ?? 0) >= budget
       stopped ||= overBudget || await context.client.now() + stopMargin >= deadline
-      return stopped
+      if (stopped) return false
+      state.requestsSent = (state.requestsSent ?? 0) + 1
+      await writeState(context, info.epoch, state)
+      return true
     }
     const slices = []
     for (const slice of assigned) {
@@ -239,16 +239,14 @@ async function collect(
       const done = new Map(Object.entries(checkpoint.batches[key] ?? {}).map(([index, exchange]) => [Number(index), exchange]))
       slices.push(await collectSlice(slice, context.collector!, {
         done,
-        shouldStop,
+        beforeRequest,
         onBatch: async (batchIndex, exchange) => {
           checkpoint.batches[key] = { ...checkpoint.batches[key], [batchIndex]: exchange }
           await writeJsonAtomic(checkpointPath, checkpoint)
-          state.batchesBought = (state.batchesBought ?? 0) + 1
-          await writeState(context, info.epoch, state)
         },
       }))
     }
-    if (overBudget) context.log(`epoch ${info.epoch}: reached the budget of ${budget} batches this epoch; committing what was collected`)
+    if (overBudget) context.log(`epoch ${info.epoch}: reached the budget of ${budget} requests this epoch; committing what was collected`)
     else if (stopped) context.log(`epoch ${info.epoch}: ${label}phase ends soon; stopped buying, committing what was collected`)
     manifest = {
       kind: 'antseed-kbf-slices', version: 1, epoch: info.epoch.toString(),

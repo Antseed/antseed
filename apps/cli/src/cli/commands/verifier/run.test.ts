@@ -356,3 +356,14 @@ test('--max-enrollment-requests is one allowance per model for the whole run, ne
   assert.throws(() => second.take(), /request budget exhausted \(5 requests/)
   assert.equal(modelRequestAllowance(allowances, 'kimi-k3', budget).remaining, 5)
 })
+
+test('the run exit status is decided after the retry rounds', async () => {
+  const { runExitCode } = await import('./run.js')
+  // Round 1 had a failed audit, round 2 finished everything: success.
+  assert.equal(runExitCode([{ permanent: false, recoverable: 1 }, { permanent: false, recoverable: 0 }]), 0)
+  // Failures still there after the last round.
+  assert.equal(runExitCode([{ permanent: false, recoverable: 1 }, { permanent: false, recoverable: 2 }]), 1)
+  // An unpriced model in any round is not something a retry fixes.
+  assert.equal(runExitCode([{ permanent: true, recoverable: 0 }, { permanent: false, recoverable: 0 }]), 1)
+  assert.equal(runExitCode([]), 0)
+})
