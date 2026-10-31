@@ -202,6 +202,8 @@ interface SellerBillingContext {
 const METADATA_REFRESH_DEBOUNCE_MS = 200;
 /** Time to wait for a catch-up SpendingAuth before returning 402. */
 const DEFAULT_CATCH_UP_WAIT_MS = 5_000;
+/** How long a request waits for a closing channel's close() to land before it is answered. */
+const CLOSING_CHANNEL_WAIT_MS = 15_000;
 /** Per-buyer rate limit for the free attestation route. */
 const ATTEST_RATE_WINDOW_MS = 60_000;
 const ATTEST_RATE_MAX_PER_WINDOW = 10;
@@ -834,6 +836,21 @@ export class SellerRequestHandler {
       // between serving the request and claiming its cost.
       const isBillable = !isServedFree && !oneOffChannelId && (spm?.hasSession(buyerPeerId) ?? false);
       if (isBillable && spm!.hasClosingChannel(buyerPeerId)) {
+        // A close takes seconds on-chain (a disconnect, an exhausted channel).
+        // Let it finish, then ask for a new channel: the buyer opens one and
+        // retries this request, instead of the client getting an error.
+        if (await spm!.waitForClosingChannel(buyerPeerId, CLOSING_CHANNEL_WAIT_MS) && !spm!.hasSession(buyerPeerId)) {
+          mux.sendProxyResponse({
+            requestId: request.requestId,
+            statusCode: 402,
+            headers: { 'content-type': 'application/json' },
+            body: new TextEncoder().encode(JSON.stringify({
+              error: 'payment_required',
+              message: 'Session expired, please renegotiate',
+            })),
+          });
+          return;
+        }
         mux.sendProxyResponse({
           requestId: request.requestId,
           statusCode: 503,

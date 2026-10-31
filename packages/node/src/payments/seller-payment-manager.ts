@@ -1894,6 +1894,23 @@ export class SellerPaymentManager {
     return session != null && this._closingChannels.has(session.sessionId);
   }
 
+  /**
+   * Wait (up to `timeoutMs`) for the close in flight on the buyer's active
+   * channel. Returns whether it finished in time.
+   */
+  async waitForClosingChannel(buyerPeerId: string, timeoutMs: number): Promise<boolean> {
+    const session = this._channelStore.getActiveChannelByPeer(buyerPeerId, CHANNEL_ROLE.SELLER);
+    const closing = session ? this._closingChannels.get(session.sessionId) : undefined;
+    if (!closing) return true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); });
+    try {
+      return await Promise.race([closing.then(() => true, () => true), timedOut]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   // ── Disconnect handling ───────────────────────────────────────
 
   onBuyerDisconnect(buyerPeerId: string): void {
