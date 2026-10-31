@@ -1999,3 +1999,39 @@ it('checks a stale stored ceiling against the chain before closing a channel as 
   expect(body.reserveMaxAmount).toBe('8000000');
   expect(settleSession).not.toHaveBeenCalled();
 });
+
+it('never serves a request whose channel closed during the reserve ceiling check', async () => {
+  let channel: { sessionId: string; authMax: string } | null = { sessionId: 'session-1', authMax: '1000000' };
+  let spent = 1_000_000n;
+  let accepted = 1_000_000n;
+  let reserveMax = 1_000_000n;
+  const provider = makeProvider(1, 1, { name: 'openai', services: ['test-model'] });
+  const handleRequest = vi.spyOn(provider, 'handleRequest');
+  const handler = makeSellerRequestHandler({
+    providers: [provider],
+    sellerPaymentManager: makeSpmMock({
+      getChannelByPeer: () => channel,
+      getCumulativeSpend: () => spent,
+      getAcceptedCumulative: () => accepted,
+      getReserveMax: () => reserveMax,
+      refreshReserveMaxFromChain: async () => {
+        // A cooperative close lands meanwhile and forgets the channel.
+        channel = null;
+        spent = 0n;
+        accepted = 0n;
+        reserveMax = 0n;
+        return 0n;
+      },
+    }),
+    channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,
+  });
+  const frames: Uint8Array[] = [];
+  const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+  await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+    requestId: 'closed-during-refresh', method: 'POST', path: '/v1/chat/completions',
+    headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'test-model', messages: [] })),
+  }) });
+
+  expect(handleRequest).not.toHaveBeenCalled();
+  expect(decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload).statusCode).toBe(402);
+});

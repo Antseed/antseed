@@ -687,6 +687,15 @@ export class SellerRequestHandler {
           // the seller was down): check it before treating the channel as full.
           if (reserveMax > 0n && (accepted >= reserveMax || spent > reserveMax)) {
             reserveMax = await spm.refreshReserveMaxFromChain(session.sessionId);
+            // The channel may have closed during the read: never admit work
+            // on a channel that is gone, and judge the others on fresh counters.
+            if (spm.getChannelByPeer(buyerPeerId)?.sessionId !== session.sessionId) {
+              sendSessionExpired('the reserve ceiling check');
+              return;
+            }
+            accepted = spm.getAcceptedCumulative(session.sessionId);
+            spent = spm.getCumulativeSpend(session.sessionId);
+            isBlocked = spm.isChannelBlocked(session.sessionId);
           }
           // If spend has caught up and there is no headroom left in the reserve,
           // stop serving before accepting any additional request cost.
