@@ -61,6 +61,8 @@ const DEFAULT_MIN_SETTLE_DELTA = BigInt(DEFAULT_MIN_SETTLE_DELTA_STR);
  * the wire when the close request arrives.
  */
 const CLOSE_CATCH_UP_WAIT_MS = 5_000;
+/** How long an auth only a mining top-up covers waits for it (outside the buyer lock). */
+const OVER_CEILING_AUTH_WAIT_MS = 30_000;
 /** Minimum gap between on-chain reads of one channel's deposit. */
 const RESERVE_REFRESH_MIN_INTERVAL_MS = 10_000;
 /** `retryAfterMs` hint returned with 'busy' / 'pending_auth' rejections. */
@@ -564,6 +566,18 @@ export class SellerPaymentManager {
     // channel gets its own lock so opening it (reserve + topUp on-chain) never
     // delays the buyer's session-channel auths.
     const isOneOff = payload.oneOffRequestId != null || this._oneOffChannelIds.has(payload.channelId);
+    // An auth only a mining top-up covers waits for it here, outside the lock,
+    // so this buyer's other auths and requests keep moving meanwhile.
+    if (!isOneOff && this._topUpsRunning.has(payload.channelId)) {
+      const ceiling = this._reserveMax.get(payload.channelId) ?? 0n;
+      let cumulative = 0n;
+      let isTopUp = false;
+      try {
+        cumulative = BigInt(payload.cumulativeAmount);
+        isTopUp = payload.reserveMaxAmount != null && BigInt(payload.reserveMaxAmount) > ceiling;
+      } catch { /* malformed: rejected below */ }
+      if (!isTopUp && cumulative > ceiling) await this.waitForTopUp(payload.channelId, OVER_CEILING_AUTH_WAIT_MS);
+    }
     const lockKey = isOneOff ? `${buyerPeerId}\n${payload.channelId.toLowerCase()}` : buyerPeerId;
     const existing = this._buyerLocks.get(lockKey);
     let result: 'accepted' | 'reserved' | 'rejected' = 'rejected';
@@ -838,12 +852,6 @@ export class SellerPaymentManager {
         // seller with an auth the contract cannot settle.
         let currentReserveMax = this._reserveMax.get(channelId) ?? 0n;
         const pendingTopUpForCheck = this._pendingTopUp.get(channelId);
-        // The buyer signs up to a top-up it sent; wait for that topUp() to land
-        // rather than reject an auth only the new ceiling covers.
-        if (currentReserveMax > 0n && cumulativeAmount > currentReserveMax && this._topUpsRunning.has(channelId)) {
-          await this.waitForTopUp(channelId);
-          currentReserveMax = this._reserveMax.get(channelId) ?? 0n;
-        }
         if (currentReserveMax > 0n && cumulativeAmount > currentReserveMax) {
           currentReserveMax = await this.refreshReserveMaxFromChain(channelId);
         }
@@ -1660,8 +1668,12 @@ export class SellerPaymentManager {
         `[SellerPayment] Deferred topUp failed permanently: channel=${channelId.slice(0, 18)}... ` +
         `kind=${failureKind} error=${this._formatError(retryErr)} — closing latest auth and dropping pending topUp`,
       );
+      // Stop admitting work at once, but close only after the requests already
+      // running on this channel have recorded their spend and been signed for.
       this._blockedChannels.add(channelId);
-      await this.settleSession(buyerPeerId);
+      if (this._channelStore.getActiveChannelByPeer(buyerPeerId, CHANNEL_ROLE.SELLER)?.sessionId === channelId) {
+        await this.closeSessionWhenIdle(buyerPeerId);
+      }
       return 'permanent-failure';
     }
   }

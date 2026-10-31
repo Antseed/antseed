@@ -533,7 +533,7 @@ describe('SellerPaymentManager', () => {
     expect(store.getChannel(channelId)!.latestMetadata).toBe(reservePayload.metadata);
   });
 
-  it('waitForPendingAuths drains queued SpendingAuths while an on-chain top-up is in flight', async () => {
+  it('keeps the buyer lock free while an auth waits for the top-up that covers it', async () => {
     const channelId = makeChannelId(99);
 
     const reservePayload = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
@@ -578,17 +578,14 @@ describe('SellerPaymentManager', () => {
 
     expect(manager.getAcceptedCumulative(channelId)).toBe(900_000n);
 
-    let waitResolved = false;
-    const waitPromise = manager
-      .waitForPendingAuths(buyerIdentity.peerId)
-      .then(() => { waitResolved = true; });
-    await new Promise<void>((r) => setImmediate(r));
-    expect(waitResolved).toBe(false);
+    // The auth only the new ceiling covers waits outside the buyer lock, so
+    // the buyer's requests are not held behind the mining top-up.
+    await manager.waitForPendingAuths(buyerIdentity.peerId);
+    expect(manager.getAcceptedCumulative(channelId)).toBe(900_000n);
 
     releaseTopUp();
-    await Promise.all([topUpPromise, followUpPromise, waitPromise]);
+    await Promise.all([topUpPromise, followUpPromise]);
 
-    expect(waitResolved).toBe(true);
     expect(manager.getAcceptedCumulative(channelId)).toBe(1_500_000n);
     expect(manager.getCumulativeSpend(channelId) >= manager.getAcceptedCumulative(channelId)).toBe(false);
   });
@@ -686,6 +683,34 @@ describe('SellerPaymentManager', () => {
     expect(topUpSpy).toHaveBeenCalledTimes(1);
     expect(topUpSpy.mock.calls[0]?.[2]).toBe(900_000n);
     expect(manager.getReserveMax(channelId)).toBe(2_000_000n);
+  });
+
+  it('lets running requests finish and be signed for before closing on a failed background top-up', async () => {
+    const channelId = makeChannelId(123);
+    await manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      isReserve: true, reserveMaxAmount: '1000000',
+    }), mux);
+    const auth = (amount: bigint) => buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, { cumulativeAmount: amount, reserveMaxAmount: '1000000' });
+    await manager.handleSpendingAuth(buyerIdentity.peerId, await auth(900_000n), mux);
+    manager.recordSpend(channelId, 900_000n);
+    vi.spyOn(manager.channelsClient, 'topUp').mockRejectedValue(new Error('execution reverted: InsufficientBalance'));
+
+    // A request admitted while the top-up is mining is still being served when it fails.
+    manager.beginBillableRequest(buyerIdentity.peerId);
+    await manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      isReserve: true, reserveMaxAmount: '2000000', salt: '0x' + '23'.repeat(32),
+    }), mux);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(manager.isChannelBlocked(channelId)).toBe(true);
+    expect(manager.channelsClient.close).not.toHaveBeenCalled();
+
+    // It finishes, its cost is recorded and signed, then the channel closes at it.
+    manager.recordSpend(channelId, 60_000n);
+    await manager.handleSpendingAuth(buyerIdentity.peerId, await auth(960_000n), mux);
+    manager.endBillableRequest(buyerIdentity.peerId);
+    await manager.waitForTopUp(channelId);
+    expect(manager.channelsClient.close).toHaveBeenCalledOnce();
+    expect((manager.channelsClient.close as ReturnType<typeof vi.fn>).mock.calls[0]![2]).toBe(960_000n);
   });
 
   it('tracks the largest pending top-up ceiling while retries are deferred', async () => {
