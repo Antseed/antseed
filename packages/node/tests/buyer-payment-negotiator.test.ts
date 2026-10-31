@@ -46,6 +46,7 @@ function createMockBpm(): BuyerPaymentManager & Record<string, unknown> {
     canReplayReserveAuth: vi.fn().mockReturnValue(false),
     hasPendingReserveAuth: vi.fn().mockReturnValue(false),
     reconcileReserveAmount: vi.fn().mockResolvedValue(undefined),
+    setChannelDepositReader: vi.fn(),
     extendCurrentSpendingAuth: vi.fn().mockResolvedValue(undefined),
     getCumulativeAmount: vi.fn().mockReturnValue(0n),
     resendCurrentSpendingAuth: vi.fn().mockResolvedValue(undefined),

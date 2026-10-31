@@ -1921,6 +1921,214 @@ describe('BuyerPaymentManager', () => {
     expect(manager.getReserveCeiling(sellerPeerId)).toBe(20_000_000n);
   });
 
+  it('sizes reserve top-ups and their trigger to the paid requests in flight, within a bound', async () => {
+    store.close();
+    store = new ChannelStore(tempDir);
+    manager = new BuyerPaymentManager(identity, makeConfig(tempDir, { maxReserveAmountUsdc: 1_000_000n }), store);
+    manager.setSigner(Wallet.createRandom());
+    mux = createMockPaymentMux();
+    const sellerPeerId = fakePeerId('seller-load-topup');
+    await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    const internals = manager as unknown as {
+      _metadata: Map<string, { cumulativeRequestCount: bigint }>;
+      _verifiedCost: Map<string, bigint>;
+      _cumulativeAmount: Map<string, bigint>;
+      _needsTopUp(sellerPeerId: string): boolean;
+    };
+    // Ten requests served at $0.07 each on average.
+    internals._metadata.set(sellerPeerId, { ...internals._metadata.get(sellerPeerId)!, cumulativeRequestCount: 10n });
+    internals._verifiedCost.set(sellerPeerId, 700_000n);
+    internals._cumulativeAmount.set(sellerPeerId, 400_000n);
+
+    // Idle: $0.60 of headroom left is above the fixed trigger, and one step is enough.
+    expect(internals._needsTopUp(sellerPeerId)).toBe(false);
+
+    // 32 requests in flight need 32 x $0.07 x 2 = $4.48: top up now, by that much.
+    for (let i = 0; i < 32; i += 1) manager.beginPaidRequest(sellerPeerId);
+    expect(internals._needsTopUp(sellerPeerId)).toBe(true);
+    mux.sentSpendingAuths.length = 0;
+    await manager.topUpReserve(sellerPeerId, mux);
+    expect((mux.sentSpendingAuths[0] as Record<string, unknown>).reserveMaxAmount).toBe('5480000');
+
+    // 200 in flight would need $28: capped at ten configured steps.
+    for (let i = 0; i < 168; i += 1) manager.beginPaidRequest(sellerPeerId);
+    mux.sentSpendingAuths.length = 0;
+    await manager.topUpReserve(sellerPeerId, mux);
+    expect((mux.sentSpendingAuths[0] as Record<string, unknown>).reserveMaxAmount).toBe('15480000');
+
+    // Once they finish, top-ups return to one configured step.
+    for (let i = 0; i < 200; i += 1) manager.endPaidRequest(sellerPeerId);
+    mux.sentSpendingAuths.length = 0;
+    await manager.topUpReserve(sellerPeerId, mux);
+    expect((mux.sentSpendingAuths[0] as Record<string, unknown>).reserveMaxAmount).toBe('16480000');
+  });
+
+  it('never authorizes stacked top-ups beyond the deposits left after one still pending on-chain', async () => {
+    store.close();
+    store = new ChannelStore(tempDir);
+    manager = new BuyerPaymentManager(identity, makeConfig(tempDir, { maxReserveAmountUsdc: 1_000_000n }), store);
+    manager.setSigner(Wallet.createRandom());
+    mux = createMockPaymentMux();
+    const sellerPeerId = fakePeerId('seller-stacked-topup');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    manager.handleAuthAck(sellerPeerId, { channelId });
+    vi.spyOn(manager, 'getBalance').mockResolvedValue({ available: 12_000_000n, reserved: 1_000_000n });
+    const internals = manager as unknown as {
+      _metadata: Map<string, { cumulativeRequestCount: bigint }>;
+      _verifiedCost: Map<string, bigint>;
+    };
+    internals._metadata.set(sellerPeerId, { ...internals._metadata.get(sellerPeerId)!, cumulativeRequestCount: 10n });
+    internals._verifiedCost.set(sellerPeerId, 700_000n);
+    for (let i = 0; i < 200; i += 1) manager.beginPaidRequest(sellerPeerId);
+    const ceilings = (): string[] => mux.sentSpendingAuths.map((auth) => (auth as Record<string, unknown>).reserveMaxAmount as string);
+    mux.sentSpendingAuths.length = 0;
+
+    // $28 needed: capped at ten steps. The seller defers it (below the settle threshold).
+    await manager.topUpReserve(sellerPeerId, mux);
+    // Still short: only the $2 left after the pending $10 can be added.
+    await manager.topUpReserve(sellerPeerId, mux);
+    expect(ceilings()).toEqual(['11000000', '13000000']);
+    // Nothing left: refuse rather than authorize more than the deposits hold.
+    await expect(manager.topUpReserve(sellerPeerId, mux)).rejects.toThrow(/Insufficient buyer deposits/);
+    expect(ceilings()).toHaveLength(2);
+  });
+
+  it('reconciles a top-up that already landed before budgeting the next, so its funds are not counted twice', async () => {
+    store.close();
+    store = new ChannelStore(tempDir);
+    manager = new BuyerPaymentManager(identity, makeConfig(tempDir, { maxReserveAmountUsdc: 1_000_000n }), store);
+    manager.setSigner(Wallet.createRandom());
+    mux = createMockPaymentMux();
+    const sellerPeerId = fakePeerId('seller-landed-topup');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    manager.handleAuthAck(sellerPeerId, { channelId });
+    let deposit = 1_000_000n;
+    manager.setChannelDepositReader(async () => deposit);
+    let available = 12_000_000n;
+    vi.spyOn(manager, 'getBalance').mockImplementation(async () => ({ available, reserved: 0n }));
+    const internals = manager as unknown as {
+      _metadata: Map<string, { cumulativeRequestCount: bigint }>;
+      _verifiedCost: Map<string, bigint>;
+    };
+    internals._metadata.set(sellerPeerId, { ...internals._metadata.get(sellerPeerId)!, cumulativeRequestCount: 10n });
+    internals._verifiedCost.set(sellerPeerId, 700_000n);
+    for (let i = 0; i < 200; i += 1) manager.beginPaidRequest(sellerPeerId);
+    mux.sentSpendingAuths.length = 0;
+
+    await manager.topUpReserve(sellerPeerId, mux);
+    // The $10 top-up lands: the chain locks it and the available balance drops,
+    // but the seller's acknowledgement has not reached the buyer yet.
+    deposit = 11_000_000n;
+    available = 2_000_000n;
+    await manager.topUpReserve(sellerPeerId, mux);
+
+    expect(mux.sentSpendingAuths.map((auth) => (auth as Record<string, unknown>).reserveMaxAmount)).toEqual(['11000000', '13000000']);
+    expect(manager.hasPendingReserveAuth(sellerPeerId)).toBe(true);
+  });
+
+  it('runs overlapping top-ups one at a time, so a slow deposit read never moves the ceiling backward', async () => {
+    store.close();
+    store = new ChannelStore(tempDir);
+    manager = new BuyerPaymentManager(identity, makeConfig(tempDir, { maxReserveAmountUsdc: 1_000_000n }), store);
+    manager.setSigner(Wallet.createRandom());
+    mux = createMockPaymentMux();
+    const sellerPeerId = fakePeerId('seller-overlap-topup');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    manager.handleAuthAck(sellerPeerId, { channelId });
+    vi.spyOn(manager, 'getBalance').mockResolvedValue({ available: 50_000_000n, reserved: 0n });
+    const internals = manager as unknown as {
+      _metadata: Map<string, { cumulativeRequestCount: bigint }>;
+      _verifiedCost: Map<string, bigint>;
+    };
+    internals._metadata.set(sellerPeerId, { ...internals._metadata.get(sellerPeerId)!, cumulativeRequestCount: 10n });
+    internals._verifiedCost.set(sellerPeerId, 700_000n);
+    for (let i = 0; i < 200; i += 1) manager.beginPaidRequest(sellerPeerId);
+    await manager.topUpReserve(sellerPeerId, mux); // $11, pending on-chain
+
+    // It lands; the next two top-ups both start before the first deposit read answers.
+    let releaseFirstRead!: () => void;
+    let reads = 0;
+    manager.setChannelDepositReader(() => {
+      reads += 1;
+      if (reads === 1) return new Promise((resolve) => { releaseFirstRead = () => resolve(11_000_000n); });
+      return Promise.resolve(11_000_000n);
+    });
+    mux.sentSpendingAuths.length = 0;
+    const first = manager.topUpReserve(sellerPeerId, mux);
+    const second = manager.topUpReserve(sellerPeerId, mux);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    // The load drains while the slow read is outstanding.
+    for (let i = 0; i < 200; i += 1) manager.endPaidRequest(sellerPeerId);
+    releaseFirstRead();
+    await Promise.all([first, second]);
+
+    const ceilings = mux.sentSpendingAuths.map((auth) => BigInt((auth as Record<string, unknown>).reserveMaxAmount as string));
+    expect(ceilings.length).toBeGreaterThanOrEqual(1);
+    for (let i = 1; i < ceilings.length; i += 1) expect(ceilings[i]! > ceilings[i - 1]!).toBe(true);
+    expect(manager.getReserveCeiling(sellerPeerId)).toBe(ceilings.at(-1));
+  });
+
+  function loadedManager(label: string, available: () => bigint) {
+    store.close();
+    store = new ChannelStore(tempDir);
+    manager = new BuyerPaymentManager(identity, makeConfig(tempDir, { maxReserveAmountUsdc: 1_000_000n }), store);
+    manager.setSigner(Wallet.createRandom());
+    mux = createMockPaymentMux();
+    const sellerPeerId = fakePeerId(label);
+    vi.spyOn(manager, 'getBalance').mockImplementation(async () => ({ available: available(), reserved: 0n }));
+    return { sellerPeerId };
+  }
+
+  it('drops top-ups queued behind one that already restored the headroom', async () => {
+    const { sellerPeerId } = loadedManager('seller-queued-topups', () => 50_000_000n);
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    manager.handleAuthAck(sellerPeerId, { channelId });
+    const internals = manager as unknown as {
+      _metadata: Map<string, { cumulativeRequestCount: bigint }>;
+      _verifiedCost: Map<string, bigint>;
+      _cumulativeAmount: Map<string, bigint>;
+    };
+    internals._metadata.set(sellerPeerId, { ...internals._metadata.get(sellerPeerId)!, cumulativeRequestCount: 10n });
+    internals._verifiedCost.set(sellerPeerId, 700_000n);
+    internals._cumulativeAmount.set(sellerPeerId, 900_000n);
+    for (let i = 0; i < 32; i += 1) manager.beginPaidRequest(sellerPeerId);
+    mux.sentSpendingAuths.length = 0;
+
+    // Three signing steps each see the low ceiling and ask for a top-up at once.
+    await Promise.all([1, 2, 3].map(() => manager.topUpReserve(sellerPeerId, mux)));
+
+    // The first adds $4.48 for the 32 in flight; the others find enough headroom.
+    expect(mux.sentSpendingAuths.map((auth) => (auth as Record<string, unknown>).reserveMaxAmount)).toEqual(['5480000']);
+  });
+
+  it('reads both the deposit and the balance again when a pending top-up lands between them', async () => {
+    let available = 12_000_000n;
+    const { sellerPeerId } = loadedManager('seller-snapshot-topup', () => available);
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    manager.handleAuthAck(sellerPeerId, { channelId });
+    const internals = manager as unknown as {
+      _metadata: Map<string, { cumulativeRequestCount: bigint }>;
+      _verifiedCost: Map<string, bigint>;
+    };
+    internals._metadata.set(sellerPeerId, { ...internals._metadata.get(sellerPeerId)!, cumulativeRequestCount: 10n });
+    internals._verifiedCost.set(sellerPeerId, 700_000n);
+    for (let i = 0; i < 200; i += 1) manager.beginPaidRequest(sellerPeerId);
+    await manager.topUpReserve(sellerPeerId, mux); // $10 more, pending on-chain
+    mux.sentSpendingAuths.length = 0;
+
+    // The deposit read still sees $1; the $10 then lands before the balance read.
+    let deposit = 1_000_000n;
+    manager.setChannelDepositReader(async () => {
+      const seen = deposit;
+      deposit = 11_000_000n;
+      available = 2_000_000n;
+      return seen;
+    });
+    await manager.topUpReserve(sellerPeerId, mux);
+
+    expect(mux.sentSpendingAuths.map((auth) => (auth as Record<string, unknown>).reserveMaxAmount)).toEqual(['13000000']);
+  });
+
   it('resendReserveAuth replays the original reserve amount after top-up', async () => {
     store.close();
     store = new ChannelStore(tempDir);
