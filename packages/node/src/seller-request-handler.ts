@@ -625,13 +625,8 @@ export class SellerRequestHandler {
           // top-ups are not counted until topUp() succeeds, otherwise a large
           // request could push spend above the current reserve before the extra
           // funds are actually locked.
-          const reserveMax = spm.getEffectiveReserveMax(session.sessionId);
-          const isBlocked = spm.isChannelBlocked(session.sessionId);
-          // If spend has caught up and there is no headroom left in the reserve,
-          // stop serving before accepting any additional request cost.
-          const atExactSpendLimit = (): boolean => spent > 0n && spent === accepted && reserveMax > 0n && accepted >= reserveMax;
-          let isAtExactSpendLimit = atExactSpendLimit();
-
+          let reserveMax = spm.getEffectiveReserveMax(session.sessionId);
+          let isBlocked = spm.isChannelBlocked(session.sessionId);
           if (spent > 0n && spent > accepted) {
             // Race cover: the buyer's SpendingAuth for the *previous* response's
             // NeedAuth may still be on the wire when this request arrives. The
@@ -676,11 +671,17 @@ export class SellerRequestHandler {
               sendSessionExpired('the catch-up wait');
               return;
             }
-            isAtExactSpendLimit = atExactSpendLimit();
+            // A top-up can land while parked: judge exhaustion on the current
+            // ceiling, or a channel that just grew is closed as exhausted.
+            reserveMax = spm.getEffectiveReserveMax(session.sessionId);
+            isBlocked = spm.isChannelBlocked(session.sessionId);
             if (spent <= accepted) {
               debugLog(`[SellerHandler] Caught up before 402 for ${buyerPeerId.slice(0, 12)}... (spent=${spent} accepted=${accepted})`);
             }
           }
+          // If spend has caught up and there is no headroom left in the reserve,
+          // stop serving before accepting any additional request cost.
+          const isAtExactSpendLimit = spent > 0n && spent === accepted && reserveMax > 0n && accepted >= reserveMax;
           const remainingLockedReserve = reserveMax > spent ? reserveMax - spent : 0n;
           const reserveEstimateOverdraft = this._deps.reserveEstimateOverdraftUsdc;
           const effectiveEstimateLimit = reserveEstimateOverdraft != null
