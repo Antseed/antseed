@@ -10,6 +10,7 @@ import {
   type GasRefuelRecord,
 } from '@antseed/node'
 import type { SellerGasRefuelCLIConfig } from '../../../config/types.js'
+import type { SellerGasRefuel } from '../../../gateway/console-api/types.js'
 import { ethToWei } from './gas.js'
 
 /** Refuels in the last 24 hours, kept so the daily USDC cap holds across restarts. */
@@ -62,7 +63,7 @@ export async function saveGasRefuelHistory(dataDir: string, refuels: GasRefuelRe
 }
 
 /** The refueler's state for daemon.state.json (`gas.refuel`), in ETH / USDC numbers (bigint is not JSON). */
-export function gasRefuelState(refueler: Pick<GasAutoRefueler, 'getSnapshot'> | null) {
+export function gasRefuelState(refueler: Pick<GasAutoRefueler, 'getSnapshot'> | null): SellerGasRefuel | null {
   if (!refueler) return null
   const snapshot = refueler.getSnapshot()
   return {

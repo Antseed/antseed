@@ -170,7 +170,6 @@ export class GasAutoRefueler {
 
   private async _refuel(balanceWei: bigint): Promise<void> {
     let reservation: GasRefuelRecord | null = null;
-    let swapSent = false;
     try {
       const recent = this.recentHistory;
       const usedToday = recent.reduce((sum, record) => sum + BigInt(record.usdcUnits), 0n);
@@ -208,7 +207,6 @@ export class GasAutoRefueler {
         throw new Error(`could not save the refuel reservation, so no swap was sent: ${err instanceof Error ? err.message : err}`);
       }
       reservation = pending;
-      swapSent = true;
       const txHash = await this._swapper.swap(amount, minOut);
       const record: GasRefuelRecord = { at: this._now(), usdcUnits: amount.toString(), txHash };
       this._history = [...this.recentHistory.filter((entry) => entry !== reservation), record];
@@ -222,7 +220,7 @@ export class GasAutoRefueler {
     } catch (err) {
       // Release the reservation only when the swap certainly spent nothing. Otherwise (a timeout, a lost
       // RPC response) it may still be mined, so the pending spend keeps counting until it ages out.
-      if (reservation && swapSent && swapCertainlyNotSpent(err)) {
+      if (reservation && swapCertainlyNotSpent(err)) {
         const dropped = reservation;
         this._history = this._history.filter((entry) => entry !== dropped);
         await this._persist();
