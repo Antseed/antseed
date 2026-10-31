@@ -3,6 +3,7 @@ import chalk from 'chalk';
 import ora from 'ora';
 import { getGlobalOptions } from '../types.js';
 import { loadConfig } from '../../../config/loader.js';
+import { getAuthorizedWalletStatus } from './set-authorized-wallet.js';
 import {
   loadOrCreateIdentity,
   DepositsClient,
@@ -50,6 +51,14 @@ export function registerBuyerBalanceCommand(buyerCmd: Command): void {
         const account = await depositsClient.getBuyerBalance(address);
         const usdcBalance = await depositsClient.getUSDCBalance(address);
 
+        // Non-fatal: the balance is still useful if the operator read fails.
+        let operator: string | null | undefined;
+        try {
+          operator = (await getAuthorizedWalletStatus({ context: { address }, client: depositsClient })).operator;
+        } catch {
+          operator = undefined;
+        }
+
         spinner.stop();
 
         if (options.json) {
@@ -58,6 +67,7 @@ export function registerBuyerBalanceCommand(buyerCmd: Command): void {
             walletUSDC: formatUsdc(usdcBalance),
             depositsAvailable: formatUsdc(account.available),
             depositsReserved: formatUsdc(account.reserved),
+            authorizedWallet: operator,
           }, null, 2));
           return;
         }
@@ -69,6 +79,17 @@ export function registerBuyerBalanceCommand(buyerCmd: Command): void {
         console.log(chalk.bold('Deposits Account:'));
         console.log(`  Available:           ${chalk.green(formatUsdc(account.available) + ' USDC')}`);
         console.log(`  Reserved:            ${chalk.yellow(formatUsdc(account.reserved) + ' USDC')}`);
+        console.log('');
+        if (operator === undefined) {
+          console.log(chalk.bold('Authorized wallet: ') + chalk.dim('unknown (could not read)'));
+        } else if (operator === null) {
+          console.log(chalk.bold('Authorized wallet: ') + chalk.yellow('none'));
+          console.log(chalk.dim('  Without one, closing or withdrawing expired channels reverts with NotAuthorized().'));
+          console.log(chalk.dim('  Set it with: antseed buyer set-authorized-wallet'));
+        } else {
+          const self = operator.toLowerCase() === address.toLowerCase();
+          console.log(chalk.bold('Authorized wallet: ') + chalk.cyan(operator) + (self ? chalk.dim(' (this wallet)') : ''));
+        }
       } catch (err) {
         spinner.fail(chalk.red(`Failed to fetch balance: ${(err as Error).message}`));
         process.exit(1);
