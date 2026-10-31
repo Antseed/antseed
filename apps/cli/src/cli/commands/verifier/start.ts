@@ -9,18 +9,19 @@ import { requireCurrentVerifier } from '../../../verifier/release-check.js'
 import { writeSecretJsonAtomic } from '../../../verifier/atomic-files.js'
 import { loadBuyerProxySnapshot } from '../../../verifier/model-run.js'
 import { openResponseAuthReader, type ResponseAuthReader } from '../../../verifier/response-auth-reader.js'
+import { buildEpochBank } from '../../../verifier/round/bank-builder.js'
 import type { CollectorContext } from '../../../verifier/round/collector.js'
-import { encryptionPublicKey, generateEncryptionKeyPair } from '../../../verifier/round/sealing.js'
-import { roundStorageFromEnv } from '../../../verifier/round/storage.js'
 import { fallbackPublisherTick } from '../../../verifier/round/fallback-publisher.js'
 import { keyEscrowTick } from '../../../verifier/round/key-escrow.js'
+import { encryptionPublicKey, generateEncryptionKeyPair } from '../../../verifier/round/sealing.js'
+import { roundStorageFromEnv } from '../../../verifier/round/storage.js'
+import { discoverRoundTargets, targetBindingsFromRegistry } from '../../../verifier/round/target-discovery.js'
 import { verifierTick } from '../../../verifier/round/verifier-daemon.js'
-import { createKbfRoundClient } from '../../payment-utils.js'
+import { createKbfRoundClient, createSellerRegistryClient } from '../../payment-utils.js'
 import { setupShutdownHandler } from '../../shutdown.js'
 import { startGatewayBuyer } from '../gateway/shared.js'
 import { getGlobalOptions } from '../types.js'
 import { resolveAuditorSigner } from './auditor-identity.js'
-import { buildEpochBank, discoverRoundTargets, targetBindingsFromConfig } from './publish.js'
 
 interface StartOptions {
   keystore?: string
@@ -111,7 +112,7 @@ export function registerVerifierStartCommand(verifier: Command): void {
       if (responseAuth) setupShutdownHandler(async () => responseAuth.close())
 
       const storage = roundStorageFromEnv()
-      const targetBindings = targetBindingsFromConfig(config)
+      const targetBindings = targetBindingsFromRegistry(createSellerRegistryClient(config))
       const bindings = targetBindings.reader
       const interval = Math.max(10, Number(options.interval ?? '60')) * 1_000
       log(chalk.bold(`verifier ${signer.address} on ${client.contractAddress}${collect ? '' : ' (attest only)'}`))

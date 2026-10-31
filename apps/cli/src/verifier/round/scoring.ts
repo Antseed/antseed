@@ -66,10 +66,15 @@ export function scoreRound(input: {
 
   const credits = new Map<string, number>()
   const results: TargetResultV1[] = []
+  const usableByModel = new Map<string, UsableReference>()
   for (const [key, target] of targets) {
     const reference = bank.models[target.model]
     if (!reference) throw new Error(`bank has no reference for ${target.model}`)
-    const usable = usableReference(reference)
+    let usable = usableByModel.get(target.model)
+    if (!usable) {
+      usable = usableReference(reference)
+      usableByModel.set(target.model, usable)
+    }
     const { probesById } = usable
     const planned = slicesByTarget.get(key) ?? []
     const used: Array<UsedSlice | null> = planned.map((slice) => pickSlice(slice, manifests, target, usable))

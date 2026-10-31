@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { encryptKeystoreJsonSync, Wallet } from 'ethers'
-import { resolveAuditorAddress, resolveAuditorSigner } from './auditor-identity.js'
+import { resolveAuditorSigner } from './auditor-identity.js'
 
 const AUDITOR = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8'
 
@@ -27,16 +27,6 @@ async function withKeystore(body: (path: string, wallet: Wallet, dataDir: string
     await rm(directory, { recursive: true, force: true })
   }
 }
-
-test('auditor address comes from --auditor, then verifier.auditor, then verifier.keystore', async () => withKeystore(async (keystore, wallet, dataDir) => {
-  assert.deepEqual(
-    await resolveAuditorAddress({ config: { auditor: AUDITOR }, dataDir, flag: wallet.address.toLowerCase() }),
-    { address: wallet.address, source: 'flag' },
-  )
-  assert.deepEqual(await resolveAuditorAddress({ config: { auditor: AUDITOR.toLowerCase() }, dataDir }), { address: AUDITOR, source: 'config' })
-  assert.deepEqual(await resolveAuditorAddress({ config: { keystore }, dataDir }), { address: wallet.address, source: 'keystore' })
-  await assert.rejects(resolveAuditorAddress({ config: { auditor: AUDITOR, keystore }, dataDir }), /does not match/)
-}))
 
 test('the signer must match verifier.auditor', async () => withKeystore(async (keystore, wallet, dataDir) => {
   const signer = await resolveAuditorSigner({ config: { auditor: wallet.address, keystore }, dataDir })

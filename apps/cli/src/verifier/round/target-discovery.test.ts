@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import type { RoundTargetV1 } from '../../../verifier/round/types.js'
-import { bindRoundTargets } from './publish.js'
+import type { RoundTargetV1 } from './types.js'
+import { bindRoundTargets } from './target-discovery.js'
 
 function target(agentId: string, peerId: string): RoundTargetV1 {
   return { agentId, peerId, service: 'model-a', serviceHash: '0x01', model: 'model-a', modelHash: '0x02' }

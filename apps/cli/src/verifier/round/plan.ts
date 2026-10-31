@@ -61,11 +61,16 @@ export function derivePlan(input: PlanInput): RoundPlanV1 {
   const verifiers = input.verifiers.map((address) => address.toLowerCase())
   const targetProbes: Record<string, string[]> = {}
   const slices: PlannedSliceV1[] = []
+  const canonicalByModel = new Map<string, KbfProbe[]>()
   for (const target of targets) {
     const reference = input.bank.models[target.model]
     if (!reference) throw new Error(`bank has no reference for ${target.model}`)
     const key = targetKey(target)
-    const canonical = [...reference.probes].sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0))
+    let canonical = canonicalByModel.get(target.model)
+    if (!canonical) {
+      canonical = [...reference.probes].sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0))
+      canonicalByModel.set(target.model, canonical)
+    }
     const selected = seededShuffle(canonical, input.seed, `probes|${key}`).slice(0, input.probesPerService)
     const batches = createDomainHomogeneousKbfBatches(selected, KBF_PROBES_PER_REQUEST, (values) => [...values])
     const variants = new SeededStream(input.seed, `variants|${key}`)
@@ -103,12 +108,17 @@ export function envelopeFor(
   const address = collector.toLowerCase()
   const byKey = new Map(plan.targets.map((target) => [targetKey(target), target]))
   const slices: EnvelopeSliceV1[] = []
+  const probesByModel = new Map<string, Map<string, KbfProbe>>()
   for (const slice of plan.slices) {
     if ((options.backup ? slice.backup : slice.owner) !== address) continue
     if (options.sliceFilter && !options.sliceFilter(slice)) continue
     const target = byKey.get(slice.targetKey)!
     const reference = bank.models[target.model]!
-    const probesById = new Map(reference.probes.map((probe) => [probe.id, probe]))
+    let probesById = probesByModel.get(target.model)
+    if (!probesById) {
+      probesById = new Map(reference.probes.map((probe) => [probe.id, probe]))
+      probesByModel.set(target.model, probesById)
+    }
     slices.push({
       target,
       sliceIndex: slice.sliceIndex,

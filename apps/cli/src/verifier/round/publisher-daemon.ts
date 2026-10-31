@@ -14,8 +14,9 @@ import { buildKeySharesFile } from './key-shares.js'
 import { derivePlan, envelopeFor } from './plan.js'
 import { createDeliveryChecker, type CommittedManifest } from './scoring.js'
 import { bankKeyHash, contentHash, sealBank, sealEnvelope } from './sealing.js'
-import { RoundFileMismatchError, type RoundStorage } from './storage.js'
-import { targetKey, type EpochBankV1, type PlanFileV1, type PlannedSliceV1, type RoundTargetV1, type SealedEnvelopeV1, type SliceManifestV1 } from './types.js'
+import { loadCommittedManifest } from './manifest-loader.js'
+import type { RoundStorage } from './storage.js'
+import { targetKey, type EpochBankV1, type PlanFileV1, type PlannedSliceV1, type RoundTargetV1, type SealedEnvelopeV1 } from './types.js'
 import { encodeRoundFile } from './verifier-daemon.js'
 
 /**
@@ -208,19 +209,11 @@ async function publishBackupPlan(
   const unavailable: string[] = []
   for (const commit of await context.client.sliceCommits(info.epoch)) {
     if (commit.backup) continue
-    let bytes: Buffer
-    try {
-      bytes = await context.storage.get(commit.uri, commit.hash)
-    } catch (error) {
-      // Bytes that are not the committed ones never become valid; a fetch failure may be transient.
-      if (!(error instanceof RoundFileMismatchError)) unavailable.push(commit.uri)
-      continue
-    }
-    try {
-      manifests.push({ collector: commit.sender.toLowerCase(), backup: false, uri: commit.uri, manifest: JSON.parse(bytes.toString('utf8')) as SliceManifestV1 })
-    } catch {
-      // not JSON: an invalid delivery, its slices are missing
-    }
+    const load = await loadCommittedManifest(context.storage, commit)
+    // Bytes that are not the committed ones never become valid, and non-JSON is an invalid
+    // delivery whose slices are missing; a fetch failure may be transient.
+    if (load.kind === 'loaded') manifests.push(load.manifest)
+    else if (load.kind === 'unavailable') unavailable.push(commit.uri)
   }
   if (unavailable.length > 0) {
     const waitUntil = deadlines.commitDeadline + Math.floor(info.schedule.backupSeconds * BACKUP_UNAVAILABLE_WAIT_SHARE)

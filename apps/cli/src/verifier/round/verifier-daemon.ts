@@ -19,7 +19,8 @@ import { scoreRound, type CommittedManifest } from './scoring.js'
 import { contentHash, openBank, openEnvelope } from './sealing.js'
 import { seededRanking } from './seeded.js'
 import { boundTargets, type SellerBindingReader } from './seller-binding.js'
-import { RoundFileMismatchError, type RoundStorage } from './storage.js'
+import { loadCommittedManifest } from './manifest-loader.js'
+import type { RoundStorage } from './storage.js'
 import type {
   EnvelopeContentV1,
   EpochBankV1,
@@ -303,24 +304,19 @@ export async function computeResults(
   const unavailable: string[] = []
   for (const commit of await client.sliceCommits(info.epoch)) {
     if (!memberSet.has(commit.sender.toLowerCase())) continue
-    let bytes: Buffer
-    try {
-      bytes = await storage.get(commit.uri, commit.hash)
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error)
-      if (error instanceof RoundFileMismatchError) {
+    const load = await loadCommittedManifest(storage, commit)
+    if (load.kind === 'loaded') {
+      manifests.push(load.manifest)
+    } else if (load.kind === 'not-json') {
+      context.log(`epoch ${info.epoch}: ignoring slices ${commit.uri}: not JSON`)
+    } else {
+      const reason = load.error instanceof Error ? load.error.message : String(load.error)
+      if (load.kind === 'mismatch') {
         context.log(`epoch ${info.epoch}: ignoring invalid slices ${commit.uri}: ${reason}`)
       } else {
         unavailable.push(commit.uri)
         context.log(`epoch ${info.epoch}: slices ${commit.uri} unavailable: ${reason}`)
       }
-      continue
-    }
-    try {
-      const manifest = JSON.parse(bytes.toString('utf8')) as SliceManifestV1
-      manifests.push({ collector: commit.sender.toLowerCase(), backup: commit.backup, uri: commit.uri, manifest })
-    } catch {
-      context.log(`epoch ${info.epoch}: ignoring slices ${commit.uri}: not JSON`)
     }
   }
   if (unavailable.length > 0 && !options.allowUnavailable) throw new ManifestsUnavailableError(unavailable)
