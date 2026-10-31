@@ -21,6 +21,16 @@ export interface RecognizedUsageDeployment {
   };
 }
 
+/** The Uniswap v3 deployment a seller swaps USDC for ETH through (gas auto-refuel). */
+export interface UsdcEthSwapDeployment {
+  swapRouter02: string;
+  quoterV2: string;
+  /** Wrapped native token, unwrapped to ETH after the swap. */
+  weth: string;
+  /** USDC/WETH pool fee tier, in hundredths of a basis point (500 = 0.05%). */
+  poolFee: number;
+}
+
 export interface ChainConfig {
   chainId: ChainId;
   evmChainId: number;
@@ -72,6 +82,8 @@ export interface ChainConfig {
   verificationDeployBlock?: number;
   /** AntseedDepositRelay contract for gasless USDC sweeps from buyer hot wallets. */
   depositRelayAddress?: string;
+  /** Where sellers swap USDC for ETH to refuel gas; absent on chains without a deep pool. */
+  usdcEthSwap?: UsdcEthSwapDeployment;
 }
 
 /**
@@ -102,6 +114,13 @@ const CHAIN_CONFIGS: Record<ChainId, ChainConfig> = {
     ],
     networkStatsUrl: 'https://network.antseed.com',
     explorerApiUrl: 'https://antscan.co',
+    // Uniswap v3: the deep USDC/WETH 0.05% pool.
+    usdcEthSwap: {
+      swapRouter02: '0x2626664c2603336E57B271c5C0b26F421741e481',
+      quoterV2: '0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a',
+      weth: '0x4200000000000000000000000000000000000006',
+      poolFee: 500,
+    },
   },
   'base-sepolia': {
     ...DEPLOYED_CONTRACT_ADDRESSES['base-sepolia'],

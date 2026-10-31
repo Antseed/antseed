@@ -1222,6 +1222,29 @@ export interface SellerGas {
   balanceEth: number | null
   minBalanceEth: number
   lastCheckedAt: number | null
+  /** Auto-refuel state; null when it is off or unavailable on this chain. */
+  refuel: SellerGasRefuel | null
+}
+
+export interface SellerGasRefuel {
+  triggerBalanceEth: number
+  swapUsdc: number
+  maxUsdcPerDay: number
+  usdcLast24h: number
+  lastRefuel: { at: number; usdc: number; txHash: string } | null
+  lastError: string | null
+  /** Why the last attempt did not swap: the daily cap, too little USDC, or too little ETH to pay for the swap. */
+  skipped: 'daily_cap' | 'insufficient_usdc' | 'insufficient_eth' | null
+  nextAttemptAt: number | null
+}
+
+export interface SellerGasRefuelSettings {
+  enabled: boolean
+  triggerBalanceEth: number
+  swapUsdc: number
+  maxUsdcPerDay: number
+  /** Slippage tolerance in basis points; set in config.json only. */
+  slippageBps: number
 }
 
 export interface SellerAlertsState {
@@ -1371,6 +1394,8 @@ export interface SellerSettings {
   maxConcurrentBuyers: number
   healthCheck: { enabled: boolean; intervalMs: number; failureThreshold: number }
   gasCheck: { enabled: boolean; minBalanceEth: number }
+  /** Swap USDC earnings for ETH before the wallet runs out of gas (Base mainnet). */
+  gasRefuel: SellerGasRefuelSettings
   /** The seller-wide program for free models. */
   freeTier: SellerFreeTierProgramSettings
   /** The network's default staked tiers, used where a program sets none. */
@@ -1429,6 +1454,7 @@ export interface SellerSettingsPatch {
   maxConcurrentBuyers?: number
   healthCheck?: { enabled?: boolean; intervalMs?: number; failureThreshold?: number }
   gasCheck?: { enabled?: boolean; minBalanceEth?: number }
+  gasRefuel?: Partial<Omit<SellerGasRefuelSettings, 'slippageBps'>>
   /** The seller-wide program; null removes a limit. */
   freeTier?: SellerFreeTierProgramPatch
   /** null goes back to the built-in list. */

@@ -234,3 +234,16 @@ test('no model is added under a routing provider that offers exactly one service
   assert.equal((await readSellerSettings(configPath, dir)).providers[0]!.singleService, true)
   await assert.rejects(updateSellerSettings(configPath, dir, { addServices: [{ provider: 'router', service: 'glm', inputUsdPerMillion: 1, outputUsdPerMillion: 1 }] }), /exactly one service/)
 })
+
+test('gas auto-refuel is on by default and its settings save to seller.gasRefuel', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'seller-settings-'))
+  const configPath = join(dir, 'config.json')
+  writeFileSync(configPath, JSON.stringify({ seller: {} }))
+  let view = await readSellerSettings(configPath, dir)
+  assert.deepEqual(view.gasRefuel, { enabled: true, triggerBalanceEth: 0.0005, swapUsdc: 10, maxUsdcPerDay: 30, slippageBps: 100 })
+  view = (await updateSellerSettings(configPath, dir, { gasRefuel: { enabled: false, swapUsdc: 25 } })).settings
+  assert.deepEqual(view.gasRefuel, { enabled: false, triggerBalanceEth: 0.0005, swapUsdc: 25, maxUsdcPerDay: 30, slippageBps: 100 })
+  assert.deepEqual(JSON.parse(readFileSync(configPath, 'utf-8')).seller.gasRefuel, { enabled: false, swapUsdc: 25 })
+  await assert.rejects(updateSellerSettings(configPath, dir, { gasRefuel: { swapUsdc: 0.5 } }), /gasRefuel\.swapUsdc/)
+  await assert.rejects(updateSellerSettings(configPath, dir, { gasRefuel: { triggerBalanceEth: 0 } }), /gasRefuel\.triggerBalanceEth/)
+})

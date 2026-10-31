@@ -14,6 +14,8 @@ export type SellerEventKind =
   | 'model_up'
   | 'gas_low'
   | 'gas_ok'
+  | 'gas_refueled'
+  | 'gas_refuel_failed'
   | 'idle'
   | 'active'
   | 'upstream_credit'

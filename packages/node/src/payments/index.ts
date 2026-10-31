@@ -36,6 +36,10 @@ export type { IdentityClientConfig } from './evm/identity-client.js';
 export { StakingClient } from './evm/staking-client.js';
 export type { StakingClientConfig } from './evm/staking-client.js';
 
+// USDC → ETH swaps for seller gas refuels (Base mainnet, Uniswap v3)
+export { UsdcEthSwapClient, usdcEthSwapDeployment } from './evm/usdc-eth-swap-client.js';
+export type { UsdcEthSwapClientConfig } from './evm/usdc-eth-swap-client.js';
+
 // Verifier network client
 export {
   VerifierClient,

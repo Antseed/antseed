@@ -32,6 +32,8 @@ If a buyer has already asked the contract to close a channel, your node stops se
 
 Your seller wallet pays the Base gas for `reserve`, `topUp`, `settle`, `close` and free-usage records. Keep some ETH in it. While the balance is below `seller.gasCheck.minBalanceEth` (default 0.00005 ETH), the seller stops advertising so buyers aren't sent to a node that can't settle, and it resumes on its own once you fund it. The startup log prints the effective settings.
 
+On Base mainnet the seller tops itself up before it gets there. When the wallet holds less than 0.0005 ETH, it swaps 10 USDC of its earnings for ETH on Uniswap and pays that swap's gas in ETH, at most 30 USDC in any 24 hours. The swap needs a little ETH, so a wallet that is already empty still needs ETH sent to it once. Change the amounts or turn it off with `antseed seller settings set --refuel off` (or `--refuel-below`, `--refuel-usdc`, `--refuel-max-day`), the dashboard's **Settings → Checks**, or `seller.gasRefuel` in the config. Each refuel is logged in the seller's events, and a failed one sends an alert.
+
 By default your node also relays buyers' gasless deposit sweeps: it submits the sweep on-chain, pays the gas, and keeps the fixed relay fee. Turn this off with `relayer.enabled: false`, or set a minimum profit with `relayer.minProfitBaseUnits`. See [Seller configuration](/docs/provide/config#payment-settings).
 
 ## Check your earnings
