@@ -78,6 +78,25 @@ export type DesktopRewardsSummary = {
   currentEpoch: number | null;
   transfersEnabled: boolean;
   error: string | null;
+  /** The buyer wallet's Antseed Points this epoch; null when the explorer cannot be read. */
+  points?: DesktopPointsSummary | null;
+};
+
+/** Paid $ × the seller's boost, converted to $ANTS when the epoch ends. */
+export type DesktopPointsSummary = {
+  points: number;
+  /** At the live rate, capped at 5% of the buyer pot; null when the pot cannot be read. */
+  estimatedAnts: number | null;
+  capped: boolean;
+  /** When the epoch's points convert (ms since 1970); null when unknown. */
+  endsAt: number | null;
+  /** This epoch's buyer $ANTS pot and everyone's points so far, for the spend calculator; null when unavailable. */
+  potAnts: number | null;
+  totalPoints: number | null;
+  /** When this epoch started (ms since 1970), to pace the end-of-week projection; null when unknown. */
+  startsAt: number | null;
+  /** Everyone's points per day on a busy day (the projection's low end); null when unknown. */
+  busyPointsPerDay: number | null;
 };
 
 export const MAX_SPENDING_AUTH_BASE_UNITS = 5_000_000n;

@@ -138,6 +138,7 @@ export function VprExploreView({ onSelectView }: Props) {
     { value: 'Popular', label: 'Popular', description: 'Most available sellers first', icon: <FilterIconView icon={Sorting01Icon} /> },
     { value: 'Price', label: 'Price', description: 'Lowest price first', icon: <FilterIconView icon={Dollar01Icon} /> },
     { value: 'Savings', label: 'Savings', description: 'Largest savings first', icon: <FilterIconView icon={ChartUpIcon} /> },
+    { value: 'Most ANTS', label: 'Most ANTS', description: 'Highest seller boost first (more Antseed Points per $1)', icon: <FilterIconView icon={ZapIcon} /> },
     { value: 'Name', label: 'Name', description: 'Alphabetical order', icon: <FilterIconView icon={AlphabetGreekIcon} /> },
   ], []);
   const displayCatalog = useMemo(() => projectTeeBrowseCatalog(

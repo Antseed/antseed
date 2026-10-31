@@ -374,6 +374,39 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .gc-nowrap { white-space: nowrap; }
 .gc-ellipsis { display: inline-block; max-width: 22rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
 .gc-fineprint { color: var(--as-text-muted); font-size: 0.75rem; }
+/* Rewards: "What would you earn?", the Points site's calculator laid out in console tokens. */
+.gc-hc { display: grid; gap: 0.875rem; max-width: 34rem; }
+.gc-hc__top { display: flex; align-items: center; gap: 0.625rem; }
+.gc-hc__top h3 { margin: 0; font-size: 1rem; font-weight: 600; color: var(--as-text-primary); }
+.gc-hc__live { margin-left: auto; display: inline-flex; align-items: center; gap: 0.375rem; font-size: 0.8125rem; font-weight: 500; color: #3DC799; }
+.gc-hc__live i { width: 7px; height: 7px; border-radius: 50%; background: #3DC799; animation: gc-hc-pulse 2s infinite; }
+@keyframes gc-hc-pulse { 0% { box-shadow: 0 0 0 0 rgb(61 199 153 / 0.5); } 70% { box-shadow: 0 0 0 7px rgb(61 199 153 / 0); } 100% { box-shadow: 0 0 0 0 rgb(61 199 153 / 0); } }
+@media (prefers-reduced-motion: reduce) { .gc-hc__live i { animation: none; } }
+.gc-hc__q { display: grid; gap: 0.5rem; }
+.gc-hc__q > span { font-size: 0.8125rem; color: var(--as-text-muted); }
+.gc-hc__opts { display: flex; flex-wrap: wrap; gap: 0.375rem; }
+.gc-hc__opt { height: 2.125rem; padding: 0 0.75rem; border: 0; border-radius: 999px; background: var(--as-bg-muted); color: var(--as-text-primary); font-size: 0.8125rem; font-weight: 600; white-space: nowrap; cursor: pointer;
+  &[aria-pressed='true'] { background: #10B981; color: #001E12; }
+  &:focus-visible { outline: 2px solid var(--as-focus); outline-offset: 2px; }
+}
+.gc-hc__steps { display: grid; gap: 0.375rem; padding-top: 0.75rem; border-top: 1px solid var(--as-border); font-size: 0.875rem;
+  div { display: flex; justify-content: space-between; gap: 0.625rem; }
+  span { color: var(--as-text-muted); }
+  b { color: var(--as-text-primary); white-space: nowrap; font-variant-numeric: tabular-nums; }
+}
+.gc-hc__total { display: flex; align-items: baseline; justify-content: space-between; gap: 0.625rem; flex-wrap: wrap;
+  span { color: var(--as-text-secondary); }
+  b { font-size: 2.25rem; line-height: 1; font-weight: 650; color: #D9A441; font-variant-numeric: tabular-nums; }
+  b.gc-hc__zero { color: #E0705F; }
+}
+.gc-hc__range { display: grid; gap: 0.375rem; }
+.gc-hc__bar { position: relative; height: 8px; border-radius: 999px; background: var(--as-bg-muted);
+  i { position: absolute; top: 0; bottom: 0; border-radius: 999px; background: linear-gradient(90deg, rgb(242 196 109 / 0.35), #F2C46D); }
+  b { position: absolute; top: -4px; width: 4px; height: 16px; margin-left: -2px; border-radius: 2px; background: var(--as-text-primary); }
+}
+.gc-hc__range-l { display: flex; justify-content: space-between; gap: 0.625rem; flex-wrap: wrap; font-size: 0.78rem; color: var(--as-text-muted); }
+/* The model panel's Antseed Points line: Auto/Pinned boost, best paid seller and Pin. */
+.gc-boost-line { display: flex; flex-wrap: wrap; align-items: center; gap: 0.375rem; margin: 0; }
 .gc-panel-note { margin: 0; padding: 0.75rem 1rem; border-top: 1px solid var(--as-border); }
 .gc-warn { color: var(--as-warning); font-size: 0.8125rem; }
 .gc-link { color: var(--as-text-primary); font-weight: 500; text-decoration: underline; text-decoration-color: var(--as-border-strong); text-underline-offset: 0.2em;
@@ -886,6 +919,10 @@ li + li > .gc-choice { border-top: 1px solid var(--as-border); }
   a { color: var(--as-text-primary); text-decoration: underline; text-underline-offset: 2px; }
 }
 .gc-tip__title { display: block; margin-bottom: 0.125rem; font-weight: 600; color: var(--as-text-primary); }
+/* In a table header: wrap like body text and open leftwards, so the bubble stays inside the table. */
+.as-table__head-info .gc-tip__bubble {
+  left: auto; right: -0.5rem; width: 19rem; white-space: normal; text-align: left; text-transform: none; letter-spacing: normal;
+}
 .gc-tip:hover .gc-tip__bubble, .gc-tip:focus-within .gc-tip__bubble, .gc-tip--open .gc-tip__bubble { visibility: visible; opacity: 1; }
 .gc-tip--end .gc-tip__bubble { left: auto; right: -0.5rem; max-width: min(16rem, 80vw); }
 .gc-tip--center .gc-tip__bubble { left: 50%; transform: translateX(-50%); width: min(16rem, 80vw); }

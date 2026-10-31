@@ -232,3 +232,17 @@ test('persisted peer catalog keeps native video offers and their prices', () => 
   assert.equal(catalog[0]?.maxVideoUsdPerVideo, 0.4);
   assert.equal(catalog[0]?.minVideoUsdPerSecond, undefined);
 });
+
+test('discover rows carry the seller boost: by seller contract, 0 without a pool, null when Antscan is unknown', async () => {
+  const contract = 'c'.repeat(40);
+  const entries = normalizeChatServiceCatalogEntries(buildChatServiceCatalogFromNetworkModels({ data: [{ peers: [
+    { peerId: venicePeerId, provider: 'openai', serviceId: 'gpt-test', protocol: 'openai-chat-completions' },
+    { peerId: flashPeerId, provider: 'openai', serviceId: 'gpt-test', protocol: 'openai-chat-completions' },
+  ] }] }));
+  const peers = { [venicePeerId]: { sellerContract: `0x${contract.toUpperCase()}` } } as unknown as Parameters<typeof buildDiscoverRows>[2];
+  const boosts = new Map([[`0x${contract}`, { boost: 15.87, agentId: 1 }], [`0x${venicePeerId}`, { boost: 1, agentId: 2 }]]);
+  const rows = await buildDiscoverRows(entries, new Map(), peers, new Map(), {}, boosts);
+  assert.deepEqual(rows.map((row) => [row.peerId, row.boost]), [[venicePeerId, 15.87], [flashPeerId, 0]]);
+  const unknown = await buildDiscoverRows(entries, new Map(), peers, new Map(), {}, null);
+  assert.deepEqual(unknown.map((row) => row.boost), [null, null]);
+});

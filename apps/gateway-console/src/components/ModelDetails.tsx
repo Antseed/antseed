@@ -1,17 +1,20 @@
 import { useState } from 'react'
 import { Button } from '@antseed/ui'
 import type { NetworkModel, NetworkModelOffer, PeerTeeScope, RoutePreview } from '../api/types'
-import { formatPriceRange, formatTokens, shortId } from '../lib/format'
+import { boostOptions, summarizeModelBoost, type ModelBoostSummary } from '../lib/boost'
+import { formatBoost, formatPriceRange, formatTokens, shortId } from '../lib/format'
 import { CAPABILITY_LABELS, MODEL_TYPE_LABELS, priceSummary } from '../lib/models'
 import { panelPath } from '../lib/nav'
 import { modelCallFormat, pinnedModelId } from '../lib/snippets'
 import { ApiCall } from './ApiCall'
-import { previewListsSellers } from '../lib/selection'
+import { usePeers } from '../lib/queries'
+import { previewListsSellers, rankCandidates } from '../lib/selection'
 import { SellerSelection, type SellerRowExtras } from './SellerSelection'
 import { ServiceHealthInfo, ServicePerformanceInfo } from './ServiceHealthInfo'
 import { PanelRow, PanelSection } from './SidePanel'
 import { FreeTierInfo } from './FreeTierInfo'
 import { TeeBadge } from './TeeBadge'
+import { BoostTip } from './TrustInfo'
 import { Badge, CopyButton, DetailList, Mono, PageLink, SelectField } from './ui'
 import { VerificationLinks } from './VerificationLinks'
 
@@ -40,6 +43,28 @@ function offerKey(offer: NetworkModelOffer): string {
   return `${offer.peerId}:${offer.serviceId}`
 }
 
+/** "Auto: ~2.0× · up to 16× with GesundAI [Pin]": Antseed Points per $1 now, and the paid seller that earns most. */
+function ModelBoostLine({ summary, pinned, onPin }: { summary: ModelBoostSummary; pinned: boolean; onPin: (key: string) => void }) {
+  const { current, best, better } = summary
+  const now = !current ? null
+    : current.free ? 'Free, no points'
+      : current.boost === null ? '—'
+        : `${pinned ? '' : '~'}${formatBoost(current.boost)}`
+  return (
+    <p className="gc-fineprint gc-boost-line" aria-label="Antseed Points boost">
+      <span className="gc-info-label"><span className="gc-strong">Points</span><BoostTip /></span>
+      {now !== null && <span>{pinned ? 'Pinned' : 'Auto'}: <span className="gc-strong">{now}</span></span>}
+      {best && better && <>
+        <span aria-hidden="true">·</span>
+        <span>up to <span className="gc-strong">{formatBoost(best.boost)}</span> with {best.name}</span>
+        <Button size="sm" variant="outline" onClick={() => onPin(best.key)}>Pin</Button>
+      </>}
+      {best && !better && current && current.peerId === best.peerId && <><span aria-hidden="true">·</span><span>the highest for this model</span></>}
+      {!best && <><span aria-hidden="true">·</span><span>no seller of this model earns points yet</span></>}
+    </p>
+  )
+}
+
 /**
  * One model: what it is, who offers it, how automatic routing picks among
  * them, and how to call it. On the Models page Pin picks the provider for the
@@ -52,6 +77,7 @@ export function ModelDetails({ model, preview, previewLoading, pin }: {
   pin?: { peerId: string | null; onChange: (peerId: string | null) => void }
 }) {
   const [localRoute, setLocalRoute] = useState<Route>('')
+  const peers = usePeers()
   const pinnedOffer = pin
     ? model.offers.find((offer) => offer.peerId.toLowerCase() === pin.peerId) ?? null
     : model.offers.find((offer) => offerKey(offer) === localRoute) ?? null
@@ -66,6 +92,12 @@ export function ModelDetails({ model, preview, previewLoading, pin }: {
   const perImage = model.offers.some((offer) => offer.usdPerImage !== null)
   const offersOf = (peerId: string) => model.offers.filter((offer) => offer.peerId.toLowerCase() === peerId.toLowerCase())
   const latencyOf = (peerId: string) => offersOf(peerId)[0]?.firstTokenMsP50 ?? null
+  /** The offer's Antseed Points boost; free offers earn none. Nothing when Antscan is unreachable. */
+  const offerBoost = (offer: NetworkModelOffer) => {
+    const boost = peers.data?.find((peer) => peer.peerId.toLowerCase() === offer.peerId.toLowerCase())?.boost ?? null
+    if (boost === null) return null
+    return <span>{offer.free ? 'No points' : `Boost ${formatBoost(boost)}`}</span>
+  }
   /** An offer's price, trust and identity, with copy and Pin, for its seller's row. */
   const offerExtras = (offers: NetworkModelOffer[]): SellerRowExtras => {
     const offer = offers[0]
@@ -76,6 +108,7 @@ export function ModelDetails({ model, preview, previewLoading, pin }: {
         {offer.free && offer.freeTier ? <FreeTierInfo program={offer.freeTier} agentId={offer.agentId} align="center" /> : <span>{priceSummary(offer)}</span>}
         {!offer.free && offer.freeTier && <FreeTierInfo program={offer.freeTier} agentId={offer.agentId} priced align="center" />}
         <span>Trust {score(offer.trustScore)}</span>
+        {offerBoost(offer)}
         {offers.map((entry) => entry.serviceId !== model.id && <Mono key={entry.serviceId}>{entry.serviceId}</Mono>)}
         <ServicePerformanceInfo performance={offer.performance} />
       </>,
@@ -98,6 +131,9 @@ export function ModelDetails({ model, preview, previewLoading, pin }: {
     }
   }
   const offerRow = (peerId: string) => offerExtras(offersOf(peerId))
+  // Automatic routing's first pick, from the route preview, when nothing is pinned.
+  const autoPeer = preview?.modelAllowed ? rankCandidates(preview, latencyOf).inRange[0]?.peerId : undefined
+  const boostSummary = summarizeModelBoost(boostOptions(model.offers, peers.data), pinnedOffer ? { key: offerKey(pinnedOffer) } : autoPeer ? { peerId: autoPeer } : null)
 
   return (
     <>
@@ -121,6 +157,8 @@ export function ModelDetails({ model, preview, previewLoading, pin }: {
           ]),
         ]} />
       </div>
+
+      {boostSummary && <ModelBoostLine summary={boostSummary} pinned={!!pinnedOffer} onPin={setRoute} />}
 
       {previewListsSellers(preview) || previewLoading
         ? <SellerSelection preview={preview} loading={previewLoading} row={offerRow} latencyOf={latencyOf} pin={pin} />

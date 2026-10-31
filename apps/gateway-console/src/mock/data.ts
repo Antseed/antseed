@@ -115,6 +115,8 @@ export function seed() {
     // Gamma is attested end to end, Beta at the seller node only, Epsilon not checked yet.
     teeScope: index === 2 ? 'end-to-end' as const : index === 1 ? 'seller-node' as const : null,
     stakeAnts: index < 5 ? `${(index + 1) * 2500}.0` : null,
+    // Delta has nothing staked (0×); the unnamed seller's boost is unknown (Antscan unreachable).
+    boost: [15.87, 7.23, 2.01, 0, 0.83, null, 0.05, 4.42][index]!,
     agentId: 86_900 + index,
     // Delta's free models come with the default staked tiers.
     freeTier: index === 3 ? {

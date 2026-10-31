@@ -1,6 +1,7 @@
 import type { Command } from 'commander'
 import chalk from 'chalk'
 import Table from 'cli-table3'
+import { BOOST_EARNING_MIN, formatBoost } from '@antseed/ants'
 import { createConsoleAuth } from '../../../gateway/auth/index.js'
 import { readConsoleLocation } from '../../../gateway/console.js'
 import { observabilitySettings } from '../../../gateway/observability.js'
@@ -9,7 +10,7 @@ import type { BuyerSettings, BuyerSettingsInput, Peer } from '../../../gateway/c
 import { readSettings, setObservabilitySettings, updateBuyerSettings, type SettingsContext } from '../../../gateway/services/settings.js'
 import { sameRoutingModel } from '../../../routing-policy/policy.js'
 import { collect } from './policy-options.js'
-import { addBuyerPortOption, configSourceNote, parseCountOrNone, parseOnOff, printJson, withGateway, type CliGateway } from './shared.js'
+import { addBuyerPortOption, configSourceNote, gatewayCliRuntime, parseCountOrNone, parseOnOff, printJson, withGateway, type CliGateway } from './shared.js'
 
 async function settingsContext(gateway: CliGateway): Promise<SettingsContext> {
   const publicUrl = readConsoleLocation(gateway.store)?.publicUrl ?? null
@@ -290,6 +291,18 @@ function buyerPatchFromOptions(options: SetBuyerOptions, current: BuyerSettings)
   return patch
 }
 
+/**
+ * The Boost column: Antseed Points per $1 spent with the seller. Free usage earns
+ * no points, so a seller that charges nothing for the shown services says so; a
+ * paid seller under 0.01× reads 0×; "-" when Antscan could not be read.
+ */
+export function boostLabel(peer: Peer): string {
+  const paid = peer.services.some((service) => (service.inputUsdPerMillion ?? 0) > 0 || (service.outputUsdPerMillion ?? 0) > 0)
+  if (!paid) return chalk.dim('no points')
+  if (peer.boost === null) return '-'
+  return peer.boost < BOOST_EARNING_MIN ? chalk.dim('0×') : formatBoost(peer.boost)
+}
+
 /** The TEE column: how far a verified attestation reaches, or that it is only advertised so far. */
 function teeLabel(peer: Peer): string {
   if (!peer.tee) return '-'
@@ -301,14 +314,15 @@ function teeLabel(peer: Peer): string {
 export function registerGatewayPeersCommand(gateway: Command): void {
   addBuyerPortOption(
     gateway.command('peers')
-      .description('Sellers the running buyer knows, with trust, TEE, prices and this gateway\'s own 24 h stats'),
+      .description('Sellers the running buyer knows, with trust, TEE, Antseed Points boost, prices and this gateway\'s own 24 h stats'),
   )
     .option('--model <id>', 'only sellers offering this model')
     .option('--tee', 'only sellers with TEE attestation', false)
     .option('--json', 'print machine-readable JSON', false)
-    .action((options: { model?: string; tee: boolean; json: boolean }, cmd: Command) => withGateway(cmd, async ({ store, buyer }) => {
+    .action((options: { model?: string; tee: boolean; json: boolean }, cmd: Command) => withGateway(cmd, async ({ store, buyer, configPath }) => {
       const wanted = options.model?.trim()
-      const peers = (await listNetworkPeers(store, await buyer(), Date.now()))
+      // Boosts come from Antscan (cached, bounded wait); `boost` is null when it cannot be read.
+      const peers = (await listNetworkPeers(store, await buyer(), Date.now(), gatewayCliRuntime.peerBoosts(configPath)))
         .filter((peer) => !options.tee || peer.tee)
         .map((peer) => wanted ? { ...peer, services: peer.services.filter((service) => sameRoutingModel(service.service, wanted)) } : peer)
         .filter((peer) => !wanted || peer.services.length > 0)
@@ -320,7 +334,7 @@ export function registerGatewayPeersCommand(gateway: Command): void {
         console.log(chalk.dim(wanted ? `No seller offers ${options.model} right now.` : 'The buyer knows no sellers yet.'))
         return
       }
-      const table = new Table({ head: ['Seller', 'Name', 'Trust', 'TEE', 'Services', 'In $/M', 'Out $/M', 'p50', 'Req 24h'] })
+      const table = new Table({ head: ['Seller', 'Name', 'Trust', 'TEE', 'Boost', 'Services', 'In $/M', 'Out $/M', 'p50', 'Req 24h'] })
       for (const peer of peers) {
         const prices = peer.services.map((service) => service.inputUsdPerMillion).filter((value): value is number => value !== null)
         const outs = peer.services.map((service) => service.outputUsdPerMillion).filter((value): value is number => value !== null)
@@ -330,6 +344,7 @@ export function registerGatewayPeersCommand(gateway: Command): void {
           peer.displayName ?? '-',
           peer.trustScore ?? '-',
           teeLabel(peer),
+          boostLabel(peer),
           peer.services.length > 3 ? `${peer.services.slice(0, 3).map((service) => service.service).join(', ')} +${peer.services.length - 3}` : peer.services.map((service) => service.service).join(', ') || '-',
           range(prices),
           range(outs),
@@ -341,5 +356,6 @@ export function registerGatewayPeersCommand(gateway: Command): void {
       if (peers.some((peer) => peer.tee)) {
         console.log(chalk.dim('TEE: full = seller node and its model provider attested; partial = seller node only, its model provider may see requests; unverified = advertised, not attested yet.'))
       }
+      console.log(chalk.dim('Boost: Antseed Points per $1 spent with the seller (0× = nothing staked); free usage earns no points; - = Antscan unreachable.'))
     }))
 }
