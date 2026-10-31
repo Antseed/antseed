@@ -218,3 +218,34 @@ test('collection stops before the primary deadline and never commits a primary m
   await verifierTick(late.context)
   assert.equal(late.chain.commits, 0)
 })
+
+test('an upload that runs past the deadline is not committed into the backup phase', async (t) => {
+  const s = await setup()
+  t.after(() => rm(s.dir, { recursive: true, force: true }))
+  const deadline = START + COLLECT_SECONDS
+  s.chain.time = deadline - 20 * 60
+  const put = s.storage.put.bind(s.storage)
+  s.storage.put = async (bytes: Uint8Array) => {
+    s.chain.time += 25 * 60
+    return put(bytes)
+  }
+  await verifierTick(s.context)
+  assert.ok(s.requests.length > 0)
+  assert.equal(s.chain.commits, 0, 'the commit would land after the primary deadline')
+  assert.ok(s.logs.some((line) => line.includes('phase over before the slices were committed')))
+  assert.ok(await batchesPlanned(s) > 0, 'the manifest stays on disk')
+})
+
+test('a failing current epoch does not hold back earlier epochs', async (t) => {
+  const s = await setup()
+  t.after(() => rm(s.dir, { recursive: true, force: true }))
+  const asked: bigint[] = []
+  const epochInfo = s.chain.epochInfo.bind(s.chain)
+  s.chain.epochInfo = async (epoch: bigint) => {
+    asked.push(epoch)
+    return epochInfo(epoch)
+  }
+  s.chain.planCommits = async () => { throw new Error('rpc down') }
+  await assert.rejects(verifierTick(s.context), /epoch 7: .*rpc down/)
+  assert.ok(asked.includes(EPOCH - 1n) && asked.includes(EPOCH - 2n), 'earlier epochs were still applied and claimed')
+})

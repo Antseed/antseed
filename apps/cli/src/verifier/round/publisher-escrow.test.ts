@@ -272,3 +272,21 @@ test('key shares are posted in time even when the attestation window is shorter 
   await escrow(1)
   assert.notEqual(s.fake.info(EPOCH).bankKey, ZERO_HASH, 'the key is rebuilt inside the 400 s window')
 })
+
+test('with no eligible targets the publisher keeps looking, then commits an empty plan', async (t) => {
+  const s = await setup()
+  t.after(() => rm(s.dir, { recursive: true, force: true }))
+  const context = { ...s.context(s.publisher, 'publisher'), discoverTargets: async () => [] }
+  s.fake.time = START + HOUR
+  await publisherTick(context)
+  s.fake.openAndSeed(EPOCH)
+  await publisherTick(context)
+  assert.equal(s.fake.info(EPOCH).planHash, ZERO_HASH, 'still waiting for the buyer to find sellers')
+  assert.ok(s.logs.some((line) => line.includes('no eligible targets yet')))
+
+  // Half the grace period in: before anyone may take over, the empty plan goes out.
+  s.fake.time = START + s.fake.graceSeconds / 2 + 60
+  await publisherTick(context)
+  assert.notEqual(s.fake.info(EPOCH).planHash, ZERO_HASH)
+  assert.ok(s.logs.some((line) => line.includes('committing an empty plan')))
+})

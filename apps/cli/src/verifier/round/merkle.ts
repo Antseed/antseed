@@ -10,6 +10,7 @@ import type { RoundResultsV1, RoundVerdict } from './types.js'
 
 const LEAF_SERVICE = 1
 const LEAF_COLLECTOR = 2
+const LEAF_EMPTY_ROUND = 3
 const abi = AbiCoder.defaultAbiCoder()
 
 export function verdictCode(verdict: RoundVerdict): number {
@@ -41,15 +42,28 @@ export function collectorLeaf(epoch: bigint, collector: string, slices: number, 
   )
 }
 
+/**
+ * The only leaf of a round that had no targets and no deliveries, so verifiers still agree on a
+ * root and the epoch finalizes. It matches no service or collector leaf, so nothing can be
+ * applied or claimed as a collector against it.
+ */
+export function emptyRoundLeaf(epoch: bigint): string {
+  return keccak256(keccak256(abi.encode(['uint8', 'uint256'], [LEAF_EMPTY_ROUND, epoch])))
+}
+
 function hashPair(left: string, right: string): string {
   return BigInt(left) < BigInt(right) ? keccak256(concat([left, right])) : keccak256(concat([right, left]))
 }
 
-/** The results tree of an epoch's scoring: one leaf per service verdict and per collector credit. */
+/**
+ * The results tree of an epoch's scoring: one leaf per service verdict and per collector credit,
+ * or the single `emptyRoundLeaf` when the round had neither.
+ */
 export function buildResultsTree(
   epoch: bigint,
   data: Pick<RoundResultsV1, 'results' | 'credits' | 'totalSlices'>,
 ): ResultsTree {
+  if (data.results.length === 0 && data.credits.length === 0) return new ResultsTree([emptyRoundLeaf(epoch)])
   return new ResultsTree([
     ...data.results.map(({ target, verdict }) => serviceLeaf(epoch, {
       agentId: BigInt(target.agentId),

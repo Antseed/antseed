@@ -178,6 +178,32 @@ export interface ReferenceRequestLimiter {
   recordSuccess: (model: string) => void
 }
 
+/**
+ * Physical reference requests one audited model may still send in this run, across all of its
+ * builds (enrollment, seller-capacity top-ups, recheck sets) and retry rounds. Cached responses
+ * from a checkpoint are free.
+ */
+export class ReferenceRequestAllowance {
+  private used = 0
+
+  constructor(readonly limit: number) {
+    if (!Number.isSafeInteger(limit) || limit <= 0) throw new Error('reference request allowance must be a positive integer')
+  }
+
+  get remaining(): number {
+    return this.limit - this.used
+  }
+
+  take(): void {
+    if (this.used >= this.limit) throw new Error(`reference request budget exhausted (${this.limit} requests for this model in this run)`)
+    this.used += 1
+  }
+
+  refund(): void {
+    if (this.used > 0) this.used -= 1
+  }
+}
+
 export function createReferenceRequestLimiter(
   config: VerifierCLIConfig | undefined,
   options: {
@@ -355,6 +381,8 @@ export async function buildModelReference(input: {
   fetchFn?: typeof fetch
   log?: (message: string) => void
   requestLimiter?: ReferenceRequestLimiter
+  /** Requests this model may still send in the run, shared by all of its builds. */
+  allowance?: ReferenceRequestAllowance
   initialReference?: KbfReferenceV1
   /**
    * Probes already certified stable for this model by an earlier enrollment
@@ -454,6 +482,7 @@ export async function buildModelReference(input: {
     checkpoint: discoveryCheckpoint,
     limiter,
     maxRequests: input.config?.referenceMaxRequestsPerBuild ?? DEFAULT_MAX_REQUESTS_PER_BUILD,
+    allowance: input.allowance,
     retryCount: input.config?.referenceBatchRetryCount ?? DEFAULT_BATCH_RETRY_COUNT,
     retryBaseDelayMs: input.config?.referenceRetryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS,
     pricingForModel,
@@ -590,9 +619,11 @@ export async function buildModelReference(input: {
     fetchFn: input.fetchFn ?? fetch,
     checkpoint,
     limiter,
-    // Discovery requests count toward the same per-build budget.
-    maxRequests: Math.max(1, (input.config?.referenceMaxRequestsPerBuild ?? DEFAULT_MAX_REQUESTS_PER_BUILD)
+    // Discovery requests count toward the same per-build budget. When discovery used all of it,
+    // the build may still read its cached responses but cannot send another request.
+    maxRequests: Math.max(0, (input.config?.referenceMaxRequestsPerBuild ?? DEFAULT_MAX_REQUESTS_PER_BUILD)
       - (discoveryCheckpoint?.requestsUsed ?? 0)),
+    allowance: input.allowance,
     retryCount: input.config?.referenceBatchRetryCount ?? DEFAULT_BATCH_RETRY_COUNT,
     retryBaseDelayMs: input.config?.referenceRetryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS,
     pricingForModel,
@@ -1373,13 +1404,25 @@ function createReferenceQuery(input: {
   checkpoint: ReferenceBuildCheckpoint
     limiter: ReferenceRequestLimiter
   maxRequests: number
+  allowance?: ReferenceRequestAllowance
   retryCount: number
   retryBaseDelayMs: number
   pricingForModel: (model: string) => VerifierModelPricingConfig
   routeForModel: (model: string) => ReferenceRequestRoute
   log?: (message: string) => void
 }): ReferenceQuery {
-  assertPositiveInteger(input.maxRequests, 'referenceMaxRequestsPerBuild')
+  // Zero is the remainder after discovery spent the whole budget: cached reads only.
+  assertNonNegativeInteger(input.maxRequests, 'referenceMaxRequestsPerBuild')
+  // A physical request counts against both this build's checkpoint and the model's run allowance.
+  const reserveRequest = async (): Promise<void> => {
+    input.allowance?.take()
+    try {
+      await input.checkpoint.reserveRequest(input.maxRequests)
+    } catch (error) {
+      input.allowance?.refund()
+      throw error
+    }
+  }
   assertNonNegativeInteger(input.retryCount, 'referenceBatchRetryCount')
   assertPositiveInteger(input.retryBaseDelayMs, 'referenceRetryBaseDelayMs')
   const consumed = new Map<string, ReferenceCachedResponseV1>()
@@ -1426,7 +1469,7 @@ function createReferenceQuery(input: {
     let attempt = 0
     for (;;) {
       attempt += 1
-      await input.checkpoint.reserveRequest(input.maxRequests)
+      await reserveRequest()
       try {
         const response = await input.limiter.run(model, () => postChatCompletion(
           route,
@@ -1536,7 +1579,7 @@ function createReferenceQuery(input: {
     // times, and any other 4xx means this strategy is refused.
     let failure: { status: number | null; failure: string } = { status: null, failure: 'not attempted' }
     for (let attempt = 1; attempt <= 3; attempt += 1) {
-      await input.checkpoint.reserveRequest(input.maxRequests)
+      await reserveRequest()
       try {
         const response = await input.limiter.run(model, () => postChatCompletion(route, body, input.timeoutMs, input.fetchFn))
         const success: ReferenceCachedSuccessV1 = {

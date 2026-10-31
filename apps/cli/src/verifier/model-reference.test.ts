@@ -19,6 +19,7 @@ import {
   createReferenceRequestLimiter,
   loadModelReference,
   ReferenceBuildCheckpoint,
+  ReferenceRequestAllowance,
   resolveReferenceRequestOverrides,
 } from './model-reference.js'
 import type { VerifierModelCatalog } from './openrouter-catalog.js'
@@ -1789,7 +1790,8 @@ test('reference builds enforce the physical request budget', async () => {
   try {
     await assert.rejects(
       buildModelReference({ model: MODEL, referencesDir: directory, config: budgetedConfig, fetchFn }),
-      /request budget exhausted \(1\)/,
+      // Thinking discovery spends the one request, leaving none for enrollment.
+      /request budget exhausted \(0\)/,
     )
   } finally {
     await rm(directory, { recursive: true, force: true })
@@ -2105,6 +2107,60 @@ test('reference builds record contrast detection and grow until every contrast i
       }),
       /contrast models that would pass as SAME: close-contrast/,
     )
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('thinking discovery and enrollment share one request budget: none is sent once discovery spent it', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-budget-'))
+  let physical = 0
+  const answering = answerThinkingDiscovery(async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    return response(successfulContent(body.model, body.messages.at(-1)?.content ?? ''))
+  })!
+  const fetchFn: typeof fetch = async (url, init) => {
+    physical += 1
+    return answering(url, init)
+  }
+  try {
+    // The target and the one contrast each accept their first discovery request: 2 of 2 used.
+    await assert.rejects(buildModelReferenceWithoutDiscoveryStub({
+      model: MODEL, referencesDir: directory, config: config({ referenceMaxRequestsPerBuild: 2 }), fetchFn,
+    }), /request budget exhausted \(0\)/)
+    assert.equal(physical, 2)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a model\'s run allowance caps requests across builds and retry rounds, even with checkpoints left', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-allowance-'))
+  let physical = 0
+  const answering = answerThinkingDiscovery(async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    return response(successfulContent(body.model, body.messages.at(-1)?.content ?? ''))
+  })!
+  const fetchFn: typeof fetch = async (url, init) => {
+    physical += 1
+    return answering(url, init)
+  }
+  try {
+    const allowance = new ReferenceRequestAllowance(3)
+    // Each build allows 1000 requests itself; the shared allowance stops the first after 3.
+    await assert.rejects(buildModelReferenceWithoutDiscoveryStub({
+      model: MODEL, referencesDir: join(directory, 'first'), config: config({ referenceMaxRequestsPerBuild: 1000 }), fetchFn, allowance,
+    }), /request budget exhausted \(3 requests for this model in this run\)/)
+    assert.equal(physical, 3)
+    // The next round (or another build of the same model) resumes but cannot send more.
+    await assert.rejects(buildModelReferenceWithoutDiscoveryStub({
+      model: MODEL, referencesDir: join(directory, 'first'), config: config({ referenceMaxRequestsPerBuild: 1000 }), fetchFn, allowance,
+    }), /request budget exhausted/)
+    await assert.rejects(buildModelReferenceWithoutDiscoveryStub({
+      model: MODEL, referencesDir: join(directory, 'second'), config: config({ referenceMaxRequestsPerBuild: 1000 }), fetchFn, allowance,
+    }), /request budget exhausted/)
+    assert.equal(physical, 3)
+    assert.equal(allowance.remaining, 0)
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

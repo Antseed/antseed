@@ -109,3 +109,27 @@ test('a waiting DIFF whose evidence no longer matches its hash is not carried ov
     await rm(evidenceDir, { recursive: true, force: true })
   }
 })
+
+test('resuming one run only rechecks the sellers that run audited', async () => {
+  const evidenceDir = await mkdtemp(join(tmpdir(), 'pending-rechecks-'))
+  try {
+    const a = await evidenceFor(evidenceDir, PEER_A, 'a1')
+    const b = await evidenceFor(evidenceDir, PEER_B, 'b1')
+    const waiting = { reason: 'reference endpoint 402', since: '2026-10-27T12:00:00.000Z' }
+    // Two runs of the same model this epoch, over different sellers, each with a waiting DIFF.
+    await writeRun(evidenceDir, 'run-a', '2026-10-27T13:00:00.000Z', [result(PEER_A, 'DIFF', a, { recheckPending: waiting })])
+    await writeRun(evidenceDir, 'run-b', '2026-10-27T14:00:00.000Z', [result(PEER_B, 'DIFF', b, { recheckPending: waiting })])
+
+    assert.equal((await loadPendingDiffRechecks(evidenceDir, '28', ['model-a'])).size, 2)
+    const resumedA = await loadPendingDiffRechecks(evidenceDir, '28', ['model-a'], { onlyRunId: 'run-a' })
+    assert.deepEqual([...resumedA.keys()], [pendingRecheckKey('model-a', PEER_A)])
+    const resumedB = await loadPendingDiffRechecks(evidenceDir, '28', ['model-a'], { onlyRunId: 'run-b' })
+    assert.deepEqual([...resumedB.keys()], [pendingRecheckKey('model-a', PEER_B)])
+
+    // A later run settles seller A: resuming run-a no longer rechecks it.
+    await writeRun(evidenceDir, 'run-c', '2026-10-27T15:00:00.000Z', [result(PEER_A, 'SAME', a)])
+    assert.equal((await loadPendingDiffRechecks(evidenceDir, '28', ['model-a'], { onlyRunId: 'run-a' })).size, 0)
+  } finally {
+    await rm(evidenceDir, { recursive: true, force: true })
+  }
+})

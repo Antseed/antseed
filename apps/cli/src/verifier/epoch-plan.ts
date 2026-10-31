@@ -29,7 +29,8 @@ const AUDITOR_TEXT = [
   /unseen questions/i,
   /\benrol(?:l)?ment\b/i,
   /reference (?:endpoint|credits?)/i,
-  /buyer proxy/i,
+  // Our own buyer being down, not a request through it (a seller timeout also says "buyer proxy").
+  /buyer proxy (?:state|is not connected|has no live)/i,
 ]
 
 const SELLER_CODES = new Set([

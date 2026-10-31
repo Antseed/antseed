@@ -18,6 +18,7 @@ import {
   filterCompatibleResumeCandidates,
   filterResumeCandidatesByPeer,
   loadResumeCandidates,
+  modelRequestAllowance,
   normalizeVerifierPeerId,
   resolveRunModels,
   selectVerifierPeer,
@@ -342,4 +343,16 @@ test('a round with no targets left still retries models whose enrollment failed'
   const done = noTargetsOutcome('42', 0)
   assert.equal(done.left, 0)
   assert.match(done.message, /nothing left to audit/)
+})
+
+test('--max-enrollment-requests is one allowance per model for the whole run, never raised by retry rounds', () => {
+  const allowances = new Map()
+  const budget = enrollmentRequestBudget({ maxEnrollmentRequests: '5' } as never)!
+  const first = modelRequestAllowance(allowances, 'GLM-5.3', budget)
+  for (let request = 0; request < 5; request += 1) first.take()
+  // Round 2 asks again for the same model: the same, spent allowance comes back.
+  const second = modelRequestAllowance(allowances, 'glm-5.3 ', budget)
+  assert.equal(second, first)
+  assert.throws(() => second.take(), /request budget exhausted \(5 requests/)
+  assert.equal(modelRequestAllowance(allowances, 'kimi-k3', budget).remaining, 5)
 })

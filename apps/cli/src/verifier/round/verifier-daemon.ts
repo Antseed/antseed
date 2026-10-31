@@ -84,10 +84,22 @@ export class ManifestsUnavailableError extends Error {
 /** One pass over the current epoch and the recent past; safe to run repeatedly and after restarts. */
 export async function verifierTick(context: VerifierDaemonContext): Promise<void> {
   const epoch = await context.client.currentEpoch()
-  await stepEpoch(context, epoch)
-  for (let back = 1n; back <= CLAIM_LOOKBACK_EPOCHS && back <= epoch; back++) {
-    await applyAndClaim(context, epoch - back, epoch)
+  // A failing current epoch must not hold back applying and claiming earlier ones, nor one
+  // earlier epoch the others.
+  const failures: string[] = []
+  try {
+    await stepEpoch(context, epoch)
+  } catch (error) {
+    failures.push(`epoch ${epoch}: ${error instanceof Error ? error.message : String(error)}`)
   }
+  for (let back = 1n; back <= CLAIM_LOOKBACK_EPOCHS && back <= epoch; back++) {
+    try {
+      await applyAndClaim(context, epoch - back, epoch)
+    } catch (error) {
+      failures.push(`epoch ${epoch - back}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  if (failures.length > 0) throw new Error(failures.join('; '))
 }
 
 async function stepEpoch(context: VerifierDaemonContext, epoch: bigint): Promise<void> {
@@ -207,15 +219,19 @@ async function collect(context: VerifierDaemonContext, info: KbfEpochInfo, state
     await writeJsonAtomic(manifestPath, manifest)
   }
 
-  if (await context.client.now() + commitMargin >= deadline) {
-    // Landing after the deadline would file it under the wrong phase, where it cannot be scored.
+  // Landing after the deadline would file it under the wrong phase, where it cannot be scored.
+  // Checked again after the upload, which can take long enough to cross the deadline.
+  const phaseMissed = async (): Promise<boolean> => {
+    if (await context.client.now() + commitMargin < deadline) return false
     state[phase] = { uri: '', root: '', slices: 0 }
     await writeState(context, info.epoch, state)
-    context.log(`epoch ${info.epoch}: ${label}phase over before the slices were committed; ${manifest.slices.length} slices not delivered`)
-    return
+    context.log(`epoch ${info.epoch}: ${label}phase over before the slices were committed; ${manifest!.slices.length} slices not delivered`)
+    return true
   }
+  if (await phaseMissed()) return
   const bytes = encodeRoundFile(manifest)
   const uri = await context.storage.put(bytes, `antseed-kbf-${info.epoch}-slices-${context.address.toLowerCase()}${backup ? '-backup' : ''}.json`)
+  if (await phaseMissed()) return
   const root = contentHash(bytes)
   await context.client.commitSlices(context.signer, info.epoch, root, uri)
   state[phase] = { uri, root, slices: manifest.slices.length }
@@ -386,21 +402,47 @@ async function applyAndClaim(context: VerifierDaemonContext, epoch: bigint, curr
     client.claimRewards(context.signer, epoch, slices, slices ? results.totalSlices : 0, proof))
 }
 
-/** This verifier's results when they match the finalized root, otherwise a matching attester's. */
+/**
+ * This verifier's results, or a matching attester's copy, but only once its leaves rebuild the
+ * finalized root: a file is never trusted for its `root` property alone, because applying or
+ * claiming from altered leaves (say, a missing collector credit) can forfeit a reward for good.
+ */
 async function finalizedResults(context: VerifierDaemonContext, info: KbfEpochInfo): Promise<RoundResultsV1 | null> {
-  const local = await readJson<RoundResultsV1>(join(epochDir(context, info.epoch), 'results.json'))
-  if (local && local.root.toLowerCase() === info.finalizedRoot.toLowerCase()) return local
+  const local = authenticResults(info, await readJson<unknown>(join(epochDir(context, info.epoch), 'results.json')))
+  if (local) return local
   for (const attestation of await context.client.attestationEvents(info.epoch)) {
     if (attestation.hash.toLowerCase() !== info.finalizedRoot.toLowerCase()) continue
     try {
-      const results = JSON.parse((await context.storage.get(attestation.uri)).toString('utf8')) as RoundResultsV1
-      if (results.root.toLowerCase() === info.finalizedRoot.toLowerCase()) return results
+      const results = authenticResults(info, JSON.parse((await context.storage.get(attestation.uri)).toString('utf8')))
+      if (results) return results
+      context.log(`epoch ${info.epoch}: ignoring results ${attestation.uri}: leaves do not rebuild the finalized root`)
     } catch {
       // try the next attester's copy
     }
   }
   context.log(`epoch ${info.epoch}: finalized results unavailable`)
   return null
+}
+
+/** `value` as results of `info.epoch` whose leaves rebuild `info.finalizedRoot`, else null. */
+export function authenticResults(info: Pick<KbfEpochInfo, 'epoch' | 'finalizedRoot'>, value: unknown): RoundResultsV1 | null {
+  if (!value || typeof value !== 'object') return null
+  const results = value as RoundResultsV1
+  const wellFormed = results.kind === 'antseed-kbf-results' && results.epoch === info.epoch.toString()
+    && Array.isArray(results.results) && Array.isArray(results.credits)
+    && Number.isSafeInteger(results.totalSlices) && results.totalSlices >= 0
+    && results.results.every((entry) => entry && typeof entry === 'object' && entry.target && typeof entry.target === 'object'
+      && typeof entry.target.agentId === 'string' && /^[1-9]\d*$/.test(entry.target.agentId)
+      && typeof entry.target.serviceHash === 'string' && typeof entry.target.modelHash === 'string'
+      && typeof entry.verdict === 'string')
+    && results.credits.every((entry) => entry && typeof entry === 'object' && typeof entry.collector === 'string'
+      && Number.isSafeInteger(entry.slices) && entry.slices > 0)
+  if (!wellFormed) return null
+  try {
+    return buildResultsTree(info.epoch, results).root.toLowerCase() === info.finalizedRoot.toLowerCase() ? results : null
+  } catch {
+    return null
+  }
 }
 
 async function tryWrite(context: VerifierDaemonContext, label: string, write: () => Promise<string>): Promise<void> {

@@ -58,15 +58,15 @@ Exit codes: `0` SAME, `2` DIFF, `3` UNDETERMINED, `1` error. If the endpoint ans
 
 - **SAME**: no evidence of substitution. The endpoint misses about as often as the genuine model does, so it very likely serves the claimed model.
 - **DIFF**: significantly more wrong answers than the genuine model makes. The endpoint very likely serves a different model (or a heavily quantized or altered one).
-- **UNDETERMINED**: some questions got no usable answer (errors, refusals, timeouts), so there is no verdict. Not evidence either way; suggest trying again later.
+- **UNDETERMINED**: the answers it got can't settle it either way. Usually too many questions got no usable answer (errors, refusals, timeouts), so the missing ones could still change the outcome. Not evidence either way; suggest trying again later.
 
-Read the numbers from the JSON:
+Always report the `verdict` and its `reason` from the JSON exactly as the command returns them; never work out a verdict yourself from the numbers. The command already accounts for unanswered questions: a few missing answers can still give SAME or DIFF when they could not change the outcome, while a result that looks significant on the answered questions alone can be UNDETERMINED if too few were answered. The `reason` says which.
 
-- answers that differed: `stats.targetHamming` of `stats.targetTotal`
+Numbers you can quote from the JSON:
+
+- answers that differed: `stats.targetHamming` of `stats.targetTotal` answered (`stats.targetCoverage` is the share of questions answered)
 - what the genuine model gets wrong at most: about `stats.p0Cp99 × stats.targetTotal`
-- p-value: `stats.pValueBinomial` (DIFF when it is below 0.05)
-
-A single unanswered question is enough to make the result UNDETERMINED.
+- p-value on the answered questions: `stats.pValueBinomial`
 
 Answer in one or two plain sentences, for example: "SAME: 6 of 120 answers differed, while the genuine model gets up to about 11 wrong (p = 0.97), so this looks like the real claude-opus-5.5." Mention the bank or audit it used (`audit` in the JSON).
 

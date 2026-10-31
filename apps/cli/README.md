@@ -760,13 +760,21 @@ verifier models` prints each model's source, model id and provider pin.
 unless `referenceEndpoint.contrastModelBank` is set. A model list under
 `referenceEndpoint.models` (older configs) is rejected, and so is `enabled`.
 
-A seller is only audited at or below the model's upstream price. Each model's
-price is resolved from its `upstream.pricing` or `referenceRoute.pricing`, then
-`verifier.models.<model>.pricing`, then the OpenRouter catalog. A seller whose
-input or output price is above that price times `verifier.auditPriceRatio`
-(default 1.0) is not audited. Audit requests still pass the buyer proxy's caps,
-so set `buyer.maxPricing.defaults` at least as high as the most expensive
-reference price.
+A seller is only audited at or below the most any OpenRouter provider charges
+for the model. Input and output each take the highest price across OpenRouter's
+providers for the model, leaving out speed tiers (`fast`, `ultrafast`, `flex`).
+If the model's reference upstream (`upstream.pricing` or
+`referenceRoute.pricing`) or `verifier.models.<model>.pricing` is higher, that
+is used instead; so a configured price raises the limit but never lowers it
+below the highest provider price. If OpenRouter lists no providers for the
+model, the configured price or the OpenRouter catalog price is used. A seller
+whose input or output price is above that limit times
+`verifier.auditPriceRatio` (default 1.0) is not audited.
+
+This is which sellers are eligible, not a spending cap. The hard cap on what
+audit requests pay is the buyer's `buyer.maxPricing`: the buyer proxy refuses
+any seller above it, so set `buyer.maxPricing.defaults` at least as high as the
+most expensive audited model's limit, and no higher than you are willing to pay.
 
 ### Local audits
 
@@ -777,9 +785,10 @@ is reachable). Running it again in the same epoch continues it: it prints a plan
 from the earlier runs, skips finished sellers (SAME, rechecked DIFF), retries
 failures on the auditor's side every run and seller failures once per epoch,
 rechecks waiting DIFFs, and audits new or previously skipped sellers. One run
-retries what is left in up to `--max-rounds` rounds (default 3), with a larger
-enrollment budget each round, and stops early when nothing is left or a round
-makes no progress. `--fresh` ignores the earlier runs.
+retries what is left in up to `--max-rounds` rounds (default 3), and stops early
+when nothing is left or a round makes no progress. `--max-enrollment-requests`
+(default 2000) caps a model's reference requests for the whole run: every build
+(enrollment, seller top-ups, recheck sets) in every round draws on it. `--fresh` ignores the earlier runs.
 
 A local run rechecks every first DIFF on fresh probes the seller has never seen.
 The result is DIFF only when the recheck is DIFF too; a recheck SAME or
@@ -822,13 +831,14 @@ sending anything when a bank isn't ready:
 antseed --config ./audit-config.json verifier run gpt-6.1-sol --max-enrollment-requests 1000
 ```
 
-The request budget is **per build** (2000 unless `--max-enrollment-requests`
-sets it), includes retries and requests already used by a compatible enrollment
-checkpoint, and cannot exceed a lower configured `referenceMaxRequestsPerBuild`.
-One model can need several builds in a run: one to make its bank usable, up to
-3 more when sellers have seen too much of it, and up to 3 more for DIFF
-rechecks. Each retry round (`--max-rounds`) can build again with the budget
-times the round number. It is a request limit, not a dollar spending cap.
+The request budget is **per model, for the whole run** (2000 unless
+`--max-enrollment-requests` sets it) and includes retries. One model can need
+several builds in a run: one to make its bank usable, up to 3 more when sellers
+have seen too much of it, and more for DIFF rechecks. All of them, in every
+retry round (`--max-rounds`), draw on the same budget, and so do the requests a
+build spends finding how to turn thinking off. Each build is also capped by a
+lower configured `referenceMaxRequestsPerBuild`, counting requests already used
+by its compatible checkpoint. It is a request limit, not a dollar spending cap.
 Probe growth also respects `referenceMaximumProbeCount` (default 500) and the
 configured no-progress limit. An `--all` run applies this process to
 each model with eligible sellers; it can therefore spend up to the per-model limit for each.

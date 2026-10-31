@@ -140,10 +140,12 @@ export class FakeRoundClient {
     if (sender !== getAddress(info.publisher)) throw new Error('NotPublisher')
     if (backup) {
       if (this.time < this.commitDeadline(info) || this.time >= this.backupDeadline(info)) throw new Error('WrongPhase')
+      if (info.backupPlanHash !== ZERO_HASH && info.backupPlanHash !== hash) throw new Error('PlanAlreadyCommitted')
       info.backupPlanHash = hash
     } else {
       if (info.seed === ZERO_HASH || this.time >= this.commitDeadline(info)) throw new Error('WrongPhase')
       if (info.keySharesHash === ZERO_HASH) throw new Error('KeyNotEscrowed')
+      if (info.planHash !== ZERO_HASH && info.planHash !== hash) throw new Error('PlanAlreadyCommitted')
       info.planHash = hash
     }
     this.plans.push({ epoch, hash, uri, backup, sender, blockNumber: 1, logIndex: 0, txHash: '0x' })

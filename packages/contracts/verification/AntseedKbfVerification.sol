@@ -183,6 +183,7 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     error AlreadyClaimed();
     error AlreadyRevealed();
     error KeyNotEscrowed();
+    error PlanAlreadyCommitted();
 
     modifier onlyPublisher() {
         if (msg.sender != publisher) revert NotPublisher();
@@ -431,18 +432,25 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     }
 
     /// @notice Commits the target list and the per-verifier question envelopes derived from the seed.
+    ///         Once only: repeating the same hash is a no-op, a different one reverts.
     function commitPlan(uint256 epoch, bytes32 planHash, string calldata planUri) external onlyEpochPublisher(epoch) {
         EpochState storage state = _epochs[epoch];
         if (state.seed == bytes32(0) || block.timestamp >= _commitDeadline(epoch, state)) revert WrongPhase();
         // Without escrowed shares, losing the publisher after the plan would strand the round.
         if (state.keySharesHash == bytes32(0)) revert KeyNotEscrowed();
         if (planHash == bytes32(0)) revert InvalidValue();
+        // Frozen once out: verifiers buy against it, and replacing it would void their work.
+        if (state.planHash != bytes32(0)) {
+            if (state.planHash == planHash) return;
+            revert PlanAlreadyCommitted();
+        }
         _validateUri(planUri);
         state.planHash = planHash;
         emit PlanCommitted(epoch, false, planHash, planUri);
     }
 
     /// @notice Commits the envelopes for slices their owner did not deliver, for the backup verifiers.
+    ///         Once only, like `commitPlan`.
     function commitBackupPlan(uint256 epoch, bytes32 planHash, string calldata planUri)
         external
         onlyEpochPublisher(epoch)
@@ -453,6 +461,10 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
                 || block.timestamp >= _backupDeadline(epoch, state)
         ) revert WrongPhase();
         if (planHash == bytes32(0)) revert InvalidValue();
+        if (state.backupPlanHash != bytes32(0)) {
+            if (state.backupPlanHash == planHash) return;
+            revert PlanAlreadyCommitted();
+        }
         _validateUri(planUri);
         state.backupPlanHash = planHash;
         emit PlanCommitted(epoch, true, planHash, planUri);

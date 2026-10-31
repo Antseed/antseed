@@ -6,10 +6,10 @@ import { createResponseAuthPayload, encodeHttpRequest, encodeHttpResponse } from
 import { buildKbfProbeRequestBody } from '../model-run.js'
 import { referenceFixture } from '../model-audit-fixtures.test-support.js'
 import { derivePlan, envelopeFor } from './plan.js'
-import { ResultsTree, buildResultsTree, collectorLeaf, serviceLeaf, verifyProof } from './merkle.js'
+import { ResultsTree, buildResultsTree, collectorLeaf, emptyRoundLeaf, serviceLeaf, verifyProof } from './merkle.js'
 import { scoreRound, type CommittedManifest } from './scoring.js'
-import { RoundFileMismatchError, type RoundStorage } from './storage.js'
-import { ManifestsUnavailableError, computeResults, encodeRoundFile } from './verifier-daemon.js'
+import { PinataRoundStorage, RoundFileMismatchError, type RoundStorage } from './storage.js'
+import { ManifestsUnavailableError, authenticResults, computeResults, encodeRoundFile } from './verifier-daemon.js'
 import type { KbfEpochInfo, KbfRoundClient } from '@antseed/node/payments'
 import type { SellerBindingReader } from './seller-binding.js'
 import { SeededStream, seededRanking, seededShuffle } from './seeded.js'
@@ -447,4 +447,48 @@ test('an unavailable slice file blocks attestation until the cutoff, an invalid 
   const results = await computeResults(mismatched.context, mismatched.info, mismatched.members)
   assert.equal(results.root, late.root, 'an invalid file is treated exactly like a missing one')
   assert.ok(mismatched.logs.some((line) => line.includes('ignoring invalid slices')))
+})
+
+test('fetched results are trusted only when their leaves rebuild the finalized root', () => {
+  const roundPlan = plan()
+  const results = scoreRound({ epoch: 7n, plan: roundPlan, bank: bank(), manifests: manifestsFor(roundPlan) })
+  const info = { epoch: 7n, finalizedRoot: results.root }
+  assert.ok(results.credits.length > 0)
+  assert.deepEqual(authenticResults(info, results), results)
+  // Keeps the right root property but drops the collector credits: claiming from it would forfeit them.
+  const stripped = { ...results, credits: [] }
+  assert.equal(authenticResults(info, stripped), null)
+  assert.equal(authenticResults(info, { ...results, epoch: '8' }), null)
+  assert.equal(authenticResults(info, { ...results, results: [{ ...results.results[0], verdict: 'MAYBE' }] }), null)
+  assert.equal(authenticResults(info, { root: results.root }), null)
+  assert.equal(authenticResults(info, null), null)
+})
+
+test('a round with no targets scores to the agreed empty root', () => {
+  const empty = derivePlan({ epoch: '7', seed: SEED, probesPerService: 20, slicesPerService: 2, verifiers: verifiers.map((wallet) => wallet.address), targets: [], bank: bank() })
+  const results = scoreRound({ epoch: 7n, plan: empty, bank: bank(), manifests: [] })
+  assert.deepEqual(results.results, [])
+  assert.deepEqual(results.credits, [])
+  assert.equal(results.root, emptyRoundLeaf(7n))
+  assert.notEqual(emptyRoundLeaf(7n), emptyRoundLeaf(8n))
+  assert.deepEqual(authenticResults({ epoch: 7n, finalizedRoot: results.root }, results), results)
+})
+
+test('a gateway returning the wrong bytes is unavailability, not an invalid commitment', async () => {
+  const good = Buffer.from('{"kind":"x"}')
+  let recovered = false
+  const fetchImpl = (async (url: string | URL | Request) => {
+    const href = String(url)
+    if (href.startsWith('https://bad.test/')) return new Response('<html>rate limited</html>', { status: 200 })
+    if (!recovered) throw new Error('timeout')
+    return new Response(good, { status: 200 })
+  }) as typeof fetch
+  const storage = new PinataRoundStorage('jwt', ['https://bad.test/ipfs', 'https://slow.test/ipfs'], fetchImpl)
+  const uri = 'ipfs://bafkreiabcdefghijklmnopqrstuvwxyz234567'
+  const error = await storage.get(uri, contentHash(good)).catch((caught: unknown) => caught)
+  assert.ok(error instanceof Error && !(error instanceof RoundFileMismatchError), 'retryable, so verifiers wait for it')
+  assert.match((error as Error).message, /does not match the committed hash/)
+  recovered = true
+  assert.deepEqual(await storage.get(uri, contentHash(good)), good)
+  await assert.rejects(storage.get('ipfs://../etc/passwd', contentHash(good)), RoundFileMismatchError)
 })

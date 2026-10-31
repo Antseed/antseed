@@ -15,8 +15,11 @@ export interface RoundStorage {
 }
 
 /**
- * The file at a URI was fetched but its bytes are not the committed ones. Unlike a failed fetch
- * this is permanent (an IPFS CID always names the same bytes), so the commitment is invalid.
+ * The commitment is invalid for good, whoever reads it: a URI that cannot name a round file, or
+ * (for the directory store, which reads its own disk) bytes that are not the committed ones.
+ * Bytes from an IPFS gateway that miss the committed hash are not this: they are not checked
+ * against the CID, so a bad gateway or an error page would look the same. Those count as
+ * unavailable, which verifiers wait out before scoring without them.
  */
 export class RoundFileMismatchError extends Error {
   constructor(message: string) {
@@ -69,8 +72,8 @@ export class PinataRoundStorage implements RoundStorage {
 
   async get(uri: string, expectedHash?: string): Promise<Buffer> {
     const cid = uri.replace(/^ipfs:\/\//, '')
+    if (!/^[A-Za-z0-9]{20,128}$/.test(cid)) throw new RoundFileMismatchError(`not an IPFS round file: ${uri}`)
     const failures: string[] = []
-    let mismatched = false
     for (const gateway of this.gateways) {
       const url = `${gateway.replace(/\/+$/, '')}/${cid}`
       try {
@@ -82,7 +85,6 @@ export class PinataRoundStorage implements RoundStorage {
         const bytes = Buffer.from(await response.arrayBuffer())
         if (expectedHash && contentHash(bytes).toLowerCase() !== expectedHash.toLowerCase()) {
           failures.push(`${url}: content does not match the committed hash`)
-          mismatched = true
           continue
         }
         return bytes
@@ -90,8 +92,7 @@ export class PinataRoundStorage implements RoundStorage {
         failures.push(`${url}: ${error instanceof Error ? error.message : String(error)}`)
       }
     }
-    const message = `failed to fetch ${uri} (${failures.join('; ')})`
-    throw mismatched ? new RoundFileMismatchError(message) : new Error(message)
+    throw new Error(`failed to fetch ${uri} (${failures.join('; ')})`)
   }
 }
 

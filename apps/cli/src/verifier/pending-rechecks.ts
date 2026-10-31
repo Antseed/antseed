@@ -23,9 +23,17 @@ export async function loadPendingDiffRechecks(
   evidenceDir: string,
   epoch: string,
   models: readonly string[],
+  options: {
+    /**
+     * `--resume-run`: only sellers that run audited. Later runs still decide whether their DIFF
+     * is settled, so a seller another run already rechecked is not rechecked again.
+     */
+    onlyRunId?: string
+  } = {},
 ): Promise<Map<string, PendingDiffRecheck>> {
   const wanted = new Set(models.map((model) => model.toLowerCase()))
   const latest = new Map<string, PendingDiffRecheck>()
+  const inResumedRun = new Set<string>()
   for (const manifest of await epochRunManifests(evidenceDir, epoch)) {
     for (const entry of manifest.models) {
       if (!wanted.has(entry.model.toLowerCase())) continue
@@ -37,12 +45,15 @@ export async function loadPendingDiffRechecks(
       }
       if (summary.runId !== manifest.runId || summary.epoch !== epoch) continue
       for (const result of summary.results ?? []) {
-        latest.set(pendingRecheckKey(entry.model, result.peerId), { model: entry.model, runId: manifest.runId, result })
+        const key = pendingRecheckKey(entry.model, result.peerId)
+        latest.set(key, { model: entry.model, runId: manifest.runId, result })
+        if (manifest.runId === options.onlyRunId) inResumedRun.add(key)
       }
     }
   }
   const pending = new Map<string, PendingDiffRecheck>()
   for (const [key, entry] of latest) {
+    if (options.onlyRunId !== undefined && !inResumedRun.has(key)) continue
     if (entry.result.status !== 'DIFF' || entry.result.recheck || !entry.result.recheckPending) continue
     try {
       await verifyProxyAuditEvidenceFile(entry.result.evidencePath, entry.result.evidenceHash)

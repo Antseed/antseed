@@ -55,6 +55,29 @@ test('failure blame: our buyer, deposit, payment lock and bank are the auditor; 
   assert.equal(failureBlame(null), 'unclear')
 })
 
+test('a seller request timeout is the seller\'s, so it is finished after two attempts; our buyer being down is ours', () => {
+  // The exact reason model-run writes for a request that outlived the request timeout.
+  const timeout = {
+    code: 'request_timeout', summary: 'buyer proxy request timed out after 120000ms', retryable: true,
+    source: 'transport', affectedBatchCount: 1, totalBatchCount: 1, nextAction: 'resume audit',
+  } as const
+  assert.equal(failureBlame(timeout), 'seller')
+  assert.equal(failureBlame(null, 'buyer proxy is not connected; start antseed buyer first'), 'auditor')
+  assert.equal(failureBlame(null, 'buyer proxy state is stale; start antseed buyer first'), 'auditor')
+  assert.equal(failureBlame(null, 'buyer proxy has no live discovered peers'), 'auditor')
+  const attempt = (runId: string, at: string) => run(runId, at, [{
+    model: 'm', results: [result('t', 'UNDETERMINED', { outcomeReason: timeout })],
+  }])
+  const once = mergeEpochRuns(EPOCH, [attempt('r1', '2026-10-28T20:00:00.000Z')]).get(epochCellKey('m', 't'))!
+  assert.equal(once.action, 'retry')
+  const twice = mergeEpochRuns(EPOCH, [
+    attempt('r1', '2026-10-28T20:00:00.000Z'),
+    attempt('r2', '2026-10-28T23:00:00.000Z'),
+  ]).get(epochCellKey('m', 't'))!
+  assert.equal(twice.blame, 'seller')
+  assert.equal(twice.action, 'done')
+})
+
 test('the latest result per model and seller wins and decides the action', () => {
   const cells = mergeEpochRuns(EPOCH, [
     run('r1', '2026-10-28T20:00:00.000Z', [{

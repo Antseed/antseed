@@ -324,6 +324,30 @@ contract AntseedKbfVerificationTest is Test {
         verification.commitBackupPlan(EPOCH, keccak256("backup"), URI);
     }
 
+    function test_plansAreFrozenOnceCommitted() public {
+        _openAndSeed(EPOCH);
+        _commitPlan(EPOCH);
+        bytes32 plan = keccak256(abi.encode("plan", EPOCH));
+        // The same plan again is a no-op; a different one would void slices already bought.
+        vm.recordLogs();
+        vm.prank(publisher);
+        verification.commitPlan(EPOCH, plan, URI);
+        assertEq(vm.getRecordedLogs().length, 0);
+        vm.prank(publisher);
+        vm.expectRevert(AntseedKbfVerification.PlanAlreadyCommitted.selector);
+        verification.commitPlan(EPOCH, keccak256("other plan"), URI);
+        assertEq(verification.epochInfo(EPOCH).planHash, plan);
+
+        vm.warp(EPOCH_START + 3 days);
+        vm.startPrank(publisher);
+        verification.commitBackupPlan(EPOCH, keccak256("backup"), URI);
+        verification.commitBackupPlan(EPOCH, keccak256("backup"), URI);
+        vm.expectRevert(AntseedKbfVerification.PlanAlreadyCommitted.selector);
+        verification.commitBackupPlan(EPOCH, keccak256("other backup"), URI);
+        vm.stopPrank();
+        assertEq(verification.epochInfo(EPOCH).backupPlanHash, keccak256("backup"));
+    }
+
     function test_urisMustBeIpfs() public {
         vm.prank(publisher);
         vm.expectRevert(AntseedKbfVerification.InvalidUri.selector);

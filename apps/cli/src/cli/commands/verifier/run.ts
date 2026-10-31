@@ -88,7 +88,7 @@ import {
 } from '../../../verifier/epoch-plan.js'
 import { getGlobalOptions } from '../types.js'
 import { enrollFreshProbes, ensureAuditableReference, ensureSellerProbeCapacity } from '../../../verifier/ensure-auditable-reference.js'
-import { createReferenceRequestLimiter } from '../../../verifier/model-reference.js'
+import { createReferenceRequestLimiter, ReferenceRequestAllowance } from '../../../verifier/model-reference.js'
 import { runDiffRechecks, type DiffRecheckStats } from '../../../verifier/diff-recheck.js'
 import { loadPendingDiffRechecks, pendingRecheckKey } from '../../../verifier/pending-rechecks.js'
 import { VerifierRunProgress } from './run-progress.js'
@@ -138,6 +138,25 @@ export function enrollmentRequestBudget(options: RunOptions): number | null {
     throw new Error('--max-enrollment-requests must be a positive integer (requests per model)')
   }
   return budget
+}
+
+/**
+ * The model's reference request allowance for the whole run: `--max-enrollment-requests` caps the
+ * physical requests of all its builds together (enrollment, seller top-ups, recheck sets), across
+ * every retry round.
+ */
+export function modelRequestAllowance(
+  allowances: Map<string, ReferenceRequestAllowance>,
+  model: string,
+  budget: number,
+): ReferenceRequestAllowance {
+  const key = model.trim().toLowerCase()
+  let allowance = allowances.get(key)
+  if (!allowance) {
+    allowance = new ReferenceRequestAllowance(budget)
+    allowances.set(key, allowance)
+  }
+  return allowance
 }
 
 /**
@@ -223,11 +242,12 @@ export function registerVerifierRunCommand(verifier: Command): void {
       const maxRounds = maxRunRounds(options)
       let previousLeft: number | null = null
       let replannedForNewEpoch = false
+      const allowances = new Map<string, ReferenceRequestAllowance>()
       for (let round = 1; round <= maxRounds; round += 1) {
         if (round > 1) console.log(chalk.cyan(`\nRound ${round} of ${maxRounds}: retrying what is left this epoch`))
-        // Later rounds continue from the epoch (never --fresh) and get another enrollment budget,
-        // so a bank or recheck build that ran out of requests can finish from its checkpoint.
-        const outcome = await runVerifierRound(modelValue, round === 1 ? options : { ...options, fresh: false }, command, round)
+        // Later rounds continue from the epoch (never --fresh). Builds resume from their checkpoints,
+        // and every round draws on the same per-model request allowance, so retries never raise it.
+        const outcome = await runVerifierRound(modelValue, round === 1 ? options : { ...options, fresh: false }, command, allowances)
         if (outcome.epochChanged) {
           // The round was planned for the previous epoch (assignment, finished sellers, rechecks),
           // so nothing was audited; plan it again for the new epoch, once, without using up a round.
@@ -279,7 +299,7 @@ export interface VerifierRoundOutcome {
 /**
  * What a round leaves when no prepared model has a target this epoch. Models whose enrollment
  * failed were dropped before planning, so they still count: the next round retries them with a
- * larger enrollment budget.
+ * build resumed from its checkpoint.
  */
 export function noTargetsOutcome(epoch: string, enrollmentFailures: number): { left: number; message: string } {
   if (enrollmentFailures > 0) {
@@ -296,10 +316,11 @@ async function runVerifierRound(
   modelValue: string | undefined,
   options: RunOptions,
   command: Command,
-  round: number,
+  allowances: Map<string, ReferenceRequestAllowance>,
 ): Promise<VerifierRoundOutcome> {
       const baseBudget = enrollmentRequestBudget(options)
-      const enrollmentBudget = baseBudget === null ? null : baseBudget * round
+      const enrollmentBudget = baseBudget
+      const allowanceFor = (model: string) => modelRequestAllowance(allowances, model, baseBudget ?? 1)
       const globalOptions = getGlobalOptions(command)
       const config = await loadConfig(globalOptions.config)
       // An outdated CLI would audit other models, or score them differently, from other auditors.
@@ -374,7 +395,7 @@ async function runVerifierRound(
         // First DIFFs from earlier runs this epoch whose recheck could not run: rechecked here
         // without repeating the first check. --fresh audits those sellers from the start instead.
         const pendingRechecks = (config.verifier?.diffConfirmationRuns ?? 1) > 0 && !options.fresh
-          ? await loadPendingDiffRechecks(evidenceDir, epoch, models)
+          ? await loadPendingDiffRechecks(evidenceDir, epoch, models, resumeSourceRunId ? { onlyRunId: resumeSourceRunId } : {})
           : new Map()
         if (selectedPeerId) {
           for (const [key, entry] of pendingRechecks) {
@@ -472,6 +493,7 @@ async function runVerifierRound(
                 model, banksDir, referencesDir,
                 config: config.verifier,
                 maxRequests: enrollmentBudget,
+                allowance: allowanceFor(model),
                 buyerProxyPort: config.buyer.proxyPort,
                 requestLimiter,
                 log,
@@ -482,6 +504,7 @@ async function runVerifierRound(
                 model, banksDir, referencesDir,
                 config: config.verifier,
                 maxRequests: enrollmentBudget,
+                allowance: allowanceFor(model),
                 epoch,
                 sellerPeerIds: sellersToAudit.map((peer) => peer.peerId),
                 recheck: (config.verifier?.diffConfirmationRuns ?? 1) > 0,
@@ -497,8 +520,8 @@ async function runVerifierRound(
               return false
             }
           }))
-          // A failed enrollment stays in the remaining work: the next round has a larger budget and
-          // continues the build from its checkpoint.
+          // A failed enrollment stays in the remaining work: the next round continues the build from
+          // its checkpoint with what is left of the model's request allowance.
           enrollmentFailures = enrolled.filter((ready) => !ready).length
           runModels = runModels.filter((_, index) => enrolled[index])
           if (runModels.length === 0) {
@@ -909,6 +932,7 @@ async function runVerifierRound(
                   referencesDir: config.verifier?.referencesDir ?? join(globalOptions.dataDir, 'verifier', 'references'),
                   config: config.verifier,
                   maxRequests: enrollmentBudget,
+                  allowance: allowanceFor(model),
                   buyerProxyPort: config.buyer.proxyPort,
                   log: (message) => console.log(chalk.dim(`[enrollment:${model}] ${message}`)),
                 })

@@ -92,7 +92,7 @@ export async function advanceEpochAsPublisher(
     }
   }
   if (!isZeroHash(info.seed) && isZeroHash(info.planHash) && now < deadlines.commitDeadline) {
-    await publishPlan(context, info)
+    await publishPlan(context, info, now)
   }
   if (
     !isZeroHash(info.planHash) && isZeroHash(info.backupPlanHash)
@@ -155,10 +155,22 @@ export async function prepareBank(context: PublisherDaemonContext, epoch: bigint
   }
 }
 
-async function publishPlan(context: PublisherDaemonContext, info: KbfEpochInfo): Promise<void> {
+async function publishPlan(context: PublisherDaemonContext, info: KbfEpochInfo, now: number): Promise<void> {
   const bank = await readBank(context, info.epoch)
   const models = await context.client.models(info.modelsVersion)
   const targets = (await context.discoverTargets(models)).filter((target) => bank.models[target.model])
+  if (targets.length === 0) {
+    // Often only a buyer that has not discovered its peers yet. Keep looking for a while (well
+    // before anyone may take the epoch over), then commit an empty plan: its round has an agreed
+    // empty results root, so the epoch still finalizes instead of stalling.
+    const since = info.takenOverAt || info.startedAt
+    const holdUntil = since + Math.floor(Math.min(await context.client.publisherGraceSeconds(), info.schedule.collectSeconds) / 2)
+    if (now < holdUntil) {
+      context.log(`epoch ${info.epoch}: no eligible targets yet; retrying discovery until ${new Date(holdUntil * 1_000).toISOString()}`)
+      return
+    }
+    context.log(`epoch ${info.epoch}: no eligible targets; committing an empty plan`)
+  }
   const members = await context.client.epochVerifiers(info.epoch)
   const plan = derivePlan({
     epoch: info.epoch.toString(), seed: info.seed,
