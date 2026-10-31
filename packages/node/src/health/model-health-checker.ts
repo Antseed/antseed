@@ -308,6 +308,30 @@ export class ModelHealthChecker {
         }
         await this._probeService(target, service);
       }
+      if (checked.length === 0) {
+        for (const service of services) {
+          if (!supportsHealthProbe(resolveProbeProtocol(provider, service))) this._followAccount(provider, this._stateFor(provider, service));
+        }
+      }
+    }
+  }
+
+  /**
+   * An image or video service on an upstream without its own account check
+   * follows what the upstream's other services found out about the account:
+   * each sweep while it is out of credit counts as a failed check, as an
+   * account check does for a video service, and once it has credit again a
+   * service failing only for that recovers.
+   */
+  private _followAccount(provider: Provider, state: TrackedService): void {
+    const account = this._accounts.get(provider);
+    if (account === 'out') {
+      state.lastProbeAt = Date.now();
+      state.lastStatusCode = null;
+      state.lastDetail = 'The upstream account is out of credit';
+      this._recordFailure(state, 'out_of_credit', null, null);
+    } else if (account !== undefined && state.status === 'failing' && state.reason === 'out_of_credit' && !state.liveFailed) {
+      this._recordSuccess(state, 'probe', 'The upstream account has credit again');
     }
   }
 
@@ -716,8 +740,10 @@ export class ModelHealthChecker {
     if (state.status === 'failing') {
       if (state.failingSince !== null) health.failingSince = state.failingSince;
       if (state.consecutiveFailures > 0) health.consecutiveFailures = Math.min(0xffff, state.consecutiveFailures);
-      if (state.reason !== null) health.reason = state.reason;
-      if (state.httpStatus !== null && state.httpStatus >= 100 && state.httpStatus <= 599) health.httpStatus = state.httpStatus;
+      // The seller's own upstream account (its credit, its key) is not the buyers' business: they are told the upstream is unavailable.
+      const accountReason = state.reason === 'out_of_credit' || state.reason === 'auth';
+      if (state.reason !== null) health.reason = accountReason ? 'upstream_error' : state.reason;
+      if (!accountReason && state.httpStatus !== null && state.httpStatus >= 100 && state.httpStatus <= 599) health.httpStatus = state.httpStatus;
     }
     // An own entry even for a service named like an Object.prototype property ("__proto__").
     state.provider.serviceHealth ??= Object.create(null) as Record<string, ServiceHealth>;

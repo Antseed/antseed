@@ -237,8 +237,12 @@ async function readVeniceAccount(baseUrl: string, apiKey: string): Promise<Venic
     const data = (parseJsonObject(Buffer.from(await response.arrayBuffer()))?.data ?? null) as
       { accessPermitted?: unknown; balances?: Record<string, unknown> } | null;
     if (!data || typeof data !== 'object') return { status: 'unknown', reason: 'Venice account check returned no data' };
-    if (data.accessPermitted === false) return { status: 'unavailable', reason: 'Venice API access is not permitted for this key' };
     const balances = Object.values(data.balances ?? {}).filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+    // Venice also refuses access to a key whose account has no balance left: that is credit, not the key.
+    if (data.accessPermitted === false) {
+      const outOfCredit = balances.length > 0 && balances.every((value) => value <= 0);
+      return { status: 'unavailable', reason: outOfCredit ? 'Venice balance is empty' : 'Venice API access is not permitted for this key', ...(outOfCredit ? { outOfCredit: true } : {}) };
+    }
     if (balances.length === 0) return { status: 'unknown', reason: 'Venice account check returned no balance' };
     return { status: 'ok', balanceUsd: balances.reduce((sum, value) => sum + value, 0) };
   } catch (cause) {

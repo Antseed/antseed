@@ -67,3 +67,28 @@ export function buildSelfHealthErrorResponse(
     })),
   };
 }
+
+/** Error code a seller answers with when its upstream account is out of credit. */
+export const UPSTREAM_UNAVAILABLE_CODE = 'upstream_unavailable';
+
+/**
+ * What a buyer gets for an upstream answer saying the seller's account is out
+ * of credit: the seller's account is not the buyer's business (and a 402 would
+ * read as a request to pay), so it is a 503 saying the service is unavailable,
+ * without the upstream's message, type or headers.
+ */
+export function buildUpstreamUnavailableResponse(requestId: string, service: string): SerializedHttpResponse {
+  return {
+    requestId,
+    statusCode: SELF_HEALTH_ERROR_STATUS,
+    headers: { 'content-type': 'application/json' },
+    body: new TextEncoder().encode(JSON.stringify({
+      error: {
+        type: UPSTREAM_UNAVAILABLE_CODE,
+        code: UPSTREAM_UNAVAILABLE_CODE,
+        message: `${service} is unavailable on this seller right now`,
+        service,
+      },
+    })),
+  };
+}

@@ -69,6 +69,24 @@ describe('seller self health error', () => {
     expect(JSON.parse(new TextDecoder().decode(response.body))).toEqual({ error: { message: 'upstream overloaded' } });
   });
 
+  it('answers an upstream out of credit as unavailable, never with the upstream account error', async () => {
+    for (const [statusCode, message] of [[402, 'Insufficient USD or Diem balance'], [429, 'You exceeded your current quota: insufficient_quota']] as const) {
+      const provider = makeProvider('p', statusCode);
+      provider.handleRequest = vi.fn(async (req) => ({
+        requestId: req.requestId, statusCode, headers: { 'content-type': 'application/json', 'x-upstream-account': 'acct-1' },
+        body: new TextEncoder().encode(JSON.stringify({ error: { message } })),
+      }));
+      const events: Array<[string, unknown]> = [];
+      const response = await serve([provider], (event, payload) => { events.push([event, payload]); return true; });
+      expect(response.statusCode).toBe(503);
+      expect(response.headers['x-upstream-account']).toBeUndefined();
+      const body = new TextDecoder().decode(response.body);
+      expect(JSON.parse(body).error).toMatchObject({ code: 'upstream_unavailable', service: 'test-model' });
+      expect(body).not.toContain(message);
+      expect(events.find(([event]) => event === 'provider:response')?.[1]).toMatchObject({ statusCode, body: expect.stringContaining(message) });
+    }
+  });
+
   it('prefers a provider whose health check is not failing the model', async () => {
     const down = makeProvider('down', 502);
     down.serviceHealth = { 'test-model': failing };

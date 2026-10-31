@@ -272,6 +272,10 @@ describe('checkServiceHealth and checkUpstreamAccount', () => {
     expect(await checkAccount()).toMatchObject({ status: 'unavailable', reason: expect.stringContaining('HTTP 401') });
     mockVenice(account({ ...funded, accessPermitted: false }));
     expect(await checkAccount()).toMatchObject({ status: 'unavailable', reason: expect.stringContaining('not permitted') });
+    expect((await checkAccount()).outOfCredit).toBeUndefined();
+    // Venice blocks access to a key whose balance is empty: that is credit, not the key.
+    mockVenice(account({ accessPermitted: false, balances: { USD: 0, DIEM: 0 } }));
+    expect(await checkAccount()).toMatchObject({ status: 'unavailable', outOfCredit: true, reason: 'Venice balance is empty' });
   });
 
   it('checks each model against Venice\'s public model list, without the key', async () => {
