@@ -1578,8 +1578,27 @@ export class SellerPaymentManager {
   }
 
   /** Resolves once no background topUp() is running for the channel. */
-  async waitForTopUp(channelId: string): Promise<void> {
-    while (this._topUpsRunning.has(channelId)) await this._topUpsRunning.get(channelId);
+  async waitForTopUp(channelId: string, timeoutMs = Infinity): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (this._topUpsRunning.has(channelId)) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timedOut = new Promise<void>((resolve) => {
+        if (Number.isFinite(remaining)) timer = setTimeout(resolve, remaining);
+      });
+      try {
+        await Promise.race([this._topUpsRunning.get(channelId), timedOut]);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    return true;
+  }
+
+  /** Whether a background topUp() is being submitted for the channel now. */
+  isTopUpRunning(channelId: string): boolean {
+    return this._topUpsRunning.has(channelId);
   }
 
   /** Whether topUp() settling `settleAmount` would pass the contract's settled threshold. */
