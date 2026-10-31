@@ -204,6 +204,8 @@ export class SellerPaymentManager {
   /** Channels with a background topUp() running, and those asked for another meanwhile. */
   private readonly _topUpsRunning = new Map<string, Promise<void>>();
   private readonly _topUpsWanted = new Set<string>();
+  /** channelId -> ceiling of the topUp() being submitted now. */
+  private readonly _topUpInFlight = new Map<string, bigint>();
   /** AntseedChannels TOP_UP_SETTLED_THRESHOLD_BPS, read once. */
   private _topUpThreshold: Promise<bigint> | null = null;
 
@@ -775,6 +777,8 @@ export class SellerPaymentManager {
         // topUp() takes seconds, and every auth and request for this buyer
         // waits on the lock. Until it lands, serving uses the current ceiling.
         debugLog(`[SellerPayment] Top-up verified: channel=${channelId.slice(0, 18)}... ceiling ${currentReserveMax} → ${newMaxAmount}`);
+        // A replay of the top-up being submitted right now adds nothing.
+        if (newMaxAmount <= (this._topUpInFlight.get(channelId) ?? 0n)) return 'accepted';
         this._storePendingTopUp(channelId, {
           newMaxAmount,
           deadline: topUpDeadline,
@@ -1535,15 +1539,34 @@ export class SellerPaymentManager {
     }
     const run = (async () => {
       try {
-        do {
+        for (;;) {
           this._topUpsWanted.delete(channelId);
           const pending = this._pendingTopUp.get(channelId);
           if (!pending) break;
+          // A replay of a top-up that already landed: the contract would
+          // reject it (TopUpAmountTooLow) and that would close the channel.
+          if (pending.newMaxAmount <= (this._reserveMax.get(channelId) ?? 0n)) {
+            this._pendingTopUp.delete(channelId);
+            break;
+          }
           const { amount, metadata, sig } = this._getSettleParams(channelId);
-          if (!await this._topUpEligible(channelId, amount)) break;
-          const outcome = await this._retryPendingTopUp(buyerPeerId, channelId, pending, amount, metadata, sig);
+          if (!await this._topUpEligible(channelId, amount)) {
+            // A higher auth may have arrived during the threshold read.
+            if (this._topUpsWanted.has(channelId)) continue;
+            break;
+          }
+          this._topUpInFlight.set(channelId, pending.newMaxAmount);
+          let outcome: Awaited<ReturnType<SellerPaymentManager['_retryPendingTopUp']>>;
+          try {
+            outcome = await this._retryPendingTopUp(buyerPeerId, channelId, pending, amount, metadata, sig);
+          } finally {
+            this._topUpInFlight.delete(channelId);
+          }
           if (outcome === 'permanent-failure') break;
-        } while (this._topUpsWanted.has(channelId));
+          // After a success, a higher top-up queued meanwhile goes next; after
+          // a retryable failure, only a newer request retries it.
+          if (outcome === 'succeeded' ? !this._pendingTopUp.has(channelId) : !this._topUpsWanted.has(channelId)) break;
+        }
       } catch (err) {
         debugWarn(`[SellerPayment] Background topUp failed: channel=${channelId.slice(0, 18)}... error=${this._formatError(err)}`);
       } finally {
