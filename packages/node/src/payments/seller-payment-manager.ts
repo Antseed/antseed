@@ -110,6 +110,8 @@ interface PendingOneOffPlan {
   expiresAt: number;
 }
 
+/** handleSpendingAuth's internal result: 'awaiting-top-up' asks it to wait for a mining top-up and retry. */
+type SpendingAuthOutcome = 'accepted' | 'reserved' | 'rejected' | 'awaiting-top-up';
 type TopUpFailureKind = 'retryable-threshold' | 'retryable-tx-backpressure' | 'insufficient-balance' | 'non-retryable';
 /** `amount`/`txHash` describe the close actually submitted on-chain, which may
  *  differ from what a caller that joined an in-flight close intended to submit. */
@@ -566,34 +568,33 @@ export class SellerPaymentManager {
     // channel gets its own lock so opening it (reserve + topUp on-chain) never
     // delays the buyer's session-channel auths.
     const isOneOff = payload.oneOffRequestId != null || this._oneOffChannelIds.has(payload.channelId);
-    // An auth only a mining top-up covers waits for it here, outside the lock,
-    // so this buyer's other auths and requests keep moving meanwhile.
-    if (!isOneOff && this._topUpsRunning.has(payload.channelId)) {
-      const ceiling = this._reserveMax.get(payload.channelId) ?? 0n;
-      let cumulative = 0n;
-      let isTopUp = false;
-      try {
-        cumulative = BigInt(payload.cumulativeAmount);
-        isTopUp = payload.reserveMaxAmount != null && BigInt(payload.reserveMaxAmount) > ceiling;
-      } catch { /* malformed: rejected below */ }
-      if (!isTopUp && cumulative > ceiling) await this.waitForTopUp(payload.channelId, OVER_CEILING_AUTH_WAIT_MS);
-    }
     const lockKey = isOneOff ? `${buyerPeerId}\n${payload.channelId.toLowerCase()}` : buyerPeerId;
-    const existing = this._buyerLocks.get(lockKey);
-    let result: 'accepted' | 'reserved' | 'rejected' = 'rejected';
-    const lock = (existing ?? Promise.resolve()).then(async () => {
-      result = isOneOff
-        ? await this._handleOneOffSpendingAuth(buyerPeerId, payload, paymentMux)
-        : await this._handleSpendingAuthInner(buyerPeerId, payload, paymentMux, disconnectMarker);
-    });
-    const tail = lock.catch(() => {});
-    this._buyerLocks.set(lockKey, tail);
-    try {
-      await lock;
-    } finally {
-      if (isOneOff && this._buyerLocks.get(lockKey) === tail) this._buyerLocks.delete(lockKey);
+    const runLocked = async (allowTopUpWait: boolean): Promise<SpendingAuthOutcome> => {
+      const existing = this._buyerLocks.get(lockKey);
+      let outcome: SpendingAuthOutcome = 'rejected';
+      const lock = (existing ?? Promise.resolve()).then(async () => {
+        outcome = isOneOff
+          ? await this._handleOneOffSpendingAuth(buyerPeerId, payload, paymentMux)
+          : await this._handleSpendingAuthInner(buyerPeerId, payload, paymentMux, disconnectMarker, allowTopUpWait);
+      });
+      const tail = lock.catch(() => {});
+      this._buyerLocks.set(lockKey, tail);
+      try {
+        await lock;
+      } finally {
+        if (isOneOff && this._buyerLocks.get(lockKey) === tail) this._buyerLocks.delete(lockKey);
+      }
+      return outcome;
+    };
+    let result = await runLocked(true);
+    if (result === 'awaiting-top-up') {
+      // Only a top-up that is mining covers this auth: wait for it with the
+      // lock released, so this buyer's other auths and requests keep moving,
+      // then judge the auth again against the new ceiling.
+      await this.waitForTopUp(payload.channelId, OVER_CEILING_AUTH_WAIT_MS);
+      result = await runLocked(false);
     }
-    return result;
+    return result === 'awaiting-top-up' ? 'rejected' : result;
   }
 
   /**
@@ -613,7 +614,8 @@ export class SellerPaymentManager {
     payload: SpendingAuthPayload,
     paymentMux: PaymentMux,
     disconnectMarker: object | undefined,
-  ): Promise<'accepted' | 'reserved' | 'rejected'> {
+    allowTopUpWait = false,
+  ): Promise<SpendingAuthOutcome> {
     const buyerEvmAddr = peerIdToAddress(buyerPeerId);
     try {
       const channelId = payload.channelId;
@@ -852,6 +854,12 @@ export class SellerPaymentManager {
         // seller with an auth the contract cannot settle.
         let currentReserveMax = this._reserveMax.get(channelId) ?? 0n;
         const pendingTopUpForCheck = this._pendingTopUp.get(channelId);
+        // The buyer signs up to a top-up it sent: while that topUp() is mining,
+        // ask the caller to wait for it (with the lock released) instead of
+        // rejecting an auth only the new ceiling covers.
+        if (allowTopUpWait && currentReserveMax > 0n && cumulativeAmount > currentReserveMax && this._topUpsRunning.has(channelId)) {
+          return 'awaiting-top-up';
+        }
         if (currentReserveMax > 0n && cumulativeAmount > currentReserveMax) {
           currentReserveMax = await this.refreshReserveMaxFromChain(channelId);
         }

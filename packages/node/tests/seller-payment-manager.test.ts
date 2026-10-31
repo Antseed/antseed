@@ -713,6 +713,37 @@ describe('SellerPaymentManager', () => {
     expect((manager.channelsClient.close as ReturnType<typeof vi.fn>).mock.calls[0]![2]).toBe(960_000n);
   });
 
+  it('holds an auth sent right behind its top-up until the top-up lands, without blocking other auths', async () => {
+    const channelId = makeChannelId(124);
+    await manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      isReserve: true, reserveMaxAmount: '1000000',
+    }), mux);
+    const auth = (amount: bigint) => buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, { cumulativeAmount: amount, reserveMaxAmount: '1000000' });
+    await manager.handleSpendingAuth(buyerIdentity.peerId, await auth(900_000n), mux);
+    let release!: () => void;
+    vi.spyOn(manager.channelsClient, 'topUp').mockImplementation(async () => {
+      await new Promise<void>((resolve) => { release = resolve; });
+      return '0xtopup';
+    });
+    const topUp = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      isReserve: true, reserveMaxAmount: '2000000', salt: '0x' + '24'.repeat(32),
+    });
+    const [over, within] = await Promise.all([auth(1_500_000n), auth(950_000n)]);
+
+    // Dispatched back-to-back, as the node does with decoded frames.
+    const topUpDone = manager.handleSpendingAuth(buyerIdentity.peerId, topUp, mux);
+    const overDone = manager.handleSpendingAuth(buyerIdentity.peerId, over, mux);
+    await topUpDone;
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    // Another auth is processed while the top-up mines.
+    expect(await manager.handleSpendingAuth(buyerIdentity.peerId, within, mux)).toBe('accepted');
+
+    release();
+    expect(await overDone).toBe('accepted');
+    expect(manager.getAcceptedCumulative(channelId)).toBe(1_500_000n);
+    expect(manager.getReserveMax(channelId)).toBe(2_000_000n);
+  });
+
   it('tracks the largest pending top-up ceiling while retries are deferred', async () => {
     const channelId = makeChannelId(100);
 
