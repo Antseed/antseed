@@ -134,8 +134,8 @@ interface TrackedService {
   lastDetail: string | null;
   lastTrafficAt: number | null;
   probeInFlight: boolean;
-  /** What the failed checks counted in `consecutiveFailures` came from. */
-  failureSource: ServiceHealthSource | null;
+  /** A buyer request failed since the last successful one: only another success clears it, never a passing account or model check. */
+  liveFailed: boolean;
   /**
    * A service no probe can check, announced as failing on live failures alone
    * and back to unknown so buyers try it again: the next live failure marks it
@@ -373,7 +373,7 @@ export class ModelHealthChecker {
         continue;
       }
       // A funded account and a listed model say nothing about generations that fail.
-      if (state.failureSource === 'traffic' && state.consecutiveFailures > 0) continue;
+      if (state.liveFailed) continue;
       this._recordSuccess(state, 'probe', balance === undefined ? 'Account check passed' : `Account check passed (balance $${balance.toFixed(2)})`);
     }
   }
@@ -404,7 +404,7 @@ export class ModelHealthChecker {
         lastDetail: null,
         lastTrafficAt: null,
         probeInFlight: false,
-        failureSource: null,
+        liveFailed: false,
         retrying: false,
       };
       this._states.set(key, state);
@@ -510,9 +510,12 @@ export class ModelHealthChecker {
     if (statusCode !== 404 && classifyProbeStatus(statusCode) === 'unhealthy') {
       if (supportsHealthProbe(resolveProbeProtocol(target.provider, service))) {
         this._probeSoon(target, service);
-      } else if (billable) {
-        const reason = isLiveResponseOutOfCredit(statusCode, body) ? 'out_of_credit' : reasonForStatus(statusCode);
-        this._recordLiveFailure(target.provider, service, reason, statusCode, `HTTP ${statusCode} on a buyer request`);
+        return;
+      }
+      const outOfCredit = isLiveResponseOutOfCredit(statusCode, body);
+      // A 429 says the provider (often the seller's own concurrency limit) is busy, not broken.
+      if (billable && (statusCode !== 429 || outOfCredit)) {
+        this._recordLiveFailure(target.provider, service, outOfCredit ? 'out_of_credit' : reasonForStatus(statusCode), statusCode, `HTTP ${statusCode} on a buyer request`);
       }
     }
   }
@@ -545,7 +548,7 @@ export class ModelHealthChecker {
    * service waits, it is announced unknown so buyers try it again.
    */
   private _retryAfterLiveFailures(state: TrackedService): void {
-    if (state.status !== 'failing' || state.failureSource !== 'traffic' || state.checkedAt === null) return;
+    if (state.status !== 'failing' || !state.liveFailed || state.checkedAt === null) return;
     if (Date.now() - state.checkedAt < this._failingBackoff(state) * this._intervalMs - LIVE_FAILURE_PROBE_MIN_GAP_MS) return;
     state.status = 'unknown';
     state.retrying = true;
@@ -647,7 +650,7 @@ export class ModelHealthChecker {
     const wasFailing = state.status === 'failing' || state.retrying;
     state.status = 'healthy';
     state.retrying = false;
-    state.failureSource = null;
+    state.liveFailed = false;
     state.consecutiveFailures = 0;
     state.failingSince = null;
     state.reason = null;
@@ -676,7 +679,7 @@ export class ModelHealthChecker {
     }
     const now = Date.now();
     state.consecutiveFailures += 1;
-    state.failureSource = source;
+    if (source === 'traffic') state.liveFailed = true;
     state.reason = reason;
     state.httpStatus = httpStatus;
     state.failingSince ??= now;

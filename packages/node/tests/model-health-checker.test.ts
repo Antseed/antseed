@@ -838,6 +838,8 @@ describe('ModelHealthChecker live failures on unprobed services', () => {
     const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1 });
     fail(checker, provider, 3, 400);
     fail(checker, provider, 3, 404);
+    // The seller's own concurrency limit answers 429 before the upstream is called.
+    for (let i = 0; i < 3; i++) checker.reportUpstreamResponse(provider, 429, JSON.stringify({ error: 'Max concurrency reached' }), true, 'image-a');
     checker.reportUpstreamResponse(provider, 500, '', false, 'image-a');
     checker.reportUpstreamFailure(provider, 'image-a', false);
     expect(provider.serviceHealth).toBeUndefined();
@@ -888,5 +890,19 @@ describe('ModelHealthChecker live failures on unprobed services', () => {
     await checker.runSweep();
     expect(statusOf(provider, 'video-a')).toBe('failing');
     expect(checkUpstreamAccount).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps live failures after a failed account check is followed by a passing one', async () => {
+    const accounts: UpstreamAccountStatus[] = [{ status: 'unavailable', reason: 'account check: invalid key' }, { status: 'available', balanceUsd: 20 }];
+    const checkUpstreamAccount = vi.fn(async (): Promise<UpstreamAccountStatus> => accounts.shift() ?? { status: 'available', balanceUsd: 20 });
+    const provider = makeProvider({ services: ['video-a'], serviceApiProtocols: { 'video-a': ['venice-video'] }, checkUpstreamAccount });
+    const onChange = vi.fn();
+    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 2, onChange });
+    checker.reportUpstreamResponse(provider, 500, '', true, 'video-a');
+    checker.reportUpstreamResponse(provider, 500, '', true, 'video-a');
+    await checker.runSweep();
+    await checker.runSweep();
+    expect(statusOf(provider, 'video-a')).toBe('failing');
+    expect(onChange.mock.calls.map(([event]) => (event as ModelHealthEvent).status)).toEqual(['failing']);
   });
 });
