@@ -1,5 +1,5 @@
 import type { DomainVerificationMethod, PeerMetadata } from "./peer-metadata.js";
-import { isServiceHealthTime, MAX_SERVICE_HEALTH_TIME_MS, METADATA_VERSION, MIN_SUPPORTED_METADATA_VERSION, SERVICE_CAPABILITIES_METADATA_VERSION, SERVICE_HEALTH_METADATA_VERSION, SERVICE_HEALTH_REASONS, SERVICE_HEALTH_SOURCES, SERVICE_HEALTH_STATUSES, SERVICE_UNIT_BILLING_METADATA_VERSION, WELL_KNOWN_SERVICE_API_PROTOCOLS, validateServiceCapabilityFields, type ServiceHealth } from "./peer-metadata.js";
+import { isServiceHealthTime, MAX_SERVICE_HEALTH_TIME_MS, METADATA_VERSION, MIN_SUPPORTED_METADATA_VERSION, SERVICE_CAPABILITIES_METADATA_VERSION, SERVICE_HEALTH_METADATA_VERSION, SERVICE_HEALTH_REASONS, SERVICE_HEALTH_SOURCES, SERVICE_HEALTH_STATUSES, SERVICE_PERFORMANCE_METADATA_VERSION, SERVICE_UNIT_BILLING_METADATA_VERSION, WELL_KNOWN_SERVICE_API_PROTOCOLS, validateServiceCapabilityFields, parseServicePerformance, type ServiceHealth } from "./peer-metadata.js";
 import { encodeMetadata } from "./metadata-codec.js";
 import { MAX_PUBLIC_ADDRESS_LENGTH, parsePublicAddress } from "./public-address.js";
 import { isUnitBilledProtocol, validateUnitBillingModelForProtocolV1, validateUnitBillingModelV1 } from "../billing/unit.js";
@@ -694,6 +694,35 @@ export function validateMetadata(metadata: PeerMetadata): ValidationError[] {
         }
         for (const message of validateServiceHealthFields(health)) {
           errors.push({ field, message });
+        }
+      }
+    }
+
+    if (p.servicePerformance !== undefined) {
+      if (metadata.version < SERVICE_PERFORMANCE_METADATA_VERSION) {
+        errors.push({
+          field: `providers[${i}].servicePerformance`,
+          message: `Service performance requires metadata version ${SERVICE_PERFORMANCE_METADATA_VERSION}`,
+        });
+      }
+      const performanceEntries = Object.entries(p.servicePerformance);
+      if (performanceEntries.length > MAX_SERVICES_PER_PROVIDER) {
+        errors.push({
+          field: `providers[${i}].servicePerformance`,
+          message: `Service performance entry count ${performanceEntries.length} exceeds max ${MAX_SERVICES_PER_PROVIDER}`,
+        });
+      }
+      for (const [serviceName, performance] of performanceEntries) {
+        const field = `providers[${i}].servicePerformance.${serviceName}`;
+        if (serviceName.length > MAX_SERVICE_NAME_LENGTH) {
+          errors.push({ field, message: `Service name length ${serviceName.length} exceeds max ${MAX_SERVICE_NAME_LENGTH}` });
+        }
+        if (!hasWildcardServices && !p.services.includes(serviceName)) {
+          errors.push({ field, message: "Service performance must reference a service listed in providers[].services" });
+        }
+        const parsed = parseServicePerformance(performance);
+        if (!parsed || Object.keys(parsed).length !== Object.keys(performance ?? {}).length) {
+          errors.push({ field, message: "Service performance needs requests (u32) and successRate (0..1), and optional integer firstTokenMsP50/P90 (u32) and tokensPerSecondP50 (u16)" });
         }
       }
     }

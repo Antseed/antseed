@@ -8,7 +8,7 @@ import { modelCallFormat, pinnedModelId } from '../lib/snippets'
 import { ApiCall } from './ApiCall'
 import { previewListsSellers } from '../lib/selection'
 import { SellerSelection, type SellerRowExtras } from './SellerSelection'
-import { ServiceHealthInfo } from './ServiceHealthInfo'
+import { ServiceHealthInfo, ServicePerformanceInfo } from './ServiceHealthInfo'
 import { PanelRow, PanelSection } from './SidePanel'
 import { FreeTierInfo } from './FreeTierInfo'
 import { TeeBadge } from './TeeBadge'
@@ -77,6 +77,7 @@ export function ModelDetails({ model, preview, previewLoading, pin }: {
         {!offer.free && offer.freeTier && <FreeTierInfo program={offer.freeTier} agentId={offer.agentId} priced align="center" />}
         <span>Trust {score(offer.trustScore)}</span>
         {offers.map((entry) => entry.serviceId !== model.id && <Mono key={entry.serviceId}>{entry.serviceId}</Mono>)}
+        <ServicePerformanceInfo performance={offer.performance} />
       </>,
       badges: (offer.verificationLinks?.length || offer.tee || offer.free || offer.freeTier) ? <>
         <VerificationLinks links={offer.verificationLinks} />

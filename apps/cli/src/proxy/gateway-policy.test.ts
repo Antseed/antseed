@@ -291,6 +291,24 @@ test('route-preview carries each seller\'s last announced self health check, fai
   assert.equal(byId.get(silent.peerId)?.health, null)
 })
 
+test('route-preview starts a seller the buyer has not used from its reported performance', async (t) => {
+  const struggling = makePeer('h', { input: 1, output: 1, trust: 80 })
+  struggling.providerServicePerformance = { openai: { services: { 'gpt-5': { requests: 200, successRate: 0.4, firstTokenMsP50: 900, tokensPerSecondP50: 40 } } } }
+  const steady = makePeer('i', { input: 1, output: 1, trust: 80 })
+  steady.providerServicePerformance = { openai: { services: { 'gpt-5': { requests: 200, successRate: 0.99, firstTokenMsP50: 400 } } } }
+  const h = await startHarness(t, [struggling, steady])
+
+  const res = await fetch(`${h.url}/_antseed/route-preview?model=gpt-5`, { headers: withPolicy({}) })
+  const body = await res.json() as { candidates: Array<{ peerId: string; rank: number; reasons: string[]; selection: { successRate: number; record: string; reported: unknown } }> }
+  const byId = new Map(body.candidates.map((candidate) => [candidate.peerId, candidate]))
+  assert.deepEqual(body.candidates.map((candidate) => candidate.peerId), [steady.peerId, struggling.peerId])
+  const first = byId.get(steady.peerId)!
+  assert.equal(first.selection.record, 'none')
+  assert.ok(Math.abs(first.selection.successRate - 0.95) < 1e-9, 'a reported rate is capped')
+  assert.deepEqual(first.selection.reported, { requests: 200, successRate: 0.99, firstTokenMsP50: 400, tokensPerSecondP50: null })
+  assert.ok(byId.get(struggling.peerId)!.reasons.includes('success ~40% (seller reports 200 requests in the last hour)'))
+})
+
 test('route-preview explains each eligible seller with the numbers routing ranked it by', async (t) => {
   const twin = makePeer('d', { input: 1, output: 1, trust: 99 })
   const h = await startHarness(t, [cheap, twin], {}, true)
