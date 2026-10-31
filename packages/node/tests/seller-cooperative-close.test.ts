@@ -220,6 +220,23 @@ describe('SellerPaymentManager.handleCloseChannelRequest', () => {
     expect(store.getChannel(CHANNEL_ID)!.previousConsumption).toBe('15000000');
   });
 
+  it('keeps a buyer close auth above a stale ceiling when the deposit read fails, and retries the read at once', async () => {
+    await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 400_000n), mux);
+    manager.recordSpend(CHANNEL_ID, 400_000n);
+    const getSession = vi.spyOn(manager.channelsClient, 'getSession')
+      .mockRejectedValueOnce(new Error('rpc down'))
+      .mockResolvedValue({ ...onChainChannel(buyer, seller, 0n), deposit: 15_000_000n });
+
+    const failed = await manager.handleCloseChannelRequest(buyer.peerId, await buildCloseRequest(buyer, 12_000_000n), mux);
+    expect(failed).toMatchObject({ status: 'rejected', code: 'close_failed' });
+    expect(manager.channelsClient.close).not.toHaveBeenCalled();
+
+    const closed = await manager.handleCloseChannelRequest(buyer.peerId, await buildCloseRequest(buyer, 12_000_000n), mux);
+    expect(closed.status).toBe('closed');
+    expect(closed.finalAmount).toBe('12000000');
+    expect(getSession.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
   it('shares one pending on-chain ceiling read between concurrent callers', async () => {
     let release!: () => void;
     const getSession = vi.spyOn(manager.channelsClient, 'getSession').mockImplementation(() => new Promise((resolve) => {

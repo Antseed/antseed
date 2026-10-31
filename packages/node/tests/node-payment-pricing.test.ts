@@ -1652,6 +1652,36 @@ describe('SellerRequestHandler payment pricing selection', () => {
     expect(BigInt(body.estimatedInputTokens)).toBeGreaterThan(0n);
   });
 
+  it('checks the chain before closing a channel whose estimate only exceeds a stale stored ceiling', async () => {
+    const provider = makeProvider(0, 1_000_000, { name: 'paid-tier', services: ['local-test'] });
+    provider.handleRequest = vi.fn(async (req) => ({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ ok: true })) }));
+    let reserveMax = 1_000_000n;
+    const settleSession = vi.fn(async () => {});
+    const handler = makeSellerRequestHandler({
+      providers: [provider],
+      sellerPaymentManager: makeSpmMock({
+        getCumulativeSpend: () => 500_000n,
+        getAcceptedCumulative: () => 500_000n,
+        getReserveMax: () => reserveMax,
+        // A top-up to 3M confirmed on-chain but is not in the store.
+        refreshReserveMaxFromChain: vi.fn(async () => { reserveMax = 3_000_000n; return reserveMax; }),
+        settleSession,
+      }),
+      sessionTracker: null,
+      channelsClient: {} as any,
+      announcer: null,
+      reserveEstimateOverdraftUsdc: 0n,
+      emit: () => false,
+    });
+    const sentFrames: Uint8Array[] = [];
+    const { mux } = handler.handleConnection(makeConn(sentFrames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+
+    await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({ requestId: 'req-estimate-stale-ceiling', method: 'POST', path: '/v1/chat/completions', headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ model: 'local-test', max_tokens: 1 })) }) });
+
+    expect(settleSession).not.toHaveBeenCalled();
+    expect(provider.handleRequest).toHaveBeenCalledTimes(1);
+  });
+
   it('stops serving when delivered spend is already at the reserve ceiling', async () => {
     const provider = makeProvider(1, 1, { name: 'paid-tier', services: ['local-test'] });
     provider.handleRequest = vi.fn(async (req) => ({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ ok: true })) }));
