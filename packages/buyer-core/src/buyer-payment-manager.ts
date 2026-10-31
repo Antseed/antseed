@@ -133,6 +133,21 @@ function hasPositiveCost(cost: string | undefined): boolean {
   }
 }
 
+/**
+ * Run `run` after everything queued under `key` has finished, whether it
+ * succeeded or not. The queue entry removes itself once it is the last.
+ */
+function runQueued<T>(queues: Map<string, Promise<unknown>>, key: string, run: () => Promise<T>): Promise<T> {
+  const previous = queues.get(key) ?? Promise.resolve();
+  const next = previous.then(run, run);
+  const tail = next.catch(() => undefined);
+  queues.set(key, tail);
+  void tail.then(() => {
+    if (queues.get(key) === tail) queues.delete(key);
+  });
+  return next;
+}
+
 /** What the buyer saw of a served response, for signPerRequestAuth. */
 export type PerRequestResponseStats = {
   inputBytes: Uint8Array;
@@ -261,7 +276,9 @@ export class BuyerPaymentManager {
   /** sellerPeerId -> paid requests dispatched and not yet answered */
   private readonly _inFlightPaidRequests = new Map<string, number>();
   /** Per seller: the tail of the queue of reserve top-ups (see topUpReserve). */
-  private readonly _topUpLocks = new Map<string, Promise<void>>();
+  private readonly _topUpLocks = new Map<string, Promise<unknown>>();
+  /** Per seller: top-ups queued or running, so one that waited can tell. */
+  private readonly _topUpsQueued = new Map<string, number>();
   /** Reads a channel's locked deposit on-chain (set by the negotiator when it has a channels client). */
   private _readChannelDeposit: ((channelId: string) => Promise<bigint>) | null = null;
   /**
@@ -1743,14 +1760,7 @@ export class BuyerPaymentManager {
    * cumulative amount, capped at the reserve ceiling.
    */
   private _withSellerLock<T>(sellerPeerId: string, run: () => Promise<T>): Promise<T> {
-    const previous = this._sellerLocks.get(sellerPeerId) ?? Promise.resolve();
-    const next = previous.then(run, run);
-    const tail = next.catch(() => undefined);
-    this._sellerLocks.set(sellerPeerId, tail);
-    void tail.then(() => {
-      if (this._sellerLocks.get(sellerPeerId) === tail) this._sellerLocks.delete(sellerPeerId);
-    });
-    return next;
+    return runQueued(this._sellerLocks, sellerPeerId, run);
   }
 
   async handleNeedAuth(
@@ -2099,14 +2109,20 @@ export class BuyerPaymentManager {
     sellerPeerId: string,
     paymentMux: PaymentMux,
   ): Promise<void> {
-    const previous = this._topUpLocks.get(sellerPeerId) ?? Promise.resolve();
-    const next = previous.then(() => this._topUpReserve(sellerPeerId, paymentMux));
-    const tail = next.catch(() => undefined);
-    this._topUpLocks.set(sellerPeerId, tail);
-    void tail.then(() => {
-      if (this._topUpLocks.get(sellerPeerId) === tail) this._topUpLocks.delete(sellerPeerId);
+    // A top-up that waited behind another is asked for again only if the
+    // channel still needs one: the earlier top-up usually restored headroom.
+    const ahead = this._topUpsQueued.get(sellerPeerId) ?? 0;
+    this._topUpsQueued.set(sellerPeerId, ahead + 1);
+    return runQueued(this._topUpLocks, sellerPeerId, async () => {
+      try {
+        if (ahead > 0 && !this._needsTopUp(sellerPeerId)) return;
+        await this._topUpReserve(sellerPeerId, paymentMux);
+      } finally {
+        const left = (this._topUpsQueued.get(sellerPeerId) ?? 1) - 1;
+        if (left > 0) this._topUpsQueued.set(sellerPeerId, left);
+        else this._topUpsQueued.delete(sellerPeerId);
+      }
     });
-    return next;
   }
 
   private async _topUpReserve(
@@ -2123,11 +2139,12 @@ export class BuyerPaymentManager {
     // deposits: budget only what is left after it, so stacked top-ups never
     // authorize more than the buyer holds. One that already landed is out of
     // the available balance already, so read the deposit before counting it.
-    const outstanding = await this._outstandingTopUp(sellerPeerId, session.sessionId, this._getCeiling(sellerPeerId));
-    if (outstanding === null) {
+    const firstOutstanding = await this._outstandingTopUp(sellerPeerId, session.sessionId, this._getCeiling(sellerPeerId));
+    if (firstOutstanding === null) {
       debugWarn(`[BuyerPayment] topUpReserve: channel for ${sellerPeerId.slice(0, 12)}... was replaced; skipping the top-up`);
       return;
     }
+    let outstanding = firstOutstanding;
     const prevCeiling = this._getCeiling(sellerPeerId);
     // Under parallel load one configured step can be smaller than the work in
     // flight, which then runs past the locked reserve before the next top-up
@@ -2140,8 +2157,17 @@ export class BuyerPaymentManager {
     const deadline = this._authDeadline();
 
     try {
-      const balance = await this.getBalance();
-      const budget = balance.available > outstanding ? balance.available - outstanding : 0n;
+      let balance = await this.getBalance();
+      let budget = balance.available > outstanding ? balance.available - outstanding : 0n;
+      // The pending top-up may have landed between the two reads, which counts
+      // it twice: read both again before calling the budget short.
+      if (outstanding > 0n && budget < additionalReserve) {
+        const reread = await this._outstandingTopUp(sellerPeerId, session.sessionId, this._getCeiling(sellerPeerId));
+        if (reread === null) return;
+        outstanding = reread;
+        balance = await this.getBalance();
+        budget = balance.available > outstanding ? balance.available - outstanding : 0n;
+      }
       // A load-sized step shrinks to the budget; the configured step is the floor.
       if (additionalReserve > step && budget < additionalReserve) {
         additionalReserve = budget > step ? budget : step;
