@@ -599,6 +599,34 @@ describe('BuyerPaymentNegotiator', () => {
       expect(result.action).toBe('retry');
     });
 
+    it('signs against the new ceiling instead of retiring when the extension stopped to send a top-up', async () => {
+      await simulateSuccessfulNegotiation(negotiator, bpm, peer, conn);
+      (bpm.authorizeSpending as ReturnType<typeof vi.fn>).mockClear();
+      (bpm.getActiveSession as ReturnType<typeof vi.fn>).mockReturnValue(makeActiveSession(peer.peerId));
+      let cumulative = 1_000_000n;
+      (bpm.getCumulativeAmount as ReturnType<typeof vi.fn>).mockImplementation(() => cumulative);
+      // At the ceiling: the first call only sends a top-up; the second signs past the old ceiling.
+      (bpm.extendCurrentSpendingAuth as ReturnType<typeof vi.fn>)
+        .mockImplementationOnce(async () => {
+          (bpm.hasPendingReserveAuth as ReturnType<typeof vi.fn>).mockReturnValue(true);
+        })
+        .mockImplementationOnce(async () => { cumulative = 1_200_000n; });
+      (bpm.isLockConfirmed as ReturnType<typeof vi.fn>).mockReturnValue(true);
+      bufferPaymentRequired(negotiator, peer.peerId, conn);
+
+      const result = await negotiator.handle402(make402Response({
+        error: 'payment_required',
+        minBudgetPerRequest: paymentRequiredPayload.minBudgetPerRequest,
+        suggestedAmount: paymentRequiredPayload.suggestedAmount,
+        requiredCumulativeAmount: '1200000',
+      }), peer, conn, makeRequest());
+
+      expect(bpm.extendCurrentSpendingAuth).toHaveBeenCalledTimes(2);
+      expect(bpm.retireSession).not.toHaveBeenCalled();
+      expect(bpm.authorizeSpending).not.toHaveBeenCalled();
+      expect(result.action).toBe('retry');
+    });
+
     it('retires session as ghost and negotiates fresh reserve when extendCurrentSpendingAuth makes no progress', async () => {
       await simulateSuccessfulNegotiation(negotiator, bpm, peer, conn);
       (bpm.authorizeSpending as ReturnType<typeof vi.fn>).mockClear();

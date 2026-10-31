@@ -1651,7 +1651,7 @@ export class BuyerPaymentNegotiator {
     } else if (!requireFreshAck && minBudgetPerRequest != null && minBudgetPerRequest > 0n) {
       this._resentForTarget.delete(peer.peerId);
       const cumulativeBefore = signedCumulative;
-      await this._bpm.extendCurrentSpendingAuth(
+      const extend = (): Promise<string> => this._bpm.extendCurrentSpendingAuth(
         peer.peerId,
         minBudgetPerRequest,
         pmux,
@@ -1659,7 +1659,15 @@ export class BuyerPaymentNegotiator {
         requestId,
         inFlightRequests,
       );
-      const cumulativeAfter = this._bpm.getCumulativeAmount(peer.peerId);
+      await extend();
+      let cumulativeAfter = this._bpm.getCumulativeAmount(peer.peerId);
+      if (cumulativeAfter <= cumulativeBefore && this._bpm.hasPendingReserveAuth(peer.peerId)) {
+        // Stopped at the old ceiling and sent a top-up for it: sign against the
+        // new ceiling. The seller holds that authorization until the topUp()
+        // lands, instead of the channel being retired with a top-up on its way.
+        await extend();
+        cumulativeAfter = this._bpm.getCumulativeAmount(peer.peerId);
+      }
       if (cumulativeAfter <= cumulativeBefore) {
         // extendCurrentSpendingAuth was a no-op — the overdraft window and reserve ceiling
         // are both wedged. Retire the session so the caller negotiates a fresh channel

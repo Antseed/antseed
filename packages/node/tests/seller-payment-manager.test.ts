@@ -159,6 +159,7 @@ describe('SellerPaymentManager', () => {
     vi.spyOn(manager.channelsClient, 'close').mockResolvedValue('0xclose-hash');
     vi.spyOn(manager.channelsClient, 'requestClose').mockResolvedValue('0xrequesttimeout-hash');
     vi.spyOn(manager.channelsClient, 'withdraw').mockResolvedValue('0xwithdraw-hash');
+    vi.spyOn(manager.channelsClient, 'getTopUpSettledThresholdBps').mockResolvedValue(8_500n);
 
     mux = createMockPaymentMux();
   });
@@ -570,7 +571,7 @@ describe('SellerPaymentManager', () => {
 
     const followUpPayload = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
       cumulativeAmount: 1_500_000n,
-      reserveMaxAmount: '2000000',
+      reserveMaxAmount: '1000000',
     });
     const followUpPromise = manager.handleSpendingAuth(buyerIdentity.peerId, followUpPayload, mux);
     await new Promise<void>((r) => setImmediate(r));
@@ -590,6 +591,42 @@ describe('SellerPaymentManager', () => {
     expect(waitResolved).toBe(true);
     expect(manager.getAcceptedCumulative(channelId)).toBe(1_500_000n);
     expect(manager.getCumulativeSpend(channelId) >= manager.getAcceptedCumulative(channelId)).toBe(false);
+  });
+
+  it('submits a top-up only once the contract would accept it, and never inside the buyer lock', async () => {
+    const channelId = makeChannelId(120);
+    await manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      isReserve: true, reserveMaxAmount: '1000000',
+    }), mux);
+    const auth = (amount: bigint) => buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, { cumulativeAmount: amount, reserveMaxAmount: '1000000' });
+    await manager.handleSpendingAuth(buyerIdentity.peerId, await auth(500_000n), mux);
+    let release!: () => void;
+    const topUpSpy = vi.spyOn(manager.channelsClient, 'topUp').mockImplementation(async () => {
+      await new Promise<void>((resolve) => { release = resolve; });
+      return '0xtopup';
+    });
+
+    // 50% settled is below the 85% threshold: nothing is sent to the chain.
+    const topUp = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      isReserve: true, reserveMaxAmount: '2000000', salt: '0x' + '20'.repeat(32),
+    });
+    expect(await manager.handleSpendingAuth(buyerIdentity.peerId, topUp, mux)).toBe('accepted');
+    await manager.waitForTopUp(channelId);
+    expect(topUpSpy).not.toHaveBeenCalled();
+    expect(manager.hasPendingTopUp(channelId)).toBe(true);
+
+    // At 90% it is submitted, in the background: later auths do not wait for it.
+    expect(await manager.handleSpendingAuth(buyerIdentity.peerId, await auth(900_000n), mux)).toBe('accepted');
+    while (topUpSpy.mock.calls.length === 0) await new Promise<void>((r) => setImmediate(r));
+    expect(topUpSpy.mock.calls[0]?.[2]).toBe(900_000n);
+    expect(await manager.handleSpendingAuth(buyerIdentity.peerId, await auth(950_000n), mux)).toBe('accepted');
+    expect(manager.getAcceptedCumulative(channelId)).toBe(950_000n);
+
+    release();
+    await manager.waitForTopUp(channelId);
+    expect(topUpSpy).toHaveBeenCalledTimes(1);
+    expect(manager.getReserveMax(channelId)).toBe(2_000_000n);
+    expect(manager.hasPendingTopUp(channelId)).toBe(false);
   });
 
   it('tracks the largest pending top-up ceiling while retries are deferred', async () => {
@@ -627,6 +664,7 @@ describe('SellerPaymentManager', () => {
     expect(manager.getEffectiveReserveMax(channelId)).toBe(1_000_000n);
 
     expect(await manager.handleSpendingAuth(buyerIdentity.peerId, topUp3m, mux)).toBe('accepted');
+    await manager.waitForTopUp(channelId);
     expect(manager.hasPendingTopUp(channelId)).toBe(true);
     expect(manager.getEffectiveReserveMax(channelId)).toBe(1_000_000n);
     expect(manager.getReserveMax(channelId)).toBe(1_000_000n);
@@ -660,6 +698,7 @@ describe('SellerPaymentManager', () => {
     });
 
     expect(await manager.handleSpendingAuth(buyerIdentity.peerId, topUp2m, mux)).toBe('accepted');
+    await manager.waitForTopUp(channelId);
     expect(topUpSpy).toHaveBeenCalledOnce();
     expect(manager.hasPendingTopUp(channelId)).toBe(true);
     expect(manager.getReserveMax(channelId)).toBe(1_000_000n);
@@ -693,7 +732,9 @@ describe('SellerPaymentManager', () => {
       salt: '0x' + '05'.repeat(32),
     });
 
-    expect(await manager.handleSpendingAuth(buyerIdentity.peerId, topUp2m, mux)).toBe('rejected');
+    // The ReserveAuth is valid; the on-chain topUp() fails in the background.
+    expect(await manager.handleSpendingAuth(buyerIdentity.peerId, topUp2m, mux)).toBe('accepted');
+    await manager.waitForTopUp(channelId);
     expect(manager.channelsClient.settle).not.toHaveBeenCalled();
     expect(manager.channelsClient.close).toHaveBeenCalledOnce();
     const closeArgs = (manager.channelsClient.close as ReturnType<typeof vi.fn>).mock.calls[0]!;
@@ -838,7 +879,9 @@ describe('SellerPaymentManager', () => {
       salt: '0x' + '07'.repeat(32),
     });
 
-    expect(await manager.handleSpendingAuth(buyerIdentity.peerId, topUp2m, mux)).toBe('rejected');
+    // The ReserveAuth is valid; the on-chain topUp() fails in the background.
+    expect(await manager.handleSpendingAuth(buyerIdentity.peerId, topUp2m, mux)).toBe('accepted');
+    await manager.waitForTopUp(channelId);
     expect(manager.channelsClient.close).toHaveBeenCalledOnce();
     expect(manager.hasPendingTopUp(channelId)).toBe(false);
     expect(manager.isChannelBlocked(channelId)).toBe(true);
@@ -872,6 +915,7 @@ describe('SellerPaymentManager', () => {
       salt: '0x' + '09'.repeat(32),
     });
     expect(await manager.handleSpendingAuth(buyerIdentity.peerId, topUp2m, mux)).toBe('accepted');
+    await manager.waitForTopUp(channelId);
     expect(manager.hasPendingTopUp(channelId)).toBe(true);
 
     const withinReserve = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
@@ -882,6 +926,7 @@ describe('SellerPaymentManager', () => {
     delete withinReserve.reserveMaxAmount;
     delete withinReserve.reserveDeadline;
     expect(await manager.handleSpendingAuth(buyerIdentity.peerId, withinReserve, mux)).toBe('accepted');
+    await manager.waitForTopUp(channelId);
 
     expect(topUpSpy).toHaveBeenCalledTimes(2);
     expect(manager.hasPendingTopUp(channelId)).toBe(true);
@@ -918,6 +963,7 @@ describe('SellerPaymentManager', () => {
       salt: '0x' + '06'.repeat(32),
     });
     expect(await manager.handleSpendingAuth(buyerIdentity.peerId, topUp2m, mux)).toBe('accepted');
+    await manager.waitForTopUp(channelId);
     expect(manager.hasPendingTopUp(channelId)).toBe(true);
 
     const withinReserve = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
@@ -928,6 +974,7 @@ describe('SellerPaymentManager', () => {
     delete withinReserve.reserveMaxAmount;
     delete withinReserve.reserveDeadline;
     expect(await manager.handleSpendingAuth(buyerIdentity.peerId, withinReserve, mux)).toBe('accepted');
+    await manager.waitForTopUp(channelId);
 
     expect(topUpSpy).toHaveBeenCalledTimes(2);
     expect(manager.channelsClient.settle).not.toHaveBeenCalled();
@@ -1319,17 +1366,21 @@ describe('SellerPaymentManager', () => {
         await new Promise<void>((resolve) => { release = resolve; });
         return '0xtopup';
       });
+      // The topUp() runs in the background, so the auth itself is accepted first.
+      vi.spyOn(manager.channelsClient, 'getTopUpSettledThresholdBps').mockResolvedValue(1n);
       const auth = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, { cumulativeAmount: 25_000n });
-      const acceptance = manager.handleSpendingAuth(buyerIdentity.peerId, auth, mux);
+      expect(await manager.handleSpendingAuth(buyerIdentity.peerId, auth, mux)).toBe('accepted');
       await toppingUp;
+      const acksBeforeDisconnect = mux.sentAuthAcks.length;
       manager.onBuyerDisconnect(buyerIdentity.peerId);
       vi.mocked(manager.channelsClient.close).mockRejectedValue(makeInFlightTxLimitError());
       await manager.settleSession(buyerIdentity.peerId, { cleanupOnFailure: true });
       expect(manager.hasSession(buyerIdentity.peerId)).toBe(false);
       release();
-      expect(await acceptance).toBe('accepted');
+      await manager.waitForTopUp(channelId);
+      // The top-up landing after the failed close does not bring the session back.
       expect(manager.hasSession(buyerIdentity.peerId)).toBe(false);
-      expect(mux.sentAuthAcks).toEqual([]);
+      expect(mux.sentAuthAcks.length).toBe(acksBeforeDisconnect);
       expect(store.getChannel(channelId)?.latestSpendingAuthSig).toBe(auth.spendingAuthSig);
     });
 

@@ -9,6 +9,7 @@ import type {
   CloseChannelResultPayload,
   CloseChannelRejectCode,
 } from '../types/protocol.js';
+import { DEFAULT_TOP_UP_SETTLED_THRESHOLD_BPS } from '../types/protocol.js';
 import { ChannelsClient } from './evm/channels-client.js';
 import {
   SPENDING_AUTH_TYPES,
@@ -200,6 +201,11 @@ export class SellerPaymentManager {
    *  before a retry succeeds, we keep the most recent higher ceiling because it
    *  subsumes the older request. */
   private readonly _pendingTopUp = new Map<string, { newMaxAmount: bigint; deadline: number; reserveAuthSig: string }>();
+  /** Channels with a background topUp() running, and those asked for another meanwhile. */
+  private readonly _topUpsRunning = new Map<string, Promise<void>>();
+  private readonly _topUpsWanted = new Set<string>();
+  /** AntseedChannels TOP_UP_SETTLED_THRESHOLD_BPS, read once. */
+  private _topUpThreshold: Promise<bigint> | null = null;
 
   /** Channels that must not serve more paid work until closed/renegotiated. */
   private readonly _blockedChannels = new Set<string>();
@@ -623,6 +629,13 @@ export class SellerPaymentManager {
       const channelsDomain = makeChannelsDomain(this._config.chainId, channelsAddr);
 
       if (existingCumulative === undefined) {
+        // A channel this seller already closed stays closed: a lagging RPC
+        // node can still report it active, and recovering it would block the
+        // buyer's replacement channel. No chain read is needed to say so.
+        if (this._channelStore.getChannel(channelId)?.status === CHANNEL_STATUS.SETTLED) {
+          debugLog(`[SellerPayment] SpendingAuth for closed channel ${channelId.slice(0, 18)}... — rejected`);
+          return 'rejected';
+        }
         const hasReserveFields = payload.reserveSalt != null
           || payload.reserveMaxAmount != null
           || payload.reserveDeadline != null;
@@ -757,56 +770,17 @@ export class SellerPaymentManager {
           return 'rejected';
         }
 
-        // Call topUp() on-chain — includes settle of current cumulative spend
-        const { amount: settleAmount, metadata: settleMetadata, sig: settleSig } = this._getSettleParams(channelId);
-        debugLog(`[SellerPayment] Top-up verified: channel=${channelId.slice(0, 18)}... ceiling ${currentReserveMax} → ${newMaxAmount} (settling cumulative=${settleAmount})`);
-        try {
-          await this._channelsClient.topUp(
-            this._signer,
-            channelId,
-            settleAmount,
-            settleMetadata,
-            settleSig,
-            newMaxAmount,
-            BigInt(topUpDeadline),
-            payload.spendingAuthSig,
-          );
-
-          // Update tracking
-          this._hydratedChannelIds.delete(channelId);
-          this._updateReserveCeiling(channelId, newMaxAmount, topUpDeadline);
-
-          debugLog(`[SellerPayment] Top-up completed: channel=${channelId.slice(0, 18)}... new ceiling=${newMaxAmount}`);
-        } catch (topUpErr) {
-          const failureKind = this._classifyTopUpFailure(topUpErr);
-          if (failureKind === 'retryable-threshold' || failureKind === 'retryable-tx-backpressure') {
-            // TopUpThresholdNotMet is a timing/settlement race; tx backpressure
-            // means the RPC/delegated-account queue is saturated. In both cases
-            // keep the ReserveAuth pending and retry after a later SpendingAuth
-            // instead of treating the active channel as permanently broken.
-            const reason = failureKind === 'retryable-threshold' ? 'threshold not met' : 'transaction backpressure';
-            debugWarn(
-              `[SellerPayment] Top-up ${reason}: channel=${channelId.slice(0, 18)}... ` +
-              `error=${this._formatError(topUpErr)} — ` +
-              `deferring topUp (will retry after next SpendingAuth)`,
-            );
-            this._storePendingTopUp(channelId, {
-              newMaxAmount,
-              deadline: topUpDeadline,
-              reserveAuthSig: payload.spendingAuthSig,
-            });
-            return 'accepted';
-          }
-
-          debugWarn(
-            `[SellerPayment] Top-up on-chain failed permanently: channel=${channelId.slice(0, 18)}... ` +
-            `kind=${failureKind} error=${this._formatError(topUpErr)} — closing latest auth and rejecting topUp`,
-          );
-          this._pendingTopUp.delete(channelId);
-          this._blockedChannels.add(channelId);
-          await this.settleSession(buyerPeerId);
-          return 'rejected';
-        }
+        // The on-chain topUp() runs outside this per-buyer lock, once the
+        // contract will accept it: with Base's block time and RPC latency a
+        // topUp() takes seconds, and every auth and request for this buyer
+        // waits on the lock. Until it lands, serving uses the current ceiling.
+        debugLog(`[SellerPayment] Top-up verified: channel=${channelId.slice(0, 18)}... ceiling ${currentReserveMax} → ${newMaxAmount}`);
+        this._storePendingTopUp(channelId, {
+          newMaxAmount,
+          deadline: topUpDeadline,
+          reserveAuthSig: payload.spendingAuthSig,
+        });
+        this._scheduleTopUp(buyerPeerId, channelId);
         return 'accepted';
       } else {
         // ── Subsequent SpendingAuth: verify SpendingAuth signature ──
@@ -860,6 +834,12 @@ export class SellerPaymentManager {
         // seller with an auth the contract cannot settle.
         let currentReserveMax = this._reserveMax.get(channelId) ?? 0n;
         const pendingTopUpForCheck = this._pendingTopUp.get(channelId);
+        // The buyer signs up to a top-up it sent; wait for that topUp() to land
+        // rather than reject an auth only the new ceiling covers.
+        if (currentReserveMax > 0n && cumulativeAmount > currentReserveMax && this._topUpsRunning.has(channelId)) {
+          await this.waitForTopUp(channelId);
+          currentReserveMax = this._reserveMax.get(channelId) ?? 0n;
+        }
         if (currentReserveMax > 0n && cumulativeAmount > currentReserveMax) {
           currentReserveMax = await this.refreshReserveMaxFromChain(channelId);
         }
@@ -895,12 +875,8 @@ export class SellerPaymentManager {
 
         debugLog(`[SellerPayment] Budget updated: channel=${channelId.slice(0, 18)}... cumulative=${cumulativeAmount}`);
 
-        // Retry any deferred topUp now that we have a higher settle amount.
-        const pendingTopUp = this._pendingTopUp.get(channelId);
-        if (pendingTopUp) {
-          const { amount: retrySettleAmount, metadata: retryMetadata, sig: retrySig } = this._getSettleParams(channelId);
-          await this._retryPendingTopUp(buyerPeerId, channelId, pendingTopUp, retrySettleAmount, retryMetadata, retrySig);
-        }
+        // A deferred topUp may be accepted now that more is authorized.
+        if (this._pendingTopUp.has(channelId)) this._scheduleTopUp(buyerPeerId, channelId);
 
         if (requiresReactivation
           && await this._validateRetainedChannel(buyerPeerId, channelId, cumulativeAmount, disconnectMarker)) {
@@ -1545,6 +1521,63 @@ export class SellerPaymentManager {
     }
   }
 
+  /**
+   * Submit the channel's pending topUp in the background, one at a time per
+   * channel, and only once the authorized amount reaches the contract's
+   * settled threshold: anything earlier reverts TopUpThresholdNotMet after a
+   * full chain round trip. A request made while one is running is picked up
+   * when it finishes.
+   */
+  private _scheduleTopUp(buyerPeerId: string, channelId: string): void {
+    if (this._topUpsRunning.has(channelId)) {
+      this._topUpsWanted.add(channelId);
+      return;
+    }
+    const run = (async () => {
+      try {
+        do {
+          this._topUpsWanted.delete(channelId);
+          const pending = this._pendingTopUp.get(channelId);
+          if (!pending) break;
+          const { amount, metadata, sig } = this._getSettleParams(channelId);
+          if (!await this._topUpEligible(channelId, amount)) break;
+          const outcome = await this._retryPendingTopUp(buyerPeerId, channelId, pending, amount, metadata, sig);
+          if (outcome === 'permanent-failure') break;
+        } while (this._topUpsWanted.has(channelId));
+      } catch (err) {
+        debugWarn(`[SellerPayment] Background topUp failed: channel=${channelId.slice(0, 18)}... error=${this._formatError(err)}`);
+      } finally {
+        this._topUpsRunning.delete(channelId);
+        this._topUpsWanted.delete(channelId);
+      }
+    })();
+    this._topUpsRunning.set(channelId, run);
+  }
+
+  /** Resolves once no background topUp() is running for the channel. */
+  async waitForTopUp(channelId: string): Promise<void> {
+    while (this._topUpsRunning.has(channelId)) await this._topUpsRunning.get(channelId);
+  }
+
+  /** Whether topUp() settling `settleAmount` would pass the contract's settled threshold. */
+  private async _topUpEligible(channelId: string, settleAmount: bigint): Promise<boolean> {
+    const deposit = this._reserveMax.get(channelId) ?? 0n;
+    if (deposit <= 0n) return true;
+    const thresholdBps = await this._topUpThresholdBps();
+    return settleAmount * 10_000n >= deposit * thresholdBps;
+  }
+
+  private _topUpThresholdBps(): Promise<bigint> {
+    this._topUpThreshold ??= this._channelsClient.getTopUpSettledThresholdBps()
+      .then((bps) => (bps > 0n && bps <= 10_000n ? bps : DEFAULT_TOP_UP_SETTLED_THRESHOLD_BPS))
+      .catch((err) => {
+        debugWarn(`[SellerPayment] Failed to read the top-up threshold; using ${DEFAULT_TOP_UP_SETTLED_THRESHOLD_BPS}: ${this._formatError(err)}`);
+        this._topUpThreshold = null;
+        return DEFAULT_TOP_UP_SETTLED_THRESHOLD_BPS;
+      });
+    return this._topUpThreshold;
+  }
+
   private async _retryPendingTopUp(
     buyerPeerId: string,
     channelId: string,
@@ -2186,6 +2219,16 @@ export class SellerPaymentManager {
       const drainDeadline = Date.now() + IDLE_CLOSE_DRAIN_MS;
       while (this.hasInFlightRequests(buyerPeerId) && Date.now() < drainDeadline) {
         await new Promise((resolve) => setTimeout(resolve, IDLE_CLOSE_POLL_MS));
+      }
+      // The buyer's auths for the work just finished are still on the wire or
+      // queued behind the lock: close at them, not at what was accepted before.
+      await this.waitForPendingAuths(buyerPeerId);
+      const spent = this._spent.get(channelId) ?? 0n;
+      const ceiling = this._reserveMax.get(channelId) ?? 0n;
+      const claimable = ceiling > 0n && spent > ceiling ? ceiling : spent;
+      if ((this._acceptedCumulative.get(channelId) ?? 0n) < claimable) {
+        await this.awaitAcceptedAtLeast(channelId, claimable, CLOSE_CATCH_UP_WAIT_MS);
+        await this.waitForPendingAuths(buyerPeerId);
       }
       if (this._channelStore.getActiveChannelByPeer(buyerPeerId, CHANNEL_ROLE.SELLER)?.sessionId !== channelId) return;
       if ((this._acceptedCumulative.get(channelId) ?? 0n) > 0n || !this._blockedChannels.has(channelId)) {
