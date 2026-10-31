@@ -438,13 +438,26 @@ describe('BuyerPaymentNegotiator', () => {
         expect(bpm.retireSession).not.toHaveBeenCalled();
       });
 
+      it('retries parallel requests parked on the same target instead of closing the channel', async () => {
+        setSigned(5_600_000n);
+        const close = closeConfirmed();
+        const results = await Promise.all([1, 2, 3].map(() => negotiator.handle402(make402Response(catchUp), peer, conn, makeRequest())));
+
+        expect(bpm.resendCurrentSpendingAuth).toHaveBeenCalledTimes(1);
+        expect(close).not.toHaveBeenCalled();
+        expect(results.map((result) => result.action)).toEqual(['retry', 'retry', 'retry']);
+      });
+
       it('closes the channel before opening a replacement when the seller repeats the target', async () => {
         setSigned(5_600_000n);
         await negotiator.handle402(make402Response(catchUp), peer, conn, makeRequest());
         const close = closeConfirmed();
         bufferPaymentRequired(negotiator, peer.peerId, conn);
+        // The seller has had time to act on the resend and still asks for the same amount.
+        vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 10_000);
 
         const result = await negotiator.handle402(make402Response(catchUp), peer, conn, makeRequest());
+        vi.mocked(Date.now).mockRestore();
 
         expect(close).toHaveBeenCalledWith(peer.peerId, conn, { maxCumulative: 6_000_000n });
         expect(bpm.resendCurrentSpendingAuth).toHaveBeenCalledTimes(1);
@@ -634,7 +647,8 @@ describe('BuyerPaymentNegotiator', () => {
       expect(bpm.authorizeSpending).not.toHaveBeenCalled();
       expect(result.action).toBe('return');
       const res = (result as { action: 'return'; response: SerializedHttpResponse }).response;
-      expect(res.statusCode).toBe(409);
+      expect(res.statusCode).toBe(503);
+      expect(res.headers['retry-after']).toBe('2');
       expect(JSON.parse(new TextDecoder().decode(res.body))).toMatchObject({
         error: 'payment_negotiation_failed',
         reason: 'existing_channel_still_active',

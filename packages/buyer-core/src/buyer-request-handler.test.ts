@@ -134,7 +134,9 @@ describe('BuyerRequestHandler payment negotiation', () => {
     ]);
 
     const result = await handler.sendRequest(makePeer(), makeRequest());
-    expect(result.statusCode).toBe(409);
+    // Retryable: the channel is fine and the next attempt usually succeeds.
+    expect(result.statusCode).toBe(503);
+    expect(result.headers['retry-after']).toBe('2');
     const body = Buffer.from(result.body).toString();
     expect(JSON.parse(body)).toMatchObject({ error: { type: 'payment_negotiation_failed' } });
     expect(body).not.toContain('requiredCumulativeAmount');
@@ -142,16 +144,27 @@ describe('BuyerRequestHandler payment negotiation', () => {
     expect(sendProxyRequest).toHaveBeenCalledTimes(3);
   });
 
-  it('returns the buyer error without repeating a catch-up whose gap did not shrink', async () => {
+  it('returns the buyer error without repeating a catch-up that made no progress', async () => {
     const { handler, handle402, sendProxyRequest } = makeHandler([
       catchUp('500000', '100000'), catchUp('600000', '100000'),
     ]);
 
     const result = await handler.sendRequest(makePeer(), makeRequest());
-    expect(result.statusCode).toBe(409);
+    expect(result.statusCode).toBe(503);
     expect(Buffer.from(result.body).toString()).not.toContain('requiredCumulativeAmount');
     expect(handle402).toHaveBeenCalledOnce();
     expect(sendProxyRequest).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps catching up while the seller accepts more, even when other requests widen the gap', async () => {
+    const { handler, handle402, sendProxyRequest } = makeHandler([
+      catchUp('500000', '100000'), catchUp('700000', '250000'), ACCEPTED,
+    ]);
+
+    const result = await handler.sendRequest(makePeer(), makeRequest());
+    expect(result.statusCode).toBe(200);
+    expect(handle402).toHaveBeenCalledTimes(2);
+    expect(sendProxyRequest).toHaveBeenCalledTimes(3);
   });
 
   it('does not negotiate for a client-provided spending authorization', async () => {

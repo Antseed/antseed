@@ -1116,6 +1116,27 @@ describe('SellerPaymentManager', () => {
     expect(manager.getAcceptedCumulative(channelId)).toBe(500_000n);
   });
 
+  it('accepts an auth that falls behind spend while requests run in parallel, and keeps the gate on spend', async () => {
+    const channelId = makeChannelId(79);
+    const reservePayload = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      isReserve: true,
+      reserveMaxAmount: '1000000',
+    });
+    await manager.handleSpendingAuth(buyerIdentity.peerId, reservePayload, mux);
+    // Request 1 finishes and its NeedAuth asks for 100k; request 2 finishes before the buyer's answer lands.
+    manager.recordSpend(channelId, 100_000n);
+    manager.recordSpend(channelId, 50_000n);
+    const behind = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, { cumulativeAmount: 100_000n, reserveMaxAmount: '1000000' });
+    await expect(manager.handleSpendingAuth(buyerIdentity.peerId, behind, mux)).resolves.toBe('accepted');
+    expect(manager.getAcceptedCumulative(channelId)).toBe(100_000n);
+
+    // Still short of spend: a request waiting for the rest is released only by the auth that covers it.
+    const waiting = manager.awaitAcceptedAtLeast(channelId, 150_000n, 2_000);
+    const covering = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, { cumulativeAmount: 150_000n, reserveMaxAmount: '1000000' });
+    await manager.handleSpendingAuth(buyerIdentity.peerId, covering, mux);
+    await expect(waiting).resolves.toBe(true);
+  });
+
   it('rejects a SpendingAuth or top-up from another buyer for a channel it does not own', async () => {
     const channelId = makeChannelId(81);
     const reservePayload = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, { isReserve: true, reserveMaxAmount: '1000000' });

@@ -746,6 +746,115 @@ describe('BuyerPaymentManager', () => {
     expect(sent.cumulativeAmount).toBe('50000');
   });
 
+  it('handleNeedAuth signs concurrent NeedAuths one at a time: no lost cost, no lower cumulative after a higher one', async () => {
+    const sellerPeerId = fakePeerId('seller-needauth-race');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    mux.sentSpendingAuths.length = 0;
+    // The first signature is slow, so without serializing the second would commit first.
+    const wallet = Wallet.createRandom();
+    let calls = 0;
+    const slowFirst = new Proxy(wallet, {
+      get(target, property, receiver) {
+        if (property !== 'signTypedData') return Reflect.get(target, property, receiver);
+        return async (...args: Parameters<Wallet['signTypedData']>) => {
+          calls += 1;
+          if (calls === 1) await new Promise((resolve) => setTimeout(resolve, 50));
+          return target.signTypedData(...args);
+        };
+      },
+    });
+    manager.setSigner(slowFirst);
+
+    await Promise.all([
+      manager.handleNeedAuth(sellerPeerId, { channelId, requiredCumulativeAmount: '40000', currentAcceptedCumulative: '0', deposit: '1000000', lastRequestCost: '40000' }, mux),
+      manager.handleNeedAuth(sellerPeerId, { channelId, requiredCumulativeAmount: '80000', currentAcceptedCumulative: '0', deposit: '1000000', lastRequestCost: '40000' }, mux),
+    ]);
+
+    expect(mux.sentSpendingAuths.map((auth) => (auth as Record<string, unknown>).cumulativeAmount)).toEqual(['40000', '80000']);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(80_000n);
+    expect(manager.getVerifiedCost(sellerPeerId)).toBe(80_000n);
+  });
+
+  it('judges NeedAuths in arrival order while an image NeedAuth waits for its delivery: the image is counted once, never charged again at close', async () => {
+    const sellerPeerId = fakePeerId('seller-needauth-image-order');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    manager.trackRequestBilling('req-image-order', {
+      context: {
+        sellerPeerId,
+        provider: 'openai',
+        service: 'gpt-image-2',
+        serviceApiProtocol: 'openai-images',
+        attributes: { model: 'gpt-image-2', size: '1024x1024' },
+      },
+      requestFacts: { kind: 'image', image: {} },
+      tokenPricing: TEST_PRICING,
+      unitModel: { version: 1, components: [{ unit: 'output_images', priceUsd: 0.004, match: { size: '1024x1024' } }] },
+    });
+    mux.sentSpendingAuths.length = 0;
+
+    const imageCost = 11_750n; // 1000 input + 50 output tokens, plus 2 images at $0.004
+    const tokenCost = 40_000n;
+    // The image NeedAuth arrives before the buyer saw the images; a token
+    // NeedAuth for the next request arrives right behind it.
+    const image = manager.handleNeedAuth(sellerPeerId, {
+      channelId,
+      requestId: 'req-image-order',
+      requiredCumulativeAmount: imageCost.toString(),
+      currentAcceptedCumulative: '0',
+      deposit: '1000000',
+      lastRequestCost: imageCost.toString(),
+      inputTokens: '1000',
+      freshInputTokens: '1000',
+      cachedInputTokens: '0',
+      outputTokens: '50',
+      billingUsage: { version: 1, units: { output_images: '2' } },
+    }, mux);
+    const token = manager.handleNeedAuth(sellerPeerId, {
+      channelId,
+      requiredCumulativeAmount: (imageCost + tokenCost).toString(),
+      currentAcceptedCumulative: '0',
+      deposit: '1000000',
+      lastRequestCost: tokenCost.toString(),
+    }, mux);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    manager.recordObservedUnitUsage('req-image-order', { units: { output_images: 2 } });
+    await Promise.all([image, token]);
+
+    expect(mux.sentSpendingAuths.map((auth) => (auth as Record<string, unknown>).cumulativeAmount))
+      .toEqual([imageCost.toString(), (imageCost + tokenCost).toString()]);
+    expect(manager.getVerifiedCost(sellerPeerId)).toBe(imageCost + tokenCost);
+    const last = mux.sentSpendingAuths.at(-1) as Record<string, string>;
+    expect(decodeMetadataTokens(last.metadata).outputImages).toBe(2n);
+
+    // The buyer-initiated authorization for the same response at close adds nothing.
+    const { payload } = await manager.signPerRequestAuth(sellerPeerId, {
+      inputBytes: SAMPLE_INPUT,
+      outputBytes: SAMPLE_OUTPUT,
+      sellerClaimedCost: imageCost,
+      reportedInputTokens: 1000n,
+      reportedOutputTokens: 50n,
+      unitUsage: { units: { output_images: 2 } },
+      service: 'gpt-image-2',
+      requestId: 'req-image-order',
+    });
+    expect(BigInt(payload.cumulativeAmount)).toBe(imageCost + tokenCost);
+  });
+
+  it('handleNeedAuth resends the signed authorization when a catch-up prompt shows the seller never got it', async () => {
+    const sellerPeerId = fakePeerId('seller-needauth-resend');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    await manager.handleNeedAuth(sellerPeerId, { channelId, requiredCumulativeAmount: '50000', currentAcceptedCumulative: '0', deposit: '1000000' }, mux);
+    mux.sentSpendingAuths.length = 0;
+
+    // The seller restarted and only accepted 20k: same amount again, never higher.
+    await manager.handleNeedAuth(sellerPeerId, { channelId, requiredCumulativeAmount: '50000', currentAcceptedCumulative: '20000', deposit: '1000000' }, mux);
+    expect(mux.sentSpendingAuths.map((auth) => (auth as Record<string, unknown>).cumulativeAmount)).toEqual(['50000']);
+
+    // A post-response NeedAuth for an amount already signed is still ignored (its authorization is in flight).
+    await manager.handleNeedAuth(sellerPeerId, { channelId, requiredCumulativeAmount: '50000', currentAcceptedCumulative: '20000', deposit: '1000000', lastRequestCost: '0' }, mux);
+    expect(mux.sentSpendingAuths).toHaveLength(1);
+  });
+
   it('handleNeedAuth refuses to sign for a request the seller served from a free allowance', async () => {
     const sellerPeerId = fakePeerId('seller-needauth-covered');
     const otherSellerPeerId = fakePeerId('seller-needauth-fallback');
@@ -1261,6 +1370,26 @@ describe('BuyerPaymentManager', () => {
     expect(manager.getVerifiedCost(sellerPeerId)).toBe(0n);
   });
 
+  it('handleNeedAuth keeps a pending request\'s billing context through a catch-up prompt that names it', async () => {
+    const sellerPeerId = fakePeerId('seller-catch-up-billing');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    const context = {
+      sellerPeerId,
+      provider: 'openai',
+      service: 'gpt-image-2',
+      serviceApiProtocol: 'openai-images' as const,
+      attributes: { model: 'gpt-image-2', size: '1024x1024' },
+    };
+    manager.trackRequestBillingContext('req-image-pending', context);
+
+    // A catch-up for earlier spend arrives while the image request is still being served.
+    await manager.handleNeedAuth(sellerPeerId, {
+      channelId, requestId: 'req-image-pending', requiredCumulativeAmount: '40000', currentAcceptedCumulative: '0', deposit: '1000000',
+    }, mux);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(40_000n);
+    expect(manager.getRequestBilling('req-image-pending')?.context).toEqual(context);
+  });
+
   it('handleNeedAuth rejects positive cost for free-default image billing', async () => {
     const sellerPeerId = fakePeerId('seller-image-free');
     const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
@@ -1663,11 +1792,11 @@ describe('BuyerPaymentManager', () => {
     expect(mux.sentSpendingAuths.length).toBe(1);
     mux.sentSpendingAuths.length = 0;
 
-    // Stale: required (30000) < current cumulative (50000)
+    // Stale: required (30000) < current cumulative (50000), which the seller already accepted
     await manager.handleNeedAuth(sellerPeerId, {
       channelId,
       requiredCumulativeAmount: '30000',
-      currentAcceptedCumulative: '10000',
+      currentAcceptedCumulative: '50000',
       deposit: '1000000',
     }, mux);
 

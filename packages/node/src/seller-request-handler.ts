@@ -216,6 +216,8 @@ const ATTEST_RATE_MAX_TRACKED_PEERS = 1024;
 export class SellerRequestHandler {
   private readonly _deps: SellerRequestHandlerDeps;
   private readonly _providerLoadCounts = new Map<string, number>();
+  /** Per channel: the highest spend a catch-up NeedAuth was already sent for, so parked requests ask once. */
+  private readonly _catchUpPrompted = new Map<string, bigint>();
   private readonly _attestRateWindows = new Map<string, { start: number; count: number }>();
   private _metadataRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -604,9 +606,8 @@ export class SellerRequestHandler {
           await spm.waitForPendingAuths(buyerPeerId);
           // Re-read after the await — the session may have been evicted (timeout
           // checker, disconnect) while the on-chain top-up was confirming.
-          const session = spm.getChannelByPeer(buyerPeerId);
-          if (!session) {
-            debugWarn(`[SellerHandler] Session evicted during waitForPendingAuths for ${buyerPeerId.slice(0, 12)}... — returning 402`);
+          const sendSessionExpired = (during: string): void => {
+            debugWarn(`[SellerHandler] Session evicted during ${during} for ${buyerPeerId.slice(0, 12)}... — returning 402`);
             mux.sendProxyResponse({
               requestId: request.requestId,
               statusCode: 402,
@@ -616,20 +617,20 @@ export class SellerRequestHandler {
                 message: 'Session expired, please renegotiate',
               })),
             });
+          };
+          const session = spm.getChannelByPeer(buyerPeerId);
+          if (!session) {
+            sendSessionExpired('waitForPendingAuths');
             return;
           }
           let accepted = spm.getAcceptedCumulative(session.sessionId);
-          const spent = spm.getCumulativeSpend(session.sessionId);
+          let spent = spm.getCumulativeSpend(session.sessionId);
           // Serving headroom only includes funds locked on-chain. Pending
           // top-ups are not counted until topUp() succeeds, otherwise a large
           // request could push spend above the current reserve before the extra
           // funds are actually locked.
-          const reserveMax = spm.getEffectiveReserveMax(session.sessionId);
-          const isBlocked = spm.isChannelBlocked(session.sessionId);
-          // If spend has caught up and there is no headroom left in the reserve,
-          // stop serving before accepting any additional request cost.
-          const isAtExactSpendLimit = spent > 0n && spent === accepted && reserveMax > 0n && accepted >= reserveMax;
-
+          let reserveMax = spm.getEffectiveReserveMax(session.sessionId);
+          let isBlocked = spm.isChannelBlocked(session.sessionId);
           if (spent > 0n && spent > accepted) {
             // Race cover: the buyer's SpendingAuth for the *previous* response's
             // NeedAuth may still be on the wire when this request arrives. The
@@ -640,12 +641,51 @@ export class SellerRequestHandler {
             // operation this wait is a no-op; under pipelined requests (a new
             // request dispatched before the prior NeedAuth → SpendingAuth has
             // completed) it hides the round-trip latency from the buyer.
-            const caughtUp = await spm.awaitAcceptedAtLeast(session.sessionId, spent, DEFAULT_CATCH_UP_WAIT_MS);
-            accepted = spm.getAcceptedCumulative(session.sessionId);
-            if (caughtUp && spent <= accepted) {
+            // Ask for the catch-up now instead of only after the wait: after a
+            // restart (or a lost NeedAuth) nothing else would prompt the buyer,
+            // and every parked request would end in a 402. Once per spend level,
+            // and only for spend the reserve can cover (beyond it the channel is closed below).
+            const signable = reserveMax <= 0n || spent <= reserveMax;
+            if (signable && spent > (this._catchUpPrompted.get(session.sessionId) ?? 0n)) {
+              this._catchUpPrompted.delete(session.sessionId);
+              this._catchUpPrompted.set(session.sessionId, spent);
+              if (this._catchUpPrompted.size > 1_024) this._catchUpPrompted.delete(this._catchUpPrompted.keys().next().value!);
+              // A channel-level prompt: no requestId, since it is not about the
+              // request that is waiting (its cost is not known yet).
+              this._sendNeedAuthBestEffort(paymentMux, {
+                channelId: session.sessionId,
+                requiredCumulativeAmount: spent.toString(),
+                currentAcceptedCumulative: accepted.toString(),
+                deposit: session.authMax ?? '0',
+              }, buyerPeerId, 'catch-up-before-wait');
+            }
+            // Other requests can finish while this one is parked: re-read the
+            // spend after each catch-up and keep waiting, within one budget,
+            // so an auth for the earlier spend never releases newer unpaid work.
+            const deadline = Date.now() + DEFAULT_CATCH_UP_WAIT_MS;
+            let caughtUp = true;
+            while (caughtUp && spent > accepted) {
+              caughtUp = await spm.awaitAcceptedAtLeast(session.sessionId, spent, Math.max(0, deadline - Date.now()));
+              accepted = spm.getAcceptedCumulative(session.sessionId);
+              spent = spm.getCumulativeSpend(session.sessionId);
+            }
+            // A channel closed or evicted while parked has its counters reset
+            // to zero, which would read as caught up: renegotiate instead.
+            if (spm.getChannelByPeer(buyerPeerId)?.sessionId !== session.sessionId) {
+              sendSessionExpired('the catch-up wait');
+              return;
+            }
+            // A top-up can land while parked: judge exhaustion on the current
+            // ceiling, or a channel that just grew is closed as exhausted.
+            reserveMax = spm.getEffectiveReserveMax(session.sessionId);
+            isBlocked = spm.isChannelBlocked(session.sessionId);
+            if (spent <= accepted) {
               debugLog(`[SellerHandler] Caught up before 402 for ${buyerPeerId.slice(0, 12)}... (spent=${spent} accepted=${accepted})`);
             }
           }
+          // If spend has caught up and there is no headroom left in the reserve,
+          // stop serving before accepting any additional request cost.
+          const isAtExactSpendLimit = spent > 0n && spent === accepted && reserveMax > 0n && accepted >= reserveMax;
           const remainingLockedReserve = reserveMax > spent ? reserveMax - spent : 0n;
           const reserveEstimateOverdraft = this._deps.reserveEstimateOverdraftUsdc;
           const effectiveEstimateLimit = reserveEstimateOverdraft != null
@@ -1531,7 +1571,7 @@ export class SellerRequestHandler {
     paymentMux: PaymentMux,
     payload: Parameters<PaymentMux['sendNeedAuth']>[0],
     buyerPeerId: string,
-    phase: 'budget-catch-up' | 'post-response' | 'video-delivered',
+    phase: 'budget-catch-up' | 'catch-up-before-wait' | 'post-response' | 'video-delivered',
   ): void {
     try {
       paymentMux.sendNeedAuth(payload);

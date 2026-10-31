@@ -31,6 +31,8 @@ import { ConversationStore } from './conversation-store.js'
 import { findFailingServiceOffers, resolvePeerRoutePlan } from './routing.js'
 import {
   BuyerProxy,
+  classifyFailedAttempt,
+  healthStatusFor,
   isModelNotFoundResponse,
   makeVerifierReach,
   mergeJsonStateFile,
@@ -6700,4 +6702,26 @@ test('requests from other sites never reach the paid or control routes', async (
   }))
   assert.equal(local.statusCode, 200)
   assert.equal(stateWrites, 1)
+})
+
+test('a buyer payment negotiation failure counts like a busy answer, flat or adapted to the model API', () => {
+  const negotiation = {
+    requestId: 'r', statusCode: 503, headers: { 'content-type': 'application/json', 'retry-after': '2' },
+    body: new TextEncoder().encode(JSON.stringify({ error: 'payment_negotiation_failed', reason: 'catch_up_incomplete', message: 'The seller is still waiting for payment of earlier requests on this channel. Retry the request.' })),
+  }
+  const bodies = [Buffer.from(negotiation.body)]
+  for (const protocol of ['openai-chat-completions', 'anthropic-messages'] as const) {
+    for (const pinned of [false, true]) {
+      bodies.push(Buffer.from(adaptPeerFaultErrorResponse(negotiation, protocol, { pinned, peerId: 'a'.repeat(40) }).body))
+    }
+  }
+  for (const responseBody of bodies) {
+    const attempt = classifyFailedAttempt({ done: false, statusCode: 503, responseBody, responseHeaders: {}, errorMessage: null })
+    assert.deepEqual({ sellerOnly: attempt.sellerOnly, weight: attempt.weight }, { sellerOnly: false, weight: 0.5 }, responseBody.toString())
+    // Peer health records it as busy, so a burst never cools the seller down.
+    assert.equal(healthStatusFor({ statusCode: 503, body: responseBody }), 429)
+  }
+  // Any other 503 is still the seller's.
+  assert.equal(classifyFailedAttempt({ done: false, statusCode: 503, responseBody: Buffer.from('{"error":"overloaded"}'), responseHeaders: {}, errorMessage: null }).sellerOnly, true)
+  assert.equal(healthStatusFor({ statusCode: 503, body: Buffer.from('{"error":"overloaded"}') }), 503)
 })
