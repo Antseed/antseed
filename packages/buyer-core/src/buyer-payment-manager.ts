@@ -1984,7 +1984,10 @@ export class BuyerPaymentManager {
     // settleable before topUp is allowed). Also proactively send the top-up
     // once the signed cumulative reaches the buyer's remaining-headroom
     // threshold; the seller may defer it until the contract gate is satisfied.
-    if (payload.requestId) {
+    // Only a NeedAuth that reports a request's delivered cost is done with its
+    // billing context; a catch-up or headroom prompt may name a request that is
+    // still being served.
+    if (payload.requestId && deliveredResponse) {
       this.clearRequestBilling(payload.requestId);
     }
     return needsTopUp || this._needsTopUp(sellerPeerId);

@@ -1305,6 +1305,26 @@ describe('BuyerPaymentManager', () => {
     expect(manager.getVerifiedCost(sellerPeerId)).toBe(0n);
   });
 
+  it('handleNeedAuth keeps a pending request\'s billing context through a catch-up prompt that names it', async () => {
+    const sellerPeerId = fakePeerId('seller-catch-up-billing');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    const context = {
+      sellerPeerId,
+      provider: 'openai',
+      service: 'gpt-image-2',
+      serviceApiProtocol: 'openai-images' as const,
+      attributes: { model: 'gpt-image-2', size: '1024x1024' },
+    };
+    manager.trackRequestBillingContext('req-image-pending', context);
+
+    // A catch-up for earlier spend arrives while the image request is still being served.
+    await manager.handleNeedAuth(sellerPeerId, {
+      channelId, requestId: 'req-image-pending', requiredCumulativeAmount: '40000', currentAcceptedCumulative: '0', deposit: '1000000',
+    }, mux);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(40_000n);
+    expect(manager.getRequestBilling('req-image-pending')?.context).toEqual(context);
+  });
+
   it('handleNeedAuth rejects positive cost for free-default image billing', async () => {
     const sellerPeerId = fakePeerId('seller-image-free');
     const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);

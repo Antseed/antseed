@@ -647,12 +647,13 @@ export class SellerRequestHandler {
               this._catchUpPrompted.delete(session.sessionId);
               this._catchUpPrompted.set(session.sessionId, spent);
               if (this._catchUpPrompted.size > 1_024) this._catchUpPrompted.delete(this._catchUpPrompted.keys().next().value!);
+              // A channel-level prompt: no requestId, since it is not about the
+              // request that is waiting (its cost is not known yet).
               this._sendNeedAuthBestEffort(paymentMux, {
                 channelId: session.sessionId,
                 requiredCumulativeAmount: spent.toString(),
                 currentAcceptedCumulative: accepted.toString(),
                 deposit: session.authMax ?? '0',
-                requestId: request.requestId,
               }, buyerPeerId, 'catch-up-before-wait');
             }
             const caughtUp = await spm.awaitAcceptedAtLeast(session.sessionId, spent, DEFAULT_CATCH_UP_WAIT_MS);

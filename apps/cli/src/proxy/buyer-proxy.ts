@@ -410,16 +410,22 @@ type FailedAttempt = {
   weight: number
 }
 
+/** A buyer-authored payment negotiation failure, flat or adapted to a model API's error shape. */
 function isBuyerPaymentNegotiationError(body: Buffer): boolean {
   if (body.length === 0 || body.length > 4_096) return false
   try {
-    return (JSON.parse(body.toString('utf8')) as { error?: unknown }).error === 'payment_negotiation_failed'
+    const error = (JSON.parse(body.toString('utf8')) as { error?: unknown }).error
+    if (error === 'payment_negotiation_failed') return true
+    if (!error || typeof error !== 'object') return false
+    const { type, code } = error as { type?: unknown; code?: unknown }
+    return type === 'payment_negotiation_failed' || code === 'payment_negotiation_failed'
   } catch {
     return false
   }
 }
 
-function classifyFailedAttempt(result: DispatchFailure): FailedAttempt {
+/** @internal Exported for tests. */
+export function classifyFailedAttempt(result: DispatchFailure): FailedAttempt {
   if (result.emptyAnswer) return { description: 'answered with no text or tool call', sellerOnly: false, weight: 1 }
   if (result.timedOut) return { description: result.errorMessage ?? 'no answer in time', sellerOnly: true, weight: 0.5 }
   if (result.errorMessage) return { description: `request failed (${result.errorMessage.split('\n')[0]!.slice(0, 120)})`, sellerOnly: true, weight: 1 }
@@ -675,7 +681,7 @@ type PeerDispatchResult =
     timedOut?: boolean
   }
 
-type DispatchFailure = Extract<PeerDispatchResult, { done: false }>
+export type DispatchFailure = Extract<PeerDispatchResult, { done: false }>
 
 function dispatchFailure(statusCode: number, responseHeaders: Record<string, string>, body: string): DispatchFailure {
   return { done: false, statusCode, responseHeaders, responseBody: Buffer.from(body), errorMessage: null }
