@@ -15,6 +15,7 @@ import type {
   ProviderServiceApiProtocolMatrixEntry,
   ProviderServiceCapabilityMatrixEntry,
   ProviderServiceHealthMatrixEntry,
+  ProviderServicePerformanceMatrixEntry,
   ProviderServiceUnitBillingModelMatrixEntry,
   ResponseAuthPayload,
   SerializedHttpRequest,
@@ -62,6 +63,8 @@ export interface BuyerPeerView {
   providerServiceCapabilities?: Record<string, ProviderServiceCapabilityMatrixEntry>;
   /** Seller self health check results per provider/service (metadata v13+). */
   providerServiceHealth?: Record<string, ProviderServiceHealthMatrixEntry>;
+  /** How each service served buyers lately, measured by the seller (metadata v14+). */
+  providerServicePerformance?: Record<string, ProviderServicePerformanceMatrixEntry>;
   defaultInputUsdPerMillion?: number;
   defaultOutputUsdPerMillion?: number;
   defaultCachedInputUsdPerMillion?: number;

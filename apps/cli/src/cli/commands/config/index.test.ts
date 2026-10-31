@@ -51,6 +51,17 @@ test('seller free-tier fields can be created before the optional block exists', 
   assert.deepEqual(seller['freeTier'], { maxRequestsPerAddress: 100, maxRequestsPerIp: 300, windowMs: 86400000 });
 });
 
+test('seller gas settings can be set before their optional blocks exist, booleans included', () => {
+  assert.equal(isDynamicKey('seller.gasRefuel.enabled'), true);
+  assert.equal(isDynamicKey('seller.gasRefuel.swapUsdc'), true);
+  assert.equal(isDynamicKey('seller.gasCheck.enabled'), true);
+  const config = createDefaultConfig() as unknown as Record<string, unknown>;
+  setConfigValue(config, 'seller.gasRefuel.enabled', 'false');
+  setConfigValue(config, 'seller.gasRefuel.swapUsdc', '25');
+  const seller = config['seller'] as Record<string, unknown>;
+  assert.deepEqual(seller['gasRefuel'], { enabled: false, swapUsdc: 25 });
+});
+
 test('redactConfig returns a detached clone of the config object', () => {
   const config = createDefaultConfig();
   config.identity.displayName = 'Original';

@@ -10,7 +10,7 @@ import {
   topicToInfoHash,
 } from "./dht-node.js";
 import type { PeerOffering } from "../types/capability.js";
-import type { DomainVerificationClaim, DomainVerificationMethod, GithubVerificationClaim, PeerMetadata, PeerVerifications, ProviderAnnouncement, ServiceCapabilities, ServiceHealth } from "./peer-metadata.js";
+import type { DomainVerificationClaim, DomainVerificationMethod, GithubVerificationClaim, PeerMetadata, PeerVerifications, ProviderAnnouncement, ServiceCapabilities, ServiceHealth, ServicePerformance } from "./peer-metadata.js";
 import { METADATA_VERSION } from "./peer-metadata.js";
 import {
   MAX_DOMAIN_LENGTH,
@@ -62,6 +62,8 @@ export interface AnnouncerConfig {
     serviceCapabilities?: Record<string, ServiceCapabilities>;
     /** Current self health check results per service, read on every refresh. */
     serviceHealth?: () => Record<string, ServiceHealth> | undefined;
+    /** Read on every refresh: how each service served buyers lately. */
+    servicePerformance?: () => Record<string, ServicePerformance> | undefined;
     maxConcurrency: number;
     /** Runtime availability predicate. Unavailable providers are omitted. */
     isAvailable?: () => boolean;
@@ -328,9 +330,13 @@ export class PeerAnnouncer {
         if (normalizedServiceCapabilities) {
           providerAnnouncement.serviceCapabilities = normalizedServiceCapabilities;
         }
-        const normalizedServiceHealth = this._normalizeServiceHealth(p.serviceHealth?.(), p.services);
+        const normalizedServiceHealth = this._normalizeServiceMeasurements(p.serviceHealth?.(), p.services);
         if (normalizedServiceHealth) {
           providerAnnouncement.serviceHealth = normalizedServiceHealth;
+        }
+        const normalizedServicePerformance = this._normalizeServiceMeasurements(p.servicePerformance?.(), p.services);
+        if (normalizedServicePerformance) {
+          providerAnnouncement.servicePerformance = normalizedServicePerformance;
         }
         return providerAnnouncement;
       });
@@ -490,17 +496,18 @@ export class PeerAnnouncer {
     }
   }
 
-  private _normalizeServiceHealth(
-    serviceHealth: Record<string, ServiceHealth> | undefined,
+  /** Copies of the live per-service measurements (health, performance) for services the provider lists. */
+  private _normalizeServiceMeasurements<T extends object>(
+    measurements: Record<string, T> | undefined,
     supportedServices: string[],
-  ): Record<string, ServiceHealth> | undefined {
-    if (!serviceHealth) return undefined;
+  ): Record<string, T> | undefined {
+    if (!measurements) return undefined;
     const hasWildcardServices = supportedServices.length === 0;
     const supportedServiceSet = new Set(supportedServices);
-    const normalized: Record<string, ServiceHealth> = serviceMap();
-    for (const [service, health] of Object.entries(serviceHealth)) {
+    const normalized: Record<string, T> = serviceMap();
+    for (const [service, measurement] of Object.entries(measurements)) {
       if (!hasWildcardServices && !supportedServiceSet.has(service)) continue;
-      normalized[service] = { ...health };
+      normalized[service] = { ...measurement };
     }
     return Object.keys(normalized).length > 0 ? normalized : undefined;
   }

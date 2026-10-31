@@ -148,7 +148,7 @@ Capability fields are optional; absence means unknown. `inputs` and `outputs` de
 
 Capabilities are hints, not enforced contracts. The buyer proxy performs one advisory check: when a peer announces `supportedParameters` for the routed service and the request body carries parameters outside that list, the proxy logs a warning and forwards the request unchanged. The upstream provider remains the authority on which parameters it accepts.
 
-Buyers accept metadata versions 10 through 13 and reject versions newer than they understand. The current version is 13, which adds `serviceHealth`: the seller's own health check result for each service.
+Buyers accept metadata versions 10 through 14 and reject versions newer than they understand. Version 13 added `serviceHealth`, the seller's own health check result for each service, and version 14 (the current one) adds `servicePerformance`, how each service served the seller's buyers in the last hour.
 
 ```json
 "serviceHealth": {
@@ -157,9 +157,21 @@ Buyers accept metadata versions 10 through 13 and reject versions newer than the
 }
 ```
 
+A healthy entry says when the service last succeeded and how: `source: "traffic"` when a paid buyer request got a successful answer, `"probe"` when the seller's own check passed. `checkedAt` moves forward with each success, but buyers see the new value only with the seller's next announcement. The HTTP status of a success is not announced; `httpStatus` appears only on a failing entry. A seller's own upstream account is not announced: when the upstream is out of credit or rejects the seller's key, the entry says `reason: "upstream_error"` (the upstream is unavailable) with no `httpStatus`, and a request whose upstream answers with an account error (a rejected key, a 402 or a billing error) gets `503` with `error.code: "upstream_unavailable"` instead of the upstream's error. The seller's own dashboard, logs and alerts keep the real reason.
+
 A seller keeps failing services announced with this status instead of withdrawing them. Buyers leave failing services out of model lists and automatic routing; a request pinned to that seller still goes through. If it fails, the seller answers `503` with `error.code: "seller_self_health_failing"`, and the error says the seller's self health check is failing and why. When every seller of a model reports it failing, a buyer asking for that model gets the same error instead of "model not found".
 
-Buyers ask for the version they understand with the `x-antseed-metadata-version` request header. Sellers sign a v12 and a v13 document and answer with the newest one the buyer understands; a buyer that sends no header gets v12, without the services that are failing.
+```json
+"servicePerformance": {
+  "gpt-6-terra": { "requests": 312, "successRate": 0.9712, "firstTokenMsP50": 420, "firstTokenMsP90": 1250, "tokensPerSecondP50": 78 }
+}
+```
+
+The seller measures these on its own buyer traffic over the last hour: every buyer request it relayed upstream (`requests`), and the share the upstream answered without a server-side error, rate limit, timeout or an error reported inside the stream (`successRate`, 0 to 1). For streamed answers it adds the median and 90th percentile time from receiving the request to the first generated token (start events and empty deltas do not count) and the median output speed in tokens per second (to within about 5%: the seller keeps running histograms rather than every request). A client error such as a malformed request does not count against it, and health probes and video jobs are not counted. A service with no buyer requests in the last hour has no entry.
+
+Buyers use these figures as their starting point for a seller they have not used yet. Without them, a new seller is assumed to succeed 80% of the time and to be as fast as the sellers the buyer has measured. With them, the buyer starts from the reported success rate (once it covers at least 10 requests, and never above 95%, since sellers grade themselves) and the reported speed. A seller reporting failures is tried after healthier ones from the first request. The buyer's own requests quickly outweigh what the seller reports.
+
+Buyers ask for the version they understand with the `x-antseed-metadata-version` request header. Sellers sign a v12, a v13 and a v14 document and answer with the newest one the buyer understands; a buyer that sends no header gets v12, without the services that are failing.
 
 `publicAddress` is optional. When present, buyers should prefer it over the raw host learned from the DHT announcement. This is intended for deployments where DHT traffic exits from one IP but buyers must connect to another address, such as a Kubernetes load balancer.
 

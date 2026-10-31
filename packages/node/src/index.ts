@@ -39,6 +39,19 @@ export {
   type GasHealthSnapshot,
 } from './health/gas-health-monitor.js';
 export {
+  GasAutoRefueler,
+  DEFAULT_REFUEL_TRIGGER_WEI,
+  DEFAULT_REFUEL_SWAP_USDC_UNITS,
+  DEFAULT_REFUEL_MAX_USDC_PER_DAY_UNITS,
+  DEFAULT_REFUEL_SLIPPAGE_BPS,
+  type GasAutoRefuelConfig,
+  type GasRefuelEvent,
+  type GasRefuelRecord,
+  type GasRefuelSkipReason,
+  type GasRefuelSnapshot,
+  type GasRefuelSwapper,
+} from './health/gas-auto-refuel.js';
+export {
   appendSellerEvent,
   readSellerEvents,
   SELLER_EVENTS_FILE,
@@ -140,6 +153,11 @@ export {
   parseProviderServiceHealthMatrix,
   parseServiceHealth,
   providerServiceHealthFor,
+  parseProviderServicePerformanceMatrix,
+  parseServicePerformance,
+  providerServicePerformanceFor,
+  SERVICE_PERFORMANCE_WINDOW_MS,
+  type ServicePerformance,
   type ServiceHealth,
   type ServiceHealthReason,
   type ServiceHealthSource,
@@ -234,6 +252,7 @@ export {
 } from './payments/evm/free-usage-client.js';
 export { IdentityClient, type IdentityClientConfig } from './payments/evm/identity-client.js';
 export { StakingClient, type StakingClientConfig } from './payments/evm/staking-client.js';
+export { UsdcEthSwapClient, usdcEthSwapDeployment, type UsdcEthSwapClientConfig } from './payments/evm/usdc-eth-swap-client.js';
 export { EmissionsClient, type EmissionsClientConfig, type EmissionsEpochParams } from './payments/evm/emissions-client.js';
 export { RegistryClient, type RegistryClientConfig } from './payments/evm/registry-client.js';
 export { UsageAccountingClient, type UsageAccountingClientConfig } from './payments/evm/usage-accounting-client.js';
@@ -368,7 +387,7 @@ export type { SellerPaymentConfig } from './payments/seller-payment-manager.js';
 export { ChannelStore } from './payments/channel-store.js';
 export type { StoredChannel, StoredReceipt } from './payments/channel-store.js';
 export { getChainConfig, resolveChainConfig, DEFAULT_CHAIN_ID, CHAIN_CONFIGS } from './payments/chain-config.js';
-export type { ChainConfig, RecognizedUsageDeployment } from './payments/chain-config.js';
+export type { ChainConfig, RecognizedUsageDeployment, UsdcEthSwapDeployment } from './payments/chain-config.js';
 export { formatUsdc, parseUsdc } from './payments/usdc-utils.js';
 export { ProxyMux } from './proxy/proxy-mux.js';
 export { encodeHttpRequest, encodeHttpResponse, decodeHttpRequest, decodeHttpResponse } from './proxy/request-codec.js';
@@ -426,6 +445,8 @@ export {
   successProbability,
   adaptiveFirstTokenTimeoutMs,
   sellerHealthKey,
+  reportedSuccessPrior,
+  MIN_REPORTED_REQUESTS,
   DEFAULT_TIME_VALUE_USD_PER_SECOND,
   SELLER_HEALTH_HALF_LIFE_MS,
   type SellerHealthStats,
@@ -434,6 +455,7 @@ export {
   type AdaptiveRouteInput,
   type AdaptiveRouteScore,
   type AdaptiveOrder,
+  type ReportedPerformance,
 } from './routing/seller-health.js';
 
 export type { AntseedPlugin, AntseedProviderPlugin, AntseedRouterPlugin, AntseedVerifierPlugin, Prover, VerifyContext, VerifyResult, ClaimResult, SellerRequest, SellerResponse, PluginConfigKey, ConfigField } from './interfaces/plugin.js'

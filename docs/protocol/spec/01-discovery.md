@@ -67,7 +67,7 @@ Custom bootstrap nodes can be supplied and are merged (deduplicated by `host:por
 **Source:** `node/src/discovery/peer-metadata.ts`
 
 ```
-METADATA_VERSION = 13
+METADATA_VERSION = 14
 MIN_SUPPORTED_METADATA_VERSION = 10
 LEGACY_METADATA_VERSION = 12   // served to buyers that do not ask for a version
 METADATA_VERSION_HEADER = "x-antseed-metadata-version"
@@ -80,7 +80,7 @@ METADATA_VERSION_HEADER = "x-antseed-metadata-version"
 | Field       | Type                    | Description                             |
 |-------------|-------------------------|-----------------------------------------|
 | peerId      | PeerId (string)         | 40 hex chars (20-byte EVM address)      |
-| version     | number                  | Supported range is 10 through `METADATA_VERSION` (13) |
+| version     | number                  | Supported range is 10 through `METADATA_VERSION` (14) |
 | displayName | string                  | Optional human-readable node label      |
 | publicAddress | string                | Optional public `host:port` buyers should dial instead of the raw DHT source address |
 | providers   | ProviderAnnouncement[]  | List of provider offerings              |
@@ -108,6 +108,7 @@ METADATA_VERSION_HEADER = "x-antseed-metadata-version"
 | serviceUnitBillingModels | object | v11+. Optional map `{ [service]: { [protocol]: UnitBillingModelV1 } }` for non-token usage such as `output_images` |
 | serviceCapabilities | object | v12+. Optional map `{ [service]: ServiceCapabilities }` with context/output limits, input/output modalities, reasoning, tool-use, structured-output, and supported-parameter hints |
 | serviceHealth | object | v13+. Optional map `{ [service]: ServiceHealth }` with the seller's own health check result (see below) |
+| servicePerformance | object | v14+. Optional map `{ [service]: ServicePerformance }`: how the service served the seller's buyers in the last hour (see below) |
 | maxConcurrency   | number   | Maximum concurrent requests (>= 1)                           |
 | currentLoad      | number   | Current number of active requests                            |
 
@@ -137,6 +138,24 @@ Failed checks below the threshold change nothing announced: `status` and its evi
 `status`, `source` and `reason` are sent as ids in the binary encoding, and buyers verify by re-encoding, so a buyer rejects a value it does not know. A new value therefore needs a new metadata version whose older documents map it to an existing value.
 
 Health is the seller's own claim. Buyers only use it to avoid a service, so they do not check it for consistency.
+
+#### ServicePerformance (v14+)
+
+The seller's own measurements of its buyer traffic over the last hour (`SERVICE_PERFORMANCE_WINDOW_MS`), per service. A service with no buyer requests in that hour has no entry. Health probes and native video jobs are not counted.
+
+| Field | Type | Description |
+|---|---|---|
+| requests | number | Buyer requests relayed upstream in the window, 0..2^32-1 |
+| successRate | number | Share answered without an upstream failure, 0..1, four decimals. Failures are the statuses `isUpstreamFailureStatus` counts (401, 402, 403, 404, 408, 429, 5xx), exceptions, and a stream that reports an error after a 200 start (an `error` event, an `error` object or `response.failed`); other client errors do not count |
+| firstTokenMsP50 | number | Optional median ms from receiving the request to the first event carrying generated output (text, reasoning or tool-call deltas of the OpenAI chat, OpenAI Responses and Anthropic Messages streams; start events, empty deltas and keepalives do not count), 0..2^32-1 |
+| firstTokenMsP90 | number | Optional 90th percentile of the same |
+| tokensPerSecondP50 | number | Optional median output tokens per second from the first generated token to the end, for successful streamed answers with at least 20 output tokens, 0..65535 |
+
+The seller keeps the window as 5-minute slices of running counts, so it covers the last 55 to 60 minutes and recording a request costs O(1). `requests` and `successRate` are exact. The percentiles come from log-scale histograms whose bins are 10% wide, so a reported value is within about 5% of the exact one. The summary is cached until a request arrives or a slice leaves the window, since sellers rebuild their metadata on every load change.
+
+Upstreams sharing a provider name offer a service on the same terms, so the seller measures per provider name and announces the same figures on each of them.
+
+Buyers use the figures as the prior for a seller they have no record of: the reported success rate replaces the default prior of 0.8 when `requests` is at least `MIN_REPORTED_REQUESTS` (10), capped at `MAX_REPORTED_SUCCESS_PRIOR` (0.95), and the reported first-token time and speed replace the typical values of sellers the buyer has measured. Like health, these are the seller's own claims; the cap and the buyer's own observations limit what an inflated report can gain.
 
 Buyers MUST NOT route automatically to a service whose status is `failing`, and SHOULD leave it out of model catalogs. When a seller serves a service through several providers, buyers and sellers SHOULD prefer a provider that is not failing it.
 
@@ -210,6 +229,11 @@ Per provider (repeated providerCount times):
     [consecutiveFailures:2?][reasonId:1?][httpStatus:2?]
     Presence bits: checkedAt(0), source(1), failingSince(2), consecutiveFailures(3), reason(4), httpStatus(5).
     Ids are positions in the append-only SERVICE_HEALTH_STATUSES, SERVICE_HEALTH_SOURCES and SERVICE_HEALTH_REASONS lists.
+  [servicePerformanceEntryCount : 2 bytes uint16 ]   // v14+
+  Per performance entry (code-unit sorted by service):
+    [service][requests:4][successRateBps:2][presenceBits:1][firstTokenMsP50:4?][firstTokenMsP90:4?][tokensPerSecondP50:2?]
+    successRateBps is successRate × 10000, at most 10000.
+    Presence bits: firstTokenMsP50(0), firstTokenMsP90(1), tokensPerSecondP50(2).
   [maxConcurrency: 2 bytes  uint16  big-endian ]
   [currentLoad   : 2 bytes  uint16  big-endian ]
 
@@ -254,7 +278,7 @@ Metadata validation is intentionally bounded: buyers accept versions from `MIN_S
 
 The decoder cannot safely ignore unknown newer versions because provider extensions are embedded in the signed binary layout. Metadata v12 widens service and service-map counts from `uint8` to `uint16`; removing optional fields from config does not make a v12 seller emit an older version.
 
-From v13, sellers negotiate the version. A seller signs one document per version it serves (currently 12 and 13) on every refresh. A buyer sends `x-antseed-metadata-version: <newest version it understands>` on `GET /metadata`; the seller answers with the newest version it signs that is not newer. A buyer that sends no header gets `LEGACY_METADATA_VERSION` (12), so buyers released before negotiation keep working. The v12 document has no health block, so it leaves out services announced as failing (and a provider whose services are all failing), which is how sellers withdrew them before v13.
+From v13, sellers negotiate the version. A seller signs one document per version it serves (currently 12, 13 and 14) on every refresh. A buyer sends `x-antseed-metadata-version: <newest version it understands>` on `GET /metadata`; the seller answers with the newest version it signs that is not newer. A buyer that sends no header gets `LEGACY_METADATA_VERSION` (12), so buyers released before negotiation keep working. The v12 document has no health block, so it leaves out services announced as failing (and a provider whose services are all failing), which is how sellers withdrew them before v13.
 
 The body (everything except the trailing 65-byte signature) is the data that is signed. `encodeMetadataForSigning()` produces this body without the signature for signing and verification purposes.
 
@@ -284,8 +308,9 @@ The body (everything except the trailing 65-byte signature) is the data that is 
 
 Additional validation rules enforced by `validateMetadata()`:
 
-- `version` must be between `MIN_SUPPORTED_METADATA_VERSION` (10) and `METADATA_VERSION` (13).
+- `version` must be between `MIN_SUPPORTED_METADATA_VERSION` (10) and `METADATA_VERSION` (14).
 - `serviceHealth` requires v13; each entry must reference an announced service and use known status, source and reason codes.
+- `servicePerformance` requires v14; each entry must reference an announced service, with `requests` and `successRate` in range and integer optional figures within their wire sizes.
 - `peerId` must be exactly 40 lowercase hex characters.
 - `region` must not be empty.
 - `displayName` is optional, but when present it must be non-empty and <= 64 chars.
@@ -459,7 +484,7 @@ The `PeerLookup` class orchestrates the full discovery flow:
 The `PeerAnnouncer` class handles the seller-side announcement lifecycle:
 
 1. Build a `PeerMetadata` object from the configured providers, current pricing, current load, and region.
-2. Set `version` to `METADATA_VERSION` (13) and `timestamp` to `Date.now()`, including each provider's live `serviceHealth`.
+2. Set `version` to `METADATA_VERSION` (14) and `timestamp` to `Date.now()`, including each provider's live `serviceHealth` and `servicePerformance`.
 3. Include configured seller contract, verification claims, and peer capabilities when present.
 4. For every served version, build that version's document (`getMetadataCodec(v).fromLatest()`) and encode its body (without signature) via `encodeMetadataForSigning()`.
 5. Sign each body with the seller's secp256k1 private key (via EIP-191 personal_sign).

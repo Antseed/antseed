@@ -3,9 +3,10 @@ import { describe, expect, it } from 'vitest';
 import { decodeMetadata, encodeMetadata, encodeMetadataForSigning, getMetadataCodec } from '../src/discovery/metadata-codec.js';
 import type { PeerMetadata } from '../src/discovery/peer-metadata.js';
 
-// Every field v10-v12 know. The hashes are of the bytes the codec signed
-// before it was split into per-version files: buyers that have not upgraded
-// verify those exact bytes, so they must never change.
+// Every field v10-v13 know. The v10-v12 hashes are of the bytes the codec
+// signed before it was split into per-version files, v13's of the bytes it
+// signed when v14 was added: buyers that have not upgraded verify those exact
+// bytes, so they must never change.
 const fixture = (version: number): PeerMetadata => {
   const metadata = {
     peerId: "ab".repeat(20), version: 12, region: "eu-west-1", timestamp: 1_700_000_000_000,
@@ -28,6 +29,12 @@ const fixture = (version: number): PeerMetadata => {
     signature: "",
   } as any;
   metadata.version = version;
+  if (version >= 13) {
+    metadata.providers[0].serviceHealth = {
+      m1: { status: "failing", checkedAt: 1_700_000_000_000, source: "probe", failingSince: 1_699_999_000_000, consecutiveFailures: 3, reason: "timeout", httpStatus: 504 },
+      m2: { status: "healthy", checkedAt: 1_700_000_000_000, source: "traffic" },
+    };
+  }
   if (version < 12) {
     metadata.providers = metadata.providers.map((provider: any) => {
       const { serviceCapabilities: _capabilities, ...rest } = provider;
@@ -42,6 +49,7 @@ const GOLDEN_SHA256: Record<number, string> = {
   10: '27b3c5f031f632d8a6eef35c00bd70dcc7dbdc0adbff17f55a956c5a790ed252',
   11: '8bd42ef2d8fd886b718c42800ef0573c63230cff0a111573db1945ea43f96bb2',
   12: 'a5dbd0ef1380cfe1bd9ed16586540de4600c41039d3eb0e76b9758211b084a3d',
+  13: '45e7d04a3a58a03f9781c393002828b8064434c7e741de5eb25896488ebab271',
 };
 
 describe('metadata signing bytes', () => {

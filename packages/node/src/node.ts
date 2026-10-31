@@ -113,6 +113,7 @@ import { Contract as EthersContract, type AbstractProvider } from "ethers";
 import { SellerPaymentManager, type SellerPaymentConfig } from "./payments/seller-payment-manager.js";
 import { IdentityClient } from "./payments/evm/identity-client.js";
 import { SellerRequestHandler, assertSameNameUpstreamsAgree, assertSingleRoutingService } from "./seller-request-handler.js";
+import { ServicePerformanceTracker } from "./health/service-performance.js";
 import {
   BuyerRequestHandler,
   type RequestStreamCallbacks,
@@ -457,6 +458,8 @@ export class AntseedNode extends EventEmitter {
   private _nat: NatTraversal | null = null;
   private _metering: MeteringStorage | null = null;
   private _resourceOwnership: ResourceOwnershipStore | null = null;
+  /** How each service served buyers lately, announced in the seller's metadata. */
+  private readonly _servicePerformance = new ServicePerformanceTracker();
   private _receiptGenerator: ReceiptGenerator | null = null;
   private _balanceManager: BalanceManager | null = null;
   private _depositsClient: DepositsClient | null = null;
@@ -1994,6 +1997,7 @@ export class AntseedNode extends EventEmitter {
           ...(p.serviceCapabilities ? { serviceCapabilities: { ...p.serviceCapabilities } } : {}),
           // Read live: the model health checker updates it between refreshes.
           serviceHealth: () => announcedServiceHealth(p),
+          servicePerformance: () => this._servicePerformance.snapshot(p.name, p.services),
           maxConcurrency: p.maxConcurrency,
           isAvailable: () => this._advertisingPausedReason === null,
           pricing: {
@@ -2058,6 +2062,7 @@ export class AntseedNode extends EventEmitter {
       announcer: this._announcer,
       maxUploadBodyBytes: this._config.maxUploadBodyBytes,
       resourceOwnershipStore: this._resourceOwnership,
+      servicePerformance: this._servicePerformance,
       ...(this._config.payments?.reserveEstimateOverdraftUsdc != null
         ? { reserveEstimateOverdraftUsdc: BigInt(this._config.payments.reserveEstimateOverdraftUsdc) }
         : {}),
@@ -2733,6 +2738,7 @@ export class AntseedNode extends EventEmitter {
     const providerServiceUnitBillingModels = nonEmpty(matrices.providerServiceUnitBillingModels);
     const providerServiceCapabilities = nonEmpty(matrices.providerServiceCapabilities);
     const providerServiceHealth = nonEmpty(matrices.providerServiceHealth);
+    const providerServicePerformance = nonEmpty(matrices.providerServicePerformance);
 
     return {
       peerId: result.metadata.peerId,
@@ -2756,6 +2762,7 @@ export class AntseedNode extends EventEmitter {
       ...(providerServiceUnitBillingModels ? { providerServiceUnitBillingModels } : {}),
       ...(providerServiceCapabilities ? { providerServiceCapabilities } : {}),
       ...(providerServiceHealth ? { providerServiceHealth } : {}),
+      ...(providerServicePerformance ? { providerServicePerformance } : {}),
       defaultInputUsdPerMillion: firstProvider?.defaultPricing.inputUsdPerMillion,
       defaultOutputUsdPerMillion: firstProvider?.defaultPricing.outputUsdPerMillion,
       defaultCachedInputUsdPerMillion: firstProvider?.defaultPricing.cachedInputUsdPerMillion,

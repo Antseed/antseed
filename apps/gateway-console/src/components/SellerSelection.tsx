@@ -8,6 +8,7 @@ import { isOrgAdmin, panelPath } from '../lib/nav'
 import { qk, usePeers } from '../lib/queries'
 import { samePeerId } from '../lib/peer-id'
 import { PeerActionDialog } from './PeerActionDialog'
+import { ServiceHealthInfo } from './ServiceHealthInfo'
 import { healthWarning, neverReason, orderingSummary, rankCandidates, selectionHeadline } from '../lib/selection'
 import { shortId } from '../lib/format'
 import { PanelRow, PanelSection } from './SidePanel'
@@ -118,6 +119,7 @@ export function SellerSelection({ preview, loading, pin, title, explainSkipped, 
                 meta={<>
                   <span>{selection ? selectionHeadline(selection) : candidate.reasons.join(' · ')}</span>
                   {extras.meta}
+                  <ServiceHealthInfo health={candidate.health} />
                 </>}
                 badges={(exceptions || warning || extras.badges) && (
                   <div className="gc-stack gc-stack--tight">
@@ -157,6 +159,7 @@ export function SellerSelection({ preview, loading, pin, title, explainSkipped, 
                 meta={<>
                   <span className="gc-never">Filtered out: {neverReason(candidate, preview.modelAllowed)}</span>
                   {extras.meta}
+                  <ServiceHealthInfo health={candidate.health} />
                 </>}
                 badges={(rule || extras.badges) && <div className="gc-stack gc-stack--tight">{rule}{extras.badges && <div className="gc-badges">{extras.badges}</div>}</div>}
                 actions={<>

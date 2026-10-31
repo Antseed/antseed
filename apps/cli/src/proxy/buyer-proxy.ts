@@ -15,6 +15,7 @@ import {
   adaptPeerFaultErrorResponse,
   describeServiceHealth,
   parseProviderServiceHealthMatrix,
+  parseProviderServicePerformanceMatrix,
   SELF_HEALTH_ERROR_STATUS,
   SELLER_SELF_HEALTH_FAILING_CODE,
   isFreeTierExhaustedResponse,
@@ -33,11 +34,13 @@ import {
   rankModelRoutes,
   SellerHealthBook,
   orderAdaptiveRoutes,
+  reportedSuccessPrior,
   adaptiveFirstTokenTimeoutMs,
   sanitizePeerDisplayName,
   type AntseedNode,
   type FaultAttribution,
   type BuyerSpendEvent,
+  type ServiceHealth,
   type ResponseAuthEvent,
   type AdaptiveRouteScore,
   type RouteRequestShape,
@@ -348,6 +351,7 @@ interface RoutePreviewCandidate {
   outputUsdPerMillion: number | null
   trustScore: number | null
   selection: RouteSelection | null
+  health: ServiceHealth | null
 }
 
 type RequestPolicyResult =
@@ -416,12 +420,42 @@ type FailedAttempt = {
   weight: number
 }
 
-function classifyFailedAttempt(result: DispatchFailure): FailedAttempt {
+/** A buyer-authored payment negotiation failure, flat or adapted to a model API's error shape. */
+function isBuyerPaymentNegotiationError(body: Buffer): boolean {
+  if (body.length === 0 || body.length > 4_096) return false
+  try {
+    const error = (JSON.parse(body.toString('utf8')) as { error?: unknown }).error
+    if (error === 'payment_negotiation_failed') return true
+    if (!error || typeof error !== 'object') return false
+    const { type, code } = error as { type?: unknown; code?: unknown }
+    return type === 'payment_negotiation_failed' || code === 'payment_negotiation_failed'
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The status peer health records for a response. A payment catch-up still
+ * pending is the buyer's own channel state with a live seller: record it like
+ * busy, which never escalates to a cooldown.
+ * @internal Exported for tests.
+ */
+export function healthStatusFor(response: { statusCode: number; body: Uint8Array }): number {
+  if (response.statusCode >= 500 && isBuyerPaymentNegotiationError(Buffer.from(response.body.buffer, response.body.byteOffset, response.body.byteLength))) return 429
+  return response.statusCode
+}
+
+/** @internal Exported for tests. */
+export function classifyFailedAttempt(result: DispatchFailure): FailedAttempt {
   if (result.emptyAnswer) return { description: 'answered with no text or tool call', sellerOnly: false, weight: 1 }
   if (result.timedOut) return { description: result.errorMessage ?? 'no answer in time', sellerOnly: true, weight: 0.5 }
   if (result.errorMessage) return { description: `request failed (${result.errorMessage.split('\n')[0]!.slice(0, 120)})`, sellerOnly: true, weight: 1 }
   // Busy is not broken: it costs the seller less, and only when another seller served.
   if (result.statusCode === 429) return { description: 'HTTP 429 (busy)', sellerOnly: false, weight: 0.5 }
+  // The buyer's own payment state with the seller (a catch-up still short, a
+  // channel being recovered) is transient and partly the buyer's: count it
+  // like busy, not as a broken seller.
+  if (isBuyerPaymentNegotiationError(result.responseBody)) return { description: `HTTP ${result.statusCode} (payment catch-up pending)`, sellerOnly: false, weight: 0.5 }
   const sellerOnly = result.statusCode >= 500 || result.statusCode === 401 || result.statusCode === 403 || result.statusCode === 408
   return { description: `HTTP ${result.statusCode}`, sellerOnly, weight: 1 }
 }
@@ -585,6 +619,7 @@ const PEER_CATALOG_FIELDS = [
   'providerServiceUnitBillingModels',
   'providerServiceCapabilities',
   'providerServiceHealth',
+  'providerServicePerformance',
 ] as const satisfies readonly (keyof PeerInfo)[]
 /**
  * Requests kept in the spend-attribution map. Entries outlive their request on
@@ -668,7 +703,7 @@ type PeerDispatchResult =
     timedOut?: boolean
   }
 
-type DispatchFailure = Extract<PeerDispatchResult, { done: false }>
+export type DispatchFailure = Extract<PeerDispatchResult, { done: false }>
 
 function dispatchFailure(statusCode: number, responseHeaders: Record<string, string>, body: string): DispatchFailure {
   return { done: false, statusCode, responseHeaders, responseBody: Buffer.from(body), errorMessage: null }
@@ -971,6 +1006,10 @@ export function parsePersistedPeers(
     const persistedHealth = parseProviderServiceHealthMatrix(entry.providerServiceHealth)
     if (persistedHealth) {
       peer.providerServiceHealth = persistedHealth
+    }
+    const persistedPerformance = parseProviderServicePerformanceMatrix(entry.providerServicePerformance)
+    if (persistedPerformance) {
+      peer.providerServicePerformance = persistedPerformance
     }
     if (typeof entry.defaultInputUsdPerMillion === 'number') {
       peer.defaultInputUsdPerMillion = entry.defaultInputUsdPerMillion
@@ -1768,6 +1807,7 @@ export class BuyerProxy {
       ...(openChannels ? { channelOpen: modelRouteTotalPrice(candidate) === 0 || openChannels.has(candidate.peerId.toLowerCase()) } : {}),
       saturated: typeof candidate.peer.maxConcurrency === 'number' && candidate.peer.maxConcurrency > 0
         && (this._inFlightBySeller.get(candidate.peerId.toLowerCase()) ?? 0) >= candidate.peer.maxConcurrency,
+      reported: candidate.offer.performance ?? null,
     }), this._sellerHealth, requestShape(request), {
       now,
       affinityKey: input.affinityKey ?? null,
@@ -1836,7 +1876,12 @@ export class BuyerProxy {
       else if (health.unhealthy) verdict.reasons.push(`failing lately: ${health.stats?.lastFailureReason ?? 'failed requests'} (tried after healthy sellers)`)
       if (pool.length > 1 && pool.includes(candidate)) verdict.reasons.push(`shares traffic with ${pool.length - 1} other seller(s)`)
       if (modelRouteTotalPrice(candidate) === 0) verdict.reasons.push('free')
-      verdict.reasons.push(`success ~${Math.round(health.successProbability * 100)}%${health.stats ? '' : ' (no data yet)'}`)
+      const reported = candidate.offer.performance
+      let basis = ''
+      if (!health.stats) {
+        basis = reported && reportedSuccessPrior(reported) !== null ? ` (seller reports ${reported.requests} requests in the last hour)` : ' (no data yet)'
+      }
+      verdict.reasons.push(`success ~${Math.round(health.successProbability * 100)}%${basis}`)
       const latency = this._peerLatency(candidate.peerId, candidate.serviceId)
       if (latency !== null) verdict.reasons.push(`first token ~${Math.round(latency)}ms`)
       const throughput = this._peerThroughput(candidate.peerId, candidate.serviceId)
@@ -1868,6 +1913,14 @@ export class BuyerProxy {
         inFlight: this._inFlightBySeller.get(candidate.peerId.toLowerCase()) ?? 0,
         maxConcurrency,
         routeChainPosition: position !== undefined ? position + 1 : null,
+        ...(reported ? {
+          reported: {
+            requests: reported.requests,
+            successRate: reported.successRate,
+            firstTokenMsP50: reported.firstTokenMsP50 ?? null,
+            tokensPerSecondP50: reported.tokensPerSecondP50 ?? null,
+          },
+        } : {}),
       }
       verdict.selection = selection
       selections.set(candidate, selection)
@@ -1949,6 +2002,7 @@ export class BuyerProxy {
         outputUsdPerMillion: offer.outputUsdPerMillion ?? null,
         trustScore: peer ? normalizedModelReputationScore(peer) : null,
         selection: null,
+        health: offer.health ?? null,
       })
     }
     return [...plan.verdicts
@@ -1962,6 +2016,7 @@ export class BuyerProxy {
         outputUsdPerMillion: verdict.offer.outputUsdPerMillion ?? null,
         trustScore: normalizedModelReputationScore(verdict.peer),
         selection: modelAllowed && verdict.eligible ? verdict.selection ?? null : null,
+        health: verdict.offer.health ?? null,
       })), ...failing]
       .sort((a, b) => (a.rank ?? Number.POSITIVE_INFINITY) - (b.rank ?? Number.POSITIVE_INFINITY)
         || a.peerId.localeCompare(b.peerId))
@@ -2600,6 +2655,7 @@ export class BuyerProxy {
         providerServiceUnitBillingModels: p.providerServiceUnitBillingModels ?? null,
         providerServiceCapabilities: p.providerServiceCapabilities ?? null,
         providerServiceHealth: p.providerServiceHealth ?? null,
+        providerServicePerformance: p.providerServicePerformance ?? null,
         defaultInputUsdPerMillion: p.defaultInputUsdPerMillion ?? 0,
         defaultOutputUsdPerMillion: p.defaultOutputUsdPerMillion ?? 0,
         defaultCachedInputUsdPerMillion: p.defaultCachedInputUsdPerMillion ?? null,
@@ -3017,6 +3073,7 @@ export class BuyerProxy {
         providerServiceUnitBillingModels: p.providerServiceUnitBillingModels,
         providerServiceCapabilities: p.providerServiceCapabilities,
         providerServiceHealth: p.providerServiceHealth,
+        providerServicePerformance: p.providerServicePerformance,
         reputationScore: p.reputationScore,
         onChainReputationScore: p.onChainReputationScore ?? null,
         trust: p.trust ?? null,
@@ -5246,7 +5303,7 @@ export class BuyerProxy {
           this._recordPeerFailure(selectedPeer.peerId, 'buyer-local', 'buyer')
         } else {
           this._recordPeerResponseHealth(
-            selectedPeer.peerId, responseForClient.statusCode, requestForPeer.path,
+            selectedPeer.peerId, healthStatusFor(responseForClient), requestForPeer.path,
           )
         }
 
@@ -5382,7 +5439,7 @@ export class BuyerProxy {
         if (responseFault === 'buyer') {
           this._recordPeerFailure(selectedPeer.peerId, 'buyer-local', 'buyer')
         } else {
-          this._recordPeerResponseHealth(selectedPeer.peerId, response.statusCode, requestForPeer.path)
+          this._recordPeerResponseHealth(selectedPeer.peerId, healthStatusFor(response), requestForPeer.path)
         }
 
         // Check if retryable
