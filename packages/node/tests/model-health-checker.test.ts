@@ -1000,6 +1000,26 @@ describe('ModelHealthChecker image services following the upstream account', () 
     }
   });
 
+  it('lets buyers retry an image service once its probes stop confirming the account is out', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const provider = mixedProvider(200);
+      const intervalMs = 5 * 60_000;
+      const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1, intervalMs });
+      checker.reportUpstreamResponse(provider, 402, '{"error":"Insufficient USD or Diem balance"}', true, 'image-a');
+      expect(statusOf(provider, 'image-a')).toBe('failing');
+      // The account is funded, but the text endpoint only rejects the probe now: nothing confirms either way.
+      provider.handleRequest = async (req) => jsonResponse(req.requestId, 400);
+      for (let sweep = 0; sweep < 3; sweep++) {
+        vi.setSystemTime(Date.now() + intervalMs);
+        await checker.runSweep();
+      }
+      expect(statusOf(provider, 'image-a')).toBe('unknown');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('never announces the account reason or its status code to buyers', async () => {
     const provider = makeProvider({ services: ['model-a'], onRequest: statusSequence({ 'model-a': [401] }) });
     const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1 });

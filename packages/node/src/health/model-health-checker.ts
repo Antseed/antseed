@@ -142,6 +142,8 @@ interface TrackedService {
    * failing without a new alert, and a success reports the recovery.
    */
   retrying: boolean;
+  /** The account answer this service last followed, by `_accountAnswers` count (see `_followAccount`). */
+  accountFollowed: number | null;
 }
 
 class ProbeTimeoutError extends Error {}
@@ -177,6 +179,8 @@ export class ModelHealthChecker {
   private readonly _onSweepComplete: ModelHealthCheckerConfig['onSweepComplete'];
   /** Each upstream's credit as last seen; unset until something said. */
   private readonly _accounts = new Map<Provider, AccountState>();
+  /** How many account answers each provider has had, changed or not. */
+  private readonly _accountAnswers = new Map<Provider, number>();
   /** Services marked failing before `onChange` could be told; reported on the first start. */
   private _failingAtInit: TrackedService[] = [];
 
@@ -328,6 +332,11 @@ export class ModelHealthChecker {
   private _followAccount(provider: Provider, state: TrackedService): void {
     const account = this._accounts.get(provider);
     if (account === 'out') {
+      // Only a new answer counts: copying a cached one every sweep would keep the service failing
+      // after the account is funded whenever the probes stop telling (say they turn inconclusive).
+      const answer = this._accountAnswers.get(provider) ?? 0;
+      if (state.accountFollowed === answer) return;
+      state.accountFollowed = answer;
       state.lastProbeAt = Date.now();
       state.lastStatusCode = null;
       state.lastDetail = 'The upstream account is out of credit';
@@ -439,6 +448,7 @@ export class ModelHealthChecker {
         probeInFlight: false,
         liveFailed: false,
         retrying: false,
+        accountFollowed: null,
       };
       this._states.set(key, state);
     }
@@ -585,12 +595,13 @@ export class ModelHealthChecker {
   }
 
   /**
-   * No probe can tell when a service failing on live failures works again,
-   * and buyers skip it while it is failing: after the same backoff a probed
+   * No probe can tell when a service failing on live failures (or on its
+   * upstream's credit, which nothing may confirm again) works again, and
+   * buyers skip it while it is failing: after the same backoff a probed
    * service waits, it is announced unknown so buyers try it again.
    */
   private _retryAfterLiveFailures(state: TrackedService): void {
-    if (state.status !== 'failing' || !state.liveFailed || state.checkedAt === null) return;
+    if (state.status !== 'failing' || !(state.liveFailed || state.reason === 'out_of_credit') || state.checkedAt === null) return;
     if (Date.now() - state.checkedAt < this._failingBackoff(state) * this._intervalMs - LIVE_FAILURE_PROBE_MIN_GAP_MS) return;
     state.status = 'unknown';
     state.retrying = true;
@@ -663,6 +674,7 @@ export class ModelHealthChecker {
 
   /** Records an upstream's credit and reports a change; the first reading of a funded account is not a change. */
   private _setAccount(provider: Provider, next: AccountState, detail: string, balanceUsd: number | null): void {
+    this._accountAnswers.set(provider, (this._accountAnswers.get(provider) ?? 0) + 1);
     const previous = this._accounts.get(provider);
     if (previous === next) return;
     this._accounts.set(provider, next);

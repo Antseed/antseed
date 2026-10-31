@@ -215,7 +215,7 @@ function retrieveBody(service: string, queueId: string, deleteMedia: unknown): U
 
 type VeniceAccount =
   | { status: 'ok'; balanceUsd: number }
-  | { status: 'unavailable'; reason: string }
+  | Extract<UpstreamAccountStatus, { status: 'unavailable' }>
   | { status: 'unknown'; reason: string };
 
 /**
