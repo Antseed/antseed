@@ -14,6 +14,13 @@ export const DEFAULT_HEALTH_CHECK_FAILURE_THRESHOLD = 3;
 export const DEFAULT_HEALTH_CHECK_PROBE_TIMEOUT_MS = 60_000;
 /** Shortest gap between probes triggered by failed buyer requests for one service. */
 export const LIVE_FAILURE_PROBE_MIN_GAP_MS = 30_000;
+/**
+ * A service that keeps failing is probed less often: every interval, then
+ * every second, then every third (with the default, 5, 10 and 15 minutes).
+ * Its upstream is often rate limited or out of credit, and each probe would
+ * add to that. A successful buyer request still marks it healthy at once.
+ */
+export const MAX_FAILING_PROBE_BACKOFF = 3;
 
 export interface ModelHealthTarget {
   /**
@@ -282,6 +289,10 @@ export class ModelHealthChecker {
           debugLog(`[ModelHealth] ${provider.name}/${service}: skipping probe, served a buyer ${Math.round((now - state.lastTrafficAt) / 1000)}s ago`);
           continue;
         }
+        if (this._backingOff(state, now)) {
+          debugLog(`[ModelHealth] ${provider.name}/${service}: failing, next probe later (${state.consecutiveFailures} failed checks in a row)`);
+          continue;
+        }
         await this._probeService(target, service);
       }
     }
@@ -501,11 +512,22 @@ export class ModelHealthChecker {
     return this._targets.find((entry) => entry.provider === provider || entry.probeProvider === provider);
   }
 
+  /** A failing service skips scheduled probes for longer the more checks it has failed in a row. */
+  private _backingOff(state: TrackedService, now: number): boolean {
+    if (state.status !== 'failing' || state.lastProbeAt === null) return false;
+    const backoff = Math.min(MAX_FAILING_PROBE_BACKOFF, 1 + state.consecutiveFailures - this._failureThreshold);
+    // Sweeps come one interval apart, so allow one to come a little early.
+    return backoff > 1 && now - state.lastProbeAt < backoff * this._intervalMs - LIVE_FAILURE_PROBE_MIN_GAP_MS;
+  }
+
   private _probeSoon(target: ModelHealthTarget, service: string): void {
     // Image and video services are never probed (a probe would cost a real generation).
     if (!supportsHealthProbe(resolveProbeProtocol(target.provider, service))) return;
     const state = this._stateFor(target.provider, service);
     if (state.probeInFlight) return;
+    // Already announced as failing: a probe could only confirm it. A buyer
+    // success or the next scheduled probe notices recovery.
+    if (state.status === 'failing') return;
     if (state.lastProbeAt !== null && Date.now() - state.lastProbeAt < LIVE_FAILURE_PROBE_MIN_GAP_MS) return;
     // A full provider answers its own 429, which says nothing about the upstream.
     if (this._atCapacity(target.provider)) return;

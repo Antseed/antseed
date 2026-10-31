@@ -542,6 +542,7 @@ export function sellerSummaryFromMetadata(metadata: PeerMetadata): SellerSummary
     providerServiceUnitBillingModels,
     providerServiceCapabilities,
     providerServiceHealth,
+    providerServicePerformance,
   } = mergeProviderAnnouncements(metadata.providers);
 
   return {
@@ -560,6 +561,7 @@ export function sellerSummaryFromMetadata(metadata: PeerMetadata): SellerSummary
       : {}),
     ...(Object.keys(providerServiceCapabilities).length ? { providerServiceCapabilities } : {}),
     ...(Object.keys(providerServiceHealth).length ? { providerServiceHealth } : {}),
+    ...(Object.keys(providerServicePerformance).length ? { providerServicePerformance } : {}),
     defaultInputUsdPerMillion: firstProvider?.defaultPricing.inputUsdPerMillion,
     defaultOutputUsdPerMillion: firstProvider?.defaultPricing.outputUsdPerMillion,
     defaultCachedInputUsdPerMillion: firstProvider?.defaultPricing.cachedInputUsdPerMillion,

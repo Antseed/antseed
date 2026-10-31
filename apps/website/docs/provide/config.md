@@ -359,7 +359,7 @@ Both must be positive integers; `recordFlushIntervalMs` must be at least 1000. T
 
 ### Model health checks
 
-The seller checks its own services and announces the result in its signed metadata. Buyer traffic counts as a check: a service that served a paid buyer request in the last `intervalMs` is not probed. Other text services are probed with a one-token request at startup and every `intervalMs`, and a buyer request that fails upstream triggers an early probe of that service. After `failureThreshold` failed checks in a row the service is announced as failing: it stays in the metadata, buyers leave it out of their model lists and automatic routing, and a buyer who pins it gets an error saying the seller's health check is failing and why. The first passed check, or a successful buyer request, marks it healthy again.
+The seller checks its own services and announces the result in its signed metadata. Buyer traffic counts as a check: a service that served a paid buyer request in the last `intervalMs` is not probed. Other text services are probed with a one-token request at startup and every `intervalMs`, and a buyer request that fails upstream triggers an early probe of that service, unless it is already announced as failing. A service that keeps failing is probed less often: every `intervalMs`, then every second, then every third (with the default 5, 10 and 15 minutes), so a rate-limited or empty upstream account is not hit by every check. After `failureThreshold` failed checks in a row the service is announced as failing: it stays in the metadata, buyers leave it out of their model lists and automatic routing, and a buyer who pins it gets an error saying the seller's health check is failing and why. The first passed check, or a successful buyer request, marks it healthy again.
 
 Image and video services are never probed, because a probe would generate a paid result. Instead, the Venice and fal video plugins check the account and model list for free every `intervalMs` (see [Image and video services](/docs/provide/media)).
 
@@ -370,6 +370,8 @@ Image and video services are never probed, because a probe would generate a paid
   }
 }
 ```
+
+The seller also announces, in its signed metadata, how each service served buyers in the last hour: the number of requests, the share the upstream answered without a server-side error, rate limit, timeout or an error inside the stream, and for streamed answers the median and 90th percentile time to the first generated token and the median output speed. The seller keeps running counts rather than every request, so this costs next to nothing at any traffic. It measures these on its own buyer traffic, so there is nothing to configure. Buyers start from these figures for a seller they have not used yet, so a model that keeps failing gets less traffic before each buyer finds out for itself. See [discovery](/docs/discovery).
 
 ### Ant agent
 

@@ -262,6 +262,16 @@ test('peer services, model offers and route-preview candidates carry the seller\
   assert.deepEqual(candidate!.health, failing)
 })
 
+test('peer services and model offers carry the seller\'s measured performance', () => {
+  const performance = { requests: 312, successRate: 0.97, firstTokenMsP50: 420, tokensPerSecondP50: 78 }
+  const row = { ...PEERS_BODY.peers[0], providerServicePerformance: { openai: { services: { 'open-model-a': performance, 'open-model-b': { requests: 'x' } } } } }
+  const services = peerServices(row as Record<string, unknown>)
+  assert.deepEqual(services.find((entry) => entry.service === 'open-model-a')?.performance, { ...performance, firstTokenMsP90: null })
+  assert.equal(services.find((entry) => entry.service === 'open-model-b')?.performance, undefined, 'a malformed entry is not shown')
+  const [model] = mapNetworkModels({ data: [{ id: 'open-model-a', peers: [{ peerId: PEER_A, serviceId: 'open-model-a', performance }] }] }, [])
+  assert.equal(model!.offers[0]!.performance?.requests, 312)
+})
+
 test('peer services give a paid unit-billed service no seller-wide program', () => {
   const row = {
     ...PEERS_BODY.peers[0],

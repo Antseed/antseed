@@ -15,6 +15,7 @@ import {
   adaptPeerFaultErrorResponse,
   describeServiceHealth,
   parseProviderServiceHealthMatrix,
+  parseProviderServicePerformanceMatrix,
   SELF_HEALTH_ERROR_STATUS,
   SELLER_SELF_HEALTH_FAILING_CODE,
   isFreeTierExhaustedResponse,
@@ -33,6 +34,7 @@ import {
   rankModelRoutes,
   SellerHealthBook,
   orderAdaptiveRoutes,
+  reportedSuccessPrior,
   adaptiveFirstTokenTimeoutMs,
   sanitizePeerDisplayName,
   type AntseedNode,
@@ -609,6 +611,7 @@ const PEER_CATALOG_FIELDS = [
   'providerServiceUnitBillingModels',
   'providerServiceCapabilities',
   'providerServiceHealth',
+  'providerServicePerformance',
 ] as const satisfies readonly (keyof PeerInfo)[]
 /**
  * Requests kept in the spend-attribution map. Entries outlive their request on
@@ -995,6 +998,10 @@ export function parsePersistedPeers(
     const persistedHealth = parseProviderServiceHealthMatrix(entry.providerServiceHealth)
     if (persistedHealth) {
       peer.providerServiceHealth = persistedHealth
+    }
+    const persistedPerformance = parseProviderServicePerformanceMatrix(entry.providerServicePerformance)
+    if (persistedPerformance) {
+      peer.providerServicePerformance = persistedPerformance
     }
     if (typeof entry.defaultInputUsdPerMillion === 'number') {
       peer.defaultInputUsdPerMillion = entry.defaultInputUsdPerMillion
@@ -1788,6 +1795,7 @@ export class BuyerProxy {
       ...(openChannels ? { channelOpen: modelRouteTotalPrice(candidate) === 0 || openChannels.has(candidate.peerId.toLowerCase()) } : {}),
       saturated: typeof candidate.peer.maxConcurrency === 'number' && candidate.peer.maxConcurrency > 0
         && (this._inFlightBySeller.get(candidate.peerId.toLowerCase()) ?? 0) >= candidate.peer.maxConcurrency,
+      reported: candidate.offer.performance ?? null,
     }), this._sellerHealth, requestShape(request), {
       now,
       affinityKey: input.affinityKey ?? null,
@@ -1856,7 +1864,12 @@ export class BuyerProxy {
       else if (health.unhealthy) verdict.reasons.push(`failing lately: ${health.stats?.lastFailureReason ?? 'failed requests'} (tried after healthy sellers)`)
       if (pool.length > 1 && pool.includes(candidate)) verdict.reasons.push(`shares traffic with ${pool.length - 1} other seller(s)`)
       if (modelRouteTotalPrice(candidate) === 0) verdict.reasons.push('free')
-      verdict.reasons.push(`success ~${Math.round(health.successProbability * 100)}%${health.stats ? '' : ' (no data yet)'}`)
+      const reported = candidate.offer.performance
+      let basis = ''
+      if (!health.stats) {
+        basis = reported && reportedSuccessPrior(reported) !== null ? ` (seller reports ${reported.requests} requests in the last hour)` : ' (no data yet)'
+      }
+      verdict.reasons.push(`success ~${Math.round(health.successProbability * 100)}%${basis}`)
       const latency = this._peerLatency(candidate.peerId, candidate.serviceId)
       if (latency !== null) verdict.reasons.push(`first token ~${Math.round(latency)}ms`)
       const throughput = this._peerThroughput(candidate.peerId, candidate.serviceId)
@@ -1888,6 +1901,14 @@ export class BuyerProxy {
         inFlight: this._inFlightBySeller.get(candidate.peerId.toLowerCase()) ?? 0,
         maxConcurrency,
         routeChainPosition: position !== undefined ? position + 1 : null,
+        ...(reported ? {
+          reported: {
+            requests: reported.requests,
+            successRate: reported.successRate,
+            firstTokenMsP50: reported.firstTokenMsP50 ?? null,
+            tokensPerSecondP50: reported.tokensPerSecondP50 ?? null,
+          },
+        } : {}),
       }
       verdict.selection = selection
       selections.set(candidate, selection)
@@ -2616,6 +2637,7 @@ export class BuyerProxy {
         providerServiceUnitBillingModels: p.providerServiceUnitBillingModels ?? null,
         providerServiceCapabilities: p.providerServiceCapabilities ?? null,
         providerServiceHealth: p.providerServiceHealth ?? null,
+        providerServicePerformance: p.providerServicePerformance ?? null,
         defaultInputUsdPerMillion: p.defaultInputUsdPerMillion ?? 0,
         defaultOutputUsdPerMillion: p.defaultOutputUsdPerMillion ?? 0,
         defaultCachedInputUsdPerMillion: p.defaultCachedInputUsdPerMillion ?? null,
@@ -3033,6 +3055,7 @@ export class BuyerProxy {
         providerServiceUnitBillingModels: p.providerServiceUnitBillingModels,
         providerServiceCapabilities: p.providerServiceCapabilities,
         providerServiceHealth: p.providerServiceHealth,
+        providerServicePerformance: p.providerServicePerformance,
         reputationScore: p.reputationScore,
         onChainReputationScore: p.onChainReputationScore ?? null,
         trust: p.trust ?? null,

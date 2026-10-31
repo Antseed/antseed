@@ -771,6 +771,16 @@ export interface ServiceHealthView {
   httpStatus: number | null
 }
 
+/** How a seller says one model served all its buyers in the last hour (signed in its metadata). */
+export interface ServicePerformanceView {
+  requests: number
+  /** 0–1. */
+  successRate: number
+  firstTokenMsP50: number | null
+  firstTokenMsP90: number | null
+  tokensPerSecondP50: number | null
+}
+
 export interface Peer {
   peerId: string
   displayName: string | null
@@ -789,6 +799,8 @@ export interface Peer {
     freeTier?: FreeTierProgramView | null
     /** The seller's last announced self health check; routing skips a failing service. Absent when not announced. */
     health?: ServiceHealthView
+    /** The seller's measured performance in the last hour. Absent when not announced. */
+    performance?: ServicePerformanceView
   }>
   trustScore: number | null
   reputationScore: number | null
@@ -908,6 +920,8 @@ export interface NetworkModelOffer {
   tokensPerSecondP50: number | null
   /** The seller's last announced self health check; failing offers are not listed. */
   health?: ServiceHealthView
+  /** The seller's measured performance in the last hour. */
+  performance?: ServicePerformanceView
 }
 
 /** A model on the network, merged across the sellers that offer it (aliases included). */

@@ -59,6 +59,8 @@ import {
 } from '@antseed/api-adapter';
 import { parseResponseUsage } from './utils/response-usage.js';
 import { buildSelfHealthErrorResponse, isUpstreamFailureStatus } from './health/self-health-error.js';
+import type { ServicePerformanceTracker } from './health/service-performance.js';
+import { StreamOutcome } from './health/stream-outcome.js';
 import { routingProtocolForPath, routingProtocolOf, routingRequestOf, routingWireProtocol, ROUTING_PROTOCOLS, type RoutingProtocol } from '@antseed/protocol/routing';
 
 type ProviderTokenPricing = import('./interfaces/seller-provider.js').ProviderTokenPricingUsdPerMillion;
@@ -185,6 +187,8 @@ export interface SellerRequestHandlerDeps {
   reserveEstimateOverdraftUsdc?: bigint;
   /** Persistent buyer ownership and pending charges for stateful video jobs. Video follow-ups fail closed without it. */
   resourceOwnershipStore?: ResourceOwnershipStore | null;
+  /** Records how each service served buyers, for the seller to announce. */
+  servicePerformance?: ServicePerformanceTracker | null;
   emit: (event: string, ...args: unknown[]) => boolean;
 }
 
@@ -802,6 +806,8 @@ export class SellerRequestHandler {
       let downloadHash: ReturnType<typeof createStreamingResponseHash> | undefined;
       let heldDoneChunkData: Uint8Array | null = null;
       let responseStartedAt = startTime;
+      // First generated token and in-stream failures of a streamed answer, for the performance this seller announces.
+      const streamOutcome = new StreamOutcome();
       let responseForAuth: SerializedHttpResponse | null = null;
       let streamAuthStatusCode = 0;
       let streamAuthHeaders: Record<string, string> | null = null;
@@ -842,6 +848,7 @@ export class SellerRequestHandler {
             },
             onResponseChunk: (chunk) => {
               if (!streamedResponseStarted) return;
+              if (!downloadHash) streamOutcome.observe(chunk.data);
               if (downloadHash) {
                 downloadHash.update(chunk.data);
                 if (!chunk.done) return mux.sendDownloadChunk(chunk);
@@ -966,7 +973,17 @@ export class SellerRequestHandler {
           }
 
         // Record metering
-        const latencyMs = Date.now() - startTime;
+        const finishedAt = Date.now();
+        const latencyMs = finishedAt - startTime;
+        // Video jobs are polled and downloaded on their own schedule: their timing says nothing about the model.
+        if (!videoRoute && requestedModel !== 'unknown') {
+          const { firstTokenAt } = streamOutcome;
+          this._deps.servicePerformance?.record(provider.name, requestedModel, {
+            ok: failureMessage === null && !streamOutcome.failed && !isUpstreamFailureStatus(statusCode),
+            ...(firstTokenAt !== null ? { firstTokenMs: firstTokenAt - startTime, streamMs: finishedAt - firstTokenAt } : {}),
+            outputTokens: responseUsage.outputTokens,
+          }, finishedAt);
+        }
         if (this._deps.sessionTracker) {
           await this._deps.sessionTracker.recordMetering({
             buyerPeerId,
