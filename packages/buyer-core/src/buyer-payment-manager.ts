@@ -2071,15 +2071,24 @@ export class BuyerPaymentManager {
     if (loadHeadroom > step) additionalReserve = loadHeadroom < maxStep ? loadHeadroom : maxStep;
     const deadline = this._authDeadline();
 
+    // A top-up still waiting on-chain will lock its increase from the same
+    // deposits: budget only what is left after it, so stacked top-ups never
+    // authorize more than the buyer holds.
+    const pendingTopUp = this._pendingReserveAuth.get(sellerPeerId);
+    const outstanding = pendingTopUp && pendingTopUp.confirmedAmount > 0n && prevCeiling > pendingTopUp.confirmedAmount
+      ? prevCeiling - pendingTopUp.confirmedAmount
+      : 0n;
+
     try {
       const balance = await this.getBalance();
-      // A load-sized step shrinks to what is available; the configured step is the floor.
-      if (additionalReserve > step && balance.available < additionalReserve) {
-        additionalReserve = balance.available > step ? balance.available : step;
+      const budget = balance.available > outstanding ? balance.available - outstanding : 0n;
+      // A load-sized step shrinks to the budget; the configured step is the floor.
+      if (additionalReserve > step && budget < additionalReserve) {
+        additionalReserve = budget > step ? budget : step;
       }
-      if (balance.available < additionalReserve) {
+      if (budget < additionalReserve) {
         throw buyerFault(
-          `Insufficient buyer deposits for reserve top-up: available=${balance.available} required=${additionalReserve}`,
+          `Insufficient buyer deposits for reserve top-up: available=${balance.available} pending=${outstanding} required=${additionalReserve}`,
           'buyer-deposits-insufficient',
         );
       }
@@ -2105,7 +2114,8 @@ export class BuyerPaymentManager {
       salt,
       maxAmount: newCeiling,
       deadline,
-      confirmedAmount: prevCeiling,
+      // Stacked on a top-up still pending: the chain has confirmed only what that one had.
+      confirmedAmount: prevCeiling - outstanding,
     };
 
     // Send ReserveAuth sig with reserve fields (same pattern as initial authorizeSpending).

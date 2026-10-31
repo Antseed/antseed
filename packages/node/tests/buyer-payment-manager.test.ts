@@ -1963,6 +1963,36 @@ describe('BuyerPaymentManager', () => {
     expect((mux.sentSpendingAuths[0] as Record<string, unknown>).reserveMaxAmount).toBe('16480000');
   });
 
+  it('never authorizes stacked top-ups beyond the deposits left after one still pending on-chain', async () => {
+    store.close();
+    store = new ChannelStore(tempDir);
+    manager = new BuyerPaymentManager(identity, makeConfig(tempDir, { maxReserveAmountUsdc: 1_000_000n }), store);
+    manager.setSigner(Wallet.createRandom());
+    mux = createMockPaymentMux();
+    const sellerPeerId = fakePeerId('seller-stacked-topup');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    manager.handleAuthAck(sellerPeerId, { channelId });
+    vi.spyOn(manager, 'getBalance').mockResolvedValue({ available: 12_000_000n, reserved: 1_000_000n });
+    const internals = manager as unknown as {
+      _metadata: Map<string, { cumulativeRequestCount: bigint }>;
+      _verifiedCost: Map<string, bigint>;
+    };
+    internals._metadata.set(sellerPeerId, { ...internals._metadata.get(sellerPeerId)!, cumulativeRequestCount: 10n });
+    internals._verifiedCost.set(sellerPeerId, 700_000n);
+    for (let i = 0; i < 200; i += 1) manager.beginPaidRequest(sellerPeerId);
+    const ceilings = (): string[] => mux.sentSpendingAuths.map((auth) => (auth as Record<string, unknown>).reserveMaxAmount as string);
+    mux.sentSpendingAuths.length = 0;
+
+    // $28 needed: capped at ten steps. The seller defers it (below the settle threshold).
+    await manager.topUpReserve(sellerPeerId, mux);
+    // Still short: only the $2 left after the pending $10 can be added.
+    await manager.topUpReserve(sellerPeerId, mux);
+    expect(ceilings()).toEqual(['11000000', '13000000']);
+    // Nothing left: refuse rather than authorize more than the deposits hold.
+    await expect(manager.topUpReserve(sellerPeerId, mux)).rejects.toThrow(/Insufficient buyer deposits/);
+    expect(ceilings()).toHaveLength(2);
+  });
+
   it('resendReserveAuth replays the original reserve amount after top-up', async () => {
     store.close();
     store = new ChannelStore(tempDir);
