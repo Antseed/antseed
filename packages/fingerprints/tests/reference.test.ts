@@ -9,6 +9,7 @@ import {
   queryProfileHash,
   referenceCompatibilityProfileHash,
   referenceEndpointRequest,
+  rescoreKbfReference,
   subsetReferenceSelfTest,
   validateKbfReferenceV1,
   type KbfReferenceV1,
@@ -440,4 +441,69 @@ describe('validateKbfReferenceV1', () => {
     duplicate.referenceId = computeReferenceId(duplicate);
     expect(() => validateKbfReferenceV1(duplicate)).toThrow(/duplicate self-test outcome/);
   });
+
+  it('accepts a missing self-test answer scored either as unscored (null) or, in older references, as 0', () => {
+    const current = withOutcome(reference(), { probeId: 'p-0', answers: [null, 0, 0], matches: [null, 1, 1] });
+    expect(() => validateKbfReferenceV1(current)).not.toThrow();
+    const legacy = withOutcome(reference(), { probeId: 'p-0', answers: [null, 0, 0], matches: [0, 1, 1] });
+    expect(() => validateKbfReferenceV1(legacy)).not.toThrow();
+    const outOfRange = withOutcome(reference(), { probeId: 'p-0', answers: [5_000, 0, 0], matches: [null, 1, 1] });
+    expect(() => validateKbfReferenceV1(outOfRange)).not.toThrow();
+  });
 });
+
+describe('rescoreKbfReference', () => {
+  it('re-scores missing self-test answers as unscored and recomputes the derived fields', () => {
+    const legacy = withOutcome(reference(), { probeId: 'p-0', answers: [null, 0, null], matches: [0, 1, 0] });
+    expect(legacy.selfTest).toMatchObject({ hamming: 2, total: 300 });
+
+    const rescored = rescoreKbfReference(legacy);
+
+    expect(rescored.selfTest.outcomes[0]).toEqual({ probeId: 'p-0', answers: [null, 0, null], matches: [null, 1, null] });
+    expect(rescored.selfTest).toMatchObject({ hamming: 0, total: 298, coverage: 298 / 300 });
+    expect(rescored.statisticalPowerEvidence).toMatchObject({ selfHamming: 0, selfTotal: 298 });
+    expect(rescored.statisticalPower).toBeGreaterThanOrEqual(legacy.statisticalPower);
+    expect(rescored.referenceId).not.toBe(legacy.referenceId);
+    expect(rescored.referenceId).toBe(computeReferenceId(rescored));
+    expect(() => validateKbfReferenceV1(rescored)).not.toThrow();
+    expect(legacy.selfTest.outcomes[0]!.matches).toEqual([0, 1, 0]);
+  });
+
+  it('returns a current reference unchanged', () => {
+    const value = reference();
+    expect(rescoreKbfReference(value)).toBe(value);
+  });
+
+  it('keeps wrong answers as discrepancies', () => {
+    const legacy = withOutcome(reference(), { probeId: 'p-0', answers: [7, 0, 0], matches: [0, 1, 1] });
+    expect(rescoreKbfReference(legacy)).toBe(legacy);
+  });
+});
+
+function withOutcome(
+  value: KbfReferenceV1,
+  outcome: KbfReferenceV1['selfTest']['outcomes'][number],
+): KbfReferenceV1 {
+  const index = value.selfTest.outcomes.findIndex((entry) => entry.probeId === outcome.probeId);
+  value.selfTest.outcomes[index] = outcome;
+  const aggregate = subsetReferenceSelfTest(value, value.probes.map((probe) => probe.id));
+  value.selfTest = aggregate;
+  const power = computeBinomialPower({
+    selfHamming: aggregate.hamming,
+    selfTotal: aggregate.total,
+    probeCount: value.probes.length,
+    minimumMismatchDelta: value.minimumMismatchDelta,
+  });
+  value.statisticalPower = power.power;
+  value.statisticalPowerEvidence = {
+    ...value.statisticalPowerEvidence,
+    selfHamming: aggregate.hamming,
+    selfTotal: aggregate.total,
+    p0UpperBound: power.p0,
+    alternativeMismatchRate: power.p1,
+    criticalMismatchCount: power.criticalMismatchCount,
+    power: power.power,
+  };
+  value.referenceId = computeReferenceId(value);
+  return value;
+}

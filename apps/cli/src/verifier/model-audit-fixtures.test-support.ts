@@ -23,6 +23,7 @@ import {
   encodeResponseAuthSigningPayload,
 } from '@antseed/node'
 import {
+  modelAuditRechecksDirectory,
   modelAuditSellersDirectory,
   writeEpochAuditSummary,
   writeModelAuditSummary,
@@ -53,6 +54,8 @@ export interface FixtureAudit {
   routedService?: string
   /** UNDETERMINED answers like SAME, then is recorded as lacking verified ResponseAuth. */
   verdict: 'SAME' | 'DIFF' | 'UNDETERMINED'
+  /** A DIFF's recheck on fresh probes; omit for a DIFF that was never rechecked. */
+  recheck?: 'SAME' | 'DIFF' | 'UNDETERMINED'
   /** Seller key that actually signs ResponseAuth (defaults to `seller`). */
   signer?: Wallet
   reference?: KbfReferenceV1
@@ -162,63 +165,38 @@ export async function writeSignedAuditRun(input: {
         createdAt: timestamps.startedAt,
         createdByRunId: input.runId,
       })
-      const exchanges = signedExchanges({ ...audit, reference, auditor: input.auditor, runId: input.runId })
-      const answersById = new Map<string, number | null>()
-      const matchesById = new Map<string, 0 | 1 | null>()
-      for (const exchange of exchanges) {
-        for (const [position, probeId] of exchange.probeIds.entries()) {
-          answersById.set(probeId, exchange.answers[position] ?? null)
-          matchesById.set(probeId, exchange.matches[position] ?? null)
+      const auditId = canonicalHashBytes32({ fixture: input.runId, model, peerId })
+      const first = await writeFixtureEvidence({
+        audit, reference, auditor: input.auditor, runId: input.runId, completedAt: timestamps.completedAt,
+        displayName: `${model}-${index + 1}`, peerId, verdictWanted: audit.verdict, auditId,
+        directory: modelAuditSellersDirectory(input.evidenceDir, input.epoch, model, input.runId),
+      })
+      const { evidence, written, exchanges, matchVector, cost } = first
+      let verdict: FixtureAudit['verdict'] = audit.verdict
+      let recheck: ModelAuditSummaryV1['results'][number]['recheck']
+      if (audit.recheck) {
+        if (audit.verdict !== 'DIFF') throw new Error('only a DIFF fixture can carry a recheck')
+        const recheckReference = freshReference(reference)
+        const recheckAuditId = canonicalHashBytes32({ fixture: input.runId, model, peerId, recheck: true })
+        const second = await writeFixtureEvidence({
+          audit, reference: recheckReference, auditor: input.auditor, runId: `${input.runId}-recheck`,
+          completedAt: timestamps.completedAt, displayName: `${model}-${index + 1}`, peerId,
+          verdictWanted: audit.recheck, auditId: recheckAuditId,
+          directory: modelAuditRechecksDirectory(input.evidenceDir, input.epoch, model, input.runId),
+        })
+        verdict = audit.recheck === 'SAME' ? 'UNDETERMINED' : 'DIFF'
+        recheck = {
+          auditId: recheckAuditId,
+          status: audit.recheck,
+          referenceId: recheckReference.referenceId,
+          probeCount: recheckReference.probes.length,
+          parsedProbeCount: second.evidence.result.parsedProbeCount,
+          correctProbeCount: second.matchVector.filter((entry) => entry === 1).length,
+          cost: second.cost,
+          evidencePath: second.written.path,
+          evidenceHash: second.written.evidenceHash,
         }
       }
-      const answers = reference.probes.map((probe) => answersById.get(probe.id) ?? null)
-      const matchVector = reference.probes.map((probe) => matchesById.get(probe.id) ?? null)
-      const fragment = verifyKbf(reference, { answers, matchVector }, KBF_AUDIT_VERIFY_OPTIONS)
-      if (fragment.verdict === 'UNKNOWN') throw new Error(fragment.verdictReason ?? 'UNKNOWN fixture verdict')
-      const undetermined = audit.verdict === 'UNDETERMINED'
-      const verdict = undetermined ? 'UNDETERMINED' as const : fragment.verdict
-      const verdictReason = undetermined
-        ? 'one or more successful proxy batches lacked valid verified ResponseAuth'
-        : fragment.verdictReason
-      const cost = summarizeAuditExchangeCosts(exchanges)
-      const evidence: ProxyAuditEvidenceV1 = {
-        version: 1,
-        kind: 'antseed-buyer-proxy-kbf-audit',
-        evidenceLevel: 'proxy-observation-with-verified-response-auth-no-payment-evidence',
-        createdAt: timestamps.completedAt,
-        buyerProxy: { baseUrl: 'http://127.0.0.1:8377', statePath: '/tmp/buyer.state.json', pid: 1 },
-        target: { peerId, displayName: `${model}-${index + 1}`, agentId: audit.agentId, service: audit.service },
-        reference: {
-          referenceId: reference.referenceId,
-          referenceModel: reference.referenceModel,
-          queryProfileHash: queryProfileHash(reference.queryProfile),
-          queryProfile: reference.queryProfile,
-          statisticalPower: reference.statisticalPower,
-          statisticalPowerEvidence: reference.statisticalPowerEvidence as unknown as Record<string, unknown>,
-          selfTest: reference.selfTest,
-          probes: reference.probes,
-        },
-        exchanges,
-        result: {
-          selectedProbeCount: reference.probes.length,
-          parsedProbeCount: matchVector.filter((entry) => entry !== null).length,
-          matchVector,
-          matchVectorHash: fragment.matchVectorHash,
-          stats: fragment.stats,
-          verdict,
-          verdictReason,
-          outcomeReason: null,
-          cost,
-          cumulativeCost: cost,
-        },
-      }
-      if (verdict !== audit.verdict) throw new Error(`fixture produced ${fragment.verdict}, expected ${audit.verdict}`)
-      const auditId = canonicalHashBytes32({ fixture: input.runId, model, peerId })
-      const written = await writeProxyAuditEvidence(
-        modelAuditSellersDirectory(input.evidenceDir, input.epoch, model, input.runId),
-        auditId,
-        evidence,
-      )
       results.push({
         peerId,
         displayName: evidence.target.displayName,
@@ -237,6 +215,7 @@ export async function writeSignedAuditRun(input: {
         cumulativeCost: cost,
         evidencePath: written.path,
         evidenceHash: written.evidenceHash,
+        ...(recheck ? { recheck } : {}),
       })
     }
     const summaryPath = await writeModelAuditSummary(input.evidenceDir, input.epoch, model, {
@@ -390,4 +369,95 @@ function signedExchanges(input: FixtureAudit & {
       },
     }
   })
+}
+
+/** A copy of a reference with new probe IDs, as a recheck on fresh probes gets. */
+function freshReference(reference: KbfReferenceV1): KbfReferenceV1 {
+  const probes = reference.probes.map((probe) => ({ ...probe, id: `${probe.id}-fresh` }))
+  const ids = new Map(reference.probes.map((probe, index) => [probe.id, probes[index]!.id]))
+  const value: KbfReferenceV1 = {
+    ...reference,
+    referenceId: '',
+    probes,
+    selfTest: {
+      ...reference.selfTest,
+      outcomes: reference.selfTest.outcomes.map((outcome) => ({ ...outcome, probeId: ids.get(outcome.probeId)! })),
+    },
+    contrasts: reference.contrasts?.map((contrast) => ({
+      ...contrast,
+      distinguishingProbeIds: contrast.distinguishingProbeIds.map((id) => ids.get(id)!),
+    })),
+  } as KbfReferenceV1
+  value.referenceId = computeReferenceId(value)
+  return value
+}
+
+async function writeFixtureEvidence(input: {
+  audit: FixtureAudit
+  reference: KbfReferenceV1
+  auditor: Wallet
+  runId: string
+  completedAt: string
+  displayName: string
+  peerId: string
+  verdictWanted: FixtureAudit['verdict']
+  auditId: string
+  directory: string
+}) {
+  const { reference, peerId } = input
+  const audit = { ...input.audit, verdict: input.verdictWanted }
+  const timestamps = { completedAt: input.completedAt }
+  const exchanges = signedExchanges({ ...audit, reference, auditor: input.auditor, runId: input.runId })
+  const answersById = new Map<string, number | null>()
+  const matchesById = new Map<string, 0 | 1 | null>()
+  for (const exchange of exchanges) {
+    for (const [position, probeId] of exchange.probeIds.entries()) {
+      answersById.set(probeId, exchange.answers[position] ?? null)
+      matchesById.set(probeId, exchange.matches[position] ?? null)
+    }
+  }
+  const answers = reference.probes.map((probe) => answersById.get(probe.id) ?? null)
+  const matchVector = reference.probes.map((probe) => matchesById.get(probe.id) ?? null)
+  const fragment = verifyKbf(reference, { answers, matchVector }, KBF_AUDIT_VERIFY_OPTIONS)
+  if (fragment.verdict === 'UNKNOWN') throw new Error(fragment.verdictReason ?? 'UNKNOWN fixture verdict')
+  const undetermined = audit.verdict === 'UNDETERMINED'
+  const verdict = undetermined ? 'UNDETERMINED' as const : fragment.verdict
+  const verdictReason = undetermined
+    ? 'one or more successful proxy batches lacked valid verified ResponseAuth'
+    : fragment.verdictReason
+  const cost = summarizeAuditExchangeCosts(exchanges)
+  const evidence: ProxyAuditEvidenceV1 = {
+    version: 1,
+    kind: 'antseed-buyer-proxy-kbf-audit',
+    evidenceLevel: 'proxy-observation-with-verified-response-auth-no-payment-evidence',
+    createdAt: timestamps.completedAt,
+    buyerProxy: { baseUrl: 'http://127.0.0.1:8377', statePath: '/tmp/buyer.state.json', pid: 1 },
+    target: { peerId, displayName: input.displayName, agentId: audit.agentId, service: audit.service },
+    reference: {
+      referenceId: reference.referenceId,
+      referenceModel: reference.referenceModel,
+      queryProfileHash: queryProfileHash(reference.queryProfile),
+      queryProfile: reference.queryProfile,
+      statisticalPower: reference.statisticalPower,
+      statisticalPowerEvidence: reference.statisticalPowerEvidence as unknown as Record<string, unknown>,
+      selfTest: reference.selfTest,
+      probes: reference.probes,
+    },
+    exchanges,
+    result: {
+      selectedProbeCount: reference.probes.length,
+      parsedProbeCount: matchVector.filter((entry) => entry !== null).length,
+      matchVector,
+      matchVectorHash: fragment.matchVectorHash,
+      stats: fragment.stats,
+      verdict,
+      verdictReason,
+      outcomeReason: null,
+      cost,
+      cumulativeCost: cost,
+    },
+  }
+  if (verdict !== audit.verdict) throw new Error(`fixture produced ${fragment.verdict}, expected ${audit.verdict}`)
+  const written = await writeProxyAuditEvidence(input.directory, input.auditId, evidence)
+  return { evidence, written, exchanges, matchVector, cost }
 }

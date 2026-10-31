@@ -56,7 +56,25 @@ function peer(overrides: Partial<PeerInfo> = {}): PeerInfo {
 
 const targetPolicy = {
   minReputation: 0,
-  maxPricing: { inputUsdPerMillion: 5, outputUsdPerMillion: 30 },
+  priceCap: {
+    model: 'gpt-5.6-sol',
+    reference: { inputUsdPerMillion: 5, outputUsdPerMillion: 30 },
+    source: 'catalog' as const,
+    ratio: 1,
+  },
+}
+
+function pricedAt(input: number, output: number, cachedInput?: number): PeerInfo {
+  return peer({
+    providerPricing: { test: {
+      defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 },
+      services: { 'GPT-5.6-SOL': {
+        inputUsdPerMillion: input,
+        outputUsdPerMillion: output,
+        ...(cachedInput === undefined ? {} : { cachedInputUsdPerMillion: cachedInput }),
+      } },
+    } },
+  })
 }
 
 function reference(count: number): KbfReferenceV1 {
@@ -119,7 +137,8 @@ async function runTarget(
   answerMode: 'valid' | 'out-of-range' | 'all-wrong' | 'partial-malformed' | 'malformed'
     | 'malformed-first-batch' | 'empty-responses' | 'content-filter' | 'sse' | 'transport-failure' | 'hanging'
     | 'rate-limited' | 'semantic-unavailable' | 'blank-length'
-    | 'persistent-blank-length' | 'checkpoint-abort' | 'sampling-rejected' = 'valid',
+    | 'persistent-blank-length' | 'checkpoint-abort' | 'sampling-rejected' | 'thinking-rejected'
+    | 'sparse-then-better' | 'sparse-best-first' = 'valid',
   transientFailures = 0,
   authMode: 'verified' | 'missing' | 'unverified' | 'wrong-request' | 'wrong-seller' | 'wrong-service' = 'verified',
   includeCost = true,
@@ -139,6 +158,7 @@ async function runTarget(
   let failureCount = 0
   let changedAnswer = false
   let returnedBlankLength = false
+  let firstBatchAttempts = 0
   let slowBatchCompleted = false
   let finalBatchStartedAfterSlow = false
   const requests: Array<{ headers: RequestInit['headers']; body: string }> = []
@@ -169,7 +189,10 @@ async function runTarget(
         error: { type: 'invalid_request_error', message: '`temperature` is deprecated for this model.' },
       }, { status: 400 })
     }
-    const prompt = body.messages.at(-1)?.content ?? ''
+    if (answerMode === 'thinking-rejected' && 'reasoning' in body) {
+      return Response.json({ error: { message: 'unsupported chat feature for claude messages: reasoning' } }, { status: 400 })
+    }
+    const prompt = body.messages.filter((message) => (message as { role?: string }).role !== 'assistant').at(-1)?.content ?? ''
     const firstProbe = Number(prompt.match(/test probe (\d+) value is ___/)?.[1] ?? 0)
     if (answerMode === 'checkpoint-abort' && firstProbe === 21) {
       return await new Promise<Response>((_resolve, reject) => {
@@ -197,12 +220,17 @@ async function runTarget(
     }
     if (answerMode === 'transport-failure') return new Response('unavailable', { status: 502 })
     const values = [...prompt.matchAll(/test probe (\d+) value is ___/g)].map((match) => Number(match[1]))
-    const content = values.map((value, index) => {
+    // Answers kept per attempt of the batch holding probe 1 (the rest are dropped).
+    const sparseKeep = firstProbe === 1 && (answerMode === 'sparse-then-better' || answerMode === 'sparse-best-first')
+      ? (answerMode === 'sparse-then-better' ? [3, 8, 10] : [4, 2, 3])[firstBatchAttempts++] ?? 10
+      : values.length
+    const content = values.slice(0, sparseKeep).map((value, index) => {
       if (answerMode === 'out-of-range' && !changedAnswer) {
         changedAnswer = true
         return `(${index + 1}) ${count + 100}`
       }
-      if (answerMode === 'all-wrong') return `(${index + 1}) ${count + 100}`
+      // In range but wrong: an out-of-range answer would be unscored instead.
+      if (answerMode === 'all-wrong') return `(${index + 1}) ${(value % count) + 1}`
       if (answerMode === 'partial-malformed' && index > 0) return `(${index + 1}) unknown`
       return `(${index + 1}) ${value}`
     }).join('\n')
@@ -586,7 +614,7 @@ test('target eligibility matches advertised spellings of the same model like buy
   }
   // Pricing is read from the matched service, so a renamed listing cannot dodge the price check.
   const overpriced = classifyVerificationTarget(advertising('openai/gpt-5.6-sol', 40), 'gpt-5.6-sol', targetPolicy)
-  assert.equal(overpriced.eligible ? null : overpriced.code, 'price_above_maximum')
+  assert.equal(overpriced.eligible ? null : overpriced.code, 'price_above_reference')
   assert.equal(classifyVerificationTarget(advertising('gpt-5.6'), 'gpt-5.6-sol', targetPolicy).eligible, false)
 })
 
@@ -603,7 +631,7 @@ test('target eligibility prefers the exact advertised id over a canonical match'
   assert.deepEqual(classifyVerificationTarget(both, 'gpt-5.6-sol', targetPolicy), { eligible: true, service: 'GPT-5.6-SOL' })
 })
 
-test('target eligibility applies buyer reputation and pricing before audit', () => {
+test('target eligibility applies the buyer reputation minimum before audit', () => {
   assert.deepEqual(classifyVerificationTarget(peer({ reputationScore: 20 }), 'gpt-5.6-sol', {
     ...targetPolicy,
     minReputation: 50,
@@ -613,17 +641,50 @@ test('target eligibility applies buyer reputation and pricing before audit', () 
     service: 'GPT-5.6-SOL',
     reason: 'peer reputation 20 is below buyer minimum 50',
   })
+})
 
-  assert.deepEqual(classifyVerificationTarget(peer({
-    providerPricing: { test: {
-      defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 },
-      services: { 'GPT-5.6-SOL': { inputUsdPerMillion: 6, outputUsdPerMillion: 31 } },
-    } },
-  }), 'gpt-5.6-sol', targetPolicy), {
+test('target eligibility audits sellers priced at or below the model reference price', () => {
+  assert.deepEqual(classifyVerificationTarget(pricedAt(4, 20), 'gpt-5.6-sol', targetPolicy), {
+    eligible: true, service: 'GPT-5.6-SOL',
+  })
+  assert.deepEqual(classifyVerificationTarget(pricedAt(5, 30, 5), 'gpt-5.6-sol', targetPolicy), {
+    eligible: true, service: 'GPT-5.6-SOL',
+  })
+})
+
+test('target eligibility skips sellers priced above the model reference price', () => {
+  assert.deepEqual(classifyVerificationTarget(pricedAt(6, 31), 'gpt-5.6-sol', targetPolicy), {
     eligible: false,
-    code: 'price_above_maximum',
+    code: 'price_above_reference',
     service: 'GPT-5.6-SOL',
-    reason: 'advertised price input $6/M, output $31/M exceeds buyer maximum input $5/M, output $30/M',
+    reason: 'priced $6/$31 per 1M, above the gpt-5.6-sol reference $5/$30 · not audited',
+  })
+  // Either side above the reference is enough.
+  assert.equal((classifyVerificationTarget(pricedAt(5, 30.01), 'gpt-5.6-sol', targetPolicy) as { code?: string }).code,
+    'price_above_reference')
+  // The seller's price for the model counts, not its cheaper default.
+  assert.equal(classifyVerificationTarget(pricedAt(16.99, 84.99), 'gpt-5.6-sol', targetPolicy).eligible, false)
+})
+
+test('target eligibility refuses cached input priced above input, as the buyer router does', () => {
+  // The buyer would refuse this offer, so auditing it could only end UNDETERMINED.
+  assert.deepEqual(classifyVerificationTarget(pricedAt(4, 30, 4.5), 'gpt-5.6-sol', targetPolicy), {
+    eligible: false,
+    code: 'policy_rejected',
+    service: 'GPT-5.6-SOL',
+    reason: 'could not read a valid advertised price for GPT-5.6-SOL',
+  })
+  assert.equal(classifyVerificationTarget(pricedAt(5, 30, 5), 'gpt-5.6-sol', targetPolicy).eligible, true)
+})
+
+test('auditPriceRatio allows sellers up to that multiple of the reference price', () => {
+  const tenPercent = { ...targetPolicy, priceCap: { ...targetPolicy.priceCap, ratio: 1.1 } }
+  assert.equal(classifyVerificationTarget(pricedAt(5.5, 33), 'gpt-5.6-sol', tenPercent).eligible, true)
+  assert.deepEqual(classifyVerificationTarget(pricedAt(5.6, 33), 'gpt-5.6-sol', tenPercent), {
+    eligible: false,
+    code: 'price_above_reference',
+    service: 'GPT-5.6-SOL',
+    reason: 'priced $5.6/$33 per 1M, above the gpt-5.6-sol reference $5/$30 × 1.1 · not audited',
   })
 })
 
@@ -690,6 +751,34 @@ test('target aliases select one eligible advertised spelling without duplicating
   })
 })
 
+test('an exact alias wins over a canonical spelling, whatever the alias order', () => {
+  // The seller lists the canonical spelling (priced high) and the exact second alias (priced low).
+  const listing = peer({
+    providerPricing: { test: {
+      defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 },
+      services: {
+        'openai/gpt-5.6-sol': { inputUsdPerMillion: 40, outputUsdPerMillion: 40 },
+        'gpt5.6-sol': { inputUsdPerMillion: 1, outputUsdPerMillion: 1 },
+      },
+    } },
+  })
+  assert.deepEqual(classifyVerificationTargetServices(listing, ['gpt-5.6-sol', 'gpt5.6-sol'], targetPolicy), {
+    eligible: true,
+    service: 'gpt5.6-sol',
+  })
+  // With no exact name listed, the canonical spelling is audited.
+  const renamed = peer({
+    providerPricing: { test: {
+      defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 },
+      services: { 'openai/gpt-5-6-sol-latest': { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } },
+    } },
+  })
+  assert.deepEqual(classifyVerificationTargetServices(renamed, ['gpt-5.6-sol', 'gpt5.6-sol'], targetPolicy), {
+    eligible: true,
+    service: 'openai/gpt-5-6-sol-latest',
+  })
+})
+
 test('buyer proxy snapshot requires a connected live daemon and parses peers', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-verifier-proxy-state-'))
   try {
@@ -703,6 +792,22 @@ test('buyer proxy snapshot requires a connected live daemon and parses peers', a
     assert.equal(snapshot.baseUrl, 'http://127.0.0.1:8377')
     assert.equal(snapshot.pid, process.pid)
     assert.equal(snapshot.peers.length, 1)
+    assert.equal(snapshot.settings, null)
+    await writeFile(join(directory, 'buyer.state.json'), JSON.stringify({
+      state: 'connected',
+      pid: process.pid,
+      port: 8377,
+      discoveredPeers: [peer()],
+      settings: {
+        minPeerReputation: 5,
+        maxPricing: { inputUsdPerMillion: 10, outputUsdPerMillion: 50 },
+      },
+    }))
+    assert.deepEqual((await loadBuyerProxySnapshot(directory)).settings, {
+      minPeerReputation: 5,
+      maxPricing: { inputUsdPerMillion: 10, outputUsdPerMillion: 50 },
+      maxReserveAmountUsdc: null,
+    })
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
@@ -757,10 +862,10 @@ test('audit batches use recorded crypto-random prompt variants', async () => {
   assert.ok(used.size > 1, 'expected more than one prompt variant across 50 batches')
 })
 
-test('audits send the canonical body without reference-endpoint settings', async () => {
+test('audits send the reference thinking suppression but no other reference-endpoint settings', async () => {
   const legacy = reference(100)
   legacy.queryProfile.reasoningStrategy = 'bare'
-  legacy.queryProfile.requestOverrides = { reasoning_effort: 'none', reasoning: { effort: 'low' } }
+  legacy.queryProfile.requestOverrides = { reasoning_effort: 'none', reasoning: { effort: 'low' }, provider: { order: ['X'] } }
   legacy.queryProfile.requestOmissions = ['temperature', 'top_p']
   const run = await runTarget(100, 'valid', 0, 'verified', true, 10_000, undefined, undefined, legacy)
   assert.equal(run.result.status, 'SAME')
@@ -768,12 +873,50 @@ test('audits send the canonical body without reference-endpoint settings', async
   for (const request of run.requests) {
     const body = JSON.parse(request.body) as Record<string, unknown>
     assert.equal(body.temperature, 0)
-    assert.equal(body.top_p, 1)
     assert.equal(body.max_tokens, legacy.queryProfile.maxTokensPerRequest)
     assert.equal(body.stream, false)
-    assert.equal(body.n, 1)
-    assert.equal(body.reasoning_effort, undefined)
-    assert.equal(body.reasoning, undefined)
+    // `n` and `top_p` are left out, as in the KBF reference code: Anthropic-Messages-only
+    // sellers reject `n`, and several upstreams reject `top_p` (Kimi K3, Opus 5, Opus 4.6).
+    assert.equal(body.n, undefined)
+    assert.equal(body.top_p, undefined)
+    // As in the KBF reference code, the target gets the reference's thinking suppression.
+    assert.equal(body.reasoning_effort, 'none')
+    assert.deepEqual(body.reasoning, { effort: 'low' })
+    assert.equal(body.provider, undefined)
+  }
+})
+
+test('audits append the reference prefill and record nothing when the seller accepts it', async () => {
+  const prefilled = reference(40)
+  prefilled.generator.params.referenceEndpointRequest = {
+    reasoningStrategy: 'prefill', requestOverrides: {}, requestOmissions: [], assistantPrefill: '<think></think>',
+  }
+  const run = await runTarget(40, 'valid', 0, 'verified', true, 10_000, undefined, undefined, prefilled)
+  assert.equal(run.result.status, 'SAME')
+  for (const exchange of run.evidence.exchanges) {
+    assert.equal(exchange.omittedThinkingSuppression, undefined)
+    const sent = JSON.parse(Buffer.from(exchange.request.bodyBase64, 'base64').toString('utf8')) as {
+      messages: Array<{ role: string; content: string }>
+    }
+    assert.deepEqual(sent.messages.at(-1), { role: 'assistant', content: '<think></think>' })
+  }
+})
+
+test('a seller refusing the thinking suppression is re-asked without it and the omission is recorded', async () => {
+  const suppressed = reference(40)
+  suppressed.generator.params.referenceEndpointRequest = {
+    reasoningStrategy: 'reasoning-effort-none', requestOverrides: { reasoning: { effort: 'none' } }, requestOmissions: [],
+  }
+  const run = await runTarget(40, 'thinking-rejected', 0, 'verified', true, 10_000, undefined, undefined, suppressed)
+  assert.equal(run.result.status, 'SAME')
+  const bodies = run.requests.map((request) => JSON.parse(request.body) as Record<string, unknown>)
+  const refused = bodies.filter((body) => 'reasoning' in body)
+  assert.ok(refused.length >= 1 && refused.length <= 2, `expected at most one refused request per concurrent batch, got ${refused.length}`)
+  for (const exchange of run.evidence.exchanges) {
+    assert.equal(exchange.omittedThinkingSuppression, true)
+    const sent = JSON.parse(Buffer.from(exchange.request.bodyBase64, 'base64').toString('utf8')) as Record<string, unknown>
+    assert.equal('reasoning' in sent, false)
+    assert.equal(sent.temperature, 0)
   }
 })
 
@@ -800,13 +943,42 @@ test('proxy runtime retries one verified blank length response without usable to
   assert.equal(firstBatchRequests[0]?.body, firstBatchRequests[1]?.body)
 })
 
-test('proxy runtime retries persistent blank length responses only once', async () => {
+test('proxy runtime re-asks a persistently blank batch twice, then keeps the result', async () => {
   const run = await runTarget(100, 'persistent-blank-length')
 
-  assert.equal(run.requestCount, 11)
-  assert.equal(run.evidence.exchanges[0]?.attemptCount, 2)
-  assert.equal(run.evidence.exchanges[0]?.requestIds.length, 2)
-  assert.equal(run.evidence.exchanges[0]?.attemptCosts?.length, 2)
+  assert.equal(run.requestCount, 12)
+  assert.equal(run.evidence.exchanges[0]?.attemptCount, 3)
+  assert.equal(run.evidence.exchanges[0]?.requestIds.length, 3)
+  assert.equal(run.evidence.exchanges[0]?.attemptCosts?.length, 3)
+  // The other nine batches still give 90% coverage, so the audit reaches a verdict.
+  assert.equal(run.result.status, 'SAME')
+  assert.equal(run.result.parsedProbeCount, 90)
+})
+
+test('a batch missing any answer is re-asked until it is complete', async () => {
+  const run = await runTarget(100, 'sparse-then-better')
+  const first = run.evidence.exchanges[0]!
+  // Attempts gave 3, 8 and 10 answers: the 8-answer try is still re-asked, and the full one is kept.
+  assert.equal(first.attemptCount, 3)
+  assert.equal(first.requestIds.length, 3)
+  assert.equal(first.attemptCosts?.length, 3)
+  assert.equal(first.answers.filter((answer) => answer !== null).length, 10)
+  assert.equal(first.responseAuth.requestId, first.requestIds[2])
+  assert.equal(run.requestCount, 12)
+  assert.equal(run.result.status, 'SAME')
+  assert.equal(run.result.parsedProbeCount, 100)
+  assert.equal(run.evidence.result.stats.targetHamming, 0)
+})
+
+test('a low-coverage batch keeps its best attempt after two re-asks', async () => {
+  const run = await runTarget(100, 'sparse-best-first')
+  const first = run.evidence.exchanges[0]!
+  assert.equal(first.attemptCount, 3)
+  assert.equal(first.requestIds.length, 3)
+  // Attempts gave 4, 2 and 3 answers; the first (4 answers) is kept with its own ResponseAuth.
+  assert.equal(first.answers.filter((answer) => answer !== null).length, 4)
+  assert.equal(first.responseAuth.requestId, first.requestIds[0])
+  assert.equal(run.requestCount, 12)
 })
 
 test('stale model advertisement skips after one model-not-found response', async () => {
@@ -823,6 +995,14 @@ test('stale model advertisement skips after one model-not-found response', async
   assert.equal(run.evidence.exchange.attemptCount, 1)
 })
 
+test('an upstream "Unknown model" answer is a stale advertisement, not an audit failure', async () => {
+  const run = await runSkippedTarget(Response.json({
+    error: { type: 'invalid_request_error', message: 'Unknown model: claude-sonnet-5.5' },
+  }, { status: 400 }))
+  assert.equal(run.requestCount, 1)
+  assert.equal(run.result.code, 'stale_model_advertisement')
+})
+
 test('deleted upstream credentials skip after the first batch with a structured reason', async () => {
   const run = await runSkippedTarget(Response.json({
     code: 'GROUP_DELETED',
@@ -834,7 +1014,7 @@ test('deleted upstream credentials skip after the first batch with a structured 
   assert.equal(run.evidence.result.outcomeReason?.code, 'upstream_credentials_invalid')
 })
 
-test('a seller refusing temperature/top_p is re-asked without them and the omission is recorded', async () => {
+test('a seller refusing temperature is re-asked without it and the omission is recorded', async () => {
   const run = await runTarget(40, 'sampling-rejected')
   assert.equal(run.result.status, 'SAME')
   const bodies = run.requests.map((request) => JSON.parse(request.body) as Record<string, unknown>)
@@ -842,14 +1022,14 @@ test('a seller refusing temperature/top_p is re-asked without them and the omiss
   assert.ok(withSampling.length >= 1 && withSampling.length <= 2, `expected at most one refused request per concurrent batch, got ${withSampling.length}`)
   assert.equal(bodies.length, run.evidence.exchanges.length + withSampling.length)
   for (const exchange of run.evidence.exchanges) {
-    assert.deepEqual(exchange.omittedSamplingFields, ['temperature', 'top_p'])
+    assert.deepEqual(exchange.omittedSamplingFields, ['temperature'])
     const sent = JSON.parse(Buffer.from(exchange.request.bodyBase64, 'base64').toString('utf8')) as Record<string, unknown>
     assert.equal('temperature' in sent, false)
     assert.equal('top_p' in sent, false)
   }
 })
 
-test('canonical audits send temperature and top_p and record no omission', async () => {
+test('canonical audits send temperature and record no omission', async () => {
   const run = await runTarget(40)
   for (const exchange of run.evidence.exchanges) {
     assert.equal(exchange.omittedSamplingFields, undefined)
@@ -869,18 +1049,24 @@ test('canonical temperature rejection skips after the first batch', async () => 
 
 test('proxy runtime reduces seller concurrency after HTTP 429', async () => {
   const run = await runTarget(40, 'rate-limited')
-  assert.equal(run.result.status, 'UNDETERMINED')
+  // Three of four batches answered: 75% coverage is enough for a verdict.
+  assert.equal(run.result.status, 'SAME')
+  assert.equal(run.result.parsedProbeCount, 30)
   assert.equal(run.evidence.exchanges[1]?.response?.statusCode, 429)
   assert.equal(run.evidence.exchanges[1]?.attemptCount, 5)
   assert.equal(run.finalBatchStartedAfterSlow, true)
 })
 
-test('one out-of-range answer remains in the fixed discrepancy denominator', async () => {
+test('an out-of-range answer is unscored, not counted wrong, and its batch is re-asked', async () => {
   const run = await runTarget(100, 'out-of-range')
+  // Only the first try returns the out-of-range answer; the re-ask answers every probe.
   assert.equal(run.result.status, 'SAME')
+  assert.equal(run.requestCount, 11)
   assert.equal(run.result.parsedProbeCount, 100)
-  assert.equal(run.evidence.result.stats.targetHamming, 1)
+  assert.equal(run.evidence.result.stats.targetHamming, 0)
   assert.equal(run.evidence.result.stats.targetTotal, 100)
+  const reasked = run.evidence.exchanges.find((exchange) => exchange.attemptCount === 2)
+  assert.ok(reasked, 'the batch with the out-of-range answer is asked twice')
 })
 
 for (const answerMode of ['malformed', 'empty-responses', 'content-filter'] as const) {
@@ -893,8 +1079,9 @@ for (const answerMode of ['malformed', 'empty-responses', 'content-filter'] as c
     assert.equal(run.result.outcomeReason?.code, 'malformed_output')
     assert.equal(run.result.outcomeReason?.affectedBatchCount, 10)
     assert.equal(run.result.outcomeReason?.nextAction, 'seller must return parseable output')
-    assert.equal(run.requestCount, 10)
-    assert.equal(run.evidence.exchanges.every((exchange) => exchange.attemptCount === 1), true)
+    // Each empty batch is asked three times (first try plus two re-asks), as in the KBF reference code.
+    assert.equal(run.requestCount, 30)
+    assert.equal(run.evidence.exchanges.every((exchange) => exchange.attemptCount === 3), true)
     assert.equal(run.evidence.exchanges.every((exchange) => (
       exchange.status === 'succeeded'
       && exchange.outcomeReason?.code === 'malformed_output'
@@ -903,7 +1090,7 @@ for (const answerMode of ['malformed', 'empty-responses', 'content-filter'] as c
   })
 }
 
-test('fully parsed wrong answers remain DIFF', async () => {
+test('fully parsed wrong answers are DIFF', async () => {
   const run = await runTarget(100, 'all-wrong')
   assert.equal(run.result.status, 'DIFF')
   assert.equal(run.result.parsedProbeCount, 100)
@@ -912,25 +1099,29 @@ test('fully parsed wrong answers remain DIFF', async () => {
   assert.equal(run.result.outcomeReason, null)
 })
 
-test('selective omissions remain discrepancies when a batch has a parseable answer', async () => {
+test('selective omissions are unscored, and a batch missing most answers is re-asked', async () => {
   const run = await runTarget(100, 'partial-malformed')
-  assert.equal(run.result.status, 'DIFF')
-  assert.equal(run.result.parsedProbeCount, 100)
-  assert.equal(run.evidence.result.stats.targetHamming, 90)
-  assert.equal(run.evidence.result.stats.targetTotal, 100)
+  // Every attempt answers only the first probe of each batch: 10 scored answers is under half.
+  assert.equal(run.result.status, 'UNDETERMINED')
+  assert.equal(run.result.parsedProbeCount, 10)
+  assert.equal(run.evidence.result.stats.targetHamming, 0)
+  assert.equal(run.evidence.result.stats.targetTotal, 10)
+  assert.equal(run.requestCount, 30)
   assert.equal(run.evidence.exchanges.every((exchange) => (
     exchange.matches[0] === 1
-    && exchange.matches.slice(1).every((match) => match === 0)
+    && exchange.matches.slice(1).every((match) => match === null)
     && exchange.outcomeReason === null
+    && exchange.attemptCount === 3
   )), true)
 })
 
-test('one wholly malformed batch makes the audit UNDETERMINED and can be repaired by resume', async () => {
+test('one wholly malformed batch is left unscored and can be repaired by resume', async () => {
   const first = await runTarget(100, 'malformed-first-batch')
-  assert.equal(first.result.status, 'UNDETERMINED')
+  // 90% of probes scored: enough for a verdict, the malformed batch is simply left out.
+  assert.equal(first.result.status, 'SAME')
   assert.equal(first.result.parsedProbeCount, 90)
-  assert.equal(first.result.outcomeReason?.code, 'malformed_output')
-  assert.equal(first.result.outcomeReason?.affectedBatchCount, 1)
+  assert.equal(first.evidence.exchanges[0]?.outcomeReason?.code, 'malformed_output')
+  assert.equal(first.evidence.exchanges[0]?.attemptCount, 3)
   assert.equal(first.evidence.exchanges[0]?.matches.every((match) => match === null), true)
 
   const resumed = await runTarget(100, 'valid', 0, 'verified', true, 10_000, {
@@ -974,7 +1165,7 @@ test('semantic temporarily-unavailable HTTP 400 retries and remains resumable', 
 
 test('resume reuses authenticated batches and requests only unresolved batches', async () => {
   const first = await runTarget(40, 'rate-limited')
-  assert.equal(first.result.status, 'UNDETERMINED')
+  assert.equal(first.evidence.exchanges[1]?.status, 'failed')
   const resumed = await runTarget(40, 'valid', 0, 'verified', true, 10_000, {
     parentAuditId: first.result.auditId,
     reservationAuditId: first.result.auditId,

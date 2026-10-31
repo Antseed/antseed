@@ -3,69 +3,36 @@ pragma solidity ^0.8.24;
 
 import { Test } from "forge-std/Test.sol";
 import { AntseedPointsPolicyRegistry } from "../policies/AntseedPointsPolicyRegistry.sol";
-import { AntseedVerificationPointsPolicy } from "../policies/AntseedVerificationPointsPolicy.sol";
+import { AntseedKbfVerificationPointsPolicy } from "../policies/AntseedKbfVerificationPointsPolicy.sol";
 import { AntseedWashTradingPointsPolicy } from "../policies/AntseedWashTradingPointsPolicy.sol";
-import { IAntseedVerification } from "../interfaces/IAntseedVerification.sol";
+import { IAntseedKbfVerification } from "../interfaces/IAntseedKbfVerification.sol";
 
 contract ScoreSourceForPoints {
-    mapping(uint256 => IAntseedVerification.AgentStatus) private _status;
+    mapping(uint256 => IAntseedKbfVerification.AgentStatus) private _status;
     bool public reverts;
 
     function set(uint256 agentId, uint16 verifiedCount, uint16 diffCount) external {
-        _status[agentId] = IAntseedVerification.AgentStatus(verifiedCount, diffCount);
+        _status[agentId] = IAntseedKbfVerification.AgentStatus(verifiedCount, diffCount);
     }
 
     function setReverts(bool value) external {
         reverts = value;
     }
 
-    function status(uint256 agentId) external view returns (IAntseedVerification.AgentStatus memory) {
+    function status(uint256 agentId) external view returns (IAntseedKbfVerification.AgentStatus memory) {
         return _status[agentId];
-    }
-}
-
-contract EpochGateForPoints {
-    uint256 public currentEpoch;
-    bool public reverts;
-
-    function setEpoch(uint256 epoch) external {
-        currentEpoch = epoch;
-    }
-
-    function setReverts(bool value) external {
-        reverts = value;
-    }
-
-    function epoch() external view returns (uint256) {
-        if (reverts) revert("gate down");
-        return currentEpoch;
-    }
-}
-
-/// @dev Exposes `currentEpoch` through a switch so the policy can be tested against a reverting gate.
-contract SwitchableEpochGate {
-    EpochGateForPoints public immutable gate;
-
-    constructor(EpochGateForPoints gate_) {
-        gate = gate_;
-    }
-
-    function currentEpoch() external view returns (uint256) {
-        return gate.epoch();
     }
 }
 
 /// @dev Routes `agentStatus` through a switch so the policy can be tested against a reverting source.
 contract SwitchableScoreSource {
     ScoreSourceForPoints public immutable source;
-    address public immutable emissionsGate;
 
-    constructor(ScoreSourceForPoints source_, address emissionsGate_) {
+    constructor(ScoreSourceForPoints source_) {
         source = source_;
-        emissionsGate = emissionsGate_;
     }
 
-    function agentStatus(uint256 agentId) external view returns (IAntseedVerification.AgentStatus memory) {
+    function agentStatus(uint256 agentId) external view returns (IAntseedKbfVerification.AgentStatus memory) {
         if (source.reverts()) revert("score source down");
         return source.status(agentId);
     }
@@ -95,12 +62,11 @@ contract WashStatusForVerificationPoints {
     }
 }
 
-contract AntseedVerificationPointsPolicyTest is Test {
+contract AntseedKbfVerificationPointsPolicyTest is Test {
     ScoreSourceForPoints scores;
     SellerPoolsForPoints pools;
     UsageAccountingForPoints accounting;
-    EpochGateForPoints gate;
-    AntseedVerificationPointsPolicy policy;
+    AntseedKbfVerificationPointsPolicy policy;
     address seller = address(0x100);
     address buyer = address(0x200);
 
@@ -111,53 +77,35 @@ contract AntseedVerificationPointsPolicyTest is Test {
         accounting = new UsageAccountingForPoints();
         accounting.setSellerPools(address(pools));
         pools.set(seller, 7);
-        gate = new EpochGateForPoints();
-        gate.setEpoch(5);
-        policy = new AntseedVerificationPointsPolicy(
-            address(new SwitchableScoreSource(scores, address(new SwitchableEpochGate(gate)))),
-            address(accounting),
-            100,
-            address(this)
+        policy = new AntseedKbfVerificationPointsPolicy(
+            address(new SwitchableScoreSource(scores)), address(accounting), 100, address(this)
         );
-        policy.setPointsStartEpoch(0);
     }
 
-    function test_pointsAreOffUntilStartEpoch() public {
-        AntseedVerificationPointsPolicy fresh = new AntseedVerificationPointsPolicy(
-            address(new SwitchableScoreSource(scores, address(new SwitchableEpochGate(gate)))),
-            address(accounting),
-            100,
-            address(this)
+    function test_ratesApplyAsSoonAsTheOwnerSetsThem() public {
+        AntseedKbfVerificationPointsPolicy fresh = new AntseedKbfVerificationPointsPolicy(
+            address(new SwitchableScoreSource(scores)), address(accounting), 0, address(this)
         );
-        assertEq(fresh.pointsStartEpoch(), type(uint256).max, "off by default");
-        _verify(10);
+        assertEq(fresh.bonusBps(), 0, "bonus off by default");
+        assertEq(fresh.penaltyBps(), 0, "penalty off by default");
+        scores.set(7, 10, 1);
         (uint256 sellerPoints,) = fresh.points(bytes32(0), buyer, seller, 10_000, 10_000);
-        assertEq(sellerPoints, 10_000, "off by default");
+        assertEq(sellerPoints, 10_000, "unchanged while both rates are 0");
 
         vm.expectEmit(address(fresh));
-        emit AntseedVerificationPointsPolicy.PointsStartEpochSet(6);
-        fresh.setPointsStartEpoch(6);
+        emit AntseedKbfVerificationPointsPolicy.PenaltyBpsSet(5_000);
+        fresh.setPenaltyBps(5_000);
         (sellerPoints,) = fresh.points(bytes32(0), buyer, seller, 10_000, 10_000);
-        assertEq(sellerPoints, 10_000, "before start epoch");
+        assertEq(sellerPoints, 5_000, "penalty applies on the next settlement");
 
-        gate.setEpoch(6);
+        fresh.setBonusBps(100);
         (sellerPoints,) = fresh.points(bytes32(0), buyer, seller, 10_000, 10_000);
-        assertEq(sellerPoints, 11_000, "from start epoch");
+        assertEq(sellerPoints, 6_000, "1 + 10 * 1% - 1 * 50%");
 
-        fresh.setPointsStartEpoch(type(uint256).max);
+        fresh.setBonusBps(0);
+        fresh.setPenaltyBps(0);
         (sellerPoints,) = fresh.points(bytes32(0), buyer, seller, 10_000, 10_000);
-        assertEq(sellerPoints, 10_000, "turned off again");
-
-        vm.prank(address(0xBAD));
-        vm.expectRevert();
-        fresh.setPointsStartEpoch(0);
-    }
-
-    function test_revertingGatePassesPointsThrough() public {
-        _verify(10);
-        gate.setReverts(true);
-        (uint256 sellerPoints,) = policy.points(bytes32(0), buyer, seller, 10_000, 10_000);
-        assertEq(sellerPoints, 10_000);
+        assertEq(sellerPoints, 10_000, "zeroing both rates turns it off again");
     }
 
     function test_eachVerifiedModelAddsBonusUpToCap() public {
@@ -243,7 +191,7 @@ contract AntseedVerificationPointsPolicyTest is Test {
     }
 
     function test_bonusIsCappedAndOwnerOnly() public {
-        vm.expectRevert(AntseedVerificationPointsPolicy.InvalidValue.selector);
+        vm.expectRevert(AntseedKbfVerificationPointsPolicy.InvalidValue.selector);
         policy.setBonusBps(5_001);
         policy.setBonusBps(5_000);
         _verify(1);

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { KbfReferenceV1 } from '@antseed/fingerprints'
-import { combineDiffRecheck, runDiffRechecks } from './diff-recheck.js'
+import { combineDiffRecheck, RECHECK_ENROLLMENT_ROUNDS, runDiffRechecks } from './diff-recheck.js'
 import type { ModelVerificationSkip, ModelVerificationTargetResult } from './model-run.js'
 import { BANK_EXHAUSTED } from './probe-bank.js'
 import { emptyAuditCostSummary } from './proxy-evidence.js'
@@ -74,31 +74,35 @@ test('only DIFF results are rechecked; a recheck DIFF confirms the DIFF', async 
   assert.ok(logs.some((line) => line.includes('confirmed DIFF')))
 })
 
-test('a recheck SAME turns the DIFF into UNDETERMINED; a recheck UNDETERMINED keeps the DIFF', async () => {
+test('a recheck SAME or UNDETERMINED turns the DIFF into UNDETERMINED', async () => {
   const toSame = result('b', 'DIFF')
   const toUndetermined = result('c', 'DIFF')
-  const { outcome } = await run({
+  const { outcome, logs } = await run({
     results: [toSame, toUndetermined],
     recheckVerdicts: { [toSame.peerId]: 'SAME', [toUndetermined.peerId]: 'UNDETERMINED' },
   })
-  assert.deepEqual(outcome.results.map((entry) => entry.status), ['UNDETERMINED', 'DIFF'])
+  assert.deepEqual(outcome.results.map((entry) => entry.status), ['UNDETERMINED', 'UNDETERMINED'])
   assert.deepEqual(outcome.results.map((entry) => entry.recheck?.status), ['SAME', 'UNDETERMINED'])
-  assert.equal(outcome.stats.notConfirmed, 1)
-  assert.equal(outcome.stats.confirmed, 1)
+  assert.equal(outcome.stats.notConfirmed, 2)
+  assert.equal(outcome.stats.confirmed, 0)
   assert.equal(outcome.failures.length, 0)
+  assert.ok(logs.some((line) => line.includes('recheck UNDETERMINED → not confirmed')))
 })
 
-test('a DIFF without fresh questions submits nothing when enrollment is off', async () => {
+test('a DIFF without fresh questions is kept, waiting for its recheck, when enrollment is off', async () => {
   const diff = result('b', 'DIFF')
-  const { outcome, verified } = await run({ results: [diff], exhausted: new Set([diff.peerId]) })
+  const { outcome, verified, logs } = await run({ results: [diff], exhausted: new Set([diff.peerId]) })
   assert.deepEqual(verified, [])
-  assert.equal(outcome.results.length, 0)
-  assert.equal(outcome.failures.length, 1)
-  assert.match(outcome.failures[0]!.reason, /DIFF not confirmed: recheck skipped, no fresh questions/)
-  assert.equal(outcome.stats.skipped, 1)
+  assert.equal(outcome.failures.length, 0)
+  assert.equal(outcome.results.length, 1)
+  assert.equal(outcome.results[0]!.status, 'DIFF')
+  assert.equal(outcome.results[0]!.recheck, undefined)
+  assert.match(outcome.results[0]!.recheckPending!.reason, /no fresh questions left and enrollment is off/)
+  assert.equal(outcome.stats.pending, 1)
+  assert.ok(logs.some((line) => line.includes('DIFF kept, not submitted')))
 })
 
-test('exhausted rechecks enroll fresh questions once, then recheck', async () => {
+test('exhausted rechecks enroll fresh questions once when that is enough, then recheck', async () => {
   const first = result('b', 'DIFF')
   const second = result('c', 'DIFF')
   const exhausted = new Set([first.peerId, second.peerId])
@@ -113,7 +117,27 @@ test('exhausted rechecks enroll fresh questions once, then recheck', async () =>
   assert.deepEqual(outcome.results.map((entry) => entry.status), ['DIFF', 'DIFF'])
 })
 
-test('a failed enrollment or a skipped recheck submits nothing for that seller', async () => {
+test('a seller still short of unseen questions after one enrollment triggers another, up to the limit', async () => {
+  const first = result('b', 'DIFF')
+  const stuck = result('c', 'DIFF')
+  const exhausted = new Set([first.peerId, stuck.peerId])
+  let enrollments = 0
+  const { outcome, verified } = await run({
+    results: [first, stuck],
+    exhausted,
+    // The first enrollment is enough for one seller; the second one never gets enough.
+    enroll: async () => { enrollments += 1; if (enrollments === 2) exhausted.delete(first.peerId) },
+  })
+  assert.equal(enrollments, RECHECK_ENROLLMENT_ROUNDS)
+  assert.deepEqual(verified, [first.peerId])
+  assert.deepEqual(outcome.results.map((entry) => [entry.peerId, entry.status, Boolean(entry.recheck), Boolean(entry.recheckPending)]), [
+    [first.peerId, 'DIFF', true, false],
+    [stuck.peerId, 'DIFF', false, true],
+  ])
+  assert.match(outcome.results[1]!.recheckPending!.reason, /BANK_EXHAUSTED/)
+})
+
+test('a failed enrollment, a skipped recheck or a recheck error keeps the first DIFF waiting for its recheck', async () => {
   const exhaustedDiff = result('b', 'DIFF')
   const skippedDiff = result('c', 'DIFF')
   const { outcome } = await run({
@@ -122,10 +146,37 @@ test('a failed enrollment or a skipped recheck submits nothing for that seller',
     enroll: async () => { throw new Error('budget exhausted') },
     recheckVerdicts: { [skippedDiff.peerId]: 'SKIPPED' },
   })
-  assert.equal(outcome.results.length, 0)
-  assert.deepEqual(outcome.failures.map((entry) => entry.peerId), [exhaustedDiff.peerId, skippedDiff.peerId])
-  assert.match(outcome.failures[0]!.reason, /enrollment failed: budget exhausted/)
-  assert.equal(outcome.stats.skipped, 2)
+  assert.equal(outcome.failures.length, 0)
+  assert.deepEqual(outcome.results.map((entry) => entry.status), ['DIFF', 'DIFF'])
+  assert.match(outcome.results[0]!.recheckPending!.reason, /enrollment failed: budget exhausted/)
+  assert.match(outcome.results[1]!.recheckPending!.reason, /recheck skipped: no ResponseAuth/)
+  assert.equal(outcome.stats.pending, 2)
+})
+
+test('a recheck that throws keeps the DIFF waiting too', async () => {
+  const diff = result('b', 'DIFF')
+  const outcome = await runDiffRechecks({
+    results: [diff],
+    reserve: async () => ({ reference, auditId: 'recheck-b' }),
+    enroll: null,
+    verify: async () => { throw new Error('reference endpoint 402: out of credits') },
+    concurrency: async (tasks) => { for (const task of tasks) await task() },
+    log: () => undefined,
+  })
+  assert.equal(outcome.results[0]!.status, 'DIFF')
+  assert.match(outcome.results[0]!.recheckPending!.reason, /recheck failed: reference endpoint 402/)
+})
+
+test('a DIFF carried over from an earlier run keeps its first wait time, and a later recheck clears the wait', async () => {
+  const carried = { ...result('b', 'DIFF'), recheckPending: { reason: 'earlier', since: '2026-10-27T00:00:00.000Z' } }
+  const stillStuck = await run({ results: [carried], exhausted: new Set([carried.peerId]) })
+  assert.equal(stillStuck.outcome.results[0]!.recheckPending!.since, '2026-10-27T00:00:00.000Z')
+
+  const settled = await run({ results: [carried], recheckVerdicts: { [carried.peerId]: 'SAME' } })
+  assert.deepEqual(settled.verified, [carried.peerId])
+  assert.equal(settled.outcome.results[0]!.status, 'UNDETERMINED')
+  assert.equal(settled.outcome.results[0]!.recheck?.status, 'SAME')
+  assert.equal(settled.outcome.results[0]!.recheckPending, undefined)
 })
 
 test('an already rechecked DIFF is not rechecked again', async () => {

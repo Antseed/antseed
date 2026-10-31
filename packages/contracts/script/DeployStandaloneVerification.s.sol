@@ -5,13 +5,13 @@ import { Script } from "forge-std/Script.sol";
 import { console } from "forge-std/console.sol";
 
 import { IAntseedRegistry } from "../interfaces/IAntseedRegistry.sol";
-import { AntseedVerification } from "../verification/AntseedVerification.sol";
+import { AntseedKbfVerification } from "../verification/AntseedKbfVerification.sol";
 
 /// @title DeployStandaloneVerification
 /// @notice Deploys the verification registry without installing a points policy or enabling rewards.
 ///
 /// This is intentionally separate from M003. It only reads the existing registry and seller-pools
-/// addresses, then deploys one independently owned AntseedVerification contract. It does not call
+/// addresses, then deploys one independently owned AntseedKbfVerification contract. It does not call
 /// any policy registry, usage-accounting setter, emissions-gate setter, or rewards setter.
 ///
 /// Required environment:
@@ -43,7 +43,7 @@ contract DeployStandaloneVerification is Script {
         address[] auditors;
     }
 
-    function run() external returns (AntseedVerification verification) {
+    function run() external returns (AntseedKbfVerification verification) {
         return runWith(
             Config({
                 expectedChainId: vm.envUint("EXPECTED_CHAIN_ID"),
@@ -55,14 +55,14 @@ contract DeployStandaloneVerification is Script {
         );
     }
 
-    function runWith(Config memory config) public returns (AntseedVerification verification) {
+    function runWith(Config memory config) public returns (AntseedKbfVerification verification) {
         _validate(config);
 
         address emissions = IAntseedRegistry(config.registry).emissions();
         address identityRegistry = IAntseedRegistry(config.registry).identityRegistry();
 
         vm.startBroadcast(config.owner);
-        verification = new AntseedVerification(config.registry, config.sellerPools);
+        verification = new AntseedKbfVerification(config.registry, config.sellerPools);
         for (uint256 index; index < config.auditors.length; index++) {
             address auditor = config.auditors[index];
             verification.setAuditor(auditor, true);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { computeMatchVector, matchesTolerance } from '../src/verifiers/kbf/scoring.js';
+import { computeMatchVector, hasMissingKbfAnswers, isLowCoverageKbfBatch, matchesTolerance } from '../src/verifiers/kbf/scoring.js';
 import type { KbfProbe } from '../src/types.js';
 
 function makeProbe(overrides: Partial<KbfProbe> = {}): KbfProbe {
@@ -62,12 +62,16 @@ describe('computeMatchVector', () => {
     expect(computeMatchVector([1002, 48, 302], probes)).toEqual([1, 0, 1]);
   });
 
-  it('counts missing answers as discrepancies', () => {
-    expect(computeMatchVector([null, 46, null], probes)).toEqual([0, 1, 0]);
+  it('leaves missing answers unscored', () => {
+    expect(computeMatchVector([null, 46, null], probes)).toEqual([null, 1, null]);
   });
 
-  it('counts finite out-of-range answers as discrepancies', () => {
-    expect(computeMatchVector([9999, 1, 300], probes)).toEqual([0, 0, 1]);
+  it('leaves finite out-of-range answers unscored', () => {
+    expect(computeMatchVector([9999, 1, 300], probes)).toEqual([null, null, 1]);
+  });
+
+  it('leaves non-finite answers unscored', () => {
+    expect(computeMatchVector([Number.NaN, Number.POSITIVE_INFINITY, 300], probes)).toEqual([null, null, 1]);
   });
 
   it('accepts range-boundary values as parseable', () => {
@@ -78,5 +82,22 @@ describe('computeMatchVector', () => {
 
   it('throws on length mismatch', () => {
     expect(() => computeMatchVector([1], probes)).toThrow(/length/);
+  });
+});
+
+describe('hasMissingKbfAnswers', () => {
+  it('flags any missing answer', () => {
+    expect(hasMissingKbfAnswers([1, 0, 1])).toBe(false);
+    expect(hasMissingKbfAnswers([1, null, 1])).toBe(true);
+    expect(hasMissingKbfAnswers([])).toBe(false);
+  });
+});
+
+describe('isLowCoverageKbfBatch', () => {
+  it('flags a batch with more than half its answers unscored, as the KBF reference code does', () => {
+    expect(isLowCoverageKbfBatch([1, 0, 1, 1, 0, null, null, null, null, null])).toBe(false);
+    expect(isLowCoverageKbfBatch([1, 0, 1, 1, null, null, null, null, null, null])).toBe(true);
+    expect(isLowCoverageKbfBatch([null, null, null])).toBe(true);
+    expect(isLowCoverageKbfBatch([null, null])).toBe(false);
   });
 });

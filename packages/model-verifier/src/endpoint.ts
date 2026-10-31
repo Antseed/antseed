@@ -7,10 +7,13 @@ export interface ModelBatchRequest {
   model: string
   system: string
   user: string
-  /** Left out when the endpoint refuses sampling fields (see `isKbfSamplingFieldRejection`). */
+  /** Left out when the endpoint refuses it (see `isKbfSamplingFieldRejection`). */
   temperature?: number
-  topP?: number
   maxTokens: number
+  /** Thinking-suppression fields from the reference (e.g. `reasoning: {effort: 'none'}`); dropped if refused. */
+  extraBody?: Record<string, unknown>
+  /** Assistant prefill from the reference (`prefill` strategy; OpenAI Chat Completions only). */
+  assistantPrefill?: string
 }
 
 export interface ModelCallSuccess {

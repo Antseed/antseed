@@ -30,13 +30,17 @@ export * from './reference.js';
 export const KBF_KIND = 'kbf';
 
 /**
- * Verification options for KBF audits of a seller or endpoint: every probe must be scoreable,
- * so any re-run reaches the same verdict as the on-chain audit.
+ * Verification options for KBF audits of a seller or endpoint. Missing answers are
+ * left unscored, and at least half the probes must be scored, as in the KBF paper (v3)
+ * and its reference code; below that the verdict is UNDETERMINED. A DIFF additionally
+ * needs 80% of the probes scored, so a seller cannot steer the verdict by leaving out
+ * answers it would get wrong.
  */
-export const KBF_AUDIT_VERIFY_OPTIONS = { minCoverage: 1 } as const satisfies VerifyKbfOptions;
+export const KBF_AUDIT_VERIFY_OPTIONS = { minCoverage: 0.5, minDiffCoverage: 0.8 } as const satisfies VerifyKbfOptions;
 
 export interface VerifyKbfOptions {
   minCoverage?: number;
+  minDiffCoverage?: number;
   cpConfidence?: number;
   alpha?: number;
 }
@@ -107,6 +111,7 @@ export function verifyKbf(
       selfTotal: selectedSelfTest.total,
       targetMatchVector: matchVector,
       minCoverage: options.minCoverage,
+      minDiffCoverage: options.minDiffCoverage,
       cpConfidence: options.cpConfidence,
       alpha: options.alpha,
     });

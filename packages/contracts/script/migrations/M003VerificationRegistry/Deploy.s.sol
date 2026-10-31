@@ -2,9 +2,8 @@ pragma solidity ^0.8.24;
 
 import { Script } from "forge-std/Script.sol";
 import { IAntseedRegistry } from "../../../interfaces/IAntseedRegistry.sol";
-import { AntseedPointsPolicyRegistry } from "../../../policies/AntseedPointsPolicyRegistry.sol";
-import { AntseedVerificationPointsPolicy } from "../../../policies/AntseedVerificationPointsPolicy.sol";
-import { AntseedVerification } from "../../../verification/AntseedVerification.sol";
+import { AntseedKbfVerificationPointsPolicy } from "../../../policies/AntseedKbfVerificationPointsPolicy.sol";
+import { AntseedKbfVerification } from "../../../verification/AntseedKbfVerification.sol";
 
 interface IM003UsageAccounting {
     function sellerPools() external view returns (address);
@@ -23,10 +22,9 @@ contract M003DeployVerificationRegistry is Script {
         address owner;
         uint256 deploymentNonce;
         uint256 bonusBps;
-        address[] auditors;
     }
 
-    function run() external returns (AntseedVerification, AntseedVerificationPointsPolicy) {
+    function run() external returns (AntseedKbfVerification, AntseedKbfVerificationPointsPolicy) {
         return runWith(
             Config({
                 chainId: vm.envUint("EXPECTED_CHAIN_ID"),
@@ -37,32 +35,30 @@ contract M003DeployVerificationRegistry is Script {
                 pointsPolicyRegistry: vm.envAddress("POINTS_POLICY_REGISTRY"),
                 owner: vm.envAddress("VERIFICATION_OWNER"),
                 deploymentNonce: vm.envUint("VERIFICATION_DEPLOYMENT_NONCE"),
-                bonusBps: vm.envUint("VERIFICATION_BONUS_BPS"),
-                auditors: vm.envOr("VERIFICATION_AUDITORS", ",", new address[](0))
+                bonusBps: vm.envUint("VERIFICATION_BONUS_BPS")
             })
         );
     }
 
     function runWith(Config memory config)
         public
-        returns (AntseedVerification verification, AntseedVerificationPointsPolicy policy)
+        returns (AntseedKbfVerification verification, AntseedKbfVerificationPointsPolicy policy)
     {
         _validate(config);
         address predictedVerification = vm.computeCreateAddress(config.owner, config.deploymentNonce);
         address predictedPolicy = vm.computeCreateAddress(config.owner, config.deploymentNonce + 1);
-        verification = AntseedVerification(predictedVerification);
-        policy = AntseedVerificationPointsPolicy(predictedPolicy);
-        AntseedPointsPolicyRegistry pointsPolicyRegistry = AntseedPointsPolicyRegistry(config.pointsPolicyRegistry);
+        verification = AntseedKbfVerification(predictedVerification);
+        policy = AntseedKbfVerificationPointsPolicy(predictedPolicy);
 
         vm.startBroadcast(config.owner);
         if (predictedVerification.code.length == 0) {
             require(vm.getNonce(config.owner) == config.deploymentNonce, "M003: deployment nonce changed");
-            verification = new AntseedVerification(config.registry, config.sellerPools);
+            verification = new AntseedKbfVerification(config.registry, config.sellerPools);
             require(address(verification) == predictedVerification, "M003: unexpected deployment address");
         }
         if (predictedPolicy.code.length == 0) {
             require(vm.getNonce(config.owner) == config.deploymentNonce + 1, "M003: policy nonce changed");
-            policy = new AntseedVerificationPointsPolicy(
+            policy = new AntseedKbfVerificationPointsPolicy(
                 address(verification), config.usageAccounting, config.bonusBps, config.owner
             );
             require(address(policy) == predictedPolicy, "M003: unexpected policy address");
@@ -79,15 +75,8 @@ contract M003DeployVerificationRegistry is Script {
         require(address(policy.usageAccounting()) == config.usageAccounting, "M003: wrong policy usage accounting");
         require(policy.owner() == config.owner, "M003: wrong policy owner");
         require(policy.pendingOwner() == address(0), "M003: pending policy ownership transfer");
-        for (uint256 index; index < config.auditors.length; index++) {
-            address auditor = config.auditors[index];
-            if (!verification.approvedAuditors(auditor)) verification.setAuditor(auditor, true);
-            require(verification.approvedAuditors(auditor), "M003: auditor not approved");
-        }
-        if (!pointsPolicyRegistry.isPolicyRegistered(address(policy))) {
-            pointsPolicyRegistry.registerPolicy(address(policy));
-        }
-        require(pointsPolicyRegistry.isPolicyRegistered(address(policy)), "M003: policy not registered");
+        // M003 only deploys. Approving auditors and registering the policy in the points policy
+        // registry are separate, manual owner steps, so verdicts change no points until then.
         vm.stopBroadcast();
     }
 
@@ -118,14 +107,7 @@ contract M003DeployVerificationRegistry is Script {
             IM003UsageAccounting(config.usageAccounting).pointsPolicy() == config.pointsPolicyRegistry,
             "M003: wrong points policy registry"
         );
-        require(
-            AntseedPointsPolicyRegistry(config.pointsPolicyRegistry).owner() == config.owner,
-            "M003: owner does not own points policy registry"
-        );
         require(config.owner != address(0), "M003: missing owner");
         require(config.bonusBps <= 5_000, "M003: bonus above cap");
-        for (uint256 index; index < config.auditors.length; index++) {
-            require(config.auditors[index] != address(0), "M003: zero auditor");
-        }
     }
 }

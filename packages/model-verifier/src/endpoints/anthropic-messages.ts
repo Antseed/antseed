@@ -32,6 +32,7 @@ export class AnthropicMessagesEndpoint implements ModelEndpoint {
         messages: [{ role: 'user', content: request.user }],
         temperature: request.temperature,
         max_tokens: request.maxTokens,
+        ...anthropicThinking(request.extraBody),
         ...this.options.extraBody,
       },
       timeoutMs: this.options.timeoutMs ?? 120_000,
@@ -44,4 +45,9 @@ export class AnthropicMessagesEndpoint implements ModelEndpoint {
       },
     })
   }
+}
+
+/** Only Anthropic's own `thinking` field applies to the Messages API; OpenAI-style reasoning fields are dropped. */
+function anthropicThinking(extraBody: Record<string, unknown> | undefined): Record<string, unknown> {
+  return extraBody?.thinking !== undefined ? { thinking: extraBody.thinking } : {}
 }

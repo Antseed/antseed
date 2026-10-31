@@ -14,7 +14,7 @@ import {
 } from '@antseed/fingerprints'
 import type { VerifierCLIConfig } from '../config/types.js'
 import {
-  buildModelReference,
+  buildModelReference as buildModelReferenceWithoutDiscoveryStub,
   collectReferenceProbes,
   createReferenceRequestLimiter,
   loadModelReference,
@@ -22,9 +22,42 @@ import {
   resolveReferenceRequestOverrides,
 } from './model-reference.js'
 import type { VerifierModelCatalog } from './openrouter-catalog.js'
+import { setAuditedModelsForTesting } from './audited-models.js'
 import { appendModelReferenceToBank, inspectModelProbeBankPower, loadBankEnrollmentReference } from './probe-bank.js'
 
 const MODEL = 'gpt-test'
+
+const DISCOVERY_MARKER = 'The atomic number of gold is ___'
+
+/**
+ * Answers the fixed thinking-discovery batch (ten readable answers, no reasoning tokens)
+ * so tests about other build stages see the first strategy accepted.
+ */
+function answerThinkingDiscovery(fetchFn: typeof fetch | undefined): typeof fetch | undefined {
+  if (!fetchFn) return fetchFn
+  return (async (url, init) => {
+    const body = JSON.parse(String(init?.body ?? '{}')) as { messages?: Array<{ content?: unknown }> }
+    const prompt = body.messages?.map((message) => String(message.content ?? '')).join('\n') ?? ''
+    if (!prompt.includes(DISCOVERY_MARKER)) return fetchFn(url, init)
+    if (String(url).endsWith('/messages')) {
+      return new Response(JSON.stringify({
+        content: [{ type: 'text', text: DISCOVERY_ANSWERS }],
+        usage: { input_tokens: 100, output_tokens: 40 },
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    return new Response(JSON.stringify({
+      choices: [{ message: { content: DISCOVERY_ANSWERS } }],
+      usage: { prompt_tokens: 100, completion_tokens: 40, completion_tokens_details: { reasoning_tokens: 0 } },
+    }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }) as typeof fetch
+}
+
+const DISCOVERY_ANSWERS = ['78.37', '79', '299792458', '1538', '206', '12', '100', '9.81', '8', '0']
+  .map((value, index) => `(${index + 1}) ${value}`).join('\n')
+
+const buildModelReference: typeof buildModelReferenceWithoutDiscoveryStub = (input) =>
+  buildModelReferenceWithoutDiscoveryStub({ ...input, fetchFn: answerThinkingDiscovery(input.fetchFn) })
+setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test' } })
 
 test('collector promotes reserve probes that distinguish the failing contrast first', async () => {
   const probes = reference(100).probes.slice(0, 2)
@@ -43,10 +76,83 @@ test('collector promotes reserve probes that distinguish the failing contrast fi
   assert.deepEqual(collected.distinguishingProbeIdsByModel.get('hard'), [probes[1]!.id])
 })
 
+test('fresh probes for an existing bank reuse its recorded request settings instead of re-discovering them', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-fresh-settings-'))
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    return response(successfulContent(body.model, body.messages.at(-1)?.content ?? ''))
+  }
+  try {
+    const built = await buildModelReference({ model: MODEL, referencesDir: directory, config: config(), fetchFn })
+    await built.finalize()
+    // A bank enrolled before discovery switched to OpenRouter's unified reasoning object.
+    const legacy = structuredClone(built.reference)
+    const recorded = legacy.generator.params.referenceEndpointRequest as Record<string, unknown>
+    legacy.generator.params.referenceEndpointRequest = { ...recorded, requestOverrides: { reasoning_effort: 'none' } }
+    // ...and with a longer request timeout than the current config.
+    legacy.queryProfile.requestTimeoutMs = 360_000
+    legacy.referenceId = computeReferenceId(legacy)
+    const banksDir = join(directory, 'banks')
+    await appendModelReferenceToBank({ banksDir, model: MODEL, reference: legacy, cost: built.cost })
+    const settingsReference = await loadBankEnrollmentReference(banksDir, MODEL)
+    assert.ok(settingsReference)
+    const excludedProbeIds = new Set(settingsReference.probes.map((probe) => probe.id))
+    // New candidates, as a real generator would produce on a second build.
+    const bodies: Array<Record<string, unknown>> = []
+    const freshFetch: typeof fetch = async (url, init) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown> & { model: string; messages: Array<{ content: string }> }
+      const prompt = body.messages.map((message) => String(message.content)).join('\n')
+      if (prompt.includes(DISCOVERY_MARKER)) throw new Error('must not re-discover thinking suppression for an existing bank')
+      bodies.push(body)
+      const last = body.messages.at(-1)?.content ?? ''
+      if (last.startsWith('Generate ')) {
+        return response(generatedCandidates(last).replace(/(stable fact |test value )(\d+)/g, (_m, label, value) => `${label}${Number(value) + 50_000}`)
+          .replace(/"consensus":(\d+)/g, (_m, value) => `"consensus":${Number(value) + 50_000}`))
+      }
+      return fetchFn(url, init)
+    }
+
+    // Without the bank's settings the build re-discovers them and the bank refuses the result.
+    const rediscovered = await buildModelReference({
+      model: MODEL, referencesDir: join(directory, 'rediscovered'), config: config(), excludedProbeIds,
+      fetchFn: async (url, init) => {
+        const prompt = String(init?.body ?? '')
+        if (prompt.includes('Generate ')) return freshFetch(url, init)
+        return fetchFn(url, init)
+      },
+    })
+    await assert.rejects(
+      appendModelReferenceToBank({ banksDir, model: MODEL, reference: rediscovered.reference, cost: rediscovered.cost }),
+      /incompatible/,
+    )
+
+    const fresh = await buildModelReferenceWithoutDiscoveryStub({
+      model: MODEL, referencesDir: join(directory, 'fresh'), config: config(), excludedProbeIds,
+      settingsReference, fetchFn: freshFetch,
+    })
+    const targetBodies = bodies.filter((body) => body.model === 'upstream-test'
+      && !String((body.messages as Array<{ content: string }>).at(-1)?.content).startsWith('Generate '))
+    assert.ok(targetBodies.length > 0)
+    for (const body of targetBodies) {
+      assert.equal(body.reasoning_effort, 'none')
+      assert.equal(body.reasoning, undefined)
+    }
+    assert.equal(fresh.reference.probes.some((probe) => excludedProbeIds.has(probe.id)), false)
+    assert.equal(fresh.reference.queryProfile.requestTimeoutMs, 360_000)
+    await appendModelReferenceToBank({ banksDir, model: MODEL, reference: fresh.reference, cost: fresh.cost })
+    await assert.rejects(buildModelReference({
+      model: MODEL, referencesDir: directory, config: config(), initialReference: settingsReference, settingsReference,
+      fetchFn: async () => { throw new Error('must not query') },
+    }), /already carries the bank settings/)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('bank top-up reuses enrolled measurements, grows against the failed contrast, and resumes without repeating calls', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-top-up-'))
   const policy = config()
-  policy.referenceEndpoint!.models[MODEL]!.contrastModels = ['contrast-test', 'contrast-other']
+  policy.models![MODEL]!.contrastModels = ['contrast-test', 'contrast-other']
   policy.referenceEndpoint!.contrastModelBank!['contrast-other'] = {
     upstreamModel: 'contrast-other', pricing: { inputUsdPerMillion: 0.1, outputUsdPerMillion: 0.2 }, capabilityRank: 2,
   }
@@ -96,17 +202,20 @@ test('bank top-up reuses enrolled measurements, grows against the failed contras
     assert.ok((await inspectModelProbeBankPower({ banksDir, model: MODEL })).selectedProbeCount)
     await expanded.finalize()
     const changedContrast = structuredClone(policy)
-    changedContrast.referenceEndpoint!.models[MODEL]!.contrastModels = ['contrast-test']
+    changedContrast.models![MODEL]!.contrastModels = ['contrast-test']
     await assert.rejects(buildModelReference({
       model: MODEL, referencesDir: directory, config: changedContrast, initialReference,
       fetchFn: async () => { throw new Error('must not mix contrast enrollments') },
     }), /incompatible/)
-    const incompatible = config()
-    incompatible.referenceEndpoint!.models[MODEL]!.upstreamModel = 'other-model'
-    await assert.rejects(buildModelReference({
-      model: MODEL, referencesDir: directory, config: incompatible, initialReference,
-      fetchFn: async () => { throw new Error('must not make paid requests') },
-    }), /incompatible/)
+    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'other-model' } })
+    try {
+      await assert.rejects(buildModelReference({
+        model: MODEL, referencesDir: directory, config: config(), initialReference,
+        fetchFn: async () => { throw new Error('must not make paid requests') },
+      }), /incompatible/)
+    } finally {
+      setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test' } })
+    }
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
@@ -116,17 +225,16 @@ function config(overrides: Partial<VerifierCLIConfig> = {}): VerifierCLIConfig {
   return {
     probeRequestTimeoutMs: 120_000,
     referenceRetryBaseDelayMs: 1,
+    models: {
+      [MODEL]: {
+        contrastModels: ['contrast-test'],
+        pricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 },
+      },
+    },
     referenceEndpoint: {
       baseUrl: 'https://reference.test/v1',
       sourceId: 'test-source',
       trust: 'trusted' as const,
-      models: {
-        [MODEL]: {
-          upstreamModel: 'upstream-test',
-          contrastModels: ['contrast-test'],
-          pricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 },
-        },
-      },
       contrastModelBank: {
         'contrast-test': {
           upstreamModel: 'contrast-test',
@@ -258,19 +366,35 @@ test('missing references fail with the explicit build command', async () => {
   }
 })
 
-test('reference build uses minimum mandatory reasoning and persists the target override', async () => {
+test('reference build discovers thinking suppression like the KBF reference code and records it', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-build-'))
   const value = config()
-  value.referenceEndpoint!.models[MODEL]!.serviceAliases = ['model.test-alias']
+  setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', serviceAliases: ['model.test-alias'] } })
   const requestBodies: Array<Record<string, unknown>> = []
+  const discoveryBodies: Array<Record<string, unknown>> = []
   const fetchFn: typeof fetch = async (_url, init) => {
     const body = JSON.parse(String(init?.body)) as Record<string, unknown> & {
       model: string
       messages: Array<{ content: string }>
     }
-    requestBodies.push(body)
-    const prompt = body.messages.at(-1)?.content ?? ''
-    return response(successfulContent(body.model, prompt))
+    const prompt = body.messages.map((message) => message.content).join('\n')
+    if (prompt.includes(DISCOVERY_MARKER)) {
+      discoveryBodies.push(body)
+      if (body.model === 'upstream-test') {
+        // effort none is accepted but ignored, minimal is refused, thinking.disabled works.
+        if ((body.reasoning as { effort?: string } | undefined)?.effort === 'minimal') {
+          return new Response(JSON.stringify({ error: { message: 'Reasoning is mandatory' } }), { status: 400 })
+        }
+        const ignored = body.thinking === undefined
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: DISCOVERY_ANSWERS } }],
+          usage: { prompt_tokens: 100, completion_tokens: 40, completion_tokens_details: { reasoning_tokens: ignored ? 300 : 0 } },
+        }), { status: 200 })
+      }
+    }
+    if (!prompt.includes(DISCOVERY_MARKER)) requestBodies.push(body)
+    const userPrompt = body.messages.at(-1)?.content ?? ''
+    return answerThinkingDiscovery(async () => response(successfulContent(body.model, userPrompt)))!(_url, init)
   }
   const catalog: VerifierModelCatalog = new Map([
     ['upstream-test', {
@@ -287,30 +411,42 @@ test('reference build uses minimum mandatory reasoning and persists the target o
     }],
   ])
   try {
-    const built = await buildModelReference({ model: MODEL, referencesDir: directory, config: value, catalog, fetchFn })
+    const built = await buildModelReferenceWithoutDiscoveryStub({ model: MODEL, referencesDir: directory, config: value, catalog, fetchFn })
     assert.equal(built.reference.probes.length, 100)
     assert.deepEqual(built.reference.serviceAliases, [MODEL, 'model.test-alias'])
     assert.equal(built.reference.queryProfile.reasoningStrategy, undefined)
     assert.equal(built.reference.queryProfile.requestOverrides, undefined)
+    assert.equal(built.reference.queryProfile.maxTokensPerRequest, 1600)
     assert.deepEqual(referenceEndpointRequest(built.reference), {
-      reasoningStrategy: 'reasoning-effort-minimum-supported',
-      requestOverrides: { reasoning: { effort: 'low', exclude: true } },
+      reasoningStrategy: 'disable-thinking',
+      requestOverrides: { thinking: { type: 'disabled' } },
       requestOmissions: [],
     })
+    const discovery = built.reference.generator.params.thinkingDiscovery as {
+      target: { strategy: string; attempts: Array<{ strategy: string; status: number | null; reasoningTokens: number | null }> }
+      contrasts: Record<string, { strategy: string }>
+    }
+    assert.equal(discovery.target.strategy, 'disable-thinking')
+    assert.deepEqual(discovery.target.attempts.map((attempt) => [attempt.strategy, attempt.status, attempt.reasoningTokens]), [
+      ['reasoning-effort-none', null, 300],
+      ['reasoning-effort-minimal', 400, null],
+      ['disable-thinking', null, 0],
+    ])
+    assert.equal(discovery.contrasts['contrast-test']!.strategy, 'reasoning-effort-none')
+    assert.equal(discoveryBodies.every((body) => body.max_tokens === 800 && body.temperature === 0), true)
     const targetBodies = requestBodies.filter((body) => body.model === 'upstream-test')
     const contrastBodies = requestBodies.filter((body) => body.model === 'contrast-test')
     assert.equal(targetBodies.length > 0, true)
     assert.equal(contrastBodies.length > 0, true)
-    assert.equal(targetBodies.every((body) => body.reasoning_effort === undefined), true)
-    assert.equal(targetBodies.every((body) => JSON.stringify(body.reasoning) === JSON.stringify({
-      effort: 'low',
-      exclude: true,
-    })), true)
-    assert.equal(contrastBodies.every((body) => body.reasoning_effort === 'none'), true)
+    assert.equal(targetBodies.every((body) => body.reasoning === undefined && body.reasoning_effort === undefined
+      && JSON.stringify(body.thinking) === JSON.stringify({ type: 'disabled' })), true)
+    assert.equal(contrastBodies.every((body) => JSON.stringify(body.reasoning) === JSON.stringify({ effort: 'none' })
+      && body.reasoning_effort === undefined), true)
+    assert.equal(built.cost.purposes.some((purpose) => purpose.purpose === 'thinking-discovery'), true)
     assert.equal(BigInt(built.cost.totalUsdMicros) > 0n, true)
     assert.deepEqual(
       new Set(built.cost.purposes.map((entry) => entry.purpose)),
-      new Set(['candidate-generation', 'target-model', 'contrast-model', 'self-test']),
+      new Set(['candidate-generation', 'target-model', 'contrast-model', 'self-test', 'thinking-discovery']),
     )
     const loaded = await loadModelReference({ model: MODEL, referencesDir: directory })
     assert.equal(loaded.reference.referenceId, built.reference.referenceId)
@@ -318,6 +454,7 @@ test('reference build uses minimum mandatory reasoning and persists the target o
     await built.finalize()
     await assert.rejects(readFile(join(directory, '.checkpoints', `${MODEL}.json`), 'utf8'), { code: 'ENOENT' })
   } finally {
+    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test' } })
     await rm(directory, { recursive: true, force: true })
   }
 })
@@ -331,7 +468,7 @@ test('reference build sends target requests to a native Anthropic upstream and r
     },
   })
   value.referenceEndpoint!.apiKey = 'openrouter-secret'
-  value.referenceEndpoint!.models[MODEL]!.upstream = { name: 'anthropic-native', model: 'claude-test-native' }
+  value.models![MODEL]!.upstream = { name: 'anthropic-native', model: 'claude-test-native' }
   const requests: Array<{ url: string; headers: Record<string, string>; body: Record<string, unknown> }> = []
   const fetchFn: typeof fetch = async (url, init) => {
     const body = JSON.parse(String(init?.body)) as Record<string, unknown> & {
@@ -373,7 +510,8 @@ test('reference build sends target requests to a native Anthropic upstream and r
       baseUrl: 'https://api.anthropic.test/v1',
       model: 'claude-test-native',
       protocol: 'anthropic-messages',
-      request: { overrides: {}, omissions: ['top_p'] },
+      // The stub accepts the first discovery strategy; the real API refuses it and moves on.
+      request: { overrides: { reasoning: { effort: 'none' } }, omissions: ['top_p'] },
       providerPin: null,
     })
     assert.equal(built.reference.provenance?.sourceId, 'upstream:anthropic-native:anthropic:claude-test-native')
@@ -385,13 +523,17 @@ test('reference build sends target requests to a native Anthropic upstream and r
     assert.equal(exchanges.sha256, `sha256:${createHash('sha256').update(raw).digest('hex')}`)
     const document = JSON.parse(raw.toString('utf8')) as {
       kind: string
-      exchanges: Array<{ url: string; protocol: string; requestBody: string; responseBody: string; status: number }>
+      exchanges: Array<{ url: string; protocol: string; purpose: string; requestBody: string; responseBody: string; status: number }>
     }
     assert.equal(document.kind, 'antseed-reference-exchanges')
     assert.equal(exchanges.exchangeCount, document.exchanges.length)
-    assert.equal(exchanges.exchangeCount, requests.length)
+    // Thinking discovery (one accepted request each for the target and the contrast) is recorded too.
+    const discovery = document.exchanges.filter((exchange) => exchange.purpose === 'thinking-discovery')
+    assert.equal(discovery.length, 2)
+    assert.equal(exchanges.exchangeCount, requests.length + discovery.length)
     assert.equal(raw.toString('utf8').includes('secret'), false)
-    const anthropicExchange = document.exchanges.find((exchange) => exchange.protocol === 'anthropic-messages')!
+    const anthropicExchange = document.exchanges.find((exchange) => exchange.protocol === 'anthropic-messages'
+      && exchange.purpose !== 'thinking-discovery')!
     assert.equal(JSON.parse(anthropicExchange.requestBody).model, 'claude-test-native')
     assert.equal(JSON.parse(anthropicExchange.responseBody).stop_reason, 'end_turn')
 
@@ -417,7 +559,7 @@ test('the default reference endpoint records OpenRouter-style upstream provenanc
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-default-upstream-'))
   const value = config()
   value.referenceEndpoint!.baseUrl = 'https://openrouter.ai/api/v1'
-  value.referenceEndpoint!.models[MODEL]!.referenceProvider = { order: ['Provider A'] }
+  value.models![MODEL]!.referenceProvider = { order: ['Provider A'] }
   const fetchFn: typeof fetch = async (_url, init) => {
     const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
     const content = successfulContent(body.model, body.messages.at(-1)?.content ?? '')
@@ -436,9 +578,126 @@ test('the default reference endpoint records OpenRouter-style upstream provenanc
       baseUrl: 'https://openrouter.ai/api/v1',
       model: 'upstream-test',
       protocol: 'openai-chat-completions',
-      request: { overrides: { reasoning_effort: 'none' }, omissions: [] },
+      request: { overrides: { reasoning: { effort: 'none' } }, omissions: [] },
       providerPin: ['Provider A'],
     })
+    await built.finalize()
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('question writing that runs out of tokens retries with a little thinking; asking keeps the recorded setting', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-candidate-writing-'))
+  const value = config()
+  value.referenceEndpoint!.baseUrl = 'https://openrouter.ai/api/v1'
+  const writingRequests: Array<Record<string, unknown>> = []
+  const otherRequests: Array<Record<string, unknown>> = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown> & { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (!prompt.startsWith('Generate ')) {
+      otherRequests.push(body)
+      return response(successfulContent(body.model, prompt))
+    }
+    writingRequests.push(body)
+    // Like Kimi K3.1 Pro: with thinking off it thinks out loud until max_tokens and gives no list.
+    if ((body.reasoning as { effort?: string } | undefined)?.effort !== 'minimal') {
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: 'I need generate exactly 20 facts. Should output only list. No bullets? Each line' }, finish_reason: 'length' }],
+        usage: { prompt_tokens: 100, completion_tokens: 6000, completion_tokens_details: { reasoning_tokens: 0 } },
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    return new Response(JSON.stringify({
+      choices: [{ message: { content: generatedCandidates(prompt) }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 100, completion_tokens: 1500, completion_tokens_details: { reasoning_tokens: 1000 } },
+    }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }
+  try {
+    const built = await buildModelReference({ model: MODEL, referencesDir: directory, config: value, fetchFn })
+    // Only question writing used the fallback; every other request kept thinking off.
+    assert.ok(writingRequests.some((body) => (body.reasoning as { effort?: string } | undefined)?.effort === 'minimal'))
+    for (const body of otherRequests) assert.deepEqual(body.reasoning, { effort: 'none' })
+    // The fallback replaces the thinking setting instead of adding a second one.
+    for (const body of writingRequests) assert.equal('reasoning_effort' in body, false)
+    // Only the three trial batches used the recorded setting; once they rambled, new batches
+    // went straight to the fallback.
+    const rambling = writingRequests.filter((body) => (body.reasoning as { effort?: string }).effort === 'none').length
+    assert.equal(rambling, 3)
+    const params = built.reference.generator.params as Record<string, unknown>
+    assert.deepEqual(params.referenceEndpointRequest, {
+      reasoningStrategy: 'reasoning-effort-none',
+      requestOverrides: { reasoning: { effort: 'none' } },
+      requestOmissions: [],
+    })
+    const writing = params.candidateWriting as Record<string, unknown>
+    assert.equal(writing.fallbackStrategy, 'reasoning-effort-minimal')
+    assert.equal(writing.ramblingAnswers, 3)
+    assert.equal(writing.retriedBatches, 3)
+    assert.ok((writing.directBatches as number) > 0)
+    await built.finalize()
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('question writing is unchanged for models that write clean lists', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-candidate-clean-'))
+  const value = config()
+  value.referenceEndpoint!.baseUrl = 'https://openrouter.ai/api/v1'
+  const writingBodies: string[] = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (prompt.startsWith('Generate ')) writingBodies.push(String(init?.body))
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    const built = await buildModelReference({ model: MODEL, referencesDir: directory, config: value, fetchFn })
+    assert.ok(writingBodies.length > 0)
+    for (const raw of writingBodies) {
+      const body = JSON.parse(raw) as Record<string, unknown>
+      assert.deepEqual(body.reasoning, { effort: 'none' })
+      assert.equal(body.temperature, 0.7)
+      assert.equal(body.max_tokens, 6000)
+    }
+    assert.equal('candidateWriting' in built.reference.generator.params, false)
+    await built.finalize()
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a refused question-writing fallback keeps the recorded setting and the build goes on', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-candidate-refused-'))
+  const value = config()
+  value.referenceEndpoint!.baseUrl = 'https://openrouter.ai/api/v1'
+  let refused = 0
+  let calls = 0
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown> & { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (prompt.startsWith('Generate ')) {
+      if ((body.reasoning as { effort?: string }).effort === 'minimal') {
+        refused += 1
+        return response('reasoning effort minimal is not supported', 400)
+      }
+      calls += 1
+      // The first answer rambles; later ones are clean lists.
+      if (calls === 1) {
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: 'Thinking out loud' }, finish_reason: 'length' }],
+          usage: { prompt_tokens: 100, completion_tokens: 6000 },
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    const built = await buildModelReference({ model: MODEL, referencesDir: directory, config: value, fetchFn })
+    assert.equal(refused, 1)
+    const writing = built.reference.generator.params.candidateWriting as Record<string, unknown>
+    assert.equal(writing.fallbackRefused, 'HTTP 400')
     await built.finalize()
   } finally {
     await rm(directory, { recursive: true, force: true })
@@ -450,7 +709,7 @@ test('reference build routes only target requests through a pinned Antseed peer'
   const requests: Array<{ url: string; headers: Record<string, string>; body: Record<string, unknown> }> = []
   const value = config()
   value.referenceEndpoint!.apiKey = 'openrouter-secret'
-  value.referenceEndpoint!.models[MODEL]!.referenceRoute = {
+  value.models![MODEL]!.referenceRoute = {
     type: 'antseed',
     service: 'fable-5-coding-only',
     peerId: '12'.repeat(20),
@@ -492,7 +751,8 @@ test('reference build routes only target requests through a pinned Antseed peer'
     )), true)
     assert.equal(contrastRequests.every((request) => request.headers.authorization === 'Bearer openrouter-secret'), true)
     assert.equal(contrastRequests.every((request) => request.headers['x-antseed-pin-peer'] === undefined), true)
-    assert.equal(contrastRequests.every((request) => request.body.temperature !== undefined && request.body.top_p !== undefined), true)
+    // Contrast requests keep temperature; nothing sends top_p any more.
+    assert.equal(contrastRequests.every((request) => request.body.temperature !== undefined && request.body.top_p === undefined), true)
     assert.equal(built.reference.queryProfile.upstreamModel, 'fable-5-coding-only')
     assert.equal(built.reference.queryProfile.requestOmissions, undefined)
     assert.deepEqual(built.reference.generator.params.referenceEndpointRequest, {
@@ -511,7 +771,7 @@ test('an antseed entry in verifier.upstreams routes target requests to that pinn
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-upstream-peer-'))
   const peerId = '34'.repeat(20)
   const value = config({ upstreams: { 'trusted-seller': { type: 'antseed', peerId } } })
-  value.referenceEndpoint!.models[MODEL]!.upstream = {
+  value.models![MODEL]!.upstream = {
     name: 'trusted-seller',
     model: 'seller-service',
     pricing: { inputUsdPerMillion: 0.5, outputUsdPerMillion: 1.5 },
@@ -553,7 +813,7 @@ test('Antseed reference route failures preserve cached work and never fall back'
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-route-resume-'))
   const value = config()
   value.referenceEndpoint!.apiKey = 'openrouter-secret'
-  value.referenceEndpoint!.models[MODEL]!.referenceRoute = {
+  value.models![MODEL]!.referenceRoute = {
     type: 'antseed',
     service: 'fable-5-coding-only',
     peerId: '34'.repeat(20),
@@ -667,6 +927,35 @@ test('reference build skips one empty candidate domain and retains powered quali
   }
 })
 
+test('reference build skips a candidate batch that keeps failing upstream and still completes', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-failing-candidates-'))
+  let medicalAttempts = 0
+  const logs: string[] = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (prompt.includes('domain medical')) {
+      medicalAttempts += 1
+      return Response.json({ error: { message: 'upstream timed out' } }, { status: 504 })
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    const built = await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: { ...config(), referenceRetryBaseDelayMs: 1 },
+      fetchFn,
+      log: (message) => logs.push(message),
+    })
+    assert.equal(built.reference.probes.length, 100)
+    assert.ok(medicalAttempts > 1)
+    assert.equal(logs.some((message) => message.includes('skipping failed candidate batch for medical after retries')), true)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('reference build rejects a refused stability batch without aborting the target', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-refused-stability-'))
   let refusedStabilityAttempts = 0
@@ -761,17 +1050,17 @@ test('reference build adaptively isolates and caches a refused self-test probe',
       log: (message) => logs.push(message),
     })
     assert.equal(built.reference.probes.length, 100)
-    assert.equal(built.reference.selfTest.total, 300)
     const refusedProbe = built.reference.probes.find((probe) => renderKbfProbeLine(probe) === refusedProbeText)!
     const refusedOutcome = built.reference.selfTest.outcomes.find((outcome) => outcome.probeId === refusedProbe.id)!
     const refusedRuns = refusedOutcome.answers.filter((answer) => answer === null).length
     assert.ok(refusedRuns >= 1)
-    // Refused runs count as discrepancies, exactly like a missing target answer.
+    // Refused runs are unscored, exactly like a missing target answer.
     assert.deepEqual(
       refusedOutcome.matches.filter((_match, run) => refusedOutcome.answers[run] === null),
-      new Array(refusedRuns).fill(0),
+      new Array(refusedRuns).fill(null),
     )
-    assert.equal(built.reference.selfTest.hamming, refusedRuns)
+    assert.equal(built.reference.selfTest.hamming, 0)
+    assert.equal(built.reference.selfTest.total, 300 - refusedRuns)
     assert.equal(built.reference.selfTest.coverage, (300 - refusedRuns) / 300)
     assert.equal(refusedBatchSizes.some((size) => size > 1), true)
     assert.equal(refusedBatchSizes.includes(1), true)
@@ -865,7 +1154,7 @@ test('reference build isolates an unavailable contrast after its first terminal 
   let gatedAttempts = 0
   const logs: string[] = []
   const value = config()
-  value.referenceEndpoint!.models[MODEL]!.contrastModels = ['gated-contrast', 'contrast-test']
+  value.models![MODEL]!.contrastModels = ['gated-contrast', 'contrast-test']
   value.referenceEndpoint!.contrastModelBank!['gated-contrast'] = {
     upstreamModel: 'gated-contrast',
     pricing: { inputUsdPerMillion: 0.1, outputUsdPerMillion: 0.2 },
@@ -1002,7 +1291,7 @@ test('adaptive builder selects the first powered prefix', async () => {
     assert.ok(built.reference.statisticalPower >= 0.9)
     assert.deepEqual(referenceEndpointRequest(built.reference), {
       reasoningStrategy: 'reasoning-effort-none',
-      requestOverrides: { reasoning_effort: 'none' },
+      requestOverrides: { reasoning: { effort: 'none' } },
       requestOmissions: [],
     })
   } finally {
@@ -1550,7 +1839,7 @@ test('domain exclusions preserve safe exact-request checkpoint responses', async
     const medicalPrompt = [...promptCalls.keys()].find((prompt) => prompt.includes('domain medical'))!
     const reusablePrompt = [...promptCalls.keys()].find((prompt) => prompt.includes('domain chemistry_bp'))!
     const excludedConfig = config()
-    excludedConfig.referenceEndpoint!.models[MODEL]!.excludedDomains = ['medical']
+    excludedConfig.models![MODEL]!.excludedDomains = ['medical']
     await buildModelReference({ model: MODEL, referencesDir: directory, config: excludedConfig, fetchFn })
     assert.equal(promptCalls.get(medicalPrompt), 1)
     assert.equal(promptCalls.get(reusablePrompt), 1)
@@ -1593,7 +1882,7 @@ test('checkpoint compatibility invalidates changed Antseed target routes', async
   const promptCalls = new Map<string, number>()
   let failSecondCandidateBatch = true
   const value = config()
-  value.referenceEndpoint!.models[MODEL]!.referenceRoute = {
+  value.models![MODEL]!.referenceRoute = {
     type: 'antseed', service: 'fable-5-coding-only', peerId: '56'.repeat(20),
     pricing: { inputUsdPerMillion: 0.45, outputUsdPerMillion: 1.15 },
   }
@@ -1612,7 +1901,7 @@ test('checkpoint compatibility invalidates changed Antseed target routes', async
     await assert.rejects(buildModelReference({
       model: MODEL, referencesDir: directory, config: value, buyerProxyPort: 8377, fetchFn,
     }))
-    value.referenceEndpoint!.models[MODEL]!.referenceRoute = {
+    value.models![MODEL]!.referenceRoute = {
       type: 'antseed', service: 'fable-5-reference-v2', peerId: '78'.repeat(20),
       pricing: { inputUsdPerMillion: 0.5, outputUsdPerMillion: 1.25 },
     }
@@ -1680,7 +1969,7 @@ function providerResponse(content: string, provider: string): Response {
 test('reference build pins the target upstream provider and records it', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-provider-pin-'))
   const value = config()
-  value.referenceEndpoint!.models[MODEL]!.referenceProvider = { order: ['Provider-A'] }
+  value.models![MODEL]!.referenceProvider = { order: ['Provider-A'] }
   const requestBodies: Array<Record<string, unknown>> = []
   const fetchFn: typeof fetch = async (_url, init) => {
     const body = JSON.parse(String(init?.body)) as Record<string, unknown> & {
@@ -1710,10 +1999,26 @@ test('reference build pins the target upstream provider and records it', async (
   }
 })
 
+test('a pinned endpoint tag matches the provider name OpenRouter reports', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-provider-tag-'))
+  const value = config()
+  value.models![MODEL]!.referenceProvider = { order: ['provider-a/prime'] }
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    return providerResponse(successfulContent(body.model, body.messages.at(-1)?.content ?? ''), body.model === 'upstream-test' ? 'Provider A' : 'Other')
+  }
+  try {
+    const built = await buildModelReference({ model: MODEL, referencesDir: directory, config: value, fetchFn })
+    assert.deepEqual((built.reference.generator.params.referenceProvider as { served?: string[] }).served, ['Provider A'])
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('reference build fails when a pinned provider is not the one that served', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-provider-mismatch-'))
   const value = config()
-  value.referenceEndpoint!.models[MODEL]!.referenceProvider = { order: ['Provider-A'] }
+  value.models![MODEL]!.referenceProvider = { order: ['Provider-A'] }
   const fetchFn: typeof fetch = async (_url, init) => {
     const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
     return providerResponse(successfulContent(body.model, body.messages.at(-1)?.content ?? ''), 'Provider-B')
@@ -1765,7 +2070,7 @@ test('unpinned reference builds record served providers and warn when they chang
 test('reference builds record contrast detection and grow until every contrast is flagged', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-contrast-detection-'))
   const value = config()
-  value.referenceEndpoint!.models[MODEL]!.contrastModels = ['contrast-test', 'close-contrast']
+  value.models![MODEL]!.contrastModels = ['contrast-test', 'close-contrast']
   value.referenceEndpoint!.contrastModelBank!['close-contrast'] = {
     upstreamModel: 'close-contrast',
     pricing: { inputUsdPerMillion: 0.1, outputUsdPerMillion: 0.2 },
@@ -1790,6 +2095,7 @@ test('reference builds record contrast detection and grow until every contrast i
 
     const capped = config({ referenceMaximumProbeCount: 100 })
     capped.referenceEndpoint = value.referenceEndpoint
+    capped.models = value.models
     await assert.rejects(
       buildModelReference({
         model: MODEL,

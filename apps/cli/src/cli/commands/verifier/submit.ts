@@ -1,10 +1,11 @@
-import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline/promises'
 import chalk from 'chalk'
+import pkg from '../../../../package.json' with { type: 'json' }
+import { requireCurrentVerifier } from '../../../verifier/release-check.js'
 import Table from 'cli-table3'
 import type { Command } from 'commander'
-import { getAddress, Wallet, type AbstractSigner } from 'ethers'
+import { getAddress } from 'ethers'
 import type { VerifierClient } from '@antseed/node/payments'
 import { loadConfig } from '../../../config/loader.js'
 import {
@@ -25,12 +26,14 @@ import {
 import { readVerifierRunManifest, type VerifierRunManifestV1 } from '../../../verifier/audit-artifacts.js'
 import { prepareAuditPublication, publishVerificationToPinata } from '../../../verifier/ipfs-publication.js'
 import { asError, normalized } from '../../../verifier/utils.js'
-import { createVerifierClient, loadCryptoContext } from '../../payment-utils.js'
-import { promptHidden } from '../../prompt-hidden.js'
+import { createVerifierClient } from '../../payment-utils.js'
+import { resolveAuditorAddress, resolveAuditorSigner } from './auditor-identity.js'
+import { writeEpochOverview } from '../../../verifier/epoch-overview.js'
+import { loadEpochState, writeEpochSubmissionManifest } from '../../../verifier/epoch-plan.js'
 import { getGlobalOptions } from '../types.js'
 
 interface SubmitOptions {
-  runId: string
+  runId?: string
   publishIpfs?: boolean
   dryRun?: boolean
   publishOnly?: boolean
@@ -38,6 +41,7 @@ interface SubmitOptions {
   yes?: boolean
   rpcUrl?: string
   keystore?: string
+  skipVersionCheck?: boolean
 }
 
 interface PendingModelAudit {
@@ -72,42 +76,52 @@ export function validateRunEpoch(manifest: VerifierRunManifestV1, window: EpochW
   }
 }
 
-async function loadKeystoreSigner(path: string): Promise<{ wallet: AbstractSigner; address: string }> {
-  const json = await readFile(path, 'utf8')
-  const password = process.env['ANTSEED_KEYSTORE_PASSWORD']
-    || await promptHidden(`Keystore password for ${path}: `, '--keystore needs a terminal to ask for the password.')
-  const wallet = await Wallet.fromEncryptedJson(json, password)
-  return { wallet, address: wallet.address }
-}
-
 export function registerVerifierSubmitCommand(verifierCmd: Command): void {
   verifierCmd
     .command('submit')
-    .description('Submit one audit per model from a completed verifier run (approved auditors only)')
-    .requiredOption('--run-id <run-id>', 'completed verifier run ID')
-    .option('--publish-ipfs', 'publish each model audit\'s public evidence to Pinata and record its ipfs:// URI')
+    .description('Submit one audit per model for the current epoch, merging every run of the epoch (approved auditors only)')
+    .option('--run-id <run-id>', 'submit only this completed run instead of the whole epoch')
+    .option('--no-publish-ipfs', 'do not publish the audit evidence to IPFS (by default each model audit\'s public evidence is pinned to Pinata and its ipfs:// URI recorded; needs PINATA_JWT)')
     .option('--dry-run', 'preview the audits without publishing or broadcasting')
-    .option('--publish-only', 'with --publish-ipfs: write and publish each model audit\'s evidence and record it in the ledger, without sending transactions')
+    .option('--publish-only', 'write and publish each model audit\'s evidence and record it in the ledger, without sending transactions')
     .option('--auditor <address>', 'with --publish-only: auditor address the evidence is written for, so no signer is needed')
     .option('--yes', 'submit without an interactive confirmation prompt')
     .option('--rpc-url <url>', 'Base JSON-RPC URL override')
-    .option('--keystore <path>', 'sign with this encrypted JSON keystore (e.g. a Foundry keystore) instead of the data-dir identity; the password is asked on the terminal')
+    .option('--keystore <path>', 'sign with this encrypted JSON keystore (e.g. a Foundry keystore) instead of verifier.keystore or the data-dir identity; the password is asked on the terminal')
+    .option('--skip-version-check', 'submit even if this CLI is older than the latest release, or the check cannot be made')
     .action(async (options: SubmitOptions, command: Command) => {
       const globalOptions = getGlobalOptions(command)
       const config = await loadConfig(globalOptions.config)
+      // Audits from a CLI that audits differently from the latest release are not submitted.
+      await requireCurrentVerifier({
+        command: 'submit',
+        currentVersion: pkg.version,
+        skip: options.skipVersionCheck === true,
+        strictWhenUnavailable: !options.dryRun,
+        warn: (text) => console.warn(chalk.yellow(text)),
+      })
       const evidenceDir = config.verifier?.evidenceDir ?? join(globalOptions.dataDir, 'verifier', 'evidence')
       const banksDir = config.verifier?.banksDir ?? join(globalOptions.dataDir, 'verifier', 'banks')
-      const manifest = await readVerifierRunManifest(evidenceDir, options.runId)
       const verifierClient = createVerifierClient(config, options.rpcUrl ? { rpcUrl: String(options.rpcUrl) } : {})
-      if (options.publishOnly && !options.publishIpfs) throw new Error('--publish-only requires --publish-ipfs')
+      const manifest = options.runId
+        ? await readVerifierRunManifest(evidenceDir, options.runId)
+        : await epochSubmissionManifest(evidenceDir, (await verifierClient.currentEpochWindow()).epoch)
+      if (options.publishOnly && options.publishIpfs === false) throw new Error('--publish-only cannot be combined with --no-publish-ipfs')
       if (options.auditor && !options.publishOnly) throw new Error('--auditor is only valid with --publish-only')
       const { wallet, address } = options.auditor
         ? { wallet: null, address: getAddress(options.auditor) }
-        : options.keystore
-          ? await loadKeystoreSigner(options.keystore)
-          : await loadCryptoContext(globalOptions.dataDir)
-      const pinataJwt = options.publishIpfs ? process.env['PINATA_JWT']?.trim() : undefined
-      if (options.publishIpfs && !pinataJwt) throw new Error('PINATA_JWT is required with --publish-ipfs')
+        : options.publishOnly
+          ? { wallet: null, ...await resolveAuditorAddress({ config: config.verifier, dataDir: globalOptions.dataDir }) }
+          : await resolveAuditorSigner({
+            config: config.verifier, dataDir: globalOptions.dataDir, keystoreFlag: options.keystore,
+          })
+      const publishIpfs = options.publishIpfs !== false
+      const pinataJwt = publishIpfs ? process.env['PINATA_JWT']?.trim() : undefined
+      if (publishIpfs && !pinataJwt) {
+        const message = 'PINATA_JWT is required to publish the audit evidence to IPFS; set it, or pass --no-publish-ipfs to submit without publishing'
+        if (!options.dryRun) throw new Error(message)
+        console.warn(chalk.yellow(message))
+      }
 
       const [window, network, approved, limits] = await Promise.all([
         verifierClient.currentEpochWindow(),
@@ -163,6 +177,8 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       }
 
       printPreview(pending)
+      const overviewPath = await writeEpochOverview(evidenceDir, manifest.epoch)
+      if (overviewPath) console.log(chalk.cyan(`Epoch overview (all runs this epoch): ${overviewPath}`))
       for (const exclusion of excluded) {
         console.warn(chalk.yellow(
           `${exclusion.model} ${exclusion.service} (${exclusion.agentId ?? exclusion.peerId}): excluded: ${exclusion.reason}`,
@@ -181,7 +197,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
         console.log(chalk.dim('Nothing to submit.'))
         return
       }
-      if (options.publishIpfs) {
+      if (publishIpfs) {
         console.warn(chalk.yellow('IPFS publication is public: complete audit evidence and signed exchanges will be pinned.'))
       }
       if (options.publishOnly) {
@@ -216,7 +232,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
         let publication = reusablePublication(previous, audit.evidenceHash)
         try {
           await writeModelAuditEvidence(audit)
-          if (options.publishIpfs && !publication) publication = await publish(evidenceDir, manifest.runId, audit, pinataJwt!)
+          if (publishIpfs && !publication) publication = await publish(evidenceDir, manifest.runId, audit, pinataJwt!)
           const evidenceUri = publication?.uri ?? previous?.evidenceUri ?? ''
           const entry = ledgerEntry(audit, evidenceUri, publication)
           ledger.models[audit.key] = entry
@@ -278,6 +294,20 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       console.log(chalk.dim(`Ledger: ${ledgerPath}`))
       if (failed > 0) process.exitCode = 1
     })
+}
+
+/**
+ * The whole current epoch as one submission: for each model and seller, the latest result of any
+ * run this epoch (see `writeEpochSubmissionManifest`).
+ */
+async function epochSubmissionManifest(evidenceDir: string, epoch: bigint): Promise<VerifierRunManifestV1> {
+  const state = await loadEpochState(evidenceDir, epoch.toString())
+  const manifest = await writeEpochSubmissionManifest(evidenceDir, state)
+  console.log(chalk.dim(
+    `Epoch ${epoch}: merging ${state.manifests.length} run(s) (${state.manifests.map((run) => run.runId.slice(0, 10)).join(', ')}); `
+    + 'the latest result per model and seller is submitted.',
+  ))
+  return manifest
 }
 
 /** Evidence hashes this auditor has already submitted on-chain, read from its `ModelAudited` events. */

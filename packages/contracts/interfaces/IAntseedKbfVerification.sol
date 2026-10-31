@@ -5,7 +5,9 @@ import {IAntseedEmissionsGate} from "./IAntseedEmissionsGate.sol";
 import {IAntseedRegistry} from "./IAntseedRegistry.sol";
 import {IAntseedSellerPools} from "./IAntseedSellerPools.sol";
 
-/// @notice Model-verification audits submitted by approved auditors, one model per submission.
+/// @notice KBF (model identity) audits, submitted by approved auditors, one model per submission.
+///         KBF is one of several verification methods; each method has its own contract and
+///         interface with its own verdicts, auditors and rewards bucket.
 /// @dev Status is kept per (agent, service). The latest result (SAME, DIFF, or UNDETERMINED) is
 ///      the service's verdict, with the emissions epoch it was given in; it is live while
 ///      `currentEpoch < epoch + validityEpochs` and drops out on its own afterwards. Only SAME and
@@ -15,7 +17,7 @@ import {IAntseedSellerPools} from "./IAntseedSellerPools.sol";
 ///      and are paid from the verification emission bucket in proportion to their credits, capped
 ///      at `maxAuditorShareBps` of the epoch's budget per auditor. These credit and share limits are
 ///      safety limits against a compromised or malicious auditor.
-interface IAntseedVerification {
+interface IAntseedKbfVerification {
     enum Verdict {
         NONE,
         SAME,
@@ -62,7 +64,7 @@ interface IAntseedVerification {
     function approvedAuditors(address auditor) external view returns (bool);
     function setAuditor(address auditor, bool approved) external;
 
-    /// @notice Records one auditor's results for every seller audited as `modelHash`.
+    /// @notice Records one auditor's KBF results for every seller audited as `modelHash`.
     /// @dev Reverts unless the caller is an approved auditor, `expectedEpoch` is the current
     ///      epoch of the pinned emissions gate, `evidenceHash` is non-zero, and `results` is non-empty, bounded, and
     ///      strictly ordered by (agentId, serviceHash).

@@ -129,13 +129,15 @@ Authentication is split into chunks to bound gas, and interrupted submissions
 can resume. Backfilling a missing hash into Chainlink's store is a separate step;
 neither staging a proof nor backfilling its hashes makes it finalized.
 
-## Model verification policy
+## KBF verification policy
 
-`AntseedVerificationPointsPolicy` scales seller points by the seller's on-chain
-model verification results: a small bonus per verified service (capped at +50% in
+`AntseedKbfVerificationPointsPolicy` scales seller points by the seller's on-chain
+KBF verification results: a small bonus per verified service (capped at +50% in
 total) and a penalty per service marked DIFF. Both start at 0, so points are
-unchanged until the owner turns them on. Buyer points always pass through. See
-[Model verification](/docs/model-verification).
+unchanged until the owner turns them on. Buyer points always pass through. The
+policy only reads a KBF verification contract. KBF is one of the first
+verification methods; a later method gets its own contract and points policy.
+See [Model verification](/docs/model-verification).
 
 ## Other policy interfaces
 

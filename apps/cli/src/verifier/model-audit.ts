@@ -24,6 +24,7 @@ import { readJsonIfExists, writeJsonAtomic } from './atomic-files.js'
 import type { VerificationOutcomeReasonV1 } from './outcome-reason.js'
 import type { ReferenceUpstreamProvenanceV1 } from './model-reference.js'
 import { findEpochProbeReference, loadBankReferenceExchanges } from './probe-bank.js'
+import { confirmedDiffStatus } from './diff-recheck.js'
 import { verifyProxyAuditEvidenceFile, type ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import { resolveReferenceSizingPolicy } from './reference-sizing.js'
 import { safeServiceSlug } from './slug.js'
@@ -53,8 +54,8 @@ export interface ModelAuditSellerResultV1 {
     evidenceHash: string
   }
   /**
-   * Second check on fresh probes after the first check (`audit`) said DIFF. `verdict` stays DIFF
-   * unless this check is SAME, which makes it UNDETERMINED.
+   * Second check on fresh probes after the first check (`audit`) said DIFF. `verdict` is DIFF only
+   * when this check is DIFF too; otherwise it is UNDETERMINED.
    */
   confirmation?: {
     verdict: ModelAuditVerdict
@@ -252,7 +253,7 @@ export async function prepareModelAudits(input: {
     }> = []
     const seen = new Set<string>()
     let referenceModel: string | null = null
-    for (const result of summary.results) {
+    for (let result of summary.results) {
       const exclude = (reason: string): void => {
         excluded.push({ peerId: result.peerId, agentId: result.agentId, service: result.service, auditId: result.auditId, reason })
       }
@@ -273,6 +274,14 @@ export async function prepareModelAudits(input: {
         exclude(`invalid audit evidence: ${asError(error).message}`)
         continue
       }
+      const finalVerdict = finalAuditVerdict(result)
+      if (finalVerdict === null) {
+        exclude(result.recheckPending
+          ? `DIFF waiting for its recheck (${result.recheckPending.reason}); a later run this epoch rechecks it, so it is not submitted yet`
+          : 'DIFF not confirmed: no recheck on fresh probes, so it is not submitted')
+        continue
+      }
+      if (finalVerdict !== result.status) result = { ...result, status: finalVerdict }
       if (referenceModel === null) referenceModel = evidence.reference.referenceModel
       else if (normalized(referenceModel) !== normalized(evidence.reference.referenceModel)) {
         exclude(`audited against ${evidence.reference.referenceModel}, not ${referenceModel}`)
@@ -620,8 +629,21 @@ export function validateAuditMatchesSummary(
     || recheckEvidence.reference.probes.some((probe) => evidence.reference.probes.some((first) => first.id === probe.id))) {
     throw new Error('recheck reused probes from the first check')
   }
-  const expected = recheckEvidence.result.verdict === 'SAME' ? 'UNDETERMINED' : 'DIFF'
-  if (result.status !== expected) throw new Error('final verdict does not follow from the recheck')
+  // Runs from before DIFF needed two DIFFs stored "DIFF then UNDETERMINED" as DIFF; the submitted
+  // verdict is recomputed from the evidence (finalAuditVerdict), so only a SAME recheck is checked.
+  if (recheckEvidence.result.verdict === 'SAME' && result.status !== 'UNDETERMINED') {
+    throw new Error('final verdict does not follow from the recheck')
+  }
+}
+
+/**
+ * The verdict submitted for a seller: a DIFF counts only when a recheck on fresh probes is DIFF too,
+ * otherwise it is UNDETERMINED. Null for a DIFF that was never rechecked, which is not submitted.
+ */
+export function finalAuditVerdict(result: ModelAuditSummaryV1['results'][number]): ModelAuditVerdict | null {
+  if (result.recheck) return confirmedDiffStatus(result.recheck.status)
+  if (result.status === 'DIFF') return null
+  return result.status as ModelAuditVerdict
 }
 
 async function readModelSummary(path: string, runId: string, model: string): Promise<ModelAuditSummaryV1> {

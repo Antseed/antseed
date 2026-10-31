@@ -76,7 +76,7 @@ export interface ChainConfig {
   networkStatsUrl?: string;
   /** Public REST API of the chain explorer (Antscan). Serves per-seller on-chain stats at /api/sellers. */
   explorerApiUrl?: string;
-  /** AntseedVerification contract address. */
+  /** AntseedKbfVerification contract address. */
   verificationContractAddress?: string;
   /** Block when the verification contract was deployed. Floor for verifier event scans. */
   verificationDeployBlock?: number;

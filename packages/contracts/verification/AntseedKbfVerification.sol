@@ -7,14 +7,18 @@ import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {IAntseedEmissionsGate} from "../interfaces/IAntseedEmissionsGate.sol";
 import {IAntseedRegistry} from "../interfaces/IAntseedRegistry.sol";
 import {IAntseedSellerPools} from "../interfaces/IAntseedSellerPools.sol";
-import {IAntseedVerification} from "../interfaces/IAntseedVerification.sol";
+import {IAntseedKbfVerification} from "../interfaces/IAntseedKbfVerification.sol";
 import {IERC8004Registry} from "../interfaces/IERC8004Registry.sol";
 
 interface IEmissionsGateSource {
     function emissionsGate() external view returns (address);
 }
 
-/// @notice Records model-verification audits from approved auditors, one model per submission.
+/// @notice Records KBF (Knowledge Boundary Fingerprinting) model audits from approved auditors, one
+///         model per submission. KBF is one of several verification methods: every audit recorded
+///         here is a KBF audit. Another method gets its own contract, its own points policy, and its
+///         own emissions bucket, and never writes into KBF verdicts.
+///
 ///
 ///         Status: each (agent, service) keeps its latest result as its verdict, with the emissions
 ///         epoch it was given in. A verdict counts while `currentEpoch < epoch + validityEpochs`
@@ -36,7 +40,7 @@ interface IEmissionsGateSource {
 ///         `min(budget * credits / totalCredits, budget * maxAuditorShareBps / BPS)` from the
 ///         verification emission bucket, using the share cap in force at claim time. Budget above
 ///         the cap is never minted.
-contract AntseedVerification is IAntseedVerification, Ownable2Step {
+contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     uint256 public constant MAX_RESULTS_PER_AUDIT = 256;
     uint256 public constant MAX_EVIDENCE_URI_BYTES = 200;
     uint8 public constant MAX_VALIDITY_EPOCHS = 4;
