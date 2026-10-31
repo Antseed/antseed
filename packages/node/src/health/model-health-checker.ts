@@ -142,6 +142,10 @@ interface TrackedService {
    * failing without a new alert, and a success reports the recovery.
    */
   retrying: boolean;
+  /** The account answer this service last followed, by `_accountAnswers` count (see `_followAccount`). */
+  accountFollowed: number | null;
+  /** Its failed checks since the last success include the upstream being out of credit, which credit again forgives. */
+  accountFailed: boolean;
 }
 
 class ProbeTimeoutError extends Error {}
@@ -177,6 +181,8 @@ export class ModelHealthChecker {
   private readonly _onSweepComplete: ModelHealthCheckerConfig['onSweepComplete'];
   /** Each upstream's credit as last seen; unset until something said. */
   private readonly _accounts = new Map<Provider, AccountState>();
+  /** How many account answers each provider has had, changed or not. */
+  private readonly _accountAnswers = new Map<Provider, number>();
   /** Services marked failing before `onChange` could be told; reported on the first start. */
   private _failingAtInit: TrackedService[] = [];
 
@@ -284,7 +290,6 @@ export class ModelHealthChecker {
       for (const service of services) {
         if (!supportsHealthProbe(resolveProbeProtocol(provider, service))) this._retryAfterLiveFailures(this._stateFor(provider, service));
       }
-      const hasFreeCheck = (candidate?: Provider) => Boolean(candidate?.checkServiceHealth || candidate?.checkUpstreamAccount);
       const checkProvider = hasFreeCheck(target.probeProvider) ? target.probeProvider! : provider;
       // Free checks also read the account balance, so they run even with traffic.
       const checked = hasFreeCheck(checkProvider)
@@ -307,6 +312,46 @@ export class ModelHealthChecker {
           continue;
         }
         await this._probeService(target, service);
+      }
+      // Only a probed service can find out that the account has credit again: without one, a cached
+      // out-of-credit answer would keep the others failing for good, so they wait for a buyer to retry them.
+      if (checked.length === 0 && this._probesAccount(provider)) {
+        for (const service of services) {
+          if (!supportsHealthProbe(resolveProbeProtocol(provider, service))) this._followAccount(provider, this._stateFor(provider, service));
+        }
+      }
+    }
+  }
+
+  /**
+   * An image or video service on an upstream without its own account check
+   * follows what the upstream's other services found out about the account:
+   * each sweep while it is out of credit counts as a failed check, as an
+   * account check does for a video service, and once it has credit again
+   * those failures are forgiven: a failing service recovers, unless a buyer
+   * request failed it for another reason.
+   */
+  private _followAccount(provider: Provider, state: TrackedService): void {
+    const account = this._accounts.get(provider);
+    if (account === 'out') {
+      // Only a new answer counts: copying a cached one every sweep would keep the service failing
+      // after the account is funded whenever the probes stop telling (say they turn inconclusive).
+      const answer = this._accountAnswers.get(provider) ?? 0;
+      if (state.accountFollowed === answer) return;
+      state.accountFollowed = answer;
+      state.lastProbeAt = Date.now();
+      state.lastStatusCode = null;
+      state.lastDetail = 'The upstream account is out of credit';
+      state.accountFailed = true;
+      this._recordFailure(state, 'out_of_credit', null, null);
+    } else if (account !== undefined && state.accountFailed && !state.liveFailed) {
+      if (state.status === 'failing' || state.retrying) {
+        this._recordSuccess(state, 'probe', 'The upstream account has credit again');
+      } else {
+        state.consecutiveFailures = 0;
+        state.failingSince = null;
+        state.reason = null;
+        state.accountFailed = false;
       }
     }
   }
@@ -406,6 +451,8 @@ export class ModelHealthChecker {
         probeInFlight: false,
         liveFailed: false,
         retrying: false,
+        accountFollowed: null,
+        accountFailed: false,
       };
       this._states.set(key, state);
     }
@@ -539,16 +586,27 @@ export class ModelHealthChecker {
     const state = this._stateFor(provider, service);
     state.lastStatusCode = httpStatus;
     state.lastDetail = detail;
-    this._recordFailure(state, reason, httpStatus, null, 'traffic');
+    // Out of credit is the account's failure, not the service's, when a probe will tell when it has credit again (see `_followAccount`).
+    const accountFailure = reason === 'out_of_credit' && this._probesAccount(provider);
+    if (accountFailure) state.accountFailed = true;
+    this._recordFailure(state, reason, httpStatus, null, accountFailure ? 'probe' : 'traffic');
+  }
+
+  /** Whether the provider's probes read its account: it has a probed service and no account check of its own. */
+  private _probesAccount(provider: Provider): boolean {
+    const target = this._findTarget(provider);
+    if (!target || hasFreeCheck(target.provider) || hasFreeCheck(target.probeProvider)) return false;
+    return target.provider.services.some((service) => supportsHealthProbe(resolveProbeProtocol(target.provider, service)));
   }
 
   /**
-   * No probe can tell when a service failing on live failures works again,
-   * and buyers skip it while it is failing: after the same backoff a probed
+   * No probe can tell when a service failing on live failures (or on its
+   * upstream's credit, which nothing may confirm again) works again, and
+   * buyers skip it while it is failing: after the same backoff a probed
    * service waits, it is announced unknown so buyers try it again.
    */
   private _retryAfterLiveFailures(state: TrackedService): void {
-    if (state.status !== 'failing' || !state.liveFailed || state.checkedAt === null) return;
+    if (state.status !== 'failing' || !(state.liveFailed || state.accountFailed) || state.checkedAt === null) return;
     if (Date.now() - state.checkedAt < this._failingBackoff(state) * this._intervalMs - LIVE_FAILURE_PROBE_MIN_GAP_MS) return;
     state.status = 'unknown';
     state.retrying = true;
@@ -621,6 +679,7 @@ export class ModelHealthChecker {
 
   /** Records an upstream's credit and reports a change; the first reading of a funded account is not a change. */
   private _setAccount(provider: Provider, next: AccountState, detail: string, balanceUsd: number | null): void {
+    this._accountAnswers.set(provider, (this._accountAnswers.get(provider) ?? 0) + 1);
     const previous = this._accounts.get(provider);
     if (previous === next) return;
     this._accounts.set(provider, next);
@@ -651,6 +710,7 @@ export class ModelHealthChecker {
     state.status = 'healthy';
     state.retrying = false;
     state.liveFailed = false;
+    state.accountFailed = false;
     state.consecutiveFailures = 0;
     state.failingSince = null;
     state.reason = null;
@@ -716,8 +776,10 @@ export class ModelHealthChecker {
     if (state.status === 'failing') {
       if (state.failingSince !== null) health.failingSince = state.failingSince;
       if (state.consecutiveFailures > 0) health.consecutiveFailures = Math.min(0xffff, state.consecutiveFailures);
-      if (state.reason !== null) health.reason = state.reason;
-      if (state.httpStatus !== null && state.httpStatus >= 100 && state.httpStatus <= 599) health.httpStatus = state.httpStatus;
+      // The seller's own upstream account (its credit, its key) is not the buyers' business: they are told the upstream is unavailable.
+      const accountReason = state.reason === 'out_of_credit' || state.reason === 'auth';
+      if (state.reason !== null) health.reason = accountReason ? 'upstream_error' : state.reason;
+      if (!accountReason && state.httpStatus !== null && state.httpStatus >= 100 && state.httpStatus <= 599) health.httpStatus = state.httpStatus;
     }
     // An own entry even for a service named like an Object.prototype property ("__proto__").
     state.provider.serviceHealth ??= Object.create(null) as Record<string, ServiceHealth>;
@@ -759,6 +821,11 @@ function reasonForStatus(statusCode: number): ServiceHealthReason {
 /** Pick the probe request shape from the service's advertised API protocol. */
 function resolveProbeProtocol(provider: Provider, service: string): ServiceApiProtocol {
   return provider.serviceApiProtocols?.[service]?.[0] ?? 'openai-chat-completions';
+}
+
+/** Whether the provider has checks that cost nothing (its account, its model list). */
+function hasFreeCheck(provider?: Provider): boolean {
+  return Boolean(provider?.checkServiceHealth || provider?.checkUpstreamAccount);
 }
 
 export function supportsHealthProbe(protocol: ServiceApiProtocol): boolean {

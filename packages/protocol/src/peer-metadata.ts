@@ -352,7 +352,7 @@ const SERVICE_HEALTH_REASON_TEXT: Record<ServiceHealthReason, string> = {
   out_of_credit: "the upstream account is out of credit",
   auth: "the upstream rejected the seller's credentials",
   model_unavailable: "the upstream no longer offers this model",
-  upstream_error: "the upstream returned errors",
+  upstream_error: "the upstream is unavailable",
   unreachable: "the upstream could not be reached",
   init_failed: "the provider failed to initialize",
 };

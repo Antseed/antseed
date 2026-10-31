@@ -271,7 +271,10 @@ describe('ModelHealthChecker', () => {
 
     await checker.runSweep();
     expect(provider.services).toEqual(['only-model']);
-    expect(provider.serviceHealth?.['only-model']).toMatchObject({ status: 'failing', reason: 'out_of_credit', httpStatus: 402 });
+    // Buyers are told the upstream is unavailable; the seller's own snapshot keeps the real reason.
+    expect(provider.serviceHealth?.['only-model']).toMatchObject({ status: 'failing', reason: 'upstream_error' });
+    expect(provider.serviceHealth?.['only-model']?.httpStatus).toBeUndefined();
+    expect(checker.getSnapshot()[0]).toMatchObject({ reason: 'out_of_credit', lastStatusCode: 402 });
     expect(provider.healthCheckAvailable).toBeUndefined();
 
     await checker.runSweep();
@@ -469,7 +472,7 @@ describe('ModelHealthChecker free media health checks', () => {
     expect(failingServices(provider)).toEqual([]);
     await checker.runSweep();
     expect(failingServices(provider)).toEqual(['wan-2.5', 'kling-2']);
-    expect(provider.serviceHealth?.['wan-2.5']?.reason).toBe('out_of_credit');
+    expect(provider.serviceHealth?.['wan-2.5']?.reason).toBe('upstream_error');
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ service: 'wan-2.5', status: 'failing', detail: noCredits.reason }));
 
     await checker.runSweep();
@@ -611,7 +614,7 @@ describe('upstream credit classification in probes and requests', () => {
     await checker.runSweep();
     expect(statuses).toEqual(['out_of_credit']);
     expect(failingServices(provider)).toEqual(['model-a']);
-    expect(provider.serviceHealth?.['model-a']?.reason).toBe('out_of_credit');
+    expect(checker.getSnapshot().find((s) => s.service === 'model-a')?.reason).toBe('out_of_credit');
     expect(rounds).toBe(1);
   });
 
@@ -904,5 +907,144 @@ describe('ModelHealthChecker live failures on unprobed services', () => {
     await checker.runSweep();
     expect(statusOf(provider, 'video-a')).toBe('failing');
     expect(onChange.mock.calls.map(([event]) => (event as ModelHealthEvent).status)).toEqual(['failing']);
+  });
+});
+
+describe('ModelHealthChecker image services following the upstream account', () => {
+  const mixedProvider = (status: number) => makeProvider({
+    services: ['text-a', 'image-a'],
+    serviceApiProtocols: { 'image-a': ['openai-images'] },
+    onRequest: async (req) => jsonResponse(req.requestId, status, status === 402 ? { error: 'Insufficient USD or Diem balance' } : {}),
+  });
+
+  it('marks an image service failing while its upstream is out of credit, and recovers it with the account', async () => {
+    const provider = mixedProvider(402);
+    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 2 });
+    await checker.runSweep();
+    expect(statusOf(provider, 'image-a')).toBe('unknown');
+    await checker.runSweep();
+    expect(failingServices(provider)).toEqual(['text-a', 'image-a']);
+    expect(provider.serviceHealth?.['image-a']).toMatchObject({ status: 'failing', reason: 'upstream_error', source: 'probe' });
+    expect(checker.getSnapshot().find((s) => s.service === 'image-a')?.reason).toBe('out_of_credit');
+
+    provider.handleRequest = async (req) => jsonResponse(req.requestId, 200);
+    await checker.runSweep();
+    expect(statusOf(provider, 'text-a')).toBe('healthy');
+    // The account came back during this sweep; the image service follows on the next.
+    await checker.runSweep();
+    expect(statusOf(provider, 'image-a')).toBe('healthy');
+  });
+
+  it('learns the account from a live image request too', async () => {
+    const provider = makeProvider({ services: ['image-a'], serviceApiProtocols: { 'image-a': ['openai-images'] } });
+    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1 });
+    checker.reportUpstreamResponse(provider, 402, '{"error":"Insufficient USD or Diem balance"}', true, 'image-a');
+    expect(statusOf(provider, 'image-a')).toBe('failing');
+    checker.reportUpstreamResponse(provider, 200, '', true, 'image-a');
+    expect(statusOf(provider, 'image-a')).toBe('healthy');
+    await checker.runSweep();
+    expect(statusOf(provider, 'image-a')).toBe('healthy');
+  });
+
+  it('keeps a live generation failure when the account has credit again', async () => {
+    const provider = mixedProvider(402);
+    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1 });
+    await checker.runSweep();
+    checker.reportUpstreamResponse(provider, 500, '', true, 'image-a');
+    provider.handleRequest = async (req) => jsonResponse(req.requestId, 200);
+    await checker.runSweep();
+    await checker.runSweep();
+    expect(statusOf(provider, 'image-a')).toBe('failing');
+  });
+
+  it('forgives out-of-credit checks once the account has credit, before they add up to failing', async () => {
+    const provider = mixedProvider(402);
+    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 2 });
+    for (let outage = 0; outage < 3; outage++) {
+      provider.handleRequest = async (req) => jsonResponse(req.requestId, 402, { error: 'Insufficient USD or Diem balance' });
+      await checker.runSweep();
+      provider.handleRequest = async (req) => jsonResponse(req.requestId, 200);
+      await checker.runSweep();
+      await checker.runSweep();
+      expect(checker.getSnapshot().find((s) => s.service === 'image-a')?.consecutiveFailures).toBe(0);
+    }
+    expect(statusOf(provider, 'image-a')).not.toBe('failing');
+  });
+
+  it('recovers an image service failed by a live 402 when the text probes find credit again', async () => {
+    const provider = mixedProvider(200);
+    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1 });
+    checker.reportUpstreamResponse(provider, 402, '{"error":"Insufficient USD or Diem balance"}', true, 'image-a');
+    expect(statusOf(provider, 'image-a')).toBe('failing');
+    await checker.runSweep();
+    await checker.runSweep();
+    expect(statusOf(provider, 'image-a')).toBe('healthy');
+  });
+
+  it('lets buyers retry an image-only upstream after a live 402, since nothing can recheck its account', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const provider = makeProvider({ services: ['image-a'], serviceApiProtocols: { 'image-a': ['openai-images'] } });
+      const intervalMs = 5 * 60_000;
+      const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1, intervalMs });
+      checker.reportUpstreamResponse(provider, 402, '{"error":"Insufficient USD or Diem balance"}', true, 'image-a');
+      await checker.runSweep();
+      expect(statusOf(provider, 'image-a')).toBe('failing');
+      vi.setSystemTime(Date.now() + intervalMs);
+      await checker.runSweep();
+      expect(statusOf(provider, 'image-a')).toBe('unknown');
+      await checker.runSweep();
+      expect(statusOf(provider, 'image-a')).toBe('unknown');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('lets buyers retry an image service once its probes stop confirming the account is out', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const provider = mixedProvider(200);
+      const intervalMs = 5 * 60_000;
+      const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1, intervalMs });
+      checker.reportUpstreamResponse(provider, 402, '{"error":"Insufficient USD or Diem balance"}', true, 'image-a');
+      expect(statusOf(provider, 'image-a')).toBe('failing');
+      // The account is funded, but the text endpoint only rejects the probe now: nothing confirms either way.
+      provider.handleRequest = async (req) => jsonResponse(req.requestId, 400);
+      for (let sweep = 0; sweep < 3; sweep++) {
+        vi.setSystemTime(Date.now() + intervalMs);
+        await checker.runSweep();
+      }
+      expect(statusOf(provider, 'image-a')).toBe('unknown');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('recovers an image service on credit again after it was let back for a retry', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const provider = mixedProvider(402);
+      const intervalMs = 5 * 60_000;
+      const onChange = vi.fn();
+      const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1, intervalMs, onChange });
+      await checker.runSweep();
+      expect(statusOf(provider, 'image-a')).toBe('failing');
+      provider.handleRequest = async (req) => jsonResponse(req.requestId, 200);
+      vi.setSystemTime(Date.now() + intervalMs);
+      await checker.runSweep();
+      expect(statusOf(provider, 'image-a')).toBe('healthy');
+      expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ service: 'image-a', status: 'recovered' }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('never announces the account reason or its status code to buyers', async () => {
+    const provider = makeProvider({ services: ['model-a'], onRequest: statusSequence({ 'model-a': [401] }) });
+    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1 });
+    await checker.runSweep();
+    expect(provider.serviceHealth?.['model-a']).toMatchObject({ status: 'failing', reason: 'upstream_error' });
+    expect(provider.serviceHealth?.['model-a']?.httpStatus).toBeUndefined();
+    expect(checker.getSnapshot()[0]?.reason).toBe('auth');
   });
 });

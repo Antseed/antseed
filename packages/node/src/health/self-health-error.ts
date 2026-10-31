@@ -2,6 +2,7 @@ import type { ServiceHealth } from '../discovery/peer-metadata.js';
 import { describeServiceHealth, SELLER_SELF_HEALTH_FAILING_CODE } from '../discovery/peer-metadata.js';
 import type { SerializedHttpResponse } from '../types/http.js';
 import { tryParseJsonObject } from '../utils/json-codec.js';
+import { isUpstreamOutOfCredit } from './upstream-credit.js';
 
 export { describeServiceHealth, SELLER_SELF_HEALTH_FAILING_CODE };
 
@@ -63,6 +64,42 @@ export function buildSelfHealthErrorResponse(
         service_health: health,
         upstream_status: upstream.statusCode,
         ...(upstreamType ? { upstream_type: upstreamType } : {}),
+      },
+    })),
+  };
+}
+
+/**
+ * Whether an upstream error is about the seller's own account: its key
+ * (401, 403) or its credit. This decides what buyers are shown, so it reads
+ * a billing error at any status; a buyer who gets its own input echoed back
+ * this way only gets a 503 instead of a 400. Health checks read the account
+ * more carefully (`isLiveResponseOutOfCredit`).
+ */
+export function isUpstreamAccountError(statusCode: number, text: string): boolean {
+  return statusCode === 401 || statusCode === 403 || (statusCode >= 400 && isUpstreamOutOfCredit(statusCode, text));
+}
+
+/** Error code a seller answers with when its upstream account (credit or key) fails a request. */
+export const UPSTREAM_UNAVAILABLE_CODE = 'upstream_unavailable';
+
+/**
+ * What a buyer gets for an upstream answer about the seller's account (out of
+ * credit, key rejected): the seller's account is not the buyer's business (and
+ * a 402 would read as a request to pay), so it is a 503 saying the service is
+ * unavailable, without the upstream's message, type or headers.
+ */
+export function buildUpstreamUnavailableResponse(requestId: string, service: string): SerializedHttpResponse {
+  return {
+    requestId,
+    statusCode: SELF_HEALTH_ERROR_STATUS,
+    headers: { 'content-type': 'application/json' },
+    body: new TextEncoder().encode(JSON.stringify({
+      error: {
+        type: UPSTREAM_UNAVAILABLE_CODE,
+        code: UPSTREAM_UNAVAILABLE_CODE,
+        message: `${service} is unavailable on this seller right now`,
+        service,
       },
     })),
   };
