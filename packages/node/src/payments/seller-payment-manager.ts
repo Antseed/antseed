@@ -167,6 +167,8 @@ export class SellerPaymentManager {
   private readonly _reserveMax = new Map<string, bigint>();
   /** When each channel's ceiling was last checked against the chain (see refreshReserveMaxFromChain). */
   private readonly _reserveRefreshedAt = new Map<string, number>();
+  /** channelId -> on-chain ceiling read in progress, shared by concurrent callers */
+  private readonly _reserveRefreshes = new Map<string, Promise<bigint>>();
 
   /** channelId -> latest buyer-signed auth (both sigs + cumulative values + metadata) for settle/close */
   private readonly _latestAuth = new Map<string, LatestAuth>();
@@ -772,14 +774,7 @@ export class SellerPaymentManager {
 
           // Update tracking
           this._hydratedChannelIds.delete(channelId);
-          this._reserveMax.set(channelId, newMaxAmount);
-          const session = this._channelStore.getChannel(channelId);
-          if (session) {
-            session.previousConsumption = newMaxAmount.toString(); // repurposed: stores reserveMax
-            session.deadline = topUpDeadline;
-            session.updatedAt = Date.now();
-            this._channelStore.upsertChannel(session);
-          }
+          this._updateReserveCeiling(channelId, newMaxAmount, topUpDeadline);
 
           debugLog(`[SellerPayment] Top-up completed: channel=${channelId.slice(0, 18)}... new ceiling=${newMaxAmount}`);
         } catch (topUpErr) {
@@ -1571,14 +1566,7 @@ export class SellerPaymentManager {
         BigInt(pendingTopUp.deadline),
         pendingTopUp.reserveAuthSig,
       );
-      this._reserveMax.set(channelId, pendingTopUp.newMaxAmount);
-      const topUpSession = this._channelStore.getChannel(channelId);
-      if (topUpSession) {
-        topUpSession.previousConsumption = pendingTopUp.newMaxAmount.toString();
-        topUpSession.deadline = pendingTopUp.deadline;
-        topUpSession.updatedAt = Date.now();
-        this._channelStore.upsertChannel(topUpSession);
-      }
+      this._updateReserveCeiling(channelId, pendingTopUp.newMaxAmount, pendingTopUp.deadline);
       debugLog(`[SellerPayment] Deferred topUp succeeded: channel=${channelId.slice(0, 18)}... new ceiling=${pendingTopUp.newMaxAmount}`);
       return 'succeeded';
     } catch (retryErr) {
@@ -2252,33 +2240,47 @@ export class SellerPaymentManager {
    * is behind: a top-up that confirmed while the seller stopped is not in the
    * store. Checked before treating a channel as exhausted or rejecting an
    * auth above the ceiling, so a stale ceiling never closes a channel early.
-   * Never lowers the ceiling. Returns the effective ceiling.
+   * Never lowers the ceiling. Concurrent callers share one read, and a channel
+   * is read at most once per interval. Returns the effective ceiling.
    */
-  async refreshReserveMaxFromChain(channelId: string): Promise<bigint> {
-    // One chain read per channel per window, however many requests ask.
-    const now = Date.now();
-    if (now - (this._reserveRefreshedAt.get(channelId) ?? 0) < RESERVE_REFRESH_MIN_INTERVAL_MS) {
-      return this.getEffectiveReserveMax(channelId);
+  refreshReserveMaxFromChain(channelId: string): Promise<bigint> {
+    const pending = this._reserveRefreshes.get(channelId);
+    if (pending) return pending;
+    if (Date.now() - (this._reserveRefreshedAt.get(channelId) ?? 0) < RESERVE_REFRESH_MIN_INTERVAL_MS) {
+      return Promise.resolve(this.getEffectiveReserveMax(channelId));
     }
-    this._reserveRefreshedAt.set(channelId, now);
-    if (this._reserveRefreshedAt.size > 1_024) this._reserveRefreshedAt.delete(this._reserveRefreshedAt.keys().next().value!);
+    const refresh = this._readReserveMaxFromChain(channelId).finally(() => {
+      this._reserveRefreshes.delete(channelId);
+      this._reserveRefreshedAt.set(channelId, Date.now());
+      if (this._reserveRefreshedAt.size > 1_024) this._reserveRefreshedAt.delete(this._reserveRefreshedAt.keys().next().value!);
+    });
+    this._reserveRefreshes.set(channelId, refresh);
+    return refresh;
+  }
+
+  private async _readReserveMaxFromChain(channelId: string): Promise<bigint> {
     try {
       const state = classifyOnChainChannel(await this._channelsClient.getSession(channelId));
       const current = this._reserveMax.get(channelId) ?? 0n;
       if (state.exists && state.status === 'active' && state.channel.deposit > current) {
-        this._reserveMax.set(channelId, state.channel.deposit);
-        const session = this._channelStore.getChannel(channelId);
-        if (session) {
-          session.previousConsumption = state.channel.deposit.toString(); // repurposed: stores reserveMax
-          session.updatedAt = Date.now();
-          this._channelStore.upsertChannel(session);
-        }
+        this._updateReserveCeiling(channelId, state.channel.deposit);
         debugLog(`[SellerPayment] Reserve ceiling ${current} behind on-chain deposit ${state.channel.deposit}: channel=${channelId.slice(0, 18)}...`);
       }
     } catch (err) {
       debugWarn(`[SellerPayment] Reserve ceiling refresh failed: channel=${channelId.slice(0, 18)}... error=${this._formatError(err)}`);
     }
     return this.getEffectiveReserveMax(channelId);
+  }
+
+  /** Set a channel's reserve ceiling in memory and in the store (and its deadline, after a top-up). */
+  private _updateReserveCeiling(channelId: string, reserveMax: bigint, deadline?: number): void {
+    this._reserveMax.set(channelId, reserveMax);
+    const session = this._channelStore.getChannel(channelId);
+    if (!session) return;
+    session.previousConsumption = reserveMax.toString(); // repurposed: stores reserveMax
+    if (deadline !== undefined) session.deadline = deadline;
+    session.updatedAt = Date.now();
+    this._channelStore.upsertChannel(session);
   }
 
   /** Whether this channel is blocked from serving more paid work. */

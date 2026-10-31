@@ -220,6 +220,23 @@ describe('SellerPaymentManager.handleCloseChannelRequest', () => {
     expect(store.getChannel(CHANNEL_ID)!.previousConsumption).toBe('15000000');
   });
 
+  it('shares one pending on-chain ceiling read between concurrent callers', async () => {
+    let release!: () => void;
+    const getSession = vi.spyOn(manager.channelsClient, 'getSession').mockImplementation(() => new Promise((resolve) => {
+      release = () => resolve({ ...onChainChannel(buyer, seller, 0n), deposit: 15_000_000n });
+    }));
+
+    const first = manager.refreshReserveMaxFromChain(CHANNEL_ID);
+    const second = manager.refreshReserveMaxFromChain(CHANNEL_ID);
+    release();
+
+    await expect(Promise.all([first, second])).resolves.toEqual([15_000_000n, 15_000_000n]);
+    expect(getSession).toHaveBeenCalledTimes(1);
+    // A third call inside the interval reads nothing and sees the raised ceiling.
+    await expect(manager.refreshReserveMaxFromChain(CHANNEL_ID)).resolves.toBe(15_000_000n);
+    expect(getSession).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps the seller-held cumulative when the buyer offers a lower one', async () => {
     await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 900_000n), mux);
     manager.recordSpend(CHANNEL_ID, 900_000n);
