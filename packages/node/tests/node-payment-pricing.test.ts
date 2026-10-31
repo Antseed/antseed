@@ -224,6 +224,9 @@ function makeSpmMock(overrides: Record<string, unknown> = {}): any {
     getEffectiveReserveMax() {
       return this.getReserveMax();
     },
+    async refreshReserveMaxFromChain() {
+      return this.getEffectiveReserveMax();
+    },
     isChannelBlocked: () => false,
     getPaymentRequirements: () => ({ minBudgetPerRequest: '10000', suggestedAmount: '1000000' }),
     waitForPendingAuths: async () => {},
@@ -1649,6 +1652,36 @@ describe('SellerRequestHandler payment pricing selection', () => {
     expect(BigInt(body.estimatedInputTokens)).toBeGreaterThan(0n);
   });
 
+  it('checks the chain before closing a channel whose estimate only exceeds a stale stored ceiling', async () => {
+    const provider = makeProvider(0, 1_000_000, { name: 'paid-tier', services: ['local-test'] });
+    provider.handleRequest = vi.fn(async (req) => ({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ ok: true })) }));
+    let reserveMax = 1_000_000n;
+    const settleSession = vi.fn(async () => {});
+    const handler = makeSellerRequestHandler({
+      providers: [provider],
+      sellerPaymentManager: makeSpmMock({
+        getCumulativeSpend: () => 500_000n,
+        getAcceptedCumulative: () => 500_000n,
+        getReserveMax: () => reserveMax,
+        // A top-up to 3M confirmed on-chain but is not in the store.
+        refreshReserveMaxFromChain: vi.fn(async () => { reserveMax = 3_000_000n; return reserveMax; }),
+        settleSession,
+      }),
+      sessionTracker: null,
+      channelsClient: {} as any,
+      announcer: null,
+      reserveEstimateOverdraftUsdc: 0n,
+      emit: () => false,
+    });
+    const sentFrames: Uint8Array[] = [];
+    const { mux } = handler.handleConnection(makeConn(sentFrames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+
+    await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({ requestId: 'req-estimate-stale-ceiling', method: 'POST', path: '/v1/chat/completions', headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ model: 'local-test', max_tokens: 1 })) }) });
+
+    expect(settleSession).not.toHaveBeenCalled();
+    expect(provider.handleRequest).toHaveBeenCalledTimes(1);
+  });
+
   it('stops serving when delivered spend is already at the reserve ceiling', async () => {
     const provider = makeProvider(1, 1, { name: 'paid-tier', services: ['local-test'] });
     provider.handleRequest = vi.fn(async (req) => ({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ ok: true })) }));
@@ -1959,4 +1992,76 @@ it('judges exhaustion on the reserve ceiling after a parked catch-up, so a top-u
 
   expect(decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload).statusCode).toBe(200);
   expect(settleSession).not.toHaveBeenCalled();
+});
+
+it('checks a stale stored ceiling against the chain before closing a channel as exhausted', async () => {
+  // After a restart the store says 7M, but a top-up to 8M confirmed on-chain.
+  let reserveMax = 7_000_000n;
+  const settleSession = vi.fn(async () => {});
+  const refreshReserveMaxFromChain = vi.fn(async () => {
+    reserveMax = 8_000_000n;
+    return reserveMax;
+  });
+  const handler = makeSellerRequestHandler({
+    providers: [makeProvider(1, 1, { name: 'openai', services: ['test-model'] })],
+    sellerPaymentManager: makeSpmMock({
+      getCumulativeSpend: () => 7_459_839n,
+      getAcceptedCumulative: () => 6_509_280n,
+      getReserveMax: () => reserveMax,
+      refreshReserveMaxFromChain,
+      settleSession,
+    }),
+    channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,
+  });
+  const frames: Uint8Array[] = [];
+  const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+  await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+    requestId: 'after-restart', method: 'POST', path: '/v1/chat/completions',
+    headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'test-model', messages: [] })),
+  }) });
+
+  const response = decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload);
+  expect(refreshReserveMaxFromChain).toHaveBeenCalled();
+  // Still a catch-up 402 for the unsigned spend, but not an exhausted one.
+  expect(response.statusCode).toBe(402);
+  const body = JSON.parse(new TextDecoder().decode(response.body));
+  expect(body.code).toBeUndefined();
+  expect(body.reserveMaxAmount).toBe('8000000');
+  expect(settleSession).not.toHaveBeenCalled();
+});
+
+it('never serves a request whose channel closed during the reserve ceiling check', async () => {
+  let channel: { sessionId: string; authMax: string } | null = { sessionId: 'session-1', authMax: '1000000' };
+  let spent = 1_000_000n;
+  let accepted = 1_000_000n;
+  let reserveMax = 1_000_000n;
+  const provider = makeProvider(1, 1, { name: 'openai', services: ['test-model'] });
+  const handleRequest = vi.spyOn(provider, 'handleRequest');
+  const handler = makeSellerRequestHandler({
+    providers: [provider],
+    sellerPaymentManager: makeSpmMock({
+      getChannelByPeer: () => channel,
+      getCumulativeSpend: () => spent,
+      getAcceptedCumulative: () => accepted,
+      getReserveMax: () => reserveMax,
+      refreshReserveMaxFromChain: async () => {
+        // A cooperative close lands meanwhile and forgets the channel.
+        channel = null;
+        spent = 0n;
+        accepted = 0n;
+        reserveMax = 0n;
+        return 0n;
+      },
+    }),
+    channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,
+  });
+  const frames: Uint8Array[] = [];
+  const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+  await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+    requestId: 'closed-during-refresh', method: 'POST', path: '/v1/chat/completions',
+    headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'test-model', messages: [] })),
+  }) });
+
+  expect(handleRequest).not.toHaveBeenCalled();
+  expect(decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload).statusCode).toBe(402);
 });

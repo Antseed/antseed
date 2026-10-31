@@ -60,6 +60,8 @@ const DEFAULT_MIN_SETTLE_DELTA = BigInt(DEFAULT_MIN_SETTLE_DELTA_STR);
  * the wire when the close request arrives.
  */
 const CLOSE_CATCH_UP_WAIT_MS = 5_000;
+/** Minimum gap between on-chain reads of one channel's deposit. */
+const RESERVE_REFRESH_MIN_INTERVAL_MS = 10_000;
 /** `retryAfterMs` hint returned with 'busy' / 'pending_auth' rejections. */
 const CLOSE_RETRY_AFTER_MS = 2_000;
 
@@ -163,6 +165,10 @@ export class SellerPaymentManager {
 
   /** channelId -> on-chain reserveMaxAmount (budget ceiling from ReserveAuth) */
   private readonly _reserveMax = new Map<string, bigint>();
+  /** When each channel's ceiling was last checked against the chain (see refreshReserveMaxFromChain). */
+  private readonly _reserveRefreshedAt = new Map<string, number>();
+  /** channelId -> on-chain ceiling read in progress, shared by concurrent callers */
+  private readonly _reserveRefreshes = new Map<string, Promise<{ ceiling: bigint; verified: boolean }>>();
 
   /** channelId -> latest buyer-signed auth (both sigs + cumulative values + metadata) for settle/close */
   private readonly _latestAuth = new Map<string, LatestAuth>();
@@ -768,14 +774,7 @@ export class SellerPaymentManager {
 
           // Update tracking
           this._hydratedChannelIds.delete(channelId);
-          this._reserveMax.set(channelId, newMaxAmount);
-          const session = this._channelStore.getChannel(channelId);
-          if (session) {
-            session.previousConsumption = newMaxAmount.toString(); // repurposed: stores reserveMax
-            session.deadline = topUpDeadline;
-            session.updatedAt = Date.now();
-            this._channelStore.upsertChannel(session);
-          }
+          this._updateReserveCeiling(channelId, newMaxAmount, topUpDeadline);
 
           debugLog(`[SellerPayment] Top-up completed: channel=${channelId.slice(0, 18)}... new ceiling=${newMaxAmount}`);
         } catch (topUpErr) {
@@ -859,8 +858,11 @@ export class SellerPaymentManager {
         // not count here: until topUp() succeeds, the extra funds are not
         // locked, and accepting an over-reserve SpendingAuth would leave the
         // seller with an auth the contract cannot settle.
-        const currentReserveMax = this._reserveMax.get(channelId) ?? 0n;
+        let currentReserveMax = this._reserveMax.get(channelId) ?? 0n;
         const pendingTopUpForCheck = this._pendingTopUp.get(channelId);
+        if (currentReserveMax > 0n && cumulativeAmount > currentReserveMax) {
+          currentReserveMax = await this.refreshReserveMaxFromChain(channelId);
+        }
         if (currentReserveMax > 0n && cumulativeAmount > currentReserveMax) {
           debugWarn(
             `[SellerPayment] Rejecting SpendingAuth exceeding deposit ceiling: ` +
@@ -1564,14 +1566,7 @@ export class SellerPaymentManager {
         BigInt(pendingTopUp.deadline),
         pendingTopUp.reserveAuthSig,
       );
-      this._reserveMax.set(channelId, pendingTopUp.newMaxAmount);
-      const topUpSession = this._channelStore.getChannel(channelId);
-      if (topUpSession) {
-        topUpSession.previousConsumption = pendingTopUp.newMaxAmount.toString();
-        topUpSession.deadline = pendingTopUp.deadline;
-        topUpSession.updatedAt = Date.now();
-        this._channelStore.upsertChannel(topUpSession);
-      }
+      this._updateReserveCeiling(channelId, pendingTopUp.newMaxAmount, pendingTopUp.deadline);
       debugLog(`[SellerPayment] Deferred topUp succeeded: channel=${channelId.slice(0, 18)}... new ceiling=${pendingTopUp.newMaxAmount}`);
       return 'succeeded';
     } catch (retryErr) {
@@ -2240,6 +2235,69 @@ export class SellerPaymentManager {
     return this.getReserveMax(sessionId);
   }
 
+  /**
+   * Raise the local reserve ceiling to the channel's on-chain deposit when it
+   * is behind: a top-up that confirmed while the seller stopped is not in the
+   * store. Checked before treating a channel as exhausted or rejecting an
+   * auth above the ceiling, so a stale ceiling never closes a channel early.
+   * Never lowers the ceiling. Concurrent callers share one read, and a channel
+   * is read at most once per interval. Returns the effective ceiling.
+   */
+  async refreshReserveMaxFromChain(channelId: string): Promise<bigint> {
+    return (await this._refreshReserveCeiling(channelId)).ceiling;
+  }
+
+  /**
+   * The effective ceiling, and whether it reflects a successful chain read
+   * (now or within the interval). A failed read returns the stored ceiling,
+   * unverified, and is retried on the next call.
+   */
+  private _refreshReserveCeiling(channelId: string): Promise<{ ceiling: bigint; verified: boolean }> {
+    const pending = this._reserveRefreshes.get(channelId);
+    if (pending) return pending;
+    if (Date.now() - (this._reserveRefreshedAt.get(channelId) ?? 0) < RESERVE_REFRESH_MIN_INTERVAL_MS) {
+      return Promise.resolve({ ceiling: this.getEffectiveReserveMax(channelId), verified: true });
+    }
+    const refresh = this._readReserveMaxFromChain(channelId).then((verified) => {
+      if (verified) {
+        this._reserveRefreshedAt.set(channelId, Date.now());
+        if (this._reserveRefreshedAt.size > 1_024) this._reserveRefreshedAt.delete(this._reserveRefreshedAt.keys().next().value!);
+      }
+      return { ceiling: this.getEffectiveReserveMax(channelId), verified };
+    }).finally(() => {
+      this._reserveRefreshes.delete(channelId);
+    });
+    this._reserveRefreshes.set(channelId, refresh);
+    return refresh;
+  }
+
+  /** Raise the ceiling to the on-chain deposit when it is behind. Returns whether the read succeeded. */
+  private async _readReserveMaxFromChain(channelId: string): Promise<boolean> {
+    try {
+      const state = classifyOnChainChannel(await this._channelsClient.getSession(channelId));
+      const current = this._reserveMax.get(channelId) ?? 0n;
+      if (state.exists && state.status === 'active' && state.channel.deposit > current) {
+        this._updateReserveCeiling(channelId, state.channel.deposit);
+        debugLog(`[SellerPayment] Reserve ceiling ${current} behind on-chain deposit ${state.channel.deposit}: channel=${channelId.slice(0, 18)}...`);
+      }
+      return true;
+    } catch (err) {
+      debugWarn(`[SellerPayment] Reserve ceiling refresh failed: channel=${channelId.slice(0, 18)}... error=${this._formatError(err)}`);
+      return false;
+    }
+  }
+
+  /** Set a channel's reserve ceiling in memory and in the store (and its deadline, after a top-up). */
+  private _updateReserveCeiling(channelId: string, reserveMax: bigint, deadline?: number): void {
+    this._reserveMax.set(channelId, reserveMax);
+    const session = this._channelStore.getChannel(channelId);
+    if (!session) return;
+    session.previousConsumption = reserveMax.toString(); // repurposed: stores reserveMax
+    if (deadline !== undefined) session.deadline = deadline;
+    session.updatedAt = Date.now();
+    this._channelStore.upsertChannel(session);
+  }
+
   /** Whether this channel is blocked from serving more paid work. */
   isChannelBlocked(sessionId: string): boolean {
     return this._blockedChannels.has(sessionId);
@@ -2347,7 +2405,23 @@ export class SellerPaymentManager {
       return reject('invalid_auth', err instanceof Error ? err.message : String(err));
     }
     if (buyerAuth) {
-      this._adoptBuyerCloseAuth(channelId, buyerAuth);
+      // An auth above the deposit cannot be settled: close() would revert and
+      // the channel would stay open. Keep the settleable auth instead.
+      const { ceiling, verified } = await this._refreshReserveCeiling(channelId);
+      if (ceiling > 0n && buyerAuth.cumulativeAmount > ceiling && !verified) {
+        // The stored ceiling may just be stale: never drop the buyer's auth on it.
+        return reject('close_failed', 'could not read the on-chain deposit to check the close authorization', {
+          retryAfterMs: CLOSE_RETRY_AFTER_MS,
+        });
+      }
+      if (ceiling > 0n && buyerAuth.cumulativeAmount > ceiling) {
+        debugWarn(
+          `[SellerPayment] Ignoring close auth above the deposit: cumulative=${buyerAuth.cumulativeAmount} ` +
+          `> reserveMax=${ceiling} channel=${channelId.slice(0, 18)}...`,
+        );
+      } else {
+        this._adoptBuyerCloseAuth(channelId, buyerAuth);
+      }
     }
 
     // Anything served but not yet signed for is unclaimable — ask for the
