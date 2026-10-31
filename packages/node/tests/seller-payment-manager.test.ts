@@ -744,6 +744,57 @@ describe('SellerPaymentManager', () => {
     expect(manager.getReserveMax(channelId)).toBe(2_000_000n);
   });
 
+  it('clears a top-up already covered by the ceiling without leaving the channel stuck', async () => {
+    const channelId = makeChannelId(125);
+    await manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      isReserve: true, reserveMaxAmount: '1000000',
+    }), mux);
+    // A deferred top-up the chain already covers (raised elsewhere).
+    manager['_pendingTopUp'].set(channelId, { newMaxAmount: 1_000_000n, deadline: Math.floor(Date.now() / 1000) + 3600, reserveAuthSig: '0x' });
+    const auth = (amount: bigint, ceiling = '1000000') => buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, { cumulativeAmount: amount, reserveMaxAmount: ceiling });
+    await manager.handleSpendingAuth(buyerIdentity.peerId, await auth(500_000n), mux);
+    await expect(manager.waitForTopUp(channelId, 1_000)).resolves.toBe(true);
+    expect(manager.isTopUpRunning(channelId)).toBe(false);
+
+    // A real top-up still runs afterwards.
+    const topUpSpy = vi.spyOn(manager.channelsClient, 'topUp').mockResolvedValue('0xtopup');
+    await manager.handleSpendingAuth(buyerIdentity.peerId, await auth(900_000n), mux);
+    await manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      isReserve: true, reserveMaxAmount: '2000000', salt: '0x' + '25'.repeat(32),
+    }), mux);
+    await manager.waitForTopUp(channelId);
+    expect(topUpSpy).toHaveBeenCalledOnce();
+    expect(manager.getReserveMax(channelId)).toBe(2_000_000n);
+  });
+
+  it('submits the higher top-up that arrived during the threshold read, not the older one', async () => {
+    const channelId = makeChannelId(126);
+    let releaseThreshold!: () => void;
+    vi.spyOn(manager.channelsClient, 'getTopUpSettledThresholdBps').mockImplementation(() => new Promise((resolve) => {
+      releaseThreshold = () => resolve(8_500n);
+    }));
+    await manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      isReserve: true, reserveMaxAmount: '1000000',
+    }), mux);
+    await manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      cumulativeAmount: 900_000n, reserveMaxAmount: '1000000',
+    }), mux);
+    const topUpSpy = vi.spyOn(manager.channelsClient, 'topUp').mockResolvedValue('0xtopup');
+    const reserveAuth = (ceiling: string, salt: string) => buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      isReserve: true, reserveMaxAmount: ceiling, salt: '0x' + salt.repeat(32),
+    });
+    await manager.handleSpendingAuth(buyerIdentity.peerId, await reserveAuth('2000000', '26'), mux);
+    // A higher top-up arrives while the threshold read is pending.
+    await manager.handleSpendingAuth(buyerIdentity.peerId, await reserveAuth('3000000', '27'), mux);
+    releaseThreshold();
+    await manager.waitForTopUp(channelId);
+
+    expect(topUpSpy).toHaveBeenCalledOnce();
+    expect(topUpSpy.mock.calls[0]?.[5]).toBe(3_000_000n);
+    expect(manager.getReserveMax(channelId)).toBe(3_000_000n);
+    expect(manager.hasPendingTopUp(channelId)).toBe(false);
+  });
+
   it('tracks the largest pending top-up ceiling while retries are deferred', async () => {
     const channelId = makeChannelId(100);
 

@@ -1553,7 +1553,8 @@ export class SellerPaymentManager {
       this._topUpsWanted.add(channelId);
       return;
     }
-    const run = (async () => {
+    // Starts after it is registered below, so every exit path finds itself there.
+    const run: Promise<void> = Promise.resolve().then(async () => {
       try {
         for (;;) {
           this._topUpsWanted.delete(channelId);
@@ -1565,16 +1566,20 @@ export class SellerPaymentManager {
             this._pendingTopUp.delete(channelId);
             break;
           }
-          const { amount, metadata, sig } = this._getSettleParams(channelId);
-          if (!await this._topUpEligible(channelId, amount)) {
+          if (!await this._topUpEligible(channelId, this._getSettleParams(channelId).amount)) {
             // A higher auth may have arrived during the threshold read.
             if (this._topUpsWanted.has(channelId)) continue;
             break;
           }
-          this._topUpInFlight.set(channelId, pending.newMaxAmount);
+          // Submit what is pending now: a higher ReserveAuth may have replaced
+          // it during the read, and settle with the latest authorization.
+          const latest = this._pendingTopUp.get(channelId);
+          if (!latest) break;
+          const { amount, metadata, sig } = this._getSettleParams(channelId);
+          this._topUpInFlight.set(channelId, latest.newMaxAmount);
           let outcome: Awaited<ReturnType<SellerPaymentManager['_retryPendingTopUp']>>;
           try {
-            outcome = await this._retryPendingTopUp(buyerPeerId, channelId, pending, amount, metadata, sig);
+            outcome = await this._retryPendingTopUp(buyerPeerId, channelId, latest, amount, metadata, sig);
           } finally {
             this._topUpInFlight.delete(channelId);
           }
@@ -1586,10 +1591,10 @@ export class SellerPaymentManager {
       } catch (err) {
         debugWarn(`[SellerPayment] Background topUp failed: channel=${channelId.slice(0, 18)}... error=${this._formatError(err)}`);
       } finally {
-        this._topUpsRunning.delete(channelId);
+        if (this._topUpsRunning.get(channelId) === run) this._topUpsRunning.delete(channelId);
         this._topUpsWanted.delete(channelId);
       }
-    })();
+    });
     this._topUpsRunning.set(channelId, run);
   }
 
@@ -1644,7 +1649,8 @@ export class SellerPaymentManager {
     settleMetadata: string,
     settleSig: string,
   ): Promise<'succeeded' | 'retryable-failure' | 'permanent-failure'> {
-    this._pendingTopUp.delete(channelId);
+    // A higher ReserveAuth queued meanwhile stays pending for the next round.
+    if (this._pendingTopUp.get(channelId) === pendingTopUp) this._pendingTopUp.delete(channelId);
     debugLog(`[SellerPayment] Retrying deferred topUp: channel=${channelId.slice(0, 18)}... settling=${settleAmount} newMax=${pendingTopUp.newMaxAmount}`);
     try {
       await this._channelsClient.topUp(
