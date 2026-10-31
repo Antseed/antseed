@@ -15,8 +15,14 @@ export class StreamOutcome {
   private _event = '';
 
   observe(data: Uint8Array, now = Date.now()): void {
-    if (data.length === 0) return;
-    const lines = (this._partial + this._decoder.decode(data, { stream: true })).split('\n');
+    if (data.length === 0 || (this.failed && this.firstTokenAt !== null)) return;
+    const text = this._partial + this._decoder.decode(data, { stream: true });
+    // After the first token only an error matters: skip parsing chunks that cannot hold one.
+    if (this.firstTokenAt !== null && !text.includes('error') && !text.includes('response.failed')) {
+      this._partial = text.slice(text.lastIndexOf('\n') + 1);
+      return;
+    }
+    const lines = text.split('\n');
     this._partial = lines.pop() ?? '';
     for (const raw of lines) this._line(raw.endsWith('\r') ? raw.slice(0, -1) : raw, now);
   }

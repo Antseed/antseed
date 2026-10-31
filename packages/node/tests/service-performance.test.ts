@@ -18,19 +18,21 @@ const NOW = 1_800_000_000_000;
 describe('ServicePerformanceTracker', () => {
   it('reports requests, success rate, first-token percentiles and speed over the last hour', () => {
     const tracker = new ServicePerformanceTracker();
-    for (let i = 1; i <= 10; i += 1) {
+    tracker.record('openai', 'm1', { ok: true }, NOW - 2 * 60 * 60_000);
+    for (let i = 10; i >= 1; i -= 1) {
       tracker.record('openai', 'm1', { ok: true, firstTokenMs: i * 100, streamMs: 2_000, outputTokens: 100 }, NOW - i * 1_000);
     }
     tracker.record('openai', 'm1', { ok: false }, NOW);
-    tracker.record('openai', 'm1', { ok: true }, NOW - 2 * 60 * 60_000);
 
-    expect(tracker.performance('openai', 'm1', NOW)).toEqual({
-      requests: 11,
-      successRate: 0.9091,
-      firstTokenMsP50: 500,
-      firstTokenMsP90: 900,
-      tokensPerSecondP50: 50,
-    });
+    const performance = tracker.performance('openai', 'm1', NOW)!;
+    expect(performance).toMatchObject({ requests: 11, successRate: 0.9091 });
+    // Percentiles come from log-scale bins 10% wide.
+    expect(performance.firstTokenMsP50).toBeGreaterThan(500 * 0.94);
+    expect(performance.firstTokenMsP50).toBeLessThan(500 * 1.06);
+    expect(performance.firstTokenMsP90).toBeGreaterThan(900 * 0.94);
+    expect(performance.firstTokenMsP90).toBeLessThan(900 * 1.06);
+    expect(performance.tokensPerSecondP50).toBeGreaterThan(50 * 0.94);
+    expect(performance.tokensPerSecondP50).toBeLessThan(50 * 1.06);
   });
 
   it('leaves out speed it cannot judge: unstreamed answers, short answers and failures', () => {
@@ -39,15 +41,33 @@ describe('ServicePerformanceTracker', () => {
     tracker.record('openai', 'm1', { ok: true, firstTokenMs: 300, streamMs: 100, outputTokens: 5 }, NOW);
     tracker.record('openai', 'm1', { ok: false, firstTokenMs: 9_000, streamMs: 100, outputTokens: 500 }, NOW);
 
-    expect(tracker.performance('openai', 'm1', NOW)).toEqual({ requests: 3, successRate: 0.6667, firstTokenMsP50: 300, firstTokenMsP90: 300 });
+    const performance = tracker.performance('openai', 'm1', NOW)!;
+    expect(performance).toMatchObject({ requests: 3, successRate: 0.6667 });
+    expect(performance.firstTokenMsP50).toBe(performance.firstTokenMsP90);
+    expect(performance.tokensPerSecondP50).toBeUndefined();
   });
 
-  it('counts every request in the window, while timings come from the newest 500 answers', () => {
+  it('counts every request in the window, at any volume', () => {
     const tracker = new ServicePerformanceTracker();
-    for (let i = 0; i < 2_000; i += 1) {
-      tracker.record('openai', 'm1', { ok: i % 4 !== 0, firstTokenMs: i < 1_300 ? 9_000 : 300 }, NOW - (2_000 - i));
+    for (let i = 0; i < 20_000; i += 1) {
+      tracker.record('openai', 'm1', { ok: i % 4 !== 0, firstTokenMs: i % 10 === 0 ? 9_000 : 300 }, NOW - 50 * 60_000 + i * 150);
     }
-    expect(tracker.performance('openai', 'm1', NOW)).toMatchObject({ requests: 2_000, successRate: 0.75, firstTokenMsP50: 300, firstTokenMsP90: 300 });
+    const performance = tracker.performance('openai', 'm1', NOW)!;
+    expect(performance).toMatchObject({ requests: 20_000, successRate: 0.75 });
+    expect(performance.firstTokenMsP50).toBeLessThan(330);
+    expect(performance.firstTokenMsP90).toBeLessThan(330);
+  });
+
+  it('drops a slice once it is out of the window, and caches the summary until then', () => {
+    const tracker = new ServicePerformanceTracker();
+    tracker.record('openai', 'm1', { ok: false }, NOW - 58 * 60_000);
+    tracker.record('openai', 'm1', { ok: true }, NOW);
+    const first = tracker.performance('openai', 'm1', NOW);
+    expect(first).toMatchObject({ requests: 2, successRate: 0.5 });
+    expect(tracker.performance('openai', 'm1', NOW + 1_000)).toBe(first);
+    expect(tracker.performance('openai', 'm1', NOW + 10 * 60_000)).toMatchObject({ requests: 1, successRate: 1 });
+    tracker.record('openai', 'm1', { ok: true }, NOW + 10 * 60_000);
+    expect(tracker.performance('openai', 'm1', NOW + 10 * 60_000)).toMatchObject({ requests: 2 });
   });
 
   it('announces only listed services with traffic in the window, and forgets idle ones', () => {
