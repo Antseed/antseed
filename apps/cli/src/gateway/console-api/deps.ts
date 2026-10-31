@@ -1,3 +1,4 @@
+import type { PeerBoostSource } from '../services/peer-boosts.js'
 import type { BuyerAddressBook } from '../services/wallet-address.js'
 import type { HostFacts } from '../exposure.js'
 import type { GatewayStore } from '../store.js'
@@ -49,4 +50,6 @@ export interface ConsoleDeps {
   hostFacts?: HostFacts
   /** Antseed update checks for `/update`; created from `dataDir` and `version` when absent (tests inject them). */
   updates?: GatewayUpdates
+  /** Antseed Points boost per seller for `/peers` (display only); every peer's boost is null when absent. */
+  peerBoosts?: PeerBoostSource
 }

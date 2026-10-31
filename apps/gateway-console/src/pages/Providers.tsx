@@ -7,15 +7,16 @@ import { copyModelIdItem, CopyIdButton, useCopy } from '../components/copy-actio
 import { Icon } from '../components/icons'
 import { PeerActionDialog } from '../components/PeerActionDialog'
 import { TeeBadge } from '../components/TeeBadge'
+import { BoostTip } from '../components/TrustInfo'
 import { VerificationLinks } from '../components/VerificationLinks'
 import { SplitView, type SidePanelContent } from '../components/SidePanel'
 import { Badge, EmptyState, LoadingRows, Mono, PageHeader, PageLink, Panel, QueryView, SelectField, Switch } from '../components/ui'
-import { formatLatency, formatNumber, formatPriceRange, formatSpeed, shortId } from '../lib/format'
+import { BOOST_EARNING_MIN, formatBoost, formatLatency, formatNumber, formatPriceRange, formatSpeed, shortId } from '../lib/format'
 import { canOpen, panelPath, panelSelection } from '../lib/nav'
 import { useConsole } from '../app/context'
 import { SellerListsButton } from '../components/PeerLists'
 import { samePeerId } from '../lib/peer-id'
-import { filterPeers, inputPrice, isFreePeer, outputPrice, priceRange, type PeerFilter } from '../lib/peers'
+import { filterPeers, inputPrice, isFreePeer, isPaidPeer, outputPrice, priceRange, type PeerFilter } from '../lib/peers'
 import { hasReputationData } from '../lib/policy-match'
 import { modelsFromPeers, qk, usePeers } from '../lib/queries'
 import { routingPlaces, type RoutingPlace } from '../lib/selection'
@@ -47,6 +48,7 @@ function ProviderBadges({ peer, model }: { peer: Peer; model: string }) {
       {isFreePeer(peer, model) && <Badge tone="success">Free</Badge>}
       {peer.washFlagged && <Badge tone="danger">Flagged</Badge>}
       {coolingDown && <Badge tone="warning">Cooling down</Badge>}
+      {peer.boost !== null && peer.boost < BOOST_EARNING_MIN && isPaidPeer(peer, model) && <Badge tone="neutral">0× earns nothing</Badge>}
     </div>
   )
 }
@@ -116,6 +118,12 @@ export default function Providers() {
                 { key: 'input', header: 'Input $/M', align: 'right', sortValue: (peer) => inputPrice(peer, filter.model), render: (peer) => formatPriceRange(priceRange(peer, 'inputUsdPerMillion', filter.model)) },
                 { key: 'output', header: 'Output $/M', align: 'right', secondary: true, sortValue: (peer) => outputPrice(peer, filter.model), render: (peer) => formatPriceRange(priceRange(peer, 'outputUsdPerMillion', filter.model)) },
                 { key: 'trust', header: 'Trust', align: 'right', sortValue: (peer) => peer.trustScore, render: (peer) => score(peer.trustScore) },
+                // Free usage earns no points, so a provider that charges nothing (for the chosen model) has no boost to show.
+                { key: 'boost', header: 'Boost', headerInfo: <BoostTip />, align: 'right', sortValue: (peer) => (isPaidPeer(peer, filter.model) ? peer.boost : null), render: (peer) => (
+                  isPaidPeer(peer, filter.model)
+                    ? <span title="Antseed Points per $1 spent with this provider">{formatBoost(peer.boost)}</span>
+                    : <span className="gc-muted" title="Free usage earns no Antseed Points">No points</span>
+                ) },
                 ...(showReputation ? [{ key: 'reputation', header: 'Reputation', align: 'right' as const, secondary: true, optional: true, sortValue: (peer: Peer) => peer.reputationScore, render: (peer: Peer) => score(peer.reputationScore) }] : []),
                 { key: 'firstToken', header: 'First token', align: 'right', secondary: true, optional: true, sortValue: (peer) => peer.firstTokenMsP50, render: (peer) => formatLatency(peer.firstTokenMsP50) },
                 { key: 'speed', header: 'Speed', align: 'right', secondary: true, optional: true, sortValue: (peer) => peer.tokensPerSecondP50, render: (peer) => formatSpeed(peer.tokensPerSecondP50) },

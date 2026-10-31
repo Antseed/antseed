@@ -3,7 +3,7 @@
  * payment channels and buyer rewards, plus the chain the browser signs
  * operator actions (claim, withdraw, deposit) against.
  */
-import { resolveAntsChain, type AntsChainConfig, type RewardsView } from '@antseed/ants'
+import { resolveAntsChain, type AntsChainConfig, type BuyerPointsView, type RewardsView } from '@antseed/ants'
 import { DEFAULT_BUYER_IDENTITY } from '@antseed/node'
 import type { AbstractSigner } from 'ethers'
 import { createHash } from 'node:crypto'
@@ -59,7 +59,7 @@ export interface WalletRouteOverrides {
   buyerAddresses?: BuyerAddressBook
   resolveChain?: () => Promise<AntsChainConfig>
   /** Buyer rewards, with the legacy epochs a claim may name (`legacyEpochs`, empty when unknown). */
-  readRewards?: (chain: AntsChainConfig, address: string) => Promise<RewardsView & { legacyEpochs?: number[] }>
+  readRewards?: (chain: AntsChainConfig, address: string) => Promise<RewardsView & { legacyEpochs?: number[]; points?: BuyerPointsView | null }>
   /** On-chain records of these channels (AntseedChannels); ids that could not be read are left out. */
   readChannelStates?: (chain: AntsChainConfig, channelIds: string[], sellers: ReadonlyMap<string, string>) => Promise<Map<string, ChannelChainState>>
   payBaseUrl?: () => string

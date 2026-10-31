@@ -333,6 +333,8 @@ test('GET peers merges buyer peers, health and gateway stats', async () => {
     tee: true,
     teeScope: null,
     stakeAnts: '1200',
+    // No boost source wired: unknown, never 0×.
+    boost: null,
     agentId: 42,
     freeTier: {
       base: { maxRequestsPerAddress: 1000, maxRequestsPerIp: null, windowMs: 86_400_000 },
@@ -375,6 +377,34 @@ test('GET peers uses the TEE snapshot when the buyer shares it', async () => {
   } finally {
     verificationAllowed = false
   }
+})
+
+test('peer boost: seller contract first, then the peer address; no pool is 0×', () => {
+  const contract = 'dd'.repeat(20)
+  const body = { ok: true, peers: [
+    { ...PEERS_BODY.peers[0], sellerContract: `0x${contract.toUpperCase()}` },
+    PEERS_BODY.peers[1],
+    { ...PEERS_BODY.peers[1], peerId: PEER_C },
+  ] }
+  const boosts = new Map([[`0x${contract}`, { boost: 15.87, agentId: 1 }], [`0x${PEER_A}`, { boost: 2, agentId: 2 }], [`0x${PEER_B}`, { boost: 0.5, agentId: 3 }]])
+  const peers = mapPeers({ peers: body, health: null, verification: null, stats: [], now: NOW, boosts })
+  assert.deepEqual(peers.map((peer) => peer.boost), [15.87, 0.5, 0])
+  assert.deepEqual(mapPeers({ peers: body, health: null, verification: null, stats: [], now: NOW, boosts: null }).map((peer) => peer.boost), [null, null, null])
+})
+
+test('GET peers reads boosts from the deps source and stays up when it fails', async () => {
+  verificationAllowed = false
+  const withSource = (peerBoosts: NonNullable<ReturnType<typeof fakeDeps>['peerBoosts']>) => {
+    const router = new ConsoleRouter()
+    registerNetworkRoutes(router, { ...fakeDeps(store, () => NOW), peerBoosts }, {
+      buyer: buyer.client, canSeeWorkspace: fakeCanSeeWorkspace, requireOrgAdmin: fakeRequireOrgAdmin, resolvePolicy: fakeResolvePolicy,
+    })
+    return router
+  }
+  const boosted = await call(withSource(async () => new Map([[`0x${PEER_A}`, { boost: 4.2, agentId: 7 }]])), 'GET', '/peers', member) as Peer[]
+  assert.deepEqual(boosted.map((peer) => peer.boost), [4.2, 0])
+  const failing = await call(withSource(async () => { throw new Error('antscan down') }), 'GET', '/peers', member) as Peer[]
+  assert.deepEqual(failing.map((peer) => peer.boost), [null, null])
 })
 
 test('GET peers still answers without peer health', () => {

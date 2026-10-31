@@ -4,10 +4,11 @@ import { ActionMenu, Drawer, IconButton, LoadingRows, Logo, LogoMark } from '@an
 import { api } from '../api'
 import { useConsole } from '../app/context'
 import { useTheme, type ThemeChoice } from '../app/theme'
-import { isOrgAdmin, ROLE_LABELS, visibleNav, type PageId } from '../lib/nav'
+import { pointsUrl } from '../config'
+import { isOrgAdmin, isWorkspaceAdmin, ROLE_LABELS, visibleNav, type PageId } from '../lib/nav'
 import { href, linkHandler, navigate, useLocation } from '../lib/router'
 import { useWalletAttention } from '../lib/attention'
-import { useSellerStatus, useStatus } from '../lib/queries'
+import { useSellerStatus, useStatus, useWallet } from '../lib/queries'
 import { startTour, tourSeen } from '../lib/tour'
 import { AccountModal } from './AccountModal'
 import { ExposureBanner } from './ExposureBanner'
@@ -146,8 +147,10 @@ function initials(label: string): string {
 
 /** Avatar button with a small menu: who is signed in, account settings, sign out. */
 function AccountMenu({ onAccount, onTour, onSignOut }: { onAccount: () => void; onTour: () => void; onSignOut: () => void }) {
-  const { me } = useConsole()
+  const { me, workspace, viewer } = useConsole()
   const [open, setOpen] = useState(false)
+  // Points belong to the workspace's buyer wallet; only admins can read it, others land on the lookup.
+  const wallet = useWallet(workspace.id, open && isWorkspaceAdmin(viewer))
   const root = useRef<HTMLDivElement | null>(null)
   const trigger = useRef<HTMLButtonElement | null>(null)
   useEffect(() => {
@@ -176,6 +179,7 @@ function AccountMenu({ onAccount, onTour, onSignOut }: { onAccount: () => void; 
           </div>
           <button type="button" role="menuitem" className="gc-account__item" onClick={pick(onAccount)}><Icon.shield size={15} />Account and sign-in</button>
           <button type="button" role="menuitem" className="gc-account__item" onClick={pick(onTour)}><Icon.compass size={15} />Take the tour</button>
+          <a role="menuitem" className="gc-account__item" href={pointsUrl(wallet.data?.address)} target="_blank" rel="noreferrer" onClick={() => setOpen(false)}><Icon.rewards size={15} />Antseed Points</a>
           <a role="menuitem" className="gc-account__item" href={DOCS_URL} target="_blank" rel="noreferrer" onClick={() => setOpen(false)}><Icon.external size={15} />Documentation</a>
           <div className="gc-account__sep" />
           <button type="button" role="menuitem" className="gc-account__item" onClick={pick(onSignOut)}><Icon.logout size={15} />Sign out</button>

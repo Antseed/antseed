@@ -737,3 +737,20 @@ test('selectDefaultVprModel never falls back to a video model', () => {
     provider: 'openai', serviceId: 'free-video', label: 'free-video', categories: [],
   }), null);
 });
+
+test('catalog entries carry their best seller boost; unknown when no seller has one', () => {
+  const [entry] = projectRowsToVprModelCatalog([
+    discoverRow({ peerId: 'p1', boost: 2.5 }),
+    discoverRow({ peerId: 'p2', boost: 15.9 }),
+    discoverRow({ peerId: 'p3', boost: null }),
+  ]);
+  assert.equal(entry?.maxBoost, 15.9);
+  // A free seller earns no points, whatever its pool's boost.
+  const [withFree] = projectRowsToVprModelCatalog([
+    discoverRow({ peerId: 'p1', boost: 2.5 }),
+    discoverRow({ peerId: 'p2', boost: 30, inputUsdPerMillion: 0, outputUsdPerMillion: 0 }),
+  ]);
+  assert.equal(withFree?.maxBoost, 2.5);
+  const [unknown] = projectRowsToVprModelCatalog([discoverRow({ peerId: 'p1' }), discoverRow({ peerId: 'p2', boost: null })]);
+  assert.equal(unknown?.maxBoost, null);
+});

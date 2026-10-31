@@ -4,7 +4,7 @@ import { test } from 'vitest';
 import type { DiscoverRow, VprRouteSelection } from '../../core/state';
 import { modelPinKey } from '../routing/model-pins.js';
 import type { VprModelCatalogEntry } from '../../core/state';
-import { compareModelRoutesByReputation, filterVprCatalog, pinnedSellerLabel, pinnedSellerLabels } from './view-models.js';
+import { compareModelRoutesByReputation, filterVprCatalog, pinnedSellerLabel, pinnedSellerLabels, sortVprCatalog } from './view-models.js';
 
 function discoverRow(overrides: Partial<DiscoverRow> = {}): DiscoverRow {
   const peerId = overrides.peerId ?? 'p1';
@@ -221,4 +221,18 @@ test('seller ordering matches effective reputation instead of raw trust', () => 
     'apex',
     'flash',
   ]);
+});
+
+test('Most ANTS sorts by the best seller boost, unknown boosts last', () => {
+  const entries = [
+    catalogEntry({ serviceId: 'unknown', label: 'Unknown', maxBoost: null, peerCount: 9 }),
+    catalogEntry({ serviceId: 'low', label: 'Low', maxBoost: 0.8 }),
+    catalogEntry({ serviceId: 'zero', label: 'Zero', maxBoost: 0 }),
+    catalogEntry({ serviceId: 'high', label: 'High', maxBoost: 15.9 }),
+    catalogEntry({ serviceId: 'tie-popular', label: 'Tie popular', maxBoost: 0.8, peerCount: 4 }),
+  ];
+  assert.deepEqual(
+    sortVprCatalog(entries, 'Most ANTS').map((entry) => entry.serviceId),
+    ['high', 'tie-popular', 'low', 'zero', 'unknown'],
+  );
 });

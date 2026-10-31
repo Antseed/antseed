@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
 import type { DiscoverRow } from '../../core/state';
-import { sellerMetaLabel, sellerReputationLabel, sellerReputationExplanation } from './seller-format.js';
+import { formatBoost, sellerBoostLabel, sellerMetaLabel, sellerReputationLabel, sellerReputationExplanation } from './seller-format.js';
 
 test('seller reputation explains the trust formula part by part', () => {
   const route = {
@@ -94,4 +94,17 @@ test('seller metadata shows video prices per video and per second', () => {
     minVideoUsdPerSecond: null,
     maxVideoUsdPerSecond: null,
   } as DiscoverRow), 'Price unknown');
+});
+
+test('seller boost badge matches the Points site, hides an unknown boost and gives free routes no points', () => {
+  const paid = (boost?: number | null) => ({ protocol: 'openai-chat-completions', inputUsdPerMillion: 1, outputUsdPerMillion: 2, boost }) as DiscoverRow;
+  assert.equal(sellerBoostLabel(paid(15.87)), '16×');
+  assert.equal(sellerBoostLabel(paid(7.23)), '7.2×');
+  assert.equal(sellerBoostLabel(paid(0.05)), '<0.1×');
+  assert.equal(sellerBoostLabel(paid(0.004)), '0× earns nothing');
+  assert.equal(sellerBoostLabel(paid(0)), '0× earns nothing');
+  assert.equal(sellerBoostLabel(paid(null)), null);
+  assert.equal(sellerBoostLabel(paid()), null);
+  assert.equal(sellerBoostLabel({ ...paid(15.87), inputUsdPerMillion: 0, outputUsdPerMillion: 0 }), 'No points');
+  assert.equal(formatBoost(undefined), '—');
 });

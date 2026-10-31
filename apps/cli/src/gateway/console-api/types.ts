@@ -606,8 +606,30 @@ export interface Rewards {
   legacy: { pendingAnts: string; contract: string; epochs: number[] } | null
   /** Claiming needs the operator wallet connected in the browser. */
   operator: string | null
+  /** Antseed Points of the buyer wallet (`address`); null when the explorer cannot be read. */
+  points?: RewardsPoints | null
   /** Last known values: the chain RPC is unreachable or rate limiting right now. */
   stale?: boolean
+}
+
+/** A buyer's Antseed Points: paid $ × the provider's boost, converted to ANTS when the epoch ends. */
+export interface RewardsPoints {
+  epoch: number
+  /** When this epoch's points convert to ANTS (ms since 1970); null when unknown. */
+  endsAt: number | null
+  points: number
+  /** This epoch's points at the live rate, capped at 5% of the buyer pot; null when the pot cannot be read. */
+  estimatedAnts: number | null
+  capped: boolean
+  /** This epoch's buyer ANTS pot and everyone's points so far, for the spend calculator; null when unavailable. */
+  potAnts: number | null
+  totalPoints: number | null
+  /** When this epoch started (ms since 1970), to pace the end-of-week projection; null when unknown. */
+  startsAt: number | null
+  /** Everyone's points per day on a busy day (the projection's low end); null when unknown. */
+  busyPointsPerDay: number | null
+  /** Points per epoch with any, newest first. */
+  history: Array<{ epoch: number; points: number }>
 }
 
 export interface ChainInfo {
@@ -815,6 +837,11 @@ export interface Peer {
    */
   teeScope: PeerTeeScope | null
   stakeAnts: string | null
+  /**
+   * Antseed Points boost of the seller's pool (pool power ÷ 10,000 ANTS × 104 epochs):
+   * points per $1 spent with it. 0 earns nothing; null when Antscan is unreachable.
+   */
+  boost: number | null
   /** The seller's pool in the seller pools (its ERC-8004 agent id); null when it has none. */
   agentId: number | null
   /** The seller-wide free-tier program; null when it has none. Services may have their own (`services[].freeTier`). */
