@@ -602,9 +602,8 @@ export class SellerRequestHandler {
           await spm.waitForPendingAuths(buyerPeerId);
           // Re-read after the await — the session may have been evicted (timeout
           // checker, disconnect) while the on-chain top-up was confirming.
-          const session = spm.getChannelByPeer(buyerPeerId);
-          if (!session) {
-            debugWarn(`[SellerHandler] Session evicted during waitForPendingAuths for ${buyerPeerId.slice(0, 12)}... — returning 402`);
+          const sendSessionExpired = (during: string): void => {
+            debugWarn(`[SellerHandler] Session evicted during ${during} for ${buyerPeerId.slice(0, 12)}... — returning 402`);
             mux.sendProxyResponse({
               requestId: request.requestId,
               statusCode: 402,
@@ -614,6 +613,10 @@ export class SellerRequestHandler {
                 message: 'Session expired, please renegotiate',
               })),
             });
+          };
+          const session = spm.getChannelByPeer(buyerPeerId);
+          if (!session) {
+            sendSessionExpired('waitForPendingAuths');
             return;
           }
           let accepted = spm.getAcceptedCumulative(session.sessionId);
@@ -666,6 +669,12 @@ export class SellerRequestHandler {
               caughtUp = await spm.awaitAcceptedAtLeast(session.sessionId, spent, Math.max(0, deadline - Date.now()));
               accepted = spm.getAcceptedCumulative(session.sessionId);
               spent = spm.getCumulativeSpend(session.sessionId);
+            }
+            // A channel closed or evicted while parked has its counters reset
+            // to zero, which would read as caught up: renegotiate instead.
+            if (spm.getChannelByPeer(buyerPeerId)?.sessionId !== session.sessionId) {
+              sendSessionExpired('the catch-up wait');
+              return;
             }
             isAtExactSpendLimit = atExactSpendLimit();
             if (spent <= accepted) {

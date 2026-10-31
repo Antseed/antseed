@@ -1894,3 +1894,37 @@ it('re-reads the spend after a parked catch-up: an auth for the earlier spend ne
     expect(status).toBe(coversNewSpend ? 200 : 402);
   }
 });
+
+it('never serves a request parked on a catch-up when its channel is evicted during the wait', async () => {
+  let spent = 300_000n;
+  let accepted = 100_000n;
+  let channel: { sessionId: string; authMax: string } | null = { sessionId: 'session-1', authMax: '1000000' };
+  const provider = makeProvider(1, 1, { name: 'openai', services: ['test-model'] });
+  const handleRequest = vi.spyOn(provider, 'handleRequest');
+  const handler = makeSellerRequestHandler({
+    providers: [provider],
+    sellerPaymentManager: makeSpmMock({
+      getChannelByPeer: () => channel,
+      getCumulativeSpend: () => spent,
+      getAcceptedCumulative: () => accepted,
+      getReserveMax: () => 1_000_000n,
+      awaitAcceptedAtLeast: async () => {
+        // Eviction forgets the counters and releases waiters with false.
+        channel = null;
+        spent = 0n;
+        accepted = 0n;
+        return false;
+      },
+    }),
+    channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,
+  });
+  const frames: Uint8Array[] = [];
+  const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+  await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+    requestId: 'parked-evicted', method: 'POST', path: '/v1/chat/completions',
+    headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'test-model', messages: [] })),
+  }) });
+
+  expect(handleRequest).not.toHaveBeenCalled();
+  expect(decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload).statusCode).toBe(402);
+});

@@ -431,7 +431,7 @@ function isBuyerPaymentNegotiationError(body: Buffer): boolean {
  * @internal Exported for tests.
  */
 export function healthStatusFor(response: { statusCode: number; body: Uint8Array }): number {
-  if (response.statusCode >= 500 && isBuyerPaymentNegotiationError(Buffer.from(response.body))) return 429
+  if (response.statusCode >= 500 && isBuyerPaymentNegotiationError(Buffer.from(response.body.buffer, response.body.byteOffset, response.body.byteLength))) return 429
   return response.statusCode
 }
 
