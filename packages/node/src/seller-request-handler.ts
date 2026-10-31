@@ -969,7 +969,7 @@ export class SellerRequestHandler {
         } catch (err) {
           const message = err instanceof Error ? err.message : "Internal error";
           failureMessage = message;
-          this._deps.emit('provider:failure', { provider, service: requestedModel });
+          this._deps.emit('provider:failure', { provider, service: requestedModel, billable: videoRoute?.action !== 'retrieve' });
           debugWarn(`[SellerHandler] Provider exception: provider="${provider.name}" model="${requestedModel}" buyer=${buyerPeerId.slice(0, 12)}... (${Date.now() - startTime}ms) ${message}`);
           if (videoRoute?.action === 'create') this._closeOneOffBestEffort(oneOffChannelId, 'video create failed');
           responseBody = new TextEncoder().encode(message);

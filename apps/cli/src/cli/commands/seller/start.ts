@@ -1012,7 +1012,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         // Live traffic is health evidence: a success spares the next probe, an
         // upstream failure triggers one early, and an out-of-credit error is seen first.
         node.on('provider:response', ({ provider, service, statusCode, body, billable }: { provider: Provider; service: string; statusCode: number; body: string; billable: boolean }) => checker.reportUpstreamResponse(provider, statusCode, body, billable, service))
-        node.on('provider:failure', ({ provider, service }: { provider: Provider; service: string }) => checker.reportUpstreamFailure(provider, service))
+        node.on('provider:failure', ({ provider, service, billable }: { provider: Provider; service: string; billable: boolean }) => checker.reportUpstreamFailure(provider, service, billable))
         healthChecker.start()
       }
 

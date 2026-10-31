@@ -134,6 +134,14 @@ interface TrackedService {
   lastDetail: string | null;
   lastTrafficAt: number | null;
   probeInFlight: boolean;
+  /** What the failed checks counted in `consecutiveFailures` came from. */
+  failureSource: ServiceHealthSource | null;
+  /**
+   * A service no probe can check, announced as failing on live failures alone
+   * and back to unknown so buyers try it again: the next live failure marks it
+   * failing without a new alert, and a success reports the recovery.
+   */
+  retrying: boolean;
 }
 
 class ProbeTimeoutError extends Error {}
@@ -147,8 +155,10 @@ class ProbeTimeoutError extends Error {}
  * Buyer traffic is the main evidence: a successful billable response marks a
  * service healthy, and a service that had one within the last interval is not
  * probed. Idle services get a minimal (1-token) completion each interval, and
- * a failed buyer request triggers an early probe. A service is failing after
- * `failureThreshold` failed checks in a row and recovers on the first pass.
+ * a failed buyer request triggers an early probe. Image and video services
+ * are never probed (a probe would cost a real generation): their failed buyer
+ * requests count as the checks. A service is failing after `failureThreshold`
+ * failed checks in a row and recovers on the first pass.
  */
 export class ModelHealthChecker {
   private readonly _targets: ModelHealthTarget[];
@@ -271,6 +281,9 @@ export class ModelHealthChecker {
       if (this._atCapacity(provider)) continue;
 
       const services = [...provider.services];
+      for (const service of services) {
+        if (!supportsHealthProbe(resolveProbeProtocol(provider, service))) this._retryAfterLiveFailures(this._stateFor(provider, service));
+      }
       const hasFreeCheck = (candidate?: Provider) => Boolean(candidate?.checkServiceHealth || candidate?.checkUpstreamAccount);
       const checkProvider = hasFreeCheck(target.probeProvider) ? target.probeProvider! : provider;
       // Free checks also read the account balance, so they run even with traffic.
@@ -359,6 +372,8 @@ export class ModelHealthChecker {
         this._recordFailure(state, reason, null, checkStartedAt);
         continue;
       }
+      // A funded account and a listed model say nothing about generations that fail.
+      if (state.failureSource === 'traffic' && state.consecutiveFailures > 0) continue;
       this._recordSuccess(state, 'probe', balance === undefined ? 'Account check passed' : `Account check passed (balance $${balance.toFixed(2)})`);
     }
   }
@@ -389,6 +404,8 @@ export class ModelHealthChecker {
         lastDetail: null,
         lastTrafficAt: null,
         probeInFlight: false,
+        failureSource: null,
+        retrying: false,
       };
       this._states.set(key, state);
     }
@@ -491,15 +508,54 @@ export class ModelHealthChecker {
       return;
     }
     if (statusCode !== 404 && classifyProbeStatus(statusCode) === 'unhealthy') {
-      this._probeSoon(target, service);
+      if (supportsHealthProbe(resolveProbeProtocol(target.provider, service))) {
+        this._probeSoon(target, service);
+      } else if (billable) {
+        const reason = isLiveResponseOutOfCredit(statusCode, body) ? 'out_of_credit' : reasonForStatus(statusCode);
+        this._recordLiveFailure(target.provider, service, reason, statusCode, `HTTP ${statusCode} on a buyer request`);
+      }
     }
   }
 
   /** A live request threw before the upstream answered (network error, timeout). */
-  reportUpstreamFailure(provider: Provider, service: string): void {
+  reportUpstreamFailure(provider: Provider, service: string, billable = true): void {
     const target = this._findTarget(provider);
     if (!target || this._stopped || !target.provider.services.includes(service)) return;
-    this._probeSoon(target, service);
+    if (supportsHealthProbe(resolveProbeProtocol(target.provider, service))) {
+      this._probeSoon(target, service);
+    } else if (billable) {
+      this._recordLiveFailure(target.provider, service, 'upstream_error', null, 'Upstream request failed on a buyer request');
+    }
+  }
+
+  /**
+   * Image and video services are never probed, so their buyers' failures are
+   * the checks: `failureThreshold` in a row mark the service failing.
+   */
+  private _recordLiveFailure(provider: Provider, service: string, reason: ServiceHealthReason, httpStatus: number | null, detail: string): void {
+    const state = this._stateFor(provider, service);
+    state.lastStatusCode = httpStatus;
+    state.lastDetail = detail;
+    this._recordFailure(state, reason, httpStatus, null, 'traffic');
+  }
+
+  /**
+   * No probe can tell when a service failing on live failures works again,
+   * and buyers skip it while it is failing: after the same backoff a probed
+   * service waits, it is announced unknown so buyers try it again.
+   */
+  private _retryAfterLiveFailures(state: TrackedService): void {
+    if (state.status !== 'failing' || state.failureSource !== 'traffic' || state.checkedAt === null) return;
+    if (Date.now() - state.checkedAt < this._failingBackoff(state) * this._intervalMs - LIVE_FAILURE_PROBE_MIN_GAP_MS) return;
+    state.status = 'unknown';
+    state.retrying = true;
+    state.failingSince = null;
+    state.reason = null;
+    state.httpStatus = null;
+    state.checkedAt = Date.now();
+    state.source = null;
+    debugLog(`[ModelHealth] ${state.providerName}/${state.service}: no probe for this service, letting buyers try it again`);
+    this._publish(state);
   }
 
   /** The announced health of `service`, if it has been checked. */
@@ -515,9 +571,14 @@ export class ModelHealthChecker {
   /** A failing service skips scheduled probes for longer the more checks it has failed in a row. */
   private _backingOff(state: TrackedService, now: number): boolean {
     if (state.status !== 'failing' || state.lastProbeAt === null) return false;
-    const backoff = Math.min(MAX_FAILING_PROBE_BACKOFF, 1 + state.consecutiveFailures - this._failureThreshold);
+    const backoff = this._failingBackoff(state);
     // Sweeps come one interval apart, so allow one to come a little early.
     return backoff > 1 && now - state.lastProbeAt < backoff * this._intervalMs - LIVE_FAILURE_PROBE_MIN_GAP_MS;
+  }
+
+  /** How many intervals a failing service waits for its next check. */
+  private _failingBackoff(state: TrackedService): number {
+    return Math.min(MAX_FAILING_PROBE_BACKOFF, 1 + state.consecutiveFailures - this._failureThreshold);
   }
 
   private _probeSoon(target: ModelHealthTarget, service: string): void {
@@ -583,8 +644,10 @@ export class ModelHealthChecker {
   }
 
   private _recordSuccess(state: TrackedService, source: ServiceHealthSource, detail: string): void {
-    const wasFailing = state.status === 'failing';
+    const wasFailing = state.status === 'failing' || state.retrying;
     state.status = 'healthy';
+    state.retrying = false;
+    state.failureSource = null;
     state.consecutiveFailures = 0;
     state.failingSince = null;
     state.reason = null;
@@ -605,14 +668,15 @@ export class ModelHealthChecker {
     });
   }
 
-  /** A failed check started at `checkStartedAt`; a buyer success since then outweighs it. */
-  private _recordFailure(state: TrackedService, reason: ServiceHealthReason, httpStatus: number | null, checkStartedAt: number): void {
-    if (state.lastTrafficAt !== null && state.lastTrafficAt >= checkStartedAt) {
+  /** A failed check started at `checkStartedAt` (null: a buyer request's); a buyer success since then outweighs it. */
+  private _recordFailure(state: TrackedService, reason: ServiceHealthReason, httpStatus: number | null, checkStartedAt: number | null, source: ServiceHealthSource = 'probe'): void {
+    if (checkStartedAt !== null && state.lastTrafficAt !== null && state.lastTrafficAt >= checkStartedAt) {
       debugLog(`[ModelHealth] ${state.providerName}/${state.service}: check failed, but a buyer request succeeded meanwhile`);
       return;
     }
     const now = Date.now();
     state.consecutiveFailures += 1;
+    state.failureSource = source;
     state.reason = reason;
     state.httpStatus = httpStatus;
     state.failingSince ??= now;
@@ -626,9 +690,10 @@ export class ModelHealthChecker {
     // a failing status is backed by this check.
     if (state.status !== 'failing') return;
     state.checkedAt = now;
-    state.source = 'probe';
+    state.source = source;
     this._publish(state);
-    if (!crossed) return;
+    // A retried service failing again was already reported, and not yet recovered.
+    if (!crossed || state.retrying) return;
     this._emitChange({
       provider: state.providerName,
       providerId: state.providerId,

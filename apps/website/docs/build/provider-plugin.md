@@ -145,7 +145,7 @@ To bill per image or per video instead of per token, declare `ANTSEED_SERVICE_UN
 
 ### Health checks
 
-The node checks text services at startup and periodically (skipping services that just served buyers) and publishes each result on `serviceHealth`, which is signed into metadata. A service that keeps failing stays advertised with a failing status, so buyers skip it. Leave `serviceHealth` alone. Set `healthCheckAvailable` to `false` only when your provider failed to initialize and should be announced as failing until a check passes. Image and video services are not probed.
+The node checks text services at startup and periodically (skipping services that just served buyers) and publishes each result on `serviceHealth`, which is signed into metadata. A service that keeps failing stays advertised with a failing status, so buyers skip it. Leave `serviceHealth` alone. Set `healthCheckAvailable` to `false` only when your provider failed to initialize and should be announced as failing until a check passes. Image and video services are not probed; their failed buyer requests count as the checks.
 
 ## Example: relay to an HTTP upstream
 

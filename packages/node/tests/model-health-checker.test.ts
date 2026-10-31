@@ -797,3 +797,96 @@ describe('ModelHealthChecker buyer traffic', () => {
     expect(onRequest).not.toHaveBeenCalled();
   });
 });
+
+describe('ModelHealthChecker live failures on unprobed services', () => {
+  const imageProvider = () => {
+    const handleRequest = vi.fn(async (req: SerializedHttpRequest) => jsonResponse(req.requestId, 200));
+    const provider = makeProvider({ services: ['image-a'], serviceApiProtocols: { 'image-a': ['openai-images'] }, onRequest: handleRequest });
+    return { provider, handleRequest };
+  };
+  const fail = (checker: ModelHealthChecker, provider: Provider, times: number, status = 500) => {
+    for (let i = 0; i < times; i++) checker.reportUpstreamResponse(provider, status, '', true, 'image-a');
+  };
+
+  it('marks an image service failing after failed buyer requests in a row, without probing it', async () => {
+    const { provider, handleRequest } = imageProvider();
+    const onChange = vi.fn();
+    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 3, onChange });
+    fail(checker, provider, 2);
+    expect(statusOf(provider, 'image-a')).toBe('unknown');
+    fail(checker, provider, 1, 503);
+    expect(provider.serviceHealth?.['image-a']).toEqual(expect.objectContaining({ status: 'failing', source: 'traffic', reason: 'upstream_error', httpStatus: 503, consecutiveFailures: 3 }));
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ service: 'image-a', status: 'failing' }));
+    await checker.runSweep();
+    expect(handleRequest).not.toHaveBeenCalled();
+  });
+
+  it('counts thrown requests and resets on a success', () => {
+    const { provider } = imageProvider();
+    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 2 });
+    checker.reportUpstreamFailure(provider, 'image-a');
+    checker.reportUpstreamResponse(provider, 200, '', true, 'image-a');
+    checker.reportUpstreamFailure(provider, 'image-a');
+    expect(statusOf(provider, 'image-a')).toBe('healthy');
+    checker.reportUpstreamFailure(provider, 'image-a');
+    expect(statusOf(provider, 'image-a')).toBe('failing');
+  });
+
+  it('ignores failures the buyer caused and failed video polls', () => {
+    const { provider } = imageProvider();
+    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1 });
+    fail(checker, provider, 3, 400);
+    fail(checker, provider, 3, 404);
+    checker.reportUpstreamResponse(provider, 500, '', false, 'image-a');
+    checker.reportUpstreamFailure(provider, 'image-a', false);
+    expect(provider.serviceHealth).toBeUndefined();
+  });
+
+  it('lets buyers try it again after the backoff, re-fails at once, and reports the recovery', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const { provider } = imageProvider();
+      const onChange = vi.fn();
+      const intervalMs = 5 * 60_000;
+      const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 3, intervalMs, onChange });
+      fail(checker, provider, 3);
+      await checker.runSweep();
+      expect(statusOf(provider, 'image-a')).toBe('failing');
+
+      vi.setSystemTime(Date.now() + intervalMs);
+      await checker.runSweep();
+      expect(provider.serviceHealth?.['image-a']).toEqual(expect.objectContaining({ status: 'unknown' }));
+
+      fail(checker, provider, 1);
+      expect(statusOf(provider, 'image-a')).toBe('failing');
+      // One more failure in a row: it waits two intervals now.
+      vi.setSystemTime(Date.now() + intervalMs);
+      await checker.runSweep();
+      expect(statusOf(provider, 'image-a')).toBe('failing');
+      vi.setSystemTime(Date.now() + intervalMs);
+      await checker.runSweep();
+      expect(statusOf(provider, 'image-a')).toBe('unknown');
+
+      checker.reportUpstreamResponse(provider, 200, '', true, 'image-a');
+      expect(statusOf(provider, 'image-a')).toBe('healthy');
+      expect(onChange.mock.calls.map(([event]) => (event as ModelHealthEvent).status)).toEqual(['failing', 'recovered']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a video service failing on live failures while its account and model checks pass', async () => {
+    const checkServiceHealth = vi.fn(async (services: string[]): Promise<Record<string, ServiceHealthStatus>> => Object.fromEntries(services.map((service) => [service, { status: 'available' as const }])));
+    const checkUpstreamAccount = vi.fn(async (): Promise<UpstreamAccountStatus> => ({ status: 'available', balanceUsd: 20 }));
+    const provider = makeProvider({ services: ['video-a'], serviceApiProtocols: { 'video-a': ['venice-video'] }, checkServiceHealth, checkUpstreamAccount });
+    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 2 });
+    checker.reportUpstreamResponse(provider, 500, '', true, 'video-a');
+    await checker.runSweep();
+    checker.reportUpstreamResponse(provider, 500, '', true, 'video-a');
+    expect(statusOf(provider, 'video-a')).toBe('failing');
+    await checker.runSweep();
+    expect(statusOf(provider, 'video-a')).toBe('failing');
+    expect(checkUpstreamAccount).toHaveBeenCalledTimes(2);
+  });
+});
