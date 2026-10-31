@@ -227,7 +227,7 @@ export {
 } from './payments/evm/free-usage-client.js';
 export { IdentityClient, type IdentityClientConfig } from './payments/evm/identity-client.js';
 export { StakingClient, type StakingClientConfig } from './payments/evm/staking-client.js';
-export { UsdcEthSwapClient, supportsUsdcEthSwap, type UsdcEthSwapClientConfig } from './payments/evm/usdc-eth-swap-client.js';
+export { UsdcEthSwapClient, usdcEthSwapDeployment, type UsdcEthSwapClientConfig } from './payments/evm/usdc-eth-swap-client.js';
 export { EmissionsClient, type EmissionsClientConfig, type EmissionsEpochParams } from './payments/evm/emissions-client.js';
 export { RegistryClient, type RegistryClientConfig } from './payments/evm/registry-client.js';
 export { UsageAccountingClient, type UsageAccountingClientConfig } from './payments/evm/usage-accounting-client.js';
@@ -362,7 +362,7 @@ export type { SellerPaymentConfig } from './payments/seller-payment-manager.js';
 export { ChannelStore } from './payments/channel-store.js';
 export type { StoredChannel, StoredReceipt } from './payments/channel-store.js';
 export { getChainConfig, resolveChainConfig, DEFAULT_CHAIN_ID, CHAIN_CONFIGS } from './payments/chain-config.js';
-export type { ChainConfig, RecognizedUsageDeployment } from './payments/chain-config.js';
+export type { ChainConfig, RecognizedUsageDeployment, UsdcEthSwapDeployment } from './payments/chain-config.js';
 export { formatUsdc, parseUsdc } from './payments/usdc-utils.js';
 export { ProxyMux } from './proxy/proxy-mux.js';
 export { encodeHttpRequest, encodeHttpResponse, decodeHttpRequest, decodeHttpResponse } from './proxy/request-codec.js';

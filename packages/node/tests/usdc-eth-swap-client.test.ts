@@ -1,14 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { AbiCoder, Interface, type AbstractProvider, type AbstractSigner, type TransactionRequest } from 'ethers';
-import {
-  BASE_UNISWAP_QUOTER_V2,
-  BASE_UNISWAP_SWAP_ROUTER_02,
-  BASE_USDC,
-  BASE_WETH,
-  USDC_WETH_POOL_FEE,
-  UsdcEthSwapClient,
-  supportsUsdcEthSwap,
-} from '../src/payments/evm/usdc-eth-swap-client.js';
+import { UsdcEthSwapClient, usdcEthSwapDeployment } from '../src/payments/evm/usdc-eth-swap-client.js';
+import { getChainConfig } from '../src/payments/chain-config.js';
+
+const baseMainnet = getChainConfig('base-mainnet');
+const deployment = baseMainnet.usdcEthSwap!;
+const BASE_USDC = baseMainnet.usdcContractAddress;
+const BASE_UNISWAP_QUOTER_V2 = deployment.quoterV2;
+const BASE_UNISWAP_SWAP_ROUTER_02 = deployment.swapRouter02;
+const BASE_WETH = deployment.weth;
+const USDC_WETH_POOL_FEE = deployment.poolFee;
 
 const OWNER = '0x1111111111111111111111111111111111111111';
 const ROUTER_ADDRESS_THIS = '0x0000000000000000000000000000000000000002';
@@ -64,7 +65,7 @@ function fakeChain(opts: { allowance: bigint; revert?: 'approve' | 'swap' }) {
       return { hash: `0x${'ab'.repeat(31)}0${sent.length - 1}`, from: OWNER, nonce: tx.nonce };
     },
   } as unknown as AbstractSigner;
-  const client = new UsdcEthSwapClient({ rpcUrl: 'http://127.0.0.1:1', evmChainId: 8453 }).withProvider(provider);
+  const client = new UsdcEthSwapClient({ rpcUrl: 'http://127.0.0.1:1', evmChainId: 8453, usdcAddress: BASE_USDC, deployment }).withProvider(provider);
   return { client, signer, sent, quoterCalls };
 }
 
@@ -79,10 +80,21 @@ function decodeSwap(tx: TransactionRequest) {
 }
 
 describe('UsdcEthSwapClient', () => {
-  it('is available only on Base mainnet with canonical USDC', () => {
-    expect(supportsUsdcEthSwap(8453, BASE_USDC.toLowerCase())).toBe(true);
-    expect(supportsUsdcEthSwap(84532, BASE_USDC)).toBe(false);
-    expect(supportsUsdcEthSwap(8453, '0x5FbDB2315678afecb367f032d93F642f64180aa3')).toBe(false);
+  it('takes the Base mainnet Uniswap v3 USDC/WETH 0.05% deployment from chain config', () => {
+    expect(deployment).toEqual({
+      swapRouter02: '0x2626664c2603336E57B271c5C0b26F421741e481',
+      quoterV2: '0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a',
+      weth: '0x4200000000000000000000000000000000000006',
+      poolFee: 500,
+    });
+  });
+
+  it('is available only on a chain with a swap deployment, for its canonical USDC', () => {
+    expect(usdcEthSwapDeployment(baseMainnet, { evmChainId: 8453, usdcAddress: BASE_USDC.toLowerCase() })).toBe(deployment);
+    expect(usdcEthSwapDeployment(baseMainnet, { evmChainId: 84532, usdcAddress: BASE_USDC })).toBeNull();
+    expect(usdcEthSwapDeployment(baseMainnet, { evmChainId: 8453, usdcAddress: '0x5FbDB2315678afecb367f032d93F642f64180aa3' })).toBeNull();
+    const sepolia = getChainConfig('base-sepolia');
+    expect(usdcEthSwapDeployment(sepolia, { evmChainId: sepolia.evmChainId, usdcAddress: sepolia.usdcContractAddress })).toBeNull();
   });
 
   it('quotes USDC → WETH on the 0.05% pool', async () => {

@@ -16,7 +16,7 @@ import {
   GasHealthMonitor,
   GasAutoRefueler,
   UsdcEthSwapClient,
-  supportsUsdcEthSwap,
+  usdcEthSwapDeployment,
   CONNECTION_CAPABILITY_MODEL_HEALTH_V1,
   DEFAULT_HEALTH_CHECK_INTERVAL_MS,
   DEFAULT_HEALTH_CHECK_FAILURE_THRESHOLD,
@@ -1203,10 +1203,11 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           const gasProvider = sharedChainProvider({ rpcUrl: gasCrypto.rpcUrl, evmChainId: gasCrypto.evmChainId, ...(gasCrypto.fallbackRpcUrls ? { fallbackRpcUrls: gasCrypto.fallbackRpcUrls } : {}) })
           // Auto-refuel: swap some of the wallet's USDC earnings for ETH before it runs dry (Base mainnet only).
           const usdcAddress = gasCrypto.usdcContractAddress
-          if (gasRefuelSettings.enabled && !supportsUsdcEthSwap(gasCrypto.evmChainId, usdcAddress)) {
+          const swapDeployment = usdcEthSwapDeployment(resolveChainConfig({ chainId: gasCrypto.chainId }), { evmChainId: gasCrypto.evmChainId, usdcAddress })
+          if (gasRefuelSettings.enabled && !swapDeployment) {
             console.log(chalk.dim('  gas auto-refuel: unavailable on this chain (Base mainnet only)'))
-          } else if (gasRefuelSettings.enabled) {
-            const swapClient = new UsdcEthSwapClient({ rpcUrl: gasCrypto.rpcUrl, evmChainId: gasCrypto.evmChainId, usdcAddress }).withProvider(gasProvider)
+          } else if (gasRefuelSettings.enabled && swapDeployment) {
+            const swapClient = new UsdcEthSwapClient({ rpcUrl: gasCrypto.rpcUrl, evmChainId: gasCrypto.evmChainId, usdcAddress, deployment: swapDeployment }).withProvider(gasProvider)
             const wallet = node.identity.wallet
             const dataDir = globalOpts.dataDir
             gasRefueler = new GasAutoRefueler({

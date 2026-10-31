@@ -1,14 +1,7 @@
 import { readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import {
-  DEFAULT_REFUEL_MAX_USDC_PER_DAY_UNITS,
-  DEFAULT_REFUEL_SLIPPAGE_BPS,
-  DEFAULT_REFUEL_SWAP_USDC_UNITS,
-  DEFAULT_REFUEL_TRIGGER_WEI,
-  formatEther,
-  type GasAutoRefueler,
-  type GasRefuelRecord,
-} from '@antseed/node'
+import { formatEther, type GasAutoRefueler, type GasRefuelRecord } from '@antseed/node'
+import { resolveGasRefuelConfig } from '../../../config/gas-refuel.js'
 import type { SellerGasRefuelCLIConfig } from '../../../config/types.js'
 import type { SellerGasRefuel } from '../../../gateway/console-api/types.js'
 import { ethToWei } from './gas.js'
@@ -27,12 +20,13 @@ export interface GasRefuelSettings {
 const usdcUnits = (usdc: number) => BigInt(Math.round(usdc * 1e6))
 
 export function resolveGasRefuelSettings(cfg: SellerGasRefuelCLIConfig | undefined): GasRefuelSettings {
+  const resolved = resolveGasRefuelConfig(cfg)
   return {
-    enabled: cfg?.enabled !== false,
-    triggerBalanceWei: cfg?.triggerBalanceEth !== undefined ? ethToWei(cfg.triggerBalanceEth) : DEFAULT_REFUEL_TRIGGER_WEI,
-    swapUsdcUnits: cfg?.swapUsdc !== undefined ? usdcUnits(cfg.swapUsdc) : DEFAULT_REFUEL_SWAP_USDC_UNITS,
-    maxUsdcPerDayUnits: cfg?.maxUsdcPerDay !== undefined ? usdcUnits(cfg.maxUsdcPerDay) : DEFAULT_REFUEL_MAX_USDC_PER_DAY_UNITS,
-    slippageBps: cfg?.slippageBps ?? DEFAULT_REFUEL_SLIPPAGE_BPS,
+    enabled: resolved.enabled,
+    triggerBalanceWei: ethToWei(resolved.triggerBalanceEth),
+    swapUsdcUnits: usdcUnits(resolved.swapUsdc),
+    maxUsdcPerDayUnits: usdcUnits(resolved.maxUsdcPerDay),
+    slippageBps: resolved.slippageBps,
   }
 }
 
