@@ -5,6 +5,7 @@ import {
   isZeroHash,
   kbfEpochDeadlines,
   VERIFIER_VERDICT,
+  type CommitmentEvent,
   type KbfEpochInfo,
   type KbfRoundClient,
   type KbfServiceResult,
@@ -19,7 +20,7 @@ import { createEnvelopeDeliveryChecker, scoreRound, type CommittedManifest } fro
 import { contentHash, openBank, openEnvelope } from './sealing.js'
 import { seededRanking } from './seeded.js'
 import { boundTargets, type SellerBindingReader } from './seller-binding.js'
-import { loadCommittedManifests } from './manifest-loader.js'
+import { loadCommittedManifests, manifestBudget } from './manifest-loader.js'
 import { ROUND_FILE_MAX_BYTES, type RoundStorage } from './storage.js'
 import type {
   EnvelopeSliceV1,
@@ -220,7 +221,7 @@ async function collect(
     const bound = new Set((await boundTargets(context.bindings, uniqueTargets(envelope.slices.map((slice) => slice.target)), info.seedBlock, context.log)).map(targetKey))
     let assigned = envelope.slices.filter((slice) => bound.has(targetKey(slice.target)))
     if (backup) {
-      assigned = await undeliveredSlices(context, info, members, assigned)
+      assigned = await undeliveredSlices(context, info, members, plan.targets, assigned)
       if (assigned.length === 0) return nothingToBuy('every slice this verifier backs up was delivered; no backups to buy')
     }
     const checkpointPath = join(epochDir(context, info.epoch), `collect-${phase}.json`)
@@ -345,11 +346,12 @@ export async function computeResults(
   const manifests: CommittedManifest[] = []
   const unavailable: string[] = []
   const commits = (await client.sliceCommits(info.epoch)).filter((commit) => memberSet.has(commit.sender.toLowerCase()))
-  for (const { commit, load } of await loadCommittedManifests(storage, commits, options.signal)) {
+  const budgetFor = roundManifestBudget(info, members, planFile.targets)
+  for (const { commit, load } of await loadCommittedManifests(storage, commits, budgetFor, options.signal)) {
     if (load.kind === 'loaded') {
       manifests.push(load.manifest)
-    } else if (load.kind === 'not-json') {
-      context.log(`epoch ${info.epoch}: ignoring slices ${commit.uri}: not JSON`)
+    } else if (load.kind === 'invalid') {
+      context.log(`epoch ${info.epoch}: ignoring slices ${commit.uri}: ${load.reason}`)
     } else {
       const reason = load.error instanceof Error ? load.error.message : String(load.error)
       if (load.kind === 'mismatch') {
@@ -373,6 +375,31 @@ export function phaseFetchSignal(now: number, deadline: number, phaseSeconds: nu
   return AbortSignal.timeout(Math.max(0, deadline - reserve - now) * 1_000)
 }
 
+/**
+ * Each commitment's size budget, from the slices the seed gives its sender in that phase, over
+ * the plan file's public targets: the same for every verifier.
+ */
+function roundManifestBudget(info: KbfEpochInfo, members: readonly string[], targets: readonly RoundTargetV1[]) {
+  const budgets = new Map<string, ReturnType<typeof manifestBudget>>()
+  return (commit: CommitmentEvent) => {
+    const key = `${commit.sender.toLowerCase()}|${commit.backup}`
+    let budget = budgets.get(key)
+    if (!budget) {
+      budget = manifestBudget({
+        verifiers: members,
+        seed: info.seed,
+        targets,
+        probesPerService: info.schedule.probesPerService,
+        slicesPerService: info.schedule.slicesPerService,
+        collector: commit.sender,
+        backup: commit.backup,
+      })
+      budgets.set(key, budget)
+    }
+    return budget
+  }
+}
+
 function isAuditedTarget(target: RoundTargetV1, allowed: Set<string>, bank: EpochBankV1): boolean {
   return isListedTarget(target, allowed) && Object.hasOwn(bank.models, target.model)
 }
@@ -386,6 +413,7 @@ async function undeliveredSlices(
   context: Pick<VerifierDaemonContext, 'client' | 'storage' | 'log'>,
   info: KbfEpochInfo,
   members: readonly string[],
+  targets: readonly RoundTargetV1[],
   slices: readonly EnvelopeSliceV1[],
 ): Promise<EnvelopeSliceV1[]> {
   const memberSet = new Set(members.map((member) => member.toLowerCase()))
@@ -395,7 +423,7 @@ async function undeliveredSlices(
   const commits = (await context.client.sliceCommits(info.epoch))
     .filter((commit) => !commit.backup && memberSet.has(commit.sender.toLowerCase()))
   const signal = phaseFetchSignal(await context.client.now(), deadlines.backupDeadline, info.schedule.backupSeconds)
-  for (const { commit, load } of await loadCommittedManifests(context.storage, commits, signal)) {
+  for (const { commit, load } of await loadCommittedManifests(context.storage, commits, roundManifestBudget(info, members, targets), signal)) {
     if (load.kind === 'loaded') manifests.push(load.manifest)
     else if (load.kind === 'unavailable') unavailable.push(commit.uri)
   }

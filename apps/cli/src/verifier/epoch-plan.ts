@@ -138,6 +138,8 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
     failure: { entry: ModelVerificationFailure; runId: string } | null
     skip: { entry: ModelVerificationSkip; runId: string } | null
     last: 'result' | 'pending' | 'failure' | 'skip'
+    /** What the newest audit that reached the seller ended with; preflight skips are not attempts. */
+    lastAttempt: 'result' | 'pending' | 'failure' | 'runtime-skip' | null
   }
   const acc = new Map<string, Acc>()
   const get = (model: string, peerId: string, runId: string): Acc => {
@@ -146,7 +148,7 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
     if (!entry) {
       entry = {
         model, peerId, runId, attempts: 0, result: null, resultRunId: null,
-        pending: null, failure: null, skip: null, last: 'skip',
+        pending: null, failure: null, skip: null, last: 'skip', lastAttempt: null,
       }
       acc.set(key, entry)
     }
@@ -161,11 +163,13 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
         if (finalAuditVerdict(result) === null) {
           entry.pending = { result, runId: manifest.runId }
           entry.last = 'pending'
+          entry.lastAttempt = 'pending'
         } else {
           entry.result = result
           entry.resultRunId = manifest.runId
           entry.pending = null
           entry.last = 'result'
+          entry.lastAttempt = 'result'
         }
       }
       for (const failure of summary.failures ?? []) {
@@ -174,10 +178,14 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
         entry.attempts += 1
         entry.failure = { entry: failure, runId: manifest.runId }
         entry.last = 'failure'
+        entry.lastAttempt = 'failure'
       }
       for (const skip of summary.skipped ?? []) {
         const entry = get(summary.model, skip.peerId, manifest.runId)
-        if (skip.source === 'runtime') entry.attempts += 1
+        if (skip.source === 'runtime') {
+          entry.attempts += 1
+          entry.lastAttempt = 'runtime-skip'
+        }
         entry.skip = { entry: skip, runId: manifest.runId }
         entry.last = 'skip'
       }
@@ -202,6 +210,15 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
         ...base, runId: entry.resultRunId!, state, result: entry.result,
         blame: state === 'undetermined' ? failureBlame(reason) : null,
         reason: reason?.summary ?? null,
+      }
+      // An UNDETERMINED keeps its evidence, but when a newer audit of the seller failed or was
+      // skipped mid-audit, that newer attempt decides who is to blame and so whether to retry.
+      if (state === 'undetermined' && entry.lastAttempt === 'failure' && entry.failure) {
+        cell.blame = failureBlame(entry.failure.entry.outcomeReason, entry.failure.entry.reason)
+        cell.reason = entry.failure.entry.reason
+      } else if (state === 'undetermined' && entry.lastAttempt === 'runtime-skip' && entry.skip) {
+        cell.blame = 'seller'
+        cell.reason = entry.skip.entry.reason
       }
     } else if (entry.failure && (entry.last === 'failure' || !entry.skip)) {
       cell = {

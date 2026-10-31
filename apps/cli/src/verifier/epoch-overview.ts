@@ -169,13 +169,20 @@ export async function buildEpochOverview(
     }
   }
 
-  const ordered = [...sellers.values()].filter((seller) => seller.cells.size > 0).sort((left, right) => {
-    const count = (seller: OverviewSeller, state: OverviewCellState): number =>
-      [...seller.cells.values()].filter((cell) => cell.state === state).length
-    return count(right, 'diff') - count(left, 'diff')
-      || count(right, 'same') - count(left, 'same')
-      || left.label.localeCompare(right.label)
-  })
+  // Count each seller's verdicts once, then sort: most DIFFs first, then most SAMEs, then by name.
+  const ordered = [...sellers.values()]
+    .filter((seller) => seller.cells.size > 0)
+    .map((seller) => {
+      let same = 0
+      let diff = 0
+      for (const cell of seller.cells.values()) {
+        if (cell.state === 'same') same += 1
+        else if (cell.state === 'diff') diff += 1
+      }
+      return { seller, same, diff }
+    })
+    .sort((left, right) => right.diff - left.diff || right.same - left.same || left.seller.label.localeCompare(right.seller.label))
+    .map(({ seller }) => seller)
   return { epoch, runIds: runs.map((run) => run.runId), models, sellers: ordered }
 }
 

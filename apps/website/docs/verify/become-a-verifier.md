@@ -85,7 +85,7 @@ Create an encrypted keystore (for example with `cast wallet new <dir>`), then se
 
 or pass `--keystore <path>` to `verifier start`. Give the password in `ANTSEED_KEYSTORE_PASSWORD`; otherwise it is asked in the terminal.
 
-Send the keystore's address a little ETH on Base for transactions. Without a keystore, the verifier falls back to the data-dir identity and warns at startup, because that would fund the buyer identity.
+Send the keystore's address a little ETH on Base for transactions. A keystore is required: `verifier start` and `verifier publish` refuse to run without one, and refuse a keystore holding any of the data dir's buyer wallets, so the buyer never pays gas or receives rewards.
 
 ## 3. Fund the buyer
 

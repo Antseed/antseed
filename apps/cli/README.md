@@ -678,11 +678,12 @@ Every envelope is checked against the public plan before anything is bought (onl
 slices assigned to this verifier, at most the schedule's questions per seller,
 bounded questions and request settings), and `--max-epoch-requests` (default 1000)
 caps the seller requests sent per epoch, retries included, own and backup slices together.
-It signs with `--keystore <path>` (password from `ANTSEED_KEYSTORE_PASSWORD`),
-then `verifier.keystore`, then the data-dir identity, and refuses to start for an
-address that isn't an approved verifier. Use a dedicated keystore: the signer pays
-the verifier's gas and receives its ANTS rewards, so falling back to the data-dir
-identity (the buyer's) prints a warning. One `verifier start` or `verifier publish`
+It signs with a dedicated keystore, `--keystore <path>` or `verifier.keystore`
+(password from `ANTSEED_KEYSTORE_PASSWORD`), and refuses to start for an address
+that isn't an approved verifier. The keystore is required: the signer pays the
+verifier's gas and receives its ANTS rewards, so `verifier start` and `verifier publish`
+never fall back to the data-dir identity and refuse a keystore holding one of the
+data dir's buyer wallets. One `verifier start` or `verifier publish`
 runs per data dir at a time; a second one stops with "already running". A newly approved verifier joins from the
 next epoch opened; until its encryption key is on-chain, the plan gives its slices
 to backups. Like `verifier run`, it first checks that

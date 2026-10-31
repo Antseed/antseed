@@ -9,7 +9,7 @@ import { createKbfRoundClient, createSellerRegistryClient } from '../../payment-
 import { setupShutdownHandler } from '../../shutdown.js'
 import { startGatewayBuyer } from '../gateway/shared.js'
 import { getGlobalOptions } from '../types.js'
-import { resolveAuditorSigner, sharedIdentityWarning } from './auditor-identity.js'
+import { resolveAuditorSigner } from './auditor-identity.js'
 import { acquireDaemonLock, createPublisherContext, parsePollInterval } from './daemon-setup.js'
 
 interface PublishOptions {
@@ -38,8 +38,6 @@ export function registerVerifierPublishCommand(verifier: Command): void {
       try {
         const client = createKbfRoundClient(config)
         const signer = await resolveAuditorSigner({ config: config.verifier, dataDir: globalOptions.dataDir, keystoreFlag: options.keystore })
-        const identityWarning = sharedIdentityWarning(signer)
-        if (identityWarning) log(chalk.yellow(identityWarning))
         const publisher = await client.publisher()
         if (publisher.toLowerCase() !== signer.address.toLowerCase()) {
           throw new Error(`${signer.address} is not the publisher on ${client.contractAddress} (publisher: ${publisher})`)

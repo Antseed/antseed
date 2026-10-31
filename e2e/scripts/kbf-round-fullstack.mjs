@@ -21,7 +21,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { AbiCoder, getAddress, Interface, keccak256, toUtf8Bytes } from 'ethers';
+import { AbiCoder, encryptKeystoreJsonSync, getAddress, Interface, keccak256, toUtf8Bytes, Wallet } from 'ethers';
 import { loadOrCreateIdentity } from '@antseed/node';
 import { DHTNode } from '@antseed/node/discovery';
 import { KbfRoundClient, isZeroHash, kbfEpochDeadlines } from '@antseed/node/payments';
@@ -48,6 +48,8 @@ const IMPOSTOR_UPSTREAM = 'impostor/glm-lookalike';
 const AGENT_SEARCH_POSITIONS = 500;
 const VERIFICATION_MINTER_ID = keccak256(toUtf8Bytes('antseed.emissions.verification.v1'));
 const USDC_DEPOSIT = 20_000_000n;
+// Password of the throwaway keystores the publisher and verifiers sign with.
+const KEYSTORE_PASSWORD = 'kbf-e2e';
 // 100 questions make at least 10 batches, so every target gets all 4 slices.
 const PROBES_PER_SERVICE = 100;
 const SLICES_PER_SERVICE = 4;
@@ -248,8 +250,19 @@ async function main() {
     const identity = await loadOrCreateIdentity(dataDir);
     nodes[role] = { role, dataDir, address: getAddress(identity.wallet.address), configPath: join(dataDir, 'config.json') };
   }
+  // The publisher and verifiers sign with their own keystores: the buyer identity of their data
+  // dir only signs payment authorizations and never pays gas or receives rewards.
+  for (const role of ['publisher', 'verifier-1', 'verifier-2', 'verifier-3']) {
+    const wallet = Wallet.createRandom();
+    const keystore = join(out, `${role}-signer.json`);
+    await writeFile(keystore, encryptKeystoreJsonSync({ address: wallet.address, privateKey: wallet.privateKey }, KEYSTORE_PASSWORD, { scrypt: { N: 1024 } }), { mode: 0o600 });
+    nodes[role].signer = getAddress(wallet.address);
+    nodes[role].keystore = keystore;
+  }
   const funder = getAddress('0x70997970C51812dc3A010C7d01b50e0d17dc79C8');
-  for (const account of [owner, funder, ...roles.map((role) => nodes[role].address)]) {
+  // Gas for sellers and the dedicated signers only: buyers never send transactions.
+  const sellerRoles = ['seller-genuine', 'seller-impostor'];
+  for (const account of [owner, funder, ...sellerRoles.map((role) => nodes[role].address), ...roles.flatMap((role) => nodes[role].signer ?? [])]) {
     await rpc('anvil_setBalance', [account, '0x8AC7230489E80000']);
   }
   const usdc = address('usdc');
@@ -299,8 +312,8 @@ async function main() {
   const elapsed = (await chainNow()) - epochStart;
   const schedule = [elapsed + COLLECT_WINDOW, BACKUP_WINDOW, ATTEST_WINDOW, PROBES_PER_SERVICE, SLICES_PER_SERVICE];
   await send(owner, gate, 'setMinterController(bytes32,address)', [VERIFICATION_MINTER_ID, verification]);
-  await send(owner, verification, 'setPublisher(address)', [nodes.publisher.address]);
-  for (const role of ['verifier-1', 'verifier-2', 'verifier-3']) await send(owner, verification, 'setVerifier(address,bool)', [nodes[role].address, 'true']);
+  await send(owner, verification, 'setPublisher(address)', [nodes.publisher.signer]);
+  for (const role of ['verifier-1', 'verifier-2', 'verifier-3']) await send(owner, verification, 'setVerifier(address,bool)', [nodes[role].signer, 'true']);
   await send(owner, verification, 'setModels((bytes32,string)[])', [`[(${keccak256(toUtf8Bytes(MODEL))},${MODEL})]`]);
   await send(owner, verification, 'setRewardsStartEpoch(uint256)', [String(epoch)]);
   await send(owner, verification, 'setSchedule((uint32,uint32,uint32,uint16,uint16))', [`(${schedule.join(',')})`]);
@@ -337,6 +350,7 @@ async function main() {
     ANTSEED_ROUND_STORAGE_DIR: roundStorage,
     ANTSEED_BASE_RPC_URL: rpcUrl,
     STUB_UPSTREAM_KEY: 'stub',
+    ANTSEED_KEYSTORE_PASSWORD: KEYSTORE_PASSWORD,
   };
   const crypto = { chainId: 'base-mainnet', rpcUrl, fallbackRpcUrls: [], verificationContractAddress: verification, verificationDeployBlock: deployBlock };
   for (const role of roles) {
@@ -410,12 +424,13 @@ async function main() {
   const startVerifier = (role, name = role) => {
     nodes[role].process = startProcess(name, process.execPath, cli(nodes[role], [
       'verifier', 'start', '--skip-version-check', '--interval', '10', '--buyer-port', String(nodes[role].buyerPort),
+      '--keystore', nodes[role].keystore,
     ]), env);
   };
   for (const role of verifierRoles) startVerifier(role);
   await waitFor('every verifier published its encryption key', async () => {
     for (const role of verifierRoles) {
-      if (isZeroHash(await client.encryptionKey(nodes[role].address))) return false;
+      if (isZeroHash(await client.encryptionKey(nodes[role].signer))) return false;
     }
     return true;
   }, 240_000);
@@ -424,6 +439,7 @@ async function main() {
 
   const publisherProcess = startProcess('publisher', process.execPath, cli(nodes.publisher, [
     'verifier', 'publish', '--no-buyer', '--buyer-port', String(nodes.publisher.buyerPort), '--interval', '10',
+    '--keystore', nodes.publisher.keystore,
   ]), env);
 
   // ── Seed: one where every verifier owns a slice, so the stopped one leaves work for backups ──
@@ -463,7 +479,7 @@ async function main() {
   const stoppedRole = 'verifier-3';
   const liveRoles = verifierRoles.filter((role) => role !== stoppedRole);
   for (const role of liveRoles) startVerifier(role, `${role}-live`);
-  log(`${stoppedRole} stays offline with ${owned.get(nodes[stoppedRole].address.toLowerCase())} slices: they must go to backups`);
+  log(`${stoppedRole} stays offline with ${owned.get(nodes[stoppedRole].signer.toLowerCase())} slices: they must go to backups`);
 
   // ── Collection ───────────────────────────────────────────────────────────────────────────
   await waitFor('the publisher committed the plan', async () => !isZeroHash((await info()).planHash), 300_000);
@@ -477,18 +493,19 @@ async function main() {
   // the bank key from the verifiers' escrowed shares.
   await stopProcess(publisherProcess);
   log('the publisher goes offline after the plan');
-  const live = liveRoles.map((role) => nodes[role].address);
+  const live = liveRoles.map((role) => nodes[role].signer);
+  const liveBuyers = liveRoles.map((role) => nodes[role].address);
   await waitFor('both live verifiers committed their primary slices', async () => {
     for (const verifier of live) if (await client.sliceCommitCount(epoch, verifier) < 1) return false;
     return true;
   }, 900_000, 5_000);
-  check(await client.sliceCommitCount(epoch, nodes[stoppedRole].address) === 0, 'the stopped verifier committed nothing');
+  check(await client.sliceCommitCount(epoch, nodes[stoppedRole].signer) === 0, 'the stopped verifier committed nothing');
 
   let deadlines = kbfEpochDeadlines(await info(), await client.epochDuration());
   await warpTo(deadlines.commitDeadline + 5);
   // No publisher step here: each slice's backup verifier (second in its seeded ranking) finds the
   // owner's slices missing from the commitments and buys them from the plan's backup envelopes.
-  const stopped = nodes[stoppedRole].address.toLowerCase();
+  const stopped = nodes[stoppedRole].signer.toLowerCase();
   const fixedSeed = (await info()).seed;
   const backupCollectors = [...new Set(targets.flatMap((key) => Array.from({ length: SLICES_PER_SERVICE }, (_, sliceIndex) => {
     const ranking = seededRanking(members, fixedSeed, `slice|${key}|${sliceIndex}`);
@@ -549,7 +566,7 @@ async function main() {
   const verifierChannels = {};
   for (const role of ['seller-genuine', 'seller-impostor']) {
     const reserved = await logsFor(reservedTopic, nodes[role].address);
-    const fromVerifiers = reserved.filter((entry) => live.some((verifier) => coder.decode(['address'], entry.topics[2])[0] === verifier));
+    const fromVerifiers = reserved.filter((entry) => liveBuyers.some((buyer) => coder.decode(['address'], entry.topics[2])[0] === buyer));
     check(fromVerifiers.length >= 1, `${role} reserved ${fromVerifiers.length} payment channel(s) with the verifiers' buyers`);
     verifierChannels[role] = new Set(fromVerifiers.map((entry) => entry.topics[1]));
   }
@@ -572,10 +589,11 @@ async function main() {
   }, 300_000, 5_000);
   const ants = address('antsToken');
   for (const role of liveRoles) {
-    const balance = BigInt(call(ants, 'balanceOf(address)(uint256)', [nodes[role].address]));
+    const balance = BigInt(call(ants, 'balanceOf(address)(uint256)', [nodes[role].signer]));
+    check(BigInt(call(ants, 'balanceOf(address)(uint256)', [nodes[role].address])) === 0n, `${role}'s buyer identity received no ANTS`);
     check(balance > 0n, `${role} received ${Number(balance / 10n ** 14n) / 1e4} ANTS`);
   }
-  check(!await client.rewardClaimed(epoch, nodes[stoppedRole].address), 'the stopped verifier earned nothing');
+  check(!await client.rewardClaimed(epoch, nodes[stoppedRole].signer), 'the stopped verifier earned nothing');
   log(`stub served ${[...stub.stats.completions.values()].reduce((a, b) => a + b, 0)} completions: ${JSON.stringify(Object.fromEntries(stub.stats.completions))}`);
   log(`PASS in ${((Date.now() - started) / 60_000).toFixed(1)} min`);
   await stub.close();

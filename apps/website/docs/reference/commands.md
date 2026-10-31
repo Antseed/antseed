@@ -370,7 +370,7 @@ Run a KBF verifier, which checks sellers' model claims (one of the first of many
 
 | Command | Purpose | Key flags |
 |---|---|---|
-| `antseed verifier start` | Run an approved verifier: publish its encryption key, buy its assigned slices, cover backup slices, score each epoch, attest the results root, apply finalized results and claim rewards. Runs until stopped | `--keystore <path>`, `--no-buyer`, `--buyer-port <port>`, `--interval <seconds>` (60), `--no-collect` (attest only), `--max-epoch-requests <n>` (1000), `--skip-version-check` |
+| `antseed verifier start` | Run an approved verifier with its own keystore (never the buyer wallet): publish its encryption key, buy its assigned slices, cover backup slices, score each epoch, attest the results root, apply finalized results and claim rewards. Runs until stopped | `--keystore <path>`, `--no-buyer`, `--buyer-port <port>`, `--interval <seconds>` (60), `--no-collect` (attest only), `--max-epoch-requests <n>` (1000), `--skip-version-check` |
 | `antseed verifier publish` | Run the reference publisher (the contract's publisher address only): build and seal each epoch's question bank, commit the plan (with every verifier's own and backup slices), reveal the bank key | `--keystore <path>`, `--no-buyer`, `--buyer-port <port>`, `--interval <seconds>` (60) |
 | `antseed verifier models` | List the built-in audited models and where each takes its genuine answers from | `--json` |
 | `antseed verifier reference build [model]` | Build or grow the local probe bank of one audited model | `--all` (every audited model without a powered bank) |

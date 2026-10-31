@@ -151,7 +151,7 @@ All keys live in the `verifier` block of the config file. The most used:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `keystore` | | Keystore that signs round transactions (password from `ANTSEED_KEYSTORE_PASSWORD`) |
+| `keystore` | | Keystore that signs round transactions (password from `ANTSEED_KEYSTORE_PASSWORD`). Required for `verifier start` and `verifier publish`, and never one of the data dir's buyer wallets |
 | `referenceEndpoint` | | Where the genuine answers come from, for the publisher and local audits. See [Reference upstreams](#reference-upstreams) |
 | `upstreams`, `models.<model>.upstream` | | Other sources for one model's genuine answers |
 | `auditPriceRatio` | 1 | Audit sellers priced up to this multiple of the upstream price |

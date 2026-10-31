@@ -13,6 +13,7 @@ import { ResultsTree, buildResultsTree, collectorLeaf, emptyRoundLeaf, serviceLe
 import { createEnvelopeDeliveryChecker, scoreRound, type CommittedManifest } from './scoring.js'
 import { CachedRoundStorage, DirectoryRoundStorage, PinataRoundStorage, RoundFileMismatchError, type RoundStorage } from './storage.js'
 import { encodeRoundFile } from './encoding.js'
+import { exceedsJsonTokens, manifestBudget } from './manifest-loader.js'
 import { ManifestsUnavailableError, authenticResults, computeResults, phaseFetchSignal } from './verifier-daemon.js'
 import type { KbfEpochInfo, KbfRoundClient } from '@antseed/node/payments'
 import type { SellerBindingReader } from './seller-binding.js'
@@ -401,6 +402,8 @@ function daemonFixture(options: {
   /** Never answer for these: the read only ends when its signal aborts. */
   hanging?: ReadonlySet<string>
   bindings?: SellerBindingReader
+  /** More commitments, with any bytes, from epoch members. */
+  extra?: Array<{ sender: string; backup: boolean; uri: string; bytes: Buffer }>
 } = {}) {
   const roundPlan = plan()
   const manifests = manifestsFor(roundPlan)
@@ -410,12 +413,17 @@ function daemonFixture(options: {
   const bankHash = publish('ipfs://bank', sealed.blob)
   const planFile: PlanFileV1 = { kind: 'antseed-kbf-plan', version: 1, epoch: '7', seed: SEED, targets: roundPlan.targets, envelopes: {}, backupEnvelopes: {} }
   const planHash = publish('ipfs://plan', encodeRoundFile(planFile))
-  const sliceCommits = manifests.map((entry) => ({
-    sender: entry.collector, backup: entry.backup, uri: entry.uri, hash: publish(entry.uri, encodeRoundFile(entry.manifest)),
-  }))
+  const sliceCommits = [
+    ...manifests.map((entry) => ({
+      sender: entry.collector, backup: entry.backup, uri: entry.uri, hash: publish(entry.uri, encodeRoundFile(entry.manifest)),
+    })),
+    ...(options.extra ?? []).map((entry) => ({ sender: entry.sender, backup: entry.backup, uri: entry.uri, hash: publish(entry.uri, entry.bytes) })),
+  ]
+  const requestedMaxBytes = new Map<string, number>()
   const storage: RoundStorage = {
     put: async () => { throw new Error('read only') },
-    get: async (uri, expectedHash, _maxBytes, signal) => {
+    get: async (uri, expectedHash, maxBytes, signal) => {
+      if (maxBytes !== undefined) requestedMaxBytes.set(uri, maxBytes)
       if (options.hanging?.has(uri)) {
         await new Promise((_resolve, reject) => {
           if (!signal) return
@@ -427,6 +435,7 @@ function daemonFixture(options: {
       const bytes = files.get(uri)
       if (!bytes) throw new Error(`no ${uri}`)
       if (expectedHash && contentHash(bytes) !== expectedHash.toLowerCase()) throw new RoundFileMismatchError(`${uri} mismatch`)
+      if (maxBytes !== undefined && bytes.length > maxBytes) throw new RoundFileMismatchError(`${uri} is over ${maxBytes} bytes`)
       return bytes
     },
   }
@@ -449,7 +458,7 @@ function daemonFixture(options: {
   }
   const logs: string[] = []
   const context = { client, storage, bindings, log: (message: string) => { logs.push(message) } }
-  return { roundPlan, manifests, context, info, members: verifiers.map((wallet) => wallet.address), blockTags, logs }
+  return { roundPlan, manifests, context, info, members: verifiers.map((wallet) => wallet.address), blockTags, logs, requestedMaxBytes }
 }
 
 test('computeResults rebuilds the epoch from chain and storage, reading seller bindings at the seed block', async () => {
@@ -629,4 +638,63 @@ test('round files are cut off while they stream once they exceed their size limi
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
+})
+
+test('size-compliant manifests stuffed with structure are refused before they are parsed', async () => {
+  const clean = daemonFixture()
+  const sender = clean.manifests[0]!.collector
+  const budget = manifestBudget({
+    verifiers: clean.members, seed: SEED, targets: clean.roundPlan.targets,
+    probesPerService: 20, slicesPerService: 2, collector: sender, backup: false,
+  })
+  // Eight commitments (the contract's per-verifier limit) of millions of empty objects, each
+  // within the byte budget, plus valid JSON that is not a manifest.
+  const stuffed = Buffer.from(`[${'{},'.repeat(Math.floor((budget.maxBytes - 8) / 3))}{}]`)
+  assert.ok(stuffed.length <= budget.maxBytes)
+  const extra = [
+    ...Array.from({ length: 8 }, (_unused, index) => ({ sender, backup: false, uri: `ipfs://stuffed-${index}`, bytes: stuffed })),
+    { sender, backup: false, uri: 'ipfs://not-a-manifest', bytes: Buffer.from('{"kind":"other"}') },
+  ]
+  const fixture = daemonFixture({ extra })
+  const parse = JSON.parse
+  let largestParsed = 0
+  JSON.parse = ((text: string, reviver?: Parameters<typeof JSON.parse>[1]) => {
+    largestParsed = Math.max(largestParsed, text.length)
+    return parse(text, reviver)
+  }) as typeof JSON.parse
+  let results: Awaited<ReturnType<typeof computeResults>>
+  try {
+    results = await computeResults(fixture.context, fixture.info, fixture.members)
+  } finally {
+    JSON.parse = parse
+  }
+  assert.ok(largestParsed < stuffed.length, 'no stuffed file reached JSON.parse')
+  assert.equal(results.root, (await computeResults(clean.context, clean.info, clean.members)).root)
+  assert.equal(fixture.logs.filter((line) => line.includes('more JSON structure than its assigned slices allow')).length, 8)
+  assert.ok(fixture.logs.some((line) => line.includes('ipfs://not-a-manifest: not a slice manifest')))
+  assert.equal(fixture.requestedMaxBytes.get('ipfs://stuffed-0'), budget.maxBytes, 'downloads stop at the sender\'s budget')
+})
+
+test('a manifest budget follows the slices the seed assigns, and a collector with none gets the minimum', () => {
+  const fixture = daemonFixture()
+  const input = { verifiers: fixture.members, seed: SEED, targets: fixture.roundPlan.targets, probesPerService: 20, slicesPerService: 2 }
+  const owners = fixture.roundPlan.slices.map((slice) => slice.owner)
+  const busiest = fixture.members.map((member) => member.toLowerCase())
+    .sort((a, b) => owners.filter((owner) => owner === b).length - owners.filter((owner) => owner === a).length)
+  const most = manifestBudget({ ...input, collector: busiest[0]!, backup: false })
+  const outsider = manifestBudget({ ...input, collector: '0x000000000000000000000000000000000000dead', backup: false })
+  assert.ok(most.maxBytes > outsider.maxBytes && most.maxTokens > outsider.maxTokens)
+  assert.equal(outsider.maxBytes, 64 * 1024)
+  // Every honest manifest in the fixture fits its sender's budget.
+  for (const entry of fixture.manifests) {
+    const budget = manifestBudget({ ...input, collector: entry.collector, backup: entry.backup })
+    const bytes = encodeRoundFile(entry.manifest)
+    assert.ok(bytes.length <= budget.maxBytes && !exceedsJsonTokens(bytes, budget.maxTokens))
+  }
+})
+
+test('JSON structure inside strings does not count against a manifest budget', () => {
+  assert.equal(exceedsJsonTokens(Buffer.from('{"a":"{[,:]}\\",\"x"}'), 2), false)
+  assert.equal(exceedsJsonTokens(Buffer.from('[1,2,3]'), 2), true)
+  assert.equal(exceedsJsonTokens(Buffer.from('[1,2,3]'), 3), false)
 })

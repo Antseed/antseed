@@ -182,3 +182,39 @@ test('a skip decided during the audit gets the seller retry limit; a preflight s
   assert.equal(twice.get(epochCellKey('m', 'b'))!.attempts, 0)
   assert.equal(twice.get(epochCellKey('m', 'b'))!.action, 'audit', 'a price skip is still re-evaluated')
 })
+
+test('a newer failed attempt, not an older UNDETERMINED, decides whether to retry', () => {
+  const auditorFailure = { peerId: 'a', agentId: '1', service: 'svc', status: 'FAILED', reason: 'no probe bank exists for m' } as const
+  const sellerFailure = { peerId: 'b', agentId: '2', service: 'svc', status: 'FAILED', reason: 'seller down', outcomeReason: sellerDown } as const
+  const cells = mergeEpochRuns(EPOCH, [
+    run('r1', '2026-10-28T20:00:00.000Z', [{ model: 'm', results: [
+      result('a', 'UNDETERMINED', { outcomeReason: sellerDown }),
+      result('b', 'UNDETERMINED', { outcomeReason: buyerRefused }),
+    ] }]),
+    run('r2', '2026-10-28T21:00:00.000Z', [{ model: 'm', failures: [auditorFailure, sellerFailure] as never }]),
+  ])
+  const a = cells.get(epochCellKey('m', 'a'))!
+  // Seller-blamed UNDETERMINED, then our own failure: ours, so retried even after two attempts.
+  assert.equal(a.state, 'undetermined')
+  assert.equal(a.attempts, 2)
+  assert.equal(a.blame, 'auditor')
+  assert.equal(a.action, 'retry')
+  assert.ok(a.result, 'the UNDETERMINED evidence is kept')
+  const b = cells.get(epochCellKey('m', 'b'))!
+  // Auditor-blamed UNDETERMINED, then the seller failed: the seller limit applies.
+  assert.equal(b.blame, 'seller')
+  assert.equal(b.action, 'done')
+})
+
+test('a mid-audit skip after an UNDETERMINED counts against the seller', () => {
+  const cells = mergeEpochRuns(EPOCH, [
+    run('r1', '2026-10-28T20:00:00.000Z', [{ model: 'm', results: [result('a', 'UNDETERMINED', { outcomeReason: buyerRefused })] }]),
+    run('r2', '2026-10-28T21:00:00.000Z', [{ model: 'm', skipped: [{
+      peerId: 'a', displayName: null, agentId: '1', service: 'svc', status: 'SKIPPED', code: 'upstream_credentials_invalid',
+      reason: 'bad upstream credentials', source: 'runtime', auditId: null, evidencePath: null, evidenceHash: null,
+    }] }]),
+  ])
+  const a = cells.get(epochCellKey('m', 'a'))!
+  assert.equal(a.blame, 'seller')
+  assert.equal(a.action, 'done')
+})

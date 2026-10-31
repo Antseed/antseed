@@ -20,7 +20,7 @@ import { createKbfRoundClient, createSellerRegistryClient } from '../../payment-
 import { setupShutdownHandler } from '../../shutdown.js'
 import { startGatewayBuyer } from '../gateway/shared.js'
 import { getGlobalOptions } from '../types.js'
-import { resolveAuditorSigner, sharedIdentityWarning } from './auditor-identity.js'
+import { resolveAuditorSigner } from './auditor-identity.js'
 import { acquireDaemonLock, createPublisherContext, parsePollInterval } from './daemon-setup.js'
 
 interface StartOptions {
@@ -107,8 +107,6 @@ export function registerVerifierStartCommand(verifier: Command): void {
         })
         const client = createKbfRoundClient(config)
         const signer = await resolveAuditorSigner({ config: config.verifier, dataDir: globalOptions.dataDir, keystoreFlag: options.keystore })
-        const identityWarning = sharedIdentityWarning(signer)
-        if (identityWarning) log(chalk.yellow(identityWarning))
         if (!await client.isVerifier(signer.address)) {
           throw new Error(`${signer.address} is not an approved verifier on ${client.contractAddress}`)
         }

@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { encryptKeystoreJsonSync, Wallet } from 'ethers'
-import { resolveAuditorSigner, sharedIdentityWarning } from './auditor-identity.js'
+import { resolveAuditorSigner } from './auditor-identity.js'
 
 const AUDITOR = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8'
 
@@ -35,9 +35,19 @@ test('the signer must match verifier.auditor', async () => withKeystore(async (k
   await assert.rejects(resolveAuditorSigner({ config: { auditor: AUDITOR }, dataDir, keystoreFlag: keystore }), /does not match the keystore signer/)
 }))
 
-test('signing with the data-dir identity warns that the buyer identity would be funded', () => {
-  const address = '0x0000000000000000000000000000000000000001'
-  assert.match(sharedIdentityWarning({ source: 'data-dir', address }) ?? '', /buyer identity.*dedicated funded keystore/)
-  assert.equal(sharedIdentityWarning({ source: 'keystore', address }), null)
-  assert.equal(sharedIdentityWarning({ source: 'flag-keystore', address }), null)
-})
+test('without a keystore there is no fallback to the buyer identity', async () => withKeystore(async (_keystore, _wallet, dataDir) => {
+  await assert.rejects(resolveAuditorSigner({ config: {}, dataDir }), /dedicated signer, never the buyer identity.*cast wallet/)
+}))
+
+test('a keystore holding the buyer hot wallet is refused', async () => withKeystore(async (keystore, wallet, dataDir) => {
+  await writeFile(join(dataDir, 'identity.key'), wallet.privateKey.slice(2), { mode: 0o600 })
+  await assert.rejects(resolveAuditorSigner({ config: { keystore }, dataDir }), /is a buyer wallet of this data dir/)
+  await assert.rejects(resolveAuditorSigner({ config: {}, dataDir, keystoreFlag: keystore }), /is a buyer wallet of this data dir/)
+}))
+
+test('a keystore holding a named buyer identity is refused', async () => withKeystore(async (keystore, wallet, dataDir) => {
+  const named = join(dataDir, 'buyer-identities', 'work')
+  await mkdir(named, { recursive: true })
+  await writeFile(join(named, 'identity.key'), wallet.privateKey.slice(2), { mode: 0o600 })
+  await assert.rejects(resolveAuditorSigner({ config: { keystore }, dataDir }), /is a buyer wallet of this data dir/)
+}))

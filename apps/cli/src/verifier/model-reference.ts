@@ -477,18 +477,23 @@ export async function buildModelReference(input: {
     model: normalized(input.model),
     routesByModel: [...routesByModel.entries()],
   })) : null
-  const discoveryQuery = discoveryCheckpoint ? createReferenceQuery({
-    timeoutMs: THINKING_DISCOVERY_TIMEOUT_MS,
+  // The request policy discovery and measurement share; each sets its own timeout, checkpoint,
+  // budget and routing.
+  const commonQueryOptions = {
     fetchFn: input.fetchFn ?? fetch,
-    checkpoint: discoveryCheckpoint,
     limiter,
-    maxRequests: input.config?.referenceMaxRequestsPerBuild ?? DEFAULT_MAX_REQUESTS_PER_BUILD,
     allowance: input.allowance,
     retryCount: input.config?.referenceBatchRetryCount ?? DEFAULT_BATCH_RETRY_COUNT,
     retryBaseDelayMs: input.config?.referenceRetryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS,
     pricingForModel,
-    routeForModel: (model) => routesByModel.get(normalized(model))!,
     log: input.log,
+  }
+  const discoveryQuery = discoveryCheckpoint ? createReferenceQuery({
+    ...commonQueryOptions,
+    timeoutMs: THINKING_DISCOVERY_TIMEOUT_MS,
+    checkpoint: discoveryCheckpoint,
+    maxRequests: input.config?.referenceMaxRequestsPerBuild ?? DEFAULT_MAX_REQUESTS_PER_BUILD,
+    routeForModel: (model) => routesByModel.get(normalized(model))!,
   }) : null
   let thinkingDiscovery: ReferenceThinkingDiscoveryRecordV1 | undefined
   if (discoveryQuery) {
@@ -620,21 +625,15 @@ export async function buildModelReference(input: {
   const checkpoint = await ReferenceBuildCheckpoint.open(checkpointPath, compatibilityHash)
   const exchangesPath = referenceExchangesPath(input.referencesDir, input.model)
   const query = createReferenceQuery({
+    ...commonQueryOptions,
     timeoutMs,
-    fetchFn: input.fetchFn ?? fetch,
     checkpoint,
-    limiter,
     // Discovery requests count toward the same per-build budget. When discovery used all of it,
     // the build may still read its cached responses but cannot send another request.
     maxRequests: Math.max(0, (input.config?.referenceMaxRequestsPerBuild ?? DEFAULT_MAX_REQUESTS_PER_BUILD)
       - (discoveryCheckpoint?.requestsUsed ?? 0)),
-    allowance: input.allowance,
-    retryCount: input.config?.referenceBatchRetryCount ?? DEFAULT_BATCH_RETRY_COUNT,
-    retryBaseDelayMs: input.config?.referenceRetryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS,
-    pricingForModel,
     routeForModel: (model) => routesByModel.get(normalized(model))
       ?? resolveReferenceRequestRoute({ endpoint, model, apiKey, catalog: input.catalog ?? null }),
-    log: input.log,
   })
   const candidateWriting = new CandidateWritingPolicy(candidateWritingFallback(targetRoute), input.log)
   const excludedDomains = new Set<string>(modelConfig.excludedDomains ?? [])
