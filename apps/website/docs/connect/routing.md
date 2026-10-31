@@ -93,7 +93,7 @@ Each entry includes:
 | `capability_coverage` | How many offers reported each field |
 | `peers` | One offer per seller, in the same order automatic routing ranks them |
 
-Each item in `peers` has the seller's `peerId`, `provider`, `serviceId`, protocols, prices (`inputUsdPerMillion`, `outputUsdPerMillion`, `cachedInputUsdPerMillion`, or image prices), `reputationScore`, `effectiveReputationScore` (the model-specific score used for ranking) and its own capabilities. To pin one offer, send `<peerId>@<serviceId>` from the same item.
+Each item in `peers` has the seller's `peerId`, `provider`, `serviceId`, protocols, prices (`inputUsdPerMillion`, `outputUsdPerMillion`, `cachedInputUsdPerMillion`, or image prices), `reputationScore`, `effectiveReputationScore` (the model-specific score used for ranking), its own capabilities and `health`: the seller's last self health check for the model, for example `{ "status": "healthy", "checkedAt": 1793328100000, "source": "traffic" }` when a paid buyer request last succeeded (`"probe"` when the seller's own check passed). Offers the seller reports failing are left out, and a model whose every seller reports it failing is not listed. See [discovery](/docs/discovery) for every field. To pin one offer, send `<peerId>@<serviceId>` from the same item.
 
 Through a gateway API key, `/v1/models` lists only the models that key may use.
 

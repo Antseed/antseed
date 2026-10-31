@@ -474,7 +474,8 @@ function preview(query: URLSearchParams): RoutePreview {
     if (policy.requireTee && !peer.tee) reasons.push('no TEE')
     if (policy.requireVerified && !peer.verified) reasons.push('not verified')
     if (policy.maxInputUsdPerMillion !== undefined && (service.inputUsdPerMillion ?? 0) > policy.maxInputUsdPerMillion) reasons.push('over input price cap')
-    return { peerId: peer.peerId, displayName: peer.displayName, rank: null as number | null, eligible: reasons.length === 0, reasons, inputUsdPerMillion: service.inputUsdPerMillion, outputUsdPerMillion: service.outputUsdPerMillion, trustScore: peer.trustScore, selection: null as RouteSelection | null }
+    if (service.health?.status === 'failing') reasons.push(`self health check failing${service.health.reason ? ` (${service.health.reason})` : ''}`)
+    return { peerId: peer.peerId, displayName: peer.displayName, rank: null as number | null, eligible: reasons.length === 0, reasons, inputUsdPerMillion: service.inputUsdPerMillion, outputUsdPerMillion: service.outputUsdPerMillion, trustScore: peer.trustScore, selection: null as RouteSelection | null, ...(service.health ? { health: service.health } : {}) }
   })
   const ready = candidates.filter((c) => c.eligible).sort((a, b) => (a.inputUsdPerMillion ?? 0) - (b.inputUsdPerMillion ?? 0))
   ready.forEach((c, index) => { c.rank = index + 1; c.selection = mockRouteSelection(index + 1, ready.length, index) })

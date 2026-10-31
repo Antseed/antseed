@@ -21,7 +21,7 @@ import {
 } from '@antseed/node'
 import { canonicalModelKey, preferredModelDisplayName } from '@antseed/node/model-identity'
 import { freeTierProgramForService, isPricedService, type FreeTierProgram } from '@antseed/node/free-tier-program'
-import type { RoutingProtocol } from '@antseed/node'
+import type { RoutingProtocol, ServiceHealth } from '@antseed/node'
 import type { RouterOptionSpec } from '@antseed/router-core'
 
 export { effectiveModelReputationScore } from '@antseed/node'
@@ -53,6 +53,8 @@ export type NetworkModelPeerOffer = {
    * on a priced one the free allowance before the listed price applies.
    */
   freeTier?: FreeTierProgram
+  /** The seller's last announced self health check for this offer; failing offers are not listed. */
+  health?: ServiceHealth
 }
 
 export type NetworkModelCapabilityCoverage = {
@@ -323,6 +325,7 @@ export function buildNetworkModels(
       ...(offer.minImageUsdPerImage !== undefined ? { minImageUsdPerImage: offer.minImageUsdPerImage } : {}),
       ...(offer.maxImageUsdPerImage !== undefined ? { maxImageUsdPerImage: offer.maxImageUsdPerImage } : {}),
       ...(freeTier ? { freeTier } : {}),
+      ...(offer.health ? { health: offer.health } : {}),
     })
   }
 
