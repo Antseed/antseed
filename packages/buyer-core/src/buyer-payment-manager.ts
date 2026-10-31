@@ -260,6 +260,8 @@ export class BuyerPaymentManager {
   private readonly _verifiedCost = new Map<string, bigint>();
   /** sellerPeerId -> paid requests dispatched and not yet answered */
   private readonly _inFlightPaidRequests = new Map<string, number>();
+  /** Reads a channel's locked deposit on-chain (set by the negotiator when it has a channels client). */
+  private _readChannelDeposit: ((channelId: string) => Promise<bigint>) | null = null;
   /**
    * Per seller: the tail of the queue of signing steps. Reading the signed
    * amount and verified cost, signing and committing happen one at a time
@@ -1408,6 +1410,10 @@ export class BuyerPaymentManager {
     return remaining <= threshold;
   }
 
+  setChannelDepositReader(reader: (channelId: string) => Promise<bigint>): void {
+    this._readChannelDeposit = reader;
+  }
+
   /** Count a paid request to this seller as in flight until endPaidRequest. */
   beginPaidRequest(sellerPeerId: string): void {
     this._inFlightPaidRequests.set(sellerPeerId, (this._inFlightPaidRequests.get(sellerPeerId) ?? 0) + 1);
@@ -1417,6 +1423,31 @@ export class BuyerPaymentManager {
     const remaining = (this._inFlightPaidRequests.get(sellerPeerId) ?? 0) - 1;
     if (remaining > 0) this._inFlightPaidRequests.set(sellerPeerId, remaining);
     else this._inFlightPaidRequests.delete(sellerPeerId);
+  }
+
+  /**
+   * How much of the current ceiling is a top-up not yet locked on-chain. A
+   * landed top-up the buyer has not heard about is reconciled first, so it is
+   * not counted against the available balance twice. Without a chain read,
+   * the whole pending increase counts.
+   */
+  private async _outstandingTopUp(sellerPeerId: string, channelId: string, ceiling: bigint): Promise<bigint> {
+    const pending = this._pendingReserveAuth.get(sellerPeerId);
+    if (!pending || pending.confirmedAmount <= 0n || ceiling <= pending.confirmedAmount) return 0n;
+    let locked = pending.confirmedAmount;
+    if (this._readChannelDeposit) {
+      try {
+        const deposit = await this._readChannelDeposit(channelId);
+        if (deposit >= pending.maxAmount) {
+          await this.reconcileReserveAmount(sellerPeerId, deposit);
+          return 0n;
+        }
+        if (deposit > locked) locked = deposit;
+      } catch (err) {
+        debugWarn(`[BuyerPayment] topUpReserve: could not read the channel deposit: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+    return ceiling > locked ? ceiling - locked : 0n;
   }
 
   /**
@@ -2060,6 +2091,11 @@ export class BuyerPaymentManager {
       return;
     }
 
+    // A top-up still waiting on-chain will lock its increase from the same
+    // deposits: budget only what is left after it, so stacked top-ups never
+    // authorize more than the buyer holds. One that already landed is out of
+    // the available balance already, so read the deposit before counting it.
+    const outstanding = await this._outstandingTopUp(sellerPeerId, session.sessionId, this._getCeiling(sellerPeerId));
     const prevCeiling = this._getCeiling(sellerPeerId);
     // Under parallel load one configured step can be smaller than the work in
     // flight, which then runs past the locked reserve before the next top-up
@@ -2070,14 +2106,6 @@ export class BuyerPaymentManager {
     let additionalReserve = step;
     if (loadHeadroom > step) additionalReserve = loadHeadroom < maxStep ? loadHeadroom : maxStep;
     const deadline = this._authDeadline();
-
-    // A top-up still waiting on-chain will lock its increase from the same
-    // deposits: budget only what is left after it, so stacked top-ups never
-    // authorize more than the buyer holds.
-    const pendingTopUp = this._pendingReserveAuth.get(sellerPeerId);
-    const outstanding = pendingTopUp && pendingTopUp.confirmedAmount > 0n && prevCeiling > pendingTopUp.confirmedAmount
-      ? prevCeiling - pendingTopUp.confirmedAmount
-      : 0n;
 
     try {
       const balance = await this.getBalance();

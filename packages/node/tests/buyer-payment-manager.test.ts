@@ -1993,6 +1993,39 @@ describe('BuyerPaymentManager', () => {
     expect(ceilings()).toHaveLength(2);
   });
 
+  it('reconciles a top-up that already landed before budgeting the next, so its funds are not counted twice', async () => {
+    store.close();
+    store = new ChannelStore(tempDir);
+    manager = new BuyerPaymentManager(identity, makeConfig(tempDir, { maxReserveAmountUsdc: 1_000_000n }), store);
+    manager.setSigner(Wallet.createRandom());
+    mux = createMockPaymentMux();
+    const sellerPeerId = fakePeerId('seller-landed-topup');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    manager.handleAuthAck(sellerPeerId, { channelId });
+    let deposit = 1_000_000n;
+    manager.setChannelDepositReader(async () => deposit);
+    let available = 12_000_000n;
+    vi.spyOn(manager, 'getBalance').mockImplementation(async () => ({ available, reserved: 0n }));
+    const internals = manager as unknown as {
+      _metadata: Map<string, { cumulativeRequestCount: bigint }>;
+      _verifiedCost: Map<string, bigint>;
+    };
+    internals._metadata.set(sellerPeerId, { ...internals._metadata.get(sellerPeerId)!, cumulativeRequestCount: 10n });
+    internals._verifiedCost.set(sellerPeerId, 700_000n);
+    for (let i = 0; i < 200; i += 1) manager.beginPaidRequest(sellerPeerId);
+    mux.sentSpendingAuths.length = 0;
+
+    await manager.topUpReserve(sellerPeerId, mux);
+    // The $10 top-up lands: the chain locks it and the available balance drops,
+    // but the seller's acknowledgement has not reached the buyer yet.
+    deposit = 11_000_000n;
+    available = 2_000_000n;
+    await manager.topUpReserve(sellerPeerId, mux);
+
+    expect(mux.sentSpendingAuths.map((auth) => (auth as Record<string, unknown>).reserveMaxAmount)).toEqual(['11000000', '13000000']);
+    expect(manager.hasPendingReserveAuth(sellerPeerId)).toBe(true);
+  });
+
   it('resendReserveAuth replays the original reserve amount after top-up', async () => {
     store.close();
     store = new ChannelStore(tempDir);

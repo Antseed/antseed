@@ -224,6 +224,9 @@ export class BuyerPaymentNegotiator {
     this._sellerAddressResolver = sellerAddressResolver;
     this._isChainReachable = _config.isChainReachable ?? null;
     this._onChainReadFailure = _config.onChainReadFailure ?? null;
+    if (channelsClient) {
+      bpm.setChannelDepositReader(async (channelId) => (await channelsClient.getSession(channelId)).deposit);
+    }
   }
 
   get bpm(): BuyerPaymentManager {
