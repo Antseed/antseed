@@ -443,6 +443,24 @@ export function aggregateKbfSelfTestOutcomes(
 }
 
 /**
+ * Scored runs per trial: the share of self-test runs that count toward the
+ * error rate. Unlike `coverage` (parsed answers per trial), it leaves out
+ * out-of-range answers, matching how target coverage is measured, so use it to
+ * decide whether a reference is ready.
+ */
+export function scoredSelfTestCoverage(selfTest: Pick<KbfReferenceSelfTestV1, 'outcomes'>): number {
+  let trials = 0;
+  let scored = 0;
+  for (const outcome of selfTest.outcomes) {
+    for (const match of outcome.matches) {
+      trials += 1;
+      if (match !== null) scored += 1;
+    }
+  }
+  return trials === 0 ? 0 : scored / trials;
+}
+
+/**
  * Re-scores one probe's self-test runs with the current rule: a run whose
  * answer is missing, unreadable, or out of range becomes null (unscored)
  * instead of the 0 that older references stored. Runs that were never

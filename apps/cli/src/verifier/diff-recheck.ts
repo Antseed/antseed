@@ -1,11 +1,8 @@
 import type { KbfReferenceV1 } from '@antseed/fingerprints'
+import type { ModelAuditSummaryV1 } from './audit-artifacts.js'
 import { BANK_EXHAUSTED } from './probe-bank.js'
 import { addAuditCostSummaries, emptyAuditCostSummary, type AuditCostSummaryV1 } from './proxy-evidence.js'
-import type {
-  ModelVerificationFailure,
-  ModelVerificationSkip,
-  ModelVerificationTargetResult,
-} from './model-run.js'
+import type { ModelVerificationSkip, ModelVerificationTargetResult } from './model-run.js'
 import { asError } from './utils.js'
 
 /** Fresh-probe enrollments a run may make for one model's rechecks. */
@@ -22,7 +19,6 @@ export interface DiffRecheckStats {
 
 export interface DiffRecheckOutcome {
   results: ModelVerificationTargetResult[]
-  failures: ModelVerificationFailure[]
   stats: DiffRecheckStats
 }
 
@@ -50,7 +46,7 @@ export async function runDiffRechecks(input: {
     rechecked: 0, confirmed: 0, notConfirmed: 0, pending: 0, cost: emptyAuditCostSummary(),
   }
   const diffs = input.results.filter((result) => result.status === 'DIFF' && !result.recheck)
-  if (diffs.length === 0) return { results: [...input.results], failures: [], stats }
+  if (diffs.length === 0) return { results: [...input.results], stats }
 
   const reservations = new Map<ModelVerificationTargetResult, { reference: KbfReferenceV1; auditId: string }>()
   const skipReasons = new Map<ModelVerificationTargetResult, string>()
@@ -135,7 +131,7 @@ export async function runDiffRechecks(input: {
   }))
 
   const results = input.results.map((result) => finals.get(result) ?? result)
-  return { results, failures: [], stats }
+  return { results, stats }
 }
 
 export function combineDiffRecheck(
@@ -166,4 +162,16 @@ export function combineDiffRecheck(
 /** The final verdict after a first DIFF: DIFF only when the recheck is DIFF too. */
 export function confirmedDiffStatus(recheckStatus: string): 'DIFF' | 'UNDETERMINED' {
   return recheckStatus === 'DIFF' ? 'DIFF' : 'UNDETERMINED'
+}
+
+export type ModelAuditVerdict = 'SAME' | 'DIFF' | 'UNDETERMINED'
+
+/**
+ * A seller's final verdict from a local run: a DIFF counts only when a recheck on fresh probes is
+ * DIFF too, otherwise it is UNDETERMINED. Null for a DIFF that was never rechecked.
+ */
+export function finalAuditVerdict(result: ModelAuditSummaryV1['results'][number]): ModelAuditVerdict | null {
+  if (result.recheck) return confirmedDiffStatus(result.recheck.status)
+  if (result.status === 'DIFF') return null
+  return result.status as ModelAuditVerdict
 }

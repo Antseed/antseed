@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 
 import {IAntseedEmissionsGate} from "../interfaces/IAntseedEmissionsGate.sol";
 import {IAntseedRegistry} from "../interfaces/IAntseedRegistry.sol";
@@ -14,109 +15,146 @@ interface IEmissionsGateSource {
     function emissionsGate() external view returns (address);
 }
 
-/// @notice Records KBF (Knowledge Boundary Fingerprinting) model audits from approved auditors, one
-///         model per submission. KBF is one of several verification methods: every audit recorded
-///         here is a KBF audit. Another method gets its own contract, its own points policy, and its
-///         own emissions bucket, and never writes into KBF verdicts.
+interface IEmissionsGateSchedule {
+    function genesis() external view returns (uint256);
+    function epochDuration() external view returns (uint256);
+}
+
+/// @notice Distributed KBF (Knowledge Boundary Fingerprinting) model verification. Many approved
+///         verifiers buy slices of one seed-derived sample from each seller, publish the
+///         seller-signed transcripts, score everything independently against one sealed
+///         reference, and a majority must attest the same results root before any verdict counts.
+///         See `IAntseedKbfVerification` for the round. KBF is one of several verification
+///         methods: another method gets its own contract, points policy and emissions bucket.
 ///
+///         Roles:
+///         - owner: approves verifiers and the publisher, sets the audited model list and the
+///           schedule, and can void an epoch or clear verdicts as remediation;
+///         - publisher: Antseed's automated reference publisher. It builds and seals each epoch's
+///           question bank, commits the plan and reveals the bank key. It decides no verdicts;
+///         - verifiers: collect slices, attest results and earn rewards.
 ///
-///         Status: each (agent, service) keeps its latest result as its verdict, with the emissions
-///         epoch it was given in. A verdict counts while `currentEpoch < epoch + validityEpochs`
-///         (default 2: through the epoch after the audit). A SAME verifies that service, a DIFF
-///         marks it as not serving the audited model, and an UNDETERMINED (the audit could not
-///         decide) counts as neither. The latest result always wins. Auditors double-check a DIFF
-///         off-chain before submitting it.
-///         Each agent keeps per-epoch SAME and DIFF counters, so its status sums only the last
-///         `validityEpochs` epochs and older verdicts drop out without any cleanup.
-///         Results for agents the identity registry cannot resolve (e.g. burned) are skipped with
-///         `UnknownAgentSkipped`, so one stale agent does not fail the whole audit.
-///
-///         Epochs come from the emissions gate pinned at deployment; audits revert without it.
-///
-///         Rewards: from `rewardsStartEpoch` on (off until the owner sets it), an auditor earns one
-///         credit per model audit, whatever the results, up to `maxCreditsPerModelPerEpoch` per
-///         model and `maxCreditsPerAuditorPerEpoch` overall, provided the audit covers at least one
-///         agent with staked pool power. Once the epoch is final an auditor claims
-///         `min(budget * credits / totalCredits, budget * maxAuditorShareBps / BPS)` from the
-///         verification emission bucket, using the share cap in force at claim time. Budget above
-///         the cap is never minted.
+///         Rewards: from `rewardsStartEpoch` on, an epoch's verification budget is split into an
+///         attester pool (`attestRewardBps`), shared equally by the verifiers that attested the
+///         finalized root, and a collector pool, shared by the slices the finalized root credits
+///         each verifier with. One verifier's claim is capped at `maxVerifierShareBps` of the
+///         budget; budget above the cap is never minted.
 contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
-    uint256 public constant MAX_RESULTS_PER_AUDIT = 256;
-    uint256 public constant MAX_EVIDENCE_URI_BYTES = 200;
+    uint256 public constant MAX_VERIFIERS = 64;
+    uint256 public constant MAX_MODELS = 64;
+    uint256 public constant MAX_URI_BYTES = 200;
+    uint256 public constant MAX_SLICE_COMMITS = 8;
     uint8 public constant MAX_VALIDITY_EPOCHS = 4;
+    /// @notice Blocks between opening an epoch and the block whose hash seeds it.
+    uint64 public constant SEED_DELAY_BLOCKS = 4;
     uint256 public constant BPS = 10_000;
+
+    uint8 private constant LEAF_SERVICE = 1;
+    uint8 private constant LEAF_COLLECTOR = 2;
 
     struct EpochCounts {
         uint32 same;
         uint32 diff;
     }
 
+    struct EpochState {
+        uint64 seedBlock;
+        bytes32 seed;
+        uint32 modelsVersion;
+        Schedule schedule;
+        bytes32 bankHash;
+        bytes32 bankKeyHash;
+        bytes32 bankKey;
+        bytes32 planHash;
+        bytes32 backupPlanHash;
+        bytes32 finalizedRoot;
+        bool voided;
+        address[] verifiers;
+    }
+
     IAntseedRegistry public immutable override registry;
     IAntseedEmissionsGate public immutable override emissionsGate;
     IAntseedSellerPools public override sellerPools;
     uint8 public override validityEpochs = 2;
-    // Safety limits against a compromised or malicious auditor; honest auditors should stay below them.
-    /// @notice Safety limit: credits one auditor can earn per epoch (default 100). Stops an auditor
-    ///         that invents model hashes from inflating total credits and diluting honest auditors.
-    uint32 public maxCreditsPerAuditorPerEpoch = 100;
-    /// @notice Safety limit: credited audits of the same model per auditor and epoch (default 1).
-    ///         Stops an auditor from earning repeatedly by re-auditing one model.
-    uint32 public maxCreditsPerModelPerEpoch = 1;
-    /// @notice Safety limit: most of an epoch's verification budget one auditor can claim, in bps
-    ///         (default 20%). Stops a single auditor from draining the bucket.
-    uint16 public override maxAuditorShareBps = 2_000;
-    /// @notice First epoch whose audits earn credits; `type(uint256).max` keeps rewards off.
+    address public override publisher;
+    uint32 public override modelsVersion;
+    /// @notice Share of an epoch's budget paid to the verifiers that attested the finalized root.
+    uint16 public attestRewardBps = 2_000;
+    /// @notice Most of an epoch's budget one verifier can claim (default 20%).
+    uint16 public maxVerifierShareBps = 2_000;
+    /// @notice First epoch that earns rewards; `type(uint256).max` keeps rewards off.
     uint256 public override rewardsStartEpoch = type(uint256).max;
 
-    mapping(address auditor => bool approved) public override approvedAuditors;
+    Schedule private _schedule;
+    address[] private _verifiers;
+    mapping(address verifier => uint256 indexPlusOne) private _verifierIndex;
+    mapping(address verifier => bytes32 key) public override encryptionKeys;
+    mapping(uint32 version => Model[] list) private _models;
+
+    mapping(uint256 epoch => EpochState state) private _epochs;
+    mapping(uint256 epoch => mapping(address verifier => bool member)) private _epochMember;
+    mapping(uint256 epoch => mapping(address verifier => uint256 count)) public sliceCommits;
+    mapping(uint256 epoch => mapping(address verifier => bytes32 root)) public override attestations;
+    mapping(uint256 epoch => mapping(bytes32 root => uint256 votes)) public override rootVotes;
+    mapping(uint256 epoch => mapping(bytes32 leaf => bool applied)) public resultApplied;
+    mapping(uint256 epoch => mapping(address verifier => bool claimed)) public rewardClaimed;
 
     mapping(uint256 agentId => mapping(bytes32 serviceHash => ServiceStatus status)) private _serviceStatus;
     // Latest SAME/DIFF verdicts given in each epoch; a verdict moves out when the service gets a new one.
     mapping(uint256 agentId => mapping(uint256 epoch => EpochCounts counts)) private _epochCounts;
 
-    mapping(uint256 epoch => uint256 credits) public epochCredits;
-    mapping(uint256 epoch => mapping(address auditor => uint256 credits)) public auditorEpochCredits;
-    mapping(uint256 epoch => mapping(address auditor => mapping(bytes32 modelHash => uint256 credits))) public
-        modelCredits;
-    mapping(uint256 epoch => mapping(address auditor => bool claimed)) public auditorEpochClaimed;
-
-    event AuditorSet(address indexed auditor, bool approved);
+    event VerifierSet(address indexed verifier, bool approved);
+    event EncryptionKeySet(address indexed verifier, bytes32 key);
+    event PublisherSet(address indexed publisher);
+    event ModelsSet(uint32 indexed version, Model[] models);
+    event ScheduleSet(Schedule schedule);
     event SellerPoolsSet(address sellerPools);
     event ValidityEpochsSet(uint8 validityEpochs);
-    event MaxCreditsPerAuditorPerEpochSet(uint32 maxCredits);
-    event MaxCreditsPerModelPerEpochSet(uint32 maxCredits);
-    event MaxAuditorShareBpsSet(uint16 shareBps);
     event RewardsStartEpochSet(uint256 epoch);
-    event ModelAudited(
-        bytes32 indexed modelHash,
-        address indexed auditor,
-        uint256 indexed epoch,
-        bytes32 evidenceHash,
-        string evidenceUri,
-        uint256 resultCount
+    event AttestRewardBpsSet(uint16 bps);
+    event MaxVerifierShareBpsSet(uint16 bps);
+    event BankCommitted(uint256 indexed epoch, bytes32 bankHash, bytes32 bankKeyHash, string bankUri);
+    event EpochOpened(uint256 indexed epoch, uint64 seedBlock, uint32 modelsVersion, uint16 verifierCount);
+    event SeedRearmed(uint256 indexed epoch, uint64 seedBlock);
+    event SeedFixed(uint256 indexed epoch, bytes32 seed);
+    event PlanCommitted(uint256 indexed epoch, bool backup, bytes32 planHash, string planUri);
+    event BankKeyRevealed(uint256 indexed epoch, bytes32 bankKey);
+    event SlicesCommitted(
+        uint256 indexed epoch, address indexed verifier, bool backup, bytes32 slicesRoot, string manifestUri
     );
+    event Attested(uint256 indexed epoch, address indexed verifier, bytes32 resultsRoot, string evidenceUri);
+    event EpochFinalized(uint256 indexed epoch, bytes32 resultsRoot, uint256 votes);
+    event EpochVoided(uint256 indexed epoch);
     event ServiceAudited(
-        uint256 indexed agentId, bytes32 indexed serviceHash, address indexed auditor, bytes32 modelHash, Verdict verdict
+        uint256 indexed agentId, bytes32 indexed serviceHash, uint256 indexed epoch, bytes32 modelHash, Verdict verdict
     );
     event ServiceStatusChanged(
         uint256 indexed agentId, bytes32 indexed serviceHash, bytes32 modelHash, Verdict previous, Verdict current
     );
     event AgentStatusChanged(uint256 indexed agentId, uint16 verifiedCount, uint16 diffCount);
-    event AuditCredited(uint256 indexed epoch, address indexed auditor, bytes32 indexed modelHash);
-    event AuditorRewardClaimed(uint256 indexed epoch, address indexed auditor, uint256 amount);
-    event AuditorCreditsVoided(uint256 indexed epoch, address indexed auditor, uint256 credits);
-    event UnknownAgentSkipped(uint256 indexed agentId, bytes32 indexed modelHash);
+    event UnknownAgentSkipped(uint256 indexed agentId, uint256 indexed epoch);
+    event RewardClaimed(uint256 indexed epoch, address indexed verifier, uint256 amount);
 
     error InvalidAddress();
     error InvalidValue();
-    error NotApprovedAuditor();
-    error InvalidEvidenceUri();
+    error InvalidUri();
     error InvalidResults();
-    error UnknownAgent();
-    error SelfAudit();
-    error EpochChanged();
+    error InvalidProof();
+    error NotVerifier();
+    error NotPublisher();
+    error WrongEpoch();
+    error WrongPhase();
+    error TooManyVerifiers();
+    error TooManyCommits();
+    error AlreadyAttested();
+    error EpochVoidedError();
     error EpochNotFinalized();
     error AlreadyClaimed();
+
+    modifier onlyPublisher() {
+        if (msg.sender != publisher) revert NotPublisher();
+        _;
+    }
 
     /// @dev Pins the emissions gate behind `registry.emissions()`. After M001 the registry points at
     ///      usage accounting, which exposes the gate as `emissionsGate()`; otherwise the registry
@@ -133,16 +171,67 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         } catch {}
         emissionsGate = IAntseedEmissionsGate(gate);
         _setSellerPools(sellerPools_);
+        _setSchedule(
+            Schedule({
+                collectSeconds: 3 days, backupSeconds: 1 days, attestSeconds: 1 days, probesPerService: 100, slicesPerService: 4
+            })
+        );
     }
 
     // ═══════════════════════════════════════════════════════════════════
     //                        ADMIN
     // ═══════════════════════════════════════════════════════════════════
 
-    function setAuditor(address auditor, bool approved) external override onlyOwner {
-        if (auditor == address(0)) revert InvalidAddress();
-        approvedAuditors[auditor] = approved;
-        emit AuditorSet(auditor, approved);
+    /// @notice Approves or removes a verifier. Takes effect from the next epoch opened; an open
+    ///         epoch keeps its snapshot.
+    function setVerifier(address verifier, bool approved) external onlyOwner {
+        if (verifier == address(0)) revert InvalidAddress();
+        uint256 indexPlusOne = _verifierIndex[verifier];
+        if (approved && indexPlusOne == 0) {
+            if (_verifiers.length >= MAX_VERIFIERS) revert TooManyVerifiers();
+            _verifiers.push(verifier);
+            _verifierIndex[verifier] = _verifiers.length;
+        } else if (!approved && indexPlusOne != 0) {
+            address last = _verifiers[_verifiers.length - 1];
+            _verifiers[indexPlusOne - 1] = last;
+            _verifierIndex[last] = indexPlusOne;
+            _verifiers.pop();
+            delete _verifierIndex[verifier];
+        }
+        emit VerifierSet(verifier, approved);
+    }
+
+    function setPublisher(address publisher_) external onlyOwner {
+        if (publisher_ == address(0)) revert InvalidAddress();
+        publisher = publisher_;
+        emit PublisherSet(publisher_);
+    }
+
+    /// @notice Replaces the standing list of audited models. Each epoch audits the list in force
+    ///         when it was opened.
+    function setModels(Model[] calldata list) external onlyOwner {
+        uint256 count = list.length;
+        if (count == 0 || count > MAX_MODELS) revert InvalidValue();
+        uint32 version = modelsVersion + 1;
+        Model[] storage stored = _models[version];
+        for (uint256 i = 0; i < count; i++) {
+            Model calldata model = list[i];
+            bytes memory service = bytes(model.service);
+            if (service.length == 0 || service.length > 128 || model.modelHash != keccak256(service)) {
+                revert InvalidValue();
+            }
+            for (uint256 j = 0; j < i; j++) {
+                if (list[j].modelHash == model.modelHash) revert InvalidValue();
+            }
+            stored.push(model);
+        }
+        modelsVersion = version;
+        emit ModelsSet(version, list);
+    }
+
+    /// @notice Sets the timing and sampling for epochs opened from now on.
+    function setSchedule(Schedule calldata schedule_) external onlyOwner {
+        _setSchedule(schedule_);
     }
 
     function setSellerPools(address sellerPools_) external onlyOwner {
@@ -157,39 +246,35 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         emit ValidityEpochsSet(epochs);
     }
 
-    /// @notice Sets the per-auditor safety limit on credits per epoch.
-    function setMaxCreditsPerAuditorPerEpoch(uint32 maxCredits) external onlyOwner {
-        if (maxCredits == 0) revert InvalidValue();
-        maxCreditsPerAuditorPerEpoch = maxCredits;
-        emit MaxCreditsPerAuditorPerEpochSet(maxCredits);
-    }
-
-    /// @notice Sets the per-model safety limit on credited audits per auditor and epoch.
-    function setMaxCreditsPerModelPerEpoch(uint32 maxCredits) external onlyOwner {
-        if (maxCredits == 0) revert InvalidValue();
-        maxCreditsPerModelPerEpoch = maxCredits;
-        emit MaxCreditsPerModelPerEpochSet(maxCredits);
-    }
-
-    /// @notice Sets the safety limit on one auditor's share of an epoch's budget, so a compromised
-    ///         auditor cannot take the whole bucket. Applies to every claim made after the change,
-    ///         including past epochs.
-    function setMaxAuditorShareBps(uint16 shareBps) external onlyOwner {
-        if (shareBps == 0 || shareBps > BPS) revert InvalidValue();
-        maxAuditorShareBps = shareBps;
-        emit MaxAuditorShareBpsSet(shareBps);
-    }
-
-    /// @notice Audits earn credits from this epoch on. Set it to the epoch rewards launch so
-    ///         audits made before launch never claim past budgets; `type(uint256).max` turns
-    ///         new credits off again. Credits already earned stay claimable.
+    /// @notice Epochs from this one on earn rewards; `type(uint256).max` turns new rewards off.
     function setRewardsStartEpoch(uint256 epoch) external onlyOwner {
         rewardsStartEpoch = epoch;
         emit RewardsStartEpochSet(epoch);
     }
 
-    /// @notice Remediation for wrong results, e.g. from a revoked auditor: resets each listed
-    ///         service's verdict. `agentIds[i]` pairs with `serviceHashes[i]`.
+    function setAttestRewardBps(uint16 bps) external onlyOwner {
+        if (bps > BPS) revert InvalidValue();
+        attestRewardBps = bps;
+        emit AttestRewardBpsSet(bps);
+    }
+
+    /// @notice Caps one verifier's share of an epoch's budget. Applies to every later claim.
+    function setMaxVerifierShareBps(uint16 bps) external onlyOwner {
+        if (bps == 0 || bps > BPS) revert InvalidValue();
+        maxVerifierShareBps = bps;
+        emit MaxVerifierShareBpsSet(bps);
+    }
+
+    /// @notice Remediation for a bad round, e.g. a leaked bank or a colluding majority: no more
+    ///         results of `epoch` can be applied and nothing of it can be claimed. Results already
+    ///         applied stay until cleared with `clearServiceStatuses`.
+    function voidEpoch(uint256 epoch) external onlyOwner {
+        _epochs[epoch].voided = true;
+        emit EpochVoided(epoch);
+    }
+
+    /// @notice Remediation for wrong results: resets each listed service's verdict.
+    ///         `agentIds[i]` pairs with `serviceHashes[i]`.
     function clearServiceStatuses(uint256[] calldata agentIds, bytes32[] calldata serviceHashes)
         external
         onlyOwner
@@ -202,64 +287,276 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         }
     }
 
-    /// @notice Remediation for credit farming: removes an auditor's unclaimed credits for an
-    ///         epoch so they no longer dilute other auditors' shares. Claimed epochs cannot be voided.
-    function voidAuditorCredits(uint256 epoch, address auditor) external onlyOwner {
-        if (auditorEpochClaimed[epoch][auditor]) revert AlreadyClaimed();
-        uint256 credits = auditorEpochCredits[epoch][auditor];
-        if (credits == 0) return;
-        auditorEpochCredits[epoch][auditor] = 0;
-        epochCredits[epoch] -= credits;
-        emit AuditorCreditsVoided(epoch, auditor, credits);
+    // ═══════════════════════════════════════════════════════════════════
+    //                        VERIFIERS
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// @notice Sets the caller's X25519 public key, which the publisher encrypts its question
+    ///         envelopes to. Only approved verifiers have one.
+    function setEncryptionKey(bytes32 key) external {
+        if (_verifierIndex[msg.sender] == 0) revert NotVerifier();
+        if (key == bytes32(0)) revert InvalidValue();
+        encryptionKeys[msg.sender] = key;
+        emit EncryptionKeySet(msg.sender, key);
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    //                        AUDITS
+    //                        ROUND
     // ═══════════════════════════════════════════════════════════════════
 
-    function submitModelAudit(
-        uint256 expectedEpoch,
-        bytes32 modelHash,
-        bytes32 evidenceHash,
-        string calldata evidenceUri,
-        ServiceResult[] calldata results
-    ) external override {
-        if (!approvedAuditors[msg.sender]) revert NotApprovedAuditor();
-        if (modelHash == bytes32(0) || evidenceHash == bytes32(0)) revert InvalidValue();
-        _validateEvidenceUri(evidenceUri);
+    /// @notice Commits the epoch's sealed bank: `bankHash` is the hash of the encrypted bank at
+    ///         `bankUri`, `bankKeyHash` is `keccak256(abi.encode(key))`. Possible for the current or
+    ///         next epoch until the epoch is opened.
+    function commitBank(uint256 epoch, bytes32 bankHash, bytes32 bankKeyHash, string calldata bankUri)
+        external
+        onlyPublisher
+    {
+        uint256 current = emissionsGate.currentEpoch();
+        if (epoch != current && epoch != current + 1) revert WrongEpoch();
+        EpochState storage state = _epochs[epoch];
+        if (state.seedBlock != 0) revert WrongPhase();
+        if (bankHash == bytes32(0) || bankKeyHash == bytes32(0)) revert InvalidValue();
+        _validateUri(bankUri);
+        state.bankHash = bankHash;
+        state.bankKeyHash = bankKeyHash;
+        emit BankCommitted(epoch, bankHash, bankKeyHash, bankUri);
+    }
+
+    /// @notice Opens the current epoch once its bank is committed: snapshots the verifiers, the
+    ///         model list and the schedule, and picks the block whose hash will seed the epoch.
+    ///         Anyone can call it, but only before the collection window ends.
+    function openEpoch(uint256 epoch) external {
+        if (epoch != emissionsGate.currentEpoch()) revert WrongEpoch();
+        EpochState storage state = _epochs[epoch];
+        if (state.seedBlock != 0 || state.bankHash == bytes32(0) || modelsVersion == 0) revert WrongPhase();
+        Schedule memory schedule_ = _schedule;
+        if (block.timestamp >= _epochStart(epoch) + schedule_.collectSeconds) revert WrongPhase();
+        uint256 count = _verifiers.length;
+        if (count == 0) revert NotVerifier();
+        state.verifiers = _verifiers;
+        for (uint256 i = 0; i < count; i++) {
+            _epochMember[epoch][_verifiers[i]] = true;
+        }
+        state.modelsVersion = modelsVersion;
+        state.schedule = schedule_;
+        state.seedBlock = uint64(block.number) + SEED_DELAY_BLOCKS;
+        emit EpochOpened(epoch, state.seedBlock, state.modelsVersion, uint16(count));
+    }
+
+    /// @notice Fixes the epoch seed from the hash of the block chosen at opening. If that block is
+    ///         older than 256 blocks its hash is gone, so a new future block is chosen instead.
+    function fixSeed(uint256 epoch) external {
+        EpochState storage state = _epochs[epoch];
+        uint64 seedBlock = state.seedBlock;
+        if (seedBlock == 0 || state.seed != bytes32(0) || block.number <= seedBlock) revert WrongPhase();
+        if (block.number - seedBlock > 256) {
+            state.seedBlock = uint64(block.number) + SEED_DELAY_BLOCKS;
+            emit SeedRearmed(epoch, state.seedBlock);
+            return;
+        }
+        bytes32 seed = keccak256(abi.encode(blockhash(seedBlock), epoch, state.bankHash));
+        state.seed = seed;
+        emit SeedFixed(epoch, seed);
+    }
+
+    /// @notice Commits the target list and the per-verifier question envelopes derived from the seed.
+    function commitPlan(uint256 epoch, bytes32 planHash, string calldata planUri) external onlyPublisher {
+        EpochState storage state = _epochs[epoch];
+        if (state.seed == bytes32(0) || block.timestamp >= _commitDeadline(epoch, state)) revert WrongPhase();
+        if (planHash == bytes32(0)) revert InvalidValue();
+        _validateUri(planUri);
+        state.planHash = planHash;
+        emit PlanCommitted(epoch, false, planHash, planUri);
+    }
+
+    /// @notice Commits the envelopes for slices their owner did not deliver, for the backup verifiers.
+    function commitBackupPlan(uint256 epoch, bytes32 planHash, string calldata planUri) external onlyPublisher {
+        EpochState storage state = _epochs[epoch];
+        if (
+            state.planHash == bytes32(0) || block.timestamp < _commitDeadline(epoch, state)
+                || block.timestamp >= _backupDeadline(epoch, state)
+        ) revert WrongPhase();
+        if (planHash == bytes32(0)) revert InvalidValue();
+        _validateUri(planUri);
+        state.backupPlanHash = planHash;
+        emit PlanCommitted(epoch, true, planHash, planUri);
+    }
+
+    /// @notice Reveals the bank key once collection is over, so everyone can read the bank and
+    ///         score. Anyone holding the key can reveal it; it must match the committed hash.
+    function revealBankKey(uint256 epoch, bytes32 bankKey) external {
+        EpochState storage state = _epochs[epoch];
+        if (state.planHash == bytes32(0) || state.bankKey != bytes32(0)) revert WrongPhase();
+        if (block.timestamp < _backupDeadline(epoch, state)) revert WrongPhase();
+        if (keccak256(abi.encode(bankKey)) != state.bankKeyHash) revert InvalidValue();
+        state.bankKey = bankKey;
+        emit BankKeyRevealed(epoch, bankKey);
+    }
+
+    /// @notice Commits seller-signed transcripts bought by the caller: `slicesRoot` is the Merkle
+    ///         root of the slices in the manifest at `manifestUri`. Commits before the commit
+    ///         deadline are primary, later ones (until the backup deadline) are backups.
+    function commitSlices(uint256 epoch, bytes32 slicesRoot, string calldata manifestUri) external {
+        if (!_epochMember[epoch][msg.sender]) revert NotVerifier();
+        EpochState storage state = _epochs[epoch];
+        if (state.planHash == bytes32(0) || block.timestamp >= _backupDeadline(epoch, state)) revert WrongPhase();
+        if (slicesRoot == bytes32(0)) revert InvalidValue();
+        _validateUri(manifestUri);
+        uint256 commits = sliceCommits[epoch][msg.sender] + 1;
+        if (commits > MAX_SLICE_COMMITS) revert TooManyCommits();
+        sliceCommits[epoch][msg.sender] = commits;
+        emit SlicesCommitted(
+            epoch, msg.sender, block.timestamp >= _commitDeadline(epoch, state), slicesRoot, manifestUri
+        );
+    }
+
+    /// @notice Attests the Merkle root of every (service, verdict) and collector credit the caller
+    ///         computed for the epoch. Once per verifier. The first root a majority of the epoch's
+    ///         verifiers attests becomes final.
+    function attest(uint256 epoch, bytes32 resultsRoot, string calldata evidenceUri) external {
+        if (!_epochMember[epoch][msg.sender]) revert NotVerifier();
+        EpochState storage state = _epochs[epoch];
+        if (state.voided) revert EpochVoidedError();
+        if (state.bankKey == bytes32(0) || block.timestamp >= _attestDeadline(epoch, state)) revert WrongPhase();
+        if (resultsRoot == bytes32(0)) revert InvalidValue();
+        if (attestations[epoch][msg.sender] != bytes32(0)) revert AlreadyAttested();
+        _validateUri(evidenceUri);
+        attestations[epoch][msg.sender] = resultsRoot;
+        uint256 votes = rootVotes[epoch][resultsRoot] + 1;
+        rootVotes[epoch][resultsRoot] = votes;
+        emit Attested(epoch, msg.sender, resultsRoot, evidenceUri);
+        if (state.finalizedRoot == bytes32(0) && votes >= _threshold(state)) {
+            state.finalizedRoot = resultsRoot;
+            emit EpochFinalized(epoch, resultsRoot, votes);
+        }
+    }
+
+    /// @notice Applies finalized results. Anyone can call it; each result needs a Merkle proof
+    ///         against the epoch's finalized root. Results already applied are skipped, and a
+    ///         service keeps a newer epoch's verdict over an older one.
+    function applyResults(uint256 epoch, ServiceResult[] calldata results, bytes32[][] calldata proofs) external {
+        EpochState storage state = _epochs[epoch];
+        if (state.voided) revert EpochVoidedError();
+        bytes32 root = state.finalizedRoot;
+        if (root == bytes32(0)) revert EpochNotFinalized();
         uint256 count = results.length;
-        if (count == 0 || count > MAX_RESULTS_PER_AUDIT) revert InvalidResults();
-
-        uint256 epoch = emissionsGate.currentEpoch();
-        if (epoch != expectedEpoch) revert EpochChanged();
-
-        bool staked;
-        bool skipAgent;
-        uint256 previousAgent;
-        bytes32 previousService;
+        if (count == 0 || count != proofs.length) revert InvalidResults();
         for (uint256 i = 0; i < count; i++) {
             ServiceResult calldata result = results[i];
-            if (
-                result.serviceHash == bytes32(0) || result.verdict == Verdict.NONE || result.agentId < previousAgent
-                    || (result.agentId == previousAgent && result.serviceHash <= previousService)
-            ) revert InvalidResults();
-            if (i == 0 || result.agentId != previousAgent) {
-                if (result.agentId == 0) revert UnknownAgent();
-                (bool known, address owner) = _agentOwner(result.agentId);
-                if (known && msg.sender == owner) revert SelfAudit();
-                skipAgent = !known;
-                if (skipAgent) emit UnknownAgentSkipped(result.agentId, modelHash);
-                else if (!staked) staked = _hasPoolPower(result.agentId, epoch);
-                previousAgent = result.agentId;
+            if (result.verdict == Verdict.NONE || result.serviceHash == bytes32(0)) revert InvalidResults();
+            bytes32 leaf = serviceLeaf(epoch, result);
+            if (!MerkleProof.verifyCalldata(proofs[i], root, leaf)) revert InvalidProof();
+            if (resultApplied[epoch][leaf]) continue;
+            resultApplied[epoch][leaf] = true;
+            if (!_agentKnown(result.agentId)) {
+                emit UnknownAgentSkipped(result.agentId, epoch);
+                continue;
             }
-            previousService = result.serviceHash;
-            if (skipAgent) continue;
-            emit ServiceAudited(result.agentId, result.serviceHash, msg.sender, modelHash, result.verdict);
-            _applyResult(result.agentId, result.serviceHash, modelHash, result.verdict, epoch);
+            emit ServiceAudited(result.agentId, result.serviceHash, epoch, result.modelHash, result.verdict);
+            _applyResult(result.agentId, result.serviceHash, result.modelHash, result.verdict, epoch);
         }
+    }
 
-        emit ModelAudited(modelHash, msg.sender, expectedEpoch, evidenceHash, evidenceUri, count);
-        if (staked && epoch >= rewardsStartEpoch) _creditAudit(epoch, modelHash);
+    // ═══════════════════════════════════════════════════════════════════
+    //                        REWARDS
+    // ═══════════════════════════════════════════════════════════════════
+
+    function claimRewards(uint256 epoch, uint32 slices, uint32 totalSlices, bytes32[] calldata proof)
+        external
+        override
+        returns (uint256 amount)
+    {
+        if (rewardClaimed[epoch][msg.sender]) revert AlreadyClaimed();
+        IAntseedEmissionsGate gate = emissionsGate;
+        if (epoch >= gate.currentEpoch()) revert EpochNotFinalized();
+        amount = _pendingReward(gate, msg.sender, epoch, slices, totalSlices, proof);
+        if (amount == 0) return 0;
+        rewardClaimed[epoch][msg.sender] = true;
+        gate.claim(epoch, msg.sender, amount);
+        emit RewardClaimed(epoch, msg.sender, amount);
+    }
+
+    /// @notice Claimable reward for a finished epoch; 0 while the epoch is current, already
+    ///         claimed, voided or unfinalized. Pass `slices = 0` and an empty proof for a verifier
+    ///         that only attested.
+    function pendingReward(
+        address verifier,
+        uint256 epoch,
+        uint32 slices,
+        uint32 totalSlices,
+        bytes32[] calldata proof
+    ) external view override returns (uint256) {
+        if (rewardClaimed[epoch][verifier]) return 0;
+        IAntseedEmissionsGate gate = emissionsGate;
+        if (epoch >= gate.currentEpoch()) return 0;
+        return _pendingReward(gate, verifier, epoch, slices, totalSlices, proof);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //                        VIEWS
+    // ═══════════════════════════════════════════════════════════════════
+
+    function isVerifier(address verifier) external view override returns (bool) {
+        return _verifierIndex[verifier] != 0;
+    }
+
+    function verifiers() external view override returns (address[] memory) {
+        return _verifiers;
+    }
+
+    function models(uint32 version) external view override returns (Model[] memory) {
+        return _models[version];
+    }
+
+    function schedule() external view override returns (Schedule memory) {
+        return _schedule;
+    }
+
+    function epochInfo(uint256 epoch) external view override returns (EpochInfo memory info) {
+        EpochState storage state = _epochs[epoch];
+        info.startedAt = _epochStart(epoch);
+        info.seedBlock = state.seedBlock;
+        info.seed = state.seed;
+        info.modelsVersion = state.modelsVersion;
+        info.verifierCount = uint16(state.verifiers.length);
+        info.schedule = state.seedBlock == 0 ? _schedule : state.schedule;
+        info.bankHash = state.bankHash;
+        info.bankKeyHash = state.bankKeyHash;
+        info.bankKey = state.bankKey;
+        info.planHash = state.planHash;
+        info.backupPlanHash = state.backupPlanHash;
+        info.finalizedRoot = state.finalizedRoot;
+        info.voided = state.voided;
+    }
+
+    function epochVerifiers(uint256 epoch) external view override returns (address[] memory) {
+        return _epochs[epoch].verifiers;
+    }
+
+    function threshold(uint256 epoch) external view override returns (uint256) {
+        return _threshold(_epochs[epoch]);
+    }
+
+    /// @notice Leaf of a service result in an epoch's results root (OpenZeppelin double-hash format).
+    function serviceLeaf(uint256 epoch, ServiceResult calldata result) public pure returns (bytes32) {
+        return keccak256(
+            bytes.concat(
+                keccak256(
+                    abi.encode(
+                        LEAF_SERVICE, epoch, result.agentId, result.serviceHash, result.modelHash, result.verdict
+                    )
+                )
+            )
+        );
+    }
+
+    /// @notice Leaf crediting `collector` with `slices` of the epoch's `totalSlices` valid slices.
+    function collectorLeaf(uint256 epoch, address collector, uint32 slices, uint32 totalSlices)
+        public
+        pure
+        returns (bytes32)
+    {
+        return keccak256(bytes.concat(keccak256(abi.encode(LEAF_COLLECTOR, epoch, collector, slices, totalSlices))));
     }
 
     function serviceStatus(uint256 agentId, bytes32 serviceHash)
@@ -281,45 +578,81 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    //                        AUDITOR REWARDS
-    // ═══════════════════════════════════════════════════════════════════
-
-    /// @notice Claims the caller's share of the verification bucket for finalized epochs.
-    ///         Epochs with nothing to claim, or whose bucket has no budget yet, are skipped
-    ///         and stay claimable.
-    function claimAuditorRewards(uint256[] calldata epochs) external override returns (uint256 total) {
-        IAntseedEmissionsGate gate = emissionsGate;
-        uint256 current = gate.currentEpoch();
-        for (uint256 i = 0; i < epochs.length; i++) {
-            uint256 epoch = epochs[i];
-            if (epoch >= current) revert EpochNotFinalized();
-            uint256 amount = _pendingReward(gate, msg.sender, epoch);
-            if (amount == 0) continue;
-            auditorEpochClaimed[epoch][msg.sender] = true;
-            total += amount;
-            gate.claim(epoch, msg.sender, amount);
-            emit AuditorRewardClaimed(epoch, msg.sender, amount);
-        }
-    }
-
-    /// @notice Claimable reward for a finalized epoch; 0 for the current epoch, whose share can still change.
-    function pendingAuditorReward(address auditor, uint256 epoch) external view override returns (uint256) {
-        return _pendingReward(emissionsGate, auditor, epoch);
-    }
-
-    // ═══════════════════════════════════════════════════════════════════
     //                        INTERNAL
     // ═══════════════════════════════════════════════════════════════════
+
+    function _threshold(EpochState storage state) private view returns (uint256) {
+        return state.verifiers.length / 2 + 1;
+    }
+
+    function _epochStart(uint256 epoch) private view returns (uint256) {
+        IEmissionsGateSchedule gate = IEmissionsGateSchedule(address(emissionsGate));
+        return gate.genesis() + epoch * gate.epochDuration();
+    }
+
+    function _commitDeadline(uint256 epoch, EpochState storage state) private view returns (uint256) {
+        return _epochStart(epoch) + state.schedule.collectSeconds;
+    }
+
+    function _backupDeadline(uint256 epoch, EpochState storage state) private view returns (uint256) {
+        return _commitDeadline(epoch, state) + state.schedule.backupSeconds;
+    }
+
+    function _attestDeadline(uint256 epoch, EpochState storage state) private view returns (uint256) {
+        return _backupDeadline(epoch, state) + state.schedule.attestSeconds;
+    }
+
+    function _setSchedule(Schedule memory schedule_) private {
+        if (
+            schedule_.collectSeconds == 0 || schedule_.backupSeconds == 0 || schedule_.attestSeconds == 0
+                || schedule_.slicesPerService == 0 || schedule_.probesPerService < schedule_.slicesPerService
+        ) revert InvalidValue();
+        uint256 total = uint256(schedule_.collectSeconds) + schedule_.backupSeconds + schedule_.attestSeconds;
+        if (total > IEmissionsGateSchedule(address(emissionsGate)).epochDuration()) revert InvalidValue();
+        _schedule = schedule_;
+        emit ScheduleSet(schedule_);
+    }
+
+    function _pendingReward(
+        IAntseedEmissionsGate gate,
+        address verifier,
+        uint256 epoch,
+        uint32 slices,
+        uint32 totalSlices,
+        bytes32[] calldata proof
+    ) private view returns (uint256) {
+        EpochState storage state = _epochs[epoch];
+        bytes32 root = state.finalizedRoot;
+        if (root == bytes32(0) || state.voided || epoch < rewardsStartEpoch) return 0;
+        uint256 budget = gate.controllerEpochBudget(address(this), epoch);
+        if (budget == 0) return 0;
+        uint256 reward;
+        if (attestations[epoch][verifier] == root) {
+            reward = (budget * attestRewardBps) / BPS / rootVotes[epoch][root];
+        }
+        if (slices != 0) {
+            if (totalSlices < slices) revert InvalidValue();
+            if (!MerkleProof.verifyCalldata(proof, root, collectorLeaf(epoch, verifier, slices, totalSlices))) {
+                revert InvalidProof();
+            }
+            reward += (budget * (BPS - attestRewardBps) * slices) / BPS / totalSlices;
+        }
+        uint256 cap = (budget * maxVerifierShareBps) / BPS;
+        return reward < cap ? reward : cap;
+    }
 
     function _applyResult(uint256 agentId, bytes32 serviceHash, bytes32 modelHash, Verdict verdict, uint256 epoch)
         private
     {
         ServiceStatus storage service = _serviceStatus[agentId][serviceHash];
+        // A late apply never overwrites a verdict from a newer epoch.
+        if (service.verdict != Verdict.NONE && service.epoch > epoch) return;
+        uint256 current = emissionsGate.currentEpoch();
         if (service.modelHash != modelHash) {
-            if (service.modelHash != bytes32(0)) _resetService(agentId, serviceHash, service, epoch);
+            if (service.modelHash != bytes32(0)) _resetService(agentId, serviceHash, service, current);
             service.modelHash = modelHash;
         }
-        Verdict previous = _liveVerdict(service, epoch);
+        Verdict previous = _liveVerdict(service, current);
         if (service.verdict == verdict && service.epoch == epoch) return;
         _uncount(agentId, service);
         EpochCounts storage counts = _epochCounts[agentId][epoch];
@@ -327,9 +660,10 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         else if (verdict == Verdict.DIFF) counts.diff += 1;
         service.verdict = verdict;
         service.epoch = uint64(epoch);
-        if (previous == verdict) return;
+        Verdict live = _liveVerdict(service, current);
+        if (previous == live) return;
         service.updatedAt = uint64(block.timestamp);
-        _emitServiceChange(agentId, serviceHash, service, previous, epoch);
+        _emitServiceChange(agentId, serviceHash, service, previous, live, current);
     }
 
     function _resetService(uint256 agentId, bytes32 serviceHash, ServiceStatus storage service, uint256 epoch)
@@ -340,7 +674,7 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         service.verdict = Verdict.NONE;
         service.epoch = 0;
         service.updatedAt = uint64(block.timestamp);
-        if (previous != Verdict.NONE) _emitServiceChange(agentId, serviceHash, service, previous, epoch);
+        if (previous != Verdict.NONE) _emitServiceChange(agentId, serviceHash, service, previous, Verdict.NONE, epoch);
     }
 
     /// @dev Removes the service's stored verdict from the counter of the epoch it was given in.
@@ -354,12 +688,8 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
 
     function _liveVerdict(ServiceStatus storage service, uint256 epoch) private view returns (Verdict) {
         Verdict stored = service.verdict;
-        if (stored == Verdict.NONE || !_isLive(service.epoch, epoch)) return Verdict.NONE;
+        if (stored == Verdict.NONE || epoch >= service.epoch + validityEpochs) return Verdict.NONE;
         return stored;
-    }
-
-    function _isLive(uint256 givenEpoch, uint256 epoch) private view returns (bool) {
-        return epoch < givenEpoch + validityEpochs;
     }
 
     /// @dev Sums the counters of the epochs whose verdicts are still live, saturating at uint16.
@@ -377,43 +707,16 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     }
 
     function _emitServiceChange(
-        uint256 agentId, bytes32 serviceHash, ServiceStatus storage service, Verdict previous, uint256 epoch
+        uint256 agentId,
+        bytes32 serviceHash,
+        ServiceStatus storage service,
+        Verdict previous,
+        Verdict current,
+        uint256 epoch
     ) private {
-        emit ServiceStatusChanged(agentId, serviceHash, service.modelHash, previous, service.verdict);
+        emit ServiceStatusChanged(agentId, serviceHash, service.modelHash, previous, current);
         AgentStatus memory agent = _agentStatusAt(agentId, epoch);
         emit AgentStatusChanged(agentId, agent.verifiedCount, agent.diffCount);
-    }
-
-    /// @dev One credit per audit, up to the per-model and per-auditor caps for the epoch.
-    function _creditAudit(uint256 epoch, bytes32 modelHash) private {
-        if (modelCredits[epoch][msg.sender][modelHash] >= maxCreditsPerModelPerEpoch) return;
-        if (auditorEpochCredits[epoch][msg.sender] >= maxCreditsPerAuditorPerEpoch) return;
-        modelCredits[epoch][msg.sender][modelHash] += 1;
-        auditorEpochCredits[epoch][msg.sender] += 1;
-        epochCredits[epoch] += 1;
-        emit AuditCredited(epoch, msg.sender, modelHash);
-    }
-
-    /// @dev Failing pools never block an audit; they only withhold the credit.
-    function _hasPoolPower(uint256 agentId, uint256 epoch) private view returns (bool) {
-        try sellerPools.poolWeightAtEpoch(agentId, epoch) returns (uint256 weight) {
-            return weight != 0;
-        } catch {
-            return false;
-        }
-    }
-
-    function _pendingReward(IAntseedEmissionsGate gate, address auditor, uint256 epoch)
-        private
-        view
-        returns (uint256)
-    {
-        uint256 credits = auditorEpochCredits[epoch][auditor];
-        if (credits == 0 || auditorEpochClaimed[epoch][auditor] || epoch >= gate.currentEpoch()) return 0;
-        uint256 budget = gate.controllerEpochBudget(address(this), epoch);
-        uint256 reward = (budget * credits) / epochCredits[epoch];
-        uint256 cap = (budget * maxAuditorShareBps) / BPS;
-        return reward < cap ? reward : cap;
     }
 
     function _setSellerPools(address sellerPools_) private {
@@ -422,20 +725,18 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         emit SellerPoolsSet(sellerPools_);
     }
 
-    /// @dev `known` is false for agents the identity registry cannot resolve, e.g. burned ones.
-    function _agentOwner(uint256 agentId) private view returns (bool known, address owner) {
-        try IERC8004Registry(registry.identityRegistry()).ownerOf(agentId) returns (address agentOwner) {
-            return (agentOwner != address(0), agentOwner);
+    /// @dev False for agents the identity registry cannot resolve, e.g. burned ones.
+    function _agentKnown(uint256 agentId) private view returns (bool) {
+        if (agentId == 0) return false;
+        try IERC8004Registry(registry.identityRegistry()).ownerOf(agentId) returns (address owner) {
+            return owner != address(0);
         } catch {
-            return (false, address(0));
+            return false;
         }
     }
 
-    function _validateEvidenceUri(string calldata evidenceUri) private pure {
-        uint256 length = bytes(evidenceUri).length;
-        if (length == 0) return;
-        if (length <= 7 || length > MAX_EVIDENCE_URI_BYTES || bytes7(bytes(evidenceUri)[:7]) != bytes7("ipfs://")) {
-            revert InvalidEvidenceUri();
-        }
+    function _validateUri(string calldata uri) private pure {
+        uint256 length = bytes(uri).length;
+        if (length <= 7 || length > MAX_URI_BYTES || bytes7(bytes(uri)[:7]) != bytes7("ipfs://")) revert InvalidUri();
     }
 }

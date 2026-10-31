@@ -1,7 +1,4 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import test from 'node:test'
 import type { ModelAuditSummaryV1, VerifierRunManifestV1 } from './audit-artifacts.js'
 import {
@@ -10,7 +7,6 @@ import {
   epochModelRows,
   failureBlame,
   mergeEpochRuns,
-  writeEpochSubmissionManifest,
 } from './epoch-plan.js'
 import type { ModelVerificationTargetResult } from './model-run.js'
 import { emptyAuditCostSummary } from './proxy-evidence.js'
@@ -124,36 +120,4 @@ test('runs of another epoch or with a mismatched run id are ignored', () => {
   const other = run('r1', '2026-10-28T20:00:00.000Z', [{ model: 'm', results: [result('a', 'SAME')] }])
   other.summaries[0]!.epoch = '27'
   assert.equal(mergeEpochRuns(EPOCH, [other]).size, 0)
-})
-
-test('the epoch submission manifest holds the merged result per seller and changes id with each run', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'epoch-plan-'))
-  try {
-    const runs = [
-      run('r1', '2026-10-28T20:00:00.000Z', [{ model: 'm', results: [
-        result('a', 'UNDETERMINED', { outcomeReason: buyerRefused }),
-        result('b', 'SAME'),
-      ] }]),
-      run('r2', '2026-10-28T21:00:00.000Z', [{ model: 'm', results: [result('a', 'SAME')] }]),
-    ]
-    const state = { epoch: EPOCH, manifests: runs.map((entry) => entry.manifest), cells: mergeEpochRuns(EPOCH, runs) }
-    // Summaries come from disk in the real flow; point the manifests at written files.
-    const { writeJsonAtomic } = await import('./atomic-files.js')
-    for (const entry of runs) {
-      const path = join(directory, `${entry.manifest.runId}.summary.json`)
-      await writeJsonAtomic(path, entry.summaries[0])
-      entry.manifest.models = [{ model: 'm', summaryPath: path } as VerifierRunManifestV1['models'][number]]
-    }
-    const manifest = await writeEpochSubmissionManifest(directory, state)
-    assert.equal(manifest.epoch, EPOCH)
-    assert.equal(manifest.startedAt, '2026-10-28T20:00:00.000Z')
-    assert.equal(manifest.completedAt, '2026-10-28T21:00:00.000Z')
-    const summary = JSON.parse(await readFile(manifest.models[0]!.summaryPath, 'utf8')) as ModelAuditSummaryV1
-    assert.equal(summary.runId, manifest.runId)
-    assert.deepEqual(summary.results.map((entry) => [entry.peerId, entry.status]), [['a', 'SAME'], ['b', 'SAME']])
-    const fewer = await writeEpochSubmissionManifest(directory, { ...state, manifests: [runs[0]!.manifest] })
-    assert.notEqual(fewer.runId, manifest.runId)
-  } finally {
-    await rm(directory, { recursive: true, force: true })
-  }
 })

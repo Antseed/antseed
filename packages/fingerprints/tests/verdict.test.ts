@@ -71,19 +71,31 @@ describe('computeKbfVerdict', () => {
     expect(computeKbfVerdict({ ...input, minCoverage: 0.5 }).verdict).toBe('UNDETERMINED');
   });
 
-  it('a DIFF needs minDiffCoverage; a SAME only needs minCoverage', () => {
-    // 70 of 100 scored (coverage 0.7), 40 mismatches against a ~1% reference: clearly significant.
-    const diffInput = { selfHamming: 3, selfTotal: 224, targetMatchVector: vector(30, 40, 30) };
-    expect(computeKbfVerdict(diffInput).verdict).toBe('DIFF');
-    const strict = computeKbfVerdict({ ...diffInput, minDiffCoverage: 0.8 });
+  it('a DIFF from the answered probes alone needs minDiffCoverage', () => {
+    // 70 of 100 scored, 8 mismatches: significant on the answered probes, not with the 30 missing counted as matches.
+    const input = { selfHamming: 3, selfTotal: 224, targetMatchVector: vector(62, 8, 30) };
+    expect(computeKbfVerdict(input).verdict).toBe('DIFF');
+    const strict = computeKbfVerdict({ ...input, minDiffCoverage: 0.8 });
     expect(strict.verdict).toBe('UNDETERMINED');
     expect(strict.verdictReason).toMatch(/below the 0.8 a DIFF needs/);
     expect(strict.stats.pValueBinomial).not.toBeNull();
-    // Same coverage, all matches: SAME is unaffected.
-    const sameInput = { selfHamming: 3, selfTotal: 224, targetMatchVector: vector(70, 0, 30) };
-    expect(computeKbfVerdict({ ...sameInput, minDiffCoverage: 0.8 }).verdict).toBe('SAME');
     // At or above 0.8 the DIFF stands.
-    expect(computeKbfVerdict({ selfHamming: 3, selfTotal: 224, targetMatchVector: vector(40, 40, 20), minDiffCoverage: 0.8 }).verdict).toBe('DIFF');
+    expect(computeKbfVerdict({ selfHamming: 3, selfTotal: 224, targetMatchVector: vector(70, 10, 20), minDiffCoverage: 0.8 }).verdict).toBe('DIFF');
+  });
+
+  it('leaving answers out never avoids a DIFF', () => {
+    // Seven wrong answers per ten probes, the other three left out: DIFF even counting every missing answer as a match.
+    const result = computeKbfVerdict({ selfHamming: 3, selfTotal: 224, targetMatchVector: vector(0, 70, 30), minCoverage: 0.5, minDiffCoverage: 0.8 });
+    expect(result.verdict).toBe('DIFF');
+  });
+
+  it('leaving out the answers it would get wrong never earns a SAME', () => {
+    // 70 right answers, 30 left out: SAME only if counting the 30 as wrong is still not significant.
+    const withheld = computeKbfVerdict({ selfHamming: 3, selfTotal: 224, targetMatchVector: vector(70, 0, 30), minCoverage: 0.5, minDiffCoverage: 0.8 });
+    expect(withheld.verdict).toBe('UNDETERMINED');
+    expect(withheld.verdictReason).toMatch(/30 missing answers could hide a DIFF/);
+    // A couple of missing answers from an otherwise matching seller is still SAME.
+    expect(computeKbfVerdict({ selfHamming: 3, selfTotal: 224, targetMatchVector: vector(98, 0, 2), minCoverage: 0.5, minDiffCoverage: 0.8 }).verdict).toBe('SAME');
   });
 
   it('UNDETERMINED when nothing parsed', () => {

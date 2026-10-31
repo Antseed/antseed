@@ -3,10 +3,11 @@ import { join } from 'node:path'
 import { writeTextAtomic } from './atomic-files.js'
 import {
   epochDirectory,
+  escapeHtml,
   type ModelAuditSummaryV1,
   type VerifierRunManifestV1,
 } from './audit-artifacts.js'
-import { finalAuditVerdict } from './model-audit.js'
+import { finalAuditVerdict } from './diff-recheck.js'
 import { explainInconclusive, explainSkipReason, type PlainReason } from './plain-reason.js'
 import { normalized } from './utils.js'
 
@@ -342,11 +343,3 @@ function renderCell(cell: OverviewCell): string {
     + `<span class="card-tip" role="tooltip"><b>${escapeHtml(headline)}</b>${lines}<i>${escapeHtml(meta)}</i></span></span>`
 }
 
-function escapeHtml(value: string): string {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;')
-}

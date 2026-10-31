@@ -21,7 +21,7 @@ import { AntseedKbfVerification } from "../verification/AntseedKbfVerification.s
 ///   STANDALONE_OWNER         New wallet that will own the verification contract.
 ///
 /// Optional environment:
-///   VERIFICATION_AUDITORS    Comma-separated auditor addresses to approve at deployment.
+///   VERIFICATION_AUDITORS    Comma-separated verifier addresses to approve at deployment.
 ///
 /// The owner address is supplied to startBroadcast, but this script never reads a private key.
 /// Use a new keystore, hardware wallet, or an explicitly supplied Foundry signer when broadcasting.
@@ -65,7 +65,7 @@ contract DeployStandaloneVerification is Script {
         verification = new AntseedKbfVerification(config.registry, config.sellerPools);
         for (uint256 index; index < config.auditors.length; index++) {
             address auditor = config.auditors[index];
-            verification.setAuditor(auditor, true);
+            verification.setVerifier(auditor, true);
         }
         vm.stopBroadcast();
 

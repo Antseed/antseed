@@ -1,48 +1,38 @@
 ---
 title: Become a verifier
 slug: /verify
-description: Set up an Antseed verifier from scratch and run your first KBF audit, one of the first of many verification methods on the network, checking that sellers serve the models they advertise.
+description: Set up an Antseed verifier and run it in the weekly KBF verification rounds, one of the first of many verification methods on the network, checking that sellers serve the models they advertise.
 ---
 
 # Become a verifier
 
-A verifier (on-chain: an **auditor**) checks that sellers serve the model they advertise. It buys from sellers like any other buyer, compares their answers with the genuine model's, and gives each seller a `SAME`, `DIFF` or `UNDETERMINED` verdict.
+A verifier checks that sellers serve the model they advertise. It buys from sellers like any other buyer, compares their answers with the genuine model's, and together with the other verifiers gives each seller service a `SAME`, `DIFF` or `UNDETERMINED` verdict.
 
 This guide sets up **KBF audits** (Knowledge Boundary Fingerprinting). KBF is one of the first verification methods Antseed is launching, and one of many: more ways to verify sellers and protect model integrity are coming. See [Model verification](/docs/model-verification#one-method-among-many).
 
 ## Quick start
 
-Once you're set up (steps 1 and 2 below), these are the only commands you run each epoch:
+Once you're set up and approved (steps below), a verifier is one process left running:
 
 ```bash
-# Terminal 1: the buyer, left running
-antseed-verifier buyer start
-
-# Terminal 2: audit your models, then put the results on-chain
-antseed-verifier verifier run
-antseed-verifier verifier submit --dry-run
-antseed-verifier verifier submit --yes
-
-# Terminal 3 (optional): follow the audit while it runs
-antseed-verifier verifier status
+antseed-verifier verifier start
 ```
 
-- `verifier run` builds any missing question banks, audits every seller of your models, rechecks every `DIFF` and retries failures on its own. Running it again in the same epoch continues where it left off.
-- Until you're approved, use `verifier run --all` to try an audit; you can't submit it yet.
-- `submit` publishes the audit evidence on IPFS, so set `PINATA_JWT` first (`--no-publish-ipfs` submits without it).
+- It starts its own buyer, publishes its encryption key on-chain, and then follows every epoch on its own: it buys its share of the questions, scores the epoch, attests the results, and claims its rewards.
+- It keeps its progress on disk, so you can stop and restart it at any time.
+- `--no-collect` runs a verifier that only scores and attests, without buying from sellers.
 
-The rest of this page explains each step. How an audit works is in [How audits run](/docs/verify/audits).
-
-:::tip You don't need approval to run an audit
-Approval is only needed to submit results on-chain (see [Getting approved](/docs/verify/audits#getting-approved)).
-:::
+How a round works is in [How verification rounds run](/docs/verify/audits).
 
 ## What you need
 
 - **The Antseed CLI**: `npm install -g @antseed/cli` (see [Install](/docs/install)).
-- **USDC for buyer deposits.** You pay each seller you audit like a normal buyer. See [Funding](/docs/gateway/funding).
-- **API keys for the reference models**, where the genuine answers come from. Building references is billed by that provider.
+- **USDC for buyer deposits.** You pay each seller you buy questions from like a normal buyer. See [Funding](/docs/gateway/funding).
+- **A little ETH on Base** for the round transactions.
+- **A Pinata API key** (`PINATA_JWT`), to publish the seller responses you collect and your results on IPFS.
 - **A Base RPC endpoint.**
+
+You don't need an API key for the reference models: the question bank and its genuine answers come from the round.
 
 ## 1. Set up
 
@@ -55,67 +45,65 @@ alias antseed-verifier='antseed --data-dir $ANTSEED_VERIFIER_DIR --config $ANTSE
 antseed-verifier config init
 ```
 
-Then open `$ANTSEED_VERIFIER_DIR/config.json` and add the chain and the reference source:
+Then open `$ANTSEED_VERIFIER_DIR/config.json` and add the chain:
 
 ```json
 {
   "payments": {
     "crypto": {
       "chainId": "base-mainnet",
-      "rpcUrl": "https://your-base-rpc.example",
-      "verificationContractAddress": "0xVerificationContractAddress",
-      "verificationDeployBlock": 0
-    }
-  },
-  "verifier": {
-    "referenceEndpoint": {
-      "baseUrl": "https://openrouter.ai/api/v1",
-      "apiKeyEnv": "OPENROUTER_API_KEY",
-      "sourceId": "openrouter",
-      "trust": "trusted"
+      "rpcUrl": "https://your-base-rpc.example"
     }
   }
 }
 ```
 
-- `verificationContractAddress` and `verificationDeployBlock` are the verification contract on Base and the block it was deployed in. Ask for the current address in the [Antseed Telegram community](https://t.me/antseed).
-- `referenceEndpoint` is where the genuine answers come from. The example uses OpenRouter, which serves every audited model with one key. To use other providers, see [Reference upstreams](/docs/verify/audits#reference-upstreams).
-- Leave `buyer.maxPricing` at the `config init` default.
+- The CLI already knows the verification contract on Base and the block it was deployed in, so leave `verificationContractAddress` and `verificationDeployBlock` out. Set both only to point at a custom deployment, and then set `verificationDeployBlock` to the block that contract was deployed in: the CLI scans its events from there.
+- Leave `buyer.maxPricing` at the `config init` default. If the buyer port 8377 is taken by another Antseed app, set `buyer.proxyPort`.
 
-The audited models are built into the CLI. Set the API key and check the setup:
+Set the environment the verifier needs:
 
 ```bash
-export OPENROUTER_API_KEY=…
-antseed-verifier verifier models
+export PINATA_JWT=…                       # publishes your slices and results on IPFS
+export ANTSEED_IPFS_GATEWAYS=https://…    # optional: comma-separated gateways to read round files
 ```
 
-It lists every audited model and where its genuine answers come from.
+## 2. Choose the verifier address
 
-## 2. Start the buyer
+The verifier signs with the data-dir identity by default (`antseed-verifier buyer status` shows its address). To sign with an encrypted keystore instead, set `verifier.keystore` in the config, or pass `--keystore <path>` to `verifier start`, and give the password in `ANTSEED_KEYSTORE_PASSWORD` (otherwise it is asked in the terminal).
 
-The audit buys from sellers through your own buyer. Fund it, then start it in its own terminal and leave it running:
+Send that address a little ETH on Base for transactions.
+
+## 3. Fund the buyer
+
+The verifier buys from sellers through its own buyer. Fund it:
 
 ```bash
 antseed-verifier buyer status     # creates the identity and shows its address
 antseed-verifier buyer deposit    # shows where to send USDC
-antseed-verifier buyer start
 ```
 
-If another Antseed app already uses port 8377, set `buyer.proxyPort` to a free port in the config first.
+`verifier start` starts this buyer itself. To use a buyer you already run, add `--no-buyer` (and `--buyer-port <port>` if it isn't on `buyer.proxyPort`).
 
-If its price cap is too low for an audited model, `verifier run` stops and says what to set (see [Your buyer's price cap](/docs/verify/audits#your-buyers-price-cap)).
+## 4. Get approved
 
-## 3. Run the audit
+Only approved verifiers take part in rounds. Ask in the [Antseed Telegram community](https://t.me/antseed) with your verifier address; the contract owner approves it with `setVerifier`. An approval takes effect from the next epoch that opens.
+
+Until you're approved, `verifier start` stops with "is not an approved verifier". You can still try an audit locally with `antseed-verifier verifier run <model>` (see [Local audits](/docs/verify/audits#local-audits)).
+
+## 5. Start the verifier
 
 ```bash
-antseed-verifier verifier run
+antseed-verifier verifier start
 ```
 
-Follow it from a second terminal with `antseed-verifier verifier status`. The first run takes longest: it builds each model's question bank from the reference API before it asks any seller (see [Reference banks](/docs/verify/audits#reference-banks)). When it finishes, it prints the epoch overview, `<data-dir>/verifier/evidence/epochs/<epoch>/overview.html`, with every seller's verdict (see [The epoch overview](/docs/verify/audits#the-epoch-overview)).
+On first start it creates an encryption key pair in `<data-dir>/verifier/round/encryption-key.json` and publishes the public key on-chain, so the round can send it its questions. Keep that file: a new key is published if it's lost, and an epoch already planned for the old key is covered by backups.
 
-Until you are approved, the run has no models to audit: add `--all` (or name one model) to try an audit without submitting it.
+Before starting, it checks that your CLI is the latest `@antseed/cli` on npm, so every verifier scores the same way. Update with `antseed update`. `--skip-version-check` skips the check.
+
+Run it under a process manager (systemd, a container) so it restarts with the machine. It logs one line per step; each epoch's files are in `<data-dir>/verifier/round/epochs/<epoch>/`.
 
 ## Next
 
-- [How audits run](/docs/verify/audits): question banks, which models and sellers you audit, verdicts, submitting on-chain and rewards.
-- [Getting approved](/docs/verify/audits#getting-approved): needed before you can submit.
+- [How verification rounds run](/docs/verify/audits): the weekly schedule, how questions are kept secret, scoring, majority attestation and rewards.
+- [Model verification](/docs/model-verification): the method and what goes on-chain.

@@ -4,6 +4,7 @@ import { dirname, join, relative, sep } from 'node:path'
 import {
   KBF_REFERENCE_VERSION,
   aggregateKbfSelfTestOutcomes,
+  scoredSelfTestCoverage,
   canonicalHashBytes32,
   computeBinomialPower,
   computeContrastDetection,
@@ -1077,7 +1078,7 @@ function selectPoweredReference(
       alpha: bank.statisticalAssumptions.alpha,
       cpConfidence: bank.statisticalAssumptions.clopperPearsonConfidence,
     })
-    if (selfTest.coverage < 0.8 || selfTest.errorRate > REFERENCE_MAXIMUM_SELF_TEST_ERROR_RATE
+    if (scoredSelfTestCoverage(selfTest) < 0.8 || selfTest.errorRate > REFERENCE_MAXIMUM_SELF_TEST_ERROR_RATE
       || power.power < sizing.minimumStatisticalPower) continue
     const selectedIds = new Set(selected.map((entry) => entry.probe.id))
     const contrasts = bank.contrastModels.map((model) => ({

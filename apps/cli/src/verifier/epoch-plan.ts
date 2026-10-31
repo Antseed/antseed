@@ -1,22 +1,12 @@
 import { readFile } from 'node:fs/promises'
-import { join } from 'node:path'
-import { canonicalHashBytes32 } from '@antseed/fingerprints'
-import { writeJsonAtomic } from './atomic-files.js'
-import {
-  epochDirectory,
-  type ModelAuditSummaryV1,
-  type VerifierRunManifestV1,
-} from './audit-artifacts.js'
+import type { ModelAuditSummaryV1, VerifierRunManifestV1 } from './audit-artifacts.js'
 import { epochRunManifests } from './epoch-overview.js'
-import { finalAuditVerdict } from './model-audit.js'
+import { finalAuditVerdict } from './diff-recheck.js'
 import type {
   ModelVerificationFailure,
   ModelVerificationSkip,
   ModelVerificationTargetResult,
 } from './model-run.js'
-import { addAuditCostSummaries, emptyAuditCostSummary } from './proxy-evidence.js'
-import { safeServiceSlug } from './slug.js'
-import { normalized } from './utils.js'
 
 /**
  * Who caused a failed or UNDETERMINED audit. `auditor` failures (our buyer refused the seller, our
@@ -304,119 +294,4 @@ export function epochModelRows(cells: Iterable<EpochCell>, models?: readonly str
     if (cell.action === 'retry' || cell.action === 'recheck') entry.left += 1
   }
   return [...rows.values()].sort((left, right) => left.model.localeCompare(right.model))
-}
-
-/**
- * One manifest for `verifier submit` that covers the whole epoch: per model, the merged result for
- * each seller. Its summaries are written under `epochs/<epoch>/submission/<id>/`; the evidence
- * files they point to stay in their runs. The id changes whenever another run is added.
- */
-export async function writeEpochSubmissionManifest(
-  evidenceDir: string,
-  state: EpochState,
-): Promise<VerifierRunManifestV1> {
-  const { epoch, manifests } = state
-  if (manifests.length === 0) throw new Error(`no completed verifier run found for epoch ${epoch}; run \`antseed verifier run\` first`)
-  const runIds = manifests.map((manifest) => manifest.runId)
-  const runId = canonicalHashBytes32({ domain: 'antseed-verifier-epoch-submission-v1', epoch, runIds })
-  const directory = join(epochDirectory(evidenceDir, epoch), 'submission', safeServiceSlug(runId))
-  const models: string[] = []
-  for (const manifest of manifests) {
-    for (const model of manifest.modelOrder) {
-      if (!models.some((entry) => normalized(entry) === normalized(model))) models.push(model)
-    }
-  }
-  const summaries = new Map<string, ModelAuditSummaryV1[]>()
-  for (const manifest of manifests) {
-    for (const entry of manifest.models) {
-      const summary = await readSummary(entry.summaryPath)
-      if (!summary || summary.runId !== manifest.runId || summary.epoch !== epoch) continue
-      const list = summaries.get(normalized(summary.model)) ?? []
-      list.push(summary)
-      summaries.set(normalized(summary.model), list)
-    }
-  }
-  const startedAt = manifests.map((manifest) => manifest.startedAt).sort()[0]!
-  const completedAt = manifests.map((manifest) => manifest.completedAt).sort().at(-1)!
-  const modelEntries: VerifierRunManifestV1['models'] = []
-  for (const model of models) {
-    const runSummaries = summaries.get(normalized(model)) ?? []
-    const results: ModelVerificationTargetResult[] = []
-    const failures: ModelVerificationFailure[] = []
-    const skipped: ModelVerificationSkip[] = []
-    for (const cell of state.cells.values()) {
-      if (normalized(cell.model) !== normalized(model)) continue
-      const peer = normalized(cell.peerId)
-      if (cell.state === 'pending_diff') {
-        const pending = latestBy(runSummaries, (summary) => summary.results, peer, (result) => finalAuditVerdict(result) === null)
-        if (pending) results.push(pending)
-      } else if (cell.result) {
-        results.push(cell.result)
-      } else if (cell.state === 'failed') {
-        const failure = latestBy(runSummaries, (summary) => summary.failures, peer)
-        if (failure) failures.push(failure)
-      } else {
-        const skip = latestBy(runSummaries, (summary) => summary.skipped, peer)
-        if (skip) skipped.push(skip)
-      }
-    }
-    for (const failure of runSummaries.flatMap((summary) => summary.failures)) {
-      if (failure.peerId.startsWith('model:') && results.length === 0) failures.push(failure)
-    }
-    const byPeer = <T extends { peerId: string }>(values: T[]): T[] => values.sort((a, b) => a.peerId.localeCompare(b.peerId))
-    const summary: ModelAuditSummaryV1 = {
-      version: 1,
-      kind: 'antseed-verifier-model-summary',
-      runId,
-      epoch,
-      model,
-      startedAt,
-      completedAt,
-      results: byPeer(results),
-      failures: byPeer(failures),
-      skipped: byPeer(skipped),
-      cost: addAuditCostSummaries(emptyAuditCostSummary(), ...runSummaries.map((entry) => entry.cost)),
-    }
-    const summaryPath = join(directory, `${safeServiceSlug(model)}.summary.json`)
-    await writeJsonAtomic(summaryPath, summary)
-    modelEntries.push({
-      model,
-      summaryPath,
-      reportPath: '',
-      resultCount: results.length,
-      failureCount: failures.length,
-      skippedCount: skipped.length,
-      cost: summary.cost,
-      reasonCounts: {},
-    })
-  }
-  return {
-    version: 1,
-    kind: 'antseed-verifier-run-manifest',
-    runId,
-    state: 'completed',
-    epoch,
-    epochSource: manifests.every((manifest) => manifest.epochSource === 'onchain') ? 'onchain' : 'utc-day',
-    epochStartedAt: manifests[0]!.epochStartedAt,
-    epochEndsAt: manifests[0]!.epochEndsAt,
-    startedAt,
-    completedAt,
-    summaryPath: join(directory, 'manifest.json'),
-    modelOrder: models,
-    models: modelEntries,
-    failureCount: modelEntries.reduce((total, entry) => total + entry.failureCount, 0),
-  }
-}
-
-function latestBy<T extends { peerId: string }>(
-  summaries: readonly ModelAuditSummaryV1[],
-  pick: (summary: ModelAuditSummaryV1) => readonly T[] | undefined,
-  peer: string,
-  filter: (value: T) => boolean = () => true,
-): T | null {
-  for (let index = summaries.length - 1; index >= 0; index -= 1) {
-    const found = (pick(summaries[index]!) ?? []).find((value) => normalized(value.peerId) === peer && filter(value))
-    if (found) return found
-  }
-  return null
 }

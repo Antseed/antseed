@@ -13,18 +13,15 @@ import {
 } from '../../../verifier/proxy-evidence.js'
 import { setAuditedModelsForTesting } from '../../../verifier/audited-models.js'
 import { registerVerifierCommands } from './index.js'
-import { validateRunEpoch } from './submit.js'
 import {
   enrollmentRequestBudget,
   filterCompatibleResumeCandidates,
   filterResumeCandidatesByPeer,
   loadResumeCandidates,
   normalizeVerifierPeerId,
-  resolveAssignedAuditModels,
   resolveRunModels,
   selectVerifierPeer,
-  isAssignedMode,
-  validateAssignedModeOptions,
+  requireRunModelSelection,
   type ResumeCandidate,
 } from './run.js'
 
@@ -40,21 +37,13 @@ function command(): Command {
   return program
 }
 
-test('verifier exposes run, assignment, models, overview, reference, status, submit, rewards, and check workflows', () => {
+test('verifier exposes start, publish, run, models, overview, reference, status, and check workflows', () => {
   const verifier = command().commands.find((entry) => entry.name() === 'verifier')
   assert.ok(verifier)
   assert.deepEqual(
     verifier.commands.map((entry) => entry.name()).sort(),
-    ['assignment', 'check', 'models', 'overview', 'reference', 'rewards', 'run', 'status', 'submit'],
+    ['check', 'models', 'overview', 'publish', 'reference', 'run', 'start', 'status'],
   )
-})
-
-test('verifier submit and rewards expose the auditor controls', () => {
-  const verifier = command().commands.find((entry) => entry.name() === 'verifier')!
-  const options = (name: string) => verifier.commands.find((entry) => entry.name() === name)!
-    .options.map((option) => option.long)
-  assert.deepEqual(options('submit'), ['--run-id', '--no-publish-ipfs', '--dry-run', '--publish-only', '--auditor', '--yes', '--rpc-url', '--keystore', '--skip-version-check'])
-  assert.deepEqual(options('rewards'), ['--epochs', '--claim', '--yes', '--auditor', '--rpc-url'])
 })
 
 test('verifier reference exposes only the explicit build workflow', () => {
@@ -65,12 +54,12 @@ test('verifier reference exposes only the explicit build workflow', () => {
   assert.deepEqual(reference.commands[0]!.options.map((option) => option.long), ['--all'])
 })
 
-test('verifier run accepts one model, all configured models, or an auditor assignment', () => {
+test('verifier run accepts one model or all configured models', () => {
   const verifier = command().commands.find((entry) => entry.name() === 'verifier')!
   const run = verifier.commands.find((entry) => entry.name() === 'run')!
   assert.deepEqual(
     run.options.map((option) => option.long),
-    ['--all', '--auditor', '--allow-probe-reuse', '--peer', '--resume-run', '--no-enroll', '--max-enrollment-requests', '--ignore-pre-run-checks', '--fresh', '--skip-version-check', '--max-rounds'],
+    ['--all', '--allow-probe-reuse', '--peer', '--resume-run', '--no-enroll', '--max-enrollment-requests', '--ignore-pre-run-checks', '--fresh', '--skip-version-check', '--max-rounds'],
   )
   assert.deepEqual(run.registeredArguments.map((argument) => argument.name()), ['model'])
 })
@@ -328,77 +317,11 @@ test('automatic resume ignores candidates whose archived bank reservation no lon
   }
 })
 
-test('assigned mode gives the auditor its round-robin share of the models for the on-chain epoch', () => {
-  const config = {
-    verifier: {
-      referenceEndpoint: {
-        baseUrl: 'https://example.test',
-        apiKeyEnv: 'TEST_API_KEY',
-        sourceId: 'test',
-        trust: 'trusted' as const,
-      },
-    },
-  } as unknown as Parameters<typeof resolveAssignedAuditModels>[0]
-  const auditors = ['0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc', '0x70997970c51812dc3a010c7d01b50e0d17dc79c8']
-  const at = (epoch: string) => resolveAssignedAuditModels(
-    config, '0x70997970c51812dc3a010c7d01b50e0d17dc79c8', { epoch, startedAt: 220, endsAt: 230, source: 'onchain' }, auditors,
-  )
-  // 0x3C44… sorts first, so 0x7099… is auditor 1 of 2 over model-a..c.
-  assert.deepEqual(at('12'), {
-    auditor: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8',
-    epoch: '12',
-    strategy: 'round-robin',
-    models: ['model-b'],
-  })
-  assert.deepEqual(['12', '13', '14'].map((epoch) => at(epoch).models), [['model-b'], ['model-a', 'model-c'], ['model-b']])
-  assert.throws(
-    () => resolveAssignedAuditModels(config, '0x90f79bf6eb2c4f870365e785982e1f101e93b906', { epoch: '12', startedAt: 220, endsAt: 230, source: 'onchain' }, auditors),
-    /not an approved auditor when epoch 12 started/,
-  )
-  assert.throws(
-    () => resolveAssignedAuditModels(config, auditors[1]!, { epoch: '2026-10-28', startedAt: 0, endsAt: 1, source: 'utc-day' }, auditors),
-    /on-chain epoch is unavailable/,
-  )
-})
-
-test('a bare verifier run audits the assigned models', () => {
-  assert.equal(isAssignedMode(undefined, {}), true)
-  assert.equal(isAssignedMode(undefined, { auditor: '0x70997970c51812dc3a010c7d01b50e0d17dc79c8' }), true)
-  assert.equal(isAssignedMode('model-a', {}), false)
-  assert.equal(isAssignedMode(undefined, { all: true }), false)
-  assert.equal(isAssignedMode(undefined, { resumeRun: 'run-1' }), false)
-})
-
-test('--auditor cannot be combined with an explicit model, --all, or --resume-run', () => {
-  const auditor = '0x70997970c51812dc3a010c7d01b50e0d17dc79c8'
-  assert.doesNotThrow(() => validateAssignedModeOptions(undefined, { auditor }))
-  assert.throws(() => validateAssignedModeOptions('model-a', { auditor }), /--auditor/)
-  assert.throws(() => validateAssignedModeOptions(undefined, { auditor, all: true }), /--auditor/)
-  assert.throws(() => validateAssignedModeOptions(undefined, { auditor, resumeRun: 'run-1' }), /--resume-run/)
-})
-
-test('submit only accepts runs audited in the current on-chain epoch', () => {
-  const manifest = {
-    version: 1 as const,
-    kind: 'antseed-verifier-run-manifest' as const,
-    runId: 'run-1',
-    state: 'completed' as const,
-    epoch: '7',
-    epochSource: 'onchain' as const,
-    epochStartedAt: '1970-01-01T00:11:40.000Z',
-    epochEndsAt: '1970-01-01T00:13:20.000Z',
-    startedAt: '1970-01-01T00:12:00.000Z',
-    completedAt: '1970-01-01T00:13:00.000Z',
-    summaryPath: '/tmp/summary.json',
-    modelOrder: [],
-    models: [],
-    failureCount: 0,
-  }
-  const window = { epoch: 7n, startedAt: 700, endsAt: 800 }
-  assert.doesNotThrow(() => validateRunEpoch(manifest, window))
-  assert.throws(() => validateRunEpoch({ ...manifest, epochSource: 'utc-day' }, window), /epoch fallback/)
-  assert.throws(() => validateRunEpoch(manifest, { ...window, epoch: 8n }), /current on-chain epoch is 8/)
-  assert.throws(() => validateRunEpoch({ ...manifest, completedAt: '1970-01-01T00:13:30.000Z' }, window), /outside/)
+test('a bare verifier run asks for a model; rounds run with verifier start', () => {
+  assert.throws(() => requireRunModelSelection(undefined, {}), /verifier start/)
+  assert.doesNotThrow(() => requireRunModelSelection('model-a', {}))
+  assert.doesNotThrow(() => requireRunModelSelection(undefined, { all: true }))
+  assert.doesNotThrow(() => requireRunModelSelection(undefined, { resumeRun: 'run-1' }))
 })
 
 test('verifier run retries what is left for up to --max-rounds rounds; --resume-run is one round', async () => {

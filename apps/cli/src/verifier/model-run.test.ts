@@ -950,8 +950,8 @@ test('proxy runtime re-asks a persistently blank batch twice, then keeps the res
   assert.equal(run.evidence.exchanges[0]?.attemptCount, 3)
   assert.equal(run.evidence.exchanges[0]?.requestIds.length, 3)
   assert.equal(run.evidence.exchanges[0]?.attemptCosts?.length, 3)
-  // The other nine batches still give 90% coverage, so the audit reaches a verdict.
-  assert.equal(run.result.status, 'SAME')
+  // The other nine batches all match, but the blank one could hide a DIFF: no SAME until it is answered.
+  assert.equal(run.result.status, 'UNDETERMINED')
   assert.equal(run.result.parsedProbeCount, 90)
 })
 
@@ -1049,8 +1049,8 @@ test('canonical temperature rejection skips after the first batch', async () => 
 
 test('proxy runtime reduces seller concurrency after HTTP 429', async () => {
   const run = await runTarget(40, 'rate-limited')
-  // Three of four batches answered: 75% coverage is enough for a verdict.
-  assert.equal(run.result.status, 'SAME')
+  // Three of four batches answered and matching; the unanswered one could still hide a DIFF.
+  assert.equal(run.result.status, 'UNDETERMINED')
   assert.equal(run.result.parsedProbeCount, 30)
   assert.equal(run.evidence.exchanges[1]?.response?.statusCode, 429)
   assert.equal(run.evidence.exchanges[1]?.attemptCount, 5)
@@ -1117,8 +1117,8 @@ test('selective omissions are unscored, and a batch missing most answers is re-a
 
 test('one wholly malformed batch is left unscored and can be repaired by resume', async () => {
   const first = await runTarget(100, 'malformed-first-batch')
-  // 90% of probes scored: enough for a verdict, the malformed batch is simply left out.
-  assert.equal(first.result.status, 'SAME')
+  // 90% of probes scored and matching, but the malformed batch could hide a DIFF; resume repairs it.
+  assert.equal(first.result.status, 'UNDETERMINED')
   assert.equal(first.result.parsedProbeCount, 90)
   assert.equal(first.evidence.exchanges[0]?.outcomeReason?.code, 'malformed_output')
   assert.equal(first.evidence.exchanges[0]?.attemptCount, 3)

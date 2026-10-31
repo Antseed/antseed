@@ -31,15 +31,16 @@ Fingerprinting (KBF)**.
 
 ## How one KBF check works
 
-1. **A reference is built once per model.** The genuine model is queried through a
+1. **A fresh question bank is built every epoch.** The genuine model is queried through a
    trusted upstream: OpenRouter by default, or the model maker's own API (for example
-   Anthropic or OpenAI) when an auditor sets one up. Questions it answers consistently are kept; questions
+   Anthropic or OpenAI). Questions it answers consistently are kept; questions
    where cheaper look-alikes give the same answers are dropped, because they cannot
-   tell models apart. The reference also measures the genuine model's own
-   error rate, since even the real model is not perfectly consistent.
-2. **The seller is asked a fresh random subset.** Each check picks a new random set of
-   about 100 questions from the reference, in a new order and with varied wording, so a
-   seller cannot memorize a fixed test.
+   tell models apart. The bank also measures the genuine model's own
+   error rate, since even the real model is not perfectly consistent. Questions used in
+   recent epochs are left out.
+2. **Each seller gets a random set.** About 100 questions from the bank, picked by the
+   epoch's random seed, in batches with varied wording, so a seller cannot memorize a
+   fixed test.
 3. **A statistical test gives the verdict.** The seller's wrong answers are compared
    with the genuine model's own error rate:
 
@@ -47,75 +48,83 @@ Fingerprinting (KBF)**.
 |---|---|
 | **SAME** | No evidence of substitution: the seller misses about as often as the genuine model does. This is strong evidence, not proof, that it is the advertised model. |
 | **DIFF** | Significantly more misses than the genuine model makes. The seller very likely serves a different model. |
-| **UNDETERMINED** | Too few usable answers to decide either way: fewer than half the questions were answered (errors, timeouts, empty or unreadable answers), a seller looked different but answered fewer than 80% of the questions, or a DIFF wasn't confirmed by its recheck. |
+| **UNDETERMINED** | Too few usable answers to decide either way: fewer than 80% of the questions were answered (errors, timeouts, empty or unreadable answers), or part of the seller's questions were never delivered. |
 
 A missing or unreadable answer is left out of the score, not counted as wrong, so a
-flaky seller doesn't look like a substituted model.
+flaky seller doesn't look like a substituted model. Requiring 80% of the questions
+answered for either verdict means a seller can't earn a SAME by leaving out the
+answers it would get wrong.
 
-A reference only goes into use if it has enough statistical power to tell the genuine
+A bank only goes into use if it has enough statistical power to tell the genuine
 model apart from the look-alikes it was tested against.
 
 ## Who checks
 
-**Auditors** are addresses approved by the verification contract's owner. An auditor
+**Verifiers** are addresses approved by the verification contract's owner. A verifier
 buys from sellers like any other buyer, through the normal network and payments,
 with no special label on its requests.
 
-The audited models are built into the CLI. Each epoch they are split across the
-approved auditors, round robin, so every model is audited every epoch by one auditor,
-and the models move to a different auditor the next epoch. For its models, the auditor
-checks every seller that advertises them. See
-[Which models you audit](/docs/verify/audits#which-models-you-audit).
+KBF audits run as one round per epoch (one week), shared by every approved verifier:
 
-Before an auditor reports a **DIFF**, it rechecks that seller on a second, fresh set of
-questions the seller has never seen:
+1. **The bank is sealed.** Antseed's reference publisher builds the epoch's bank for
+   every model on the contract's list of audited models, encrypts it and commits its
+   hash on-chain. It decides no verdicts.
+2. **The work is split at random.** Once the epoch opens, a seed taken from a future
+   block hash decides which questions each seller gets and which verifier buys each
+   part of them (a slice, 4 per seller service by default), plus a backup verifier for each slice. A seller never
+   buys its own slices.
+3. **Each verifier sees only its own questions.** The publisher sends each verifier an
+   envelope encrypted to that verifier's key, with the questions of its slices and none
+   of the answers. Verifiers buy the slices and commit the seller-signed responses;
+   slices that weren't delivered go to the backups.
+4. **The key is revealed after collection.** Then anyone can decrypt the bank and check
+   every verdict.
+5. **Everyone scores, a majority decides.** Each verifier scores the whole epoch from
+   the public data and attests the root of its results. Scoring is deterministic, so
+   honest verifiers agree. The first root a majority of the epoch's verifiers attest
+   becomes final, and its results go on-chain.
 
-- the recheck says DIFF → the result is DIFF
-- the recheck says SAME or UNDETERMINED → the result is UNDETERMINED, not DIFF
-- the recheck cannot run → nothing is reported for that seller until a later run in the
-  same epoch rechecks it
-
-So a seller is only marked DIFF when two independent checks agree.
-
-To run an auditor yourself, see [Become a verifier](/docs/verify). [How audits run](/docs/verify/audits)
-covers each step, including where the genuine model's answers come from.
+To run a verifier yourself, see [Become a verifier](/docs/verify).
+[How verification rounds run](/docs/verify/audits) covers each step.
 
 ## Public evidence
 
-Every audit is published to IPFS: the questions asked, the seller's raw responses, the
-statistics, and where the reference answers came from (which API, which model id and
-which request settings), with the raw reference requests and responses. Its hash goes on-chain with the result. Anyone can download it and
-re-run the same kind of check themselves (see [Check a model yourself](#check-a-model-yourself)).
-An auditor that publishes wrong results can be caught from its own evidence and loses
-its approval.
+Everything a verdict depends on is public once the epoch's bank key is revealed: the
+bank (questions, the genuine model's answers and where they came from), the plan, every
+slice of seller-signed responses, and every verifier's results, each on IPFS with its
+hash on-chain. Anyone can download them and recompute the epoch's results root. A seller
+can't deny its answers, because each batch carries its signature.
 
 ## What goes on-chain
 
 ```
-seller audit ──► DIFF? ──► recheck ──► evidence on IPFS ──► AntseedKbfVerification
+sealed bank ──► plan ──► slices bought ──► key revealed ──► majority attests root ──► results applied
 ```
 
 `AntseedKbfVerification` keeps one result per seller service (one model offer of one
 seller):
 
-- **The latest result wins**, whichever approved auditor submitted it. A new SAME replaces
-  an old DIFF and the other way round; an UNDETERMINED clears the earlier verdict.
+- **The latest epoch wins.** A new SAME replaces an old DIFF and the other way round;
+  an UNDETERMINED clears the earlier verdict. A late result never overwrites a newer
+  epoch's.
 - **Results expire on their own.** A verdict counts for the epoch it was given in and
   the next one (about two weeks), so sellers must keep being checked. A seller that fixes
-  its model recovers at the next audit.
+  its model recovers at the next round.
 - **A DIFF only affects that one service.** A seller's other verified models are not
   touched.
-- Auditors cannot audit sellers they own.
+- Verifiers earn a share of the verification part of ANTS emissions for attesting the
+  final results and for the slices they delivered.
 
 ## Check a model yourself
 
-Anyone can re-run the latest published audit against a seller or any OpenAI- or
-Anthropic-compatible endpoint, paying for the questions themselves:
+Anyone can audit a seller or any OpenAI- or Anthropic-compatible endpoint against a
+revealed bank, paying for the questions themselves:
 
-- `antseed verifier check <model>` in the [CLI](/docs/commands) finds the latest
-  on-chain audit and runs it, through your buyer proxy or against any URL.
+- `antseed verifier check <model>` in the [CLI](/docs/commands) finds the newest
+  revealed bank for the model and runs it, through your buyer proxy or against any URL.
 - [`@antseed/model-verifier`](https://github.com/AntSeed/antseed/tree/main/packages/model-verifier)
-  (its `antseed-verify` command) does the same without the rest of Antseed.
+  (its `antseed-verify` command) checks against published audit evidence without the
+  rest of Antseed.
 - The [`antseed-verify-model` agent skill](https://github.com/AntSeed/antseed/tree/main/skills/antseed-verify-model)
   asks for an endpoint, has you set its API key, runs the check and explains the
   result.

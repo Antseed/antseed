@@ -5,18 +5,27 @@ import {IAntseedEmissionsGate} from "./IAntseedEmissionsGate.sol";
 import {IAntseedRegistry} from "./IAntseedRegistry.sol";
 import {IAntseedSellerPools} from "./IAntseedSellerPools.sol";
 
-/// @notice KBF (model identity) audits, submitted by approved auditors, one model per submission.
-///         KBF is one of several verification methods; each method has its own contract and
-///         interface with its own verdicts, auditors and rewards bucket.
-/// @dev Status is kept per (agent, service). The latest result (SAME, DIFF, or UNDETERMINED) is
-///      the service's verdict, with the emissions epoch it was given in; it is live while
-///      `currentEpoch < epoch + validityEpochs` and drops out on its own afterwards. Only SAME and
-///      DIFF count in the agent's status. A single approved auditor's result sets the verdict;
-///      auditors double-check DIFF results off-chain before submitting them. Auditors earn one credit per model audit, whatever the results, up to an
-///      owner-set number per model and epoch (default 1), once the owner sets `rewardsStartEpoch`,
-///      and are paid from the verification emission bucket in proportion to their credits, capped
-///      at `maxAuditorShareBps` of the epoch's budget per auditor. These credit and share limits are
-///      safety limits against a compromised or malicious auditor.
+/// @notice Distributed KBF (model identity) verification. KBF is one of several verification
+///         methods; each method has its own contract and interface with its own verdicts,
+///         verifiers and rewards bucket.
+/// @dev One audit round runs per emissions epoch, driven by deadlines instead of messages:
+///      1. The publisher commits the epoch's sealed question bank (`commitBank`): the hash of the
+///         encrypted bank and the hash of its key.
+///      2. Anyone opens the epoch (`openEpoch`), which snapshots the approved verifiers, the
+///         audited model list and the schedule, and fixes a future block. Its hash becomes the
+///         epoch seed (`fixSeed`), so nobody can choose which questions a seller gets.
+///      3. The publisher commits the plan (`commitPlan`): the target list and one encrypted
+///         question envelope per verifier, derived from the seed.
+///      4. Verifiers buy their assigned slices from sellers and commit the seller-signed
+///         transcripts (`commitSlices`) by the commit deadline; missing slices go to backup
+///         verifiers (`commitBackupPlan`, then `commitSlices` again) until the backup deadline.
+///      5. The publisher reveals the bank key (`revealBankKey`), so everyone can score.
+///      6. Each verifier scores every transcript and attests the Merkle root of the results
+///         (`attest`). A root attested by a majority of the snapshot's verifiers finalizes.
+///      7. Anyone applies the finalized results with Merkle proofs (`applyResults`).
+///      Status is kept per (agent, service): the latest applied verdict with the epoch it was
+///      given in, live while `currentEpoch < epoch + validityEpochs`. Only SAME and DIFF count
+///      in the agent's status.
 interface IAntseedKbfVerification {
     enum Verdict {
         NONE,
@@ -25,22 +34,58 @@ interface IAntseedKbfVerification {
         UNDETERMINED
     }
 
-    /// @param agentId Seller agent the result is for.
+    /// @param modelHash keccak256 of the lowercased audited model id, e.g. "claude-opus-5.5".
+    /// @param service The audited model id that `modelHash` is derived from.
+    struct Model {
+        bytes32 modelHash;
+        string service;
+    }
+
+    /// @notice Per-epoch timing and sampling, as offsets from the epoch start.
+    /// @param collectSeconds Primary collection window; slices committed before it ends count as primary.
+    /// @param backupSeconds Backup round after collection, for slices their owner did not deliver.
+    /// @param attestSeconds Attestation window after the backup round.
+    /// @param probesPerService Questions asked per (seller, service).
+    /// @param slicesPerService Slices those questions are split into, each bought by one verifier.
+    struct Schedule {
+        uint32 collectSeconds;
+        uint32 backupSeconds;
+        uint32 attestSeconds;
+        uint16 probesPerService;
+        uint16 slicesPerService;
+    }
+
+    /// @notice Everything a verifier needs to follow one epoch. Zero values mean "not yet".
+    struct EpochInfo {
+        uint256 startedAt;
+        uint64 seedBlock;
+        bytes32 seed;
+        uint32 modelsVersion;
+        uint16 verifierCount;
+        Schedule schedule;
+        bytes32 bankHash;
+        bytes32 bankKeyHash;
+        bytes32 bankKey;
+        bytes32 planHash;
+        bytes32 backupPlanHash;
+        bytes32 finalizedRoot;
+        bool voided;
+    }
+
+    /// @notice One leaf of an epoch's results root.
     /// @param serviceHash keccak256 of the lowercased service name in the seller's signed metadata.
-    /// @param verdict SAME when the service answered as the audited model, DIFF when it did not,
-    ///        UNDETERMINED when the audit ran but could not decide.
+    /// @param modelHash Audited model the service was matched to.
     struct ServiceResult {
         uint256 agentId;
         bytes32 serviceHash;
+        bytes32 modelHash;
         Verdict verdict;
     }
 
     /// @param modelHash Model the service was last audited as.
-    /// @param verdict Latest result (NONE, SAME, DIFF, or UNDETERMINED). Live only while
-    ///        `currentEpoch < epoch + validityEpochs`; only SAME and DIFF count in the agent's status.
+    /// @param verdict Latest applied result. Live only while `currentEpoch < epoch + validityEpochs`.
     /// @param updatedAt When the live verdict last changed.
-    /// @param epoch Emissions epoch `verdict` was given in; every result moves it to the current
-    ///        epoch. Zero while `verdict` is NONE.
+    /// @param epoch Emissions epoch `verdict` was given in. Zero while `verdict` is NONE.
     struct ServiceStatus {
         bytes32 modelHash;
         Verdict verdict;
@@ -56,38 +101,51 @@ interface IAntseedKbfVerification {
     }
 
     function registry() external view returns (IAntseedRegistry);
-    /// @notice Emissions gate pinned at deployment; every epoch the contract uses comes from it.
+    /// @notice Gate pinned at deployment; every epoch and reward reads it.
     function emissionsGate() external view returns (IAntseedEmissionsGate);
-    /// @notice Epochs a SAME or DIFF verdict counts for, including the one it was given in.
+    /// @notice Epochs a verdict counts for, including the one it was given in.
     function validityEpochs() external view returns (uint8);
     function sellerPools() external view returns (IAntseedSellerPools);
-    function approvedAuditors(address auditor) external view returns (bool);
-    function setAuditor(address auditor, bool approved) external;
 
-    /// @notice Records one auditor's KBF results for every seller audited as `modelHash`.
-    /// @dev Reverts unless the caller is an approved auditor, `expectedEpoch` is the current
-    ///      epoch of the pinned emissions gate, `evidenceHash` is non-zero, and `results` is non-empty, bounded, and
-    ///      strictly ordered by (agentId, serviceHash).
-    function submitModelAudit(
-        uint256 expectedEpoch,
-        bytes32 modelHash,
-        bytes32 evidenceHash,
-        string calldata evidenceUri,
-        ServiceResult[] calldata results
-    ) external;
+    function isVerifier(address verifier) external view returns (bool);
+    function verifiers() external view returns (address[] memory);
+    function encryptionKeys(address verifier) external view returns (bytes32);
+    function publisher() external view returns (address);
+    function modelsVersion() external view returns (uint32);
+    function models(uint32 version) external view returns (Model[] memory);
+    function schedule() external view returns (Schedule memory);
+
+    function epochInfo(uint256 epoch) external view returns (EpochInfo memory);
+    function epochVerifiers(uint256 epoch) external view returns (address[] memory);
+    /// @notice Attestations needed to finalize: a majority of the epoch's verifier snapshot.
+    function threshold(uint256 epoch) external view returns (uint256);
+    function attestations(uint256 epoch, address verifier) external view returns (bytes32 root);
+    function rootVotes(uint256 epoch, bytes32 root) external view returns (uint256);
+
+    function commitBank(uint256 epoch, bytes32 bankHash, bytes32 bankKeyHash, string calldata bankUri) external;
+    function openEpoch(uint256 epoch) external;
+    function fixSeed(uint256 epoch) external;
+    function commitPlan(uint256 epoch, bytes32 planHash, string calldata planUri) external;
+    function commitBackupPlan(uint256 epoch, bytes32 planHash, string calldata planUri) external;
+    function revealBankKey(uint256 epoch, bytes32 bankKey) external;
+    function commitSlices(uint256 epoch, bytes32 slicesRoot, string calldata manifestUri) external;
+    function attest(uint256 epoch, bytes32 resultsRoot, string calldata evidenceUri) external;
+    function applyResults(uint256 epoch, ServiceResult[] calldata results, bytes32[][] calldata proofs) external;
 
     function serviceStatus(uint256 agentId, bytes32 serviceHash) external view returns (ServiceStatus memory);
     function agentStatus(uint256 agentId) external view returns (AgentStatus memory);
-
-    /// @notice True while the agent has a live SAME service and no live DIFF service.
+    /// @notice True when the agent has at least one live SAME and no live DIFF.
     function isVerified(uint256 agentId) external view returns (bool);
 
-    /// @notice Most of an epoch's verification budget one auditor can claim, in bps of 10,000.
-    function maxAuditorShareBps() external view returns (uint16);
-    /// @notice First epoch whose audits earn credits; `type(uint256).max` while rewards are off.
     function rewardsStartEpoch() external view returns (uint256);
-
-    /// @notice Claims the caller's auditor share of the verification emission bucket.
-    function claimAuditorRewards(uint256[] calldata epochs) external returns (uint256 total);
-    function pendingAuditorReward(address auditor, uint256 epoch) external view returns (uint256);
+    /// @notice Claims the caller's reward for one finished epoch: an equal share of the attester
+    ///         pool if it attested the finalized root, plus its share of the collector pool for the
+    ///         slices the finalized root credits it with (`slices` of `totalSlices`, proven by `proof`).
+    function claimRewards(uint256 epoch, uint32 slices, uint32 totalSlices, bytes32[] calldata proof)
+        external
+        returns (uint256 amount);
+    function pendingReward(address verifier, uint256 epoch, uint32 slices, uint32 totalSlices, bytes32[] calldata proof)
+        external
+        view
+        returns (uint256);
 }

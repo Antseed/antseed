@@ -30,13 +30,12 @@ export async function checkVerifierRelease(options: {
 }
 
 /**
- * Stops `verifier run` and `verifier submit` on a CLI older than the latest one on npm, so every
- * auditor audits the same models the same way. When the check can't be made,
- * `run` (and `submit --dry-run`) only warn, while a real submit stops; `--skip-version-check`
- * skips the check.
+ * Stops `verifier run` and `verifier start` on a CLI older than the latest one on npm, so every
+ * verifier scores the same way and attests the same results root. When the check can't be made,
+ * it only warns unless `strictWhenUnavailable`; `--skip-version-check` skips the check.
  */
 export async function requireCurrentVerifier(input: {
-  command: 'run' | 'submit'
+  command: 'run' | 'start'
   currentVersion: string
   skip: boolean
   strictWhenUnavailable: boolean
@@ -44,22 +43,22 @@ export async function requireCurrentVerifier(input: {
   check?: () => Promise<VerifierReleaseCheck>
 }): Promise<VerifierReleaseCheck | null> {
   if (input.skip) {
-    input.warn('Skipping the verifier version check (--skip-version-check): this CLI may audit differently from other auditors.')
+    input.warn('Skipping the verifier version check (--skip-version-check): this CLI may score differently from other verifiers.')
     return null
   }
   const result = await (input.check ?? (() => checkVerifierRelease({ localVersion: input.currentVersion })))()
   if (result.status === 'outdated') {
     throw new Error(
       `this CLI (${input.currentVersion}) is older than the latest @antseed/cli ${result.latestVersion}. Update with \`antseed update\` (or \`npm i -g @antseed/cli@latest\`) `
-      + `before running \`verifier ${input.command}\`, so every auditor audits the same models the same way.`,
+      + `before running \`verifier ${input.command}\`, so every verifier scores the same way.`,
     )
   }
   if (result.status === 'unavailable') {
     const text = `Could not check that this verifier is up to date: ${result.reason}.`
     if (input.strictWhenUnavailable) {
-      throw new Error(`${text} Retry when the npm registry can be reached, or pass --skip-version-check to submit anyway.`)
+      throw new Error(`${text} Retry when the npm registry can be reached, or pass --skip-version-check to continue anyway.`)
     }
-    input.warn(`${text} Continuing; \`verifier submit\` checks again.`)
+    input.warn(`${text} Continuing.`)
   }
   return result
 }

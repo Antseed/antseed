@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  aggregateKbfSelfTestOutcomes,
+  scoredSelfTestCoverage,
   assertMatchingQueryProfile,
   computeBinomialPower,
   computeContrastDetection,
@@ -507,3 +509,14 @@ function withOutcome(
   value.referenceId = computeReferenceId(value);
   return value;
 }
+
+describe('scoredSelfTestCoverage', () => {
+  it('leaves out-of-range answers out of the readiness coverage', () => {
+    // One right answer and two out-of-range answers: parsed coverage 1, scored coverage 1/3.
+    const outcome = { probeId: 'p1', answers: [5, 5_000, 6_000], matches: [1, null, null] as (0 | 1 | null)[] };
+    const selfTest = aggregateKbfSelfTestOutcomes([outcome]);
+    expect(selfTest.coverage).toBe(1);
+    expect(scoredSelfTestCoverage(selfTest)).toBeCloseTo(1 / 3);
+    expect(scoredSelfTestCoverage(selfTest) < 0.8).toBe(true);
+  });
+});

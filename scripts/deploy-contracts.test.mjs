@@ -2081,7 +2081,7 @@ test('M003 refuses an auditor list: it never approves auditors', () => {
   assert.doesNotThrow(() => rejectAuditorList(undefined));
   assert.doesNotThrow(() => rejectAuditorList(''));
   assert.doesNotThrow(() => rejectAuditorList('  '));
-  assert.throws(() => rejectAuditorList(ADDRESS.registry), /does not approve auditors/);
+  assert.throws(() => rejectAuditorList(ADDRESS.registry), /does not approve verifiers/);
 });
 
 test('M003 defaults and validates the bonus', () => {
@@ -2185,7 +2185,7 @@ test('M003 rejects an auditor list, a changed bonus or baseline before sending t
     assert.fail(`unexpected call ${args}`);
   });
   process.env.VERIFICATION_AUDITORS = ADDRESS.registry;
-  await assert.rejects(m003.observe(context), /does not approve auditors/);
+  await assert.rejects(m003.observe(context), /does not approve verifiers/);
   delete process.env.VERIFICATION_AUDITORS;
   process.env.VERIFICATION_BONUS_BPS = '200';
   await assert.rejects(m003.observe(context), /bonus differs/);

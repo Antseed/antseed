@@ -85,7 +85,6 @@ test('a recheck SAME or UNDETERMINED turns the DIFF into UNDETERMINED', async ()
   assert.deepEqual(outcome.results.map((entry) => entry.recheck?.status), ['SAME', 'UNDETERMINED'])
   assert.equal(outcome.stats.notConfirmed, 2)
   assert.equal(outcome.stats.confirmed, 0)
-  assert.equal(outcome.failures.length, 0)
   assert.ok(logs.some((line) => line.includes('recheck UNDETERMINED → not confirmed')))
 })
 
@@ -93,7 +92,6 @@ test('a DIFF without fresh questions is kept, waiting for its recheck, when enro
   const diff = result('b', 'DIFF')
   const { outcome, verified, logs } = await run({ results: [diff], exhausted: new Set([diff.peerId]) })
   assert.deepEqual(verified, [])
-  assert.equal(outcome.failures.length, 0)
   assert.equal(outcome.results.length, 1)
   assert.equal(outcome.results[0]!.status, 'DIFF')
   assert.equal(outcome.results[0]!.recheck, undefined)
@@ -146,7 +144,6 @@ test('a failed enrollment, a skipped recheck or a recheck error keeps the first 
     enroll: async () => { throw new Error('budget exhausted') },
     recheckVerdicts: { [skippedDiff.peerId]: 'SKIPPED' },
   })
-  assert.equal(outcome.failures.length, 0)
   assert.deepEqual(outcome.results.map((entry) => entry.status), ['DIFF', 'DIFF'])
   assert.match(outcome.results[0]!.recheckPending!.reason, /enrollment failed: budget exhausted/)
   assert.match(outcome.results[1]!.recheckPending!.reason, /recheck skipped: no ResponseAuth/)

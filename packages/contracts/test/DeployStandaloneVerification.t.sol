@@ -55,7 +55,7 @@ contract DeployStandaloneVerificationTest is Test {
         assertEq(address(verification.sellerPools()), address(sellerPools));
         assertEq(address(verification.emissionsGate()), address(emissions));
         assertEq(verification.rewardsStartEpoch(), type(uint256).max);
-        assertTrue(verification.approvedAuditors(auditor));
+        assertTrue(verification.isVerifier(auditor));
         assertEq(registry.emissions(), originalEmissions);
         assertEq(registry.identityRegistry(), originalIdentity);
         assertEq(vm.getNonce(owner), originalOwnerNonce + 1 + _config().auditors.length);

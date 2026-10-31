@@ -176,6 +176,8 @@ export async function ensureSellerProbeCapacity(input: {
   epoch: string
   sellerPeerIds: readonly string[]
   recheck: boolean
+  /** `--allow-probe-reuse`: the first audit may reuse seen questions; a DIFF recheck still needs unseen ones. */
+  allowProbeReuse?: boolean
   buyerProxyPort?: number
   requestLimiter?: ReferenceRequestLimiter
   log?: (message: string) => void
@@ -188,6 +190,7 @@ export async function ensureSellerProbeCapacity(input: {
     const capacity = await operations.capacity({
       banksDir: input.banksDir, model: input.model, epoch: input.epoch,
       sellerPeerIds: input.sellerPeerIds, recheck: input.recheck, config: input.config,
+      allowProbeReuse: input.allowProbeReuse === true,
     })
     return capacity.sellers.filter((seller) => seller.unseenProbeCount < seller.neededProbeCount)
   }

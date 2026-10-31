@@ -13,6 +13,7 @@ import {
   canonicalJsonStringify,
   computeBinomialPower,
   computeMatchVector,
+  scoredSelfTestCoverage,
   isLowCoverageKbfBatch,
   computeReferenceId,
   createReferenceQueryProfile,
@@ -712,12 +713,12 @@ export async function buildModelReference(input: {
         .map((entry) => entry.model)
       input.log?.(
         `reference size ${targetCount}: power ${power.power.toFixed(3)}, `
-        + `self-test ${selfTest.hamming}/${selfTest.total}, coverage ${selfTest.coverage.toFixed(3)}`
+        + `self-test ${selfTest.hamming}/${selfTest.total}, coverage ${scoredSelfTestCoverage(selfTest).toFixed(3)}`
         + (contrastDetection.length > 0
           ? `, contrasts detected ${contrastDetection.length - undetectedContrasts.length}/${contrastDetection.length}`
           : ''),
       )
-      if (selfTest.coverage >= 0.8 && selfTest.errorRate <= REFERENCE_MAXIMUM_SELF_TEST_ERROR_RATE
+      if (scoredSelfTestCoverage(selfTest) >= 0.8 && selfTest.errorRate <= REFERENCE_MAXIMUM_SELF_TEST_ERROR_RATE
         && power.power >= sizing.minimumStatisticalPower
         && undetectedContrasts.length === 0) {
         selected = { probes, selfTest, power, contrasts, contrastDetection }
@@ -738,9 +739,9 @@ export async function buildModelReference(input: {
     )
   }
   const { probes, selfTest, power, contrasts, contrastDetection } = selected
-  if (selfTest.coverage < 0.8) {
+  if (scoredSelfTestCoverage(selfTest) < 0.8) {
     await checkpoint.remove()
-    throw new Error(`self-test coverage ${selfTest.coverage.toFixed(3)} is below 0.8`)
+    throw new Error(`self-test coverage ${scoredSelfTestCoverage(selfTest).toFixed(3)} is below 0.8`)
   }
   if (selfTest.errorRate > REFERENCE_MAXIMUM_SELF_TEST_ERROR_RATE) {
     await checkpoint.remove()

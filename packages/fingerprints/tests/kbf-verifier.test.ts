@@ -172,15 +172,17 @@ describe('verifyKbf', () => {
     expect(undetermined.stats.targetHamming).toBe(0);
     expect(undetermined.stats.targetTotal).toBe(5);
 
+    // Half answered, all right: the missing half could hide a DIFF, so no SAME.
     const half = PROBES.map((p, i) => (i < 10 ? p.consensus : null));
-    const same = verifyKbf(reference, makeObservation(half), { minCoverage: 0.5 });
-    expect(same.verdict).toBe('SAME');
-    expect(same.stats.targetHamming).toBe(0);
-    expect(same.stats.targetTotal).toBe(10);
-    expect(same.stats.targetCoverage).toBe(0.5);
+    const partial = verifyKbf(reference, makeObservation(half), { minCoverage: 0.5 });
+    expect(partial.verdict).toBe('UNDETERMINED');
+    expect(partial.verdictReason).toMatch(/10 missing answers could hide a DIFF/);
+    expect(partial.stats.targetHamming).toBe(0);
+    expect(partial.stats.targetTotal).toBe(10);
+    expect(partial.stats.targetCoverage).toBe(0.5);
   });
 
-  it('scores only answered probes when a completed response omits 49 of 100 answers', () => {
+  it('scores only answered probes, and no SAME while the omitted ones could hide a DIFF', () => {
     const probes: KbfProbe[] = Array.from({ length: 100 }, (_, index) => ({
       ...PROBES[index % PROBES.length]!,
       id: `unscored-${index + 1}`,
@@ -200,10 +202,14 @@ describe('verifyKbf', () => {
 
     const fragment = verifyKbf(reference, makeObservation(answers), { minCoverage: 0.5 });
 
-    expect(fragment.verdict).toBe('SAME');
+    expect(fragment.verdict).toBe('UNDETERMINED');
     expect(fragment.parsedProbeCount).toBe(51);
     expect(fragment.stats.targetHamming).toBe(0);
     expect(fragment.stats.targetTotal).toBe(51);
+
+    // A couple of omissions from a perfect reference's match is still SAME.
+    const nearlyAll = probes.map((probe, index) => (index < 98 ? probe.consensus : null));
+    expect(verifyKbf(reference, makeObservation(nearlyAll), { minCoverage: 0.5 }).verdict).toBe('SAME');
   });
 
   it('still returns DIFF when the answered probes are wrong', () => {

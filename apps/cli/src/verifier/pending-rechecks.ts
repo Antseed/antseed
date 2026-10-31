@@ -1,6 +1,6 @@
-import { readdir, readFile } from 'node:fs/promises'
-import { join } from 'node:path'
-import type { ModelAuditSummaryV1, VerifierRunManifestV1 } from './audit-artifacts.js'
+import { readFile } from 'node:fs/promises'
+import type { ModelAuditSummaryV1 } from './audit-artifacts.js'
+import { epochRunManifests } from './epoch-overview.js'
 import type { ModelVerificationTargetResult } from './model-run.js'
 import { verifyProxyAuditEvidenceFile } from './proxy-evidence.js'
 
@@ -53,26 +53,4 @@ export async function loadPendingDiffRechecks(
     pending.set(key, entry)
   }
   return pending
-}
-
-async function epochRunManifests(evidenceDir: string, epoch: string): Promise<VerifierRunManifestV1[]> {
-  const runsDir = join(evidenceDir, 'runs')
-  let names: string[]
-  try {
-    names = await readdir(runsDir)
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
-    throw error
-  }
-  const manifests: VerifierRunManifestV1[] = []
-  for (const name of names) {
-    if (!name.endsWith('.json') || name.endsWith('.summary.json')) continue
-    try {
-      const parsed = JSON.parse(await readFile(join(runsDir, name), 'utf8')) as VerifierRunManifestV1
-      if (parsed.kind === 'antseed-verifier-run-manifest' && parsed.epoch === epoch) manifests.push(parsed)
-    } catch {
-      // A manifest being written or a foreign file.
-    }
-  }
-  return manifests.sort((left, right) => left.completedAt.localeCompare(right.completedAt))
 }

@@ -74,7 +74,7 @@ contract M003VerificationRegistryTest is Test {
         assertEq(verification.pendingOwner(), address(0));
         assertEq(address(verification.registry()), address(registry));
         assertEq(address(verification.sellerPools()), address(pools));
-        assertFalse(verification.approvedAuditors(auditor), "M003 approves no auditors");
+        assertFalse(verification.isVerifier(auditor), "M003 approves no verifiers");
         assertEq(address(policy), vm.computeCreateAddress(owner, settings.deploymentNonce + 1));
         assertEq(address(policy.verification()), address(verification));
         assertEq(address(policy.usageAccounting()), address(accounting));
@@ -107,21 +107,14 @@ contract M003VerificationRegistryTest is Test {
         (AntseedKbfVerification verification, AntseedKbfVerificationPointsPolicy policy) = script.run();
         assertEq(verification.owner(), owner);
         assertEq(policy.bonusBps(), 250);
-        assertFalse(verification.approvedAuditors(auditor));
+        assertFalse(verification.isVerifier(auditor));
     }
 
-    function test_auditorApprovedByOwnerAfterDeployCanSubmitAudit() public {
+    function test_verifierApprovedByOwnerAfterDeployCanFinalizeARound() public {
         AntseedKbfVerification verification = deploy(config());
-        vm.prank(owner);
-        verification.setAuditor(auditor, true); // the manual step after M003
         vm.prank(address(0xCAFE));
         uint256 agentId = identity.register();
-        IAntseedKbfVerification.ServiceResult[] memory results = new IAntseedKbfVerification.ServiceResult[](1);
-        results[0] = IAntseedKbfVerification.ServiceResult({
-            agentId: agentId, serviceHash: keccak256("service"), verdict: IAntseedKbfVerification.Verdict.SAME
-        });
-        vm.prank(auditor);
-        verification.submitModelAudit(0, keccak256("model"), keccak256("evidence"), "ipfs://evidence", results);
+        _runRound(verification, agentId); // the manual approvals after M003 happen inside
         assertTrue(verification.isVerified(agentId));
     }
 
@@ -227,18 +220,11 @@ contract M003VerificationRegistryTest is Test {
         (AntseedKbfVerification verification, AntseedKbfVerificationPointsPolicy policy) = script.runWith(config());
         vm.prank(owner);
         pointsPolicyRegistry.registerPolicy(address(policy)); // the manual steps after M003
-        vm.prank(owner);
-        verification.setAuditor(auditor, true);
         address seller = address(0x5E11);
         vm.prank(seller);
         uint256 agentId = identity.register();
         pools.setSeller(seller, agentId);
-        IAntseedKbfVerification.ServiceResult[] memory results = new IAntseedKbfVerification.ServiceResult[](1);
-        results[0] = IAntseedKbfVerification.ServiceResult({
-            agentId: agentId, serviceHash: keccak256("service"), verdict: IAntseedKbfVerification.Verdict.SAME
-        });
-        vm.prank(auditor);
-        verification.submitModelAudit(0, keccak256("model"), keccak256("evidence"), "", results);
+        _runRound(verification, agentId);
         (uint256 sellerPoints,) = pointsPolicyRegistry.points(bytes32(0), address(0xB0), seller, 1_000_000);
         assertEq(sellerPoints, 1_010_000, "the deployed bonus applies at once");
 
@@ -246,5 +232,39 @@ contract M003VerificationRegistryTest is Test {
         policy.setBonusBps(0);
         (sellerPoints,) = pointsPolicyRegistry.points(bytes32(0), address(0xB0), seller, 1_000_000);
         assertEq(sellerPoints, 1_000_000, "zero rates leave points unchanged");
+    }
+
+    /// @dev Owner approves one verifier and a publisher, then a full one-verifier round marks
+    ///      `agentId`'s service SAME.
+    function _runRound(AntseedKbfVerification verification, uint256 agentId) private {
+        address publisher = address(0x9B);
+        IAntseedKbfVerification.Model[] memory models = new IAntseedKbfVerification.Model[](1);
+        models[0] = IAntseedKbfVerification.Model({modelHash: keccak256("model"), service: "model"});
+        vm.startPrank(owner);
+        verification.setVerifier(auditor, true);
+        verification.setPublisher(publisher);
+        verification.setModels(models);
+        vm.stopPrank();
+        bytes32 key = keccak256("key");
+        vm.prank(publisher);
+        verification.commitBank(0, keccak256("bank"), keccak256(abi.encode(key)), "ipfs://bank");
+        verification.openEpoch(0);
+        vm.roll(verification.epochInfo(0).seedBlock + 1);
+        verification.fixSeed(0);
+        vm.prank(publisher);
+        verification.commitPlan(0, keccak256("plan"), "ipfs://plan");
+        vm.warp(block.timestamp + 4 days);
+        verification.revealBankKey(0, key);
+        IAntseedKbfVerification.ServiceResult[] memory results = new IAntseedKbfVerification.ServiceResult[](1);
+        results[0] = IAntseedKbfVerification.ServiceResult({
+            agentId: agentId,
+            serviceHash: keccak256("service"),
+            modelHash: keccak256("model"),
+            verdict: IAntseedKbfVerification.Verdict.SAME
+        });
+        bytes32 root = verification.serviceLeaf(0, results[0]);
+        vm.prank(auditor);
+        verification.attest(0, root, "ipfs://evidence");
+        verification.applyResults(0, results, new bytes32[][](1));
     }
 }

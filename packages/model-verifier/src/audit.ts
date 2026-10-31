@@ -14,6 +14,7 @@ import {
   kbfTargetThinkingSuppression,
   hasMissingKbfAnswers,
   parseKbfAnswers,
+  rescoreKbfReference,
   subsetReferenceSelfTest,
   verifyKbf,
   type FingerprintEvaluation,
@@ -32,7 +33,10 @@ export interface AuditOptions {
   probeCount?: number
   minimumPower?: number
   minCoverage?: number
-  /** Fraction of answers a DIFF needs (default 0.8); below it a significant result is UNDETERMINED. */
+  /**
+   * Fraction of answers a DIFF from the answered probes alone needs (default 0.8). Missing
+   * answers never help: a DIFF that holds with them counted as matches stands regardless.
+   */
   minDiffCoverage?: number
   concurrency?: number
   maxAttempts?: number
@@ -71,7 +75,10 @@ export interface AuditResult {
   completedAt: string
 }
 
-export async function auditEndpoint(options: AuditOptions): Promise<AuditResult> {
+export async function auditEndpoint(input: AuditOptions): Promise<AuditResult> {
+  // Older references scored a missing answer as a discrepancy; re-score them with the rule
+  // used for the target, so both sides of the test count the same thing.
+  const options: AuditOptions = { ...input, reference: rescoreKbfReference(input.reference) }
   const startedAt = new Date().toISOString()
   const draw = options.randomInt ?? ((max: number) => randomInt(max))
   const model = options.model ?? options.reference.queryProfile.upstreamModel

@@ -40,6 +40,35 @@ Optional environment overrides:
 
 On success, the script prints a JSON summary with deployed contract addresses, peer IDs, session status, balances, and reputation.
 
+## KBF Verification Round on a Base Fork
+
+Run one whole distributed KBF verification round with the real processes, on a fork of Base
+mainnet (about 2–3 minutes):
+
+1. Fork Base at the latest block with Anvil and deploy `AntseedKbfVerification` with the M003
+   deploy script (`Deploy.s.sol`), as the protocol owner
+2. Do the owner's post-deploy steps: hand the verification emissions bucket to the contract,
+   set the publisher, three verifiers, the audited model (`glm-5.3`), the rewards start epoch,
+   and a schedule that fits the time left in the current epoch
+3. Give two staked mainnet agents to two `antseed seller start` sellers: one serves the genuine
+   model, the other an impostor (both through a local OpenAI-compatible stub)
+4. Run `antseed verifier publish` (with its own buyer) and three `antseed verifier start`
+   verifiers, each with a funded buyer deposit; stop the third verifier before the plan
+5. Move chain time through collection, backup, reveal and attestation, then check: the backup
+   plan covers the stopped verifier's slices, both live verifiers attest the same root, the
+   epoch finalizes, the genuine seller is SAME and the impostor DIFF on-chain, the sellers
+   reserved and settled payment channels, and the live verifiers claim ANTS rewards
+
+```bash
+BASE_MAINNET_RPC_URL=<archive-capable Base RPC> pnpm --filter @antseed/e2e run flow:kbf-round
+```
+
+Prerequisites: a built workspace (`pnpm run build`), Foundry on `PATH`. The stub upstream also
+serves an OpenRouter-style model catalog, so no API keys are needed; round files go to a shared
+directory (`ANTSEED_ROUND_STORAGE_DIR`) instead of IPFS. `KEEP_FULLSTACK_DIR=1` keeps the
+working directory (configs, process logs, round files) after a passing run; a failing run always
+keeps it and prints the last lines of every process log.
+
 ## Test Suites
 
 ### Discovery (`tests/discovery.test.ts`)

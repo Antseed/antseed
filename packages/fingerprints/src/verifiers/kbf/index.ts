@@ -32,9 +32,10 @@ export const KBF_KIND = 'kbf';
 /**
  * Verification options for KBF audits of a seller or endpoint. Missing answers are
  * left unscored, and at least half the probes must be scored, as in the KBF paper (v3)
- * and its reference code; below that the verdict is UNDETERMINED. A DIFF additionally
- * needs 80% of the probes scored, so a seller cannot steer the verdict by leaving out
- * answers it would get wrong.
+ * and its reference code; below that the verdict is UNDETERMINED. A DIFF from the
+ * answered probes alone needs 80% of them scored. Leaving answers out never helps a
+ * seller: a DIFF that holds with every missing answer counted as a match stands at any
+ * coverage, and a SAME must also hold with every missing answer counted as a mismatch.
  */
 export const KBF_AUDIT_VERIFY_OPTIONS = { minCoverage: 0.5, minDiffCoverage: 0.8 } as const satisfies VerifyKbfOptions;
 

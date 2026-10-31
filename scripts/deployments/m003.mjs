@@ -29,10 +29,10 @@ function receiptFile(context, simulated = false) {
   return context.forkTest ? path.join(context.receiptDirectory, path.relative(CONTRACTS_ROOT, file)) : file;
 }
 
-/** M003 never approves auditors; the owner does that separately with setAuditor after the deploy. */
+/** M003 never approves verifiers; the owner does that separately with setVerifier after the deploy. */
 export function rejectAuditorList(value = process.env.VERIFICATION_AUDITORS) {
   if (value !== undefined && value.trim() !== '') {
-    throw new Error('M003 does not approve auditors; unset VERIFICATION_AUDITORS and approve them separately with setAuditor');
+    throw new Error('M003 does not approve verifiers; unset VERIFICATION_AUDITORS and approve them separately with setVerifier');
   }
 }
 

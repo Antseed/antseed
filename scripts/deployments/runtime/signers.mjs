@@ -1,7 +1,8 @@
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { capture } from './exec.mjs';
 import { call, sameAddress } from './chain.mjs';
 import { requireEnvironment } from './env.mjs';
@@ -25,10 +26,21 @@ const DEFAULT_KEYSTORES = process.env.FOUNDRY_KEYSTORES ?? path.join(homedir(), 
 
 function keystoreAddress(file) {
   const args = ['wallet', 'address', '--keystore', file];
-  if (process.env.ETH_PASSWORD) args.push('--password', process.env.ETH_PASSWORD);
-  const result = spawnSync('cast', args, { encoding: 'utf8', stdio: ['inherit', 'pipe', 'inherit'] });
-  if (result.status !== 0) throw new Error(`Could not read the address of keystore ${file}`);
-  return result.stdout.trim();
+  // The password goes through a private file, never argv, which other local users can read.
+  const { ETH_PASSWORD: password, ...env } = process.env;
+  const dir = password ? mkdtempSync(path.join(tmpdir(), 'antseed-keystore-')) : null;
+  try {
+    if (dir) {
+      const passwordFile = path.join(dir, 'password');
+      writeFileSync(passwordFile, password, { mode: 0o600 });
+      args.push('--password-file', passwordFile);
+    }
+    const result = spawnSync('cast', args, { encoding: 'utf8', env, stdio: ['inherit', 'pipe', 'inherit'] });
+    if (result.status !== 0) throw new Error(`Could not read the address of keystore ${file}`);
+    return result.stdout.trim();
+  } finally {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 export async function resolveSigner(spec, { rpcUrl } = {}) {

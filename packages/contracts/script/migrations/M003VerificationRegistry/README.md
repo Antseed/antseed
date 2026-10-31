@@ -1,13 +1,12 @@
 # M003 — Verification registry and points policy
 
 Deploys `AntseedKbfVerification` and `AntseedKbfVerificationPointsPolicy`, and nothing else.
-It approves **no** auditors and does **not** register the policy in the
-`AntseedPointsPolicyRegistry`. Both are separate, manual owner steps after the deploy:
-the verification owner approves each auditor with `setAuditor(auditor, true)`, and the
-registry owner calls `registerPolicy(policy)`. Until then no audit can be submitted and
-verdicts change no seller points. Approved auditors submit
-one audit per model; each seller service gets `SAME`, `DIFF`, or `UNDETERMINED`.
-It does not change emissions, staking, or
+It sets **no** publisher, verifiers or audited models, and does **not** register the
+policy in the `AntseedPointsPolicyRegistry`. These are separate, manual owner steps after
+the deploy (see [Post-deploy setup](#post-deploy-setup)). Until they are done no round can
+run and verdicts change no seller points. Approved verifiers run one KBF round per epoch;
+each audited seller service gets `SAME`, `DIFF`, or `UNDETERMINED` once a majority of the
+epoch's verifiers attest the same results root. It does not change emissions, staking, or
 protocol registry pointers. M002 is not a prerequisite.
 
 After M003:
@@ -20,20 +19,23 @@ After M003:
   there is no separate start epoch, so announce rate changes to sellers before sending
   them. Setting both back to 0, or removing the policy from the registry, turns it off
   without a redeploy. A DIFF only affects its own model.
-- **Auditor rewards stay off.** Audits record status but earn no credits until the
+- **Verifier rewards stay off.** Rounds record status but earn nothing until the
   verification owner calls `setRewardsStartEpoch(epoch)`. To launch rewards:
   1. The emissions-gate owner hands the verification bucket to the contract:
      `gate.setMinterController(keccak256("antseed.emissions.verification.v1"), verification)`.
-  2. The verification owner calls `setRewardsStartEpoch` with the launch epoch. Audits
-     from that epoch on earn credits; earlier audits never claim past budgets.
-  Each auditor can claim at most `maxAuditorShareBps` of an epoch's verification budget
-  (default 2,000 = 20%, owner-settable from 1 to 10,000). The cap in force at claim time
-  applies, and budget above it is never minted.
+  2. The verification owner calls `setRewardsStartEpoch` with the launch epoch. Rounds
+     from that epoch on earn rewards; earlier epochs never claim past budgets.
+  An epoch's budget is split into an attester pool (`attestRewardBps`, default 2,000 =
+  20%), shared equally by the verifiers that attested the finalized root, and a collector
+  pool shared by the slices each verifier delivered. Each verifier can claim at most
+  `maxVerifierShareBps` of an epoch's budget (default 2,000 = 20%, owner-settable from 1
+  to 10,000). The cap in force at claim time applies, and budget above it is never minted.
 - **Verdicts expire by epoch.** A SAME or DIFF counts for `validityEpochs` emissions
   epochs including the one it was given in (default 2; owner-settable from 1 to 4), and
-  then drops out on its own. The latest result from a single auditor sets the verdict,
-  including UNDETERMINED, which clears an earlier SAME or DIFF. Auditors double-check
-  DIFF results off-chain before submitting.
+  then drops out on its own. The latest epoch's finalized result sets the verdict,
+  including UNDETERMINED, which clears an earlier SAME or DIFF; a late apply never
+  overwrites a newer epoch's verdict. A bad round can be voided with `voidEpoch(epoch)`
+  and its applied verdicts cleared with `clearServiceStatuses`.
 - **The emissions gate is pinned.** The constructor reads the gate behind
   `registry.emissions()` (usage accounting's `emissionsGate()`) and keeps it for life,
   so verdict epochs never mix gates. A new gate needs a new verification deployment.
@@ -48,8 +50,8 @@ After M003:
   both new contracts and does not need to own the protocol or points policy registry. Supply
   the matching wallet with `--signer verificationOwner=<spec>` (keystore, Ledger, or unlocked
   signer). Both contracts use `Ownable2Step` if ownership should move later.
-- Leave `VERIFICATION_AUDITORS` unset. M003 refuses to run when it is set: auditors are
-  approved separately with `setAuditor` after the deploy.
+- Leave `VERIFICATION_AUDITORS` unset. M003 refuses to run when it is set: verifiers are
+  approved separately with `setVerifier` after the deploy.
 - Optionally set `VERIFICATION_BONUS_BPS` (0 to 5000, default 0).
   It is fixed in the checkpoint; change it later with `setBonusBps`.
 - Set the network RPC environment variable and `BASESCAN_API_KEY` as for M001/M002.
@@ -65,11 +67,48 @@ pnpm contracts:deploy -- M003 --network base-mainnet --broadcast \
   --signer verificationOwner=account:antseed-verification-deployer
 ```
 
-After the broadcast, as separate manual steps:
+After the broadcast, finish the [post-deploy setup](#post-deploy-setup).
 
-- the verification owner approves each auditor: `setAuditor(<auditor>, true)`;
-- the points policy registry owner registers the policy when points should start to count:
-  `registerPolicy(<kbfVerificationPointsPolicy address>)`.
+## Post-deploy setup
+
+All calls are on `AntseedKbfVerification` from the verification owner, except the last.
+`VERIFICATION` is its address.
+
+1. **Publisher.** The address that runs `antseed verifier publish`:
+   `setPublisher(address)`.
+   ```bash
+   cast send $VERIFICATION 'setPublisher(address)' <publisher> --account <owner>
+   ```
+2. **Verifiers.** Each address that runs `antseed verifier start`:
+   `setVerifier(address verifier, bool approved)` (at most 64). An approval or removal
+   takes effect from the next epoch opened; an open epoch keeps its snapshot. Each
+   verifier then publishes its encryption key itself with `setEncryptionKey`, which
+   `verifier start` does on first run.
+   ```bash
+   cast send $VERIFICATION 'setVerifier(address,bool)' <verifier> true --account <owner>
+   ```
+3. **Audited models.** The standing list each epoch audits:
+   `setModels((bytes32 modelHash, string service)[])`, at most 64 entries, where
+   `modelHash` must equal `keccak256(bytes(service))` and `service` is the lowercased
+   audited model id (for example `claude-opus-5.5`). Each call replaces the list and bumps
+   `modelsVersion`; an epoch audits the list in force when it opened.
+   ```bash
+   cast send $VERIFICATION 'setModels((bytes32,string)[])' \
+     "[($(cast keccak claude-opus-5.5),claude-opus-5.5)]" --account <owner>
+   ```
+4. **Optional tuning.**
+   - `setSchedule((uint32 collectSeconds, uint32 backupSeconds, uint32 attestSeconds, uint16 probesPerService, uint16 slicesPerService))`
+     for epochs opened later. Defaults: 3 days collect, 1 day backup, 1 day attest, 100
+     questions and 4 slices per seller service. The three windows together must fit in the
+     emissions epoch, and `probesPerService` must be at least `slicesPerService`.
+   - `setAttestRewardBps(uint16)` (default 2,000), `setMaxVerifierShareBps(uint16)`
+     (default 2,000), `setValidityEpochs(uint8)` (default 2, at most 4).
+   - `setRewardsStartEpoch(uint256)` once the verification bucket is handed over (see above).
+5. **Points.** The points policy registry owner registers the policy when points should
+   start to count: `registerPolicy(<kbfVerificationPointsPolicy address>)`.
+
+The first round runs once the publisher has committed a bank for the current epoch and a
+verifier opens it, before that epoch's collection window ends.
 
 Base Sepolia also supports `--dry-run` and `--broadcast`. Review and commit
 `pending/003-kbf-verification.plan.json` and its `.VALIDATION.md` before
@@ -103,6 +142,6 @@ Once both deployments are confirmed, the runner appends
 Undeployed networks keep that optional address absent. Existing explicit CLI
 overrides still take precedence. No existing history files are edited.
 
-M003 records the deployment only, not auditor approvals, the policy registration or
-later governance changes. Approve or revoke auditors with `setAuditor` and register or
-remove the policy with the points policy registry owner directly.
+M003 records the deployment only, not the publisher, verifier approvals, the model list,
+the policy registration or later governance changes. Make those calls directly, as in
+[Post-deploy setup](#post-deploy-setup).

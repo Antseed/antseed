@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { rescoreKbfReference, type KbfReferenceV1 } from '@antseed/fingerprints'
 import { auditEndpoint, selectProbes } from '../src/audit.js'
 import { FakeEndpoint, testReference } from './fixtures.js'
 
@@ -25,11 +26,31 @@ describe('auditEndpoint', () => {
     expect(result.evaluation.stats.targetHamming).toBe(0)
   })
 
-  it('reaches a verdict when half the probes are scored', async () => {
+  it('gives no SAME while the batches that never came back could hide a DIFF', async () => {
     const flaky = new FakeEndpoint(() => false, (callIndex) => callIndex % 2 === 0)
     const result = await auditEndpoint({ endpoint: flaky, reference: testReference(), probeCount: 100, concurrency: 1 })
-    expect(result.evaluation.verdict).toBe('SAME')
+    expect(result.evaluation.verdict).toBe('UNDETERMINED')
+    expect(result.evaluation.verdictReason).toMatch(/50 missing answers could hide a DIFF/)
     expect(result.evaluation.stats.targetTotal).toBe(50)
+  })
+
+  it('re-scores a legacy reference before testing against it, like the CLI', async () => {
+    // A reference built before missing answers were unscored: 60 of its 600 runs are missing and scored as wrong.
+    const current = testReference()
+    const outcomes = current.selfTest.outcomes.map((outcome, index) => index % 10 === 0
+      ? { ...outcome, answers: [null, null, null], matches: [0, 0, 0] as (0 | 1 | null)[] }
+      : outcome)
+    const legacy: KbfReferenceV1 = {
+      ...current,
+      selfTest: { ...current.selfTest, outcomes, hamming: 60, errorRate: 0.1, coverage: 0.9 },
+    }
+    const substitute = () => new FakeEndpoint((probeIndex) => probeIndex % 6 === 0)
+    const draw = () => 0
+    const audited = await auditEndpoint({ endpoint: substitute(), reference: legacy, probeCount: 100, randomInt: draw })
+    const rescored = await auditEndpoint({ endpoint: substitute(), reference: rescoreKbfReference(legacy), probeCount: 100, randomInt: draw })
+    expect(audited.evaluation.verdict).toBe(rescored.evaluation.verdict)
+    expect(audited.evaluation.verdict).toBe('DIFF')
+    expect(audited.referenceId).toBe(rescoreKbfReference(legacy).referenceId)
   })
 
   it('leaves missing answers unscored and re-asks a batch missing any answer until it is complete', async () => {
