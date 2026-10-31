@@ -284,7 +284,6 @@ export class ModelHealthChecker {
       for (const service of services) {
         if (!supportsHealthProbe(resolveProbeProtocol(provider, service))) this._retryAfterLiveFailures(this._stateFor(provider, service));
       }
-      const hasFreeCheck = (candidate?: Provider) => Boolean(candidate?.checkServiceHealth || candidate?.checkUpstreamAccount);
       const checkProvider = hasFreeCheck(target.probeProvider) ? target.probeProvider! : provider;
       // Free checks also read the account balance, so they run even with traffic.
       const checked = hasFreeCheck(checkProvider)
@@ -581,7 +580,6 @@ export class ModelHealthChecker {
   /** Whether the provider's probes read its account: it has a probed service and no account check of its own. */
   private _probesAccount(provider: Provider): boolean {
     const target = this._findTarget(provider);
-    const hasFreeCheck = (candidate?: Provider) => Boolean(candidate?.checkServiceHealth || candidate?.checkUpstreamAccount);
     if (!target || hasFreeCheck(target.provider) || hasFreeCheck(target.probeProvider)) return false;
     return target.provider.services.some((service) => supportsHealthProbe(resolveProbeProtocol(target.provider, service)));
   }
@@ -805,6 +803,11 @@ function reasonForStatus(statusCode: number): ServiceHealthReason {
 /** Pick the probe request shape from the service's advertised API protocol. */
 function resolveProbeProtocol(provider: Provider, service: string): ServiceApiProtocol {
   return provider.serviceApiProtocols?.[service]?.[0] ?? 'openai-chat-completions';
+}
+
+/** Whether the provider has checks that cost nothing (its account, its model list). */
+function hasFreeCheck(provider?: Provider): boolean {
+  return Boolean(provider?.checkServiceHealth || provider?.checkUpstreamAccount);
 }
 
 export function supportsHealthProbe(protocol: ServiceApiProtocol): boolean {
