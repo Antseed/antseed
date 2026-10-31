@@ -16,6 +16,12 @@ export interface ResolvedVerifierModelConfig extends Omit<VerifierReferenceModel
   service: string
   pricing?: VerifierModelPricingConfig
   contrastModels: string[]
+  /**
+   * The built-in OpenRouter provider pin (`AuditedModel.referenceProvider`), set only when the
+   * verifier configures no `referenceProvider` of its own and the model's reference comes from
+   * OpenRouter. New banks use it; a bank built before keeps the pin it recorded.
+   */
+  defaultReferenceProvider?: { order: string[] }
 }
 
 /**
@@ -122,7 +128,42 @@ export function resolveVerifierModelConfig(
       `no contrast models selected for ${service}; check the configured price ratio and intelligence threshold`,
     )
   }
-  return { ...withAntseedUpstreamRoute(config, model), service, pricing, contrastModels }
+  const defaultReferenceProvider = builtInReferenceProvider(config, service, model)
+  return {
+    ...withAntseedUpstreamRoute(config, model),
+    service,
+    pricing,
+    contrastModels,
+    ...(defaultReferenceProvider ? { defaultReferenceProvider } : {}),
+  }
+}
+
+/**
+ * The built-in provider pin for a model, when it applies: the verifier pins nothing itself, sends
+ * no reference through an Antseed peer, and the reference source is OpenRouter (provider routing is
+ * an OpenRouter feature).
+ */
+export function builtInReferenceProvider(
+  config: VerifierCLIConfig | undefined,
+  service: string,
+  model: VerifierReferenceModelConfig,
+): { order: string[] } | undefined {
+  const order = auditedModels()[service]?.referenceProvider
+  if (!order?.length || model.referenceProvider || model.referenceRoute) return undefined
+  if (model.upstream) {
+    return config?.upstreams?.[model.upstream.name]?.type === 'openrouter' ? { order: [...order] } : undefined
+  }
+  return isOpenRouterUrl(config?.referenceEndpoint?.baseUrl) ? { order: [...order] } : undefined
+}
+
+function isOpenRouterUrl(value: string | undefined): boolean {
+  if (!value) return false
+  try {
+    const host = new URL(value).hostname
+    return host === 'openrouter.ai' || host.endsWith('.openrouter.ai')
+  } catch {
+    return false
+  }
 }
 
 /**

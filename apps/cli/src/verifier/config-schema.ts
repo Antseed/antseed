@@ -187,6 +187,11 @@ export const VerifierConfigSchema = strictObject({
   /** Rechecks of a first DIFF on fresh probes before it is submitted: 1 (default) or 0 to turn rechecks off. */
   diffConfirmationRuns: z.number().int().min(0).max(1).optional(),
   /**
+   * Close calls (first-audit p-value from 0.005 up to 0.20) get one extra set of never-seen probes
+   * and are decided on both sets pooled (`kbf-extension-v1`): 1 (default) or 0 for the single-look rule.
+   */
+  closeCallExtensions: z.number().int().min(0).max(1).optional(),
+  /**
    * Sellers are audited only when their price for a model is at most its reference price
    * (OpenRouter by default) times this ratio: 1 (default) is the reference price, 1.1 allows 10% more.
    */
@@ -200,6 +205,11 @@ export const VerifierConfigSchema = strictObject({
   referenceRetryBaseDelayMs: positiveIntegerSchema.optional(),
   referenceMaxNoProgressRounds: positiveIntegerSchema.optional(),
   referenceSelfTestRuns: positiveIntegerSchema.optional(),
+  /**
+   * KBF layout-filter passes for new banks (default 1; 0 turns it off). Each pass re-asks every new
+   * probe once the way audits do and drops probes whose answer moves. A bank keeps its own setting.
+   */
+  referenceLayoutFilterPasses: z.number().int().min(0, 'must be an integer >= 0').optional(),
   /**
    * When no thinking-suppression strategy works for a reference model, keep building in
    * "bare" mode with a 50x token budget instead of stopping (KBF reference code: --allow-thinking).

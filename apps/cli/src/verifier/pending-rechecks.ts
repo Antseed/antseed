@@ -3,11 +3,14 @@ import { join } from 'node:path'
 import type { ModelAuditSummaryV1, VerifierRunManifestV1 } from './audit-artifacts.js'
 import type { ModelVerificationTargetResult } from './model-run.js'
 import { verifyProxyAuditEvidenceFile } from './proxy-evidence.js'
+import { stageOneVerdict } from './close-call.js'
 
 export interface PendingDiffRecheck {
   model: string
   runId: string
   result: ModelVerificationTargetResult
+  /** `extension`: a close call waiting for its extra questions; `recheck`: a stage-1 DIFF waiting for its recheck. */
+  kind: 'extension' | 'recheck'
 }
 
 export function pendingRecheckKey(model: string, peerId: string): string {
@@ -15,7 +18,8 @@ export function pendingRecheckKey(model: string, peerId: string): string {
 }
 
 /**
- * First DIFFs from this epoch's earlier runs whose recheck could not run and that no later run has
+ * First audits from this epoch's earlier runs that are still waiting: close calls whose extra
+ * questions could not be asked, and stage-1 DIFFs whose recheck could not run, that no later run has
  * settled. Runs are replayed oldest first and the latest result per (model, seller) wins, so a DIFF
  * that a later run rechecked, or re-audited as SAME, is no longer pending. The first check's
  * evidence must still verify against its recorded hash.
@@ -38,19 +42,29 @@ export async function loadPendingDiffRechecks(
       }
       if (summary.runId !== manifest.runId || summary.epoch !== epoch) continue
       for (const result of summary.results ?? []) {
-        latest.set(pendingRecheckKey(entry.model, result.peerId), { model: entry.model, runId: manifest.runId, result })
+        latest.set(pendingRecheckKey(entry.model, result.peerId), {
+          model: entry.model, runId: manifest.runId, result, kind: 'recheck',
+        })
       }
     }
   }
   const pending = new Map<string, PendingDiffRecheck>()
   for (const [key, entry] of latest) {
-    if (entry.result.status !== 'DIFF' || entry.result.recheck || !entry.result.recheckPending) continue
+    if (entry.result.recheck) continue
+    const stageOne = stageOneVerdict(entry.result)
+    const kind = stageOne === null && entry.result.extensionPending
+      ? 'extension'
+      : stageOne === 'DIFF' && entry.result.recheckPending ? 'recheck' : null
+    if (!kind) continue
     try {
       await verifyProxyAuditEvidenceFile(entry.result.evidencePath, entry.result.evidenceHash)
+      if (entry.result.extension) {
+        await verifyProxyAuditEvidenceFile(entry.result.extension.evidencePath, entry.result.extension.evidenceHash)
+      }
     } catch {
       continue
     }
-    pending.set(key, entry)
+    pending.set(key, { ...entry, kind })
   }
   return pending
 }

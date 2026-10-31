@@ -7,6 +7,7 @@ import {
   type VerifierRunManifestV1,
 } from './audit-artifacts.js'
 import { finalAuditVerdict } from './model-audit.js'
+import { stageOneVerdict } from './close-call.js'
 import { explainInconclusive, explainSkipReason, type PlainReason } from './plain-reason.js'
 import { normalized } from './utils.js'
 
@@ -27,6 +28,8 @@ export interface OverviewCell {
   answered: number | null
   asked: number | null
   recheck: { status: string; correctRate: number | null } | null
+  /** Extra questions after a close-call first check; absent on cells from before close calls were extended. */
+  extension?: { probeCount: number; firstPValue: number | null; pooledPValue: number | null; verdict: string } | null
   /** Plain-language reason for grey and yellow cells. */
   reason: PlainReason | null
   /** How many runs this epoch produced a verdict for this cell. */
@@ -132,14 +135,25 @@ export async function buildEpochOverview(
           answered: result.parsedProbeCount,
           asked: result.probeCount,
           recheck,
+          extension: result.extension
+            ? {
+              probeCount: result.extension.probeCount,
+              firstPValue: result.extension.firstLook.pValue,
+              pooledPValue: result.extension.pooled.pValueBinomial,
+              verdict: result.extension.pooled.verdict,
+            }
+            : null,
         }
         if (verdict === null) {
-          // A first DIFF that was never rechecked is not submitted; keep any earlier verdict.
+          // A close call without its extra questions, or a DIFF that was never rechecked, is not
+          // submitted; keep any earlier verdict.
           if (previous && previous.state !== 'skipped') continue
           seller.cells.set(model, {
             ...base,
             state: 'skipped',
-            reason: explainSkipReason('DIFF not confirmed: no recheck on fresh probes', model),
+            reason: explainSkipReason(stageOneVerdict(result) === null
+              ? 'close call waiting for extra questions'
+              : 'DIFF not confirmed: no recheck on fresh probes', model),
             audits: previous?.audits ?? 0,
           })
           continue
@@ -228,6 +242,11 @@ function cellDetail(cell: OverviewCell): string[] {
   if (cell.state !== 'skipped' || cell.answered !== null) {
     lines.push(`1st check: ${percent(cell.correctRate)} match (${cell.answered ?? 0} of ${cell.asked ?? 0} answered)`)
   }
+  if (cell.extension) {
+    const p = (value: number | null): string => value === null ? '?' : value.toFixed(3)
+    lines.push(`close call (p=${p(cell.extension.firstPValue)}): ${cell.extension.probeCount} extra questions, `
+      + `pooled p=${p(cell.extension.pooledPValue)} → ${cell.extension.verdict}`)
+  }
   if (cell.recheck) lines.push(`recheck: ${cell.recheck.status}, ${percent(cell.recheck.correctRate)} match`)
   if (cell.state === 'diff') lines.push('DIFF on both checks')
   return lines
@@ -296,7 +315,7 @@ td{text-align:center;padding:6px 4px}td.num{white-space:nowrap;font-size:12px}
 <body>
 <main>
 <h1>KBF audits · epoch ${escapeHtml(overview.epoch)}</h1>
-<div class="sub">${overview.runIds.length} run${overview.runIds.length === 1 ? '' : 's'} merged in submit order (a later verdict replaces an earlier one, as on the contract). A DIFF counts only when a recheck on fresh questions is DIFF too. Hover a dot for details.</div>
+<div class="sub">${overview.runIds.length} run${overview.runIds.length === 1 ? '' : 's'} merged in submit order (a later verdict replaces an earlier one, as on the contract). A close call is decided on twice the questions. A DIFF counts only when a recheck on fresh questions is DIFF too. Hover a dot for details.</div>
 <div class="cards">
 <div class="card"><h3>AUDITED SELLERS</h3><div class="v">${audited}</div><small>${verifiedSellers} with SAME and no DIFF</small></div>
 <div class="card"><h3>SAME</h3><div class="v">${count('same')}</div><small>services verified</small></div>

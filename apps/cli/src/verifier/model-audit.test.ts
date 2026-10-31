@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { Wallet } from 'ethers'
-import { canonicalHashBytes32 } from '@antseed/fingerprints'
+import { KBF_EXTENSION_RULE, canonicalHashBytes32 } from '@antseed/fingerprints'
 import { VERIFIER_VERDICT, modelHash, serviceHash, sortServiceResults } from '@antseed/node/payments'
 import {
   modelAuditLedgerPath,
@@ -17,9 +17,15 @@ import {
   validateAuditMatchesSummary,
   writeModelAuditEvidence,
   writeModelAuditLedger,
+  type ModelAuditSellerResultV1,
   type PreparedModelAudit,
 } from './model-audit.js'
-import { FIXTURE_CONFIG, writeSignedAuditRun, type FixtureAudit } from './model-audit-fixtures.test-support.js'
+import {
+  FIXTURE_CONFIG,
+  referenceFixture,
+  writeSignedAuditRun,
+  type FixtureAudit,
+} from './model-audit-fixtures.test-support.js'
 import { readVerifierRunManifest } from './audit-artifacts.js'
 
 const randomWallet = (): Wallet => new Wallet(Wallet.createRandom().privateKey)
@@ -293,4 +299,86 @@ test('submits one SAME per seller and model, but every DIFF', async () => {
     for (const exclusion of prepared.excluded) assert.match(exclusion.reason, /bonus counts once per model/)
     assert.equal(entry.evidence.excluded.length, 2)
   })
+})
+
+test('close calls are submitted on the pooled verdict, re-verified from both evidence files', async () => {
+  // 20 probes and a clean self-test: p0 ~0.206, so 7 wrong is a close call (p ~0.098).
+  // Pooled over 40 probes (p0 ~0.109): 7+1 wrong is SAME (p ~0.063), 7+8 wrong is DIFF.
+  const reference = referenceFixture('model-a', 20)
+  const closeCall = (agentId: string, seller: Wallet, value: NonNullable<FixtureAudit['closeCall']>): FixtureAudit => ({
+    ...audit(agentId, seller, 'model-a'), reference, closeCall: value,
+  })
+  await withRun([
+    closeCall('1', sellers[0]!, { firstWrong: 7, extensionWrong: 1 }),
+    closeCall('2', sellers[1]!, { firstWrong: 7, extensionWrong: 8, recheck: 'DIFF' }),
+    closeCall('3', sellers[2]!, { firstWrong: 7, extensionWrong: 8 }),
+    closeCall('4', randomWallet(), { firstWrong: 7 }),
+  ], async ({ prepared }) => {
+    const [entry] = prepared.audits as [PreparedModelAudit]
+    assert.deepEqual(entry.results.map((result) => [result.agentId, result.verdict]), [
+      [1n, VERIFIER_VERDICT.SAME],
+      [2n, VERIFIER_VERDICT.DIFF],
+    ])
+    assert.deepEqual(entry.evidence.extensionRule, KBF_EXTENSION_RULE)
+    const [same, diff] = entry.evidence.results as [ModelAuditSellerResultV1, ModelAuditSellerResultV1]
+    assert.equal(same.extension?.pooled.verdict, 'SAME')
+    assert.equal(same.extension?.pooled.targetHamming, 8)
+    assert.equal(same.extension?.pooled.targetTotal, 40)
+    assert.ok(same.extension!.firstLook.pValue! >= 0.005 && same.extension!.firstLook.pValue! < 0.2)
+    assert.equal(diff.extension?.pooled.verdict, 'DIFF')
+    assert.equal(diff.confirmation?.verdict, 'DIFF')
+    // Fixture sellers share probe sets: first set, extension and recheck are three references.
+    assert.equal(entry.evidence.references.length, 3)
+    assert.equal(entry.auditEvidencePaths.length, 5)
+    assert.ok(entry.auditEvidencePaths.some((path) => path.includes('/extensions/')))
+    assert.deepEqual(prepared.excluded.map((exclusion) => [exclusion.agentId, exclusion.reason.split(' (')[0]]).sort(), [
+      ['3', 'DIFF not confirmed: no recheck on fresh probes, so it is not submitted'],
+      ['4', 'close call waiting for its extra questions'],
+    ])
+  })
+})
+
+test('tampered pooled statistics or a reused extension probe are rejected', async () => {
+  const reference = referenceFixture('model-a', 20)
+  await withRun([
+    { ...audit('1', sellers[0]!, 'model-a'), reference, closeCall: { firstWrong: 7, extensionWrong: 1 } },
+    { ...audit('2', sellers[1]!, 'model-a'), reference, closeCall: { firstWrong: 7, extensionWrong: 1 } },
+  ], async ({ prepared }) => {
+    assert.equal(prepared.audits.length, 0)
+    const reasons = prepared.excluded.map((exclusion) => [exclusion.agentId, exclusion.reason]).sort()
+    assert.match(reasons[0]![1]!, /pooled (statistics|verdict)/)
+    assert.match(reasons[1]![1]!, /verdict mismatch/)
+  }, {
+    tamper: async (evidenceDir) => {
+      const manifest = await readVerifierRunManifest(evidenceDir, 'run-1')
+      const path = manifest.models[0]!.summaryPath
+      const summary = JSON.parse(await readFile(path, 'utf8')) as {
+        results: Array<{ agentId: string; status: string; extension: { pooled: { targetHamming: number; verdict: string } } }>
+      }
+      // Seller 1 claims fewer pooled mismatches; seller 2 claims DIFF on a SAME pool.
+      summary.results.find((result) => result.agentId === '1')!.extension.pooled.targetHamming = 2
+      const second = summary.results.find((result) => result.agentId === '2')!
+      second.status = 'DIFF'
+      await writeFile(path, JSON.stringify(summary))
+    },
+  })
+})
+
+test('a close call is checked against the close-call rule', () => {
+  const first = {
+    target: { peerId: 'aa', service: 'm', agentId: '1' },
+    reference: { referenceId: 'sha256:a', probes: [{ id: 'p1' }] },
+    exchanges: [],
+    result: { verdict: 'SAME', stats: { pValueBinomial: 0.5, targetCoverage: 1, selfHamming: 0, selfTotal: 10, targetHamming: 0, targetTotal: 10, selfCoverage: 1, p0Cp99: 0.3 } },
+  } as unknown as Parameters<typeof validateAuditMatchesSummary>[0]
+  const extensionEvidence = {
+    ...first,
+    reference: { referenceId: 'sha256:b', probes: [{ id: 'p2' }] },
+  } as unknown as Parameters<typeof validateAuditMatchesSummary>[0]
+  const result = {
+    peerId: 'aa', service: 'm', agentId: '1', status: 'SAME', decisionRule: 'kbf-extension-v1',
+    extension: { rule: 'kbf-extension-v1', status: 'SAME', pooled: { verdict: 'SAME' } },
+  } as unknown as Parameters<typeof validateAuditMatchesSummary>[1]
+  // p = 0.5 is a clear SAME: it must not have been extended.
+  assert.throws(() => validateAuditMatchesSummary(first, result, null, extensionEvidence), /not a close call/)
 })

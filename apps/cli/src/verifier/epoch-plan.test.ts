@@ -157,3 +157,24 @@ test('the epoch submission manifest holds the merged result per seller and chang
     await rm(directory, { recursive: true, force: true })
   }
 })
+
+test('a close call waiting for extra questions is pending_extension, not submitted, and counted as left', () => {
+  const grey = {
+    decisionRule: 'kbf-extension-v1' as const,
+    responseAuthVerified: true,
+    stats: { selfHamming: 30, selfTotal: 300, targetHamming: 22, targetTotal: 100, selfCoverage: 1, targetCoverage: 1, p0Cp99: 0.155, pValueBinomial: 0.05 },
+  }
+  const cells = mergeEpochRuns(EPOCH, [
+    run('r1', '2026-10-28T20:00:00.000Z', [{ model: 'm', results: [
+      result('a', 'SAME'),
+      result('b', 'SAME', { ...grey, extensionPending: { reason: 'no fresh questions', since: 'x' } }),
+    ] }]),
+  ])
+  const cell = cells.get(epochCellKey('m', 'b'))!
+  assert.equal(cell.state, 'pending_extension')
+  assert.equal(cell.action, 'extend')
+  assert.equal(cell.reason, 'no fresh questions')
+  assert.equal(countPlan(cells.values()).recheck, 1)
+  const [row] = epochModelRows(cells.values())
+  assert.deepEqual({ ...row }, { model: 'm', same: 1, diff: 0, undetermined: 0, pendingRecheck: 1, failed: 0, skipped: 0, left: 1 })
+})

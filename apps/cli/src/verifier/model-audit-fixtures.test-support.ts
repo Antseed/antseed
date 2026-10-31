@@ -23,6 +23,7 @@ import {
   encodeResponseAuthSigningPayload,
 } from '@antseed/node'
 import {
+  modelAuditExtensionsDirectory,
   modelAuditRechecksDirectory,
   modelAuditSellersDirectory,
   writeEpochAuditSummary,
@@ -34,7 +35,9 @@ import {
 } from './audit-artifacts.js'
 import { writeJsonAtomic } from './atomic-files.js'
 import { createDomainHomogeneousKbfBatches } from './kbf-batching.js'
-import { buildKbfProbeRequestBody } from './model-run.js'
+import { buildKbfProbeRequestBody, type ModelVerificationTargetResult } from './model-run.js'
+import { combineExtension } from './extension-round.js'
+import { combineDiffRecheck } from './diff-recheck.js'
 import { sellerEpochProbeReferencePath, SELLER_PROBE_SELECTION_METHOD } from './probe-bank.js'
 import {
   emptyAuditCostSummary,
@@ -59,6 +62,12 @@ export interface FixtureAudit {
   /** Seller key that actually signs ResponseAuth (defaults to `seller`). */
   signer?: Wallet
   reference?: KbfReferenceV1
+  /**
+   * A close-call first audit (`kbf-extension-v1`): `firstWrong` wrong answers on the first set, then
+   * an extension set of the same size with `extensionWrong` wrong answers, and an optional recheck of
+   * a pooled DIFF. `verdict` is ignored. Omit `extensionWrong` for a close call still waiting.
+   */
+  closeCall?: { firstWrong: number; extensionWrong?: number; recheck?: 'SAME' | 'DIFF' | 'UNDETERMINED' }
 }
 
 export function referenceFixture(model: string, probeCount = 10): KbfReferenceV1 {
@@ -166,6 +175,14 @@ export async function writeSignedAuditRun(input: {
         createdByRunId: input.runId,
       })
       const auditId = canonicalHashBytes32({ fixture: input.runId, model, peerId })
+      if (audit.closeCall) {
+        results.push(await closeCallResult({
+          audit, closeCall: audit.closeCall, reference, auditor: input.auditor, runId: input.runId, epoch: input.epoch,
+          evidenceDir: input.evidenceDir, completedAt: timestamps.completedAt, displayName: `${model}-${index + 1}`,
+          peerId, auditId,
+        }))
+        continue
+      }
       const first = await writeFixtureEvidence({
         audit, reference, auditor: input.auditor, runId: input.runId, completedAt: timestamps.completedAt,
         displayName: `${model}-${index + 1}`, peerId, verdictWanted: audit.verdict, auditId,
@@ -272,6 +289,8 @@ function signedExchanges(input: FixtureAudit & {
   reference: KbfReferenceV1
   auditor: Wallet
   runId: string
+  /** When set, exactly these probes are answered wrong, whatever `verdict` says. */
+  wrongProbeIds?: ReadonlySet<string>
 }): ProxyAuditEvidenceExchangeV1[] {
   const batches = createDomainHomogeneousKbfBatches(input.reference.probes, KBF_PROBES_PER_REQUEST, (values) => [...values])
   const peerId = peerIdOf(input.seller)
@@ -281,7 +300,10 @@ function signedExchanges(input: FixtureAudit & {
     const body = buildKbfProbeRequestBody(input.service, input.reference.queryProfile, probes, promptVariantId)
     const headers = { 'content-type': 'application/json' }
     const content = probes
-      .map((probe, index) => `(${index + 1}) ${input.verdict !== 'DIFF' ? probe.consensus : probe.consensus + 500}`)
+      .map((probe, index) => {
+        const wrong = input.wrongProbeIds ? input.wrongProbeIds.has(probe.id) : input.verdict === 'DIFF'
+        return `(${index + 1}) ${wrong ? probe.consensus + 500 : probe.consensus}`
+      })
       .join('\n')
     const responseBody = new TextEncoder().encode(JSON.stringify({
       choices: [{ message: { role: 'assistant', content }, finish_reason: 'stop' }],
@@ -371,9 +393,88 @@ function signedExchanges(input: FixtureAudit & {
   })
 }
 
-/** A copy of a reference with new probe IDs, as a recheck on fresh probes gets. */
-function freshReference(reference: KbfReferenceV1): KbfReferenceV1 {
-  const probes = reference.probes.map((probe) => ({ ...probe, id: `${probe.id}-fresh` }))
+async function closeCallResult(input: {
+  audit: FixtureAudit
+  closeCall: NonNullable<FixtureAudit['closeCall']>
+  reference: KbfReferenceV1
+  auditor: Wallet
+  runId: string
+  epoch: string
+  evidenceDir: string
+  completedAt: string
+  displayName: string
+  peerId: string
+  auditId: string
+}): Promise<ModelVerificationTargetResult> {
+  const { audit, closeCall, reference, peerId } = input
+  const asResult = (
+    written: Awaited<ReturnType<typeof writeFixtureEvidence>>,
+    auditId: string,
+    probeCount: number,
+  ): ModelVerificationTargetResult => {
+    const correct = written.matchVector.filter((entry) => entry === 1).length
+    const incorrect = written.matchVector.filter((entry) => entry === 0).length
+    return {
+      peerId,
+      displayName: written.evidence.target.displayName,
+      agentId: audit.agentId,
+      service: audit.service,
+      status: written.evidence.result.verdict,
+      outcomeReason: null,
+      auditId,
+      parsedProbeCount: correct + incorrect,
+      probeCount,
+      correctProbeCount: correct,
+      incorrectProbeCount: incorrect,
+      correctRate: correct + incorrect === 0 ? null : correct / (correct + incorrect),
+      requestCount: written.exchanges.length,
+      cost: written.cost,
+      cumulativeCost: written.cost,
+      evidencePath: written.written.path,
+      evidenceHash: written.written.evidenceHash,
+      stats: written.evidence.result.stats,
+      responseAuthVerified: true,
+    }
+  }
+  const common = {
+    audit, auditor: input.auditor, completedAt: input.completedAt, displayName: input.displayName, peerId,
+    verdictWanted: 'SAME' as const,
+  }
+  const first = await writeFixtureEvidence({
+    ...common, reference, runId: input.runId, auditId: input.auditId, wrongCount: closeCall.firstWrong,
+    directory: modelAuditSellersDirectory(input.evidenceDir, input.epoch, audit.model, input.runId),
+  })
+  let result: ModelVerificationTargetResult = {
+    ...asResult(first, input.auditId, reference.probes.length),
+    decisionRule: 'kbf-extension-v1',
+  }
+  if (closeCall.extensionWrong === undefined) {
+    return { ...result, extensionPending: { reason: 'fixture: not extended', since: input.completedAt } }
+  }
+  const extensionReference = freshReference(reference, 'extension')
+  const extensionAuditId = canonicalHashBytes32({ fixture: input.runId, model: audit.model, peerId, extension: true })
+  const extension = await writeFixtureEvidence({
+    ...common, reference: extensionReference, runId: `${input.runId}-extension`, auditId: extensionAuditId,
+    wrongCount: closeCall.extensionWrong,
+    directory: modelAuditExtensionsDirectory(input.evidenceDir, input.epoch, audit.model, input.runId),
+  })
+  result = combineExtension(
+    result, asResult(extension, extensionAuditId, extensionReference.probes.length), extensionReference.referenceId,
+  )
+  if (!closeCall.recheck) return result
+  const recheckReference = freshReference(reference, 'recheck')
+  const recheckAuditId = canonicalHashBytes32({ fixture: input.runId, model: audit.model, peerId, recheck: true })
+  const recheck = await writeFixtureEvidence({
+    ...common, reference: recheckReference, runId: `${input.runId}-recheck`, auditId: recheckAuditId,
+    verdictWanted: closeCall.recheck,
+    directory: modelAuditRechecksDirectory(input.evidenceDir, input.epoch, audit.model, input.runId),
+  })
+  return combineDiffRecheck(result, asResult(recheck, recheckAuditId, recheckReference.probes.length), recheckReference.referenceId)
+}
+
+/** A copy of a reference with new probe IDs, as a recheck or extension on fresh probes gets. */
+function freshReference(reference: KbfReferenceV1, suffix = 'fresh'): KbfReferenceV1 {
+  const probes = reference.probes.map((probe) => ({ ...probe, id: `${probe.id}-${suffix}` }))
   const ids = new Map(reference.probes.map((probe, index) => [probe.id, probes[index]!.id]))
   const value: KbfReferenceV1 = {
     ...reference,
@@ -403,11 +504,16 @@ async function writeFixtureEvidence(input: {
   verdictWanted: FixtureAudit['verdict']
   auditId: string
   directory: string
+  /** Answer exactly this many probes wrong (the first ones) and keep whatever verdict that gives. */
+  wrongCount?: number
 }) {
   const { reference, peerId } = input
   const audit = { ...input.audit, verdict: input.verdictWanted }
   const timestamps = { completedAt: input.completedAt }
-  const exchanges = signedExchanges({ ...audit, reference, auditor: input.auditor, runId: input.runId })
+  const wrongProbeIds = input.wrongCount === undefined
+    ? undefined
+    : new Set(reference.probes.slice(0, input.wrongCount).map((probe) => probe.id))
+  const exchanges = signedExchanges({ ...audit, reference, auditor: input.auditor, runId: input.runId, wrongProbeIds })
   const answersById = new Map<string, number | null>()
   const matchesById = new Map<string, 0 | 1 | null>()
   for (const exchange of exchanges) {
@@ -420,7 +526,7 @@ async function writeFixtureEvidence(input: {
   const matchVector = reference.probes.map((probe) => matchesById.get(probe.id) ?? null)
   const fragment = verifyKbf(reference, { answers, matchVector }, KBF_AUDIT_VERIFY_OPTIONS)
   if (fragment.verdict === 'UNKNOWN') throw new Error(fragment.verdictReason ?? 'UNKNOWN fixture verdict')
-  const undetermined = audit.verdict === 'UNDETERMINED'
+  const undetermined = audit.verdict === 'UNDETERMINED' && input.wrongCount === undefined
   const verdict = undetermined ? 'UNDETERMINED' as const : fragment.verdict
   const verdictReason = undetermined
     ? 'one or more successful proxy batches lacked valid verified ResponseAuth'
@@ -457,7 +563,9 @@ async function writeFixtureEvidence(input: {
       cumulativeCost: cost,
     },
   }
-  if (verdict !== audit.verdict) throw new Error(`fixture produced ${fragment.verdict}, expected ${audit.verdict}`)
+  if (input.wrongCount === undefined && verdict !== audit.verdict) {
+    throw new Error(`fixture produced ${fragment.verdict}, expected ${audit.verdict}`)
+  }
   const written = await writeProxyAuditEvidence(input.directory, input.auditId, evidence)
   return { evidence, written, exchanges, matchVector, cost }
 }

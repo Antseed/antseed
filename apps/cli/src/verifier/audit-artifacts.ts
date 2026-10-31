@@ -111,6 +111,12 @@ interface SellerAuditReportResult {
   evidencePath?: string
   outcomeReason?: VerificationOutcomeReasonV1 | null
   recheck?: { status: string; parsedProbeCount: number; probeCount: number }
+  extension?: {
+    probeCount: number
+    firstLook: { pValue: number | null }
+    pooled: { pValueBinomial: number | null; verdict: string }
+  }
+  extensionPending?: { reason: string }
 }
 
 interface SellerAuditReportFailure {
@@ -181,6 +187,16 @@ export function modelAuditRechecksDirectory(
   runId: string,
 ): string {
   return join(modelAuditsDirectory(evidenceDir, epoch, model, runId), 'rechecks')
+}
+
+/** Close-call extension evidence, apart from first checks and rechecks. */
+export function modelAuditExtensionsDirectory(
+  evidenceDir: string,
+  epoch: string,
+  model: string,
+  runId: string,
+): string {
+  return join(modelAuditsDirectory(evidenceDir, epoch, model, runId), 'extensions')
 }
 
 export function modelReferencesDirectory(evidenceDir: string, epoch: string, model: string): string {
@@ -323,10 +339,17 @@ export async function renderModelAuditReports(
         incorrect: result.parsedProbeCount === 0 ? '—' : String(result.incorrectProbeCount),
         correctRate: result.correctRate === null ? 'N/A' : `${(result.correctRate * 100).toFixed(1)}%`,
         verdict: result.status,
-        reason: result.recheck
-          ? `first check DIFF; recheck ${result.recheck.status} `
-            + `(${result.recheck.parsedProbeCount}/${result.recheck.probeCount} fresh probes)`
-          : reportReason(result.outcomeReason),
+        reason: [
+          result.extension
+            ? `close call (p=${result.extension.firstLook.pValue?.toFixed(3) ?? '?'}); `
+              + `${result.extension.probeCount} extra questions, pooled p=${result.extension.pooled.pValueBinomial?.toFixed(3) ?? '?'} `
+              + `→ ${result.extension.pooled.verdict}`
+            : result.extensionPending ? `close call waiting for extra questions: ${result.extensionPending.reason}` : null,
+          result.recheck
+            ? `stage-1 DIFF; recheck ${result.recheck.status} `
+              + `(${result.recheck.parsedProbeCount}/${result.recheck.probeCount} fresh probes)`
+            : null,
+        ].filter(Boolean).join('; ') || reportReason(result.outcomeReason),
         nextAction: result.outcomeReason?.nextAction ?? '—',
         auditId: result.auditId,
         evidencePath: result.evidencePath,

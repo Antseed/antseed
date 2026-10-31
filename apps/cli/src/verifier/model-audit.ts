@@ -3,6 +3,8 @@ import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { getAddress } from 'ethers'
 import {
   KBF_AUDIT_VERIFY_OPTIONS,
+  KBF_EXTENSION_RULE,
+  classifyKbfFirstLook,
   canonicalHashBytes32,
   canonicalJsonStringify,
   sha256Hex,
@@ -25,6 +27,7 @@ import type { VerificationOutcomeReasonV1 } from './outcome-reason.js'
 import type { ReferenceUpstreamProvenanceV1 } from './model-reference.js'
 import { findEpochProbeReference, loadBankReferenceExchanges } from './probe-bank.js'
 import { confirmedDiffStatus } from './diff-recheck.js'
+import { CLOSE_CALL_RULE_ID, pooledCloseCallVerdict, stageOneVerdict } from './close-call.js'
 import { verifyProxyAuditEvidenceFile, type ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import { resolveReferenceSizingPolicy } from './reference-sizing.js'
 import { safeServiceSlug } from './slug.js'
@@ -54,8 +57,25 @@ export interface ModelAuditSellerResultV1 {
     evidenceHash: string
   }
   /**
-   * Second check on fresh probes after the first check (`audit`) said DIFF. `verdict` is DIFF only
-   * when this check is DIFF too; otherwise it is UNDETERMINED.
+   * Extra set of never-seen probes asked because the first check (`audit`) was a close call
+   * (`extensionRule`). The stage-1 verdict is `pooled.verdict`, computed from both sets' stats.
+   */
+  extension?: {
+    rule: typeof CLOSE_CALL_RULE_ID
+    firstLook: { verdict: ModelAuditVerdict; pValue: number | null }
+    referenceId: string
+    stats: FingerprintStats
+    matchVectorHash: string
+    pooled: Omit<FingerprintStats, 'selfCoverage'> & { verdict: ModelAuditVerdict; verdictReason: string | null }
+    audit: {
+      auditId: string
+      evidencePath: string
+      evidenceHash: string
+    }
+  }
+  /**
+   * Second check on fresh probes after stage 1 (the first check, or the first check pooled with its
+   * extension) said DIFF. `verdict` is DIFF only when this check is DIFF too; otherwise UNDETERMINED.
    */
   confirmation?: {
     verdict: ModelAuditVerdict
@@ -104,6 +124,8 @@ export interface ModelAuditEvidenceV1 {
    */
   referenceEvidence?: ModelAuditReferenceEvidenceV1[]
   kbfOptions: typeof KBF_VERIFY_OPTIONS
+  /** Close-call rule; written when any result in this evidence was decided by it. */
+  extensionRule?: typeof KBF_EXTENSION_RULE
   results: ModelAuditSellerResultV1[]
   excluded: ExcludedSellerAuditV1[]
 }
@@ -249,6 +271,7 @@ export async function prepareModelAudits(input: {
       agentId: bigint
       result: ModelAuditSummaryV1['results'][number]
       evidence: ProxyAuditEvidenceV1
+      extensionEvidence: ProxyAuditEvidenceV1 | null
       recheckEvidence: ProxyAuditEvidenceV1 | null
     }> = []
     const seen = new Set<string>()
@@ -263,22 +286,30 @@ export async function prepareModelAudits(input: {
         continue
       }
       let evidence: ProxyAuditEvidenceV1
+      let extensionEvidence: ProxyAuditEvidenceV1 | null = null
       let recheckEvidence: ProxyAuditEvidenceV1 | null = null
       try {
         evidence = await verifyProxyAuditEvidenceFile(result.evidencePath, result.evidenceHash)
+        if (result.extension) {
+          extensionEvidence = await verifyProxyAuditEvidenceFile(result.extension.evidencePath, result.extension.evidenceHash)
+        }
         if (result.recheck) {
           recheckEvidence = await verifyProxyAuditEvidenceFile(result.recheck.evidencePath, result.recheck.evidenceHash)
         }
-        validateAuditMatchesSummary(evidence, result, recheckEvidence)
+        validateAuditMatchesSummary(evidence, result, recheckEvidence, extensionEvidence)
       } catch (error) {
         exclude(`invalid audit evidence: ${asError(error).message}`)
         continue
       }
       const finalVerdict = finalAuditVerdict(result)
       if (finalVerdict === null) {
-        exclude(result.recheckPending
-          ? `DIFF waiting for its recheck (${result.recheckPending.reason}); a later run this epoch rechecks it, so it is not submitted yet`
-          : 'DIFF not confirmed: no recheck on fresh probes, so it is not submitted')
+        exclude(stageOneVerdict(result) === null
+          ? result.extensionPending
+            ? `close call waiting for its extra questions (${result.extensionPending.reason}); a later run this epoch asks them, so it is not submitted yet`
+            : 'close call without its extra questions, so it is not submitted'
+          : result.recheckPending
+            ? `DIFF waiting for its recheck (${result.recheckPending.reason}); a later run this epoch rechecks it, so it is not submitted yet`
+            : 'DIFF not confirmed: no recheck on fresh probes, so it is not submitted')
         continue
       }
       if (finalVerdict !== result.status) result = { ...result, status: finalVerdict }
@@ -304,7 +335,7 @@ export async function prepareModelAudits(input: {
         continue
       }
       seen.add(duplicateKey)
-      accepted.push({ agentId, result, evidence, recheckEvidence })
+      accepted.push({ agentId, result, evidence, extensionEvidence, recheckEvidence })
     }
 
     keepOneSamePerSeller(accepted, excluded)
@@ -321,9 +352,13 @@ export async function prepareModelAudits(input: {
       const evidenceDirectory = dirname(evidencePath)
       const references: PreparedModelAudit['references'] = []
       const referenceEntries: ModelAuditEvidenceV1['references'] = []
-      const auditEvidence = slice.flatMap(({ evidence, recheckEvidence }) => (
-        recheckEvidence ? [evidence, recheckEvidence] : [evidence]
+      const auditEvidence = slice.flatMap(({ evidence, extensionEvidence, recheckEvidence }) => (
+        [evidence, extensionEvidence, recheckEvidence].filter((entry): entry is ProxyAuditEvidenceV1 => entry !== null)
       ))
+      // A close-call extension set is only judged pooled with its first set, so it is not power-sized.
+      const extensionReferenceIds = new Set(slice.flatMap(({ extensionEvidence }) => (
+        extensionEvidence ? [extensionEvidence.reference.referenceId] : []
+      )))
       for (const evidence of auditEvidence) {
         const referenceId = evidence.reference.referenceId
         if (referenceEntries.some((entry) => entry.referenceId === referenceId)) continue
@@ -331,7 +366,9 @@ export async function prepareModelAudits(input: {
         let exportedPath: string | null = null
         const located = await findEpochProbeReference(input.banksDir, referenceId)
         if (located) {
-          const reference = validateKbfReferenceV1(located, { minimumStatisticalPower: sizing.minimumStatisticalPower })
+          const reference = validateKbfReferenceV1(located, {
+            minimumStatisticalPower: extensionReferenceIds.has(referenceId) ? Number.EPSILON : sizing.minimumStatisticalPower,
+          })
           references.push({ path: referencePath, reference })
           exportedPath = portableRelative(evidenceDirectory, referencePath)
         }
@@ -356,7 +393,7 @@ export async function prepareModelAudits(input: {
           exchangeCount: stored.exchangeCount,
         })
       }
-      const results: ModelAuditSellerResultV1[] = slice.map(({ agentId, result, evidence, recheckEvidence }) => ({
+      const results: ModelAuditSellerResultV1[] = slice.map(({ agentId, result, evidence, extensionEvidence, recheckEvidence }) => ({
         agentId: agentId.toString(),
         peerId: result.peerId,
         displayName: result.displayName,
@@ -373,6 +410,31 @@ export async function prepareModelAudits(input: {
           evidencePath: portableRelative(evidenceDirectory, result.evidencePath),
           evidenceHash: result.evidenceHash,
         },
+        ...(result.extension && extensionEvidence ? {
+          extension: {
+            rule: result.extension.rule,
+            firstLook: { verdict: evidence.result.verdict, pValue: evidence.result.stats.pValueBinomial },
+            referenceId: extensionEvidence.reference.referenceId,
+            stats: extensionEvidence.result.stats,
+            matchVectorHash: extensionEvidence.result.matchVectorHash,
+            pooled: {
+              selfHamming: result.extension.pooled.selfHamming,
+              selfTotal: result.extension.pooled.selfTotal,
+              targetHamming: result.extension.pooled.targetHamming,
+              targetTotal: result.extension.pooled.targetTotal,
+              targetCoverage: result.extension.pooled.targetCoverage,
+              p0Cp99: result.extension.pooled.p0Cp99,
+              pValueBinomial: result.extension.pooled.pValueBinomial,
+              verdict: result.extension.pooled.verdict,
+              verdictReason: result.extension.pooled.verdictReason,
+            },
+            audit: {
+              auditId: result.extension.auditId,
+              evidencePath: portableRelative(evidenceDirectory, result.extension.evidencePath),
+              evidenceHash: result.extension.evidenceHash,
+            },
+          },
+        } : {}),
         ...(result.recheck && recheckEvidence ? {
           confirmation: {
             verdict: result.recheck.status,
@@ -400,6 +462,9 @@ export async function prepareModelAudits(input: {
         references: referenceEntries,
         ...(referenceEvidenceEntries.length > 0 ? { referenceEvidence: referenceEvidenceEntries } : {}),
         kbfOptions: KBF_VERIFY_OPTIONS,
+        ...(slice.some(({ result }) => result.decisionRule === CLOSE_CALL_RULE_ID)
+          ? { extensionRule: KBF_EXTENSION_RULE }
+          : {}),
         results,
         excluded: part === 1 ? excluded : [],
       }
@@ -418,9 +483,11 @@ export async function prepareModelAudits(input: {
         }))),
         references,
         referenceEvidence,
-        auditEvidencePaths: slice.flatMap(({ result }) => (
-          result.recheck ? [result.evidencePath, result.recheck.evidencePath] : [result.evidencePath]
-        )),
+        auditEvidencePaths: slice.flatMap(({ result }) => [
+          result.evidencePath,
+          ...(result.extension ? [result.extension.evidencePath] : []),
+          ...(result.recheck ? [result.recheck.evidencePath] : []),
+        ]),
       })
     }
   }
@@ -612,22 +679,68 @@ export function validateAuditMatchesSummary(
   evidence: ProxyAuditEvidenceV1,
   result: ModelAuditSummaryV1['results'][number],
   recheckEvidence: ProxyAuditEvidenceV1 | null = null,
+  extensionEvidence: ProxyAuditEvidenceV1 | null = null,
 ): void {
-  for (const checked of recheckEvidence ? [evidence, recheckEvidence] : [evidence]) {
+  for (const checked of [evidence, extensionEvidence, recheckEvidence]) {
+    if (!checked) continue
     if (normalized(checked.target.peerId) !== normalized(result.peerId)) throw new Error('seller peer ID mismatch')
     if (normalized(checked.target.service) !== normalized(result.service)) throw new Error('service mismatch')
     if ((checked.target.agentId ?? null) !== (result.agentId ?? null)) throw new Error('seller agent ID mismatch')
   }
+  const sharesProbes = (left: ProxyAuditEvidenceV1, right: ProxyAuditEvidenceV1): boolean => {
+    const ids = new Set(left.reference.probes.map((probe) => probe.id))
+    return left.reference.referenceId === right.reference.referenceId
+      || right.reference.probes.some((probe) => ids.has(probe.id))
+  }
+  // The close-call decision reads the summary's stats; they must be the first check's evidence stats.
+  if (result.stats && canonicalHashBytes32(result.stats) !== canonicalHashBytes32(evidence.result.stats)) {
+    throw new Error('first check statistics do not match its evidence')
+  }
+  // The stage-1 verdict, recomputed from the evidence: the first check's own verdict, or after a
+  // close call the pooled verdict of both sets.
+  let stageOne: ModelAuditVerdict = evidence.result.verdict
+  if (result.extension) {
+    if (!extensionEvidence) throw new Error('extension evidence missing')
+    if (result.decisionRule !== CLOSE_CALL_RULE_ID || result.extension.rule !== CLOSE_CALL_RULE_ID) {
+      throw new Error('extension without the close-call rule')
+    }
+    if (result.extension.status !== extensionEvidence.result.verdict) throw new Error('extension verdict mismatch')
+    if (sharesProbes(evidence, extensionEvidence)) throw new Error('extension reused probes from the first check')
+    if (classifyKbfFirstLook(evidence.result.stats, { minCoverage: KBF_VERIFY_OPTIONS.minCoverage }) !== 'extend') {
+      throw new Error('extension of a first check that was not a close call')
+    }
+    const pooled = pooledCloseCallVerdict(
+      { stats: evidence.result.stats, probeCount: evidence.reference.probes.length },
+      { stats: extensionEvidence.result.stats, probeCount: extensionEvidence.reference.probes.length },
+    )
+    if (pooled.verdict === 'UNKNOWN') throw new Error(`pooled verdict is UNKNOWN: ${pooled.verdictReason}`)
+    const recordedPooled = result.extension.pooled
+    const sameNumber = (left: number | null, right: number | null): boolean => (
+      left === right || (left !== null && right !== null && Math.abs(left - right) <= 1e-12 * Math.max(1, Math.abs(left)))
+    )
+    if (pooled.stats.selfHamming !== recordedPooled.selfHamming || pooled.stats.selfTotal !== recordedPooled.selfTotal
+      || pooled.stats.targetHamming !== recordedPooled.targetHamming || pooled.stats.targetTotal !== recordedPooled.targetTotal
+      || !sameNumber(pooled.stats.pValueBinomial, recordedPooled.pValueBinomial)) {
+      throw new Error('pooled statistics do not follow from the two evidence files')
+    }
+    const unverified = (checked: ProxyAuditEvidenceV1): boolean => checked.exchanges.some((exchange) => (
+      exchange.status === 'succeeded' && exchange.responseAuth.status !== 'verified'
+    ))
+    if (unverified(evidence)) throw new Error('extension of a first check without verified ResponseAuth')
+    const authFailed = unverified(extensionEvidence)
+    stageOne = authFailed ? 'UNDETERMINED' : pooled.verdict
+    if (recordedPooled.verdict !== stageOne) throw new Error('pooled verdict mismatch')
+  }
   if (!result.recheck) {
-    if (evidence.result.verdict !== result.status) throw new Error('verdict mismatch')
+    if (stageOne !== result.status) throw new Error('verdict mismatch')
     return
   }
   if (!recheckEvidence) throw new Error('recheck evidence missing')
-  if (evidence.result.verdict !== 'DIFF') throw new Error('recheck without a first DIFF')
+  if (stageOne !== 'DIFF') throw new Error('recheck without a first DIFF (stage 1)')
   if (recheckEvidence.result.verdict !== result.recheck.status) throw new Error('recheck verdict mismatch')
-  if (recheckEvidence.reference.referenceId === evidence.reference.referenceId
-    || recheckEvidence.reference.probes.some((probe) => evidence.reference.probes.some((first) => first.id === probe.id))) {
-    throw new Error('recheck reused probes from the first check')
+  if (sharesProbes(evidence, recheckEvidence)) throw new Error('recheck reused probes from the first check')
+  if (extensionEvidence && sharesProbes(extensionEvidence, recheckEvidence)) {
+    throw new Error('recheck reused probes from the extension')
   }
   // Runs from before DIFF needed two DIFFs stored "DIFF then UNDETERMINED" as DIFF; the submitted
   // verdict is recomputed from the evidence (finalAuditVerdict), so only a SAME recheck is checked.
@@ -637,13 +750,16 @@ export function validateAuditMatchesSummary(
 }
 
 /**
- * The verdict submitted for a seller: a DIFF counts only when a recheck on fresh probes is DIFF too,
- * otherwise it is UNDETERMINED. Null for a DIFF that was never rechecked, which is not submitted.
+ * The verdict submitted for a seller. A close call (`kbf-extension-v1`) is decided on its first set
+ * pooled with an extra set; null while that extra set is missing. A stage-1 DIFF counts only when a
+ * recheck on fresh probes is DIFF too, otherwise it is UNDETERMINED; null for a DIFF that was never
+ * rechecked. Null results are not submitted.
  */
 export function finalAuditVerdict(result: ModelAuditSummaryV1['results'][number]): ModelAuditVerdict | null {
   if (result.recheck) return confirmedDiffStatus(result.recheck.status)
-  if (result.status === 'DIFF') return null
-  return result.status as ModelAuditVerdict
+  const stageOne = stageOneVerdict(result)
+  if (stageOne === null || stageOne === 'DIFF') return null
+  return stageOne
 }
 
 async function readModelSummary(path: string, runId: string, model: string): Promise<ModelAuditSummaryV1> {
