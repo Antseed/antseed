@@ -525,7 +525,7 @@ describe('BuyerPaymentNegotiator', () => {
         currentSpent: '11009626',
         currentAcceptedCumulative: '10998222',
         reserveMaxAmount: '11000000',
-        channelId: '0x' + 'cd'.repeat(32),
+        channelId: '0x' + 'ab'.repeat(32),
       });
 
       const result = await negotiator.handle402(response, peer, conn, makeRequest());
@@ -537,6 +537,32 @@ describe('BuyerPaymentNegotiator', () => {
       // Fresh negotiation opens a new channel.
       expect(bpm.authorizeSpending).toHaveBeenCalled();
       expect(result.action).toBe('retry');
+    });
+
+    it('retries on the replacement channel instead of retiring it when an exhausted 402 names the old channel', async () => {
+      await simulateSuccessfulNegotiation(negotiator, bpm, peer, conn);
+      (bpm.authorizeSpending as ReturnType<typeof vi.fn>).mockClear();
+      // Another request already replaced the exhausted channel 0xcd… with 0xab….
+      (bpm.getActiveSession as ReturnType<typeof vi.fn>).mockReturnValue(makeActiveSession(peer.peerId));
+
+      const response = make402Response({
+        error: 'payment_required',
+        code: 'channel_exhausted',
+        minBudgetPerRequest: '10000',
+        suggestedAmount: '1000000',
+        requiredCumulativeAmount: '11019626',
+        currentSpent: '11009626',
+        currentAcceptedCumulative: '10998222',
+        reserveMaxAmount: '11000000',
+        channelId: '0x' + 'cd'.repeat(32),
+      });
+
+      const result = await negotiator.handle402(response, peer, conn, makeRequest());
+
+      expect(result.action).toBe('retry');
+      expect(bpm.retireSession).not.toHaveBeenCalled();
+      expect(bpm.authorizeSpending).not.toHaveBeenCalled();
+      expect(bpm.extendCurrentSpendingAuth).not.toHaveBeenCalled();
     });
 
     it('detects exhaustion via reserveMaxAmount even when seller omits the explicit code', async () => {
@@ -561,7 +587,7 @@ describe('BuyerPaymentNegotiator', () => {
         suggestedAmount: '1000000',
         requiredCumulativeAmount: '11019626',
         reserveMaxAmount: '11000000',
-        channelId: '0x' + 'cd'.repeat(32),
+        channelId: '0x' + 'ab'.repeat(32),
       });
 
       const result = await negotiator.handle402(response, peer, conn, makeRequest());

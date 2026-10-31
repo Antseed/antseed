@@ -911,6 +911,22 @@ export class BuyerPaymentNegotiator {
 
     const hasActiveSession = hadLockedSession || this._bpm.getActiveSession(peer.peerId) != null;
 
+    // With requests in parallel, an exhausted 402 for the old channel can
+    // arrive after another request already replaced it. Retiring then would
+    // ghost the replacement: wait for its negotiation and retry on it instead.
+    const exhaustedChannelId = channelExhausted
+      ? buffered?.channelId ?? (responseAlreadyHasRequirements && typeof directPaymentBody?.channelId === 'string' ? directPaymentBody.channelId : null)
+      : null;
+    const activeChannelId = exhaustedChannelId ? this._bpm.getActiveSession(peer.peerId)?.sessionId : undefined;
+    if (exhaustedChannelId && activeChannelId && exhaustedChannelId.toLowerCase() !== activeChannelId.toLowerCase()) {
+      debugLog(
+        `[BuyerNegotiator] Exhausted 402 for replaced channel ${exhaustedChannelId.slice(0, 18)}... from ${peer.peerId.slice(0, 12)}... — ` +
+        `retrying on ${activeChannelId.slice(0, 18)}...`,
+      );
+      await this._negotiationLocks.get(peer.peerId)?.catch(() => undefined);
+      return { action: 'retry' };
+    }
+
     if (channelExhausted && hasActiveSession) {
       debugLog(
         `[BuyerNegotiator] Channel exhausted for ${peer.peerId.slice(0, 12)}... ` +

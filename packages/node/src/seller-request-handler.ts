@@ -683,18 +683,33 @@ export class SellerRequestHandler {
               debugLog(`[SellerHandler] Caught up before 402 for ${buyerPeerId.slice(0, 12)}... (spent=${spent} accepted=${accepted})`);
             }
           }
+          // A stored ceiling can lag the chain (a top-up that confirmed while
+          // the seller was down): check it before treating the channel as full.
+          const reserveEstimateOverdraft = this._deps.reserveEstimateOverdraftUsdc;
+          const estimateExceedsReserve = (): boolean => reserveEstimateOverdraft != null
+            && reserveMax > 0n
+            && estimatedRequestCost > 0n
+            && estimatedRequestCost > (reserveMax > spent ? reserveMax - spent : 0n) + reserveEstimateOverdraft;
+          if (reserveMax > 0n && (accepted >= reserveMax || spent > reserveMax || estimateExceedsReserve())) {
+            reserveMax = await spm.refreshReserveMaxFromChain(session.sessionId);
+            // The channel may have closed during the read: never admit work
+            // on a channel that is gone, and judge the others on fresh counters.
+            if (spm.getChannelByPeer(buyerPeerId)?.sessionId !== session.sessionId) {
+              sendSessionExpired('the reserve ceiling check');
+              return;
+            }
+            accepted = spm.getAcceptedCumulative(session.sessionId);
+            spent = spm.getCumulativeSpend(session.sessionId);
+            isBlocked = spm.isChannelBlocked(session.sessionId);
+          }
           // If spend has caught up and there is no headroom left in the reserve,
           // stop serving before accepting any additional request cost.
           const isAtExactSpendLimit = spent > 0n && spent === accepted && reserveMax > 0n && accepted >= reserveMax;
           const remainingLockedReserve = reserveMax > spent ? reserveMax - spent : 0n;
-          const reserveEstimateOverdraft = this._deps.reserveEstimateOverdraftUsdc;
           const effectiveEstimateLimit = reserveEstimateOverdraft != null
             ? remainingLockedReserve + reserveEstimateOverdraft
             : null;
-          const estimatedCostExceedsLockedReserve = effectiveEstimateLimit != null
-            && reserveMax > 0n
-            && estimatedRequestCost > 0n
-            && estimatedRequestCost > effectiveEstimateLimit;
+          const estimatedCostExceedsLockedReserve = estimateExceedsReserve();
 
           if (isBlocked || (spent > 0n && (spent > accepted || isAtExactSpendLimit)) || estimatedCostExceedsLockedReserve) {
             const baseRequirements = spm.getPaymentRequirements(
