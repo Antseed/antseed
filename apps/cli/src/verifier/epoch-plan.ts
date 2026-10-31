@@ -65,11 +65,13 @@ export interface EpochCell {
   peerId: string
   runId: string
   state: EpochCellState
-  /** Audits that reached the seller this epoch (results and failures, not skips). */
+  /** Audits that reached the seller this epoch: results, failures and runtime skips (not preflight skips). */
   attempts: number
   blame: FailureBlame | null
   reason: string | null
   skipCode: string | null
+  /** Where the latest skip was decided: before any request (`preflight`, `policy`, …) or during the audit (`runtime`). */
+  skipSource: string | null
   /** The result submitted for this cell, when there is one. */
   result: ModelVerificationTargetResult | null
   action: EpochCellAction
@@ -96,8 +98,12 @@ export function epochCellAction(cell: Omit<EpochCell, 'action'>): EpochCellActio
     case 'pending_diff':
       return 'recheck'
     case 'skipped':
-      // A skip is decided before any request, so it is re-evaluated each run (a seller may have
-      // lowered its price, or the model is advertised again).
+      // A skip decided during the audit came after paid requests the seller could not serve
+      // (bad upstream credentials, an incompatible request profile, a stale advertisement): it
+      // gets the same attempts as a seller failure.
+      if (cell.skipSource === 'runtime') return cell.attempts < SELLER_FAILURE_ATTEMPTS ? 'audit' : 'done'
+      // Any other skip is decided before any request, so it is re-evaluated each run (a seller
+      // may have lowered its price, or the model is advertised again).
       return 'audit'
     case 'undetermined':
       // A DIFF the recheck did not confirm, or a seller that answered and was simply too close to
@@ -181,7 +187,7 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
   const cells = new Map<string, EpochCell>()
   for (const [key, entry] of acc) {
     let cell: Omit<EpochCell, 'action'>
-    const base = { model: entry.model, peerId: entry.peerId, attempts: entry.attempts, skipCode: null }
+    const base = { model: entry.model, peerId: entry.peerId, attempts: entry.attempts, skipCode: null, skipSource: null }
     if (entry.pending) {
       // A first DIFF newer than any submittable result: its recheck decides the cell.
       cell = {
@@ -207,7 +213,7 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
       const skip = entry.skip!
       cell = {
         ...base, runId: skip.runId, state: 'skipped', result: null, blame: null,
-        reason: skip.entry.reason, skipCode: skip.entry.code,
+        reason: skip.entry.reason, skipCode: skip.entry.code, skipSource: skip.entry.source ?? null,
       }
     }
     cells.set(key, { ...cell, action: epochCellAction(cell) })

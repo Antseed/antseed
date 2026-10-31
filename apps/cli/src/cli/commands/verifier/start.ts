@@ -13,15 +13,15 @@ import type { CollectorContext } from '../../../verifier/round/collector.js'
 import { fallbackPublisherTick } from '../../../verifier/round/fallback-publisher.js'
 import { keyEscrowTick } from '../../../verifier/round/key-escrow.js'
 import { encryptionPublicKey, generateEncryptionKeyPair, isUsableEncryptionKey } from '../../../verifier/round/sealing.js'
-import { roundStorageFromEnv } from '../../../verifier/round/storage.js'
+import { CachedRoundStorage, roundStorageFromEnv } from '../../../verifier/round/storage.js'
 import { targetBindingsFromRegistry } from '../../../verifier/round/target-discovery.js'
 import { DEFAULT_MAX_REQUESTS_PER_EPOCH, verifierTick } from '../../../verifier/round/verifier-daemon.js'
 import { createKbfRoundClient, createSellerRegistryClient } from '../../payment-utils.js'
 import { setupShutdownHandler } from '../../shutdown.js'
 import { startGatewayBuyer } from '../gateway/shared.js'
 import { getGlobalOptions } from '../types.js'
-import { resolveAuditorSigner } from './auditor-identity.js'
-import { createPublisherContext, parsePollInterval } from './daemon-setup.js'
+import { resolveAuditorSigner, sharedIdentityWarning } from './auditor-identity.js'
+import { acquireDaemonLock, createPublisherContext, parsePollInterval } from './daemon-setup.js'
 
 interface StartOptions {
   keystore?: string
@@ -93,79 +93,90 @@ export function registerVerifierStartCommand(verifier: Command): void {
       if (!Number.isSafeInteger(maxRequestsPerEpoch) || maxRequestsPerEpoch < 0) {
         throw new Error(`--max-epoch-requests must be a whole number, got ${options.maxEpochRequests}`)
       }
-      // An outdated verifier scores differently and attests a root the others don't.
-      await requireCurrentVerifier({
-        command: 'start',
-        currentVersion: pkg.version,
-        skip: options.skipVersionCheck === true,
-        strictWhenUnavailable: false,
-        warn: (text) => log(chalk.yellow(text)),
-      })
-      const client = createKbfRoundClient(config)
-      const signer = await resolveAuditorSigner({ config: config.verifier, dataDir: globalOptions.dataDir, keystoreFlag: options.keystore })
-      if (!await client.isVerifier(signer.address)) {
-        throw new Error(`${signer.address} is not an approved verifier on ${client.contractAddress}`)
-      }
-      const keys = await loadOrCreateEncryptionKey(globalOptions.dataDir)
-      if (!isUsableEncryptionKey(keys.publicKey)) throw new Error('the stored encryption key cannot receive envelopes; remove verifier/round/encryption-key.json to make a new one')
-      const onChainKey = await client.encryptionKey(signer.address)
-      if (isZeroHash(onChainKey) || onChainKey.toLowerCase() !== keys.publicKey.toLowerCase()) {
-        log(`publishing encryption key ${keys.publicKey}`)
-        await client.setEncryptionKey(signer.wallet, keys.publicKey)
-      }
-
-      const collect = options.collect !== false
-      const buyerPort = Number(options.buyerPort ?? config.buyer.proxyPort)
-      if (collect && options.buyer !== false) await startGatewayBuyer(buyerPort, globalOptions, log)
-      const responseAuth = collect ? await openResponseAuthReader({ dataDir: globalOptions.dataDir }) : null
-      if (responseAuth) setupShutdownHandler(async () => responseAuth.close())
-
-      const storage = roundStorageFromEnv()
-      const targetBindings = targetBindingsFromRegistry(createSellerRegistryClient(config))
-      const bindings = targetBindings.reader
-      const publisherContext = createPublisherContext({
-        config, dataDir: globalOptions.dataDir, client, signer: signer.wallet, storage, bindings: targetBindings, buyerPort, log,
-      })
-      log(chalk.bold(`verifier ${signer.address} on ${client.contractAddress}${collect ? '' : ' (attest only)'}`))
-      let stopped = false
-      setupShutdownHandler(async () => { stopped = true })
-      while (!stopped) {
-        try {
-          const collector = await collectorForPass({
-            responseAuth,
-            loadBuyerUrl: async () => (await loadBuyerProxySnapshot(globalOptions.dataDir)).baseUrl,
-            log,
-          })
-          await verifierTick({
-            client,
-            signer: signer.wallet,
-            address: signer.address,
-            encryptionPrivateKey: keys.privateKey,
-            storage,
-            bindings,
-            stateDir: join(globalOptions.dataDir, 'verifier', 'round', 'epochs'),
-            collector,
-            maxRequestsPerEpoch,
-            log,
-          })
-        } catch (error) {
-          log(chalk.yellow(`pass failed: ${error instanceof Error ? error.message : String(error)}`))
+      // Before any key, bank or paid request: a second daemon on this data dir would race this one.
+      const lock = await acquireDaemonLock(globalOptions.dataDir)
+      setupShutdownHandler(async () => lock.release())
+      try {
+        // An outdated verifier scores differently and attests a root the others don't.
+        await requireCurrentVerifier({
+          command: 'start',
+          currentVersion: pkg.version,
+          skip: options.skipVersionCheck === true,
+          strictWhenUnavailable: false,
+          warn: (text) => log(chalk.yellow(text)),
+        })
+        const client = createKbfRoundClient(config)
+        const signer = await resolveAuditorSigner({ config: config.verifier, dataDir: globalOptions.dataDir, keystoreFlag: options.keystore })
+        const identityWarning = sharedIdentityWarning(signer)
+        if (identityWarning) log(chalk.yellow(identityWarning))
+        if (!await client.isVerifier(signer.address)) {
+          throw new Error(`${signer.address} is not an approved verifier on ${client.contractAddress}`)
         }
-        // Liveness without the publisher: reveal the escrowed bank key, and take over an epoch
-        // whose publisher never planned it (needs the buyer, to build a bank and find targets).
-        try {
-          await keyEscrowTick({ client, signer: signer.wallet, address: signer.address, encryptionPrivateKey: keys.privateKey, storage, log })
-        } catch (error) {
-          log(chalk.yellow(`key escrow pass failed: ${error instanceof Error ? error.message : String(error)}`))
+        const keys = await loadOrCreateEncryptionKey(globalOptions.dataDir)
+        if (!isUsableEncryptionKey(keys.publicKey)) throw new Error('the stored encryption key cannot receive envelopes; remove verifier/round/encryption-key.json to make a new one')
+        const onChainKey = await client.encryptionKey(signer.address)
+        if (isZeroHash(onChainKey) || onChainKey.toLowerCase() !== keys.publicKey.toLowerCase()) {
+          log(`publishing encryption key ${keys.publicKey}`)
+          await client.setEncryptionKey(signer.wallet, keys.publicKey)
         }
-        if (collect) {
+
+        const collect = options.collect !== false
+        const buyerPort = Number(options.buyerPort ?? config.buyer.proxyPort)
+        if (collect && options.buyer !== false) await startGatewayBuyer(buyerPort, globalOptions, log)
+        const responseAuth = collect ? await openResponseAuthReader({ dataDir: globalOptions.dataDir }) : null
+        if (responseAuth) setupShutdownHandler(async () => responseAuth.close())
+
+        // Files already fetched against their committed hash are reused, so a pass short of time
+        // only misses files no pass could fetch.
+        const storage = new CachedRoundStorage(roundStorageFromEnv(), join(globalOptions.dataDir, 'verifier', 'round', 'cache'))
+        const targetBindings = targetBindingsFromRegistry(createSellerRegistryClient(config))
+        const bindings = targetBindings.reader
+        const publisherContext = createPublisherContext({
+          config, dataDir: globalOptions.dataDir, client, signer: signer.wallet, storage, bindings: targetBindings, buyerPort, log,
+        })
+        log(chalk.bold(`verifier ${signer.address} on ${client.contractAddress}${collect ? '' : ' (attest only)'}`))
+        let stopped = false
+        setupShutdownHandler(async () => { stopped = true })
+        while (!stopped) {
           try {
-            await fallbackPublisherTick({ ...publisherContext, address: signer.address })
+            const collector = await collectorForPass({
+              responseAuth,
+              loadBuyerUrl: async () => (await loadBuyerProxySnapshot(globalOptions.dataDir)).baseUrl,
+              log,
+            })
+            await verifierTick({
+              client,
+              signer: signer.wallet,
+              address: signer.address,
+              encryptionPrivateKey: keys.privateKey,
+              storage,
+              bindings,
+              stateDir: join(globalOptions.dataDir, 'verifier', 'round', 'epochs'),
+              collector,
+              maxRequestsPerEpoch,
+              log,
+            })
           } catch (error) {
-            log(chalk.yellow(`fallback publisher pass failed: ${error instanceof Error ? error.message : String(error)}`))
+            log(chalk.yellow(`pass failed: ${error instanceof Error ? error.message : String(error)}`))
           }
+          // Liveness without the publisher: reveal the escrowed bank key, and take over an epoch
+          // whose publisher never planned it (needs the buyer, to build a bank and find targets).
+          try {
+            await keyEscrowTick({ client, signer: signer.wallet, address: signer.address, encryptionPrivateKey: keys.privateKey, storage, log })
+          } catch (error) {
+            log(chalk.yellow(`key escrow pass failed: ${error instanceof Error ? error.message : String(error)}`))
+          }
+          if (collect) {
+            try {
+              await fallbackPublisherTick({ ...publisherContext, address: signer.address })
+            } catch (error) {
+              log(chalk.yellow(`fallback publisher pass failed: ${error instanceof Error ? error.message : String(error)}`))
+            }
+          }
+          await new Promise((resolve) => setTimeout(resolve, interval))
         }
-        await new Promise((resolve) => setTimeout(resolve, interval))
+      } finally {
+        await lock.release()
       }
     })
 }

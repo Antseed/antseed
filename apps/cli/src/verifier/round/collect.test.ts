@@ -5,12 +5,16 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { Wallet, getAddress, keccak256, toUtf8Bytes, type AbstractSigner } from 'ethers'
 import { ZERO_HASH, type CommitmentEvent, type KbfEpochInfo, type KbfRoundClient } from '@antseed/node/payments'
+import type { KbfReferenceV1 } from '@antseed/fingerprints'
 import type { ResponseAuthReader } from '../response-auth-reader.js'
+import { THINKING_FALLBACK_MAX_TOKENS } from '../thinking-suppression.js'
 import { referenceFixture } from '../model-audit-fixtures.test-support.js'
 import { derivePlan, envelopeFor } from './plan.js'
 import { contentHash, generateEncryptionKeyPair, sealEnvelope } from './sealing.js'
+import { ENVELOPE_MAX_TOKENS } from './envelope-check.js'
 import { DirectoryRoundStorage } from './storage.js'
-import type { EnvelopeContentV1, EpochBankV1, PlanFileV1, RoundPlanV1, RoundTargetV1, SliceManifestV1 } from './types.js'
+import { buildResultsTree, collectorLeaf } from './merkle.js'
+import type { EnvelopeContentV1, EpochBankV1, PlanFileV1, RoundPlanV1, RoundResultsV1, RoundTargetV1, SliceManifestV1 } from './types.js'
 import { encodeRoundFile } from './encoding.js'
 import { verifierTick, type VerifierDaemonContext } from './verifier-daemon.js'
 
@@ -72,6 +76,8 @@ interface SetupOptions {
   /** Edits this verifier's envelope before it is sealed, as a dishonest publisher would. */
   tamper?: (envelope: EnvelopeContentV1) => void
   maxRequestsPerEpoch?: number
+  /** Edits the bank's reference before the plan is derived. */
+  reference?: (reference: KbfReferenceV1) => void
 }
 
 async function setup(options: SetupOptions = {}): Promise<Setup> {
@@ -85,6 +91,7 @@ async function setup(options: SetupOptions = {}): Promise<Setup> {
     agentId: '1', peerId: seller.address.slice(2).toLowerCase(), service: MODEL, serviceHash: MODEL_HASH, model: MODEL, modelHash: MODEL_HASH,
   }
   const bank: EpochBankV1 = { kind: 'antseed-kbf-epoch-bank', version: 1, epoch: EPOCH.toString(), models: { [MODEL]: referenceFixture(MODEL, 80) } }
+  options.reference?.(bank.models[MODEL]!)
   const plan = derivePlan({ epoch: EPOCH.toString(), seed: SEED, probesPerService: 80, slicesPerService: 4, verifiers: members, targets: [target], bank })
   const envelope = envelopeFor(plan, bank, me.address, { backup: false })
   options.tamper?.(envelope)
@@ -269,6 +276,39 @@ test('a failing current epoch does not hold back earlier epochs', async (t) => {
   s.chain.planCommits = async () => { throw new Error('rpc down') }
   await assert.rejects(verifierTick(s.context), /epoch 7: .*rpc down/)
   assert.ok(asked.includes(EPOCH - 1n) && asked.includes(EPOCH - 2n), 'earlier epochs were still applied and claimed')
+})
+
+test('a reference built with the unsuppressed thinking fallback is collected', async (t) => {
+  // `bare-expanded` asks for the largest per-request budget any reference strategy uses.
+  const s = await setup({ reference: (reference) => { reference.queryProfile = { ...reference.queryProfile, maxTokensPerRequest: THINKING_FALLBACK_MAX_TOKENS } } })
+  t.after(() => rm(s.dir, { recursive: true, force: true }))
+  await verifierTick(s.context)
+  assert.ok(s.requests.length > 0, 'the envelope was accepted and its slices bought')
+  assert.equal(THINKING_FALLBACK_MAX_TOKENS <= ENVELOPE_MAX_TOKENS, true)
+})
+
+test('a recovered results file with checksummed collectors still claims the collector share', async (t) => {
+  const s = await setup()
+  t.after(() => rm(s.dir, { recursive: true, force: true }))
+  const previous = EPOCH - 1n
+  const credits = [{ collector: getAddress(s.me), slices: 3 }]
+  const tree = buildResultsTree(previous, { results: [], credits, totalSlices: 4 })
+  const file: RoundResultsV1 = { kind: 'antseed-kbf-results', version: 1, epoch: previous.toString(), seed: SEED, results: [], credits, totalSlices: 4, root: tree.root }
+  const uri = await s.storage.put(encodeRoundFile(file))
+  const chain = s.chain as unknown as Record<string, unknown>
+  const epochInfo = s.chain.epochInfo.bind(s.chain)
+  chain.epochInfo = async (epoch: bigint) => epoch === previous ? { ...(await epochInfo(EPOCH)), epoch, finalizedRoot: tree.root } : epochInfo(epoch)
+  chain.attestationEvents = async () => [{ epoch: previous, hash: tree.root, uri, backup: false, sender: s.me, blockNumber: 1, logIndex: 0, txHash: '0x' }]
+  chain.rewardClaimed = async () => false
+  const claims: Array<{ slices: number; totalSlices: number; proof: string[] }> = []
+  chain.pendingReward = async () => 1n
+  chain.claimRewards = async (_signer: unknown, _epoch: bigint, slices: number, totalSlices: number, proof: string[]) => {
+    claims.push({ slices, totalSlices, proof })
+    return '0xclaim'
+  }
+  await verifierTick(s.context).catch(() => {})
+  assert.deepEqual(claims.map((claim) => [claim.slices, claim.totalSlices]), [[3, 4]])
+  assert.deepEqual(claims[0]!.proof, tree.proof(collectorLeaf(previous, s.me, 3, 4)))
 })
 
 test('an envelope with work the plan does not assign buys nothing', async (t) => {

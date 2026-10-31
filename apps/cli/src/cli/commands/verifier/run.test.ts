@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { Command } from 'commander'
-import { createReferenceQueryProfile } from '@antseed/fingerprints'
+import { createReferenceQueryProfile, queryProfileHash } from '@antseed/fingerprints'
 import type { ModelAuditSummaryV1, VerifierRunManifestV1 } from '../../../verifier/audit-artifacts.js'
 import {
   emptyAuditCostSummary,
@@ -23,8 +23,10 @@ import {
   resolveRunModels,
   selectVerifierPeer,
   requireRunModelSelection,
+  validateResumeCandidate,
   type ResumeCandidate,
 } from './run.js'
+import { referenceFixture } from '../../../verifier/model-audit-fixtures.test-support.js'
 
 setAuditedModelsForTesting({
   'model-a': { upstreamModel: 'vendor/model-a' },
@@ -366,4 +368,24 @@ test('the run exit status is decided after the retry rounds', async () => {
   // An unpriced model in any round is not something a retry fixes.
   assert.equal(runExitCode([{ permanent: true, recoverable: 0 }, { permanent: false, recoverable: 0 }]), 1)
   assert.equal(runExitCode([]), 0)
+})
+
+test('a checkpoint resumes on a reservation that re-scoring gave a new reference ID', () => {
+  const reference = referenceFixture('model-a', 10)
+  const candidate: ResumeCandidate = {
+    model: 'model-a', peerId: 'a'.repeat(40), service: 'model-a', auditId: '0xaudit', reservationAuditId: '0xreservation',
+    evidencePath: '/tmp/x', evidenceHash: '0xhash', referenceId: '0xstored-id',
+    queryProfileHash: queryProfileHash(reference.queryProfile), probeIds: reference.probes.map((probe) => probe.id), exchanges: [],
+  }
+  // The reservation was made under the stored ID; the loaded reference carries its re-scored ID.
+  validateResumeCandidate(candidate, reference, 'model-a', '7', '0xstored-id')
+  assert.throws(() => validateResumeCandidate(candidate, reference, 'model-a', '7'), /reference or query profile mismatch/)
+  assert.throws(
+    () => validateResumeCandidate({ ...candidate, referenceId: '0xother' }, reference, 'model-a', '7', '0xstored-id'),
+    /reference or query profile mismatch/,
+  )
+  assert.throws(
+    () => validateResumeCandidate({ ...candidate, probeIds: candidate.probeIds.slice(1) }, reference, 'model-a', '7', '0xstored-id'),
+    /reference or query profile mismatch/,
+  )
 })

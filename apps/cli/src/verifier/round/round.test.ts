@@ -11,9 +11,9 @@ import { referenceFixture } from '../model-audit-fixtures.test-support.js'
 import { derivePlan, envelopeFor } from './plan.js'
 import { ResultsTree, buildResultsTree, collectorLeaf, emptyRoundLeaf, serviceLeaf, verifyProof } from './merkle.js'
 import { createEnvelopeDeliveryChecker, scoreRound, type CommittedManifest } from './scoring.js'
-import { DirectoryRoundStorage, PinataRoundStorage, RoundFileMismatchError, type RoundStorage } from './storage.js'
+import { CachedRoundStorage, DirectoryRoundStorage, PinataRoundStorage, RoundFileMismatchError, type RoundStorage } from './storage.js'
 import { encodeRoundFile } from './encoding.js'
-import { ManifestsUnavailableError, authenticResults, computeResults } from './verifier-daemon.js'
+import { ManifestsUnavailableError, authenticResults, computeResults, phaseFetchSignal } from './verifier-daemon.js'
 import type { KbfEpochInfo, KbfRoundClient } from '@antseed/node/payments'
 import type { SellerBindingReader } from './seller-binding.js'
 import { SeededStream, seededRanking, seededShuffle } from './seeded.js'
@@ -398,6 +398,8 @@ test('buildResultsTree gives the root scoring attests and proves every credit', 
 function daemonFixture(options: {
   unavailable?: ReadonlySet<string>
   mismatched?: ReadonlySet<string>
+  /** Never answer for these: the read only ends when its signal aborts. */
+  hanging?: ReadonlySet<string>
   bindings?: SellerBindingReader
 } = {}) {
   const roundPlan = plan()
@@ -413,7 +415,13 @@ function daemonFixture(options: {
   }))
   const storage: RoundStorage = {
     put: async () => { throw new Error('read only') },
-    get: async (uri, expectedHash) => {
+    get: async (uri, expectedHash, _maxBytes, signal) => {
+      if (options.hanging?.has(uri)) {
+        await new Promise((_resolve, reject) => {
+          if (!signal) return
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+        })
+      }
       if (options.unavailable?.has(uri)) throw new Error(`gateway timeout for ${uri}`)
       if (options.mismatched?.has(uri)) throw new RoundFileMismatchError(`${uri} does not match the committed hash`)
       const bytes = files.get(uri)
@@ -482,6 +490,57 @@ test('an unavailable slice file blocks attestation until the cutoff, an invalid 
   const results = await computeResults(mismatched.context, mismatched.info, mismatched.members)
   assert.equal(results.root, late.root, 'an invalid file is treated exactly like a missing one')
   assert.ok(mismatched.logs.some((line) => line.includes('ignoring invalid slices')))
+})
+
+test('slice files that never answer cannot hold scoring past the phase budget', async () => {
+  const probe = daemonFixture()
+  const hanging = new Set(probe.manifests.map((entry) => entry.uri))
+  const fixture = daemonFixture({ hanging })
+  const started = Date.now()
+  // Every file hangs; downloads run in parallel and all stop when the budget runs out.
+  await assert.rejects(
+    computeResults(fixture.context, fixture.info, fixture.members, { signal: AbortSignal.timeout(200) }),
+    ManifestsUnavailableError,
+  )
+  const late = await computeResults(fixture.context, fixture.info, fixture.members, { allowUnavailable: true, signal: AbortSignal.timeout(200) })
+  assert.ok(Date.now() - started < 2_000, `two passes took ${Date.now() - started} ms`)
+  assert.equal(late.credits.length, 0, 'nothing fetched, nothing credited')
+})
+
+test('the fetch budget keeps a reserve before the phase deadline', async () => {
+  const now = 1_000_000
+  const roomy = phaseFetchSignal(now, now + 600, 3_600)
+  // Inside the reserve (2 minutes, or a quarter of a short phase): no time left to download.
+  const tight = phaseFetchSignal(now, now + 60, 3_600)
+  const short = phaseFetchSignal(now, now + 110, 400)
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  assert.equal(roomy.aborted, false)
+  assert.equal(tight.aborted, true)
+  assert.equal(short.aborted, false, 'a 400 s phase keeps only 100 s in reserve')
+})
+
+test('the read cache serves files already fetched against their committed hash', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'antseed-round-cache-'))
+  try {
+    const bytes = Buffer.from('{"kind":"x"}')
+    const hash = contentHash(bytes)
+    let reads = 0
+    const inner: RoundStorage = {
+      put: async () => 'ipfs://x',
+      get: async () => {
+        reads++
+        if (reads > 1) throw new Error('gateway down')
+        return bytes
+      },
+    }
+    const cached = new CachedRoundStorage(inner, dir)
+    assert.deepEqual(await cached.get('ipfs://x', hash, 1_000), bytes)
+    assert.deepEqual(await cached.get('ipfs://x', hash, 1_000), bytes, 'second read from the cache')
+    assert.equal(reads, 1)
+    await assert.rejects(cached.get('ipfs://x'), /gateway down/, 'unverified reads are never cached')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 })
 
 test('fetched results are trusted only when their leaves rebuild the finalized root', () => {

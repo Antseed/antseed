@@ -19,7 +19,7 @@ import { createEnvelopeDeliveryChecker, scoreRound, type CommittedManifest } fro
 import { contentHash, openBank, openEnvelope } from './sealing.js'
 import { seededRanking } from './seeded.js'
 import { boundTargets, type SellerBindingReader } from './seller-binding.js'
-import { loadCommittedManifest } from './manifest-loader.js'
+import { loadCommittedManifests } from './manifest-loader.js'
 import { ROUND_FILE_MAX_BYTES, type RoundStorage } from './storage.js'
 import type {
   EnvelopeSliceV1,
@@ -51,6 +51,11 @@ const UNAVAILABLE_WAIT_SHARE = 0.5
  * yet before treating their slices as undelivered and buying them itself.
  */
 export const BACKUP_UNAVAILABLE_WAIT_SHARE = 0.25
+/**
+ * Time kept free at the end of a phase for what follows downloads: publishing and sending the
+ * attestation, or buying backed-up slices (capped at a quarter of the phase).
+ */
+const FETCH_RESERVE_SECONDS = 2 * 60
 /** Default for `maxRequestsPerEpoch`. */
 export const DEFAULT_MAX_REQUESTS_PER_EPOCH = 1_000
 
@@ -283,10 +288,12 @@ async function scoreAndAttest(
 ): Promise<void> {
   const deadlines = kbfEpochDeadlines(info, await context.client.epochDuration())
   const waitUntil = deadlines.backupDeadline + Math.floor(info.schedule.attestSeconds * UNAVAILABLE_WAIT_SHARE)
-  const allowUnavailable = await context.client.now() >= waitUntil
+  const now = await context.client.now()
+  const allowUnavailable = now >= waitUntil
+  const signal = phaseFetchSignal(now, deadlines.attestDeadline, info.schedule.attestSeconds)
   let results: RoundResultsV1
   try {
-    results = await computeResults(context, info, members, { allowUnavailable })
+    results = await computeResults(context, info, members, { allowUnavailable, signal })
   } catch (error) {
     if (!(error instanceof ManifestsUnavailableError)) throw error
     context.log(`epoch ${info.epoch}: not attesting yet, ${error.message}; retrying until ${new Date(waitUntil * 1_000).toISOString()}`)
@@ -313,7 +320,7 @@ export async function computeResults(
   context: Pick<VerifierDaemonContext, 'client' | 'storage' | 'bindings' | 'log'>,
   info: KbfEpochInfo,
   members: readonly string[],
-  options: { allowUnavailable?: boolean } = {},
+  options: { allowUnavailable?: boolean; signal?: AbortSignal } = {},
 ): Promise<RoundResultsV1> {
   const { client, storage } = context
   const bankEvent = (await client.bankCommits(info.epoch)).filter((event) => event.bankHash === info.bankHash).at(-1)
@@ -337,9 +344,8 @@ export async function computeResults(
   const memberSet = new Set(members.map((member) => member.toLowerCase()))
   const manifests: CommittedManifest[] = []
   const unavailable: string[] = []
-  for (const commit of await client.sliceCommits(info.epoch)) {
-    if (!memberSet.has(commit.sender.toLowerCase())) continue
-    const load = await loadCommittedManifest(storage, commit)
+  const commits = (await client.sliceCommits(info.epoch)).filter((commit) => memberSet.has(commit.sender.toLowerCase()))
+  for (const { commit, load } of await loadCommittedManifests(storage, commits, options.signal)) {
     if (load.kind === 'loaded') {
       manifests.push(load.manifest)
     } else if (load.kind === 'not-json') {
@@ -356,6 +362,15 @@ export async function computeResults(
   }
   if (unavailable.length > 0 && !options.allowUnavailable) throw new ManifestsUnavailableError(unavailable)
   return scoreRound({ epoch: info.epoch, plan, bank, manifests })
+}
+
+/**
+ * Aborts downloads once a phase is down to its reserve, so unfetchable files cannot hold this
+ * verifier past `deadline` (unix seconds): they count as unavailable and the usual rules apply.
+ */
+export function phaseFetchSignal(now: number, deadline: number, phaseSeconds: number): AbortSignal {
+  const reserve = Math.min(FETCH_RESERVE_SECONDS, Math.floor(phaseSeconds / 4))
+  return AbortSignal.timeout(Math.max(0, deadline - reserve - now) * 1_000)
 }
 
 function isAuditedTarget(target: RoundTargetV1, allowed: Set<string>, bank: EpochBankV1): boolean {
@@ -376,14 +391,15 @@ async function undeliveredSlices(
   const memberSet = new Set(members.map((member) => member.toLowerCase()))
   const manifests: CommittedManifest[] = []
   const unavailable: string[] = []
-  for (const commit of await context.client.sliceCommits(info.epoch)) {
-    if (commit.backup || !memberSet.has(commit.sender.toLowerCase())) continue
-    const load = await loadCommittedManifest(context.storage, commit)
+  const deadlines = kbfEpochDeadlines(info, await context.client.epochDuration())
+  const commits = (await context.client.sliceCommits(info.epoch))
+    .filter((commit) => !commit.backup && memberSet.has(commit.sender.toLowerCase()))
+  const signal = phaseFetchSignal(await context.client.now(), deadlines.backupDeadline, info.schedule.backupSeconds)
+  for (const { commit, load } of await loadCommittedManifests(context.storage, commits, signal)) {
     if (load.kind === 'loaded') manifests.push(load.manifest)
     else if (load.kind === 'unavailable') unavailable.push(commit.uri)
   }
   if (unavailable.length > 0) {
-    const deadlines = kbfEpochDeadlines(info, await context.client.epochDuration())
     const waitUntil = deadlines.commitDeadline + Math.floor(info.schedule.backupSeconds * BACKUP_UNAVAILABLE_WAIT_SHARE)
     if (await context.client.now() < waitUntil) {
       throw new Error(`${unavailable.length} primary slice files unavailable; retrying before buying backups`)
@@ -493,7 +509,9 @@ export function authenticResults(info: Pick<KbfEpochInfo, 'epoch' | 'finalizedRo
       && Number.isSafeInteger(entry.slices) && entry.slices > 0)
   if (!wellFormed) return null
   try {
-    return buildResultsTree(info.epoch, results).root.toLowerCase() === info.finalizedRoot.toLowerCase() ? results : null
+    if (buildResultsTree(info.epoch, results).root.toLowerCase() !== info.finalizedRoot.toLowerCase()) return null
+    // Leaves hash checksummed addresses, so any casing authenticates; credits are looked up lowercase.
+    return { ...results, credits: results.credits.map((entry) => ({ ...entry, collector: entry.collector.toLowerCase() })) }
   } catch {
     return null
   }

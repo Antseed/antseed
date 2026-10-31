@@ -69,11 +69,23 @@ export PINATA_JWT=…                       # publishes your slices and results 
 export ANTSEED_IPFS_GATEWAYS=https://…    # optional: comma-separated gateways to read round files
 ```
 
-## 2. Choose the verifier address
+## 2. Create a verifier key
 
-The verifier signs with the data-dir identity by default (`antseed-verifier buyer status` shows its address). To sign with an encrypted keystore instead, set `verifier.keystore` in the config, or pass `--keystore <path>` to `verifier start`, and give the password in `ANTSEED_KEYSTORE_PASSWORD` (otherwise it is asked in the terminal).
+Sign verifier transactions with a dedicated key, kept apart from the buyer. The verifier address is the one that gets approved, pays gas for commitments and attestations, and receives ANTS rewards. The buyer's data-dir identity should only ever sign requests, never hold ETH or rewards.
 
-Send that address a little ETH on Base for transactions.
+Create an encrypted keystore (for example with `cast wallet new <dir>`), then set it in the config:
+
+```json
+{
+  "verifier": {
+    "keystore": "~/.antseed-verifier/verifier-keystore.json"
+  }
+}
+```
+
+or pass `--keystore <path>` to `verifier start`. Give the password in `ANTSEED_KEYSTORE_PASSWORD`; otherwise it is asked in the terminal.
+
+Send the keystore's address a little ETH on Base for transactions. Without a keystore, the verifier falls back to the data-dir identity and warns at startup, because that would fund the buyer identity.
 
 ## 3. Fund the buyer
 

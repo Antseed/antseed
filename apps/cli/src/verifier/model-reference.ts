@@ -54,6 +54,7 @@ import type { VerifierModelCatalog, VerifierReasoningEffort } from './openrouter
 import {
   THINKING_DISCOVERY_PROBES,
   THINKING_DISCOVERY_TIMEOUT_MS,
+  REFERENCE_MAX_TOKENS_CEILING,
   THINKING_FALLBACK_MAX_TOKENS,
   ThinkingDiscoveryError,
   discoverThinkingSuppression,
@@ -508,7 +509,7 @@ export async function buildModelReference(input: {
         return [key, routeWithThinkingStrategy(route, result.strategy), result] as const
       } catch (error) {
         if (isTarget && !(input.config?.referenceAllowThinking === true && error instanceof ThinkingDiscoveryError
-          && !asError(error).message.includes('refused every request'))) {
+          && error.reason !== 'all-requests-refused')) {
           throw error
         }
         input.log?.(`${asError(error).message}; continuing with 'bare' and ${THINKING_FALLBACK_MAX_TOKENS} tokens per request`)
@@ -537,9 +538,13 @@ export async function buildModelReference(input: {
   const targetRequestOverrides = targetRoute.requestOverrides
   const targetReasoningStrategy = referenceReasoningStrategy(targetRoute)
   const upstreamProvenance = referenceUpstreamProvenance(endpoint, targetRoute)
+  const maxTokensPerRequest = Math.max(MAX_TOKENS, targetRoute.minMaxTokens ?? 0)
+  if (maxTokensPerRequest > REFERENCE_MAX_TOKENS_CEILING) {
+    throw new Error(`reference for ${modelConfig.upstreamModel} needs ${maxTokensPerRequest} tokens per request, above the ${REFERENCE_MAX_TOKENS_CEILING} collectors accept`)
+  }
   const queryProfile = createReferenceQueryProfile({
     upstreamModel: targetRoute.model,
-    maxTokensPerRequest: Math.max(MAX_TOKENS, targetRoute.minMaxTokens ?? 0),
+    maxTokensPerRequest,
     requestTimeoutMs: timeoutMs,
   })
   // The reference endpoint's request settings stay out of the query profile. Audits
@@ -1426,6 +1431,20 @@ function createReferenceQuery(input: {
   assertNonNegativeInteger(input.retryCount, 'referenceBatchRetryCount')
   assertPositiveInteger(input.retryBaseDelayMs, 'referenceRetryBaseDelayMs')
   const consumed = new Map<string, ReferenceCachedResponseV1>()
+  // Every response kept for reuse: its raw exchange when there is one, the cached outcome, and
+  // what this build consumed.
+  const rememberResponse = async (
+    cacheKey: string,
+    model: string,
+    cached: ReferenceCachedResponseV1,
+    exchange?: Omit<ReferenceExchangeV1, 'cacheKey' | 'model' | 'purpose' | 'receivedAt'>,
+  ): Promise<void> => {
+    if (exchange) {
+      await input.checkpoint.appendExchange({ cacheKey, model, purpose: cached.purpose, ...exchange, receivedAt: new Date().toISOString() })
+    }
+    await input.checkpoint.set(cacheKey, cached)
+    consumed.set(cacheKey, cached)
+  }
   const providersByModel = new Map<string, string[]>()
   const recordProvider = (model: string, provider: string | null | undefined): void => {
     if (!provider) return
@@ -1485,15 +1504,7 @@ function createReferenceQuery(input: {
           content: response.content,
           ...(response.provider ? { provider: response.provider } : {}),
         }
-        await input.checkpoint.appendExchange({
-          cacheKey,
-          model,
-          purpose: cachedResponse.purpose,
-          ...response.exchange,
-          receivedAt: new Date().toISOString(),
-        })
-        await input.checkpoint.set(cacheKey, cachedResponse)
-        consumed.set(cacheKey, cachedResponse)
+        await rememberResponse(cacheKey, model, cachedResponse, response.exchange)
         recordProvider(model, response.provider)
         input.limiter.recordSuccess(model)
         options?.onUsage?.({ outputTokens: response.outputTokens })
@@ -1507,17 +1518,7 @@ function createReferenceQuery(input: {
             nativeFinishReason: error.nativeFinishReason,
             detail: error.detail,
           }
-          if (error.exchange) {
-            await input.checkpoint.appendExchange({
-              cacheKey,
-              model,
-              purpose: cachedResponse.purpose,
-              ...error.exchange,
-              receivedAt: new Date().toISOString(),
-            })
-          }
-          await input.checkpoint.set(cacheKey, cachedResponse)
-          consumed.set(cacheKey, cachedResponse)
+          await rememberResponse(cacheKey, model, cachedResponse, error.exchange)
         }
         const retryable = isRetryableReferenceError(error)
         if (!retryable || attempt >= input.retryCount + 1) throw error
@@ -1569,11 +1570,7 @@ function createReferenceQuery(input: {
           reasoningTokens: response.reasoningTokens ?? 0,
           ...(response.provider ? { provider: response.provider } : {}),
         }
-        await input.checkpoint.appendExchange({
-          cacheKey, model, purpose: 'thinking-discovery', ...response.exchange, receivedAt: new Date().toISOString(),
-        })
-        await input.checkpoint.set(cacheKey, success)
-        consumed.set(cacheKey, success)
+        await rememberResponse(cacheKey, model, success, response.exchange)
         return { ok: true, content: response.content, reasoningTokens: response.reasoningTokens ?? 0 }
       } catch (error) {
         if (error instanceof EmptyReferenceResponseError) {
@@ -1585,13 +1582,7 @@ function createReferenceQuery(input: {
             detail: error.detail,
             reasoningTokens: error.reasoningTokens ?? 0,
           }
-          if (error.exchange) {
-            await input.checkpoint.appendExchange({
-              cacheKey, model, purpose: 'thinking-discovery', ...error.exchange, receivedAt: new Date().toISOString(),
-            })
-          }
-          await input.checkpoint.set(cacheKey, empty)
-          consumed.set(cacheKey, empty)
+          await rememberResponse(cacheKey, model, empty, error.exchange)
           return { ok: true, content: null, reasoningTokens: error.reasoningTokens ?? 0 }
         }
         if (error instanceof ReferenceEndpointError) {

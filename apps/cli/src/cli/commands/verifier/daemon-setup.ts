@@ -2,6 +2,7 @@ import { join } from 'node:path'
 import type { AbstractSigner } from 'ethers'
 import type { KbfRoundClient } from '@antseed/node/payments'
 import type { AntseedConfig } from '../../../config/types.js'
+import { acquirePidFileLock, type FileLock } from '../../../verifier/atomic-files.js'
 import { buildEpochBank } from '../../../verifier/round/bank-builder.js'
 import type { PublisherDaemonContext } from '../../../verifier/round/publisher-daemon.js'
 import type { RoundStorage } from '../../../verifier/round/storage.js'
@@ -20,6 +21,24 @@ export function parsePollInterval(value: string | undefined, fallbackSeconds = 6
     throw new Error(`--interval must be a number of seconds up to ${Math.floor(MAX_TIMER_MS / 1_000)}, got "${raw}"`)
   }
   return Math.max(MIN_POLL_SECONDS, seconds) * 1_000
+}
+
+/**
+ * Holds the data dir for one verifier daemon at a time. `verifier start` and `verifier publish`
+ * share epoch state, the per-epoch request budget and the publisher's bank and key files, and
+ * none of those are safe to read-modify-write from two processes. A lock left by a process that
+ * died is taken over.
+ */
+export async function acquireDaemonLock(dataDir: string): Promise<FileLock> {
+  const path = join(dataDir, 'verifier', 'daemon.lock')
+  try {
+    return await acquirePidFileLock(path)
+  } catch (error) {
+    if (error instanceof Error && /already active/.test(error.message)) {
+      throw new Error(`another verifier start or publish is already running with the data dir ${dataDir} (lock ${path}); use a separate --data-dir per daemon`)
+    }
+    throw error
+  }
 }
 
 /**

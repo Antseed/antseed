@@ -13,10 +13,13 @@ export type ManifestLoad =
   | { kind: 'mismatch' | 'unavailable'; error: unknown }
   | { kind: 'not-json' }
 
-export async function loadCommittedManifest(storage: RoundStorage, commit: CommitmentEvent): Promise<ManifestLoad> {
+/** Parallel downloads per pass, so unavailable files do not add up their gateway timeouts. */
+export const MANIFEST_FETCH_CONCURRENCY = 8
+
+export async function loadCommittedManifest(storage: RoundStorage, commit: CommitmentEvent, signal?: AbortSignal): Promise<ManifestLoad> {
   let bytes: Buffer
   try {
-    bytes = await storage.get(commit.uri, commit.hash, ROUND_FILE_MAX_BYTES.slices)
+    bytes = await storage.get(commit.uri, commit.hash, ROUND_FILE_MAX_BYTES.slices, signal)
   } catch (error) {
     return { kind: error instanceof RoundFileMismatchError ? 'mismatch' : 'unavailable', error }
   }
@@ -26,4 +29,25 @@ export async function loadCommittedManifest(storage: RoundStorage, commit: Commi
   } catch {
     return { kind: 'not-json' }
   }
+}
+
+/**
+ * Loads `commits` a few at a time, in order. Once `signal` aborts, the rest count as unavailable,
+ * so a phase's remaining time bounds the whole pass however many files cannot be fetched.
+ */
+export async function loadCommittedManifests(
+  storage: RoundStorage,
+  commits: readonly CommitmentEvent[],
+  signal?: AbortSignal,
+): Promise<Array<{ commit: CommitmentEvent; load: ManifestLoad }>> {
+  const loads = new Array<ManifestLoad>(commits.length)
+  let next = 0
+  const worker = async () => {
+    while (next < commits.length) {
+      const index = next++
+      loads[index] = await loadCommittedManifest(storage, commits[index]!, signal)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(MANIFEST_FETCH_CONCURRENCY, commits.length) }, worker))
+  return commits.map((commit, index) => ({ commit, load: loads[index]! }))
 }

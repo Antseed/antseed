@@ -806,7 +806,7 @@ async function runVerifierRound(
                     auditId: target.resumeCandidate.reservationAuditId,
                     config: config.verifier,
                   })
-                  validateResumeCandidate(target.resumeCandidate, loaded.reference, target.service, epoch)
+                  validateResumeCandidate(target.resumeCandidate, loaded.reference, target.service, epoch, loaded.assignment.referenceId)
                   reservationAuditId = target.resumeCandidate.reservationAuditId
                   reference = loaded.reference
                   auditId = canonicalHashBytes32({
@@ -1505,7 +1505,7 @@ export async function filterCompatibleResumeCandidates(input: {
         auditId: candidate.reservationAuditId,
         config: input.config,
       })
-      validateResumeCandidate(candidate, loaded.reference, candidate.service, input.epoch)
+      validateResumeCandidate(candidate, loaded.reference, candidate.service, input.epoch, loaded.assignment.referenceId)
       compatible.set(key, candidate)
     } catch (error) {
       if (input.strict) {
@@ -1519,17 +1519,24 @@ export async function filterCompatibleResumeCandidates(input: {
   return compatible
 }
 
+/**
+ * Checks that a checkpoint can be resumed on its reservation. A reservation stored before
+ * unscoreable answers were left out loads re-scored under a new reference ID; a checkpoint
+ * written against it still names the ID it was reserved with (`reservedReferenceId`), and is
+ * still the same reservation when the probes and query profile match.
+ */
 export function validateResumeCandidate(
   candidate: ResumeCandidate,
   reference: KbfReferenceV1,
   liveService: string,
   epoch: string,
+  reservedReferenceId?: string,
 ): void {
   if (candidate.service.toLowerCase() !== liveService.toLowerCase()
     || candidate.peerId.trim() === '') {
     throw new Error(`resume audit ${candidate.auditId} seller or service mismatch`)
   }
-  if (candidate.referenceId !== reference.referenceId
+  if ((candidate.referenceId !== reference.referenceId && candidate.referenceId !== reservedReferenceId)
     || candidate.queryProfileHash !== queryProfileHash(reference.queryProfile)
     || candidate.probeIds.length !== reference.probes.length
     || candidate.probeIds.some((probeId, index) => probeId !== reference.probes[index]?.id)) {

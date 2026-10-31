@@ -680,7 +680,10 @@ bounded questions and request settings), and `--max-epoch-requests` (default 100
 caps the seller requests sent per epoch, retries included, own and backup slices together.
 It signs with `--keystore <path>` (password from `ANTSEED_KEYSTORE_PASSWORD`),
 then `verifier.keystore`, then the data-dir identity, and refuses to start for an
-address that isn't an approved verifier. A newly approved verifier joins from the
+address that isn't an approved verifier. Use a dedicated keystore: the signer pays
+the verifier's gas and receives its ANTS rewards, so falling back to the data-dir
+identity (the buyer's) prints a warning. One `verifier start` or `verifier publish`
+runs per data dir at a time; a second one stops with "already running". A newly approved verifier joins from the
 next epoch opened; until its encryption key is on-chain, the plan gives its slices
 to backups. Like `verifier run`, it first checks that
 this CLI is the latest `@antseed/cli` on npm (`--skip-version-check` skips it), so

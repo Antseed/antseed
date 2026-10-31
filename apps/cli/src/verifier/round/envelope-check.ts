@@ -7,11 +7,12 @@ import {
   type KbfProbe,
 } from '@antseed/fingerprints'
 import { modelHash, serviceHash } from '@antseed/node/payments'
+import { REFERENCE_MAX_TOKENS_CEILING } from '../thinking-suppression.js'
 import { sliceCollectors, sortTargets } from './plan.js'
 import { targetKey, type EnvelopeContentV1, type EnvelopeSliceV1, type RoundTargetV1 } from './types.js'
 
-/** Most output tokens an envelope may ask a seller for per request. */
-export const ENVELOPE_MAX_TOKENS = 16_384
+/** Most output tokens an envelope may ask a seller for per request: the most any reference strategy uses. */
+export const ENVELOPE_MAX_TOKENS = REFERENCE_MAX_TOKENS_CEILING
 /** Longest question line an envelope may hold, so a publisher cannot inflate prompt costs. */
 export const ENVELOPE_MAX_PROBE_CHARS = 1_000
 const MAX_PREFILL_CHARS = 1_024

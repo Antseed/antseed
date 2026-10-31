@@ -161,3 +161,24 @@ test('runs of another epoch or with a mismatched run id are ignored', () => {
   other.summaries[0]!.epoch = '27'
   assert.equal(mergeEpochRuns(EPOCH, [other]).size, 0)
 })
+
+test('a skip decided during the audit gets the seller retry limit; a preflight skip is re-evaluated', () => {
+  const runtimeSkip = (peerId: string) => ({
+    peerId, displayName: null, agentId: '1', service: 'svc', status: 'SKIPPED', code: 'upstream_credentials_invalid',
+    reason: 'upstream key rejected', source: 'runtime', auditId: '0xa', evidencePath: '/e', evidenceHash: '0x00',
+  }) as never
+  const preflightSkip = (peerId: string) => ({
+    peerId, displayName: null, agentId: '2', service: 'svc', status: 'SKIPPED', code: 'price_above_reference',
+    reason: 'too expensive', source: 'preflight', auditId: null, evidencePath: null, evidenceHash: null,
+  }) as never
+  const once = mergeEpochRuns(EPOCH, [run('r1', '2026-10-28T22:00:00.000Z', [{ model: 'm', skipped: [runtimeSkip('a'), preflightSkip('b')] }])])
+  assert.equal(once.get(epochCellKey('m', 'a'))!.action, 'audit', 'one paid attempt: one retry')
+  const twice = mergeEpochRuns(EPOCH, [
+    run('r1', '2026-10-28T22:00:00.000Z', [{ model: 'm', skipped: [runtimeSkip('a'), preflightSkip('b')] }]),
+    run('r2', '2026-10-28T23:00:00.000Z', [{ model: 'm', skipped: [runtimeSkip('a'), preflightSkip('b')] }]),
+  ])
+  assert.equal(twice.get(epochCellKey('m', 'a'))!.attempts, 2)
+  assert.equal(twice.get(epochCellKey('m', 'a'))!.action, 'done', 'two paid attempts: finished for this epoch')
+  assert.equal(twice.get(epochCellKey('m', 'b'))!.attempts, 0)
+  assert.equal(twice.get(epochCellKey('m', 'b'))!.action, 'audit', 'a price skip is still re-evaluated')
+})

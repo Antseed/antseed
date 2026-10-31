@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import {
-  buildKbfChatRequestBody,
   isKbfSamplingFieldRejection,
   isKbfThinkingSuppressionRejection,
 } from '@antseed/fingerprints'
+import { buildKbfAuditChatBody } from '../kbf-audit-request.js'
 import type { ResponseAuthReader } from '../response-auth-reader.js'
 import type { CollectedSliceV1, EnvelopeSliceV1, SliceExchangeV1 } from './types.js'
 import { targetKey } from './types.js'
@@ -142,19 +142,13 @@ function requestBody(
   batch: EnvelopeSliceV1['batches'][number],
   options: { omitSampling: boolean; omitThinking: boolean },
 ): string {
-  const chat = buildKbfChatRequestBody(slice.target.service, batch.probes, {
+  return JSON.stringify(buildKbfAuditChatBody(slice.target.service, batch.probes, {
     maxTokens: slice.request.maxTokens,
-    variantId: batch.promptVariantId,
-  })
-  const body: Record<string, unknown> = {
-    ...chat,
-    ...(!options.omitThinking && slice.request.assistantPrefill
-      ? { messages: [...chat.messages, { role: 'assistant', content: slice.request.assistantPrefill }] }
-      : {}),
-    ...(options.omitThinking ? {} : slice.request.thinkingOverrides),
+    promptVariantId: batch.promptVariantId,
     temperature: 0,
-    stream: false,
-  }
-  if (options.omitSampling) delete body['temperature']
-  return JSON.stringify(body)
+    thinking: options.omitThinking
+      ? null
+      : { overrides: slice.request.thinkingOverrides, assistantPrefill: slice.request.assistantPrefill },
+    omitSampling: options.omitSampling,
+  }))
 }

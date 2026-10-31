@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { encryptKeystoreJsonSync, Wallet } from 'ethers'
-import { resolveAuditorSigner } from './auditor-identity.js'
+import { resolveAuditorSigner, sharedIdentityWarning } from './auditor-identity.js'
 
 const AUDITOR = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8'
 
@@ -34,3 +34,10 @@ test('the signer must match verifier.auditor', async () => withKeystore(async (k
   assert.equal(signer.source, 'keystore')
   await assert.rejects(resolveAuditorSigner({ config: { auditor: AUDITOR }, dataDir, keystoreFlag: keystore }), /does not match the keystore signer/)
 }))
+
+test('signing with the data-dir identity warns that the buyer identity would be funded', () => {
+  const address = '0x0000000000000000000000000000000000000001'
+  assert.match(sharedIdentityWarning({ source: 'data-dir', address }) ?? '', /buyer identity.*dedicated funded keystore/)
+  assert.equal(sharedIdentityWarning({ source: 'keystore', address }), null)
+  assert.equal(sharedIdentityWarning({ source: 'flag-keystore', address }), null)
+})

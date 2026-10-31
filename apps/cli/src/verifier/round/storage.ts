@@ -12,9 +12,10 @@ export interface RoundStorage {
   put(bytes: Uint8Array, name: string): Promise<string>
   /**
    * Fetches `uri` and, when given, rejects bytes whose keccak256 differs from `expectedHash`.
-   * Never holds more than `maxBytes` (default: the largest round file) in memory.
+   * Never holds more than `maxBytes` (default: the largest round file) in memory, and gives up
+   * as soon as `signal` aborts.
    */
-  get(uri: string, expectedHash?: string, maxBytes?: number): Promise<Buffer>
+  get(uri: string, expectedHash?: string, maxBytes?: number, signal?: AbortSignal): Promise<Buffer>
 }
 
 const MIB = 1024 * 1024
@@ -96,14 +97,19 @@ export class PinataRoundStorage implements RoundStorage {
     throw new Error(`Pinata upload of ${name} failed: ${lastError}`)
   }
 
-  async get(uri: string, expectedHash?: string, maxBytes: number = ROUND_FILE_MAX_BYTES.bank): Promise<Buffer> {
+  async get(uri: string, expectedHash?: string, maxBytes: number = ROUND_FILE_MAX_BYTES.bank, signal?: AbortSignal): Promise<Buffer> {
     const cid = uri.replace(/^ipfs:\/\//, '')
     if (!/^[A-Za-z0-9]{20,128}$/.test(cid)) throw new RoundFileMismatchError(`not an IPFS round file: ${uri}`)
     const failures: string[] = []
     for (const gateway of this.gateways) {
+      if (signal?.aborted) {
+        failures.push('out of time')
+        break
+      }
       const url = `${gateway.replace(/\/+$/, '')}/${cid}`
       try {
-        const response = await this.fetchImpl(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
+        const timeout = AbortSignal.timeout(FETCH_TIMEOUT_MS)
+        const response = await this.fetchImpl(url, { signal: signal ? AbortSignal.any([timeout, signal]) : timeout })
         if (!response.ok) {
           failures.push(`${url}: HTTP ${response.status}`)
           continue
@@ -163,7 +169,8 @@ export class DirectoryRoundStorage implements RoundStorage {
     return `ipfs://${id}`
   }
 
-  async get(uri: string, expectedHash?: string, maxBytes: number = ROUND_FILE_MAX_BYTES.bank): Promise<Buffer> {
+  async get(uri: string, expectedHash?: string, maxBytes: number = ROUND_FILE_MAX_BYTES.bank, signal?: AbortSignal): Promise<Buffer> {
+    signal?.throwIfAborted()
     const id = uri.replace(/^ipfs:\/\//, '')
     if (!/^local-[0-9a-f]{64}$/.test(id)) throw new RoundFileMismatchError(`not a local round file: ${uri}`)
     const path = join(this.directory, id)
@@ -173,6 +180,30 @@ export class DirectoryRoundStorage implements RoundStorage {
     if (expectedHash && contentHash(bytes).toLowerCase() !== expectedHash.toLowerCase()) {
       throw new RoundFileMismatchError(`${uri} does not match the committed hash`)
     }
+    return bytes
+  }
+}
+
+/**
+ * Keeps a copy of every file read against a committed hash under `directory`, so later passes
+ * reuse it instead of fetching again: a pass that runs short of time still has every file an
+ * earlier pass got, and only files never fetched count as unavailable.
+ */
+export class CachedRoundStorage implements RoundStorage {
+  constructor(private readonly inner: RoundStorage, private readonly directory: string) {}
+
+  put(bytes: Uint8Array, name: string): Promise<string> {
+    return this.inner.put(bytes, name)
+  }
+
+  async get(uri: string, expectedHash?: string, maxBytes: number = ROUND_FILE_MAX_BYTES.bank, signal?: AbortSignal): Promise<Buffer> {
+    if (!expectedHash || !/^0x[0-9a-fA-F]{64}$/.test(expectedHash)) return this.inner.get(uri, expectedHash, maxBytes, signal)
+    const path = join(this.directory, expectedHash.toLowerCase())
+    const cached = await readFile(path).catch(() => null)
+    if (cached && cached.length <= maxBytes && contentHash(cached).toLowerCase() === expectedHash.toLowerCase()) return cached
+    const bytes = await this.inner.get(uri, expectedHash, maxBytes, signal)
+    await mkdir(this.directory, { recursive: true })
+    await writeFile(path, bytes).catch(() => {})
     return bytes
   }
 }

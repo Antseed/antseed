@@ -7,7 +7,6 @@ import {
   KBF_PROBES_PER_REQUEST,
   KBF_PROMPT_VARIANT_IDS,
   KBF_OPTIONAL_SAMPLING_FIELDS,
-  buildKbfChatRequestBody,
   isKbfThinkingSuppressionRejection,
   kbfTargetThinkingSuppression,
   type KbfThinkingSuppression,
@@ -33,6 +32,7 @@ import { auditedModels, findAuditedModelKey } from './audited-models.js'
 import { parsePersistedPeers } from '../proxy/buyer-proxy.js'
 import { auditPriceRejection, type AuditPriceCap } from './audit-price.js'
 import { createDomainHomogeneousKbfBatches } from './kbf-batching.js'
+import { buildKbfAuditChatBody } from './kbf-audit-request.js'
 import {
   deriveProxyAuditId,
   parseProxyAuditExchangeCost,
@@ -1176,26 +1176,14 @@ export function buildKbfProbeRequestBody(
   omitSampling = false,
   thinking: KbfThinkingSuppression | null = null,
 ): Uint8Array {
-  // Audits send the canonical KBF body plus the reference's thinking suppression,
-  // as the KBF reference code does for every endpoint. Other reference-endpoint
-  // settings (omitted fields, provider pins) never reach sellers.
-  const chat = buildKbfChatRequestBody(service, probes, {
+  const body = buildKbfAuditChatBody(service, probes, {
     maxTokens: queryProfile.maxTokensPerRequest,
-    variantId: promptVariantId,
-  })
-  const requestBody: Record<string, unknown> = {
-    ...chat,
-    ...(thinking?.assistantPrefill
-      ? { messages: [...chat.messages, { role: 'assistant', content: thinking.assistantPrefill }] }
-      : {}),
-    ...thinking?.overrides,
-    // No top_p: the KBF reference code sends only model, messages, temperature and
-    // max_tokens, and several upstreams reject top_p (Kimi K3, Opus 5, Opus 4.6).
+    promptVariantId,
     temperature: queryProfile.auditTemperature,
-    stream: false,
-  }
-  if (omitSampling) for (const field of KBF_OPTIONAL_SAMPLING_FIELDS) delete requestBody[field]
-  return new TextEncoder().encode(JSON.stringify(requestBody))
+    thinking,
+    omitSampling,
+  })
+  return new TextEncoder().encode(JSON.stringify(body))
 }
 
 function buildProxyBatchRequest(

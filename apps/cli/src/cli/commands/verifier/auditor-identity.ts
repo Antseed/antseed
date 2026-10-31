@@ -50,3 +50,15 @@ export async function resolveAuditorSigner(input: {
   checkConfiguredAuditor(input.config, signer.address, keystore ? 'the keystore signer' : 'the data-dir identity')
   return signer
 }
+
+/**
+ * A warning when the verifier signs with the data-dir identity, which is also the buyer's
+ * identity. That account pays the verifier's gas and receives its ANTS rewards, while the buyer
+ * key should only ever sign: run verifiers with a dedicated keystore instead.
+ */
+export function sharedIdentityWarning(signer: Pick<AuditorSigner, 'source' | 'address'>): string | null {
+  if (signer.source !== 'data-dir') return null
+  return `signing with the data-dir identity ${signer.address}, which is also this data dir's buyer identity: `
+    + 'it will pay verifier gas and receive ANTS rewards. Use a dedicated funded keystore (--keystore or verifier.keystore) '
+    + 'and keep the buyer identity unfunded.'
+}
