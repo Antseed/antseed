@@ -1,0 +1,17 @@
+<svg width="800" height="450" viewBox="0 0 800 450" fill="none" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<pattern id="dg" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="1.5" cy="1.5" r="1.3" fill="rgba(0,30,18,0.06)"/></pattern>
+<radialGradient id="glow" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="rgba(16,185,129,0.10)"/><stop offset="1" stop-color="rgba(16,185,129,0)"/></radialGradient>
+</defs>
+<rect width="800" height="450" fill="#F4F5F4"/>
+<rect width="800" height="450" fill="url(#dg)"/>
+<ellipse cx="400" cy="225" rx="280" ry="170" fill="url(#glow)"/>
+
+<rect x="205" y="138.58606784138829" width="42" height="191.41393215861171" rx="6" fill="#10B981" stroke="#001E12" stroke-width="3"/>
+<rect x="273" y="157.12741429917514" width="42" height="172.87258570082486" rx="6" fill="rgba(0,30,18,0.14)" stroke="#001E12" stroke-width="3"/>
+<rect x="341" y="169.15477912174538" width="42" height="160.84522087825462" rx="6" fill="rgba(0,30,18,0.14)" stroke="#001E12" stroke-width="3"/>
+<rect x="409" y="223.5838723508641" width="42" height="106.41612764913589" rx="6" fill="rgba(0,30,18,0.14)" stroke="#001E12" stroke-width="3"/>
+<rect x="477" y="284.44213145179674" width="42" height="45.55786854820326" rx="6" fill="rgba(0,30,18,0.14)" stroke="#001E12" stroke-width="3"/>
+<rect x="545" y="284.9932667030953" width="42" height="45.00673329690471" rx="6" fill="rgba(0,30,18,0.14)" stroke="#001E12" stroke-width="3"/>
+<line x1="180" y1="332" x2="620" y2="332" stroke="#001E12" stroke-width="3" stroke-linecap="round" />
+</svg>
