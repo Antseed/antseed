@@ -1116,6 +1116,23 @@ describe('SellerPaymentManager', () => {
     expect(manager.getAcceptedCumulative(channelId)).toBe(500_000n);
   });
 
+  it('rejects a SpendingAuth or top-up from another buyer for a channel it does not own', async () => {
+    const channelId = makeChannelId(81);
+    const reservePayload = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, { isReserve: true, reserveMaxAmount: '1000000' });
+    await manager.handleSpendingAuth(buyerIdentity.peerId, reservePayload, mux);
+    const other = createTestIdentity();
+    const foreign = await buildSpendingAuth(other, sellerIdentity, channelId, { cumulativeAmount: 900_000n, reserveMaxAmount: '1000000' });
+    await expect(manager.handleSpendingAuth(other.peerId, foreign, mux)).resolves.toBe('rejected');
+    const foreignTopUp = await buildSpendingAuth(other, sellerIdentity, channelId, { isReserve: true, reserveMaxAmount: '5000000' });
+    await expect(manager.handleSpendingAuth(other.peerId, foreignTopUp, mux)).resolves.toBe('rejected');
+    expect(manager.getAcceptedCumulative(channelId)).toBe(0n);
+
+    // The owner is unaffected.
+    const own = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, { cumulativeAmount: 100_000n, reserveMaxAmount: '1000000' });
+    await expect(manager.handleSpendingAuth(buyerIdentity.peerId, own, mux)).resolves.toBe('accepted');
+    expect(manager.getAcceptedCumulative(channelId)).toBe(100_000n);
+  });
+
   it('awaitAcceptedAtLeast returns true immediately when the target is already satisfied', async () => {
     const channelId = makeChannelId(78);
     const reservePayload = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
