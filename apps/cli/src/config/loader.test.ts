@@ -447,10 +447,10 @@ test('loadConfig preserves and validates verifier settings', async () => {
       contrastSelection: { inputWeight: 0.9, maxPriceRatio: 0.3, maxModels: 3 },
       referenceEndpoint: REFERENCE_ENDPOINT,
       models: {
-        'gpt-5.6-sol': {
+        'gpt-6.1-sol': {
           referenceRoute: {
             type: 'antseed',
-            service: 'gpt-5.6-sol-reference',
+            service: 'gpt-6.1-sol-reference',
             peerId: '12'.repeat(20),
             pricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 },
           },
@@ -458,7 +458,7 @@ test('loadConfig preserves and validates verifier settings', async () => {
           excludedDomains: ['medical'],
         },
         'kimi-k3': {
-          contrastModels: ['gpt-5.6-sol'],
+          contrastModels: ['gpt-6.1-sol'],
           referenceProvider: { order: ['Provider-A'] },
         },
       },
@@ -488,8 +488,8 @@ test('loadConfig preserves and validates verifier settings', async () => {
     assert.equal(config.verifier?.auditPeerTimeoutMs, 123_456);
     assert.equal(config.verifier?.contrastSelection?.inputWeight, 0.9);
     assert.equal(config.verifier?.referenceEndpoint?.sourceId, 'trusted-reference-v1');
-    assert.deepEqual(config.verifier?.models?.['gpt-5.6-sol']?.excludedDomains, ['medical']);
-    assert.equal(config.verifier?.models?.['gpt-5.6-sol']?.referenceRoute?.service, 'gpt-5.6-sol-reference');
+    assert.deepEqual(config.verifier?.models?.['gpt-6.1-sol']?.excludedDomains, ['medical']);
+    assert.equal(config.verifier?.models?.['gpt-6.1-sol']?.referenceRoute?.service, 'gpt-6.1-sol-reference');
     assert.deepEqual(config.verifier?.models?.['kimi-k3']?.referenceProvider, { order: ['Provider-A'] });
     assert.equal(config.verifier?.referenceMaxRequestsPerBuild, 500);
     assert.equal(config.verifier?.referenceMinimumProbeCount, 120);
@@ -544,7 +544,7 @@ test('loadConfig rejects model lists: the audited models are built in', async ()
   });
   await withTempConfig(JSON.stringify({ verifier: {
     referenceEndpoint: REFERENCE_ENDPOINT,
-    models: { 'claude-opus-4-6': {}, 'claude-opus-4.6': {} },
+    models: { 'claude-opus-5.5': {}, 'claude-opus-5-5': {} },
   } }), async (configPath) => {
     await assert.rejects(loadConfig(configPath), /configures the same model/);
   });
@@ -555,18 +555,18 @@ test('loadConfig rejects model lists: the audited models are built in', async ()
 
 test('loadConfig accepts named reference upstreams and rejects unknown ones', async () => {
   const models = (upstream: unknown) => ({
-    'claude-opus-5': { contrastModels: ['contrast'], upstream },
+    'claude-opus-5.5': { contrastModels: ['contrast'], upstream },
   });
   await withTempConfig(JSON.stringify({ verifier: {
     upstreams: {
       anthropic: { type: 'anthropic', baseUrl: 'https://api.anthropic.com/v1', apiKeyEnv: 'ANTHROPIC_API_KEY' },
     },
     referenceEndpoint: { baseUrl: 'https://openrouter.ai/api/v1', sourceId: 'openrouter', trust: 'trusted' },
-    models: models({ name: 'anthropic', model: 'claude-opus-5' }),
+    models: models({ name: 'anthropic', model: 'claude-opus-5.5' }),
   } }), async (configPath) => {
     const config = await loadConfig(configPath);
     assert.equal(config.verifier?.upstreams?.anthropic?.type, 'anthropic');
-    assert.deepEqual(config.verifier?.models?.['claude-opus-5']?.upstream, { name: 'anthropic', model: 'claude-opus-5' });
+    assert.deepEqual(config.verifier?.models?.['claude-opus-5.5']?.upstream, { name: 'anthropic', model: 'claude-opus-5.5' });
   });
   await withTempConfig(JSON.stringify({ verifier: {
     referenceEndpoint: { baseUrl: 'https://openrouter.ai/api/v1', sourceId: 'openrouter', trust: 'trusted' },
