@@ -58,8 +58,7 @@ import {
   selectTargetProtocolForRequest,
 } from '@antseed/api-adapter';
 import { parseResponseUsage } from './utils/response-usage.js';
-import { buildSelfHealthErrorResponse, buildUpstreamUnavailableResponse, isUpstreamFailureStatus } from './health/self-health-error.js';
-import { isLiveResponseOutOfCredit } from './health/upstream-credit.js';
+import { buildSelfHealthErrorResponse, buildUpstreamUnavailableResponse, isUpstreamAccountError, isUpstreamFailureStatus } from './health/self-health-error.js';
 import type { ServicePerformanceTracker } from './health/service-performance.js';
 import { StreamOutcome } from './health/stream-outcome.js';
 import { routingProtocolForPath, routingProtocolOf, routingRequestOf, routingWireProtocol, ROUTING_PROTOCOLS, type RoutingProtocol } from '@antseed/protocol/routing';
@@ -930,8 +929,8 @@ export class SellerRequestHandler {
           const upstreamBody = response.body ?? new Uint8Array(0);
           const upstreamError = statusCode >= 400 ? new TextDecoder().decode(upstreamBody.slice(0, 2_000)) : '';
           this._deps.emit('provider:response', { provider, service: requestedModel, statusCode, body: upstreamError, billable: videoRoute?.action !== 'retrieve' });
-          if (!streamedResponseStarted && statusCode >= 400 && isLiveResponseOutOfCredit(statusCode, upstreamError)) {
-            debugWarn(`[SellerHandler] Upstream out of credit: status=${statusCode} provider="${provider.name}" model="${requestedModel}" body=${upstreamError.slice(0, 200)}`);
+          if (!streamedResponseStarted && isUpstreamAccountError(statusCode, upstreamError)) {
+            debugWarn(`[SellerHandler] Upstream account error: status=${statusCode} provider="${provider.name}" model="${requestedModel}" body=${upstreamError.slice(0, 200)}`);
             response = buildUpstreamUnavailableResponse(request.requestId, requestedModel);
             statusCode = response.statusCode;
           }

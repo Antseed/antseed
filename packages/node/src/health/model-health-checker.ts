@@ -144,6 +144,8 @@ interface TrackedService {
   retrying: boolean;
   /** The account answer this service last followed, by `_accountAnswers` count (see `_followAccount`). */
   accountFollowed: number | null;
+  /** Its failed checks since the last success include the upstream being out of credit, which credit again forgives. */
+  accountFailed: boolean;
 }
 
 class ProbeTimeoutError extends Error {}
@@ -340,15 +342,16 @@ export class ModelHealthChecker {
       state.lastProbeAt = Date.now();
       state.lastStatusCode = null;
       state.lastDetail = 'The upstream account is out of credit';
+      state.accountFailed = true;
       this._recordFailure(state, 'out_of_credit', null, null);
-    } else if (account !== undefined && state.reason === 'out_of_credit' && state.consecutiveFailures > 0) {
-      if (state.status !== 'failing') {
+    } else if (account !== undefined && state.accountFailed && !state.liveFailed) {
+      if (state.status === 'failing' || state.retrying) {
+        this._recordSuccess(state, 'probe', 'The upstream account has credit again');
+      } else {
         state.consecutiveFailures = 0;
         state.failingSince = null;
         state.reason = null;
-        state.liveFailed = false;
-      } else if (!state.liveFailed) {
-        this._recordSuccess(state, 'probe', 'The upstream account has credit again');
+        state.accountFailed = false;
       }
     }
   }
@@ -449,6 +452,7 @@ export class ModelHealthChecker {
         liveFailed: false,
         retrying: false,
         accountFollowed: null,
+        accountFailed: false,
       };
       this._states.set(key, state);
     }
@@ -584,6 +588,7 @@ export class ModelHealthChecker {
     state.lastDetail = detail;
     // Out of credit is the account's failure, not the service's, when a probe will tell when it has credit again (see `_followAccount`).
     const accountFailure = reason === 'out_of_credit' && this._probesAccount(provider);
+    if (accountFailure) state.accountFailed = true;
     this._recordFailure(state, reason, httpStatus, null, accountFailure ? 'probe' : 'traffic');
   }
 
@@ -601,7 +606,7 @@ export class ModelHealthChecker {
    * service waits, it is announced unknown so buyers try it again.
    */
   private _retryAfterLiveFailures(state: TrackedService): void {
-    if (state.status !== 'failing' || !(state.liveFailed || state.reason === 'out_of_credit') || state.checkedAt === null) return;
+    if (state.status !== 'failing' || !(state.liveFailed || state.accountFailed) || state.checkedAt === null) return;
     if (Date.now() - state.checkedAt < this._failingBackoff(state) * this._intervalMs - LIVE_FAILURE_PROBE_MIN_GAP_MS) return;
     state.status = 'unknown';
     state.retrying = true;
@@ -705,6 +710,7 @@ export class ModelHealthChecker {
     state.status = 'healthy';
     state.retrying = false;
     state.liveFailed = false;
+    state.accountFailed = false;
     state.consecutiveFailures = 0;
     state.failingSince = null;
     state.reason = null;

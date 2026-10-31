@@ -1020,6 +1020,25 @@ describe('ModelHealthChecker image services following the upstream account', () 
     }
   });
 
+  it('recovers an image service on credit again after it was let back for a retry', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const provider = mixedProvider(402);
+      const intervalMs = 5 * 60_000;
+      const onChange = vi.fn();
+      const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1, intervalMs, onChange });
+      await checker.runSweep();
+      expect(statusOf(provider, 'image-a')).toBe('failing');
+      provider.handleRequest = async (req) => jsonResponse(req.requestId, 200);
+      vi.setSystemTime(Date.now() + intervalMs);
+      await checker.runSweep();
+      expect(statusOf(provider, 'image-a')).toBe('healthy');
+      expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ service: 'image-a', status: 'recovered' }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('never announces the account reason or its status code to buyers', async () => {
     const provider = makeProvider({ services: ['model-a'], onRequest: statusSequence({ 'model-a': [401] }) });
     const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1 });
