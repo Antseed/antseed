@@ -652,8 +652,9 @@ already running, `--buyer-port` picks its port) and every `--interval` seconds
 (default 60):
 
 - opens the epoch and fixes its seed if nobody has yet;
-- buys its primary slices and commits them before the collection deadline, then its
-  backup slices if the backup plan has any;
+- buys its primary slices and commits them before the collection deadline; after it,
+  buys the slices it backs up whose owner didn't deliver them (judged from the
+  committed slices with its backup envelope, so no publisher step is needed);
 - after the key reveal, scores every committed slice and attests the results root;
 - applies the finalized results (the first verifier in a seeded order applies at
   once, the others two hours after the attest deadline if it is still undone) and
@@ -673,6 +674,10 @@ recent past blocks.
 
 Per-epoch state is kept in `<data-dir>/verifier/round/epochs/<epoch>/`, so a
 restart continues where it stopped. `--no-collect` only scores and attests.
+Every envelope is checked against the public plan before anything is bought (only
+slices assigned to this verifier, at most the schedule's questions per seller,
+bounded questions and request settings), and `--max-epoch-requests` (default 1000)
+caps the paid requests per epoch, own and backup slices together.
 It signs with `--keystore <path>` (password from `ANTSEED_KEYSTORE_PASSWORD`),
 then `verifier.keystore`, then the data-dir identity, and refuses to start for an
 address that isn't an approved verifier. A newly approved verifier joins from the
@@ -684,7 +689,9 @@ every verifier scores the same way.
 Round files (slice manifests, results) are stored on IPFS through Pinata
 (`PINATA_JWT`) and read through `ANTSEED_IPFS_GATEWAYS` (comma-separated, public
 gateways by default). `ANTSEED_ROUND_STORAGE_DIR` stores them in a local directory
-instead, for tests. Every file is checked against its on-chain hash before use.
+instead, for tests. Every file is checked against its on-chain hash before use, and
+downloads are cut off past a size limit per kind of file (64 MiB for a bank, 32 MiB
+for a plan or slice file).
 
 ### Scoring
 
@@ -715,11 +722,14 @@ epoch opens, so changing them only affects later epochs.
 sellers to audit: staked sellers with an on-chain agent id that advertise an
 audited model at or below its reference price. It builds each epoch's bank one
 epoch ahead, skipping questions used in the last 8 banks, and keeps every bank key
-and plaintext bank in `<data-dir>/verifier/publisher/<epoch>/` (mode 0600, back it
-up). Once the epoch opens it also escrows the key: Shamir shares, one sealed to each
+and plaintext bank in `<data-dir>/verifier/publisher/<epoch>/` (back it
+up; files and directory are owner-only from creation, and so are the reference
+build files under `references/`). Once the epoch opens it also escrows the key: Shamir shares, one sealed to each
 of the epoch's verifiers, any majority of which rebuild the key (`commitKeyShares`).
-Next epoch's bank is built only after the current round's steps, so a failing build
-never holds up the current backup plan or key reveal. It only plans sellers whose
+The plan holds each verifier's own and backed-up slices, so after it the round
+needs nothing from the publisher but the key reveal, which the escrow covers. Next
+epoch's bank is built only after the current round's steps, so a failing build
+never holds up the current key reveal. It only plans sellers whose
 peer and agent are bound to each other on the seller registry. It needs
 `PINATA_JWT` to publish the bank and plans.
 

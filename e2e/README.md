@@ -47,7 +47,7 @@ mainnet (about 2–3 minutes):
 
 1. Fork Base with Anvil and deploy `AntseedKbfVerification` with the KBF deploy script
    (`M003VerificationRegistry/Deploy.s.sol`), as the protocol owner. The fork is at the latest
-   block, or at an older block of the same epoch when less than about 85 minutes of it is left,
+   block, or at an older block of the same epoch when less than about 65 minutes of it is left,
    so the whole round fits in the epoch
 2. Do the owner's post-deploy steps: hand the verification emissions bucket to the contract,
    set the publisher, three verifiers, the audited model (`glm-5.3`), the rewards start epoch,
@@ -60,8 +60,10 @@ mainnet (about 2–3 minutes):
    go offline; the run opens the epoch and fixes a seed under which every verifier owns at least
    one slice (redrawing the seed block if needed), then restarts only two of them, so the third
    verifier's slices have to go to backups
-5. Move chain time through collection, backup, reveal and attestation, then check: the backup
-   plan covers the stopped verifier's slices, both live verifiers attest the same root, the
+5. Move chain time through collection, backup, reveal and attestation, then check: the live
+   verifiers that back up the stopped verifier's slices buy and commit them on their own, and
+   with the publisher stopped right after the plan they also rebuild the bank key from their
+   escrowed shares; both live verifiers attest the same root, the
    epoch finalizes, the genuine seller is SAME and the impostor DIFF on-chain, each seller
    reserved payment channels with the live verifiers' buyers and settled spending on them, and
    the live verifiers claim ANTS rewards

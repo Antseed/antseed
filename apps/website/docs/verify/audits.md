@@ -28,7 +28,7 @@ Each epoch follows the same timeline, as offsets from the epoch start. The defau
 | Open | start of the epoch | A verifier opens the epoch. This fixes the epoch's verifiers, models and schedule; anyone approved later joins from the next epoch |
 | Seed | 4 blocks later | A verifier fixes the epoch's random seed from that block's hash. The seed decides which questions each seller gets and who buys them |
 | Collect | 3 days | The publisher publishes the plan. Each verifier buys its slices from the sellers and commits the signed responses |
-| Backup | 1 day | Slices that weren't delivered go to their backup verifier |
+| Backup | 1 day | Each slice's backup verifier buys it if its owner didn't deliver it |
 | Attest | 1 day | The publisher reveals the bank key. Every verifier scores the epoch and attests the results root |
 
 The owner can change the schedule (`setSchedule`) for epochs opened later. `verifier start` takes each step on its own as soon as it is due.
@@ -38,7 +38,7 @@ The owner can change the schedule (`setSchedule`) for epochs opened later. `veri
 A seller that knew the questions in advance could answer them with the genuine model and serve something else the rest of the time. So:
 
 - **The bank is sealed.** Only its hash and the hash of its key are on-chain while sellers are being asked. The bank itself sits on IPFS, encrypted.
-- **Each verifier only sees its own questions.** The plan lists the sellers to audit and holds one envelope per verifier, encrypted to the key that verifier published on-chain. An envelope has the questions of that verifier's slices and none of the answers.
+- **Each verifier only sees its own questions.** The plan lists the sellers to audit and holds, per verifier, one envelope with the questions of its own slices and one with the slices it backs up, each encrypted to the key that verifier published on-chain. Envelopes have none of the answers.
 - **Questions are fresh.** Each bank is built for its epoch and leaves out the questions of the last 8 banks.
 - **The key is revealed when buying is over.** After the backup deadline the publisher reveals the bank key on-chain. The contract checks it against the committed hash, and from then on anyone can decrypt the bank and check the round.
 - **The key is escrowed with the verifiers.** Once the epoch is open, the publisher splits the bank key into Shamir shares, one sealed to each of the epoch's verifiers, and commits the share file's hash on-chain. Any majority of the shares rebuilds the key; fewer reveal nothing. A majority of verifiers can already decide the results, so this adds no new trust.
@@ -47,7 +47,7 @@ A seller that knew the questions in advance could answer them with the genuine m
 
 The publisher is a convenience, not a requirement:
 
-- **No plan in time.** If no plan is committed 6 hours into the epoch (`publisherGraceSeconds`), any of the epoch's verifiers can take the epoch over: it builds its own bank, commits it with `takeOverBank` and runs the rest of the round as the epoch's publisher (plan, backup plan, key reveal). `verifier start` does this on its own. Verifiers take turns 10 minutes apart, in an order drawn from the epoch, so they don't all build a bank at once, and a further takeover waits another grace period. Taking over needs the verifier's buyer and a working [reference upstream](#reference-upstreams), the same setup the publisher uses to build a bank. An epoch that was already opened gets a new seed.
+- **No plan in time.** If no plan is committed 6 hours into the epoch (`publisherGraceSeconds`), any of the epoch's verifiers can take the epoch over: it builds its own bank, commits it with `takeOverBank` and runs the rest of the round as the epoch's publisher (key escrow, plan, key reveal). `verifier start` does this on its own. Verifiers take turns 10 minutes apart, in an order drawn from the epoch, so they don't all build a bank at once, and a further takeover waits another grace period. Taking over needs the verifier's buyer and a working [reference upstream](#reference-upstreams), the same setup the publisher uses to build a bank. An epoch that was already opened gets a new seed.
 - **No key reveal.** If the bank key is still hidden 10 minutes after the backup deadline, each verifier posts its share on-chain (`revealKeyShare`), up to the attest deadline. As soon as a majority of shares are on-chain, any verifier rebuilds the key and reveals it. A forged share is ignored, because every share is checked against the hash in the share file.
 
 ## Which sellers are audited
@@ -68,9 +68,11 @@ Each audited seller service gets 100 questions (`probesPerService`), in batches 
 
 - Each verifier buys its slices from the seller through its own buyer, as normal paid requests pinned to that seller, and keeps the seller's signature on every response. A batch is retried only when there is no signed answer.
 - Before the collection deadline it publishes its slices on IPFS and commits their hash on-chain.
-- After the deadline, the publisher hands every slice its owner didn't deliver to that slice's backup verifier, who buys and commits it before the backup deadline.
+- After the deadline, each backup verifier checks the committed slices against the questions in its backup envelope. Every slice it backs up whose owner didn't deliver a complete, validly signed copy, it buys and commits before the backup deadline. It decides this exactly as scoring later does, and it needs nothing from the publisher, so backups still happen if the publisher is gone after the plan. A slice file it can't fetch yet is waited for during the first quarter of the backup window.
 
 A verifier that is offline loses its share of the slices, and its backups cover for it.
+
+Before buying anything, a verifier checks its envelope against the public plan: only slices the seed assigns to it, of sellers on the plan, at most the schedule's questions per seller, questions of bounded length and request settings limited to the reference's token and thinking fields. An envelope that asks for anything else is refused, so a dishonest publisher can't make a verifier pay for work that will never count. `verifier start --max-epoch-requests` (default 1,000) also caps how many requests a verifier buys per epoch, whatever the envelopes say.
 
 ## Scoring
 

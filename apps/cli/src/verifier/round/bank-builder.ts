@@ -2,6 +2,7 @@ import { join } from 'node:path'
 import chalk from 'chalk'
 import type { KbfModel } from '@antseed/node/payments'
 import type { AntseedConfig } from '../../config/types.js'
+import { ensurePrivateDirectory } from '../atomic-files.js'
 import { buildModelReference } from '../model-reference.js'
 import { loadConfiguredVerifierModelCatalog } from '../openrouter-catalog.js'
 import type { EpochBankV1 } from './types.js'
@@ -18,11 +19,15 @@ export async function buildEpochBank(input: {
 }): Promise<EpochBankV1> {
   const catalog = await loadConfiguredVerifierModelCatalog(input.config.verifier)
   const bank: EpochBankV1 = { kind: 'antseed-kbf-epoch-bank', version: 1, epoch: input.epoch.toString(), models: {} }
+  // The references are the bank in plaintext until the key is revealed: keep them owner-only.
+  await ensurePrivateDirectory(input.referencesDir)
+  const referencesDir = join(input.referencesDir, input.epoch.toString())
+  await ensurePrivateDirectory(referencesDir)
   for (const model of input.models) {
     try {
       const built = await buildModelReference({
         model: model.service,
-        referencesDir: join(input.referencesDir, input.epoch.toString()),
+        referencesDir,
         config: input.config.verifier,
         catalog,
         buyerProxyPort: input.buyerPort,

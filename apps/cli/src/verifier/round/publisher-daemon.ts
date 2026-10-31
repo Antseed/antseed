@@ -1,4 +1,4 @@
-import { chmod, mkdir, readFile } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { AbstractSigner } from 'ethers'
 import {
@@ -9,21 +9,18 @@ import {
   type KbfModel,
   type KbfRoundClient,
 } from '@antseed/node/payments'
-import { writeJsonAtomic } from '../atomic-files.js'
+import { ensurePrivateDirectory, writeSecretJsonAtomic } from '../atomic-files.js'
 import { buildKeySharesFile } from './key-shares.js'
 import { derivePlan, envelopeFor } from './plan.js'
-import { createDeliveryChecker, type CommittedManifest } from './scoring.js'
 import { bankKeyHash, contentHash, sealBank, sealEnvelope } from './sealing.js'
-import { loadCommittedManifest } from './manifest-loader.js'
 import type { RoundStorage } from './storage.js'
-import { targetKey, type EpochBankV1, type PlanFileV1, type PlannedSliceV1, type RoundTargetV1, type SealedEnvelopeV1 } from './types.js'
+import type { EpochBankV1, PlanFileV1, RoundTargetV1, SealedEnvelopeV1 } from './types.js'
 import { encodeRoundFile } from './verifier-daemon.js'
 
 /**
  * Antseed's reference publisher. It never decides a verdict: it builds and seals each epoch's
- * question bank, publishes the target list and the per-verifier question envelopes once the
- * seed is fixed, hands missing slices to backup verifiers, and reveals the bank key once
- * collection is over.
+ * question bank, publishes the target list and the per-verifier question envelopes (own and
+ * backup slices) once the seed is fixed, and reveals the bank key once collection is over.
  */
 export interface PublisherDaemonContext {
   client: KbfRoundClient
@@ -70,7 +67,8 @@ export async function publisherTick(context: PublisherDaemonContext): Promise<vo
 
 /**
  * Moves an epoch whose bank the signer committed through the rest of the round: key escrow,
- * plan, backup plan and key reveal. Shared by the publisher and a verifier that took over.
+ * plan and key reveal. Shared by the publisher and a verifier that took over. Nothing is needed
+ * from it between the plan and the reveal: backup collectors work from the plan alone.
  */
 export async function advanceEpochAsPublisher(
   context: PublisherDaemonContext,
@@ -94,12 +92,6 @@ export async function advanceEpochAsPublisher(
   }
   if (!isZeroHash(info.seed) && isZeroHash(info.planHash) && now < deadlines.commitDeadline) {
     await publishPlan(context, info, now)
-  }
-  if (
-    !isZeroHash(info.planHash) && isZeroHash(info.backupPlanHash)
-    && now >= deadlines.commitDeadline && now < deadlines.backupDeadline
-  ) {
-    await publishBackupPlan(context, info, deadlines, now)
   }
   if (!isZeroHash(info.planHash) && isZeroHash(info.bankKey) && now >= deadlines.backupDeadline) {
     const state = await readState(context, epoch)
@@ -178,78 +170,37 @@ async function publishPlan(context: PublisherDaemonContext, info: KbfEpochInfo, 
     probesPerService: info.schedule.probesPerService, slicesPerService: info.schedule.slicesPerService,
     verifiers: members, targets, bank,
   })
-  const envelopes = await sealEnvelopes(context, members, (member) => envelopeFor(plan, bank, member, { backup: false }))
-  const file: PlanFileV1 = { kind: 'antseed-kbf-plan', version: 1, epoch: plan.epoch, seed: plan.seed, backup: false, targets: plan.targets, envelopes }
+  const encryptionKeys = await memberEncryptionKeys(context, members)
+  const envelopes = sealEnvelopes(encryptionKeys, (member) => envelopeFor(plan, bank, member, { backup: false }))
+  const backupEnvelopes = sealEnvelopes(encryptionKeys, (member) => envelopeFor(plan, bank, member, { backup: true }))
+  const file: PlanFileV1 = {
+    kind: 'antseed-kbf-plan', version: 1, epoch: plan.epoch, seed: plan.seed, targets: plan.targets, envelopes, backupEnvelopes,
+  }
   const bytes = encodeRoundFile(file)
   const uri = await context.storage.put(bytes, `antseed-kbf-${info.epoch}-plan.json`)
   const hash = await context.client.commitPlan(context.signer, info.epoch, contentHash(bytes), uri)
   context.log(`epoch ${info.epoch}: committed plan for ${plan.targets.length} targets, ${plan.slices.length} slices (${hash})`)
 }
 
-/** Share of the backup window the publisher keeps retrying unreachable slice files before counting them as missing. */
-export const BACKUP_UNAVAILABLE_WAIT_SHARE = 0.25
-
-async function publishBackupPlan(
-  context: PublisherDaemonContext,
-  info: KbfEpochInfo,
-  deadlines: KbfEpochDeadlines,
-  now: number,
-): Promise<void> {
-  const bank = await readBank(context, info.epoch)
-  const planEvent = (await context.client.planCommits(info.epoch)).filter((entry) => !entry.backup && entry.hash === info.planHash).at(-1)
-  if (!planEvent) throw new Error(`no plan event for epoch ${info.epoch}`)
-  const planFile = JSON.parse((await context.storage.get(planEvent.uri, info.planHash)).toString('utf8')) as PlanFileV1
-  const members = await context.client.epochVerifiers(info.epoch)
-  const plan = derivePlan({
-    epoch: info.epoch.toString(), seed: info.seed,
-    probesPerService: info.schedule.probesPerService, slicesPerService: info.schedule.slicesPerService,
-    verifiers: members, targets: planFile.targets, bank,
-  })
-  const manifests: CommittedManifest[] = []
-  const unavailable: string[] = []
-  for (const commit of await context.client.sliceCommits(info.epoch)) {
-    if (commit.backup) continue
-    const load = await loadCommittedManifest(context.storage, commit)
-    // Bytes that are not the committed ones never become valid, and non-JSON is an invalid
-    // delivery whose slices are missing; a fetch failure may be transient.
-    if (load.kind === 'loaded') manifests.push(load.manifest)
-    else if (load.kind === 'unavailable') unavailable.push(commit.uri)
+/** Each member's envelope key; members without one get no envelopes, so their slices fall to backups. */
+async function memberEncryptionKeys(context: PublisherDaemonContext, members: readonly string[]): Promise<Map<string, string>> {
+  const keys = new Map<string, string>()
+  for (const member of members) {
+    const key = await context.client.encryptionKey(member)
+    if (isZeroHash(key)) context.log(`verifier ${member} has no encryption key; its slices go to backups`)
+    else keys.set(member.toLowerCase(), key)
   }
-  if (unavailable.length > 0) {
-    const waitUntil = deadlines.commitDeadline + Math.floor(info.schedule.backupSeconds * BACKUP_UNAVAILABLE_WAIT_SHARE)
-    if (now < waitUntil) throw new Error(`epoch ${info.epoch}: ${unavailable.length} slice files unavailable; retrying before the backup plan`)
-    context.log(`epoch ${info.epoch}: ${unavailable.length} slice files still unavailable; their slices go to the backup round`)
-  }
-  const targets = new Map(plan.targets.map((target) => [targetKey(target), target]))
-  const delivered = createDeliveryChecker(manifests, bank)
-  const missing = new Set<PlannedSliceV1>(plan.slices.filter((slice) => !delivered(slice, targets.get(slice.targetKey)!)))
-  if (missing.size === 0) {
-    context.log(`epoch ${info.epoch}: every slice delivered; no backup round needed`)
-    return
-  }
-  const envelopes = await sealEnvelopes(context, members, (member) => envelopeFor(plan, bank, member, { backup: true, sliceFilter: (slice) => missing.has(slice) }))
-  const file: PlanFileV1 = { kind: 'antseed-kbf-plan', version: 1, epoch: plan.epoch, seed: plan.seed, backup: true, targets: plan.targets, envelopes }
-  const bytes = encodeRoundFile(file)
-  const uri = await context.storage.put(bytes, `antseed-kbf-${info.epoch}-backup-plan.json`)
-  const hash = await context.client.commitPlan(context.signer, info.epoch, contentHash(bytes), uri, true)
-  context.log(`epoch ${info.epoch}: committed backup plan for ${missing.size} missing slices (${hash})`)
+  return keys
 }
 
-async function sealEnvelopes(
-  context: PublisherDaemonContext,
-  members: readonly string[],
+function sealEnvelopes(
+  encryptionKeys: ReadonlyMap<string, string>,
   contentFor: (member: string) => ReturnType<typeof envelopeFor>,
-): Promise<Record<string, SealedEnvelopeV1>> {
+): Record<string, SealedEnvelopeV1> {
   const envelopes: Record<string, SealedEnvelopeV1> = {}
-  for (const member of members) {
+  for (const [member, key] of encryptionKeys) {
     const content = contentFor(member)
-    if (content.slices.length === 0) continue
-    const key = await context.client.encryptionKey(member)
-    if (isZeroHash(key)) {
-      context.log(`verifier ${member} has no encryption key; its slices go to backups`)
-      continue
-    }
-    envelopes[member.toLowerCase()] = sealEnvelope(key, encodeRoundFile(content))
+    if (content.slices.length > 0) envelopes[member] = sealEnvelope(key, encodeRoundFile(content))
   }
   return envelopes
 }
@@ -283,10 +234,10 @@ async function readState(context: PublisherDaemonContext, epoch: bigint): Promis
   }
 }
 
+/** Bank plaintext and keys: written owner-only from the first byte, in an owner-only directory. */
 async function writeSecret(path: string, value: unknown): Promise<void> {
-  await mkdir(join(path, '..'), { recursive: true })
-  await writeJsonAtomic(path, value)
-  await chmod(path, 0o600)
+  await ensurePrivateDirectory(join(path, '..'))
+  await writeSecretJsonAtomic(path, value)
 }
 
 function epochDir(context: Pick<PublisherDaemonContext, 'stateDir'>, epoch: bigint): string {

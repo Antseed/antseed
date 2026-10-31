@@ -1,6 +1,6 @@
 import type { CommitmentEvent } from '@antseed/node/payments'
 import type { CommittedManifest } from './scoring.js'
-import { RoundFileMismatchError, type RoundStorage } from './storage.js'
+import { ROUND_FILE_MAX_BYTES, RoundFileMismatchError, type RoundStorage } from './storage.js'
 import type { SliceManifestV1 } from './types.js'
 
 /**
@@ -16,7 +16,7 @@ export type ManifestLoad =
 export async function loadCommittedManifest(storage: RoundStorage, commit: CommitmentEvent): Promise<ManifestLoad> {
   let bytes: Buffer
   try {
-    bytes = await storage.get(commit.uri, commit.hash)
+    bytes = await storage.get(commit.uri, commit.hash, ROUND_FILE_MAX_BYTES.slices)
   } catch (error) {
     return { kind: error instanceof RoundFileMismatchError ? 'mismatch' : 'unavailable', error }
   }

@@ -51,7 +51,10 @@ const USDC_DEPOSIT = 20_000_000n;
 // 100 questions make at least 10 batches, so every target gets all 4 slices.
 const PROBES_PER_SERVICE = 100;
 const SLICES_PER_SERVICE = 4;
-const COLLECT_WINDOW = 30 * 60;
+// Short enough that warping to the commit deadline leaves chain time well inside the 15 minutes
+// a buyer's ReserveAuth is valid for (wall time + 900 s): backup verifiers may open their first
+// channel with a seller after that warp, and the seller's reserve() must still land in time.
+const COLLECT_WINDOW = 10 * 60;
 const BACKUP_WINDOW = 20 * 60;
 const ATTEST_WINDOW = 20 * 60;
 const APPLY_FALLBACK_DELAY = 2 * 60 * 60;
@@ -301,6 +304,9 @@ async function main() {
   await send(owner, verification, 'setModels((bytes32,string)[])', [`[(${keccak256(toUtf8Bytes(MODEL))},${MODEL})]`]);
   await send(owner, verification, 'setRewardsStartEpoch(uint256)', [String(epoch)]);
   await send(owner, verification, 'setSchedule((uint32,uint32,uint32,uint16,uint16))', [`(${schedule.join(',')})`]);
+  // The fork joins the epoch hours in, past the default 6-hour grace: without this, verifiers would
+  // try to take the epoch over before the publisher commits its plan.
+  await send(owner, verification, 'setPublisherGraceSeconds(uint32)', [String(elapsed + COLLECT_WINDOW)]);
   check(BigInt(call(gate, 'controllerEpochBudget(address,uint256)(uint256)', [verification, String(epoch)])) > 0n,
     'the verification minter now pays the new contract this epoch');
   const client = new KbfRoundClient({ rpcUrl, contractAddress: verification, evmChainId: 8453, deploymentBlock: deployBlock });
@@ -416,7 +422,7 @@ async function main() {
   // Offline until the seed is fixed, so the run can pick the verifier to lose from the real plan.
   for (const role of verifierRoles) await stopProcess(nodes[role].process);
 
-  startProcess('publisher', process.execPath, cli(nodes.publisher, [
+  const publisherProcess = startProcess('publisher', process.execPath, cli(nodes.publisher, [
     'verifier', 'publish', '--no-buyer', '--buyer-port', String(nodes.publisher.buyerPort), '--interval', '10',
   ]), env);
 
@@ -462,10 +468,15 @@ async function main() {
   // ── Collection ───────────────────────────────────────────────────────────────────────────
   await waitFor('the publisher committed the plan', async () => !isZeroHash((await info()).planHash), 300_000);
   const storage = new DirectoryRoundStorage(roundStorage);
-  const planEvent = (await client.planCommits(epoch)).find((entry) => !entry.backup);
+  const planEvent = (await client.planCommits(epoch)).at(-1);
   const plan = JSON.parse((await storage.get(planEvent.uri, planEvent.hash)).toString('utf8'));
   const collectors = Object.keys(plan.envelopes).sort();
   check(collectors.join() === [...members].sort().join(), `the plan seals slices to all ${collectors.length} verifiers, as the seed predicted`);
+  check(Object.keys(plan.backupEnvelopes ?? {}).length > 0, 'the plan also seals the backed-up slices');
+  // From here on the round must finish without the publisher: backups come from the plan, and
+  // the bank key from the verifiers' escrowed shares.
+  await stopProcess(publisherProcess);
+  log('the publisher goes offline after the plan');
   const live = liveRoles.map((role) => nodes[role].address);
   await waitFor('both live verifiers committed their primary slices', async () => {
     for (const verifier of live) if (await client.sliceCommitCount(epoch, verifier) < 1) return false;
@@ -475,21 +486,29 @@ async function main() {
 
   let deadlines = kbfEpochDeadlines(await info(), await client.epochDuration());
   await warpTo(deadlines.commitDeadline + 5);
-  await waitFor('the publisher committed a backup plan for the missing slices', async () => !isZeroHash((await info()).backupPlanHash), 300_000);
-  // The backup plan seals the missing slices to the verifiers ranked as their backups.
-  const backupEvent = (await client.planCommits(epoch)).find((entry) => entry.backup);
-  const backupPlan = JSON.parse((await storage.get(backupEvent.uri, backupEvent.hash)).toString('utf8'));
-  const backupCollectors = Object.keys(backupPlan.envelopes);
+  // No publisher step here: each slice's backup verifier (second in its seeded ranking) finds the
+  // owner's slices missing from the commitments and buys them from the plan's backup envelopes.
+  const stopped = nodes[stoppedRole].address.toLowerCase();
+  const fixedSeed = (await info()).seed;
+  const backupCollectors = [...new Set(targets.flatMap((key) => Array.from({ length: SLICES_PER_SERVICE }, (_, sliceIndex) => {
+    const ranking = seededRanking(members, fixedSeed, `slice|${key}|${sliceIndex}`);
+    return ranking[0] === stopped ? [ranking[1]] : [];
+  }).flat()))];
   check(backupCollectors.length > 0 && backupCollectors.every((collector) => live.some((verifier) => verifier.toLowerCase() === collector)),
-    `the backup plan hands the missing slices to live verifiers only (${backupCollectors.length})`);
+    `the stopped verifier's slices are backed up by live verifiers only (${backupCollectors.length})`);
   await waitFor('the backup verifiers committed the missing slices', async () => {
-    for (const collector of backupCollectors) if (await client.sliceCommitCount(epoch, collector) < 2) return false;
-    return true;
+    const backups = (await client.sliceCommits(epoch)).filter((entry) => entry.backup).map((entry) => entry.sender.toLowerCase());
+    return backupCollectors.every((collector) => backups.includes(collector));
   }, 900_000, 5_000);
+  check(!(await client.sliceCommits(epoch)).some((entry) => entry.sender.toLowerCase() === stopped), 'the stopped verifier still committed nothing');
 
   // ── Reveal, attest, finalize, apply ──────────────────────────────────────────────────────
-  await warpTo(deadlines.backupDeadline + 5);
-  await waitFor('the publisher revealed the bank key', async () => !isZeroHash((await info()).bankKey), 300_000);
+  // The verifiers give the publisher a few minutes to reveal the key, then post their shares.
+  await warpTo(deadlines.backupDeadline + Math.min(600, Math.floor(ATTEST_WINDOW / 4)) + 5);
+  await waitFor('the verifiers rebuilt and revealed the bank key from their shares', async () => !isZeroHash((await info()).bankKey), 300_000, 5_000);
+  const shares = await client.keyShareReveals(epoch);
+  check(shares.length >= 2 && shares.every((entry) => live.some((verifier) => verifier.toLowerCase() === entry.verifier.toLowerCase())),
+    `the bank key came from ${shares.length} live verifiers' escrowed shares`);
   const roots = await waitFor('both live verifiers attested', async () => {
     const values = await Promise.all(live.map((verifier) => client.attestation(epoch, verifier)));
     return values.every((value) => !isZeroHash(value)) ? values : null;

@@ -23,7 +23,7 @@ const gateIface = new Interface([
 const SCHEDULE = [3n * 86_400n, 86_400n, 43_200n, 100n, 8n];
 const EPOCH_INFO = [
   1_000n, 55n, '0x' + 'ab'.repeat(32), 2n, 3n, SCHEDULE,
-  '0x' + '01'.repeat(32), '0x' + '02'.repeat(32), ZeroHash, '0x' + '03'.repeat(32), ZeroHash,
+  '0x' + '01'.repeat(32), '0x' + '02'.repeat(32), ZeroHash, '0x' + '03'.repeat(32),
   '0x' + '04'.repeat(32), false, PUBLISHER, 77n, '0x' + '05'.repeat(32),
 ];
 
@@ -92,7 +92,7 @@ describe('KbfRoundClient reads', () => {
       epoch: 7n, startedAt: 1_000, seedBlock: 55n, seed: '0x' + 'ab'.repeat(32), modelsVersion: 2, verifierCount: 3,
       schedule: { collectSeconds: 259_200, backupSeconds: 86_400, attestSeconds: 43_200, probesPerService: 100, slicesPerService: 8 },
       bankHash: '0x' + '01'.repeat(32), bankKeyHash: '0x' + '02'.repeat(32), bankKey: ZeroHash, planHash: '0x' + '03'.repeat(32),
-      backupPlanHash: ZeroHash, finalizedRoot: '0x' + '04'.repeat(32), voided: false, publisher: PUBLISHER, takenOverAt: 77,
+      finalizedRoot: '0x' + '04'.repeat(32), voided: false, publisher: PUBLISHER, takenOverAt: 77,
       keySharesHash: '0x' + '05'.repeat(32),
     });
     expect(await client().schedule()).toEqual(info.schedule);
@@ -136,7 +136,7 @@ describe('KbfRoundClient events', () => {
   it('maps each event field to its place', async () => {
     const logs = [
       log('BankCommitted', [7n, '0x' + '01'.repeat(32), '0x' + '02'.repeat(32), 'ipfs://bank'], 1),
-      log('PlanCommitted', [7n, true, '0x' + '03'.repeat(32), 'ipfs://backup-plan'], 2),
+      log('PlanCommitted', [7n, '0x' + '03'.repeat(32), 'ipfs://plan'], 2),
       log('SlicesCommitted', [7n, VERIFIER, true, '0x' + '06'.repeat(32), 'ipfs://slices'], 3),
       log('Attested', [7n, VERIFIER, '0x' + '07'.repeat(32), 'ipfs://results'], 4),
       log('KeySharesCommitted', [7n, '0x' + '05'.repeat(32), 'ipfs://shares'], 5),
@@ -147,7 +147,7 @@ describe('KbfRoundClient events', () => {
       { epoch: 7n, bankHash: '0x' + '01'.repeat(32), bankKeyHash: '0x' + '02'.repeat(32), bankUri: 'ipfs://bank', blockNumber: 901 },
     ]);
     expect(await c.planCommits(7n)).toMatchObject([
-      { epoch: 7n, backup: true, hash: '0x' + '03'.repeat(32), uri: 'ipfs://backup-plan', sender: PUBLISHER, logIndex: 2 },
+      { epoch: 7n, hash: '0x' + '03'.repeat(32), uri: 'ipfs://plan', sender: PUBLISHER, logIndex: 2 },
     ]);
     expect(await c.sliceCommits(7n)).toMatchObject([
       { epoch: 7n, sender: VERIFIER, backup: true, hash: '0x' + '06'.repeat(32), uri: 'ipfs://slices', blockNumber: 903 },
@@ -213,12 +213,12 @@ describe('KbfRoundClient writes', () => {
     const { c, execWrite } = writer();
     const signer = Wallet.createRandom();
     await c.claimRewards(signer, 7n, 3, 8, ['0x' + '0a'.repeat(32)]);
-    await c.commitPlan(signer, 7n, '0x' + '03'.repeat(32), 'ipfs://plan', true);
+    await c.commitPlan(signer, 7n, '0x' + '03'.repeat(32), 'ipfs://plan');
     await c.commitSlices(signer, 7n, '0x' + '06'.repeat(32), 'ipfs://slices');
     await c.revealKeyShare(signer, 7n, '0x01aa');
     await c.takeOverBank(signer, 7n, '0x' + '01'.repeat(32), keccak256(AbiCoder.defaultAbiCoder().encode(['bytes32'], ['0x' + '0b'.repeat(32)])), 'ipfs://bank');
     const names = execWrite.mock.calls.map((call) => call[2]);
-    expect(names).toEqual(['claimRewards', 'commitBackupPlan', 'commitSlices', 'revealKeyShare', 'takeOverBank']);
+    expect(names).toEqual(['claimRewards', 'commitPlan', 'commitSlices', 'revealKeyShare', 'takeOverBank']);
     expect(execWrite.mock.calls[0]!.slice(3)).toEqual([7n, 3, 8, ['0x' + '0a'.repeat(32)]]);
     for (const call of execWrite.mock.calls) {
       expect(() => iface.encodeFunctionData(call[2] as string, call.slice(3))).not.toThrow();

@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { DEFAULT_IPFS_GATEWAYS } from '@antseed/model-verifier'
@@ -10,9 +10,27 @@ import { contentHash } from './sealing.js'
  */
 export interface RoundStorage {
   put(bytes: Uint8Array, name: string): Promise<string>
-  /** Fetches `uri` and, when given, rejects bytes whose keccak256 differs from `expectedHash`. */
-  get(uri: string, expectedHash?: string): Promise<Buffer>
+  /**
+   * Fetches `uri` and, when given, rejects bytes whose keccak256 differs from `expectedHash`.
+   * Never holds more than `maxBytes` (default: the largest round file) in memory.
+   */
+  get(uri: string, expectedHash?: string, maxBytes?: number): Promise<Buffer>
 }
+
+const MIB = 1024 * 1024
+
+/**
+ * Largest file of each kind a reader accepts. Anything bigger is cut off while it streams in,
+ * so one oversized commitment cannot exhaust a verifier's memory; well above what a real round
+ * produces (a plan for 100 targets is a few MiB, a collector's slices tens of KiB per target).
+ */
+export const ROUND_FILE_MAX_BYTES = {
+  bank: 64 * MIB,
+  plan: 32 * MIB,
+  slices: 32 * MIB,
+  results: 16 * MIB,
+  keyShares: 1 * MIB,
+} as const
 
 /**
  * The commitment is invalid for good, whoever reads it: a URI that cannot name a round file, or
@@ -25,6 +43,14 @@ export class RoundFileMismatchError extends Error {
   constructor(message: string) {
     super(message)
     this.name = 'RoundFileMismatchError'
+  }
+}
+
+/** A round file larger than its kind allows; counts as not served, like any failed fetch. */
+export class RoundFileTooLargeError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'RoundFileTooLargeError'
   }
 }
 
@@ -70,7 +96,7 @@ export class PinataRoundStorage implements RoundStorage {
     throw new Error(`Pinata upload of ${name} failed: ${lastError}`)
   }
 
-  async get(uri: string, expectedHash?: string): Promise<Buffer> {
+  async get(uri: string, expectedHash?: string, maxBytes: number = ROUND_FILE_MAX_BYTES.bank): Promise<Buffer> {
     const cid = uri.replace(/^ipfs:\/\//, '')
     if (!/^[A-Za-z0-9]{20,128}$/.test(cid)) throw new RoundFileMismatchError(`not an IPFS round file: ${uri}`)
     const failures: string[] = []
@@ -82,7 +108,10 @@ export class PinataRoundStorage implements RoundStorage {
           failures.push(`${url}: HTTP ${response.status}`)
           continue
         }
-        const bytes = Buffer.from(await response.arrayBuffer())
+        // A gateway's oversized answer proves nothing about the CID, so like a mismatch it only
+        // fails this gateway; a commitment that really is oversized fails on every gateway and
+        // ends up unavailable, which verifiers wait out and then score without.
+        const bytes = await readBounded(response, maxBytes)
         if (expectedHash && contentHash(bytes).toLowerCase() !== expectedHash.toLowerCase()) {
           failures.push(`${url}: content does not match the committed hash`)
           continue
@@ -94,6 +123,30 @@ export class PinataRoundStorage implements RoundStorage {
     }
     throw new Error(`failed to fetch ${uri} (${failures.join('; ')})`)
   }
+}
+
+/** Reads a response body, cancelling it as soon as it exceeds `maxBytes`. */
+export async function readBounded(response: Response, maxBytes: number): Promise<Buffer> {
+  const declared = Number(response.headers.get('content-length') ?? '')
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await response.body?.cancel().catch(() => {})
+    throw new RoundFileTooLargeError(`declared ${declared} bytes, more than the ${maxBytes} allowed`)
+  }
+  if (!response.body) return Buffer.alloc(0)
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    total += value.byteLength
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => {})
+      throw new RoundFileTooLargeError(`more than the ${maxBytes} bytes allowed`)
+    }
+    chunks.push(value)
+  }
+  return Buffer.concat(chunks)
 }
 
 /**
@@ -110,10 +163,13 @@ export class DirectoryRoundStorage implements RoundStorage {
     return `ipfs://${id}`
   }
 
-  async get(uri: string, expectedHash?: string): Promise<Buffer> {
+  async get(uri: string, expectedHash?: string, maxBytes: number = ROUND_FILE_MAX_BYTES.bank): Promise<Buffer> {
     const id = uri.replace(/^ipfs:\/\//, '')
     if (!/^local-[0-9a-f]{64}$/.test(id)) throw new RoundFileMismatchError(`not a local round file: ${uri}`)
-    const bytes = await readFile(join(this.directory, id))
+    const path = join(this.directory, id)
+    // The store's own disk: an oversized file is the committed file, so it is invalid for good.
+    if ((await stat(path)).size > maxBytes) throw new RoundFileMismatchError(`${uri} is larger than the ${maxBytes} bytes allowed`)
+    const bytes = await readFile(path)
     if (expectedHash && contentHash(bytes).toLowerCase() !== expectedHash.toLowerCase()) {
       throw new RoundFileMismatchError(`${uri} does not match the committed hash`)
     }

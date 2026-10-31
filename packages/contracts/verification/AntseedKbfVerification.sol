@@ -79,7 +79,6 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         bytes32 bankKeyHash;
         bytes32 bankKey;
         bytes32 planHash;
-        bytes32 backupPlanHash;
         bytes32 finalizedRoot;
         bool voided;
         address[] verifiers;
@@ -127,6 +126,10 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     mapping(uint256 epoch => mapping(address verifier => bool revealed)) public keyShareRevealed;
 
     mapping(uint256 agentId => mapping(bytes32 serviceHash => ServiceStatus status)) private _serviceStatus;
+    /// @notice First epoch whose results can still change a service. Clearing a service moves it
+    ///         past the current epoch, so a finalized but unapplied older result cannot bring a
+    ///         cleared verdict back.
+    mapping(uint256 agentId => mapping(bytes32 serviceHash => uint256 epoch)) public override serviceResultsFrom;
     // Latest SAME/DIFF verdicts given in each epoch; a verdict moves out when the service gets a new one.
     mapping(uint256 agentId => mapping(uint256 epoch => EpochCounts counts)) private _epochCounts;
 
@@ -148,7 +151,7 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     event EpochOpened(uint256 indexed epoch, uint64 seedBlock, uint32 modelsVersion, uint16 verifierCount);
     event SeedRearmed(uint256 indexed epoch, uint64 seedBlock);
     event SeedFixed(uint256 indexed epoch, bytes32 seed);
-    event PlanCommitted(uint256 indexed epoch, bool backup, bytes32 planHash, string planUri);
+    event PlanCommitted(uint256 indexed epoch, bytes32 planHash, string planUri);
     event BankKeyRevealed(uint256 indexed epoch, bytes32 bankKey);
     event SlicesCommitted(
         uint256 indexed epoch, address indexed verifier, bool backup, bytes32 slicesRoot, string manifestUri
@@ -164,6 +167,7 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     );
     event AgentStatusChanged(uint256 indexed agentId, uint16 verifiedCount, uint16 diffCount);
     event UnknownAgentSkipped(uint256 indexed agentId, uint256 indexed epoch);
+    event ClearedResultSkipped(uint256 indexed agentId, bytes32 indexed serviceHash, uint256 indexed epoch);
     event RewardClaimed(uint256 indexed epoch, address indexed verifier, uint256 amount);
 
     error InvalidAddress();
@@ -321,7 +325,8 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         emit EpochVoided(epoch);
     }
 
-    /// @notice Remediation for wrong results: resets each listed service's verdict.
+    /// @notice Remediation for wrong results: resets each listed service's verdict, and ignores
+    ///         results of the current and earlier epochs for it from now on, applied or not.
     ///         `agentIds[i]` pairs with `serviceHashes[i]`.
     function clearServiceStatuses(uint256[] calldata agentIds, bytes32[] calldata serviceHashes)
         external
@@ -331,6 +336,7 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         if (count != serviceHashes.length) revert InvalidValue();
         uint256 epoch = emissionsGate.currentEpoch();
         for (uint256 i = 0; i < count; i++) {
+            serviceResultsFrom[agentIds[i]][serviceHashes[i]] = epoch + 1;
             _resetService(agentIds[i], serviceHashes[i], _serviceStatus[agentIds[i]][serviceHashes[i]], epoch);
         }
     }
@@ -431,7 +437,10 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         emit SeedFixed(epoch, seed);
     }
 
-    /// @notice Commits the target list and the per-verifier question envelopes derived from the seed.
+    /// @notice Commits the target list and the per-verifier question envelopes derived from the seed:
+    ///         each verifier's primary slices, and, sealed alongside, the slices it backs up, which
+    ///         it buys after the commit deadline if their owner did not deliver them. The round
+    ///         therefore needs no publisher action between the plan and the key reveal.
     ///         Once only: repeating the same hash is a no-op, a different one reverts.
     function commitPlan(uint256 epoch, bytes32 planHash, string calldata planUri) external onlyEpochPublisher(epoch) {
         EpochState storage state = _epochs[epoch];
@@ -446,28 +455,7 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         }
         _validateUri(planUri);
         state.planHash = planHash;
-        emit PlanCommitted(epoch, false, planHash, planUri);
-    }
-
-    /// @notice Commits the envelopes for slices their owner did not deliver, for the backup verifiers.
-    ///         Once only, like `commitPlan`.
-    function commitBackupPlan(uint256 epoch, bytes32 planHash, string calldata planUri)
-        external
-        onlyEpochPublisher(epoch)
-    {
-        EpochState storage state = _epochs[epoch];
-        if (
-            state.planHash == bytes32(0) || block.timestamp < _commitDeadline(epoch, state)
-                || block.timestamp >= _backupDeadline(epoch, state)
-        ) revert WrongPhase();
-        if (planHash == bytes32(0)) revert InvalidValue();
-        if (state.backupPlanHash != bytes32(0)) {
-            if (state.backupPlanHash == planHash) return;
-            revert PlanAlreadyCommitted();
-        }
-        _validateUri(planUri);
-        state.backupPlanHash = planHash;
-        emit PlanCommitted(epoch, true, planHash, planUri);
+        emit PlanCommitted(epoch, planHash, planUri);
     }
 
     /// @notice Escrows the bank key with the epoch's verifiers: `sharesHash` is the hash of the
@@ -558,8 +546,9 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     }
 
     /// @notice Applies finalized results. Anyone can call it; each result needs a Merkle proof
-    ///         against the epoch's finalized root. Results already applied are skipped, and a
-    ///         service keeps a newer epoch's verdict over an older one.
+    ///         against the epoch's finalized root. Results already applied are skipped, a
+    ///         service keeps a newer epoch's verdict over an older one, and results up to the epoch
+    ///         a service was cleared in are ignored.
     function applyResults(uint256 epoch, ServiceResult[] calldata results, bytes32[][] calldata proofs) external {
         EpochState storage state = _epochs[epoch];
         if (state.voided) revert EpochVoidedError();
@@ -576,6 +565,10 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
             resultApplied[epoch][leaf] = true;
             if (!_agentKnown(result.agentId)) {
                 emit UnknownAgentSkipped(result.agentId, epoch);
+                continue;
+            }
+            if (epoch < serviceResultsFrom[result.agentId][result.serviceHash]) {
+                emit ClearedResultSkipped(result.agentId, result.serviceHash, epoch);
                 continue;
             }
             emit ServiceAudited(result.agentId, result.serviceHash, epoch, result.modelHash, result.verdict);
@@ -650,7 +643,6 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         info.bankKeyHash = state.bankKeyHash;
         info.bankKey = state.bankKey;
         info.planHash = state.planHash;
-        info.backupPlanHash = state.backupPlanHash;
         info.finalizedRoot = state.finalizedRoot;
         info.voided = state.voided;
         info.publisher = state.publisher;

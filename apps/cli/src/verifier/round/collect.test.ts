@@ -10,7 +10,7 @@ import { referenceFixture } from '../model-audit-fixtures.test-support.js'
 import { derivePlan, envelopeFor } from './plan.js'
 import { contentHash, generateEncryptionKeyPair, sealEnvelope } from './sealing.js'
 import { DirectoryRoundStorage } from './storage.js'
-import type { EpochBankV1, PlanFileV1, RoundTargetV1, SliceManifestV1 } from './types.js'
+import type { EnvelopeContentV1, EpochBankV1, PlanFileV1, RoundPlanV1, RoundTargetV1, SliceManifestV1 } from './types.js'
 import { encodeRoundFile, verifierTick, type VerifierDaemonContext } from './verifier-daemon.js'
 
 const EPOCH = 7n
@@ -37,6 +37,7 @@ class CollectChain {
   async epochDuration(): Promise<number> { return EPOCH_SECONDS }
   async now(): Promise<number> { return this.time }
   async epochVerifiers(): Promise<string[]> { return this.members }
+  async models(): Promise<Array<{ modelHash: string; service: string }>> { return [{ modelHash: MODEL_HASH, service: MODEL }] }
   async planCommits(): Promise<CommitmentEvent[]> { return this.plans }
   async sliceCommits(): Promise<CommitmentEvent[]> { return this.slices }
   async commitSlices(signer: AbstractSigner, epoch: bigint, hash: string, uri: string): Promise<string> {
@@ -60,22 +61,37 @@ interface Setup {
   logs: string[]
   /** Seconds of chain time each purchase takes. */
   setRequestSeconds: (seconds: number) => void
+  plan: RoundPlanV1
+  me: string
 }
 
-async function setup(): Promise<Setup> {
+interface SetupOptions {
+  /** Other verifiers in the epoch snapshot (default: none). */
+  others?: number
+  /** Edits this verifier's envelope before it is sealed, as a dishonest publisher would. */
+  tamper?: (envelope: EnvelopeContentV1) => void
+  maxBatchesPerEpoch?: number
+}
+
+async function setup(options: SetupOptions = {}): Promise<Setup> {
   const dir = await mkdtemp(join(tmpdir(), 'antseed-round-collect-'))
   const me = new Wallet(Wallet.createRandom().privateKey)
+  const others = Array.from({ length: options.others ?? 0 }, () => Wallet.createRandom().address)
+  const members = [me.address, ...others]
   const keys = generateEncryptionKeyPair()
   const seller = new Wallet(Wallet.createRandom().privateKey)
   const target: RoundTargetV1 = {
     agentId: '1', peerId: seller.address.slice(2).toLowerCase(), service: MODEL, serviceHash: MODEL_HASH, model: MODEL, modelHash: MODEL_HASH,
   }
   const bank: EpochBankV1 = { kind: 'antseed-kbf-epoch-bank', version: 1, epoch: EPOCH.toString(), models: { [MODEL]: referenceFixture(MODEL, 80) } }
-  const plan = derivePlan({ epoch: EPOCH.toString(), seed: SEED, probesPerService: 80, slicesPerService: 2, verifiers: [me.address], targets: [target], bank })
+  const plan = derivePlan({ epoch: EPOCH.toString(), seed: SEED, probesPerService: 80, slicesPerService: 4, verifiers: members, targets: [target], bank })
   const envelope = envelopeFor(plan, bank, me.address, { backup: false })
+  options.tamper?.(envelope)
+  const backupEnvelope = envelopeFor(plan, bank, me.address, { backup: true })
+  const sealed = (content: EnvelopeContentV1) => content.slices.length > 0 ? { [me.address.toLowerCase()]: sealEnvelope(keys.publicKey, encodeRoundFile(content)) } : {}
   const planFile: PlanFileV1 = {
-    kind: 'antseed-kbf-plan', version: 1, epoch: EPOCH.toString(), seed: SEED, backup: false, targets: [target],
-    envelopes: { [me.address.toLowerCase()]: sealEnvelope(keys.publicKey, encodeRoundFile(envelope)) },
+    kind: 'antseed-kbf-plan', version: 1, epoch: EPOCH.toString(), seed: SEED, targets: [target],
+    envelopes: sealed(envelope), backupEnvelopes: sealed(backupEnvelope),
   }
   const files = new DirectoryRoundStorage(join(dir, 'files'))
   const planBytes = encodeRoundFile(planFile)
@@ -83,11 +99,11 @@ async function setup(): Promise<Setup> {
   const planHash = contentHash(planBytes)
   const info: KbfEpochInfo = {
     epoch: EPOCH, startedAt: START, seedBlock: 10n, seed: SEED, modelsVersion: 1, verifierCount: 1,
-    schedule: { collectSeconds: COLLECT_SECONDS, backupSeconds: 86400, attestSeconds: 86400, probesPerService: 80, slicesPerService: 2 },
-    bankHash: `0x${'01'.repeat(32)}`, bankKeyHash: `0x${'02'.repeat(32)}`, bankKey: ZERO_HASH, planHash, backupPlanHash: ZERO_HASH,
+    schedule: { collectSeconds: COLLECT_SECONDS, backupSeconds: 86400, attestSeconds: 86400, probesPerService: 80, slicesPerService: 4 },
+    bankHash: `0x${'01'.repeat(32)}`, bankKeyHash: `0x${'02'.repeat(32)}`, bankKey: ZERO_HASH, planHash,
     finalizedRoot: ZERO_HASH, voided: false, publisher: me.address, takenOverAt: 0, keySharesHash: `0x${'03'.repeat(32)}`,
   }
-  const chain = new CollectChain(info, [{ epoch: EPOCH, hash: planHash, uri: planUri, backup: false, sender: me.address, blockNumber: 1, logIndex: 0, txHash: '0x' }], [getAddress(me.address)])
+  const chain = new CollectChain(info, [{ epoch: EPOCH, hash: planHash, uri: planUri, backup: false, sender: me.address, blockNumber: 1, logIndex: 0, txHash: '0x' }], members.map((member) => getAddress(member)))
 
   const storage = Object.assign(files, { failPuts: 0 })
   const put = files.put.bind(files)
@@ -124,9 +140,13 @@ async function setup(): Promise<Setup> {
     bindings: { isBound: async () => true },
     stateDir: join(dir, 'state'),
     collector: { buyerUrl: 'http://buyer.test', responseAuth: reader, log: () => {}, fetchImpl },
+    ...(options.maxBatchesPerEpoch === undefined ? {} : { maxBatchesPerEpoch: options.maxBatchesPerEpoch }),
     log: (line) => logs.push(line),
   }
-  return { dir, chain, storage, requests, context, logs, setRequestSeconds: (seconds) => { requestSeconds = seconds } }
+  return {
+    dir, chain, storage, requests, context, logs, setRequestSeconds: (seconds) => { requestSeconds = seconds },
+    plan, me: me.address.toLowerCase(),
+  }
 }
 
 async function batchesPlanned(s: Setup): Promise<number> {
@@ -248,4 +268,117 @@ test('a failing current epoch does not hold back earlier epochs', async (t) => {
   s.chain.planCommits = async () => { throw new Error('rpc down') }
   await assert.rejects(verifierTick(s.context), /epoch 7: .*rpc down/)
   assert.ok(asked.includes(EPOCH - 1n) && asked.includes(EPOCH - 2n), 'earlier epochs were still applied and claimed')
+})
+
+test('an envelope with work the plan does not assign buys nothing', async (t) => {
+  const cases: Array<[string, (envelope: EnvelopeContentV1) => void, RegExp]> = [
+    ['a slice index beyond the schedule', (envelope) => { envelope.slices.push({ ...envelope.slices[0]!, sliceIndex: 9 }) }, /out of range/],
+    ['the same slice twice', (envelope) => { envelope.slices.push(envelope.slices[0]!) }, /appears twice/],
+    ['more questions than the schedule', (envelope) => {
+      const slice = envelope.slices[0]!
+      const extra = slice.batches.map((batch, index) => ({ ...batch, batchIndex: 70 + index, probeIds: batch.probeIds.map((id) => `${id}-x`), probes: batch.probes.map((probe) => ({ ...probe, id: `${probe.id}-x` })) }))
+      for (let copy = 0; copy < 4; copy++) slice.batches.push(...extra.map((batch) => ({ ...batch, batchIndex: batch.batchIndex - 10 * copy, probeIds: batch.probeIds.map((id) => `${id}${copy}`), probes: batch.probes.map((probe) => ({ ...probe, id: `${probe.id}${copy}` })) })))
+    }, /more than 80 questions/],
+    ['a target that is not on the plan', (envelope) => { envelope.slices[0] = { ...envelope.slices[0]!, target: { ...envelope.slices[0]!.target, agentId: '99' } } }, /not an audited target of the plan/],
+    ['a huge output budget', (envelope) => { envelope.slices[0]!.request = { ...envelope.slices[0]!.request, maxTokens: 1_000_000 } }, /max tokens/],
+    ['extra request fields', (envelope) => { envelope.slices[0]!.request = { ...envelope.slices[0]!.request, thinkingOverrides: { tools: [{ type: 'web_search' }] } } }, /other than thinking settings/],
+    ['an inflated question', (envelope) => { envelope.slices[0]!.batches[0]!.probes[0] = { ...envelope.slices[0]!.batches[0]!.probes[0]!, template: 'x'.repeat(5_000) } }, /too long/],
+  ]
+  for (const [label, tamper, reason] of cases) {
+    const s = await setup({ tamper })
+    t.after(() => rm(s.dir, { recursive: true, force: true }))
+    await assert.rejects(verifierTick(s.context), reason, label)
+    assert.equal(s.requests.length, 0, `${label}: no paid request`)
+  }
+
+  // A slice that the seed assigns to another verifier, copied into this one's envelope.
+  let checked = false
+  for (let attempt = 0; attempt < 20 && !checked; attempt++) {
+    const s = await setup({
+      others: 3,
+      tamper: (envelope) => {
+        const own = new Set(envelope.slices.map((slice) => slice.sliceIndex))
+        const foreign = [0, 1, 2, 3].find((index) => !own.has(index))
+        if (foreign !== undefined && envelope.slices[0]) envelope.slices.push({ ...envelope.slices[0], sliceIndex: foreign })
+      },
+    })
+    t.after(() => rm(s.dir, { recursive: true, force: true }))
+    const owned = s.plan.slices.filter((slice) => slice.owner === s.me).length
+    if (owned === 0 || owned === s.plan.slices.length) continue
+    await assert.rejects(verifierTick(s.context), /not assigned to this verifier/)
+    assert.equal(s.requests.length, 0)
+    checked = true
+  }
+  assert.ok(checked, 'a fixture where this verifier owns some but not all slices')
+})
+
+test('purchases stop at the per-epoch budget whatever the envelope asks for', async (t) => {
+  const s = await setup({ maxBatchesPerEpoch: 3 })
+  t.after(() => rm(s.dir, { recursive: true, force: true }))
+  await verifierTick(s.context)
+  assert.equal(s.requests.length, 3)
+  assert.ok(s.logs.some((line) => line.includes('reached the budget of 3 batches')))
+  assert.equal(s.chain.slices.length, 1, 'what was bought is still committed')
+})
+
+test('backups need no publisher step: undelivered backed-up slices are bought after the deadline', async (t) => {
+  // Find a fixture where this verifier backs up at least one slice of another owner.
+  let s: Setup | null = null
+  for (let attempt = 0; attempt < 20 && !s; attempt++) {
+    const candidate = await setup({ others: 2 })
+    t.after(() => rm(candidate.dir, { recursive: true, force: true }))
+    if (candidate.plan.slices.some((slice) => slice.backup === candidate.me && slice.owner !== candidate.me)) s = candidate
+  }
+  assert.ok(s, 'a fixture with backed-up slices')
+  const backedUp = s.plan.slices.filter((slice) => slice.backup === s!.me && slice.owner !== s!.me)
+  const ownBatches = s.plan.slices.filter((slice) => slice.owner === s!.me).reduce((sum, slice) => sum + slice.batches.length, 0)
+  await verifierTick(s.context)
+  assert.equal(s.requests.length, ownBatches, 'only its own slices before the commit deadline')
+
+  // The owners delivered nothing; nobody publishes anything after the plan.
+  s.chain.time = START + COLLECT_SECONDS + 60
+  await verifierTick(s.context)
+  const backupBatches = backedUp.reduce((sum, slice) => sum + slice.batches.length, 0)
+  assert.equal(s.requests.length, ownBatches + backupBatches, 'every backed-up slice was bought')
+  const backupCommit = s.chain.slices.find((entry) => entry.backup)
+  assert.ok(backupCommit, 'committed as backups')
+  const manifest = JSON.parse(await readFile(join(s.context.stateDir, EPOCH.toString(), 'slices-backup.json'), 'utf8')) as SliceManifestV1
+  assert.deepEqual(
+    manifest.slices.map((slice) => `${slice.targetKey}#${slice.sliceIndex}`).sort(),
+    backedUp.map((slice) => `${slice.targetKey}#${slice.sliceIndex}`).sort(),
+  )
+})
+
+test('a backup collector waits for unreachable primary files, not for ones that never match', async (t) => {
+  const pick = async (): Promise<Setup> => {
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const candidate = await setup({ others: 2 })
+      t.after(() => rm(candidate.dir, { recursive: true, force: true }))
+      if (candidate.plan.slices.some((slice) => slice.backup === candidate.me && slice.owner !== candidate.me)) return candidate
+    }
+    throw new Error('no fixture with backed-up slices')
+  }
+  const primaryFrom = (s: Setup, uri: string, hash: string): CommitmentEvent => {
+    const owner = s.plan.slices.find((slice) => slice.backup === s.me && slice.owner !== s.me)!.owner
+    return { epoch: EPOCH, hash, uri, backup: false, sender: getAddress(owner), blockNumber: 1, logIndex: 0, txHash: '0x' }
+  }
+
+  // Bytes that never match their commitment: invalid at once, the backups are bought right away.
+  const s = await pick()
+  const stored = await s.storage.put(Buffer.from('{"kind":"antseed-kbf-slices"}'))
+  s.chain.time = START + COLLECT_SECONDS + 60
+  s.chain.slices.push(primaryFrom(s, stored, `0x${'12'.repeat(32)}`))
+  await verifierTick(s.context)
+  assert.ok(s.chain.slices.some((entry) => entry.backup), 'mismatched delivery: backups bought at once')
+
+  // A committed file the store cannot serve right now: wait before buying backups.
+  const u = await pick()
+  u.chain.time = START + COLLECT_SECONDS + 60
+  u.chain.slices.push(primaryFrom(u, `ipfs://local-${'0'.repeat(64)}`, `0x${'34'.repeat(32)}`))
+  await assert.rejects(verifierTick(u.context), /unavailable; retrying/)
+  assert.equal(u.requests.length, 0)
+  u.chain.time = START + COLLECT_SECONDS + 7 * 3600
+  await verifierTick(u.context)
+  assert.ok(u.chain.slices.some((entry) => entry.backup), 'after the wait the unreachable slices are bought as backups')
+  assert.ok(u.logs.some((line) => line.includes('still unavailable')))
 })

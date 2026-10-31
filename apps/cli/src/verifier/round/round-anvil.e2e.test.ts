@@ -8,7 +8,7 @@ import { dirname, join, resolve } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
-import { JsonRpcProvider, Wallet, keccak256, toUtf8Bytes } from 'ethers'
+import { JsonRpcProvider, Wallet, getAddress, keccak256, toUtf8Bytes } from 'ethers'
 import { renderKbfProbeLine } from '@antseed/fingerprints'
 import { createResponseAuthPayload, encodeHttpRequest, encodeHttpResponse } from '@antseed/node'
 import { KbfRoundClient, VERIFIER_VERDICT } from '@antseed/node/payments'
@@ -135,10 +135,12 @@ test('a publisher and three verifiers run one epoch end to end on Anvil', {
     assert.ok((await publisherContext.client.sliceCommits(EPOCH)).length >= 1, logs.join('\n'))
 
     await advance(3 * DAY)
-    await tickAll() // backup plan, backup slices
+    // The publisher does nothing in the backup round: backup collectors work from the plan.
+    for (const context of verifierContexts) await verifierTick(context)
     await tickAll()
-    info = await publisherContext.client.epochInfo(EPOCH)
-    assert.notEqual(BigInt(info.backupPlanHash), 0n, `the silent verifier's slices go to backups\n${logs.join('\n')}`)
+    const backups = (await publisherContext.client.sliceCommits(EPOCH)).filter((entry) => entry.backup)
+    assert.ok(backups.length > 0, `the silent verifier's slices go to backups\n${logs.join('\n')}`)
+    assert.ok(backups.every((entry) => entry.sender !== getAddress(verifiers[2]!.address)), 'only live verifiers buy backups')
 
     await advance(DAY)
     await tickAll() // key revealed, results attested, finalized, applied

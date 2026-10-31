@@ -16,7 +16,7 @@ import { keyEscrowTick } from '../../../verifier/round/key-escrow.js'
 import { encryptionPublicKey, generateEncryptionKeyPair } from '../../../verifier/round/sealing.js'
 import { roundStorageFromEnv } from '../../../verifier/round/storage.js'
 import { discoverRoundTargets, targetBindingsFromRegistry } from '../../../verifier/round/target-discovery.js'
-import { verifierTick } from '../../../verifier/round/verifier-daemon.js'
+import { DEFAULT_MAX_BATCHES_PER_EPOCH, verifierTick } from '../../../verifier/round/verifier-daemon.js'
 import { createKbfRoundClient, createSellerRegistryClient } from '../../payment-utils.js'
 import { setupShutdownHandler } from '../../shutdown.js'
 import { startGatewayBuyer } from '../gateway/shared.js'
@@ -29,6 +29,7 @@ interface StartOptions {
   buyerPort?: string
   interval?: string
   collect?: boolean
+  maxEpochRequests?: string
   skipVersionCheck?: boolean
 }
 
@@ -80,6 +81,7 @@ export function registerVerifierStartCommand(verifier: Command): void {
     .option('--buyer-port <port>', 'buyer proxy port (default: buyer.proxyPort from the config)')
     .option('--interval <seconds>', 'seconds between passes', '60')
     .option('--no-collect', 'only score and attest; never buy slices')
+    .option('--max-epoch-requests <n>', 'most paid seller requests (question batches) to buy per epoch, own and backup slices together', String(DEFAULT_MAX_BATCHES_PER_EPOCH))
     .option('--skip-version-check', 'start even if this CLI is older than the latest release (it may attest a different results root)')
     .action(async (options: StartOptions, command: Command) => {
       const globalOptions = getGlobalOptions(command)
@@ -115,6 +117,10 @@ export function registerVerifierStartCommand(verifier: Command): void {
       const targetBindings = targetBindingsFromRegistry(createSellerRegistryClient(config))
       const bindings = targetBindings.reader
       const interval = Math.max(10, Number(options.interval ?? '60')) * 1_000
+      const maxBatchesPerEpoch = Number(options.maxEpochRequests ?? DEFAULT_MAX_BATCHES_PER_EPOCH)
+      if (!Number.isSafeInteger(maxBatchesPerEpoch) || maxBatchesPerEpoch < 0) {
+        throw new Error(`--max-epoch-requests must be a whole number, got ${options.maxEpochRequests}`)
+      }
       log(chalk.bold(`verifier ${signer.address} on ${client.contractAddress}${collect ? '' : ' (attest only)'}`))
       let stopped = false
       setupShutdownHandler(async () => { stopped = true })
@@ -134,6 +140,7 @@ export function registerVerifierStartCommand(verifier: Command): void {
             bindings,
             stateDir: join(globalOptions.dataDir, 'verifier', 'round', 'epochs'),
             collector,
+            maxBatchesPerEpoch,
             log,
           })
         } catch (error) {

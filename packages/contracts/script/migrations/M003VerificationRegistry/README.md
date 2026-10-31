@@ -37,7 +37,12 @@ After M003:
   does this in turns. Before its plan is accepted, the epoch publisher must escrow the
   bank key with the epoch's verifiers (`commitKeyShares`, a Shamir split with the
   finalization majority as threshold; fixed once the plan is in), so if the key is not revealed at the backup deadline, verifiers post their
-  shares (`revealKeyShare`) and rebuild and reveal it themselves.
+  shares (`revealKeyShare`) and rebuild and reveal it themselves. Backups need no
+  publisher step either: the plan already seals each verifier's backed-up slices, and
+  backup verifiers buy the undelivered ones after the commit deadline.
+- **Clearing is final for past results.** `clearServiceStatuses` also moves the
+  service's `serviceResultsFrom` past the current epoch, so a finalized but unapplied
+  result of that epoch or an earlier one can no longer bring the cleared verdict back.
 - **Verdicts expire by epoch.** A SAME or DIFF counts for `validityEpochs` emissions
   epochs including the one it was given in (default 2; owner-settable from 1 to 4), and
   then drops out on its own. The latest epoch's finalized result sets the verdict,

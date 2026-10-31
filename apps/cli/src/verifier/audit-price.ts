@@ -1,5 +1,6 @@
 import type { TokenPricingUsdPerMillion } from '@antseed/node'
 import type { VerifierCLIConfig, VerifierModelPricingConfig } from '../config/types.js'
+import { mapConcurrently } from './audit-concurrency.js'
 import { findVerifierModel, withAntseedUpstreamRoute } from './model-config.js'
 import type { VerifierModelCatalog } from './openrouter-catalog.js'
 import { normalized } from './utils.js'
@@ -103,6 +104,8 @@ function formatUsd(value: number): string {
   return `$${Math.round(value * 10_000) / 10_000}`
 }
 
+const HIGHEST_PRICE_LOOKUPS = 4
+
 /**
  * Reference price caps for the models of a run. Each model's cap is the highest price any reference
  * provider charges for it (`loadHighestPrice`, OpenRouter's per-model endpoints), input and output
@@ -122,16 +125,18 @@ export async function resolveAuditPriceCaps(
   const unpriced = new Map<string, string>()
   let catalog: VerifierModelCatalog | null = null
   let catalogError: Error | null = null
-  for (const model of models) {
+  // Independent lookups, so they run side by side; a failed one falls back to the sources below.
+  const highestPrices = await mapConcurrently(models, HIGHEST_PRICE_LOOKUPS, async (model) => {
     const entry = findVerifierModel(config, model)
-    let highest: VerifierModelPricingConfig | null = null
-    if (entry && loadHighestPrice) {
-      try {
-        highest = await loadHighestPrice(entry[1].upstreamModel)
-      } catch {
-        // Fall back to the other sources below.
-      }
+    if (!entry || !loadHighestPrice) return null
+    try {
+      return await loadHighestPrice(entry[1].upstreamModel)
+    } catch {
+      return null
     }
+  })
+  for (const [index, model] of models.entries()) {
+    const highest = highestPrices[index] ?? null
     let base: AuditPriceCap | null = null
     try {
       base = resolveAuditPriceCap(config, model, null)

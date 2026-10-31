@@ -146,23 +146,28 @@ function usableReference(reference: KbfReferenceV1): UsableReference {
 
 /**
  * Prepares the check "did the slice's owner deliver a complete, validly signed primary copy?"
- * for a whole plan: the primary manifests are validated and each model's reference indexed once.
+ * for a backup collector, before the bank key is out. Delivery depends only on the signed
+ * exchanges matching the planned requests, which the backup envelope's questions and request
+ * settings are enough to rebuild, so the answer is the one scoring will reach later.
  */
-export function createDeliveryChecker(
+export function createEnvelopeDeliveryChecker(
   manifests: readonly CommittedManifest[],
-  bank: EpochBankV1,
-): (slice: PlannedSliceV1, target: TargetResultV1['target']) => boolean {
-  const primary = validManifests(manifests.filter((entry) => !entry.backup), bank.epoch)
-  const references = new Map<string, UsableReference>()
-  return (slice, target) => {
-    const reference = bank.models[target.model]
-    if (!reference) return false
-    let usable = references.get(target.model)
-    if (!usable) {
-      usable = usableReference(reference)
-      references.set(target.model, usable)
+  epoch: string,
+): (slice: EnvelopeSliceV1, owner: string) => boolean {
+  const primary = validManifests(manifests.filter((entry) => !entry.backup), epoch)
+  return (slice, owner) => {
+    const planned: PlannedSliceV1 = {
+      targetKey: targetKey(slice.target),
+      sliceIndex: slice.sliceIndex,
+      batches: slice.batches.map(({ batchIndex, probeIds, promptVariantId }) => ({ batchIndex, probeIds, promptVariantId })),
+      owner: owner.toLowerCase(),
+      backup: '',
     }
-    return pickSlice(slice, primary, target, usable) !== null
+    const usable: UsableReference = {
+      probesById: new Map(slice.batches.flatMap((batch) => batch.probes.map((probe) => [probe.id, probe] as const))),
+      settings: slice.request,
+    }
+    return pickSlice(planned, primary, slice.target, usable) !== null
   }
 }
 
@@ -179,7 +184,7 @@ function pickSlice(
 ): UsedSlice | null {
   const candidates = [
     ...manifests.filter((entry) => !entry.backup && entry.collector.toLowerCase() === slice.owner),
-    ...manifests.filter((entry) => entry.backup && entry.collector.toLowerCase() === slice.backup),
+    ...manifests.filter((entry) => entry.backup && slice.backup !== slice.owner && entry.collector.toLowerCase() === slice.backup),
   ]
   for (const candidate of candidates) {
     const delivered = candidate.manifest.slices.find((entry) => entry.targetKey === slice.targetKey && entry.sliceIndex === slice.sliceIndex)

@@ -17,7 +17,7 @@ export const KBF_ROUND_ABI = [
   'function modelsVersion() view returns (uint32)',
   'function models(uint32 version) view returns ((bytes32 modelHash, string service)[])',
   'function schedule() view returns ((uint32 collectSeconds, uint32 backupSeconds, uint32 attestSeconds, uint16 probesPerService, uint16 slicesPerService))',
-  'function epochInfo(uint256 epoch) view returns ((uint256 startedAt, uint64 seedBlock, bytes32 seed, uint32 modelsVersion, uint16 verifierCount, (uint32 collectSeconds, uint32 backupSeconds, uint32 attestSeconds, uint16 probesPerService, uint16 slicesPerService) schedule, bytes32 bankHash, bytes32 bankKeyHash, bytes32 bankKey, bytes32 planHash, bytes32 backupPlanHash, bytes32 finalizedRoot, bool voided, address publisher, uint64 takenOverAt, bytes32 keySharesHash))',
+  'function epochInfo(uint256 epoch) view returns ((uint256 startedAt, uint64 seedBlock, bytes32 seed, uint32 modelsVersion, uint16 verifierCount, (uint32 collectSeconds, uint32 backupSeconds, uint32 attestSeconds, uint16 probesPerService, uint16 slicesPerService) schedule, bytes32 bankHash, bytes32 bankKeyHash, bytes32 bankKey, bytes32 planHash, bytes32 finalizedRoot, bool voided, address publisher, uint64 takenOverAt, bytes32 keySharesHash))',
   'function epochVerifiers(uint256 epoch) view returns (address[])',
   'function threshold(uint256 epoch) view returns (uint256)',
   'function attestations(uint256 epoch, address verifier) view returns (bytes32)',
@@ -35,7 +35,6 @@ export const KBF_ROUND_ABI = [
   'function openEpoch(uint256 epoch)',
   'function fixSeed(uint256 epoch)',
   'function commitPlan(uint256 epoch, bytes32 planHash, string planUri)',
-  'function commitBackupPlan(uint256 epoch, bytes32 planHash, string planUri)',
   'function revealBankKey(uint256 epoch, bytes32 bankKey)',
   'function commitSlices(uint256 epoch, bytes32 slicesRoot, string manifestUri)',
   'function attest(uint256 epoch, bytes32 resultsRoot, string evidenceUri)',
@@ -43,7 +42,7 @@ export const KBF_ROUND_ABI = [
   'function claimRewards(uint256 epoch, uint32 slices, uint32 totalSlices, bytes32[] proof) returns (uint256)',
   'function pendingReward(address verifier, uint256 epoch, uint32 slices, uint32 totalSlices, bytes32[] proof) view returns (uint256)',
   'event BankCommitted(uint256 indexed epoch, bytes32 bankHash, bytes32 bankKeyHash, string bankUri)',
-  'event PlanCommitted(uint256 indexed epoch, bool backup, bytes32 planHash, string planUri)',
+  'event PlanCommitted(uint256 indexed epoch, bytes32 planHash, string planUri)',
   'event SlicesCommitted(uint256 indexed epoch, address indexed verifier, bool backup, bytes32 slicesRoot, string manifestUri)',
   'event Attested(uint256 indexed epoch, address indexed verifier, bytes32 resultsRoot, string evidenceUri)',
   'event EpochTakenOver(uint256 indexed epoch, address indexed verifier)',
@@ -83,7 +82,6 @@ export interface KbfEpochInfo {
   bankKeyHash: string;
   bankKey: string;
   planHash: string;
-  backupPlanHash: string;
   finalizedRoot: string;
   voided: boolean;
   /** Whoever committed the bank: the publisher, or a verifier that took the epoch over. Zero address until then. */
@@ -292,7 +290,6 @@ export class KbfRoundClient extends BaseEvmClient {
       bankKeyHash: String(raw['bankKeyHash']),
       bankKey: String(raw['bankKey']),
       planHash: String(raw['planHash']),
-      backupPlanHash: String(raw['backupPlanHash']),
       finalizedRoot: String(raw['finalizedRoot']),
       voided: Boolean(raw['voided']),
       publisher: getAddress(String(raw['publisher'])),
@@ -362,8 +359,8 @@ export class KbfRoundClient extends BaseEvmClient {
     return this._execWrite(signer, KBF_ROUND_ABI, 'fixSeed', epoch);
   }
 
-  async commitPlan(signer: AbstractSigner, epoch: bigint, planHash: string, planUri: string, backup = false): Promise<string> {
-    return this._execWrite(signer, KBF_ROUND_ABI, backup ? 'commitBackupPlan' : 'commitPlan', epoch, planHash, planUri);
+  async commitPlan(signer: AbstractSigner, epoch: bigint, planHash: string, planUri: string): Promise<string> {
+    return this._execWrite(signer, KBF_ROUND_ABI, 'commitPlan', epoch, planHash, planUri);
   }
 
   async revealBankKey(signer: AbstractSigner, epoch: bigint, bankKey: string): Promise<string> {
@@ -424,9 +421,9 @@ export class KbfRoundClient extends BaseEvmClient {
     const logs = await this._queryEvents(contract, contract.filters['PlanCommitted']!(epoch), fromBlock);
     return logs.filter((log): log is EventLog => log instanceof EventLog).map((log) => ({
       epoch: BigInt(log.args[0]),
-      backup: Boolean(log.args[1]),
-      hash: String(log.args[2]),
-      uri: String(log.args[3]),
+      hash: String(log.args[1]),
+      uri: String(log.args[2]),
+      backup: false,
       sender: publisher,
       blockNumber: log.blockNumber,
       logIndex: log.index,

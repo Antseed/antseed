@@ -80,30 +80,47 @@ export function derivePlan(input: PlanInput): RoundPlanV1 {
       promptVariantId: KBF_PROMPT_VARIANT_IDS[variants.below(KBF_PROMPT_VARIANT_IDS.length)]!,
     }))
     targetProbes[key] = plannedBatches.flatMap((batch) => batch.probeIds)
-    // A seller never collects its own slices.
-    const eligible = verifiers.filter((address) => address.replace(/^0x/, '') !== target.peerId)
-    const pool = eligible.length > 0 ? eligible : verifiers
     const sliceCount = Math.min(input.slicesPerService, plannedBatches.length)
     for (let sliceIndex = 0; sliceIndex < sliceCount; sliceIndex++) {
-      const ranking = seededRanking(pool, input.seed, `slice|${key}|${sliceIndex}`)
       slices.push({
         targetKey: key,
         sliceIndex,
         batches: plannedBatches.filter((batch) => batch.batchIndex % sliceCount === sliceIndex),
-        owner: ranking[0]!,
-        backup: ranking[1] ?? ranking[0]!,
+        ...sliceCollectors(verifiers, input.seed, target, sliceIndex),
       })
     }
   }
   return { epoch: input.epoch, seed: input.seed, targets, targetProbes, slices }
 }
 
-/** The slices one collector must buy, with their questions but none of the bank's answers. */
+/**
+ * Who buys a slice: the first verifier in its seeded ranking owns it, the second backs it up
+ * (the owner again when there is no second). It depends only on public inputs, never on the
+ * bank, so a collector can check its assignments before the bank key is out.
+ */
+export function sliceCollectors(
+  verifiers: readonly string[],
+  seed: string,
+  target: Pick<RoundTargetV1, 'agentId' | 'serviceHash' | 'peerId'>,
+  sliceIndex: number,
+): { owner: string; backup: string } {
+  const members = verifiers.map((address) => address.toLowerCase())
+  // A seller never collects its own slices.
+  const peer = target.peerId.toLowerCase().replace(/^0x/, '')
+  const eligible = members.filter((address) => address.replace(/^0x/, '') !== peer)
+  const ranking = seededRanking(eligible.length > 0 ? eligible : members, seed, `slice|${targetKey(target)}|${sliceIndex}`)
+  return { owner: ranking[0]!, backup: ranking[1] ?? ranking[0]! }
+}
+
+/**
+ * The slices one collector must buy, with their questions but none of the bank's answers:
+ * the slices it owns, or (`backup`) the slices it backs up for another owner.
+ */
 export function envelopeFor(
   plan: RoundPlanV1,
   bank: EpochBankV1,
   collector: string,
-  options: { backup: boolean; sliceFilter?: (slice: PlannedSliceV1) => boolean },
+  options: { backup: boolean },
 ): EnvelopeContentV1 {
   const address = collector.toLowerCase()
   const byKey = new Map(plan.targets.map((target) => [targetKey(target), target]))
@@ -111,7 +128,7 @@ export function envelopeFor(
   const probesByModel = new Map<string, Map<string, KbfProbe>>()
   for (const slice of plan.slices) {
     if ((options.backup ? slice.backup : slice.owner) !== address) continue
-    if (options.sliceFilter && !options.sliceFilter(slice)) continue
+    if (options.backup && slice.backup === slice.owner) continue
     const target = byKey.get(slice.targetKey)!
     const reference = bank.models[target.model]!
     let probesById = probesByModel.get(target.model)

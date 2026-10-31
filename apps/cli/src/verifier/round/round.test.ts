@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
 import { Wallet, keccak256, toUtf8Bytes } from 'ethers'
 import { canonicalJsonStringify, type KbfProbe } from '@antseed/fingerprints'
@@ -7,8 +10,8 @@ import { buildKbfProbeRequestBody } from '../model-run.js'
 import { referenceFixture } from '../model-audit-fixtures.test-support.js'
 import { derivePlan, envelopeFor } from './plan.js'
 import { ResultsTree, buildResultsTree, collectorLeaf, emptyRoundLeaf, serviceLeaf, verifyProof } from './merkle.js'
-import { scoreRound, type CommittedManifest } from './scoring.js'
-import { PinataRoundStorage, RoundFileMismatchError, type RoundStorage } from './storage.js'
+import { createEnvelopeDeliveryChecker, scoreRound, type CommittedManifest } from './scoring.js'
+import { DirectoryRoundStorage, PinataRoundStorage, RoundFileMismatchError, type RoundStorage } from './storage.js'
 import { ManifestsUnavailableError, authenticResults, computeResults, encodeRoundFile } from './verifier-daemon.js'
 import type { KbfEpochInfo, KbfRoundClient } from '@antseed/node/payments'
 import type { SellerBindingReader } from './seller-binding.js'
@@ -235,6 +238,37 @@ test('a backup delivery fills a slice its owner did not deliver', () => {
   assert.ok(results.results.some((result) => result.sources.some((source) => source.manifestUri === 'ipfs://backup')))
 })
 
+test('a backup collector judges delivery from its envelope exactly as scoring does', () => {
+  const roundPlan = plan()
+  const dropped = roundPlan.slices.find((slice) => slice.backup !== slice.owner)!
+  const manifests = manifestsFor(roundPlan, (slice) => slice === dropped)
+  const delivered = createEnvelopeDeliveryChecker(manifests, '7')
+  const backups = envelopeFor(roundPlan, bank(), dropped.backup, { backup: true })
+  assert.ok(backups.slices.length > 0)
+  for (const slice of backups.slices) {
+    const planned = roundPlan.slices.find((entry) => entry.targetKey === targetKey(slice.target) && entry.sliceIndex === slice.sliceIndex)!
+    assert.equal(delivered(slice, planned.owner), planned !== dropped, `${planned.targetKey}#${planned.sliceIndex}`)
+  }
+  // Without the bank, the questions alone still reject an exchange signed for other questions.
+  const swapped = backups.slices.find((slice) => slice !== backups.slices.find((entry) => entry.sliceIndex === dropped.sliceIndex && targetKey(entry.target) === dropped.targetKey))
+  if (swapped) {
+    const planned = roundPlan.slices.find((entry) => entry.targetKey === targetKey(swapped.target) && entry.sliceIndex === swapped.sliceIndex)!
+    const altered = { ...swapped, batches: swapped.batches.map((batch) => ({ ...batch, promptVariantId: batch.promptVariantId === 'v1' ? 'v2' : 'v1' })) }
+    assert.equal(delivered(altered, planned.owner), false)
+  }
+})
+
+test('backup envelopes hold only slices backed up for another owner', () => {
+  const roundPlan = plan()
+  for (const wallet of verifiers) {
+    const address = wallet.address.toLowerCase()
+    const content = envelopeFor(roundPlan, bank(), address, { backup: true })
+    const expected = roundPlan.slices.filter((slice) => slice.backup === address && slice.owner !== address)
+    assert.equal(content.slices.length, expected.length)
+    assert.ok(content.backup)
+  }
+})
+
 test('a slice from someone who is neither its owner nor its backup is ignored', () => {
   const roundPlan = plan()
   const slice = roundPlan.slices[0]!
@@ -371,7 +405,7 @@ function daemonFixture(options: {
   const publish = (uri: string, bytes: Buffer) => { files.set(uri, bytes); return contentHash(bytes) }
   const sealed = sealBank(encodeRoundFile(bank()))
   const bankHash = publish('ipfs://bank', sealed.blob)
-  const planFile: PlanFileV1 = { kind: 'antseed-kbf-plan', version: 1, epoch: '7', seed: SEED, backup: false, targets: roundPlan.targets, envelopes: {} }
+  const planFile: PlanFileV1 = { kind: 'antseed-kbf-plan', version: 1, epoch: '7', seed: SEED, targets: roundPlan.targets, envelopes: {}, backupEnvelopes: {} }
   const planHash = publish('ipfs://plan', encodeRoundFile(planFile))
   const sliceCommits = manifests.map((entry) => ({
     sender: entry.collector, backup: entry.backup, uri: entry.uri, hash: publish(entry.uri, encodeRoundFile(entry.manifest)),
@@ -491,4 +525,48 @@ test('a gateway returning the wrong bytes is unavailability, not an invalid comm
   recovered = true
   assert.deepEqual(await storage.get(uri, contentHash(good)), good)
   await assert.rejects(storage.get('ipfs://../etc/passwd', contentHash(good)), RoundFileMismatchError)
+})
+
+test('round files are cut off while they stream once they exceed their size limit', async () => {
+  let pulled = 0
+  const endless = () => new ReadableStream<Uint8Array>({
+    pull(controller) {
+      pulled++
+      controller.enqueue(new Uint8Array(256))
+    },
+  })
+  const good = Buffer.from('{"kind":"x"}')
+  const fetchImpl = (async (url: string | URL | Request) => {
+    const href = String(url)
+    if (href.startsWith('https://huge.test/')) return new Response(endless(), { status: 200 })
+    if (href.startsWith('https://declared.test/')) return new Response(endless(), { status: 200, headers: { 'content-length': String(10 * 1024 * 1024) } })
+    return new Response(good, { status: 200 })
+  }) as typeof fetch
+  const uri = 'ipfs://bafkreiabcdefghijklmnopqrstuvwxyz234567'
+
+  const huge = new PinataRoundStorage('jwt', ['https://huge.test/ipfs'], fetchImpl)
+  const error = await huge.get(uri, contentHash(good), 1024).catch((caught: unknown) => caught)
+  assert.ok(error instanceof Error && !(error instanceof RoundFileMismatchError), 'oversized from a gateway is unavailability')
+  assert.match((error as Error).message, /more than the 1024 bytes allowed/)
+  assert.ok(pulled <= 6, `stopped reading after the limit (${pulled} chunks)`)
+
+  pulled = 0
+  const declared = new PinataRoundStorage('jwt', ['https://declared.test/ipfs'], fetchImpl)
+  await assert.rejects(declared.get(uri, contentHash(good), 1024), /declared 10485760 bytes/)
+  assert.ok(pulled <= 1, 'a declared oversize is never read')
+
+  // The next gateway still serves the real file.
+  const fallback = new PinataRoundStorage('jwt', ['https://huge.test/ipfs', 'https://ok.test/ipfs'], fetchImpl)
+  assert.deepEqual(await fallback.get(uri, contentHash(good), 1024), good)
+
+  // The directory store reads its own disk: an oversized file is the committed one, so invalid for good.
+  const dir = await mkdtemp(join(tmpdir(), 'antseed-round-limit-'))
+  try {
+    const local = new DirectoryRoundStorage(dir)
+    const big = await local.put(Buffer.alloc(4096, 1))
+    await assert.rejects(local.get(big, undefined, 1024), RoundFileMismatchError)
+    assert.equal((await local.get(big, undefined, 8192)).length, 4096)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 })

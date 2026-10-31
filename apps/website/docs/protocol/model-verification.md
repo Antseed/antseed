@@ -76,8 +76,9 @@ KBF audits run as one round per epoch (one week), shared by every approved verif
    buys its own slices.
 3. **Each verifier sees only its own questions.** The publisher sends each verifier an
    envelope encrypted to that verifier's key, with the questions of its slices and none
-   of the answers. Verifiers buy the slices and commit the seller-signed responses;
-   slices that weren't delivered go to the backups. A response only counts if the
+   of the answers, and a second envelope with the slices it backs up. Verifiers buy the
+   slices and commit the seller-signed responses; after the deadline each backup buys
+   the slices it backs up that weren't delivered, without waiting for the publisher. A response only counts if the
    seller signed exactly the planned request, and only for the agent the seller is
    bound to on-chain.
 4. **The key is revealed after collection.** Then anyone can decrypt the bank and check

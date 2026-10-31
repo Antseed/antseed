@@ -1,7 +1,7 @@
 import type { AbstractSigner } from 'ethers'
 import { isZeroHash, kbfEpochDeadlines, type KbfRoundClient } from '@antseed/node/payments'
 import { openKeyShare, recoverBankKey, type KeySharesFileV1 } from './key-shares.js'
-import type { RoundStorage } from './storage.js'
+import { ROUND_FILE_MAX_BYTES, type RoundStorage } from './storage.js'
 
 /**
  * A verifier's side of the bank-key escrow: if the key is still hidden a little after the backup
@@ -45,7 +45,7 @@ export async function keyEscrowTick(context: KeyEscrowContext): Promise<void> {
 
   const commit = (await client.keySharesCommits(epoch)).filter((entry) => entry.hash === info.keySharesHash).at(-1)
   if (!commit) throw new Error(`no key-share file event for epoch ${epoch}`)
-  const file = JSON.parse((await context.storage.get(commit.uri, commit.hash)).toString('utf8')) as KeySharesFileV1
+  const file = JSON.parse((await context.storage.get(commit.uri, commit.hash, ROUND_FILE_MAX_BYTES.keyShares)).toString('utf8')) as KeySharesFileV1
   if (file.kind !== 'antseed-kbf-key-shares' || file.version !== 1 || file.epoch !== epoch.toString()) {
     throw new Error(`key-share file for epoch ${epoch} is malformed`)
   }

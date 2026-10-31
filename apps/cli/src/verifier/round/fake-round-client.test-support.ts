@@ -40,7 +40,7 @@ export class FakeRoundClient {
       info = {
         epoch, startedAt: Number(epoch) * EPOCH_SECONDS, seedBlock: 0n, seed: ZERO_HASH, modelsVersion: 0, verifierCount: 0,
         schedule: { collectSeconds: 3 * 86400, backupSeconds: 86400, attestSeconds: 86400, probesPerService: 20, slicesPerService: 2 },
-        bankHash: ZERO_HASH, bankKeyHash: ZERO_HASH, bankKey: ZERO_HASH, planHash: ZERO_HASH, backupPlanHash: ZERO_HASH,
+        bankHash: ZERO_HASH, bankKeyHash: ZERO_HASH, bankKey: ZERO_HASH, planHash: ZERO_HASH,
         finalizedRoot: ZERO_HASH, voided: false, publisher: ZERO_ADDRESS, takenOverAt: 0, keySharesHash: ZERO_HASH,
       }
       this.infos.set(epoch, info)
@@ -134,22 +134,16 @@ export class FakeRoundClient {
     return '0xtx'
   }
 
-  async commitPlan(signer: AbstractSigner, epoch: bigint, hash: string, uri: string, backup = false): Promise<string> {
+  async commitPlan(signer: AbstractSigner, epoch: bigint, hash: string, uri: string): Promise<string> {
     const sender = await this.sender(signer)
     const info = this.info(epoch)
     if (sender !== getAddress(info.publisher)) throw new Error('NotPublisher')
-    if (backup) {
-      if (this.time < this.commitDeadline(info) || this.time >= this.backupDeadline(info)) throw new Error('WrongPhase')
-      if (info.backupPlanHash !== ZERO_HASH && info.backupPlanHash !== hash) throw new Error('PlanAlreadyCommitted')
-      info.backupPlanHash = hash
-    } else {
-      if (info.seed === ZERO_HASH || this.time >= this.commitDeadline(info)) throw new Error('WrongPhase')
-      if (info.keySharesHash === ZERO_HASH) throw new Error('KeyNotEscrowed')
-      if (info.planHash !== ZERO_HASH && info.planHash !== hash) throw new Error('PlanAlreadyCommitted')
-      info.planHash = hash
-    }
-    this.plans.push({ epoch, hash, uri, backup, sender, blockNumber: 1, logIndex: 0, txHash: '0x' })
-    this.calls.push(`${backup ? 'commitBackupPlan' : 'commitPlan'}:${epoch}`)
+    if (info.seed === ZERO_HASH || this.time >= this.commitDeadline(info)) throw new Error('WrongPhase')
+    if (info.keySharesHash === ZERO_HASH) throw new Error('KeyNotEscrowed')
+    if (info.planHash !== ZERO_HASH && info.planHash !== hash) throw new Error('PlanAlreadyCommitted')
+    info.planHash = hash
+    this.plans.push({ epoch, hash, uri, backup: false, sender, blockNumber: 1, logIndex: 0, txHash: '0x' })
+    this.calls.push(`commitPlan:${epoch}`)
     return '0xtx'
   }
 

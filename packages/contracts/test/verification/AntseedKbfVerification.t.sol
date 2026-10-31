@@ -291,9 +291,8 @@ contract AntseedKbfVerificationTest is Test {
         vm.prank(verifierA);
         verification.commitSlices(EPOCH, keccak256("p"), URI);
 
+        // Backups need no publisher step: the plan already sealed them to their verifiers.
         vm.warp(EPOCH_START + 3 days);
-        vm.prank(publisher);
-        verification.commitBackupPlan(EPOCH, keccak256("backup"), URI);
         vm.expectEmit(true, true, false, true);
         emit AntseedKbfVerification.SlicesCommitted(EPOCH, verifierB, true, keccak256("b"), URI);
         vm.prank(verifierB);
@@ -312,18 +311,6 @@ contract AntseedKbfVerificationTest is Test {
         vm.stopPrank();
     }
 
-    function test_backupPlanOnlyInTheBackupRound() public {
-        _openAndSeed(EPOCH);
-        _commitPlan(EPOCH);
-        vm.prank(publisher);
-        vm.expectRevert(AntseedKbfVerification.WrongPhase.selector);
-        verification.commitBackupPlan(EPOCH, keccak256("backup"), URI);
-        vm.warp(EPOCH_START + 4 days);
-        vm.prank(publisher);
-        vm.expectRevert(AntseedKbfVerification.WrongPhase.selector);
-        verification.commitBackupPlan(EPOCH, keccak256("backup"), URI);
-    }
-
     function test_plansAreFrozenOnceCommitted() public {
         _openAndSeed(EPOCH);
         _commitPlan(EPOCH);
@@ -337,15 +324,6 @@ contract AntseedKbfVerificationTest is Test {
         vm.expectRevert(AntseedKbfVerification.PlanAlreadyCommitted.selector);
         verification.commitPlan(EPOCH, keccak256("other plan"), URI);
         assertEq(verification.epochInfo(EPOCH).planHash, plan);
-
-        vm.warp(EPOCH_START + 3 days);
-        vm.startPrank(publisher);
-        verification.commitBackupPlan(EPOCH, keccak256("backup"), URI);
-        verification.commitBackupPlan(EPOCH, keccak256("backup"), URI);
-        vm.expectRevert(AntseedKbfVerification.PlanAlreadyCommitted.selector);
-        verification.commitBackupPlan(EPOCH, keccak256("other backup"), URI);
-        vm.stopPrank();
-        assertEq(verification.epochInfo(EPOCH).backupPlanHash, keccak256("backup"));
     }
 
     function test_urisMustBeIpfs() public {
@@ -631,6 +609,33 @@ contract AntseedKbfVerificationTest is Test {
         verification.clearServiceStatuses(agents, services);
         assertEq(verification.agentStatus(agentId).diffCount, 0);
         assertEq(uint8(verification.serviceStatus(agentId, SERVICE_A).verdict), uint8(NONE));
+    }
+
+    function test_clearedServiceIgnoresUnappliedOlderResults() public {
+        // Epoch N's DIFF finalizes but nobody applies it; N+1's SAME is applied, then cleared.
+        (IAntseedKbfVerification.ServiceResult[] memory oldResults, bytes32[] memory oldLeaves) = _finalize(EPOCH, DIFF);
+        _advance();
+        gate.setBudget(address(verification), EPOCH + 1, 1_000 ether);
+        (IAntseedKbfVerification.ServiceResult[] memory newResults, bytes32[] memory newLeaves) =
+            _finalize(EPOCH + 1, SAME);
+        _apply(EPOCH + 1, newResults, newLeaves);
+        _clear(agentId, SERVICE_A);
+        assertEq(verification.serviceResultsFrom(agentId, SERVICE_A), EPOCH + 2);
+
+        // The unused older proof must not bring the DIFF back.
+        vm.expectEmit(true, true, true, true);
+        emit AntseedKbfVerification.ClearedResultSkipped(agentId, SERVICE_A, EPOCH);
+        _apply(EPOCH, oldResults, oldLeaves);
+        IAntseedKbfVerification.ServiceStatus memory status = verification.serviceStatus(agentId, SERVICE_A);
+        assertEq(uint8(status.verdict), uint8(NONE));
+        assertEq(verification.agentStatus(agentId).diffCount, 0);
+
+        // Results after the clearing epoch apply as usual.
+        _advance();
+        gate.setBudget(address(verification), EPOCH + 2, 1_000 ether);
+        (IAntseedKbfVerification.ServiceResult[] memory later, bytes32[] memory laterLeaves) = _finalize(EPOCH + 2, SAME);
+        _apply(EPOCH + 2, later, laterLeaves);
+        assertTrue(verification.isVerified(agentId));
     }
 
     function test_undeterminedCountsAsNeither() public {

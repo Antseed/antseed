@@ -82,16 +82,24 @@ export interface SealedEnvelopeV1 {
   ciphertext: string
 }
 
-/** Published by the publisher after the seed; its keccak256 is the on-chain plan hash. */
+/**
+ * Published by the publisher after the seed; its keccak256 is the on-chain plan hash. It holds
+ * everything collection needs, backups included, so no publisher step sits between it and the
+ * key reveal.
+ */
 export interface PlanFileV1 {
   kind: 'antseed-kbf-plan'
   version: 1
   epoch: string
   seed: string
-  backup: boolean
   targets: RoundTargetV1[]
-  /** Keyed by lowercase collector address. */
+  /** Each collector's own slices, keyed by lowercase collector address. */
   envelopes: Record<string, SealedEnvelopeV1>
+  /**
+   * The slices each collector backs up, keyed the same way. It buys the ones their owner did
+   * not deliver, after the commit deadline.
+   */
+  backupEnvelopes: Record<string, SealedEnvelopeV1>
 }
 
 /** One seller response, with everything a third party needs to check its signature. */

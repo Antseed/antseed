@@ -15,11 +15,13 @@ import {IAntseedSellerPools} from "./IAntseedSellerPools.sol";
 ///         audited model list and the schedule, and fixes a future block. Its hash becomes the
 ///         epoch seed (`fixSeed`), so nobody can choose which questions a seller gets.
 ///      3. The publisher escrows the bank key with the verifiers (`commitKeyShares`), then commits
-///         the plan (`commitPlan`): the target list and one encrypted question envelope per
-///         verifier, derived from the seed. A plan is only accepted once the key is escrowed.
-///      4. Verifiers buy their assigned slices from sellers and commit the seller-signed
-///         transcripts (`commitSlices`) by the commit deadline; missing slices go to backup
-///         verifiers (`commitBackupPlan`, then `commitSlices` again) until the backup deadline.
+///         the plan (`commitPlan`): the target list and, per verifier, one encrypted envelope with
+///         the slices it owns and one with the slices it backs up, derived from the seed. A plan
+///         is only accepted once the key is escrowed.
+///      4. Verifiers buy their slices from sellers and commit the seller-signed transcripts
+///         (`commitSlices`) by the commit deadline. After it, each verifier checks which of the
+///         slices it backs up their owner did not deliver, buys those and commits them again
+///         until the backup deadline; no publisher step sits in between.
 ///      5. The publisher reveals the bank key (`revealBankKey`), so everyone can score.
 ///      If the publisher misses its deadlines, verifiers carry the round: one takes the epoch over
 ///      with its own bank (`takeOverBank`) when no plan is committed `publisherGraceSeconds` in,
@@ -72,7 +74,6 @@ interface IAntseedKbfVerification {
         bytes32 bankKeyHash;
         bytes32 bankKey;
         bytes32 planHash;
-        bytes32 backupPlanHash;
         bytes32 finalizedRoot;
         bool voided;
         /// @dev Whoever committed the bank: the publisher, or a verifier that took the epoch over.
@@ -137,7 +138,6 @@ interface IAntseedKbfVerification {
     function openEpoch(uint256 epoch) external;
     function fixSeed(uint256 epoch) external;
     function commitPlan(uint256 epoch, bytes32 planHash, string calldata planUri) external;
-    function commitBackupPlan(uint256 epoch, bytes32 planHash, string calldata planUri) external;
     function takeOverBank(uint256 epoch, bytes32 bankHash, bytes32 bankKeyHash, string calldata bankUri) external;
     function commitKeyShares(uint256 epoch, bytes32 sharesHash, string calldata sharesUri) external;
     function revealKeyShare(uint256 epoch, bytes calldata share) external;
@@ -147,6 +147,9 @@ interface IAntseedKbfVerification {
     function applyResults(uint256 epoch, ServiceResult[] calldata results, bytes32[][] calldata proofs) external;
 
     function serviceStatus(uint256 agentId, bytes32 serviceHash) external view returns (ServiceStatus memory);
+    /// @notice First epoch whose results can still change the service; earlier ones are ignored
+    ///         because the owner cleared the service. Zero for a service never cleared.
+    function serviceResultsFrom(uint256 agentId, bytes32 serviceHash) external view returns (uint256);
     function agentStatus(uint256 agentId) external view returns (AgentStatus memory);
     /// @notice True when the agent has at least one live SAME and no live DIFF.
     function isVerified(uint256 agentId) external view returns (bool);

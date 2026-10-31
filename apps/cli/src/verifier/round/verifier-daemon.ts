@@ -5,24 +5,24 @@ import { canonicalJsonStringify } from '@antseed/fingerprints'
 import {
   isZeroHash,
   kbfEpochDeadlines,
-  modelHash,
-  serviceHash,
+  VERIFIER_VERDICT,
   type KbfEpochInfo,
   type KbfRoundClient,
   type KbfServiceResult,
 } from '@antseed/node/payments'
 import { writeJsonAtomic } from '../atomic-files.js'
 import { collectSlice, type CollectorContext } from './collector.js'
-import { buildResultsTree, collectorLeaf, serviceLeaf, verdictCode } from './merkle.js'
-import { derivePlan } from './plan.js'
-import { scoreRound, type CommittedManifest } from './scoring.js'
+import { checkEnvelope, isListedTarget } from './envelope-check.js'
+import { buildResultsTree, collectorLeaf, serviceLeaf } from './merkle.js'
+import { derivePlan, sliceCollectors } from './plan.js'
+import { createEnvelopeDeliveryChecker, scoreRound, type CommittedManifest } from './scoring.js'
 import { contentHash, openBank, openEnvelope } from './sealing.js'
 import { seededRanking } from './seeded.js'
 import { boundTargets, type SellerBindingReader } from './seller-binding.js'
 import { loadCommittedManifest } from './manifest-loader.js'
-import type { RoundStorage } from './storage.js'
+import { ROUND_FILE_MAX_BYTES, type RoundStorage } from './storage.js'
 import type {
-  EnvelopeContentV1,
+  EnvelopeSliceV1,
   EpochBankV1,
   PlanFileV1,
   RoundResultsV1,
@@ -46,6 +46,13 @@ const COMMIT_MARGIN_SECONDS = 60
  * count as missing so the round can still finalize.
  */
 const UNAVAILABLE_WAIT_SHARE = 0.5
+/**
+ * Share of the backup window a backup collector waits for primary slice files it cannot fetch
+ * yet before treating their slices as undelivered and buying them itself.
+ */
+export const BACKUP_UNAVAILABLE_WAIT_SHARE = 0.25
+/** Default for `maxBatchesPerEpoch`. */
+export const DEFAULT_MAX_BATCHES_PER_EPOCH = 1_000
 
 export interface VerifierDaemonContext {
   client: KbfRoundClient
@@ -60,6 +67,11 @@ export interface VerifierDaemonContext {
   stateDir: string
   /** Buys slices; null when the verifier only attests. */
   collector: CollectorContext | null
+  /**
+   * Most question batches (paid seller requests) bought per epoch, primary and backup together,
+   * whatever the envelopes ask for. Default `DEFAULT_MAX_BATCHES_PER_EPOCH`.
+   */
+  maxBatchesPerEpoch?: number
   log: (message: string) => void
 }
 
@@ -68,6 +80,8 @@ interface EpochStateV1 {
   backup?: { uri: string; root: string; slices: number }
   results?: { uri: string; root: string }
   attestedRoot?: string
+  /** Question batches bought this epoch, counted against `maxBatchesPerEpoch`. */
+  batchesBought?: number
 }
 
 export function encodeRoundFile(value: unknown): Buffer {
@@ -126,13 +140,13 @@ async function stepEpoch(context: VerifierDaemonContext, epoch: bigint): Promise
   const state = await readState(context, epoch)
 
   if (context.collector && !isZeroHash(info.planHash) && now < deadlines.commitDeadline && !state.primary) {
-    await collect(context, info, state, false)
+    await collect(context, info, members, state, false)
   }
   if (
-    context.collector && !isZeroHash(info.backupPlanHash) && now >= deadlines.commitDeadline
+    context.collector && !isZeroHash(info.planHash) && now >= deadlines.commitDeadline
     && now < deadlines.backupDeadline && !state.backup
   ) {
-    await collect(context, info, state, true)
+    await collect(context, info, members, state, true)
   }
   if (!isZeroHash(info.bankKey) && now < deadlines.attestDeadline) {
     const attested = await client.attestation(epoch, context.address)
@@ -147,13 +161,22 @@ interface CollectCheckpointV1 {
 }
 
 /**
- * Buys this verifier's slices for one phase and commits them. Bought batches are checkpointed as
- * they complete and the finished manifest is kept on disk before it is uploaded, so a failed
- * upload or commit only retries publication: nothing is bought twice. Buying stops when the phase
- * is about to end, and a manifest is only committed while its phase is still open, because the
- * contract labels a commitment by the time it lands.
+ * Buys this verifier's slices for one phase and commits them. The envelope is checked against
+ * everything public before anything is bought (`checkEnvelope`), and purchases stop at the
+ * operator's per-epoch budget whatever it asks for. In the backup phase only the backed-up slices
+ * whose owner did not deliver are bought. Bought batches are checkpointed as they complete and the
+ * finished manifest is kept on disk before it is uploaded, so a failed upload or commit only
+ * retries publication: nothing is bought twice. Buying stops when the phase is about to end, and a
+ * manifest is only committed while its phase is still open, because the contract labels a
+ * commitment by the time it lands.
  */
-async function collect(context: VerifierDaemonContext, info: KbfEpochInfo, state: EpochStateV1, backup: boolean): Promise<void> {
+async function collect(
+  context: VerifierDaemonContext,
+  info: KbfEpochInfo,
+  members: readonly string[],
+  state: EpochStateV1,
+  backup: boolean,
+): Promise<void> {
   const phase = backup ? 'backup' : 'primary'
   const label = backup ? 'backup ' : ''
   const deadlines = kbfEpochDeadlines(info, await context.client.epochDuration())
@@ -177,26 +200,37 @@ async function collect(context: VerifierDaemonContext, info: KbfEpochInfo, state
 
   let manifest = await readJson<SliceManifestV1>(manifestPath)
   if (!manifest) {
-    const plan = await loadPlanFile(context, info, backup)
-    const sealed = plan.envelopes[context.address.toLowerCase()]
-    if (!sealed) {
+    const plan = await loadPlanFile(context, info)
+    const me = context.address.toLowerCase()
+    const sealed = (backup ? plan.backupEnvelopes : plan.envelopes)[me]
+    const nothingToBuy = async (reason: string): Promise<void> => {
       state[phase] = { uri: '', root: '', slices: 0 }
       await writeState(context, info.epoch, state)
-      return
+      if (reason) context.log(`epoch ${info.epoch}: ${reason}`)
     }
-    const envelope = JSON.parse(openEnvelope(context.encryptionPrivateKey, sealed).toString('utf8')) as EnvelopeContentV1
-    if (envelope.epoch !== info.epoch.toString() || envelope.collector !== context.address.toLowerCase() || envelope.backup !== backup) {
-      throw new Error(`envelope for epoch ${info.epoch} does not belong to this verifier`)
-    }
+    if (!sealed) return nothingToBuy('')
+    const models = await context.client.models(info.modelsVersion)
+    const envelope = checkEnvelope(JSON.parse(openEnvelope(context.encryptionPrivateKey, sealed).toString('utf8')), {
+      epoch: info.epoch, seed: info.seed, collector: me, backup, verifiers: members, targets: plan.targets,
+      allowedModels: new Set(models.map((model) => model.modelHash.toLowerCase())),
+      probesPerService: info.schedule.probesPerService, slicesPerService: info.schedule.slicesPerService,
+    })
     // Never buy from a target whose peer is not its agent's seller: verifiers will not score it.
     const bound = new Set((await boundTargets(context.bindings, uniqueTargets(envelope.slices.map((slice) => slice.target)), info.seedBlock, context.log)).map(targetKey))
-    const assigned = envelope.slices.filter((slice) => bound.has(targetKey(slice.target)))
+    let assigned = envelope.slices.filter((slice) => bound.has(targetKey(slice.target)))
+    if (backup) {
+      assigned = await undeliveredSlices(context, info, members, assigned)
+      if (assigned.length === 0) return nothingToBuy('every slice this verifier backs up was delivered; no backups to buy')
+    }
     const checkpointPath = join(epochDir(context, info.epoch), `collect-${phase}.json`)
     const checkpoint = await readJson<CollectCheckpointV1>(checkpointPath) ?? { batches: {} }
-    context.log(`epoch ${info.epoch}: collecting ${assigned.length} ${label}slices`)
+    const budget = context.maxBatchesPerEpoch ?? DEFAULT_MAX_BATCHES_PER_EPOCH
+    context.log(`epoch ${info.epoch}: collecting ${assigned.length} ${label}slices (${state.batchesBought ?? 0} of ${budget} batches bought this epoch)`)
     let stopped = false
+    let overBudget = false
     const shouldStop = async () => {
-      stopped ||= await context.client.now() + stopMargin >= deadline
+      overBudget ||= (state.batchesBought ?? 0) >= budget
+      stopped ||= overBudget || await context.client.now() + stopMargin >= deadline
       return stopped
     }
     const slices = []
@@ -209,10 +243,13 @@ async function collect(context: VerifierDaemonContext, info: KbfEpochInfo, state
         onBatch: async (batchIndex, exchange) => {
           checkpoint.batches[key] = { ...checkpoint.batches[key], [batchIndex]: exchange }
           await writeJsonAtomic(checkpointPath, checkpoint)
+          state.batchesBought = (state.batchesBought ?? 0) + 1
+          await writeState(context, info.epoch, state)
         },
       }))
     }
-    if (stopped) context.log(`epoch ${info.epoch}: ${label}phase ends soon; stopped buying, committing what was collected`)
+    if (overBudget) context.log(`epoch ${info.epoch}: reached the budget of ${budget} batches this epoch; committing what was collected`)
+    else if (stopped) context.log(`epoch ${info.epoch}: ${label}phase ends soon; stopped buying, committing what was collected`)
     manifest = {
       kind: 'antseed-kbf-slices', version: 1, epoch: info.epoch.toString(),
       collector: context.address.toLowerCase(), backup, slices,
@@ -283,9 +320,9 @@ export async function computeResults(
   const { client, storage } = context
   const bankEvent = (await client.bankCommits(info.epoch)).filter((event) => event.bankHash === info.bankHash).at(-1)
   if (!bankEvent) throw new Error(`no BankCommitted event for epoch ${info.epoch}`)
-  const bank = JSON.parse(openBank(info.bankKey, await storage.get(bankEvent.bankUri, info.bankHash)).toString('utf8')) as EpochBankV1
+  const bank = JSON.parse(openBank(info.bankKey, await storage.get(bankEvent.bankUri, info.bankHash, ROUND_FILE_MAX_BYTES.bank)).toString('utf8')) as EpochBankV1
   if (bank.kind !== 'antseed-kbf-epoch-bank' || bank.epoch !== info.epoch.toString()) throw new Error('bank does not belong to this epoch')
-  const planFile = await loadPlanFile(context, info, false)
+  const planFile = await loadPlanFile(context, info)
   const models = await client.models(info.modelsVersion)
   const allowed = new Set(models.map((model) => model.modelHash.toLowerCase()))
   const audited = planFile.targets.filter((target) => isAuditedTarget(target, allowed, bank))
@@ -324,14 +361,39 @@ export async function computeResults(
 }
 
 function isAuditedTarget(target: RoundTargetV1, allowed: Set<string>, bank: EpochBankV1): boolean {
-  return typeof target.agentId === 'string' && /^[1-9]\d*$/.test(target.agentId)
-    && typeof target.peerId === 'string' && /^(0x)?[0-9a-fA-F]{40}$/.test(target.peerId)
-    && typeof target.model === 'string' && typeof target.service === 'string'
-    && typeof target.modelHash === 'string' && typeof target.serviceHash === 'string'
-    && allowed.has(target.modelHash.toLowerCase())
-    && modelHash(target.model) === target.modelHash.toLowerCase()
-    && serviceHash(target.service) === target.serviceHash.toLowerCase()
-    && Object.hasOwn(bank.models, target.model)
+  return isListedTarget(target, allowed) && Object.hasOwn(bank.models, target.model)
+}
+
+/**
+ * The backed-up slices whose owner did not commit a complete, valid primary copy, judged from
+ * the committed primary files exactly as scoring will judge them. Primary files that cannot be
+ * fetched are waited for during the first part of the backup window, then counted as missing.
+ */
+async function undeliveredSlices(
+  context: Pick<VerifierDaemonContext, 'client' | 'storage' | 'log'>,
+  info: KbfEpochInfo,
+  members: readonly string[],
+  slices: readonly EnvelopeSliceV1[],
+): Promise<EnvelopeSliceV1[]> {
+  const memberSet = new Set(members.map((member) => member.toLowerCase()))
+  const manifests: CommittedManifest[] = []
+  const unavailable: string[] = []
+  for (const commit of await context.client.sliceCommits(info.epoch)) {
+    if (commit.backup || !memberSet.has(commit.sender.toLowerCase())) continue
+    const load = await loadCommittedManifest(context.storage, commit)
+    if (load.kind === 'loaded') manifests.push(load.manifest)
+    else if (load.kind === 'unavailable') unavailable.push(commit.uri)
+  }
+  if (unavailable.length > 0) {
+    const deadlines = kbfEpochDeadlines(info, await context.client.epochDuration())
+    const waitUntil = deadlines.commitDeadline + Math.floor(info.schedule.backupSeconds * BACKUP_UNAVAILABLE_WAIT_SHARE)
+    if (await context.client.now() < waitUntil) {
+      throw new Error(`${unavailable.length} primary slice files unavailable; retrying before buying backups`)
+    }
+    context.log(`epoch ${info.epoch}: ${unavailable.length} primary slice files still unavailable; buying their backed-up slices`)
+  }
+  const delivered = createEnvelopeDeliveryChecker(manifests, info.epoch.toString())
+  return slices.filter((slice) => !delivered(slice, sliceCollectors(members, info.seed, slice.target, slice.sliceIndex).owner))
 }
 
 function uniqueTargets(targets: readonly RoundTargetV1[]): RoundTargetV1[] {
@@ -341,15 +403,13 @@ function uniqueTargets(targets: readonly RoundTargetV1[]): RoundTargetV1[] {
 async function loadPlanFile(
   context: Pick<VerifierDaemonContext, 'client' | 'storage'>,
   info: KbfEpochInfo,
-  backup: boolean,
 ): Promise<PlanFileV1> {
-  const hash = backup ? info.backupPlanHash : info.planHash
-  const event = (await context.client.planCommits(info.epoch)).filter((entry) => entry.backup === backup && entry.hash === hash).at(-1)
-  if (!event) throw new Error(`no ${backup ? 'backup ' : ''}PlanCommitted event for epoch ${info.epoch}`)
-  const plan = JSON.parse((await context.storage.get(event.uri, hash)).toString('utf8')) as PlanFileV1
+  const event = (await context.client.planCommits(info.epoch)).filter((entry) => entry.hash === info.planHash).at(-1)
+  if (!event) throw new Error(`no PlanCommitted event for epoch ${info.epoch}`)
+  const plan = JSON.parse((await context.storage.get(event.uri, info.planHash, ROUND_FILE_MAX_BYTES.plan)).toString('utf8')) as PlanFileV1
   if (
-    plan.kind !== 'antseed-kbf-plan' || plan.epoch !== info.epoch.toString() || plan.seed !== info.seed || plan.backup !== backup
-    || !Array.isArray(plan.targets) || typeof plan.envelopes !== 'object' || plan.envelopes === null
+    plan.kind !== 'antseed-kbf-plan' || plan.epoch !== info.epoch.toString() || plan.seed !== info.seed
+    || !Array.isArray(plan.targets) || !isRecord(plan.envelopes) || !isRecord(plan.backupEnvelopes)
   ) {
     throw new Error(`plan file for epoch ${info.epoch} does not match the chain`)
   }
@@ -379,7 +439,7 @@ async function applyAndClaim(context: VerifierDaemonContext, epoch: bigint, curr
       const input = { agentId: BigInt(result.target.agentId), serviceHash: result.target.serviceHash, modelHash: result.target.modelHash, verdict: result.verdict }
       const leaf = serviceLeaf(epoch, input)
       if (await client.resultApplied(epoch, leaf)) continue
-      pending.push({ result: { ...input, verdict: verdictCode(result.verdict) as KbfServiceResult['verdict'] }, proof: tree.proof(leaf) })
+      pending.push({ result: { ...input, verdict: VERIFIER_VERDICT[result.verdict] }, proof: tree.proof(leaf) })
     }
     for (let offset = 0; offset < pending.length; offset += APPLY_BATCH) {
       const batch = pending.slice(offset, offset + APPLY_BATCH)
@@ -409,7 +469,7 @@ async function finalizedResults(context: VerifierDaemonContext, info: KbfEpochIn
   for (const attestation of await context.client.attestationEvents(info.epoch)) {
     if (attestation.hash.toLowerCase() !== info.finalizedRoot.toLowerCase()) continue
     try {
-      const results = authenticResults(info, JSON.parse((await context.storage.get(attestation.uri)).toString('utf8')))
+      const results = authenticResults(info, JSON.parse((await context.storage.get(attestation.uri, undefined, ROUND_FILE_MAX_BYTES.results)).toString('utf8')))
       if (results) return results
       context.log(`epoch ${info.epoch}: ignoring results ${attestation.uri}: leaves do not rebuild the finalized root`)
     } catch {
@@ -461,6 +521,10 @@ async function readState(context: VerifierDaemonContext, epoch: bigint): Promise
 async function writeState(context: VerifierDaemonContext, epoch: bigint, state: EpochStateV1): Promise<void> {
   await mkdir(epochDir(context, epoch), { recursive: true })
   await writeJsonAtomic(join(epochDir(context, epoch), 'state.json'), state)
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 async function readJson<T>(path: string): Promise<T | null> {

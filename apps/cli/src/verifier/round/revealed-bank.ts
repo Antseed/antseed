@@ -1,7 +1,7 @@
 import type { KbfReferenceV1 } from '@antseed/fingerprints'
 import { isZeroHash, type KbfRoundClient } from '@antseed/node/payments'
 import { openBank } from './sealing.js'
-import type { RoundStorage } from './storage.js'
+import { ROUND_FILE_MAX_BYTES, type RoundStorage } from './storage.js'
 import type { EpochBankV1 } from './types.js'
 
 export interface RevealedBankReference {
@@ -30,7 +30,7 @@ export async function loadRevealedBankReference(input: {
     if (isZeroHash(info.bankKey) || isZeroHash(info.bankHash)) continue
     const commit = (await input.client.bankCommits(epoch)).filter((entry) => entry.bankHash === info.bankHash).at(-1)
     if (!commit) continue
-    const bank = JSON.parse(openBank(info.bankKey, await input.storage.get(commit.bankUri, info.bankHash)).toString('utf8')) as EpochBankV1
+    const bank = JSON.parse(openBank(info.bankKey, await input.storage.get(commit.bankUri, info.bankHash, ROUND_FILE_MAX_BYTES.bank)).toString('utf8')) as EpochBankV1
     const reference = Object.entries(bank.models).find(([model]) => model.trim().toLowerCase() === wanted)?.[1]
     if (reference) return { epoch, bankUri: commit.bankUri, reference }
     if (epoch === 0n) break

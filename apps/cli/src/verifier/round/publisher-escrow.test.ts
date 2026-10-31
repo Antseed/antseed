@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -11,9 +11,9 @@ import { fallbackPublisherTick, takeoverTime } from './fallback-publisher.js'
 import { keyEscrowTick, keyRevealDelay } from './key-escrow.js'
 import { buildKeySharesFile, combineShares, openKeyShare, recoverBankKey, splitSecret } from './key-shares.js'
 import { publisherTick, type PublisherDaemonContext } from './publisher-daemon.js'
-import { generateEncryptionKeyPair } from './sealing.js'
+import { generateEncryptionKeyPair, openEnvelope } from './sealing.js'
 import { DirectoryRoundStorage } from './storage.js'
-import type { EpochBankV1, RoundTargetV1 } from './types.js'
+import type { EnvelopeContentV1, EpochBankV1, PlanFileV1, RoundTargetV1 } from './types.js'
 
 const MODEL = 'model-a'
 const MODEL_HASH = keccak256(toUtf8Bytes(MODEL))
@@ -120,8 +120,9 @@ test('publisher reveals the current key even when next epoch\'s bank keeps faili
 
   failNext = true
   s.fake.time = START + 3 * DAY + HOUR
+  const before = s.fake.calls.length
   await publisherTick(context)
-  assert.ok(s.fake.calls.includes(`commitBackupPlan:${EPOCH}`), 'backup plan published despite the failing next bank')
+  assert.equal(s.fake.calls.length, before, 'nothing to publish during the backup round: backups work from the plan')
   s.fake.time = START + 4 * DAY + HOUR
   await publisherTick(context)
   assert.ok(s.fake.calls.includes(`revealBankKey:${EPOCH}`), 'key revealed despite the failing next bank')
@@ -198,41 +199,6 @@ test('a verifier takes over an epoch the publisher never planned and runs it', a
   assert.equal(s.fake.calls.filter((call) => call === `commitPlan:${EPOCH}`).length, 1, 'the original publisher stays out')
 })
 
-test('backup planning waits for unreachable slice files but not for mismatched ones', async (t) => {
-  const s = await setup()
-  t.after(() => rm(s.dir, { recursive: true, force: true }))
-  const context = s.context(s.publisher, 'publisher')
-  s.fake.time = START + HOUR
-  await publisherTick(context)
-  s.fake.openAndSeed(EPOCH)
-  await publisherTick(context)
-  const collector = s.verifiers[0]!.wallet.address
-  const commit = (uri: string, hash: string) => ({ epoch: EPOCH, hash, uri, backup: false, sender: collector, blockNumber: 1, logIndex: 0, txHash: '0x' })
-  const stored = await s.storage.put(Buffer.from('{"kind":"antseed-kbf-slices"}'))
-  // Bytes that never match their commitment: invalid at once, no reason to wait.
-  s.fake.slices = [commit(stored, `0x${'12'.repeat(32)}`)]
-  s.fake.time = START + 3 * DAY + HOUR
-  await publisherTick(context)
-  assert.ok(s.fake.calls.includes(`commitBackupPlan:${EPOCH}`), 'mismatched delivery goes straight to the backup round')
-
-  const u = await setup()
-  t.after(() => rm(u.dir, { recursive: true, force: true }))
-  const waiting = u.context(u.publisher, 'publisher')
-  u.fake.time = START + HOUR
-  await publisherTick(waiting)
-  u.fake.openAndSeed(EPOCH)
-  await publisherTick(waiting)
-  // A committed file the store cannot serve right now: retry before planning backups.
-  u.fake.slices = [{ epoch: EPOCH, hash: `0x${'34'.repeat(32)}`, uri: `ipfs://local-${'0'.repeat(64)}`, backup: false, sender: u.verifiers[0]!.wallet.address, blockNumber: 1, logIndex: 0, txHash: '0x' }]
-  u.fake.time = START + 3 * DAY + HOUR
-  await assert.rejects(publisherTick(waiting), /unavailable; retrying/)
-  assert.ok(!u.fake.calls.includes(`commitBackupPlan:${EPOCH}`))
-  u.fake.time = START + 3 * DAY + 7 * HOUR
-  await publisherTick(waiting)
-  assert.ok(u.fake.calls.includes(`commitBackupPlan:${EPOCH}`), 'after the wait the unreachable slices go to the backup round')
-  assert.ok(u.logs.some((line) => line.includes('still unavailable')))
-})
-
 test('a failed key escrow holds the plan back until the escrow is in', async (t) => {
   const s = await setup()
   t.after(() => rm(s.dir, { recursive: true, force: true }))
@@ -289,4 +255,39 @@ test('with no eligible targets the publisher keeps looking, then commits an empt
   await publisherTick(context)
   assert.notEqual(s.fake.info(EPOCH).planHash, ZERO_HASH)
   assert.ok(s.logs.some((line) => line.includes('committing an empty plan')))
+})
+
+test('the plan seals every verifier its own and its backed-up slices', async (t) => {
+  const s = await setup()
+  t.after(() => rm(s.dir, { recursive: true, force: true }))
+  const context = s.context(s.publisher, 'publisher')
+  s.fake.time = START + HOUR
+  await publisherTick(context)
+  s.fake.openAndSeed(EPOCH)
+  await publisherTick(context)
+  const event = s.fake.plans.at(-1)!
+  const plan = JSON.parse((await s.storage.get(event.uri, event.hash)).toString('utf8')) as PlanFileV1
+  assert.ok(Object.keys(plan.envelopes).length > 0)
+  assert.ok(Object.keys(plan.backupEnvelopes).length > 0, 'backups are sealed with the plan')
+  for (const verifier of s.verifiers) {
+    const sealed = plan.backupEnvelopes[verifier.wallet.address.toLowerCase()]
+    if (!sealed) continue
+    const content = JSON.parse(openEnvelope(verifier.keys.privateKey, sealed).toString('utf8')) as EnvelopeContentV1
+    assert.equal(content.backup, true)
+    assert.equal(content.collector, verifier.wallet.address.toLowerCase())
+  }
+})
+
+test('the bank and its key are written owner-only, even under a permissive umask', async (t) => {
+  const s = await setup()
+  t.after(() => rm(s.dir, { recursive: true, force: true }))
+  const previous = process.umask(0)
+  t.after(() => { process.umask(previous) })
+  s.fake.time = START + HOUR
+  await publisherTick(s.context(s.publisher, 'publisher'))
+  const epochDir = join(s.dir, 'publisher', EPOCH.toString())
+  assert.equal((await stat(epochDir)).mode & 0o777, 0o700)
+  for (const name of ['bank.json', 'publisher.json']) {
+    assert.equal((await stat(join(epochDir, name))).mode & 0o777, 0o600, name)
+  }
 })

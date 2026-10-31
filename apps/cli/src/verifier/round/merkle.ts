@@ -13,10 +13,6 @@ const LEAF_COLLECTOR = 2
 const LEAF_EMPTY_ROUND = 3
 const abi = AbiCoder.defaultAbiCoder()
 
-export function verdictCode(verdict: RoundVerdict): number {
-  return VERIFIER_VERDICT[verdict]
-}
-
 export function serviceLeaf(
   epoch: bigint,
   result: { agentId: bigint; serviceHash: string; modelHash: string; verdict: RoundVerdict },
@@ -25,7 +21,7 @@ export function serviceLeaf(
     keccak256(
       abi.encode(
         ['uint8', 'uint256', 'uint256', 'bytes32', 'bytes32', 'uint8'],
-        [LEAF_SERVICE, epoch, result.agentId, result.serviceHash, result.modelHash, verdictCode(result.verdict)],
+        [LEAF_SERVICE, epoch, result.agentId, result.serviceHash, result.modelHash, VERIFIER_VERDICT[result.verdict]],
       ),
     ),
   )
