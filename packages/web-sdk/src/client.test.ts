@@ -400,6 +400,26 @@ describe('sellerSummaryFromMetadata', () => {
     ).toEqual(['openai-chat-completions']);
     expect(seller.metadata).toBe(metadata);
   });
+
+  it('takes a service pricing from the healthy upstream among those sharing a provider name', () => {
+    const upstream = (price: number, status: 'healthy' | 'failing') => ({
+      provider: 'openai',
+      services: ['test-model'],
+      defaultPricing: { inputUsdPerMillion: price, outputUsdPerMillion: price },
+      serviceHealth: { 'test-model': { status } },
+      maxConcurrency: 1,
+      currentLoad: 0,
+    });
+    const seller = sellerSummaryFromMetadata({
+      peerId: '55'.repeat(20) as PeerMetadata['peerId'],
+      version: 13,
+      region: 'global',
+      timestamp: Date.now(),
+      signature: '0xsig',
+      providers: [upstream(1, 'healthy'), upstream(9, 'failing')],
+    });
+    expect(seller.providerPricing?.openai?.services?.['test-model']?.inputUsdPerMillion).toBe(1);
+  });
 });
 
 class FakeLockManager implements WebLockManagerLike {

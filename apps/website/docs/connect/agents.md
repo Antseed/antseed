@@ -19,6 +19,7 @@ Maintained setup guides and skills:
 - [Hermes integration](/integrations/hermes) and the [Hermes skill](https://github.com/AntSeed/antseed/tree/main/skills/hermes-antseed)
 - [OpenClaw integration](/integrations/openclaw) and the [OpenClaw skill](https://github.com/AntSeed/antseed/tree/main/skills/openclaw-antseed)
 - The [model verification skill](https://github.com/AntSeed/antseed/tree/main/skills/antseed-verify-model), to check that an API endpoint serves the model it claims ([how it works](/docs/model-verification))
+- [Generate videos with an agent](/docs/videos) with the `antseed-videos` skill
 
 ## Gateway API key
 

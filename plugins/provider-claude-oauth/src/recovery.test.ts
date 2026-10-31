@@ -57,7 +57,7 @@ describe('development OAuth persistence and recovery', () => {
     expect(() => plugin.createProvider({ ...config(), CLAUDE_AUTH_FILE: directory })).toThrow();
   });
 
-  it('keeps failed services hidden, continues other providers, and restores every model after repair', async () => {
+  it('announces failed services as failing, continues other providers, and recovers every model after repair', async () => {
     fetchMock.mockResolvedValue(new Response('sensitive-upstream-body', { status: 401 }));
     const provider: Provider = plugin.createProvider(config());
     await expect(provider.init?.()).rejects.toMatchObject({ code: 'ANTSEED_OAUTH_REFRESH_FAILED' });
@@ -68,9 +68,11 @@ describe('development OAuth persistence and recovery', () => {
       handleRequest: vi.fn(async (req) => ({ requestId: req.requestId, statusCode: 200, headers: {}, body: new Uint8Array() })),
     };
     const checker = new ModelHealthChecker({ targets: [{ provider }, { provider: other }] });
-    expect(provider.services).toEqual([]);
+    expect(provider.services).toEqual(['model-a', 'model-b']);
+    expect(provider.serviceHealth?.['model-a']).toMatchObject({ status: 'failing', reason: 'init_failed' });
     await checker.runSweep();
     expect(provider.healthCheckAvailable).toBe(false);
+    expect(provider.serviceHealth?.['model-a']?.status).toBe('failing');
     expect(other.handleRequest).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledTimes(1); // refresh backoff applies across model probes
     new CredentialStore(path).save(fresh());
@@ -78,7 +80,7 @@ describe('development OAuth persistence and recovery', () => {
     await checker.runSweep();
     expect(provider.healthCheckAvailable).toBe(true);
     expect(provider.services).toEqual(['model-a', 'model-b']);
-    expect(checker.getSnapshot().every((s) => s.advertised)).toBe(true);
+    expect(checker.getSnapshot().every((s) => s.status === 'healthy')).toBe(true);
     expect(other.handleRequest).toHaveBeenCalledTimes(2);
     checker.stop();
   });

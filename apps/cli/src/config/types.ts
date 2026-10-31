@@ -161,11 +161,11 @@ export interface BuyerVerificationConfig {
  * Periodic model health self-check settings for the seller.
  */
 export interface SellerHealthCheckCLIConfig {
-  /** Enable periodic 1-token probes of every advertised service. Default: true. */
+  /** Enable the seller self health check: 1-token probes of services without recent buyer traffic. Default: true. */
   enabled?: boolean;
-  /** Milliseconds between probe sweeps. Default: 300000 (5 minutes). */
+  /** Milliseconds between probe sweeps; a service that served a buyer within this window is not probed. Default: 300000 (5 minutes). */
   intervalMs?: number;
-  /** Consecutive probe failures before a service is unadvertised. Default: 3. */
+  /** Consecutive failed checks before a service is announced as failing. Default: 3. */
   failureThreshold?: number;
 }
 
@@ -179,6 +179,23 @@ export interface SellerGasCheckCLIConfig {
   intervalMs?: number;
   /** Minimum wallet balance in ETH before advertising is paused. Default: 0.00005. */
   minBalanceEth?: number;
+}
+
+/**
+ * Automatic gas top-ups: when the seller wallet runs low on ETH, swap some of
+ * its USDC earnings for ETH (Uniswap v3 on Base mainnet, gas paid in ETH).
+ */
+export interface SellerGasRefuelCLIConfig {
+  /** Default: true. Needs gas checks on (`seller.gasCheck`). */
+  enabled?: boolean;
+  /** Refuel when the wallet holds less than this many ETH. Default: 0.0005. */
+  triggerBalanceEth?: number;
+  /** USDC swapped per refuel. Default: 10. */
+  swapUsdc?: number;
+  /** Most USDC swapped in any 24 hours. Default: 30. */
+  maxUsdcPerDay?: number;
+  /** Slippage tolerance in basis points. Default: 100 (1%). */
+  slippageBps?: number;
 }
 
 /** `seller.alerts` in config.json: where the seller sends its own alerts. */
@@ -274,7 +291,8 @@ export interface SellerCLIConfig {
   verifiers?: string[];
   /**
    * Periodic model health self-checks. Enabled by default; failing services
-   * are unadvertised until they recover. Set `enabled: false` to opt out.
+   * are announced with a failing status (buyers skip them) until they recover.
+   * Set `enabled: false` to opt out.
    */
   healthCheck?: SellerHealthCheckCLIConfig;
   /**
@@ -284,12 +302,17 @@ export interface SellerCLIConfig {
    */
   gasCheck?: SellerGasCheckCLIConfig;
   /**
+   * Swap USDC for ETH automatically before the wallet runs out of gas (Base
+   * mainnet). On by default; set `enabled: false` to opt out.
+   */
+  gasRefuel?: SellerGasRefuelCLIConfig;
+  /**
    * Seller-wide free-tier program for zero-priced services. A service with its
    * own `providers.<p>.services.<s>.freeTier` uses that instead.
    */
   freeTier?: SellerFreeTierCLIConfig;
   /**
-   * Alerts the seller sends itself (Telegram, webhook) when a model is withdrawn,
+   * Alerts the seller sends itself (Telegram, webhook) when a model fails its health checks,
    * gas runs low, it restarts after a crash or goes idle. Off until a channel is set.
    */
   alerts?: SellerAlertsCLIConfig;

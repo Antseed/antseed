@@ -14,7 +14,7 @@ export function mockRouteSelection(rank: number, of: number, seed: number, now =
     expectedCostUsd: (0.0011 + rank * 0.0004) / success,
     expectedPriceUsd: 0.0011 + rank * 0.0004,
     expectedSeconds: 2.4 + rank * 0.6,
-    successRate: fresh ? 0.8 : success,
+    successRate: fresh ? 0.95 : success,
     observations: fresh ? 0 : Math.max(1, 34 - rank * 7 + (seed % 5)),
     record: fresh ? 'none' : rank === 3 ? 'other-models' : 'model',
     firstTokenMs: fresh ? null : 280 + rank * 140,
@@ -33,6 +33,8 @@ export function mockRouteSelection(rank: number, of: number, seed: number, now =
     inFlight: rank === 1 ? 2 : 0,
     maxConcurrency: 8,
     routeChainPosition: null,
+    // A seller this buyer has not used yet: routing starts from its own last-hour figures.
+    ...(fresh ? { reported: { requests: 312, successRate: 0.99, firstTokenMsP50: 420, tokensPerSecondP50: 78 } } : {}),
   }
 }
 
@@ -137,6 +139,27 @@ export function seed() {
   } : service)
   const delta = peers[3]!
   delta.services = delta.services.map((service) => ({ ...service, freeTier: delta.freeTier }))
+  // Each seller's announced self check: buyer traffic or its own probe, Beta's first model out of credit, Eta not checked yet.
+  for (const [index, peer] of peers.entries()) {
+    peer.services = peer.services.map((service, m) => ({
+      ...service,
+      health: index === 1 && m === 0
+        ? { status: 'failing' as const, checkedAt: now - 60_000, source: 'probe' as const, failingSince: now - 18 * 60_000, consecutiveFailures: 4, reason: 'out_of_credit', httpStatus: 402 }
+        : index === 6
+          ? { status: 'unknown' as const, checkedAt: null, source: null, failingSince: null, consecutiveFailures: null, reason: null, httpStatus: null }
+          : { status: 'healthy' as const, checkedAt: now - ((index + m) % 5 + 1) * 60_000 * (m % 2 ? 7 : 1), source: (index + m) % 2 ? 'probe' as const : 'traffic' as const, failingSince: null, consecutiveFailures: null, reason: null, httpStatus: null },
+      // The seller's last hour of buyer traffic; idle models have none.
+      ...((index + m) % 4 === 3 ? {} : {
+        performance: {
+          requests: 40 + ((index * 53 + m * 31) % 400),
+          successRate: index === 1 && m === 0 ? 0.31 : 0.9 + ((index + m) % 10) / 100,
+          firstTokenMsP50: 260 + ((index * 7 + m * 3) % 9) * 70,
+          firstTokenMsP90: 900 + ((index + m) % 5) * 300,
+          tokensPerSecondP50: 40 + ((index * 11 + m * 5) % 70),
+        },
+      }),
+    }))
+  }
   const fakeRouter: Peer = { ...peers[7]!, peerId: fakePeerId(9), displayName: 'Fake Router Iota', services: [], verified: false, verificationLinks: [], tee: false, teeScope: null, washFlagged: false, requests24h: 48 }
   peers.push(fakeRouter)
   const peerLists: PeerList[] = [
@@ -259,6 +282,8 @@ export function mockNetworkModels(peers: readonly Peer[]): NetworkModel[] {
   const offers = new Map<string, NetworkModelOffer[]>()
   for (const peer of peers) {
     for (const service of peer.services) {
+      // Buyers leave out offers their seller reports failing.
+      if (service.health?.status === 'failing') continue
       const free = service.inputUsdPerMillion === 0 && (service.outputUsdPerMillion ?? 0) === 0
       const list = offers.get(service.service) ?? []
       list.push({
@@ -268,6 +293,8 @@ export function mockNetworkModels(peers: readonly Peer[]): NetworkModel[] {
         contextLength: service.service.includes('llama') ? 128_000 : service.service.includes('qwen') ? 262_144 : null, free,
         agentId: peer.agentId, freeTier: service.freeTier ?? (free ? peer.freeTier : null),
         reputationScore: peer.reputationScore, trustScore: peer.trustScore, verified: peer.verified, verificationLinks: peer.verificationLinks, tee: peer.tee, teeScope: peer.teeScope, latencyMsP50: peer.latencyMsP50, firstTokenMsP50: peer.firstTokenMsP50, tokensPerSecondP50: peer.tokensPerSecondP50,
+        ...(service.health ? { health: service.health } : {}),
+        ...(service.performance ? { performance: service.performance } : {}),
       })
       offers.set(service.service, list)
     }

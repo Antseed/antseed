@@ -8,10 +8,9 @@ import { TrustSignalsClient, type TrustSignals } from './payments/evm/trust-sign
 import type { Identity, IdentityStore } from "./p2p/identity.js";
 import { loadOrCreateIdentity } from "./p2p/identity.js";
 import type { PeerId } from "./types/peer.js";
-import type { PeerInfo, PeerVerificationResults, TokenPricingUsdPerMillion } from "./types/peer.js";
+import type { PeerInfo, PeerVerificationResults } from "./types/peer.js";
 import { peerIdToAddress } from "./types/peer.js";
 import { isFreeUnitBillingModel } from "./billing/unit.js";
-import type { ServiceUnitBillingModelsV1 } from "./types/billing.js";
 import type {
   SerializedHttpRequest,
   SerializedHttpResponse,
@@ -41,7 +40,8 @@ import {
   type AnnouncerConfig,
   type SellerContractConfig,
 } from "./discovery/announcer.js";
-import type { PeerVerifications } from "./discovery/peer-metadata.js";
+import type { PeerVerifications, ServiceHealth } from "./discovery/peer-metadata.js";
+import { mergeProviderAnnouncements, serviceHealthOf } from "./discovery/peer-metadata.js";
 import { verifyPeerMetadataDomains } from "./discovery/domain-verification.js";
 import { verifyPeerMetadataGithub } from "./discovery/github-verification.js";
 import {
@@ -112,7 +112,8 @@ import { encodeFreeTierDelegationsHeader, type FreeTierDelegation } from "./paym
 import { Contract as EthersContract, type AbstractProvider } from "ethers";
 import { SellerPaymentManager, type SellerPaymentConfig } from "./payments/seller-payment-manager.js";
 import { IdentityClient } from "./payments/evm/identity-client.js";
-import { SellerRequestHandler, assertSingleRoutingService } from "./seller-request-handler.js";
+import { SellerRequestHandler, assertSameNameUpstreamsAgree, assertSingleRoutingService } from "./seller-request-handler.js";
+import { ServicePerformanceTracker } from "./health/service-performance.js";
 import {
   BuyerRequestHandler,
   type RequestStreamCallbacks,
@@ -457,6 +458,8 @@ export class AntseedNode extends EventEmitter {
   private _nat: NatTraversal | null = null;
   private _metering: MeteringStorage | null = null;
   private _resourceOwnership: ResourceOwnershipStore | null = null;
+  /** How each service served buyers lately, announced in the seller's metadata. */
+  private readonly _servicePerformance = new ServicePerformanceTracker();
   private _receiptGenerator: ReceiptGenerator | null = null;
   private _balanceManager: BalanceManager | null = null;
   private _depositsClient: DepositsClient | null = null;
@@ -552,7 +555,7 @@ export class AntseedNode extends EventEmitter {
   /**
    * Re-sign the advertised seller metadata snapshot without a DHT announce.
    * Call after mutating a provider's `services` at runtime (e.g. when the
-   * model health checker unadvertises or restores a service) so the next
+   * model health checker marks a service failing or recovered) so the next
    * `GET /metadata` fetch reflects the change immediately.
    */
   async refreshSellerMetadata(): Promise<void> {
@@ -1877,6 +1880,7 @@ export class AntseedNode extends EventEmitter {
     const signalingPort = this._config.signalingPort ?? 6882;
     debugLog(`[Node] Starting seller — DHT port=${dhtPort}, signaling port=${signalingPort}`);
     assertSingleRoutingService(this._providers);
+    assertSameNameUpstreamsAgree(this._providers);
 
     const dataDir = this._config.dataDir ?? join(homedir(), ".antseed");
     try {
@@ -1991,8 +1995,11 @@ export class AntseedNode extends EventEmitter {
           ...(p.serviceApiProtocols ? { serviceApiProtocols: { ...p.serviceApiProtocols } } : {}),
           ...(p.serviceUnitBillingModels ? { serviceUnitBillingModels: { ...p.serviceUnitBillingModels } } : {}),
           ...(p.serviceCapabilities ? { serviceCapabilities: { ...p.serviceCapabilities } } : {}),
+          // Read live: the model health checker updates it between refreshes.
+          serviceHealth: () => announcedServiceHealth(p),
+          servicePerformance: () => this._servicePerformance.snapshot(p.name, p.services),
           maxConcurrency: p.maxConcurrency,
-          isAvailable: () => this._advertisingPausedReason === null && p.healthCheckAvailable !== false,
+          isAvailable: () => this._advertisingPausedReason === null,
           pricing: {
             defaults: {
               inputUsdPerMillion: p.pricing.defaults.inputUsdPerMillion,
@@ -2030,7 +2037,7 @@ export class AntseedNode extends EventEmitter {
 
       // Serve metadata on the signaling port (HTTP requests are auto-detected)
       this._connectionManager!.setMetadataProvider(
-        () => this._announcer?.getLatestMetadata() ?? null,
+        (requestedVersion) => this._announcer?.getMetadataForVersion(requestedVersion) ?? null,
       );
     }
 
@@ -2055,6 +2062,7 @@ export class AntseedNode extends EventEmitter {
       announcer: this._announcer,
       maxUploadBodyBytes: this._config.maxUploadBodyBytes,
       resourceOwnershipStore: this._resourceOwnership,
+      servicePerformance: this._servicePerformance,
       ...(this._config.payments?.reserveEstimateOverdraftUsdc != null
         ? { reserveEstimateOverdraftUsdc: BigInt(this._config.payments.reserveEstimateOverdraftUsdc) }
         : {}),
@@ -2722,92 +2730,15 @@ export class AntseedNode extends EventEmitter {
     const displayName = sanitizePeerDisplayName(result.metadata.displayName);
     const providers = result.metadata.providers.map((p) => p.provider);
     const firstProvider = result.metadata.providers[0];
-    const providerPricingEntries: NonNullable<PeerInfo["providerPricing"]> = {};
-    const providerServiceCategoryEntries: NonNullable<PeerInfo["providerServiceCategories"]> = {};
-    const providerServiceApiProtocolEntries: NonNullable<PeerInfo["providerServiceApiProtocols"]> = {};
-    const providerServiceUnitBillingModelEntries: NonNullable<PeerInfo["providerServiceUnitBillingModels"]> = {};
-    const providerServiceCapabilityEntries: NonNullable<PeerInfo["providerServiceCapabilities"]> = {};
-
-    for (const providerAnnouncement of result.metadata.providers) {
-      const provName = providerAnnouncement.provider;
-      const serviceEntries: Record<string, TokenPricingUsdPerMillion> = {};
-      for (const service of providerAnnouncement.services) {
-        serviceEntries[service] =
-          providerAnnouncement.servicePricing?.[service] ?? providerAnnouncement.defaultPricing;
-      }
-
-      const existing = providerPricingEntries[provName];
-      if (existing) {
-        // Merge services from duplicate provider names
-        Object.assign(existing.services ?? {}, serviceEntries);
-        if (!existing.services && Object.keys(serviceEntries).length > 0) {
-          existing.services = serviceEntries;
-        }
-      } else {
-        providerPricingEntries[provName] = {
-          defaults: {
-            inputUsdPerMillion: providerAnnouncement.defaultPricing.inputUsdPerMillion,
-            outputUsdPerMillion: providerAnnouncement.defaultPricing.outputUsdPerMillion,
-            ...(providerAnnouncement.defaultPricing.cachedInputUsdPerMillion != null
-              ? { cachedInputUsdPerMillion: providerAnnouncement.defaultPricing.cachedInputUsdPerMillion }
-              : {}),
-          },
-          ...(Object.keys(serviceEntries).length > 0 ? { services: serviceEntries } : {}),
-        };
-      }
-
-      if (providerAnnouncement.serviceCategories && Object.keys(providerAnnouncement.serviceCategories).length > 0) {
-        const existingCats = providerServiceCategoryEntries[provName];
-        const newEntries = Object.fromEntries(
-          Object.entries(providerAnnouncement.serviceCategories)
-            .map(([service, categories]) => [service, [...categories]]),
-        );
-        if (existingCats) {
-          Object.assign(existingCats.services, newEntries);
-        } else {
-          providerServiceCategoryEntries[provName] = { services: newEntries };
-        }
-      }
-
-      if (providerAnnouncement.serviceApiProtocols && Object.keys(providerAnnouncement.serviceApiProtocols).length > 0) {
-        const existingProtos = providerServiceApiProtocolEntries[provName];
-        const newEntries = Object.fromEntries(
-          Object.entries(providerAnnouncement.serviceApiProtocols)
-            .map(([service, protocols]) => [service, [...protocols]]),
-        );
-        if (existingProtos) {
-          Object.assign(existingProtos.services, newEntries);
-        } else {
-          providerServiceApiProtocolEntries[provName] = { services: newEntries };
-        }
-      }
-
-      if (providerAnnouncement.serviceUnitBillingModels && Object.keys(providerAnnouncement.serviceUnitBillingModels).length > 0) {
-        const existingBillingModels = providerServiceUnitBillingModelEntries[provName];
-        const newEntries: ServiceUnitBillingModelsV1 = { ...providerAnnouncement.serviceUnitBillingModels };
-        if (existingBillingModels) {
-          Object.assign(existingBillingModels.services, newEntries);
-        } else {
-          providerServiceUnitBillingModelEntries[provName] = { services: newEntries };
-        }
-      }
-
-      if (providerAnnouncement.serviceCapabilities && Object.keys(providerAnnouncement.serviceCapabilities).length > 0) {
-        const existingCapabilities = providerServiceCapabilityEntries[provName];
-        const newEntries = { ...providerAnnouncement.serviceCapabilities };
-        if (existingCapabilities) {
-          Object.assign(existingCapabilities.services, newEntries);
-        } else {
-          providerServiceCapabilityEntries[provName] = { services: newEntries };
-        }
-      }
-    }
-
-    const hasProviderPricing = Object.keys(providerPricingEntries).length > 0;
-    const hasProviderServiceCategories = Object.keys(providerServiceCategoryEntries).length > 0;
-    const hasProviderServiceApiProtocols = Object.keys(providerServiceApiProtocolEntries).length > 0;
-    const hasProviderServiceUnitBillingModels = Object.keys(providerServiceUnitBillingModelEntries).length > 0;
-    const hasProviderServiceCapabilities = Object.keys(providerServiceCapabilityEntries).length > 0;
+    const matrices = mergeProviderAnnouncements(result.metadata.providers);
+    const nonEmpty = <T extends object>(matrix: T): T | undefined => (Object.keys(matrix).length > 0 ? matrix : undefined);
+    const providerPricing = nonEmpty(matrices.providerPricing);
+    const providerServiceCategories = nonEmpty(matrices.providerServiceCategories);
+    const providerServiceApiProtocols = nonEmpty(matrices.providerServiceApiProtocols);
+    const providerServiceUnitBillingModels = nonEmpty(matrices.providerServiceUnitBillingModels);
+    const providerServiceCapabilities = nonEmpty(matrices.providerServiceCapabilities);
+    const providerServiceHealth = nonEmpty(matrices.providerServiceHealth);
+    const providerServicePerformance = nonEmpty(matrices.providerServicePerformance);
 
     return {
       peerId: result.metadata.peerId,
@@ -2825,11 +2756,13 @@ export class AntseedNode extends EventEmitter {
         ? { capabilities: [...result.metadata.capabilities] }
         : {}),
       publicAddress: this._resolvePublicAddress(result),
-      ...(hasProviderPricing ? { providerPricing: providerPricingEntries } : {}),
-      ...(hasProviderServiceCategories ? { providerServiceCategories: providerServiceCategoryEntries } : {}),
-      ...(hasProviderServiceApiProtocols ? { providerServiceApiProtocols: providerServiceApiProtocolEntries } : {}),
-      ...(hasProviderServiceUnitBillingModels ? { providerServiceUnitBillingModels: providerServiceUnitBillingModelEntries } : {}),
-      ...(hasProviderServiceCapabilities ? { providerServiceCapabilities: providerServiceCapabilityEntries } : {}),
+      ...(providerPricing ? { providerPricing } : {}),
+      ...(providerServiceCategories ? { providerServiceCategories } : {}),
+      ...(providerServiceApiProtocols ? { providerServiceApiProtocols } : {}),
+      ...(providerServiceUnitBillingModels ? { providerServiceUnitBillingModels } : {}),
+      ...(providerServiceCapabilities ? { providerServiceCapabilities } : {}),
+      ...(providerServiceHealth ? { providerServiceHealth } : {}),
+      ...(providerServicePerformance ? { providerServicePerformance } : {}),
       defaultInputUsdPerMillion: firstProvider?.defaultPricing.inputUsdPerMillion,
       defaultOutputUsdPerMillion: firstProvider?.defaultPricing.outputUsdPerMillion,
       defaultCachedInputUsdPerMillion: firstProvider?.defaultPricing.cachedInputUsdPerMillion,
@@ -2978,4 +2911,18 @@ function peerOffersService(peer: PeerInfo, service: string): boolean {
     }
   }
   return false;
+}
+
+/**
+ * A provider that failed to initialize is announced as failing from the
+ * first announcement, before the model health checker has published anything.
+ */
+/** @internal Exported for tests. */
+export function announcedServiceHealth(provider: Provider): Record<string, ServiceHealth> | undefined {
+  if (provider.healthCheckAvailable !== false) return provider.serviceHealth;
+  const health = Object.create(null) as Record<string, ServiceHealth>;
+  for (const service of provider.services) {
+    health[service] = serviceHealthOf(provider.serviceHealth, service) ?? { status: 'failing', reason: 'init_failed' };
+  }
+  return health;
 }

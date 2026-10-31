@@ -1,11 +1,11 @@
 /** Pure mapping from the buyer's peer, health and verification views to the console's `Peer`. */
-import { isNativeVideoProtocol } from '@antseed/node'
+import { isNativeVideoProtocol, parseServiceHealth, parseServicePerformance } from '@antseed/node'
 import { collectPeerVerificationLinks } from '@antseed/node/discovery'
 import { parseVerifierCapabilities } from '@antseed/node/verifier-capabilities'
 import { freeTierProgramForService, isPricedService, normalizeFreeTierProgram, parseFreeTierProgram } from '@antseed/node/free-tier-program'
 import { modelTagsFor } from '@antseed/node/model-metadata'
 import { TEE_VERIFIER_ID, teeScope, type TeeClaim, type TeeScope } from '@antseed/node/tee-status'
-import type { NetworkModel, NetworkModelCapability, NetworkModelOffer, NetworkModelType, NetworkRouter, NetworkRouterOption, Peer, RoutePreview } from '../types.js'
+import type { NetworkModel, NetworkModelCapability, NetworkModelOffer, NetworkModelType, NetworkRouter, NetworkRouterOption, Peer, RoutePreview, ServiceHealthView, ServicePerformanceView } from '../types.js'
 import { parseRouteSelection } from '../../../proxy/route-selection.js'
 
 type Row = Record<string, unknown>
@@ -27,6 +27,34 @@ function str(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null
 }
 
+/** A seller's announced self health check with every field present, as a `health` property; none when not announced. */
+export function serviceHealthField(value: unknown): { health?: ServiceHealthView } {
+  const health = parseServiceHealth(value)
+  if (!health) return {}
+  return { health: {
+    status: health.status,
+    checkedAt: health.checkedAt ?? null,
+    source: health.source ?? null,
+    failingSince: health.failingSince ?? null,
+    consecutiveFailures: health.consecutiveFailures ?? null,
+    reason: health.reason ?? null,
+    httpStatus: health.httpStatus ?? null,
+  } }
+}
+
+/** A seller's announced performance with every field present, as a `performance` property; none when not announced. */
+export function servicePerformanceField(value: unknown): { performance?: ServicePerformanceView } {
+  const performance = parseServicePerformance(value)
+  if (!performance) return {}
+  return { performance: {
+    requests: performance.requests,
+    successRate: performance.successRate,
+    firstTokenMsP50: performance.firstTokenMsP50 ?? null,
+    firstTokenMsP90: performance.firstTokenMsP90 ?? null,
+    tokensPerSecondP50: performance.tokensPerSecondP50 ?? null,
+  } }
+}
+
 function peerKey(peerId: string): string {
   return peerId.trim().toLowerCase().replace(/^0x/, '')
 }
@@ -45,6 +73,8 @@ export function peerServices(row: Row): Peer['services'] {
   const categories = asRecord(row['providerServiceCategories'])
   const protocols = asRecord(row['providerServiceApiProtocols'])
   const unitModels = asRecord(row['providerServiceUnitBillingModels'])
+  const health = asRecord(row['providerServiceHealth'])
+  const performance = asRecord(row['providerServicePerformance'])
   const capabilities = strings(row['capabilities'])
   const providers = new Set<string>([
     ...(Array.isArray(row['providers']) ? row['providers'].filter((p): p is string => typeof p === 'string') : []),
@@ -81,6 +111,8 @@ export function peerServices(row: Row): Peer['services'] {
         paid,
         // A priced service only has a free allowance of its own; the seller-wide program covers free services.
         freeTier: freeTierProgramForService(capabilities, service, paid, { video }),
+        ...serviceHealthField(asRecord(asRecord(health[provider])['services'])[service]),
+        ...servicePerformanceField(asRecord(asRecord(performance[provider])['services'])[service]),
       })
     }
   }
@@ -188,6 +220,7 @@ export function enrichCandidates(candidates: unknown, peers: unknown): RoutePrev
       outputUsdPerMillion: num(row['outputUsdPerMillion']),
       trustScore: num(row['trustScore']) ?? trust,
       selection: parseRouteSelection(row['selection']),
+      ...serviceHealthField(row['health']),
     }]
   })
 }
@@ -293,6 +326,8 @@ export function mapNetworkModels(body: unknown, peers: readonly Peer[]): Network
         latencyMsP50: peer?.latencyMsP50 ?? null,
         firstTokenMsP50: peer?.firstTokenMsP50 ?? null,
         tokensPerSecondP50: peer?.tokensPerSecondP50 ?? null,
+        ...serviceHealthField(offer['health']),
+        ...servicePerformanceField(offer['performance']),
       }]
     })
     const capabilityRows = rows(row['peers']).map((offer) => asRecord(offer['capabilities']))

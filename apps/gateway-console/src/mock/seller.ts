@@ -1,4 +1,4 @@
-/** Dev mock of a seller on the gateway host (`VITE_MOCK=1`): a running seller with one withdrawn model. */
+/** Dev mock of a seller on the gateway host (`VITE_MOCK=1`): a running seller with one failing model. */
 import type { SellerAlertSettings, SellerAlertsPatch, SellerEventView, SellerFreeTierProgramPatch, SellerFreeTierProgramSettings, SellerMarket, SellerMarketOffer, SellerPromote, SellerReputation, SellerRestartView, SellerSettings, SellerSettingsPatch, SellerStatus, SellerUsage, SellerVerificationsInput, TelegramChat } from '../api/types'
 
 const DAY = 86_400_000
@@ -9,7 +9,7 @@ const MOCK_STARTED_AT = Date.now() - 13 * 3_600_000
 
 export function mockSellerStatus(now = Date.now()): SellerStatus {
   const model = (service: string, advertised: boolean, failures: number, code: number | null, detail: string, ago: number) => (
-    { provider: 'openai', providerId: 'openai', service, advertised, consecutiveFailures: failures, lastProbeAt: now - ago, lastStatusCode: code, lastDetail: detail }
+    { provider: 'openai', providerId: 'openai', service, status: advertised ? 'healthy' as const : 'failing' as const, reason: advertised ? null : 'upstream_error', consecutiveFailures: failures, failingSince: advertised ? null : now - ago * 3, checkedAt: now - ago, source: 'probe' as const, lastTrafficAt: null, lastProbeAt: now - ago, lastStatusCode: code, lastDetail: detail }
   )
   return {
     available: true, running: true, dataDir: '/var/lib/antseed', peerId: FAKE_PEER, provider: 'openai',
@@ -20,7 +20,13 @@ export function mockSellerStatus(now = Date.now()): SellerStatus {
       model('glm-5.3', true, 0, null, 'Probe passed', 125_000),
       model('kimi-k3', true, 1, 429, 'HTTP 429: rate limited', 130_000),
     ],
-    gas: { address: FAKE_PEER, depleted: false, balanceEth: 0.0297, minBalanceEth: 0.00005, lastCheckedAt: now - 30_000 },
+    gas: {
+      address: FAKE_PEER, depleted: false, balanceEth: 0.0297, minBalanceEth: 0.00005, lastCheckedAt: now - 30_000,
+      refuel: {
+        triggerBalanceEth: 0.0005, swapUsdc: 10, maxUsdcPerDay: 30, usdcLast24h: 10, lastError: null, skipped: null, nextAttemptAt: null,
+        lastRefuel: { at: now - 3 * 3_600_000, usdc: 10, txHash: '0x22ab2afb58cd7b96c028b1ea4c7b3cd2c3d65db1fb173e1fb29fa43cb7aed636' },
+      },
+    },
     alerts: null,
     version: '0.0.0-mock',
   }
@@ -29,8 +35,8 @@ export function mockSellerStatus(now = Date.now()): SellerStatus {
 export function mockSellerEvents(now = Date.now()): { events: SellerEventView[] } {
   return {
     events: [
-      { at: now - 26 * 60_000, kind: 'model_down', severity: 'warning', title: 'llama-4-maverick withdrawn after 3 failed health checks', detail: 'HTTP 402: You need positive balance to do inference' },
-      { at: now - 3 * 3_600_000, kind: 'model_up', severity: 'info', title: 'glm-5.3 restored: health check passed' },
+      { at: now - 26 * 60_000, kind: 'model_down', severity: 'warning', title: 'llama-4-maverick marked failing after 3 failed health checks', detail: 'HTTP 402: You need positive balance to do inference' },
+      { at: now - 3 * 3_600_000, kind: 'model_up', severity: 'info', title: 'glm-5.3 recovered: health check passed' },
       { at: now - 13 * 3_600_000, kind: 'started', severity: 'info', title: 'Seller started' },
     ],
   }
@@ -66,6 +72,7 @@ export function mockSellerSettings(): { settings: SellerSettings; alerts: Seller
       configPath: '/etc/antseed/config.json', writable: true, readOnlyReason: null, savesTo: 'overrides', overridesPath: '/var/lib/antseed/config.overrides.json', overridden: [],
       displayName: 'Fake Seller', maxConcurrentBuyers: 50,
       healthCheck: { enabled: true, intervalMs: 300_000, failureThreshold: 3 }, gasCheck: { enabled: true, minBalanceEth: 0.00005 },
+      gasRefuel: { enabled: true, triggerBalanceEth: 0.0005, swapUsdc: 10, maxUsdcPerDay: 30, slippageBps: 100 },
       freeTier: { maxRequestsPerAddress: 200, maxRequestsPerIp: 400, windowMs: null, stakersOnly: false, stakeTiers: null }, restrictedCountries: ['CU', 'IR', 'KP', 'SY', 'RU'], restrictedCountriesDefault: true,
       defaultStakeTiers: DEFAULT_TIERS,
       services: [
@@ -238,6 +245,7 @@ export function mockUpdateSellerSettings(patch: SellerSettingsPatch) {
   if (patch.maxConcurrentBuyers !== undefined) settings.maxConcurrentBuyers = patch.maxConcurrentBuyers
   if (patch.healthCheck) settings.healthCheck = { ...settings.healthCheck, ...patch.healthCheck }
   if (patch.gasCheck) settings.gasCheck = { ...settings.gasCheck, ...patch.gasCheck }
+  if (patch.gasRefuel) settings.gasRefuel = { ...settings.gasRefuel, ...patch.gasRefuel }
   if (patch.freeTier) {
     const program = patchProgram(settings.freeTier, patch.freeTier)
     // Clearing both limits removes the seller-wide program.
@@ -277,7 +285,7 @@ export function mockUpdateSellerSettings(patch: SellerSettingsPatch) {
     })
   }
   for (const provider of settings.providers) provider.services = settings.services.filter((row) => row.provider === provider.name).length
-  const paths: Record<string, string> = { displayName: 'identity.displayName', maxConcurrentBuyers: 'seller.maxConcurrentBuyers', healthCheck: 'seller.healthCheck', gasCheck: 'seller.gasCheck', freeTier: 'seller.freeTier', restrictedCountries: 'seller.restrictedCountries', pricing: 'seller.providers', addServices: 'seller.providers', removeServices: 'seller.providers' }
+  const paths: Record<string, string> = { displayName: 'identity.displayName', maxConcurrentBuyers: 'seller.maxConcurrentBuyers', healthCheck: 'seller.healthCheck', gasCheck: 'seller.gasCheck', gasRefuel: 'seller.gasRefuel', freeTier: 'seller.freeTier', restrictedCountries: 'seller.restrictedCountries', pricing: 'seller.providers', addServices: 'seller.providers', removeServices: 'seller.providers' }
   settings.overridden = [...new Set([...settings.overridden, ...changed.map((key) => paths[key] ?? key)])]
   settingsStore = { ...state, settings }
   return { ...settingsStore, changed }

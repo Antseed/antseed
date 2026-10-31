@@ -1,22 +1,32 @@
+import type { ServiceHealth, ServiceHealthReason, ServiceHealthSource, ServiceHealthState } from '../discovery/peer-metadata.js';
+import { serviceHealthOf } from '../discovery/peer-metadata.js';
 import type { Provider, ServiceHealthStatus, UpstreamAccountStatus } from '../interfaces/seller-provider.js';
 import type { SerializedHttpRequest } from '../types/http.js';
 import { isNativeVideoProtocol, isRoutingProtocol, type ServiceApiProtocol } from '../types/service-api.js';
 import { debugLog, debugWarn } from '../utils/debug.js';
 import { isLiveResponseOutOfCredit, isUpstreamOutOfCredit } from './upstream-credit.js';
 
-/** Default sweep interval. Each sweep sends one 1-token probe per advertised service. */
+/** Default sweep interval. Each sweep sends one 1-token probe per service without recent buyer traffic. */
 export const DEFAULT_HEALTH_CHECK_INTERVAL_MS = 5 * 60_000;
-/** Consecutive probe failures before a service is unadvertised. */
+/** Consecutive failed checks before a service is announced as failing. */
 export const DEFAULT_HEALTH_CHECK_FAILURE_THRESHOLD = 3;
 /** Per-probe timeout. A model that hangs this long is treated as failing. */
 export const DEFAULT_HEALTH_CHECK_PROBE_TIMEOUT_MS = 60_000;
+/** Shortest gap between probes triggered by failed buyer requests for one service. */
+export const LIVE_FAILURE_PROBE_MIN_GAP_MS = 30_000;
+/**
+ * A service that keeps failing is probed less often: every interval, then
+ * every second, then every third (with the default, 5, 10 and 15 minutes).
+ * Its upstream is often rate limited or out of credit, and each probe would
+ * add to that. A successful buyer request still marks it healthy at once.
+ */
+export const MAX_FAILING_PROBE_BACKOFF = 3;
 
 export interface ModelHealthTarget {
   /**
-   * The provider whose advertised `services` array is managed. Must be the
-   * same object (or share the same `services` array) as the one registered
-   * with the node, so removals propagate to both request matching and
-   * announced metadata.
+   * The provider registered with the node. The checker publishes results on
+   * its `serviceHealth`, which the announcer signs into metadata and the
+   * request handler quotes in errors.
    */
   provider: Provider;
   /**
@@ -38,9 +48,12 @@ export interface ModelHealthEvent {
   /** The target's `id` (the configured provider name). */
   providerId: string;
   service: string;
-  status: 'removed' | 'restored';
+  /** `failing`: the service crossed the failure threshold; `recovered`: a check passed again. */
+  status: 'failing' | 'recovered';
   consecutiveFailures: number;
-  /** Short description of the most recent probe outcome. */
+  /** Why the service is failing (unset on recovery). */
+  reason?: ServiceHealthReason;
+  /** Short description of the most recent check outcome. Local only, never announced. */
   detail: string;
 }
 
@@ -58,7 +71,7 @@ export interface UpstreamAccountEvent {
   detail: string;
   /** USD balance, when the provider can read it. */
   balanceUsd: number | null;
-  /** The upstream's services (advertised or withdrawn). */
+  /** The upstream's services. */
   services: string[];
 }
 
@@ -67,11 +80,18 @@ export interface ServiceHealthSnapshot {
   /** The target's `id` (the configured provider name). */
   providerId: string;
   service: string;
-  advertised: boolean;
+  status: ServiceHealthState;
   consecutiveFailures: number;
+  failingSince: number | null;
+  reason: ServiceHealthReason | null;
+  /** When the evidence behind `status` was gathered, and from where. */
+  checkedAt: number | null;
+  source: ServiceHealthSource | null;
   lastProbeAt: number | null;
   lastStatusCode: number | null;
   lastDetail: string | null;
+  /** Last successful billable buyer request. */
+  lastTrafficAt: number | null;
 }
 
 export interface ModelHealthCheckerConfig {
@@ -80,8 +100,8 @@ export interface ModelHealthCheckerConfig {
   failureThreshold?: number;
   probeTimeoutMs?: number;
   /**
-   * Invoked after a service is unadvertised or restored. Callers should
-   * re-sign seller metadata here (e.g. `node.refreshSellerMetadata()`).
+   * Invoked when a service starts failing or recovers. Callers should re-sign
+   * seller metadata here (e.g. `node.refreshSellerMetadata()`).
    */
   onChange?: (event: ModelHealthEvent) => void | Promise<void>;
   /** Invoked when an upstream account runs out of credit, drops below `lowBalanceUsd`, or is funded again. */
@@ -96,31 +116,53 @@ type AccountState = 'out' | 'low' | 'ok';
 
 type ProbeOutcome = 'healthy' | 'unhealthy' | 'inconclusive';
 
-interface ServiceHealthState {
+interface TrackedService {
   /** The provider instance this state belongs to (several can share a name, e.g. four upstreams on the openai plugin). */
   provider: Provider;
   providerName: string;
   providerId: string;
   service: string;
+  status: ServiceHealthState;
   consecutiveFailures: number;
-  removed: boolean;
-  removedAtIndex: number;
+  failingSince: number | null;
+  reason: ServiceHealthReason | null;
+  httpStatus: number | null;
+  checkedAt: number | null;
+  source: ServiceHealthSource | null;
   lastProbeAt: number | null;
   lastStatusCode: number | null;
   lastDetail: string | null;
+  lastTrafficAt: number | null;
+  probeInFlight: boolean;
+  /** A buyer request failed since the last successful one: only another success clears it, never a passing account or model check. */
+  liveFailed: boolean;
+  /**
+   * A service no probe can check, announced as failing on live failures alone
+   * and back to unknown so buyers try it again: the next live failure marks it
+   * failing without a new alert, and a success reports the recovery.
+   */
+  retrying: boolean;
+  /** The account answer this service last followed, by `_accountAnswers` count (see `_followAccount`). */
+  accountFollowed: number | null;
+  /** Its failed checks since the last success include the upstream being out of credit, which credit again forgives. */
+  accountFailed: boolean;
 }
 
+class ProbeTimeoutError extends Error {}
+
 /**
- * Periodically probes every advertised service with a minimal (1-token)
- * completion and unadvertises services that fail repeatedly, so buyers stop
- * discovering models the seller cannot actually serve. Removed services keep
- * being probed and are re-advertised on the first healthy probe.
+ * The seller's self health check. Every service stays announced; its latest
+ * result is published on `provider.serviceHealth`, which goes into signed
+ * metadata (v13+) so buyers can hide failing services from catalogs and
+ * routing and explain why a pinned request failed.
  *
- * Removal mutates `provider.services` in place — the same array reference the
- * announcer and the seller request handler read live — so it takes effect on
- * the next `/metadata` fetch and the next incoming request. If every service
- * is removed, `provider.healthCheckAvailable` becomes false so discovery omits
- * the provider instead of treating its empty service list as a wildcard.
+ * Buyer traffic is the main evidence: a successful billable response marks a
+ * service healthy, and a service that had one within the last interval is not
+ * probed. Idle services get a minimal (1-token) completion each interval, and
+ * a failed buyer request triggers an early probe. Image and video services
+ * are never probed (a probe would cost a real generation): their failed buyer
+ * requests count as the checks. A service is failing after `failureThreshold`
+ * failed checks in a row and recovers on the first pass.
  */
 export class ModelHealthChecker {
   private readonly _targets: ModelHealthTarget[];
@@ -128,7 +170,7 @@ export class ModelHealthChecker {
   private readonly _failureThreshold: number;
   private readonly _probeTimeoutMs: number;
   private readonly _onChange: ModelHealthCheckerConfig['onChange'];
-  private readonly _states = new Map<string, ServiceHealthState>();
+  private readonly _states = new Map<string, TrackedService>();
   /** Stable per-instance ids: providers are told apart by instance, not by name. */
   private readonly _providerIds = new Map<Provider, number>();
   private _timer: ReturnType<typeof setInterval> | null = null;
@@ -139,8 +181,10 @@ export class ModelHealthChecker {
   private readonly _onSweepComplete: ModelHealthCheckerConfig['onSweepComplete'];
   /** Each upstream's credit as last seen; unset until something said. */
   private readonly _accounts = new Map<Provider, AccountState>();
-  /** Services withdrawn before `onChange` could be told; reported on the first start. */
-  private _withdrawnAtInit: ServiceHealthState[] = [];
+  /** How many account answers each provider has had, changed or not. */
+  private readonly _accountAnswers = new Map<Provider, number>();
+  /** Services marked failing before `onChange` could be told; reported on the first start. */
+  private _failingAtInit: TrackedService[] = [];
 
   constructor(config: ModelHealthCheckerConfig) {
     this._targets = config.targets;
@@ -151,19 +195,22 @@ export class ModelHealthChecker {
     this._onUpstreamAccount = config.onUpstreamAccount;
     this._lowBalanceUsd = config.lowBalanceUsd;
     this._onSweepComplete = config.onSweepComplete;
-    // Providers retained after an OAuth initialization failure must pass a real
-    // probe before any service is advertised. Keep their services in recovery
-    // state rather than dropping the provider permanently.
+    // Providers retained after an OAuth initialization failure stay announced
+    // as failing until a real check passes.
+    const now = Date.now();
     for (const { provider } of this._targets) {
       if (provider.healthCheckAvailable !== false) continue;
-      for (const [index, service] of provider.services.entries()) {
+      for (const service of provider.services) {
         const state = this._stateFor(provider, service);
-        state.removed = true;
-        state.removedAtIndex = index;
-        state.lastDetail = 'Awaiting successful probe after initialization failure';
-        this._withdrawnAtInit.push(state);
+        state.status = 'failing';
+        state.reason = 'init_failed';
+        state.failingSince = now;
+        state.checkedAt = now;
+        state.source = 'probe';
+        state.lastDetail = 'Initialization failed; awaiting a successful check';
+        this._publish(state);
+        this._failingAtInit.push(state);
       }
-      provider.services.splice(0);
     }
   }
 
@@ -171,14 +218,15 @@ export class ModelHealthChecker {
   start(): void {
     if (this._timer) return;
     this._stopped = false;
-    for (const state of this._withdrawnAtInit.splice(0)) {
-      if (!state.removed) continue;
+    for (const state of this._failingAtInit.splice(0)) {
+      if (state.status !== 'failing') continue;
       this._emitChange({
         provider: state.providerName,
         providerId: state.providerId,
         service: state.service,
-        status: 'removed',
+        status: 'failing',
         consecutiveFailures: state.consecutiveFailures,
+        reason: 'init_failed',
         detail: state.lastDetail ?? 'initialization failed',
       });
     }
@@ -198,7 +246,7 @@ export class ModelHealthChecker {
     }
   }
 
-  /** Probe every advertised (and previously removed) service once. */
+  /** Check every service once, skipping probes for services with recent buyer traffic. */
   async runSweep(): Promise<void> {
     if (this._sweepInFlight) return this._sweepInFlight;
     this._sweepInFlight = this._runSweep().finally(() => {
@@ -218,11 +266,16 @@ export class ModelHealthChecker {
       provider: state.providerName,
       providerId: state.providerId,
       service: state.service,
-      advertised: !state.removed,
+      status: state.status,
       consecutiveFailures: state.consecutiveFailures,
+      failingSince: state.failingSince,
+      reason: state.reason,
+      checkedAt: state.checkedAt,
+      source: state.source,
       lastProbeAt: state.lastProbeAt,
       lastStatusCode: state.lastStatusCode,
       lastDetail: state.lastDetail,
+      lastTrafficAt: state.lastTrafficAt,
     }));
   }
 
@@ -231,39 +284,74 @@ export class ModelHealthChecker {
       if (this._stopped) return;
       const provider = target.provider;
 
-      // Don't compete with paying buyers for concurrency slots.
-      try {
-        const capacity = provider.getCapacity();
-        if (capacity.current >= capacity.max) {
-          debugLog(`[ModelHealth] Skipping ${provider.name}: at capacity (${capacity.current}/${capacity.max})`);
-          continue;
-        }
-      } catch {
-        // getCapacity should not throw; probe anyway if it does.
-      }
+      if (this._atCapacity(provider)) continue;
 
-      // Probe currently advertised services plus ones we removed earlier
-      // (so they can recover). Snapshot before iterating — probes mutate
-      // the live array on state transitions.
-      const services = new Set<string>(provider.services);
-      for (const state of this._states.values()) {
-        if (state.provider === provider && state.removed) {
-          services.add(state.service);
-        }
+      const services = [...provider.services];
+      for (const service of services) {
+        if (!supportsHealthProbe(resolveProbeProtocol(provider, service))) this._retryAfterLiveFailures(this._stateFor(provider, service));
       }
-
-      const hasFreeCheck = (candidate?: Provider) => Boolean(candidate?.checkServiceHealth || candidate?.checkUpstreamAccount);
       const checkProvider = hasFreeCheck(target.probeProvider) ? target.probeProvider! : provider;
+      // Free checks also read the account balance, so they run even with traffic.
       const checked = hasFreeCheck(checkProvider)
-        ? [...services].filter((service) => !supportsHealthProbe(resolveProbeProtocol(provider, service)))
+        ? services.filter((service) => !supportsHealthProbe(resolveProbeProtocol(provider, service)))
         : [];
       if (checked.length > 0) {
         await this._checkServices(target, checkProvider, checked);
       }
+      const now = Date.now();
       for (const service of services) {
         if (this._stopped) return;
         if (checked.includes(service)) continue;
+        const state = this._stateFor(provider, service);
+        if (state.lastTrafficAt !== null && now - state.lastTrafficAt < this._intervalMs) {
+          debugLog(`[ModelHealth] ${provider.name}/${service}: skipping probe, served a buyer ${Math.round((now - state.lastTrafficAt) / 1000)}s ago`);
+          continue;
+        }
+        if (this._backingOff(state, now)) {
+          debugLog(`[ModelHealth] ${provider.name}/${service}: failing, next probe later (${state.consecutiveFailures} failed checks in a row)`);
+          continue;
+        }
         await this._probeService(target, service);
+      }
+      // Only a probed service can find out that the account has credit again: without one, a cached
+      // out-of-credit answer would keep the others failing for good, so they wait for a buyer to retry them.
+      if (checked.length === 0 && this._probesAccount(provider)) {
+        for (const service of services) {
+          if (!supportsHealthProbe(resolveProbeProtocol(provider, service))) this._followAccount(provider, this._stateFor(provider, service));
+        }
+      }
+    }
+  }
+
+  /**
+   * An image or video service on an upstream without its own account check
+   * follows what the upstream's other services found out about the account:
+   * each sweep while it is out of credit counts as a failed check, as an
+   * account check does for a video service, and once it has credit again
+   * those failures are forgiven: a failing service recovers, unless a buyer
+   * request failed it for another reason.
+   */
+  private _followAccount(provider: Provider, state: TrackedService): void {
+    const account = this._accounts.get(provider);
+    if (account === 'out') {
+      // Only a new answer counts: copying a cached one every sweep would keep the service failing
+      // after the account is funded whenever the probes stop telling (say they turn inconclusive).
+      const answer = this._accountAnswers.get(provider) ?? 0;
+      if (state.accountFollowed === answer) return;
+      state.accountFollowed = answer;
+      state.lastProbeAt = Date.now();
+      state.lastStatusCode = null;
+      state.lastDetail = 'The upstream account is out of credit';
+      state.accountFailed = true;
+      this._recordFailure(state, 'out_of_credit', null, null);
+    } else if (account !== undefined && state.accountFailed && !state.liveFailed) {
+      if (state.status === 'failing' || state.retrying) {
+        this._recordSuccess(state, 'probe', 'The upstream account has credit again');
+      } else {
+        state.consecutiveFailures = 0;
+        state.failingSince = null;
+        state.reason = null;
+        state.accountFailed = false;
       }
     }
   }
@@ -273,7 +361,7 @@ export class ModelHealthChecker {
    * upstream account check (key valid, account funded) once, and the model
    * check (model still offered) for every service. A service is unavailable
    * when either check says so, and available only when no check is unsure.
-   * `unavailable` counts as a failed check, `available` re-advertises,
+   * `unavailable` counts as a failed check, `available` as a pass,
    * `unknown` changes nothing.
    */
   private async _checkServices(target: ModelHealthTarget, checkProvider: Provider, services: string[]): Promise<void> {
@@ -283,6 +371,7 @@ export class ModelHealthChecker {
       this._probeTimeoutMs,
       `${label} for ${provider.name} timed out after ${this._probeTimeoutMs}ms`,
     );
+    const checkStartedAt = Date.now();
     const [account, models] = await Promise.all([
       checkProvider.checkUpstreamAccount
         ? timed('account check', () => checkProvider.checkUpstreamAccount!())
@@ -293,7 +382,8 @@ export class ModelHealthChecker {
         : undefined,
     ]);
     const balance = account?.status === 'available' ? account.balanceUsd : undefined;
-    if (account?.status === 'unavailable' && (account.outOfCredit === true || isUpstreamOutOfCredit(null, account.reason))) {
+    const accountOutOfCredit = account?.status === 'unavailable' && (account.outOfCredit === true || isUpstreamOutOfCredit(null, account.reason));
+    if (accountOutOfCredit) {
       this._setAccount(provider, 'out', account.reason, null);
     } else if (account?.status === 'available') {
       const low = this._lowLine();
@@ -303,18 +393,18 @@ export class ModelHealthChecker {
       else if (balance !== undefined && low !== undefined && balance < low) this._setAccount(provider, 'low', `Balance $${balance.toFixed(2)}, under $${low.toFixed(2)}`, balance);
       else if (!unproven) this._setAccount(provider, 'ok', balance === undefined ? 'Account check passed' : `Balance $${balance.toFixed(2)}`, balance ?? null);
     }
-    const combine = (service: string): UpstreamAccountStatus => {
+    const combine = (service: string): { result: UpstreamAccountStatus; reason: ServiceHealthReason } => {
       const model: ServiceHealthStatus | undefined = models === undefined
         ? undefined
         : models?.[service] ?? { status: 'unknown', reason: 'model check gave no result' };
-      const results = [account, model].filter((result): result is UpstreamAccountStatus => result !== undefined);
-      return results.find((result) => result.status === 'unavailable')
-        ?? results.find((result) => result.status === 'unknown')
-        ?? { status: 'available', balanceUsd: balance };
+      if (account?.status === 'unavailable') return { result: account, reason: accountOutOfCredit ? 'out_of_credit' : reasonForAccount(account.reason) };
+      if (model?.status === 'unavailable') return { result: model, reason: 'model_unavailable' };
+      const unsure = [account, model].find((result) => result?.status === 'unknown');
+      return { result: unsure ?? { status: 'available', balanceUsd: balance }, reason: 'upstream_error' };
     };
     for (const service of services) {
       if (this._stopped) return;
-      const result = combine(service);
+      const { result, reason } = combine(service);
       const state = this._stateFor(provider, service);
       if (result.status === 'unknown') {
         debugLog(`[ModelHealth] ${provider.name}/${service}: inconclusive (${result.reason ?? 'no result'})`);
@@ -324,17 +414,16 @@ export class ModelHealthChecker {
       state.lastStatusCode = null;
       if (result.status === 'unavailable') {
         state.lastDetail = result.reason;
-        this._recordFailure(provider, state);
+        this._recordFailure(state, reason, null, checkStartedAt);
         continue;
       }
-      state.consecutiveFailures = 0;
-      if (!state.removed) continue;
-      state.lastDetail = balance === undefined ? 'Account check passed' : `Account check passed (balance $${balance.toFixed(2)})`;
-      this._restoreService(provider, state);
+      // A funded account and a listed model say nothing about generations that fail.
+      if (state.liveFailed) continue;
+      this._recordSuccess(state, 'probe', balance === undefined ? 'Account check passed' : `Account check passed (balance $${balance.toFixed(2)})`);
     }
   }
 
-  private _stateFor(provider: Provider, service: string): ServiceHealthState {
+  private _stateFor(provider: Provider, service: string): TrackedService {
     let id = this._providerIds.get(provider);
     if (id === undefined) {
       id = this._providerIds.size;
@@ -348,12 +437,22 @@ export class ModelHealthChecker {
         providerName: provider.name,
         providerId: this._targets.find((target) => target.provider === provider)?.id ?? provider.name,
         service,
+        status: 'unknown',
         consecutiveFailures: 0,
-        removed: false,
-        removedAtIndex: 0,
+        failingSince: null,
+        reason: null,
+        httpStatus: null,
+        checkedAt: null,
+        source: null,
         lastProbeAt: null,
         lastStatusCode: null,
         lastDetail: null,
+        lastTrafficAt: null,
+        probeInFlight: false,
+        liveFailed: false,
+        retrying: false,
+        accountFollowed: null,
+        accountFailed: false,
       };
       this._states.set(key, state);
     }
@@ -364,9 +463,13 @@ export class ModelHealthChecker {
     const provider = target.provider;
     const probeProvider = target.probeProvider ?? provider;
     const state = this._stateFor(provider, service);
-    state.lastProbeAt = Date.now();
+    if (state.probeInFlight) return;
+    state.probeInFlight = true;
+    const probeStartedAt = Date.now();
+    state.lastProbeAt = probeStartedAt;
 
     let outcome: ProbeOutcome;
+    let reason: ServiceHealthReason;
     let errorText: string | null = null;
     try {
       const protocol = resolveProbeProtocol(provider, service);
@@ -384,6 +487,7 @@ export class ModelHealthChecker {
       );
       state.lastStatusCode = response.statusCode;
       outcome = classifyProbeStatus(response.statusCode);
+      reason = reasonForStatus(response.statusCode);
       // Classified on the body itself, not the 200-byte summary: a billing code can follow a long message.
       if (outcome !== 'healthy') errorText = decodeBody(response.body, 16_384);
       state.lastDetail = outcome === 'healthy'
@@ -394,18 +498,22 @@ export class ModelHealthChecker {
       state.lastDetail = err instanceof Error ? err.message : String(err);
       errorText = state.lastDetail;
       outcome = 'unhealthy';
+      reason = err instanceof ProbeTimeoutError ? 'timeout' : 'unreachable';
+    } finally {
+      state.probeInFlight = false;
     }
 
     // A billing error is a failure whatever its status (Anthropic answers one with a 400);
     // a 404 or 422 is about the probe itself, so its text never marks the account.
     if (outcome !== 'healthy' && state.lastStatusCode !== 404 && state.lastStatusCode !== 422 && isUpstreamOutOfCredit(state.lastStatusCode, errorText)) {
       outcome = 'unhealthy';
+      reason = 'out_of_credit';
       this._setAccount(provider, 'out', state.lastDetail ?? 'out of credit', null);
     }
     if (outcome === 'inconclusive') {
       // The endpoint answered but the probe result proves nothing either way
-      // (for example, 400 for an unsupported probe parameter). Leave failure
-      // counters and advertisement untouched.
+      // (for example, 400 for an unsupported probe parameter). Leave the
+      // service's health untouched.
       debugLog(`[ModelHealth] ${provider.name}/${service}: inconclusive (${state.lastDetail})`);
       return;
     }
@@ -413,29 +521,154 @@ export class ModelHealthChecker {
     if (outcome === 'healthy') {
       // An answered completion means the account pays again (its balance is unknown here).
       if (this._accounts.get(provider) === 'out') this._setAccount(provider, 'ok', state.lastDetail ?? 'probe succeeded', null);
-      state.consecutiveFailures = 0;
-      if (state.removed) {
-        this._restoreService(provider, state);
-      }
+      this._recordSuccess(state, 'probe', state.lastDetail ?? 'probe succeeded');
       return;
     }
 
-    this._recordFailure(provider, state);
+    this._recordFailure(state, reason, state.lastStatusCode, probeStartedAt);
   }
 
   /**
-   * A live request's upstream answer (the seller's own traffic): an out-of-credit
-   * error is reported at once instead of waiting for the probes, and a billable
-   * success after one means the account pays again (polling or downloading a
-   * video already paid for is not billable and proves nothing).
+   * A live request's upstream answer (the seller's own traffic). A billable
+   * success marks `service` healthy and spares it the next probe. A failure
+   * the upstream is responsible for (auth, limits, 5xx) triggers an early
+   * probe instead of counting directly, so one buyer's odd request cannot mark
+   * a service failing. An out-of-credit error is reported at once, and a
+   * billable success after one means the account pays again (polling or
+   * downloading a video already paid for is not billable and proves nothing).
    */
-  reportUpstreamResponse(provider: Provider, statusCode: number, body: string, billable = true): void {
-    const target = this._targets.find((entry) => entry.provider === provider || entry.probeProvider === provider);
+  reportUpstreamResponse(provider: Provider, statusCode: number, body: string, billable = true, service?: string): void {
+    const target = this._findTarget(provider);
     if (!target || this._stopped) return;
     if (statusCode >= 400 && isLiveResponseOutOfCredit(statusCode, body)) {
       this._setAccount(target.provider, 'out', `HTTP ${statusCode}: ${summarizeBody(new TextEncoder().encode(body))}`, null);
     } else if (statusCode < 400 && billable && this._accounts.get(target.provider) === 'out') {
       this._setAccount(target.provider, 'ok', `HTTP ${statusCode} on a request`, null);
+    }
+    if (!service || !target.provider.services.includes(service)) return;
+    if (statusCode < 400) {
+      if (!billable) return;
+      const state = this._stateFor(target.provider, service);
+      state.lastTrafficAt = Date.now();
+      state.lastStatusCode = statusCode;
+      this._recordSuccess(state, 'traffic', `HTTP ${statusCode} on a buyer request`);
+      return;
+    }
+    if (statusCode !== 404 && classifyProbeStatus(statusCode) === 'unhealthy') {
+      if (supportsHealthProbe(resolveProbeProtocol(target.provider, service))) {
+        this._probeSoon(target, service);
+        return;
+      }
+      const outOfCredit = isLiveResponseOutOfCredit(statusCode, body);
+      // A 429 says the provider (often the seller's own concurrency limit) is busy, not broken.
+      if (billable && (statusCode !== 429 || outOfCredit)) {
+        this._recordLiveFailure(target.provider, service, outOfCredit ? 'out_of_credit' : reasonForStatus(statusCode), statusCode, `HTTP ${statusCode} on a buyer request`);
+      }
+    }
+  }
+
+  /** A live request threw before the upstream answered (network error, timeout). */
+  reportUpstreamFailure(provider: Provider, service: string, billable = true): void {
+    const target = this._findTarget(provider);
+    if (!target || this._stopped || !target.provider.services.includes(service)) return;
+    if (supportsHealthProbe(resolveProbeProtocol(target.provider, service))) {
+      this._probeSoon(target, service);
+    } else if (billable) {
+      this._recordLiveFailure(target.provider, service, 'upstream_error', null, 'Upstream request failed on a buyer request');
+    }
+  }
+
+  /**
+   * Image and video services are never probed, so their buyers' failures are
+   * the checks: `failureThreshold` in a row mark the service failing.
+   */
+  private _recordLiveFailure(provider: Provider, service: string, reason: ServiceHealthReason, httpStatus: number | null, detail: string): void {
+    const state = this._stateFor(provider, service);
+    state.lastStatusCode = httpStatus;
+    state.lastDetail = detail;
+    // Out of credit is the account's failure, not the service's, when a probe will tell when it has credit again (see `_followAccount`).
+    const accountFailure = reason === 'out_of_credit' && this._probesAccount(provider);
+    if (accountFailure) state.accountFailed = true;
+    this._recordFailure(state, reason, httpStatus, null, accountFailure ? 'probe' : 'traffic');
+  }
+
+  /** Whether the provider's probes read its account: it has a probed service and no account check of its own. */
+  private _probesAccount(provider: Provider): boolean {
+    const target = this._findTarget(provider);
+    if (!target || hasFreeCheck(target.provider) || hasFreeCheck(target.probeProvider)) return false;
+    return target.provider.services.some((service) => supportsHealthProbe(resolveProbeProtocol(target.provider, service)));
+  }
+
+  /**
+   * No probe can tell when a service failing on live failures (or on its
+   * upstream's credit, which nothing may confirm again) works again, and
+   * buyers skip it while it is failing: after the same backoff a probed
+   * service waits, it is announced unknown so buyers try it again.
+   */
+  private _retryAfterLiveFailures(state: TrackedService): void {
+    if (state.status !== 'failing' || !(state.liveFailed || state.accountFailed) || state.checkedAt === null) return;
+    if (Date.now() - state.checkedAt < this._failingBackoff(state) * this._intervalMs - LIVE_FAILURE_PROBE_MIN_GAP_MS) return;
+    state.status = 'unknown';
+    state.retrying = true;
+    state.failingSince = null;
+    state.reason = null;
+    state.httpStatus = null;
+    state.checkedAt = Date.now();
+    state.source = null;
+    debugLog(`[ModelHealth] ${state.providerName}/${state.service}: no probe for this service, letting buyers try it again`);
+    this._publish(state);
+  }
+
+  /** The announced health of `service`, if it has been checked. */
+  getServiceHealth(provider: Provider, service: string): ServiceHealth | undefined {
+    const target = this._findTarget(provider);
+    return serviceHealthOf(target?.provider.serviceHealth, service);
+  }
+
+  private _findTarget(provider: Provider): ModelHealthTarget | undefined {
+    return this._targets.find((entry) => entry.provider === provider || entry.probeProvider === provider);
+  }
+
+  /** A failing service skips scheduled probes for longer the more checks it has failed in a row. */
+  private _backingOff(state: TrackedService, now: number): boolean {
+    if (state.status !== 'failing' || state.lastProbeAt === null) return false;
+    const backoff = this._failingBackoff(state);
+    // Sweeps come one interval apart, so allow one to come a little early.
+    return backoff > 1 && now - state.lastProbeAt < backoff * this._intervalMs - LIVE_FAILURE_PROBE_MIN_GAP_MS;
+  }
+
+  /** How many intervals a failing service waits for its next check. */
+  private _failingBackoff(state: TrackedService): number {
+    return Math.min(MAX_FAILING_PROBE_BACKOFF, 1 + state.consecutiveFailures - this._failureThreshold);
+  }
+
+  private _probeSoon(target: ModelHealthTarget, service: string): void {
+    // Image and video services are never probed (a probe would cost a real generation).
+    if (!supportsHealthProbe(resolveProbeProtocol(target.provider, service))) return;
+    const state = this._stateFor(target.provider, service);
+    if (state.probeInFlight) return;
+    // Already announced as failing: a probe could only confirm it. A buyer
+    // success or the next scheduled probe notices recovery.
+    if (state.status === 'failing') return;
+    if (state.lastProbeAt !== null && Date.now() - state.lastProbeAt < LIVE_FAILURE_PROBE_MIN_GAP_MS) return;
+    // A full provider answers its own 429, which says nothing about the upstream.
+    if (this._atCapacity(target.provider)) return;
+    debugLog(`[ModelHealth] ${target.provider.name}/${service}: buyer request failed upstream, probing now`);
+    void this._probeService(target, service).catch((err) => {
+      debugWarn(`[ModelHealth] early probe failed: ${err instanceof Error ? err.message : err}`);
+    });
+  }
+
+  /** Probes never compete with paying buyers for concurrency slots. */
+  private _atCapacity(provider: Provider): boolean {
+    try {
+      const capacity = provider.getCapacity();
+      if (capacity.current < capacity.max) return false;
+      debugLog(`[ModelHealth] Skipping ${provider.name}: at capacity (${capacity.current}/${capacity.max})`);
+      return true;
+    } catch {
+      // getCapacity should not throw; probe anyway if it does.
+      return false;
     }
   }
 
@@ -446,19 +679,19 @@ export class ModelHealthChecker {
 
   /** Records an upstream's credit and reports a change; the first reading of a funded account is not a change. */
   private _setAccount(provider: Provider, next: AccountState, detail: string, balanceUsd: number | null): void {
+    this._accountAnswers.set(provider, (this._accountAnswers.get(provider) ?? 0) + 1);
     const previous = this._accounts.get(provider);
     if (previous === next) return;
     this._accounts.set(provider, next);
     if (next === 'ok' && previous === undefined) return;
     const target = this._targets.find((entry) => entry.provider === provider);
-    const services = [...new Set([...provider.services, ...[...this._states.values()].filter((state) => state.provider === provider).map((state) => state.service)])];
     const event: UpstreamAccountEvent = {
       provider: provider.name,
       providerId: target?.id ?? provider.name,
       status: next === 'out' ? 'out_of_credit' : next === 'low' ? 'low_balance' : 'funded',
       detail,
       balanceUsd,
-      services,
+      services: [...provider.services],
     };
     debugWarn(`[ModelHealth] ${event.providerId}: upstream ${event.status} (${detail})`);
     if (!this._onUpstreamAccount) return;
@@ -472,64 +705,89 @@ export class ModelHealthChecker {
     }
   }
 
-  private _recordFailure(provider: Provider, state: ServiceHealthState): void {
-    state.consecutiveFailures += 1;
-    debugWarn(
-      `[ModelHealth] ${provider.name}/${state.service}: health check failed `
-      + `(${state.consecutiveFailures}/${this._failureThreshold}) — ${state.lastDetail}`,
-    );
-    if (!state.removed && state.consecutiveFailures >= this._failureThreshold) {
-      this._removeService(provider, state);
-    }
+  private _recordSuccess(state: TrackedService, source: ServiceHealthSource, detail: string): void {
+    const wasFailing = state.status === 'failing' || state.retrying;
+    state.status = 'healthy';
+    state.retrying = false;
+    state.liveFailed = false;
+    state.accountFailed = false;
+    state.consecutiveFailures = 0;
+    state.failingSince = null;
+    state.reason = null;
+    state.httpStatus = null;
+    state.checkedAt = Date.now();
+    state.source = source;
+    state.lastDetail = detail;
+    if (state.provider.healthCheckAvailable === false) state.provider.healthCheckAvailable = true;
+    this._publish(state);
+    if (!wasFailing) return;
+    this._emitChange({
+      provider: state.providerName,
+      providerId: state.providerId,
+      service: state.service,
+      status: 'recovered',
+      consecutiveFailures: 0,
+      detail,
+    });
   }
 
-  private _removeService(provider: Provider, state: ServiceHealthState): void {
-    const services = provider.services;
-    const index = services.indexOf(state.service);
-    if (index < 0) {
-      // Already gone (removed externally) — track it as removed so it can recover.
-      state.removed = true;
-      if (services.length === 0) {
-        provider.healthCheckAvailable = false;
-      }
+  /** A failed check started at `checkStartedAt` (null: a buyer request's); a buyer success since then outweighs it. */
+  private _recordFailure(state: TrackedService, reason: ServiceHealthReason, httpStatus: number | null, checkStartedAt: number | null, source: ServiceHealthSource = 'probe'): void {
+    if (checkStartedAt !== null && state.lastTrafficAt !== null && state.lastTrafficAt >= checkStartedAt) {
+      debugLog(`[ModelHealth] ${state.providerName}/${state.service}: check failed, but a buyer request succeeded meanwhile`);
       return;
     }
-    services.splice(index, 1);
-    state.removed = true;
-    state.removedAtIndex = index;
-    if (services.length === 0) {
-      provider.healthCheckAvailable = false;
-    }
+    const now = Date.now();
+    state.consecutiveFailures += 1;
+    if (source === 'traffic') state.liveFailed = true;
+    state.reason = reason;
+    state.httpStatus = httpStatus;
+    state.failingSince ??= now;
+    debugWarn(
+      `[ModelHealth] ${state.providerName}/${state.service}: health check failed `
+      + `(${state.consecutiveFailures}/${this._failureThreshold}, ${reason}) — ${state.lastDetail}`,
+    );
+    const crossed = state.status !== 'failing' && state.consecutiveFailures >= this._failureThreshold;
+    if (crossed) state.status = 'failing';
+    // Below the threshold the announced status and its evidence stand; only
+    // a failing status is backed by this check.
+    if (state.status !== 'failing') return;
+    state.checkedAt = now;
+    state.source = source;
+    this._publish(state);
+    // A retried service failing again was already reported, and not yet recovered.
+    if (!crossed || state.retrying) return;
     this._emitChange({
-      provider: provider.name,
+      provider: state.providerName,
       providerId: state.providerId,
       service: state.service,
-      status: 'removed',
+      status: 'failing',
       consecutiveFailures: state.consecutiveFailures,
-      detail: state.lastDetail ?? 'probe failed',
+      reason,
+      detail: state.lastDetail ?? 'check failed',
     });
   }
 
-  private _restoreService(provider: Provider, state: ServiceHealthState): void {
-    const services = provider.services;
-    state.removed = false;
-    if (!services.includes(state.service)) {
-      services.splice(Math.min(state.removedAtIndex, services.length), 0, state.service);
+  /** Writes the announced form of `state` onto the provider. */
+  private _publish(state: TrackedService): void {
+    const health: ServiceHealth = { status: state.status };
+    if (state.checkedAt !== null) health.checkedAt = state.checkedAt;
+    if (state.source !== null) health.source = state.source;
+    if (state.status === 'failing') {
+      if (state.failingSince !== null) health.failingSince = state.failingSince;
+      if (state.consecutiveFailures > 0) health.consecutiveFailures = Math.min(0xffff, state.consecutiveFailures);
+      // The seller's own upstream account (its credit, its key) is not the buyers' business: they are told the upstream is unavailable.
+      const accountReason = state.reason === 'out_of_credit' || state.reason === 'auth';
+      if (state.reason !== null) health.reason = accountReason ? 'upstream_error' : state.reason;
+      if (!accountReason && state.httpStatus !== null && state.httpStatus >= 100 && state.httpStatus <= 599) health.httpStatus = state.httpStatus;
     }
-    provider.healthCheckAvailable = true;
-    this._emitChange({
-      provider: provider.name,
-      providerId: state.providerId,
-      service: state.service,
-      status: 'restored',
-      consecutiveFailures: 0,
-      detail: state.lastDetail ?? 'probe succeeded',
-    });
+    // An own entry even for a service named like an Object.prototype property ("__proto__").
+    state.provider.serviceHealth ??= Object.create(null) as Record<string, ServiceHealth>;
+    Object.defineProperty(state.provider.serviceHealth, state.service, { value: health, enumerable: true, writable: true, configurable: true });
   }
 
   private _emitChange(event: ModelHealthEvent): void {
-    const action = event.status === 'removed' ? 'unadvertised' : 're-advertised';
-    debugLog(`[ModelHealth] ${event.provider}/${event.service} ${action} (${event.detail})`);
+    debugLog(`[ModelHealth] ${event.provider}/${event.service} ${event.status === 'failing' ? 'marked failing' : 'recovered'} (${event.detail})`);
     if (!this._onChange) return;
     try {
       const result = this._onChange(event);
@@ -544,9 +802,30 @@ export class ModelHealthChecker {
   }
 }
 
+/** The announced reason for an account check that says the upstream cannot serve. */
+function reasonForAccount(reason: string): ServiceHealthReason {
+  if (/balance|credit|fund|top.?up|quota/i.test(reason)) return 'out_of_credit';
+  if (/key|auth|credential|forbidden|permission|token/i.test(reason)) return 'auth';
+  return 'upstream_error';
+}
+
+/** The announced reason for a failed check's upstream status. */
+function reasonForStatus(statusCode: number): ServiceHealthReason {
+  if (statusCode === 429) return 'rate_limited';
+  if (statusCode === 402) return 'out_of_credit';
+  if (statusCode === 401 || statusCode === 403) return 'auth';
+  if (statusCode === 404) return 'model_unavailable';
+  return 'upstream_error';
+}
+
 /** Pick the probe request shape from the service's advertised API protocol. */
 function resolveProbeProtocol(provider: Provider, service: string): ServiceApiProtocol {
   return provider.serviceApiProtocols?.[service]?.[0] ?? 'openai-chat-completions';
+}
+
+/** Whether the provider has checks that cost nothing (its account, its model list). */
+function hasFreeCheck(provider?: Provider): boolean {
+  return Boolean(provider?.checkServiceHealth || provider?.checkUpstreamAccount);
 }
 
 export function supportsHealthProbe(protocol: ServiceApiProtocol): boolean {
@@ -620,7 +899,7 @@ export function buildHealthProbeRequest(service: string, protocol: ServiceApiPro
  *   collapses upstream network errors/timeouts to 502.)
  * - Everything else (400, 422, ...) — the endpoint is alive but the probe
  *   itself was rejected (for example, an unsupported parameter): inconclusive,
- *   so a working model is never unadvertised over a probe quirk.
+ *   so a working model is never marked failing over a probe quirk.
  */
 export function classifyProbeStatus(statusCode: number): ProbeOutcome {
   if (statusCode >= 200 && statusCode < 400) return 'healthy';
@@ -650,7 +929,7 @@ function summarizeBody(body: Uint8Array): string {
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+    timer = setTimeout(() => reject(new ProbeTimeoutError(message)), timeoutMs);
     timer.unref?.();
   });
   try {

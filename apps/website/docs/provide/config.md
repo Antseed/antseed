@@ -59,6 +59,8 @@ Everything a seller announces lives under `seller.providers`. Each key is a labe
 | `defaults` | Fallback token pricing for services that don't set their own `pricing`. |
 | `services` | The services this provider announces. |
 
+Providers of the same plugin announce under one provider name (two `openai` providers both announce as `openai`). A model that two of them list must have the same terms in both: price, API protocols, unit billing and capabilities. Buyers see one entry per provider name, so the seller refuses to start otherwise; list the model under one of them only, or give it the same terms. A video model can be listed by only one of them, because a video job stays with the upstream account that accepted it.
+
 ### Backup upstreams
 
 A provider can list backup upstreams that serve the same models. When the main upstream fails before anything reaches the buyer, the seller sends the request to the next upstream instead of returning the error:
@@ -208,6 +210,7 @@ Any other npm package that exports a provider plugin works too. See [Provider pl
 | `seller.freeUsage` | 16 requests / 15 min | How often free usage is recorded on-chain. See below. |
 | `seller.healthCheck` | enabled, 5 min, 3 failures | Model health checks. See below. |
 | `seller.gasCheck` | enabled, 60 s, 0.00005 ETH | Pauses advertising while the seller wallet holds less ETH than `minBalanceEth`, checking every `intervalMs` (at least 10 s). Resumes once funded. |
+| `seller.gasRefuel` | enabled, 0.0005 ETH, 10 USDC, 30 USDC/day | Base mainnet only, and needs `seller.gasCheck` on. When a gas check finds the wallet below `triggerBalanceEth`, the seller swaps `swapUsdc` of the wallet's own USDC for ETH on Uniswap v3 (USDC/WETH 0.05% pool, `slippageBps` default 100), paying the swap's gas from the ETH still there. At most `maxUsdcPerDay` in any 24 hours; failures retry with back-off. Set `enabled: false` to opt out. |
 | `seller.verifiers` | none | Verifier SDKs to run provers for. See [TEE seller](/docs/provide/tee). |
 | `seller.verifications` | none | Domain and GitHub ownership claims. See [Verified identity](/docs/provide/verified-identity). |
 | `seller.agentDir` | none | Ant agent directory. See below. |
@@ -356,9 +359,11 @@ Both must be positive integers; `recordFlushIntervalMs` must be at least 1000. T
 
 ### Model health checks
 
-The seller probes each text service at startup and every `intervalMs` afterwards. After `failureThreshold` consecutive failures it stops advertising the service, and advertises it again when a probe succeeds.
+The seller checks its own services and announces the result in its signed metadata. Buyer traffic counts as a check: a service that served a paid buyer request in the last `intervalMs` is not probed. Other text services are probed with a one-token request at startup and every `intervalMs`, and a buyer request that fails upstream triggers an early probe of that service, unless it is already announced as failing. A service that keeps failing is probed less often: every `intervalMs`, then every second, then every third (with the default 5, 10 and 15 minutes), so a rate-limited or empty upstream account is not hit by every check. After `failureThreshold` failed checks in a row the service is announced as failing: it stays in the metadata, buyers leave it out of their model lists and automatic routing, and a buyer who pins it gets an error saying the seller's health check is failing and why. The first passed check, or a successful buyer request, marks it healthy again.
 
-Image and video services are never probed, because a probe would generate a paid result. Instead, the Venice and fal video plugins check the account and model list for free every `intervalMs` (see [Image and video services](/docs/provide/media)).
+Buyers are never told about your upstream account: an upstream that is out of credit or rejects your key is announced as unavailable (`reason: "upstream_error"`), and a buyer request whose upstream answers with such an error (401, 403, 402 or a billing error) gets a `503` saying the model is unavailable on this seller, not the upstream's error. Your dashboard, `antseed seller status`, logs and alerts show the real reason.
+
+Image and video services are never probed, because a probe would generate a paid result. An image service on an upstream without such a check (for example images on the OpenAI-compatible plugin) follows the account the upstream's text services found: each check interval while that upstream is out of credit counts as a failed check, and it recovers once the account has credit again. Instead, the Venice and fal video plugins check the account and model list for free every `intervalMs` (see [Image and video services](/docs/provide/media)). Their failed buyer requests count as the checks: after `failureThreshold` upstream failures in a row (401, 402, 403, 5xx, or a request that throws; a 429 means busy, not broken) the service is announced as failing. A passing account or model check doesn't clear that. Because nothing can check it in the meantime, it is announced as unknown again after the same wait a failing text service has between probes, so buyers try it; one more failure marks it failing again, and a successful request marks it healthy.
 
 ```json
 {
@@ -367,6 +372,8 @@ Image and video services are never probed, because a probe would generate a paid
   }
 }
 ```
+
+The seller also announces, in its signed metadata, how each service served buyers in the last hour: the number of requests, the share the upstream answered without a server-side error, rate limit, timeout or an error inside the stream, and for streamed answers the median and 90th percentile time to the first generated token and the median output speed. The seller keeps running counts rather than every request, so this costs next to nothing at any traffic. It measures these on its own buyer traffic, so there is nothing to configure. Buyers start from these figures for a seller they have not used yet, so a model that keeps failing gets less traffic before each buyer finds out for itself. See [discovery](/docs/discovery).
 
 ### Ant agent
 

@@ -14,6 +14,9 @@ import {
   AntseedNode,
   ModelHealthChecker,
   GasHealthMonitor,
+  GasAutoRefueler,
+  UsdcEthSwapClient,
+  usdcEthSwapDeployment,
   CONNECTION_CAPABILITY_MODEL_HEALTH_V1,
   DEFAULT_HEALTH_CHECK_INTERVAL_MS,
   DEFAULT_HEALTH_CHECK_FAILURE_THRESHOLD,
@@ -53,18 +56,25 @@ import { rpcUsage, withRpcSource } from '../../../proxy/rpc-sources.js'
 import { DEFAULT_LOW_BALANCE_USD, SellerAlerts } from '../../../seller-alerts/alerts.js'
 import { UpstreamAlerts } from '../../../seller-alerts/upstream-alerts.js'
 import { ethToWei } from './gas.js'
+import { gasRefuelState, loadGasRefuelHistory, resolveGasRefuelSettings, saveGasRefuelHistory } from './gas-refuel.js'
 import { startIdleWatch, uncleanExitEvent, waitAtMost } from '../../../seller-alerts/lifecycle.js'
 import { startSellerDashboard, type SellerDashboardServer } from '../../../seller-monitor/dashboard-server.js'
 import { previousDashboardPort, previousDashboardToken, removeDashboardLink, writeDashboardLink } from '../../../seller-monitor/dashboard-link.js'
 import { DEFAULT_SELLER_DASHBOARD_PORT } from './dashboard.js'
 import { patchSellerConfig } from '../../../seller-monitor/settings.js'
 
+/** How long shutdown waits, after channels are finalized, for a gas refuel swap already sent to be mined and recorded. */
+const GAS_REFUEL_SHUTDOWN_WAIT_MS = 20_000
+
 function getStateFile(dataDir: string): string {
   return join(dataDir, 'daemon.state.json')
 }
 
 /** The gas monitor's last reading for daemon.state.json, in ETH (bigint is not JSON). */
-export function gasHealthState(monitor: Pick<GasHealthMonitor, 'getSnapshot'> | null) {
+export function gasHealthState(
+  monitor: Pick<GasHealthMonitor, 'getSnapshot'> | null,
+  refueler: Pick<GasAutoRefueler, 'getSnapshot'> | null = null,
+) {
   if (!monitor) return null
   const snapshot = monitor.getSnapshot()
   return {
@@ -73,6 +83,7 @@ export function gasHealthState(monitor: Pick<GasHealthMonitor, 'getSnapshot'> | 
     balanceEth: snapshot.lastBalanceWei === null ? null : Number(formatEther(snapshot.lastBalanceWei)),
     minBalanceEth: Number(formatEther(snapshot.minBalanceWei)),
     lastCheckedAt: snapshot.lastCheckedAt,
+    refuel: gasRefuelState(refueler),
   }
 }
 
@@ -697,6 +708,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       const minGasBalanceWei = gasCheckCfg?.minBalanceEth !== undefined
         ? ethToWei(gasCheckCfg.minBalanceEth)
         : DEFAULT_MIN_GAS_BALANCE_WEI
+      const gasRefuelSettings = resolveGasRefuelSettings(effectiveSellerConfig.gasRefuel)
 
       console.log(chalk.bold('Effective seller settings:'))
       if (overriddenSettings.length > 0) {
@@ -746,12 +758,15 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       if (healthCheckEnabled) {
         const intervalMs = healthCheckCfg?.intervalMs ?? DEFAULT_HEALTH_CHECK_INTERVAL_MS
         const failureThreshold = healthCheckCfg?.failureThreshold ?? DEFAULT_HEALTH_CHECK_FAILURE_THRESHOLD
-        console.log(chalk.dim(`  model health checks: every ${Math.round(intervalMs / 1000)}s, unadvertise after ${failureThreshold} consecutive failures`))
+        console.log(chalk.dim(`  model health checks: every ${Math.round(intervalMs / 1000)}s for models without buyer traffic, announce failing after ${failureThreshold} consecutive failures`))
       } else {
         console.log(chalk.dim('  model health checks: disabled'))
       }
       if (gasCheckEnabled) {
         console.log(chalk.dim(`  gas checks: every ${Math.round(gasCheckIntervalMs / 1000)}s, pause advertising below ${formatEther(minGasBalanceWei)} ETH`))
+        console.log(chalk.dim(gasRefuelSettings.enabled
+          ? `  gas auto-refuel: below ${formatEther(gasRefuelSettings.triggerBalanceWei)} ETH swap ${Number(gasRefuelSettings.swapUsdcUnits) / 1e6} USDC for ETH (max ${Number(gasRefuelSettings.maxUsdcPerDayUnits) / 1e6} USDC/day)`
+          : '  gas auto-refuel: off'))
       }
       const restrictedCountries = new Set(effectiveSellerConfig.restrictedCountries ?? DEFAULT_RESTRICTED_COUNTRIES)
       let acceptInboundAddress: ((remoteAddress: string) => boolean) | undefined
@@ -929,9 +944,10 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         process.exit(1)
       }
 
-      // Periodic model health self-checks: probe supported text services with
-      // a minimal completion; unadvertise services that keep failing and
-      // restore them when they recover, refreshing signed metadata each time.
+      // Periodic model health self-checks: buyer traffic counts as a check, and
+      // idle text services are probed with a minimal completion. Services that
+      // keep failing stay announced with a failing status in signed metadata
+      // (buyers skip them) until a check passes again.
       // Image and video services are not probed because a meaningful probe
       // would generate and charge for media. Providers check them with free
       // account and model-list calls instead (checkUpstreamAccount,
@@ -972,10 +988,10 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           ...(healthCheckCfg?.intervalMs !== undefined ? { intervalMs: healthCheckCfg.intervalMs } : {}),
           ...(healthCheckCfg?.failureThreshold !== undefined ? { failureThreshold: healthCheckCfg.failureThreshold } : {}),
           onChange: (event) => {
-            if (event.status === 'removed') {
-              console.log(chalk.yellow(`Model ${event.provider}/${event.service} unadvertised — failing health checks (${event.detail})`))
+            if (event.status === 'failing') {
+              console.log(chalk.yellow(`Model ${event.provider}/${event.service} announced as failing — self health check failed (${event.detail})`))
             } else {
-              console.log(chalk.green(`Model ${event.provider}/${event.service} re-advertised — health check recovered (${event.detail})`))
+              console.log(chalk.green(`Model ${event.provider}/${event.service} announced as healthy — self health check recovered (${event.detail})`))
             }
             upstreamAlerts.modelChanged(event)
             void node.refreshSellerMetadata().catch(() => {})
@@ -984,13 +1000,19 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
             console.log((event.status === 'funded' ? chalk.green : chalk.yellow)(`Upstream ${event.providerId}: ${event.status.replace('_', ' ')} (${event.detail})`))
             upstreamAlerts.account(event)
           },
-          onSweepComplete: () => upstreamAlerts.flush(),
+          onSweepComplete: () => {
+            upstreamAlerts.flush()
+            // Re-sign so announced check times stay current between status changes.
+            void node.refreshSellerMetadata().catch(() => {})
+          },
           // Read on every check, so a dashboard edit applies without a restart.
           lowBalanceUsd: () => alerts.settings.config.lowBalanceUsd ?? DEFAULT_LOW_BALANCE_USD,
         })
         const checker = healthChecker
-        // Live traffic sees an upstream run out of credit before the next probe does.
-        node.on('provider:response', ({ provider, statusCode, body, billable }: { provider: Provider; statusCode: number; body: string; billable: boolean }) => checker.reportUpstreamResponse(provider, statusCode, body, billable))
+        // Live traffic is health evidence: a success spares the next probe, an
+        // upstream failure triggers one early, and an out-of-credit error is seen first.
+        node.on('provider:response', ({ provider, service, statusCode, body, billable }: { provider: Provider; service: string; statusCode: number; body: string; billable: boolean }) => checker.reportUpstreamResponse(provider, statusCode, body, billable, service))
+        node.on('provider:failure', ({ provider, service, billable }: { provider: Provider; service: string; billable: boolean }) => checker.reportUpstreamFailure(provider, service, billable))
         healthChecker.start()
       }
 
@@ -998,6 +1020,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       // command and desktop). Currently only the out-of-gas notice.
       let gasNotice: string | null = null
       let gasMonitor: GasHealthMonitor | null = null
+      let gasRefueler: GasAutoRefueler | null = null
 
       // Write daemon state so dashboard and connect can discover this seeder
       const startedAt = Date.now()
@@ -1121,7 +1144,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           notices: gasNotice ? [gasNotice] : [],
           // Read by `antseed metrics serve --role seller` for model and gas alerts.
           modelHealth: healthChecker?.getSnapshot() ?? [],
-          gas: gasHealthState(gasMonitor),
+          gas: gasHealthState(gasMonitor, gasRefueler),
           alerts: alerts.state(),
           // Chain RPC calls this process made, per source (the dashboard and metrics exporter show them).
           rpc: rpcUsage(),
@@ -1185,11 +1208,52 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           // Balance reads go through the process's shared provider (coalescing, back-off), tagged for the RPC counters.
           const gasCrypto = requireCryptoConfig(config, { rpcUrl: baseRpcUrlOverride })
           const gasProvider = sharedChainProvider({ rpcUrl: gasCrypto.rpcUrl, evmChainId: gasCrypto.evmChainId, ...(gasCrypto.fallbackRpcUrls ? { fallbackRpcUrls: gasCrypto.fallbackRpcUrls } : {}) })
+          // Auto-refuel: swap some of the wallet's USDC earnings for ETH before it runs dry (Base mainnet only).
+          const usdcAddress = gasCrypto.usdcContractAddress
+          const swapDeployment = usdcEthSwapDeployment(resolveChainConfig({ chainId: gasCrypto.chainId }), { evmChainId: gasCrypto.evmChainId, usdcAddress })
+          if (gasRefuelSettings.enabled && !swapDeployment) {
+            console.log(chalk.dim('  gas auto-refuel: unavailable on this chain (Base mainnet only)'))
+          } else if (gasRefuelSettings.enabled && swapDeployment) {
+            const swapClient = new UsdcEthSwapClient({ rpcUrl: gasCrypto.rpcUrl, evmChainId: gasCrypto.evmChainId, usdcAddress, deployment: swapDeployment }).withProvider(gasProvider)
+            const wallet = node.identity.wallet
+            const dataDir = globalOpts.dataDir
+            gasRefueler = new GasAutoRefueler({
+              address: gasWalletAddress,
+              triggerBalanceWei: gasRefuelSettings.triggerBalanceWei,
+              swapUsdcUnits: gasRefuelSettings.swapUsdcUnits,
+              maxUsdcPerDayUnits: gasRefuelSettings.maxUsdcPerDayUnits,
+              slippageBps: gasRefuelSettings.slippageBps,
+              history: await loadGasRefuelHistory(dataDir),
+              saveHistory: (records) => saveGasRefuelHistory(dataDir, records),
+              swapper: {
+                quote: (amount) => withRpcSource('gas', () => swapClient.quote(amount)),
+                usdcBalance: (address) => withRpcSource('gas', () => swapClient.usdcBalance(address)),
+                maxSwapCostWei: () => withRpcSource('gas', () => swapClient.maxSwapCostWei()),
+                swap: (amount, minEthOut) => withRpcSource('gas', () => swapClient.swapUsdcForEth(wallet, amount, minEthOut)),
+              },
+              onEvent: (event) => {
+                if (event.status === 'refueled') {
+                  const usdc = Number(event.record.usdcUnits) / 1e6
+                  console.log(chalk.green(`Gas auto-refuel: swapped ${usdc} USDC for ~${formatEther(event.expectedEthWei)} ETH (tx ${event.record.txHash}).`))
+                  void alerts.record({ kind: 'gas_refueled', severity: 'info', title: `Gas refueled: swapped ${usdc} USDC for ETH`, detail: `tx ${event.record.txHash}` })
+                  void gasMonitor?.checkNow()
+                } else if (event.status === 'failed') {
+                  console.log(chalk.yellow(`Gas auto-refuel failed: ${event.error}. Retrying at ${new Date(event.retryAt).toISOString()}.`))
+                  void alerts.record({ kind: 'gas_refuel_failed', severity: 'warning', title: 'Gas auto-refuel failed', detail: `${event.error}. Send ETH to ${event.address} if this persists.` })
+                } else {
+                  console.log(chalk.yellow(`Gas auto-refuel skipped (${event.reason}): ${event.detail}.`))
+                  void alerts.record({ kind: 'gas_refuel_failed', severity: 'warning', title: 'Gas auto-refuel skipped', detail: `${event.detail}. Send ETH to ${event.address} to keep selling.` })
+                }
+                scheduleDaemonStateWrite()
+              },
+            })
+          }
           gasMonitor = new GasHealthMonitor({
             address: gasWalletAddress,
             getBalance: (address) => withRpcSource('gas', () => gasProvider.getBalance(address)),
             intervalMs: gasCheckIntervalMs,
             minBalanceWei: minGasBalanceWei,
+            ...(gasRefueler ? { onBalance: (balanceWei: bigint) => gasRefueler?.onBalance(balanceWei) } : {}),
             onChange: (event) => {
               const balanceSummary = `wallet ${event.address} holds ${formatEther(event.balanceWei)} ETH (minimum ${formatEther(event.minBalanceWei)} ETH)`
               if (event.status === 'depleted') {
@@ -1265,6 +1329,8 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         idleWatch.stop()
         healthChecker?.stop()
         gasMonitor?.stop()
+        // A refuel swap already sent keeps going while channels finalize; it is saved to the daily-cap history when mined.
+        const refuelStopped = gasRefueler?.stop() ?? Promise.resolve()
         clearInterval(stateInterval)
         node.off('connection', scheduleDaemonStateWrite)
         node.off('session:updated', scheduleDaemonStateWrite)
@@ -1286,6 +1352,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           stateStopped = true
           await stateWriteCurrent?.catch(() => {})
           await unlink(getStateFile(globalOpts.dataDir)).catch(() => {})
+          await waitAtMost(refuelStopped, GAS_REFUEL_SHUTDOWN_WAIT_MS)
           // Only once the node is down, and never for long: alert delivery is remote and best effort.
           await waitAtMost(alerts.record({ kind: 'stopped', severity: 'info', title: 'Seller stopped' }))
         }

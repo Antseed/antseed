@@ -289,44 +289,71 @@ export function registerVerifierRunCommand(verifier: Command): void {
     .option('--max-rounds <count>', 'rounds per run: after a round, retry what is left (failures, waiting rechecks) until nothing is left or a round makes no progress', '3')
     .action(async (modelValue: string | undefined, options: RunOptions, command: Command) => {
       validateAssignedModeOptions(modelValue, options)
-      const maxRounds = maxRunRounds(options)
-      let previousLeft: number | null = null
-      let replannedForNewEpoch = false
-      for (let round = 1; round <= maxRounds; round += 1) {
-        if (round > 1) console.log(chalk.cyan(`\nRound ${round} of ${maxRounds}: retrying what is left this epoch`))
-        // Later rounds continue from the epoch (never --fresh) and get another enrollment budget,
-        // so a bank or recheck build that ran out of requests can finish from its checkpoint.
-        const outcome = await runVerifierRound(modelValue, round === 1 ? options : { ...options, fresh: false }, command, round)
-        if (outcome.epochChanged) {
-          // The round was planned for the previous epoch (assignment, finished sellers, rechecks),
-          // so nothing was audited; plan it again for the new epoch, once, without using up a round.
-          if (replannedForNewEpoch) {
-            console.log(chalk.yellow('The epoch changed again; run `antseed verifier run` again.'))
-            break
-          }
-          replannedForNewEpoch = true
-          previousLeft = null
-          console.log(chalk.cyan(`\nThe epoch changed to ${outcome.epochChanged} while fresh questions were built; planning the run again for the new epoch`))
-          round -= 1
-          continue
-        }
-        if (outcome.left === 0) break
-        if (round === maxRounds) {
-          console.log(chalk.yellow(`${outcome.left} audit(s) or recheck(s) still left after ${maxRounds} round(s); run \`antseed verifier run\` again later this epoch to retry them.`))
-          break
-        }
-        if (previousLeft !== null && outcome.left >= previousLeft) {
-          console.log(chalk.yellow(`Round ${round} made no progress (${outcome.left} left); stopping. Run again later this epoch to retry.`))
-          break
-        }
-        if (outcome.secondsLeftInEpoch < MIN_SECONDS_FOR_ANOTHER_ROUND) {
-          console.log(chalk.yellow(`Less than ${MIN_SECONDS_FOR_ANOTHER_ROUND / 60} minutes left in the epoch; stopping so there is time to submit.`))
-          break
-        }
-        previousLeft = outcome.left
-      }
+      const last = await runVerifierRounds(
+        maxRunRounds(options),
+        (round) => runVerifierRound(modelValue, round === 1 ? options : { ...options, fresh: false }, command, round),
+      )
+      // A build that failed in an early round but succeeded later does not fail the command.
+      if ((last?.enrollmentFailures?.size ?? 0) > 0) process.exitCode = 1
       console.log(`Next: antseed verifier submit`)
     })
+}
+
+/**
+ * Runs up to `maxRounds` rounds. After a round, what is left (failed audits, waiting rechecks and
+ * models whose fresh-question build failed) is retried in the next round, which re-plans every model
+ * and gets a larger enrollment budget, so a build that ran out of requests or hit a network error
+ * continues from its checkpoint. Stops early when nothing is left, a round makes no progress, or the
+ * epoch is nearly over.
+ */
+export async function runVerifierRounds(
+  maxRounds: number,
+  runRound: (round: number) => Promise<VerifierRoundOutcome>,
+  log: (line: string) => void = (line) => console.log(line),
+): Promise<VerifierRoundOutcome | null> {
+  let previousLeft: number | null = null
+  let replannedForNewEpoch = false
+  let last: VerifierRoundOutcome | null = null
+  for (let round = 1; round <= maxRounds; round += 1) {
+    if (round > 1) log(chalk.cyan(`\nRound ${round} of ${maxRounds}: retrying what is left this epoch`))
+    // Later rounds continue from the epoch (never --fresh) and get another enrollment budget,
+    // so a bank or recheck build that ran out of requests can finish from its checkpoint.
+    const outcome = await runRound(round)
+    if (outcome.epochChanged) {
+      // The round was planned for the previous epoch (assignment, finished sellers, rechecks),
+      // so nothing was audited; plan it again for the new epoch, once, without using up a round.
+      if (replannedForNewEpoch) {
+        log(chalk.yellow('The epoch changed again; run `antseed verifier run` again.'))
+        break
+      }
+      replannedForNewEpoch = true
+      previousLeft = null
+      log(chalk.cyan(`\nThe epoch changed to ${outcome.epochChanged} while fresh questions were built; planning the run again for the new epoch`))
+      round -= 1
+      continue
+    }
+    last = outcome
+    if (outcome.left === 0) break
+    if (round === maxRounds) {
+      log(chalk.yellow(`${outcome.left} audit(s), recheck(s) or question build(s) still left after ${maxRounds} round(s); run \`antseed verifier run\` again later this epoch to retry them.`))
+      break
+    }
+    if (previousLeft !== null && outcome.left >= previousLeft) {
+      log(chalk.yellow(`Round ${round} made no progress (${outcome.left} left); stopping. Run again later this epoch to retry.`))
+      break
+    }
+    if (outcome.secondsLeftInEpoch < MIN_SECONDS_FOR_ANOTHER_ROUND) {
+      log(chalk.yellow(`Less than ${MIN_SECONDS_FOR_ANOTHER_ROUND / 60} minutes left in the epoch; stopping so there is time to submit.`))
+      break
+    }
+    previousLeft = outcome.left
+  }
+  const failedBuilds = [...(last?.enrollmentFailures ?? new Map<string, string>())]
+  if (failedBuilds.length > 0) {
+    log(chalk.yellow(`Not audited this run, fresh questions could not be built (${failedBuilds.length}):`))
+    for (const [model, reason] of failedBuilds) log(chalk.yellow(`  - ${model}: ${reason}`))
+  }
+  return last
 }
 
 /** No new round starts with less than this left in the epoch, so there is time to submit. */
@@ -340,10 +367,13 @@ export function maxRunRounds(options: RunOptions): number {
 }
 
 export interface VerifierRoundOutcome {
+  /** Audits, rechecks and question builds a later round can retry. */
   left: number
   secondsLeftInEpoch: number
   /** Set to the new epoch when it started during enrollment; the round audited nothing. */
   epochChanged?: string
+  /** Models whose fresh-question build failed this round, with the reason; retried next round. */
+  enrollmentFailures?: Map<string, string>
 }
 
 /** One pass over the epoch's remaining work. Returns how much is still left to retry or recheck. */
@@ -400,6 +430,7 @@ async function runVerifierRound(
       let responseAuthReader: Awaited<ReturnType<typeof openResponseAuthReader>> | null = null
       let status: VerifierStatusV1 | null = null
       let runProgress: VerifierRunProgress | null = null
+      const enrollmentFailures = new Map<string, string>()
       try {
         const epoch = epochWindow.epoch
         if (requestedResumeManifest && requestedResumeManifest.epoch !== epoch) {
@@ -570,14 +601,23 @@ async function runVerifierRound(
               })
               return true
             } catch (error) {
-              console.warn(chalk.yellow(`SKIPPED ${model}: enrollment failed: ${asError(error).message}`))
-              process.exitCode = 1
+              const reason = asError(error).message
+              console.warn(chalk.yellow(`SKIPPED ${model}: enrollment failed: ${reason}`))
+              enrollmentFailures.set(model, reason)
               return false
             }
           }))
           const readyModels = runModels.filter((_, index) => enrolled[index])
           runModels = readyModels
-          if (runModels.length === 0) throw new Error('no models ready after reference enrollment')
+          if (runModels.length === 0) {
+            // Nothing to audit this round; the next round (with a larger budget) builds them again.
+            console.warn(chalk.yellow(`No model is ready after building fresh questions (${enrollmentFailures.size} failed).`))
+            const now = await resolveEpoch()
+            if (now.epoch !== epoch) {
+              return { left: 0, secondsLeftInEpoch: now.endsAt - Date.now() / 1_000, epochChanged: now.epoch }
+            }
+            return { left: enrollmentFailures.size, secondsLeftInEpoch: now.endsAt - Date.now() / 1_000, enrollmentFailures }
+          }
           epochWindow = await resolveEpoch()
           if (epochWindow.epoch !== epoch) {
             // Everything planned so far (assignment, finished sellers, waiting rechecks) belongs to
@@ -1302,17 +1342,18 @@ async function runVerifierRound(
         const left = countPlan([...finalState.cells.values()].filter((cell) => (
           models.some((model) => model.toLowerCase() === cell.model.toLowerCase())
         )))
-        const remaining = left.retryAuditor + left.retrySeller + left.recheck
+        const remaining = left.retryAuditor + left.retrySeller + left.recheck + enrollmentFailures.size
         if (remaining > 0) {
           console.log(chalk.yellow(
             `Epoch ${epoch}: ${left.retryAuditor + left.retrySeller} audit(s) can be retried and ${left.recheck} `
-            + 'close call(s) or DIFF(s) wait for extra questions or a recheck.',
+            + 'close call(s) or DIFF(s) wait for extra questions or a recheck'
+            + (enrollmentFailures.size > 0 ? `; fresh questions for ${enrollmentFailures.size} model(s) must be built again.` : '.'),
           ))
         } else {
           console.log(chalk.green(`Epoch ${epoch}: every eligible seller is finished.`))
         }
         if (status.failures > 0) process.exitCode = 1
-        return { left: remaining, secondsLeftInEpoch: epochWindow.endsAt - Date.now() / 1_000 }
+        return { left: remaining, secondsLeftInEpoch: epochWindow.endsAt - Date.now() / 1_000, enrollmentFailures }
       } catch (error) {
         if (status) {
           status.state = 'failed'

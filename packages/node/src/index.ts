@@ -22,6 +22,7 @@ export {
   DEFAULT_HEALTH_CHECK_INTERVAL_MS,
   DEFAULT_HEALTH_CHECK_FAILURE_THRESHOLD,
   DEFAULT_HEALTH_CHECK_PROBE_TIMEOUT_MS,
+  LIVE_FAILURE_PROBE_MIN_GAP_MS,
   type ModelHealthCheckerConfig,
   type ModelHealthEvent,
   type ModelHealthTarget,
@@ -37,6 +38,19 @@ export {
   type GasHealthEvent,
   type GasHealthSnapshot,
 } from './health/gas-health-monitor.js';
+export {
+  GasAutoRefueler,
+  DEFAULT_REFUEL_TRIGGER_WEI,
+  DEFAULT_REFUEL_SWAP_USDC_UNITS,
+  DEFAULT_REFUEL_MAX_USDC_PER_DAY_UNITS,
+  DEFAULT_REFUEL_SLIPPAGE_BPS,
+  type GasAutoRefuelConfig,
+  type GasRefuelEvent,
+  type GasRefuelRecord,
+  type GasRefuelSkipReason,
+  type GasRefuelSnapshot,
+  type GasRefuelSwapper,
+} from './health/gas-auto-refuel.js';
 export {
   appendSellerEvent,
   readSellerEvents,
@@ -131,6 +145,23 @@ export {
   MAX_CAPABILITY_SUPPORTED_PARAMETERS,
   MAX_CAPABILITY_PARAMETER_LENGTH,
   validateServiceCapabilityFields,
+  METADATA_VERSION_HEADER,
+  SERVICE_HEALTH_STATUSES,
+  SERVICE_HEALTH_REASONS,
+  SERVICE_HEALTH_SOURCES,
+  isServiceHealthFailing,
+  parseProviderServiceHealthMatrix,
+  parseServiceHealth,
+  providerServiceHealthFor,
+  parseProviderServicePerformanceMatrix,
+  parseServicePerformance,
+  providerServicePerformanceFor,
+  SERVICE_PERFORMANCE_WINDOW_MS,
+  type ServicePerformance,
+  type ServiceHealth,
+  type ServiceHealthReason,
+  type ServiceHealthSource,
+  type ServiceHealthState,
   type DomainVerificationClaim,
   type DomainVerificationMethod,
   type GithubVerificationClaim,
@@ -138,6 +169,8 @@ export {
   type NativeVideoProtocol,
   type ServiceCapabilities,
   type ServiceCapabilityModality,
+  type VideoInputKind,
+  type VideoOptions,
   type PeerMetadata,
   type PeerVerifications,
   type ProviderAnnouncement,
@@ -176,9 +209,16 @@ export { parseVerifierCapabilities, normalizeAdvertisedVerifierIds, advertisesTe
 export { parsePublicAddress, MAX_PUBLIC_ADDRESS_LENGTH, type ParsedPublicAddress } from './discovery/public-address.js';
 export { sanitizePeerDisplayName } from './discovery/display-name.js';
 export {
+  SELLER_SELF_HEALTH_FAILING_CODE,
+  SELF_HEALTH_ERROR_STATUS,
+  buildSelfHealthErrorResponse,
+  describeServiceHealth,
+} from './health/self-health-error.js';
+export {
   buildNetworkServiceOffers,
   inferServiceProtocol,
   resolveServiceProtocol,
+  type BuildNetworkServiceOffersOptions,
   type CatalogServiceCapabilities,
   type CatalogServiceProtocol,
   type NetworkServiceCatalogPeer,
@@ -212,6 +252,7 @@ export {
 } from './payments/evm/free-usage-client.js';
 export { IdentityClient, type IdentityClientConfig } from './payments/evm/identity-client.js';
 export { StakingClient, type StakingClientConfig } from './payments/evm/staking-client.js';
+export { UsdcEthSwapClient, usdcEthSwapDeployment, type UsdcEthSwapClientConfig } from './payments/evm/usdc-eth-swap-client.js';
 export { EmissionsClient, type EmissionsClientConfig, type EmissionsEpochParams } from './payments/evm/emissions-client.js';
 export { RegistryClient, type RegistryClientConfig } from './payments/evm/registry-client.js';
 export { UsageAccountingClient, type UsageAccountingClientConfig } from './payments/evm/usage-accounting-client.js';
@@ -346,7 +387,7 @@ export type { SellerPaymentConfig } from './payments/seller-payment-manager.js';
 export { ChannelStore } from './payments/channel-store.js';
 export type { StoredChannel, StoredReceipt } from './payments/channel-store.js';
 export { getChainConfig, resolveChainConfig, DEFAULT_CHAIN_ID, CHAIN_CONFIGS } from './payments/chain-config.js';
-export type { ChainConfig, RecognizedUsageDeployment } from './payments/chain-config.js';
+export type { ChainConfig, RecognizedUsageDeployment, UsdcEthSwapDeployment } from './payments/chain-config.js';
 export { formatUsdc, parseUsdc } from './payments/usdc-utils.js';
 export { ProxyMux } from './proxy/proxy-mux.js';
 export { encodeHttpRequest, encodeHttpResponse, decodeHttpRequest, decodeHttpResponse } from './proxy/request-codec.js';
@@ -404,6 +445,8 @@ export {
   successProbability,
   adaptiveFirstTokenTimeoutMs,
   sellerHealthKey,
+  reportedSuccessPrior,
+  MIN_REPORTED_REQUESTS,
   DEFAULT_TIME_VALUE_USD_PER_SECOND,
   SELLER_HEALTH_HALF_LIFE_MS,
   type SellerHealthStats,
@@ -412,6 +455,7 @@ export {
   type AdaptiveRouteInput,
   type AdaptiveRouteScore,
   type AdaptiveOrder,
+  type ReportedPerformance,
 } from './routing/seller-health.js';
 
 export type { AntseedPlugin, AntseedProviderPlugin, AntseedRouterPlugin, AntseedVerifierPlugin, Prover, VerifyContext, VerifyResult, ClaimResult, SellerRequest, SellerResponse, PluginConfigKey, ConfigField } from './interfaces/plugin.js'

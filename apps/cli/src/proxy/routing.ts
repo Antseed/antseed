@@ -1,9 +1,12 @@
 import {
   buildNetworkServiceOffers,
+  isServiceHealthFailing,
+  providerServiceHealthFor,
   selectLowestPricedNetworkServiceOffer,
   type NetworkServiceOffer,
   type PeerInfo,
   type SerializedHttpRequest,
+  type ServiceHealth,
 } from '@antseed/node'
 import { canonicalModelKey } from '@antseed/node/model-identity'
 import {
@@ -161,10 +164,12 @@ export function findAdvertisedServiceOffer(
   peer: PeerInfo,
   provider: string,
   requestedService: string,
+  /** Also match services the seller's own health check announces as failing (pinned requests). */
+  includeFailing = false,
 ): NetworkServiceOffer | null {
   const requestedKey = canonicalModelKey(requestedService)
   if (!requestedKey) return null
-  const offers = buildNetworkServiceOffers([peer]).filter((offer) => (
+  const offers = buildNetworkServiceOffers([peer], { includeFailing }).filter((offer) => (
     offer.provider.toLowerCase() === provider.toLowerCase()
     && isRequestedServiceMatch(offer.serviceId, requestedService)
   ))
@@ -179,16 +184,74 @@ export function findAdvertisedServiceOffer(
  * whether it fits the current request. Lets the proxy tell "nobody serves
  * this model" apart from "it is served, but not on this API".
  */
-export function findAdvertisedServiceProtocols(peers: PeerInfo[], requestedService: string): string[] {
+export function findAdvertisedServiceProtocols(peers: PeerInfo[], requestedService: string, includeFailing = false): string[] {
   const requestedKey = canonicalModelKey(requestedService)
   if (!requestedKey) return []
   const protocols = new Set<string>()
-  for (const offer of buildNetworkServiceOffers(peers)) {
+  for (const offer of buildNetworkServiceOffers(peers, { includeFailing })) {
     if (!isRequestedServiceMatch(offer.serviceId, requestedService)) continue
     for (const protocol of offer.protocols) protocols.add(protocol)
     if (offer.protocol) protocols.add(offer.protocol)
   }
   return [...protocols].sort()
+}
+
+/** Required parameters a route cannot take: all of them through a protocol transform. */
+export function findMissingRouteParameters(
+  peer: PeerInfo,
+  plan: PeerProtocolRoutePlan,
+  requestedService: string | null,
+  requiredParameters: readonly string[],
+): string[] {
+  if (requiredParameters.length === 0) return []
+  if (plan.selection?.requiresTransform) return [...requiredParameters]
+  return findMissingRequiredParameters(peer, plan.provider, plan.serviceId ?? requestedService, requiredParameters)
+}
+
+/**
+ * Sellers that could take the request but whose own health check announces
+ * the model failing. For explaining why automatic routing found no peer.
+ */
+export function findFailingServiceRoutes(
+  peers: PeerInfo[],
+  requestProtocol: ServiceApiProtocol | null,
+  requestedService: string,
+  explicitProvider: string | null,
+  requiredParameters: readonly string[],
+): Array<{ peerId: string; serviceId: string; health: ServiceHealth }> {
+  const routes: Array<{ peerId: string; serviceId: string; health: ServiceHealth }> = []
+  for (const peer of peers) {
+    // Each provider's route is its own: a healthy one without the required
+    // parameters must not hide a capable one that is failing.
+    const providers = explicitProvider ? [explicitProvider] : [...new Set(peer.providers.map((provider) => provider.trim().toLowerCase()))]
+    for (const provider of providers) {
+      const plan = resolvePeerRoutePlan(peer, requestProtocol, requestedService, provider, 'lenient')
+      if (!plan?.serviceId) continue
+      const health = providerServiceHealthFor(peer.providerServiceHealth, plan.provider, plan.serviceId)
+      if (!isServiceHealthFailing(health)) continue
+      if (findMissingRouteParameters(peer, plan, requestedService, requiredParameters).length > 0) continue
+      routes.push({ peerId: peer.peerId, serviceId: plan.serviceId, health })
+      break
+    }
+  }
+  return routes
+}
+
+/**
+ * Offers for the requested model that the sellers' own health checks announce
+ * as failing, for explaining why automatic routing found no peer for it.
+ */
+export function findFailingServiceOffers(
+  peers: PeerInfo[],
+  requestedService: string,
+  explicitProvider: string | null = null,
+): NetworkServiceOffer[] {
+  if (!canonicalModelKey(requestedService)) return []
+  return buildNetworkServiceOffers(peers, { includeFailing: true }).filter((offer) => (
+    offer.health?.status === 'failing'
+    && isRequestedServiceMatch(offer.serviceId, requestedService)
+    && (!explicitProvider || offer.provider.toLowerCase() === explicitProvider)
+  ))
 }
 
 function selectProviderByProtocol(
@@ -219,10 +282,11 @@ function selectAdvertisedServiceByProtocol(
   candidates: string[],
   requestProtocol: ServiceApiProtocol,
   requestedService: string,
+  includeFailing: boolean,
 ): PeerProtocolRoutePlan | null {
   const compatible: Array<{ offer: NetworkServiceOffer; plan: PeerProtocolRoutePlan }> = []
   for (const provider of candidates) {
-    const offer = findAdvertisedServiceOffer(peer, provider, requestedService)
+    const offer = findAdvertisedServiceOffer(peer, provider, requestedService, includeFailing)
     if (!offer) continue
     let supportedProtocols: ServiceApiProtocol[] = []
     if (offer.protocols.length > 0) {
@@ -268,12 +332,19 @@ export function resolvePeerRoutePlan(
   }
 
   const candidates = explicitProvider ? [explicitProvider] : providers
+  // Automatic routing skips services the seller's own health check announces
+  // as failing. A pinned request (lenient) prefers a healthy provider and
+  // otherwise still reaches the seller, which explains the failure if the
+  // upstream is still down.
+  const healthPasses = serviceFilterMode === 'lenient' ? [false, true] : [false]
 
   if (!requestProtocol) {
     if (requestedService) {
-      for (const provider of candidates) {
-        const offer = findAdvertisedServiceOffer(peer, provider, requestedService)
-        if (offer) return { provider, selection: null, serviceId: offer.serviceId }
+      for (const includeFailing of healthPasses) {
+        for (const provider of candidates) {
+          const offer = findAdvertisedServiceOffer(peer, provider, requestedService, includeFailing)
+          if (offer) return { provider, selection: null, serviceId: offer.serviceId }
+        }
       }
       if (serviceFilterMode === 'strict' || !candidates[0]) return null
       return { provider: candidates[0], selection: null, serviceId: null }
@@ -283,11 +354,15 @@ export function resolvePeerRoutePlan(
   }
 
   if (requestedService?.trim()) {
-    const exactPlan = selectAdvertisedServiceByProtocol(peer, candidates, requestProtocol, requestedService)
-    if (exactPlan) return exactPlan
+    for (const includeFailing of healthPasses) {
+      const exactPlan = selectAdvertisedServiceByProtocol(peer, candidates, requestProtocol, requestedService, includeFailing)
+      if (exactPlan) return exactPlan
+    }
     if (isNativeVideoProtocol(requestProtocol)) return null
+    // Failing offers count here too: a model the peer announces as failing
+    // must not slip through the protocol-only fallback below.
     const hasAdvertisedCanonicalOffer = candidates.some(
-      (provider) => findAdvertisedServiceOffer(peer, provider, requestedService) !== null,
+      (provider) => findAdvertisedServiceOffer(peer, provider, requestedService, true) !== null,
     )
     if (hasAdvertisedCanonicalOffer) return null
   }

@@ -78,6 +78,8 @@ export function marketView(rows: readonly PeerRow[], myPeerId: string | null, mi
     if (!peerId || peerKey(peerId) === me) continue
     const tee = parseVerifierCapabilities(row['capabilities']).supported.includes(TEE_VERIFIER_ID)
     for (const service of peerServices(row)) {
+      // A service its seller announces as failing gets no traffic, so it sets no market price.
+      if (service.health?.status === 'failing') continue
       const key = modelKey(service.service)
       if (!modelNames.has(key)) modelNames.set(key, service.service)
       const list = offersByModel.get(key) ?? []

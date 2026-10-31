@@ -252,7 +252,7 @@ export function addSellerHealthMetrics(samples: MetricSample[], sellerLabels: Re
   for (const service of parseModelHealth(daemon?.modelHealth)) {
     // `provider` is the configured provider name, so upstreams sharing a plugin get their own series.
     const serviceLabels = { provider: service.providerId, plugin: service.provider, service: service.service };
-    addSample(samples, sellerLabels, { name: 'antseed_seller_model_advertised', help: 'Whether the service passes health checks and is advertised (0 = withdrawn after failing probes).', type: 'gauge', labels: serviceLabels, value: service.advertised ? 1 : 0 });
+    addSample(samples, sellerLabels, { name: 'antseed_seller_model_advertised', help: 'Whether buyers are told the service is usable (0 = the seller self health check announces it as failing, so buyers skip it).', type: 'gauge', labels: serviceLabels, value: service.status === 'failing' ? 0 : 1 });
     addSample(samples, sellerLabels, { name: 'antseed_seller_model_consecutive_failures', help: 'Consecutive failed health probes for the service.', type: 'gauge', labels: serviceLabels, value: service.consecutiveFailures });
     if (service.lastStatusCode !== null) {
       addSample(samples, sellerLabels, { name: 'antseed_seller_model_last_status_code', help: 'HTTP status of the last failed upstream probe (e.g. 402 = upstream out of credit).', type: 'gauge', labels: serviceLabels, value: service.lastStatusCode });

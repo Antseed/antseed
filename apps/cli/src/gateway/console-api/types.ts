@@ -757,6 +757,30 @@ export interface PeerVerificationLink {
 /** Mirrors `TeeScope` in `@antseed/node/tee-status`, which the console cannot import. */
 export type PeerTeeScope = 'end-to-end' | 'seller-node'
 
+/** A seller's last announced self health check for one model (signed in its metadata). */
+export interface ServiceHealthView {
+  status: 'healthy' | 'failing' | 'unknown'
+  /** When the evidence behind `status` was gathered, and whether the seller's probe or a buyer request gave it. */
+  checkedAt: number | null
+  source: 'probe' | 'traffic' | null
+  failingSince: number | null
+  consecutiveFailures: number | null
+  /** Why the last check failed (a fixed code such as `timeout` or `out_of_credit`). */
+  reason: string | null
+  /** The upstream's HTTP status on the failed check. */
+  httpStatus: number | null
+}
+
+/** How a seller says one model served all its buyers in the last hour (signed in its metadata). */
+export interface ServicePerformanceView {
+  requests: number
+  /** 0–1. */
+  successRate: number
+  firstTokenMsP50: number | null
+  firstTokenMsP90: number | null
+  tokensPerSecondP50: number | null
+}
+
 export interface Peer {
   peerId: string
   displayName: string | null
@@ -773,6 +797,10 @@ export interface Peer {
     paid?: boolean
     /** The free-tier program this service is served under: its own, else the seller-wide one. */
     freeTier?: FreeTierProgramView | null
+    /** The seller's last announced self health check; routing skips a failing service. Absent when not announced. */
+    health?: ServiceHealthView
+    /** The seller's measured performance in the last hour. Absent when not announced. */
+    performance?: ServicePerformanceView
   }>
   trustScore: number | null
   reputationScore: number | null
@@ -890,6 +918,10 @@ export interface NetworkModelOffer {
   latencyMsP50: number | null
   firstTokenMsP50: number | null
   tokensPerSecondP50: number | null
+  /** The seller's last announced self health check; failing offers are not listed. */
+  health?: ServiceHealthView
+  /** The seller's measured performance in the last hour. */
+  performance?: ServicePerformanceView
 }
 
 /** A model on the network, merged across the sellers that offer it (aliases included). */
@@ -967,6 +999,8 @@ export interface RoutePreview {
     trustScore: number | null
     /** Eligible sellers: the numbers automatic routing ranks them by. Null when ineligible. */
     selection: RouteSelection | null
+    /** The seller's last announced self health check for the model; a failing one is never routed to. */
+    health?: ServiceHealthView
   }>
 }
 
@@ -1181,9 +1215,16 @@ export interface SellerModelHealth {
   /** The seller config's provider name; tells apart upstreams that share a plugin. Older sellers: same as `provider`. */
   providerId: string
   service: string
-  /** False when the seller withdrew the service after failing health probes. */
-  advertised: boolean
+  /** The seller's self health check result, as announced to buyers (who skip failing services). */
+  status: 'healthy' | 'failing' | 'unknown'
+  /** Why the last check failed (a fixed code such as `timeout` or `rate_limited`). */
+  reason: string | null
   consecutiveFailures: number
+  failingSince: number | null
+  /** When the evidence behind `status` was gathered, and whether a probe or a buyer request gave it. */
+  checkedAt: number | null
+  source: 'probe' | 'traffic' | null
+  lastTrafficAt: number | null
   lastProbeAt: number | null
   lastStatusCode: number | null
   lastDetail: string | null
@@ -1195,6 +1236,29 @@ export interface SellerGas {
   balanceEth: number | null
   minBalanceEth: number
   lastCheckedAt: number | null
+  /** Auto-refuel state; null when it is off or unavailable on this chain. */
+  refuel: SellerGasRefuel | null
+}
+
+export interface SellerGasRefuel {
+  triggerBalanceEth: number
+  swapUsdc: number
+  maxUsdcPerDay: number
+  usdcLast24h: number
+  lastRefuel: { at: number; usdc: number; txHash: string } | null
+  lastError: string | null
+  /** Why the last attempt did not swap: the daily cap, too little USDC, or too little ETH to pay for the swap. */
+  skipped: 'daily_cap' | 'insufficient_usdc' | 'insufficient_eth' | null
+  nextAttemptAt: number | null
+}
+
+export interface SellerGasRefuelSettings {
+  enabled: boolean
+  triggerBalanceEth: number
+  swapUsdc: number
+  maxUsdcPerDay: number
+  /** Slippage tolerance in basis points; set in config.json only. */
+  slippageBps: number
 }
 
 export interface SellerAlertsState {
@@ -1344,6 +1408,8 @@ export interface SellerSettings {
   maxConcurrentBuyers: number
   healthCheck: { enabled: boolean; intervalMs: number; failureThreshold: number }
   gasCheck: { enabled: boolean; minBalanceEth: number }
+  /** Swap USDC earnings for ETH before the wallet runs out of gas (Base mainnet). */
+  gasRefuel: SellerGasRefuelSettings
   /** The seller-wide program for free models. */
   freeTier: SellerFreeTierProgramSettings
   /** The network's default staked tiers, used where a program sets none. */
@@ -1402,6 +1468,7 @@ export interface SellerSettingsPatch {
   maxConcurrentBuyers?: number
   healthCheck?: { enabled?: boolean; intervalMs?: number; failureThreshold?: number }
   gasCheck?: { enabled?: boolean; minBalanceEth?: number }
+  gasRefuel?: Partial<Omit<SellerGasRefuelSettings, 'slippageBps'>>
   /** The seller-wide program; null removes a limit. */
   freeTier?: SellerFreeTierProgramPatch
   /** null goes back to the built-in list. */

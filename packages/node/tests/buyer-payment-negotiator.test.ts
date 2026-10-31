@@ -46,6 +46,7 @@ function createMockBpm(): BuyerPaymentManager & Record<string, unknown> {
     canReplayReserveAuth: vi.fn().mockReturnValue(false),
     hasPendingReserveAuth: vi.fn().mockReturnValue(false),
     reconcileReserveAmount: vi.fn().mockResolvedValue(undefined),
+    setChannelDepositReader: vi.fn(),
     extendCurrentSpendingAuth: vi.fn().mockResolvedValue(undefined),
     getCumulativeAmount: vi.fn().mockReturnValue(0n),
     resendCurrentSpendingAuth: vi.fn().mockResolvedValue(undefined),
@@ -438,13 +439,26 @@ describe('BuyerPaymentNegotiator', () => {
         expect(bpm.retireSession).not.toHaveBeenCalled();
       });
 
+      it('retries parallel requests parked on the same target instead of closing the channel', async () => {
+        setSigned(5_600_000n);
+        const close = closeConfirmed();
+        const results = await Promise.all([1, 2, 3].map(() => negotiator.handle402(make402Response(catchUp), peer, conn, makeRequest())));
+
+        expect(bpm.resendCurrentSpendingAuth).toHaveBeenCalledTimes(1);
+        expect(close).not.toHaveBeenCalled();
+        expect(results.map((result) => result.action)).toEqual(['retry', 'retry', 'retry']);
+      });
+
       it('closes the channel before opening a replacement when the seller repeats the target', async () => {
         setSigned(5_600_000n);
         await negotiator.handle402(make402Response(catchUp), peer, conn, makeRequest());
         const close = closeConfirmed();
         bufferPaymentRequired(negotiator, peer.peerId, conn);
+        // The seller has had time to act on the resend and still asks for the same amount.
+        vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 10_000);
 
         const result = await negotiator.handle402(make402Response(catchUp), peer, conn, makeRequest());
+        vi.mocked(Date.now).mockRestore();
 
         expect(close).toHaveBeenCalledWith(peer.peerId, conn, { maxCumulative: 6_000_000n });
         expect(bpm.resendCurrentSpendingAuth).toHaveBeenCalledTimes(1);
@@ -512,7 +526,7 @@ describe('BuyerPaymentNegotiator', () => {
         currentSpent: '11009626',
         currentAcceptedCumulative: '10998222',
         reserveMaxAmount: '11000000',
-        channelId: '0x' + 'cd'.repeat(32),
+        channelId: '0x' + 'ab'.repeat(32),
       });
 
       const result = await negotiator.handle402(response, peer, conn, makeRequest());
@@ -524,6 +538,32 @@ describe('BuyerPaymentNegotiator', () => {
       // Fresh negotiation opens a new channel.
       expect(bpm.authorizeSpending).toHaveBeenCalled();
       expect(result.action).toBe('retry');
+    });
+
+    it('retries on the replacement channel instead of retiring it when an exhausted 402 names the old channel', async () => {
+      await simulateSuccessfulNegotiation(negotiator, bpm, peer, conn);
+      (bpm.authorizeSpending as ReturnType<typeof vi.fn>).mockClear();
+      // Another request already replaced the exhausted channel 0xcd… with 0xab….
+      (bpm.getActiveSession as ReturnType<typeof vi.fn>).mockReturnValue(makeActiveSession(peer.peerId));
+
+      const response = make402Response({
+        error: 'payment_required',
+        code: 'channel_exhausted',
+        minBudgetPerRequest: '10000',
+        suggestedAmount: '1000000',
+        requiredCumulativeAmount: '11019626',
+        currentSpent: '11009626',
+        currentAcceptedCumulative: '10998222',
+        reserveMaxAmount: '11000000',
+        channelId: '0x' + 'cd'.repeat(32),
+      });
+
+      const result = await negotiator.handle402(response, peer, conn, makeRequest());
+
+      expect(result.action).toBe('retry');
+      expect(bpm.retireSession).not.toHaveBeenCalled();
+      expect(bpm.authorizeSpending).not.toHaveBeenCalled();
+      expect(bpm.extendCurrentSpendingAuth).not.toHaveBeenCalled();
     });
 
     it('detects exhaustion via reserveMaxAmount even when seller omits the explicit code', async () => {
@@ -548,7 +588,7 @@ describe('BuyerPaymentNegotiator', () => {
         suggestedAmount: '1000000',
         requiredCumulativeAmount: '11019626',
         reserveMaxAmount: '11000000',
-        channelId: '0x' + 'cd'.repeat(32),
+        channelId: '0x' + 'ab'.repeat(32),
       });
 
       const result = await negotiator.handle402(response, peer, conn, makeRequest());
@@ -556,6 +596,34 @@ describe('BuyerPaymentNegotiator', () => {
       expect(bpm.retireSession).toHaveBeenCalledWith(peer.peerId, CHANNEL_STATUS.GHOST);
       expect(bpm.extendCurrentSpendingAuth).not.toHaveBeenCalled();
       expect(bpm.authorizeSpending).toHaveBeenCalled();
+      expect(result.action).toBe('retry');
+    });
+
+    it('signs against the new ceiling instead of retiring when the extension stopped to send a top-up', async () => {
+      await simulateSuccessfulNegotiation(negotiator, bpm, peer, conn);
+      (bpm.authorizeSpending as ReturnType<typeof vi.fn>).mockClear();
+      (bpm.getActiveSession as ReturnType<typeof vi.fn>).mockReturnValue(makeActiveSession(peer.peerId));
+      let cumulative = 1_000_000n;
+      (bpm.getCumulativeAmount as ReturnType<typeof vi.fn>).mockImplementation(() => cumulative);
+      // At the ceiling: the first call only sends a top-up; the second signs past the old ceiling.
+      (bpm.extendCurrentSpendingAuth as ReturnType<typeof vi.fn>)
+        .mockImplementationOnce(async () => {
+          (bpm.hasPendingReserveAuth as ReturnType<typeof vi.fn>).mockReturnValue(true);
+        })
+        .mockImplementationOnce(async () => { cumulative = 1_200_000n; });
+      (bpm.isLockConfirmed as ReturnType<typeof vi.fn>).mockReturnValue(true);
+      bufferPaymentRequired(negotiator, peer.peerId, conn);
+
+      const result = await negotiator.handle402(make402Response({
+        error: 'payment_required',
+        minBudgetPerRequest: paymentRequiredPayload.minBudgetPerRequest,
+        suggestedAmount: paymentRequiredPayload.suggestedAmount,
+        requiredCumulativeAmount: '1200000',
+      }), peer, conn, makeRequest());
+
+      expect(bpm.extendCurrentSpendingAuth).toHaveBeenCalledTimes(2);
+      expect(bpm.retireSession).not.toHaveBeenCalled();
+      expect(bpm.authorizeSpending).not.toHaveBeenCalled();
       expect(result.action).toBe('retry');
     });
 
@@ -634,7 +702,8 @@ describe('BuyerPaymentNegotiator', () => {
       expect(bpm.authorizeSpending).not.toHaveBeenCalled();
       expect(result.action).toBe('return');
       const res = (result as { action: 'return'; response: SerializedHttpResponse }).response;
-      expect(res.statusCode).toBe(409);
+      expect(res.statusCode).toBe(503);
+      expect(res.headers['retry-after']).toBe('2');
       expect(JSON.parse(new TextDecoder().decode(res.body))).toMatchObject({
         error: 'payment_negotiation_failed',
         reason: 'existing_channel_still_active',
