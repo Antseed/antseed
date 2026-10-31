@@ -600,6 +600,19 @@ export class SellerPaymentManager {
         return 'rejected';
       }
 
+      // The signature check below only proves the sender signed the auth, not
+      // that the channel is theirs. An auth from one buyer must never move
+      // another buyer's channel: it would raise what that buyer may spend
+      // with an authorization the contract cannot settle.
+      const owner = existingCumulative !== undefined ? this._channelStore.getChannel(channelId)?.peerId : undefined;
+      if (owner !== undefined && owner !== buyerPeerId) {
+        debugWarn(
+          `[SellerPayment] Rejecting SpendingAuth for a channel another buyer owns: ` +
+          `channel=${channelId.slice(0, 18)}... sender=${buyerPeerId.slice(0, 12)}...`,
+        );
+        return 'rejected';
+      }
+
       const { channels: channelsAddr } = await this._resolvedAddresses!;
       const channelsDomain = makeChannelsDomain(this._config.chainId, channelsAddr);
 
