@@ -567,6 +567,8 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         configPath: globalOpts.config,
         routingPreferences: effectiveBuyerConfig.routingPreferences,
         minPeerReputation: effectiveBuyerConfig.minPeerReputation,
+        maxPricing: effectiveBuyerConfig.maxPricing.defaults,
+        maxReserveAmountUsdc: config.payments?.maxReserveAmountUsdc ?? '1000000',
         settingOverrides: buyerSettingOverrides({ buyerOverrides: runtimeOverrides, verifierFlags }),
         backgroundRefreshIntervalMs: effectiveBuyerConfig.peerRefreshIntervalMs,
         ...(verifierPolicy ? { verifier: verifierPolicy } : {}),

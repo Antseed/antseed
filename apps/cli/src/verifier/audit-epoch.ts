@@ -36,7 +36,7 @@ export interface ResolvedAuditEpoch {
 export const ONCHAIN_EPOCH_TIMEOUT_MS = 10_000
 
 /**
- * The audit epoch is the on-chain emissions-gate epoch, the same one AntseedVerification checks on
+ * The audit epoch is the on-chain emissions-gate epoch, the same one AntseedKbfVerification checks on
  * submit. Without a reachable chain it falls back to the UTC day and says so; evidence recorded with
  * `source: 'utc-day'` cannot be submitted on-chain.
  */

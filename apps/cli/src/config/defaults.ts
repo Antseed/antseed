@@ -60,9 +60,9 @@ export function createDefaultConfig(): AntseedConfig {
     verifier: {
       probeRequestTimeoutMs: 120_000,
       responseAuthWaitTimeoutMs: 35_000,
-      auditMaxConcurrentModels: 3,
+      auditMaxConcurrentModels: 6,
       auditMaxConcurrentPeersPerModel: 4,
-      auditMaxConcurrentBatches: 12,
+      auditMaxConcurrentBatches: 24,
       auditMaxConcurrentBatchesPerPeer: 2,
       auditConcurrencyPromotionLatencyMs: 30_000,
       auditPeerTimeoutMs: 600_000,

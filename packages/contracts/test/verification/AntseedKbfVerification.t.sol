@@ -4,9 +4,9 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 
 import {AntseedRegistry} from "../../core/AntseedRegistry.sol";
-import {IAntseedVerification} from "../../interfaces/IAntseedVerification.sol";
-import {AntseedVerification} from "../../verification/AntseedVerification.sol";
-import {AntseedVerificationPointsPolicy} from "../../policies/AntseedVerificationPointsPolicy.sol";
+import {IAntseedKbfVerification} from "../../interfaces/IAntseedKbfVerification.sol";
+import {AntseedKbfVerification} from "../../verification/AntseedKbfVerification.sol";
+import {AntseedKbfVerificationPointsPolicy} from "../../policies/AntseedKbfVerificationPointsPolicy.sol";
 import {MockERC8004Registry} from "../mocks/MockERC8004Registry.sol";
 import {MockVerificationEmissionsGate} from "../mocks/MockVerificationEmissionsGate.sol";
 import {MockVerificationSellerPools} from "../mocks/MockVerificationSellerPools.sol";
@@ -33,17 +33,17 @@ contract VerificationPointsAccounting {
     }
 }
 
-contract AntseedVerificationTest is Test {
+contract AntseedKbfVerificationTest is Test {
     uint256 private constant EPOCH = 5;
     bytes32 private constant MODEL_A = keccak256("model-a");
     bytes32 private constant MODEL_B = keccak256("model-b");
     bytes32 private constant SERVICE_A = bytes32(uint256(1));
     bytes32 private constant SERVICE_B = bytes32(uint256(2));
 
-    IAntseedVerification.Verdict private constant SAME = IAntseedVerification.Verdict.SAME;
-    IAntseedVerification.Verdict private constant DIFF = IAntseedVerification.Verdict.DIFF;
-    IAntseedVerification.Verdict private constant NONE = IAntseedVerification.Verdict.NONE;
-    IAntseedVerification.Verdict private constant UNDETERMINED = IAntseedVerification.Verdict.UNDETERMINED;
+    IAntseedKbfVerification.Verdict private constant SAME = IAntseedKbfVerification.Verdict.SAME;
+    IAntseedKbfVerification.Verdict private constant DIFF = IAntseedKbfVerification.Verdict.DIFF;
+    IAntseedKbfVerification.Verdict private constant NONE = IAntseedKbfVerification.Verdict.NONE;
+    IAntseedKbfVerification.Verdict private constant UNDETERMINED = IAntseedKbfVerification.Verdict.UNDETERMINED;
 
     address private auditorA = address(0xA1);
     address private auditorB = address(0xB2);
@@ -51,7 +51,7 @@ contract AntseedVerificationTest is Test {
     address private seller = address(0x5E1);
 
     AntseedRegistry private registry;
-    AntseedVerification private verification;
+    AntseedKbfVerification private verification;
     MockERC8004Registry private identityRegistry;
     MockVerificationEmissionsGate private gate;
     MockVerificationSellerPools private pools;
@@ -67,7 +67,7 @@ contract AntseedVerificationTest is Test {
         pools = new MockVerificationSellerPools();
         registry.setIdentityRegistry(address(identityRegistry));
         registry.setEmissions(address(gate));
-        verification = new AntseedVerification(address(registry), address(pools));
+        verification = new AntseedKbfVerification(address(registry), address(pools));
         verification.setAuditor(auditorA, true);
         verification.setAuditor(auditorB, true);
         verification.setAuditor(auditorC, true);
@@ -83,10 +83,10 @@ contract AntseedVerificationTest is Test {
     function test_sameCountsForTwoEpochs() public {
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
         assertTrue(verification.isVerified(agentId));
-        IAntseedVerification.AgentStatus memory agent = verification.agentStatus(agentId);
+        IAntseedKbfVerification.AgentStatus memory agent = verification.agentStatus(agentId);
         assertEq(agent.verifiedCount, 1);
         assertEq(agent.diffCount, 0);
-        IAntseedVerification.ServiceStatus memory service = verification.serviceStatus(agentId, SERVICE_A);
+        IAntseedKbfVerification.ServiceStatus memory service = verification.serviceStatus(agentId, SERVICE_A);
         assertEq(service.modelHash, MODEL_A);
         assertEq(uint8(service.verdict), uint8(SAME));
         assertEq(service.epoch, EPOCH);
@@ -102,7 +102,7 @@ contract AntseedVerificationTest is Test {
     }
 
     function test_expiredVerdictsLeavePointsWithoutCleanup() public {
-        AntseedVerificationPointsPolicy policy = _pointsPolicy();
+        AntseedKbfVerificationPointsPolicy policy = _pointsPolicy();
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
         _audit(auditorA, MODEL_B, agentId, SERVICE_B, SAME);
         assertEq(_sellerPoints(policy), 120);
@@ -146,9 +146,9 @@ contract AntseedVerificationTest is Test {
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, DIFF);
         _advance(2);
         vm.expectEmit(true, true, false, true, address(verification));
-        emit AntseedVerification.ServiceStatusChanged(agentId, SERVICE_A, MODEL_A, NONE, SAME);
+        emit AntseedKbfVerification.ServiceStatusChanged(agentId, SERVICE_A, MODEL_A, NONE, SAME);
         vm.expectEmit(true, false, false, true, address(verification));
-        emit AntseedVerification.AgentStatusChanged(agentId, 1, 0);
+        emit AntseedKbfVerification.AgentStatusChanged(agentId, 1, 0);
         _audit(auditorB, MODEL_A, agentId, SERVICE_A, SAME);
         assertTrue(verification.isVerified(agentId));
     }
@@ -175,9 +175,9 @@ contract AntseedVerificationTest is Test {
     }
 
     function test_statusReadsStayCheapWithManyServices() public {
-        AntseedVerificationPointsPolicy policy = _pointsPolicy();
+        AntseedKbfVerificationPointsPolicy policy = _pointsPolicy();
         for (uint256 batch = 0; batch < 3; batch++) {
-            IAntseedVerification.ServiceResult[] memory results = new IAntseedVerification.ServiceResult[](256);
+            IAntseedKbfVerification.ServiceResult[] memory results = new IAntseedKbfVerification.ServiceResult[](256);
             for (uint256 i = 0; i < results.length; i++) {
                 results[i] = _result(agentId, bytes32(batch * 256 + i + 1), SAME);
             }
@@ -204,7 +204,7 @@ contract AntseedVerificationTest is Test {
     function test_diffAffectsOnlyThatServiceButBlocksAgentVerification() public {
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
         _audit(auditorA, MODEL_B, agentId, SERVICE_B, DIFF);
-        IAntseedVerification.AgentStatus memory agent = verification.agentStatus(agentId);
+        IAntseedKbfVerification.AgentStatus memory agent = verification.agentStatus(agentId);
         assertEq(agent.verifiedCount, 1, "service A stays verified");
         assertEq(agent.diffCount, 1);
         assertEq(uint8(verification.serviceStatus(agentId, SERVICE_A).verdict), uint8(SAME));
@@ -215,7 +215,7 @@ contract AntseedVerificationTest is Test {
     function test_sameAfterDiffRestoresService() public {
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, DIFF);
         _audit(auditorB, MODEL_A, agentId, SERVICE_A, SAME);
-        IAntseedVerification.AgentStatus memory agent = verification.agentStatus(agentId);
+        IAntseedKbfVerification.AgentStatus memory agent = verification.agentStatus(agentId);
         assertEq(agent.verifiedCount, 1);
         assertEq(agent.diffCount, 0);
         assertTrue(verification.isVerified(agentId));
@@ -229,7 +229,7 @@ contract AntseedVerificationTest is Test {
     function test_singleDiffLandsAndLatestResultWins() public {
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
         vm.expectEmit(true, true, false, true, address(verification));
-        emit AntseedVerification.ServiceStatusChanged(agentId, SERVICE_A, MODEL_A, SAME, DIFF);
+        emit AntseedKbfVerification.ServiceStatusChanged(agentId, SERVICE_A, MODEL_A, SAME, DIFF);
         _audit(auditorB, MODEL_A, agentId, SERVICE_A, DIFF);
         assertEq(verification.agentStatus(agentId).diffCount, 1, "one auditor's DIFF counts");
         assertFalse(verification.isVerified(agentId));
@@ -249,7 +249,7 @@ contract AntseedVerificationTest is Test {
 
     function test_undeterminedReplacesSame() public {
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, UNDETERMINED);
-        IAntseedVerification.ServiceStatus memory service = verification.serviceStatus(agentId, SERVICE_A);
+        IAntseedKbfVerification.ServiceStatus memory service = verification.serviceStatus(agentId, SERVICE_A);
         assertEq(uint8(service.verdict), uint8(UNDETERMINED));
         assertEq(service.epoch, EPOCH);
         assertEq(service.modelHash, MODEL_A);
@@ -260,9 +260,9 @@ contract AntseedVerificationTest is Test {
 
         _advance(1);
         vm.expectEmit(true, true, false, true, address(verification));
-        emit AntseedVerification.ServiceStatusChanged(agentId, SERVICE_A, MODEL_A, SAME, UNDETERMINED);
+        emit AntseedKbfVerification.ServiceStatusChanged(agentId, SERVICE_A, MODEL_A, SAME, UNDETERMINED);
         vm.expectEmit(true, false, false, true, address(verification));
-        emit AntseedVerification.AgentStatusChanged(agentId, 0, 0);
+        emit AntseedKbfVerification.AgentStatusChanged(agentId, 0, 0);
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, UNDETERMINED);
         service = verification.serviceStatus(agentId, SERVICE_A);
         assertEq(uint8(service.verdict), uint8(UNDETERMINED), "latest result wins");
@@ -277,7 +277,7 @@ contract AntseedVerificationTest is Test {
     function test_modelChangeResetsServiceStatus() public {
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, DIFF);
         _audit(auditorB, MODEL_B, agentId, SERVICE_A, SAME);
-        IAntseedVerification.AgentStatus memory agent = verification.agentStatus(agentId);
+        IAntseedKbfVerification.AgentStatus memory agent = verification.agentStatus(agentId);
         assertEq(agent.diffCount, 0, "old model's DIFF does not carry over");
         assertEq(agent.verifiedCount, 1);
         assertEq(verification.serviceStatus(agentId, SERVICE_A).modelHash, MODEL_B);
@@ -313,16 +313,16 @@ contract AntseedVerificationTest is Test {
 
     function test_oneSubmissionCoversManySellers() public {
         uint256 other = _register(address(0x5E2), 100);
-        IAntseedVerification.ServiceResult[] memory results = new IAntseedVerification.ServiceResult[](2);
+        IAntseedKbfVerification.ServiceResult[] memory results = new IAntseedKbfVerification.ServiceResult[](2);
         results[0] = _result(agentId, SERVICE_A, SAME);
         results[1] = _result(other, SERVICE_A, DIFF);
 
         vm.expectEmit(true, true, true, true, address(verification));
-        emit AntseedVerification.ServiceAudited(agentId, SERVICE_A, auditorA, MODEL_A, SAME);
+        emit AntseedKbfVerification.ServiceAudited(agentId, SERVICE_A, auditorA, MODEL_A, SAME);
         vm.expectEmit(true, true, true, true, address(verification));
-        emit AntseedVerification.ServiceAudited(other, SERVICE_A, auditorA, MODEL_A, DIFF);
+        emit AntseedKbfVerification.ServiceAudited(other, SERVICE_A, auditorA, MODEL_A, DIFF);
         vm.expectEmit(true, true, true, true, address(verification));
-        emit AntseedVerification.ModelAudited(MODEL_A, auditorA, EPOCH, keccak256("evidence"), "ipfs://cid", 2);
+        emit AntseedKbfVerification.ModelAudited(MODEL_A, auditorA, EPOCH, keccak256("evidence"), "ipfs://cid", 2);
         vm.prank(auditorA);
         verification.submitModelAudit(EPOCH, MODEL_A, keccak256("evidence"), "ipfs://cid", results);
 
@@ -334,20 +334,20 @@ contract AntseedVerificationTest is Test {
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
         _audit(auditorA, MODEL_A, agentId, SERVICE_B, DIFF);
         uint256 other = _register(address(0x5E2), 100);
-        IAntseedVerification.ServiceResult[] memory results = new IAntseedVerification.ServiceResult[](4);
+        IAntseedKbfVerification.ServiceResult[] memory results = new IAntseedKbfVerification.ServiceResult[](4);
         results[0] = _result(agentId, SERVICE_A, DIFF);
         results[1] = _result(agentId, SERVICE_B, SAME);
         results[2] = _result(other, SERVICE_A, SAME);
         results[3] = _result(other, SERVICE_B, DIFF);
 
         vm.expectEmit(true, false, false, true, address(verification));
-        emit AntseedVerification.AgentStatusChanged(agentId, 0, 2);
+        emit AntseedKbfVerification.AgentStatusChanged(agentId, 0, 2);
         vm.expectEmit(true, false, false, true, address(verification));
-        emit AntseedVerification.AgentStatusChanged(agentId, 1, 1);
+        emit AntseedKbfVerification.AgentStatusChanged(agentId, 1, 1);
         vm.expectEmit(true, false, false, true, address(verification));
-        emit AntseedVerification.AgentStatusChanged(other, 1, 0);
+        emit AntseedKbfVerification.AgentStatusChanged(other, 1, 0);
         vm.expectEmit(true, false, false, true, address(verification));
-        emit AntseedVerification.AgentStatusChanged(other, 1, 1);
+        emit AntseedKbfVerification.AgentStatusChanged(other, 1, 1);
         vm.prank(auditorB);
         verification.submitModelAudit(EPOCH, MODEL_A, _evidence(), "", results);
     }
@@ -372,14 +372,14 @@ contract AntseedVerificationTest is Test {
     function test_clearRejectsMismatchedLists() public {
         uint256[] memory agents = new uint256[](2);
         bytes32[] memory services = new bytes32[](1);
-        vm.expectRevert(AntseedVerification.InvalidValue.selector);
+        vm.expectRevert(AntseedKbfVerification.InvalidValue.selector);
         verification.clearServiceStatuses(agents, services);
     }
 
     function test_clearResetsUndetermined() public {
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, UNDETERMINED);
         _clear(agentId, SERVICE_A);
-        IAntseedVerification.ServiceStatus memory service = verification.serviceStatus(agentId, SERVICE_A);
+        IAntseedKbfVerification.ServiceStatus memory service = verification.serviceStatus(agentId, SERVICE_A);
         assertEq(uint8(service.verdict), uint8(NONE));
         assertEq(service.epoch, 0);
         assertEq(service.modelHash, MODEL_A);
@@ -388,30 +388,30 @@ contract AntseedVerificationTest is Test {
     // ── access and validation ────────────────────────────────────────
 
     function test_rejectsUnapprovedAuditor() public {
-        _expectAuditRevert(AntseedVerification.NotApprovedAuditor.selector);
+        _expectAuditRevert(AntseedKbfVerification.NotApprovedAuditor.selector);
         _audit(address(0xBAD), MODEL_A, agentId, SERVICE_A, SAME);
 
         verification.setAuditor(auditorA, false);
-        _expectAuditRevert(AntseedVerification.NotApprovedAuditor.selector);
+        _expectAuditRevert(AntseedKbfVerification.NotApprovedAuditor.selector);
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
     }
 
     function test_rejectsSelfAudit() public {
         verification.setAuditor(seller, true);
-        _expectAuditRevert(AntseedVerification.SelfAudit.selector);
+        _expectAuditRevert(AntseedKbfVerification.SelfAudit.selector);
         _audit(seller, MODEL_A, agentId, SERVICE_A, SAME);
     }
 
     function test_skipsUnknownAgentWithoutFailingTheBatch() public {
-        IAntseedVerification.ServiceResult[] memory results = new IAntseedVerification.ServiceResult[](2);
+        IAntseedKbfVerification.ServiceResult[] memory results = new IAntseedKbfVerification.ServiceResult[](2);
         results[0] = _result(agentId, SERVICE_A, SAME);
         results[1] = _result(999, SERVICE_A, DIFF);
         vm.expectEmit(address(verification));
-        emit AntseedVerification.UnknownAgentSkipped(999, MODEL_A);
+        emit AntseedKbfVerification.UnknownAgentSkipped(999, MODEL_A);
         vm.prank(auditorA);
         verification.submitModelAudit(EPOCH, MODEL_A, _evidence(), "", results);
         assertTrue(verification.isVerified(agentId), "known agents in the batch still count");
-        assertEq(uint8(verification.serviceStatus(999, SERVICE_A).verdict), uint8(IAntseedVerification.Verdict.NONE));
+        assertEq(uint8(verification.serviceStatus(999, SERVICE_A).verdict), uint8(IAntseedKbfVerification.Verdict.NONE));
         assertEq(verification.agentStatus(999).diffCount, 0);
         assertEq(verification.epochCredits(EPOCH), 1);
     }
@@ -422,8 +422,8 @@ contract AntseedVerificationTest is Test {
     }
 
     function testFuzz_rejectsZeroAgent(uint8 verdictSeed) public {
-        IAntseedVerification.Verdict verdict = IAntseedVerification.Verdict(bound(verdictSeed, 1, 3));
-        _expectAuditRevert(AntseedVerification.UnknownAgent.selector);
+        IAntseedKbfVerification.Verdict verdict = IAntseedKbfVerification.Verdict(bound(verdictSeed, 1, 3));
+        _expectAuditRevert(AntseedKbfVerification.UnknownAgent.selector);
         _audit(auditorA, MODEL_A, 0, SERVICE_A, verdict);
         assertFalse(verification.isVerified(0));
         assertEq(verification.agentStatus(0).verifiedCount, 0);
@@ -432,11 +432,11 @@ contract AntseedVerificationTest is Test {
 
     function test_rejectsZeroAgentBeforeValidAgent() public {
         bytes32 evidence = keccak256("zero-agent-evidence");
-        IAntseedVerification.ServiceResult[] memory results = new IAntseedVerification.ServiceResult[](2);
+        IAntseedKbfVerification.ServiceResult[] memory results = new IAntseedKbfVerification.ServiceResult[](2);
         results[0] = _result(0, SERVICE_A, SAME);
         results[1] = _result(agentId, SERVICE_A, SAME);
         vm.prank(auditorA);
-        vm.expectRevert(AntseedVerification.UnknownAgent.selector);
+        vm.expectRevert(AntseedKbfVerification.UnknownAgent.selector);
         verification.submitModelAudit(EPOCH, MODEL_A, evidence, "", results);
 
         assertFalse(verification.isVerified(0));
@@ -451,7 +451,7 @@ contract AntseedVerificationTest is Test {
 
     function test_rejectsStaleEpoch() public {
         vm.prank(auditorA);
-        vm.expectRevert(AntseedVerification.EpochChanged.selector);
+        vm.expectRevert(AntseedKbfVerification.EpochChanged.selector);
         verification.submitModelAudit(EPOCH - 1, MODEL_A, keccak256("evidence"), "", _single(agentId, SERVICE_A, SAME));
     }
 
@@ -465,13 +465,13 @@ contract AntseedVerificationTest is Test {
 
     function test_rejectsInvalidResults() public {
         uint256 other = _register(address(0x5E2), 100);
-        IAntseedVerification.ServiceResult[] memory results = new IAntseedVerification.ServiceResult[](0);
+        IAntseedKbfVerification.ServiceResult[] memory results = new IAntseedKbfVerification.ServiceResult[](0);
         _expectInvalidResults(results);
 
         _expectInvalidResults(_single(agentId, SERVICE_A, NONE));
         _expectInvalidResults(_single(agentId, bytes32(0), SAME));
 
-        results = new IAntseedVerification.ServiceResult[](2);
+        results = new IAntseedKbfVerification.ServiceResult[](2);
         results[0] = _result(agentId, SERVICE_B, SAME);
         results[1] = _result(agentId, SERVICE_A, SAME);
         _expectInvalidResults(results);
@@ -486,15 +486,15 @@ contract AntseedVerificationTest is Test {
     }
 
     function test_validatesModelAndEvidence() public {
-        IAntseedVerification.ServiceResult[] memory results = _single(agentId, SERVICE_A, SAME);
+        IAntseedKbfVerification.ServiceResult[] memory results = _single(agentId, SERVICE_A, SAME);
         vm.startPrank(auditorA);
-        vm.expectRevert(AntseedVerification.InvalidValue.selector);
+        vm.expectRevert(AntseedKbfVerification.InvalidValue.selector);
         verification.submitModelAudit(EPOCH, bytes32(0), keccak256("evidence"), "", results);
-        vm.expectRevert(AntseedVerification.InvalidValue.selector);
+        vm.expectRevert(AntseedKbfVerification.InvalidValue.selector);
         verification.submitModelAudit(EPOCH, MODEL_A, bytes32(0), "", results);
-        vm.expectRevert(AntseedVerification.InvalidEvidenceUri.selector);
+        vm.expectRevert(AntseedKbfVerification.InvalidEvidenceUri.selector);
         verification.submitModelAudit(EPOCH, MODEL_A, keccak256("evidence"), "https://example.com/e", results);
-        vm.expectRevert(AntseedVerification.InvalidEvidenceUri.selector);
+        vm.expectRevert(AntseedKbfVerification.InvalidEvidenceUri.selector);
         verification.submitModelAudit(EPOCH, MODEL_A, keccak256("evidence"), "ipfs://", results);
         verification.submitModelAudit(EPOCH, MODEL_A, keccak256("evidence"), "", results);
         vm.stopPrank();
@@ -522,19 +522,19 @@ contract AntseedVerificationTest is Test {
         verification.voidAuditorCredits(EPOCH, auditorB);
         vm.stopPrank();
 
-        vm.expectRevert(AntseedVerification.InvalidValue.selector);
+        vm.expectRevert(AntseedKbfVerification.InvalidValue.selector);
         verification.setValidityEpochs(0);
-        vm.expectRevert(AntseedVerification.InvalidValue.selector);
+        vm.expectRevert(AntseedKbfVerification.InvalidValue.selector);
         verification.setValidityEpochs(5);
-        vm.expectRevert(AntseedVerification.InvalidValue.selector);
+        vm.expectRevert(AntseedKbfVerification.InvalidValue.selector);
         verification.setMaxAuditorShareBps(0);
-        vm.expectRevert(AntseedVerification.InvalidValue.selector);
+        vm.expectRevert(AntseedKbfVerification.InvalidValue.selector);
         verification.setMaxAuditorShareBps(10_001);
-        vm.expectRevert(AntseedVerification.InvalidValue.selector);
+        vm.expectRevert(AntseedKbfVerification.InvalidValue.selector);
         verification.setMaxCreditsPerAuditorPerEpoch(0);
-        vm.expectRevert(AntseedVerification.InvalidValue.selector);
+        vm.expectRevert(AntseedKbfVerification.InvalidValue.selector);
         verification.setMaxCreditsPerModelPerEpoch(0);
-        vm.expectRevert(AntseedVerification.InvalidAddress.selector);
+        vm.expectRevert(AntseedKbfVerification.InvalidAddress.selector);
         verification.setSellerPools(address(0x1234));
     }
 
@@ -559,7 +559,7 @@ contract AntseedVerificationTest is Test {
 
     function test_usesTheGateBehindUsageAccounting() public {
         registry.setEmissions(address(new UsageAccountingFront(address(gate))));
-        verification = new AntseedVerification(address(registry), address(pools));
+        verification = new AntseedKbfVerification(address(registry), address(pools));
         verification.setAuditor(auditorA, true);
         verification.setRewardsStartEpoch(0);
         verification.setMaxAuditorShareBps(10_000);
@@ -569,7 +569,7 @@ contract AntseedVerificationTest is Test {
         assertEq(verification.auditorEpochCredits(EPOCH, auditorA), 1);
 
         vm.prank(auditorA);
-        vm.expectRevert(AntseedVerification.EpochChanged.selector);
+        vm.expectRevert(AntseedKbfVerification.EpochChanged.selector);
         verification.submitModelAudit(EPOCH + 1, MODEL_A, _evidence(), "", _single(agentId, SERVICE_A, SAME));
 
         gate.setCurrentEpoch(EPOCH + 1);
@@ -626,7 +626,7 @@ contract AntseedVerificationTest is Test {
     }
 
     function test_rewardsAreOffByDefault() public {
-        AntseedVerification fresh = new AntseedVerification(address(registry), address(pools));
+        AntseedKbfVerification fresh = new AntseedKbfVerification(address(registry), address(pools));
         assertEq(fresh.rewardsStartEpoch(), type(uint256).max);
         assertEq(fresh.maxAuditorShareBps(), 2_000);
         fresh.setAuditor(auditorA, true);
@@ -681,7 +681,7 @@ contract AntseedVerificationTest is Test {
         uint256[] memory epochs = new uint256[](1);
         epochs[0] = EPOCH;
         vm.prank(auditorA);
-        vm.expectRevert(AntseedVerification.EpochNotFinalized.selector);
+        vm.expectRevert(AntseedKbfVerification.EpochNotFinalized.selector);
         verification.claimAuditorRewards(epochs);
     }
 
@@ -706,7 +706,7 @@ contract AntseedVerificationTest is Test {
         assertEq(verification.epochCredits(EPOCH), 4);
 
         vm.expectEmit(true, true, false, true, address(verification));
-        emit AntseedVerification.AuditorCreditsVoided(EPOCH, auditorA, 3);
+        emit AntseedKbfVerification.AuditorCreditsVoided(EPOCH, auditorA, 3);
         verification.voidAuditorCredits(EPOCH, auditorA);
         assertEq(verification.auditorEpochCredits(EPOCH, auditorA), 0);
         assertEq(verification.epochCredits(EPOCH), 1);
@@ -721,7 +721,7 @@ contract AntseedVerificationTest is Test {
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
         gate.setCurrentEpoch(EPOCH + 1);
         _claim(auditorA);
-        vm.expectRevert(AntseedVerification.AlreadyClaimed.selector);
+        vm.expectRevert(AntseedKbfVerification.AlreadyClaimed.selector);
         verification.voidAuditorCredits(EPOCH, auditorA);
     }
 
@@ -748,8 +748,8 @@ contract AntseedVerificationTest is Test {
 
         AntseedRegistry noGateRegistry = new AntseedRegistry();
         noGateRegistry.setIdentityRegistry(address(identityRegistry));
-        vm.expectRevert(AntseedVerification.InvalidAddress.selector);
-        new AntseedVerification(address(noGateRegistry), address(pools));
+        vm.expectRevert(AntseedKbfVerification.InvalidAddress.selector);
+        new AntseedKbfVerification(address(noGateRegistry), address(pools));
 
         MockVerificationEmissionsGate other = new MockVerificationEmissionsGate();
         other.setCurrentEpoch(EPOCH + 50);
@@ -762,7 +762,7 @@ contract AntseedVerificationTest is Test {
     // ── invariants ───────────────────────────────────────────────────
 
     function testFuzz_liveCountsMatchServiceStatusesAcrossEpochs(uint8[32] calldata steps) public {
-        AntseedVerificationPointsPolicy policy = _pointsPolicy();
+        AntseedKbfVerificationPointsPolicy policy = _pointsPolicy();
         address[3] memory auditors = [auditorA, auditorB, auditorC];
         bytes32[3] memory models = [MODEL_A, MODEL_B, keccak256("model-c")];
         bytes32[3] memory services = [SERVICE_A, SERVICE_B, bytes32(uint256(3))];
@@ -776,7 +776,7 @@ contract AntseedVerificationTest is Test {
             } else if (step % 7 == 2) {
                 verification.setValidityEpochs(uint8(1 + (step >> 5) % 4));
             } else {
-                IAntseedVerification.Verdict verdict = step % 3 == 0 ? SAME : step % 3 == 1 ? DIFF : UNDETERMINED;
+                IAntseedKbfVerification.Verdict verdict = step % 3 == 0 ? SAME : step % 3 == 1 ? DIFF : UNDETERMINED;
                 _audit(auditors[(step >> 1) % 3], models[(step >> 5) % 3], agentId, service, verdict);
             }
             uint256 current = gate.currentEpoch();
@@ -784,12 +784,12 @@ contract AntseedVerificationTest is Test {
             uint256 verified;
             uint256 diffs;
             for (uint256 j = 0; j < services.length; j++) {
-                IAntseedVerification.ServiceStatus memory status = verification.serviceStatus(agentId, services[j]);
+                IAntseedKbfVerification.ServiceStatus memory status = verification.serviceStatus(agentId, services[j]);
                 if (current >= status.epoch + window) continue;
                 if (status.verdict == SAME) verified += 1;
                 else if (status.verdict == DIFF) diffs += 1;
             }
-            IAntseedVerification.AgentStatus memory agent = verification.agentStatus(agentId);
+            IAntseedKbfVerification.AgentStatus memory agent = verification.agentStatus(agentId);
             assertEq(agent.verifiedCount, verified);
             assertEq(agent.diffCount, diffs);
             assertEq(verification.isVerified(agentId), verified > 0 && diffs == 0);
@@ -806,20 +806,20 @@ contract AntseedVerificationTest is Test {
         pools.setPower(id, EPOCH, power);
     }
 
-    function _result(uint256 id, bytes32 service, IAntseedVerification.Verdict verdict)
+    function _result(uint256 id, bytes32 service, IAntseedKbfVerification.Verdict verdict)
         private
         pure
-        returns (IAntseedVerification.ServiceResult memory)
+        returns (IAntseedKbfVerification.ServiceResult memory)
     {
-        return IAntseedVerification.ServiceResult({agentId: id, serviceHash: service, verdict: verdict});
+        return IAntseedKbfVerification.ServiceResult({agentId: id, serviceHash: service, verdict: verdict});
     }
 
-    function _single(uint256 id, bytes32 service, IAntseedVerification.Verdict verdict)
+    function _single(uint256 id, bytes32 service, IAntseedKbfVerification.Verdict verdict)
         private
         pure
-        returns (IAntseedVerification.ServiceResult[] memory results)
+        returns (IAntseedKbfVerification.ServiceResult[] memory results)
     {
-        results = new IAntseedVerification.ServiceResult[](1);
+        results = new IAntseedKbfVerification.ServiceResult[](1);
         results[0] = _result(id, service, verdict);
     }
 
@@ -828,16 +828,15 @@ contract AntseedVerificationTest is Test {
         return keccak256(abi.encode("evidence", evidenceNonce));
     }
 
-    function _pointsPolicy() private returns (AntseedVerificationPointsPolicy policy) {
+    function _pointsPolicy() private returns (AntseedKbfVerificationPointsPolicy policy) {
         pools.setSeller(seller, agentId);
-        policy = new AntseedVerificationPointsPolicy(
+        policy = new AntseedKbfVerificationPointsPolicy(
             address(verification), address(new VerificationPointsAccounting(address(pools))), 1_000, address(this)
         );
         policy.setPenaltyBps(1_000);
-        policy.setPointsStartEpoch(0);
     }
 
-    function _sellerPoints(AntseedVerificationPointsPolicy policy) private view returns (uint256 points) {
+    function _sellerPoints(AntseedKbfVerificationPointsPolicy policy) private view returns (uint256 points) {
         (points,) = policy.points(bytes32(0), address(0x123), seller, 100, 100);
     }
 
@@ -853,7 +852,7 @@ contract AntseedVerificationTest is Test {
         expectedAuditRevert = selector;
     }
 
-    function _audit(address auditor, bytes32 model, uint256 id, bytes32 service, IAntseedVerification.Verdict verdict)
+    function _audit(address auditor, bytes32 model, uint256 id, bytes32 service, IAntseedKbfVerification.Verdict verdict)
         private
     {
         uint256 epoch = gate.currentEpoch();
@@ -881,9 +880,9 @@ contract AntseedVerificationTest is Test {
         return verification.claimAuditorRewards(epochs);
     }
 
-    function _expectInvalidResults(IAntseedVerification.ServiceResult[] memory results) private {
+    function _expectInvalidResults(IAntseedKbfVerification.ServiceResult[] memory results) private {
         vm.prank(auditorA);
-        vm.expectRevert(AntseedVerification.InvalidResults.selector);
+        vm.expectRevert(AntseedKbfVerification.InvalidResults.selector);
         verification.submitModelAudit(EPOCH, MODEL_A, _evidence(), "", results);
     }
 }

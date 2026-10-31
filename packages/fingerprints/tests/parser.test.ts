@@ -19,6 +19,14 @@ describe('parseKbfAnswers', () => {
     expect(parseKbfAnswers(text, 4)).toEqual([3880, 46, 1234, 55]);
   });
 
+  it('reads index-less <number>…</number> lines in order when there is one per probe', () => {
+    expect(parseKbfAnswers('<number>2350</number>\n<number>100</number>\n<number>-73.5</number>', 3)).toEqual([2350, 100, -73.5]);
+    // Not one line per probe: positions are unknown, so nothing is guessed.
+    expect(parseKbfAnswers('<number>2350</number>\n<number>100</number>', 3)).toEqual([null, null, null]);
+    // Indexed lines still win.
+    expect(parseKbfAnswers('2) <number>5</number>\n1) <number>4</number>', 2)).toEqual([4, 5]);
+  });
+
   it('handles commas in numbers', () => {
     expect(parseKbfAnswers('(1) 384,400', 1)).toEqual([384400]);
     expect(parseKbfAnswers('(1) 1,234,567.89', 1)).toEqual([1234567.89]);
@@ -112,5 +120,30 @@ describe('isKbfSamplingFieldRejection', () => {
     expect(isKbfSamplingFieldRejection(400, 'Validation: Kimi request field top_p must be one of: 0.95')).toBe(false);
     expect(isKbfSamplingFieldRejection(400, 'unsupported Chat feature for Claude Messages: n')).toBe(false);
     expect(isKbfSamplingFieldRejection(500, '`temperature` is deprecated for this model.')).toBe(false);
+  });
+});
+
+describe('isKbfThinkingSuppressionRejection', () => {
+  it('recognises refused reasoning, thinking and prefill fields', async () => {
+    const { isKbfThinkingSuppressionRejection } = await import('../src/verifiers/kbf/prompts.js');
+    expect(isKbfThinkingSuppressionRejection(400, 'Reasoning is mandatory for this endpoint and cannot be disabled.')).toBe(true);
+    expect(isKbfThinkingSuppressionRejection(400, 'unsupported chat feature for claude messages: reasoning')).toBe(true);
+    expect(isKbfThinkingSuppressionRejection(400, 'This model does not support assistant message prefill.')).toBe(true);
+    expect(isKbfThinkingSuppressionRejection(422, 'enable_thinking: Extra inputs are not permitted')).toBe(true);
+    expect(isKbfThinkingSuppressionRejection(400, '`temperature` is deprecated for this model.')).toBe(false);
+    expect(isKbfThinkingSuppressionRejection(500, 'reasoning is not supported')).toBe(false);
+  });
+});
+
+describe('kbfTargetThinkingSuppression', () => {
+  it('keeps only the suppression fields and prefill of the reference request', async () => {
+    const { kbfTargetThinkingSuppression } = await import('../src/verifiers/kbf/reference.js');
+    const base = { queryProfile: {} as never };
+    expect(kbfTargetThinkingSuppression({ ...base, generator: { name: 'x', version: '1', verifierKind: 'kbf', params: {
+      referenceEndpointRequest: { reasoningStrategy: 'disable-thinking', requestOverrides: { thinking: { type: 'disabled' }, provider: {} }, requestOmissions: ['top_p'] },
+    } } })).toEqual({ strategy: 'disable-thinking', overrides: { thinking: { type: 'disabled' } } });
+    expect(kbfTargetThinkingSuppression({ ...base, generator: { name: 'x', version: '1', verifierKind: 'kbf', params: {
+      referenceEndpointRequest: { reasoningStrategy: 'bare', requestOverrides: {}, requestOmissions: [] },
+    } } })).toBeNull();
   });
 });

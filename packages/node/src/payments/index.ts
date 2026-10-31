@@ -58,6 +58,7 @@ export type {
   SubmitModelAuditInput,
   ServiceAuditedEvent,
   ModelAuditedEvent,
+  AuditorSetEvent,
   AuditorCredits,
   VerifierServiceStatus,
   VerifierVerdict,

@@ -27,7 +27,7 @@ export const contractFields = {
   identityRegistry: 'identityRegistryAddress',
   stats: 'statsContractAddress',
   depositRelay: 'depositRelayAddress',
-  verification: 'verificationContractAddress',
+  kbfVerification: 'verificationContractAddress',
   emissionsGate: 'emissionsGateAddress',
   sellerPools: 'sellerPoolsAddress',
   sellerRegistry: 'sellerRegistryAddress',
@@ -65,8 +65,8 @@ export function renderNetwork(record, recognizedUsageDeployment = null) {
   if (record.contracts.stats?.deploymentBlock != null) {
     values.statsDeployBlock = record.contracts.stats.deploymentBlock;
   }
-  if (record.contracts.verification?.deploymentBlock != null) {
-    values.verificationDeployBlock = record.contracts.verification.deploymentBlock;
+  if (record.contracts.kbfVerification?.deploymentBlock != null) {
+    values.verificationDeployBlock = record.contracts.kbfVerification.deploymentBlock;
   }
   if (recognizedUsageDeployment) {
     const contracts = Object.fromEntries(Object.entries(recognizedUsageDeployment.contracts)

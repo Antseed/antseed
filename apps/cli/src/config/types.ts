@@ -422,7 +422,7 @@ export interface PaymentsCLIConfig {
     identityRegistryAddress?: string;
     /** Deployed AntseedEmissions contract address */
     emissionsContractAddress?: string;
-    /** Deployed AntseedVerification contract address */
+    /** Deployed AntseedKbfVerification contract address */
     verificationContractAddress?: string;
     /** Deployment block of the verification contract; floor for verifier event scans */
     verificationDeployBlock?: number;

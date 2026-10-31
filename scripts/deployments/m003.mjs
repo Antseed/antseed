@@ -13,10 +13,13 @@ import { runMigration } from './runtime/runner.mjs';
 import { clearPlan } from './runtime/plan.mjs';
 import { CONTRACTS_ROOT } from './runtime/paths.mjs';
 
-export const RELEASE = '003-verification-registry';
+export const RELEASE = '003-kbf-verification';
+export const POLICY_NOTE = 'M003 deploys the KBF verification contract and its points policy only. The policy is not '
+  + 'registered in the points policy registry by M003; the registry owner registers it separately, so verdicts change '
+  + 'no seller points until then.';
 const ZERO = '0x0000000000000000000000000000000000000000';
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
-const CONTRACT_NAMES = { AntseedVerification: 'verification', AntseedVerificationPointsPolicy: 'verificationPointsPolicy' };
+const CONTRACT_NAMES = { AntseedKbfVerification: 'kbfVerification', AntseedKbfVerificationPointsPolicy: 'kbfVerificationPointsPolicy' };
 export const DEFAULT_BONUS_BPS = 0;
 const MAX_BONUS_BPS = 5_000;
 const TARGET = 'script/migrations/M003VerificationRegistry/Deploy.s.sol:M003DeployVerificationRegistry';
@@ -26,13 +29,23 @@ function receiptFile(context, simulated = false) {
   return context.forkTest ? path.join(context.receiptDirectory, path.relative(CONTRACTS_ROOT, file)) : file;
 }
 
-export function parseAuditors(value = '') {
-  const auditors = value.trim() ? value.split(',').map((address) => address.trim().toLowerCase()) : [];
-  if (auditors.some((address) => !ADDRESS.test(address) || sameAddress(address, ZERO))) {
-    throw new Error('VERIFICATION_AUDITORS must be comma-separated nonzero addresses');
+/** M003 never approves auditors; the owner does that separately with setAuditor after the deploy. */
+export function rejectAuditorList(value = process.env.VERIFICATION_AUDITORS) {
+  if (value !== undefined && value.trim() !== '') {
+    throw new Error('M003 does not approve auditors; unset VERIFICATION_AUDITORS and approve them separately with setAuditor');
   }
-  if (new Set(auditors).size !== auditors.length) throw new Error('Duplicate VERIFICATION_AUDITORS');
-  return auditors.sort();
+}
+
+/**
+ * The wallet that deploys and owns both contracts. M003 only deploys, so it need not own the
+ * points policy registry; the registry owner registers the policy later as a separate step.
+ */
+export function verificationOwner(value = process.env.VERIFICATION_OWNER) {
+  const owner = value?.trim() ?? '';
+  if (!ADDRESS.test(owner) || sameAddress(owner, ZERO)) {
+    throw new Error('VERIFICATION_OWNER must be the nonzero address of the deploying wallet');
+  }
+  return owner;
 }
 
 export function parseBonusBps(value) {
@@ -52,8 +65,8 @@ export function validateBaseline(canonical) {
 
 export function recordErrors(record) {
   const config = record.verificationConfiguration?.verificationRegistry;
-  const contract = record.contracts?.verification;
-  const policy = record.contracts?.verificationPointsPolicy;
+  const contract = record.contracts?.kbfVerification;
+  const policy = record.contracts?.kbfVerificationPointsPolicy;
   if (!config || !contract || !policy) return ['M003 requires verification contracts and configuration'];
   const errors = [];
   for (const key of ['registry', 'identityRegistry', 'sellerPools', 'usageAccounting', 'pointsPolicyRegistry', 'owner', 'address', 'policyAddress']) {
@@ -75,10 +88,7 @@ export function recordErrors(record) {
   }
   try { parseBonusBps(String(config.bonusBps)); } catch (error) { errors.push(error.message); }
   if (!Number.isSafeInteger(config.deploymentNonce) || config.deploymentNonce < 0) errors.push('M003 invalid nonce');
-  try {
-    if (!Array.isArray(config.auditors)) throw new Error('M003 auditors must be an array');
-    parseAuditors(config.auditors.join(','));
-  } catch (error) { errors.push(error.message); }
+  if (config.auditors !== undefined) errors.push('M003 records no auditors');
   return errors;
 }
 
@@ -86,13 +96,12 @@ async function collectReceipts(context, checkpoint) {
   const file = receiptFile(context);
   if (!(await fileExists(file))) return checkpoint;
   const parsed = await parseBroadcast(file, context.rpcUrl, CONTRACT_NAMES);
-  const creation = parsed.contracts.verification;
-  const policyCreation = parsed.contracts.verificationPointsPolicy;
+  const creation = parsed.contracts.kbfVerification;
+  const policyCreation = parsed.contracts.kbfVerificationPointsPolicy;
   if (creation && !sameAddress(creation.address, checkpoint.address)) return checkpoint;
   if (policyCreation && !sameAddress(policyCreation.address, checkpoint.policyAddress)) return checkpoint;
   const transactions = parsed.transactions.filter((transaction) =>
     sameAddress(transaction.to, checkpoint.address) || sameAddress(transaction.to, checkpoint.policyAddress)
-    || (sameAddress(transaction.to, checkpoint.pointsPolicyRegistry) && sameAddress(transaction.from, checkpoint.owner))
     || transaction.hash === creation?.transactionHash || transaction.hash === policyCreation?.transactionHash);
   if (!transactions.length) return checkpoint;
   if (transactions.some((transaction) => !transactionSucceeded(context.rpcUrl, transaction.hash))) {
@@ -100,8 +109,8 @@ async function collectReceipts(context, checkpoint) {
   }
   const combined = { ...checkpoint, ...mergeBroadcast(checkpoint, {
     transactions, contracts: {
-      ...(creation ? { verification: creation } : {}),
-      ...(policyCreation ? { verificationPointsPolicy: policyCreation } : {}),
+      ...(creation ? { kbfVerification: creation } : {}),
+      ...(policyCreation ? { kbfVerificationPointsPolicy: policyCreation } : {}),
     },
   }) };
   await writeCheckpoint(context, combined);
@@ -111,6 +120,7 @@ async function collectReceipts(context, checkpoint) {
 async function observe(context) {
   const { rpcUrl, expected, canonical } = context;
   if (chainId(rpcUrl) !== canonical.chainId) throw new Error('M003 wrong RPC chain');
+  rejectAuditorList();
   if (!hasCode(rpcUrl, expected.registry) || !hasCode(rpcUrl, expected.identityRegistry) || !hasCode(rpcUrl, expected.sellerPools)
     || !sameAddress(call(rpcUrl, expected.registry, 'identityRegistry()(address)'), expected.identityRegistry)) {
     throw new Error('M003 registry or identity registry mismatch');
@@ -125,7 +135,7 @@ async function observe(context) {
     sourceCommit: record.sourceCommit, contracts: record.contracts, transactions: record.transactions,
   }));
   if (!checkpoint) {
-    if (canonical.contracts.verification) throw new Error('M003 verification exists without its history record');
+    if (canonical.contracts.kbfVerification) throw new Error('M003 verification exists without its history record');
     const file = receiptFile(context);
     if (await fileExists(file)) {
       const broadcast = await readJson(file);
@@ -133,7 +143,7 @@ async function observe(context) {
         throw new Error('M003 prior broadcast exists; restore its checkpoint or history before continuing');
       }
     }
-    const owner = call(rpcUrl, expected.registry, 'owner()(address)');
+    const owner = verificationOwner();
     const deploymentNonce = numberValue(cast(rpcUrl, ['nonce', owner]));
     const address = cast(rpcUrl, ['compute-address', owner, '--nonce', String(deploymentNonce)]).match(/0x[0-9a-fA-F]{40}/)?.[0];
     const policyAddress = cast(rpcUrl, ['compute-address', owner, '--nonce', String(deploymentNonce + 1)]).match(/0x[0-9a-fA-F]{40}/)?.[0];
@@ -141,7 +151,6 @@ async function observe(context) {
     checkpoint = {
       ...expected, owner, deploymentNonce, address, policyAddress,
       bonusBps: parseBonusBps(process.env.VERIFICATION_BONUS_BPS),
-      auditors: parseAuditors(process.env.VERIFICATION_AUDITORS),
       sourceCommit: sourceCommit(), contracts: {}, transactions: [],
     };
   } else {
@@ -155,21 +164,17 @@ async function observe(context) {
       && parseBonusBps(process.env.VERIFICATION_BONUS_BPS) !== checkpoint.bonusBps) {
       throw new Error('M003 bonus differs from the original deployment; change it on the policy instead');
     }
-    if (process.env.VERIFICATION_AUDITORS !== undefined
-      && JSON.stringify(parseAuditors(process.env.VERIFICATION_AUDITORS)) !== JSON.stringify(checkpoint.auditors)) {
-      throw new Error('M003 auditor list differs from the original deployment; restore the reviewed list');
-    }
     checkpoint = await collectReceipts(context, checkpoint);
   }
-  if (!sameAddress(call(rpcUrl, expected.pointsPolicyRegistry, 'owner()(address)'), checkpoint.owner)) {
-    throw new Error('M003 verification owner must also own the points policy registry');
+  if (process.env.VERIFICATION_OWNER !== undefined && !sameAddress(verificationOwner(), checkpoint.owner)) {
+    throw new Error('M003 VERIFICATION_OWNER differs from the original deployment');
   }
   const verification = checkpoint.address;
   const policy = checkpoint.policyAddress;
   let state = 'ready';
   if (hasCode(rpcUrl, verification)) {
-    const found = await findArtifact(await buildArtifactIndex(), 'verification');
-    if (!found) throw new Error('M003 missing AntseedVerification artifact; run forge build');
+    const found = await findArtifact(await buildArtifactIndex(), 'kbfVerification');
+    if (!found) throw new Error('M003 missing AntseedKbfVerification artifact; run forge build');
     const mismatch = compareRuntimeCode(rpcUrl, verification, found.artifact);
     if (mismatch) throw new Error(`M003 ${mismatch}`);
     if (!sameAddress(call(rpcUrl, verification, 'registry()(address)'), expected.registry)
@@ -178,14 +183,9 @@ async function observe(context) {
       || !sameAddress(call(rpcUrl, verification, 'pendingOwner()(address)'), ZERO)) {
       throw new Error('M003 verification registry or ownership mismatch');
     }
-    if (!checkpoint.contracts.verification) throw new Error('M003 restore confirmed deployment receipts before continuing');
-    const approved = checkpoint.auditors.every((auditor) => call(rpcUrl, verification, 'approvedAuditors(address)(bool)', [auditor]) === 'true');
-    if (!approved && await historyRecordExists(context, RELEASE)) {
-      throw new Error('M003 initial approvals changed after activation; manage auditors separately');
-    }
-    const policyReady = await observePolicy(context, checkpoint);
-    state = approved && policyReady ? 'active' : 'ready';
-  } else if (checkpoint.contracts.verification || hasCode(rpcUrl, policy)
+    if (!checkpoint.contracts.kbfVerification) throw new Error('M003 restore confirmed deployment receipts before continuing');
+    state = await observePolicy(context, checkpoint) ? 'active' : 'ready';
+  } else if (checkpoint.contracts.kbfVerification || hasCode(rpcUrl, policy)
     || numberValue(cast(rpcUrl, ['nonce', checkpoint.owner, '--block', 'pending'])) !== checkpoint.deploymentNonce) {
     throw new Error('M003 deployment is missing or its nonce is in use; reconcile the original broadcast');
   }
@@ -196,14 +196,14 @@ async function observePolicy(context, checkpoint) {
   const { rpcUrl } = context;
   const policy = checkpoint.policyAddress;
   if (!hasCode(rpcUrl, policy)) {
-    if (checkpoint.contracts.verificationPointsPolicy
+    if (checkpoint.contracts.kbfVerificationPointsPolicy
       || numberValue(cast(rpcUrl, ['nonce', checkpoint.owner, '--block', 'pending'])) !== checkpoint.deploymentNonce + 1) {
       throw new Error('M003 points policy is missing or its nonce is in use; reconcile the original broadcast');
     }
     return false;
   }
-  const found = await findArtifact(await buildArtifactIndex(), 'verificationPointsPolicy');
-  if (!found) throw new Error('M003 missing AntseedVerificationPointsPolicy artifact; run forge build');
+  const found = await findArtifact(await buildArtifactIndex(), 'kbfVerificationPointsPolicy');
+  if (!found) throw new Error('M003 missing AntseedKbfVerificationPointsPolicy artifact; run forge build');
   const mismatch = compareRuntimeCode(rpcUrl, policy, found.artifact);
   if (mismatch) throw new Error(`M003 points policy ${mismatch}`);
   if (!sameAddress(call(rpcUrl, policy, 'verification()(address)'), checkpoint.address)
@@ -212,12 +212,9 @@ async function observePolicy(context, checkpoint) {
     || !sameAddress(call(rpcUrl, policy, 'pendingOwner()(address)'), ZERO)) {
     throw new Error('M003 points policy wiring or ownership mismatch');
   }
-  if (!checkpoint.contracts.verificationPointsPolicy) throw new Error('M003 restore confirmed policy deployment receipts before continuing');
-  const registered = call(rpcUrl, checkpoint.pointsPolicyRegistry, 'isPolicyRegistered(address)(bool)', [policy]) === 'true';
-  if (!registered && await historyRecordExists(context, RELEASE)) {
-    throw new Error('M003 points policy was removed after activation; manage policies separately');
-  }
-  return registered;
+  if (!checkpoint.contracts.kbfVerificationPointsPolicy) throw new Error('M003 restore confirmed policy deployment receipts before continuing');
+  // Registering the policy in the points policy registry is a manual step outside M003.
+  return true;
 }
 
 export function activationRecords(context, checkpoint) {
@@ -227,9 +224,10 @@ export function activationRecords(context, checkpoint) {
   };
   const record = buildReleaseRecord(context, {
     release: RELEASE, status: 'active', sourceCommit: commit, contracts, transactions, verificationConfiguration,
+    notes: POLICY_NOTE,
   });
   const current = applyContractAliases(structuredClone(context.canonical), contracts, {});
-  Object.assign(current, { release: RELEASE, status: 'active', sourceCommit: commit, transactions, verificationConfiguration });
+  Object.assign(current, { release: RELEASE, status: 'active', sourceCommit: commit, transactions, verificationConfiguration, notes: POLICY_NOTE });
   return { record, current };
 }
 
@@ -237,18 +235,18 @@ async function finalize(context, observation, mode) {
   if (mode !== 'broadcast' || observation.state !== 'active') return false;
   const checkpoint = observation.deployment.checkpoint;
   if (await historyRecordExists(context, RELEASE)
-    && sameAddress(context.canonical.contracts.verification?.address, checkpoint.address)) {
+    && sameAddress(context.canonical.contracts.kbfVerification?.address, checkpoint.address)) {
     await clearPlan(context, RELEASE);
     return false;
   }
-  if (!checkpoint.contracts.verification?.transactionHash || !checkpoint.contracts.verificationPointsPolicy?.transactionHash) {
+  if (!checkpoint.contracts.kbfVerification?.transactionHash || !checkpoint.contracts.kbfVerificationPointsPolicy?.transactionHash) {
     throw new Error('M003 confirmed creation receipts required');
   }
   const { record, current } = activationRecords(context, checkpoint);
   if (recordErrors(record).length) throw new Error(recordErrors(record).join('\n'));
   if (await historyRecordExists(context, RELEASE)) {
     const recorded = await readJson(historyFile(context, RELEASE));
-    if (!sameAddress(recorded.contracts.verification.address, checkpoint.address)) throw new Error('M003 history address mismatch');
+    if (!sameAddress(recorded.contracts.kbfVerification.address, checkpoint.address)) throw new Error('M003 history address mismatch');
   }
   await writeActivationRecords(context, record, current);
   await clearPlan(context, RELEASE);
@@ -262,17 +260,17 @@ const deployPhase = {
   plan: (context, observation) => ({
     release: RELEASE, phaseId: 'deploy', simulationFile: receiptFile(context, true),
     pointerChanges: {
-      'current.contracts.verification': {
-        before: context.canonical.contracts.verification?.address ?? 'not deployed',
+      'current.contracts.kbfVerification': {
+        before: context.canonical.contracts.kbfVerification?.address ?? 'not deployed',
         after: observation.deployment.checkpoint.address,
       },
-      'current.contracts.verificationPointsPolicy': {
-        before: context.canonical.contracts.verificationPointsPolicy?.address ?? 'not deployed',
+      'current.contracts.kbfVerificationPointsPolicy': {
+        before: context.canonical.contracts.kbfVerificationPointsPolicy?.address ?? 'not deployed',
         after: observation.deployment.checkpoint.policyAddress,
       },
       'pointsPolicyRegistry.policies': {
         before: 'unchanged',
-        after: `+ ${observation.deployment.checkpoint.policyAddress}`,
+        after: 'unchanged (register the policy manually later)',
       },
     },
   }),
@@ -324,7 +322,6 @@ export const migration = {
       POINTS_POLICY_REGISTRY: checkpoint.pointsPolicyRegistry,
       VERIFICATION_BONUS_BPS: String(checkpoint.bonusBps),
       VERIFICATION_OWNER: signers.verificationOwner, VERIFICATION_DEPLOYMENT_NONCE: String(checkpoint.deploymentNonce),
-      VERIFICATION_AUDITORS: checkpoint.auditors.join(','),
       ...(context.forkTest ? { FOUNDRY_BROADCAST: path.join(context.receiptDirectory, 'broadcast') } : {}),
     };
   },
@@ -339,9 +336,20 @@ export const migration = {
   rehearsal: {
     prerequisites: ['M001'],
     async run({ runMigration: drive }) {
-      const overrides = { signers: { verificationOwner: 'unlocked:0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266' } };
-      const first = await drive(overrides);
-      const second = await drive(overrides);
+      // Anvil account 1: a deployer that owns neither the protocol registry nor the points registry.
+      const owner = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8';
+      const overrides = { signers: { verificationOwner: `unlocked:${owner}` } };
+      const previous = process.env.VERIFICATION_OWNER;
+      process.env.VERIFICATION_OWNER = owner;
+      let first;
+      let second;
+      try {
+        first = await drive(overrides);
+        second = await drive(overrides);
+      } finally {
+        if (previous === undefined) delete process.env.VERIFICATION_OWNER;
+        else process.env.VERIFICATION_OWNER = previous;
+      }
       if (first.state !== 'active' || second.state !== 'active'
         || !sameAddress(first.deployment.checkpoint.address, second.deployment.checkpoint.address)
         || !sameAddress(first.deployment.checkpoint.policyAddress, second.deployment.checkpoint.policyAddress)

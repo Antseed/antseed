@@ -36,6 +36,8 @@ export interface ProxyAuditEvidenceExchange {
   promptVariantId?: string
   /** Sampling fields left out after the seller refused them; absent when the canonical body was sent. */
   omittedSamplingFields?: string[]
+  /** True when the seller refused the reference's thinking suppression and the batch was sent without it. */
+  omittedThinkingSuppression?: true
   request: {
     method: 'POST'
     url: string
@@ -97,7 +99,7 @@ export interface AuditCostSummaryV1 {
 export type VerificationSkipCode =
   | 'missing_response_auth'
   | 'reputation_below_minimum'
-  | 'price_above_maximum'
+  | 'price_above_reference'
   | 'policy_rejected'
   | 'stale_model_advertisement'
   | 'upstream_credentials_invalid'

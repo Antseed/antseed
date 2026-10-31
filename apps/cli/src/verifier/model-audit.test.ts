@@ -72,7 +72,7 @@ const audit = (
 
 test('builds one audit per model with every seller, including UNDETERMINED', async () => {
   await withRun([
-    audit('2', sellers[1]!, 'model-a', 'DIFF'),
+    { ...audit('2', sellers[1]!, 'model-a', 'DIFF'), recheck: 'DIFF' },
     audit('1', sellers[0]!, 'model-a'),
     audit('3', sellers[2]!, 'model-a', 'UNDETERMINED'),
     audit('1', sellers[0]!, 'model-b'),
@@ -90,8 +90,9 @@ test('builds one audit per model with every seller, including UNDETERMINED', asy
     ])
     assert.equal(first.evidence.results[2]!.verdict, 'UNDETERMINED')
     assert.match(first.evidence.results[2]!.verdictReason ?? '', /ResponseAuth/)
-    assert.equal(first.evidence.references.length, 1)
-    assert.ok(first.evidence.references[0]!.path?.startsWith('references/'))
+    assert.equal(first.evidence.references.length, 2, 'the first check and the DIFF recheck each have a reference')
+    const firstCheck = first.evidence.references.find((reference) => reference.referenceId === first.evidence.results[0]!.referenceId)
+    assert.ok(firstCheck?.path?.startsWith('references/'))
     assert.equal(first.evidenceHash, canonicalHashBytes32(first.evidence))
   })
 })
@@ -216,7 +217,7 @@ test('evidence lists, copies, and round-trips the bank\'s raw reference exchange
   })
 })
 
-test('a recheck may turn a first DIFF into UNDETERMINED, but never on reused probes', () => {
+test('only a recheck DIFF keeps a first DIFF, and never on reused probes', () => {
   const evidence = (verdict: string, referenceId: string, probeIds: string[]) => ({
     target: { peerId: 'aa'.repeat(20), service: 'model-a', agentId: '7' },
     reference: { referenceId, probes: probeIds.map((id) => ({ id })) },
@@ -231,13 +232,11 @@ test('a recheck may turn a first DIFF into UNDETERMINED, but never on reused pro
   validateAuditMatchesSummary(first, summary('UNDETERMINED', 'SAME'), evidence('SAME', 'sha256:second', ['p3', 'p4']))
   validateAuditMatchesSummary(first, summary('DIFF', 'DIFF'), evidence('DIFF', 'sha256:second', ['p3', 'p4']))
   validateAuditMatchesSummary(
-    first, summary('DIFF', 'UNDETERMINED'), evidence('UNDETERMINED', 'sha256:second', ['p3', 'p4']),
+    first, summary('UNDETERMINED', 'UNDETERMINED'), evidence('UNDETERMINED', 'sha256:second', ['p3', 'p4']),
   )
-  assert.throws(
-    () => validateAuditMatchesSummary(
-      first, summary('UNDETERMINED', 'UNDETERMINED'), evidence('UNDETERMINED', 'sha256:second', ['p3', 'p4']),
-    ),
-    /final verdict does not follow/,
+  // Runs from before DIFF needed two DIFFs stored this as DIFF; it is re-scored at submit time.
+  validateAuditMatchesSummary(
+    first, summary('DIFF', 'UNDETERMINED'), evidence('UNDETERMINED', 'sha256:second', ['p3', 'p4']),
   )
   assert.throws(
     () => validateAuditMatchesSummary(first, summary('DIFF', 'SAME'), evidence('SAME', 'sha256:second', ['p3', 'p4'])),
@@ -255,12 +254,34 @@ test('a recheck may turn a first DIFF into UNDETERMINED, but never on reused pro
   assert.throws(() => validateAuditMatchesSummary(first, summary('UNDETERMINED', 'SAME'), null), /recheck evidence missing/)
 })
 
+test('a DIFF is submitted only when the recheck is DIFF too', async () => {
+  await withRun([
+    { ...audit('1', sellers[0]!, 'model-a', 'DIFF'), recheck: 'DIFF' },
+    { ...audit('2', sellers[1]!, 'model-a', 'DIFF'), recheck: 'UNDETERMINED' },
+    { ...audit('3', sellers[2]!, 'model-a', 'DIFF'), recheck: 'SAME' },
+    audit('4', randomWallet(), 'model-a', 'DIFF'),
+  ], async ({ prepared }) => {
+    const [entry] = prepared.audits as [PreparedModelAudit]
+    assert.deepEqual(entry.results.map((result) => [result.agentId, result.verdict]), [
+      [1n, VERIFIER_VERDICT.DIFF],
+      [2n, VERIFIER_VERDICT.UNDETERMINED],
+      [3n, VERIFIER_VERDICT.UNDETERMINED],
+    ])
+    assert.deepEqual(entry.evidence.results.map((result) => [result.verdict, result.confirmation?.verdict]), [
+      ['DIFF', 'DIFF'], ['UNDETERMINED', 'UNDETERMINED'], ['UNDETERMINED', 'SAME'],
+    ])
+    assert.deepEqual(prepared.excluded.map((entry) => [entry.agentId, entry.reason]), [
+      ['4', 'DIFF not confirmed: no recheck on fresh probes, so it is not submitted'],
+    ])
+  })
+})
+
 test('submits one SAME per seller and model, but every DIFF', async () => {
   const names = ['model-a', 'model-a-fast', 'model-a-alias']
   const sameHashes = names.map((name) => serviceHash(name)).sort()
   await withRun([
     ...names.map((service) => ({ ...audit('1', randomWallet(), 'model-a'), service })),
-    { ...audit('1', randomWallet(), 'model-a', 'DIFF'), service: 'model-a-fake' },
+    { ...audit('1', randomWallet(), 'model-a', 'DIFF'), service: 'model-a-fake', recheck: 'DIFF' },
     audit('2', sellers[1]!, 'model-a'),
   ], async ({ prepared }) => {
     const [entry] = prepared.audits as [PreparedModelAudit]

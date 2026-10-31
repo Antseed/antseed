@@ -93,6 +93,17 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
+      label: 'Verifiers',
+      className: 'sidebar-icon sidebar-icon--verify',
+      collapsible: true,
+      collapsed: true,
+      items: [
+        'verify/become-a-verifier',
+        'verify/audits',
+      ],
+    },
+    {
+      type: 'category',
       label: 'Plugins',
       className: 'sidebar-icon sidebar-icon--plugins',
       collapsible: true,

@@ -6,7 +6,7 @@ import {
   type MatchEntry,
 } from '../../types.js';
 import { kbfPromptVariantsHash } from './prompts.js';
-import { matchesTolerance } from './scoring.js';
+import { matchesTolerance, scoreKbfAnswer } from './scoring.js';
 import { binomialOneSidedPValue, clopperPearsonUpper } from './stats.js';
 
 /**
@@ -62,11 +62,40 @@ export interface ReferenceQueryProfileV1 {
   requestOmissions?: Array<'temperature' | 'top_p'>;
 }
 
+/**
+ * How hidden reasoning ("thinking") was suppressed. New references discover it
+ * like the KBF reference code: each strategy is tried in order on a fixed test
+ * batch and the first one that yields at least 5/10 parseable answers with zero
+ * reasoning tokens is kept (`bare` may think). `bare-expanded` means nothing
+ * suppressed thinking, so requests get a much larger token budget instead.
+ * `reasoning-effort-minimum-supported` is only found in older references.
+ */
 export type ReferenceReasoningStrategy =
   | 'reasoning-effort-none'
+  | 'reasoning-effort-minimal'
   | 'reasoning-effort-minimum-supported'
   | 'disable-thinking'
-  | 'bare';
+  | 'enable-thinking-false'
+  | 'prefill'
+  | 'bare'
+  | 'bare-expanded';
+
+export const KBF_REFERENCE_REASONING_STRATEGIES: readonly ReferenceReasoningStrategy[] = Object.freeze([
+  'reasoning-effort-none',
+  'reasoning-effort-minimal',
+  'reasoning-effort-minimum-supported',
+  'disable-thinking',
+  'enable-thinking-false',
+  'prefill',
+  'bare',
+  'bare-expanded',
+]);
+
+/** Assistant prefill used by the `prefill` strategy (OpenAI Chat Completions only). */
+export const KBF_THINKING_PREFILL = '<think></think>';
+
+/** Request fields that carry thinking suppression; audits send these to targets too. */
+export const KBF_THINKING_SUPPRESSION_FIELDS = ['reasoning', 'reasoning_effort', 'thinking', 'enable_thinking'] as const;
 
 /**
  * Endpoint-specific settings used only for requests to the reference endpoint
@@ -82,6 +111,37 @@ export interface ReferenceEndpointRequestV1 {
   requestOverrides: Record<string, unknown>;
   /** Standard request fields omitted for reference-endpoint compatibility. */
   requestOmissions: Array<'temperature' | 'top_p'>;
+  /** Assistant message appended to suppress thinking (`prefill` strategy only). */
+  assistantPrefill?: typeof KBF_THINKING_PREFILL;
+}
+
+/**
+ * Thinking suppression an audit applies to the target, as the KBF reference
+ * code does for every endpoint: the suppression fields of the reference
+ * request plus any assistant prefill. Endpoint quirks (omitted sampling fields,
+ * provider pins) are not included. Null when the reference used none.
+ */
+export interface KbfThinkingSuppression {
+  strategy: ReferenceReasoningStrategy | null;
+  overrides: Record<string, unknown>;
+  assistantPrefill?: typeof KBF_THINKING_PREFILL;
+}
+
+export function kbfTargetThinkingSuppression(
+  reference: Pick<KbfReferenceV1, 'queryProfile' | 'generator'>,
+): KbfThinkingSuppression | null {
+  const request = referenceEndpointRequest(reference);
+  if (!request) return null;
+  const overrides: Record<string, unknown> = {};
+  for (const field of KBF_THINKING_SUPPRESSION_FIELDS) {
+    if (request.requestOverrides?.[field] !== undefined) overrides[field] = request.requestOverrides[field];
+  }
+  if (Object.keys(overrides).length === 0 && !request.assistantPrefill) return null;
+  return {
+    strategy: request.reasoningStrategy ?? null,
+    overrides,
+    ...(request.assistantPrefill ? { assistantPrefill: request.assistantPrefill } : {}),
+  };
 }
 
 
@@ -97,8 +157,10 @@ export interface ReferenceProbeSelfTestV1 {
   answers: Array<number | null>;
   /**
    * Match per run, scored exactly like a target answer: 1 within tolerance,
-   * 0 discrepancy (including a missing or refused answer), null only when the
-   * run could not be attempted at all.
+   * 0 discrepancy, null unscored (missing, unreadable, or out-of-range answer,
+   * or a run that could not be attempted). References built before unscored
+   * answers were left out store 0 for a missing answer; validation accepts
+   * both forms, and `rescoreKbfSelfTestOutcome` converts the old one.
    */
   matches: MatchEntry[];
 }
@@ -351,12 +413,9 @@ export function subsetReferenceSelfTest(
  * Pool per-probe self-test runs into the honest-error baseline.
  *
  * Null handling mirrors target scoring so p0 and the target statistic count
- * the same thing: a missing, unparseable, or refused answer is a discrepancy
- * (0) on both sides, while a null match (the trial could not be attempted)
- * is excluded from both hamming and total. Reference builders never emit
- * null matches (a transport failure aborts the build), so in practice every
- * refusal counts against the reference, which keeps p0 conservative: a
- * genuine seller that refuses the same probes is not penalised for it.
+ * the same thing: a null match (missing, unreadable, or out-of-range answer,
+ * or a run that could not be attempted) is excluded from both hamming and
+ * total, as in the KBF paper (v3) and its reference code.
  */
 export function aggregateKbfSelfTestOutcomes(
   outcomes: ReferenceProbeSelfTestV1[],
@@ -381,6 +440,78 @@ export function aggregateKbfSelfTestOutcomes(
     errorRate: total === 0 ? 0 : hamming / total,
     outcomes,
   };
+}
+
+/**
+ * Re-scores one probe's self-test runs with the current rule: a run whose
+ * answer is missing, unreadable, or out of range becomes null (unscored)
+ * instead of the 0 that older references stored. Runs that were never
+ * attempted (null match) stay null.
+ */
+export function rescoreKbfSelfTestOutcome(
+  outcome: ReferenceProbeSelfTestV1,
+  probe: KbfProbe,
+): ReferenceProbeSelfTestV1 {
+  return {
+    ...outcome,
+    matches: outcome.matches.map((match, run) => (match === null ? null : scoreKbfAnswer(outcome.answers[run], probe))),
+  };
+}
+
+/**
+ * Re-scores a whole reference with the current rule and recomputes everything
+ * derived from its self-test: aggregates, statistical power, contrast
+ * detection, and the reference ID. Leaving unscored runs out can only lower
+ * the self-error bound, so power and contrast detection never get worse.
+ * Returns the reference unchanged when it already uses the current rule.
+ */
+export function rescoreKbfReference(reference: KbfReferenceV1): KbfReferenceV1 {
+  const probesById = new Map(reference.probes.map((probe) => [probe.id, probe]));
+  const outcomes = reference.selfTest.outcomes.map((outcome) => {
+    const probe = probesById.get(outcome.probeId);
+    if (!probe) throw new Error(`self-test outcome ${outcome.probeId} has no probe`);
+    return rescoreKbfSelfTestOutcome(outcome, probe);
+  });
+  const changed = outcomes.some((outcome, index) => outcome.matches.some(
+    (match, run) => match !== reference.selfTest.outcomes[index]!.matches[run],
+  ));
+  if (!changed) return reference;
+  const { outcomes: _previous, ...selfTestExtensions } = reference.selfTest;
+  const selfTest = { ...selfTestExtensions, ...aggregateKbfSelfTestOutcomes(outcomes) };
+  const evidence = reference.statisticalPowerEvidence;
+  const power = computeBinomialPower({
+    selfHamming: selfTest.hamming,
+    selfTotal: selfTest.total,
+    probeCount: reference.probes.length,
+    minimumMismatchDelta: reference.minimumMismatchDelta,
+    alpha: evidence.alpha,
+    cpConfidence: evidence.clopperPearsonConfidence,
+  });
+  const p0 = clopperPearsonUpper(selfTest.hamming, selfTest.total, evidence.clopperPearsonConfidence);
+  const rescored: KbfReferenceV1 = {
+    ...reference,
+    referenceId: '',
+    selfTest,
+    statisticalPower: power.power,
+    statisticalPowerEvidence: {
+      ...evidence,
+      selfHamming: selfTest.hamming,
+      selfTotal: selfTest.total,
+      probeCount: reference.probes.length,
+      p0UpperBound: power.p0,
+      alternativeMismatchRate: power.p1,
+      criticalMismatchCount: power.criticalMismatchCount,
+      power: power.power,
+    },
+    ...(reference.contrastDetection ? {
+      contrastDetection: reference.contrastDetection.map((entry) => {
+        const pValue = contrastDetectionPValue(entry.mismatches, entry.total, p0);
+        return { ...entry, pValue, detected: pValue < evidence.alpha };
+      }),
+    } : {}),
+  };
+  rescored.referenceId = computeReferenceId(rescored);
+  return rescored;
 }
 
 export function validateKbfReferenceV1(
@@ -449,7 +580,10 @@ export function validateKbfReferenceV1(
         throw new Error('invalid self-test answer');
       }
       if (match !== null && match !== 0 && match !== 1) throw new Error('invalid self-test match');
-      if (match !== null && match !== (answer !== null && matchesTolerance(answer, probe) ? 1 : 0)) {
+      // Current rule: unscoreable answers are null. References built before it
+      // scored a missing answer as 0; both are internally consistent.
+      const legacyMatch = answer !== null && matchesTolerance(answer, probe) ? 1 : 0;
+      if (match !== null && match !== legacyMatch && match !== scoreKbfAnswer(answer, probe)) {
         throw new Error(`self-test match for ${outcome.probeId} run ${run} is inconsistent with its answer`);
       }
     }
@@ -569,9 +703,11 @@ function validateQueryProfile(profile: ReferenceQueryProfileV1): void {
 
 function validateEndpointRequestFields(fields: Partial<ReferenceEndpointRequestV1>): void {
   if (fields.reasoningStrategy !== undefined
-    && !['reasoning-effort-none', 'reasoning-effort-minimum-supported', 'disable-thinking', 'bare']
-      .includes(fields.reasoningStrategy)) {
+    && !KBF_REFERENCE_REASONING_STRATEGIES.includes(fields.reasoningStrategy)) {
     throw new Error('unsupported reasoning strategy');
+  }
+  if (fields.assistantPrefill !== undefined && fields.assistantPrefill !== KBF_THINKING_PREFILL) {
+    throw new Error('unsupported assistant prefill');
   }
   if (fields.requestOverrides !== undefined) object(fields.requestOverrides, 'requestOverrides');
   if (fields.requestOmissions !== undefined) {

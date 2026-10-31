@@ -55,4 +55,4 @@ const { reference } = await resolveAuditReference('ipfs://<audit-cid>')
 ```
 
 Any transport can be audited by implementing `ModelEndpoint`, so anyone can re-check
-an `AntseedVerification` audit against its published evidence.
+an `AntseedKbfVerification` audit against its published evidence.

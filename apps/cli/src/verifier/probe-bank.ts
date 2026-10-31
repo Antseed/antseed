@@ -9,6 +9,8 @@ import {
   computeContrastDetection,
   computeReferenceId,
   referenceCompatibilityProfileHash,
+  rescoreKbfReference,
+  rescoreKbfSelfTestOutcome,
   validateKbfReferenceV1,
   type KbfProbe,
   type KbfReferenceV1,
@@ -22,7 +24,11 @@ import type {
   ReferenceUpstreamProvenanceV1,
 } from './model-reference.js'
 import { excludedVerifierDomains } from './model-config.js'
-import { isReferenceProbeCountAllowed, resolveReferenceSizingPolicy } from './reference-sizing.js'
+import {
+  isReferenceProbeCountAllowed,
+  REFERENCE_MAXIMUM_SELF_TEST_ERROR_RATE,
+  resolveReferenceSizingPolicy,
+} from './reference-sizing.js'
 import { safeServiceSlug } from './slug.js'
 import { normalized } from './utils.js'
 
@@ -170,7 +176,7 @@ export async function appendModelReferenceToBank(input: {
       trustImported: true,
       minimumStatisticalPower: Number.EPSILON,
     })
-    const existing = await readJsonIfExists<ProbeBankV1>(path)
+    const existing = await readBankFile(path)
     const incoming = bankFromReference(
       input.model,
       validatedReference,
@@ -192,7 +198,11 @@ export async function appendModelReferenceToBank(input: {
     }
     const bank = existing
     if (!Array.isArray(bank.referenceCosts)) bank.referenceCosts = []
-    if (existing && existing.compatibilityHash !== incoming.compatibilityHash) {
+    // Service names (aliases) only say what sellers call the model, not how answers are measured,
+    // so a reference built after the alias list changed still joins the bank under its aliases.
+    if (existing && existing.compatibilityHash !== probeBankCompatibilityHash(input.model, {
+      ...validatedReference, serviceAliases: existing.referenceTemplate.serviceAliases,
+    })) {
       throw new Error(`probe bank for ${input.model} is incompatible with the new reference`)
     }
     const byId = new Map(bank.probes.map((entry) => [entry.probe.id, entry]))
@@ -266,7 +276,7 @@ export async function loadBankReferenceExchanges(
   model: string,
 ): Promise<Array<BankReferenceExchangesV1 & { absolutePath: string }>> {
   const path = bankPath(banksDir, model)
-  const bank = await readJsonIfExists<ProbeBankV1>(path)
+  const bank = await readBankFile(path)
   return (bank?.referenceExchanges ?? []).map((entry) => ({ ...entry, absolutePath: join(dirname(path), entry.path) }))
 }
 
@@ -395,7 +405,12 @@ export async function reserveDiffRecheckReference(input: {
       && entry.distinguishingContrastModels.some((model) => activeContrasts.has(normalized(model))))
     const available = candidates.filter((entry) => !used.has(entry.probe.id))
     const now = input.now?.() ?? Date.now()
-    const reference = selectPoweredReference(bank, (input.shuffle ?? cryptoShuffle)(available), input.config, now)
+    // A recheck confirms a DIFF the first check already found with every contrast detected. A
+    // contrast that became unavailable after the bank was first built (it answered none or too few
+    // of these probes to ever be told apart) cannot be tested on fresh probes and does not block it.
+    const reference = selectPoweredReference(
+      bank, (input.shuffle ?? cryptoShuffle)(available), input.config, now, { onlyDetectableContrasts: true },
+    )
     if (!reference) {
       throw new Error(
         `${BANK_EXHAUSTED}: ${available.length} probes never assigned to seller ${input.sellerPeerId} `
@@ -492,7 +507,7 @@ export async function loadModelAuditReservation(input: {
       epoch: assignment.epoch,
       config: input.config,
     })
-    if (reference.referenceId !== assignment.referenceId
+    if (!matchesReservedReferenceId(assignment.referenceId, sellerEpochReference.reference, reference)
       || !sameValues(reference.probes.map((probe) => probe.id), assignment.probeIds)) {
       throw new Error(`audit reservation ${input.auditId} does not match its seller epoch probe reference`)
     }
@@ -510,7 +525,7 @@ export async function loadModelAuditReservation(input: {
       epoch: assignment.epoch,
       config: input.config,
     })
-    if (reference.referenceId !== assignment.referenceId
+    if (!matchesReservedReferenceId(assignment.referenceId, epochReference.reference, reference)
       || !sameValues(reference.probes.map((probe) => probe.id), assignment.probeIds)) {
       throw new Error(`audit reservation ${input.auditId} does not match its epoch probe reference`)
     }
@@ -533,6 +548,15 @@ export async function loadModelAuditReservation(input: {
     throw new Error(`audit reservation ${input.auditId} is incompatible with the current probe bank`)
   }
   return { reference, assignment: structuredClone(assignment) }
+}
+
+/**
+ * A reservation names the reference ID it was drawn with. A reference stored before
+ * unscoreable answers were left out gets a new ID once re-scored; it is still the same
+ * reservation (same probes), so either ID matches.
+ */
+function matchesReservedReferenceId(reservedId: string, stored: KbfReferenceV1, rescored: KbfReferenceV1): boolean {
+  return reservedId === rescored.referenceId || reservedId === stored?.referenceId
 }
 
 export async function voidModelAuditReference(input: {
@@ -723,7 +747,10 @@ function validateBankProbeReference(input: {
 }): KbfReferenceV1 {
   const { bank, label } = input
   const sizing = resolveReferenceSizingPolicy(input.config)
-  const reference = validateKbfReferenceV1(input.reference, {
+  // References drawn before unscoreable answers were left out are re-scored like the bank.
+  const reference = validateKbfReferenceV1(rescoreKbfReference(validateKbfReferenceV1(input.reference, {
+    minimumStatisticalPower: Number.EPSILON,
+  })), {
     minimumStatisticalPower: sizing.minimumStatisticalPower,
   })
   if (!isReferenceProbeCountAllowed(reference.probes.length, sizing)) {
@@ -761,7 +788,7 @@ export async function inspectModelProbeBankPower(input: {
   now?: () => number
 }): Promise<ProbeBankPowerStatus> {
   const path = bankPath(input.banksDir, input.model)
-  const bank = await readJsonIfExists<ProbeBankV1>(path)
+  const bank = await readBankFile(path)
   if (!bank) {
     return { totalProbeCount: 0, eligibleProbeCount: 0, selectedProbeCount: null, statisticalPower: null }
   }
@@ -825,8 +852,10 @@ export async function findEpochProbeReference(banksDir: string, referenceId: str
       if (!entry.isFile() || !entry.name.endsWith('.json')) continue
       const value = await readJsonIfExists<EpochProbeReferenceV1 | SellerEpochProbeReferenceV1>(path)
       if ((value?.kind === 'antseed-kbf-seller-epoch-probe-reference' || value?.kind === 'antseed-kbf-epoch-probe-reference')
-        && value.reference?.referenceId === referenceId) {
-        return structuredClone(value.reference)
+        && value.reference) {
+        if (value.reference.referenceId === referenceId) return structuredClone(value.reference)
+        const rescored = rescoredOrNull(value.reference)
+        if (rescored?.referenceId === referenceId) return rescored
       }
     }
     return null
@@ -843,6 +872,14 @@ export async function findEpochProbeReference(banksDir: string, referenceId: str
     if (found) return found
   }
   return null
+}
+
+function rescoredOrNull(reference: KbfReferenceV1): KbfReferenceV1 | null {
+  try {
+    return rescoreKbfReference(structuredClone(reference))
+  } catch {
+    return null
+  }
 }
 
 function bankFromReference(
@@ -945,7 +982,7 @@ export async function loadBankProbeIndex(
   banksDir: string,
   model: string,
 ): Promise<{ contrastModels: string[]; probeIds: string[] } | undefined> {
-  const bank = await readJsonIfExists<ProbeBankV1>(bankPath(banksDir, model))
+  const bank = await readBankFile(bankPath(banksDir, model))
   if (!bank) return undefined
   if (bank.kind !== 'antseed-kbf-probe-bank' || normalized(bank.model) !== normalized(model)) {
     throw new Error(`invalid probe bank for ${model}`)
@@ -955,7 +992,7 @@ export async function loadBankProbeIndex(
 }
 
 export async function loadBankEnrollmentReference(banksDir: string, model: string): Promise<KbfReferenceV1 | undefined> {
-  const bank = await readJsonIfExists<ProbeBankV1>(bankPath(banksDir, model))
+  const bank = await readBankFile(bankPath(banksDir, model))
   if (!bank) return undefined
   if (bank.kind !== 'antseed-kbf-probe-bank' || normalized(bank.model) !== normalized(model)) {
     throw new Error(`invalid probe bank for ${model}`)
@@ -1017,11 +1054,16 @@ function selectPoweredReference(
   available: readonly BankProbeV1[],
   config: VerifierCLIConfig | undefined,
   now: number,
+  options: { onlyDetectableContrasts?: boolean } = {},
 ): KbfReferenceV1 | null {
   const sizing = resolveReferenceSizingPolicy(config)
   const excludedDomains = excludedVerifierDomains(config, bank.model)
   const eligible = available.filter((entry) => !excludedDomains.has(entry.probe.domain))
-  const testableContrasts = new Set(bank.probes.flatMap((entry) => entry.distinguishingContrastModels))
+  let testableContrasts = new Set(bank.probes.flatMap((entry) => entry.distinguishingContrastModels))
+  if (options.onlyDetectableContrasts) {
+    const detectable = detectableContrasts(bank, eligible)
+    testableContrasts = new Set([...testableContrasts].filter((model) => detectable.has(model)))
+  }
   for (let count = sizing.minimumProbeCount;
     count <= sizing.maximumProbeCount && count <= eligible.length;
     count += sizing.probeStep) {
@@ -1035,7 +1077,7 @@ function selectPoweredReference(
       alpha: bank.statisticalAssumptions.alpha,
       cpConfidence: bank.statisticalAssumptions.clopperPearsonConfidence,
     })
-    if (selfTest.coverage < 0.8 || selfTest.errorRate > 0.35
+    if (selfTest.coverage < 0.8 || selfTest.errorRate > REFERENCE_MAXIMUM_SELF_TEST_ERROR_RATE
       || power.power < sizing.minimumStatisticalPower) continue
     const selectedIds = new Set(selected.map((entry) => entry.probe.id))
     const contrasts = bank.contrastModels.map((model) => ({
@@ -1064,6 +1106,28 @@ function selectPoweredReference(
   return null
 }
 
+/** Contrast models detected when every eligible probe is used, the most any subset can detect. */
+function detectableContrasts(bank: ProbeBankV1, eligible: readonly BankProbeV1[]): Set<string> {
+  const selfTest = aggregateKbfSelfTestOutcomes(eligible.map((entry) => entry.selfTest))
+  if (eligible.length === 0 || selfTest.total === 0) return new Set()
+  const ids = new Set(eligible.map((entry) => entry.probe.id))
+  const detection = computeContrastDetection({
+    probeIds: [...ids],
+    contrasts: bank.contrastModels.map((model) => ({
+      model,
+      distinguishingProbeIds: eligible
+        .filter((entry) => entry.distinguishingContrastModels.includes(model))
+        .map((entry) => entry.probe.id),
+    })),
+    answeredProbeIds: answeredContrastProbeIds(bank.contrastModels, eligible),
+    selfHamming: selfTest.hamming,
+    selfTotal: selfTest.total,
+    alpha: bank.statisticalAssumptions.alpha,
+    cpConfidence: bank.statisticalAssumptions.clopperPearsonConfidence,
+  })
+  return new Set(detection.filter((entry) => entry.detected).map((entry) => entry.model))
+}
+
 function answeredContrastProbeIds(
   contrastModels: readonly string[],
   selected: readonly BankProbeV1[],
@@ -1085,8 +1149,22 @@ function cryptoShuffle<T>(values: readonly T[]): T[] {
   return shuffled
 }
 
-async function readRequiredBank(path: string, model: string): Promise<ProbeBankV1> {
+/**
+ * Reads a bank and re-scores its self-test runs with the current rule (unscoreable answers
+ * are null, not 0), so banks enrolled before that rule need no rebuild. Deterministic, so
+ * every reader derives the same references from the same file.
+ */
+async function readBankFile(path: string): Promise<ProbeBankV1 | null> {
   const bank = await readJsonIfExists<ProbeBankV1>(path)
+  if (!bank || !Array.isArray(bank.probes)) return bank
+  for (const entry of bank.probes) {
+    if (entry?.probe && entry.selfTest) entry.selfTest = rescoreKbfSelfTestOutcome(entry.selfTest, entry.probe)
+  }
+  return bank
+}
+
+async function readRequiredBank(path: string, model: string): Promise<ProbeBankV1> {
+  const bank = await readBankFile(path)
   if (!bank) throw new Error(`no probe bank exists for ${model}; run antseed verifier reference build ${model}`)
   if (!Array.isArray(bank.referenceCosts)) {
     throw new Error(`probe bank for ${model} has no reference cost metadata; rebuild it`)
@@ -1103,4 +1181,55 @@ function assertCurrentBankEnrollment(bank: ProbeBankV1, model: string): void {
       + `archive it and rebuild with enrollment ${CURRENT_ANTSEED_REFERENCE_BUILDER_VERSION}`,
     )
   }
+}
+
+/**
+ * Before a run: how many probes each seller has never been assigned, against the probes one audit
+ * uses. A first audit needs one set and a DIFF recheck a second, unseen set; a seller already
+ * assigned this epoch only needs the recheck set. Throws when the bank can't be loaded.
+ */
+export async function inspectSellerProbeCapacity(input: {
+  banksDir: string
+  model: string
+  epoch: string
+  sellerPeerIds: readonly string[]
+  /** Whether a DIFF is rechecked on a second, unseen set (`verifier.diffConfirmationRuns` > 0). */
+  recheck: boolean
+  config?: VerifierCLIConfig
+  /**
+   * `--allow-probe-reuse`: the first audit may reuse questions the seller saw in earlier epochs,
+   * as the reservation does. A DIFF recheck still needs unseen questions.
+   */
+  allowProbeReuse?: boolean
+}): Promise<{
+  selectedProbeCount: number | null
+  sellers: Array<{ sellerPeerId: string; unseenProbeCount: number; neededProbeCount: number; assignedThisEpoch: boolean }>
+}> {
+  const power = await inspectModelProbeBankPower({ banksDir: input.banksDir, model: input.model, config: input.config })
+  if (power.totalProbeCount === 0) {
+    throw new Error(`no probe bank exists for ${input.model}; run antseed verifier reference build ${input.model}`)
+  }
+  const bank = await readRequiredBank(bankPath(input.banksDir, input.model), input.model)
+  const activeContrasts = new Set(bank.contrastModels.map(normalized))
+  const excludedDomains = excludedVerifierDomains(input.config, input.model)
+  const eligibleIds = bank.probes
+    .filter((entry) => !excludedDomains.has(entry.probe.domain)
+      && entry.distinguishingContrastModels.some((model) => activeContrasts.has(normalized(model))))
+    .map((entry) => entry.probe.id)
+  const selected = power.selectedProbeCount
+  const sellers = await Promise.all(input.sellerPeerIds.map(async (sellerPeerId) => {
+    const ledger = await readJsonIfExists<SellerProbeLedgerV1>(sellerLedgerPath(input.banksDir, input.model, sellerPeerId))
+    const used = new Set(ledger?.assignments.flatMap((assignment) => assignment.probeIds) ?? [])
+    const assignedThisEpoch = ledger?.assignments.some((assignment) => assignment.epoch === input.epoch
+      && assignment.purpose !== 'diff-recheck' && !assignment.voidedAt) ?? false
+    return {
+      sellerPeerId,
+      unseenProbeCount: eligibleIds.filter((id) => !used.has(id)).length,
+      neededProbeCount: selected === null
+        ? 0
+        : selected * ((assignedThisEpoch || input.allowProbeReuse ? 0 : 1) + (input.recheck ? 1 : 0)),
+      assignedThisEpoch,
+    }
+  }))
+  return { selectedProbeCount: selected, sellers }
 }

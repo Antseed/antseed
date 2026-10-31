@@ -55,6 +55,7 @@ import {
   type SerializedHttpResponse,
   type SerializedHttpResponseChunk,
   type SweepReceiptPayload,
+  type TokenPricingUsdPerMillion,
   VIDEO_JOB_RETIRED_HEADER,
 } from '@antseed/node'
 import { encodeServedSelection, ROUTE_SELECTION_HEADER, type RouteSelection, type ServedSelection } from './route-selection.js'
@@ -253,6 +254,13 @@ export interface BuyerProxyConfig {
   buyerIdentities?: BuyerIdentityLoader
   /** `buyer.minPeerReputation`, so gateway policies narrow under it (also enforced by the router plugin). */
   minPeerReputation?: number
+  /**
+   * The effective `buyer.maxPricing.defaults` the router plugin enforces. Only recorded in
+   * buyer.state.json (`settings`), so `verifier run` can check it audits under the same limits.
+   */
+  maxPricing?: TokenPricingUsdPerMillion
+  /** `payments.maxReserveAmountUsdc` (USDC base units) each new payment channel reserves; recorded like `maxPricing`. */
+  maxReserveAmountUsdc?: string
   /** Chain reads behind `GET /_antseed/balances`; absent when payments are disabled. */
   balanceReader?: BuyerBalanceReader
   /**
@@ -1280,6 +1288,8 @@ export class BuyerProxy {
   private readonly _spendAttribution: SpendAttributionFeed
 
   private readonly _minPeerReputation: number | null
+  private readonly _maxPricing: TokenPricingUsdPerMillion | null
+  private readonly _maxReserveAmountUsdc: string | null
   /** Gateway control secret, read lazily (the gateway may create it after the buyer starts). */
   private _controlSecret: string | null = null
   private _controlSecretCheckedAt = 0
@@ -1295,6 +1305,8 @@ export class BuyerProxy {
 
   constructor(config: BuyerProxyConfig) {
     this._minPeerReputation = config.minPeerReputation ?? null
+    this._maxPricing = config.maxPricing ? { ...config.maxPricing } : null
+    this._maxReserveAmountUsdc = config.maxReserveAmountUsdc ?? null
     this._balanceReader = config.balanceReader ?? null
     this._restartHandler = config.onRestartRequested ?? null
     this._restartAllowedAt = Date.now() + (config.minRestartIntervalMs ?? MIN_RESTART_INTERVAL_MS)
@@ -2492,6 +2504,12 @@ export class BuyerProxy {
       state,
       pid: process.pid,
       port: this._port,
+      // The limits this process enforces, as started (neither is reloaded from the config file).
+      settings: {
+        minPeerReputation: this._minPeerReputation,
+        maxPricing: this._maxPricing,
+        maxReserveAmountUsdc: this._maxReserveAmountUsdc,
+      },
       ...sessionOverrides,
     })
   }
