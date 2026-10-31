@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises'
-import type { ModelAuditSummaryV1 } from './audit-artifacts.js'
-import { epochRunManifests } from './epoch-overview.js'
+import { epochRunManifests, type ModelAuditSummaryV1 } from './audit-artifacts.js'
+import { epochCellKey as pendingRecheckKey } from './epoch-plan.js'
 import type { ModelVerificationTargetResult } from './model-run.js'
 import { verifyProxyAuditEvidenceFile } from './proxy-evidence.js'
 
@@ -10,9 +10,8 @@ export interface PendingDiffRecheck {
   result: ModelVerificationTargetResult
 }
 
-export function pendingRecheckKey(model: string, peerId: string): string {
-  return `${model.trim().toLowerCase()}\u0000${peerId.trim().replace(/^0x/i, '').toLowerCase()}`
-}
+/** Same (model, seller) identity as the epoch plan's cells. */
+export { pendingRecheckKey }
 
 /**
  * First DIFFs from this epoch's earlier runs whose recheck could not run and that no later run has

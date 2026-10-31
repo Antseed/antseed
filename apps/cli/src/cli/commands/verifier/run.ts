@@ -276,6 +276,21 @@ export interface VerifierRoundOutcome {
   epochChanged?: string
 }
 
+/**
+ * What a round leaves when no prepared model has a target this epoch. Models whose enrollment
+ * failed were dropped before planning, so they still count: the next round retries them with a
+ * larger enrollment budget.
+ */
+export function noTargetsOutcome(epoch: string, enrollmentFailures: number): { left: number; message: string } {
+  if (enrollmentFailures > 0) {
+    return {
+      left: enrollmentFailures,
+      message: `Epoch ${epoch}: no seller to audit for the ready models; ${enrollmentFailures} model enrollment(s) failed and will be retried.`,
+    }
+  }
+  return { left: 0, message: `Epoch ${epoch}: nothing left to audit (sellers still skipped are listed above).` }
+}
+
 /** One pass over the epoch's remaining work. Returns how much is still left to retry or recheck. */
 async function runVerifierRound(
   modelValue: string | undefined,
@@ -583,8 +598,9 @@ async function runVerifierRound(
         if (preparedModels.every((entry) => entry.targets.length === 0)) {
           if (epochState && epochState.manifests.length > 0) {
             printEpochTable(epoch, await loadEpochState(evidenceDir, epoch), runModels.length > 0 ? runModels : models)
-            console.log(chalk.green(`Epoch ${epoch}: nothing left to audit (sellers still skipped are listed above).`))
-                  return { left: 0, secondsLeftInEpoch: epochWindow.endsAt - Date.now() / 1_000 }
+            const outcome = noTargetsOutcome(epoch, enrollmentFailures)
+            console.log(outcome.left > 0 ? chalk.yellow(outcome.message) : chalk.green(outcome.message))
+            return { left: outcome.left, secondsLeftInEpoch: epochWindow.endsAt - Date.now() / 1_000 }
           }
         }
         if (selectedPeerId && preparedModels.every((entry) => entry.targets.length + entry.skipped.length === 0)) {

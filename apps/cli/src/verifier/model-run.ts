@@ -457,7 +457,12 @@ export async function verifyModelTarget(input: {
   let checkpointTail = Promise.resolve()
   let checkpointFailure: Error | null = null
   const persistCheckpoint = async (): Promise<void> => {
-    const snapshot = [...exchangeByBatch.values()].sort((left, right) => left.batchIndex - right.batchIndex)
+    // A partial batch not asked again yet keeps its earlier attempt in the checkpoint, so an
+    // interrupted repair resumes with it instead of losing its answers and cost.
+    const snapshot = [
+      ...exchangeByBatch.values(),
+      ...[...partialByBatch.values()].filter((exchange) => !exchangeByBatch.has(exchange.batchIndex)),
+    ].sort((left, right) => left.batchIndex - right.batchIndex)
     const checkpoint: ModelAuditCheckpointV1 = {
       version: 1,
       kind: 'antseed-verifier-audit-checkpoint',
@@ -1431,7 +1436,6 @@ export function extractCompletionText(body: Uint8Array): string | null {
   }
 }
 
-/** Verified responses beat unverified ones; then the attempt with more scoreable answers wins. */
 /** Priced attempts an exchange carries (older evidence only has `cost`). */
 function exchangeAttemptCosts(exchange: ProxyAuditEvidenceExchangeV1): NonNullable<ProxyAuditEvidenceExchangeV1['attemptCosts']> {
   return exchange.attemptCosts ?? (exchange.cost ? [exchange.cost] : [])
@@ -1456,6 +1460,7 @@ function keepBetterAttempt(
   }
 }
 
+/** Verified responses beat unverified ones; then the attempt with more scoreable answers wins. */
 function isBetterBatchAttempt(candidate: ProxyAuditEvidenceExchangeV1, current: ProxyAuditEvidenceExchangeV1): boolean {
   const verified = (exchange: ProxyAuditEvidenceExchangeV1) => exchange.responseAuth.status === 'verified'
   if (verified(candidate) !== verified(current)) return verified(candidate)

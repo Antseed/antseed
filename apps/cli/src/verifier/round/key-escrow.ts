@@ -19,11 +19,19 @@ export interface KeyEscrowContext {
   encryptionPrivateKey: string
   storage: RoundStorage
   log: (message: string) => void
-  /** Seconds after the backup deadline the publisher gets to reveal the key itself. Default 600. */
+  /**
+   * Seconds after the backup deadline the publisher gets to reveal the key itself. Default 600;
+   * always capped at a quarter of the attestation window so shares, recovery and attesting fit.
+   */
   revealDelaySeconds?: number
 }
 
 export const DEFAULT_KEY_REVEAL_DELAY_SECONDS = 600
+
+/** How long verifiers wait for the publisher's own reveal before posting shares. */
+export function keyRevealDelay(attestSeconds: number, requested = DEFAULT_KEY_REVEAL_DELAY_SECONDS): number {
+  return Math.max(0, Math.min(requested, Math.floor(attestSeconds / 4)))
+}
 
 export async function keyEscrowTick(context: KeyEscrowContext): Promise<void> {
   const { client } = context
@@ -32,7 +40,7 @@ export async function keyEscrowTick(context: KeyEscrowContext): Promise<void> {
   if (info.voided || !isZeroHash(info.bankKey) || isZeroHash(info.keySharesHash)) return
   const deadlines = kbfEpochDeadlines(info, await client.epochDuration())
   const now = await client.now()
-  const delay = context.revealDelaySeconds ?? DEFAULT_KEY_REVEAL_DELAY_SECONDS
+  const delay = keyRevealDelay(info.schedule.attestSeconds, context.revealDelaySeconds)
   if (now < deadlines.backupDeadline + delay || now >= deadlines.attestDeadline) return
 
   const commit = (await client.keySharesCommits(epoch)).filter((entry) => entry.hash === info.keySharesHash).at(-1)

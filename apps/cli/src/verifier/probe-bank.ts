@@ -1189,6 +1189,23 @@ function assertCurrentBankEnrollment(bank: ProbeBankV1, model: string): void {
  * uses. A first audit needs one set and a DIFF recheck a second, unseen set; a seller already
  * assigned this epoch only needs the recheck set. Throws when the bank can't be loaded.
  */
+/** Whether `reserveDiffRecheckReference` would reuse this epoch's recheck set instead of drawing a new one. */
+async function hasReusableRecheckReservation(input: {
+  banksDir: string
+  model: string
+  epoch: string
+  sellerPeerId: string
+  ledger: SellerProbeLedgerV1 | null
+}): Promise<boolean> {
+  if (!input.ledger) return false
+  const existing = await readJsonIfExists<SellerEpochProbeReferenceV1>(
+    diffRecheckReferencePath(input.banksDir, input.model, input.epoch, input.sellerPeerId),
+  )
+  if (!existing) return false
+  return input.ledger.assignments.some((entry) => entry.purpose === 'diff-recheck' && entry.epoch === input.epoch
+    && !entry.voidedAt && entry.referenceId === existing.reference.referenceId)
+}
+
 export async function inspectSellerProbeCapacity(input: {
   banksDir: string
   model: string
@@ -1223,12 +1240,17 @@ export async function inspectSellerProbeCapacity(input: {
     const used = new Set(ledger?.assignments.flatMap((assignment) => assignment.probeIds) ?? [])
     const assignedThisEpoch = ledger?.assignments.some((assignment) => assignment.epoch === input.epoch
       && assignment.purpose !== 'diff-recheck' && !assignment.voidedAt) ?? false
+    // A recheck set already reserved this epoch is reused by the recheck (its questions are in
+    // `used` already), so it needs no further unseen questions.
+    const recheckReserved = input.recheck && await hasReusableRecheckReservation({
+      banksDir: input.banksDir, model: input.model, epoch: input.epoch, sellerPeerId, ledger,
+    })
     return {
       sellerPeerId,
       unseenProbeCount: eligibleIds.filter((id) => !used.has(id)).length,
       neededProbeCount: selected === null
         ? 0
-        : selected * ((assignedThisEpoch || input.allowProbeReuse ? 0 : 1) + (input.recheck ? 1 : 0)),
+        : selected * ((assignedThisEpoch || input.allowProbeReuse ? 0 : 1) + (input.recheck && !recheckReserved ? 1 : 0)),
       assignedThisEpoch,
     }
   }))

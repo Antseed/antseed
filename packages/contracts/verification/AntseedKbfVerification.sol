@@ -49,8 +49,8 @@ interface IEmissionsGateSchedule {
 ///         attester pool (`attestRewardBps`), shared equally by the verifiers that attested the
 ///         finalized root, and a collector pool, shared by the slices the finalized root credits
 ///         each verifier with. One verifier's claim is capped at `maxVerifierShareBps` of the
-///         budget; budget above the cap is never minted. Both splits are fixed per epoch when it
-///         is opened.
+///         budget; budget above the cap is never minted. The split, the cap and whether the
+///         epoch earns rewards at all are fixed per epoch when it is opened.
 contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     uint256 public constant MAX_VERIFIERS = 64;
     uint256 public constant MAX_MODELS = 64;
@@ -89,6 +89,8 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         bytes32 keySharesHash;
         uint16 attestRewardBps;
         uint16 maxVerifierShareBps;
+        // Whether the epoch earns rewards, fixed at opening from `rewardsStartEpoch`.
+        bool rewarded;
     }
 
     IAntseedRegistry public immutable override registry;
@@ -180,6 +182,7 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     error EpochNotFinalized();
     error AlreadyClaimed();
     error AlreadyRevealed();
+    error KeyNotEscrowed();
 
     modifier onlyPublisher() {
         if (msg.sender != publisher) revert NotPublisher();
@@ -282,6 +285,8 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     }
 
     /// @notice Epochs from this one on earn rewards; `type(uint256).max` turns new rewards off.
+    ///         Applies to epochs opened from now on: an opened epoch keeps what it was opened with,
+    ///         so rewards already earned stay claimable.
     function setRewardsStartEpoch(uint256 epoch) external onlyOwner {
         rewardsStartEpoch = epoch;
         emit RewardsStartEpochSet(epoch);
@@ -404,6 +409,7 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         state.schedule = schedule_;
         state.attestRewardBps = attestRewardBps;
         state.maxVerifierShareBps = maxVerifierShareBps;
+        state.rewarded = epoch >= rewardsStartEpoch;
         state.seedBlock = uint64(block.number) + SEED_DELAY_BLOCKS;
         emit EpochOpened(epoch, state.seedBlock, state.modelsVersion, uint16(count));
     }
@@ -428,6 +434,8 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     function commitPlan(uint256 epoch, bytes32 planHash, string calldata planUri) external onlyEpochPublisher(epoch) {
         EpochState storage state = _epochs[epoch];
         if (state.seed == bytes32(0) || block.timestamp >= _commitDeadline(epoch, state)) revert WrongPhase();
+        // Without escrowed shares, losing the publisher after the plan would strand the round.
+        if (state.keySharesHash == bytes32(0)) revert KeyNotEscrowed();
         if (planHash == bytes32(0)) revert InvalidValue();
         _validateUri(planUri);
         state.planHash = planHash;
@@ -458,7 +466,11 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         onlyEpochPublisher(epoch)
     {
         EpochState storage state = _epochs[epoch];
-        if (state.seedBlock == 0 || state.bankKey != bytes32(0) || block.timestamp >= _commitDeadline(epoch, state)) {
+        // Fixed once the plan is out, so the shares verifiers rely on cannot be swapped afterwards.
+        if (
+            state.seedBlock == 0 || state.planHash != bytes32(0) || state.bankKey != bytes32(0)
+                || block.timestamp >= _commitDeadline(epoch, state)
+        ) {
             revert WrongPhase();
         }
         if (sharesHash == bytes32(0)) revert InvalidValue();
@@ -728,7 +740,7 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     ) private view returns (uint256) {
         EpochState storage state = _epochs[epoch];
         bytes32 root = state.finalizedRoot;
-        if (root == bytes32(0) || state.voided || epoch < rewardsStartEpoch) return 0;
+        if (root == bytes32(0) || state.voided || !state.rewarded) return 0;
         uint256 budget = gate.controllerEpochBudget(address(this), epoch);
         if (budget == 0) return 0;
         uint256 attestBps = state.attestRewardBps;

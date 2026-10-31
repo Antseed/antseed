@@ -14,8 +14,9 @@ import {IAntseedSellerPools} from "./IAntseedSellerPools.sol";
 ///      2. Anyone opens the epoch (`openEpoch`), which snapshots the approved verifiers, the
 ///         audited model list and the schedule, and fixes a future block. Its hash becomes the
 ///         epoch seed (`fixSeed`), so nobody can choose which questions a seller gets.
-///      3. The publisher commits the plan (`commitPlan`): the target list and one encrypted
-///         question envelope per verifier, derived from the seed.
+///      3. The publisher escrows the bank key with the verifiers (`commitKeyShares`), then commits
+///         the plan (`commitPlan`): the target list and one encrypted question envelope per
+///         verifier, derived from the seed. A plan is only accepted once the key is escrowed.
 ///      4. Verifiers buy their assigned slices from sellers and commit the seller-signed
 ///         transcripts (`commitSlices`) by the commit deadline; missing slices go to backup
 ///         verifiers (`commitBackupPlan`, then `commitSlices` again) until the backup deadline.

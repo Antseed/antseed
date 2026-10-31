@@ -1,8 +1,9 @@
-import { readdir, readFile } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { writeTextAtomic } from './atomic-files.js'
 import {
   epochDirectory,
+  epochRunManifests,
   escapeHtml,
   type ModelAuditSummaryV1,
   type VerifierRunManifestV1,
@@ -51,29 +52,6 @@ export interface EpochOverview {
 
 export function epochOverviewPath(evidenceDir: string, epoch: string): string {
   return join(epochDirectory(evidenceDir, epoch), 'overview.html')
-}
-
-/** Completed runs of an epoch, oldest first, which is the order they are submitted in. */
-export async function epochRunManifests(evidenceDir: string, epoch: string): Promise<VerifierRunManifestV1[]> {
-  const runsDir = join(evidenceDir, 'runs')
-  let names: string[]
-  try {
-    names = await readdir(runsDir)
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
-    throw error
-  }
-  const manifests: VerifierRunManifestV1[] = []
-  for (const name of names) {
-    if (!name.endsWith('.json') || name.endsWith('.summary.json')) continue
-    try {
-      const parsed = JSON.parse(await readFile(join(runsDir, name), 'utf8')) as VerifierRunManifestV1
-      if (parsed.kind === 'antseed-verifier-run-manifest' && parsed.epoch === epoch) manifests.push(parsed)
-    } catch {
-      // A manifest being written or a foreign file: leave it out of the overview.
-    }
-  }
-  return manifests.sort((left, right) => left.completedAt.localeCompare(right.completedAt))
 }
 
 /**

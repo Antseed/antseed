@@ -331,3 +331,15 @@ test('verifier run retries what is left for up to --max-rounds rounds; --resume-
   assert.equal(maxRunRounds({ maxRounds: '5', resumeRun: '0xabc' }), 1)
   assert.throws(() => maxRunRounds({ maxRounds: '0' }), /positive integer/)
 })
+
+test('a round with no targets left still retries models whose enrollment failed', async () => {
+  const { noTargetsOutcome } = await import('./run.js')
+  // Model A finished earlier this epoch; model B's enrollment ran out of budget this round.
+  const withFailure = noTargetsOutcome('42', 1)
+  assert.equal(withFailure.left, 1)
+  assert.match(withFailure.message, /1 model enrollment\(s\) failed and will be retried/)
+  assert.doesNotMatch(withFailure.message, /nothing left/)
+  const done = noTargetsOutcome('42', 0)
+  assert.equal(done.left, 0)
+  assert.match(done.message, /nothing left to audit/)
+})

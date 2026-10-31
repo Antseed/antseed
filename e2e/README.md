@@ -56,7 +56,10 @@ mainnet (about 2–3 minutes):
    two `antseed seller start` sellers: one serves the genuine model, the other an impostor (both
    through a local OpenAI-compatible stub)
 4. Run `antseed verifier publish` (with its own buyer) and three `antseed verifier start`
-   verifiers, each with a funded buyer deposit; stop the third verifier before the plan
+   verifiers, each with a funded buyer deposit. The verifiers publish their encryption keys and
+   go offline; the run opens the epoch and fixes a seed under which every verifier owns at least
+   one slice (redrawing the seed block if needed), then restarts only two of them, so the third
+   verifier's slices have to go to backups
 5. Move chain time through collection, backup, reveal and attestation, then check: the backup
    plan covers the stopped verifier's slices, both live verifiers attest the same root, the
    epoch finalizes, the genuine seller is SAME and the impostor DIFF on-chain, each seller

@@ -368,6 +368,8 @@ contract AntseedKbfVerificationTest is Test {
         verification.commitPlan(EPOCH, keccak256("plan"), URI);
 
         vm.prank(verifierA);
+        verification.commitKeyShares(EPOCH, keccak256("shares"), URI);
+        vm.prank(verifierA);
         verification.commitPlan(EPOCH, keccak256("plan"), URI);
         vm.prank(verifierB);
         verification.commitSlices(EPOCH, keccak256("slices"), URI);
@@ -408,6 +410,8 @@ contract AntseedKbfVerificationTest is Test {
         vm.roll(verification.epochInfo(EPOCH).seedBlock + 1);
         verification.fixSeed(EPOCH);
         assertTrue(verification.epochInfo(EPOCH).seed != oldSeed);
+        vm.prank(verifierC);
+        verification.commitKeyShares(EPOCH, keccak256("shares"), URI);
         vm.prank(verifierC);
         verification.commitPlan(EPOCH, keccak256("plan"), URI);
         vm.warp(block.timestamp + 6 hours);
@@ -496,6 +500,23 @@ contract AntseedKbfVerificationTest is Test {
         vm.prank(publisher);
         vm.expectRevert(AntseedKbfVerification.NotPublisher.selector);
         verification.commitKeyShares(EPOCH, keccak256("shares"), URI);
+    }
+
+    function test_planNeedsEscrowedKeySharesWhichThenStayFixed() public {
+        _openAndSeed(EPOCH);
+        vm.prank(publisher);
+        vm.expectRevert(AntseedKbfVerification.KeyNotEscrowed.selector);
+        verification.commitPlan(EPOCH, keccak256("plan"), URI);
+
+        vm.prank(publisher);
+        verification.commitKeyShares(EPOCH, keccak256("shares"), URI);
+        vm.prank(publisher);
+        verification.commitPlan(EPOCH, keccak256("plan"), URI);
+        // Verifiers rely on these shares from here on: the publisher cannot swap them.
+        vm.prank(publisher);
+        vm.expectRevert(AntseedKbfVerification.WrongPhase.selector);
+        verification.commitKeyShares(EPOCH, keccak256("other shares"), URI);
+        assertEq(verification.epochInfo(EPOCH).keySharesHash, keccak256("shares"));
     }
 
     // ── results ──────────────────────────────────────────────────────
@@ -658,6 +679,19 @@ contract AntseedKbfVerificationTest is Test {
         (bytes32[] memory leaves,) = _finalizeWithCredits(EPOCH);
         _advance();
         assertEq(verification.pendingReward(verifierA, EPOCH, 3, 4, TestMerkle.proof(leaves, 1)), 0);
+    }
+
+    function test_turningRewardsOffKeepsEarnedRewardsClaimable() public {
+        verification.setMaxVerifierShareBps(10_000);
+        (bytes32[] memory leaves,) = _finalizeWithCredits(EPOCH);
+        // Rewards off for new epochs, before anyone claimed the finished one.
+        verification.setRewardsStartEpoch(type(uint256).max);
+        _advance();
+        assertEq(verification.pendingReward(verifierB, EPOCH, 0, 0, new bytes32[](0)), 100 ether);
+        assertEq(_claim(verifierA, 3, 4, TestMerkle.proof(leaves, 1)), 700 ether);
+        // Moving the start later (a restart) does not take earned rewards back either.
+        verification.setRewardsStartEpoch(EPOCH + 5);
+        assertEq(_claim(verifierB, 0, 0, new bytes32[](0)), 100 ether);
     }
 
     // ── admin ────────────────────────────────────────────────────────
@@ -852,6 +886,10 @@ contract AntseedKbfVerificationTest is Test {
     }
 
     function _commitPlan(uint256 epoch) private {
+        if (verification.epochInfo(epoch).keySharesHash == bytes32(0)) {
+            vm.prank(publisher);
+            verification.commitKeyShares(epoch, keccak256(abi.encode("shares", epoch)), URI);
+        }
         vm.prank(publisher);
         verification.commitPlan(epoch, keccak256(abi.encode("plan", epoch)), URI);
     }

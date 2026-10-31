@@ -8,7 +8,7 @@ import { ZERO_HASH } from '@antseed/node/payments'
 import { referenceFixture } from '../model-audit-fixtures.test-support.js'
 import { EPOCH_SECONDS, FakeRoundClient } from './fake-round-client.test-support.js'
 import { fallbackPublisherTick, takeoverTime } from './fallback-publisher.js'
-import { keyEscrowTick } from './key-escrow.js'
+import { keyEscrowTick, keyRevealDelay } from './key-escrow.js'
 import { buildKeySharesFile, combineShares, openKeyShare, recoverBankKey, splitSecret } from './key-shares.js'
 import { publisherTick, type PublisherDaemonContext } from './publisher-daemon.js'
 import { generateEncryptionKeyPair } from './sealing.js'
@@ -231,4 +231,44 @@ test('backup planning waits for unreachable slice files but not for mismatched o
   await publisherTick(waiting)
   assert.ok(u.fake.calls.includes(`commitBackupPlan:${EPOCH}`), 'after the wait the unreachable slices go to the backup round')
   assert.ok(u.logs.some((line) => line.includes('still unavailable')))
+})
+
+test('a failed key escrow holds the plan back until the escrow is in', async (t) => {
+  const s = await setup()
+  t.after(() => rm(s.dir, { recursive: true, force: true }))
+  const context = s.context(s.publisher, 'publisher')
+  s.fake.time = START + HOUR
+  await publisherTick(context)
+  s.fake.openAndSeed(EPOCH)
+  s.fake.failKeyShares = 1
+  await publisherTick(context)
+  assert.ok(!s.fake.calls.includes(`commitPlan:${EPOCH}`), 'no plan without escrowed shares')
+  assert.ok(s.logs.some((line) => line.includes('plan held back')))
+  await publisherTick(context)
+  assert.deepEqual(s.fake.calls.slice(1), [`commitKeyShares:${EPOCH}`, `commitPlan:${EPOCH}`])
+})
+
+test('key shares are posted in time even when the attestation window is shorter than the default delay', async (t) => {
+  const s = await setup()
+  t.after(() => rm(s.dir, { recursive: true, force: true }))
+  s.fake.info(EPOCH).schedule.attestSeconds = 400
+  s.fake.time = START + HOUR
+  await publisherTick(s.context(s.publisher, 'publisher'))
+  s.fake.openAndSeed(EPOCH)
+  await publisherTick(s.context(s.publisher, 'publisher'))
+  const backupDeadline = START + 4 * DAY
+  const escrow = (index: number) => keyEscrowTick({
+    client: s.fake.asClient(), signer: s.verifiers[index]!.wallet as never, address: s.verifiers[index]!.wallet.address,
+    encryptionPrivateKey: s.verifiers[index]!.keys.privateKey, storage: s.storage, log: (line) => s.logs.push(line),
+  })
+  assert.equal(keyRevealDelay(400), 100)
+  assert.equal(keyRevealDelay(400, 3600), 100, 'an explicit delay is clamped too')
+  assert.equal(keyRevealDelay(86_400), 600)
+  s.fake.time = backupDeadline + 50
+  await escrow(0)
+  assert.equal(s.fake.shares.length, 0)
+  s.fake.time = backupDeadline + 150
+  await escrow(0)
+  await escrow(1)
+  assert.notEqual(s.fake.info(EPOCH).bankKey, ZERO_HASH, 'the key is rebuilt inside the 400 s window')
 })

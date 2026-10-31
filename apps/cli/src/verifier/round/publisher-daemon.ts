@@ -12,7 +12,7 @@ import {
 import { writeJsonAtomic } from '../atomic-files.js'
 import { buildKeySharesFile } from './key-shares.js'
 import { derivePlan, envelopeFor } from './plan.js'
-import { deliveredSlice, type CommittedManifest } from './scoring.js'
+import { createDeliveryChecker, type CommittedManifest } from './scoring.js'
 import { bankKeyHash, contentHash, sealBank, sealEnvelope } from './sealing.js'
 import { RoundFileMismatchError, type RoundStorage } from './storage.js'
 import { targetKey, type EpochBankV1, type PlanFileV1, type PlannedSliceV1, type RoundTargetV1, type SealedEnvelopeV1, type SliceManifestV1 } from './types.js'
@@ -79,11 +79,16 @@ export async function advanceEpochAsPublisher(
 ): Promise<void> {
   if (info.voided) return
   const epoch = info.epoch
-  if (info.seedBlock !== 0n && isZeroHash(info.keySharesHash) && isZeroHash(info.bankKey) && now < deadlines.commitDeadline) {
+  if (
+    info.seedBlock !== 0n && isZeroHash(info.keySharesHash) && isZeroHash(info.planHash)
+    && isZeroHash(info.bankKey) && now < deadlines.commitDeadline
+  ) {
+    // The contract takes the plan only after the escrow, so verifiers can always rebuild the key.
     try {
       await escrowBankKey(context, info)
     } catch (error) {
-      context.log(`epoch ${epoch}: bank key not escrowed: ${error instanceof Error ? error.message : String(error)}`)
+      context.log(`epoch ${epoch}: bank key not escrowed, plan held back: ${error instanceof Error ? error.message : String(error)}`)
+      return
     }
   }
   if (!isZeroHash(info.seed) && isZeroHash(info.planHash) && now < deadlines.commitDeadline) {
@@ -211,7 +216,8 @@ async function publishBackupPlan(
     context.log(`epoch ${info.epoch}: ${unavailable.length} slice files still unavailable; their slices go to the backup round`)
   }
   const targets = new Map(plan.targets.map((target) => [targetKey(target), target]))
-  const missing = new Set<PlannedSliceV1>(plan.slices.filter((slice) => !deliveredSlice(slice, manifests, targets.get(slice.targetKey)!, bank)))
+  const delivered = createDeliveryChecker(manifests, bank)
+  const missing = new Set<PlannedSliceV1>(plan.slices.filter((slice) => !delivered(slice, targets.get(slice.targetKey)!)))
   if (missing.size === 0) {
     context.log(`epoch ${info.epoch}: every slice delivered; no backup round needed`)
     return

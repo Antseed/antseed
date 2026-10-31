@@ -1,12 +1,12 @@
 import pkg from '../../../../package.json' with { type: 'json' }
-import { chmod, mkdir, readFile } from 'node:fs/promises'
+import { chmod, readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import chalk from 'chalk'
 import type { Command } from 'commander'
 import { isZeroHash } from '@antseed/node/payments'
 import { loadConfig } from '../../../config/loader.js'
 import { requireCurrentVerifier } from '../../../verifier/release-check.js'
-import { writeJsonAtomic } from '../../../verifier/atomic-files.js'
+import { writeSecretJsonAtomic } from '../../../verifier/atomic-files.js'
 import { loadBuyerProxySnapshot } from '../../../verifier/model-run.js'
 import { openResponseAuthReader, type ResponseAuthReader } from '../../../verifier/response-auth-reader.js'
 import type { CollectorContext } from '../../../verifier/round/collector.js'
@@ -50,19 +50,24 @@ export async function collectorForPass(input: {
   }
 }
 
-/** The verifier's X25519 key pair for question envelopes, created once in the data dir. */
+/** The verifier's X25519 key pair for question envelopes, created once in the data dir (owner-only). */
 export async function loadOrCreateEncryptionKey(dataDir: string): Promise<{ publicKey: string; privateKey: string }> {
   const path = join(dataDir, 'verifier', 'round', 'encryption-key.json')
+  let text: string | null = null
   try {
-    const stored = JSON.parse(await readFile(path, 'utf8')) as { privateKey: string }
-    return { privateKey: stored.privateKey, publicKey: encryptionPublicKey(stored.privateKey) }
-  } catch {
-    const pair = generateEncryptionKeyPair()
-    await mkdir(join(dataDir, 'verifier', 'round'), { recursive: true })
-    await writeJsonAtomic(path, { privateKey: pair.privateKey })
-    await chmod(path, 0o600)
-    return pair
+    text = await readFile(path, 'utf8')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
   }
+  if (text !== null) {
+    // Repair a key file left readable by an older build.
+    if (((await stat(path)).mode & 0o077) !== 0) await chmod(path, 0o600)
+    const stored = JSON.parse(text) as { privateKey: string }
+    return { privateKey: stored.privateKey, publicKey: encryptionPublicKey(stored.privateKey) }
+  }
+  const pair = generateEncryptionKeyPair()
+  await writeSecretJsonAtomic(path, { privateKey: pair.privateKey })
+  return pair
 }
 
 export function registerVerifierStartCommand(verifier: Command): void {

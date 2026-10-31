@@ -31,6 +31,8 @@ export class FakeRoundClient {
   shares: KeyShareRevealedEvent[] = []
   members = new Map<bigint, string[]>()
   calls: string[] = []
+  /** Makes the next `commitKeyShares` calls fail, as a storage or RPC outage would. */
+  failKeyShares = 0
 
   info(epoch: bigint): KbfEpochInfo {
     let info = this.infos.get(epoch)
@@ -121,7 +123,11 @@ export class FakeRoundClient {
     const sender = await this.sender(signer)
     const info = this.info(epoch)
     if (sender !== getAddress(info.publisher)) throw new Error('NotPublisher')
-    if (info.seedBlock === 0n || this.time >= this.commitDeadline(info)) throw new Error('WrongPhase')
+    if (info.seedBlock === 0n || info.planHash !== ZERO_HASH || this.time >= this.commitDeadline(info)) throw new Error('WrongPhase')
+    if (this.failKeyShares > 0) {
+      this.failKeyShares--
+      throw new Error('storage outage')
+    }
     info.keySharesHash = hash
     this.shareFiles.push({ epoch, hash, uri, backup: false, sender, blockNumber: 1, logIndex: 0, txHash: '0x' })
     this.calls.push(`commitKeyShares:${epoch}`)
@@ -137,6 +143,7 @@ export class FakeRoundClient {
       info.backupPlanHash = hash
     } else {
       if (info.seed === ZERO_HASH || this.time >= this.commitDeadline(info)) throw new Error('WrongPhase')
+      if (info.keySharesHash === ZERO_HASH) throw new Error('KeyNotEscrowed')
       info.planHash = hash
     }
     this.plans.push({ epoch, hash, uri, backup, sender, blockNumber: 1, logIndex: 0, txHash: '0x' })

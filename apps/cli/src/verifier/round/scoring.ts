@@ -139,17 +139,26 @@ function usableReference(reference: KbfReferenceV1): UsableReference {
   }
 }
 
-/** True when the slice's owner delivered a complete, validly signed primary copy. */
-export function deliveredSlice(
-  slice: PlannedSliceV1,
+/**
+ * Prepares the check "did the slice's owner deliver a complete, validly signed primary copy?"
+ * for a whole plan: the primary manifests are validated and each model's reference indexed once.
+ */
+export function createDeliveryChecker(
   manifests: readonly CommittedManifest[],
-  target: TargetResultV1['target'],
   bank: EpochBankV1,
-): boolean {
-  const reference = bank.models[target.model]
-  if (!reference) return false
+): (slice: PlannedSliceV1, target: TargetResultV1['target']) => boolean {
   const primary = validManifests(manifests.filter((entry) => !entry.backup), bank.epoch)
-  return pickSlice(slice, primary, target, usableReference(reference)) !== null
+  const references = new Map<string, UsableReference>()
+  return (slice, target) => {
+    const reference = bank.models[target.model]
+    if (!reference) return false
+    let usable = references.get(target.model)
+    if (!usable) {
+      usable = usableReference(reference)
+      references.set(target.model, usable)
+    }
+    return pickSlice(slice, primary, target, usable) !== null
+  }
 }
 
 /**

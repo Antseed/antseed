@@ -34,9 +34,9 @@ After M003:
 - **The publisher is not a single point of failure.** If no plan is committed
   `publisherGraceSeconds` into an epoch (default 6 hours, owner-settable), any approved
   verifier can take the epoch over with its own bank (`takeOverBank`); `verifier start`
-  does this in turns. The epoch publisher also escrows the bank key with the epoch's
-  verifiers (`commitKeyShares`, a Shamir split with the finalization majority as
-  threshold), so if the key is not revealed at the backup deadline, verifiers post their
+  does this in turns. Before its plan is accepted, the epoch publisher must escrow the
+  bank key with the epoch's verifiers (`commitKeyShares`, a Shamir split with the
+  finalization majority as threshold; fixed once the plan is in), so if the key is not revealed at the backup deadline, verifiers post their
   shares (`revealKeyShare`) and rebuild and reveal it themselves.
 - **Verdicts expire by epoch.** A SAME or DIFF counts for `validityEpochs` emissions
   epochs including the one it was given in (default 2; owner-settable from 1 to 4), and

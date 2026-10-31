@@ -26,6 +26,7 @@ import type {
   PlanFileV1,
   RoundResultsV1,
   RoundTargetV1,
+  SliceExchangeV1,
   SliceManifestV1,
 } from './types.js'
 import { targetKey } from './types.js'
@@ -34,6 +35,10 @@ const APPLY_BATCH = 40
 /** Verifiers other than the first in the epoch's apply ranking wait this long before applying. */
 const APPLY_FALLBACK_DELAY_SECONDS = 2 * 60 * 60
 const CLAIM_LOOKBACK_EPOCHS = 4n
+/** Stop starting purchases this long before a collection phase ends (capped at a tenth of it). */
+const COLLECT_STOP_MARGIN_SECONDS = 5 * 60
+/** Do not send a slice commitment closer than this to its phase deadline (capped at a twentieth). */
+const COMMIT_MARGIN_SECONDS = 60
 /**
  * Share of the attestation window a verifier waits for committed slices it cannot fetch yet.
  * Until then it does not attest (an attestation is final); after it, the unavailable slices
@@ -123,36 +128,99 @@ async function stepEpoch(context: VerifierDaemonContext, epoch: bigint): Promise
   if (!isZeroHash(info.finalizedRoot)) await applyAndClaim(context, epoch, epoch)
 }
 
+interface CollectCheckpointV1 {
+  /** `<targetKey>#<sliceIndex>` → batch index → the signed exchange, or null when the batch failed. */
+  batches: Record<string, Record<string, SliceExchangeV1 | null>>
+}
+
+/**
+ * Buys this verifier's slices for one phase and commits them. Bought batches are checkpointed as
+ * they complete and the finished manifest is kept on disk before it is uploaded, so a failed
+ * upload or commit only retries publication: nothing is bought twice. Buying stops when the phase
+ * is about to end, and a manifest is only committed while its phase is still open, because the
+ * contract labels a commitment by the time it lands.
+ */
 async function collect(context: VerifierDaemonContext, info: KbfEpochInfo, state: EpochStateV1, backup: boolean): Promise<void> {
-  const plan = await loadPlanFile(context, info, backup)
-  const sealed = plan.envelopes[context.address.toLowerCase()]
-  if (!sealed) {
-    state[backup ? 'backup' : 'primary'] = { uri: '', root: '', slices: 0 }
+  const phase = backup ? 'backup' : 'primary'
+  const label = backup ? 'backup ' : ''
+  const deadlines = kbfEpochDeadlines(info, await context.client.epochDuration())
+  const deadline = backup ? deadlines.backupDeadline : deadlines.commitDeadline
+  const phaseSeconds = backup ? info.schedule.backupSeconds : info.schedule.collectSeconds
+  const stopMargin = Math.min(COLLECT_STOP_MARGIN_SECONDS, Math.floor(phaseSeconds / 10))
+  const commitMargin = Math.min(COMMIT_MARGIN_SECONDS, Math.floor(phaseSeconds / 20))
+
+  // A commit that landed although its receipt was lost: adopt it instead of buying again.
+  const landed = (await context.client.sliceCommits(info.epoch))
+    .filter((entry) => entry.backup === backup && entry.sender.toLowerCase() === context.address.toLowerCase())
+    .at(-1)
+  const manifestPath = join(epochDir(context, info.epoch), backup ? 'slices-backup.json' : 'slices.json')
+  if (landed) {
+    const local = await readJson<SliceManifestV1>(manifestPath)
+    state[phase] = { uri: landed.uri, root: landed.hash, slices: local?.slices.length ?? 0 }
     await writeState(context, info.epoch, state)
+    context.log(`epoch ${info.epoch}: ${label}slices already committed (${landed.uri})`)
     return
   }
-  const envelope = JSON.parse(openEnvelope(context.encryptionPrivateKey, sealed).toString('utf8')) as EnvelopeContentV1
-  if (envelope.epoch !== info.epoch.toString() || envelope.collector !== context.address.toLowerCase() || envelope.backup !== backup) {
-    throw new Error(`envelope for epoch ${info.epoch} does not belong to this verifier`)
+
+  let manifest = await readJson<SliceManifestV1>(manifestPath)
+  if (!manifest) {
+    const plan = await loadPlanFile(context, info, backup)
+    const sealed = plan.envelopes[context.address.toLowerCase()]
+    if (!sealed) {
+      state[phase] = { uri: '', root: '', slices: 0 }
+      await writeState(context, info.epoch, state)
+      return
+    }
+    const envelope = JSON.parse(openEnvelope(context.encryptionPrivateKey, sealed).toString('utf8')) as EnvelopeContentV1
+    if (envelope.epoch !== info.epoch.toString() || envelope.collector !== context.address.toLowerCase() || envelope.backup !== backup) {
+      throw new Error(`envelope for epoch ${info.epoch} does not belong to this verifier`)
+    }
+    // Never buy from a target whose peer is not its agent's seller: verifiers will not score it.
+    const bound = new Set((await boundTargets(context.bindings, uniqueTargets(envelope.slices.map((slice) => slice.target)), info.seedBlock, context.log)).map(targetKey))
+    const assigned = envelope.slices.filter((slice) => bound.has(targetKey(slice.target)))
+    const checkpointPath = join(epochDir(context, info.epoch), `collect-${phase}.json`)
+    const checkpoint = await readJson<CollectCheckpointV1>(checkpointPath) ?? { batches: {} }
+    context.log(`epoch ${info.epoch}: collecting ${assigned.length} ${label}slices`)
+    let stopped = false
+    const shouldStop = async () => {
+      stopped ||= await context.client.now() + stopMargin >= deadline
+      return stopped
+    }
+    const slices = []
+    for (const slice of assigned) {
+      const key = `${targetKey(slice.target)}#${slice.sliceIndex}`
+      const done = new Map(Object.entries(checkpoint.batches[key] ?? {}).map(([index, exchange]) => [Number(index), exchange]))
+      slices.push(await collectSlice(slice, context.collector!, {
+        done,
+        shouldStop,
+        onBatch: async (batchIndex, exchange) => {
+          checkpoint.batches[key] = { ...checkpoint.batches[key], [batchIndex]: exchange }
+          await writeJsonAtomic(checkpointPath, checkpoint)
+        },
+      }))
+    }
+    if (stopped) context.log(`epoch ${info.epoch}: ${label}phase ends soon; stopped buying, committing what was collected`)
+    manifest = {
+      kind: 'antseed-kbf-slices', version: 1, epoch: info.epoch.toString(),
+      collector: context.address.toLowerCase(), backup, slices,
+    }
+    await writeJsonAtomic(manifestPath, manifest)
   }
-  // Never buy from a target whose peer is not its agent's seller: verifiers will not score it.
-  const bound = new Set((await boundTargets(context.bindings, uniqueTargets(envelope.slices.map((slice) => slice.target)), info.seedBlock, context.log)).map(targetKey))
-  const assigned = envelope.slices.filter((slice) => bound.has(targetKey(slice.target)))
-  context.log(`epoch ${info.epoch}: collecting ${assigned.length} ${backup ? 'backup ' : ''}slices`)
-  const slices = []
-  for (const slice of assigned) slices.push(await collectSlice(slice, context.collector!))
-  const manifest: SliceManifestV1 = {
-    kind: 'antseed-kbf-slices', version: 1, epoch: info.epoch.toString(),
-    collector: context.address.toLowerCase(), backup, slices,
+
+  if (await context.client.now() + commitMargin >= deadline) {
+    // Landing after the deadline would file it under the wrong phase, where it cannot be scored.
+    state[phase] = { uri: '', root: '', slices: 0 }
+    await writeState(context, info.epoch, state)
+    context.log(`epoch ${info.epoch}: ${label}phase over before the slices were committed; ${manifest.slices.length} slices not delivered`)
+    return
   }
   const bytes = encodeRoundFile(manifest)
   const uri = await context.storage.put(bytes, `antseed-kbf-${info.epoch}-slices-${context.address.toLowerCase()}${backup ? '-backup' : ''}.json`)
   const root = contentHash(bytes)
-  await writeJsonAtomic(join(epochDir(context, info.epoch), backup ? 'slices-backup.json' : 'slices.json'), manifest)
   await context.client.commitSlices(context.signer, info.epoch, root, uri)
-  state[backup ? 'backup' : 'primary'] = { uri, root, slices: slices.length }
+  state[phase] = { uri, root, slices: manifest.slices.length }
   await writeState(context, info.epoch, state)
-  context.log(`epoch ${info.epoch}: committed ${slices.length} ${backup ? 'backup ' : ''}slices (${uri})`)
+  context.log(`epoch ${info.epoch}: committed ${manifest.slices.length} ${label}slices (${uri})`)
 }
 
 async function scoreAndAttest(

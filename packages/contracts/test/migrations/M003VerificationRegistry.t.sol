@@ -252,6 +252,8 @@ contract M003VerificationRegistryTest is Test {
         vm.roll(verification.epochInfo(0).seedBlock + 1);
         verification.fixSeed(0);
         vm.prank(publisher);
+        verification.commitKeyShares(0, keccak256("shares"), "ipfs://shares");
+        vm.prank(publisher);
         verification.commitPlan(0, keccak256("plan"), "ipfs://plan");
         vm.warp(block.timestamp + 4 days);
         verification.revealBankKey(0, key);

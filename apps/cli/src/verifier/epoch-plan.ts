@@ -1,6 +1,5 @@
 import { readFile } from 'node:fs/promises'
-import type { ModelAuditSummaryV1, VerifierRunManifestV1 } from './audit-artifacts.js'
-import { epochRunManifests } from './epoch-overview.js'
+import { epochRunManifests, type ModelAuditSummaryV1, type VerifierRunManifestV1 } from './audit-artifacts.js'
 import { finalAuditVerdict } from './diff-recheck.js'
 import type {
   ModelVerificationFailure,

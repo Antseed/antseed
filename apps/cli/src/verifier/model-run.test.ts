@@ -1160,6 +1160,34 @@ test('resume asks partially answered batches again and keeps the better attempt'
   assert.equal(stillDown.evidence.exchanges.every((exchange) => exchange.status === 'succeeded'), true)
 })
 
+test('an interrupted repair checkpoint keeps the partial batches not asked again yet', async () => {
+  const first = await runTarget(100, 'partial-malformed')
+  const resume = {
+    parentAuditId: first.result.auditId,
+    reservationAuditId: first.result.auditId,
+    parentEvidenceHash: first.result.evidenceHash,
+    exchanges: first.evidence.exchanges,
+  }
+  const written: Array<{ exchanges: Array<{ batchIndex: number; requestIds: string[] }> }> = []
+  await runTarget(100, 'valid', 0, 'verified', true, 10_000, resume, {
+    runId: 'repair-checkpoint', epoch: '2026-10-06', model: 'gpt-5.6-sol',
+  }, reference(100), {
+    writeCheckpoint: async (path, value) => {
+      written.push(structuredClone(value) as typeof written[number])
+      await writeJsonAtomic(path, value)
+    },
+  })
+  // The very first checkpoint of the repair, written after the first batch was asked again, still
+  // holds every batch: those not asked again yet as their earlier partial attempt.
+  const firstWrite = written[0]!
+  assert.deepEqual(firstWrite.exchanges.map((exchange) => exchange.batchIndex), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
+  const earlierRequestIds = new Map(first.evidence.exchanges.map((exchange) => [exchange.batchIndex, exchange.requestIds.join()]))
+  assert.ok(
+    firstWrite.exchanges.some((exchange) => exchange.requestIds.join() === earlierRequestIds.get(exchange.batchIndex)),
+    'a batch not asked again yet keeps its earlier attempt',
+  )
+})
+
 test('responses SSE is decoded even when the request used stream false', async () => {
   const run = await runTarget(100, 'sse')
   assert.equal(run.result.status, 'SAME')

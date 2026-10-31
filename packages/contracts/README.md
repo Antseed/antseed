@@ -703,10 +703,15 @@ States: `ready` (M001 active, at least one install missing), `active`,
 
 ### KBF verification
 
-`AntseedKbfVerification` records KBF model-verification audits from approved auditors and pays
-them from the verification emission bucket by audit credits, capped per model, per
-auditor and by each auditor's share of the epoch budget. Rewards stay off until the owner
-sets `rewardsStartEpoch`. Every audit it records is a KBF audit.
+`AntseedKbfVerification` runs one KBF verification round per epoch: the publisher commits a
+sealed question bank and plan, approved verifiers (`setVerifier`) collect seller-signed slices
+and attest a results root, and the root a majority attests is final and applied with proofs.
+It pays verifiers from the verification emission bucket: each epoch's budget is split between
+an attester pool (`attestRewardBps`), shared by the verifiers that attested the final root, and
+a collector pool, shared by delivered slices, with each verifier capped at
+`maxVerifierShareBps` of the budget; `claimRewards(epoch, slices, totalSlices, proof)` claims
+both. The split and cap in force when an epoch opens apply to that epoch. Rewards stay off
+until the owner sets `rewardsStartEpoch`. Every result it records is a KBF result.
 KBF is one of the first verification methods: each later method gets its own
 contract, points policy and emissions bucket, and the verification bucket share
 is split between them with `setMinter` from the next epoch.

@@ -27,7 +27,9 @@ import { DHTNode } from '@antseed/node/discovery';
 import { KbfRoundClient, isZeroHash, kbfEpochDeadlines } from '@antseed/node/payments';
 import { startStubUpstream } from './kbf-stub-upstream.mjs';
 
-const { DirectoryRoundStorage } = await import(join(fileURLToPath(new URL('.', import.meta.url)), '..', '..', 'apps', 'cli', 'dist', 'verifier', 'round', 'storage.js'));
+const roundDist = join(fileURLToPath(new URL('.', import.meta.url)), '..', '..', 'apps', 'cli', 'dist', 'verifier', 'round');
+const { DirectoryRoundStorage } = await import(join(roundDist, 'storage.js'));
+const { seededRanking } = await import(join(roundDist, 'seeded.js'));
 
 const repoRoot = resolve(fileURLToPath(new URL('.', import.meta.url)), '..', '..');
 const cliEntry = join(repoRoot, 'apps', 'cli', 'dist', 'cli', 'index.js');
@@ -46,6 +48,9 @@ const IMPOSTOR_UPSTREAM = 'impostor/glm-lookalike';
 const AGENT_SEARCH_POSITIONS = 500;
 const VERIFICATION_MINTER_ID = keccak256(toUtf8Bytes('antseed.emissions.verification.v1'));
 const USDC_DEPOSIT = 20_000_000n;
+// 100 questions make at least 10 batches, so every target gets all 4 slices.
+const PROBES_PER_SERVICE = 100;
+const SLICES_PER_SERVICE = 4;
 const COLLECT_WINDOW = 30 * 60;
 const BACKUP_WINDOW = 20 * 60;
 const ATTEST_WINDOW = 20 * 60;
@@ -289,7 +294,7 @@ async function main() {
 
   // ── Owner setup: rewards, roles, models, a schedule inside the epoch headroom checked above ──
   const elapsed = (await chainNow()) - epochStart;
-  const schedule = [elapsed + COLLECT_WINDOW, BACKUP_WINDOW, ATTEST_WINDOW, 100, 4];
+  const schedule = [elapsed + COLLECT_WINDOW, BACKUP_WINDOW, ATTEST_WINDOW, PROBES_PER_SERVICE, SLICES_PER_SERVICE];
   await send(owner, gate, 'setMinterController(bytes32,address)', [VERIFICATION_MINTER_ID, verification]);
   await send(owner, verification, 'setPublisher(address)', [nodes.publisher.address]);
   for (const role of ['verifier-1', 'verifier-2', 'verifier-3']) await send(owner, verification, 'setVerifier(address,bool)', [nodes[role].address, 'true']);
@@ -394,42 +399,84 @@ async function main() {
   startProcess('publisher-buyer', process.execPath, cli(nodes.publisher, ['buyer', 'start', '--port', String(nodes.publisher.buyerPort)]), env);
   await waitFor('the publisher\'s buyer discovered both staked sellers', () => peersSeen(nodes.publisher), 240_000);
 
-  // ── Verifiers. Verifier 3 publishes its key, then goes offline before the plan ──────────
-  for (const role of ['verifier-1', 'verifier-2', 'verifier-3']) {
-    nodes[role].process = startProcess(role, process.execPath, cli(nodes[role], [
+  // ── Verifiers publish their encryption keys, then wait offline for the seed ─────────────
+  const verifierRoles = ['verifier-1', 'verifier-2', 'verifier-3'];
+  const startVerifier = (role, name = role) => {
+    nodes[role].process = startProcess(name, process.execPath, cli(nodes[role], [
       'verifier', 'start', '--skip-version-check', '--interval', '10', '--buyer-port', String(nodes[role].buyerPort),
     ]), env);
-  }
+  };
+  for (const role of verifierRoles) startVerifier(role);
   await waitFor('every verifier published its encryption key', async () => {
-    for (const role of ['verifier-1', 'verifier-2', 'verifier-3']) {
+    for (const role of verifierRoles) {
       if (isZeroHash(await client.encryptionKey(nodes[role].address))) return false;
     }
     return true;
   }, 240_000);
-  await stopProcess(nodes['verifier-3'].process);
-  log('verifier-3 stopped: its slices must go to backups');
+  // Offline until the seed is fixed, so the run can pick the verifier to lose from the real plan.
+  for (const role of verifierRoles) await stopProcess(nodes[role].process);
 
   startProcess('publisher', process.execPath, cli(nodes.publisher, [
     'verifier', 'publish', '--no-buyer', '--buyer-port', String(nodes.publisher.buyerPort), '--interval', '10',
   ]), env);
 
-  // ── Collection ───────────────────────────────────────────────────────────────────────────
+  // ── Seed: one where every verifier owns a slice, so the stopped one leaves work for backups ──
   const info = () => client.epochInfo(epoch);
   await waitFor('the publisher committed a sealed bank', async () => !isZeroHash((await info()).bankHash), 900_000, 5_000);
-  await waitFor('a verifier opened the epoch and fixed its seed', async () => !isZeroHash((await info()).seed), 300_000);
+  await send(funder, verification, 'openEpoch(uint256)', [String(epoch)]);
+  const members = (await client.epochVerifiers(epoch)).map((member) => member.toLowerCase());
+  const targets = ['seller-genuine', 'seller-impostor'].map((role) => `${nodes[role].agentId}:${keccak256(toUtf8Bytes(MODEL)).toLowerCase()}`);
+  const ownersFor = (seed) => {
+    const owned = new Map(members.map((member) => [member, 0]));
+    for (const key of targets) {
+      for (let sliceIndex = 0; sliceIndex < SLICES_PER_SERVICE; sliceIndex++) {
+        const owner = seededRanking(members, seed, `slice|${key}|${sliceIndex}`)[0];
+        owned.set(owner, owned.get(owner) + 1);
+      }
+    }
+    return owned;
+  };
+  let owned;
+  for (let attempt = 1; ; attempt++) {
+    const current = await info();
+    const head = Number(BigInt(await rpc('eth_blockNumber')));
+    if (head <= Number(current.seedBlock)) await rpc('anvil_mine', [`0x${(Number(current.seedBlock) - head + 1).toString(16)}`]);
+    const blockHash = (await rpc('eth_getBlockByNumber', [`0x${current.seedBlock.toString(16)}`, false])).hash;
+    const seed = keccak256(AbiCoder.defaultAbiCoder().encode(['bytes32', 'uint256', 'bytes32'], [blockHash, epoch, current.bankHash]));
+    owned = ownersFor(seed);
+    if ([...owned.values()].every((count) => count > 0)) break;
+    if (attempt === 8) throw new Error(`no seed in ${attempt} draws gave every verifier a slice`);
+    // Let the seed block's hash expire: fixSeed then re-arms on a new future block.
+    log(`seed draw ${attempt} leaves a verifier without slices (${JSON.stringify(Object.fromEntries(owned))}); redrawing`);
+    await rpc('anvil_mine', ['0x102']);
+    await send(funder, verification, 'fixSeed(uint256)', [String(epoch)]);
+  }
+  await send(funder, verification, 'fixSeed(uint256)', [String(epoch)]);
+  check(!isZeroHash((await info()).seed), `seed fixed; slices per verifier ${JSON.stringify(Object.fromEntries(owned))}`);
+
+  const stoppedRole = 'verifier-3';
+  const liveRoles = verifierRoles.filter((role) => role !== stoppedRole);
+  for (const role of liveRoles) startVerifier(role, `${role}-live`);
+  log(`${stoppedRole} stays offline with ${owned.get(nodes[stoppedRole].address.toLowerCase())} slices: they must go to backups`);
+
+  // ── Collection ───────────────────────────────────────────────────────────────────────────
   await waitFor('the publisher committed the plan', async () => !isZeroHash((await info()).planHash), 300_000);
-  const live = ['verifier-1', 'verifier-2'].map((role) => nodes[role].address);
+  const storage = new DirectoryRoundStorage(roundStorage);
+  const planEvent = (await client.planCommits(epoch)).find((entry) => !entry.backup);
+  const plan = JSON.parse((await storage.get(planEvent.uri, planEvent.hash)).toString('utf8'));
+  const collectors = Object.keys(plan.envelopes).sort();
+  check(collectors.join() === [...members].sort().join(), `the plan seals slices to all ${collectors.length} verifiers, as the seed predicted`);
+  const live = liveRoles.map((role) => nodes[role].address);
   await waitFor('both live verifiers committed their primary slices', async () => {
     for (const verifier of live) if (await client.sliceCommitCount(epoch, verifier) < 1) return false;
     return true;
   }, 900_000, 5_000);
-  check(await client.sliceCommitCount(epoch, nodes['verifier-3'].address) === 0, 'the stopped verifier committed nothing');
+  check(await client.sliceCommitCount(epoch, nodes[stoppedRole].address) === 0, 'the stopped verifier committed nothing');
 
   let deadlines = kbfEpochDeadlines(await info(), await client.epochDuration());
   await warpTo(deadlines.commitDeadline + 5);
   await waitFor('the publisher committed a backup plan for the missing slices', async () => !isZeroHash((await info()).backupPlanHash), 300_000);
   // The backup plan seals the missing slices to the verifiers ranked as their backups.
-  const storage = new DirectoryRoundStorage(roundStorage);
   const backupEvent = (await client.planCommits(epoch)).find((entry) => entry.backup);
   const backupPlan = JSON.parse((await storage.get(backupEvent.uri, backupEvent.hash)).toString('utf8'));
   const backupCollectors = Object.keys(backupPlan.envelopes);
@@ -505,11 +552,11 @@ async function main() {
     return true;
   }, 300_000, 5_000);
   const ants = address('antsToken');
-  for (const role of ['verifier-1', 'verifier-2']) {
+  for (const role of liveRoles) {
     const balance = BigInt(call(ants, 'balanceOf(address)(uint256)', [nodes[role].address]));
     check(balance > 0n, `${role} received ${Number(balance / 10n ** 14n) / 1e4} ANTS`);
   }
-  check(!await client.rewardClaimed(epoch, nodes['verifier-3'].address), 'the stopped verifier earned nothing');
+  check(!await client.rewardClaimed(epoch, nodes[stoppedRole].address), 'the stopped verifier earned nothing');
   log(`stub served ${[...stub.stats.completions.values()].reduce((a, b) => a + b, 0)} completions: ${JSON.stringify(Object.fromEntries(stub.stats.completions))}`);
   log(`PASS in ${((Date.now() - started) / 60_000).toFixed(1)} min`);
   await stub.close();

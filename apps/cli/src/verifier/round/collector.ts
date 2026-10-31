@@ -19,16 +19,37 @@ export interface CollectorContext {
   fetchImpl?: typeof fetch
 }
 
+/** Resume and deadline hooks for `collectSlice`. */
+export interface CollectSliceOptions {
+  /** Batches already bought (null: tried and failed), e.g. from a checkpoint; never bought again. */
+  done?: ReadonlyMap<number, SliceExchangeV1 | null>
+  /** Called after each batch is bought, before the next one starts, to checkpoint it. */
+  onBatch?: (batchIndex: number, exchange: SliceExchangeV1 | null) => Promise<void>
+  /** Checked before each batch; true stops buying (the phase is about to end). */
+  shouldStop?: () => Promise<boolean>
+}
+
 /**
  * Buys one slice from its seller through the buyer proxy, pinned to that seller, and keeps the
  * seller-signed record of every batch. A batch is retried only when there is no usable signed
  * response (transport error, non-200, missing signature); the first signed 200 is kept, so a
  * collector never picks among several answers.
  */
-export async function collectSlice(slice: EnvelopeSliceV1, context: CollectorContext): Promise<CollectedSliceV1> {
+export async function collectSlice(
+  slice: EnvelopeSliceV1,
+  context: CollectorContext,
+  options: CollectSliceOptions = {},
+): Promise<CollectedSliceV1> {
   const exchanges: SliceExchangeV1[] = []
   for (const batch of slice.batches) {
+    if (options.done?.has(batch.batchIndex)) {
+      const previous = options.done.get(batch.batchIndex)
+      if (previous) exchanges.push(previous)
+      continue
+    }
+    if (options.shouldStop && await options.shouldStop()) break
     const exchange = await collectBatch(slice, batch, context)
+    await options.onBatch?.(batch.batchIndex, exchange)
     if (exchange) exchanges.push(exchange)
   }
   return { targetKey: targetKey(slice.target), sliceIndex: slice.sliceIndex, exchanges }
