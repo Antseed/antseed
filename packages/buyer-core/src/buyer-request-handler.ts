@@ -477,7 +477,17 @@ export class BuyerRequestHandler {
       );
     });
 
-    const response = await executeRequest();
+    // Paid work in flight sizes the buyer's reserve top-ups (see beginPaidRequest).
+    const bpm = isFreeService ? undefined : this._deps.negotiator?.bpm;
+    const executeCountedRequest = async (): Promise<SerializedHttpResponse> => {
+      bpm?.beginPaidRequest(peer.peerId);
+      try {
+        return await executeRequest();
+      } finally {
+        bpm?.endPaidRequest(peer.peerId);
+      }
+    };
+    const response = await executeCountedRequest();
 
     // A seller demanded payment while this buyer runs no payment machinery
     // (payments disabled or unconfigured). Forwarding the raw seller 402 would
@@ -518,7 +528,7 @@ export class BuyerRequestHandler {
           return adaptPeerResponse(result.response);
         }
         startTime = Date.now();
-        retriedResponse = await executeRequest();
+        retriedResponse = await executeCountedRequest();
         const previous = catchUpState(paymentResponse);
         const current = catchUpState(retriedResponse);
         if (current == null || previous == null) break;

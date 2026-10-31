@@ -63,7 +63,7 @@ function makeHandler(responses: SerializedHttpResponse[], freeTierDelegationsHea
     getOrCreatePaymentMux: vi.fn(() => ({})),
     trackRequestBillingContext: vi.fn(),
     estimateCostFromResponse: vi.fn(),
-    bpm: { clearRequestBilling: vi.fn(), markRequestCovered: vi.fn(), releaseRequestCoverage: vi.fn() },
+    bpm: { clearRequestBilling: vi.fn(), markRequestCovered: vi.fn(), releaseRequestCoverage: vi.fn(), beginPaidRequest: vi.fn(), endPaidRequest: vi.fn() },
     handle402,
     applyExternalSpendingAuth: vi.fn(async () => {}),
   };

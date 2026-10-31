@@ -52,6 +52,14 @@ const INITIAL_TOPUP_HEADROOM_PERCENT = 35n;
 /** Fixed remaining headroom that triggers every later top-up ($0.50). */
 const SUBSEQUENT_TOPUP_HEADROOM_USDC = 500_000n;
 const PERCENT_DENOMINATOR = 100n;
+/**
+ * Paid requests still in flight cost about the channel's average request
+ * each, and are charged after they finish: keep twice that much headroom so
+ * a top-up lands before the work in flight passes the locked reserve.
+ */
+const IN_FLIGHT_HEADROOM_FACTOR = 2n;
+/** Largest load-sized top-up, in multiples of the configured reserve step. */
+const MAX_LOAD_TOPUP_MULTIPLE = 10n;
 /** Default max price of one video generation ($5.00). */
 export const DEFAULT_MAX_VIDEO_REQUEST_USDC = 5_000_000n;
 const REQUEST_BILLING_TTL_MS = 5 * 60_000;
@@ -250,6 +258,8 @@ export class BuyerPaymentManager {
 
   /** sellerPeerId -> buyer-verified cumulative cost from bytes/4 */
   private readonly _verifiedCost = new Map<string, bigint>();
+  /** sellerPeerId -> paid requests dispatched and not yet answered */
+  private readonly _inFlightPaidRequests = new Map<string, number>();
   /**
    * Per seller: the tail of the queue of signing steps. Reading the signed
    * amount and verified cost, signing and committing happen one at a time
@@ -1389,11 +1399,37 @@ export class BuyerPaymentManager {
     const current = this._cumulativeAmount.get(sellerPeerId) ?? 0n;
     const initialReserve = this._initialReserveAmount.get(sellerPeerId)
       ?? this._config.maxReserveAmountUsdc;
-    const threshold = ceiling <= initialReserve
+    const fixedThreshold = ceiling <= initialReserve
       ? initialReserve * INITIAL_TOPUP_HEADROOM_PERCENT / PERCENT_DENOMINATOR
       : SUBSEQUENT_TOPUP_HEADROOM_USDC;
+    const loadThreshold = this._inFlightHeadroom(sellerPeerId);
+    const threshold = loadThreshold > fixedThreshold ? loadThreshold : fixedThreshold;
     const remaining = ceiling > current ? ceiling - current : 0n;
     return remaining <= threshold;
+  }
+
+  /** Count a paid request to this seller as in flight until endPaidRequest. */
+  beginPaidRequest(sellerPeerId: string): void {
+    this._inFlightPaidRequests.set(sellerPeerId, (this._inFlightPaidRequests.get(sellerPeerId) ?? 0) + 1);
+  }
+
+  endPaidRequest(sellerPeerId: string): void {
+    const remaining = (this._inFlightPaidRequests.get(sellerPeerId) ?? 0) - 1;
+    if (remaining > 0) this._inFlightPaidRequests.set(sellerPeerId, remaining);
+    else this._inFlightPaidRequests.delete(sellerPeerId);
+  }
+
+  /**
+   * Headroom the paid requests in flight to this seller need: their count
+   * times the channel's average verified cost per request, doubled. Zero until
+   * the channel has served a request, so a fresh channel keeps the fixed rules.
+   */
+  private _inFlightHeadroom(sellerPeerId: string): bigint {
+    const inFlight = BigInt(this._inFlightPaidRequests.get(sellerPeerId) ?? 0);
+    const requests = this._metadata.get(sellerPeerId)?.cumulativeRequestCount ?? 0n;
+    if (inFlight <= 0n || requests <= 0n) return 0n;
+    const averageCost = (this._verifiedCost.get(sellerPeerId) ?? 0n) / requests;
+    return inFlight * averageCost * IN_FLIGHT_HEADROOM_FACTOR;
   }
 
   /**
@@ -2025,12 +2061,22 @@ export class BuyerPaymentManager {
     }
 
     const prevCeiling = this._getCeiling(sellerPeerId);
-    const newCeiling = prevCeiling + this._config.maxReserveAmountUsdc;
-    const additionalReserve = newCeiling - prevCeiling;
+    // Under parallel load one configured step can be smaller than the work in
+    // flight, which then runs past the locked reserve before the next top-up
+    // is allowed: grow by enough to cover it, up to a bound.
+    const step = this._config.maxReserveAmountUsdc;
+    const maxStep = step * MAX_LOAD_TOPUP_MULTIPLE;
+    const loadHeadroom = this._inFlightHeadroom(sellerPeerId);
+    let additionalReserve = step;
+    if (loadHeadroom > step) additionalReserve = loadHeadroom < maxStep ? loadHeadroom : maxStep;
     const deadline = this._authDeadline();
 
     try {
       const balance = await this.getBalance();
+      // A load-sized step shrinks to what is available; the configured step is the floor.
+      if (additionalReserve > step && balance.available < additionalReserve) {
+        additionalReserve = balance.available > step ? balance.available : step;
+      }
       if (balance.available < additionalReserve) {
         throw buyerFault(
           `Insufficient buyer deposits for reserve top-up: available=${balance.available} required=${additionalReserve}`,
@@ -2047,6 +2093,7 @@ export class BuyerPaymentManager {
       );
     }
 
+    const newCeiling = prevCeiling + additionalReserve;
     debugLog(`[BuyerPayment] topUpReserve: channel=${session.sessionId.slice(0, 18)}... ceiling ${prevCeiling} → ${newCeiling}`);
 
     const reserveAuthSig = await this._signReserveAuth(session.sessionId, newCeiling, deadline);

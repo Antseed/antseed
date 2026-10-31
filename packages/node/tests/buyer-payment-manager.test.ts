@@ -1921,6 +1921,48 @@ describe('BuyerPaymentManager', () => {
     expect(manager.getReserveCeiling(sellerPeerId)).toBe(20_000_000n);
   });
 
+  it('sizes reserve top-ups and their trigger to the paid requests in flight, within a bound', async () => {
+    store.close();
+    store = new ChannelStore(tempDir);
+    manager = new BuyerPaymentManager(identity, makeConfig(tempDir, { maxReserveAmountUsdc: 1_000_000n }), store);
+    manager.setSigner(Wallet.createRandom());
+    mux = createMockPaymentMux();
+    const sellerPeerId = fakePeerId('seller-load-topup');
+    await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    const internals = manager as unknown as {
+      _metadata: Map<string, { cumulativeRequestCount: bigint }>;
+      _verifiedCost: Map<string, bigint>;
+      _cumulativeAmount: Map<string, bigint>;
+      _needsTopUp(sellerPeerId: string): boolean;
+    };
+    // Ten requests served at $0.07 each on average.
+    internals._metadata.set(sellerPeerId, { ...internals._metadata.get(sellerPeerId)!, cumulativeRequestCount: 10n });
+    internals._verifiedCost.set(sellerPeerId, 700_000n);
+    internals._cumulativeAmount.set(sellerPeerId, 400_000n);
+
+    // Idle: $0.60 of headroom left is above the fixed trigger, and one step is enough.
+    expect(internals._needsTopUp(sellerPeerId)).toBe(false);
+
+    // 32 requests in flight need 32 x $0.07 x 2 = $4.48: top up now, by that much.
+    for (let i = 0; i < 32; i += 1) manager.beginPaidRequest(sellerPeerId);
+    expect(internals._needsTopUp(sellerPeerId)).toBe(true);
+    mux.sentSpendingAuths.length = 0;
+    await manager.topUpReserve(sellerPeerId, mux);
+    expect((mux.sentSpendingAuths[0] as Record<string, unknown>).reserveMaxAmount).toBe('5480000');
+
+    // 200 in flight would need $28: capped at ten configured steps.
+    for (let i = 0; i < 168; i += 1) manager.beginPaidRequest(sellerPeerId);
+    mux.sentSpendingAuths.length = 0;
+    await manager.topUpReserve(sellerPeerId, mux);
+    expect((mux.sentSpendingAuths[0] as Record<string, unknown>).reserveMaxAmount).toBe('15480000');
+
+    // Once they finish, top-ups return to one configured step.
+    for (let i = 0; i < 200; i += 1) manager.endPaidRequest(sellerPeerId);
+    mux.sentSpendingAuths.length = 0;
+    await manager.topUpReserve(sellerPeerId, mux);
+    expect((mux.sentSpendingAuths[0] as Record<string, unknown>).reserveMaxAmount).toBe('16480000');
+  });
+
   it('resendReserveAuth replays the original reserve amount after top-up', async () => {
     store.close();
     store = new ChannelStore(tempDir);
