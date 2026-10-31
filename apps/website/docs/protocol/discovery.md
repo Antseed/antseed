@@ -157,6 +157,8 @@ Buyers accept metadata versions 10 through 13 and reject versions newer than the
 }
 ```
 
+A healthy entry says when the service last succeeded and how: `source: "traffic"` when a paid buyer request got a successful answer, `"probe"` when the seller's own check passed. `checkedAt` moves forward with each success, but buyers see the new value only with the seller's next announcement. The HTTP status of a success is not announced; `httpStatus` appears only on a failing entry.
+
 A seller keeps failing services announced with this status instead of withdrawing them. Buyers leave failing services out of model lists and automatic routing; a request pinned to that seller still goes through. If it fails, the seller answers `503` with `error.code: "seller_self_health_failing"`, and the error says the seller's self health check is failing and why. When every seller of a model reports it failing, a buyer asking for that model gets the same error instead of "model not found".
 
 Buyers ask for the version they understand with the `x-antseed-metadata-version` request header. Sellers sign a v12 and a v13 document and answer with the newest one the buyer understands; a buyer that sends no header gets v12, without the services that are failing.

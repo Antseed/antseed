@@ -38,6 +38,7 @@ import {
   type AntseedNode,
   type FaultAttribution,
   type BuyerSpendEvent,
+  type ServiceHealth,
   type ResponseAuthEvent,
   type AdaptiveRouteScore,
   type RouteRequestShape,
@@ -340,6 +341,7 @@ interface RoutePreviewCandidate {
   outputUsdPerMillion: number | null
   trustScore: number | null
   selection: RouteSelection | null
+  health: ServiceHealth | null
 }
 
 type RequestPolicyResult =
@@ -1937,6 +1939,7 @@ export class BuyerProxy {
         outputUsdPerMillion: offer.outputUsdPerMillion ?? null,
         trustScore: peer ? normalizedModelReputationScore(peer) : null,
         selection: null,
+        health: offer.health ?? null,
       })
     }
     return [...plan.verdicts
@@ -1950,6 +1953,7 @@ export class BuyerProxy {
         outputUsdPerMillion: verdict.offer.outputUsdPerMillion ?? null,
         trustScore: normalizedModelReputationScore(verdict.peer),
         selection: modelAllowed && verdict.eligible ? verdict.selection ?? null : null,
+        health: verdict.offer.health ?? null,
       })), ...failing]
       .sort((a, b) => (a.rank ?? Number.POSITIVE_INFINITY) - (b.rank ?? Number.POSITIVE_INFINITY)
         || a.peerId.localeCompare(b.peerId))

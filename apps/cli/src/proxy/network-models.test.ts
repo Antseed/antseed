@@ -41,6 +41,23 @@ test('network model offers carry the free-tier program they are served under', (
   assert.equal(offer('paid-model')?.freeTier, undefined)
 })
 
+test('network model offers carry the seller\'s last self health check and leave out failing ones', () => {
+  const providerPricing = { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'gpt-test': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } } } }
+  const healthy = makePeer({
+    peerId: 'a'.repeat(40), providers: ['openai'], providerPricing,
+    providerServiceHealth: { openai: { services: { 'gpt-test': { status: 'healthy', checkedAt: NOW_MS - 60_000, source: 'traffic' } } } },
+  })
+  const failing = makePeer({
+    peerId: 'b'.repeat(40), providers: ['openai'], providerPricing,
+    providerServiceHealth: { openai: { services: { 'gpt-test': { status: 'failing', reason: 'timeout', consecutiveFailures: 3 } } } },
+  })
+  const silent = makePeer({ peerId: 'c'.repeat(40), providers: ['openai'], providerPricing })
+  const [model] = buildNetworkModels([healthy, failing, silent], NOW_MS)
+  assert.deepEqual(model?.peers.map((offer) => offer.peerId).sort(), [healthy.peerId, silent.peerId])
+  assert.deepEqual(model?.peers.find((offer) => offer.peerId === healthy.peerId)?.health, { status: 'healthy', checkedAt: NOW_MS - 60_000, source: 'traffic' })
+  assert.equal(model?.peers.find((offer) => offer.peerId === silent.peerId)?.health, undefined)
+})
+
 test('paid image and video offers never inherit the seller-wide program, and paid video has no allowance', () => {
   const sellerWide = { base: { maxRequestsPerAddress: 1000, maxRequestsPerIp: null, windowMs: 86_400_000 }, stakeTiers: [] }
   const allowance = { base: { maxRequestsPerAddress: 5, maxRequestsPerIp: null, windowMs: 86_400_000 }, stakeTiers: [] }

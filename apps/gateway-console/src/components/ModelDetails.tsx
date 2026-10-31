@@ -8,6 +8,7 @@ import { modelCallFormat, pinnedModelId } from '../lib/snippets'
 import { ApiCall } from './ApiCall'
 import { previewListsSellers } from '../lib/selection'
 import { SellerSelection, type SellerRowExtras } from './SellerSelection'
+import { ServiceHealthInfo } from './ServiceHealthInfo'
 import { PanelRow, PanelSection } from './SidePanel'
 import { FreeTierInfo } from './FreeTierInfo'
 import { TeeBadge } from './TeeBadge'
@@ -131,7 +132,7 @@ export function ModelDetails({ model, preview, previewLoading, pin }: {
                   const extras = offerExtras([offer])
                   return <PanelRow key={offerKey(offer)} selected={extras.selected}
                     title={<PageLink to={panelPath('providers', offer.peerId)}>{offerName(offer)}</PageLink>}
-                    meta={extras.meta} badges={extras.badges} actions={extras.actions} />
+                    meta={<>{extras.meta}<ServiceHealthInfo health={offer.health} /></>} badges={extras.badges} actions={extras.actions} />
                 })}
               </ul>
             )}

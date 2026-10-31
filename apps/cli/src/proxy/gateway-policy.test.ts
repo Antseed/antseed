@@ -252,7 +252,7 @@ test('route-preview shares routing logic and explains ineligible sellers', async
   assert.equal(body.model, 'gpt-5')
   const byId = new Map(body.candidates.map((candidate) => [candidate['peerId'], candidate]))
   assert.deepEqual(Object.keys(body.candidates[0]!).sort(), [
-    'displayName', 'eligible', 'inputUsdPerMillion', 'outputUsdPerMillion', 'peerId', 'rank', 'reasons', 'selection', 'trustScore',
+    'displayName', 'eligible', 'health', 'inputUsdPerMillion', 'outputUsdPerMillion', 'peerId', 'rank', 'reasons', 'selection', 'trustScore',
   ])
   // Only eligible sellers carry the numbers routing ranked them by.
   assert.equal(byId.get(pricey.peerId)?.['selection'], null)
@@ -270,6 +270,25 @@ test('route-preview shares routing logic and explains ineligible sellers', async
 
   const bad = await fetch(`${h.url}/_antseed/route-preview?model=gpt-5`, { headers: { [GATEWAY_CONTROL_HEADER]: SECRET, [ROUTING_POLICY_HEADER]: '!!' } })
   assert.equal(bad.status, 400)
+})
+
+test('route-preview carries each seller\'s last announced self health check, failing ones included', async (t) => {
+  const healthy = makePeer('e', { input: 1, output: 1, trust: 80 })
+  healthy.providerServiceHealth = { openai: { services: { 'gpt-5': { status: 'healthy', checkedAt: 1_793_328_100_000, source: 'traffic' } } } }
+  const failing = makePeer('f', { input: 1, output: 1, trust: 80 })
+  const failingHealth = { status: 'failing' as const, checkedAt: 1_793_328_180_000, source: 'probe' as const, failingSince: 1_793_327_880_000, consecutiveFailures: 3, reason: 'timeout' as const }
+  failing.providerServiceHealth = { openai: { services: { 'gpt-5': failingHealth } } }
+  const silent = makePeer('g', { input: 1, output: 1, trust: 80 })
+  const h = await startHarness(t, [healthy, failing, silent])
+
+  const res = await fetch(`${h.url}/_antseed/route-preview?model=gpt-5`, { headers: withPolicy({}) })
+  const body = await res.json() as { candidates: Array<{ peerId: string; eligible: boolean; reasons: string[]; health: unknown }> }
+  const byId = new Map(body.candidates.map((candidate) => [candidate.peerId, candidate]))
+  assert.deepEqual(byId.get(healthy.peerId)?.health, { status: 'healthy', checkedAt: 1_793_328_100_000, source: 'traffic' })
+  assert.equal(byId.get(failing.peerId)?.eligible, false)
+  assert.deepEqual(byId.get(failing.peerId)?.reasons, ['self health check failing (timeout)'])
+  assert.deepEqual(byId.get(failing.peerId)?.health, failingHealth)
+  assert.equal(byId.get(silent.peerId)?.health, null)
 })
 
 test('route-preview explains each eligible seller with the numbers routing ranked it by', async (t) => {

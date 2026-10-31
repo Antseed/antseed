@@ -397,10 +397,10 @@ export function SellerSettingsEditor({ settings, restart }: { settings: SellerSe
           <section className="gc-policy__section">
             <h3>Checks</h3>
             <Switch checked={draft.healthEnabled} disabled={readOnly} onChange={(next) => set('healthEnabled', next)} label="Model health checks"
-              description="Probe every service; withdraw one that keeps failing until it recovers." />
+              description="Probe services without recent buyer traffic; announce one that keeps failing as failing, so buyers skip it until it recovers." />
             <div className="gc-policy__caps">
               {field('healthIntervalSec', 'Every (seconds)')}
-              {field('healthThreshold', 'Failures to withdraw')}
+              {field('healthThreshold', 'Failures to mark failing')}
             </div>
             <Switch checked={draft.gasEnabled} disabled={readOnly} onChange={(next) => set('gasEnabled', next)} label="Gas checks"
               description="Pause advertising while the wallet cannot pay for settlement." />

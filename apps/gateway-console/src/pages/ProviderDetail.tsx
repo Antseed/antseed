@@ -5,6 +5,7 @@ import { useConsole, useScopeFilter } from '../app/context'
 import { useGatewayBaseUrl } from '../components/copy-actions'
 import { FreeTierInfo } from '../components/FreeTierInfo'
 import { PeerActionDialog } from '../components/PeerActionDialog'
+import { ServiceHealthInfo } from '../components/ServiceHealthInfo'
 import { PanelRow, PanelSection } from '../components/SidePanel'
 import { TeeBadge } from '../components/TeeBadge'
 import { VerificationLinks } from '../components/VerificationLinks'
@@ -97,6 +98,7 @@ function ProviderModels({ peer, selected, onSelect }: { peer: Peer; selected: Se
                     : <span>{priceSummary(service)}</span>}
                   {!isFreeService(service) && service.freeTier && <FreeTierInfo program={service.freeTier} agentId={peer.agentId} priced align="center" />}
                   <span>{FORMAT_LABELS[serviceApiFormat(service)]}</span>
+                  <ServiceHealthInfo health={service.health} />
                 </>}
                 actions={<>
                   <CopyButton iconOnly value={pinnedModelId(peer.peerId, service.service)} label={`Copy ${service.service} pinned to this provider (peer@model)`} />

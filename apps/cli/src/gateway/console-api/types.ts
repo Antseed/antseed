@@ -757,6 +757,20 @@ export interface PeerVerificationLink {
 /** Mirrors `TeeScope` in `@antseed/node/tee-status`, which the console cannot import. */
 export type PeerTeeScope = 'end-to-end' | 'seller-node'
 
+/** A seller's last announced self health check for one model (signed in its metadata). */
+export interface ServiceHealthView {
+  status: 'healthy' | 'failing' | 'unknown'
+  /** When the evidence behind `status` was gathered, and whether the seller's probe or a buyer request gave it. */
+  checkedAt: number | null
+  source: 'probe' | 'traffic' | null
+  failingSince: number | null
+  consecutiveFailures: number | null
+  /** Why the last check failed (a fixed code such as `timeout` or `out_of_credit`). */
+  reason: string | null
+  /** The upstream's HTTP status on the failed check. */
+  httpStatus: number | null
+}
+
 export interface Peer {
   peerId: string
   displayName: string | null
@@ -773,8 +787,8 @@ export interface Peer {
     paid?: boolean
     /** The free-tier program this service is served under: its own, else the seller-wide one. */
     freeTier?: FreeTierProgramView | null
-    /** The seller's own health check marks the service failing, so routing skips it. */
-    failing?: boolean
+    /** The seller's last announced self health check; routing skips a failing service. Absent when not announced. */
+    health?: ServiceHealthView
   }>
   trustScore: number | null
   reputationScore: number | null
@@ -892,6 +906,8 @@ export interface NetworkModelOffer {
   latencyMsP50: number | null
   firstTokenMsP50: number | null
   tokensPerSecondP50: number | null
+  /** The seller's last announced self health check; failing offers are not listed. */
+  health?: ServiceHealthView
 }
 
 /** A model on the network, merged across the sellers that offer it (aliases included). */
@@ -969,6 +985,8 @@ export interface RoutePreview {
     trustScore: number | null
     /** Eligible sellers: the numbers automatic routing ranks them by. Null when ineligible. */
     selection: RouteSelection | null
+    /** The seller's last announced self health check for the model; a failing one is never routed to. */
+    health?: ServiceHealthView
   }>
 }
 
