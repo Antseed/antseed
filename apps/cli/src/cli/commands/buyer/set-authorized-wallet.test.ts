@@ -4,6 +4,7 @@ import { Command } from 'commander';
 import { Wallet, ZeroAddress } from 'ethers';
 import {
   buildAuthorizedWalletUrl,
+  getAuthorizedWalletStatus,
   loadAuthorizingIdentity,
   registerBuyerSetAuthorizedWalletCommand,
   runBrowserWalletAuthorization,
@@ -177,4 +178,21 @@ test('loadAuthorizingIdentity loads a named buyer identity and refuses unknown n
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test('status reports none for the zero address', async () => {
+  const status = await getAuthorizedWalletStatus({
+    context: { address: buyer },
+    client: { getOperator: async () => ZeroAddress, getOperatorNonce: async () => 9007199254740993n },
+  });
+  assert.deepEqual(status, { buyer, operator: null, nonce: '9007199254740993' });
+});
+
+test('status reports the operator address when one is set', async () => {
+  const status = await getAuthorizedWalletStatus({
+    context: { address: buyer },
+    client: { getOperator: async () => otherOperator, getOperatorNonce: async () => 3n },
+  });
+  assert.deepEqual(status, { buyer, operator: otherOperator, nonce: '3' });
+  assert.doesNotThrow(() => JSON.stringify(status));
 });

@@ -44,6 +44,7 @@ Command-line interface and web dashboard for the AntSeed Network — a P2P netwo
 | `antseed buyer deposit --onchain <usdc>` | Direct on-chain deposit from the hot wallet (requires ETH for gas) |
 | `antseed buyer withdraw <amount>` | Withdraw USDC from deposits |
 | `antseed buyer set-authorized-wallet [--self]` | Authorize an external wallet in the browser, or authorize the buyer wallet itself |
+| `antseed buyer authorized-wallet-status [--json]` | Show the buyer's authorized wallet (operator) and nonce, read-only |
 | `antseed buyer balance` | Check wallet and deposit balance |
 | `antseed network browse` | Browse peers, models, and pricing (same catalog as `/v1/models`) |
 | `antseed apps [--json]` / `antseed apps status [--json]` | List every supported connected app (OpenCode, Codex, Claude Code, Claude Desktop, Hermes, Droid, T3 Code, pi, GooeyPi, Crush, Goose, Zed) with installed / connected / config path. `--json` output carries `"schemaVersion": 1` |

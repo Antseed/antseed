@@ -114,6 +114,30 @@ export async function setSelfAuthorizedWallet(input: SetSelfAuthorizedWalletInpu
   return input.client.setOperator(wallet, buyer, buyer, nonce, signature);
 }
 
+export interface AuthorizedWalletStatus {
+  buyer: string;
+  /** null when no operator is set (zero address). */
+  operator: string | null;
+  /** String, because bigint is not JSON-serializable. */
+  nonce: string;
+}
+
+export async function getAuthorizedWalletStatus(input: {
+  context: Pick<CryptoContext, 'address'>;
+  client: Pick<DepositsClient, 'getOperator' | 'getOperatorNonce'>;
+}): Promise<AuthorizedWalletStatus> {
+  const buyer = input.context.address;
+  const [operator, nonce] = await Promise.all([
+    input.client.getOperator(buyer),
+    input.client.getOperatorNonce(buyer),
+  ]);
+  return {
+    buyer,
+    operator: operator.toLowerCase() === ZeroAddress ? null : operator,
+    nonce: nonce.toString(),
+  };
+}
+
 export function registerBuyerSetAuthorizedWalletCommand(buyerCmd: Command): void {
   buyerCmd
     .command('set-authorized-wallet')
@@ -169,6 +193,43 @@ export function registerBuyerSetAuthorizedWalletCommand(buyerCmd: Command): void
         const message = `Failed to set authorized wallet: ${(err as Error).message}`;
         if (spinner) spinner.fail(chalk.red(message));
         else console.error(chalk.red(message));
+        process.exitCode = 1;
+      }
+    });
+
+  buyerCmd
+    .command('authorized-wallet-status')
+    .description('Show the authorized wallet (operator) of the buyer, read-only')
+    .option('--json', 'output as JSON', false)
+    .option('--identity <n>', 'check this buyer identity wallet instead of the default one')
+    .action(async (options: { json: boolean; identity?: string }) => {
+      try {
+        const globalOpts = getGlobalOptions(buyerCmd);
+        const identity = await loadAuthorizingIdentity(globalOpts.dataDir, options.identity);
+        const { loadConfig } = await import('../../../config/loader.js');
+        const { createDepositsClient } = await import('../../payment-utils.js');
+        const config = await loadConfig(globalOpts.config);
+        const status = await getAuthorizedWalletStatus({
+          context: identity,
+          client: createDepositsClient(config),
+        });
+
+        if (options.json) {
+          console.log(JSON.stringify(status, null, 2));
+          return;
+        }
+        console.log(chalk.bold('Buyer: ') + chalk.cyan(status.buyer));
+        if (status.operator === null) {
+          console.log(chalk.bold('Authorized wallet: ') + chalk.yellow('none'));
+          console.log(chalk.dim('Without one, closing or withdrawing expired channels reverts with NotAuthorized().'));
+          console.log(chalk.dim('Set it with: antseed buyer set-authorized-wallet'));
+        } else {
+          const self = status.operator.toLowerCase() === status.buyer.toLowerCase();
+          console.log(chalk.bold('Authorized wallet: ') + chalk.cyan(status.operator) + (self ? chalk.dim(' (the buyer wallet itself)') : ''));
+        }
+        console.log(chalk.bold('Operator nonce: ') + status.nonce);
+      } catch (err) {
+        console.error(chalk.red(`Failed to read authorized wallet: ${(err as Error).message}`));
         process.exitCode = 1;
       }
     });
