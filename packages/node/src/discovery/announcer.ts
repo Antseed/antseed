@@ -330,11 +330,11 @@ export class PeerAnnouncer {
         if (normalizedServiceCapabilities) {
           providerAnnouncement.serviceCapabilities = normalizedServiceCapabilities;
         }
-        const normalizedServiceHealth = this._normalizeServiceHealth(p.serviceHealth?.(), p.services);
+        const normalizedServiceHealth = this._normalizeServiceMeasurements(p.serviceHealth?.(), p.services);
         if (normalizedServiceHealth) {
           providerAnnouncement.serviceHealth = normalizedServiceHealth;
         }
-        const normalizedServicePerformance = this._normalizeServicePerformance(p.servicePerformance?.(), p.services);
+        const normalizedServicePerformance = this._normalizeServiceMeasurements(p.servicePerformance?.(), p.services);
         if (normalizedServicePerformance) {
           providerAnnouncement.servicePerformance = normalizedServicePerformance;
         }
@@ -496,32 +496,18 @@ export class PeerAnnouncer {
     }
   }
 
-  private _normalizeServiceHealth(
-    serviceHealth: Record<string, ServiceHealth> | undefined,
+  /** Copies of the live per-service measurements (health, performance) for services the provider lists. */
+  private _normalizeServiceMeasurements<T extends object>(
+    measurements: Record<string, T> | undefined,
     supportedServices: string[],
-  ): Record<string, ServiceHealth> | undefined {
-    if (!serviceHealth) return undefined;
+  ): Record<string, T> | undefined {
+    if (!measurements) return undefined;
     const hasWildcardServices = supportedServices.length === 0;
     const supportedServiceSet = new Set(supportedServices);
-    const normalized: Record<string, ServiceHealth> = serviceMap();
-    for (const [service, health] of Object.entries(serviceHealth)) {
+    const normalized: Record<string, T> = serviceMap();
+    for (const [service, measurement] of Object.entries(measurements)) {
       if (!hasWildcardServices && !supportedServiceSet.has(service)) continue;
-      normalized[service] = { ...health };
-    }
-    return Object.keys(normalized).length > 0 ? normalized : undefined;
-  }
-
-  private _normalizeServicePerformance(
-    servicePerformance: Record<string, ServicePerformance> | undefined,
-    supportedServices: string[],
-  ): Record<string, ServicePerformance> | undefined {
-    if (!servicePerformance) return undefined;
-    const hasWildcardServices = supportedServices.length === 0;
-    const supportedServiceSet = new Set(supportedServices);
-    const normalized: Record<string, ServicePerformance> = serviceMap();
-    for (const [service, performance] of Object.entries(servicePerformance)) {
-      if (!hasWildcardServices && !supportedServiceSet.has(service)) continue;
-      normalized[service] = { ...performance };
+      normalized[service] = { ...measurement };
     }
     return Object.keys(normalized).length > 0 ? normalized : undefined;
   }

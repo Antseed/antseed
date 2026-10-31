@@ -6,6 +6,7 @@ import { MessageType } from '../src/types/protocol.js';
 import type { Provider } from '../src/interfaces/seller-provider.js';
 import { VerificationMux } from '../src/verification/index.js';
 import { ServicePerformanceTracker } from '../src/health/service-performance.js';
+import { StreamOutcome } from '../src/health/stream-outcome.js';
 import { decodeMetadata, encodeMetadata, encodeMetadataForSigning, getMetadataCodec } from '../src/discovery/metadata-codec.js';
 import { validateMetadata } from '../src/discovery/metadata-validator.js';
 import { mergeProviderAnnouncements, type PeerMetadata, type ProviderAnnouncement } from '../src/discovery/peer-metadata.js';
@@ -41,6 +42,14 @@ describe('ServicePerformanceTracker', () => {
     expect(tracker.performance('openai', 'm1', NOW)).toEqual({ requests: 3, successRate: 0.6667, firstTokenMsP50: 300, firstTokenMsP90: 300 });
   });
 
+  it('counts every request in the window, while timings come from the newest 500 answers', () => {
+    const tracker = new ServicePerformanceTracker();
+    for (let i = 0; i < 2_000; i += 1) {
+      tracker.record('openai', 'm1', { ok: i % 4 !== 0, firstTokenMs: i < 1_300 ? 9_000 : 300 }, NOW - (2_000 - i));
+    }
+    expect(tracker.performance('openai', 'm1', NOW)).toMatchObject({ requests: 2_000, successRate: 0.75, firstTokenMsP50: 300, firstTokenMsP90: 300 });
+  });
+
   it('announces only listed services with traffic in the window, and forgets idle ones', () => {
     const tracker = new ServicePerformanceTracker();
     tracker.record('openai', 'm1', { ok: true }, NOW);
@@ -49,6 +58,49 @@ describe('ServicePerformanceTracker', () => {
 
     expect(tracker.snapshot('openai', ['m1', 'm2', 'old'], NOW)).toEqual({ m1: { requests: 1, successRate: 1 } });
     expect(tracker.snapshot('openai', ['old'], NOW)).toBeUndefined();
+  });
+});
+
+describe('StreamOutcome', () => {
+  const sse = (text: string) => new TextEncoder().encode(text);
+
+  it('takes the first generated token, not start events, empty deltas or keepalives', () => {
+    const outcome = new StreamOutcome();
+    outcome.observe(sse(': keepalive\n\nevent: message_start\ndata: {"type":"message_start","message":{"content":[]}}\n\n'), 1);
+    outcome.observe(sse('data: {"choices":[{"delta":{"role":"assistant","content":""}}]}\n\n'), 2);
+    expect(outcome.firstTokenAt).toBeNull();
+    outcome.observe(sse('event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hi"}}\n\n'), 3);
+    outcome.observe(sse('data: {"choices":[{"delta":{"content":"later"}}]}\n\n'), 4);
+    expect(outcome.firstTokenAt).toBe(3);
+    expect(outcome.failed).toBe(false);
+  });
+
+  it('reads OpenAI chat and Responses deltas, also split across chunks', () => {
+    const chat = new StreamOutcome();
+    chat.observe(sse('data: {"choices":[{"delta":{"reasoning_con'), 1);
+    chat.observe(sse('tent":"thinking"}}]}\n\n'), 2);
+    expect(chat.firstTokenAt).toBe(2);
+    const responses = new StreamOutcome();
+    responses.observe(sse('event: response.created\ndata: {"type":"response.created"}\n\n'), 1);
+    responses.observe(sse('event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"Hi"}\n\n'), 5);
+    expect(responses.firstTokenAt).toBe(5);
+  });
+
+  it('marks a 200 stream failed when it reports an error, from the upstream or the relay', () => {
+    for (const text of [
+      'event: error\ndata: {"type":"error","error":{"type":"overloaded_error"}}\n\n',
+      'data: {"error":{"message":"upstream overloaded"}}\n\n',
+      'event: response.failed\ndata: {"type":"response.failed"}\n\n',
+      'event: error\ndata: socket hang up\n\n',
+    ]) {
+      const outcome = new StreamOutcome();
+      outcome.observe(sse('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'), 1);
+      outcome.observe(sse(text), 2);
+      expect(outcome.failed, text).toBe(true);
+    }
+    const fine = new StreamOutcome();
+    fine.observe(sse('data: {"choices":[{"delta":{"content":"the word \\"error\\": is fine here"}}]}\n\n'), 1);
+    expect(fine.failed).toBe(false);
   });
 });
 
@@ -203,5 +255,28 @@ describe('seller request handler', () => {
     const performance = tracker.performance('openai', 'test-model')!;
     expect(performance).toMatchObject({ requests: 2, successRate: 0.5 });
     expect(performance.firstTokenMsP50).toBeGreaterThanOrEqual(25);
+  });
+
+  it('times the first token after a start event, and counts a stream that fails after a 200 start as failed', async () => {
+    const tracker = new ServicePerformanceTracker();
+    const encoder = new TextEncoder();
+    const stream = (events: string[], delayBefore: number) => provider({
+      handleRequestStream: async (req, callbacks) => {
+        const headers = { 'content-type': 'text/event-stream' };
+        callbacks.onResponseStart({ requestId: req.requestId, statusCode: 200, headers, body: new Uint8Array(0) });
+        await callbacks.onResponseChunk({ requestId: req.requestId, data: encoder.encode(events[0]!), done: false });
+        await new Promise((resolve) => setTimeout(resolve, delayBefore));
+        for (const event of events.slice(1)) await callbacks.onResponseChunk({ requestId: req.requestId, data: encoder.encode(event), done: false });
+        await callbacks.onResponseChunk({ requestId: req.requestId, data: new Uint8Array(0), done: true });
+        return { requestId: req.requestId, statusCode: 200, headers, body: encoder.encode(events.join('')) };
+      },
+    });
+    const start = 'event: message_start\ndata: {"type":"message_start"}\n\n';
+    await serve(stream([start, 'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"text":"Hi"}}\n\n'], 60), tracker);
+    await serve(stream([start, 'event: error\ndata: upstream dropped\n\n'], 0), tracker);
+
+    const performance = tracker.performance('openai', 'test-model')!;
+    expect(performance).toMatchObject({ requests: 2, successRate: 0.5 });
+    expect(performance.firstTokenMsP50).toBeGreaterThanOrEqual(55);
   });
 });

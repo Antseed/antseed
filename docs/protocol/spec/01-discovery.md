@@ -145,11 +145,13 @@ The seller's own measurements of its buyer traffic over the last hour (`SERVICE_
 
 | Field | Type | Description |
 |---|---|---|
-| requests | number | Buyer requests relayed upstream in the window, 0..2^32-1 (the seller keeps at most the newest 500 per service) |
-| successRate | number | Share answered without an upstream failure, 0..1, four decimals. Failures are the statuses `isUpstreamFailureStatus` counts (401, 402, 403, 404, 408, 429, 5xx) and exceptions; other client errors do not count |
-| firstTokenMsP50 | number | Optional median ms from receiving the request to the first streamed bytes of the answer, 0..2^32-1 (streamed answers only) |
+| requests | number | Buyer requests relayed upstream in the window, 0..2^32-1, counted per minute |
+| successRate | number | Share answered without an upstream failure, 0..1, four decimals. Failures are the statuses `isUpstreamFailureStatus` counts (401, 402, 403, 404, 408, 429, 5xx), exceptions, and a stream that reports an error after a 200 start (an `error` event, an `error` object or `response.failed`); other client errors do not count |
+| firstTokenMsP50 | number | Optional median ms from receiving the request to the first event carrying generated output (text, reasoning or tool-call deltas of the OpenAI chat, OpenAI Responses and Anthropic Messages streams; start events, empty deltas and keepalives do not count), 0..2^32-1 |
 | firstTokenMsP90 | number | Optional 90th percentile of the same |
-| tokensPerSecondP50 | number | Optional median output tokens per second of streamed answers with at least 20 output tokens, 0..65535 |
+| tokensPerSecondP50 | number | Optional median output tokens per second from the first generated token to the end, for successful streamed answers with at least 20 output tokens, 0..65535 |
+
+The percentiles are taken over the newest 500 timed successful answers in the window; `requests` and `successRate` cover every request in it.
 
 Upstreams sharing a provider name offer a service on the same terms, so the seller measures per provider name and announces the same figures on each of them.
 
