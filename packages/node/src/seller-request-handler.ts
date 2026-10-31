@@ -212,6 +212,8 @@ const ATTEST_RATE_MAX_TRACKED_PEERS = 1024;
 export class SellerRequestHandler {
   private readonly _deps: SellerRequestHandlerDeps;
   private readonly _providerLoadCounts = new Map<string, number>();
+  /** Per channel: the highest spend a catch-up NeedAuth was already sent for, so parked requests ask once. */
+  private readonly _catchUpPrompted = new Map<string, bigint>();
   private readonly _attestRateWindows = new Map<string, { start: number; count: number }>();
   private _metadataRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -636,6 +638,23 @@ export class SellerRequestHandler {
             // operation this wait is a no-op; under pipelined requests (a new
             // request dispatched before the prior NeedAuth → SpendingAuth has
             // completed) it hides the round-trip latency from the buyer.
+            // Ask for the catch-up now instead of only after the wait: after a
+            // restart (or a lost NeedAuth) nothing else would prompt the buyer,
+            // and every parked request would end in a 402. Once per spend level,
+            // and only for spend the reserve can cover (beyond it the channel is closed below).
+            const signable = reserveMax <= 0n || spent <= reserveMax;
+            if (signable && spent > (this._catchUpPrompted.get(session.sessionId) ?? 0n)) {
+              this._catchUpPrompted.delete(session.sessionId);
+              this._catchUpPrompted.set(session.sessionId, spent);
+              if (this._catchUpPrompted.size > 1_024) this._catchUpPrompted.delete(this._catchUpPrompted.keys().next().value!);
+              this._sendNeedAuthBestEffort(paymentMux, {
+                channelId: session.sessionId,
+                requiredCumulativeAmount: spent.toString(),
+                currentAcceptedCumulative: accepted.toString(),
+                deposit: session.authMax ?? '0',
+                requestId: request.requestId,
+              }, buyerPeerId, 'catch-up-before-wait');
+            }
             const caughtUp = await spm.awaitAcceptedAtLeast(session.sessionId, spent, DEFAULT_CATCH_UP_WAIT_MS);
             accepted = spm.getAcceptedCumulative(session.sessionId);
             if (caughtUp && spent <= accepted) {
@@ -1514,7 +1533,7 @@ export class SellerRequestHandler {
     paymentMux: PaymentMux,
     payload: Parameters<PaymentMux['sendNeedAuth']>[0],
     buyerPeerId: string,
-    phase: 'budget-catch-up' | 'post-response' | 'video-delivered',
+    phase: 'budget-catch-up' | 'catch-up-before-wait' | 'post-response' | 'video-delivered',
   ): void {
     try {
       paymentMux.sendNeedAuth(payload);

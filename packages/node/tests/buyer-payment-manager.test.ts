@@ -746,6 +746,50 @@ describe('BuyerPaymentManager', () => {
     expect(sent.cumulativeAmount).toBe('50000');
   });
 
+  it('handleNeedAuth signs concurrent NeedAuths one at a time: no lost cost, no lower cumulative after a higher one', async () => {
+    const sellerPeerId = fakePeerId('seller-needauth-race');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    mux.sentSpendingAuths.length = 0;
+    // The first signature is slow, so without serializing the second would commit first.
+    const wallet = Wallet.createRandom();
+    let calls = 0;
+    const slowFirst = new Proxy(wallet, {
+      get(target, property, receiver) {
+        if (property !== 'signTypedData') return Reflect.get(target, property, receiver);
+        return async (...args: Parameters<Wallet['signTypedData']>) => {
+          calls += 1;
+          if (calls === 1) await new Promise((resolve) => setTimeout(resolve, 50));
+          return target.signTypedData(...args);
+        };
+      },
+    });
+    manager.setSigner(slowFirst);
+
+    await Promise.all([
+      manager.handleNeedAuth(sellerPeerId, { channelId, requiredCumulativeAmount: '40000', currentAcceptedCumulative: '0', deposit: '1000000', lastRequestCost: '40000' }, mux),
+      manager.handleNeedAuth(sellerPeerId, { channelId, requiredCumulativeAmount: '80000', currentAcceptedCumulative: '0', deposit: '1000000', lastRequestCost: '40000' }, mux),
+    ]);
+
+    expect(mux.sentSpendingAuths.map((auth) => (auth as Record<string, unknown>).cumulativeAmount)).toEqual(['40000', '80000']);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(80_000n);
+    expect(manager.getVerifiedCost(sellerPeerId)).toBe(80_000n);
+  });
+
+  it('handleNeedAuth resends the signed authorization when a catch-up prompt shows the seller never got it', async () => {
+    const sellerPeerId = fakePeerId('seller-needauth-resend');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    await manager.handleNeedAuth(sellerPeerId, { channelId, requiredCumulativeAmount: '50000', currentAcceptedCumulative: '0', deposit: '1000000' }, mux);
+    mux.sentSpendingAuths.length = 0;
+
+    // The seller restarted and only accepted 20k: same amount again, never higher.
+    await manager.handleNeedAuth(sellerPeerId, { channelId, requiredCumulativeAmount: '50000', currentAcceptedCumulative: '20000', deposit: '1000000' }, mux);
+    expect(mux.sentSpendingAuths.map((auth) => (auth as Record<string, unknown>).cumulativeAmount)).toEqual(['50000']);
+
+    // A post-response NeedAuth for an amount already signed is still ignored (its authorization is in flight).
+    await manager.handleNeedAuth(sellerPeerId, { channelId, requiredCumulativeAmount: '50000', currentAcceptedCumulative: '20000', deposit: '1000000', lastRequestCost: '0' }, mux);
+    expect(mux.sentSpendingAuths).toHaveLength(1);
+  });
+
   it('handleNeedAuth refuses to sign for a request the seller served from a free allowance', async () => {
     const sellerPeerId = fakePeerId('seller-needauth-covered');
     const otherSellerPeerId = fakePeerId('seller-needauth-fallback');
@@ -1663,11 +1707,11 @@ describe('BuyerPaymentManager', () => {
     expect(mux.sentSpendingAuths.length).toBe(1);
     mux.sentSpendingAuths.length = 0;
 
-    // Stale: required (30000) < current cumulative (50000)
+    // Stale: required (30000) < current cumulative (50000), which the seller already accepted
     await manager.handleNeedAuth(sellerPeerId, {
       channelId,
       requiredCumulativeAmount: '30000',
-      currentAcceptedCumulative: '10000',
+      currentAcceptedCumulative: '50000',
       deposit: '1000000',
     }, mux);
 

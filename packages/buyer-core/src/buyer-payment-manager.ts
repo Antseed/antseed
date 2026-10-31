@@ -116,6 +116,19 @@ export interface BuyerPaymentConfig {
   dataDir: string;
 }
 
+/** What the buyer saw of a served response, for signPerRequestAuth. */
+export type PerRequestResponseStats = {
+  inputBytes: Uint8Array;
+  outputBytes: Uint8Array;
+  sellerClaimedCost?: bigint;
+  reportedInputTokens?: bigint;
+  reportedOutputTokens?: bigint;
+  reportedCachedInputTokens?: bigint;
+  unitUsage?: UnitBillingUsage;
+  service?: string;
+  requestId?: string;
+};
+
 /** Result of signPerRequestAuth — includes the payload and whether a reserve top-up is needed. */
 export interface PerRequestAuthResult {
   payload: SpendingAuthPayload;
@@ -228,6 +241,13 @@ export class BuyerPaymentManager {
 
   /** sellerPeerId -> buyer-verified cumulative cost from bytes/4 */
   private readonly _verifiedCost = new Map<string, bigint>();
+  /**
+   * Per seller: the tail of the queue of signing steps. Reading the signed
+   * amount and verified cost, signing and committing happen one at a time
+   * per seller, so concurrent requests can neither lose a cost nor commit a
+   * lower cumulative after a higher one.
+   */
+  private readonly _sellerLocks = new Map<string, Promise<unknown>>();
 
   /** requestId -> service/model the buyer requested (from its own request body).
    *  Used in handleNeedAuth to validate cost with the correct pricing tier
@@ -517,7 +537,11 @@ export class BuyerPaymentManager {
     this._rejectedPeers.delete(sellerPeerId);
   }
 
-  async resendCurrentSpendingAuth(
+  resendCurrentSpendingAuth(sellerPeerId: string, paymentMux: PaymentMux): Promise<string> {
+    return this._withSellerLock(sellerPeerId, () => this._resendCurrentSpendingAuth(sellerPeerId, paymentMux));
+  }
+
+  private async _resendCurrentSpendingAuth(
     sellerPeerId: string,
     paymentMux: PaymentMux,
   ): Promise<string> {
@@ -565,6 +589,23 @@ export class BuyerPaymentManager {
     requestId?: string,
     inFlightRequests = 1,
   ): Promise<string> {
+    const { sessionId, topUp } = await this._withSellerLock(sellerPeerId, () => this._extendCurrentSpendingAuth(
+      sellerPeerId, minBudgetPerRequest, paymentMux, targetCumulative, requestId, inFlightRequests,
+    ));
+    // Sent after the SpendingAuth so the seller processes the higher cumulative
+    // first, meeting the on-chain settle threshold for topUp.
+    if (topUp) await this._topUpAfterSpendAuthBestEffort(sellerPeerId, paymentMux, 'extendCurrentSpendingAuth');
+    return sessionId;
+  }
+
+  private async _extendCurrentSpendingAuth(
+    sellerPeerId: string,
+    minBudgetPerRequest: bigint,
+    paymentMux: PaymentMux,
+    targetCumulative: bigint | undefined,
+    requestId: string | undefined,
+    inFlightRequests: number,
+  ): Promise<{ sessionId: string; topUp: boolean }> {
     const session = this.getActiveSession(sellerPeerId);
     if (!session) {
       throw buyerFault(`[BuyerPayment] No active session for seller ${sellerPeerId.slice(0, 12)}...`, 'buyer-session-state');
@@ -600,15 +641,12 @@ export class BuyerPaymentManager {
     const nextCumulative = requestedAmount < maxSignable ? requestedAmount : maxSignable;
     const extendNeedsTopUp = this._needsCeilingAdvance(requestedAmount, maxSignable, ceiling);
     if (nextCumulative <= currentCumulative) {
-      // Nothing to sign at current ceiling — try topUp anyway for next round
-      if (extendNeedsTopUp) {
-        await this._topUpAfterSpendAuthBestEffort(sellerPeerId, paymentMux, 'extendCurrentSpendingAuth');
-      }
+      // Nothing to sign at current ceiling; a top-up still extends it for the next round.
       debugWarn(
         `[BuyerPayment] Cannot extend active session for ${sellerPeerId.slice(0, 12)}... ` +
         `(current=${currentCumulative} maxSignable=${maxSignable} target=${targetCumulative ?? 'n/a'})`,
       );
-      return session.sessionId;
+      return { sessionId: session.sessionId, topUp: extendNeedsTopUp };
     }
 
     const currentMeta = this._sanitizeMetadata(this._metadata.get(sellerPeerId));
@@ -629,14 +667,7 @@ export class BuyerPaymentManager {
       outputImages: '0',
     });
     paymentMux.sendSpendingAuth(spendingAuth);
-
-    // Send topUp AFTER the SpendingAuth so the seller processes the higher
-    // cumulative first, meeting the on-chain settle threshold for topUp.
-    if (extendNeedsTopUp) {
-      await this._topUpAfterSpendAuthBestEffort(sellerPeerId, paymentMux, 'extendCurrentSpendingAuth');
-    }
-
-    return session.sessionId;
+    return { sessionId: session.sessionId, topUp: extendNeedsTopUp };
   }
 
   /**
@@ -1369,19 +1400,16 @@ export class BuyerPaymentManager {
    * @param responseStats Byte counts from the last response and seller's claimed cost.
    * @returns The signed payload and whether a reserve top-up is needed.
    */
-  async signPerRequestAuth(
+  signPerRequestAuth(
     sellerPeerId: string,
-    responseStats: {
-      inputBytes: Uint8Array;
-      outputBytes: Uint8Array;
-      sellerClaimedCost?: bigint;
-      reportedInputTokens?: bigint;
-      reportedOutputTokens?: bigint;
-      reportedCachedInputTokens?: bigint;
-      unitUsage?: UnitBillingUsage;
-      service?: string;
-      requestId?: string;
-    },
+    responseStats: PerRequestResponseStats,
+  ): Promise<PerRequestAuthResult> {
+    return this._withSellerLock(sellerPeerId, () => this._signPerRequestAuth(sellerPeerId, responseStats));
+  }
+
+  private async _signPerRequestAuth(
+    sellerPeerId: string,
+    responseStats: PerRequestResponseStats,
   ): Promise<PerRequestAuthResult> {
     const session = this.getActiveSession(sellerPeerId);
     if (!session) {
@@ -1630,6 +1658,17 @@ export class BuyerPaymentManager {
    * against its own token count and signs a new SpendingAuth for the required
    * cumulative amount, capped at the reserve ceiling.
    */
+  private _withSellerLock<T>(sellerPeerId: string, run: () => Promise<T>): Promise<T> {
+    const previous = this._sellerLocks.get(sellerPeerId) ?? Promise.resolve();
+    const next = previous.then(run, run);
+    const tail = next.catch(() => undefined);
+    this._sellerLocks.set(sellerPeerId, tail);
+    void tail.then(() => {
+      if (this._sellerLocks.get(sellerPeerId) === tail) this._sellerLocks.delete(sellerPeerId);
+    });
+    return next;
+  }
+
   async handleNeedAuth(
     sellerPeerId: string,
     payload: NeedAuthPayload,
@@ -1639,21 +1678,42 @@ export class BuyerPaymentManager {
       await this._handleOneOffNeedAuth(sellerPeerId, payload, paymentMux);
       return;
     }
+    // The seller's NeedAuth can legitimately race ahead of the buyer's own
+    // response processing (different muxes). Give the response path a moment
+    // to record a unit-billed delivery before judging the claim, outside the
+    // seller lock so other requests' authorizations do not wait on it.
+    if (payload.billingUsage && payload.requestId && BigInt(payload.lastRequestCost ?? '0') > 0n) {
+      await this._waitForObservedUnitUsage(payload.requestId, OBSERVED_UNIT_USAGE_WAIT_MS);
+    }
+    const topUp = await this._withSellerLock(sellerPeerId, () => this._signForNeedAuth(sellerPeerId, payload, paymentMux));
+    if (topUp) await this._topUpAfterSpendAuthBestEffort(sellerPeerId, paymentMux, 'handleNeedAuth');
+  }
+
+  /**
+   * Validates a NeedAuth and signs the next cumulative authorization. Runs
+   * under the seller lock, so it reads the latest signed amount and verified
+   * cost. Returns whether a reserve top-up should follow.
+   */
+  private async _signForNeedAuth(
+    sellerPeerId: string,
+    payload: NeedAuthPayload,
+    paymentMux: PaymentMux,
+  ): Promise<boolean> {
     const session = this.getActiveSession(sellerPeerId);
     if (!session) {
       debugWarn(`[BuyerPayment] NeedAuth for unknown seller: ${sellerPeerId.slice(0, 12)}...`);
-      return;
+      return false;
     }
     if (session.sessionId !== payload.channelId) {
       debugWarn(`[BuyerPayment] NeedAuth for unknown channel ${payload.channelId.slice(0, 18)}... — ignoring`);
-      return;
+      return false;
     }
 
     if (this.isRequestCovered(sellerPeerId, payload.requestId)) {
       debugWarn(
         `[BuyerPayment] Refusing NeedAuth from ${sellerPeerId.slice(0, 12)}... for request ${payload.requestId} it served from a free allowance`,
       );
-      return;
+      return false;
     }
 
     const requestBilling = payload.requestId ? this.getRequestBilling(payload.requestId) : undefined;
@@ -1666,10 +1726,22 @@ export class BuyerPaymentManager {
 
     // Reject stale/lower NeedAuth (monotonicity guard)
     if (requiredCumulativeAmount <= currentCumulative) {
+      // A catch-up prompt (no response cost) for what is already signed but
+      // not accepted (lost on the wire, or the seller restarted): resend the
+      // same authorization, no higher. A post-response NeedAuth is not
+      // answered this way: its authorization is usually still in flight.
+      const catchUpPrompt = payload.lastRequestCost == null && payload.billingUsage == null;
+      if (catchUpPrompt && payload.currentAcceptedCumulative != null && BigInt(payload.currentAcceptedCumulative) < currentCumulative) {
+        debugLog(
+          `[BuyerPayment] NeedAuth stale but seller accepted ${payload.currentAcceptedCumulative} < signed ${currentCumulative} — resending`,
+        );
+        await this._resendCurrentSpendingAuth(sellerPeerId, paymentMux);
+        return false;
+      }
       debugLog(
         `[BuyerPayment] NeedAuth stale: required=${requiredCumulativeAmount} <= current=${currentCumulative} — ignoring`,
       );
-      return;
+      return false;
     }
     let acceptedServiceCost = 0n;
     let acceptedOutputImages = 0n;
@@ -1712,10 +1784,8 @@ export class BuyerPaymentManager {
           // a moment to record what was actually delivered before judging the
           // claim; a seller claiming delivery that never happens still gets
           // rejected once the wait expires.
-          const observedUnitUsage = requestBilling.observedUnitUsage
-            ?? (sellerTotalCost > 0n && payload.requestId
-              ? await this._waitForObservedUnitUsage(payload.requestId, OBSERVED_UNIT_USAGE_WAIT_MS)
-              : undefined);
+          // Waited for before taking the seller lock (see handleNeedAuth).
+          const observedUnitUsage = requestBilling.observedUnitUsage;
           const claimedUnitCost = sellerTotalCost > tokenEstimate
             ? sellerTotalCost - tokenEstimate
             : 0n;
@@ -1748,7 +1818,7 @@ export class BuyerPaymentManager {
         );
       } catch (err) {
         debugWarn(`[BuyerPayment] NeedAuth billingUsage rejected: ${err instanceof Error ? err.message : err}`);
-        return;
+        return false;
       }
     } else if (payload.lastRequestCost) {
       const sellerCost = BigInt(payload.lastRequestCost);
@@ -1756,7 +1826,7 @@ export class BuyerPaymentManager {
         debugWarn(
           `[BuyerPayment] NeedAuth rejected: positive unit cost omitted verifiable billingUsage`,
         );
-        return;
+        return false;
       }
       const sellerIn = reportedInputTokens;
       const sellerOut = reportedOutputTokens;
@@ -1783,13 +1853,13 @@ export class BuyerPaymentManager {
           debugWarn(
             `[BuyerPayment] NeedAuth rejected: positive unit cost recomputed to zero`,
           );
-          return;
+          return false;
         }
         if (buyerEstimate > 0n && sellerCost > maxAcceptable) {
           debugWarn(
             `[BuyerPayment] NeedAuth: seller claimed cost ${sellerCost} exceeds ${this._costTolerance}x buyer estimate ${buyerEstimate} — rejecting`,
           );
-          return;
+          return false;
         }
         debugLog(
           `[BuyerPayment] NeedAuth: seller cost=${sellerCost} buyer estimate=${buyerEstimate} (in=${sellerIn} cached=${sellerCached} out=${sellerOut}) — validated`,
@@ -1826,7 +1896,7 @@ export class BuyerPaymentManager {
         debugWarn(
           `[BuyerPayment] NeedAuth: maxSignable=${maxSignable} <= currentCumulative=${currentCumulative} — overdraft limit reached`,
         );
-        return;
+        return false;
       }
     }
 
@@ -1839,14 +1909,11 @@ export class BuyerPaymentManager {
       ? (maxSignable > currentCumulative ? maxSignable : currentCumulative)
       : (requiredCumulativeAmount < maxSignable ? requiredCumulativeAmount : maxSignable);
     if (effectiveAmount <= currentCumulative) {
-      // Nothing to sign — trigger topUp anyway to extend ceiling for next round
-      if (needsTopUp) {
-        await this._topUpAfterSpendAuthBestEffort(sellerPeerId, paymentMux, 'handleNeedAuth');
-      }
+      // Nothing to sign; a top-up still extends the ceiling for the next round.
       debugWarn(
         `[BuyerPayment] NeedAuth: effectiveAmount=${effectiveAmount} <= currentCumulative=${currentCumulative} — cannot advance`,
       );
-      return;
+      return needsTopUp;
     }
 
     debugLog(`[BuyerPayment] NeedAuth: channel=${session.sessionId.slice(0, 18)}... required=${requiredCumulativeAmount} effective=${effectiveAmount}`);
@@ -1917,12 +1984,10 @@ export class BuyerPaymentManager {
     // settleable before topUp is allowed). Also proactively send the top-up
     // once the signed cumulative reaches the buyer's remaining-headroom
     // threshold; the seller may defer it until the contract gate is satisfied.
-    if (needsTopUp || this._needsTopUp(sellerPeerId)) {
-      await this._topUpAfterSpendAuthBestEffort(sellerPeerId, paymentMux, 'handleNeedAuth');
-    }
     if (payload.requestId) {
       this.clearRequestBilling(payload.requestId);
     }
+    return needsTopUp || this._needsTopUp(sellerPeerId);
   }
 
   // ── Reserve top-up ─────────────────────────────────────────────

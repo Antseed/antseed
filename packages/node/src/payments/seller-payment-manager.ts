@@ -828,14 +828,18 @@ export class SellerPaymentManager {
           return 'accepted';
         }
 
-        // Reject if buyer's cumulative doesn't cover what the seller has already spent
+        // An auth below what the seller has spent is still accepted: it only
+        // raises what the seller can claim. With requests in parallel, another
+        // one often finishes between a NeedAuth and the buyer's answer, so the
+        // answer is behind by then; rejecting it left the accepted amount stuck
+        // and parked every later request. Serving stays gated on spent <=
+        // accepted (see the request handler), so this never serves more.
         const spent = this._spent.get(channelId) ?? 0n;
         if (cumulativeAmount < spent) {
-          debugWarn(
-            `[SellerPayment] Rejecting underfunded SpendingAuth: ` +
+          debugLog(
+            `[SellerPayment] SpendingAuth behind spend, accepted: ` +
             `cumulative=${cumulativeAmount} < spent=${spent} channel=${channelId.slice(0, 18)}...`,
           );
-          return 'rejected';
         }
 
         // Reject if cumulative exceeds the on-chain deposit. Pending topUps do

@@ -1821,3 +1821,37 @@ describe('SellerRequestHandler payment pricing selection', () => {
     expect(response.statusCode).toBe(402);
   });
 });
+
+it('asks the buyer for the unsigned spend before parking a request on it, once per spend level', async () => {
+  let accepted = 100_000n;
+  const sendNeedAuth = vi.fn();
+  const promptedBeforeWait: boolean[] = [];
+  const handler = makeSellerRequestHandler({
+    providers: [makeProvider(1, 1, { name: 'openai', services: ['test-model'] })],
+    sellerPaymentManager: makeSpmMock({
+      getCumulativeSpend: () => 300_000n,
+      getAcceptedCumulative: () => accepted,
+      getReserveMax: () => 1_000_000n,
+      awaitAcceptedAtLeast: async (_channelId: string, target: bigint) => {
+        promptedBeforeWait.push(sendNeedAuth.mock.calls.some(([payload]) => payload.requiredCumulativeAmount === target.toString()));
+        accepted = target;
+        return true;
+      },
+    }),
+    channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,
+  });
+  const frames: Uint8Array[] = [];
+  const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth, sendPaymentRequired: vi.fn() } as any);
+  for (const messageId of [1, 2]) {
+    accepted = 100_000n;
+    await mux.handleFrame({ type: MessageType.HttpRequest, messageId, payload: encodeHttpRequest({
+      requestId: `r-${messageId}`, method: 'POST', path: '/v1/chat/completions',
+      headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'test-model', messages: [] })),
+    }) });
+  }
+
+  expect(promptedBeforeWait).toEqual([true, true]);
+  const prompts = sendNeedAuth.mock.calls.filter(([payload]) => payload.lastRequestCost == null);
+  expect(prompts).toHaveLength(1);
+  expect(prompts[0]![0]).toMatchObject({ requiredCumulativeAmount: '300000', currentAcceptedCumulative: '100000' });
+});

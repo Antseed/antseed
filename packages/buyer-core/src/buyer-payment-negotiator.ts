@@ -64,6 +64,13 @@ export interface BuyerNegotiatorConfig {
   onChainReadFailure?: () => void;
 }
 
+/**
+ * How long a resent authorization gets to reach the seller and release the
+ * requests parked on it: the seller waits up to 5 s for a catch-up before it
+ * answers 402, plus the round trip. The same target asked for within this
+ * time is the same burst, not a refusal.
+ */
+const RESEND_SETTLE_MS = 7_000;
 /** How long to wait for a seller's CloseChannelResult before giving up. */
 const CLOSE_REQUEST_TIMEOUT_MS = 60_000;
 /** How long to wait for the seller's AuthAck between chain reads while a one-off channel opens. */
@@ -162,7 +169,8 @@ export class BuyerPaymentNegotiator {
   /** Tracks which seller peers the buyer has already negotiated payment for. */
   private readonly _lockedPeers = new Set<string>();
   /** peerId -> catch-up target already answered by resending the current SpendingAuth. */
-  private readonly _resentForTarget = new Map<string, bigint>();
+  /** Per seller: the cumulative target the buyer last resent its authorization for, and when. */
+  private readonly _resentForTarget = new Map<string, { target: bigint; at: number }>();
   /** Pending PaymentRequired payloads from sellers, keyed by peerId. */
   private readonly _pendingPaymentRequired = new Map<string, {
     resolve: (payload: PaymentRequiredPayload) => void;
@@ -934,9 +942,12 @@ export class BuyerPaymentNegotiator {
       }
 
       if (this._bpm.getActiveSession(peer.peerId)) {
+        // Usually transient (the seller was busy, or a chain read failed): a
+        // retryable 503 lets routers fail over and clients retry.
         return returnNegotiationFailure(
           'existing_channel_still_active',
           'An existing payment channel could not be recovered automatically. Close or recover the channel and retry.',
+          503,
         );
       }
 
@@ -1578,7 +1589,14 @@ export class BuyerPaymentNegotiator {
       // authorization above the on-chain deposit can never be accepted, so
       // such a channel goes straight to a close capped at the deposit.
       const resendable = deposit <= 0n || signedCumulative <= deposit;
-      if (!resendable || this._resentForTarget.get(peer.peerId) === targetCumulative) {
+      const resent = this._resentForTarget.get(peer.peerId);
+      if (resendable && resent?.target === targetCumulative && Date.now() - resent.at < RESEND_SETTLE_MS) {
+        // Parallel requests parked on the same spend get the same target at
+        // once: the resend for it is already on its way, so retry instead of
+        // reading their 402s as the seller refusing it.
+        return true;
+      }
+      if (!resendable || resent?.target === targetCumulative) {
         // The resend did not reach the seller either (or could not be
         // accepted). Close the channel cooperatively so its reserve is
         // released before a replacement is funded; never forget a channel
@@ -1604,7 +1622,7 @@ export class BuyerPaymentNegotiator {
         }
         return false;
       }
-      this._resentForTarget.set(peer.peerId, targetCumulative);
+      this._resentForTarget.set(peer.peerId, { target: targetCumulative, at: Date.now() });
       await this._bpm.resendCurrentSpendingAuth(peer.peerId, pmux);
     } else if (!requireFreshAck && minBudgetPerRequest != null && minBudgetPerRequest > 0n) {
       this._resentForTarget.delete(peer.peerId);
