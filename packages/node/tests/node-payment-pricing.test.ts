@@ -224,6 +224,9 @@ function makeSpmMock(overrides: Record<string, unknown> = {}): any {
     getEffectiveReserveMax() {
       return this.getReserveMax();
     },
+    async refreshReserveMaxFromChain() {
+      return this.getEffectiveReserveMax();
+    },
     isChannelBlocked: () => false,
     getPaymentRequirements: () => ({ minBudgetPerRequest: '10000', suggestedAmount: '1000000' }),
     waitForPendingAuths: async () => {},
@@ -1958,5 +1961,41 @@ it('judges exhaustion on the reserve ceiling after a parked catch-up, so a top-u
   }) });
 
   expect(decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload).statusCode).toBe(200);
+  expect(settleSession).not.toHaveBeenCalled();
+});
+
+it('checks a stale stored ceiling against the chain before closing a channel as exhausted', async () => {
+  // After a restart the store says 7M, but a top-up to 8M confirmed on-chain.
+  let reserveMax = 7_000_000n;
+  const settleSession = vi.fn(async () => {});
+  const refreshReserveMaxFromChain = vi.fn(async () => {
+    reserveMax = 8_000_000n;
+    return reserveMax;
+  });
+  const handler = makeSellerRequestHandler({
+    providers: [makeProvider(1, 1, { name: 'openai', services: ['test-model'] })],
+    sellerPaymentManager: makeSpmMock({
+      getCumulativeSpend: () => 7_459_839n,
+      getAcceptedCumulative: () => 6_509_280n,
+      getReserveMax: () => reserveMax,
+      refreshReserveMaxFromChain,
+      settleSession,
+    }),
+    channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,
+  });
+  const frames: Uint8Array[] = [];
+  const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+  await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+    requestId: 'after-restart', method: 'POST', path: '/v1/chat/completions',
+    headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'test-model', messages: [] })),
+  }) });
+
+  const response = decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload);
+  expect(refreshReserveMaxFromChain).toHaveBeenCalled();
+  // Still a catch-up 402 for the unsigned spend, but not an exhausted one.
+  expect(response.statusCode).toBe(402);
+  const body = JSON.parse(new TextDecoder().decode(response.body));
+  expect(body.code).toBeUndefined();
+  expect(body.reserveMaxAmount).toBe('8000000');
   expect(settleSession).not.toHaveBeenCalled();
 });

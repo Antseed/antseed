@@ -683,6 +683,11 @@ export class SellerRequestHandler {
               debugLog(`[SellerHandler] Caught up before 402 for ${buyerPeerId.slice(0, 12)}... (spent=${spent} accepted=${accepted})`);
             }
           }
+          // A stored ceiling can lag the chain (a top-up that confirmed while
+          // the seller was down): check it before treating the channel as full.
+          if (reserveMax > 0n && (accepted >= reserveMax || spent > reserveMax)) {
+            reserveMax = await spm.refreshReserveMaxFromChain(session.sessionId);
+          }
           // If spend has caught up and there is no headroom left in the reserve,
           // stop serving before accepting any additional request cost.
           const isAtExactSpendLimit = spent > 0n && spent === accepted && reserveMax > 0n && accepted >= reserveMax;

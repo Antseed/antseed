@@ -198,6 +198,28 @@ describe('SellerPaymentManager.handleCloseChannelRequest', () => {
     );
   });
 
+  it('keeps the settleable auth when the buyer offers one above the deposit, and adopts it once the chain shows a larger deposit', async () => {
+    await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 400_000n), mux);
+    manager.recordSpend(CHANNEL_ID, 400_000n);
+
+    // 12M is above the 10M deposit: close() would revert InvalidAmount.
+    const above = await manager.handleCloseChannelRequest(buyer.peerId, await buildCloseRequest(buyer, 12_000_000n), mux);
+    expect(above.status).toBe('closed');
+    expect(above.finalAmount).toBe('400000');
+  });
+
+  it('raises a stale reserve ceiling to the on-chain deposit before judging a close auth', async () => {
+    await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 400_000n), mux);
+    manager.recordSpend(CHANNEL_ID, 400_000n);
+    // A top-up to 15M confirmed on-chain, but the seller never recorded it.
+    vi.spyOn(manager.channelsClient, 'getSession').mockResolvedValue({ ...onChainChannel(buyer, seller, 0n), deposit: 15_000_000n });
+
+    const result = await manager.handleCloseChannelRequest(buyer.peerId, await buildCloseRequest(buyer, 12_000_000n), mux);
+    expect(result.status).toBe('closed');
+    expect(result.finalAmount).toBe('12000000');
+    expect(store.getChannel(CHANNEL_ID)!.previousConsumption).toBe('15000000');
+  });
+
   it('keeps the seller-held cumulative when the buyer offers a lower one', async () => {
     await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 900_000n), mux);
     manager.recordSpend(CHANNEL_ID, 900_000n);
