@@ -236,6 +236,9 @@ function makeSpmMock(overrides: Record<string, unknown> = {}): any {
     endBillableRequest: vi.fn(() => { inFlight -= 1; }),
     hasInFlightRequests: () => inFlight > 0,
     hasClosingChannel: () => false,
+    waitForClosingChannel: async () => false,
+    isTopUpRunning: () => false,
+    waitForTopUp: async () => true,
     // The real one waits for in-flight requests, then settles.
     closeSessionWhenIdle(buyerPeerId: string) {
       return this.settleSession(buyerPeerId);
@@ -1040,6 +1043,32 @@ describe('SellerRequestHandler payment pricing selection', () => {
     expect(provider.handleRequest).not.toHaveBeenCalled();
     expect(beginBillableRequest).not.toHaveBeenCalled();
     expect(recordSpend).not.toHaveBeenCalled();
+  });
+
+  it('lets a closing channel finish closing, then asks the buyer for a new one instead of failing the request', async () => {
+    const provider = makeProvider(1, 1, { name: 'openai', services: ['test-model'] });
+    const handleRequest = vi.spyOn(provider, 'handleRequest');
+    let open = true;
+    const handler = makeSellerRequestHandler({
+      providers: [provider],
+      sellerPaymentManager: makeSpmMock({
+        hasSession: () => open,
+        hasClosingChannel: () => open,
+        waitForClosingChannel: async () => { open = false; return true; },
+      }),
+      sessionTracker: null, channelsClient: {} as any, announcer: null, emit: () => false,
+    });
+    const frames: Uint8Array[] = [];
+    const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+    await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+      requestId: 'req-after-close', method: 'POST', path: '/v1/chat/completions',
+      headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'test-model', messages: [] })),
+    }) });
+
+    const response = decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload);
+    expect(response.statusCode).toBe(402);
+    expect(JSON.parse(new TextDecoder().decode(response.body)).error).toBe('payment_required');
+    expect(handleRequest).not.toHaveBeenCalled();
   });
 
   it('adds image unit billing on top of existing token pricing', async () => {
@@ -2064,4 +2093,38 @@ it('never serves a request whose channel closed during the reserve ceiling check
 
   expect(handleRequest).not.toHaveBeenCalled();
   expect(decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload).statusCode).toBe(402);
+});
+
+it('waits for a running top-up before treating a channel at its ceiling as exhausted', async () => {
+  for (const lands of [true, false]) {
+    let reserveMax = 1_000_000n;
+    const settleSession = vi.fn(async () => {});
+    const handler = makeSellerRequestHandler({
+      providers: [makeProvider(1, 1, { name: 'openai', services: ['test-model'] })],
+      sellerPaymentManager: makeSpmMock({
+        getCumulativeSpend: () => 1_000_000n,
+        getAcceptedCumulative: () => 1_000_000n,
+        getReserveMax: () => reserveMax,
+        settleSession,
+        isTopUpRunning: () => true,
+        waitForTopUp: async () => {
+          if (lands) reserveMax = 2_000_000n;
+          return lands;
+        },
+      }),
+      channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,
+    });
+    const frames: Uint8Array[] = [];
+    const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+    await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+      requestId: `at-ceiling-${lands}`, method: 'POST', path: '/v1/chat/completions',
+      headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'test-model', messages: [] })),
+    }) });
+
+    const response = decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload);
+    // Landed: served on the raised ceiling. Still mining: a retryable answer, never a close.
+    expect(response.statusCode).toBe(lands ? 200 : 503);
+    if (!lands) expect(JSON.parse(new TextDecoder().decode(response.body)).error).toBe('top_up_pending');
+    expect(settleSession).not.toHaveBeenCalled();
+  }
 });

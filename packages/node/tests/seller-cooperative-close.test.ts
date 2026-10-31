@@ -254,6 +254,21 @@ describe('SellerPaymentManager.handleCloseChannelRequest', () => {
     expect(getSession).toHaveBeenCalledTimes(1);
   });
 
+  it('never brings back a channel it closed, even when a lagging node still reports it active', async () => {
+    await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 400_000n), mux);
+    manager.recordSpend(CHANNEL_ID, 400_000n);
+    const closed = await manager.handleCloseChannelRequest(buyer.peerId, { version: 1, channelId: CHANNEL_ID }, mux);
+    expect(closed.status).toBe('closed');
+    const getSession = vi.mocked(manager.channelsClient.getSession);
+    getSession.mockClear();
+
+    // A late auth for the closed channel: the stale node would say "active".
+    expect(await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 500_000n), mux)).toBe('rejected');
+    expect(getSession).not.toHaveBeenCalled();
+    expect(manager.hasSession(buyer.peerId)).toBe(false);
+    expect(store.getChannel(CHANNEL_ID)!.status).toBe(CHANNEL_STATUS.SETTLED);
+  });
+
   it('keeps the seller-held cumulative when the buyer offers a lower one', async () => {
     await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 900_000n), mux);
     manager.recordSpend(CHANNEL_ID, 900_000n);
