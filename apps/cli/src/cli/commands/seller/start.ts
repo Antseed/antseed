@@ -758,7 +758,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       if (healthCheckEnabled) {
         const intervalMs = healthCheckCfg?.intervalMs ?? DEFAULT_HEALTH_CHECK_INTERVAL_MS
         const failureThreshold = healthCheckCfg?.failureThreshold ?? DEFAULT_HEALTH_CHECK_FAILURE_THRESHOLD
-        console.log(chalk.dim(`  model health checks: every ${Math.round(intervalMs / 1000)}s, unadvertise after ${failureThreshold} consecutive failures`))
+        console.log(chalk.dim(`  model health checks: every ${Math.round(intervalMs / 1000)}s for models without buyer traffic, announce failing after ${failureThreshold} consecutive failures`))
       } else {
         console.log(chalk.dim('  model health checks: disabled'))
       }
@@ -944,9 +944,10 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         process.exit(1)
       }
 
-      // Periodic model health self-checks: probe supported text services with
-      // a minimal completion; unadvertise services that keep failing and
-      // restore them when they recover, refreshing signed metadata each time.
+      // Periodic model health self-checks: buyer traffic counts as a check, and
+      // idle text services are probed with a minimal completion. Services that
+      // keep failing stay announced with a failing status in signed metadata
+      // (buyers skip them) until a check passes again.
       // Image and video services are not probed because a meaningful probe
       // would generate and charge for media. Providers check them with free
       // account and model-list calls instead (checkUpstreamAccount,
@@ -987,10 +988,10 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           ...(healthCheckCfg?.intervalMs !== undefined ? { intervalMs: healthCheckCfg.intervalMs } : {}),
           ...(healthCheckCfg?.failureThreshold !== undefined ? { failureThreshold: healthCheckCfg.failureThreshold } : {}),
           onChange: (event) => {
-            if (event.status === 'removed') {
-              console.log(chalk.yellow(`Model ${event.provider}/${event.service} unadvertised — failing health checks (${event.detail})`))
+            if (event.status === 'failing') {
+              console.log(chalk.yellow(`Model ${event.provider}/${event.service} announced as failing — self health check failed (${event.detail})`))
             } else {
-              console.log(chalk.green(`Model ${event.provider}/${event.service} re-advertised — health check recovered (${event.detail})`))
+              console.log(chalk.green(`Model ${event.provider}/${event.service} announced as healthy — self health check recovered (${event.detail})`))
             }
             upstreamAlerts.modelChanged(event)
             void node.refreshSellerMetadata().catch(() => {})
@@ -999,13 +1000,19 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
             console.log((event.status === 'funded' ? chalk.green : chalk.yellow)(`Upstream ${event.providerId}: ${event.status.replace('_', ' ')} (${event.detail})`))
             upstreamAlerts.account(event)
           },
-          onSweepComplete: () => upstreamAlerts.flush(),
+          onSweepComplete: () => {
+            upstreamAlerts.flush()
+            // Re-sign so announced check times stay current between status changes.
+            void node.refreshSellerMetadata().catch(() => {})
+          },
           // Read on every check, so a dashboard edit applies without a restart.
           lowBalanceUsd: () => alerts.settings.config.lowBalanceUsd ?? DEFAULT_LOW_BALANCE_USD,
         })
         const checker = healthChecker
-        // Live traffic sees an upstream run out of credit before the next probe does.
-        node.on('provider:response', ({ provider, statusCode, body, billable }: { provider: Provider; statusCode: number; body: string; billable: boolean }) => checker.reportUpstreamResponse(provider, statusCode, body, billable))
+        // Live traffic is health evidence: a success spares the next probe, an
+        // upstream failure triggers one early, and an out-of-credit error is seen first.
+        node.on('provider:response', ({ provider, service, statusCode, body, billable }: { provider: Provider; service: string; statusCode: number; body: string; billable: boolean }) => checker.reportUpstreamResponse(provider, statusCode, body, billable, service))
+        node.on('provider:failure', ({ provider, service }: { provider: Provider; service: string }) => checker.reportUpstreamFailure(provider, service))
         healthChecker.start()
       }
 

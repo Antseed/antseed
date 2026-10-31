@@ -1,5 +1,5 @@
 /** Pure mapping from the buyer's peer, health and verification views to the console's `Peer`. */
-import { isNativeVideoProtocol } from '@antseed/node'
+import { isNativeVideoProtocol, isServiceHealthFailing, parseServiceHealth } from '@antseed/node'
 import { collectPeerVerificationLinks } from '@antseed/node/discovery'
 import { parseVerifierCapabilities } from '@antseed/node/verifier-capabilities'
 import { freeTierProgramForService, isPricedService, normalizeFreeTierProgram, parseFreeTierProgram } from '@antseed/node/free-tier-program'
@@ -45,6 +45,7 @@ export function peerServices(row: Row): Peer['services'] {
   const categories = asRecord(row['providerServiceCategories'])
   const protocols = asRecord(row['providerServiceApiProtocols'])
   const unitModels = asRecord(row['providerServiceUnitBillingModels'])
+  const health = asRecord(row['providerServiceHealth'])
   const capabilities = strings(row['capabilities'])
   const providers = new Set<string>([
     ...(Array.isArray(row['providers']) ? row['providers'].filter((p): p is string => typeof p === 'string') : []),
@@ -81,6 +82,7 @@ export function peerServices(row: Row): Peer['services'] {
         paid,
         // A priced service only has a free allowance of its own; the seller-wide program covers free services.
         freeTier: freeTierProgramForService(capabilities, service, paid, { video }),
+        ...(isServiceHealthFailing(parseServiceHealth(asRecord(asRecord(health[provider])['services'])[service])) ? { failing: true } : {}),
       })
     }
   }

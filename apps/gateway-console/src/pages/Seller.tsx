@@ -10,6 +10,8 @@ import { SellerEventList } from '../components/SellerEvents'
 import '../styles/seller.scss'
 
 const DAYS = 14
+/** Failing models sort first, then unchecked ones. */
+const STATUS_SORT_ORDER: Record<AvailableSeller['models'][number]['status'], number> = { failing: 0, unknown: 1, healthy: 2 }
 type ChartMetric = 'requests' | 'revenue'
 const CHART_METRICS: Array<{ value: ChartMetric; label: string }> = [
   { value: 'requests', label: 'Requests' },
@@ -103,19 +105,21 @@ function UsagePanel({ usage }: { usage: ReturnType<typeof useSellerUsage> }) {
 function ModelsPanel({ seller }: { seller: AvailableSeller }) {
   type Row = AvailableSeller['models'][number]
   return (
-    <Panel title="Models" description="Health checks probe every service; a service that keeps failing is withdrawn until it recovers." flush>
+    <Panel title="Models" description="Buyer traffic counts as a health check, and idle services are probed. A service that keeps failing is announced as failing, so buyers skip it until it recovers." flush>
       <DataTable<Row> label="Model health" rows={seller.models} rowKey={(row) => `${row.providerId}/${row.service}`}
         empty={<EmptyState title="No health data yet" body="Model health appears once the seller has run its first checks." />}
         columns={[
           { key: 'service', header: 'Service', render: (row) => <span className="gc-ellipsis" title={row.service}>{row.service}</span>, sortValue: (row) => row.service },
           { key: 'provider', header: 'Provider', secondary: true, render: (row) => row.provider, sortValue: (row) => row.provider },
           {
-            key: 'status', header: 'Status', sortValue: (row) => (row.advertised ? 1 : 0),
-            render: (row) => (row.advertised ? <Badge tone="neutral">Advertised</Badge> : <Badge tone="warning">Withdrawn</Badge>),
+            key: 'status', header: 'Status', sortValue: (row) => STATUS_SORT_ORDER[row.status],
+            render: (row) => (row.status === 'failing'
+              ? <Badge tone="warning">Failing</Badge>
+              : <Badge tone="neutral">{row.status === 'healthy' ? 'Healthy' : 'Not checked'}</Badge>),
           },
           { key: 'failures', header: 'Failures', align: 'right', render: (row) => formatNumber(row.consecutiveFailures), sortValue: (row) => row.consecutiveFailures },
           { key: 'last', header: 'Last result', secondary: true, render: (row) => <span className="gc-ellipsis" title={lastResult(row)}>{lastResult(row)}</span> },
-          { key: 'probe', header: 'Checked', align: 'right', optional: true, render: (row) => formatRelative(row.lastProbeAt), sortValue: (row) => row.lastProbeAt ?? 0 },
+          { key: 'probe', header: 'Checked', align: 'right', optional: true, render: (row) => formatRelative(row.checkedAt ?? row.lastProbeAt), sortValue: (row) => row.checkedAt ?? row.lastProbeAt ?? 0 },
         ]} />
     </Panel>
   )
@@ -123,7 +127,7 @@ function ModelsPanel({ seller }: { seller: AvailableSeller }) {
 
 function EventsPanel({ events }: { events: ReturnType<typeof useSellerEvents> }) {
   return (
-    <Panel title="Recent events" description="Starts and stops, models withdrawn or restored, gas, quiet periods." actions={<PageLink to="seller-logs?view=events">All events</PageLink>}>
+    <Panel title="Recent events" description="Starts and stops, models failing or recovered, gas, quiet periods." actions={<PageLink to="seller-logs?view=events">All events</PageLink>}>
       <SellerEventList events={events} limit={12} />
     </Panel>
   )

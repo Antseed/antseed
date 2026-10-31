@@ -35,7 +35,7 @@ A unit billing model maps a protocol key to a list of priced components:
 
 A component can carry a `match` object to price tiers. Match keys are `model`, `size`, `quality` and `resolution`, compared with the request's values. Every billed unit must match a component: a request that matches none is refused, not served for free.
 
-Image and video services are not health-probed, because a probe would generate a paid result. The Venice and fal video plugins instead check for free on each health sweep: Venice reads the key's balance and its public model list, and fal reads its model list, plus the balance when `FAL_VIDEO_API_KEY` has fal's `billing:usage:read` permission. Without that permission the fal seller logs at startup that its balance check is off, and keeps selling. A model that fails these checks is unadvertised, and advertised again once they pass.
+Image and video services are not health-probed, because a probe would generate a paid result. The Venice and fal video plugins instead check for free on each health sweep: Venice reads the key's balance and its public model list, and fal reads its model list, plus the balance when `FAL_VIDEO_API_KEY` has fal's `billing:usage:read` permission. Without that permission the fal seller logs at startup that its balance check is off, and keeps selling. A model that fails these checks is announced as failing, so buyers skip it, and as healthy again once they pass.
 
 ## Routing services
 

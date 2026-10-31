@@ -22,6 +22,7 @@ export {
   DEFAULT_HEALTH_CHECK_INTERVAL_MS,
   DEFAULT_HEALTH_CHECK_FAILURE_THRESHOLD,
   DEFAULT_HEALTH_CHECK_PROBE_TIMEOUT_MS,
+  LIVE_FAILURE_PROBE_MIN_GAP_MS,
   type ModelHealthCheckerConfig,
   type ModelHealthEvent,
   type ModelHealthTarget,
@@ -144,6 +145,18 @@ export {
   MAX_CAPABILITY_SUPPORTED_PARAMETERS,
   MAX_CAPABILITY_PARAMETER_LENGTH,
   validateServiceCapabilityFields,
+  METADATA_VERSION_HEADER,
+  SERVICE_HEALTH_STATUSES,
+  SERVICE_HEALTH_REASONS,
+  SERVICE_HEALTH_SOURCES,
+  isServiceHealthFailing,
+  parseProviderServiceHealthMatrix,
+  parseServiceHealth,
+  providerServiceHealthFor,
+  type ServiceHealth,
+  type ServiceHealthReason,
+  type ServiceHealthSource,
+  type ServiceHealthState,
   type DomainVerificationClaim,
   type DomainVerificationMethod,
   type GithubVerificationClaim,
@@ -191,9 +204,16 @@ export { parseVerifierCapabilities, normalizeAdvertisedVerifierIds, advertisesTe
 export { parsePublicAddress, MAX_PUBLIC_ADDRESS_LENGTH, type ParsedPublicAddress } from './discovery/public-address.js';
 export { sanitizePeerDisplayName } from './discovery/display-name.js';
 export {
+  SELLER_SELF_HEALTH_FAILING_CODE,
+  SELF_HEALTH_ERROR_STATUS,
+  buildSelfHealthErrorResponse,
+  describeServiceHealth,
+} from './health/self-health-error.js';
+export {
   buildNetworkServiceOffers,
   inferServiceProtocol,
   resolveServiceProtocol,
+  type BuildNetworkServiceOffersOptions,
   type CatalogServiceCapabilities,
   type CatalogServiceProtocol,
   type NetworkServiceCatalogPeer,

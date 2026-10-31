@@ -14,8 +14,8 @@ import {
 import { resolveConfigPath } from '../../../config/loader.js';
 import { readSellerRegistration } from '../../../seller-monitor/standing.js';
 import { sellerMonitorFor } from './monitor.js';
+import type { SellerGasRefuel, SellerModelHealth } from '../../../gateway/console-api/types.js';
 import { formatEarnings, formatTokens } from '../../formatters.js';
-import type { SellerGasRefuel } from '../../../gateway/console-api/types.js';
 
 type SellerNodeState = 'seeding' | 'connected' | 'idle';
 
@@ -162,9 +162,8 @@ export function registerSellerStatusCommand(sellerCmd: Command): void {
           // A seller that crashed or was killed leaves its last state behind: not live health.
           table.push(['Health', chalk.dim('not running; models, gas and alerts show once it is')]);
         } else if (health.available) {
-          const withdrawn = health.models.filter((model) => !model.advertised);
           table.push(
-            ['Models', health.models.length === 0 ? chalk.dim('no health data yet') : withdrawn.length === 0 ? `${health.models.length} advertised` : chalk.yellow(`${withdrawn.length} withdrawn: ${withdrawn.map((model) => `${model.service} (${model.lastStatusCode ?? model.lastDetail ?? 'failing'})`).join(', ')}`)],
+            ['Models', describeModelHealth(health.models)],
             ['Gas', health.gas?.balanceEth == null ? chalk.dim('no gas checks') : `${health.gas.balanceEth} ETH${health.gas.depleted ? chalk.yellow(' (below minimum, advertising paused)') : ''}`],
             ['Gas auto-refuel', refuelLine(health.gas?.refuel ?? null)],
             ['Alerts', health.alerts?.channels.length ? health.alerts.channels.join(', ') : chalk.dim('off (antseed seller alerts set)')],
@@ -194,4 +193,12 @@ function refuelLine(refuel: SellerGasRefuel | null): string {
   if (refuel.lastError) return `${parts.join(' · ')}\n${chalk.yellow(`last attempt failed: ${refuel.lastError}`)}`;
   if (refuel.skipped) return `${parts.join(' · ')}\n${chalk.yellow(`skipped: ${refuel.skipped.replaceAll('_', ' ')}`)}`;
   return parts.join(' · ');
+}
+
+function describeModelHealth(models: SellerModelHealth[]): string {
+  if (models.length === 0) return chalk.dim('no health data yet');
+  const failing = models.filter((model) => model.status === 'failing');
+  if (failing.length === 0) return `${models.length} healthy or unchecked`;
+  const names = failing.map((model) => `${model.service} (${model.reason ?? model.lastStatusCode ?? model.lastDetail ?? 'failing'})`);
+  return chalk.yellow(`${failing.length} failing: ${names.join(', ')}`);
 }
