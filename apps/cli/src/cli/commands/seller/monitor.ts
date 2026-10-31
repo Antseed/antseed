@@ -207,7 +207,7 @@ export function freeTierSummary(program: FreeTierProgramView | null, paid: boole
 export function registerSellerMonitorCommands(sellerCmd: Command): void {
   sellerCmd
     .command('events')
-    .description('Recent seller events: starts and stops, models withdrawn or restored, gas, quiet periods')
+    .description('Recent seller events: starts and stops, models failing or recovered, gas, quiet periods')
     .option('--limit <n>', 'how many, newest first', '25')
     .option('--json', 'output as JSON', false)
     .action((options: { limit: string; json: boolean }) => runMonitorCommand(options.json, () => sellerMonitorFor(sellerCmd).events(Number(options.limit) || 25), (events) => {

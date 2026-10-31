@@ -2,6 +2,7 @@ import {
   Contract,
   FallbackProvider,
   FetchRequest,
+  getBigInt,
   JsonRpcProvider,
   makeError,
   Network,
@@ -63,6 +64,9 @@ export const ERC20_ABI = [
  *  whose actual gas is even a hair above the estimate reverts with OOG. */
 const GAS_BUFFER_NUMERATOR = 130n;
 const GAS_BUFFER_DENOMINATOR = 100n;
+
+/** Tip used when no RPC reports one: about a normal Base tip (0.001 gwei), not ethers' 1 gwei fallback. */
+export const DEFAULT_PRIORITY_FEE_WEI = 1_000_000n;
 
 /**
  * Next nonce and reservation lock per chain and signer, shared by every client
@@ -172,7 +176,44 @@ export abstract class BaseEvmClient {
     return (await this._provider.getTransactionReceipt(tx.hash)) === null;
   }
 
-  /** Apply the gas buffer and broadcast on the signer's next nonce. */
+  /**
+   * EIP-1559 fees for the next write. Left to the signer, ethers' getFeeData() turns a failed
+   * eth_maxPriorityFeePerGas read into a 1 gwei tip, 100-1000x a normal Base tip, without any error.
+   * Here the tip is read directly and a failure falls back to DEFAULT_PRIORITY_FEE_WEI instead. If the
+   * base fee cannot be read, or the chain has none, the signer prices the transaction as before.
+   */
+  protected async _feeFields(): Promise<Pick<TransactionRequest, 'maxFeePerGas' | 'maxPriorityFeePerGas'>> {
+    let baseFee: bigint | null | undefined;
+    try {
+      baseFee = (await this._provider.getBlock('latest'))?.baseFeePerGas;
+    } catch {
+      return {};
+    }
+    if (baseFee == null) return {};
+    const tip = (await this._readPriorityFee()) ?? DEFAULT_PRIORITY_FEE_WEI;
+    return { maxPriorityFeePerGas: tip, maxFeePerGas: baseFee * 2n + tip };
+  }
+
+  /**
+   * eth_maxPriorityFeePerGas straight from the RPC, or null when no RPC answers. A FallbackProvider
+   * answers getPriorityFee through each backend's getFeeData(), which hides a failed read behind the
+   * same 1 gwei default, so its backends are asked one by one instead.
+   */
+  private async _readPriorityFee(): Promise<bigint | null> {
+    const backends = this._provider instanceof FallbackProvider
+      ? this._provider.providerConfigs.map((config) => config.provider)
+      : [this._provider];
+    for (const backend of backends) {
+      try {
+        return getBigInt(await backend._perform({ method: 'getPriorityFee' }), '%response');
+      } catch {
+        // RPC timeout, rate limit or no support: try the next backend.
+      }
+    }
+    return null;
+  }
+
+  /** Apply the gas buffer and fees, and broadcast on the signer's next nonce. */
   private async _sendBuffered(
     connected: AbstractSigner,
     signerAddress: string,
@@ -182,6 +223,7 @@ export abstract class BaseEvmClient {
       populated.nonce = nonce;
       const estimated = await connected.estimateGas(populated);
       populated.gasLimit = (estimated * GAS_BUFFER_NUMERATOR) / GAS_BUFFER_DENOMINATOR;
+      if (populated.maxFeePerGas == null && populated.gasPrice == null) Object.assign(populated, await this._feeFields());
       return connected.sendTransaction(populated);
     });
   }

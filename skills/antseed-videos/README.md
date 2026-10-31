@@ -20,6 +20,8 @@ The skill walks the user through three approved stages before it pays for a vide
 2. **Prompts and frames.** A video prompt written for the chosen model, first- and last-frame prompts, and frames made with a strong image model through the `antseed-images` skill. Each frame is shown for approval.
 3. **Settings and go.** A recap, then duration, resolution, and the price before the create.
 
+It also edits a video the user brings: a new character from an image, a new style, or a text instruction, on a video-to-video model, for the source's own length.
+
 Both `venice-video` and `fal-video` sellers are supported. The skill writes a job file right after the create, so an interrupted wait resumes instead of creating another video. The buyer pays once, when the finished MP4 is delivered, and refuses any single video priced above $5.00.
 
 ## Files

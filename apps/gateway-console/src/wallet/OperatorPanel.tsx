@@ -37,6 +37,7 @@ export function OperatorPanel({ workspaceId, action, onActionChange }: {
   const open = action !== undefined ? action : ownOpen
   const setOpen = (next: Action | null) => (onActionChange ? onActionChange(next) : setOwnOpen(next))
   const [linking, setLinking] = useState(false)
+  const [linkAddress, setLinkAddress] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [refreshError, setRefreshError] = useState<unknown>(null)
 
@@ -67,6 +68,7 @@ export function OperatorPanel({ workspaceId, action, onActionChange }: {
               <Suspense fallback={<LoadingRows rows={2} />}>
                 <OperatorActions mode={open} workspaceId={workspaceId} state={operator.data!} chain={info}
                   onStale={() => void reload()}
+                  onAddSignInWallet={(addr) => { setOpen(null); setLinkAddress(addr) }}
                   onChanged={(next) => {
                     apply(next)
                     setOpen(null)
@@ -84,6 +86,16 @@ export function OperatorPanel({ workspaceId, action, onActionChange }: {
           onCredentialAdded={() => {
             void reload()
             toast('Wallet linked to your account')
+          }} />
+      )}
+
+      {linkAddress && (
+        <AccountModal isOpen startWith="wallet" onClose={() => setLinkAddress(null)}
+          intro={<p className="gc-muted">Connect <code className="gc-mono">{shortId(linkAddress)}</code> and sign the message to add it as one of your sign-in methods. It can be authorized 24 hours later.</p>}
+          onCredentialAdded={() => {
+            void reload()
+            toast('Wallet added to your account')
+            setLinkAddress(null)
           }} />
       )}
     </Panel>

@@ -41,19 +41,33 @@ export async function readDaemonState(dataDir: string): Promise<Record<string, u
   }
 }
 
-/** `modelHealth` from daemon.state.json, withdrawn services first (shared with the metrics exporter). */
+const HEALTH_ORDER: Record<SellerModelHealth['status'], number> = { failing: 0, unknown: 1, healthy: 2 }
+
+function parseHealthStatus(entry: Record<string, unknown>): SellerModelHealth['status'] {
+  if (entry.status === 'healthy' || entry.status === 'failing' || entry.status === 'unknown') return entry.status
+  // Sellers before self health status wrote `advertised` instead.
+  if (entry.advertised === false) return 'failing'
+  return entry.lastProbeAt ? 'healthy' : 'unknown'
+}
+
+/** `modelHealth` from daemon.state.json, failing services first (shared with the metrics exporter). */
 export function parseModelHealth(raw: unknown): SellerModelHealth[] {
   if (!Array.isArray(raw)) return []
   return raw.map((entry: Record<string, unknown>) => ({
     provider: String(entry.provider ?? ''),
     providerId: String(entry.providerId ?? entry.provider ?? ''),
     service: String(entry.service ?? ''),
-    advertised: entry.advertised !== false,
+    status: parseHealthStatus(entry),
+    reason: strOrNull(entry.reason),
     consecutiveFailures: num(entry.consecutiveFailures),
+    failingSince: numOrNull(entry.failingSince),
+    checkedAt: numOrNull(entry.checkedAt),
+    source: entry.source === 'probe' || entry.source === 'traffic' ? entry.source as 'probe' | 'traffic' : null,
+    lastTrafficAt: numOrNull(entry.lastTrafficAt),
     lastProbeAt: numOrNull(entry.lastProbeAt),
     lastStatusCode: numOrNull(entry.lastStatusCode),
     lastDetail: strOrNull(entry.lastDetail),
-  })).sort((a, b) => Number(a.advertised) - Number(b.advertised) || a.service.localeCompare(b.service))
+  })).sort((a, b) => HEALTH_ORDER[a.status] - HEALTH_ORDER[b.status] || a.service.localeCompare(b.service))
 }
 
 /** `gas` from daemon.state.json (shared with the metrics exporter). */

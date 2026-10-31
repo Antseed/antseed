@@ -44,18 +44,21 @@ import {
 import { VerificationMux } from './verification/verification-mux.js';
 import { createResponseAuthPayload, createStreamingResponseHash } from './verification/response-auth.js';
 import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION } from '@antseed/protocol/http';
+import { isServiceHealthFailing, preferHealthyUpstream, serviceHealthOf } from '@antseed/protocol/peer-metadata';
 import { hasJsonContentType, tryParseJsonObject } from './utils/json-codec.js';
 import type { UnitBillingContext, UnitBillingModelV1, UnitBillingUsage, UnitBillingUsageReportV1 } from './types/billing.js';
 import { captureUnitBillingContext, computeFinalUnitBilling, estimateUnitRequestCost, isFreeUnitBillingModel, type BillingRequestFacts } from './billing/unit.js';
 import { nativeVideoAcceptance, nativeVideoDelivered, nativeVideoRoute, requestService, type NativeVideoRoute } from '@antseed/api-adapter';
 import type { PendingResourceCharge, ResourceOwnershipStore } from './resources/resource-ownership-store.js';
 import type { ServiceApiProtocol } from './types/service-api.js';
+import { isNativeVideoProtocol } from '@antseed/protocol/service-api';
 import {
   detectRequestServiceApiProtocol,
   extractRequestBodyFields,
   selectTargetProtocolForRequest,
 } from '@antseed/api-adapter';
 import { parseResponseUsage } from './utils/response-usage.js';
+import { buildSelfHealthErrorResponse, isUpstreamFailureStatus } from './health/self-health-error.js';
 import { routingProtocolForPath, routingProtocolOf, routingRequestOf, routingWireProtocol, ROUTING_PROTOCOLS, type RoutingProtocol } from '@antseed/protocol/routing';
 
 type ProviderTokenPricing = import('./interfaces/seller-provider.js').ProviderTokenPricingUsdPerMillion;
@@ -79,6 +82,53 @@ export function assertSingleRoutingService(providers: readonly Provider[]): void
       throw new Error(`A seller can offer at most one ${protocol} routing service; found ${found.map(entry => `${entry.provider.name}/${entry.service}`).join(', ')}`);
     }
   }
+}
+
+/**
+ * Upstreams sharing a provider name must announce a service they both list
+ * with the same terms: price, API protocols, unit billing models and
+ * capabilities. Buyers see one entry per provider name and bill by it, while
+ * the seller serves through whichever of those upstreams is healthy. A native
+ * video service has one upstream per name: a job stays in the account that
+ * accepted it, so its creates and retrieves must reach the same upstream.
+ */
+export function assertSameNameUpstreamsAgree(providers: readonly Provider[]): void {
+  const terms = new Map<string, { provider: Provider; terms: string }>();
+  for (const provider of providers) {
+    for (const service of provider.services) {
+      const video = provider.serviceApiProtocols?.[service]?.some(isNativeVideoProtocol) ?? false;
+      const announced = canonicalJson({
+        pricing: provider.pricing.services?.[service] ?? provider.pricing.defaults,
+        protocols: [...(provider.serviceApiProtocols?.[service] ?? [])].sort(),
+        unitBilling: provider.serviceUnitBillingModels?.[service] ?? null,
+        capabilities: provider.serviceCapabilities?.[service] ?? null,
+      });
+      const key = `${provider.name.toLowerCase()}\u0000${service}`;
+      const first = terms.get(key);
+      if (!first) {
+        terms.set(key, { provider, terms: announced });
+      } else if (video) {
+        throw new Error(
+          `Providers sharing the name "${provider.name}" both offer the video service "${service}". `
+          + 'A video job stays with the upstream that accepted it, so offer it from one of them only.',
+        );
+      } else if (first.terms !== announced) {
+        throw new Error(
+          `Providers sharing the name "${provider.name}" offer "${service}" with different pricing, API protocols, billing or capabilities. `
+          + 'Buyers see one entry per provider name, so offer it from one of them only, or on the same terms.',
+        );
+      }
+    }
+  }
+}
+
+/** JSON with object keys sorted, so equal values compare equal. */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson((value as Record<string, unknown>)[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
 }
 
 const FREE_TOKEN_PRICING: ProviderTokenPricing = { inputUsdPerMillion: 0, outputUsdPerMillion: 0 };
@@ -773,12 +823,18 @@ export class SellerRequestHandler {
             response = this._acceptVideoCreate(videoRoute, request, response, buyerPeerId, requestedModel, requestBilling, unitBillingModel, oneOffChannelId);
           }
           statusCode = response.statusCode;
+          // The upstream's answer for its account and model health (an out-of-credit error is seen here first).
+          // Polling or downloading a video already paid for says nothing about the account's credit.
+          const upstreamBody = response.body ?? new Uint8Array(0);
+          this._deps.emit('provider:response', { provider, service: requestedModel, statusCode, body: statusCode >= 400 ? new TextDecoder().decode(upstreamBody.slice(0, 2_000)) : '', billable: videoRoute?.action !== 'retrieve' });
+          const health = serviceHealthOf(provider.serviceHealth, requestedModel);
+          if (!streamedResponseStarted && isServiceHealthFailing(health) && isUpstreamFailureStatus(statusCode)) {
+            response = buildSelfHealthErrorResponse(request.requestId, requestedModel, health, response);
+            statusCode = response.statusCode;
+          }
           responseBody = response.body ?? new Uint8Array(0);
           responseForAuth = response;
           if (downloadHash) responseForAuth = { ...response, streamedBody: downloadHash.finish() };
-          // The upstream's answer for its account health (an out-of-credit error is seen here first).
-          // Polling or downloading a video already paid for says nothing about the account's credit.
-          this._deps.emit('provider:response', { provider, statusCode, body: statusCode >= 400 ? new TextDecoder().decode(responseBody.slice(0, 2_000)) : '', billable: videoRoute?.action !== 'retrieve' });
           if (statusCode >= 400) {
             const errBody = new TextDecoder().decode(responseBody).slice(0, 200);
             debugWarn(`[SellerHandler] Provider error response: status=${statusCode} provider="${provider.name}" model="${requestedModel}" buyer=${buyerPeerId.slice(0, 12)}... (${Date.now() - startTime}ms) body=${errBody}`);
@@ -812,6 +868,7 @@ export class SellerRequestHandler {
         } catch (err) {
           const message = err instanceof Error ? err.message : "Internal error";
           failureMessage = message;
+          this._deps.emit('provider:failure', { provider, service: requestedModel });
           debugWarn(`[SellerHandler] Provider exception: provider="${provider.name}" model="${requestedModel}" buyer=${buyerPeerId.slice(0, 12)}... (${Date.now() - startTime}ms) ${message}`);
           if (videoRoute?.action === 'create') this._closeOneOffBestEffort(oneOffChannelId, 'video create failed');
           responseBody = new TextEncoder().encode(message);
@@ -841,13 +898,17 @@ export class SellerRequestHandler {
               };
             }
           } else {
-            statusCode = 500;
-            responseForAuth = {
-              requestId: request.requestId,
-              statusCode: 500,
-              headers: { "content-type": "text/plain" },
-              body: responseBody,
-            };
+            const health = serviceHealthOf(provider.serviceHealth, requestedModel);
+            responseForAuth = isServiceHealthFailing(health)
+              ? buildSelfHealthErrorResponse(request.requestId, requestedModel, health, { statusCode: 500, headers: {}, body: responseBody })
+              : {
+                requestId: request.requestId,
+                statusCode: 500,
+                headers: { "content-type": "text/plain" },
+                body: responseBody,
+              };
+            statusCode = responseForAuth.statusCode;
+            responseBody = responseForAuth.body;
             mux.sendProxyResponse(responseForAuth);
           }
         }
@@ -1207,14 +1268,21 @@ export class SellerRequestHandler {
     const matchesService = (provider: Provider): boolean =>
       provider.services.includes(requestedService) && (!videoRoute || Boolean(provider.serviceApiProtocols?.[requestedService]?.includes(videoRoute.protocol)));
 
+    // Several upstreams can share a provider name (with the same terms, see
+    // assertSameNameUpstreamsAgree); buyers merge their announcements with the
+    // same preference (mergeProviderAnnouncements). A native video job lives
+    // in the account of the upstream that accepted it, so video requests keep
+    // to the first matching upstream: a retrieve reaches the job's upstream
+    // even after it starts failing.
+    const pick = (candidates: Provider[]): Provider | undefined =>
+      (videoRoute ? candidates[0] : preferHealthyUpstream(candidates, requestedService));
+    const serving = providers.filter(matchesService);
     let provider: Provider | undefined;
     if (requestedProvider) {
-      provider = providers.find((candidate) =>
-        candidate.name.toLowerCase() === requestedProvider && matchesService(candidate),
-      );
+      provider = pick(serving.filter((candidate) => candidate.name.toLowerCase() === requestedProvider));
     }
     if (!provider && !(videoRoute && requestedProvider)) {
-      provider = providers.find((candidate) => matchesService(candidate));
+      provider = pick(serving);
     }
     return provider;
   }

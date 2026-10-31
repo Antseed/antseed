@@ -24,6 +24,7 @@ import type { BuyerFreeUsageManager } from './buyer-free-usage-manager.js';
 import { verifyResponseAuth, createStreamingResponseHash } from './response-auth.js';
 import { encodeHttpRequest, encodeHttpResponse } from '@antseed/protocol/request-codec';
 import { isFreeUnitBillingModel } from '@antseed/protocol/billing';
+import { isServiceHealthFailing, providerServiceHealthFor } from '@antseed/protocol/peer-metadata';
 import { findRoutingService, routingProtocolForPath, routingWireProtocol } from '@antseed/protocol/routing';
 import { isUnitBilledProtocol } from './unit-billing.js';
 import type { ServiceApiProtocol } from '@antseed/protocol/service-api';
@@ -198,6 +199,11 @@ export class BuyerRequestHandler {
       return { ...adapted, headers: { ...headers, [VIDEO_PRICE_HEADER]: videoPriceUsdc.toString() } };
     };
     const billingRoute = requestedService ? selectBillingRoute(peer, req, requestedService) : null;
+    // Name the provider the request is billed under, so the seller serves it
+    // through the same upstream instead of choosing one by itself.
+    if (billingRoute && !extractRequestedProvider(req)) {
+      req = { ...req, headers: { ...req.headers, "x-antseed-provider": billingRoute.provider } };
+    }
     // Decide free vs paid from the resolved route (provider + protocol), mirroring
     // the seller's per-request gate so both sides classify the request the same way.
     const videoRoute = nativeVideoRoute(req);
@@ -567,6 +573,10 @@ export class BuyerRequestHandler {
     requestId: string,
   ): VideoDelivery {
     if (videoRoute?.action !== 'retrieve' || !videoJobId) return null;
+    if (tracked && videoJobEndedWithoutVideo(response)) {
+      this._deps.negotiator?.bpm?.recordVideoFailed(peer.peerId, videoRoute.protocol, videoJobId);
+      return null;
+    }
     if (!nativeVideoDelivered(response, duration)) return null;
     if (!tracked) {
       return this._deps.negotiator?.bpm?.videoDeliveryUnsaved(peer.peerId, videoRoute.protocol, videoJobId) === true ? 'unrecorded' : 'delivered';
@@ -703,12 +713,13 @@ function extractRequestedService(peer: BuyerPeerView, request: SerializedHttpReq
   return undefined;
 }
 
-function selectBillingRoute(
+/** The provider, protocol and pricing a request to `peer` is billed under. Exported for tests. */
+export function selectBillingRoute(
   peer: BuyerPeerView,
   request: SerializedHttpRequest,
   service: string,
 ): SelectedBillingRoute | null {
-  const provider = selectProviderForService(peer, service, extractRequestedProvider(request));
+  const provider = selectProviderForService(peer, service, extractRequestedProvider(request), request);
   if (!provider) return null;
   const serviceApiProtocol = selectProtocolForService(peer, provider, service, request);
   const unitModel = peer.providerServiceUnitBillingModels?.[provider]?.services[service]?.[serviceApiProtocol];
@@ -727,6 +738,7 @@ function selectProviderForService(
   peer: BuyerPeerView,
   service: string,
   requestedProvider: string | null,
+  request: SerializedHttpRequest,
 ): string | null {
   const providers = peer.providers ?? [];
   if (requestedProvider) {
@@ -739,7 +751,19 @@ function selectProviderForService(
     return null;
   }
 
-  const match = providers.find((provider) =>
+  // Mirrors the seller's matchProvider: a native video request needs a
+  // provider serving its protocol, and takes the first one, so a job's
+  // retrieves reach the provider that accepted it whatever its health is now.
+  // Other requests prefer a provider whose self health check is not failing.
+  const videoRoute = nativeVideoRoute(request);
+  const eligible = providers.filter((provider) =>
+    providerOffersService(peer, provider, service)
+    && (!videoRoute || Boolean(peer.providerServiceApiProtocols?.[provider]?.services[service]?.includes(videoRoute.protocol))),
+  );
+  const healthy = videoRoute ? undefined : eligible.find((provider) =>
+    !isServiceHealthFailing(providerServiceHealthFor(peer.providerServiceHealth, provider, service)),
+  );
+  const match = healthy ?? eligible[0] ?? providers.find((provider) =>
     providerOffersService(peer, provider, service),
   );
   return match ?? providers[0] ?? null;
@@ -988,4 +1012,26 @@ function concatChunks(chunks: Uint8Array[]): Uint8Array {
     offset += chunk.length;
   }
   return output;
+}
+
+const FAILED_VIDEO_STATUSES = new Set(['FAILED', 'ERROR', 'CANCELLED', 'CANCELED']);
+
+/**
+ * A retrieve answer that ends the job without a video: a JSON status the
+ * job failed (the seller closes the job's channel on it). Error answers are
+ * not: a malformed retrieve, 404, 429 or 5xx leaves the job as it is.
+ */
+export function videoJobEndedWithoutVideo(response: SerializedHttpResponse): boolean {
+  if (response.streamedBody) return false;
+  const contentType = Object.entries(response.headers).find(([key]) => key.toLowerCase() === 'content-type')?.[1];
+  if (!contentType?.toLowerCase().startsWith('application/json')) return false;
+  let body: unknown;
+  try {
+    body = JSON.parse(new TextDecoder().decode(response.body));
+  } catch {
+    return false;
+  }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
+  const status = (body as { status?: unknown }).status;
+  return response.statusCode === 200 && typeof status === 'string' && FAILED_VIDEO_STATUSES.has(status.toUpperCase());
 }

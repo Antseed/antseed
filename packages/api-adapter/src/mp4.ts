@@ -126,3 +126,134 @@ function readMvhdDuration(moov: Uint8Array): number | undefined {
   }
   return undefined;
 }
+
+/**
+ * Length in whole seconds (rounded down) of an inline `data:video/...;base64`
+ * source: its longest video track's played length, from its edit list
+ * (`elst`) or else its samples (`stts`, checked against `stsz`), never from
+ * headers the sender could shorten. Null when it is not a readable inline
+ * MP4: a malformed box, a fragmented MP4 or no video track.
+ */
+export function inlineVideoSeconds(source: unknown): number | null {
+  if (typeof source !== 'string') return null;
+  const match = /^data:video\/[a-z0-9.+-]+(?:;[a-z0-9.+-]+=[^;,]*)*;base64,/i.exec(source.slice(0, 256));
+  if (!match) return null;
+  let binary: string;
+  try {
+    binary = atob(source.slice(match[0].length));
+  } catch {
+    return null;
+  }
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  const moov = only(childBoxes(bytes, { type: '', body: 0, end: bytes.length }), 'moov', 'ftyp');
+  const inMoov = moov && childBoxes(bytes, moov);
+  // A fragmented MP4 (`mvex`) keeps its samples outside `moov`, so its length can't be read here.
+  if (!inMoov || inMoov.some(box => box.type === 'mvex')) return null;
+  const mvhd = only(inMoov, 'mvhd');
+  const movieTimescale = mvhd && timescaleOf(bytes, mvhd);
+  if (!movieTimescale) return null;
+  let longestMs: number | null = null;
+  for (const trak of inMoov.filter(box => box.type === 'trak')) {
+    const inTrak = childBoxes(bytes, trak);
+    const mdia = inTrak && only(inTrak, 'mdia');
+    const inMdia = mdia && childBoxes(bytes, mdia);
+    const hdlr = inMdia && only(inMdia, 'hdlr');
+    if (!inTrak || !inMdia || !hdlr || hdlr.body + 12 > hdlr.end) return null;
+    if (boxType(bytes, hdlr.body + 8) !== 'vide') continue;
+    const mdhd = only(inMdia, 'mdhd');
+    const minf = only(inMdia, 'minf');
+    const inMinf = minf && childBoxes(bytes, minf);
+    const stbl = inMinf && only(inMinf, 'stbl');
+    const inStbl = stbl && childBoxes(bytes, stbl);
+    const stts = inStbl && only(inStbl, 'stts');
+    const stsz = inStbl && only(inStbl, 'stsz');
+    // The sample table (stts) counts in mdhd's timescale; the edit list in the movie's.
+    const media = mdhd && timescaleOf(bytes, mdhd);
+    const samples = stts && stsz && media ? sampleTableMs(bytes, stts, stsz, media) : undefined;
+    if (samples === undefined) return null;
+    // An edit list (`edts`/`elst`, written by trims) sets what is played; samples outside it are skipped.
+    const edts = only(inTrak, 'edts');
+    const inEdts = edts && childBoxes(bytes, edts);
+    if (edts && !inEdts) return null;
+    const elst = inEdts && only(inEdts, 'elst');
+    const edited = elst ? editListMs(bytes, elst, movieTimescale) : null;
+    if (edited === undefined) return null;
+    longestMs = Math.max(longestMs ?? 0, edited ?? samples);
+  }
+  return longestMs === null ? null : Math.floor(longestMs / 1000);
+}
+
+interface Box { type: string; body: number; end: number }
+
+/** The boxes inside `parent`, or null when one is malformed or runs past it. */
+function childBoxes(bytes: Uint8Array, parent: Box): Box[] | null {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const boxes: Box[] = [];
+  let offset = parent.body;
+  for (; offset + 8 <= parent.end && boxes.length < 1000;) {
+    const size32 = view.getUint32(offset);
+    const headerSize = size32 === 1 ? 16 : 8;
+    if (offset + headerSize > parent.end) return null;
+    const size = size32 === 1 ? Number(view.getBigUint64(offset + 8)) : size32 === 0 ? parent.end - offset : size32;
+    if (!Number.isSafeInteger(size) || size < headerSize || offset + size > parent.end) return null;
+    boxes.push({ type: boxType(bytes, offset + 4), body: offset + headerSize, end: offset + size });
+    offset += size;
+  }
+  return offset === parent.end ? boxes : null;
+}
+
+/**
+ * The single box of `type` among `boxes` (and `boxes` starts with `first`,
+ * when given), or undefined when it is missing or repeated.
+ */
+function only(boxes: Box[] | null, type: string, first?: string): Box | undefined {
+  if (!boxes || (first && boxes[0]?.type !== first)) return undefined;
+  const found = boxes.filter(box => box.type === type);
+  return found.length === 1 ? found[0] : undefined;
+}
+
+/** Timescale of an `mvhd` or `mdhd` box (same layout); undefined outside 1..2^31-1. */
+function timescaleOf(bytes: Uint8Array, box: Box): number | undefined {
+  // version/flags (4), creation and modification times (8 or 16), timescale (4).
+  const at = box.body + (bytes[box.body] === 1 ? 20 : 12);
+  if (at + 4 > box.end) return undefined;
+  const timescale = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(at);
+  return timescale && timescale <= 0x7fffffff ? timescale : undefined;
+}
+
+/** Total length of an `elst` box's segments, in the movie's timescale; null when it has none. */
+function editListMs(bytes: Uint8Array, box: Box, movieTimescale: number): number | null | undefined {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (box.body + 8 > box.end) return undefined;
+  const version1 = bytes[box.body] === 1;
+  const entries = view.getUint32(box.body + 4);
+  const size = version1 ? 20 : 12;
+  if (entries === 0) return null;
+  if (box.body + 8 + entries * size > box.end) return undefined;
+  let total = 0;
+  for (let i = 0, at = box.body + 8; i < entries; i += 1, at += size) {
+    total += version1 ? Number(view.getBigUint64(at)) : view.getUint32(at);
+  }
+  return Number.isSafeInteger(total) ? Math.floor((total * 1000) / movieTimescale) : undefined;
+}
+
+/**
+ * Total length of a track's samples from its `stts` box, in the media
+ * timescale. Undefined unless `stts` counts exactly the samples `stsz` lists,
+ * so a table that leaves samples out is refused.
+ */
+function sampleTableMs(bytes: Uint8Array, stts: Box, stsz: Box, timescale: number): number | undefined {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (stts.body + 8 > stts.end || stsz.body + 12 > stsz.end) return undefined;
+  const entries = view.getUint32(stts.body + 4);
+  if (stts.body + 8 + entries * 8 > stts.end) return undefined;
+  let count = 0;
+  let total = 0;
+  for (let i = 0, at = stts.body + 8; i < entries; i += 1, at += 8) {
+    count += view.getUint32(at);
+    total += view.getUint32(at) * view.getUint32(at + 4);
+  }
+  if (count !== view.getUint32(stsz.body + 8) || !Number.isSafeInteger(total)) return undefined;
+  return Math.floor((total * 1000) / timescale);
+}
