@@ -739,6 +739,45 @@ describe('ModelHealthChecker buyer traffic', () => {
     expect(Object.getOwnPropertyDescriptor(provider.serviceHealth, '__proto__')?.value.status).toBe('failing');
   });
 
+  it('does not probe early for a service already announced as failing', async () => {
+    const onRequest = vi.fn(async (req: SerializedHttpRequest) => jsonResponse(req.requestId, 429));
+    const provider = makeProvider({ onRequest });
+    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1 });
+    checker.reportUpstreamFailure(provider, 'model-a');
+    await vi.waitFor(() => expect(provider.serviceHealth?.['model-a']?.status).toBe('failing'));
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + 10 * 60_000 });
+    try {
+      for (let attempt = 0; attempt < 5; attempt++) checker.reportUpstreamResponse(provider, 429, '', true, 'model-a');
+      expect(onRequest).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('probes a service that keeps failing less often, back to every sweep once it recovers', async () => {
+    const statuses = [429, 429, 429, 429, 429, 200];
+    const onRequest = vi.fn(async (req: SerializedHttpRequest) => jsonResponse(req.requestId, statuses.shift() ?? 200));
+    const provider = makeProvider({ services: ['model-a'], onRequest });
+    const intervalMs = 5 * 60_000;
+    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 2, intervalMs });
+    const start = Date.now();
+    vi.useFakeTimers({ toFake: ['Date'], now: start });
+    try {
+      const probedAt: number[] = [];
+      for (let sweep = 0; sweep < 14; sweep++) {
+        vi.setSystemTime(start + sweep * intervalMs);
+        const before = onRequest.mock.calls.length;
+        await checker.runSweep();
+        if (onRequest.mock.calls.length > before) probedAt.push(sweep);
+      }
+      // Failing from the second check: then every sweep, every second, every third, until it passes.
+      expect(probedAt).toEqual([0, 1, 2, 4, 7, 10, 11, 12, 13]);
+      expect(provider.serviceHealth?.['model-a']?.status).toBe('healthy');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does not probe early while the provider is at capacity', async () => {
     const onRequest = vi.fn(async (req: SerializedHttpRequest) => jsonResponse(req.requestId, 429));
     const provider = { ...makeProvider({ onRequest }), getCapacity: () => ({ current: 1, max: 1 }) };
