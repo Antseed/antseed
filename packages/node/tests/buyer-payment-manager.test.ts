@@ -775,6 +775,71 @@ describe('BuyerPaymentManager', () => {
     expect(manager.getVerifiedCost(sellerPeerId)).toBe(80_000n);
   });
 
+  it('judges NeedAuths in arrival order while an image NeedAuth waits for its delivery: the image is counted once, never charged again at close', async () => {
+    const sellerPeerId = fakePeerId('seller-needauth-image-order');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    manager.trackRequestBilling('req-image-order', {
+      context: {
+        sellerPeerId,
+        provider: 'openai',
+        service: 'gpt-image-2',
+        serviceApiProtocol: 'openai-images',
+        attributes: { model: 'gpt-image-2', size: '1024x1024' },
+      },
+      requestFacts: { kind: 'image', image: {} },
+      tokenPricing: TEST_PRICING,
+      unitModel: { version: 1, components: [{ unit: 'output_images', priceUsd: 0.004, match: { size: '1024x1024' } }] },
+    });
+    mux.sentSpendingAuths.length = 0;
+
+    const imageCost = 11_750n; // 1000 input + 50 output tokens, plus 2 images at $0.004
+    const tokenCost = 40_000n;
+    // The image NeedAuth arrives before the buyer saw the images; a token
+    // NeedAuth for the next request arrives right behind it.
+    const image = manager.handleNeedAuth(sellerPeerId, {
+      channelId,
+      requestId: 'req-image-order',
+      requiredCumulativeAmount: imageCost.toString(),
+      currentAcceptedCumulative: '0',
+      deposit: '1000000',
+      lastRequestCost: imageCost.toString(),
+      inputTokens: '1000',
+      freshInputTokens: '1000',
+      cachedInputTokens: '0',
+      outputTokens: '50',
+      billingUsage: { version: 1, units: { output_images: '2' } },
+    }, mux);
+    const token = manager.handleNeedAuth(sellerPeerId, {
+      channelId,
+      requiredCumulativeAmount: (imageCost + tokenCost).toString(),
+      currentAcceptedCumulative: '0',
+      deposit: '1000000',
+      lastRequestCost: tokenCost.toString(),
+    }, mux);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    manager.recordObservedUnitUsage('req-image-order', { units: { output_images: 2 } });
+    await Promise.all([image, token]);
+
+    expect(mux.sentSpendingAuths.map((auth) => (auth as Record<string, unknown>).cumulativeAmount))
+      .toEqual([imageCost.toString(), (imageCost + tokenCost).toString()]);
+    expect(manager.getVerifiedCost(sellerPeerId)).toBe(imageCost + tokenCost);
+    const last = mux.sentSpendingAuths.at(-1) as Record<string, string>;
+    expect(decodeMetadataTokens(last.metadata).outputImages).toBe(2n);
+
+    // The buyer-initiated authorization for the same response at close adds nothing.
+    const { payload } = await manager.signPerRequestAuth(sellerPeerId, {
+      inputBytes: SAMPLE_INPUT,
+      outputBytes: SAMPLE_OUTPUT,
+      sellerClaimedCost: imageCost,
+      reportedInputTokens: 1000n,
+      reportedOutputTokens: 50n,
+      unitUsage: { units: { output_images: 2 } },
+      service: 'gpt-image-2',
+      requestId: 'req-image-order',
+    });
+    expect(BigInt(payload.cumulativeAmount)).toBe(imageCost + tokenCost);
+  });
+
   it('handleNeedAuth resends the signed authorization when a catch-up prompt shows the seller never got it', async () => {
     const sellerPeerId = fakePeerId('seller-needauth-resend');
     const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);

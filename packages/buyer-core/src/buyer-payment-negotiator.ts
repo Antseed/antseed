@@ -818,7 +818,12 @@ export class BuyerPaymentNegotiator {
         response: {
           ...response,
           statusCode,
-          headers: { ...response.headers, 'content-type': 'application/json' },
+          headers: {
+            ...response.headers,
+            'content-type': 'application/json',
+            // A 503 is transient: tell clients when to retry.
+            ...(statusCode === 503 ? { 'retry-after': '2' } : {}),
+          },
           body: new TextEncoder().encode(JSON.stringify({
             error: 'payment_negotiation_failed',
             reason,

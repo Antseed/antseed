@@ -116,6 +116,15 @@ export interface BuyerPaymentConfig {
   dataDir: string;
 }
 
+/** A wire cost that is a positive integer; malformed values are judged later, where they are caught. */
+function hasPositiveCost(cost: string | undefined): boolean {
+  try {
+    return BigInt(cost ?? '0') > 0n;
+  } catch {
+    return false;
+  }
+}
+
 /** What the buyer saw of a served response, for signPerRequestAuth. */
 export type PerRequestResponseStats = {
   inputBytes: Uint8Array;
@@ -1678,13 +1687,6 @@ export class BuyerPaymentManager {
       await this._handleOneOffNeedAuth(sellerPeerId, payload, paymentMux);
       return;
     }
-    // The seller's NeedAuth can legitimately race ahead of the buyer's own
-    // response processing (different muxes). Give the response path a moment
-    // to record a unit-billed delivery before judging the claim, outside the
-    // seller lock so other requests' authorizations do not wait on it.
-    if (payload.billingUsage && payload.requestId && BigInt(payload.lastRequestCost ?? '0') > 0n) {
-      await this._waitForObservedUnitUsage(payload.requestId, OBSERVED_UNIT_USAGE_WAIT_MS);
-    }
     const topUp = await this._withSellerLock(sellerPeerId, () => this._signForNeedAuth(sellerPeerId, payload, paymentMux));
     if (topUp) await this._topUpAfterSpendAuthBestEffort(sellerPeerId, paymentMux, 'handleNeedAuth');
   }
@@ -1699,6 +1701,18 @@ export class BuyerPaymentManager {
     payload: NeedAuthPayload,
     paymentMux: PaymentMux,
   ): Promise<boolean> {
+    // The seller's NeedAuth can legitimately race ahead of the buyer's own
+    // response processing (different muxes). Give the response path a moment
+    // to record a unit-billed delivery before judging the claim. This waits
+    // inside the lock on purpose: NeedAuths must be judged in arrival order,
+    // or a later one signs past this request's cost and this one is dropped
+    // as stale, never counted, and charged again at close.
+    if (
+      payload.billingUsage && payload.requestId && hasPositiveCost(payload.lastRequestCost)
+      && this.getRequestBilling(payload.requestId)?.unitModel
+    ) {
+      await this._waitForObservedUnitUsage(payload.requestId, OBSERVED_UNIT_USAGE_WAIT_MS);
+    }
     const session = this.getActiveSession(sellerPeerId);
     if (!session) {
       debugWarn(`[BuyerPayment] NeedAuth for unknown seller: ${sellerPeerId.slice(0, 12)}...`);
@@ -1784,7 +1798,7 @@ export class BuyerPaymentManager {
           // a moment to record what was actually delivered before judging the
           // claim; a seller claiming delivery that never happens still gets
           // rejected once the wait expires.
-          // Waited for before taking the seller lock (see handleNeedAuth).
+          // Waited for at the top of _signForNeedAuth.
           const observedUnitUsage = requestBilling.observedUnitUsage;
           const claimedUnitCost = sellerTotalCost > tokenEstimate
             ? sellerTotalCost - tokenEstimate

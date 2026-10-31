@@ -617,7 +617,7 @@ export class SellerRequestHandler {
             return;
           }
           let accepted = spm.getAcceptedCumulative(session.sessionId);
-          const spent = spm.getCumulativeSpend(session.sessionId);
+          let spent = spm.getCumulativeSpend(session.sessionId);
           // Serving headroom only includes funds locked on-chain. Pending
           // top-ups are not counted until topUp() succeeds, otherwise a large
           // request could push spend above the current reserve before the extra
@@ -626,7 +626,8 @@ export class SellerRequestHandler {
           const isBlocked = spm.isChannelBlocked(session.sessionId);
           // If spend has caught up and there is no headroom left in the reserve,
           // stop serving before accepting any additional request cost.
-          const isAtExactSpendLimit = spent > 0n && spent === accepted && reserveMax > 0n && accepted >= reserveMax;
+          const atExactSpendLimit = (): boolean => spent > 0n && spent === accepted && reserveMax > 0n && accepted >= reserveMax;
+          let isAtExactSpendLimit = atExactSpendLimit();
 
           if (spent > 0n && spent > accepted) {
             // Race cover: the buyer's SpendingAuth for the *previous* response's
@@ -656,9 +657,18 @@ export class SellerRequestHandler {
                 deposit: session.authMax ?? '0',
               }, buyerPeerId, 'catch-up-before-wait');
             }
-            const caughtUp = await spm.awaitAcceptedAtLeast(session.sessionId, spent, DEFAULT_CATCH_UP_WAIT_MS);
-            accepted = spm.getAcceptedCumulative(session.sessionId);
-            if (caughtUp && spent <= accepted) {
+            // Other requests can finish while this one is parked: re-read the
+            // spend after each catch-up and keep waiting, within one budget,
+            // so an auth for the earlier spend never releases newer unpaid work.
+            const deadline = Date.now() + DEFAULT_CATCH_UP_WAIT_MS;
+            let caughtUp = true;
+            while (caughtUp && spent > accepted) {
+              caughtUp = await spm.awaitAcceptedAtLeast(session.sessionId, spent, Math.max(0, deadline - Date.now()));
+              accepted = spm.getAcceptedCumulative(session.sessionId);
+              spent = spm.getCumulativeSpend(session.sessionId);
+            }
+            isAtExactSpendLimit = atExactSpendLimit();
+            if (spent <= accepted) {
               debugLog(`[SellerHandler] Caught up before 402 for ${buyerPeerId.slice(0, 12)}... (spent=${spent} accepted=${accepted})`);
             }
           }

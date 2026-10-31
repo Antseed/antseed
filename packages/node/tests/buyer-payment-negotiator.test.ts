@@ -648,6 +648,7 @@ describe('BuyerPaymentNegotiator', () => {
       expect(result.action).toBe('return');
       const res = (result as { action: 'return'; response: SerializedHttpResponse }).response;
       expect(res.statusCode).toBe(503);
+      expect(res.headers['retry-after']).toBe('2');
       expect(JSON.parse(new TextDecoder().decode(res.body))).toMatchObject({
         error: 'payment_negotiation_failed',
         reason: 'existing_channel_still_active',

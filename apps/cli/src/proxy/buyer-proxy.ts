@@ -424,6 +424,17 @@ function isBuyerPaymentNegotiationError(body: Buffer): boolean {
   }
 }
 
+/**
+ * The status peer health records for a response. A payment catch-up still
+ * pending is the buyer's own channel state with a live seller: record it like
+ * busy, which never escalates to a cooldown.
+ * @internal Exported for tests.
+ */
+export function healthStatusFor(response: { statusCode: number; body: Uint8Array }): number {
+  if (response.statusCode >= 500 && isBuyerPaymentNegotiationError(Buffer.from(response.body))) return 429
+  return response.statusCode
+}
+
 /** @internal Exported for tests. */
 export function classifyFailedAttempt(result: DispatchFailure): FailedAttempt {
   if (result.emptyAnswer) return { description: 'answered with no text or tool call', sellerOnly: false, weight: 1 }
@@ -5251,7 +5262,7 @@ export class BuyerProxy {
           this._recordPeerFailure(selectedPeer.peerId, 'buyer-local', 'buyer')
         } else {
           this._recordPeerResponseHealth(
-            selectedPeer.peerId, responseForClient.statusCode, requestForPeer.path,
+            selectedPeer.peerId, healthStatusFor(responseForClient), requestForPeer.path,
           )
         }
 
@@ -5387,7 +5398,7 @@ export class BuyerProxy {
         if (responseFault === 'buyer') {
           this._recordPeerFailure(selectedPeer.peerId, 'buyer-local', 'buyer')
         } else {
-          this._recordPeerResponseHealth(selectedPeer.peerId, response.statusCode, requestForPeer.path)
+          this._recordPeerResponseHealth(selectedPeer.peerId, healthStatusFor(response), requestForPeer.path)
         }
 
         // Check if retryable

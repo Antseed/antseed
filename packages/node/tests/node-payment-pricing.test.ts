@@ -1855,3 +1855,42 @@ it('asks the buyer for the unsigned spend before parking a request on it, once p
   expect(prompts).toHaveLength(1);
   expect(prompts[0]![0]).toMatchObject({ requiredCumulativeAmount: '300000', currentAcceptedCumulative: '100000' });
 });
+
+it('re-reads the spend after a parked catch-up: an auth for the earlier spend never releases newer unpaid work', async () => {
+  for (const coversNewSpend of [false, true]) {
+    let spent = 300_000n;
+    let accepted = 100_000n;
+    const targets: bigint[] = [];
+    const handler = makeSellerRequestHandler({
+      providers: [makeProvider(1, 1, { name: 'openai', services: ['test-model'] })],
+      sellerPaymentManager: makeSpmMock({
+        getCumulativeSpend: () => spent,
+        getAcceptedCumulative: () => accepted,
+        getReserveMax: () => 1_000_000n,
+        awaitAcceptedAtLeast: async (_channelId: string, target: bigint) => {
+          targets.push(target);
+          if (targets.length === 1) {
+            // The auth for 300k lands, but another request finished meanwhile.
+            spent = 400_000n;
+            accepted = target;
+            return true;
+          }
+          if (!coversNewSpend) return false;
+          accepted = target;
+          return true;
+        },
+      }),
+      channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,
+    });
+    const frames: Uint8Array[] = [];
+    const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+    await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+      requestId: 'parked', method: 'POST', path: '/v1/chat/completions',
+      headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'test-model', messages: [] })),
+    }) });
+
+    expect(targets).toEqual([300_000n, 400_000n]);
+    const status = decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload).statusCode;
+    expect(status).toBe(coversNewSpend ? 200 : 402);
+  }
+});
