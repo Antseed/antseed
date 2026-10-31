@@ -1,8 +1,8 @@
 import { join } from 'node:path'
 import chalk from 'chalk'
 import type { Command } from 'commander'
-import { getAddress, keccak256, toUtf8Bytes } from 'ethers'
-import type { KbfModel } from '@antseed/node/payments'
+import { getAddress } from 'ethers'
+import { modelHash, serviceHash, type KbfModel } from '@antseed/node/payments'
 import { loadConfig } from '../../../config/loader.js'
 import type { AntseedConfig } from '../../../config/types.js'
 import { resolveAuditPriceCaps } from '../../../verifier/audit-price.js'
@@ -15,10 +15,10 @@ import {
   loadVerifierModelCatalog,
 } from '../../../verifier/openrouter-catalog.js'
 import { publisherTick } from '../../../verifier/round/publisher-daemon.js'
+import { boundTargets, sellerRegistryBindingReader, type SellerBindingReader } from '../../../verifier/round/seller-binding.js'
 import { roundStorageFromEnv } from '../../../verifier/round/storage.js'
 import type { EpochBankV1, RoundTargetV1 } from '../../../verifier/round/types.js'
-import { modelHashOf } from '../../../verifier/round/verifier-daemon.js'
-import { createKbfRoundClient } from '../../payment-utils.js'
+import { createKbfRoundClient, createSellerRegistryClient } from '../../payment-utils.js'
 import { setupShutdownHandler } from '../../shutdown.js'
 import { startGatewayBuyer } from '../gateway/shared.js'
 import { getGlobalOptions } from '../types.js'
@@ -72,6 +72,7 @@ export async function discoverRoundTargets(input: {
   config: AntseedConfig
   dataDir: string
   models: KbfModel[]
+  bindings: TargetBindings
   log: (message: string) => void
 }): Promise<RoundTargetV1[]> {
   const { peers } = await loadBuyerProxySnapshot(input.dataDir)
@@ -87,7 +88,7 @@ export async function discoverRoundTargets(input: {
     if (!peer.onChainAgentId || !(peer.onChainPoolPowerShareBps && peer.onChainPoolPowerShareBps > 0)) continue
     for (const model of input.models) {
       const priceCap = caps.caps.get(model.service)
-      if (!priceCap || modelHashOf(model.service) !== model.modelHash.toLowerCase()) continue
+      if (!priceCap || modelHash(model.service) !== model.modelHash.toLowerCase()) continue
       const eligibility = classifyVerificationTargetServices(
         peer,
         verifierModelServices(input.config.verifier, model.service),
@@ -99,14 +100,39 @@ export async function discoverRoundTargets(input: {
         agentId: String(peer.onChainAgentId),
         peerId: getAddress(`0x${peer.peerId.replace(/^0x/, '')}`).slice(2).toLowerCase(),
         service,
-        serviceHash: keccak256(toUtf8Bytes(service)),
+        serviceHash: serviceHash(service),
         model: model.service,
         modelHash: model.modelHash.toLowerCase(),
       })
     }
   }
-  input.log(`[targets] ${targets.length} targets from ${peers.length} peers`)
-  return targets
+  const bound = await bindRoundTargets(targets, input.bindings, input.log)
+  input.log(`[targets] ${bound.length} targets from ${peers.length} peers`)
+  return bound
+}
+
+/** Where the publisher checks seller-to-agent bindings: verifiers drop unbound targets, so never plan them. */
+export interface TargetBindings {
+  reader: SellerBindingReader
+  latestBlock: () => Promise<bigint>
+}
+
+export function targetBindingsFromConfig(config: AntseedConfig): TargetBindings {
+  const registry = createSellerRegistryClient(config)
+  return {
+    reader: sellerRegistryBindingReader(registry),
+    latestBlock: async () => BigInt(await registry.provider.getBlockNumber()),
+  }
+}
+
+/** The targets whose peer and agent are bound to each other at the latest block. */
+export async function bindRoundTargets(
+  targets: RoundTargetV1[],
+  bindings: TargetBindings,
+  log: (message: string) => void,
+): Promise<RoundTargetV1[]> {
+  if (targets.length === 0) return targets
+  return boundTargets(bindings.reader, targets, await bindings.latestBlock(), (message) => log(`[targets] ${message}`))
 }
 
 export function registerVerifierPublishCommand(verifier: Command): void {
@@ -130,6 +156,7 @@ export function registerVerifierPublishCommand(verifier: Command): void {
       const buyerPort = Number(options.buyerPort ?? config.buyer.proxyPort)
       if (options.buyer !== false) await startGatewayBuyer(buyerPort, globalOptions, log)
       const stateDir = join(globalOptions.dataDir, 'verifier', 'publisher')
+      const bindings = targetBindingsFromConfig(config)
       const storage = roundStorageFromEnv()
       const interval = Math.max(10, Number(options.interval ?? '60')) * 1_000
       log(chalk.bold(`publisher ${signer.address} on ${client.contractAddress}`))
@@ -145,7 +172,7 @@ export function registerVerifierPublishCommand(verifier: Command): void {
             buildBank: ({ epoch, models, excludedProbeIds }) => buildEpochBank({
               config, epoch, models, excludedProbeIds, referencesDir: join(stateDir, 'references'), buyerPort, log,
             }),
-            discoverTargets: (models) => discoverRoundTargets({ config, dataDir: globalOptions.dataDir, models, log }),
+            discoverTargets: (models) => discoverRoundTargets({ config, dataDir: globalOptions.dataDir, models, bindings, log }),
             log,
           })
         } catch (error) {

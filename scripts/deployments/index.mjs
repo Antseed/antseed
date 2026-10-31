@@ -1,10 +1,11 @@
 import { migration as m001 } from './m001.mjs';
 import { migration as m002 } from './m002.mjs';
 import { migration as m003 } from './m003.mjs';
+import { migration as m004 } from './m004.mjs';
 import { parseSignerSpecs } from './runtime/signers.mjs';
 
 /** Every deployment migration, in order. Add new migrations here explicitly. */
-const MIGRATIONS = [m001, m002, m003];
+const MIGRATIONS = [m001, m002, m003, m004];
 
 export function buildMigrationRegistry(migrations) {
   const registry = new Map();

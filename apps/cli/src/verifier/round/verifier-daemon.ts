@@ -1,22 +1,25 @@
 import { mkdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { getAddress, keccak256, toUtf8Bytes, type AbstractSigner } from 'ethers'
+import { getAddress, type AbstractSigner } from 'ethers'
 import { canonicalJsonStringify } from '@antseed/fingerprints'
 import {
   isZeroHash,
   kbfEpochDeadlines,
+  modelHash,
+  serviceHash,
   type KbfEpochInfo,
   type KbfRoundClient,
   type KbfServiceResult,
 } from '@antseed/node/payments'
 import { writeJsonAtomic } from '../atomic-files.js'
 import { collectSlice, type CollectorContext } from './collector.js'
-import { ResultsTree, collectorLeaf, serviceLeaf, verdictCode } from './merkle.js'
+import { buildResultsTree, collectorLeaf, serviceLeaf, verdictCode } from './merkle.js'
 import { derivePlan } from './plan.js'
 import { scoreRound, type CommittedManifest } from './scoring.js'
 import { contentHash, openBank, openEnvelope } from './sealing.js'
 import { seededRanking } from './seeded.js'
-import type { RoundStorage } from './storage.js'
+import { boundTargets, type SellerBindingReader } from './seller-binding.js'
+import { RoundFileMismatchError, type RoundStorage } from './storage.js'
 import type {
   EnvelopeContentV1,
   EpochBankV1,
@@ -25,11 +28,18 @@ import type {
   RoundTargetV1,
   SliceManifestV1,
 } from './types.js'
+import { targetKey } from './types.js'
 
 const APPLY_BATCH = 40
 /** Verifiers other than the first in the epoch's apply ranking wait this long before applying. */
 const APPLY_FALLBACK_DELAY_SECONDS = 2 * 60 * 60
 const CLAIM_LOOKBACK_EPOCHS = 4n
+/**
+ * Share of the attestation window a verifier waits for committed slices it cannot fetch yet.
+ * Until then it does not attest (an attestation is final); after it, the unavailable slices
+ * count as missing so the round can still finalize.
+ */
+const UNAVAILABLE_WAIT_SHARE = 0.5
 
 export interface VerifierDaemonContext {
   client: KbfRoundClient
@@ -38,6 +48,8 @@ export interface VerifierDaemonContext {
   /** 0x-prefixed X25519 private key the publisher seals this verifier's envelopes to. */
   encryptionPrivateKey: string
   storage: RoundStorage
+  /** Seller registry reads that confirm each target's peer belongs to its agent. */
+  bindings: SellerBindingReader
   /** Per-epoch state and published files: `<stateDir>/<epoch>/`. */
   stateDir: string
   /** Buys slices; null when the verifier only attests. */
@@ -56,8 +68,12 @@ export function encodeRoundFile(value: unknown): Buffer {
   return Buffer.from(canonicalJsonStringify(value), 'utf8')
 }
 
-export function modelHashOf(model: string): string {
-  return keccak256(toUtf8Bytes(model.trim().toLowerCase()))
+/** Some committed slices could not be fetched yet; attesting now would be final and incomplete. */
+export class ManifestsUnavailableError extends Error {
+  constructor(readonly uris: string[]) {
+    super(`${uris.length} committed slice files unavailable: ${uris.join(', ')}`)
+    this.name = 'ManifestsUnavailableError'
+  }
 }
 
 /** One pass over the current epoch and the recent past; safe to run repeatedly and after restarts. */
@@ -119,9 +135,12 @@ async function collect(context: VerifierDaemonContext, info: KbfEpochInfo, state
   if (envelope.epoch !== info.epoch.toString() || envelope.collector !== context.address.toLowerCase() || envelope.backup !== backup) {
     throw new Error(`envelope for epoch ${info.epoch} does not belong to this verifier`)
   }
-  context.log(`epoch ${info.epoch}: collecting ${envelope.slices.length} ${backup ? 'backup ' : ''}slices`)
+  // Never buy from a target whose peer is not its agent's seller: verifiers will not score it.
+  const bound = new Set((await boundTargets(context.bindings, uniqueTargets(envelope.slices.map((slice) => slice.target)), info.seedBlock, context.log)).map(targetKey))
+  const assigned = envelope.slices.filter((slice) => bound.has(targetKey(slice.target)))
+  context.log(`epoch ${info.epoch}: collecting ${assigned.length} ${backup ? 'backup ' : ''}slices`)
   const slices = []
-  for (const slice of envelope.slices) slices.push(await collectSlice(slice, context.collector!))
+  for (const slice of assigned) slices.push(await collectSlice(slice, context.collector!))
   const manifest: SliceManifestV1 = {
     kind: 'antseed-kbf-slices', version: 1, epoch: info.epoch.toString(),
     collector: context.address.toLowerCase(), backup, slices,
@@ -142,7 +161,17 @@ async function scoreAndAttest(
   members: readonly string[],
   state: EpochStateV1,
 ): Promise<void> {
-  const results = await computeResults(context, info, members)
+  const deadlines = kbfEpochDeadlines(info, await context.client.epochDuration())
+  const waitUntil = deadlines.backupDeadline + Math.floor(info.schedule.attestSeconds * UNAVAILABLE_WAIT_SHARE)
+  const allowUnavailable = await context.client.now() >= waitUntil
+  let results: RoundResultsV1
+  try {
+    results = await computeResults(context, info, members, { allowUnavailable })
+  } catch (error) {
+    if (!(error instanceof ManifestsUnavailableError)) throw error
+    context.log(`epoch ${info.epoch}: not attesting yet, ${error.message}; retrying until ${new Date(waitUntil * 1_000).toISOString()}`)
+    return
+  }
   const bytes = encodeRoundFile(results)
   const uri = await context.storage.put(bytes, `antseed-kbf-${info.epoch}-results-${context.address.toLowerCase()}.json`)
   await writeJsonAtomic(join(epochDir(context, info.epoch), 'results.json'), results)
@@ -155,11 +184,16 @@ async function scoreAndAttest(
   context.log(`epoch ${info.epoch}: attested ${results.root} (${JSON.stringify(counts)}, ${results.totalSlices} slices)`)
 }
 
-/** Rebuilds the epoch from chain + storage only and scores it. */
+/**
+ * Rebuilds the epoch from chain + storage only and scores it. A committed slice file that cannot
+ * be fetched throws `ManifestsUnavailableError` unless `allowUnavailable`; one whose bytes are
+ * not the committed ones, or that is not a slice manifest, is invalid and simply not used.
+ */
 export async function computeResults(
-  context: Pick<VerifierDaemonContext, 'client' | 'storage' | 'log'>,
+  context: Pick<VerifierDaemonContext, 'client' | 'storage' | 'bindings' | 'log'>,
   info: KbfEpochInfo,
   members: readonly string[],
+  options: { allowUnavailable?: boolean } = {},
 ): Promise<RoundResultsV1> {
   const { client, storage } = context
   const bankEvent = (await client.bankCommits(info.epoch)).filter((event) => event.bankHash === info.bankHash).at(-1)
@@ -169,7 +203,8 @@ export async function computeResults(
   const planFile = await loadPlanFile(context, info, false)
   const models = await client.models(info.modelsVersion)
   const allowed = new Set(models.map((model) => model.modelHash.toLowerCase()))
-  const targets = planFile.targets.filter((target) => isAuditedTarget(target, allowed, bank))
+  const audited = planFile.targets.filter((target) => isAuditedTarget(target, allowed, bank))
+  const targets = await boundTargets(context.bindings, audited, info.seedBlock, context.log)
   const plan = derivePlan({
     epoch: info.epoch.toString(),
     seed: info.seed,
@@ -181,23 +216,46 @@ export async function computeResults(
   })
   const memberSet = new Set(members.map((member) => member.toLowerCase()))
   const manifests: CommittedManifest[] = []
+  const unavailable: string[] = []
   for (const commit of await client.sliceCommits(info.epoch)) {
     if (!memberSet.has(commit.sender.toLowerCase())) continue
+    let bytes: Buffer
     try {
-      const manifest = JSON.parse((await storage.get(commit.uri, commit.hash)).toString('utf8')) as SliceManifestV1
-      manifests.push({ collector: commit.sender.toLowerCase(), backup: commit.backup, uri: commit.uri, manifest })
+      bytes = await storage.get(commit.uri, commit.hash)
     } catch (error) {
-      context.log(`epoch ${info.epoch}: skipping unavailable slices ${commit.uri}: ${error instanceof Error ? error.message : String(error)}`)
+      const reason = error instanceof Error ? error.message : String(error)
+      if (error instanceof RoundFileMismatchError) {
+        context.log(`epoch ${info.epoch}: ignoring invalid slices ${commit.uri}: ${reason}`)
+      } else {
+        unavailable.push(commit.uri)
+        context.log(`epoch ${info.epoch}: slices ${commit.uri} unavailable: ${reason}`)
+      }
+      continue
+    }
+    try {
+      const manifest = JSON.parse(bytes.toString('utf8')) as SliceManifestV1
+      manifests.push({ collector: commit.sender.toLowerCase(), backup: commit.backup, uri: commit.uri, manifest })
+    } catch {
+      context.log(`epoch ${info.epoch}: ignoring slices ${commit.uri}: not JSON`)
     }
   }
+  if (unavailable.length > 0 && !options.allowUnavailable) throw new ManifestsUnavailableError(unavailable)
   return scoreRound({ epoch: info.epoch, plan, bank, manifests })
 }
 
 function isAuditedTarget(target: RoundTargetV1, allowed: Set<string>, bank: EpochBankV1): boolean {
-  return allowed.has(target.modelHash.toLowerCase())
-    && modelHashOf(target.model) === target.modelHash.toLowerCase()
-    && keccak256(toUtf8Bytes(target.service.trim().toLowerCase())) === target.serviceHash.toLowerCase()
-    && Boolean(bank.models[target.model])
+  return typeof target.agentId === 'string' && /^[1-9]\d*$/.test(target.agentId)
+    && typeof target.peerId === 'string' && /^(0x)?[0-9a-fA-F]{40}$/.test(target.peerId)
+    && typeof target.model === 'string' && typeof target.service === 'string'
+    && typeof target.modelHash === 'string' && typeof target.serviceHash === 'string'
+    && allowed.has(target.modelHash.toLowerCase())
+    && modelHash(target.model) === target.modelHash.toLowerCase()
+    && serviceHash(target.service) === target.serviceHash.toLowerCase()
+    && Object.hasOwn(bank.models, target.model)
+}
+
+function uniqueTargets(targets: readonly RoundTargetV1[]): RoundTargetV1[] {
+  return [...new Map(targets.map((target) => [targetKey(target), target])).values()]
 }
 
 async function loadPlanFile(
@@ -209,7 +267,10 @@ async function loadPlanFile(
   const event = (await context.client.planCommits(info.epoch)).filter((entry) => entry.backup === backup && entry.hash === hash).at(-1)
   if (!event) throw new Error(`no ${backup ? 'backup ' : ''}PlanCommitted event for epoch ${info.epoch}`)
   const plan = JSON.parse((await context.storage.get(event.uri, hash)).toString('utf8')) as PlanFileV1
-  if (plan.kind !== 'antseed-kbf-plan' || plan.epoch !== info.epoch.toString() || plan.seed !== info.seed || plan.backup !== backup) {
+  if (
+    plan.kind !== 'antseed-kbf-plan' || plan.epoch !== info.epoch.toString() || plan.seed !== info.seed || plan.backup !== backup
+    || !Array.isArray(plan.targets) || typeof plan.envelopes !== 'object' || plan.envelopes === null
+  ) {
     throw new Error(`plan file for epoch ${info.epoch} does not match the chain`)
   }
   return plan
@@ -226,11 +287,7 @@ async function applyAndClaim(context: VerifierDaemonContext, epoch: bigint, curr
   if (info.voided || isZeroHash(info.finalizedRoot)) return
   const results = await finalizedResults(context, info)
   if (!results) return
-  const leaves = [
-    ...results.results.map((result) => serviceLeaf(epoch, { agentId: BigInt(result.target.agentId), serviceHash: result.target.serviceHash, modelHash: result.target.modelHash, verdict: result.verdict })),
-    ...results.credits.map((credit) => collectorLeaf(epoch, credit.collector, credit.slices, results.totalSlices)),
-  ]
-  const tree = new ResultsTree(leaves)
+  const tree = buildResultsTree(epoch, results)
 
   const members = await client.epochVerifiers(epoch)
   const applier = seededRanking(members, info.seed, 'apply')[0]

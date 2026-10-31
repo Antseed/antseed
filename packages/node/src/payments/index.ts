@@ -53,6 +53,7 @@ export type {
   KbfServiceResult,
   CommitmentEvent,
   BankCommittedEvent,
+  KeyShareRevealedEvent,
 } from './evm/kbf-round-client.js';
 export {
   DEFAULT_LOG_QUERY_CHUNK_BLOCKS,

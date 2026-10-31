@@ -68,7 +68,8 @@ KBF audits run as one round per epoch (one week), shared by every approved verif
 
 1. **The bank is sealed.** Antseed's reference publisher builds the epoch's bank for
    every model on the contract's list of audited models, encrypts it and commits its
-   hash on-chain. It decides no verdicts.
+   hash on-chain. It decides no verdicts, and it isn't required: if it publishes no
+   plan in time, a verifier takes the epoch over with its own bank.
 2. **The work is split at random.** Once the epoch opens, a seed taken from a future
    block hash decides which questions each seller gets and which verifier buys each
    part of them (a slice, 4 per seller service by default), plus a backup verifier for each slice. A seller never
@@ -76,9 +77,12 @@ KBF audits run as one round per epoch (one week), shared by every approved verif
 3. **Each verifier sees only its own questions.** The publisher sends each verifier an
    envelope encrypted to that verifier's key, with the questions of its slices and none
    of the answers. Verifiers buy the slices and commit the seller-signed responses;
-   slices that weren't delivered go to the backups.
+   slices that weren't delivered go to the backups. A response only counts if the
+   seller signed exactly the planned request, and only for the agent the seller is
+   bound to on-chain.
 4. **The key is revealed after collection.** Then anyone can decrypt the bank and check
-   every verdict.
+   every verdict. The key is also escrowed in shares with the verifiers, so a majority
+   of them can reveal it if the publisher doesn't.
 5. **Everyone scores, a majority decides.** Each verifier scores the whole epoch from
    the public data and attests the root of its results. Scoring is deterministic, so
    honest verifiers agree. The first root a majority of the epoch's verifiers attest

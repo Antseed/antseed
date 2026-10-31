@@ -958,6 +958,9 @@ async function runVerifierRound(
                 recheckVerdict: result.recheck.status, verdict: result.status, at: new Date().toISOString(),
               })
             }
+          } else {
+            // Confirmation is off: a first DIFF is final, and is recorded so later runs treat it as done.
+            results = firstResults.map((result) => result.status === 'DIFF' ? { ...result, diffConfirmation: 'off' as const } : result)
           }
           const allSkipped = [
             ...skipped,

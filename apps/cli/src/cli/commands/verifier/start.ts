@@ -8,15 +8,19 @@ import { loadConfig } from '../../../config/loader.js'
 import { requireCurrentVerifier } from '../../../verifier/release-check.js'
 import { writeJsonAtomic } from '../../../verifier/atomic-files.js'
 import { loadBuyerProxySnapshot } from '../../../verifier/model-run.js'
-import { openResponseAuthReader } from '../../../verifier/response-auth-reader.js'
+import { openResponseAuthReader, type ResponseAuthReader } from '../../../verifier/response-auth-reader.js'
+import type { CollectorContext } from '../../../verifier/round/collector.js'
 import { encryptionPublicKey, generateEncryptionKeyPair } from '../../../verifier/round/sealing.js'
 import { roundStorageFromEnv } from '../../../verifier/round/storage.js'
+import { fallbackPublisherTick } from '../../../verifier/round/fallback-publisher.js'
+import { keyEscrowTick } from '../../../verifier/round/key-escrow.js'
 import { verifierTick } from '../../../verifier/round/verifier-daemon.js'
 import { createKbfRoundClient } from '../../payment-utils.js'
 import { setupShutdownHandler } from '../../shutdown.js'
 import { startGatewayBuyer } from '../gateway/shared.js'
 import { getGlobalOptions } from '../types.js'
 import { resolveAuditorSigner } from './auditor-identity.js'
+import { buildEpochBank, discoverRoundTargets, targetBindingsFromConfig } from './publish.js'
 
 interface StartOptions {
   keystore?: string
@@ -25,6 +29,25 @@ interface StartOptions {
   interval?: string
   collect?: boolean
   skipVersionCheck?: boolean
+}
+
+/**
+ * This pass's slice buyer, or null when collection is off or the buyer is unavailable. A buyer
+ * outage only pauses buying: scoring, attesting, applying results and claiming need nothing but
+ * the chain and storage, so the pass still runs without it.
+ */
+export async function collectorForPass(input: {
+  responseAuth: ResponseAuthReader | null
+  loadBuyerUrl: () => Promise<string>
+  log: (message: string) => void
+}): Promise<CollectorContext | null> {
+  if (!input.responseAuth) return null
+  try {
+    return { buyerUrl: await input.loadBuyerUrl(), responseAuth: input.responseAuth, log: input.log }
+  } catch (error) {
+    input.log(chalk.yellow(`buyer unavailable, not collecting this pass: ${error instanceof Error ? error.message : String(error)}`))
+    return null
+  }
 }
 
 /** The verifier's X25519 key pair for question envelopes, created once in the data dir. */
@@ -83,25 +106,58 @@ export function registerVerifierStartCommand(verifier: Command): void {
       if (responseAuth) setupShutdownHandler(async () => responseAuth.close())
 
       const storage = roundStorageFromEnv()
+      const targetBindings = targetBindingsFromConfig(config)
+      const bindings = targetBindings.reader
       const interval = Math.max(10, Number(options.interval ?? '60')) * 1_000
       log(chalk.bold(`verifier ${signer.address} on ${client.contractAddress}${collect ? '' : ' (attest only)'}`))
       let stopped = false
       setupShutdownHandler(async () => { stopped = true })
       while (!stopped) {
         try {
-          const buyerUrl = collect ? (await loadBuyerProxySnapshot(globalOptions.dataDir)).baseUrl : ''
+          const collector = await collectorForPass({
+            responseAuth,
+            loadBuyerUrl: async () => (await loadBuyerProxySnapshot(globalOptions.dataDir)).baseUrl,
+            log,
+          })
           await verifierTick({
             client,
             signer: signer.wallet,
             address: signer.address,
             encryptionPrivateKey: keys.privateKey,
             storage,
+            bindings,
             stateDir: join(globalOptions.dataDir, 'verifier', 'round', 'epochs'),
-            collector: collect && responseAuth ? { buyerUrl, responseAuth, log } : null,
+            collector,
             log,
           })
         } catch (error) {
           log(chalk.yellow(`pass failed: ${error instanceof Error ? error.message : String(error)}`))
+        }
+        // Liveness without the publisher: reveal the escrowed bank key, and take over an epoch
+        // whose publisher never planned it (needs the buyer, to build a bank and find targets).
+        try {
+          await keyEscrowTick({ client, signer: signer.wallet, address: signer.address, encryptionPrivateKey: keys.privateKey, storage, log })
+        } catch (error) {
+          log(chalk.yellow(`key escrow pass failed: ${error instanceof Error ? error.message : String(error)}`))
+        }
+        if (collect) {
+          try {
+            const publisherDir = join(globalOptions.dataDir, 'verifier', 'publisher')
+            await fallbackPublisherTick({
+              client,
+              signer: signer.wallet,
+              address: signer.address,
+              storage,
+              stateDir: publisherDir,
+              buildBank: ({ epoch, models, excludedProbeIds }) => buildEpochBank({
+                config, epoch, models, excludedProbeIds, referencesDir: join(publisherDir, 'references'), buyerPort, log,
+              }),
+              discoverTargets: (models) => discoverRoundTargets({ config, dataDir: globalOptions.dataDir, models, bindings: targetBindings, log }),
+              log,
+            })
+          } catch (error) {
+            log(chalk.yellow(`fallback publisher pass failed: ${error instanceof Error ? error.message : String(error)}`))
+          }
         }
         await new Promise((resolve) => setTimeout(resolve, interval))
       }

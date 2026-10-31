@@ -1,6 +1,6 @@
 import { AbiCoder, concat, getAddress, keccak256 } from 'ethers'
 import { VERIFIER_VERDICT } from '@antseed/node/payments'
-import type { RoundVerdict } from './types.js'
+import type { RoundResultsV1, RoundVerdict } from './types.js'
 
 /**
  * Results roots in the exact format AntseedKbfVerification verifies: OpenZeppelin double-hashed
@@ -45,14 +45,32 @@ function hashPair(left: string, right: string): string {
   return BigInt(left) < BigInt(right) ? keccak256(concat([left, right])) : keccak256(concat([right, left]))
 }
 
+/** The results tree of an epoch's scoring: one leaf per service verdict and per collector credit. */
+export function buildResultsTree(
+  epoch: bigint,
+  data: Pick<RoundResultsV1, 'results' | 'credits' | 'totalSlices'>,
+): ResultsTree {
+  return new ResultsTree([
+    ...data.results.map(({ target, verdict }) => serviceLeaf(epoch, {
+      agentId: BigInt(target.agentId),
+      serviceHash: target.serviceHash,
+      modelHash: target.modelHash,
+      verdict,
+    })),
+    ...data.credits.map(({ collector, slices }) => collectorLeaf(epoch, collector, slices, data.totalSlices)),
+  ])
+}
+
 export class ResultsTree {
   readonly leaves: string[]
   private readonly layers: string[][]
+  private readonly leafIndexes: Map<string, number>
 
   constructor(leaves: readonly string[]) {
     if (leaves.length === 0) throw new Error('results tree needs at least one leaf')
     const unique = [...new Set(leaves.map((leaf) => leaf.toLowerCase()))]
     this.leaves = unique.sort((left, right) => (BigInt(left) < BigInt(right) ? -1 : 1))
+    this.leafIndexes = new Map(this.leaves.map((leaf, index) => [leaf, index]))
     this.layers = [this.leaves]
     while (this.layers[this.layers.length - 1]!.length > 1) {
       const layer = this.layers[this.layers.length - 1]!
@@ -69,8 +87,8 @@ export class ResultsTree {
   }
 
   proof(leaf: string): string[] {
-    let index = this.leaves.indexOf(leaf.toLowerCase())
-    if (index < 0) throw new Error(`leaf ${leaf} is not in the tree`)
+    let index = this.leafIndexes.get(leaf.toLowerCase())
+    if (index === undefined) throw new Error(`leaf ${leaf} is not in the tree`)
     const path: string[] = []
     for (let level = 0; level < this.layers.length - 1; level++) {
       const layer = this.layers[level]!

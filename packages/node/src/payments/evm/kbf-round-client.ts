@@ -13,10 +13,11 @@ export const KBF_ROUND_ABI = [
   'function verifiers() view returns (address[])',
   'function encryptionKeys(address verifier) view returns (bytes32)',
   'function publisher() view returns (address)',
+  'function publisherGraceSeconds() view returns (uint32)',
   'function modelsVersion() view returns (uint32)',
   'function models(uint32 version) view returns ((bytes32 modelHash, string service)[])',
   'function schedule() view returns ((uint32 collectSeconds, uint32 backupSeconds, uint32 attestSeconds, uint16 probesPerService, uint16 slicesPerService))',
-  'function epochInfo(uint256 epoch) view returns ((uint256 startedAt, uint64 seedBlock, bytes32 seed, uint32 modelsVersion, uint16 verifierCount, (uint32 collectSeconds, uint32 backupSeconds, uint32 attestSeconds, uint16 probesPerService, uint16 slicesPerService) schedule, bytes32 bankHash, bytes32 bankKeyHash, bytes32 bankKey, bytes32 planHash, bytes32 backupPlanHash, bytes32 finalizedRoot, bool voided))',
+  'function epochInfo(uint256 epoch) view returns ((uint256 startedAt, uint64 seedBlock, bytes32 seed, uint32 modelsVersion, uint16 verifierCount, (uint32 collectSeconds, uint32 backupSeconds, uint32 attestSeconds, uint16 probesPerService, uint16 slicesPerService) schedule, bytes32 bankHash, bytes32 bankKeyHash, bytes32 bankKey, bytes32 planHash, bytes32 backupPlanHash, bytes32 finalizedRoot, bool voided, address publisher, uint64 takenOverAt, bytes32 keySharesHash))',
   'function epochVerifiers(uint256 epoch) view returns (address[])',
   'function threshold(uint256 epoch) view returns (uint256)',
   'function attestations(uint256 epoch, address verifier) view returns (bytes32)',
@@ -24,9 +25,13 @@ export const KBF_ROUND_ABI = [
   'function sliceCommits(uint256 epoch, address verifier) view returns (uint256)',
   'function rewardClaimed(uint256 epoch, address verifier) view returns (bool)',
   'function resultApplied(uint256 epoch, bytes32 leaf) view returns (bool)',
+  'function keyShareRevealed(uint256 epoch, address verifier) view returns (bool)',
   'function emissionsGate() view returns (address)',
   'function setEncryptionKey(bytes32 key)',
   'function commitBank(uint256 epoch, bytes32 bankHash, bytes32 bankKeyHash, string bankUri)',
+  'function takeOverBank(uint256 epoch, bytes32 bankHash, bytes32 bankKeyHash, string bankUri)',
+  'function commitKeyShares(uint256 epoch, bytes32 sharesHash, string sharesUri)',
+  'function revealKeyShare(uint256 epoch, bytes share)',
   'function openEpoch(uint256 epoch)',
   'function fixSeed(uint256 epoch)',
   'function commitPlan(uint256 epoch, bytes32 planHash, string planUri)',
@@ -41,6 +46,9 @@ export const KBF_ROUND_ABI = [
   'event PlanCommitted(uint256 indexed epoch, bool backup, bytes32 planHash, string planUri)',
   'event SlicesCommitted(uint256 indexed epoch, address indexed verifier, bool backup, bytes32 slicesRoot, string manifestUri)',
   'event Attested(uint256 indexed epoch, address indexed verifier, bytes32 resultsRoot, string evidenceUri)',
+  'event EpochTakenOver(uint256 indexed epoch, address indexed verifier)',
+  'event KeySharesCommitted(uint256 indexed epoch, bytes32 sharesHash, string sharesUri)',
+  'event KeyShareRevealed(uint256 indexed epoch, address indexed verifier, bytes share)',
 ] as const;
 
 const EMISSIONS_GATE_ABI = [
@@ -78,6 +86,12 @@ export interface KbfEpochInfo {
   backupPlanHash: string;
   finalizedRoot: string;
   voided: boolean;
+  /** Whoever committed the bank: the publisher, or a verifier that took the epoch over. Zero address until then. */
+  publisher: string;
+  /** Time of the latest takeover; 0 if the publisher kept the epoch. */
+  takenOverAt: number;
+  /** Hash of the escrowed key-share file; zero hash until committed. */
+  keySharesHash: string;
 }
 
 /** Absolute deadlines (unix seconds) of one epoch's round. */
@@ -114,6 +128,15 @@ export interface BankCommittedEvent {
   bankKeyHash: string;
   bankUri: string;
   blockNumber: number;
+}
+
+export interface KeyShareRevealedEvent {
+  epoch: bigint;
+  verifier: string;
+  /** 0x-prefixed share bytes as posted. */
+  share: string;
+  blockNumber: number;
+  logIndex: number;
 }
 
 export const ZERO_HASH = `0x${'0'.repeat(64)}`;
@@ -234,6 +257,14 @@ export class KbfRoundClient extends BaseEvmClient {
     return getAddress(String(await this._contract().getFunction('publisher')()));
   }
 
+  async publisherGraceSeconds(): Promise<number> {
+    return Number(await this._contract().getFunction('publisherGraceSeconds')());
+  }
+
+  async keyShareRevealed(epoch: bigint, verifier: string): Promise<boolean> {
+    return Boolean(await this._contract().getFunction('keyShareRevealed')(epoch, getAddress(verifier)));
+  }
+
   async modelsVersion(): Promise<number> {
     return Number(await this._contract().getFunction('modelsVersion')());
   }
@@ -264,6 +295,9 @@ export class KbfRoundClient extends BaseEvmClient {
       backupPlanHash: String(raw['backupPlanHash']),
       finalizedRoot: String(raw['finalizedRoot']),
       voided: Boolean(raw['voided']),
+      publisher: getAddress(String(raw['publisher'])),
+      takenOverAt: Number(raw['takenOverAt']),
+      keySharesHash: String(raw['keySharesHash']),
     };
   }
 
@@ -305,6 +339,19 @@ export class KbfRoundClient extends BaseEvmClient {
 
   async commitBank(signer: AbstractSigner, epoch: bigint, bankHash: string, bankKeyHash: string, bankUri: string): Promise<string> {
     return this._execWrite(signer, KBF_ROUND_ABI, 'commitBank', epoch, bankHash, bankKeyHash, bankUri);
+  }
+
+  /** Stands in for a publisher that missed its plan: the caller's bank replaces the epoch's. */
+  async takeOverBank(signer: AbstractSigner, epoch: bigint, bankHash: string, bankKeyHash: string, bankUri: string): Promise<string> {
+    return this._execWrite(signer, KBF_ROUND_ABI, 'takeOverBank', epoch, bankHash, bankKeyHash, bankUri);
+  }
+
+  async commitKeyShares(signer: AbstractSigner, epoch: bigint, sharesHash: string, sharesUri: string): Promise<string> {
+    return this._execWrite(signer, KBF_ROUND_ABI, 'commitKeyShares', epoch, sharesHash, sharesUri);
+  }
+
+  async revealKeyShare(signer: AbstractSigner, epoch: bigint, share: string): Promise<string> {
+    return this._execWrite(signer, KBF_ROUND_ABI, 'revealKeyShare', epoch, share);
   }
 
   async openEpoch(signer: AbstractSigner, epoch: bigint): Promise<string> {
@@ -373,7 +420,7 @@ export class KbfRoundClient extends BaseEvmClient {
 
   async planCommits(epoch: bigint, fromBlock?: number): Promise<CommitmentEvent[]> {
     const contract = this._contract();
-    const publisher = await this.publisher();
+    const publisher = (await this.epochInfo(epoch)).publisher;
     const logs = await this._queryEvents(contract, contract.filters['PlanCommitted']!(epoch), fromBlock);
     return logs.filter((log): log is EventLog => log instanceof EventLog).map((log) => ({
       epoch: BigInt(log.args[0]),
@@ -414,6 +461,35 @@ export class KbfRoundClient extends BaseEvmClient {
       blockNumber: log.blockNumber,
       logIndex: log.index,
       txHash: log.transactionHash,
+    }));
+  }
+
+  /** Key-share files committed for the epoch; the latest one is current. */
+  async keySharesCommits(epoch: bigint, fromBlock?: number): Promise<CommitmentEvent[]> {
+    const contract = this._contract();
+    const publisher = (await this.epochInfo(epoch)).publisher;
+    const logs = await this._queryEvents(contract, contract.filters['KeySharesCommitted']!(epoch), fromBlock);
+    return logs.filter((log): log is EventLog => log instanceof EventLog).map((log) => ({
+      epoch: BigInt(log.args[0]),
+      hash: String(log.args[1]),
+      uri: String(log.args[2]),
+      backup: false,
+      sender: publisher,
+      blockNumber: log.blockNumber,
+      logIndex: log.index,
+      txHash: log.transactionHash,
+    }));
+  }
+
+  async keyShareReveals(epoch: bigint, fromBlock?: number): Promise<KeyShareRevealedEvent[]> {
+    const contract = this._contract();
+    const logs = await this._queryEvents(contract, contract.filters['KeyShareRevealed']!(epoch), fromBlock);
+    return logs.filter((log): log is EventLog => log instanceof EventLog).map((log) => ({
+      epoch: BigInt(log.args[0]),
+      verifier: getAddress(String(log.args[1])),
+      share: String(log.args[2]),
+      blockNumber: log.blockNumber,
+      logIndex: log.index,
     }));
   }
 

@@ -20,6 +20,10 @@ import {IAntseedSellerPools} from "./IAntseedSellerPools.sol";
 ///         transcripts (`commitSlices`) by the commit deadline; missing slices go to backup
 ///         verifiers (`commitBackupPlan`, then `commitSlices` again) until the backup deadline.
 ///      5. The publisher reveals the bank key (`revealBankKey`), so everyone can score.
+///      If the publisher misses its deadlines, verifiers carry the round: one takes the epoch over
+///      with its own bank (`takeOverBank`) when no plan is committed `publisherGraceSeconds` in,
+///      and a key escrowed with `commitKeyShares` is rebuilt from the shares verifiers post with
+///      `revealKeyShare` after the backup deadline.
 ///      6. Each verifier scores every transcript and attests the Merkle root of the results
 ///         (`attest`). A root attested by a majority of the snapshot's verifiers finalizes.
 ///      7. Anyone applies the finalized results with Merkle proofs (`applyResults`).
@@ -70,6 +74,11 @@ interface IAntseedKbfVerification {
         bytes32 backupPlanHash;
         bytes32 finalizedRoot;
         bool voided;
+        /// @dev Whoever committed the bank: the publisher, or a verifier that took the epoch over.
+        address publisher;
+        /// @dev Time of the latest takeover; zero if the publisher kept the epoch.
+        uint64 takenOverAt;
+        bytes32 keySharesHash;
     }
 
     /// @notice One leaf of an epoch's results root.
@@ -111,6 +120,7 @@ interface IAntseedKbfVerification {
     function verifiers() external view returns (address[] memory);
     function encryptionKeys(address verifier) external view returns (bytes32);
     function publisher() external view returns (address);
+    function publisherGraceSeconds() external view returns (uint32);
     function modelsVersion() external view returns (uint32);
     function models(uint32 version) external view returns (Model[] memory);
     function schedule() external view returns (Schedule memory);
@@ -127,6 +137,9 @@ interface IAntseedKbfVerification {
     function fixSeed(uint256 epoch) external;
     function commitPlan(uint256 epoch, bytes32 planHash, string calldata planUri) external;
     function commitBackupPlan(uint256 epoch, bytes32 planHash, string calldata planUri) external;
+    function takeOverBank(uint256 epoch, bytes32 bankHash, bytes32 bankKeyHash, string calldata bankUri) external;
+    function commitKeyShares(uint256 epoch, bytes32 sharesHash, string calldata sharesUri) external;
+    function revealKeyShare(uint256 epoch, bytes calldata share) external;
     function revealBankKey(uint256 epoch, bytes32 bankKey) external;
     function commitSlices(uint256 epoch, bytes32 slicesRoot, string calldata manifestUri) external;
     function attest(uint256 epoch, bytes32 resultsRoot, string calldata evidenceUri) external;

@@ -34,17 +34,30 @@ interface IEmissionsGateSchedule {
 ///           question bank, commits the plan and reveals the bank key. It decides no verdicts;
 ///         - verifiers: collect slices, attest results and earn rewards.
 ///
+///         The publisher is a convenience, not a dependency:
+///         - if it has not committed a plan `publisherGraceSeconds` into the epoch, any verifier
+///           can take the epoch over (`takeOverBank`) with its own bank and act as the epoch's
+///           publisher; each takeover waits another grace period after the previous one;
+///         - the epoch publisher escrows the bank key with the verifiers (`commitKeyShares`): a
+///           Shamir split, one share sealed to each verifier, with the finalization majority as
+///           threshold. If the key is not revealed by the backup deadline, verifiers post their
+///           shares (`revealKeyShare`) and anyone combines them into `revealBankKey`. A majority
+///           that pools its shares early learns the questions, but a majority can already
+///           finalize any root, so the escrow adds no new trust.
+///
 ///         Rewards: from `rewardsStartEpoch` on, an epoch's verification budget is split into an
 ///         attester pool (`attestRewardBps`), shared equally by the verifiers that attested the
 ///         finalized root, and a collector pool, shared by the slices the finalized root credits
 ///         each verifier with. One verifier's claim is capped at `maxVerifierShareBps` of the
-///         budget; budget above the cap is never minted.
+///         budget; budget above the cap is never minted. Both splits are fixed per epoch when it
+///         is opened.
 contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     uint256 public constant MAX_VERIFIERS = 64;
     uint256 public constant MAX_MODELS = 64;
     uint256 public constant MAX_URI_BYTES = 200;
     uint256 public constant MAX_SLICE_COMMITS = 8;
     uint8 public constant MAX_VALIDITY_EPOCHS = 4;
+    uint256 public constant MAX_KEY_SHARE_BYTES = 64;
     /// @notice Blocks between opening an epoch and the block whose hash seeds it.
     uint64 public constant SEED_DELAY_BLOCKS = 4;
     uint256 public constant BPS = 10_000;
@@ -70,6 +83,12 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         bytes32 finalizedRoot;
         bool voided;
         address[] verifiers;
+        // Whoever committed the bank: the publisher, or the verifier that took the epoch over.
+        address publisher;
+        uint64 takenOverAt;
+        bytes32 keySharesHash;
+        uint16 attestRewardBps;
+        uint16 maxVerifierShareBps;
     }
 
     IAntseedRegistry public immutable override registry;
@@ -79,9 +98,14 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     address public override publisher;
     uint32 public override modelsVersion;
     /// @notice Share of an epoch's budget paid to the verifiers that attested the finalized root.
+    ///         Epochs keep the value in force when they were opened.
     uint16 public attestRewardBps = 2_000;
-    /// @notice Most of an epoch's budget one verifier can claim (default 20%).
+    /// @notice Most of an epoch's budget one verifier can claim (default 20%). Epochs keep the
+    ///         value in force when they were opened.
     uint16 public maxVerifierShareBps = 2_000;
+    /// @notice How long into an epoch, and after each takeover, the publisher has to commit a
+    ///         plan before a verifier can take the epoch over.
+    uint32 public override publisherGraceSeconds = 6 hours;
     /// @notice First epoch that earns rewards; `type(uint256).max` keeps rewards off.
     uint256 public override rewardsStartEpoch = type(uint256).max;
 
@@ -98,6 +122,7 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     mapping(uint256 epoch => mapping(bytes32 root => uint256 votes)) public override rootVotes;
     mapping(uint256 epoch => mapping(bytes32 leaf => bool applied)) public resultApplied;
     mapping(uint256 epoch => mapping(address verifier => bool claimed)) public rewardClaimed;
+    mapping(uint256 epoch => mapping(address verifier => bool revealed)) public keyShareRevealed;
 
     mapping(uint256 agentId => mapping(bytes32 serviceHash => ServiceStatus status)) private _serviceStatus;
     // Latest SAME/DIFF verdicts given in each epoch; a verdict moves out when the service gets a new one.
@@ -113,6 +138,10 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     event RewardsStartEpochSet(uint256 epoch);
     event AttestRewardBpsSet(uint16 bps);
     event MaxVerifierShareBpsSet(uint16 bps);
+    event PublisherGraceSecondsSet(uint32 seconds_);
+    event EpochTakenOver(uint256 indexed epoch, address indexed verifier);
+    event KeySharesCommitted(uint256 indexed epoch, bytes32 sharesHash, string sharesUri);
+    event KeyShareRevealed(uint256 indexed epoch, address indexed verifier, bytes share);
     event BankCommitted(uint256 indexed epoch, bytes32 bankHash, bytes32 bankKeyHash, string bankUri);
     event EpochOpened(uint256 indexed epoch, uint64 seedBlock, uint32 modelsVersion, uint16 verifierCount);
     event SeedRearmed(uint256 indexed epoch, uint64 seedBlock);
@@ -150,9 +179,15 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     error EpochVoidedError();
     error EpochNotFinalized();
     error AlreadyClaimed();
+    error AlreadyRevealed();
 
     modifier onlyPublisher() {
         if (msg.sender != publisher) revert NotPublisher();
+        _;
+    }
+
+    modifier onlyEpochPublisher(uint256 epoch) {
+        if (msg.sender != _epochs[epoch].publisher) revert NotPublisher();
         _;
     }
 
@@ -252,17 +287,24 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         emit RewardsStartEpochSet(epoch);
     }
 
+    /// @notice Sets the attester pool for epochs opened from now on.
     function setAttestRewardBps(uint16 bps) external onlyOwner {
         if (bps > BPS) revert InvalidValue();
         attestRewardBps = bps;
         emit AttestRewardBpsSet(bps);
     }
 
-    /// @notice Caps one verifier's share of an epoch's budget. Applies to every later claim.
+    /// @notice Caps one verifier's share of the budget of epochs opened from now on.
     function setMaxVerifierShareBps(uint16 bps) external onlyOwner {
         if (bps == 0 || bps > BPS) revert InvalidValue();
         maxVerifierShareBps = bps;
         emit MaxVerifierShareBpsSet(bps);
+    }
+
+    function setPublisherGraceSeconds(uint32 seconds_) external onlyOwner {
+        if (seconds_ == 0) revert InvalidValue();
+        publisherGraceSeconds = seconds_;
+        emit PublisherGraceSecondsSet(seconds_);
     }
 
     /// @notice Remediation for a bad round, e.g. a leaked bank or a colluding majority: no more
@@ -306,7 +348,7 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
 
     /// @notice Commits the epoch's sealed bank: `bankHash` is the hash of the encrypted bank at
     ///         `bankUri`, `bankKeyHash` is `keccak256(abi.encode(key))`. Possible for the current or
-    ///         next epoch until the epoch is opened.
+    ///         next epoch until the epoch is opened, and not once a verifier has taken it over.
     function commitBank(uint256 epoch, bytes32 bankHash, bytes32 bankKeyHash, string calldata bankUri)
         external
         onlyPublisher
@@ -314,12 +356,33 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         uint256 current = emissionsGate.currentEpoch();
         if (epoch != current && epoch != current + 1) revert WrongEpoch();
         EpochState storage state = _epochs[epoch];
-        if (state.seedBlock != 0) revert WrongPhase();
-        if (bankHash == bytes32(0) || bankKeyHash == bytes32(0)) revert InvalidValue();
-        _validateUri(bankUri);
-        state.bankHash = bankHash;
-        state.bankKeyHash = bankKeyHash;
-        emit BankCommitted(epoch, bankHash, bankKeyHash, bankUri);
+        if (state.seedBlock != 0 || state.takenOverAt != 0) revert WrongPhase();
+        _setBank(epoch, state, bankHash, bankKeyHash, bankUri);
+    }
+
+    /// @notice Lets a verifier stand in for a publisher that has not committed a plan by
+    ///         `publisherGraceSeconds` into the current epoch (or that long after the previous
+    ///         takeover). The caller's bank replaces any committed one and the caller becomes the
+    ///         epoch's publisher. An opened epoch keeps its snapshot but draws a new seed, since
+    ///         the seed is bound to the bank.
+    function takeOverBank(uint256 epoch, bytes32 bankHash, bytes32 bankKeyHash, string calldata bankUri) external {
+        if (epoch != emissionsGate.currentEpoch()) revert WrongEpoch();
+        EpochState storage state = _epochs[epoch];
+        bool opened = state.seedBlock != 0;
+        if (opened ? !_epochMember[epoch][msg.sender] : _verifierIndex[msg.sender] == 0) revert NotVerifier();
+        if (state.planHash != bytes32(0)) revert WrongPhase();
+        uint256 start = _epochStart(epoch);
+        uint256 since = state.takenOverAt == 0 ? start : state.takenOverAt;
+        uint256 collect = opened ? state.schedule.collectSeconds : _schedule.collectSeconds;
+        if (block.timestamp < since + publisherGraceSeconds || block.timestamp >= start + collect) revert WrongPhase();
+        _setBank(epoch, state, bankHash, bankKeyHash, bankUri);
+        state.takenOverAt = uint64(block.timestamp);
+        if (opened) {
+            state.seed = bytes32(0);
+            state.seedBlock = uint64(block.number) + SEED_DELAY_BLOCKS;
+            emit SeedRearmed(epoch, state.seedBlock);
+        }
+        emit EpochTakenOver(epoch, msg.sender);
     }
 
     /// @notice Opens the current epoch once its bank is committed: snapshots the verifiers, the
@@ -339,6 +402,8 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         }
         state.modelsVersion = modelsVersion;
         state.schedule = schedule_;
+        state.attestRewardBps = attestRewardBps;
+        state.maxVerifierShareBps = maxVerifierShareBps;
         state.seedBlock = uint64(block.number) + SEED_DELAY_BLOCKS;
         emit EpochOpened(epoch, state.seedBlock, state.modelsVersion, uint16(count));
     }
@@ -360,7 +425,7 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     }
 
     /// @notice Commits the target list and the per-verifier question envelopes derived from the seed.
-    function commitPlan(uint256 epoch, bytes32 planHash, string calldata planUri) external onlyPublisher {
+    function commitPlan(uint256 epoch, bytes32 planHash, string calldata planUri) external onlyEpochPublisher(epoch) {
         EpochState storage state = _epochs[epoch];
         if (state.seed == bytes32(0) || block.timestamp >= _commitDeadline(epoch, state)) revert WrongPhase();
         if (planHash == bytes32(0)) revert InvalidValue();
@@ -370,7 +435,10 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     }
 
     /// @notice Commits the envelopes for slices their owner did not deliver, for the backup verifiers.
-    function commitBackupPlan(uint256 epoch, bytes32 planHash, string calldata planUri) external onlyPublisher {
+    function commitBackupPlan(uint256 epoch, bytes32 planHash, string calldata planUri)
+        external
+        onlyEpochPublisher(epoch)
+    {
         EpochState storage state = _epochs[epoch];
         if (
             state.planHash == bytes32(0) || block.timestamp < _commitDeadline(epoch, state)
@@ -380,6 +448,39 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         _validateUri(planUri);
         state.backupPlanHash = planHash;
         emit PlanCommitted(epoch, true, planHash, planUri);
+    }
+
+    /// @notice Escrows the bank key with the epoch's verifiers: `sharesHash` is the hash of the
+    ///         file at `sharesUri` holding one Shamir share of the key per verifier, each sealed to
+    ///         its encryption key, any `threshold(epoch)` of which rebuild the key.
+    function commitKeyShares(uint256 epoch, bytes32 sharesHash, string calldata sharesUri)
+        external
+        onlyEpochPublisher(epoch)
+    {
+        EpochState storage state = _epochs[epoch];
+        if (state.seedBlock == 0 || state.bankKey != bytes32(0) || block.timestamp >= _commitDeadline(epoch, state)) {
+            revert WrongPhase();
+        }
+        if (sharesHash == bytes32(0)) revert InvalidValue();
+        _validateUri(sharesUri);
+        state.keySharesHash = sharesHash;
+        emit KeySharesCommitted(epoch, sharesHash, sharesUri);
+    }
+
+    /// @notice Publishes the caller's decrypted key share when the bank key is still hidden at
+    ///         the backup deadline. Once per verifier; anyone can combine `threshold(epoch)`
+    ///         shares and call `revealBankKey`, which checks the key against its hash.
+    function revealKeyShare(uint256 epoch, bytes calldata share) external {
+        if (!_epochMember[epoch][msg.sender]) revert NotVerifier();
+        EpochState storage state = _epochs[epoch];
+        if (
+            state.keySharesHash == bytes32(0) || state.bankKey != bytes32(0)
+                || block.timestamp < _backupDeadline(epoch, state) || block.timestamp >= _attestDeadline(epoch, state)
+        ) revert WrongPhase();
+        if (share.length == 0 || share.length > MAX_KEY_SHARE_BYTES) revert InvalidValue();
+        if (keyShareRevealed[epoch][msg.sender]) revert AlreadyRevealed();
+        keyShareRevealed[epoch][msg.sender] = true;
+        emit KeyShareRevealed(epoch, msg.sender, share);
     }
 
     /// @notice Reveals the bank key once collection is over, so everyone can read the bank and
@@ -393,9 +494,10 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         emit BankKeyRevealed(epoch, bankKey);
     }
 
-    /// @notice Commits seller-signed transcripts bought by the caller: `slicesRoot` is the Merkle
-    ///         root of the slices in the manifest at `manifestUri`. Commits before the commit
-    ///         deadline are primary, later ones (until the backup deadline) are backups.
+    /// @notice Commits seller-signed transcripts bought by the caller: `slicesRoot` is the
+    ///         keccak256 hash of the canonical JSON manifest bytes at `manifestUri` (a content
+    ///         hash, not a Merkle root). Commits before the commit deadline are primary, later
+    ///         ones (until the backup deadline) are backups.
     function commitSlices(uint256 epoch, bytes32 slicesRoot, string calldata manifestUri) external {
         if (!_epochMember[epoch][msg.sender]) revert NotVerifier();
         EpochState storage state = _epochs[epoch];
@@ -527,6 +629,9 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         info.backupPlanHash = state.backupPlanHash;
         info.finalizedRoot = state.finalizedRoot;
         info.voided = state.voided;
+        info.publisher = state.publisher;
+        info.takenOverAt = state.takenOverAt;
+        info.keySharesHash = state.keySharesHash;
     }
 
     function epochVerifiers(uint256 epoch) external view override returns (address[] memory) {
@@ -626,18 +731,19 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         if (root == bytes32(0) || state.voided || epoch < rewardsStartEpoch) return 0;
         uint256 budget = gate.controllerEpochBudget(address(this), epoch);
         if (budget == 0) return 0;
+        uint256 attestBps = state.attestRewardBps;
         uint256 reward;
         if (attestations[epoch][verifier] == root) {
-            reward = (budget * attestRewardBps) / BPS / rootVotes[epoch][root];
+            reward = (budget * attestBps) / BPS / rootVotes[epoch][root];
         }
         if (slices != 0) {
             if (totalSlices < slices) revert InvalidValue();
             if (!MerkleProof.verifyCalldata(proof, root, collectorLeaf(epoch, verifier, slices, totalSlices))) {
                 revert InvalidProof();
             }
-            reward += (budget * (BPS - attestRewardBps) * slices) / BPS / totalSlices;
+            reward += (budget * (BPS - attestBps) * slices) / BPS / totalSlices;
         }
-        uint256 cap = (budget * maxVerifierShareBps) / BPS;
+        uint256 cap = (budget * state.maxVerifierShareBps) / BPS;
         return reward < cap ? reward : cap;
     }
 
@@ -717,6 +823,22 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         emit ServiceStatusChanged(agentId, serviceHash, service.modelHash, previous, current);
         AgentStatus memory agent = _agentStatusAt(agentId, epoch);
         emit AgentStatusChanged(agentId, agent.verifiedCount, agent.diffCount);
+    }
+
+    function _setBank(
+        uint256 epoch,
+        EpochState storage state,
+        bytes32 bankHash,
+        bytes32 bankKeyHash,
+        string calldata bankUri
+    ) private {
+        if (bankHash == bytes32(0) || bankKeyHash == bytes32(0)) revert InvalidValue();
+        _validateUri(bankUri);
+        state.bankHash = bankHash;
+        state.bankKeyHash = bankKeyHash;
+        state.keySharesHash = bytes32(0);
+        state.publisher = msg.sender;
+        emit BankCommitted(epoch, bankHash, bankKeyHash, bankUri);
     }
 
     function _setSellerPools(address sellerPools_) private {

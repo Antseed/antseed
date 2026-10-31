@@ -109,6 +109,8 @@ test('a publisher and three verifiers run one epoch end to end on Anvil', {
         address: verifier.address,
         encryptionPrivateKey: keys.privateKey,
         storage,
+        // The mock pools have no seller registry; the two targets are the agents' own sellers.
+        bindings: { isBound: async (peerId, agentId) => targets.some((target) => target.peerId === peerId && BigInt(target.agentId) === agentId) },
         stateDir: join(directory, `verifier-${index}`),
         // The third verifier never buys anything, so its slices go to backups.
         collector: index === 2 ? null : { buyerUrl: 'http://buyer.test', responseAuth: fake.reader, log: log(`v${index}`), fetchImpl: fake.fetch },

@@ -657,7 +657,19 @@ already running, `--buyer-port` picks its port) and every `--interval` seconds
 - after the key reveal, scores every committed slice and attests the results root;
 - applies the finalized results (the first verifier in a seeded order applies at
   once, the others two hours after the attest deadline if it is still undone) and
-  claims rewards for up to 4 finished epochs.
+  claims rewards for up to 4 finished epochs;
+- covers for a missing publisher: if the bank key is still hidden 10 minutes after
+  the backup deadline, it posts its sealed key share (`revealKeyShare`) and, once a
+  majority of shares are on-chain, rebuilds and reveals the key; if no plan is
+  committed `publisherGraceSeconds` (6 hours by default) into the epoch, verifiers
+  take turns, 10 minutes apart in a seeded order, to take the epoch over
+  (`takeOverBank`) and run the rest of the round as its publisher. Taking over
+  builds a bank, so it needs a reference source (see below); without one the
+  verifier skips its turn.
+
+It checks each target's seller-to-agent binding on the seller registry at the
+epoch's seed block before buying or scoring it, so the RPC must serve state at
+recent past blocks.
 
 Per-epoch state is kept in `<data-dir>/verifier/round/epochs/<epoch>/`, so a
 restart continues where it stopped. `--no-collect` only scores and attests.
@@ -681,14 +693,19 @@ from the seed and the committed slices, so honest verifiers get the same root.
 Each audited seller service gets 100 questions (`probesPerService`) in batches of
 10, split into 4 slices (`slicesPerService`), each bought by a different verifier;
 a seller never collects its own slices. A batch counts only with the seller's
-signature over the exact request and response. A service with a missing or invalid
+signature over the exact request and response, and only if that request is exactly
+the planned one: the planned system and user messages (plus the reference's prefill),
+temperature 0 and the reference's token and thinking settings, with no other
+messages, tools or fields. Slice files that aren't valid are ignored; ones that
+can't be fetched yet are retried until halfway through the attest window. A service with a missing or invalid
 slice is `UNDETERMINED`; otherwise `SAME` and `DIFF` each need 80% of the questions
 answered. Collectors are credited per delivered slice.
 
 Rewards for an epoch are split into an attester pool (`attestRewardBps`, 20% by
 default), shared equally by the verifiers that attested the finalized root, and a
 collector pool shared by delivered slices. One verifier's claim is capped at
-`maxVerifierShareBps` (20% by default) of the epoch's budget.
+`maxVerifierShareBps` (20% by default) of the epoch's budget. Both are fixed when the
+epoch opens, so changing them only affects later epochs.
 
 ### Running the publisher
 
@@ -699,8 +716,12 @@ sellers to audit: staked sellers with an on-chain agent id that advertise an
 audited model at or below its reference price. It builds each epoch's bank one
 epoch ahead, skipping questions used in the last 8 banks, and keeps every bank key
 and plaintext bank in `<data-dir>/verifier/publisher/<epoch>/` (mode 0600, back it
-up): a lost key can't be revealed. It needs `PINATA_JWT` to publish the bank and
-plans.
+up). Once the epoch opens it also escrows the key: Shamir shares, one sealed to each
+of the epoch's verifiers, any majority of which rebuild the key (`commitKeyShares`).
+Next epoch's bank is built only after the current round's steps, so a failing build
+never holds up the current backup plan or key reveal. It only plans sellers whose
+peer and agent are bound to each other on the seller registry. It needs
+`PINATA_JWT` to publish the bank and plans.
 
 ### Reference sources
 

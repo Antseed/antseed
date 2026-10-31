@@ -15,7 +15,7 @@ KBF audits run as one round per epoch (one week), shared by every approved verif
 | Role | Who | Does |
 |---|---|---|
 | Owner | The contract owner | Approves verifiers and the publisher, sets the list of audited models and the schedule |
-| Publisher | Antseed's reference publisher, `antseed verifier publish` | Builds and seals each epoch's question bank, publishes the plan, reveals the bank key. It decides no verdicts |
+| Publisher | Antseed's reference publisher, `antseed verifier publish` | Builds and seals each epoch's question bank, publishes the plan, reveals the bank key. It decides no verdicts, and verifiers can finish a round without it (see [If the publisher goes missing](#if-the-publisher-goes-missing)) |
 | Verifiers | Approved addresses, `antseed verifier start` | Buy questions from sellers, score the epoch, attest the results, and earn rewards |
 
 ## The schedule
@@ -41,6 +41,14 @@ A seller that knew the questions in advance could answer them with the genuine m
 - **Each verifier only sees its own questions.** The plan lists the sellers to audit and holds one envelope per verifier, encrypted to the key that verifier published on-chain. An envelope has the questions of that verifier's slices and none of the answers.
 - **Questions are fresh.** Each bank is built for its epoch and leaves out the questions of the last 8 banks.
 - **The key is revealed when buying is over.** After the backup deadline the publisher reveals the bank key on-chain. The contract checks it against the committed hash, and from then on anyone can decrypt the bank and check the round.
+- **The key is escrowed with the verifiers.** Once the epoch is open, the publisher splits the bank key into Shamir shares, one sealed to each of the epoch's verifiers, and commits the share file's hash on-chain. Any majority of the shares rebuilds the key; fewer reveal nothing. A majority of verifiers can already decide the results, so this adds no new trust.
+
+## If the publisher goes missing
+
+The publisher is a convenience, not a requirement:
+
+- **No plan in time.** If no plan is committed 6 hours into the epoch (`publisherGraceSeconds`), any of the epoch's verifiers can take the epoch over: it builds its own bank, commits it with `takeOverBank` and runs the rest of the round as the epoch's publisher (plan, backup plan, key reveal). `verifier start` does this on its own. Verifiers take turns 10 minutes apart, in an order drawn from the epoch, so they don't all build a bank at once, and a further takeover waits another grace period. Taking over needs the verifier's buyer and a working [reference upstream](#reference-upstreams), the same setup the publisher uses to build a bank. An epoch that was already opened gets a new seed.
+- **No key reveal.** If the bank key is still hidden 10 minutes after the backup deadline, each verifier posts its share on-chain (`revealKeyShare`), up to the attest deadline. As soon as a majority of shares are on-chain, any verifier rebuilds the key and reveals it. A forged share is ignored, because every share is checked against the hash in the share file.
 
 ## Which sellers are audited
 
@@ -49,7 +57,10 @@ The publisher's buyer finds the sellers. A seller service is audited when the se
 - is staked and has an on-chain agent id;
 - advertises a model on the contract's list of audited models;
 - charges at or below that model's [price limit](#price-limit);
-- meets the buyer's `buyer.minPeerReputation`.
+- meets the buyer's `buyer.minPeerReputation`;
+- is bound to its agent: on the seller registry, the seller's peer points to the agent and the agent to the peer.
+
+Verifiers check that last binding themselves, at the block the epoch's seed was fixed from, so they all read the same state. A target that fails it is never bought or scored, so a publisher can't pin one seller's answers on another agent. This needs an RPC that serves state at past blocks.
 
 ## Slices and backups
 
@@ -63,7 +74,7 @@ A verifier that is offline loses its share of the slices, and its backups cover 
 
 ## Scoring
 
-After the key reveal, every verifier rebuilds the epoch from public data only: the revealed bank, the plan derived from the seed, and the committed slices. A batch only counts with the seller's valid signature over the exact questions it was sent. Each seller service gets a verdict:
+After the key reveal, every verifier rebuilds the epoch from public data only: the revealed bank, the plan derived from the seed, and the committed slices. A batch only counts with the seller's valid signature over exactly the planned request: the planned system and user messages (plus the reference's assistant prefill, if it has one), temperature 0, the reference's token limit and thinking settings, and nothing else. A request with an extra instruction, tool or setting doesn't count, so a collector can't steer a seller into wrong answers. A slice file that isn't a valid slice file is ignored; one that can't be fetched yet is retried until halfway through the attest window before it counts as missing. Each seller service gets a verdict:
 
 | Verdict | Meaning |
 |---|---|
@@ -90,7 +101,7 @@ Each epoch's verification budget of ANTS emissions is split in two:
 - **Attester pool** (`attestRewardBps`, 20% by default): shared equally by the verifiers that attested the final root.
 - **Collector pool** (the rest): shared by the slices each verifier delivered that went into the results.
 
-One verifier's claim is capped at `maxVerifierShareBps` (20% by default) of the epoch's budget. Rewards can be claimed once an epoch is over; `verifier start` claims them for up to 4 finished epochs.
+One verifier's claim is capped at `maxVerifierShareBps` (20% by default) of the epoch's budget. Both settings are fixed for an epoch when it opens, so changing them only affects later epochs. Rewards can be claimed once an epoch is over; `verifier start` claims them for up to 4 finished epochs.
 
 ## Price limit
 

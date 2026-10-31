@@ -116,6 +116,23 @@ test('a later SAME replaces an earlier UNDETERMINED, and a later first DIFF wait
   assert.deepEqual({ ...row }, { model: 'm', same: 1, diff: 0, undetermined: 0, pendingRecheck: 1, failed: 0, skipped: 0, left: 1 })
 })
 
+test('with DIFF confirmation off, a first DIFF is done and later runs leave it alone', () => {
+  const first = run('r1', '2026-10-28T20:00:00.000Z', [{ model: 'm', results: [
+    result('a', 'DIFF', { diffConfirmation: 'off' }),
+  ] }])
+  const second = run('r2', '2026-10-28T21:00:00.000Z', [{ model: 'm', results: [] }])
+  const cells = mergeEpochRuns(EPOCH, [first, second])
+  const cell = cells.get(epochCellKey('m', 'a'))!
+  assert.equal(cell.state, 'diff')
+  assert.equal(cell.action, 'done')
+  const [row] = epochModelRows(cells.values())
+  assert.equal(row!.diff, 1)
+  assert.equal(row!.left, 0)
+  // Without the marker the same DIFF still waits for its recheck.
+  const unconfirmed = mergeEpochRuns(EPOCH, [run('r1', '2026-10-28T20:00:00.000Z', [{ model: 'm', results: [result('a', 'DIFF')] }])])
+  assert.equal(unconfirmed.get(epochCellKey('m', 'a'))!.state, 'pending_diff')
+})
+
 test('runs of another epoch or with a mismatched run id are ignored', () => {
   const other = run('r1', '2026-10-28T20:00:00.000Z', [{ model: 'm', results: [result('a', 'SAME')] }])
   other.summaries[0]!.epoch = '27'

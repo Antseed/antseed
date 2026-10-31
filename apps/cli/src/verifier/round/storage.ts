@@ -14,6 +14,17 @@ export interface RoundStorage {
   get(uri: string, expectedHash?: string): Promise<Buffer>
 }
 
+/**
+ * The file at a URI was fetched but its bytes are not the committed ones. Unlike a failed fetch
+ * this is permanent (an IPFS CID always names the same bytes), so the commitment is invalid.
+ */
+export class RoundFileMismatchError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'RoundFileMismatchError'
+  }
+}
+
 const PINATA_UPLOAD_URL = 'https://uploads.pinata.cloud/v3/files'
 const FETCH_TIMEOUT_MS = 60_000
 
@@ -59,6 +70,7 @@ export class PinataRoundStorage implements RoundStorage {
   async get(uri: string, expectedHash?: string): Promise<Buffer> {
     const cid = uri.replace(/^ipfs:\/\//, '')
     const failures: string[] = []
+    let mismatched = false
     for (const gateway of this.gateways) {
       const url = `${gateway.replace(/\/+$/, '')}/${cid}`
       try {
@@ -70,6 +82,7 @@ export class PinataRoundStorage implements RoundStorage {
         const bytes = Buffer.from(await response.arrayBuffer())
         if (expectedHash && contentHash(bytes).toLowerCase() !== expectedHash.toLowerCase()) {
           failures.push(`${url}: content does not match the committed hash`)
+          mismatched = true
           continue
         }
         return bytes
@@ -77,7 +90,8 @@ export class PinataRoundStorage implements RoundStorage {
         failures.push(`${url}: ${error instanceof Error ? error.message : String(error)}`)
       }
     }
-    throw new Error(`failed to fetch ${uri} (${failures.join('; ')})`)
+    const message = `failed to fetch ${uri} (${failures.join('; ')})`
+    throw mismatched ? new RoundFileMismatchError(message) : new Error(message)
   }
 }
 
@@ -97,10 +111,10 @@ export class DirectoryRoundStorage implements RoundStorage {
 
   async get(uri: string, expectedHash?: string): Promise<Buffer> {
     const id = uri.replace(/^ipfs:\/\//, '')
-    if (!/^local-[0-9a-f]{64}$/.test(id)) throw new Error(`not a local round file: ${uri}`)
+    if (!/^local-[0-9a-f]{64}$/.test(id)) throw new RoundFileMismatchError(`not a local round file: ${uri}`)
     const bytes = await readFile(join(this.directory, id))
     if (expectedHash && contentHash(bytes).toLowerCase() !== expectedHash.toLowerCase()) {
-      throw new Error(`${uri} does not match the committed hash`)
+      throw new RoundFileMismatchError(`${uri} does not match the committed hash`)
     }
     return bytes
   }

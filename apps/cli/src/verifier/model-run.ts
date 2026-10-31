@@ -185,6 +185,8 @@ export interface ModelVerificationTargetResult {
    * `verifier run` in the same epoch rechecks it without repeating the first check.
    */
   recheckPending?: { reason: string; since: string }
+  /** Set on a DIFF from a run with `verifier.diffConfirmationRuns` 0: it is final without a recheck. */
+  diffConfirmation?: 'off'
 }
 
 export interface ModelVerificationRecheckV1 {
@@ -430,15 +432,18 @@ export async function verifyModelTarget(input: {
     startedAt: Date.now(),
   })
   const exchangeByBatch = new Map<number, ProxyAuditEvidenceExchangeV1>()
+  // Signed batches with missing answers are asked again; the earlier attempt is kept if the new one is no better.
+  const partialByBatch = new Map<number, ProxyAuditEvidenceExchangeV1>()
   for (const exchange of input.resume?.exchanges ?? []) {
     const expectedProbeIds = batches[exchange.batchIndex]?.probes.map((probe) => probe.id)
     if (isReusableExchange(exchange) && expectedProbeIds && sameStrings(exchange.probeIds, expectedProbeIds)) {
       // Re-score with the current rule so a checkpoint written before unscoreable
       // answers were left out does not count them as wrong.
-      exchangeByBatch.set(exchange.batchIndex, {
+      const rescored = {
         ...exchange,
         matches: computeMatchVector(exchange.answers, batches[exchange.batchIndex]!.probes),
-      })
+      }
+      ;(hasMissingKbfAnswers(rescored.matches) ? partialByBatch : exchangeByBatch).set(exchange.batchIndex, rescored)
     }
   }
   const reusedBatchIndexes = [...exchangeByBatch.keys()].sort((left, right) => left - right)
@@ -494,7 +499,7 @@ export async function verifyModelTarget(input: {
       input.context.batchConcurrency,
       async ({ probes, batchIndex }, _pendingIndex, control) => input.context.batchLimiter.run(async () => {
         if (checkpointFailure) throw checkpointFailure
-        const exchange = await executeProxyProbeBatch(
+        const exchange = keepBetterAttempt(await executeProxyProbeBatch(
         { ...input.context, signal: deadline.start() },
         input.target,
         input.service,
@@ -503,7 +508,7 @@ export async function verifyModelTarget(input: {
         batchIndex,
         control.reduceToOne,
         sampling,
-        )
+        ), partialByBatch.get(batchIndex))
         exchangeByBatch.set(batchIndex, exchange)
         await persistCheckpoint()
         if (batchIndex === 0 && exchange.status === 'failed' && exchange.outcomeReason?.retryable) {
@@ -615,7 +620,15 @@ export async function verifyModelTarget(input: {
   const outcomeReason = verdict === 'UNDETERMINED' ? summarizeUndeterminedReason(exchanges, batches.length) : null
   const cumulativeCost = summarizeAuditExchangeCosts(exchanges)
   const newBatchIndexes = new Set(pending.map((entry) => entry.batchIndex))
-  const cost = summarizeAuditExchangeCosts(exchanges.filter((exchange) => newBatchIndexes.has(exchange.batchIndex)))
+  // This audit's cost leaves out what an asked-again batch had already cost in the audit it resumes.
+  const cost = summarizeAuditExchangeCosts(exchanges
+    .filter((exchange) => newBatchIndexes.has(exchange.batchIndex))
+    .map((exchange) => {
+      const earlier = partialByBatch.get(exchange.batchIndex)
+      return earlier && exchange.attemptCosts
+        ? { ...exchange, attemptCosts: exchange.attemptCosts.slice(exchangeAttemptCosts(earlier).length) }
+        : exchange
+    }))
   const correctProbeCount = matchVector.filter((entry) => entry === 1).length
   const incorrectProbeCount = matchVector.filter((entry) => entry === 0).length
   const parsedProbeCount = correctProbeCount + incorrectProbeCount
@@ -1419,6 +1432,30 @@ export function extractCompletionText(body: Uint8Array): string | null {
 }
 
 /** Verified responses beat unverified ones; then the attempt with more scoreable answers wins. */
+/** Priced attempts an exchange carries (older evidence only has `cost`). */
+function exchangeAttemptCosts(exchange: ProxyAuditEvidenceExchangeV1): NonNullable<ProxyAuditEvidenceExchangeV1['attemptCosts']> {
+  return exchange.attemptCosts ?? (exchange.cost ? [exchange.cost] : [])
+}
+
+/**
+ * A resumed batch that was asked again keeps whichever attempt scored more answers, and carries the
+ * requests and costs of both so the cumulative cost stays complete.
+ */
+function keepBetterAttempt(
+  fresh: ProxyAuditEvidenceExchangeV1,
+  earlier: ProxyAuditEvidenceExchangeV1 | undefined,
+): ProxyAuditEvidenceExchangeV1 {
+  if (!earlier) return fresh
+  const kept = isBetterBatchAttempt(earlier, fresh) ? earlier : fresh
+  return {
+    ...kept,
+    attemptCount: earlier.attemptCount + fresh.attemptCount,
+    requestIds: [...earlier.requestIds, ...fresh.requestIds],
+    attemptCosts: [...exchangeAttemptCosts(earlier), ...exchangeAttemptCosts(fresh)],
+    timing: fresh.timing,
+  }
+}
+
 function isBetterBatchAttempt(candidate: ProxyAuditEvidenceExchangeV1, current: ProxyAuditEvidenceExchangeV1): boolean {
   const verified = (exchange: ProxyAuditEvidenceExchangeV1) => exchange.responseAuth.status === 'verified'
   if (verified(candidate) !== verified(current)) return verified(candidate)

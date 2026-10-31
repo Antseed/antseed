@@ -29,7 +29,15 @@ After M003:
   20%), shared equally by the verifiers that attested the finalized root, and a collector
   pool shared by the slices each verifier delivered. Each verifier can claim at most
   `maxVerifierShareBps` of an epoch's budget (default 2,000 = 20%, owner-settable from 1
-  to 10,000). The cap in force at claim time applies, and budget above it is never minted.
+  to 10,000). Both values are fixed per epoch when it is opened, so a later change never
+  alters what an earlier epoch pays, and budget above the cap is never minted.
+- **The publisher is not a single point of failure.** If no plan is committed
+  `publisherGraceSeconds` into an epoch (default 6 hours, owner-settable), any approved
+  verifier can take the epoch over with its own bank (`takeOverBank`); `verifier start`
+  does this in turns. The epoch publisher also escrows the bank key with the epoch's
+  verifiers (`commitKeyShares`, a Shamir split with the finalization majority as
+  threshold), so if the key is not revealed at the backup deadline, verifiers post their
+  shares (`revealKeyShare`) and rebuild and reveal it themselves.
 - **Verdicts expire by epoch.** A SAME or DIFF counts for `validityEpochs` emissions
   epochs including the one it was given in (default 2; owner-settable from 1 to 4), and
   then drops out on its own. The latest epoch's finalized result sets the verdict,
@@ -39,6 +47,23 @@ After M003:
 - **The emissions gate is pinned.** The constructor reads the gate behind
   `registry.emissions()` (usage accounting's `emissionsGate()`) and keeps it for life,
   so verdict epochs never mix gates. A new gate needs a new verification deployment.
+
+## M004 — the round contract on Base mainnet
+
+Base mainnet already has release `003-kbf-verification`, which deployed the earlier
+single-auditor contract (`submitModelAudit`). It doesn't have the round API, so the CLI
+doesn't use its address as a default, and M003 can't redeploy over it: its resume check
+compares the deployed code with the current artifact and refuses the mismatch.
+
+M004 (`scripts/deployments/m004.mjs`) deploys the round contract and its points policy
+under the new release `004-kbf-rounds`, with the same `Deploy.s.sol`, configuration and
+signer as M003 (`M004` in place of `M003` in the [rollout](#rollout) commands). It then
+becomes the current `kbfVerification`, and the `003-kbf-verification` history record is
+kept as it was. M004 ignores the 003 receipts in `broadcast/`, but still refuses to
+continue past a lost broadcast of its own. As with M003, it doesn't register the policy
+in the points policy registry. After the deploy, regenerate the chain config so the CLI
+picks up the new address, then do the [post-deploy setup](#post-deploy-setup) on the new
+contract.
 
 ## Configuration
 
@@ -102,7 +127,9 @@ All calls are on `AntseedKbfVerification` from the verification owner, except th
      questions and 4 slices per seller service. The three windows together must fit in the
      emissions epoch, and `probesPerService` must be at least `slicesPerService`.
    - `setAttestRewardBps(uint16)` (default 2,000), `setMaxVerifierShareBps(uint16)`
-     (default 2,000), `setValidityEpochs(uint8)` (default 2, at most 4).
+     (default 2,000), both for epochs opened later; `setValidityEpochs(uint8)` (default 2,
+     at most 4); `setPublisherGraceSeconds(uint32)` (default 6 hours), how long the
+     publisher has to commit a plan before a verifier can take the epoch over.
    - `setRewardsStartEpoch(uint256)` once the verification bucket is handed over (see above).
 5. **Points.** The points policy registry owner registers the policy when points should
    start to count: `registerPolicy(<kbfVerificationPointsPolicy address>)`.

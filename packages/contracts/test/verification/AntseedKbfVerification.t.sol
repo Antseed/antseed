@@ -91,6 +91,8 @@ contract AntseedKbfVerificationTest is Test {
     MockVerificationEmissionsGate private gate;
     MockVerificationSellerPools private pools;
     uint256 private agentId;
+    mapping(uint256 epoch => bytes32[] leaves) private _allLeaves;
+    mapping(uint256 epoch => bool finalized) private _allFinalized;
 
     function setUp() public {
         registry = new AntseedRegistry();
@@ -328,6 +330,174 @@ contract AntseedKbfVerificationTest is Test {
         verification.commitBank(EPOCH, keccak256("bank"), keccak256(abi.encode(BANK_KEY)), "https://x");
     }
 
+    // ── publisher fallback ───────────────────────────────────────────
+
+    function test_verifierTakesOverAnEpochWithoutABank() public {
+        bytes32 bank = keccak256("verifier bank");
+        bytes32 keyHash = keccak256(abi.encode(BANK_KEY));
+        vm.prank(verifierA);
+        vm.expectRevert(AntseedKbfVerification.WrongPhase.selector);
+        verification.takeOverBank(EPOCH, bank, keyHash, URI);
+
+        vm.warp(EPOCH_START + verification.publisherGraceSeconds());
+        vm.prank(address(0xBAD));
+        vm.expectRevert(AntseedKbfVerification.NotVerifier.selector);
+        verification.takeOverBank(EPOCH, bank, keyHash, URI);
+        vm.prank(verifierA);
+        vm.expectRevert(AntseedKbfVerification.WrongEpoch.selector);
+        verification.takeOverBank(EPOCH + 1, bank, keyHash, URI);
+
+        vm.expectEmit(true, true, false, false);
+        emit AntseedKbfVerification.EpochTakenOver(EPOCH, verifierA);
+        vm.prank(verifierA);
+        verification.takeOverBank(EPOCH, bank, keyHash, URI);
+        IAntseedKbfVerification.EpochInfo memory info = verification.epochInfo(EPOCH);
+        assertEq(info.publisher, verifierA);
+        assertEq(info.bankHash, bank);
+        assertEq(info.takenOverAt, block.timestamp);
+
+        // The original publisher can no longer replace the bank or run the epoch.
+        vm.prank(publisher);
+        vm.expectRevert(AntseedKbfVerification.WrongPhase.selector);
+        verification.commitBank(EPOCH, keccak256("late bank"), keyHash, URI);
+        verification.openEpoch(EPOCH);
+        vm.roll(verification.epochInfo(EPOCH).seedBlock + 1);
+        verification.fixSeed(EPOCH);
+        vm.prank(publisher);
+        vm.expectRevert(AntseedKbfVerification.NotPublisher.selector);
+        verification.commitPlan(EPOCH, keccak256("plan"), URI);
+
+        vm.prank(verifierA);
+        verification.commitPlan(EPOCH, keccak256("plan"), URI);
+        vm.prank(verifierB);
+        verification.commitSlices(EPOCH, keccak256("slices"), URI);
+        vm.warp(EPOCH_START + 4 days);
+        verification.revealBankKey(EPOCH, BANK_KEY);
+        (bytes32 root,,) = _resultsRoot(EPOCH, SAME);
+        _attestMajority(EPOCH, root);
+        assertEq(verification.epochInfo(EPOCH).finalizedRoot, root);
+    }
+
+    function test_takeoverOfAnOpenedEpochRedrawsTheSeed() public {
+        _openAndSeed(EPOCH);
+        bytes32 oldSeed = verification.epochInfo(EPOCH).seed;
+        bytes32 keyHash = keccak256(abi.encode(BANK_KEY));
+        vm.warp(EPOCH_START + 6 hours);
+
+        address late = address(0xD4);
+        verification.setVerifier(late, true);
+        vm.prank(late);
+        vm.expectRevert(AntseedKbfVerification.NotVerifier.selector);
+        verification.takeOverBank(EPOCH, keccak256("late"), keyHash, URI);
+
+        vm.prank(verifierB);
+        verification.takeOverBank(EPOCH, keccak256("b bank"), keyHash, URI);
+        IAntseedKbfVerification.EpochInfo memory info = verification.epochInfo(EPOCH);
+        assertEq(info.seed, bytes32(0), "the seed is bound to the bank");
+        assertEq(info.seedBlock, uint64(block.number) + verification.SEED_DELAY_BLOCKS());
+        assertEq(info.verifierCount, 3, "the snapshot stays");
+
+        vm.prank(verifierC);
+        vm.expectRevert(AntseedKbfVerification.WrongPhase.selector);
+        verification.takeOverBank(EPOCH, keccak256("c bank"), keyHash, URI);
+        vm.warp(block.timestamp + 6 hours);
+        vm.prank(verifierC);
+        verification.takeOverBank(EPOCH, keccak256("c bank"), keyHash, URI);
+        assertEq(verification.epochInfo(EPOCH).publisher, verifierC);
+
+        vm.roll(verification.epochInfo(EPOCH).seedBlock + 1);
+        verification.fixSeed(EPOCH);
+        assertTrue(verification.epochInfo(EPOCH).seed != oldSeed);
+        vm.prank(verifierC);
+        verification.commitPlan(EPOCH, keccak256("plan"), URI);
+        vm.warp(block.timestamp + 6 hours);
+        vm.prank(verifierA);
+        vm.expectRevert(AntseedKbfVerification.WrongPhase.selector);
+        verification.takeOverBank(EPOCH, keccak256("a bank"), keyHash, URI);
+    }
+
+    function test_takeoverEndsWithTheCollectionWindow() public {
+        _commitBank(EPOCH);
+        vm.warp(EPOCH_START + 3 days);
+        vm.prank(verifierA);
+        vm.expectRevert(AntseedKbfVerification.WrongPhase.selector);
+        verification.takeOverBank(EPOCH, keccak256("bank"), keccak256(abi.encode(BANK_KEY)), URI);
+    }
+
+    function test_publisherGraceIsOwnerSet() public {
+        verification.setPublisherGraceSeconds(1 hours);
+        assertEq(verification.publisherGraceSeconds(), 1 hours);
+        vm.expectRevert(AntseedKbfVerification.InvalidValue.selector);
+        verification.setPublisherGraceSeconds(0);
+        vm.prank(verifierA);
+        vm.expectRevert();
+        verification.setPublisherGraceSeconds(2 hours);
+    }
+
+    function test_keySharesRevealTheKeyWhenThePublisherDisappears() public {
+        _commitBank(EPOCH);
+        vm.prank(publisher);
+        vm.expectRevert(AntseedKbfVerification.WrongPhase.selector);
+        verification.commitKeyShares(EPOCH, keccak256("shares"), URI);
+        verification.openEpoch(EPOCH);
+        vm.prank(verifierA);
+        vm.expectRevert(AntseedKbfVerification.NotPublisher.selector);
+        verification.commitKeyShares(EPOCH, keccak256("shares"), URI);
+        vm.prank(publisher);
+        verification.commitKeyShares(EPOCH, keccak256("shares"), URI);
+        assertEq(verification.epochInfo(EPOCH).keySharesHash, keccak256("shares"));
+        vm.roll(verification.epochInfo(EPOCH).seedBlock + 1);
+        verification.fixSeed(EPOCH);
+        _commitPlan(EPOCH);
+        // The publisher disappears here.
+
+        vm.prank(verifierA);
+        vm.expectRevert(AntseedKbfVerification.WrongPhase.selector);
+        verification.revealKeyShare(EPOCH, hex"01aa");
+        vm.warp(EPOCH_START + 4 days);
+        vm.prank(address(0xBAD));
+        vm.expectRevert(AntseedKbfVerification.NotVerifier.selector);
+        verification.revealKeyShare(EPOCH, hex"01aa");
+        vm.prank(verifierA);
+        vm.expectRevert(AntseedKbfVerification.InvalidValue.selector);
+        verification.revealKeyShare(EPOCH, "");
+
+        vm.expectEmit(true, true, false, true);
+        emit AntseedKbfVerification.KeyShareRevealed(EPOCH, verifierA, hex"01aa");
+        vm.prank(verifierA);
+        verification.revealKeyShare(EPOCH, hex"01aa");
+        vm.prank(verifierA);
+        vm.expectRevert(AntseedKbfVerification.AlreadyRevealed.selector);
+        verification.revealKeyShare(EPOCH, hex"01aa");
+        vm.prank(verifierB);
+        verification.revealKeyShare(EPOCH, hex"02bb");
+        assertTrue(verification.keyShareRevealed(EPOCH, verifierB));
+
+        // Off-chain, anyone combines the shares; the contract only checks the key's hash.
+        vm.prank(address(0xBAD));
+        verification.revealBankKey(EPOCH, BANK_KEY);
+        vm.prank(verifierC);
+        vm.expectRevert(AntseedKbfVerification.WrongPhase.selector);
+        verification.revealKeyShare(EPOCH, hex"03cc");
+
+        (bytes32 root,,) = _resultsRoot(EPOCH, SAME);
+        _attestMajority(EPOCH, root);
+        assertEq(verification.epochInfo(EPOCH).finalizedRoot, root);
+    }
+
+    function test_takeoverDropsTheOldKeyShares() public {
+        _openAndSeed(EPOCH);
+        vm.prank(publisher);
+        verification.commitKeyShares(EPOCH, keccak256("shares"), URI);
+        vm.warp(EPOCH_START + 6 hours);
+        vm.prank(verifierA);
+        verification.takeOverBank(EPOCH, keccak256("a bank"), keccak256(abi.encode(BANK_KEY)), URI);
+        assertEq(verification.epochInfo(EPOCH).keySharesHash, bytes32(0));
+        vm.prank(publisher);
+        vm.expectRevert(AntseedKbfVerification.NotPublisher.selector);
+        verification.commitKeyShares(EPOCH, keccak256("shares"), URI);
+    }
+
     // ── results ──────────────────────────────────────────────────────
 
     function test_applyRejectsBadProofsAndSkipsRepeats() public {
@@ -466,6 +636,23 @@ contract AntseedKbfVerificationTest is Test {
         verification.claimRewards(EPOCH, 3, 4, proof);
     }
 
+    function test_rewardSplitIsFixedWhenTheEpochOpens() public {
+        verification.setMaxVerifierShareBps(10_000);
+        (bytes32[] memory leaves,) = _finalizeWithCredits(EPOCH);
+        _advance();
+        uint256 a = _claim(verifierA, 3, 4, TestMerkle.proof(leaves, 1));
+        // Changing the split after collectors claimed must not raise later entitlements.
+        verification.setAttestRewardBps(10_000);
+        verification.setMaxVerifierShareBps(1_000);
+        assertEq(verification.pendingReward(verifierB, EPOCH, 0, 0, new bytes32[](0)), 100 ether);
+        uint256 b = _claim(verifierB, 0, 0, new bytes32[](0));
+        uint256 c = _claim(verifierC, 1, 4, TestMerkle.proof(leaves, 2));
+        assertEq(a, 700 ether);
+        assertEq(b, 100 ether);
+        assertEq(c, 200 ether);
+        assertLe(a + b + c, 1_000 ether, "never more than the budget");
+    }
+
     function test_noRewardsBeforeTheStartEpoch() public {
         verification.setRewardsStartEpoch(EPOCH + 1);
         (bytes32[] memory leaves,) = _finalizeWithCredits(EPOCH);
@@ -534,7 +721,117 @@ contract AntseedKbfVerificationTest is Test {
         vm.stopPrank();
     }
 
+    // ── invariants ───────────────────────────────────────────────────
+
+    /// @dev Live counts, `isVerified` and seller points always match what the stored service
+    ///      statuses imply, across verdict changes, model changes, late applies of older epochs,
+    ///      expiry, clearing and validity-window changes.
+    function testFuzz_liveCountsMatchServiceStatusesAcrossEpochs(uint8[32] calldata steps) public {
+        AntseedKbfVerificationPointsPolicy policy = _pointsPolicy();
+        policy.setPenaltyBps(1_000);
+        bytes32[3] memory services = [SERVICE_A, SERVICE_B, bytes32(uint256(3))];
+        for (uint256 i = 0; i < steps.length; i++) {
+            uint8 step = steps[i];
+            uint256 serviceIndex = (step >> 3) % 3;
+            uint256 current = gate.currentEpoch();
+            if (step % 7 == 0) {
+                _advance();
+            } else if (step % 7 == 1) {
+                _clear(agentId, services[serviceIndex]);
+            } else if (step % 7 == 2) {
+                verification.setValidityEpochs(uint8(1 + (step >> 5) % 4));
+            } else {
+                // Step 3 applies a result of the previous epoch late, when that epoch finalized.
+                uint256 epoch = step % 7 == 3 && _allFinalized[current - 1] ? current - 1 : current;
+                if (!_allFinalized[epoch]) _finalizeAll(epoch);
+                uint256 index = serviceIndex * 9 + ((step >> 5) % 3) * 3 + step % 3;
+                _applyOne(epoch, index);
+            }
+            _assertCountsMatch(policy, services);
+        }
+    }
+
+    function test_lateApplyOfAnExpiredEpochCountsNothing() public {
+        AntseedKbfVerificationPointsPolicy policy = _pointsPolicy();
+        policy.setPenaltyBps(1_000);
+        bytes32[3] memory services = [SERVICE_A, SERVICE_B, bytes32(uint256(3))];
+        _finalizeAll(EPOCH);
+        _applyOne(EPOCH, 0 * 9 + 0 * 3 + 0); // SERVICE_A SAME
+        _advance();
+        _advance();
+        _applyOne(EPOCH, 1 * 9 + 1 * 3 + 1); // SERVICE_B DIFF, already expired
+        _assertCountsMatch(policy, services);
+        assertEq(verification.agentStatus(agentId).diffCount, 0);
+        verification.setValidityEpochs(3);
+        _assertCountsMatch(policy, services);
+        assertEq(verification.agentStatus(agentId).diffCount, 1, "a longer window revives it");
+        _clear(agentId, SERVICE_B);
+        _clear(agentId, SERVICE_B);
+        _assertCountsMatch(policy, services);
+    }
+
     // ── helpers ──────────────────────────────────────────────────────
+
+    /// @dev Finalizes `epoch` with one leaf per (service, model, verdict): 3 x 3 x 3.
+    function _finalizeAll(uint256 epoch) private {
+        bytes32[3] memory services = [SERVICE_A, SERVICE_B, bytes32(uint256(3))];
+        bytes32[3] memory modelHashes = [MODEL_A, MODEL_B, keccak256("model-c")];
+        IAntseedKbfVerification.Verdict[3] memory verdicts = [SAME, DIFF, UNDETERMINED];
+        bytes32[] memory leaves = new bytes32[](27);
+        for (uint256 s = 0; s < 3; s++) {
+            for (uint256 m = 0; m < 3; m++) {
+                for (uint256 v = 0; v < 3; v++) {
+                    leaves[s * 9 + m * 3 + v] = this.leafOf(epoch, _result(agentId, services[s], modelHashes[m], verdicts[v]));
+                }
+            }
+        }
+        _allLeaves[epoch] = leaves;
+        uint256 time = block.timestamp;
+        _openAndSeed(epoch);
+        _commitPlan(epoch);
+        _toReveal(epoch);
+        _attestMajority(epoch, TestMerkle.root(leaves));
+        _allFinalized[epoch] = true;
+        if (time > block.timestamp) vm.warp(time);
+    }
+
+    function _applyOne(uint256 epoch, uint256 index) private {
+        bytes32[3] memory services = [SERVICE_A, SERVICE_B, bytes32(uint256(3))];
+        bytes32[3] memory modelHashes = [MODEL_A, MODEL_B, keccak256("model-c")];
+        IAntseedKbfVerification.Verdict[3] memory verdicts = [SAME, DIFF, UNDETERMINED];
+        IAntseedKbfVerification.ServiceResult[] memory results = new IAntseedKbfVerification.ServiceResult[](1);
+        results[0] = _result(agentId, services[index / 9], modelHashes[(index / 3) % 3], verdicts[index % 3]);
+        bytes32[][] memory proofs = new bytes32[][](1);
+        proofs[0] = TestMerkle.proof(_allLeaves[epoch], index);
+        verification.applyResults(epoch, results, proofs);
+    }
+
+    function _assertCountsMatch(AntseedKbfVerificationPointsPolicy policy, bytes32[3] memory services) private view {
+        uint256 current = gate.currentEpoch();
+        uint256 window = verification.validityEpochs();
+        uint256 verified;
+        uint256 diffs;
+        for (uint256 j = 0; j < services.length; j++) {
+            IAntseedKbfVerification.ServiceStatus memory status = verification.serviceStatus(agentId, services[j]);
+            if (status.verdict == NONE || current >= status.epoch + window) continue;
+            if (status.verdict == SAME) verified += 1;
+            else if (status.verdict == DIFF) diffs += 1;
+        }
+        IAntseedKbfVerification.AgentStatus memory agent = verification.agentStatus(agentId);
+        assertEq(agent.verifiedCount, verified, "verified count");
+        assertEq(agent.diffCount, diffs, "diff count");
+        assertEq(verification.isVerified(agentId), verified > 0 && diffs == 0);
+        uint256 multiplier = 100 + 10 * verified;
+        assertEq(_sellerPoints(policy), multiplier > 10 * diffs ? multiplier - 10 * diffs : 0, "seller points");
+    }
+
+    function _clear(uint256 agent, bytes32 service) private {
+        uint256[] memory agents = new uint256[](1);
+        bytes32[] memory services = new bytes32[](1);
+        agents[0] = agent;
+        services[0] = service;
+        verification.clearServiceStatuses(agents, services);
+    }
 
     function _models() private pure returns (IAntseedKbfVerification.Model[] memory list) {
         list = new IAntseedKbfVerification.Model[](2);

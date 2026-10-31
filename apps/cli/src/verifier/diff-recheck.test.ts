@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { KbfReferenceV1 } from '@antseed/fingerprints'
-import { combineDiffRecheck, RECHECK_ENROLLMENT_ROUNDS, runDiffRechecks } from './diff-recheck.js'
+import { combineDiffRecheck, finalAuditVerdict, RECHECK_ENROLLMENT_ROUNDS, runDiffRechecks } from './diff-recheck.js'
 import type { ModelVerificationSkip, ModelVerificationTargetResult } from './model-run.js'
 import { BANK_EXHAUSTED } from './probe-bank.js'
 import { emptyAuditCostSummary } from './proxy-evidence.js'
@@ -60,6 +60,12 @@ async function run(input: {
   })
   return { outcome, logs, verified }
 }
+
+test('a DIFF is final only after its recheck, or when the run had confirmation off', () => {
+  assert.equal(finalAuditVerdict(result('a', 'SAME')), 'SAME')
+  assert.equal(finalAuditVerdict(result('a', 'DIFF')), null)
+  assert.equal(finalAuditVerdict({ ...result('a', 'DIFF'), diffConfirmation: 'off' }), 'DIFF')
+})
 
 test('only DIFF results are rechecked; a recheck DIFF confirms the DIFF', async () => {
   const same = result('a', 'SAME')

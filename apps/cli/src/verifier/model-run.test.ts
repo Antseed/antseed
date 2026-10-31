@@ -1135,6 +1135,31 @@ test('one wholly malformed batch is left unscored and can be repaired by resume'
   assert.deepEqual(resumed.evidence.resume?.reusedBatchIndexes, [1, 2, 3, 4, 5, 6, 7, 8, 9])
 })
 
+test('resume asks partially answered batches again and keeps the better attempt', async () => {
+  const first = await runTarget(100, 'partial-malformed')
+  assert.equal(first.result.status, 'UNDETERMINED')
+  const resume = {
+    parentAuditId: first.result.auditId,
+    reservationAuditId: first.result.auditId,
+    parentEvidenceHash: first.result.evidenceHash,
+    exchanges: first.evidence.exchanges,
+  }
+
+  const repaired = await runTarget(100, 'valid', 0, 'verified', true, 10_000, resume)
+  assert.equal(repaired.result.status, 'SAME')
+  assert.equal(repaired.result.parsedProbeCount, 100)
+  assert.equal(repaired.requestCount, 10)
+  assert.deepEqual(repaired.evidence.resume?.reusedBatchIndexes, [])
+  const earlierCosts = first.result.cumulativeCost?.pricedExchangeCount ?? 0
+  assert.equal(repaired.result.cost.pricedExchangeCount, 10, 'only the new requests count as this audit')
+  assert.equal(repaired.result.cumulativeCost?.pricedExchangeCount, earlierCosts + 10)
+  assert.equal(repaired.evidence.exchanges[0]?.requestIds.length, 4)
+
+  const stillDown = await runTarget(100, 'transport-failure', 0, 'verified', true, 10_000, resume)
+  assert.equal(stillDown.result.parsedProbeCount, 10, 'a failed retry keeps the earlier signed answers')
+  assert.equal(stillDown.evidence.exchanges.every((exchange) => exchange.status === 'succeeded'), true)
+})
+
 test('responses SSE is decoded even when the request used stream false', async () => {
   const run = await runTarget(100, 'sse')
   assert.equal(run.result.status, 'SAME')

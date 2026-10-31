@@ -1,7 +1,8 @@
-import { buildKbfPrompt, parseKbfAnswers, type KbfProbe } from '@antseed/fingerprints'
+import { parseKbfAnswers, type KbfProbe } from '@antseed/fingerprints'
 import { decodeHttpRequest, decodeHttpResponse, verifyResponseAuth } from '@antseed/node'
 import { extractCompletionText } from '../model-run.js'
-import type { PlannedBatchV1, RoundTargetV1, SliceExchangeV1 } from './types.js'
+import { auditRequestProblem } from './request-check.js'
+import type { EnvelopeSliceV1, PlannedBatchV1, RoundTargetV1, SliceExchangeV1 } from './types.js'
 
 export type ExchangeCheck =
   | { ok: true; answers: Array<number | null> }
@@ -11,14 +12,30 @@ export type ExchangeCheck =
  * Checks one seller response with nothing but its published bytes:
  * - the seller's signature covers exactly these request and response bytes;
  * - it was signed by the target seller for the target service, with HTTP 200;
- * - the request asked exactly the planned questions in the planned prompt variant.
+ * - the request is exactly the planned audit request (see `auditRequestProblem`).
  * Answers are parsed from the signed response bytes, so every verifier reads the same answers.
+ * Never throws: anything malformed is a failed check.
  */
 export function checkExchange(
   exchange: SliceExchangeV1,
   target: RoundTargetV1,
   batch: PlannedBatchV1,
   probes: readonly KbfProbe[],
+  settings: EnvelopeSliceV1['request'],
+): ExchangeCheck {
+  try {
+    return check(exchange, target, batch, probes, settings)
+  } catch (error) {
+    return { ok: false, reason: `malformed exchange: ${error instanceof Error ? error.message : String(error)}` }
+  }
+}
+
+function check(
+  exchange: SliceExchangeV1,
+  target: RoundTargetV1,
+  batch: PlannedBatchV1,
+  probes: readonly KbfProbe[],
+  settings: EnvelopeSliceV1['request'],
 ): ExchangeCheck {
   let request
   let response
@@ -43,11 +60,15 @@ export function checkExchange(
   if (!verified.valid) return { ok: false, reason: `seller signature: ${verified.reason}` }
   if (response.statusCode !== 200) return { ok: false, reason: `HTTP ${response.statusCode}` }
 
-  const expectedPrompt = buildKbfPrompt(probes, 0, batch.promptVariantId)
-  const requestText = Buffer.from(request.body).toString('utf8')
-  if (!requestText.includes(JSON.stringify(expectedPrompt).slice(1, -1))) {
-    return { ok: false, reason: 'request did not ask the planned questions' }
-  }
+  const requestProblem = auditRequestProblem({
+    path: request.path,
+    body: request.body,
+    service: target.service,
+    probes,
+    promptVariantId: batch.promptVariantId,
+    settings,
+  })
+  if (requestProblem) return { ok: false, reason: requestProblem }
 
   const text = extractCompletionText(response.body)
   if (text === null) return { ok: false, reason: 'no completion text' }

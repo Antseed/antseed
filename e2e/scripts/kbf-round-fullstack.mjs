@@ -2,7 +2,8 @@
 // Full-stack rehearsal of one distributed KBF verification round on a Base mainnet fork.
 //
 // Everything that runs in production runs here as separate processes: two `antseed seller start`
-// sellers (one serving the genuine model, one an impostor) bound to real staked mainnet agents,
+// sellers (one serving the genuine model, one an impostor) bound to staked mainnet agents found
+// on the fork at run time,
 // a publisher (`antseed verifier publish`) with its own buyer, and three `antseed verifier start`
 // verifiers with their own buyers paying through real payment channels. The verification contract
 // is deployed with the M003 deploy script. Only the model upstream is local (a deterministic
@@ -20,7 +21,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { AbiCoder, getAddress, keccak256, toUtf8Bytes } from 'ethers';
+import { AbiCoder, getAddress, Interface, keccak256, toUtf8Bytes } from 'ethers';
 import { loadOrCreateIdentity } from '@antseed/node';
 import { DHTNode } from '@antseed/node/discovery';
 import { KbfRoundClient, isZeroHash, kbfEpochDeadlines } from '@antseed/node/payments';
@@ -41,14 +42,16 @@ const KEEP = process.env.KEEP_FULLSTACK_DIR === '1';
 const MODEL = 'glm-5.3';
 const GENUINE_UPSTREAM = 'z-ai/glm-5.3';
 const IMPOSTOR_UPSTREAM = 'impostor/glm-lookalike';
-/** Mainnet agents with pool power this epoch; the fork hands their identity NFTs to the test sellers. */
-const SELLER_AGENTS = [47214, 68881];
+/** Newest stake positions searched for two agents with pool power this epoch. */
+const AGENT_SEARCH_POSITIONS = 500;
 const VERIFICATION_MINTER_ID = keccak256(toUtf8Bytes('antseed.emissions.verification.v1'));
 const USDC_DEPOSIT = 20_000_000n;
 const COLLECT_WINDOW = 30 * 60;
 const BACKUP_WINDOW = 20 * 60;
 const ATTEST_WINDOW = 20 * 60;
 const APPLY_FALLBACK_DELAY = 2 * 60 * 60;
+/** Epoch time the round needs: the three windows plus setup before the schedule is set. */
+const ROUND_HEADROOM = COLLECT_WINDOW + BACKUP_WINDOW + ATTEST_WINDOW + 15 * 60;
 
 const started = Date.now();
 const children = [];
@@ -140,6 +143,54 @@ function startProcess(name, command, args, env = {}) {
   return child;
 }
 
+async function ethCall(to, abi, name, args = []) {
+  const contract = new Interface([abi]);
+  const data = contract.encodeFunctionData(name, args);
+  return contract.decodeFunctionResult(name, await rpc('eth_call', [{ to, data }, 'latest']));
+}
+
+async function startFork(forkBlockNumber) {
+  const port = await freePort();
+  rpcUrl = `http://127.0.0.1:${port}`;
+  anvil = startProcess(`anvil-${forkBlockNumber ?? 'latest'}`, 'anvil', [
+    '--fork-url', FORK_URL, '--chain-id', '8453', '--port', String(port),
+    '--block-time', '1', '--auto-impersonate', '--silent',
+    ...(forkBlockNumber === undefined ? [] : ['--fork-block-number', String(forkBlockNumber)]),
+  ]);
+  await waitFor(`anvil fork at ${forkBlockNumber ?? 'the latest block'} is up`, async () => {
+    try { return Boolean(await rpc('eth_blockNumber')); } catch { return false; }
+  }, 60_000, 500);
+}
+
+/** The current epoch on the fork and how much of it is left. */
+async function epochTiming(gate) {
+  const epoch = BigInt(call(gate, 'currentEpoch()(uint256)'));
+  const duration = Number(call(gate, 'epochDuration()(uint256)'));
+  const epochStart = Number(call(gate, 'genesis()(uint256)')) + Number(epoch) * duration;
+  return { epoch, epochStart, remaining: epochStart + duration - await chainNow() };
+}
+
+/**
+ * Two agents whose stake gives them pool power this epoch (at least 1 bps, so buyers see them as
+ * staked), found from the newest stake positions instead of fixed IDs.
+ */
+async function findStakedAgents(sellerPools, epoch, count) {
+  const [next] = await ethCall(sellerPools, 'function nextPositionId() view returns (uint256)', 'nextPositionId');
+  const [total] = await ethCall(sellerPools, 'function totalPowerWeightAtEpoch(uint256) view returns (uint256)', 'totalPowerWeightAtEpoch', [epoch]);
+  const seen = new Set();
+  const found = [];
+  for (let id = next - 1n; id > 0n && id >= next - BigInt(AGENT_SEARCH_POSITIONS) && found.length < count; id--) {
+    const [, agentId] = await ethCall(sellerPools,
+      'function positions(uint256) view returns (address,uint256,uint256,uint256,uint64,uint64,uint64,bool)', 'positions', [id]);
+    if (agentId === 0n || seen.has(agentId)) continue;
+    seen.add(agentId);
+    const [weight] = await ethCall(sellerPools, 'function poolWeightAtEpoch(uint256,uint256) view returns (uint256)', 'poolWeightAtEpoch', [agentId, epoch]);
+    if (total > 0n && weight * 10_000n / total >= 1n) found.push(Number(agentId));
+  }
+  if (found.length < count) throw new Error(`found ${found.length} agents with pool power in the newest ${AGENT_SEARCH_POSITIONS} stake positions; need ${count}`);
+  return found;
+}
+
 async function stopProcess(child) {
   if (child.exitCode !== null || child.signalCode !== null) return;
   child.kill('SIGTERM');
@@ -157,21 +208,27 @@ async function main() {
   await mkdir(join(out, 'logs'));
   log(`working directory ${out}`);
 
-  // ── Chain: Base mainnet fork at the latest block ─────────────────────────────────────────
-  const anvilPort = await freePort();
-  rpcUrl = `http://127.0.0.1:${anvilPort}`;
-  anvil = startProcess('anvil', 'anvil', [
-    '--fork-url', FORK_URL, '--chain-id', '8453', '--port', String(anvilPort),
-    '--block-time', '1', '--auto-impersonate', '--silent',
-  ]);
-  await waitFor('anvil fork is up', async () => {
-    try { return Boolean(await rpc('eth_blockNumber')); } catch { return false; }
-  }, 60_000, 500);
-
+  // ── Chain: Base mainnet fork with room for the whole round in the current epoch ──────────
+  // Fork at the latest block; if too little of the epoch is left, fork again at an older block
+  // of the same epoch. Chain time then trails wall time, which buyer deadlines allow (they only
+  // reject a chain that is ahead of them).
   const gate = address('emissionsGate');
+  await startFork();
+  let timing = await epochTiming(gate);
+  if (timing.remaining < ROUND_HEADROOM) {
+    const latest = Number(BigInt(await rpc('eth_blockNumber')));
+    const sample = 10_000;
+    const blockTime = (await chainNow() - Number(BigInt((await rpc('eth_getBlockByNumber', [`0x${(latest - sample).toString(16)}`, false])).timestamp))) / sample;
+    const blocksBack = Math.ceil((ROUND_HEADROOM - timing.remaining + 60) / blockTime);
+    const epoch = timing.epoch;
+    log(`only ${Math.round(timing.remaining / 60)} min left in epoch ${epoch}; forking ${blocksBack} blocks earlier`);
+    await stopProcess(anvil);
+    await startFork(latest - blocksBack);
+    timing = await epochTiming(gate);
+    check(timing.epoch === epoch && timing.remaining >= ROUND_HEADROOM, `the older fork has ${Math.round(timing.remaining / 60)} min of epoch ${epoch} left`);
+  }
+  const { epoch, epochStart } = timing;
   const owner = getAddress(call(gate, 'owner()(address)'));
-  const epoch = BigInt(call(gate, 'currentEpoch()(uint256)'));
-  const epochStart = Number(call(gate, 'genesis()(uint256)')) + Number(epoch) * Number(call(gate, 'epochDuration()(uint256)'));
   log(`fork at epoch ${epoch}, ${((await chainNow()) - epochStart) / 3600 | 0}h into it; protocol owner ${owner}`);
 
   // ── Identities and funding ───────────────────────────────────────────────────────────────
@@ -197,7 +254,8 @@ async function main() {
 
   const identityRegistry = address('identityRegistry');
   const sellerPools = address('sellerPools');
-  const sellers = [['seller-genuine', SELLER_AGENTS[0]], ['seller-impostor', SELLER_AGENTS[1]]];
+  const agents = await findStakedAgents(sellerPools, epoch, 2);
+  const sellers = [['seller-genuine', agents[0]], ['seller-impostor', agents[1]]];
   for (const [role, agentId] of sellers) {
     const previousOwner = getAddress(call(identityRegistry, 'ownerOf(uint256)(address)', [String(agentId)]));
     await send(previousOwner, identityRegistry, 'transferFrom(address,address,uint256)', [previousOwner, nodes[role].address, String(agentId)]);
@@ -229,7 +287,7 @@ async function main() {
   const verification = getAddress(run('cast', ['compute-address', '--nonce', String(nonce), owner]).split(/\s/).at(-1));
   check((await rpc('eth_getCode', [verification, 'latest'])).length > 2, `M003 deployed AntseedKbfVerification at ${verification}`);
 
-  // ── Owner setup: rewards, roles, models, a schedule that fits the time left in this epoch ──
+  // ── Owner setup: rewards, roles, models, a schedule inside the epoch headroom checked above ──
   const elapsed = (await chainNow()) - epochStart;
   const schedule = [elapsed + COLLECT_WINDOW, BACKUP_WINDOW, ATTEST_WINDOW, 100, 4];
   await send(owner, gate, 'setMinterController(bytes32,address)', [VERIFICATION_MINTER_ID, verification]);
@@ -422,17 +480,23 @@ async function main() {
     address: channels, fromBlock: `0x${deployBlock.toString(16)}`, toBlock: 'latest',
     topics: [topic, null, null, coder.encode(['address'], [seller])],
   }]);
+  const verifierChannels = {};
   for (const role of ['seller-genuine', 'seller-impostor']) {
     const reserved = await logsFor(reservedTopic, nodes[role].address);
     const fromVerifiers = reserved.filter((entry) => live.some((verifier) => coder.decode(['address'], entry.topics[2])[0] === verifier));
     check(fromVerifiers.length >= 1, `${role} reserved ${fromVerifiers.length} payment channel(s) with the verifiers' buyers`);
+    verifierChannels[role] = new Set(fromVerifiers.map((entry) => entry.topics[1]));
   }
-  const settled = await waitFor('sellers settled spending on-chain', async () => {
-    const all = [];
-    for (const role of ['seller-genuine', 'seller-impostor']) all.push(...await logsFor(settledTopic, nodes[role].address));
-    return all.length > 0 ? all : null;
-  }, 300_000, 10_000);
-  log(`${settled.length} ChannelSettled event(s) from the sellers`);
+  // Every seller must settle spending on a channel a live verifier's buyer reserved.
+  for (const role of ['seller-genuine', 'seller-impostor']) {
+    const settled = await waitFor(`${role} settled verifier spending on-chain`, async () => {
+      const entries = (await logsFor(settledTopic, nodes[role].address)).filter((entry) => verifierChannels[role].has(entry.topics[1])
+        && coder.decode(['uint128', 'uint128', 'uint128', 'uint256', 'bytes'], entry.data)[1] > 0n);
+      return entries.length > 0 ? entries : null;
+    }, 300_000, 10_000);
+    const amount = settled.reduce((total, entry) => total + coder.decode(['uint128', 'uint128', 'uint128', 'uint256', 'bytes'], entry.data)[1], 0n);
+    log(`${role}: ${settled.length} settlement(s) of verifier channels, ${Number(amount) / 1e6} USDC`);
+  }
 
   // ── Rewards: claimed once the epoch is over ──────────────────────────────────────────────
   await warpTo(Number(await client.genesis()) + (Number(epoch) + 1) * (await client.epochDuration()) + 30);

@@ -1,9 +1,12 @@
 import { verifyKbf, type KbfReferenceV1, type VerifyKbfOptions } from '@antseed/fingerprints'
 import { checkExchange } from './transcript.js'
-import { ResultsTree, collectorLeaf, serviceLeaf } from './merkle.js'
+import { parseSliceManifest } from './manifest-check.js'
+import { buildResultsTree } from './merkle.js'
+import { requestSettings } from './plan.js'
 import {
   targetKey,
   type CollectorCreditV1,
+  type EnvelopeSliceV1,
   type EpochBankV1,
   type PlannedSliceV1,
   type RoundPlanV1,
@@ -25,7 +28,13 @@ export interface CommittedManifest {
   collector: string
   backup: boolean
   uri: string
+  /** Parsed JSON as committed; validated by `validManifests` before any use. */
   manifest: SliceManifestV1
+}
+
+interface UsableReference {
+  probesById: Map<string, KbfReferenceV1['probes'][number]>
+  settings: EnvelopeSliceV1['request']
 }
 
 interface UsedSlice {
@@ -46,8 +55,7 @@ export function scoreRound(input: {
   manifests: readonly CommittedManifest[]
 }): RoundResultsV1 {
   const { plan, bank } = input
-  const manifests = input.manifests.filter((entry) => entry.manifest.collector.toLowerCase() === entry.collector.toLowerCase()
-    && entry.manifest.epoch === plan.epoch && entry.manifest.backup === entry.backup)
+  const manifests = validManifests(input.manifests, plan.epoch)
   const targets = new Map(plan.targets.map((target) => [targetKey(target), target]))
   const slicesByTarget = new Map<string, PlannedSliceV1[]>()
   for (const slice of plan.slices) {
@@ -61,9 +69,10 @@ export function scoreRound(input: {
   for (const [key, target] of targets) {
     const reference = bank.models[target.model]
     if (!reference) throw new Error(`bank has no reference for ${target.model}`)
-    const probesById = new Map(reference.probes.map((probe) => [probe.id, probe]))
+    const usable = usableReference(reference)
+    const { probesById } = usable
     const planned = slicesByTarget.get(key) ?? []
-    const used: Array<UsedSlice | null> = planned.map((slice) => pickSlice(slice, manifests, target, probesById))
+    const used: Array<UsedSlice | null> = planned.map((slice) => pickSlice(slice, manifests, target, usable))
     const missing = used.filter((slice) => slice === null).length
     const probeIds = plan.targetProbes[key] ?? []
     const sources = planned.flatMap((slice, index) => {
@@ -102,16 +111,31 @@ export function scoreRound(input: {
     .map(([collector, slices]) => ({ collector, slices }))
     .sort((left, right) => (left.collector < right.collector ? -1 : 1))
   const totalSlices = creditList.reduce((sum, entry) => sum + entry.slices, 0)
-  const leaves = [
-    ...results.map((result) => serviceLeaf(input.epoch, {
-      agentId: BigInt(result.target.agentId), serviceHash: result.target.serviceHash,
-      modelHash: result.target.modelHash, verdict: result.verdict,
-    })),
-    ...creditList.map((entry) => collectorLeaf(input.epoch, entry.collector, entry.slices, totalSlices)),
-  ]
   return {
     kind: 'antseed-kbf-results', version: 1, epoch: plan.epoch, seed: plan.seed,
-    results, credits: creditList, totalSlices, root: new ResultsTree(leaves).root,
+    results, credits: creditList, totalSlices,
+    root: buildResultsTree(input.epoch, { results, credits: creditList, totalSlices }).root,
+  }
+}
+
+/**
+ * Manifests that parse as slice manifests of this epoch and were committed by the collector
+ * they name, in the phase they claim. Malformed parts are dropped, never thrown on, so one
+ * collector's bad commit cannot stop the epoch from being scored.
+ */
+export function validManifests(manifests: readonly CommittedManifest[], epoch: string): CommittedManifest[] {
+  return manifests.flatMap((entry) => {
+    const manifest = parseSliceManifest(entry.manifest)
+    if (!manifest || manifest.epoch !== epoch || manifest.backup !== entry.backup) return []
+    if (manifest.collector.toLowerCase() !== entry.collector.toLowerCase()) return []
+    return [{ ...entry, manifest }]
+  })
+}
+
+function usableReference(reference: KbfReferenceV1): UsableReference {
+  return {
+    probesById: new Map(reference.probes.map((probe) => [probe.id, probe])),
+    settings: requestSettings(reference),
   }
 }
 
@@ -124,8 +148,8 @@ export function deliveredSlice(
 ): boolean {
   const reference = bank.models[target.model]
   if (!reference) return false
-  const primary = manifests.filter((entry) => !entry.backup)
-  return pickSlice(slice, primary, target, new Map(reference.probes.map((probe) => [probe.id, probe]))) !== null
+  const primary = validManifests(manifests.filter((entry) => !entry.backup), bank.epoch)
+  return pickSlice(slice, primary, target, usableReference(reference)) !== null
 }
 
 /**
@@ -137,7 +161,7 @@ function pickSlice(
   slice: PlannedSliceV1,
   manifests: readonly CommittedManifest[],
   target: TargetResultV1['target'],
-  probesById: Map<string, KbfReferenceV1['probes'][number]>,
+  reference: UsableReference,
 ): UsedSlice | null {
   const candidates = [
     ...manifests.filter((entry) => !entry.backup && entry.collector.toLowerCase() === slice.owner),
@@ -151,7 +175,9 @@ function pickSlice(
     for (const batch of slice.batches) {
       const exchanges = delivered.exchanges.filter((exchange) => exchange.batchIndex === batch.batchIndex)
       if (exchanges.length !== 1) { valid = false; break }
-      const check = checkExchange(exchanges[0]!, target, batch, batch.probeIds.map((id) => probesById.get(id)!))
+      const probes = batch.probeIds.map((id) => reference.probesById.get(id))
+      if (probes.some((probe) => probe === undefined)) { valid = false; break }
+      const check = checkExchange(exchanges[0]!, target, batch, probes as KbfReferenceV1['probes'], reference.settings)
       if (!check.ok) { valid = false; break }
       answers.set(batch.batchIndex, check.answers)
     }

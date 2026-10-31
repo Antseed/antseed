@@ -19,6 +19,7 @@ antseed-verifier verifier start
 ```
 
 - It starts its own buyer, publishes its encryption key on-chain, and then follows every epoch on its own: it buys its share of the questions, scores the epoch, attests the results, and claims its rewards.
+- If the publisher goes missing, it covers for it: it posts its share of the escrowed bank key so the key can still be revealed, and, when no plan was published in time, it can take the epoch over and publish one itself (see [If the publisher goes missing](/docs/verify/audits#if-the-publisher-goes-missing)).
 - It keeps its progress on disk, so you can stop and restart it at any time.
 - `--no-collect` runs a verifier that only scores and attests, without buying from sellers.
 
@@ -30,9 +31,9 @@ How a round works is in [How verification rounds run](/docs/verify/audits).
 - **USDC for buyer deposits.** You pay each seller you buy questions from like a normal buyer. See [Funding](/docs/gateway/funding).
 - **A little ETH on Base** for the round transactions.
 - **A Pinata API key** (`PINATA_JWT`), to publish the seller responses you collect and your results on IPFS.
-- **A Base RPC endpoint.**
+- **A Base RPC endpoint** that serves state at recent past blocks: verifiers check each seller's agent binding at the block the epoch's seed was fixed from. A pruned node that only keeps the latest state makes the verifier retry.
 
-You don't need an API key for the reference models: the question bank and its genuine answers come from the round.
+You don't need an API key for the reference models: the question bank and its genuine answers come from the round. The one exception is taking over an epoch whose publisher went missing: that builds a bank, which needs a [reference upstream](/docs/verify/audits#reference-upstreams). Without one the verifier still collects, scores and attests; it just can't be the one that takes over.
 
 ## 1. Set up
 
@@ -58,7 +59,7 @@ Then open `$ANTSEED_VERIFIER_DIR/config.json` and add the chain:
 }
 ```
 
-- The CLI already knows the verification contract on Base and the block it was deployed in, so leave `verificationContractAddress` and `verificationDeployBlock` out. Set both only to point at a custom deployment, and then set `verificationDeployBlock` to the block that contract was deployed in: the CLI scans its events from there.
+- Once the round contract is deployed on Base, the CLI knows its address and the block it was deployed in, so leave `verificationContractAddress` and `verificationDeployBlock` out. Until then, `verifier start` stops with "No verification contract address configured". Set both only to point at a custom deployment, and then set `verificationDeployBlock` to the block that contract was deployed in: the CLI scans its events from there.
 - Leave `buyer.maxPricing` at the `config init` default. If the buyer port 8377 is taken by another Antseed app, set `buyer.proxyPort`.
 
 Set the environment the verifier needs:

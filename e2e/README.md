@@ -45,19 +45,23 @@ On success, the script prints a JSON summary with deployed contract addresses, p
 Run one whole distributed KBF verification round with the real processes, on a fork of Base
 mainnet (about 2–3 minutes):
 
-1. Fork Base at the latest block with Anvil and deploy `AntseedKbfVerification` with the M003
-   deploy script (`Deploy.s.sol`), as the protocol owner
+1. Fork Base with Anvil and deploy `AntseedKbfVerification` with the KBF deploy script
+   (`M003VerificationRegistry/Deploy.s.sol`), as the protocol owner. The fork is at the latest
+   block, or at an older block of the same epoch when less than about 85 minutes of it is left,
+   so the whole round fits in the epoch
 2. Do the owner's post-deploy steps: hand the verification emissions bucket to the contract,
    set the publisher, three verifiers, the audited model (`glm-5.3`), the rewards start epoch,
-   and a schedule that fits the time left in the current epoch
-3. Give two staked mainnet agents to two `antseed seller start` sellers: one serves the genuine
-   model, the other an impostor (both through a local OpenAI-compatible stub)
+   and the round schedule
+3. Find two agents with pool power this epoch from the newest stake positions and give them to
+   two `antseed seller start` sellers: one serves the genuine model, the other an impostor (both
+   through a local OpenAI-compatible stub)
 4. Run `antseed verifier publish` (with its own buyer) and three `antseed verifier start`
    verifiers, each with a funded buyer deposit; stop the third verifier before the plan
 5. Move chain time through collection, backup, reveal and attestation, then check: the backup
    plan covers the stopped verifier's slices, both live verifiers attest the same root, the
-   epoch finalizes, the genuine seller is SAME and the impostor DIFF on-chain, the sellers
-   reserved and settled payment channels, and the live verifiers claim ANTS rewards
+   epoch finalizes, the genuine seller is SAME and the impostor DIFF on-chain, each seller
+   reserved payment channels with the live verifiers' buyers and settled spending on them, and
+   the live verifiers claim ANTS rewards
 
 ```bash
 BASE_MAINNET_RPC_URL=<archive-capable Base RPC> pnpm --filter @antseed/e2e run flow:kbf-round

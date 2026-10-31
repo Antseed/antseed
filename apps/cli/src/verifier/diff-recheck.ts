@@ -168,10 +168,11 @@ export type ModelAuditVerdict = 'SAME' | 'DIFF' | 'UNDETERMINED'
 
 /**
  * A seller's final verdict from a local run: a DIFF counts only when a recheck on fresh probes is
- * DIFF too, otherwise it is UNDETERMINED. Null for a DIFF that was never rechecked.
+ * DIFF too, otherwise it is UNDETERMINED. Null for a DIFF that was never rechecked, unless the run
+ * had confirmation off (`verifier.diffConfirmationRuns` 0), where the first DIFF is final.
  */
 export function finalAuditVerdict(result: ModelAuditSummaryV1['results'][number]): ModelAuditVerdict | null {
   if (result.recheck) return confirmedDiffStatus(result.recheck.status)
-  if (result.status === 'DIFF') return null
+  if (result.status === 'DIFF') return result.diffConfirmation === 'off' ? 'DIFF' : null
   return result.status as ModelAuditVerdict
 }

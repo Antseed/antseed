@@ -401,7 +401,10 @@ const VERIFIER_LOG_QUERY_CHUNK_BLOCKS = 1_000
 export function createKbfRoundClient(config: AntseedConfig, overrides?: CryptoConfigOverrides): KbfRoundClient {
   const crypto = requireCryptoConfig(config, overrides);
   if (!crypto.verificationContractAddress) {
-    throw new Error('No verification contract address configured. Set payments.crypto.verificationContractAddress in your config file.');
+    throw new Error(
+      `No verification contract address configured: the round contract is not deployed on ${crypto.chainId ?? 'this chain'} yet. `
+      + 'Set payments.crypto.verificationContractAddress (and verificationDeployBlock) in your config file to use a custom deployment.',
+    );
   }
   return new KbfRoundClient({
     rpcUrl: crypto.rpcUrl,
