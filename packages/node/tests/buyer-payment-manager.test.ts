@@ -2026,6 +2026,48 @@ describe('BuyerPaymentManager', () => {
     expect(manager.hasPendingReserveAuth(sellerPeerId)).toBe(true);
   });
 
+  it('runs overlapping top-ups one at a time, so a slow deposit read never moves the ceiling backward', async () => {
+    store.close();
+    store = new ChannelStore(tempDir);
+    manager = new BuyerPaymentManager(identity, makeConfig(tempDir, { maxReserveAmountUsdc: 1_000_000n }), store);
+    manager.setSigner(Wallet.createRandom());
+    mux = createMockPaymentMux();
+    const sellerPeerId = fakePeerId('seller-overlap-topup');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    manager.handleAuthAck(sellerPeerId, { channelId });
+    vi.spyOn(manager, 'getBalance').mockResolvedValue({ available: 50_000_000n, reserved: 0n });
+    const internals = manager as unknown as {
+      _metadata: Map<string, { cumulativeRequestCount: bigint }>;
+      _verifiedCost: Map<string, bigint>;
+    };
+    internals._metadata.set(sellerPeerId, { ...internals._metadata.get(sellerPeerId)!, cumulativeRequestCount: 10n });
+    internals._verifiedCost.set(sellerPeerId, 700_000n);
+    for (let i = 0; i < 200; i += 1) manager.beginPaidRequest(sellerPeerId);
+    await manager.topUpReserve(sellerPeerId, mux); // $11, pending on-chain
+
+    // It lands; the next two top-ups both start before the first deposit read answers.
+    let releaseFirstRead!: () => void;
+    let reads = 0;
+    manager.setChannelDepositReader(() => {
+      reads += 1;
+      if (reads === 1) return new Promise((resolve) => { releaseFirstRead = () => resolve(11_000_000n); });
+      return Promise.resolve(11_000_000n);
+    });
+    mux.sentSpendingAuths.length = 0;
+    const first = manager.topUpReserve(sellerPeerId, mux);
+    const second = manager.topUpReserve(sellerPeerId, mux);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    // The load drains while the slow read is outstanding.
+    for (let i = 0; i < 200; i += 1) manager.endPaidRequest(sellerPeerId);
+    releaseFirstRead();
+    await Promise.all([first, second]);
+
+    const ceilings = mux.sentSpendingAuths.map((auth) => BigInt((auth as Record<string, unknown>).reserveMaxAmount as string));
+    expect(ceilings.length).toBe(2);
+    expect(ceilings[1]! > ceilings[0]!).toBe(true);
+    expect(manager.getReserveCeiling(sellerPeerId)).toBe(ceilings[1]);
+  });
+
   it('resendReserveAuth replays the original reserve amount after top-up', async () => {
     store.close();
     store = new ChannelStore(tempDir);

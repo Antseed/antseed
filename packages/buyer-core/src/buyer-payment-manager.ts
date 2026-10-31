@@ -260,6 +260,8 @@ export class BuyerPaymentManager {
   private readonly _verifiedCost = new Map<string, bigint>();
   /** sellerPeerId -> paid requests dispatched and not yet answered */
   private readonly _inFlightPaidRequests = new Map<string, number>();
+  /** Per seller: the tail of the queue of reserve top-ups (see topUpReserve). */
+  private readonly _topUpLocks = new Map<string, Promise<void>>();
   /** Reads a channel's locked deposit on-chain (set by the negotiator when it has a channels client). */
   private _readChannelDeposit: ((channelId: string) => Promise<bigint>) | null = null;
   /**
@@ -1429,15 +1431,21 @@ export class BuyerPaymentManager {
    * How much of the current ceiling is a top-up not yet locked on-chain. A
    * landed top-up the buyer has not heard about is reconciled first, so it is
    * not counted against the available balance twice. Without a chain read,
-   * the whole pending increase counts.
+   * the whole pending increase counts. Null when the channel was replaced
+   * during the read.
    */
-  private async _outstandingTopUp(sellerPeerId: string, channelId: string, ceiling: bigint): Promise<bigint> {
+  private async _outstandingTopUp(sellerPeerId: string, channelId: string, ceiling: bigint): Promise<bigint | null> {
     const pending = this._pendingReserveAuth.get(sellerPeerId);
     if (!pending || pending.confirmedAmount <= 0n || ceiling <= pending.confirmedAmount) return 0n;
     let locked = pending.confirmedAmount;
     if (this._readChannelDeposit) {
       try {
         const deposit = await this._readChannelDeposit(channelId);
+        // Only act on the read if nothing replaced the channel or the authorization meanwhile.
+        if (this.getActiveSession(sellerPeerId)?.sessionId !== channelId) return null;
+        if (this._pendingReserveAuth.get(sellerPeerId) !== pending) {
+          return this._outstandingTopUp(sellerPeerId, channelId, this._getCeiling(sellerPeerId));
+        }
         if (deposit >= pending.maxAmount) {
           await this.reconcileReserveAmount(sellerPeerId, deposit);
           return 0n;
@@ -2081,7 +2089,27 @@ export class BuyerPaymentManager {
    * The seller must call reserve() on-chain again with the new signature.
    * Note: requires contract support for top-up (increaseDeposit on existing channelId).
    */
-  async topUpReserve(
+  /**
+   * Top-ups for one seller run one at a time: each reads the chain and the
+   * pending authorization before signing, and a parallel one would budget or
+   * reconcile against state the other is about to replace. Kept apart from the
+   * signing lock so authorizations never wait on these chain reads.
+   */
+  topUpReserve(
+    sellerPeerId: string,
+    paymentMux: PaymentMux,
+  ): Promise<void> {
+    const previous = this._topUpLocks.get(sellerPeerId) ?? Promise.resolve();
+    const next = previous.then(() => this._topUpReserve(sellerPeerId, paymentMux));
+    const tail = next.catch(() => undefined);
+    this._topUpLocks.set(sellerPeerId, tail);
+    void tail.then(() => {
+      if (this._topUpLocks.get(sellerPeerId) === tail) this._topUpLocks.delete(sellerPeerId);
+    });
+    return next;
+  }
+
+  private async _topUpReserve(
     sellerPeerId: string,
     paymentMux: PaymentMux,
   ): Promise<void> {
@@ -2096,6 +2124,10 @@ export class BuyerPaymentManager {
     // authorize more than the buyer holds. One that already landed is out of
     // the available balance already, so read the deposit before counting it.
     const outstanding = await this._outstandingTopUp(sellerPeerId, session.sessionId, this._getCeiling(sellerPeerId));
+    if (outstanding === null) {
+      debugWarn(`[BuyerPayment] topUpReserve: channel for ${sellerPeerId.slice(0, 12)}... was replaced; skipping the top-up`);
+      return;
+    }
     const prevCeiling = this._getCeiling(sellerPeerId);
     // Under parallel load one configured step can be smaller than the work in
     // flight, which then runs past the locked reserve before the next top-up
