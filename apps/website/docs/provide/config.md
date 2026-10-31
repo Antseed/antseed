@@ -371,6 +371,8 @@ Image and video services are never probed, because a probe would generate a paid
 }
 ```
 
+The seller also announces, in its signed metadata, how each service served buyers in the last hour: the number of requests, the share the upstream answered without a server-side error, rate limit or timeout, and for streamed answers the median and 90th percentile time to the first token and the median output speed. It measures these on its own buyer traffic, so there is nothing to configure. Buyers start from these figures for a seller they have not used yet, so a model that keeps failing gets less traffic before each buyer finds out for itself. See [discovery](/docs/discovery).
+
 ### Ant agent
 
 An ant agent wraps your service with a persona, guardrails, on-demand knowledge and custom tools. Point `agentDir` at a directory containing an `agent.json` manifest, or map service IDs to directories, with `"*"` as the fallback:

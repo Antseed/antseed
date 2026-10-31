@@ -10,7 +10,7 @@ import {
   topicToInfoHash,
 } from "./dht-node.js";
 import type { PeerOffering } from "../types/capability.js";
-import type { DomainVerificationClaim, DomainVerificationMethod, GithubVerificationClaim, PeerMetadata, PeerVerifications, ProviderAnnouncement, ServiceCapabilities, ServiceHealth } from "./peer-metadata.js";
+import type { DomainVerificationClaim, DomainVerificationMethod, GithubVerificationClaim, PeerMetadata, PeerVerifications, ProviderAnnouncement, ServiceCapabilities, ServiceHealth, ServicePerformance } from "./peer-metadata.js";
 import { METADATA_VERSION } from "./peer-metadata.js";
 import {
   MAX_DOMAIN_LENGTH,
@@ -62,6 +62,8 @@ export interface AnnouncerConfig {
     serviceCapabilities?: Record<string, ServiceCapabilities>;
     /** Current self health check results per service, read on every refresh. */
     serviceHealth?: () => Record<string, ServiceHealth> | undefined;
+    /** Read on every refresh: how each service served buyers lately. */
+    servicePerformance?: () => Record<string, ServicePerformance> | undefined;
     maxConcurrency: number;
     /** Runtime availability predicate. Unavailable providers are omitted. */
     isAvailable?: () => boolean;
@@ -332,6 +334,10 @@ export class PeerAnnouncer {
         if (normalizedServiceHealth) {
           providerAnnouncement.serviceHealth = normalizedServiceHealth;
         }
+        const normalizedServicePerformance = this._normalizeServicePerformance(p.servicePerformance?.(), p.services);
+        if (normalizedServicePerformance) {
+          providerAnnouncement.servicePerformance = normalizedServicePerformance;
+        }
         return providerAnnouncement;
       });
 
@@ -501,6 +507,21 @@ export class PeerAnnouncer {
     for (const [service, health] of Object.entries(serviceHealth)) {
       if (!hasWildcardServices && !supportedServiceSet.has(service)) continue;
       normalized[service] = { ...health };
+    }
+    return Object.keys(normalized).length > 0 ? normalized : undefined;
+  }
+
+  private _normalizeServicePerformance(
+    servicePerformance: Record<string, ServicePerformance> | undefined,
+    supportedServices: string[],
+  ): Record<string, ServicePerformance> | undefined {
+    if (!servicePerformance) return undefined;
+    const hasWildcardServices = supportedServices.length === 0;
+    const supportedServiceSet = new Set(supportedServices);
+    const normalized: Record<string, ServicePerformance> = serviceMap();
+    for (const [service, performance] of Object.entries(servicePerformance)) {
+      if (!hasWildcardServices && !supportedServiceSet.has(service)) continue;
+      normalized[service] = { ...performance };
     }
     return Object.keys(normalized).length > 0 ? normalized : undefined;
   }

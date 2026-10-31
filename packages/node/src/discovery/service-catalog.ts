@@ -1,8 +1,8 @@
 import { CODING_ONLY_SUFFIX_RE, canonicalModelKey } from '../model-identity.js';
 import { parseVerifierCapabilities } from './verifier-capabilities.js';
 import { NATIVE_VIDEO_PROTOCOLS, isNativeVideoProtocol, isRoutingProtocol, type NativeVideoProtocol } from '@antseed/protocol/service-api';
-import { isServiceHealthFailing, providerServiceHealthFor, type ServiceHealth, type VideoOptions } from '@antseed/protocol/peer-metadata';
-import type { ProviderServiceHealthMatrixEntry } from '@antseed/protocol/peer-pricing';
+import { isServiceHealthFailing, providerServiceHealthFor, providerServicePerformanceFor, type ServiceHealth, type ServicePerformance, type VideoOptions } from '@antseed/protocol/peer-metadata';
+import type { ProviderServiceHealthMatrixEntry, ProviderServicePerformanceMatrixEntry } from '@antseed/protocol/peer-pricing';
 
 export type CatalogServiceProtocol =
   | 'anthropic-messages'
@@ -58,6 +58,7 @@ export type NetworkServiceCatalogPeer = {
   }>;
   providerServiceCategories?: Record<string, { services: Record<string, string[]> }>;
   providerServiceHealth?: Record<string, ProviderServiceHealthMatrixEntry>;
+  providerServicePerformance?: Record<string, ProviderServicePerformanceMatrixEntry>;
   defaultInputUsdPerMillion?: number;
   defaultOutputUsdPerMillion?: number;
   defaultCachedInputUsdPerMillion?: number;
@@ -86,6 +87,8 @@ export type NetworkServiceOffer = {
   maxImageUsdPerImage?: number;
   /** The seller's self health check result for this service, when announced. */
   health?: ServiceHealth;
+  /** How the service served the seller's buyers in the last hour, when announced. */
+  performance?: ServicePerformance;
 };
 
 export type BuildNetworkServiceOffersOptions = {
@@ -195,6 +198,7 @@ export function buildNetworkServiceOffers(
       for (const serviceId of serviceIds) {
         const health = providerServiceHealthFor(peer.providerServiceHealth, provider, serviceId);
         if (isServiceHealthFailing(health) && !options.includeFailing) continue;
+        const performance = providerServicePerformanceFor(peer.providerServicePerformance, provider, serviceId);
         const protocols = peer.providerServiceApiProtocols?.[provider]?.services?.[serviceId] ?? [];
         const billingModels = peer.providerServiceUnitBillingModels?.[provider]?.services?.[serviceId];
         if (protocols.some(isRoutingProtocol) || Object.values(billingModels ?? {}).some(model => (model?.components ?? []).some(component => component.unit === 'completed_requests'))) continue;
@@ -227,6 +231,7 @@ export function buildNetworkServiceOffers(
           ...(type === 'video' ? { unitBillingModels: peer.providerServiceUnitBillingModels?.[provider]?.services[serviceId] } : {}),
           ...resolveImagePriceRange(peer, provider, serviceId),
           ...(health ? { health } : {}),
+          ...(performance ? { performance } : {}),
         });
       }
     }

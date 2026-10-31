@@ -1,5 +1,5 @@
-import type { ServiceHealthView } from '../api/types'
-import { formatDateTime, formatRelative } from './format'
+import type { ServiceHealthView, ServicePerformanceView } from '../api/types'
+import { formatDateTime, formatLatency, formatRelative, formatSpeed } from './format'
 
 /** The fixed failure codes a seller announces, in plain words. */
 const REASON_LABELS: Record<string, string> = {
@@ -32,4 +32,15 @@ export function serviceHealthSummary(health: ServiceHealthView, now = Date.now()
   if (health.checkedAt) facts.push(`last ${formatRelative(health.checkedAt, now)}`)
   const since = health.failingSince ? ` since ${formatDateTime(health.failingSince)}` : ''
   return `Self check failing${since}${facts.length ? `: ${facts.join(', ')}` : ''}`
+}
+
+/** How a seller says a model served all its buyers in the last hour, in one line. */
+export function servicePerformanceSummary(performance: ServicePerformanceView): string {
+  const parts = [`Last hour: ${performance.requests} request${performance.requests === 1 ? '' : 's'}, ${Math.round(performance.successRate * 100)}% ok`]
+  if (performance.firstTokenMsP50 !== null) {
+    const p90 = performance.firstTokenMsP90 !== null && performance.firstTokenMsP90 > performance.firstTokenMsP50 ? ` (p90 ${formatLatency(performance.firstTokenMsP90)})` : ''
+    parts.push(`${formatLatency(performance.firstTokenMsP50)} first token${p90}`)
+  }
+  if (performance.tokensPerSecondP50 !== null) parts.push(formatSpeed(performance.tokensPerSecondP50))
+  return parts.join(' · ')
 }
