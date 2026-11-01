@@ -47,11 +47,11 @@ export const KBF_ROUND_ABI = [
   'function claimRewards(uint256 epoch, uint32 slices, uint32 totalSlices, bytes32[] proof) returns (uint256)',
   'function pendingReward(address verifier, uint256 epoch, uint32 slices, uint32 totalSlices, bytes32[] proof) view returns (uint256)',
   'event BankCommitted(uint256 indexed epoch, bytes32 bankHash, bytes32 bankKeyHash, string bankUri)',
-  'event PlanCommitted(uint256 indexed epoch, bytes32 planHash, string planUri)',
+  'event PlanCommitted(uint256 indexed epoch, address indexed publisher, bytes32 planHash, string planUri)',
   'event SlicesCommitted(uint256 indexed epoch, address indexed verifier, bool backup, bytes32 slicesRoot, string manifestUri)',
   'event Attested(uint256 indexed epoch, address indexed verifier, bytes32 resultsRoot, string evidenceUri)',
   'event EpochTakenOver(uint256 indexed epoch, address indexed verifier)',
-  'event KeySharesCommitted(uint256 indexed epoch, bytes32 sharesHash, string sharesUri)',
+  'event KeySharesCommitted(uint256 indexed epoch, address indexed publisher, bytes32 sharesHash, string sharesUri)',
   'event KeyShareRevealed(uint256 indexed epoch, address indexed verifier, bytes share)',
 ] as const;
 
@@ -447,9 +447,9 @@ export class KbfRoundClient extends BaseEvmClient {
     }));
   }
 
-  /** Plans proposed for the epoch. `publisher` (the epoch publisher, as `sender`) saves a read when the caller has it. */
-  async planCommits(epoch: bigint, fromBlock?: number, publisher?: string): Promise<CommitmentEvent[]> {
-    return this._publisherCommits('PlanCommitted', epoch, fromBlock, publisher);
+  /** Plans proposed for the epoch, each with the epoch publisher that proposed it as `sender`. */
+  async planCommits(epoch: bigint, fromBlock?: number): Promise<CommitmentEvent[]> {
+    return this._publisherCommits('PlanCommitted', epoch, fromBlock);
   }
 
   async sliceCommits(epoch: bigint, fromBlock?: number): Promise<CommitmentEvent[]> {
@@ -482,27 +482,25 @@ export class KbfRoundClient extends BaseEvmClient {
     }));
   }
 
-  /** Key-share files committed for the epoch; the latest one is current. */
-  async keySharesCommits(epoch: bigint, fromBlock?: number, publisher?: string): Promise<CommitmentEvent[]> {
-    return this._publisherCommits('KeySharesCommitted', epoch, fromBlock, publisher);
+  /** Key-share files committed for the epoch (the latest one is current), each with its publisher as `sender`. */
+  async keySharesCommits(epoch: bigint, fromBlock?: number): Promise<CommitmentEvent[]> {
+    return this._publisherCommits('KeySharesCommitted', epoch, fromBlock);
   }
 
-  /** Events the epoch publisher emits as `(epoch, hash, uri)`: its sender is the epoch publisher. */
+  /** Events `(epoch, publisher, hash, uri)` of an epoch publisher; a takeover does not change older ones' sender. */
   private async _publisherCommits(
     eventName: 'PlanCommitted' | 'KeySharesCommitted',
     epoch: bigint,
     fromBlock?: number,
-    publisher?: string,
   ): Promise<CommitmentEvent[]> {
     const contract = this._contract();
-    const sender = publisher ?? (await this.epochInfo(epoch)).publisher;
     const logs = await this._queryEvents(contract, contract.filters[eventName]!(epoch), fromBlock);
     return logs.filter((log): log is EventLog => log instanceof EventLog).map((log) => ({
       epoch: BigInt(log.args[0]),
-      hash: String(log.args[1]),
-      uri: String(log.args[2]),
+      sender: getAddress(String(log.args[1])),
+      hash: String(log.args[2]),
+      uri: String(log.args[3]),
       backup: false,
-      sender,
       blockNumber: log.blockNumber,
       logIndex: log.index,
       txHash: log.transactionHash,

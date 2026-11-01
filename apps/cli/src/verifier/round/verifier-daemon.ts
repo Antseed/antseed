@@ -22,7 +22,7 @@ import { loadPlanFile, openCommittedBank, UnusableBankError } from './round-file
 import { contentHash, openEnvelope } from './sealing.js'
 import { seededRanking } from './seeded.js'
 import { boundTargets, type SellerBindingReader } from './seller-binding.js'
-import { loadCommittedManifests, manifestBudget } from './manifest-loader.js'
+import { loadCommittedManifests, manifestBudgets } from './manifest-loader.js'
 import { ROUND_FILE_MAX_BYTES, type RoundStorage } from './storage.js'
 import type {
   EnvelopeSliceV1,
@@ -398,24 +398,14 @@ export function phaseFetchSignal(now: number, deadline: number, phaseSeconds: nu
  * the plan file's public targets: the same for every verifier.
  */
 function roundManifestBudget(info: KbfEpochInfo, members: readonly string[], targets: readonly RoundTargetV1[]) {
-  const budgets = new Map<string, ReturnType<typeof manifestBudget>>()
-  return (commit: CommitmentEvent) => {
-    const key = `${commit.sender.toLowerCase()}|${commit.backup}`
-    let budget = budgets.get(key)
-    if (!budget) {
-      budget = manifestBudget({
-        verifiers: members,
-        seed: info.seed,
-        targets,
-        probesPerService: info.schedule.probesPerService,
-        slicesPerService: info.schedule.slicesPerService,
-        collector: commit.sender,
-        backup: commit.backup,
-      })
-      budgets.set(key, budget)
-    }
-    return budget
-  }
+  const budgetOf = manifestBudgets({
+    verifiers: members,
+    seed: info.seed,
+    targets,
+    probesPerService: info.schedule.probesPerService,
+    slicesPerService: info.schedule.slicesPerService,
+  })
+  return (commit: CommitmentEvent) => budgetOf(commit.sender, commit.backup)
 }
 
 function isAuditedTarget(target: RoundTargetV1, allowed: Set<string>, bank: EpochBankV1): boolean {

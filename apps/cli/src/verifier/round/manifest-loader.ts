@@ -39,29 +39,42 @@ export interface ManifestBudget {
   maxTokens: number
 }
 
-/**
- * The budget for one collector's primary or backup manifest, derived only from public round data
- * (the verifier snapshot, the seed, the plan file's targets and the schedule), so every verifier
- * computes the same one: its assigned slices, each with at most `ceil(probes / slices)` batches.
- */
-export function manifestBudget(input: {
+/** Public round data every manifest budget is derived from. */
+export interface ManifestBudgetInput {
   verifiers: readonly string[]
   seed: string
   targets: readonly RoundTargetV1[]
   probesPerService: number
   slicesPerService: number
-  collector: string
-  backup: boolean
-}): ManifestBudget {
-  const collector = input.collector.toLowerCase()
-  let slices = 0
+}
+
+/**
+ * Every collector's primary and backup manifest budgets, derived only from public round data (the
+ * verifier snapshot, the seed, the plan file's targets and the schedule), so every verifier
+ * computes the same ones: a collector's assigned slices, each with at most `ceil(probes / slices)`
+ * batches. The seeded assignments are derived once for all collectors.
+ */
+export function manifestBudgets(input: ManifestBudgetInput): (collector: string, backup: boolean) => ManifestBudget {
+  const counts = new Map<string, number>()
+  const keyFor = (collector: string, backup: boolean) => `${collector.toLowerCase()}|${backup}`
+  const increment = (collector: string, backup: boolean) => counts.set(keyFor(collector, backup), (counts.get(keyFor(collector, backup)) ?? 0) + 1)
   for (const target of input.targets) {
     for (let sliceIndex = 0; sliceIndex < input.slicesPerService; sliceIndex += 1) {
       const { owner, backup } = sliceCollectors(input.verifiers, input.seed, target, sliceIndex)
-      if (input.backup ? backup === collector && backup !== owner : owner === collector) slices += 1
+      increment(owner, false)
+      if (backup !== owner) increment(backup, true)
     }
   }
-  const exchanges = slices * Math.ceil(input.probesPerService / Math.max(1, input.slicesPerService))
+  return (collector, backup) => manifestBudgetForSlices(counts.get(keyFor(collector, backup)) ?? 0, input.probesPerService, input.slicesPerService)
+}
+
+/** The budget for one collector's primary or backup manifest (see `manifestBudgets`). */
+export function manifestBudget(input: ManifestBudgetInput & { collector: string; backup: boolean }): ManifestBudget {
+  return manifestBudgets(input)(input.collector, input.backup)
+}
+
+function manifestBudgetForSlices(slices: number, probesPerService: number, slicesPerService: number): ManifestBudget {
+  const exchanges = slices * Math.ceil(probesPerService / Math.max(1, slicesPerService))
   return {
     maxBytes: Math.min(ROUND_FILE_MAX_BYTES.slices, MANIFEST_BASE_BYTES + exchanges * MANIFEST_EXCHANGE_MAX_BYTES),
     maxTokens: MANIFEST_BASE_TOKENS + slices * SLICE_MAX_TOKENS + exchanges * EXCHANGE_MAX_TOKENS,

@@ -15,7 +15,7 @@ import {
   type KeySharesFileV2,
 } from './key-shares.js'
 import { publisherTick, type PublisherDaemonContext } from './publisher-daemon.js'
-import { bankKeyHash, generateEncryptionKeyPair, isUsableEncryptionKey, openEnvelope } from './sealing.js'
+import { bankKeyHash, generateEncryptionKeyPair, isUsableEncryptionKey, openEnvelope, sealEnvelope } from './sealing.js'
 import { DirectoryRoundStorage } from './storage.js'
 import type { EnvelopeContentV1, EpochBankV1, PlanFileV1, RoundTargetV1 } from './types.js'
 
@@ -468,7 +468,20 @@ test('verifiers do not accept a plan they cannot fetch, a plan missing their env
   await s.accept()
   assert.equal(await s.fake.planAcceptances(EPOCH), 1)
   assert.equal(s.fake.info(EPOCH).planActive, false)
-  assert.ok(s.logs.some((line) => line.includes('no envelope, although the seed gives this verifier')))
+  assert.ok(s.logs.some((line) => line.includes('which the seed gives this verifier')))
+
+  // Envelopes that are there, correctly sealed and well formed, but hold no slices at all.
+  const emptyEnvelopes = (backup: boolean) => Object.fromEntries(s.verifiers.map((entry) => [
+    entry.wallet.address.toLowerCase(),
+    sealEnvelope(entry.keys.publicKey, Buffer.from(JSON.stringify({
+      kind: 'antseed-kbf-envelope', version: 1, epoch: EPOCH.toString(), collector: entry.wallet.address.toLowerCase(), backup, slices: [],
+    }))),
+  ]))
+  const hollow = Buffer.from(JSON.stringify({ ...plan, envelopes: emptyEnvelopes(false), backupEnvelopes: emptyEnvelopes(true) }))
+  await s.fake.commitPlan(s.publisher as never, EPOCH, keccak256(hollow), await s.storage.put(hollow))
+  await s.accept()
+  assert.equal(await s.fake.planAcceptances(EPOCH), 1, 'the owner and the backup of the first slice refuse it')
+  assert.equal(s.fake.info(EPOCH).planActive, false)
 
   // The proposed plan again, but its bank file is gone.
   const bankUri = s.fake.banks.at(-1)!.bankUri

@@ -145,18 +145,23 @@ describe('KbfRoundClient events', () => {
   it('maps each event field to its place', async () => {
     const logs = [
       log('BankCommitted', [7n, '0x' + '01'.repeat(32), '0x' + '02'.repeat(32), 'ipfs://bank'], 1),
-      log('PlanCommitted', [7n, '0x' + '03'.repeat(32), 'ipfs://plan'], 2),
+      log('PlanCommitted', [7n, PUBLISHER, '0x' + '03'.repeat(32), 'ipfs://plan'], 2),
       log('SlicesCommitted', [7n, VERIFIER, true, '0x' + '06'.repeat(32), 'ipfs://slices'], 3),
       log('Attested', [7n, VERIFIER, '0x' + '07'.repeat(32), 'ipfs://results'], 4),
-      log('KeySharesCommitted', [7n, '0x' + '05'.repeat(32), 'ipfs://shares'], 5),
+      log('KeySharesCommitted', [7n, PUBLISHER, '0x' + '05'.repeat(32), 'ipfs://shares'], 5),
       log('KeyShareRevealed', [7n, VERIFIER, '0x01aa'], 6),
+      // A verifier took the epoch over and committed its own escrow and plan.
+      log('KeySharesCommitted', [7n, VERIFIER, '0x' + '15'.repeat(32), 'ipfs://shares-2'], 7),
+      log('PlanCommitted', [7n, VERIFIER, '0x' + '13'.repeat(32), 'ipfs://plan-2'], 8),
     ];
     const c = client({ deploymentBlock: 500 }, fakeProvider({ logs }));
     expect(await c.bankCommits(7n)).toEqual([
       { epoch: 7n, bankHash: '0x' + '01'.repeat(32), bankKeyHash: '0x' + '02'.repeat(32), bankUri: 'ipfs://bank', blockNumber: 901 },
     ]);
+    // Each commitment keeps the publisher that made it, before and after the takeover.
     expect(await c.planCommits(7n)).toMatchObject([
       { epoch: 7n, hash: '0x' + '03'.repeat(32), uri: 'ipfs://plan', sender: PUBLISHER, logIndex: 2 },
+      { epoch: 7n, hash: '0x' + '13'.repeat(32), uri: 'ipfs://plan-2', sender: VERIFIER, logIndex: 8 },
     ]);
     expect(await c.sliceCommits(7n)).toMatchObject([
       { epoch: 7n, sender: VERIFIER, backup: true, hash: '0x' + '06'.repeat(32), uri: 'ipfs://slices', blockNumber: 903 },
@@ -166,10 +171,8 @@ describe('KbfRoundClient events', () => {
     ]);
     expect(await c.keySharesCommits(7n)).toMatchObject([
       { epoch: 7n, hash: '0x' + '05'.repeat(32), uri: 'ipfs://shares', sender: PUBLISHER },
+      { epoch: 7n, hash: '0x' + '15'.repeat(32), uri: 'ipfs://shares-2', sender: VERIFIER },
     ]);
-    // A caller holding the epoch info passes the publisher instead of another epochInfo read.
-    expect(await c.keySharesCommits(7n, undefined, VERIFIER)).toMatchObject([{ sender: VERIFIER }]);
-    expect(await c.planCommits(7n, undefined, VERIFIER)).toMatchObject([{ sender: VERIFIER }]);
     expect(await c.keyShareReveals(7n)).toEqual([{ epoch: 7n, verifier: VERIFIER, share: '0x01aa', blockNumber: 906, logIndex: 6 }]);
   });
 

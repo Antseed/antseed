@@ -68,3 +68,14 @@ test('a collector pays only targets its own audit caps allow at current prices',
   // A model this collector cannot price is not bought at all.
   assert.deepEqual(affordableTargets({ targets, peers: [seller('aa', 1)], caps: { caps: new Map(), unpriced: new Map([['model-a', 'no reference price']]) }, minReputation: 0, log: () => {} }), [])
 })
+
+test('a seller with several audited services is checked once per pass', async () => {
+  let reads = 0
+  const services = [target('1', 'aa'.repeat(20)), { ...target('1', 'aa'.repeat(20)), service: 'model-b' }, target('2', 'bb'.repeat(20))]
+  const bound = await bindRoundTargets(services, {
+    reader: { async isBound() { reads += 1; return true } },
+    latestBlock: async () => 1n,
+  }, () => {})
+  assert.equal(bound.length, 3)
+  assert.equal(reads, 2)
+})

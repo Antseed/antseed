@@ -621,8 +621,13 @@ contract AntseedKbfVerificationTest is Test {
         assertEq(verification.epochInfo(EPOCH).planHash, bytes32(0), "the unaccepted plan goes with its bank");
         vm.roll(verification.epochInfo(EPOCH).seedBlock + 1);
         verification.fixSeed(EPOCH);
+        // Commitments name the epoch publisher that made them, so A's stay A's after the takeover.
+        vm.expectEmit(true, true, false, true);
+        emit AntseedKbfVerification.KeySharesCommitted(EPOCH, verifierB, keccak256("b shares"), URI);
         vm.prank(verifierB);
         verification.commitKeyShares(EPOCH, keccak256("b shares"), URI);
+        vm.expectEmit(true, true, false, true);
+        emit AntseedKbfVerification.PlanCommitted(EPOCH, verifierB, keccak256("plan"), URI);
         vm.prank(verifierB);
         verification.commitPlan(EPOCH, keccak256("plan"), URI);
         _accept(EPOCH);

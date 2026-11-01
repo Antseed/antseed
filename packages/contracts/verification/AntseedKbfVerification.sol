@@ -169,7 +169,7 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     event MaxVerifierShareBpsSet(uint16 bps);
     event PublisherGraceSecondsSet(uint32 seconds_);
     event EpochTakenOver(uint256 indexed epoch, address indexed verifier);
-    event KeySharesCommitted(uint256 indexed epoch, bytes32 sharesHash, string sharesUri);
+    event KeySharesCommitted(uint256 indexed epoch, address indexed publisher, bytes32 sharesHash, string sharesUri);
     event KeyShareRevealed(uint256 indexed epoch, address indexed verifier, bytes share);
     event PlanAccepted(uint256 indexed epoch, address indexed verifier, bytes32 sharesHash, bytes32 planHash);
     event PlanActivated(uint256 indexed epoch, bytes32 planHash);
@@ -177,7 +177,7 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     event EpochOpened(uint256 indexed epoch, uint64 seedBlock, uint32 modelsVersion, uint16 verifierCount);
     event SeedRearmed(uint256 indexed epoch, uint64 seedBlock);
     event SeedFixed(uint256 indexed epoch, bytes32 seed);
-    event PlanCommitted(uint256 indexed epoch, bytes32 planHash, string planUri);
+    event PlanCommitted(uint256 indexed epoch, address indexed publisher, bytes32 planHash, string planUri);
     event BankKeyRevealed(uint256 indexed epoch, bytes32 bankKey);
     event SlicesCommitted(
         uint256 indexed epoch, address indexed verifier, bool backup, bytes32 slicesRoot, string manifestUri
@@ -490,7 +490,7 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         }
         _validateUri(planUri);
         state.planHash = planHash;
-        emit PlanCommitted(epoch, planHash, planUri);
+        emit PlanCommitted(epoch, msg.sender, planHash, planUri);
         _activateIfAccepted(epoch, state);
     }
 
@@ -512,7 +512,7 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         if (sharesHash == bytes32(0)) revert InvalidValue();
         _validateUri(sharesUri);
         state.keySharesHash = sharesHash;
-        emit KeySharesCommitted(epoch, sharesHash, sharesUri);
+        emit KeySharesCommitted(epoch, msg.sender, sharesHash, sharesUri);
     }
 
     /// @notice Accepts the epoch's current plan and key escrow. A verifier accepts only after

@@ -43,7 +43,18 @@ export async function boundTargets(
   blockTag: bigint,
   log: (message: string) => void,
 ): Promise<RoundTargetV1[]> {
-  const checks = await Promise.all(targets.map((target) => reader.isBound(target.peerId, BigInt(target.agentId), blockTag)))
+  // A seller's services share one (peer, agent) check; kept for this call only, at this block.
+  const pending = new Map<string, Promise<boolean>>()
+  const checks = await Promise.all(targets.map((target) => {
+    const agentId = BigInt(target.agentId)
+    const key = `${target.peerId.toLowerCase()}|${agentId}`
+    let check = pending.get(key)
+    if (!check) {
+      check = reader.isBound(target.peerId, agentId, blockTag)
+      pending.set(key, check)
+    }
+    return check
+  }))
   return targets.filter((target, index) => {
     if (!checks[index]) log(`target ${target.agentId}/${target.service}: peer ${target.peerId} is not bound to agent ${target.agentId}; skipped`)
     return checks[index]

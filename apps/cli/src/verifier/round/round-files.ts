@@ -75,9 +75,9 @@ export async function openCommittedBank(
 /** The epoch's current plan file, fetched against the on-chain plan hash and checked to belong to it. */
 export async function loadPlanFile(
   context: { client: Pick<KbfRoundClient, 'planCommits'>; storage: Pick<RoundStorage, 'get'> },
-  info: Pick<KbfEpochInfo, 'epoch' | 'planHash' | 'seed' | 'publisher'>,
+  info: Pick<KbfEpochInfo, 'epoch' | 'planHash' | 'seed'>,
 ): Promise<PlanFileV1> {
-  const event = (await context.client.planCommits(info.epoch, undefined, info.publisher)).filter((entry) => entry.hash === info.planHash).at(-1)
+  const event = (await context.client.planCommits(info.epoch)).filter((entry) => entry.hash === info.planHash).at(-1)
   if (!event) throw new Error(`no PlanCommitted event for epoch ${info.epoch}`)
   let plan: PlanFileV1
   try {

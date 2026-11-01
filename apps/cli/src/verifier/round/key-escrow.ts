@@ -68,7 +68,7 @@ export async function loadKeySharesFile(
   context: { client: Pick<KbfRoundClient, 'keySharesCommits' | 'threshold' | 'epochVerifiers'>; storage: RoundStorage },
   info: KbfEpochInfo,
 ): Promise<KeySharesFileV2> {
-  const commit = (await context.client.keySharesCommits(info.epoch, undefined, info.publisher))
+  const commit = (await context.client.keySharesCommits(info.epoch))
     .filter((entry) => entry.hash === info.keySharesHash).at(-1)
   if (!commit) throw new Error(`no key-share file event for epoch ${info.epoch}`)
   const bytes = await context.storage.get(commit.uri, commit.hash, ROUND_FILE_MAX_BYTES.keyShares)
