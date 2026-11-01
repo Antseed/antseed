@@ -163,16 +163,18 @@ export function registerStatementRoutes(router: ConsoleRouter, deps: ConsoleDeps
     // settlements carry no chain), and settlements after its checkpoint are not listed yet.
     const indexed = settlementsRead?.value.indexed ?? []
     const onlyChain = indexed.length === 1 && indexed[0]!.chainId === chain.evmChainId ? indexed[0]! : null
-    // Without the buyer's channels a delegated seller's settlements could not be put with its purchases.
-    const settlementsComplete = explorerUrl === null
-      || (settlementsRead !== null && !settlementsRead.stale && onlyChain !== null && onlyChain.at >= bounds.to
-        && channelsRead !== null && !channelsRead.stale)
+    const explorerComplete = explorerUrl === null
+      || (settlementsRead !== null && !settlementsRead.stale && onlyChain !== null && onlyChain.at >= bounds.to)
+    // Without the buyer's channels a delegated seller's settlements could not be put with its purchases. They are
+    // the gateway's own buyer's, so the week's wait for the explorer does not excuse them.
+    const channelsKnown = explorerUrl === null || wallet === null || (channelsRead !== null && !channelsRead.stale)
+    const settlementsComplete = explorerComplete && channelsKnown
     const buyer = deps.store.getBillingProfile(ws.id)
     // Final once the month is over (plus a day for late spend reports and settlements), the buyer is named, and
     // every outside read answered now (a value cached before a failed refresh is not enough) and covers the month,
     // except the explorer's after a week: then it is issued without settlements.
-    const final = now >= bounds.to + STATEMENT_GRACE_MS && buyer !== null
-      && (settlementsComplete || now >= bounds.to + SETTLEMENTS_WAIT_MS)
+    const final = now >= bounds.to + STATEMENT_GRACE_MS && buyer !== null && channelsKnown
+      && (explorerComplete || now >= bounds.to + SETTLEMENTS_WAIT_MS)
     // A list that may be incomplete or another chain's is never shown as the payments, in a draft or a final statement.
     const settlements = settlementsComplete ? settlementsRead?.value.settlements ?? null : null
     const statement = buildStatement({

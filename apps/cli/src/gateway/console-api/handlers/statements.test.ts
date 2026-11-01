@@ -304,8 +304,17 @@ test('a delegated seller paid at its seller contract is listed once, its settlem
       peers: async () => new Map([[OPERATOR, { name: 'Proxy Seller', verificationLinks: [] }]]),
     },
   })
+  // Months after June: the week's wait for the explorer is over, but a failed channels read still keeps it a draft.
+  channelsDown = true
+  const unread = await call(router, 'GET', `/workspaces/${workspaceId}/statements/2026-06`, admin()) as PurchaseStatement
+  channelsDown = false
+  assert.equal(unread.status, 'open')
+  assert.equal(store.getStatement(workspaceId, '2026-06'), null)
+
+  now += 60_000 // past the failed read's retry wait
   const statement = await call(router, 'GET', `/workspaces/${workspaceId}/statements/2026-06`, admin()) as PurchaseStatement
   channels = []
+  assert.equal(statement.status, 'final', 'issued with its settlements once the channels are read')
   assert.deepEqual(statement.suppliers.map((supplier) => [supplier.peerId, supplier.name, supplier.total, supplier.settlements?.length]), [[`0x${OPERATOR}`, 'Proxy Seller', '2.500000', 1]])
   assert.ok(buyer.requests.some((req) => req.url === '/_antseed/channels?all=1&identity=default'))
 })
