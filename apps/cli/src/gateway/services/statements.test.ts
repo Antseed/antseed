@@ -62,3 +62,49 @@ test('a seller paid this month for an earlier month\'s purchases is listed with 
   assert.equal(statement.suppliers[0]!.total, '0.000000')
   assert.deepEqual(statement.suppliers[0]!.settlements, [{ txHash: `0x${'a1'.repeat(32)}`, time: Date.UTC(2026, 10, 2), amount: '1.250000' }])
 })
+
+test('a delegated seller\'s settlements at its seller contract are listed with the operator peer bought from', () => {
+  const operator = '9e'.repeat(20)
+  const contract = '1f'.repeat(20)
+  const statement = buildStatement({
+    period: '2026-10',
+    workspace: { id: 'ws_1', name: 'Default', wallet: null },
+    buyer: null,
+    lines: [{ sellerPeerId: operator, model: 'open-model', routingFee: false, requests: 3, inputTokens: 10, cachedInputTokens: 0, outputTokens: 5, spentUsdc: 2_000_000 }],
+    deposits: [],
+    peers: new Map([[operator, { name: 'Proxy Seller', verificationLinks: [], sellerContract: `0x${contract.toUpperCase()}` }]]),
+    settlements: [{ seller: `0x${contract}`, txHash: `0x${'b2'.repeat(32)}`, time: Date.UTC(2026, 9, 20), amountUsdc: 1_500_000 }],
+    settlementsSource: 'https://explorer.test',
+    sharedWallet: 0,
+    status: 'open',
+    now: Date.UTC(2026, 10, 1),
+  })
+  assert.equal(statement.suppliers.length, 1)
+  assert.equal(statement.suppliers[0]!.peerId, `0x${operator}`)
+  assert.equal(statement.suppliers[0]!.name, 'Proxy Seller')
+  assert.equal(statement.suppliers[0]!.total, '2.000000')
+  assert.deepEqual(statement.suppliers[0]!.settlements, [{ txHash: `0x${'b2'.repeat(32)}`, time: Date.UTC(2026, 9, 20), amount: '1.500000' }])
+})
+
+test('a seller contract two operators bought from both claim keeps its settlements on their own', () => {
+  const contract = '1f'.repeat(20)
+  const line = (sellerPeerId: string) => ({ sellerPeerId, model: 'open-model', routingFee: false, requests: 1, inputTokens: 1, cachedInputTokens: 0, outputTokens: 1, spentUsdc: 1_000_000 })
+  const statement = buildStatement({
+    period: '2026-10',
+    workspace: { id: 'ws_1', name: 'Default', wallet: null },
+    buyer: null,
+    lines: [line('aa'.repeat(20)), line('bb'.repeat(20))],
+    deposits: [],
+    peers: new Map([
+      ['aa'.repeat(20), { name: 'A', verificationLinks: [], sellerContract: `0x${contract}` }],
+      ['bb'.repeat(20), { name: 'B', verificationLinks: [], sellerContract: `0x${contract}` }],
+    ]),
+    settlements: [{ seller: `0x${contract}`, txHash: `0x${'b2'.repeat(32)}`, time: Date.UTC(2026, 9, 20), amountUsdc: 1_500_000 }],
+    settlementsSource: 'https://explorer.test',
+    sharedWallet: 0,
+    status: 'open',
+    now: Date.UTC(2026, 10, 1),
+  })
+  assert.deepEqual(statement.suppliers.map((supplier) => [supplier.peerId, supplier.settlements?.length]),
+    [[`0x${'aa'.repeat(20)}`, 0], [`0x${'bb'.repeat(20)}`, 0], [`0x${contract}`, 1]])
+})

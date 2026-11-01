@@ -134,20 +134,48 @@ export async function fetchSettlements(explorerUrl: string, buyer: string, from:
 
 const peerKey = (peerId: string): string => peerId.trim().toLowerCase().replace(/^0x/, '')
 
+export interface StatementPeer {
+  name: string | null
+  verificationLinks: StatementSupplier['verificationLinks']
+  /** The seller contract the peer operates for: its settlements pay that address, not the peer id. */
+  sellerContract?: string | null
+}
+
 export interface StatementInput {
   period: string
   workspace: { id: string; name: string; wallet: string | null }
   buyer: BillingProfileRecord | null
   lines: StatementLineRow[]
   deposits: DepositRecord[]
-  /** Seller names and proven claims, by peer id. */
-  peers: ReadonlyMap<string, { name: string | null; verificationLinks: StatementSupplier['verificationLinks'] }>
+  /** Seller names, proven claims and the seller contract each operates for (if any), by peer id. */
+  peers: ReadonlyMap<string, StatementPeer>
   settlements: Settlement[] | null
   settlementsSource: string | null
   /** How many other workspaces paid from the same wallet by the month's end. */
   sharedWallet: number
   status: PurchaseStatement['status']
   now: number
+}
+
+/**
+ * Which supplier a settlement's seller address is. A delegated seller is paid at its seller contract while its
+ * purchases are under the operator peer: the contract's settlements go with the one peer bought from this month that
+ * operates for it (the buyer checked that binding before paying it). With none, or several, they stay on their own.
+ */
+function settlementSupplier(bySeller: ReadonlyMap<string, unknown>, peers: StatementInput['peers']): (seller: string) => string {
+  const operators = new Map<string, string[]>()
+  for (const key of bySeller.keys()) {
+    const contract = peers.get(key)?.sellerContract
+    if (!contract) continue
+    const contractKey = peerKey(contract)
+    operators.set(contractKey, [...(operators.get(contractKey) ?? []), key])
+  }
+  return (seller) => {
+    const key = peerKey(seller)
+    if (bySeller.has(key)) return key
+    const operator = operators.get(key)
+    return operator?.length === 1 ? operator[0]! : key
+  }
 }
 
 /** The statement document from the month's ledger lines, deposits and settlements. */
@@ -158,16 +186,17 @@ export function buildStatement(input: StatementInput): PurchaseStatement {
     const key = peerKey(line.sellerPeerId ?? '')
     bySeller.set(key, [...(bySeller.get(key) ?? []), line])
   }
+  const supplierOf = settlementSupplier(bySeller, input.peers)
   // A seller paid this month for what was bought before is listed too, with no purchases, so its settlement is on the record.
   // Not with a shared wallet: that seller may have sold only to another workspace.
   for (const settlement of input.sharedWallet ? [] : input.settlements ?? []) {
-    const key = peerKey(settlement.seller)
+    const key = supplierOf(settlement.seller)
     if (!bySeller.has(key)) bySeller.set(key, [])
   }
   const suppliers: StatementSupplier[] = [...bySeller].map(([key, lines]) => {
     const peer = input.peers.get(key)
     const settlements = input.settlements
-      ?.filter((settlement) => peerKey(settlement.seller) === key)
+      ?.filter((settlement) => supplierOf(settlement.seller) === key)
       .sort((a, b) => a.time - b.time)
       .map((settlement) => ({ txHash: settlement.txHash, time: settlement.time, amount: usdcToDecimalString(settlement.amountUsdc) })) ?? null
     return {

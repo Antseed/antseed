@@ -55,6 +55,12 @@ export function servicePerformanceField(value: unknown): { performance?: Service
   } }
 }
 
+/** An announced seller contract as a `sellerContract` property; none when the peer is paid at its own id. */
+function sellerContractField(value: unknown): { sellerContract?: string } {
+  const hex = str(value)?.toLowerCase().replace(/^0x/, '')
+  return hex && /^[0-9a-f]{40}$/.test(hex) ? { sellerContract: `0x${hex}` } : {}
+}
+
 function peerKey(peerId: string): string {
   return peerId.trim().toLowerCase().replace(/^0x/, '')
 }
@@ -182,6 +188,7 @@ export function mapPeers(input: {
       reputationScore: num(row['onChainReputationScore']) ?? num(trust['score']) ?? num(row['reputationScore']),
       verified,
       verificationLinks: collectPeerVerificationLinks(row),
+      ...sellerContractField(row['sellerContract']),
       tee,
       teeScope: tee ? teeVerified?.get(key) ?? null : null,
       stakeAnts: stake === null ? null : String(stake),

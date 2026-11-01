@@ -13,14 +13,14 @@ import { errorMessage } from '../../errors.js'
 import { listNetworkPeers } from '../../services/network.js'
 import {
   buildStatement, fetchSettlements, periodBounds, periodsSince,
-  SETTLEMENTS_WAIT_MS, statementFunding, statementReference, STATEMENT_GRACE_MS, type SettlementRead,
+  SETTLEMENTS_WAIT_MS, statementFunding, statementReference, STATEMENT_GRACE_MS, type SettlementRead, type StatementPeer,
 } from '../../services/statements.js'
 import type { BillingProfileRecord, WorkspaceRecord } from '../../store.js'
 import { usdcToDecimalString } from '../../money.js'
 import { audit, type requireWorkspaceAccess } from '../access.js'
 import type { ConsoleDeps } from '../deps.js'
 import { ConsoleError, type ConsoleRequest, type ConsoleRouter } from '../router.js'
-import type { BillingProfile, PurchaseStatement, StatementSummary, StatementSupplier } from '../types.js'
+import type { BillingProfile, PurchaseStatement, StatementSummary } from '../types.js'
 import type { BuyerClient } from './network-buyer.js'
 import { record } from './wallet-mapping.js'
 
@@ -33,7 +33,7 @@ export interface StatementRouteSeams {
   syncDeposits: (ws: WorkspaceRecord) => Promise<boolean>
   /** Seams for tests; production reads the chain explorer and the buyer's peers. */
   fetchSettlements?: (explorerUrl: string, buyer: string, from: number, to: number) => Promise<SettlementRead>
-  peers?: () => Promise<Map<string, { name: string | null; verificationLinks: StatementSupplier['verificationLinks'] }>>
+  peers?: () => Promise<Map<string, StatementPeer>>
 }
 
 const SETTLEMENTS_TTL_MS = 5 * 60 * 1000
@@ -65,7 +65,8 @@ function text(body: Record<string, unknown>, field: string, max: number, require
 export function registerStatementRoutes(router: ConsoleRouter, deps: ConsoleDeps, seams: StatementRouteSeams): void {
   const settlementsOf = seams.fetchSettlements ?? ((url: string, buyer: string, from: number, to: number) => fetchSettlements(url, buyer, from, to))
   const peers = seams.peers ?? (async () => new Map((await listNetworkPeers(deps.store, seams.buyer, deps.now())).map((peer) => [
-    peer.peerId.toLowerCase().replace(/^0x/, ''), { name: peer.displayName, verificationLinks: peer.verificationLinks },
+    peer.peerId.toLowerCase().replace(/^0x/, ''),
+    { name: peer.displayName, verificationLinks: peer.verificationLinks, sellerContract: peer.sellerContract ?? null },
   ])))
   const cache = new ChainReadCache({ now: deps.now, errorRetryMs: 30_000 })
 

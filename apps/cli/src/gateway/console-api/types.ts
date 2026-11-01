@@ -807,6 +807,8 @@ export interface Peer {
   verified: boolean
   /** Verified domain and GitHub claims; empty when none checked out. */
   verificationLinks: PeerVerificationLink[]
+  /** The seller contract the peer operates for (0x-prefixed): its settlements pay that address. Absent for a seller paid at its peer id. */
+  sellerContract?: string
   tee: boolean
   /**
    * How far a current TEE attestation reaches: 'end-to-end' (seller node and its model
