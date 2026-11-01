@@ -1066,6 +1066,38 @@ test('loadConfig rejects invalid seller gasCheck minBalanceEth', async () => {
   );
 });
 
+test('loadConfig preserves seller gasRefuel setting', async () => {
+  const gasRefuel = { enabled: false, triggerBalanceEth: 0.001, swapUsdc: 20, maxUsdcPerDay: 50, slippageBps: 50 };
+  await withTempConfig(
+    JSON.stringify({ seller: { gasRefuel } }),
+    async (configPath) => {
+      const config = await loadConfig(configPath);
+      assert.deepEqual(config.seller.gasRefuel, gasRefuel);
+    }
+  );
+});
+
+test('loadConfig rejects invalid seller gasRefuel values', async () => {
+  for (const [gasRefuel, field] of [
+    [{ enabled: 'no' }, 'enabled'],
+    [{ triggerBalanceEth: 0 }, 'triggerBalanceEth'],
+    [{ swapUsdc: 0.5 }, 'swapUsdc'],
+    [{ maxUsdcPerDay: -1 }, 'maxUsdcPerDay'],
+    [{ slippageBps: 5_000 }, 'slippageBps'],
+    [false, ''],
+    ['off', ''],
+    [null, ''],
+    [[], ''],
+  ] as const) {
+    await withTempConfig(
+      JSON.stringify({ seller: { gasRefuel } }),
+      async (configPath) => {
+        await assert.rejects(async () => loadConfig(configPath), new RegExp(field ? `seller\\.gasRefuel\\.${field}` : 'seller\\.gasRefuel must be an object'));
+      }
+    );
+  }
+});
+
 test('loadConfig preserves seller freeUsage setting', async () => {
   await withTempConfig(
     JSON.stringify({ seller: { freeUsage: { recordBatchSize: 64, recordFlushIntervalMs: 900_000 } } }),

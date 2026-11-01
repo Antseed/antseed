@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { readSellerEvents, SELLER_EVENTS_FILE } from '@antseed/node'
 import { MeteringStorage } from '@antseed/node/metering'
 import { CHANNEL_KIND, ChannelStore } from '@antseed/node/payments'
-import type { SellerAlertsState, SellerEventView, SellerGas, SellerModelHealth, SellerStatus, SellerUsage, SellerUsageDay } from '../gateway/console-api/types.js'
+import type { SellerAlertsState, SellerEventView, SellerGas, SellerGasRefuel, SellerModelHealth, SellerStatus, SellerUsage, SellerUsageDay } from '../gateway/console-api/types.js'
 
 const DAY_MS = 86_400_000
 /** The longest usage series asked for; older cached days are dropped. */
@@ -80,6 +80,25 @@ export function parseGas(raw: unknown): SellerGas | null {
     balanceEth: numOrNull(entry.balanceEth),
     minBalanceEth: num(entry.minBalanceEth),
     lastCheckedAt: numOrNull(entry.lastCheckedAt),
+    refuel: parseGasRefuel(entry.refuel),
+  }
+}
+
+const REFUEL_SKIPS = new Set(['daily_cap', 'insufficient_usdc', 'insufficient_eth'])
+
+function parseGasRefuel(raw: unknown): SellerGasRefuel | null {
+  if (!raw || typeof raw !== 'object') return null
+  const entry = raw as Record<string, unknown>
+  const last = entry.lastRefuel && typeof entry.lastRefuel === 'object' ? entry.lastRefuel as Record<string, unknown> : null
+  return {
+    triggerBalanceEth: num(entry.triggerBalanceEth),
+    swapUsdc: num(entry.swapUsdc),
+    maxUsdcPerDay: num(entry.maxUsdcPerDay),
+    usdcLast24h: num(entry.usdcLast24h),
+    lastRefuel: last ? { at: num(last.at), usdc: num(last.usdc), txHash: String(last.txHash ?? '') } : null,
+    lastError: typeof entry.lastError === 'string' ? entry.lastError : null,
+    skipped: typeof entry.skipped === 'string' && REFUEL_SKIPS.has(entry.skipped) ? entry.skipped as SellerGasRefuel['skipped'] : null,
+    nextAttemptAt: numOrNull(entry.nextAttemptAt),
   }
 }
 

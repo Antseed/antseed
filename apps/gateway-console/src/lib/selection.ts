@@ -31,8 +31,21 @@ function requests(count: number): string {
   return `${rounded} recent request${rounded === 1 ? '' : 's'}`
 }
 
+/** Requests a seller's reported success rate must cover before routing starts from it (MIN_REPORTED_REQUESTS in the buyer). */
+const MIN_REPORTED_REQUESTS = 10
+
+/** The seller's own figures, when routing starts from them because the buyer has no record yet. */
+function reportedPrior(selection: RouteSelection): NonNullable<RouteSelection['reported']> | null {
+  const reported = selection.reported
+  return selection.record === 'none' && reported && reported.requests >= MIN_REPORTED_REQUESTS ? reported : null
+}
+
 /** What the buyer's record says of the seller: success rate and how much it is based on. */
 export function recordSummary(selection: RouteSelection): string {
+  const reported = reportedPrior(selection)
+  if (reported) {
+    return `No requests yet: the seller reports ${percent(reported.successRate)} success over its last hour's ${reported.requests} requests, so routing starts from ${percent(selection.successRate)}.`
+  }
   if (selection.record === 'none') return 'No requests yet: assumed 80% success until it has answered some.'
   const base = `${percent(selection.successRate)} success over ${requests(selection.observations)}`
   return selection.record === 'other-models' ? `${base} on its other models (counted at half weight)` : base
@@ -53,7 +66,9 @@ export function selectionFacts(selection: RouteSelection): string[] {
   if (selection.ordering === 'expected-cost') facts.push(`${formatUsd(selection.expectedCostUsd)} expected per good answer`)
   facts.push(recordSummary(selection))
   if (selection.firstTokenMs !== null) facts.push(`${formatLatency(selection.firstTokenMs)} first token`)
+  else if (selection.reported?.firstTokenMsP50 != null) facts.push(`${formatLatency(selection.reported.firstTokenMsP50)} first token (seller-reported)`)
   if (selection.tokensPerSecond !== null) facts.push(formatSpeed(selection.tokensPerSecond))
+  else if (selection.reported?.tokensPerSecondP50 != null) facts.push(`${formatSpeed(selection.reported.tokensPerSecondP50)} (seller-reported)`)
   if (selection.sharesTraffic && selection.trafficShare !== null) facts.push(`takes ~${percent(selection.trafficShare)} of the traffic`)
   if (selection.channel === 'open') facts.push('payment channel open')
   else if (selection.channel === 'new') facts.push('first request opens a payment channel (~5 s)')
@@ -68,11 +83,14 @@ export function selectionFacts(selection: RouteSelection): string[] {
 /** The few numbers that set a seller's place, for one compact line: success, speed, traffic share, expected cost. */
 export function selectionHeadline(selection: RouteSelection): string {
   const parts: string[] = []
-  parts.push(selection.record === 'none'
-    ? 'no requests yet'
-    : `${percent(selection.successRate)} success (${Math.round(selection.observations)} recent${selection.record === 'other-models' ? ', other models' : ''})`)
-  if (selection.firstTokenMs !== null) parts.push(`${formatLatency(selection.firstTokenMs)} first token`)
-  if (selection.tokensPerSecond !== null) parts.push(formatSpeed(selection.tokensPerSecond))
+  const reported = reportedPrior(selection)
+  if (reported) parts.push(`seller reports ${percent(reported.successRate)} success (${reported.requests} last hour)`)
+  else if (selection.record === 'none') parts.push('no requests yet')
+  else parts.push(`${percent(selection.successRate)} success (${Math.round(selection.observations)} recent${selection.record === 'other-models' ? ', other models' : ''})`)
+  const firstTokenMs = selection.firstTokenMs ?? selection.reported?.firstTokenMsP50 ?? null
+  const tokensPerSecond = selection.tokensPerSecond ?? selection.reported?.tokensPerSecondP50 ?? null
+  if (firstTokenMs !== null) parts.push(`${formatLatency(firstTokenMs)} first token`)
+  if (tokensPerSecond !== null) parts.push(formatSpeed(tokensPerSecond))
   if (selection.sharesTraffic && selection.trafficShare !== null) parts.push(`${percent(selection.trafficShare)} of traffic`)
   if (selection.ordering === 'expected-cost') parts.push(`${formatUsd(selection.expectedCostUsd)} per answer`)
   return parts.join(' · ')

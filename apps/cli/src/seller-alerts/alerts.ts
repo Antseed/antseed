@@ -22,6 +22,7 @@ const SEVERITY_RANK: Record<SellerEventSeverity, number> = { info: 0, warning: 1
 /** Recoveries close an alert that was sent, so they go out whatever their severity. */
 const RECOVERY_OF: Partial<Record<SellerEventKind, SellerEventKind>> = {
   model_up: 'model_down', gas_ok: 'gas_low', active: 'idle', upstream_credit_ok: 'upstream_credit', upstream_balance_ok: 'upstream_balance_low',
+  gas_refueled: 'gas_refuel_failed',
 };
 const ICON: Record<SellerEventSeverity, string> = { info: '✅', warning: '⚠️', critical: '🚨' };
 /**

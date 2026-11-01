@@ -477,7 +477,17 @@ export class BuyerRequestHandler {
       );
     });
 
-    const response = await executeRequest();
+    // Paid work in flight sizes the buyer's reserve top-ups (see beginPaidRequest).
+    const bpm = isFreeService ? undefined : this._deps.negotiator?.bpm;
+    const executeCountedRequest = async (): Promise<SerializedHttpResponse> => {
+      bpm?.beginPaidRequest(peer.peerId);
+      try {
+        return await executeRequest();
+      } finally {
+        bpm?.endPaidRequest(peer.peerId);
+      }
+    };
+    const response = await executeCountedRequest();
 
     // A seller demanded payment while this buyer runs no payment machinery
     // (payments disabled or unconfigured). Forwarding the raw seller 402 would
@@ -507,7 +517,9 @@ export class BuyerRequestHandler {
       && (!videoRoute || isPaymentRequired402(response))
     ) {
       // Parallel requests can leave the seller's spend several requests ahead
-      // of the signed cumulative. Keep catching up while the gap shrinks.
+      // of the signed cumulative. Keep catching up while the gap shrinks or
+      // the seller accepts more: other requests finishing can widen the gap
+      // even while the buyer is paying.
       let paymentResponse = response;
       let retriedResponse: SerializedHttpResponse;
       for (let retry = 1; ; retry++) {
@@ -516,11 +528,12 @@ export class BuyerRequestHandler {
           return adaptPeerResponse(result.response);
         }
         startTime = Date.now();
-        retriedResponse = await executeRequest();
-        const previousGap = catchUpGap(paymentResponse);
-        const gap = catchUpGap(retriedResponse);
-        if (gap == null || previousGap == null) break;
-        if (gap >= previousGap || retry >= MAX_CATCH_UP_RETRIES) {
+        retriedResponse = await executeCountedRequest();
+        const previous = catchUpState(paymentResponse);
+        const current = catchUpState(retriedResponse);
+        if (current == null || previous == null) break;
+        const progressing = current.gap < previous.gap || current.accepted > previous.accepted;
+        if (!progressing || retry >= MAX_CATCH_UP_RETRIES) {
           return adaptPeerResponse(catchUpIncompleteResponse(retriedResponse));
         }
         paymentResponse = retriedResponse;
@@ -883,10 +896,11 @@ function isPaymentRequired402(response: SerializedHttpResponse): boolean {
 const MAX_CATCH_UP_RETRIES = 2;
 
 /**
- * Unsigned spend a seller catch-up 402 asks for (required - accepted), or null
- * when the response is not a catch-up 402 (exhausted channels carry a code).
+ * A seller catch-up 402's unsigned spend (required - accepted) and accepted
+ * amount, or null when the response is not a catch-up 402 (exhausted
+ * channels carry a code).
  */
-function catchUpGap(response: SerializedHttpResponse): bigint | null {
+function catchUpState(response: SerializedHttpResponse): { gap: bigint; accepted: bigint } | null {
   if (response.statusCode !== 402) return null;
   try {
     const body = JSON.parse(new TextDecoder().decode(response.body)) as Record<string, unknown>;
@@ -894,18 +908,22 @@ function catchUpGap(response: SerializedHttpResponse): bigint | null {
     const required = BigInt(String(body.requiredCumulativeAmount));
     const accepted = BigInt(String(body.currentAcceptedCumulative));
     if (body.reserveMaxAmount != null && required > BigInt(String(body.reserveMaxAmount))) return null;
-    return required > accepted ? required - accepted : 0n;
+    return { gap: required > accepted ? required - accepted : 0n, accepted };
   } catch {
     return null;
   }
 }
 
-/** Buyer-authored error for a catch-up that is still short after the retries. */
+/**
+ * Buyer-authored error for a catch-up that is still short after the retries.
+ * The channel is fine and the next attempt usually succeeds, so it is a
+ * retryable 503: routers fail over and clients retry.
+ */
 function catchUpIncompleteResponse(response: SerializedHttpResponse): SerializedHttpResponse {
   return {
     ...response,
-    statusCode: 409,
-    headers: { ...response.headers, 'content-type': 'application/json' },
+    statusCode: 503,
+    headers: { ...response.headers, 'content-type': 'application/json', 'retry-after': '2' },
     body: new TextEncoder().encode(JSON.stringify({
       error: 'payment_negotiation_failed',
       reason: 'catch_up_incomplete',

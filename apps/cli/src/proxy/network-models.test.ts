@@ -41,6 +41,30 @@ test('network model offers carry the free-tier program they are served under', (
   assert.equal(offer('paid-model')?.freeTier, undefined)
 })
 
+test('network model offers carry the seller\'s last self health check and leave out failing ones', () => {
+  const providerPricing = { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'gpt-test': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } } } }
+  const healthy = makePeer({
+    peerId: 'a'.repeat(40), providers: ['openai'], providerPricing,
+    providerServiceHealth: { openai: { services: { 'gpt-test': { status: 'healthy', checkedAt: NOW_MS - 60_000, source: 'traffic' } } } },
+  })
+  const failing = makePeer({
+    peerId: 'b'.repeat(40), providers: ['openai'], providerPricing,
+    providerServiceHealth: { openai: { services: { 'gpt-test': { status: 'failing', reason: 'timeout', consecutiveFailures: 3 } } } },
+  })
+  const silent = makePeer({ peerId: 'c'.repeat(40), providers: ['openai'], providerPricing })
+  const [model] = buildNetworkModels([healthy, failing, silent], NOW_MS)
+  assert.deepEqual(model?.peers.map((offer) => offer.peerId).sort(), [healthy.peerId, silent.peerId])
+  assert.deepEqual(model?.peers.find((offer) => offer.peerId === healthy.peerId)?.health, { status: 'healthy', checkedAt: NOW_MS - 60_000, source: 'traffic' })
+  assert.equal(model?.peers.find((offer) => offer.peerId === silent.peerId)?.health, undefined)
+})
+
+test('network model offers carry the performance the seller measured', () => {
+  const providerPricing = { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'gpt-test': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } } } }
+  const performance = { requests: 312, successRate: 0.97, firstTokenMsP50: 420, firstTokenMsP90: 1250, tokensPerSecondP50: 78 }
+  const seller = makePeer({ peerId: 'a'.repeat(40), providers: ['openai'], providerPricing, providerServicePerformance: { openai: { services: { 'gpt-test': performance } } } })
+  assert.deepEqual(buildNetworkModels([seller], NOW_MS)[0]?.peers[0]?.performance, performance)
+})
+
 test('paid image and video offers never inherit the seller-wide program, and paid video has no allowance', () => {
   const sellerWide = { base: { maxRequestsPerAddress: 1000, maxRequestsPerIp: null, windowMs: 86_400_000 }, stakeTiers: [] }
   const allowance = { base: { maxRequestsPerAddress: 5, maxRequestsPerIp: null, windowMs: 86_400_000 }, stakeTiers: [] }

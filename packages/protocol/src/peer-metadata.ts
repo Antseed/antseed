@@ -7,6 +7,7 @@ import type {
   ProviderServiceCapabilityMatrixEntry,
   ProviderServiceCategoryMatrixEntry,
   ProviderServiceHealthMatrixEntry,
+  ProviderServicePerformanceMatrixEntry,
   ProviderServiceUnitBillingModelMatrixEntry,
 } from './peer-pricing.js';
 import {
@@ -15,7 +16,7 @@ import {
 } from './service-api.js';
 
 /** Newest metadata version this build signs and understands. */
-export const METADATA_VERSION = 13;
+export const METADATA_VERSION = 14;
 /** Oldest announced metadata version buyers still accept from sellers. */
 export const MIN_SUPPORTED_METADATA_VERSION = 10;
 /**
@@ -33,6 +34,7 @@ export const METADATA_VERSION_HEADER = "x-antseed-metadata-version";
 export const SERVICE_UNIT_BILLING_METADATA_VERSION = 11;
 export const SERVICE_CAPABILITIES_METADATA_VERSION = 12;
 export const SERVICE_HEALTH_METADATA_VERSION = 13;
+export const SERVICE_PERFORMANCE_METADATA_VERSION = 14;
 export const WELL_KNOWN_SERVICE_CATEGORIES = [
   "privacy",
   "legal",
@@ -248,6 +250,73 @@ export interface ServiceHealth {
   httpStatus?: number;
 }
 
+/** How far back a seller's announced service performance looks. */
+export const SERVICE_PERFORMANCE_WINDOW_MS = 60 * 60_000;
+/** Limits of the wire encoding, which buyers check when validating. */
+export const MAX_SERVICE_PERFORMANCE_REQUESTS = 0xffff_ffff;
+export const MAX_SERVICE_PERFORMANCE_FIRST_TOKEN_MS = 0xffff_ffff;
+export const MAX_SERVICE_PERFORMANCE_TOKENS_PER_SECOND = 0xffff;
+
+/**
+ * How a service served buyers over the last `SERVICE_PERFORMANCE_WINDOW_MS`,
+ * as the seller measured it on its own buyer traffic. Buyers use it as their
+ * starting estimate for a seller they have no record of, before their own
+ * requests take over. Self-reported: buyers cap how much it can help a seller.
+ */
+export interface ServicePerformance {
+  /** Buyer requests in the window. */
+  requests: number;
+  /** Share of them the upstream answered without a server-side failure, 0..1 (four decimals on the wire). */
+  successRate: number;
+  /** Median and 90th percentile time from the request to the first streamed token, in ms. */
+  firstTokenMsP50?: number;
+  firstTokenMsP90?: number;
+  /** Median output speed of streamed answers, in tokens per second. */
+  tokensPerSecondP50?: number;
+}
+
+/** Reads a ServicePerformance from untrusted JSON, or null when it is malformed. */
+export function parseServicePerformance(value: unknown): ServicePerformance | null {
+  if (!isPlainObject(value)) return null;
+  const { requests, successRate } = value;
+  if (!isWireInteger(requests, MAX_SERVICE_PERFORMANCE_REQUESTS)) return null;
+  if (typeof successRate !== "number" || !Number.isFinite(successRate) || successRate < 0 || successRate > 1) return null;
+  const performance: ServicePerformance = { requests, successRate };
+  if (isWireInteger(value.firstTokenMsP50, MAX_SERVICE_PERFORMANCE_FIRST_TOKEN_MS)) performance.firstTokenMsP50 = value.firstTokenMsP50;
+  if (isWireInteger(value.firstTokenMsP90, MAX_SERVICE_PERFORMANCE_FIRST_TOKEN_MS)) performance.firstTokenMsP90 = value.firstTokenMsP90;
+  if (isWireInteger(value.tokensPerSecondP50, MAX_SERVICE_PERFORMANCE_TOKENS_PER_SECOND)) performance.tokensPerSecondP50 = value.tokensPerSecondP50;
+  return performance;
+}
+
+function isWireInteger(value: unknown, max: number): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= max;
+}
+
+/** Looks up one service's performance in a per-provider map such as PeerInfo.providerServicePerformance. */
+export function providerServicePerformanceFor(
+  providerServicePerformance: Record<string, { services?: Record<string, ServicePerformance> }> | undefined,
+  provider: string,
+  service: string,
+): ServicePerformance | undefined {
+  return own(own(providerServicePerformance, provider)?.services, service);
+}
+
+/** Reads a performance matrix from untrusted JSON (a cache file), keeping only well-formed entries. */
+export function parseProviderServicePerformanceMatrix(value: unknown): Record<string, ProviderServicePerformanceMatrixEntry> | undefined {
+  if (!isPlainObject(value)) return undefined;
+  const matrix: Record<string, ProviderServicePerformanceMatrixEntry> = dict();
+  for (const [provider, entry] of Object.entries(value)) {
+    if (!isPlainObject(entry)) continue;
+    const services: Record<string, ServicePerformance> = dict();
+    for (const [service, performance] of Object.entries(isPlainObject(entry.services) ? entry.services : {})) {
+      const parsed = parseServicePerformance(performance);
+      if (parsed) services[service] = parsed;
+    }
+    if (Object.keys(services).length > 0) matrix[provider] = { services };
+  }
+  return Object.keys(matrix).length > 0 ? matrix : undefined;
+}
+
 /** Latest Unix ms a JS Date can hold; health timestamps above it are rejected. */
 export const MAX_SERVICE_HEALTH_TIME_MS = 8_640_000_000_000_000;
 
@@ -283,7 +352,7 @@ const SERVICE_HEALTH_REASON_TEXT: Record<ServiceHealthReason, string> = {
   out_of_credit: "the upstream account is out of credit",
   auth: "the upstream rejected the seller's credentials",
   model_unavailable: "the upstream no longer offers this model",
-  upstream_error: "the upstream returned errors",
+  upstream_error: "the upstream is unavailable",
   unreachable: "the upstream could not be reached",
   init_failed: "the provider failed to initialize",
 };
@@ -345,6 +414,8 @@ export interface ProviderAnnouncement {
   serviceCapabilities?: Record<string, ServiceCapabilities>;
   /** Seller self health check results per service (v13+). */
   serviceHealth?: Record<string, ServiceHealth>;
+  /** How each service served buyers lately, measured by the seller (v14+). */
+  servicePerformance?: Record<string, ServicePerformance>;
   maxConcurrency: number;
   currentLoad: number;
 }
@@ -447,6 +518,7 @@ export interface ProviderServiceMatrices {
   providerServiceUnitBillingModels: Record<string, ProviderServiceUnitBillingModelMatrixEntry>;
   providerServiceCapabilities: Record<string, ProviderServiceCapabilityMatrixEntry>;
   providerServiceHealth: Record<string, ProviderServiceHealthMatrixEntry>;
+  providerServicePerformance: Record<string, ProviderServicePerformanceMatrixEntry>;
 }
 
 function setServiceEntry<T>(matrix: Record<string, { services: Record<string, T> }>, provider: string, service: string, value: T | undefined): void {
@@ -462,6 +534,7 @@ function describedServices(upstreams: readonly ProviderAnnouncement[]): Set<stri
     ...Object.keys(upstream.serviceApiProtocols ?? {}),
     ...Object.keys(upstream.serviceUnitBillingModels ?? {}),
     ...Object.keys(upstream.serviceCapabilities ?? {}),
+    ...Object.keys(upstream.servicePerformance ?? {}),
   ]));
 }
 
@@ -480,6 +553,7 @@ export function mergeProviderAnnouncements(providers: readonly ProviderAnnouncem
     providerServiceUnitBillingModels: dict(),
     providerServiceCapabilities: dict(),
     providerServiceHealth: providerServiceHealthMatrix(providers),
+    providerServicePerformance: dict(),
   };
   for (const [name, upstreams] of upstreamsByProvider(providers)) {
     const { defaultPricing } = upstreams[0]!;
@@ -504,6 +578,8 @@ export function mergeProviderAnnouncements(providers: readonly ProviderAnnouncem
 
       setServiceEntry(matrices.providerServiceApiProtocols, name, service, own(owner.serviceApiProtocols, service)?.slice());
       setServiceEntry(matrices.providerServiceUnitBillingModels, name, service, own(owner.serviceUnitBillingModels, service));
+      // Sellers measure performance per provider name, so every upstream of a name announces the same figures.
+      setServiceEntry(matrices.providerServicePerformance, name, service, own(owner.servicePerformance, service));
     }
   }
   return matrices;

@@ -239,6 +239,39 @@ test('peer services and model offers carry a service’s own free-tier program',
   assert.equal(peers[0]!.freeTier?.base.stakersOnly, undefined)
 })
 
+test('peer services, model offers and route-preview candidates carry the seller\'s self health check', () => {
+  const failing = { status: 'failing', checkedAt: 1_793_328_180_000, source: 'probe', failingSince: 1_793_327_880_000, consecutiveFailures: 3, reason: 'timeout', httpStatus: 504 }
+  const row = {
+    ...PEERS_BODY.peers[0],
+    providerServiceHealth: { openai: { services: {
+      'open-model-a': failing,
+      'open-model-b': { status: 'healthy', checkedAt: 1_793_328_100_000, source: 'traffic' },
+      'open-model-free': { status: 'bogus' },
+    } } },
+  }
+  const healthOf = (service: string) => peerServices(row as Record<string, unknown>).find((entry) => entry.service === service)?.health
+  assert.deepEqual(healthOf('open-model-a'), failing)
+  // Every field is present, null when the seller did not announce it.
+  assert.deepEqual(healthOf('open-model-b'), { status: 'healthy', checkedAt: 1_793_328_100_000, source: 'traffic', failingSince: null, consecutiveFailures: null, reason: null, httpStatus: null })
+  assert.equal(healthOf('open-model-free'), undefined, 'an unknown status is not shown')
+
+  const healthy = { status: 'healthy', checkedAt: 1_793_328_100_000, source: 'probe' }
+  const [model] = mapNetworkModels({ data: [{ id: 'open-model-b', peers: [{ peerId: PEER_A, serviceId: 'open-model-b', health: healthy }] }] }, [])
+  assert.equal(model!.offers[0]!.health?.source, 'probe')
+  const [candidate] = enrichCandidates([{ peerId: PEER_A, eligible: false, reasons: [], health: failing }], PEERS_BODY)
+  assert.deepEqual(candidate!.health, failing)
+})
+
+test('peer services and model offers carry the seller\'s measured performance', () => {
+  const performance = { requests: 312, successRate: 0.97, firstTokenMsP50: 420, tokensPerSecondP50: 78 }
+  const row = { ...PEERS_BODY.peers[0], providerServicePerformance: { openai: { services: { 'open-model-a': performance, 'open-model-b': { requests: 'x' } } } } }
+  const services = peerServices(row as Record<string, unknown>)
+  assert.deepEqual(services.find((entry) => entry.service === 'open-model-a')?.performance, { ...performance, firstTokenMsP90: null })
+  assert.equal(services.find((entry) => entry.service === 'open-model-b')?.performance, undefined, 'a malformed entry is not shown')
+  const [model] = mapNetworkModels({ data: [{ id: 'open-model-a', peers: [{ peerId: PEER_A, serviceId: 'open-model-a', performance }] }] }, [])
+  assert.equal(model!.offers[0]!.performance?.requests, 312)
+})
+
 test('peer services give a paid unit-billed service no seller-wide program', () => {
   const row = {
     ...PEERS_BODY.peers[0],

@@ -181,6 +181,23 @@ export interface SellerGasCheckCLIConfig {
   minBalanceEth?: number;
 }
 
+/**
+ * Automatic gas top-ups: when the seller wallet runs low on ETH, swap some of
+ * its USDC earnings for ETH (Uniswap v3 on Base mainnet, gas paid in ETH).
+ */
+export interface SellerGasRefuelCLIConfig {
+  /** Default: true. Needs gas checks on (`seller.gasCheck`). */
+  enabled?: boolean;
+  /** Refuel when the wallet holds less than this many ETH. Default: 0.0005. */
+  triggerBalanceEth?: number;
+  /** USDC swapped per refuel. Default: 10. */
+  swapUsdc?: number;
+  /** Most USDC swapped in any 24 hours. Default: 30. */
+  maxUsdcPerDay?: number;
+  /** Slippage tolerance in basis points. Default: 100 (1%). */
+  slippageBps?: number;
+}
+
 /** `seller.alerts` in config.json: where the seller sends its own alerts. */
 export interface SellerAlertsCLIConfig {
   /** A Telegram bot (create one with @BotFather) posting to a chat the bot was added to. */
@@ -284,6 +301,11 @@ export interface SellerCLIConfig {
    * advertising until it is funded again. Set `enabled: false` to opt out.
    */
   gasCheck?: SellerGasCheckCLIConfig;
+  /**
+   * Swap USDC for ETH automatically before the wallet runs out of gas (Base
+   * mainnet). On by default; set `enabled: false` to opt out.
+   */
+  gasRefuel?: SellerGasRefuelCLIConfig;
   /**
    * Seller-wide free-tier program for zero-priced services. A service with its
    * own `providers.<p>.services.<s>.freeTier` uses that instead.

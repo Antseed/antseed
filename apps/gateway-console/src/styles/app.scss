@@ -750,6 +750,8 @@ li + li > .gc-choice { border-top: 1px solid var(--as-border); }
 @media (max-width: 640px) { .gc-setup { flex-direction: column; align-items: stretch; } }
 /* A payment on its way into the credits: amber dot + one line, emphasised so it does not read as a failed payment. */
 .gc-pending { color: var(--as-text-primary); font-size: 0.8125rem; flex-wrap: nowrap; align-items: baseline; .gc-attention { transform: translateY(-1px); } }
+/* A model's seller self check failing, inside a row's meta: amber dot + one line. */
+.gc-health-failing { display: inline-flex; align-items: baseline; gap: 0.375rem; color: var(--as-text-primary); .gc-attention { transform: translateY(-1px); } }
 /* An alert at the top of a panel, above its figures. */
 .gc-panel-alert { margin-bottom: 1.25rem; }
 /* A section someone was just sent to: a brief ring so the jump is visible even without scrolling. */

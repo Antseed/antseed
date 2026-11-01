@@ -389,3 +389,33 @@ test('a checkpoint resumes on a reservation that re-scoring gave a new reference
     /reference or query profile mismatch/,
   )
 })
+
+test('a model whose question build fails is retried in the next round, not dropped', async () => {
+  const { runVerifierRounds } = await import('./run.js')
+  const lines: string[] = []
+  const rounds: number[] = []
+  // Round 1: every build fails (all models). Round 2: kimi still fails, glm works. Round 3: all done.
+  const outcomes = [
+    { left: 2, secondsLeftInEpoch: 86_400, enrollmentFailures: new Map([['kimi-k3', 'fetch failed'], ['glm-5.3', 'fetch failed']]) },
+    { left: 1, secondsLeftInEpoch: 86_400, enrollmentFailures: new Map([['kimi-k3', 'fetch failed']]) },
+    { left: 0, secondsLeftInEpoch: 86_400, enrollmentFailures: new Map<string, string>() },
+  ]
+  const last = await runVerifierRounds(3, async (round) => { rounds.push(round); return outcomes[round - 1]! }, (line) => lines.push(line))
+  assert.deepEqual(rounds, [1, 2, 3])
+  assert.equal(last?.left, 0)
+  assert.ok(!lines.some((line) => line.includes('could not be built')), lines.join('\n'))
+})
+
+test('a build that keeps failing is reported once at the end, and a round without progress stops', async () => {
+  const { runVerifierRounds } = await import('./run.js')
+  const lines: string[] = []
+  const rounds: number[] = []
+  const failing = () => ({ left: 1, secondsLeftInEpoch: 86_400, enrollmentFailures: new Map([['glm-5.3', 'no contrast models selected for glm-5.3']]) })
+  const last = await runVerifierRounds(3, async (round) => { rounds.push(round); return failing() }, (line) => lines.push(line))
+  assert.deepEqual(rounds, [1, 2])
+  assert.equal(last?.enrollmentFailures?.size, 1)
+  const report = lines.join('\n')
+  assert.match(report, /made no progress/)
+  assert.match(report, /fresh questions could not be built \(1\)/)
+  assert.match(report, /glm-5\.3: no contrast models selected/)
+})

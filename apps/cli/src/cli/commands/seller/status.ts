@@ -14,7 +14,7 @@ import {
 import { resolveConfigPath } from '../../../config/loader.js';
 import { readSellerRegistration } from '../../../seller-monitor/standing.js';
 import { sellerMonitorFor } from './monitor.js';
-import type { SellerModelHealth } from '../../../gateway/console-api/types.js';
+import type { SellerGasRefuel, SellerModelHealth } from '../../../gateway/console-api/types.js';
 import { formatEarnings, formatTokens } from '../../formatters.js';
 
 type SellerNodeState = 'seeding' | 'connected' | 'idle';
@@ -165,6 +165,7 @@ export function registerSellerStatusCommand(sellerCmd: Command): void {
           table.push(
             ['Models', describeModelHealth(health.models)],
             ['Gas', health.gas?.balanceEth == null ? chalk.dim('no gas checks') : `${health.gas.balanceEth} ETH${health.gas.depleted ? chalk.yellow(' (below minimum, advertising paused)') : ''}`],
+            ['Gas auto-refuel', refuelLine(health.gas?.refuel ?? null)],
             ['Alerts', health.alerts?.channels.length ? health.alerts.channels.join(', ') : chalk.dim('off (antseed seller alerts set)')],
           );
         }
@@ -183,6 +184,15 @@ function formatAntsForStatus(amount: bigint): string {
   const whole = amount / 10n ** 18n;
   const fraction = (amount % 10n ** 18n).toString().padStart(18, '0').slice(0, 4).replace(/0+$/, '');
   return fraction ? `${whole}.${fraction}` : String(whole);
+}
+
+function refuelLine(refuel: SellerGasRefuel | null): string {
+  if (!refuel) return chalk.dim('off (antseed seller settings set --refuel on)');
+  const parts = [`below ${refuel.triggerBalanceEth} ETH swap ${refuel.swapUsdc} USDC; ${refuel.usdcLast24h}/${refuel.maxUsdcPerDay} USDC in 24h`];
+  if (refuel.lastRefuel) parts.push(`last ${new Date(refuel.lastRefuel.at).toISOString()} (tx ${refuel.lastRefuel.txHash})`);
+  if (refuel.lastError) return `${parts.join(' · ')}\n${chalk.yellow(`last attempt failed: ${refuel.lastError}`)}`;
+  if (refuel.skipped) return `${parts.join(' · ')}\n${chalk.yellow(`skipped: ${refuel.skipped.replaceAll('_', ' ')}`)}`;
+  return parts.join(' · ');
 }
 
 function describeModelHealth(models: SellerModelHealth[]): string {

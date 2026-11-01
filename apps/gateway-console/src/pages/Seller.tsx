@@ -69,9 +69,16 @@ function Tiles({ seller, usage }: { seller: AvailableSeller; usage?: SellerUsage
       <StatTile label="Active channels" value={formatNumber(seller.activeChannels)}
         sub={`${seller.capacityUsedPercent}% of capacity`} meter={seller.capacityUsedPercent / 100} />
       <StatTile label="Gas" value={gas ? `${formatEth(gas.balanceEth)} ETH` : '—'}
-        sub={gas ? (gas.depleted ? 'Below minimum, advertising paused' : `Minimum ${formatEth(gas.minBalanceEth)} ETH`) : 'No gas checks (payments off)'} />
+        sub={gas ? (gas.depleted ? 'Below minimum, advertising paused' : gasSub(gas)) : 'No gas checks (payments off)'} />
     </div>
   )
+}
+
+function gasSub(gas: NonNullable<AvailableSeller['gas']>): string {
+  if (!gas.refuel) return `Minimum ${formatEth(gas.minBalanceEth)} ETH`
+  return gas.refuel.lastRefuel
+    ? `Auto-refuel: ${gas.refuel.lastRefuel.usdc} USDC swapped ${formatRelative(gas.refuel.lastRefuel.at)}`
+    : `Auto-refuel below ${formatEth(gas.refuel.triggerBalanceEth)} ETH`
 }
 
 function UsagePanel({ usage }: { usage: ReturnType<typeof useSellerUsage> }) {
