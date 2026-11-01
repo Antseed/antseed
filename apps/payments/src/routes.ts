@@ -397,10 +397,14 @@ export function registerRoutes(fastify: FastifyInstance, ctx: RouteContext): voi
       const rows = await Promise.all(
         epochList.map(async (epoch) => {
           if (recognizedActive && epoch >= effectiveEpoch) {
-            const [pending, buyerAmount] = await Promise.all([
+            // pendingEmissions already skips claimed agent epochs, but
+            // pendingBuyerReward does not check buyerEpochClaimed, so a buyer
+            // epoch that was claimed or staked would still show its full amount.
+            const [pending, buyerClaimed] = await Promise.all([
               retryRead(() => usageAccounting.pendingEmissions(address, [epoch])),
-              retryRead(() => usageRewards.pendingBuyerReward(address, epoch)),
+              retryRead(() => usageRewards.buyerEpochClaimed(address, epoch)),
             ]);
+            const buyerAmount = buyerClaimed ? 0n : await retryRead(() => usageRewards.pendingBuyerReward(address, epoch));
             return {
               epoch,
               protocol: 'recognized' as const,
@@ -416,7 +420,7 @@ export function registerRoutes(fastify: FastifyInstance, ctx: RouteContext): voi
                 amount: buyerAmount.toString(),
                 userPoints: '0',
                 totalPoints: '0',
-                claimed: false,
+                claimed: buyerClaimed,
               },
               isCurrent: epoch === current,
             };
