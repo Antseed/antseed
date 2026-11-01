@@ -20,12 +20,20 @@ interface IEmissionsGateSource {
 ///         own emissions bucket, and never writes into KBF verdicts.
 ///
 ///
-///         Status: each (agent, service) keeps its latest result as its verdict, with the emissions
-///         epoch it was given in. A verdict counts while `currentEpoch < epoch + validityEpochs`
+///         Status: each (agent, service) keeps its latest recorded result as its verdict, with the
+///         emissions epoch it was given in. A verdict counts while `currentEpoch < epoch + validityEpochs`
 ///         (default 2: through the epoch after the audit). A SAME verifies that service, a DIFF
 ///         marks it as not serving the audited model, and an UNDETERMINED (the audit could not
-///         decide) counts as neither. The latest result always wins. Auditors double-check a DIFF
-///         off-chain before submitting it.
+///         decide) counts as neither.
+///
+///         Confirmations: a result is recorded once `requiredReports[verdict]` distinct approved
+///         auditors report it for the same (agent, service, model) in the same epoch (defaults:
+///         SAME 1, DIFF 2, UNDETERMINED 1), so a DIFF needs a second auditor. Replacing a live DIFF
+///         needs as many reports as a DIFF does, whatever the new result or model, so one auditor
+///         cannot clear a confirmed DIFF either. Reports count per epoch only. An auditor's later
+///         report replaces its earlier one; a repeated report adds no support, so it records again
+///         only when one report is enough. Every report emits `ServiceAudited` with the reports
+///         so far and the reports needed.
 ///         Each agent keeps per-epoch SAME and DIFF counters, so its status sums only the last
 ///         `validityEpochs` epochs and older verdicts drop out without any cleanup.
 ///         Results for agents the identity registry cannot resolve (e.g. burned) are skipped with
@@ -67,12 +75,17 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     uint16 public override maxAuditorShareBps = 2_000;
     /// @notice First epoch whose audits earn credits; `type(uint256).max` keeps rewards off.
     uint256 public override rewardsStartEpoch = type(uint256).max;
+    /// @notice Distinct approved auditors that must report a verdict in one epoch before it is recorded.
+    mapping(Verdict verdict => uint8 reports) public requiredReports;
 
     mapping(address auditor => bool approved) public override approvedAuditors;
 
     mapping(uint256 agentId => mapping(bytes32 serviceHash => ServiceStatus status)) private _serviceStatus;
     // Latest SAME/DIFF verdicts given in each epoch; a verdict moves out when the service gets a new one.
     mapping(uint256 agentId => mapping(uint256 epoch => EpochCounts counts)) private _epochCounts;
+    // Reports per (epoch, agent, service, model): how many auditors report each verdict, and each auditor's report.
+    mapping(bytes32 reportKey => mapping(Verdict verdict => uint256 reports)) private _reportCounts;
+    mapping(bytes32 reportKey => mapping(address auditor => Verdict verdict)) private _reports;
 
     mapping(uint256 epoch => uint256 credits) public epochCredits;
     mapping(uint256 epoch => mapping(address auditor => uint256 credits)) public auditorEpochCredits;
@@ -87,6 +100,7 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     event MaxCreditsPerModelPerEpochSet(uint32 maxCredits);
     event MaxAuditorShareBpsSet(uint16 shareBps);
     event RewardsStartEpochSet(uint256 epoch);
+    event RequiredReportsSet(Verdict indexed verdict, uint8 reports);
     event ModelAudited(
         bytes32 indexed modelHash,
         address indexed auditor,
@@ -95,8 +109,16 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         string evidenceUri,
         uint256 resultCount
     );
+    /// @param reports Distinct auditors reporting `verdict` for this service and model this epoch.
+    /// @param required Reports `verdict` needs to be recorded; it is recorded once `reports` reaches it.
     event ServiceAudited(
-        uint256 indexed agentId, bytes32 indexed serviceHash, address indexed auditor, bytes32 modelHash, Verdict verdict
+        uint256 indexed agentId,
+        bytes32 indexed serviceHash,
+        address indexed auditor,
+        bytes32 modelHash,
+        Verdict verdict,
+        uint256 reports,
+        uint256 required
     );
     event ServiceStatusChanged(
         uint256 indexed agentId, bytes32 indexed serviceHash, bytes32 modelHash, Verdict previous, Verdict current
@@ -133,6 +155,9 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         } catch {}
         emissionsGate = IAntseedEmissionsGate(gate);
         _setSellerPools(sellerPools_);
+        requiredReports[Verdict.SAME] = 1;
+        requiredReports[Verdict.DIFF] = 2;
+        requiredReports[Verdict.UNDETERMINED] = 1;
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -155,6 +180,14 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         if (epochs == 0 || epochs > MAX_VALIDITY_EPOCHS) revert InvalidValue();
         validityEpochs = epochs;
         emit ValidityEpochsSet(epochs);
+    }
+
+    /// @notice Distinct approved auditors `verdict` needs in one epoch before it is recorded.
+    ///         Applies from the next report on.
+    function setRequiredReports(Verdict verdict, uint8 reports) external onlyOwner {
+        if (verdict == Verdict.NONE || reports == 0) revert InvalidValue();
+        requiredReports[verdict] = reports;
+        emit RequiredReportsSet(verdict, reports);
     }
 
     /// @notice Sets the per-auditor safety limit on credits per epoch.
@@ -254,8 +287,7 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
             }
             previousService = result.serviceHash;
             if (skipAgent) continue;
-            emit ServiceAudited(result.agentId, result.serviceHash, msg.sender, modelHash, result.verdict);
-            _applyResult(result.agentId, result.serviceHash, modelHash, result.verdict, epoch);
+            _report(result.agentId, result.serviceHash, modelHash, result.verdict, epoch);
         }
 
         emit ModelAudited(modelHash, msg.sender, expectedEpoch, evidenceHash, evidenceUri, count);
@@ -310,6 +342,31 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     // ═══════════════════════════════════════════════════════════════════
     //                        INTERNAL
     // ═══════════════════════════════════════════════════════════════════
+
+    /// @dev Counts the caller's report and records the verdict once enough auditors report it.
+    function _report(uint256 agentId, bytes32 serviceHash, bytes32 modelHash, Verdict verdict, uint256 epoch)
+        private
+    {
+        bytes32 key = keccak256(abi.encode(epoch, agentId, serviceHash, modelHash));
+        Verdict previous = _reports[key][msg.sender];
+        bool addsSupport = previous != verdict;
+        if (addsSupport) {
+            if (previous != Verdict.NONE) _reportCounts[key][previous] -= 1;
+            _reportCounts[key][verdict] += 1;
+            _reports[key][msg.sender] = verdict;
+        }
+        uint256 reports = _reportCounts[key][verdict];
+        uint256 required = requiredReports[verdict];
+        // Replacing a live DIFF takes as many auditors as giving one.
+        if (verdict != Verdict.DIFF && _liveVerdict(_serviceStatus[agentId][serviceHash], epoch) == Verdict.DIFF) {
+            uint256 diffRequired = requiredReports[Verdict.DIFF];
+            if (diffRequired > required) required = diffRequired;
+        }
+        emit ServiceAudited(agentId, serviceHash, msg.sender, modelHash, verdict, reports, required);
+        if (reports >= required && (addsSupport || required == 1)) {
+            _applyResult(agentId, serviceHash, modelHash, verdict, epoch);
+        }
+    }
 
     function _applyResult(uint256 agentId, bytes32 serviceHash, bytes32 modelHash, Verdict verdict, uint256 epoch)
         private

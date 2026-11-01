@@ -98,6 +98,13 @@ import { createReferenceRequestLimiter } from '../../../verifier/model-reference
 import { runDiffRechecks, type DiffRecheckStats } from '../../../verifier/diff-recheck.js'
 import { runExtensionRounds, type ExtensionRoundStats } from '../../../verifier/extension-round.js'
 import { CLOSE_CALL_RULE_ID } from '../../../verifier/close-call.js'
+import {
+  confirmationTargetsByModel,
+  describeTallies,
+  loadEpochReports,
+  pendingConfirmations,
+  type ConfirmationTarget,
+} from '../../../verifier/pending-confirmations.js'
 import { loadPendingDiffRechecks, pendingRecheckKey } from '../../../verifier/pending-rechecks.js'
 import { VerifierRunProgress } from './run-progress.js'
 import { failureOutcomeReason } from '../../../verifier/outcome-reason.js'
@@ -119,6 +126,8 @@ interface RunOptions {
   fresh?: boolean
   skipVersionCheck?: boolean
   maxRounds?: string
+  /** `--no-confirm` sets this to false. */
+  confirm?: boolean
 }
 
 /** Reference requests per model a run may spend on enrollment when `--max-enrollment-requests` isn't given. */
@@ -206,6 +215,72 @@ export async function loadApprovedAuditors(config: AntseedConfig, dataDir: strin
   return approvedAuditorsAt(events, epoch.startedAt)
 }
 
+/**
+ * Reports other auditors made this epoch that wait for a confirmation this auditor is to give, as
+ * the sellers to audit per model. Confirmations rotate like the assignment
+ * (`auditorRotationForModel`): the first auditor in a model's rotation that has not reported on the
+ * seller confirms it, and from halfway through the epoch any auditor that has not may. Nothing when
+ * the epoch is not on-chain or no verification contract is configured; a failed read is a warning,
+ * not a stop.
+ */
+export async function loadRunConfirmations(input: {
+  config: AntseedConfig
+  dataDir: string
+  auditorFlag?: string
+  epochWindow: AuditEpochWindow
+  /** Models whose waiting reports this run may confirm. */
+  models: readonly string[]
+  /** Auditors approved at the epoch's start, when already loaded. */
+  approvedAuditors?: readonly string[]
+  now?: number
+}): Promise<Map<string, Map<string, ConfirmationTarget>>> {
+  if (input.epochWindow.source !== 'onchain' || input.models.length === 0) return new Map()
+  let client: ReturnType<typeof createVerifierClient>
+  try {
+    client = createVerifierClient(input.config)
+  } catch {
+    return new Map()
+  }
+  try {
+    const auditor = await resolveAuditorAddress({
+      config: input.config.verifier, dataDir: input.dataDir, flag: input.auditorFlag,
+    })
+    const [auditors, reports, required] = await Promise.all([
+      input.approvedAuditors ?? loadApprovedAuditors(input.config, input.dataDir, input.epochWindow),
+      loadEpochReports({ reader: client, epochStartedAt: input.epochWindow.startedAt, deploymentBlock: client.deploymentBlock }),
+      client.requiredReports(),
+    ])
+    if (required.DIFF > auditors.length) {
+      console.warn(chalk.yellow(
+        `A DIFF needs ${required.DIFF} auditors but only ${auditors.length} ${auditors.length === 1 ? 'is' : 'are'} approved; no DIFF can be recorded.`,
+      ))
+    }
+    const pending = pendingConfirmations({
+      reports,
+      epoch: input.epochWindow.epoch,
+      epochStartedAt: input.epochWindow.startedAt,
+      epochEndsAt: input.epochWindow.endsAt,
+      now: input.now ?? Math.floor(Date.now() / 1_000),
+      auditor: auditor.address,
+      auditors,
+      auditedModels: configuredVerifierModels(input.config.verifier),
+      models: input.models,
+    })
+    if (pending.length > 0) {
+      const mine = pending.filter((entry) => entry.mine).length
+      console.log(chalk.cyan(`Reports waiting for a confirmation this epoch: ${pending.length}, ${mine} for this auditor`))
+      for (const entry of pending) {
+        const who = entry.mine ? 'auditing it now' : entry.confirmer ? `confirmer ${entry.confirmer}` : 'every approved auditor has reported'
+        console.log(chalk.cyan(`  ${entry.model}: agent ${entry.agentId} ${describeTallies(entry.waiting)} (${who})`))
+      }
+    }
+    return confirmationTargetsByModel(pending, (model) => verifierModelServices(input.config.verifier, model))
+  } catch (error) {
+    console.warn(chalk.yellow(`Could not read reports waiting for a confirmation: ${asError(error).message}`))
+    return new Map()
+  }
+}
+
 export function printAuditAssignment(
   assignment: AuditAssignment,
   context: { auditorSource?: string; approvedAuditors: readonly string[]; availableModels: readonly string[] },
@@ -287,6 +362,7 @@ export function registerVerifierRunCommand(verifier: Command): void {
     .option('--fresh', 'ignore this epoch\'s earlier runs and audit every eligible seller again')
     .option('--skip-version-check', 'run even if this CLI is older than the latest release (its results may not match other auditors)')
     .option('--max-rounds <count>', 'rounds per run: after a round, retry what is left (failures, waiting rechecks) until nothing is left or a round makes no progress', '3')
+    .option('--no-confirm', 'do not audit sellers whose verdicts from other auditors this epoch still wait for a confirmation')
     .action(async (modelValue: string | undefined, options: RunOptions, command: Command) => {
       validateAssignedModeOptions(modelValue, options)
       const last = await runVerifierRounds(
@@ -402,21 +478,18 @@ async function runVerifierRound(
       }
       let epochWindow = await resolveEpoch()
       let assignedModels: string[] | null = null
+      let approvedAuditors: string[] | undefined
       if (isAssignedMode(modelValue, options)) {
         const auditor = await resolveAuditorAddress({
           config: config.verifier, dataDir: globalOptions.dataDir, flag: options.auditor,
         })
-        const approvedAuditors = await loadApprovedAuditors(config, globalOptions.dataDir, epochWindow)
+        approvedAuditors = await loadApprovedAuditors(config, globalOptions.dataDir, epochWindow)
         const assignment = resolveAssignedAuditModels(config, auditor.address, epochWindow, approvedAuditors)
         printAuditAssignment(assignment, {
           auditorSource: describeAuditorSource(auditor.source),
           approvedAuditors,
           availableModels: configuredVerifierModels(config.verifier),
         })
-        if (assignment.models.length === 0) {
-          console.log('No model is assigned to this auditor this epoch (more approved auditors than models); nothing to audit.')
-          return { left: 0, secondsLeftInEpoch: Infinity }
-        }
         assignedModels = assignment.models
       }
       const selectedPeerId = options.peer ? normalizeVerifierPeerId(options.peer) : null
@@ -425,7 +498,32 @@ async function runVerifierRound(
       const requestedResumeManifest = options.resumeRun
         ? await readVerifierRunManifest(evidenceDir, options.resumeRun)
         : null
-      const models = assignedModels ?? resolveRunModels(config.verifier, modelValue, options.all === true, requestedResumeManifest)
+      const requestedModels = assignedModels ?? resolveRunModels(config.verifier, modelValue, options.all === true, requestedResumeManifest)
+      // Verdicts other auditors reported this epoch that still need more auditors: their sellers
+      // are audited here too, as the same model, on this auditor's own probes.
+      const confirmations = requestedResumeManifest || options.confirm === false
+        ? new Map<string, Map<string, ConfirmationTarget>>()
+        : await loadRunConfirmations({
+          config, dataDir: globalOptions.dataDir, auditorFlag: options.auditor, epochWindow, approvedAuditors,
+          // An explicit model run confirms only that model's reports; the assigned run confirms
+          // every audited model's it is responsible for.
+          models: assignedModels ? configuredVerifierModels(config.verifier) : requestedModels,
+        })
+      // Models outside this run's own models are audited only for the sellers awaiting a confirmation.
+      const confirmationOnly = new Map<string, Map<string, ConfirmationTarget>>([...confirmations].filter(([model]) => (
+        !requestedModels.some((entry) => entry.toLowerCase() === model.toLowerCase())
+      )))
+      const models = [...requestedModels, ...confirmationOnly.keys()]
+      if (models.length === 0) {
+        console.log('No model is assigned to this auditor this epoch (more approved auditors than models) and no report waits for a confirmation; nothing to audit.')
+        return { left: 0, secondsLeftInEpoch: Infinity }
+      }
+      const confirmationFor = (model: string, peer: { onChainAgentId?: number | bigint | string | null }) => (
+        peer.onChainAgentId != null ? confirmations.get(model)?.get(String(peer.onChainAgentId)) : undefined
+      )
+      const auditsPeer = (model: string, peer: { onChainAgentId?: number | bigint | string | null }): boolean => (
+        !confirmationOnly.has(model) || confirmationFor(model, peer) !== undefined
+      )
       const runLock = await acquirePidFileLock(join(evidenceDir, '.run.lock'))
       let responseAuthReader: Awaited<ReturnType<typeof openResponseAuthReader>> | null = null
       let status: VerifierStatusV1 | null = null
@@ -567,7 +665,7 @@ async function runVerifierRound(
           // Every model enrolls at once; one shared limiter caps the reference requests in flight.
           const requestLimiter = createReferenceRequestLimiter(config.verifier)
           const enrolled = await Promise.all(runModels.map(async (model) => {
-            const sellersToAudit = selectedPeers.filter((peer) => !isDone(model, peer.peerId)
+            const sellersToAudit = selectedPeers.filter((peer) => auditsPeer(model, peer) && !isDone(model, peer.peerId)
               && classifyVerificationTargetServices(
                 peer, verifierModelServices(config.verifier, model), targetPolicyFor(model),
               ).eligible)
@@ -645,6 +743,7 @@ async function runVerifierRound(
           const skipped: ModelVerificationSkip[] = []
           const configuredServices = verifierModelServices(config.verifier, model)
           const targets = selectedPeers.flatMap((peer) => {
+            if (!auditsPeer(model, peer)) return []
             const resumeCandidate = resumeCandidates.get(resumeKey(model, peer.peerId))
             const pendingRecheck = pendingRechecks.get(pendingRecheckKey(model, peer.peerId))
             if (resumeOnly && !resumeCandidate && !pendingRecheck) return []
@@ -652,9 +751,11 @@ async function runVerifierRound(
               doneCount += 1
               return []
             }
+            // A confirmation audits the service the other auditors reported on.
+            const confirmation = confirmationFor(model, peer)
             const services = resumeCandidate
               ? [resumeCandidate.service.toLowerCase(), ...configuredServices]
-              : configuredServices
+              : confirmation ? [confirmation.service, ...configuredServices] : configuredServices
             const eligibility = classifyVerificationTargetServices(peer, services, targetPolicyFor(model))
             if (eligibility.eligible) {
               const resumable = resumeCandidate

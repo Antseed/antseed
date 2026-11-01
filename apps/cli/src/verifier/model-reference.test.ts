@@ -1011,6 +1011,44 @@ test('reference build rejects a refused stability batch without aborting the tar
   }
 })
 
+test('reference build skips a stability batch the model filters as sensitive', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-sensitive-stability-'))
+  let refusedPrompt: string | null = null
+  const logs: string[] = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as {
+      model: string
+      temperature: number
+      messages: Array<{ content: string }>
+    }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (refusedPrompt === null && body.model === 'upstream-test' && !prompt.startsWith('Generate ') && body.temperature === 0) {
+      refusedPrompt = prompt
+    }
+    if (prompt === refusedPrompt && body.temperature === 0) {
+      // As OpenRouter relays Z.ai's content filter.
+      return Response.json({
+        choices: [{ message: { content: null }, finish_reason: 'stop', native_finish_reason: 'sensitive' }],
+        usage: { prompt_tokens: 100, completion_tokens: 0 },
+      })
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    const built = await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: config(),
+      fetchFn,
+      log: (message) => logs.push(message),
+    })
+    assert.equal(built.reference.probes.length, 100)
+    assert.equal(logs.some((message) => message.includes('skipping 10-probe stability batch')), true)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('reference build adaptively isolates and caches a refused self-test probe', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-refused-self-test-'))
   let refusedSelfTestAttempts = 0

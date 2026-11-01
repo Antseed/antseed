@@ -8,6 +8,7 @@ import { registerVerifierRewardsCommand } from './rewards.js'
 import { registerVerifierRunCommand } from './run.js'
 import { registerVerifierStatusCommand } from './status.js'
 import { registerVerifierSubmitCommand } from './submit.js'
+import { registerVerifierWatchCommand } from './watch.js'
 
 export function registerVerifierCommands(program: Command): void {
   const verifier = program
@@ -20,6 +21,7 @@ export function registerVerifierCommands(program: Command): void {
   registerVerifierStatusCommand(verifier)
   registerVerifierOverviewCommand(verifier)
   registerVerifierSubmitCommand(verifier)
+  registerVerifierWatchCommand(verifier)
   registerVerifierRewardsCommand(verifier)
   registerVerifierCheckCommand(verifier)
 }

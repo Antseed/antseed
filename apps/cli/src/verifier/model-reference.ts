@@ -96,7 +96,8 @@ const BARE_REASONING_STRATEGY = 'bare' as const
 const DISABLED_REASONING_REQUEST_OVERRIDES = { reasoning_effort: 'none' } as const
 const CONTRAST_EMPTY_BATCH_RETRIES = 2
 const CONTRAST_MAX_CONSECUTIVE_EMPTY_BATCHES = 3
-const TERMINAL_EMPTY_FINISH_REASONS = new Set(['content_filter', 'length', 'refusal'])
+// `sensitive` is how Z.ai (GLM) reports its content filter through OpenRouter, with finish reason `stop`.
+const TERMINAL_EMPTY_FINISH_REASONS = new Set(['content_filter', 'length', 'refusal', 'sensitive'])
 const REASONING_EFFORT_ASCENDING: readonly VerifierReasoningEffort[] = [
   'minimal',
   'low',
