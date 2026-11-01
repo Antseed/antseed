@@ -123,6 +123,14 @@ export interface PeerInfo {
   /** Proven wash share of the seller's volume, in basis points. */
   onChainWashShareBps?: number;
   /**
+   * Advertised services with a live DIFF verdict on `AntseedKbfVerification`, as
+   * trimmed lowercase service names. Each one keeps 10% of its effective
+   * reputation (see `effectiveModelReputationScore`). Absent when unread.
+   */
+  onChainDiffServices?: string[];
+  /** Unix ms of the verification read behind `onChainDiffServices`. */
+  onChainVerificationFetchedAt?: number;
+  /**
    * Unix ms when the buyer last refreshed on-chain stats for this peer.
    * Used to throttle repeat chain reads across discovery cycles.
    */

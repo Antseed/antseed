@@ -9,7 +9,11 @@ import { normalizeAdvertisedVerifierIds } from '@antseed/node/verifier-capabilit
 import {
   NATIVE_VIDEO_PROTOCOLS,
   buildNetworkServiceOffers,
+  canonicalModelKey,
+  effectiveModelReputationScore,
+  hasLiveDiffVerdict,
   isNativeVideoProtocol,
+  modelRouteTotalPrice,
   normalizedModelReputationScore,
   preferredModelDisplayName,
 } from '@antseed/node';
@@ -243,10 +247,25 @@ export function buildChatServiceCatalogFromPersistedPeers(payload: unknown): Cha
     })
     : [];
   const peersById = new Map(peers.map((peer) => [peer.peerId, peer]));
-  return buildNetworkServiceOffers(peers).flatMap((offer) => {
+  const offers = buildNetworkServiceOffers(peers);
+  // Same effective reputation as the live `/v1/models` catalog: a missing
+  // cached-input price counts only when another seller of the model lists one,
+  // and a service with a live DIFF verification verdict keeps 10%.
+  const cachedPricedModels = new Set(offers
+    .filter((offer) => offer.cachedInputUsdPerMillion !== undefined)
+    .map((offer) => canonicalModelKey(offer.serviceId)));
+  return offers.flatMap((offer) => {
     if (!offer.protocol) return [];
-    const peer = peersById.get(offer.peerId);
-    const effectiveReputationScore = peer ? normalizedModelReputationScore(peer as PeerInfo) : null;
+    const peer = peersById.get(offer.peerId) as PeerInfo | undefined;
+    const effectiveReputationScore = peer
+      ? effectiveModelReputationScore(
+          normalizedModelReputationScore(peer),
+          offer.cachedInputUsdPerMillion !== undefined,
+          cachedPricedModels.has(canonicalModelKey(offer.serviceId)),
+          modelRouteTotalPrice(offer) === 0,
+          hasLiveDiffVerdict(peer, offer.serviceId),
+        )
+      : null;
     return [{
       advertisedVerifierIds: offer.advertisedVerifierIds,
       id: offer.serviceId,
