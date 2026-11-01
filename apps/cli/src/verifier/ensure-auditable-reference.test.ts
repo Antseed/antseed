@@ -155,6 +155,25 @@ test('seller capacity makes no calls when every seller has enough unseen questio
   assert.deepEqual(calls, ['capacity'])
 })
 
+test('seller capacity honors --allow-probe-reuse when deciding whether to build fresh questions', async () => {
+  const { ensureSellerProbeCapacity } = await import('./ensure-auditable-reference.js')
+  const calls: string[] = []
+  const short = await ensureSellerProbeCapacity({
+    model: 'model-a', banksDir: '/banks', referencesDir: '/refs', config: undefined, maxRequests: 10,
+    epoch: '29', sellerPeerIds: ['aa'.repeat(20)], recheck: false, allowProbeReuse: true,
+  }, {
+    capacity: async (input) => {
+      calls.push('capacity')
+      // An exhausted bank the seller has seen in full: enough only when reuse is allowed.
+      const needed = input.allowProbeReuse && !input.recheck ? 0 : 100
+      return { selectedProbeCount: 100, sellers: [{ sellerPeerId: 'aa'.repeat(20), unseenProbeCount: 0, neededProbeCount: needed, assignedThisEpoch: false }] }
+    },
+    enrollFresh: async () => { calls.push('enroll'); return { addedProbeCount: 1, costUsdMicros: '1' } },
+  })
+  assert.deepEqual(short, [])
+  assert.deepEqual(calls, ['capacity'])
+})
+
 test('seller capacity stops after the round limit and returns the sellers still short', async () => {
   const { ensureSellerProbeCapacity, SELLER_CAPACITY_ENROLLMENT_ROUNDS } = await import('./ensure-auditable-reference.js')
   let enrolls = 0

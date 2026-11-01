@@ -2,7 +2,7 @@ import { join } from 'node:path'
 import type { VerifierCLIConfig } from '../config/types.js'
 import { acquirePidFileLock } from './atomic-files.js'
 import { findVerifierModel } from './model-config.js'
-import { buildModelReference, type ReferenceRequestLimiter } from './model-reference.js'
+import { buildModelReference, type ReferenceRequestAllowance, type ReferenceRequestLimiter } from './model-reference.js'
 import { loadConfiguredVerifierModelCatalog } from './openrouter-catalog.js'
 import {
   appendModelReferenceToBank,
@@ -39,6 +39,8 @@ export async function ensureAuditableReference(input: {
   buyerProxyPort?: number
   /** Shared across models enrolled at the same time, so they respect one concurrency limit. */
   requestLimiter?: ReferenceRequestLimiter
+  /** Requests this model may still send in the run, across every build and round. */
+  allowance?: ReferenceRequestAllowance
   log?: (message: string) => void
 }, operations: typeof dependencies = dependencies): Promise<void> {
   if (!Number.isSafeInteger(input.maxRequests) || input.maxRequests <= 0) {
@@ -76,6 +78,7 @@ export async function ensureAuditableReference(input: {
       catalog,
       buyerProxyPort: input.buyerProxyPort,
       requestLimiter: input.requestLimiter,
+      ...(input.allowance ? { allowance: input.allowance } : {}),
       initialReference,
       log: input.log,
     })
@@ -108,6 +111,7 @@ export async function enrollFreshProbes(input: {
   maxRequests: number
   buyerProxyPort?: number
   requestLimiter?: ReferenceRequestLimiter
+  allowance?: ReferenceRequestAllowance
   log?: (message: string) => void
 }, operations: typeof dependencies = dependencies): Promise<{ addedProbeCount: number; costUsdMicros: string }> {
   if (!Number.isSafeInteger(input.maxRequests) || input.maxRequests <= 0) {
@@ -137,6 +141,7 @@ export async function enrollFreshProbes(input: {
       catalog,
       buyerProxyPort: input.buyerProxyPort,
       ...(input.requestLimiter ? { requestLimiter: input.requestLimiter } : {}),
+      ...(input.allowance ? { allowance: input.allowance } : {}),
       log: input.log,
       excludedProbeIds: new Set(bank?.probeIds ?? []),
       ...(settingsReference ? { settingsReference } : {}),
@@ -176,8 +181,11 @@ export async function ensureSellerProbeCapacity(input: {
   epoch: string
   sellerPeerIds: readonly string[]
   recheck: boolean
+  /** `--allow-probe-reuse`: the first audit may reuse seen questions; a DIFF recheck still needs unseen ones. */
+  allowProbeReuse?: boolean
   buyerProxyPort?: number
   requestLimiter?: ReferenceRequestLimiter
+  allowance?: ReferenceRequestAllowance
   log?: (message: string) => void
 }, operations: {
   capacity: typeof inspectSellerProbeCapacity
@@ -188,6 +196,7 @@ export async function ensureSellerProbeCapacity(input: {
     const capacity = await operations.capacity({
       banksDir: input.banksDir, model: input.model, epoch: input.epoch,
       sellerPeerIds: input.sellerPeerIds, recheck: input.recheck, config: input.config,
+      allowProbeReuse: input.allowProbeReuse === true,
     })
     return capacity.sellers.filter((seller) => seller.unseenProbeCount < seller.neededProbeCount)
   }
@@ -202,6 +211,7 @@ export async function ensureSellerProbeCapacity(input: {
       model: input.model, banksDir: input.banksDir, referencesDir: input.referencesDir, config: input.config,
       maxRequests: input.maxRequests, buyerProxyPort: input.buyerProxyPort,
       ...(input.requestLimiter ? { requestLimiter: input.requestLimiter } : {}),
+      ...(input.allowance ? { allowance: input.allowance } : {}),
       ...(input.log ? { log: input.log } : {}),
     })
     if (enrolled.addedProbeCount === 0) {

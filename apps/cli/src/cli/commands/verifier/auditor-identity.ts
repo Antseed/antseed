@@ -3,15 +3,13 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { getAddress, Wallet, type AbstractSigner } from 'ethers'
 import type { VerifierCLIConfig } from '../../../config/types.js'
-import { loadCryptoContext } from '../../payment-utils.js'
+import { listBuyerIdentities, readDefaultWallet, storedDefaultIdentityAddress } from '../../../buyer-identities/store.js'
 import { promptHidden } from '../../prompt-hidden.js'
-
-export type AuditorSource = 'flag' | 'config' | 'keystore' | 'data-dir'
 
 export interface AuditorSigner {
   wallet: AbstractSigner
   address: string
-  source: Exclude<AuditorSource, 'flag' | 'config'> | 'flag-keystore'
+  source: 'keystore' | 'flag-keystore'
 }
 
 function expandHome(path: string): string {
@@ -19,13 +17,6 @@ function expandHome(path: string): string {
   if (value === '~') return homedir()
   if (value.startsWith('~/')) return join(homedir(), value.slice(2))
   return resolve(value)
-}
-
-/** The address an encrypted JSON keystore belongs to, read without decrypting when the file records it. */
-export async function keystoreAddress(path: string): Promise<string | null> {
-  const parsed = JSON.parse(await readFile(expandHome(path), 'utf8')) as { address?: unknown }
-  if (typeof parsed.address !== 'string' || !/^(0x)?[0-9a-fA-F]{40}$/.test(parsed.address)) return null
-  return getAddress(parsed.address.startsWith('0x') ? parsed.address : `0x${parsed.address}`)
 }
 
 export async function loadKeystoreSigner(path: string): Promise<{ wallet: AbstractSigner; address: string }> {
@@ -43,55 +34,56 @@ function checkConfiguredAuditor(config: VerifierCLIConfig | undefined, address: 
   }
 }
 
+const IDENTITY_HEX_ENV = 'ANTSEED_IDENTITY_HEX'
+
+/** Explains how to give a verifier its own key; the buyer's hot wallet only ever signs. */
+export const DEDICATED_SIGNER_HELP =
+  'Create a dedicated verifier key (for example `cast wallet new ~/.antseed-verifier-keystore` or '
+  + '`cast wallet import verifier --interactive`), fund that address with ETH for gas, and pass it with '
+  + '--keystore or verifier.keystore (password from ANTSEED_KEYSTORE_PASSWORD).'
+
 /**
- * The auditor address without unlocking a signer, for model assignment and read-only commands:
- * `--auditor`, then `verifier.auditor`, then the address recorded in `verifier.keystore`, then the
- * data-dir identity. A keystore that does not record its address is unlocked.
+ * Every buyer hot-wallet address of a data dir: the default identity (as the buyer loads it,
+ * including ANTSEED_IDENTITY_HEX), the stored identity.key, and each named buyer identity.
  */
-export async function resolveAuditorAddress(input: {
-  config: VerifierCLIConfig | undefined
-  dataDir: string
-  flag?: string
-}): Promise<{ address: string; source: AuditorSource }> {
-  if (input.flag?.trim()) return { address: getAddress(input.flag.trim()), source: 'flag' }
-  const keystore = input.config?.keystore
-  if (input.config?.auditor) {
-    const address = getAddress(input.config.auditor)
-    if (keystore) {
-      const recorded = await keystoreAddress(keystore)
-      if (recorded) checkConfiguredAuditor(input.config, recorded, `the address in verifier.keystore`)
-    }
-    return { address, source: 'config' }
+export async function buyerHotAddresses(dataDir: string): Promise<Set<string>> {
+  const addresses = new Set<string>()
+  const add = (address: string | null | undefined) => {
+    if (address) addresses.add(getAddress(address))
   }
-  if (keystore) {
-    const address = await keystoreAddress(keystore) ?? (await loadKeystoreSigner(keystore)).address
-    return { address, source: 'keystore' }
+  // Reading the default identity consumes ANTSEED_IDENTITY_HEX (the node clears it once loaded),
+  // but the buyer this command starts next must still inherit it: put it back.
+  const envIdentity = process.env[IDENTITY_HEX_ENV]
+  try {
+    add((await readDefaultWallet(dataDir).catch(() => ({ address: null }))).address)
+  } finally {
+    if (envIdentity !== undefined) process.env[IDENTITY_HEX_ENV] = envIdentity
   }
-  return { address: (await loadCryptoContext(input.dataDir)).address, source: 'data-dir' }
+  add(await storedDefaultIdentityAddress(dataDir))
+  for (const identity of await listBuyerIdentities(dataDir)) add(identity.address)
+  return addresses
 }
 
 /**
- * The signer for `submit` and `rewards --claim`: `--keystore`, then `verifier.keystore`, then the
- * data-dir identity. Fails when `verifier.auditor` names a different address.
+ * The signer for `verifier start` and `verifier publish`: `--keystore`, then `verifier.keystore`.
+ * The verifier pays gas and receives ANTS rewards, so it must be a dedicated key: there is no
+ * fallback to the data-dir identity, and a keystore that resolves to any of the data dir's buyer
+ * wallets is refused. Fails when `verifier.auditor` names a different address.
  */
 export async function resolveAuditorSigner(input: {
   config: VerifierCLIConfig | undefined
   dataDir: string
   keystoreFlag?: string
 }): Promise<AuditorSigner> {
-  const keystore = input.keystoreFlag?.trim() || input.config?.keystore
-  const signer = keystore
-    ? { ...await loadKeystoreSigner(keystore), source: input.keystoreFlag?.trim() ? 'flag-keystore' as const : 'keystore' as const }
-    : await loadCryptoContext(input.dataDir).then(({ wallet, address }) => ({ wallet: wallet as AbstractSigner, address, source: 'data-dir' as const }))
-  checkConfiguredAuditor(input.config, signer.address, keystore ? 'the keystore signer' : 'the data-dir identity')
-  return signer
-}
-
-export function describeAuditorSource(source: AuditorSource): string {
-  switch (source) {
-    case 'flag': return '--auditor'
-    case 'config': return 'verifier.auditor'
-    case 'keystore': return 'verifier.keystore'
-    case 'data-dir': return 'data-dir identity'
+  const flag = input.keystoreFlag?.trim()
+  const keystore = flag || input.config?.keystore?.trim()
+  if (!keystore) {
+    throw new Error(`verifier start and verifier publish need a dedicated signer, never the buyer identity. ${DEDICATED_SIGNER_HELP}`)
   }
+  const signer = { ...await loadKeystoreSigner(keystore), source: flag ? 'flag-keystore' as const : 'keystore' as const }
+  if ((await buyerHotAddresses(input.dataDir)).has(getAddress(signer.address))) {
+    throw new Error(`the verifier keystore ${getAddress(signer.address)} is a buyer wallet of this data dir; the buyer wallet must never pay gas or receive rewards. ${DEDICATED_SIGNER_HELP}`)
+  }
+  checkConfiguredAuditor(input.config, signer.address, 'the keystore signer')
+  return signer
 }

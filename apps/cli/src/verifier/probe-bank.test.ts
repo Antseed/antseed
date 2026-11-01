@@ -507,6 +507,20 @@ test('pre-run capacity counts each seller\'s unseen questions against an audit p
       banksDir: directory, model: 'model-a', epoch: '28', sellerPeerIds: [fresh], recheck: true, config,
     })
     assert.deepEqual(after.sellers.map((entry) => [entry.unseenProbeCount, entry.neededProbeCount, entry.assignedThisEpoch]), [[100, 100, true]])
+    // The recheck set reserved this epoch is reused, so nothing unseen is needed any more.
+    await reserveDiffRecheckReference({
+      banksDir: directory, model: 'model-a', sellerPeerId: fresh, service: 'model-a',
+      runId: 'now', epoch: '28', config, shuffle: identityShuffle,
+    })
+    const reserved = await inspectSellerProbeCapacity({
+      banksDir: directory, model: 'model-a', epoch: '28', sellerPeerIds: [fresh], recheck: true, config,
+    })
+    assert.deepEqual(reserved.sellers.map((entry) => [entry.unseenProbeCount, entry.neededProbeCount]), [[0, 0]])
+    // A new epoch needs a new audit and recheck set again.
+    const nextEpoch = await inspectSellerProbeCapacity({
+      banksDir: directory, model: 'model-a', epoch: '29', sellerPeerIds: [fresh], recheck: true, config,
+    })
+    assert.deepEqual(nextEpoch.sellers.map((entry) => [entry.unseenProbeCount, entry.neededProbeCount]), [[0, 200]])
     await assert.rejects(inspectSellerProbeCapacity({
       banksDir: directory, model: 'missing-model', epoch: '28', sellerPeerIds: [fresh], recheck: true, config,
     }), /no probe bank exists for missing-model/)

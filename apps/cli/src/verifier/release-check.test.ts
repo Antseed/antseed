@@ -31,9 +31,9 @@ test('an unreachable registry or an odd answer makes the check unavailable', asy
   assert.equal((await checkVerifierRelease({ localVersion: 'dev', fetch: fakeNpm({ latest: '0.1.216' }) })).status, 'unavailable')
 })
 
-test('an outdated CLI cannot run or submit', async () => {
+test('an outdated CLI cannot run or start a verifier', async () => {
   const outdated = async () => ({ status: 'outdated' as const, latestVersion: '0.2.0' })
-  for (const command of ['run', 'submit'] as const) {
+  for (const command of ['run', 'start'] as const) {
     await assert.rejects(
       requireCurrentVerifier({ command, currentVersion: '0.1.0', skip: false, strictWhenUnavailable: false, warn: () => undefined, check: outdated }),
       /this CLI \(0\.1\.0\) is older than the latest @antseed\/cli 0\.2\.0\. Update with `antseed update`/,
@@ -41,14 +41,14 @@ test('an outdated CLI cannot run or submit', async () => {
   }
 })
 
-test('when the check cannot be made, run warns and a real submit stops', async () => {
+test('when the check cannot be made, it warns, or stops when strict', async () => {
   const unavailable = async () => ({ status: 'unavailable' as const, reason: 'offline' })
   const warnings: string[] = []
   const warn = (text: string) => { warnings.push(text) }
   await requireCurrentVerifier({ command: 'run', currentVersion: '0.1.0', skip: false, strictWhenUnavailable: false, warn, check: unavailable })
   assert.match(warnings[0]!, /Could not check that this verifier is up to date: offline/)
   await assert.rejects(
-    requireCurrentVerifier({ command: 'submit', currentVersion: '0.1.0', skip: false, strictWhenUnavailable: true, warn, check: unavailable }),
+    requireCurrentVerifier({ command: 'start', currentVersion: '0.1.0', skip: false, strictWhenUnavailable: true, warn, check: unavailable }),
     /--skip-version-check/,
   )
 })
@@ -56,7 +56,7 @@ test('when the check cannot be made, run warns and a real submit stops', async (
 test('--skip-version-check skips the check with a warning', async () => {
   const warnings: string[] = []
   const result = await requireCurrentVerifier({
-    command: 'submit', currentVersion: '0.1.0', skip: true, strictWhenUnavailable: true,
+    command: 'start', currentVersion: '0.1.0', skip: true, strictWhenUnavailable: true,
     warn: (text) => { warnings.push(text) },
     check: async () => { throw new Error('must not be called') },
   })

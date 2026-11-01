@@ -45,8 +45,9 @@ import {
 import { recordErrors } from './validate-contract-deployments.mjs';
 import { assertSignerOwners, parseSignerSpecs, resolveSigners, signerEnvironment } from './deployments/runtime/signers.mjs';
 import { parseSandboxArgs } from './m001-sandbox.mjs';
-import { renderNetwork } from './generate-contract-chain-config.mjs';
+import { renderNetwork, ROUND_VERIFICATION_PROTOCOL } from './generate-contract-chain-config.mjs';
 import { activationRecords, migration as m003, parseBonusBps, rejectAuditorList, RELEASE as M003_RELEASE, verificationOwner } from './deployments/m003.mjs';
+import { activationRecords as m004ActivationRecords, migration as m004, RELEASE as M004_RELEASE } from './deployments/m004.mjs';
 
 const ADDRESS = {
   registry: '0x0000000000000000000000000000000000000001',
@@ -384,6 +385,30 @@ test('renders the verification deployment block so verifier log scans have a sta
   assert.equal(renderNetwork({ chainId: 8453, contracts: {} }).verificationDeployBlock, undefined);
 });
 
+test('never publishes the single-auditor 003 contract as the verification default', async () => {
+  const current = JSON.parse(await readFile('packages/contracts/deployments/base-mainnet/current.json', 'utf8'));
+  const singleAuditor = JSON.parse(await readFile('packages/contracts/deployments/base-mainnet/history/003-kbf-verification.json', 'utf8'));
+  const rendered = renderNetwork(current, null, singleAuditor);
+  assert.equal(rendered.verificationContractAddress, undefined);
+  assert.equal(rendered.verificationDeployBlock, undefined);
+  const replaced = structuredClone(current);
+  replaced.contracts.kbfVerification = { address: ADDRESS.registry, deploymentBlock: 456 };
+  assert.equal(renderNetwork(replaced, null, singleAuditor).verificationContractAddress, ADDRESS.registry);
+  assert.equal(renderNetwork(replaced, null, singleAuditor).verificationDeployBlock, 456);
+});
+
+test('publishes a round contract freshly deployed by M003 as the verification default', async () => {
+  const current = JSON.parse(await readFile('packages/contracts/deployments/base-mainnet/current.json', 'utf8'));
+  const legacy = JSON.parse(await readFile('packages/contracts/deployments/base-mainnet/history/003-kbf-verification.json', 'utf8'));
+  const fresh = structuredClone(legacy);
+  fresh.verificationConfiguration.verificationRegistry.protocol = ROUND_VERIFICATION_PROTOCOL;
+  current.contracts.kbfVerification = { ...fresh.contracts.kbfVerification, deploymentBlock: 789 };
+  const rendered = renderNetwork(current, null, fresh);
+  assert.equal(rendered.verificationContractAddress, fresh.contracts.kbfVerification.address);
+  assert.equal(rendered.verificationDeployBlock, 789);
+  assert.equal(renderNetwork(current, null, legacy).verificationContractAddress, undefined);
+});
+
 test('parses signer specs and resolves them to addresses, never keys', async () => {
   assert.deepEqual(parseSignerSpecs(['a=ledger', 'b=keystore:/k/b']), { a: 'ledger', b: 'keystore:/k/b' });
   assert.throws(() => parseSignerSpecs(['a=ledger', 'a=ledger:1']), /given twice/);
@@ -479,7 +504,7 @@ test('reports incomplete network baselines before deployment', () => {
 
 test('registers migrations explicitly', () => {
   assert.equal(getDeploymentMigration('M001').id, 'M001');
-  assert.deepEqual([...deploymentMigrations.keys()], ['M001', 'M002', 'M003']);
+  assert.deepEqual([...deploymentMigrations.keys()], ['M001', 'M002', 'M003', 'M004']);
   assert.equal(getDeploymentMigration('M002').id, 'M002');
 });
 
@@ -612,6 +637,8 @@ for (const broadcast of [true, false]) {
 
 function mockCast(t, reply) {
   t.mock.method(childProcess, 'spawnSync', (command, args) => {
+    // A fresh checkpoint records the source commit; reading it deploys nothing.
+    if (command === 'git' && args[0] === 'rev-parse') return { status: 0, stdout: `${'b'.repeat(40)}\n`, stderr: '' };
     assert.equal(command, 'cast', 'no deployment commands may run');
     return { status: 0, stdout: reply(args), stderr: '' };
   });
@@ -2081,7 +2108,7 @@ test('M003 refuses an auditor list: it never approves auditors', () => {
   assert.doesNotThrow(() => rejectAuditorList(undefined));
   assert.doesNotThrow(() => rejectAuditorList(''));
   assert.doesNotThrow(() => rejectAuditorList('  '));
-  assert.throws(() => rejectAuditorList(ADDRESS.registry), /does not approve auditors/);
+  assert.throws(() => rejectAuditorList(ADDRESS.registry), /does not approve verifiers/);
 });
 
 test('M003 defaults and validates the bonus', () => {
@@ -2117,8 +2144,17 @@ function m003Checkpoint() {
   };
 }
 
-test('M003 activation preserves previous contracts/configuration and generates its address', async () => {
+/** Base mainnet as it was before M003 recorded the single-auditor deployment. */
+async function preM003Baseline() {
   const baseline = JSON.parse(await readFile('packages/contracts/deployments/base-mainnet/current.json', 'utf8'));
+  delete baseline.contracts.kbfVerification;
+  delete baseline.contracts.kbfVerificationPointsPolicy;
+  delete baseline.verificationConfiguration.verificationRegistry;
+  return baseline;
+}
+
+test('M003 activation preserves previous contracts/configuration and generates its address', async () => {
+  const baseline = await preM003Baseline();
   const original = structuredClone(baseline);
   const { record, current } = activationRecords({ network: 'base-mainnet', canonical: baseline }, m003Checkpoint());
   assert.deepEqual(m003.recordErrors(record), []);
@@ -2131,6 +2167,9 @@ test('M003 activation preserves previous contracts/configuration and generates i
   }
   assert.equal(current.contracts.kbfVerification.deployedInRelease, true);
   assert.equal(renderNetwork(current).verificationContractAddress, ADDRESS.sellerRegistry);
+  assert.equal(record.verificationConfiguration.verificationRegistry.protocol, ROUND_VERIFICATION_PROTOCOL);
+  // Its own 003 history record does not retire the round contract it just deployed.
+  assert.equal(renderNetwork(current, null, record).verificationContractAddress, ADDRESS.sellerRegistry);
   assert.equal(renderNetwork(original).verificationContractAddress, undefined);
   const deployed = JSON.parse(await readFile('packages/contracts/deployments/base-mainnet/history/001-recognized-usage-deployed.json', 'utf8'));
   assert.deepEqual(renderNetwork(current, deployed).recognizedUsage, renderNetwork(original, deployed).recognizedUsage);
@@ -2185,7 +2224,7 @@ test('M003 rejects an auditor list, a changed bonus or baseline before sending t
     assert.fail(`unexpected call ${args}`);
   });
   process.env.VERIFICATION_AUDITORS = ADDRESS.registry;
-  await assert.rejects(m003.observe(context), /does not approve auditors/);
+  await assert.rejects(m003.observe(context), /does not approve verifiers/);
   delete process.env.VERIFICATION_AUDITORS;
   process.env.VERIFICATION_BONUS_BPS = '200';
   await assert.rejects(m003.observe(context), /bonus differs/);
@@ -2210,6 +2249,54 @@ test('M003 repairs history-only activation without a deployment or rewriting his
   assert.equal(await m003.finalize(context, observation, 'broadcast'), false);
   context.canonical.release = '004-future-release';
   assert.equal(await m003.finalize(context, observation, 'broadcast'), false);
+});
+
+test('re-running M003 after M004 replaced its round contract leaves the M004 pointers alone', async (t) => {
+  const checkpoint = m003Checkpoint();
+  const context = await m003Context(t, checkpoint);
+  const { record } = activationRecords(context, checkpoint);
+  await writeJsonAtomic(path.join(context.outputRoot, context.network, 'history', `${M003_RELEASE}.json`), record);
+  // M004 is current: its own verification contract and policy.
+  const m004 = structuredClone(context.canonical);
+  m004.release = M004_RELEASE;
+  m004.contracts.kbfVerification = { ...checkpoint.contracts.kbfVerification, address: ADDRESS.ants };
+  const currentPath = path.join(context.outputRoot, context.network, 'current.json');
+  await writeJsonAtomic(currentPath, m004);
+  context.canonical = m004;
+  const before = await readFile(currentPath, 'utf8');
+  assert.equal(await m003.finalize(context, { state: 'active', deployment: { checkpoint } }, 'broadcast'), false);
+  assert.equal(await readFile(currentPath, 'utf8'), before, 'current.json still points at M004');
+});
+
+test('re-running M003 is a no-op for the recorded single-auditor deployment and after M004, before any code comparison', async (t) => {
+  const checkpoint = m003Checkpoint();
+  const context = await m003Context(t, checkpoint);
+  mockCast(t, (args) => {
+    if (args[0] === 'chain-id') return '8453';
+    if (args[0] === 'code') return '0x01';
+    if (args[0] === 'call') {
+      if (args[2] === 'sellerPools()(address)') return ADDRESS.sellerRewardsPool;
+      if (args[2] === 'pointsPolicy()(address)') return ADDRESS.pointsPolicyRegistry;
+      return ADDRESS.channels;
+    }
+    assert.fail(`unexpected call ${args}`);
+  });
+  const history = path.join(context.outputRoot, context.network, 'history', `${M003_RELEASE}.json`);
+  const { record } = activationRecords(context, checkpoint);
+  // The single-auditor record, as Base mainnet has it: no round protocol marker.
+  const legacy = structuredClone(record);
+  delete legacy.verificationConfiguration.verificationRegistry.protocol;
+  await writeJsonAtomic(history, legacy);
+  context.canonical.contracts.kbfVerification = { address: checkpoint.address };
+  const observedLegacy = await m003.observe(context);
+  assert.equal(observedLegacy.state, 'legacy');
+  assert.match(m003.idleMessage(observedLegacy), /single-auditor deployment; no transactions required/);
+  // A round deployment of M003 that M004 replaced.
+  await writeJsonAtomic(history, record);
+  context.canonical.contracts.kbfVerification = { address: ADDRESS.ants };
+  const observedSuperseded = await m003.observe(context);
+  assert.equal(observedSuperseded.state, 'superseded');
+  assert.equal(await m003.finalize(context, observedSuperseded, 'broadcast'), false);
 });
 
 test('M003 binds the deploy signer and environment to the original checkpoint', () => {
@@ -2269,6 +2356,7 @@ function mockM003Chain(t, options, context) {
   mockCast(t, (args) => {
     if (args[0] === 'chain-id') return options.chainId ?? '8453';
     if (args[0] === 'nonce') return options.nonce ?? '7';
+    if (args[0] === 'compute-address') return `Computed Address: ${args[3] === '7' ? checkpoint.address : checkpoint.policyAddress}`;
     if (args[0] === 'codehash') return `0x${'a'.repeat(64)}`;
     if (args[0] === 'receipt') return JSON.stringify({ status: options.receiptStatus ?? '0x1' });
     if (args[0] === 'code') {
@@ -2408,4 +2496,36 @@ test('published M001 address inventories match the immutable deployment record',
       assert.ok(document.includes(contract.address.toLowerCase()), `${file} is missing ${name}`);
     }
   }
+});
+
+test('M004 deploys the round contract over the recorded single-auditor contract', async (t) => {
+  assert.equal(getDeploymentMigration('M004'), m004);
+  assert.equal(M004_RELEASE, '004-kbf-rounds');
+  const resolved = resolveRehearsal(m004, { ...REHEARSAL_OPTIONS, migration: 'M004' }, deploymentMigrations);
+  assert.deepEqual(resolved.migrations.map((entry) => entry.id), ['M001', 'M004']);
+
+  const checkpoint = m003Checkpoint();
+  const context = await m003Context(t, checkpoint);
+  await rm(context.checkpointFile);
+  const singleAuditor = { ...m003Checkpoint().contracts.kbfVerification, address: ADDRESS.channels };
+  context.canonical.contracts.kbfVerification = singleAuditor;
+  const options = { code: '0x', nonce: '7', broadcast: { transactions: [{ contractName: 'AntseedKbfVerification', contractAddress: ADDRESS.channels }] } };
+  mockM003Chain(t, options, context);
+  process.env.VERIFICATION_OWNER = checkpoint.owner;
+  await assert.rejects(m003.observe(context), /verification exists without its history record/);
+  await assert.rejects(m004.observe(context), /verification exists without its history record/, 'no 003 history: nothing to replace');
+
+  const history = path.join(context.outputRoot, context.network, 'history', `${M003_RELEASE}.json`);
+  await writeJsonAtomic(history, { contracts: { kbfVerification: singleAuditor } });
+  const originalHistory = await readFile(history, 'utf8');
+  assert.equal((await m004.observe(context)).state, 'ready', 'the 003 broadcast is not a lost M004 deployment');
+  options.broadcast.transactions[0].contractAddress = ADDRESS.ants;
+  await assert.rejects(m004.observe(context), /restore its checkpoint or history/);
+
+  const { record, current } = m004ActivationRecords(context, checkpoint);
+  assert.equal(record.release, M004_RELEASE);
+  assert.deepEqual(m004.recordErrors(record), []);
+  assert.equal(current.contracts.kbfVerification.address, ADDRESS.sellerRegistry);
+  assert.equal(renderNetwork(current, null, JSON.parse(originalHistory)).verificationContractAddress, ADDRESS.sellerRegistry);
+  assert.equal(await readFile(history, 'utf8'), originalHistory, 'M004 never rewrites the 003 history record');
 });

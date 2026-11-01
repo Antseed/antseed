@@ -18,7 +18,7 @@ import {
 import { canonicalHash } from '../../canonical-json.js';
 import { computeMatchVector } from './scoring.js';
 import { computeKbfVerdict } from './verdict.js';
-import { subsetReferenceSelfTest, type KbfReferenceV1 } from './reference.js';
+import { rescoreKbfSelfTestOutcome, subsetReferenceSelfTest, type KbfReferenceV1 } from './reference.js';
 
 export * from './prompts.js';
 export * from './parser.js';
@@ -32,9 +32,10 @@ export const KBF_KIND = 'kbf';
 /**
  * Verification options for KBF audits of a seller or endpoint. Missing answers are
  * left unscored, and at least half the probes must be scored, as in the KBF paper (v3)
- * and its reference code; below that the verdict is UNDETERMINED. A DIFF additionally
- * needs 80% of the probes scored, so a seller cannot steer the verdict by leaving out
- * answers it would get wrong.
+ * and its reference code; below that the verdict is UNDETERMINED. A DIFF from the
+ * answered probes alone needs 80% of them scored. Leaving answers out never helps a
+ * seller: a DIFF that holds with every missing answer counted as a match stands at any
+ * coverage, and a SAME must also hold with every missing answer counted as a mismatch.
  */
 export const KBF_AUDIT_VERIFY_OPTIONS = { minCoverage: 0.5, minDiffCoverage: 0.8 } as const satisfies VerifyKbfOptions;
 
@@ -99,9 +100,17 @@ export function verifyKbf(
 
     let selectedSelfTest;
     try {
+      // Score the baseline by the same rule as the target: a legacy reference stores a missing
+      // self-test answer as a discrepancy, which would inflate p0 and hide a DIFF.
+      const kbf = reference as KbfReferenceV1;
+      const probesById = new Map(kbf.probes.map((probe) => [probe.id, probe]));
+      const outcomes = kbf.selfTest.outcomes.map((outcome) => {
+        const probe = probesById.get(outcome.probeId);
+        return probe ? rescoreKbfSelfTestOutcome(outcome, probe) : outcome;
+      });
       selectedSelfTest = subsetReferenceSelfTest(
-        reference as KbfReferenceV1,
-        reference.probes.map((probe) => probe.id),
+        { probes: kbf.probes, selfTest: { ...kbf.selfTest, outcomes } },
+        kbf.probes.map((probe) => probe.id),
       );
     } catch (error) {
       return unknown(`invalid reference self-test: ${error instanceof Error ? error.message : String(error)}`);

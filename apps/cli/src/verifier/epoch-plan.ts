@@ -1,22 +1,11 @@
 import { readFile } from 'node:fs/promises'
-import { join } from 'node:path'
-import { canonicalHashBytes32 } from '@antseed/fingerprints'
-import { writeJsonAtomic } from './atomic-files.js'
-import {
-  epochDirectory,
-  type ModelAuditSummaryV1,
-  type VerifierRunManifestV1,
-} from './audit-artifacts.js'
-import { epochRunManifests } from './epoch-overview.js'
-import { finalAuditVerdict } from './model-audit.js'
+import { epochRunManifests, type ModelAuditSummaryV1, type VerifierRunManifestV1 } from './audit-artifacts.js'
+import { finalAuditVerdict } from './diff-recheck.js'
 import type {
   ModelVerificationFailure,
   ModelVerificationSkip,
   ModelVerificationTargetResult,
 } from './model-run.js'
-import { addAuditCostSummaries, emptyAuditCostSummary } from './proxy-evidence.js'
-import { safeServiceSlug } from './slug.js'
-import { normalized } from './utils.js'
 
 /**
  * Who caused a failed or UNDETERMINED audit. `auditor` failures (our buyer refused the seller, our
@@ -40,7 +29,8 @@ const AUDITOR_TEXT = [
   /unseen questions/i,
   /\benrol(?:l)?ment\b/i,
   /reference (?:endpoint|credits?)/i,
-  /buyer proxy/i,
+  // Our own buyer being down, not a request through it (a seller timeout also says "buyer proxy").
+  /buyer proxy (?:state|is not connected|has no live)/i,
 ]
 
 const SELLER_CODES = new Set([
@@ -75,11 +65,13 @@ export interface EpochCell {
   peerId: string
   runId: string
   state: EpochCellState
-  /** Audits that reached the seller this epoch (results and failures, not skips). */
+  /** Audits that reached the seller this epoch: results, failures and runtime skips (not preflight skips). */
   attempts: number
   blame: FailureBlame | null
   reason: string | null
   skipCode: string | null
+  /** Where the latest skip was decided: before any request (`preflight`, `policy`, …) or during the audit (`runtime`). */
+  skipSource: string | null
   /** The result submitted for this cell, when there is one. */
   result: ModelVerificationTargetResult | null
   action: EpochCellAction
@@ -106,8 +98,12 @@ export function epochCellAction(cell: Omit<EpochCell, 'action'>): EpochCellActio
     case 'pending_diff':
       return 'recheck'
     case 'skipped':
-      // A skip is decided before any request, so it is re-evaluated each run (a seller may have
-      // lowered its price, or the model is advertised again).
+      // A skip decided during the audit came after paid requests the seller could not serve
+      // (bad upstream credentials, an incompatible request profile, a stale advertisement): it
+      // gets the same attempts as a seller failure.
+      if (cell.skipSource === 'runtime') return cell.attempts < SELLER_FAILURE_ATTEMPTS ? 'audit' : 'done'
+      // Any other skip is decided before any request, so it is re-evaluated each run (a seller
+      // may have lowered its price, or the model is advertised again).
       return 'audit'
     case 'undetermined':
       // A DIFF the recheck did not confirm, or a seller that answered and was simply too close to
@@ -142,6 +138,8 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
     failure: { entry: ModelVerificationFailure; runId: string } | null
     skip: { entry: ModelVerificationSkip; runId: string } | null
     last: 'result' | 'pending' | 'failure' | 'skip'
+    /** What the newest audit that reached the seller ended with; preflight skips are not attempts. */
+    lastAttempt: 'result' | 'pending' | 'failure' | 'runtime-skip' | null
   }
   const acc = new Map<string, Acc>()
   const get = (model: string, peerId: string, runId: string): Acc => {
@@ -150,7 +148,7 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
     if (!entry) {
       entry = {
         model, peerId, runId, attempts: 0, result: null, resultRunId: null,
-        pending: null, failure: null, skip: null, last: 'skip',
+        pending: null, failure: null, skip: null, last: 'skip', lastAttempt: null,
       }
       acc.set(key, entry)
     }
@@ -165,11 +163,13 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
         if (finalAuditVerdict(result) === null) {
           entry.pending = { result, runId: manifest.runId }
           entry.last = 'pending'
+          entry.lastAttempt = 'pending'
         } else {
           entry.result = result
           entry.resultRunId = manifest.runId
           entry.pending = null
           entry.last = 'result'
+          entry.lastAttempt = 'result'
         }
       }
       for (const failure of summary.failures ?? []) {
@@ -178,10 +178,14 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
         entry.attempts += 1
         entry.failure = { entry: failure, runId: manifest.runId }
         entry.last = 'failure'
+        entry.lastAttempt = 'failure'
       }
       for (const skip of summary.skipped ?? []) {
         const entry = get(summary.model, skip.peerId, manifest.runId)
-        if (skip.source === 'runtime') entry.attempts += 1
+        if (skip.source === 'runtime') {
+          entry.attempts += 1
+          entry.lastAttempt = 'runtime-skip'
+        }
         entry.skip = { entry: skip, runId: manifest.runId }
         entry.last = 'skip'
       }
@@ -191,7 +195,7 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
   const cells = new Map<string, EpochCell>()
   for (const [key, entry] of acc) {
     let cell: Omit<EpochCell, 'action'>
-    const base = { model: entry.model, peerId: entry.peerId, attempts: entry.attempts, skipCode: null }
+    const base = { model: entry.model, peerId: entry.peerId, attempts: entry.attempts, skipCode: null, skipSource: null }
     if (entry.pending) {
       // A first DIFF newer than any submittable result: its recheck decides the cell.
       cell = {
@@ -207,6 +211,17 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
         blame: state === 'undetermined' ? failureBlame(reason) : null,
         reason: reason?.summary ?? null,
       }
+      // An UNDETERMINED keeps its evidence, but when a newer audit of the seller failed or was
+      // skipped mid-audit, that newer attempt decides who is to blame and so whether to retry.
+      if (state === 'undetermined') {
+        if (entry.lastAttempt === 'failure' && entry.failure) {
+          cell.blame = failureBlame(entry.failure.entry.outcomeReason, entry.failure.entry.reason)
+          cell.reason = entry.failure.entry.reason
+        } else if (entry.lastAttempt === 'runtime-skip' && entry.skip) {
+          cell.blame = 'seller'
+          cell.reason = entry.skip.entry.reason
+        }
+      }
     } else if (entry.failure && (entry.last === 'failure' || !entry.skip)) {
       cell = {
         ...base, runId: entry.failure.runId, state: 'failed', result: null,
@@ -217,7 +232,7 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
       const skip = entry.skip!
       cell = {
         ...base, runId: skip.runId, state: 'skipped', result: null, blame: null,
-        reason: skip.entry.reason, skipCode: skip.entry.code,
+        reason: skip.entry.reason, skipCode: skip.entry.code, skipSource: skip.entry.source ?? null,
       }
     }
     cells.set(key, { ...cell, action: epochCellAction(cell) })
@@ -304,119 +319,4 @@ export function epochModelRows(cells: Iterable<EpochCell>, models?: readonly str
     if (cell.action === 'retry' || cell.action === 'recheck') entry.left += 1
   }
   return [...rows.values()].sort((left, right) => left.model.localeCompare(right.model))
-}
-
-/**
- * One manifest for `verifier submit` that covers the whole epoch: per model, the merged result for
- * each seller. Its summaries are written under `epochs/<epoch>/submission/<id>/`; the evidence
- * files they point to stay in their runs. The id changes whenever another run is added.
- */
-export async function writeEpochSubmissionManifest(
-  evidenceDir: string,
-  state: EpochState,
-): Promise<VerifierRunManifestV1> {
-  const { epoch, manifests } = state
-  if (manifests.length === 0) throw new Error(`no completed verifier run found for epoch ${epoch}; run \`antseed verifier run\` first`)
-  const runIds = manifests.map((manifest) => manifest.runId)
-  const runId = canonicalHashBytes32({ domain: 'antseed-verifier-epoch-submission-v1', epoch, runIds })
-  const directory = join(epochDirectory(evidenceDir, epoch), 'submission', safeServiceSlug(runId))
-  const models: string[] = []
-  for (const manifest of manifests) {
-    for (const model of manifest.modelOrder) {
-      if (!models.some((entry) => normalized(entry) === normalized(model))) models.push(model)
-    }
-  }
-  const summaries = new Map<string, ModelAuditSummaryV1[]>()
-  for (const manifest of manifests) {
-    for (const entry of manifest.models) {
-      const summary = await readSummary(entry.summaryPath)
-      if (!summary || summary.runId !== manifest.runId || summary.epoch !== epoch) continue
-      const list = summaries.get(normalized(summary.model)) ?? []
-      list.push(summary)
-      summaries.set(normalized(summary.model), list)
-    }
-  }
-  const startedAt = manifests.map((manifest) => manifest.startedAt).sort()[0]!
-  const completedAt = manifests.map((manifest) => manifest.completedAt).sort().at(-1)!
-  const modelEntries: VerifierRunManifestV1['models'] = []
-  for (const model of models) {
-    const runSummaries = summaries.get(normalized(model)) ?? []
-    const results: ModelVerificationTargetResult[] = []
-    const failures: ModelVerificationFailure[] = []
-    const skipped: ModelVerificationSkip[] = []
-    for (const cell of state.cells.values()) {
-      if (normalized(cell.model) !== normalized(model)) continue
-      const peer = normalized(cell.peerId)
-      if (cell.state === 'pending_diff') {
-        const pending = latestBy(runSummaries, (summary) => summary.results, peer, (result) => finalAuditVerdict(result) === null)
-        if (pending) results.push(pending)
-      } else if (cell.result) {
-        results.push(cell.result)
-      } else if (cell.state === 'failed') {
-        const failure = latestBy(runSummaries, (summary) => summary.failures, peer)
-        if (failure) failures.push(failure)
-      } else {
-        const skip = latestBy(runSummaries, (summary) => summary.skipped, peer)
-        if (skip) skipped.push(skip)
-      }
-    }
-    for (const failure of runSummaries.flatMap((summary) => summary.failures)) {
-      if (failure.peerId.startsWith('model:') && results.length === 0) failures.push(failure)
-    }
-    const byPeer = <T extends { peerId: string }>(values: T[]): T[] => values.sort((a, b) => a.peerId.localeCompare(b.peerId))
-    const summary: ModelAuditSummaryV1 = {
-      version: 1,
-      kind: 'antseed-verifier-model-summary',
-      runId,
-      epoch,
-      model,
-      startedAt,
-      completedAt,
-      results: byPeer(results),
-      failures: byPeer(failures),
-      skipped: byPeer(skipped),
-      cost: addAuditCostSummaries(emptyAuditCostSummary(), ...runSummaries.map((entry) => entry.cost)),
-    }
-    const summaryPath = join(directory, `${safeServiceSlug(model)}.summary.json`)
-    await writeJsonAtomic(summaryPath, summary)
-    modelEntries.push({
-      model,
-      summaryPath,
-      reportPath: '',
-      resultCount: results.length,
-      failureCount: failures.length,
-      skippedCount: skipped.length,
-      cost: summary.cost,
-      reasonCounts: {},
-    })
-  }
-  return {
-    version: 1,
-    kind: 'antseed-verifier-run-manifest',
-    runId,
-    state: 'completed',
-    epoch,
-    epochSource: manifests.every((manifest) => manifest.epochSource === 'onchain') ? 'onchain' : 'utc-day',
-    epochStartedAt: manifests[0]!.epochStartedAt,
-    epochEndsAt: manifests[0]!.epochEndsAt,
-    startedAt,
-    completedAt,
-    summaryPath: join(directory, 'manifest.json'),
-    modelOrder: models,
-    models: modelEntries,
-    failureCount: modelEntries.reduce((total, entry) => total + entry.failureCount, 0),
-  }
-}
-
-function latestBy<T extends { peerId: string }>(
-  summaries: readonly ModelAuditSummaryV1[],
-  pick: (summary: ModelAuditSummaryV1) => readonly T[] | undefined,
-  peer: string,
-  filter: (value: T) => boolean = () => true,
-): T | null {
-  for (let index = summaries.length - 1; index >= 0; index -= 1) {
-    const found = (pick(summaries[index]!) ?? []).find((value) => normalized(value.peerId) === peer && filter(value))
-    if (found) return found
-  }
-  return null
 }

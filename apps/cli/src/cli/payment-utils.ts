@@ -18,7 +18,7 @@ import {
   PositionInitClient,
   EmissionsGateClient,
   ChannelStore,
-  VerifierClient,
+  KbfRoundClient,
   ANTSTokenClient,
   SellerPoolsClient,
   SellerPoolsRewardsClient,
@@ -397,15 +397,16 @@ export function createLegacyStakingClient(config: AntseedConfig): StakingClient 
 
 const VERIFIER_LOG_QUERY_CHUNK_BLOCKS = 1_000
 
-/**
- * Create a VerifierClient from the CLI config.
- */
-export function createVerifierClient(config: AntseedConfig, overrides?: CryptoConfigOverrides): VerifierClient {
+/** Client for the distributed KBF round on the configured verification contract. */
+export function createKbfRoundClient(config: AntseedConfig, overrides?: CryptoConfigOverrides): KbfRoundClient {
   const crypto = requireCryptoConfig(config, overrides);
   if (!crypto.verificationContractAddress) {
-    throw new Error('No verification contract address configured. Set payments.crypto.verificationContractAddress in your config file.');
+    throw new Error(
+      `No verification contract address configured: the round contract is not deployed on ${crypto.chainId ?? 'this chain'} yet. `
+      + 'Set payments.crypto.verificationContractAddress (and verificationDeployBlock) in your config file to use a custom deployment.',
+    );
   }
-  return new VerifierClient({
+  return new KbfRoundClient({
     rpcUrl: crypto.rpcUrl,
     ...fallbackClientOpts(crypto),
     contractAddress: crypto.verificationContractAddress,

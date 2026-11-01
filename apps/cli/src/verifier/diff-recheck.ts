@@ -1,11 +1,8 @@
 import type { KbfReferenceV1 } from '@antseed/fingerprints'
+import type { ModelAuditSummaryV1 } from './audit-artifacts.js'
 import { BANK_EXHAUSTED } from './probe-bank.js'
 import { addAuditCostSummaries, emptyAuditCostSummary, type AuditCostSummaryV1 } from './proxy-evidence.js'
-import type {
-  ModelVerificationFailure,
-  ModelVerificationSkip,
-  ModelVerificationTargetResult,
-} from './model-run.js'
+import type { ModelVerificationSkip, ModelVerificationTargetResult } from './model-run.js'
 import { asError } from './utils.js'
 
 /** Fresh-probe enrollments a run may make for one model's rechecks. */
@@ -22,14 +19,14 @@ export interface DiffRecheckStats {
 
 export interface DiffRecheckOutcome {
   results: ModelVerificationTargetResult[]
-  failures: ModelVerificationFailure[]
   stats: DiffRecheckStats
 }
 
 /**
  * A first DIFF is rechecked on probes the seller has never seen. A seller is flagged DIFF only when
  * both checks say DIFF; a recheck SAME or UNDETERMINED makes it UNDETERMINED. When the second check
- * cannot run (no fresh questions, the reference endpoint fails, the recheck is skipped), the first
+ * cannot run (no fresh questions, the reference endpoint fails, the recheck is skipped, the seller
+ * cannot be reached), the first
  * DIFF is kept with `recheckPending`: nothing is submitted for it, and the next run in the same
  * epoch rechecks it. A first DIFF carried over from an earlier run is rechecked the same way.
  */
@@ -38,6 +35,11 @@ export async function runDiffRechecks(input: {
   reserve(first: ModelVerificationTargetResult): Promise<{ reference: KbfReferenceV1; auditId: string }>
   /** Adds fresh probes to the bank once; null when enrollment is not allowed for this run. */
   enroll: (() => Promise<void>) | null
+  /**
+   * Gives up a recheck reservation the seller has seen part of, so the next recheck draws
+   * questions it has never seen instead of the ones it could now look up.
+   */
+  release(first: ModelVerificationTargetResult, auditId: string, reason: string): Promise<void>
   verify(
     first: ModelVerificationTargetResult,
     reference: KbfReferenceV1,
@@ -50,7 +52,7 @@ export async function runDiffRechecks(input: {
     rechecked: 0, confirmed: 0, notConfirmed: 0, pending: 0, cost: emptyAuditCostSummary(),
   }
   const diffs = input.results.filter((result) => result.status === 'DIFF' && !result.recheck)
-  if (diffs.length === 0) return { results: [...input.results], failures: [], stats }
+  if (diffs.length === 0) return { results: [...input.results], stats }
 
   const reservations = new Map<ModelVerificationTargetResult, { reference: KbfReferenceV1; auditId: string }>()
   const skipReasons = new Map<ModelVerificationTargetResult, string>()
@@ -111,14 +113,30 @@ export async function runDiffRechecks(input: {
     }
     input.log(`DIFF ${label}: rechecking with ${reservation.reference.probes.length} fresh questions…`)
     let recheck: ModelVerificationTargetResult | ModelVerificationSkip
+    // Questions that may have reached the seller are spent: the next recheck draws fresh ones, so
+    // failing a recheck on purpose (dropping the connection, blank or unsigned answers) gains nothing.
+    const spend = (reason: string) => input.release(first, reservation.auditId, reason)
     try {
       recheck = await input.verify(first, reservation.reference, reservation.auditId)
     } catch (error) {
+      // Whatever failed, some batches may have been sent before it did.
+      await spend('the recheck failed after it may have reached the seller')
       keepPending(first, label, `recheck failed: ${asError(error).message}`)
       return
     }
     if (recheck.status === 'SKIPPED') {
+      // A skip decided mid-audit came after paid requests; one decided before any request did not.
+      if (recheck.source === 'runtime') await spend('the recheck was skipped after requests reached the seller')
       keepPending(first, label, `recheck skipped: ${recheck.reason}`)
+      return
+    }
+    if (recheckUnanswered(recheck)) {
+      // The seller was out of reach, not inconclusive: what it cost still counts, and the DIFF
+      // waits for a recheck once the seller is back. If some questions did reach it, they are
+      // spent: the next recheck gets fresh ones, so dropping the connection gains nothing.
+      stats.cost = addAuditCostSummaries(stats.cost, recheck.cost)
+      if (recheckMayHaveReachedSeller(recheck)) await spend('requests of this recheck may have reached the seller')
+      keepPending(first, label, `recheck unanswered: ${recheck.outcomeReason!.summary}`)
       return
     }
     stats.rechecked += 1
@@ -135,7 +153,24 @@ export async function runDiffRechecks(input: {
   }))
 
   const results = input.results.map((result) => finals.get(result) ?? result)
-  return { results, failures: [], stats }
+  return { results, stats }
+}
+
+/**
+ * An UNDETERMINED recheck whose every failure is retryable (transport, deadline, rate limit,
+ * payment): the seller could not be asked, so it says nothing about the first DIFF.
+ */
+export function recheckUnanswered(recheck: ModelVerificationTargetResult): boolean {
+  return recheck.status === 'UNDETERMINED' && recheck.outcomeReason?.retryable === true
+}
+
+/**
+ * Whether any of a recheck's questions may have reached the seller. Only a recheck that sent no
+ * request at all is known not to have: a timeout after sending, or a blank or unsigned answer,
+ * still showed the seller its questions.
+ */
+export function recheckMayHaveReachedSeller(recheck: ModelVerificationTargetResult): boolean {
+  return recheck.requestCount > 0 || recheck.parsedProbeCount > 0
 }
 
 export function combineDiffRecheck(
@@ -166,4 +201,17 @@ export function combineDiffRecheck(
 /** The final verdict after a first DIFF: DIFF only when the recheck is DIFF too. */
 export function confirmedDiffStatus(recheckStatus: string): 'DIFF' | 'UNDETERMINED' {
   return recheckStatus === 'DIFF' ? 'DIFF' : 'UNDETERMINED'
+}
+
+export type ModelAuditVerdict = 'SAME' | 'DIFF' | 'UNDETERMINED'
+
+/**
+ * A seller's final verdict from a local run: a DIFF counts only when a recheck on fresh probes is
+ * DIFF too, otherwise it is UNDETERMINED. Null for a DIFF that was never rechecked, unless the run
+ * had confirmation off (`verifier.diffConfirmationRuns` 0), where the first DIFF is final.
+ */
+export function finalAuditVerdict(result: ModelAuditSummaryV1['results'][number]): ModelAuditVerdict | null {
+  if (result.recheck) return confirmedDiffStatus(result.recheck.status)
+  if (result.status === 'DIFF') return result.diffConfirmation === 'off' ? 'DIFF' : null
+  return result.status as ModelAuditVerdict
 }

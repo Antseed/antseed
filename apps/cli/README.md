@@ -617,23 +617,138 @@ Use `base-sepolia` for testing with MockUSDC.
 
 Provider-specific options are configured via each plugin's config schema (see `antseed plugin add --help`).
 
-## Assigned Model Audits
+## Verification Rounds
 
 `antseed verifier` runs **KBF audits** (Knowledge Boundary Fingerprinting). KBF is
 one of the first of many verification methods Antseed is launching; more are coming.
-KBF audits are recorded in their own contract, `AntseedKbfVerification`; each new
+KBF results are recorded in their own contract, `AntseedKbfVerification`; each new
 method gets its own contract.
 
+Audits run as one weekly round per epoch, shared by every approved verifier:
+
+| Phase | Default length | What happens |
+|---|---|---|
+| Bank | during the previous epoch | The publisher builds a fresh question bank for every model on the contract's model list, encrypts it and commits its hash (`commitBank`) |
+| Open and seed | start of the epoch | Any verifier opens the epoch (snapshot of verifiers, models and schedule), then fixes the seed from the hash of a block 4 blocks later |
+| Collect | 3 days | The publisher commits the plan: the sellers to audit and, per verifier, an envelope with only that verifier's questions, encrypted to its key. Each verifier buys its slices from the sellers and commits the seller-signed responses |
+| Backup | 1 day | Slices their owner didn't deliver go to each slice's backup verifier |
+| Attest | 1 day | The publisher reveals the bank key. Every verifier scores the whole epoch from public data and attests the Merkle root of the results. The first root a majority of the epoch's verifiers attest is final |
+
+After that, anyone can apply the finalized results with Merkle proofs
+(`applyResults`), and each verifier claims its reward for a finished epoch.
+
+### Running a verifier
+
+An approved verifier runs one long-running process next to a funded buyer:
+
+```bash
+antseed verifier start
+```
+
+On first start it creates an X25519 key pair in
+`<data-dir>/verifier/round/encryption-key.json` and publishes the public key
+on-chain (`setEncryptionKey`). It then starts a buyer (`--no-buyer` uses one
+already running, `--buyer-port` picks its port) and every `--interval` seconds
+(default 60):
+
+- opens the epoch and fixes its seed if nobody has yet;
+- buys its primary slices and commits them before the collection deadline; after it,
+  buys the slices it backs up whose owner didn't deliver them (judged from the
+  committed slices with its backup envelope, so no publisher step is needed);
+- after the key reveal, scores every committed slice and attests the results root;
+- applies the finalized results (the first verifier in a seeded order applies at
+  once, the others two hours after the attest deadline if it is still undone) and
+  claims rewards for every finished epoch it took part in, however long ago
+  (the last 4 every pass, plus up to 8 older unsettled ones);
+- covers for a missing publisher: if the bank key is still hidden 10 minutes after
+  the backup deadline, it posts its sealed key share (`revealKeyShare`) and, once a
+  majority of shares are on-chain, rebuilds and reveals the key; if no plan is
+  committed `publisherGraceSeconds` (6 hours by default) into the epoch, verifiers
+  take turns, 10 minutes apart in a seeded order, to take the epoch over
+  (`takeOverBank`) and run the rest of the round as its publisher. Taking over
+  builds a bank, so it needs a reference source (see below); without one the
+  verifier skips its turn.
+
+It checks each target's seller-to-agent binding on the seller registry at the
+epoch's seed block before buying or scoring it, so the RPC must serve state at
+recent past blocks.
+
+Per-epoch state is kept in `<data-dir>/verifier/round/epochs/<epoch>/`, so a
+restart continues where it stopped. `--no-collect` only scores and attests.
+Every envelope is checked against the public plan before anything is bought (only
+slices assigned to this verifier, at most the schedule's questions per seller,
+bounded questions and request settings), and `--max-epoch-requests` (default 1000)
+caps the seller requests sent per epoch, retries included, own and backup slices together.
+It signs with a dedicated keystore, `--keystore <path>` or `verifier.keystore`
+(password from `ANTSEED_KEYSTORE_PASSWORD`), and refuses to start for an address
+that isn't an approved verifier. The keystore is required: the signer pays the
+verifier's gas and receives its ANTS rewards, so `verifier start` and `verifier publish`
+never fall back to the data-dir identity and refuse a keystore holding one of the
+data dir's buyer wallets. One `verifier start` or `verifier publish`
+runs per data dir at a time; a second one stops with "already running". A newly approved verifier joins from the
+next epoch opened; until its encryption key is on-chain, the plan gives its slices
+to backups. Like `verifier run`, it first checks that
+this CLI is the latest `@antseed/cli` on npm (`--skip-version-check` skips it), so
+every verifier scores the same way.
+
+Round files (slice manifests, results) are stored on IPFS through Pinata
+(`PINATA_JWT`) and read through `ANTSEED_IPFS_GATEWAYS` (comma-separated, public
+gateways by default). `ANTSEED_ROUND_STORAGE_DIR` stores them in a local directory
+instead, for tests. Every file is checked against its on-chain hash before use, and
+downloads are cut off past a size limit per kind of file (64 MiB for a bank, 32 MiB
+for a plan or slice file).
+
+### Scoring
+
+Every verifier scores the same public inputs, the revealed bank, the plan derived
+from the seed and the committed slices, so honest verifiers get the same root.
+Each audited seller service gets 100 questions (`probesPerService`) in batches of
+10, split into 4 slices (`slicesPerService`), each bought by a different verifier;
+a seller never collects its own slices. A batch counts only with the seller's
+signature over the exact request and response, and only if that request is exactly
+the planned one: the planned system and user messages (plus the reference's prefill),
+temperature 0 and the reference's token and thinking settings, with no other
+messages, tools or fields. Slice files that aren't valid are ignored; ones that
+can't be fetched yet are retried until halfway through the attest window. A service with a missing or invalid
+slice is `UNDETERMINED`; otherwise `SAME` and `DIFF` each need 80% of the questions
+answered. Collectors are credited per delivered slice.
+
+Rewards for an epoch are split into an attester pool (`attestRewardBps`, 20% by
+default), shared equally by the verifiers that attested the finalized root, and a
+collector pool shared by delivered slices. One verifier's claim is capped at
+`maxVerifierShareBps` (20% by default) of the epoch's budget. Both are fixed when the
+epoch opens, so changing them only affects later epochs.
+
+### Running the publisher
+
+`antseed verifier publish` runs the reference publisher; only the contract's
+`publisher()` address can run it. It needs a reference source
+(`verifier.referenceEndpoint`, see below) and a funded buyer, which discovers the
+sellers to audit: staked sellers with an on-chain agent id that advertise an
+audited model at or below its reference price. It builds each epoch's bank one
+epoch ahead, skipping questions used in the last 8 banks, and keeps every bank key
+and plaintext bank in `<data-dir>/verifier/publisher/<epoch>/` (back it
+up; files and directory are owner-only from creation, and so are the reference
+build files under `references/`). Once the epoch opens it also escrows the key: Shamir shares, one sealed to each
+of the epoch's verifiers, any majority of which rebuild the key (`commitKeyShares`).
+The plan holds each verifier's own and backed-up slices, so after it the round
+needs nothing from the publisher but the key reveal, which the escrow covers. Next
+epoch's bank is built only after the current round's steps, so a failing build
+never holds up the current key reveal. It only plans sellers whose
+peer and agent are bound to each other on the seller registry. It needs
+`PINATA_JWT` to publish the bank and plans.
+
+### Reference sources
+
 The audited models are a list built into the CLI (`src/verifier/audited-models.ts`):
-each model's service id, the aliases sellers use for it, and its OpenRouter id. A
-verifier's config never lists models. It sets the auditor and where the genuine
-answers come from:
+each model's service id, the aliases sellers use for it, and its OpenRouter id. The
+models a round audits come from the contract's model list (`setModels`). Building
+banks needs a reference source; verifiers that only run `verifier start` don't:
 
 ```json
 {
   "verifier": {
-    "auditor": "0xYourAuditorAddress",
-    "keystore": "~/.foundry/keystores/auditor",
+    "keystore": "~/.foundry/keystores/verifier",
     "referenceEndpoint": {
       "baseUrl": "https://openrouter.ai/api/v1",
       "apiKeyEnv": "OPENROUTER_API_KEY",
@@ -658,119 +773,66 @@ verifier models` prints each model's source, model id and provider pin.
 `upstream`, `referenceProvider`, `contrastModels`, `excludedDomains`,
 `pricing` and `referenceRoute`. Contrast models come from the OpenRouter catalog
 unless `referenceEndpoint.contrastModelBank` is set. A model list under
-`referenceEndpoint.models` (older configs) is rejected. Models can't be turned
-off: an auditor audits every model assigned to it, so `enabled` is rejected too.
+`referenceEndpoint.models` (older configs) is rejected, and so is `enabled`.
 
-`verifier run` with no model audits the models assigned to the auditor in the
-current epoch and prints the assignment first:
+A seller is only audited at or below the most any OpenRouter provider charges
+for the model. Input and output each take the highest price across OpenRouter's
+providers for the model, leaving out speed tiers (`fast`, `ultrafast`, `flex`).
+If the model's reference upstream (`upstream.pricing` or
+`referenceRoute.pricing`) or `verifier.models.<model>.pricing` is higher, that
+is used instead; so a configured price raises the limit but never lowers it
+below the highest provider price. If OpenRouter lists no providers for the
+model, the configured price or the OpenRouter catalog price is used. A seller
+whose input or output price is above that limit times
+`verifier.auditPriceRatio` (default 1.0) is not audited.
 
-```bash
-antseed --config ./audit-config.json verifier run
-```
+This is which sellers are eligible, not a spending cap. The hard cap on what
+audit requests pay is the buyer's `buyer.maxPricing`: the buyer proxy refuses
+any seller above it, so set `buyer.maxPricing.defaults` at least as high as the
+most expensive audited model's limit, and no higher than you are willing to pay.
 
-The auditor is `--auditor <address>`, then `verifier.auditor`, then the address
-of `verifier.keystore`, then the data-dir identity. `verifier submit` and
-`verifier rewards --claim` sign with `--keystore`, then `verifier.keystore`, then
-the data-dir identity, and refuse a signer whose address differs from
-`verifier.auditor`. `verifier run <model>` and `--all` ignore the assignment.
+### Local audits
 
-An audit never pays a seller more than the model costs upstream. At the start of
-a run each model's price is resolved (its `upstream.pricing` or
-`referenceRoute.pricing`, then `verifier.models.<model>.pricing`, then the
-OpenRouter catalog). A seller whose input or output price is above that price
-times `verifier.auditPriceRatio` (default 1.0) is skipped with
-`price_above_reference` and listed in the published evidence. The verifier does
-not use `buyer.maxPricing` to choose sellers, but audit requests still pass the
-buyer proxy's caps, so set `buyer.maxPricing.defaults` at least as high as the
-most expensive reference price.
+`verifier run <model>` (or `--all`) audits the sellers your buyer has discovered
+locally, for testing and investigation; nothing goes on-chain. It labels its
+evidence with the current epoch from the emissions gate (the UTC day when no chain
+is reachable). Running it again in the same epoch continues it: it prints a plan
+from the earlier runs, skips finished sellers (SAME, rechecked DIFF), retries
+failures on the auditor's side every run and seller failures once per epoch,
+rechecks waiting DIFFs, and audits new or previously skipped sellers. One run
+retries what is left in up to `--max-rounds` rounds (default 3), and stops early
+when nothing is left or a round makes no progress. `--max-enrollment-requests`
+(default 2000) caps a model's reference requests for the whole run: every build
+(enrollment, seller top-ups, recheck sets) in every round draws on it. `--fresh` ignores the earlier runs.
 
-Every `verifier run` labels its evidence with the current on-chain epoch from the
-emissions gate, the epoch `AntseedKbfVerification` checks on submit. When no chain
-is reachable it falls back to the UTC-day epoch with a warning; that evidence
-cannot be submitted on-chain. The assignment uses the same epoch: every audited
-model is audited every epoch, split round robin across the auditors approved when
-the epoch started (read from the contract's `AuditorSet` events). Auditors are
-sorted by address and models by name, and in epoch `e` model `i` goes to auditor
-`(i + e) mod auditors`. `antseed verifier assignment [--epoch <n>] [--epochs <count>]`
-shows every auditor's models. The split is off-chain only. `--auditor` cannot be
-combined with `<model>`, `--all`, or `--resume-run`.
+A local run rechecks every first DIFF on fresh probes the seller has never seen.
+The result is DIFF only when the recheck is DIFF too; a recheck SAME or
+UNDETERMINED turns it into UNDETERMINED. Set `verifier.diffConfirmationRuns` to
+`0` to turn rechecks off.
 
-## Submitting Model Audits
-
-Approved auditors submit the current epoch with one transaction per model:
-
-```bash
-antseed verifier submit --dry-run
-antseed verifier submit --yes
-```
-
-Without `--run-id`, every run of the epoch is merged and the latest result per
-model and seller is submitted; `--run-id <run-id>` submits one run only. Running
-`verifier run` again in the same epoch continues it: it prints a plan from the
-earlier runs, skips finished sellers (SAME, rechecked DIFF), retries failures on
-the auditor's side every run and seller failures once per epoch, rechecks
-waiting DIFFs, and audits new or previously skipped sellers. One run retries
-what is left in up to `--max-rounds` rounds (default 3), with a larger
-enrollment budget each round, and stops early when nothing is left or a round
-makes no progress. `--fresh` ignores the earlier runs, including DIFFs waiting
-for a recheck and an interrupted run's checkpoints, and audits every eligible
-seller again from the start.
-
-`verifier run` and `verifier submit` first check that this CLI is up to date:
-they compare its version with the latest `@antseed/cli` on npm (the version
-`antseed update` installs). A CLI older than that stops with an update hint;
-the same or a newer version passes. When the npm registry can't be reached,
-`run` warns and a real `submit` stops; `--skip-version-check` skips it.
-
-Each model's submission covers every seller result for that model: `SAME`,
-`DIFF`, and `UNDETERMINED`. Only runs audited on the current on-chain epoch can
-be submitted. The contract rejects any other epoch, so submit before the epoch
-ends. Results the contract would reject (your own agent, unknown agents,
-evidence that no longer matches its hash) are listed as excluded and do not
-block the model. Re-running is safe: a ledger under
-`<evidenceDir>/submissions/<run-id>/` records each model, and models already
-recorded on-chain are skipped. A seller service's SAME or DIFF verdict counts
-through the next epoch and then drops out on its own; the latest result always
-wins, and an UNDETERMINED clears an earlier verdict.
-
-`verifier run` rechecks every first DIFF on fresh probes the seller has never
-seen before it can be submitted. The result is DIFF only when the recheck is DIFF
-too; a recheck SAME or UNDETERMINED turns it into UNDETERMINED. A DIFF whose
-recheck cannot run is not submitted, and the next `verifier run` in the same
-epoch rechecks it without repeating the first check. Unless the run uses
-`--no-enroll`, fresh probes are generated when a recheck needs them, and also before a model's
-audits when any seller about to be audited lacks an unseen audit set plus recheck
-set (sellers are never given probes from their earlier epochs), up to 3 builds per
-model. Set `verifier.diffConfirmationRuns` to `0` to turn rechecks
-off. The `submit` preview shows how many results were rechecked.
-
-`verifier run` and `verifier submit` also write
-`<evidenceDir>/epochs/<epoch>/overview.html`: every seller × model from all of
-the epoch's runs, merged in submit order, with the reason for each inconclusive
-or skipped result in the same words as AntScan. `verifier overview [--epoch <n>]
+Local runs write `<evidenceDir>/epochs/<epoch>/overview.html`: every seller ×
+model from all of the epoch's runs, with the reason for each inconclusive or
+skipped result in the same words as AntScan. `verifier overview [--epoch <n>]
 [--run <ids...>]` rebuilds it.
-
-`verifier rewards --epochs <list>` shows the credits earned per epoch and claims
-the auditor share once an epoch is final; the current epoch shows 0 until it ends.
 
 ## Checking Other Endpoints
 
-`verifier check` reuses the latest published audit for a model to check any
-OpenAI- or Anthropic-compatible endpoint, such as another network or a provider's
-own API:
+`verifier check` audits any OpenAI- or Anthropic-compatible endpoint, such as
+another network or a provider's own API, against the newest revealed question bank
+for a model:
 
 ```bash
-VERIFY_API_KEY=... antseed verifier check meta-llama/llama-3.3-70b-instruct \
+VERIFY_API_KEY=... antseed verifier check claude-opus-5.5 \
   --base-url https://api.example.com/v1 --target-model their-model-id
 ```
 
-It finds the newest `ModelAudited` event for the model on-chain, downloads its
-evidence from IPFS, checks the evidence against the on-chain hash, and audits the
-endpoint with the largest KBF reference the audit published. Pass
-`--audit ipfs://<cid>` to use a specific audit without a chain lookup. Use
-`--protocol anthropic` for Messages-API endpoints. Exit codes are 0 for `SAME`,
-2 for `DIFF`, and 3 for `UNDETERMINED`. Results stay local and are never
-submitted on-chain.
+It looks back up to 8 epochs for one whose bank key has been revealed and whose
+bank includes the model, downloads the bank, checks it against the on-chain hash,
+decrypts it with the revealed key and audits the endpoint with that model's
+reference. `--epoch <n>` uses one epoch's bank. `--audit ipfs://<cid>` uses
+published audit evidence from the earlier single-auditor contract instead, without
+a chain lookup. Use `--protocol anthropic` for Messages-API endpoints. Exit codes
+are 0 for `SAME`, 2 for `DIFF`, and 3 for `UNDETERMINED`. Results stay local.
 
 ## Model Audits With Reference Enrollment
 
@@ -784,15 +846,16 @@ sending anything when a bank isn't ready:
 antseed --config ./audit-config.json verifier run gpt-6.1-sol --max-enrollment-requests 1000
 ```
 
-The request budget is **per build** (2000 unless `--max-enrollment-requests`
-sets it), includes retries and requests already used by a compatible enrollment
-checkpoint, and cannot exceed a lower configured `referenceMaxRequestsPerBuild`.
-One model can need several builds in a run: one to make its bank usable, up to
-3 more when sellers have seen too much of it, and up to 3 more for DIFF
-rechecks. Each retry round (`--max-rounds`) can build again with the budget
-times the round number. It is a request limit, not a dollar spending cap.
+The request budget is **per model, for the whole run** (2000 unless
+`--max-enrollment-requests` sets it) and includes retries. One model can need
+several builds in a run: one to make its bank usable, up to 3 more when sellers
+have seen too much of it, and more for DIFF rechecks. All of them, in every
+retry round (`--max-rounds`), draw on the same budget, and so do the requests a
+build spends finding how to turn thinking off. Each build is also capped by a
+lower configured `referenceMaxRequestsPerBuild`, counting requests already used
+by its compatible checkpoint. It is a request limit, not a dollar spending cap.
 Probe growth also respects `referenceMaximumProbeCount` (default 500) and the
-configured no-progress limit. An assigned or `--all` run applies this process to
+configured no-progress limit. An `--all` run applies this process to
 each model with eligible sellers; it can therefore spend up to the per-model limit for each.
 
 Compatible banks retain their enrolled probes and self-test answers. New stable

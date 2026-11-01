@@ -13,6 +13,7 @@ import {
   canonicalJsonStringify,
   computeBinomialPower,
   computeMatchVector,
+  scoredSelfTestCoverage,
   isLowCoverageKbfBatch,
   computeReferenceId,
   createReferenceQueryProfile,
@@ -53,6 +54,7 @@ import type { VerifierModelCatalog, VerifierReasoningEffort } from './openrouter
 import {
   THINKING_DISCOVERY_PROBES,
   THINKING_DISCOVERY_TIMEOUT_MS,
+  REFERENCE_MAX_TOKENS_CEILING,
   THINKING_FALLBACK_MAX_TOKENS,
   ThinkingDiscoveryError,
   discoverThinkingSuppression,
@@ -175,6 +177,32 @@ export interface ReferenceBuildCostV1 {
 export interface ReferenceRequestLimiter {
   run: <T>(model: string, execute: () => Promise<T>) => Promise<T>
   recordSuccess: (model: string) => void
+}
+
+/**
+ * Physical reference requests one audited model may still send in this run, across all of its
+ * builds (enrollment, seller-capacity top-ups, recheck sets) and retry rounds. Cached responses
+ * from a checkpoint are free.
+ */
+export class ReferenceRequestAllowance {
+  private used = 0
+
+  constructor(readonly limit: number) {
+    if (!Number.isSafeInteger(limit) || limit <= 0) throw new Error('reference request allowance must be a positive integer')
+  }
+
+  get remaining(): number {
+    return this.limit - this.used
+  }
+
+  take(): void {
+    if (this.used >= this.limit) throw new Error(`reference request budget exhausted (${this.limit} requests for this model in this run)`)
+    this.used += 1
+  }
+
+  refund(): void {
+    if (this.used > 0) this.used -= 1
+  }
 }
 
 export function createReferenceRequestLimiter(
@@ -354,6 +382,8 @@ export async function buildModelReference(input: {
   fetchFn?: typeof fetch
   log?: (message: string) => void
   requestLimiter?: ReferenceRequestLimiter
+  /** Requests this model may still send in the run, shared by all of its builds. */
+  allowance?: ReferenceRequestAllowance
   initialReference?: KbfReferenceV1
   /**
    * Probes already certified stable for this model by an earlier enrollment
@@ -447,17 +477,23 @@ export async function buildModelReference(input: {
     model: normalized(input.model),
     routesByModel: [...routesByModel.entries()],
   })) : null
-  const discoveryQuery = discoveryCheckpoint ? createReferenceQuery({
-    timeoutMs: THINKING_DISCOVERY_TIMEOUT_MS,
+  // The request policy discovery and measurement share; each sets its own timeout, checkpoint,
+  // budget and routing.
+  const commonQueryOptions = {
     fetchFn: input.fetchFn ?? fetch,
-    checkpoint: discoveryCheckpoint,
     limiter,
-    maxRequests: input.config?.referenceMaxRequestsPerBuild ?? DEFAULT_MAX_REQUESTS_PER_BUILD,
+    allowance: input.allowance,
     retryCount: input.config?.referenceBatchRetryCount ?? DEFAULT_BATCH_RETRY_COUNT,
     retryBaseDelayMs: input.config?.referenceRetryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS,
     pricingForModel,
-    routeForModel: (model) => routesByModel.get(normalized(model))!,
     log: input.log,
+  }
+  const discoveryQuery = discoveryCheckpoint ? createReferenceQuery({
+    ...commonQueryOptions,
+    timeoutMs: THINKING_DISCOVERY_TIMEOUT_MS,
+    checkpoint: discoveryCheckpoint,
+    maxRequests: input.config?.referenceMaxRequestsPerBuild ?? DEFAULT_MAX_REQUESTS_PER_BUILD,
+    routeForModel: (model) => routesByModel.get(normalized(model))!,
   }) : null
   let thinkingDiscovery: ReferenceThinkingDiscoveryRecordV1 | undefined
   if (discoveryQuery) {
@@ -478,7 +514,7 @@ export async function buildModelReference(input: {
         return [key, routeWithThinkingStrategy(route, result.strategy), result] as const
       } catch (error) {
         if (isTarget && !(input.config?.referenceAllowThinking === true && error instanceof ThinkingDiscoveryError
-          && !asError(error).message.includes('refused every request'))) {
+          && error.reason !== 'all-requests-refused')) {
           throw error
         }
         input.log?.(`${asError(error).message}; continuing with 'bare' and ${THINKING_FALLBACK_MAX_TOKENS} tokens per request`)
@@ -507,9 +543,13 @@ export async function buildModelReference(input: {
   const targetRequestOverrides = targetRoute.requestOverrides
   const targetReasoningStrategy = referenceReasoningStrategy(targetRoute)
   const upstreamProvenance = referenceUpstreamProvenance(endpoint, targetRoute)
+  const maxTokensPerRequest = Math.max(MAX_TOKENS, targetRoute.minMaxTokens ?? 0)
+  if (maxTokensPerRequest > REFERENCE_MAX_TOKENS_CEILING) {
+    throw new Error(`reference for ${modelConfig.upstreamModel} needs ${maxTokensPerRequest} tokens per request, above the ${REFERENCE_MAX_TOKENS_CEILING} collectors accept`)
+  }
   const queryProfile = createReferenceQueryProfile({
     upstreamModel: targetRoute.model,
-    maxTokensPerRequest: Math.max(MAX_TOKENS, targetRoute.minMaxTokens ?? 0),
+    maxTokensPerRequest,
     requestTimeoutMs: timeoutMs,
   })
   // The reference endpoint's request settings stay out of the query profile. Audits
@@ -585,19 +625,15 @@ export async function buildModelReference(input: {
   const checkpoint = await ReferenceBuildCheckpoint.open(checkpointPath, compatibilityHash)
   const exchangesPath = referenceExchangesPath(input.referencesDir, input.model)
   const query = createReferenceQuery({
+    ...commonQueryOptions,
     timeoutMs,
-    fetchFn: input.fetchFn ?? fetch,
     checkpoint,
-    limiter,
-    // Discovery requests count toward the same per-build budget.
-    maxRequests: Math.max(1, (input.config?.referenceMaxRequestsPerBuild ?? DEFAULT_MAX_REQUESTS_PER_BUILD)
+    // Discovery requests count toward the same per-build budget. When discovery used all of it,
+    // the build may still read its cached responses but cannot send another request.
+    maxRequests: Math.max(0, (input.config?.referenceMaxRequestsPerBuild ?? DEFAULT_MAX_REQUESTS_PER_BUILD)
       - (discoveryCheckpoint?.requestsUsed ?? 0)),
-    retryCount: input.config?.referenceBatchRetryCount ?? DEFAULT_BATCH_RETRY_COUNT,
-    retryBaseDelayMs: input.config?.referenceRetryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS,
-    pricingForModel,
     routeForModel: (model) => routesByModel.get(normalized(model))
       ?? resolveReferenceRequestRoute({ endpoint, model, apiKey, catalog: input.catalog ?? null }),
-    log: input.log,
   })
   const candidateWriting = new CandidateWritingPolicy(candidateWritingFallback(targetRoute), input.log)
   const excludedDomains = new Set<string>(modelConfig.excludedDomains ?? [])
@@ -712,12 +748,12 @@ export async function buildModelReference(input: {
         .map((entry) => entry.model)
       input.log?.(
         `reference size ${targetCount}: power ${power.power.toFixed(3)}, `
-        + `self-test ${selfTest.hamming}/${selfTest.total}, coverage ${selfTest.coverage.toFixed(3)}`
+        + `self-test ${selfTest.hamming}/${selfTest.total}, coverage ${scoredSelfTestCoverage(selfTest).toFixed(3)}`
         + (contrastDetection.length > 0
           ? `, contrasts detected ${contrastDetection.length - undetectedContrasts.length}/${contrastDetection.length}`
           : ''),
       )
-      if (selfTest.coverage >= 0.8 && selfTest.errorRate <= REFERENCE_MAXIMUM_SELF_TEST_ERROR_RATE
+      if (scoredSelfTestCoverage(selfTest) >= 0.8 && selfTest.errorRate <= REFERENCE_MAXIMUM_SELF_TEST_ERROR_RATE
         && power.power >= sizing.minimumStatisticalPower
         && undetectedContrasts.length === 0) {
         selected = { probes, selfTest, power, contrasts, contrastDetection }
@@ -738,9 +774,9 @@ export async function buildModelReference(input: {
     )
   }
   const { probes, selfTest, power, contrasts, contrastDetection } = selected
-  if (selfTest.coverage < 0.8) {
+  if (scoredSelfTestCoverage(selfTest) < 0.8) {
     await checkpoint.remove()
-    throw new Error(`self-test coverage ${selfTest.coverage.toFixed(3)} is below 0.8`)
+    throw new Error(`self-test coverage ${scoredSelfTestCoverage(selfTest).toFixed(3)} is below 0.8`)
   }
   if (selfTest.errorRate > REFERENCE_MAXIMUM_SELF_TEST_ERROR_RATE) {
     await checkpoint.remove()
@@ -1372,16 +1408,42 @@ function createReferenceQuery(input: {
   checkpoint: ReferenceBuildCheckpoint
     limiter: ReferenceRequestLimiter
   maxRequests: number
+  allowance?: ReferenceRequestAllowance
   retryCount: number
   retryBaseDelayMs: number
   pricingForModel: (model: string) => VerifierModelPricingConfig
   routeForModel: (model: string) => ReferenceRequestRoute
   log?: (message: string) => void
 }): ReferenceQuery {
-  assertPositiveInteger(input.maxRequests, 'referenceMaxRequestsPerBuild')
+  // Zero is the remainder after discovery spent the whole budget: cached reads only.
+  assertNonNegativeInteger(input.maxRequests, 'referenceMaxRequestsPerBuild')
+  // A physical request counts against both this build's checkpoint and the model's run allowance.
+  const reserveRequest = async (): Promise<void> => {
+    input.allowance?.take()
+    try {
+      await input.checkpoint.reserveRequest(input.maxRequests)
+    } catch (error) {
+      input.allowance?.refund()
+      throw error
+    }
+  }
   assertNonNegativeInteger(input.retryCount, 'referenceBatchRetryCount')
   assertPositiveInteger(input.retryBaseDelayMs, 'referenceRetryBaseDelayMs')
   const consumed = new Map<string, ReferenceCachedResponseV1>()
+  // Every response kept for reuse: its raw exchange when there is one, the cached outcome, and
+  // what this build consumed.
+  const rememberResponse = async (
+    cacheKey: string,
+    model: string,
+    cached: ReferenceCachedResponseV1,
+    exchange?: Omit<ReferenceExchangeV1, 'cacheKey' | 'model' | 'purpose' | 'receivedAt'>,
+  ): Promise<void> => {
+    if (exchange) {
+      await input.checkpoint.appendExchange({ cacheKey, model, purpose: cached.purpose, ...exchange, receivedAt: new Date().toISOString() })
+    }
+    await input.checkpoint.set(cacheKey, cached)
+    consumed.set(cacheKey, cached)
+  }
   const providersByModel = new Map<string, string[]>()
   const recordProvider = (model: string, provider: string | null | undefined): void => {
     if (!provider) return
@@ -1425,7 +1487,7 @@ function createReferenceQuery(input: {
     let attempt = 0
     for (;;) {
       attempt += 1
-      await input.checkpoint.reserveRequest(input.maxRequests)
+      await reserveRequest()
       try {
         const response = await input.limiter.run(model, () => postChatCompletion(
           route,
@@ -1435,65 +1497,27 @@ function createReferenceQuery(input: {
             : input.timeoutMs,
           input.fetchFn,
         ))
-        const pricing = input.pricingForModel(model)
         const cachedResponse: ReferenceCachedSuccessV1 = {
           outcome: 'success',
+          ...cachedCost(model, referenceRequestPurpose(__antseedReferenceCacheDomain), response.inputTokens, response.outputTokens),
           content: response.content,
-          model,
           ...(response.provider ? { provider: response.provider } : {}),
-          purpose: referenceRequestPurpose(__antseedReferenceCacheDomain),
-          inputTokens: response.inputTokens,
-          outputTokens: response.outputTokens,
-          inputUsdPerMillion: pricing.inputUsdPerMillion,
-          outputUsdPerMillion: pricing.outputUsdPerMillion,
-          costUsdMicros: String(Math.ceil(
-            response.inputTokens * pricing.inputUsdPerMillion
-            + response.outputTokens * pricing.outputUsdPerMillion,
-          )),
         }
-        await input.checkpoint.appendExchange({
-          cacheKey,
-          model,
-          purpose: cachedResponse.purpose,
-          ...response.exchange,
-          receivedAt: new Date().toISOString(),
-        })
-        await input.checkpoint.set(cacheKey, cachedResponse)
-        consumed.set(cacheKey, cachedResponse)
+        await rememberResponse(cacheKey, model, cachedResponse, response.exchange)
         recordProvider(model, response.provider)
         input.limiter.recordSuccess(model)
         options?.onUsage?.({ outputTokens: response.outputTokens })
         return response.content
       } catch (error) {
         if (isTerminalEmptyReferenceError(error)) {
-          const pricing = input.pricingForModel(model)
           const cachedResponse: ReferenceCachedTerminalEmptyV1 = {
             outcome: 'terminal-empty',
-            model,
-            purpose: referenceRequestPurpose(__antseedReferenceCacheDomain),
+            ...cachedCost(model, referenceRequestPurpose(__antseedReferenceCacheDomain), error.inputTokens, error.outputTokens),
             finishReason: error.finishReason,
             nativeFinishReason: error.nativeFinishReason,
             detail: error.detail,
-            inputTokens: error.inputTokens,
-            outputTokens: error.outputTokens,
-            inputUsdPerMillion: pricing.inputUsdPerMillion,
-            outputUsdPerMillion: pricing.outputUsdPerMillion,
-            costUsdMicros: String(Math.ceil(
-              error.inputTokens * pricing.inputUsdPerMillion
-              + error.outputTokens * pricing.outputUsdPerMillion,
-            )),
           }
-          if (error.exchange) {
-            await input.checkpoint.appendExchange({
-              cacheKey,
-              model,
-              purpose: cachedResponse.purpose,
-              ...error.exchange,
-              receivedAt: new Date().toISOString(),
-            })
-          }
-          await input.checkpoint.set(cacheKey, cachedResponse)
-          consumed.set(cacheKey, cachedResponse)
+          await rememberResponse(cacheKey, model, cachedResponse, error.exchange)
         }
         const retryable = isRetryableReferenceError(error)
         if (!retryable || attempt >= input.retryCount + 1) throw error
@@ -1535,7 +1559,7 @@ function createReferenceQuery(input: {
     // times, and any other 4xx means this strategy is refused.
     let failure: { status: number | null; failure: string } = { status: null, failure: 'not attempted' }
     for (let attempt = 1; attempt <= 3; attempt += 1) {
-      await input.checkpoint.reserveRequest(input.maxRequests)
+      await reserveRequest()
       try {
         const response = await input.limiter.run(model, () => postChatCompletion(route, body, input.timeoutMs, input.fetchFn))
         const success: ReferenceCachedSuccessV1 = {
@@ -1545,11 +1569,7 @@ function createReferenceQuery(input: {
           reasoningTokens: response.reasoningTokens ?? 0,
           ...(response.provider ? { provider: response.provider } : {}),
         }
-        await input.checkpoint.appendExchange({
-          cacheKey, model, purpose: 'thinking-discovery', ...response.exchange, receivedAt: new Date().toISOString(),
-        })
-        await input.checkpoint.set(cacheKey, success)
-        consumed.set(cacheKey, success)
+        await rememberResponse(cacheKey, model, success, response.exchange)
         return { ok: true, content: response.content, reasoningTokens: response.reasoningTokens ?? 0 }
       } catch (error) {
         if (error instanceof EmptyReferenceResponseError) {
@@ -1561,13 +1581,7 @@ function createReferenceQuery(input: {
             detail: error.detail,
             reasoningTokens: error.reasoningTokens ?? 0,
           }
-          if (error.exchange) {
-            await input.checkpoint.appendExchange({
-              cacheKey, model, purpose: 'thinking-discovery', ...error.exchange, receivedAt: new Date().toISOString(),
-            })
-          }
-          await input.checkpoint.set(cacheKey, empty)
-          consumed.set(cacheKey, empty)
+          await rememberResponse(cacheKey, model, empty, error.exchange)
           return { ok: true, content: null, reasoningTokens: error.reasoningTokens ?? 0 }
         }
         if (error instanceof ReferenceEndpointError) {

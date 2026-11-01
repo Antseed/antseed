@@ -42,22 +42,42 @@ async function readDeployment(network) {
   return JSON.parse(await readFile(path.join(deploymentsRoot, network, 'current.json'), 'utf8'));
 }
 
-async function readRecognizedUsageDeployment(network) {
+/**
+ * Release 003 deployed the single-auditor AntseedKbfVerification (`submitModelAudit`) on Base
+ * mainnet. The round client cannot talk to it, so its address is never published as the
+ * verification default; the round contract replaces it in release 004. M003 now deploys the
+ * round contract too, and marks its record with `ROUND_VERIFICATION_PROTOCOL`.
+ */
+export const SINGLE_AUDITOR_VERIFICATION_RELEASE = '003-kbf-verification';
+
+/** Recorded in `verificationConfiguration.verificationRegistry.protocol` by every round-contract deploy. */
+export const ROUND_VERIFICATION_PROTOCOL = 'kbf-rounds';
+
+/** The single-auditor contract a 003 history record holds, or undefined when it holds a round contract. */
+export function singleAuditorVerificationAddress(record) {
+  if (record?.verificationConfiguration?.verificationRegistry?.protocol === ROUND_VERIFICATION_PROTOCOL) return undefined;
+  return record?.contracts?.kbfVerification?.address;
+}
+
+async function readHistory(network, release) {
   try {
-    return JSON.parse(await readFile(path.join(
-      deploymentsRoot, network, 'history', '001-recognized-usage-deployed.json',
-    ), 'utf8'));
+    return JSON.parse(await readFile(path.join(deploymentsRoot, network, 'history', `${release}.json`), 'utf8'));
   } catch (error) {
     if (error.code === 'ENOENT') return null;
     throw error;
   }
 }
 
-export function renderNetwork(record, recognizedUsageDeployment = null) {
+const sameAddress = (left, right) => Boolean(left && right && left.toLowerCase() === right.toLowerCase());
+
+export function renderNetwork(record, recognizedUsageDeployment = null, singleAuditorVerification = null) {
   const values = { evmChainId: record.chainId };
+  const retiredVerification = singleAuditorVerificationAddress(singleAuditorVerification);
   for (const [contractName, field] of Object.entries(contractFields)) {
     const contract = record.contracts[contractName];
-    if (contract) values[field] = contract.address;
+    if (!contract) continue;
+    if (contractName === 'kbfVerification' && sameAddress(contract.address, retiredVerification)) continue;
+    values[field] = contract.address;
   }
   if (record.contracts.channels?.deploymentBlock != null) {
     values.channelsDeployBlock = record.contracts.channels.deploymentBlock;
@@ -65,13 +85,12 @@ export function renderNetwork(record, recognizedUsageDeployment = null) {
   if (record.contracts.stats?.deploymentBlock != null) {
     values.statsDeployBlock = record.contracts.stats.deploymentBlock;
   }
-  if (record.contracts.kbfVerification?.deploymentBlock != null) {
+  if (values.verificationContractAddress && record.contracts.kbfVerification?.deploymentBlock != null) {
     values.verificationDeployBlock = record.contracts.kbfVerification.deploymentBlock;
   }
   if (recognizedUsageDeployment) {
     const contracts = Object.fromEntries(Object.entries(recognizedUsageDeployment.contracts)
       .map(([name, contract]) => [name, contract.address]));
-    const sameAddress = (left, right) => Boolean(left && right && left.toLowerCase() === right.toLowerCase());
     const active = record.status === 'active'
       && sameAddress(record.contracts.emissions?.address, contracts.usageAccounting)
       && sameAddress(record.contracts.staking?.address, contracts.sellerRegistry);
@@ -91,7 +110,11 @@ export async function renderContractChainConfig() {
   const networks = ['base-mainnet', 'base-sepolia'];
   const entries = [];
   for (const network of networks) {
-    const values = renderNetwork(await readDeployment(network), await readRecognizedUsageDeployment(network));
+    const values = renderNetwork(
+      await readDeployment(network),
+      await readHistory(network, '001-recognized-usage-deployed'),
+      await readHistory(network, SINGLE_AUDITOR_VERIFICATION_RELEASE),
+    );
     const properties = Object.entries(values)
       .map(([key, value]) => {
         const rendered = typeof value === 'string' ? `'${value}'` : JSON.stringify(value, null, 2).replaceAll('\n', '\n    ');

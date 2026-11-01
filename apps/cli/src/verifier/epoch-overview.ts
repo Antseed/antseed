@@ -1,12 +1,14 @@
-import { readdir, readFile } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { writeTextAtomic } from './atomic-files.js'
 import {
   epochDirectory,
+  epochRunManifests,
+  escapeHtml,
   type ModelAuditSummaryV1,
   type VerifierRunManifestV1,
 } from './audit-artifacts.js'
-import { finalAuditVerdict } from './model-audit.js'
+import { finalAuditVerdict } from './diff-recheck.js'
 import { explainInconclusive, explainSkipReason, type PlainReason } from './plain-reason.js'
 import { normalized } from './utils.js'
 
@@ -27,6 +29,8 @@ export interface OverviewCell {
   answered: number | null
   asked: number | null
   recheck: { status: string; correctRate: number | null } | null
+  /** A DIFF a recheck on fresh questions confirmed; false when confirmation was off and one check decided it. */
+  confirmed: boolean
   /** Plain-language reason for grey and yellow cells. */
   reason: PlainReason | null
   /** How many runs this epoch produced a verdict for this cell. */
@@ -50,29 +54,6 @@ export interface EpochOverview {
 
 export function epochOverviewPath(evidenceDir: string, epoch: string): string {
   return join(epochDirectory(evidenceDir, epoch), 'overview.html')
-}
-
-/** Completed runs of an epoch, oldest first, which is the order they are submitted in. */
-export async function epochRunManifests(evidenceDir: string, epoch: string): Promise<VerifierRunManifestV1[]> {
-  const runsDir = join(evidenceDir, 'runs')
-  let names: string[]
-  try {
-    names = await readdir(runsDir)
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
-    throw error
-  }
-  const manifests: VerifierRunManifestV1[] = []
-  for (const name of names) {
-    if (!name.endsWith('.json') || name.endsWith('.summary.json')) continue
-    try {
-      const parsed = JSON.parse(await readFile(join(runsDir, name), 'utf8')) as VerifierRunManifestV1
-      if (parsed.kind === 'antseed-verifier-run-manifest' && parsed.epoch === epoch) manifests.push(parsed)
-    } catch {
-      // A manifest being written or a foreign file: leave it out of the overview.
-    }
-  }
-  return manifests.sort((left, right) => left.completedAt.localeCompare(right.completedAt))
 }
 
 /**
@@ -132,6 +113,7 @@ export async function buildEpochOverview(
           answered: result.parsedProbeCount,
           asked: result.probeCount,
           recheck,
+          confirmed: result.status === 'DIFF' && result.recheck?.status === 'DIFF',
         }
         if (verdict === null) {
           // A first DIFF that was never rechecked is not submitted; keep any earlier verdict.
@@ -179,6 +161,7 @@ export async function buildEpochOverview(
           answered: null,
           asked: null,
           recheck: null,
+          confirmed: false,
           reason: explainSkipReason(skip.text, model),
           audits: 0,
         })
@@ -186,13 +169,20 @@ export async function buildEpochOverview(
     }
   }
 
-  const ordered = [...sellers.values()].filter((seller) => seller.cells.size > 0).sort((left, right) => {
-    const count = (seller: OverviewSeller, state: OverviewCellState): number =>
-      [...seller.cells.values()].filter((cell) => cell.state === state).length
-    return count(right, 'diff') - count(left, 'diff')
-      || count(right, 'same') - count(left, 'same')
-      || left.label.localeCompare(right.label)
-  })
+  // Count each seller's verdicts once, then sort: most DIFFs first, then most SAMEs, then by name.
+  const ordered = [...sellers.values()]
+    .filter((seller) => seller.cells.size > 0)
+    .map((seller) => {
+      let same = 0
+      let diff = 0
+      for (const cell of seller.cells.values()) {
+        if (cell.state === 'same') same += 1
+        else if (cell.state === 'diff') diff += 1
+      }
+      return { seller, same, diff }
+    })
+    .sort((left, right) => right.diff - left.diff || right.same - left.same || left.seller.label.localeCompare(right.seller.label))
+    .map(({ seller }) => seller)
   return { epoch, runIds: runs.map((run) => run.runId), models, sellers: ordered }
 }
 
@@ -214,7 +204,7 @@ export async function writeEpochOverview(evidenceDir: string, epoch: string, run
 
 const STATE_LABEL: Record<OverviewCellState, string> = {
   same: 'Verified (SAME)',
-  diff: 'Wrong model (DIFF twice)',
+  diff: 'Wrong model (DIFF)',
   undetermined: 'Inconclusive',
   skipped: 'Tried, not submitted',
 }
@@ -229,7 +219,7 @@ function cellDetail(cell: OverviewCell): string[] {
     lines.push(`1st check: ${percent(cell.correctRate)} match (${cell.answered ?? 0} of ${cell.asked ?? 0} answered)`)
   }
   if (cell.recheck) lines.push(`recheck: ${cell.recheck.status}, ${percent(cell.recheck.correctRate)} match`)
-  if (cell.state === 'diff') lines.push('DIFF on both checks')
+  if (cell.state === 'diff') lines.push(cell.confirmed ? 'DIFF on both checks' : 'DIFF on one check (confirmation was off)')
   return lines
 }
 
@@ -241,6 +231,7 @@ export function renderEpochOverview(overview: EpochOverview): string {
   const verifiedSellers = overview.sellers.filter((seller) => isVerified(seller)).length
   const audited = overview.sellers.filter((seller) => [...seller.cells.values()].some((cell) => cell.state !== 'skipped')).length
   const notConfirmed = all.filter((cell) => cell.state === 'undetermined' && cell.recheck).length
+  const confirmedDiffs = all.filter((cell) => cell.state === 'diff' && cell.confirmed).length
 
   const header = overview.models.map((model) => `<th class="m">${escapeHtml(model)}</th>`).join('')
   const rows = overview.sellers.map((seller) => {
@@ -296,11 +287,11 @@ td{text-align:center;padding:6px 4px}td.num{white-space:nowrap;font-size:12px}
 <body>
 <main>
 <h1>KBF audits · epoch ${escapeHtml(overview.epoch)}</h1>
-<div class="sub">${overview.runIds.length} run${overview.runIds.length === 1 ? '' : 's'} merged in submit order (a later verdict replaces an earlier one, as on the contract). A DIFF counts only when a recheck on fresh questions is DIFF too. Hover a dot for details.</div>
+<div class="sub">${overview.runIds.length} run${overview.runIds.length === 1 ? '' : 's'} merged in submit order (a later verdict replaces an earlier one, as on the contract). A DIFF counts only when a recheck on fresh questions is DIFF too, unless confirmation was off for that run. Hover a dot for details.</div>
 <div class="cards">
 <div class="card"><h3>AUDITED SELLERS</h3><div class="v">${audited}</div><small>${verifiedSellers} with SAME and no DIFF</small></div>
 <div class="card"><h3>SAME</h3><div class="v">${count('same')}</div><small>services verified</small></div>
-<div class="card"><h3>DIFF (2× CONFIRMED)</h3><div class="v">${count('diff')}</div><small>${sellersWith('diff')} sellers with ≥1 DIFF</small></div>
+<div class="card"><h3>DIFF</h3><div class="v">${count('diff')}</div><small>${confirmedDiffs} confirmed by a recheck · ${sellersWith('diff')} sellers</small></div>
 <div class="card"><h3>UNDETERMINED</h3><div class="v">${count('undetermined')}</div><small>incl. ${notConfirmed} DIFFs not confirmed</small></div>
 <div class="card"><h3>NOT SUBMITTED</h3><div class="v">${count('skipped')}</div><small>tried, not audited or not confirmed</small></div>
 </div>
@@ -336,17 +327,9 @@ function renderCell(cell: OverviewCell): string {
   ].join('')
   const meta = `${cell.model} · service ${cell.service} · run ${cell.runId.slice(0, 10)}…`
     + (cell.audits > 1 ? ` · ${cell.audits} audits` : '')
-  const sup = cell.state === 'diff' ? '<sup>2×</sup>' : cell.audits > 1 ? `<sup>${cell.audits}</sup>` : ''
+  const sup = cell.state === 'diff' && cell.confirmed ? '<sup>2×</sup>' : cell.audits > 1 ? `<sup>${cell.audits}</sup>` : ''
   return `<span class="cell" tabindex="0" aria-label="${escapeHtml(`${headline}. ${cell.reason?.detail ?? ''}`)}">`
     + `<span class="dot ${cell.state}"></span>${sup}`
     + `<span class="card-tip" role="tooltip"><b>${escapeHtml(headline)}</b>${lines}<i>${escapeHtml(meta)}</i></span></span>`
 }
 
-function escapeHtml(value: string): string {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;')
-}

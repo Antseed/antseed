@@ -7,7 +7,6 @@ import {
   KBF_PROBES_PER_REQUEST,
   KBF_PROMPT_VARIANT_IDS,
   KBF_OPTIONAL_SAMPLING_FIELDS,
-  buildKbfChatRequestBody,
   isKbfThinkingSuppressionRejection,
   kbfTargetThinkingSuppression,
   type KbfThinkingSuppression,
@@ -33,6 +32,7 @@ import { auditedModels, findAuditedModelKey } from './audited-models.js'
 import { parsePersistedPeers } from '../proxy/buyer-proxy.js'
 import { auditPriceRejection, type AuditPriceCap } from './audit-price.js'
 import { createDomainHomogeneousKbfBatches } from './kbf-batching.js'
+import { buildKbfAuditChatBody } from './kbf-audit-request.js'
 import {
   deriveProxyAuditId,
   parseProxyAuditExchangeCost,
@@ -185,6 +185,8 @@ export interface ModelVerificationTargetResult {
    * `verifier run` in the same epoch rechecks it without repeating the first check.
    */
   recheckPending?: { reason: string; since: string }
+  /** Set on a DIFF from a run with `verifier.diffConfirmationRuns` 0: it is final without a recheck. */
+  diffConfirmation?: 'off'
 }
 
 export interface ModelVerificationRecheckV1 {
@@ -233,7 +235,12 @@ export interface VerificationTargetPolicy {
   priceCap: AuditPriceCap
 }
 
-export async function loadBuyerProxySnapshot(dataDir: string): Promise<BuyerProxySnapshot> {
+/**
+ * The running buyer's proxy and discovered peers. Throws when no live, connected buyer runs, and
+ * by default when it has discovered no peers; `allowEmptyPeers` returns an empty list instead,
+ * for callers to whom no sellers is an answer (a round with nothing to audit).
+ */
+export async function loadBuyerProxySnapshot(dataDir: string, options: { allowEmptyPeers?: boolean } = {}): Promise<BuyerProxySnapshot> {
   const statePath = join(dataDir, 'buyer.state.json')
   let parsed: {
     state?: unknown
@@ -258,7 +265,7 @@ export async function loadBuyerProxySnapshot(dataDir: string): Promise<BuyerProx
     throw new Error('buyer proxy state has an invalid port')
   }
   const peers = parsePersistedPeers(parsed)
-  if (peers.length === 0) throw new Error('buyer proxy has no live discovered peers')
+  if (peers.length === 0 && !options.allowEmptyPeers) throw new Error('buyer proxy has no live discovered peers')
   return {
     baseUrl: `http://127.0.0.1:${String(parsed.port)}`,
     statePath,
@@ -430,15 +437,18 @@ export async function verifyModelTarget(input: {
     startedAt: Date.now(),
   })
   const exchangeByBatch = new Map<number, ProxyAuditEvidenceExchangeV1>()
+  // Signed batches with missing answers are asked again; the earlier attempt is kept if the new one is no better.
+  const partialByBatch = new Map<number, ProxyAuditEvidenceExchangeV1>()
   for (const exchange of input.resume?.exchanges ?? []) {
     const expectedProbeIds = batches[exchange.batchIndex]?.probes.map((probe) => probe.id)
     if (isReusableExchange(exchange) && expectedProbeIds && sameStrings(exchange.probeIds, expectedProbeIds)) {
       // Re-score with the current rule so a checkpoint written before unscoreable
       // answers were left out does not count them as wrong.
-      exchangeByBatch.set(exchange.batchIndex, {
+      const rescored = {
         ...exchange,
         matches: computeMatchVector(exchange.answers, batches[exchange.batchIndex]!.probes),
-      })
+      }
+      ;(hasMissingKbfAnswers(rescored.matches) ? partialByBatch : exchangeByBatch).set(exchange.batchIndex, rescored)
     }
   }
   const reusedBatchIndexes = [...exchangeByBatch.keys()].sort((left, right) => left - right)
@@ -452,7 +462,12 @@ export async function verifyModelTarget(input: {
   let checkpointTail = Promise.resolve()
   let checkpointFailure: Error | null = null
   const persistCheckpoint = async (): Promise<void> => {
-    const snapshot = [...exchangeByBatch.values()].sort((left, right) => left.batchIndex - right.batchIndex)
+    // A partial batch not asked again yet keeps its earlier attempt in the checkpoint, so an
+    // interrupted repair resumes with it instead of losing its answers and cost.
+    const snapshot = [
+      ...exchangeByBatch.values(),
+      ...[...partialByBatch.values()].filter((exchange) => !exchangeByBatch.has(exchange.batchIndex)),
+    ].sort((left, right) => left.batchIndex - right.batchIndex)
     const checkpoint: ModelAuditCheckpointV1 = {
       version: 1,
       kind: 'antseed-verifier-audit-checkpoint',
@@ -494,7 +509,7 @@ export async function verifyModelTarget(input: {
       input.context.batchConcurrency,
       async ({ probes, batchIndex }, _pendingIndex, control) => input.context.batchLimiter.run(async () => {
         if (checkpointFailure) throw checkpointFailure
-        const exchange = await executeProxyProbeBatch(
+        const exchange = keepBetterAttempt(await executeProxyProbeBatch(
         { ...input.context, signal: deadline.start() },
         input.target,
         input.service,
@@ -503,7 +518,7 @@ export async function verifyModelTarget(input: {
         batchIndex,
         control.reduceToOne,
         sampling,
-        )
+        ), partialByBatch.get(batchIndex))
         exchangeByBatch.set(batchIndex, exchange)
         await persistCheckpoint()
         if (batchIndex === 0 && exchange.status === 'failed' && exchange.outcomeReason?.retryable) {
@@ -520,7 +535,12 @@ export async function verifyModelTarget(input: {
     if (error instanceof VerificationTerminalTransientSignal) {
       exchangeByBatch.set(error.exchange.batchIndex, error.exchange)
       for (const { probes, batchIndex } of pending) {
-        if (!exchangeByBatch.has(batchIndex)) {
+        if (exchangeByBatch.has(batchIndex)) continue
+        // Not asked again this time: a saved signed partial attempt stays, with its answers and cost.
+        const saved = partialByBatch.get(batchIndex)
+        if (saved) {
+          exchangeByBatch.set(batchIndex, saved)
+        } else {
           exchangeByBatch.set(batchIndex, notAttemptedExchange(
             input.context,
             input.target,
@@ -615,7 +635,15 @@ export async function verifyModelTarget(input: {
   const outcomeReason = verdict === 'UNDETERMINED' ? summarizeUndeterminedReason(exchanges, batches.length) : null
   const cumulativeCost = summarizeAuditExchangeCosts(exchanges)
   const newBatchIndexes = new Set(pending.map((entry) => entry.batchIndex))
-  const cost = summarizeAuditExchangeCosts(exchanges.filter((exchange) => newBatchIndexes.has(exchange.batchIndex)))
+  // This audit's cost leaves out what an asked-again batch had already cost in the audit it resumes.
+  const cost = summarizeAuditExchangeCosts(exchanges
+    .filter((exchange) => newBatchIndexes.has(exchange.batchIndex))
+    .map((exchange) => {
+      const earlier = partialByBatch.get(exchange.batchIndex)
+      return earlier && exchange.attemptCosts
+        ? { ...exchange, attemptCosts: exchange.attemptCosts.slice(exchangeAttemptCosts(earlier).length) }
+        : exchange
+    }))
   const correctProbeCount = matchVector.filter((entry) => entry === 1).length
   const incorrectProbeCount = matchVector.filter((entry) => entry === 0).length
   const parsedProbeCount = correctProbeCount + incorrectProbeCount
@@ -1158,26 +1186,14 @@ export function buildKbfProbeRequestBody(
   omitSampling = false,
   thinking: KbfThinkingSuppression | null = null,
 ): Uint8Array {
-  // Audits send the canonical KBF body plus the reference's thinking suppression,
-  // as the KBF reference code does for every endpoint. Other reference-endpoint
-  // settings (omitted fields, provider pins) never reach sellers.
-  const chat = buildKbfChatRequestBody(service, probes, {
+  const body = buildKbfAuditChatBody(service, probes, {
     maxTokens: queryProfile.maxTokensPerRequest,
-    variantId: promptVariantId,
-  })
-  const requestBody: Record<string, unknown> = {
-    ...chat,
-    ...(thinking?.assistantPrefill
-      ? { messages: [...chat.messages, { role: 'assistant', content: thinking.assistantPrefill }] }
-      : {}),
-    ...thinking?.overrides,
-    // No top_p: the KBF reference code sends only model, messages, temperature and
-    // max_tokens, and several upstreams reject top_p (Kimi K3, Opus 5, Opus 4.6).
+    promptVariantId,
     temperature: queryProfile.auditTemperature,
-    stream: false,
-  }
-  if (omitSampling) for (const field of KBF_OPTIONAL_SAMPLING_FIELDS) delete requestBody[field]
-  return new TextEncoder().encode(JSON.stringify(requestBody))
+    thinking,
+    omitSampling,
+  })
+  return new TextEncoder().encode(JSON.stringify(body))
 }
 
 function buildProxyBatchRequest(
@@ -1415,6 +1431,30 @@ export function extractCompletionText(body: Uint8Array): string | null {
     return extractCompletionFromJson(JSON.parse(text) as Record<string, unknown>)
   } catch {
     return extractCompletionFromSse(text)
+  }
+}
+
+/** Priced attempts an exchange carries (older evidence only has `cost`). */
+function exchangeAttemptCosts(exchange: ProxyAuditEvidenceExchangeV1): NonNullable<ProxyAuditEvidenceExchangeV1['attemptCosts']> {
+  return exchange.attemptCosts ?? (exchange.cost ? [exchange.cost] : [])
+}
+
+/**
+ * A resumed batch that was asked again keeps whichever attempt scored more answers, and carries the
+ * requests and costs of both so the cumulative cost stays complete.
+ */
+function keepBetterAttempt(
+  fresh: ProxyAuditEvidenceExchangeV1,
+  earlier: ProxyAuditEvidenceExchangeV1 | undefined,
+): ProxyAuditEvidenceExchangeV1 {
+  if (!earlier) return fresh
+  const kept = isBetterBatchAttempt(earlier, fresh) ? earlier : fresh
+  return {
+    ...kept,
+    attemptCount: earlier.attemptCount + fresh.attemptCount,
+    requestIds: [...earlier.requestIds, ...fresh.requestIds],
+    attemptCosts: [...exchangeAttemptCosts(earlier), ...exchangeAttemptCosts(fresh)],
+    timing: fresh.timing,
   }
 }
 

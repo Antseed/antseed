@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { KbfReferenceV1 } from '@antseed/fingerprints'
-import { combineDiffRecheck, RECHECK_ENROLLMENT_ROUNDS, runDiffRechecks } from './diff-recheck.js'
+import { combineDiffRecheck, finalAuditVerdict, RECHECK_ENROLLMENT_ROUNDS, runDiffRechecks } from './diff-recheck.js'
 import type { ModelVerificationSkip, ModelVerificationTargetResult } from './model-run.js'
 import { BANK_EXHAUSTED } from './probe-bank.js'
 import { emptyAuditCostSummary } from './proxy-evidence.js'
@@ -30,13 +30,15 @@ const reference = { referenceId: 'sha256:recheck', probes: Array.from({ length: 
 
 async function run(input: {
   results: ModelVerificationTargetResult[]
-  recheckVerdicts?: Record<string, ModelVerificationTargetResult['status'] | 'SKIPPED'>
+  recheckVerdicts?: Record<string, ModelVerificationTargetResult['status'] | 'SKIPPED' | 'UNREACHABLE' | 'PARTLY_SEEN' | 'BLANK' | 'THROWS'>
   exhausted?: Set<string>
   enroll?: (() => Promise<void>) | null
 }) {
   const logs: string[] = []
   const verified: string[] = []
+  const released: string[] = []
   const outcome = await runDiffRechecks({
+    release: async (_first, auditId) => { released.push(auditId) },
     results: input.results,
     reserve: async (first) => {
       if (input.exhausted?.has(first.peerId)) throw new Error(`${BANK_EXHAUSTED}: 20 probes remain`)
@@ -46,6 +48,7 @@ async function run(input: {
     verify: async (first): Promise<ModelVerificationTargetResult | ModelVerificationSkip> => {
       verified.push(first.peerId)
       const verdict = input.recheckVerdicts?.[first.peerId] ?? 'DIFF'
+      if (verdict === 'THROWS') throw new Error('proxy connection lost')
       if (verdict === 'SKIPPED') {
         return {
           peerId: first.peerId, displayName: null, agentId: first.agentId, service: first.service,
@@ -53,13 +56,50 @@ async function run(input: {
           auditId: null, evidencePath: null, evidenceHash: null,
         }
       }
+      if (verdict === 'PARTLY_SEEN') {
+        // Half the batches answered, then the connection dropped.
+        return {
+          ...result(first.peerId[0]!, 'UNDETERMINED'),
+          peerId: first.peerId,
+          auditId: `second-${first.peerId}`,
+          parsedProbeCount: 50,
+          outcomeReason: {
+            code: 'transport_error', summary: 'connection reset', retryable: true, source: 'transport',
+            affectedBatchCount: 5, totalBatchCount: 10, nextAction: 'retry later',
+          },
+        }
+      }
+      if (verdict === 'UNREACHABLE' || verdict === 'BLANK') {
+        // UNREACHABLE: the buyer never got a request out (no request recorded). BLANK: every request
+        // went out but came back unanswered or unsigned, or timed out after sending.
+        return {
+          ...result(first.peerId[0]!, 'UNDETERMINED'),
+          peerId: first.peerId,
+          auditId: `second-${first.peerId}`,
+          requestCount: verdict === 'UNREACHABLE' ? 0 : 10,
+          parsedProbeCount: 0,
+          correctProbeCount: 0,
+          incorrectProbeCount: 0,
+          correctRate: null,
+          outcomeReason: {
+            code: 'transport_error', summary: 'seller unreachable', retryable: true, source: 'transport',
+            affectedBatchCount: 10, totalBatchCount: 10, nextAction: 'retry later',
+          },
+        }
+      }
       return { ...result(first.peerId[0]!, verdict), peerId: first.peerId, auditId: `second-${first.peerId}` }
     },
     concurrency: async (tasks) => { for (const task of tasks) await task() },
     log: (message) => logs.push(message),
   })
-  return { outcome, logs, verified }
+  return { outcome, logs, verified, released }
 }
+
+test('a DIFF is final only after its recheck, or when the run had confirmation off', () => {
+  assert.equal(finalAuditVerdict(result('a', 'SAME')), 'SAME')
+  assert.equal(finalAuditVerdict(result('a', 'DIFF')), null)
+  assert.equal(finalAuditVerdict({ ...result('a', 'DIFF'), diffConfirmation: 'off' }), 'DIFF')
+})
 
 test('only DIFF results are rechecked; a recheck DIFF confirms the DIFF', async () => {
   const same = result('a', 'SAME')
@@ -85,7 +125,6 @@ test('a recheck SAME or UNDETERMINED turns the DIFF into UNDETERMINED', async ()
   assert.deepEqual(outcome.results.map((entry) => entry.recheck?.status), ['SAME', 'UNDETERMINED'])
   assert.equal(outcome.stats.notConfirmed, 2)
   assert.equal(outcome.stats.confirmed, 0)
-  assert.equal(outcome.failures.length, 0)
   assert.ok(logs.some((line) => line.includes('recheck UNDETERMINED → not confirmed')))
 })
 
@@ -93,7 +132,6 @@ test('a DIFF without fresh questions is kept, waiting for its recheck, when enro
   const diff = result('b', 'DIFF')
   const { outcome, verified, logs } = await run({ results: [diff], exhausted: new Set([diff.peerId]) })
   assert.deepEqual(verified, [])
-  assert.equal(outcome.failures.length, 0)
   assert.equal(outcome.results.length, 1)
   assert.equal(outcome.results[0]!.status, 'DIFF')
   assert.equal(outcome.results[0]!.recheck, undefined)
@@ -146,7 +184,6 @@ test('a failed enrollment, a skipped recheck or a recheck error keeps the first 
     enroll: async () => { throw new Error('budget exhausted') },
     recheckVerdicts: { [skippedDiff.peerId]: 'SKIPPED' },
   })
-  assert.equal(outcome.failures.length, 0)
   assert.deepEqual(outcome.results.map((entry) => entry.status), ['DIFF', 'DIFF'])
   assert.match(outcome.results[0]!.recheckPending!.reason, /enrollment failed: budget exhausted/)
   assert.match(outcome.results[1]!.recheckPending!.reason, /recheck skipped: no ResponseAuth/)
@@ -158,6 +195,7 @@ test('a recheck that throws keeps the DIFF waiting too', async () => {
   const outcome = await runDiffRechecks({
     results: [diff],
     reserve: async () => ({ reference, auditId: 'recheck-b' }),
+    release: async () => {},
     enroll: null,
     verify: async () => { throw new Error('reference endpoint 402: out of credits') },
     concurrency: async (tasks) => { for (const task of tasks) await task() },
@@ -184,4 +222,40 @@ test('an already rechecked DIFF is not rechecked again', async () => {
   const { verified, outcome } = await run({ results: [confirmed] })
   assert.deepEqual(verified, [])
   assert.equal(outcome.results[0], confirmed)
+})
+
+test('a recheck the seller could not answer keeps the DIFF waiting instead of finishing it UNDETERMINED', async () => {
+  const diff = result('a', 'DIFF')
+  const inconclusive = result('b', 'DIFF')
+  const { outcome, logs } = await run({
+    results: [diff, inconclusive],
+    recheckVerdicts: { [diff.peerId]: 'UNREACHABLE', [inconclusive.peerId]: 'UNDETERMINED' },
+  })
+  const kept = outcome.results[0]!
+  assert.equal(kept.status, 'DIFF')
+  assert.equal(kept.recheck, undefined)
+  assert.match(kept.recheckPending?.reason ?? '', /seller unreachable/)
+  assert.equal(finalAuditVerdict(kept), null)
+  // An answered but too-close-to-call recheck still finishes the DIFF as UNDETERMINED.
+  assert.equal(outcome.results[1]!.status, 'UNDETERMINED')
+  assert.equal(outcome.results[1]!.recheck?.status, 'UNDETERMINED')
+  assert.deepEqual([outcome.stats.pending, outcome.stats.rechecked, outcome.stats.notConfirmed], [1, 1, 1])
+  assert.ok(logs.some((line) => line.includes('recheck unanswered')))
+})
+
+test('a recheck that may have reached the seller stays pending but gives up its questions for fresh ones', async () => {
+  const unreachable = result('a', 'DIFF')
+  const partly = result('b', 'DIFF')
+  const blank = result('c', 'DIFF')
+  const throws = result('d', 'DIFF')
+  const { outcome, released } = await run({
+    results: [unreachable, partly, blank, throws],
+    recheckVerdicts: {
+      [unreachable.peerId]: 'UNREACHABLE', [partly.peerId]: 'PARTLY_SEEN', [blank.peerId]: 'BLANK', [throws.peerId]: 'THROWS',
+    },
+  })
+  assert.deepEqual(outcome.results.map((entry) => entry.status), ['DIFF', 'DIFF', 'DIFF', 'DIFF'])
+  assert.ok(outcome.results.every((entry) => entry.recheckPending && !entry.recheck))
+  // Only a recheck that sent nothing keeps its questions; any request may have shown them.
+  assert.deepEqual(released.sort(), [`recheck-${partly.peerId}`, `recheck-${blank.peerId}`, `recheck-${throws.peerId}`].sort())
 })

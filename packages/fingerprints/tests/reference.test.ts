@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  aggregateKbfSelfTestOutcomes,
+  scoredSelfTestCoverage,
   assertMatchingQueryProfile,
   computeBinomialPower,
   computeContrastDetection,
@@ -12,6 +14,7 @@ import {
   rescoreKbfReference,
   subsetReferenceSelfTest,
   validateKbfReferenceV1,
+  verifyKbf,
   type KbfReferenceV1,
 } from '../src/index.js';
 
@@ -469,6 +472,27 @@ describe('rescoreKbfReference', () => {
     expect(legacy.selfTest.outcomes[0]!.matches).toEqual([0, 1, 0]);
   });
 
+  it('verifyKbf scores a legacy reference baseline by the current rule without the caller rescoring it', () => {
+    // 30 of 300 self-test runs missing but stored as discrepancies: p0 ~0.15 if taken as is.
+    let legacy = reference();
+    legacy.minimumMismatchDelta = 0.15;
+    for (let index = 0; index < 30; index++) {
+      legacy = withOutcome(legacy, { probeId: `p-${index}`, answers: [null, index, index], matches: [0, 1, 1] });
+    }
+    expect(() => validateKbfReferenceV1(legacy)).not.toThrow();
+    expect(legacy.selfTest).toMatchObject({ hamming: 30, total: 300 });
+    // A fully answered target with 15 wrong answers.
+    const answers = legacy.probes.map((probe, index) => (index < 15 ? probe.consensus + 500 : probe.consensus));
+
+    const direct = verifyKbf(legacy, { answers });
+    const rescored = verifyKbf(rescoreKbfReference(legacy), { answers });
+
+    expect(direct.verdict).toBe('DIFF');
+    expect(direct.verdict).toBe(rescored.verdict);
+    expect(direct.stats).toMatchObject({ selfHamming: 0, selfTotal: 270 });
+    expect(direct.stats).toEqual(rescored.stats);
+  });
+
   it('returns a current reference unchanged', () => {
     const value = reference();
     expect(rescoreKbfReference(value)).toBe(value);
@@ -507,3 +531,14 @@ function withOutcome(
   value.referenceId = computeReferenceId(value);
   return value;
 }
+
+describe('scoredSelfTestCoverage', () => {
+  it('leaves out-of-range answers out of the readiness coverage', () => {
+    // One right answer and two out-of-range answers: parsed coverage 1, scored coverage 1/3.
+    const outcome = { probeId: 'p1', answers: [5, 5_000, 6_000], matches: [1, null, null] as (0 | 1 | null)[] };
+    const selfTest = aggregateKbfSelfTestOutcomes([outcome]);
+    expect(selfTest.coverage).toBe(1);
+    expect(scoredSelfTestCoverage(selfTest)).toBeCloseTo(1 / 3);
+    expect(scoredSelfTestCoverage(selfTest) < 0.8).toBe(true);
+  });
+});

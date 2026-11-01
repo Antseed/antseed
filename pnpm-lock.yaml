@@ -138,6 +138,9 @@ importers:
       '@antseed/router-core':
         specifier: workspace:*
         version: link:../../packages/router-core
+      '@noble/curves':
+        specifier: ^2.2.0
+        version: 2.4.0
       '@peculiar/x509':
         specifier: ^2.0.0
         version: 2.0.0

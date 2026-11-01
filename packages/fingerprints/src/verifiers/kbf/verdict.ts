@@ -16,9 +16,9 @@ export interface KbfVerdictInput {
   /** Below this scored fraction, the verdict is UNDETERMINED. Default 0.5. */
   minCoverage?: number;
   /**
-   * A DIFF also needs at least this scored fraction; below it a would-be DIFF is
-   * UNDETERMINED, so a seller cannot make a DIFF likelier by leaving answers out.
-   * Default: `minCoverage` (no extra requirement).
+   * A DIFF from the answered probes alone needs at least this scored fraction.
+   * Below it the result is DIFF only when it holds even with every missing answer
+   * counted as a match. Default: `minCoverage` (no extra requirement).
    */
   minDiffCoverage?: number;
   /** Clopper-Pearson confidence for the self-error upper bound. Default 0.99. */
@@ -48,8 +48,13 @@ export interface KbfVerdictResult {
  * - invalid reference self-test or empty match vector → UNKNOWN;
  * - fewer than `minCoverage` of the target's probes scored → UNDETERMINED;
  * - otherwise p0 = CP upper bound on the reference self-error rate and a
- *   one-sided binomial test of the target's mismatch count against p0:
- *   pValue < alpha → DIFF, else SAME.
+ *   one-sided binomial test of the target's mismatch count against p0.
+ *
+ * Missing answers cannot improve the verdict. DIFF when the answered probes are
+ * significant (with `minDiffCoverage` scored) or when even counting every missing
+ * answer as a match is significant. SAME only when the answered probes are not
+ * significant and neither is counting every missing answer as a mismatch; a seller
+ * that leaves out the answers it would get wrong is UNDETERMINED, not SAME.
  */
 export function computeKbfVerdict(input: KbfVerdictInput): KbfVerdictResult {
   const { selfHamming, selfTotal, targetMatchVector } = input;
@@ -122,11 +127,15 @@ export function computeKbfVerdict(input: KbfVerdictInput): KbfVerdictResult {
   }
 
   const p0 = clopperPearsonUpper(selfHamming, selfTotal, cpConfidence);
+  const missing = total - parsed;
   const pValue = binomialOneSidedPValue(mismatches, parsed, p0);
   const significant = pValue < alpha;
-  const verdict: FingerprintVerdict = !significant
-    ? 'SAME'
-    : coverage < minDiffCoverage ? 'UNDETERMINED' : 'DIFF';
+  // Bounds over every way the missing answers could have gone.
+  const missingAsMatches = binomialOneSidedPValue(mismatches, total, p0) < alpha;
+  const missingAsMismatches = missing > 0 && binomialOneSidedPValue(mismatches + missing, total, p0) < alpha;
+  const verdict: FingerprintVerdict = (significant && coverage >= minDiffCoverage) || missingAsMatches
+    ? 'DIFF'
+    : significant || missingAsMismatches ? 'UNDETERMINED' : 'SAME';
 
   return {
     verdict,
@@ -134,7 +143,9 @@ export function computeKbfVerdict(input: KbfVerdictInput): KbfVerdictResult {
       verdict === 'DIFF'
         ? `binomial p-value ${pValue.toExponential(4)} below alpha ${alpha}`
         : verdict === 'UNDETERMINED'
-          ? `binomial p-value ${pValue.toExponential(4)} below alpha ${alpha}, but coverage ${coverage.toFixed(4)} is below the ${minDiffCoverage} a DIFF needs`
+          ? significant
+            ? `binomial p-value ${pValue.toExponential(4)} below alpha ${alpha}, but coverage ${coverage.toFixed(4)} is below the ${minDiffCoverage} a DIFF needs`
+            : `${missing} missing answers could hide a DIFF (coverage ${coverage.toFixed(4)})`
           : null,
     stats: {
       selfHamming,

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { link, mkdir, open, readFile, rename, rm, stat, unlink } from 'node:fs/promises'
+import { chmod, link, mkdir, open, readFile, rename, rm, stat, unlink } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { canonicalJsonStringify } from '@antseed/fingerprints'
 
@@ -17,11 +17,11 @@ export async function readJsonIfExists<T>(path: string): Promise<T | null> {
   }
 }
 
-export async function writeTextAtomic(path: string, text: string): Promise<void> {
+export async function writeTextAtomic(path: string, text: string, mode?: number): Promise<void> {
   await mkdir(dirname(path), { recursive: true })
   const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`
   try {
-    await writeExclusive(temporary, text)
+    await writeExclusive(temporary, text, mode)
     await rename(temporary, path)
   } catch (error) {
     await rm(temporary, { force: true })
@@ -68,14 +68,25 @@ export async function acquirePidFileLock(path: string): Promise<FileLock> {
   }
 }
 
-async function writeExclusive(path: string, text: string): Promise<void> {
-  const handle = await open(path, 'wx')
+async function writeExclusive(path: string, text: string, mode?: number): Promise<void> {
+  const handle = await open(path, 'wx', mode)
   try {
     await handle.writeFile(text)
     await handle.sync()
   } finally {
     await handle.close()
   }
+}
+
+/** Creates `path` (and parents) and makes it owner-only (0700), so files written in it stay private. */
+export async function ensurePrivateDirectory(path: string): Promise<void> {
+  await mkdir(path, { recursive: true, mode: 0o700 })
+  await chmod(path, 0o700)
+}
+
+/** Writes a secret file atomically; it is created owner-only (0600) before any byte is written. */
+export async function writeSecretJsonAtomic(path: string, value: unknown): Promise<void> {
+  await writeTextAtomic(path, JSON.stringify(value, null, 2), 0o600)
 }
 
 /**

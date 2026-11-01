@@ -1,137 +1,120 @@
 ---
-title: How audits run
+title: How verification rounds run
 slug: /verify/audits
-description: How KBF audits run — which models each auditor audits, which sellers are audited, how verdicts are decided, where the genuine answers come from, and how results go on-chain.
+description: How KBF verification rounds run — the weekly schedule, how the questions stay secret until collection is over, how sellers are scored, how verifiers agree on results on-chain, and how rewards are split.
 ---
 
-# How audits run
+# How verification rounds run
 
 This page covers **KBF audits**, one of the first of many verification methods Antseed is launching, with more to come (see [Model verification](/docs/model-verification#one-method-among-many)). For setup, see [Become a verifier](/docs/verify).
 
-## Running an audit
+KBF audits run as one round per epoch (one week), shared by every approved verifier. No single verifier decides a verdict: every verifier scores the same public data, and a result only counts once a majority of verifiers attest the same results.
 
-With the buyer running (`antseed buyer start`), each epoch is:
+## Roles
 
-```bash
-antseed verifier run                          # audit, recheck and retry, all in one run
-antseed verifier status                       # optional, from another terminal
-antseed verifier submit --dry-run             # check before sending
-antseed verifier submit --yes                # publish the evidence and put the results on-chain
-```
+| Role | Who | Does |
+|---|---|---|
+| Owner | The contract owner | Approves verifiers and the publisher, sets the list of audited models and the schedule |
+| Publisher | Antseed's reference publisher, `antseed verifier publish` | Builds and seals each epoch's question bank, publishes the plan, reveals the bank key. It decides no verdicts, and verifiers can finish a round without it (see [If the publisher goes missing](#if-the-publisher-goes-missing)) |
+| Verifiers | Approved addresses, `antseed verifier start` | Buy questions from sellers, score the epoch, attest the results, and earn rewards |
 
-The rest of this page explains what these commands do.
+## The schedule
 
-## One audit
+Each epoch follows the same timeline, as offsets from the epoch start. The defaults:
 
-1. **Reference banks.** For each model, the auditor asks the genuine model short questions with exact answers. It keeps the ones it answers consistently and that cheaper look-alike models get wrong (see [Reference banks](#reference-banks)).
-2. **Questions.** `verifier run` asks each seller a fresh set of those questions. These are normal paid requests, and the seller must sign every response.
-3. **Verdict.** The seller's answers are compared with the genuine ones:
+| Phase | Default | What happens |
+|---|---|---|
+| Bank | during the previous epoch | The publisher builds a fresh question bank for every audited model, encrypts it and commits its hash on-chain |
+| Open | start of the epoch | A verifier opens the epoch. This fixes the epoch's verifiers, models and schedule; anyone approved later joins from the next epoch |
+| Seed | 4 blocks later | A verifier fixes the epoch's random seed from that block's hash. The seed decides which questions each seller gets and who buys them |
+| Collect | 3 days | The publisher publishes the plan. Each verifier buys its slices from the sellers and commits the signed responses |
+| Backup | 1 day | Each slice's backup verifier buys it if its owner didn't deliver it |
+| Attest | 1 day | The publisher reveals the bank key. Every verifier scores the epoch and attests the results root |
+
+The owner can change the schedule (`setSchedule`) for epochs opened later. `verifier start` takes each step on its own as soon as it is due.
+
+## Keeping the questions secret
+
+A seller that knew the questions in advance could answer them with the genuine model and serve something else the rest of the time. So:
+
+- **The bank is sealed.** Only its hash and a commitment to its key (the address of the key's secp256k1 point) are on-chain while sellers are being asked. The bank itself sits on IPFS, encrypted.
+- **Each verifier only sees its own questions.** The plan lists the sellers to audit and holds, per verifier, one envelope with the questions of its own slices and one with the slices it backs up, each encrypted to the key that verifier published on-chain. Envelopes have none of the answers.
+- **Questions are fresh.** Each bank is built for its epoch and leaves out the questions of the last 8 banks.
+- **The key is revealed when buying is over.** After the backup deadline the publisher reveals the bank key on-chain. The contract checks it against the committed point, and from then on anyone can decrypt the bank and check the round.
+- **The key is escrowed with the verifiers.** Once the epoch is open, the publisher splits the bank key into Shamir shares, one sealed to each of the epoch's verifiers, and commits the share file's hash on-chain. Any majority of the shares rebuilds the key; fewer reveal nothing. A majority of verifiers can already decide the results, so this adds no new trust.
+- **Verifiers check the round before it starts.** The publisher's plan is only a proposal until the verifiers accept it (`acceptPlan`). Each verifier checks that it can fetch the plan and the sealed bank at their committed hashes, that its own envelopes open and ask only for what the seed assigns it, and that the key escrow is sound: the epoch's threshold, shares only for the epoch's verifiers, and its own share on the polynomial the share file commits to, whose constant term is the committed key's point. The plan takes effect once a majority of the epoch's verifiers, not counting the epoch's publisher, have accepted it; only then does buying start and the epoch can no longer be taken over. So a publisher can't freeze a round with a plan, bank or escrow the others can't use. If the revealed key later doesn't open the committed bank, or the bank isn't a bank of the epoch, every verifier scores the epoch as an empty round, so it still finalizes.
+
+## If the publisher goes missing
+
+The publisher is a convenience, not a requirement:
+
+- **No plan in time.** If no plan is in effect 6 hours into the epoch (`publisherGraceSeconds`), any of the epoch's verifiers can take the epoch over: it builds its own bank, commits it with `takeOverBank` and runs the rest of the round as the epoch's publisher (key escrow, plan, key reveal). `verifier start` does this on its own. Verifiers take turns 10 minutes apart, in an order drawn from the epoch, so they don't all build a bank at once, and a further takeover waits another grace period. The epoch's publisher can't take its own epoch over again, and a verifier takes one epoch over at most twice. Taking over needs the verifier's buyer and a working [reference upstream](#reference-upstreams), the same setup the publisher uses to build a bank. An epoch that was already opened gets a new seed.
+- **No key reveal.** If the bank key is still hidden 10 minutes after the backup deadline, each verifier posts its share on-chain (`revealKeyShare`), up to the attest deadline. As soon as a majority of shares are on-chain, any verifier rebuilds the key and reveals it. A forged share is ignored, because every share is checked against the share file's commitments.
+
+## Which sellers are audited
+
+The publisher's buyer finds the sellers. A seller service is audited when the seller:
+
+- is staked and has an on-chain agent id;
+- advertises a model on the contract's list of audited models;
+- charges at or below that model's [price limit](#price-limit);
+- meets the buyer's `buyer.minPeerReputation`;
+- is bound to its agent: on the seller registry, the seller's peer points to the agent and the agent to the peer.
+
+Verifiers check that last binding themselves, at the block the epoch's seed was fixed from, so they all read the same state. A target that fails it is never bought or scored, so a publisher can't pin one seller's answers on another agent. This needs an RPC that serves state at past blocks.
+
+## Slices and backups
+
+Each audited seller service gets 100 questions (`probesPerService`), in batches of 10 on one topic, with varied wording. The batches are split into 4 slices (`slicesPerService`), and each slice has an owner and a backup verifier, both picked at random from the seed. A seller never buys its own slices.
+
+- Each verifier buys its slices from the seller through its own buyer, as normal paid requests pinned to that seller, and keeps the seller's signature on every response. A batch is retried only when there is no signed answer.
+- Before the collection deadline it publishes its slices on IPFS and commits their hash on-chain.
+- After the deadline, each backup verifier checks the committed slices against the questions in its backup envelope. Every slice it backs up whose owner didn't deliver a complete, validly signed copy, it buys and commits before the backup deadline. It decides this exactly as scoring later does, and it needs nothing from the publisher, so backups still happen if the publisher is gone after the plan. A slice file it can't fetch yet is waited for during the first quarter of the backup window.
+
+A verifier that is offline loses its share of the slices, and its backups cover for it.
+
+Before buying anything, a verifier checks its envelope against the public plan: only slices the seed assigns to it, of sellers on the plan, at most the schedule's questions per seller, questions of bounded length and request settings limited to the reference's token and thinking fields. An envelope that asks for anything else is refused, so a dishonest publisher can't make a verifier pay for work that will never count. `verifier start --max-epoch-requests` (default 1,000) also caps how many seller requests a verifier sends per epoch, retries included, whatever the envelopes say. It also checks each seller against its own audit price caps at the seller's current price, and skips one that is priced above them (for example after raising its price once the plan was out), so the publisher's choice of sellers never decides what a verifier pays. Reference prices come from `verifier.referenceEndpoint` when it is set, and otherwise from OpenRouter's public model catalog, which needs no key. A verifier whose encryption key can't receive envelopes gets none, like an offline verifier: its slices go to backups and it holds no key share.
+
+## Scoring
+
+After the key reveal, every verifier rebuilds the epoch from public data only: the revealed bank, the plan derived from the seed, and the committed slices. A batch only counts with the seller's valid signature over exactly the planned request: the planned system and user messages (plus the reference's assistant prefill, if it has one), temperature 0, the reference's token limit and thinking settings, and nothing else. A request with an extra instruction, tool or setting doesn't count, so a collector can't steer a seller into wrong answers. A slice file that isn't a valid slice file is ignored; one that can't be fetched yet is retried until halfway through the attest window before it counts as missing. Downloads run a few at a time and stop when the window is down to its last 2 minutes, so files that never answer can't make a verifier miss the deadline, and files already fetched are kept and reused. Each seller service gets a verdict:
 
 | Verdict | Meaning |
 |---|---|
 | `SAME` | The seller misses about as often as the genuine model |
 | `DIFF` | The seller misses clearly more often: probably a different model |
-| `UNDETERMINED` | Too few usable answers to decide, or a `DIFF` the recheck didn't confirm |
+| `UNDETERMINED` | Not enough to decide |
 
-   A missing, empty or unreadable answer is left out of the score, not counted as wrong. A `SAME` needs at least half the questions answered and a `DIFF` at least 80%, so a seller can't make a `DIFF` more likely by dropping answers; below that the result is `UNDETERMINED`. A batch with any answer missing is asked again up to two more times, and the try with the most answers is kept. Answers sent as `<number>X</number>` lines without question numbers are read in order when there is exactly one per question.
+- A service with any slice missing or invalid is `UNDETERMINED`.
+- A missing or unreadable answer is left out of the score, not counted as wrong. `SAME` and `DIFF` each need at least 80% of the questions answered, so a seller can't earn `SAME` by leaving out the answers it would get wrong.
+- The test compares the seller's misses with the genuine model's own error rate, measured when the bank was built.
 
-4. **Recheck.** Every `DIFF` is rechecked on questions the seller hasn't seen. It stays `DIFF` only if the recheck is `DIFF` too; a recheck `SAME` or `UNDETERMINED` makes it `UNDETERMINED`. A `DIFF` whose recheck couldn't run is not submitted.
-5. **Submit.** `verifier submit` publishes the evidence and puts the results on-chain.
+Scoring is deterministic, so honest verifiers get the same results and the same root.
 
-Running `verifier run` again in the same epoch retries the `UNDETERMINED` sellers and rechecks any earlier `DIFF` whose recheck couldn't run, without repeating its first check.
+## Attesting and applying results
 
-### Following a run
+Each verifier publishes its results on IPFS and attests their Merkle root on-chain, once per epoch. The first root that a majority of the epoch's verifiers attest becomes the epoch's final root.
 
-`antseed verifier status` shows a running audit from another terminal. When a run finishes it prints its run ID, an HTML report per model and the epoch overview.
+After that, anyone can apply the results to the contract, each with a proof against the final root. `verifier start` does it: one verifier, picked at random from the seed, applies right away, and the others step in two hours after the attest deadline if it is still undone. A verdict counts for the epoch it was given in and the next one; a newer epoch's verdict for the same service replaces it.
 
-### The epoch overview
+## Rewards
 
-`verifier run` and `verifier submit` write `<data-dir>/verifier/evidence/epochs/<epoch>/overview.html`. It shows every seller × model from all of the epoch's runs, merged in the order they are submitted, so a later verdict replaces an earlier one, as on-chain. Hover a yellow (`UNDETERMINED`) or grey (tried, not submitted) dot for the reason, in the same words as [AntScan](https://antscan.co), plus the match rate of the first check and the recheck. `antseed verifier overview [--epoch <n>] [--run <ids...>]` rebuilds it, optionally from only some runs.
+Each epoch's verification budget of ANTS emissions is split in two:
 
-## Which models you audit
+- **Attester pool** (`attestRewardBps`, 20% by default): shared equally by the verifiers that attested the final root.
+- **Collector pool** (the rest): shared by the slices each verifier delivered that went into the results.
 
-The audited models are built into the CLI, the same for every auditor (`antseed verifier models` lists them). Every model is audited every epoch: the models are split across the approved auditors, round robin, and `verifier run` audits your share. Until you are approved you have no share: `verifier run --all` or `verifier run <model>` tries an audit you can't submit.
+One verifier's claim is capped at `maxVerifierShareBps` (20% by default) of the epoch's budget. Both settings are fixed for an epoch when it opens, so changing them only affects later epochs. Rewards can be claimed once an epoch is over, with no time limit; `verifier start` claims them on its own, including for epochs that ended while it was offline.
 
-- Each model has exactly one auditor per epoch, and auditors get the same number of models, give or take one.
-- The split moves every epoch, so with two or more auditors you never audit the same model two epochs in a row, and over as many epochs as there are auditors you audit every model once.
-- Auditors and models are sorted (by address and by name), so everyone works out the same split. The approved auditors are the ones approved when the epoch started; anyone approved later joins from the next epoch.
+## Price limit
 
-`antseed verifier assignment` shows every auditor's models (`--epochs 4` for the next few). `verifier run <model>` or `--all` still audits any model.
+A seller is only audited at or below the most any OpenRouter provider charges for the model. Input and output each take the highest price across OpenRouter's providers for the model, leaving out speed tiers (`fast`, `ultrafast`, `flex`), which are the same model at a different speed and price. If the model's reference upstream or `verifier.models.<model>.pricing` is higher, that is used instead. If OpenRouter lists no providers for the model, the reference upstream, `verifier.models.<model>.pricing` or the OpenRouter catalog price is used. `verifier.auditPriceRatio` (default 1) allows sellers that charge somewhat more, for example `1.1` for up to 10% more.
 
-The assignment is not enforced on-chain: the contract records any approved auditor's audit of any model, and keeps only the latest result per seller service, whoever submitted it. Two things follow:
-
-- If an auditor doesn't run in an epoch, its models get no new verdict that epoch. Earlier verdicts still count until they expire.
-- Auditing models outside your share can overwrite another auditor's verdict for the same seller.
-
-Auditors on different CLI versions can have different model lists, and so different splits. `verifier run` and `verifier assignment` print a hash of the model list to compare.
-
-## Which sellers are audited
-
-Every seller your buyer has found that offers the model. A seller is skipped when:
-
-| Skip code | Reason |
-|---|---|
-| `missing_response_auth` | It doesn't sign its responses |
-| `reputation_below_minimum` | Its trust score is below `buyer.minPeerReputation` |
-| `price_above_reference` | It charges more than the model's upstream price |
-| `policy_rejected` | Its pricing couldn't be read |
-
-### Your buyer's price cap
-
-Audit requests go through your running buyer, which refuses sellers above its own `buyer.maxPricing`. Before sending anything, `verifier run` checks that the running buyer's caps are at or above every audited model's reference price. They don't have to match it. If one is lower, the run stops:
-
-```
-the running buyer would refuse sellers priced at or below the reference:
-  - claude-fable-5.1: the buyer price cap is below its reference price (input $5 < $10, output $30 < $50, cached input $5 < $10 per 1M)
-Set buyer.maxPricing.defaults to at least input $10, output $50 (and cachedInputUsdPerMillion, if set, to at least the input value) and restart the buyer.
-```
-
-### Checks before the run
-
-Before sending anything, `verifier run` stops with a list of problems and how to fix each when:
-
-- the chain can't be reached, so the run could not be submitted;
-- your buyer deposit can't cover a payment channel for every seller you don't have one with yet (each reserves `payments.maxReserveAmountUsdc`, $1 by default);
-- a model's probe bank can't be loaded (rebuild it with `verifier reference build <model>`);
-- a seller has too few questions it hasn't seen for an audit and a DIFF recheck (only with `--no-enroll`; by default the run builds fresh questions, see [Reference banks](#reference-banks)).
-
-To run anyway, add `--ignore-pre-run-checks`: the problems are printed as warnings. Audits that fail because of them can come back `UNDETERMINED`.
-
-### Up-to-date CLI
-
-All auditors must audit the same models in the same way, or the round-robin split and the results don't line up. So `verifier run` and `verifier submit` first compare your CLI version with the latest `@antseed/cli` on npm, the version `antseed update` installs. If yours is older, the command stops before sending anything, even if the new release changed nothing about audits:
-
-```
-this CLI (0.1.211) is older than the latest @antseed/cli 0.1.214. Update with `antseed update` …
-```
-
-If the npm registry can't be reached, `verifier run` warns and continues, and `verifier submit` stops (`submit --dry-run` only warns). `--skip-version-check` skips the check on both.
-
-### Price limit
-
-The auditor doesn't pay a seller more than the most any OpenRouter provider charges for the model. Input and output each take the highest price across OpenRouter's providers for the model, leaving out speed tiers (`fast`, `ultrafast`, `flex`), which are the same model at a different speed and price. If the model's reference upstream or `verifier.models.<model>.pricing` is higher, that is used instead. If OpenRouter lists no providers for the model, the reference upstream, `verifier.models.<model>.pricing` or the OpenRouter catalog price is used. A seller priced above it is skipped:
-
-```
-priced $17/$85 per 1M, above the claude-fable-5.1 reference $10/$50 · not audited
-```
-
-`verifier.auditPriceRatio` (default 1) lets you audit sellers that charge somewhat more, for example `1.1` for up to 10% more.
-
-## Reference banks
-
-A model's bank holds the questions and the genuine model's answers. Banks live in `<data-dir>/verifier/banks`, and seller audits never call the reference API: sellers are compared with the answers stored in the bank.
-
-`verifier run` builds banks on its own, before it asks any seller:
-
-- **No bank yet, or too small** to tell the genuine model from its look-alikes: it builds one. On a new verifier this is the whole first run's set-up, so the first run takes longest.
-- **Worn out:** each seller only gets questions it hasn't been given in an earlier epoch, so a bank wears out as the same sellers are audited again. When any seller about to be audited lacks an unseen audit set plus a recheck set, it builds fresh questions and adds them to the bank, up to 3 builds per model.
-- **Ready:** no reference calls.
-
-Each build is billed by the reference API and stops once the bank is ready, or after 2,000 requests (`--max-enrollment-requests` changes it, `verifier.referenceMaxRequestsPerBuild` caps it). The limit is per build, not per model: one model can need a build to make its bank usable, up to 3 more when it's worn out and up to 3 more for DIFF rechecks, and each retry round can build again with a larger limit. Building grows a bank and never replaces it. `--no-enroll` turns this off: the run then stops before sending anything when a bank isn't ready. `antseed verifier reference build [<model> | --all]` builds banks ahead of time, for example to spread the cost before the first run.
+A verifier's buyer must accept those prices: set `buyer.maxPricing.defaults` at least as high as the most expensive audited model's price.
 
 ## Reference upstreams
 
-The genuine answers come from `verifier.referenceEndpoint` (OpenRouter in the setup example), which also supplies the look-alike models and the price catalog. To take one model's genuine answers straight from its maker, add an upstream and point the model at it:
+The genuine answers in a bank come from the publisher's `verifier.referenceEndpoint` (OpenRouter by default), which also supplies the look-alike models and the price catalog. To take one model's genuine answers straight from its maker, add an upstream and point the model at it:
 
 ```json
 {
@@ -153,51 +136,15 @@ The genuine answers come from `verifier.referenceEndpoint` (OpenRouter in the se
 | `openrouter` | OpenRouter, optionally pinned to one provider with `referenceProvider: { "order": ["…"] }` |
 | `antseed` | One Antseed seller you trust (`peerId`), through your running buyer. Needs `upstream.pricing` |
 
-`antseed verifier models` shows where each model's answers come from. Use a source you trust to serve the real model: if it doesn't, every audit built on it is wrong. A bank keeps one source, so changing it later needs a new bank.
+`antseed verifier models` shows where each model's answers come from. Use a source you trust to serve the real model: if it doesn't, every audit built on it is wrong. The same settings apply to [local audits](#local-audits).
 
-## Getting approved
+## Local audits
 
-Submitting needs an **approved auditor address**. Ask in the [Antseed Telegram community](https://t.me/antseed) with the address you will submit from.
+`antseed verifier run <model>` (or `--all`) audits the sellers your buyer has found, on your own machine, with your own question banks. Nothing goes on-chain: it is for testing a setup and investigating a seller. It needs a reference source (`verifier.referenceEndpoint`) to build its banks, and each DIFF is rechecked on questions the seller hasn't seen. `antseed verifier status` follows a run, and `antseed verifier overview` writes a page with every seller × model of an epoch's local runs.
 
-- By default this is the data-dir identity (`antseed buyer status` shows it). To sign with a keystore instead, set `verifier.keystore`.
-- It needs a little ETH on Base for the transactions.
-- It can't audit sellers it owns.
+## Check a model yourself
 
-## Submitting
-
-```bash
-antseed verifier submit --dry-run
-export PINATA_JWT=…
-antseed verifier submit --yes
-```
-
-`submit` sends the whole current epoch: every run of the epoch, merged, with the latest result per model and seller. `--run-id <id>` sends one run instead. The dry run checks everything, including your approval. `submit` makes the evidence public on IPFS, which needs `PINATA_JWT`; `--no-publish-ipfs` submits without publishing it. Audits can only be submitted in the epoch they ran in, and re-running `submit` is safe.
-
-## Running again in the same epoch
-
-Run the same `antseed verifier run` command again; it continues the epoch. It first prints a plan built from the epoch's earlier runs:
-
-- **Finished:** SAME, or a DIFF the recheck confirmed or overturned. Not asked again.
-- **Retry, our side:** our buyer refused the seller, a payment channel timed out, the deposit or a probe bank was missing, or the seller had already seen too much of the bank (`BANK_EXHAUSTED`). Retried on every run.
-- **Retry, seller or unclear:** the seller was unreachable, too slow or sent bad answers. Retried once per epoch. A retry keeps the answers the seller already gave.
-- **Recheck:** a DIFF whose recheck couldn't run.
-- **New:** a seller or model not audited yet, or skipped earlier (for example its price was above the reference).
-
-One run does this in rounds: after the first round it retries what is left (failures, waiting rechecks) with a larger probe-bank budget, up to `--max-rounds` rounds (default 3). It stops early when nothing is left, a round makes no progress, or less than 45 minutes of the epoch remain.
-
-The run ends with a table of the whole epoch and the next command. `--fresh` ignores the earlier runs, including DIFFs waiting for a recheck and an interrupted run, and audits every eligible seller again from the start.
-
-## Running every epoch
-
-A verdict counts for the epoch it was given in and the next one, so run and submit once per epoch, for example from cron:
-
-```bash
-antseed verifier run; antseed verifier submit --yes
-```
-
-## Rewards
-
-Auditors share the verification part of ANTS emissions: one credit per model audited per epoch. Once an epoch has ended, claim with `antseed verifier rewards --claim`.
+`antseed verifier check <model> --base-url <url>` audits any OpenAI- or Anthropic-compatible endpoint against the newest revealed bank that includes the model, or `--epoch <n>`'s bank. Exit code 0 is `SAME`, 2 `DIFF`, 3 `UNDETERMINED`.
 
 ## Configuration
 
@@ -205,9 +152,17 @@ All keys live in the `verifier` block of the config file. The most used:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `referenceEndpoint` | required | Where the genuine answers come from. See [Reference upstreams](#reference-upstreams) |
-| `upstreams`, `models.<model>.upstream` | | Other sources for one model's genuine answers. See [Reference upstreams](#reference-upstreams) |
-| `keystore` | | Keystore that signs `submit` and `rewards --claim` |
-| `auditor` | data-dir identity | Your approved auditor address |
+| `keystore` | | Keystore that signs round transactions (password from `ANTSEED_KEYSTORE_PASSWORD`). Required for `verifier start` and `verifier publish`, and never one of the data dir's buyer wallets |
+| `referenceEndpoint` | | Where the genuine answers come from, for the publisher and local audits. See [Reference upstreams](#reference-upstreams) |
+| `upstreams`, `models.<model>.upstream` | | Other sources for one model's genuine answers |
 | `auditPriceRatio` | 1 | Audit sellers priced up to this multiple of the upstream price |
 | `models.<model>.pricing` | | The model's upstream price, if not taken from OpenRouter |
+
+Environment:
+
+| Variable | Meaning |
+|---|---|
+| `PINATA_JWT` | Publishes round files (slices, results, banks, plans) on IPFS |
+| `ANTSEED_IPFS_GATEWAYS` | Comma-separated IPFS gateways to read round files (public gateways by default) |
+| `ANTSEED_ROUND_STORAGE_DIR` | Keep round files in a local directory instead of IPFS (testing) |
+| `ANTSEED_KEYSTORE_PASSWORD` | Password of the signing keystore |

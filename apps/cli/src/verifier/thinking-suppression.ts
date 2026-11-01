@@ -31,6 +31,11 @@ export const THINKING_DISCOVERY_MAX_TOKENS = 80 * 10
 export const THINKING_FALLBACK_TOKEN_MULTIPLIER = 50
 /** Token budget per request when nothing suppresses thinking (`bare-expanded`). */
 export const THINKING_FALLBACK_MAX_TOKENS = THINKING_DISCOVERY_MAX_TOKENS * THINKING_FALLBACK_TOKEN_MULTIPLIER
+/**
+ * Most output tokens per request any supported reference strategy asks for. Reference builds
+ * refuse anything above it, and collectors refuse envelopes above it, so both sides agree.
+ */
+export const REFERENCE_MAX_TOKENS_CEILING = THINKING_FALLBACK_MAX_TOKENS
 /** An unsuppressed endpoint is still thinking, so the discovery request is the slowest one sent. */
 export const THINKING_DISCOVERY_TIMEOUT_MS = 600_000
 export const THINKING_DISCOVERY_MINIMUM_VALID_ANSWERS = 5
@@ -105,8 +110,14 @@ export type ThinkingDiscoveryProbe = (input: {
   | { ok: false; status: number | null; failure: string }
 >
 
+/**
+ * Why discovery failed: every request was refused (an upstream problem: model id, provider pin,
+ * API key), or requests went through but no strategy suppressed thinking.
+ */
+export type ThinkingDiscoveryFailure = 'all-requests-refused' | 'no-working-strategy'
+
 export class ThinkingDiscoveryError extends Error {
-  constructor(message: string, readonly attempts: ThinkingDiscoveryAttemptV1[]) {
+  constructor(message: string, readonly attempts: ThinkingDiscoveryAttemptV1[], readonly reason: ThinkingDiscoveryFailure) {
     super(message)
     this.name = 'ThinkingDiscoveryError'
   }
@@ -178,6 +189,7 @@ export async function discoverThinkingSuppression(input: {
       `${input.label} refused every request for ${input.model} with HTTP ${failures[0]!.status}, so the problem is the `
       + `upstream (model id, provider pin, API key), not thinking suppression: ${failures[0]!.failure ?? ''}`,
       attempts,
+      'all-requests-refused',
     )
   }
   const detail = attempts.map((attempt) => attempt.validAnswers === null
@@ -187,5 +199,6 @@ export async function discoverThinkingSuppression(input: {
     `no thinking-suppression strategy worked for ${input.model} on ${input.label}, even 'bare' with `
     + `${THINKING_FALLBACK_MAX_TOKENS} tokens: ${detail}`,
     attempts,
+    'no-working-strategy',
   )
 }

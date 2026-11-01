@@ -779,6 +779,32 @@ test('an exact alias wins over a canonical spelling, whatever the alias order', 
   })
 })
 
+test('a running buyer with no peers is an error, unless the caller takes no sellers as an answer', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-verifier-proxy-empty-'))
+  try {
+    await writeFile(join(directory, 'buyer.state.json'), JSON.stringify({ state: 'connected', pid: process.pid, port: 8377, discoveredPeers: [] }))
+    await assert.rejects(loadBuyerProxySnapshot(directory), /no live discovered peers/)
+    assert.deepEqual((await loadBuyerProxySnapshot(directory, { allowEmptyPeers: true })).peers, [])
+    // Round discovery returns no targets, so the publisher can fall back to an empty plan.
+    const { discoverRoundTargets } = await import('./round/target-discovery.js')
+    const logs: string[] = []
+    const targets = await discoverRoundTargets({
+      config: { verifier: {}, buyer: { minPeerReputation: 0 } } as never,
+      dataDir: directory,
+      models: [{ modelHash: '0x01', service: 'model-a' }],
+      bindings: { reader: { isBound: async () => true }, latestBlock: async () => 1n },
+      log: (line) => logs.push(line),
+    })
+    assert.deepEqual(targets, [])
+    assert.ok(logs.some((line) => line.includes('no peers')))
+    // A stopped buyer is still an error: it is not the same as a buyer with no sellers.
+    await writeFile(join(directory, 'buyer.state.json'), JSON.stringify({ state: 'stopped', pid: process.pid, port: 8377, discoveredPeers: [] }))
+    await assert.rejects(loadBuyerProxySnapshot(directory, { allowEmptyPeers: true }), /not connected/)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('buyer proxy snapshot requires a connected live daemon and parses peers', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-verifier-proxy-state-'))
   try {
@@ -950,8 +976,8 @@ test('proxy runtime re-asks a persistently blank batch twice, then keeps the res
   assert.equal(run.evidence.exchanges[0]?.attemptCount, 3)
   assert.equal(run.evidence.exchanges[0]?.requestIds.length, 3)
   assert.equal(run.evidence.exchanges[0]?.attemptCosts?.length, 3)
-  // The other nine batches still give 90% coverage, so the audit reaches a verdict.
-  assert.equal(run.result.status, 'SAME')
+  // The other nine batches all match, but the blank one could hide a DIFF: no SAME until it is answered.
+  assert.equal(run.result.status, 'UNDETERMINED')
   assert.equal(run.result.parsedProbeCount, 90)
 })
 
@@ -1049,8 +1075,8 @@ test('canonical temperature rejection skips after the first batch', async () => 
 
 test('proxy runtime reduces seller concurrency after HTTP 429', async () => {
   const run = await runTarget(40, 'rate-limited')
-  // Three of four batches answered: 75% coverage is enough for a verdict.
-  assert.equal(run.result.status, 'SAME')
+  // Three of four batches answered and matching; the unanswered one could still hide a DIFF.
+  assert.equal(run.result.status, 'UNDETERMINED')
   assert.equal(run.result.parsedProbeCount, 30)
   assert.equal(run.evidence.exchanges[1]?.response?.statusCode, 429)
   assert.equal(run.evidence.exchanges[1]?.attemptCount, 5)
@@ -1117,8 +1143,8 @@ test('selective omissions are unscored, and a batch missing most answers is re-a
 
 test('one wholly malformed batch is left unscored and can be repaired by resume', async () => {
   const first = await runTarget(100, 'malformed-first-batch')
-  // 90% of probes scored: enough for a verdict, the malformed batch is simply left out.
-  assert.equal(first.result.status, 'SAME')
+  // 90% of probes scored and matching, but the malformed batch could hide a DIFF; resume repairs it.
+  assert.equal(first.result.status, 'UNDETERMINED')
   assert.equal(first.result.parsedProbeCount, 90)
   assert.equal(first.evidence.exchanges[0]?.outcomeReason?.code, 'malformed_output')
   assert.equal(first.evidence.exchanges[0]?.attemptCount, 3)
@@ -1133,6 +1159,84 @@ test('one wholly malformed batch is left unscored and can be repaired by resume'
   assert.equal(resumed.result.status, 'SAME')
   assert.equal(resumed.requestCount, 1)
   assert.deepEqual(resumed.evidence.resume?.reusedBatchIndexes, [1, 2, 3, 4, 5, 6, 7, 8, 9])
+})
+
+test('resume asks partially answered batches again and keeps the better attempt', async () => {
+  const first = await runTarget(100, 'partial-malformed')
+  assert.equal(first.result.status, 'UNDETERMINED')
+  const resume = {
+    parentAuditId: first.result.auditId,
+    reservationAuditId: first.result.auditId,
+    parentEvidenceHash: first.result.evidenceHash,
+    exchanges: first.evidence.exchanges,
+  }
+
+  const repaired = await runTarget(100, 'valid', 0, 'verified', true, 10_000, resume)
+  assert.equal(repaired.result.status, 'SAME')
+  assert.equal(repaired.result.parsedProbeCount, 100)
+  assert.equal(repaired.requestCount, 10)
+  assert.deepEqual(repaired.evidence.resume?.reusedBatchIndexes, [])
+  const earlierCosts = first.result.cumulativeCost?.pricedExchangeCount ?? 0
+  assert.equal(repaired.result.cost.pricedExchangeCount, 10, 'only the new requests count as this audit')
+  assert.equal(repaired.result.cumulativeCost?.pricedExchangeCount, earlierCosts + 10)
+  assert.equal(repaired.evidence.exchanges[0]?.requestIds.length, 4)
+
+  const stillDown = await runTarget(100, 'transport-failure', 0, 'verified', true, 10_000, resume)
+  assert.equal(stillDown.result.parsedProbeCount, 10, 'a failed retry keeps the earlier signed answers')
+  assert.equal(stillDown.evidence.exchanges.every((exchange) => exchange.status === 'succeeded'), true)
+})
+
+test('a repair stopped by its first batch keeps the later batches\' saved signed answers', async () => {
+  const first = await runTarget(100, 'partial-malformed')
+  // Batch 0's earlier attempt is not reusable; batches 1-9 hold signed partial answers.
+  const exchanges = first.evidence.exchanges.map((exchange) => (exchange.batchIndex === 0
+    ? { ...exchange, status: 'failed' as const, answers: [], matches: [] }
+    : exchange))
+  const resume = {
+    parentAuditId: first.result.auditId,
+    reservationAuditId: first.result.auditId,
+    parentEvidenceHash: first.result.evidenceHash,
+    exchanges,
+  }
+  // Asking batch 0 again fails in transport, which stops the audit before the other batches run.
+  const stopped = await runTarget(100, 'transport-failure', 0, 'verified', true, 10_000, resume)
+  const earlier = new Map(first.evidence.exchanges.map((exchange) => [exchange.batchIndex, exchange]))
+  for (const exchange of stopped.evidence.exchanges.filter((entry) => entry.batchIndex > 0)) {
+    assert.equal(exchange.status, 'succeeded', `batch ${exchange.batchIndex} keeps its signed attempt`)
+    assert.deepEqual(exchange.requestIds, earlier.get(exchange.batchIndex)!.requestIds)
+  }
+  assert.equal(stopped.result.parsedProbeCount, 9, 'their answers still count')
+  const earlierCost = first.result.cumulativeCost?.pricedExchangeCount ?? 0
+  // Batches 1-9 bring along what they cost earlier (batch 0's unusable attempt is dropped, as before).
+  assert.equal(stopped.result.cumulativeCost?.pricedExchangeCount, earlierCost * 9 / 10)
+})
+
+test('an interrupted repair checkpoint keeps the partial batches not asked again yet', async () => {
+  const first = await runTarget(100, 'partial-malformed')
+  const resume = {
+    parentAuditId: first.result.auditId,
+    reservationAuditId: first.result.auditId,
+    parentEvidenceHash: first.result.evidenceHash,
+    exchanges: first.evidence.exchanges,
+  }
+  const written: Array<{ exchanges: Array<{ batchIndex: number; requestIds: string[] }> }> = []
+  await runTarget(100, 'valid', 0, 'verified', true, 10_000, resume, {
+    runId: 'repair-checkpoint', epoch: '2026-10-06', model: 'gpt-5.6-sol',
+  }, reference(100), {
+    writeCheckpoint: async (path, value) => {
+      written.push(structuredClone(value) as typeof written[number])
+      await writeJsonAtomic(path, value)
+    },
+  })
+  // The very first checkpoint of the repair, written after the first batch was asked again, still
+  // holds every batch: those not asked again yet as their earlier partial attempt.
+  const firstWrite = written[0]!
+  assert.deepEqual(firstWrite.exchanges.map((exchange) => exchange.batchIndex), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
+  const earlierRequestIds = new Map(first.evidence.exchanges.map((exchange) => [exchange.batchIndex, exchange.requestIds.join()]))
+  assert.ok(
+    firstWrite.exchanges.some((exchange) => exchange.requestIds.join() === earlierRequestIds.get(exchange.batchIndex)),
+    'a batch not asked again yet keeps its earlier attempt',
+  )
 })
 
 test('responses SSE is decoded even when the request used stream false', async () => {

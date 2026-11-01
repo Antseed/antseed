@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile } from 'node:fs/promises'
+import { appendFile, mkdir, readdir, readFile } from 'node:fs/promises'
 import { basename, dirname, join, relative, sep } from 'node:path'
 import { canonicalJsonStringify } from '@antseed/fingerprints'
 import { readJsonIfExists, writeJsonAtomic, writeTextAtomic } from './atomic-files.js'
@@ -797,7 +797,7 @@ async function readReportEvidenceFiles(evidencePath?: string): Promise<ReportEvi
   }
 }
 
-function escapeHtml(value: string): string {
+export function escapeHtml(value: string): string {
   return value
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
@@ -809,4 +809,27 @@ function escapeHtml(value: string): string {
 function sellerLabel(value: { peerId: string; displayName?: string | null }): string {
   const peer = `${value.peerId.slice(0, 12)}…`
   return value.displayName ? `${value.displayName} (${peer})` : peer
+}
+
+/** Completed runs of an epoch, oldest first, which is the order they are submitted in. */
+export async function epochRunManifests(evidenceDir: string, epoch: string): Promise<VerifierRunManifestV1[]> {
+  const runsDir = join(evidenceDir, 'runs')
+  let names: string[]
+  try {
+    names = await readdir(runsDir)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw error
+  }
+  const manifests: VerifierRunManifestV1[] = []
+  for (const name of names) {
+    if (!name.endsWith('.json') || name.endsWith('.summary.json')) continue
+    try {
+      const parsed = JSON.parse(await readFile(join(runsDir, name), 'utf8')) as VerifierRunManifestV1
+      if (parsed.kind === 'antseed-verifier-run-manifest' && parsed.epoch === epoch) manifests.push(parsed)
+    } catch {
+      // A manifest being written or a foreign file: leave it out of the overview.
+    }
+  }
+  return manifests.sort((left, right) => left.completedAt.localeCompare(right.completedAt))
 }

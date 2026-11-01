@@ -40,6 +40,44 @@ Optional environment overrides:
 
 On success, the script prints a JSON summary with deployed contract addresses, peer IDs, session status, balances, and reputation.
 
+## KBF Verification Round on a Base Fork
+
+Run one whole distributed KBF verification round with the real processes, on a fork of Base
+mainnet (about 2–3 minutes):
+
+1. Fork Base with Anvil and deploy `AntseedKbfVerification` with the KBF deploy script
+   (`M003VerificationRegistry/Deploy.s.sol`), as the protocol owner. The fork is at the latest
+   block, or at an older block of the same epoch when less than about 65 minutes of it is left,
+   so the whole round fits in the epoch
+2. Do the owner's post-deploy steps: hand the verification emissions bucket to the contract,
+   set the publisher, three verifiers, the audited model (`glm-5.3`), the rewards start epoch,
+   and the round schedule
+3. Find two agents with pool power this epoch from the newest stake positions and give them to
+   two `antseed seller start` sellers: one serves the genuine model, the other an impostor (both
+   through a local OpenAI-compatible stub)
+4. Run `antseed verifier publish` (with its own buyer) and three `antseed verifier start`
+   verifiers, each with a funded buyer deposit. The verifiers publish their encryption keys and
+   go offline; the run opens the epoch and fixes a seed under which every verifier owns at least
+   one slice (redrawing the seed block if needed), then restarts only two of them, so the third
+   verifier's slices have to go to backups
+5. Move chain time through collection, backup, reveal and attestation, then check: the live
+   verifiers that back up the stopped verifier's slices buy and commit them on their own, and
+   with the publisher stopped right after the plan they also rebuild the bank key from their
+   escrowed shares; both live verifiers attest the same root, the
+   epoch finalizes, the genuine seller is SAME and the impostor DIFF on-chain, each seller
+   reserved payment channels with the live verifiers' buyers and settled spending on them, and
+   the live verifiers claim ANTS rewards
+
+```bash
+BASE_MAINNET_RPC_URL=<archive-capable Base RPC> pnpm --filter @antseed/e2e run flow:kbf-round
+```
+
+Prerequisites: a built workspace (`pnpm run build`), Foundry on `PATH`. The stub upstream also
+serves an OpenRouter-style model catalog, so no API keys are needed; round files go to a shared
+directory (`ANTSEED_ROUND_STORAGE_DIR`) instead of IPFS. `KEEP_FULLSTACK_DIR=1` keeps the
+working directory (configs, process logs, round files) after a passing run; a failing run always
+keeps it and prints the last lines of every process log.
+
 ## Test Suites
 
 ### Discovery (`tests/discovery.test.ts`)

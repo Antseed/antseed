@@ -1,6 +1,6 @@
-import { readdir, readFile } from 'node:fs/promises'
-import { join } from 'node:path'
-import type { ModelAuditSummaryV1, VerifierRunManifestV1 } from './audit-artifacts.js'
+import { readFile } from 'node:fs/promises'
+import { epochRunManifests, type ModelAuditSummaryV1 } from './audit-artifacts.js'
+import { epochCellKey as pendingRecheckKey } from './epoch-plan.js'
 import type { ModelVerificationTargetResult } from './model-run.js'
 import { verifyProxyAuditEvidenceFile } from './proxy-evidence.js'
 
@@ -10,9 +10,8 @@ export interface PendingDiffRecheck {
   result: ModelVerificationTargetResult
 }
 
-export function pendingRecheckKey(model: string, peerId: string): string {
-  return `${model.trim().toLowerCase()}\u0000${peerId.trim().replace(/^0x/i, '').toLowerCase()}`
-}
+/** Same (model, seller) identity as the epoch plan's cells. */
+export { pendingRecheckKey }
 
 /**
  * First DIFFs from this epoch's earlier runs whose recheck could not run and that no later run has
@@ -24,9 +23,17 @@ export async function loadPendingDiffRechecks(
   evidenceDir: string,
   epoch: string,
   models: readonly string[],
+  options: {
+    /**
+     * `--resume-run`: only sellers that run audited. Later runs still decide whether their DIFF
+     * is settled, so a seller another run already rechecked is not rechecked again.
+     */
+    onlyRunId?: string
+  } = {},
 ): Promise<Map<string, PendingDiffRecheck>> {
   const wanted = new Set(models.map((model) => model.toLowerCase()))
   const latest = new Map<string, PendingDiffRecheck>()
+  const inResumedRun = new Set<string>()
   for (const manifest of await epochRunManifests(evidenceDir, epoch)) {
     for (const entry of manifest.models) {
       if (!wanted.has(entry.model.toLowerCase())) continue
@@ -38,12 +45,15 @@ export async function loadPendingDiffRechecks(
       }
       if (summary.runId !== manifest.runId || summary.epoch !== epoch) continue
       for (const result of summary.results ?? []) {
-        latest.set(pendingRecheckKey(entry.model, result.peerId), { model: entry.model, runId: manifest.runId, result })
+        const key = pendingRecheckKey(entry.model, result.peerId)
+        latest.set(key, { model: entry.model, runId: manifest.runId, result })
+        if (manifest.runId === options.onlyRunId) inResumedRun.add(key)
       }
     }
   }
   const pending = new Map<string, PendingDiffRecheck>()
   for (const [key, entry] of latest) {
+    if (options.onlyRunId !== undefined && !inResumedRun.has(key)) continue
     if (entry.result.status !== 'DIFF' || entry.result.recheck || !entry.result.recheckPending) continue
     try {
       await verifyProxyAuditEvidenceFile(entry.result.evidencePath, entry.result.evidenceHash)
@@ -53,26 +63,4 @@ export async function loadPendingDiffRechecks(
     pending.set(key, entry)
   }
   return pending
-}
-
-async function epochRunManifests(evidenceDir: string, epoch: string): Promise<VerifierRunManifestV1[]> {
-  const runsDir = join(evidenceDir, 'runs')
-  let names: string[]
-  try {
-    names = await readdir(runsDir)
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
-    throw error
-  }
-  const manifests: VerifierRunManifestV1[] = []
-  for (const name of names) {
-    if (!name.endsWith('.json') || name.endsWith('.summary.json')) continue
-    try {
-      const parsed = JSON.parse(await readFile(join(runsDir, name), 'utf8')) as VerifierRunManifestV1
-      if (parsed.kind === 'antseed-verifier-run-manifest' && parsed.epoch === epoch) manifests.push(parsed)
-    } catch {
-      // A manifest being written or a foreign file.
-    }
-  }
-  return manifests.sort((left, right) => left.completedAt.localeCompare(right.completedAt))
 }
