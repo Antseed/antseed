@@ -104,7 +104,7 @@ Each epoch's verification budget of ANTS emissions is split in two:
 - **Attester pool** (`attestRewardBps`, 20% by default): shared equally by the verifiers that attested the final root.
 - **Collector pool** (the rest): shared by the slices each verifier delivered that went into the results.
 
-One verifier's claim is capped at `maxVerifierShareBps` (20% by default) of the epoch's budget. Both settings are fixed for an epoch when it opens, so changing them only affects later epochs. Rewards can be claimed once an epoch is over; `verifier start` claims them for up to 4 finished epochs.
+One verifier's claim is capped at `maxVerifierShareBps` (20% by default) of the epoch's budget. Both settings are fixed for an epoch when it opens, so changing them only affects later epochs. Rewards can be claimed once an epoch is over, with no time limit; `verifier start` claims them on its own, including for epochs that ended while it was offline.
 
 ## Price limit
 

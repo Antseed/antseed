@@ -2268,6 +2268,37 @@ test('re-running M003 after M004 replaced its round contract leaves the M004 poi
   assert.equal(await readFile(currentPath, 'utf8'), before, 'current.json still points at M004');
 });
 
+test('re-running M003 is a no-op for the recorded single-auditor deployment and after M004, before any code comparison', async (t) => {
+  const checkpoint = m003Checkpoint();
+  const context = await m003Context(t, checkpoint);
+  mockCast(t, (args) => {
+    if (args[0] === 'chain-id') return '8453';
+    if (args[0] === 'code') return '0x01';
+    if (args[0] === 'call') {
+      if (args[2] === 'sellerPools()(address)') return ADDRESS.sellerRewardsPool;
+      if (args[2] === 'pointsPolicy()(address)') return ADDRESS.pointsPolicyRegistry;
+      return ADDRESS.channels;
+    }
+    assert.fail(`unexpected call ${args}`);
+  });
+  const history = path.join(context.outputRoot, context.network, 'history', `${M003_RELEASE}.json`);
+  const { record } = activationRecords(context, checkpoint);
+  // The single-auditor record, as Base mainnet has it: no round protocol marker.
+  const legacy = structuredClone(record);
+  delete legacy.verificationConfiguration.verificationRegistry.protocol;
+  await writeJsonAtomic(history, legacy);
+  context.canonical.contracts.kbfVerification = { address: checkpoint.address };
+  const observedLegacy = await m003.observe(context);
+  assert.equal(observedLegacy.state, 'legacy');
+  assert.match(m003.idleMessage(observedLegacy), /single-auditor deployment; no transactions required/);
+  // A round deployment of M003 that M004 replaced.
+  await writeJsonAtomic(history, record);
+  context.canonical.contracts.kbfVerification = { address: ADDRESS.ants };
+  const observedSuperseded = await m003.observe(context);
+  assert.equal(observedSuperseded.state, 'superseded');
+  assert.equal(await m003.finalize(context, observedSuperseded, 'broadcast'), false);
+});
+
 test('M003 binds the deploy signer and environment to the original checkpoint', () => {
   const checkpoint = m003Checkpoint();
   const context = { forkTest: true, receiptDirectory: '/tmp/m003-test-receipts', canonical: { chainId: 8453 } };

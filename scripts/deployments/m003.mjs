@@ -148,6 +148,11 @@ export function kbfVerificationMigration({ id, release: RELEASE, replaces = null
       ...record.verificationConfiguration.verificationRegistry,
       sourceCommit: record.sourceCommit, contracts: record.contracts, transactions: record.transactions,
     }));
+    // A recorded release is final. If it is the single-auditor contract (an older 003 record,
+    // without the round protocol marker) or a later release replaced it, re-running it has nothing
+    // to do: say so before comparing its code with the round contract built today.
+    const settled = checkpoint && await recordedReleaseState(context);
+    if (settled) return { state: settled, deployment: { checkpoint } };
     if (!checkpoint) {
       const replaced = await replacedAddresses(context);
       if (canonical.contracts.kbfVerification && !replaced.has(canonical.contracts.kbfVerification.address.toLowerCase())) {
@@ -209,6 +214,19 @@ export function kbfVerificationMigration({ id, release: RELEASE, replaces = null
       throw new Error(`${id} deployment is missing or its nonce is in use; reconcile the original broadcast`);
     }
     return { state, deployment: { checkpoint } };
+  }
+
+  /** 'legacy' or 'superseded' for a recorded release that must not be touched again, else null. */
+  async function recordedReleaseState(context) {
+    if (!(await historyRecordExists(context, RELEASE))) return null;
+    const record = await readJson(historyFile(context, RELEASE));
+    if (record.verificationConfiguration?.verificationRegistry?.protocol !== ROUND_VERIFICATION_PROTOCOL) return 'legacy';
+    const current = context.canonical.contracts.kbfVerification?.address;
+    if (current && !sameAddress(current, record.contracts?.kbfVerification?.address)
+      && !(await replacedAddresses(context)).has(current.toLowerCase())) {
+      return 'superseded';
+    }
+    return null;
   }
 
   async function observePolicy(context, checkpoint) {
@@ -361,7 +379,10 @@ export function kbfVerificationMigration({ id, release: RELEASE, replaces = null
       if (!context.forkTest) requireEnvironment(['BASESCAN_API_KEY'], environment);
     },
     finalize,
-    idleMessage: () => `${id} already active; no transactions required.`,
+    idleMessage: (observation) => ({
+      legacy: `${id} is the recorded single-auditor deployment; no transactions required.`,
+      superseded: `${id} was replaced by a later release; no transactions required.`,
+    })[observation.state] ?? `${id} already active; no transactions required.`,
     recordErrors,
     allowedDirtyReleases: () => [],
     rehearsal: {

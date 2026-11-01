@@ -658,7 +658,8 @@ already running, `--buyer-port` picks its port) and every `--interval` seconds
 - after the key reveal, scores every committed slice and attests the results root;
 - applies the finalized results (the first verifier in a seeded order applies at
   once, the others two hours after the attest deadline if it is still undone) and
-  claims rewards for up to 4 finished epochs;
+  claims rewards for every finished epoch it took part in, however long ago
+  (the last 4 every pass, plus up to 8 older unsettled ones);
 - covers for a missing publisher: if the bank key is still hidden 10 minutes after
   the backup deadline, it posts its sealed key share (`revealKeyShare`) and, once a
   majority of shares are on-chain, rebuilds and reveals the key; if no plan is

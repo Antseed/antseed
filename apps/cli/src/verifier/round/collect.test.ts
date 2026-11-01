@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -112,7 +112,7 @@ async function setup(options: SetupOptions = {}): Promise<Setup> {
     epoch: EPOCH, startedAt: START, seedBlock: 10n, seed: SEED, modelsVersion: 1, verifierCount: 1,
     schedule: { collectSeconds: COLLECT_SECONDS, backupSeconds: 86400, attestSeconds: 86400, probesPerService: 80, slicesPerService: 4 },
     bankHash: `0x${'01'.repeat(32)}`, bankKeyHash: `0x${'02'.repeat(32)}`, bankKey: ZERO_HASH, planHash,
-    finalizedRoot: ZERO_HASH, voided: false, publisher: me.address, takenOverAt: 0, keySharesHash: `0x${'03'.repeat(32)}`, planActive: true,
+    finalizedRoot: ZERO_HASH, voided: false, publisher: me.address, takenOverAt: 0, keySharesHash: `0x${'03'.repeat(32)}`, planActive: true, bankGeneration: 1,
   }
   const chain = new CollectChain(info, [{ epoch: EPOCH, hash: planHash, uri: planUri, backup: false, sender: me.address, blockNumber: 1, logIndex: 0, txHash: '0x' }], members.map((member) => getAddress(member)))
 
@@ -312,6 +312,38 @@ test('a recovered results file with checksummed collectors still claims the coll
   await verifierTick(s.context).catch(() => {})
   assert.deepEqual(claims.map((claim) => [claim.slices, claim.totalSlices]), [[3, 4]])
   assert.deepEqual(claims[0]!.proof, tree.proof(collectorLeaf(previous, s.me, 3, 4)))
+})
+
+test('a reward from an epoch long past is still claimed after a restart, then left alone', async (t) => {
+  const s = await setup()
+  t.after(() => rm(s.dir, { recursive: true, force: true }))
+  // The verifier collected in an epoch six back, went offline, and comes back now.
+  const old = EPOCH - 6n
+  const credits = [{ collector: s.me, slices: 2 }]
+  const tree = buildResultsTree(old, { results: [], credits, totalSlices: 2 })
+  const file: RoundResultsV1 = { kind: 'antseed-kbf-results', version: 1, epoch: old.toString(), seed: SEED, results: [], credits, totalSlices: 2, root: tree.root }
+  const oldDir = join(s.context.stateDir, old.toString())
+  await mkdir(oldDir, { recursive: true })
+  await writeFile(join(oldDir, 'state.json'), '{}')
+  await writeFile(join(oldDir, 'results.json'), JSON.stringify(file))
+  const chain = s.chain as unknown as Record<string, unknown>
+  const epochInfo = s.chain.epochInfo.bind(s.chain)
+  const asked: bigint[] = []
+  chain.epochInfo = async (epoch: bigint) => {
+    asked.push(epoch)
+    return epoch === old ? { ...(await epochInfo(EPOCH)), epoch, finalizedRoot: tree.root } : epochInfo(epoch)
+  }
+  let claimed = false
+  chain.rewardClaimed = async (epoch: bigint) => epoch === old && claimed
+  chain.pendingReward = async (_verifier: string, epoch: bigint) => (epoch === old && !claimed ? 5n : 0n)
+  chain.claimRewards = async (_signer: unknown, epoch: bigint) => { assert.equal(epoch, old); claimed = true; return '0xclaim' }
+  await verifierTick(s.context).catch(() => {})
+  assert.equal(claimed, true, 'claimed although the epoch is beyond the recent lookback')
+  await verifierTick(s.context).catch(() => {})
+  assert.equal(JSON.parse(await readFile(join(oldDir, 'state.json'), 'utf8')).settled, true, 'settled once the claim shows on-chain')
+  asked.length = 0
+  await verifierTick(s.context).catch(() => {})
+  assert.ok(!asked.includes(old), 'a settled epoch is not visited again')
 })
 
 test('an envelope with work the plan does not assign buys nothing', async (t) => {

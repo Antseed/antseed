@@ -33,7 +33,6 @@ export class FakeRoundClient {
   shares: KeyShareRevealedEvent[] = []
   /** `<epoch>:<generation>:<sharesHash>:<planHash>` → verifiers that accepted that round. */
   acceptances = new Map<string, Set<string>>()
-  generations = new Map<bigint, number>()
   takeoverCounts = new Map<string, number>()
   members = new Map<bigint, string[]>()
   calls: string[] = []
@@ -48,7 +47,7 @@ export class FakeRoundClient {
         schedule: { collectSeconds: 3 * 86400, backupSeconds: 86400, attestSeconds: 86400, probesPerService: 20, slicesPerService: 2 },
         bankHash: ZERO_HASH, bankKeyHash: ZERO_HASH, bankKey: ZERO_HASH, planHash: ZERO_HASH,
         finalizedRoot: ZERO_HASH, voided: false, publisher: ZERO_ADDRESS, takenOverAt: 0, keySharesHash: ZERO_HASH,
-        planActive: false,
+        planActive: false, bankGeneration: 0,
       }
       this.infos.set(epoch, info)
     }
@@ -98,7 +97,7 @@ export class FakeRoundClient {
   async keyShareReveals(epoch: bigint): Promise<KeyShareRevealedEvent[]> { return this.shares.filter((entry) => entry.epoch === epoch) }
   private roundKey(epoch: bigint): string {
     const info = this.info(epoch)
-    return `${epoch}:${this.generations.get(epoch) ?? 0}:${info.keySharesHash}:${info.planHash}`
+    return `${epoch}:${info.bankGeneration}:${info.keySharesHash}:${info.planHash}`
   }
   async hasAcceptedPlan(epoch: bigint, verifier: string): Promise<boolean> {
     return this.acceptances.get(this.roundKey(epoch))?.has(getAddress(verifier)) ?? false
@@ -134,7 +133,7 @@ export class FakeRoundClient {
     const info = this.info(epoch)
     if (info.seedBlock !== 0n || info.takenOverAt !== 0) throw new Error('WrongPhase')
     Object.assign(info, { bankHash, bankKeyHash: keyHash, publisher: sender, keySharesHash: ZERO_HASH, planHash: ZERO_HASH })
-    this.generations.set(epoch, (this.generations.get(epoch) ?? 0) + 1)
+    info.bankGeneration += 1
     this.calls.push(`commitBank:${epoch}`)
     return '0xtx'
   }
@@ -154,7 +153,7 @@ export class FakeRoundClient {
     Object.assign(info, {
       bankHash, bankKeyHash: keyHash, publisher: sender, keySharesHash: ZERO_HASH, planHash: ZERO_HASH, takenOverAt: this.time,
     })
-    this.generations.set(epoch, (this.generations.get(epoch) ?? 0) + 1)
+    info.bankGeneration += 1
     if (opened) info.seed = ZERO_HASH
     this.banks.push({ epoch, bankHash, bankKeyHash: keyHash, bankUri, blockNumber: 1 })
     this.calls.push(`takeOverBank:${epoch}:${sender}`)
@@ -193,14 +192,14 @@ export class FakeRoundClient {
     return '0xtx'
   }
 
-  async acceptPlan(signer: AbstractSigner, epoch: bigint, sharesHash: string, planHash: string): Promise<string> {
+  async acceptPlan(signer: AbstractSigner, epoch: bigint, bankGeneration: number, sharesHash: string, planHash: string): Promise<string> {
     const sender = await this.sender(signer)
     const info = this.info(epoch)
     if (!(this.members.get(epoch) ?? []).some((member) => getAddress(member) === sender) || sender === getAddress(info.publisher)) {
       throw new Error('NotVerifier')
     }
     if (info.planActive || info.planHash === ZERO_HASH || this.time >= this.commitDeadline(info)) throw new Error('WrongPhase')
-    if (sharesHash !== info.keySharesHash || planHash !== info.planHash) throw new Error('InvalidValue')
+    if (bankGeneration !== info.bankGeneration || sharesHash !== info.keySharesHash || planHash !== info.planHash) throw new Error('InvalidValue')
     const key = this.roundKey(epoch)
     const accepted = this.acceptances.get(key) ?? new Set<string>()
     if (accepted.has(sender)) throw new Error('AlreadyAccepted')

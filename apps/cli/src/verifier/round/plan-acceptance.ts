@@ -44,7 +44,9 @@ export async function acceptPlan(context: PlanAcceptanceContext, info: KbfEpochI
     context.log(`epoch ${info.epoch}: not accepting the plan: ${error instanceof Error ? error.message : String(error)}`)
     return
   }
-  const hash = await context.client.acceptPlan(context.signer, info.epoch, info.keySharesHash, info.planHash)
+  // Names the bank generation that was checked: if a takeover replaced the bank meanwhile, even
+  // with the same shares and plan hashes, the contract refuses this acceptance.
+  const hash = await context.client.acceptPlan(context.signer, info.epoch, info.bankGeneration, info.keySharesHash, info.planHash)
   context.log(`epoch ${info.epoch}: checked the plan, envelopes, bank and key escrow, and accepted them (${hash})`)
 }
 

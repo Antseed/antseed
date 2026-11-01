@@ -171,7 +171,9 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     event EpochTakenOver(uint256 indexed epoch, address indexed verifier);
     event KeySharesCommitted(uint256 indexed epoch, address indexed publisher, bytes32 sharesHash, string sharesUri);
     event KeyShareRevealed(uint256 indexed epoch, address indexed verifier, bytes share);
-    event PlanAccepted(uint256 indexed epoch, address indexed verifier, bytes32 sharesHash, bytes32 planHash);
+    event PlanAccepted(
+        uint256 indexed epoch, address indexed verifier, uint32 bankGeneration, bytes32 sharesHash, bytes32 planHash
+    );
     event PlanActivated(uint256 indexed epoch, bytes32 planHash);
     event BankCommitted(uint256 indexed epoch, bytes32 bankHash, bytes32 bankKeyHash, string bankUri);
     event EpochOpened(uint256 indexed epoch, uint64 seedBlock, uint32 modelsVersion, uint16 verifierCount);
@@ -520,21 +522,25 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     ///         escrow's threshold is the epoch's, and that its own share lies on the escrow's
     ///         committed polynomial, whose constant term is the committed key's point. Epoch
     ///         verifiers other than the epoch publisher; the plan takes effect at
-    ///         `requiredPlanAcceptances(epoch)`. Acceptances are bound to the bank, the shares and
-    ///         the plan, so a replaced bank, escrow or plan needs accepting again.
-    function acceptPlan(uint256 epoch, bytes32 sharesHash, bytes32 planHash) external {
+    ///         `requiredPlanAcceptances(epoch)`. Acceptances are bound to the bank generation
+    ///         (`epochInfo(epoch).bankGeneration`, bumped by every bank commit or takeover), the shares
+    ///         and the plan the verifier checked: one sent for an earlier generation reverts, even if
+    ///         a takeover re-commits the same shares and plan hashes in the meantime.
+    function acceptPlan(uint256 epoch, uint32 bankGeneration, bytes32 sharesHash, bytes32 planHash) external {
         if (!_epochMember[epoch][msg.sender]) revert NotVerifier();
         EpochState storage state = _epochs[epoch];
         if (msg.sender == state.publisher) revert NotVerifier();
         if (state.planActive || state.planHash == bytes32(0) || block.timestamp >= _commitDeadline(epoch, state)) {
             revert WrongPhase();
         }
-        if (sharesHash != state.keySharesHash || planHash != state.planHash) revert InvalidValue();
+        if (bankGeneration != state.bankGeneration || sharesHash != state.keySharesHash || planHash != state.planHash) {
+            revert InvalidValue();
+        }
         bytes32 round = _roundKey(state);
         if (_accepted[epoch][round][msg.sender]) revert AlreadyAccepted();
         _accepted[epoch][round][msg.sender] = true;
         _acceptances[epoch][round] += 1;
-        emit PlanAccepted(epoch, msg.sender, sharesHash, planHash);
+        emit PlanAccepted(epoch, msg.sender, bankGeneration, sharesHash, planHash);
         _activateIfAccepted(epoch, state);
     }
 
@@ -727,6 +733,7 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         info.takenOverAt = state.takenOverAt;
         info.keySharesHash = state.keySharesHash;
         info.planActive = state.planActive;
+        info.bankGeneration = state.bankGeneration;
     }
 
     function epochVerifiers(uint256 epoch) external view override returns (address[] memory) {

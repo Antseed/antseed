@@ -1,4 +1,4 @@
-import { mkdir, readFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { getAddress, type AbstractSigner } from 'ethers'
 import {
@@ -8,8 +8,8 @@ import {
   type CommitmentEvent,
   type KbfEpochInfo,
   type KbfRoundClient,
-  type KbfServiceResult,
 } from '@antseed/node/payments'
+import { mapConcurrently } from '../audit-concurrency.js'
 import { writeJsonAtomic } from '../atomic-files.js'
 import { encodeRoundFile } from './encoding.js'
 import { collectSlice, type CollectorContext } from './collector.js'
@@ -35,9 +35,13 @@ import type {
 import { targetKey } from './types.js'
 
 const APPLY_BATCH = 40
+/** `resultApplied` reads in flight at once. */
+const RESULT_READ_CONCURRENCY = 8
 /** Verifiers other than the first in the epoch's apply ranking wait this long before applying. */
 const APPLY_FALLBACK_DELAY_SECONDS = 2 * 60 * 60
 const CLAIM_LOOKBACK_EPOCHS = 4n
+/** Older epochs, beyond the lookback, this verifier still owes a claim or an apply: at most this many per pass. */
+const CATCH_UP_EPOCHS_PER_PASS = 8
 /** Stop starting purchases this long before a collection phase ends (capped at a tenth of it). */
 const COLLECT_STOP_MARGIN_SECONDS = 5 * 60
 /** Do not send a slice commitment closer than this to its phase deadline (capped at a twentieth). */
@@ -87,6 +91,8 @@ interface EpochStateV1 {
   backup?: { uri: string; root: string; slices: number }
   /** Seller requests sent this epoch, retries included, counted against `maxRequestsPerEpoch`. */
   requestsSent?: number
+  /** Results applied and reward claimed (or none due), or the epoch voided or never finalized. */
+  settled?: boolean
 }
 
 /** Some committed slices could not be fetched yet; attesting now would be final and incomplete. */
@@ -108,11 +114,17 @@ export async function verifierTick(context: VerifierDaemonContext): Promise<void
   } catch (error) {
     failures.push(`epoch ${epoch}: ${error instanceof Error ? error.message : String(error)}`)
   }
-  for (let back = 1n; back <= CLAIM_LOOKBACK_EPOCHS && back <= epoch; back++) {
+  // The last few epochs every pass (even without local state, say after a data-dir loss), then
+  // older epochs this verifier took part in and has not settled yet, however old: a reward is
+  // never left behind because the verifier was offline when its epoch went by.
+  const recent: bigint[] = []
+  for (let back = 1n; back <= CLAIM_LOOKBACK_EPOCHS && back <= epoch; back++) recent.push(epoch - back)
+  const older = await unsettledEpochs(context, epoch - CLAIM_LOOKBACK_EPOCHS)
+  for (const earlier of [...recent, ...older]) {
     try {
-      await applyAndClaim(context, epoch - back, epoch)
+      if (await applyAndClaim(context, earlier, epoch)) await markSettled(context, earlier)
     } catch (error) {
-      failures.push(`epoch ${epoch - back}: ${error instanceof Error ? error.message : String(error)}`)
+      failures.push(`epoch ${earlier}: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
   if (failures.length > 0) throw new Error(failures.join('; '))
@@ -453,28 +465,32 @@ function uniqueTargets(targets: readonly RoundTargetV1[]): RoundTargetV1[] {
 /**
  * Applies the finalized results (the first verifier in the epoch's apply ranking does it at
  * once, the others only if it is still undone later) and claims this verifier's reward once
- * the epoch is over.
+ * the epoch is over. True once nothing is left to do for the epoch: it was voided or can no
+ * longer finalize, or every result is applied and the reward is claimed (or there is none).
  */
-async function applyAndClaim(context: VerifierDaemonContext, epoch: bigint, current: bigint): Promise<void> {
+async function applyAndClaim(context: VerifierDaemonContext, epoch: bigint, current: bigint): Promise<boolean> {
   const { client } = context
   const info = await client.epochInfo(epoch)
-  if (info.voided || isZeroHash(info.finalizedRoot)) return
+  if (info.voided) return true
+  const deadlines = kbfEpochDeadlines(info, await client.epochDuration())
+  const now = await client.now()
+  if (isZeroHash(info.finalizedRoot)) return now >= deadlines.attestDeadline
   const results = await finalizedResults(context, info)
-  if (!results) return
+  if (!results) return false
   const tree = buildResultsTree(epoch, results)
 
   const members = await client.epochVerifiers(epoch)
   const applier = seededRanking(members, info.seed, 'apply')[0]
-  const deadlines = kbfEpochDeadlines(info, await client.epochDuration())
-  const now = await client.now()
+  let applied = false
   if (applier === context.address.toLowerCase() || now >= deadlines.attestDeadline + APPLY_FALLBACK_DELAY_SECONDS) {
-    const pending: Array<{ result: KbfServiceResult; proof: string[] }> = []
-    for (const result of results.results) {
+    const candidates = results.results.map((result) => {
       const input = { agentId: BigInt(result.target.agentId), serviceHash: result.target.serviceHash, modelHash: result.target.modelHash, verdict: result.verdict }
       const leaf = serviceLeaf(epoch, input)
-      if (await client.resultApplied(epoch, leaf)) continue
-      pending.push({ result: { ...input, verdict: VERIFIER_VERDICT[result.verdict] }, proof: tree.proof(leaf) })
-    }
+      return { leaf, result: { ...input, verdict: VERIFIER_VERDICT[result.verdict] }, proof: tree.proof(leaf) }
+    })
+    const done = await mapConcurrently(candidates, RESULT_READ_CONCURRENCY, ({ leaf }) => client.resultApplied(epoch, leaf))
+    const pending = candidates.filter((_, index) => !done[index])
+    applied = pending.length === 0
     for (let offset = 0; offset < pending.length; offset += APPLY_BATCH) {
       const batch = pending.slice(offset, offset + APPLY_BATCH)
       await tryWrite(context, `apply ${batch.length} results of epoch ${epoch}`, () =>
@@ -482,14 +498,40 @@ async function applyAndClaim(context: VerifierDaemonContext, epoch: bigint, curr
     }
   }
 
-  if (epoch >= current || await client.rewardClaimed(epoch, context.address)) return
+  if (epoch >= current) return false
+  if (await client.rewardClaimed(epoch, context.address)) return applied
   const credit = results.credits.find((entry) => entry.collector === context.address.toLowerCase())
   const slices = credit?.slices ?? 0
   const proof = credit ? tree.proof(collectorLeaf(epoch, credit.collector, credit.slices, results.totalSlices)) : []
   const pending = await client.pendingReward(context.address, epoch, slices, slices ? results.totalSlices : 0, proof)
-  if (pending === 0n) return
+  if (pending === 0n) return applied
   await tryWrite(context, `claim ${pending} for epoch ${epoch}`, () =>
     client.claimRewards(context.signer, epoch, slices, slices ? results.totalSlices : 0, proof))
+  // Settled once a later pass sees the claim on-chain.
+  return false
+}
+
+/** Epochs before `before` this verifier has state for and has not settled, oldest first, a pass's worth. */
+async function unsettledEpochs(context: VerifierDaemonContext, before: bigint): Promise<bigint[]> {
+  let names: string[]
+  try {
+    names = await readdir(context.stateDir)
+  } catch {
+    return []
+  }
+  const epochs = names.filter((name) => /^\d+$/.test(name)).map(BigInt).filter((epoch) => epoch < before)
+    .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0))
+  const unsettled: bigint[] = []
+  for (const epoch of epochs) {
+    if (unsettled.length >= CATCH_UP_EPOCHS_PER_PASS) break
+    if (!(await readState(context, epoch)).settled) unsettled.push(epoch)
+  }
+  return unsettled
+}
+
+async function markSettled(context: VerifierDaemonContext, epoch: bigint): Promise<void> {
+  const state = await readState(context, epoch)
+  if (!state.settled) await writeState(context, epoch, { ...state, settled: true })
 }
 
 /**

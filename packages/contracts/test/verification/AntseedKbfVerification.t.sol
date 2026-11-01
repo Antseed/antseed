@@ -532,7 +532,7 @@ contract AntseedKbfVerificationTest is Test {
         verification.commitKeyShares(EPOCH, shares, URI);
         vm.prank(verifierA);
         vm.expectRevert(AntseedKbfVerification.WrongPhase.selector);
-        verification.acceptPlan(EPOCH, shares, plan);
+        verification.acceptPlan(EPOCH, 1, shares, plan);
         vm.prank(publisher);
         verification.commitPlan(EPOCH, plan, URI);
         assertFalse(verification.epochInfo(EPOCH).planActive, "proposed, not in effect");
@@ -545,21 +545,21 @@ contract AntseedKbfVerificationTest is Test {
 
         vm.prank(address(0xBAD));
         vm.expectRevert(AntseedKbfVerification.NotVerifier.selector);
-        verification.acceptPlan(EPOCH, shares, plan);
+        verification.acceptPlan(EPOCH, 1, shares, plan);
         vm.prank(verifierA);
         vm.expectRevert(AntseedKbfVerification.InvalidValue.selector);
-        verification.acceptPlan(EPOCH, keccak256("other shares"), plan);
+        verification.acceptPlan(EPOCH, 1, keccak256("other shares"), plan);
         vm.prank(verifierA);
         vm.expectRevert(AntseedKbfVerification.InvalidValue.selector);
-        verification.acceptPlan(EPOCH, shares, keccak256("other plan"));
+        verification.acceptPlan(EPOCH, 1, shares, keccak256("other plan"));
 
         vm.expectEmit(true, true, false, true);
-        emit AntseedKbfVerification.PlanAccepted(EPOCH, verifierA, shares, plan);
+        emit AntseedKbfVerification.PlanAccepted(EPOCH, verifierA, 1, shares, plan);
         vm.prank(verifierA);
-        verification.acceptPlan(EPOCH, shares, plan);
+        verification.acceptPlan(EPOCH, 1, shares, plan);
         vm.prank(verifierA);
         vm.expectRevert(AntseedKbfVerification.AlreadyAccepted.selector);
-        verification.acceptPlan(EPOCH, shares, plan);
+        verification.acceptPlan(EPOCH, 1, shares, plan);
         assertEq(verification.planAcceptances(EPOCH), 1);
         assertTrue(verification.hasAcceptedPlan(EPOCH, verifierA));
 
@@ -569,11 +569,11 @@ contract AntseedKbfVerificationTest is Test {
         assertEq(verification.planAcceptances(EPOCH), 0);
         assertFalse(verification.hasAcceptedPlan(EPOCH, verifierA));
         vm.prank(verifierB);
-        verification.acceptPlan(EPOCH, shares, keccak256("new plan"));
+        verification.acceptPlan(EPOCH, 1, shares, keccak256("new plan"));
         vm.prank(verifierC);
         vm.expectEmit(true, false, false, true);
         emit AntseedKbfVerification.PlanActivated(EPOCH, keccak256("new plan"));
-        verification.acceptPlan(EPOCH, shares, keccak256("new plan"));
+        verification.acceptPlan(EPOCH, 1, shares, keccak256("new plan"));
         assertTrue(verification.epochInfo(EPOCH).planActive);
 
         // In effect: final.
@@ -587,7 +587,7 @@ contract AntseedKbfVerificationTest is Test {
         verification.commitKeyShares(EPOCH, keccak256("late shares"), URI);
         vm.prank(verifierA);
         vm.expectRevert(AntseedKbfVerification.WrongPhase.selector);
-        verification.acceptPlan(EPOCH, shares, keccak256("new plan"));
+        verification.acceptPlan(EPOCH, 1, shares, keccak256("new plan"));
         vm.prank(verifierA);
         verification.commitSlices(EPOCH, keccak256("slices"), URI);
     }
@@ -607,7 +607,7 @@ contract AntseedKbfVerificationTest is Test {
         verification.commitPlan(EPOCH, keccak256("unusable plan"), URI);
         vm.prank(verifierA);
         vm.expectRevert(AntseedKbfVerification.NotVerifier.selector);
-        verification.acceptPlan(EPOCH, keccak256("bogus shares"), keccak256("unusable plan"));
+        verification.acceptPlan(EPOCH, 2, keccak256("bogus shares"), keccak256("unusable plan"));
         assertEq(verification.requiredPlanAcceptances(EPOCH), 2, "two of the other verifiers");
         assertFalse(verification.epochInfo(EPOCH).planActive);
 
@@ -648,7 +648,7 @@ contract AntseedKbfVerificationTest is Test {
         vm.prank(publisher);
         verification.commitPlan(EPOCH, plan, URI);
         vm.prank(verifierB);
-        verification.acceptPlan(EPOCH, shares, plan);
+        verification.acceptPlan(EPOCH, 1, shares, plan);
         assertEq(verification.planAcceptances(EPOCH), 1);
 
         // A takes the epoch over with another key and re-commits the very same shares and plan
@@ -664,11 +664,16 @@ contract AntseedKbfVerificationTest is Test {
         verification.commitPlan(EPOCH, plan, URI);
         assertEq(verification.planAcceptances(EPOCH), 0);
         assertFalse(verification.hasAcceptedPlan(EPOCH, verifierB));
+        // C checked the first bank's round and its acceptance lands only now: it names generation 1.
+        assertEq(verification.epochInfo(EPOCH).bankGeneration, 2);
         vm.prank(verifierC);
-        verification.acceptPlan(EPOCH, shares, plan);
+        vm.expectRevert(AntseedKbfVerification.InvalidValue.selector);
+        verification.acceptPlan(EPOCH, 1, shares, plan);
+        vm.prank(verifierC);
+        verification.acceptPlan(EPOCH, 2, shares, plan);
         assertFalse(verification.epochInfo(EPOCH).planActive, "one fresh acceptance of two");
         vm.prank(verifierB);
-        verification.acceptPlan(EPOCH, shares, plan);
+        verification.acceptPlan(EPOCH, 2, shares, plan);
         assertTrue(verification.epochInfo(EPOCH).planActive);
     }
 
@@ -714,7 +719,7 @@ contract AntseedKbfVerificationTest is Test {
         // Threshold 2 of 2, but A must attest for any root to finalize: B's check is all that counts.
         assertEq(verification.requiredPlanAcceptances(EPOCH), 1);
         vm.prank(verifierB);
-        verification.acceptPlan(EPOCH, keccak256("shares"), keccak256("plan"));
+        verification.acceptPlan(EPOCH, 2, keccak256("shares"), keccak256("plan"));
         assertTrue(verification.epochInfo(EPOCH).planActive);
     }
 
@@ -1158,7 +1163,7 @@ contract AntseedKbfVerificationTest is Test {
             if (info.planActive) return;
             if (members[i] == info.publisher || verification.hasAcceptedPlan(epoch, members[i])) continue;
             vm.prank(members[i]);
-            verification.acceptPlan(epoch, info.keySharesHash, info.planHash);
+            verification.acceptPlan(epoch, info.bankGeneration, info.keySharesHash, info.planHash);
         }
         assertTrue(verification.epochInfo(epoch).planActive, "the plan is in effect");
     }

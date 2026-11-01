@@ -525,3 +525,26 @@ test('a verifier whose takeover was replaced takes the epoch over again after re
   assert.equal(s.fake.info(EPOCH).bankHash, aBank)
   assert.equal(s.fake.calls.filter((call) => call === `takeOverBank:${EPOCH}:${a!.wallet.address}`).length, 2)
 })
+
+test('an acceptance checked against one bank never counts for the bank a takeover put in its place', async (t) => {
+  const s = await setup()
+  t.after(() => rm(s.dir, { recursive: true, force: true }))
+  s.fake.time = START + HOUR
+  await publisherTick(s.context(s.publisher, 'publisher'))
+  s.fake.openAndSeed(EPOCH)
+  await publisherTick(s.context(s.publisher, 'publisher'))
+  // B checks the round now, but its transaction only lands after A took the epoch over and
+  // re-committed the very same shares and plan hashes for its own bank.
+  const checked = await s.fake.epochInfo(EPOCH)
+  const [a, b] = s.verifiers
+  s.fake.time = START + 6 * HOUR + 1
+  await s.fake.takeOverBank(a!.wallet as never, EPOCH, `0x${'a1'.repeat(32)}`, checked.bankKeyHash)
+  s.fake.openAndSeed(EPOCH)
+  await s.fake.commitKeyShares(a!.wallet as never, EPOCH, checked.keySharesHash, s.fake.shareFiles.at(-1)!.uri)
+  await s.fake.commitPlan(a!.wallet as never, EPOCH, checked.planHash, s.fake.plans.at(-1)!.uri)
+  await assert.rejects(acceptPlan({
+    client: s.fake.asClient(), signer: b!.wallet as never, address: b!.wallet.address,
+    encryptionPrivateKey: b!.keys.privateKey, storage: s.storage, log: () => {},
+  }, checked), /InvalidValue/)
+  assert.equal(await s.fake.planAcceptances(EPOCH), 0)
+})

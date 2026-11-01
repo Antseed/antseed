@@ -24,7 +24,7 @@ const SCHEDULE = [3n * 86_400n, 86_400n, 43_200n, 100n, 8n];
 const EPOCH_INFO = [
   1_000n, 55n, '0x' + 'ab'.repeat(32), 2n, 3n, SCHEDULE,
   '0x' + '01'.repeat(32), '0x' + '02'.repeat(32), ZeroHash, '0x' + '03'.repeat(32),
-  '0x' + '04'.repeat(32), false, PUBLISHER, 77n, '0x' + '05'.repeat(32), true,
+  '0x' + '04'.repeat(32), false, PUBLISHER, 77n, '0x' + '05'.repeat(32), true, 3n,
 ];
 
 interface RawLog {
@@ -97,7 +97,7 @@ describe('KbfRoundClient reads', () => {
       schedule: { collectSeconds: 259_200, backupSeconds: 86_400, attestSeconds: 43_200, probesPerService: 100, slicesPerService: 8 },
       bankHash: '0x' + '01'.repeat(32), bankKeyHash: '0x' + '02'.repeat(32), bankKey: ZeroHash, planHash: '0x' + '03'.repeat(32),
       finalizedRoot: '0x' + '04'.repeat(32), voided: false, publisher: PUBLISHER, takenOverAt: 77,
-      keySharesHash: '0x' + '05'.repeat(32), planActive: true,
+      keySharesHash: '0x' + '05'.repeat(32), planActive: true, bankGeneration: 3,
     });
     expect(await client().schedule()).toEqual(info.schedule);
     expect(kbfEpochDeadlines(info, 604_800)).toEqual({
@@ -230,7 +230,7 @@ describe('KbfRoundClient writes', () => {
     await c.claimRewards(signer, 7n, 3, 8, ['0x' + '0a'.repeat(32)]);
     await c.commitPlan(signer, 7n, '0x' + '03'.repeat(32), 'ipfs://plan');
     await c.commitSlices(signer, 7n, '0x' + '06'.repeat(32), 'ipfs://slices');
-    await c.acceptPlan(signer, 7n, '0x' + '0c'.repeat(32), '0x' + '0d'.repeat(32));
+    await c.acceptPlan(signer, 7n, 3, '0x' + '0c'.repeat(32), '0x' + '0d'.repeat(32));
     await c.revealKeyShare(signer, 7n, '0x01aa');
     await c.takeOverBank(signer, 7n, '0x' + '01'.repeat(32), keccak256(AbiCoder.defaultAbiCoder().encode(['bytes32'], ['0x' + '0b'.repeat(32)])), 'ipfs://bank');
     const names = execWrite.mock.calls.map((call) => call[2]);

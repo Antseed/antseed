@@ -17,7 +17,7 @@ export const KBF_ROUND_ABI = [
   'function modelsVersion() view returns (uint32)',
   'function models(uint32 version) view returns ((bytes32 modelHash, string service)[])',
   'function schedule() view returns ((uint32 collectSeconds, uint32 backupSeconds, uint32 attestSeconds, uint16 probesPerService, uint16 slicesPerService))',
-  'function epochInfo(uint256 epoch) view returns ((uint256 startedAt, uint64 seedBlock, bytes32 seed, uint32 modelsVersion, uint16 verifierCount, (uint32 collectSeconds, uint32 backupSeconds, uint32 attestSeconds, uint16 probesPerService, uint16 slicesPerService) schedule, bytes32 bankHash, bytes32 bankKeyHash, bytes32 bankKey, bytes32 planHash, bytes32 finalizedRoot, bool voided, address publisher, uint64 takenOverAt, bytes32 keySharesHash, bool planActive))',
+  'function epochInfo(uint256 epoch) view returns ((uint256 startedAt, uint64 seedBlock, bytes32 seed, uint32 modelsVersion, uint16 verifierCount, (uint32 collectSeconds, uint32 backupSeconds, uint32 attestSeconds, uint16 probesPerService, uint16 slicesPerService) schedule, bytes32 bankHash, bytes32 bankKeyHash, bytes32 bankKey, bytes32 planHash, bytes32 finalizedRoot, bool voided, address publisher, uint64 takenOverAt, bytes32 keySharesHash, bool planActive, uint32 bankGeneration))',
   'function epochVerifiers(uint256 epoch) view returns (address[])',
   'function threshold(uint256 epoch) view returns (uint256)',
   'function attestations(uint256 epoch, address verifier) view returns (bytes32)',
@@ -35,7 +35,7 @@ export const KBF_ROUND_ABI = [
   'function commitBank(uint256 epoch, bytes32 bankHash, bytes32 bankKeyHash, string bankUri)',
   'function takeOverBank(uint256 epoch, bytes32 bankHash, bytes32 bankKeyHash, string bankUri)',
   'function commitKeyShares(uint256 epoch, bytes32 sharesHash, string sharesUri)',
-  'function acceptPlan(uint256 epoch, bytes32 sharesHash, bytes32 planHash)',
+  'function acceptPlan(uint256 epoch, uint32 bankGeneration, bytes32 sharesHash, bytes32 planHash)',
   'function revealKeyShare(uint256 epoch, bytes share)',
   'function openEpoch(uint256 epoch)',
   'function fixSeed(uint256 epoch)',
@@ -97,6 +97,8 @@ export interface KbfEpochInfo {
   keySharesHash: string;
   /** Whether verifiers accepted the plan: collection runs, and the epoch can no longer be taken over. */
   planActive: boolean;
+  /** Bumped by every bank commit or takeover; an acceptance names the one it checked. */
+  bankGeneration: number;
 }
 
 /** Absolute deadlines (unix seconds) of one epoch's round. */
@@ -323,6 +325,7 @@ export class KbfRoundClient extends BaseEvmClient {
       takenOverAt: Number(raw['takenOverAt']),
       keySharesHash: String(raw['keySharesHash']),
       planActive: Boolean(raw['planActive']),
+      bankGeneration: Number(raw['bankGeneration']),
     };
   }
 
@@ -375,8 +378,9 @@ export class KbfRoundClient extends BaseEvmClient {
     return this._execWrite(signer, KBF_ROUND_ABI, 'commitKeyShares', epoch, sharesHash, sharesUri);
   }
 
-  async acceptPlan(signer: AbstractSigner, epoch: bigint, sharesHash: string, planHash: string): Promise<string> {
-    return this._execWrite(signer, KBF_ROUND_ABI, 'acceptPlan', epoch, sharesHash, planHash);
+  /** Accepts the round of `bankGeneration` the caller checked; reverts if the bank was replaced since. */
+  async acceptPlan(signer: AbstractSigner, epoch: bigint, bankGeneration: number, sharesHash: string, planHash: string): Promise<string> {
+    return this._execWrite(signer, KBF_ROUND_ABI, 'acceptPlan', epoch, bankGeneration, sharesHash, planHash);
   }
 
   async revealKeyShare(signer: AbstractSigner, epoch: bigint, share: string): Promise<string> {
@@ -449,7 +453,7 @@ export class KbfRoundClient extends BaseEvmClient {
 
   /** Plans proposed for the epoch, each with the epoch publisher that proposed it as `sender`. */
   async planCommits(epoch: bigint, fromBlock?: number): Promise<CommitmentEvent[]> {
-    return this._publisherCommits('PlanCommitted', epoch, fromBlock);
+    return this._commitmentEvents('PlanCommitted', epoch, fromBlock);
   }
 
   async sliceCommits(epoch: bigint, fromBlock?: number): Promise<CommitmentEvent[]> {
@@ -468,28 +472,20 @@ export class KbfRoundClient extends BaseEvmClient {
   }
 
   async attestationEvents(epoch: bigint, fromBlock?: number): Promise<CommitmentEvent[]> {
-    const contract = this._contract();
-    const logs = await this._queryEvents(contract, contract.filters['Attested']!(epoch), fromBlock);
-    return logs.filter((log): log is EventLog => log instanceof EventLog).map((log) => ({
-      epoch: BigInt(log.args[0]),
-      sender: getAddress(String(log.args[1])),
-      backup: false,
-      hash: String(log.args[2]),
-      uri: String(log.args[3]),
-      blockNumber: log.blockNumber,
-      logIndex: log.index,
-      txHash: log.transactionHash,
-    }));
+    return this._commitmentEvents('Attested', epoch, fromBlock);
   }
 
   /** Key-share files committed for the epoch (the latest one is current), each with its publisher as `sender`. */
   async keySharesCommits(epoch: bigint, fromBlock?: number): Promise<CommitmentEvent[]> {
-    return this._publisherCommits('KeySharesCommitted', epoch, fromBlock);
+    return this._commitmentEvents('KeySharesCommitted', epoch, fromBlock);
   }
 
-  /** Events `(epoch, publisher, hash, uri)` of an epoch publisher; a takeover does not change older ones' sender. */
-  private async _publisherCommits(
-    eventName: 'PlanCommitted' | 'KeySharesCommitted',
+  /**
+   * Events `(epoch, sender, hash, uri)`: the epoch publisher of a plan or escrow (a takeover does
+   * not change older ones' sender), or the verifier of an attestation.
+   */
+  private async _commitmentEvents(
+    eventName: 'PlanCommitted' | 'KeySharesCommitted' | 'Attested',
     epoch: bigint,
     fromBlock?: number,
   ): Promise<CommitmentEvent[]> {

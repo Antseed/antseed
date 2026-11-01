@@ -86,6 +86,8 @@ interface IAntseedKbfVerification {
         bytes32 keySharesHash;
         /// @dev Whether verifiers accepted the plan: collection runs and the epoch is final.
         bool planActive;
+        /// @dev Bumped by every bank commit or takeover; `acceptPlan` must name the current one.
+        uint32 bankGeneration;
     }
 
     /// @notice One leaf of an epoch's results root.
@@ -145,7 +147,7 @@ interface IAntseedKbfVerification {
     function commitPlan(uint256 epoch, bytes32 planHash, string calldata planUri) external;
     function takeOverBank(uint256 epoch, bytes32 bankHash, bytes32 bankKeyHash, string calldata bankUri) external;
     function commitKeyShares(uint256 epoch, bytes32 sharesHash, string calldata sharesUri) external;
-    function acceptPlan(uint256 epoch, bytes32 sharesHash, bytes32 planHash) external;
+    function acceptPlan(uint256 epoch, uint32 bankGeneration, bytes32 sharesHash, bytes32 planHash) external;
     function planAcceptances(uint256 epoch) external view returns (uint256);
     function hasAcceptedPlan(uint256 epoch, address verifier) external view returns (bool);
     function requiredPlanAcceptances(uint256 epoch) external view returns (uint256);
