@@ -13,7 +13,7 @@ import type { CollectorContext } from '../../../verifier/round/collector.js'
 import { fallbackPublisherTick } from '../../../verifier/round/fallback-publisher.js'
 import { keyEscrowTick } from '../../../verifier/round/key-escrow.js'
 import { encryptionPublicKey, generateEncryptionKeyPair, isUsableEncryptionKey } from '../../../verifier/round/sealing.js'
-import { targetBindingsFromRegistry } from '../../../verifier/round/target-discovery.js'
+import { affordableRoundTargets, targetBindingsFromRegistry } from '../../../verifier/round/target-discovery.js'
 import { DEFAULT_MAX_REQUESTS_PER_EPOCH, verifierTick } from '../../../verifier/round/verifier-daemon.js'
 import { createKbfRoundClient, createSellerRegistryClient } from '../../payment-utils.js'
 import { setupShutdownHandler } from '../../shutdown.js'
@@ -40,11 +40,12 @@ interface StartOptions {
 export async function collectorForPass(input: {
   responseAuth: ResponseAuthReader | null
   loadBuyerUrl: () => Promise<string>
+  affordable: CollectorContext['affordable']
   log: (message: string) => void
 }): Promise<CollectorContext | null> {
   if (!input.responseAuth) return null
   try {
-    return { buyerUrl: await input.loadBuyerUrl(), responseAuth: input.responseAuth, log: input.log }
+    return { buyerUrl: await input.loadBuyerUrl(), responseAuth: input.responseAuth, affordable: input.affordable, log: input.log }
   } catch (error) {
     input.log(chalk.yellow(`buyer unavailable, not collecting this pass: ${error instanceof Error ? error.message : String(error)}`))
     return null
@@ -143,7 +144,8 @@ export function registerVerifierStartCommand(verifier: Command): void {
           }
           const collector = await collectorForPass({
             responseAuth,
-            loadBuyerUrl: async () => (await loadBuyerProxySnapshot(globalOptions.dataDir)).baseUrl,
+            loadBuyerUrl: async () => (await loadBuyerProxySnapshot(globalOptions.dataDir, { allowEmptyPeers: true })).baseUrl,
+            affordable: (targets, models) => affordableRoundTargets({ config, dataDir: globalOptions.dataDir, models, targets, log }),
             log,
           })
           await step('', () => verifierTick({

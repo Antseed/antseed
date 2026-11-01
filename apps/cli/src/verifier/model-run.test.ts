@@ -779,6 +779,32 @@ test('an exact alias wins over a canonical spelling, whatever the alias order', 
   })
 })
 
+test('a running buyer with no peers is an error, unless the caller takes no sellers as an answer', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-verifier-proxy-empty-'))
+  try {
+    await writeFile(join(directory, 'buyer.state.json'), JSON.stringify({ state: 'connected', pid: process.pid, port: 8377, discoveredPeers: [] }))
+    await assert.rejects(loadBuyerProxySnapshot(directory), /no live discovered peers/)
+    assert.deepEqual((await loadBuyerProxySnapshot(directory, { allowEmptyPeers: true })).peers, [])
+    // Round discovery returns no targets, so the publisher can fall back to an empty plan.
+    const { discoverRoundTargets } = await import('./round/target-discovery.js')
+    const logs: string[] = []
+    const targets = await discoverRoundTargets({
+      config: { verifier: {}, buyer: { minPeerReputation: 0 } } as never,
+      dataDir: directory,
+      models: [{ modelHash: '0x01', service: 'model-a' }],
+      bindings: { reader: { isBound: async () => true }, latestBlock: async () => 1n },
+      log: (line) => logs.push(line),
+    })
+    assert.deepEqual(targets, [])
+    assert.ok(logs.some((line) => line.includes('no peers')))
+    // A stopped buyer is still an error: it is not the same as a buyer with no sellers.
+    await writeFile(join(directory, 'buyer.state.json'), JSON.stringify({ state: 'stopped', pid: process.pid, port: 8377, discoveredPeers: [] }))
+    await assert.rejects(loadBuyerProxySnapshot(directory, { allowEmptyPeers: true }), /not connected/)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('buyer proxy snapshot requires a connected live daemon and parses peers', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-verifier-proxy-state-'))
   try {

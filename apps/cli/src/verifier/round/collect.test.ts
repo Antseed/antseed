@@ -17,6 +17,7 @@ import { buildResultsTree, collectorLeaf } from './merkle.js'
 import type { EnvelopeContentV1, EpochBankV1, PlanFileV1, RoundPlanV1, RoundResultsV1, RoundTargetV1, SliceManifestV1 } from './types.js'
 import { encodeRoundFile } from './encoding.js'
 import { verifierTick, type VerifierDaemonContext } from './verifier-daemon.js'
+import type { CollectorContext } from './collector.js'
 
 const EPOCH = 7n
 const EPOCH_SECONDS = 7 * 24 * 3600
@@ -78,6 +79,8 @@ interface SetupOptions {
   maxRequestsPerEpoch?: number
   /** Edits the bank's reference before the plan is derived. */
   reference?: (reference: KbfReferenceV1) => void
+  /** This collector's own price check (default: every target is affordable). */
+  affordable?: CollectorContext['affordable']
 }
 
 async function setup(options: SetupOptions = {}): Promise<Setup> {
@@ -147,7 +150,7 @@ async function setup(options: SetupOptions = {}): Promise<Setup> {
     storage,
     bindings: { isBound: async () => true },
     stateDir: join(dir, 'state'),
-    collector: { buyerUrl: 'http://buyer.test', responseAuth: reader, log: () => {}, fetchImpl },
+    collector: { buyerUrl: 'http://buyer.test', responseAuth: reader, log: () => {}, fetchImpl, affordable: options.affordable ?? (async (targets) => targets) },
     ...(options.maxRequestsPerEpoch === undefined ? {} : { maxRequestsPerEpoch: options.maxRequestsPerEpoch }),
     log: (line) => logs.push(line),
   }
@@ -353,6 +356,21 @@ test('an envelope with work the plan does not assign buys nothing', async (t) =>
   assert.ok(checked, 'a fixture where this verifier owns some but not all slices')
 })
 
+test('nothing is bought from a target this collector cannot afford at current prices, whatever the plan says', async (t) => {
+  const seen: string[][] = []
+  const s = await setup({
+    // The seller raised its price above this verifier's audit cap after the plan went out.
+    affordable: async (_targets, models) => {
+      seen.push(models.map((model) => model.service))
+      return []
+    },
+  })
+  t.after(() => rm(s.dir, { recursive: true, force: true }))
+  await verifierTick(s.context)
+  assert.equal(s.requests.length, 0, 'no paid request')
+  assert.deepEqual(seen, [[MODEL]], 'checked against the epoch\'s audited models')
+})
+
 test('purchases stop at the per-epoch budget whatever the envelope asks for', async (t) => {
   const s = await setup({ maxRequestsPerEpoch: 3 })
   t.after(() => rm(s.dir, { recursive: true, force: true }))
@@ -459,7 +477,7 @@ test('format adaptations do not use up a batch attempt', async () => {
   let calls = 0
   const fetchImpl = (async () => answers[calls++]!()) as unknown as typeof fetch
   const collected = await collectSlice({ ...slice, batches: slice.batches.slice(0, 1) }, {
-    buyerUrl: 'http://buyer.test', responseAuth: {} as ResponseAuthReader, log: () => {}, fetchImpl,
+    buyerUrl: 'http://buyer.test', responseAuth: {} as ResponseAuthReader, log: () => {}, fetchImpl, affordable: async (targets) => targets,
   })
   assert.equal(calls, 5, 'two format adaptations, then all three attempts at an answer')
   assert.equal(collected.exchanges.length, 0)

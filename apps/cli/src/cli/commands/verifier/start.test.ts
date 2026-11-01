@@ -7,9 +7,10 @@ import type { ResponseAuthReader } from '../../../verifier/response-auth-reader.
 import { collectorForPass, loadOrCreateEncryptionKey } from './start.js'
 
 const reader = {} as ResponseAuthReader
+const affordable = async <T>(targets: T[]) => targets
 
 test('a pass collects through the buyer when it is up', async () => {
-  const collector = await collectorForPass({ responseAuth: reader, loadBuyerUrl: async () => 'http://127.0.0.1:8377', log: () => {} })
+  const collector = await collectorForPass({ responseAuth: reader, loadBuyerUrl: async () => 'http://127.0.0.1:8377', affordable, log: () => {} })
   assert.equal(collector?.buyerUrl, 'http://127.0.0.1:8377')
   assert.equal(collector?.responseAuth, reader)
 })
@@ -19,6 +20,7 @@ test('a buyer outage only skips collection, so the pass can still attest and cla
   const collector = await collectorForPass({
     responseAuth: reader,
     loadBuyerUrl: async () => { throw new Error('buyer is not running') },
+    affordable,
     log: (message) => logs.push(message),
   })
   assert.equal(collector, null)
@@ -27,7 +29,7 @@ test('a buyer outage only skips collection, so the pass can still attest and cla
 
 test('an attest-only verifier never touches the buyer', async () => {
   let loaded = false
-  const collector = await collectorForPass({ responseAuth: null, loadBuyerUrl: async () => { loaded = true; return '' }, log: () => {} })
+  const collector = await collectorForPass({ responseAuth: null, loadBuyerUrl: async () => { loaded = true; return '' }, affordable, log: () => {} })
   assert.equal(collector, null)
   assert.equal(loaded, false)
 })

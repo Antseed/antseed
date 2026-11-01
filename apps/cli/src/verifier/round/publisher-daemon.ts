@@ -9,6 +9,7 @@ import {
   type KbfModel,
   type KbfRoundClient,
 } from '@antseed/node/payments'
+import { mapConcurrently } from '../audit-concurrency.js'
 import { ensurePrivateDirectory, writeSecretJsonAtomic } from '../atomic-files.js'
 import { encodeRoundFile } from './encoding.js'
 import { buildKeySharesFile } from './key-shares.js'
@@ -34,6 +35,9 @@ export interface PublisherDaemonContext {
   discoverTargets: (models: KbfModel[]) => Promise<RoundTargetV1[]>
   log: (message: string) => void
 }
+
+/** Encryption-key reads in flight at once. */
+const ENCRYPTION_KEY_READS = 8
 
 interface PublisherEpochStateV1 {
   bankKey: string
@@ -189,9 +193,10 @@ async function publishPlan(context: PublisherDaemonContext, info: KbfEpochInfo, 
  * envelopes, get no envelopes or key share: like an offline verifier, their slices fall to backups.
  */
 async function memberEncryptionKeys(context: PublisherDaemonContext, members: readonly string[]): Promise<Map<string, string>> {
+  // Independent reads side by side; the checks below run in member order.
+  const entries = await mapConcurrently(members, ENCRYPTION_KEY_READS, async (member) => ({ member, key: await context.client.encryptionKey(member) }))
   const keys = new Map<string, string>()
-  for (const member of members) {
-    const key = await context.client.encryptionKey(member)
+  for (const { member, key } of entries) {
     if (isZeroHash(key)) context.log(`verifier ${member} has no encryption key; its slices go to backups`)
     else if (!isUsableEncryptionKey(key)) context.log(`verifier ${member} has an unusable encryption key; it gets no envelopes or key share`)
     else keys.set(member.toLowerCase(), key)

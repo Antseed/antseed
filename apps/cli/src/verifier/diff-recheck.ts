@@ -113,13 +113,20 @@ export async function runDiffRechecks(input: {
     }
     input.log(`DIFF ${label}: rechecking with ${reservation.reference.probes.length} fresh questions…`)
     let recheck: ModelVerificationTargetResult | ModelVerificationSkip
+    // Questions that may have reached the seller are spent: the next recheck draws fresh ones, so
+    // failing a recheck on purpose (dropping the connection, blank or unsigned answers) gains nothing.
+    const spend = (reason: string) => input.release(first, reservation.auditId, reason)
     try {
       recheck = await input.verify(first, reservation.reference, reservation.auditId)
     } catch (error) {
+      // Whatever failed, some batches may have been sent before it did.
+      await spend('the recheck failed after it may have reached the seller')
       keepPending(first, label, `recheck failed: ${asError(error).message}`)
       return
     }
     if (recheck.status === 'SKIPPED') {
+      // A skip decided mid-audit came after paid requests; one decided before any request did not.
+      if (recheck.source === 'runtime') await spend('the recheck was skipped after requests reached the seller')
       keepPending(first, label, `recheck skipped: ${recheck.reason}`)
       return
     }
@@ -128,9 +135,7 @@ export async function runDiffRechecks(input: {
       // waits for a recheck once the seller is back. If some questions did reach it, they are
       // spent: the next recheck gets fresh ones, so dropping the connection gains nothing.
       stats.cost = addAuditCostSummaries(stats.cost, recheck.cost)
-      if (recheckPartlySeen(recheck)) {
-        await input.release(first, reservation.auditId, 'the seller saw part of this recheck before it failed')
-      }
+      if (recheckMayHaveReachedSeller(recheck)) await spend('requests of this recheck may have reached the seller')
       keepPending(first, label, `recheck unanswered: ${recheck.outcomeReason!.summary}`)
       return
     }
@@ -159,10 +164,13 @@ export function recheckUnanswered(recheck: ModelVerificationTargetResult): boole
   return recheck.status === 'UNDETERMINED' && recheck.outcomeReason?.retryable === true
 }
 
-/** Whether any of a recheck's questions reached the seller: a batch answered, or not every batch failed. */
-export function recheckPartlySeen(recheck: ModelVerificationTargetResult): boolean {
-  const reason = recheck.outcomeReason
-  return recheck.parsedProbeCount > 0 || !reason || reason.affectedBatchCount < reason.totalBatchCount
+/**
+ * Whether any of a recheck's questions may have reached the seller. Only a recheck that sent no
+ * request at all is known not to have: a timeout after sending, or a blank or unsigned answer,
+ * still showed the seller its questions.
+ */
+export function recheckMayHaveReachedSeller(recheck: ModelVerificationTargetResult): boolean {
+  return recheck.requestCount > 0 || recheck.parsedProbeCount > 0
 }
 
 export function combineDiffRecheck(

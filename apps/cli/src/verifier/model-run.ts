@@ -235,7 +235,12 @@ export interface VerificationTargetPolicy {
   priceCap: AuditPriceCap
 }
 
-export async function loadBuyerProxySnapshot(dataDir: string): Promise<BuyerProxySnapshot> {
+/**
+ * The running buyer's proxy and discovered peers. Throws when no live, connected buyer runs, and
+ * by default when it has discovered no peers; `allowEmptyPeers` returns an empty list instead,
+ * for callers to whom no sellers is an answer (a round with nothing to audit).
+ */
+export async function loadBuyerProxySnapshot(dataDir: string, options: { allowEmptyPeers?: boolean } = {}): Promise<BuyerProxySnapshot> {
   const statePath = join(dataDir, 'buyer.state.json')
   let parsed: {
     state?: unknown
@@ -260,7 +265,7 @@ export async function loadBuyerProxySnapshot(dataDir: string): Promise<BuyerProx
     throw new Error('buyer proxy state has an invalid port')
   }
   const peers = parsePersistedPeers(parsed)
-  if (peers.length === 0) throw new Error('buyer proxy has no live discovered peers')
+  if (peers.length === 0 && !options.allowEmptyPeers) throw new Error('buyer proxy has no live discovered peers')
   return {
     baseUrl: `http://127.0.0.1:${String(parsed.port)}`,
     statePath,

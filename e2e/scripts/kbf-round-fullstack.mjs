@@ -384,7 +384,9 @@ async function main() {
         },
       };
     }
-    if (role === 'publisher') {
+    if (role === 'publisher' || role.startsWith('verifier')) {
+      // The publisher builds banks from it; verifiers read reference prices from it to cap what
+      // they pay (without it they would use OpenRouter's public catalog).
       config.verifier = {
         referenceEndpoint: { baseUrl: `${stub.baseUrl}/api/v1`, apiKeyEnv: 'STUB_UPSTREAM_KEY', sourceId: 'openrouter', trust: 'trusted' },
       };

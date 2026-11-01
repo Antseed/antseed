@@ -449,19 +449,7 @@ export class KbfRoundClient extends BaseEvmClient {
 
   /** Plans proposed for the epoch. `publisher` (the epoch publisher, as `sender`) saves a read when the caller has it. */
   async planCommits(epoch: bigint, fromBlock?: number, publisher?: string): Promise<CommitmentEvent[]> {
-    const contract = this._contract();
-    const sender = publisher ?? (await this.epochInfo(epoch)).publisher;
-    const logs = await this._queryEvents(contract, contract.filters['PlanCommitted']!(epoch), fromBlock);
-    return logs.filter((log): log is EventLog => log instanceof EventLog).map((log) => ({
-      epoch: BigInt(log.args[0]),
-      hash: String(log.args[1]),
-      uri: String(log.args[2]),
-      backup: false,
-      sender,
-      blockNumber: log.blockNumber,
-      logIndex: log.index,
-      txHash: log.transactionHash,
-    }));
+    return this._publisherCommits('PlanCommitted', epoch, fromBlock, publisher);
   }
 
   async sliceCommits(epoch: bigint, fromBlock?: number): Promise<CommitmentEvent[]> {
@@ -496,9 +484,19 @@ export class KbfRoundClient extends BaseEvmClient {
 
   /** Key-share files committed for the epoch; the latest one is current. */
   async keySharesCommits(epoch: bigint, fromBlock?: number, publisher?: string): Promise<CommitmentEvent[]> {
+    return this._publisherCommits('KeySharesCommitted', epoch, fromBlock, publisher);
+  }
+
+  /** Events the epoch publisher emits as `(epoch, hash, uri)`: its sender is the epoch publisher. */
+  private async _publisherCommits(
+    eventName: 'PlanCommitted' | 'KeySharesCommitted',
+    epoch: bigint,
+    fromBlock?: number,
+    publisher?: string,
+  ): Promise<CommitmentEvent[]> {
     const contract = this._contract();
     const sender = publisher ?? (await this.epochInfo(epoch)).publisher;
-    const logs = await this._queryEvents(contract, contract.filters['KeySharesCommitted']!(epoch), fromBlock);
+    const logs = await this._queryEvents(contract, contract.filters[eventName]!(epoch), fromBlock);
     return logs.filter((log): log is EventLog => log instanceof EventLog).map((log) => ({
       epoch: BigInt(log.args[0]),
       hash: String(log.args[1]),

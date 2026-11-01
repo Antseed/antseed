@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto'
+import type { KbfModel } from '@antseed/node/payments'
 import {
   isKbfSamplingFieldRejection,
   isKbfThinkingSuppressionRejection,
 } from '@antseed/fingerprints'
 import { buildKbfAuditChatBody } from '../kbf-audit-request.js'
 import type { ResponseAuthReader } from '../response-auth-reader.js'
-import type { CollectedSliceV1, EnvelopeSliceV1, SliceExchangeV1 } from './types.js'
+import type { CollectedSliceV1, EnvelopeSliceV1, RoundTargetV1, SliceExchangeV1 } from './types.js'
 import { targetKey } from './types.js'
 
 const BATCH_ATTEMPTS = 3
@@ -17,6 +18,11 @@ export interface CollectorContext {
   responseAuth: ResponseAuthReader
   log: (message: string) => void
   fetchImpl?: typeof fetch
+  /**
+   * The targets this collector may pay for now, by its own audit policy (current prices against
+   * its audit caps): checked before every phase's purchases, never taken from the publisher.
+   */
+  affordable: (targets: RoundTargetV1[], models: KbfModel[]) => Promise<RoundTargetV1[]>
 }
 
 /** Resume and deadline hooks for `collectSlice`. */

@@ -30,7 +30,7 @@ const reference = { referenceId: 'sha256:recheck', probes: Array.from({ length: 
 
 async function run(input: {
   results: ModelVerificationTargetResult[]
-  recheckVerdicts?: Record<string, ModelVerificationTargetResult['status'] | 'SKIPPED' | 'UNREACHABLE' | 'PARTLY_SEEN'>
+  recheckVerdicts?: Record<string, ModelVerificationTargetResult['status'] | 'SKIPPED' | 'UNREACHABLE' | 'PARTLY_SEEN' | 'BLANK' | 'THROWS'>
   exhausted?: Set<string>
   enroll?: (() => Promise<void>) | null
 }) {
@@ -48,6 +48,7 @@ async function run(input: {
     verify: async (first): Promise<ModelVerificationTargetResult | ModelVerificationSkip> => {
       verified.push(first.peerId)
       const verdict = input.recheckVerdicts?.[first.peerId] ?? 'DIFF'
+      if (verdict === 'THROWS') throw new Error('proxy connection lost')
       if (verdict === 'SKIPPED') {
         return {
           peerId: first.peerId, displayName: null, agentId: first.agentId, service: first.service,
@@ -68,12 +69,14 @@ async function run(input: {
           },
         }
       }
-      if (verdict === 'UNREACHABLE') {
-        // Every batch failed in transport: nothing parsed, a retryable reason.
+      if (verdict === 'UNREACHABLE' || verdict === 'BLANK') {
+        // UNREACHABLE: the buyer never got a request out (no request recorded). BLANK: every request
+        // went out but came back unanswered or unsigned, or timed out after sending.
         return {
           ...result(first.peerId[0]!, 'UNDETERMINED'),
           peerId: first.peerId,
           auditId: `second-${first.peerId}`,
+          requestCount: verdict === 'UNREACHABLE' ? 0 : 10,
           parsedProbeCount: 0,
           correctProbeCount: 0,
           incorrectProbeCount: 0,
@@ -240,15 +243,19 @@ test('a recheck the seller could not answer keeps the DIFF waiting instead of fi
   assert.ok(logs.some((line) => line.includes('recheck unanswered')))
 })
 
-test('a recheck the seller saw part of stays pending but gives up its questions for fresh ones', async () => {
+test('a recheck that may have reached the seller stays pending but gives up its questions for fresh ones', async () => {
   const unreachable = result('a', 'DIFF')
   const partly = result('b', 'DIFF')
+  const blank = result('c', 'DIFF')
+  const throws = result('d', 'DIFF')
   const { outcome, released } = await run({
-    results: [unreachable, partly],
-    recheckVerdicts: { [unreachable.peerId]: 'UNREACHABLE', [partly.peerId]: 'PARTLY_SEEN' },
+    results: [unreachable, partly, blank, throws],
+    recheckVerdicts: {
+      [unreachable.peerId]: 'UNREACHABLE', [partly.peerId]: 'PARTLY_SEEN', [blank.peerId]: 'BLANK', [throws.peerId]: 'THROWS',
+    },
   })
-  assert.deepEqual(outcome.results.map((entry) => entry.status), ['DIFF', 'DIFF'])
+  assert.deepEqual(outcome.results.map((entry) => entry.status), ['DIFF', 'DIFF', 'DIFF', 'DIFF'])
   assert.ok(outcome.results.every((entry) => entry.recheckPending && !entry.recheck))
-  // Only the reservation the seller saw part of is released; the unreached one is reused as is.
-  assert.deepEqual(released, [`recheck-${partly.peerId}`])
+  // Only a recheck that sent nothing keeps its questions; any request may have shown them.
+  assert.deepEqual(released.sort(), [`recheck-${partly.peerId}`, `recheck-${blank.peerId}`, `recheck-${throws.peerId}`].sort())
 })

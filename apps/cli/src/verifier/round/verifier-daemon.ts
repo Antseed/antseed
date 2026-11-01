@@ -85,8 +85,6 @@ export interface VerifierDaemonContext {
 interface EpochStateV1 {
   primary?: { uri: string; root: string; slices: number }
   backup?: { uri: string; root: string; slices: number }
-  results?: { uri: string; root: string }
-  attestedRoot?: string
   /** Seller requests sent this epoch, retries included, counted against `maxRequestsPerEpoch`. */
   requestsSent?: number
 }
@@ -160,7 +158,7 @@ async function stepEpoch(context: VerifierDaemonContext, epoch: bigint): Promise
   }
   if (!isZeroHash(info.bankKey) && now < deadlines.attestDeadline) {
     const attested = await client.attestation(epoch, context.address)
-    if (isZeroHash(attested)) await scoreAndAttest(context, info, members, state)
+    if (isZeroHash(attested)) await scoreAndAttest(context, info, members)
   }
   if (!isZeroHash(info.finalizedRoot)) await applyAndClaim(context, epoch, epoch)
 }
@@ -225,9 +223,11 @@ async function collect(
       allowedModels: new Set(models.map((model) => model.modelHash.toLowerCase())),
       probesPerService: info.schedule.probesPerService, slicesPerService: info.schedule.slicesPerService,
     })
-    // Never buy from a target whose peer is not its agent's seller: verifiers will not score it.
-    const bound = new Set((await boundTargets(context.bindings, uniqueTargets(envelope.slices.map((slice) => slice.target)), info.seedBlock, context.log)).map(targetKey))
-    let assigned = envelope.slices.filter((slice) => bound.has(targetKey(slice.target)))
+    // Never buy from a target whose peer is not its agent's seller (verifiers will not score it),
+    // nor above this verifier's own audit price caps at current prices.
+    const bound = await boundTargets(context.bindings, uniqueTargets(envelope.slices.map((slice) => slice.target)), info.seedBlock, context.log)
+    const payable = new Set((await context.collector!.affordable(bound, models)).map(targetKey))
+    let assigned = envelope.slices.filter((slice) => payable.has(targetKey(slice.target)))
     if (backup) {
       assigned = await undeliveredSlices(context, info, members, plan.targets, assigned)
       if (assigned.length === 0) return nothingToBuy('every slice this verifier backs up was delivered; no backups to buy')
@@ -293,7 +293,6 @@ async function scoreAndAttest(
   context: VerifierDaemonContext,
   info: KbfEpochInfo,
   members: readonly string[],
-  state: EpochStateV1,
 ): Promise<void> {
   const deadlines = kbfEpochDeadlines(info, await context.client.epochDuration())
   const waitUntil = deadlines.backupDeadline + Math.floor(info.schedule.attestSeconds * UNAVAILABLE_WAIT_SHARE)
@@ -311,11 +310,7 @@ async function scoreAndAttest(
   const bytes = encodeRoundFile(results)
   const uri = await context.storage.put(bytes, `antseed-kbf-${info.epoch}-results-${context.address.toLowerCase()}.json`)
   await writeJsonAtomic(join(epochDir(context, info.epoch), 'results.json'), results)
-  state.results = { uri, root: results.root }
-  await writeState(context, info.epoch, state)
   await context.client.attest(context.signer, info.epoch, results.root, uri)
-  state.attestedRoot = results.root
-  await writeState(context, info.epoch, state)
   const counts = results.results.reduce<Record<string, number>>((acc, result) => ({ ...acc, [result.verdict]: (acc[result.verdict] ?? 0) + 1 }), {})
   context.log(`epoch ${info.epoch}: attested ${results.root} (${JSON.stringify(counts)}, ${results.totalSlices} slices)`)
 }
