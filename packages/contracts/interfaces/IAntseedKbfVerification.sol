@@ -14,10 +14,11 @@ import {IAntseedSellerPools} from "./IAntseedSellerPools.sol";
 ///      2. Anyone opens the epoch (`openEpoch`), which snapshots the approved verifiers, the
 ///         audited model list and the schedule, and fixes a future block. Its hash becomes the
 ///         epoch seed (`fixSeed`), so nobody can choose which questions a seller gets.
-///      3. The publisher escrows the bank key with the verifiers (`commitKeyShares`), then commits
-///         the plan (`commitPlan`): the target list and, per verifier, one encrypted envelope with
-///         the slices it owns and one with the slices it backs up, derived from the seed. A plan
-///         is only accepted once the key is escrowed.
+///      3. The publisher escrows the bank key with the verifiers (`commitKeyShares`), the
+///         verifiers check their shares against it (`acknowledgeKeyShares`), then the publisher
+///         commits the plan (`commitPlan`): the target list and, per verifier, one encrypted
+///         envelope with the slices it owns and one with the slices it backs up, derived from the
+///         seed. A plan is only accepted once enough verifiers acknowledged the escrow.
 ///      4. Verifiers buy their slices from sellers and commit the seller-signed transcripts
 ///         (`commitSlices`) by the commit deadline. After it, each verifier checks which of the
 ///         slices it backs up their owner did not deliver, buys those and commits them again
@@ -140,6 +141,11 @@ interface IAntseedKbfVerification {
     function commitPlan(uint256 epoch, bytes32 planHash, string calldata planUri) external;
     function takeOverBank(uint256 epoch, bytes32 bankHash, bytes32 bankKeyHash, string calldata bankUri) external;
     function commitKeyShares(uint256 epoch, bytes32 sharesHash, string calldata sharesUri) external;
+    function acknowledgeKeyShares(uint256 epoch, bytes32 sharesHash) external;
+    /// @notice Verifiers that acknowledged the key-share file `sharesHash`.
+    function keyShareAcks(uint256 epoch, bytes32 sharesHash) external view returns (uint256);
+    /// @notice Acknowledgements of the current key-share file the plan needs.
+    function requiredKeyShareAcks(uint256 epoch) external view returns (uint256);
     function revealKeyShare(uint256 epoch, bytes calldata share) external;
     function revealBankKey(uint256 epoch, bytes32 bankKey) external;
     function commitSlices(uint256 epoch, bytes32 slicesRoot, string calldata manifestUri) external;

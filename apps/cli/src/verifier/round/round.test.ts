@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { Wallet, keccak256, toUtf8Bytes } from 'ethers'
+import { Wallet, keccak256, toUtf8Bytes, zeroPadValue } from 'ethers'
 import { canonicalJsonStringify, type KbfProbe } from '@antseed/fingerprints'
 import { createResponseAuthPayload, encodeHttpRequest, encodeHttpResponse } from '@antseed/node'
 import { buildKbfProbeRequestBody } from '../model-run.js'
@@ -26,6 +26,7 @@ import {
   openEnvelope,
   sealBank,
   sealEnvelope,
+  SECP256K1_ORDER,
 } from './sealing.js'
 import {
   targetKey,
@@ -168,12 +169,15 @@ test('envelopes carry questions but no answers, and only the recipient can open 
   assert.throws(() => openEnvelope(generateEncryptionKeyPair().privateKey, sealed))
 })
 
-test('the sealed bank opens only with its key, whose hash matches abi.encode(bytes32)', () => {
+test('the sealed bank opens only with its key, committed as the address of its secp256k1 point', () => {
   const plaintext = Buffer.from(canonicalJsonStringify(bank()))
   const sealed = sealBank(plaintext)
   assert.deepEqual(openBank(sealed.key, sealed.blob), plaintext)
   assert.throws(() => openBank(`0x${'11'.repeat(32)}`, sealed.blob))
-  assert.equal(bankKeyHash(sealed.key), keccak256(sealed.key))
+  // What the contract checks with ecrecover: the key's point's address, left-padded.
+  assert.equal(bankKeyHash(sealed.key), zeroPadValue(new Wallet(sealed.key).address, 32).toLowerCase())
+  assert.ok(BigInt(sealed.key) > 0n && BigInt(sealed.key) < SECP256K1_ORDER)
+  assert.throws(() => bankKeyHash(`0x${'ff'.repeat(32)}`), 'a key outside the group cannot be committed')
 })
 
 test('results trees prove every leaf and do not depend on leaf order', () => {

@@ -43,11 +43,21 @@ async function readDeployment(network) {
 }
 
 /**
- * Release 003 deployed the single-auditor AntseedKbfVerification (`submitModelAudit`). The
- * round client cannot talk to it, so its address is never published as the verification
- * default; the round contract replaces it in release 004.
+ * Release 003 deployed the single-auditor AntseedKbfVerification (`submitModelAudit`) on Base
+ * mainnet. The round client cannot talk to it, so its address is never published as the
+ * verification default; the round contract replaces it in release 004. M003 now deploys the
+ * round contract too, and marks its record with `ROUND_VERIFICATION_PROTOCOL`.
  */
 export const SINGLE_AUDITOR_VERIFICATION_RELEASE = '003-kbf-verification';
+
+/** Recorded in `verificationConfiguration.verificationRegistry.protocol` by every round-contract deploy. */
+export const ROUND_VERIFICATION_PROTOCOL = 'kbf-rounds';
+
+/** The single-auditor contract a 003 history record holds, or undefined when it holds a round contract. */
+export function singleAuditorVerificationAddress(record) {
+  if (record?.verificationConfiguration?.verificationRegistry?.protocol === ROUND_VERIFICATION_PROTOCOL) return undefined;
+  return record?.contracts?.kbfVerification?.address;
+}
 
 async function readHistory(network, release) {
   try {
@@ -62,7 +72,7 @@ const sameAddress = (left, right) => Boolean(left && right && left.toLowerCase()
 
 export function renderNetwork(record, recognizedUsageDeployment = null, singleAuditorVerification = null) {
   const values = { evmChainId: record.chainId };
-  const retiredVerification = singleAuditorVerification?.contracts?.kbfVerification?.address;
+  const retiredVerification = singleAuditorVerificationAddress(singleAuditorVerification);
   for (const [contractName, field] of Object.entries(contractFields)) {
     const contract = record.contracts[contractName];
     if (!contract) continue;

@@ -39,11 +39,15 @@ interface IEmissionsGateSchedule {
 ///           can take the epoch over (`takeOverBank`) with its own bank and act as the epoch's
 ///           publisher; each takeover waits another grace period after the previous one;
 ///         - the epoch publisher escrows the bank key with the verifiers (`commitKeyShares`): a
-///           Shamir split, one share sealed to each verifier, with the finalization majority as
-///           threshold. If the key is not revealed by the backup deadline, verifiers post their
-///           shares (`revealKeyShare`) and anyone combines them into `revealBankKey`. A majority
-///           that pools its shares early learns the questions, but a majority can already
-///           finalize any root, so the escrow adds no new trust.
+///           Feldman-verifiable Shamir split, one share sealed to each verifier, with the
+///           finalization majority as threshold. Each verifier checks its share against the
+///           file's commitments and the committed key point and acknowledges it
+///           (`acknowledgeKeyShares`); the plan needs the threshold of acknowledgements from
+///           verifiers other than the epoch publisher, so a publisher that took the epoch over
+///           cannot freeze a round whose key the others cannot rebuild. If the key is not revealed
+///           by the backup deadline, verifiers post their shares (`revealKeyShare`) and anyone
+///           combines them into `revealBankKey`. A majority that pools its shares early learns the
+///           questions, but a majority can already finalize any root, so the escrow adds no new trust.
 ///
 ///         Rewards: from `rewardsStartEpoch` on, an epoch's verification budget is split into an
 ///         attester pool (`attestRewardBps`), shared equally by the verifiers that attested the
@@ -60,6 +64,10 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     uint256 public constant MAX_KEY_SHARE_BYTES = 64;
     /// @notice Blocks between opening an epoch and the block whose hash seeds it.
     uint64 public constant SEED_DELAY_BLOCKS = 4;
+    /// @dev secp256k1 group order and generator x coordinate, to check a bank key against its
+    ///      committed address with `ecrecover`.
+    uint256 private constant SECP256K1_N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;
+    uint256 private constant SECP256K1_GX = 0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798;
     uint256 public constant BPS = 10_000;
 
     uint8 private constant LEAF_SERVICE = 1;
@@ -124,6 +132,10 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     mapping(uint256 epoch => mapping(bytes32 leaf => bool applied)) public resultApplied;
     mapping(uint256 epoch => mapping(address verifier => bool claimed)) public rewardClaimed;
     mapping(uint256 epoch => mapping(address verifier => bool revealed)) public keyShareRevealed;
+    /// @notice Verifiers that checked their share of a key-share file against its commitments.
+    mapping(uint256 epoch => mapping(bytes32 sharesHash => mapping(address verifier => bool acknowledged))) public
+        keySharesAcknowledged;
+    mapping(uint256 epoch => mapping(bytes32 sharesHash => uint256 count)) public override keyShareAcks;
 
     mapping(uint256 agentId => mapping(bytes32 serviceHash => ServiceStatus status)) private _serviceStatus;
     /// @notice First epoch whose results can still change a service. Clearing a service moves it
@@ -147,6 +159,7 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     event EpochTakenOver(uint256 indexed epoch, address indexed verifier);
     event KeySharesCommitted(uint256 indexed epoch, bytes32 sharesHash, string sharesUri);
     event KeyShareRevealed(uint256 indexed epoch, address indexed verifier, bytes share);
+    event KeySharesAcknowledged(uint256 indexed epoch, address indexed verifier, bytes32 sharesHash);
     event BankCommitted(uint256 indexed epoch, bytes32 bankHash, bytes32 bankKeyHash, string bankUri);
     event EpochOpened(uint256 indexed epoch, uint64 seedBlock, uint32 modelsVersion, uint16 verifierCount);
     event SeedRearmed(uint256 indexed epoch, uint64 seedBlock);
@@ -187,6 +200,8 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     error AlreadyClaimed();
     error AlreadyRevealed();
     error KeyNotEscrowed();
+    error KeyNotAcknowledged();
+    error AlreadyAcknowledged();
     error PlanAlreadyCommitted();
 
     modifier onlyPublisher() {
@@ -359,8 +374,11 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     // ═══════════════════════════════════════════════════════════════════
 
     /// @notice Commits the epoch's sealed bank: `bankHash` is the hash of the encrypted bank at
-    ///         `bankUri`, `bankKeyHash` is `keccak256(abi.encode(key))`. Possible for the current or
-    ///         next epoch until the epoch is opened, and not once a verifier has taken it over.
+    ///         `bankUri`, `bankKeyHash` the key's address: the Ethereum address of `key·G` on
+    ///         secp256k1, left-padded to 32 bytes. Escrowed shares are checked against that point,
+    ///         so verifiers know before the plan that the shares rebuild the committed key.
+    ///         Possible for the current or next epoch until the epoch is opened, and not once a
+    ///         verifier has taken it over.
     function commitBank(uint256 epoch, bytes32 bankHash, bytes32 bankKeyHash, string calldata bankUri)
         external
         onlyPublisher
@@ -447,6 +465,9 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         if (state.seed == bytes32(0) || block.timestamp >= _commitDeadline(epoch, state)) revert WrongPhase();
         // Without escrowed shares, losing the publisher after the plan would strand the round.
         if (state.keySharesHash == bytes32(0)) revert KeyNotEscrowed();
+        // And enough verifiers other than the publisher must have checked their shares, so the
+        // publisher alone can never freeze a plan whose key the others cannot rebuild.
+        if (keyShareAcks[epoch][state.keySharesHash] < _requiredKeyShareAcks(epoch, state)) revert KeyNotAcknowledged();
         if (planHash == bytes32(0)) revert InvalidValue();
         // Frozen once out: verifiers buy against it, and replacing it would void their work.
         if (state.planHash != bytes32(0)) {
@@ -479,6 +500,31 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         emit KeySharesCommitted(epoch, sharesHash, sharesUri);
     }
 
+    /// @notice Confirms the caller decrypted its share of the escrow file `sharesHash` and that the
+    ///         share matches the file's polynomial commitments, whose constant term is the
+    ///         committed key's point. Epoch verifiers other than the epoch publisher, before the plan.
+    function acknowledgeKeyShares(uint256 epoch, bytes32 sharesHash) external {
+        if (!_epochMember[epoch][msg.sender]) revert NotVerifier();
+        EpochState storage state = _epochs[epoch];
+        if (msg.sender == state.publisher) revert NotVerifier();
+        if (
+            state.keySharesHash == bytes32(0) || state.planHash != bytes32(0)
+                || block.timestamp >= _commitDeadline(epoch, state)
+        ) revert WrongPhase();
+        if (sharesHash != state.keySharesHash) revert InvalidValue();
+        if (keySharesAcknowledged[epoch][sharesHash][msg.sender]) revert AlreadyAcknowledged();
+        keySharesAcknowledged[epoch][sharesHash][msg.sender] = true;
+        keyShareAcks[epoch][sharesHash] += 1;
+        emit KeySharesAcknowledged(epoch, msg.sender, sharesHash);
+    }
+
+    /// @notice Acknowledgements `commitPlan` needs: the threshold, from verifiers other than the
+    ///         epoch publisher. When fewer such verifiers exist, all of them: the publisher could
+    ///         then block finalization by not attesting anyway, so it gains nothing.
+    function requiredKeyShareAcks(uint256 epoch) external view override returns (uint256) {
+        return _requiredKeyShareAcks(epoch, _epochs[epoch]);
+    }
+
     /// @notice Publishes the caller's decrypted key share when the bank key is still hidden at
     ///         the backup deadline. Once per verifier; anyone can combine `threshold(epoch)`
     ///         shares and call `revealBankKey`, which checks the key against its hash.
@@ -501,7 +547,8 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         EpochState storage state = _epochs[epoch];
         if (state.planHash == bytes32(0) || state.bankKey != bytes32(0)) revert WrongPhase();
         if (block.timestamp < _backupDeadline(epoch, state)) revert WrongPhase();
-        if (keccak256(abi.encode(bankKey)) != state.bankKeyHash) revert InvalidValue();
+        address keyAddress = _keyAddress(bankKey);
+        if (keyAddress == address(0) || bytes32(uint256(uint160(keyAddress))) != state.bankKeyHash) revert InvalidValue();
         state.bankKey = bankKey;
         emit BankKeyRevealed(epoch, bankKey);
     }
@@ -706,6 +753,20 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         return state.verifiers.length / 2 + 1;
     }
 
+    function _requiredKeyShareAcks(uint256 epoch, EpochState storage state) private view returns (uint256) {
+        uint256 others = state.verifiers.length - (_epochMember[epoch][state.publisher] ? 1 : 0);
+        uint256 needed = _threshold(state);
+        return needed < others ? needed : others;
+    }
+
+    /// @dev Address of `key·G`, or zero for a key outside (0, n). With h = 0, R = G (even y, so
+    ///      v = 27) and s = key·Gx mod n, ecrecover returns the address of Gx⁻¹·s·G = key·G.
+    function _keyAddress(bytes32 key) private pure returns (address) {
+        uint256 scalar = uint256(key);
+        if (scalar == 0 || scalar >= SECP256K1_N) return address(0);
+        return ecrecover(bytes32(0), 27, bytes32(SECP256K1_GX), bytes32(mulmod(scalar, SECP256K1_GX, SECP256K1_N)));
+    }
+
     function _epochStart(uint256 epoch) private view returns (uint256) {
         IEmissionsGateSchedule gate = IEmissionsGateSchedule(address(emissionsGate));
         return gate.genesis() + epoch * gate.epochDuration();
@@ -848,7 +909,8 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         bytes32 bankKeyHash,
         string calldata bankUri
     ) private {
-        if (bankHash == bytes32(0) || bankKeyHash == bytes32(0)) revert InvalidValue();
+        // `bankKeyHash` is an address: anything wider could never be revealed.
+        if (bankHash == bytes32(0) || bankKeyHash == bytes32(0) || uint256(bankKeyHash) >> 160 != 0) revert InvalidValue();
         _validateUri(bankUri);
         state.bankHash = bankHash;
         state.bankKeyHash = bankKeyHash;

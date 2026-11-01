@@ -26,11 +26,15 @@ export const KBF_ROUND_ABI = [
   'function rewardClaimed(uint256 epoch, address verifier) view returns (bool)',
   'function resultApplied(uint256 epoch, bytes32 leaf) view returns (bool)',
   'function keyShareRevealed(uint256 epoch, address verifier) view returns (bool)',
+  'function keySharesAcknowledged(uint256 epoch, bytes32 sharesHash, address verifier) view returns (bool)',
+  'function keyShareAcks(uint256 epoch, bytes32 sharesHash) view returns (uint256)',
+  'function requiredKeyShareAcks(uint256 epoch) view returns (uint256)',
   'function emissionsGate() view returns (address)',
   'function setEncryptionKey(bytes32 key)',
   'function commitBank(uint256 epoch, bytes32 bankHash, bytes32 bankKeyHash, string bankUri)',
   'function takeOverBank(uint256 epoch, bytes32 bankHash, bytes32 bankKeyHash, string bankUri)',
   'function commitKeyShares(uint256 epoch, bytes32 sharesHash, string sharesUri)',
+  'function acknowledgeKeyShares(uint256 epoch, bytes32 sharesHash)',
   'function revealKeyShare(uint256 epoch, bytes share)',
   'function openEpoch(uint256 epoch)',
   'function fixSeed(uint256 epoch)',
@@ -263,6 +267,21 @@ export class KbfRoundClient extends BaseEvmClient {
     return Boolean(await this._contract().getFunction('keyShareRevealed')(epoch, getAddress(verifier)));
   }
 
+  /** Whether `verifier` checked and acknowledged its share of the key-share file `sharesHash`. */
+  async keySharesAcknowledged(epoch: bigint, sharesHash: string, verifier: string): Promise<boolean> {
+    return Boolean(await this._contract().getFunction('keySharesAcknowledged')(epoch, sharesHash, getAddress(verifier)));
+  }
+
+  /** Acknowledgements of the key-share file `sharesHash` so far. */
+  async keyShareAcks(epoch: bigint, sharesHash: string): Promise<number> {
+    return Number(await this._contract().getFunction('keyShareAcks')(epoch, sharesHash));
+  }
+
+  /** Acknowledgements of the current key-share file `commitPlan` needs. */
+  async requiredKeyShareAcks(epoch: bigint): Promise<number> {
+    return Number(await this._contract().getFunction('requiredKeyShareAcks')(epoch));
+  }
+
   async modelsVersion(): Promise<number> {
     return Number(await this._contract().getFunction('modelsVersion')());
   }
@@ -345,6 +364,10 @@ export class KbfRoundClient extends BaseEvmClient {
 
   async commitKeyShares(signer: AbstractSigner, epoch: bigint, sharesHash: string, sharesUri: string): Promise<string> {
     return this._execWrite(signer, KBF_ROUND_ABI, 'commitKeyShares', epoch, sharesHash, sharesUri);
+  }
+
+  async acknowledgeKeyShares(signer: AbstractSigner, epoch: bigint, sharesHash: string): Promise<string> {
+    return this._execWrite(signer, KBF_ROUND_ABI, 'acknowledgeKeyShares', epoch, sharesHash);
   }
 
   async revealKeyShare(signer: AbstractSigner, epoch: bigint, share: string): Promise<string> {

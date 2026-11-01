@@ -19,6 +19,7 @@ antseed-verifier verifier start
 ```
 
 - It starts its own buyer, publishes its encryption key on-chain, and then follows every epoch on its own: it buys its share of the questions, scores the epoch, attests the results, and claims its rewards.
+- Before each plan, it checks its share of the escrowed bank key and acknowledges it on-chain; the plan waits for a majority of verifiers to do so.
 - If the publisher goes missing, it covers for it: it posts its share of the escrowed bank key so the key can still be revealed, and, when no plan was published in time, it can take the epoch over and publish one itself (see [If the publisher goes missing](/docs/verify/audits#if-the-publisher-goes-missing)).
 - It keeps its progress on disk, so you can stop and restart it at any time.
 - `--no-collect` runs a verifier that only scores and attests, without buying from sellers.

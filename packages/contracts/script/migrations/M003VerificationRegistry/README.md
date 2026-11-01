@@ -35,8 +35,10 @@ After M003:
   `publisherGraceSeconds` into an epoch (default 6 hours, owner-settable), any approved
   verifier can take the epoch over with its own bank (`takeOverBank`); `verifier start`
   does this in turns. Before its plan is accepted, the epoch publisher must escrow the
-  bank key with the epoch's verifiers (`commitKeyShares`, a Shamir split with the
-  finalization majority as threshold; fixed once the plan is in), so if the key is not revealed at the backup deadline, verifiers post their
+  bank key with the epoch's verifiers (`commitKeyShares`, a Feldman-verifiable Shamir split
+  with the finalization majority as threshold; fixed once the plan is in), and a majority of
+  the epoch's verifiers other than the epoch publisher must check their shares against the
+  committed key point (`acknowledgeKeyShares`), so if the key is not revealed at the backup deadline, verifiers post their
   shares (`revealKeyShare`) and rebuild and reveal it themselves. Backups need no
   publisher step either: the plan already seals each verifier's backed-up slices, and
   backup verifiers buy the undelivered ones after the commit deadline.

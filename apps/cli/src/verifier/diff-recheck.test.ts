@@ -30,7 +30,7 @@ const reference = { referenceId: 'sha256:recheck', probes: Array.from({ length: 
 
 async function run(input: {
   results: ModelVerificationTargetResult[]
-  recheckVerdicts?: Record<string, ModelVerificationTargetResult['status'] | 'SKIPPED'>
+  recheckVerdicts?: Record<string, ModelVerificationTargetResult['status'] | 'SKIPPED' | 'UNREACHABLE'>
   exhausted?: Set<string>
   enroll?: (() => Promise<void>) | null
 }) {
@@ -51,6 +51,22 @@ async function run(input: {
           peerId: first.peerId, displayName: null, agentId: first.agentId, service: first.service,
           status: 'SKIPPED', code: 'missing_response_auth', reason: 'no ResponseAuth', source: 'runtime',
           auditId: null, evidencePath: null, evidenceHash: null,
+        }
+      }
+      if (verdict === 'UNREACHABLE') {
+        // Every batch failed in transport: nothing parsed, a retryable reason.
+        return {
+          ...result(first.peerId[0]!, 'UNDETERMINED'),
+          peerId: first.peerId,
+          auditId: `second-${first.peerId}`,
+          parsedProbeCount: 0,
+          correctProbeCount: 0,
+          incorrectProbeCount: 0,
+          correctRate: null,
+          outcomeReason: {
+            code: 'transport_error', summary: 'seller unreachable', retryable: true, source: 'transport',
+            affectedBatchCount: 10, totalBatchCount: 10, nextAction: 'retry later',
+          },
         }
       }
       return { ...result(first.peerId[0]!, verdict), peerId: first.peerId, auditId: `second-${first.peerId}` }
@@ -187,4 +203,23 @@ test('an already rechecked DIFF is not rechecked again', async () => {
   const { verified, outcome } = await run({ results: [confirmed] })
   assert.deepEqual(verified, [])
   assert.equal(outcome.results[0], confirmed)
+})
+
+test('a recheck the seller could not answer keeps the DIFF waiting instead of finishing it UNDETERMINED', async () => {
+  const diff = result('a', 'DIFF')
+  const inconclusive = result('b', 'DIFF')
+  const { outcome, logs } = await run({
+    results: [diff, inconclusive],
+    recheckVerdicts: { [diff.peerId]: 'UNREACHABLE', [inconclusive.peerId]: 'UNDETERMINED' },
+  })
+  const kept = outcome.results[0]!
+  assert.equal(kept.status, 'DIFF')
+  assert.equal(kept.recheck, undefined)
+  assert.match(kept.recheckPending?.reason ?? '', /seller unreachable/)
+  assert.equal(finalAuditVerdict(kept), null)
+  // An answered but too-close-to-call recheck still finishes the DIFF as UNDETERMINED.
+  assert.equal(outcome.results[1]!.status, 'UNDETERMINED')
+  assert.equal(outcome.results[1]!.recheck?.status, 'UNDETERMINED')
+  assert.deepEqual([outcome.stats.pending, outcome.stats.rechecked, outcome.stats.notConfirmed], [1, 1, 1])
+  assert.ok(logs.some((line) => line.includes('recheck unanswered')))
 })

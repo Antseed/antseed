@@ -9,7 +9,7 @@ import {
   randomBytes,
   type KeyObject,
 } from 'node:crypto'
-import { keccak256 } from 'ethers'
+import { computeAddress, keccak256, zeroPadValue } from 'ethers'
 import type { SealedEnvelopeV1 } from './types.js'
 
 /**
@@ -77,14 +77,26 @@ export function openEnvelope(privateKeyHex: string, envelope: SealedEnvelopeV1):
   return Buffer.concat([decipher.update(Buffer.from(envelope.ciphertext, 'base64')), decipher.final()])
 }
 
+/** secp256k1 group order: a bank key is also a scalar, so verifiers can check escrowed shares against its point. */
+export const SECP256K1_ORDER = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n
+
+/** A random 32-byte bank key that is a valid secp256k1 scalar (0 < key < n). */
+export function randomBankKey(): Buffer {
+  for (;;) {
+    const key = randomBytes(32)
+    const scalar = BigInt(`0x${key.toString('hex')}`)
+    if (scalar > 0n && scalar < SECP256K1_ORDER) return key
+  }
+}
+
 export interface SealedBank {
-  /** 0x-prefixed 32-byte AES key; revealed on-chain as `bankKey`. */
+  /** 0x-prefixed 32-byte AES key, also a secp256k1 scalar; revealed on-chain as `bankKey`. */
   key: string
   /** iv(12) | tag(16) | ciphertext. Its keccak256 is the on-chain `bankHash`. */
   blob: Buffer
 }
 
-export function sealBank(plaintext: Uint8Array, key: Buffer = randomBytes(32)): SealedBank {
+export function sealBank(plaintext: Uint8Array, key: Buffer = randomBankKey()): SealedBank {
   const iv = randomBytes(12)
   const cipher = createCipheriv('aes-256-gcm', key, iv)
   cipher.setAAD(BANK_AAD)
@@ -100,9 +112,13 @@ export function openBank(keyHex: string, blob: Uint8Array): Buffer {
   return Buffer.concat([decipher.update(data.subarray(28)), decipher.final()])
 }
 
-/** On-chain `bankKeyHash`: keccak256(abi.encode(bytes32 key)). */
+/**
+ * On-chain `bankKeyHash`: the Ethereum address of `key·G` on secp256k1, left-padded to 32 bytes.
+ * The contract checks a revealed key against it, and escrowed shares are checked against the same
+ * point. Throws for a key that is not a valid scalar.
+ */
 export function bankKeyHash(keyHex: string): string {
-  return keccak256(hexToBuffer(keyHex, 32))
+  return zeroPadValue(computeAddress(`0x${hexToBuffer(keyHex, 32).toString('hex')}`), 32).toLowerCase()
 }
 
 /** keccak256 of exact published bytes: the on-chain hash of every round file. */

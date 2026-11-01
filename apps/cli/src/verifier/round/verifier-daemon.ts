@@ -17,6 +17,7 @@ import { checkEnvelope, isListedTarget } from './envelope-check.js'
 import { buildResultsTree, collectorLeaf, serviceLeaf } from './merkle.js'
 import { derivePlan, sliceCollectors } from './plan.js'
 import { createEnvelopeDeliveryChecker, scoreRound, type CommittedManifest } from './scoring.js'
+import { acknowledgeKeyShares } from './key-escrow.js'
 import { contentHash, openBank, openEnvelope } from './sealing.js'
 import { seededRanking } from './seeded.js'
 import { boundTargets, type SellerBindingReader } from './seller-binding.js'
@@ -139,6 +140,12 @@ async function stepEpoch(context: VerifierDaemonContext, epoch: bigint): Promise
   const members = await client.epochVerifiers(epoch)
   const member = members.includes(getAddress(context.address))
   if (!member) return
+  if (
+    !isZeroHash(info.keySharesHash) && isZeroHash(info.planHash) && now < deadlines.commitDeadline
+    && getAddress(info.publisher) !== getAddress(context.address)
+  ) {
+    await acknowledgeKeyShares(context, info)
+  }
   const state = await readState(context, epoch)
 
   if (context.collector && !isZeroHash(info.planHash) && now < deadlines.commitDeadline && !state.primary) {

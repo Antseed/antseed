@@ -247,12 +247,14 @@ contract M003VerificationRegistryTest is Test {
         vm.stopPrank();
         bytes32 key = keccak256("key");
         vm.prank(publisher);
-        verification.commitBank(0, keccak256("bank"), keccak256(abi.encode(key)), "ipfs://bank");
+        verification.commitBank(0, keccak256("bank"), bytes32(uint256(uint160(vm.addr(uint256(key))))), "ipfs://bank");
         verification.openEpoch(0);
         vm.roll(verification.epochInfo(0).seedBlock + 1);
         verification.fixSeed(0);
         vm.prank(publisher);
         verification.commitKeyShares(0, keccak256("shares"), "ipfs://shares");
+        vm.prank(auditor);
+        verification.acknowledgeKeyShares(0, keccak256("shares"));
         vm.prank(publisher);
         verification.commitPlan(0, keccak256("plan"), "ipfs://plan");
         vm.warp(block.timestamp + 4 days);

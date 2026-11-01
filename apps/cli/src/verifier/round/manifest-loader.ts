@@ -1,4 +1,5 @@
 import type { CommitmentEvent } from '@antseed/node/payments'
+import { mapConcurrently } from '../audit-concurrency.js'
 import { parseSliceManifest } from './manifest-check.js'
 import { sliceCollectors } from './plan.js'
 import type { CommittedManifest } from './scoring.js'
@@ -127,15 +128,8 @@ export async function loadCommittedManifests(
   budgetFor: (commit: CommitmentEvent) => ManifestBudget,
   signal?: AbortSignal,
 ): Promise<Array<{ commit: CommitmentEvent; load: ManifestLoad }>> {
-  const loads = new Array<ManifestLoad>(commits.length)
-  let next = 0
-  const worker = async () => {
-    while (next < commits.length) {
-      const index = next++
-      const commit = commits[index]!
-      loads[index] = await loadCommittedManifest(storage, commit, budgetFor(commit), signal)
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(MANIFEST_FETCH_CONCURRENCY, commits.length) }, worker))
-  return commits.map((commit, index) => ({ commit, load: loads[index]! }))
+  return mapConcurrently(commits, MANIFEST_FETCH_CONCURRENCY, async (commit) => ({
+    commit,
+    load: await loadCommittedManifest(storage, commit, budgetFor(commit), signal),
+  }))
 }

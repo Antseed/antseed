@@ -29,6 +29,8 @@ export class FakeRoundClient {
   shareFiles: CommitmentEvent[] = []
   slices: CommitmentEvent[] = []
   shares: KeyShareRevealedEvent[] = []
+  /** `<epoch>:<sharesHash>` → verifiers that acknowledged that key-share file. */
+  acks = new Map<string, Set<string>>()
   members = new Map<bigint, string[]>()
   calls: string[] = []
   /** Makes the next `commitKeyShares` calls fail, as a storage or RPC outage would. */
@@ -89,6 +91,18 @@ export class FakeRoundClient {
   async sliceCommits(epoch: bigint): Promise<CommitmentEvent[]> { return this.slices.filter((entry) => entry.epoch === epoch) }
   async keySharesCommits(epoch: bigint): Promise<CommitmentEvent[]> { return this.shareFiles.filter((entry) => entry.epoch === epoch) }
   async keyShareReveals(epoch: bigint): Promise<KeyShareRevealedEvent[]> { return this.shares.filter((entry) => entry.epoch === epoch) }
+  async keySharesAcknowledged(epoch: bigint, sharesHash: string, verifier: string): Promise<boolean> {
+    return this.acks.get(`${epoch}:${sharesHash}`)?.has(getAddress(verifier)) ?? false
+  }
+  async keyShareAcks(epoch: bigint, sharesHash: string): Promise<number> {
+    return this.acks.get(`${epoch}:${sharesHash}`)?.size ?? 0
+  }
+  async requiredKeyShareAcks(epoch: bigint): Promise<number> {
+    const members = this.members.get(epoch) ?? []
+    const publisher = this.info(epoch).publisher
+    const others = members.filter((member) => getAddress(member) !== getAddress(publisher)).length
+    return Math.min(await this.threshold(epoch), others)
+  }
   async keyShareRevealed(epoch: bigint, verifier: string): Promise<boolean> {
     return this.shares.some((entry) => entry.epoch === epoch && entry.verifier.toLowerCase() === verifier.toLowerCase())
   }
@@ -140,10 +154,28 @@ export class FakeRoundClient {
     if (sender !== getAddress(info.publisher)) throw new Error('NotPublisher')
     if (info.seed === ZERO_HASH || this.time >= this.commitDeadline(info)) throw new Error('WrongPhase')
     if (info.keySharesHash === ZERO_HASH) throw new Error('KeyNotEscrowed')
+    if (await this.keyShareAcks(epoch, info.keySharesHash) < await this.requiredKeyShareAcks(epoch)) throw new Error('KeyNotAcknowledged')
     if (info.planHash !== ZERO_HASH && info.planHash !== hash) throw new Error('PlanAlreadyCommitted')
     info.planHash = hash
     this.plans.push({ epoch, hash, uri, backup: false, sender, blockNumber: 1, logIndex: 0, txHash: '0x' })
     this.calls.push(`commitPlan:${epoch}`)
+    return '0xtx'
+  }
+
+  async acknowledgeKeyShares(signer: AbstractSigner, epoch: bigint, sharesHash: string): Promise<string> {
+    const sender = await this.sender(signer)
+    const info = this.info(epoch)
+    if (!(this.members.get(epoch) ?? []).some((member) => getAddress(member) === sender) || sender === getAddress(info.publisher)) {
+      throw new Error('NotVerifier')
+    }
+    if (info.keySharesHash === ZERO_HASH || info.planHash !== ZERO_HASH || this.time >= this.commitDeadline(info)) throw new Error('WrongPhase')
+    if (sharesHash !== info.keySharesHash) throw new Error('InvalidValue')
+    const key = `${epoch}:${sharesHash}`
+    const acked = this.acks.get(key) ?? new Set<string>()
+    if (acked.has(sender)) throw new Error('AlreadyAcknowledged')
+    acked.add(sender)
+    this.acks.set(key, acked)
+    this.calls.push(`acknowledgeKeyShares:${epoch}:${sender}`)
     return '0xtx'
   }
 

@@ -1,6 +1,6 @@
 import type { AbstractSigner } from 'ethers'
-import { isZeroHash, kbfEpochDeadlines, type KbfRoundClient } from '@antseed/node/payments'
-import { openKeyShare, recoverBankKey, type KeySharesFileV1 } from './key-shares.js'
+import { isZeroHash, kbfEpochDeadlines, type KbfEpochInfo, type KbfRoundClient } from '@antseed/node/payments'
+import { checkKeySharesFile, openKeyShare, recoverBankKey, type KeySharesFileV2 } from './key-shares.js'
 import { ROUND_FILE_MAX_BYTES, type RoundStorage } from './storage.js'
 
 /**
@@ -43,12 +43,7 @@ export async function keyEscrowTick(context: KeyEscrowContext): Promise<void> {
   const delay = keyRevealDelay(info.schedule.attestSeconds, context.revealDelaySeconds)
   if (now < deadlines.backupDeadline + delay || now >= deadlines.attestDeadline) return
 
-  const commit = (await client.keySharesCommits(epoch)).filter((entry) => entry.hash === info.keySharesHash).at(-1)
-  if (!commit) throw new Error(`no key-share file event for epoch ${epoch}`)
-  const file = JSON.parse((await context.storage.get(commit.uri, commit.hash, ROUND_FILE_MAX_BYTES.keyShares)).toString('utf8')) as KeySharesFileV1
-  if (file.kind !== 'antseed-kbf-key-shares' || file.version !== 1 || file.epoch !== epoch.toString()) {
-    throw new Error(`key-share file for epoch ${epoch} is malformed`)
-  }
+  const file = await loadKeySharesFile(context, info)
 
   if (!await client.keyShareRevealed(epoch, context.address)) {
     const share = openKeyShare(file, context.address, context.encryptionPrivateKey)
@@ -63,4 +58,54 @@ export async function keyEscrowTick(context: KeyEscrowContext): Promise<void> {
   if (!isZeroHash((await client.epochInfo(epoch)).bankKey)) return
   const hash = await client.revealBankKey(context.signer, epoch, key)
   context.log(`epoch ${epoch}: rebuilt the bank key from ${file.threshold} shares and revealed it (${hash})`)
+}
+
+/** The epoch's current key-share file, fetched against its on-chain hash and checked against the bank key. */
+async function loadKeySharesFile(
+  context: { client: Pick<KbfRoundClient, 'keySharesCommits'>; storage: RoundStorage },
+  info: KbfEpochInfo,
+): Promise<KeySharesFileV2> {
+  const commit = (await context.client.keySharesCommits(info.epoch)).filter((entry) => entry.hash === info.keySharesHash).at(-1)
+  if (!commit) throw new Error(`no key-share file event for epoch ${info.epoch}`)
+  const bytes = await context.storage.get(commit.uri, commit.hash, ROUND_FILE_MAX_BYTES.keyShares)
+  let value: unknown
+  try {
+    value = JSON.parse(bytes.toString('utf8'))
+  } catch {
+    throw new Error(`key-share file for epoch ${info.epoch} is malformed`)
+  }
+  return checkKeySharesFile(value, info.epoch, info.bankKeyHash)
+}
+
+export interface KeyShareAcknowledgeContext {
+  client: Pick<KbfRoundClient, 'keySharesCommits' | 'keySharesAcknowledged' | 'acknowledgeKeyShares'>
+  signer: AbstractSigner
+  address: string
+  encryptionPrivateKey: string
+  storage: RoundStorage
+  log: (message: string) => void
+}
+
+/**
+ * Checks this verifier's share of the epoch's escrowed bank key and acknowledges it on-chain: the
+ * plan needs enough acknowledgements, so the epoch publisher alone cannot freeze a round whose key
+ * the other verifiers could not rebuild. A file or share that fails the check is never acknowledged.
+ * Call it for an epoch this verifier is a member of but not the publisher of, before the plan.
+ */
+export async function acknowledgeKeyShares(context: KeyShareAcknowledgeContext, info: KbfEpochInfo): Promise<void> {
+  if (isZeroHash(info.keySharesHash) || !isZeroHash(info.planHash)) return
+  if (await context.client.keySharesAcknowledged(info.epoch, info.keySharesHash, context.address)) return
+  let share: string | null
+  try {
+    share = openKeyShare(await loadKeySharesFile(context, info), context.address, context.encryptionPrivateKey)
+  } catch (error) {
+    context.log(`epoch ${info.epoch}: not acknowledging the bank-key escrow: ${error instanceof Error ? error.message : String(error)}`)
+    return
+  }
+  if (!share) {
+    context.log(`epoch ${info.epoch}: the bank-key escrow holds no share for this verifier; not acknowledging it`)
+    return
+  }
+  const hash = await context.client.acknowledgeKeyShares(context.signer, info.epoch, info.keySharesHash)
+  context.log(`epoch ${info.epoch}: checked this verifier's bank-key share and acknowledged the escrow (${hash})`)
 }

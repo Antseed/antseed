@@ -37,18 +37,19 @@ The owner can change the schedule (`setSchedule`) for epochs opened later. `veri
 
 A seller that knew the questions in advance could answer them with the genuine model and serve something else the rest of the time. So:
 
-- **The bank is sealed.** Only its hash and the hash of its key are on-chain while sellers are being asked. The bank itself sits on IPFS, encrypted.
+- **The bank is sealed.** Only its hash and a commitment to its key (the address of the key's secp256k1 point) are on-chain while sellers are being asked. The bank itself sits on IPFS, encrypted.
 - **Each verifier only sees its own questions.** The plan lists the sellers to audit and holds, per verifier, one envelope with the questions of its own slices and one with the slices it backs up, each encrypted to the key that verifier published on-chain. Envelopes have none of the answers.
 - **Questions are fresh.** Each bank is built for its epoch and leaves out the questions of the last 8 banks.
-- **The key is revealed when buying is over.** After the backup deadline the publisher reveals the bank key on-chain. The contract checks it against the committed hash, and from then on anyone can decrypt the bank and check the round.
+- **The key is revealed when buying is over.** After the backup deadline the publisher reveals the bank key on-chain. The contract checks it against the committed point, and from then on anyone can decrypt the bank and check the round.
 - **The key is escrowed with the verifiers.** Once the epoch is open, the publisher splits the bank key into Shamir shares, one sealed to each of the epoch's verifiers, and commits the share file's hash on-chain. Any majority of the shares rebuilds the key; fewer reveal nothing. A majority of verifiers can already decide the results, so this adds no new trust.
+- **Verifiers check the escrow before the plan.** The share file also commits to the polynomial behind the shares, and its constant term is the committed key's point. Each verifier checks that its own share lies on that polynomial and acknowledges the escrow on-chain (`acknowledgeKeyShares`). The plan is only accepted once a majority of the epoch's verifiers, not counting the epoch's publisher, have acknowledged it, so a publisher can't freeze a round whose key the others couldn't rebuild.
 
 ## If the publisher goes missing
 
 The publisher is a convenience, not a requirement:
 
 - **No plan in time.** If no plan is committed 6 hours into the epoch (`publisherGraceSeconds`), any of the epoch's verifiers can take the epoch over: it builds its own bank, commits it with `takeOverBank` and runs the rest of the round as the epoch's publisher (key escrow, plan, key reveal). `verifier start` does this on its own. Verifiers take turns 10 minutes apart, in an order drawn from the epoch, so they don't all build a bank at once, and a further takeover waits another grace period. Taking over needs the verifier's buyer and a working [reference upstream](#reference-upstreams), the same setup the publisher uses to build a bank. An epoch that was already opened gets a new seed.
-- **No key reveal.** If the bank key is still hidden 10 minutes after the backup deadline, each verifier posts its share on-chain (`revealKeyShare`), up to the attest deadline. As soon as a majority of shares are on-chain, any verifier rebuilds the key and reveals it. A forged share is ignored, because every share is checked against the hash in the share file.
+- **No key reveal.** If the bank key is still hidden 10 minutes after the backup deadline, each verifier posts its share on-chain (`revealKeyShare`), up to the attest deadline. As soon as a majority of shares are on-chain, any verifier rebuilds the key and reveals it. A forged share is ignored, because every share is checked against the share file's commitments.
 
 ## Which sellers are audited
 

@@ -91,6 +91,14 @@ export async function advanceEpochAsPublisher(
     }
   }
   if (!isZeroHash(info.seed) && isZeroHash(info.planHash) && now < deadlines.commitDeadline) {
+    // The plan freezes the round, so it waits for verifiers to check the escrow (`acknowledgeKeyShares`).
+    const live = await context.client.epochInfo(epoch)
+    const acks = isZeroHash(live.keySharesHash) ? 0 : await context.client.keyShareAcks(epoch, live.keySharesHash)
+    const needed = await context.client.requiredKeyShareAcks(epoch)
+    if (isZeroHash(live.keySharesHash) || acks < needed) {
+      context.log(`epoch ${epoch}: waiting for verifiers to acknowledge the bank-key escrow (${acks} of ${needed})`)
+      return
+    }
     await publishPlan(context, info, now)
   }
   if (!isZeroHash(info.planHash) && isZeroHash(info.bankKey) && now >= deadlines.backupDeadline) {
@@ -118,7 +126,8 @@ async function escrowBankKey(context: PublisherDaemonContext, info: KbfEpochInfo
 
 /**
  * Builds, seals and commits an epoch's bank once; the key and plaintext stay on disk. `takeover`
- * commits it through `takeOverBank`, for a verifier standing in for a missing publisher.
+ * commits it through `takeOverBank`, for a verifier standing in for a missing publisher, and
+ * commits the same bank again when another verifier's takeover replaced it.
  */
 export async function prepareBank(context: PublisherDaemonContext, epoch: bigint, mode: 'publisher' | 'takeover'): Promise<void> {
   let state = await readState(context, epoch)
@@ -135,7 +144,11 @@ export async function prepareBank(context: PublisherDaemonContext, epoch: bigint
     await writeSecret(join(epochDir(context, epoch), 'bank.json'), bank)
     await writeSecret(join(epochDir(context, epoch), 'publisher.json'), state)
   }
-  if (!state.committed) {
+  // `committed` is history, not proof the bank is live: another verifier may have taken the epoch
+  // over since, and a takeover then has to commit this bank again.
+  const replaced = mode === 'takeover' && state.committed
+    && (await context.client.epochInfo(epoch)).bankHash.toLowerCase() !== state.bankHash.toLowerCase()
+  if (!state.committed || replaced) {
     const commit = mode === 'takeover' ? context.client.takeOverBank.bind(context.client) : context.client.commitBank.bind(context.client)
     const hash = await commit(context.signer, epoch, state.bankHash, bankKeyHash(state.bankKey), state.bankUri)
     state.committed = true

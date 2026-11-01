@@ -37,6 +37,7 @@
     "@antseed/payments": "workspace:*",
     "@antseed/provider-core": "workspace:*",
     "@antseed/router-core": "workspace:*",
+    "@noble/curves": "^2.2.0",
     "@peculiar/x509": "^2.0.0",
     "@simplewebauthn/server": "^13.1.0",
     "@tanstack/query-core": "5.97.0",

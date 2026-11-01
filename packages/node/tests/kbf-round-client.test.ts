@@ -66,6 +66,9 @@ function fakeProvider(options: { logs?: RawLog[]; head?: number; send?: (method:
         case 'schedule': return iface.encodeFunctionResult('schedule', [SCHEDULE]);
         case 'models': return iface.encodeFunctionResult('models', [[[modelHash('model-a'), 'model-a']]]);
         case 'pendingReward': return iface.encodeFunctionResult('pendingReward', [123n]);
+        case 'keyShareAcks': return iface.encodeFunctionResult('keyShareAcks', [2n]);
+        case 'requiredKeyShareAcks': return iface.encodeFunctionResult('requiredKeyShareAcks', [3n]);
+        case 'keySharesAcknowledged': return iface.encodeFunctionResult('keySharesAcknowledged', [parsed.args[2] === VERIFIER]);
         default: throw new Error(`unexpected call ${parsed.name}`);
       }
     },
@@ -108,6 +111,11 @@ describe('KbfRoundClient reads', () => {
     expect(await c.epochDuration()).toBe(604_800);
     expect(await c.models(2)).toEqual([{ modelHash: modelHash('model-a'), service: 'model-a' }]);
     expect(await c.pendingReward(VERIFIER, 7n, 3, 8, [])).toBe(123n);
+    const shares = '0x' + '05'.repeat(32);
+    expect(await c.keyShareAcks(7n, shares)).toBe(2);
+    expect(await c.requiredKeyShareAcks(7n)).toBe(3);
+    expect(await c.keySharesAcknowledged(7n, shares, VERIFIER)).toBe(true);
+    expect(await c.keySharesAcknowledged(7n, shares, PUBLISHER)).toBe(false);
   });
 
   it('reads chain time and head uncached, falling back across providers', async () => {
@@ -215,10 +223,11 @@ describe('KbfRoundClient writes', () => {
     await c.claimRewards(signer, 7n, 3, 8, ['0x' + '0a'.repeat(32)]);
     await c.commitPlan(signer, 7n, '0x' + '03'.repeat(32), 'ipfs://plan');
     await c.commitSlices(signer, 7n, '0x' + '06'.repeat(32), 'ipfs://slices');
+    await c.acknowledgeKeyShares(signer, 7n, '0x' + '0c'.repeat(32));
     await c.revealKeyShare(signer, 7n, '0x01aa');
     await c.takeOverBank(signer, 7n, '0x' + '01'.repeat(32), keccak256(AbiCoder.defaultAbiCoder().encode(['bytes32'], ['0x' + '0b'.repeat(32)])), 'ipfs://bank');
     const names = execWrite.mock.calls.map((call) => call[2]);
-    expect(names).toEqual(['claimRewards', 'commitPlan', 'commitSlices', 'revealKeyShare', 'takeOverBank']);
+    expect(names).toEqual(['claimRewards', 'commitPlan', 'commitSlices', 'acknowledgeKeyShares', 'revealKeyShare', 'takeOverBank']);
     expect(execWrite.mock.calls[0]!.slice(3)).toEqual([7n, 3, 8, ['0x' + '0a'.repeat(32)]]);
     for (const call of execWrite.mock.calls) {
       expect(() => iface.encodeFunctionData(call[2] as string, call.slice(3))).not.toThrow();

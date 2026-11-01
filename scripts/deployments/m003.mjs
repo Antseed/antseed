@@ -10,6 +10,7 @@ import {
   writeActivationRecords, writeCheckpoint,
 } from './runtime/ledger.mjs';
 import { runMigration } from './runtime/runner.mjs';
+import { ROUND_VERIFICATION_PROTOCOL } from '../generate-contract-chain-config.mjs';
 import { clearPlan } from './runtime/plan.mjs';
 import { CONTRACTS_ROOT } from './runtime/paths.mjs';
 
@@ -238,7 +239,9 @@ export function kbfVerificationMigration({ id, release: RELEASE, replaces = null
   function activationRecords(context, checkpoint) {
     const { sourceCommit: commit, contracts, transactions, ...configuration } = checkpoint;
     const verificationConfiguration = {
-      ...context.canonical.verificationConfiguration, verificationRegistry: configuration,
+      ...context.canonical.verificationConfiguration,
+      // Tells this round contract apart from the single-auditor one an older 003 record holds.
+      verificationRegistry: { ...configuration, protocol: ROUND_VERIFICATION_PROTOCOL },
     };
     const record = buildReleaseRecord(context, {
       release: RELEASE, status: 'active', sourceCommit: commit, contracts, transactions, verificationConfiguration,

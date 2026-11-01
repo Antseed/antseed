@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, rm, stat } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -8,10 +8,13 @@ import { ZERO_HASH } from '@antseed/node/payments'
 import { referenceFixture } from '../model-audit-fixtures.test-support.js'
 import { EPOCH_SECONDS, FakeRoundClient } from './fake-round-client.test-support.js'
 import { fallbackPublisherTick, takeoverTime } from './fallback-publisher.js'
-import { keyEscrowTick, keyRevealDelay } from './key-escrow.js'
-import { buildKeySharesFile, combineShares, openKeyShare, recoverBankKey, splitSecret } from './key-shares.js'
+import { acknowledgeKeyShares, keyEscrowTick, keyRevealDelay } from './key-escrow.js'
+import {
+  buildKeySharesFile, checkKeySharesFile, combineShares, openKeyShare, recoverBankKey, shareMatchesCommitments, splitSecret,
+  type KeySharesFileV2,
+} from './key-shares.js'
 import { publisherTick, type PublisherDaemonContext } from './publisher-daemon.js'
-import { generateEncryptionKeyPair, isUsableEncryptionKey, openEnvelope } from './sealing.js'
+import { bankKeyHash, generateEncryptionKeyPair, isUsableEncryptionKey, openEnvelope } from './sealing.js'
 import { DirectoryRoundStorage } from './storage.js'
 import type { EnvelopeContentV1, EpochBankV1, PlanFileV1, RoundTargetV1 } from './types.js'
 
@@ -42,6 +45,8 @@ interface Setup {
   dir: string
   logs: string[]
   context: (signer: Wallet, stateName: string, buildBank?: PublisherDaemonContext['buildBank']) => PublisherDaemonContext
+  /** Every epoch verifier checks and acknowledges the current escrow, as their `verifier start` would. */
+  acknowledge: (epoch?: bigint) => Promise<void>
 }
 
 async function setup(): Promise<Setup> {
@@ -55,8 +60,18 @@ async function setup(): Promise<Setup> {
   fake.modelList = [{ modelHash: MODEL_HASH, service: MODEL }]
   const storage = new DirectoryRoundStorage(join(dir, 'files'))
   const logs: string[] = []
+  const acknowledge = async (epoch = EPOCH) => {
+    const info = await fake.epochInfo(epoch)
+    for (const entry of verifiers) {
+      if (entry.wallet.address === info.publisher) continue
+      await acknowledgeKeyShares({
+        client: fake.asClient(), signer: entry.wallet as never, address: entry.wallet.address,
+        encryptionPrivateKey: entry.keys.privateKey, storage, log: (message) => logs.push(message),
+      }, info)
+    }
+  }
   return {
-    fake, storage, publisher, verifiers, dir, logs,
+    fake, storage, publisher, verifiers, dir, logs, acknowledge,
     context: (signer, stateName, buildBank = async ({ epoch }) => bank(epoch)) => ({
       client: fake.asClient(),
       signer: signer as never,
@@ -87,14 +102,31 @@ test('only keys that can receive envelopes count as usable', () => {
   }), /only 2 verifiers have usable encryption keys; 3 needed/)
 })
 
-test('Shamir shares rebuild the secret from any threshold subset only', () => {
-  const secret = Buffer.from('11'.repeat(16) + 'ee'.repeat(16), 'hex')
-  const shares = splitSecret(secret, 3, 5)
-  assert.deepEqual(combineShares([shares[0]!, shares[2]!, shares[4]!]), secret)
-  assert.deepEqual(combineShares([shares[3]!, shares[1]!, shares[0]!]), secret)
-  assert.notDeepEqual(combineShares([shares[0]!, shares[1]!]), secret)
+test('Shamir shares rebuild the secret from any threshold subset only, and match their commitments', () => {
+  const secret = BigInt(`0x${'11'.repeat(16)}${'ee'.repeat(16)}`)
+  const { shares, commitments } = splitSecret(secret, 3, 5)
+  assert.equal(combineShares([shares[0]!, shares[2]!, shares[4]!]), secret)
+  assert.equal(combineShares([shares[3]!, shares[1]!, shares[0]!]), secret)
+  assert.notEqual(combineShares([shares[0]!, shares[1]!]), secret)
+  assert.equal(commitments.length, 3)
+  assert.ok(shares.every((share) => shareMatchesCommitments(commitments, share)))
+  assert.equal(shareMatchesCommitments(commitments, { x: 1, y: shares[0]!.y + 1n }), false, 'a share off the polynomial')
+  assert.equal(shareMatchesCommitments(commitments, { x: 2, y: shares[0]!.y }), false, 'a share at the wrong x')
   assert.throws(() => splitSecret(secret, 6, 5))
+  assert.throws(() => splitSecret(0n, 1, 1))
   assert.throws(() => combineShares([shares[0]!, shares[0]!]))
+})
+
+test('a key-share file must commit to the bank key the epoch committed', () => {
+  const recipients = [0, 1, 2].map(() => ({ address: Wallet.createRandom().address, encryptionKey: generateEncryptionKeyPair().publicKey }))
+  const bankKey = `0x${'5a'.repeat(32)}`
+  const file = buildKeySharesFile({ epoch: EPOCH, bankKey, threshold: 2, recipients })
+  assert.equal(checkKeySharesFile(JSON.parse(JSON.stringify(file)), EPOCH, bankKeyHash(bankKey)).version, 2)
+  assert.throws(() => checkKeySharesFile(file, EPOCH, bankKeyHash(`0x${'5b'.repeat(32)}`)), /does not commit to the epoch's bank key/)
+  assert.throws(() => checkKeySharesFile(file, EPOCH + 1n, bankKeyHash(bankKey)), /malformed/)
+  assert.throws(() => checkKeySharesFile({ ...file, commitments: file.commitments.slice(1) }, EPOCH, bankKeyHash(bankKey)), /malformed/)
+  assert.throws(() => checkKeySharesFile({ ...file, commitments: ['0x02', file.commitments[1]] }, EPOCH, bankKeyHash(bankKey)), /malformed/)
+  assert.throws(() => checkKeySharesFile({ ...file, version: 1 }, EPOCH, bankKeyHash(bankKey)), /malformed/)
 })
 
 test('escrowed key shares open per verifier and ignore forged shares', () => {
@@ -107,6 +139,11 @@ test('escrowed key shares open per verifier and ignore forged shares', () => {
   const opened = recipients.map((entry) => openKeyShare(file, entry.wallet.address, entry.keys.privateKey)!)
   assert.equal(openKeyShare(file, new Wallet(Wallet.createRandom().privateKey).address, recipients[0]!.keys.privateKey), null)
   assert.throws(() => openKeyShare(file, recipients[0]!.wallet.address, recipients[1]!.keys.privateKey))
+  // Someone else's valid share does not count under another verifier's name.
+  assert.equal(recoverBankKey(file, [
+    { verifier: recipients[0]!.wallet.address, share: opened[1]! },
+    { verifier: recipients[1]!.wallet.address, share: opened[1]! },
+  ]), null)
 
   const forged = `0x01${'00'.repeat(32)}`
   assert.equal(recoverBankKey(file, [{ verifier: recipients[0]!.wallet.address, share: opened[0]! }]), null, 'one share is not enough')
@@ -136,7 +173,11 @@ test('publisher reveals the current key even when next epoch\'s bank keeps faili
   assert.deepEqual(s.fake.calls, [`commitBank:${EPOCH}`])
   s.fake.openAndSeed(EPOCH)
   await publisherTick(context)
-  assert.deepEqual(s.fake.calls.slice(1), [`commitKeyShares:${EPOCH}`, `commitPlan:${EPOCH}`])
+  assert.deepEqual(s.fake.calls.slice(1), [`commitKeyShares:${EPOCH}`])
+  assert.ok(s.logs.some((line) => line.includes('waiting for verifiers to acknowledge the bank-key escrow (0 of 2)')))
+  await s.acknowledge()
+  await publisherTick(context)
+  assert.equal(s.fake.calls.at(-1), `commitPlan:${EPOCH}`)
 
   failNext = true
   s.fake.time = START + 3 * DAY + HOUR
@@ -158,6 +199,9 @@ test('verifiers rebuild and reveal the bank key when the publisher disappears', 
   s.fake.openAndSeed(EPOCH)
   await publisherTick(s.context(s.publisher, 'publisher'))
   assert.notEqual(s.fake.info(EPOCH).keySharesHash, ZERO_HASH)
+  await s.acknowledge()
+  await publisherTick(s.context(s.publisher, 'publisher'))
+  assert.notEqual(s.fake.info(EPOCH).planHash, ZERO_HASH)
 
   // The publisher is gone from here on.
   const escrow = (index: number) => keyEscrowTick({
@@ -190,7 +234,10 @@ test('a verifier with an unusable encryption key does not stall escrow or the pl
   await publisherTick(context)
   s.fake.openAndSeed(EPOCH)
   await publisherTick(context)
+  await s.acknowledge()
+  await publisherTick(context)
   assert.ok(s.fake.calls.includes(`commitKeyShares:${EPOCH}`), 'escrowed with the two usable keys')
+  assert.ok(s.logs.some((line) => line.includes('holds no share for this verifier')), 'the broken verifier cannot acknowledge')
   assert.ok(s.fake.calls.includes(`commitPlan:${EPOCH}`), 'the plan is not held back')
   assert.ok(s.logs.some((line) => line.includes(`${broken} has an unusable encryption key`)))
 
@@ -245,6 +292,10 @@ test('a verifier takes over an epoch the publisher never planned and runs it', a
   s.fake.openAndSeed(EPOCH, `0x${'cd'.repeat(32)}`)
   await fallback(order[0]!.index)
   assert.ok(s.fake.calls.includes(`commitKeyShares:${EPOCH}`))
+  assert.ok(!s.fake.calls.includes(`commitPlan:${EPOCH}`), 'the plan waits for the other verifiers to check the escrow')
+  await s.acknowledge()
+  assert.ok(!s.fake.calls.includes(`acknowledgeKeyShares:${EPOCH}:${first}`), 'the epoch publisher never acknowledges its own escrow')
+  await fallback(order[0]!.index)
   assert.ok(s.fake.calls.includes(`commitPlan:${EPOCH}`), 'the new epoch publisher commits the plan')
   await publisherTick(s.context(s.publisher, 'publisher'))
   assert.equal(s.fake.calls.filter((call) => call === `commitPlan:${EPOCH}`).length, 1, 'the original publisher stays out')
@@ -262,7 +313,9 @@ test('a failed key escrow holds the plan back until the escrow is in', async (t)
   assert.ok(!s.fake.calls.includes(`commitPlan:${EPOCH}`), 'no plan without escrowed shares')
   assert.ok(s.logs.some((line) => line.includes('plan held back')))
   await publisherTick(context)
-  assert.deepEqual(s.fake.calls.slice(1), [`commitKeyShares:${EPOCH}`, `commitPlan:${EPOCH}`])
+  await s.acknowledge()
+  await publisherTick(context)
+  assert.deepEqual(s.fake.calls.filter((call) => !call.startsWith('acknowledge')).slice(1), [`commitKeyShares:${EPOCH}`, `commitPlan:${EPOCH}`])
 })
 
 test('key shares are posted in time even when the attestation window is shorter than the default delay', async (t) => {
@@ -272,6 +325,8 @@ test('key shares are posted in time even when the attestation window is shorter 
   s.fake.time = START + HOUR
   await publisherTick(s.context(s.publisher, 'publisher'))
   s.fake.openAndSeed(EPOCH)
+  await publisherTick(s.context(s.publisher, 'publisher'))
+  await s.acknowledge()
   await publisherTick(s.context(s.publisher, 'publisher'))
   const backupDeadline = START + 4 * DAY
   const escrow = (index: number) => keyEscrowTick({
@@ -298,6 +353,8 @@ test('with no eligible targets the publisher keeps looking, then commits an empt
   await publisherTick(context)
   s.fake.openAndSeed(EPOCH)
   await publisherTick(context)
+  await s.acknowledge()
+  await publisherTick(context)
   assert.equal(s.fake.info(EPOCH).planHash, ZERO_HASH, 'still waiting for the buyer to find sellers')
   assert.ok(s.logs.some((line) => line.includes('no eligible targets yet')))
 
@@ -315,6 +372,8 @@ test('the plan seals every verifier its own and its backed-up slices', async (t)
   s.fake.time = START + HOUR
   await publisherTick(context)
   s.fake.openAndSeed(EPOCH)
+  await publisherTick(context)
+  await s.acknowledge()
   await publisherTick(context)
   const event = s.fake.plans.at(-1)!
   const plan = JSON.parse((await s.storage.get(event.uri, event.hash)).toString('utf8')) as PlanFileV1
@@ -341,4 +400,66 @@ test('the bank and its key are written owner-only, even under a permissive umask
   for (const name of ['bank.json', 'publisher.json']) {
     assert.equal((await stat(join(epochDir, name))).mode & 0o777, 0o600, name)
   }
+})
+
+test('verifiers do not acknowledge an escrow whose shares cannot rebuild the committed key', async (t) => {
+  const s = await setup()
+  t.after(() => rm(s.dir, { recursive: true, force: true }))
+  const context = s.context(s.publisher, 'publisher')
+  s.fake.time = START + HOUR
+  await publisherTick(context)
+  s.fake.openAndSeed(EPOCH)
+  // A publisher escrowing some other key: shares are valid on their own polynomial, but its
+  // constant term is not the committed bank key.
+  const members = s.verifiers.map((entry) => ({ address: entry.wallet.address, encryptionKey: entry.keys.publicKey }))
+  const bogus = buildKeySharesFile({ epoch: EPOCH, bankKey: `0x${'42'.repeat(32)}`, threshold: 2, recipients: members })
+  const bytes = Buffer.from(JSON.stringify(bogus))
+  const uri = await s.storage.put(bytes)
+  await s.fake.commitKeyShares(s.publisher as never, EPOCH, keccak256(bytes), uri)
+  await s.acknowledge()
+  assert.equal(await s.fake.keyShareAcks(EPOCH, keccak256(bytes)), 0)
+  assert.ok(s.logs.some((line) => line.includes("does not commit to the epoch's bank key")))
+  await publisherTick(context)
+  assert.equal(s.fake.info(EPOCH).planHash, ZERO_HASH, 'no plan without acknowledgements')
+
+  // A file that commits to the right key but hands one verifier a share off the polynomial.
+  const stateFile = JSON.parse(await readFile(join(s.dir, 'publisher', EPOCH.toString(), 'publisher.json'), 'utf8')) as { bankKey: string }
+  const honest = buildKeySharesFile({ epoch: EPOCH, bankKey: stateFile.bankKey, threshold: 2, recipients: members })
+  const victim = s.verifiers[0]!
+  const tampered: KeySharesFileV2 = {
+    ...honest,
+    shares: { ...honest.shares, [victim.wallet.address.toLowerCase()]: honest.shares[s.verifiers[1]!.wallet.address.toLowerCase()]! },
+  }
+  const tamperedBytes = Buffer.from(JSON.stringify(tampered))
+  const tamperedUri = await s.storage.put(tamperedBytes)
+  await s.fake.commitKeyShares(s.publisher as never, EPOCH, keccak256(tamperedBytes), tamperedUri)
+  await s.acknowledge()
+  assert.equal(await s.fake.keySharesAcknowledged(EPOCH, keccak256(tamperedBytes), victim.wallet.address), false)
+  assert.ok(s.logs.some((line) => line.includes("does not match the file's commitments")))
+})
+
+test('a verifier whose takeover was replaced takes the epoch over again after restarting', async (t) => {
+  const s = await setup()
+  t.after(() => rm(s.dir, { recursive: true, force: true }))
+  const [a, b] = s.verifiers
+  const fallback = (entry: typeof a, name: string) => fallbackPublisherTick({
+    ...s.context(entry!.wallet, name), address: entry!.wallet.address, turnSeconds: 0,
+  })
+  // Verifier A takes the epoch over, then goes offline before its plan.
+  s.fake.time = START + 6 * HOUR + 1
+  await fallback(a, 'verifier-a')
+  assert.equal(s.fake.info(EPOCH).publisher, a!.wallet.address)
+  const aBank = s.fake.info(EPOCH).bankHash
+
+  // B replaces A's bank a grace period later, and disappears too.
+  s.fake.time += s.fake.graceSeconds
+  await fallback(b, 'verifier-b')
+  assert.equal(s.fake.info(EPOCH).publisher, b!.wallet.address)
+
+  // A comes back (same state directory) once B's grace has passed: its old bank goes in again.
+  s.fake.time += s.fake.graceSeconds
+  await fallback(a, 'verifier-a')
+  assert.equal(s.fake.info(EPOCH).publisher, a!.wallet.address)
+  assert.equal(s.fake.info(EPOCH).bankHash, aBank)
+  assert.equal(s.fake.calls.filter((call) => call === `takeOverBank:${EPOCH}:${a!.wallet.address}`).length, 2)
 })

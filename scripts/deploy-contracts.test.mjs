@@ -45,7 +45,7 @@ import {
 import { recordErrors } from './validate-contract-deployments.mjs';
 import { assertSignerOwners, parseSignerSpecs, resolveSigners, signerEnvironment } from './deployments/runtime/signers.mjs';
 import { parseSandboxArgs } from './m001-sandbox.mjs';
-import { renderNetwork } from './generate-contract-chain-config.mjs';
+import { renderNetwork, ROUND_VERIFICATION_PROTOCOL } from './generate-contract-chain-config.mjs';
 import { activationRecords, migration as m003, parseBonusBps, rejectAuditorList, RELEASE as M003_RELEASE, verificationOwner } from './deployments/m003.mjs';
 import { activationRecords as m004ActivationRecords, migration as m004, RELEASE as M004_RELEASE } from './deployments/m004.mjs';
 
@@ -395,6 +395,18 @@ test('never publishes the single-auditor 003 contract as the verification defaul
   replaced.contracts.kbfVerification = { address: ADDRESS.registry, deploymentBlock: 456 };
   assert.equal(renderNetwork(replaced, null, singleAuditor).verificationContractAddress, ADDRESS.registry);
   assert.equal(renderNetwork(replaced, null, singleAuditor).verificationDeployBlock, 456);
+});
+
+test('publishes a round contract freshly deployed by M003 as the verification default', async () => {
+  const current = JSON.parse(await readFile('packages/contracts/deployments/base-mainnet/current.json', 'utf8'));
+  const legacy = JSON.parse(await readFile('packages/contracts/deployments/base-mainnet/history/003-kbf-verification.json', 'utf8'));
+  const fresh = structuredClone(legacy);
+  fresh.verificationConfiguration.verificationRegistry.protocol = ROUND_VERIFICATION_PROTOCOL;
+  current.contracts.kbfVerification = { ...fresh.contracts.kbfVerification, deploymentBlock: 789 };
+  const rendered = renderNetwork(current, null, fresh);
+  assert.equal(rendered.verificationContractAddress, fresh.contracts.kbfVerification.address);
+  assert.equal(rendered.verificationDeployBlock, 789);
+  assert.equal(renderNetwork(current, null, legacy).verificationContractAddress, undefined);
 });
 
 test('parses signer specs and resolves them to addresses, never keys', async () => {
@@ -2155,6 +2167,9 @@ test('M003 activation preserves previous contracts/configuration and generates i
   }
   assert.equal(current.contracts.kbfVerification.deployedInRelease, true);
   assert.equal(renderNetwork(current).verificationContractAddress, ADDRESS.sellerRegistry);
+  assert.equal(record.verificationConfiguration.verificationRegistry.protocol, ROUND_VERIFICATION_PROTOCOL);
+  // Its own 003 history record does not retire the round contract it just deployed.
+  assert.equal(renderNetwork(current, null, record).verificationContractAddress, ADDRESS.sellerRegistry);
   assert.equal(renderNetwork(original).verificationContractAddress, undefined);
   const deployed = JSON.parse(await readFile('packages/contracts/deployments/base-mainnet/history/001-recognized-usage-deployed.json', 'utf8'));
   assert.deepEqual(renderNetwork(current, deployed).recognizedUsage, renderNetwork(original, deployed).recognizedUsage);

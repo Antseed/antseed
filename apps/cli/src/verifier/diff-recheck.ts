@@ -25,7 +25,8 @@ export interface DiffRecheckOutcome {
 /**
  * A first DIFF is rechecked on probes the seller has never seen. A seller is flagged DIFF only when
  * both checks say DIFF; a recheck SAME or UNDETERMINED makes it UNDETERMINED. When the second check
- * cannot run (no fresh questions, the reference endpoint fails, the recheck is skipped), the first
+ * cannot run (no fresh questions, the reference endpoint fails, the recheck is skipped, the seller
+ * cannot be reached), the first
  * DIFF is kept with `recheckPending`: nothing is submitted for it, and the next run in the same
  * epoch rechecks it. A first DIFF carried over from an earlier run is rechecked the same way.
  */
@@ -117,6 +118,13 @@ export async function runDiffRechecks(input: {
       keepPending(first, label, `recheck skipped: ${recheck.reason}`)
       return
     }
+    if (recheckUnanswered(recheck)) {
+      // The seller was out of reach, not inconclusive: what it cost still counts, and the DIFF
+      // waits for a recheck once the seller is back.
+      stats.cost = addAuditCostSummaries(stats.cost, recheck.cost)
+      keepPending(first, label, `recheck unanswered: ${recheck.outcomeReason!.summary}`)
+      return
+    }
     stats.rechecked += 1
     stats.cost = addAuditCostSummaries(stats.cost, recheck.cost)
     const final = combineDiffRecheck(first, recheck, reservation.reference.referenceId)
@@ -132,6 +140,14 @@ export async function runDiffRechecks(input: {
 
   const results = input.results.map((result) => finals.get(result) ?? result)
   return { results, stats }
+}
+
+/**
+ * An UNDETERMINED recheck whose every failure is retryable (transport, deadline, rate limit,
+ * payment): the seller could not be asked, so it says nothing about the first DIFF.
+ */
+export function recheckUnanswered(recheck: ModelVerificationTargetResult): boolean {
+  return recheck.status === 'UNDETERMINED' && recheck.outcomeReason?.retryable === true
 }
 
 export function combineDiffRecheck(
