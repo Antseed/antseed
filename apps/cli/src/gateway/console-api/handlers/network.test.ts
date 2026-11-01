@@ -56,7 +56,6 @@ const PEERS_BODY = {
       providers: ['anthropic'],
       capabilities: [],
       providerPricing: { anthropic: { defaults: { inputUsdPerMillion: 3, outputUsdPerMillion: 15 } } },
-      sellerContract: '1F'.repeat(20),
       onChainWashFlagged: true,
       verificationResults: {
         verified: true,
@@ -349,8 +348,6 @@ test('GET peers merges buyer peers, health and gateway stats', async () => {
     requests24h: 17,
   })
   assert.equal(b.verified, true)
-  // A delegated seller: its settlements pay the contract.
-  assert.equal(b.sellerContract, `0x${'1f'.repeat(20)}`)
   // Only claims that checked out, sanitised, as links.
   assert.deepEqual(b.verificationLinks, [
     { kind: 'domain', label: 'seller.example.com', href: 'https://seller.example.com' },

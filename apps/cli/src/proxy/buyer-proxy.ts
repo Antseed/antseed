@@ -3091,8 +3091,6 @@ export class BuyerProxy {
         onChainTotalVolumeUsdcMicros: p.onChainTotalVolumeUsdcMicros ?? null,
         onChainLastSettledAtSec: p.onChainLastSettledAtSec ?? null,
         onChainSybilRisk: p.onChainSybilRisk ?? null,
-        // Delegated sellers are paid at this contract, not at their peer id.
-        sellerContract: p.metadata?.sellerContract ?? null,
         verificationResults: p.verificationResults,
         lastSeen: p.lastSeen,
       }))

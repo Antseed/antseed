@@ -13,16 +13,16 @@ import { errorMessage } from '../../errors.js'
 import { listNetworkPeers } from '../../services/network.js'
 import {
   buildStatement, fetchSettlements, periodBounds, periodsSince,
-  SETTLEMENTS_WAIT_MS, statementFunding, statementReference, STATEMENT_GRACE_MS, type SettlementRead, type StatementPeer,
+  SETTLEMENTS_WAIT_MS, statementFunding, statementReference, STATEMENT_GRACE_MS, type SettlementRead,
 } from '../../services/statements.js'
 import type { BillingProfileRecord, WorkspaceRecord } from '../../store.js'
 import { usdcToDecimalString } from '../../money.js'
 import { audit, type requireWorkspaceAccess } from '../access.js'
 import type { ConsoleDeps } from '../deps.js'
 import { ConsoleError, type ConsoleRequest, type ConsoleRouter } from '../router.js'
-import type { BillingProfile, PurchaseStatement, StatementSummary } from '../types.js'
-import type { BuyerClient } from './network-buyer.js'
-import { record } from './wallet-mapping.js'
+import type { BillingProfile, PurchaseStatement, StatementSummary, StatementSupplier } from '../types.js'
+import { buyerJson, withIdentity, type BuyerClient } from './network-buyer.js'
+import { mapChannels, record } from './wallet-mapping.js'
 
 export interface StatementRouteSeams {
   access: typeof requireWorkspaceAccess
@@ -33,7 +33,9 @@ export interface StatementRouteSeams {
   syncDeposits: (ws: WorkspaceRecord) => Promise<boolean>
   /** Seams for tests; production reads the chain explorer and the buyer's peers. */
   fetchSettlements?: (explorerUrl: string, buyer: string, from: number, to: number) => Promise<SettlementRead>
-  peers?: () => Promise<Map<string, StatementPeer>>
+  peers?: () => Promise<Map<string, { name: string | null; verificationLinks: StatementSupplier['verificationLinks'] }>>
+  /** The peer each of the buyer identity's payment channels paid, by channel id. */
+  channelPeers?: (identity: string) => Promise<Map<string, string>>
 }
 
 const SETTLEMENTS_TTL_MS = 5 * 60 * 1000
@@ -65,9 +67,13 @@ function text(body: Record<string, unknown>, field: string, max: number, require
 export function registerStatementRoutes(router: ConsoleRouter, deps: ConsoleDeps, seams: StatementRouteSeams): void {
   const settlementsOf = seams.fetchSettlements ?? ((url: string, buyer: string, from: number, to: number) => fetchSettlements(url, buyer, from, to))
   const peers = seams.peers ?? (async () => new Map((await listNetworkPeers(deps.store, seams.buyer, deps.now())).map((peer) => [
-    peer.peerId.toLowerCase().replace(/^0x/, ''),
-    { name: peer.displayName, verificationLinks: peer.verificationLinks, sellerContract: peer.sellerContract ?? null },
+    peer.peerId.toLowerCase().replace(/^0x/, ''), { name: peer.displayName, verificationLinks: peer.verificationLinks },
   ])))
+  const channelPeers = seams.channelPeers ?? (async (identity: string) => new Map(
+    mapChannels(await buyerJson(seams.buyer, withIdentity('/_antseed/channels?all=1', identity)))
+      .filter((channel) => channel.peerId)
+      .map((channel) => [channel.channelId.toLowerCase(), channel.peerId.toLowerCase().replace(/^0x/, '')]),
+  ))
   const cache = new ChainReadCache({ now: deps.now, errorRetryMs: 30_000 })
 
   const workspace = (request: ConsoleRequest) => {
@@ -138,11 +144,17 @@ export function registerStatementRoutes(router: ConsoleRouter, deps: ConsoleDeps
 
     const chain = await seams.resolveChain()
     const explorerUrl = chain.explorerApiUrl?.trim() || null
-    const wallet = await seams.walletAddress(ws.buyerIdentity || DEFAULT_BUYER_IDENTITY).catch(() => null)
-    const [settlementsRead, peerMap] = await Promise.all([
+    const identity = ws.buyerIdentity || DEFAULT_BUYER_IDENTITY
+    const wallet = await seams.walletAddress(identity).catch(() => null)
+    const [settlementsRead, channelsRead, peerMap] = await Promise.all([
       explorerUrl && wallet
         ? cache.read(`settlements:${wallet.toLowerCase()}:${period}`, { ttlMs: SETTLEMENTS_TTL_MS }, () => settlementsOf(explorerUrl, wallet, bounds.from, bounds.to))
           .catch((err: unknown) => { deps.log(`console: settlements not read from ${explorerUrl}: ${errorMessage(err)}`); return null })
+        : Promise.resolve(null),
+      // Settlements name the address paid; the buyer's channels name the peer, which differs for a delegated seller.
+      explorerUrl && wallet
+        ? cache.read(`channel-peers:${identity}`, { ttlMs: SETTLEMENTS_TTL_MS }, () => channelPeers(identity))
+          .catch((err: unknown) => { deps.log(`console: payment channels not read: ${errorMessage(err)}`); return null })
         : Promise.resolve(null),
       cache.read('peers', { ttlMs: PEERS_TTL_MS }, peers).then((read) => read.value).catch(() => new Map()),
       synced,
@@ -151,8 +163,10 @@ export function registerStatementRoutes(router: ConsoleRouter, deps: ConsoleDeps
     // settlements carry no chain), and settlements after its checkpoint are not listed yet.
     const indexed = settlementsRead?.value.indexed ?? []
     const onlyChain = indexed.length === 1 && indexed[0]!.chainId === chain.evmChainId ? indexed[0]! : null
+    // Without the buyer's channels a delegated seller's settlements could not be put with its purchases.
     const settlementsComplete = explorerUrl === null
-      || (settlementsRead !== null && !settlementsRead.stale && onlyChain !== null && onlyChain.at >= bounds.to)
+      || (settlementsRead !== null && !settlementsRead.stale && onlyChain !== null && onlyChain.at >= bounds.to
+        && channelsRead !== null && !channelsRead.stale)
     const buyer = deps.store.getBillingProfile(ws.id)
     // Final once the month is over (plus a day for late spend reports and settlements), the buyer is named, and
     // every outside read answered now (a value cached before a failed refresh is not enough) and covers the month,
@@ -169,6 +183,7 @@ export function registerStatementRoutes(router: ConsoleRouter, deps: ConsoleDeps
       deposits: deps.store.listDeposits(ws.id),
       peers: peerMap,
       settlements,
+      channelPeers: channelsRead?.value ?? new Map(),
       settlementsSource: settlements ? explorerUrl : null,
       // Any spend by another workspace up to the month's end: a settlement can pay for purchases of earlier months.
       sharedWallet: deps.store.workspacesSpendingFrom(ws.buyerIdentity || DEFAULT_BUYER_IDENTITY, 0, bounds.to)

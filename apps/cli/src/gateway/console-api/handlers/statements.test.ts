@@ -37,6 +37,9 @@ let alsoIndexed = false
 let history: string[] = []
 const LATE_DEPOSIT = `0x${'e4'.repeat(32)}`
 let ledgerSeq = 0
+/** The buyer's payment channels (`GET /_antseed/channels`), and whether reading them fails. */
+let channels: Array<Record<string, unknown>> = []
+let channelsDown = false
 
 before(async () => {
   dir = mkdtempSync(join(tmpdir(), 'antseed-statements-'))
@@ -45,6 +48,7 @@ before(async () => {
   workspaceId = store.defaultWorkspace().id
   buyer = await startFakeBuyer({
     'GET /_antseed/deposits/history': () => ({ body: { ok: true, address: WALLET, deposits: history.map((txHash) => ({ txHash })) } }),
+    'GET /_antseed/channels': () => (channelsDown ? { status: 500, body: { ok: false, error: 'boom' } } : { body: { ok: true, channels } }),
   })
   spend(SELLER_A, 'qwen3-coder', 1_500_000, 'r1', OCT + 1000, { input: 1000, cached: 400, output: 200 })
   spend(SELLER_A, 'qwen3-coder', 500_000, 'r1', OCT + 2000, { input: 0, cached: 0, output: 0 }) // a second charge of the same request
@@ -89,8 +93,8 @@ function setup(): ConsoleRouter {
         assert.deepEqual([from, to], [OCT, NOV])
         return {
           settlements: [
-            { seller: `0x${SELLER_A}`, txHash: `0x${'f1'.repeat(32)}`, time: OCT + 10_000, amountUsdc: 4_000_000 },
-            { seller: `0x${SELLER_B}`, txHash: `0x${'f2'.repeat(32)}`, time: OCT + 20_000, amountUsdc: 3_000_000 },
+            { seller: `0x${SELLER_A}`, channelId: null, txHash: `0x${'f1'.repeat(32)}`, time: OCT + 10_000, amountUsdc: 4_000_000 },
+            { seller: `0x${SELLER_B}`, channelId: null, txHash: `0x${'f2'.repeat(32)}`, time: OCT + 20_000, amountUsdc: 3_000_000 },
           ].filter((settlement) => settlement.time <= indexedAt),
           indexed: [{ chainId: CHAIN.evmChainId, at: indexedAt }, ...(alsoIndexed ? [{ chainId: 1, at: Date.UTC(2030, 0, 1) }] : [])],
         }
@@ -164,6 +168,16 @@ test('a month is not final without billing details, or while the explorer cannot
   assert.equal(unread.settlementsSource, null)
   assert.equal(unread.suppliers[0]!.settlements, null)
   explorerDown = false
+})
+
+test('a month is not final while the buyer\'s payment channels cannot be read', async () => {
+  now = NOV + 2 * 24 * 60 * 60 * 1000
+  channelsDown = true
+  const unread = await call(setup(), 'GET', `/workspaces/${workspaceId}/statements/2026-10`, admin()) as PurchaseStatement
+  channelsDown = false
+  assert.equal(unread.status, 'open', 'a delegated seller\'s settlements could not be put with its purchases')
+  assert.equal(unread.suppliers[0]!.settlements, null)
+  assert.equal(store.getStatement(workspaceId, '2026-10'), null)
 })
 
 test('a month is not final while the explorer has not indexed past its end', async () => {
@@ -251,7 +265,7 @@ test('a wallet shared with another workspace: its settlements are shown as the w
     sellerPeerId: SELLER_C, inputTokens: 1, cachedInputTokens: 0, outputTokens: 1, createdAt: at, workspaceId: other.id, memberId: ownerId, model: 'glm-5', routingFee: false,
   })
   spend(SELLER_A, 'qwen3-coder', 500_000, 'mine-1', at, { input: 1, cached: 0, output: 1 })
-  const settled = (txHash: string, seller: string) => ({ seller: `0x${seller}`, txHash, time: at + 1000, amountUsdc: 1_500_000 })
+  const settled = (txHash: string, seller: string) => ({ seller: `0x${seller}`, channelId: null, txHash, time: at + 1000, amountUsdc: 1_500_000 })
   const router = new ConsoleRouter()
   registerWalletRoutes(router, fakeDeps(store, () => now), {
     buyer: buyer.client, requireWorkspaceAccess: fakeRequireWorkspaceAccess, walletAddress: async () => WALLET, resolveChain: async () => CHAIN,
@@ -270,6 +284,30 @@ test('a wallet shared with another workspace: its settlements are shown as the w
   const november = await call(router, 'GET', `/workspaces/${workspaceId}/statements/2026-11`, admin()) as PurchaseStatement
   assert.equal(november.sharedWallet, 1)
   assert.ok(!november.suppliers.some((supplier) => supplier.peerId === `0x${SELLER_C}`))
+})
+
+test('a delegated seller paid at its seller contract is listed once, its settlements under the peer bought from', async () => {
+  const OPERATOR = '6d'.repeat(20)
+  const CONTRACT = '7e'.repeat(20)
+  const channelId = `0x${'d1'.repeat(32)}`
+  const june = Date.UTC(2026, 5, 10)
+  spend(OPERATOR, 'claude-model', 2_500_000, 'delegated-1', june, { input: 10, cached: 0, output: 5 })
+  channels = [{ channelId, peerId: `0x${OPERATOR}`, seller: `0x${CONTRACT}`, status: 'settled' }]
+  const router = new ConsoleRouter()
+  registerWalletRoutes(router, fakeDeps(store, () => now), {
+    buyer: buyer.client, requireWorkspaceAccess: fakeRequireWorkspaceAccess, walletAddress: async () => WALLET, resolveChain: async () => CHAIN,
+    statements: {
+      fetchSettlements: async () => ({
+        settlements: [{ seller: `0x${CONTRACT}`, channelId, txHash: `0x${'d2'.repeat(32)}`, time: june + 1000, amountUsdc: 2_500_000 }],
+        indexed: [{ chainId: CHAIN.evmChainId, at: indexedAt }],
+      }),
+      peers: async () => new Map([[OPERATOR, { name: 'Proxy Seller', verificationLinks: [] }]]),
+    },
+  })
+  const statement = await call(router, 'GET', `/workspaces/${workspaceId}/statements/2026-06`, admin()) as PurchaseStatement
+  channels = []
+  assert.deepEqual(statement.suppliers.map((supplier) => [supplier.peerId, supplier.name, supplier.total, supplier.settlements?.length]), [[`0x${OPERATOR}`, 'Proxy Seller', '2.500000', 1]])
+  assert.ok(buyer.requests.some((req) => req.url === '/_antseed/channels?all=1&identity=default'))
 })
 
 test('a week after the month, a statement the explorer still cannot list settlements for is issued without them', async () => {

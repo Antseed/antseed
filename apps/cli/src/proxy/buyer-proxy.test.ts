@@ -2247,17 +2247,6 @@ test('peers control endpoint exposes relay capability metadata', async () => {
   assert.deepEqual(body.peers[0]?.capabilities, [CONNECTION_CAPABILITY_RELAYS_SWEEPS_V1])
 })
 
-test('peers control endpoint exposes the seller contract a delegated seller is paid at', async () => {
-  const delegated = makePeer('a', ['openai'])
-  delegated.metadata = { ...(delegated.metadata ?? {}), sellerContract: '1f'.repeat(20) } as typeof delegated.metadata
-  const proxy = makeBuyerProxyWithPeers([delegated, makePeer('b', ['openai'])])
-
-  const res = await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path: '/_antseed/peers' }))
-  const body = JSON.parse(res.body) as { peers: Array<{ sellerContract: string | null }> }
-
-  assert.deepEqual(body.peers.map((peer) => peer.sellerContract), ['1f'.repeat(20), null])
-})
-
 test('channels endpoint exposes cooperative-close support from peer capabilities', async () => {
   const supportedPeer = makePeer('a', ['openai'])
   supportedPeer.displayName = '  Seller One  '
