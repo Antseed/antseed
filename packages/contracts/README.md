@@ -718,9 +718,13 @@ distinct approved auditors report it for the same agent, service and model in th
 epoch: by default 1 for SAME and UNDETERMINED and 2 for DIFF (`setRequiredReports`). A SAME
 or UNDETERMINED that would replace a live DIFF needs as many reports as a DIFF, whatever
 model it is reported as, so one auditor can neither give nor clear a DIFF. Reports count
-per epoch only; an auditor's later report replaces its earlier one, and repeating a report
-adds no support (it records again only where one report is enough). `ServiceAudited` carries
-`reports` (distinct auditors reporting that verdict so far this epoch) and `required`;
+per epoch only, and only within the service's current report round (`reportRound`): it moves
+on whenever the service's verdict moves into or out of DIFF, so support given before a DIFF
+was confirmed can't clear it and support given before it was cleared can't restore it. Changes
+between SAME and UNDETERMINED don't move it, so one auditor can't reset a DIFF that waits for its
+second report. An auditor's later report replaces its earlier one, and repeating a report adds
+no support (it records again only where one report is enough). `ServiceAudited` carries the
+`round`, `reports` (distinct auditors reporting that verdict so far this epoch and round) and `required`;
 `antseed verifier run` reads it to find DIFFs waiting for a confirmation. Credits are
 unchanged: every model audit earns one, confirmed or not.
 

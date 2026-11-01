@@ -186,7 +186,7 @@ Each result is a report. The contract records it as the seller service's verdict
 | `UNDETERMINED` | 1 |
 | `SAME` or `UNDETERMINED` replacing a `DIFF` that still counts | 2 |
 
-So one auditor's `SAME` verifies a seller right away, but one auditor alone can neither mark a seller `DIFF` nor clear a `DIFF` two auditors agreed on. While a `DIFF` waits for its second auditor, the seller keeps its current verdict. Reports count only in the epoch they were made in; a recorded verdict counts for that epoch and the next, like every verdict. Your own report never confirms itself: submitting the same result again adds nothing. The contract owner can change the numbers.
+So one auditor's `SAME` verifies a seller right away, but one auditor alone can neither mark a seller `DIFF` nor clear a `DIFF` two auditors agreed on. Only reports made after a `DIFF` was confirmed count toward clearing it, and only reports made after it was cleared count toward giving it again. While a `DIFF` waits for its second auditor, the seller keeps its current verdict. Reports count only in the epoch they were made in; a recorded verdict counts for that epoch and the next, like every verdict. Your own report never confirms itself: submitting the same result again adds nothing. The contract owner can change the numbers.
 
 `verifier run` confirms automatically. Before it plans the run, it reads this epoch's reports that still need another auditor, and audits the sellers it is responsible for: those where it is the model's confirmer, or the next auditor in the rotation who hasn't reported yet. From halfway through the epoch, any auditor who hasn't reported on a waiting result picks it up. This includes models outside your share: a model you have no bank for gets one built first, the same way as for your own models. Your audit is a normal audit on your own questions. It can confirm the report or disagree with it, and either way it earns credit like any other audit. `--no-confirm` skips these sellers, and `verifier run <model>` confirms only that model's reports. With fewer approved auditors than a `DIFF` needs, no `DIFF` can be recorded; `verifier run` warns about it.
 
@@ -203,7 +203,7 @@ antseed verifier watch --once           # one tick, e.g. from cron
 
 Every tick runs `verifier run` (your models, plus the confirmations you're responsible for) and then `verifier submit --yes`. A `DIFF` another auditor submits is picked up by its confirmer within one tick. Each tick continues the epoch, so sellers already finished aren't asked again, and a new epoch starts its own assignment on the next tick. A failed step is logged and retried on the next tick.
 
-- Signing runs without a terminal. With a keystore (`--keystore` or `verifier.keystore`), set `ANTSEED_KEYSTORE_PASSWORD` or type the password once when `watch` starts.
+- Signing runs without a terminal. With a keystore (`--keystore` or `verifier.keystore`), set `ANTSEED_KEYSTORE_PASSWORD` or type the password once when `watch` starts. `--keystore` also decides which auditor's models and confirmations are run, unless `--auditor` is given.
 - Set `PINATA_JWT` for the evidence, or pass `--no-publish-ipfs`.
 - `--max-enrollment-requests <n>` caps the reference requests of each question build, per tick. A model whose build keeps failing is built again on the next tick, so watch the reference spend.
 - Only one `watch` runs per data dir. Run it under systemd, pm2 or tmux to keep it up.

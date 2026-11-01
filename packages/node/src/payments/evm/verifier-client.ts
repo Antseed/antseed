@@ -62,7 +62,9 @@ export interface ServiceAuditedEvent {
   auditor: string;
   modelHash: string;
   verdict: VerifierVerdict;
-  /** Distinct auditors reporting `verdict` for this service and model in the epoch, this report included. */
+  /** The service's report round: it moves on whenever the service's verdict moves into or out of DIFF, and only reports of the current round count. */
+  round: number;
+  /** Distinct auditors reporting `verdict` for this service and model in the epoch and round, this report included. */
   reports: number;
   /** Reports `verdict` needs to be recorded; it is recorded once `reports` reaches it. */
   required: number;
@@ -123,9 +125,10 @@ export const VERIFICATION_ABI = [
   'function sellerPools() external view returns (address)',
   'function approvedAuditors(address auditor) external view returns (bool)',
   'function requiredReports(uint8 verdict) external view returns (uint8)',
+  'function reportRound(uint256 agentId,bytes32 serviceHash) external view returns (uint256)',
   'event AuditorSet(address indexed auditor,bool approved)',
   'event ModelAudited(bytes32 indexed modelHash,address indexed auditor,uint256 indexed epoch,bytes32 evidenceHash,string evidenceUri,uint256 resultCount)',
-  'event ServiceAudited(uint256 indexed agentId,bytes32 indexed serviceHash,address indexed auditor,bytes32 modelHash,uint8 verdict,uint256 reports,uint256 required)',
+  'event ServiceAudited(uint256 indexed agentId,bytes32 indexed serviceHash,address indexed auditor,bytes32 modelHash,uint8 verdict,uint256 round,uint256 reports,uint256 required)',
   'event ServiceStatusChanged(uint256 indexed agentId,bytes32 indexed serviceHash,bytes32 modelHash,uint8 previous,uint8 current)',
   'event AuditCredited(uint256 indexed epoch,address indexed auditor,bytes32 indexed modelHash)',
 ] as const;
@@ -340,8 +343,9 @@ export class VerifierClient extends BaseEvmClient {
         auditor: getAddress(String(log.args.auditor ?? log.args[2])),
         modelHash: String(log.args.modelHash ?? log.args[3]),
         verdict: Number(log.args.verdict ?? log.args[4]) as VerifierVerdict,
-        reports: Number(log.args.reports ?? log.args[5]),
-        required: Number(log.args.required ?? log.args[6]),
+        round: Number(log.args.round ?? log.args[5]),
+        reports: Number(log.args.reports ?? log.args[6]),
+        required: Number(log.args.required ?? log.args[7]),
         blockNumber: log.blockNumber,
         logIndex: log.index,
         transactionHash: log.transactionHash,

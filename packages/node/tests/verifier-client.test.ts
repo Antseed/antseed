@@ -69,6 +69,7 @@ describe('VerifierClient audit ABI', () => {
       'auditor',
       'modelHash',
       'verdict',
+      'round',
       'reports',
       'required',
     ]);

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { Command } from 'commander'
-import { parseWatchInterval, registerVerifierWatchCommand, runWatchLoop, watchStepArgs, type WatchStep } from './watch.js'
+import { parseWatchInterval, registerVerifierWatchCommand, resolveWatchAuditor, runWatchLoop, watchStepArgs, type WatchStep } from './watch.js'
 
 const GLOBALS = { config: '/cfg/config.json', dataDir: '/data', verbose: false }
 
@@ -75,6 +75,15 @@ test('each step forwards the global options and only its own flags', () => {
   assert.deepEqual(watchStepArgs('submit', GLOBALS, { interval: '10' }), [
     '--data-dir', '/data', '--config', '/cfg/config.json', 'verifier', 'submit', '--yes',
   ])
+})
+
+test('a keystore given to watch decides the auditor the run step plans for', async () => {
+  const addressOf = async (keystore: string) => `address-of:${keystore}`
+  assert.equal(await resolveWatchAuditor({ keystore: '~/ks' }, addressOf), 'address-of:~/ks')
+  assert.equal(await resolveWatchAuditor({ keystore: '~/ks', auditor: '0xabc' }, addressOf), '0xabc', '--auditor wins')
+  assert.equal(await resolveWatchAuditor({}, addressOf), undefined, 'run resolves verifier.keystore or the data-dir identity itself')
+  const auditor = await resolveWatchAuditor({ keystore: '~/ks' }, addressOf)
+  assert.deepEqual(watchStepArgs('run', GLOBALS, { interval: '10', keystore: '~/ks', auditor }).slice(-2), ['--auditor', 'address-of:~/ks'])
 })
 
 test('the interval is in minutes and at least one', () => {

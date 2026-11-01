@@ -30,10 +30,13 @@ interface IEmissionsGateSource {
 ///         auditors report it for the same (agent, service, model) in the same epoch (defaults:
 ///         SAME 1, DIFF 2, UNDETERMINED 1), so a DIFF needs a second auditor. Replacing a live DIFF
 ///         needs as many reports as a DIFF does, whatever the new result or model, so one auditor
-///         cannot clear a confirmed DIFF either. Reports count per epoch only. An auditor's later
-///         report replaces its earlier one; a repeated report adds no support, so it records again
-///         only when one report is enough. Every report emits `ServiceAudited` with the reports
-///         so far and the reports needed.
+///         cannot clear a confirmed DIFF either. Reports count per epoch only, and only those made
+///         after the service's verdict last moved into or out of DIFF: that change starts a new
+///         report round, so support given before a DIFF was confirmed cannot clear it, and support
+///         given before a DIFF was cleared cannot restore it. An auditor's later report replaces its
+///         earlier one; a repeated report adds no support, so it records again only when one report
+///         is enough. Every report emits `ServiceAudited` with its round, the reports so far and
+///         the reports needed.
 ///         Each agent keeps per-epoch SAME and DIFF counters, so its status sums only the last
 ///         `validityEpochs` epochs and older verdicts drop out without any cleanup.
 ///         Results for agents the identity registry cannot resolve (e.g. burned) are skipped with
@@ -83,9 +86,11 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     mapping(uint256 agentId => mapping(bytes32 serviceHash => ServiceStatus status)) private _serviceStatus;
     // Latest SAME/DIFF verdicts given in each epoch; a verdict moves out when the service gets a new one.
     mapping(uint256 agentId => mapping(uint256 epoch => EpochCounts counts)) private _epochCounts;
-    // Reports per (epoch, agent, service, model): how many auditors report each verdict, and each auditor's report.
+    // Reports per (epoch, agent, service, model, round): how many auditors report each verdict, and each auditor's report.
     mapping(bytes32 reportKey => mapping(Verdict verdict => uint256 reports)) private _reportCounts;
     mapping(bytes32 reportKey => mapping(address auditor => Verdict verdict)) private _reports;
+    // Bumped whenever a service's live verdict moves into or out of DIFF; earlier reports stop counting.
+    mapping(uint256 agentId => mapping(bytes32 serviceHash => uint256 round)) public reportRound;
 
     mapping(uint256 epoch => uint256 credits) public epochCredits;
     mapping(uint256 epoch => mapping(address auditor => uint256 credits)) public auditorEpochCredits;
@@ -109,7 +114,8 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         string evidenceUri,
         uint256 resultCount
     );
-    /// @param reports Distinct auditors reporting `verdict` for this service and model this epoch.
+    /// @param round The service's report round; only reports of the current round count.
+    /// @param reports Distinct auditors reporting `verdict` for this service and model this epoch and round.
     /// @param required Reports `verdict` needs to be recorded; it is recorded once `reports` reaches it.
     event ServiceAudited(
         uint256 indexed agentId,
@@ -117,6 +123,7 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         address indexed auditor,
         bytes32 modelHash,
         Verdict verdict,
+        uint256 round,
         uint256 reports,
         uint256 required
     );
@@ -347,7 +354,8 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     function _report(uint256 agentId, bytes32 serviceHash, bytes32 modelHash, Verdict verdict, uint256 epoch)
         private
     {
-        bytes32 key = keccak256(abi.encode(epoch, agentId, serviceHash, modelHash));
+        uint256 round = reportRound[agentId][serviceHash];
+        bytes32 key = keccak256(abi.encode(epoch, agentId, serviceHash, modelHash, round));
         Verdict previous = _reports[key][msg.sender];
         bool addsSupport = previous != verdict;
         if (addsSupport) {
@@ -362,7 +370,7 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
             uint256 diffRequired = requiredReports[Verdict.DIFF];
             if (diffRequired > required) required = diffRequired;
         }
-        emit ServiceAudited(agentId, serviceHash, msg.sender, modelHash, verdict, reports, required);
+        emit ServiceAudited(agentId, serviceHash, msg.sender, modelHash, verdict, round, reports, required);
         if (reports >= required && (addsSupport || required == 1)) {
             _applyResult(agentId, serviceHash, modelHash, verdict, epoch);
         }
@@ -436,6 +444,8 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     function _emitServiceChange(
         uint256 agentId, bytes32 serviceHash, ServiceStatus storage service, Verdict previous, uint256 epoch
     ) private {
+        // A DIFF given or cleared starts a new report round: support from before it no longer counts.
+        if (previous == Verdict.DIFF || service.verdict == Verdict.DIFF) reportRound[agentId][serviceHash] += 1;
         emit ServiceStatusChanged(agentId, serviceHash, service.modelHash, previous, service.verdict);
         AgentStatus memory agent = _agentStatusAt(agentId, epoch);
         emit AgentStatusChanged(agentId, agent.verifiedCount, agent.diffCount);

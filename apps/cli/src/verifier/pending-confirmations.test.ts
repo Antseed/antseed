@@ -35,6 +35,7 @@ function audited(input: {
   service?: string
   verdict: VerifierVerdict
   required?: number
+  round?: number
 }): ServiceAuditedEvent {
   logIndex += 1
   return {
@@ -43,6 +44,7 @@ function audited(input: {
     auditor: input.auditor,
     modelHash: modelHash(input.model ?? 'model-a'),
     verdict: input.verdict,
+    round: input.round ?? 0,
     reports: 0,
     required: input.required ?? (input.verdict === VERIFIER_VERDICT.DIFF ? 2 : 1),
     blockNumber: 1,
@@ -149,6 +151,23 @@ test('an auditor that changes its report moves its support', () => {
     { verdict: 'DIFF', reports: 1, required: 2 },
     { verdict: 'SAME', reports: 1, required: 1 },
   ])
+})
+
+test('reports from before the service\'s verdict moved into or out of DIFF no longer count', () => {
+  const events = [
+    audited({ auditor: A, verdict: VERIFIER_VERDICT.SAME }),
+    audited({ auditor: B, verdict: VERIFIER_VERDICT.DIFF }),
+    audited({ auditor: C, verdict: VERIFIER_VERDICT.DIFF }),
+    // The DIFF was recorded: the contract started round 1, where A's SAME does not count.
+    audited({ auditor: C, verdict: VERIFIER_VERDICT.SAME, round: 1, required: 2 }),
+  ]
+  const report = [...epochReports(events).values()]
+  assert.equal(report.length, 1)
+  assert.equal(report[0]!.round, 1)
+  assert.deepEqual(verdictTallies(report[0]!), [{ verdict: 'SAME', reports: 1, required: 2 }])
+  const pending = pendingFor(B, events, { auditors: [A, B, C] })
+  assert.deepEqual(pending.map((entry) => [entry.reporters, entry.confirmer, entry.mine]), [[[C], B, true]],
+    'B reported only in the earlier round, so it can confirm in this one')
 })
 
 test('confirmation targets keep only this auditor\'s confirmations, under a configured service', () => {

@@ -5,6 +5,7 @@ import chalk from 'chalk'
 import { loadConfig } from '../../../config/loader.js'
 import { acquirePidFileLock } from '../../../verifier/atomic-files.js'
 import { promptHidden } from '../../prompt-hidden.js'
+import { keystoreAddress, loadKeystoreSigner } from './auditor-identity.js'
 import { getGlobalOptions, type GlobalOptions } from '../types.js'
 
 interface WatchOptions {
@@ -77,6 +78,24 @@ export async function runWatchLoop(input: {
   return ticks
 }
 
+/**
+ * The auditor `run` plans for. `run` has no `--keystore`, so a keystore given only to `watch` would
+ * leave `run` assigning models and confirmations to the data-dir identity while `submit` signs as
+ * the keystore: pass the keystore's address as `--auditor` instead. A keystore in the config
+ * (`verifier.keystore`) needs nothing, since `run` reads it itself.
+ */
+export async function resolveWatchAuditor(
+  options: Pick<WatchOptions, 'auditor' | 'keystore'>,
+  addressOf: (keystore: string) => Promise<string> = keystoreSignerAddress,
+): Promise<string | undefined> {
+  if (options.auditor || !options.keystore) return options.auditor
+  return addressOf(options.keystore)
+}
+
+async function keystoreSignerAddress(keystore: string): Promise<string> {
+  return (await keystoreAddress(keystore)) ?? (await loadKeystoreSigner(keystore)).address
+}
+
 export function parseWatchInterval(value: string): number {
   const minutes = Number(value)
   if (!Number.isFinite(minutes) || minutes < 1) throw new Error('--interval must be at least 1 minute')
@@ -107,7 +126,12 @@ export function registerVerifierWatchCommand(verifier: Command): void {
           `Keystore password for ${keystore}: `,
           'the keystore needs a terminal to ask for the password, or set ANTSEED_KEYSTORE_PASSWORD.',
         )
+        // A keystore without a recorded address is decrypted below to find it.
+        process.env['ANTSEED_KEYSTORE_PASSWORD'] = env['ANTSEED_KEYSTORE_PASSWORD']
       }
+      const auditor = await resolveWatchAuditor(options)
+      if (auditor && !options.auditor) console.log(chalk.dim(`Auditing as ${auditor}, the address of ${options.keystore}`))
+      const stepOptions: WatchOptions = { ...options, auditor }
       const evidenceDir = config.verifier?.evidenceDir ?? join(globals.dataDir, 'verifier', 'evidence')
       const lock = await acquirePidFileLock(join(evidenceDir, '.watch.lock'))
       const controller = new AbortController()
@@ -132,7 +156,7 @@ export function registerVerifierWatchCommand(verifier: Command): void {
           sleep: abortableSleep,
           step: (step) => new Promise<number>((resolve) => {
             console.log(chalk.cyan(`$ antseed verifier ${step}`))
-            child = spawn(process.execPath, [...process.execArgv, process.argv[1]!, ...watchStepArgs(step, globals, options)], {
+            child = spawn(process.execPath, [...process.execArgv, process.argv[1]!, ...watchStepArgs(step, globals, stepOptions)], {
               env,
               stdio: ['ignore', 'inherit', 'inherit'],
             })

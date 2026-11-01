@@ -323,9 +323,9 @@ contract AntseedKbfVerificationTest is Test {
         results[1] = _result(other, SERVICE_A, DIFF);
 
         vm.expectEmit(true, true, true, true, address(verification));
-        emit AntseedKbfVerification.ServiceAudited(agentId, SERVICE_A, auditorA, MODEL_A, SAME, 1, 1);
+        emit AntseedKbfVerification.ServiceAudited(agentId, SERVICE_A, auditorA, MODEL_A, SAME, 0, 1, 1);
         vm.expectEmit(true, true, true, true, address(verification));
-        emit AntseedKbfVerification.ServiceAudited(other, SERVICE_A, auditorA, MODEL_A, DIFF, 1, 1);
+        emit AntseedKbfVerification.ServiceAudited(other, SERVICE_A, auditorA, MODEL_A, DIFF, 0, 1, 1);
         vm.expectEmit(true, true, true, true, address(verification));
         emit AntseedKbfVerification.ModelAudited(MODEL_A, auditorA, EPOCH, keccak256("evidence"), "ipfs://cid", 2);
         vm.prank(auditorA);
@@ -784,12 +784,12 @@ contract AntseedKbfVerificationTest is Test {
     function test_oneSameVerifiesAndADiffWaitsForASecondAuditor() public {
         verification.setRequiredReports(DIFF, 2);
         vm.expectEmit(true, true, true, true, address(verification));
-        emit AntseedKbfVerification.ServiceAudited(agentId, SERVICE_A, auditorA, MODEL_A, SAME, 1, 1);
+        emit AntseedKbfVerification.ServiceAudited(agentId, SERVICE_A, auditorA, MODEL_A, SAME, 0, 1, 1);
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
         assertTrue(verification.isVerified(agentId), "one SAME is enough");
 
         vm.expectEmit(true, true, true, true, address(verification));
-        emit AntseedKbfVerification.ServiceAudited(agentId, SERVICE_A, auditorB, MODEL_A, DIFF, 1, 2);
+        emit AntseedKbfVerification.ServiceAudited(agentId, SERVICE_A, auditorB, MODEL_A, DIFF, 0, 1, 2);
         _audit(auditorB, MODEL_A, agentId, SERVICE_A, DIFF);
         assertTrue(verification.isVerified(agentId), "one DIFF waits");
         assertEq(uint8(verification.serviceStatus(agentId, SERVICE_A).verdict), uint8(SAME));
@@ -798,7 +798,7 @@ contract AntseedKbfVerificationTest is Test {
         assertTrue(verification.isVerified(agentId), "the same auditor cannot confirm itself");
 
         vm.expectEmit(true, true, true, true, address(verification));
-        emit AntseedKbfVerification.ServiceAudited(agentId, SERVICE_A, auditorC, MODEL_A, DIFF, 2, 2);
+        emit AntseedKbfVerification.ServiceAudited(agentId, SERVICE_A, auditorC, MODEL_A, DIFF, 0, 2, 2);
         vm.expectEmit(true, true, false, true, address(verification));
         emit AntseedKbfVerification.ServiceStatusChanged(agentId, SERVICE_A, MODEL_A, SAME, DIFF);
         _audit(auditorC, MODEL_A, agentId, SERVICE_A, DIFF);
@@ -813,7 +813,7 @@ contract AntseedKbfVerificationTest is Test {
         assertEq(verification.agentStatus(agentId).diffCount, 1);
 
         vm.expectEmit(true, true, true, true, address(verification));
-        emit AntseedKbfVerification.ServiceAudited(agentId, SERVICE_A, auditorC, MODEL_A, SAME, 1, 2);
+        emit AntseedKbfVerification.ServiceAudited(agentId, SERVICE_A, auditorC, MODEL_A, SAME, 1, 1, 2);
         _audit(auditorC, MODEL_A, agentId, SERVICE_A, SAME);
         assertEq(verification.agentStatus(agentId).diffCount, 1, "one SAME cannot clear it");
         _audit(auditorD, MODEL_A, agentId, SERVICE_A, UNDETERMINED);
@@ -855,7 +855,7 @@ contract AntseedKbfVerificationTest is Test {
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, DIFF);
         _advance(1);
         vm.expectEmit(true, true, true, true, address(verification));
-        emit AntseedKbfVerification.ServiceAudited(agentId, SERVICE_A, auditorB, MODEL_A, DIFF, 1, 2);
+        emit AntseedKbfVerification.ServiceAudited(agentId, SERVICE_A, auditorB, MODEL_A, DIFF, 0, 1, 2);
         _audit(auditorB, MODEL_A, agentId, SERVICE_A, DIFF);
         assertEq(uint8(verification.serviceStatus(agentId, SERVICE_A).verdict), uint8(NONE));
     }
@@ -866,7 +866,7 @@ contract AntseedKbfVerificationTest is Test {
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
         assertTrue(verification.isVerified(agentId));
         vm.expectEmit(true, true, true, true, address(verification));
-        emit AntseedKbfVerification.ServiceAudited(agentId, SERVICE_A, auditorB, MODEL_A, DIFF, 1, 2);
+        emit AntseedKbfVerification.ServiceAudited(agentId, SERVICE_A, auditorB, MODEL_A, DIFF, 0, 1, 2);
         _audit(auditorB, MODEL_A, agentId, SERVICE_A, DIFF);
         assertTrue(verification.isVerified(agentId), "auditor A no longer reports DIFF");
     }
@@ -881,10 +881,60 @@ contract AntseedKbfVerificationTest is Test {
         _audit(auditorD, MODEL_A, agentId, SERVICE_A, DIFF);
         assertFalse(verification.isVerified(agentId));
         vm.expectEmit(true, true, true, true, address(verification));
-        emit AntseedKbfVerification.ServiceAudited(agentId, SERVICE_A, auditorB, MODEL_A, SAME, 2, 2);
+        emit AntseedKbfVerification.ServiceAudited(agentId, SERVICE_A, auditorB, MODEL_A, SAME, 1, 1, 2);
         _audit(auditorB, MODEL_A, agentId, SERVICE_A, SAME);
-        assertFalse(verification.isVerified(agentId), "a repeat adds no support");
+        assertFalse(verification.isVerified(agentId), "support from before the DIFF no longer counts");
         assertEq(uint8(verification.serviceStatus(agentId, SERVICE_A).verdict), uint8(DIFF));
+    }
+
+    function test_supportFromBeforeAConfirmedDiffCannotClearIt() public {
+        verification.setRequiredReports(DIFF, 2);
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+        _audit(auditorB, MODEL_A, agentId, SERVICE_A, DIFF);
+        _audit(auditorC, MODEL_A, agentId, SERVICE_A, DIFF);
+        assertEq(verification.reportRound(agentId, SERVICE_A), 1, "the DIFF started a new round");
+        _audit(auditorD, MODEL_A, agentId, SERVICE_A, SAME);
+        assertEq(uint8(verification.serviceStatus(agentId, SERVICE_A).verdict), uint8(DIFF), "A's earlier SAME does not count");
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+        assertEq(uint8(verification.serviceStatus(agentId, SERVICE_A).verdict), uint8(SAME), "two SAMEs after the DIFF clear it");
+        assertEq(verification.reportRound(agentId, SERVICE_A), 2);
+    }
+
+    function test_oneAuditorCannotClearADiffByChangingAndRestoringItsReport() public {
+        verification.setRequiredReports(DIFF, 2);
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+        _audit(auditorD, MODEL_A, agentId, SERVICE_A, SAME);
+        _audit(auditorB, MODEL_A, agentId, SERVICE_A, DIFF);
+        _audit(auditorC, MODEL_A, agentId, SERVICE_A, DIFF);
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, UNDETERMINED);
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+        assertEq(uint8(verification.serviceStatus(agentId, SERVICE_A).verdict), uint8(DIFF));
+        assertFalse(verification.isVerified(agentId));
+    }
+
+    function test_supportFromBeforeADiffWasClearedCannotRestoreIt() public {
+        verification.setRequiredReports(DIFF, 2);
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, DIFF);
+        _audit(auditorB, MODEL_A, agentId, SERVICE_A, DIFF);
+        _audit(auditorC, MODEL_A, agentId, SERVICE_A, SAME);
+        _audit(auditorD, MODEL_A, agentId, SERVICE_A, SAME);
+        assertTrue(verification.isVerified(agentId), "cleared");
+        assertEq(verification.reportRound(agentId, SERVICE_A), 2);
+        vm.expectEmit(true, true, true, true, address(verification));
+        emit AntseedKbfVerification.ServiceAudited(agentId, SERVICE_A, auditorA, MODEL_A, DIFF, 2, 1, 2);
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, DIFF);
+        assertTrue(verification.isVerified(agentId), "B's DIFF from before the clear does not count");
+    }
+
+    function test_flippingBetweenSameAndUndeterminedDoesNotResetAWaitingDiff() public {
+        verification.setRequiredReports(DIFF, 2);
+        _audit(auditorB, MODEL_A, agentId, SERVICE_A, DIFF);
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, UNDETERMINED);
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+        assertEq(verification.reportRound(agentId, SERVICE_A), 0, "no DIFF moved, so no new round");
+        _audit(auditorC, MODEL_A, agentId, SERVICE_A, DIFF);
+        assertEq(uint8(verification.serviceStatus(agentId, SERVICE_A).verdict), uint8(DIFF), "B's waiting DIFF still counts");
     }
 
     function test_unconfirmedAndConfirmingAuditsBothEarnCredit() public {

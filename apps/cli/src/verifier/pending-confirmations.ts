@@ -18,11 +18,16 @@ export interface EpochReportReader {
   firstBlockAtOrAfter(timestamp: number, floor?: number): Promise<number>
 }
 
-/** Every auditor's latest report this epoch on one (agent, service, model). */
+/**
+ * Every auditor's latest report this epoch on one (agent, service, model), in the service's current
+ * report round. The contract starts a new round whenever the service's verdict moves into or out of
+ * DIFF, and reports from earlier rounds stop counting.
+ */
 export interface EpochReport {
   agentId: bigint
   serviceHash: string
   modelHash: string
+  round: number
   /** Checksummed auditor address to its latest verdict this epoch. */
   byAuditor: Map<string, VerifierVerdict>
   /** Reports each verdict needed at its latest report (the contract raises SAME and UNDETERMINED while a DIFF is live). */
@@ -52,17 +57,27 @@ export async function loadEpochReports(input: {
   return epochReports(await input.reader.queryServiceAudits(null, null, fromBlock, 'latest'))
 }
 
-/** Replays `ServiceAudited` events, in block order, into each auditor's latest report per service and model. */
+/**
+ * Replays `ServiceAudited` events, in block order, into each auditor's latest report per service and
+ * model, keeping only each service's latest report round (what the contract still counts).
+ */
 export function epochReports(events: readonly ServiceAuditedEvent[]): Map<string, EpochReport> {
+  const latestRound = new Map<string, number>()
+  for (const event of events) {
+    const service = serviceKey(event.agentId, event.serviceHash)
+    latestRound.set(service, Math.max(latestRound.get(service) ?? 0, event.round))
+  }
   const reports = new Map<string, EpochReport>()
   for (const event of events) {
-    const key = reportKey(event.agentId, event.serviceHash, event.modelHash)
+    if (event.round !== latestRound.get(serviceKey(event.agentId, event.serviceHash))) continue
+    const key = `${serviceKey(event.agentId, event.serviceHash)}:${normalized(event.modelHash)}`
     let report = reports.get(key)
     if (!report) {
       report = {
         agentId: event.agentId,
         serviceHash: event.serviceHash,
         modelHash: event.modelHash,
+        round: event.round,
         byAuditor: new Map(),
         required: new Map(),
       }
@@ -214,6 +229,6 @@ export function ownResultTallies(input: {
   return results.sort((left, right) => (left.agentId < right.agentId ? -1 : left.agentId > right.agentId ? 1 : 0))
 }
 
-function reportKey(agentId: bigint, service: string, model: string): string {
-  return `${agentId}:${normalized(service)}:${normalized(model)}`
+function serviceKey(agentId: bigint, service: string): string {
+  return `${agentId}:${normalized(service)}`
 }
