@@ -129,8 +129,8 @@ test('a publisher and three verifiers run one epoch end to end on Anvil', {
     await tickAll() // bank committed, epoch opened
     await provider.send('anvil_mine', ['0x6'])
     await tickAll() // seed fixed
-    await tickAll() // bank key escrowed, verifiers check their shares and acknowledge it
-    await tickAll() // plan committed, slices collected and committed
+    await tickAll() // bank key escrowed and plan proposed; verifiers check and accept it
+    await tickAll() // plan in effect, slices collected and committed
     let info = await publisherContext.client.epochInfo(EPOCH)
     assert.notEqual(BigInt(info.planHash), 0n, logs.join('\n'))
     assert.ok((await publisherContext.client.sliceCommits(EPOCH)).length >= 1, logs.join('\n'))

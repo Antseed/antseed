@@ -213,12 +213,14 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
       }
       // An UNDETERMINED keeps its evidence, but when a newer audit of the seller failed or was
       // skipped mid-audit, that newer attempt decides who is to blame and so whether to retry.
-      if (state === 'undetermined' && entry.lastAttempt === 'failure' && entry.failure) {
-        cell.blame = failureBlame(entry.failure.entry.outcomeReason, entry.failure.entry.reason)
-        cell.reason = entry.failure.entry.reason
-      } else if (state === 'undetermined' && entry.lastAttempt === 'runtime-skip' && entry.skip) {
-        cell.blame = 'seller'
-        cell.reason = entry.skip.entry.reason
+      if (state === 'undetermined') {
+        if (entry.lastAttempt === 'failure' && entry.failure) {
+          cell.blame = failureBlame(entry.failure.entry.outcomeReason, entry.failure.entry.reason)
+          cell.reason = entry.failure.entry.reason
+        } else if (entry.lastAttempt === 'runtime-skip' && entry.skip) {
+          cell.blame = 'seller'
+          cell.reason = entry.skip.entry.reason
+        }
       }
     } else if (entry.failure && (entry.last === 'failure' || !entry.skip)) {
       cell = {

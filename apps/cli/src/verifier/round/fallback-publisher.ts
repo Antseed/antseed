@@ -1,9 +1,9 @@
 import { AbiCoder, keccak256 } from 'ethers'
-import { isZeroHash, kbfEpochDeadlines } from '@antseed/node/payments'
+import { kbfEpochDeadlines } from '@antseed/node/payments'
 import { advanceEpochAsPublisher, prepareBank, type PublisherDaemonContext } from './publisher-daemon.js'
 
 /**
- * Lets verifiers carry a round whose publisher went missing. When no plan is committed
+ * Lets verifiers carry a round whose publisher went missing. When no plan is in effect
  * `publisherGraceSeconds` into the epoch (or after the previous takeover), verifiers take turns,
  * in an order seeded by the epoch, to build their own bank and take the epoch over; the one that
  * does then runs the rest of the round exactly like the publisher.
@@ -16,6 +16,9 @@ export interface FallbackPublisherContext extends PublisherDaemonContext {
 }
 
 export const DEFAULT_TAKEOVER_TURN_SECONDS = 600
+
+/** The contract's `MAX_TAKEOVERS_PER_VERIFIER`. */
+export const MAX_TAKEOVERS_PER_VERIFIER = 2
 
 /**
  * Unix time this verifier may take `epoch` over: grace after `since`, then one turn per verifier
@@ -48,7 +51,9 @@ export async function fallbackPublisherTick(context: FallbackPublisherContext): 
     await advanceEpochAsPublisher(context, info, deadlines, now)
     return
   }
-  if (!isZeroHash(info.planHash) || now >= deadlines.commitDeadline) return
+  // A plan in effect is final; a proposed one the verifiers did not accept is no reason to wait.
+  if (info.planActive || now >= deadlines.commitDeadline) return
+  if (await client.takeovers(epoch, context.address) >= MAX_TAKEOVERS_PER_VERIFIER) return
   const since = info.takenOverAt || info.startedAt
   const turn = takeoverTime({
     epoch,

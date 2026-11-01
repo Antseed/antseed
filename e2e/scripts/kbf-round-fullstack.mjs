@@ -483,6 +483,7 @@ async function main() {
 
   // ── Collection ───────────────────────────────────────────────────────────────────────────
   await waitFor('the publisher committed the plan', async () => !isZeroHash((await info()).planHash), 300_000);
+  await waitFor('the verifiers accepted the plan', async () => (await info()).planActive, 300_000);
   const storage = new DirectoryRoundStorage(roundStorage);
   const planEvent = (await client.planCommits(epoch)).at(-1);
   const plan = JSON.parse((await storage.get(planEvent.uri, planEvent.hash)).toString('utf8'));

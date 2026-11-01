@@ -51,3 +51,20 @@ test('a keystore holding a named buyer identity is refused', async () => withKey
   await writeFile(join(named, 'identity.key'), wallet.privateKey.slice(2), { mode: 0o600 })
   await assert.rejects(resolveAuditorSigner({ config: { keystore }, dataDir }), /is a buyer wallet of this data dir/)
 }))
+
+// Last in this file: the node keeps the first identity it reads from the environment for the process.
+test('checking the signer leaves the env-provided buyer identity for the buyer it starts', async () => withKeystore(async (keystore, _wallet, dataDir) => {
+  const buyer = Wallet.createRandom()
+  const previous = process.env['ANTSEED_IDENTITY_HEX']
+  process.env['ANTSEED_IDENTITY_HEX'] = buyer.privateKey.slice(2)
+  try {
+    await resolveAuditorSigner({ config: { keystore }, dataDir })
+    assert.equal(process.env['ANTSEED_IDENTITY_HEX'], buyer.privateKey.slice(2), 'the spawned buyer still inherits it')
+    // And it is still recognised as the buyer wallet.
+    const { buyerHotAddresses } = await import('./auditor-identity.js')
+    assert.ok((await buyerHotAddresses(dataDir)).has(buyer.address))
+  } finally {
+    if (previous === undefined) delete process.env['ANTSEED_IDENTITY_HEX']
+    else process.env['ANTSEED_IDENTITY_HEX'] = previous
+  }
+}))

@@ -977,6 +977,9 @@ async function runVerifierRound(
                 banksDir, model, sellerPeerId: first.peerId, service: first.service,
                 runId, epoch, config: config.verifier,
               }),
+              release: async (first, auditId, reason) => {
+                await voidModelAuditReference({ banksDir, model, sellerPeerId: first.peerId, auditId, reason })
+              },
               enroll: enrollmentBudget === null ? null : async () => {
                 await enrollFreshProbes({
                   model, banksDir,

@@ -474,6 +474,21 @@ test('computeResults rebuilds the epoch from chain and storage, reading seller b
   assert.ok(fixture.blockTags.length > 0 && fixture.blockTags.every((tag) => tag === 1234n))
 })
 
+test('a bank the revealed key does not open, or that is no bank of the epoch, is scored as an empty round', async () => {
+  const fixture = daemonFixture()
+  const empty = buildResultsTree(7n, { results: [], credits: [], totalSlices: 0 }).root
+  // The publisher sealed the bank under another key than the one it committed and revealed.
+  const wrongKey = await computeResults(fixture.context, { ...fixture.info, bankKey: `0x${'11'.repeat(32)}` }, fixture.members)
+  assert.equal(wrongKey.root, empty)
+  assert.deepEqual([wrongKey.results.length, wrongKey.credits.length], [0, 0])
+  assert.ok(fixture.logs.some((line) => line.includes('the revealed key does not open it')))
+  // A bank for another epoch.
+  const other = await computeResults(fixture.context, { ...fixture.info, epoch: 8n }, fixture.members)
+  assert.equal(other.root, buildResultsTree(8n, { results: [], credits: [], totalSlices: 0 }).root)
+  // A bank that cannot be fetched is not judged: it may come back.
+  await assert.rejects(computeResults({ ...fixture.context, storage: { ...fixture.context.storage, get: async () => { throw new Error('gateway timeout') } } }, fixture.info, fixture.members), /gateway timeout/)
+})
+
 test('a target whose peer is not its agent\'s seller is never scored', async () => {
   // The publisher paired the cheater's signing peer with agent 1, someone else's agent.
   const fixture = daemonFixture({

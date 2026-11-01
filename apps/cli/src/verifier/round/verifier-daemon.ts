@@ -17,8 +17,9 @@ import { checkEnvelope, isListedTarget } from './envelope-check.js'
 import { buildResultsTree, collectorLeaf, serviceLeaf } from './merkle.js'
 import { derivePlan, sliceCollectors } from './plan.js'
 import { createEnvelopeDeliveryChecker, scoreRound, type CommittedManifest } from './scoring.js'
-import { acknowledgeKeyShares } from './key-escrow.js'
-import { contentHash, openBank, openEnvelope } from './sealing.js'
+import { acceptPlan } from './plan-acceptance.js'
+import { loadPlanFile, openCommittedBank, UnusableBankError } from './round-files.js'
+import { contentHash, openEnvelope } from './sealing.js'
 import { seededRanking } from './seeded.js'
 import { boundTargets, type SellerBindingReader } from './seller-binding.js'
 import { loadCommittedManifests, manifestBudget } from './manifest-loader.js'
@@ -26,7 +27,6 @@ import { ROUND_FILE_MAX_BYTES, type RoundStorage } from './storage.js'
 import type {
   EnvelopeSliceV1,
   EpochBankV1,
-  PlanFileV1,
   RoundResultsV1,
   RoundTargetV1,
   SliceExchangeV1,
@@ -141,18 +141,19 @@ async function stepEpoch(context: VerifierDaemonContext, epoch: bigint): Promise
   const member = members.includes(getAddress(context.address))
   if (!member) return
   if (
-    !isZeroHash(info.keySharesHash) && isZeroHash(info.planHash) && now < deadlines.commitDeadline
+    !info.planActive && !isZeroHash(info.keySharesHash) && !isZeroHash(info.planHash) && now < deadlines.commitDeadline
     && getAddress(info.publisher) !== getAddress(context.address)
   ) {
-    await acknowledgeKeyShares(context, info)
+    await acceptPlan(context, info)
   }
   const state = await readState(context, epoch)
 
-  if (context.collector && !isZeroHash(info.planHash) && now < deadlines.commitDeadline && !state.primary) {
+  // Collection only runs on a plan in effect: before that it may still be replaced or taken over.
+  if (context.collector && info.planActive && now < deadlines.commitDeadline && !state.primary) {
     await collect(context, info, members, state, false)
   }
   if (
-    context.collector && !isZeroHash(info.planHash) && now >= deadlines.commitDeadline
+    context.collector && info.planActive && now >= deadlines.commitDeadline
     && now < deadlines.backupDeadline && !state.backup
   ) {
     await collect(context, info, members, state, true)
@@ -331,10 +332,16 @@ export async function computeResults(
   options: { allowUnavailable?: boolean; signal?: AbortSignal } = {},
 ): Promise<RoundResultsV1> {
   const { client, storage } = context
-  const bankEvent = (await client.bankCommits(info.epoch)).filter((event) => event.bankHash === info.bankHash).at(-1)
-  if (!bankEvent) throw new Error(`no BankCommitted event for epoch ${info.epoch}`)
-  const bank = JSON.parse(openBank(info.bankKey, await storage.get(bankEvent.bankUri, info.bankHash, ROUND_FILE_MAX_BYTES.bank)).toString('utf8')) as EpochBankV1
-  if (bank.kind !== 'antseed-kbf-epoch-bank' || bank.epoch !== info.epoch.toString()) throw new Error('bank does not belong to this epoch')
+  let bank: EpochBankV1
+  try {
+    bank = await openCommittedBank(context, info)
+  } catch (error) {
+    if (!(error instanceof UnusableBankError)) throw error
+    // The publisher committed a bank its revealed key does not open, or not a bank at all: every
+    // verifier sees the same bytes, so all score the epoch as an empty round and it still finalizes.
+    context.log(`epoch ${info.epoch}: ${error.message}; scoring an empty round`)
+    return emptyRoundResults(info)
+  }
   const planFile = await loadPlanFile(context, info)
   const models = await client.models(info.modelsVersion)
   const allowed = new Set(models.map((model) => model.modelHash.toLowerCase()))
@@ -377,6 +384,15 @@ export async function computeResults(
  * Aborts downloads once a phase is down to its reserve, so unfetchable files cannot hold this
  * verifier past `deadline` (unix seconds): they count as unavailable and the usual rules apply.
  */
+/** The results of an epoch nothing can be scored in: no verdicts, no credits, the empty-round root. */
+export function emptyRoundResults(info: Pick<KbfEpochInfo, 'epoch' | 'seed'>): RoundResultsV1 {
+  return {
+    kind: 'antseed-kbf-results', version: 1, epoch: info.epoch.toString(), seed: info.seed,
+    results: [], credits: [], totalSlices: 0,
+    root: buildResultsTree(info.epoch, { results: [], credits: [], totalSlices: 0 }).root,
+  }
+}
+
 export function phaseFetchSignal(now: number, deadline: number, phaseSeconds: number): AbortSignal {
   const reserve = Math.min(FETCH_RESERVE_SECONDS, Math.floor(phaseSeconds / 4))
   return AbortSignal.timeout(Math.max(0, deadline - reserve - now) * 1_000)
@@ -447,22 +463,6 @@ async function undeliveredSlices(
 
 function uniqueTargets(targets: readonly RoundTargetV1[]): RoundTargetV1[] {
   return [...new Map(targets.map((target) => [targetKey(target), target])).values()]
-}
-
-async function loadPlanFile(
-  context: Pick<VerifierDaemonContext, 'client' | 'storage'>,
-  info: KbfEpochInfo,
-): Promise<PlanFileV1> {
-  const event = (await context.client.planCommits(info.epoch)).filter((entry) => entry.hash === info.planHash).at(-1)
-  if (!event) throw new Error(`no PlanCommitted event for epoch ${info.epoch}`)
-  const plan = JSON.parse((await context.storage.get(event.uri, info.planHash, ROUND_FILE_MAX_BYTES.plan)).toString('utf8')) as PlanFileV1
-  if (
-    plan.kind !== 'antseed-kbf-plan' || plan.epoch !== info.epoch.toString() || plan.seed !== info.seed
-    || !Array.isArray(plan.targets) || !isRecord(plan.envelopes) || !isRecord(plan.backupEnvelopes)
-  ) {
-    throw new Error(`plan file for epoch ${info.epoch} does not match the chain`)
-  }
-  return plan
 }
 
 /**
@@ -574,9 +574,6 @@ async function writeState(context: VerifierDaemonContext, epoch: bigint, state: 
   await writeJsonAtomic(join(epochDir(context, epoch), 'state.json'), state)
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
 
 async function readJson<T>(path: string): Promise<T | null> {
   try {

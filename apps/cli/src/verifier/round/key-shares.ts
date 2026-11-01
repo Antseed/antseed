@@ -1,3 +1,4 @@
+import { invert, mod as modulo } from '@noble/curves/abstract/modular.js'
 import { secp256k1 } from '@noble/curves/secp256k1.js'
 import { computeAddress, getAddress, zeroPadValue } from 'ethers'
 import { bankKeyHash, isUsableEncryptionKey, openEnvelope, SECP256K1_ORDER, sealEnvelope } from './sealing.js'
@@ -40,21 +41,7 @@ const Point = secp256k1.Point
 const N = SECP256K1_ORDER
 
 function mod(value: bigint): bigint {
-  const result = value % N
-  return result < 0n ? result + N : result
-}
-
-function inverse(value: bigint): bigint {
-  // Fermat: N is prime.
-  let result = 1n
-  let base = mod(value)
-  let exponent = N - 2n
-  while (exponent > 0n) {
-    if (exponent & 1n) result = (result * base) % N
-    base = (base * base) % N
-    exponent >>= 1n
-  }
-  return result
+  return modulo(value, N)
 }
 
 function scalar(hex: string): bigint {
@@ -115,7 +102,7 @@ export function combineShares(shares: readonly Share[]): bigint {
   for (let i = 0; i < shares.length; i++) {
     let basis = 1n
     for (let j = 0; j < shares.length; j++) {
-      if (i !== j) basis = mod(basis * xs[j]! * inverse(xs[j]! - xs[i]!))
+      if (i !== j) basis = mod(basis * xs[j]! * invert(mod(xs[j]! - xs[i]!), N))
     }
     secret = mod(secret + shares[i]!.y * basis)
   }
@@ -171,31 +158,62 @@ export function buildKeySharesFile(input: {
   return file
 }
 
+/** What a key-share file must match on-chain: its epoch, bank key, threshold and verifiers. */
+export interface KeySharesExpectations {
+  epoch: bigint
+  bankKeyHash: string
+  /** The contract's finalization threshold for the epoch. */
+  threshold: number
+  /** The epoch's verifier snapshot. */
+  members: readonly string[]
+}
+
 /**
- * Checks a fetched key-share file for `epoch` against the on-chain `bankKeyHash`: well formed, with
- * one commitment per coefficient and the constant term's point being the committed key's. Throws
- * when it is not, since no share of it could rebuild the committed key.
+ * Checks a fetched key-share file against the chain before anyone relies on it: its epoch, a
+ * threshold equal to the epoch's finalization threshold (so a majority's shares rebuild the key),
+ * one commitment per coefficient whose constant term is the committed key's point, the file's own
+ * `bankKeyHash` equal to the on-chain one, and shares only for epoch verifiers, each with its own
+ * distinct x coordinate. Throws when it is not, since the escrow could then fail the majority.
  */
-export function checkKeySharesFile(value: unknown, epoch: bigint, onChainBankKeyHash: string): KeySharesFileV2 {
+export function checkKeySharesFile(value: unknown, expected: KeySharesExpectations): KeySharesFileV2 {
+  const { epoch } = expected
+  const malformed = (reason: string): never => { throw new Error(`key-share file for epoch ${epoch} is malformed: ${reason}`) }
   const file = value as Partial<KeySharesFileV2> | null
-  if (
-    !file || file.kind !== 'antseed-kbf-key-shares' || file.version !== 2 || file.epoch !== epoch.toString()
-    || !Number.isInteger(file.threshold) || file.threshold! < 1 || !Array.isArray(file.commitments)
-    || file.commitments.length !== file.threshold || typeof file.indexes !== 'object' || file.indexes === null
-    || typeof file.shares !== 'object' || file.shares === null
-  ) {
-    throw new Error(`key-share file for epoch ${epoch} is malformed`)
+  if (!file || file.kind !== 'antseed-kbf-key-shares' || file.version !== 2 || file.epoch !== epoch.toString()) {
+    return malformed('not a version 2 key-share file of this epoch')
   }
-  let constantKeyHash: string
+  if (!Array.isArray(file.commitments) || !isRecord(file.indexes) || !isRecord(file.shares)) return malformed('missing parts')
+  if (file.threshold !== expected.threshold) {
+    throw new Error(`key-share file for epoch ${epoch} needs ${String(file.threshold)} shares; the epoch's threshold is ${expected.threshold}`)
+  }
+  if (file.commitments.length !== file.threshold) return malformed('one commitment per coefficient expected')
+  let constantKeyHash = ''
   try {
-    constantKeyHash = pointKeyHash(file.commitments[0]!)
+    constantKeyHash = pointKeyHash(String(file.commitments[0]))
+    for (const commitment of file.commitments) Point.fromHex(String(commitment).replace(/^0x/, ''))
   } catch {
-    throw new Error(`key-share file for epoch ${epoch} is malformed`)
+    malformed('commitments are not curve points')
   }
-  if (constantKeyHash !== onChainBankKeyHash.toLowerCase()) {
+  const onChain = expected.bankKeyHash.toLowerCase()
+  if (constantKeyHash !== onChain || String(file.bankKeyHash).toLowerCase() !== onChain) {
     throw new Error(`key-share file for epoch ${epoch} does not commit to the epoch's bank key`)
   }
+  const members = new Set(expected.members.map((member) => member.toLowerCase()))
+  const recipients = Object.keys(file.shares)
+  const seen = new Set<number>()
+  for (const recipient of recipients) {
+    const x = file.indexes[recipient]
+    if (!members.has(recipient)) malformed(`share for ${recipient}, who is not an epoch verifier`)
+    if (!Number.isInteger(x) || x! < 1 || x! > 255 || seen.has(x!)) malformed(`share index of ${recipient} is not a distinct 1..255`)
+    seen.add(x!)
+  }
+  if (Object.keys(file.indexes).length !== recipients.length) malformed('indexes and shares disagree')
+  if (recipients.length < file.threshold) malformed('fewer shares than the threshold')
   return file as KeySharesFileV2
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /**

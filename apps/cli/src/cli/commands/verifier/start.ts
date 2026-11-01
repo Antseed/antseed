@@ -13,7 +13,6 @@ import type { CollectorContext } from '../../../verifier/round/collector.js'
 import { fallbackPublisherTick } from '../../../verifier/round/fallback-publisher.js'
 import { keyEscrowTick } from '../../../verifier/round/key-escrow.js'
 import { encryptionPublicKey, generateEncryptionKeyPair, isUsableEncryptionKey } from '../../../verifier/round/sealing.js'
-import { CachedRoundStorage, roundStorageFromEnv } from '../../../verifier/round/storage.js'
 import { targetBindingsFromRegistry } from '../../../verifier/round/target-discovery.js'
 import { DEFAULT_MAX_REQUESTS_PER_EPOCH, verifierTick } from '../../../verifier/round/verifier-daemon.js'
 import { createKbfRoundClient, createSellerRegistryClient } from '../../payment-utils.js'
@@ -21,7 +20,7 @@ import { setupShutdownHandler } from '../../shutdown.js'
 import { startGatewayBuyer } from '../gateway/shared.js'
 import { getGlobalOptions } from '../types.js'
 import { resolveAuditorSigner } from './auditor-identity.js'
-import { acquireDaemonLock, createPublisherContext, parsePollInterval } from './daemon-setup.js'
+import { acquireDaemonLock, cachedRoundStorage, createPublisherContext, parsePollInterval, runDaemonLoop, timestampedLog } from './daemon-setup.js'
 
 interface StartOptions {
   keystore?: string
@@ -86,7 +85,7 @@ export function registerVerifierStartCommand(verifier: Command): void {
     .action(async (options: StartOptions, command: Command) => {
       const globalOptions = getGlobalOptions(command)
       const config = await loadConfig(globalOptions.config)
-      const log = (message: string) => console.log(`${new Date().toISOString()} ${message}`)
+      const log = timestampedLog
       // Option errors first, before anything is published on-chain or a buyer is started.
       const interval = parsePollInterval(options.interval)
       const maxRequestsPerEpoch = Number(options.maxEpochRequests ?? DEFAULT_MAX_REQUESTS_PER_EPOCH)
@@ -126,53 +125,47 @@ export function registerVerifierStartCommand(verifier: Command): void {
 
         // Files already fetched against their committed hash are reused, so a pass short of time
         // only misses files no pass could fetch.
-        const storage = new CachedRoundStorage(roundStorageFromEnv(), join(globalOptions.dataDir, 'verifier', 'round', 'cache'))
+        const storage = cachedRoundStorage(globalOptions.dataDir)
         const targetBindings = targetBindingsFromRegistry(createSellerRegistryClient(config))
         const bindings = targetBindings.reader
         const publisherContext = createPublisherContext({
           config, dataDir: globalOptions.dataDir, client, signer: signer.wallet, storage, bindings: targetBindings, buyerPort, log,
         })
         log(chalk.bold(`verifier ${signer.address} on ${client.contractAddress}${collect ? '' : ' (attest only)'}`))
-        let stopped = false
-        setupShutdownHandler(async () => { stopped = true })
-        while (!stopped) {
-          try {
-            const collector = await collectorForPass({
-              responseAuth,
-              loadBuyerUrl: async () => (await loadBuyerProxySnapshot(globalOptions.dataDir)).baseUrl,
-              log,
-            })
-            await verifierTick({
-              client,
-              signer: signer.wallet,
-              address: signer.address,
-              encryptionPrivateKey: keys.privateKey,
-              storage,
-              bindings,
-              stateDir: join(globalOptions.dataDir, 'verifier', 'round', 'epochs'),
-              collector,
-              maxRequestsPerEpoch,
-              log,
-            })
-          } catch (error) {
-            log(chalk.yellow(`pass failed: ${error instanceof Error ? error.message : String(error)}`))
-          }
-          // Liveness without the publisher: reveal the escrowed bank key, and take over an epoch
-          // whose publisher never planned it (needs the buyer, to build a bank and find targets).
-          try {
-            await keyEscrowTick({ client, signer: signer.wallet, address: signer.address, encryptionPrivateKey: keys.privateKey, storage, log })
-          } catch (error) {
-            log(chalk.yellow(`key escrow pass failed: ${error instanceof Error ? error.message : String(error)}`))
-          }
-          if (collect) {
+        await runDaemonLoop(interval, (message) => log(chalk.yellow(message)), async () => {
+          const failures: string[] = []
+          const step = async (label: string, run: () => Promise<void>) => {
             try {
-              await fallbackPublisherTick({ ...publisherContext, address: signer.address })
+              await run()
             } catch (error) {
-              log(chalk.yellow(`fallback publisher pass failed: ${error instanceof Error ? error.message : String(error)}`))
+              failures.push(`${label}${error instanceof Error ? error.message : String(error)}`)
             }
           }
-          await new Promise((resolve) => setTimeout(resolve, interval))
-        }
+          const collector = await collectorForPass({
+            responseAuth,
+            loadBuyerUrl: async () => (await loadBuyerProxySnapshot(globalOptions.dataDir)).baseUrl,
+            log,
+          })
+          await step('', () => verifierTick({
+            client,
+            signer: signer.wallet,
+            address: signer.address,
+            encryptionPrivateKey: keys.privateKey,
+            storage,
+            bindings,
+            stateDir: join(globalOptions.dataDir, 'verifier', 'round', 'epochs'),
+            collector,
+            maxRequestsPerEpoch,
+            log,
+          }))
+          // Liveness without the publisher: reveal the escrowed bank key, and take over an epoch
+          // with no plan in effect (needs the buyer, to build a bank and find targets).
+          await step('key escrow: ', () => keyEscrowTick({
+            client, signer: signer.wallet, address: signer.address, encryptionPrivateKey: keys.privateKey, storage, log,
+          }))
+          if (collect) await step('fallback publisher: ', () => fallbackPublisherTick({ ...publisherContext, address: signer.address }))
+          if (failures.length > 0) throw new Error(failures.join('; '))
+        })
       } finally {
         await lock.release()
       }

@@ -79,7 +79,7 @@ export async function advanceEpochAsPublisher(
   if (info.voided) return
   const epoch = info.epoch
   if (
-    info.seedBlock !== 0n && isZeroHash(info.keySharesHash) && isZeroHash(info.planHash)
+    info.seedBlock !== 0n && isZeroHash(info.keySharesHash) && !info.planActive
     && isZeroHash(info.bankKey) && now < deadlines.commitDeadline
   ) {
     // The contract takes the plan only after the escrow, so verifiers can always rebuild the key.
@@ -91,17 +91,10 @@ export async function advanceEpochAsPublisher(
     }
   }
   if (!isZeroHash(info.seed) && isZeroHash(info.planHash) && now < deadlines.commitDeadline) {
-    // The plan freezes the round, so it waits for verifiers to check the escrow (`acknowledgeKeyShares`).
-    const live = await context.client.epochInfo(epoch)
-    const acks = isZeroHash(live.keySharesHash) ? 0 : await context.client.keyShareAcks(epoch, live.keySharesHash)
-    const needed = await context.client.requiredKeyShareAcks(epoch)
-    if (isZeroHash(live.keySharesHash) || acks < needed) {
-      context.log(`epoch ${epoch}: waiting for verifiers to acknowledge the bank-key escrow (${acks} of ${needed})`)
-      return
-    }
+    // Proposed only: it takes effect once the verifiers accept it (`acceptPlan`).
     await publishPlan(context, info, now)
   }
-  if (!isZeroHash(info.planHash) && isZeroHash(info.bankKey) && now >= deadlines.backupDeadline) {
+  if (info.planActive && isZeroHash(info.bankKey) && now >= deadlines.backupDeadline) {
     const state = await readState(context, epoch)
     if (!state || state.bankHash !== info.bankHash) throw new Error(`no bank key on disk for epoch ${epoch}; it cannot be revealed`)
     const hash = await context.client.revealBankKey(context.signer, epoch, state.bankKey)

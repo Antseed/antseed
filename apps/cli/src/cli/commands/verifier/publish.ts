@@ -1,16 +1,14 @@
-import { join } from 'node:path'
 import chalk from 'chalk'
 import type { Command } from 'commander'
 import { loadConfig } from '../../../config/loader.js'
 import { publisherTick } from '../../../verifier/round/publisher-daemon.js'
-import { CachedRoundStorage, roundStorageFromEnv } from '../../../verifier/round/storage.js'
 import { targetBindingsFromRegistry } from '../../../verifier/round/target-discovery.js'
 import { createKbfRoundClient, createSellerRegistryClient } from '../../payment-utils.js'
 import { setupShutdownHandler } from '../../shutdown.js'
 import { startGatewayBuyer } from '../gateway/shared.js'
 import { getGlobalOptions } from '../types.js'
 import { resolveAuditorSigner } from './auditor-identity.js'
-import { acquireDaemonLock, createPublisherContext, parsePollInterval } from './daemon-setup.js'
+import { acquireDaemonLock, cachedRoundStorage, createPublisherContext, parsePollInterval, runDaemonLoop, timestampedLog } from './daemon-setup.js'
 
 interface PublishOptions {
   keystore?: string
@@ -30,7 +28,7 @@ export function registerVerifierPublishCommand(verifier: Command): void {
     .action(async (options: PublishOptions, command: Command) => {
       const globalOptions = getGlobalOptions(command)
       const config = await loadConfig(globalOptions.config)
-      const log = (message: string) => console.log(`${new Date().toISOString()} ${message}`)
+      const log = timestampedLog
       const interval = parsePollInterval(options.interval)
       // Before any key, bank or paid request: a second daemon on this data dir would race this one.
       const lock = await acquireDaemonLock(globalOptions.dataDir)
@@ -49,22 +47,13 @@ export function registerVerifierPublishCommand(verifier: Command): void {
           dataDir: globalOptions.dataDir,
           client,
           signer: signer.wallet,
-          storage: new CachedRoundStorage(roundStorageFromEnv(), join(globalOptions.dataDir, 'verifier', 'round', 'cache')),
+          storage: cachedRoundStorage(globalOptions.dataDir),
           bindings: targetBindingsFromRegistry(createSellerRegistryClient(config)),
           buyerPort,
           log,
         })
         log(chalk.bold(`publisher ${signer.address} on ${client.contractAddress}`))
-        let stopped = false
-        setupShutdownHandler(async () => { stopped = true })
-        while (!stopped) {
-          try {
-            await publisherTick(context)
-          } catch (error) {
-            log(chalk.yellow(`pass failed: ${error instanceof Error ? error.message : String(error)}`))
-          }
-          await new Promise((resolve) => setTimeout(resolve, interval))
-        }
+        await runDaemonLoop(interval, (message) => log(chalk.yellow(message)), () => publisherTick(context))
       } finally {
         await lock.release()
       }

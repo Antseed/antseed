@@ -30,13 +30,15 @@ const reference = { referenceId: 'sha256:recheck', probes: Array.from({ length: 
 
 async function run(input: {
   results: ModelVerificationTargetResult[]
-  recheckVerdicts?: Record<string, ModelVerificationTargetResult['status'] | 'SKIPPED' | 'UNREACHABLE'>
+  recheckVerdicts?: Record<string, ModelVerificationTargetResult['status'] | 'SKIPPED' | 'UNREACHABLE' | 'PARTLY_SEEN'>
   exhausted?: Set<string>
   enroll?: (() => Promise<void>) | null
 }) {
   const logs: string[] = []
   const verified: string[] = []
+  const released: string[] = []
   const outcome = await runDiffRechecks({
+    release: async (_first, auditId) => { released.push(auditId) },
     results: input.results,
     reserve: async (first) => {
       if (input.exhausted?.has(first.peerId)) throw new Error(`${BANK_EXHAUSTED}: 20 probes remain`)
@@ -51,6 +53,19 @@ async function run(input: {
           peerId: first.peerId, displayName: null, agentId: first.agentId, service: first.service,
           status: 'SKIPPED', code: 'missing_response_auth', reason: 'no ResponseAuth', source: 'runtime',
           auditId: null, evidencePath: null, evidenceHash: null,
+        }
+      }
+      if (verdict === 'PARTLY_SEEN') {
+        // Half the batches answered, then the connection dropped.
+        return {
+          ...result(first.peerId[0]!, 'UNDETERMINED'),
+          peerId: first.peerId,
+          auditId: `second-${first.peerId}`,
+          parsedProbeCount: 50,
+          outcomeReason: {
+            code: 'transport_error', summary: 'connection reset', retryable: true, source: 'transport',
+            affectedBatchCount: 5, totalBatchCount: 10, nextAction: 'retry later',
+          },
         }
       }
       if (verdict === 'UNREACHABLE') {
@@ -74,7 +89,7 @@ async function run(input: {
     concurrency: async (tasks) => { for (const task of tasks) await task() },
     log: (message) => logs.push(message),
   })
-  return { outcome, logs, verified }
+  return { outcome, logs, verified, released }
 }
 
 test('a DIFF is final only after its recheck, or when the run had confirmation off', () => {
@@ -177,6 +192,7 @@ test('a recheck that throws keeps the DIFF waiting too', async () => {
   const outcome = await runDiffRechecks({
     results: [diff],
     reserve: async () => ({ reference, auditId: 'recheck-b' }),
+    release: async () => {},
     enroll: null,
     verify: async () => { throw new Error('reference endpoint 402: out of credits') },
     concurrency: async (tasks) => { for (const task of tasks) await task() },
@@ -222,4 +238,17 @@ test('a recheck the seller could not answer keeps the DIFF waiting instead of fi
   assert.equal(outcome.results[1]!.recheck?.status, 'UNDETERMINED')
   assert.deepEqual([outcome.stats.pending, outcome.stats.rechecked, outcome.stats.notConfirmed], [1, 1, 1])
   assert.ok(logs.some((line) => line.includes('recheck unanswered')))
+})
+
+test('a recheck the seller saw part of stays pending but gives up its questions for fresh ones', async () => {
+  const unreachable = result('a', 'DIFF')
+  const partly = result('b', 'DIFF')
+  const { outcome, released } = await run({
+    results: [unreachable, partly],
+    recheckVerdicts: { [unreachable.peerId]: 'UNREACHABLE', [partly.peerId]: 'PARTLY_SEEN' },
+  })
+  assert.deepEqual(outcome.results.map((entry) => entry.status), ['DIFF', 'DIFF'])
+  assert.ok(outcome.results.every((entry) => entry.recheckPending && !entry.recheck))
+  // Only the reservation the seller saw part of is released; the unreached one is reused as is.
+  assert.deepEqual(released, [`recheck-${partly.peerId}`])
 })

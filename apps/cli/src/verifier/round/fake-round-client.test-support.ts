@@ -5,6 +5,7 @@ import {
   type KbfEpochInfo,
   type KbfModel,
   type KbfRoundClient,
+  type BankCommittedEvent,
   type KeyShareRevealedEvent,
 } from '@antseed/node/payments'
 import { bankKeyHash } from './sealing.js'
@@ -26,11 +27,14 @@ export class FakeRoundClient {
   modelList: KbfModel[] = []
   infos = new Map<bigint, KbfEpochInfo>()
   plans: CommitmentEvent[] = []
+  banks: BankCommittedEvent[] = []
   shareFiles: CommitmentEvent[] = []
   slices: CommitmentEvent[] = []
   shares: KeyShareRevealedEvent[] = []
-  /** `<epoch>:<sharesHash>` → verifiers that acknowledged that key-share file. */
-  acks = new Map<string, Set<string>>()
+  /** `<epoch>:<generation>:<sharesHash>:<planHash>` → verifiers that accepted that round. */
+  acceptances = new Map<string, Set<string>>()
+  generations = new Map<bigint, number>()
+  takeoverCounts = new Map<string, number>()
   members = new Map<bigint, string[]>()
   calls: string[] = []
   /** Makes the next `commitKeyShares` calls fail, as a storage or RPC outage would. */
@@ -44,6 +48,7 @@ export class FakeRoundClient {
         schedule: { collectSeconds: 3 * 86400, backupSeconds: 86400, attestSeconds: 86400, probesPerService: 20, slicesPerService: 2 },
         bankHash: ZERO_HASH, bankKeyHash: ZERO_HASH, bankKey: ZERO_HASH, planHash: ZERO_HASH,
         finalizedRoot: ZERO_HASH, voided: false, publisher: ZERO_ADDRESS, takenOverAt: 0, keySharesHash: ZERO_HASH,
+        planActive: false,
       }
       this.infos.set(epoch, info)
     }
@@ -91,44 +96,67 @@ export class FakeRoundClient {
   async sliceCommits(epoch: bigint): Promise<CommitmentEvent[]> { return this.slices.filter((entry) => entry.epoch === epoch) }
   async keySharesCommits(epoch: bigint): Promise<CommitmentEvent[]> { return this.shareFiles.filter((entry) => entry.epoch === epoch) }
   async keyShareReveals(epoch: bigint): Promise<KeyShareRevealedEvent[]> { return this.shares.filter((entry) => entry.epoch === epoch) }
-  async keySharesAcknowledged(epoch: bigint, sharesHash: string, verifier: string): Promise<boolean> {
-    return this.acks.get(`${epoch}:${sharesHash}`)?.has(getAddress(verifier)) ?? false
+  private roundKey(epoch: bigint): string {
+    const info = this.info(epoch)
+    return `${epoch}:${this.generations.get(epoch) ?? 0}:${info.keySharesHash}:${info.planHash}`
   }
-  async keyShareAcks(epoch: bigint, sharesHash: string): Promise<number> {
-    return this.acks.get(`${epoch}:${sharesHash}`)?.size ?? 0
+  async hasAcceptedPlan(epoch: bigint, verifier: string): Promise<boolean> {
+    return this.acceptances.get(this.roundKey(epoch))?.has(getAddress(verifier)) ?? false
   }
-  async requiredKeyShareAcks(epoch: bigint): Promise<number> {
+  async planAcceptances(epoch: bigint): Promise<number> {
+    return this.acceptances.get(this.roundKey(epoch))?.size ?? 0
+  }
+  async requiredPlanAcceptances(epoch: bigint): Promise<number> {
     const members = this.members.get(epoch) ?? []
     const publisher = this.info(epoch).publisher
     const others = members.filter((member) => getAddress(member) !== getAddress(publisher)).length
     return Math.min(await this.threshold(epoch), others)
   }
+  async takeovers(epoch: bigint, verifier: string): Promise<number> {
+    return this.takeoverCounts.get(`${epoch}:${getAddress(verifier)}`) ?? 0
+  }
+  private async activateIfAccepted(epoch: bigint): Promise<void> {
+    if (await this.planAcceptances(epoch) >= await this.requiredPlanAcceptances(epoch)) {
+      this.info(epoch).planActive = true
+      this.calls.push(`planActivated:${epoch}`)
+    }
+  }
   async keyShareRevealed(epoch: bigint, verifier: string): Promise<boolean> {
     return this.shares.some((entry) => entry.epoch === epoch && entry.verifier.toLowerCase() === verifier.toLowerCase())
   }
 
-  async commitBank(signer: AbstractSigner, epoch: bigint, bankHash: string, keyHash: string): Promise<string> {
+  async bankCommits(epoch: bigint): Promise<BankCommittedEvent[]> { return this.banks.filter((entry) => entry.epoch === epoch) }
+
+  async commitBank(signer: AbstractSigner, epoch: bigint, bankHash: string, keyHash: string, bankUri = ''): Promise<string> {
+    this.banks.push({ epoch, bankHash, bankKeyHash: keyHash, bankUri, blockNumber: 1 })
     const sender = await this.sender(signer)
     if (sender !== getAddress(this.publisherAddress)) throw new Error('NotPublisher')
     const info = this.info(epoch)
     if (info.seedBlock !== 0n || info.takenOverAt !== 0) throw new Error('WrongPhase')
-    Object.assign(info, { bankHash, bankKeyHash: keyHash, publisher: sender, keySharesHash: ZERO_HASH })
+    Object.assign(info, { bankHash, bankKeyHash: keyHash, publisher: sender, keySharesHash: ZERO_HASH, planHash: ZERO_HASH })
+    this.generations.set(epoch, (this.generations.get(epoch) ?? 0) + 1)
     this.calls.push(`commitBank:${epoch}`)
     return '0xtx'
   }
 
-  async takeOverBank(signer: AbstractSigner, epoch: bigint, bankHash: string, keyHash: string): Promise<string> {
+  async takeOverBank(signer: AbstractSigner, epoch: bigint, bankHash: string, keyHash: string, bankUri = ''): Promise<string> {
     const sender = await this.sender(signer)
     const info = this.info(epoch)
     const opened = info.seedBlock !== 0n
     const allowed = opened ? this.members.get(epoch) ?? [] : this.approved
     if (!allowed.some((entry) => getAddress(entry) === sender)) throw new Error('NotVerifier')
     const since = info.takenOverAt || info.startedAt
-    if (info.planHash !== ZERO_HASH || this.time < since + this.graceSeconds || this.time >= this.commitDeadline(info)) {
+    if (info.planActive || this.time < since + this.graceSeconds || this.time >= this.commitDeadline(info)) {
       throw new Error('WrongPhase')
     }
-    Object.assign(info, { bankHash, bankKeyHash: keyHash, publisher: sender, keySharesHash: ZERO_HASH, takenOverAt: this.time })
+    if (sender === getAddress(info.publisher) || await this.takeovers(epoch, sender) >= 2) throw new Error('WrongPhase')
+    this.takeoverCounts.set(`${epoch}:${sender}`, await this.takeovers(epoch, sender) + 1)
+    Object.assign(info, {
+      bankHash, bankKeyHash: keyHash, publisher: sender, keySharesHash: ZERO_HASH, planHash: ZERO_HASH, takenOverAt: this.time,
+    })
+    this.generations.set(epoch, (this.generations.get(epoch) ?? 0) + 1)
     if (opened) info.seed = ZERO_HASH
+    this.banks.push({ epoch, bankHash, bankKeyHash: keyHash, bankUri, blockNumber: 1 })
     this.calls.push(`takeOverBank:${epoch}:${sender}`)
     return '0xtx'
   }
@@ -137,7 +165,7 @@ export class FakeRoundClient {
     const sender = await this.sender(signer)
     const info = this.info(epoch)
     if (sender !== getAddress(info.publisher)) throw new Error('NotPublisher')
-    if (info.seedBlock === 0n || info.planHash !== ZERO_HASH || this.time >= this.commitDeadline(info)) throw new Error('WrongPhase')
+    if (info.seedBlock === 0n || info.planActive || this.time >= this.commitDeadline(info)) throw new Error('WrongPhase')
     if (this.failKeyShares > 0) {
       this.failKeyShares--
       throw new Error('storage outage')
@@ -154,35 +182,39 @@ export class FakeRoundClient {
     if (sender !== getAddress(info.publisher)) throw new Error('NotPublisher')
     if (info.seed === ZERO_HASH || this.time >= this.commitDeadline(info)) throw new Error('WrongPhase')
     if (info.keySharesHash === ZERO_HASH) throw new Error('KeyNotEscrowed')
-    if (await this.keyShareAcks(epoch, info.keySharesHash) < await this.requiredKeyShareAcks(epoch)) throw new Error('KeyNotAcknowledged')
-    if (info.planHash !== ZERO_HASH && info.planHash !== hash) throw new Error('PlanAlreadyCommitted')
+    if (info.planActive) {
+      if (info.planHash === hash) return '0xtx'
+      throw new Error('PlanAlreadyCommitted')
+    }
     info.planHash = hash
     this.plans.push({ epoch, hash, uri, backup: false, sender, blockNumber: 1, logIndex: 0, txHash: '0x' })
     this.calls.push(`commitPlan:${epoch}`)
+    await this.activateIfAccepted(epoch)
     return '0xtx'
   }
 
-  async acknowledgeKeyShares(signer: AbstractSigner, epoch: bigint, sharesHash: string): Promise<string> {
+  async acceptPlan(signer: AbstractSigner, epoch: bigint, sharesHash: string, planHash: string): Promise<string> {
     const sender = await this.sender(signer)
     const info = this.info(epoch)
     if (!(this.members.get(epoch) ?? []).some((member) => getAddress(member) === sender) || sender === getAddress(info.publisher)) {
       throw new Error('NotVerifier')
     }
-    if (info.keySharesHash === ZERO_HASH || info.planHash !== ZERO_HASH || this.time >= this.commitDeadline(info)) throw new Error('WrongPhase')
-    if (sharesHash !== info.keySharesHash) throw new Error('InvalidValue')
-    const key = `${epoch}:${sharesHash}`
-    const acked = this.acks.get(key) ?? new Set<string>()
-    if (acked.has(sender)) throw new Error('AlreadyAcknowledged')
-    acked.add(sender)
-    this.acks.set(key, acked)
-    this.calls.push(`acknowledgeKeyShares:${epoch}:${sender}`)
+    if (info.planActive || info.planHash === ZERO_HASH || this.time >= this.commitDeadline(info)) throw new Error('WrongPhase')
+    if (sharesHash !== info.keySharesHash || planHash !== info.planHash) throw new Error('InvalidValue')
+    const key = this.roundKey(epoch)
+    const accepted = this.acceptances.get(key) ?? new Set<string>()
+    if (accepted.has(sender)) throw new Error('AlreadyAccepted')
+    accepted.add(sender)
+    this.acceptances.set(key, accepted)
+    this.calls.push(`acceptPlan:${epoch}:${sender}`)
+    await this.activateIfAccepted(epoch)
     return '0xtx'
   }
 
   async revealKeyShare(signer: AbstractSigner, epoch: bigint, share: string): Promise<string> {
     const sender = await this.sender(signer)
     const info = this.info(epoch)
-    if (info.keySharesHash === ZERO_HASH || info.bankKey !== ZERO_HASH || this.time < this.backupDeadline(info)) throw new Error('WrongPhase')
+    if (!info.planActive || info.bankKey !== ZERO_HASH || this.time < this.backupDeadline(info)) throw new Error('WrongPhase')
     if (await this.keyShareRevealed(epoch, sender)) throw new Error('AlreadyRevealed')
     this.shares.push({ epoch, verifier: sender, share, blockNumber: 1, logIndex: this.shares.length })
     this.calls.push(`revealKeyShare:${epoch}:${sender}`)
@@ -191,7 +223,7 @@ export class FakeRoundClient {
 
   async revealBankKey(_signer: AbstractSigner, epoch: bigint, key: string): Promise<string> {
     const info = this.info(epoch)
-    if (info.planHash === ZERO_HASH || info.bankKey !== ZERO_HASH || this.time < this.backupDeadline(info)) throw new Error('WrongPhase')
+    if (!info.planActive || info.bankKey !== ZERO_HASH || this.time < this.backupDeadline(info)) throw new Error('WrongPhase')
     if (bankKeyHash(key) !== info.bankKeyHash) throw new Error('InvalidValue')
     info.bankKey = key
     this.calls.push(`revealBankKey:${epoch}`)

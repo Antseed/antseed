@@ -1,12 +1,43 @@
 import { join } from 'node:path'
+import { setupShutdownHandler } from '../../shutdown.js'
 import type { AbstractSigner } from 'ethers'
 import type { KbfRoundClient } from '@antseed/node/payments'
 import type { AntseedConfig } from '../../../config/types.js'
 import { acquirePidFileLock, type FileLock } from '../../../verifier/atomic-files.js'
 import { buildEpochBank } from '../../../verifier/round/bank-builder.js'
 import type { PublisherDaemonContext } from '../../../verifier/round/publisher-daemon.js'
-import type { RoundStorage } from '../../../verifier/round/storage.js'
+import { CachedRoundStorage, roundStorageFromEnv, type RoundStorage } from '../../../verifier/round/storage.js'
 import { discoverRoundTargets, type TargetBindings } from '../../../verifier/round/target-discovery.js'
+
+/** Daemon log lines, timestamped. */
+export function timestampedLog(message: string): void {
+  console.log(`${new Date().toISOString()} ${message}`)
+}
+
+/**
+ * Round storage with the data dir's cache of every committed file already fetched against its
+ * hash, so a later pass (or a file its publisher stops serving) needs no new download.
+ */
+export function cachedRoundStorage(dataDir: string): RoundStorage {
+  return new CachedRoundStorage(roundStorageFromEnv(), join(dataDir, 'verifier', 'round', 'cache'))
+}
+
+/**
+ * Runs `pass` every `intervalMs` until the process is asked to stop. A failing pass is logged
+ * and the next one runs on schedule.
+ */
+export async function runDaemonLoop(intervalMs: number, log: (message: string) => void, pass: () => Promise<void>): Promise<void> {
+  let stopped = false
+  setupShutdownHandler(async () => { stopped = true })
+  while (!stopped) {
+    try {
+      await pass()
+    } catch (error) {
+      log(`pass failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs))
+  }
+}
 
 /** Fewest seconds between daemon passes. */
 export const MIN_POLL_SECONDS = 10

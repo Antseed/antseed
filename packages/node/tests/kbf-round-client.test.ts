@@ -24,7 +24,7 @@ const SCHEDULE = [3n * 86_400n, 86_400n, 43_200n, 100n, 8n];
 const EPOCH_INFO = [
   1_000n, 55n, '0x' + 'ab'.repeat(32), 2n, 3n, SCHEDULE,
   '0x' + '01'.repeat(32), '0x' + '02'.repeat(32), ZeroHash, '0x' + '03'.repeat(32),
-  '0x' + '04'.repeat(32), false, PUBLISHER, 77n, '0x' + '05'.repeat(32),
+  '0x' + '04'.repeat(32), false, PUBLISHER, 77n, '0x' + '05'.repeat(32), true,
 ];
 
 interface RawLog {
@@ -66,9 +66,10 @@ function fakeProvider(options: { logs?: RawLog[]; head?: number; send?: (method:
         case 'schedule': return iface.encodeFunctionResult('schedule', [SCHEDULE]);
         case 'models': return iface.encodeFunctionResult('models', [[[modelHash('model-a'), 'model-a']]]);
         case 'pendingReward': return iface.encodeFunctionResult('pendingReward', [123n]);
-        case 'keyShareAcks': return iface.encodeFunctionResult('keyShareAcks', [2n]);
-        case 'requiredKeyShareAcks': return iface.encodeFunctionResult('requiredKeyShareAcks', [3n]);
-        case 'keySharesAcknowledged': return iface.encodeFunctionResult('keySharesAcknowledged', [parsed.args[2] === VERIFIER]);
+        case 'planAcceptances': return iface.encodeFunctionResult('planAcceptances', [2n]);
+        case 'requiredPlanAcceptances': return iface.encodeFunctionResult('requiredPlanAcceptances', [3n]);
+        case 'takeovers': return iface.encodeFunctionResult('takeovers', [1n]);
+        case 'hasAcceptedPlan': return iface.encodeFunctionResult('hasAcceptedPlan', [parsed.args[1] === VERIFIER]);
         default: throw new Error(`unexpected call ${parsed.name}`);
       }
     },
@@ -96,7 +97,7 @@ describe('KbfRoundClient reads', () => {
       schedule: { collectSeconds: 259_200, backupSeconds: 86_400, attestSeconds: 43_200, probesPerService: 100, slicesPerService: 8 },
       bankHash: '0x' + '01'.repeat(32), bankKeyHash: '0x' + '02'.repeat(32), bankKey: ZeroHash, planHash: '0x' + '03'.repeat(32),
       finalizedRoot: '0x' + '04'.repeat(32), voided: false, publisher: PUBLISHER, takenOverAt: 77,
-      keySharesHash: '0x' + '05'.repeat(32),
+      keySharesHash: '0x' + '05'.repeat(32), planActive: true,
     });
     expect(await client().schedule()).toEqual(info.schedule);
     expect(kbfEpochDeadlines(info, 604_800)).toEqual({
@@ -111,11 +112,11 @@ describe('KbfRoundClient reads', () => {
     expect(await c.epochDuration()).toBe(604_800);
     expect(await c.models(2)).toEqual([{ modelHash: modelHash('model-a'), service: 'model-a' }]);
     expect(await c.pendingReward(VERIFIER, 7n, 3, 8, [])).toBe(123n);
-    const shares = '0x' + '05'.repeat(32);
-    expect(await c.keyShareAcks(7n, shares)).toBe(2);
-    expect(await c.requiredKeyShareAcks(7n)).toBe(3);
-    expect(await c.keySharesAcknowledged(7n, shares, VERIFIER)).toBe(true);
-    expect(await c.keySharesAcknowledged(7n, shares, PUBLISHER)).toBe(false);
+    expect(await c.planAcceptances(7n)).toBe(2);
+    expect(await c.requiredPlanAcceptances(7n)).toBe(3);
+    expect(await c.takeovers(7n, VERIFIER)).toBe(1);
+    expect(await c.hasAcceptedPlan(7n, VERIFIER)).toBe(true);
+    expect(await c.hasAcceptedPlan(7n, PUBLISHER)).toBe(false);
   });
 
   it('reads chain time and head uncached, falling back across providers', async () => {
@@ -166,6 +167,9 @@ describe('KbfRoundClient events', () => {
     expect(await c.keySharesCommits(7n)).toMatchObject([
       { epoch: 7n, hash: '0x' + '05'.repeat(32), uri: 'ipfs://shares', sender: PUBLISHER },
     ]);
+    // A caller holding the epoch info passes the publisher instead of another epochInfo read.
+    expect(await c.keySharesCommits(7n, undefined, VERIFIER)).toMatchObject([{ sender: VERIFIER }]);
+    expect(await c.planCommits(7n, undefined, VERIFIER)).toMatchObject([{ sender: VERIFIER }]);
     expect(await c.keyShareReveals(7n)).toEqual([{ epoch: 7n, verifier: VERIFIER, share: '0x01aa', blockNumber: 906, logIndex: 6 }]);
   });
 
@@ -223,11 +227,11 @@ describe('KbfRoundClient writes', () => {
     await c.claimRewards(signer, 7n, 3, 8, ['0x' + '0a'.repeat(32)]);
     await c.commitPlan(signer, 7n, '0x' + '03'.repeat(32), 'ipfs://plan');
     await c.commitSlices(signer, 7n, '0x' + '06'.repeat(32), 'ipfs://slices');
-    await c.acknowledgeKeyShares(signer, 7n, '0x' + '0c'.repeat(32));
+    await c.acceptPlan(signer, 7n, '0x' + '0c'.repeat(32), '0x' + '0d'.repeat(32));
     await c.revealKeyShare(signer, 7n, '0x01aa');
     await c.takeOverBank(signer, 7n, '0x' + '01'.repeat(32), keccak256(AbiCoder.defaultAbiCoder().encode(['bytes32'], ['0x' + '0b'.repeat(32)])), 'ipfs://bank');
     const names = execWrite.mock.calls.map((call) => call[2]);
-    expect(names).toEqual(['claimRewards', 'commitPlan', 'commitSlices', 'acknowledgeKeyShares', 'revealKeyShare', 'takeOverBank']);
+    expect(names).toEqual(['claimRewards', 'commitPlan', 'commitSlices', 'acceptPlan', 'revealKeyShare', 'takeOverBank']);
     expect(execWrite.mock.calls[0]!.slice(3)).toEqual([7n, 3, 8, ['0x' + '0a'.repeat(32)]]);
     for (const call of execWrite.mock.calls) {
       expect(() => iface.encodeFunctionData(call[2] as string, call.slice(3))).not.toThrow();

@@ -83,8 +83,8 @@ KBF audits run as one round per epoch (one week), shared by every approved verif
    bound to on-chain.
 4. **The key is revealed after collection.** Then anyone can decrypt the bank and check
    every verdict. The key is also escrowed in shares with the verifiers, so a majority
-   of them can reveal it if the publisher doesn't. Verifiers check their shares against
-   the committed key before the plan can go out.
+   of them can reveal it if the publisher doesn't. The plan only takes effect once a
+   majority of verifiers checked it, their envelopes and their key shares, and accepted it.
 5. **Everyone scores, a majority decides.** Each verifier scores the whole epoch from
    the public data and attests the root of its results. Scoring is deterministic, so
    honest verifiers agree. The first root a majority of the epoch's verifiers attest

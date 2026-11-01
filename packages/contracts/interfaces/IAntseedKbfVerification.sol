@@ -14,18 +14,20 @@ import {IAntseedSellerPools} from "./IAntseedSellerPools.sol";
 ///      2. Anyone opens the epoch (`openEpoch`), which snapshots the approved verifiers, the
 ///         audited model list and the schedule, and fixes a future block. Its hash becomes the
 ///         epoch seed (`fixSeed`), so nobody can choose which questions a seller gets.
-///      3. The publisher escrows the bank key with the verifiers (`commitKeyShares`), the
-///         verifiers check their shares against it (`acknowledgeKeyShares`), then the publisher
-///         commits the plan (`commitPlan`): the target list and, per verifier, one encrypted
-///         envelope with the slices it owns and one with the slices it backs up, derived from the
-///         seed. A plan is only accepted once enough verifiers acknowledged the escrow.
+///      3. The publisher escrows the bank key with the verifiers (`commitKeyShares`) and proposes
+///         the plan (`commitPlan`): the target list and, per verifier, one encrypted envelope with
+///         the slices it owns and one with the slices it backs up, derived from the seed. Verifiers
+///         check the plan, their envelopes and their key shares and accept them (`acceptPlan`);
+///         the plan takes effect once a majority of verifiers other than the publisher accepted.
 ///      4. Verifiers buy their slices from sellers and commit the seller-signed transcripts
 ///         (`commitSlices`) by the commit deadline. After it, each verifier checks which of the
 ///         slices it backs up their owner did not deliver, buys those and commits them again
 ///         until the backup deadline; no publisher step sits in between.
-///      5. The publisher reveals the bank key (`revealBankKey`), so everyone can score.
+///      5. The publisher reveals the bank key (`revealBankKey`), so everyone can score. A bank the
+///         revealed key does not open, or that is not a well-formed bank of the epoch, is scored as
+///         an empty round, so the epoch still finalizes.
 ///      If the publisher misses its deadlines, verifiers carry the round: one takes the epoch over
-///      with its own bank (`takeOverBank`) when no plan is committed `publisherGraceSeconds` in,
+///      with its own bank (`takeOverBank`) when no plan is in effect `publisherGraceSeconds` in,
 ///      and a key escrowed with `commitKeyShares` is rebuilt from the shares verifiers post with
 ///      `revealKeyShare` after the backup deadline.
 ///      6. Each verifier scores every transcript and attests the Merkle root of the results
@@ -82,6 +84,8 @@ interface IAntseedKbfVerification {
         /// @dev Time of the latest takeover; zero if the publisher kept the epoch.
         uint64 takenOverAt;
         bytes32 keySharesHash;
+        /// @dev Whether verifiers accepted the plan: collection runs and the epoch is final.
+        bool planActive;
     }
 
     /// @notice One leaf of an epoch's results root.
@@ -141,11 +145,11 @@ interface IAntseedKbfVerification {
     function commitPlan(uint256 epoch, bytes32 planHash, string calldata planUri) external;
     function takeOverBank(uint256 epoch, bytes32 bankHash, bytes32 bankKeyHash, string calldata bankUri) external;
     function commitKeyShares(uint256 epoch, bytes32 sharesHash, string calldata sharesUri) external;
-    function acknowledgeKeyShares(uint256 epoch, bytes32 sharesHash) external;
-    /// @notice Verifiers that acknowledged the key-share file `sharesHash`.
-    function keyShareAcks(uint256 epoch, bytes32 sharesHash) external view returns (uint256);
-    /// @notice Acknowledgements of the current key-share file the plan needs.
-    function requiredKeyShareAcks(uint256 epoch) external view returns (uint256);
+    function acceptPlan(uint256 epoch, bytes32 sharesHash, bytes32 planHash) external;
+    function planAcceptances(uint256 epoch) external view returns (uint256);
+    function hasAcceptedPlan(uint256 epoch, address verifier) external view returns (bool);
+    function requiredPlanAcceptances(uint256 epoch) external view returns (uint256);
+    function takeovers(uint256 epoch, address verifier) external view returns (uint256);
     function revealKeyShare(uint256 epoch, bytes calldata share) external;
     function revealBankKey(uint256 epoch, bytes32 bankKey) external;
     function commitSlices(uint256 epoch, bytes32 slicesRoot, string calldata manifestUri) external;

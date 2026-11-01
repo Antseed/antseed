@@ -35,19 +35,22 @@ interface IEmissionsGateSchedule {
 ///         - verifiers: collect slices, attest results and earn rewards.
 ///
 ///         The publisher is a convenience, not a dependency:
-///         - if it has not committed a plan `publisherGraceSeconds` into the epoch, any verifier
-///           can take the epoch over (`takeOverBank`) with its own bank and act as the epoch's
-///           publisher; each takeover waits another grace period after the previous one;
-///         - the epoch publisher escrows the bank key with the verifiers (`commitKeyShares`): a
-///           Feldman-verifiable Shamir split, one share sealed to each verifier, with the
-///           finalization majority as threshold. Each verifier checks its share against the
-///           file's commitments and the committed key point and acknowledges it
-///           (`acknowledgeKeyShares`); the plan needs the threshold of acknowledgements from
-///           verifiers other than the epoch publisher, so a publisher that took the epoch over
-///           cannot freeze a round whose key the others cannot rebuild. If the key is not revealed
-///           by the backup deadline, verifiers post their shares (`revealKeyShare`) and anyone
-///           combines them into `revealBankKey`. A majority that pools its shares early learns the
-///           questions, but a majority can already finalize any root, so the escrow adds no new trust.
+///         - if no plan is in effect `publisherGraceSeconds` into the epoch, any verifier can take
+///           the epoch over (`takeOverBank`) with its own bank and act as the epoch's publisher;
+///           each takeover waits another grace period after the previous one, the epoch publisher
+///           cannot take its own epoch over again, and a verifier takes one epoch over at most
+///           `MAX_TAKEOVERS_PER_VERIFIER` times;
+///         - nothing the epoch publisher commits is final until the verifiers accept it
+///           (`acceptPlan`): the plan, each verifier's envelopes and the key escrow (`commitKeyShares`,
+///           a Feldman-verifiable Shamir split with the finalization majority as threshold, one
+///           share sealed to each verifier, whose commitments' constant term is the committed key's
+///           point). The plan takes effect once a majority of the verifiers other than the epoch
+///           publisher accepted it; before that, collection cannot start and the epoch can still be
+///           taken over, so a publisher cannot freeze a round with a plan or escrow the others
+///           cannot use. If the key is not revealed by the backup deadline, verifiers post their
+///           shares (`revealKeyShare`) and anyone combines them into `revealBankKey`. A majority
+///           that pools its shares early learns the questions, but a majority can already finalize
+///           any root, so the escrow adds no new trust.
 ///
 ///         Rewards: from `rewardsStartEpoch` on, an epoch's verification budget is split into an
 ///         attester pool (`attestRewardBps`), shared equally by the verifiers that attested the
@@ -64,6 +67,9 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     uint256 public constant MAX_KEY_SHARE_BYTES = 64;
     /// @notice Blocks between opening an epoch and the block whose hash seeds it.
     uint64 public constant SEED_DELAY_BLOCKS = 4;
+    /// @notice Takeovers one verifier may make in one epoch, so no verifier can keep the epoch to
+    ///         itself by taking it over again every grace period.
+    uint256 public constant MAX_TAKEOVERS_PER_VERIFIER = 2;
     /// @dev secp256k1 group order and generator x coordinate, to check a bank key against its
     ///      committed address with `ecrecover`.
     uint256 private constant SECP256K1_N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;
@@ -94,6 +100,11 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         address publisher;
         uint64 takenOverAt;
         bytes32 keySharesHash;
+        // Bumped by every bank commit or takeover, so acceptances never carry over to another bank.
+        uint32 bankGeneration;
+        // Set once enough verifiers accepted the plan and escrow: collection may start, and the
+        // epoch can no longer be taken over.
+        bool planActive;
         uint16 attestRewardBps;
         uint16 maxVerifierShareBps;
         // Whether the epoch earns rewards, fixed at opening from `rewardsStartEpoch`.
@@ -132,10 +143,11 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     mapping(uint256 epoch => mapping(bytes32 leaf => bool applied)) public resultApplied;
     mapping(uint256 epoch => mapping(address verifier => bool claimed)) public rewardClaimed;
     mapping(uint256 epoch => mapping(address verifier => bool revealed)) public keyShareRevealed;
-    /// @notice Verifiers that checked their share of a key-share file against its commitments.
-    mapping(uint256 epoch => mapping(bytes32 sharesHash => mapping(address verifier => bool acknowledged))) public
-        keySharesAcknowledged;
-    mapping(uint256 epoch => mapping(bytes32 sharesHash => uint256 count)) public override keyShareAcks;
+    // Acceptances per (bank generation, key shares, plan) of an epoch: see `acceptPlan`.
+    mapping(uint256 epoch => mapping(bytes32 round => mapping(address verifier => bool accepted))) private _accepted;
+    mapping(uint256 epoch => mapping(bytes32 round => uint256 count)) private _acceptances;
+    /// @notice Takeovers each verifier made in an epoch (at most `MAX_TAKEOVERS_PER_VERIFIER`).
+    mapping(uint256 epoch => mapping(address verifier => uint256 count)) public override takeovers;
 
     mapping(uint256 agentId => mapping(bytes32 serviceHash => ServiceStatus status)) private _serviceStatus;
     /// @notice First epoch whose results can still change a service. Clearing a service moves it
@@ -159,7 +171,8 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     event EpochTakenOver(uint256 indexed epoch, address indexed verifier);
     event KeySharesCommitted(uint256 indexed epoch, bytes32 sharesHash, string sharesUri);
     event KeyShareRevealed(uint256 indexed epoch, address indexed verifier, bytes share);
-    event KeySharesAcknowledged(uint256 indexed epoch, address indexed verifier, bytes32 sharesHash);
+    event PlanAccepted(uint256 indexed epoch, address indexed verifier, bytes32 sharesHash, bytes32 planHash);
+    event PlanActivated(uint256 indexed epoch, bytes32 planHash);
     event BankCommitted(uint256 indexed epoch, bytes32 bankHash, bytes32 bankKeyHash, string bankUri);
     event EpochOpened(uint256 indexed epoch, uint64 seedBlock, uint32 modelsVersion, uint16 verifierCount);
     event SeedRearmed(uint256 indexed epoch, uint64 seedBlock);
@@ -200,8 +213,7 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     error AlreadyClaimed();
     error AlreadyRevealed();
     error KeyNotEscrowed();
-    error KeyNotAcknowledged();
-    error AlreadyAcknowledged();
+    error AlreadyAccepted();
     error PlanAlreadyCommitted();
 
     modifier onlyPublisher() {
@@ -400,11 +412,16 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         EpochState storage state = _epochs[epoch];
         bool opened = state.seedBlock != 0;
         if (opened ? !_epochMember[epoch][msg.sender] : _verifierIndex[msg.sender] == 0) revert NotVerifier();
-        if (state.planHash != bytes32(0)) revert WrongPhase();
+        // An accepted plan is final. Until then, a plan the verifiers would not accept (or never
+        // saw) does not stop another verifier from carrying the epoch.
+        if (state.planActive) revert WrongPhase();
+        // Not the epoch's own publisher again, and only a few times per verifier.
+        if (msg.sender == state.publisher || takeovers[epoch][msg.sender] >= MAX_TAKEOVERS_PER_VERIFIER) revert WrongPhase();
         uint256 start = _epochStart(epoch);
         uint256 since = state.takenOverAt == 0 ? start : state.takenOverAt;
         uint256 collect = opened ? state.schedule.collectSeconds : _schedule.collectSeconds;
         if (block.timestamp < since + publisherGraceSeconds || block.timestamp >= start + collect) revert WrongPhase();
+        takeovers[epoch][msg.sender] += 1;
         _setBank(epoch, state, bankHash, bankKeyHash, bankUri);
         state.takenOverAt = uint64(block.timestamp);
         if (opened) {
@@ -455,28 +472,26 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         emit SeedFixed(epoch, seed);
     }
 
-    /// @notice Commits the target list and the per-verifier question envelopes derived from the seed:
+    /// @notice Proposes the target list and the per-verifier question envelopes derived from the seed:
     ///         each verifier's primary slices, and, sealed alongside, the slices it backs up, which
     ///         it buys after the commit deadline if their owner did not deliver them. The round
-    ///         therefore needs no publisher action between the plan and the key reveal.
-    ///         Once only: repeating the same hash is a no-op, a different one reverts.
+    ///         therefore needs no publisher action between the plan and the key reveal. A plan
+    ///         takes effect once verifiers accept it (`acceptPlan`); until then the publisher may
+    ///         propose another one, and once in effect a different hash reverts.
     function commitPlan(uint256 epoch, bytes32 planHash, string calldata planUri) external onlyEpochPublisher(epoch) {
         EpochState storage state = _epochs[epoch];
         if (state.seed == bytes32(0) || block.timestamp >= _commitDeadline(epoch, state)) revert WrongPhase();
         // Without escrowed shares, losing the publisher after the plan would strand the round.
         if (state.keySharesHash == bytes32(0)) revert KeyNotEscrowed();
-        // And enough verifiers other than the publisher must have checked their shares, so the
-        // publisher alone can never freeze a plan whose key the others cannot rebuild.
-        if (keyShareAcks[epoch][state.keySharesHash] < _requiredKeyShareAcks(epoch, state)) revert KeyNotAcknowledged();
         if (planHash == bytes32(0)) revert InvalidValue();
-        // Frozen once out: verifiers buy against it, and replacing it would void their work.
-        if (state.planHash != bytes32(0)) {
+        if (state.planActive) {
             if (state.planHash == planHash) return;
             revert PlanAlreadyCommitted();
         }
         _validateUri(planUri);
         state.planHash = planHash;
         emit PlanCommitted(epoch, planHash, planUri);
+        _activateIfAccepted(epoch, state);
     }
 
     /// @notice Escrows the bank key with the epoch's verifiers: `sharesHash` is the hash of the
@@ -487,9 +502,9 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         onlyEpochPublisher(epoch)
     {
         EpochState storage state = _epochs[epoch];
-        // Fixed once the plan is out, so the shares verifiers rely on cannot be swapped afterwards.
+        // Fixed once the plan is in effect, so the shares verifiers rely on cannot be swapped.
         if (
-            state.seedBlock == 0 || state.planHash != bytes32(0) || state.bankKey != bytes32(0)
+            state.seedBlock == 0 || state.planActive || state.bankKey != bytes32(0)
                 || block.timestamp >= _commitDeadline(epoch, state)
         ) {
             revert WrongPhase();
@@ -500,29 +515,45 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         emit KeySharesCommitted(epoch, sharesHash, sharesUri);
     }
 
-    /// @notice Confirms the caller decrypted its share of the escrow file `sharesHash` and that the
-    ///         share matches the file's polynomial commitments, whose constant term is the
-    ///         committed key's point. Epoch verifiers other than the epoch publisher, before the plan.
-    function acknowledgeKeyShares(uint256 epoch, bytes32 sharesHash) external {
+    /// @notice Accepts the epoch's current plan and key escrow. A verifier accepts only after
+    ///         checking that the plan and its own envelopes are fetchable and well formed, that the
+    ///         escrow's threshold is the epoch's, and that its own share lies on the escrow's
+    ///         committed polynomial, whose constant term is the committed key's point. Epoch
+    ///         verifiers other than the epoch publisher; the plan takes effect at
+    ///         `requiredPlanAcceptances(epoch)`. Acceptances are bound to the bank, the shares and
+    ///         the plan, so a replaced bank, escrow or plan needs accepting again.
+    function acceptPlan(uint256 epoch, bytes32 sharesHash, bytes32 planHash) external {
         if (!_epochMember[epoch][msg.sender]) revert NotVerifier();
         EpochState storage state = _epochs[epoch];
         if (msg.sender == state.publisher) revert NotVerifier();
-        if (
-            state.keySharesHash == bytes32(0) || state.planHash != bytes32(0)
-                || block.timestamp >= _commitDeadline(epoch, state)
-        ) revert WrongPhase();
-        if (sharesHash != state.keySharesHash) revert InvalidValue();
-        if (keySharesAcknowledged[epoch][sharesHash][msg.sender]) revert AlreadyAcknowledged();
-        keySharesAcknowledged[epoch][sharesHash][msg.sender] = true;
-        keyShareAcks[epoch][sharesHash] += 1;
-        emit KeySharesAcknowledged(epoch, msg.sender, sharesHash);
+        if (state.planActive || state.planHash == bytes32(0) || block.timestamp >= _commitDeadline(epoch, state)) {
+            revert WrongPhase();
+        }
+        if (sharesHash != state.keySharesHash || planHash != state.planHash) revert InvalidValue();
+        bytes32 round = _roundKey(state);
+        if (_accepted[epoch][round][msg.sender]) revert AlreadyAccepted();
+        _accepted[epoch][round][msg.sender] = true;
+        _acceptances[epoch][round] += 1;
+        emit PlanAccepted(epoch, msg.sender, sharesHash, planHash);
+        _activateIfAccepted(epoch, state);
     }
 
-    /// @notice Acknowledgements `commitPlan` needs: the threshold, from verifiers other than the
-    ///         epoch publisher. When fewer such verifiers exist, all of them: the publisher could
-    ///         then block finalization by not attesting anyway, so it gains nothing.
-    function requiredKeyShareAcks(uint256 epoch) external view override returns (uint256) {
-        return _requiredKeyShareAcks(epoch, _epochs[epoch]);
+    /// @notice Acceptances of the current bank, escrow and plan so far.
+    function planAcceptances(uint256 epoch) external view override returns (uint256) {
+        EpochState storage state = _epochs[epoch];
+        return _acceptances[epoch][_roundKey(state)];
+    }
+
+    /// @notice Whether `verifier` accepted the current bank, escrow and plan.
+    function hasAcceptedPlan(uint256 epoch, address verifier) external view override returns (bool) {
+        return _accepted[epoch][_roundKey(_epochs[epoch])][verifier];
+    }
+
+    /// @notice Acceptances a plan needs: the threshold, from verifiers other than the epoch
+    ///         publisher. When fewer such verifiers exist, all of them: the publisher could then
+    ///         block finalization by not attesting anyway, so it gains nothing.
+    function requiredPlanAcceptances(uint256 epoch) external view override returns (uint256) {
+        return _requiredAcceptances(epoch, _epochs[epoch]);
     }
 
     /// @notice Publishes the caller's decrypted key share when the bank key is still hidden at
@@ -532,7 +563,7 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         if (!_epochMember[epoch][msg.sender]) revert NotVerifier();
         EpochState storage state = _epochs[epoch];
         if (
-            state.keySharesHash == bytes32(0) || state.bankKey != bytes32(0)
+            !state.planActive || state.bankKey != bytes32(0)
                 || block.timestamp < _backupDeadline(epoch, state) || block.timestamp >= _attestDeadline(epoch, state)
         ) revert WrongPhase();
         if (share.length == 0 || share.length > MAX_KEY_SHARE_BYTES) revert InvalidValue();
@@ -545,7 +576,7 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     ///         score. Anyone holding the key can reveal it; it must match the committed hash.
     function revealBankKey(uint256 epoch, bytes32 bankKey) external {
         EpochState storage state = _epochs[epoch];
-        if (state.planHash == bytes32(0) || state.bankKey != bytes32(0)) revert WrongPhase();
+        if (!state.planActive || state.bankKey != bytes32(0)) revert WrongPhase();
         if (block.timestamp < _backupDeadline(epoch, state)) revert WrongPhase();
         address keyAddress = _keyAddress(bankKey);
         if (keyAddress == address(0) || bytes32(uint256(uint160(keyAddress))) != state.bankKeyHash) revert InvalidValue();
@@ -560,7 +591,7 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     function commitSlices(uint256 epoch, bytes32 slicesRoot, string calldata manifestUri) external {
         if (!_epochMember[epoch][msg.sender]) revert NotVerifier();
         EpochState storage state = _epochs[epoch];
-        if (state.planHash == bytes32(0) || block.timestamp >= _backupDeadline(epoch, state)) revert WrongPhase();
+        if (!state.planActive || block.timestamp >= _backupDeadline(epoch, state)) revert WrongPhase();
         if (slicesRoot == bytes32(0)) revert InvalidValue();
         _validateUri(manifestUri);
         uint256 commits = sliceCommits[epoch][msg.sender] + 1;
@@ -695,6 +726,7 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         info.publisher = state.publisher;
         info.takenOverAt = state.takenOverAt;
         info.keySharesHash = state.keySharesHash;
+        info.planActive = state.planActive;
     }
 
     function epochVerifiers(uint256 epoch) external view override returns (address[] memory) {
@@ -753,10 +785,20 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         return state.verifiers.length / 2 + 1;
     }
 
-    function _requiredKeyShareAcks(uint256 epoch, EpochState storage state) private view returns (uint256) {
+    function _requiredAcceptances(uint256 epoch, EpochState storage state) private view returns (uint256) {
         uint256 others = state.verifiers.length - (_epochMember[epoch][state.publisher] ? 1 : 0);
         uint256 needed = _threshold(state);
         return needed < others ? needed : others;
+    }
+
+    function _roundKey(EpochState storage state) private view returns (bytes32) {
+        return keccak256(abi.encode(state.bankGeneration, state.keySharesHash, state.planHash));
+    }
+
+    function _activateIfAccepted(uint256 epoch, EpochState storage state) private {
+        if (_acceptances[epoch][_roundKey(state)] < _requiredAcceptances(epoch, state)) return;
+        state.planActive = true;
+        emit PlanActivated(epoch, state.planHash);
     }
 
     /// @dev Address of `key·G`, or zero for a key outside (0, n). With h = 0, R = G (even y, so
@@ -915,6 +957,8 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         state.bankHash = bankHash;
         state.bankKeyHash = bankKeyHash;
         state.keySharesHash = bytes32(0);
+        state.planHash = bytes32(0);
+        state.bankGeneration += 1;
         state.publisher = msg.sender;
         emit BankCommitted(epoch, bankHash, bankKeyHash, bankUri);
     }

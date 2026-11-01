@@ -371,9 +371,9 @@ contract AntseedKbfVerificationTest is Test {
 
         vm.prank(verifierA);
         verification.commitKeyShares(EPOCH, keccak256("shares"), URI);
-        _acknowledge(EPOCH);
         vm.prank(verifierA);
         verification.commitPlan(EPOCH, keccak256("plan"), URI);
+        _accept(EPOCH);
         vm.prank(verifierB);
         verification.commitSlices(EPOCH, keccak256("slices"), URI);
         vm.warp(EPOCH_START + 4 days);
@@ -415,9 +415,9 @@ contract AntseedKbfVerificationTest is Test {
         assertTrue(verification.epochInfo(EPOCH).seed != oldSeed);
         vm.prank(verifierC);
         verification.commitKeyShares(EPOCH, keccak256("shares"), URI);
-        _acknowledge(EPOCH);
         vm.prank(verifierC);
         verification.commitPlan(EPOCH, keccak256("plan"), URI);
+        _accept(EPOCH);
         vm.warp(block.timestamp + 6 hours);
         vm.prank(verifierA);
         vm.expectRevert(AntseedKbfVerification.WrongPhase.selector);
@@ -514,9 +514,9 @@ contract AntseedKbfVerificationTest is Test {
 
         vm.prank(publisher);
         verification.commitKeyShares(EPOCH, keccak256("shares"), URI);
-        _acknowledge(EPOCH);
         vm.prank(publisher);
         verification.commitPlan(EPOCH, keccak256("plan"), URI);
+        _accept(EPOCH);
         // Verifiers rely on these shares from here on: the publisher cannot swap them.
         vm.prank(publisher);
         vm.expectRevert(AntseedKbfVerification.WrongPhase.selector);
@@ -524,57 +524,79 @@ contract AntseedKbfVerificationTest is Test {
         assertEq(verification.epochInfo(EPOCH).keySharesHash, keccak256("shares"));
     }
 
-    function test_planNeedsVerifiersOtherThanThePublisherToAcknowledgeTheShares() public {
+    function test_aPlanTakesEffectOnceVerifiersOtherThanThePublisherAcceptIt() public {
         _openAndSeed(EPOCH);
         bytes32 shares = keccak256("shares");
-        vm.prank(verifierA);
-        vm.expectRevert(AntseedKbfVerification.WrongPhase.selector);
-        verification.acknowledgeKeyShares(EPOCH, shares);
+        bytes32 plan = keccak256("plan");
         vm.prank(publisher);
         verification.commitKeyShares(EPOCH, shares, URI);
-        assertEq(verification.requiredKeyShareAcks(EPOCH), 2, "the threshold of three verifiers");
+        vm.prank(verifierA);
+        vm.expectRevert(AntseedKbfVerification.WrongPhase.selector);
+        verification.acceptPlan(EPOCH, shares, plan);
+        vm.prank(publisher);
+        verification.commitPlan(EPOCH, plan, URI);
+        assertFalse(verification.epochInfo(EPOCH).planActive, "proposed, not in effect");
+        assertEq(verification.requiredPlanAcceptances(EPOCH), 2, "the threshold of three verifiers");
+
+        // Nothing runs on a plan that is not in effect.
+        vm.prank(verifierA);
+        vm.expectRevert(AntseedKbfVerification.WrongPhase.selector);
+        verification.commitSlices(EPOCH, keccak256("slices"), URI);
 
         vm.prank(address(0xBAD));
         vm.expectRevert(AntseedKbfVerification.NotVerifier.selector);
-        verification.acknowledgeKeyShares(EPOCH, shares);
+        verification.acceptPlan(EPOCH, shares, plan);
         vm.prank(verifierA);
         vm.expectRevert(AntseedKbfVerification.InvalidValue.selector);
-        verification.acknowledgeKeyShares(EPOCH, keccak256("other shares"));
+        verification.acceptPlan(EPOCH, keccak256("other shares"), plan);
+        vm.prank(verifierA);
+        vm.expectRevert(AntseedKbfVerification.InvalidValue.selector);
+        verification.acceptPlan(EPOCH, shares, keccak256("other plan"));
 
         vm.expectEmit(true, true, false, true);
-        emit AntseedKbfVerification.KeySharesAcknowledged(EPOCH, verifierA, shares);
+        emit AntseedKbfVerification.PlanAccepted(EPOCH, verifierA, shares, plan);
         vm.prank(verifierA);
-        verification.acknowledgeKeyShares(EPOCH, shares);
+        verification.acceptPlan(EPOCH, shares, plan);
         vm.prank(verifierA);
-        vm.expectRevert(AntseedKbfVerification.AlreadyAcknowledged.selector);
-        verification.acknowledgeKeyShares(EPOCH, shares);
-        vm.prank(publisher);
-        vm.expectRevert(AntseedKbfVerification.KeyNotAcknowledged.selector);
-        verification.commitPlan(EPOCH, keccak256("plan"), URI);
+        vm.expectRevert(AntseedKbfVerification.AlreadyAccepted.selector);
+        verification.acceptPlan(EPOCH, shares, plan);
+        assertEq(verification.planAcceptances(EPOCH), 1);
+        assertTrue(verification.hasAcceptedPlan(EPOCH, verifierA));
 
-        // New shares need acknowledging again.
+        // A new plan (or new shares) needs accepting again.
         vm.prank(publisher);
-        verification.commitKeyShares(EPOCH, keccak256("new shares"), URI);
+        verification.commitPlan(EPOCH, keccak256("new plan"), URI);
+        assertEq(verification.planAcceptances(EPOCH), 0);
+        assertFalse(verification.hasAcceptedPlan(EPOCH, verifierA));
         vm.prank(verifierB);
-        verification.acknowledgeKeyShares(EPOCH, keccak256("new shares"));
-        vm.prank(publisher);
-        vm.expectRevert(AntseedKbfVerification.KeyNotAcknowledged.selector);
-        verification.commitPlan(EPOCH, keccak256("plan"), URI);
+        verification.acceptPlan(EPOCH, shares, keccak256("new plan"));
         vm.prank(verifierC);
-        verification.acknowledgeKeyShares(EPOCH, keccak256("new shares"));
-        vm.prank(publisher);
-        verification.commitPlan(EPOCH, keccak256("plan"), URI);
+        vm.expectEmit(true, false, false, true);
+        emit AntseedKbfVerification.PlanActivated(EPOCH, keccak256("new plan"));
+        verification.acceptPlan(EPOCH, shares, keccak256("new plan"));
+        assertTrue(verification.epochInfo(EPOCH).planActive);
 
+        // In effect: final.
+        vm.prank(publisher);
+        vm.expectRevert(AntseedKbfVerification.PlanAlreadyCommitted.selector);
+        verification.commitPlan(EPOCH, plan, URI);
+        vm.prank(publisher);
+        verification.commitPlan(EPOCH, keccak256("new plan"), URI);
+        vm.prank(publisher);
+        vm.expectRevert(AntseedKbfVerification.WrongPhase.selector);
+        verification.commitKeyShares(EPOCH, keccak256("late shares"), URI);
         vm.prank(verifierA);
         vm.expectRevert(AntseedKbfVerification.WrongPhase.selector);
-        verification.acknowledgeKeyShares(EPOCH, keccak256("new shares"));
+        verification.acceptPlan(EPOCH, shares, keccak256("new plan"));
+        vm.prank(verifierA);
+        verification.commitSlices(EPOCH, keccak256("slices"), URI);
     }
 
-    function test_aTakeoverVerifierWithBogusEscrowCannotFreezeTheRound() public {
+    function test_aTakeoverVerifierCannotFreezeTheRoundWithAPlanNobodyAccepts() public {
         _openAndSeed(EPOCH);
         vm.warp(EPOCH_START + 6 hours);
-        // A takes the epoch over with a bank only it can open, escrows shares nobody can use and
-        // would withhold the key: no other verifier acknowledges them.
+        // A takes the epoch over, escrows and proposes a plan the others cannot use (unfetchable,
+        // malformed, or with bogus shares): nobody accepts it.
         vm.prank(verifierA);
         verification.takeOverBank(EPOCH, keccak256("a bank"), _keyHashOf(0xA11CE), URI);
         vm.roll(verification.epochInfo(EPOCH).seedBlock + 1);
@@ -582,30 +604,94 @@ contract AntseedKbfVerificationTest is Test {
         vm.prank(verifierA);
         verification.commitKeyShares(EPOCH, keccak256("bogus shares"), URI);
         vm.prank(verifierA);
-        vm.expectRevert(AntseedKbfVerification.NotVerifier.selector);
-        verification.acknowledgeKeyShares(EPOCH, keccak256("bogus shares"));
-        assertEq(verification.requiredKeyShareAcks(EPOCH), 2, "two of the other verifiers");
+        verification.commitPlan(EPOCH, keccak256("unusable plan"), URI);
         vm.prank(verifierA);
-        vm.expectRevert(AntseedKbfVerification.KeyNotAcknowledged.selector);
-        verification.commitPlan(EPOCH, keccak256("plan"), URI);
+        vm.expectRevert(AntseedKbfVerification.NotVerifier.selector);
+        verification.acceptPlan(EPOCH, keccak256("bogus shares"), keccak256("unusable plan"));
+        assertEq(verification.requiredPlanAcceptances(EPOCH), 2, "two of the other verifiers");
+        assertFalse(verification.epochInfo(EPOCH).planActive);
 
-        // With no plan, the honest majority takes the epoch over again and completes it.
+        // With no plan in effect, the honest majority takes the epoch over again and completes it.
         vm.warp(block.timestamp + 6 hours);
+        vm.prank(verifierA);
+        vm.expectRevert(AntseedKbfVerification.WrongPhase.selector);
+        verification.takeOverBank(EPOCH, keccak256("a bank again"), _keyHash(), URI);
         vm.prank(verifierB);
         verification.takeOverBank(EPOCH, keccak256("b bank"), _keyHash(), URI);
+        assertEq(verification.epochInfo(EPOCH).planHash, bytes32(0), "the unaccepted plan goes with its bank");
         vm.roll(verification.epochInfo(EPOCH).seedBlock + 1);
         verification.fixSeed(EPOCH);
         vm.prank(verifierB);
         verification.commitKeyShares(EPOCH, keccak256("b shares"), URI);
-        _acknowledge(EPOCH);
-        assertFalse(verification.keySharesAcknowledged(EPOCH, keccak256("b shares"), verifierB));
         vm.prank(verifierB);
         verification.commitPlan(EPOCH, keccak256("plan"), URI);
+        _accept(EPOCH);
+        assertFalse(verification.hasAcceptedPlan(EPOCH, verifierB));
         vm.warp(EPOCH_START + 4 days);
         verification.revealBankKey(EPOCH, BANK_KEY);
         (bytes32 root,,) = _resultsRoot(EPOCH, SAME);
         _attestMajority(EPOCH, root);
         assertEq(verification.epochInfo(EPOCH).finalizedRoot, root);
+    }
+
+    function test_acceptancesDoNotCarryOverToAReplacedBank() public {
+        _openAndSeed(EPOCH);
+        bytes32 shares = keccak256("shares");
+        bytes32 plan = keccak256("plan");
+        vm.prank(publisher);
+        verification.commitKeyShares(EPOCH, shares, URI);
+        vm.prank(publisher);
+        verification.commitPlan(EPOCH, plan, URI);
+        vm.prank(verifierB);
+        verification.acceptPlan(EPOCH, shares, plan);
+        assertEq(verification.planAcceptances(EPOCH), 1);
+
+        // A takes the epoch over with another key and re-commits the very same shares and plan
+        // hashes: B checked them against the old key, so they need accepting again.
+        vm.warp(EPOCH_START + 6 hours);
+        vm.prank(verifierA);
+        verification.takeOverBank(EPOCH, keccak256("a bank"), _keyHashOf(0xA11CE), URI);
+        vm.roll(verification.epochInfo(EPOCH).seedBlock + 1);
+        verification.fixSeed(EPOCH);
+        vm.prank(verifierA);
+        verification.commitKeyShares(EPOCH, shares, URI);
+        vm.prank(verifierA);
+        verification.commitPlan(EPOCH, plan, URI);
+        assertEq(verification.planAcceptances(EPOCH), 0);
+        assertFalse(verification.hasAcceptedPlan(EPOCH, verifierB));
+        vm.prank(verifierC);
+        verification.acceptPlan(EPOCH, shares, plan);
+        assertFalse(verification.epochInfo(EPOCH).planActive, "one fresh acceptance of two");
+        vm.prank(verifierB);
+        verification.acceptPlan(EPOCH, shares, plan);
+        assertTrue(verification.epochInfo(EPOCH).planActive);
+    }
+
+    function test_aVerifierTakesOneEpochOverAtMostTwiceAndNeverTwiceInARow() public {
+        _openAndSeed(EPOCH);
+        verification.setPublisherGraceSeconds(1 hours);
+        vm.warp(EPOCH_START + 1 hours);
+        vm.prank(verifierA);
+        verification.takeOverBank(EPOCH, keccak256("a1"), _keyHash(), URI);
+        vm.warp(block.timestamp + 1 hours);
+        vm.prank(verifierA);
+        vm.expectRevert(AntseedKbfVerification.WrongPhase.selector);
+        verification.takeOverBank(EPOCH, keccak256("a again"), _keyHash(), URI);
+        vm.prank(verifierB);
+        verification.takeOverBank(EPOCH, keccak256("b1"), _keyHash(), URI);
+        vm.warp(block.timestamp + 1 hours);
+        vm.prank(verifierA);
+        verification.takeOverBank(EPOCH, keccak256("a2"), _keyHash(), URI);
+        assertEq(verification.takeovers(EPOCH, verifierA), 2);
+        vm.warp(block.timestamp + 1 hours);
+        vm.prank(verifierB);
+        verification.takeOverBank(EPOCH, keccak256("b2"), _keyHash(), URI);
+        vm.warp(block.timestamp + 1 hours);
+        vm.prank(verifierA);
+        vm.expectRevert(AntseedKbfVerification.WrongPhase.selector);
+        verification.takeOverBank(EPOCH, keccak256("a3"), _keyHash(), URI);
+        vm.prank(verifierC);
+        verification.takeOverBank(EPOCH, keccak256("c1"), _keyHash(), URI);
     }
 
     function test_aLoneOtherVerifierIsEnoughWhenThePublisherCouldBlockAnyway() public {
@@ -618,12 +704,13 @@ contract AntseedKbfVerificationTest is Test {
         verification.fixSeed(EPOCH);
         vm.prank(verifierA);
         verification.commitKeyShares(EPOCH, keccak256("shares"), URI);
-        // Threshold 2 of 2, but A must attest for any root to finalize: B's check is all that counts.
-        assertEq(verification.requiredKeyShareAcks(EPOCH), 1);
-        vm.prank(verifierB);
-        verification.acknowledgeKeyShares(EPOCH, keccak256("shares"));
         vm.prank(verifierA);
         verification.commitPlan(EPOCH, keccak256("plan"), URI);
+        // Threshold 2 of 2, but A must attest for any root to finalize: B's check is all that counts.
+        assertEq(verification.requiredPlanAcceptances(EPOCH), 1);
+        vm.prank(verifierB);
+        verification.acceptPlan(EPOCH, keccak256("shares"), keccak256("plan"));
+        assertTrue(verification.epochInfo(EPOCH).planActive);
     }
 
     function test_theBankKeyMustMatchItsCommittedPoint() public {
@@ -1053,23 +1140,22 @@ contract AntseedKbfVerificationTest is Test {
             vm.prank(publisher);
             verification.commitKeyShares(epoch, keccak256(abi.encode("shares", epoch)), URI);
         }
-        _acknowledge(epoch);
         vm.prank(publisher);
         verification.commitPlan(epoch, keccak256(abi.encode("plan", epoch)), URI);
+        _accept(epoch);
     }
 
-    /// @dev Acknowledges the current key shares from snapshot verifiers until the plan may go out.
-    function _acknowledge(uint256 epoch) private {
-        IAntseedKbfVerification.EpochInfo memory info = verification.epochInfo(epoch);
+    /// @dev Snapshot verifiers other than the epoch publisher accept the current plan until it is in effect.
+    function _accept(uint256 epoch) private {
         address[] memory members = verification.epochVerifiers(epoch);
         for (uint256 i = 0; i < members.length; i++) {
-            if (verification.keyShareAcks(epoch, info.keySharesHash) >= verification.requiredKeyShareAcks(epoch)) return;
-            if (members[i] == info.publisher || verification.keySharesAcknowledged(epoch, info.keySharesHash, members[i])) {
-                continue;
-            }
+            IAntseedKbfVerification.EpochInfo memory info = verification.epochInfo(epoch);
+            if (info.planActive) return;
+            if (members[i] == info.publisher || verification.hasAcceptedPlan(epoch, members[i])) continue;
             vm.prank(members[i]);
-            verification.acknowledgeKeyShares(epoch, info.keySharesHash);
+            verification.acceptPlan(epoch, info.keySharesHash, info.planHash);
         }
+        assertTrue(verification.epochInfo(epoch).planActive, "the plan is in effect");
     }
 
     /// @dev The committed form of `BANK_KEY`: the address of `BANK_KEY·G`, left-padded.

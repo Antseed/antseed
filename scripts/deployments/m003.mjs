@@ -260,6 +260,16 @@ export function kbfVerificationMigration({ id, release: RELEASE, replaces = null
       await clearPlan(context, RELEASE);
       return false;
     }
+    // A later release replaced this deployment as the current verification contract (M004 after
+    // M003): re-running this release must not point clients back at it.
+    const currentVerification = context.canonical.contracts.kbfVerification?.address;
+    if (
+      await historyRecordExists(context, RELEASE) && currentVerification && !sameAddress(currentVerification, checkpoint.address)
+      && !(await replacedAddresses(context)).has(currentVerification.toLowerCase())
+    ) {
+      await clearPlan(context, RELEASE);
+      return false;
+    }
     if (!checkpoint.contracts.kbfVerification?.transactionHash || !checkpoint.contracts.kbfVerificationPointsPolicy?.transactionHash) {
       throw new Error(`${id} confirmed creation receipts required`);
     }

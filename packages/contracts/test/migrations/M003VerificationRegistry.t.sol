@@ -253,10 +253,10 @@ contract M003VerificationRegistryTest is Test {
         verification.fixSeed(0);
         vm.prank(publisher);
         verification.commitKeyShares(0, keccak256("shares"), "ipfs://shares");
-        vm.prank(auditor);
-        verification.acknowledgeKeyShares(0, keccak256("shares"));
         vm.prank(publisher);
         verification.commitPlan(0, keccak256("plan"), "ipfs://plan");
+        vm.prank(auditor);
+        verification.acceptPlan(0, keccak256("shares"), keccak256("plan"));
         vm.warp(block.timestamp + 4 days);
         verification.revealBankKey(0, key);
         IAntseedKbfVerification.ServiceResult[] memory results = new IAntseedKbfVerification.ServiceResult[](1);

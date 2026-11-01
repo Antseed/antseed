@@ -95,8 +95,10 @@ async function collectBatch(
       errorText = error instanceof Error ? error.message : String(error)
     }
     if (status === 400 || status === 422) {
-      if (!omitSampling && isKbfSamplingFieldRejection(status, errorText)) { omitSampling = true; continue }
-      if (!omitThinking && isKbfThinkingSuppressionRejection(status, errorText)) { omitThinking = true; continue }
+      // Adapting the request format is not an attempt at an answer: each adaptation happens once,
+      // and the batch still gets all its attempts afterwards.
+      if (!omitSampling && isKbfSamplingFieldRejection(status, errorText)) { omitSampling = true; attempt--; continue }
+      if (!omitThinking && isKbfThinkingSuppressionRejection(status, errorText)) { omitThinking = true; attempt--; continue }
     }
     if (status !== 200) {
       context.log(`batch ${batch.batchIndex} of ${targetKey(slice.target)}: HTTP ${status || 'error'} ${errorText.slice(0, 160)}`)

@@ -36,9 +36,10 @@ After M003:
   verifier can take the epoch over with its own bank (`takeOverBank`); `verifier start`
   does this in turns. Before its plan is accepted, the epoch publisher must escrow the
   bank key with the epoch's verifiers (`commitKeyShares`, a Feldman-verifiable Shamir split
-  with the finalization majority as threshold; fixed once the plan is in), and a majority of
-  the epoch's verifiers other than the epoch publisher must check their shares against the
-  committed key point (`acknowledgeKeyShares`), so if the key is not revealed at the backup deadline, verifiers post their
+  with the finalization majority as threshold), and the plan only takes effect once a majority of
+  the epoch's verifiers other than the epoch publisher checked the plan, their envelopes, the bank
+  and their key shares and accepted it (`acceptPlan`); until then the epoch can be taken over
+  again (at most twice per verifier, never by its own publisher). so if the key is not revealed at the backup deadline, verifiers post their
   shares (`revealKeyShare`) and rebuild and reveal it themselves. Backups need no
   publisher step either: the plan already seals each verifier's backed-up slices, and
   backup verifiers buy the undelivered ones after the commit deadline.

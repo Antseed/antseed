@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import type { KbfReferenceV1 } from '@antseed/fingerprints'
+import { referenceFixture } from '../model-audit-fixtures.test-support.js'
 import { ZERO_HASH, type KbfEpochInfo } from '@antseed/node/payments'
 import { loadRevealedBankReference } from './revealed-bank.js'
 import { contentHash, sealBank } from './sealing.js'
@@ -19,7 +19,7 @@ test('check reads the newest revealed bank that includes the model, verified aga
     const publish = async (epoch: bigint, models: string[], reveal: boolean) => {
       const bank: EpochBankV1 = {
         kind: 'antseed-kbf-epoch-bank', version: 1, epoch: epoch.toString(),
-        models: Object.fromEntries(models.map((model) => [model, { referenceId: `${model}@${epoch}` } as unknown as KbfReferenceV1])),
+        models: Object.fromEntries(models.map((model) => [model, referenceFixture(model, 40)])),
       }
       const sealed = sealBank(encodeRoundFile(bank))
       const uri = await storage.put(sealed.blob)
@@ -39,11 +39,15 @@ test('check reads the newest revealed bank that includes the model, verified aga
 
     const latestA = await loadRevealedBankReference({ client, storage, model: 'MODEL-A' })
     assert.equal(latestA.epoch, 11n)
-    assert.equal(latestA.reference.referenceId, 'model-a@11')
+    assert.equal(latestA.reference.referenceId, referenceFixture('model-a', 40).referenceId)
     const latestB = await loadRevealedBankReference({ client, storage, model: 'model-b' })
     assert.equal(latestB.epoch, 10n)
     await assert.rejects(loadRevealedBankReference({ client, storage, model: 'model-b', epoch: 12n }), /epoch 12 has no revealed/)
     await assert.rejects(loadRevealedBankReference({ client, storage, model: 'model-z' }), /no revealed question bank/)
+
+    // A revealed key that does not open its bank is skipped, not fatal.
+    banks.get(11n)!.info.bankKey = `0x${'11'.repeat(32)}`
+    assert.equal((await loadRevealedBankReference({ client, storage, model: 'model-a' })).epoch, 10n)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

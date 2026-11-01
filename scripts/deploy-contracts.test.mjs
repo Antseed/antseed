@@ -2251,6 +2251,23 @@ test('M003 repairs history-only activation without a deployment or rewriting his
   assert.equal(await m003.finalize(context, observation, 'broadcast'), false);
 });
 
+test('re-running M003 after M004 replaced its round contract leaves the M004 pointers alone', async (t) => {
+  const checkpoint = m003Checkpoint();
+  const context = await m003Context(t, checkpoint);
+  const { record } = activationRecords(context, checkpoint);
+  await writeJsonAtomic(path.join(context.outputRoot, context.network, 'history', `${M003_RELEASE}.json`), record);
+  // M004 is current: its own verification contract and policy.
+  const m004 = structuredClone(context.canonical);
+  m004.release = M004_RELEASE;
+  m004.contracts.kbfVerification = { ...checkpoint.contracts.kbfVerification, address: ADDRESS.ants };
+  const currentPath = path.join(context.outputRoot, context.network, 'current.json');
+  await writeJsonAtomic(currentPath, m004);
+  context.canonical = m004;
+  const before = await readFile(currentPath, 'utf8');
+  assert.equal(await m003.finalize(context, { state: 'active', deployment: { checkpoint } }, 'broadcast'), false);
+  assert.equal(await readFile(currentPath, 'utf8'), before, 'current.json still points at M004');
+});
+
 test('M003 binds the deploy signer and environment to the original checkpoint', () => {
   const checkpoint = m003Checkpoint();
   const context = { forkTest: true, receiptDirectory: '/tmp/m003-test-receipts', canonical: { chainId: 8453 } };

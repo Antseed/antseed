@@ -109,7 +109,7 @@ async function setup(options: SetupOptions = {}): Promise<Setup> {
     epoch: EPOCH, startedAt: START, seedBlock: 10n, seed: SEED, modelsVersion: 1, verifierCount: 1,
     schedule: { collectSeconds: COLLECT_SECONDS, backupSeconds: 86400, attestSeconds: 86400, probesPerService: 80, slicesPerService: 4 },
     bankHash: `0x${'01'.repeat(32)}`, bankKeyHash: `0x${'02'.repeat(32)}`, bankKey: ZERO_HASH, planHash,
-    finalizedRoot: ZERO_HASH, voided: false, publisher: me.address, takenOverAt: 0, keySharesHash: `0x${'03'.repeat(32)}`,
+    finalizedRoot: ZERO_HASH, voided: false, publisher: me.address, takenOverAt: 0, keySharesHash: `0x${'03'.repeat(32)}`, planActive: true,
   }
   const chain = new CollectChain(info, [{ epoch: EPOCH, hash: planHash, uri: planUri, backup: false, sender: me.address, blockNumber: 1, logIndex: 0, txHash: '0x' }], members.map((member) => getAddress(member)))
 
@@ -437,4 +437,30 @@ test('a backup collector waits for unreachable primary files, not for ones that 
   await verifierTick(u.context)
   assert.ok(u.chain.slices.some((entry) => entry.backup), 'after the wait the unreachable slices are bought as backups')
   assert.ok(u.logs.some((line) => line.includes('still unavailable')))
+})
+
+test('format adaptations do not use up a batch attempt', async () => {
+  const me = new Wallet(Wallet.createRandom().privateKey)
+  const seller = new Wallet(Wallet.createRandom().privateKey)
+  const target: RoundTargetV1 = {
+    agentId: '1', peerId: seller.address.slice(2).toLowerCase(), service: MODEL, serviceHash: MODEL_HASH, model: MODEL, modelHash: MODEL_HASH,
+  }
+  const bank: EpochBankV1 = { kind: 'antseed-kbf-epoch-bank', version: 1, epoch: EPOCH.toString(), models: { [MODEL]: referenceFixture(MODEL, 40) } }
+  const plan = derivePlan({ epoch: EPOCH.toString(), seed: SEED, probesPerService: 10, slicesPerService: 1, verifiers: [me.address], targets: [target], bank })
+  const slice = envelopeFor(plan, bank, me.address, { backup: false }).slices[0]!
+  const { collectSlice } = await import('./collector.js')
+  const answers = [
+    () => new Response('temperature is not supported by this model', { status: 400 }),
+    () => new Response('reasoning_effort is not supported', { status: 400 }),
+    () => { throw new Error('socket hang up') },
+    () => { throw new Error('socket hang up') },
+    () => { throw new Error('socket hang up') },
+  ]
+  let calls = 0
+  const fetchImpl = (async () => answers[calls++]!()) as unknown as typeof fetch
+  const collected = await collectSlice({ ...slice, batches: slice.batches.slice(0, 1) }, {
+    buyerUrl: 'http://buyer.test', responseAuth: {} as ResponseAuthReader, log: () => {}, fetchImpl,
+  })
+  assert.equal(calls, 5, 'two format adaptations, then all three attempts at an answer')
+  assert.equal(collected.exchanges.length, 0)
 })

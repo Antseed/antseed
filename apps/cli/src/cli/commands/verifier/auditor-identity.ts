@@ -34,6 +34,8 @@ function checkConfiguredAuditor(config: VerifierCLIConfig | undefined, address: 
   }
 }
 
+const IDENTITY_HEX_ENV = 'ANTSEED_IDENTITY_HEX'
+
 /** Explains how to give a verifier its own key; the buyer's hot wallet only ever signs. */
 export const DEDICATED_SIGNER_HELP =
   'Create a dedicated verifier key (for example `cast wallet new ~/.antseed-verifier-keystore` or '
@@ -49,7 +51,14 @@ export async function buyerHotAddresses(dataDir: string): Promise<Set<string>> {
   const add = (address: string | null | undefined) => {
     if (address) addresses.add(getAddress(address))
   }
-  add((await readDefaultWallet(dataDir).catch(() => ({ address: null }))).address)
+  // Reading the default identity consumes ANTSEED_IDENTITY_HEX (the node clears it once loaded),
+  // but the buyer this command starts next must still inherit it: put it back.
+  const envIdentity = process.env[IDENTITY_HEX_ENV]
+  try {
+    add((await readDefaultWallet(dataDir).catch(() => ({ address: null }))).address)
+  } finally {
+    if (envIdentity !== undefined) process.env[IDENTITY_HEX_ENV] = envIdentity
+  }
   add(await storedDefaultIdentityAddress(dataDir))
   for (const identity of await listBuyerIdentities(dataDir)) add(identity.address)
   return addresses

@@ -35,6 +35,11 @@ export async function runDiffRechecks(input: {
   reserve(first: ModelVerificationTargetResult): Promise<{ reference: KbfReferenceV1; auditId: string }>
   /** Adds fresh probes to the bank once; null when enrollment is not allowed for this run. */
   enroll: (() => Promise<void>) | null
+  /**
+   * Gives up a recheck reservation the seller has seen part of, so the next recheck draws
+   * questions it has never seen instead of the ones it could now look up.
+   */
+  release(first: ModelVerificationTargetResult, auditId: string, reason: string): Promise<void>
   verify(
     first: ModelVerificationTargetResult,
     reference: KbfReferenceV1,
@@ -120,8 +125,12 @@ export async function runDiffRechecks(input: {
     }
     if (recheckUnanswered(recheck)) {
       // The seller was out of reach, not inconclusive: what it cost still counts, and the DIFF
-      // waits for a recheck once the seller is back.
+      // waits for a recheck once the seller is back. If some questions did reach it, they are
+      // spent: the next recheck gets fresh ones, so dropping the connection gains nothing.
       stats.cost = addAuditCostSummaries(stats.cost, recheck.cost)
+      if (recheckPartlySeen(recheck)) {
+        await input.release(first, reservation.auditId, 'the seller saw part of this recheck before it failed')
+      }
       keepPending(first, label, `recheck unanswered: ${recheck.outcomeReason!.summary}`)
       return
     }
@@ -148,6 +157,12 @@ export async function runDiffRechecks(input: {
  */
 export function recheckUnanswered(recheck: ModelVerificationTargetResult): boolean {
   return recheck.status === 'UNDETERMINED' && recheck.outcomeReason?.retryable === true
+}
+
+/** Whether any of a recheck's questions reached the seller: a batch answered, or not every batch failed. */
+export function recheckPartlySeen(recheck: ModelVerificationTargetResult): boolean {
+  const reason = recheck.outcomeReason
+  return recheck.parsedProbeCount > 0 || !reason || reason.affectedBatchCount < reason.totalBatchCount
 }
 
 export function combineDiffRecheck(
