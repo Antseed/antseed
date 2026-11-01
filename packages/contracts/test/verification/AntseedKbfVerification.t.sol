@@ -894,6 +894,20 @@ contract AntseedKbfVerificationTest is Test {
         assertEq(gate.minted(verifierA), a);
     }
 
+    function test_aRemovedVerifierFinishesItsEpochAndClaimsWhatItEarned() public {
+        verification.setMaxVerifierShareBps(10_000);
+        (bytes32[] memory leaves,) = _finalizeWithCredits(EPOCH);
+        // Removed after it did the work: the snapshot keeps its round, and its reward stays claimable.
+        verification.setVerifier(verifierA, false);
+        _advance();
+        uint256 a = _claim(verifierA, 3, 4, TestMerkle.proof(leaves, 1));
+        assertEq(a, 100 ether + 600 ether);
+        // Only new work needs approval: it can no longer publish a key.
+        vm.prank(verifierA);
+        vm.expectRevert(AntseedKbfVerification.NotVerifier.selector);
+        verification.setEncryptionKey(keccak256("new key"));
+    }
+
     function test_rewardsAreCappedPerVerifier() public {
         (bytes32[] memory leaves,) = _finalizeWithCredits(EPOCH);
         _advance();

@@ -16,7 +16,15 @@ import { collectSlice, type CollectorContext } from './collector.js'
 import { checkEnvelope, isListedTarget } from './envelope-check.js'
 import { buildResultsTree, collectorLeaf, serviceLeaf } from './merkle.js'
 import { derivePlan, sliceCollectors } from './plan.js'
-import { createEnvelopeDeliveryChecker, scoreRound, type CommittedManifest } from './scoring.js'
+import {
+  compactManifest,
+  deliveredByOwner,
+  envelopeSliceChecks,
+  roundSliceChecks,
+  scoreCompactRound,
+  type CommittedManifest,
+  type CompactManifest,
+} from './scoring.js'
 import { acceptPlan } from './plan-acceptance.js'
 import { loadPlanFile, openCommittedBank, UnusableBankError } from './round-files.js'
 import { contentHash, openEnvelope } from './sealing.js'
@@ -83,6 +91,8 @@ export interface VerifierDaemonContext {
    * the envelopes ask for. Default `DEFAULT_MAX_REQUESTS_PER_EPOCH`.
    */
   maxRequestsPerEpoch?: number
+  /** Older unsettled epochs visited per pass, beyond the recent lookback. Default 8. */
+  catchUpEpochsPerPass?: number
   log: (message: string) => void
 }
 
@@ -364,11 +374,14 @@ export async function computeResults(
     bank,
   })
   const memberSet = new Set(members.map((member) => member.toLowerCase()))
-  const manifests: CommittedManifest[] = []
+  const manifests: CompactManifest[] = []
   const unavailable: string[] = []
   const commits = (await client.sliceCommits(info.epoch)).filter((commit) => memberSet.has(commit.sender.toLowerCase()))
   const budgetFor = roundManifestBudget(info, members, planFile.targets)
-  for (const { commit, load } of await loadCommittedManifests(storage, commits, budgetFor, options.signal)) {
+  // Each file is checked as it arrives and only its per-slice answers are kept.
+  const checks = roundSliceChecks(plan, bank)
+  const compact = (manifest: CommittedManifest) => compactManifest(manifest, plan.epoch, checks)
+  for (const { commit, load } of await loadCommittedManifests(storage, commits, budgetFor, compact, options.signal)) {
     if (load.kind === 'loaded') {
       manifests.push(load.manifest)
     } else if (load.kind === 'invalid') {
@@ -384,7 +397,7 @@ export async function computeResults(
     }
   }
   if (unavailable.length > 0 && !options.allowUnavailable) throw new ManifestsUnavailableError(unavailable)
-  return scoreRound({ epoch: info.epoch, plan, bank, manifests })
+  return scoreCompactRound({ epoch: info.epoch, plan, bank, manifests })
 }
 
 /**
@@ -437,13 +450,16 @@ async function undeliveredSlices(
   slices: readonly EnvelopeSliceV1[],
 ): Promise<EnvelopeSliceV1[]> {
   const memberSet = new Set(members.map((member) => member.toLowerCase()))
-  const manifests: CommittedManifest[] = []
+  const manifests: CompactManifest[] = []
   const unavailable: string[] = []
   const deadlines = kbfEpochDeadlines(info, await context.client.epochDuration())
+  const owners = slices.map((slice) => ({ slice, owner: sliceCollectors(members, info.seed, slice.target, slice.sliceIndex).owner }))
+  const checks = envelopeSliceChecks(owners)
   const commits = (await context.client.sliceCommits(info.epoch))
     .filter((commit) => !commit.backup && memberSet.has(commit.sender.toLowerCase()))
   const signal = phaseFetchSignal(await context.client.now(), deadlines.backupDeadline, info.schedule.backupSeconds)
-  for (const { commit, load } of await loadCommittedManifests(context.storage, commits, roundManifestBudget(info, members, targets), signal)) {
+  const compact = (manifest: CommittedManifest) => compactManifest(manifest, info.epoch.toString(), checks)
+  for (const { commit, load } of await loadCommittedManifests(context.storage, commits, roundManifestBudget(info, members, targets), compact, signal)) {
     if (load.kind === 'loaded') manifests.push(load.manifest)
     else if (load.kind === 'unavailable') unavailable.push(commit.uri)
   }
@@ -454,8 +470,8 @@ async function undeliveredSlices(
     }
     context.log(`epoch ${info.epoch}: ${unavailable.length} primary slice files still unavailable; buying their backed-up slices`)
   }
-  const delivered = createEnvelopeDeliveryChecker(manifests, info.epoch.toString())
-  return slices.filter((slice) => !delivered(slice, sliceCollectors(members, info.seed, slice.target, slice.sliceIndex).owner))
+  const delivered = deliveredByOwner(manifests)
+  return owners.filter(({ slice, owner }) => !delivered(slice, owner)).map(({ slice }) => slice)
 }
 
 function uniqueTargets(targets: readonly RoundTargetV1[]): RoundTargetV1[] {
@@ -511,7 +527,11 @@ async function applyAndClaim(context: VerifierDaemonContext, epoch: bigint, curr
   return false
 }
 
-/** Epochs before `before` this verifier has state for and has not settled, oldest first, a pass's worth. */
+/**
+ * Epochs before `before` this verifier has state for and has not settled, a pass's worth. They
+ * take turns: each pass starts after the last epoch the previous one visited (a cursor kept in
+ * the state dir) and wraps around, so epochs that keep failing never starve the ones after them.
+ */
 async function unsettledEpochs(context: VerifierDaemonContext, before: bigint): Promise<bigint[]> {
   let names: string[]
   try {
@@ -523,10 +543,16 @@ async function unsettledEpochs(context: VerifierDaemonContext, before: bigint): 
     .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0))
   const unsettled: bigint[] = []
   for (const epoch of epochs) {
-    if (unsettled.length >= CATCH_UP_EPOCHS_PER_PASS) break
     if (!(await readState(context, epoch)).settled) unsettled.push(epoch)
   }
-  return unsettled
+  const perPass = context.catchUpEpochsPerPass ?? CATCH_UP_EPOCHS_PER_PASS
+  if (unsettled.length <= perPass) return unsettled
+  const cursorPath = join(context.stateDir, 'catch-up.json')
+  const after = BigInt((await readJson<{ after?: string }>(cursorPath))?.after ?? '-1')
+  const start = Math.max(0, unsettled.findIndex((epoch) => epoch > after))
+  const turn = Array.from({ length: perPass }, (_, offset) => unsettled[(start + offset) % unsettled.length]!)
+  await writeJsonAtomic(cursorPath, { after: turn.at(-1)!.toString() })
+  return turn
 }
 
 async function markSettled(context: VerifierDaemonContext, epoch: bigint): Promise<void> {

@@ -33,6 +33,11 @@ export interface PublisherDaemonContext {
   buildBank: (input: { epoch: bigint; models: KbfModel[]; excludedProbeIds: ReadonlySet<string> }) => Promise<EpochBankV1>
   /** Sellers to audit this epoch: staked, reachable, advertising an audited model within the price cap. */
   discoverTargets: (models: KbfModel[]) => Promise<RoundTargetV1[]>
+  /**
+   * False for a publisher the owner has replaced: it builds no new banks, but still carries the
+   * epochs whose banks it committed (escrow, plan, key reveal). Default true.
+   */
+  newBanks?: boolean
   log: (message: string) => void
 }
 
@@ -54,12 +59,13 @@ export async function publisherTick(context: PublisherDaemonContext): Promise<vo
   const me = await context.signer.getAddress()
 
   // The current round first: its deadlines are close, and next epoch's bank must never hold it up.
+  const newBanks = context.newBanks !== false
   if (isZeroHash(info.bankHash) && info.takenOverAt === 0 && now < deadlines.commitDeadline) {
-    await prepareBank(context, current, 'publisher')
+    if (newBanks) await prepareBank(context, current, 'publisher')
   } else if (sameAddress(info.publisher, me)) {
     await advanceEpochAsPublisher(context, info, deadlines, now)
   }
-  if (now >= deadlines.commitDeadline) {
+  if (newBanks && now >= deadlines.commitDeadline) {
     try {
       const next = await context.client.epochInfo(current + 1n)
       if (isZeroHash(next.bankHash)) await prepareBank(context, current + 1n, 'publisher')

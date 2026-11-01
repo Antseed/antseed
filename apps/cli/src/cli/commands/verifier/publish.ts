@@ -37,8 +37,19 @@ export function registerVerifierPublishCommand(verifier: Command): void {
         const client = createKbfRoundClient(config)
         const signer = await resolveAuditorSigner({ config: config.verifier, dataDir: globalOptions.dataDir, keystoreFlag: options.keystore })
         const publisher = await client.publisher()
-        if (publisher.toLowerCase() !== signer.address.toLowerCase()) {
-          throw new Error(`${signer.address} is not the publisher on ${client.contractAddress} (publisher: ${publisher})`)
+        // A publisher the owner replaced still owes the epochs whose banks it committed: their
+        // escrow, plan and key reveal. It finishes those and builds no new banks.
+        const newBanks = publisher.toLowerCase() === signer.address.toLowerCase()
+        if (!newBanks) {
+          const current = await client.currentEpoch()
+          const owed = []
+          for (const epoch of [current, current + 1n]) {
+            if ((await client.epochInfo(epoch)).publisher.toLowerCase() === signer.address.toLowerCase()) owed.push(epoch)
+          }
+          if (owed.length === 0) {
+            throw new Error(`${signer.address} is not the publisher on ${client.contractAddress} (publisher: ${publisher}) and publishes no open epoch`)
+          }
+          log(chalk.yellow(`${signer.address} is no longer the publisher: finishing epoch ${owed.join(' and ')}, no new banks`))
         }
         const buyerPort = Number(options.buyerPort ?? config.buyer.proxyPort)
         if (options.buyer !== false) await startGatewayBuyer(buyerPort, globalOptions, log)
@@ -52,6 +63,7 @@ export function registerVerifierPublishCommand(verifier: Command): void {
           buyerPort,
           log,
         })
+        context.newBanks = newBanks
         log(chalk.bold(`publisher ${signer.address} on ${client.contractAddress}`))
         await runDaemonLoop(interval, (message) => log(chalk.yellow(message)), () => publisherTick(context))
       } finally {

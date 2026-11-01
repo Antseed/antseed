@@ -548,3 +548,22 @@ test('an acceptance checked against one bank never counts for the bank a takeove
   }, checked), /InvalidValue/)
   assert.equal(await s.fake.planAcceptances(EPOCH), 0)
 })
+
+test('a publisher the owner replaced still carries the epoch it committed, and builds no new bank', async (t) => {
+  const s = await setup()
+  t.after(() => rm(s.dir, { recursive: true, force: true }))
+  const context = s.context(s.publisher, 'publisher')
+  s.fake.time = START + HOUR
+  await publisherTick(context)
+  s.fake.openAndSeed(EPOCH)
+  // The owner points the contract at a new publisher; the old one keeps running in finishing mode.
+  s.fake.publisherAddress = Wallet.createRandom().address
+  const finishing = { ...context, newBanks: false }
+  await publisherTick(finishing)
+  assert.ok(s.fake.calls.includes(`commitPlan:${EPOCH}`), 'escrow and plan of its own epoch')
+  await s.accept()
+  s.fake.time = START + 4 * DAY + HOUR
+  await publisherTick(finishing)
+  assert.ok(s.fake.calls.includes(`revealBankKey:${EPOCH}`), 'and the key reveal')
+  assert.ok(!s.fake.calls.includes(`commitBank:${EPOCH + 1n}`), 'no bank for the next epoch')
+})

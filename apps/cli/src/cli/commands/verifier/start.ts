@@ -1,9 +1,9 @@
 import pkg from '../../../../package.json' with { type: 'json' }
-import { chmod, readFile, stat } from 'node:fs/promises'
+import { chmod, readdir, readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import chalk from 'chalk'
 import type { Command } from 'commander'
-import { isZeroHash } from '@antseed/node/payments'
+import { isZeroHash, type KbfRoundClient } from '@antseed/node/payments'
 import { loadConfig } from '../../../config/loader.js'
 import { requireCurrentVerifier } from '../../../verifier/release-check.js'
 import { writeSecretJsonAtomic } from '../../../verifier/atomic-files.js'
@@ -50,6 +50,25 @@ export async function collectorForPass(input: {
     input.log(chalk.yellow(`buyer unavailable, not collecting this pass: ${error instanceof Error ? error.message : String(error)}`))
     return null
   }
+}
+
+/**
+ * Whether the signer may run: `approved` when it is on the current verifier list; `finishing` when
+ * it was removed but still has work it is owed, as a member of the current epoch's snapshot (whose
+ * round it may complete) or with local state of earlier epochs (whose results it may apply and
+ * whose rewards it may claim). Throws when it has neither, which is usually the wrong key.
+ */
+export async function verifierStanding(input: {
+  client: Pick<KbfRoundClient, 'isVerifier' | 'currentEpoch' | 'epochVerifiers' | 'contractAddress'>
+  address: string
+  stateDir: string
+}): Promise<'approved' | 'finishing'> {
+  if (await input.client.isVerifier(input.address)) return 'approved'
+  const members = await input.client.epochVerifiers(await input.client.currentEpoch())
+  if (members.some((member) => member.toLowerCase() === input.address.toLowerCase())) return 'finishing'
+  const epochs = await readdir(input.stateDir).catch(() => [] as string[])
+  if (epochs.some((name) => /^\d+$/.test(name))) return 'finishing'
+  throw new Error(`${input.address} is not an approved verifier on ${input.client.contractAddress}, and has no epoch to finish or claim`)
 }
 
 /** The verifier's X25519 key pair for question envelopes, created once in the data dir (owner-only). */
@@ -107,13 +126,16 @@ export function registerVerifierStartCommand(verifier: Command): void {
         })
         const client = createKbfRoundClient(config)
         const signer = await resolveAuditorSigner({ config: config.verifier, dataDir: globalOptions.dataDir, keystoreFlag: options.keystore })
-        if (!await client.isVerifier(signer.address)) {
-          throw new Error(`${signer.address} is not an approved verifier on ${client.contractAddress}`)
+        const epochsDir = join(globalOptions.dataDir, 'verifier', 'round', 'epochs')
+        const standing = await verifierStanding({ client, address: signer.address, stateDir: epochsDir })
+        if (standing === 'finishing') {
+          log(chalk.yellow(`${signer.address} is no longer an approved verifier: finishing the epochs it is part of and claiming what it earned, nothing new`))
         }
         const keys = await loadOrCreateEncryptionKey(globalOptions.dataDir)
         if (!isUsableEncryptionKey(keys.publicKey)) throw new Error('the stored encryption key cannot receive envelopes; remove verifier/round/encryption-key.json to make a new one')
         const onChainKey = await client.encryptionKey(signer.address)
-        if (isZeroHash(onChainKey) || onChainKey.toLowerCase() !== keys.publicKey.toLowerCase()) {
+        // Publishing a key needs current approval; a removed verifier keeps the one it published.
+        if (standing === 'approved' && (isZeroHash(onChainKey) || onChainKey.toLowerCase() !== keys.publicKey.toLowerCase())) {
           log(`publishing encryption key ${keys.publicKey}`)
           await client.setEncryptionKey(signer.wallet, keys.publicKey)
         }
@@ -155,7 +177,7 @@ export function registerVerifierStartCommand(verifier: Command): void {
             encryptionPrivateKey: keys.privateKey,
             storage,
             bindings,
-            stateDir: join(globalOptions.dataDir, 'verifier', 'round', 'epochs'),
+            stateDir: epochsDir,
             collector,
             maxRequestsPerEpoch,
             log,
@@ -165,7 +187,10 @@ export function registerVerifierStartCommand(verifier: Command): void {
           await step('key escrow: ', () => keyEscrowTick({
             client, signer: signer.wallet, address: signer.address, encryptionPrivateKey: keys.privateKey, storage, log,
           }))
-          if (collect) await step('fallback publisher: ', () => fallbackPublisherTick({ ...publisherContext, address: signer.address }))
+          // Taking an epoch over is new work: only for a verifier still approved.
+          if (collect && standing === 'approved') {
+            await step('fallback publisher: ', () => fallbackPublisherTick({ ...publisherContext, address: signer.address }))
+          }
           if (failures.length > 0) throw new Error(failures.join('; '))
         })
       } finally {

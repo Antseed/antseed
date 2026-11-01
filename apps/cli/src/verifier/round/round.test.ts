@@ -10,10 +10,10 @@ import { buildKbfProbeRequestBody } from '../model-run.js'
 import { referenceFixture } from '../model-audit-fixtures.test-support.js'
 import { derivePlan, envelopeFor } from './plan.js'
 import { ResultsTree, buildResultsTree, collectorLeaf, emptyRoundLeaf, serviceLeaf, verifyProof } from './merkle.js'
-import { createEnvelopeDeliveryChecker, scoreRound, type CommittedManifest } from './scoring.js'
+import { compactManifest, createEnvelopeDeliveryChecker, roundSliceChecks, scoreCompactRound, scoreRound, type CommittedManifest } from './scoring.js'
 import { CachedRoundStorage, DirectoryRoundStorage, PinataRoundStorage, RoundFileMismatchError, type RoundStorage } from './storage.js'
 import { encodeRoundFile } from './encoding.js'
-import { exceedsJsonTokens, manifestBudget } from './manifest-loader.js'
+import { exceedsJsonTokens, loadCommittedManifests, manifestBudget } from './manifest-loader.js'
 import { ManifestsUnavailableError, authenticResults, computeResults, phaseFetchSignal } from './verifier-daemon.js'
 import type { KbfEpochInfo, KbfRoundClient } from '@antseed/node/payments'
 import type { SellerBindingReader } from './seller-binding.js'
@@ -199,6 +199,44 @@ test('scoring finds the honest seller SAME and the cheater DIFF, identically for
   assert.deepEqual(verdicts, { '1': 'SAME', '2': 'DIFF' })
   assert.equal(results.totalSlices, roundPlan.slices.length)
   assert.equal(results.root, scoreRound({ epoch: 7n, plan: roundPlan, bank: bank(), manifests: [...manifests].reverse() }).root)
+})
+
+test('committed manifests are checked as they arrive and only their answers are kept, however much they carry', async () => {
+  const roundPlan = plan()
+  const honest = manifestsFor(roundPlan)
+  // Collectors committing size-compliant files stuffed with long, unsigned strings, many times over.
+  const padding = 'A'.repeat(1 << 20)
+  const stuffed = honest.map((entry) => ({
+    ...entry,
+    uri: `${entry.uri}-stuffed`,
+    manifest: {
+      ...entry.manifest,
+      slices: entry.manifest.slices.map((slice) => ({
+        ...slice,
+        exchanges: slice.exchanges.map((exchange) => ({ ...exchange, requestBase64: padding, responseBase64: padding })),
+      })),
+    },
+  }))
+  const files = new Map<string, Buffer>()
+  const commits = [...stuffed, ...stuffed, ...stuffed, ...honest].map((entry, index) => {
+    const bytes = encodeRoundFile(entry.manifest)
+    const uri = `${entry.uri}#${index}`
+    files.set(uri, bytes)
+    return { epoch: 7n, sender: entry.collector, backup: entry.backup, hash: contentHash(bytes), uri, blockNumber: 1, logIndex: index, txHash: '0x' }
+  })
+  const storage: RoundStorage = { put: async () => { throw new Error('read only') }, get: async (uri) => files.get(uri)! }
+  const checks = roundSliceChecks(roundPlan, bank())
+  const loads = await loadCommittedManifests(storage, commits, () => ({ maxBytes: 64 << 20, maxTokens: 1_000_000 }),
+    (manifest) => compactManifest(manifest, roundPlan.epoch, checks))
+  const kept = loads.flatMap(({ load }) => (load.kind === 'loaded' ? [load.manifest] : []))
+  assert.equal(kept.length, commits.length)
+  // Nothing of the padding survives: a compact manifest holds answers per slice, or null for a bad copy.
+  const retained = JSON.stringify(kept, (_key, value) => (value instanceof Map ? [...value.entries()] : value))
+  assert.ok(retained.length < 100_000, `retained ${retained.length} characters`)
+  assert.ok(kept.slice(0, stuffed.length).every((entry) => [...entry.slices.values()].every((answers) => answers === null)))
+  // The honest copies, committed last, still decide every slice.
+  const results = scoreCompactRound({ epoch: 7n, plan: roundPlan, bank: bank(), manifests: kept })
+  assert.deepEqual(results.results.map((result) => result.verdict).sort(), ['DIFF', 'SAME'])
 })
 
 test('a missing slice makes the target UNDETERMINED, never SAME', () => {
@@ -566,6 +604,10 @@ test('the read cache serves files already fetched against their committed hash',
     assert.deepEqual(await cached.get('ipfs://x', hash, 1_000), bytes, 'second read from the cache')
     assert.equal(reads, 1)
     await assert.rejects(cached.get('ipfs://x'), /gateway down/, 'unverified reads are never cached')
+    // Old files go, so a long-running daemon's cache does not grow with every round it has seen.
+    assert.equal(await cached.prune(Date.now() + 1_000), 0, 'recent files stay')
+    assert.equal(await cached.prune(Date.now() + 36 * 24 * 60 * 60 * 1000), 1)
+    await assert.rejects(cached.get('ipfs://x', hash, 1_000), /gateway down/, 'pruned, so read again')
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

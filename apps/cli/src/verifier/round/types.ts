@@ -1,3 +1,4 @@
+import type { ResponseAuthPayload } from '@antseed/node'
 import type { KbfProbe, KbfReferenceV1 } from '@antseed/fingerprints'
 
 /**
@@ -107,21 +108,7 @@ export interface SliceExchangeV1 {
   batchIndex: number
   requestId: string
   /** The seller's ResponseAuth record (all signed fields plus the signature). */
-  responseAuth: {
-    version: 1
-    requestId: string
-    channelId?: string
-    buyerPeerId: string
-    sellerPeerId: string
-    advertisedService: string
-    provider: string
-    statusCode: number
-    requestHash: string
-    responseHash: string
-    responseStartedAt: number
-    responseCompletedAt: number
-    signature: string
-  }
+  responseAuth: ResponseAuthPayload
   /** Exact P2P request and response bytes (antseed-http-codec-v1) the signature covers. */
   requestBase64: string
   responseBase64: string

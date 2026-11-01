@@ -535,7 +535,12 @@ export async function verifyModelTarget(input: {
     if (error instanceof VerificationTerminalTransientSignal) {
       exchangeByBatch.set(error.exchange.batchIndex, error.exchange)
       for (const { probes, batchIndex } of pending) {
-        if (!exchangeByBatch.has(batchIndex)) {
+        if (exchangeByBatch.has(batchIndex)) continue
+        // Not asked again this time: a saved signed partial attempt stays, with its answers and cost.
+        const saved = partialByBatch.get(batchIndex)
+        if (saved) {
+          exchangeByBatch.set(batchIndex, saved)
+        } else {
           exchangeByBatch.set(batchIndex, notAttemptedExchange(
             input.context,
             input.target,

@@ -1,4 +1,4 @@
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { DEFAULT_IPFS_GATEWAYS } from '@antseed/model-verifier'
@@ -189,8 +189,34 @@ export class DirectoryRoundStorage implements RoundStorage {
  * reuse it instead of fetching again: a pass that runs short of time still has every file an
  * earlier pass got, and only files never fetched count as unavailable.
  */
+/** How long a cached round file is kept: a round fits in one epoch, so this is several epochs over. */
+export const ROUND_CACHE_MAX_AGE_MS = 35 * 24 * 60 * 60 * 1000
+const ROUND_CACHE_PRUNE_EVERY_MS = 24 * 60 * 60 * 1000
+
 export class CachedRoundStorage implements RoundStorage {
-  constructor(private readonly inner: RoundStorage, private readonly directory: string) {}
+  private lastPrune = 0
+
+  constructor(
+    private readonly inner: RoundStorage,
+    private readonly directory: string,
+    private readonly maxAgeMs: number = ROUND_CACHE_MAX_AGE_MS,
+  ) {}
+
+  /** Removes cached files older than the cache's maximum age, so a long-running daemon's cache stays bounded. */
+  async prune(now = Date.now()): Promise<number> {
+    this.lastPrune = now
+    const names = await readdir(this.directory).catch(() => [] as string[])
+    let removed = 0
+    for (const name of names) {
+      const path = join(this.directory, name)
+      const info = await stat(path).catch(() => null)
+      if (info?.isFile() && now - info.mtimeMs > this.maxAgeMs) {
+        await rm(path, { force: true })
+        removed += 1
+      }
+    }
+    return removed
+  }
 
   put(bytes: Uint8Array, name: string): Promise<string> {
     return this.inner.put(bytes, name)
@@ -198,6 +224,7 @@ export class CachedRoundStorage implements RoundStorage {
 
   async get(uri: string, expectedHash?: string, maxBytes: number = ROUND_FILE_MAX_BYTES.bank, signal?: AbortSignal): Promise<Buffer> {
     if (!expectedHash || !/^0x[0-9a-fA-F]{64}$/.test(expectedHash)) return this.inner.get(uri, expectedHash, maxBytes, signal)
+    if (Date.now() - this.lastPrune > ROUND_CACHE_PRUNE_EVERY_MS) void this.prune().catch(() => {})
     const path = join(this.directory, expectedHash.toLowerCase())
     const cached = await readFile(path).catch(() => null)
     if (cached && cached.length <= maxBytes && contentHash(cached).toLowerCase() === expectedHash.toLowerCase()) return cached

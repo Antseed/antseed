@@ -1186,6 +1186,31 @@ test('resume asks partially answered batches again and keeps the better attempt'
   assert.equal(stillDown.evidence.exchanges.every((exchange) => exchange.status === 'succeeded'), true)
 })
 
+test('a repair stopped by its first batch keeps the later batches\' saved signed answers', async () => {
+  const first = await runTarget(100, 'partial-malformed')
+  // Batch 0's earlier attempt is not reusable; batches 1-9 hold signed partial answers.
+  const exchanges = first.evidence.exchanges.map((exchange) => (exchange.batchIndex === 0
+    ? { ...exchange, status: 'failed' as const, answers: [], matches: [] }
+    : exchange))
+  const resume = {
+    parentAuditId: first.result.auditId,
+    reservationAuditId: first.result.auditId,
+    parentEvidenceHash: first.result.evidenceHash,
+    exchanges,
+  }
+  // Asking batch 0 again fails in transport, which stops the audit before the other batches run.
+  const stopped = await runTarget(100, 'transport-failure', 0, 'verified', true, 10_000, resume)
+  const earlier = new Map(first.evidence.exchanges.map((exchange) => [exchange.batchIndex, exchange]))
+  for (const exchange of stopped.evidence.exchanges.filter((entry) => entry.batchIndex > 0)) {
+    assert.equal(exchange.status, 'succeeded', `batch ${exchange.batchIndex} keeps its signed attempt`)
+    assert.deepEqual(exchange.requestIds, earlier.get(exchange.batchIndex)!.requestIds)
+  }
+  assert.equal(stopped.result.parsedProbeCount, 9, 'their answers still count')
+  const earlierCost = first.result.cumulativeCost?.pricedExchangeCount ?? 0
+  // Batches 1-9 bring along what they cost earlier (batch 0's unusable attempt is dropped, as before).
+  assert.equal(stopped.result.cumulativeCost?.pricedExchangeCount, earlierCost * 9 / 10)
+})
+
 test('an interrupted repair checkpoint keeps the partial batches not asked again yet', async () => {
   const first = await runTarget(100, 'partial-malformed')
   const resume = {

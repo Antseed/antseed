@@ -12,8 +12,8 @@ import type { RoundTargetV1 } from './types.js'
  * committed bytes that are not an acceptable slice manifest (`invalid`). Callers decide what
  * each means for their phase.
  */
-export type ManifestLoad =
-  | { kind: 'loaded'; manifest: CommittedManifest }
+export type ManifestLoad<T = CommittedManifest> =
+  | { kind: 'loaded'; manifest: T }
   | { kind: 'mismatch' | 'unavailable'; error: unknown }
   | { kind: 'invalid'; reason: string }
 
@@ -131,18 +131,26 @@ export async function loadCommittedManifest(
 }
 
 /**
- * Loads `commits` a few at a time, in order, keeping only validated manifests. Once `signal`
- * aborts, the rest count as unavailable, so a phase's remaining time bounds the whole pass
- * however many files cannot be fetched.
+ * Loads `commits` a few at a time, in order, and hands each validated manifest to `convert` as
+ * soon as it is parsed, keeping only what that returns (null: invalid), so at most the downloads
+ * in flight are ever held in full. Once `signal` aborts, the rest count as unavailable, so a
+ * phase's remaining time bounds the whole pass however many files cannot be fetched.
  */
-export async function loadCommittedManifests(
+export async function loadCommittedManifests<T>(
   storage: RoundStorage,
   commits: readonly CommitmentEvent[],
   budgetFor: (commit: CommitmentEvent) => ManifestBudget,
+  convert: (manifest: CommittedManifest) => T | null,
   signal?: AbortSignal,
-): Promise<Array<{ commit: CommitmentEvent; load: ManifestLoad }>> {
+): Promise<Array<{ commit: CommitmentEvent; load: ManifestLoad<T> }>> {
   return mapConcurrently(commits, MANIFEST_FETCH_CONCURRENCY, async (commit) => ({
     commit,
-    load: await loadCommittedManifest(storage, commit, budgetFor(commit), signal),
+    load: compactLoad(await loadCommittedManifest(storage, commit, budgetFor(commit), signal), convert),
   }))
+}
+
+function compactLoad<T>(load: ManifestLoad, convert: (manifest: CommittedManifest) => T | null): ManifestLoad<T> {
+  if (load.kind !== 'loaded') return load
+  const converted = convert(load.manifest)
+  return converted === null ? { kind: 'invalid', reason: 'not a slice manifest of this collector and phase' } : { kind: 'loaded', manifest: converted }
 }

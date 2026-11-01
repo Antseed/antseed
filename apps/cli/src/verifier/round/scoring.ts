@@ -37,10 +37,35 @@ interface UsableReference {
   settings: EnvelopeSliceV1['request']
 }
 
-/** Valid manifests by phase and collector, in commit order, so slices look up only their own candidates. */
-type ManifestIndex = Map<string, CommittedManifest[]>
+/**
+ * What a committed manifest is worth once checked: for each planned slice it was meant to deliver
+ * (its sender's own, in its phase), the checked answers of its first copy of that slice, or null
+ * when that copy is invalid. It keeps none of the raw exchanges, so a round's memory is bounded by
+ * its plan, not by what collectors chose to commit.
+ */
+export interface CompactManifest {
+  collector: string
+  backup: boolean
+  uri: string
+  slices: Map<string, SliceAnswers | null>
+}
 
-function indexManifests(manifests: readonly CommittedManifest[]): ManifestIndex {
+type SliceAnswers = Map<number, Array<number | null>>
+
+/** Planned slice, its target and reference: what checking a delivered copy needs. */
+interface SliceCheck {
+  slice: PlannedSliceV1
+  target: TargetResultV1['target']
+  reference: UsableReference
+}
+
+/** The slices each (phase, collector) may deliver, by slice key. */
+export type SliceChecks = Map<string, Map<string, SliceCheck>>
+
+/** Compact manifests by phase and collector, in commit order, so slices look up only their own candidates. */
+type ManifestIndex = Map<string, CompactManifest[]>
+
+function indexManifests(manifests: readonly CompactManifest[]): ManifestIndex {
   const index: ManifestIndex = new Map()
   for (const manifest of manifests) {
     const key = manifestKey(manifest.backup, manifest.collector)
@@ -53,6 +78,72 @@ function indexManifests(manifests: readonly CommittedManifest[]): ManifestIndex 
 
 function manifestKey(backup: boolean, collector: string): string {
   return `${backup}:${collector.toLowerCase()}`
+}
+
+function sliceKey(target: string, sliceIndex: number): string {
+  return JSON.stringify([target, sliceIndex])
+}
+
+function addCheck(checks: SliceChecks, backup: boolean, collector: string, check: SliceCheck): void {
+  const key = manifestKey(backup, collector)
+  const forCollector = checks.get(key) ?? new Map<string, SliceCheck>()
+  forCollector.set(sliceKey(check.slice.targetKey, check.slice.sliceIndex), check)
+  checks.set(key, forCollector)
+}
+
+/** The checks of every planned slice, for its owner's primary and its backup's backup copy. */
+export function roundSliceChecks(plan: RoundPlanV1, bank: EpochBankV1): SliceChecks {
+  const targets = new Map(plan.targets.map((target) => [targetKey(target), target]))
+  const usableByModel = new Map<string, UsableReference>()
+  const checks: SliceChecks = new Map()
+  for (const slice of plan.slices) {
+    const target = targets.get(slice.targetKey)
+    if (!target) continue
+    const reference = bank.models[target.model]
+    if (!reference) throw new Error(`bank has no reference for ${target.model}`)
+    let usable = usableByModel.get(target.model)
+    if (!usable) {
+      usable = usableReference(reference)
+      usableByModel.set(target.model, usable)
+    }
+    addCheck(checks, false, slice.owner, { slice, target, reference: usable })
+    if (slice.backup && slice.backup !== slice.owner) addCheck(checks, true, slice.backup, { slice, target, reference: usable })
+  }
+  return checks
+}
+
+/**
+ * Checks one committed manifest right away and keeps only the result: null when it is not a
+ * manifest of this epoch, phase and collector, otherwise its answers per planned slice. Slices
+ * its sender was not meant to deliver are ignored, as scoring would.
+ */
+export function compactManifest(entry: CommittedManifest, epoch: string, checks: SliceChecks): CompactManifest | null {
+  const [valid] = validManifests([entry], epoch)
+  if (!valid) return null
+  const wanted = checks.get(manifestKey(valid.backup, valid.collector))
+  const slices = new Map<string, SliceAnswers | null>()
+  for (const delivered of valid.manifest.slices) {
+    const key = sliceKey(delivered.targetKey, delivered.sliceIndex)
+    const check = wanted?.get(key)
+    // Only the first copy of a slice counts, as before.
+    if (!check || slices.has(key)) continue
+    slices.set(key, checkCopy(check, delivered))
+  }
+  return { collector: valid.collector.toLowerCase(), backup: valid.backup, uri: valid.uri, slices }
+}
+
+function checkCopy(check: SliceCheck, delivered: SliceManifestV1['slices'][number]): SliceAnswers | null {
+  const answers: SliceAnswers = new Map()
+  for (const batch of check.slice.batches) {
+    const exchanges = delivered.exchanges.filter((exchange) => exchange.batchIndex === batch.batchIndex)
+    if (exchanges.length !== 1) return null
+    const probes = batch.probeIds.map((id) => check.reference.probesById.get(id))
+    if (probes.some((probe) => probe === undefined)) return null
+    const result = checkExchange(exchanges[0]!, check.target, batch, probes as KbfReferenceV1['probes'], check.reference.settings)
+    if (!result.ok) return null
+    answers.set(batch.batchIndex, result.answers)
+  }
+  return answers
 }
 
 interface UsedSlice {
@@ -72,8 +163,20 @@ export function scoreRound(input: {
   bank: EpochBankV1
   manifests: readonly CommittedManifest[]
 }): RoundResultsV1 {
+  const checks = roundSliceChecks(input.plan, input.bank)
+  const compact = input.manifests.flatMap((entry) => compactManifest(entry, input.plan.epoch, checks) ?? [])
+  return scoreCompactRound({ epoch: input.epoch, plan: input.plan, bank: input.bank, manifests: compact })
+}
+
+/** `scoreRound` over manifests already checked with `compactManifest` against this plan's `roundSliceChecks`. */
+export function scoreCompactRound(input: {
+  epoch: bigint
+  plan: RoundPlanV1
+  bank: EpochBankV1
+  manifests: readonly CompactManifest[]
+}): RoundResultsV1 {
   const { plan, bank } = input
-  const manifests = indexManifests(validManifests(input.manifests, plan.epoch))
+  const manifests = indexManifests(input.manifests)
   const targets = new Map(plan.targets.map((target) => [targetKey(target), target]))
   const slicesByTarget = new Map<string, PlannedSliceV1[]>()
   for (const slice of plan.slices) {
@@ -95,7 +198,7 @@ export function scoreRound(input: {
     }
     const { probesById } = usable
     const planned = slicesByTarget.get(key) ?? []
-    const used: Array<UsedSlice | null> = planned.map((slice) => pickSlice(slice, manifests, target, usable))
+    const used: Array<UsedSlice | null> = planned.map((slice) => pickSlice(slice, manifests))
     const missing = used.filter((slice) => slice === null).length
     const probeIds = plan.targetProbes[key] ?? []
     const sources = planned.flatMap((slice, index) => {
@@ -172,8 +275,17 @@ export function createEnvelopeDeliveryChecker(
   manifests: readonly CommittedManifest[],
   epoch: string,
 ): (slice: EnvelopeSliceV1, owner: string) => boolean {
-  const primary = indexManifests(validManifests(manifests.filter((entry) => !entry.backup), epoch))
   return (slice, owner) => {
+    const checks = envelopeSliceChecks([{ slice, owner }])
+    const compact = manifests.filter((entry) => !entry.backup).flatMap((entry) => compactManifest(entry, epoch, checks) ?? [])
+    return deliveredByOwner(compact)(slice, owner)
+  }
+}
+
+/** The checks of backed-up envelope slices against their owners' primary copies, before the reveal. */
+export function envelopeSliceChecks(slices: ReadonlyArray<{ slice: EnvelopeSliceV1; owner: string }>): SliceChecks {
+  const checks: SliceChecks = new Map()
+  for (const { slice, owner } of slices) {
     const planned: PlannedSliceV1 = {
       targetKey: targetKey(slice.target),
       sliceIndex: slice.sliceIndex,
@@ -181,12 +293,21 @@ export function createEnvelopeDeliveryChecker(
       owner: owner.toLowerCase(),
       backup: '',
     }
-    const usable: UsableReference = {
+    const reference: UsableReference = {
       probesById: new Map(slice.batches.flatMap((batch) => batch.probes.map((probe) => [probe.id, probe] as const))),
       settings: slice.request,
     }
-    return pickSlice(planned, primary, slice.target, usable) !== null
+    addCheck(checks, false, owner, { slice: planned, target: slice.target, reference })
   }
+  return checks
+}
+
+/** Whether a slice's owner committed a complete, valid primary copy, from compact primary manifests. */
+export function deliveredByOwner(primary: readonly CompactManifest[]): (slice: EnvelopeSliceV1, owner: string) => boolean {
+  const index = indexManifests(primary.filter((entry) => !entry.backup))
+  return (slice, owner) => pickSlice({
+    targetKey: targetKey(slice.target), sliceIndex: slice.sliceIndex, batches: [], owner: owner.toLowerCase(), backup: '',
+  }, index) !== null
 }
 
 /**
@@ -194,31 +315,15 @@ export function createEnvelopeDeliveryChecker(
  * deadline, otherwise the backup collector's backup delivery, otherwise nothing. Each planned
  * batch needs exactly one exchange.
  */
-function pickSlice(
-  slice: PlannedSliceV1,
-  manifests: ManifestIndex,
-  target: TargetResultV1['target'],
-  reference: UsableReference,
-): UsedSlice | null {
+function pickSlice(slice: PlannedSliceV1, manifests: ManifestIndex): UsedSlice | null {
   const candidates = [
     ...(manifests.get(manifestKey(false, slice.owner)) ?? []),
     ...(slice.backup && slice.backup !== slice.owner ? manifests.get(manifestKey(true, slice.backup)) ?? [] : []),
   ]
+  const key = sliceKey(slice.targetKey, slice.sliceIndex)
   for (const candidate of candidates) {
-    const delivered = candidate.manifest.slices.find((entry) => entry.targetKey === slice.targetKey && entry.sliceIndex === slice.sliceIndex)
-    if (!delivered) continue
-    const answers = new Map<number, Array<number | null>>()
-    let valid = true
-    for (const batch of slice.batches) {
-      const exchanges = delivered.exchanges.filter((exchange) => exchange.batchIndex === batch.batchIndex)
-      if (exchanges.length !== 1) { valid = false; break }
-      const probes = batch.probeIds.map((id) => reference.probesById.get(id))
-      if (probes.some((probe) => probe === undefined)) { valid = false; break }
-      const check = checkExchange(exchanges[0]!, target, batch, probes as KbfReferenceV1['probes'], reference.settings)
-      if (!check.ok) { valid = false; break }
-      answers.set(batch.batchIndex, check.answers)
-    }
-    if (valid) return { collector: candidate.collector.toLowerCase(), uri: candidate.uri, answers }
+    const answers = candidate.slices.get(key)
+    if (answers) return { collector: candidate.collector, uri: candidate.uri, answers }
   }
   return null
 }

@@ -346,6 +346,39 @@ test('a reward from an epoch long past is still claimed after a restart, then le
   assert.ok(!asked.includes(old), 'a settled epoch is not visited again')
 })
 
+test('old epochs whose claims keep failing take turns with later ones instead of starving them', async (t) => {
+  const s = await setup()
+  t.after(() => rm(s.dir, { recursive: true, force: true }))
+  // Three old epochs, two visited per pass: the oldest two are finalized but their results are
+  // nowhere to be found; the newest can be claimed.
+  s.context.catchUpEpochsPerPass = 2
+  const claimable = EPOCH - 5n
+  const blocked = [EPOCH - 7n, EPOCH - 6n]
+  const credits = [{ collector: s.me, slices: 1 }]
+  const tree = buildResultsTree(claimable, { results: [], credits, totalSlices: 1 })
+  for (const epoch of [...blocked, claimable]) {
+    const dir = join(s.context.stateDir, epoch.toString())
+    await mkdir(dir, { recursive: true })
+    await writeFile(join(dir, 'state.json'), '{}')
+  }
+  const file: RoundResultsV1 = { kind: 'antseed-kbf-results', version: 1, epoch: claimable.toString(), seed: SEED, results: [], credits, totalSlices: 1, root: tree.root }
+  await writeFile(join(s.context.stateDir, claimable.toString(), 'results.json'), JSON.stringify(file))
+  const chain = s.chain as unknown as Record<string, unknown>
+  const epochInfo = s.chain.epochInfo.bind(s.chain)
+  chain.epochInfo = async (epoch: bigint) => (epoch < EPOCH - 4n
+    ? { ...(await epochInfo(EPOCH)), epoch, finalizedRoot: epoch === claimable ? tree.root : `0x${'ee'.repeat(32)}` }
+    : epochInfo(epoch))
+  chain.attestationEvents = async () => []
+  let claimed = false
+  chain.rewardClaimed = async (epoch: bigint) => epoch === claimable && claimed
+  chain.pendingReward = async (_verifier: string, epoch: bigint) => (epoch === claimable && !claimed ? 5n : 0n)
+  chain.claimRewards = async () => { claimed = true; return '0xclaim' }
+  await verifierTick(s.context).catch(() => {})
+  assert.equal(claimed, false, 'the first pass visits the oldest two')
+  await verifierTick(s.context).catch(() => {})
+  assert.equal(claimed, true, 'the next pass reaches the later epoch')
+})
+
 test('an envelope with work the plan does not assign buys nothing', async (t) => {
   const cases: Array<[string, (envelope: EnvelopeContentV1) => void, RegExp]> = [
     ['a slice index beyond the schedule', (envelope) => { envelope.slices.push({ ...envelope.slices[0]!, sliceIndex: 9 }) }, /out of range/],
