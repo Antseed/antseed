@@ -16,7 +16,7 @@ test('periods are UTC calendar months', () => {
 test('settlements are read page by page and merged per seller and transaction', async () => {
   const pages = [
     { items: [
-      { txHash: '0xAA', seller: '0xS1', deltaAmountUsdc: '100', timestamp: 10 },
+      { txHash: '0xAA', seller: '0xS1', channelId: '0xC1', deltaAmountUsdc: '100', timestamp: 10 },
       { txHash: '0xaa', seller: '0xs1', deltaAmountUsdc: '50', timestamp: 10 }, // the same settlement, another service
     ], pageInfo: { hasNextPage: true, endCursor: 'c1' } },
     { items: [{ txHash: '0xbb', seller: '0xs2', deltaAmountUsdc: '7', timestamp: 20 }], pageInfo: { hasNextPage: false, endCursor: null } },
@@ -32,8 +32,8 @@ test('settlements are read page by page and merged per seller and transaction', 
   assert.deepEqual(asked.map((variables) => [variables['buyer'], variables['from'], variables['to'], variables['after']]), [['0xbuyer', 1, 3, null], ['0xbuyer', 1, 3, 'c1']])
   assert.deepEqual(settlements, {
     settlements: [
-      { seller: '0xs1', txHash: '0xaa', time: 10_000, amountUsdc: 150 },
-      { seller: '0xs2', txHash: '0xbb', time: 20_000, amountUsdc: 7 },
+      { seller: '0xs1', channelId: '0xc1', txHash: '0xaa', time: 10_000, amountUsdc: 150 },
+      { seller: '0xs2', channelId: null, txHash: '0xbb', time: 20_000, amountUsdc: 7 },
     ],
     indexed: [{ chainId: 8453, at: 3_000 }],
   })
@@ -49,7 +49,8 @@ test('a seller paid this month for an earlier month\'s purchases is listed with 
     lines: [],
     deposits: [],
     peers: new Map(),
-    settlements: [{ seller: `0x${seller}`, txHash: `0x${'a1'.repeat(32)}`, time: Date.UTC(2026, 10, 2), amountUsdc: 1_250_000 }],
+    settlements: [{ seller: `0x${seller}`, channelId: null, txHash: `0x${'a1'.repeat(32)}`, time: Date.UTC(2026, 10, 2), amountUsdc: 1_250_000 }],
+    channelPeers: new Map(),
     settlementsSource: 'https://explorer.test',
     sharedWallet: 0,
     status: 'open',
@@ -61,4 +62,32 @@ test('a seller paid this month for an earlier month\'s purchases is listed with 
   assert.deepEqual(statement.suppliers[0]!.lines, [])
   assert.equal(statement.suppliers[0]!.total, '0.000000')
   assert.deepEqual(statement.suppliers[0]!.settlements, [{ txHash: `0x${'a1'.repeat(32)}`, time: Date.UTC(2026, 10, 2), amount: '1.250000' }])
+})
+
+test('a delegated seller is paid at its seller contract: its settlements are listed under the peer the buyer paid on that channel', () => {
+  const operator = '9e'.repeat(20)
+  const contract = '1f'.repeat(20)
+  const known = `0x${'c1'.repeat(32)}`
+  const statement = buildStatement({
+    period: '2026-10',
+    workspace: { id: 'ws_1', name: 'Default', wallet: null },
+    buyer: null,
+    lines: [{ sellerPeerId: operator, model: 'open-model', routingFee: false, requests: 3, inputTokens: 10, cachedInputTokens: 0, outputTokens: 5, spentUsdc: 2_000_000 }],
+    deposits: [],
+    peers: new Map([[operator, { name: 'Proxy Seller', verificationLinks: [] }]]),
+    settlements: [
+      { seller: `0x${contract}`, channelId: known, txHash: `0x${'b1'.repeat(32)}`, time: Date.UTC(2026, 9, 20), amountUsdc: 1_500_000 },
+      // A channel the buyer has no record of: it stays with the address paid.
+      { seller: `0x${contract}`, channelId: `0x${'c2'.repeat(32)}`, txHash: `0x${'b2'.repeat(32)}`, time: Date.UTC(2026, 9, 21), amountUsdc: 500_000 },
+    ],
+    channelPeers: new Map([[known, operator]]),
+    settlementsSource: 'https://explorer.test',
+    sharedWallet: 0,
+    status: 'open',
+    now: Date.UTC(2026, 10, 1),
+  })
+  assert.deepEqual(statement.suppliers.map((supplier) => [supplier.peerId, supplier.name, supplier.total, supplier.settlements?.map((settlement) => settlement.amount)]), [
+    [`0x${operator}`, 'Proxy Seller', '2.000000', ['1.500000']],
+    [`0x${contract}`, null, '0.000000', ['0.500000']],
+  ])
 })
