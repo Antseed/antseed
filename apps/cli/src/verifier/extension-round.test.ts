@@ -12,7 +12,11 @@ import { emptyAuditCostSummary } from './proxy-evidence.js'
 const SELF = { selfHamming: 30, selfTotal: 300 } // 10% self-error over 100 probes x 3 runs
 
 /** A first audit of 100 probes with `wrong` mismatches, scored as a real audit would be. */
-function audit(peer: string, wrong: number, options: { rule?: boolean; answered?: number } = {}): ModelVerificationTargetResult {
+function audit(
+  peer: string,
+  wrong: number,
+  options: { rule?: boolean | 'kbf-extension-v1' | 'kbf-extension-v2'; answered?: number } = {},
+): ModelVerificationTargetResult {
   const answered = options.answered ?? 100
   const vector = Array.from({ length: 100 }, (_, index) => index >= answered ? null : index < wrong ? 0 : 1)
   const verdict = computeKbfVerdict({ ...SELF, targetMatchVector: vector, minCoverage: 0.5, minDiffCoverage: 0.8 })
@@ -35,7 +39,7 @@ function audit(peer: string, wrong: number, options: { rule?: boolean; answered?
     evidenceHash: `0x${peer.repeat(64).slice(0, 64)}`,
     stats,
     responseAuthVerified: true,
-    ...(options.rule === false ? {} : { decisionRule: 'kbf-extension-v1' as const }),
+    ...(options.rule === false ? {} : { decisionRule: typeof options.rule === 'string' ? options.rule : 'kbf-extension-v1' as const }),
   }
 }
 
@@ -43,22 +47,27 @@ const reference = { referenceId: 'sha256:extension', probes: Array.from({ length
 
 async function run(input: {
   results: ModelVerificationTargetResult[]
-  extensionWrong?: Record<string, number | 'SKIPPED' | 'THROW'>
+  /** Wrong answers per extra set: a number for every set, or one entry per set in order. */
+  extensionWrong?: Record<string, number | 'SKIPPED' | 'THROW' | Array<number | 'SKIPPED' | 'THROW'>>
   exhausted?: Set<string>
   enroll?: (() => Promise<void>) | null
 }) {
   const logs: string[] = []
   const verified: string[] = []
+  const calls = new Map<string, number>()
   const outcome = await runExtensionRounds({
     results: input.results,
     reserve: async (first) => {
       if (input.exhausted?.has(first.peerId)) throw new Error(`${BANK_EXHAUSTED}: 20 probes remain`)
-      return { reference, auditId: `extension-${first.peerId}` }
+      return { reference, auditId: `extension-${first.peerId}-${(first.extension ? 2 : 1)}` }
     },
     enroll: input.enroll ?? null,
     verify: async (first): Promise<ModelVerificationTargetResult | ModelVerificationSkip> => {
       verified.push(first.peerId)
-      const wrong = input.extensionWrong?.[first.peerId] ?? 10
+      const call = calls.get(first.peerId) ?? 0
+      calls.set(first.peerId, call + 1)
+      const planned = input.extensionWrong?.[first.peerId] ?? 10
+      const wrong = Array.isArray(planned) ? planned[call] ?? 10 : planned
       if (wrong === 'THROW') throw new Error('reference endpoint down')
       if (wrong === 'SKIPPED') {
         return {
@@ -68,7 +77,7 @@ async function run(input: {
         }
       }
       const { decisionRule: _rule, ...second } = audit(first.peerId[0]!, wrong)
-      return { ...second, peerId: first.peerId, auditId: `second-${first.peerId}` }
+      return { ...second, peerId: first.peerId, auditId: `second-${first.peerId}-${call + 1}` }
     },
     concurrency: async (tasks) => { for (const task of tasks) await task() },
     log: (message) => logs.push(message),
@@ -213,4 +222,67 @@ test('an extension whose answers lack verified ResponseAuth cannot decide: UNDET
   assert.equal(combined.status, 'UNDETERMINED')
   assert.equal(combined.extension?.pooled.verdict, 'UNDETERMINED')
   assert.equal(finalAuditVerdict(combined), 'UNDETERMINED')
+})
+
+test('kbf-extension-v2: a pooled look still in the grey zone gets a second extra set in the same run', async () => {
+  // 10% self-error, 100 probes per set. 22 wrong is a close call; 22+10 over 200 is still one (p ~0.14).
+  const v2 = { rule: 'kbf-extension-v2' as const }
+  const honest = audit('a', 22, v2)
+  const cheat = audit('b', 22, v2)
+  const clearAfterOne = audit('c', 22, v2)
+  const legacy = audit('d', 22) // kbf-extension-v1: one extra set only
+  const { outcome, verified, logs } = await run({
+    results: [honest, cheat, clearAfterOne, legacy],
+    extensionWrong: {
+      [honest.peerId]: [10, 8], // 22+10+8 over 300: SAME (p ~0.37)
+      [cheat.peerId]: [10, 18], // 22+10+18 over 300: DIFF (p ~0.023)
+      [clearAfterOne.peerId]: [18], // 22+18 over 200: clear DIFF (p ~0.005), no third set
+      [legacy.peerId]: [10], // v1 decides 22+10 at 0.05: SAME
+    },
+  })
+  assert.deepEqual(verified, [honest.peerId, cheat.peerId, clearAfterOne.peerId, legacy.peerId, honest.peerId, cheat.peerId])
+  const [h, c, early, old] = outcome.results as [ModelVerificationTargetResult, ModelVerificationTargetResult, ModelVerificationTargetResult, ModelVerificationTargetResult]
+  assert.equal(h.extension?.pooled.extendNext, true)
+  assert.equal(h.extension2?.pooled.targetHamming, 40)
+  assert.equal(h.extension2?.pooled.targetTotal, 300)
+  assert.equal(h.extension2?.pooled.selfTotal, 900)
+  assert.equal(h.extension2?.firstLook.pValue, honest.stats!.pValueBinomial)
+  assert.equal(h.status, 'SAME')
+  assert.equal(finalAuditVerdict(h), 'SAME')
+  assert.equal(c.status, 'DIFF')
+  assert.equal(stageOneVerdict(c), 'DIFF')
+  assert.equal(finalAuditVerdict(c), null, 'a pooled DIFF still needs the recheck')
+  assert.equal(early.status, 'DIFF')
+  assert.equal(early.extension2, undefined)
+  assert.equal(early.extension?.pooled.extendNext, undefined)
+  assert.equal(old.status, 'SAME')
+  assert.equal(old.extension2, undefined)
+  assert.deepEqual(
+    { extended: outcome.stats.extended, continued: outcome.stats.continued, same: outcome.stats.same, diff: outcome.stats.diff },
+    { extended: 6, continued: 2, same: 2, diff: 2 },
+  )
+  assert.ok(logs.some((line) => line.includes('still a close call; one more set decides')))
+})
+
+test('kbf-extension-v2: a close call waiting for its second set is not submitted and finishes in a later run', async () => {
+  const grey = audit('a', 22, { rule: 'kbf-extension-v2' })
+  const { outcome } = await run({ results: [grey], extensionWrong: { [grey.peerId]: [10, 'THROW'] } })
+  const waiting = outcome.results[0]!
+  assert.ok(waiting.extension)
+  assert.equal(waiting.extension2, undefined)
+  assert.equal(waiting.extension?.pooled.extendNext, true)
+  assert.ok(waiting.extensionPending)
+  assert.equal(needsExtension(waiting), true)
+  assert.equal(stageOneVerdict(waiting), null)
+  assert.equal(finalAuditVerdict(waiting), null)
+  assert.equal(outcome.stats.pending, 1)
+
+  const later = await run({ results: [waiting], extensionWrong: { [grey.peerId]: [8] } })
+  const done = later.outcome.results[0]!
+  assert.equal(done.extensionPending, undefined)
+  assert.equal(done.auditId, grey.auditId)
+  assert.equal(done.extension?.auditId, waiting.extension?.auditId, 'the first extra set is kept')
+  assert.equal(done.extension2?.pooled.targetTotal, 300)
+  assert.equal(finalAuditVerdict(done), 'SAME')
+  assert.equal(needsExtension(done), false)
 })

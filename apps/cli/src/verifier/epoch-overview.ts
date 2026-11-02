@@ -7,7 +7,7 @@ import {
   type VerifierRunManifestV1,
 } from './audit-artifacts.js'
 import { finalAuditVerdict } from './model-audit.js'
-import { stageOneVerdict } from './close-call.js'
+import { extensionSets, latestExtension, stageOneVerdict } from './close-call.js'
 import { explainInconclusive, explainSkipReason, type PlainReason } from './plain-reason.js'
 import { normalized } from './utils.js'
 
@@ -29,7 +29,7 @@ export interface OverviewCell {
   asked: number | null
   recheck: { status: string; correctRate: number | null } | null
   /** Extra questions after a close-call first check; absent on cells from before close calls were extended. */
-  extension?: { probeCount: number; firstPValue: number | null; pooledPValue: number | null; verdict: string } | null
+  extension?: { probeCount: number; extraSets: number; firstPValue: number | null; pooledPValue: number | null; verdict: string } | null
   /** Plain-language reason for grey and yellow cells. */
   reason: PlainReason | null
   /** How many runs this epoch produced a verdict for this cell. */
@@ -137,10 +137,11 @@ export async function buildEpochOverview(
           recheck,
           extension: result.extension
             ? {
-              probeCount: result.extension.probeCount,
+              probeCount: extensionSets(result).reduce((sum, set) => sum + set.probeCount, 0),
+              extraSets: extensionSets(result).length,
               firstPValue: result.extension.firstLook.pValue,
-              pooledPValue: result.extension.pooled.pValueBinomial,
-              verdict: result.extension.pooled.verdict,
+              pooledPValue: latestExtension(result)!.pooled.pValueBinomial,
+              verdict: latestExtension(result)!.pooled.extendNext ? 'still close' : latestExtension(result)!.pooled.verdict,
             }
             : null,
         }
@@ -244,7 +245,8 @@ function cellDetail(cell: OverviewCell): string[] {
   }
   if (cell.extension) {
     const p = (value: number | null): string => value === null ? '?' : value.toFixed(3)
-    lines.push(`close call (p=${p(cell.extension.firstPValue)}): ${cell.extension.probeCount} extra questions, `
+    lines.push(`close call (p=${p(cell.extension.firstPValue)}): ${cell.extension.probeCount} extra questions `
+      + `in ${cell.extension.extraSets ?? 1} set(s), `
       + `pooled p=${p(cell.extension.pooledPValue)} → ${cell.extension.verdict}`)
   }
   if (cell.recheck) lines.push(`recheck: ${cell.recheck.status}, ${percent(cell.recheck.correctRate)} match`)

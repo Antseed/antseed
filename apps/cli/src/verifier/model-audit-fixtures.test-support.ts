@@ -66,8 +66,16 @@ export interface FixtureAudit {
    * A close-call first audit (`kbf-extension-v1`): `firstWrong` wrong answers on the first set, then
    * an extension set of the same size with `extensionWrong` wrong answers, and an optional recheck of
    * a pooled DIFF. `verdict` is ignored. Omit `extensionWrong` for a close call still waiting.
+   * Under `rule: 'kbf-extension-v2'`, a pooled look still in the grey zone gets a second extra set with
+   * `extension2Wrong` wrong answers (omit it for a close call waiting for that set).
    */
-  closeCall?: { firstWrong: number; extensionWrong?: number; recheck?: 'SAME' | 'DIFF' | 'UNDETERMINED' }
+  closeCall?: {
+    firstWrong: number
+    extensionWrong?: number
+    extension2Wrong?: number
+    rule?: 'kbf-extension-v1' | 'kbf-extension-v2'
+    recheck?: 'SAME' | 'DIFF' | 'UNDETERMINED'
+  }
 }
 
 export function referenceFixture(model: string, probeCount = 10): KbfReferenceV1 {
@@ -446,7 +454,7 @@ async function closeCallResult(input: {
   })
   let result: ModelVerificationTargetResult = {
     ...asResult(first, input.auditId, reference.probes.length),
-    decisionRule: 'kbf-extension-v1',
+    decisionRule: closeCall.rule ?? 'kbf-extension-v1',
   }
   if (closeCall.extensionWrong === undefined) {
     return { ...result, extensionPending: { reason: 'fixture: not extended', since: input.completedAt } }
@@ -461,6 +469,21 @@ async function closeCallResult(input: {
   result = combineExtension(
     result, asResult(extension, extensionAuditId, extensionReference.probes.length), extensionReference.referenceId,
   )
+  if (result.extension?.pooled.extendNext) {
+    if (closeCall.extension2Wrong === undefined) {
+      return { ...result, extensionPending: { reason: 'fixture: second set not asked', since: input.completedAt } }
+    }
+    const extension2Reference = freshReference(reference, 'extension2')
+    const extension2AuditId = canonicalHashBytes32({ fixture: input.runId, model: audit.model, peerId, extension: 2 })
+    const extension2 = await writeFixtureEvidence({
+      ...common, reference: extension2Reference, runId: `${input.runId}-extension2`, auditId: extension2AuditId,
+      wrongCount: closeCall.extension2Wrong,
+      directory: modelAuditExtensionsDirectory(input.evidenceDir, input.epoch, audit.model, input.runId, 2),
+    })
+    result = combineExtension(
+      result, asResult(extension2, extension2AuditId, extension2Reference.probes.length), extension2Reference.referenceId,
+    )
+  }
   if (!closeCall.recheck) return result
   const recheckReference = freshReference(reference, 'recheck')
   const recheckAuditId = canonicalHashBytes32({ fixture: input.runId, model: audit.model, peerId, recheck: true })

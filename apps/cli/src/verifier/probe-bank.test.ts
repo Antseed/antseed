@@ -15,6 +15,7 @@ import {
   appendModelReferenceToBank,
   BANK_EXHAUSTED,
   epochProbeReferencePath,
+  extensionReferencePath,
   inspectModelProbeBankPower,
   inspectSellerProbeCapacity,
   loadModelAuditReservation,
@@ -980,6 +981,55 @@ test('a close-call extension draws exactly as many never-seen probes as the firs
     assert.deepEqual(ledger.assignments.map((entry: { purpose?: string }) => entry.purpose ?? 'audit'), [
       'audit', 'extension', 'diff-recheck',
     ])
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a second close-call extra set (kbf-extension-v2) draws probes neither earlier set used, in its own file', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-extension2-'))
+  const seller = '11'.repeat(20)
+  try {
+    await appendReference(directory, reference(400))
+    const first = await reserveModelAuditReference({
+      banksDir: directory, model: 'model-a', sellerPeerId: seller,
+      service: 'model-a', runId: 'run-a', epoch: '4',
+    })
+    const probeCount = first.reference.probes.length
+    const extension = await reserveExtensionReference({
+      banksDir: directory, model: 'model-a', sellerPeerId: seller,
+      service: 'model-a', runId: 'run-a', epoch: '4', probeCount,
+    })
+    const extension2 = await reserveExtensionReference({
+      banksDir: directory, model: 'model-a', sellerPeerId: seller,
+      service: 'model-a', runId: 'run-a', epoch: '4', probeCount, extensionIndex: 2,
+    })
+    const seen = new Set([...first.reference.probes, ...extension.reference.probes].map((probe) => probe.id))
+    assert.equal(extension2.reference.probes.length, probeCount)
+    assert.ok(extension2.reference.probes.every((probe) => !seen.has(probe.id)))
+    assert.notEqual(extension2.auditId, extension.auditId)
+    assert.notEqual(extensionReferencePath(directory, 'model-a', '4', seller, 2), extensionReferencePath(directory, 'model-a', '4', seller))
+
+    // Each set resumes to its own reservation.
+    const again1 = await reserveExtensionReference({
+      banksDir: directory, model: 'model-a', sellerPeerId: seller,
+      service: 'model-a', runId: 'run-a', epoch: '4', probeCount,
+    })
+    const again2 = await reserveExtensionReference({
+      banksDir: directory, model: 'model-a', sellerPeerId: seller,
+      service: 'model-a', runId: 'run-a', epoch: '4', probeCount, extensionIndex: 2,
+    })
+    assert.equal(again1.auditId, extension.auditId)
+    assert.equal(again2.auditId, extension2.auditId)
+    const loaded = await loadModelAuditReservation({
+      banksDir: directory, model: 'model-a', sellerPeerId: seller, auditId: extension2.auditId,
+    })
+    assert.equal(loaded.reference.referenceId, extension2.reference.referenceId)
+    assert.equal(loaded.assignment.extensionIndex, 2)
+    await assert.rejects(reserveExtensionReference({
+      banksDir: directory, model: 'model-a', sellerPeerId: seller,
+      service: 'model-a', runId: 'run-a', epoch: '4', probeCount, extensionIndex: 3,
+    }), /extension index must be 1 or 2/)
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

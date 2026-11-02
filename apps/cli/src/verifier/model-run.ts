@@ -182,10 +182,11 @@ export interface ModelVerificationTargetResult {
   evidencePath: string
   evidenceHash: string
   /**
-   * Close-call rule this first audit is decided by. Absent on audits from before close calls were
-   * extended (and with `verifier.closeCallExtensions = 0`): those keep the single-look rule.
+   * Close-call rule this first audit is decided by (`kbf-extension-v2`: up to two extra sets;
+   * `kbf-extension-v1`: one). Absent on audits from before close calls were extended (and with
+   * `verifier.closeCallExtensions = 0`): those keep the single-look rule.
    */
-  decisionRule?: 'kbf-extension-v1'
+  decisionRule?: 'kbf-extension-v1' | 'kbf-extension-v2'
   /** This set's own KBF statistics, as in its evidence file. */
   stats?: FingerprintStats
   /** False when a successful batch lacked verified ResponseAuth (the set's verdict is then UNDETERMINED). */
@@ -195,6 +196,11 @@ export interface ModelVerificationTargetResult {
    * verdict on both sets pooled (or, after a recheck, the final verdict).
    */
   extension?: ModelVerificationExtensionV1
+  /**
+   * Second extra set (`kbf-extension-v2`), asked when the first set pooled with `extension` was
+   * still a close call; its `pooled` is the look over all three sets.
+   */
+  extension2?: ModelVerificationExtensionV1
   /**
    * Set on a close-call first audit whose extension could not run. Nothing is submitted for it; the
    * next `verifier run` in the same epoch extends it without repeating the first audit.
@@ -211,7 +217,7 @@ export interface ModelVerificationTargetResult {
 }
 
 export interface ModelVerificationExtensionV1 {
-  rule: 'kbf-extension-v1'
+  rule: 'kbf-extension-v1' | 'kbf-extension-v2'
   auditId: string
   /** The extension set's own single-set verdict (never used on its own). */
   status: 'SAME' | 'DIFF' | 'UNDETERMINED'
@@ -220,11 +226,17 @@ export interface ModelVerificationExtensionV1 {
   parsedProbeCount: number
   correctProbeCount: number
   responseAuthVerified: boolean
+  /** This extra set's own KBF statistics, as in its evidence file (absent on `kbf-extension-v1` records). */
+  stats?: FingerprintStats
   cost: AuditCostSummaryV1
   evidencePath: string
   evidenceHash: string
   firstLook: { status: 'SAME' | 'DIFF' | 'UNDETERMINED'; pValue: number | null }
-  pooled: KbfVerdictStats & { verdict: 'SAME' | 'DIFF' | 'UNDETERMINED'; verdictReason: string | null }
+  /**
+   * The look over the first set and every extra set up to this one. `extendNext` is true when that
+   * look was still a close call and one more set decides (`verdict` is then UNDETERMINED).
+   */
+  pooled: KbfVerdictStats & { verdict: 'SAME' | 'DIFF' | 'UNDETERMINED'; verdictReason: string | null; extendNext?: boolean }
 }
 
 export interface ModelVerificationRecheckV1 {
