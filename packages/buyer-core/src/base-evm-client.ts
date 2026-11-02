@@ -94,6 +94,12 @@ export const DEFAULT_PRIORITY_FEE_WEI = 1_000_000n;
  */
 const nonceCursors = new Map<string, { next: number; at: number }>();
 const nonceLocks = new Map<string, Promise<void>>();
+/**
+ * The operation each sent nonce belongs to. A stale cursor can hand a dropped tx's nonce to a newer
+ * operation; the older one's speed-ups then stop, so they cannot replace the newer tx.
+ */
+const nonceOwners = new Map<string, object>();
+const MAX_NONCE_OWNERS = 1_024;
 
 export abstract class BaseEvmClient {
   protected _provider: AbstractProvider;
@@ -133,8 +139,9 @@ export abstract class BaseEvmClient {
     const signerAddress = await connected.getAddress();
     const contract = new Contract(this._contractAddress, abi, connected);
     const populated = await contract.getFunction(method).populateTransaction(...args);
-    const tx = await this._sendBuffered(connected, signerAddress, populated);
-    const receipt = await this._waitForReceipt(tx, () => this._speedUp(connected, populated));
+    const owner = {};
+    const tx = await this._sendBuffered(connected, signerAddress, populated, owner);
+    const receipt = await this._waitForReceipt(tx, () => this._speedUp(connected, signerAddress, populated, owner));
     return receipt.hash;
   }
 
@@ -153,8 +160,9 @@ export abstract class BaseEvmClient {
     const signerAddress = await connected.getAddress();
     const usdc = new Contract(usdcAddress, ERC20_ABI, connected);
     const approvePopulated = await usdc.getFunction('approve').populateTransaction(this._contractAddress, amount);
-    const approveTx = await this._sendBuffered(connected, signerAddress, approvePopulated);
-    await this._waitForReceipt(approveTx, () => this._speedUp(connected, approvePopulated));
+    const approveOwner = {};
+    const approveTx = await this._sendBuffered(connected, signerAddress, approvePopulated, approveOwner);
+    await this._waitForReceipt(approveTx, () => this._speedUp(connected, signerAddress, approvePopulated, approveOwner));
     return this._execWrite(signer, abi, method, ...args);
   }
 
@@ -215,10 +223,16 @@ export abstract class BaseEvmClient {
 
   /**
    * Send `populated` again on the same nonce with fees high enough to replace it (at least 25% more,
-   * and no less than a new tx would pay now). Null when the signer priced it or the tip is at the cap.
+   * and no less than a new tx would pay now). Null when the signer priced it, the tip is at the cap,
+   * or the nonce now belongs to a newer operation.
    */
-  private async _speedUp(connected: AbstractSigner, populated: TransactionRequest): Promise<TransactionResponse | null> {
-    if (populated.maxPriorityFeePerGas == null || populated.maxFeePerGas == null) return null;
+  private async _speedUp(
+    connected: AbstractSigner,
+    signerAddress: string,
+    populated: TransactionRequest,
+    owner: object,
+  ): Promise<TransactionResponse | null> {
+    if (populated.maxPriorityFeePerGas == null || populated.maxFeePerGas == null || populated.nonce == null) return null;
     const prevTip = getBigInt(populated.maxPriorityFeePerGas);
     const prevMax = getBigInt(populated.maxFeePerGas);
     if (prevTip >= MAX_SPEED_UP_TIP_WEI) return null;
@@ -229,9 +243,14 @@ export abstract class BaseEvmClient {
     const currentMax = current.maxFeePerGas != null ? getBigInt(current.maxFeePerGas) - currentTip + tip : 0n;
     const maxFee = max(prevMax + prevMax / 4n + (tip - prevTip), currentMax);
     const replacement = { ...populated, maxPriorityFeePerGas: tip, maxFeePerGas: maxFee };
-    const tx = await connected.sendTransaction(replacement);
-    Object.assign(populated, { maxPriorityFeePerGas: tip, maxFeePerGas: maxFee });
-    return tx;
+    const key = this._nonceKey(signerAddress);
+    const nonce = populated.nonce;
+    return this._withNonceLock(key, async () => {
+      if (nonceOwners.get(`${key}:${nonce}`) !== owner) return null;
+      const tx = await connected.sendTransaction(replacement);
+      Object.assign(populated, { maxPriorityFeePerGas: tip, maxFeePerGas: maxFee });
+      return tx;
+    });
   }
 
   /**
@@ -300,6 +319,7 @@ export abstract class BaseEvmClient {
     connected: AbstractSigner,
     signerAddress: string,
     populated: TransactionRequest,
+    owner?: object,
   ): Promise<TransactionResponse> {
     return this._sendWithNonce(signerAddress, async (nonce) => {
       populated.nonce = nonce;
@@ -307,7 +327,7 @@ export abstract class BaseEvmClient {
       populated.gasLimit = (estimated * GAS_BUFFER_NUMERATOR) / GAS_BUFFER_DENOMINATOR;
       if (populated.maxFeePerGas == null && populated.gasPrice == null) Object.assign(populated, await this._feeFields());
       return connected.sendTransaction(populated);
-    });
+    }, owner);
   }
 
   /**
@@ -318,24 +338,37 @@ export abstract class BaseEvmClient {
    * pending count may not include txs that were sent but not yet mined, so
    * it cannot be trusted alone right after a send; a cursor older than
    * NONCE_CURSOR_TRUST_MS is dropped, so txs that were never mined cannot
-   * leave every later send on a nonce gap.
+   * leave every later send on a nonce gap. The sent nonce then belongs to
+   * `owner` (see nonceOwners).
    */
-  protected async _sendWithNonce<T>(address: string, send: (nonce: number) => Promise<T>): Promise<T> {
+  protected async _sendWithNonce<T>(address: string, send: (nonce: number) => Promise<T>, owner: object = {}): Promise<T> {
     const key = this._nonceKey(address);
-    const prev = nonceLocks.get(key) ?? Promise.resolve();
-    let release: () => void;
-    const lock = new Promise<void>(r => { release = r; });
-    nonceLocks.set(key, lock);
-
-    await prev;
-    try {
+    return this._withNonceLock(key, async () => {
       const networkNonce = await this._provider.getTransactionCount(address, 'pending');
       const cursor = nonceCursors.get(key);
       const trustCursor = cursor !== undefined && Date.now() - cursor.at < NONCE_CURSOR_TRUST_MS;
       const nonce = trustCursor ? Math.max(networkNonce, cursor.next) : networkNonce;
       const result = await send(nonce);
       nonceCursors.set(key, { next: nonce + 1, at: Date.now() });
+      nonceOwners.delete(`${key}:${nonce}`);
+      nonceOwners.set(`${key}:${nonce}`, owner);
+      if (nonceOwners.size > MAX_NONCE_OWNERS) {
+        const oldest = nonceOwners.keys().next().value;
+        if (oldest !== undefined) nonceOwners.delete(oldest);
+      }
       return result;
+    });
+  }
+
+  /** Run `fn` holding the signer's nonce lock, shared by every client in the process. */
+  private async _withNonceLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const prev = nonceLocks.get(key) ?? Promise.resolve();
+    let release: () => void;
+    const lock = new Promise<void>(r => { release = r; });
+    nonceLocks.set(key, lock);
+    await prev;
+    try {
+      return await fn();
     } finally {
       release!();
     }

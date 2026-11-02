@@ -12,6 +12,7 @@ import {
   type DepositWatcherDeps,
   type DepositWatcherDepositsReader,
   type DepositWatcherRelayReader,
+  supersedesSweepReceipt,
 } from './deposit-watcher.js'
 
 const RELAY_ADDRESS = '0x' + '11'.repeat(20)
@@ -326,6 +327,19 @@ test('deposit watcher gives up on a sweep at once when the relayer that took it 
   assert.ok(Date.now() - started < 5_000, 'did not wait out the confirmation window')
   assert.match(events.find((e) => e.phase === 'error')!.error ?? '', /could not submit/)
   assert.equal(chain.walletBalance, 5_000_000n)
+})
+
+test('a late refusal from another relayer does not replace the accepting relayer\'s receipt', () => {
+  const nonce = '0x' + 'aa'.repeat(32)
+  const submitted = { peerId: 'b', payload: { version: 1 as const, authNonce: nonce, status: 'submitted' as const } }
+  const lateRefusal = { peerId: 'a', payload: { version: 1 as const, authNonce: nonce, status: 'rejected' as const, reason: 'simulation failed' } }
+  const ownFailure = { peerId: 'b', payload: { version: 1 as const, authNonce: nonce, status: 'rejected' as const, reason: 'submission failed' } }
+  assert.equal(supersedesSweepReceipt(null, submitted), true)
+  assert.equal(supersedesSweepReceipt(submitted, lateRefusal), false)
+  assert.equal(supersedesSweepReceipt(submitted, ownFailure), true)
+  assert.equal(supersedesSweepReceipt(lateRefusal, submitted), true)
+  // Another sweep's receipt always replaces it.
+  assert.equal(supersedesSweepReceipt(submitted, { ...lateRefusal, payload: { ...lateRefusal.payload, authNonce: '0x' + 'bb'.repeat(32) } }), true)
 })
 
 test('deposit watcher status exposes mode transitions and the last event', async (t) => {

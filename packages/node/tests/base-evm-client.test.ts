@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { makeError, type AbstractSigner, type InterfaceAbi, type TransactionReceipt, type TransactionRequest, type TransactionResponse } from 'ethers';
+import { Interface, JsonRpcProvider, makeError, type AbstractSigner, type InterfaceAbi, type TransactionReceipt, type TransactionRequest, type TransactionResponse } from 'ethers';
 import { BaseEvmClient } from '../src/payments/evm/base-evm-client.js';
 
 class TestEvmClient extends BaseEvmClient {
@@ -162,6 +162,46 @@ describe('BaseEvmClient nonce cursor', () => {
       expect(sent.map((t) => t.nonce)).toEqual([20, 21, 20]);
     } finally {
       clock.mockRestore();
+    }
+  });
+});
+
+describe('BaseEvmClient speed-ups', () => {
+  it('stops speeding up a dropped tx once its nonce went to a newer one', async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new TestEvmClient();
+      const provider = client.provider as JsonRpcProvider;
+      vi.spyOn(provider, 'getBlock').mockResolvedValue({ baseFeePerGas: 5_000_000n } as never);
+      vi.spyOn(provider, '_perform').mockImplementation(async (req) => {
+        if (req.method === 'getPriorityFee') return '0xf4240';
+        throw new Error(`unexpected ${req.method}`);
+      });
+      vi.spyOn(provider, 'send').mockRejectedValue(new Error('no fee history'));
+      // Nothing ever mines, and the pending count never counts the sent txs.
+      vi.spyOn(provider, 'getTransactionCount').mockResolvedValue(20);
+      vi.mocked(provider.getTransactionReceipt).mockResolvedValue(null);
+      const sent: TransactionRequest[] = [];
+      const address = '0x' + '13'.repeat(20);
+      const transfer = (amount: bigint) =>
+        client.exec(signerSendingTo(sent, address), ABI as unknown as InterfaceAbi, 'transfer', '0x' + '08'.repeat(20), amount).catch(() => undefined);
+      const iface = new Interface(ABI as unknown as InterfaceAbi);
+      const amounts = () => sent.map((tx) => (iface.decodeFunctionData('transfer', tx.data as string)[1] as bigint));
+
+      void transfer(1n);
+      await vi.advanceTimersByTimeAsync(65_000);
+      // A was sent and sped up twice, all on nonce 20, with rising tips.
+      expect(amounts()).toEqual([1n, 1n, 1n]);
+      expect(sent.map((tx) => tx.nonce)).toEqual([20, 20, 20]);
+      expect(BigInt(sent[2]!.maxPriorityFeePerGas!)).toBeGreaterThan(BigInt(sent[1]!.maxPriorityFeePerGas!));
+
+      // The cursor is stale, so B gets nonce 20; A must not replace it.
+      void transfer(2n);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(amounts().slice(3).every((amount) => amount === 2n)).toBe(true);
+      expect(sent.slice(3).map((tx) => tx.nonce).every((nonce) => nonce === 20)).toBe(true);
+    } finally {
+      vi.useRealTimers();
     }
   });
 });

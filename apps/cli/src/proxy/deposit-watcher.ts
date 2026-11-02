@@ -146,6 +146,21 @@ const TOPUP_LIMIT_DIVISOR = 2n
 const SESSION_RESERVE_BASE_UNITS = 1_000_000n
 
 /** The smallest headroom a clamped top-up waits for (mirrored in the desktop's funding-status). */
+/** A relayer's progress report on a sweep, with the relayer that sent it. */
+export interface AttributedSweepReceipt {
+  peerId: string
+  payload: SweepReceiptPayload
+}
+
+/**
+ * Whether `next` replaces `current` as the receipt kept for a sweep. A refusal from a relayer other
+ * than the one that took the sweep (one offered it earlier, answering late) does not hide its progress.
+ */
+export function supersedesSweepReceipt(current: AttributedSweepReceipt | null | undefined, next: AttributedSweepReceipt): boolean {
+  if (!current || current.payload.authNonce.toLowerCase() !== next.payload.authNonce.toLowerCase()) return true
+  return current.payload.status === 'rejected' || next.payload.status !== 'rejected' || current.peerId === next.peerId
+}
+
 export function minTopupBaseUnits(creditLimit: bigint): bigint {
   const share = creditLimit / TOPUP_LIMIT_DIVISOR
   return share > MIN_TOPUP_BASE_UNITS ? share : MIN_TOPUP_BASE_UNITS

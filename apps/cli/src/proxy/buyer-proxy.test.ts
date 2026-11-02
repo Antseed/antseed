@@ -6078,7 +6078,7 @@ test('getSweepReceipt returns cached relayer receipts case-insensitively', () =>
   })
   const nonce = '0x' + 'AB'.repeat(32)
   const receipt = { authNonce: nonce.toLowerCase(), status: 'confirmed', txHash: '0x' + '12'.repeat(32) }
-  ;(proxy as any)._sweepReceipts.set(nonce.toLowerCase(), receipt)
+  ;(proxy as any)._sweepReceipts.set(nonce.toLowerCase(), { peerId: 'p1', payload: receipt })
 
   assert.equal(proxy.getSweepReceipt(nonce), receipt)
   assert.equal(proxy.getSweepReceipt(nonce.toLowerCase()), receipt)
