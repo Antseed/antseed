@@ -223,6 +223,7 @@ export function normalizeDiscoverRow(raw: unknown): DiscoverRow | null {
       : null,
     trust: normalizeTrust(r.trust),
     washFlagged: typeof r.washFlagged === 'boolean' ? r.washFlagged : null,
+    verificationDiff: r.verificationDiff === true,
     effectiveReputationScore: typeof r.effectiveReputationScore === 'number' && Number.isFinite(r.effectiveReputationScore)
       ? r.effectiveReputationScore
       : null,

@@ -628,6 +628,12 @@ export function registerPiChatHandlers({
               onChainLastSettledAtSec: typeof rec.onChainLastSettledAtSec === 'number' ? rec.onChainLastSettledAtSec : null,
               onChainReputationScore: typeof rec.onChainReputationScore === 'number' ? rec.onChainReputationScore : null,
               onChainWashFlagged: typeof rec.onChainWashFlagged === 'boolean' ? rec.onChainWashFlagged : null,
+              onChainDiffServices: Array.isArray(rec.onChainDiffServices)
+                ? rec.onChainDiffServices.filter((s: unknown): s is string => typeof s === 'string')
+                : [],
+              onChainVerificationFetchedAt: typeof rec.onChainVerificationFetchedAt === 'number' && Number.isFinite(rec.onChainVerificationFetchedAt)
+                ? rec.onChainVerificationFetchedAt
+                : null,
               onChainSybilRisk: typeof rec.onChainSybilRisk === 'number' ? rec.onChainSybilRisk : null,
               onChainSybilFlags: Array.isArray(rec.onChainSybilFlags)
                 ? rec.onChainSybilFlags.filter((f: unknown): f is string => typeof f === 'string')

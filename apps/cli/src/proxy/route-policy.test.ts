@@ -82,6 +82,12 @@ test('a halved trust score says why, and sub-cent prices keep their digits', () 
   )
 })
 
+test('a DIFF-penalized trust score names the verification verdict', () => {
+  const penalty = 'cut to 10% from 90: live DIFF verification verdict'
+  const prefs = { preferFreePeers: false, maxInputUsdPerMillion: 25, minTrustScore: 60, allowedPeerIds: [], blockedPeerIds: [] }
+  assert.deepEqual(preferenceExclusionReasons(prefs, id('a'), 9, penalty), [`trust 9 (${penalty}) below buyer minimum 60`])
+})
+
 test('buyer hard limits narrow a gateway policy; routing preferences are not part of them', () => {
   const buyer = buyerHardPolicy({ minPeerReputation: 50, verifierRequired: true })
   assert.deepEqual(buyer, { minReputation: 50, requireVerified: true })

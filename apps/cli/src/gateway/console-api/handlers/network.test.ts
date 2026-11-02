@@ -57,6 +57,8 @@ const PEERS_BODY = {
       capabilities: [],
       providerPricing: { anthropic: { defaults: { inputUsdPerMillion: 3, outputUsdPerMillion: 15 } } },
       onChainWashFlagged: true,
+      onChainDiffServices: ['claude-opus-5.5'],
+      onChainVerificationFetchedAt: NOW - 60_000,
       verificationResults: {
         verified: true,
         checkedAtMs: 1,
@@ -355,6 +357,10 @@ test('GET peers merges buyer peers, health and gateway stats', async () => {
   ])
   assert.equal(b.tee, false)
   assert.equal(b.washFlagged, true)
+  assert.deepEqual(b.diffServices, ['claude-opus-5.5'])
+  // A DIFF list from a read 15 minutes old or more no longer cuts, so the console stops showing it.
+  const stale = mapPeers({ peers: PEERS_BODY, health: null, verification: null, stats: [], now: NOW + 15 * 60_000 })
+  assert.equal(stale.find((peer) => peer.peerId === PEER_B)?.diffServices, undefined)
   assert.equal(b.trustScore, null)
   assert.equal(b.reputationScore, null)
   assert.deepEqual(b.health, { failureStreak: 3, coolingDownUntil: NOW + 30_000 })

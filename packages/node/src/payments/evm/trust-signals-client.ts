@@ -1,5 +1,5 @@
 import { Interface, type AbstractProvider } from 'ethers';
-import { multicallRead, MULTICALL3_ADDRESS, type MulticallRequest } from './multicall.js';
+import { createCachedMulticallReader, type MulticallRequest } from './multicall.js';
 
 /**
  * Reads every on-chain input of the buyer trust score for a batch of sellers
@@ -108,26 +108,13 @@ class Round {
 }
 
 export class TrustSignalsClient {
-  private _multicallAvailable: Promise<boolean> | undefined;
+  private readonly _read: (requests: MulticallRequest[]) => Promise<Array<unknown[] | null>>;
 
   constructor(
-    private readonly _provider: AbstractProvider,
+    provider: AbstractProvider,
     private readonly _addresses: TrustSignalsAddresses,
-  ) {}
-
-  private async _read(requests: MulticallRequest[]): Promise<Array<unknown[] | null>> {
-    // `multicallRead` probes for Multicall3 with `eth_getCode` on every call;
-    // remember the answer so a discovery cycle costs only the batched reads.
-    this._multicallAvailable ??= this._provider.getCode(MULTICALL3_ADDRESS).then((code) => code !== '0x').catch(() => false);
-    if (await this._multicallAvailable) return multicallRead(this._provider, requests, { assumeDeployed: true });
-    return Promise.all(requests.map(async (request) => {
-      try {
-        const data = await this._provider.call({ to: request.target, data: request.iface.encodeFunctionData(request.method, request.args ?? []) });
-        return [...request.iface.decodeFunctionResult(request.method, data)];
-      } catch {
-        return null;
-      }
-    }));
+  ) {
+    this._read = createCachedMulticallReader(provider);
   }
 
   /**

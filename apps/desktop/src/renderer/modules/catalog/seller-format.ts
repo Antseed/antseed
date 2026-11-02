@@ -23,6 +23,13 @@ const IDENTITY_KIND_LABELS: Record<NonNullable<TrustBreakdown['identity']>['kind
  * Flagged sellers read `Trust 0/10: flagged as a proven wash trader by the on-chain registry.`
  */
 export function sellerReputationExplanation(route: DiscoverRow): string {
+  const base = sellerTrustExplanation(route);
+  if (!route.verificationDiff) return base;
+  const sentence = base.endsWith('.') ? base : `${base}.`;
+  return `${sentence} Model verification: DIFF. An on-chain audit suspects this service is not the model it claims, so its reputation is cut to 10% (${sellerReputationLabel(route)}/10).`;
+}
+
+function sellerTrustExplanation(route: DiscoverRow): string {
   const trust = route.trust;
   if (!trust) return `Trust: ${sellerReputationLabel(route)}/10`;
   if (trust.washFlagged) return 'Trust 0/10: flagged as a proven wash trader by the on-chain registry.';
