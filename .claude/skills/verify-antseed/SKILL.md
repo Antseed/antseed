@@ -204,7 +204,7 @@ The testbench cannot do these yet. Treat each as a known limit, not as a reason 
 - **`mainnet-smoke` has never run funded.** Case 3 is untested with a real wallet.
 - **`pnpm testbench share` is untested on a real server with Tailscale.**
 - **Network simulation and failpoints** are separate branches, not in this testbench.
-- **Desktop on headless Linux.** On a Debian VPS under `xvfb-run -a`, `desktop-chat` timed out at `page.waitForLoadState` and the run never exited after the failed launch (the Electron process tree stayed up until killed). The cause is unverified; `--disable-gpu` does not fix it. Give `desktop-chat` a hard deadline there and report a timeout as blocked.
+- **Desktop on headless Linux.** Desktop scenarios need Playwright's ffmpeg (`pnpm exec playwright install ffmpeg`); without it the recorded window never loaded and runs timed out at `page.waitForLoadState`. `run` now refuses a desktop scenario up front when it is missing, and a launch that still fails closes the app instead of hanging. `desktop-chat` passes on a Debian VPS under `xvfb-run -a` as root.
 
 ## Keep this skill honest
 
