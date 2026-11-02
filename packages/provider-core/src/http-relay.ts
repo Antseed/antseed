@@ -17,6 +17,7 @@ export interface RelayConfig {
   extraHeadersProvider?: () => Promise<Record<string, string> | undefined>;
   maxConcurrency: number;
   allowedServices: string[];
+  /** Timeout awaiting upstream headers or further response-body data, not a total stream-duration limit. */
   timeoutMs?: number;
   /** Lowercase header-name prefixes to strip before forwarding upstream. */
   stripHeaderPrefixes?: string[];
@@ -274,38 +275,45 @@ export class HttpRelay {
       const candidates = this._candidateUpstreams(service);
       for (const [position, { upstream, index }] of candidates.entries()) {
         const isLast = position === candidates.length - 1;
-        let attempt: UpstreamAttempt;
+        let attempt: UpstreamAttempt | undefined;
         try {
-          attempt = await this._fetchUpstream(request, upstream);
-        } catch (err) {
-          if (isLast) throw err;
-          this._coolDown(index, service, null);
-          this._logFailover(service, upstream, candidates[position + 1]!.upstream, err instanceof Error ? err.message : String(err));
-          continue;
-        }
-        if (!isLast && FAILOVER_STATUS_CODES.has(attempt.response.status)) {
-          this._coolDown(index, service, attempt.response.headers.get('retry-after'));
-          this._logFailover(service, upstream, candidates[position + 1]!.upstream, `HTTP ${attempt.response.status}`);
-          await attempt.response.body?.cancel().catch(() => undefined);
-          continue;
-        }
-        if (!isStreamingAttempt(attempt)) {
-          // Buffer a complete response before delivering it, so a connection that
-          // drops mid-body can still fail over: nothing has reached the buyer yet.
           try {
-            attempt.body = new Uint8Array(await attempt.response.arrayBuffer());
+            attempt = await this._fetchUpstream(request, upstream);
           } catch (err) {
             if (isLast) throw err;
             this._coolDown(index, service, null);
             this._logFailover(service, upstream, candidates[position + 1]!.upstream, err instanceof Error ? err.message : String(err));
             continue;
           }
+          if (!isLast && FAILOVER_STATUS_CODES.has(attempt.response.status)) {
+            this._coolDown(index, service, attempt.response.headers.get('retry-after'));
+            this._logFailover(service, upstream, candidates[position + 1]!.upstream, `HTTP ${attempt.response.status}`);
+            continue;
+          }
+          if (!isStreamingAttempt(attempt)) {
+            // Buffer a complete response before delivering it, so a connection that
+            // drops mid-body can still fail over: nothing has reached the buyer yet.
+            try {
+              attempt.body = await readUpstreamBody(attempt);
+            } catch (err) {
+              const error = attempt.signal.aborted ? attempt.signal.reason : err;
+              if (isLast) throw error;
+              this._coolDown(index, service, null);
+              this._logFailover(service, upstream, candidates[position + 1]!.upstream, error instanceof Error ? error.message : String(error));
+              continue;
+            }
+          }
+          if (attempt.response.status < 400) {
+            this._cooldownUntil.delete(`${index}:${service}`);
+          }
+          await this._deliver(request, attempt);
+          return;
+        } finally {
+          // fetch() resolves at headers, not at the end of the body. Keep its
+          // idle timeout alive through buffering/streaming, then release it on every
+          // completion, failure, or failover (including an unread error body).
+          attempt?.dispose();
         }
-        if (attempt.response.status < 400) {
-          this._cooldownUntil.delete(`${index}:${service}`);
-        }
-        await this._deliver(request, attempt);
-        return;
       }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
@@ -459,11 +467,14 @@ export class HttpRelay {
 
     const timeoutMs = this._config.timeoutMs ?? DEFAULT_HTTP_TIMEOUT_MS;
 
-    const doFetch = async (headers: Record<string, string>): Promise<Response> => {
+    const doFetch = async (headers: Record<string, string>): Promise<UpstreamAttempt> => {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      const timeout = setTimeout(() => controller.abort(new Error(`Upstream request timed out after ${timeoutMs}ms`)), timeoutMs);
+      const refreshTimeout = () => {
+        if (!controller.signal.aborted) timeout.refresh();
+      };
       try {
-        return await fetch(url, {
+        const response = await fetch(url, {
           redirect: this._config.redirect,
           method: swappedRequest.method,
           headers,
@@ -472,13 +483,20 @@ export class HttpRelay {
             : undefined,
           signal: controller.signal,
         });
+        refreshTimeout();
+        return {
+          response, headers, url, signal: controller.signal, refreshTimeout,
+          dispose: () => {
+            clearTimeout(timeout);
+            controller.abort();
+          },
+        };
       } catch (error) {
+        clearTimeout(timeout);
         if (controller.signal.aborted) {
-          throw new Error(`Upstream request timed out after ${timeoutMs}ms`);
+          throw controller.signal.reason;
         }
         throw error;
-      } finally {
-        clearTimeout(timeout);
       }
     };
 
@@ -491,7 +509,7 @@ export class HttpRelay {
       ? (headers: Record<string, string>) => this._limiter!.schedule(() => doFetch(headers))
       : doFetch;
 
-    const fetchWithRetries = async (): Promise<Response> => {
+    const fetchWithRetries = async (): Promise<UpstreamAttempt> => {
       let lastError: unknown;
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
         if (attempt > 0) {
@@ -500,10 +518,11 @@ export class HttpRelay {
         }
 
         try {
-          const response = await runFetch(currentHeaders);
-          if (attempt === maxRetries || (response.status < 500 && !retryableStatusCodes.has(response.status))) {
-            return response;
+          const result = await runFetch(currentHeaders);
+          if (attempt === maxRetries || (result.response.status < 500 && !retryableStatusCodes.has(result.response.status))) {
+            return result;
           }
+          result.dispose();
         } catch (error) {
           lastError = error;
           if (attempt === maxRetries) {
@@ -515,9 +534,10 @@ export class HttpRelay {
       throw (lastError instanceof Error ? lastError : new Error('Upstream request failed after retries'));
     };
 
-    let fetchResponse = await fetchWithRetries();
+    let result = await fetchWithRetries();
 
-    if (fetchResponse.status === 401 && upstream.authHeaderValue === null && this._config.retryOn401 && this._config.tokenProvider?.forceRefresh) {
+    if (result.response.status === 401 && upstream.authHeaderValue === null && this._config.retryOn401 && this._config.tokenProvider?.forceRefresh) {
+      result.dispose();
       const refreshedToken = await this._config.tokenProvider.forceRefresh();
       const isBearer = this._config.authHeaderName === 'authorization';
       const newHeaderValue = isBearer ? `Bearer ${refreshedToken}` : refreshedToken;
@@ -532,10 +552,10 @@ export class HttpRelay {
           };
         }
       }
-      fetchResponse = await fetchWithRetries();
+      result = await fetchWithRetries();
     }
 
-    return { response: fetchResponse, headers: currentHeaders, url };
+    return result;
   }
 
   private async _deliver(request: SerializedHttpRequest, attempt: UpstreamAttempt): Promise<void> {
@@ -563,6 +583,7 @@ export class HttpRelay {
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
+          attempt.refreshTimeout();
           totalStreamBytes += value.byteLength;
           if (totalStreamBytes <= 500) debugChunks.push(value);
           this._callbacks.onResponseChunk?.({
@@ -572,10 +593,11 @@ export class HttpRelay {
           });
         }
       } catch (err) {
+        const error = attempt.signal.aborted ? attempt.signal.reason : err;
         this._callbacks.onResponseChunk?.({
           requestId: request.requestId,
           data: new TextEncoder().encode(
-            `event: error\ndata: ${err instanceof Error ? err.message : 'stream error'}\n\n`
+            `event: error\ndata: ${error instanceof Error ? error.message : 'stream error'}\n\n`
           ),
           done: false,
         });
@@ -596,7 +618,7 @@ export class HttpRelay {
       });
     } else {
       // Complete response
-      const body = attempt.body ?? new Uint8Array(await fetchResponse.arrayBuffer());
+      const body = attempt.body ?? await readUpstreamBody(attempt);
       this._callbacks.onResponse({
         requestId: request.requestId,
         statusCode: fetchResponse.status,
@@ -611,8 +633,38 @@ interface UpstreamAttempt {
   response: Response;
   headers: Record<string, string>;
   url: string;
+  signal: AbortSignal;
+  /** Activity resets the body timeout without capping a healthy stream's duration. */
+  refreshTimeout: () => void;
+  /** Clear the deadline and abort any unread response body before discarding it. */
+  dispose: () => void;
   /** The complete response body, once buffered for a non-streaming response. */
   body?: Uint8Array;
+}
+
+async function readUpstreamBody(attempt: UpstreamAttempt): Promise<Uint8Array> {
+  if (!attempt.response.body) return new Uint8Array(0);
+  const reader = attempt.response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      attempt.refreshTimeout();
+      chunks.push(value);
+      size += value.byteLength;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const body = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return body;
 }
 
 function isStreamingAttempt({ response, headers }: UpstreamAttempt): boolean {
