@@ -31,12 +31,22 @@ After M003:
   applies, and budget above it is never minted.
 - **Verdicts expire by epoch.** A SAME or DIFF counts for `validityEpochs` emissions
   epochs including the one it was given in (default 2; owner-settable from 1 to 4), and
-  then drops out on its own. The latest result from a single auditor sets the verdict,
-  including UNDETERMINED, which clears an earlier SAME or DIFF. Auditors double-check
-  DIFF results off-chain before submitting.
+  then drops out on its own.
+- **A DIFF needs a second auditor.** `requiredReports` sets how many distinct approved
+  auditors must report a verdict before it is recorded: SAME 1, DIFF 2, UNDETERMINED 1.
+  Until a second auditor confirms it, a DIFF only waits; the service keeps its previous
+  status. The owner can change the counts with `setRequiredReports(verdict, reports)`.
 - **The emissions gate is pinned.** The constructor reads the gate behind
   `registry.emissions()` (usage accounting's `emissionsGate()`) and keeps it for life,
   so verdict epochs never mix gates. A new gate needs a new verification deployment.
+
+## Redeploy on Base mainnet
+
+M003 was first broadcast on Base mainnet on 2026-10-30 (`0xded52D46…3D1c`, policy
+`0x97CfCca8…035a`), before confirmations existed. That deployment is abandoned: no
+auditor was approved and its policy was never registered. Its history record and
+`current.json` entries were removed, so M003 runs again from a clean baseline and deploys
+the contract with confirmations. The old contracts stay on-chain unused.
 
 ## Configuration
 

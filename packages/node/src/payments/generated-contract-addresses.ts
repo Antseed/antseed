@@ -17,7 +17,6 @@ export const DEPLOYED_CONTRACT_ADDRESSES = {
     identityRegistryAddress: '0x8004A169FB4a3325136EB29fA0ceB6D2e539a432',
     statsContractAddress: '0x15649ff076BFa5e37e24EE3154a00503149954Fd',
     depositRelayAddress: '0x34a44542e76f9b4cff3a31902eDF14AbF2C3B3DD',
-    verificationContractAddress: '0xded52d46f1047c037dd54d9470ebb1be291b3d1c',
     emissionsGateAddress: '0xe60a31e6cd2f8455503ca0b3f6545dd3ddf543bd',
     sellerPoolsAddress: '0x8bf4d39aa13f3cb03f87d9500767fbc4d0940652',
     sellerRegistryAddress: '0x99c533bcc6ca646e543dba835fdbb9c2ee02cb60',
@@ -28,7 +27,6 @@ export const DEPLOYED_CONTRACT_ADDRESSES = {
     legacyEmissionsEscrowAddress: '0x4d0fc3c0bbb5233af6c4ce33223e5330c34db9ab',
     channelsDeployBlock: 44469557,
     statsDeployBlock: 44469557,
-    verificationDeployBlock: 53291075,
     recognizedUsage: {
       "status": "active",
       "effectiveEpoch": 22,
