@@ -5,6 +5,7 @@ import {
   getBigInt,
   JsonRpcProvider,
   makeError,
+  NonceManager,
   Network,
   type AbstractProvider,
   type AbstractSigner,
@@ -139,9 +140,7 @@ export abstract class BaseEvmClient {
     const signerAddress = await connected.getAddress();
     const contract = new Contract(this._contractAddress, abi, connected);
     const populated = await contract.getFunction(method).populateTransaction(...args);
-    const owner = {};
-    const tx = await this._sendBuffered(connected, signerAddress, populated, owner);
-    const receipt = await this._waitForReceipt(tx, () => this._speedUp(connected, signerAddress, populated, owner));
+    const receipt = await this._sendAndWait(connected, signerAddress, populated);
     return receipt.hash;
   }
 
@@ -160,10 +159,24 @@ export abstract class BaseEvmClient {
     const signerAddress = await connected.getAddress();
     const usdc = new Contract(usdcAddress, ERC20_ABI, connected);
     const approvePopulated = await usdc.getFunction('approve').populateTransaction(this._contractAddress, amount);
-    const approveOwner = {};
-    const approveTx = await this._sendBuffered(connected, signerAddress, approvePopulated, approveOwner);
-    await this._waitForReceipt(approveTx, () => this._speedUp(connected, signerAddress, approvePopulated, approveOwner));
+    await this._sendAndWait(connected, signerAddress, approvePopulated);
     return this._execWrite(signer, abi, method, ...args);
+  }
+
+  /**
+   * Send `populated` on the signer's next nonce and wait until it mines, speeding it up when it
+   * stalls. Only a tx broadcast on the nonce assigned here is sped up: a signer that picks its own
+   * nonce (ethers NonceManager) would send the replacement as a second operation.
+   */
+  private async _sendAndWait(
+    connected: AbstractSigner,
+    signerAddress: string,
+    populated: TransactionRequest,
+  ): Promise<TransactionReceipt> {
+    const owner = {};
+    const tx = await this._sendBuffered(connected, signerAddress, populated, owner);
+    const replaceable = !(connected instanceof NonceManager) && typeof tx.nonce === 'number' && tx.nonce === populated.nonce;
+    return this._waitForReceipt(tx, replaceable ? () => this._speedUp(connected, signerAddress, populated, owner) : undefined);
   }
 
   /**
@@ -233,6 +246,10 @@ export abstract class BaseEvmClient {
     owner: object,
   ): Promise<TransactionResponse | null> {
     if (populated.maxPriorityFeePerGas == null || populated.maxFeePerGas == null || populated.nonce == null) return null;
+    const key = this._nonceKey(signerAddress);
+    const ownerKey = `${key}:${populated.nonce}`;
+    // An operation that lost its nonce prices no more replacements (checked again under the lock).
+    if (nonceOwners.get(ownerKey) !== owner) return null;
     const prevTip = getBigInt(populated.maxPriorityFeePerGas);
     const prevMax = getBigInt(populated.maxFeePerGas);
     if (prevTip >= MAX_SPEED_UP_TIP_WEI) return null;
@@ -243,10 +260,8 @@ export abstract class BaseEvmClient {
     const currentMax = current.maxFeePerGas != null ? getBigInt(current.maxFeePerGas) - currentTip + tip : 0n;
     const maxFee = max(prevMax + prevMax / 4n + (tip - prevTip), currentMax);
     const replacement = { ...populated, maxPriorityFeePerGas: tip, maxFeePerGas: maxFee };
-    const key = this._nonceKey(signerAddress);
-    const nonce = populated.nonce;
     return this._withNonceLock(key, async () => {
-      if (nonceOwners.get(`${key}:${nonce}`) !== owner) return null;
+      if (nonceOwners.get(ownerKey) !== owner) return null;
       const tx = await connected.sendTransaction(replacement);
       Object.assign(populated, { maxPriorityFeePerGas: tip, maxFeePerGas: maxFee });
       return tx;

@@ -2655,6 +2655,8 @@ export class AntseedNode extends EventEmitter {
     candidates.push(...skipped);
 
     const wantNonce = payload.nonce.toLowerCase();
+    // Watch the whole sweep before offering it: a relayer's 'submitted' and 'rejected' can arrive together.
+    const stopWatching = this._watchSweepOutcomes(wantNonce);
     let offered = 0;
     for (const { peerId, conn } of candidates) {
       // Stop offering when the authorization is too close to expiry for a
@@ -2670,22 +2672,26 @@ export class AntseedNode extends EventEmitter {
       offered++;
       const receipt = await this._waitForSweepReceipt(peerId, wantNonce, perPeerTimeoutMs);
       if (receipt && (receipt.status === 'submitted' || receipt.status === 'confirmed')) {
-        if (receipt.status === 'submitted') this._watchAcceptedSweep(peerId, wantNonce);
         return { offered, accepted: true };
       }
       // 'rejected' or silence — pass the opportunity to the next relayer.
     }
+    stopWatching();
     return { offered, accepted: false };
   }
 
-  /** Remember a relayer that accepted `authNonce` and then reported it could not submit it. */
-  private _watchAcceptedSweep(peerId: PeerId, authNonce: string): void {
+  /**
+   * Until stopped or SWEEP_OUTCOME_WATCH_MS pass, remember any relayer that accepts `authNonce`
+   * ('submitted') and then reports it could not submit it, so later sweeps go to it last.
+   */
+  private _watchSweepOutcomes(authNonce: string): () => void {
+    const accepted = new Set<string>();
     const listener = (event: { peerId: string; payload: SweepReceiptPayload }): void => {
-      if (event.peerId !== peerId || event.payload.authNonce.toLowerCase() !== authNonce) return;
-      if (event.payload.status === 'rejected') {
-        this._failedSweepRelayers.set(peerId, Date.now() + FAILED_SWEEP_RELAYER_COOLDOWN_MS);
+      if (event.payload.authNonce.toLowerCase() !== authNonce) return;
+      if (event.payload.status === 'submitted') accepted.add(event.peerId);
+      else if (event.payload.status === 'rejected' && accepted.has(event.peerId)) {
+        this._failedSweepRelayers.set(event.peerId as PeerId, Date.now() + FAILED_SWEEP_RELAYER_COOLDOWN_MS);
       }
-      if (event.payload.status !== 'submitted') cleanup();
     };
     const timer = setTimeout(() => cleanup(), SWEEP_OUTCOME_WATCH_MS);
     timer.unref?.();
@@ -2694,6 +2700,7 @@ export class AntseedNode extends EventEmitter {
       this.off('sweep:receipt', listener);
     };
     this.on('sweep:receipt', listener);
+    return cleanup;
   }
 
   /** Resolve with the first 'sweep:receipt' from `peerId` for `authNonce`

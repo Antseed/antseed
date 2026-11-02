@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { Interface, JsonRpcProvider, makeError, type AbstractSigner, type InterfaceAbi, type TransactionReceipt, type TransactionRequest, type TransactionResponse } from 'ethers';
+import { Interface, JsonRpcProvider, makeError, NonceManager, type AbstractSigner, type InterfaceAbi, type TransactionReceipt, type TransactionRequest, type TransactionResponse } from 'ethers';
 import { BaseEvmClient } from '../src/payments/evm/base-evm-client.js';
 
 class TestEvmClient extends BaseEvmClient {
@@ -31,7 +31,7 @@ function signerSendingTo(
     estimateGas,
     sendTransaction: async (tx: TransactionRequest): Promise<TransactionResponse> => {
       sent.push(tx);
-      return { hash: '0x01', wait: async () => ({ hash: '0x01' }) } as unknown as TransactionResponse;
+      return { hash: '0x01', nonce: tx.nonce, from: address, wait: async () => ({ hash: '0x01' }) } as unknown as TransactionResponse;
     },
   };
   return signer as unknown as AbstractSigner;
@@ -200,6 +200,38 @@ describe('BaseEvmClient speed-ups', () => {
       await vi.advanceTimersByTimeAsync(60_000);
       expect(amounts().slice(3).every((amount) => amount === 2n)).toBe(true);
       expect(sent.slice(3).map((tx) => tx.nonce).every((nonce) => nonce === 20)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('BaseEvmClient speed-ups with nonce-managing signers', () => {
+  it('never re-sends through a NonceManager, which would send the replacement on a new nonce', async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new TestEvmClient();
+      const provider = client.provider as JsonRpcProvider;
+      vi.spyOn(provider, 'getBlock').mockResolvedValue({ baseFeePerGas: 5_000_000n } as never);
+      vi.spyOn(provider, '_perform').mockResolvedValue('0xf4240');
+      vi.spyOn(provider, 'send').mockRejectedValue(new Error('no fee history'));
+      vi.spyOn(provider, 'getTransactionCount').mockResolvedValue(30);
+      vi.mocked(provider.getTransactionReceipt).mockResolvedValue(null);
+      const sent: TransactionRequest[] = [];
+      class ManagedSigner extends NonceManager {
+        override async getAddress() { return '0x' + '14'.repeat(20); }
+        override connect() { return this; }
+        override async estimateGas() { return 21_000n; }
+        override async sendTransaction(tx: TransactionRequest): Promise<TransactionResponse> {
+          // Like NonceManager: the signer's own nonce replaces the one asked for.
+          sent.push({ ...tx, nonce: 77 });
+          return { hash: '0x02', nonce: 77, from: '0x' + '14'.repeat(20) } as unknown as TransactionResponse;
+        }
+      }
+      const signer = new ManagedSigner(signerSendingTo([], '0x' + '14'.repeat(20)));
+      void client.exec(signer, ABI as unknown as InterfaceAbi, 'transfer', '0x' + '09'.repeat(20), 1n).catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(130_000);
+      expect(sent).toHaveLength(1);
     } finally {
       vi.useRealTimers();
     }

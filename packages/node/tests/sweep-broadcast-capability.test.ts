@@ -69,7 +69,7 @@ type NodeInternals = {
  *  what the peer does when offered a sweep: a receipt status (sent async),
  *  or 'silent' to never respond. Returns the per-peer offer log. */
 function makeDispatchNode(
-  peers: Array<{ peerId: string; behavior: 'submitted' | 'confirmed' | 'rejected' | 'silent'; capable?: boolean }>,
+  peers: Array<{ peerId: string; behavior: 'submitted' | 'confirmed' | 'rejected' | 'silent' | 'submitted-then-failed'; capable?: boolean }>,
 ): { node: AntseedNode; offers: string[] } {
   const node = new AntseedNode({ role: 'buyer' });
   const offers: string[] = [];
@@ -89,6 +89,12 @@ function makeDispatchNode(
       const behavior = peers.find((p) => p.peerId === peerId)?.behavior;
       if (behavior === 'silent' || behavior === undefined) return;
       setTimeout(() => {
+        if (behavior === 'submitted-then-failed') {
+          // Both receipts in one read: emitted back to back, before dispatch resumes.
+          node.emit('sweep:receipt', { peerId, payload: { version: 1, authNonce: payload.nonce, status: 'submitted' } });
+          node.emit('sweep:receipt', { peerId, payload: { version: 1, authNonce: payload.nonce, status: 'rejected', reason: 'submission failed' } });
+          return;
+        }
         node.emit('sweep:receipt', {
           peerId,
           payload: { version: 1, authNonce: payload.nonce, status: behavior },
@@ -160,6 +166,21 @@ describe('AntseedNode sequential sweep dispatch', () => {
 
     const second = { ...makePayload(), nonce: '0x' + 'bb'.repeat(32) };
     expect(await node.dispatchSweepRequest(second, { perPeerTimeoutMs: 200 })).toEqual({ offered: 1, accepted: true });
+    expect(offers).toEqual([a, b]);
+    vi.restoreAllMocks();
+  });
+
+  it('also notices a failure that arrives together with the acceptance', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0.999);
+    const a = toPeerId('a'.repeat(40));
+    const b = toPeerId('b'.repeat(40));
+    const { node, offers } = makeDispatchNode([
+      { peerId: a, behavior: 'submitted-then-failed' },
+      { peerId: b, behavior: 'submitted' },
+    ]);
+
+    expect(await node.dispatchSweepRequest(makePayload(), { perPeerTimeoutMs: 200 })).toEqual({ offered: 1, accepted: true });
+    expect(await node.dispatchSweepRequest({ ...makePayload(), nonce: '0x' + 'cc'.repeat(32) }, { perPeerTimeoutMs: 200 })).toEqual({ offered: 1, accepted: true });
     expect(offers).toEqual([a, b]);
     vi.restoreAllMocks();
   });
