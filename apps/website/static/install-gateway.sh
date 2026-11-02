@@ -648,6 +648,12 @@ Wants=network-online.target
 [Service]
 ExecStart=$CLI_BIN buyer start --port $BUYER_PORT
 Environment=ANTSEED_SUPERVISED=1
+# Under heavy traffic glibc keeps the native memory of freed request buffers,
+# so RSS only climbs until the OOM killer stops the buyer. Hand large buffers
+# back to the OS when they are freed.
+Environment=MALLOC_ARENA_MAX=2
+Environment=MALLOC_MMAP_THRESHOLD_=131072
+Environment=MALLOC_TRIM_THRESHOLD_=131072
 $common
 
 [Install]
