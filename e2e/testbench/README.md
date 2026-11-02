@@ -17,6 +17,8 @@ Agents: the `verify-antseed` skill (`.claude/skills/verify-antseed/SKILL.md`) sa
 
 - Node 24 (`.nvmrc`; `up` refuses other majors because native modules would not load), then `pnpm install && pnpm run build`
 - Desktop scenarios and cases 2 to 4: build the desktop too (`pnpm --filter @antseed/desktop run build`)
+- Desktop scenarios: Playwright's own ffmpeg, which records the run video (`pnpm exec playwright install ffmpeg`, once per machine; it goes to Playwright's cache, `~/.cache/ms-playwright` on Linux, `~/Library/Caches/ms-playwright` on macOS). Without it the window never loads, so `run` refuses a desktop scenario before starting anything.
+- Linux as root (common on servers): Chromium refuses to run as root, so the desktop launchers add `--no-sandbox` there and say so. Run as a normal user to keep Chromium's sandbox on.
 - Foundry's `anvil` on `PATH` (plus `forge` and `packages/contracts/lib/forge-std` for `--chain local`: `cd packages/contracts && forge install foundry-rs/forge-std --no-git`; the first `forge build` takes several minutes, later runs reuse `out/`)
 - For the fork chain and for case 3, a dedicated Base mainnet RPC with an API key (Alchemy, QuickNode, ...) as `BASE_MAINNET_RPC_URL` in the worktree's gitignored `.env.local` (or exported in the shell, which wins). Public gateways rate-limit fork reads and Anvil times out. The URL is passed through process environments only and never printed or written to testbench state. Anvil forks through a loopback relay (`http://127.0.0.1:<port>/<random token>`), so the URL and its key never appear on a command line that other users can read with `ps`.
 

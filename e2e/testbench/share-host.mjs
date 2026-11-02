@@ -9,7 +9,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { desktopEnv } from './lib/desktop.mjs';
+import { desktopEnv, electronRootArgs } from './lib/desktop.mjs';
 import { ownProcessEntry, processStartTime } from './lib/lock.mjs';
 import { readJson, saveJson, validateManifest } from './lib/manifest.mjs';
 import { isInside, testbenchPaths } from './lib/paths.mjs';
@@ -110,7 +110,7 @@ async function startDesktop(display, manifest) {
   const env = { ...desktopEnv({ manifest, instance, ports: resolveInstancePorts(instance), stateDir: 'desktop-share' }), DISPLAY: display };
   delete env.WAYLAND_DISPLAY;
   const electron = createRequire(join(desktopDir, 'package.json'))('electron');
-  const args = ['.', ...(typeof process.getuid === 'function' && process.getuid() === 0 ? ['--no-sandbox'] : []), ...(process.env.ANTSEED_TESTBENCH_SHARE_DEBUG_PORT ? [`--remote-debugging-port=${process.env.ANTSEED_TESTBENCH_SHARE_DEBUG_PORT}`, '--remote-debugging-address=127.0.0.1'] : [])];
+  const args = ['.', ...electronRootArgs(), ...(process.env.ANTSEED_TESTBENCH_SHARE_DEBUG_PORT ? [`--remote-debugging-port=${process.env.ANTSEED_TESTBENCH_SHARE_DEBUG_PORT}`, '--remote-debugging-address=127.0.0.1'] : [])];
   const child = spawn(electron, args, { cwd: desktopDir, env, stdio: ['ignore', 'pipe', 'pipe'] });
   track('desktop', child, 'share-desktop');
   desktopStatus = 'running';

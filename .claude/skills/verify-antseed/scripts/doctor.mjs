@@ -66,6 +66,11 @@ const staleDesktop = desktopParts.filter(([, source, built]) => existsSync(join(
 if (missing.length) warn(`desktop ${missing.map(([part]) => part).join(' and ')} not built: desktop scenarios need ${desktopBuild}`);
 else if (staleDesktop.length) warn(`desktop ${staleDesktop.map(([part]) => part).join(' and ')} src newer than dist: run ${desktopBuild} before desktop scenarios`);
 else ok('desktop built (main and renderer)');
+const { playwrightFfmpeg, FFMPEG_INSTALL } = await import(join(repo, 'e2e/testbench/lib/desktop.mjs'));
+const ffmpeg = playwrightFfmpeg();
+if (ffmpeg.installed) ok(`Playwright ffmpeg installed (${ffmpeg.location}); desktop scenarios can record video`);
+else fail(`${ffmpeg.reason}: desktop scenarios would time out without it. Run: ${FFMPEG_INSTALL}`);
+if (process.platform === 'linux' && process.getuid?.() === 0) warn('running as root: desktop launchers add --no-sandbox (Chromium refuses root otherwise); a normal user keeps Chromium\'s sandbox on');
 if (process.platform === 'linux' && !process.env.DISPLAY) {
   if (which('xvfb-run')) ok('no DISPLAY: wrap desktop scenarios in xvfb-run -a');
   else warn('no DISPLAY and no xvfb-run: desktop scenarios cannot open a window (apt-get install xvfb)');

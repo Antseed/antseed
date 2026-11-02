@@ -1,7 +1,8 @@
-import { createWriteStream, existsSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { createWriteStream, existsSync, readdirSync } from 'node:fs';
 import { mkdir, readdir, rename, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { isolatedEnv, toolchainEnv } from './env.mjs';
 import { isInside } from './paths.mjs';
@@ -72,6 +73,32 @@ export async function launchProfileDesktop({ repo, env, instance, reportDir, eve
   return launchElectron({ desktopDir, env, reportDir, event, trace, instance, title: instance });
 }
 
+export const FFMPEG_INSTALL = 'pnpm exec playwright install ffmpeg';
+
+/**
+ * Playwright records desktop video with its own ffmpeg build, a separate download. Without it the Electron
+ * window never finishes loading and a desktop scenario only times out, so check before launching.
+ * Read-only: asks Playwright where that ffmpeg belongs (`install --dry-run`) and looks for it there.
+ */
+export function playwrightFfmpeg({ env = process.env } = {}) {
+  let cli;
+  try {
+    cli = join(dirname(createRequire(import.meta.url).resolve('playwright/package.json')), 'cli.js');
+  } catch {
+    return { installed: false, location: null, reason: 'Playwright is not installed; run pnpm install' };
+  }
+  const result = spawnSync(process.execPath, [cli, 'install', '--dry-run', 'ffmpeg'], { encoding: 'utf8', env, timeout: 30_000 });
+  const location = /Install location:\s*(.+)/.exec(result.stdout ?? '')?.[1]?.trim() ?? null;
+  if (!location) return { installed: false, location: null, reason: 'could not ask Playwright where ffmpeg belongs' };
+  const installed = existsSync(location) && readdirSync(location).some((name) => name.startsWith('ffmpeg'));
+  return { installed, location, reason: installed ? null : `Playwright's ffmpeg is not installed (expected in ${location})` };
+}
+
+/** Electron on Linux refuses to start as root unless Chromium's own sandbox is turned off. */
+export function electronRootArgs({ platform = process.platform, uid = process.getuid?.() } = {}) {
+  return platform === 'linux' && uid === 0 ? ['--no-sandbox'] : [];
+}
+
 /** Closes the app, and kills its process if Electron does not exit in time (it can hang on shutdown). */
 export async function closeApp(app, { timeoutMs = 15_000 } = {}) {
   const child = app.process();
@@ -101,6 +128,8 @@ async function launchElectron({ desktopDir, env, reportDir, event, trace, instan
   await mkdir(shotsDir, { recursive: true, mode: 0o700 });
   await mkdir(videoDir, { recursive: true, mode: 0o700 });
 
+  const ffmpeg = playwrightFfmpeg();
+  if (!ffmpeg.installed) throw new Error(`${ffmpeg.reason}. Desktop scenarios record video with it; run once: ${FFMPEG_INSTALL}`);
   const executablePath = createRequire(join(desktopDir, 'package.json'))('electron');
   const app = await electron.launch({
     executablePath, args: ['.'], cwd: desktopDir, env, timeout: 60_000,
