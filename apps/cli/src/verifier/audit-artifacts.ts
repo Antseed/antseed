@@ -111,6 +111,17 @@ interface SellerAuditReportResult {
   evidencePath?: string
   outcomeReason?: VerificationOutcomeReasonV1 | null
   recheck?: { status: string; parsedProbeCount: number; probeCount: number }
+  extension?: {
+    probeCount: number
+    firstLook: { pValue: number | null }
+    pooled: { pValueBinomial: number | null; verdict: string; extendNext?: boolean }
+  }
+  extension2?: {
+    probeCount: number
+    firstLook: { pValue: number | null }
+    pooled: { pValueBinomial: number | null; verdict: string; extendNext?: boolean }
+  }
+  extensionPending?: { reason: string }
 }
 
 interface SellerAuditReportFailure {
@@ -181,6 +192,20 @@ export function modelAuditRechecksDirectory(
   runId: string,
 ): string {
   return join(modelAuditsDirectory(evidenceDir, epoch, model, runId), 'rechecks')
+}
+
+/**
+ * Close-call extension evidence, apart from first checks and rechecks. A second extra set
+ * (`kbf-extension-v2`) has its own directory so it never overwrites the first set's evidence.
+ */
+export function modelAuditExtensionsDirectory(
+  evidenceDir: string,
+  epoch: string,
+  model: string,
+  runId: string,
+  extensionIndex = 1,
+): string {
+  return join(modelAuditsDirectory(evidenceDir, epoch, model, runId), extensionIndex === 1 ? 'extensions' : `extensions-${extensionIndex}`)
 }
 
 export function modelReferencesDirectory(evidenceDir: string, epoch: string, model: string): string {
@@ -323,10 +348,20 @@ export async function renderModelAuditReports(
         incorrect: result.parsedProbeCount === 0 ? '—' : String(result.incorrectProbeCount),
         correctRate: result.correctRate === null ? 'N/A' : `${(result.correctRate * 100).toFixed(1)}%`,
         verdict: result.status,
-        reason: result.recheck
-          ? `first check DIFF; recheck ${result.recheck.status} `
-            + `(${result.recheck.parsedProbeCount}/${result.recheck.probeCount} fresh probes)`
-          : reportReason(result.outcomeReason),
+        reason: [
+          result.extension
+            ? `close call (p=${result.extension.firstLook.pValue?.toFixed(3) ?? '?'}); `
+              + [result.extension, result.extension2].flatMap((set, index) => set ? [
+                `extra set ${index + 1}: ${set.probeCount} questions, pooled p=${set.pooled.pValueBinomial?.toFixed(3) ?? '?'} `
+                + `→ ${set.pooled.extendNext ? 'still close' : set.pooled.verdict}`,
+              ] : []).join('; ')
+              + (result.extensionPending ? `; waiting for more extra questions: ${result.extensionPending.reason}` : '')
+            : result.extensionPending ? `close call waiting for extra questions: ${result.extensionPending.reason}` : null,
+          result.recheck
+            ? `stage-1 DIFF; recheck ${result.recheck.status} `
+              + `(${result.recheck.parsedProbeCount}/${result.recheck.probeCount} fresh probes)`
+            : null,
+        ].filter(Boolean).join('; ') || reportReason(result.outcomeReason),
         nextAction: result.outcomeReason?.nextAction ?? '—',
         auditId: result.auditId,
         evidencePath: result.evidencePath,

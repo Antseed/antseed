@@ -1011,6 +1011,44 @@ test('reference build rejects a refused stability batch without aborting the tar
   }
 })
 
+test('reference build skips a stability batch the model filters as sensitive', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-sensitive-stability-'))
+  let refusedPrompt: string | null = null
+  const logs: string[] = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as {
+      model: string
+      temperature: number
+      messages: Array<{ content: string }>
+    }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (refusedPrompt === null && body.model === 'upstream-test' && !prompt.startsWith('Generate ') && body.temperature === 0) {
+      refusedPrompt = prompt
+    }
+    if (prompt === refusedPrompt && body.temperature === 0) {
+      // As OpenRouter relays Z.ai's content filter.
+      return Response.json({
+        choices: [{ message: { content: null }, finish_reason: 'stop', native_finish_reason: 'sensitive' }],
+        usage: { prompt_tokens: 100, completion_tokens: 0 },
+      })
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    const built = await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: config(),
+      fetchFn,
+      log: (message) => logs.push(message),
+    })
+    assert.equal(built.reference.probes.length, 100)
+    assert.equal(logs.some((message) => message.includes('skipping 10-probe stability batch')), true)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('reference build adaptively isolates and caches a refused self-test probe', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-refused-self-test-'))
   let refusedSelfTestAttempts = 0
@@ -1045,7 +1083,7 @@ test('reference build adaptively isolates and caches a refused self-test probe',
     const built = await buildModelReference({
       model: MODEL,
       referencesDir: directory,
-      config: config(),
+      config: config({ referenceLayoutFilterPasses: 0 }), // counts self-test calls; the layout filter has its own test
       fetchFn,
       log: (message) => logs.push(message),
     })
@@ -1070,7 +1108,7 @@ test('reference build adaptively isolates and caches a refused self-test probe',
     await buildModelReference({
       model: MODEL,
       referencesDir: directory,
-      config: config(),
+      config: config({ referenceLayoutFilterPasses: 0 }), // counts self-test calls; the layout filter has its own test
       fetchFn,
       log: (message) => logs.push(message),
     })
@@ -1283,7 +1321,10 @@ test('adaptive builder selects the first powered prefix', async () => {
     }).join('\n'))
   }
   try {
-    const built = await buildModelReference({ model: MODEL, referencesDir: directory, config: config(), fetchFn })
+    // Counts self-test mismatches; the layout filter (its own test) would use some of them up.
+    const built = await buildModelReference({
+      model: MODEL, referencesDir: directory, config: config({ referenceLayoutFilterPasses: 0 }), fetchFn,
+    })
     assert.equal(built.reference.probes.length, 110)
     assert.equal(built.reference.selfTest.hamming, 14)
     assert.equal(built.reference.selfTest.total, 330)
@@ -2010,6 +2051,96 @@ test('a pinned endpoint tag matches the provider name OpenRouter reports', async
   try {
     const built = await buildModelReference({ model: MODEL, referencesDir: directory, config: value, fetchFn })
     assert.deepEqual((built.reference.generator.params.referenceProvider as { served?: string[] }).served, ['Provider A'])
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a new OpenRouter bank uses the built-in provider pin; a bank built unpinned stays unpinned', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-builtin-pin-'))
+  setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', referenceProvider: ['maker/fp8'] } })
+  const openRouter = () => {
+    const value = config()
+    value.referenceEndpoint!.baseUrl = 'https://openrouter.ai/api/v1'
+    return value
+  }
+  const bodies: Array<Record<string, unknown>> = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown> & { model: string; messages: Array<{ content: string }> }
+    bodies.push(body)
+    return providerResponse(successfulContent(body.model, body.messages.at(-1)?.content ?? ''), body.model === 'upstream-test' ? 'Maker' : 'Other')
+  }
+  try {
+    const pinned = await buildModelReference({ model: MODEL, referencesDir: join(directory, 'new'), config: openRouter(), fetchFn })
+    const targetBodies = bodies.filter((body) => body.model === 'upstream-test')
+    assert.ok(targetBodies.length > 0)
+    for (const body of targetBodies) assert.deepEqual(body.provider, { order: ['maker/fp8'], allow_fallbacks: false })
+    assert.deepEqual(pinned.reference.generator.params.referenceProvider, {
+      pinned: { order: ['maker/fp8'], allowFallbacks: false },
+      served: ['Maker'],
+    })
+
+    // A bank enrolled before the built-in pin keeps being extended unpinned, so its measurements stay comparable.
+    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test' } })
+    const unpinned = await buildModelReference({ model: MODEL, referencesDir: join(directory, 'old'), config: openRouter(), fetchFn })
+    await unpinned.finalize()
+    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', referenceProvider: ['maker/fp8'] } })
+    bodies.length = 0
+    const extended = await buildModelReference({
+      model: MODEL, referencesDir: join(directory, 'extended'), config: openRouter(), fetchFn,
+      initialReference: unpinned.reference,
+    })
+    assert.equal(bodies.filter((body) => body.model === 'upstream-test').every((body) => body.provider === undefined), true)
+    assert.equal((extended.reference.generator.params.referenceProvider as { pinned: unknown }).pinned, null)
+
+    // Provider routing is an OpenRouter feature: other endpoints get no built-in pin.
+    bodies.length = 0
+    await buildModelReference({ model: MODEL, referencesDir: join(directory, 'other'), config: config(), fetchFn })
+    assert.equal(bodies.every((body) => body.provider === undefined), true)
+  } finally {
+    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test' } })
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('the KBF layout filter drops probes whose answer moves under audit layout and self-tests only the survivors', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-layout-filter-'))
+  // Facts numbered 3 mod 7 answer right in the stability passes and in the self-test, but far off
+  // in the layout-filter pass (after a round's probes are selected, before the filter logs): a probe
+  // that is sensitive to how it is asked.
+  const wobbly = (value: number) => value % 7 === 3
+  let layoutPass = false
+  const phaseLog = (message: string): void => {
+    if (/^generation round \d+: .* selected$/.test(message)) layoutPass = true
+    if (message.startsWith('layout filter:')) layoutPass = false
+  }
+  const trackingFetch: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (prompt.startsWith('Generate ') || body.model !== 'upstream-test') return response(successfulContent(body.model, prompt))
+    const values = testPromptValues(prompt).map((value) => (layoutPass && wobbly(value) ? value * 3 + 50 : value))
+    return response(values.map((value, index) => `(${index + 1}) ${value}`).join('\n'))
+  }
+  try {
+    const built = await buildModelReference({ model: MODEL, referencesDir: directory, config: config(), fetchFn: trackingFetch, log: phaseLog })
+    const values = built.reference.probes.map((probe) => Number(probe.consensus))
+    assert.ok(values.length > 0)
+    assert.equal(values.some(wobbly), false)
+    // Survivors are self-tested on separate requests, so their limit is not set by the answers that chose them.
+    assert.equal(built.reference.selfTest.hamming, 0)
+    const layoutFilter = built.reference.generator.params.layoutFilter as { passes: number; droppedProbeCount: number; checkedProbeCount: number }
+    assert.equal(layoutFilter.passes, 1)
+    assert.ok(layoutFilter.droppedProbeCount > 0)
+    assert.ok(layoutFilter.checkedProbeCount >= values.length + layoutFilter.droppedProbeCount)
+    assert.equal(built.reference.generator.params.layoutFilterPasses, 1)
+
+    // Turned off, nothing is re-asked and the wobbly probes stay.
+    const unfiltered = await buildModelReference({
+      model: MODEL, referencesDir: join(directory, 'off'), config: config({ referenceLayoutFilterPasses: 0 }), fetchFn: trackingFetch, log: phaseLog,
+    })
+    assert.equal(unfiltered.reference.probes.some((probe) => wobbly(Number(probe.consensus))), true)
+    assert.equal(unfiltered.reference.generator.params.layoutFilter, undefined)
+    assert.equal(unfiltered.reference.generator.params.layoutFilterPasses, undefined)
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

@@ -7,6 +7,7 @@ import type {
   ModelVerificationTargetResult,
 } from './model-run.js'
 import { asError } from './utils.js'
+import { stageOneVerdict } from './close-call.js'
 
 /** Fresh-probe enrollments a run may make for one model's rechecks. */
 export const RECHECK_ENROLLMENT_ROUNDS = 3
@@ -49,7 +50,8 @@ export async function runDiffRechecks(input: {
   const stats: DiffRecheckStats = {
     rechecked: 0, confirmed: 0, notConfirmed: 0, pending: 0, cost: emptyAuditCostSummary(),
   }
-  const diffs = input.results.filter((result) => result.status === 'DIFF' && !result.recheck)
+  // Only a DIFF that is final for stage 1: a clear first look, or a close call after its extension.
+  const diffs = input.results.filter((result) => !result.recheck && stageOneVerdict(result) === 'DIFF')
   if (diffs.length === 0) return { results: [...input.results], failures: [], stats }
 
   const reservations = new Map<ModelVerificationTargetResult, { reference: KbfReferenceV1; auditId: string }>()

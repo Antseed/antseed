@@ -16,12 +16,14 @@ import {
   writeSignedAuditRun,
   type FixtureAudit,
 } from './model-audit-fixtures.test-support.js'
+import { loadEpochReports, pendingConfirmations } from './pending-confirmations.js'
 
 const randomWallet = (): Wallet => new Wallet(Wallet.createRandom().privateKey)
 const RUN_ANVIL_E2E = process.env['ANTSEED_RUN_VERIFIER_ANVIL_E2E'] === '1'
 const DEPLOYER_PRIVATE_KEY = 'ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80'
 const AUDITOR_PRIVATE_KEY = '8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba'
 const UNAPPROVED_PRIVATE_KEY = '92db14e403b83dfe3df233f83dfa3a0d7096f21ca9b0d6d6b8d88b2b4ec1564e'
+const SECOND_AUDITOR_PRIVATE_KEY = '4bbbf85ce3377467afe5d46f804f221813b2bb87f24d81f60f1fcdbf7cbf4356'
 const AUDIT_EPOCH = 5
 const SELLER_OWNERS = [
   '0x70997970C51812dc3A010C7d01b50e0d17dc79C8',
@@ -78,6 +80,8 @@ test('an approved auditor submits one audit per model, earns credits, and a re-r
     castSend(rpcUrl, gateAddress, 'setSchedule(uint256,uint256)', [String(GENESIS), String(EPOCH_DURATION)])
     const auditor = new Wallet(`0x${AUDITOR_PRIVATE_KEY}`)
     castSend(rpcUrl, verificationAddress, 'setAuditor(address,bool)', [auditor.address, 'true'])
+    // Rewards are off until the owner sets a start epoch.
+    castSend(rpcUrl, verificationAddress, 'setRewardsStartEpoch(uint256)', ['0'])
     // Agent 3 belongs to the auditor, who must not audit it.
     const owners = [...SELLER_OWNERS, auditor.address]
     for (const [index, owner] of owners.entries()) {
@@ -90,7 +94,7 @@ test('an approved auditor submits one audit per model, earns credits, and a re-r
     const audits: FixtureAudit[] = [
       { agentId: '1', seller: sellers[0]!, model: 'model-a', service: 'model-a', verdict: 'SAME', reference: referenceFixture('model-a') },
       { agentId: '1', seller: sellers[0]!, model: 'model-b', service: 'model-b', verdict: 'SAME', reference: referenceFixture('model-b') },
-      { agentId: '2', seller: sellers[1]!, model: 'model-a', service: 'model-a', verdict: 'DIFF', reference: referenceFixture('model-a') },
+      { agentId: '2', seller: sellers[1]!, model: 'model-a', service: 'model-a', verdict: 'DIFF', recheck: 'DIFF', reference: referenceFixture('model-a') },
       { agentId: '2', seller: sellers[1]!, model: 'model-b', service: 'model-b', verdict: 'UNDETERMINED', reference: referenceFixture('model-b') },
       { agentId: '3', seller: sellers[2]!, model: 'model-b', service: 'model-b', verdict: 'SAME', reference: referenceFixture('model-b') },
     ]
@@ -122,7 +126,7 @@ test('an approved auditor submits one audit per model, earns credits, and a re-r
     const pinataPreloadPath = join(directory, 'mock-pinata.mjs')
     await writeMockPinataPreload(pinataPreloadPath, pinataLogPath)
     const submit = (dirs: typeof approved, extra: string[]) => runCli(dirs.dataDir, dirs.configPath, rpcUrl, [
-      'submit', '--run-id', RUN_ID, ...extra,
+      'submit', '--run-id', RUN_ID, '--skip-version-check', ...extra,
     ], { importPath: pinataPreloadPath, env: { PINATA_JWT: 'test-pinata-jwt' } })
     const client = new VerifierClient({ rpcUrl, contractAddress: verificationAddress, evmChainId: 31_337, deploymentBlock: 0 })
 
@@ -167,7 +171,10 @@ test('an approved auditor submits one audit per model, earns credits, and a re-r
     assert.equal(await client.validityEpochs(), 2)
     assert.equal((await client.serviceStatus(1n, 'model-a')).epoch, BigInt(AUDIT_EPOCH))
     assert.deepEqual(await client.agentStatus(1n), { verifiedCount: 2, diffCount: 0 })
-    assert.deepEqual(await client.agentStatus(2n), { verifiedCount: 0, diffCount: 1 })
+    assert.deepEqual(await client.agentStatus(2n), { verifiedCount: 0, diffCount: 0 }, 'one auditor\'s DIFF waits for a second')
+    assert.equal((await client.serviceStatus(2n, 'model-a')).verdict, VERIFIER_VERDICT.NONE)
+    assert.match(first.output, /model-a: 1 recorded, 1 waiting for another auditor/)
+    assert.match(first.output, /agent 2: DIFF 1\/2/)
 
     castSend(rpcUrl, gateAddress, 'setCurrentEpoch(uint256)', [String(AUDIT_EPOCH + 1)])
     assert.equal(await client.isVerified(1n), true, 'still counts in the next epoch')
@@ -181,6 +188,154 @@ test('an approved auditor submits one audit per model, earns credits, and a re-r
     const stale = submit(approved, ['--yes'])
     assert.equal(stale.status, 1, stale.output)
     assert.match(stale.output, new RegExp(`current on-chain epoch is ${AUDIT_EPOCH + 1}`))
+  } finally {
+    await stopProcess(anvil)
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('two auditors confirm each other\'s DIFFs: one SAME is recorded at once, a DIFF once the other auditor reports it', {
+  skip: !RUN_ANVIL_E2E,
+  timeout: 300_000,
+}, async () => {
+  requireCommand('anvil')
+  requireCommand('cast')
+  requireCommand('forge')
+
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-verifier-confirm-e2e-'))
+  const port = await availablePort()
+  const rpcUrl = `http://127.0.0.1:${port}`
+  const anvil = startAnvil(port)
+  try {
+    await waitForRpcReady(rpcUrl, anvil)
+    const registryAddress = deployContract(rpcUrl, 'core/AntseedRegistry.sol:AntseedRegistry')
+    const identityRegistryAddress = deployContract(rpcUrl, 'test/mocks/MockERC8004Registry.sol:MockERC8004Registry')
+    const gateAddress = deployContract(rpcUrl, 'test/mocks/MockVerificationEmissionsGate.sol:MockVerificationEmissionsGate')
+    const poolsAddress = deployContract(rpcUrl, 'test/mocks/MockVerificationSellerPools.sol:MockVerificationSellerPools')
+    castSend(rpcUrl, registryAddress, 'setIdentityRegistry(address)', [identityRegistryAddress])
+    castSend(rpcUrl, registryAddress, 'setEmissions(address)', [gateAddress])
+    const verificationAddress = deployContract(
+      rpcUrl,
+      'verification/AntseedKbfVerification.sol:AntseedKbfVerification',
+      [registryAddress, poolsAddress],
+    )
+    castSend(rpcUrl, verificationAddress, 'setRewardsStartEpoch(uint256)', ['0'])
+    castSend(rpcUrl, gateAddress, 'setCurrentEpoch(uint256)', [String(AUDIT_EPOCH)])
+    castSend(rpcUrl, gateAddress, 'setSchedule(uint256,uint256)', [String(GENESIS), String(EPOCH_DURATION)])
+    const auditorA = new Wallet(`0x${AUDITOR_PRIVATE_KEY}`)
+    const auditorB = new Wallet(`0x${SECOND_AUDITOR_PRIVATE_KEY}`)
+    for (const auditor of [auditorA, auditorB]) {
+      castSend(rpcUrl, verificationAddress, 'setAuditor(address,bool)', [auditor.address, 'true'])
+    }
+    for (const [index, owner] of SELLER_OWNERS.entries()) {
+      castSend(rpcUrl, identityRegistryAddress, 'setOwner(uint256,address)', [String(index + 1), owner])
+      castSend(rpcUrl, poolsAddress, 'setPower(uint256,uint256,uint256)', [String(index + 1), String(AUDIT_EPOCH), '100'])
+    }
+
+    // Seller 1 is honest; seller 2 does not serve either model. A audits model-a and B model-b.
+    const sellers = [randomWallet(), randomWallet()]
+    const audit = (agent: 1 | 2, model: string): FixtureAudit => ({
+      agentId: String(agent),
+      seller: sellers[agent - 1]!,
+      model,
+      service: model,
+      verdict: agent === 1 ? 'SAME' : 'DIFF',
+      ...(agent === 2 ? { recheck: 'DIFF' as const } : {}),
+      reference: referenceFixture(model),
+    })
+    const crypto = {
+      chainId: 'base-local',
+      rpcUrl,
+      verificationContractAddress: verificationAddress,
+      verificationDeployBlock: 0,
+      identityRegistryAddress,
+    }
+    const setUpDataDir = async (name: string, key: string) => {
+      const dataDir = join(directory, name)
+      const evidenceDir = join(dataDir, 'verifier', 'evidence')
+      const banksDir = join(dataDir, 'verifier', 'banks')
+      const configPath = join(dataDir, 'config.json')
+      await mkdir(dataDir, { recursive: true })
+      await writeFile(join(dataDir, 'identity.key'), `${key}\n`, { mode: 0o600 })
+      await writeFile(configPath, JSON.stringify({
+        payments: { preferredMethod: 'crypto', crypto },
+        verifier: { evidenceDir, banksDir, ...FIXTURE_CONFIG },
+      }))
+      const auditor = new Wallet(`0x${key}`)
+      const writeRun = (runId: string, audits: FixtureAudit[]) => (
+        writeSignedAuditRun({ evidenceDir, banksDir, runId, epoch: EPOCH, auditor, audits })
+      )
+      return { dataDir, configPath, writeRun }
+    }
+    const a = await setUpDataDir('auditor-a', AUDITOR_PRIVATE_KEY)
+    const b = await setUpDataDir('auditor-b', SECOND_AUDITOR_PRIVATE_KEY)
+    const submit = (dirs: typeof a, runId: string) => runCli(dirs.dataDir, dirs.configPath, rpcUrl, [
+      'submit', '--run-id', runId, '--no-publish-ipfs', '--yes', '--skip-version-check',
+    ])
+    const client = new VerifierClient({ rpcUrl, contractAddress: verificationAddress, evmChainId: 31_337, deploymentBlock: 0 })
+    const epochStartedAt = GENESIS + AUDIT_EPOCH * EPOCH_DURATION
+    const pendingFor = async (auditor: string) => pendingConfirmations({
+      reports: await loadEpochReports({ reader: client, epochStartedAt, deploymentBlock: 0 }),
+      epoch: AUDIT_EPOCH,
+      epochStartedAt,
+      epochEndsAt: epochStartedAt + EPOCH_DURATION,
+      now: epochStartedAt + 60,
+      auditor,
+      auditors: [auditorA.address, auditorB.address],
+      auditedModels: ['model-a', 'model-b'],
+    }).map((entry) => ({
+      model: entry.model, agentId: entry.agentId, waiting: entry.waiting, confirmer: entry.confirmer, mine: entry.mine,
+    }))
+
+    assert.deepEqual(await client.requiredReports(), { SAME: 1, DIFF: 2, UNDETERMINED: 1 })
+
+    await a.writeRun('a-model-a', [audit(1, 'model-a'), audit(2, 'model-a')])
+    await b.writeRun('b-model-b', [audit(1, 'model-b'), audit(2, 'model-b')])
+    const reportedA = submit(a, 'a-model-a')
+    assert.equal(reportedA.status, 0, reportedA.output)
+    assert.match(reportedA.output, /model-a: 1 recorded, 1 waiting for another auditor/)
+    assert.match(reportedA.output, /agent 2: DIFF 1\/2/)
+    const reportedB = submit(b, 'b-model-b')
+    assert.equal(reportedB.status, 0, reportedB.output)
+    assert.match(reportedB.output, /model-b: 1 recorded, 1 waiting for another auditor/)
+    assert.equal(await client.isVerified(1n), true, 'one SAME verifies')
+    assert.deepEqual(await client.agentStatus(2n), { verifiedCount: 0, diffCount: 0 }, 'one DIFF is only a report')
+
+    // Each auditor is the confirmer of the other's DIFF.
+    const waitingDiff = [{ verdict: 'DIFF', reports: 1, required: 2 }]
+    assert.deepEqual(await pendingFor(auditorA.address), [
+      { model: 'model-a', agentId: 2n, waiting: waitingDiff, confirmer: auditorB.address, mine: false },
+      { model: 'model-b', agentId: 2n, waiting: waitingDiff, confirmer: auditorA.address, mine: true },
+    ])
+    assert.deepEqual((await pendingFor(auditorB.address)).map((entry) => [entry.model, entry.mine]), [
+      ['model-a', true], ['model-b', false],
+    ])
+
+    // Each confirms with its own audit of the other's model.
+    await a.writeRun('a-confirm-model-b', [audit(2, 'model-b')])
+    await b.writeRun('b-confirm-model-a', [audit(2, 'model-a')])
+    const confirmedByB = submit(b, 'b-confirm-model-a')
+    assert.equal(confirmedByB.status, 0, confirmedByB.output)
+    assert.match(confirmedByB.output, /model-a: 1 recorded, 0 waiting for another auditor/)
+    assert.deepEqual(await client.agentStatus(2n), { verifiedCount: 0, diffCount: 1 })
+    const confirmedByA = submit(a, 'a-confirm-model-b')
+    assert.equal(confirmedByA.status, 0, confirmedByA.output)
+    assert.deepEqual(await client.agentStatus(2n), { verifiedCount: 0, diffCount: 2 })
+    assert.equal(await client.isVerified(2n), false)
+    assert.equal(await client.isVerified(1n), true)
+    assert.deepEqual(await pendingFor(auditorA.address), [])
+    assert.deepEqual(await pendingFor(auditorB.address), [])
+    const events = await client.queryServiceAudits(2n, null, 0)
+    assert.deepEqual(events.map(({ auditor, reports, required }) => [auditor, reports, required]), [
+      [auditorA.address, 1, 2], [auditorB.address, 1, 2], [auditorB.address, 2, 2], [auditorA.address, 2, 2],
+    ])
+    assert.deepEqual(await client.auditCredits(auditorA.address, AUDIT_EPOCH), { auditor: 2n, total: 4n })
+    assert.deepEqual(await client.auditCredits(auditorB.address, AUDIT_EPOCH), { auditor: 2n, total: 4n })
+
+    castSend(rpcUrl, gateAddress, 'setCurrentEpoch(uint256)', [String(AUDIT_EPOCH + 1)])
+    assert.equal(await client.isVerified(2n), false, 'a confirmed DIFF still counts in the next epoch')
+    castSend(rpcUrl, gateAddress, 'setCurrentEpoch(uint256)', [String(AUDIT_EPOCH + 2)])
+    assert.deepEqual(await client.agentStatus(2n), { verifiedCount: 0, diffCount: 0 }, 'and expires after it')
   } finally {
     await stopProcess(anvil)
     await rm(directory, { recursive: true, force: true })

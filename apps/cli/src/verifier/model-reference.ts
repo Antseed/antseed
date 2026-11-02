@@ -78,6 +78,8 @@ const DEFAULT_MAX_REQUESTS_PER_BUILD = 2_000
 const DEFAULT_BATCH_RETRY_COUNT = 3
 const DEFAULT_RETRY_BASE_DELAY_MS = 500
 const DEFAULT_MAX_NO_PROGRESS_ROUNDS = 3
+/** Layout-filter passes for a new bank, as `generate_probes.py --layout-filter 1` in the KBF reference code. */
+const DEFAULT_LAYOUT_FILTER_PASSES = 1
 // Candidate batches ask for a long list (up to 6000 tokens) and nothing is scored from them, so
 // they get more time than the measured requests, whose timeout is part of the bank settings.
 const CANDIDATE_GENERATION_TIMEOUT_MS = 300_000
@@ -94,7 +96,8 @@ const BARE_REASONING_STRATEGY = 'bare' as const
 const DISABLED_REASONING_REQUEST_OVERRIDES = { reasoning_effort: 'none' } as const
 const CONTRAST_EMPTY_BATCH_RETRIES = 2
 const CONTRAST_MAX_CONSECUTIVE_EMPTY_BATCHES = 3
-const TERMINAL_EMPTY_FINISH_REASONS = new Set(['content_filter', 'length', 'refusal'])
+// `sensitive` is how Z.ai (GLM) reports its content filter through OpenRouter, with finish reason `stop`.
+const TERMINAL_EMPTY_FINISH_REASONS = new Set(['content_filter', 'length', 'refusal', 'sensitive'])
 const REASONING_EFFORT_ASCENDING: readonly VerifierReasoningEffort[] = [
   'minimal',
   'low',
@@ -386,25 +389,6 @@ export async function buildModelReference(input: {
   const modelConfig = resolveVerifierModelConfig(input.config, input.model, input.catalog)
   const pricingByModel = referencePricingByModel(input.config, modelConfig, input.catalog ?? null)
   const apiKey = (endpoint.apiKeyEnv ? process.env[endpoint.apiKeyEnv] : undefined) ?? endpoint.apiKey
-  const routesByModel = new Map(
-    [modelConfig.upstreamModel, ...modelConfig.contrastModels].map((model) => {
-      const isTarget = normalized(model) === normalized(modelConfig.upstreamModel)
-      return [normalized(model), resolveReferenceRequestRoute({
-        endpoint,
-        model,
-        apiKey,
-        catalog: input.catalog ?? null,
-        referenceRoute: isTarget ? modelConfig.referenceRoute : undefined,
-        referenceProvider: isTarget ? modelConfig.referenceProvider : undefined,
-        upstream: isTarget && modelConfig.upstream ? {
-          name: modelConfig.upstream.name,
-          model: modelConfig.upstream.model,
-          config: input.config?.upstreams?.[modelConfig.upstream.name],
-        } : undefined,
-        buyerProxyPort: input.buyerProxyPort,
-      })] as const
-    }),
-  )
   const sizing = resolveReferenceSizingPolicy(input.config)
   const selfTestRuns = input.config?.referenceSelfTestRuns ?? KBF_DEFAULT_SELF_TEST_RUNS
   assertPositiveInteger(selfTestRuns, 'referenceSelfTestRuns')
@@ -417,6 +401,40 @@ export async function buildModelReference(input: {
   const settings = initial ?? (input.settingsReference && validateKbfReferenceV1(input.settingsReference, {
     minimumStatisticalPower: Number.EPSILON,
   }))
+  // The provider pin: the verifier's own, else the one the bank being extended was built with (so
+  // its measurements stay comparable), else the built-in pin for a new bank.
+  const recordedPin = settings
+    ? (settings.generator.params.referenceProvider as { pinned?: { order?: string[] } | null } | undefined)?.pinned
+    : undefined
+  const targetReferenceProvider = modelConfig.referenceProvider
+    ?? (settings
+      ? (recordedPin?.order?.length ? { order: [...recordedPin.order] } : undefined)
+      : modelConfig.defaultReferenceProvider)
+  // KBF layout filter (`generate_probes.py --layout-filter`): a bank keeps the setting it was built
+  // with; a new bank uses the config (default one pass).
+  const layoutFilterPasses = settings
+    ? recordedLayoutFilterPasses(settings)
+    : input.config?.referenceLayoutFilterPasses ?? DEFAULT_LAYOUT_FILTER_PASSES
+  assertNonNegativeInteger(layoutFilterPasses, 'referenceLayoutFilterPasses')
+  const routesByModel = new Map(
+    [modelConfig.upstreamModel, ...modelConfig.contrastModels].map((model) => {
+      const isTarget = normalized(model) === normalized(modelConfig.upstreamModel)
+      return [normalized(model), resolveReferenceRequestRoute({
+        endpoint,
+        model,
+        apiKey,
+        catalog: input.catalog ?? null,
+        referenceRoute: isTarget ? modelConfig.referenceRoute : undefined,
+        referenceProvider: isTarget ? targetReferenceProvider : undefined,
+        upstream: isTarget && modelConfig.upstream ? {
+          name: modelConfig.upstream.name,
+          model: modelConfig.upstream.model,
+          config: input.config?.upstreams?.[modelConfig.upstream.name],
+        } : undefined,
+        buyerProxyPort: input.buyerProxyPort,
+      })] as const
+    }),
+  )
   // The request timeout is part of the measurement (it decides which slow answers count), so a
   // bank keeps the one it was enrolled with.
   const timeoutMs = settings?.queryProfile.requestTimeoutMs ?? input.config?.probeRequestTimeoutMs ?? 120_000
@@ -531,7 +549,10 @@ export async function buildModelReference(input: {
       minimumMismatchDelta: REFERENCE_MINIMUM_MISMATCH_DELTA,
       generator: {
         name: 'antseed-simple-reference-builder', version: REFERENCE_BUILDER_VERSION, verifierKind: 'kbf',
-        params: { enrollmentBatchingVersion: 2, enrollmentStabilityVersion: 2, referenceEndpointRequest },
+        params: {
+          enrollmentBatchingVersion: 2, enrollmentStabilityVersion: 2, referenceEndpointRequest,
+          ...(layoutFilterPasses > 0 ? { layoutFilterPasses } : {}),
+        },
       },
       provenance: { sourceId: referenceSourceId(endpoint, targetRoute), trust: endpoint.trust },
     }
@@ -572,6 +593,7 @@ export async function buildModelReference(input: {
     enrollmentBatchingVersion: 2,
     enrollmentStabilityVersion: 2,
     enrollmentEvidenceVersion: 1,
+    layoutFilterPasses,
     timeoutMs,
     reasoningStrategy: targetReasoningStrategy,
     routesByModel: [...routesByModel.entries()],
@@ -652,11 +674,13 @@ export async function buildModelReference(input: {
     contrastDetection: ReferenceContrastDetectionV1[]
   } | null = null
   let undetectedContrasts: string[] = []
+  const layoutCheckedProbeIds = new Set<string>()
+  const layoutFilterStats = { checkedProbeCount: 0, droppedProbeCount: 0 }
   try {
     for (let targetCount = sizing.minimumProbeCount;
       targetCount <= sizing.maximumProbeCount;
       targetCount += sizing.probeStep) {
-      collected = await collectReferenceProbes({
+      const collect = (initialState: CollectedReferenceProbes | undefined) => collectReferenceProbes({
         model: modelConfig.upstreamModel,
         contrastModels: modelConfig.contrastModels,
         excludedDomains: modelConfig.excludedDomains,
@@ -665,11 +689,34 @@ export async function buildModelReference(input: {
         maxNoProgressRounds: input.config?.referenceMaxNoProgressRounds ?? DEFAULT_MAX_NO_PROGRESS_ROUNDS,
         query,
         log: input.log,
-        initial: collected,
+        initial: initialState,
         preferredContrastModels: undetectedContrasts,
         excludedProbeIds: input.excludedProbeIds,
         candidateWriting,
       })
+      collected = await collect(collected)
+      // Layout filter: ask every new probe once more the way audits do (fresh domain shuffle, a
+      // rotating prompt variant, temperature 0) and drop the ones whose answer moves, then refill.
+      // The self-test below runs on the survivors only, as separate requests, so the error limit is
+      // measured independently of the answers that chose them.
+      while (layoutFilterPasses > 0) {
+        const pending = collected.probes.slice(selfOutcomes.length, targetCount)
+          .filter((probe) => !layoutCheckedProbeIds.has(probe.id))
+        if (pending.length === 0) break
+        const moved = await layoutFilterMovedProbeIds(
+          modelConfig.upstreamModel, pending, layoutFilterPasses, query, input.log,
+        )
+        for (const probe of pending) layoutCheckedProbeIds.add(probe.id)
+        layoutFilterStats.checkedProbeCount += pending.length
+        layoutFilterStats.droppedProbeCount += moved.size
+        input.log?.(
+          `layout filter: ${moved.size}/${pending.length} new probes changed answer under audit layout; `
+          + `${layoutFilterStats.droppedProbeCount}/${layoutFilterStats.checkedProbeCount} dropped so far`,
+        )
+        if (moved.size === 0) break
+        removeCollectedProbes(collected, moved)
+        collected = await collect(collected)
+      }
       const additions = collected.probes.slice(selfOutcomes.length, targetCount)
       if (additions.length > 0) {
         input.log?.(
@@ -791,6 +838,15 @@ export async function buildModelReference(input: {
         enrollmentEvidenceVersion: 1,
         selfTestRuns,
         referenceEndpointRequest,
+        ...(layoutFilterPasses > 0 ? {
+          layoutFilterPasses,
+          layoutFilter: {
+            version: 1,
+            method: 'kbf-layout-filter-audit-variants-v1',
+            passes: layoutFilterPasses,
+            ...layoutFilterStats,
+          },
+        } : {}),
         ...(thinkingDiscovery ?? initialDiscovery ? { thinkingDiscovery: thinkingDiscovery ?? initialDiscovery } : {}),
         ...(candidateWriting.summary() ? { candidateWriting: candidateWriting.summary() } : {}),
         ...(initial ? { enrollmentSeedReferenceId: initial.referenceId, reusedProbeCount: retained.length } : {}),
@@ -988,6 +1044,49 @@ export async function collectReferenceProbes(input: {
   }
 
   return state
+}
+
+/**
+ * KBF layout filter (`layout_filter` in the reference code's `generate_probes.py`). Stability passes
+ * ask a candidate next to its own generation round's candidates; audits ask it next to other probes
+ * and, here, with a rotating prompt variant. A probe that agrees under the first layout but not the
+ * second only inflates the self-test error (and so the DIFF limit) without telling models apart.
+ * Each pass asks every probe once at temperature 0 in a fresh domain shuffle with a seeded prompt
+ * variant, as an audit would; any probe whose answer misses its consensus (or is missing) moved.
+ */
+async function layoutFilterMovedProbeIds(
+  model: string,
+  probes: readonly KbfProbe[],
+  passes: number,
+  query: ReferenceQuery,
+  log?: (message: string) => void,
+): Promise<Set<string>> {
+  const moved = new Set<string>()
+  for (let pass = 0; pass < passes; pass += 1) {
+    const seed = `layout-filter-${pass}`
+    const batches = createDomainHomogeneousKbfBatches(probes, KBF_PROBES_PER_REQUEST, deterministicShuffle(seed))
+    await allSettledOrThrow(batches.map(async (batch) => {
+      const variantId = seededPromptVariantId(seed, batch.probes)
+      const answers = await querySelfTestBatch(model, batch.probes, query, log, seed, variantId)
+      const matches = computeMatchVector(answers, [...batch.probes])
+      for (const [index, probe] of batch.probes.entries()) {
+        if (matches[index] !== 1) moved.add(probe.id)
+      }
+    }))
+  }
+  return moved
+}
+
+function removeCollectedProbes(collected: CollectedReferenceProbes, probeIds: ReadonlySet<string>): void {
+  collected.probes = collected.probes.filter((probe) => !probeIds.has(probe.id))
+  for (const [model, ids] of collected.distinguishingProbeIdsByModel) {
+    collected.distinguishingProbeIdsByModel.set(model, ids.filter((id) => !probeIds.has(id)))
+  }
+}
+
+function recordedLayoutFilterPasses(reference: KbfReferenceV1): number {
+  const passes = reference.generator.params.layoutFilterPasses
+  return typeof passes === 'number' && Number.isInteger(passes) && passes > 0 ? passes : 0
 }
 
 async function certifyStableProbes(
@@ -2301,6 +2400,7 @@ function referenceRequestPurpose(value: unknown): ReferenceBuildCostPurposeV1['p
   if (typeof value === 'string' && value.startsWith('self-test')) return 'self-test'
   if (typeof value === 'string' && value.startsWith('contrast-')) return 'contrast-model'
   if (typeof value === 'string' && value.startsWith('stability-')) return 'target-model'
+  if (typeof value === 'string' && value.startsWith('layout-filter-')) return 'target-model'
   return 'candidate-generation'
 }
 

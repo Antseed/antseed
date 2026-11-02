@@ -31,6 +31,7 @@ import { resolveAuditorAddress, resolveAuditorSigner } from './auditor-identity.
 import { writeEpochOverview } from '../../../verifier/epoch-overview.js'
 import { loadEpochState, writeEpochSubmissionManifest } from '../../../verifier/epoch-plan.js'
 import { getGlobalOptions } from '../types.js'
+import { loadEpochReports, ownResultTallies } from '../../../verifier/pending-confirmations.js'
 
 interface SubmitOptions {
   runId?: string
@@ -285,6 +286,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
         }
       }
 
+      await printConfirmations(verifierClient, window.startedAt, address, pending.map((entry) => entry.audit))
       const after = await verifierClient.auditCredits(address, window.epoch)
       console.log(chalk.bold('Model audit submission summary'))
       console.log(`  Auditor: ${address}`)
@@ -308,6 +310,30 @@ async function epochSubmissionManifest(evidenceDir: string, epoch: bigint): Prom
     + 'the latest result per model and seller is submitted.',
   ))
   return manifest
+}
+
+/**
+ * Which of this auditor's results this epoch reached the reports their verdict needs (one SAME, two
+ * DIFFs by default), and which still wait for another auditor's confirmation.
+ */
+async function printConfirmations(
+  client: VerifierClient, epochStartedAt: number, auditor: string, audits: readonly PreparedModelAudit[],
+): Promise<void> {
+  if (audits.length === 0) return
+  try {
+    const reports = await loadEpochReports({ reader: client, epochStartedAt, deploymentBlock: client.deploymentBlock })
+    console.log(chalk.bold('Confirmations (distinct auditors reporting each result this epoch)'))
+    for (const audit of audits) {
+      const results = ownResultTallies({ reports, auditor, modelHash: audit.modelHash })
+      const waiting = results.filter((result) => result.tally.reports < result.tally.required)
+      console.log(`  ${audit.key}: ${results.length - waiting.length} recorded, ${waiting.length} waiting for another auditor`)
+      for (const result of waiting) {
+        console.log(chalk.dim(`    agent ${result.agentId}: ${result.tally.verdict} ${result.tally.reports}/${result.tally.required}`))
+      }
+    }
+  } catch (error) {
+    console.warn(chalk.yellow(`Could not read confirmations: ${asError(error).message}`))
+  }
 }
 
 /** Evidence hashes this auditor has already submitted on-chain, read from its `ModelAudited` events. */

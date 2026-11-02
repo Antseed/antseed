@@ -109,3 +109,39 @@ test('a waiting DIFF whose evidence no longer matches its hash is not carried ov
     await rm(evidenceDir, { recursive: true, force: true })
   }
 })
+
+test('a close call waiting for its extra questions is carried over as an extension until extended', async () => {
+  const evidenceDir = await mkdtemp(join(tmpdir(), 'pending-rechecks-'))
+  try {
+    const a = await evidenceFor(evidenceDir, PEER_A, 'a1')
+    const grey = {
+      decisionRule: 'kbf-extension-v1' as const,
+      responseAuthVerified: true,
+      stats: { selfHamming: 30, selfTotal: 300, targetHamming: 22, targetTotal: 100, selfCoverage: 1, targetCoverage: 1, p0Cp99: 0.155, pValueBinomial: 0.05 },
+    }
+    await writeRun(evidenceDir, 'run-1', '2026-10-27T13:00:00.000Z', [
+      result(PEER_A, 'SAME', a, { ...grey, extensionPending: { reason: 'no fresh questions', since: '2026-10-27T13:00:00.000Z' } }),
+    ])
+    let pending = await loadPendingDiffRechecks(evidenceDir, '28', ['model-a'])
+    assert.equal(pending.get(pendingRecheckKey('model-a', PEER_A))?.kind, 'extension')
+
+    // Extended in a later run, the pooled verdict is DIFF: now it waits for its recheck instead.
+    await writeRun(evidenceDir, 'run-2', '2026-10-27T14:00:00.000Z', [
+      result(PEER_A, 'DIFF', a, {
+        ...grey,
+        recheckPending: { reason: 'reference endpoint 402', since: '2026-10-27T14:00:00.000Z' },
+        extension: {
+          rule: 'kbf-extension-v1', auditId: 'x', status: 'DIFF', referenceId: 'r', probeCount: 1, parsedProbeCount: 1,
+          correctProbeCount: 0, responseAuthVerified: true, cost: emptyAuditCostSummary(),
+          evidencePath: a.path, evidenceHash: a.evidenceHash,
+          firstLook: { status: 'SAME', pValue: 0.05 },
+          pooled: { ...grey.stats, verdict: 'DIFF', verdictReason: null },
+        },
+      }),
+    ])
+    pending = await loadPendingDiffRechecks(evidenceDir, '28', ['model-a'])
+    assert.equal(pending.get(pendingRecheckKey('model-a', PEER_A))?.kind, 'recheck')
+  } finally {
+    await rm(evidenceDir, { recursive: true, force: true })
+  }
+})

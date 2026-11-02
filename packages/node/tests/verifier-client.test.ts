@@ -69,6 +69,9 @@ describe('VerifierClient audit ABI', () => {
       'auditor',
       'modelHash',
       'verdict',
+      'round',
+      'reports',
+      'required',
     ]);
     expect(iface.getEvent('ModelAudited')?.inputs.map((input) => input.name)).toEqual([
       'modelHash',

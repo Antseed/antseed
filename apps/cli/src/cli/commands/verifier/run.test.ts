@@ -40,12 +40,12 @@ function command(): Command {
   return program
 }
 
-test('verifier exposes run, assignment, models, overview, reference, status, submit, rewards, and check workflows', () => {
+test('verifier exposes run, assignment, models, overview, reference, status, submit, watch, rewards, and check workflows', () => {
   const verifier = command().commands.find((entry) => entry.name() === 'verifier')
   assert.ok(verifier)
   assert.deepEqual(
     verifier.commands.map((entry) => entry.name()).sort(),
-    ['assignment', 'check', 'models', 'overview', 'reference', 'rewards', 'run', 'status', 'submit'],
+    ['assignment', 'check', 'models', 'overview', 'reference', 'rewards', 'run', 'status', 'submit', 'watch'],
   )
 })
 
@@ -70,7 +70,7 @@ test('verifier run accepts one model, all configured models, or an auditor assig
   const run = verifier.commands.find((entry) => entry.name() === 'run')!
   assert.deepEqual(
     run.options.map((option) => option.long),
-    ['--all', '--auditor', '--allow-probe-reuse', '--peer', '--resume-run', '--no-enroll', '--max-enrollment-requests', '--ignore-pre-run-checks', '--fresh', '--skip-version-check', '--max-rounds'],
+    ['--all', '--auditor', '--allow-probe-reuse', '--peer', '--resume-run', '--no-enroll', '--max-enrollment-requests', '--ignore-pre-run-checks', '--fresh', '--skip-version-check', '--max-rounds', '--no-confirm'],
   )
   assert.deepEqual(run.registeredArguments.map((argument) => argument.name()), ['model'])
 })

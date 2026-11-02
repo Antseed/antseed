@@ -711,6 +711,23 @@ KBF is one of the first verification methods: each later method gets its own
 contract, points policy and emissions bucket, and the verification bucket share
 is split between them with `setMinter` from the next epoch.
 
+#### Confirmations
+
+Each submitted result is a report. A verdict is recorded once `requiredReports(verdict)`
+distinct approved auditors report it for the same agent, service and model in the same
+epoch: by default 1 for SAME and UNDETERMINED and 2 for DIFF (`setRequiredReports`). A SAME
+or UNDETERMINED that would replace a live DIFF needs as many reports as a DIFF, whatever
+model it is reported as, so one auditor can neither give nor clear a DIFF. Reports count
+per epoch only, and only within the service's current report round (`reportRound`): it moves
+on whenever the service's verdict moves into or out of DIFF, so support given before a DIFF
+was confirmed can't clear it and support given before it was cleared can't restore it. Changes
+between SAME and UNDETERMINED don't move it, so one auditor can't reset a DIFF that waits for its
+second report. An auditor's later report replaces its earlier one, and repeating a report adds
+no support (it records again only where one report is enough). `ServiceAudited` carries the
+`round`, `reports` (distinct auditors reporting that verdict so far this epoch and round) and `required`;
+`antseed verifier run` reads it to find DIFFs waiting for a confirmation. Credits are
+unchanged: every model audit earns one, confirmed or not.
+
 Administrative parameters use their contract's dedicated setters where available.
 The emissions gate's schedule constants are immutable; do not treat legacy
 owner-configurable emissions parameters as configuration for the standard gate.

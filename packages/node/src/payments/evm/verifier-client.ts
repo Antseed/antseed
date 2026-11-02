@@ -62,9 +62,22 @@ export interface ServiceAuditedEvent {
   auditor: string;
   modelHash: string;
   verdict: VerifierVerdict;
+  /** The service's report round: it moves on whenever the service's verdict moves into or out of DIFF, and only reports of the current round count. */
+  round: number;
+  /** Distinct auditors reporting `verdict` for this service and model in the epoch and round, this report included. */
+  reports: number;
+  /** Reports `verdict` needs to be recorded; it is recorded once `reports` reaches it. */
+  required: number;
   blockNumber: number;
   logIndex: number;
   transactionHash: string;
+}
+
+/** Distinct approved auditors each verdict needs in one epoch before it is recorded. */
+export interface RequiredReports {
+  SAME: number;
+  DIFF: number;
+  UNDETERMINED: number;
 }
 
 export interface ModelAuditedEvent {
@@ -111,9 +124,11 @@ export const VERIFICATION_ABI = [
   'function registry() external view returns (address)',
   'function sellerPools() external view returns (address)',
   'function approvedAuditors(address auditor) external view returns (bool)',
+  'function requiredReports(uint8 verdict) external view returns (uint8)',
+  'function reportRound(uint256 agentId,bytes32 serviceHash) external view returns (uint256)',
   'event AuditorSet(address indexed auditor,bool approved)',
   'event ModelAudited(bytes32 indexed modelHash,address indexed auditor,uint256 indexed epoch,bytes32 evidenceHash,string evidenceUri,uint256 resultCount)',
-  'event ServiceAudited(uint256 indexed agentId,bytes32 indexed serviceHash,address indexed auditor,bytes32 modelHash,uint8 verdict)',
+  'event ServiceAudited(uint256 indexed agentId,bytes32 indexed serviceHash,address indexed auditor,bytes32 modelHash,uint8 verdict,uint256 round,uint256 reports,uint256 required)',
   'event ServiceStatusChanged(uint256 indexed agentId,bytes32 indexed serviceHash,bytes32 modelHash,uint8 previous,uint8 current)',
   'event AuditCredited(uint256 indexed epoch,address indexed auditor,bytes32 indexed modelHash)',
 ] as const;
@@ -170,6 +185,11 @@ export class VerifierClient extends BaseEvmClient {
     super(config.rpcUrl, config.contractAddress, config.fallbackRpcUrls, config.evmChainId);
     this._deploymentBlock = config.deploymentBlock;
     this._logQueryChunkBlocks = config.logQueryChunkBlocks;
+  }
+
+  /** Block the verification contract was deployed at, when configured. */
+  get deploymentBlock(): number | undefined {
+    return this._deploymentBlock;
   }
 
   private _contract(): Contract {
@@ -288,9 +308,20 @@ export class VerifierClient extends BaseEvmClient {
     return getAddress(String(await identityRegistry.getFunction('ownerOf')(BigInt(agentId))));
   }
 
-  /** Per-service audit results for one agent, optionally narrowed to one service. */
+  /** Distinct approved auditors each verdict needs in one epoch before it is recorded. */
+  async requiredReports(): Promise<RequiredReports> {
+    const required = this._contract().getFunction('requiredReports');
+    const [same, diff, undetermined] = await Promise.all([
+      required(VERIFIER_VERDICT.SAME),
+      required(VERIFIER_VERDICT.DIFF),
+      required(VERIFIER_VERDICT.UNDETERMINED),
+    ]);
+    return { SAME: Number(same), DIFF: Number(diff), UNDETERMINED: Number(undetermined) };
+  }
+
+  /** Per-service audit results, for one agent (or every agent with `null`), optionally narrowed to one service. */
   async queryServiceAudits(
-    agentId: number | bigint,
+    agentId: number | bigint | null,
     service: string | null = null,
     fromBlock?: number,
     toBlock: number | 'latest' = 'latest',
@@ -300,7 +331,7 @@ export class VerifierClient extends BaseEvmClient {
     if (!filterFactory) throw new Error('ServiceAudited event is missing from verification ABI');
     const logs = await this._queryEvents(
       contract,
-      filterFactory(BigInt(agentId), service === null ? null : serviceHash(service)),
+      filterFactory(agentId === null ? null : BigInt(agentId), service === null ? null : serviceHash(service)),
       fromBlock,
       toBlock,
     );
@@ -312,11 +343,14 @@ export class VerifierClient extends BaseEvmClient {
         auditor: getAddress(String(log.args.auditor ?? log.args[2])),
         modelHash: String(log.args.modelHash ?? log.args[3]),
         verdict: Number(log.args.verdict ?? log.args[4]) as VerifierVerdict,
+        round: Number(log.args.round ?? log.args[5]),
+        reports: Number(log.args.reports ?? log.args[6]),
+        required: Number(log.args.required ?? log.args[7]),
         blockNumber: log.blockNumber,
         logIndex: log.index,
         transactionHash: log.transactionHash,
       }];
-    });
+    }).sort((left, right) => left.blockNumber - right.blockNumber || left.logIndex - right.logIndex);
   }
 
   /** Model audits, optionally narrowed to one model and auditor. */
@@ -378,6 +412,25 @@ export class VerifierClient extends BaseEvmClient {
       });
     }
     return events.sort((left, right) => left.blockNumber - right.blockNumber || left.logIndex - right.logIndex);
+  }
+
+  /**
+   * The first block whose timestamp is at or after `timestamp` (seconds), by binary search; the
+   * latest block when none is. Bounds event scans to an epoch.
+   */
+  async firstBlockAtOrAfter(timestamp: number, floor = 0): Promise<number> {
+    let low = floor;
+    let high = await this._provider.getBlockNumber();
+    const latest = await this._provider.getBlock(high);
+    if (!latest || latest.timestamp < timestamp) return high;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      const block = await this._provider.getBlock(middle);
+      if (!block) throw new Error(`block ${middle} is unavailable`);
+      if (block.timestamp < timestamp) low = middle + 1;
+      else high = middle;
+    }
+    return low;
   }
 
   /** Latest block number, for incremental event scans. */

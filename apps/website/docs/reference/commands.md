@@ -372,7 +372,8 @@ Run KBF audits of sellers' model claims (one of the first of many [verification 
 |---|---|---|
 | `antseed verifier models` | List the built-in audited models and where each takes its genuine answers from | `--json` |
 | `antseed verifier reference build [model]` | Build or grow the probe bank of one audited model | `--all` (every audited model without a powered bank) |
-| `antseed verifier run [model]` | Audit the sellers your buyer has discovered, for the models assigned to your auditor this epoch (or one `<model>`) | `--all`, `--auditor <address>`, `--peer <peerId>`, `--no-enroll`, `--max-enrollment-requests <n>`, `--allow-probe-reuse`, `--resume-run <runId>`, `--ignore-pre-run-checks`, `--fresh`, `--max-rounds <n>`, `--skip-version-check` |
+| `antseed verifier run [model]` | Audit the sellers your buyer has discovered, for the models assigned to your auditor this epoch (or one `<model>`) | `--all`, `--auditor <address>`, `--peer <peerId>`, `--no-enroll`, `--max-enrollment-requests <n>`, `--allow-probe-reuse`, `--resume-run <runId>`, `--ignore-pre-run-checks`, `--fresh`, `--max-rounds <n>`, `--no-confirm`, `--skip-version-check` |
+| `antseed verifier watch` | Keep auditing: every interval, run your assigned models and the confirmations you're responsible for, then submit | `--interval <minutes>`, `--once`, `--auditor <address>`, `--keystore <path>`, `--rpc-url <url>`, `--no-publish-ipfs`, `--max-enrollment-requests <n>`, `--skip-version-check` |
 | `antseed verifier assignment` | Show which models each approved auditor audits; every model is audited every epoch, split round robin | `--epoch <n>`, `--epochs <count>`, `--json` |
 | `antseed verifier status` | Progress of the latest run | `--json` |
 | `antseed verifier overview` | Write the seller × model overview page of an epoch from all its runs, with the reason for every inconclusive or skipped result | `--epoch <n>`, `--run <ids...>` |

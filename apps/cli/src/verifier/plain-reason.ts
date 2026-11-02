@@ -43,6 +43,14 @@ export function explainSkipReason(reason: string, modelLabel?: string): PlainRea
     }
   }
 
+  if (/close call waiting for extra questions/i.test(text)) {
+    return {
+      headline: 'Not submitted yet: close call',
+      detail: 'The first check was too close to call, so the auditor asks the seller a second set of fresh questions '
+        + 'and decides on both together. That second set has not run yet, so nothing was recorded on-chain.',
+    }
+  }
+
   if (/DIFF not confirmed/i.test(text)) {
     return {
       headline: 'Not submitted: wrong-model result not confirmed',
