@@ -127,27 +127,38 @@ export class FrameEncryptor {
 /** Accumulates inbound bytes and decrypts complete AEAD frames. */
 export class FrameDecryptor {
   private _counter = 0n;
-  private _buffer = Buffer.alloc(0);
+  // Received bytes not yet decrypted. They are joined only once a whole header
+  // or frame is in: joining on every chunk copies a large frame over and over.
+  private _chunks: Buffer[] = [];
+  private _buffered = 0;
+  /** Body length of the frame being received, once its header is in. */
+  private _bodyLength: number | null = null;
 
   constructor(private readonly key: Buffer) {}
 
   /** Feed raw bytes, get decrypted messages. Throws are fatal for the connection. */
   push(chunk: Uint8Array): Uint8Array[] {
-    this._buffer = this._buffer.length === 0
-      ? Buffer.from(chunk)
-      : Buffer.concat([this._buffer, chunk]);
+    this._chunks.push(Buffer.from(chunk));
+    this._buffered += chunk.length;
 
     const messages: Uint8Array[] = [];
-    while (this._buffer.length >= FRAME_HEADER_BYTES) {
-      const bodyLength = this._buffer.readUInt32BE(0);
-      if (bodyLength < AEAD_TAG_BYTES || bodyLength > MAX_FRAME_PLAINTEXT_BYTES + AEAD_TAG_BYTES) {
-        throw new Error(`Invalid encrypted frame length ${bodyLength}`);
+    while (this._buffered >= FRAME_HEADER_BYTES + (this._bodyLength ?? 0)) {
+      const buffer = this._chunks.length === 1 ? this._chunks[0]! : Buffer.concat(this._chunks, this._buffered);
+      this._chunks = [buffer];
+      if (this._bodyLength === null) {
+        const bodyLength = buffer.readUInt32BE(0);
+        if (bodyLength < AEAD_TAG_BYTES || bodyLength > MAX_FRAME_PLAINTEXT_BYTES + AEAD_TAG_BYTES) {
+          throw new Error(`Invalid encrypted frame length ${bodyLength}`);
+        }
+        this._bodyLength = bodyLength;
+        continue;
       }
-      if (this._buffer.length < FRAME_HEADER_BYTES + bodyLength) {
-        break;
-      }
-      const body = this._buffer.subarray(FRAME_HEADER_BYTES, FRAME_HEADER_BYTES + bodyLength);
-      this._buffer = this._buffer.subarray(FRAME_HEADER_BYTES + bodyLength);
+      const end = FRAME_HEADER_BYTES + this._bodyLength;
+      const body = buffer.subarray(FRAME_HEADER_BYTES, end);
+      const rest = buffer.subarray(end);
+      this._chunks = rest.length > 0 ? [rest] : [];
+      this._buffered = rest.length;
+      this._bodyLength = null;
 
       const decipher = createDecipheriv(AEAD_ALGORITHM, this.key, counterIv(this._counter), {
         authTagLength: AEAD_TAG_BYTES,
@@ -160,6 +171,8 @@ export class FrameDecryptor {
       ]);
       messages.push(new Uint8Array(plaintext));
     }
+    // A leftover view would keep the whole joined buffer alive until the next frame completes.
+    if (messages.length > 0 && this._chunks.length === 1) this._chunks = [Buffer.from(this._chunks[0]!)];
     return messages;
   }
 }
