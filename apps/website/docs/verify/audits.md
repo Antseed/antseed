@@ -13,7 +13,7 @@ This page covers **KBF audits**, one of the first of many verification methods A
 With the buyer running (`antseed buyer start`), each epoch is:
 
 ```bash
-antseed verifier run                          # audit, recheck and retry, all in one run
+antseed verifier run                          # audit, confirm and retry, all in one run
 antseed verifier status                       # optional, from another terminal
 antseed verifier submit --dry-run             # check before sending
 antseed verifier submit --yes                # publish the evidence and put the results on-chain
@@ -31,14 +31,15 @@ The rest of this page explains what these commands do.
 |---|---|
 | `SAME` | The seller misses about as often as the genuine model |
 | `DIFF` | The seller misses clearly more often: probably a different model |
-| `UNDETERMINED` | Too few usable answers to decide, or a `DIFF` the recheck didn't confirm |
+| `UNDETERMINED` | Too few usable answers to decide |
 
    A missing, empty or unreadable answer is left out of the score, not counted as wrong. A `SAME` needs at least half the questions answered and a `DIFF` at least 80%, so a seller can't make a `DIFF` more likely by dropping answers; below that the result is `UNDETERMINED`. A batch with any answer missing is asked again up to two more times, and the try with the most answers is kept. Answers sent as `<number>X</number>` lines without question numbers are read in order when there is exactly one per question.
 
-4. **Recheck.** Every `DIFF` is rechecked on questions the seller hasn't seen. It stays `DIFF` only if the recheck is `DIFF` too; a recheck `SAME` or `UNDETERMINED` makes it `UNDETERMINED`. A `DIFF` whose recheck couldn't run is not submitted.
-5. **Submit.** `verifier submit` publishes the evidence and puts the results on-chain.
+4. **Submit.** `verifier submit` publishes the evidence and puts the results on-chain. A `DIFF` is submitted as found: it is one auditor's report, and it counts only once another auditor confirms it with its own audit (see [Confirmations](#confirmations-from-other-auditors)). Auditors don't recheck their own `DIFF`s.
 
-Running `verifier run` again in the same epoch retries the `UNDETERMINED` sellers and rechecks any earlier `DIFF` whose recheck couldn't run, without repeating its first check.
+A close call (a first look that is neither clearly `SAME` nor clearly `DIFF`) gets one extra set of questions the seller hasn't seen, and is decided on both sets together; that is how the auditor reaches any verdict at all, not a second opinion.
+
+Running `verifier run` again in the same epoch retries the `UNDETERMINED` sellers and asks any close call its extra questions if they couldn't be asked, without repeating its first check.
 
 ### Following a run
 
@@ -46,7 +47,7 @@ Running `verifier run` again in the same epoch retries the `UNDETERMINED` seller
 
 ### The epoch overview
 
-`verifier run` and `verifier submit` write `<data-dir>/verifier/evidence/epochs/<epoch>/overview.html`. It shows every seller × model from all of the epoch's runs, merged in the order they are submitted, so a later verdict replaces an earlier one, as on-chain. Hover a yellow (`UNDETERMINED`) or grey (tried, not submitted) dot for the reason, in the same words as [AntScan](https://antscan.co), plus the match rate of the first check and the recheck. `antseed verifier overview [--epoch <n>] [--run <ids...>]` rebuilds it, optionally from only some runs.
+`verifier run` and `verifier submit` write `<data-dir>/verifier/evidence/epochs/<epoch>/overview.html`. It shows every seller × model from all of the epoch's runs, merged in the order they are submitted, so a later verdict replaces an earlier one, as on-chain. Hover a yellow (`UNDETERMINED`) or grey (tried, not submitted) dot for the reason, in the same words as [AntScan](https://antscan.co), plus the match rate of the check (and of a close call's extra questions). `antseed verifier overview [--epoch <n>] [--run <ids...>]` rebuilds it, optionally from only some runs.
 
 ## Which models you audit
 
@@ -58,10 +59,12 @@ The audited models are built into the CLI, the same for every auditor (`antseed 
 
 `antseed verifier assignment` shows every auditor's models (`--epochs 4` for the next few). `verifier run <model>` or `--all` still audits any model.
 
-The assignment is not enforced on-chain: the contract records any approved auditor's audit of any model, and keeps only the latest result per seller service, whoever submitted it. Two things follow:
+Each model also has a **confirmer** each epoch: the next auditor in the same rotation. A `DIFF` needs a second auditor (see [Confirmations](#confirmations-from-other-auditors)), and the confirmer audits the sellers whose `DIFF` waits for it. With two auditors, each one confirms the other's `DIFF`s, and the roles swap every epoch. `antseed verifier assignment` shows both: the models each auditor audits, and the models it confirms `DIFF`s on. This confirmation replaces a recheck by the same auditor: nobody rechecks their own `DIFF`.
+
+The assignment is not enforced on-chain: the contract records any approved auditor's audit of any model. Two things follow:
 
 - If an auditor doesn't run in an epoch, its models get no new verdict that epoch. Earlier verdicts still count until they expire.
-- Auditing models outside your share can overwrite another auditor's verdict for the same seller.
+- Auditing models outside your share adds your report to the other auditors' for the same seller.
 
 Auditors on different CLI versions can have different model lists, and so different splits. `verifier run` and `verifier assignment` print a hash of the model list to compare.
 
@@ -93,7 +96,7 @@ Before sending anything, `verifier run` stops with a list of problems and how to
 - the chain can't be reached, so the run could not be submitted;
 - your buyer deposit can't cover a payment channel for every seller you don't have one with yet (each reserves `payments.maxReserveAmountUsdc`, $1 by default);
 - a model's probe bank can't be loaded (rebuild it with `verifier reference build <model>`);
-- a seller has too few questions it hasn't seen for an audit and a DIFF recheck (only with `--no-enroll`; by default the run builds fresh questions, see [Reference banks](#reference-banks)).
+- a seller has too few questions it hasn't seen for an audit (only with `--no-enroll`; by default the run builds fresh questions, see [Reference banks](#reference-banks)).
 
 To run anyway, add `--ignore-pre-run-checks`: the problems are printed as warnings. Audits that fail because of them can come back `UNDETERMINED`.
 
@@ -127,7 +130,7 @@ A model's bank holds the questions and the genuine model's answers. Banks live i
 - **Worn out:** each seller only gets questions it hasn't been given in an earlier epoch, so a bank wears out as the same sellers are audited again. When any seller about to be audited lacks an unseen audit set plus a recheck set, it builds fresh questions and adds them to the bank, up to 3 builds per model.
 - **Ready:** no reference calls.
 
-Each build is billed by the reference API and stops once the bank is ready, or after 2,000 requests (`--max-enrollment-requests` changes it, `verifier.referenceMaxRequestsPerBuild` caps it). The limit is per build, not per model: one model can need a build to make its bank usable, up to 3 more when it's worn out and up to 3 more for DIFF rechecks, and each retry round can build again with a larger limit. Building grows a bank and never replaces it. `--no-enroll` turns this off: the run then stops before sending anything when a bank isn't ready. `antseed verifier reference build [<model> | --all]` builds banks ahead of time, for example to spread the cost before the first run.
+Each build is billed by the reference API and stops once the bank is ready, or after 2,000 requests in a round (`--max-enrollment-requests` changes it). A build that runs out continues from where it stopped in the next round or run, up to `verifier.referenceMaxRequestsPerBuild` requests in total (default: 3 times the per-round limit). The limit is per build, not per model: one model can need a build to make its bank usable, up to 3 more when it's worn out and up to 3 more for close-call extra questions. Building grows a bank and never replaces it. `--no-enroll` turns this off: the run then stops before sending anything when a bank isn't ready. `antseed verifier reference build [<model> | --all]` builds banks ahead of time, for example to spread the cost before the first run.
 
 ## Reference upstreams
 
@@ -173,19 +176,54 @@ antseed verifier submit --yes
 
 `submit` sends the whole current epoch: every run of the epoch, merged, with the latest result per model and seller. `--run-id <id>` sends one run instead. The dry run checks everything, including your approval. `submit` makes the evidence public on IPFS, which needs `PINATA_JWT`; `--no-publish-ipfs` submits without publishing it. Audits can only be submitted in the epoch they ran in, and re-running `submit` is safe.
 
+`submit` only sends what changes your position on-chain: your first result for a seller service this epoch (including a confirmation of another auditor's report) and a result whose verdict changed. A result you already reported this epoch is left out, and the evidence lists only the results that are sent, so its result count matches the transaction. A model with nothing new is skipped (`claude-opus-5.5: nothing new to submit (23 already on-chain)`), and the preview's **On-chain** column counts what was left out. Two cases are sent again: a report that stopped counting because an auditor was revoked, and a fresh audit after the seller's verdict moved into or out of `DIFF`. A result audited before that change is not, because the contract only counts support given after it (see below). A retry after a failed transaction sends the same evidence again.
+
+## Confirmations from other auditors
+
+Each result is a report. The contract records it as the seller service's verdict once enough different approved auditors report the same result for the same seller service and model in the same epoch:
+
+| Result | Auditors needed |
+|---|---|
+| `SAME` | 1 |
+| `DIFF` | 2 |
+| `UNDETERMINED` | 1 |
+| `SAME` or `UNDETERMINED` replacing a `DIFF` that still counts | 2 |
+
+So one auditor's `SAME` verifies a seller right away, but one auditor alone can neither mark a seller `DIFF` nor clear a `DIFF` two auditors agreed on. Only reports made after a `DIFF` was confirmed count toward clearing it, and only reports made after it was cleared count toward giving it again. While a `DIFF` waits for its second auditor, the seller keeps its current verdict. Reports count only in the epoch they were made in; a recorded verdict counts for that epoch and the next, like every verdict. Your own report never confirms itself: submitting the same result again adds nothing. When an auditor is revoked, every report still waiting for a second auditor starts over, so a revoked auditor's report never counts; verdicts already recorded stay. The contract owner can change the numbers.
+
+`verifier run` confirms automatically. Before it plans the run, it reads this epoch's reports that still need another auditor, and audits the sellers it is responsible for: those where it is the model's confirmer, or the next auditor in the rotation who hasn't reported yet. From halfway through the epoch, any auditor who hasn't reported on a waiting result picks it up. This includes models outside your share: a model you have no bank for gets one built first, the same way as for your own models. Your audit is a normal audit on your own questions. It can confirm the report or disagree with it, and either way it earns credit like any other audit. `--no-confirm` skips these sellers, and `verifier run <model>` confirms only that model's reports. If your audit of a `DIFF` waiting for you ends `UNDETERMINED` because the seller failed (unreachable, too slow, bad answers), it isn't submitted yet, since it would replace the waiting `DIFF`: the seller is audited again at least 10 minutes later, up to 3 attempts in the epoch, and only the last attempt's `UNDETERMINED` is submitted. `submit` lists such a seller as held. A close call that stays undecided after its extra questions is submitted at once. Confirmations you can't audit now (the seller no longer advertises the service, or is skipped) stay waiting, and `verifier run` says why. With fewer approved auditors than a `DIFF` needs, no `DIFF` can be recorded; `verifier run` warns about it.
+
+After a submission, `submit` lists for each model how many of your results are recorded and which still wait for another auditor (for example `agent 1234: DIFF 1/2`).
+
+## Keeping a verifier running
+
+`antseed verifier watch` does the run and the submit for you, on a timer:
+
+```bash
+antseed verifier watch                  # a tick every 10 minutes; --interval <minutes> changes it
+antseed verifier watch --once           # one tick, e.g. from cron
+```
+
+Every tick runs `verifier run` (your models, plus the confirmations you're responsible for, in up to 3 rounds like a run of your own; what is still left is retried on the next tick) and then `verifier submit --yes`, which sends only the results that aren't on-chain yet. A `DIFF` another auditor submits is picked up by its confirmer within one tick. Each tick continues the epoch, so sellers already finished aren't asked again, and a new epoch starts its own assignment on the next tick. A failed step is logged and retried on the next tick. With `--once` there is no next tick, so `watch` exits non-zero when its `run` or `submit` failed, and cron or your supervisor sees it.
+
+- Signing runs without a terminal. With a keystore (`--keystore` or `verifier.keystore`), set `ANTSEED_KEYSTORE_PASSWORD` or type the password once when `watch` starts. `--keystore` also decides which auditor's models and confirmations are run, unless `--auditor` is given.
+- Set `PINATA_JWT` for the evidence, or pass `--no-publish-ipfs`.
+- `watch` takes `run`'s tuning options and passes them to every tick's run: `--max-rounds <n>`, `--max-enrollment-requests <n>`, `--no-enroll`, `--ignore-pre-run-checks`, `--allow-probe-reuse` and `--no-confirm`. Without them, each tick uses `run`'s defaults (3 rounds, 2,000 requests per build and round). A build that keeps failing continues on the next tick until its total (`verifier.referenceMaxRequestsPerBuild`, default 3 times the per-round limit), so watch the reference spend.
+- Only one `watch` runs per data dir. Run it under systemd, pm2 or tmux to keep it up.
+
 ## Running again in the same epoch
 
 Run the same `antseed verifier run` command again; it continues the epoch. It first prints a plan built from the epoch's earlier runs:
 
-- **Finished:** SAME, or a DIFF the recheck confirmed or overturned. Not asked again.
+- **Finished:** SAME or DIFF. Not asked again.
 - **Retry, our side:** our buyer refused the seller, a payment channel timed out, the deposit or a probe bank was missing, or the seller had already seen too much of the bank (`BANK_EXHAUSTED`). Retried on every run.
 - **Retry, seller or unclear:** the seller was unreachable, too slow or sent bad answers. Retried once per epoch. A retry keeps the answers the seller already gave.
-- **Recheck:** a DIFF whose recheck couldn't run.
+- **Close call:** a close call whose extra questions couldn't be asked yet.
 - **New:** a seller or model not audited yet, or skipped earlier (for example its price was above the reference).
 
-One run does this in rounds: after the first round it retries what is left (failures, waiting rechecks) with a larger probe-bank budget, up to `--max-rounds` rounds (default 3). It stops early when nothing is left, a round makes no progress, or less than 45 minutes of the epoch remain.
+One run does this in rounds: after the first round it retries what is left (failures, close calls waiting for their extra questions) with another probe-bank budget, up to `--max-rounds` rounds (default 3). It stops early when nothing is left, a round makes no progress, or less than 45 minutes of the epoch remain.
 
-The run ends with a table of the whole epoch and the next command. `--fresh` ignores the earlier runs, including DIFFs waiting for a recheck and an interrupted run, and audits every eligible seller again from the start.
+The run ends with a table of the whole epoch and the next command. `--fresh` ignores the earlier runs, including close calls waiting for extra questions and an interrupted run, and audits every eligible seller again from the start.
 
 ## Running every epoch
 

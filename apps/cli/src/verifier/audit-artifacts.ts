@@ -110,7 +110,17 @@ interface SellerAuditReportResult {
   auditId?: string
   evidencePath?: string
   outcomeReason?: VerificationOutcomeReasonV1 | null
-  recheck?: { status: string; parsedProbeCount: number; probeCount: number }
+  extension?: {
+    probeCount: number
+    firstLook: { pValue: number | null }
+    pooled: { pValueBinomial: number | null; verdict: string; extendNext?: boolean }
+  }
+  extension2?: {
+    probeCount: number
+    firstLook: { pValue: number | null }
+    pooled: { pValueBinomial: number | null; verdict: string; extendNext?: boolean }
+  }
+  extensionPending?: { reason: string }
 }
 
 interface SellerAuditReportFailure {
@@ -173,14 +183,18 @@ export function modelAuditSellersDirectory(
   return join(modelAuditsDirectory(evidenceDir, epoch, model, runId), 'sellers')
 }
 
-/** DIFF recheck evidence lives apart from first checks so it never overwrites a seller's first pack. */
-export function modelAuditRechecksDirectory(
+/**
+ * Close-call extension evidence, apart from first checks. A second extra set
+ * (`kbf-extension-v2`) has its own directory so it never overwrites the first set's evidence.
+ */
+export function modelAuditExtensionsDirectory(
   evidenceDir: string,
   epoch: string,
   model: string,
   runId: string,
+  extensionIndex = 1,
 ): string {
-  return join(modelAuditsDirectory(evidenceDir, epoch, model, runId), 'rechecks')
+  return join(modelAuditsDirectory(evidenceDir, epoch, model, runId), extensionIndex === 1 ? 'extensions' : `extensions-${extensionIndex}`)
 }
 
 export function modelReferencesDirectory(evidenceDir: string, epoch: string, model: string): string {
@@ -323,10 +337,7 @@ export async function renderModelAuditReports(
         incorrect: result.parsedProbeCount === 0 ? '—' : String(result.incorrectProbeCount),
         correctRate: result.correctRate === null ? 'N/A' : `${(result.correctRate * 100).toFixed(1)}%`,
         verdict: result.status,
-        reason: result.recheck
-          ? `first check DIFF; recheck ${result.recheck.status} `
-            + `(${result.recheck.parsedProbeCount}/${result.recheck.probeCount} fresh probes)`
-          : reportReason(result.outcomeReason),
+        reason: sellerResultReason(result),
         nextAction: result.outcomeReason?.nextAction ?? '—',
         auditId: result.auditId,
         evidencePath: result.evidencePath,
@@ -404,6 +415,26 @@ export async function renderModelAuditReports(
     )
     return { model: entry.model, path, html: text }
   })
+}
+
+/** A result's report reason: its close call (first look, each extra set, what it waits for) or its outcome reason. */
+function sellerResultReason(
+  result: SellerAuditReportResult,
+): string {
+  if (!result.extension) {
+    if (result.extensionPending) return `close call waiting for extra questions: ${result.extensionPending.reason}`
+    return reportReason(result.outcomeReason)
+  }
+  const parts = [`close call (p=${result.extension.firstLook.pValue?.toFixed(3) ?? '?'})`]
+  for (const [index, set] of [result.extension, result.extension2].entries()) {
+    if (!set) continue
+    parts.push(
+      `extra set ${index + 1}: ${set.probeCount} questions, pooled p=${set.pooled.pValueBinomial?.toFixed(3) ?? '?'} `
+      + `→ ${set.pooled.extendNext ? 'still close' : set.pooled.verdict}`,
+    )
+  }
+  if (result.extensionPending) parts.push(`waiting for more extra questions: ${result.extensionPending.reason}`)
+  return parts.join('; ')
 }
 
 function reportReason(reason?: VerificationOutcomeReasonV1 | null, fallback = '—'): string {

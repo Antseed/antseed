@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { createReferenceQueryProfile } from '@antseed/fingerprints'
 import type { ModelVerificationTargetResult } from './model-run.js'
-import { loadPendingDiffRechecks, pendingRecheckKey } from './pending-rechecks.js'
+import { loadPendingExtensions, pendingExtensionKey } from './pending-extensions.js'
 import { emptyAuditCostSummary, writeProxyAuditEvidence, type ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 
 const PEER_A = 'aa'.repeat(20)
@@ -63,48 +63,47 @@ async function writeRun(evidenceDir: string, runId: string, completedAt: string,
   }))
 }
 
-test('a DIFF waiting for its recheck is carried over until a later run settles it', async () => {
-  const evidenceDir = await mkdtemp(join(tmpdir(), 'pending-rechecks-'))
+test('a DIFF is never carried over: it is submitted as found, and another auditor confirms it', async () => {
+  const evidenceDir = await mkdtemp(join(tmpdir(), 'pending-extensions-'))
   try {
     const a = await evidenceFor(evidenceDir, PEER_A, 'a1')
-    const b = await evidenceFor(evidenceDir, PEER_B, 'b1')
-    const waiting = { reason: 'reference endpoint 402', since: '2026-10-27T12:00:00.000Z' }
-    await writeRun(evidenceDir, 'run-1', '2026-10-27T13:00:00.000Z', [
-      result(PEER_A, 'DIFF', a, { recheckPending: waiting }),
-      result(PEER_B, 'DIFF', b, { recheckPending: waiting }),
-    ])
-    // A first DIFF from before this change (no recheckPending) is not carried over.
-    await writeRun(evidenceDir, 'run-old', '2026-10-27T11:00:00.000Z', [result('cc'.repeat(20), 'DIFF', a)])
-    // Another epoch is ignored.
-    await writeRun(evidenceDir, 'run-27', '2026-10-20T13:00:00.000Z', [result('dd'.repeat(20), 'DIFF', a, { recheckPending: waiting })], '27')
-
-    let pending = await loadPendingDiffRechecks(evidenceDir, '28', ['MODEL-A'])
-    assert.deepEqual([...pending.keys()].sort(), [pendingRecheckKey('model-a', PEER_A), pendingRecheckKey('model-a', PEER_B)])
-    assert.equal(pending.get(pendingRecheckKey('model-a', PEER_A))!.runId, 'run-1')
-
-    // A later run rechecks seller A (now UNDETERMINED); seller B stays waiting.
-    await writeRun(evidenceDir, 'run-2', '2026-10-27T14:00:00.000Z', [
-      result(PEER_A, 'UNDETERMINED', a, { recheck: {
-        auditId: 'r', status: 'SAME', referenceId: 'x', probeCount: 1, parsedProbeCount: 1, correctProbeCount: 1,
-        cost: emptyAuditCostSummary(), evidencePath: a.path, evidenceHash: a.evidenceHash,
-      } }),
-    ])
-    pending = await loadPendingDiffRechecks(evidenceDir, '28', ['model-a'])
-    assert.deepEqual([...pending.keys()], [pendingRecheckKey('model-a', PEER_B)])
-    assert.deepEqual(await loadPendingDiffRechecks(evidenceDir, '28', ['model-b']), new Map())
+    await writeRun(evidenceDir, 'run-1', '2026-10-27T13:00:00.000Z', [result(PEER_A, 'DIFF', a), result(PEER_B, 'SAME', a)])
+    assert.equal((await loadPendingExtensions(evidenceDir, '28', ['model-a'])).size, 0)
   } finally {
     await rm(evidenceDir, { recursive: true, force: true })
   }
 })
 
-test('a waiting DIFF whose evidence no longer matches its hash is not carried over', async () => {
-  const evidenceDir = await mkdtemp(join(tmpdir(), 'pending-rechecks-'))
+test('a close call waiting for its extra questions is carried over as an extension until extended', async () => {
+  const evidenceDir = await mkdtemp(join(tmpdir(), 'pending-extensions-'))
   try {
     const a = await evidenceFor(evidenceDir, PEER_A, 'a1')
+    const grey = {
+      decisionRule: 'kbf-extension-v1' as const,
+      responseAuthVerified: true,
+      stats: { selfHamming: 30, selfTotal: 300, targetHamming: 22, targetTotal: 100, selfCoverage: 1, targetCoverage: 1, p0Cp99: 0.155, pValueBinomial: 0.05 },
+    }
     await writeRun(evidenceDir, 'run-1', '2026-10-27T13:00:00.000Z', [
-      result(PEER_A, 'DIFF', { ...a, evidenceHash: `0x${'00'.repeat(32)}` }, { recheckPending: { reason: 'x', since: 'y' } }),
+      result(PEER_A, 'SAME', a, { ...grey, extensionPending: { reason: 'no fresh questions', since: '2026-10-27T13:00:00.000Z' } }),
     ])
-    assert.equal((await loadPendingDiffRechecks(evidenceDir, '28', ['model-a'])).size, 0)
+    let pending = await loadPendingExtensions(evidenceDir, '28', ['model-a'])
+    assert.ok(pending.get(pendingExtensionKey('model-a', PEER_A)))
+
+    // Extended in a later run, the pooled verdict is DIFF: final for this auditor, nothing left to carry over.
+    await writeRun(evidenceDir, 'run-2', '2026-10-27T14:00:00.000Z', [
+      result(PEER_A, 'DIFF', a, {
+        ...grey,
+        extension: {
+          rule: 'kbf-extension-v1', auditId: 'x', status: 'DIFF', referenceId: 'r', probeCount: 1, parsedProbeCount: 1,
+          correctProbeCount: 0, responseAuthVerified: true, cost: emptyAuditCostSummary(),
+          evidencePath: a.path, evidenceHash: a.evidenceHash,
+          firstLook: { status: 'SAME', pValue: 0.05 },
+          pooled: { ...grey.stats, verdict: 'DIFF', verdictReason: null },
+        },
+      }),
+    ])
+    pending = await loadPendingExtensions(evidenceDir, '28', ['model-a'])
+    assert.equal(pending.get(pendingExtensionKey('model-a', PEER_A)), undefined)
   } finally {
     await rm(evidenceDir, { recursive: true, force: true })
   }

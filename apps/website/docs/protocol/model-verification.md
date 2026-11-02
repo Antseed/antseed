@@ -47,7 +47,7 @@ Fingerprinting (KBF)**.
 |---|---|
 | **SAME** | No evidence of substitution: the seller misses about as often as the genuine model does. This is strong evidence, not proof, that it is the advertised model. |
 | **DIFF** | Significantly more misses than the genuine model makes. The seller very likely serves a different model. |
-| **UNDETERMINED** | Too few usable answers to decide either way: fewer than half the questions were answered (errors, timeouts, empty or unreadable answers), a seller looked different but answered fewer than 80% of the questions, or a DIFF wasn't confirmed by its recheck. |
+| **UNDETERMINED** | Too few usable answers to decide either way: fewer than half the questions were answered (errors, timeouts, empty or unreadable answers), or a seller looked different but answered fewer than 80% of the questions. |
 
 A missing or unreadable answer is left out of the score, not counted as wrong, so a
 flaky seller doesn't look like a substituted model.
@@ -67,15 +67,11 @@ and the models move to a different auditor the next epoch. For its models, the a
 checks every seller that advertises them. See
 [Which models you audit](/docs/verify/audits#which-models-you-audit).
 
-Before an auditor reports a **DIFF**, it rechecks that seller on a second, fresh set of
-questions the seller has never seen:
-
-- the recheck says DIFF → the result is DIFF
-- the recheck says SAME or UNDETERMINED → the result is UNDETERMINED, not DIFF
-- the recheck cannot run → nothing is reported for that seller until a later run in the
-  same epoch rechecks it
-
-So a seller is only marked DIFF when two independent checks agree.
+A **DIFF** from one auditor is only a report. The contract records it once a second
+approved auditor, the model's confirmer this epoch (the next auditor in the rotation),
+audits the same seller with its own questions and also finds DIFF. A SAME is recorded
+from one auditor, but clearing a recorded DIFF again takes two. So a seller is only
+marked DIFF when two independent auditors agree.
 
 To run an auditor yourself, see [Become a verifier](/docs/verify). [How audits run](/docs/verify/audits)
 covers each step, including where the genuine model's answers come from.
@@ -92,7 +88,7 @@ its approval.
 ## What goes on-chain
 
 ```
-seller audit ──► DIFF? ──► recheck ──► evidence on IPFS ──► AntseedKbfVerification
+seller audit ──► evidence on IPFS ──► AntseedKbfVerification ◄── second auditor's audit (for a DIFF)
 ```
 
 `AntseedKbfVerification` keeps one result per seller service (one model offer of one
@@ -106,6 +102,17 @@ seller):
 - **A DIFF only affects that one service.** A seller's other verified models are not
   touched.
 - Auditors cannot audit sellers they own.
+
+## How buyers use results
+
+Buyers read each seller service's recorded result from `AntseedKbfVerification`. A
+service with a live **DIFF** keeps 10% of its effective reputation, so automatic routing
+skips it under the default minimum trust score, and the desktop app explains the cut
+in the seller's reputation tooltip. Only a recorded DIFF counts: a DIFF from one auditor
+that is still waiting for the second changes nothing, and the service keeps its earlier
+result until then. SAME, UNDETERMINED, expired and missing results change nothing. The
+penalty lifts on its own when the DIFF expires or two auditors replace it with a later
+result. See [Routing](/docs/api/routing).
 
 ## Check a model yourself
 

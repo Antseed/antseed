@@ -8,7 +8,8 @@ import {
   type VerifierRunManifestV1,
 } from './audit-artifacts.js'
 import { epochRunManifests } from './epoch-overview.js'
-import { finalAuditVerdict } from './model-audit.js'
+import { latestExtension } from './close-call.js'
+import { finalAuditVerdict, retiredRecheckResult } from './model-audit.js'
 import type {
   ModelVerificationFailure,
   ModelVerificationSkip,
@@ -67,8 +68,9 @@ export function failureBlame(reason: ReasonLike | null | undefined, text?: strin
   return 'unclear'
 }
 
-export type EpochCellState = 'same' | 'diff' | 'undetermined' | 'pending_diff' | 'failed' | 'skipped'
-export type EpochCellAction = 'done' | 'retry' | 'recheck' | 'audit'
+export type EpochCellState =
+  | 'same' | 'diff' | 'undetermined' | 'pending_extension' | 'failed' | 'skipped'
+export type EpochCellAction = 'done' | 'retry' | 'extend' | 'audit'
 
 export interface EpochCell {
   model: string
@@ -98,26 +100,55 @@ export function epochCellKey(model: string, peerId: string): string {
 /** Seller and unclear failures get this many audits per epoch (the first plus one retry). */
 export const SELLER_FAILURE_ATTEMPTS = 2
 
+/**
+ * Audits per epoch for a seller whose DIFF waits for this auditor's confirmation and whose audit
+ * ended UNDETERMINED because of a failure. Submitted, that UNDETERMINED replaces the waiting DIFF,
+ * so it is held and the seller audited again until a SAME or DIFF, or the last attempt.
+ */
+export const CONFIRMATION_ATTEMPTS = 3
+
+/** A confirmation is audited again at least this long after its last attempt finished. */
+export const CONFIRMATION_RECHECK_SPACING_SECONDS = 10 * 60
+
+/** Whether a cell is a confirmation's UNDETERMINED that is audited again before it is submitted. */
+export function heldForConfirmationRecheck(cell: Pick<EpochCell, 'state' | 'action' | 'result' | 'attempts'>): boolean {
+  return cell.state === 'undetermined' && cell.action === 'retry' && cell.result?.confirmsDiff === true
+    && cell.attempts < CONFIRMATION_ATTEMPTS
+}
+
 export function epochCellAction(cell: Omit<EpochCell, 'action'>): EpochCellAction {
   switch (cell.state) {
     case 'same':
     case 'diff':
       return 'done'
-    case 'pending_diff':
-      return 'recheck'
+    case 'pending_extension':
+      return 'extend'
     case 'skipped':
       // A skip is decided before any request, so it is re-evaluated each run (a seller may have
       // lowered its price, or the model is advertised again).
       return 'audit'
     case 'undetermined':
-      // A DIFF the recheck did not confirm, or a seller that answered and was simply too close to
-      // call, is a finished UNDETERMINED: asking again would only repeat it.
-      if (cell.result?.recheck || !cell.result?.outcomeReason) return 'done'
+      // The retired DIFF self-recheck's UNDETERMINED cannot be submitted (`retiredRecheckResult`).
+      if (cell.result && retiredRecheckResult(cell.result)) return 'audit'
+      // A seller that answered and was simply too close to call is a finished UNDETERMINED: asking
+      // again would only repeat it.
+      if (!cell.result || !failedUndetermined(cell.result)) return 'done'
+      // A close call whose extra questions failed is final too, unless a waiting DIFF depends on it:
+      // a confirmation's failure is retried like one in its first set.
+      if (cell.result.extension && !cell.result.confirmsDiff) return 'done'
       // falls through
     case 'failed':
       if (cell.blame === 'auditor') return 'retry'
-      return cell.attempts < SELLER_FAILURE_ATTEMPTS ? 'retry' : 'done'
+      return cell.attempts < (cell.result?.confirmsDiff ? CONFIRMATION_ATTEMPTS : SELLER_FAILURE_ATTEMPTS) ? 'retry' : 'done'
   }
+}
+
+/**
+ * Whether an UNDETERMINED came from a failure rather than from a seller that answered and was too
+ * close to call: an outcome reason, or a last extra set whose answers lacked verified ResponseAuth.
+ */
+function failedUndetermined(result: ModelVerificationTargetResult): boolean {
+  return Boolean(result.outcomeReason) || latestExtension(result)?.responseAuthVerified === false
 }
 
 interface RunSummaries {
@@ -126,9 +157,9 @@ interface RunSummaries {
 }
 
 /**
- * Merges runs oldest first. The latest submittable result per (model, seller) wins; a DIFF waiting
- * for its recheck replaces it only when nothing submittable came after. Failures and skips fill
- * cells without a result.
+ * Merges runs oldest first. The latest submittable result per (model, seller) wins; a close call
+ * waiting for its extra questions replaces it only when nothing submittable came after. Failures
+ * and skips fill cells without a result.
  */
 export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Map<string, EpochCell> {
   interface Acc {
@@ -193,10 +224,11 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
     let cell: Omit<EpochCell, 'action'>
     const base = { model: entry.model, peerId: entry.peerId, attempts: entry.attempts, skipCode: null }
     if (entry.pending) {
-      // A first DIFF newer than any submittable result: its recheck decides the cell.
+      // A close call newer than any submittable result: its extra questions decide the cell.
       cell = {
-        ...base, runId: entry.pending.runId, state: 'pending_diff', blame: null,
-        reason: entry.pending.result.recheckPending?.reason ?? null, result: null,
+        ...base, runId: entry.pending.runId, state: 'pending_extension', blame: null,
+        reason: entry.pending.result.extensionPending?.reason ?? null,
+        result: null,
       }
     } else if (entry.result) {
       const verdict = finalAuditVerdict(entry.result)!
@@ -253,15 +285,16 @@ export interface EpochPlanCounts {
   done: number
   retryAuditor: number
   retrySeller: number
-  recheck: number
+  /** Close calls waiting for their extra questions. */
+  extend: number
   audit: number
 }
 
 export function countPlan(cells: Iterable<EpochCell>): EpochPlanCounts {
-  const counts: EpochPlanCounts = { done: 0, retryAuditor: 0, retrySeller: 0, recheck: 0, audit: 0 }
+  const counts: EpochPlanCounts = { done: 0, retryAuditor: 0, retrySeller: 0, extend: 0, audit: 0 }
   for (const cell of cells) {
     if (cell.action === 'done') counts.done += 1
-    else if (cell.action === 'recheck') counts.recheck += 1
+    else if (cell.action === 'extend') counts.extend += 1
     else if (cell.action === 'audit') counts.audit += 1
     else if (cell.blame === 'auditor') counts.retryAuditor += 1
     else counts.retrySeller += 1
@@ -274,7 +307,8 @@ export interface EpochModelRow {
   same: number
   diff: number
   undetermined: number
-  pendingRecheck: number
+  /** Close calls waiting for their extra questions. */
+  closeCalls: number
   failed: number
   skipped: number
   left: number
@@ -287,7 +321,7 @@ export function epochModelRows(cells: Iterable<EpochCell>, models?: readonly str
     const key = model.toLowerCase()
     let entry = rows.get(key)
     if (!entry) {
-      entry = { model, same: 0, diff: 0, undetermined: 0, pendingRecheck: 0, failed: 0, skipped: 0, left: 0 }
+      entry = { model, same: 0, diff: 0, undetermined: 0, closeCalls: 0, failed: 0, skipped: 0, left: 0 }
       rows.set(key, entry)
     }
     return entry
@@ -298,10 +332,10 @@ export function epochModelRows(cells: Iterable<EpochCell>, models?: readonly str
     if (cell.state === 'same') entry.same += 1
     else if (cell.state === 'diff') entry.diff += 1
     else if (cell.state === 'undetermined') entry.undetermined += 1
-    else if (cell.state === 'pending_diff') entry.pendingRecheck += 1
+    else if (cell.state === 'pending_extension') entry.closeCalls += 1
     else if (cell.state === 'failed') entry.failed += 1
     else entry.skipped += 1
-    if (cell.action === 'retry' || cell.action === 'recheck') entry.left += 1
+    if (cell.action === 'retry' || cell.action === 'extend') entry.left += 1
   }
   return [...rows.values()].sort((left, right) => left.model.localeCompare(right.model))
 }
@@ -347,9 +381,22 @@ export async function writeEpochSubmissionManifest(
     for (const cell of state.cells.values()) {
       if (normalized(cell.model) !== normalized(model)) continue
       const peer = normalized(cell.peerId)
-      if (cell.state === 'pending_diff') {
+      if (cell.state === 'pending_extension') {
         const pending = latestBy(runSummaries, (summary) => summary.results, peer, (result) => finalAuditVerdict(result) === null)
         if (pending) results.push(pending)
+      } else if (heldForConfirmationRecheck(cell)) {
+        // Not submitted yet: it would replace the DIFF waiting for this auditor's confirmation.
+        const result = cell.result!
+        failures.push({
+          peerId: result.peerId,
+          displayName: result.displayName,
+          agentId: result.agentId,
+          service: result.service,
+          status: 'FAILED',
+          reason: `held: UNDETERMINED (${cell.reason ?? 'audit failed'}) on a DIFF waiting for this auditor's confirmation; `
+            + `audited again before it is submitted (attempt ${cell.attempts} of ${CONFIRMATION_ATTEMPTS})`,
+          ...(result.outcomeReason ? { outcomeReason: result.outcomeReason } : {}),
+        })
       } else if (cell.result) {
         results.push(cell.result)
       } else if (cell.state === 'failed') {

@@ -82,6 +82,38 @@ export function roundRobinAssignmentFor(auditor: string, input: RoundRobinAssign
 }
 
 /**
+ * The approved auditors in the order they take a model in `epoch`: the model's round-robin auditor
+ * first, then the next auditor in the rotation, and so on. A report on the model that waits for a
+ * confirmation is confirmed by the first auditor in this order that has not reported on it yet, so
+ * confirmations rotate between auditors the same way the assignment does: with two auditors, each
+ * one confirms the other's reports. Empty when the model is not in `availableModels`.
+ */
+export function auditorRotationForModel(model: string, input: RoundRobinAssignmentInput): string[] {
+  const epoch = parseEpoch(input.epoch)
+  const auditors = uniqueAuditors(input.auditors)
+  const index = uniqueModels(input.availableModels).findIndex((entry) => entry.toLowerCase() === model.trim().toLowerCase())
+  if (index < 0 || auditors.length === 0) return []
+  const first = (index + Number(epoch % BigInt(auditors.length))) % auditors.length
+  return auditors.map((_, offset) => auditors[(first + offset) % auditors.length]!)
+}
+
+/**
+ * The models each auditor confirms in `epoch`: those where it is next after the model's round-robin
+ * auditor (`auditorRotationForModel`). It audits the sellers whose DIFF on such a model waits for a
+ * second auditor. Empty for everyone with fewer than two auditors, since nobody can confirm then.
+ */
+export function confirmationAssignments(input: RoundRobinAssignmentInput): Map<string, string[]> {
+  const auditors = uniqueAuditors(input.auditors)
+  const confirms = new Map(auditors.map((auditor) => [auditor, [] as string[]]))
+  if (auditors.length < 2) return confirms
+  for (const model of uniqueModels(input.availableModels)) {
+    const confirmer = auditorRotationForModel(model, input)[1]
+    if (confirmer) confirms.get(confirmer)!.push(model)
+  }
+  return confirms
+}
+
+/**
  * Fingerprint of the sorted model list. Auditors on different CLI versions may have different
  * built-in lists and so different assignments; comparing this hash shows whether they agree.
  */

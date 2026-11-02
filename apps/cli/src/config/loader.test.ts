@@ -518,6 +518,15 @@ test('loadConfig accepts a verifier with only a reference endpoint', async () =>
   });
 });
 
+test('loadConfig accepts and ignores the retired verifier.diffConfirmationRuns', async () => {
+  for (const diffConfirmationRuns of [0, 1]) {
+    await withTempConfig(JSON.stringify({ verifier: { referenceEndpoint: REFERENCE_ENDPOINT, diffConfirmationRuns } }), async (configPath) => {
+      const config = await loadConfig(configPath);
+      assert.equal(config.verifier?.closeCallExtensions, undefined);
+    });
+  }
+});
+
 test('loadConfig rejects model lists: the audited models are built in', async () => {
   await withTempConfig(JSON.stringify({ verifier: {
     referenceEndpoint: { ...REFERENCE_ENDPOINT, models: { 'kimi-k3': { upstreamModel: 'moonshotai/kimi-k3' } } },

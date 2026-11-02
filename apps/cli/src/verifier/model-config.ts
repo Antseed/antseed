@@ -16,6 +16,12 @@ export interface ResolvedVerifierModelConfig extends Omit<VerifierReferenceModel
   service: string
   pricing?: VerifierModelPricingConfig
   contrastModels: string[]
+  /**
+   * The built-in OpenRouter provider pin (`AuditedModel.referenceProvider`), set only when the
+   * verifier configures no `referenceProvider` of its own and the model's reference comes from
+   * OpenRouter. New banks use it; a bank built before keeps the pin it recorded.
+   */
+  defaultReferenceProvider?: { order: string[] }
 }
 
 /**
@@ -28,13 +34,25 @@ export function auditedVerifierModels(
 ): Array<[string, VerifierReferenceModelConfig]> {
   const settings = new Map(Object.entries(config?.models ?? {})
     .map(([service, value]) => [findAuditedModelKey(service) ?? service, value] as const))
+  const only = testModelKeys(config)
   return Object.entries(auditedModels())
+    .filter(([service]) => only === null || only.has(service))
     .map(([service, model]): [string, VerifierReferenceModelConfig] => [service, {
       ...withoutRemovedSettings(settings.get(service)),
       upstreamModel: model.upstreamModel,
       ...(model.serviceAliases?.length ? { serviceAliases: [...model.serviceAliases] } : {}),
     }])
     .sort(([left], [right]) => left.localeCompare(right))
+}
+
+/** `verifier.testModels` as built-in model keys, or null when unset; an unknown model is an error. */
+export function testModelKeys(config: VerifierCLIConfig | undefined): Set<string> | null {
+  if (!config?.testModels) return null
+  return new Set(config.testModels.map((model) => {
+    const key = findAuditedModelKey(model)
+    if (!key) throw new Error(`verifier.testModels: ${model} is not a built-in audited model (antseed verifier models lists them)`)
+    return key
+  }))
 }
 
 function withoutRemovedSettings<T extends { enabled?: unknown }>(value: T | undefined): Omit<T, 'enabled'> | undefined {
@@ -122,7 +140,42 @@ export function resolveVerifierModelConfig(
       `no contrast models selected for ${service}; check the configured price ratio and intelligence threshold`,
     )
   }
-  return { ...withAntseedUpstreamRoute(config, model), service, pricing, contrastModels }
+  const defaultReferenceProvider = builtInReferenceProvider(config, service, model)
+  return {
+    ...withAntseedUpstreamRoute(config, model),
+    service,
+    pricing,
+    contrastModels,
+    ...(defaultReferenceProvider ? { defaultReferenceProvider } : {}),
+  }
+}
+
+/**
+ * The built-in provider pin for a model, when it applies: the verifier pins nothing itself, sends
+ * no reference through an Antseed peer, and the reference source is OpenRouter (provider routing is
+ * an OpenRouter feature).
+ */
+export function builtInReferenceProvider(
+  config: VerifierCLIConfig | undefined,
+  service: string,
+  model: VerifierReferenceModelConfig,
+): { order: string[] } | undefined {
+  const order = auditedModels()[service]?.referenceProvider
+  if (!order?.length || model.referenceProvider || model.referenceRoute) return undefined
+  if (model.upstream) {
+    return config?.upstreams?.[model.upstream.name]?.type === 'openrouter' ? { order: [...order] } : undefined
+  }
+  return isOpenRouterUrl(config?.referenceEndpoint?.baseUrl) ? { order: [...order] } : undefined
+}
+
+function isOpenRouterUrl(value: string | undefined): boolean {
+  if (!value) return false
+  try {
+    const host = new URL(value).hostname
+    return host === 'openrouter.ai' || host.endsWith('.openrouter.ai')
+  } catch {
+    return false
+  }
 }
 
 /**

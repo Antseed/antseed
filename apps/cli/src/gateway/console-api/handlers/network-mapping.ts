@@ -1,5 +1,5 @@
 /** Pure mapping from the buyer's peer, health and verification views to the console's `Peer`. */
-import { isNativeVideoProtocol, parseServiceHealth, parseServicePerformance } from '@antseed/node'
+import { VERIFICATION_STATUS_STALE_MAX_MS, isNativeVideoProtocol, parseServiceHealth, parseServicePerformance } from '@antseed/node'
 import { collectPeerVerificationLinks } from '@antseed/node/discovery'
 import { parseVerifierCapabilities } from '@antseed/node/verifier-capabilities'
 import { freeTierProgramForService, isPricedService, normalizeFreeTierProgram, parseFreeTierProgram } from '@antseed/node/free-tier-program'
@@ -172,6 +172,11 @@ export function mapPeers(input: {
     const stake = num(row['onChainPoolStakeAnts'])
     const agentId = num(row['onChainAgentId'])
     const coolingDown = healthRow?.['coolingDown'] === true
+    // A DIFF list from a read older than the buyer's fail-open window no longer cuts anything.
+    const diffReadAt = num(row['onChainVerificationFetchedAt'])
+    const diffServices = diffReadAt !== null && input.now - diffReadAt < VERIFICATION_STATUS_STALE_MAX_MS
+      ? strings(row['onChainDiffServices'])
+      : []
     return [{
       peerId,
       displayName: str(row['displayName']),
@@ -189,6 +194,7 @@ export function mapPeers(input: {
       freeTier: parseFreeTierProgram(strings(row['capabilities'])),
       usageShareBps: num(row['onChainUsageShareBps']),
       washFlagged: row['onChainWashFlagged'] === true || trust['washFlagged'] === true,
+      ...(diffServices.length > 0 ? { diffServices } : {}),
       lastSeen: num(row['lastSeen']),
       health: {
         failureStreak: num(healthRow?.['failureStreak']) ?? 0,

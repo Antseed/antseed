@@ -102,8 +102,10 @@ export interface SellerProbeLedgerV1 {
     probeIds: string[]
     /** How the subset and order were drawn. Absent on legacy shared-epoch assignments. */
     selection?: SellerProbeSelectionMethod
-    /** Set on the second probe set reserved to recheck a DIFF. */
-    purpose?: 'diff-recheck'
+    /** Set on the extra set reserved to decide a close-call first audit (`kbf-extension-v1` / `-v2`). */
+    purpose?: 'extension'
+    /** Which extra set of a close call this is (1 or 2); absent means 1. */
+    extensionIndex?: number
     reservedAt: string
     voidedAt?: string
     voidReason?: string
@@ -143,6 +145,10 @@ export interface SellerEpochProbeReferenceV1 {
     excludedPreviouslyAssignedProbeCount: number
     allowProbeReuse: boolean
   }
+  /** Set on a close-call extension set, which is not power-sized on its own. */
+  purpose?: 'extension'
+  /** Which extra set of a close call this is (1 or 2); absent means 1. */
+  extensionIndex?: number
   reference: KbfReferenceV1
   createdAt: string
   createdByRunId: string
@@ -360,22 +366,34 @@ export async function reserveModelAuditReference(input: {
   }
 }
 
+
 /**
- * Reserves the probes for a DIFF recheck: a fresh powered subset drawn only from probes this
- * seller has never been assigned, in any epoch. The set is stored per seller, model and epoch, so
- * a resumed run rechecks on the same probes.
+ * Reserves the extra probes for a close-call first audit (`kbf-extension-v1`): exactly
+ * `probeCount` probes this seller has never been assigned, in any epoch. The set is never judged on
+ * its own (only pooled with the first set), so it is not power-sized again. It is stored per seller,
+ * model and epoch, so a resumed run asks the same probes.
  */
-export async function reserveDiffRecheckReference(input: {
+export async function reserveExtensionReference(input: {
   banksDir: string
   model: string
   sellerPeerId: string
   service: string
   runId: string
   epoch: string
+  probeCount: number
+  /** Which extra set of the close call to reserve (1 or 2). Default 1. */
+  extensionIndex?: number
   config?: VerifierCLIConfig
   now?: () => number
   shuffle?: <T>(values: readonly T[]) => T[]
 }): Promise<{ reference: KbfReferenceV1; auditId: string }> {
+  if (!Number.isInteger(input.probeCount) || input.probeCount <= 0) {
+    throw new Error(`extension probe count must be a positive integer, got ${input.probeCount}`)
+  }
+  const extensionIndex = input.extensionIndex ?? 1
+  if (extensionIndex !== 1 && extensionIndex !== 2) {
+    throw new Error(`extension index must be 1 or 2, got ${extensionIndex}`)
+  }
   const ledgerPath = sellerLedgerPath(input.banksDir, input.model, input.sellerPeerId)
   const lock = await acquirePidFileLock(`${ledgerPath}.lock`)
   try {
@@ -386,17 +404,19 @@ export async function reserveDiffRecheckReference(input: {
       || normalized(ledger.sellerPeerId) !== normalized(input.sellerPeerId)) {
       throw new Error(`invalid seller probe ledger at ${ledgerPath}`)
     }
-    const path = diffRecheckReferencePath(input.banksDir, input.model, input.epoch, input.sellerPeerId)
+    const path = extensionReferencePath(input.banksDir, input.model, input.epoch, input.sellerPeerId, extensionIndex)
     const existing = await readJsonIfExists<SellerEpochProbeReferenceV1>(path)
-    const existingAssignment = existing && ledger.assignments.find((entry) => (
-      entry.purpose === 'diff-recheck' && entry.epoch === input.epoch && !entry.voidedAt
+    const existingAssignment = existing && (existing.extensionIndex ?? 1) === extensionIndex && ledger.assignments.find((entry) => (
+      entry.purpose === 'extension' && (entry.extensionIndex ?? 1) === extensionIndex
+      && entry.epoch === input.epoch && !entry.voidedAt
       && entry.referenceId === existing.reference.referenceId
     ))
     if (existing && existingAssignment) {
       const reference = validateSellerEpochProbeReference({
-        value: existing, bank, model: input.model, sellerPeerId: input.sellerPeerId, epoch: input.epoch, config: input.config,
+        value: existing, bank, model: input.model, sellerPeerId: input.sellerPeerId, epoch: input.epoch,
+        config: input.config, requirePower: false,
       })
-      return { reference, auditId: existingAssignment.auditId }
+      if (reference.probes.length === input.probeCount) return { reference, auditId: existingAssignment.auditId }
     }
     const used = new Set(ledger.assignments.flatMap((assignment) => assignment.probeIds))
     const activeContrasts = new Set(bank.contrastModels.map(normalized))
@@ -404,19 +424,17 @@ export async function reserveDiffRecheckReference(input: {
     const candidates = bank.probes.filter((entry) => !excludedDomains.has(entry.probe.domain)
       && entry.distinguishingContrastModels.some((model) => activeContrasts.has(normalized(model))))
     const available = candidates.filter((entry) => !used.has(entry.probe.id))
-    const now = input.now?.() ?? Date.now()
-    // A recheck confirms a DIFF the first check already found with every contrast detected. A
-    // contrast that became unavailable after the bank was first built (it answered none or too few
-    // of these probes to ever be told apart) cannot be tested on fresh probes and does not block it.
-    const reference = selectPoweredReference(
-      bank, (input.shuffle ?? cryptoShuffle)(available), input.config, now, { onlyDetectableContrasts: true },
-    )
-    if (!reference) {
+    if (available.length < input.probeCount) {
       throw new Error(
         `${BANK_EXHAUSTED}: ${available.length} probes never assigned to seller ${input.sellerPeerId} `
-        + `remain for a ${input.model} recheck`,
+        + `remain for a ${input.model} close-call extension of ${input.probeCount}`,
       )
     }
+    const now = input.now?.() ?? Date.now()
+    const selected = (input.shuffle ?? cryptoShuffle)(available).slice(0, input.probeCount)
+    const reference = validateKbfReferenceV1(referenceFromBankEntries(bank, selected, now), {
+      minimumStatisticalPower: Number.EPSILON,
+    })
     const value: SellerEpochProbeReferenceV1 = {
       version: 1,
       kind: 'antseed-kbf-seller-epoch-probe-reference',
@@ -430,6 +448,8 @@ export async function reserveDiffRecheckReference(input: {
         excludedPreviouslyAssignedProbeCount: candidates.length - available.length,
         allowProbeReuse: false,
       },
+      purpose: 'extension',
+      ...(extensionIndex === 1 ? {} : { extensionIndex }),
       reference,
       createdAt: new Date(now).toISOString(),
       createdByRunId: input.runId,
@@ -438,7 +458,7 @@ export async function reserveDiffRecheckReference(input: {
     await writeJsonAtomic(path, value)
     const reservedAt = new Date(now).toISOString()
     const auditId = canonicalHashBytes32({
-      domain: 'antseed-verifier-diff-recheck-reservation-v1',
+      domain: 'antseed-verifier-extension-reservation-v1',
       runId: input.runId,
       epoch: input.epoch,
       model: normalized(input.model),
@@ -455,7 +475,8 @@ export async function reserveDiffRecheckReference(input: {
       referenceId: reference.referenceId,
       probeIds: reference.probes.map((probe) => probe.id),
       selection: SELLER_PROBE_SELECTION_METHOD,
-      purpose: 'diff-recheck',
+      purpose: 'extension',
+      ...(extensionIndex === 1 ? {} : { extensionIndex }),
       reservedAt,
     })
     await writeJsonAtomic(ledgerPath, ledger)
@@ -465,14 +486,20 @@ export async function reserveDiffRecheckReference(input: {
   }
 }
 
-export function diffRecheckReferencePath(banksDir: string, model: string, epoch: string, sellerPeerId: string): string {
+export function extensionReferencePath(
+  banksDir: string,
+  model: string,
+  epoch: string,
+  sellerPeerId: string,
+  extensionIndex = 1,
+): string {
   return join(
     banksDir,
     safeServiceSlug(model),
     'epochs',
     safeServiceSlug(epoch),
-    'rechecks',
-    `${sellerPeerHash(sellerPeerId)}.json`,
+    'extensions',
+    `${sellerPeerHash(sellerPeerId)}${extensionIndex === 1 ? '' : `.${extensionIndex}`}.json`,
   )
 }
 
@@ -494,8 +521,8 @@ export async function loadModelAuditReservation(input: {
   const assignment = ledger.assignments.find((entry) => entry.auditId === input.auditId && !entry.voidedAt)
   if (!assignment) throw new Error(`active audit reservation ${input.auditId} not found in ${ledgerPath}`)
   const sellerEpochReference = await readJsonIfExists<SellerEpochProbeReferenceV1>(
-    assignment.purpose === 'diff-recheck'
-      ? diffRecheckReferencePath(input.banksDir, input.model, assignment.epoch, input.sellerPeerId)
+    assignment.purpose === 'extension'
+      ? extensionReferencePath(input.banksDir, input.model, assignment.epoch, input.sellerPeerId, assignment.extensionIndex ?? 1)
       : sellerEpochProbeReferencePath(input.banksDir, input.model, assignment.epoch, input.sellerPeerId),
   )
   if (sellerEpochReference) {
@@ -506,6 +533,7 @@ export async function loadModelAuditReservation(input: {
       sellerPeerId: input.sellerPeerId,
       epoch: assignment.epoch,
       config: input.config,
+      requirePower: assignment.purpose !== 'extension',
     })
     if (!matchesReservedReferenceId(assignment.referenceId, sellerEpochReference.reference, reference)
       || !sameValues(reference.probes.map((probe) => probe.id), assignment.probeIds)) {
@@ -697,6 +725,8 @@ function validateSellerEpochProbeReference(input: {
   sellerPeerId: string
   epoch: string
   config?: VerifierCLIConfig
+  /** False for a close-call extension set, which is only judged pooled with the first set. */
+  requirePower?: boolean
 }): KbfReferenceV1 {
   const { value } = input
   if (value.version !== 1 || value.kind !== 'antseed-kbf-seller-epoch-probe-reference'
@@ -713,6 +743,7 @@ function validateSellerEpochProbeReference(input: {
     model: input.model,
     label: `seller epoch probe reference for ${input.model} epoch ${input.epoch}`,
     config: input.config,
+    requirePower: input.requirePower,
   })
 }
 
@@ -744,16 +775,18 @@ function validateBankProbeReference(input: {
   model: string
   label: string
   config?: VerifierCLIConfig
+  requirePower?: boolean
 }): KbfReferenceV1 {
   const { bank, label } = input
   const sizing = resolveReferenceSizingPolicy(input.config)
+  const requirePower = input.requirePower !== false
   // References drawn before unscoreable answers were left out are re-scored like the bank.
   const reference = validateKbfReferenceV1(rescoreKbfReference(validateKbfReferenceV1(input.reference, {
     minimumStatisticalPower: Number.EPSILON,
   })), {
-    minimumStatisticalPower: sizing.minimumStatisticalPower,
+    minimumStatisticalPower: requirePower ? sizing.minimumStatisticalPower : Number.EPSILON,
   })
-  if (!isReferenceProbeCountAllowed(reference.probes.length, sizing)) {
+  if (requirePower && !isReferenceProbeCountAllowed(reference.probes.length, sizing)) {
     throw new Error(`${label} is incompatible with configured sizing`)
   }
   if (probeBankCompatibilityHash(input.model, reference) !== bank.compatibilityHash) {
@@ -962,6 +995,9 @@ export function probeBankCompatibilityHash(model: string, reference: KbfReferenc
       version: reference.generator.version,
       enrollmentBatchingVersion: reference.generator.params.enrollmentBatchingVersion ?? null,
       enrollmentStabilityVersion: reference.generator.params.enrollmentStabilityVersion ?? null,
+      // Only present for filtered banks, so banks built before the filter keep their hash.
+      ...(typeof reference.generator.params.layoutFilterPasses === 'number' && reference.generator.params.layoutFilterPasses > 0
+        ? { layoutFilterPasses: reference.generator.params.layoutFilterPasses } : {}),
     },
     minimumMismatchDelta: reference.minimumMismatchDelta,
     assumptions: {
@@ -1185,21 +1221,16 @@ function assertCurrentBankEnrollment(bank: ProbeBankV1, model: string): void {
 
 /**
  * Before a run: how many probes each seller has never been assigned, against the probes one audit
- * uses. A first audit needs one set and a DIFF recheck a second, unseen set; a seller already
- * assigned this epoch only needs the recheck set. Throws when the bank can't be loaded.
+ * uses. A first audit needs one unseen set; a seller already assigned this epoch needs none (the
+ * reservation reuses its set). Throws when the bank can't be loaded.
  */
 export async function inspectSellerProbeCapacity(input: {
   banksDir: string
   model: string
   epoch: string
   sellerPeerIds: readonly string[]
-  /** Whether a DIFF is rechecked on a second, unseen set (`verifier.diffConfirmationRuns` > 0). */
-  recheck: boolean
   config?: VerifierCLIConfig
-  /**
-   * `--allow-probe-reuse`: the first audit may reuse questions the seller saw in earlier epochs,
-   * as the reservation does. A DIFF recheck still needs unseen questions.
-   */
+  /** `--allow-probe-reuse`: the first audit may reuse questions the seller saw in earlier epochs, as the reservation does. */
   allowProbeReuse?: boolean
 }): Promise<{
   selectedProbeCount: number | null
@@ -1221,13 +1252,13 @@ export async function inspectSellerProbeCapacity(input: {
     const ledger = await readJsonIfExists<SellerProbeLedgerV1>(sellerLedgerPath(input.banksDir, input.model, sellerPeerId))
     const used = new Set(ledger?.assignments.flatMap((assignment) => assignment.probeIds) ?? [])
     const assignedThisEpoch = ledger?.assignments.some((assignment) => assignment.epoch === input.epoch
-      && assignment.purpose !== 'diff-recheck' && !assignment.voidedAt) ?? false
+      && assignment.purpose === undefined && !assignment.voidedAt) ?? false
     return {
       sellerPeerId,
       unseenProbeCount: eligibleIds.filter((id) => !used.has(id)).length,
       neededProbeCount: selected === null
         ? 0
-        : selected * ((assignedThisEpoch || input.allowProbeReuse ? 0 : 1) + (input.recheck ? 1 : 0)),
+        : selected * (assignedThisEpoch || input.allowProbeReuse ? 0 : 1),
       assignedThisEpoch,
     }
   }))

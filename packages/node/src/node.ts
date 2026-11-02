@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { IDENTITY_HISTORY_TTL_MS, IdentityHistoryCollector } from './reputation/identity-history.js';
 import { computeTrustScore } from './reputation/trust-score.js';
 import { TrustSignalsClient, type TrustSignals } from './payments/evm/trust-signals-client.js';
+import { VerificationSignalsClient } from './payments/evm/verification-signals-client.js';
+import { VERIFICATION_STATUS_STALE_MAX_MS, verificationServiceKey } from './reputation/model-reputation.js';
 
 import type { Identity, IdentityStore } from "./p2p/identity.js";
 import { loadOrCreateIdentity } from "./p2p/identity.js";
@@ -148,6 +150,30 @@ export const ON_CHAIN_STATS_TTL_MS = 120_000;
  */
 export const ON_CHAIN_STATS_MISS_TTL_MS = 2 * 60_000;
 const ON_CHAIN_STATS_CACHE_MAX_ENTRIES = 4096;
+/** How long a verification read of a seller's services is reused before it is read again. */
+export const VERIFICATION_STATUS_TTL_MS = 120_000;
+/**
+ * How long the last good verification read stands in for failed refreshes.
+ * Past this, the buyer fails open: no DIFF penalty until a read succeeds.
+ * `hasLiveDiffVerdict` applies the same bound to carried or saved copies.
+ */
+export { VERIFICATION_STATUS_STALE_MAX_MS };
+
+/** Every service name the peer advertises, as verification keys. */
+function advertisedVerificationKeys(p: PeerInfo): string[] {
+  const keys = new Set<string>();
+  const add = (service: string): void => {
+    const key = verificationServiceKey(service);
+    if (key.length > 0) keys.add(key);
+  };
+  for (const announcement of p.metadata?.providers ?? []) {
+    for (const service of announcement.services ?? []) add(service);
+  }
+  for (const entry of Object.values(p.providerPricing ?? {})) {
+    for (const service of Object.keys(entry.services ?? {})) add(service);
+  }
+  return [...keys].sort();
+}
 
 function sellerContractOf(p: PeerInfo): string | null {
   return p.metadata?.sellerContract?.toLowerCase().replace(/^0x/, '') ?? null;
@@ -252,6 +278,8 @@ export interface NodePaymentsConfig {
   usageAccountingAddress?: string;
   /** AntseedWashTradingRegistry contract address (buyer trust score: proven wash traders). */
   washTradingRegistryAddress?: string;
+  /** AntseedKbfVerification contract address (buyer reputation: services with a live DIFF verdict keep 10%). */
+  verificationContractAddress?: string;
   /** Chain ID for EIP-712 domain. Default: 8453 (Base) */
   chainId?: number;
   /** Default maximum USDC per spending auth. Default: 500000 ($0.50) */
@@ -475,6 +503,10 @@ export class AntseedNode extends EventEmitter {
   private _stakingClient: StakingClient | null = null;
   /** Batched reader for the on-chain inputs of the buyer trust score. */
   private _trustSignalsClient: TrustSignalsClient | null = null;
+  /** Batched reader for live DIFF verdicts on `AntseedKbfVerification`. */
+  private _verificationSignalsClient: VerificationSignalsClient | null = null;
+  /** Last good verification read per agent id, keyed by the services it covered. */
+  private _verificationStatusCache = new Map<number, { servicesKey: string; diffServices: string[]; fetchedAt: number }>();
   private _sellerAddressResolver: SellerAddressResolver | null = null;
   private _identityClient: IdentityClient | null = null;
   private _paymentMuxes = new Map<PeerId, PaymentMux>();
@@ -874,6 +906,8 @@ export class AntseedNode extends EventEmitter {
     this._sellerFreeTierLimiter = null;
     this._stakingClient = null;
     this._trustSignalsClient = null;
+    this._verificationSignalsClient = null;
+    this._verificationStatusCache.clear();
     this._onChainStatsCache.clear();
     this._pendingPartialEnrichment.clear();
     this._identityClient = null;
@@ -1202,6 +1236,80 @@ export class AntseedNode extends EventEmitter {
    * configured — callers can safely invoke this regardless.
    */
   private async _enrichPeersWithOnChainStats(peers: PeerInfo[]): Promise<void> {
+    await this._enrichPeersWithTrustSignals(peers);
+    await this._enrichPeersWithVerificationStatus(peers);
+  }
+
+  /**
+   * Mark each peer's services that have a live DIFF verdict on
+   * `AntseedKbfVerification` (`onChainDiffServices`). Needs the agent id from the
+   * trust read. Reads are batched and cached per agent for
+   * VERIFICATION_STATUS_TTL_MS; a failed read reuses the last good one for up
+   * to VERIFICATION_STATUS_STALE_MAX_MS and otherwise leaves the peer
+   * unmarked, so an RPC outage never penalizes anyone.
+   */
+  private async _enrichPeersWithVerificationStatus(peers: PeerInfo[]): Promise<void> {
+    const client = this._verificationSignalsClient;
+    if (!client || peers.length === 0) return;
+    const nowMs = Date.now();
+    const targets: Array<{ peer: PeerInfo; agentId: number; services: string[]; servicesKey: string }> = [];
+    for (const peer of peers) {
+      const agentId = peer.onChainAgentId;
+      if (typeof agentId !== 'number' || !Number.isSafeInteger(agentId) || agentId <= 0) continue;
+      const services = advertisedVerificationKeys(peer);
+      if (services.length === 0) continue;
+      targets.push({ peer, agentId, services, servicesKey: services.join('\u0000') });
+    }
+    if (targets.length === 0) return;
+    const apply = (peer: PeerInfo, entry: { diffServices: string[]; fetchedAt: number }): void => {
+      peer.onChainDiffServices = [...entry.diffServices];
+      peer.onChainVerificationFetchedAt = entry.fetchedAt;
+    };
+    const stale = new Map<number, string[]>();
+    for (const target of targets) {
+      const cached = this._verificationStatusCache.get(target.agentId);
+      if (cached && cached.servicesKey === target.servicesKey && nowMs - cached.fetchedAt < VERIFICATION_STATUS_TTL_MS) {
+        apply(target.peer, cached);
+        continue;
+      }
+      const services = stale.get(target.agentId) ?? [];
+      for (const service of target.services) if (!services.includes(service)) services.push(service);
+      stale.set(target.agentId, services);
+    }
+    if (stale.size === 0) return;
+    let read: Map<number, string[]> = new Map();
+    try {
+      read = await client.readDiffServices([...stale].map(([agentId, services]) => ({ agentId, services })));
+    } catch (err) {
+      debugWarn(`[Node] On-chain verification read failed: ${err instanceof Error ? err.message : err}`);
+    }
+    const fetchedAt = Date.now();
+    if (this._verificationStatusCache.size >= ON_CHAIN_STATS_CACHE_MAX_ENTRIES) {
+      for (const [agentId, entry] of this._verificationStatusCache) {
+        if (fetchedAt - entry.fetchedAt >= VERIFICATION_STATUS_STALE_MAX_MS) this._verificationStatusCache.delete(agentId);
+      }
+    }
+    for (const [agentId, services] of stale) {
+      const diffServices = read.get(agentId);
+      if (diffServices) {
+        this._verificationStatusCache.set(agentId, { servicesKey: [...services].sort().join('\u0000'), diffServices, fetchedAt });
+      }
+    }
+    // The cache now holds this read where it succeeded and the last good read
+    // where it failed; a failed read older than the stale window fails open.
+    for (const target of targets) {
+      if (!stale.has(target.agentId)) continue;
+      const entry = this._verificationStatusCache.get(target.agentId);
+      if (!entry || fetchedAt - entry.fetchedAt >= VERIFICATION_STATUS_STALE_MAX_MS) {
+        delete target.peer.onChainDiffServices;
+        delete target.peer.onChainVerificationFetchedAt;
+        continue;
+      }
+      apply(target.peer, { diffServices: entry.diffServices.filter((service) => target.services.includes(service)), fetchedAt: entry.fetchedAt });
+    }
+  }
+
+  private async _enrichPeersWithTrustSignals(peers: PeerInfo[]): Promise<void> {
     const client = this._trustSignalsClient;
     if (!client || peers.length === 0) {
       return;
@@ -2433,6 +2541,10 @@ export class AntseedNode extends EventEmitter {
         ...(payments.washTradingRegistryAddress ? { washTradingRegistry: payments.washTradingRegistryAddress } : {}),
       });
       debugLog(`[Node] TrustSignalsClient initialized (pools=${Boolean(payments.sellerPoolsAddress)} usage=${Boolean(payments.usageAccountingAddress)} wash=${Boolean(payments.washTradingRegistryAddress)})`);
+    }
+    if (this._channelsClient && payments.verificationContractAddress) {
+      this._verificationSignalsClient = new VerificationSignalsClient(payments.readProvider ?? this._channelsClient.provider, payments.verificationContractAddress);
+      debugLog(`[Node] VerificationSignalsClient initialized (contract=${payments.verificationContractAddress.slice(0, 10)}...)`);
     }
 
     // Initialize IdentityClient (ERC-8004 IdentityRegistry)

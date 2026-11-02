@@ -7,7 +7,7 @@ test('models use referenceEndpoint unless they name an upstream', () => {
   setAuditedModelsForTesting({
     'model-a': { upstreamModel: 'vendor/model-a', serviceAliases: ['model.a'] },
     'model-b': { upstreamModel: 'vendor/model-b' },
-    'model-c': { upstreamModel: 'vendor/model-c' },
+    'model-c': { upstreamModel: 'vendor/model-c', referenceProvider: ['maker'] },
   })
   try {
     const rows = describeVerifierModelSources({
@@ -18,12 +18,12 @@ test('models use referenceEndpoint unless they name an upstream', () => {
         'model-b': { upstream: { name: 'maker', model: 'model-b-native' } },
       },
     })
-    assert.deepEqual(rows.map(({ model, source, sourceType, sourceModel, providerPin }) => ({
-      model, source, sourceType, sourceModel, providerPin,
+    assert.deepEqual(rows.map(({ model, source, sourceType, sourceModel, providerPin, providerPinBuiltIn }) => ({
+      model, source, sourceType, sourceModel, providerPin, providerPinBuiltIn,
     })), [
-      { model: 'model-a', source: 'referenceEndpoint', sourceType: 'default', sourceModel: 'vendor/model-a', providerPin: ['Provider-A'] },
-      { model: 'model-b', source: 'maker', sourceType: 'anthropic', sourceModel: 'model-b-native', providerPin: null },
-      { model: 'model-c', source: 'referenceEndpoint', sourceType: 'default', sourceModel: 'vendor/model-c', providerPin: null },
+      { model: 'model-a', source: 'referenceEndpoint', sourceType: 'default', sourceModel: 'vendor/model-a', providerPin: ['Provider-A'], providerPinBuiltIn: false },
+      { model: 'model-b', source: 'maker', sourceType: 'anthropic', sourceModel: 'model-b-native', providerPin: null, providerPinBuiltIn: false },
+      { model: 'model-c', source: 'referenceEndpoint', sourceType: 'default', sourceModel: 'vendor/model-c', providerPin: ['maker'], providerPinBuiltIn: true },
     ])
   } finally {
     setAuditedModelsForTesting(null)

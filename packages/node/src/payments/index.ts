@@ -64,6 +64,7 @@ export type {
   ModelAuditedEvent,
   AuditorSetEvent,
   AuditorCredits,
+  RequiredReports,
   VerifierServiceStatus,
   VerifierVerdict,
   VerifierVerdictName,

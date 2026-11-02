@@ -2,7 +2,7 @@ import chalk from 'chalk'
 import Table from 'cli-table3'
 import type { Command } from 'commander'
 import { loadConfig } from '../../../config/loader.js'
-import { assignAuditModelsRoundRobin, auditModelListHash } from '../../../verifier/audit-assignment.js'
+import { assignAuditModelsRoundRobin, auditModelListHash, confirmationAssignments } from '../../../verifier/audit-assignment.js'
 import { resolveAuditEpochWindow, type AuditEpochWindow } from '../../../verifier/audit-epoch.js'
 import { configuredVerifierModels } from '../../../verifier/model-config.js'
 import { getGlobalOptions } from '../types.js'
@@ -53,8 +53,11 @@ export function registerVerifierAssignmentCommand(verifier: Command): void {
           startedAt: new Date(window.startedAt * 1_000).toISOString(),
           auditors: auditors.length === 0
             ? []
-            : assignAuditModelsRoundRobin({ auditors, epoch: window.epoch, availableModels })
-              .map((entry) => ({ auditor: entry.auditor, models: entry.models })),
+            : (() => {
+              const confirms = confirmationAssignments({ auditors, epoch: window.epoch, availableModels })
+              return assignAuditModelsRoundRobin({ auditors, epoch: window.epoch, availableModels })
+                .map((entry) => ({ auditor: entry.auditor, models: entry.models, confirms: confirms.get(entry.auditor) ?? [] }))
+            })(),
         }
       })
       if (options.json) {
@@ -68,7 +71,8 @@ export function registerVerifierAssignmentCommand(verifier: Command): void {
       }
       console.log(chalk.dim(
         `Round robin: every model is audited every epoch, split across the approved auditors. ${availableModels.length} models, `
-        + `model list ${auditModelListHash(availableModels).slice(0, 10)} (auditors on another CLI version may differ).`,
+        + `model list ${auditModelListHash(availableModels).slice(0, 10)} (auditors on another CLI version may differ). `
+        + 'A DIFF needs a second auditor: each model\'s confirmer (the next auditor in the rotation) audits the sellers whose DIFF waits for it.',
       ))
       for (const entry of epochs) {
         console.log(`\nEpoch ${entry.epoch}${entry.epoch === resolved.window.epoch ? ' (current)' : ''}, started ${entry.startedAt}`)
@@ -76,8 +80,10 @@ export function registerVerifierAssignmentCommand(verifier: Command): void {
           console.log(chalk.yellow('  no approved auditors'))
           continue
         }
-        const table = new Table({ head: ['Auditor', 'Models'] })
-        for (const row of entry.auditors) table.push([row.auditor, row.models.join('\n') || chalk.dim('none')])
+        const table = new Table({ head: ['Auditor', 'Audits', 'Confirms DIFFs on'] })
+        for (const row of entry.auditors) {
+          table.push([row.auditor, row.models.join('\n') || chalk.dim('none'), row.confirms.join('\n') || chalk.dim('none')])
+        }
         console.log(table.toString())
       }
     })

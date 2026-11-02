@@ -14,7 +14,7 @@ import {
   DESKTOP_DEFAULT_MAX_OUTPUT_USD_PER_MILLION,
 } from '../runtime/config-io.js';
 import { normalizeProviderId } from './provider-hint.js';
-import { isNativeVideoProtocol } from '@antseed/node';
+import { hasLiveDiffVerdict, isNativeVideoProtocol } from '@antseed/node';
 import {
   normalizeVideoOptions,
   sortChatServiceCatalogEntries,
@@ -87,6 +87,8 @@ export type DiscoverRowEntry = {
   onChainReputationScore: number | null;
   /** Wash-trading registry verdict; `null` when the registry was unavailable. */
   washFlagged: boolean | null;
+  /** True when this service has a live DIFF verdict on AntseedKbfVerification (its reputation keeps 10%). */
+  verificationDiff: boolean;
   effectiveReputationScore: number | null;
   onChainSybilRisk: number | null;
   onChainSybilFlags: string[];
@@ -351,6 +353,10 @@ export type BuyerStateDiscoveredPeer = {
   onChainLastSettledAtSec: number | null;
   onChainReputationScore: number | null;
   onChainWashFlagged: boolean | null;
+  /** Services with a live DIFF verdict, as trimmed lowercase names. */
+  onChainDiffServices?: string[];
+  /** Unix ms of the verification read behind `onChainDiffServices`; a list older than 15 minutes counts for nothing. */
+  onChainVerificationFetchedAt?: number | null;
   onChainSybilRisk: number | null;
   onChainSybilFlags: string[];
   sellerContract?: string;
@@ -523,6 +529,7 @@ export async function buildDiscoverRows(
       onChainReputationScore,
       trust: peerBlob?.trust ?? null,
       washFlagged,
+      verificationDiff: hasLiveDiffVerdict(peerBlob, entry.id),
       effectiveReputationScore: entry.effectiveReputationScore ?? null,
       onChainSybilRisk,
       onChainSybilFlags,
