@@ -8,6 +8,7 @@ import type {
   DescriptionType as NativeDescriptionType,
 } from "node-datachannel";
 import { type PeerId } from "../types/peer.js";
+import { METADATA_VERSION_HEADER } from "../discovery/peer-metadata.js";
 import { ConnectionState, type ConnectionConfig } from "../types/connection.js";
 import {
   CONNECTION_CAPABILITY_RESPONSE_AUTH_V1,
@@ -88,7 +89,23 @@ export interface PeerEndpoint {
 }
 
 type TransportMode = "webrtc" | "tcp";
-type MetadataProvider = () => object | null;
+
+/** Reads the metadata version request header from raw HTTP header bytes. */
+export function parseMetadataVersionHeader(headers: Buffer): number | undefined {
+  const text = headers.toString("latin1");
+  const prefix = `${METADATA_VERSION_HEADER}:`;
+  for (const line of text.split(/\r?\n/)) {
+    if (line.length === 0) break;
+    if (line.slice(0, prefix.length).toLowerCase() !== prefix) continue;
+    const value = line.slice(prefix.length).trim();
+    if (!/^\d{1,4}$/.test(value)) return undefined;
+    return Number(value);
+  }
+  return undefined;
+}
+
+/** `requestedVersion` is the newest metadata version the buyer said it understands. */
+type MetadataProvider = (requestedVersion: number | undefined) => object | null;
 
 export interface ConnectionManagerOptions {
   /** Refuse plaintext TCP and unsigned SDP in both directions. Default false (legacy interop). */
@@ -921,7 +938,7 @@ export class ConnectionManager extends EventEmitter {
 
       // Detect HTTP requests (metadata endpoint served on signaling port)
       if (line.startsWith("GET ") || line.startsWith("HEAD ")) {
-        this._serveHttpMetadata(socket, line, refused);
+        this._serveHttpMetadata(socket, line, refused, remaining);
         return;
       }
 
@@ -1001,28 +1018,49 @@ export class ConnectionManager extends EventEmitter {
     });
   }
 
-  private _serveHttpMetadata(socket: Socket, requestLine: string, refused: boolean): void {
+  private _serveHttpMetadata(socket: Socket, requestLine: string, refused: boolean, initialData: Buffer): void {
     const MAX_HEADER_SIZE = 8 * 1024; // 8KB
-    let headerBytes = 0;
-    const headerTimeout = setTimeout(() => {
-      socket.destroy();
-    }, 5_000);
+    let headers = initialData;
+    let responded = false;
+    const respond = (): void => {
+      if (responded) return;
+      responded = true;
+      clearTimeout(headerTimeout);
+      socket.off("data", onData);
+      this._sendHttpMetadataResponse(socket, requestLine, refused, parseMetadataVersionHeader(headers));
+    };
+    const headersComplete = (): boolean =>
+      headers.includes(Buffer.from("\r\n\r\n")) || headers.includes(Buffer.from("\n\n"))
+      // A request with no headers ends right after the request line.
+      || headers.subarray(0, 2).toString("latin1") === "\r\n" || headers.subarray(0, 1).toString("latin1") === "\n";
+    // Clients that never finish their headers still get the legacy document.
+    const headerTimeout = setTimeout(respond, 2_000);
 
     const onData = (chunk: Buffer): void => {
-      headerBytes += chunk.length;
-      if (headerBytes > MAX_HEADER_SIZE) {
+      headers = Buffer.concat([headers, chunk]);
+      if (headers.length > MAX_HEADER_SIZE) {
+        responded = true;
         clearTimeout(headerTimeout);
         socket.off("data", onData);
         socket.destroy();
         return;
       }
-      if (chunk.includes(Buffer.from("\r\n\r\n")) || chunk.includes(Buffer.from("\n\n"))) {
-        clearTimeout(headerTimeout);
-        socket.off("data", onData);
-      }
+      if (headersComplete()) respond();
     };
     socket.on("data", onData);
+    if (headers.length > MAX_HEADER_SIZE) {
+      onData(Buffer.alloc(0));
+      return;
+    }
+    if (headersComplete()) respond();
+  }
 
+  private _sendHttpMetadataResponse(
+    socket: Socket,
+    requestLine: string,
+    refused: boolean,
+    requestedVersion: number | undefined,
+  ): void {
     const url = requestLine.split(" ")[1] ?? "";
     let statusLine: string;
     let body: string;
@@ -1037,7 +1075,7 @@ export class ConnectionManager extends EventEmitter {
       statusLine = "503 Service Unavailable";
       body = JSON.stringify({ error: "metadata not available" });
     } else {
-      const metadata = this._metadataProvider();
+      const metadata = this._metadataProvider(requestedVersion);
       if (!metadata) {
         statusLine = "503 Service Unavailable";
         body = JSON.stringify({ error: "metadata not available" });

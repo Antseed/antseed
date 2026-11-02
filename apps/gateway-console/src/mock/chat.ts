@@ -3,39 +3,45 @@
  * agent run streamed in the AI SDK UI message stream format, with a web
  * search, a page read, a file write and the peer that answered.
  */
-import type { ChatMessageMetadata, ChatModel, ChatModelPeer, ChatThread, ChatThreadDetail } from '../api/types'
+import type { ChatFreeTierError, ChatMessageMetadata, ChatModel, ChatModelPeer, ChatThread, ChatThreadDetail } from '../api/types'
+import { fakePeerId } from './data'
 
 const PEER_A = 'aa11bb22cc33dd44ee55ff6677889900aabbccdd'
 const PEER_B = '0ee134b462785a6407860278ced89d193e1d6c41'
 
-const PEER_FREE = '1d90f467689d499dc435e5744b4613c3203eb0aa'
+/** Fake Free Delta from the network mock: free models with staked tiers, its limit used up. */
+const PEER_FREE = fakePeerId(4)
 
 export function mockChatModels(): ChatModel[] {
   const peer = (peerId: string, name: string, input: number, output: number, reputation: number, extra: Partial<ChatModelPeer> = {}): ChatModelPeer => ({
-    peerId, name, toolUse: true, reasoning: true, vision: false, tee: false, inputUsdPerMillion: input, outputUsdPerMillion: output, cachedInputUsdPerMillion: null, reputation, ...extra,
+    peerId, name, toolUse: true, reasoning: true, vision: false, tee: false, inputUsdPerMillion: input, outputUsdPerMillion: output, cachedInputUsdPerMillion: null, reputation, freeTier: null, ...extra,
   })
   return [
     {
-      id: 'kimi-k3', name: 'Kimi K3', toolUse: true, reasoning: true, vision: true, free: false, tee: true, offers: 2, inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5,
+      id: 'kimi-k3', name: 'Kimi K3', toolUse: true, reasoning: true, vision: true, free: false, freeForStakers: true, tee: true, offers: 2, inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5,
       peers: [
-        peer(PEER_B, 'Fake Seller Beta', 0.6, 2.5, 81, { vision: true, tee: true }),
+        // Free for Beta's stakers (45M power gets 200 a day); everyone else pays.
+        peer(PEER_B, 'Fake Seller Beta', 0.6, 2.5, 81, {
+          vision: true, tee: true,
+          freeTier: { base: { maxRequestsPerAddress: 200, maxRequestsPerIp: null, windowMs: 86_400_000, stakersOnly: true }, stakeTiers: [{ minPower: 45_000_000, multiplier: 1 }] },
+        }),
         peer(PEER_A, 'Fake Seller Alpha', 0.72, 2.8, 74),
       ],
     },
     {
-      id: 'glm-5.3-flash', name: 'GLM 5.3 Flash', toolUse: true, reasoning: true, vision: true, free: true, tee: false, offers: 3, inputUsdPerMillion: 0, outputUsdPerMillion: 0,
+      id: 'glm-5.3-flash', name: 'GLM 5.3 Flash', toolUse: true, reasoning: true, vision: true, free: true, freeForStakers: false, tee: false, offers: 3, inputUsdPerMillion: 0, outputUsdPerMillion: 0,
       peers: [
         peer(PEER_A, 'Fake Seller Alpha', 0.06, 0.19, 74, { vision: true }),
         peer(PEER_B, 'Fake Seller Beta', 0.07, 0.25, 71),
-        peer(PEER_FREE, 'Open Forge', 0, 0, 58, { toolUse: false, reasoning: false }),
+        peer(PEER_FREE, 'Fake Free Delta', 0, 0, 58, { toolUse: false, reasoning: false }),
       ],
     },
     {
-      id: 'qwen3-coder-480b', name: 'Qwen3 Coder 480B', toolUse: true, reasoning: false, vision: false, free: false, tee: false, offers: 1, inputUsdPerMillion: 0.4, outputUsdPerMillion: 1.6,
+      id: 'qwen3-coder-480b', name: 'Qwen3 Coder 480B', toolUse: true, reasoning: false, vision: false, free: false, freeForStakers: false, tee: false, offers: 1, inputUsdPerMillion: 0.4, outputUsdPerMillion: 1.6,
       peers: [peer(PEER_A, 'Fake Seller Alpha', 0.4, 1.6, 74, { reasoning: false })],
     },
     {
-      id: 'llama-3.3-70b', name: 'Llama 3.3 70B', toolUse: false, reasoning: false, vision: false, free: false, tee: false, offers: 1, inputUsdPerMillion: 0.12, outputUsdPerMillion: 0.3,
+      id: 'llama-3.3-70b', name: 'Llama 3.3 70B', toolUse: false, reasoning: false, vision: false, free: false, freeForStakers: false, tee: false, offers: 1, inputUsdPerMillion: 0.12, outputUsdPerMillion: 0.3,
       peers: [peer(PEER_B, 'Fake Seller Beta', 0.12, 0.3, 81, { toolUse: false, reasoning: false })],
     },
   ]
@@ -79,6 +85,7 @@ export function mockChatStream(body: { id?: string; model?: string; peerId?: str
     ...(peers.length ? { usage: { inputTokens: done ? 9_840 : 3_120, cachedInputTokens: 0, outputTokens: done ? 412 : 96 }, costUsd: done ? 0.00693 : 0.00211 } : {}),
   })
   const served = [{ peerId: peer, name }]
+  if (peer === PEER_FREE) return freeTierLimitStream()
   const chunks: Array<[number, unknown]> = [
     [50, { type: 'start', messageId: `m${Date.now()}`, messageMetadata: metadata([]) }],
     [300, { type: 'start-step' }],
@@ -126,4 +133,21 @@ export function mockChatStream(body: { id?: string; model?: string; peerId?: str
     },
   })
   return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream', 'x-vercel-ai-ui-message-stream': 'v1' } })
+}
+
+/** A chat turn the free seller refuses: the gateway sends its free-tier limit as the error text. */
+function freeTierLimitStream(): Response {
+  const error: ChatFreeTierError = {
+    code: 'free_tier_exhausted',
+    message: "Free limit reached on this seller (1,000 requests per day). It resets in 3 h. Stake ANTS in this seller's pool to raise it: 10,000 ANTS locked for a year gives 5× the free limit.",
+    freeTier: {
+      peerId: PEER_FREE, limitedBy: 'address', limit: 1000, windowMs: 86_400_000, retryAfterSeconds: 3 * 3600 + 600,
+      stakeTiers: [{ minPower: 520_000, multiplier: 5 }, { minPower: 2_600_000, multiplier: 20 }, { minPower: 10_400_000, multiplier: 'unlimited' }],
+      stakePower: 0,
+      baseLimit: 1000,
+      stakersOnly: false,
+    },
+  }
+  const lines = [{ type: 'start' }, { type: 'error', errorText: JSON.stringify(error) }].map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join('')
+  return new Response(`${lines}data: [DONE]\n\n`, { headers: { 'content-type': 'text/event-stream', 'x-vercel-ai-ui-message-stream': 'v1' } })
 }

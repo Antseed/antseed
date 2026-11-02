@@ -1,9 +1,11 @@
 export type StakingPage = 'stake' | 'rewards';
 
-export function stakingLaunchUrl(url: string, page: StakingPage = 'stake'): string {
+/** `pool` opens that seller's pool (its agent id) on the stake page. */
+export function stakingLaunchUrl(url: string, page: StakingPage = 'stake', pool?: number): string {
   const target = new URL(url);
   const params = new URLSearchParams(target.hash.slice(1));
   params.set('page', page);
+  if (page === 'stake' && pool !== undefined) params.set('pool', String(pool));
   target.hash = params.toString();
   return target.toString();
 }
@@ -11,8 +13,8 @@ export function stakingLaunchUrl(url: string, page: StakingPage = 'stake'): stri
 export interface StakingSession {
   readonly busy: boolean;
   pauseWrites(): void;
-  open(page?: StakingPage): Promise<void>;
-  copyLink(page?: StakingPage): Promise<void>;
+  open(page?: StakingPage, pool?: number): Promise<void>;
+  copyLink(page?: StakingPage, pool?: number): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -34,12 +36,12 @@ export class StakingSessionManager {
     return result;
   }
 
-  open(page?: StakingPage): Promise<void> {
-    return this.withSession((session) => session.open(page));
+  open(page?: StakingPage, pool?: number): Promise<void> {
+    return this.withSession((session) => session.open(page, pool));
   }
 
-  copyLink(page?: StakingPage): Promise<void> {
-    return this.withSession((session) => session.copyLink(page));
+  copyLink(page?: StakingPage, pool?: number): Promise<void> {
+    return this.withSession((session) => session.copyLink(page, pool));
   }
 
   private withSession(action: (session: StakingSession) => Promise<void>): Promise<void> {

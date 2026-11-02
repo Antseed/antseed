@@ -4,12 +4,14 @@ import type { AddressInfo } from 'node:net'
 import { nativeVideoAcceptance, nativeVideoRoute, type NativeVideoRoute } from '@antseed/api-adapter'
 import { DEFAULT_BUYER_IDENTITY, VIDEO_JOB_RETIRED_HEADER, VIDEO_PRICE_HEADER } from '@antseed/node'
 import { SPEND_ATTRIBUTION_HEADER } from '../proxy/spend-attribution.js'
-import { ROUTER_PEER_ID_HEADER, ROUTER_RANK_HEADER, ROUTER_SERVICE_HEADER } from '../proxy/telemetry.js'
+import { decodeServedSelection, ROUTE_SELECTION_HEADER, type ServedSelection } from '../proxy/route-selection.js'
+import { coveredByFreeAllowance, ROUTER_PEER_ID_HEADER, ROUTER_RANK_HEADER, ROUTER_SERVICE_HEADER } from '../proxy/telemetry.js'
 import { BUYER_IDENTITY_HEADER, MAX_VIDEO_COST_HEADER } from '../proxy/request-utils.js'
 import { GATEWAY_CONTROL_HEADER, ROUTING_POLICY_HEADER, encodePolicyHeader, meaningfulPolicy, policyAllowsModel, type RoutingPolicy } from '../routing-policy/policy.js'
 import { effectiveKeyLimits, newRequestTag, videoJobKey, type AdmitOptions, type GatewayAccounting, type KeyContext } from './accounting.js'
 import { errorMessage } from './errors.js'
 import { isClientCredentialHeader } from '../proxy/credential-headers.js'
+import { isBrowserContextHeader } from '../proxy/local-request-guard.js'
 import { parseBearerToken } from './keys.js'
 import { BUDGET_PERIODS, type LimitBreach } from './limits.js'
 import { formatUsdc, optionalUsdcToDecimalString, parseUsdToUsdc, usdcToDecimalString } from './money.js'
@@ -584,6 +586,7 @@ export class GatewayServer {
       let gatewayError: RequestError | null = null
       let sellerPeerId: string | null = null
       let servedModel: string | null = null
+      let routeSelection: ServedSelection | null = null
       let router: RequestRouter | null = null
       let reportedLatency: number | null = null
       // Streamed answers: the buyer's time to the seller's first frame, and when that frame reached the gateway.
@@ -624,7 +627,7 @@ export class GatewayServer {
         const tokensPerSecond = firstTokenMs !== null ? outputTokensPerSecond(usage?.outputTokens ?? 0, finishedAt - respondedAt) : null
         try {
           // First, and apart from the rest: the job ID is what lets its key retrieve it after a restart.
-          store.recordRequestOutcome(tag, { sellerPeerId, latencyMs, firstTokenMs, tokensPerSecond, endUser, servedFree, videoJobId, videoDelivered, router, servedModel })
+          store.recordRequestOutcome(tag, { sellerPeerId, latencyMs, firstTokenMs, tokensPerSecond, endUser, servedFree, videoJobId, videoDelivered, router, servedModel, routeSelection })
         } catch (error) {
           this._log(`gateway could not record request ${tag}: ${errorMessage(error)}`)
         }
@@ -689,12 +692,14 @@ export class GatewayServer {
           sellerPeerId = firstHeader(upstreamRes.headers['x-antseed-peer-id']).slice(0, 200) || null
           servedModel = firstHeader(upstreamRes.headers['x-antseed-service']).slice(0, 200) || null
           router = routerHeaders(upstreamRes.headers)
+          routeSelection = decodeServedSelection(upstreamRes.headers[ROUTE_SELECTION_HEADER])
           reportedLatency = latencyHeader(firstHeader(upstreamRes.headers['x-antseed-latency-ms']))
           firstTokenMs = status < 400 ? latencyHeader(firstHeader(upstreamRes.headers['x-antseed-first-token-ms'])) : null
           respondedAt = Date.now()
           const contentType = firstHeader(upstreamRes.headers['content-type']).toLowerCase()
           // A video is priced per second, not per token: zero token prices do not make it free.
-          servedFree = !request.video && freeSellerPricing(upstreamRes.headers)
+          // A priced model's response the seller's free allowance covered is free too.
+          servedFree = !request.video && (freeSellerPricing(upstreamRes.headers) || coveredByFreeAllowance(upstreamRes.headers))
           if (request.video?.action === 'create' && status >= 200 && status < 300) {
             videoCreateChunks = collectPrefix(upstreamRes, MAX_ERROR_BODY_BYTES)
             videoPriceHeader = firstHeader(upstreamRes.headers[VIDEO_PRICE_HEADER])
@@ -710,6 +715,8 @@ export class GatewayServer {
             if (!HOP_BY_HOP.has(name.toLowerCase()) && value !== undefined) responseHeaders[name] = value
           }
           responseHeaders.connection = 'close'
+          // The request log is keyed by this tag. The buyer's x-antseed-request-id is a different id.
+          responseHeaders['x-antseed-gateway-tag'] = tag
           upstreamRes.once('error', () => {
             finish!(status, buyerRequestId)
             // The buyer's answer broke off: end the client's too, rather than leave it waiting.
@@ -1174,6 +1181,9 @@ const STRIPPED_HEADERS = new Set([
   GATEWAY_CONTROL_HEADER,
   GATEWAY_INTERNAL_KEY_HEADER,
   END_USER_HEADER,
+  // Proxy-internal hooks for the local verifier; a key holder must not choose them.
+  'x-antseed-request-id',
+  'x-antseed-capture-response-auth-preimages',
 ])
 
 /** Client headers passed on to the buyer, minus everything the key (not the client) decides. */
@@ -1185,6 +1195,9 @@ function forwardedHeaders(incoming: http.IncomingHttpHeaders): http.OutgoingHttp
     // credentials are never needed downstream (see credential-headers.ts).
     if (isClientCredentialHeader(normalized) || STRIPPED_HEADERS.has(normalized)) continue
     if (normalized.startsWith('x-forwarded-') || HOP_BY_HOP.has(normalized)) continue
+    // The key, not the client's page, decides access; the buyer refuses
+    // requests that look like they came from a web page.
+    if (isBrowserContextHeader(normalized)) continue
     headers[name] = value
   }
   return headers

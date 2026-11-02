@@ -69,7 +69,7 @@ export function keyPatch(rights: KeyEditRights, before: ApiKey, form: {
 }
 
 const FIELD_NAMES: Record<string, string> = {
-  allowedPeerIds: 'allowed sellers', allowedPeerLists: 'allowed peer lists', allowedModels: 'allowed models', modelRoutes: 'fallback chains',
+  allowedPeerIds: 'allowed sellers', allowedPeerLists: 'allowed seller lists', allowedModels: 'allowed models', modelRoutes: 'fallback chains',
   maxInputUsdPerMillion: 'input price cap', maxOutputUsdPerMillion: 'output price cap', maxCachedInputUsdPerMillion: 'cached input price cap',
   maxImageUsdPerImage: 'image price cap', minTrustScore: 'minimum trust', minReputation: 'minimum reputation',
 }

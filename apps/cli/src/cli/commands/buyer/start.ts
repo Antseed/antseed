@@ -18,7 +18,7 @@ import { loadRouterPlugin, loadVerifierPlugin, buildPluginConfig, getPackageVers
 import { ensurePluginsUpToDate } from '../../../plugins/drift.js'
 import { resolvePluginPackage } from '../../../plugins/registry.js'
 import { BUYER_RESTART_EXIT_CODE, BUYER_SHUTDOWN_DEADLINE_MS, BuyerProxy, type DepositWatcherAbsenceReason } from '../../../proxy/buyer-proxy.js'
-import { DEPOSIT_WATCH_ACTIVE_INTERVAL_MS, DepositWatcher } from '../../../proxy/deposit-watcher.js'
+import { DEPOSIT_WATCH_ACTIVE_INTERVAL_MS, DepositWatcher, reserveBaseUnits } from '../../../proxy/deposit-watcher.js'
 import { DepositWatchHub } from '../../../proxy/deposit-watch-hub.js'
 import { CachedBuyerChainReader, constantRelayReads } from '../../../proxy/buyer-chain-reader.js'
 import { redact, sharedChainProvider } from '../../../proxy/chain-rpc.js'
@@ -433,9 +433,18 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         maxStreamDurationMs: effectiveBuyerConfig.maxStreamDurationMs,
         payments: paymentsConfig,
         verification: effectiveBuyerConfig.verification,
+        ...(config.buyer.freeTierDelegations ? { freeTierDelegations: config.buyer.freeTierDelegations } : {}),
       })
 
       node.setRouter(router)
+      // `antseed buyer free-tier share` writes new delegations to the config
+      // file; pick them up without a restart.
+      const freeTierDelegationsReload = setInterval(() => {
+        void loadConfig(globalOpts.config)
+          .then((latest) => node.setFreeTierDelegations(latest.buyer.freeTierDelegations ?? []))
+          .catch(() => {})
+      }, 60_000)
+      freeTierDelegationsReload.unref()
 
       try {
         await node.start()
@@ -558,6 +567,8 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         configPath: globalOpts.config,
         routingPreferences: effectiveBuyerConfig.routingPreferences,
         minPeerReputation: effectiveBuyerConfig.minPeerReputation,
+        maxPricing: effectiveBuyerConfig.maxPricing.defaults,
+        maxReserveAmountUsdc: config.payments?.maxReserveAmountUsdc ?? '1000000',
         settingOverrides: buyerSettingOverrides({ buyerOverrides: runtimeOverrides, verifierFlags }),
         backgroundRefreshIntervalMs: effectiveBuyerConfig.peerRefreshIntervalMs,
         ...(verifierPolicy ? { verifier: verifierPolicy } : {}),
@@ -663,6 +674,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
             }
           },
           usdcAddress: chainConfig.usdcContractAddress,
+          sessionReserveBaseUnits: reserveBaseUnits(config.payments?.maxReserveAmountUsdc),
           evmChainId: chainConfig.evmChainId,
           depositRelayAddress,
           dispatch: (payload) => node.dispatchSweepRequest(payload),

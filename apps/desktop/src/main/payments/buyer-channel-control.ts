@@ -73,13 +73,16 @@ export function normalizePaymentChannelSummary(value: unknown): DesktopPaymentCh
     requestCount: readNumberField(raw, 'requestCount'),
     inputTokens: readStringField(raw, 'tokensDelivered') || '0',
     outputTokens: readStringField(raw, 'outputTokens') || '0',
-    cooperativeCloseSupported: raw['cooperativeCloseSupported'] === true,
+    // Only the live session can be closed by the seller; a buyer that predates `live` omits it.
+    cooperativeCloseSupported: raw['cooperativeCloseSupported'] === true && raw['live'] !== false,
   };
 }
 
 export type CooperativeCloseRequestOptions = {
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  /** The row being closed; the buyer refuses unless it is the live channel with the seller. */
+  channelId?: string;
 };
 
 export async function runInBatches<T>(
@@ -110,7 +113,7 @@ export async function requestCooperativeChannelCloseAtPort(
   const response = await fetchImpl(`${LOCALHOST_URL}:${port}/_antseed/channels/close`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ peerId, includeAuth: true }),
+    body: JSON.stringify({ peerId, ...(options.channelId ? { channelId: options.channelId } : {}), includeAuth: true }),
     signal: AbortSignal.timeout(options.timeoutMs ?? 90_000),
   });
   const body = await response.json().catch(() => null) as Record<string, unknown> | null;

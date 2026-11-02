@@ -1,4 +1,4 @@
-import type { ChatModel, ChatModelPeer, RoutePreview } from '../api/types'
+import type { ChatModel, ChatModelPeer, RoutePreview, RouteSelection } from '../api/types'
 
 /** Filters and orderings for the chat's model and seller pickers (like the desktop app's model browser). */
 
@@ -30,10 +30,20 @@ export const PEER_SORTS: Array<{ id: PeerSort; label: string }> = [
   { id: 'trust', label: 'Trust' },
 ]
 
-type Priced = { inputUsdPerMillion: number | null; outputUsdPerMillion: number | null }
+type Priced = {
+  inputUsdPerMillion: number | null
+  outputUsdPerMillion: number | null
+  freeTier?: { base: { stakersOnly?: boolean } } | null
+}
 
+/** Free to everyone: no price, and not reserved for the seller's stakers. */
 export function isFreeOffer(offer: Priced): boolean {
-  return offer.inputUsdPerMillion === 0 && offer.outputUsdPerMillion === 0
+  return offer.inputUsdPerMillion === 0 && offer.outputUsdPerMillion === 0 && !offer.freeTier?.base.stakersOnly
+}
+
+/** Free only to buyers staked on its seller; others pay its price, or are not served. */
+export function isStakerFreeOffer(offer: Priced): boolean {
+  return offer.freeTier?.base.stakersOnly === true
 }
 
 /** Input + output per million, for ordering; unknown prices last. */
@@ -65,12 +75,14 @@ export interface PeerVerdict {
   rank: number | null
   eligible: boolean
   reasons: string[]
+  /** Eligible sellers: what routing has seen of them. */
+  selection: RouteSelection | null
 }
 
 export function verdictsFrom(preview: RoutePreview | undefined): Map<string, PeerVerdict> {
   const verdicts = new Map<string, PeerVerdict>()
   for (const candidate of preview?.candidates ?? []) {
-    verdicts.set(candidate.peerId.toLowerCase(), { rank: candidate.rank, eligible: candidate.eligible, reasons: candidate.reasons })
+    verdicts.set(candidate.peerId.toLowerCase(), { rank: candidate.rank, eligible: candidate.eligible, reasons: candidate.reasons, selection: candidate.selection })
   }
   return verdicts
 }

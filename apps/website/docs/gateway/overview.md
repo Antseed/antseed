@@ -46,6 +46,8 @@ Inside a workspace, a member is either a workspace **admin**, who manages that w
 
 The first time someone opens the console, a short tour shows where everything is. Replay it from the account menu with **Take the tour**. The navigation shows only the pages your role can open:
 
+![The console Overview: spend today, this week and this month against budgets, and spend per day by model](/img/docs/gateway/overview.webp)
+
 - **Overview**: spend, budgets and warnings for the open workspace.
 - **Chat**: talk to any model on the network, paid by your own key. See [Chat](/docs/gateway/chat).
 - **Activity** and **Logs**: spend and requests by model, key and member, and a searchable request log. See [Logs, usage and audit](/docs/gateway/activity).
@@ -54,7 +56,7 @@ The first time someone opens the console, a short tour shows where everything is
 - **Wallet & Funding** and **Rewards**: add funds by card or USDC, the authorized wallet, and ANTS rewards. See [Funding](/docs/gateway/funding).
 - **Staking**: stake ANTS into seller pools and manage your positions for the workspace's buyer account. See [ANTS staking](/docs/provide/staking).
 - **Providers** and **Models**: the sellers and models on the network, with copyable `<peerId>@<model>` ids. See [Models and providers](/docs/gateway/models).
-- **Routing**: which sellers may serve requests, and a route preview. See [Routing policies and presets](/docs/gateway/routing).
+- **Routing**: where a request for a model goes and why (**Try a request**), and the rules that shape it. See [Routing policies and presets](/docs/gateway/routing).
 - **Members** and **Workspaces**: invite people and organize them. See [Sign-in and access](/docs/gateway/sign-in) and [Budgets](/docs/gateway/budgets).
 - **Audit log**: who changed what. See [Logs, usage and audit](/docs/gateway/activity).
 - **Settings**: **General**, **Buyer**, **Observability**, **Management tokens** and **Sign-in**. See [Management API and observability](/docs/gateway/management-api).

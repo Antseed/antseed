@@ -149,9 +149,9 @@ export function normalizeBuyerUsageTotals(value: unknown): DesktopBuyerUsageTota
   };
 }
 
-export async function requestCooperativeChannelClose(peerId: string): Promise<CloseChannelResultPayload> {
+export async function requestCooperativeChannelClose(peerId: string, channelId?: string): Promise<CloseChannelResultPayload> {
   const port = await resolveBuyerProxyPort();
-  return requestCooperativeChannelCloseAtPort(port, peerId);
+  return requestCooperativeChannelCloseAtPort(port, peerId, channelId ? { channelId } : {});
 }
 
 const BUYER_PROXY_TIMEOUT_MS = 10_000;

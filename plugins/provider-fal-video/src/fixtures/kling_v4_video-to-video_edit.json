@@ -1,0 +1,145 @@
+{
+  "paths": {
+    "/kling/v4/video-to-video/edit": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/V4VideoToVideoEditInput"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "V4VideoToVideoEditInput": {
+        "type": "object",
+        "properties": {
+          "image_urls": {
+            "title": "Image Urls",
+            "anyOf": [
+              {
+                "items": {
+                  "ui": {
+                    "field": "image"
+                  },
+                  "limit_description": "Max file size: 30.0MB, Min width: 300px, Min height: 300px, Min aspect ratio: 0.40, Max aspect ratio: 2.50, Timeout: 20.0s",
+                  "x-fal": {
+                    "min_aspect_ratio": 0.4,
+                    "min_width": 300,
+                    "timeout": 20,
+                    "min_height": 300,
+                    "max_aspect_ratio": 2.5,
+                    "max_file_size": 31457280
+                  },
+                  "type": "string",
+                  "_fal_ui_field": "image"
+                },
+                "type": "array",
+                "maxItems": 10
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Reference images, referenced as @Image1, @Image2, ...",
+            "examples": [
+              null
+            ]
+          },
+          "video_url": {
+            "type": "string",
+            "x-fal": {
+              "min_width": 700,
+              "max_aspect_ratio": 2.5,
+              "min_height": 700,
+              "max_width": 4553,
+              "max_file_size": 314572800,
+              "max_duration": 30.05,
+              "max_fps": 60.05,
+              "min_fps": 23.9,
+              "min_duration": 3,
+              "timeout": 30,
+              "max_height": 4553,
+              "min_aspect_ratio": 0.4
+            },
+            "title": "Video Url",
+            "description": "The video to edit (3-30s), referenced as @Video1.\n\nMax file size: 300.0MB, Min width: 700px, Min height: 700px, Max width: 4553px, Max height: 4553px, Min aspect ratio: 0.40, Max aspect ratio: 2.50, Min duration: 3.0s, Max duration: 30.05s, Min FPS: 23.9, Max FPS: 60.05, Timeout: 30.0s"
+          },
+          "prompt": {
+            "type": "string",
+            "title": "Prompt",
+            "maxLength": 26000,
+            "description": "Edit instruction. Reference the source video as @Video1.",
+            "examples": [
+              "Change the background to a tropical island at sunset."
+            ]
+          },
+          "elements": {
+            "title": "Elements",
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/KlingV4ImageElement"
+                },
+                "type": "array",
+                "maxItems": 7
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Characters/objects, referenced as @Element1, @Element2, ...",
+            "examples": [
+              null
+            ]
+          },
+          "duration": {
+            "title": "Duration",
+            "anyOf": [
+              {
+                "maximum": 30,
+                "type": "integer",
+                "minimum": 3
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Output duration in seconds (3-30). Defaults to the source video's length.",
+            "examples": [
+              null
+            ]
+          },
+          "resolution": {
+            "enum": [
+              "720p",
+              "1080p"
+            ],
+            "type": "string",
+            "default": "1080p",
+            "title": "Resolution",
+            "description": "Output resolution."
+          }
+        },
+        "x-fal-order-properties": [
+          "prompt",
+          "video_url",
+          "image_urls",
+          "elements",
+          "duration",
+          "resolution"
+        ],
+        "required": [
+          "prompt",
+          "video_url"
+        ],
+        "title": "EditVideoInput"
+      }
+    }
+  }
+}

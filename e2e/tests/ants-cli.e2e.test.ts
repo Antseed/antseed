@@ -73,7 +73,6 @@ describe.skipIf(!forkUrl)('antseed ants on a Base mainnet fork', () => {
   }
 
   beforeAll(async () => {
-    await execFile('pnpm', ['--filter', '@antseed/cli', 'build'], { cwd: root, env: process.env });
     const ready = new Promise<string>((resolveReady) => {
       forkDone = withAnvilFork({ forkUrl: forkUrl!, chainId: 8453 }, async ({ rpcUrl: url }) => {
         resolveReady(url);

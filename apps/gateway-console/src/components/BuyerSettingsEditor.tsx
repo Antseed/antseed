@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { TrustTip } from './TrustInfo'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Alert, Button, ConfirmDialog, Disclosure, Segmented, Switch, TextAreaField, TextField, useToast } from '@antseed/ui'
 import { api } from '../api'
 import type { BuyerSettingsInput, RoutingPolicy, Settings } from '../api/types'
 import { formatPricePerMillion, formatUsd } from '../lib/format'
-import { combinePolicies, hasReputationData, matchingPeers } from '../lib/policy-match'
+import { combinePolicies, matchingPeers } from '../lib/policy-match'
 import { qk, usePeerLists, usePeers } from '../lib/queries'
 import { buyerSettingsErrors, isOverridden, numberFieldError, peerIdsError, splitEntries, urlsError } from '../lib/settings'
 import { PeerPicker } from './PeerPicker'
@@ -244,11 +245,13 @@ export function BuyerSettingsEditor({ buyer }: { buyer: Buyer }) {
 
           <section className="gc-policy__section">
             <h3>Quality and ranking</h3>
-            <Slider label="Minimum trust score" clearable={false} value={draft.minTrustScore} onChange={(next) => set('minTrustScore', next)}
+            <Slider label="Minimum trust score" info={<TrustTip />} clearable={false} value={draft.minTrustScore} onChange={(next) => set('minTrustScore', next)}
               hint="Keys can raise it, not lower it." />
-            {(hasReputationData(peers.data) || draft.minReputation !== '0') && (
-              <Slider label="Minimum reputation" clearable={false} value={draft.minReputation} onChange={(next) => set('minReputation', next)}
-                hint={hint('minPeerReputation', 'Applies to pinned sellers too.')} />
+            {draft.minReputation !== '0' && draft.minReputation !== '' && (
+              <p className="gc-fineprint">
+                The buyer also asks for reputation {draft.minReputation} or more, an older score the trust score replaces.{' '}
+                <Button variant="link" size="sm" onClick={() => set('minReputation', '0')}>Remove it</Button>
+              </p>
             )}
             <div className="gc-policy__switches">
               <Switch checked={draft.preferFree} onChange={(next) => set('preferFree', next)} label="Free sellers first" />

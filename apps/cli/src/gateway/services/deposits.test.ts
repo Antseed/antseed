@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { AbiCoder, Interface, zeroPadValue, type Log, type TransactionReceipt } from 'ethers'
-import { SOURCE_LOOKBACK_BLOCKS, verifyDeposit, type DepositChainProvider } from './deposits.js'
+import { ReceiptUnavailableError, SOURCE_LOOKBACK_BLOCKS, verifyDeposit, type DepositChainProvider } from './deposits.js'
 
 // Obvious fakes: fixed test addresses and hashes, never real ones.
 const DEPOSITS = `0x${'d0'.repeat(20)}`
@@ -64,13 +64,23 @@ test('not a deposit to this wallet: another wallet, a failed transaction, a forg
   assert.equal(await verifyDeposit(provider({ status: 0, logs: [deposited(WALLET, 1n, SWEEP_TX)] }), CHAIN, SWEEP_TX, WALLET), null)
   const forged = { ...deposited(WALLET, 1n, SWEEP_TX), address: `0x${'66'.repeat(20)}` } as Log
   assert.equal(await verifyDeposit(provider({ status: 1, logs: [forged] }), CHAIN, SWEEP_TX, WALLET), null)
-  assert.equal(await verifyDeposit(provider(null), CHAIN, SWEEP_TX, WALLET), null)
+  // No receipt (yet) is not a verdict: the caller retries.
+  await assert.rejects(verifyDeposit(provider(null), CHAIN, SWEEP_TX, WALLET), ReceiptUnavailableError)
 })
 
-test('a log query the RPC refuses leaves the sources empty, not the confirmation', async () => {
+test('a log query the RPC refuses fails the sweep, to be checked again, rather than losing its funding', async () => {
   const chain = provider({ status: 1, logs: [deposited(WALLET, 1_000_000n, SWEEP_TX), swept(WALLET, 1_000_000n, 50_000n, SWEEP_TX)] })
   chain.getLogs = async () => { throw new Error('block range too large') }
-  const result = await verifyDeposit(chain, CHAIN, SWEEP_TX, WALLET)
-  assert.equal(result?.creditedUsdc, 1_000_000)
-  assert.deepEqual(result?.sources, [])
+  await assert.rejects(verifyDeposit(chain, CHAIN, SWEEP_TX, WALLET), /block range too large/)
+})
+
+test('USDC sent to the wallet is a transfer: the amount, and who sent it', async () => {
+  const result = await verifyDeposit(provider({ status: 1, logs: [transfer(PAYER, WALLET, 40_000_000n, FUND_TX)] }), CHAIN, FUND_TX, WALLET)
+  assert.equal(result?.kind, 'transfer')
+  assert.equal(result?.creditedUsdc, 40_000_000)
+  assert.equal(result?.feeUsdc, 0)
+  assert.deepEqual(result?.sources, [{ from: PAYER, amountUsdc: 40_000_000, txHash: FUND_TX }])
+  // USDC sent elsewhere, or by the protocol's own contracts, is not money coming in.
+  assert.equal(await verifyDeposit(provider({ status: 1, logs: [transfer(PAYER, RELAYER, 1n, FUND_TX)] }), CHAIN, FUND_TX, WALLET), null)
+  assert.equal(await verifyDeposit(provider({ status: 1, logs: [transfer(DEPOSITS, WALLET, 1n, FUND_TX)] }), CHAIN, FUND_TX, WALLET), null)
 })

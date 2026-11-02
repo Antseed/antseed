@@ -1,7 +1,7 @@
 import { QueryClient } from '@tanstack/react-query'
 import { describe, expect, it, vi } from 'vitest'
 import type { ApiKey, Member, RoutingPolicy, Workspace } from '../api/types'
-import { applyPeerActionToScope } from './peer-actions'
+import { applyPeerActionToScope, peerActionModels } from './peer-actions'
 import { applyPeerAction } from './policy'
 import { qk, workspaceQuery } from './queries'
 
@@ -82,5 +82,21 @@ describe('Providers Allow/Block keeps the rest of the policy (regression: policy
     const api = fakeApi()
     await applyPeerActionToScope(api as never, { kind: 'gateway' }, 'block', B)
     expect(api.network.setGatewayPolicy).toHaveBeenCalledWith({ minTrustScore: 10, blockedPeerIds: [B] })
+  })
+})
+
+describe('peerActionModels', () => {
+  it('keeps the requested model even when the seller lists it under an alias, after an unrelated model', () => {
+    const services = [{ service: 'llama-3.3-70b' }, { service: 'openai/gpt-5' }]
+    expect(peerActionModels(services, 'gpt-5')).toEqual({ options: ['gpt-5', 'llama-3.3-70b', 'openai/gpt-5'], initial: 'gpt-5' })
+  })
+
+  it('does not list the requested model twice', () => {
+    expect(peerActionModels([{ service: 'Kimi-K2' }, { service: 'qwen' }], 'kimi-k2')).toEqual({ options: ['kimi-k2', 'qwen'], initial: 'kimi-k2' })
+  })
+
+  it('starts on the first advertised model without a requested one', () => {
+    expect(peerActionModels([{ service: 'a' }, { service: 'b' }])).toEqual({ options: ['a', 'b'], initial: 'a' })
+    expect(peerActionModels([])).toEqual({ options: [], initial: '' })
   })
 })

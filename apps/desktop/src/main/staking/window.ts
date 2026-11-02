@@ -15,8 +15,8 @@ export async function createStakingWindowSession(
   return {
     get busy() { return server.busy; },
     pauseWrites: () => server.pauseWrites(),
-    async open(page) { await shell.openExternal(stakingLaunchUrl(server.url, page)); },
-    async copyLink(page) { clipboard.writeText(stakingLaunchUrl(server.url, page)); },
+    async open(page, pool) { await shell.openExternal(stakingLaunchUrl(server.url, page, pool)); },
+    async copyLink(page, pool) { clipboard.writeText(stakingLaunchUrl(server.url, page, pool)); },
     async close() { await server.close(); },
   };
 }

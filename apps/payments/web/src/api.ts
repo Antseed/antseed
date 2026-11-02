@@ -277,3 +277,31 @@ export async function getNetworkStats(networkStatsUrl: string): Promise<NetworkS
 export async function openRewardsDashboard(): Promise<void> {
   await fetchJson('/api/pay/open-rewards', { method: 'POST' });
 }
+
+export interface FreeTierDelegationEntry {
+  staker: string;
+  buyer: string;
+  expiresAt: number;
+  signature: string;
+}
+
+export interface FreeTierDelegationsInfo {
+  ok: boolean;
+  buyer: string;
+  chainId: number;
+  defaultDays: number;
+  domain: { name: string; version: string; chainId: number };
+  types: Record<string, Array<{ name: string; type: string }>>;
+  delegations: FreeTierDelegationEntry[];
+}
+
+export async function getFreeTierDelegations(): Promise<FreeTierDelegationsInfo> {
+  return fetchJson('/api/free-tier/delegations');
+}
+
+export async function saveFreeTierDelegation(delegation: { staker: string; expiresAt: number; signature: string }): Promise<{ ok: boolean }> {
+  return fetchJson('/api/free-tier/delegations', {
+    method: 'POST',
+    body: JSON.stringify(delegation),
+  });
+}

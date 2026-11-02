@@ -1,4 +1,5 @@
 import { ANTSEED_BUYER_FAULT_ERROR_CODE } from '@antseed/node/types';
+import { FREE_TIER_EXHAUSTED_ERROR_ID, readFreeTierLimit, type FreeTierLimit } from '@antseed/node';
 
 // Note: `payment_required` is part of this union but is intentionally never
 // produced by `classifyChatStreamFailure`. Payment-required stops are emitted
@@ -30,7 +31,24 @@ export type ChatStreamStopReason = {
   message: string;
   statusCode?: number;
   errorCode?: string;
+  /** Set when a seller's free tier ran out: its limit and staked tiers (only stake in that seller's pool counts). */
+  freeTier?: FreeTierLimit;
 };
+
+/** The buyer's free-tier 429 body inside an error message, or null. */
+function extractFreeTierLimit(raw: string): FreeTierLimit | null {
+  const jsonStart = raw.indexOf('{');
+  const jsonEnd = raw.lastIndexOf('}');
+  if (jsonStart < 0 || jsonEnd < jsonStart || !raw.includes(FREE_TIER_EXHAUSTED_ERROR_ID)) return null;
+  try {
+    const parsed = JSON.parse(raw.slice(jsonStart, jsonEnd + 1)) as Record<string, unknown>;
+    const error = parsed.error && typeof parsed.error === 'object' ? parsed.error as Record<string, unknown> : null;
+    if (error?.code !== FREE_TIER_EXHAUSTED_ERROR_ID || !parsed.free_tier) return null;
+    return readFreeTierLimit(parsed);
+  } catch {
+    return null;
+  }
+}
 
 type ClassifyChatStreamFailureInput = {
   error?: unknown;
@@ -355,6 +373,21 @@ export function classifyChatStreamFailure({
     };
   }
 
+  // The buyer rewrites a seller's free-tier 429 from its numbers, so its
+  // message is safe to show; retrying would only hit the same limit.
+  const freeTier = extractFreeTierLimit(rawMessage);
+  if (freeTier) {
+    return {
+      kind: 'http_error',
+      source: 'upstream',
+      retryable: false,
+      message: embedded?.message ?? 'This seller\'s free limit is used up.',
+      statusCode: 429,
+      errorCode: FREE_TIER_EXHAUSTED_ERROR_ID,
+      freeTier,
+    };
+  }
+
   if (buyerFault) {
     const buyerStatusCode = statusCode ?? 503;
     return {
@@ -430,6 +463,18 @@ export function classifyChatStreamFailure({
     message: buyerAuthoredMessage ?? rawMessage,
     ...(errorCode ? { errorCode } : {}),
   };
+}
+
+/**
+ * A free-tier refusal never clears on retry, so cancel the agent's automatic
+ * backoff and show the limit notice at once. Call from `auto_retry_start`:
+ * the agent arms its abort signal right after emitting it, so the cancel runs
+ * on the next microtask. Returns whether the retry was cancelled.
+ */
+export function cancelFreeTierRetry(reason: ChatStreamStopReason, session: { abortRetry(): void }): boolean {
+  if (!reason.freeTier) return false;
+  queueMicrotask(() => session.abortRetry());
+  return true;
 }
 
 export function formatChatStreamStopForLog(reason: ChatStreamStopReason): string {

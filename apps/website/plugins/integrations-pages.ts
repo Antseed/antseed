@@ -157,6 +157,10 @@ function renderIntegrationMarkdown(i: Integration): string {
     lines.push('');
     lines.push(`**TL;DR for agents:** ${i.agentSummary}`);
   }
+  if (i.agentSkill) {
+    lines.push('');
+    lines.push(`**Agent skill:** \`${i.agentSkill}\``);
+  }
   lines.push('');
   for (const p of i.description) {
     lines.push(htmlToMarkdown(p));
@@ -312,13 +316,16 @@ function renderSkillMarkdown(): string {
   out.push('# 1. Install');
   out.push('npm install -g @antseed/cli');
   out.push('');
-  out.push('# 2. Identity (an EVM private key — 64 hex chars). Save this somewhere safe;');
-  out.push('#    you will reuse it across machines and it controls your USDC deposits.');
-  out.push('export ANTSEED_IDENTITY_HEX=$(openssl rand -hex 32)');
-  out.push('# SECURITY: never paste this key into chat, logs, GitHub issues, or a file');
+  out.push('# 2. Identity: the first `antseed buyer start` creates ~/.antseed/identity.key');
+  out.push('#    (your buyer wallet key) and reuses it. Back that file up. Do NOT export a');
+  out.push('#    fresh ANTSEED_IDENTITY_HEX per shell: it is never saved, so each new shell');
+  out.push('#    would be a different wallet and earlier deposits would be stranded.');
+  out.push('# SECURITY: never paste the key into chat, logs, GitHub issues, or a file');
   out.push('# committed to git. It controls the buyer identity and access to deposits.');
   out.push('');
-  out.push('# 3. Start the buyer proxy on :8377');
+  out.push('# 3. Start the buyer proxy on :8377. `&` only lasts as long as this shell;');
+  out.push('#    for anything long-lived run it as a service (launchd / systemd --user;');
+  out.push('#    templates in the hermes-antseed skill) or use the desktop app.');
   out.push('antseed buyer start &');
   out.push('');
   out.push('# 4. List every model on the network (answered locally, aggregated across');
