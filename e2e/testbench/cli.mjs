@@ -17,7 +17,7 @@ import { inspectLock, isOwnedProcessAlive, killOwned } from './lib/lock.mjs';
 import { readJson, saveJson, validateManifest } from './lib/manifest.mjs';
 import { HELP, parseArgs } from './lib/options.mjs';
 import { testbenchName, testbenchPaths, testbenchRoot, worktreeRoot } from './lib/paths.mjs';
-import { createTestbenchApi } from './lib/sb.mjs';
+import { createTestbenchApi } from './lib/tb.mjs';
 import { writeHtmlReport } from './lib/report-html.mjs';
 import { serveReports } from './lib/report-server.mjs';
 import { createMainnetApi, mainnetReader } from './lib/mainnet-run.mjs';
@@ -289,7 +289,7 @@ async function runScenario(options, ctx) {
   const sdk = await import(join(repo, 'packages/node/dist/index.js'));
   const chain = sdk.getChainConfig(target === 'local' ? 'base-local' : 'base-mainnet');
   const control = await loadControlClient(ctx.paths.control);
-  const sb = createTestbenchApi({ manifest, control, eventsPath: join(reportDir, 'events.jsonl'), chain, strict: Boolean(options.strict), repo, reportDir, trace: Boolean(options.trace) });
+  const tb = createTestbenchApi({ manifest, control, eventsPath: join(reportDir, 'events.jsonl'), chain, strict: Boolean(options.strict), repo, reportDir, trace: Boolean(options.trace) });
   const report = {
     scenario: scenario.name, description: scenario.description, target, testbench: manifest.name, result: 'running',
     startedAt: new Date().toISOString(), configHash: manifest.configHash, configOrigin: manifest.configOrigin, upstream: manifest.upstream,
@@ -298,18 +298,18 @@ async function runScenario(options, ctx) {
   };
   say(`Running scenario ${scenario.name} against ${manifest.name}`);
   try {
-    await scenario.run(sb);
+    await scenario.run(tb);
     report.result = 'passed';
   } catch (error) {
     report.result = 'failed';
     report.error = error.message;
     process.exitCode = 1;
   } finally {
-    const summary = sb.summary();
+    const summary = tb.summary();
     Object.assign(report, { finishedAt: new Date().toISOString(), checks: summary.checks, knownIssues: summary.knownIssues, strict: Boolean(options.strict), metrics: summary.metrics });
     await saveJson(join(reportDir, 'report.json'), report);
     await saveJson(join(reportDir, 'metrics.json'), summary.metrics);
-    await sb.dispose();
+    await tb.dispose();
     await writeHtmlReport(reportDir, report).catch((error) => say(`HTML report failed: ${error.message}`));
   }
   printReport(report, reportDir);
@@ -390,20 +390,20 @@ async function runMainnetScenario(options, ctx, scenario) {
   await mkdir(reportDir, { recursive: true, mode: 0o700 });
   const sdk = await import(join(repo, 'packages/node/dist/index.js'));
   const reader = mainnetReader(rpcUrl, sdk.getChainConfig('base-mainnet'));
-  const sb = createMainnetApi({ repo, env, instance, profile, reader, reportDir, eventsPath: join(reportDir, 'events.jsonl'), capMicros: profile.cap.micros, strict: Boolean(options.strict), trace: Boolean(options.trace) });
+  const tb = createMainnetApi({ repo, env, instance, profile, reader, reportDir, eventsPath: join(reportDir, 'events.jsonl'), capMicros: profile.cap.micros, strict: Boolean(options.strict), trace: Boolean(options.trace) });
   const report = { scenario: scenario.name, description: scenario.description, target: 'mainnet', testbench: ctx.name, result: 'running', startedAt: new Date().toISOString(), upstream: 'live network', wallet: profile.address, reserveCapUsdc: profile.cap.usdc };
   say(`Running scenario ${scenario.name} on the real network`);
   try {
-    await scenario.run(sb);
+    await scenario.run(tb);
     report.result = 'passed';
   } catch (error) {
     report.result = 'failed';
     report.error = error.message;
     process.exitCode = 1;
   } finally {
-    const summary = sb.summary();
+    const summary = tb.summary();
     Object.assign(report, { finishedAt: new Date().toISOString(), checks: summary.checks, knownIssues: summary.knownIssues, strict: Boolean(options.strict), metrics: summary.metrics });
-    await sb.dispose();
+    await tb.dispose();
     await profile.release();
     await saveJson(join(reportDir, 'report.json'), report);
     await saveJson(join(reportDir, 'metrics.json'), summary.metrics);

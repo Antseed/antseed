@@ -31,7 +31,7 @@ describe('mainnet wallet and cap', () => {
 
 describe('mainnet profile', () => {
   it('seeds a capped base-mainnet config and a private identity, keeping desktop settings', async () => {
-    const paths = profilePaths(await mkdtemp(join(tmpdir(), 'sb-mainnet-')));
+    const paths = profilePaths(await mkdtemp(join(tmpdir(), 'tb-mainnet-')));
     await seedProfile(paths, { walletHex: KEY, buyerProxyPort: 18999, reserveCapMicros: 500_000n });
     await writeFile(paths.config, JSON.stringify({ ...JSON.parse(await readFile(paths.config, 'utf8')), ui: { theme: 'dark' } }));
     const config = await seedProfile(paths, { walletHex: KEY, buyerProxyPort: 19000, reserveCapMicros: 250_000n });
@@ -45,12 +45,12 @@ describe('mainnet profile', () => {
   });
 
   it('gives the desktop its own HOME and the isolated-profile flag, without secrets', () => {
-    const paths = profilePaths('/sb');
+    const paths = profilePaths('/tb');
     const env = profileDesktopEnv({
       baseEnv: { PATH: '/bin', HOME: '/Users/me', OPENAI_API_KEY: 'sk', BASE_MAINNET_RPC_URL: 'https://x', [MAINNET_WALLET_ENV]: KEY, ANTSEED_SKIP_PLUGIN_UPDATE_CHECK: '1', VITE_DEV_SERVER_URL: 'http://x' },
       paths,
       ports: { renderer: 1, payments: 2, systemProxy: 3, claudeGateway: 4 },
-      instance: 'sb-mainnet',
+      instance: 'tb-mainnet',
     });
     assert.equal(env.HOME, paths.home);
     assert.equal(env.ANTSEED_DESKTOP_ISOLATED_PROFILE, '1');
@@ -65,7 +65,7 @@ describe('mainnet profile', () => {
 describe('worktree plugin links', () => {
   it('pins the plugin to worktree versions and never links a whole scope directory', async () => {
     const repo = join(import.meta.dirname, '../../..');
-    const pluginsDir = await mkdtemp(join(tmpdir(), 'sb-plugins-'));
+    const pluginsDir = await mkdtemp(join(tmpdir(), 'tb-plugins-'));
     await linkWorktreePlugins(pluginsDir, repo);
     const nodeModules = join(pluginsDir, 'node_modules');
     const plugin = JSON.parse(await readFile(join(nodeModules, '@antseed/router-local/package.json'), 'utf8'));

@@ -20,7 +20,7 @@ export function mainnetReader(rpcUrl, chain) {
 }
 
 /**
- * Scenario API for the full desktop on the real network. Same shape as the testbench `sb` where it makes sense
+ * Scenario API for the full desktop on the real network. Same shape as the testbench `tb` where it makes sense
  * (check, knownIssue, metric, event, waitFor, desktop), plus real-network helpers. Every chat is guarded by
  * the per-run spend cap: signed spend above `capMicros` fails the run.
  */
@@ -34,11 +34,11 @@ export function createMainnetApi({ repo, env, instance, profile, reader, reportD
     await appendFile(eventsPath, `${JSON.stringify({ at: new Date().toISOString(), type, ...data })}\n`);
   };
   const proxy = async (path, init = {}) => {
-    assert(proxyUrl, 'The desktop buyer is not running yet; call sb.desktop() first');
+    assert(proxyUrl, 'The desktop buyer is not running yet; call tb.desktop() first');
     return fetch(`${proxyUrl}${path}`, { ...init, signal: AbortSignal.timeout(init.timeoutMs ?? 30_000) });
   };
 
-  const sb = {
+  const tb = {
     target: 'mainnet',
     wallet: profile.address,
     capMicros,
@@ -72,7 +72,7 @@ export function createMainnetApi({ repo, env, instance, profile, reader, reportD
     },
     /** Waits until the desktop's buyer answers and has discovered at least `min` sellers. */
     async waitForPeers({ min = 1, timeoutMs = 180_000 } = {}) {
-      return sb.waitFor(async () => {
+      return tb.waitFor(async () => {
         const body = await (await proxy('/_antseed/peers')).json();
         return (body.peers ?? []).length >= min ? body.peers : null;
       }, `the desktop buyer discovering ${min}+ sellers`, { timeoutMs, intervalMs: 2000 });
@@ -87,20 +87,20 @@ export function createMainnetApi({ repo, env, instance, profile, reader, reportD
     },
     /** Cumulative signed micro-USDC per channel; pass it to spentSince() later to get this run's spend. */
     async signedSnapshot() {
-      return new Map((await sb.channels({ all: true })).map((channel) => [channel.channelId, BigInt(channel.cumulativeSigned ?? '0')]));
+      return new Map((await tb.channels({ all: true })).map((channel) => [channel.channelId, BigInt(channel.cumulativeSigned ?? '0')]));
     },
     /** Micro-USDC signed since the snapshot, across new and reused channels. */
     async spentSince(snapshot) {
-      const now = await sb.signedSnapshot();
+      const now = await tb.signedSnapshot();
       let spent = 0n;
       for (const [channelId, signed] of now) spent += signed - (snapshot.get(channelId) ?? 0n);
       return spent;
     },
     /** Fails the run when spend since the snapshot exceeds the per-run cap; returns the spend. */
     async assertWithinCap(snapshot) {
-      const spent = await sb.spentSince(snapshot);
-      sb.metric('signedThisRunMicroUsdc', String(spent));
-      sb.check(`signed spend within the per-run cap (${capMicros} micro-USDC)`, spent <= capMicros, String(spent));
+      const spent = await tb.spentSince(snapshot);
+      tb.metric('signedThisRunMicroUsdc', String(spent));
+      tb.check(`signed spend within the per-run cap (${capMicros} micro-USDC)`, spent <= capMicros, String(spent));
       return spent;
     },
     buyerBalance: () => reader.buyerBalance(profile.address),
@@ -110,5 +110,5 @@ export function createMainnetApi({ repo, env, instance, profile, reader, reportD
       reader.close();
     },
   };
-  return sb;
+  return tb;
 }

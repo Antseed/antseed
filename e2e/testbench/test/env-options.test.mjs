@@ -11,8 +11,8 @@ describe('isolatedEnv', () => {
     const env = isolatedEnv({
       PATH: '/bin', HOME: '/Users/me', ANTSEED_DATA_DIR: '/Users/me/.antseed', OPENAI_API_KEY: 'sk', ANTHROPIC_API_KEY: 'a',
       VENICE_API_KEY: 'v', BASE_MAINNET_RPC_URL: 'https://secret', TESTBENCH_KEY_CHAT: 'k', LANG: 'C',
-    }, '/sb/home', { EXTRA: '1' });
-    assert.equal(env.HOME, '/sb/home');
+    }, '/tb/home', { EXTRA: '1' });
+    assert.equal(env.HOME, '/tb/home');
     assert.equal(env.PATH, '/bin');
     assert.equal(env.LANG, 'C');
     assert.equal(env.EXTRA, '1');
@@ -27,11 +27,11 @@ describe('network options', () => {
 
   it('accepts the testbench defaults', () => {
     assert.equal(assertNetworkOptions({ ...base }).dhtPort, 0);
-    const built = testbenchNodeOptions({ role: 'seller', dataDir: '/sb/s', bootstrapNodes: base.bootstrapNodes, payments: {} });
+    const built = testbenchNodeOptions({ role: 'seller', dataDir: '/tb/s', bootstrapNodes: base.bootstrapNodes, payments: {} });
     assert.equal(built.dhtPort, 0);
     assert.equal(built.signalingPort, 0);
     assert.equal(built.bindHost, '127.0.0.1');
-    assert.equal(testbenchNodeOptions({ role: 'buyer', dataDir: '/sb/b', bootstrapNodes: base.bootstrapNodes, payments: {} }).signalingPort, undefined);
+    assert.equal(testbenchNodeOptions({ role: 'buyer', dataDir: '/tb/b', bootstrapNodes: base.bootstrapNodes, payments: {} }).signalingPort, undefined);
   });
 
   it('fails fast on unset or default ports', () => {
@@ -89,7 +89,7 @@ describe('listenWithRetry', () => {
 });
 
 describe('manifest validation', () => {
-  const dir = '/sb/wt-a-12345678';
+  const dir = '/tb/wt-a-12345678';
   const good = () => ({
     version: MANIFEST_VERSION, name: 'wt-a-12345678', chainId: 8453, rpcUrl: 'http://127.0.0.1:1000', proxyUrl: 'http://127.0.0.1:1001',
     supervisor: { pid: 10, startedAt: 'x' }, anvil: { pid: 11, startedAt: 'y' },
@@ -207,8 +207,8 @@ describe('anvil exits', async () => {
   });
   it('explains other exits without echoing the output', () => {
     const output = 'failed to get fork block from https://base.example/v2/SECRET';
-    const message = anvilExitMessage(1, output, { fork: true, logPath: '/sb/logs/anvil.log' });
-    assert.match(message, /see \/sb\/logs\/anvil\.log/);
+    const message = anvilExitMessage(1, output, { fork: true, logPath: '/tb/logs/anvil.log' });
+    assert.match(message, /see \/tb\/logs\/anvil\.log/);
     assert.match(message, /BASE_MAINNET_RPC_URL/);
     assert.doesNotMatch(message, /SECRET/);
     assert.doesNotMatch(anvilExitMessage(1, '', { fork: false, logPath: 'x' }), /BASE_MAINNET_RPC_URL/);

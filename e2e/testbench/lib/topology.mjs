@@ -69,7 +69,7 @@ export function buyerRoutingPreferences(normalized, sellerPeerIds) {
 
 export function validateScenarioModule(mod, name) {
   const meta = mod.meta ?? {};
-  if (typeof mod.run !== 'function') throw new Error(`Scenario ${name} must export async function run(sb)`);
+  if (typeof mod.run !== 'function') throw new Error(`Scenario ${name} must export async function run(tb)`);
   const targets = meta.targets ?? ['fork'];
   const requires = meta.requires ?? [];
   if (!Array.isArray(targets) || targets.length === 0) throw new Error(`Scenario ${name} meta.targets must be a non-empty array`);

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { controlClient, newToken, startControlServer } from '../lib/control.mjs';
 import { MOCK_USAGE, startMock } from '../lib/mock.mjs';
-import { createTestbenchApi, parseSse } from '../lib/sb.mjs';
+import { createTestbenchApi, parseSse } from '../lib/tb.mjs';
 
 describe('mock upstream', () => {
   it('answers every configured model: models, chat, streaming, images', async () => {
@@ -90,28 +90,28 @@ describe('scenario api', () => {
   const chain = { depositsContractAddress: '0x' + '1'.repeat(40), usdcContractAddress: '0x' + '2'.repeat(40), channelsContractAddress: '0x' + '3'.repeat(40) };
 
   it('records checks, known issues and mock pricing', async () => {
-    const sb = createTestbenchApi({ manifest, control: {}, eventsPath: '/dev/null', chain });
+    const tb = createTestbenchApi({ manifest, control: {}, eventsPath: '/dev/null', chain });
     try {
-      sb.check('ok', true);
-      assert.throws(() => sb.check('bad', false, { x: 1 }), /bad/);
-      sb.knownIssue('tracked', false, { a: 1 }, 'bug-123');
-      assert.equal(sb.mockCostPerChat('s', 'm'), 18n);
-      assert.equal(sb.mockCostPerChat('s', 'pricey'), 2600n);
-      const summary = sb.summary();
+      tb.check('ok', true);
+      assert.throws(() => tb.check('bad', false, { x: 1 }), /bad/);
+      tb.knownIssue('tracked', false, { a: 1 }, 'bug-123');
+      assert.equal(tb.mockCostPerChat('s', 'm'), 18n);
+      assert.equal(tb.mockCostPerChat('s', 'pricey'), 2600n);
+      const summary = tb.summary();
       assert.deepEqual(summary.checks.map((entry) => [entry.name, entry.ok]), [['ok', true], ['bad', false]]);
       assert.deepEqual(summary.knownIssues, [{ name: 'tracked', ok: false, issue: 'bug-123', detail: { a: 1 } }]);
     } finally {
-      await sb.dispose();
+      await tb.dispose();
     }
   });
 
   it('known issues fail the run under --strict', async () => {
-    const sb = createTestbenchApi({ manifest, control: {}, eventsPath: '/dev/null', chain, strict: true });
+    const tb = createTestbenchApi({ manifest, control: {}, eventsPath: '/dev/null', chain, strict: true });
     try {
-      assert.throws(() => sb.knownIssue('tracked', false, {}, 'bug-123'), /known issue: bug-123/);
-      assert.doesNotThrow(() => sb.knownIssue('fixed', true, {}, 'bug-123'));
+      assert.throws(() => tb.knownIssue('tracked', false, {}, 'bug-123'), /known issue: bug-123/);
+      assert.doesNotThrow(() => tb.knownIssue('fixed', true, {}, 'bug-123'));
     } finally {
-      await sb.dispose();
+      await tb.dispose();
     }
   });
 

@@ -13,13 +13,13 @@ The buyer picks a seller for each request: the one a request pins with `<peerId>
 
 - Set the model to `<peerId>@<model>` in a client, or only `<model>`.
 
-## Driving it with sb
+## Driving it with tb
 
 Preconditions:
 
 - `pnpm testbench run routing-smoke --chain local` (two sellers with different mock latency).
 
-- **Pinned.** `sb.chat({ model: `${seller.peerId}@${model}` })` for each seller. The reply contains that seller's id.
+- **Pinned.** `tb.chat({ model: `${seller.peerId}@${model}` })` for each seller. The reply contains that seller's id.
 - **Auto.** Six model-only chats. Each reply comes from a testbench seller.
 - **Isolation.** The buyer's peers are exactly the testbench sellers.
 - **Proof.** `routing-smoke` prints `PASSED`. Paste `checks.log`.

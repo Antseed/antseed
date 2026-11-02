@@ -77,7 +77,7 @@ pnpm testbench:attach              # one step: starts or reuses routing-smoke, t
 
 `pnpm testbench desktop` is the interactive loop. Renderer edits show up immediately; main-process edits recompile on save and load when you quit and rerun the command. It runs next to your normal desktop with its own ports and data: `HOME` is the testbench's `home/`, and Electron's data lives in `$TMPDIR/antseed-desktop/<instance>/` (the dev launcher's location), not in the testbench directory. Add `--cdp-port N` to also open Chrome DevTools Protocol on `127.0.0.1:N`, so an agent can drive it with `agent-browser connect N`.
 
-For an agent-run check with evidence, use `pnpm testbench run desktop-chat` (built desktop under Playwright: screenshots, video, renderer errors). Rebuild first: `pnpm --filter @antseed/desktop run build`. Write a scenario with `sb.desktop()` for a new desktop feature (see [Desktop automation](#desktop-automation)).
+For an agent-run check with evidence, use `pnpm testbench run desktop-chat` (built desktop under Playwright: screenshots, video, renderer errors). Rebuild first: `pnpm --filter @antseed/desktop run build`. Write a scenario with `tb.desktop()` for a new desktop feature (see [Desktop automation](#desktop-automation)).
 
 ## Case 3: Local buyer against real sellers (mainnet, real funds)
 
@@ -207,16 +207,16 @@ export const topology = {
   payments: { settlementIdleMs: 5000 },  // optional: seller idle-settle timer (default 600000)
 };
 
-export async function run(sb) {
-  const reply = await sb.chat({ model: sb.sellers[0].models[0], sellerId: 'fast' });
-  sb.check('fast seller answered', reply.content.length > 0, reply.content);
-  sb.metric('latencyMs', reply.latencyMs);
-  await sb.closeAll();
-  await sb.assertSettlementMatchesSigned();
+export async function run(tb) {
+  const reply = await tb.chat({ model: tb.sellers[0].models[0], sellerId: 'fast' });
+  tb.check('fast seller answered', reply.content.length > 0, reply.content);
+  tb.metric('latencyMs', reply.latencyMs);
+  await tb.closeAll();
+  await tb.assertSettlementMatchesSigned();
 }
 ```
 
-The `sb` API:
+The `tb` API:
 
 | Area | Calls |
 | --- | --- |
@@ -241,11 +241,11 @@ Shipped scenarios:
 - `routing-smoke`: two sellers with different mock latency; the buyer sees only testbench sellers, pinned and auto-routed chats stay inside the testbench, and per-seller settlement is exact.
 - `issue-1200-spendingauth-catchup`: #1200. A lost NeedAuth leaves the buyer under-signed, the seller's budget-exhausted 402 asks it to catch up, and the buyer must sign exactly the delivered spend, so settle-on-disconnect charges exactly the delivered work. Fails on a buyer that signs `max(target, signed + minBudgetPerRequest)`.
 
-Mainnet scenarios (`targets: ['mainnet']`) get a smaller `sb`: `check`, `knownIssue`, `metric`, `event`, `waitFor`, `desktop()` (the full profile desktop), `waitForPeers({ min })`, `models()`, `channels({ all })`, `signedSnapshot()`, `spentSince(snapshot)`, `assertWithinCap(snapshot)`, `buyerBalance()` (on-chain deposit) and `capMicros`. There is no chain or seller control on the real network.
+Mainnet scenarios (`targets: ['mainnet']`) get a smaller `tb`: `check`, `knownIssue`, `metric`, `event`, `waitFor`, `desktop()` (the full profile desktop), `waitForPeers({ min })`, `models()`, `channels({ all })`, `signedSnapshot()`, `spentSince(snapshot)`, `assertWithinCap(snapshot)`, `buyerBalance()` (on-chain deposit) and `capMicros`. There is no chain or seller control on the real network.
 
 ## Desktop automation
 
-`sb.desktop()` launches the built desktop (`apps/desktop/dist`) under Playwright's Electron driver in attach-only mode on this testbench's buyer. Chats, sessions and projects go to `buyer/desktop/` and Electron data to `desktop-automation/` inside the testbench; telemetry is off; nothing reads or writes `~/.antseed`. Rebuild after desktop changes (`pnpm --filter @antseed/desktop run build:main && pnpm --filter @antseed/desktop run build:renderer`). The window is visible while it runs, and it closes automatically when the scenario ends.
+`tb.desktop()` launches the built desktop (`apps/desktop/dist`) under Playwright's Electron driver in attach-only mode on this testbench's buyer. Chats, sessions and projects go to `buyer/desktop/` and Electron data to `desktop-automation/` inside the testbench; telemetry is off; nothing reads or writes `~/.antseed`. Rebuild after desktop changes (`pnpm --filter @antseed/desktop run build:main && pnpm --filter @antseed/desktop run build:renderer`). The window is visible while it runs, and it closes automatically when the scenario ends.
 
 Every desktop run records `video/desktop.webm` and keeps screenshots in `screenshots/`; a chat that times out also saves `chat-timeout.png` and puts the visible screen text in the error. `run --trace` additionally records a Playwright trace (`trace.zip`, 100+ MB) for `npx playwright show-trace`. Each launch starts from an empty desktop state (`desktop-automation/` is reset).
 
@@ -293,7 +293,7 @@ For agents: with `ANTSEED_TESTBENCH_SHARE_DEBUG_PORT=N`, the shared desktop list
 
 ## Control API
 
-The supervisor exposes a loopback-only API with a bearer token stored in `control.json` (mode 0600). Scenarios use it through `sb`; you rarely need it directly.
+The supervisor exposes a loopback-only API with a bearer token stored in `control.json` (mode 0600). Scenarios use it through `tb`; you rarely need it directly.
 
 `GET /status`, `POST /channels/close {sellerId?}`, `POST /chain/warp {seconds}`, `POST /buyer/stop`, `POST /buyer/start`, `POST /sellers/:id/stop`, `POST /sellers/:id/start`, `GET|POST /sellers/:id/mock {latencyMs}`, `GET|POST /faults/buyer/need-auth-loss {count}`, `POST /shutdown`
 

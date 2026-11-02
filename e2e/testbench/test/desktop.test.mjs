@@ -21,6 +21,10 @@ function fakeApp({ closeHangs }) {
 }
 
 describe('closeApp', () => {
+  it('is a no-op for an app Playwright has already dropped', async () => {
+    await closeApp({ process: () => { throw new TypeError("Cannot read properties of undefined (reading '_object')"); }, close: () => Promise.reject(new Error('closed')) });
+  });
+
   it('waits for a clean exit without killing', async () => {
     const app = fakeApp({ closeHangs: false });
     await closeApp(app, { timeoutMs: 1000 });
