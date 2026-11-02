@@ -722,7 +722,9 @@ per epoch only, and only within the service's current report round (`reportRound
 on whenever the service's verdict moves into or out of DIFF, so support given before a DIFF
 was confirmed can't clear it and support given before it was cleared can't restore it. Changes
 between SAME and UNDETERMINED don't move it, so one auditor can't reset a DIFF that waits for its
-second report. An auditor's later report replaces its earlier one, and repeating a report adds
+second report. Revoking an auditor (`setAuditor(auditor, false)`) moves every service's round on
+(`auditorRevocations`), so a revoked auditor's waiting reports never help record a verdict;
+recorded verdicts stay. An auditor's later report replaces its earlier one, and repeating a report adds
 no support (it records again only where one report is enough). `ServiceAudited` carries the
 `round`, `reports` (distinct auditors reporting that verdict so far this epoch and round) and `required`;
 `antseed verifier run` reads it to find DIFFs waiting for a confirmation. Credits are

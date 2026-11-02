@@ -937,6 +937,39 @@ contract AntseedKbfVerificationTest is Test {
         assertEq(uint8(verification.serviceStatus(agentId, SERVICE_A).verdict), uint8(DIFF), "B's waiting DIFF still counts");
     }
 
+    function test_aRevokedAuditorsWaitingReportStopsCounting() public {
+        verification.setRequiredReports(DIFF, 2);
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+        _audit(auditorB, MODEL_A, agentId, SERVICE_A, DIFF);
+        verification.setAuditor(auditorB, false);
+        assertEq(verification.auditorRevocations(), 1);
+        assertEq(verification.reportRound(agentId, SERVICE_A), 1, "a revocation starts a new round");
+        vm.expectEmit(true, true, true, true, address(verification));
+        emit AntseedKbfVerification.ServiceAudited(agentId, SERVICE_A, auditorC, MODEL_A, DIFF, 1, 1, 2);
+        _audit(auditorC, MODEL_A, agentId, SERVICE_A, DIFF);
+        assertTrue(verification.isVerified(agentId), "B's DIFF no longer counts, so C's is only 1 of 2");
+        _audit(auditorD, MODEL_A, agentId, SERVICE_A, DIFF);
+        assertFalse(verification.isVerified(agentId), "two approved auditors record it");
+    }
+
+    function test_aRevocationLeavesRecordedVerdicts() public {
+        verification.setRequiredReports(DIFF, 2);
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, DIFF);
+        _audit(auditorB, MODEL_A, agentId, SERVICE_A, DIFF);
+        verification.setAuditor(auditorA, false);
+        assertEq(uint8(verification.serviceStatus(agentId, SERVICE_A).verdict), uint8(DIFF));
+        assertEq(verification.agentStatus(agentId).diffCount, 1);
+    }
+
+    function test_onlyRevokingAnApprovedAuditorStartsANewRound() public {
+        verification.setAuditor(address(0xBEEF), false);
+        verification.setAuditor(auditorA, true);
+        assertEq(verification.auditorRevocations(), 0);
+        verification.setAuditor(auditorA, false);
+        verification.setAuditor(auditorA, false);
+        assertEq(verification.auditorRevocations(), 1);
+    }
+
     function test_unconfirmedAndConfirmingAuditsBothEarnCredit() public {
         verification.setRequiredReports(DIFF, 2);
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, DIFF);

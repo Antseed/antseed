@@ -308,6 +308,14 @@ export class VerifierClient extends BaseEvmClient {
     return getAddress(String(await identityRegistry.getFunction('ownerOf')(BigInt(agentId))));
   }
 
+  /**
+   * The service's current report round: only reports made in it count. It moves on whenever the
+   * service's verdict moves into or out of DIFF and whenever an auditor is revoked.
+   */
+  async reportRound(agentId: number | bigint, serviceHashValue: string): Promise<number> {
+    return Number(await this._contract().getFunction('reportRound')(BigInt(agentId), serviceHashValue));
+  }
+
   /** Distinct approved auditors each verdict needs in one epoch before it is recorded. */
   async requiredReports(): Promise<RequiredReports> {
     const required = this._contract().getFunction('requiredReports');

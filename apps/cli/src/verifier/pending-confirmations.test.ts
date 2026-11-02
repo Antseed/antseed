@@ -11,6 +11,7 @@ import {
 import { auditorRotationForModel, confirmationAssignments } from './audit-assignment.js'
 import {
   confirmationTargetsByModel,
+  dropSettledConfirmations,
   epochReports,
   loadEpochReports,
   ownResultTallies,
@@ -226,4 +227,26 @@ test('epoch reports are read from the epoch\'s first block, never before the dep
   })
   assert.deepEqual(calls, [['first', STARTED, 7], ['query', null, null, 42, 'latest']])
   assert.equal(reports.size, 1)
+})
+
+test('a waiting report is dropped once the contract no longer counts it or its verdict is already recorded', async () => {
+  const events = [
+    audited({ auditor: B, agentId: 1n, verdict: VERIFIER_VERDICT.DIFF }),
+    audited({ auditor: B, agentId: 2n, verdict: VERIFIER_VERDICT.DIFF }),
+    audited({ auditor: B, agentId: 3n, verdict: VERIFIER_VERDICT.DIFF }),
+    audited({ auditor: B, agentId: 4n, verdict: VERIFIER_VERDICT.DIFF }),
+  ]
+  const pending = pendingFor(A, events)
+  assert.deepEqual(pending.map((entry) => [entry.agentId, entry.mine]), [[1n, true], [2n, true], [3n, true], [4n, true]])
+  const kept = await dropSettledConfirmations(pending, {
+    // Agent 2: a DIFF was recorded or an auditor revoked since, so the round moved on.
+    reportRound: async (agentId) => (agentId === 2n ? 1 : 0),
+    serviceStatusByHash: async (agentId) => ({
+      // Agent 3: DIFF already recorded this epoch (a resent report after its confirmation).
+      // Agent 4: DIFF recorded last epoch; this epoch's DIFF still needs confirming to stay live.
+      verdict: agentId === 3n || agentId === 4n ? VERIFIER_VERDICT.DIFF : VERIFIER_VERDICT.SAME,
+      epoch: agentId === 3n ? 7n : 6n,
+    }),
+  }, 7n)
+  assert.deepEqual(kept.map((entry) => entry.agentId), [1n, 4n])
 })

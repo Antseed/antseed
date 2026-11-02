@@ -33,7 +33,8 @@ interface IEmissionsGateSource {
 ///         cannot clear a confirmed DIFF either. Reports count per epoch only, and only those made
 ///         after the service's verdict last moved into or out of DIFF: that change starts a new
 ///         report round, so support given before a DIFF was confirmed cannot clear it, and support
-///         given before a DIFF was cleared cannot restore it. An auditor's later report replaces its
+///         given before a DIFF was cleared cannot restore it. Revoking an auditor starts a new round
+///         everywhere, so its waiting reports stop counting. An auditor's later report replaces its
 ///         earlier one; a repeated report adds no support, so it records again only when one report
 ///         is enough. Every report emits `ServiceAudited` with its round, the reports so far and
 ///         the reports needed.
@@ -90,7 +91,10 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     mapping(bytes32 reportKey => mapping(Verdict verdict => uint256 reports)) private _reportCounts;
     mapping(bytes32 reportKey => mapping(address auditor => Verdict verdict)) private _reports;
     // Bumped whenever a service's live verdict moves into or out of DIFF; earlier reports stop counting.
-    mapping(uint256 agentId => mapping(bytes32 serviceHash => uint256 round)) public reportRound;
+    mapping(uint256 agentId => mapping(bytes32 serviceHash => uint256 changes)) private _diffChanges;
+    /// @notice Auditors revoked so far. Every revocation starts all waiting tallies over, so a revoked
+    ///         auditor's reports never help record a verdict. Recorded verdicts are not touched.
+    uint256 public auditorRevocations;
 
     mapping(uint256 epoch => uint256 credits) public epochCredits;
     mapping(uint256 epoch => mapping(address auditor => uint256 credits)) public auditorEpochCredits;
@@ -173,6 +177,7 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
 
     function setAuditor(address auditor, bool approved) external override onlyOwner {
         if (auditor == address(0)) revert InvalidAddress();
+        if (approvedAuditors[auditor] && !approved) auditorRevocations += 1;
         approvedAuditors[auditor] = approved;
         emit AuditorSet(auditor, approved);
     }
@@ -310,6 +315,13 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         return _serviceStatus[agentId][serviceHash];
     }
 
+    /// @notice The service's report round: only reports made in it count. It moves on whenever the
+    ///         service's verdict moves into or out of DIFF, and whenever an auditor is revoked. Both only
+    ///         grow, so a round never comes back.
+    function reportRound(uint256 agentId, bytes32 serviceHash) public view returns (uint256) {
+        return _diffChanges[agentId][serviceHash] + auditorRevocations;
+    }
+
     function agentStatus(uint256 agentId) public view override returns (AgentStatus memory) {
         return _agentStatusAt(agentId, emissionsGate.currentEpoch());
     }
@@ -354,7 +366,7 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
     function _report(uint256 agentId, bytes32 serviceHash, bytes32 modelHash, Verdict verdict, uint256 epoch)
         private
     {
-        uint256 round = reportRound[agentId][serviceHash];
+        uint256 round = reportRound(agentId, serviceHash);
         bytes32 key = keccak256(abi.encode(epoch, agentId, serviceHash, modelHash, round));
         Verdict previous = _reports[key][msg.sender];
         bool addsSupport = previous != verdict;
@@ -445,7 +457,7 @@ contract AntseedKbfVerification is IAntseedKbfVerification, Ownable2Step {
         uint256 agentId, bytes32 serviceHash, ServiceStatus storage service, Verdict previous, uint256 epoch
     ) private {
         // A DIFF given or cleared starts a new report round: support from before it no longer counts.
-        if (previous == Verdict.DIFF || service.verdict == Verdict.DIFF) reportRound[agentId][serviceHash] += 1;
+        if (previous == Verdict.DIFF || service.verdict == Verdict.DIFF) _diffChanges[agentId][serviceHash] += 1;
         emit ServiceStatusChanged(agentId, serviceHash, service.modelHash, previous, service.verdict);
         AgentStatus memory agent = _agentStatusAt(agentId, epoch);
         emit AgentStatusChanged(agentId, agent.verifiedCount, agent.diffCount);

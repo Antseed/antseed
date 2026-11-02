@@ -111,6 +111,8 @@ export interface PendingConfirmation {
   modelHash: string
   agentId: bigint
   serviceHash: string
+  /** The report round the waiting reports were made in. */
+  round: number
   /** Verdicts with at least one report and fewer than they need. */
   waiting: VerdictTally[]
   /** Auditors that reported on this service and model this epoch. */
@@ -160,6 +162,7 @@ export function pendingConfirmations(input: {
       modelHash: report.modelHash,
       agentId: report.agentId,
       serviceHash: report.serviceHash,
+      round: report.round,
       waiting,
       reporters,
       confirmer,
@@ -171,6 +174,43 @@ export function pendingConfirmations(input: {
     || (left.agentId < right.agentId ? -1 : left.agentId > right.agentId ? 1 : 0)
     || left.serviceHash.localeCompare(right.serviceHash)
   ))
+}
+
+/** The on-chain reads `dropSettledConfirmations` needs. */
+export interface SettledConfirmationReader {
+  reportRound(agentId: bigint, serviceHash: string): Promise<number>
+  serviceStatusByHash(agentId: bigint, serviceHash: string): Promise<{ verdict: VerifierVerdict; epoch: bigint }>
+}
+
+/**
+ * Drops waiting reports there is nothing left to confirm for, read from the contract:
+ * - the service's report round moved past them (a DIFF was given or cleared, or an auditor was
+ *   revoked, after they were made), so the contract no longer counts them;
+ * - every waiting verdict is already the service's verdict recorded this epoch, e.g. an auditor
+ *   resubmitting its DIFF after another auditor confirmed it.
+ * Only the entries this auditor would act on are read.
+ */
+export async function dropSettledConfirmations(
+  pending: readonly PendingConfirmation[],
+  reader: SettledConfirmationReader,
+  epoch: bigint,
+): Promise<PendingConfirmation[]> {
+  const kept: PendingConfirmation[] = []
+  for (const entry of pending) {
+    if (!entry.mine) {
+      kept.push(entry)
+      continue
+    }
+    const [round, status] = await Promise.all([
+      reader.reportRound(entry.agentId, entry.serviceHash),
+      reader.serviceStatusByHash(entry.agentId, entry.serviceHash),
+    ])
+    if (round > entry.round) continue
+    const recorded = VERDICT_NAMES[status.verdict]
+    if (status.epoch === epoch && entry.waiting.every((tally) => tally.verdict === recorded)) continue
+    kept.push(entry)
+  }
+  return kept
 }
 
 export interface ConfirmationTarget {

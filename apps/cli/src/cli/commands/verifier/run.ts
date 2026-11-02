@@ -98,6 +98,7 @@ import { closeCallRuleForExtensions, extensionSets, latestExtension } from '../.
 import {
   confirmationTargetsByModel,
   describeTallies,
+  dropSettledConfirmations,
   loadEpochReports,
   pendingConfirmations,
   type ConfirmationTarget,
@@ -252,7 +253,7 @@ export async function loadRunConfirmations(input: {
         `A DIFF needs ${required.DIFF} auditors but only ${auditors.length} ${auditors.length === 1 ? 'is' : 'are'} approved; no DIFF can be recorded.`,
       ))
     }
-    const pending = pendingConfirmations({
+    const pending = await dropSettledConfirmations(pendingConfirmations({
       reports,
       epoch: input.epochWindow.epoch,
       epochStartedAt: input.epochWindow.startedAt,
@@ -262,7 +263,7 @@ export async function loadRunConfirmations(input: {
       auditors,
       auditedModels: configuredVerifierModels(input.config.verifier),
       models: input.models,
-    })
+    }), client, BigInt(input.epochWindow.epoch))
     if (pending.length > 0) {
       const mine = pending.filter((entry) => entry.mine).length
       console.log(chalk.cyan(`Reports waiting for a confirmation this epoch: ${pending.length}, ${mine} for this auditor`))
