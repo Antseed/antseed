@@ -337,16 +337,7 @@ export async function renderModelAuditReports(
         incorrect: result.parsedProbeCount === 0 ? '—' : String(result.incorrectProbeCount),
         correctRate: result.correctRate === null ? 'N/A' : `${(result.correctRate * 100).toFixed(1)}%`,
         verdict: result.status,
-        reason: [
-          result.extension
-            ? `close call (p=${result.extension.firstLook.pValue?.toFixed(3) ?? '?'}); `
-              + [result.extension, result.extension2].flatMap((set, index) => set ? [
-                `extra set ${index + 1}: ${set.probeCount} questions, pooled p=${set.pooled.pValueBinomial?.toFixed(3) ?? '?'} `
-                + `→ ${set.pooled.extendNext ? 'still close' : set.pooled.verdict}`,
-              ] : []).join('; ')
-              + (result.extensionPending ? `; waiting for more extra questions: ${result.extensionPending.reason}` : '')
-            : result.extensionPending ? `close call waiting for extra questions: ${result.extensionPending.reason}` : null,
-        ].filter(Boolean).join('; ') || reportReason(result.outcomeReason),
+        reason: sellerResultReason(result),
         nextAction: result.outcomeReason?.nextAction ?? '—',
         auditId: result.auditId,
         evidencePath: result.evidencePath,
@@ -424,6 +415,26 @@ export async function renderModelAuditReports(
     )
     return { model: entry.model, path, html: text }
   })
+}
+
+/** A result's report reason: its close call (first look, each extra set, what it waits for) or its outcome reason. */
+function sellerResultReason(
+  result: SellerAuditReportResult,
+): string {
+  if (!result.extension) {
+    if (result.extensionPending) return `close call waiting for extra questions: ${result.extensionPending.reason}`
+    return reportReason(result.outcomeReason)
+  }
+  const parts = [`close call (p=${result.extension.firstLook.pValue?.toFixed(3) ?? '?'})`]
+  for (const [index, set] of [result.extension, result.extension2].entries()) {
+    if (!set) continue
+    parts.push(
+      `extra set ${index + 1}: ${set.probeCount} questions, pooled p=${set.pooled.pValueBinomial?.toFixed(3) ?? '?'} `
+      + `→ ${set.pooled.extendNext ? 'still close' : set.pooled.verdict}`,
+    )
+  }
+  if (result.extensionPending) parts.push(`waiting for more extra questions: ${result.extensionPending.reason}`)
+  return parts.join('; ')
 }
 
 function reportReason(reason?: VerificationOutcomeReasonV1 | null, fallback = '—'): string {

@@ -9,6 +9,7 @@ import {
 } from '@antseed/node/payments'
 import { auditorRotationForModel } from './audit-assignment.js'
 import { normalized } from './utils.js'
+import { mapConcurrently } from './audit-concurrency.js'
 
 /** The reads the confirmation helpers need from the verification contract. */
 export interface EpochReportReader {
@@ -233,23 +234,22 @@ export async function dropSettledConfirmations(
   reader: SettledConfirmationReader,
   epoch: bigint,
 ): Promise<PendingConfirmation[]> {
-  const kept: PendingConfirmation[] = []
-  for (const entry of pending) {
-    if (!entry.mine) {
-      kept.push(entry)
-      continue
-    }
+  const checked = await mapConcurrently(pending, SETTLED_READ_CONCURRENCY, async (entry) => {
+    if (!entry.mine) return entry
     const [round, status] = await Promise.all([
       reader.reportRound(entry.agentId, entry.serviceHash),
       reader.serviceStatusByHash(entry.agentId, entry.serviceHash),
     ])
-    if (round > entry.round) continue
+    if (round > entry.round) return null
     const recorded = VERDICT_NAMES[status.verdict]
-    if (status.epoch === epoch && entry.waiting.every((tally) => tally.verdict === recorded)) continue
-    kept.push(entry)
-  }
-  return kept
+    if (status.epoch === epoch && entry.waiting.every((tally) => tally.verdict === recorded)) return null
+    return entry
+  })
+  return checked.filter((entry): entry is PendingConfirmation => entry !== null)
 }
+
+/** Sellers whose confirmation status is read at the same time (two reads each). */
+const SETTLED_READ_CONCURRENCY = 8
 
 export interface ConfirmationTarget {
   agentId: bigint

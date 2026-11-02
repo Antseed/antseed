@@ -11,7 +11,7 @@ test('watch runs then submits every tick, keeps going after a failed step, and s
   const sleeps: number[] = []
   const codes: Record<WatchStep, number[]> = { run: [1, 0, 0], submit: [0, 1, 0] }
   const logs: string[] = []
-  const ticks = await runWatchLoop({
+  const { ticks } = await runWatchLoop({
     intervalMs: 600_000,
     once: false,
     signal: controller.signal,
@@ -33,7 +33,7 @@ test('watch runs then submits every tick, keeps going after a failed step, and s
 
 test('watch --once runs one tick without sleeping', async () => {
   const steps: string[] = []
-  const ticks = await runWatchLoop({
+  const { ticks, failed } = await runWatchLoop({
     intervalMs: 60_000,
     once: true,
     signal: new AbortController().signal,
@@ -43,6 +43,37 @@ test('watch --once runs one tick without sleeping', async () => {
   })
   assert.equal(ticks, 1)
   assert.deepEqual(steps, ['run', 'submit'])
+  assert.deepEqual(failed, [])
+})
+
+test('watch --once reports a failed submit, so the command exits non-zero', async () => {
+  const logs: string[] = []
+  const { failed } = await runWatchLoop({
+    intervalMs: 60_000,
+    once: true,
+    signal: new AbortController().signal,
+    log: (line) => logs.push(line),
+    step: async (step) => (step === 'submit' ? 1 : 0),
+    sleep: async () => { throw new Error('no sleep with --once') },
+  })
+  assert.deepEqual(failed, ['submit'])
+  assert.ok(logs.some((line) => /verifier submit exited with 1/.test(line)))
+  assert.ok(!logs.some((line) => /next tick/.test(line)), 'there is no next tick to promise')
+})
+
+test('a continuous watch reports only the last tick\'s failures', async () => {
+  const controller = new AbortController()
+  const codes: Record<WatchStep, number[]> = { run: [0, 0], submit: [1, 0] }
+  const { ticks, failed } = await runWatchLoop({
+    intervalMs: 60_000,
+    once: false,
+    signal: controller.signal,
+    log: () => {},
+    step: async (step) => codes[step].shift() ?? 0,
+    sleep: async () => { if (codes.submit.length === 1) return; controller.abort() },
+  })
+  assert.equal(ticks, 2)
+  assert.deepEqual(failed, [])
 })
 
 test('an abort during run skips that tick\'s submit', async () => {

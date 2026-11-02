@@ -59,6 +59,7 @@ import {
   type ModelVerificationResumeInput,
   type ModelVerificationSkip,
   type ModelVerificationTargetResult,
+  type ProxyVerificationContext,
   type VerificationTargetPolicy,
 } from '../../../verifier/model-run.js'
 import {
@@ -1155,6 +1156,21 @@ async function runVerifierRound(
           // Each seller is audited against its own probe subset, so one run
           // can span several references drawn from the same bank.
           const referenceSources = new Map<string, KbfReferenceV1>()
+          // First audits and extra sets share timeouts and concurrency; only where evidence goes differs.
+          const verificationContext = (peer: PeerInfo, auditEvidenceDir: string): ProxyVerificationContext => ({
+            proxy,
+            evidenceDir: auditEvidenceDir,
+            checkpointRootDir: modelAuditsDirectory(evidenceDir, epoch, model, runId),
+            requestTimeoutMs: config.verifier?.probeRequestTimeoutMs ?? 120_000,
+            auditTimeoutMs: config.verifier?.auditPeerTimeoutMs ?? 600_000,
+            responseAuthReader: responseAuthReader!,
+            batchConcurrency: Math.min(
+              maxConcurrentBatchesPerPeer,
+              peer.maxConcurrency && peer.maxConcurrency > 0 ? peer.maxConcurrency : maxConcurrentBatchesPerPeer,
+            ),
+            batchConcurrencyPromotionLatencyMs: config.verifier?.auditConcurrencyPromotionLatencyMs ?? 30_000,
+            batchLimiter,
+          })
           const outcomes = await mapConcurrently(targets, maxConcurrentPeersPerModel, async (target) => {
             if (target.pendingExtension) {
               // The first check ran in an earlier run; only its extra questions are left.
@@ -1220,22 +1236,8 @@ async function runVerifierRound(
                   auditId = reserved.auditId
                 }
                 referenceSources.set(reference.referenceId, reference)
-                const advertisedConcurrency = target.peer.maxConcurrency && target.peer.maxConcurrency > 0
-                  ? target.peer.maxConcurrency
-                  : maxConcurrentBatchesPerPeer
                 const verified = await verifyModelTarget({
-                  context: {
-                    proxy,
-                    evidenceDir: modelAuditSellersDirectory(evidenceDir, epoch, model, runId),
-                    checkpointRootDir: modelAuditsDirectory(evidenceDir, epoch, model, runId),
-                    requestTimeoutMs: config.verifier?.probeRequestTimeoutMs ?? 120_000,
-                    auditTimeoutMs: config.verifier?.auditPeerTimeoutMs ?? 600_000,
-                    responseAuthReader: responseAuthReader!,
-                    batchConcurrency: Math.min(maxConcurrentBatchesPerPeer, advertisedConcurrency),
-                    batchConcurrencyPromotionLatencyMs:
-                      config.verifier?.auditConcurrencyPromotionLatencyMs ?? 30_000,
-                    batchLimiter,
-                  },
+                  context: verificationContext(target.peer, modelAuditSellersDirectory(evidenceDir, epoch, model, runId)),
                   target: target.peer,
                   service: target.service,
                   reference,
@@ -1346,22 +1348,11 @@ async function runVerifierRound(
             const target = targetByPeer.get(input.first.peerId.toLowerCase())
             if (!target) throw new Error(`seller ${input.first.peerId} is no longer a target`)
             referenceSources.set(input.reference.referenceId, input.reference)
-            const advertisedConcurrency = target.peer.maxConcurrency && target.peer.maxConcurrency > 0
-              ? target.peer.maxConcurrency
-              : maxConcurrentBatchesPerPeer
             const followUp = await verifyModelTarget({
-              context: {
-                proxy,
-                evidenceDir: modelAuditExtensionsDirectory(evidenceDir, epoch, model, runId, extensionSets(input.first).length + 1),
-                checkpointRootDir: modelAuditsDirectory(evidenceDir, epoch, model, runId),
-                requestTimeoutMs: config.verifier?.probeRequestTimeoutMs ?? 120_000,
-                auditTimeoutMs: config.verifier?.auditPeerTimeoutMs ?? 600_000,
-                responseAuthReader: responseAuthReader!,
-                batchConcurrency: Math.min(maxConcurrentBatchesPerPeer, advertisedConcurrency),
-                batchConcurrencyPromotionLatencyMs:
-                  config.verifier?.auditConcurrencyPromotionLatencyMs ?? 30_000,
-                batchLimiter,
-              },
+              context: verificationContext(
+                target.peer,
+                modelAuditExtensionsDirectory(evidenceDir, epoch, model, runId, extensionSets(input.first).length + 1),
+              ),
               target: target.peer,
               service: target.service,
               reference: input.reference,

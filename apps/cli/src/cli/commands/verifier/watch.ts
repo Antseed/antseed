@@ -52,6 +52,7 @@ export function watchStepArgs(step: WatchStep, globals: Pick<GlobalOptions, 'con
  * logged and the loop goes on: `run` exits non-zero whenever a model had no sellers, and the next
  * tick retries whatever is left. Every tick sees the reports other auditors submitted since the
  * last one, so a DIFF waiting for this auditor's confirmation is audited within one interval.
+ * Returns the ticks run and the steps that failed in the last one (what `--once` exits on).
  */
 export async function runWatchLoop(input: {
   intervalMs: number
@@ -61,24 +62,29 @@ export async function runWatchLoop(input: {
   sleep: (ms: number, signal: AbortSignal) => Promise<void>
   log: (line: string) => void
   now?: () => Date
-}): Promise<number> {
+}): Promise<{ ticks: number; failed: WatchStep[] }> {
   const now = input.now ?? (() => new Date())
   let ticks = 0
+  let failed: WatchStep[] = []
   while (!input.signal.aborted) {
     ticks += 1
+    failed = []
     input.log(chalk.bold(`\n[${now().toISOString()}] verifier watch: tick ${ticks}`))
     for (const step of ['run', 'submit'] as const) {
       if (input.signal.aborted) break
       const code = await input.step(step)
       if (code !== 0 && !input.signal.aborted) {
-        input.log(chalk.yellow(`verifier ${step} exited with ${code}; the next tick retries what is left`))
+        failed.push(step)
+        input.log(chalk.yellow(input.once
+          ? `verifier ${step} exited with ${code}`
+          : `verifier ${step} exited with ${code}; the next tick retries what is left`))
       }
     }
     if (input.once || input.signal.aborted) break
     input.log(chalk.dim(`Next tick in ${Math.round(input.intervalMs / 60_000)} minute(s).`))
     await input.sleep(input.intervalMs, input.signal)
   }
-  return ticks
+  return { ticks, failed }
 }
 
 /**
@@ -153,7 +159,7 @@ export function registerVerifierWatchCommand(verifier: Command): void {
         console.log(chalk.cyan(
           options.once ? 'verifier watch: one tick' : `verifier watch: a tick every ${Math.round(intervalMs / 60_000)} minute(s); stop with Ctrl-C`,
         ))
-        await runWatchLoop({
+        const { failed } = await runWatchLoop({
           intervalMs,
           once: options.once === true,
           signal: controller.signal,
@@ -175,6 +181,12 @@ export function registerVerifierWatchCommand(verifier: Command): void {
             })
           }),
         })
+        // A continuous watch retries on its next tick; `--once` has none, so a failed step is the
+        // command's failure (for cron and other supervisors to see).
+        if (options.once && failed.length > 0) {
+          console.warn(chalk.yellow(`verifier watch --once: ${failed.join(' and ')} failed`))
+          process.exitCode = 1
+        }
       } finally {
         process.off('SIGINT', stop)
         process.off('SIGTERM', stop)
