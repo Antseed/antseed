@@ -18,7 +18,7 @@ Agents: the `verify-antseed` skill (`.claude/skills/verify-antseed/SKILL.md`) sa
 - Node 24 (`.nvmrc`; `up` refuses other majors because native modules would not load), then `pnpm install && pnpm run build`
 - Desktop scenarios and cases 2 to 4: build the desktop too (`pnpm --filter @antseed/desktop run build`)
 - Foundry's `anvil` on `PATH` (plus `forge` and `packages/contracts/lib/forge-std` for `--chain local`: `cd packages/contracts && forge install foundry-rs/forge-std --no-git`; the first `forge build` takes several minutes, later runs reuse `out/`)
-- For the fork chain and for case 3, a dedicated Base mainnet RPC with an API key (Alchemy, QuickNode, ...) as `BASE_MAINNET_RPC_URL` in the worktree's gitignored `.env.local` (or exported in the shell, which wins). Public gateways rate-limit fork reads and Anvil times out. The URL is passed through process environments only and never printed or written to sandbox state.
+- For the fork chain and for case 3, a dedicated Base mainnet RPC with an API key (Alchemy, QuickNode, ...) as `BASE_MAINNET_RPC_URL` in the worktree's gitignored `.env.local` (or exported in the shell, which wins). Public gateways rate-limit fork reads and Anvil times out. The URL is passed through process environments only and never printed or written to sandbox state. Anvil forks through a loopback relay (`http://127.0.0.1:<port>/<random token>`), so the URL and its key never appear on a command line that other users can read with `ps`.
 
   ```bash
   echo 'BASE_MAINNET_RPC_URL=https://base-mainnet.g.alchemy.com/v2/<key>' >> .env.local
@@ -30,7 +30,7 @@ Use this when you change the seller, the buyer, `packages/node`, payments, routi
 
 - an Anvil chain: a fork of Base mainnet (production contracts, fork-only USDC; default), or with `--chain local` a plain Anvil with `packages/contracts` deployed from source (no RPC key)
 - one or more sellers from this worktree, each backed by an OpenAI-compatible mock upstream (or the real upstream with `--live`)
-- a buyer and its proxy from this worktree (the same `BuyerProxy` the CLI and desktop use)
+- a buyer and its proxy from this worktree (the same `BuyerProxy` the CLI and desktop use), paying from the sandbox's own wallet (see [Buyer wallet](#buyer-wallet))
 - a private bootstrap DHT node, so sandbox nodes only ever see each other
 
 ```bash
@@ -53,6 +53,16 @@ pnpm sandbox down                              # settles and closes channels, th
 
 Your seller setup: `--config FILE` takes an existing AntSeed config (such as a seller's `config.json`); see [Config](#config). `--live` uses the real upstream with your provider keys while settlement stays on the sandbox chain.
 
+### Buyer wallet
+
+The sandbox buyer never uses your real wallet. By default it creates a throwaway key on the first `up` and keeps it in `buyer/identity.key` inside the sandbox, so the address stays the same across runs. To pick the address yourself (for example a test wallet you want to reuse on the fork), put its key in the worktree's gitignored `.env.local` or export it (the shell wins):
+
+```bash
+ANTSEED_SANDBOX_BUYER_IDENTITY_HEX=<64 hex private key of a test wallet>   # never your personal wallet
+```
+
+`up` installs that key as the sandbox buyer's `identity.key`, prints the address, and stops the sandbox if the running buyer reports a different one. Removing the variable keeps the last key in the sandbox; delete `buyer/identity.key` to get a new throwaway key. Real-funds runs (case 3) use their own variable, `ANTSEED_SANDBOX_MAINNET_IDENTITY_HEX`.
+
 ## Case 2: Desktop-only change (VPR on the isolated network)
 
 Use this when only the desktop app changes. The desktop runs attach-only on the case 1 network: it uses the sandbox buyer and its wallet, and starts no buyer of its own.
@@ -63,7 +73,7 @@ pnpm sandbox desktop             # dev mode: Vite hot reload for the renderer, t
 pnpm sandbox:attach              # one step: starts or reuses routing-smoke, then opens the desktop
 ```
 
-`pnpm sandbox desktop` is the interactive loop. Renderer edits show up immediately; main-process edits recompile on save and load when you quit and rerun the command. It runs next to your normal desktop with its own ports and data. Add `--cdp-port N` to also open Chrome DevTools Protocol on `127.0.0.1:N`, so an agent can drive it with `agent-browser connect N`.
+`pnpm sandbox desktop` is the interactive loop. Renderer edits show up immediately; main-process edits recompile on save and load when you quit and rerun the command. It runs next to your normal desktop with its own ports and data: `HOME` is the sandbox's `home/`, and Electron's data lives in `$TMPDIR/antseed-desktop/<instance>/` (the dev launcher's location), not in the sandbox directory. Add `--cdp-port N` to also open Chrome DevTools Protocol on `127.0.0.1:N`, so an agent can drive it with `agent-browser connect N`.
 
 For an agent-run check with evidence, use `pnpm sandbox run desktop-chat` (built desktop under Playwright: screenshots, video, renderer errors). Rebuild first: `pnpm --filter @antseed/desktop run build`. Write a scenario with `sb.desktop()` for a new desktop feature (see [Desktop automation](#desktop-automation)).
 
@@ -91,7 +101,7 @@ pnpm sandbox mainnet --real-funds --fresh                     # reset the profil
 Guard rails:
 
 - **Explicit opt-in.** Every real-network command needs `--real-funds`; without it the command refuses. Agents only propose these runs and never start them on their own.
-- **Spend caps.** The profile config sets `payments.maxReserveAmountUsdc` and `maxPerRequestUsdc` to the cap, so a channel can never lock more. `mainnet-smoke` also fails if this run signed more than the cap.
+- **Spend caps.** The profile config sets `payments.maxReserveAmountUsdc` and `maxPerRequestUsdc` to the cap, so a channel can never lock more. The cap is per channel: a buyer with channels to several sellers can lock up to the cap on each. `mainnet-smoke` also fails if this run signed more than the cap.
 - **Isolated profile.** The desktop gets its own `HOME` (`profiles/mainnet/home`), so identity, config, chats and plugins never touch `~/.antseed`. The wallet key is encrypted with a mock keychain, not your login keychain. OS proxy settings and connected-app changes are off (`ANTSEED_DESKTOP_ISOLATED_PROFILE=1`). The buyer proxy uses its own port, never 8377.
 - **This worktree's code.** The profile's `plugins/` links `@antseed/router-local` and its `@antseed/*` dependencies to this worktree's build; nothing is downloaded. Rebuild after changes.
 - **One user per wallet.** A machine-wide lock stops two worktrees from driving the same test wallet at once. A profile created for a different wallet is refused until you pass `--fresh`.
@@ -149,7 +159,7 @@ pnpm sandbox share [--idle MIN] [--fresh] [--no-tailscale] [--stop]   # Linux se
 - **One sandbox per worktree (per slot).** The name is `wt-<basename>-<sha1(path)[:8]>[-slot]`. All state lives in `~/.antseed-sandbox/<name>/`: `home/`, `anvil-home/`, `buyer/`, `sellers/<id>/`, `config/`, `logs/`, `reports/`, `manifest.json`, `sandbox.lock`, `control.json`. Override the root with `ANTSEED_SANDBOX_HOME` (never inside `~/.antseed`).
 - **Locks with PID-reuse protection.** Lock and manifest entries record each process's PID and its `ps` start time. `up` while running reattaches; a dead or reused PID is treated as stale and cleaned up on the next `up`.
 - **Only owned processes are stopped.** `down` and stale cleanup signal only PIDs from our manifest whose start time still matches.
-- **No defaults, no `~/.antseed`, no keychain.** Every sandbox process gets a cleaned environment (AntSeed/provider variables stripped) with `HOME` set to the sandbox's `home/`. Node options are checked before use: `dhtPort: 0`, `signalingPort: 0` (unset or 6881/6882 fail fast), `bindHost: 127.0.0.1`, `noOfficialBootstrap`, `natTraversal: false`, `allowPrivateIPs`, and one private loopback bootstrap node. Listeners take port 0 where possible; Anvil and the proxy retry on `EADDRINUSE`.
+- **No defaults, no `~/.antseed`, no keychain.** Every sandbox process gets a cleaned environment (AntSeed/provider variables, including `ANTSEED_IDENTITY_HEX`, stripped) with `HOME` set to the sandbox's `home/`; starting one with your real home or anything inside `~/.antseed` as `HOME` fails. That includes the attach-only desktop, so it cannot read your wallets, tunnel or Telegram settings or plugins. It also uses a mock keychain (macOS) and a basic password store (Linux, Windows), so it never opens your login keychain or keyring. Its wallet is the sandbox buyer's key, read from `buyer/`. Node options are checked before use: `dhtPort: 0`, `signalingPort: 0` (unset or 6881/6882 fail fast), `bindHost: 127.0.0.1`, `noOfficialBootstrap`, `natTraversal: false`, `allowPrivateIPs`, and one private loopback bootstrap node. Listeners take port 0 where possible; Anvil and the proxy retry on `EADDRINUSE`.
 - **Buyer routing stays inside the sandbox.** `allowedPeerIds` is set to this sandbox's seller peer IDs and `minTrustScore` is forced to 0 (fresh fork sellers have no trust). Other routing preferences come from the config.
 - **Fresh chain per `up`.** Channel, metering and payment databases are cleared on each `up` (they describe a chain that no longer exists); identity keys are kept, so peer IDs and wallet addresses stay stable across runs.
 

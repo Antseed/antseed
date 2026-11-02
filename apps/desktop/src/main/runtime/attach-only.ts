@@ -5,6 +5,9 @@ import path from 'node:path';
 export const ATTACH_ONLY_ENV = 'ANTSEED_DESKTOP_ATTACH_ONLY';
 export const CONNECT_DATA_DIR_ENV = 'ANTSEED_DESKTOP_CONNECT_DATA_DIR';
 
+export const ATTACH_ONLY_RUNTIME_DISABLED =
+  'This desktop is attached to an isolated sandbox. Start the sandbox buyer first; starting another runtime is disabled.';
+
 export function isAttachOnly(env: NodeJS.ProcessEnv = process.env): boolean {
   return env[ATTACH_ONLY_ENV] === '1';
 }
@@ -24,6 +27,25 @@ export function machineWideChangesDisabled(env: NodeJS.ProcessEnv = process.env)
   return isAttachOnly(env) || isIsolatedProfile(env);
 }
 
+/**
+ * Chromium switches that keep a sandbox desktop's secret storage away from the
+ * developer's real keychain. Both sandbox kinds use the mock keychain on macOS.
+ * Attach-only desktops also use the basic password store on Linux and Windows,
+ * so they never reach the real keyring (GNOME Keyring or KWallet via D-Bus does
+ * not follow HOME). Attach-only never encrypts a wallet: it reads the sandbox
+ * buyer's key from its data dir. The isolated profile keeps the OS store on Linux
+ * because its existing identity.enc was encrypted with it.
+ */
+export function secretStoreSwitches(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): Array<[string] | [string, string]> {
+  if (!machineWideChangesDisabled(env)) return [];
+  const switches: Array<[string] | [string, string]> = [['use-mock-keychain']];
+  if (isAttachOnly(env) && platform !== 'darwin') switches.push(['password-store', 'basic']);
+  return switches;
+}
+
 export function resolveBuyerStateDir(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string {
   const connectDataDir = env[CONNECT_DATA_DIR_ENV]?.trim();
   if (!connectDataDir) return path.join(home, '.antseed');
@@ -31,21 +53,36 @@ export function resolveBuyerStateDir(env: NodeJS.ProcessEnv = process.env, home:
   return path.resolve(connectDataDir);
 }
 
-// The isolated sandbox seller is brand new on the fork, so its trust score is
-// far below the desktop default floor. The sandbox harness owns that floor;
-// renderer preference syncs must not raise it and hide the only seller.
-export function preserveSandboxTrustFloor(
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+/** Routing keys the sandbox harness owns: they keep the buyer on the sandbox's own sellers. */
+const SANDBOX_ROUTING_KEYS = ['allowedPeerIds', 'blockedPeerIds'] as const;
+
+// The renderer syncs its whole routingPreferences object at launch, and the
+// config merge replaces that object wholesale. In attach-only mode the sandbox
+// owns the peer allow/block lists (they confine routing to its sellers), so
+// those are kept from the existing file. Its sellers are brand new and have
+// no trust score, so the trust floor stays at 0 as well. Other preferences
+// come from the UI, so desktop routing settings can still be tested.
+export function preserveSandboxRouting(
   config: Record<string, unknown>,
+  existing: Record<string, unknown> = {},
   env: NodeJS.ProcessEnv = process.env,
 ): Record<string, unknown> {
   if (!isAttachOnly(env)) return config;
-  const buyer = config['buyer'];
-  if (!buyer || typeof buyer !== 'object' || Array.isArray(buyer)) return config;
-  const routing = (buyer as Record<string, unknown>)['routingPreferences'];
-  if (!routing || typeof routing !== 'object' || Array.isArray(routing)) return config;
+  const buyer = asRecord(config['buyer']);
+  const routing = asRecord(buyer?.['routingPreferences']);
+  if (!buyer || !routing) return config;
+  const owned = asRecord(asRecord(existing['buyer'])?.['routingPreferences']) ?? {};
+  const kept: Record<string, unknown> = {};
+  for (const key of SANDBOX_ROUTING_KEYS) {
+    if (key in owned) kept[key] = owned[key];
+  }
   return {
     ...config,
-    buyer: { ...(buyer as Record<string, unknown>), routingPreferences: { ...(routing as Record<string, unknown>), minTrustScore: 0 } },
+    buyer: { ...buyer, routingPreferences: { ...routing, ...kept, minTrustScore: 0 } },
   };
 }
 

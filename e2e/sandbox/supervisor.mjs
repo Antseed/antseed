@@ -12,7 +12,8 @@ import { bindUpstream, listModels } from './lib/config.mjs';
 import { blocksInUse, copyIn, pruneCache, resolveForkBlock, seedFromLegacy, writeBack } from './lib/cache.mjs';
 import { chainReader, LOCAL_DEPLOYER_KEY, prepareChain, prepareLocalChain } from './lib/chain.mjs';
 import { newToken, startControlServer } from './lib/control.mjs';
-import { assertLocalUrl, isolatedEnv, listenWithRetry, redactingStream } from './lib/env.mjs';
+import { startRpcRelay } from './lib/rpc-relay.mjs';
+import { anvilExitMessage, assertLocalUrl, isAddressInUse, isolatedEnv, listenWithRetry, redactingStream } from './lib/env.mjs';
 import { acquireLock, ownProcessEntry, processStartTime, releaseLock } from './lib/lock.mjs';
 import { saveJson, validateManifest, MANIFEST_VERSION, SANDBOX_CHAIN_IDS } from './lib/manifest.mjs';
 import { startMock } from './lib/mock.mjs';
@@ -43,7 +44,7 @@ const waitFor = async (check, label, timeoutMs = 60_000, intervalMs = 200) => {
   throw new Error(`Timed out waiting for ${label}`);
 };
 
-const state = { anvil: null, bootstrap: null, mocks: new Map(), workers: new Map(), buyer: null, proxy: null, control: null, reader: null, needAuthLoss: { remaining: 0, lost: [] } };
+const state = { anvil: null, rpcRelay: null, bootstrap: null, mocks: new Map(), workers: new Map(), buyer: null, proxy: null, control: null, reader: null, needAuthLoss: { remaining: 0, lost: [] } };
 let manifest = null;
 let lockEntry = null;
 let shuttingDown = null;
@@ -68,12 +69,17 @@ async function startAnvil(forkUrl, block) {
     const spawned = spawn('anvil', args, { env: isolatedEnv(process.env, paths.anvilHome), stdio: ['ignore', 'pipe', 'pipe'] });
     spawned.stdout.pipe(redactingStream(forkUrl)).pipe(logStream, { end: false });
     spawned.stderr.pipe(redactingStream(forkUrl)).pipe(logStream, { end: false });
+    // Kept only to classify an early exit; never printed (it can contain the fork URL).
+    let output = '';
+    const keep = (chunk) => { output = (output + chunk.toString('utf8')).slice(-8192); };
+    spawned.stdout.on('data', keep);
+    spawned.stderr.on('data', keep);
     const rpcUrl = `http://127.0.0.1:${candidate}`;
     try {
       await waitFor(async () => {
         if (spawned.exitCode !== null) {
-          const error = new Error(`Anvil exited with ${spawned.exitCode}`);
-          error.code = 'EADDRINUSE';
+          const error = new Error(anvilExitMessage(spawned.exitCode, output, { fork: Boolean(forkUrl), logPath: join(paths.logs, 'anvil.log') }));
+          if (isAddressInUse(output)) error.code = 'EADDRINUSE';
           throw error;
         }
         try {
@@ -297,6 +303,7 @@ async function shutdown(reason) {
         try { await exited; } finally { clearTimeout(timer); }
       });
     }
+    if (state.rpcRelay) await step('stop fork RPC relay', () => state.rpcRelay.close());
     if (manifest?.forkBlock) {
       await step('cache write-back', async () => log(`Fork cache write-back: ${await writeBack(plan.cacheHome, paths.anvilHome, manifest.forkBlock)}`));
       await step('cache prune', async () => {
@@ -307,7 +314,8 @@ async function shutdown(reason) {
       });
     }
     if (manifest) await writeManifest({ running: false, stoppedAt: new Date().toISOString(), shutdownErrors: errors });
-    await saveJson(paths.control, {}).catch(() => {});
+    // Only the supervisor that holds the lock owns control.json; a loser of a start race must not wipe the winner's.
+    if (lockEntry) await saveJson(paths.control, {}).catch(() => {});
     if (lockEntry) await releaseLock(paths.lock, lockEntry);
     log(errors.length ? `Stopped with errors: ${errors.join('; ')}` : 'Stopped cleanly');
     process.exitCode = errors.length ? 1 : 0;
@@ -350,7 +358,8 @@ async function main() {
     const copied = await copyIn(plan.cacheHome, paths.anvilHome, fork.block);
     log(`Fork block ${fork.block} (${fork.source}); private cache copy: ${copied ? 'warm' : 'cold'}`);
     await writeManifest({ forkBlock: fork.block, forkCache: { ...fork, copied } });
-    state.anvil = await startAnvil(forkUrl, fork.block);
+    state.rpcRelay = await startRpcRelay(forkUrl);
+    state.anvil = await startAnvil(state.rpcRelay.url, fork.block);
     await writeManifest({ rpcUrl: state.anvil.rpcUrl, anvil: { pid: state.anvil.child.pid, startedAt: processStartTime(state.anvil.child.pid), port: state.anvil.port } });
     log(`Anvil fork on ${state.anvil.rpcUrl}`);
   }

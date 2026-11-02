@@ -478,13 +478,17 @@ app.whenReady().then(async () => {
 
   showMainWindow();
 
-  void publicTunnelRuntime.restoreAtLaunch().then((result) => {
-    if (result && !result.ok) {
-      appendLog('tunnel', 'system', `Public tunnel auto-start failed: ${result.error ?? 'Unknown error'}`);
-    }
-  }).catch((err) => {
-    appendLog('tunnel', 'system', `Public tunnel auto-start failed: ${err instanceof Error ? err.message : String(err)}`);
-  });
+  // A sandbox desktop never resumes a public tunnel: it would publish the
+  // sandbox buyer on a real hostname.
+  if (!isAttachOnly()) {
+    void publicTunnelRuntime.restoreAtLaunch().then((result) => {
+      if (result && !result.ok) {
+        appendLog('tunnel', 'system', `Public tunnel auto-start failed: ${result.error ?? 'Unknown error'}`);
+      }
+    }).catch((err) => {
+      appendLog('tunnel', 'system', `Public tunnel auto-start failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }
 
   // Fail open before anything else. Whatever the OS proxy is set to right now
   // was left behind by the previous run — and if that run ended in a crash,
@@ -552,9 +556,13 @@ app.whenReady().then(async () => {
 
   // Resume the Telegram bridge if a bot was connected in a previous session.
   // Needs app-ready because the token store decrypts via safeStorage.
-  void telegramBridge.start().catch((err) => {
-    appendLog('connect', 'system', `[telegram] Bridge resume failed: ${err instanceof Error ? err.message : String(err)}`);
-  });
+  // A sandbox desktop never resumes a bot: real Telegram users would get
+  // sandbox replies.
+  if (!isAttachOnly()) {
+    void telegramBridge.start().catch((err) => {
+      appendLog('connect', 'system', `[telegram] Bridge resume failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }
 
   // Payments portal starts lazily on first open (via payments:open-portal IPC)
 

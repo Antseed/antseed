@@ -198,3 +198,19 @@ describe('redactingStream', () => {
     assert.equal(out, 'Endpoint: <BASE_MAINNET_RPC_URL>\nnext line\ntail <BASE_MAINNET_RPC_URL>');
   });
 });
+
+describe('anvil exits', async () => {
+  const { anvilExitMessage, isAddressInUse } = await import('../lib/env.mjs');
+  it('retries only when the port was taken', () => {
+    assert.equal(isAddressInUse('Error: Address already in use (os error 98)'), true);
+    assert.equal(isAddressInUse('error sending request for url'), false);
+  });
+  it('explains other exits without echoing the output', () => {
+    const output = 'failed to get fork block from https://base.example/v2/SECRET';
+    const message = anvilExitMessage(1, output, { fork: true, logPath: '/sb/logs/anvil.log' });
+    assert.match(message, /see \/sb\/logs\/anvil\.log/);
+    assert.match(message, /BASE_MAINNET_RPC_URL/);
+    assert.doesNotMatch(message, /SECRET/);
+    assert.doesNotMatch(anvilExitMessage(1, '', { fork: false, logPath: 'x' }), /BASE_MAINNET_RPC_URL/);
+  });
+});

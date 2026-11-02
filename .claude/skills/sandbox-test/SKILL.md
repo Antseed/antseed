@@ -1,6 +1,6 @@
 ---
 name: sandbox-test
-description: How to use the worktree sandbox (pnpm sandbox): prerequisites, up and down, running a scenario, --chain local or fork, reading and serving reports, desktop runs under xvfb-run, share, logs. Runs isolated scenarios without asking and asks only before --live, --real-funds or mainnet runs. What to run for a given change is decided by the verify-antseed skill, not here. Use when asked to "run the sandbox", "run a scenario", "open the report", "share the desktop", or when verify-antseed names a scenario to run.
+description: How to use the worktree sandbox (pnpm sandbox): prerequisites, up and down, running a scenario, --chain local or fork, reading and serving reports, desktop runs under xvfb-run, share, logs. Opt-in only; asks before --live, --real-funds or mainnet runs. What to run for a given change is decided by the verify-antseed skill, not here. Use only when the user asks to "run the sandbox", "run a scenario", "open the report", "share the desktop", or when the user invoked verify-antseed and it names a scenario to run. Do not use it on your own after a code change.
 ---
 
 # Sandbox test
@@ -11,7 +11,7 @@ How to drive `pnpm sandbox` in this worktree. `e2e/sandbox/README.md` is the ful
 
 ## Rules
 
-- **Isolated runs need no approval.** Builds, new scenarios, `--chain local` runs (or fork runs, when `.env.local` has the RPC) and desktop QA can run without asking. Say what you will run, then run it.
+- **Opt-in.** Run the sandbox only when the user asked for it (see `CLAUDE.md`). Once they have, isolated runs for that task (`--chain local`, fork runs when `.env.local` has the RPC, desktop QA) need no further approval: say what you will run, then run it.
 - **Ask before spending.** `--live` (real upstream API money), `--real-funds`, `--chain mainnet` and `pnpm sandbox mainnet` (real USDC from the test wallet) each need an explicit yes for that run. Never print key or wallet values; check that they exist with `grep -c`.
 - Never touch `~/.antseed`, the keychain, port 8377, or processes the sandbox did not start. Tear down only with `pnpm sandbox down`; use `--force` only with the user's approval.
 - Don't commit. Don't weaken a check to make a run pass. Report a `KNOWN` result (a `knownIssue`) as known.
@@ -21,6 +21,7 @@ How to drive `pnpm sandbox` in this worktree. `e2e/sandbox/README.md` is the ful
 - Node must match `.nvmrc` (24.x); `up` refuses other majors. Put a Node 24 first on `PATH`: Volta on macOS (`PATH=~/.volta/tools/image/node/<24.x>/bin:$PATH`), `/usr/local/bin` or `nvm use` on Linux.
 - `--chain local` needs Foundry (`forge`, `anvil`; `export PATH=$HOME/.foundry/bin:$PATH`) and `git submodule update --init packages/contracts/lib/forge-std`.
 - `--chain fork` needs `BASE_MAINNET_RPC_URL` (a dedicated Base RPC with an API key) in the worktree's gitignored `.env.local` or the shell. Check with `grep -c '^BASE_MAINNET_RPC_URL=' .env.local`. If it is missing, ask the user to add it or use `--chain local`; never fall back to a public RPC.
+- The sandbox buyer pays from its own throwaway key, or from `ANTSEED_SANDBOX_BUYER_IDENTITY_HEX` in `.env.local` or the shell when set. Never put the user's real key there or read it from `~/.antseed`.
 - The sandbox loads `dist/`, not `src/`: `pnpm install && pnpm run build` in a fresh worktree, and rebuild changed packages after an edit.
 - One read-only check for all of this: `.claude/skills/verify-antseed/scripts/doctor.mjs`. Fix every `FAIL` before a run.
 
@@ -48,7 +49,7 @@ pnpm sandbox run <scenario> --chain local --keep      # leaves it up afterwards
 | Needs | `forge` + forge-std, no RPC key | `BASE_MAINNET_RPC_URL` |
 | Use for | contract changes, payment checks, offline work | release checks against what is live |
 
-`payment-flow` defaults to local, other scenarios to fork; pass `--chain` explicitly. A contract change shows up only on `--chain local`.
+A scenario's default chain is the first entry in its `targets`: `payment-flow` and `issue-1200-spendingauth-catchup` default to local, the others to fork. Pass `--chain` explicitly. A contract change shows up only on `--chain local`.
 
 ## 4. Keep a network up and poke at it
 

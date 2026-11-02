@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
-import { isolatedEnv } from './env.mjs';
+import { isolatedEnv, normalizeIdentityHex, toolchainEnv } from './env.mjs';
 import { acquireLock, releaseLock } from './lock.mjs';
 import { saveJson } from './manifest.mjs';
 
@@ -19,9 +19,7 @@ export function resolveMainnetWallet({ env = process.env, fileValues = {}, envFi
   if (!raw) {
     throw new Error(`${MAINNET_WALLET_ENV} is required: the private key (64 hex) of a dedicated, funded test buyer wallet. Put it in ${envFile} or export it. Never use your personal wallet.`);
   }
-  const hex = raw.startsWith('0x') ? raw.slice(2) : raw;
-  if (!/^[0-9a-fA-F]{64}$/.test(hex)) throw new Error(`${MAINNET_WALLET_ENV} must be 64 hex characters (optionally 0x-prefixed)`);
-  return { hex: hex.toLowerCase(), source: fromShell ? 'shell' : envFile };
+  return { hex: normalizeIdentityHex(raw, MAINNET_WALLET_ENV), source: fromShell ? 'shell' : envFile };
 }
 
 export function resolveReserveCap({ env = process.env, fileValues = {} } = {}) {
@@ -144,9 +142,7 @@ export function walletAddress(hex) {
 /** Environment for the full desktop on a profile: real network, its own buyer, nothing machine-wide. */
 export function profileDesktopEnv({ baseEnv = process.env, paths, ports, instance }) {
   const env = isolatedEnv(baseEnv, paths.home, {
-    VOLTA_HOME: baseEnv.VOLTA_HOME || join(baseEnv.HOME ?? '', '.volta'),
-    COREPACK_HOME: baseEnv.COREPACK_HOME || join(baseEnv.XDG_CACHE_HOME || join(baseEnv.HOME ?? '', '.cache'), 'node', 'corepack'),
-    COREPACK_ENABLE_DOWNLOAD_PROMPT: '0',
+    ...toolchainEnv(baseEnv),
     ANTSEED_DESKTOP_ISOLATED_PROFILE: '1',
     ANTSEED_DESKTOP_INSTANCE: instance,
     ANTSEED_DESKTOP_USER_DATA_DIR: paths.electron,

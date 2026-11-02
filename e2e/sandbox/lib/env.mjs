@@ -1,11 +1,32 @@
+import { chmod, mkdir, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
+import { userInfo } from 'node:os';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import { Transform } from 'node:stream';
 
 const STRIPPED = /^(ANTSEED_|OPENAI_|ANTHROPIC_|VENICE_|FLOW_|FORK_|SANDBOX_KEY_|BASE_MAINNET_RPC_URL$|LOCAL_LLM_|TYPESAFE_)/;
 export const FORBIDDEN_PORTS = new Set([6881, 6882, 8377, 3117]);
 
+/** The account's real home from the password database, independent of $HOME (which sandbox processes override). */
+function realHome() {
+  try { return resolve(userInfo().homedir); } catch { return null; }
+}
+
+/** Refuses the user's real home and anything inside their real ~/.antseed as a sandbox HOME. */
+export function assertSandboxHome(home, actualHome = realHome()) {
+  if (!home) throw new Error('A sandbox process needs an explicit sandbox HOME');
+  if (!actualHome) return home;
+  const target = resolve(home);
+  const fromAntseed = relative(join(actualHome, '.antseed'), target);
+  if (target === actualHome || (!fromAntseed.startsWith('..') && !isAbsolute(fromAntseed))) {
+    throw new Error(`Refusing to run a sandbox process with HOME=${target}: it must never be your real home or ~/.antseed`);
+  }
+  return home;
+}
+
 /** Environment for sandbox processes: inherited env minus AntSeed/provider secrets, with a private HOME. */
 export function isolatedEnv(env, home, extra = {}) {
+  assertSandboxHome(home);
   const clean = Object.fromEntries(Object.entries(env).filter(([key, value]) => value !== undefined && !STRIPPED.test(key)));
   return { ...clean, HOME: home, ANTSEED_SKIP_PLUGIN_UPDATE_CHECK: '1', ...extra };
 }
@@ -108,6 +129,44 @@ export function resolveLiveKeys(names, { env = process.env, fileValues = {} } = 
   return { values, sources, missing };
 }
 
+/** Toolchain locations that would otherwise move with HOME (Volta, Corepack), so pnpm and node keep working. */
+export function toolchainEnv(env = process.env) {
+  const home = env.HOME?.trim();
+  const out = { COREPACK_ENABLE_DOWNLOAD_PROMPT: '0' };
+  const volta = env.VOLTA_HOME || (home ? join(home, '.volta') : '');
+  const cache = env.XDG_CACHE_HOME || (home ? join(home, '.cache') : '');
+  const corepack = env.COREPACK_HOME || (cache ? join(cache, 'node', 'corepack') : '');
+  if (volta) out.VOLTA_HOME = volta;
+  if (corepack) out.COREPACK_HOME = corepack;
+  return out;
+}
+
+/** A private key as 64 lowercase hex characters; accepts an optional 0x prefix. */
+export function normalizeIdentityHex(raw, name) {
+  const hex = raw.startsWith('0x') ? raw.slice(2) : raw;
+  if (!/^[0-9a-fA-F]{64}$/.test(hex)) throw new Error(`${name} must be 64 hex characters (optionally 0x-prefixed)`);
+  return hex.toLowerCase();
+}
+
+/** Optional buyer wallet for local and fork sandboxes: a test key you choose instead of the generated one. */
+export const BUYER_KEY_ENV = 'ANTSEED_SANDBOX_BUYER_IDENTITY_HEX';
+
+/** The buyer key from the shell, then the env file; null when unset (the sandbox then keeps its own key). Never logged. */
+export function resolveBuyerKey({ env = process.env, fileValues = {}, envFile = '.env.local' } = {}) {
+  const fromShell = env[BUYER_KEY_ENV]?.trim();
+  const raw = fromShell || fileValues[BUYER_KEY_ENV]?.trim();
+  if (!raw) return null;
+  return { hex: normalizeIdentityHex(raw, BUYER_KEY_ENV), source: fromShell ? 'shell' : envFile };
+}
+
+/** Installs the chosen key as the sandbox buyer's identity.key (owner-only), replacing the previous sandbox key. */
+export async function writeBuyerKey(buyerDir, hex) {
+  await mkdir(buyerDir, { recursive: true, mode: 0o700 });
+  const file = join(buyerDir, 'identity.key');
+  await writeFile(file, `${hex}\n`, { mode: 0o600 });
+  await chmod(file, 0o600);
+}
+
 export const FORK_RPC_ENV = 'BASE_MAINNET_RPC_URL';
 
 /** Line-by-line transform that replaces every occurrence of `secret` (e.g. the fork RPC URL) before it reaches a log. */
@@ -134,4 +193,16 @@ export function resolveForkUrl({ env = process.env, fileValues = {}, envFile = '
   if (!value) throw new Error(`${FORK_RPC_ENV} is required (a dedicated Base mainnet RPC with an API key); put it in ${envFile} or export it`);
   if (!/^https?:\/\//.test(value)) throw new Error(`${FORK_RPC_ENV} must be HTTP(S)`);
   return { url: value, source: fromShell ? 'shell' : envFile };
+}
+
+/** True when a process's output says its port was taken, so a retry on another port can help. */
+export function isAddressInUse(output) {
+  return /address already in use|EADDRINUSE|os error 98|os error 48/i.test(output);
+}
+
+/** Why Anvil exited early, without echoing its output (which can contain the fork URL). */
+export function anvilExitMessage(code, output, { fork, logPath }) {
+  if (isAddressInUse(output)) return `Anvil exited with ${code}: port already in use`;
+  const hint = fork ? ' Check BASE_MAINNET_RPC_URL (a reachable Base mainnet RPC with an API key).' : '';
+  return `Anvil exited with ${code} before its RPC came up; see ${logPath}.${hint}`;
 }
