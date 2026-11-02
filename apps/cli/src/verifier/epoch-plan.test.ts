@@ -208,6 +208,48 @@ test('a confirmation\'s UNDETERMINED from a failure is held and retried up to CO
   assert.equal(heldForConfirmationRecheck(tie), false)
 })
 
+test('a confirmation whose close-call extension failed is retried; a decided or non-confirming one is done', () => {
+  const extension = (extra: Partial<NonNullable<ModelVerificationTargetResult['extension']>> = {}) => ({
+    rule: 'kbf-extension-v2', auditId: 'x', status: 'UNDETERMINED', referenceId: 'ref', probeCount: 10, parsedProbeCount: 10,
+    correctProbeCount: 10, responseAuthVerified: true, stats: null, cost: emptyAuditCostSummary(), evidencePath: '/x', evidenceHash: '0x01',
+    firstLook: { status: 'UNDETERMINED', pValue: 0.5 },
+    pooled: { selfHamming: 0, selfTotal: 0, targetHamming: 0, targetTotal: 0, pValueBinomial: 0.5, verdict: 'UNDETERMINED', verdictReason: null },
+    ...extra,
+  }) as unknown as NonNullable<ModelVerificationTargetResult['extension']>
+  // The close call waited for its extra questions in one run and was extended in the next.
+  const cell = (last: ModelVerificationTargetResult) => mergeEpochRuns(EPOCH, [
+    run('r0', '2026-10-28T20:00:00.000Z', [{ model: 'm', results: [result('a', 'UNDETERMINED', { confirmsDiff: true, extensionPending: { reason: 'close call', since: '' } } as Partial<ModelVerificationTargetResult>)] }]),
+    run('r1', '2026-10-28T21:00:00.000Z', [{ model: 'm', results: [last] }]),
+  ]).get(epochCellKey('m', 'a'))!
+
+  // Extra sets that failed (an outcome reason) or answered without verified ResponseAuth.
+  const timedOut = cell(result('a', 'UNDETERMINED', { confirmsDiff: true, outcomeReason: sellerDown, extension: extension() }))
+  assert.equal(timedOut.action, 'retry')
+  assert.equal(heldForConfirmationRecheck(timedOut), true)
+  const unverified = cell(result('a', 'UNDETERMINED', { confirmsDiff: true, extension: extension({ responseAuthVerified: false }) }))
+  assert.equal(unverified.action, 'retry')
+  assert.equal(heldForConfirmationRecheck(unverified), true)
+  // A close call still undecided after answering every extra question is final.
+  const tie = cell(result('a', 'UNDETERMINED', { confirmsDiff: true, extension: extension() }))
+  assert.equal(tie.action, 'done')
+  assert.equal(heldForConfirmationRecheck(tie), false)
+  // Not a confirmation: no waiting DIFF depends on it, so a failed extension is not audited again.
+  assert.equal(cell(result('a', 'UNDETERMINED', { outcomeReason: sellerDown, extension: extension() })).action, 'done')
+})
+
+test('a result of the retired DIFF self-recheck that ended UNDETERMINED is audited again', () => {
+  const legacy = (status: ModelVerificationTargetResult['status']) => ({
+    ...result('a', status),
+    recheck: { status: 'SAME', auditId: 'r', evidencePath: '/r', evidenceHash: '0x02' },
+  }) as ModelVerificationTargetResult
+  const cell = (last: ModelVerificationTargetResult) => (
+    mergeEpochRuns(EPOCH, [run('r0', '2026-10-28T20:00:00.000Z', [{ model: 'm', results: [last] }])]).get(epochCellKey('m', 'a'))!
+  )
+  assert.equal(cell(legacy('UNDETERMINED')).action, 'audit')
+  // Both checks found DIFF: the result is the first check's DIFF, which is still valid.
+  assert.equal(cell(legacy('DIFF')).action, 'done')
+})
+
 test('the submission leaves out a held confirmation UNDETERMINED and says why', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'epoch-plan-held-'))
   try {

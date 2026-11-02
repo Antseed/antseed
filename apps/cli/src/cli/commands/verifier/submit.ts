@@ -6,7 +6,7 @@ import { requireCurrentVerifier } from '../../../verifier/release-check.js'
 import Table from 'cli-table3'
 import type { Command } from 'commander'
 import { getAddress } from 'ethers'
-import type { VerifierClient } from '@antseed/node/payments'
+import type { AuditorSetEvent, VerifierClient } from '@antseed/node/payments'
 import { loadConfig } from '../../../config/loader.js'
 import {
   canonicalEvidenceBytes,
@@ -33,7 +33,7 @@ import { writeEpochOverview } from '../../../verifier/epoch-overview.js'
 import { loadEpochState, writeEpochSubmissionManifest } from '../../../verifier/epoch-plan.js'
 import { getGlobalOptions } from '../types.js'
 import { loadEpochAuditEvents, loadEpochReports, ownResultTallies } from '../../../verifier/pending-confirmations.js'
-import { alreadyOnChainFilter } from '../../../verifier/submission-delta.js'
+import { alreadyOnChainFilter, revocationPositions } from '../../../verifier/submission-delta.js'
 
 interface SubmitOptions {
   runId?: string
@@ -153,6 +153,11 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
 
       // Only what changes this auditor's on-chain position is sent: results it already reported this
       // epoch are left out before the evidence is built (see `resultsAlreadyOnChain`).
+      // Read at most once: the delta filter needs it only for results this auditor already reported.
+      let auditorSetEventsRead: Promise<AuditorSetEvent[]> | null = null
+      const auditorSetEvents = (): Promise<AuditorSetEvent[]> => (
+        auditorSetEventsRead ??= verifierClient.queryAuditorSetEvents(verifierClient.deploymentBlock)
+      )
       const epochEvents = await loadEpochAuditEvents({
         reader: verifierClient, epochStartedAt: window.startedAt, deploymentBlock: verifierClient.deploymentBlock,
       })
@@ -176,13 +181,13 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
               return block.timestamp
             },
           },
-          auditorSetEvents: () => verifierClient.queryAuditorSetEvents(verifierClient.deploymentBlock),
+          auditorSetEvents,
         }),
       })
       const audits = await reuseLedgerEvidence(
         prepared.map((audit) => withLedgerKey(audit, ledger, evidenceDir, manifest.runId)), ledger,
       )
-      const submittedEvidence = await submittedEvidenceHashes(verifierClient, address)
+      const submittedEvidence = await submittedEvidenceHashes(verifierClient, address, auditorSetEvents)
       const credited = await verifierClient.auditCredits(address, window.epoch)
       let auditorCreditsLeft = limits.perAuditor > credited.auditor ? limits.perAuditor - credited.auditor : 0n
       const modelCreditsLeft = new Map<string, bigint>()
@@ -272,7 +277,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
           ledger.models[audit.key] = entry
           await writeModelAuditLedger(ledgerPath, ledger)
 
-          const event = await findSubmission(verifierClient, audit, address)
+          const event = await findSubmission(verifierClient, audit, address, auditorSetEvents)
           if (event) {
             ledger.models[audit.key] = {
               ...entry,
@@ -372,9 +377,31 @@ async function printConfirmations(
 }
 
 /** Evidence hashes this auditor has already submitted on-chain, read from its `ModelAudited` events. */
-async function submittedEvidenceHashes(client: VerifierClient, auditor: string): Promise<Set<string>> {
-  const events = await client.queryModelAudits({ auditor })
+/**
+ * Evidence this auditor has on-chain that still stands. A submission before the latest auditor
+ * revocation does not: the revocation started a new report round everywhere, so its reports no
+ * longer count, and when the delta filter (`alreadyOnChainFilter`) selects the same results again,
+ * the identical evidence has to be sent again to restore them.
+ */
+async function submittedEvidenceHashes(
+  client: VerifierClient,
+  auditor: string,
+  auditorSetEvents: () => Promise<readonly AuditorSetEvent[]>,
+): Promise<Set<string>> {
+  const events = standingSubmissions(await client.queryModelAudits({ auditor }), await auditorSetEvents())
   return new Set(events.map((event) => normalized(event.evidenceHash)))
+}
+
+/** The submissions made after the latest auditor revocation (all of them when there was none). */
+export function standingSubmissions<T extends { blockNumber: number; logIndex: number }>(
+  submissions: readonly T[],
+  auditorSetEvents: readonly AuditorSetEvent[],
+): T[] {
+  const last = revocationPositions(auditorSetEvents).at(-1)
+  if (!last) return [...submissions]
+  return submissions.filter((event) => (
+    event.blockNumber > last.blockNumber || (event.blockNumber === last.blockNumber && event.logIndex > last.logIndex)
+  ))
 }
 
 /**
@@ -447,9 +474,15 @@ function ledgerEntry(
   }
 }
 
-async function findSubmission(client: VerifierClient, audit: PreparedModelAudit, auditor: string) {
+/** A standing submission of this exact evidence (see `submittedEvidenceHashes`), e.g. one a crashed attempt sent. */
+async function findSubmission(
+  client: VerifierClient,
+  audit: PreparedModelAudit,
+  auditor: string,
+  auditorSetEvents: () => Promise<readonly AuditorSetEvent[]>,
+) {
   try {
-    const events = await client.queryModelAudits({ model: audit.modelHash, auditor })
+    const events = standingSubmissions(await client.queryModelAudits({ model: audit.modelHash, auditor }), await auditorSetEvents())
     return events.find((event) => normalized(event.evidenceHash) === normalized(audit.evidenceHash)) ?? null
   } catch {
     return null

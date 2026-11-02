@@ -109,7 +109,7 @@ import {
   epochReports,
   loadEpochAuditEvents,
   localResultAnswersConfirmation,
-  ownReportBlocks,
+  ownLatestReports,
   pendingConfirmations,
   reportKey,
   type ConfirmationTarget,
@@ -390,14 +390,21 @@ export async function loadRunConfirmations(input: {
     }
     // When this auditor reported on a seller in a round the contract no longer counts, a local
     // result only answers the confirmation if it is newer than that report.
-    const ownBlocks = ownReportBlocks(events, auditor.address)
+    const ownReports = ownLatestReports(events, auditor.address)
+    // Results submitted together share a block, so each block is read once.
+    const timestamps = new Map<number, number>()
     for (const [model, agents] of targets) {
       for (const target of agents.values()) {
-        const block = ownBlocks.get(reportKey(target.agentId, serviceHash(target.service), modelHash(model)))
+        const block = ownReports.get(reportKey(target.agentId, serviceHash(target.service), modelHash(model)))?.blockNumber
         if (block === undefined) continue
-        const header = await client.provider.getBlock(block)
-        if (!header) throw new Error(`block ${block} of an earlier report is unavailable`)
-        target.ownReportedAt = header.timestamp
+        let timestamp = timestamps.get(block)
+        if (timestamp === undefined) {
+          const header = await client.provider.getBlock(block)
+          if (!header) throw new Error(`block ${block} of an earlier report is unavailable`)
+          timestamp = header.timestamp
+          timestamps.set(block, timestamp)
+        }
+        target.ownReportedAt = timestamp
       }
     }
     return targets

@@ -62,21 +62,6 @@ export async function loadEpochReports(input: Parameters<typeof loadEpochAuditEv
   return epochReports(await loadEpochAuditEvents(input))
 }
 
-/**
- * The block of `auditor`'s latest report this epoch on each service and model, in any report round,
- * keyed by `reportKey`.
- */
-export function ownReportBlocks(events: readonly ServiceAuditedEvent[], auditor: string): Map<string, number> {
-  const me = getAddress(auditor)
-  const blocks = new Map<string, number>()
-  for (const event of events) {
-    if (getAddress(event.auditor) !== me) continue
-    const key = reportKey(event.agentId, event.serviceHash, event.modelHash)
-    blocks.set(key, Math.max(blocks.get(key) ?? 0, event.blockNumber))
-  }
-  return blocks
-}
-
 /** One auditor's latest report on a service and model this epoch, in whatever round it was made. */
 export interface OwnReport {
   verdict: VerifierVerdict
@@ -192,6 +177,7 @@ export function pendingConfirmations(input: {
   const modelsByHash = new Map((input.models ?? input.auditedModels).map((model) => [normalized(modelHash(model)), model]))
   const pastHalf = input.now >= input.epochStartedAt + (input.epochEndsAt - input.epochStartedAt) / 2
   const pending: PendingConfirmation[] = []
+  const rotations = new Map<string, string[]>()
   for (const report of input.reports.values()) {
     const model = modelsByHash.get(normalized(report.modelHash))
     if (!model) continue
@@ -199,9 +185,14 @@ export function pendingConfirmations(input: {
     if (waiting.length === 0) continue
     const reporters = [...report.byAuditor.keys()]
     const reported = new Set(reporters)
-    const rotation = auditorRotationForModel(model, {
-      auditors: input.auditors, epoch: input.epoch, availableModels: input.auditedModels,
-    })
+    // The rotation depends only on the model and the epoch's inputs, so it is computed once per model.
+    let rotation = rotations.get(model)
+    if (rotation === undefined) {
+      rotation = auditorRotationForModel(model, {
+        auditors: input.auditors, epoch: input.epoch, availableModels: input.auditedModels,
+      })
+      rotations.set(model, rotation)
+    }
     const confirmer = rotation.find((auditor) => !reported.has(auditor)) ?? null
     const mine = !reported.has(me) && (confirmer === me || (pastHalf && confirmer !== null))
     pending.push({

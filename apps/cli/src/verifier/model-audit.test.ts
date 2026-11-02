@@ -134,6 +134,37 @@ test('excludes the auditor\'s own agent and tampered evidence without dropping t
   })
 })
 
+test('a run of the retired DIFF self-recheck submits its confirmed DIFF and leaves its UNDETERMINED for a new audit', async () => {
+  await withRun([
+    audit('1', sellers[0]!, 'model-a', 'DIFF'),
+    audit('2', sellers[1]!, 'model-a', 'DIFF'),
+    audit('3', sellers[2]!, 'model-a', 'DIFF'),
+  ], async ({ prepared }) => {
+    const [entry] = prepared.audits as [PreparedModelAudit]
+    assert.deepEqual(entry.results.map((result) => [result.agentId, result.verdict]), [[1n, VERIFIER_VERDICT.DIFF]])
+    assert.deepEqual(prepared.excluded.map((exclusion) => exclusion.agentId).sort(), ['2', '3'])
+    for (const exclusion of prepared.excluded) {
+      assert.match(exclusion.reason, /retired DIFF self-recheck/)
+      assert.doesNotMatch(exclusion.reason, /verdict mismatch/)
+    }
+  }, {
+    // CLI 0.2.70 wrote a first DIFF rechecked on fresh probes as one result: both DIFF stays DIFF,
+    // a recheck SAME or UNDETERMINED makes it UNDETERMINED. Its evidencePath is the first check.
+    tamper: async (evidenceDir) => {
+      const manifest = await readVerifierRunManifest(evidenceDir, 'run-1')
+      const path = manifest.models[0]!.summaryPath
+      const summary = JSON.parse(await readFile(path, 'utf8')) as { results: Array<Record<string, unknown>> }
+      const recheck = (status: string) => ({ status, auditId: 'recheck', evidencePath: '/recheck.json', evidenceHash: `0x${'11'.repeat(32)}` })
+      for (const result of summary.results) {
+        if (result.agentId === '1') result.recheck = recheck('DIFF')
+        if (result.agentId === '2') Object.assign(result, { status: 'UNDETERMINED', recheck: recheck('SAME') })
+        if (result.agentId === '3') Object.assign(result, { status: 'UNDETERMINED', recheck: recheck('UNDETERMINED') })
+      }
+      await writeFile(path, JSON.stringify(summary))
+    },
+  })
+})
+
 test('splits a model into ordered parts when it exceeds the per-call result limit', async () => {
   await withRun([
     audit('1', sellers[0]!, 'model-a'),

@@ -298,6 +298,11 @@ export async function prepareModelAudits(input: {
         exclude('missing or invalid seller agent ID')
         continue
       }
+      if (retiredRecheckResult(result)) {
+        exclude('made by the retired DIFF self-recheck (CLI 0.2.70 and older), whose combined verdict the evidence '
+          + 'no longer carries; a later run this epoch audits the seller again')
+        continue
+      }
       let evidence: ProxyAuditEvidenceV1
       let extensionEvidence: ProxyAuditEvidenceV1 | null = null
       let extension2Evidence: ProxyAuditEvidenceV1 | null = null
@@ -804,6 +809,16 @@ export function validateAuditMatchesSummary(
     }
   }
   if (stageOne !== result.status) throw new Error('verdict mismatch')
+}
+
+/**
+ * A result the retired DIFF self-recheck (CLI 0.2.67 to 0.2.70) turned into UNDETERMINED: its first
+ * check found DIFF and a recheck on fresh probes did not. The summary points at the first check's
+ * evidence, which says DIFF, so it can be neither validated nor submitted as recorded; the epoch plan
+ * audits the seller again instead. A recheck that also found DIFF left the result DIFF and stays valid.
+ */
+export function retiredRecheckResult(result: ModelAuditSummaryV1['results'][number]): boolean {
+  return (result as { recheck?: unknown }).recheck != null && result.status !== 'DIFF'
 }
 
 /**

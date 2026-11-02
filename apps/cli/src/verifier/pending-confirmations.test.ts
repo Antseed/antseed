@@ -15,7 +15,7 @@ import {
   epochReports,
   loadEpochReports,
   localResultAnswersConfirmation,
-  ownReportBlocks,
+  ownLatestReports,
   ownResultTallies,
   reportKey,
   pendingConfirmations,
@@ -262,10 +262,11 @@ test('this auditor\'s latest report block per service, across report rounds', ()
     { ...audited({ auditor: A, agentId: 2n, verdict: VERIFIER_VERDICT.SAME }), blockNumber: 15 },
     { ...audited({ auditor: B, agentId: 3n, verdict: VERIFIER_VERDICT.SAME }), blockNumber: 16 },
   ]
-  const blocks = ownReportBlocks(events, A.toLowerCase())
-  assert.equal(blocks.get(reportKey(1n, serviceHash('model-a'), modelHash('model-a'))), 20)
-  assert.equal(blocks.get(reportKey(2n, serviceHash('model-a'), modelHash('model-a'))), 15)
-  assert.equal(blocks.has(reportKey(3n, serviceHash('model-a'), modelHash('model-a'))), false)
+  const reports = ownLatestReports(events, A.toLowerCase())
+  assert.equal(reports.get(reportKey(1n, serviceHash('model-a'), modelHash('model-a')))?.blockNumber, 20)
+  assert.equal(reports.get(reportKey(1n, serviceHash('model-a'), modelHash('model-a')))?.round, 1)
+  assert.equal(reports.get(reportKey(2n, serviceHash('model-a'), modelHash('model-a')))?.blockNumber, 15)
+  assert.equal(reports.has(reportKey(3n, serviceHash('model-a'), modelHash('model-a'))), false)
 })
 
 test('a finished local result answers a confirmation only for the reported service and when not yet submitted', () => {

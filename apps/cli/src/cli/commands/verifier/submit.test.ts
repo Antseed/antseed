@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { ModelAuditLedgerEntryV1, PreparedModelAudit } from '../../../verifier/model-audit.js'
 import { modelAuditEvidencePath } from '../../../verifier/model-audit.js'
-import { withLedgerKey } from './submit.js'
+import { standingSubmissions, withLedgerKey } from './submit.js'
 
 const audit = (evidenceHash: string): PreparedModelAudit => ({
   key: 'model-a',
@@ -29,4 +29,21 @@ test('a model audit keeps its ledger key unless that key was already submitted w
   }, '/evidence', 'run-1')
   assert.equal(next.key, 'model-a~3', 'a later delta of the same epoch submission gets its own key')
   assert.equal(next.evidencePath, modelAuditEvidencePath('/evidence', 'run-1', 'model-a~3'))
+})
+
+test('a submission made before the latest auditor revocation no longer stands', () => {
+  const submission = (blockNumber: number, logIndex: number, evidenceHash: string) => ({ blockNumber, logIndex, evidenceHash })
+  const submissions = [submission(10, 0, '0x01'), submission(20, 3, '0x02'), submission(30, 0, '0x03')]
+  const set = (blockNumber: number, logIndex: number, auditor: string, approved: boolean) => ({
+    auditor, approved, blockNumber, logIndex, transactionHash: '0x', timestamp: 0,
+  })
+  assert.deepEqual(standingSubmissions(submissions, []), submissions, 'without revocations every submission stands')
+  assert.deepEqual(
+    standingSubmissions(submissions, [set(5, 0, '0xc', true), set(20, 1, '0xc', false)]).map((entry) => entry.evidenceHash),
+    ['0x02', '0x03'], 'the revocation reset the round for the submission before it, so its evidence can be sent again',
+  )
+  assert.deepEqual(
+    standingSubmissions(submissions, [set(25, 0, '0xd', false)]),
+    submissions, 'unapproving an auditor that was never approved resets nothing',
+  )
 })

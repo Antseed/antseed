@@ -8,7 +8,8 @@ import {
   type VerifierRunManifestV1,
 } from './audit-artifacts.js'
 import { epochRunManifests } from './epoch-overview.js'
-import { finalAuditVerdict } from './model-audit.js'
+import { latestExtension } from './close-call.js'
+import { finalAuditVerdict, retiredRecheckResult } from './model-audit.js'
 import type {
   ModelVerificationFailure,
   ModelVerificationSkip,
@@ -127,14 +128,27 @@ export function epochCellAction(cell: Omit<EpochCell, 'action'>): EpochCellActio
       // lowered its price, or the model is advertised again).
       return 'audit'
     case 'undetermined':
+      // The retired DIFF self-recheck's UNDETERMINED cannot be submitted (`retiredRecheckResult`).
+      if (cell.result && retiredRecheckResult(cell.result)) return 'audit'
       // A seller that answered and was simply too close to call is a finished UNDETERMINED: asking
       // again would only repeat it.
-      if (cell.result?.extension || !cell.result?.outcomeReason) return 'done'
+      if (!cell.result || !failedUndetermined(cell.result)) return 'done'
+      // A close call whose extra questions failed is final too, unless a waiting DIFF depends on it:
+      // a confirmation's failure is retried like one in its first set.
+      if (cell.result.extension && !cell.result.confirmsDiff) return 'done'
       // falls through
     case 'failed':
       if (cell.blame === 'auditor') return 'retry'
       return cell.attempts < (cell.result?.confirmsDiff ? CONFIRMATION_ATTEMPTS : SELLER_FAILURE_ATTEMPTS) ? 'retry' : 'done'
   }
+}
+
+/**
+ * Whether an UNDETERMINED came from a failure rather than from a seller that answered and was too
+ * close to call: an outcome reason, or a last extra set whose answers lacked verified ResponseAuth.
+ */
+function failedUndetermined(result: ModelVerificationTargetResult): boolean {
+  return Boolean(result.outcomeReason) || latestExtension(result)?.responseAuthVerified === false
 }
 
 interface RunSummaries {
