@@ -19,7 +19,7 @@ A buyer's client sends OpenAI-style requests to the local buyer proxy, which lis
 
 Preconditions:
 
-- `pnpm sandbox run chat-basic --chain local` (one seller), or a running sandbox and `eval "$(pnpm -s sandbox status --env)"`.
+- `pnpm testbench run chat-basic --chain local` (one seller), or a running testbench and `eval "$(pnpm -s testbench status --env)"`.
 
 - **Catalog.** `sb.models()` or `curl "$ANTSEED_PROXY_URL/v1/models"`. Every seller model is listed.
 - **Chat.** `sb.chat({ prompt })` and `sb.chat({ prompt, stream: true })`. Content contains `seller <id>`, `usage.total_tokens > 0`.
@@ -31,6 +31,6 @@ Preconditions:
 ## Gotchas
 
 - `chat-basic` sends model-only requests to one seller and never pins. Use routing for pinned paths.
-- Cooperative-close `KNOWN` on older sandbox bases: see `../SKILL.md` Gotchas.
-- The sandbox loads `dist/`. Rebuild after an edit or the fix looks broken.
+- Cooperative-close `KNOWN` on older testbench bases: see `../SKILL.md` Gotchas.
+- The testbench loads `dist/`. Rebuild after an edit or the fix looks broken.
 - `sb.chat()` drives only `/v1/chat/completions`; `/v1/responses` has no helper.

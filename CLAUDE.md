@@ -18,14 +18,14 @@ their own message. Auto-committing every tweak produces a noisy history of
 one-line commits that has to be squashed later. Do not chain `edit → build
 → commit → push` as a reflex — even if prior turns in the same session did.
 
-## Sandbox testing (opt-in)
+## Testbench (opt-in)
 
-This repo has a per-worktree end-to-end sandbox (`pnpm sandbox`, see
-`e2e/sandbox/README.md`) and two skills for it: `verify-antseed` (which
-scenario a change needs) and `sandbox-test` (how to run it). It is opt-in. Do
-not run the sandbox or those skills by default after a change; builds, unit
+This repo has a per-worktree end-to-end testbench (`pnpm testbench`, see
+`e2e/testbench/README.md`) and two skills for it: `verify-antseed` (which
+scenario a change needs) and `testbench` (how to run it). It is opt-in. Do
+not run the testbench or those skills by default after a change; builds, unit
 tests and typecheck stay the default checks. Use them only when the user asks
-(for example "verify it in the sandbox", "run a scenario", `/verify-antseed`)
+(for example "verify it in the testbench", "run a scenario", `/verify-antseed`)
 or gives task-specific instructions to, and then follow the skills. Runs that
 spend money (`--live`, `--real-funds`, any mainnet run) still need an explicit
 yes for each run.

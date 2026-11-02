@@ -1,6 +1,6 @@
 # Payments
 
-A buyer's chats are paid on-chain in sandbox USDC: a reserve locks deposit for a channel, each request signs a growing cumulative SpendingAuth, and the seller settles exactly what was delivered when the buyer disconnects.
+A buyer's chats are paid on-chain in testbench USDC: a reserve locks deposit for a channel, each request signs a growing cumulative SpendingAuth, and the seller settles exactly what was delivered when the buyer disconnects.
 
 ## Sub-features
 
@@ -9,17 +9,17 @@ A buyer's chats are paid on-chain in sandbox USDC: a reserve locks deposit for a
 - `pay-settle-disconnect` charges exactly the delivered work and releases the reserve.
 - `pay-reconnect` opens a fresh channel after reconnect.
 - `pay-onchain` settles on-chain exactly what the buyer signed.
-- `pay-issue-*` keeps each fixed payment bug fixed (`e2e/sandbox/scenarios/issue-*.mjs`).
+- `pay-issue-*` keeps each fixed payment bug fixed (`e2e/testbench/scenarios/issue-*.mjs`).
 
 ## How to get to it (user POV)
 
-- Chat through the proxy or the desktop with a funded sandbox buyer; payment runs on its own.
+- Chat through the proxy or the desktop with a funded testbench buyer; payment runs on its own.
 
 ## Driving it with sb
 
 Preconditions:
 
-- `pnpm sandbox run payment-flow --chain local`, then every `issue-*` scenario.
+- `pnpm testbench run payment-flow --chain local`, then every `issue-*` scenario.
 
 - **Paid chats.** Three `sb.chat()` calls. `sb.channels()` shows one channel with rising `cumulativeSigned` (compare as `BigInt`).
 - **Disconnect.** `sb.stopBuyer()`. `sb.settledEvents(id)` shows a settle equal to the delivered cost; the reserve is released.

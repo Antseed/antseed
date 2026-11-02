@@ -9,7 +9,7 @@
 # package's workspace dependencies, nothing else, so leftovers in your working tree cannot fake a result.
 # Prints PROVE OK or PROVE MISMATCH with the reason and the log path. Exit 0 when the result is the one expected,
 # 1 when not, 2 when the setup broke. Logs are kept in $PROVE_LOGS (default: a temporary directory). The throwaway
-# worktree goes under $PROVE_TMP, else $TMPDIR, else /tmp: a sandboxed agent sets PROVE_TMP to a folder it can write.
+# worktree goes under $PROVE_TMP, else $TMPDIR, else /tmp: a testbenched agent sets PROVE_TMP to a folder it can write.
 set -uo pipefail
 commit="${1:-}"; expect="${2:-}"; cmd="${3:-}"; signature="${4:-}"; pkg="${5:-}"
 usage() { echo "usage: prove.sh <commit> fail|pass \"<test command>\" [red signature] [owning package]" >&2; exit 2; }
@@ -17,7 +17,7 @@ usage() { echo "usage: prove.sh <commit> fail|pass \"<test command>\" [red signa
 case "$expect" in fail) [ -n "$signature" ] || { echo "PROVE MISMATCH fail mode needs the red signature"; exit 2; } ;; pass) ;; *) usage ;; esac
 repo="$(git rev-parse --show-toplevel)"
 sha="$(git -C "$repo" rev-parse --verify "$commit^{commit}")" || exit 2
-TESTS='(\.test\.[cm]?[jt]sx?$|\.spec\.[cm]?[jt]sx?$|/__tests__/|(^|/)tests?/|\.t\.sol$|^e2e/sandbox/scenarios/issue-[^/]+\.mjs$)'
+TESTS='(\.test\.[cm]?[jt]sx?$|\.spec\.[cm]?[jt]sx?$|/__tests__/|(^|/)tests?/|\.t\.sol$|^e2e/testbench/scenarios/issue-[^/]+\.mjs$)'
 if [ "$expect" = fail ]; then
   base="$(git -C "$repo" rev-parse --verify "${PROVE_BASE:-origin/main}^{commit}")" || exit 2
   parent="$(git -C "$repo" rev-parse "$sha^")"

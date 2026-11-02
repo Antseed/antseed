@@ -466,7 +466,7 @@ export class ProcessManager {
   }
 
   async start(opts: StartOptions): Promise<RuntimeProcessState> {
-    // An attach-only desktop only ever attaches to the sandbox's buyer. Every
+    // An attach-only desktop only ever attaches to the testbench's buyer. Every
     // spawn path (IPC, chat-triggered start, restarts) ends here, so this is
     // the one place that keeps it from starting a second buyer or a seller.
     if (isAttachOnly()) throw new Error(ATTACH_ONLY_RUNTIME_DISABLED);

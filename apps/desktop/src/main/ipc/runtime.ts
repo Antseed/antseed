@@ -10,7 +10,7 @@ import type { ProcessManager, RuntimeProcessState } from '../runtime/process-man
 import { resolveBuyerProxyPort } from '../runtime/active-config.js';
 import { assertAttachOnlyRuntime, isCompatibleSharedBuyer, refreshSharedBuyerAttachment } from '../runtime/shared-buyer.js';
 import { resolveConnectDataDir } from '../runtime/process-manager.js';
-import { isAttachOnly, preserveSandboxRouting } from '../runtime/attach-only.js';
+import { isAttachOnly, preserveTestbenchRouting } from '../runtime/attach-only.js';
 import { requestTeeSnapshot } from '../runtime/tee-verification.js';
 import type { DesktopTeeStatus } from '@antseed/node/tee-status';
 
@@ -183,7 +183,7 @@ export function registerRuntimeIpc(deps: RuntimeIpcDeps): void {
   });
 
   ipcMain.handle('runtime:stop', async (_event, mode: RuntimeMode) => {
-    // A shared buyer (named dev instances) or the sandbox buyer (attach-only)
+    // A shared buyer (named dev instances) or the testbench buyer (attach-only)
     // belongs to someone else: release it, never kill whatever holds its port.
     const sharedBuyer = isMultiInstanceDevelopment() || isAttachOnly();
     const preserveSharedBuyer = mode === 'connect' && sharedBuyer;
@@ -363,7 +363,7 @@ export function registerRuntimeIpc(deps: RuntimeIpcDeps): void {
     'runtime:update-config',
     async (_event, config: Record<string, unknown>): Promise<ApiResult> => {
       const existing = isAttachOnly() ? await readConfig(ACTIVE_CONFIG_PATH).catch(() => ({})) : {};
-      const safeConfig = preserveSandboxRouting(sanitizeDashboardConfigPayload(config), existing);
+      const safeConfig = preserveTestbenchRouting(sanitizeDashboardConfigPayload(config), existing);
       if (Object.keys(safeConfig).length === 0) {
         return { ok: false, data: null, error: 'No valid config keys provided', status: null };
       }

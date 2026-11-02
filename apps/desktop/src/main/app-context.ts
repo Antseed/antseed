@@ -109,7 +109,7 @@ export const TRAY_ICON_PATH = resolveAssetPath('antseed-mark.png', 'antseed-dock
 // since it determines the macOS keychain entry. On macOS dev runs some surfaces
 // may still show "Electron" because the underlying bundle is Electron.app.
 app.setName(INTERNAL_APP_NAME);
-// Must run before any safeStorage use: sandbox desktops (isolated profile and
+// Must run before any safeStorage use: testbench desktops (isolated profile and
 // attach-only) never read or write the developer's login keychain or keyring.
 for (const [name, value] of secretStoreSwitches()) {
   app.commandLine.appendSwitch(name, value);
