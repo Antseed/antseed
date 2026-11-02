@@ -1301,6 +1301,8 @@ export class BuyerProxy {
   private readonly _now: () => number
   /** Latest relayer receipt per sweep authNonce, for CLI progress polling. */
   private readonly _sweepReceipts = new Map<string, SweepReceiptPayload>()
+  /** The relayer whose receipt `_sweepReceipts` holds, per auth nonce. */
+  private readonly _sweepReceiptPeers = new Map<string, string>()
   /**
    * Hot-wallet deposit watcher (auto-sweep). Owned by `buyer start`, attached
    * here so the desktop and `antseed deposit` can drive it over the control
@@ -1391,11 +1393,20 @@ export class BuyerProxy {
       on?: (event: 'sweep:receipt', listener: (event: { peerId: string; payload: SweepReceiptPayload }) => void) => unknown
     }
     if (typeof sweepEventNode.on === 'function') {
-      sweepEventNode.on('sweep:receipt', ({ payload }) => {
-        this._sweepReceipts.set(payload.authNonce.toLowerCase(), payload)
+      sweepEventNode.on('sweep:receipt', ({ peerId, payload }) => {
+        const key = payload.authNonce.toLowerCase()
+        const current = this._sweepReceipts.get(key)
+        // A late refusal from a relayer offered the sweep earlier must not hide the progress of the one that took it.
+        if (current && current.status !== 'rejected' && payload.status === 'rejected' && this._sweepReceiptPeers.get(key) !== peerId) return
+        this._sweepReceipts.delete(key)
+        this._sweepReceipts.set(key, payload)
+        this._sweepReceiptPeers.set(key, peerId)
         if (this._sweepReceipts.size > 64) {
           const oldest = this._sweepReceipts.keys().next().value
-          if (oldest !== undefined) this._sweepReceipts.delete(oldest)
+          if (oldest !== undefined) {
+            this._sweepReceipts.delete(oldest)
+            this._sweepReceiptPeers.delete(oldest)
+          }
         }
       })
     }
