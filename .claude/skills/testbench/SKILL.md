@@ -5,7 +5,7 @@ description: How to use the worktree testbench (pnpm testbench): prerequisites, 
 
 # Testbench test
 
-How to drive `pnpm testbench` in this worktree. `e2e/testbench/README.md` is the full reference for every command and the `sb` API.
+How to drive `pnpm testbench` in this worktree. `e2e/testbench/README.md` is the full reference for every command and the `tb` API.
 
 **What to run is not decided here.** The **verify-antseed** skill (`.claude/skills/verify-antseed/SKILL.md`, "Decide what to prove") maps a changed path to the unit tests and scenarios it requires, and says when the change is proven. Read it first, then use this skill to run what it names.
 
@@ -76,7 +76,7 @@ Every run writes `~/.antseed-testbench/<name>/reports/<timestamp>-<scenario>/`: 
 - `pnpm testbench run desktop-chat --chain local` launches the built attach-only desktop under Playwright on the testbench buyer (testbench wallet, testbench chat store, telemetry off). A window opens while it runs.
 - On a headless Linux server or VPS: `xvfb-run -a pnpm testbench run desktop-chat --chain local`.
 - After the run, open `screenshots/` and `video/desktop.webm` and say what they show; read `desktop-main.log` for main-process errors. A chat timeout saves `screenshots/*chat-timeout*.png` and puts the visible screen text in the error.
-- A new desktop scenario: `e2e/testbench/scenarios/desktop-<name>.mjs` with `requires: ['desktop']`, `const ui = await sb.desktop()`, role and label selectors (`getByRole`, `getByLabel`), `ui.screenshot(name)`, and `sb.check('no renderer errors', ui.errors.length === 0, ui.errors)`. If an element has no accessible name, add an `aria-label` as part of the change.
+- A new desktop scenario: `e2e/testbench/scenarios/desktop-<name>.mjs` with `requires: ['desktop']`, `const ui = await tb.desktop()`, role and label selectors (`getByRole`, `getByLabel`), `ui.screenshot(name)`, and `tb.check('no renderer errors', ui.errors.length === 0, ui.errors)`. If an element has no accessible name, add an `aria-label` as part of the change.
 - Hands-on review: `pnpm testbench run desktop-chat --chain local --keep`, then `pnpm testbench desktop` (Vite hot reload, attach-only; `--cdp-port N` for agent-browser), or `pnpm testbench:attach`.
 
 ## 7. Share (Linux server)

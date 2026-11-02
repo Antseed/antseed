@@ -15,7 +15,7 @@ const report = {
 
 describe('html report', () => {
   it('renders checks, media and escapes untrusted text', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'sb-report-'));
+    const dir = await mkdtemp(join(tmpdir(), 'tb-report-'));
     await mkdir(join(dir, 'screenshots'));
     await mkdir(join(dir, 'video'));
     await writeFile(join(dir, 'screenshots', '01-launched.png'), '');
@@ -32,7 +32,7 @@ describe('html report', () => {
 
 describe('report server', () => {
   it('stays inside the reports dir and serves files with ranges', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'sb-serve-'));
+    const dir = await mkdtemp(join(tmpdir(), 'tb-serve-'));
     await mkdir(join(dir, 'run1'));
     await writeFile(join(dir, 'run1', 'index.html'), '<h1>hi</h1>');
     await writeFile(join(dir, 'run1', 'secret.key'), 'nope');

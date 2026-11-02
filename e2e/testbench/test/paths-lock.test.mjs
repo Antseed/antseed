@@ -25,7 +25,7 @@ describe('naming', () => {
 
   it('refuses a testbench root inside ~/.antseed or at $HOME', () => {
     assert.equal(testbenchRoot({}, '/home/u'), '/home/u/.antseed-testbench');
-    assert.throws(() => testbenchRoot({ ANTSEED_TESTBENCH_HOME: '/home/u/.antseed/sb' }, '/home/u'), /never live inside ~\/\.antseed/);
+    assert.throws(() => testbenchRoot({ ANTSEED_TESTBENCH_HOME: '/home/u/.antseed/tb' }, '/home/u'), /never live inside ~\/\.antseed/);
     assert.throws(() => testbenchRoot({ ANTSEED_TESTBENCH_HOME: '/home/u/.antseed' }, '/home/u'), /never live inside/);
     assert.throws(() => testbenchRoot({ ANTSEED_TESTBENCH_HOME: '/home/u' }, '/home/u'), /home directory/);
   });

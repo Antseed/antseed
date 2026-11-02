@@ -10,7 +10,7 @@ import { profileDesktopEnv, profilePaths, resolveMainnetWallet, walletAddress } 
 const KEY = 'ab'.repeat(32);
 const REAL_HOME = userInfo().homedir;
 const manifest = {
-  dir: '/sb/wt', home: '/sb/wt/home', buyerDir: '/sb/wt/buyer', buyerConfig: '/sb/wt/buyer/config.json',
+  dir: '/tb/wt', home: '/tb/wt/home', buyerDir: '/tb/wt/buyer', buyerConfig: '/tb/wt/buyer/config.json',
   proxyUrl: 'http://127.0.0.1:40001', rpcUrl: 'http://127.0.0.1:40002',
 };
 const userEnv = { PATH: '/bin', HOME: REAL_HOME, ANTSEED_IDENTITY_HEX: 'cd'.repeat(32), [BUYER_KEY_ENV]: KEY, ANTSEED_DATA_DIR: join(REAL_HOME, '.antseed') };
@@ -33,7 +33,7 @@ describe('testbench buyer key', () => {
   });
 
   it('becomes the testbench buyer identity, owner-only, replacing the previous testbench key', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'sb-buyer-'));
+    const dir = await mkdtemp(join(tmpdir(), 'tb-buyer-'));
     try {
       await writeFile(join(dir, 'identity.key'), `${'11'.repeat(32)}\n`, { mode: 0o644 });
       await writeBuyerKey(dir, KEY);
@@ -74,7 +74,7 @@ describe('testbench HOME', () => {
   });
 
   it('mainnet profile desktops run on the profile home with no inherited keys', () => {
-    const paths = profilePaths('/sb/wt');
+    const paths = profilePaths('/tb/wt');
     const env = profileDesktopEnv({ baseEnv: userEnv, paths, ports: { renderer: 1, payments: 2, systemProxy: 3, claudeGateway: 4 }, instance: 'x' });
     assert.equal(env.HOME, paths.home);
     assert.equal(env.ANTSEED_IDENTITY_HEX, undefined);

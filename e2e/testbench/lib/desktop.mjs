@@ -101,7 +101,8 @@ export function electronRootArgs({ platform = process.platform, uid = process.ge
 
 /** Closes the app, and kills its process if Electron does not exit in time (it can hang on shutdown). */
 export async function closeApp(app, { timeoutMs = 15_000 } = {}) {
-  const child = app.process();
+  let child = null;
+  try { child = app.process(); } catch { return; /* already closed: Playwright has dropped the app */ }
   const exited = new Promise((resolveExit) => {
     if (!child || child.exitCode !== null || child.signalCode !== null) resolveExit();
     else child.once('exit', () => resolveExit());
@@ -155,6 +156,7 @@ async function launchElectron({ desktopDir, env, reportDir, event, trace, instan
   await event('desktop-launched', { instance });
 
   let shot = 0;
+  let closed = false;
   const ui = {
     app,
     page,
@@ -199,6 +201,9 @@ async function launchElectron({ desktopDir, env, reportDir, event, trace, instan
       throw new Error(`No reply matching ${expect} within ${timeoutMs}ms after sending "${prompt}". Screen ends with: ${tail}${shotPath ? ` (screenshot ${shotPath})` : ''}`);
     },
     async close() {
+      // Scenarios may close the desktop themselves; dispose() closes it again.
+      if (closed) return;
+      closed = true;
       const tracePath = join(reportDir, 'trace.zip');
       if (trace) await app.context().tracing.stop({ path: tracePath }).catch(() => {});
       const video = page.video();

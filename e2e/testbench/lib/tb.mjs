@@ -45,7 +45,7 @@ export function createTestbenchApi({ manifest, control, eventsPath, chain, stric
   const proxy = async (path, init = {}) => fetch(`${manifest.proxyUrl}${path}`, { ...init, signal: AbortSignal.timeout(init.timeoutMs ?? 120_000) });
   const desktops = [];
 
-  const sb = {
+  const tb = {
     manifest,
     proxyUrl: manifest.proxyUrl,
     rpcUrl: manifest.rpcUrl,
@@ -104,7 +104,7 @@ export function createTestbenchApi({ manifest, control, eventsPath, chain, stric
     /** Chat through the proxy; pins to a seller with <peerId>@<model> when sellerId is given. */
     async chat({ model, prompt = 'Say hello.', stream = false, sellerId } = {}) {
       assert(model, 'chat needs a model');
-      const routedModel = sellerId ? `${sb.seller(sellerId).peerId}@${model}` : model;
+      const routedModel = sellerId ? `${tb.seller(sellerId).peerId}@${model}` : model;
       const started = Date.now();
       const response = await proxy('/v1/chat/completions', {
         method: 'POST',
@@ -145,7 +145,7 @@ export function createTestbenchApi({ manifest, control, eventsPath, chain, stric
     },
     /** Total signed (cumulative SpendingAuth) micro-USDC per seller id across its channels. */
     async signedBySeller() {
-      const bySeller = await sb.channels({ all: true });
+      const bySeller = await tb.channels({ all: true });
       const totals = {};
       for (const seller of manifest.sellers) {
         totals[seller.id] = (bySeller[seller.id] ?? []).reduce((sum, channel) => sum + BigInt(channel.cumulativeSigned ?? '0'), 0n);
@@ -207,10 +207,10 @@ export function createTestbenchApi({ manifest, control, eventsPath, chain, stric
     },
     usdcBalance: (address) => reader.usdcBalance(address),
     /** On-chain ChannelSettled events between the buyer and a seller since the testbench started. */
-    settledEvents: (sellerId) => reader.settledEvents(manifest.buyer.address, sb.seller(sellerId).address, manifest.chainStartBlock),
+    settledEvents: (sellerId) => reader.settledEvents(manifest.buyer.address, tb.seller(sellerId).address, manifest.chainStartBlock),
     /** Exact on-chain settlement against what the buyer signed; call after closeAll(). */
     async assertSettlementMatchesSigned(expectedBySeller) {
-      const expected = expectedBySeller ?? await sb.signedBySeller();
+      const expected = expectedBySeller ?? await tb.signedBySeller();
       const observed = await verifySettlement({ reader, manifest, expectedBySeller: expected });
       checks.push({ name: 'exact on-chain settlement with zero reserves', ok: true });
       await event('settlement', observed);
@@ -225,5 +225,5 @@ export function createTestbenchApi({ manifest, control, eventsPath, chain, stric
       reader.close();
     },
   };
-  return sb;
+  return tb;
 }

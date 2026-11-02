@@ -5,13 +5,13 @@ description: Prove an AntSeed change works end to end on this worktree's isolate
 
 # Verify AntSeed
 
-This skill says what to prove, when a scenario is required, and what evidence to keep. It is the only map from a changed path to what must run. `features/` is the user-facing feature map (pstack's create-verification-skill shape): one recipe per feature, from the user's point of view, and the table below links each row to it. The **testbench** skill (`.claude/skills/testbench/SKILL.md`) is the how-to for running it: prerequisites, commands, chains, reports, desktop under `xvfb-run`, share. `e2e/testbench/README.md` is the reference for every command and the `sb` API.
+This skill says what to prove, when a scenario is required, and what evidence to keep. It is the only map from a changed path to what must run. `features/` is the user-facing feature map (pstack's create-verification-skill shape): one recipe per feature, from the user's point of view, and the table below links each row to it. The **testbench** skill (`.claude/skills/testbench/SKILL.md`) is the how-to for running it: prerequisites, commands, chains, reports, desktop under `xvfb-run`, share. `e2e/testbench/README.md` is the reference for every command and the `tb` API.
 
 ## When to use it
 
 This skill is opt-in (see `CLAUDE.md`). Use it only when the user asks for testbench verification or their instructions for the task say to. Otherwise verify with builds, unit tests and typecheck, and at most mention which scenario would cover the change.
 
-Once the user has opted in, verify without asking again for each step (pstack's never-block-on-the-human). That covers builds, unit tests, new scenarios, `pnpm testbench run <scenario> --chain local`, `--chain fork` when doctor reports a fork RPC, and desktop QA runs (`sb.desktop()`, `xvfb-run`).
+Once the user has opted in, verify without asking again for each step (pstack's never-block-on-the-human). That covers builds, unit tests, new scenarios, `pnpm testbench run <scenario> --chain local`, `--chain fork` when doctor reports a fork RPC, and desktop QA runs (`tb.desktop()`, `xvfb-run`).
 
 Get an explicit yes for each run of:
 
@@ -38,16 +38,16 @@ When the user has opted in: add a testbench scenario only when a unit test can't
 
 ### Gotchas
 
-- `issue-1200-spendingauth-catchup` needs the lose-NeedAuth fault (`sb.faults.loseNeedAuths`). Without it, the seller's cost-free NeedAuth wins the race against the buyer's 402 negotiator, and the scenario passes on buggy code. Arm the fault right before the chat it targets, and wait for `sb.faults.lostNeedAuths()` to return the dropped frame before you read `cumulativeSigned`. Arming clears that list, and every buyer start disarms the fault.
+- `issue-1200-spendingauth-catchup` needs the lose-NeedAuth fault (`tb.faults.loseNeedAuths`). Without it, the seller's cost-free NeedAuth wins the race against the buyer's 402 negotiator, and the scenario passes on buggy code. Arm the fault right before the chat it targets, and wait for `tb.faults.lostNeedAuths()` to return the dropped frame before you read `cumulativeSigned`. Arming clears that list, and every buyer start disarms the fault.
 - The roughly 5-second delay on a 402 catch-up chat is the seller waiting for a catch-up SpendingAuth (`DEFAULT_CATCH_UP_WAIT_MS` in `packages/node/src/seller-request-handler.ts`). It is not a buyer timeout.
 - The cooperative-close `knownIssue` checks are stale against `origin/main`. On this branch's base, `payment-flow` reports `KNOWN cooperative close charges exactly the delivered work` (36 settled for 18 delivered) and `chat-basic` reports `KNOWN settled amount equals the cost of delivered work` (54 for 36). After a merge with `origin/main` (checked at 4026643ca) both print `PASS`. Both outcomes are expected. Turn them into plain checks once the testbench branch includes that fix.
-- Pricing is a topology knob (`topology.sellers[].providers.<name>.services.<model>.pricing`, read by `sb.mockCostPerChat()`). A seller's `minBudgetPerRequest` is not. Scenarios get the default of 0.5 USDC, which is the amount the #1200 bug over-signs (500018 signed for 54 delivered).
+- Pricing is a topology knob (`topology.sellers[].providers.<name>.services.<model>.pricing`, read by `tb.mockCostPerChat()`). A seller's `minBudgetPerRequest` is not. Scenarios get the default of 0.5 USDC, which is the amount the #1200 bug over-signs (500018 signed for 54 delivered).
 - When doctor flags a stale `dist/`, run `pnpm run build`, or the changed package's build plus its dependents. The testbench loads `dist/`, so an unbuilt fix looks like a fix that does not work.
 - The `BuyerPaymentManager` tests live in `packages/node/tests/`, not in `packages/buyer-core`. The class moved to buyer-core, and `packages/node/src/payments/buyer-payment-manager.ts` re-exports it.
-- On this base, `payment:spend` events do not report the negotiator's catch-up. Read `cumulativeSigned` from `sb.channels()` instead. It is a decimal string of micro-USDC, so compare it as `BigInt`.
+- On this base, `payment:spend` events do not report the negotiator's catch-up. Read `cumulativeSigned` from `tb.channels()` instead. It is a decimal string of micro-USDC, so compare it as `BigInt`.
 - Inside an agent's Bash sandbox (macOS Seatbelt), the desktop test `Linux afterPack sets the sandbox helper mode before archiving` fails with `actual: 493, expected: 2541`: the testbench refuses the setuid bit. That is the environment, not the change. Run `pnpm --filter @antseed/desktop test` outside the testbench (the operator's shell or CI) for that one result, and never skip or loosen the test.
 - `--chain fork` runs the production contracts. A contract change shows up only on `--chain local`.
-- `withdraw()` after `sb.buyerRequestClose()` needs `sb.warp(15 * 60 + 60)` first. Waiting in wall-clock time does not move Anvil's clock.
+- `withdraw()` after `tb.buyerRequestClose()` needs `tb.warp(15 * 60 + 60)` first. Waiting in wall-clock time does not move Anvil's clock.
 - A desktop chat that times out saves `screenshots/chat-timeout.png` and puts the visible screen text in the error. Read those and the video before you change the scenario.
 
 ## Launch
@@ -102,10 +102,10 @@ pstack's playbooks say what proof each kind of change needs (Bug fix steps 1, 4 
 
 ## Drive
 
-- A scenario is `e2e/testbench/scenarios/<name>.mjs` with `meta`, `topology` and `run(sb)`. Drive the buyer like a client: `sb.chat()` goes through the buyer proxy, `sb.desktop()` through the desktop UI. Read state with `sb.channels()`, `sb.buyerBalance()`, `sb.settledEvents(id)` and `sb.mockRequests(id)`. Control the network with `sb.stopBuyer()`, `sb.stopSeller(id)` and `sb.warp(seconds)`.
-- Assert with `sb.check(name, ok, detail)`. Put the observed and expected values in `detail`: the failing line in the output is the evidence.
-- `sb.faults.loseNeedAuths(count)` makes the buyer drop its next `count` seller NeedAuth frames, and `sb.faults.lostNeedAuths()` returns what it dropped since that call. Arming clears the list, and every buyer start disarms the fault. Use a fault only to reach a state that no public path produces, and say why in a comment.
-- Desktop: `const ui = await sb.desktop()`, then `ui.sendChat(prompt)`, `ui.screenshot(name)` and `ui.page` (Playwright). Prefer `getByRole` and `getByLabel`. On a headless Linux server, run `xvfb-run -a pnpm testbench run desktop-chat --chain local`. Without `--chain`, `desktop-chat`, `chat-basic` and `routing-smoke` run on their first target, the fork.
+- A scenario is `e2e/testbench/scenarios/<name>.mjs` with `meta`, `topology` and `run(tb)`. Drive the buyer like a client: `tb.chat()` goes through the buyer proxy, `tb.desktop()` through the desktop UI. Read state with `tb.channels()`, `tb.buyerBalance()`, `tb.settledEvents(id)` and `tb.mockRequests(id)`. Control the network with `tb.stopBuyer()`, `tb.stopSeller(id)` and `tb.warp(seconds)`.
+- Assert with `tb.check(name, ok, detail)`. Put the observed and expected values in `detail`: the failing line in the output is the evidence.
+- `tb.faults.loseNeedAuths(count)` makes the buyer drop its next `count` seller NeedAuth frames, and `tb.faults.lostNeedAuths()` returns what it dropped since that call. Arming clears the list, and every buyer start disarms the fault. Use a fault only to reach a state that no public path produces, and say why in a comment.
+- Desktop: `const ui = await tb.desktop()`, then `ui.sendChat(prompt)`, `ui.screenshot(name)` and `ui.page` (Playwright). Prefer `getByRole` and `getByLabel`. On a headless Linux server, run `xvfb-run -a pnpm testbench run desktop-chat --chain local`. Without `--chain`, `desktop-chat`, `chat-basic` and `routing-smoke` run on their first target, the fork.
 
 ## Fix a bug red to green
 
@@ -124,7 +124,7 @@ The testbench lives on a testbench branch, not on `main`. The fix lives on a bra
    ```
 
    Resolve merge conflicts minimally and record each resolution. `CHANGELOG.md` conflicts most often.
-2. **Write the scenario first.** In the scratch worktree, create `e2e/testbench/scenarios/issue-<N>-<slug>.mjs`. Encode the bug as plain `sb.check`s, never `knownIssue`. Start with a fresh-testbench check, as `issue-1200-spendingauth-catchup.mjs` does. Add the name to the scenario list in `e2e/testbench/test/config-topology.test.mjs`.
+2. **Write the scenario first.** In the scratch worktree, create `e2e/testbench/scenarios/issue-<N>-<slug>.mjs`. Encode the bug as plain `tb.check`s, never `knownIssue`. Start with a fresh-testbench check, as `issue-1200-spendingauth-catchup.mjs` does. Add the name to the scenario list in `e2e/testbench/test/config-topology.test.mjs`.
 3. **Prove it fails.** Run `.claude/skills/verify-antseed/scripts/run-with-evidence.mjs issue-<N>-<slug> --chain local` on the unfixed code. It must fail on the check that states the issue, with the issue's numbers in `detail`. Keep the report directory. Its `checks.log` is the red evidence. If the scenario will not fail, stop and report why before you change product code.
 4. **Find the root cause** (pstack's Bug fix and fix-root-causes). The runtime evidence here: `pnpm testbench logs supervisor`, `pnpm testbench logs seller-<id>`, the report's `events.jsonl` and `logs/`, and a `--keep` run inspected with `pnpm testbench status`.
 5. **Fix it in a worktree from `origin/main`.** Make the smallest fix the evidence justifies. Add a unit test only where one can pin the mechanism the scenario found (pstack's tdd: no test beats a bad test):
@@ -163,8 +163,8 @@ The testbench itself writes `index.html`, `report.json`, `events.jsonl` and `met
 
 Proof standards:
 
-- Drive the real user path: the proxy, the desktop UI, on-chain reads. A fault (`sb.faults`) may set up a precondition. It never stands in for the behavior under test.
-- Check the action and the resulting state: what the buyer signed (`sb.channels()`), what settled on-chain (`sb.settledEvents()`, `sb.buyerBalance()`), and what the upstream served (`sb.mockRequests()`). An HTTP 200 alone proves nothing about payments.
+- Drive the real user path: the proxy, the desktop UI, on-chain reads. A fault (`tb.faults`) may set up a precondition. It never stands in for the behavior under test.
+- Check the action and the resulting state: what the buyer signed (`tb.channels()`), what settled on-chain (`tb.settledEvents()`, `tb.buyerBalance()`), and what the upstream served (`tb.mockRequests()`). An HTTP 200 alone proves nothing about payments.
 - Mocks stand only at the upstream boundary (the seller's provider API).
 - For a desktop run, open the screenshots and the video and say what they show.
 
@@ -192,8 +192,8 @@ Run them from the worktree root, or by absolute path from another worktree.
 
 The testbench cannot do these yet. Treat each as a known limit, not as a reason to skip a required run.
 
-- **Seller payment knobs.** A topology cannot set a seller's `minBudgetPerRequest`, so scenarios get the default (0.5 USDC). Per-model pricing is settable: `topology.sellers[].providers.<name>.services.<model>.pricing`, which `sb.mockCostPerChat()` reads.
-- **`sb.request()` for other endpoints.** `sb.chat()` drives only `/v1/chat/completions`. No helper drives `/v1/responses`.
+- **Seller payment knobs.** A topology cannot set a seller's `minBudgetPerRequest`, so scenarios get the default (0.5 USDC). Per-model pricing is settable: `topology.sellers[].providers.<name>.services.<model>.pricing`, which `tb.mockCostPerChat()` reads.
+- **`tb.request()` for other endpoints.** `tb.chat()` drives only `/v1/chat/completions`. No helper drives `/v1/responses`.
 - **RPC fault injection.** No proxy sits between the nodes and Anvil to delay, drop or fail RPC calls.
 - **Transport faults.** The only fault is NeedAuth loss, and it wraps the buyer payment manager's public `handleNeedAuth`. No public setting leaves a buyer under-signed: the buyer's `costToleranceMultiplier` is not in the node's payment config, and the testbench fixes `maxPerRequestUsdc` at 5 USDC. A frame-level fault on the payment channel between buyer and seller would be cleaner.
 - **High blast radius tests.** There is no dedicated always-run suite for keys, signing and spend caps. CI runs every package's tests, and the desktop's `apps/desktop/src/main/identity.ts` has no test.
