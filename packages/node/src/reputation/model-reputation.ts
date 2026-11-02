@@ -9,9 +9,19 @@ export type ModelReputationSource = {
   reputationScore?: number | null;
 };
 
+/**
+ * How long a verification read stays usable. The node reuses its last good
+ * read for this long when the contract can't be read, and a DIFF list older
+ * than this counts for nothing wherever it was carried or saved, so every
+ * buyer surface fails open after the same 15 minutes.
+ */
+export const VERIFICATION_STATUS_STALE_MAX_MS = 15 * 60_000;
+
 export type VerificationDiffSource = {
   /** Services (verification keys) with a live DIFF verdict. See `verificationServiceKey`. */
   onChainDiffServices?: readonly string[] | null;
+  /** Unix ms of the verification read behind `onChainDiffServices`; without it the list counts for nothing. */
+  onChainVerificationFetchedAt?: number | null;
 };
 
 function finiteScore(value: number | null | undefined): number | null {
@@ -32,10 +42,21 @@ export function verificationServiceKey(serviceId: string): string {
   return serviceId.trim().toLowerCase();
 }
 
-/** Whether the seller's offer of `serviceId` has a live on-chain DIFF verification verdict. */
-export function hasLiveDiffVerdict(source: VerificationDiffSource | null | undefined, serviceId: string): boolean {
+/**
+ * Whether the seller's offer of `serviceId` has a live on-chain DIFF
+ * verification verdict, judged from a read at most
+ * VERIFICATION_STATUS_STALE_MAX_MS old. A missing or older read fails open.
+ */
+export function hasLiveDiffVerdict(
+  source: VerificationDiffSource | null | undefined,
+  serviceId: string,
+  nowMs: number = Date.now(),
+): boolean {
   const services = source?.onChainDiffServices;
   if (!Array.isArray(services) || services.length === 0) return false;
+  const fetchedAt = source?.onChainVerificationFetchedAt;
+  if (typeof fetchedAt !== 'number' || !Number.isFinite(fetchedAt)) return false;
+  if (nowMs - fetchedAt >= VERIFICATION_STATUS_STALE_MAX_MS) return false;
   const key = verificationServiceKey(serviceId);
   return key.length > 0 && services.includes(key);
 }

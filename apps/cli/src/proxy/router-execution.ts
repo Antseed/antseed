@@ -97,7 +97,8 @@ export function eligibleRouterCandidates(
       offer.cachedInputUsdPerMillion !== undefined,
       preferCachedPricing,
       offer.inputUsdPerMillion === 0 && offer.outputUsdPerMillion === 0,
-      hasLiveDiffVerdict(peer, offer.serviceId),
+      // The verdict of the service the request is sent to, not of the alias that resolved to it.
+      hasLiveDiffVerdict(peer, plan.serviceId),
     )
     if (preferences && !isModelRouteEligible({ ...candidate, effectiveReputationScore }, preferences)) continue
     const key = JSON.stringify([candidate.peerId, candidate.provider, candidate.serviceId])

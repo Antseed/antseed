@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  VERIFICATION_STATUS_STALE_MAX_MS,
   DIFF_VERIFICATION_REPUTATION_MULTIPLIER,
   compareEffectiveModelReputation,
   effectiveModelReputationScore,
@@ -44,7 +45,7 @@ describe('model reputation', () => {
   });
 
   it('matches DIFF verdicts per service, the way the contract hashes names', () => {
-    const peer = { onChainDiffServices: ['gpt-6.1-sol'] };
+    const peer = { onChainDiffServices: ['gpt-6.1-sol'], onChainVerificationFetchedAt: Date.now() };
     expect(verificationServiceKey('  GPT-6.1-Sol ')).toBe('gpt-6.1-sol');
     expect(hasLiveDiffVerdict(peer, 'GPT-6.1-Sol')).toBe(true);
     expect(hasLiveDiffVerdict(peer, 'claude-opus-5.5')).toBe(false);
@@ -52,6 +53,17 @@ describe('model reputation', () => {
     expect(hasLiveDiffVerdict(peer, 'gpt-6-1-sol')).toBe(false);
     expect(hasLiveDiffVerdict({}, 'gpt-6.1-sol')).toBe(false);
     expect(hasLiveDiffVerdict(undefined, 'gpt-6.1-sol')).toBe(false);
+  });
+
+  it('fails open on a DIFF list from a read older than 15 minutes or of unknown age', () => {
+    const now = 1_700_000_000_000;
+    const fresh = { onChainDiffServices: ['gpt-6.1-sol'], onChainVerificationFetchedAt: now - VERIFICATION_STATUS_STALE_MAX_MS + 1 };
+    expect(hasLiveDiffVerdict(fresh, 'gpt-6.1-sol', now)).toBe(true);
+    // A list carried forward or restored from saved state while the contract could not be read.
+    const stale = { ...fresh, onChainVerificationFetchedAt: now - VERIFICATION_STATUS_STALE_MAX_MS };
+    expect(hasLiveDiffVerdict(stale, 'gpt-6.1-sol', now)).toBe(false);
+    expect(hasLiveDiffVerdict({ onChainDiffServices: ['gpt-6.1-sol'] }, 'gpt-6.1-sol', now)).toBe(false);
+    expect(hasLiveDiffVerdict({ onChainDiffServices: ['gpt-6.1-sol'], onChainVerificationFetchedAt: null }, 'gpt-6.1-sol', now)).toBe(false);
   });
 
   it('sorts by effective model reputation', () => {

@@ -343,7 +343,7 @@ export function buildNetworkModels(
         peer.cachedInputUsdPerMillion !== undefined,
         modelHasCachedInputPricing,
         modelRouteTotalPrice(peer) === 0,
-        hasLiveDiffVerdict(peerById.get(peer.peerId), peer.serviceId),
+        hasLiveDiffVerdict(peerById.get(peer.peerId), peer.serviceId, nowMs),
       )
     }
     if (options.routingPreferences) {

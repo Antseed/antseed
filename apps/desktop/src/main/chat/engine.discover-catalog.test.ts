@@ -67,7 +67,7 @@ test('persisted catalog cuts a live DIFF service to 10% and the discover row fla
   } } };
   const peer = {
     peerId: flashPeerId, providers: ['openai'], onChainReputationScore: 80,
-    onChainDiffServices: ['diff-model'], providerPricing: pricing,
+    onChainDiffServices: ['diff-model'], onChainVerificationFetchedAt: Date.now() - 60_000, providerPricing: pricing,
   };
   const catalog = buildChatServiceCatalogFromPersistedPeers({ discoveredPeers: [peer] });
   const diff = catalog.find((entry) => entry.id === 'diff-model');
@@ -79,12 +79,17 @@ test('persisted catalog cuts a live DIFF service to 10% and the discover row fla
     [flashPeerId]: {
       trust: null, onChainAgentId: 7, onChainPoolStakeAnts: null, onChainChannelCount: null, onChainGhostCount: null,
       onChainTotalVolumeUsdcMicros: null, onChainLastSettledAtSec: null, onChainReputationScore: 80, onChainWashFlagged: false,
-      onChainDiffServices: ['diff-model'], onChainSybilRisk: null, onChainSybilFlags: [], capabilities: [],
+      onChainDiffServices: ['diff-model'], onChainVerificationFetchedAt: Date.now() - 60_000, onChainSybilRisk: null, onChainSybilFlags: [], capabilities: [],
       verificationLinks: [], peerIconUrl: null,
     },
   }, new Map());
   assert.equal(rows.find((row) => row.serviceId === 'diff-model')?.verificationDiff, true);
   assert.equal(rows.find((row) => row.serviceId === 'clean-model')?.verificationDiff, false);
+
+  // Saved state from a read 15 minutes old or more (the buyer could not read the contract since) fails open.
+  const stalePeer = { ...peer, onChainVerificationFetchedAt: Date.now() - 15 * 60_000 };
+  const staleCatalog = buildChatServiceCatalogFromPersistedPeers({ discoveredPeers: [stalePeer] });
+  assert.equal(staleCatalog.find((entry) => entry.id === 'diff-model')?.effectiveReputationScore, 80);
 });
 
 test('persisted catalog applies the cached-input penalty like the live catalog', () => {

@@ -355,6 +355,8 @@ export type BuyerStateDiscoveredPeer = {
   onChainWashFlagged: boolean | null;
   /** Services with a live DIFF verdict, as trimmed lowercase names. */
   onChainDiffServices?: string[];
+  /** Unix ms of the verification read behind `onChainDiffServices`; a list older than 15 minutes counts for nothing. */
+  onChainVerificationFetchedAt?: number | null;
   onChainSybilRisk: number | null;
   onChainSybilFlags: string[];
   sellerContract?: string;

@@ -5,7 +5,7 @@ import { IDENTITY_HISTORY_TTL_MS, IdentityHistoryCollector } from './reputation/
 import { computeTrustScore } from './reputation/trust-score.js';
 import { TrustSignalsClient, type TrustSignals } from './payments/evm/trust-signals-client.js';
 import { VerificationSignalsClient } from './payments/evm/verification-signals-client.js';
-import { verificationServiceKey } from './reputation/model-reputation.js';
+import { VERIFICATION_STATUS_STALE_MAX_MS, verificationServiceKey } from './reputation/model-reputation.js';
 
 import type { Identity, IdentityStore } from "./p2p/identity.js";
 import { loadOrCreateIdentity } from "./p2p/identity.js";
@@ -155,8 +155,9 @@ export const VERIFICATION_STATUS_TTL_MS = 120_000;
 /**
  * How long the last good verification read stands in for failed refreshes.
  * Past this, the buyer fails open: no DIFF penalty until a read succeeds.
+ * `hasLiveDiffVerdict` applies the same bound to carried or saved copies.
  */
-export const VERIFICATION_STATUS_STALE_MAX_MS = 15 * 60_000;
+export { VERIFICATION_STATUS_STALE_MAX_MS };
 
 /** Every service name the peer advertises, as verification keys. */
 function advertisedVerificationKeys(p: PeerInfo): string[] {
@@ -2539,7 +2540,7 @@ export class AntseedNode extends EventEmitter {
       debugLog(`[Node] TrustSignalsClient initialized (pools=${Boolean(payments.sellerPoolsAddress)} usage=${Boolean(payments.usageAccountingAddress)} wash=${Boolean(payments.washTradingRegistryAddress)})`);
     }
     if (this._channelsClient && payments.verificationContractAddress) {
-      this._verificationSignalsClient = new VerificationSignalsClient(this._channelsClient.provider, payments.verificationContractAddress);
+      this._verificationSignalsClient = new VerificationSignalsClient(payments.readProvider ?? this._channelsClient.provider, payments.verificationContractAddress);
       debugLog(`[Node] VerificationSignalsClient initialized (contract=${payments.verificationContractAddress.slice(0, 10)}...)`);
     }
 

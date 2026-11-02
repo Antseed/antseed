@@ -465,6 +465,7 @@ test('a live DIFF verdict cuts the service reputation to 10% even without cached
     peerId: '7'.repeat(40),
     onChainReputationScore: 90,
     onChainDiffServices: ['diff-model'],
+    onChainVerificationFetchedAt: NOW_MS - 60_000,
     providerPricing: pricing(['diff-model', 'other-model']),
   })
   const clean = makePeer({
@@ -481,6 +482,9 @@ test('a live DIFF verdict cuts the service reputation to 10% even without cached
   assert.equal(diffModel?.peers[1]?.reputationScore, 90)
   // Per service: the seller's other service keeps its full reputation.
   assert.equal(models.find((model) => model.id === 'other-model')?.peers[0]?.effectiveReputationScore, 90)
+  // A DIFF list from a read 15 minutes old or more (the contract has been unreadable since) no longer cuts.
+  const stale = buildNetworkModels([flagged, clean], NOW_MS + 15 * 60_000)
+  assert.equal(stale.find((model) => model.id === 'diff-model')?.peers.find((peer) => peer.peerId === flagged.peerId)?.effectiveReputationScore, 90)
 })
 
 test('a live DIFF verdict compounds with the missing cached-input penalty', () => {
@@ -488,6 +492,7 @@ test('a live DIFF verdict compounds with the missing cached-input penalty', () =
     peerId: '9'.repeat(40),
     onChainReputationScore: 100,
     onChainDiffServices: ['cache-model'],
+    onChainVerificationFetchedAt: NOW_MS - 60_000,
     providerPricing: {
       openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'cache-model': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } } },
     },

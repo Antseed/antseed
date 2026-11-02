@@ -2811,6 +2811,7 @@ test('model-only routing cuts a live DIFF service to 10% and excludes it under t
   const flagged = makePeer('a', ['openai'])
   flagged.onChainReputationScore = 95
   flagged.onChainDiffServices = ['diff-model']
+  flagged.onChainVerificationFetchedAt = Date.now()
   flagged.providerPricing = pricing
   flagged.providerServiceApiProtocols = protocols
   const clean = makePeer('b', ['openai'])
