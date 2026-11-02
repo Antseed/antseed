@@ -1,6 +1,7 @@
 pragma solidity ^0.8.24;
 
 import { Script } from "forge-std/Script.sol";
+import { IAntseedKbfVerification } from "../../../interfaces/IAntseedKbfVerification.sol";
 import { IAntseedRegistry } from "../../../interfaces/IAntseedRegistry.sol";
 import { AntseedKbfVerificationPointsPolicy } from "../../../policies/AntseedKbfVerificationPointsPolicy.sol";
 import { AntseedKbfVerification } from "../../../verification/AntseedKbfVerification.sol";
@@ -71,6 +72,14 @@ contract M003DeployVerificationRegistry is Script {
         );
         require(verification.owner() == config.owner, "M003: wrong owner");
         require(verification.pendingOwner() == address(0), "M003: pending ownership transfer");
+        // Confirmations: a DIFF is recorded only once a second auditor reports it; SAME and
+        // UNDETERMINED are recorded on one report.
+        require(verification.requiredReports(IAntseedKbfVerification.Verdict.SAME) == 1, "M003: wrong SAME reports");
+        require(verification.requiredReports(IAntseedKbfVerification.Verdict.DIFF) == 2, "M003: wrong DIFF reports");
+        require(
+            verification.requiredReports(IAntseedKbfVerification.Verdict.UNDETERMINED) == 1,
+            "M003: wrong UNDETERMINED reports"
+        );
         require(address(policy.verification()) == address(verification), "M003: wrong policy verification");
         require(address(policy.usageAccounting()) == config.usageAccounting, "M003: wrong policy usage accounting");
         require(policy.owner() == config.owner, "M003: wrong policy owner");

@@ -1,13 +1,13 @@
 {
   "release": "003-kbf-verification",
   "status": "active",
-  "sourceCommit": "67dbdc11a03530036f3177ef3e7af125c8653ee8",
+  "sourceCommit": "696045b1761481fd35562e164d809e2043f367ee",
   "contracts": {
     "kbfVerification": {
-      "address": "0xded52d46f1047c037dd54d9470ebb1be291b3d1c",
-      "deploymentBlock": 53291075,
-      "transactionHash": "0x6821e58f6917a32b49c1435d4fcc2f43d4b45c94dc009768ca6bd122f0cb3972",
-      "runtimeCodeHash": "0xb4d2273572545733e4521b53ba133d92b3afcad0a2c77695cda2accab81300b9",
+      "address": "0x4bdafcc48cc61aaf1ed2f5ebacc05ee305c80916",
+      "deploymentBlock": 53419391,
+      "transactionHash": "0x7ab57e0c461bbc41ceb215b4f77e4d4ff97e0e221570c8bb0f4507ab93679b11",
+      "runtimeCodeHash": "0xf05a5dc5c5c027a0d93959dfe4d9b8ba5979778277c43502cab3c13c6c097ab0",
       "version": "1",
       "external": false,
       "deployedInRelease": true,
@@ -18,15 +18,15 @@
       "owner": "0xb0b04d4020E9CBd3203D553Ae9c1cb9DbfFB3040"
     },
     "kbfVerificationPointsPolicy": {
-      "address": "0x97cfcca8966f41c9a49f9c11cd83f25455fd035a",
-      "deploymentBlock": 53291076,
-      "transactionHash": "0x5d4e61bc696133a67ec060330106f020fffc54ab7ee7223fb9267d54af0e11d8",
-      "runtimeCodeHash": "0x6bf0fe24b3dde705085c8614105efe2d0e0735ea968e1ebc99148bbb345d9ac9",
+      "address": "0xb252c8c9f5d74114ac525ca8dbdbc5f028ec8c12",
+      "deploymentBlock": 53419392,
+      "transactionHash": "0x7c7ccb0d8b7cbd148d3d1265cdf69887812ade7c823dbdebff4ab8d148deacae",
+      "runtimeCodeHash": "0x3c7361a1034a5dcd8e97df9185d7252bae5391c62a51fc748c85ca8eea1dcd46",
       "version": "1",
       "external": false,
       "deployedInRelease": true,
       "constructorArguments": [
-        "0xded52D46f1047C037dd54d9470eBb1bE291b3D1c",
+        "0x4BdAfcc48cc61Aaf1ed2f5EbaCc05Ee305C80916",
         "0xAdd2D85316153D7bfaF7921EE9Bf1Bb6c7A1cBc9",
         "0",
         "0xb0b04d4020E9CBd3203D553Ae9c1cb9DbfFB3040"
@@ -37,15 +37,15 @@
   "transactions": [
     {
       "action": "deploy AntseedKbfVerification",
-      "hash": "0x6821e58f6917a32b49c1435d4fcc2f43d4b45c94dc009768ca6bd122f0cb3972",
-      "blockNumber": 53291075,
+      "hash": "0x7ab57e0c461bbc41ceb215b4f77e4d4ff97e0e221570c8bb0f4507ab93679b11",
+      "blockNumber": 53419391,
       "from": "0xb0b04d4020e9cbd3203d553ae9c1cb9dbffb3040",
       "to": null
     },
     {
       "action": "deploy AntseedKbfVerificationPointsPolicy",
-      "hash": "0x5d4e61bc696133a67ec060330106f020fffc54ab7ee7223fb9267d54af0e11d8",
-      "blockNumber": 53291076,
+      "hash": "0x7c7ccb0d8b7cbd148d3d1265cdf69887812ade7c823dbdebff4ab8d148deacae",
+      "blockNumber": 53419392,
       "from": "0xb0b04d4020e9cbd3203d553ae9c1cb9dbffb3040",
       "to": null
     }
@@ -64,9 +64,9 @@
       "usageAccounting": "0xadd2d85316153d7bfaf7921ee9bf1bb6c7a1cbc9",
       "pointsPolicyRegistry": "0x212d2c1058b84507de248a147aafeb08fb19e3b6",
       "owner": "0xb0b04d4020E9CBd3203D553Ae9c1cb9DbfFB3040",
-      "deploymentNonce": 10321,
-      "address": "0xded52D46f1047C037dd54d9470eBb1bE291b3D1c",
-      "policyAddress": "0x97CfCca8966F41c9a49F9C11Cd83f25455FD035a",
+      "deploymentNonce": 10338,
+      "address": "0x4BdAfcc48cc61Aaf1ed2f5EbaCc05Ee305C80916",
+      "policyAddress": "0xB252c8c9F5d74114ac525Ca8DBdBc5F028ec8C12",
       "bonusBps": 0
     }
   },

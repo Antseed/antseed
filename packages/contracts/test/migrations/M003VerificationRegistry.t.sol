@@ -75,6 +75,9 @@ contract M003VerificationRegistryTest is Test {
         assertEq(address(verification.registry()), address(registry));
         assertEq(address(verification.sellerPools()), address(pools));
         assertFalse(verification.approvedAuditors(auditor), "M003 approves no auditors");
+        assertEq(verification.requiredReports(IAntseedKbfVerification.Verdict.SAME), 1);
+        assertEq(verification.requiredReports(IAntseedKbfVerification.Verdict.DIFF), 2, "a DIFF needs a second auditor");
+        assertEq(verification.requiredReports(IAntseedKbfVerification.Verdict.UNDETERMINED), 1);
         assertEq(address(policy), vm.computeCreateAddress(owner, settings.deploymentNonce + 1));
         assertEq(address(policy.verification()), address(verification));
         assertEq(address(policy.usageAccounting()), address(accounting));
