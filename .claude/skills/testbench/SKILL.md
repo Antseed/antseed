@@ -23,6 +23,7 @@ How to drive `pnpm testbench` in this worktree. `e2e/testbench/README.md` is the
 - `--chain fork` needs `BASE_MAINNET_RPC_URL` (a dedicated Base RPC with an API key) in the worktree's gitignored `.env.local` or the shell. Check with `grep -c '^BASE_MAINNET_RPC_URL=' .env.local`. If it is missing, ask the user to add it or use `--chain local`; never fall back to a public RPC.
 - The testbench buyer pays from its own throwaway key, or from `ANTSEED_TESTBENCH_BUYER_IDENTITY_HEX` in `.env.local` or the shell when set. Never put the user's real key there or read it from `~/.antseed`.
 - The testbench loads `dist/`, not `src/`: `pnpm install && pnpm run build` in a fresh worktree, and rebuild changed packages after an edit.
+- Desktop scenarios need Playwright's ffmpeg for the run video: `pnpm exec playwright install ffmpeg` once per machine (doctor checks it). As root on Linux the desktop launchers add `--no-sandbox` automatically.
 - One read-only check for all of this: `.claude/skills/verify-antseed/scripts/doctor.mjs`. Fix every `FAIL` before a run.
 
 ## 2. Run a scenario

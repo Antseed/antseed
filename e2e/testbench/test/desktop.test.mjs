@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { describe, it } from 'node:test';
-import { closeApp } from '../lib/desktop.mjs';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { closeApp, electronRootArgs, playwrightFfmpeg } from '../lib/desktop.mjs';
 
 function fakeApp({ closeHangs }) {
   const child = Object.assign(new EventEmitter(), {
@@ -29,5 +32,29 @@ describe('closeApp', () => {
     const closing = closeApp(app, { timeoutMs: 50 });
     await closing;
     assert.equal(app.child.killed, 'SIGKILL');
+  });
+});
+
+describe('desktop launch prerequisites', () => {
+  it('turns Chromium sandboxing off only for root on Linux', () => {
+    assert.deepEqual(electronRootArgs({ platform: 'linux', uid: 0 }), ['--no-sandbox']);
+    assert.deepEqual(electronRootArgs({ platform: 'linux', uid: 1000 }), []);
+    assert.deepEqual(electronRootArgs({ platform: 'darwin', uid: 0 }), []);
+  });
+
+  it("finds Playwright's ffmpeg where Playwright expects it", async () => {
+    const browsers = await mkdtemp(join(tmpdir(), 'pw-browsers-'));
+    try {
+      const env = { ...process.env, PLAYWRIGHT_BROWSERS_PATH: browsers };
+      const missing = playwrightFfmpeg({ env });
+      assert.equal(missing.installed, false);
+      assert.ok(missing.location.startsWith(browsers), missing.location);
+      assert.match(missing.reason, /not installed/);
+      await mkdir(missing.location, { recursive: true });
+      await writeFile(join(missing.location, 'ffmpeg-linux'), '');
+      assert.equal(playwrightFfmpeg({ env }).installed, true);
+    } finally {
+      await rm(browsers, { recursive: true, force: true });
+    }
   });
 });

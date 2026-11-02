@@ -12,7 +12,7 @@ import { legacyCacheHome, sharedCacheHome } from './lib/cache.mjs';
 import { loadSourceConfig, resolveConfigSource } from './lib/config.mjs';
 import { loadControlClient } from './lib/control.mjs';
 import { BUYER_KEY_ENV, FORBIDDEN_PORTS, isolatedEnv, parseEnvFile, resolveBuyerKey, resolveForkUrl, resolveLiveKeys, writeBuyerKey } from './lib/env.mjs';
-import { attachOnlyEnv } from './lib/desktop.mjs';
+import { attachOnlyEnv, electronRootArgs, FFMPEG_INSTALL, playwrightFfmpeg } from './lib/desktop.mjs';
 import { inspectLock, isOwnedProcessAlive, killOwned } from './lib/lock.mjs';
 import { readJson, saveJson, validateManifest } from './lib/manifest.mjs';
 import { HELP, parseArgs } from './lib/options.mjs';
@@ -262,6 +262,11 @@ async function runScenario(options, ctx) {
   const before = await runningState(ctx.paths);
   const target = chooseTarget(scenario, { requested: options.chain, running: before.running ? (before.manifest.target ?? 'fork') : null });
   assertScenarioSupported(scenario, target);
+  if (scenario.requires.includes('desktop')) {
+    // Fail before starting a chain: without Playwright's ffmpeg the desktop window never loads.
+    const ffmpeg = playwrightFfmpeg();
+    if (!ffmpeg.installed) throw new Error(`Scenario ${scenario.name} drives the desktop, but ${ffmpeg.reason}. Run once: ${FFMPEG_INSTALL}`);
+  }
   const live = before.running ? before.manifest.upstream === 'live' : Boolean(options.live);
   if (scenario.requires.includes('liveUpstream') && !live) {
     throw new Error(`Scenario ${scenario.name} needs a real upstream; ${before.running ? 'restart the testbench with pnpm testbench up --live' : 'rerun with --live'}`);
@@ -365,7 +370,7 @@ async function mainnet(options, ctx) {
     }
     say(`Starting the built desktop as instance ${instance}; quit the app to end the session`);
     const electron = createRequire(join(repo, 'apps/desktop/package.json'))('electron');
-    const child = spawn(electron, ['.'], { cwd: join(repo, 'apps/desktop'), env, stdio: 'inherit' });
+    const child = spawn(electron, ['.', ...electronRootArgs()], { cwd: join(repo, 'apps/desktop'), env, stdio: 'inherit' });
     for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => child.kill(signal));
     process.exitCode = await new Promise((resolveExit) => child.once('exit', (code) => resolveExit(code ?? 1)));
   } finally {
@@ -603,15 +608,17 @@ async function list(ctx) {
 /** The tool was called `pnpm sandbox` before; say which old names are still set so nothing is silently ignored. */
 async function warnLegacyNames(ctx) {
   const { file, values } = await localEnvValues(ctx);
+  // stderr, so `status --json` output stays parseable.
+  const tell = (message) => console.error(`[testbench] ${message}`);
   const legacy = (keys) => keys.filter((key) => key.startsWith('ANTSEED_SANDBOX_'));
   const fromShell = legacy(Object.keys(process.env));
   const fromFile = legacy(Object.keys(values));
   for (const key of new Set([...fromShell, ...fromFile])) {
-    say(`Warning: ${key} (${fromShell.includes(key) ? 'shell' : file}) is no longer read; rename it to ${key.replace('ANTSEED_SANDBOX_', 'ANTSEED_TESTBENCH_')}`);
+    tell(`Warning: ${key} (${fromShell.includes(key) ? 'shell' : file}) is no longer read; rename it to ${key.replace('ANTSEED_SANDBOX_', 'ANTSEED_TESTBENCH_')}`);
   }
   const oldRoot = join(homedir(), '.antseed-sandbox');
   if (existsSync(oldRoot) && !process.env.ANTSEED_TESTBENCH_HOME) {
-    say(`Note: state from the old name is in ${oldRoot} and is no longer used; delete it once nothing there is running`);
+    tell(`Note: state from the old name is in ${oldRoot} and is no longer used; delete it once nothing there is running`);
   }
 }
 
