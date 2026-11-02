@@ -103,3 +103,34 @@ export async function multicallRead(
   await parallel(offsets, offset => run(offset, chunkSize));
   return results;
 }
+
+/**
+ * A `multicallRead` bound to `provider` that probes for Multicall3 once
+ * instead of on every call (a failed probe is retried on the next read).
+ * Without Multicall3 it reads each call on its own, and any failure, revert
+ * or RPC error, yields `null` for that call.
+ */
+export function createCachedMulticallReader(
+  provider: AbstractProvider,
+): (requests: MulticallRequest[]) => Promise<Array<unknown[] | null>> {
+  let deployed: Promise<boolean> | undefined;
+  return async (requests) => {
+    if (requests.length === 0) return [];
+    deployed ??= provider.getCode(MULTICALL3_ADDRESS).then(
+      (code) => code !== '0x',
+      () => {
+        deployed = undefined;
+        return false;
+      },
+    );
+    if (await deployed) return multicallRead(provider, requests, { assumeDeployed: true });
+    return Promise.all(requests.map(async (request) => {
+      try {
+        const data = await provider.call({ to: request.target, data: request.iface.encodeFunctionData(request.method, request.args ?? []) });
+        return [...request.iface.decodeFunctionResult(request.method, data)];
+      } catch {
+        return null;
+      }
+    }));
+  };
+}

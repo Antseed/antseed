@@ -1289,20 +1289,17 @@ export class AntseedNode extends EventEmitter {
         this._verificationStatusCache.set(agentId, { servicesKey: [...services].sort().join('\u0000'), diffServices, fetchedAt });
       }
     }
+    // The cache now holds this read where it succeeded and the last good read
+    // where it failed; a failed read older than the stale window fails open.
     for (const target of targets) {
       if (!stale.has(target.agentId)) continue;
-      const diffServices = read.get(target.agentId);
-      if (diffServices) {
-        apply(target.peer, { diffServices: diffServices.filter((service) => target.services.includes(service)), fetchedAt });
-        continue;
-      }
-      const previous = this._verificationStatusCache.get(target.agentId);
-      if (previous && fetchedAt - previous.fetchedAt < VERIFICATION_STATUS_STALE_MAX_MS) {
-        apply(target.peer, { diffServices: previous.diffServices.filter((service) => target.services.includes(service)), fetchedAt: previous.fetchedAt });
-      } else {
+      const entry = this._verificationStatusCache.get(target.agentId);
+      if (!entry || fetchedAt - entry.fetchedAt >= VERIFICATION_STATUS_STALE_MAX_MS) {
         delete target.peer.onChainDiffServices;
         delete target.peer.onChainVerificationFetchedAt;
+        continue;
       }
+      apply(target.peer, { diffServices: entry.diffServices.filter((service) => target.services.includes(service)), fetchedAt: entry.fetchedAt });
     }
   }
 

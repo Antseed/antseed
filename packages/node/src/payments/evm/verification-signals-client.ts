@@ -1,5 +1,5 @@
 import { Interface, getAddress, type AbstractProvider } from 'ethers';
-import { multicallRead, MULTICALL3_ADDRESS, type MulticallRequest } from './multicall.js';
+import { createCachedMulticallReader, type MulticallRequest } from './multicall.js';
 import { VERIFICATION_ABI, VERIFIER_VERDICT, serviceHash } from './verifier-client.js';
 import { verificationServiceKey } from '../../reputation/model-reputation.js';
 
@@ -39,26 +39,14 @@ function first(result: unknown[] | null | undefined): unknown {
 }
 
 export class VerificationSignalsClient {
-  private _multicallAvailable: Promise<boolean> | undefined;
+  private readonly _read: (requests: MulticallRequest[]) => Promise<Array<unknown[] | null>>;
   private _emissionsGate: string | undefined;
 
   constructor(
-    private readonly _provider: AbstractProvider,
+    provider: AbstractProvider,
     private readonly _verificationAddress: string,
-  ) {}
-
-  private async _read(requests: MulticallRequest[]): Promise<Array<unknown[] | null>> {
-    if (requests.length === 0) return [];
-    this._multicallAvailable ??= this._provider.getCode(MULTICALL3_ADDRESS).then((code) => code !== '0x').catch(() => false);
-    if (await this._multicallAvailable) return multicallRead(this._provider, requests, { assumeDeployed: true });
-    return Promise.all(requests.map(async (request) => {
-      try {
-        const data = await this._provider.call({ to: request.target, data: request.iface.encodeFunctionData(request.method, request.args ?? []) });
-        return [...request.iface.decodeFunctionResult(request.method, data)];
-      } catch {
-        return null;
-      }
-    }));
+  ) {
+    this._read = createCachedMulticallReader(provider);
   }
 
   /**
