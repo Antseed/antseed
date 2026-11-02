@@ -139,7 +139,7 @@ import { ConversationStore, type ConversationRouterSelection, type StoredConvers
 import { eligibleRouterCandidates, executeRouterSelection, NoEligibleCandidatesError, requestForRecommendation, RoutingModelsCache } from './router-execution.js'
 import { recordRouterUsage } from './routing-usage.js'
 import { SPEND_ATTRIBUTION_DB_FILE, SPEND_ATTRIBUTION_HEADER, SpendAttributionFeed, parseSpendAttributionTag } from './spend-attribution.js'
-import { DEPOSIT_WATCH_ACTIVE_TTL_MS, type DepositWatcher } from './deposit-watcher.js'
+import { DEPOSIT_WATCH_ACTIVE_TTL_MS, supersedesSweepReceipt, type AttributedSweepReceipt, type DepositWatcher } from './deposit-watcher.js'
 import { DepositLog, type DepositLogEntry } from './deposit-log.js'
 import {
   recordPeerFailureEntry,
@@ -1323,7 +1323,7 @@ export class BuyerProxy {
   private _heartbeatHandle: ReturnType<typeof setInterval> | null = null
   private readonly _now: () => number
   /** Latest relayer receipt per sweep authNonce, for CLI progress polling. */
-  private readonly _sweepReceipts = new Map<string, SweepReceiptPayload>()
+  private readonly _sweepReceipts = new Map<string, AttributedSweepReceipt>()
   /**
    * Hot-wallet deposit watcher (auto-sweep). Owned by `buyer start`, attached
    * here so the desktop and `antseed deposit` can drive it over the control
@@ -1414,8 +1414,11 @@ export class BuyerProxy {
       on?: (event: 'sweep:receipt', listener: (event: { peerId: string; payload: SweepReceiptPayload }) => void) => unknown
     }
     if (typeof sweepEventNode.on === 'function') {
-      sweepEventNode.on('sweep:receipt', ({ payload }) => {
-        this._sweepReceipts.set(payload.authNonce.toLowerCase(), payload)
+      sweepEventNode.on('sweep:receipt', (receipt) => {
+        const key = receipt.payload.authNonce.toLowerCase()
+        if (!supersedesSweepReceipt(this._sweepReceipts.get(key), receipt)) return
+        this._sweepReceipts.delete(key)
+        this._sweepReceipts.set(key, receipt)
         if (this._sweepReceipts.size > 64) {
           const oldest = this._sweepReceipts.keys().next().value
           if (oldest !== undefined) this._sweepReceipts.delete(oldest)
@@ -2248,7 +2251,7 @@ export class BuyerProxy {
 
   /** Latest relayer receipt for a sweep authNonce, if one has arrived. */
   getSweepReceipt(authNonce: string): SweepReceiptPayload | null {
-    return this._sweepReceipts.get(authNonce.toLowerCase()) ?? null
+    return this._sweepReceipts.get(authNonce.toLowerCase())?.payload ?? null
   }
 
   async start(): Promise<void> {
@@ -3664,7 +3667,7 @@ export class BuyerProxy {
 
     const sweepReceiptMatch = path.match(/^\/_antseed\/sweep\/(0x[0-9a-fA-F]{64})$/)
     if (sweepReceiptMatch && method === 'GET') {
-      const receipt = this._sweepReceipts.get(sweepReceiptMatch[1]!.toLowerCase()) ?? null
+      const receipt = this.getSweepReceipt(sweepReceiptMatch[1]!)
       res.writeHead(200, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ ok: true, receipt }))
       return

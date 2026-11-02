@@ -2196,6 +2196,17 @@ test('sweep control endpoint validates and dispatches sequentially via the runni
   assert.equal(receiptBody.receipt.status, 'confirmed')
   assert.equal(receiptBody.receipt.txHash, '0x' + '77'.repeat(32))
 
+  // A late refusal from a relayer offered the sweep earlier does not hide the accepting relayer's progress...
+  const second = '0x' + 'cc'.repeat(32)
+  const receiptOf = async (nonce: string) =>
+    (JSON.parse((await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path: `/_antseed/sweep/${nonce}` }))).body) as { receipt: { status: string } }).receipt
+  emit!({ peerId: 'p2', payload: { version: 1, authNonce: second, status: 'submitted' } })
+  emit!({ peerId: 'p1', payload: { version: 1, authNonce: second, status: 'rejected', reason: 'simulation failed' } })
+  assert.equal((await receiptOf(second)).status, 'submitted')
+  // ...but the accepting relayer's own failure does.
+  emit!({ peerId: 'p2', payload: { version: 1, authNonce: second, status: 'rejected', reason: 'submission failed' } })
+  assert.equal((await receiptOf(second)).status, 'rejected')
+
   // Unknown nonce returns null receipt.
   const missing = await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path: `/_antseed/sweep/0x${'bb'.repeat(32)}` }))
   assert.deepEqual(JSON.parse(missing.body), { ok: true, receipt: null })
@@ -6118,7 +6129,7 @@ test('getSweepReceipt returns cached relayer receipts case-insensitively', () =>
   })
   const nonce = '0x' + 'AB'.repeat(32)
   const receipt = { authNonce: nonce.toLowerCase(), status: 'confirmed', txHash: '0x' + '12'.repeat(32) }
-  ;(proxy as any)._sweepReceipts.set(nonce.toLowerCase(), receipt)
+  ;(proxy as any)._sweepReceipts.set(nonce.toLowerCase(), { peerId: 'p1', payload: receipt })
 
   assert.equal(proxy.getSweepReceipt(nonce), receipt)
   assert.equal(proxy.getSweepReceipt(nonce.toLowerCase()), receipt)

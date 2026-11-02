@@ -82,6 +82,26 @@ describe('secure channel', () => {
     expect(new TextDecoder().decode(out[1])).toBe('tail');
   });
 
+  it('reassembles frames fed one byte at a time and many frames in one chunk', () => {
+    const { initiatorKeys, responderKeys } = makeSessionPair();
+    const a = new FrameEncryptor(initiatorKeys.sendKey);
+    const b = new FrameDecryptor(responderKeys.recvKey);
+
+    const bytes = a.encrypt(new Uint8Array(300).fill(3));
+    const out: Uint8Array[] = [];
+    for (let i = 0; i < bytes.length; i++) out.push(...b.push(bytes.subarray(i, i + 1)));
+    expect(out).toHaveLength(1);
+    expect(out[0]).toEqual(new Uint8Array(300).fill(3));
+
+    const words = ['one', 'two', 'three', 'four'];
+    const batch = Buffer.concat(words.map((w) => a.encrypt(new TextEncoder().encode(w))));
+    // The last frame arrives split across two pushes.
+    const first = b.push(batch.subarray(0, batch.length - 5));
+    const second = b.push(batch.subarray(batch.length - 5));
+    expect([...first, ...second].map((m) => new TextDecoder().decode(m))).toEqual(words);
+    expect(second).toHaveLength(1);
+  });
+
   it('rejects tampered ciphertext', () => {
     const { initiatorKeys, responderKeys } = makeSessionPair();
     const a = new FrameEncryptor(initiatorKeys.sendKey);
