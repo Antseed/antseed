@@ -136,11 +136,25 @@ export abstract class BaseEvmClient {
     method: string,
     ...args: unknown[]
   ): Promise<string> {
+    return this._execWriteWithin(signer, null, abi, method, ...args);
+  }
+
+  /**
+   * `_execWrite` whose speed-ups never raise the max fee per gas above `maxFeePerGasWei` (null: no
+   * limit beyond MAX_SPEED_UP_TIP_WEI), for a write that only pays off below some gas price.
+   */
+  protected async _execWriteWithin(
+    signer: AbstractSigner,
+    maxFeePerGasWei: bigint | null,
+    abi: InterfaceAbi,
+    method: string,
+    ...args: unknown[]
+  ): Promise<string> {
     const connected = this._ensureConnected(signer);
     const signerAddress = await connected.getAddress();
     const contract = new Contract(this._contractAddress, abi, connected);
     const populated = await contract.getFunction(method).populateTransaction(...args);
-    const receipt = await this._sendAndWait(connected, signerAddress, populated);
+    const receipt = await this._sendAndWait(connected, signerAddress, populated, maxFeePerGasWei);
     return receipt.hash;
   }
 
@@ -172,11 +186,15 @@ export abstract class BaseEvmClient {
     connected: AbstractSigner,
     signerAddress: string,
     populated: TransactionRequest,
+    maxFeePerGasWei: bigint | null = null,
   ): Promise<TransactionReceipt> {
     const owner = {};
     const tx = await this._sendBuffered(connected, signerAddress, populated, owner);
     const replaceable = !(connected instanceof NonceManager) && typeof tx.nonce === 'number' && tx.nonce === populated.nonce;
-    return this._waitForReceipt(tx, replaceable ? () => this._speedUp(connected, signerAddress, populated, owner) : undefined);
+    return this._waitForReceipt(
+      tx,
+      replaceable ? () => this._speedUp(connected, signerAddress, populated, owner, maxFeePerGasWei) : undefined,
+    );
   }
 
   /**
@@ -237,13 +255,15 @@ export abstract class BaseEvmClient {
   /**
    * Send `populated` again on the same nonce with fees high enough to replace it (at least 25% more,
    * and no less than a new tx would pay now). Null when the signer priced it, the tip is at the cap,
-   * or the nonce now belongs to a newer operation.
+   * the replacement would cost more than `maxFeePerGasWei` allows, or the nonce now belongs to a
+   * newer operation.
    */
   private async _speedUp(
     connected: AbstractSigner,
     signerAddress: string,
     populated: TransactionRequest,
     owner: object,
+    maxFeePerGasWei: bigint | null,
   ): Promise<TransactionResponse | null> {
     if (populated.maxPriorityFeePerGas == null || populated.maxFeePerGas == null || populated.nonce == null) return null;
     const key = this._nonceKey(signerAddress);
@@ -259,6 +279,7 @@ export abstract class BaseEvmClient {
     const tip = min(MAX_SPEED_UP_TIP_WEI, max(bumpedTip, currentTip));
     const currentMax = current.maxFeePerGas != null ? getBigInt(current.maxFeePerGas) - currentTip + tip : 0n;
     const maxFee = max(prevMax + prevMax / 4n + (tip - prevTip), currentMax);
+    if (maxFeePerGasWei !== null && maxFee > maxFeePerGasWei) return null;
     const replacement = { ...populated, maxPriorityFeePerGas: tip, maxFeePerGas: maxFee };
     return this._withNonceLock(key, async () => {
       if (nonceOwners.get(ownerKey) !== owner) return null;

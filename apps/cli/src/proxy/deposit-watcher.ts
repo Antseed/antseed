@@ -464,9 +464,6 @@ export class DepositWatcher {
       fee,
       authNonce: message.nonce,
     })
-    if (result === 'rejected') {
-      throw new Error('The relayer could not submit the deposit. Your USDC is safe in the wallet — retrying with another relayer.')
-    }
     if (!result) {
       throw new Error('The deposit was not confirmed in time. Your USDC is safe in the wallet — retrying automatically.')
     }
@@ -522,7 +519,7 @@ export class DepositWatcher {
     expectedNet: bigint
     fee: bigint
     authNonce: string
-  }): Promise<{ credited: bigint; txHash?: string } | 'rejected' | null> {
+  }): Promise<{ credited: bigint; txHash?: string } | null> {
     const { initialTotal, expectedNet, fee, authNonce } = params
     const { depositsClient, relayClient, address } = this._deps
     const deadline = Date.now() + SWEEP_CONFIRM_TIMEOUT_MS
@@ -556,7 +553,9 @@ export class DepositWatcher {
 
       // Not on-chain, and the relayer that took it says it could not submit it: retry with another
       // relayer instead of waiting out the window.
-      if (receipt?.status === 'rejected' && !txHash) return 'rejected'
+      if (receipt?.status === 'rejected' && !txHash) {
+        throw new Error('The relayer could not submit the deposit. Your USDC is safe in the wallet — retrying with another relayer.')
+      }
 
       await sleep(SWEEP_POLL_INTERVAL_MS)
     }
