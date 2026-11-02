@@ -6,6 +6,7 @@ import type { AbstractSigner } from 'ethers';
 import type { AntsContext } from './context.js';
 import { closedPositionIds } from './positions.js';
 import { legacySellerPayout } from './legacy-payout.js';
+import { stakeEligibility } from './stake-eligibility.js';
 import { IndexerError } from './indexer.js';
 import type { RewardsView, ClaimRequest, RestakeRequest, StakeUsageRequest, EpochAmount, RewardBucket } from '../api-types.js';
 import { formatAnts } from './format.js';
@@ -410,10 +411,8 @@ export interface CompoundResult { transactions: string[]; restakedPositionIds: n
 export async function compound(ctx: AntsContext, request: CompoundRequest, report: StepReporter = silentReporter): Promise<CompoundResult> {
   const pools = ctx.requirePools();
   const targetAgentId = request.targetAgentId === undefined ? null : assertAgentId(request.targetAgentId);
-  if (targetAgentId !== null) {
-    const registry = ctx.sellerRegistry();
-    const seller = registry ? await registry.agentSeller(targetAgentId) : ZeroAddress;
-    if (sameAddress(seller, ZeroAddress)) throw new Error(`Agent ${targetAgentId} has no seller bound in the seller registry, so it has no stakeable pool.`);
+  if (targetAgentId !== null && !(await stakeEligibility(ctx, [targetAgentId])).get(targetAgentId)?.stakeable) {
+    throw new Error(`Agent ${targetAgentId} is not registered to its current owner in the pool's staking source.`);
   }
   const before = new Set(await pools.allStakerPositionIds(ctx.address));
   const result: CompoundResult = { transactions: [], restakedPositionIds: [], sellerEpochs: [], buyerEpochs: [], newPositionIds: [], movedPositionIds: [], targetAgentId };

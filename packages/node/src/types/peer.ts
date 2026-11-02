@@ -13,6 +13,8 @@ export type {
   ProviderServiceApiProtocolMatrixEntry,
   ProviderServiceUnitBillingModelMatrixEntry,
   ProviderServiceCapabilityMatrixEntry,
+  ProviderServiceHealthMatrixEntry,
+  ProviderServicePerformanceMatrixEntry,
 } from '@antseed/protocol/peer-pricing';
 import type {
   ProviderPricingMatrixEntry,
@@ -20,6 +22,8 @@ import type {
   ProviderServiceApiProtocolMatrixEntry,
   ProviderServiceUnitBillingModelMatrixEntry,
   ProviderServiceCapabilityMatrixEntry,
+  ProviderServiceHealthMatrixEntry,
+  ProviderServicePerformanceMatrixEntry,
 } from '@antseed/protocol/peer-pricing';
 
 import type { TrustBreakdown } from '../reputation/trust-score.js';
@@ -70,6 +74,10 @@ export interface PeerInfo {
   providerServiceUnitBillingModels?: Record<string, ProviderServiceUnitBillingModelMatrixEntry>;
   /** Provider/service model capability hints announced by seller. */
   providerServiceCapabilities?: Record<string, ProviderServiceCapabilityMatrixEntry>;
+  /** Provider/service self health check results announced by seller (metadata v13+). */
+  providerServiceHealth?: Record<string, ProviderServiceHealthMatrixEntry>;
+  /** Provider/service performance the seller measured on its buyer traffic (metadata v14+). */
+  providerServicePerformance?: Record<string, ProviderServicePerformanceMatrixEntry>;
   /** Deterministic fallback default input price (USD per 1M tokens). */
   defaultInputUsdPerMillion?: number;
   /** Deterministic fallback default output price (USD per 1M tokens). */

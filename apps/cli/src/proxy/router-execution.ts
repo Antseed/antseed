@@ -1,7 +1,7 @@
 import { QueryClient } from '@tanstack/query-core'
 import { buildNetworkServiceOffers, effectiveModelReputationScore, isModelRouteEligible, normalizedModelReputationScore, type AntseedNode, type RouterModelEntry, type ModelRoutingPreferences, type PeerInfo, type RouteCandidate, type RouteRecommendation, type SerializedHttpRequest } from '@antseed/node'
 import { detectRequestServiceApiProtocol } from './service-api-adapter.js'
-import { findMissingRequiredParameters, getExplicitProviderOverride, resolvePeerRoutePlan } from './routing.js'
+import { findMissingRouteParameters, getExplicitProviderOverride, resolvePeerRoutePlan } from './routing.js'
 import { overrideRoutedModelInBody } from './request-utils.js'
 import type { RoutingSelection, RoutingServiceTarget } from '@antseed/node'
 import { candidatePricing, InvalidRouterOptionsError, RouterCannotRankError, routerModelResolver, routingClientAdapter, routingProtocolOfTarget, validateRouterOptions, type ModelRoutingClientApi } from '@antseed/router-core'
@@ -82,8 +82,7 @@ export function eligibleRouterCandidates(
     if (!peer || offer.type !== 'text' || (explicitProvider && offer.provider !== explicitProvider)) continue
     if (offer.inputUsdPerMillion === undefined || offer.outputUsdPerMillion === undefined) continue
     const plan = resolvePeerRoutePlan(peer, protocol, offer.serviceId, offer.provider, 'strict')
-    if (!plan?.serviceId || (requiredParameters.length && plan.selection?.requiresTransform)) continue
-    if (findMissingRequiredParameters(peer, offer.provider, plan.serviceId, requiredParameters).length) continue
+    if (!plan?.serviceId || findMissingRouteParameters(peer, plan, plan.serviceId, requiredParameters).length) continue
     const rewritten = overrideRoutedModelInBody(request.body, request.headers, plan.serviceId)
     // Check peer policy against the model/provider we would actually send, not the automatic alias.
     const policyRequest = { ...request, body: rewritten.body, headers: { ...rewritten.headers, 'x-antseed-provider': offer.provider } }

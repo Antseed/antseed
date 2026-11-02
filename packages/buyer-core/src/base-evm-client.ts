@@ -2,17 +2,24 @@ import {
   Contract,
   FallbackProvider,
   FetchRequest,
+  getBigInt,
   JsonRpcProvider,
+  makeError,
   Network,
   type AbstractProvider,
   type AbstractSigner,
+  type CallExceptionError,
   type InterfaceAbi,
+  type TransactionReceipt,
   type TransactionRequest,
   type TransactionResponse,
 } from 'ethers';
 
 const FALLBACK_STALL_TIMEOUT_MS = 750;
 const JSON_RPC_REQUEST_TIMEOUT_MS = 10_000;
+const RECEIPT_POLL_MS = 2_000;
+/** Polls between checks that the tx's nonce was not taken by another tx. */
+const NONCE_CHECK_EVERY_POLLS = 5;
 
 function createJsonRpcProvider(url: string, network?: Network, opts?: object): JsonRpcProvider {
   const request = new FetchRequest(url);
@@ -36,6 +43,15 @@ function buildProvider(rpcUrl: string, fallbackRpcUrls?: string[], evmChainId?: 
   return new FallbackProvider(configs, network, { quorum: 1 });
 }
 
+function revertError(receipt: TransactionReceipt): CallExceptionError {
+  return makeError('transaction execution reverted', 'CALL_EXCEPTION', {
+    action: 'sendTransaction',
+    data: null, reason: null, invocation: null, revert: null,
+    transaction: { to: receipt.to, from: receipt.from, data: '' },
+    receipt,
+  });
+}
+
 export const ERC20_ABI = [
   'function approve(address spender, uint256 amount) external returns (bool)',
   'function balanceOf(address owner) external view returns (uint256)',
@@ -49,15 +65,27 @@ export const ERC20_ABI = [
 const GAS_BUFFER_NUMERATOR = 130n;
 const GAS_BUFFER_DENOMINATOR = 100n;
 
+/** Tip used when no RPC reports one: about a normal Base tip (0.001 gwei), not ethers' 1 gwei fallback. */
+export const DEFAULT_PRIORITY_FEE_WEI = 1_000_000n;
+
+/**
+ * Next nonce and reservation lock per chain and signer, shared by every client
+ * in the process. A seller signs with one wallet from several clients
+ * (channels, free usage, ...); per-client cursors let two of them pick the
+ * same nonce, and the second send fails with "replacement fee too low".
+ */
+const nonceCursors = new Map<string, number>();
+const nonceLocks = new Map<string, Promise<void>>();
+
 export abstract class BaseEvmClient {
   protected _provider: AbstractProvider;
   protected readonly _contractAddress: string;
-  protected readonly _nonceCursor = new Map<string, number>();
-  private readonly _nonceLocks = new Map<string, Promise<void>>();
+  private readonly _nonceScope: string;
 
   constructor(rpcUrl: string, contractAddress: string, fallbackRpcUrls?: string[], evmChainId?: number) {
     this._provider = buildProvider(rpcUrl, fallbackRpcUrls, evmChainId);
     this._contractAddress = contractAddress;
+    this._nonceScope = evmChainId ? `chain:${evmChainId}` : `rpc:${rpcUrl}`;
   }
 
   get provider(): AbstractProvider { return this._provider; }
@@ -88,8 +116,7 @@ export abstract class BaseEvmClient {
     const contract = new Contract(this._contractAddress, abi, connected);
     const populated = await contract.getFunction(method).populateTransaction(...args);
     const tx = await this._sendBuffered(connected, signerAddress, populated);
-    const receipt = await tx.wait();
-    if (!receipt) throw new Error('Transaction was dropped or replaced');
+    const receipt = await this._waitForReceipt(tx);
     return receipt.hash;
   }
 
@@ -109,52 +136,127 @@ export abstract class BaseEvmClient {
     const usdc = new Contract(usdcAddress, ERC20_ABI, connected);
     const approvePopulated = await usdc.getFunction('approve').populateTransaction(this._contractAddress, amount);
     const approveTx = await this._sendBuffered(connected, signerAddress, approvePopulated);
-    const approveReceipt = await approveTx.wait();
-    if (!approveReceipt) throw new Error('Approve transaction was dropped or replaced');
+    await this._waitForReceipt(approveTx);
     return this._execWrite(signer, abi, method, ...args);
   }
 
   /**
-   * Reserve a nonce, apply the gas buffer, and broadcast. On any failure —
-   * estimateGas revert, RPC timeout, submission error — roll back the nonce
-   * cursor. `_reserveNonce` reads `getTransactionCount(..., 'pending')` on
-   * the next call, so an in-flight tx (if sendTransaction failed after the
-   * node accepted it) is still accounted for and we won't reuse its nonce.
+   * Wait until `tx` is mined, in place of `tx.wait()`. ethers' wait polls
+   * receipts from a block listener whose promise nobody handles, so a single
+   * RPC timeout there is an unhandled rejection that exits the process. Here
+   * read errors are retried; a revert throws CALL_EXCEPTION like `wait()`,
+   * and a tx whose nonce was used by another tx throws as dropped/replaced.
    */
+  protected async _waitForReceipt(tx: Pick<TransactionResponse, 'hash' | 'from' | 'nonce'>): Promise<TransactionReceipt> {
+    for (let poll = 1; ; poll += 1) {
+      try {
+        const receipt = await this._provider.getTransactionReceipt(tx.hash);
+        if (receipt) {
+          if (receipt.status === 0) throw revertError(receipt);
+          return receipt;
+        }
+        if (poll % NONCE_CHECK_EVERY_POLLS === 0 && await this._nonceUsedElsewhere(tx)) {
+          throw new Error('Transaction was dropped or replaced');
+        }
+      } catch (err) {
+        if (err instanceof Error && ((err as Partial<CallExceptionError>).code === 'CALL_EXCEPTION' || err.message === 'Transaction was dropped or replaced')) {
+          throw err;
+        }
+        // Transient RPC failure (timeout, 5xx, rate limit): poll again.
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, RECEIPT_POLL_MS));
+    }
+  }
+
+  /** The tx's nonce is mined but the tx itself has no receipt (checked after the nonce read, to not race its mining). */
+  private async _nonceUsedElsewhere(tx: Pick<TransactionResponse, 'hash' | 'from' | 'nonce'>): Promise<boolean> {
+    if (!tx.from || typeof tx.nonce !== 'number') return false;
+    const mined = await this._provider.getTransactionCount(tx.from, 'latest');
+    if (mined <= tx.nonce) return false;
+    return (await this._provider.getTransactionReceipt(tx.hash)) === null;
+  }
+
+  /**
+   * EIP-1559 fees for the next write. Left to the signer, ethers' getFeeData() turns a failed
+   * eth_maxPriorityFeePerGas read into a 1 gwei tip, 100-1000x a normal Base tip, without any error.
+   * Here the tip is read directly and a failure falls back to DEFAULT_PRIORITY_FEE_WEI instead. If the
+   * base fee cannot be read, or the chain has none, the signer prices the transaction as before.
+   */
+  protected async _feeFields(): Promise<Pick<TransactionRequest, 'maxFeePerGas' | 'maxPriorityFeePerGas'>> {
+    let baseFee: bigint | null | undefined;
+    try {
+      baseFee = (await this._provider.getBlock('latest'))?.baseFeePerGas;
+    } catch {
+      return {};
+    }
+    if (baseFee == null) return {};
+    const tip = (await this._readPriorityFee()) ?? DEFAULT_PRIORITY_FEE_WEI;
+    return { maxPriorityFeePerGas: tip, maxFeePerGas: baseFee * 2n + tip };
+  }
+
+  /**
+   * eth_maxPriorityFeePerGas straight from the RPC, or null when no RPC answers. A FallbackProvider
+   * answers getPriorityFee through each backend's getFeeData(), which hides a failed read behind the
+   * same 1 gwei default, so its backends are asked one by one instead.
+   */
+  private async _readPriorityFee(): Promise<bigint | null> {
+    const backends = this._provider instanceof FallbackProvider
+      ? this._provider.providerConfigs.map((config) => config.provider)
+      : [this._provider];
+    for (const backend of backends) {
+      try {
+        return getBigInt(await backend._perform({ method: 'getPriorityFee' }), '%response');
+      } catch {
+        // RPC timeout, rate limit or no support: try the next backend.
+      }
+    }
+    return null;
+  }
+
+  /** Apply the gas buffer and fees, and broadcast on the signer's next nonce. */
   private async _sendBuffered(
     connected: AbstractSigner,
     signerAddress: string,
     populated: TransactionRequest,
   ): Promise<TransactionResponse> {
-    const nonce = await this._reserveNonce(signerAddress);
-    populated.nonce = nonce;
-    try {
+    return this._sendWithNonce(signerAddress, async (nonce) => {
+      populated.nonce = nonce;
       const estimated = await connected.estimateGas(populated);
       populated.gasLimit = (estimated * GAS_BUFFER_NUMERATOR) / GAS_BUFFER_DENOMINATOR;
-      return await connected.sendTransaction(populated);
-    } catch (err) {
-      this._nonceCursor.delete(signerAddress);
-      throw err;
-    }
+      if (populated.maxFeePerGas == null && populated.gasPrice == null) Object.assign(populated, await this._feeFields());
+      return connected.sendTransaction(populated);
+    });
   }
 
-  protected async _reserveNonce(address: string): Promise<number> {
-    // Serialize nonce reservation per address to prevent concurrent calls
-    // from reading the same network nonce before either updates the cursor
-    const prev = this._nonceLocks.get(address) ?? Promise.resolve();
-    let resolve: () => void;
-    const lock = new Promise<void>(r => { resolve = r; });
-    this._nonceLocks.set(address, lock);
+  /**
+   * Run `send` with the signer's next nonce. The wallet's lock is held until
+   * `send` returns (the node accepted the tx), and the cursor only moves past
+   * a nonce once its tx is sent. A failed send (estimateGas revert, RPC
+   * error) leaves the cursor alone, so its nonce goes to the next tx; the
+   * pending count may not include txs that were sent but not yet mined, so
+   * it cannot be trusted alone.
+   */
+  protected async _sendWithNonce<T>(address: string, send: (nonce: number) => Promise<T>): Promise<T> {
+    const key = this._nonceKey(address);
+    const prev = nonceLocks.get(key) ?? Promise.resolve();
+    let release: () => void;
+    const lock = new Promise<void>(r => { release = r; });
+    nonceLocks.set(key, lock);
 
     await prev;
     try {
       const networkNonce = await this._provider.getTransactionCount(address, 'pending');
-      const cachedNext = this._nonceCursor.get(address);
+      const cachedNext = nonceCursors.get(key);
       const nonce = cachedNext === undefined ? networkNonce : Math.max(networkNonce, cachedNext);
-      this._nonceCursor.set(address, nonce + 1);
-      return nonce;
+      const result = await send(nonce);
+      nonceCursors.set(key, nonce + 1);
+      return result;
     } finally {
-      resolve!();
+      release!();
     }
+  }
+
+  private _nonceKey(address: string): string {
+    return `${this._nonceScope}:${address}`;
   }
 }

@@ -201,6 +201,16 @@ export function eligibleWallets(state: OperatorState, now = Date.now()): Eligibl
   return state.eligibleWallets.map((entry) => ({ ...entry, ready: entry.eligibleAt <= now }))
 }
 
+/**
+ * True only for the "no matching sign-in wallet" blocker case — the one where
+ * adding the connected wallet as a sign-in method is the fix. Mirrors the
+ * `!match` branch of `authorizeBlocker` without changing its behavior.
+ */
+export function authorizeNeedsSignInWallet(state: OperatorState, connected: string | null | undefined, _now = Date.now()): boolean {
+  if (!state.canAuthorize || !connected) return false
+  return !state.eligibleWallets.some((entry) => sameAddress(entry.address, connected))
+}
+
 /** Why the connected wallet cannot be authorized, or null when it can. */
 export function authorizeBlocker(state: OperatorState, connected: string | null | undefined, now = Date.now()): string | null {
   if (!state.canAuthorize) return state.relation === 'none' ? 'Only the organization owner can authorize a wallet.' : 'A wallet is already authorized; only it can transfer the role.'

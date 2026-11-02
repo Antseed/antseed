@@ -3,17 +3,23 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode }
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useChat } from '@ai-sdk/react'
 import { DefaultChatTransport, lastAssistantMessageIsCompleteWithApprovalResponses, type UIMessage } from 'ai'
-import { CheckCircle2Icon, CheckIcon, ChevronsUpDownIcon, LockIcon, MessageSquarePlusIcon, MessagesSquareIcon, ShuffleIcon, Trash2Icon } from 'lucide-react'
+import { CheckCircle2Icon, CheckIcon, ChevronsUpDownIcon, InfoIcon, LockIcon, MessageSquarePlusIcon, MessagesSquareIcon, ShuffleIcon, Trash2Icon } from 'lucide-react'
 import { Drawer } from '@antseed/ui'
 import { API_BASE, CSRF_HEADER, api } from '../api'
 import type { ChatMessageMetadata, ChatModel, ChatModelPeer, ChatThread, RoutePreview } from '../api/types'
 import {
-  autoPick, isFreeOffer, MODEL_FILTERS, MODEL_SORTS, PEER_FILTERS, PEER_SORTS, pickModels, pickPeers, verdictsFrom,
+  autoPick, isFreeOffer, isStakerFreeOffer, MODEL_FILTERS, MODEL_SORTS, PEER_FILTERS, PEER_SORTS, pickModels, pickPeers, verdictsFrom,
   type ModelFilter, type ModelSort, type PeerFilter, type PeerSort,
 } from '../lib/chat-pick'
 import { useConsole } from '../app/context'
 import { isOrgAdmin, isWorkspaceAdmin } from '../lib/nav'
-import { qk, useWallet } from '../lib/queries'
+import { qk, useModels, useWallet } from '../lib/queries'
+import { findModel } from '../lib/models'
+import { recordSummary } from '../lib/selection'
+import { FreeTierLimitNotice, parseChatFreeTierError } from '../components/FreeTierLimitNotice'
+import { ModelDetails } from '../components/ModelDetails'
+import { SellerSelection } from '../components/SellerSelection'
+import { LoadingRows } from '../components/ui'
 import { useConsoleMutation } from '../lib/mutations'
 import { formatRelative, formatTokens, formatUsd, shortId } from '../lib/format'
 import { href, linkHandler } from '../lib/router'
@@ -196,14 +202,21 @@ function autoReason(preview: RoutePreview | undefined, model: ChatModel | null):
   const buyer = preview.sources.find((source) => source.level === 'buyer')?.policy ?? null
   const sort = preview.policy.sort ?? buyer?.sort ?? 'balanced'
   const floor = Math.max(preview.policy.minTrustScore ?? 0, buyer?.minTrustScore ?? 0)
-  const how = {
+  const pick = autoPick(preview)
+  const ordering = pick?.selection?.ordering
+  const how = ordering ? {
+    'expected-cost': 'Auto: lowest expected cost of a good answer (price, speed and success rate)',
+    price: 'Auto: cheapest seller',
+    latency: 'Auto: fastest seller',
+    trust: 'Auto: most trusted healthy seller',
+  }[ordering] : {
     price: 'Auto: cheapest seller',
     latency: 'Auto: fastest seller',
     trust: 'Auto: most trusted seller',
     balanced: 'Auto: best mix of price, trust and speed',
   }[sort]
   let reason = `${how}${floor > 0 ? ` with trust ${floor}+` : ''}.`
-  const pick = autoPick(preview)
+  if (pick?.selection?.sharesTraffic) reason += ` ${pick.selection.poolSize} sellers share the traffic.`
   const cheaper = preview.candidates
     .filter((candidate) => !candidate.eligible && candidate.inputUsdPerMillion !== null && pick?.inputUsdPerMillion != null && candidate.inputUsdPerMillion < pick.inputUsdPerMillion)
     .sort((a, b) => (a.inputUsdPerMillion ?? 0) - (b.inputUsdPerMillion ?? 0))[0]
@@ -307,10 +320,11 @@ function FilterBar<F extends string, S extends string>({ filters, active, onTogg
 }
 
 /** Small capability tags after a name. */
-function Tags({ free, tools, reasoning, vision, tee }: { free?: boolean; tools?: boolean; reasoning?: boolean; vision?: boolean; tee?: boolean }) {
+function Tags({ free, stakers, tools, reasoning, vision, tee }: { free?: boolean; stakers?: boolean; tools?: boolean; reasoning?: boolean; vision?: boolean; tee?: boolean }) {
   return (
     <span className="flex flex-wrap gap-1">
       {free && <Pill tone="free">Free</Pill>}
+      {!free && stakers && <Pill tone="free" title="Free for buyers staked on the seller">Free for stakers</Pill>}
       {tee && <Pill tone="tee">TEE</Pill>}
       {tools && <Pill>Tools</Pill>}
       {reasoning && <Pill>Reasoning</Pill>}
@@ -368,7 +382,7 @@ function ModelPicker({ models, value, onChange, className }: { models: ChatModel
               <ModelSelectorItem key={model.id} value={`${model.name} ${model.id}`} onSelect={() => { onChange(model.id); setOpen(false) }} className="items-start py-2">
                 <span className="flex min-w-0 flex-col gap-1">
                   <ModelSelectorName>{model.name}</ModelSelectorName>
-                  <Tags free={model.free} tools={model.toolUse} reasoning={model.reasoning} vision={model.vision} tee={model.tee} />
+                  <Tags free={model.free} stakers={model.freeForStakers} tools={model.toolUse} reasoning={model.reasoning} vision={model.vision} tee={model.tee} />
                 </span>
                 <span className="ml-auto shrink-0 text-right text-muted-foreground text-xs">
                   {model.offers} seller{model.offers === 1 ? '' : 's'}
@@ -487,8 +501,15 @@ function PeerPicker({ model, value, onChange, preview, previewLoading, unfunded,
                       <ModelSelectorName>{peerLabel(peer)}</ModelSelectorName>
                       {verdict?.eligible && verdict.rank !== null && <span className="text-muted-foreground text-xs">#{verdict.rank}</span>}
                     </span>
-                    <Tags free={isFreeOffer(peer)} tools={peer.toolUse} reasoning={peer.reasoning} vision={peer.vision} tee={peer.tee} />
+                    <Tags free={isFreeOffer(peer)} stakers={isStakerFreeOffer(peer)} tools={peer.toolUse} reasoning={peer.reasoning} vision={peer.vision} tee={peer.tee} />
                     {skipped && <span className="text-muted-foreground text-xs">Auto skips it: {verdict.reasons[0] ?? 'not eligible'}. You can still pin it.</span>}
+                    {verdict?.selection && (
+                      <span className="text-muted-foreground text-xs">
+                        {recordSummary(verdict.selection)}
+                        {verdict.selection.sharesTraffic && verdict.selection.trafficShare !== null ? ` · takes ~${Math.round(verdict.selection.trafficShare * 100)}% of the traffic` : ''}
+                        {verdict.selection.coolingDown ? ' · cooling down' : verdict.selection.failing ? ' · failing lately' : ''}
+                      </span>
+                    )}
                     {!peer.toolUse && <span className="text-muted-foreground text-xs">No tools: plain chat when pinned.</span>}
                   </span>
                   <span className="ml-auto flex shrink-0 flex-col items-end gap-0.5 text-muted-foreground text-xs">
@@ -595,6 +616,9 @@ export default function Chat() {
   // The open conversation; a new one gets its id here and is saved on the gateway with its first answer.
   const [chatId, setChatId] = useState<string>(() => load(`chat:${storageScope}`, newChatId()))
   const [historyOpen, setHistoryOpen] = useState(false)
+  // The model's details (providers, seller selection, API call), the same panel the Models page opens.
+  const [detailsOpen, setDetailsOpen] = useState(false)
+  const networkModels = useModels(detailsOpen)
   const [toolSwitches, setToolSwitchesState] = useState<ToolSwitches>(() => ({ web: true, files: true, shell: false, ...load<Partial<ToolSwitches>>('tools', {}) }))
   const setToolSwitch = (name: keyof ToolSwitches, on: boolean) => setToolSwitchesState((current) => {
     const next = { ...current, [name]: on }
@@ -603,6 +627,7 @@ export default function Chat() {
   })
   const model = models.data?.find((entry) => entry.id === modelId)
     ?? (modelId ? models.data?.find((entry) => modelKey(entry.id) === modelKey(modelId)) : undefined) ?? null
+  const networkModel = modelId ? findModel(networkModels.data, modelId) : null
   // A model no seller offers any more (sellers drop one while busy): the chat moves on and says so.
   const [goneModel, setGoneModel] = useState<string | null>(null)
   const canSeeWallet = isWorkspaceAdmin(viewer)
@@ -683,6 +708,7 @@ export default function Chat() {
   }, [error])
 
   const busy = status === 'submitted' || status === 'streaming'
+  const freeTierError = error ? parseChatFreeTierError(error.message) : null
   // This conversation's estimated cost so far; null once any answer's cost is unknown.
   const chatCost = messages.reduce<number | null>((sum, message) => {
     const cost = message.metadata?.costUsd
@@ -747,6 +773,13 @@ export default function Chat() {
           <ThreadList threads={threads.data ?? []} loading={threads.isLoading} activeId={chatId} onOpen={open} onRemove={(id) => remove.mutate(id)} />
         </div>
       </aside>
+      <Drawer isOpen={detailsOpen} onClose={() => setDetailsOpen(false)} closeLabel="Close model details" className="gc-side-panel"
+        eyebrow="Model" title={networkModel?.name ?? model?.name ?? ''}>
+        {networkModel
+          ? <ModelDetails model={networkModel} preview={preview.data} previewLoading={preview.isLoading} pin={{ peerId, onChange: setPeerId }} />
+          : networkModels.isLoading ? <LoadingRows rows={6} />
+          : <SellerSelection preview={preview.data} loading={preview.isLoading} pin={{ peerId, onChange: setPeerId }} />}
+      </Drawer>
       <Drawer isOpen={historyOpen} onClose={() => setHistoryOpen(false)} side="left" title="Chats" className="gc-chat gc-chat-history">
         <Button variant="outline" size="sm" className="mb-2 w-full justify-start gap-2" onClick={newChat}>
           <MessageSquarePlusIcon className="size-3.5" /> New chat
@@ -761,6 +794,10 @@ export default function Chat() {
         </Button>
         <h1 className="sr-only">Chat</h1>
         <ModelPicker models={models.data ?? []} value={model} onChange={(id) => { setModelId(id); setPeerId(null); setGoneModel(null) }} />
+        <Button variant="ghost" size="icon-sm" className="shrink-0 text-muted-foreground" disabled={!model} onClick={() => setDetailsOpen(true)}
+          aria-label="Model details and seller selection" title="Model details: providers, and how automatic routing picks a seller">
+          <InfoIcon className="size-3.5" />
+        </Button>
         <span className="text-muted-foreground" aria-hidden="true">·</span>
         <PeerPicker model={model} value={peerId} onChange={setPeerId} preview={preview.data} previewLoading={preview.isLoading} unfunded={unfunded} />
         <span className="ml-auto shrink-0 pl-2 font-mono text-muted-foreground text-xs" title="Estimated at the serving sellers' prices; the signed amounts are in Logs.">
@@ -851,7 +888,8 @@ export default function Chat() {
           {busy && isWaitingForModel(messages.at(-1)) && (
             <div className="-mt-4 text-muted-foreground text-sm" role="status"><Shimmer duration={1}>Thinking…</Shimmer></div>
           )}
-          {error && (
+          {freeTierError && <FreeTierLimitNotice error={freeTierError} onAuto={peerId ? () => setPeerId(null) : null} />}
+          {error && !freeTierError && (
             <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm">
               {/out of AntSeed credits|insufficient_deposits/i.test(error.message)
                 ? (

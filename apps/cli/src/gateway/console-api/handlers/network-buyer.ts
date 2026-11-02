@@ -9,13 +9,15 @@ export interface BuyerRequestInit {
   method?: string
   body?: unknown
   policy?: RoutingPolicy
+  /** Overrides the default control-call timeout, for calls that wait on a seller. */
+  timeoutMs?: number
 }
 
 /** Calls a buyer `/_antseed/*` endpoint with the gateway's control secret. */
 export type BuyerClient = (path: string, init?: BuyerRequestInit) => Promise<Response>
 
 export function defaultBuyerClient(deps: Pick<ConsoleDeps, 'buyerPort' | 'controlSecret'>): BuyerClient {
-  return (path, init) => buyerFetch({ buyerPort: deps.buyerPort, secret: deps.controlSecret }, path, init)
+  return (path, init) => buyerFetch({ buyerPort: deps.buyerPort, secret: deps.controlSecret, ...(init?.timeoutMs ? { timeoutMs: init.timeoutMs } : {}) }, path, init)
 }
 
 /**

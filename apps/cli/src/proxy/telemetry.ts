@@ -1,7 +1,16 @@
 import type { PeerInfo, SerializedHttpRequest } from '@antseed/node'
+import { ROUTE_SELECTION_HEADER } from './route-selection.js'
 import { extractUsage, toNonNegativeInt } from '@antseed/api-adapter'
 import { pickProviderForPeer } from './routing.js'
 import { extractRequestedService } from './request-utils.js'
+import { FREE_TIER_SERVED_COVERED, FREE_TIER_SERVED_HEADER } from '@antseed/node/free-tier-program'
+
+/** Whether the seller marked a response as covered by its free allowance (nothing charged). */
+export function coveredByFreeAllowance(headers: Record<string, string | string[] | undefined>): boolean {
+  return Object.entries(headers).some(([name, value]) =>
+    name.toLowerCase() === FREE_TIER_SERVED_HEADER
+    && (Array.isArray(value) ? value : [value]).some((entry) => entry?.trim().toLowerCase() === FREE_TIER_SERVED_COVERED))
+}
 
 const decoder = new TextDecoder()
 
@@ -291,7 +300,10 @@ export function computeResponseTelemetry(
   }
 
   let estimatedCostUsd: number | null = null
-  if (
+  if (coveredByFreeAllowance(responseHeaders)) {
+    // The seller's free allowance covered it: nothing is charged at the listed price.
+    estimatedCostUsd = 0
+  } else if (
     pricing.inputUsdPerMillion !== null &&
     pricing.outputUsdPerMillion !== null &&
     Number.isFinite(pricing.inputUsdPerMillion) &&
@@ -330,14 +342,16 @@ export const ROUTER_PEER_ID_HEADER = 'x-antseed-router-peer-id'
 export const ROUTER_SERVICE_HEADER = 'x-antseed-router-service'
 export const ROUTER_RANK_HEADER = 'x-antseed-router-rank'
 
-const ROUTER_HEADERS = new Set([ROUTER_PEER_ID_HEADER, ROUTER_SERVICE_HEADER, ROUTER_RANK_HEADER])
+/** Headers only the buyer sets: which router ranked a request, and why routing picked its seller. */
+const BUYER_ROUTING_HEADERS = new Set([ROUTER_PEER_ID_HEADER, ROUTER_SERVICE_HEADER, ROUTER_RANK_HEADER, ROUTE_SELECTION_HEADER])
 
 /**
- * A seller's headers without router headers: only the buyer says which router
- * ranked a request, so a seller can neither change nor invent that.
+ * A seller's headers without the buyer's routing headers: only the buyer says
+ * which router ranked a request and why its seller was picked, so a seller can
+ * neither change nor invent that.
  */
 export function withoutRouterHeaders(headers: Record<string, string>): Record<string, string> {
-  return Object.fromEntries(Object.entries(headers).filter(([name]) => !ROUTER_HEADERS.has(name.toLowerCase())))
+  return Object.fromEntries(Object.entries(headers).filter(([name]) => !BUYER_ROUTING_HEADERS.has(name.toLowerCase())))
 }
 
 export function attachAntseedTelemetryHeaders(

@@ -1,8 +1,51 @@
 import type {
-  AdminToken, ApiKey, AuditEntry, AuthConfig, Channel, ChainInfo, Invite, Member, NetworkModel, NetworkModelOffer, NetworkRouter, Peer, PeerList, Preset, RequestDetail, RoutingPolicy, Settings, Workspace, WorkspaceRole,
+  AdminToken, ApiKey, AuditEntry, AuthConfig, Channel, ChainInfo, Invite, Member, NetworkModel, NetworkModelOffer, NetworkRouter, Peer, PeerList, Preset, RequestDetail, RoutingPolicy, Settings, Workspace, WorkspaceRole, RouteSelection, ServedSelection,
 } from '../api/types'
 
 /** Obvious fake peer ids for the mock: 0xfa1e…0001 etc. */
+
+/** What the fake buyer reports of its seller at `rank` (1-based) among `of`: the top two share traffic, the fourth fails lately. */
+export function mockRouteSelection(rank: number, of: number, seed: number, now = Date.now()): RouteSelection {
+  const pool = Math.min(2, of)
+  const failing = rank === 4
+  const success = failing ? 0.38 : [0.97, 0.93, 0.88][rank - 1] ?? 0.8
+  const fresh = rank === 3 && seed % 2 === 0
+  return {
+    expectedCostUsd: (0.0011 + rank * 0.0004) / success,
+    expectedPriceUsd: 0.0011 + rank * 0.0004,
+    expectedSeconds: 2.4 + rank * 0.6,
+    successRate: fresh ? 0.95 : success,
+    observations: fresh ? 0 : Math.max(1, 34 - rank * 7 + (seed % 5)),
+    record: fresh ? 'none' : rank === 3 ? 'other-models' : 'model',
+    firstTokenMs: fresh ? null : 280 + rank * 140,
+    tokensPerSecond: fresh ? null : 92 - rank * 14,
+    lastSuccessAt: fresh ? null : now - rank * 40_000,
+    lastFailureAt: failing ? now - 3 * 60_000 : rank === 2 ? now - 25 * 60_000 : null,
+    lastFailureReason: failing ? 'seller 503' : rank === 2 ? 'timeout before first token' : null,
+    failing,
+    coolingDown: false,
+    stale: fresh,
+    ordering: 'expected-cost',
+    sharesTraffic: rank <= pool && pool > 1,
+    trafficShare: rank <= pool && pool > 1 ? (rank === 1 ? 0.62 : 0.38) : null,
+    poolSize: pool,
+    channel: rank === 3 ? 'new' : 'open',
+    inFlight: rank === 1 ? 2 : 0,
+    maxConcurrency: 8,
+    routeChainPosition: null,
+    // A seller this buyer has not used yet: routing starts from its own last-hour figures.
+    ...(fresh ? { reported: { requests: 312, successRate: 0.99, firstTokenMsP50: 420, tokensPerSecondP50: 78 } } : {}),
+  }
+}
+
+const PICKS: Array<ServedSelection['pick']> = ['spread', 'spread', 'conversation', 'spread', 'failover', 'spread', 'exploration', 'spread']
+
+function servedSelection(index: number, now: number): ServedSelection {
+  const pick = PICKS[index % PICKS.length]!
+  const rank = pick === 'failover' ? 2 : pick === 'exploration' ? 3 : index % 3 === 0 ? 2 : 1
+  return { ...mockRouteSelection(rank, 4, index, now), rank, of: 4, attempt: pick === 'failover' ? 1 : 0, pick }
+}
+
 export const fakePeerId = (index: number) => `0xfa1e${'0'.repeat(32)}${String(index).padStart(4, '0')}`
 export const fakeAddress = (index: number) => `0x${'00'.repeat(18)}${String(index).padStart(4, '0')}`
 
@@ -59,7 +102,7 @@ export function seed() {
     services: index === 2 ? manyServices : models.filter((_, m) => (m + index) % 3 !== 0).map((service, m) => {
       const free = index === 3
       const base = 0.2 + ((index * 7 + m * 3) % 10) / 4
-      return { provider: 'openai', service, inputUsdPerMillion: free ? 0 : Number(base.toFixed(2)), outputUsdPerMillion: free ? 0 : Number((base * 3).toFixed(2)), cachedInputUsdPerMillion: free ? 0 : Number((base / 4).toFixed(3)), categories: ['chat'] }
+      return { provider: 'openai', service, inputUsdPerMillion: free ? 0 : Number(base.toFixed(2)), outputUsdPerMillion: free ? 0 : Number((base * 3).toFixed(2)), cachedInputUsdPerMillion: free ? 0 : Number((base / 4).toFixed(3)), categories: ['chat'], paid: !free }
     }),
     trustScore: [92, 78, 88, 41, 65, null, 55, 83][index]!,
     reputationScore: [90, 74, 85, 50, 60, null, 52, 80][index]!,
@@ -72,6 +115,12 @@ export function seed() {
     // Gamma is attested end to end, Beta at the seller node only, Epsilon not checked yet.
     teeScope: index === 2 ? 'end-to-end' as const : index === 1 ? 'seller-node' as const : null,
     stakeAnts: index < 5 ? `${(index + 1) * 2500}.0` : null,
+    agentId: 86_900 + index,
+    // Delta's free models come with the default staked tiers.
+    freeTier: index === 3 ? {
+      base: { maxRequestsPerAddress: 1000, maxRequestsPerIp: null, windowMs: 86_400_000 },
+      stakeTiers: [{ minPower: 520_000, multiplier: 5 }, { minPower: 2_600_000, multiplier: 20 }, { minPower: 10_400_000, multiplier: 'unlimited' as const }],
+    } : null,
     usageShareBps: [1200, 800, 450, 300, 200, null, 90, 600][index]!,
     washFlagged: index === 6,
     lastSeen: now - index * 60_000,
@@ -82,6 +131,35 @@ export function seed() {
     requests24h: [912, 340, 120, 55, 20, 0, 0, 210][index]!,
   }))
   // A routing service: sells rankings, not models, so it lists none.
+  // Beta's first model is priced, and free only for its stakers: 45M power (≈ 865k ANTS locked for a year) gets 200 a day.
+  const beta = peers[1]!
+  beta.services = beta.services.map((service, m) => m === 0 ? {
+    ...service,
+    freeTier: { base: { maxRequestsPerAddress: 200, maxRequestsPerIp: null, windowMs: 86_400_000, stakersOnly: true }, stakeTiers: [{ minPower: 45_000_000, multiplier: 1 }] },
+  } : service)
+  const delta = peers[3]!
+  delta.services = delta.services.map((service) => ({ ...service, freeTier: delta.freeTier }))
+  // Each seller's announced self check: buyer traffic or its own probe, Beta's first model out of credit, Eta not checked yet.
+  for (const [index, peer] of peers.entries()) {
+    peer.services = peer.services.map((service, m) => ({
+      ...service,
+      health: index === 1 && m === 0
+        ? { status: 'failing' as const, checkedAt: now - 60_000, source: 'probe' as const, failingSince: now - 18 * 60_000, consecutiveFailures: 4, reason: 'out_of_credit', httpStatus: 402 }
+        : index === 6
+          ? { status: 'unknown' as const, checkedAt: null, source: null, failingSince: null, consecutiveFailures: null, reason: null, httpStatus: null }
+          : { status: 'healthy' as const, checkedAt: now - ((index + m) % 5 + 1) * 60_000 * (m % 2 ? 7 : 1), source: (index + m) % 2 ? 'probe' as const : 'traffic' as const, failingSince: null, consecutiveFailures: null, reason: null, httpStatus: null },
+      // The seller's last hour of buyer traffic; idle models have none.
+      ...((index + m) % 4 === 3 ? {} : {
+        performance: {
+          requests: 40 + ((index * 53 + m * 31) % 400),
+          successRate: index === 1 && m === 0 ? 0.31 : 0.9 + ((index + m) % 10) / 100,
+          firstTokenMsP50: 260 + ((index * 7 + m * 3) % 9) * 70,
+          firstTokenMsP90: 900 + ((index + m) % 5) * 300,
+          tokensPerSecondP50: 40 + ((index * 11 + m * 5) % 70),
+        },
+      }),
+    }))
+  }
   const fakeRouter: Peer = { ...peers[7]!, peerId: fakePeerId(9), displayName: 'Fake Router Iota', services: [], verified: false, verificationLinks: [], tee: false, teeScope: null, washFlagged: false, requests24h: 48 }
   peers.push(fakeRouter)
   const peerLists: PeerList[] = [
@@ -125,7 +203,7 @@ export function seed() {
       return {
         tag: `req_${String(index).padStart(5, '0')}`, startedAt, finishedAt: startedAt + 60, keyId: k.id, keyLabel: k.label, workspaceId: k.workspaceId, memberId: k.ownerMemberId,
         endUser: null, method: 'GET', path: '/v1/models', model: null, status: 200, sellerPeerId: null, latencyMs: 60, firstTokenMs: null, tokensPerSecond: null, spent: null,
-        inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, errorCode: null, errorMessage: null, requestBody: null, responseBody: null,
+        inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, errorCode: null, errorMessage: null, routeSelection: null, requestBody: null, responseBody: null,
       }
     }
     return {
@@ -144,6 +222,7 @@ export function seed() {
       ...(servedFree ? { servedFree: true } : {}),
       errorCode: failed ? 'seller_unavailable' : rankingFailed ? 'routing_error' : null,
       errorMessage: failed ? 'No seller accepted the request in time (fake seller timed out).' : rankingFailed ? 'Selected router returned no eligible recommendation' : null,
+      routeSelection: routed || failed || rankingFailed ? null : servedSelection(index, now),
       requestBody: index % 6 === 0 ? JSON.stringify({ model: models[index % models.length], messages: [{ role: 'user', content: 'Summarise this fake ticket.' }] }) : null,
       responseBody: index % 6 === 0 && !failed ? JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'A short fake summary.' } }] }) : null,
     }
@@ -203,6 +282,8 @@ export function mockNetworkModels(peers: readonly Peer[]): NetworkModel[] {
   const offers = new Map<string, NetworkModelOffer[]>()
   for (const peer of peers) {
     for (const service of peer.services) {
+      // Buyers leave out offers their seller reports failing.
+      if (service.health?.status === 'failing') continue
       const free = service.inputUsdPerMillion === 0 && (service.outputUsdPerMillion ?? 0) === 0
       const list = offers.get(service.service) ?? []
       list.push({
@@ -210,14 +291,17 @@ export function mockNetworkModels(peers: readonly Peer[]): NetworkModel[] {
         protocols: service.apiProtocols ?? ['openai-chat-completions'], inputUsdPerMillion: service.inputUsdPerMillion,
         outputUsdPerMillion: service.outputUsdPerMillion, cachedInputUsdPerMillion: service.cachedInputUsdPerMillion, usdPerImage: null,
         contextLength: service.service.includes('llama') ? 128_000 : service.service.includes('qwen') ? 262_144 : null, free,
+        agentId: peer.agentId, freeTier: service.freeTier ?? (free ? peer.freeTier : null),
         reputationScore: peer.reputationScore, trustScore: peer.trustScore, verified: peer.verified, verificationLinks: peer.verificationLinks, tee: peer.tee, teeScope: peer.teeScope, latencyMsP50: peer.latencyMsP50, firstTokenMsP50: peer.firstTokenMsP50, tokensPerSecondP50: peer.tokensPerSecondP50,
+        ...(service.health ? { health: service.health } : {}),
+        ...(service.performance ? { performance: service.performance } : {}),
       })
       offers.set(service.service, list)
     }
   }
   const media = (id: string, type: 'image' | 'video', price: number): [string, NetworkModelOffer[], 'image' | 'video'] => [id, peers.slice(0, 2).map((peer, index) => ({
     peerId: peer.peerId, displayName: peer.displayName, serviceId: id, provider: 'fal', protocols: [], inputUsdPerMillion: null, outputUsdPerMillion: null,
-    cachedInputUsdPerMillion: null, usdPerImage: { min: price * (index + 1), max: price * (index + 1) }, contextLength: null, free: false,
+    cachedInputUsdPerMillion: null, usdPerImage: { min: price * (index + 1), max: price * (index + 1) }, contextLength: null, free: false, agentId: peer.agentId, freeTier: null,
     reputationScore: peer.reputationScore, trustScore: peer.trustScore, verified: peer.verified, verificationLinks: peer.verificationLinks, tee: peer.tee, teeScope: peer.teeScope, latencyMsP50: peer.latencyMsP50, firstTokenMsP50: peer.firstTokenMsP50, tokensPerSecondP50: peer.tokensPerSecondP50,
   })), type]
   const entries: Array<[string, NetworkModelOffer[], NetworkModel['type']]> = [
@@ -234,7 +318,9 @@ export function mockNetworkModels(peers: readonly Peer[]): NetworkModel[] {
       sellers: ranked.length,
       inputUsdPerMillion: range(ranked.map((offer) => offer.inputUsdPerMillion)),
       outputUsdPerMillion: range(ranked.map((offer) => offer.outputUsdPerMillion)),
-      free: ranked.some((offer) => offer.free),
+      free: ranked.some((offer) => offer.free && !offer.freeTier?.base.stakersOnly),
+      freeForStakers: ranked.some((offer) => offer.freeTier?.base.stakersOnly === true),
+      freeAllowance: ranked.some((offer) => !offer.free && offer.freeTier !== null && !offer.freeTier.base.stakersOnly),
       teeSellers: ranked.filter((offer) => offer.tee).length,
       fullTeeSellers: ranked.filter((offer) => offer.teeScope === 'end-to-end').length,
       verifiedSellers: ranked.filter((offer) => offer.verified).length,

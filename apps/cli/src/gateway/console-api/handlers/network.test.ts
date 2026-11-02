@@ -5,6 +5,7 @@ import type { ResolvedPolicy } from '../../policy-resolver.js'
 import { ConsoleRouter, type Principal } from '../router.js'
 import type { BuyerLimits, NetworkModel, NetworkRouter, Peer, RoutePreview } from '../types.js'
 import { registerNetworkRoutes, type NetworkRouteOverrides } from './network.js'
+import { encodeFreeTierCapabilities } from '@antseed/node/free-tier-program'
 import { enrichCandidates, mapNetworkModels, mapNetworkRouters, mapPeers, peerServices, teeScopes, teeVerifiedPeers } from './network-mapping.js'
 import {
   call,
@@ -32,7 +33,7 @@ const PEERS_BODY = {
       peerId: PEER_A,
       displayName: 'Fake TEE Seller',
       providers: ['openai'],
-      capabilities: ['verifier.antseed-verifier'],
+      capabilities: ['verifier.antseed-verifier', 'free-tier.v1.base.a1000.w86400000', 'free-tier.v1.tier.p520000.x5'],
       providerPricing: {
         openai: {
           defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 },
@@ -43,6 +44,7 @@ const PEERS_BODY = {
       reputationScore: 80,
       onChainReputationScore: 61,
       trust: { score: 72, washFlagged: false },
+      onChainAgentId: 42,
       onChainPoolStakeAnts: 1200,
       onChainUsageShareBps: 250,
       onChainWashFlagged: false,
@@ -122,6 +124,7 @@ before(async () => {
   buyer = await startFakeBuyer({
     'GET /_antseed/peers': () => (peersDown ? { status: 500, body: { error: 'boom' } } : { body: PEERS_BODY }),
     'GET /_antseed/peer-health': () => ({ body: HEALTH_BODY }),
+    'POST /_antseed/peer-health/clear': () => ({ body: { ok: true } }),
     'GET /v1/models': (req) => modelsStatus !== 200
       ? { status: modelsStatus, body: { error: 'Buyer is not ready yet.' } }
       : { body: new URL(req.url, 'http://x').searchParams.get('type') === 'router' ? ROUTERS_BODY : MODELS_BODY },
@@ -133,7 +136,7 @@ before(async () => {
         model: new URL(req.url, 'http://x').searchParams.get('model'),
         candidates: [
           { peerId: PEER_A, displayName: null, rank: 1, eligible: true, reasons: ['cheapest'], inputUsdPerMillion: 0.5, outputUsdPerMillion: 1.5, trustScore: null },
-          { peerId: PEER_C, displayName: 'Named By Buyer', rank: null, eligible: false, reasons: ['blocked by workspace'], inputUsdPerMillion: null, outputUsdPerMillion: null, trustScore: 40 },
+          { peerId: PEER_C, displayName: 'Named By Buyer', rank: null, eligible: false, reasons: ['blocked by workspace'], inputUsdPerMillion: null, outputUsdPerMillion: null, trustScore: 40, selection: null },
         ],
         buyer: { minReputation: 40, requireVerified: true },
       },
@@ -146,7 +149,9 @@ after(async () => {
 })
 
 const KEY_WORKSPACES: Record<string, string> = { key_team: 'ws_team', key_other: 'ws_other' }
+const audits: string[] = []
 const store = {
+  recordAudit: (entry: { action: string; target: { id: string | null } | null }) => { audits.push(`${entry.action} ${entry.target?.id}`) },
   peerStats: (since: number) => {
     assert.equal(since, NOW - 24 * 60 * 60 * 1000)
     return [{ peerId: PEER_A, requests: 17, latencyMsP50: 840, firstTokenMsP50: 300, tokensPerSecondP50: 55.5 }]
@@ -187,10 +192,105 @@ function setup(extra: NetworkRouteOverrides = {}): ConsoleRouter {
 // ── Peers ────────────────────────────────────────────────────────────────
 
 test('peer services price each service from its own entry or the provider default', () => {
-  assert.deepEqual(peerServices(PEERS_BODY.peers[0] as Record<string, unknown>), [
-    { provider: 'openai', service: 'open-model-a', inputUsdPerMillion: 0.5, outputUsdPerMillion: 1.5, cachedInputUsdPerMillion: 0.1, categories: ['chat', 'coding'] },
-    { provider: 'openai', service: 'open-model-b', inputUsdPerMillion: 1, outputUsdPerMillion: 2, cachedInputUsdPerMillion: null, categories: ['chat'] },
+  const freeTier = { base: { maxRequestsPerAddress: 1000, maxRequestsPerIp: null, windowMs: 86_400_000 }, stakeTiers: [{ minPower: 520_000, multiplier: 5 }] }
+  const row = {
+    ...PEERS_BODY.peers[0],
+    providerPricing: {
+      openai: {
+        ...PEERS_BODY.peers[0]!.providerPricing.openai,
+        services: { ...PEERS_BODY.peers[0]!.providerPricing.openai!.services, 'open-model-free': { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } },
+      },
+    },
+  }
+  // The seller-wide program covers the free service only; priced ones have no program of their own.
+  assert.deepEqual(peerServices(row as Record<string, unknown>), [
+    { provider: 'openai', service: 'open-model-a', inputUsdPerMillion: 0.5, outputUsdPerMillion: 1.5, cachedInputUsdPerMillion: 0.1, categories: ['chat', 'coding'], paid: true, freeTier: null },
+    { provider: 'openai', service: 'open-model-free', inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: null, categories: [], paid: false, freeTier },
+    { provider: 'openai', service: 'open-model-b', inputUsdPerMillion: 1, outputUsdPerMillion: 2, cachedInputUsdPerMillion: null, categories: ['chat'], paid: true, freeTier: null },
   ])
+})
+
+test('peer services and model offers carry a service’s own free-tier program', () => {
+  const row = {
+    ...PEERS_BODY.peers[0],
+    capabilities: [
+      ...PEERS_BODY.peers[0]!.capabilities,
+      ...encodeFreeTierCapabilities(
+        { base: { maxRequestsPerAddress: 5, maxRequestsPerIp: null, windowMs: 86_400_000, stakersOnly: true }, stakeTiers: [{ minPower: 520_000, multiplier: 5 }] },
+        'open-model-b',
+        { sellerWideTiers: [{ minPower: 520_000, multiplier: 5 }] },
+      ),
+    ],
+  }
+  const [a, b] = peerServices(row as Record<string, unknown>)
+  // open-model-b is priced: its own program is a free allowance; open-model-a has none.
+  assert.equal(a!.freeTier, null)
+  assert.deepEqual(b!.freeTier, {
+    base: { maxRequestsPerAddress: 5, maxRequestsPerIp: null, windowMs: 86_400_000, stakersOnly: true },
+    stakeTiers: [{ minPower: 520_000, multiplier: 5 }],
+  })
+  const peers = mapPeers({ peers: { ...PEERS_BODY, peers: [row] }, health: HEALTH_BODY, verification: null, stats: [], now: NOW })
+  const [model] = mapNetworkModels({
+    // The buyer's catalog sends each offer's program; the console passes it through.
+    data: [{ id: 'open-model-b', peers: [{ peerId: PEER_A, provider: 'openai', serviceId: 'open-model-b', inputUsdPerMillion: 0, outputUsdPerMillion: 0, freeTier: b!.freeTier }] }],
+  }, peers)
+  assert.deepEqual(model!.offers[0]!.freeTier, b!.freeTier)
+  // The seller-wide program stays on the peer.
+  assert.equal(peers[0]!.freeTier?.base.stakersOnly, undefined)
+})
+
+test('peer services, model offers and route-preview candidates carry the seller\'s self health check', () => {
+  const failing = { status: 'failing', checkedAt: 1_793_328_180_000, source: 'probe', failingSince: 1_793_327_880_000, consecutiveFailures: 3, reason: 'timeout', httpStatus: 504 }
+  const row = {
+    ...PEERS_BODY.peers[0],
+    providerServiceHealth: { openai: { services: {
+      'open-model-a': failing,
+      'open-model-b': { status: 'healthy', checkedAt: 1_793_328_100_000, source: 'traffic' },
+      'open-model-free': { status: 'bogus' },
+    } } },
+  }
+  const healthOf = (service: string) => peerServices(row as Record<string, unknown>).find((entry) => entry.service === service)?.health
+  assert.deepEqual(healthOf('open-model-a'), failing)
+  // Every field is present, null when the seller did not announce it.
+  assert.deepEqual(healthOf('open-model-b'), { status: 'healthy', checkedAt: 1_793_328_100_000, source: 'traffic', failingSince: null, consecutiveFailures: null, reason: null, httpStatus: null })
+  assert.equal(healthOf('open-model-free'), undefined, 'an unknown status is not shown')
+
+  const healthy = { status: 'healthy', checkedAt: 1_793_328_100_000, source: 'probe' }
+  const [model] = mapNetworkModels({ data: [{ id: 'open-model-b', peers: [{ peerId: PEER_A, serviceId: 'open-model-b', health: healthy }] }] }, [])
+  assert.equal(model!.offers[0]!.health?.source, 'probe')
+  const [candidate] = enrichCandidates([{ peerId: PEER_A, eligible: false, reasons: [], health: failing }], PEERS_BODY)
+  assert.deepEqual(candidate!.health, failing)
+})
+
+test('peer services and model offers carry the seller\'s measured performance', () => {
+  const performance = { requests: 312, successRate: 0.97, firstTokenMsP50: 420, tokensPerSecondP50: 78 }
+  const row = { ...PEERS_BODY.peers[0], providerServicePerformance: { openai: { services: { 'open-model-a': performance, 'open-model-b': { requests: 'x' } } } } }
+  const services = peerServices(row as Record<string, unknown>)
+  assert.deepEqual(services.find((entry) => entry.service === 'open-model-a')?.performance, { ...performance, firstTokenMsP90: null })
+  assert.equal(services.find((entry) => entry.service === 'open-model-b')?.performance, undefined, 'a malformed entry is not shown')
+  const [model] = mapNetworkModels({ data: [{ id: 'open-model-a', peers: [{ peerId: PEER_A, serviceId: 'open-model-a', performance }] }] }, [])
+  assert.equal(model!.offers[0]!.performance?.requests, 312)
+})
+
+test('peer services give a paid unit-billed service no seller-wide program', () => {
+  const row = {
+    ...PEERS_BODY.peers[0],
+    providerPricing: { fal: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 }, services: { 'paid-image': {}, 'free-image': {} } } },
+    providerServiceCategories: {},
+    providerServiceApiProtocols: { fal: { services: { 'paid-image': ['openai-images'], 'free-image': ['openai-images'] } } },
+    providerServiceUnitBillingModels: {
+      fal: { services: {
+        'paid-image': { 'openai-images': { version: 1, components: [{ unit: 'output_images', priceUsd: 0.02 }] } },
+        'free-image': { 'openai-images': { version: 1, components: [{ unit: 'output_images', priceUsd: 0 }] } },
+      } },
+    },
+  }
+  const services = peerServices(row as Record<string, unknown>)
+  assert.equal(services.find((entry) => entry.service === 'paid-image')?.freeTier, null)
+  assert.equal(services.find((entry) => entry.service === 'free-image')?.freeTier?.base.maxRequestsPerAddress, 1000)
+  // Zero token prices with a positive image price are paid, so the console shows the paid fallback.
+  assert.equal(services.find((entry) => entry.service === 'paid-image')?.paid, true)
+  assert.equal(services.find((entry) => entry.service === 'free-image')?.paid, false)
 })
 
 test('TEE snapshot: only current passing attestations count', () => {
@@ -233,6 +333,11 @@ test('GET peers merges buyer peers, health and gateway stats', async () => {
     tee: true,
     teeScope: null,
     stakeAnts: '1200',
+    agentId: 42,
+    freeTier: {
+      base: { maxRequestsPerAddress: 1000, maxRequestsPerIp: null, windowMs: 86_400_000 },
+      stakeTiers: [{ minPower: 520_000, multiplier: 5 }],
+    },
     usageShareBps: 250,
     washFlagged: false,
     lastSeen: NOW - 5_000,
@@ -295,6 +400,8 @@ test('network models merge the buyer catalog with the peer list', () => {
     inputUsdPerMillion: { min: 0, max: 0.5 },
     outputUsdPerMillion: { min: 0, max: 1.5 },
     free: true,
+    freeForStakers: false,
+    freeAllowance: false,
     teeSellers: 1,
     fullTeeSellers: 0,
     verifiedSellers: 1,
@@ -312,6 +419,9 @@ test('network models merge the buyer catalog with the peer list', () => {
     usdPerImage: null,
     contextLength: 128_000,
     free: false,
+    agentId: 42,
+    // A priced offer gets no seller-wide program, only one of its own.
+    freeTier: null,
     reputationScore: 64,
     trustScore: 72,
     verified: false,
@@ -412,7 +522,7 @@ test('GET routers asks the buyer for routing services without a policy', async (
 
 test('candidate enrichment fills names and trust from the peer list', () => {
   const candidates = enrichCandidates([{ peerId: PEER_A, eligible: true, reasons: [] }, { eligible: true }], PEERS_BODY)
-  assert.deepEqual(candidates, [{ peerId: PEER_A, displayName: 'Fake TEE Seller', rank: null, eligible: true, reasons: [], inputUsdPerMillion: null, outputUsdPerMillion: null, trustScore: 72 }])
+  assert.deepEqual(candidates, [{ peerId: PEER_A, displayName: 'Fake TEE Seller', rank: null, eligible: true, reasons: [], inputUsdPerMillion: null, outputUsdPerMillion: null, trustScore: 72, selection: null }])
 })
 
 test('GET route-preview sends the resolved policy and enriches candidates', async () => {
@@ -424,12 +534,38 @@ test('GET route-preview sends the resolved policy and enriches candidates', asyn
   assert.deepEqual(preview.policy, { allowedModels: ['open-model-a'], blockedPeerIds: [PEER_C], sort: 'price' })
   assert.deepEqual(preview.sources.map((source) => source.level), ['buyer', 'gateway', 'workspace'])
   assert.deepEqual(preview.candidates, [
-    { peerId: PEER_A, displayName: 'Fake TEE Seller', rank: 1, eligible: true, reasons: ['cheapest'], inputUsdPerMillion: 0.5, outputUsdPerMillion: 1.5, trustScore: 72 },
-    { peerId: PEER_C, displayName: 'Named By Buyer', rank: null, eligible: false, reasons: ['blocked by workspace'], inputUsdPerMillion: null, outputUsdPerMillion: null, trustScore: 40 },
+    { peerId: PEER_A, displayName: 'Fake TEE Seller', rank: 1, eligible: true, reasons: ['cheapest'], inputUsdPerMillion: 0.5, outputUsdPerMillion: 1.5, trustScore: 72, selection: null },
+    { peerId: PEER_C, displayName: 'Named By Buyer', rank: null, eligible: false, reasons: ['blocked by workspace'], inputUsdPerMillion: null, outputUsdPerMillion: null, trustScore: 40, selection: null },
   ])
   const sent = lastRequest(buyer, (url) => url.startsWith('/_antseed/route-preview'))
   assert.equal(sent?.url, '/_antseed/route-preview?model=open-model-a')
   assert.deepEqual(decodePolicyHeader(String(sent?.headers[ROUTING_POLICY_HEADER])), preview.policy)
+})
+
+test('candidate enrichment passes the buyer\'s selection numbers through and drops malformed ones', () => {
+  const selection = {
+    expectedCostUsd: 0.002, expectedPriceUsd: 0.0015, expectedSeconds: 3, successRate: 0.96, observations: 12, record: 'model',
+    firstTokenMs: 420, tokensPerSecond: 80, lastSuccessAt: NOW, lastFailureAt: null, lastFailureReason: null,
+    failing: false, coolingDown: false, stale: false, ordering: 'expected-cost', sharesTraffic: true, trafficShare: 0.6, poolSize: 2,
+    channel: 'open', inFlight: 1, maxConcurrency: 8, routeChainPosition: null,
+  }
+  const [good, bad] = enrichCandidates([
+    { peerId: PEER_A, eligible: true, reasons: [], selection },
+    { peerId: PEER_B, eligible: true, reasons: [], selection: { ...selection, record: 'guess' } },
+  ], PEERS_BODY)
+  assert.deepEqual(good?.selection, selection)
+  assert.equal(bad?.selection, null)
+})
+
+test('POST routing/seller-history/reset clears the buyer\'s record of a seller, for org admins only', async () => {
+  audits.length = 0
+  assert.deepEqual(await call(setup(), 'POST', '/routing/seller-history/reset', orgAdmin, { peerId: `0x${PEER_A.toUpperCase()}` }), { ok: true })
+  const sent = lastRequest(buyer, (url) => url === '/_antseed/peer-health/clear')
+  assert.equal(sent?.method, 'POST')
+  assert.deepEqual(sent?.body, { peerId: PEER_A })
+  assert.deepEqual(audits, [`routing.seller_history.reset ${PEER_A}`])
+  await rejectsWith(call(setup(), 'POST', '/routing/seller-history/reset', member, { peerId: PEER_A }), 403)
+  await rejectsWith(call(setup(), 'POST', '/routing/seller-history/reset', orgAdmin, { peerId: 'nope' }), 400, 'invalid_peer')
 })
 
 test('GET route-preview shows the buyer hard limits as the buyer source', async () => {

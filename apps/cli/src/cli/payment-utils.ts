@@ -18,6 +18,7 @@ import {
   PositionInitClient,
   EmissionsGateClient,
   ChannelStore,
+  VerifierClient,
   ANTSTokenClient,
   SellerPoolsClient,
   SellerPoolsRewardsClient,
@@ -134,6 +135,8 @@ type ResolvedCryptoConfig = NonNullable<AntseedConfig['payments']['crypto']> & {
   stakingContractAddress?: string;
   identityRegistryAddress?: string;
   emissionsContractAddress?: string;
+  verificationContractAddress?: string;
+  verificationDeployBlock?: number;
   legacyEmissionsContractAddress?: string;
   legacyStakingContractAddress?: string;
   legacyEmissionsV1ContractAddress?: string;
@@ -213,6 +216,11 @@ export function requireCryptoConfig(
     washTradingRegistryAddress: crypto.washTradingRegistryAddress || resolved.washTradingRegistryAddress,
     pointsPolicyRegistryAddress: crypto.pointsPolicyRegistryAddress || resolved.pointsPolicyRegistryAddress,
     identityRegistryAddress: crypto.identityRegistryAddress || resolved.identityRegistryAddress,
+    verificationContractAddress: crypto.verificationContractAddress || resolved.verificationContractAddress,
+    // The built-in deploy block only describes the built-in address; a custom
+    // address must bring its own block (or scans need an explicit fromBlock).
+    verificationDeployBlock: crypto.verificationDeployBlock
+      ?? (crypto.verificationContractAddress ? undefined : resolved.verificationDeployBlock),
     depositRelayAddress: crypto.depositRelayAddress || resolved.depositRelayAddress,
     evmChainId: resolved.evmChainId,
     explorerApiUrl: crypto.explorerApiUrl ?? resolved.explorerApiUrl,
@@ -384,6 +392,26 @@ export function createLegacyStakingClient(config: AntseedConfig): StakingClient 
   return new StakingClient({
     ...contractClientConfig(legacy, requireContractAddress(legacy, 'legacyStakingContractAddress', 'legacyStaking')),
     usdcAddress: crypto.usdcContractAddress,
+  });
+}
+
+const VERIFIER_LOG_QUERY_CHUNK_BLOCKS = 1_000
+
+/**
+ * Create a VerifierClient from the CLI config.
+ */
+export function createVerifierClient(config: AntseedConfig, overrides?: CryptoConfigOverrides): VerifierClient {
+  const crypto = requireCryptoConfig(config, overrides);
+  if (!crypto.verificationContractAddress) {
+    throw new Error('No verification contract address configured. Set payments.crypto.verificationContractAddress in your config file.');
+  }
+  return new VerifierClient({
+    rpcUrl: crypto.rpcUrl,
+    ...fallbackClientOpts(crypto),
+    contractAddress: crypto.verificationContractAddress,
+    evmChainId: crypto.evmChainId,
+    logQueryChunkBlocks: VERIFIER_LOG_QUERY_CHUNK_BLOCKS,
+    ...(crypto.verificationDeployBlock !== undefined ? { deploymentBlock: crypto.verificationDeployBlock } : {}),
   });
 }
 
