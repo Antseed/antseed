@@ -26,7 +26,6 @@ import { readJsonIfExists, writeJsonAtomic } from './atomic-files.js'
 import type { VerificationOutcomeReasonV1 } from './outcome-reason.js'
 import type { ReferenceUpstreamProvenanceV1 } from './model-reference.js'
 import { findEpochProbeReference, loadBankReferenceExchanges } from './probe-bank.js'
-import { confirmedDiffStatus } from './diff-recheck.js'
 import { CLOSE_CALL_RULE_ID, pooledCloseCallVerdict, stageOneVerdict } from './close-call.js'
 import { verifyProxyAuditEvidenceFile, type ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import { resolveReferenceSizingPolicy } from './reference-sizing.js'
@@ -303,13 +302,9 @@ export async function prepareModelAudits(input: {
       }
       const finalVerdict = finalAuditVerdict(result)
       if (finalVerdict === null) {
-        exclude(stageOneVerdict(result) === null
-          ? result.extensionPending
-            ? `close call waiting for its extra questions (${result.extensionPending.reason}); a later run this epoch asks them, so it is not submitted yet`
-            : 'close call without its extra questions, so it is not submitted'
-          : result.recheckPending
-            ? `DIFF waiting for its recheck (${result.recheckPending.reason}); a later run this epoch rechecks it, so it is not submitted yet`
-            : 'DIFF not confirmed: no recheck on fresh probes, so it is not submitted')
+        exclude(result.extensionPending
+          ? `close call waiting for its extra questions (${result.extensionPending.reason}); a later run this epoch asks them, so it is not submitted yet`
+          : 'close call without its extra questions, so it is not submitted')
         continue
       }
       if (finalVerdict !== result.status) result = { ...result, status: finalVerdict }
@@ -749,17 +744,21 @@ export function validateAuditMatchesSummary(
   }
 }
 
+/** A DIFF a run from before confirmations rechecked itself stays DIFF only if its recheck was DIFF. */
+function confirmedDiffStatus(recheckStatus: string): 'DIFF' | 'UNDETERMINED' {
+  return recheckStatus === 'DIFF' ? 'DIFF' : 'UNDETERMINED'
+}
+
 /**
  * The verdict submitted for a seller. A close call (`kbf-extension-v1`) is decided on its first set
- * pooled with an extra set; null while that extra set is missing. A stage-1 DIFF counts only when a
- * recheck on fresh probes is DIFF too, otherwise it is UNDETERMINED; null for a DIFF that was never
- * rechecked. Null results are not submitted.
+ * pooled with an extra set; null while that extra set is missing (null results are not submitted).
+ * A DIFF is submitted as found: it is one auditor's report, and the contract records it only once
+ * another auditor confirms it with its own audit. Runs from before that rechecked their own DIFF on
+ * fresh probes keep the recheck's outcome.
  */
 export function finalAuditVerdict(result: ModelAuditSummaryV1['results'][number]): ModelAuditVerdict | null {
   if (result.recheck) return confirmedDiffStatus(result.recheck.status)
-  const stageOne = stageOneVerdict(result)
-  if (stageOne === null || stageOne === 'DIFF') return null
-  return stageOne
+  return stageOneVerdict(result)
 }
 
 async function readModelSummary(path: string, runId: string, model: string): Promise<ModelAuditSummaryV1> {

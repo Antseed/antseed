@@ -13,7 +13,6 @@ import {
   modelAuditsDirectory,
   modelAuditReportPath,
   modelAuditExtensionsDirectory,
-  modelAuditRechecksDirectory,
   modelAuditSellersDirectory,
   modelReferencesDirectory,
   readVerifierRunManifest,
@@ -29,7 +28,7 @@ import {
   type VerifierStatusV1,
 } from '../../../verifier/audit-artifacts.js'
 import { resolveAuditEpochWindow, type AuditEpochWindow, type OnchainEpochReader } from '../../../verifier/audit-epoch.js'
-import { auditModelListHash, roundRobinAssignmentFor, type AuditAssignment } from '../../../verifier/audit-assignment.js'
+import { auditModelListHash, confirmationAssignments, roundRobinAssignmentFor, type AuditAssignment } from '../../../verifier/audit-assignment.js'
 import { approvedAuditorsAt, loadAuditorSetEvents } from '../../../verifier/auditor-set.js'
 import {
   createDepositsClient,
@@ -71,7 +70,6 @@ import { loadHighestEndpointPrice, loadVerifierModelCatalog } from '../../../ver
 import {
   inspectSellerProbeCapacity,
   loadModelAuditReservation,
-  reserveDiffRecheckReference,
   reserveExtensionReference,
   reserveModelAuditReference,
   voidModelAuditReference,
@@ -95,7 +93,6 @@ import {
 import { getGlobalOptions } from '../types.js'
 import { enrollFreshProbes, ensureAuditableReference, ensureSellerProbeCapacity } from '../../../verifier/ensure-auditable-reference.js'
 import { createReferenceRequestLimiter } from '../../../verifier/model-reference.js'
-import { runDiffRechecks, type DiffRecheckStats } from '../../../verifier/diff-recheck.js'
 import { runExtensionRounds, type ExtensionRoundStats } from '../../../verifier/extension-round.js'
 import { CLOSE_CALL_RULE_ID } from '../../../verifier/close-call.js'
 import {
@@ -287,6 +284,10 @@ export function printAuditAssignment(
 ): void {
   const from = context.auditorSource ? ` (from ${context.auditorSource})` : ''
   console.log(`Assigned models for ${assignment.auditor}${from}, epoch ${assignment.epoch}: ${assignment.models.join(', ') || 'none'}`)
+  const confirms = confirmationAssignments({
+    auditors: context.approvedAuditors, epoch: assignment.epoch, availableModels: context.availableModels,
+  }).get(assignment.auditor) ?? []
+  console.log(`Confirms DIFFs on: ${confirms.join(', ') || 'none'} (audits sellers whose DIFF on these models waits for a second auditor)`)
   console.log(chalk.dim(
     `  round robin: every model is audited every epoch, split across ${context.approvedAuditors.length} approved auditor(s); `
     + `${context.availableModels.length} model(s), model list ${auditModelListHash(context.availableModels).slice(0, 10)}. `
@@ -471,6 +472,11 @@ async function runVerifierRound(
         strictWhenUnavailable: false,
         warn: (text) => console.warn(chalk.yellow(text)),
       })
+      if (config.verifier?.testModels) {
+        console.warn(chalk.yellow(
+          `verifier.testModels is set: auditing only ${configuredVerifierModels(config.verifier).join(', ')}. For testing only; other auditors must use the same list.`,
+        ))
+      }
       const resolveEpoch = async (): Promise<AuditEpochWindow> => {
         const resolved = await resolveAuditEpochWindow(() => auditEpochReader(config))
         if (resolved.warning) console.warn(chalk.yellow(resolved.warning))
@@ -573,18 +579,11 @@ async function runVerifierRound(
         const resumeSourceRunId = requestedResumeManifest?.runId ?? null
         // Only an explicit --resume-run limits the run to repairs.
         const resumeOnly = resumeSourceRunId !== null
-        // Close calls whose extra questions could not be asked, and stage-1 DIFFs whose recheck could
-        // not run, in earlier runs this epoch: finished here without repeating the first check.
-        // --fresh audits those sellers from the start instead.
-        const pendingRechecks = !options.fresh
+        // Close calls whose extra questions could not be asked in earlier runs this epoch: finished
+        // here without repeating the first check. --fresh audits those sellers from the start instead.
+        const pendingRechecks = !options.fresh && (config.verifier?.closeCallExtensions ?? 1) > 0
           ? await loadPendingDiffRechecks(evidenceDir, epoch, models)
           : new Map()
-        for (const [key, entry] of pendingRechecks) {
-          const enabled = entry.kind === 'extension'
-            ? (config.verifier?.closeCallExtensions ?? 1) > 0
-            : (config.verifier?.diffConfirmationRuns ?? 1) > 0
-          if (!enabled) pendingRechecks.delete(key)
-        }
         if (selectedPeerId) {
           for (const [key, entry] of pendingRechecks) {
             if (entry.result.peerId.trim().replace(/^0x/i, '').toLowerCase() !== selectedPeerId) pendingRechecks.delete(key)
@@ -685,14 +684,13 @@ async function runVerifierRound(
                 log,
               })
               // The bank can be ready while sellers audited in earlier epochs have seen most of it:
-              // build fresh questions until each seller has an unseen audit set and recheck set.
+              // build fresh questions until each seller has an unseen audit set.
               await ensureSellerProbeCapacity({
                 model, banksDir, referencesDir,
                 config: config.verifier,
                 maxRequests: enrollmentBudget,
                 epoch,
                 sellerPeerIds: sellersToAudit.map((peer) => peer.peerId),
-                recheck: (config.verifier?.diffConfirmationRuns ?? 1) > 0,
                 buyerProxyPort: config.buyer.proxyPort,
                 requestLimiter,
                 log,
@@ -883,11 +881,6 @@ async function runVerifierRound(
             `Close calls waiting for extra questions from earlier runs this epoch: ${pendingExtensionCount}; asking them now`,
           ))
         }
-        if (pendingRechecks.size - pendingExtensionCount > 0) {
-          console.log(chalk.cyan(
-            `DIFFs waiting for a recheck from earlier runs this epoch: ${pendingRechecks.size - pendingExtensionCount}; rechecking them now`,
-          ))
-        }
 
         const maxConcurrentModels = config.verifier?.auditMaxConcurrentModels ?? 6
         const maxConcurrentPeersPerModel = config.verifier?.auditMaxConcurrentPeersPerModel ?? 4
@@ -909,11 +902,7 @@ async function runVerifierRound(
             await writeVerifierStatus(evidenceDir, status!)
           })
         }
-        const diffConfirmationRuns = config.verifier?.diffConfirmationRuns ?? 1
         const closeCallExtensions = config.verifier?.closeCallExtensions ?? 1
-        const recheckTotals: DiffRecheckStats = {
-          rechecked: 0, confirmed: 0, notConfirmed: 0, pending: 0, cost: emptyAuditCostSummary(),
-        }
         const extensionTotals: ExtensionRoundStats = {
           extended: 0, same: 0, diff: 0, undetermined: 0, pending: 0, cost: emptyAuditCostSummary(),
         }
@@ -1140,13 +1129,12 @@ async function runVerifierRound(
               log: (message) => console.log(chalk.dim(`[enrollment:${model}] ${message}`)),
             })
           }
-          // A follow-up check (extra questions for a close call, or a DIFF recheck) on the same seller
-          // and service as its first check, with its own evidence directory and audit ID.
+          // Extra questions for a close call on the same seller and service as its first check, with
+          // their own evidence directory and audit ID.
           const verifyFollowUp = async (input: {
             first: ModelVerificationTargetResult
             reference: KbfReferenceV1
             reservationAuditId: string
-            kind: 'extension' | 'diff-recheck'
           }): Promise<ModelVerificationTargetResult | ModelVerificationSkip> => {
             const target = targetByPeer.get(input.first.peerId.toLowerCase())
             if (!target) throw new Error(`seller ${input.first.peerId} is no longer a target`)
@@ -1154,13 +1142,10 @@ async function runVerifierRound(
             const advertisedConcurrency = target.peer.maxConcurrency && target.peer.maxConcurrency > 0
               ? target.peer.maxConcurrency
               : maxConcurrentBatchesPerPeer
-            const extension = input.kind === 'extension'
             const followUp = await verifyModelTarget({
               context: {
                 proxy,
-                evidenceDir: extension
-                  ? modelAuditExtensionsDirectory(evidenceDir, epoch, model, runId)
-                  : modelAuditRechecksDirectory(evidenceDir, epoch, model, runId),
+                evidenceDir: modelAuditExtensionsDirectory(evidenceDir, epoch, model, runId),
                 checkpointRootDir: modelAuditsDirectory(evidenceDir, epoch, model, runId),
                 requestTimeoutMs: config.verifier?.probeRequestTimeoutMs ?? 120_000,
                 auditTimeoutMs: config.verifier?.auditPeerTimeoutMs ?? 600_000,
@@ -1174,13 +1159,13 @@ async function runVerifierRound(
               service: target.service,
               reference: input.reference,
               auditId: canonicalHashBytes32({
-                domain: extension ? 'antseed-verifier-extension-audit-v1' : 'antseed-verifier-diff-recheck-audit-v1',
+                domain: 'antseed-verifier-extension-audit-v1',
                 runId,
                 firstAuditId: input.first.auditId,
                 reservationAuditId: input.reservationAuditId,
               }),
               checkpointIdentity: { runId, epoch, model },
-              ...(extension ? { extension: true } : { diffRecheck: true }),
+              extension: true,
             })
             if (followUp.status === 'SKIPPED') {
               await voidModelAuditReference({
@@ -1200,9 +1185,7 @@ async function runVerifierRound(
                 runId, epoch, probeCount: first.probeCount, config: config.verifier,
               }),
               enroll: enrollForFollowUps,
-              verify: (first, reference, reservationAuditId) => verifyFollowUp({
-                first, reference, reservationAuditId, kind: 'extension',
-              }),
+              verify: (first, reference, reservationAuditId) => verifyFollowUp({ first, reference, reservationAuditId }),
               concurrency: async (tasks) => {
                 await mapConcurrently(tasks, maxConcurrentPeersPerModel, (task) => task())
               },
@@ -1222,42 +1205,6 @@ async function runVerifierRound(
                 firstAuditId: result.auditId, extensionAuditId: result.extension.auditId,
                 firstPValue: result.extension.firstLook.pValue, pooledPValue: result.extension.pooled.pValueBinomial,
                 verdict: result.status, at: new Date().toISOString(),
-              })
-            }
-          }
-          if (diffConfirmationRuns > 0) {
-            const rechecked = await runDiffRechecks({
-              // After the close-call round: pooled DIFFs are rechecked, and its results are kept.
-              results,
-              reserve: (first) => reserveDiffRecheckReference({
-                banksDir, model, sellerPeerId: first.peerId, service: first.service,
-                runId, epoch, config: config.verifier,
-              }),
-              enroll: enrollForFollowUps,
-              verify: (first, reference, reservationAuditId) => verifyFollowUp({
-                first, reference, reservationAuditId, kind: 'diff-recheck',
-              }),
-              concurrency: async (tasks) => {
-                await mapConcurrently(tasks, maxConcurrentPeersPerModel, (task) => task())
-              },
-              log: (message) => console.log(chalk.cyan(`[recheck:${model}] ${message}`)),
-            })
-            results = rechecked.results
-            failures.push(...rechecked.failures)
-            if (rechecked.failures.length > 0) {
-              await updateStatus((value) => { value.failures += rechecked.failures.length })
-            }
-            recheckTotals.rechecked += rechecked.stats.rechecked
-            recheckTotals.confirmed += rechecked.stats.confirmed
-            recheckTotals.notConfirmed += rechecked.stats.notConfirmed
-            recheckTotals.pending += rechecked.stats.pending
-            recheckTotals.cost = addAuditCostSummaries(recheckTotals.cost, rechecked.stats.cost)
-            for (const result of results) {
-              if (!result.recheck) continue
-              await appendEvent({
-                type: 'audit-rechecked', runId, epoch, model, peerId: result.peerId,
-                firstAuditId: result.auditId, recheckAuditId: result.recheck.auditId,
-                recheckVerdict: result.recheck.status, verdict: result.status, at: new Date().toISOString(),
               })
             }
           }
@@ -1420,23 +1367,6 @@ async function runVerifierRound(
             ))
           }
         }
-        const recheckCount = recheckTotals.confirmed + recheckTotals.notConfirmed + recheckTotals.pending
-        if (diffConfirmationRuns > 0 && recheckCount > 0) {
-          console.log(chalk.cyan(
-            `DIFF rechecks: ${recheckCount} (${recheckTotals.confirmed} confirmed, `
-            + `${recheckTotals.notConfirmed} not confirmed, ${recheckTotals.pending} waiting for a recheck), `
-            + `$${recheckTotals.cost.estimatedCostUsd.toFixed(6)}`,
-          ))
-          if (recheckTotals.pending > 0) {
-            console.log(chalk.yellow(
-              `${recheckTotals.pending} DIFF(s) are kept but not submitted until rechecked. Fix the reason in the `
-              + '[recheck:…] lines above (for example reference credits, or run without --no-enroll for fresh questions), '
-              + 'then run `antseed verifier run` again this epoch: it rechecks them without repeating the first check.',
-            ))
-          }
-        } else if (diffConfirmationRuns === 0) {
-          console.log(chalk.yellow('DIFF rechecks: off (verifier.diffConfirmationRuns = 0)'))
-        }
         console.log(chalk.dim(`Estimated audit cost: $${status.cost.estimatedCostUsd.toFixed(6)}`))
         const finalState = await loadEpochState(evidenceDir, epoch)
         printEpochTable(epoch, finalState, models)
@@ -1518,12 +1448,11 @@ async function collectPreRunProblems(input: {
     }
   }
 
-  const recheck = (input.config.verifier?.diffConfirmationRuns ?? 1) > 0
   for (const { model, sellerPeerIds } of input.models) {
     if (sellerPeerIds.length === 0) continue
     try {
       const capacity = await inspectSellerProbeCapacity({
-        banksDir: input.banksDir, model, epoch: input.epoch, sellerPeerIds, recheck, config: input.config.verifier,
+        banksDir: input.banksDir, model, epoch: input.epoch, sellerPeerIds, config: input.config.verifier,
         allowProbeReuse: input.allowProbeReuse,
       })
       if (capacity.selectedProbeCount === null && !input.enrollIfNeeded) {
@@ -1667,7 +1596,8 @@ export function printEpochPlan(
   resumeCandidates: ReadonlyMap<string, ResumeCandidate>,
 ): void {
   if (state.manifests.length === 0) {
-    console.log(chalk.dim(`Epoch ${epoch}: no earlier run this epoch; auditing every eligible seller.`))
+    const sellers = planned.reduce((total, model) => total + model.targets.length, 0)
+    console.log(chalk.dim(`Epoch ${epoch}: no earlier run this epoch; auditing ${sellers} seller(s) planned for this run.`))
     return
   }
   let done = 0

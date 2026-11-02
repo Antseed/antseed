@@ -34,13 +34,25 @@ export function auditedVerifierModels(
 ): Array<[string, VerifierReferenceModelConfig]> {
   const settings = new Map(Object.entries(config?.models ?? {})
     .map(([service, value]) => [findAuditedModelKey(service) ?? service, value] as const))
+  const only = testModelKeys(config)
   return Object.entries(auditedModels())
+    .filter(([service]) => only === null || only.has(service))
     .map(([service, model]): [string, VerifierReferenceModelConfig] => [service, {
       ...withoutRemovedSettings(settings.get(service)),
       upstreamModel: model.upstreamModel,
       ...(model.serviceAliases?.length ? { serviceAliases: [...model.serviceAliases] } : {}),
     }])
     .sort(([left], [right]) => left.localeCompare(right))
+}
+
+/** `verifier.testModels` as built-in model keys, or null when unset; an unknown model is an error. */
+export function testModelKeys(config: VerifierCLIConfig | undefined): Set<string> | null {
+  if (!config?.testModels) return null
+  return new Set(config.testModels.map((model) => {
+    const key = findAuditedModelKey(model)
+    if (!key) throw new Error(`verifier.testModels: ${model} is not a built-in audited model (antseed verifier models lists them)`)
+    return key
+  }))
 }
 
 function withoutRemovedSettings<T extends { enabled?: unknown }>(value: T | undefined): Omit<T, 'enabled'> | undefined {

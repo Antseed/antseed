@@ -37,9 +37,9 @@ import { writeJsonAtomic } from './atomic-files.js'
 import { createDomainHomogeneousKbfBatches } from './kbf-batching.js'
 import { buildKbfProbeRequestBody, type ModelVerificationTargetResult } from './model-run.js'
 import { combineExtension } from './extension-round.js'
-import { combineDiffRecheck } from './diff-recheck.js'
 import { sellerEpochProbeReferencePath, SELLER_PROBE_SELECTION_METHOD } from './probe-bank.js'
 import {
+  addAuditCostSummaries,
   emptyAuditCostSummary,
   summarizeAuditExchangeCosts,
   writeProxyAuditEvidence,
@@ -470,6 +470,34 @@ async function closeCallResult(input: {
     directory: modelAuditRechecksDirectory(input.evidenceDir, input.epoch, audit.model, input.runId),
   })
   return combineDiffRecheck(result, asResult(recheck, recheckAuditId, recheckReference.probes.length), recheckReference.referenceId)
+}
+
+/**
+ * A first DIFF combined with its own recheck, as runs from before confirmations stored it: DIFF only
+ * when the recheck was DIFF too.
+ */
+function combineDiffRecheck(
+  first: ModelVerificationTargetResult,
+  recheck: ModelVerificationTargetResult,
+  referenceId: string,
+): ModelVerificationTargetResult {
+  const { recheckPending: _pending, ...firstCheck } = first
+  return {
+    ...firstCheck,
+    status: recheck.status === 'DIFF' ? 'DIFF' : 'UNDETERMINED',
+    cumulativeCost: addAuditCostSummaries(first.cumulativeCost ?? first.cost, recheck.cumulativeCost ?? recheck.cost),
+    recheck: {
+      auditId: recheck.auditId,
+      status: recheck.status,
+      referenceId,
+      probeCount: recheck.probeCount,
+      parsedProbeCount: recheck.parsedProbeCount,
+      correctProbeCount: recheck.correctProbeCount,
+      cost: recheck.cost,
+      evidencePath: recheck.evidencePath,
+      evidenceHash: recheck.evidenceHash,
+    },
+  }
 }
 
 /** A copy of a reference with new probe IDs, as a recheck or extension on fresh probes gets. */

@@ -184,8 +184,6 @@ export const VerifierConfigSchema = strictObject({
   auditMaxConcurrentBatchesPerPeer: positiveIntegerSchema.optional(),
   auditConcurrencyPromotionLatencyMs: positiveIntegerSchema.optional(),
   auditPeerTimeoutMs: positiveIntegerSchema.optional(),
-  /** Rechecks of a first DIFF on fresh probes before it is submitted: 1 (default) or 0 to turn rechecks off. */
-  diffConfirmationRuns: z.number().int().min(0).max(1).optional(),
   /**
    * Close calls (first-audit p-value from 0.005 up to 0.20) get one extra set of never-seen probes
    * and are decided on both sets pooled (`kbf-extension-v1`): 1 (default) or 0 for the single-look rule.
@@ -200,6 +198,12 @@ export const VerifierConfigSchema = strictObject({
   upstreams: z.record(z.string(), VerifierUpstreamSchema).optional(),
   referenceEndpoint: VerifierReferenceEndpointSchema.optional(),
   models: z.record(z.string(), VerifierModelSettingsSchema).optional(),
+  /**
+   * Testing only: audit just these built-in models instead of all of them, so `verifier run`,
+   * `verifier watch` and the round-robin assignment cover only these. Every auditor in a test must
+   * use the same list (the assignment depends on it); never set it on a production verifier.
+   */
+  testModels: z.array(z.string().min(1)).min(1).optional(),
   referenceMaxRequestsPerBuild: positiveIntegerSchema.optional(),
   referenceBatchRetryCount: z.number().int().min(0, 'must be an integer >= 0').optional(),
   referenceRetryBaseDelayMs: positiveIntegerSchema.optional(),

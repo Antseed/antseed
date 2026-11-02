@@ -98,6 +98,22 @@ export function auditorRotationForModel(model: string, input: RoundRobinAssignme
 }
 
 /**
+ * The models each auditor confirms in `epoch`: those where it is next after the model's round-robin
+ * auditor (`auditorRotationForModel`). It audits the sellers whose DIFF on such a model waits for a
+ * second auditor. Empty for everyone with fewer than two auditors, since nobody can confirm then.
+ */
+export function confirmationAssignments(input: RoundRobinAssignmentInput): Map<string, string[]> {
+  const auditors = uniqueAuditors(input.auditors)
+  const confirms = new Map(auditors.map((auditor) => [auditor, [] as string[]]))
+  if (auditors.length < 2) return confirms
+  for (const model of uniqueModels(input.availableModels)) {
+    const confirmer = auditorRotationForModel(model, input)[1]
+    if (confirmer) confirms.get(confirmer)!.push(model)
+  }
+  return confirms
+}
+
+/**
  * Fingerprint of the sorted model list. Auditors on different CLI versions may have different
  * built-in lists and so different assignments; comparing this hash shows whether they agree.
  */

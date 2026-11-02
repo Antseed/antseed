@@ -2,7 +2,6 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { computeKbfVerdict, type FingerprintStats, type KbfReferenceV1 } from '@antseed/fingerprints'
 import { needsExtension, stageOneVerdict } from './close-call.js'
-import { runDiffRechecks } from './diff-recheck.js'
 import { combineExtension, runExtensionRounds } from './extension-round.js'
 import { finalAuditVerdict } from './model-audit.js'
 import type { ModelVerificationSkip, ModelVerificationTargetResult } from './model-run.js'
@@ -100,7 +99,7 @@ test('a close call is not submitted until extended; a clear first look is decide
   assert.equal(stageOneVerdict(grey), null)
   assert.equal(finalAuditVerdict(grey), null)
   assert.equal(finalAuditVerdict(audit('a', 12)), 'SAME')
-  assert.equal(finalAuditVerdict(audit('c', 35)), null, 'a clear DIFF still waits for its recheck')
+  assert.equal(finalAuditVerdict(audit('c', 35)), 'DIFF', 'a clear DIFF is submitted as found')
   assert.equal(stageOneVerdict(audit('c', 35)), 'DIFF')
 })
 
@@ -126,41 +125,12 @@ test('only close calls are extended; the pooled verdict decides stage 1', async 
   const bad = outcome.results[2]!
   assert.equal(bad.status, 'DIFF')
   assert.equal(stageOneVerdict(bad), 'DIFF')
-  assert.equal(finalAuditVerdict(bad), null, 'a pooled DIFF still needs the recheck')
+  assert.equal(finalAuditVerdict(bad), 'DIFF', 'a pooled DIFF is submitted for another auditor to confirm')
   assert.deepEqual(
     { extended: outcome.stats.extended, same: outcome.stats.same, diff: outcome.stats.diff, pending: outcome.stats.pending },
     { extended: 2, same: 1, diff: 1, pending: 0 },
   )
-  assert.ok(logs.some((line) => line.includes('goes to the recheck')))
-})
-
-test('a pooled DIFF goes on to the recheck; a close call still extending does not', async () => {
-  const greyBad = audit('c', 22)
-  const greyWaiting = audit('e', 22)
-  const { outcome } = await run({
-    results: [greyBad, greyWaiting],
-    extensionWrong: { [greyBad.peerId]: 30 },
-    exhausted: new Set([greyWaiting.peerId]),
-  })
-  const rechecked: string[] = []
-  const after = await runDiffRechecks({
-    results: outcome.results,
-    reserve: async (first) => ({ reference, auditId: `recheck-${first.peerId}` }),
-    enroll: null,
-    verify: async (first) => {
-      rechecked.push(first.peerId)
-      return { ...audit(first.peerId[0]!, 40), peerId: first.peerId, auditId: `third-${first.peerId}` }
-    },
-    concurrency: async (tasks) => { for (const task of tasks) await task() },
-    log: () => {},
-  })
-  assert.deepEqual(rechecked, [greyBad.peerId])
-  assert.equal(after.results[0]!.status, 'DIFF')
-  assert.ok(after.results[0]!.extension)
-  assert.equal(after.results[0]!.recheck?.status, 'DIFF')
-  assert.equal(finalAuditVerdict(after.results[0]!), 'DIFF')
-  assert.ok(after.results[1]!.extensionPending)
-  assert.equal(finalAuditVerdict(after.results[1]!), null)
+  assert.ok(logs.some((line) => line.includes('another auditor confirms it')))
 })
 
 test('a close call stays pending when its extra questions cannot run, and is extended later', async () => {

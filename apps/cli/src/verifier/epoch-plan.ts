@@ -9,7 +9,6 @@ import {
 } from './audit-artifacts.js'
 import { epochRunManifests } from './epoch-overview.js'
 import { finalAuditVerdict } from './model-audit.js'
-import { stageOneVerdict } from './close-call.js'
 import type {
   ModelVerificationFailure,
   ModelVerificationSkip,
@@ -69,8 +68,8 @@ export function failureBlame(reason: ReasonLike | null | undefined, text?: strin
 }
 
 export type EpochCellState =
-  | 'same' | 'diff' | 'undetermined' | 'pending_extension' | 'pending_diff' | 'failed' | 'skipped'
-export type EpochCellAction = 'done' | 'retry' | 'extend' | 'recheck' | 'audit'
+  | 'same' | 'diff' | 'undetermined' | 'pending_extension' | 'failed' | 'skipped'
+export type EpochCellAction = 'done' | 'retry' | 'extend' | 'audit'
 
 export interface EpochCell {
   model: string
@@ -105,8 +104,6 @@ export function epochCellAction(cell: Omit<EpochCell, 'action'>): EpochCellActio
     case 'same':
     case 'diff':
       return 'done'
-    case 'pending_diff':
-      return 'recheck'
     case 'pending_extension':
       return 'extend'
     case 'skipped':
@@ -114,8 +111,8 @@ export function epochCellAction(cell: Omit<EpochCell, 'action'>): EpochCellActio
       // lowered its price, or the model is advertised again).
       return 'audit'
     case 'undetermined':
-      // A DIFF the recheck did not confirm, or a seller that answered and was simply too close to
-      // call, is a finished UNDETERMINED: asking again would only repeat it.
+      // A seller that answered and was simply too close to call (or, in runs from before, a DIFF
+      // its own recheck did not confirm) is a finished UNDETERMINED: asking again would only repeat it.
       if (cell.result?.recheck || cell.result?.extension || !cell.result?.outcomeReason) return 'done'
       // falls through
     case 'failed':
@@ -130,9 +127,9 @@ interface RunSummaries {
 }
 
 /**
- * Merges runs oldest first. The latest submittable result per (model, seller) wins; a DIFF waiting
- * for its recheck replaces it only when nothing submittable came after. Failures and skips fill
- * cells without a result.
+ * Merges runs oldest first. The latest submittable result per (model, seller) wins; a close call
+ * waiting for its extra questions replaces it only when nothing submittable came after. Failures
+ * and skips fill cells without a result.
  */
 export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Map<string, EpochCell> {
   interface Acc {
@@ -197,12 +194,10 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
     let cell: Omit<EpochCell, 'action'>
     const base = { model: entry.model, peerId: entry.peerId, attempts: entry.attempts, skipCode: null }
     if (entry.pending) {
-      // A close call or first DIFF newer than any submittable result: its extra questions or its
-      // recheck decide the cell.
-      const extending = stageOneVerdict(entry.pending.result) === null
+      // A close call newer than any submittable result: its extra questions decide the cell.
       cell = {
-        ...base, runId: entry.pending.runId, state: extending ? 'pending_extension' : 'pending_diff', blame: null,
-        reason: (extending ? entry.pending.result.extensionPending?.reason : entry.pending.result.recheckPending?.reason) ?? null,
+        ...base, runId: entry.pending.runId, state: 'pending_extension', blame: null,
+        reason: entry.pending.result.extensionPending?.reason ?? null,
         result: null,
       }
     } else if (entry.result) {
@@ -260,7 +255,7 @@ export interface EpochPlanCounts {
   done: number
   retryAuditor: number
   retrySeller: number
-  /** Close calls waiting for their extra questions and DIFFs waiting for their recheck. */
+  /** Close calls waiting for their extra questions. */
   recheck: number
   audit: number
 }
@@ -269,7 +264,7 @@ export function countPlan(cells: Iterable<EpochCell>): EpochPlanCounts {
   const counts: EpochPlanCounts = { done: 0, retryAuditor: 0, retrySeller: 0, recheck: 0, audit: 0 }
   for (const cell of cells) {
     if (cell.action === 'done') counts.done += 1
-    else if (cell.action === 'recheck' || cell.action === 'extend') counts.recheck += 1
+    else if (cell.action === 'extend') counts.recheck += 1
     else if (cell.action === 'audit') counts.audit += 1
     else if (cell.blame === 'auditor') counts.retryAuditor += 1
     else counts.retrySeller += 1
@@ -282,7 +277,7 @@ export interface EpochModelRow {
   same: number
   diff: number
   undetermined: number
-  /** Close calls waiting for their extra questions and DIFFs waiting for their recheck. */
+  /** Close calls waiting for their extra questions. */
   pendingRecheck: number
   failed: number
   skipped: number
@@ -307,10 +302,10 @@ export function epochModelRows(cells: Iterable<EpochCell>, models?: readonly str
     if (cell.state === 'same') entry.same += 1
     else if (cell.state === 'diff') entry.diff += 1
     else if (cell.state === 'undetermined') entry.undetermined += 1
-    else if (cell.state === 'pending_diff' || cell.state === 'pending_extension') entry.pendingRecheck += 1
+    else if (cell.state === 'pending_extension') entry.pendingRecheck += 1
     else if (cell.state === 'failed') entry.failed += 1
     else entry.skipped += 1
-    if (cell.action === 'retry' || cell.action === 'recheck' || cell.action === 'extend') entry.left += 1
+    if (cell.action === 'retry' || cell.action === 'extend') entry.left += 1
   }
   return [...rows.values()].sort((left, right) => left.model.localeCompare(right.model))
 }
@@ -356,7 +351,7 @@ export async function writeEpochSubmissionManifest(
     for (const cell of state.cells.values()) {
       if (normalized(cell.model) !== normalized(model)) continue
       const peer = normalized(cell.peerId)
-      if (cell.state === 'pending_diff' || cell.state === 'pending_extension') {
+      if (cell.state === 'pending_extension') {
         const pending = latestBy(runSummaries, (summary) => summary.results, peer, (result) => finalAuditVerdict(result) === null)
         if (pending) results.push(pending)
       } else if (cell.result) {

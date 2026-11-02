@@ -92,18 +92,18 @@ test('the latest result per model and seller wins and decides the action', () =>
   assert.equal(action('b').attempts, 2)
   assert.equal(action('c').action, 'retry', 'seller failed once: one retry')
   assert.equal(action('d').action, 'done', 'seller failed twice: finished for this epoch')
-  assert.equal(action('e').action, 'recheck')
-  assert.equal(action('e').state, 'pending_diff')
+  assert.equal(action('e').state, 'diff', 'a first DIFF is final for this auditor; another auditor confirms it')
+  assert.equal(action('e').action, 'done')
   assert.equal(action('f').action, 'done', 'answered but too close to call: asking again repeats it')
   assert.equal(action('g').state, 'diff')
   assert.equal(action('g').action, 'done')
   assert.equal(action('h').action, 'audit', 'a price skip is re-evaluated each run')
   assert.equal(action('i').action, 'retry')
   assert.equal(action('i').blame, 'auditor')
-  assert.deepEqual(countPlan(cells.values()), { done: 4, retryAuditor: 2, retrySeller: 1, recheck: 1, audit: 1 })
+  assert.deepEqual(countPlan(cells.values()), { done: 5, retryAuditor: 2, retrySeller: 1, recheck: 0, audit: 1 })
 })
 
-test('a later SAME replaces an earlier UNDETERMINED, and a later first DIFF waits for its recheck', () => {
+test('a later SAME replaces an earlier UNDETERMINED, and a later first DIFF replaces a SAME', () => {
   const cells = mergeEpochRuns(EPOCH, [
     run('r1', '2026-10-28T20:00:00.000Z', [{ model: 'm', results: [
       result('a', 'UNDETERMINED', { outcomeReason: sellerDown }),
@@ -115,9 +115,9 @@ test('a later SAME replaces an earlier UNDETERMINED, and a later first DIFF wait
     ] }]),
   ])
   assert.equal(cells.get(epochCellKey('m', 'a'))!.state, 'same')
-  assert.equal(cells.get(epochCellKey('m', 'b'))!.state, 'pending_diff')
+  assert.equal(cells.get(epochCellKey('m', 'b'))!.state, 'diff')
   const [row] = epochModelRows(cells.values())
-  assert.deepEqual({ ...row }, { model: 'm', same: 1, diff: 0, undetermined: 0, pendingRecheck: 1, failed: 0, skipped: 0, left: 1 })
+  assert.deepEqual({ ...row }, { model: 'm', same: 1, diff: 1, undetermined: 0, pendingRecheck: 0, failed: 0, skipped: 0, left: 0 })
 })
 
 test('runs of another epoch or with a mismatched run id are ignored', () => {

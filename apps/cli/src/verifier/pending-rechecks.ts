@@ -52,9 +52,8 @@ export async function loadPendingDiffRechecks(
   for (const [key, entry] of latest) {
     if (entry.result.recheck) continue
     const stageOne = stageOneVerdict(entry.result)
-    const kind = stageOne === null && entry.result.extensionPending
-      ? 'extension'
-      : stageOne === 'DIFF' && entry.result.recheckPending ? 'recheck' : null
+    // Only close calls wait for a follow-up: a DIFF is submitted as found and confirmed by another auditor.
+    const kind = stageOne === null && entry.result.extensionPending ? 'extension' : null
     if (!kind) continue
     try {
       await verifyProxyAuditEvidenceFile(entry.result.evidencePath, entry.result.evidenceHash)

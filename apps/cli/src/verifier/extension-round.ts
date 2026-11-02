@@ -1,7 +1,6 @@
 import type { KbfReferenceV1 } from '@antseed/fingerprints'
 import { BANK_EXHAUSTED } from './probe-bank.js'
 import { addAuditCostSummaries, emptyAuditCostSummary, type AuditCostSummaryV1 } from './proxy-evidence.js'
-import { RECHECK_ENROLLMENT_ROUNDS } from './diff-recheck.js'
 import { CLOSE_CALL_RULE_ID, needsExtension, pooledCloseCallVerdict } from './close-call.js'
 import type {
   ModelVerificationSkip,
@@ -27,11 +26,14 @@ export interface ExtensionRoundOutcome {
 /**
  * A close-call first audit (`kbf-extension-v1`: 0.005 <= p < 0.20 with enough answers) is asked one
  * extra set of never-seen probes of the same size, and decided on both sets pooled at 0.05. A pooled
- * DIFF then goes on to the DIFF recheck like any other DIFF. When the extension cannot run (no fresh
+ * DIFF is submitted like any other DIFF, for another auditor to confirm. When the extension cannot run (no fresh
  * questions, reference endpoint down, seller skipped), the first audit is kept with
  * `extensionPending`: nothing is submitted for it, and the next run in the same epoch extends it.
  * A close call carried over from an earlier run is extended the same way.
  */
+/** Fresh-question builds a close call short of unseen questions may trigger before it waits for a later run. */
+export const EXTENSION_ENROLLMENT_ROUNDS = 3
+
 export async function runExtensionRounds(input: {
   results: readonly ModelVerificationTargetResult[]
   reserve(first: ModelVerificationTargetResult): Promise<{ reference: KbfReferenceV1; auditId: string }>
@@ -70,9 +72,9 @@ export async function runExtensionRounds(input: {
   let exhausted = await reserveAll(closeCalls)
   if (exhausted.length > 0) {
     if (input.enroll) {
-      for (let round = 1; round <= RECHECK_ENROLLMENT_ROUNDS && exhausted.length > 0; round += 1) {
+      for (let round = 1; round <= EXTENSION_ENROLLMENT_ROUNDS && exhausted.length > 0; round += 1) {
         input.log(
-          `${exhausted.length} close call(s) need fresh questions; enrolling (round ${round}/${RECHECK_ENROLLMENT_ROUNDS})`,
+          `${exhausted.length} close call(s) need fresh questions; enrolling (round ${round}/${EXTENSION_ENROLLMENT_ROUNDS})`,
         )
         try {
           await input.enroll()
@@ -131,7 +133,7 @@ export async function runExtensionRounds(input: {
     const pooledP = final.extension!.pooled.pValueBinomial
     input.log(
       `  ${label} pooled ${final.extension!.pooled.targetHamming}/${final.extension!.pooled.targetTotal} wrong, `
-      + `p=${pooledP === null ? '?' : pooledP.toFixed(4)} → ${final.status}${final.status === 'DIFF' ? ' (goes to the recheck)' : ''}`,
+      + `p=${pooledP === null ? '?' : pooledP.toFixed(4)} → ${final.status}${final.status === 'DIFF' ? ' (another auditor confirms it)' : ''}`,
     )
     finals.set(first, final)
   }))

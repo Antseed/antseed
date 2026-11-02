@@ -94,7 +94,7 @@ test('an approved auditor submits one audit per model, earns credits, and a re-r
     const audits: FixtureAudit[] = [
       { agentId: '1', seller: sellers[0]!, model: 'model-a', service: 'model-a', verdict: 'SAME', reference: referenceFixture('model-a') },
       { agentId: '1', seller: sellers[0]!, model: 'model-b', service: 'model-b', verdict: 'SAME', reference: referenceFixture('model-b') },
-      { agentId: '2', seller: sellers[1]!, model: 'model-a', service: 'model-a', verdict: 'DIFF', recheck: 'DIFF', reference: referenceFixture('model-a') },
+      { agentId: '2', seller: sellers[1]!, model: 'model-a', service: 'model-a', verdict: 'DIFF', reference: referenceFixture('model-a') },
       { agentId: '2', seller: sellers[1]!, model: 'model-b', service: 'model-b', verdict: 'UNDETERMINED', reference: referenceFixture('model-b') },
       { agentId: '3', seller: sellers[2]!, model: 'model-b', service: 'model-b', verdict: 'SAME', reference: referenceFixture('model-b') },
     ]
@@ -240,7 +240,6 @@ test('two auditors confirm each other\'s DIFFs: one SAME is recorded at once, a 
       model,
       service: model,
       verdict: agent === 1 ? 'SAME' : 'DIFF',
-      ...(agent === 2 ? { recheck: 'DIFF' as const } : {}),
       reference: referenceFixture(model),
     })
     const crypto = {

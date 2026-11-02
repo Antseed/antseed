@@ -31,7 +31,7 @@ async function writeRun(dir: string, runId: string, completedAt: string, summary
   })
 }
 
-test('epoch overview merges runs in submit order and applies the DIFF-twice rule', async () => {
+test('epoch overview merges runs in submit order; a DIFF counts as found, and an older run\'s recheck still decides', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'antseed-overview-'))
   try {
     await writeRun(dir, 'run-1', '2026-10-01T00:00:00.000Z', {
@@ -66,8 +66,7 @@ test('epoch overview merges runs in submit order and applies the DIFF-twice rule
     assert.equal(cell('2').state, 'diff')
     assert.equal(cell('3').state, 'undetermined')
     assert.equal(cell('3').reason?.headline, 'Inconclusive: the recheck passed')
-    assert.equal(cell('4').state, 'skipped')
-    assert.equal(cell('4').reason?.headline, 'Not submitted: wrong-model result not confirmed')
+    assert.equal(cell('4').state, 'diff', 'a DIFF is submitted as found; another auditor confirms it')
     assert.match(cell('5').reason!.detail, /answered 17 of 100 questions/)
     assert.equal(cell('6').state, 'skipped')
     assert.match(cell('6').reason!.detail, /\$17 in \/ \$85 out .* \$10 in \/ \$50 out for model-a/)

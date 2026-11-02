@@ -707,13 +707,15 @@ antseed verifier submit --yes
 Without `--run-id`, every run of the epoch is merged and the latest result per
 model and seller is submitted; `--run-id <run-id>` submits one run only. Running
 `verifier run` again in the same epoch continues it: it prints a plan from the
-earlier runs, skips finished sellers (SAME, rechecked DIFF), retries failures on
-the auditor's side every run and seller failures once per epoch, rechecks
-waiting DIFFs, and audits new or previously skipped sellers. One run retries
+earlier runs, skips finished sellers (SAME, DIFF), retries failures on
+the auditor's side every run and seller failures once per epoch, asks close
+calls their missing extra questions, audits the sellers whose DIFF from another
+auditor waits for this auditor's confirmation, and audits new or previously
+skipped sellers. One run retries
 what is left in up to `--max-rounds` rounds (default 3), with a larger
 enrollment budget each round, and stops early when nothing is left or a round
-makes no progress. `--fresh` ignores the earlier runs, including DIFFs waiting
-for a recheck and an interrupted run's checkpoints, and audits every eligible
+makes no progress. `--fresh` ignores the earlier runs, including close calls
+waiting for extra questions and an interrupted run's checkpoints, and audits every eligible
 seller again from the start.
 
 `verifier run` and `verifier submit` first check that this CLI is up to date:
@@ -733,16 +735,13 @@ recorded on-chain are skipped. A seller service's SAME or DIFF verdict counts
 through the next epoch and then drops out on its own; the latest result always
 wins, and an UNDETERMINED clears an earlier verdict.
 
-`verifier run` rechecks every first DIFF on fresh probes the seller has never
-seen before it can be submitted. The result is DIFF only when the recheck is DIFF
-too; a recheck SAME or UNDETERMINED turns it into UNDETERMINED. A DIFF whose
-recheck cannot run is not submitted, and the next `verifier run` in the same
-epoch rechecks it without repeating the first check. Unless the run uses
-`--no-enroll`, fresh probes are generated when a recheck needs them, and also before a model's
-audits when any seller about to be audited lacks an unseen audit set plus recheck
-set (sellers are never given probes from their earlier epochs), up to 3 builds per
-model. Set `verifier.diffConfirmationRuns` to `0` to turn rechecks
-off. The `submit` preview shows how many results were rechecked.
+A DIFF is submitted as found: it is one auditor's report, and the contract
+records it only once a second auditor confirms it (`antseed verifier assignment`
+shows each model's confirmer). Auditors don't recheck their own DIFFs; the
+confirmer's independent audit is the second check. Unless the run uses
+`--no-enroll`, fresh probes are generated before a model's audits when any
+seller about to be audited lacks an unseen audit set (sellers are never given
+probes from their earlier epochs), up to 3 builds per model.
 
 `verifier run` and `verifier submit` also write
 `<evidenceDir>/epochs/<epoch>/overview.html`: every seller × model from all of
@@ -788,8 +787,8 @@ The request budget is **per build** (2000 unless `--max-enrollment-requests`
 sets it), includes retries and requests already used by a compatible enrollment
 checkpoint, and cannot exceed a lower configured `referenceMaxRequestsPerBuild`.
 One model can need several builds in a run: one to make its bank usable, up to
-3 more when sellers have seen too much of it, and up to 3 more for DIFF
-rechecks. Each retry round (`--max-rounds`) can build again with the budget
+3 more when sellers have seen too much of it, and up to 3 more for close-call
+extra questions. Each retry round (`--max-rounds`) can build again with the budget
 times the round number. It is a request limit, not a dollar spending cap.
 Probe growth also respects `referenceMaximumProbeCount` (default 500) and the
 configured no-progress limit. An assigned or `--all` run applies this process to

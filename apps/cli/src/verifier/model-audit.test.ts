@@ -260,7 +260,7 @@ test('only a recheck DIFF keeps a first DIFF, and never on reused probes', () =>
   assert.throws(() => validateAuditMatchesSummary(first, summary('UNDETERMINED', 'SAME'), null), /recheck evidence missing/)
 })
 
-test('a DIFF is submitted only when the recheck is DIFF too', async () => {
+test('a DIFF is submitted as found; a run from before keeps its own recheck\'s outcome', async () => {
   await withRun([
     { ...audit('1', sellers[0]!, 'model-a', 'DIFF'), recheck: 'DIFF' },
     { ...audit('2', sellers[1]!, 'model-a', 'DIFF'), recheck: 'UNDETERMINED' },
@@ -272,13 +272,12 @@ test('a DIFF is submitted only when the recheck is DIFF too', async () => {
       [1n, VERIFIER_VERDICT.DIFF],
       [2n, VERIFIER_VERDICT.UNDETERMINED],
       [3n, VERIFIER_VERDICT.UNDETERMINED],
+      [4n, VERIFIER_VERDICT.DIFF],
     ])
     assert.deepEqual(entry.evidence.results.map((result) => [result.verdict, result.confirmation?.verdict]), [
-      ['DIFF', 'DIFF'], ['UNDETERMINED', 'UNDETERMINED'], ['UNDETERMINED', 'SAME'],
+      ['DIFF', 'DIFF'], ['UNDETERMINED', 'UNDETERMINED'], ['UNDETERMINED', 'SAME'], ['DIFF', undefined],
     ])
-    assert.deepEqual(prepared.excluded.map((entry) => [entry.agentId, entry.reason]), [
-      ['4', 'DIFF not confirmed: no recheck on fresh probes, so it is not submitted'],
-    ])
+    assert.deepEqual(prepared.excluded, [])
   })
 })
 
@@ -318,6 +317,7 @@ test('close calls are submitted on the pooled verdict, re-verified from both evi
     assert.deepEqual(entry.results.map((result) => [result.agentId, result.verdict]), [
       [1n, VERIFIER_VERDICT.SAME],
       [2n, VERIFIER_VERDICT.DIFF],
+      [3n, VERIFIER_VERDICT.DIFF],
     ])
     assert.deepEqual(entry.evidence.extensionRule, KBF_EXTENSION_RULE)
     const [same, diff] = entry.evidence.results as [ModelAuditSellerResultV1, ModelAuditSellerResultV1]
@@ -329,10 +329,9 @@ test('close calls are submitted on the pooled verdict, re-verified from both evi
     assert.equal(diff.confirmation?.verdict, 'DIFF')
     // Fixture sellers share probe sets: first set, extension and recheck are three references.
     assert.equal(entry.evidence.references.length, 3)
-    assert.equal(entry.auditEvidencePaths.length, 5)
+    assert.equal(entry.auditEvidencePaths.length, 7)
     assert.ok(entry.auditEvidencePaths.some((path) => path.includes('/extensions/')))
     assert.deepEqual(prepared.excluded.map((exclusion) => [exclusion.agentId, exclusion.reason.split(' (')[0]]).sort(), [
-      ['3', 'DIFF not confirmed: no recheck on fresh probes, so it is not submitted'],
       ['4', 'close call waiting for its extra questions'],
     ])
   })

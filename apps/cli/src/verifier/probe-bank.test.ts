@@ -18,7 +18,6 @@ import {
   inspectModelProbeBankPower,
   inspectSellerProbeCapacity,
   loadModelAuditReservation,
-  reserveDiffRecheckReference,
   reserveExtensionReference,
   reserveModelAuditReference,
   SELLER_PROBE_SELECTION_METHOD,
@@ -490,26 +489,26 @@ test('pre-run capacity counts each seller\'s unseen questions against an audit p
       runId: 'earlier', epoch: '27', config, shuffle: identityShuffle,
     })
     const capacity = await inspectSellerProbeCapacity({
-      banksDir: directory, model: 'model-a', epoch: '28', sellerPeerIds: [seller, fresh], recheck: true, config,
+      banksDir: directory, model: 'model-a', epoch: '28', sellerPeerIds: [seller, fresh], config,
     })
     assert.equal(capacity.selectedProbeCount, 100)
-    assert.deepEqual(capacity.sellers.map((entry) => [entry.unseenProbeCount, entry.neededProbeCount]), [[100, 200], [200, 200]])
-    // --allow-probe-reuse: the first audit may reuse seen questions, so only the recheck set must be unseen.
+    assert.deepEqual(capacity.sellers.map((entry) => [entry.unseenProbeCount, entry.neededProbeCount]), [[100, 100], [200, 100]])
+    // --allow-probe-reuse: the first audit may reuse seen questions, so nothing unseen is needed.
     const reuse = await inspectSellerProbeCapacity({
-      banksDir: directory, model: 'model-a', epoch: '28', sellerPeerIds: [seller], recheck: true, config, allowProbeReuse: true,
+      banksDir: directory, model: 'model-a', epoch: '28', sellerPeerIds: [seller], config, allowProbeReuse: true,
     })
-    assert.deepEqual(reuse.sellers.map((entry) => [entry.unseenProbeCount, entry.neededProbeCount]), [[100, 100]])
-    // Already audited this epoch: only the recheck set is still needed.
+    assert.deepEqual(reuse.sellers.map((entry) => [entry.unseenProbeCount, entry.neededProbeCount]), [[100, 0]])
+    // Already audited this epoch: the run reuses its set, so nothing more is needed.
     await reserveModelAuditReference({
       banksDir: directory, model: 'model-a', sellerPeerId: fresh, service: 'model-a',
       runId: 'now', epoch: '28', config, shuffle: identityShuffle,
     })
     const after = await inspectSellerProbeCapacity({
-      banksDir: directory, model: 'model-a', epoch: '28', sellerPeerIds: [fresh], recheck: true, config,
+      banksDir: directory, model: 'model-a', epoch: '28', sellerPeerIds: [fresh], config,
     })
-    assert.deepEqual(after.sellers.map((entry) => [entry.unseenProbeCount, entry.neededProbeCount, entry.assignedThisEpoch]), [[100, 100, true]])
+    assert.deepEqual(after.sellers.map((entry) => [entry.unseenProbeCount, entry.neededProbeCount, entry.assignedThisEpoch]), [[100, 0, true]])
     await assert.rejects(inspectSellerProbeCapacity({
-      banksDir: directory, model: 'missing-model', epoch: '28', sellerPeerIds: [fresh], recheck: true, config,
+      banksDir: directory, model: 'missing-model', epoch: '28', sellerPeerIds: [fresh], config,
     }), /no probe bank exists for missing-model/)
   } finally {
     await rm(directory, { recursive: true, force: true })
@@ -825,118 +824,6 @@ test('different sellers reserve independent references concurrently', async () =
   }
 })
 
-test('a DIFF recheck draws probes the seller has never been assigned and stays stable on resume', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-recheck-'))
-  const seller = '11'.repeat(20)
-  try {
-    await appendReference(directory)
-    const first = await reserveModelAuditReference({
-      banksDir: directory, model: 'model-a', sellerPeerId: seller,
-      service: 'model-a', runId: 'run-a', epoch: '4',
-    })
-    const recheck = await reserveDiffRecheckReference({
-      banksDir: directory, model: 'model-a', sellerPeerId: seller,
-      service: 'model-a', runId: 'run-a', epoch: '4',
-    })
-    const firstIds = new Set(first.reference.probes.map((probe) => probe.id))
-    assert.equal(recheck.reference.probes.length, 100)
-    assert.ok(recheck.reference.probes.every((probe) => !firstIds.has(probe.id)))
-
-    const again = await reserveDiffRecheckReference({
-      banksDir: directory, model: 'model-a', sellerPeerId: seller,
-      service: 'model-a', runId: 'run-a', epoch: '4',
-    })
-    assert.equal(again.auditId, recheck.auditId)
-    assert.equal(again.reference.referenceId, recheck.reference.referenceId)
-    const loaded = await loadModelAuditReservation({
-      banksDir: directory, model: 'model-a', sellerPeerId: seller, auditId: recheck.auditId,
-    })
-    assert.equal(loaded.reference.referenceId, recheck.reference.referenceId)
-
-    // The first check of the same epoch keeps its own probes.
-    const rerun = await reserveModelAuditReference({
-      banksDir: directory, model: 'model-a', sellerPeerId: seller,
-      service: 'model-a', runId: 'run-b', epoch: '4',
-    })
-    assert.equal(rerun.reference.referenceId, first.reference.referenceId)
-  } finally {
-    await rm(directory, { recursive: true, force: true })
-  }
-})
-
-test('a DIFF recheck ignores a contrast that answered none of the fresh probes', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-recheck-'))
-  const seller = '11'.repeat(20)
-  try {
-    // First enrollment: both contrasts answered and are distinguished.
-    const first = reference(100)
-    first.contrasts = [
-      { model: 'contrast-a', distinguishingProbeIds: first.probes.map((probe) => probe.id) },
-      { model: 'contrast-gone', distinguishingProbeIds: first.probes.map((probe) => probe.id) },
-    ]
-    first.referenceId = computeReferenceId(first)
-    const allAnswered = new Map(first.probes.map((probe) => [probe.id, ['contrast-a', 'contrast-gone']]))
-    await appendModelReferenceToBank({
-      banksDir: directory, model: 'model-a', reference: first, cost: referenceCost,
-      answeredContrastModelsByProbeId: allAnswered,
-    })
-    await reserveModelAuditReference({
-      banksDir: directory, model: 'model-a', sellerPeerId: seller, service: 'model-a', runId: 'run-a', epoch: '4',
-    })
-    // Fresh probes for the recheck: contrast-gone became unavailable and answered none of them.
-    const fresh = reference(200)
-    fresh.probes = fresh.probes.slice(100)
-    fresh.selfTest.outcomes = fresh.selfTest.outcomes.slice(100)
-    Object.assign(fresh.selfTest, { total: 100 })
-    const power = computeBinomialPower({
-      selfHamming: 0, selfTotal: 100, probeCount: 100, minimumMismatchDelta: 0.1, alpha: 0.05, cpConfidence: 0.99,
-    })
-    fresh.selectedProbeCount = 100
-    fresh.statisticalPower = power.power
-    Object.assign(fresh.statisticalPowerEvidence, {
-      selfTotal: 100, probeCount: 100, p0UpperBound: power.p0, alternativeMismatchRate: power.p1,
-      criticalMismatchCount: power.criticalMismatchCount, power: power.power,
-    })
-    fresh.contrasts = [
-      { model: 'contrast-a', distinguishingProbeIds: fresh.probes.map((probe) => probe.id) },
-      { model: 'contrast-gone', distinguishingProbeIds: [] },
-    ]
-    fresh.referenceId = computeReferenceId(fresh)
-    await appendModelReferenceToBank({
-      banksDir: directory, model: 'model-a', reference: fresh, cost: referenceCost,
-      answeredContrastModelsByProbeId: new Map(fresh.probes.map((probe) => [probe.id, ['contrast-a']])),
-    })
-    const recheck = await reserveDiffRecheckReference({
-      banksDir: directory, model: 'model-a', sellerPeerId: seller, service: 'model-a', runId: 'run-a', epoch: '4',
-    })
-    const freshIds = new Set(fresh.probes.map((probe) => probe.id))
-    assert.ok(recheck.reference.probes.every((probe) => freshIds.has(probe.id)))
-    const gone = recheck.reference.contrastDetection?.find((entry) => entry.model === 'contrast-gone')
-    assert.equal(gone?.total, 0)
-    assert.equal(recheck.reference.contrastDetection?.find((entry) => entry.model === 'contrast-a')?.detected, true)
-  } finally {
-    await rm(directory, { recursive: true, force: true })
-  }
-})
-
-test('a DIFF recheck reports BANK_EXHAUSTED instead of reusing seen probes', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-recheck-'))
-  const seller = '11'.repeat(20)
-  try {
-    await appendReference(directory, reference(150))
-    await reserveModelAuditReference({
-      banksDir: directory, model: 'model-a', sellerPeerId: seller,
-      service: 'model-a', runId: 'run-a', epoch: '4',
-    })
-    await assert.rejects(reserveDiffRecheckReference({
-      banksDir: directory, model: 'model-a', sellerPeerId: seller,
-      service: 'model-a', runId: 'run-a', epoch: '4',
-    }), new RegExp(`^Error: ${BANK_EXHAUSTED}`))
-  } finally {
-    await rm(directory, { recursive: true, force: true })
-  }
-})
-
 test('a close-call extension draws exactly as many never-seen probes as the first set, stable on resume', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-extension-'))
   const seller = '11'.repeat(20)
@@ -967,18 +854,10 @@ test('a close-call extension draws exactly as many never-seen probes as the firs
     assert.equal(loaded.reference.referenceId, extension.reference.referenceId)
     assert.equal(loaded.assignment.purpose, 'extension')
 
-    // A recheck afterwards uses neither the first set nor the extension.
-    const recheck = await reserveDiffRecheckReference({
-      banksDir: directory, model: 'model-a', sellerPeerId: seller,
-      service: 'model-a', runId: 'run-a', epoch: '4',
-    })
-    const extensionIds = new Set(extension.reference.probes.map((probe) => probe.id))
-    assert.ok(recheck.reference.probes.every((probe) => !firstIds.has(probe.id) && !extensionIds.has(probe.id)))
-
     // The extension does not count as this epoch's first audit for capacity planning.
     const ledger = JSON.parse(await readFile(sellerLedgerPath(directory, 'model-a', seller), 'utf8'))
     assert.deepEqual(ledger.assignments.map((entry: { purpose?: string }) => entry.purpose ?? 'audit'), [
-      'audit', 'extension', 'diff-recheck',
+      'audit', 'extension',
     ])
   } finally {
     await rm(directory, { recursive: true, force: true })

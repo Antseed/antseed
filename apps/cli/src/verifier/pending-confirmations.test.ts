@@ -8,7 +8,7 @@ import {
   type ServiceAuditedEvent,
   type VerifierVerdict,
 } from '@antseed/node/payments'
-import { auditorRotationForModel } from './audit-assignment.js'
+import { auditorRotationForModel, confirmationAssignments } from './audit-assignment.js'
 import {
   confirmationTargetsByModel,
   epochReports,
@@ -74,6 +74,13 @@ test('the rotation gives each model a primary auditor and a confirmer, and swaps
   assert.deepEqual(auditorRotationForModel('MODEL-B', { auditors: [A, B], epoch: 8, availableModels: MODELS }), [B, A])
   assert.deepEqual(auditorRotationForModel('model-a', { auditors: [A, B, C], epoch: 7, availableModels: MODELS }), [B, C, A])
   assert.deepEqual(auditorRotationForModel('unknown', { auditors: [A, B], epoch: 7, availableModels: MODELS }), [])
+})
+
+test('verifier assignment names each model\'s confirmer: the next auditor in its rotation', () => {
+  assert.deepEqual([...confirmationAssignments({ auditors: [A, B], epoch: 7, availableModels: MODELS })], [[A, ['model-a']], [B, ['model-b']]])
+  assert.deepEqual([...confirmationAssignments({ auditors: [A, B], epoch: 8, availableModels: MODELS })], [[A, ['model-b']], [B, ['model-a']]])
+  assert.deepEqual([...confirmationAssignments({ auditors: [A, B, C], epoch: 7, availableModels: MODELS })], [[A, ['model-b']], [B, []], [C, ['model-a']]])
+  assert.deepEqual([...confirmationAssignments({ auditors: [A], epoch: 7, availableModels: MODELS })], [[A, []]], 'nobody confirms alone')
 })
 
 test('with two auditors each one confirms the other\'s DIFFs, and the roles swap the next epoch', () => {

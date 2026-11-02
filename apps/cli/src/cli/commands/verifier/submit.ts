@@ -107,6 +107,11 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       const manifest = options.runId
         ? await readVerifierRunManifest(evidenceDir, options.runId)
         : await epochSubmissionManifest(evidenceDir, (await verifierClient.currentEpochWindow()).epoch)
+      if (!manifest) {
+        // E.g. a confirmer with nothing to confirm yet: `verifier watch` calls submit every tick.
+        console.log('Nothing to submit: no verifier run completed this epoch yet.')
+        return
+      }
       if (options.publishOnly && options.publishIpfs === false) throw new Error('--publish-only cannot be combined with --no-publish-ipfs')
       if (options.auditor && !options.publishOnly) throw new Error('--auditor is only valid with --publish-only')
       const { wallet, address } = options.auditor
@@ -302,8 +307,9 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
  * The whole current epoch as one submission: for each model and seller, the latest result of any
  * run this epoch (see `writeEpochSubmissionManifest`).
  */
-async function epochSubmissionManifest(evidenceDir: string, epoch: bigint): Promise<VerifierRunManifestV1> {
+async function epochSubmissionManifest(evidenceDir: string, epoch: bigint): Promise<VerifierRunManifestV1 | null> {
   const state = await loadEpochState(evidenceDir, epoch.toString())
+  if (state.manifests.length === 0) return null
   const manifest = await writeEpochSubmissionManifest(evidenceDir, state)
   console.log(chalk.dim(
     `Epoch ${epoch}: merging ${state.manifests.length} run(s) (${state.manifests.map((run) => run.runId.slice(0, 10)).join(', ')}); `

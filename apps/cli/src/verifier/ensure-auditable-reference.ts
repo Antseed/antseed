@@ -175,7 +175,6 @@ export async function ensureSellerProbeCapacity(input: {
   maxRequests: number
   epoch: string
   sellerPeerIds: readonly string[]
-  recheck: boolean
   buyerProxyPort?: number
   requestLimiter?: ReferenceRequestLimiter
   log?: (message: string) => void
@@ -187,7 +186,7 @@ export async function ensureSellerProbeCapacity(input: {
   const shortSellers = async () => {
     const capacity = await operations.capacity({
       banksDir: input.banksDir, model: input.model, epoch: input.epoch,
-      sellerPeerIds: input.sellerPeerIds, recheck: input.recheck, config: input.config,
+      sellerPeerIds: input.sellerPeerIds, config: input.config,
     })
     return capacity.sellers.filter((seller) => seller.unseenProbeCount < seller.neededProbeCount)
   }

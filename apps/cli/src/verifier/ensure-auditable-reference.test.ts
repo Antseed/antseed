@@ -115,7 +115,7 @@ test('sellers short of unseen questions get fresh questions until each has enoug
   const calls: string[] = []
   const short = await ensureSellerProbeCapacity({
     model: 'model-a', banksDir: '/banks', referencesDir: '/refs', config: undefined, maxRequests: 10,
-    epoch: '29', sellerPeerIds: ['aa'.repeat(20), 'bb'.repeat(20)], recheck: true,
+    epoch: '29', sellerPeerIds: ['aa'.repeat(20), 'bb'.repeat(20)],
   }, {
     capacity: async () => {
       calls.push('capacity')
@@ -143,7 +143,7 @@ test('seller capacity makes no calls when every seller has enough unseen questio
   const calls: string[] = []
   const short = await ensureSellerProbeCapacity({
     model: 'model-a', banksDir: '/banks', referencesDir: '/refs', config: undefined, maxRequests: 10,
-    epoch: '29', sellerPeerIds: ['aa'.repeat(20)], recheck: true,
+    epoch: '29', sellerPeerIds: ['aa'.repeat(20)],
   }, {
     capacity: async () => {
       calls.push('capacity')
@@ -160,7 +160,7 @@ test('seller capacity stops after the round limit and returns the sellers still 
   let enrolls = 0
   const short = await ensureSellerProbeCapacity({
     model: 'model-a', banksDir: '/banks', referencesDir: '/refs', config: undefined, maxRequests: 10,
-    epoch: '29', sellerPeerIds: ['aa'.repeat(20)], recheck: true,
+    epoch: '29', sellerPeerIds: ['aa'.repeat(20)],
   }, {
     capacity: async () => ({ selectedProbeCount: 100, sellers: [{ sellerPeerId: 'aa'.repeat(20), unseenProbeCount: 0, neededProbeCount: 200, assignedThisEpoch: false }] }),
     enrollFresh: async () => { enrolls += 1; return { addedProbeCount: 10, costUsdMicros: '1' } },

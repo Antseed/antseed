@@ -65,6 +65,12 @@ test('configured models are every built-in audited model', () => {
   assert.deepEqual(configuredVerifierModels(config()), ['disabled', 'model-large', 'target'])
 })
 
+test('verifier.testModels narrows the audited models for a test, and rejects unknown ones', () => {
+  assert.deepEqual(configuredVerifierModels({ ...config(), testModels: ['TARGET'] }), ['target'])
+  assert.deepEqual(configuredVerifierModels({ ...config(), testModels: ['target', 'model-large'] }), ['model-large', 'target'])
+  assert.throws(() => configuredVerifierModels({ ...config(), testModels: ['nope'] }), /verifier\.testModels: nope is not a built-in audited model/)
+})
+
 test('excluded domains apply only to their configured model', () => {
   const value = config()
   value.models!['model-large']!.excludedDomains = ['medical']
