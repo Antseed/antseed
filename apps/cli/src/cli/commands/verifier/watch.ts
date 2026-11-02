@@ -6,9 +6,12 @@ import { loadConfig } from '../../../config/loader.js'
 import { acquirePidFileLock } from '../../../verifier/atomic-files.js'
 import { promptHidden } from '../../prompt-hidden.js'
 import { keystoreAddress, loadKeystoreSigner } from './auditor-identity.js'
+import { RUN_TUNING_OPTIONS, runTuningArgs, validateRunTuningOptions, type RunOptions } from './run.js'
 import { getGlobalOptions, type GlobalOptions } from '../types.js'
 
-interface WatchOptions {
+/** Besides its own options, `watch` takes `run`'s tuning options (`RUN_TUNING_OPTIONS`) for every tick's run. */
+interface WatchOptions extends Pick<RunOptions,
+  'allowProbeReuse' | 'enroll' | 'maxEnrollmentRequests' | 'ignorePreRunChecks' | 'maxRounds' | 'confirm'> {
   interval: string
   once?: boolean
   auditor?: string
@@ -16,7 +19,6 @@ interface WatchOptions {
   rpcUrl?: string
   /** `--no-publish-ipfs` sets this to false. */
   publishIpfs?: boolean
-  maxEnrollmentRequests?: string
   skipVersionCheck?: boolean
 }
 
@@ -33,8 +35,9 @@ export function watchStepArgs(step: WatchStep, globals: Pick<GlobalOptions, 'con
   const args = ['--data-dir', globals.dataDir, '--config', globals.config, ...(globals.verbose ? ['--verbose'] : []), 'verifier', step]
   if (options.skipVersionCheck) args.push('--skip-version-check')
   if (step === 'run') {
+    // Run's own defaults (rounds, enrollment budget) apply to whatever watch was not given.
     if (options.auditor) args.push('--auditor', options.auditor)
-    if (options.maxEnrollmentRequests) args.push('--max-enrollment-requests', options.maxEnrollmentRequests)
+    args.push(...runTuningArgs(options))
     return args
   }
   args.push('--yes')
@@ -103,7 +106,7 @@ export function parseWatchInterval(value: string): number {
 }
 
 export function registerVerifierWatchCommand(verifier: Command): void {
-  verifier
+  const watch = verifier
     .command('watch')
     .description('keep auditing: every interval, run this auditor\'s assigned models and the reports from other auditors waiting for its confirmation, then submit the results')
     .option('--interval <minutes>', 'minutes between ticks', String(DEFAULT_WATCH_INTERVAL_MINUTES))
@@ -112,10 +115,12 @@ export function registerVerifierWatchCommand(verifier: Command): void {
     .option('--keystore <path>', 'sign with this encrypted JSON keystore; the password is read from ANTSEED_KEYSTORE_PASSWORD or asked once at start')
     .option('--rpc-url <url>', 'Base JSON-RPC URL override for submissions')
     .option('--no-publish-ipfs', 'do not publish audit evidence to IPFS (by default it is pinned to Pinata; needs PINATA_JWT)')
-    .option('--max-enrollment-requests <count>', 'maximum reference requests per model and tick when building fresh questions')
     .option('--skip-version-check', 'run even if this CLI is older than the latest release')
+  for (const option of RUN_TUNING_OPTIONS) watch.option(option.flags, `run: ${option.description}`)
+  watch
     .action(async (options: WatchOptions, command: Command) => {
       const intervalMs = parseWatchInterval(options.interval)
+      validateRunTuningOptions(options)
       const globals = getGlobalOptions(command)
       const config = await loadConfig(globals.config)
       const env = { ...process.env }

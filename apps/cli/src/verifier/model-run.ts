@@ -168,6 +168,12 @@ export interface ModelVerificationTargetResult {
   service: string
   status: 'SAME' | 'DIFF' | 'UNDETERMINED'
   outcomeReason?: VerificationOutcomeReasonV1 | null
+  /**
+   * This audit answered another auditor's DIFF on this service waiting for this auditor's
+   * confirmation. An UNDETERMINED from a seller failure is then audited again before it is
+   * submitted (see `CONFIRMATION_ATTEMPTS`). Local only; not part of the submitted evidence.
+   */
+  confirmsDiff?: boolean
   auditId: string
   parsedProbeCount: number
   probeCount: number

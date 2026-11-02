@@ -99,6 +99,22 @@ export function epochCellKey(model: string, peerId: string): string {
 /** Seller and unclear failures get this many audits per epoch (the first plus one retry). */
 export const SELLER_FAILURE_ATTEMPTS = 2
 
+/**
+ * Audits per epoch for a seller whose DIFF waits for this auditor's confirmation and whose audit
+ * ended UNDETERMINED because of a failure. Submitted, that UNDETERMINED replaces the waiting DIFF,
+ * so it is held and the seller audited again until a SAME or DIFF, or the last attempt.
+ */
+export const CONFIRMATION_ATTEMPTS = 3
+
+/** A confirmation is audited again at least this long after its last attempt finished. */
+export const CONFIRMATION_RECHECK_SPACING_SECONDS = 10 * 60
+
+/** Whether a cell is a confirmation's UNDETERMINED that is audited again before it is submitted. */
+export function heldForConfirmationRecheck(cell: Pick<EpochCell, 'state' | 'action' | 'result' | 'attempts'>): boolean {
+  return cell.state === 'undetermined' && cell.action === 'retry' && cell.result?.confirmsDiff === true
+    && cell.attempts < CONFIRMATION_ATTEMPTS
+}
+
 export function epochCellAction(cell: Omit<EpochCell, 'action'>): EpochCellAction {
   switch (cell.state) {
     case 'same':
@@ -117,7 +133,7 @@ export function epochCellAction(cell: Omit<EpochCell, 'action'>): EpochCellActio
       // falls through
     case 'failed':
       if (cell.blame === 'auditor') return 'retry'
-      return cell.attempts < SELLER_FAILURE_ATTEMPTS ? 'retry' : 'done'
+      return cell.attempts < (cell.result?.confirmsDiff ? CONFIRMATION_ATTEMPTS : SELLER_FAILURE_ATTEMPTS) ? 'retry' : 'done'
   }
 }
 
@@ -354,6 +370,19 @@ export async function writeEpochSubmissionManifest(
       if (cell.state === 'pending_extension') {
         const pending = latestBy(runSummaries, (summary) => summary.results, peer, (result) => finalAuditVerdict(result) === null)
         if (pending) results.push(pending)
+      } else if (heldForConfirmationRecheck(cell)) {
+        // Not submitted yet: it would replace the DIFF waiting for this auditor's confirmation.
+        const result = cell.result!
+        failures.push({
+          peerId: result.peerId,
+          displayName: result.displayName,
+          agentId: result.agentId,
+          service: result.service,
+          status: 'FAILED',
+          reason: `held: UNDETERMINED (${cell.reason ?? 'audit failed'}) on a DIFF waiting for this auditor's confirmation; `
+            + `audited again before it is submitted (attempt ${cell.attempts} of ${CONFIRMATION_ATTEMPTS})`,
+          ...(result.outcomeReason ? { outcomeReason: result.outcomeReason } : {}),
+        })
       } else if (cell.result) {
         results.push(cell.result)
       } else if (cell.state === 'failed') {

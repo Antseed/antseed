@@ -712,7 +712,7 @@ the auditor's side every run and seller failures once per epoch, asks close
 calls their missing extra questions, audits the sellers whose DIFF from another
 auditor waits for this auditor's confirmation, and audits new or previously
 skipped sellers. One run retries
-what is left in up to `--max-rounds` rounds (default 3), with a larger
+what is left in up to `--max-rounds` rounds (default 3), with another
 enrollment budget each round, and stops early when nothing is left or a round
 makes no progress. `--fresh` ignores the earlier runs, including close calls
 waiting for extra questions and an interrupted run's checkpoints, and audits every eligible
@@ -729,9 +729,17 @@ Each model's submission covers every seller result for that model: `SAME`,
 be submitted. The contract rejects any other epoch, so submit before the epoch
 ends. Results the contract would reject (your own agent, unknown agents,
 evidence that no longer matches its hash) are listed as excluded and do not
-block the model. Re-running is safe: a ledger under
-`<evidenceDir>/submissions/<run-id>/` records each model, and models already
-recorded on-chain are skipped. A seller service's SAME or DIFF verdict counts
+block the model. Only what changes the auditor's on-chain position is sent: a
+seller result the auditor already reported this epoch with the same verdict is
+left out before the evidence is built, so the evidence's results match the
+transaction's `resultCount`, and a model with nothing new is skipped ("nothing new
+to submit (23 already on-chain)"). A first report, a confirmation of another
+auditor's report and a changed verdict are always sent; a report is sent again
+only when an auditor revocation stopped it counting, or when the audit is newer
+than a DIFF change that started a new report round. Re-running is safe: a ledger under
+`<evidenceDir>/submissions/<run-id>/` records each model, a retry after a failed
+transaction re-sends the same evidence, and models already recorded on-chain are
+skipped. A seller service's SAME or DIFF verdict counts
 through the next epoch and then drops out on its own; the latest result always
 wins, and an UNDETERMINED clears an earlier verdict.
 
@@ -783,13 +791,13 @@ sending anything when a bank isn't ready:
 antseed --config ./audit-config.json verifier run gpt-6.1-sol --max-enrollment-requests 1000
 ```
 
-The request budget is **per build** (2000 unless `--max-enrollment-requests`
-sets it), includes retries and requests already used by a compatible enrollment
-checkpoint, and cannot exceed a lower configured `referenceMaxRequestsPerBuild`.
-One model can need several builds in a run: one to make its bank usable, up to
+The request budget is **per build and round** (2000 unless `--max-enrollment-requests`
+sets it) and includes retries. A build that runs out continues from its
+checkpoint in the next round or run with another budget, up to a total per build
+of `referenceMaxRequestsPerBuild` (default: 3 times the budget), which counts
+the requests of earlier runs. One model can need several builds in a run: one to make its bank usable, up to
 3 more when sellers have seen too much of it, and up to 3 more for close-call
-extra questions. Each retry round (`--max-rounds`) can build again with the budget
-times the round number. It is a request limit, not a dollar spending cap.
+extra questions. It is a request limit, not a dollar spending cap.
 Probe growth also respects `referenceMaximumProbeCount` (default 500) and the
 configured no-progress limit. An assigned or `--all` run applies this process to
 each model with eligible sellers; it can therefore spend up to the per-model limit for each.

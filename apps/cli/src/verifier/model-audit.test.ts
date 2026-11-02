@@ -46,6 +46,7 @@ async function withRun(
     tamper?: (evidenceDir: string) => Promise<void>
     beforePrepare?: (banksDir: string) => Promise<void>
     maxResultsPerSubmission?: number
+    alreadyOnChain?: Parameters<typeof prepareModelAudits>[0]['alreadyOnChain']
   } = {},
 ): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-model-audit-'))
@@ -63,6 +64,7 @@ async function withRun(
       resolveAgentOwner: async (agentId) => options.owners?.[agentId.toString()] ?? randomWallet().address,
       config: FIXTURE_CONFIG,
       ...(options.maxResultsPerSubmission ? { maxResultsPerSubmission: options.maxResultsPerSubmission } : {}),
+      ...(options.alreadyOnChain ? { alreadyOnChain: options.alreadyOnChain } : {}),
     })
     await body({ evidenceDir, prepared })
   } finally {
@@ -142,6 +144,50 @@ test('splits a model into ordered parts when it exceeds the per-call result limi
     assert.deepEqual(prepared.audits.map((entry) => entry.results.map((result) => result.agentId)), [[1n, 2n], [3n]])
     assert.notEqual(prepared.audits[0]!.evidenceHash, prepared.audits[1]!.evidenceHash)
   }, { maxResultsPerSubmission: 2 })
+})
+
+test('results already on-chain are left out before the evidence is built', async () => {
+  const asked: Array<{ model: string; agents: bigint[] }> = []
+  await withRun([
+    audit('1', sellers[0]!, 'model-a'),
+    audit('2', sellers[1]!, 'model-a', 'DIFF'),
+    audit('3', sellers[2]!, 'model-a', 'UNDETERMINED'),
+    audit('1', sellers[0]!, 'model-b'),
+    audit('2', sellers[1]!, 'model-b'),
+  ], async ({ prepared }) => {
+    assert.deepEqual(asked.map((entry) => entry.model), [modelHash('model-a'), modelHash('model-b')])
+    assert.deepEqual(asked[0]!.agents, [1n, 2n, 3n])
+    assert.deepEqual(prepared.audits.map((entry) => entry.key), ['model-a'], 'a model with nothing new is not prepared')
+    assert.deepEqual(prepared.alreadyOnChain, [{ model: 'model-a', count: 2 }, { model: 'model-b', count: 2 }])
+    const [entry] = prepared.audits as [PreparedModelAudit]
+    assert.deepEqual(entry.results.map((result) => [result.agentId, result.verdict]), [[2n, VERIFIER_VERDICT.DIFF]])
+    // Antscan compares the evidence's results with the on-chain resultCount.
+    assert.equal(entry.evidence.results.length, entry.results.length)
+    assert.deepEqual(entry.evidence.results.map((result) => result.agentId), ['2'])
+    assert.equal(entry.auditEvidencePaths.length, 1)
+    assert.equal(entry.evidenceHash, canonicalHashBytes32(entry.evidence))
+  }, {
+    alreadyOnChain: async (model, candidates) => {
+      asked.push({ model, agents: candidates.map((candidate) => candidate.agentId) })
+      assert.ok(candidates.every((candidate) => candidate.auditedAt > 0), 'each candidate carries its audit time')
+      return candidates.map((candidate) => model === modelHash('model-b') || candidate.verdict !== VERIFIER_VERDICT.DIFF)
+    },
+  })
+})
+
+test('parts are cut from the results left to send', async () => {
+  await withRun([
+    audit('1', sellers[0]!, 'model-a'),
+    audit('2', sellers[1]!, 'model-a'),
+    audit('3', sellers[2]!, 'model-a'),
+  ], async ({ prepared }) => {
+    assert.deepEqual(prepared.audits.map((entry) => entry.key), ['model-a'])
+    assert.deepEqual(prepared.audits[0]!.results.map((result) => result.agentId), [1n, 3n])
+    assert.equal(prepared.audits[0]!.evidence.partCount, 1)
+  }, {
+    maxResultsPerSubmission: 2,
+    alreadyOnChain: async (_model, candidates) => candidates.map((candidate) => candidate.agentId === 2n),
+  })
 })
 
 test('rejects runs without a numeric on-chain epoch', async () => {

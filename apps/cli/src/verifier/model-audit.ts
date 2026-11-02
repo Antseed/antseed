@@ -31,6 +31,7 @@ import { closeCallRule, pooledCloseCallVerdict, stageOneVerdict, type CloseCallR
 import { verifyProxyAuditEvidenceFile, type ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import { resolveReferenceSizingPolicy } from './reference-sizing.js'
 import { safeServiceSlug } from './slug.js'
+import type { SubmissionCandidate } from './submission-delta.js'
 import { asError, normalized } from './utils.js'
 
 /** Options every audit passes to verifyKbf (see verifyModelTarget). */
@@ -231,7 +232,18 @@ export async function prepareModelAudits(input: {
   resolveAgentOwner(agentId: bigint): Promise<string>
   config?: VerifierCLIConfig
   maxResultsPerSubmission?: number
-}): Promise<{ audits: PreparedModelAudit[]; excluded: Array<ExcludedSellerAuditV1 & { model: string }> }> {
+  /**
+   * Flags the results of a model the auditor already has on-chain (see `resultsAlreadyOnChain`), one
+   * per candidate. They are left out before the evidence is built, so the evidence lists exactly the
+   * results sent; a model with nothing left is not prepared at all.
+   */
+  alreadyOnChain?: (modelHash: string, candidates: readonly SubmissionCandidate[]) => Promise<boolean[]>
+}): Promise<{
+  audits: PreparedModelAudit[]
+  excluded: Array<ExcludedSellerAuditV1 & { model: string }>
+  /** Per model, results left out because the auditor already has them on-chain (models with none are omitted). */
+  alreadyOnChain: Array<{ model: string; count: number }>
+}> {
   const auditor = getAddress(input.auditor)
   const maxResults = input.maxResultsPerSubmission ?? MAX_RESULTS_PER_MODEL_AUDIT
   if (!/^\d+$/.test(input.manifest.epoch)) {
@@ -252,6 +264,7 @@ export async function prepareModelAudits(input: {
 
   const audits: PreparedModelAudit[] = []
   const allExcluded: Array<ExcludedSellerAuditV1 & { model: string }> = []
+  const alreadyOnChain: Array<{ model: string; count: number }> = []
   for (const model of input.manifest.modelOrder) {
     const modelManifest = input.manifest.models.find((entry) => normalized(entry.model) === normalized(model))
     if (!modelManifest) throw new Error(`run manifest is missing the model summary for ${model}`)
@@ -337,6 +350,22 @@ export async function prepareModelAudits(input: {
     keepOneSamePerSeller(accepted, excluded)
     allExcluded.push(...excluded.map((entry) => ({ ...entry, model })))
     if (accepted.length === 0 || referenceModel === null) continue
+    // After keepOneSamePerSeller, so the SAME kept per seller is the same one whether or not it is
+    // already on-chain (another of its services is never sent in its place).
+    if (input.alreadyOnChain) {
+      const onChain = await input.alreadyOnChain(modelHash(referenceModel), accepted.map((entry) => ({
+        agentId: entry.agentId,
+        serviceHash: serviceHash(entry.result.service),
+        verdict: verifierVerdict(entry.result.status),
+        auditedAt: auditedAt(entry),
+      })))
+      const count = onChain.filter(Boolean).length
+      if (count > 0) {
+        alreadyOnChain.push({ model, count })
+        for (let index = accepted.length - 1; index >= 0; index -= 1) if (onChain[index]) accepted.splice(index, 1)
+      }
+      if (accepted.length === 0) continue
+    }
     accepted.sort((left, right) => compareResults(
       left.agentId, serviceHash(left.result.service), right.agentId, serviceHash(right.result.service),
     ))
@@ -453,7 +482,19 @@ export async function prepareModelAudits(input: {
       })
     }
   }
-  return { audits, excluded: allExcluded }
+  return { audits, excluded: allExcluded, alreadyOnChain }
+}
+
+/** Unix seconds of the latest evidence file behind a result: its last extra set when it has one. */
+function auditedAt(entry: {
+  evidence: ProxyAuditEvidenceV1
+  extensionEvidence: ProxyAuditEvidenceV1 | null
+  extension2Evidence: ProxyAuditEvidenceV1 | null
+}): number {
+  const times = [entry.evidence, entry.extensionEvidence, entry.extension2Evidence]
+    .flatMap((evidence) => evidence ? [Date.parse(evidence.createdAt)] : [])
+    .filter(Number.isFinite)
+  return times.length === 0 ? 0 : Math.max(...times) / 1_000
 }
 
 /**

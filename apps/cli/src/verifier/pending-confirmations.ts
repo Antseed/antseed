@@ -77,6 +77,29 @@ export function ownReportBlocks(events: readonly ServiceAuditedEvent[], auditor:
   return blocks
 }
 
+/** One auditor's latest report on a service and model this epoch, in whatever round it was made. */
+export interface OwnReport {
+  verdict: VerifierVerdict
+  round: number
+  blockNumber: number
+  logIndex: number
+}
+
+/** `auditor`'s latest report this epoch on each service and model, in any report round, keyed by `reportKey`. */
+export function ownLatestReports(events: readonly ServiceAuditedEvent[], auditor: string): Map<string, OwnReport> {
+  const me = getAddress(auditor)
+  const reports = new Map<string, OwnReport>()
+  for (const event of events) {
+    if (getAddress(event.auditor) !== me) continue
+    const key = reportKey(event.agentId, event.serviceHash, event.modelHash)
+    const current = reports.get(key)
+    if (current && (current.blockNumber > event.blockNumber
+      || (current.blockNumber === event.blockNumber && current.logIndex > event.logIndex))) continue
+    reports.set(key, { verdict: event.verdict, round: event.round, blockNumber: event.blockNumber, logIndex: event.logIndex })
+  }
+  return reports
+}
+
 export function reportKey(agentId: bigint, service: string, model: string): string {
   return `${serviceKey(agentId, service)}:${normalized(model)}`
 }

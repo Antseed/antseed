@@ -374,6 +374,11 @@ export async function buildModelReference(input: {
    * settings rejects the result as incompatible.
    */
   settingsReference?: KbfReferenceV1
+  /**
+   * New requests this call may make, on top of what the build's checkpoint already used in earlier
+   * runs; the build's total stays capped by `referenceMaxRequestsPerBuild`. Unset: only the total.
+   */
+  maxNewRequests?: number
 }): Promise<{
   reference: KbfReferenceV1
   path: string
@@ -439,6 +444,9 @@ export async function buildModelReference(input: {
   // bank keeps the one it was enrolled with.
   const timeoutMs = settings?.queryProfile.requestTimeoutMs ?? input.config?.probeRequestTimeoutMs ?? 120_000
   const limiter = input.requestLimiter ?? createReferenceRequestLimiter(input.config)
+  if (input.maxNewRequests !== undefined) assertPositiveInteger(input.maxNewRequests, 'maxNewRequests')
+  // Shared by the discovery and build queries: both count toward this call's new requests.
+  const runBudget: RunRequestBudget | null = input.maxNewRequests === undefined ? null : { limit: input.maxNewRequests, used: 0 }
   const pricingForModel = (model: string): VerifierModelPricingConfig => {
     const pricing = pricingByModel.get(normalized(model))
     if (!pricing) throw new Error(`no reference pricing is available for ${model}`)
@@ -465,11 +473,16 @@ export async function buildModelReference(input: {
     model: normalized(input.model),
     routesByModel: [...routesByModel.entries()],
   })) : null
+  const discoveryUsedBefore = discoveryCheckpoint?.requestsUsed ?? 0
+  if (discoveryUsedBefore > 0) {
+    input.log?.(`thinking discovery continues from its checkpoint: ${discoveryUsedBefore} requests already used in earlier runs`)
+  }
   const discoveryQuery = discoveryCheckpoint ? createReferenceQuery({
     timeoutMs: THINKING_DISCOVERY_TIMEOUT_MS,
     fetchFn: input.fetchFn ?? fetch,
     checkpoint: discoveryCheckpoint,
     limiter,
+    runBudget,
     maxRequests: input.config?.referenceMaxRequestsPerBuild ?? DEFAULT_MAX_REQUESTS_PER_BUILD,
     retryCount: input.config?.referenceBatchRetryCount ?? DEFAULT_BATCH_RETRY_COUNT,
     retryBaseDelayMs: input.config?.referenceRetryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS,
@@ -495,6 +508,8 @@ export async function buildModelReference(input: {
         })
         return [key, routeWithThinkingStrategy(route, result.strategy), result] as const
       } catch (error) {
+        // Out of requests is not a finding about the route: stop, and the next run continues.
+        if (error instanceof ReferenceRequestBudgetError) throw error
         if (isTarget && !(input.config?.referenceAllowThinking === true && error instanceof ThinkingDiscoveryError
           && !asError(error).message.includes('refused every request'))) {
           throw error
@@ -605,12 +620,20 @@ export async function buildModelReference(input: {
     } : {}),
   })
   const checkpoint = await ReferenceBuildCheckpoint.open(checkpointPath, compatibilityHash)
+  const usedBefore = checkpoint.requestsUsed + discoveryUsedBefore
+  if (usedBefore > 0) {
+    input.log?.(
+      `continuing from the checkpoint: ${usedBefore} of ${input.config?.referenceMaxRequestsPerBuild ?? DEFAULT_MAX_REQUESTS_PER_BUILD} `
+      + 'requests for this build already used in earlier runs',
+    )
+  }
   const exchangesPath = referenceExchangesPath(input.referencesDir, input.model)
   const query = createReferenceQuery({
     timeoutMs,
     fetchFn: input.fetchFn ?? fetch,
     checkpoint,
     limiter,
+    runBudget,
     // Discovery requests count toward the same per-build budget.
     maxRequests: Math.max(1, (input.config?.referenceMaxRequestsPerBuild ?? DEFAULT_MAX_REQUESTS_PER_BUILD)
       - (discoveryCheckpoint?.requestsUsed ?? 0)),
@@ -1465,12 +1488,26 @@ function parseCanonicalFacts(text: string, range: readonly [number, number]): Ar
   return facts
 }
 
+/** A build ran out of requests, for this run or in total; never a finding about a route or model. */
+export class ReferenceRequestBudgetError extends Error {
+  override name = 'ReferenceRequestBudgetError'
+}
+
+/** New requests one build call may make; `used` counts them across the call's queries. */
+interface RunRequestBudget {
+  limit: number
+  used: number
+}
+
 function createReferenceQuery(input: {
   timeoutMs: number
   fetchFn: typeof fetch
   checkpoint: ReferenceBuildCheckpoint
     limiter: ReferenceRequestLimiter
+  /** The build's total, including the checkpoint's earlier runs. */
   maxRequests: number
+  /** New requests this call may make, shared by the build's queries; null: only the total applies. */
+  runBudget?: RunRequestBudget | null
   retryCount: number
   retryBaseDelayMs: number
   pricingForModel: (model: string) => VerifierModelPricingConfig
@@ -1481,6 +1518,19 @@ function createReferenceQuery(input: {
   assertNonNegativeInteger(input.retryCount, 'referenceBatchRetryCount')
   assertPositiveInteger(input.retryBaseDelayMs, 'referenceRetryBaseDelayMs')
   const consumed = new Map<string, ReferenceCachedResponseV1>()
+  // Every physical request counts toward this call's new requests and the build's total.
+  const reserve = async (): Promise<void> => {
+    if (input.runBudget) {
+      if (input.runBudget.used >= input.runBudget.limit) {
+        throw new ReferenceRequestBudgetError(
+          `reference build request budget exhausted for this run (${input.runBudget.limit} new requests); `
+          + 'the next run continues from the checkpoint',
+        )
+      }
+      input.runBudget.used += 1
+    }
+    await input.checkpoint.reserveRequest(input.maxRequests)
+  }
   const providersByModel = new Map<string, string[]>()
   const recordProvider = (model: string, provider: string | null | undefined): void => {
     if (!provider) return
@@ -1524,7 +1574,7 @@ function createReferenceQuery(input: {
     let attempt = 0
     for (;;) {
       attempt += 1
-      await input.checkpoint.reserveRequest(input.maxRequests)
+      await reserve()
       try {
         const response = await input.limiter.run(model, () => postChatCompletion(
           route,
@@ -1634,7 +1684,7 @@ function createReferenceQuery(input: {
     // times, and any other 4xx means this strategy is refused.
     let failure: { status: number | null; failure: string } = { status: null, failure: 'not attempted' }
     for (let attempt = 1; attempt <= 3; attempt += 1) {
-      await input.checkpoint.reserveRequest(input.maxRequests)
+      await reserve()
       try {
         const response = await input.limiter.run(model, () => postChatCompletion(route, body, input.timeoutMs, input.fetchFn))
         const success: ReferenceCachedSuccessV1 = {
@@ -1756,7 +1806,10 @@ export class ReferenceBuildCheckpoint {
   async reserveRequest(maxRequests: number): Promise<void> {
     await this.enqueue(async () => {
       if (this.value.requestsUsed >= maxRequests) {
-        throw new Error(`reference build request budget exhausted (${maxRequests})`)
+        throw new ReferenceRequestBudgetError(
+          `reference build request budget exhausted (${maxRequests}): the build's total, including earlier runs; `
+          + 'raise verifier.referenceMaxRequestsPerBuild to continue it',
+        )
       }
       this.value.requestsUsed += 1
       await writeJsonAtomic(this.path, this.value)

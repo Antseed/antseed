@@ -5,8 +5,10 @@ import { join } from 'node:path'
 import test from 'node:test'
 import type { ModelAuditSummaryV1, VerifierRunManifestV1 } from './audit-artifacts.js'
 import {
+  CONFIRMATION_ATTEMPTS,
   countPlan,
   epochCellKey,
+  heldForConfirmationRecheck,
   epochModelRows,
   failureBlame,
   mergeEpochRuns,
@@ -177,4 +179,54 @@ test('a close call waiting for extra questions is pending_extension, not submitt
   assert.equal(countPlan(cells.values()).extend, 1)
   const [row] = epochModelRows(cells.values())
   assert.deepEqual({ ...row }, { model: 'm', same: 1, diff: 0, undetermined: 0, closeCalls: 1, failed: 0, skipped: 0, left: 1 })
+})
+
+test('a confirmation\'s UNDETERMINED from a failure is held and retried up to CONFIRMATION_ATTEMPTS; a close call is not', () => {
+  const confirming = (peerId: string, extra: Partial<ModelVerificationTargetResult> = {}) => (
+    result(peerId, 'UNDETERMINED', { outcomeReason: sellerDown, confirmsDiff: true, ...extra })
+  )
+  const attempts = (count: number, last: ModelVerificationTargetResult) => Array.from({ length: count }, (_, index) => (
+    run(`r${index}`, `2026-10-28T2${index}:00:00.000Z`, [{ model: 'm', results: [index === count - 1 ? last : confirming(last.peerId)] }])
+  ))
+  const cell = (runs: ReturnType<typeof run>[], peerId: string) => mergeEpochRuns(EPOCH, runs).get(epochCellKey('m', peerId))!
+  assert.equal(CONFIRMATION_ATTEMPTS, 3)
+
+  // An ordinary seller failure is done after two attempts; a confirmation gets a third.
+  const second = cell(attempts(2, confirming('a')), 'a')
+  assert.equal(second.action, 'retry')
+  assert.equal(heldForConfirmationRecheck(second), true)
+  assert.equal(cell(attempts(2, result('a', 'UNDETERMINED', { outcomeReason: sellerDown })), 'a').action, 'done')
+  // After the last attempt the UNDETERMINED is submitted.
+  const third = cell(attempts(3, confirming('a')), 'a')
+  assert.equal(third.action, 'done')
+  assert.equal(heldForConfirmationRecheck(third), false)
+  // A re-check that answers decides the cell.
+  assert.equal(cell(attempts(2, result('a', 'DIFF', { confirmsDiff: true })), 'a').state, 'diff')
+  // A close call that stayed undecided after its extra questions is final: asking again repeats it.
+  const tie = cell(attempts(1, result('a', 'UNDETERMINED', { confirmsDiff: true })), 'a')
+  assert.equal(tie.action, 'done')
+  assert.equal(heldForConfirmationRecheck(tie), false)
+})
+
+test('the submission leaves out a held confirmation UNDETERMINED and says why', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'epoch-plan-held-'))
+  try {
+    const runs = [run('r1', '2026-10-28T20:00:00.000Z', [{ model: 'm', results: [
+      result('a', 'UNDETERMINED', { outcomeReason: sellerDown, confirmsDiff: true }),
+      result('b', 'UNDETERMINED', { outcomeReason: sellerDown }),
+    ] }])]
+    const state = { epoch: EPOCH, manifests: runs.map((entry) => entry.manifest), cells: mergeEpochRuns(EPOCH, runs) }
+    const { writeJsonAtomic } = await import('./atomic-files.js')
+    const path = join(directory, 'r1.summary.json')
+    await writeJsonAtomic(path, runs[0]!.summaries[0])
+    runs[0]!.manifest.models = [{ model: 'm', summaryPath: path } as VerifierRunManifestV1['models'][number]]
+    const manifest = await writeEpochSubmissionManifest(directory, state)
+    const summary = JSON.parse(await readFile(manifest.models[0]!.summaryPath, 'utf8')) as ModelAuditSummaryV1
+    // Only the ordinary UNDETERMINED is submitted (and retried); the confirmation's waits for its re-check.
+    assert.deepEqual(summary.results.map((entry) => entry.peerId), ['b'])
+    assert.deepEqual(summary.failures.map((entry) => entry.peerId), ['a'])
+    assert.match(summary.failures[0]!.reason, /^held: UNDETERMINED .*\(attempt 1 of 3\)$/)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
 })

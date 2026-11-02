@@ -30,6 +30,19 @@ function withContrastModels(config: VerifierCLIConfig, service: string, contrast
   config.models = { ...models, [key]: { ...models[key], contrastModels: [...contrastModels] } }
 }
 
+/** Runs' budgets one build may spend in total when `verifier.referenceMaxRequestsPerBuild` is not set. */
+export const BUILD_REQUEST_RUNS = 3
+
+/**
+ * A run's `maxRequests` is what each build may spend in that run; an unfinished build continues from
+ * its checkpoint in the next run with another budget, up to its total: the configured
+ * `referenceMaxRequestsPerBuild`, or `BUILD_REQUEST_RUNS` runs' budgets.
+ */
+export function buildRequestLimits(maxRequests: number, configuredTotal: number | undefined): { perRun: number; total: number } {
+  const total = configuredTotal ?? maxRequests * BUILD_REQUEST_RUNS
+  return { perRun: Math.min(maxRequests, total), total }
+}
+
 export async function ensureAuditableReference(input: {
   model: string
   banksDir: string
@@ -60,13 +73,12 @@ export async function ensureAuditableReference(input: {
     if (initialReference) {
       withContrastModels(config, entry[0], initialReference.contrasts.map((contrast) => contrast.model))
     }
-    config.referenceMaxRequestsPerBuild = Math.min(
-      input.maxRequests, config.referenceMaxRequestsPerBuild ?? input.maxRequests,
-    )
+    const limits = buildRequestLimits(input.maxRequests, config.referenceMaxRequestsPerBuild)
+    config.referenceMaxRequestsPerBuild = limits.total
     const sizing = resolveReferenceSizingPolicy(config)
     input.log?.(
       `enrollment required: ${status.totalProbeCount} banked; maximum ${sizing.maximumProbeCount} probes, `
-      + `${config.referenceMaxRequestsPerBuild} physical requests per model (including retries and checkpoint history)`,
+      + `up to ${limits.perRun} physical requests in this run and ${limits.total} for the whole build (including retries and earlier runs)`,
     )
     const catalog = await operations.catalog(config)
     const built = await operations.build({
@@ -78,6 +90,7 @@ export async function ensureAuditableReference(input: {
       requestLimiter: input.requestLimiter,
       initialReference,
       log: input.log,
+      maxNewRequests: limits.perRun,
     })
     const appended = await operations.append({
       banksDir: input.banksDir, model: input.model, reference: built.reference, cost: built.cost,
@@ -125,10 +138,11 @@ export async function enrollFreshProbes(input: {
       throw new Error(`no reference configuration for ${input.model}`)
     }
     if (bank) withContrastModels(config, entry[0], bank.contrastModels)
-    config.referenceMaxRequestsPerBuild = Math.min(
-      input.maxRequests, config.referenceMaxRequestsPerBuild ?? input.maxRequests,
+    const limits = buildRequestLimits(input.maxRequests, config.referenceMaxRequestsPerBuild)
+    config.referenceMaxRequestsPerBuild = limits.total
+    input.log?.(
+      `generating fresh probes: up to ${limits.perRun} physical requests in this run, ${limits.total} for the whole build`,
     )
-    input.log?.(`generating fresh probes: at most ${config.referenceMaxRequestsPerBuild} physical requests`)
     const catalog = await operations.catalog(config)
     const built = await operations.build({
       model: input.model,
@@ -140,6 +154,7 @@ export async function enrollFreshProbes(input: {
       log: input.log,
       excludedProbeIds: new Set(bank?.probeIds ?? []),
       ...(settingsReference ? { settingsReference } : {}),
+      maxNewRequests: limits.perRun,
     })
     const appended = await operations.append({
       banksDir: input.banksDir, model: input.model, reference: built.reference, cost: built.cost,

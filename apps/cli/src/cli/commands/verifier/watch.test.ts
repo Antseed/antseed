@@ -68,6 +68,16 @@ test('each step forwards the global options and only its own flags', () => {
     '--data-dir', '/data', '--config', '/cfg/config.json', 'verifier', 'run',
     '--skip-version-check', '--auditor', '0xabc', '--max-enrollment-requests', '400',
   ])
+  // Nothing given: the tick's run uses run's own defaults (3 rounds, 2000 requests per build).
+  assert.deepEqual(watchStepArgs('run', GLOBALS, { interval: '10', enroll: true, confirm: true }), [
+    '--data-dir', '/data', '--config', '/cfg/config.json', 'verifier', 'run',
+  ])
+  assert.deepEqual(watchStepArgs('run', GLOBALS, {
+    interval: '10', maxRounds: '5', ignorePreRunChecks: true, allowProbeReuse: true, enroll: false, confirm: false,
+  }), [
+    '--data-dir', '/data', '--config', '/cfg/config.json', 'verifier', 'run',
+    '--allow-probe-reuse', '--no-enroll', '--ignore-pre-run-checks', '--max-rounds', '5', '--no-confirm',
+  ])
   assert.deepEqual(watchStepArgs('submit', { ...GLOBALS, verbose: true }, options), [
     '--data-dir', '/data', '--config', '/cfg/config.json', '--verbose', 'verifier', 'submit',
     '--skip-version-check', '--yes', '--no-publish-ipfs', '--keystore', '~/ks', '--rpc-url', 'http://rpc',
@@ -84,6 +94,7 @@ test('a keystore given to watch decides the auditor the run step plans for', asy
   assert.equal(await resolveWatchAuditor({}, addressOf), undefined, 'run resolves verifier.keystore or the data-dir identity itself')
   const auditor = await resolveWatchAuditor({ keystore: '~/ks' }, addressOf)
   assert.deepEqual(watchStepArgs('run', GLOBALS, { interval: '10', keystore: '~/ks', auditor }).slice(-2), ['--auditor', 'address-of:~/ks'])
+  assert.ok(!watchStepArgs('run', GLOBALS, { interval: '10' }).includes('--max-rounds'), 'run\'s own rounds by default')
 })
 
 test('the interval is in minutes and at least one', () => {
@@ -98,6 +109,9 @@ test('watch registers its options', () => {
   registerVerifierWatchCommand(verifier)
   const watch = verifier.commands.find((command) => command.name() === 'watch')!
   assert.deepEqual(watch.options.map((option) => option.long), [
-    '--interval', '--once', '--auditor', '--keystore', '--rpc-url', '--no-publish-ipfs', '--max-enrollment-requests', '--skip-version-check',
+    '--interval', '--once', '--auditor', '--keystore', '--rpc-url', '--no-publish-ipfs', '--skip-version-check',
+    // run's tuning options, without watch-side defaults, so run's own defaults apply
+    '--allow-probe-reuse', '--no-enroll', '--max-enrollment-requests', '--ignore-pre-run-checks', '--max-rounds', '--no-confirm',
   ])
+  assert.equal(watch.options.find((option) => option.long === '--max-rounds')!.defaultValue, undefined)
 })

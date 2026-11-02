@@ -1837,6 +1837,35 @@ test('reference builds enforce the physical request budget', async () => {
   }
 })
 
+test('a run\'s new-request budget stops the build; the next run continues it from the checkpoint', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-run-budget-'))
+  const budgetedConfig = { ...config(), referenceMaxRequestsPerBuild: 10_000 }
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    return response(successfulContent(body.model, prompt))
+  }
+  const logs: string[] = []
+  const build = (maxNewRequests?: number) => buildModelReference({
+    model: MODEL, referencesDir: directory, config: budgetedConfig, fetchFn, log: (line) => logs.push(line),
+    ...(maxNewRequests === undefined ? {} : { maxNewRequests }),
+  })
+  try {
+    await assert.rejects(build(1), /request budget exhausted for this run \(1 new requests\)/)
+    // Running out is not a discovery finding: no route fell back to 'bare' because of it.
+    assert.equal(logs.some((line) => line.includes("continuing with 'bare'")), false, logs.join('\n'))
+    // The next run replays the first run's answer and gets one new request of its own.
+    await assert.rejects(build(1), /request budget exhausted for this run \(1 new requests\)/)
+    assert.ok(logs.some((line) => /continues from its checkpoint: 1 requests/.test(line)), logs.join('\n'))
+    // With enough budget the build finishes from where the earlier runs stopped.
+    const built = await build(10_000)
+    assert.ok(built.reference.probes.length > 0)
+    assert.ok(logs.some((line) => /continu\w+ from (the|its) checkpoint: [2-9]\d* /.test(line)), logs.join('\n'))
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('failed builds resume cached reference responses', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-resume-'))
   const promptCalls = new Map<string, number>()
