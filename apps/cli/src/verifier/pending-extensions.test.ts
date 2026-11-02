@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { createReferenceQueryProfile } from '@antseed/fingerprints'
 import type { ModelVerificationTargetResult } from './model-run.js'
-import { loadPendingDiffRechecks, pendingRecheckKey } from './pending-rechecks.js'
+import { loadPendingExtensions, pendingExtensionKey } from './pending-extensions.js'
 import { emptyAuditCostSummary, writeProxyAuditEvidence, type ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 
 const PEER_A = 'aa'.repeat(20)
@@ -64,23 +64,18 @@ async function writeRun(evidenceDir: string, runId: string, completedAt: string,
 }
 
 test('a DIFF is never carried over: it is submitted as found, and another auditor confirms it', async () => {
-  const evidenceDir = await mkdtemp(join(tmpdir(), 'pending-rechecks-'))
+  const evidenceDir = await mkdtemp(join(tmpdir(), 'pending-extensions-'))
   try {
     const a = await evidenceFor(evidenceDir, PEER_A, 'a1')
-    const waiting = { reason: 'reference endpoint 402', since: '2026-10-27T12:00:00.000Z' }
-    await writeRun(evidenceDir, 'run-1', '2026-10-27T13:00:00.000Z', [
-      result(PEER_A, 'DIFF', a),
-      // A run from before still marked its DIFF as waiting for its own recheck: no longer carried over.
-      result(PEER_B, 'DIFF', a, { recheckPending: waiting }),
-    ])
-    assert.equal((await loadPendingDiffRechecks(evidenceDir, '28', ['model-a'])).size, 0)
+    await writeRun(evidenceDir, 'run-1', '2026-10-27T13:00:00.000Z', [result(PEER_A, 'DIFF', a), result(PEER_B, 'SAME', a)])
+    assert.equal((await loadPendingExtensions(evidenceDir, '28', ['model-a'])).size, 0)
   } finally {
     await rm(evidenceDir, { recursive: true, force: true })
   }
 })
 
 test('a close call waiting for its extra questions is carried over as an extension until extended', async () => {
-  const evidenceDir = await mkdtemp(join(tmpdir(), 'pending-rechecks-'))
+  const evidenceDir = await mkdtemp(join(tmpdir(), 'pending-extensions-'))
   try {
     const a = await evidenceFor(evidenceDir, PEER_A, 'a1')
     const grey = {
@@ -91,14 +86,13 @@ test('a close call waiting for its extra questions is carried over as an extensi
     await writeRun(evidenceDir, 'run-1', '2026-10-27T13:00:00.000Z', [
       result(PEER_A, 'SAME', a, { ...grey, extensionPending: { reason: 'no fresh questions', since: '2026-10-27T13:00:00.000Z' } }),
     ])
-    let pending = await loadPendingDiffRechecks(evidenceDir, '28', ['model-a'])
-    assert.equal(pending.get(pendingRecheckKey('model-a', PEER_A))?.kind, 'extension')
+    let pending = await loadPendingExtensions(evidenceDir, '28', ['model-a'])
+    assert.ok(pending.get(pendingExtensionKey('model-a', PEER_A)))
 
     // Extended in a later run, the pooled verdict is DIFF: final for this auditor, nothing left to carry over.
     await writeRun(evidenceDir, 'run-2', '2026-10-27T14:00:00.000Z', [
       result(PEER_A, 'DIFF', a, {
         ...grey,
-        recheckPending: { reason: 'reference endpoint 402', since: '2026-10-27T14:00:00.000Z' },
         extension: {
           rule: 'kbf-extension-v1', auditId: 'x', status: 'DIFF', referenceId: 'r', probeCount: 1, parsedProbeCount: 1,
           correctProbeCount: 0, responseAuthVerified: true, cost: emptyAuditCostSummary(),
@@ -108,8 +102,8 @@ test('a close call waiting for its extra questions is carried over as an extensi
         },
       }),
     ])
-    pending = await loadPendingDiffRechecks(evidenceDir, '28', ['model-a'])
-    assert.equal(pending.get(pendingRecheckKey('model-a', PEER_A)), undefined)
+    pending = await loadPendingExtensions(evidenceDir, '28', ['model-a'])
+    assert.equal(pending.get(pendingExtensionKey('model-a', PEER_A)), undefined)
   } finally {
     await rm(evidenceDir, { recursive: true, force: true })
   }

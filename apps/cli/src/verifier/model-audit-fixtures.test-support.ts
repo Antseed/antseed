@@ -24,7 +24,6 @@ import {
 } from '@antseed/node'
 import {
   modelAuditExtensionsDirectory,
-  modelAuditRechecksDirectory,
   modelAuditSellersDirectory,
   writeEpochAuditSummary,
   writeModelAuditSummary,
@@ -39,7 +38,6 @@ import { buildKbfProbeRequestBody, type ModelVerificationTargetResult } from './
 import { combineExtension } from './extension-round.js'
 import { sellerEpochProbeReferencePath, SELLER_PROBE_SELECTION_METHOD } from './probe-bank.js'
 import {
-  addAuditCostSummaries,
   emptyAuditCostSummary,
   summarizeAuditExchangeCosts,
   writeProxyAuditEvidence,
@@ -57,17 +55,21 @@ export interface FixtureAudit {
   routedService?: string
   /** UNDETERMINED answers like SAME, then is recorded as lacking verified ResponseAuth. */
   verdict: 'SAME' | 'DIFF' | 'UNDETERMINED'
-  /** A DIFF's recheck on fresh probes; omit for a DIFF that was never rechecked. */
-  recheck?: 'SAME' | 'DIFF' | 'UNDETERMINED'
   /** Seller key that actually signs ResponseAuth (defaults to `seller`). */
   signer?: Wallet
   reference?: KbfReferenceV1
   /**
    * A close-call first audit (`kbf-extension-v1`): `firstWrong` wrong answers on the first set, then
-   * an extension set of the same size with `extensionWrong` wrong answers, and an optional recheck of
-   * a pooled DIFF. `verdict` is ignored. Omit `extensionWrong` for a close call still waiting.
+   * an extension set of the same size with `extensionWrong` wrong answers. `verdict` is ignored. Omit `extensionWrong` for a close call still waiting.
+   * Under `rule: 'kbf-extension-v2'`, a pooled look still in the grey zone gets a second extra set with
+   * `extension2Wrong` wrong answers (omit it for a close call waiting for that set).
    */
-  closeCall?: { firstWrong: number; extensionWrong?: number; recheck?: 'SAME' | 'DIFF' | 'UNDETERMINED' }
+  closeCall?: {
+    firstWrong: number
+    extensionWrong?: number
+    extension2Wrong?: number
+    rule?: 'kbf-extension-v1' | 'kbf-extension-v2'
+  }
 }
 
 export function referenceFixture(model: string, probeCount = 10): KbfReferenceV1 {
@@ -189,37 +191,12 @@ export async function writeSignedAuditRun(input: {
         directory: modelAuditSellersDirectory(input.evidenceDir, input.epoch, model, input.runId),
       })
       const { evidence, written, exchanges, matchVector, cost } = first
-      let verdict: FixtureAudit['verdict'] = audit.verdict
-      let recheck: ModelAuditSummaryV1['results'][number]['recheck']
-      if (audit.recheck) {
-        if (audit.verdict !== 'DIFF') throw new Error('only a DIFF fixture can carry a recheck')
-        const recheckReference = freshReference(reference)
-        const recheckAuditId = canonicalHashBytes32({ fixture: input.runId, model, peerId, recheck: true })
-        const second = await writeFixtureEvidence({
-          audit, reference: recheckReference, auditor: input.auditor, runId: `${input.runId}-recheck`,
-          completedAt: timestamps.completedAt, displayName: `${model}-${index + 1}`, peerId,
-          verdictWanted: audit.recheck, auditId: recheckAuditId,
-          directory: modelAuditRechecksDirectory(input.evidenceDir, input.epoch, model, input.runId),
-        })
-        verdict = audit.recheck === 'SAME' ? 'UNDETERMINED' : 'DIFF'
-        recheck = {
-          auditId: recheckAuditId,
-          status: audit.recheck,
-          referenceId: recheckReference.referenceId,
-          probeCount: recheckReference.probes.length,
-          parsedProbeCount: second.evidence.result.parsedProbeCount,
-          correctProbeCount: second.matchVector.filter((entry) => entry === 1).length,
-          cost: second.cost,
-          evidencePath: second.written.path,
-          evidenceHash: second.written.evidenceHash,
-        }
-      }
       results.push({
         peerId,
         displayName: evidence.target.displayName,
         agentId: audit.agentId,
         service: audit.service,
-        status: verdict,
+        status: audit.verdict,
         outcomeReason: null,
         auditId,
         parsedProbeCount: evidence.result.parsedProbeCount,
@@ -232,7 +209,6 @@ export async function writeSignedAuditRun(input: {
         cumulativeCost: cost,
         evidencePath: written.path,
         evidenceHash: written.evidenceHash,
-        ...(recheck ? { recheck } : {}),
       })
     }
     const summaryPath = await writeModelAuditSummary(input.evidenceDir, input.epoch, model, {
@@ -446,7 +422,7 @@ async function closeCallResult(input: {
   })
   let result: ModelVerificationTargetResult = {
     ...asResult(first, input.auditId, reference.probes.length),
-    decisionRule: 'kbf-extension-v1',
+    decisionRule: closeCall.rule ?? 'kbf-extension-v1',
   }
   if (closeCall.extensionWrong === undefined) {
     return { ...result, extensionPending: { reason: 'fixture: not extended', since: input.completedAt } }
@@ -461,46 +437,25 @@ async function closeCallResult(input: {
   result = combineExtension(
     result, asResult(extension, extensionAuditId, extensionReference.probes.length), extensionReference.referenceId,
   )
-  if (!closeCall.recheck) return result
-  const recheckReference = freshReference(reference, 'recheck')
-  const recheckAuditId = canonicalHashBytes32({ fixture: input.runId, model: audit.model, peerId, recheck: true })
-  const recheck = await writeFixtureEvidence({
-    ...common, reference: recheckReference, runId: `${input.runId}-recheck`, auditId: recheckAuditId,
-    verdictWanted: closeCall.recheck,
-    directory: modelAuditRechecksDirectory(input.evidenceDir, input.epoch, audit.model, input.runId),
-  })
-  return combineDiffRecheck(result, asResult(recheck, recheckAuditId, recheckReference.probes.length), recheckReference.referenceId)
-}
-
-/**
- * A first DIFF combined with its own recheck, as runs from before confirmations stored it: DIFF only
- * when the recheck was DIFF too.
- */
-function combineDiffRecheck(
-  first: ModelVerificationTargetResult,
-  recheck: ModelVerificationTargetResult,
-  referenceId: string,
-): ModelVerificationTargetResult {
-  const { recheckPending: _pending, ...firstCheck } = first
-  return {
-    ...firstCheck,
-    status: recheck.status === 'DIFF' ? 'DIFF' : 'UNDETERMINED',
-    cumulativeCost: addAuditCostSummaries(first.cumulativeCost ?? first.cost, recheck.cumulativeCost ?? recheck.cost),
-    recheck: {
-      auditId: recheck.auditId,
-      status: recheck.status,
-      referenceId,
-      probeCount: recheck.probeCount,
-      parsedProbeCount: recheck.parsedProbeCount,
-      correctProbeCount: recheck.correctProbeCount,
-      cost: recheck.cost,
-      evidencePath: recheck.evidencePath,
-      evidenceHash: recheck.evidenceHash,
-    },
+  if (result.extension?.pooled.extendNext) {
+    if (closeCall.extension2Wrong === undefined) {
+      return { ...result, extensionPending: { reason: 'fixture: second set not asked', since: input.completedAt } }
+    }
+    const extension2Reference = freshReference(reference, 'extension2')
+    const extension2AuditId = canonicalHashBytes32({ fixture: input.runId, model: audit.model, peerId, extension: 2 })
+    const extension2 = await writeFixtureEvidence({
+      ...common, reference: extension2Reference, runId: `${input.runId}-extension2`, auditId: extension2AuditId,
+      wrongCount: closeCall.extension2Wrong,
+      directory: modelAuditExtensionsDirectory(input.evidenceDir, input.epoch, audit.model, input.runId, 2),
+    })
+    result = combineExtension(
+      result, asResult(extension2, extension2AuditId, extension2Reference.probes.length), extension2Reference.referenceId,
+    )
   }
+  return result
 }
 
-/** A copy of a reference with new probe IDs, as a recheck or extension on fresh probes gets. */
+/** A copy of a reference with new probe IDs, as an extension on fresh probes gets. */
 function freshReference(reference: KbfReferenceV1, suffix = 'fresh'): KbfReferenceV1 {
   const probes = reference.probes.map((probe) => ({ ...probe, id: `${probe.id}-${suffix}` }))
   const ids = new Map(reference.probes.map((probe, index) => [probe.id, probes[index]!.id]))

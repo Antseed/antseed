@@ -94,7 +94,7 @@ import { getGlobalOptions } from '../types.js'
 import { enrollFreshProbes, ensureAuditableReference, ensureSellerProbeCapacity } from '../../../verifier/ensure-auditable-reference.js'
 import { createReferenceRequestLimiter } from '../../../verifier/model-reference.js'
 import { runExtensionRounds, type ExtensionRoundStats } from '../../../verifier/extension-round.js'
-import { CLOSE_CALL_RULE_ID } from '../../../verifier/close-call.js'
+import { closeCallRuleForExtensions, extensionSets, latestExtension } from '../../../verifier/close-call.js'
 import {
   confirmationTargetsByModel,
   describeTallies,
@@ -102,7 +102,7 @@ import {
   pendingConfirmations,
   type ConfirmationTarget,
 } from '../../../verifier/pending-confirmations.js'
-import { loadPendingDiffRechecks, pendingRecheckKey } from '../../../verifier/pending-rechecks.js'
+import { loadPendingExtensions, pendingExtensionKey } from '../../../verifier/pending-extensions.js'
 import { VerifierRunProgress } from './run-progress.js'
 import { failureOutcomeReason } from '../../../verifier/outcome-reason.js'
 import {
@@ -362,7 +362,7 @@ export function registerVerifierRunCommand(verifier: Command): void {
     .option('--ignore-pre-run-checks', 'print the pre-run check problems as warnings and run anyway')
     .option('--fresh', 'ignore this epoch\'s earlier runs and audit every eligible seller again')
     .option('--skip-version-check', 'run even if this CLI is older than the latest release (its results may not match other auditors)')
-    .option('--max-rounds <count>', 'rounds per run: after a round, retry what is left (failures, waiting rechecks) until nothing is left or a round makes no progress', '3')
+    .option('--max-rounds <count>', 'rounds per run: after a round, retry what is left (failures, close calls waiting for extra questions) until nothing is left or a round makes no progress', '3')
     .option('--no-confirm', 'do not audit sellers whose verdicts from other auditors this epoch still wait for a confirmation')
     .action(async (modelValue: string | undefined, options: RunOptions, command: Command) => {
       validateAssignedModeOptions(modelValue, options)
@@ -377,7 +377,7 @@ export function registerVerifierRunCommand(verifier: Command): void {
 }
 
 /**
- * Runs up to `maxRounds` rounds. After a round, what is left (failed audits, waiting rechecks and
+ * Runs up to `maxRounds` rounds. After a round, what is left (failed audits, close calls and
  * models whose fresh-question build failed) is retried in the next round, which re-plans every model
  * and gets a larger enrollment budget, so a build that ran out of requests or hit a network error
  * continues from its checkpoint. Stops early when nothing is left, a round makes no progress, or the
@@ -394,10 +394,10 @@ export async function runVerifierRounds(
   for (let round = 1; round <= maxRounds; round += 1) {
     if (round > 1) log(chalk.cyan(`\nRound ${round} of ${maxRounds}: retrying what is left this epoch`))
     // Later rounds continue from the epoch (never --fresh) and get another enrollment budget,
-    // so a bank or recheck build that ran out of requests can finish from its checkpoint.
+    // so a bank build that ran out of requests can finish from its checkpoint.
     const outcome = await runRound(round)
     if (outcome.epochChanged) {
-      // The round was planned for the previous epoch (assignment, finished sellers, rechecks),
+      // The round was planned for the previous epoch (assignment, finished sellers, close calls),
       // so nothing was audited; plan it again for the new epoch, once, without using up a round.
       if (replannedForNewEpoch) {
         log(chalk.yellow('The epoch changed again; run `antseed verifier run` again.'))
@@ -412,7 +412,7 @@ export async function runVerifierRounds(
     last = outcome
     if (outcome.left === 0) break
     if (round === maxRounds) {
-      log(chalk.yellow(`${outcome.left} audit(s), recheck(s) or question build(s) still left after ${maxRounds} round(s); run \`antseed verifier run\` again later this epoch to retry them.`))
+      log(chalk.yellow(`${outcome.left} audit(s), close call(s) or question build(s) still left after ${maxRounds} round(s); run \`antseed verifier run\` again later this epoch to retry them.`))
       break
     }
     if (previousLeft !== null && outcome.left >= previousLeft) {
@@ -444,7 +444,7 @@ export function maxRunRounds(options: RunOptions): number {
 }
 
 export interface VerifierRoundOutcome {
-  /** Audits, rechecks and question builds a later round can retry. */
+  /** Audits, close calls and question builds a later round can retry. */
   left: number
   secondsLeftInEpoch: number
   /** Set to the new epoch when it started during enrollment; the round audited nothing. */
@@ -453,7 +453,7 @@ export interface VerifierRoundOutcome {
   enrollmentFailures?: Map<string, string>
 }
 
-/** One pass over the epoch's remaining work. Returns how much is still left to retry or recheck. */
+/** One pass over the epoch's remaining work. Returns how much is still left to retry. */
 async function runVerifierRound(
   modelValue: string | undefined,
   options: RunOptions,
@@ -543,7 +543,7 @@ async function runVerifierRound(
           )
         }
         // Everything this epoch's earlier runs settled: finished sellers are skipped, the rest are
-        // retried, rechecked or audited for the first time. `--fresh` and `--resume-run` ignore it.
+        // retried, extended or audited for the first time. `--fresh` and `--resume-run` ignore it.
         const epochState: EpochState | null = options.fresh || requestedResumeManifest
           ? null
           : await loadEpochState(evidenceDir, epoch)
@@ -581,16 +581,16 @@ async function runVerifierRound(
         const resumeOnly = resumeSourceRunId !== null
         // Close calls whose extra questions could not be asked in earlier runs this epoch: finished
         // here without repeating the first check. --fresh audits those sellers from the start instead.
-        const pendingRechecks = !options.fresh && (config.verifier?.closeCallExtensions ?? 1) > 0
-          ? await loadPendingDiffRechecks(evidenceDir, epoch, models)
+        const pendingExtensions = !options.fresh && (config.verifier?.closeCallExtensions ?? 2) > 0
+          ? await loadPendingExtensions(evidenceDir, epoch, models)
           : new Map()
         if (selectedPeerId) {
-          for (const [key, entry] of pendingRechecks) {
-            if (entry.result.peerId.trim().replace(/^0x/i, '').toLowerCase() !== selectedPeerId) pendingRechecks.delete(key)
+          for (const [key, entry] of pendingExtensions) {
+            if (entry.result.peerId.trim().replace(/^0x/i, '').toLowerCase() !== selectedPeerId) pendingExtensions.delete(key)
           }
         }
         let runModels = resumeOnly
-          ? models.filter((model) => [...resumeCandidates.values(), ...pendingRechecks.values()]
+          ? models.filter((model) => [...resumeCandidates.values(), ...pendingExtensions.values()]
             .some((candidate) => candidate.model.toLowerCase() === model.toLowerCase()))
           : models
         if (resumeOnly && runModels.length === 0) {
@@ -716,7 +716,7 @@ async function runVerifierRound(
           }
           epochWindow = await resolveEpoch()
           if (epochWindow.epoch !== epoch) {
-            // Everything planned so far (assignment, finished sellers, waiting rechecks) belongs to
+            // Everything planned so far (assignment, finished sellers, waiting close calls) belongs to
             // the previous epoch; the caller plans the round again for the new one.
             return { left: 0, secondsLeftInEpoch: epochWindow.endsAt - Date.now() / 1_000, epochChanged: epochWindow.epoch }
           }
@@ -743,9 +743,9 @@ async function runVerifierRound(
           const targets = selectedPeers.flatMap((peer) => {
             if (!auditsPeer(model, peer)) return []
             const resumeCandidate = resumeCandidates.get(resumeKey(model, peer.peerId))
-            const pendingRecheck = pendingRechecks.get(pendingRecheckKey(model, peer.peerId))
-            if (resumeOnly && !resumeCandidate && !pendingRecheck) return []
-            if (!pendingRecheck && isDone(model, peer.peerId)) {
+            const pendingExtension = pendingExtensions.get(pendingExtensionKey(model, peer.peerId))
+            if (resumeOnly && !resumeCandidate && !pendingExtension) return []
+            if (!pendingExtension && isDone(model, peer.peerId)) {
               doneCount += 1
               return []
             }
@@ -758,13 +758,13 @@ async function runVerifierRound(
             if (eligibility.eligible) {
               const resumable = resumeCandidate
                 && resumeCandidate.service.toLowerCase() === eligibility.service.toLowerCase()
-              const carried = pendingRecheck
-                && pendingRecheck.result.service.toLowerCase() === eligibility.service.toLowerCase()
+              const carried = pendingExtension
+                && pendingExtension.result.service.toLowerCase() === eligibility.service.toLowerCase()
               return [{
                 peer,
                 service: eligibility.service,
                 resumeCandidate: resumable ? resumeCandidate : undefined,
-                pendingRecheck: carried ? pendingRecheck : undefined,
+                pendingExtension: carried ? pendingExtension : undefined,
               }]
             }
             if (eligibility.code !== 'model_not_advertised') {
@@ -875,7 +875,7 @@ async function runVerifierRound(
         if (resumeSourceRunId) {
           console.log(chalk.dim(`Resume source: ${resumeSourceRunId} (${resumeCandidates.size} unresolved audit(s))`))
         }
-        const pendingExtensionCount = [...pendingRechecks.values()].filter((entry) => entry.kind === 'extension').length
+        const pendingExtensionCount = pendingExtensions.size
         if (pendingExtensionCount > 0) {
           console.log(chalk.cyan(
             `Close calls waiting for extra questions from earlier runs this epoch: ${pendingExtensionCount}; asking them now`,
@@ -902,9 +902,10 @@ async function runVerifierRound(
             await writeVerifierStatus(evidenceDir, status!)
           })
         }
-        const closeCallExtensions = config.verifier?.closeCallExtensions ?? 1
+        const closeCallExtensions = config.verifier?.closeCallExtensions ?? 2
+        const closeCallRule = closeCallRuleForExtensions(closeCallExtensions)
         const extensionTotals: ExtensionRoundStats = {
-          extended: 0, same: 0, diff: 0, undetermined: 0, pending: 0, cost: emptyAuditCostSummary(),
+          extended: 0, same: 0, diff: 0, undetermined: 0, continued: 0, pending: 0, cost: emptyAuditCostSummary(),
         }
         const appendEvent = async (event: Record<string, unknown>): Promise<void> => {
           await eventQueue.run(async () => { await appendVerifierEvent(evidenceDir, epoch, event) })
@@ -945,20 +946,16 @@ async function runVerifierRound(
           // can span several references drawn from the same bank.
           const referenceSources = new Map<string, KbfReferenceV1>()
           const outcomes = await mapConcurrently(targets, maxConcurrentPeersPerModel, async (target) => {
-            if (target.pendingRecheck) {
-              // The first check ran in an earlier run; only its extra questions or its recheck are left.
-              const extending = target.pendingRecheck.kind === 'extension'
+            if (target.pendingExtension) {
+              // The first check ran in an earlier run; only its extra questions are left.
               await updateStatus((value) => { value.queuedAudits -= 1 })
-              runProgress!.recordVerdict(
-                model, extending ? target.pendingRecheck.result.status : 'DIFF', target.pendingRecheck.result.outcomeReason,
-              )
+              runProgress!.recordVerdict(model, target.pendingExtension.result.status, target.pendingExtension.result.outcomeReason)
               if (!runProgress!.interactive) {
                 console.log(chalk.dim(
-                  `${extending ? 'Close call' : 'DIFF'} ${target.peer.peerId.slice(0, 12)}… from run `
-                  + `${target.pendingRecheck.runId.slice(0, 10)}: ${extending ? 'extra questions' : 'recheck'} only`,
+                  `Close call ${target.peer.peerId.slice(0, 12)}… from run ${target.pendingExtension.runId.slice(0, 10)}: extra questions only`,
                 ))
               }
-              return { result: target.pendingRecheck.result, failure: null, skipped: null }
+              return { result: target.pendingExtension.result, failure: null, skipped: null }
             }
             return sellerLimiter.run(target.peer.peerId, async () => {
               const startedAt = new Date().toISOString()
@@ -1037,8 +1034,8 @@ async function runVerifierRound(
                   checkpointIdentity: { runId, epoch, model },
                 })
                 // New first audits are decided by the close-call rule unless it is turned off.
-                const result = verified.status !== 'SKIPPED' && closeCallExtensions > 0
-                  ? { ...verified, decisionRule: CLOSE_CALL_RULE_ID }
+                const result = verified.status !== 'SKIPPED' && closeCallRule
+                  ? { ...verified, decisionRule: closeCallRule.id }
                   : verified
                 if (result.status === 'SKIPPED') {
                   await voidModelAuditReference({
@@ -1145,7 +1142,7 @@ async function runVerifierRound(
             const followUp = await verifyModelTarget({
               context: {
                 proxy,
-                evidenceDir: modelAuditExtensionsDirectory(evidenceDir, epoch, model, runId),
+                evidenceDir: modelAuditExtensionsDirectory(evidenceDir, epoch, model, runId, extensionSets(input.first).length + 1),
                 checkpointRootDir: modelAuditsDirectory(evidenceDir, epoch, model, runId),
                 requestTimeoutMs: config.verifier?.probeRequestTimeoutMs ?? 120_000,
                 auditTimeoutMs: config.verifier?.auditPeerTimeoutMs ?? 600_000,
@@ -1182,7 +1179,8 @@ async function runVerifierRound(
               results,
               reserve: (first) => reserveExtensionReference({
                 banksDir, model, sellerPeerId: first.peerId, service: first.service,
-                runId, epoch, probeCount: first.probeCount, config: config.verifier,
+                runId, epoch, probeCount: first.probeCount, extensionIndex: extensionSets(first).length + 1,
+                config: config.verifier,
               }),
               enroll: enrollForFollowUps,
               verify: (first, reference, reservationAuditId) => verifyFollowUp({ first, reference, reservationAuditId }),
@@ -1196,15 +1194,19 @@ async function runVerifierRound(
             extensionTotals.same += extended.stats.same
             extensionTotals.diff += extended.stats.diff
             extensionTotals.undetermined += extended.stats.undetermined
+            extensionTotals.continued += extended.stats.continued
             extensionTotals.pending += extended.stats.pending
             extensionTotals.cost = addAuditCostSummaries(extensionTotals.cost, extended.stats.cost)
             for (const result of results) {
-              if (!result.extension || firstResults.find((first) => first.auditId === result.auditId)?.extension) continue
+              const before = firstResults.find((first) => first.auditId === result.auditId)
+              const latest = latestExtension(result)
+              if (!latest || extensionSets(result).length === (before ? extensionSets(before).length : 0)) continue
               await appendEvent({
                 type: 'audit-extended', runId, epoch, model, peerId: result.peerId,
-                firstAuditId: result.auditId, extensionAuditId: result.extension.auditId,
-                firstPValue: result.extension.firstLook.pValue, pooledPValue: result.extension.pooled.pValueBinomial,
-                verdict: result.status, at: new Date().toISOString(),
+                firstAuditId: result.auditId, extensionAuditId: latest.auditId,
+                extensionAuditIds: extensionSets(result).map((set) => set.auditId),
+                firstPValue: latest.firstLook.pValue, pooledPValue: latest.pooled.pValueBinomial,
+                verdict: latest.pooled.extendNext ? 'PENDING' : result.status, at: new Date().toISOString(),
               })
             }
           }
@@ -1353,10 +1355,11 @@ async function runVerifierRound(
         console.log(chalk.dim(`Run manifest: ${manifestPath}`))
         for (const report of reportPaths) console.log(chalk.dim(`Report (${report.model}): ${report.path}`))
         if (overviewPath) console.log(chalk.cyan(`Epoch overview (all runs this epoch): ${overviewPath}`))
-        const closeCallCount = extensionTotals.extended + extensionTotals.pending
+        const closeCallCount = extensionTotals.same + extensionTotals.diff + extensionTotals.undetermined + extensionTotals.pending
         if (closeCallExtensions > 0 && closeCallCount > 0) {
           console.log(chalk.cyan(
-            `Close calls: ${closeCallCount} (${extensionTotals.same} SAME, ${extensionTotals.diff} DIFF → recheck, `
+            `Close calls: ${closeCallCount}, ${extensionTotals.extended} extra set(s) asked `
+            + `(${extensionTotals.same} SAME, ${extensionTotals.diff} DIFF, `
             + `${extensionTotals.undetermined} UNDETERMINED, ${extensionTotals.pending} waiting for extra questions), `
             + `$${extensionTotals.cost.estimatedCostUsd.toFixed(6)}`,
           ))
@@ -1373,11 +1376,11 @@ async function runVerifierRound(
         const left = countPlan([...finalState.cells.values()].filter((cell) => (
           models.some((model) => model.toLowerCase() === cell.model.toLowerCase())
         )))
-        const remaining = left.retryAuditor + left.retrySeller + left.recheck + enrollmentFailures.size
+        const remaining = left.retryAuditor + left.retrySeller + left.extend + enrollmentFailures.size
         if (remaining > 0) {
           console.log(chalk.yellow(
-            `Epoch ${epoch}: ${left.retryAuditor + left.retrySeller} audit(s) can be retried and ${left.recheck} `
-            + 'close call(s) or DIFF(s) wait for extra questions or a recheck'
+            `Epoch ${epoch}: ${left.retryAuditor + left.retrySeller} audit(s) can be retried and ${left.extend} `
+            + 'close call(s) wait for extra questions'
             + (enrollmentFailures.size > 0 ? `; fresh questions for ${enrollmentFailures.size} model(s) must be built again.` : '.'),
           ))
         } else {
@@ -1509,8 +1512,7 @@ export async function loadResumeCandidates(
       throw new Error(`resume model summary is incompatible: ${model.summaryPath}`)
     }
     for (const result of summary.results) {
-      // An unconfirmed DIFF stays UNDETERMINED; repairing its first check could only bring the DIFF back.
-      if (result.status !== 'UNDETERMINED' || result.recheck || result.extension) continue
+      if (result.status !== 'UNDETERMINED' || result.extension) continue
       const evidence = await verifyProxyAuditEvidenceFile(result.evidencePath, result.evidenceHash)
       candidates.set(resumeKey(model.model, result.peerId), {
         model: model.model,
@@ -1543,7 +1545,7 @@ export async function loadEpochRetryCandidates(
   const requested = new Set(models.map((model) => model.toLowerCase()))
   const candidates = new Map<string, ResumeCandidate>()
   for (const cell of state.cells.values()) {
-    if (cell.action !== 'retry' || !cell.result || cell.result.status !== 'UNDETERMINED' || cell.result.recheck
+    if (cell.action !== 'retry' || !cell.result || cell.result.status !== 'UNDETERMINED'
       || cell.result.extension) continue
     if (!requested.has(cell.model.toLowerCase())) continue
     const model = models.find((value) => value.toLowerCase() === cell.model.toLowerCase())!
@@ -1592,7 +1594,7 @@ export async function keepCompatibleResumeCandidates(input: {
 export function printEpochPlan(
   epoch: string,
   state: EpochState,
-  planned: ReadonlyArray<{ model: string; targets: ReadonlyArray<{ peer: { peerId: string }; pendingRecheck?: unknown; resumeCandidate?: unknown }>; skipped: readonly unknown[]; doneCount: number }>,
+  planned: ReadonlyArray<{ model: string; targets: ReadonlyArray<{ peer: { peerId: string }; pendingExtension?: unknown; resumeCandidate?: unknown }>; skipped: readonly unknown[]; doneCount: number }>,
   resumeCandidates: ReadonlyMap<string, ResumeCandidate>,
 ): void {
   if (state.manifests.length === 0) {
@@ -1601,7 +1603,7 @@ export function printEpochPlan(
     return
   }
   let done = 0
-  let recheck = 0
+  let closeCalls = 0
   let retryAuditor = 0
   let retrySeller = 0
   let fresh = 0
@@ -1609,7 +1611,7 @@ export function printEpochPlan(
     done += entry.doneCount
     for (const target of entry.targets) {
       const cell = state.cells.get(epochCellKey(entry.model, target.peer.peerId))
-      if (target.pendingRecheck) recheck += 1
+      if (target.pendingExtension) closeCalls += 1
       else if (!cell || cell.state === 'skipped') fresh += 1
       else if (cell.blame === 'auditor') retryAuditor += 1
       else retrySeller += 1
@@ -1619,7 +1621,7 @@ export function printEpochPlan(
   console.log(chalk.cyan(
     `Epoch ${epoch} plan (from ${state.manifests.length} earlier run(s)): ${done} finished, `
     + `${retryAuditor} retry (our side), ${retrySeller} retry (seller or unclear, last try this epoch), `
-    + `${recheck} close call(s) or DIFF(s) to finish, ${fresh} new. Running ${audits} audit(s) and ${recheck} follow-up(s)`
+    + `${closeCalls} close call(s) to finish, ${fresh} new. Running ${audits} audit(s) and ${closeCalls} follow-up(s)`
     + (resumeCandidates.size > 0 ? `; ${resumeCandidates.size} retry(s) keep their answered questions.` : '.'),
   ))
   console.log(chalk.dim('  Use --fresh to ignore the earlier runs.'))
@@ -1631,10 +1633,10 @@ export function printEpochTable(epoch: string, state: EpochState, models: readon
   if (rows.length === 0) return
   console.log(chalk.bold(`Epoch ${epoch}, all runs so far:`))
   const pad = (value: string | number, width: number) => String(value).padStart(width)
-  console.log(`  ${'model'.padEnd(22)}${pad('SAME', 6)}${pad('DIFF', 6)}${pad('UNDET', 7)}${pad('RECHECK', 9)}${pad('FAILED', 8)}${pad('SKIPPED', 9)}${pad('LEFT', 6)}`)
+  console.log(`  ${'model'.padEnd(22)}${pad('SAME', 6)}${pad('DIFF', 6)}${pad('UNDET', 7)}${pad('CLOSE', 9)}${pad('FAILED', 8)}${pad('SKIPPED', 9)}${pad('LEFT', 6)}`)
   for (const row of rows) {
     console.log(`  ${row.model.padEnd(22)}${pad(row.same, 6)}${pad(row.diff, 6)}${pad(row.undetermined, 7)}`
-      + `${pad(row.pendingRecheck, 9)}${pad(row.failed, 8)}${pad(row.skipped, 9)}${pad(row.left, 6)}`)
+      + `${pad(row.closeCalls, 9)}${pad(row.failed, 8)}${pad(row.skipped, 9)}${pad(row.left, 6)}`)
   }
 }
 
@@ -1651,7 +1653,7 @@ export async function loadCheckpointResumeCandidates(
       if (checkpoint.runId !== sourceRunId
         || checkpoint.epoch !== epoch
         || checkpoint.model.toLowerCase() !== model.toLowerCase()
-        || checkpoint.diffRecheck || checkpoint.extension) continue
+        || checkpoint.extension) continue
       const evidenceHash = canonicalHashBytes32(checkpoint)
       candidates.set(resumeKey(model, checkpoint.targetPeerId), {
         model,

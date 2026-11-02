@@ -31,14 +31,14 @@ async function writeRun(dir: string, runId: string, completedAt: string, summary
   })
 }
 
-test('epoch overview merges runs in submit order; a DIFF counts as found, and an older run\'s recheck still decides', async () => {
+test('epoch overview merges runs in submit order; a DIFF counts as found', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'antseed-overview-'))
   try {
     await writeRun(dir, 'run-1', '2026-10-01T00:00:00.000Z', {
       results: [
         result('p1', '1', 'SAME'),
-        result('p2', '2', 'DIFF', { recheck: { status: 'DIFF', parsedProbeCount: 50, correctProbeCount: 20, probeCount: 50 } }),
-        result('p3', '3', 'DIFF', { recheck: { status: 'SAME', parsedProbeCount: 50, correctProbeCount: 45, probeCount: 50 } }),
+        result('p2', '2', 'DIFF'),
+        result('p3', '3', 'UNDETERMINED', { outcomeReason: { code: 'malformed_output', summary: 'x' } }),
         result('p4', '4', 'DIFF'),
         result('p5', '5', 'UNDETERMINED', { outcomeReason: { code: 'deadline_exceeded', summary: 'x' }, parsedProbeCount: 17 }),
       ],
@@ -65,7 +65,7 @@ test('epoch overview merges runs in submit order; a DIFF counts as found, and an
     assert.equal(cell('1').reason?.headline, "Inconclusive: the seller's connection failed")
     assert.equal(cell('2').state, 'diff')
     assert.equal(cell('3').state, 'undetermined')
-    assert.equal(cell('3').reason?.headline, 'Inconclusive: the recheck passed')
+    assert.equal(cell('3').reason?.headline, "Inconclusive: answers couldn't be read")
     assert.equal(cell('4').state, 'diff', 'a DIFF is submitted as found; another auditor confirms it')
     assert.match(cell('5').reason!.detail, /answered 17 of 100 questions/)
     assert.equal(cell('6').state, 'skipped')
@@ -75,7 +75,7 @@ test('epoch overview merges runs in submit order; a DIFF counts as found, and an
     assert.equal(path, epochOverviewPath(dir, '9'))
     const html = await readFile(path!, 'utf8')
     assert.match(html, /KBF audits · epoch 9/)
-    assert.match(html, /Inconclusive: the recheck passed/)
+    assert.match(html, /Inconclusive: answers couldn&#39;t be read/)
     assert.match(html, /Not audited: the auditor won&#39;t pay this price/)
     assert.equal(await writeEpochOverview(dir, '10'), null)
   } finally {
@@ -89,7 +89,6 @@ test('plain reasons match the AntScan wording', () => {
     detail: 'Too many answers were empty or not in the requested format, so there were too few readable answers to decide.'
       + ' The seller answered 48 of 140 questions.',
   })
-  assert.equal(explainInconclusive({ recheckVerdict: 'UNDETERMINED' }).headline, 'Inconclusive: wrong model not confirmed')
   assert.equal(explainInconclusive({ summary: 'odd' }).detail, 'odd')
   assert.equal(
     explainSkipReason('pinned peer could not complete: {"message":"Invalid request parameters"}').detail,

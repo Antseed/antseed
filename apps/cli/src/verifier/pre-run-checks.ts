@@ -40,7 +40,7 @@ export function probeBankProblems(input: {
   if (short.length === 0) return []
   const worst = short.reduce((low, seller) => seller.unseenProbeCount < low.unseenProbeCount ? seller : low)
   return [
-    `${input.model}: ${short.length} seller(s) have too few unseen questions for an audit and a DIFF recheck `
+    `${input.model}: ${short.length} seller(s) have too few unseen questions for an audit `
     + `(lowest: ${worst.unseenProbeCount} of ${worst.neededProbeCount} needed, seller ${worst.sellerPeerId.slice(0, 12)}…). `
     + 'Run without --no-enroll to add fresh questions',
   ]

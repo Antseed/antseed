@@ -3,13 +3,14 @@ import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { getAddress } from 'ethers'
 import {
   KBF_AUDIT_VERIFY_OPTIONS,
-  KBF_EXTENSION_RULE,
   classifyKbfFirstLook,
   canonicalHashBytes32,
+  kbfExtensionRuleById,
   canonicalJsonStringify,
   sha256Hex,
   validateKbfReferenceV1,
   type FingerprintStats,
+  type KbfExtensionRule,
   type KbfReferenceV1,
 } from '@antseed/fingerprints'
 import {
@@ -26,7 +27,7 @@ import { readJsonIfExists, writeJsonAtomic } from './atomic-files.js'
 import type { VerificationOutcomeReasonV1 } from './outcome-reason.js'
 import type { ReferenceUpstreamProvenanceV1 } from './model-reference.js'
 import { findEpochProbeReference, loadBankReferenceExchanges } from './probe-bank.js'
-import { CLOSE_CALL_RULE_ID, pooledCloseCallVerdict, stageOneVerdict } from './close-call.js'
+import { closeCallRule, pooledCloseCallVerdict, stageOneVerdict, type CloseCallRuleId } from './close-call.js'
 import { verifyProxyAuditEvidenceFile, type ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import { resolveReferenceSizingPolicy } from './reference-sizing.js'
 import { safeServiceSlug } from './slug.js'
@@ -57,35 +58,30 @@ export interface ModelAuditSellerResultV1 {
   }
   /**
    * Extra set of never-seen probes asked because the first check (`audit`) was a close call
-   * (`extensionRule`). The stage-1 verdict is `pooled.verdict`, computed from both sets' stats.
+   * (`extension.rule`). Without `extension2`, the stage-1 verdict is `pooled.verdict`, computed from
+   * both sets' stats.
    */
-  extension?: {
-    rule: typeof CLOSE_CALL_RULE_ID
-    firstLook: { verdict: ModelAuditVerdict; pValue: number | null }
-    referenceId: string
-    stats: FingerprintStats
-    matchVectorHash: string
-    pooled: Omit<FingerprintStats, 'selfCoverage'> & { verdict: ModelAuditVerdict; verdictReason: string | null }
-    audit: {
-      auditId: string
-      evidencePath: string
-      evidenceHash: string
-    }
-  }
+  extension?: ModelAuditExtensionV1
   /**
-   * Second check on fresh probes after stage 1 (the first check, or the first check pooled with its
-   * extension) said DIFF. `verdict` is DIFF only when this check is DIFF too; otherwise UNDETERMINED.
+   * Second extra set (`kbf-extension-v2`), asked because the first check pooled with `extension` was
+   * still a close call (`extension.pooled.extendNext`). The stage-1 verdict is then
+   * `extension2.pooled.verdict`, computed from all three sets' stats.
    */
-  confirmation?: {
-    verdict: ModelAuditVerdict
-    referenceId: string
-    stats: FingerprintStats
-    matchVectorHash: string
-    audit: {
-      auditId: string
-      evidencePath: string
-      evidenceHash: string
-    }
+  extension2?: ModelAuditExtensionV1
+}
+
+export interface ModelAuditExtensionV1 {
+  rule: CloseCallRuleId
+  firstLook: { verdict: ModelAuditVerdict; pValue: number | null }
+  referenceId: string
+  stats: FingerprintStats
+  matchVectorHash: string
+  /** `extendNext`: this look was still a close call and `extension2` decides it. */
+  pooled: Omit<FingerprintStats, 'selfCoverage'> & { verdict: ModelAuditVerdict; verdictReason: string | null; extendNext?: boolean }
+  audit: {
+    auditId: string
+    evidencePath: string
+    evidenceHash: string
   }
 }
 
@@ -123,8 +119,13 @@ export interface ModelAuditEvidenceV1 {
    */
   referenceEvidence?: ModelAuditReferenceEvidenceV1[]
   kbfOptions: typeof KBF_VERIFY_OPTIONS
-  /** Close-call rule; written when any result in this evidence was decided by it. */
-  extensionRule?: typeof KBF_EXTENSION_RULE
+  /**
+   * Close-call rule; written when every close-call result in this evidence was decided by the same
+   * rule (each extra set also names its rule in `extension.rule`).
+   */
+  extensionRule?: KbfExtensionRule
+  /** Every close-call rule a result in this evidence was decided by. */
+  extensionRules?: KbfExtensionRule[]
   results: ModelAuditSellerResultV1[]
   excluded: ExcludedSellerAuditV1[]
 }
@@ -271,7 +272,7 @@ export async function prepareModelAudits(input: {
       result: ModelAuditSummaryV1['results'][number]
       evidence: ProxyAuditEvidenceV1
       extensionEvidence: ProxyAuditEvidenceV1 | null
-      recheckEvidence: ProxyAuditEvidenceV1 | null
+      extension2Evidence: ProxyAuditEvidenceV1 | null
     }> = []
     const seen = new Set<string>()
     let referenceModel: string | null = null
@@ -286,16 +287,16 @@ export async function prepareModelAudits(input: {
       }
       let evidence: ProxyAuditEvidenceV1
       let extensionEvidence: ProxyAuditEvidenceV1 | null = null
-      let recheckEvidence: ProxyAuditEvidenceV1 | null = null
+      let extension2Evidence: ProxyAuditEvidenceV1 | null = null
       try {
         evidence = await verifyProxyAuditEvidenceFile(result.evidencePath, result.evidenceHash)
         if (result.extension) {
           extensionEvidence = await verifyProxyAuditEvidenceFile(result.extension.evidencePath, result.extension.evidenceHash)
         }
-        if (result.recheck) {
-          recheckEvidence = await verifyProxyAuditEvidenceFile(result.recheck.evidencePath, result.recheck.evidenceHash)
+        if (result.extension2) {
+          extension2Evidence = await verifyProxyAuditEvidenceFile(result.extension2.evidencePath, result.extension2.evidenceHash)
         }
-        validateAuditMatchesSummary(evidence, result, recheckEvidence, extensionEvidence)
+        validateAuditMatchesSummary(evidence, result, extensionEvidence, extension2Evidence)
       } catch (error) {
         exclude(`invalid audit evidence: ${asError(error).message}`)
         continue
@@ -330,7 +331,7 @@ export async function prepareModelAudits(input: {
         continue
       }
       seen.add(duplicateKey)
-      accepted.push({ agentId, result, evidence, extensionEvidence, recheckEvidence })
+      accepted.push({ agentId, result, evidence, extensionEvidence, extension2Evidence })
     }
 
     keepOneSamePerSeller(accepted, excluded)
@@ -347,12 +348,12 @@ export async function prepareModelAudits(input: {
       const evidenceDirectory = dirname(evidencePath)
       const references: PreparedModelAudit['references'] = []
       const referenceEntries: ModelAuditEvidenceV1['references'] = []
-      const auditEvidence = slice.flatMap(({ evidence, extensionEvidence, recheckEvidence }) => (
-        [evidence, extensionEvidence, recheckEvidence].filter((entry): entry is ProxyAuditEvidenceV1 => entry !== null)
+      const auditEvidence = slice.flatMap(({ evidence, extensionEvidence, extension2Evidence }) => (
+        [evidence, extensionEvidence, extension2Evidence].filter((entry): entry is ProxyAuditEvidenceV1 => entry !== null)
       ))
       // A close-call extension set is only judged pooled with its first set, so it is not power-sized.
-      const extensionReferenceIds = new Set(slice.flatMap(({ extensionEvidence }) => (
-        extensionEvidence ? [extensionEvidence.reference.referenceId] : []
+      const extensionReferenceIds = new Set(slice.flatMap(({ extensionEvidence, extension2Evidence }) => (
+        [extensionEvidence, extension2Evidence].flatMap((entry) => entry ? [entry.reference.referenceId] : [])
       )))
       for (const evidence of auditEvidence) {
         const referenceId = evidence.reference.referenceId
@@ -388,7 +389,7 @@ export async function prepareModelAudits(input: {
           exchangeCount: stored.exchangeCount,
         })
       }
-      const results: ModelAuditSellerResultV1[] = slice.map(({ agentId, result, evidence, extensionEvidence, recheckEvidence }) => ({
+      const results: ModelAuditSellerResultV1[] = slice.map(({ agentId, result, evidence, extensionEvidence, extension2Evidence }) => ({
         agentId: agentId.toString(),
         peerId: result.peerId,
         displayName: result.displayName,
@@ -405,44 +406,12 @@ export async function prepareModelAudits(input: {
           evidencePath: portableRelative(evidenceDirectory, result.evidencePath),
           evidenceHash: result.evidenceHash,
         },
-        ...(result.extension && extensionEvidence ? {
-          extension: {
-            rule: result.extension.rule,
-            firstLook: { verdict: evidence.result.verdict, pValue: evidence.result.stats.pValueBinomial },
-            referenceId: extensionEvidence.reference.referenceId,
-            stats: extensionEvidence.result.stats,
-            matchVectorHash: extensionEvidence.result.matchVectorHash,
-            pooled: {
-              selfHamming: result.extension.pooled.selfHamming,
-              selfTotal: result.extension.pooled.selfTotal,
-              targetHamming: result.extension.pooled.targetHamming,
-              targetTotal: result.extension.pooled.targetTotal,
-              targetCoverage: result.extension.pooled.targetCoverage,
-              p0Cp99: result.extension.pooled.p0Cp99,
-              pValueBinomial: result.extension.pooled.pValueBinomial,
-              verdict: result.extension.pooled.verdict,
-              verdictReason: result.extension.pooled.verdictReason,
-            },
-            audit: {
-              auditId: result.extension.auditId,
-              evidencePath: portableRelative(evidenceDirectory, result.extension.evidencePath),
-              evidenceHash: result.extension.evidenceHash,
-            },
-          },
-        } : {}),
-        ...(result.recheck && recheckEvidence ? {
-          confirmation: {
-            verdict: result.recheck.status,
-            referenceId: recheckEvidence.reference.referenceId,
-            stats: recheckEvidence.result.stats,
-            matchVectorHash: recheckEvidence.result.matchVectorHash,
-            audit: {
-              auditId: result.recheck.auditId,
-              evidencePath: portableRelative(evidenceDirectory, result.recheck.evidencePath),
-              evidenceHash: result.recheck.evidenceHash,
-            },
-          },
-        } : {}),
+        ...(result.extension && extensionEvidence
+          ? { extension: submittedExtension(result.extension, extensionEvidence, evidence, evidenceDirectory) }
+          : {}),
+        ...(result.extension2 && extension2Evidence
+          ? { extension2: submittedExtension(result.extension2, extension2Evidence, evidence, evidenceDirectory) }
+          : {}),
       }))
       const evidence: ModelAuditEvidenceV1 = {
         version: 1,
@@ -457,9 +426,7 @@ export async function prepareModelAudits(input: {
         references: referenceEntries,
         ...(referenceEvidenceEntries.length > 0 ? { referenceEvidence: referenceEvidenceEntries } : {}),
         kbfOptions: KBF_VERIFY_OPTIONS,
-        ...(slice.some(({ result }) => result.decisionRule === CLOSE_CALL_RULE_ID)
-          ? { extensionRule: KBF_EXTENSION_RULE }
-          : {}),
+        ...closeCallRulesEvidence(slice.map(({ result }) => result)),
         results,
         excluded: part === 1 ? excluded : [],
       }
@@ -481,7 +448,7 @@ export async function prepareModelAudits(input: {
         auditEvidencePaths: slice.flatMap(({ result }) => [
           result.evidencePath,
           ...(result.extension ? [result.extension.evidencePath] : []),
-          ...(result.recheck ? [result.recheck.evidencePath] : []),
+          ...(result.extension2 ? [result.extension2.evidencePath] : []),
         ]),
       })
     }
@@ -580,6 +547,52 @@ export function preparedFromEvidence(
   }
 }
 
+function submittedExtension(
+  extension: NonNullable<ModelAuditSummaryV1['results'][number]['extension']>,
+  extensionEvidence: ProxyAuditEvidenceV1,
+  firstEvidence: ProxyAuditEvidenceV1,
+  evidenceDirectory: string,
+): ModelAuditExtensionV1 {
+  return {
+    rule: extension.rule,
+    firstLook: { verdict: firstEvidence.result.verdict, pValue: firstEvidence.result.stats.pValueBinomial },
+    referenceId: extensionEvidence.reference.referenceId,
+    stats: extensionEvidence.result.stats,
+    matchVectorHash: extensionEvidence.result.matchVectorHash,
+    pooled: {
+      selfHamming: extension.pooled.selfHamming,
+      selfTotal: extension.pooled.selfTotal,
+      targetHamming: extension.pooled.targetHamming,
+      targetTotal: extension.pooled.targetTotal,
+      targetCoverage: extension.pooled.targetCoverage,
+      p0Cp99: extension.pooled.p0Cp99,
+      pValueBinomial: extension.pooled.pValueBinomial,
+      verdict: extension.pooled.verdict,
+      verdictReason: extension.pooled.verdictReason,
+      ...(extension.pooled.extendNext ? { extendNext: true } : {}),
+    },
+    audit: {
+      auditId: extension.auditId,
+      evidencePath: portableRelative(evidenceDirectory, extension.evidencePath),
+      evidenceHash: extension.evidenceHash,
+    },
+  }
+}
+
+/** `extensionRule` (one rule) and `extensionRules` (all) for the close-call rules these results use. */
+function closeCallRulesEvidence(
+  results: ReadonlyArray<ModelAuditSummaryV1['results'][number]>,
+): { extensionRule?: KbfExtensionRule; extensionRules?: KbfExtensionRule[] } {
+  const rules = new Map<string, KbfExtensionRule>()
+  for (const result of results) {
+    const rule = closeCallRule(result)
+    if (rule) rules.set(rule.id, rule)
+  }
+  if (rules.size === 0) return {}
+  const list = [...rules.values()].sort((left, right) => left.id.localeCompare(right.id))
+  return { ...(list.length === 1 ? { extensionRule: list[0] } : {}), extensionRules: list }
+}
+
 /** Distinct reference upstreams named by a model audit's evidence and references. */
 export function modelAuditUpstreams(audit: PreparedModelAudit): ReferenceUpstreamProvenanceV1[] {
   const upstreams = new Map<string, ReferenceUpstreamProvenanceV1>()
@@ -673,10 +686,10 @@ function portableRelative(from: string, to: string): string {
 export function validateAuditMatchesSummary(
   evidence: ProxyAuditEvidenceV1,
   result: ModelAuditSummaryV1['results'][number],
-  recheckEvidence: ProxyAuditEvidenceV1 | null = null,
   extensionEvidence: ProxyAuditEvidenceV1 | null = null,
+  extension2Evidence: ProxyAuditEvidenceV1 | null = null,
 ): void {
-  for (const checked of [evidence, extensionEvidence, recheckEvidence]) {
+  for (const checked of [evidence, extensionEvidence, extension2Evidence]) {
     if (!checked) continue
     if (normalized(checked.target.peerId) !== normalized(result.peerId)) throw new Error('seller peer ID mismatch')
     if (normalized(checked.target.service) !== normalized(result.service)) throw new Error('service mismatch')
@@ -692,72 +705,72 @@ export function validateAuditMatchesSummary(
     throw new Error('first check statistics do not match its evidence')
   }
   // The stage-1 verdict, recomputed from the evidence: the first check's own verdict, or after a
-  // close call the pooled verdict of both sets.
+  // close call the pooled verdict of the first check and its extra sets.
   let stageOne: ModelAuditVerdict = evidence.result.verdict
+  const extraSets: Array<{ record: NonNullable<typeof result.extension>; evidence: ProxyAuditEvidenceV1 }> = []
+  if (result.extension2 && !result.extension) throw new Error('second extra set without a first one')
   if (result.extension) {
     if (!extensionEvidence) throw new Error('extension evidence missing')
-    if (result.decisionRule !== CLOSE_CALL_RULE_ID || result.extension.rule !== CLOSE_CALL_RULE_ID) {
+    extraSets.push({ record: result.extension, evidence: extensionEvidence })
+  }
+  if (result.extension2) {
+    if (!extension2Evidence) throw new Error('second extension evidence missing')
+    extraSets.push({ record: result.extension2, evidence: extension2Evidence })
+  }
+  if (extraSets.length > 0) {
+    const rule = kbfExtensionRuleById(result.decisionRule)
+    if (!rule || extraSets.some(({ record }) => record.rule !== rule.id)) {
       throw new Error('extension without the close-call rule')
     }
-    if (result.extension.status !== extensionEvidence.result.verdict) throw new Error('extension verdict mismatch')
-    if (sharesProbes(evidence, extensionEvidence)) throw new Error('extension reused probes from the first check')
-    if (classifyKbfFirstLook(evidence.result.stats, { minCoverage: KBF_VERIFY_OPTIONS.minCoverage }) !== 'extend') {
+    if (extraSets.length > rule.maxExtensions) throw new Error(`${rule.id} allows at most ${rule.maxExtensions} extra set(s)`)
+    if (classifyKbfFirstLook(evidence.result.stats, { minCoverage: KBF_VERIFY_OPTIONS.minCoverage, rule }) !== 'extend') {
       throw new Error('extension of a first check that was not a close call')
-    }
-    const pooled = pooledCloseCallVerdict(
-      { stats: evidence.result.stats, probeCount: evidence.reference.probes.length },
-      { stats: extensionEvidence.result.stats, probeCount: extensionEvidence.reference.probes.length },
-    )
-    if (pooled.verdict === 'UNKNOWN') throw new Error(`pooled verdict is UNKNOWN: ${pooled.verdictReason}`)
-    const recordedPooled = result.extension.pooled
-    const sameNumber = (left: number | null, right: number | null): boolean => (
-      left === right || (left !== null && right !== null && Math.abs(left - right) <= 1e-12 * Math.max(1, Math.abs(left)))
-    )
-    if (pooled.stats.selfHamming !== recordedPooled.selfHamming || pooled.stats.selfTotal !== recordedPooled.selfTotal
-      || pooled.stats.targetHamming !== recordedPooled.targetHamming || pooled.stats.targetTotal !== recordedPooled.targetTotal
-      || !sameNumber(pooled.stats.pValueBinomial, recordedPooled.pValueBinomial)) {
-      throw new Error('pooled statistics do not follow from the two evidence files')
     }
     const unverified = (checked: ProxyAuditEvidenceV1): boolean => checked.exchanges.some((exchange) => (
       exchange.status === 'succeeded' && exchange.responseAuth.status !== 'verified'
     ))
     if (unverified(evidence)) throw new Error('extension of a first check without verified ResponseAuth')
-    const authFailed = unverified(extensionEvidence)
-    stageOne = authFailed ? 'UNDETERMINED' : pooled.verdict
-    if (recordedPooled.verdict !== stageOne) throw new Error('pooled verdict mismatch')
+    const sameNumber = (left: number | null, right: number | null): boolean => (
+      left === right || (left !== null && right !== null && Math.abs(left - right) <= 1e-12 * Math.max(1, Math.abs(left)))
+    )
+    const seen: ProxyAuditEvidenceV1[] = [evidence]
+    for (const [index, { record, evidence: setEvidence }] of extraSets.entries()) {
+      const label = index === 0 ? 'extension' : 'second extension'
+      if (record.status !== setEvidence.result.verdict) throw new Error(`${label} verdict mismatch`)
+      if (seen.some((earlier) => sharesProbes(earlier, setEvidence))) throw new Error(`${label} reused probes from an earlier set`)
+      seen.push(setEvidence)
+      const pooled = pooledCloseCallVerdict(
+        { stats: evidence.result.stats, probeCount: evidence.reference.probes.length },
+        extraSets.slice(0, index + 1).map(({ evidence: e }) => ({ stats: e.result.stats, probeCount: e.reference.probes.length })),
+        rule,
+      )
+      if (pooled.verdict === 'UNKNOWN') throw new Error(`pooled verdict is UNKNOWN: ${pooled.verdictReason}`)
+      const recordedPooled = record.pooled
+      if (pooled.stats.selfHamming !== recordedPooled.selfHamming || pooled.stats.selfTotal !== recordedPooled.selfTotal
+        || pooled.stats.targetHamming !== recordedPooled.targetHamming || pooled.stats.targetTotal !== recordedPooled.targetTotal
+        || !sameNumber(pooled.stats.pValueBinomial, recordedPooled.pValueBinomial)) {
+        throw new Error(`pooled statistics do not follow from the evidence files (${label})`)
+      }
+      const authFailed = unverified(setEvidence)
+      const extendNext = !authFailed && pooled.extend
+      if ((recordedPooled.extendNext === true) !== extendNext) throw new Error(`close-call continuation mismatch (${label})`)
+      const lookVerdict: ModelAuditVerdict = authFailed ? 'UNDETERMINED' : pooled.verdict
+      if (recordedPooled.verdict !== lookVerdict) throw new Error('pooled verdict mismatch')
+      const last = index === extraSets.length - 1
+      // Only the last set's look may be undecided, and then the close call is still waiting.
+      if (!last && !extendNext) throw new Error(`extra set after a decided look (${label})`)
+      stageOne = lookVerdict
+    }
   }
-  if (!result.recheck) {
-    if (stageOne !== result.status) throw new Error('verdict mismatch')
-    return
-  }
-  if (!recheckEvidence) throw new Error('recheck evidence missing')
-  if (stageOne !== 'DIFF') throw new Error('recheck without a first DIFF (stage 1)')
-  if (recheckEvidence.result.verdict !== result.recheck.status) throw new Error('recheck verdict mismatch')
-  if (sharesProbes(evidence, recheckEvidence)) throw new Error('recheck reused probes from the first check')
-  if (extensionEvidence && sharesProbes(extensionEvidence, recheckEvidence)) {
-    throw new Error('recheck reused probes from the extension')
-  }
-  // Runs from before DIFF needed two DIFFs stored "DIFF then UNDETERMINED" as DIFF; the submitted
-  // verdict is recomputed from the evidence (finalAuditVerdict), so only a SAME recheck is checked.
-  if (recheckEvidence.result.verdict === 'SAME' && result.status !== 'UNDETERMINED') {
-    throw new Error('final verdict does not follow from the recheck')
-  }
-}
-
-/** A DIFF a run from before confirmations rechecked itself stays DIFF only if its recheck was DIFF. */
-function confirmedDiffStatus(recheckStatus: string): 'DIFF' | 'UNDETERMINED' {
-  return recheckStatus === 'DIFF' ? 'DIFF' : 'UNDETERMINED'
+  if (stageOne !== result.status) throw new Error('verdict mismatch')
 }
 
 /**
- * The verdict submitted for a seller. A close call (`kbf-extension-v1`) is decided on its first set
- * pooled with an extra set; null while that extra set is missing (null results are not submitted).
- * A DIFF is submitted as found: it is one auditor's report, and the contract records it only once
- * another auditor confirms it with its own audit. Runs from before that rechecked their own DIFF on
- * fresh probes keep the recheck's outcome.
+ * The verdict submitted for a seller. A close call is decided on its first set pooled with its extra
+ * sets; null while one is missing (null results are not submitted). A DIFF is submitted as found: it
+ * is one auditor's report, and the contract records it only once another auditor confirms it.
  */
 export function finalAuditVerdict(result: ModelAuditSummaryV1['results'][number]): ModelAuditVerdict | null {
-  if (result.recheck) return confirmedDiffStatus(result.recheck.status)
   return stageOneVerdict(result)
 }
 

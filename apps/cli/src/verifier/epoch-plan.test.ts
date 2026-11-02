@@ -68,9 +68,9 @@ test('the latest result per model and seller wins and decides the action', () =>
         result('b', 'UNDETERMINED', { outcomeReason: buyerRefused }),
         result('c', 'UNDETERMINED', { outcomeReason: sellerDown }),
         result('d', 'UNDETERMINED', { outcomeReason: sellerDown }),
-        result('e', 'DIFF', { recheckPending: { reason: 'no fresh questions' } as never }),
+        result('e', 'DIFF'),
         result('f', 'UNDETERMINED'),
-        result('g', 'DIFF', { recheck: { status: 'DIFF' } as never }),
+        result('g', 'DIFF'),
       ],
       skipped: [{
         peerId: 'h', displayName: null, agentId: '8', service: 'svc', status: 'SKIPPED', code: 'price_above_reference',
@@ -100,7 +100,7 @@ test('the latest result per model and seller wins and decides the action', () =>
   assert.equal(action('h').action, 'audit', 'a price skip is re-evaluated each run')
   assert.equal(action('i').action, 'retry')
   assert.equal(action('i').blame, 'auditor')
-  assert.deepEqual(countPlan(cells.values()), { done: 5, retryAuditor: 2, retrySeller: 1, recheck: 0, audit: 1 })
+  assert.deepEqual(countPlan(cells.values()), { done: 5, retryAuditor: 2, retrySeller: 1, extend: 0, audit: 1 })
 })
 
 test('a later SAME replaces an earlier UNDETERMINED, and a later first DIFF replaces a SAME', () => {
@@ -111,13 +111,13 @@ test('a later SAME replaces an earlier UNDETERMINED, and a later first DIFF repl
     ] }]),
     run('r2', '2026-10-28T21:00:00.000Z', [{ model: 'm', results: [
       result('a', 'SAME'),
-      result('b', 'DIFF', { recheckPending: { reason: 'x' } as never }),
+      result('b', 'DIFF'),
     ] }]),
   ])
   assert.equal(cells.get(epochCellKey('m', 'a'))!.state, 'same')
   assert.equal(cells.get(epochCellKey('m', 'b'))!.state, 'diff')
   const [row] = epochModelRows(cells.values())
-  assert.deepEqual({ ...row }, { model: 'm', same: 1, diff: 1, undetermined: 0, pendingRecheck: 0, failed: 0, skipped: 0, left: 0 })
+  assert.deepEqual({ ...row }, { model: 'm', same: 1, diff: 1, undetermined: 0, closeCalls: 0, failed: 0, skipped: 0, left: 0 })
 })
 
 test('runs of another epoch or with a mismatched run id are ignored', () => {
@@ -174,7 +174,7 @@ test('a close call waiting for extra questions is pending_extension, not submitt
   assert.equal(cell.state, 'pending_extension')
   assert.equal(cell.action, 'extend')
   assert.equal(cell.reason, 'no fresh questions')
-  assert.equal(countPlan(cells.values()).recheck, 1)
+  assert.equal(countPlan(cells.values()).extend, 1)
   const [row] = epochModelRows(cells.values())
-  assert.deepEqual({ ...row }, { model: 'm', same: 1, diff: 0, undetermined: 0, pendingRecheck: 1, failed: 0, skipped: 0, left: 1 })
+  assert.deepEqual({ ...row }, { model: 'm', same: 1, diff: 0, undetermined: 0, closeCalls: 1, failed: 0, skipped: 0, left: 1 })
 })

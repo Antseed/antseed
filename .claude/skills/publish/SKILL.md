@@ -19,11 +19,10 @@ Decide which public `@antseed/*` packages need a release, bump their versions, a
 For every public package, list commits touching it since its version was last bumped:
 
 ```bash
-for p in packages/protocol packages/connected-apps packages/api-adapter packages/buyer-core packages/node \
-         packages/provider-core packages/router-core packages/ant-agent \
-         packages/web-sdk plugins/* apps/cli apps/payments apps/network-stats apps/gateway-console \
-         apps/ants apps/relay; do
-  bump=$(git log origin/main -1 --format=%H -G'"version": ' -- $p/package.json)
+for f in $(git ls-files 'packages/*/package.json' 'plugins/*/package.json' 'apps/*/package.json'); do
+  node -e "process.exit(require('./$f').private ? 1 : 0)" || continue
+  p=$(dirname $f)
+  bump=$(git log origin/main -1 --format=%H -G'"version": ' -- $f)
   echo "=== $p"
   git log --oneline --no-merges $bump..origin/main -- $p
 done
@@ -69,7 +68,8 @@ node scripts/npm-publish-plan.mjs
 ```
 
 This prints local vs registry versions with a PUBLISH/skip verdict per package and **hard-fails** on:
-- a to-be-published package whose exact-pin dependent has no bump (cascade violation), or
+- a to-be-published package whose exact-pin dependent has no bump (cascade violation),
+- a to-be-published package that pins a dependency whose source changed since its last bump (the dependent would ship against code npm doesn't have), or
 - a local version behind npm latest (a previous release never committed its bumps).
 
 The PUBLISH rows must exactly match the intended set, exit code 0. The CI workflow runs this same script as a gate before publishing.

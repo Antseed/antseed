@@ -98,7 +98,7 @@ export async function ensureAuditableReference(input: {
 
 /**
  * Builds a brand-new reference (fresh questions) and appends it to the bank, keeping the bank's
- * contrast models. Used when a DIFF recheck needs probes the seller has never seen.
+ * contrast models. Used when a seller has seen too much of the bank for an audit or a close call's extra set.
  */
 export async function enrollFreshProbes(input: {
   model: string
@@ -162,7 +162,7 @@ export const SELLER_CAPACITY_ENROLLMENT_ROUNDS = 3
 
 /**
  * Makes sure every seller about to be audited has enough questions it has never been given: one
- * audit set (unless it already has one this epoch) plus a DIFF recheck set. A bank can be ready
+ * audit set (unless it already has one this epoch). A bank can be ready
  * as a whole while the sellers audited in earlier epochs have seen most of it; for them, fresh
  * questions are built and added to the bank (up to `SELLER_CAPACITY_ENROLLMENT_ROUNDS` builds).
  * Returns the sellers still short afterwards, which will fail with BANK_EXHAUSTED.

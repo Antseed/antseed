@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { Wallet } from 'ethers'
-import { KBF_EXTENSION_RULE, canonicalHashBytes32 } from '@antseed/fingerprints'
+import { KBF_EXTENSION_RULE_V1, KBF_EXTENSION_RULE_V2, canonicalHashBytes32 } from '@antseed/fingerprints'
 import { VERIFIER_VERDICT, modelHash, serviceHash, sortServiceResults } from '@antseed/node/payments'
 import {
   modelAuditLedgerPath,
@@ -27,6 +27,7 @@ import {
   type FixtureAudit,
 } from './model-audit-fixtures.test-support.js'
 import { readVerifierRunManifest } from './audit-artifacts.js'
+import { pooledCloseCallVerdict } from './close-call.js'
 
 const randomWallet = (): Wallet => new Wallet(Wallet.createRandom().privateKey)
 const auditor = randomWallet()
@@ -78,7 +79,7 @@ const audit = (
 
 test('builds one audit per model with every seller, including UNDETERMINED', async () => {
   await withRun([
-    { ...audit('2', sellers[1]!, 'model-a', 'DIFF'), recheck: 'DIFF' },
+    audit('2', sellers[1]!, 'model-a', 'DIFF'),
     audit('1', sellers[0]!, 'model-a'),
     audit('3', sellers[2]!, 'model-a', 'UNDETERMINED'),
     audit('1', sellers[0]!, 'model-b'),
@@ -96,7 +97,7 @@ test('builds one audit per model with every seller, including UNDETERMINED', asy
     ])
     assert.equal(first.evidence.results[2]!.verdict, 'UNDETERMINED')
     assert.match(first.evidence.results[2]!.verdictReason ?? '', /ResponseAuth/)
-    assert.equal(first.evidence.references.length, 2, 'the first check and the DIFF recheck each have a reference')
+    assert.equal(first.evidence.references.length, 1, 'every seller here was audited against the same reference')
     const firstCheck = first.evidence.references.find((reference) => reference.referenceId === first.evidence.results[0]!.referenceId)
     assert.ok(firstCheck?.path?.startsWith('references/'))
     assert.equal(first.evidenceHash, canonicalHashBytes32(first.evidence))
@@ -223,59 +224,15 @@ test('evidence lists, copies, and round-trips the bank\'s raw reference exchange
   })
 })
 
-test('only a recheck DIFF keeps a first DIFF, and never on reused probes', () => {
-  const evidence = (verdict: string, referenceId: string, probeIds: string[]) => ({
-    target: { peerId: 'aa'.repeat(20), service: 'model-a', agentId: '7' },
-    reference: { referenceId, probes: probeIds.map((id) => ({ id })) },
-    result: { verdict },
-  }) as unknown as Parameters<typeof validateAuditMatchesSummary>[0]
-  const summary = (status: string, recheckStatus: string) => ({
-    peerId: 'aa'.repeat(20), service: 'model-a', agentId: '7', status,
-    recheck: { status: recheckStatus },
-  }) as unknown as Parameters<typeof validateAuditMatchesSummary>[1]
-  const first = evidence('DIFF', 'sha256:first', ['p1', 'p2'])
-
-  validateAuditMatchesSummary(first, summary('UNDETERMINED', 'SAME'), evidence('SAME', 'sha256:second', ['p3', 'p4']))
-  validateAuditMatchesSummary(first, summary('DIFF', 'DIFF'), evidence('DIFF', 'sha256:second', ['p3', 'p4']))
-  validateAuditMatchesSummary(
-    first, summary('UNDETERMINED', 'UNDETERMINED'), evidence('UNDETERMINED', 'sha256:second', ['p3', 'p4']),
-  )
-  // Runs from before DIFF needed two DIFFs stored this as DIFF; it is re-scored at submit time.
-  validateAuditMatchesSummary(
-    first, summary('DIFF', 'UNDETERMINED'), evidence('UNDETERMINED', 'sha256:second', ['p3', 'p4']),
-  )
-  assert.throws(
-    () => validateAuditMatchesSummary(first, summary('DIFF', 'SAME'), evidence('SAME', 'sha256:second', ['p3', 'p4'])),
-    /final verdict does not follow/,
-  )
-  assert.throws(
-    () => validateAuditMatchesSummary(first, summary('DIFF', 'DIFF'), evidence('DIFF', 'sha256:second', ['p2', 'p4'])),
-    /reused probes/,
-  )
-  assert.throws(
-    () => validateAuditMatchesSummary(evidence('SAME', 'sha256:first', ['p1']), summary('UNDETERMINED', 'SAME'),
-      evidence('SAME', 'sha256:second', ['p3'])),
-    /without a first DIFF/,
-  )
-  assert.throws(() => validateAuditMatchesSummary(first, summary('UNDETERMINED', 'SAME'), null), /recheck evidence missing/)
-})
-
-test('a DIFF is submitted as found; a run from before keeps its own recheck\'s outcome', async () => {
+test('a DIFF is submitted as found, for another auditor to confirm', async () => {
   await withRun([
-    { ...audit('1', sellers[0]!, 'model-a', 'DIFF'), recheck: 'DIFF' },
-    { ...audit('2', sellers[1]!, 'model-a', 'DIFF'), recheck: 'UNDETERMINED' },
-    { ...audit('3', sellers[2]!, 'model-a', 'DIFF'), recheck: 'SAME' },
-    audit('4', randomWallet(), 'model-a', 'DIFF'),
+    audit('1', sellers[0]!, 'model-a', 'DIFF'),
+    audit('2', sellers[1]!, 'model-a'),
   ], async ({ prepared }) => {
     const [entry] = prepared.audits as [PreparedModelAudit]
     assert.deepEqual(entry.results.map((result) => [result.agentId, result.verdict]), [
       [1n, VERIFIER_VERDICT.DIFF],
-      [2n, VERIFIER_VERDICT.UNDETERMINED],
-      [3n, VERIFIER_VERDICT.UNDETERMINED],
-      [4n, VERIFIER_VERDICT.DIFF],
-    ])
-    assert.deepEqual(entry.evidence.results.map((result) => [result.verdict, result.confirmation?.verdict]), [
-      ['DIFF', 'DIFF'], ['UNDETERMINED', 'UNDETERMINED'], ['UNDETERMINED', 'SAME'], ['DIFF', undefined],
+      [2n, VERIFIER_VERDICT.SAME],
     ])
     assert.deepEqual(prepared.excluded, [])
   })
@@ -286,7 +243,7 @@ test('submits one SAME per seller and model, but every DIFF', async () => {
   const sameHashes = names.map((name) => serviceHash(name)).sort()
   await withRun([
     ...names.map((service) => ({ ...audit('1', randomWallet(), 'model-a'), service })),
-    { ...audit('1', randomWallet(), 'model-a', 'DIFF'), service: 'model-a-fake', recheck: 'DIFF' },
+    { ...audit('1', randomWallet(), 'model-a', 'DIFF'), service: 'model-a-fake' },
     audit('2', sellers[1]!, 'model-a'),
   ], async ({ prepared }) => {
     const [entry] = prepared.audits as [PreparedModelAudit]
@@ -300,6 +257,91 @@ test('submits one SAME per seller and model, but every DIFF', async () => {
   })
 })
 
+test('kbf-extension-v2 close calls get a second extra set and are re-verified from all three evidence files', async () => {
+  // 20 probes per set and a clean self-test. 7 wrong is a close call; 7+1 pooled over 40 is still one
+  // (p ~0.063), so a third set decides at 0.05: 7+1+0 is SAME (p ~0.073), 7+1+2 is DIFF (p ~0.012).
+  // 7+4 is a clear DIFF on the second look (p ~0.003) and needs no third set.
+  const reference = referenceFixture('model-a', 20)
+  const closeCall = (agentId: string, seller: Wallet, value: NonNullable<FixtureAudit['closeCall']>): FixtureAudit => ({
+    ...audit(agentId, seller, 'model-a'), reference, closeCall: { rule: 'kbf-extension-v2', ...value },
+  })
+  await withRun([
+    closeCall('1', sellers[0]!, { firstWrong: 7, extensionWrong: 1, extension2Wrong: 0 }),
+    closeCall('2', sellers[1]!, { firstWrong: 7, extensionWrong: 1, extension2Wrong: 2 }),
+    closeCall('3', sellers[2]!, { firstWrong: 7, extensionWrong: 4 }),
+    closeCall('4', randomWallet(), { firstWrong: 7, extensionWrong: 1 }),
+  ], async ({ prepared }) => {
+    const [entry] = prepared.audits as [PreparedModelAudit]
+    assert.deepEqual(entry.results.map((result) => [result.agentId, result.verdict]), [
+      [1n, VERIFIER_VERDICT.SAME],
+      [2n, VERIFIER_VERDICT.DIFF],
+      [3n, VERIFIER_VERDICT.DIFF],
+    ])
+    assert.deepEqual(entry.evidence.extensionRule, KBF_EXTENSION_RULE_V2)
+    const [same, diff, early] = entry.evidence.results as [ModelAuditSellerResultV1, ModelAuditSellerResultV1, ModelAuditSellerResultV1]
+    assert.equal(same.extension?.pooled.extendNext, true)
+    assert.equal(same.extension2?.pooled.verdict, 'SAME')
+    assert.equal(same.extension2?.pooled.targetHamming, 8)
+    assert.equal(same.extension2?.pooled.targetTotal, 60)
+    assert.equal(diff.extension2?.pooled.verdict, 'DIFF')
+    assert.equal(early.extension?.pooled.verdict, 'DIFF')
+    assert.equal(early.extension?.pooled.extendNext, undefined)
+    assert.equal(early.extension2, undefined)
+    assert.deepEqual(prepared.excluded.map((excluded) => [excluded.agentId, excluded.reason]), [
+      ['4', 'close call waiting for its extra questions (fixture: second set not asked); a later run this epoch asks them, so it is not submitted yet'],
+    ])
+  })
+})
+
+test('a second extra set is rejected when the first pooled look was already decided, or reuses probes', () => {
+  const evidence = (verdict: 'SAME' | 'DIFF' | 'UNDETERMINED', referenceId: string, probeIds: string[], wrong: number, total = 20) => ({
+    target: { peerId: 'aa', service: 'm', agentId: '1' },
+    reference: { referenceId, probes: probeIds.map((id) => ({ id })) },
+    result: {
+      verdict,
+      stats: { selfHamming: 0, selfTotal: total, selfCoverage: 1, targetHamming: wrong, targetTotal: total, targetCoverage: 1, p0Cp99: null, pValueBinomial: null },
+    },
+    exchanges: [],
+  }) as unknown as Parameters<typeof validateAuditMatchesSummary>[0]
+  const ids = (prefix: string) => Array.from({ length: 20 }, (_, index) => `${prefix}${index}`)
+  const first = evidence('SAME', 'sha256:first', ids('a'), 7)
+  first.result.stats.pValueBinomial = 0.098
+  const pooledOf = (sets: Array<ReturnType<typeof evidence>>, rule = KBF_EXTENSION_RULE_V2) => pooledCloseCallVerdict(
+    { stats: first.result.stats, probeCount: 20 },
+    sets.map((set) => ({ stats: set.result.stats, probeCount: 20 })),
+    rule,
+  )
+  const record = (set: ReturnType<typeof evidence>, pooled: ReturnType<typeof pooledOf>) => ({
+    rule: 'kbf-extension-v2' as const, status: set.result.verdict, evidencePath: '', evidenceHash: '',
+    pooled: { ...pooled.stats, verdict: pooled.verdict as 'SAME', verdictReason: pooled.verdictReason, ...(pooled.extend ? { extendNext: true } : {}) },
+  })
+  const summary = (extension: unknown, extension2: unknown, status: string) => ({
+    peerId: 'aa', service: 'm', agentId: '1', status, decisionRule: 'kbf-extension-v2', stats: first.result.stats,
+    extension, extension2,
+  }) as unknown as Parameters<typeof validateAuditMatchesSummary>[1]
+
+  // Decided on the second look (7+4: clear DIFF), yet a third set was added.
+  const clear1 = evidence('DIFF', 'sha256:x1', ids('b'), 4)
+  const late = evidence('SAME', 'sha256:x2', ids('c'), 0)
+  const clearPooled = pooledOf([clear1])
+  assert.equal(clearPooled.extend, false)
+  assert.throws(() => validateAuditMatchesSummary(
+    first, summary(record(clear1, clearPooled), record(late, pooledOf([clear1, late])), 'SAME'), clear1, late,
+  ), /continuation mismatch|after a decided look|UNKNOWN/)
+
+  // Still a close call after the second look (7+1), but the third set reuses the second's probes.
+  const grey1 = evidence('SAME', 'sha256:g1', ids('d'), 1)
+  const reused = evidence('SAME', 'sha256:g2', ids('d'), 0)
+  assert.throws(() => validateAuditMatchesSummary(
+    first, summary(record(grey1, pooledOf([grey1])), record(reused, pooledOf([grey1, reused])), 'SAME'), grey1, reused,
+  ), /reused probes/)
+
+  // A second set without its evidence file.
+  assert.throws(() => validateAuditMatchesSummary(
+    first, summary(record(grey1, pooledOf([grey1])), record(reused, pooledOf([grey1, reused])), 'SAME'), grey1, null,
+  ), /second extension evidence missing/)
+})
+
 test('close calls are submitted on the pooled verdict, re-verified from both evidence files', async () => {
   // 20 probes and a clean self-test: p0 ~0.206, so 7 wrong is a close call (p ~0.098).
   // Pooled over 40 probes (p0 ~0.109): 7+1 wrong is SAME (p ~0.063), 7+8 wrong is DIFF.
@@ -309,7 +351,7 @@ test('close calls are submitted on the pooled verdict, re-verified from both evi
   })
   await withRun([
     closeCall('1', sellers[0]!, { firstWrong: 7, extensionWrong: 1 }),
-    closeCall('2', sellers[1]!, { firstWrong: 7, extensionWrong: 8, recheck: 'DIFF' }),
+    closeCall('2', sellers[1]!, { firstWrong: 7, extensionWrong: 8 }),
     closeCall('3', sellers[2]!, { firstWrong: 7, extensionWrong: 8 }),
     closeCall('4', randomWallet(), { firstWrong: 7 }),
   ], async ({ prepared }) => {
@@ -319,17 +361,16 @@ test('close calls are submitted on the pooled verdict, re-verified from both evi
       [2n, VERIFIER_VERDICT.DIFF],
       [3n, VERIFIER_VERDICT.DIFF],
     ])
-    assert.deepEqual(entry.evidence.extensionRule, KBF_EXTENSION_RULE)
+    assert.deepEqual(entry.evidence.extensionRule, KBF_EXTENSION_RULE_V1)
     const [same, diff] = entry.evidence.results as [ModelAuditSellerResultV1, ModelAuditSellerResultV1]
     assert.equal(same.extension?.pooled.verdict, 'SAME')
     assert.equal(same.extension?.pooled.targetHamming, 8)
     assert.equal(same.extension?.pooled.targetTotal, 40)
     assert.ok(same.extension!.firstLook.pValue! >= 0.005 && same.extension!.firstLook.pValue! < 0.2)
     assert.equal(diff.extension?.pooled.verdict, 'DIFF')
-    assert.equal(diff.confirmation?.verdict, 'DIFF')
-    // Fixture sellers share probe sets: first set, extension and recheck are three references.
-    assert.equal(entry.evidence.references.length, 3)
-    assert.equal(entry.auditEvidencePaths.length, 7)
+    // Fixture sellers share probe sets: the first set and the extension are two references.
+    assert.equal(entry.evidence.references.length, 2)
+    assert.equal(entry.auditEvidencePaths.length, 6)
     assert.ok(entry.auditEvidencePaths.some((path) => path.includes('/extensions/')))
     assert.deepEqual(prepared.excluded.map((exclusion) => [exclusion.agentId, exclusion.reason.split(' (')[0]]).sort(), [
       ['4', 'close call waiting for its extra questions'],
@@ -379,5 +420,5 @@ test('a close call is checked against the close-call rule', () => {
     extension: { rule: 'kbf-extension-v1', status: 'SAME', pooled: { verdict: 'SAME' } },
   } as unknown as Parameters<typeof validateAuditMatchesSummary>[1]
   // p = 0.5 is a clear SAME: it must not have been extended.
-  assert.throws(() => validateAuditMatchesSummary(first, result, null, extensionEvidence), /not a close call/)
+  assert.throws(() => validateAuditMatchesSummary(first, result, extensionEvidence), /not a close call/)
 })

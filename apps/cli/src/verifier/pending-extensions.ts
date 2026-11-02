@@ -3,34 +3,31 @@ import { join } from 'node:path'
 import type { ModelAuditSummaryV1, VerifierRunManifestV1 } from './audit-artifacts.js'
 import type { ModelVerificationTargetResult } from './model-run.js'
 import { verifyProxyAuditEvidenceFile } from './proxy-evidence.js'
-import { stageOneVerdict } from './close-call.js'
+import { extensionSets, stageOneVerdict } from './close-call.js'
 
-export interface PendingDiffRecheck {
+/** A close call from an earlier run this epoch, waiting for its extra questions. */
+export interface PendingExtension {
   model: string
   runId: string
   result: ModelVerificationTargetResult
-  /** `extension`: a close call waiting for its extra questions; `recheck`: a stage-1 DIFF waiting for its recheck. */
-  kind: 'extension' | 'recheck'
 }
 
-export function pendingRecheckKey(model: string, peerId: string): string {
+export function pendingExtensionKey(model: string, peerId: string): string {
   return `${model.trim().toLowerCase()}\u0000${peerId.trim().replace(/^0x/i, '').toLowerCase()}`
 }
 
 /**
- * First audits from this epoch's earlier runs that are still waiting: close calls whose extra
- * questions could not be asked, and stage-1 DIFFs whose recheck could not run, that no later run has
- * settled. Runs are replayed oldest first and the latest result per (model, seller) wins, so a DIFF
- * that a later run rechecked, or re-audited as SAME, is no longer pending. The first check's
- * evidence must still verify against its recorded hash.
+ * Close calls from this epoch's earlier runs whose extra questions could not be asked and that no
+ * later run has settled. Runs are replayed oldest first and the latest result per (model, seller)
+ * wins. The first check's evidence (and any extra set's) must still verify against its hash.
  */
-export async function loadPendingDiffRechecks(
+export async function loadPendingExtensions(
   evidenceDir: string,
   epoch: string,
   models: readonly string[],
-): Promise<Map<string, PendingDiffRecheck>> {
+): Promise<Map<string, PendingExtension>> {
   const wanted = new Set(models.map((model) => model.toLowerCase()))
-  const latest = new Map<string, PendingDiffRecheck>()
+  const latest = new Map<string, PendingExtension>()
   for (const manifest of await epochRunManifests(evidenceDir, epoch)) {
     for (const entry of manifest.models) {
       if (!wanted.has(entry.model.toLowerCase())) continue
@@ -42,28 +39,22 @@ export async function loadPendingDiffRechecks(
       }
       if (summary.runId !== manifest.runId || summary.epoch !== epoch) continue
       for (const result of summary.results ?? []) {
-        latest.set(pendingRecheckKey(entry.model, result.peerId), {
-          model: entry.model, runId: manifest.runId, result, kind: 'recheck',
-        })
+        latest.set(pendingExtensionKey(entry.model, result.peerId), { model: entry.model, runId: manifest.runId, result })
       }
     }
   }
-  const pending = new Map<string, PendingDiffRecheck>()
+  const pending = new Map<string, PendingExtension>()
   for (const [key, entry] of latest) {
-    if (entry.result.recheck) continue
-    const stageOne = stageOneVerdict(entry.result)
-    // Only close calls wait for a follow-up: a DIFF is submitted as found and confirmed by another auditor.
-    const kind = stageOne === null && entry.result.extensionPending ? 'extension' : null
-    if (!kind) continue
+    if (stageOneVerdict(entry.result) !== null || !entry.result.extensionPending) continue
     try {
       await verifyProxyAuditEvidenceFile(entry.result.evidencePath, entry.result.evidenceHash)
-      if (entry.result.extension) {
-        await verifyProxyAuditEvidenceFile(entry.result.extension.evidencePath, entry.result.extension.evidenceHash)
+      for (const set of extensionSets(entry.result)) {
+        await verifyProxyAuditEvidenceFile(set.evidencePath, set.evidenceHash)
       }
     } catch {
       continue
     }
-    pending.set(key, { ...entry, kind })
+    pending.set(key, entry)
   }
   return pending
 }
