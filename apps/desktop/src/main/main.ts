@@ -445,7 +445,7 @@ app.whenReady().then(async () => {
     app.dock.setIcon(APP_ICON_PATH);
   }
   const hadExistingIdentity = !isAttachOnly() && hasStoredIdentity();
-  // Attach-only loads the sandbox buyer key from its data dir (memory only,
+  // Attach-only loads the testbench buyer key from its data dir (memory only,
   // never the keychain) so balance and wallet views show the fork wallet.
   await ensureSecureIdentity();
   telemetryReady = initializeTelemetry(hadExistingIdentity);
@@ -478,8 +478,8 @@ app.whenReady().then(async () => {
 
   showMainWindow();
 
-  // A sandbox desktop never resumes a public tunnel: it would publish the
-  // sandbox buyer on a real hostname.
+  // A testbench desktop never resumes a public tunnel: it would publish the
+  // testbench buyer on a real hostname.
   if (!isAttachOnly()) {
     void publicTunnelRuntime.restoreAtLaunch().then((result) => {
       if (result && !result.ok) {
@@ -556,8 +556,8 @@ app.whenReady().then(async () => {
 
   // Resume the Telegram bridge if a bot was connected in a previous session.
   // Needs app-ready because the token store decrypts via safeStorage.
-  // A sandbox desktop never resumes a bot: real Telegram users would get
-  // sandbox replies.
+  // A testbench desktop never resumes a bot: real Telegram users would get
+  // testbench replies.
   if (!isAttachOnly()) {
     void telegramBridge.start().catch((err) => {
       appendLog('connect', 'system', `[telegram] Bridge resume failed: ${err instanceof Error ? err.message : String(err)}`);
