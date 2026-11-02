@@ -10,7 +10,8 @@ import { resolveInstancePorts } from '../../apps/desktop/scripts/dev-instance-co
 import { legacyCacheHome, sharedCacheHome } from './lib/cache.mjs';
 import { loadSourceConfig, resolveConfigSource } from './lib/config.mjs';
 import { loadControlClient } from './lib/control.mjs';
-import { FORBIDDEN_PORTS, isolatedEnv, parseEnvFile, resolveForkUrl, resolveLiveKeys } from './lib/env.mjs';
+import { BUYER_KEY_ENV, FORBIDDEN_PORTS, isolatedEnv, parseEnvFile, resolveBuyerKey, resolveForkUrl, resolveLiveKeys, writeBuyerKey } from './lib/env.mjs';
+import { attachOnlyEnv } from './lib/desktop.mjs';
 import { inspectLock, isOwnedProcessAlive, killOwned } from './lib/lock.mjs';
 import { readJson, saveJson, validateManifest } from './lib/manifest.mjs';
 import { HELP, parseArgs } from './lib/options.mjs';
@@ -19,7 +20,7 @@ import { createSandboxApi } from './lib/sb.mjs';
 import { writeHtmlReport } from './lib/report-html.mjs';
 import { serveReports } from './lib/report-server.mjs';
 import { createMainnetApi, mainnetReader } from './lib/mainnet-run.mjs';
-import { MAINNET_PROFILE, prepareMainnetProfile, profileDesktopEnv } from './lib/mainnet.mjs';
+import { MAINNET_PROFILE, prepareMainnetProfile, profileDesktopEnv, walletAddress } from './lib/mainnet.mjs';
 import { findNoVncDir, funnelEnabled, parseTailscaleStatus } from './lib/share.mjs';
 import { assertScenarioSupported, chooseTarget, normalizeTopology, topologyFingerprint, validateScenarioModule } from './lib/topology.mjs';
 
@@ -129,10 +130,18 @@ async function up(options, ctx, topologyOverride) {
   }
   for (const dir of [paths.dir, paths.config, paths.logs]) await mkdir(dir, { recursive: true, mode: 0o700 });
   await saveJson(join(paths.config, 'source.cleaned.json'), { origin: config.origin, path: config.path, hash: config.hash, dropped: config.dropped, config: config.cleaned });
+  const localEnv = await localEnvValues(ctx);
+  const buyerKey = resolveBuyerKey({ fileValues: localEnv.values, envFile: localEnv.file });
+  const expectedBuyer = buyerKey ? walletAddress(buyerKey.hex) : null;
+  if (buyerKey) {
+    await writeBuyerKey(paths.buyer, buyerKey.hex);
+    say(`Buyer wallet ${expectedBuyer} from ${BUYER_KEY_ENV} (${buyerKey.source})`);
+  } else {
+    say(`Buyer wallet: this sandbox's own key (${join(paths.buyer, 'identity.key')}); set ${BUYER_KEY_ENV} in .env.local to choose one`);
+  }
   let forkUrl;
   if (target === 'fork') {
-    const localEnv = join(ctx.worktree, '.env.local');
-    const fork = resolveForkUrl({ fileValues: existsSync(localEnv) ? parseEnvFile(await readFile(localEnv, 'utf8')) : {}, envFile: localEnv });
+    const fork = resolveForkUrl({ fileValues: localEnv.values, envFile: localEnv.file });
     forkUrl = fork.url;
     say(`Fork RPC: BASE_MAINNET_RPC_URL from ${fork.source}`);
   } else {
@@ -166,6 +175,10 @@ async function up(options, ctx, topologyOverride) {
     const manifest = await readJson(paths.manifest);
     if (manifest?.running && manifest.supervisor?.pid === child.pid) {
       validateManifest(manifest, { dir: paths.dir });
+      if (expectedBuyer && manifest.buyer?.address?.toLowerCase() !== expectedBuyer.toLowerCase()) {
+        await down({}, ctx).catch(() => {});
+        throw new Error(`Sandbox buyer pays from ${manifest.buyer?.address}, not ${expectedBuyer} from ${BUYER_KEY_ENV}; stopped it`);
+      }
       return manifest;
     }
     if (child.exitCode !== null || (manifest?.startError && manifest.supervisor?.pid === child.pid)) {
@@ -424,18 +437,7 @@ async function desktop(options, ctx) {
     if (FORBIDDEN_PORTS.has(cdpPort) || Object.values(resolveInstancePorts(instance)).includes(cdpPort)) throw new Error(`--cdp-port ${cdpPort} collides with an AntSeed or desktop instance port`);
     if (await portOpen(cdpPort)) throw new Error(`--cdp-port ${cdpPort} is already in use`);
   }
-  // Keep the real macOS HOME for Electron's login Keychain. Attach-only mode
-  // reads the sandbox wallet/config through explicit paths below and never
-  // falls back to HOME for its buyer state.
-  const env = isolatedEnv(process.env, process.env.HOME ?? manifest.home, {
-    VOLTA_HOME: process.env.VOLTA_HOME || join(process.env.HOME, '.volta'),
-    ANTSEED_DESKTOP_ATTACH_ONLY: '1',
-    ANTSEED_CONFIG_PATH: manifest.buyerConfig,
-    ANTSEED_DESKTOP_CONNECT_DATA_DIR: manifest.buyerDir,
-    ANTSEED_PROXY_URL: manifest.proxyUrl,
-    ANTSEED_BASE_RPC_URL: manifest.rpcUrl,
-    ...(cdpPort === undefined ? {} : { ANTSEED_DESKTOP_CDP_PORT: String(cdpPort) }),
-  });
+  const env = attachOnlyEnv({ manifest, extra: cdpPort === undefined ? {} : { ANTSEED_DESKTOP_CDP_PORT: String(cdpPort) } });
   if (cdpPort !== undefined) say(`CDP on 127.0.0.1:${cdpPort} (agent-browser connect ${cdpPort})`);
   say(`Attaching desktop instance ${instance} to ${manifest.proxyUrl} (attach-only, sandbox wallet)`);
   const child = spawn('pnpm', ['dev:desktop:instance', instance], { cwd: repo, env, stdio: 'inherit' });

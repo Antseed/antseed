@@ -1,9 +1,10 @@
+import { ATTACH_ONLY_RUNTIME_DISABLED } from './attach-only.js';
 import type { ProcessManager } from './process-manager.js';
 
 export function assertAttachOnlyRuntime(mode: string, compatible: boolean, attachOnly: boolean): void {
   if (!attachOnly) return;
   if (mode !== 'connect' || !compatible) {
-    throw new Error('This desktop is attached to an isolated sandbox. Start the sandbox buyer first; starting another runtime is disabled.');
+    throw new Error(ATTACH_ONLY_RUNTIME_DISABLED);
   }
 }
 

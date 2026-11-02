@@ -1,15 +1,17 @@
 ---
 name: verify-antseed
-description: Prove an AntSeed change works end to end on this worktree's isolated sandbox (sandbox sellers with mock upstreams, the buyer proxy, an Anvil chain, the attach-only desktop under Playwright). Says which scenario a changed path requires, runs the red-to-green bug protocol with an issue scenario, and files evidence for PR bodies. Use after changing payments, routing, the buyer proxy, buyer-core, packages/node, provider plugins or the desktop, when fixing a bug that needs a sandbox repro, or when asked to "verify", "prove it works" or "reproduce it in the sandbox". Layers on sandbox-test, which owns run mechanics.
+description: Prove an AntSeed change works end to end on this worktree's isolated sandbox (sandbox sellers with mock upstreams, the buyer proxy, an Anvil chain, the attach-only desktop under Playwright). Says which scenario a changed path requires, runs the red-to-green bug protocol with an issue scenario, and files evidence for PR bodies. Opt-in only: use it when the user asks to "verify it in the sandbox", "prove it works end to end", "reproduce it in the sandbox" or invokes /verify-antseed, or when their instructions for the task say to. Do not use it on your own after a code change; unit tests and typecheck are the default. Layers on sandbox-test, which owns run mechanics.
 ---
 
 # Verify AntSeed
 
 This skill says what to prove, when a scenario is required, and what evidence to keep. It is the only map from a changed path to what must run. `features/` is the user-facing feature map (pstack's create-verification-skill shape): one recipe per feature, from the user's point of view, and the table below links each row to it. The **sandbox-test** skill (`.claude/skills/sandbox-test/SKILL.md`) is the how-to for running it: prerequisites, commands, chains, reports, desktop under `xvfb-run`, share. `e2e/sandbox/README.md` is the reference for every command and the `sb` API.
 
-## Autonomy
+## When to use it
 
-Once the user has discussed a change, implement and verify it without asking first (pstack's never-block-on-the-human). That covers builds, unit tests, new scenarios, `pnpm sandbox run <scenario> --chain local`, `--chain fork` when doctor reports a fork RPC, and desktop QA runs (`sb.desktop()`, `xvfb-run`).
+This skill is opt-in (see `CLAUDE.md`). Use it only when the user asks for sandbox verification or their instructions for the task say to. Otherwise verify with builds, unit tests and typecheck, and at most mention which scenario would cover the change.
+
+Once the user has opted in, verify without asking again for each step (pstack's never-block-on-the-human). That covers builds, unit tests, new scenarios, `pnpm sandbox run <scenario> --chain local`, `--chain fork` when doctor reports a fork RPC, and desktop QA runs (`sb.desktop()`, `xvfb-run`).
 
 Get an explicit yes for each run of:
 
@@ -25,7 +27,7 @@ These rules hold in every run:
 
 ## Decide what to prove
 
-Add a sandbox scenario only when a unit test can't reproduce the bug. Every change runs the row it matches. For any other path, the owning package's unit tests are the proof (`pnpm --filter <pkg> test`). A change to CLI output also gets the transcript from [CLI](features/cli.md). `packages/contracts/**` also needs `cd packages/contracts && forge test` and `pnpm sandbox run payment-flow --chain local`. `e2e/sandbox/**` needs `pnpm test:sandbox` and a run of each changed scenario. Provider plugins other than `plugins/provider-openai` have no mock upstream, so their unit tests are the proof unless the user approves `--live`. For buyer, buyer-proxy or routing changes, propose the real-network check (`pnpm sandbox run mainnet-smoke --chain mainnet --real-funds`, case 3 in `e2e/sandbox/README.md`) as a separate step after these runs pass: it spends real USDC and needs an explicit yes.
+When the user has opted in: add a sandbox scenario only when a unit test can't reproduce the bug, and run the row the change matches. For any other path, the owning package's unit tests are the proof (`pnpm --filter <pkg> test`). A change to CLI output also gets the transcript from [CLI](features/cli.md). `packages/contracts/**` also needs `cd packages/contracts && forge test` and `pnpm sandbox run payment-flow --chain local`. `e2e/sandbox/**` needs `pnpm test:sandbox` and a run of each changed scenario. Provider plugins other than `plugins/provider-openai` have no mock upstream, so their unit tests are the proof unless the user approves `--live`. For buyer, buyer-proxy or routing changes, propose the real-network check (`pnpm sandbox run mainnet-smoke --chain mainnet --real-funds`, case 3 in `e2e/sandbox/README.md`) as a separate step after these runs pass: it spends real USDC and needs an explicit yes.
 
 | If you change… | Run | It's proven when |
 | --- | --- | --- |

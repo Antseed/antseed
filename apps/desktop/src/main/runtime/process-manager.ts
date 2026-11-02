@@ -5,6 +5,7 @@ import path from 'node:path';
 
 import { desktopSystemProxyCliDataDir } from '../dev-instance.js';
 import { WORKSPACE_APPS_DIR } from '../paths.js';
+import { ATTACH_ONLY_RUNTIME_DISABLED, isAttachOnly } from './attach-only.js';
 
 const { join, resolve } = path;
 
@@ -465,6 +466,10 @@ export class ProcessManager {
   }
 
   async start(opts: StartOptions): Promise<RuntimeProcessState> {
+    // An attach-only desktop only ever attaches to the sandbox's buyer. Every
+    // spawn path (IPC, chat-triggered start, restarts) ends here, so this is
+    // the one place that keeps it from starting a second buyer or a seller.
+    if (isAttachOnly()) throw new Error(ATTACH_ONLY_RUNTIME_DISABLED);
     const mode = opts.mode;
     if (this.processes.has(mode)) {
       throw new Error(`${mode} is already running`);

@@ -3,20 +3,32 @@ import { mkdir, readdir, rename, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { isolatedEnv } from './env.mjs';
+import { isolatedEnv, toolchainEnv } from './env.mjs';
 import { isInside } from './paths.mjs';
 
 export const MOCK_REPLY = /Hello from sandbox seller/;
 
-/** Environment for an attach-only desktop on the sandbox buyer; all desktop state stays in the sandbox dir. */
-export function desktopEnv({ manifest, instance, ports, baseEnv = process.env, stateDir = 'desktop-automation' }) {
-  const instanceDir = join(manifest.dir, stateDir);
-  const env = isolatedEnv(baseEnv, baseEnv.HOME ?? manifest.home, {
+/**
+ * Environment every attach-only desktop shares. HOME is the sandbox's own home/, never yours, so nothing in the
+ * desktop can read your ~/.antseed (wallets, tunnel and Telegram settings, plugins) or reach your login keychain:
+ * the app uses a mock keychain in attach-only mode. The wallet is the sandbox buyer's, read from its data dir.
+ */
+export function attachOnlyEnv({ manifest, baseEnv = process.env, extra = {} }) {
+  return isolatedEnv(baseEnv, manifest.home, {
+    ...toolchainEnv(baseEnv),
     ANTSEED_DESKTOP_ATTACH_ONLY: '1',
     ANTSEED_CONFIG_PATH: manifest.buyerConfig,
     ANTSEED_DESKTOP_CONNECT_DATA_DIR: manifest.buyerDir,
     ANTSEED_PROXY_URL: manifest.proxyUrl,
     ANTSEED_BASE_RPC_URL: manifest.rpcUrl,
+    ...extra,
+  });
+}
+
+/** Environment for an attach-only desktop on the sandbox buyer; all desktop state stays in the sandbox dir. */
+export function desktopEnv({ manifest, instance, ports, baseEnv = process.env, stateDir = 'desktop-automation' }) {
+  const instanceDir = join(manifest.dir, stateDir);
+  const env = attachOnlyEnv({ manifest, baseEnv, extra: {
     ANTSEED_DESKTOP_INSTANCE: instance,
     ANTSEED_DESKTOP_MULTI_INSTANCE: '1',
     ANTSEED_DESKTOP_USER_DATA_DIR: join(instanceDir, 'electron'),
@@ -24,7 +36,7 @@ export function desktopEnv({ manifest, instance, ports, baseEnv = process.env, s
     ANTSEED_PAYMENTS_PORT: String(ports.payments),
     ANTSEED_SYSTEM_PROXY_PORT: String(ports.systemProxy),
     TELEMETRY_ENABLED: '0',
-  });
+  } });
   delete env.VITE_DEV_SERVER_URL;
   return env;
 }
@@ -60,6 +72,23 @@ export async function launchProfileDesktop({ repo, env, instance, reportDir, eve
   return launchElectron({ desktopDir, env, reportDir, event, trace, instance, title: instance });
 }
 
+/** Closes the app, and kills its process if Electron does not exit in time (it can hang on shutdown). */
+export async function closeApp(app, { timeoutMs = 15_000 } = {}) {
+  const child = app.process();
+  const exited = new Promise((resolveExit) => {
+    if (!child || child.exitCode !== null || child.signalCode !== null) resolveExit();
+    else child.once('exit', () => resolveExit());
+  });
+  const timer = setTimeout(() => { try { child?.kill('SIGKILL'); } catch { /* already gone */ } }, timeoutMs);
+  try {
+    // app.close() can wait forever on a hung Electron; the process exiting (or being killed) ends it too.
+    await Promise.race([app.close().catch(() => {}), exited]);
+    await exited;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function launchElectron({ desktopDir, env, reportDir, event, trace, instance, title }) {
   let electron;
   try {
@@ -81,11 +110,19 @@ async function launchElectron({ desktopDir, env, reportDir, event, trace, instan
   const mainLog = createWriteStream(join(reportDir, 'desktop-main.log'), { flags: 'a' });
   app.process().stdout?.pipe(mainLog, { end: false });
   app.process().stderr?.pipe(mainLog, { end: false });
-  const page = await app.firstWindow();
   const errors = [];
-  page.on('pageerror', (error) => errors.push(error.message));
-  await page.waitForLoadState('domcontentloaded');
-  await page.getByRole('button', { name: 'Chat', exact: true }).waitFor({ timeout: 60_000 });
+  let page;
+  try {
+    page = await app.firstWindow();
+    page.on('pageerror', (error) => errors.push(error.message));
+    await page.waitForLoadState('domcontentloaded');
+    await page.getByRole('button', { name: 'Chat', exact: true }).waitFor({ timeout: 60_000 });
+  } catch (error) {
+    // Nobody holds the app yet, so a failed launch must close it here or it outlives the run.
+    await closeApp(app);
+    mainLog.end();
+    throw error;
+  }
   await event('desktop-launched', { instance });
 
   let shot = 0;
@@ -136,7 +173,7 @@ async function launchElectron({ desktopDir, env, reportDir, event, trace, instan
       const tracePath = join(reportDir, 'trace.zip');
       if (trace) await app.context().tracing.stop({ path: tracePath }).catch(() => {});
       const video = page.video();
-      await app.close().catch(() => {});
+      await closeApp(app);
       let videoPath = null;
       if (video) {
         const recorded = await video.path().catch(() => null);
