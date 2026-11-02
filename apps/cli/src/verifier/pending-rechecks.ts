@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import type { ModelAuditSummaryV1, VerifierRunManifestV1 } from './audit-artifacts.js'
 import type { ModelVerificationTargetResult } from './model-run.js'
 import { verifyProxyAuditEvidenceFile } from './proxy-evidence.js'
-import { stageOneVerdict } from './close-call.js'
+import { extensionSets, stageOneVerdict } from './close-call.js'
 
 export interface PendingDiffRecheck {
   model: string
@@ -58,8 +58,8 @@ export async function loadPendingDiffRechecks(
     if (!kind) continue
     try {
       await verifyProxyAuditEvidenceFile(entry.result.evidencePath, entry.result.evidenceHash)
-      if (entry.result.extension) {
-        await verifyProxyAuditEvidenceFile(entry.result.extension.evidencePath, entry.result.extension.evidenceHash)
+      for (const set of extensionSets(entry.result)) {
+        await verifyProxyAuditEvidenceFile(set.evidencePath, set.evidenceHash)
       }
     } catch {
       continue

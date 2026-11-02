@@ -104,9 +104,11 @@ export interface SellerProbeLedgerV1 {
     selection?: SellerProbeSelectionMethod
     /**
      * Set on the probe set reserved to recheck a DIFF, and on the extra set reserved to decide a
-     * close-call first audit (`kbf-extension-v1`).
+     * close-call first audit (`kbf-extension-v1` / `-v2`).
      */
     purpose?: 'diff-recheck' | 'extension'
+    /** Which extra set of a close call this is (1 or 2); absent means 1. */
+    extensionIndex?: number
     reservedAt: string
     voidedAt?: string
     voidReason?: string
@@ -148,6 +150,8 @@ export interface SellerEpochProbeReferenceV1 {
   }
   /** Set on a close-call extension set, which is not power-sized on its own. */
   purpose?: 'extension'
+  /** Which extra set of a close call this is (1 or 2); absent means 1. */
+  extensionIndex?: number
   reference: KbfReferenceV1
   createdAt: string
   createdByRunId: string
@@ -495,12 +499,18 @@ export async function reserveExtensionReference(input: {
   runId: string
   epoch: string
   probeCount: number
+  /** Which extra set of the close call to reserve (1 or 2). Default 1. */
+  extensionIndex?: number
   config?: VerifierCLIConfig
   now?: () => number
   shuffle?: <T>(values: readonly T[]) => T[]
 }): Promise<{ reference: KbfReferenceV1; auditId: string }> {
   if (!Number.isInteger(input.probeCount) || input.probeCount <= 0) {
     throw new Error(`extension probe count must be a positive integer, got ${input.probeCount}`)
+  }
+  const extensionIndex = input.extensionIndex ?? 1
+  if (extensionIndex !== 1 && extensionIndex !== 2) {
+    throw new Error(`extension index must be 1 or 2, got ${extensionIndex}`)
   }
   const ledgerPath = sellerLedgerPath(input.banksDir, input.model, input.sellerPeerId)
   const lock = await acquirePidFileLock(`${ledgerPath}.lock`)
@@ -512,10 +522,11 @@ export async function reserveExtensionReference(input: {
       || normalized(ledger.sellerPeerId) !== normalized(input.sellerPeerId)) {
       throw new Error(`invalid seller probe ledger at ${ledgerPath}`)
     }
-    const path = extensionReferencePath(input.banksDir, input.model, input.epoch, input.sellerPeerId)
+    const path = extensionReferencePath(input.banksDir, input.model, input.epoch, input.sellerPeerId, extensionIndex)
     const existing = await readJsonIfExists<SellerEpochProbeReferenceV1>(path)
-    const existingAssignment = existing && ledger.assignments.find((entry) => (
-      entry.purpose === 'extension' && entry.epoch === input.epoch && !entry.voidedAt
+    const existingAssignment = existing && (existing.extensionIndex ?? 1) === extensionIndex && ledger.assignments.find((entry) => (
+      entry.purpose === 'extension' && (entry.extensionIndex ?? 1) === extensionIndex
+      && entry.epoch === input.epoch && !entry.voidedAt
       && entry.referenceId === existing.reference.referenceId
     ))
     if (existing && existingAssignment) {
@@ -556,6 +567,7 @@ export async function reserveExtensionReference(input: {
         allowProbeReuse: false,
       },
       purpose: 'extension',
+      ...(extensionIndex === 1 ? {} : { extensionIndex }),
       reference,
       createdAt: new Date(now).toISOString(),
       createdByRunId: input.runId,
@@ -582,6 +594,7 @@ export async function reserveExtensionReference(input: {
       probeIds: reference.probes.map((probe) => probe.id),
       selection: SELLER_PROBE_SELECTION_METHOD,
       purpose: 'extension',
+      ...(extensionIndex === 1 ? {} : { extensionIndex }),
       reservedAt,
     })
     await writeJsonAtomic(ledgerPath, ledger)
@@ -591,14 +604,20 @@ export async function reserveExtensionReference(input: {
   }
 }
 
-export function extensionReferencePath(banksDir: string, model: string, epoch: string, sellerPeerId: string): string {
+export function extensionReferencePath(
+  banksDir: string,
+  model: string,
+  epoch: string,
+  sellerPeerId: string,
+  extensionIndex = 1,
+): string {
   return join(
     banksDir,
     safeServiceSlug(model),
     'epochs',
     safeServiceSlug(epoch),
     'extensions',
-    `${sellerPeerHash(sellerPeerId)}.json`,
+    `${sellerPeerHash(sellerPeerId)}${extensionIndex === 1 ? '' : `.${extensionIndex}`}.json`,
   )
 }
 
@@ -623,7 +642,7 @@ export async function loadModelAuditReservation(input: {
     assignment.purpose === 'diff-recheck'
       ? diffRecheckReferencePath(input.banksDir, input.model, assignment.epoch, input.sellerPeerId)
       : assignment.purpose === 'extension'
-        ? extensionReferencePath(input.banksDir, input.model, assignment.epoch, input.sellerPeerId)
+        ? extensionReferencePath(input.banksDir, input.model, assignment.epoch, input.sellerPeerId, assignment.extensionIndex ?? 1)
         : sellerEpochProbeReferencePath(input.banksDir, input.model, assignment.epoch, input.sellerPeerId),
   )
   if (sellerEpochReference) {

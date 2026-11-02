@@ -187,10 +187,11 @@ export const VerifierConfigSchema = strictObject({
   /** Rechecks of a first DIFF on fresh probes before it is submitted: 1 (default) or 0 to turn rechecks off. */
   diffConfirmationRuns: z.number().int().min(0).max(1).optional(),
   /**
-   * Close calls (first-audit p-value from 0.005 up to 0.20) get one extra set of never-seen probes
-   * and are decided on both sets pooled (`kbf-extension-v1`): 1 (default) or 0 for the single-look rule.
+   * Close calls (first-audit p-value from 0.005 up to 0.20) get extra sets of never-seen probes and
+   * are decided on the sets pooled: 2 (default, `kbf-extension-v2`: a second extra set when the first
+   * pooled look is still a close call), 1 (`kbf-extension-v1`: one extra set) or 0 for the single-look rule.
    */
-  closeCallExtensions: z.number().int().min(0).max(1).optional(),
+  closeCallExtensions: z.number().int().min(0).max(2).optional(),
   /**
    * Sellers are audited only when their price for a model is at most its reference price
    * (OpenRouter by default) times this ratio: 1 (default) is the reference price, 1.1 allows 10% more.

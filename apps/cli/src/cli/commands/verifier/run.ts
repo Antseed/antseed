@@ -97,7 +97,7 @@ import { enrollFreshProbes, ensureAuditableReference, ensureSellerProbeCapacity 
 import { createReferenceRequestLimiter } from '../../../verifier/model-reference.js'
 import { runDiffRechecks, type DiffRecheckStats } from '../../../verifier/diff-recheck.js'
 import { runExtensionRounds, type ExtensionRoundStats } from '../../../verifier/extension-round.js'
-import { CLOSE_CALL_RULE_ID } from '../../../verifier/close-call.js'
+import { closeCallRuleForExtensions, extensionSets, latestExtension } from '../../../verifier/close-call.js'
 import { loadPendingDiffRechecks, pendingRecheckKey } from '../../../verifier/pending-rechecks.js'
 import { VerifierRunProgress } from './run-progress.js'
 import { failureOutcomeReason } from '../../../verifier/outcome-reason.js'
@@ -483,7 +483,7 @@ async function runVerifierRound(
           : new Map()
         for (const [key, entry] of pendingRechecks) {
           const enabled = entry.kind === 'extension'
-            ? (config.verifier?.closeCallExtensions ?? 1) > 0
+            ? (config.verifier?.closeCallExtensions ?? 2) > 0
             : (config.verifier?.diffConfirmationRuns ?? 1) > 0
           if (!enabled) pendingRechecks.delete(key)
         }
@@ -809,12 +809,13 @@ async function runVerifierRound(
           })
         }
         const diffConfirmationRuns = config.verifier?.diffConfirmationRuns ?? 1
-        const closeCallExtensions = config.verifier?.closeCallExtensions ?? 1
+        const closeCallExtensions = config.verifier?.closeCallExtensions ?? 2
+        const closeCallRule = closeCallRuleForExtensions(closeCallExtensions)
         const recheckTotals: DiffRecheckStats = {
           rechecked: 0, confirmed: 0, notConfirmed: 0, pending: 0, cost: emptyAuditCostSummary(),
         }
         const extensionTotals: ExtensionRoundStats = {
-          extended: 0, same: 0, diff: 0, undetermined: 0, pending: 0, cost: emptyAuditCostSummary(),
+          extended: 0, same: 0, diff: 0, undetermined: 0, continued: 0, pending: 0, cost: emptyAuditCostSummary(),
         }
         const appendEvent = async (event: Record<string, unknown>): Promise<void> => {
           await eventQueue.run(async () => { await appendVerifierEvent(evidenceDir, epoch, event) })
@@ -947,8 +948,8 @@ async function runVerifierRound(
                   checkpointIdentity: { runId, epoch, model },
                 })
                 // New first audits are decided by the close-call rule unless it is turned off.
-                const result = verified.status !== 'SKIPPED' && closeCallExtensions > 0
-                  ? { ...verified, decisionRule: CLOSE_CALL_RULE_ID }
+                const result = verified.status !== 'SKIPPED' && closeCallRule
+                  ? { ...verified, decisionRule: closeCallRule.id }
                   : verified
                 if (result.status === 'SKIPPED') {
                   await voidModelAuditReference({
@@ -1058,7 +1059,7 @@ async function runVerifierRound(
               context: {
                 proxy,
                 evidenceDir: extension
-                  ? modelAuditExtensionsDirectory(evidenceDir, epoch, model, runId)
+                  ? modelAuditExtensionsDirectory(evidenceDir, epoch, model, runId, extensionSets(input.first).length + 1)
                   : modelAuditRechecksDirectory(evidenceDir, epoch, model, runId),
                 checkpointRootDir: modelAuditsDirectory(evidenceDir, epoch, model, runId),
                 requestTimeoutMs: config.verifier?.probeRequestTimeoutMs ?? 120_000,
@@ -1096,7 +1097,8 @@ async function runVerifierRound(
               results,
               reserve: (first) => reserveExtensionReference({
                 banksDir, model, sellerPeerId: first.peerId, service: first.service,
-                runId, epoch, probeCount: first.probeCount, config: config.verifier,
+                runId, epoch, probeCount: first.probeCount, extensionIndex: extensionSets(first).length + 1,
+                config: config.verifier,
               }),
               enroll: enrollForFollowUps,
               verify: (first, reference, reservationAuditId) => verifyFollowUp({
@@ -1112,15 +1114,19 @@ async function runVerifierRound(
             extensionTotals.same += extended.stats.same
             extensionTotals.diff += extended.stats.diff
             extensionTotals.undetermined += extended.stats.undetermined
+            extensionTotals.continued += extended.stats.continued
             extensionTotals.pending += extended.stats.pending
             extensionTotals.cost = addAuditCostSummaries(extensionTotals.cost, extended.stats.cost)
             for (const result of results) {
-              if (!result.extension || firstResults.find((first) => first.auditId === result.auditId)?.extension) continue
+              const before = firstResults.find((first) => first.auditId === result.auditId)
+              const latest = latestExtension(result)
+              if (!latest || extensionSets(result).length === (before ? extensionSets(before).length : 0)) continue
               await appendEvent({
                 type: 'audit-extended', runId, epoch, model, peerId: result.peerId,
-                firstAuditId: result.auditId, extensionAuditId: result.extension.auditId,
-                firstPValue: result.extension.firstLook.pValue, pooledPValue: result.extension.pooled.pValueBinomial,
-                verdict: result.status, at: new Date().toISOString(),
+                firstAuditId: result.auditId, extensionAuditId: latest.auditId,
+                extensionAuditIds: extensionSets(result).map((set) => set.auditId),
+                firstPValue: latest.firstLook.pValue, pooledPValue: latest.pooled.pValueBinomial,
+                verdict: latest.pooled.extendNext ? 'PENDING' : result.status, at: new Date().toISOString(),
               })
             }
           }
@@ -1305,10 +1311,11 @@ async function runVerifierRound(
         console.log(chalk.dim(`Run manifest: ${manifestPath}`))
         for (const report of reportPaths) console.log(chalk.dim(`Report (${report.model}): ${report.path}`))
         if (overviewPath) console.log(chalk.cyan(`Epoch overview (all runs this epoch): ${overviewPath}`))
-        const closeCallCount = extensionTotals.extended + extensionTotals.pending
+        const closeCallCount = extensionTotals.same + extensionTotals.diff + extensionTotals.undetermined + extensionTotals.pending
         if (closeCallExtensions > 0 && closeCallCount > 0) {
           console.log(chalk.cyan(
-            `Close calls: ${closeCallCount} (${extensionTotals.same} SAME, ${extensionTotals.diff} DIFF → recheck, `
+            `Close calls: ${closeCallCount}, ${extensionTotals.extended} extra set(s) asked `
+            + `(${extensionTotals.same} SAME, ${extensionTotals.diff} DIFF → recheck, `
             + `${extensionTotals.undetermined} UNDETERMINED, ${extensionTotals.pending} waiting for extra questions), `
             + `$${extensionTotals.cost.estimatedCostUsd.toFixed(6)}`,
           ))

@@ -114,7 +114,12 @@ interface SellerAuditReportResult {
   extension?: {
     probeCount: number
     firstLook: { pValue: number | null }
-    pooled: { pValueBinomial: number | null; verdict: string }
+    pooled: { pValueBinomial: number | null; verdict: string; extendNext?: boolean }
+  }
+  extension2?: {
+    probeCount: number
+    firstLook: { pValue: number | null }
+    pooled: { pValueBinomial: number | null; verdict: string; extendNext?: boolean }
   }
   extensionPending?: { reason: string }
 }
@@ -189,14 +194,18 @@ export function modelAuditRechecksDirectory(
   return join(modelAuditsDirectory(evidenceDir, epoch, model, runId), 'rechecks')
 }
 
-/** Close-call extension evidence, apart from first checks and rechecks. */
+/**
+ * Close-call extension evidence, apart from first checks and rechecks. A second extra set
+ * (`kbf-extension-v2`) has its own directory so it never overwrites the first set's evidence.
+ */
 export function modelAuditExtensionsDirectory(
   evidenceDir: string,
   epoch: string,
   model: string,
   runId: string,
+  extensionIndex = 1,
 ): string {
-  return join(modelAuditsDirectory(evidenceDir, epoch, model, runId), 'extensions')
+  return join(modelAuditsDirectory(evidenceDir, epoch, model, runId), extensionIndex === 1 ? 'extensions' : `extensions-${extensionIndex}`)
 }
 
 export function modelReferencesDirectory(evidenceDir: string, epoch: string, model: string): string {
@@ -342,8 +351,11 @@ export async function renderModelAuditReports(
         reason: [
           result.extension
             ? `close call (p=${result.extension.firstLook.pValue?.toFixed(3) ?? '?'}); `
-              + `${result.extension.probeCount} extra questions, pooled p=${result.extension.pooled.pValueBinomial?.toFixed(3) ?? '?'} `
-              + `→ ${result.extension.pooled.verdict}`
+              + [result.extension, result.extension2].flatMap((set, index) => set ? [
+                `extra set ${index + 1}: ${set.probeCount} questions, pooled p=${set.pooled.pValueBinomial?.toFixed(3) ?? '?'} `
+                + `→ ${set.pooled.extendNext ? 'still close' : set.pooled.verdict}`,
+              ] : []).join('; ')
+              + (result.extensionPending ? `; waiting for more extra questions: ${result.extensionPending.reason}` : '')
             : result.extensionPending ? `close call waiting for extra questions: ${result.extensionPending.reason}` : null,
           result.recheck
             ? `stage-1 DIFF; recheck ${result.recheck.status} `
