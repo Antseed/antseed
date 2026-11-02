@@ -5,6 +5,8 @@ import type { Command } from 'commander'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { canonicalHashBytes32, queryProfileHash, type KbfReferenceV1 } from '@antseed/fingerprints'
+import { modelHash, serviceHash } from '@antseed/node/payments'
+import type { PeerInfo } from '@antseed/node'
 import { resolveEffectiveBuyerConfig } from '../../../config/effective.js'
 import { loadConfig } from '../../../config/loader.js'
 import type { VerifierCLIConfig } from '../../../config/types.js'
@@ -99,8 +101,12 @@ import {
   confirmationTargetsByModel,
   describeTallies,
   dropSettledConfirmations,
-  loadEpochReports,
+  epochReports,
+  loadEpochAuditEvents,
+  localResultAnswersConfirmation,
+  ownReportBlocks,
   pendingConfirmations,
+  reportKey,
   type ConfirmationTarget,
 } from '../../../verifier/pending-confirmations.js'
 import { loadPendingExtensions, pendingExtensionKey } from '../../../verifier/pending-extensions.js'
@@ -243,11 +249,12 @@ export async function loadRunConfirmations(input: {
     const auditor = await resolveAuditorAddress({
       config: input.config.verifier, dataDir: input.dataDir, flag: input.auditorFlag,
     })
-    const [auditors, reports, required] = await Promise.all([
+    const [auditors, events, required] = await Promise.all([
       input.approvedAuditors ?? loadApprovedAuditors(input.config, input.dataDir, input.epochWindow),
-      loadEpochReports({ reader: client, epochStartedAt: input.epochWindow.startedAt, deploymentBlock: client.deploymentBlock }),
+      loadEpochAuditEvents({ reader: client, epochStartedAt: input.epochWindow.startedAt, deploymentBlock: client.deploymentBlock }),
       client.requiredReports(),
     ])
+    const reports = epochReports(events)
     if (required.DIFF > auditors.length) {
       console.warn(chalk.yellow(
         `A DIFF needs ${required.DIFF} auditors but only ${auditors.length} ${auditors.length === 1 ? 'is' : 'are'} approved; no DIFF can be recorded.`,
@@ -272,7 +279,20 @@ export async function loadRunConfirmations(input: {
         console.log(chalk.cyan(`  ${entry.model}: agent ${entry.agentId} ${describeTallies(entry.waiting)} (${who})`))
       }
     }
-    return confirmationTargetsByModel(pending, (model) => verifierModelServices(input.config.verifier, model))
+    const targets = confirmationTargetsByModel(pending, (model) => verifierModelServices(input.config.verifier, model))
+    // When this auditor reported on a seller in a round the contract no longer counts, a local
+    // result only answers the confirmation if it is newer than that report.
+    const ownBlocks = ownReportBlocks(events, auditor.address)
+    for (const [model, agents] of targets) {
+      for (const target of agents.values()) {
+        const block = ownBlocks.get(reportKey(target.agentId, serviceHash(target.service), modelHash(model)))
+        if (block === undefined) continue
+        const header = await client.provider.getBlock(block)
+        if (!header) throw new Error(`block ${block} of an earlier report is unavailable`)
+        target.ownReportedAt = header.timestamp
+      }
+    }
+    return targets
   } catch (error) {
     console.warn(chalk.yellow(`Could not read reports waiting for a confirmation: ${asError(error).message}`))
     return new Map()
@@ -551,6 +571,35 @@ async function runVerifierRound(
         const epochCellFor = (model: string, peerId: string): EpochCell | undefined =>
           epochState?.cells.get(epochCellKey(model, peerId))
         const isDone = (model: string, peerId: string): boolean => epochCellFor(model, peerId)?.action === 'done'
+        // A seller this epoch already finished is audited again when a confirmation assigned to this
+        // auditor is still open for it: its finished result is for another service, or it was
+        // submitted in a report round the contract no longer counts.
+        const openConfirmationFor = (model: string, peer: PeerInfo): ConfirmationTarget | undefined => {
+          const confirmation = confirmationFor(model, peer)
+          if (!confirmation) return undefined
+          const cell = epochCellFor(model, peer.peerId)
+          const completedAt = cell?.result
+            ? epochState?.manifests.find((manifest) => manifest.runId === cell.runId)?.completedAt
+            : undefined
+          const local = cell?.result && completedAt
+            ? { service: cell.result.service, completedAt: Date.parse(completedAt) / 1_000 }
+            : null
+          return localResultAnswersConfirmation(confirmation, local) ? undefined : confirmation
+        }
+        const finished = (model: string, peer: PeerInfo): boolean => (
+          isDone(model, peer.peerId) && openConfirmationFor(model, peer) === undefined
+        )
+        // The service names a seller is audited under. A confirmation is only answered by a report on
+        // the service it waits on: confirmation-only work and the re-audit of a finished seller try
+        // that service alone, and stay waiting when it is not eligible.
+        const targetServicesFor = (model: string, peer: PeerInfo, resumeService?: string): string[] => {
+          const configured = verifierModelServices(config.verifier, model)
+          if (resumeService) return [resumeService.toLowerCase(), ...configured]
+          const confirmation = openConfirmationFor(model, peer)
+          if (!confirmation) return configured
+          if (confirmationOnly.has(model) || isDone(model, peer.peerId)) return [confirmation.service]
+          return [confirmation.service, ...configured]
+        }
         // A run that stopped before writing its manifest left checkpoints; their exchanges are reused
         // (not with --fresh, which audits every seller again).
         const previousStatus = requestedResumeManifest || options.fresh ? null : await readVerifierStatus(evidenceDir)
@@ -665,10 +714,8 @@ async function runVerifierRound(
           // Every model enrolls at once; one shared limiter caps the reference requests in flight.
           const requestLimiter = createReferenceRequestLimiter(config.verifier)
           const enrolled = await Promise.all(runModels.map(async (model) => {
-            const sellersToAudit = selectedPeers.filter((peer) => auditsPeer(model, peer) && !isDone(model, peer.peerId)
-              && classifyVerificationTargetServices(
-                peer, verifierModelServices(config.verifier, model), targetPolicyFor(model),
-              ).eligible)
+            const sellersToAudit = selectedPeers.filter((peer) => auditsPeer(model, peer) && !finished(model, peer)
+              && classifyVerificationTargetServices(peer, targetServicesFor(model, peer), targetPolicyFor(model)).eligible)
             if (sellersToAudit.length === 0) {
               console.log(chalk.dim(`[enrollment:${model}] no eligible seller left to audit; no enrollment calls needed`))
               return true
@@ -740,21 +787,16 @@ async function runVerifierRound(
         const plannedModels = runModels.map((model) => {
           let doneCount = 0
           const skipped: ModelVerificationSkip[] = []
-          const configuredServices = verifierModelServices(config.verifier, model)
           const targets = selectedPeers.flatMap((peer) => {
             if (!auditsPeer(model, peer)) return []
             const resumeCandidate = resumeCandidates.get(resumeKey(model, peer.peerId))
             const pendingExtension = pendingExtensions.get(pendingExtensionKey(model, peer.peerId))
             if (resumeOnly && !resumeCandidate && !pendingExtension) return []
-            if (!pendingExtension && isDone(model, peer.peerId)) {
+            if (!pendingExtension && finished(model, peer)) {
               doneCount += 1
               return []
             }
-            // A confirmation audits the service the other auditors reported on.
-            const confirmation = confirmationFor(model, peer)
-            const services = resumeCandidate
-              ? [resumeCandidate.service.toLowerCase(), ...configuredServices]
-              : confirmation ? [confirmation.service, ...configuredServices] : configuredServices
+            const services = targetServicesFor(model, peer, resumeCandidate?.service)
             const eligibility = classifyVerificationTargetServices(peer, services, targetPolicyFor(model))
             if (eligibility.eligible) {
               const resumable = resumeCandidate

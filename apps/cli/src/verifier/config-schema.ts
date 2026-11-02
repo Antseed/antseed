@@ -191,6 +191,11 @@ export const VerifierConfigSchema = strictObject({
    */
   closeCallExtensions: z.number().int().min(0).max(2).optional(),
   /**
+   * Retired: a first DIFF is no longer rechecked by the same auditor but confirmed by another one.
+   * Accepted and ignored so configs written for earlier releases still load.
+   */
+  diffConfirmationRuns: z.unknown().optional(),
+  /**
    * Sellers are audited only when their price for a model is at most its reference price
    * (OpenRouter by default) times this ratio: 1 (default) is the reference price, 1.1 allows 10% more.
    */

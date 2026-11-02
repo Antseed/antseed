@@ -47,14 +47,38 @@ const VERDICT_NAMES: Record<number, VerifierVerdictName> = {
 }
 
 /** Reads this epoch's `ServiceAudited` events, from the epoch's first block on. */
-export async function loadEpochReports(input: {
+export async function loadEpochAuditEvents(input: {
   reader: EpochReportReader
   epochStartedAt: number
   /** Lower bound for the block search, e.g. the contract's deployment block. */
   deploymentBlock?: number
-}): Promise<Map<string, EpochReport>> {
+}): Promise<ServiceAuditedEvent[]> {
   const fromBlock = await input.reader.firstBlockAtOrAfter(input.epochStartedAt, input.deploymentBlock ?? 0)
-  return epochReports(await input.reader.queryServiceAudits(null, null, fromBlock, 'latest'))
+  return input.reader.queryServiceAudits(null, null, fromBlock, 'latest')
+}
+
+/** This epoch's reports, as `epochReports` replays them from `loadEpochAuditEvents`. */
+export async function loadEpochReports(input: Parameters<typeof loadEpochAuditEvents>[0]): Promise<Map<string, EpochReport>> {
+  return epochReports(await loadEpochAuditEvents(input))
+}
+
+/**
+ * The block of `auditor`'s latest report this epoch on each service and model, in any report round,
+ * keyed by `reportKey`.
+ */
+export function ownReportBlocks(events: readonly ServiceAuditedEvent[], auditor: string): Map<string, number> {
+  const me = getAddress(auditor)
+  const blocks = new Map<string, number>()
+  for (const event of events) {
+    if (getAddress(event.auditor) !== me) continue
+    const key = reportKey(event.agentId, event.serviceHash, event.modelHash)
+    blocks.set(key, Math.max(blocks.get(key) ?? 0, event.blockNumber))
+  }
+  return blocks
+}
+
+export function reportKey(agentId: bigint, service: string, model: string): string {
+  return `${serviceKey(agentId, service)}:${normalized(model)}`
 }
 
 /**
@@ -70,7 +94,7 @@ export function epochReports(events: readonly ServiceAuditedEvent[]): Map<string
   const reports = new Map<string, EpochReport>()
   for (const event of events) {
     if (event.round !== latestRound.get(serviceKey(event.agentId, event.serviceHash))) continue
-    const key = `${serviceKey(event.agentId, event.serviceHash)}:${normalized(event.modelHash)}`
+    const key = reportKey(event.agentId, event.serviceHash, event.modelHash)
     let report = reports.get(key)
     if (!report) {
       report = {
@@ -218,6 +242,25 @@ export interface ConfirmationTarget {
   /** The service name the waiting reports are for. */
   service: string
   waiting: VerdictTally[]
+  /**
+   * Unix seconds of this auditor's latest report on this service and model this epoch, from a report
+   * round the contract no longer counts; null when it has not reported on it this epoch.
+   */
+  ownReportedAt: number | null
+}
+
+/**
+ * Whether a result this auditor already has for the seller answers its waiting confirmation once
+ * submitted: it is for the reported service and newer than this auditor's last report on it. An
+ * older result was already submitted, in a round the contract no longer counts, and a result for
+ * another service adds nothing to this service's tally; either way the seller is audited again.
+ */
+export function localResultAnswersConfirmation(
+  target: ConfirmationTarget,
+  local: { service: string; completedAt: number } | null,
+): boolean {
+  if (!local || normalized(local.service) !== normalized(target.service)) return false
+  return target.ownReportedAt === null || local.completedAt > target.ownReportedAt
 }
 
 /**
@@ -240,7 +283,7 @@ export function confirmationTargetsByModel(
       byModel.set(entry.model, agents)
     }
     const key = entry.agentId.toString()
-    if (!agents.has(key)) agents.set(key, { agentId: entry.agentId, service, waiting: entry.waiting })
+    if (!agents.has(key)) agents.set(key, { agentId: entry.agentId, service, waiting: entry.waiting, ownReportedAt: null })
   }
   return byModel
 }

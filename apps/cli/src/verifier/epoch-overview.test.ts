@@ -77,6 +77,10 @@ test('epoch overview merges runs in submit order; a DIFF counts as found', async
     assert.match(html, /KBF audits · epoch 9/)
     assert.match(html, /Inconclusive: answers couldn&#39;t be read/)
     assert.match(html, /Not audited: the auditor won&#39;t pay this price/)
+    // A single auditor's DIFF is one report, not a confirmed result.
+    assert.match(html, /DIFF REPORTS/)
+    assert.match(html, /counts on-chain once another auditor confirms it/)
+    assert.doesNotMatch(html, /2×|DIFF twice|both checks|CONFIRMED/)
     assert.equal(await writeEpochOverview(dir, '10'), null)
   } finally {
     await rm(dir, { recursive: true, force: true })

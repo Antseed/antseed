@@ -214,7 +214,7 @@ export async function writeEpochOverview(evidenceDir: string, epoch: string, run
 
 const STATE_LABEL: Record<OverviewCellState, string> = {
   same: 'Verified (SAME)',
-  diff: 'Wrong model (DIFF twice)',
+  diff: 'Wrong model (DIFF)',
   undetermined: 'Inconclusive',
   skipped: 'Tried, not submitted',
 }
@@ -234,7 +234,7 @@ function cellDetail(cell: OverviewCell): string[] {
       + `in ${cell.extension.extraSets ?? 1} set(s), `
       + `pooled p=${p(cell.extension.pooledPValue)} → ${cell.extension.verdict}`)
   }
-  if (cell.state === 'diff') lines.push('DIFF on both checks')
+  if (cell.state === 'diff') lines.push('This auditor\'s DIFF; it counts on-chain once another auditor confirms it')
   return lines
 }
 
@@ -304,7 +304,7 @@ td{text-align:center;padding:6px 4px}td.num{white-space:nowrap;font-size:12px}
 <div class="cards">
 <div class="card"><h3>AUDITED SELLERS</h3><div class="v">${audited}</div><small>${verifiedSellers} with SAME and no DIFF</small></div>
 <div class="card"><h3>SAME</h3><div class="v">${count('same')}</div><small>services verified</small></div>
-<div class="card"><h3>DIFF (2× CONFIRMED)</h3><div class="v">${count('diff')}</div><small>${sellersWith('diff')} sellers with ≥1 DIFF</small></div>
+<div class="card"><h3>DIFF REPORTS</h3><div class="v">${count('diff')}</div><small>${sellersWith('diff')} sellers with ≥1 DIFF</small></div>
 <div class="card"><h3>UNDETERMINED</h3><div class="v">${count('undetermined')}</div></div>
 <div class="card"><h3>NOT SUBMITTED</h3><div class="v">${count('skipped')}</div><small>tried, not audited or not confirmed</small></div>
 </div>
@@ -340,7 +340,7 @@ function renderCell(cell: OverviewCell): string {
   ].join('')
   const meta = `${cell.model} · service ${cell.service} · run ${cell.runId.slice(0, 10)}…`
     + (cell.audits > 1 ? ` · ${cell.audits} audits` : '')
-  const sup = cell.state === 'diff' ? '<sup>2×</sup>' : cell.audits > 1 ? `<sup>${cell.audits}</sup>` : ''
+  const sup = cell.audits > 1 ? `<sup>${cell.audits}</sup>` : ''
   return `<span class="cell" tabindex="0" aria-label="${escapeHtml(`${headline}. ${cell.reason?.detail ?? ''}`)}">`
     + `<span class="dot ${cell.state}"></span>${sup}`
     + `<span class="card-tip" role="tooltip"><b>${escapeHtml(headline)}</b>${lines}<i>${escapeHtml(meta)}</i></span></span>`

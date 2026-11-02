@@ -14,7 +14,10 @@ import {
   dropSettledConfirmations,
   epochReports,
   loadEpochReports,
+  localResultAnswersConfirmation,
+  ownReportBlocks,
   ownResultTallies,
+  reportKey,
   pendingConfirmations,
   verdictTallies,
 } from './pending-confirmations.js'
@@ -187,7 +190,7 @@ test('confirmation targets keep only this auditor\'s confirmations, under a conf
   const targets = confirmationTargetsByModel(pending, (model) => (model === 'model-a' ? ['model-a', 'Served-A'] : [model]))
   assert.deepEqual([...targets.keys()], ['model-a'])
   assert.deepEqual([...targets.get('model-a')!.values()], [
-    { agentId: 1n, service: 'Served-A', waiting: [{ verdict: 'DIFF', reports: 1, required: 2 }] },
+    { agentId: 1n, service: 'Served-A', waiting: [{ verdict: 'DIFF', reports: 1, required: 2 }], ownReportedAt: null },
   ])
 })
 
@@ -249,4 +252,31 @@ test('a waiting report is dropped once the contract no longer counts it or its v
     }),
   }, 7n)
   assert.deepEqual(kept.map((entry) => entry.agentId), [1n, 4n])
+})
+
+test('this auditor\'s latest report block per service, across report rounds', () => {
+  const events = [
+    { ...audited({ auditor: A, verdict: VERIFIER_VERDICT.SAME, round: 0 }), blockNumber: 10 },
+    { ...audited({ auditor: B, verdict: VERIFIER_VERDICT.DIFF, round: 0 }), blockNumber: 12 },
+    { ...audited({ auditor: A, verdict: VERIFIER_VERDICT.SAME, round: 1 }), blockNumber: 20 },
+    { ...audited({ auditor: A, agentId: 2n, verdict: VERIFIER_VERDICT.SAME }), blockNumber: 15 },
+    { ...audited({ auditor: B, agentId: 3n, verdict: VERIFIER_VERDICT.SAME }), blockNumber: 16 },
+  ]
+  const blocks = ownReportBlocks(events, A.toLowerCase())
+  assert.equal(blocks.get(reportKey(1n, serviceHash('model-a'), modelHash('model-a'))), 20)
+  assert.equal(blocks.get(reportKey(2n, serviceHash('model-a'), modelHash('model-a'))), 15)
+  assert.equal(blocks.has(reportKey(3n, serviceHash('model-a'), modelHash('model-a'))), false)
+})
+
+test('a finished local result answers a confirmation only for the reported service and when not yet submitted', () => {
+  const target = { agentId: 1n, service: 'Served-A', waiting: [{ verdict: 'SAME' as const, reports: 1, required: 2 }] }
+  // Never reported on it: a finished result for the service is submitted next and counts.
+  assert.equal(localResultAnswersConfirmation({ ...target, ownReportedAt: null }, { service: 'served-a', completedAt: 500 }), true)
+  // A result for another alias adds nothing to this service's tally.
+  assert.equal(localResultAnswersConfirmation({ ...target, ownReportedAt: null }, { service: 'served-b', completedAt: 500 }), false)
+  assert.equal(localResultAnswersConfirmation({ ...target, ownReportedAt: null }, null), false)
+  // Reported in a round the contract no longer counts: the old result was that report; audit again.
+  assert.equal(localResultAnswersConfirmation({ ...target, ownReportedAt: 600 }, { service: 'Served-A', completedAt: 500 }), false)
+  // A result newer than that report (the re-audit) is submitted next.
+  assert.equal(localResultAnswersConfirmation({ ...target, ownReportedAt: 600 }, { service: 'Served-A', completedAt: 700 }), true)
 })
