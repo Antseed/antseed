@@ -305,6 +305,29 @@ test('deposit watcher fails fast when no relayer accepts, and reports the error'
   assert.match(error.error ?? '', /No deposit relayer accepted/)
 })
 
+test('deposit watcher gives up on a sweep at once when the relayer that took it reports it could not submit it', async (t) => {
+  const chain: FakeChain = {
+    walletBalance: 5_000_000n,
+    depositsAvailable: 0n,
+    depositsReserved: 0n,
+    creditLimit: 100_000_000n,
+    authorizationUsed: false,
+  }
+  const { watcher, events, cleanup } = await makeWatcher(chain, {
+    dispatch: async () => ({ offered: 1, accepted: true }),
+    getReceipt: async (authNonce) => ({ version: 1, authNonce, status: 'rejected', reason: 'submission failed' }),
+  })
+  t.after(async () => { watcher.stop(); await cleanup() })
+
+  const started = Date.now()
+  watcher.promote()
+  await waitFor(() => events.some((e) => e.phase === 'error'))
+
+  assert.ok(Date.now() - started < 5_000, 'did not wait out the confirmation window')
+  assert.match(events.find((e) => e.phase === 'error')!.error ?? '', /could not submit/)
+  assert.equal(chain.walletBalance, 5_000_000n)
+})
+
 test('deposit watcher status exposes mode transitions and the last event', async (t) => {
   const chain: FakeChain = {
     walletBalance: 0n,

@@ -424,6 +424,10 @@ const EXTERNAL_VERIFICATION_RESULT_TTL_MS = IDENTITY_HISTORY_TTL_MS;
  *  so a peer that hasn't answered in 3s isn't going to win the deposit —
  *  move on. */
 const DEFAULT_SWEEP_OFFER_TIMEOUT_MS = 3_000;
+/** How long a relayer that accepted a sweep and then failed to submit it is offered none. */
+const FAILED_SWEEP_RELAYER_COOLDOWN_MS = 15 * 60_000;
+/** How long after accepting a sweep a relayer's failure report still counts against it. */
+const SWEEP_OUTCOME_WATCH_MS = 5 * 60_000;
 /** Don't offer a sweep whose authorization expires too soon to safely land —
  *  mirrors MIN_REMAINING_VALIDITY_SECS in the seller-side relayer. */
 const MIN_SWEEP_DISPATCH_VALIDITY_SECS = 30;
@@ -476,6 +480,8 @@ export class AntseedNode extends EventEmitter {
   private _paymentMuxes = new Map<PeerId, PaymentMux>();
   private _verificationMuxes = new Map<PeerId, VerificationMux>();
   private _sweepMuxes = new Map<PeerId, SweepMux>();
+  /** Relayers whose accepted sweep then failed on-chain (a stuck wallet, say), until when they are skipped. */
+  private _failedSweepRelayers = new Map<PeerId, number>();
   private _peerCapabilities = new Map<PeerId, Set<string>>();
   /** Buyer identities beyond the default one, by name. */
   private _buyerIdentities = new Map<string, BuyerIdentityContext>();
@@ -2615,7 +2621,8 @@ export class AntseedNode extends EventEmitter {
    * each relayer an uncontested window. Candidates are shuffled so no single
    * relayer always gets first refusal. A relayer that reports 'rejected' (or
    * stays silent past `perPeerTimeoutMs`) forfeits its turn; 'submitted' or
-   * 'confirmed' ends the round. Progress still arrives as 'sweep:receipt'
+   * 'confirmed' ends the round. A relayer that accepted a sweep and then
+   * reported its submission failed is offered sweeps last for a while. Progress still arrives as 'sweep:receipt'
    * events, and the wire protocol is unchanged — relayers need no upgrade.
    */
   async dispatchSweepRequest(
@@ -2628,18 +2635,24 @@ export class AntseedNode extends EventEmitter {
     const perPeerTimeoutMs = opts?.perPeerTimeoutMs ?? DEFAULT_SWEEP_OFFER_TIMEOUT_MS;
 
     const candidates: Array<{ peerId: PeerId; conn: PeerConnection }> = [];
+    const skipped: Array<{ peerId: PeerId; conn: PeerConnection }> = [];
+    const now = Date.now();
     for (const peerId of this._muxes.keys()) {
       const capabilities = this._peerCapabilities.get(peerId);
       if (!capabilities?.has(CONNECTION_CAPABILITY_RELAYS_SWEEPS_V1)) continue;
       const conn = this._connectionManager.getConnection(peerId);
       if (!conn) continue;
       if (conn.state !== ConnectionState.Open && conn.state !== ConnectionState.Authenticated) continue;
-      candidates.push({ peerId, conn });
+      const failedUntil = this._failedSweepRelayers.get(peerId);
+      if (failedUntil !== undefined && failedUntil <= now) this._failedSweepRelayers.delete(peerId);
+      (failedUntil !== undefined && failedUntil > now ? skipped : candidates).push({ peerId, conn });
     }
     for (let i = candidates.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [candidates[i], candidates[j]] = [candidates[j]!, candidates[i]!];
     }
+    // A relayer whose last accepted sweep failed is asked only when no other relayer takes it.
+    candidates.push(...skipped);
 
     const wantNonce = payload.nonce.toLowerCase();
     let offered = 0;
@@ -2657,11 +2670,30 @@ export class AntseedNode extends EventEmitter {
       offered++;
       const receipt = await this._waitForSweepReceipt(peerId, wantNonce, perPeerTimeoutMs);
       if (receipt && (receipt.status === 'submitted' || receipt.status === 'confirmed')) {
+        if (receipt.status === 'submitted') this._watchAcceptedSweep(peerId, wantNonce);
         return { offered, accepted: true };
       }
       // 'rejected' or silence — pass the opportunity to the next relayer.
     }
     return { offered, accepted: false };
+  }
+
+  /** Remember a relayer that accepted `authNonce` and then reported it could not submit it. */
+  private _watchAcceptedSweep(peerId: PeerId, authNonce: string): void {
+    const listener = (event: { peerId: string; payload: SweepReceiptPayload }): void => {
+      if (event.peerId !== peerId || event.payload.authNonce.toLowerCase() !== authNonce) return;
+      if (event.payload.status === 'rejected') {
+        this._failedSweepRelayers.set(peerId, Date.now() + FAILED_SWEEP_RELAYER_COOLDOWN_MS);
+      }
+      if (event.payload.status !== 'submitted') cleanup();
+    };
+    const timer = setTimeout(() => cleanup(), SWEEP_OUTCOME_WATCH_MS);
+    timer.unref?.();
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      this.off('sweep:receipt', listener);
+    };
+    this.on('sweep:receipt', listener);
   }
 
   /** Resolve with the first 'sweep:receipt' from `peerId` for `authNonce`

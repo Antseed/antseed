@@ -449,6 +449,9 @@ export class DepositWatcher {
       fee,
       authNonce: message.nonce,
     })
+    if (result === 'rejected') {
+      throw new Error('The relayer could not submit the deposit. Your USDC is safe in the wallet — retrying with another relayer.')
+    }
     if (!result) {
       throw new Error('The deposit was not confirmed in time. Your USDC is safe in the wallet — retrying automatically.')
     }
@@ -497,13 +500,14 @@ export class DepositWatcher {
 
   // Source of truth is on-chain: a matching SweepExecuted relay event, the
   // consumed EIP-3009 authorization, or the deposits-balance increase. Relayer
-  // receipts only surface the txHash faster; zero receipts must be tolerated.
+  // receipts only surface the txHash faster (or, rejected after submitting,
+  // end the wait early); zero receipts must be tolerated.
   private async _waitForConfirmation(params: {
     initialTotal: bigint
     expectedNet: bigint
     fee: bigint
     authNonce: string
-  }): Promise<{ credited: bigint; txHash?: string } | null> {
+  }): Promise<{ credited: bigint; txHash?: string } | 'rejected' | null> {
     const { initialTotal, expectedNet, fee, authNonce } = params
     const { depositsClient, relayClient, address } = this._deps
     const deadline = Date.now() + SWEEP_CONFIRM_TIMEOUT_MS
@@ -534,6 +538,10 @@ export class DepositWatcher {
       if (current && current.available + current.reserved >= initialTotal + expectedNet) {
         return { credited: current.available + current.reserved - initialTotal, ...(txHash ? { txHash } : {}) }
       }
+
+      // Not on-chain, and the relayer that took it says it could not submit it: retry with another
+      // relayer instead of waiting out the window.
+      if (receipt?.status === 'rejected' && !txHash) return 'rejected'
 
       await sleep(SWEEP_POLL_INTERVAL_MS)
     }

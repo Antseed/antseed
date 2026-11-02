@@ -145,6 +145,25 @@ describe('AntseedNode sequential sweep dispatch', () => {
     vi.restoreAllMocks();
   });
 
+  it('offers sweeps last to a relayer that accepted one and then failed to submit it', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0.999);
+    const a = toPeerId('a'.repeat(40));
+    const b = toPeerId('b'.repeat(40));
+    const { node, offers } = makeDispatchNode([
+      { peerId: a, behavior: 'submitted' },
+      { peerId: b, behavior: 'submitted' },
+    ]);
+
+    const first = makePayload();
+    expect(await node.dispatchSweepRequest(first, { perPeerTimeoutMs: 200 })).toEqual({ offered: 1, accepted: true });
+    node.emit('sweep:receipt', { peerId: a, payload: { version: 1, authNonce: first.nonce, status: 'rejected', reason: 'submission failed' } });
+
+    const second = { ...makePayload(), nonce: '0x' + 'bb'.repeat(32) };
+    expect(await node.dispatchSweepRequest(second, { perPeerTimeoutMs: 200 })).toEqual({ offered: 1, accepted: true });
+    expect(offers).toEqual([a, b]);
+    vi.restoreAllMocks();
+  });
+
   it('reports no acceptance when every relayer declines', async () => {
     const a = toPeerId('a'.repeat(40));
     const b = toPeerId('b'.repeat(40));
