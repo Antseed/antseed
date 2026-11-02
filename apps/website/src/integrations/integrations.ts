@@ -161,6 +161,7 @@ export const integrations: Integration[] = [
     oneLiner: "Anthropic's official CLI agent - launch through Antseed with `antseed claude`.",
     description: [
       'Claude Code is the official CLI coding agent from Anthropic. It speaks the Anthropic Messages API natively, so it slots into Antseed through the `antseed claude` wrapper or by pointing `ANTHROPIC_BASE_URL` at your local proxy.',
+      'The quickest route is the <a href="/docs/desktop">desktop app (AI VPN)</a>: open <strong>Connected apps</strong> and connect Claude Code, then pick the model in the app. You can change it per conversation without touching any config. The steps below are for the CLI.',
       '`antseed claude` resolves the active buyer proxy, sets the placeholder Anthropic API key for the child process, and forwards the rest of your Claude Code flags unchanged. Manual environment variables still work if you want to run `claude` directly.',
       'No real Anthropic API key is needed - the Antseed proxy authenticates each request with your local identity (`ANTSEED_IDENTITY_HEX`) and settles payments on-chain. The `ANTHROPIC_API_KEY` value is required by the Anthropic SDK only as a non-empty placeholder.',
       'When Claude Code calls the Messages API, the proxy selects the highest-ranked eligible offer under the shared Price + Trust preferences. Stable session metadata gives the conversation soft affinity to the seller that actually served it, with failover when needed. Every model on the network (listed by <code>GET /v1/models</code>) is a valid <code>--model</code> value; prefix it with a peer id (<code>&lt;peerId&gt;@&lt;service-id&gt;</code>) only when you want to force a specific seller.',
@@ -170,16 +171,15 @@ export const integrations: Integration[] = [
       {
         label: 'Verify it runs',
         command: 'claude --version',
-        output: '1.4.2 (Claude Code)',
       },
     ],
     configure: [
       {
         kind: 'code',
         language: 'bash',
-        snippet: 'antseed claude --model kimi-k2.6',
+        snippet: 'antseed claude --model deepseek-v4.1-flash',
         note:
-          'Recommended: the wrapper reads the active buyer proxy from `buyer.state.json` or config, sets `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY` for Claude Code, and forwards extra Claude args. Add `--antseed-base-url http://host:port` only when your proxy is somewhere else. To route to a specific peer, prefix the model with its peer id: `antseed claude --model <peerId>@kimi-k2.6`.',
+          'Recommended: the wrapper reads the active buyer proxy from `buyer.state.json` or config, sets `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY` for Claude Code, and forwards extra Claude args. Add `--antseed-base-url http://host:port` only when your proxy is somewhere else. To route to a specific peer, prefix the model with its peer id: `antseed claude --model <peerId>@deepseek-v4.1-flash`.',
       },
       {
         kind: 'env',
@@ -189,27 +189,52 @@ export const integrations: Integration[] = [
         },
         note: 'Manual equivalent if you want to run `claude` directly instead of through `antseed claude`.',
       },
+      {
+        kind: 'env',
+        vars: {
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: 'deepseek-v4.1-flash',
+          CLAUDE_CODE_SUBAGENT_MODEL: 'deepseek-v4.1-flash',
+          CLAUDE_CODE_MAX_CONTEXT_TOKENS: '128000',
+        },
+        note: 'Claude Code also sends background tasks and subagents to other model names (Claude Haiku, for example), and those requests reach the proxy too. Set the first two so they use an open model as well. Claude Code does not know open model ids and assumes a 200k context window; set `CLAUDE_CODE_MAX_CONTEXT_TOKENS` to the context length on the model card so it compacts at the right point.',
+      },
+      {
+        kind: 'file',
+        path: '~/.claude/settings.json',
+        language: 'json',
+        snippet: `{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://localhost:${ANT_PORT}",
+    "ANTHROPIC_API_KEY": "antseed",
+    "ANTHROPIC_MODEL": "deepseek-v4.1-flash",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4.1-flash",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-v4.1-flash",
+    "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "128000"
+  }
+}`,
+        note: 'Optional: to run plain `claude` through Antseed every time, put the settings in Claude Code\'s own settings file instead of passing them per session.',
+      },
     ],
     modelHints: {
-      suggested: ['kimi-k2.6', 'deepseek-v4-flash', 'minimax-m2.7', 'glm-5'],
-      note: "`antseed claude --model <model-id>` passes the value to Claude Code unchanged. Use a model id returned by `curl http://localhost:8377/v1/models`. You can also route to a specific peer per session with `--model <peerId>@<service-id>`.",
+      suggested: ['deepseek-v4.1-flash', 'glm-5.3-flash', 'glm-5.2', 'kimi-k3'],
+      note: "`antseed claude --model <model-id>` passes the value to Claude Code unchanged. Use a model id returned by `curl http://localhost:8377/v1/models`, and pick a seller that lists tool use: Claude Code needs it for every file edit and command. You can also route to a specific peer per session with `--model <peerId>@<service-id>`.",
     },
     test: [
       {
         label: 'List every model on the network',
         command: 'curl -s http://localhost:8377/v1/models | jq \'.data[].id\'',
         outputLabel: 'Example response',
-        output: `"deepseek-v4-flash"
-"gpt-oss-120b"
-"kimi-k2.6"
-"minimax-m2.7"`,
+        output: `"deepseek/deepseek-v4.1-flash"
+"moonshotai/kimi-k3"
+"z-ai/glm-5.2"
+"z-ai/glm-5.3-flash"`,
         note:
-          'Any id here works with `--model` - the proxy applies the shared Price + Trust ranking and keeps soft conversation affinity after the first successful route. To force a specific seller, use `--model <peerId>@<service-id>` or `antseed buyer connection set --peer <peerId>`.',
+          'Any id here works with `--model`, and so does the short name without the vendor prefix (`deepseek-v4.1-flash`) -the proxy applies the shared Price + Trust ranking and keeps soft conversation affinity after the first successful route. To force a specific seller, use `--model <peerId>@<service-id>` or `antseed buyer connection set --peer <peerId>`.',
       },
       {
         label: 'Start a Claude Code session through the wrapper',
-        command: 'antseed claude --model kimi-k2.6',
-        note: 'Manual equivalent after exporting the env vars above: `claude --model kimi-k2.6`. To pin a specific peer for the session: `antseed claude --model <peerId>@kimi-k2.6`.',
+        command: 'antseed claude --model deepseek-v4.1-flash',
+        note: 'Manual equivalent after exporting the env vars above: `claude --model deepseek-v4.1-flash`. To pin a specific peer for the session: `antseed claude --model <peerId>@deepseek-v4.1-flash`.',
       },
     ],
     troubleshooting: [
@@ -224,6 +249,14 @@ export const integrations: Integration[] = [
       {
         problem: '`model_not_found` for a model name you expected to work',
         fix: 'No policy-allowed peer on the network currently advertises that model. Check what is available with `curl http://localhost:8377/v1/models`, then pick another model or adjust your buyer policy.',
+      },
+      {
+        problem: '`402 insufficient_deposits` even though a free seller offers the model',
+        fix: 'With automatic routing, Claude Code\'s requests can still land on a paid seller. Deposit with `antseed buyer deposit`, or pin the free seller: `antseed claude --model <peerId>@<model>`. `antseed network browse --service <model>` lists sellers and their prices.',
+      },
+      {
+        problem: 'Claude Code says it doesn\'t recognize the model and assumes a 200k context window',
+        fix: 'Expected for open model ids. Set `CLAUDE_CODE_MAX_CONTEXT_TOKENS` to the model\'s real context length so Claude Code compacts at the right point.',
       },
       {
         problem: 'Want to confirm a request actually went through Antseed (not Anthropic direct)',
